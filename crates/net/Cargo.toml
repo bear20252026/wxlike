@@ -17,6 +17,10 @@ serde = { workspace = true }
 async-trait = { workspace = true }
 futures-util = "0.3"
 rusqlite = { workspace = true }
+# WP-12 TOFU: SHA-256 certificate fingerprints for first-use pinning
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # WP-02/A2 integration test drives the platform HTTP API against a live hub.

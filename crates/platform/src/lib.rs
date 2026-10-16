@@ -22,6 +22,7 @@ mod db;
 mod error;
 mod friends;
 mod groups;
+mod keys;
 mod media;
 mod moments;
 mod users;
@@ -264,6 +265,7 @@ impl Platform {
             .merge(media::routes())
             .merge(moments::routes())
             .merge(wallet::routes())
+            .merge(keys::routes())
             .with_state(state)
     }
 

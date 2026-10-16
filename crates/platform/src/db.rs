@@ -185,6 +185,16 @@ impl Db {
                 created_at  INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_mc_moment ON moment_comments(moment_id, seq);
+
+            -- WP-12: fetchable E2EE pre-key bundles. `otks` is a JSON array of
+            -- unclaimed one-time keys; claiming pops from it (see keys.rs).
+            CREATE TABLE IF NOT EXISTS prekey_bundles (
+                user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                identity         TEXT NOT NULL,
+                identity_signing TEXT NOT NULL DEFAULT '',
+                otks             TEXT NOT NULL DEFAULT '[]',
+                updated_at       INTEGER NOT NULL
+            );
             "#,
         )?;
         Ok(())

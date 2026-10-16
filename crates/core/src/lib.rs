@@ -1,6 +1,7 @@
 //! wxlike-core: message types, E2EE scaffolding, sqlite storage.
 
 pub mod crypto;
+pub mod e2ee;
 pub mod store;
 pub mod types;
 
