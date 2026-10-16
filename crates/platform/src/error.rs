@@ -21,6 +21,8 @@ pub enum PlatformError {
     Conflict(String),
     #[error("missing or invalid credentials")]
     Unauthorized,
+    #[error("not permitted")]
+    Forbidden,
 }
 
 /// HTTP-visible error: status plus a client-safe message (no SQL text leaks).
@@ -52,6 +54,7 @@ impl From<PlatformError> for ApiError {
                 Self::new(StatusCode::CONFLICT, format!("already exists: {reason}"))
             }
             PlatformError::Unauthorized => Self::new(StatusCode::UNAUTHORIZED, "unauthorized"),
+            PlatformError::Forbidden => Self::new(StatusCode::FORBIDDEN, "not permitted"),
         }
     }
 }

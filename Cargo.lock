@@ -2708,16 +2708,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "bincode",
  "futures-util",
+ "http-body-util",
  "quinn",
  "rcgen",
  "rustls",
  "rustls-pki-types",
  "serde",
+ "serde_json",
  "tokio",
+ "tower",
  "wxlike-core",
  "wxlike-mq",
+ "wxlike-platform",
 ]
 
 [[package]]
@@ -2747,9 +2752,11 @@ name = "wxlike-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "serde_json",
  "tokio",
+ "wxlike-core",
  "wxlike-mq",
  "wxlike-net",
  "wxlike-platform",

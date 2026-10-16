@@ -41,12 +41,44 @@ impl Default for MqHubOptions {
 pub struct MqHub {
     pub hub_id: String,
     pub endpoint: quinn::Endpoint,
+    handle: HubHandle,
     tasks: Vec<JoinHandle<()>>,
 }
 
 impl MqHub {
     pub fn local_addr(&self) -> anyhow::Result<std::net::SocketAddr> {
         Ok(self.endpoint.local_addr()?)
+    }
+
+    /// Server-side injection point: lets the platform service push system
+    /// envelopes (friend/group events) through the same routing as client
+    /// traffic, without holding a QUIC connection itself.
+    pub fn handle(&self) -> HubHandle {
+        self.handle.clone()
+    }
+}
+
+/// Cloneable handle for routing envelopes into a running hub.
+#[derive(Clone)]
+pub struct HubHandle {
+    hub_id: String,
+    peers: Peers,
+    router: MqRouter,
+    offline: Arc<dyn OfflineStore>,
+}
+
+impl HubHandle {
+    pub fn hub_id(&self) -> &str {
+        &self.hub_id
+    }
+
+    /// Number of users currently bound to this hub (tests + metrics).
+    pub async fn online_users(&self) -> usize {
+        self.peers.read().await.len()
+    }
+
+    pub async fn publish(&self, env: &Envelope) -> anyhow::Result<()> {
+        route_envelope(&self.hub_id, &self.peers, &self.router, &self.offline, env).await
     }
 }
 
@@ -142,8 +174,14 @@ pub async fn run_mq_hub_with(
     });
 
     Ok(MqHub {
-        hub_id,
+        hub_id: hub_id.clone(),
         endpoint,
+        handle: HubHandle {
+            hub_id,
+            peers,
+            router: router.clone(),
+            offline: options.offline.clone(),
+        },
         tasks: vec![accept_loop, consume_loop],
     })
 }

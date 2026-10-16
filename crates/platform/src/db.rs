@@ -65,6 +65,38 @@ impl Db {
                 expires_at  INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+            CREATE TABLE IF NOT EXISTS friend_requests (
+                id          TEXT PRIMARY KEY,
+                from_uid    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                to_uid      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                message     TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'pending',
+                created_at  INTEGER NOT NULL,
+                UNIQUE(from_uid, to_uid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fr_to ON friend_requests(to_uid, status);
+            CREATE INDEX IF NOT EXISTS idx_fr_from ON friend_requests(from_uid, status);
+
+            CREATE TABLE IF NOT EXISTS friends (
+                user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                friend_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                remark      TEXT NOT NULL DEFAULT '',
+                source      TEXT NOT NULL DEFAULT '',
+                created_at  INTEGER NOT NULL,
+                PRIMARY KEY (user_id, friend_id)
+            );
+
+            -- Append-only per-user contact log: the cursor source for
+            -- /api/friends/changes (address-book sync).
+            CREATE TABLE IF NOT EXISTS contact_log (
+                seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                subject_id  TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                changed_at  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_cl_user ON contact_log(user_id, seq);
             "#,
         )?;
         Ok(())

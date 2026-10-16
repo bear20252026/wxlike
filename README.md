@@ -61,6 +61,23 @@ token 为 32 字节随机 hex、有效期 30 天、过期即惰性清理；`/api
 SQL 全部参数化，且输入层再挡一层超长/控制字符/引号分号（WP-01 A4）。
 `GET /api/profile/{id}` 只回 `user_id/name/avatar`——`signature` 仅本人可见。
 
+## 好友关系（WP-02）
+
+申请—同意双向模型：`friends` 存**两行**（a→b、b→a，同一事务），所以备注是各自的；
+`contact_log` 是 append-only 的通讯录变更流，`GET /api/friends/changes?since=<seq>` 靠它做增量同步。
+
+```bash
+# 端到端验证：平台 HTTP 产生的好友事件经 hub 送达在线客户端
+cargo test -p wxlike-net --test friends_system_event
+```
+
+覆盖两件事：在线方立刻收到 `MsgKind::System`（申请、同意各一条，`to` 精确指向收件人）；
+离线方则被 `MemoryOffline` 暂存，下次 `Hello` 时补发。身份只从 token 取，
+请求体里的 `from_uid` 一律忽略（伪造他人申请是 401/403，不产生脏数据）。
+
+`platform` 不依赖 `net`：事件通过 `trait EventSink` 反向注入，server 挂 `HubHandle`，
+测试挂 recorder——所以业务层可以单测，不必起 QUIC。
+
 ## MQ 与多节点路由（Rust 移植自 box-im 的 MIT 设计）
 
 每个 hub 消费自己的队列 `wxlike:msg:hub:{hub_id}`；路由表记录 `用户 → hub`。
@@ -93,7 +110,7 @@ WXLIKE_HUB_ID=hub-2 WXLIKE_MQ=redis WXLIKE_QUIC=0.0.0.0:9444 WXLIKE_HTTP=0.0.0.0
 
 ```bash
 cargo build
-cargo test                 # 43 tests: E2EE 往返 / 存储 / 打包 / 分帧 / 双向中继 / 桥 / 平台 API
+cargo test                 # 64 tests: E2EE 往返 / 存储 / 打包 / 分帧 / 双向中继 / 桥 / 平台 API / 好友关系
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443

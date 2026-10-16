@@ -41,6 +41,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Platform data plane is on by default (WP-01): accounts, sessions, profiles.
     let platform = wxlike_platform::Platform::open(db_path)?.shared();
+    // Friend/group lifecycle events are pushed through the hub, so online peers
+    // see them the same way they see chat traffic (WP-02).
+    platform.set_event_sink(Arc::new(HubSink(hub.handle())));
     println!("[wxlike-server] platform db = {}", db_env);
     println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints, /api/*)");
     std::mem::forget(hub); // run until process exit
@@ -95,4 +98,14 @@ async fn health() -> Json<serde_json::Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "ok": true,
     }))
+}
+
+/// Pushes platform system envelopes (friend/group lifecycle) into the QUIC hub.
+struct HubSink(wxlike_net::HubHandle);
+
+#[async_trait::async_trait]
+impl wxlike_platform::EventSink for HubSink {
+    async fn publish(&self, env: wxlike_core::Envelope) -> anyhow::Result<()> {
+        self.0.publish(&env).await
+    }
 }

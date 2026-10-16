@@ -16,3 +16,11 @@ bincode = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
 futures-util = "0.3"
+
+[dev-dependencies]
+# WP-02/A2 integration test drives the platform HTTP API against a live hub.
+wxlike-platform = { path = "../platform" }
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = { workspace = true }

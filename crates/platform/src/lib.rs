@@ -20,6 +20,7 @@
 mod auth;
 mod db;
 mod error;
+mod friends;
 mod users;
 mod validate;
 
@@ -27,6 +28,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use rusqlite::{params, OptionalExtension as _};
+use wxlike_core::{Envelope, MsgBody, MsgKind};
 
 pub use crate::auth::{hash_password, random_hex, verify_password, Authed};
 pub use crate::db::Db;
@@ -53,9 +55,45 @@ impl Default for PlatformOptions {
 
 pub type PlatformState = Arc<Platform>;
 
+/// Outbound system events (friend/group lifecycle) are pushed through the QUIC
+/// hub so online peers see them end-to-end. The server wires a `HubHandle`
+/// adapter in; tests wire a recorder. `None` = events are only persisted.
+#[async_trait::async_trait]
+pub trait EventSink: Send + Sync + 'static {
+    async fn publish(&self, env: wxlike_core::Envelope) -> anyhow::Result<()>;
+}
+
+/// Deterministic 1:1 conversation id for a pair (order-independent).
+pub fn direct_conv_id(a: &str, b: &str) -> String {
+    let (mut x, mut y) = (a.to_string(), b.to_string());
+    if x > y {
+        std::mem::swap(&mut x, &mut y);
+    }
+    format!("d-{x}~{y}")
+}
+
+pub(crate) fn system_envelope(
+    conv_id: &str,
+    sender: &str,
+    to: Vec<String>,
+    text: &str,
+) -> Envelope {
+    Envelope {
+        version: 1,
+        conv_id: conv_id.to_string(),
+        sender: sender.to_string(),
+        to,
+        seq: 0,
+        kind: MsgKind::System,
+        body: MsgBody::Notice(text.to_string()),
+        sent_at_ms: wxlike_core::types::now_ms(),
+    }
+}
+
 pub struct Platform {
     db: Db,
     options: PlatformOptions,
+    sink: std::sync::Mutex<Option<Arc<dyn EventSink>>>,
 }
 
 impl Platform {
@@ -67,6 +105,7 @@ impl Platform {
         Ok(Self {
             db: Db::open(None)?,
             options,
+            sink: std::sync::Mutex::new(None),
         })
     }
 
@@ -79,6 +118,7 @@ impl Platform {
         Ok(Self {
             db: Db::open(path)?,
             options,
+            sink: std::sync::Mutex::new(None),
         })
     }
 
@@ -161,7 +201,37 @@ impl Platform {
     }
 
     pub fn router(state: PlatformState) -> Router {
-        Router::new().merge(users::routes()).with_state(state)
+        Router::new()
+            .merge(users::routes())
+            .merge(friends::routes())
+            .with_state(state)
+    }
+
+    /// Wires the hub (or a test recorder) that receives system envelopes.
+    pub fn set_event_sink(&self, sink: Arc<dyn EventSink>) {
+        let mut guard = self
+            .sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = Some(sink);
+    }
+
+    /// Best-effort push: a peer that cannot be reached must not roll back an
+    /// already-committed relationship change, so delivery failures are logged
+    /// and the caller's data stays committed.
+    pub(crate) async fn emit(&self, env: Envelope) {
+        let sink = {
+            let guard = self
+                .sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.clone()
+        };
+        if let Some(sink) = sink {
+            if let Err(err) = sink.publish(env).await {
+                eprintln!("[platform] system event publish failed: {err:#}");
+            }
+        }
     }
 }
 
