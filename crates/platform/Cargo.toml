@@ -1,0 +1,25 @@
+[package]
+name = "wxlike-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wxlike-core = { path = "../core" }
+tokio = { workspace = true }
+axum = { version = "0.8", features = ["macros"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+pbkdf2 = "0.12"
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+futures-util = "0.3"

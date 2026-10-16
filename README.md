@@ -15,10 +15,51 @@ wxlike/
 │  ├─ mq/          # ★ MQ 抽象（MessageQueue + RouteTable）· Memory 后端 · Redis 后端(feature)
 │  ├─ net/         # QUIC 长连接 · 分帧 · 广播 hub（单节点）/ MQ 路由 hub（多节点）
 │  ├─ dpage/       # 动态页包格式 DPG1：桩头(magic+id+len) + zstd 载荷（借鉴 CSO 桩+载荷设计）
-│  └─ container/   # JS 引擎宿主（Boa）· wxhost 桥 · 页面生命周期 · 研究装载器
-├─ server/         # 开发服务器：axum HTTP + MQ 路由 hub（WXLIKE_MQ=memory|redis）
+│  ├─ container/   # JS 引擎宿主（Boa）· wxhost 桥 · 页面生命周期 · 研究装载器
+│  └─ platform/    # ★ 业务数据面（WP-01）：axum HTTP + SQLite 账户/会话/资料，PBKDF2 口令哈希
+├─ server/         # 开发服务器：platform API + MQ 路由 hub（WXLIKE_MQ=memory|redis）
 └─ ui/             # Tauri2 脚手架（独立构建，见下）
 ```
+
+## 平台 API（WP-01：账户 / 会话 / 资料）
+
+唯一业务数据面，hub 只负责推送。契约见 [docs/WORK_BREAKDOWN.md](docs/WORK_BREAKDOWN.md) WP-01。
+
+```bash
+# 5 分钟内可复现的四步演示（进程内跑真实 axum router，无需起服务）
+cargo run -p wxlike-platform --example wp01_demo
+```
+
+实际输出（token/user_id 为随机值）：
+
+```
+1) POST /api/register   -> 200 OK
+   {"token":"92c26f1e...cf9b4a","user_id":"07a4254e8f5301e5"}
+2) POST /api/login      -> 200 OK
+   {"token":"e8777f14...3843985","user_id":"07a4254e8f5301e5"}
+3) PUT  /api/profile    -> 200 OK
+   {"avatar":"alice.png","name":"alice","signature":"rust && quic","user_id":"07a4254e8f5301e5"}
+4) GET  /api/me         -> 200 OK
+   {"avatar":"alice.png","name":"alice","signature":"rust && quic","user_id":"07a4254e8f5301e5"}
+5) GET  /api/me (no Authorization)   -> 401 Unauthorized (expected 401)
+5a) GET /api/me (forged token)       -> 401 Unauthorized (expected 401)
+5b) GET /api/me (register's token)   -> 200 OK (expected 200: separate live session)
+6) POST /api/logout                  -> 204 No Content (expected 204)
+7) GET  /api/me (after logout)       -> 401 Unauthorized (expected 401)
+```
+
+起服务器后同样的接口可以 curl（默认 SQLite 落 `data/wxlike.db`）：
+
+```bash
+cargo run -p wxlike-server
+curl --noproxy '*' -s -X POST http://127.0.0.1:8099/api/register \
+  -H 'content-type: application/json' -d '{"name":"alice","password":"hunter2"}'
+```
+
+安全要点：口令 PBKDF2-HMAC-SHA256 100_000 轮 + 每用户随机盐（轮数入库，可后续上调）；
+token 为 32 字节随机 hex、有效期 30 天、过期即惰性清理；`/api/me` 与所有写接口强制 Bearer 校验；
+SQL 全部参数化，且输入层再挡一层超长/控制字符/引号分号（WP-01 A4）。
+`GET /api/profile/{id}` 只回 `user_id/name/avatar`——`signature` 仅本人可见。
 
 ## MQ 与多节点路由（Rust 移植自 box-im 的 MIT 设计）
 
@@ -52,7 +93,7 @@ WXLIKE_HUB_ID=hub-2 WXLIKE_MQ=redis WXLIKE_QUIC=0.0.0.0:9444 WXLIKE_HTTP=0.0.0.0
 
 ```bash
 cargo build
-cargo test                 # 12 tests: E2EE 往返 / 存储 / 打包 / 分帧 / 双向中继 / 桥
+cargo test                 # 43 tests: E2EE 往返 / 存储 / 打包 / 分帧 / 双向中继 / 桥 / 平台 API
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443
