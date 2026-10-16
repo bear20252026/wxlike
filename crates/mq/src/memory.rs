@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::{MessageQueue, RouteTable};
+use crate::{MessageQueue, ReliableQueue, RouteTable};
 
 struct MemQueue {
     buf: std::sync::Mutex<VecDeque<Vec<u8>>>,
@@ -57,6 +57,159 @@ impl MessageQueue for MemoryMq {
             }
             notified.await;
         }
+    }
+}
+
+/// In-memory at-least-once queue, so the ack/reclaim path is testable without
+/// Redis. Same contract as `RedisStreamsMq`: a delivered entry stays pending
+/// until acknowledged, and a pending entry idle past the claim window can be
+/// handed to another consumer.
+#[derive(Default)]
+pub struct MemoryReliableMq {
+    queues: Mutex<HashMap<String, Arc<RelQueue>>>,
+    consumer: std::sync::Mutex<String>,
+}
+
+struct RelQueue {
+    entries: std::sync::Mutex<VecDeque<Entry>>,
+    /// Monotonic, never reused: ids stay unique even after entries are acked.
+    counter: std::sync::Mutex<u64>,
+    notify: Notify,
+}
+
+struct Entry {
+    id: String,
+    payload: Vec<u8>,
+    /// Set once delivered: the consumer holding it and when.
+    claimed: Option<(String, std::time::Instant)>,
+}
+
+impl RelQueue {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(VecDeque::new()),
+            counter: std::sync::Mutex::new(0),
+            notify: Notify::new(),
+        }
+    }
+
+    fn push(&self, payload: Vec<u8>) -> String {
+        let mut counter = self.counter.lock().unwrap();
+        *counter += 1;
+        let id = format!("{}-0", *counter);
+        self.entries.lock().unwrap().push_back(Entry {
+            id: id.clone(),
+            payload,
+            claimed: None,
+        });
+        self.notify.notify_waiters();
+        id
+    }
+}
+
+impl MemoryReliableMq {
+    pub fn new(consumer: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            queues: Mutex::new(HashMap::new()),
+            consumer: std::sync::Mutex::new(consumer.into()),
+        })
+    }
+
+    /// Rebind this instance's consumer name (a "second process" in tests).
+    pub fn set_consumer(&self, consumer: &str) {
+        *self.consumer.lock().unwrap() = consumer.to_string();
+    }
+
+    fn here(&self) -> String {
+        self.consumer.lock().unwrap().clone()
+    }
+
+    async fn queue(&self, name: &str) -> Arc<RelQueue> {
+        self.queues
+            .lock()
+            .await
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(RelQueue::new()))
+            .clone()
+    }
+}
+
+#[async_trait]
+impl MessageQueue for MemoryReliableMq {
+    async fn publish(&self, queue: &str, payload: Vec<u8>) -> anyhow::Result<()> {
+        self.queue(queue).await.push(payload);
+        Ok(())
+    }
+
+    /// Read and immediately acknowledge — for callers that do not need the
+    /// ack round-trip.
+    async fn consume(&self, queue: &str) -> anyhow::Result<Vec<u8>> {
+        let (_, payload) = self.consume_entry(queue).await?;
+        Ok(payload)
+    }
+}
+
+#[async_trait]
+impl ReliableQueue for MemoryReliableMq {
+    async fn consume_entry(&self, queue: &str) -> anyhow::Result<(String, Vec<u8>)> {
+        let q = self.queue(queue).await;
+        let me = self.here();
+        loop {
+            let notified = q.notify.notified();
+            {
+                let mut entries = q.entries.lock().unwrap();
+                if let Some(entry) = entries.iter_mut().find(|e| e.claimed.is_none()) {
+                    let id = entry.id.clone();
+                    let payload = entry.payload.clone();
+                    entry.claimed = Some((me.clone(), std::time::Instant::now()));
+                    return Ok((id, payload));
+                }
+            }
+            notified.await;
+        }
+    }
+
+    async fn ack(&self, queue: &str, id: &str) -> anyhow::Result<()> {
+        let q = self.queue(queue).await;
+        let mut entries = q.entries.lock().unwrap();
+        if let Some(pos) = entries.iter().position(|e| e.id == id) {
+            entries.remove(pos);
+        }
+        Ok(())
+    }
+
+    async fn claim_stale(
+        &self,
+        queue: &str,
+        min_idle_ms: u64,
+    ) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+        let q = self.queue(queue).await;
+        let me = self.here();
+        let mut out = Vec::new();
+        let mut entries = q.entries.lock().unwrap();
+        for entry in entries.iter_mut() {
+            let stale = match &entry.claimed {
+                Some((who, at)) => {
+                    *who != me && at.elapsed() >= std::time::Duration::from_millis(min_idle_ms)
+                }
+                None => false,
+            };
+            if stale {
+                entry.claimed = Some((me.clone(), std::time::Instant::now()));
+                out.push((entry.id.clone(), entry.payload.clone()));
+            }
+        }
+        Ok(out)
+    }
+
+    async fn pending_count(&self, queue: &str) -> anyhow::Result<u64> {
+        let q = self.queue(queue).await;
+        // scoped so the guard is dropped before the future resolves
+        let count = {
+            let entries = q.entries.lock().unwrap();
+            entries.iter().filter(|e| e.claimed.is_some()).count()
+        };
+        Ok(count as u64)
     }
 }
 

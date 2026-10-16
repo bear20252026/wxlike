@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod framing;
+pub mod membership;
 pub mod mq_hub;
 pub mod offline;
 pub mod server;
@@ -10,5 +11,9 @@ pub mod transport;
 pub mod wire;
 
 pub use client::Client;
-pub use mq_hub::{run_mq_hub, MqHub};
+pub use membership::Membership;
+pub use mq_hub::{
+    run_mq_hub, run_mq_hub_with, HubHandle, MqHub, MqHubOptions, DEFAULT_CLAIM_IDLE_MS,
+    DEFAULT_DEDUP_CAP,
+};
 pub use server::run_hub;

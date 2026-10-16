@@ -16,3 +16,22 @@ bincode = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
 futures-util = "0.3"
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+# WP-02/A2 integration test drives the platform HTTP API against a live hub.
+wxlike-platform = { path = "../platform" }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+# WP-05 integration test synthesizes and decodes real PNGs
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# WP-04 A3: the task book names the benchmark scripts, so they live in
+# scripts/ and are wired in as example targets.
+[[example]]
+name = "bench_group"
+path = "../../scripts/bench_group.rs"

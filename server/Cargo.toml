@@ -10,6 +10,9 @@ path = "src/main.rs"
 [dependencies]
 wxlike-net = { path = "../crates/net" }
 wxlike-mq = { path = "../crates/mq" }
+wxlike-platform = { path = "../crates/platform" }
+wxlike-core = { path = "../crates/core" }
+async-trait = { workspace = true }
 tokio = { workspace = true }
 axum = "0.8"
 anyhow = { workspace = true }
