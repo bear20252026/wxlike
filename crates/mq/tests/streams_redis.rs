@@ -35,6 +35,15 @@ fn unique_queue(tag: &str) -> String {
     format!("wxlike:test:{tag}:{}", std::process::id())
 }
 
+/// `consume_entry` long-polls by design (that is the point of a work queue), so
+/// tests must put a deadline on it: a missing entry has to fail, not hang.
+async fn read_within(mq: &wxlike_mq::streams::RedisStreamsMq, queue: &str) -> (String, Vec<u8>) {
+    tokio::time::timeout(Duration::from_secs(10), mq.consume_entry(queue))
+        .await
+        .expect("entry should arrive within 10s (a skip here means the group was created after the publish)")
+        .unwrap()
+}
+
 #[tokio::test]
 #[ignore = "requires REDIS_URL; run with: cargo test -p wxlike-mq --features redis -- --ignored"]
 async fn streams_roundtrip_and_ack() {
@@ -47,7 +56,7 @@ async fn streams_roundtrip_and_ack() {
     mq.publish(&queue, b"across the wire".to_vec())
         .await
         .unwrap();
-    let (id, payload) = mq.consume_entry(&queue).await.unwrap();
+    let (id, payload) = read_within(&mq, &queue).await;
     assert_eq!(payload, b"across the wire");
     assert_eq!(
         mq.pending_count(&queue).await.unwrap(),
@@ -75,8 +84,8 @@ async fn streams_consumer_group_splits_entries() {
     }
     let mut ids = std::collections::HashSet::new();
     for _ in 0..2 {
-        ids.insert(a.consume_entry(&queue).await.unwrap().0);
-        ids.insert(b.consume_entry(&queue).await.unwrap().0);
+        ids.insert(read_within(&a, &queue).await.0);
+        ids.insert(read_within(&b, &queue).await.0);
     }
     assert_eq!(ids.len(), 4, "one group, two consumers: no double reads");
     for id in ids {
@@ -98,7 +107,7 @@ async fn streams_reclaim_a_dead_consumers_entry() {
         .with_timeouts(2_000, 300);
 
     dead.publish(&queue, b"abandoned".to_vec()).await.unwrap();
-    let (id, payload) = dead.consume_entry(&queue).await.unwrap();
+    let (id, payload) = read_within(&dead, &queue).await;
     assert_eq!(payload, b"abandoned");
     // and it is never acknowledged, as if that process were killed
 

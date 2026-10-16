@@ -25,3 +25,9 @@ axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 serde_json = { workspace = true }
+
+# WP-04 A3: the task book names the benchmark scripts, so they live in
+# scripts/ and are wired in as example targets.
+[[example]]
+name = "bench_group"
+path = "../../scripts/bench_group.rs"

@@ -97,6 +97,22 @@ impl Db {
                 changed_at  INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_cl_user ON contact_log(user_id, seq);
+
+            CREATE TABLE IF NOT EXISTS groups (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                owner_uid   TEXT NOT NULL REFERENCES users(id),
+                created_at  INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role        TEXT NOT NULL DEFAULT 'member',
+                my_remark   TEXT NOT NULL DEFAULT '',
+                joined_at   INTEGER NOT NULL,
+                PRIMARY KEY (group_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_gm_user ON group_members(user_id);
             "#,
         )?;
         Ok(())

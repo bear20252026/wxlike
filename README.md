@@ -78,6 +78,34 @@ cargo test -p wxlike-net --test friends_system_event
 `platform` 不依赖 `net`：事件通过 `trait EventSink` 反向注入，server 挂 `HubHandle`，
 测试挂 recorder——所以业务层可以单测，不必起 QUIC。
 
+## 群聊（WP-04）
+
+群 id 直接当 `Envelope.conv_id` 用。hub 收到群消息时按**成员表**投递（不再是
+"`to` 为空就广播给所有在线连接"）：先查成员 → 非成员直接丢帧且**不入库** →
+其余成员逐个定向投递，在线直投、跨 hub 转发、离线进 `OfflineStore`。
+
+成员表由 `platform` 持有，hub 通过 `trait Membership` 反查（实现在 server 里做适配，
+`platform` 不依赖 `net`）；`platform` 侧带进程内缓存，任何成员变更即时失效。
+
+**扇出是并发的**：每条流各自有写锁，串行 `await` 会让单条消息的延迟随群规模线性增长
+（200 人群实测把 p50 顶到 236ms）；改成并发投递后 release p99 = 11ms。
+
+`@提醒`：客户端发 `MsgBody::Custom{kind:"mention", payload:{text, user_ids}}`，
+hub 按收件人逐个改写——被 @ 到的人收到 Custom 标记，其余群成员只收到纯文本。
+
+权限：拉人 = owner/admin，踢人 = 仅 owner，退群 = 普通成员（owner 必须先转移群主）；
+群成员上限 1000（批量拉人整批拒绝，不会半提交）；建群/拉人/踢人/退群都产生
+`MsgKind::System` 进群。`my_remark` 属于成员自己的那一行（本人对群的备注），
+不是观察者给别人的别名。
+
+```bash
+cargo test -p wxlike-platform --test groups     # 20 项（权限/上限/幂等/缓存失效）
+cargo test -p wxlike-net --test group_routing   # 5 项（含三人跨 hub、离线补收、@ 改写）
+cargo run -p wxlike-net --release --example bench_group   # 200 人群 50msg/s 延迟基准
+```
+
+基准数据与两个"假数字"的排查过程见 [docs/bench/wp04_group.md](docs/bench/wp04_group.md)。
+
 ## MQ 与多节点路由（Rust 移植自 box-im 的 MIT 设计）
 
 每个 hub 消费自己的队列 `wxlike:msg:hub:{hub_id}`；路由表记录 `用户 → hub`。
@@ -119,7 +147,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 
 ```bash
 cargo build
-cargo test                 # 107 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 可靠队列
+cargo test                 # 132 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 可靠队列
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443

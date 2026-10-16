@@ -25,7 +25,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use wxlike_core::types::{MsgId, NO_MSG_ID};
+use wxlike_core::types::{MsgBody, MsgId, NO_MSG_ID};
 use wxlike_core::{Envelope, Store};
 use wxlike_mq::{hub_queue, MqRouter};
 
@@ -43,6 +43,9 @@ pub struct MqHubOptions {
     pub offline: Arc<dyn OfflineStore>,
     pub storage: Option<Arc<Store>>,
     pub dedup_cap: usize,
+    /// Group membership source (WP-04). Without it a `conv_id` is never treated
+    /// as a group, so group messages would fall back to plain broadcast.
+    pub membership: Option<Arc<dyn crate::membership::Membership>>,
     /// Reclaim cross-node entries left unacked for this long. Only meaningful
     /// with an ack-capable backend; `None` disables the patrol. The task book
     /// asks for >= 60s, so `wxlike-server` uses [`DEFAULT_CLAIM_IDLE_MS`].
@@ -58,6 +61,7 @@ impl Default for MqHubOptions {
             offline: MemoryOffline::new(500),
             storage: None,
             dedup_cap: DEFAULT_DEDUP_CAP,
+            membership: None,
             reclaim_idle_ms: None,
         }
     }
@@ -104,6 +108,7 @@ struct HubState {
     storage: Option<Arc<Store>>,
     seen: Arc<tokio::sync::Mutex<MsgIdLru>>,
     reclaim_idle_ms: Option<u64>,
+    membership: Option<Arc<dyn crate::membership::Membership>>,
 }
 
 /// Cloneable handle for routing envelopes into a running hub.
@@ -206,6 +211,7 @@ pub async fn run_mq_hub_with(
         storage: options.storage.clone(),
         seen: Arc::new(Mutex::new(MsgIdLru::new(options.dedup_cap))),
         reclaim_idle_ms: options.reclaim_idle_ms,
+        membership: options.membership.clone(),
     });
 
     // accept loop
@@ -401,6 +407,22 @@ async fn handle_inbound(
         return Ok(());
     }
 
+    // 2. group scoping, before anything is persisted: a message from someone who
+    // is not a member is dropped and never stored (WP-04 A4).
+    let members = match &state.membership {
+        Some(membership) => membership.members_of(&env.conv_id).await?,
+        None => None,
+    };
+    if let Some(members) = &members {
+        if !members.iter().any(|m| m == &env.sender) {
+            eprintln!(
+                "[mq-hub] {} is not a member of group {}; frame dropped",
+                env.sender, env.conv_id
+            );
+            return Ok(());
+        }
+    }
+
     // Control frames (receipts, recalls) are never conversation content: they
     // are routed, and the dedup cache keeps a replay from notifying twice.
     if env.receipt.is_some() {
@@ -448,10 +470,10 @@ async fn handle_inbound(
             eprintln!("[mq-hub] recall refused (unknown or not the author's own)");
             return Ok(());
         }
-        return route_envelope(state, env).await;
+        return route_or_fanout(state, env, members).await;
     }
 
-    // 2. content frames: dedup, then persist, then route
+    // 3. content frames: dedup, then persist, then route
     if env.msg_id != NO_MSG_ID {
         let duplicate = state.seen.lock().await.check_and_insert(env.msg_id);
         if duplicate {
@@ -464,16 +486,122 @@ async fn handle_inbound(
         }
     }
 
-    route_envelope(state, env).await
+    route_or_fanout(state, env, members).await
+}
+
+/// Group conversations fan out by the member table; everything else keeps the
+/// directed/broadcast semantics.
+async fn route_or_fanout(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    members: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    match members {
+        Some(members) => {
+            let recipients: Vec<String> = members
+                .iter()
+                .filter(|m| **m != env.sender)
+                .cloned()
+                .collect();
+            fanout(state, env, &recipients).await
+        }
+        None => route_envelope(state, env).await,
+    }
+}
+
+/// Deliver one envelope to each recipient, rebuilding the frame per recipient
+/// because an `@mention` is marked only for the people it names.
+///
+/// Recipients are written concurrently: every peer owns its own `SendStream`
+/// mutex, so serializing them just made a single message's fan-out cost grow
+/// with group size (200 members ≈ one message's worth of delivery latency,
+/// which WP-04 A3's p99 budget cannot absorb).
+async fn fanout(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    recipients: &[String],
+) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&String> = recipients.iter().filter(|r| seen.insert(*r)).collect();
+
+    let tasks = unique.iter().map(|rcpt| {
+        let state = state.clone();
+        let rcpt = (*rcpt).clone();
+        let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
+            Ok(f) => f,
+            Err(err) => return tokio::spawn(async move { Err(err) }),
+        };
+        tokio::spawn(async move {
+            match state.router.routes.route_of(&rcpt).await? {
+                Some(h) if h == state.hub_id => {
+                    deliver_to(&state, &rcpt, &frame).await;
+                }
+                Some(h) => state.router.mq.publish(&hub_queue(&h), frame).await?,
+                None => state.offline.enqueue(&rcpt, frame).await?,
+            }
+            Ok(())
+        })
+    });
+
+    let mut first_error = None;
+    for task in futures_util::future::join_all(tasks).await {
+        match task {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(anyhow::anyhow!("fan-out task panicked: {err}"));
+                }
+            }
+        }
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/// The `@mention` payload carries the plain text plus who was named. Non-named
+/// members receive the plain text; named members receive the marked form.
+fn mention_variant(env: &Envelope, rcpt: &str) -> Envelope {
+    let mut out = env.clone();
+    out.to = vec![rcpt.to_string()];
+    if let MsgBody::Custom { kind, payload } = &env.body {
+        if kind == wxlike_core::custom_kind::MENTION {
+            let named: Vec<String> = payload
+                .get("user_ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let text = payload
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if !named.iter().any(|n| n == rcpt) {
+                // not addressed to this member: strip the mention marker
+                out.body = MsgBody::Text(text);
+            }
+        }
+    }
+    out
 }
 
 /// Deliver locally if recipients are here; publish to their hub otherwise.
 /// Empty `to` = broadcast: everyone local except sender, plus every other hub.
 async fn route_envelope(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result<()> {
-    let frame = WireFrame::Msg(env.clone()).to_bytes()?;
-
     if env.to.is_empty() {
+        // broadcast: everyone local (minus the sender) plus every other hub
         deliver_local(state, env).await;
+        let frame = WireFrame::Msg(env.clone()).to_bytes()?;
         for other in state.router.routes.list_hubs().await? {
             if other != state.hub_id {
                 state
@@ -485,55 +613,37 @@ async fn route_envelope(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result
         }
         return Ok(());
     }
-
-    let mut remote_hubs = std::collections::BTreeSet::new();
-    let mut handled = HashSet::new();
-    for rcpt in &env.to {
-        // a recipient listed twice must be notified once
-        if !handled.insert(rcpt.as_str()) {
-            continue;
-        }
-        match state.router.routes.route_of(rcpt).await? {
-            Some(h) if h == state.hub_id => {
-                deliver_to(state, rcpt, &frame).await;
-            }
-            Some(h) => {
-                remote_hubs.insert(h);
-            }
-            None => {
-                // recipient never connected anywhere: park for their first Hello
-                state.offline.enqueue(rcpt, frame.clone()).await?;
-            }
-        }
-    }
-    for h in remote_hubs {
-        state
-            .router
-            .mq
-            .publish(&hub_queue(&h), frame.clone())
-            .await?;
-    }
-    Ok(())
+    // directed traffic uses the same per-recipient path as group fan-out:
+    // concurrent writes, parked when the recipient is nowhere online
+    fanout(state, env, &env.to).await
 }
 
+/// Write to every local peer except the sender. Each peer owns its own send
+/// stream, so the writes are dispatched together rather than serialized.
 async fn deliver_local(state: &Arc<HubState>, env: &Envelope) {
     let frame = match WireFrame::Msg(env.clone()).to_bytes() {
         Ok(f) => f,
         Err(_) => return,
     };
-    let map = state.peers.read().await;
-    for (user, send) in map.iter() {
-        if *user == env.sender {
-            continue; // no echo to sender
-        }
-        if !env.to.is_empty() && !env.to.contains(user) {
-            continue;
-        }
-        let mut s = send.lock().await;
-        if let Err(err) = framing::write_frame(&mut *s, &frame).await {
-            eprintln!("[mq-hub] local deliver to {user} failed: {err}");
-        }
-    }
+    let tasks: Vec<_> = {
+        let map = state.peers.read().await;
+        map.iter()
+            .filter(|(user, _)| **user != env.sender)
+            .filter(|(user, _)| env.to.is_empty() || env.to.contains(user))
+            .map(|(user, send)| {
+                let user = user.clone();
+                let send = send.clone();
+                let frame = frame.clone();
+                tokio::spawn(async move {
+                    let mut s = send.lock().await;
+                    if let Err(err) = framing::write_frame(&mut *s, &frame).await {
+                        eprintln!("[mq-hub] local deliver to {user} failed: {err}");
+                    }
+                })
+            })
+            .collect()
+    };
+    futures_util::future::join_all(tasks).await;
 }
 
 async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) {

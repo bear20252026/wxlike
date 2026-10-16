@@ -35,6 +35,10 @@ async fn main() -> anyhow::Result<()> {
     let router = build_router(&mq_mode)?;
     println!("[wxlike-server] hub '{hub_id}' mq={mq_mode}");
 
+    // Platform data plane is on by default (WP-01): accounts, sessions, profiles.
+    // It is created first because the hub reads group membership from it (WP-04).
+    let platform = wxlike_platform::Platform::open(db_path)?.shared();
+
     // The hub persists messages (msg_id dedup, recall, receipt routing — WP-03)
     // and parks frames for offline users on disk rather than in RAM (WP-10), so
     // a restart does not lose what was waiting for someone who was away.
@@ -47,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         wxlike_net::MqHubOptions {
             storage: Some(store),
             offline,
+            membership: Some(Arc::new(PlatformMembership(platform.clone()))),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
             ..Default::default()
         },
@@ -55,8 +60,6 @@ async fn main() -> anyhow::Result<()> {
     let hub_addr = hub.local_addr()?;
     println!("[wxlike-server] QUIC hub on {hub_addr}");
 
-    // Platform data plane is on by default (WP-01): accounts, sessions, profiles.
-    let platform = wxlike_platform::Platform::open(db_path)?.shared();
     // Friend/group lifecycle events are pushed through the hub, so online peers
     // see them the same way they see chat traffic (WP-02).
     platform.set_event_sink(Arc::new(HubSink(hub.handle())));
@@ -140,5 +143,16 @@ struct HubSink(wxlike_net::HubHandle);
 impl wxlike_platform::EventSink for HubSink {
     async fn publish(&self, env: wxlike_core::Envelope) -> anyhow::Result<()> {
         self.0.publish(&env).await
+    }
+}
+
+/// Hands the hub the platform's group membership table (WP-04). The adapter
+/// lives here so `wxlike-platform` does not have to depend on `wxlike-net`.
+struct PlatformMembership(std::sync::Arc<wxlike_platform::Platform>);
+
+#[async_trait::async_trait]
+impl wxlike_net::Membership for PlatformMembership {
+    async fn members_of(&self, conv_id: &str) -> anyhow::Result<Option<Vec<String>>> {
+        Ok(self.0.cached_members(conv_id)?)
     }
 }

@@ -21,6 +21,7 @@ mod auth;
 mod db;
 mod error;
 mod friends;
+mod groups;
 mod users;
 mod validate;
 
@@ -98,6 +99,8 @@ pub struct Platform {
     db: Db,
     options: PlatformOptions,
     sink: std::sync::Mutex<Option<Arc<dyn EventSink>>>,
+    /// group_id -> member ids, invalidated on every membership change (WP-04).
+    group_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl Platform {
@@ -110,6 +113,7 @@ impl Platform {
             db: Db::open(None)?,
             options,
             sink: std::sync::Mutex::new(None),
+            group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -123,6 +127,7 @@ impl Platform {
             db: Db::open(path)?,
             options,
             sink: std::sync::Mutex::new(None),
+            group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -208,6 +213,7 @@ impl Platform {
         Router::new()
             .merge(users::routes())
             .merge(friends::routes())
+            .merge(groups::routes())
             .with_state(state)
     }
 

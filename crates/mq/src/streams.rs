@@ -69,8 +69,14 @@ impl RedisStreamsMq {
         Ok(self.client.get_multiplexed_tokio_connection().await?)
     }
 
-    /// Consumer groups must exist before the first read; idempotent, and
-    /// `$` starts at the tail so old entries are not replayed forever.
+    /// Consumer groups must exist before the first read; idempotent.
+    ///
+    /// The group starts at `0`, not at the tail: with `$`, an entry published
+    /// before the first hub created the group would never be delivered to it —
+    /// silent message loss. Starting at `0` means the very first group creation
+    /// replays whatever is already in the stream instead, which is the failure
+    /// mode at-least-once can tolerate (and dedup by `msg_id` absorbs it).
+    /// After creation, `">"` delivers only undelivered entries as usual.
     async fn ensure_group(&self, queue: &str) -> anyhow::Result<()> {
         let key = stream_key(queue);
         let mut c = self.conn().await?;
@@ -78,7 +84,7 @@ impl RedisStreamsMq {
             .arg("CREATE")
             .arg(&key)
             .arg(&self.group)
-            .arg("$")
+            .arg("0")
             .arg("MKSTREAM")
             .query_async(&mut c)
             .await;
@@ -174,7 +180,7 @@ impl ReliableQueue for RedisStreamsMq {
             .arg(100)
             .query_async(&mut c)
             .await?;
-        Ok(entries_of(&reply))
+        Ok(entries_of_claim(&reply))
     }
 
     async fn pending_count(&self, queue: &str) -> anyhow::Result<u64> {
@@ -209,29 +215,45 @@ impl RedisStreamsMq {
     }
 }
 
-/// Pull `(id, payload)` pairs out of a RESP2 stream reply.
+/// Pull `(id, payload)` pairs out of an **XREADGROUP** reply.
+///
+/// RESP2 shape: `[ [stream-key, [ [id, [field, value], ...], ... ]], ... ]`
 fn entries_of(value: &redis::Value) -> Vec<(String, Vec<u8>)> {
-    let mut out = Vec::new();
-    // XREADGROUP: [ [key, entries] ] ; XAUTOCLAIM: [cursor, entries]
     let redis::Value::Array(outer) = value else {
-        return out;
+        return Vec::new();
     };
+    let mut out = Vec::new();
     for item in outer {
+        // each item is a (stream key, entries) pair
         let redis::Value::Array(pair) = item else {
             continue;
         };
-        // the entries array is the last element in both shapes
-        let Some(entries) = pair.last() else { continue };
-        let redis::Value::Array(list) = entries else {
-            continue;
-        };
-        for entry in list {
-            if let Some(kv) = one_entry(entry) {
-                out.push(kv);
-            }
-        }
+        let Some(entries) = pair.get(1) else { continue };
+        out.extend(entry_list(entries));
     }
     out
+}
+
+/// Pull `(id, payload)` pairs out of an **XAUTOCLAIM** reply.
+///
+/// RESP2 shape: `[ next-cursor, [ [id, [field, value], ...], ... ], [deleted-ids] ]`
+/// — a different nesting depth from XREADGROUP, so it needs its own reader.
+fn entries_of_claim(value: &redis::Value) -> Vec<(String, Vec<u8>)> {
+    let redis::Value::Array(outer) = value else {
+        return Vec::new();
+    };
+    match outer.get(1) {
+        Some(entries) => entry_list(entries),
+        None => Vec::new(),
+    }
+}
+
+/// A list of `[id, [field, value], ...]` entries.
+fn entry_list(list: &redis::Value) -> Vec<(String, Vec<u8>)> {
+    let redis::Value::Array(items) = list else {
+        return Vec::new();
+    };
+    items.iter().filter_map(one_entry).collect()
 }
 
 fn one_entry(value: &redis::Value) -> Option<(String, Vec<u8>)> {
