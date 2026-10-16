@@ -13,6 +13,8 @@ pub enum PlatformError {
     Sqlite(#[from] rusqlite::Error),
     #[error("filesystem failure")]
     Io(#[from] std::io::Error),
+    #[error("json codec failure")]
+    Codec(#[from] serde_json::Error),
     #[error("invalid input: {0}")]
     BadInput(&'static str),
     #[error("not found")]
@@ -50,6 +52,9 @@ impl From<PlatformError> for ApiError {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, "database failure")
             }
             PlatformError::Io(_) => Self::new(StatusCode::INTERNAL_SERVER_ERROR, "storage failure"),
+            PlatformError::Codec(_) => {
+                Self::new(StatusCode::INTERNAL_SERVER_ERROR, "encoding failure")
+            }
             PlatformError::BadInput(m) => Self::new(StatusCode::UNPROCESSABLE_ENTITY, m),
             PlatformError::NotFound => Self::new(StatusCode::NOT_FOUND, "not found"),
             PlatformError::Conflict(reason) => {
