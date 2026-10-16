@@ -18,6 +18,9 @@ tokio = { workspace = true }
 axum = "0.8"
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+# WP-13: request/tracing observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 default = []

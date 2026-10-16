@@ -14,11 +14,25 @@
 
 use std::sync::Arc;
 
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // WXLIKE_LOG=e.g. "wxlike_server=debug,wxlike_net=debug,info" (RUST_LOG also honored)
+    let filter = std::env::var("WXLIKE_LOG")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .unwrap_or_else(|_| "info".into());
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|_| {
+                eprintln!("[wxlike-server] bad log filter '{filter}', falling back to info");
+                tracing_subscriber::EnvFilter::new("info")
+            }),
+        )
+        .init();
     let hub_id = std::env::var("WXLIKE_HUB_ID").unwrap_or_else(|_| "hub-1".into());
     let http_addr = std::env::var("WXLIKE_HTTP").unwrap_or_else(|_| "0.0.0.0:8099".into());
     let quic_addr: std::net::SocketAddr = std::env::var("WXLIKE_QUIC")
@@ -75,11 +89,28 @@ async fn main() -> anyhow::Result<()> {
         std::time::Duration::from_secs(60),
     );
     println!("[wxlike-server] platform db = {}", db_env);
-    println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints, /api/*)");
-    std::mem::forget(hub); // run until process exit
+    println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints /metrics, /api/*)");
+
+    let presence_router = {
+        let handle = hub.handle(); // clone before the hub is forgotten below
+        axum::Router::new().route(
+            "/api/presence/{user_id}",
+            get(
+                move |axum::extract::Path(user_id): axum::extract::Path<String>| {
+                    let handle = handle.clone();
+                    async move {
+                        let online = handle.is_online(&user_id).await;
+                        axum::Json(serde_json::json!({ "user_id": user_id, "online": online }))
+                    }
+                },
+            ),
+        )
+    };
+    std::mem::forget(hub); // run until process exit (the handle above was cloned)
 
     let app = axum::Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route(
             "/endpoints",
             get(move || async move {
@@ -90,7 +121,8 @@ async fn main() -> anyhow::Result<()> {
                 }))
             }),
         )
-        .merge(wxlike_platform::Platform::router(platform));
+        .merge(wxlike_platform::Platform::router(platform))
+        .merge(presence_router);
 
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
     axum::serve(listener, app).await?;
@@ -137,6 +169,24 @@ fn build_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
 #[cfg(feature = "redis")]
 fn url_consumer(url: &str) -> String {
     format!("{}-pid-{}", url, std::process::id())
+}
+
+/// Prometheus exposition (WP-13): connections, throughput, parked backlog,
+/// delivery latency histogram (p99 via histogram_quantile).
+async fn metrics() -> impl IntoResponse {
+    let text = wxlike_net::prometheus_text();
+    if text.is_empty() {
+        return axum::response::Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .body::<axum::body::Body>("metrics recorder unavailable".to_string().into())
+            .unwrap_or_default();
+    }
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body::<axum::body::Body>(text.into())
+        .unwrap_or_default()
 }
 
 async fn health() -> Json<serde_json::Value> {

@@ -1,0 +1,71 @@
+# WP-13: one command brings up Redis (MQ backend), the server (HTTP API +
+# QUIC hub + /metrics), and MinIO (S3-compatible media backend target; the
+# MediaStore trait's S3 implementation plugs in here).
+#
+#   docker compose up -d
+#   curl --noproxy '*' http://127.0.0.1:8099/health
+#   curl --noproxy '*' http://127.0.0.1:8099/metrics
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      WXLIKE_HUB_ID: hub-1
+      WXLIKE_MQ: redis
+      WXLIKE_REDIS_URL: redis://redis:6379
+      WXLIKE_DB: /data/wxlike.db
+      WXLIKE_MEDIA_DIR: /data/media
+      WXLIKE_HTTP: 0.0.0.0:8099
+      WXLIKE_QUIC: 0.0.0.0:9443
+    ports:
+      - "8099:8099"
+      - "9443:9443/udp"
+    volumes:
+      - server-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8099/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # S3-compatible object storage for the media backend (WP-05/WP-13).
+  # MinIO pulled its public images off Docker Hub and quay.io in 2025
+  # (401/404 for anonymous pulls), so the stack ships SeaweedFS — an
+  # actively maintained S3-compatible server with a public image. Any
+  # S3 endpoint works with the `MediaStore` trait.
+  s3:
+    image: chrislusf/seaweedfs:3.80
+    command: ["server", "-dir=/data", "-s3"]
+    ports:
+      - "9000:8333"
+      - "9333:9333"
+    volumes:
+      - s3-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9333/cluster/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  redis-data:
+  server-data:
+  s3-data:

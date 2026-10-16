@@ -42,6 +42,38 @@ impl Client {
         Self::hello(conn, user_id.into()).await
     }
 
+    /// Reconnect with backoff until `deadline` elapses (WP-13 crash
+    /// recovery: a hub dying underneath a client must end in a successful
+    /// reconnect, not a dead UI). `Err` only when the deadline passes.
+    pub async fn connect_retry(
+        server_addr: SocketAddr,
+        server_name: &str,
+        user_id: &str,
+        deadline: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        let started = std::time::Instant::now();
+        let mut backoff = std::time::Duration::from_millis(200);
+        loop {
+            let attempt = tokio::time::timeout(
+                backoff * 4,
+                Self::connect(server_addr, server_name, user_id),
+            )
+            .await;
+            match attempt {
+                Ok(Ok(client)) => return Ok(client),
+                Ok(Err(err)) => {
+                    tracing::debug!("reconnect attempt failed: {err:#}");
+                }
+                Err(_) => tracing::debug!("reconnect attempt timed out"),
+            }
+            if started.elapsed() >= deadline {
+                anyhow::bail!("could not reconnect to {server_addr} within {:?}", deadline);
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(std::time::Duration::from_secs(2));
+        }
+    }
+
     async fn hello(conn: quinn::Connection, user_id: String) -> anyhow::Result<Self> {
         let (mut send, recv) = conn.open_bi().await.context("open control stream")?;
         // QUIC streams are lazy: the server only sees the stream once data

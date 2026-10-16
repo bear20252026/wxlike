@@ -1,0 +1,51 @@
+[package]
+name = "wxlike-rtc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wxlike-core = { path = "../core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = "0.1"
+rand = { workspace = true }
+# 纯 Rust WebRTC（任务书明令禁 libwebrtc C++ 绑定）。
+# DTLS/SRTP 的加密提供方按平台选择：Windows 走 wincrypto（系统 API，
+# 免掉 vendored OpenSSL 在 MSVC 上的构建），Unix 走 openssl（CI 自带）。
+str0m = { version = "0.9", default-features = false, features = ["sha1"] }
+
+[target.'cfg(windows)'.dependencies]
+str0m = { version = "0.9", default-features = false, features = ["sha1", "wincrypto"] }
+
+[target.'cfg(unix)'.dependencies]
+str0m = { version = "0.9", default-features = false, features = ["sha1", "openssl", "vendored"] }
+
+[features]
+default = []
+# 真实声卡采集与 Opus 编解码（需要本机音频设备，CI/无头环境不开）
+audio = ["dep:cpal", "dep:opus"]
+# 摄像头采集（WP-08b；需要硬件）
+camera = ["dep:nokhwa"]
+
+[dependencies.cpal]
+version = "0.15"
+optional = true
+
+[dependencies.opus]
+version = "0.3"
+optional = true
+
+[dependencies.nokhwa]
+version = "0.10"
+optional = true
+features = ["input-native"]
+
+[dev-dependencies]
+wxlike-net = { path = "../net" }
+wxlike-mq = { path = "../mq" }
+tokio = { workspace = true }
