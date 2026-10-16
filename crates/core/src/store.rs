@@ -57,6 +57,7 @@ impl Store {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA busy_timeout = 5000;
             CREATE TABLE IF NOT EXISTS conversations (
                 id           TEXT PRIMARY KEY,
                 title        TEXT NOT NULL DEFAULT '',

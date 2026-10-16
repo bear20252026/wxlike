@@ -10,5 +10,8 @@ pub mod transport;
 pub mod wire;
 
 pub use client::Client;
-pub use mq_hub::{run_mq_hub, run_mq_hub_with, HubHandle, MqHub, MqHubOptions};
+pub use mq_hub::{
+    run_mq_hub, run_mq_hub_with, HubHandle, MqHub, MqHubOptions, DEFAULT_CLAIM_IDLE_MS,
+    DEFAULT_DEDUP_CAP,
+};
 pub use server::run_hub;

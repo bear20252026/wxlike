@@ -82,18 +82,27 @@ cargo test -p wxlike-net --test friends_system_event
 
 每个 hub 消费自己的队列 `wxlike:msg:hub:{hub_id}`；路由表记录 `用户 → hub`。
 **定向消息**（`Envelope.to` 非空）按收件人路由：在本 hub 直投，在别的 hub 经 MQ 队列转发；
-**广播**（`to` 为空）扇出到所有 hub。发送者不回显；离线收件人记日志丢弃（store-and-forward 是下一步）。
+**广播**（`to` 为空）扇出到所有 hub。发送者不回显；离线收件人进 `OfflineStore` 暂存，
+下次 `Hello` 时补发。
+
+**投递语义（WP-10）**：Redis 走 **Streams 消费者组**（`XADD`/`XREADGROUP`/`XACK`），
+本地投递成功后才 ack；进程中途挂掉时条目留在 pending，巡检任务用 `XAUTOCLAIM`
+在 ≥60s 后认领重投——即 at-least-once。旧的 `RedisMq`（LPUSH/BRPOP）已标注
+deprecated：BRPOP 读出即从队列消失，投递中途失败就真丢了。
+离线暂存默认落 SQLite（`SqliteOffline`，与 `WXLIKE_DB` 同文件），hub 重启不丢暂存帧。
+内存后端 `MemoryReliableMq` 提供同样的 ack/reclaim 语义，无 Redis 也能验。
 
 ```bash
 # 单节点（零依赖，内存 MQ）
 ./target/debug/wxlike-server.exe
 
-# 双节点跨机路由：先起 Redis，再编译带 redis feature，两实例不同端口
+# 双节点跨机路由：先起 Redis，编译带 redis feature，两实例不同端口
 cargo build -p wxlike-server --features redis
 WXLIKE_HUB_ID=hub-1 WXLIKE_MQ=redis WXLIKE_QUIC=0.0.0.0:9443 WXLIKE_HTTP=0.0.0.0:8099 ./target/debug/wxlike-server.exe &
 WXLIKE_HUB_ID=hub-2 WXLIKE_MQ=redis WXLIKE_QUIC=0.0.0.0:9444 WXLIKE_HTTP=0.0.0.0:8098 ./target/debug/wxlike-server.exe &
 
-# 客户端定向语法（chat 示例）："bob> 只有bob能看到"
+# 真机验证 Streams（不设 REDIS_URL 则自动跳过，不是硬编 skip）
+REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --ignored
 ```
 
 聊天示例演示（bob 的输出）：
@@ -110,7 +119,7 @@ WXLIKE_HUB_ID=hub-2 WXLIKE_MQ=redis WXLIKE_QUIC=0.0.0.0:9444 WXLIKE_HTTP=0.0.0.0
 
 ```bash
 cargo build
-cargo test                 # 92 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义
+cargo test                 # 107 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 可靠队列
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443

@@ -16,3 +16,8 @@ redis = { version = "0.27", default-features = false, features = ["tokio-comp"],
 [features]
 default = []
 redis = ["dep:redis"]
+
+# the streams tests reference the feature-gated backend
+[[test]]
+name = "streams_redis"
+required-features = ["redis"]

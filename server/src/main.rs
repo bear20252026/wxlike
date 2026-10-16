@@ -35,15 +35,19 @@ async fn main() -> anyhow::Result<()> {
     let router = build_router(&mq_mode)?;
     println!("[wxlike-server] hub '{hub_id}' mq={mq_mode}");
 
-    // The hub persists messages: msg_id dedup, recall and receipt routing
-    // (WP-03) all need a store attached.
+    // The hub persists messages (msg_id dedup, recall, receipt routing — WP-03)
+    // and parks frames for offline users on disk rather than in RAM (WP-10), so
+    // a restart does not lose what was waiting for someone who was away.
     let store = Arc::new(wxlike_core::Store::open(db_path)?);
+    let offline = wxlike_net::offline::SqliteOffline::open(db_path, 5_000)?;
     let hub = wxlike_net::run_mq_hub_with(
         hub_id.clone(),
         quic_addr,
         router,
         wxlike_net::MqHubOptions {
             storage: Some(store),
+            offline,
+            reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
             ..Default::default()
         },
     )
@@ -91,9 +95,19 @@ fn build_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
             {
                 let url = std::env::var("WXLIKE_REDIS_URL")
                     .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-                let mq = Arc::new(wxlike_mq::redis_backend::RedisMq::connect(&url)?);
+                // Streams, not lists: entries stay pending until the hub has
+                // delivered them, and the reclaim patrol recovers what a dead
+                // hub left in flight.
+                let streams =
+                    wxlike_mq::streams::RedisStreamsMq::connect(&url, Some(&url_consumer(&url)))?
+                        .with_timeouts(5_000, wxlike_net::DEFAULT_CLAIM_IDLE_MS);
+                let streams = Arc::new(streams);
                 let routes = Arc::new(wxlike_mq::redis_backend::RedisRoutes::connect(&url)?);
-                Ok(wxlike_mq::MqRouter::new(mq, routes))
+                Ok(wxlike_mq::MqRouter::with_reliable(
+                    streams.clone(),
+                    routes,
+                    streams,
+                ))
             }
             #[cfg(not(feature = "redis"))]
             {
@@ -102,6 +116,13 @@ fn build_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
         }
         other => anyhow::bail!("unknown WXLIKE_MQ='{other}' (memory|redis)"),
     }
+}
+
+/// Consumer identity per Redis database, so two hubs on one Redis are
+/// distinguishable in XPENDING output.
+#[cfg(feature = "redis")]
+fn url_consumer(url: &str) -> String {
+    format!("{}-pid-{}", url, std::process::id())
 }
 
 async fn health() -> Json<serde_json::Value> {

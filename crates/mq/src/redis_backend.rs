@@ -1,17 +1,32 @@
 //! Redis backend (feature `redis`): LPUSH/BRPOP queues + Hash/Set routes.
 //! Same semantics as box-im's Redis List design.
+//!
+//! **Deprecated for cross-node message traffic.** BRPOP removes the payload
+//! from the list the moment it is read, so a hub that dies between popping and
+//! delivering loses the message. Use [`crate::streams::RedisStreamsMq`], which
+//! keeps entries pending until they are acknowledged. Kept because `RedisRoutes`
+//! is still the route table, and because old deployments may rely on it.
+
+// This module implements the very type it deprecates.
+#![allow(deprecated)]
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
 
 use crate::{MessageQueue, RouteTable};
 
+/// At-most-once list queue. Deprecated: see the module note.
+#[deprecated(
+    since = "0.1.0",
+    note = "BRPOP discards the payload on read; use streams::RedisStreamsMq for at-least-once"
+)]
 pub struct RedisMq {
     client: redis::Client,
     /// BRPOP block seconds
     pub block_seconds: u64,
 }
 
+#[allow(deprecated)]
 impl RedisMq {
     pub fn connect(url: &str) -> anyhow::Result<Self> {
         Ok(Self {
@@ -35,14 +50,13 @@ impl MessageQueue for RedisMq {
 
     async fn consume(&self, queue: &str) -> anyhow::Result<Vec<u8>> {
         let mut c = self.conn().await?;
-        loop {
-            let (_, payload): (String, Vec<u8>) = redis::cmd("BRPOP")
-                .arg(queue)
-                .arg(self.block_seconds)
-                .query_async(&mut c)
-                .await?;
-            return Ok(payload);
-        }
+        // BRPOP already blocks server-side for `block_seconds`
+        let (_, payload): (String, Vec<u8>) = redis::cmd("BRPOP")
+            .arg(queue)
+            .arg(self.block_seconds)
+            .query_async(&mut c)
+            .await?;
+        Ok(payload)
     }
 }
 

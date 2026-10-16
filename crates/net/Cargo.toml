@@ -16,6 +16,7 @@ bincode = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
 futures-util = "0.3"
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 # WP-02/A2 integration test drives the platform HTTP API against a live hub.

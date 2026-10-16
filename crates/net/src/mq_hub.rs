@@ -37,13 +37,20 @@ use crate::wire::WireFrame;
 pub const DEFAULT_DEDUP_CAP: usize = 100_000;
 
 /// Hub knobs. Defaults: in-memory offline inbox (cap 500), 100k dedup cache,
-/// no message store (routing only).
+/// no message store (routing only), no reclaim patrol.
 #[derive(Clone)]
 pub struct MqHubOptions {
     pub offline: Arc<dyn OfflineStore>,
     pub storage: Option<Arc<Store>>,
     pub dedup_cap: usize,
+    /// Reclaim cross-node entries left unacked for this long. Only meaningful
+    /// with an ack-capable backend; `None` disables the patrol. The task book
+    /// asks for >= 60s, so `wxlike-server` uses [`DEFAULT_CLAIM_IDLE_MS`].
+    pub reclaim_idle_ms: Option<u64>,
 }
+
+/// Contract floor for reclaiming in-flight cross-node entries.
+pub const DEFAULT_CLAIM_IDLE_MS: u64 = 60_000;
 
 impl Default for MqHubOptions {
     fn default() -> Self {
@@ -51,6 +58,7 @@ impl Default for MqHubOptions {
             offline: MemoryOffline::new(500),
             storage: None,
             dedup_cap: DEFAULT_DEDUP_CAP,
+            reclaim_idle_ms: None,
         }
     }
 }
@@ -94,7 +102,8 @@ struct HubState {
     router: MqRouter,
     offline: Arc<dyn OfflineStore>,
     storage: Option<Arc<Store>>,
-    seen: Arc<Mutex<MsgIdLru>>,
+    seen: Arc<tokio::sync::Mutex<MsgIdLru>>,
+    reclaim_idle_ms: Option<u64>,
 }
 
 /// Cloneable handle for routing envelopes into a running hub.
@@ -196,6 +205,7 @@ pub async fn run_mq_hub_with(
         offline: options.offline.clone(),
         storage: options.storage.clone(),
         seen: Arc::new(Mutex::new(MsgIdLru::new(options.dedup_cap))),
+        reclaim_idle_ms: options.reclaim_idle_ms,
     });
 
     // accept loop
@@ -220,27 +230,79 @@ pub async fn run_mq_hub_with(
     let consume_state = state.clone();
     let consume_loop = tokio::spawn(async move {
         let queue = hub_queue(&consume_state.hub_id);
-        loop {
-            match consume_state.router.mq.consume(&queue).await {
-                Ok(bytes) => match WireFrame::from_bytes(&bytes) {
-                    Ok(WireFrame::Msg(env)) => deliver_local(&consume_state, &env).await,
-                    Ok(_) => {}
-                    Err(err) => eprintln!("[mq-hub] bad frame from mq: {err}"),
-                },
-                Err(err) => {
-                    eprintln!("[mq-hub] consume error: {err:#}");
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        match consume_state.router.reliable.clone() {
+            // at-least-once: ack only after local delivery completed, so a hub
+            // that dies mid-delivery leaves the entry for the patrol to reclaim
+            Some(rq) => loop {
+                match rq.consume_entry(&queue).await {
+                    Ok((id, bytes)) => {
+                        deliver_bytes(&consume_state, &bytes).await;
+                        if let Err(err) = rq.ack(&queue, &id).await {
+                            eprintln!("[mq-hub] ack {id} failed: {err:#}");
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("[mq-hub] stream consume error: {err:#}");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
                 }
-            }
+            },
+            None => loop {
+                match consume_state.router.mq.consume(&queue).await {
+                    Ok(bytes) => deliver_bytes(&consume_state, &bytes).await,
+                    Err(err) => {
+                        eprintln!("[mq-hub] consume error: {err:#}");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            },
         }
     });
+
+    // patrol: reclaim entries a dead consumer never acknowledged
+    let patrol_loop = match (state.router.reliable.clone(), state.reclaim_idle_ms) {
+        (Some(rq), Some(idle_ms)) => {
+            let patrol_state = state.clone();
+            let queue = hub_queue(&state.hub_id);
+            let period = std::time::Duration::from_millis((idle_ms / 2).max(100));
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(period).await;
+                    match rq.claim_stale(&queue, idle_ms).await {
+                        Ok(entries) => {
+                            for (id, bytes) in entries {
+                                deliver_bytes(&patrol_state, &bytes).await;
+                                if let Err(err) = rq.ack(&queue, &id).await {
+                                    eprintln!("[mq-hub] ack reclaimed {id} failed: {err:#}");
+                                }
+                            }
+                        }
+                        Err(err) => eprintln!("[mq-hub] reclaim failed: {err:#}"),
+                    }
+                }
+            }))
+        }
+        _ => None,
+    };
+
+    let mut tasks = vec![accept_loop, consume_loop];
+    tasks.extend(patrol_loop);
 
     Ok(MqHub {
         hub_id,
         endpoint,
         handle: HubHandle { state },
-        tasks: vec![accept_loop, consume_loop],
+        tasks,
     })
+}
+
+/// Decode and route one payload taken off the queue.
+async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) {
+    match WireFrame::from_bytes(bytes) {
+        Ok(WireFrame::Msg(env)) => deliver_local(state, &env).await,
+        Ok(_) => {}
+        Err(err) => eprintln!("[mq-hub] bad frame from mq: {err}"),
+    }
 }
 
 async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Result<()> {

@@ -2714,6 +2714,7 @@ dependencies = [
  "http-body-util",
  "quinn",
  "rcgen",
+ "rusqlite",
  "rustls",
  "rustls-pki-types",
  "serde",
