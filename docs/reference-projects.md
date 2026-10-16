@@ -143,3 +143,39 @@ TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许
 - WP-08a 语音：iroh 替代自建 TURN → **25 人日下调至 18–20 人日**（打洞/中继/信令封装仍需做）
 - WP-11 UI：HuLa 交互代码可借鉴 → **15 人日下调至 10–12 人日**（Rust command 层不可省）
 - 移动端壳（原 WP 清单外的后续项）：UniFFI 确立后，Android/iOS 各 8–10 人日（原手写 JNI 估 15+）
+
+---
+
+## 企业级与国内 IM（第三批，已核实 2026-10-16）
+
+### 核实结果
+
+| 项目 | 实测 | 许可证 | 状态 | 对 wxlike 的价值 |
+|------|------|--------|------|------------------|
+| [Rocket.Chat](https://github.com/RocketChat/Rocket.Chat) | 46.3k★ | **MIT 核心**（ee/ 目录企业功能分离） | 极活跃（30k+ commits） | 消息/频道数据模型、联邦、WebRTC 通话——MIT 可借 |
+| [Mattermost](https://github.com/mattermost/mattermost) | 39.3k★ | **MIT 核心** + LICENSE.enterprise（open core） | 极活跃（月度发版） | Go+PostgreSQL 单二进制、插件体系、通话——架构与 schema 参考 |
+| [Element Web](https://github.com/element-hq/element-web) | 13.6k★ | **AGPL-3.0**（多许可，含商业） | 极活跃 | Matrix 客户端交互与 E2EE UX——只学设计 |
+| [Synapse](https://github.com/element-hq/synapse) | 4.7k★ | **AGPL-3.0 或商业**（已从 Apache-2.0 改！） | 极活跃 | Matrix homeserver 语义参考——只学设计 |
+| [唐僧叨叨 Server](https://github.com/TangSengDaoDao/TangSengDaoDaoServer) | 3.6k★ | **Apache-2.0** | 活跃（529 commits） | ★★★ 与 wxlike 同构的"通讯层/业务层"分离，微信还原度最高的中文全栈参考 |
+| [WuKongIM](https://github.com/WuKongIM/WuKongIM) | 5.0k★ | **Apache-2.0** | 活跃（v3 beta，5.6k commits） | Go 自研消息引擎（自带存储/复制/集群哈希槽）——hub 设计对照物 |
+| [Startalk](https://github.com/startalkIM) | 主仓库 104★，组件个位数 | GPL-3.0/MIT 混杂 | **已停维**（核心 2021-2023） | ❌ 价值有限 |
+| [XyTalk-pc](https://github.com/xy-Group/xyTalk-pc) | 58★ | **AGPL-3.0** | 业余练手，低活跃 | ❌ 且是 Java Swing（非 Erlang），跳过 |
+
+### 关键修正（相对常见认知）
+
+1. **Synapse 与 Element Web 已不再是 Apache-2.0**：Element 于 2024-11 起改为 AGPL-3.0/商业双许可。引用 Matrix 生态时必须区分：**Matrix 协议规范是 Apache-2.0 可自由实现**；Element 的具体代码是 AGPL——学规范与 Megolm 设计，不搬代码。
+2. **Startalk（360 星语）已停维**，"适合学习参考"的说法不成立——核心 ejabberd 定制停更于 2021。
+3. **XyTalk 是 Java Swing 桌面 + Tigase/XMPP**，作者自述练手作品，非生产参考。
+
+### 对 wxlike 工作包的映射
+
+1. **WP-03/04 消息与群模型：唐僧叨叨是最好的中文对照系（Apache-2.0 可借）**
+   - 其功能清单与我们 WP-03 的扩展方向几乎一一对应：撤回/回复/转发/合并转发/收藏/@提醒/正在输入/未读数/多端同步/消息搜索
+   - 群：成员管理/群公告/群二维码/群昵称/群投诉——直接补进 WP-04 验收清单
+   - **架构互证**：它 = 通讯层（WuKongIM 引擎，长连接/投递/存储）+ 业务层（好友/群组，经 Webhook/GRPC 交互）——与我们 hub（推送）/platform（业务）分离完全同构，且验证了"引擎不管业务"的正确性
+2. **WP-12 群端到端加密：Matrix 的 Megolm/Olm 设计**
+   - 群 E2EE 不能简单 per-pair ratchet（N 人 O(N²)），Matrix 的 Megolm 用 sender-key + ratchet 是标准答案；**Matrix 协议规范 Apache-2.0 可自由实现**（Rust 参考实现 vodozemac，引入时核对其许可证）
+   - 这解决我们 WP-12 只规划了单聊 ratchet、未规划群组 E2EE 的缺口——补进 WP-12 验收
+3. **WP-13 运维：Mattermost 的"单二进制 + PostgreSQL + 月度发版"模式**是自托管产品形态的最小复杂度范本；Rocket.Chat 的 monorepo/turborepo 工程化可参考
+4. **WP-06 推送**：Rocket.Chat/Mattermost 的 push gateway（自建推送代理转发 APNs/FCM）模式与我们 push crate 设计一致
+5. **长期路线图参照**：这批项目的功能边界（TSDaoDao 缺朋友圈/红包/通话；Mattermost 通话靠插件）再次印证任务书的判断——**聊天内核是 30%，朋友圈/支付/音视频才是工作量大头**

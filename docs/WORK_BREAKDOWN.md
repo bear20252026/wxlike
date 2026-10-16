@@ -150,6 +150,7 @@ GET  /api/friends/changes?since=<cursor>                          -> 增量（�
 ### WP-03 消息强化：去重 / 回执 / 撤回 / 引用 / 多端（8 人日）
 
 **目标**：把 Envelope 升级到可靠消息语义，这决定后面所有功能的底座。
+**功能清单对照**：唐僧叨叨（Apache-2.0）已实现的消息能力——撤回/回复/转发/合并转发/收藏/@提醒/正在输入/未读数/多端同步/消息搜索——是本 WP 的完整性基准（docs/reference-projects.md 第三批）。
 
 **接口契约**（改 `wxlike-core::types`，`version: 2`，旧字段全部 `#[serde(default)]`）：
 ```rust
@@ -343,6 +344,7 @@ GET  /api/wallet/ledger?since=                                 -> 流水（分�
 - 每消息头含 ratchet 公钥+计数；乱序到达可解（out-of-order 支持 ≥ 64 条窗口）。
 - QUIC：客户端预置 CA 或 TOFU（首连钉扎指纹，存本地），替换 `connect_insecure`（保留为 `--insecure-lab` 显式开关）。
 - 兼容：ratchet 失败回退旧 static-static 需打日志（过渡期），文档写明迁移计划。
+- **群组 E2EE（2026-10-16 增补）**：单聊 ratchet 之外补 Megolm 风格 sender-key 方案（Matrix 规范，Apache-2.0 可实现）——N 人群不做 O(N²) 两两协商；验收含 10 人群加解密正确性与新成员入群后的密钥轮换。
 
 **验收标准**：
 - A1：≥10 测试：双向 1000 条交替消息全解/乱序 64 窗口内全解/中间人篡改任一密文必失败/重放旧密文被计数器拒绝/预密钥耗尽自动补充。
