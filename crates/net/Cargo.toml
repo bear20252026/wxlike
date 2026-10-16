@@ -1,0 +1,18 @@
+[package]
+name = "wxlike-net"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wxlike-core = { path = "../core" }
+wxlike-mq = { path = "../mq" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+rcgen = { workspace = true }
+bincode = { workspace = true }
+serde = { workspace = true }
+async-trait = { workspace = true }
+futures-util = "0.3"

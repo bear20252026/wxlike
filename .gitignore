@@ -1,0 +1,8 @@
+/target
+server.log
+bob.log
+alice.log
+*.dpage
+ui/node_modules
+ui/src-tauri/target
+ui/src-tauri/gen

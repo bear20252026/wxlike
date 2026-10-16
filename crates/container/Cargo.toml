@@ -1,0 +1,10 @@
+[package]
+name = "wxlike-container"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wxlike-dpage = { path = "../dpage" }
+anyhow = { workspace = true }
+boa_engine = { workspace = true }
+serde_json = { workspace = true }

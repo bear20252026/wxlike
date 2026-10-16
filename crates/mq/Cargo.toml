@@ -1,0 +1,18 @@
+[package]
+name = "wxlike-mq"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+anyhow = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# optional redis backend (feature "redis")
+redis = { version = "0.27", default-features = false, features = ["tokio-comp"], optional = true }
+
+[features]
+default = []
+redis = ["dep:redis"]

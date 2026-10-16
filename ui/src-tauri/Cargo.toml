@@ -1,0 +1,21 @@
+[package]
+name = "wxlike-ui"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+wxlike-core = { path = "../../crates/core" }
+wxlike-net = { path = "../../crates/net" }
+
+[lib]
+name = "wxlike_ui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
