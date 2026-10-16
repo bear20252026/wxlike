@@ -38,7 +38,6 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use vodozemac::base64_decode;
 use vodozemac::megolm::{GroupSession, InboundGroupSession, MegolmMessage, SessionKey};
 use vodozemac::olm::{Account, Message, OlmMessage, PreKeyMessage, Session, SessionConfig};
 use vodozemac::Curve25519PublicKey;

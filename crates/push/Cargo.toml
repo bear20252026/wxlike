@@ -1,0 +1,23 @@
+[package]
+name = "wxlike-push"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wxlike-core = { path = "../core" }
+wxlike-net = { path = "../net" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# FCM HTTP v1 client (hyper is already in the workspace tree via axum)
+hyper = { version = "1", features = ["server", "http1", "client"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "server", "tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+
+[dev-dependencies]
+wxlike-platform = { path = "../platform" }
+wxlike-mq = { path = "../mq" }
+serde_json = { workspace = true }

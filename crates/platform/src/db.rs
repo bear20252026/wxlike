@@ -195,6 +195,17 @@ impl Db {
                 otks             TEXT NOT NULL DEFAULT '[]',
                 updated_at       INTEGER NOT NULL
             );
+
+            -- WP-06: push targets. One row per (user, platform): a re-register
+            -- on the same platform replaces the token ("keep the latest"),
+            -- different platforms coexist.
+            CREATE TABLE IF NOT EXISTS devices (
+                user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                platform      TEXT NOT NULL,
+                device_token  TEXT NOT NULL,
+                last_seen     INTEGER NOT NULL,
+                PRIMARY KEY (user_id, platform)
+            );
             "#,
         )?;
         Ok(())

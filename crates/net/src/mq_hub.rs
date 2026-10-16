@@ -36,6 +36,18 @@ use crate::wire::WireFrame;
 /// Default dedup cache size required by the task book (>= 100k entries).
 pub const DEFAULT_DEDUP_CAP: usize = 100_000;
 
+/// WP-06: fired when an envelope is parked for a user with **no online
+/// connection anywhere** (the route table knows about no hub for them).
+///
+/// The hook receives the envelope so the push layer can build its payload —
+/// which by design carries only who sent it, never the content (see
+/// `wxlike-push`). Best-effort: an error here never fails delivery, because
+/// the message itself is already safely parked in the offline store.
+#[async_trait::async_trait]
+pub trait OfflinePush: Send + Sync + 'static {
+    async fn user_offline(&self, user_id: &str, env: &Envelope);
+}
+
 /// Hub knobs. Defaults: in-memory offline inbox (cap 500), 100k dedup cache,
 /// no message store (routing only), no reclaim patrol.
 #[derive(Clone)]
@@ -50,6 +62,8 @@ pub struct MqHubOptions {
     /// with an ack-capable backend; `None` disables the patrol. The task book
     /// asks for >= 60s, so `wxlike-server` uses [`DEFAULT_CLAIM_IDLE_MS`].
     pub reclaim_idle_ms: Option<u64>,
+    /// WP-06: called when a recipient is offline everywhere. `None` = no push.
+    pub push_hook: Option<Arc<dyn OfflinePush>>,
 }
 
 /// Contract floor for reclaiming in-flight cross-node entries.
@@ -63,6 +77,7 @@ impl Default for MqHubOptions {
             dedup_cap: DEFAULT_DEDUP_CAP,
             membership: None,
             reclaim_idle_ms: None,
+            push_hook: None,
         }
     }
 }
@@ -109,6 +124,7 @@ struct HubState {
     seen: Arc<tokio::sync::Mutex<MsgIdLru>>,
     reclaim_idle_ms: Option<u64>,
     membership: Option<Arc<dyn crate::membership::Membership>>,
+    push_hook: Option<Arc<dyn OfflinePush>>,
 }
 
 /// Cloneable handle for routing envelopes into a running hub.
@@ -212,6 +228,7 @@ pub async fn run_mq_hub_with(
         seen: Arc::new(Mutex::new(MsgIdLru::new(options.dedup_cap))),
         reclaim_idle_ms: options.reclaim_idle_ms,
         membership: options.membership.clone(),
+        push_hook: options.push_hook.clone(),
     });
 
     // accept loop
@@ -527,6 +544,7 @@ async fn fanout(
     let tasks = unique.iter().map(|rcpt| {
         let state = state.clone();
         let rcpt = (*rcpt).clone();
+        let owned_env = env.clone();
         let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
             Ok(f) => f,
             Err(err) => return tokio::spawn(async move { Err(err) }),
@@ -537,7 +555,17 @@ async fn fanout(
                     deliver_to(&state, &rcpt, &frame).await;
                 }
                 Some(h) => state.router.mq.publish(&hub_queue(&h), frame).await?,
-                None => state.offline.enqueue(&rcpt, frame).await?,
+                None => {
+                    // nowhere online: park for later, then wake their devices
+                    state.offline.enqueue(&rcpt, frame).await?;
+                    if let Some(hook) = state.push_hook.clone() {
+                        // fire-and-forget: push failure must not roll back the
+                        // park, and must not delay the rest of the fan-out
+                        tokio::spawn(async move {
+                            hook.user_offline(&rcpt, &owned_env).await;
+                        });
+                    }
+                }
             }
             Ok(())
         })

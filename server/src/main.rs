@@ -53,6 +53,12 @@ async fn main() -> anyhow::Result<()> {
             offline,
             membership: Some(Arc::new(PlatformMembership(platform.clone()))),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
+            // WP-06: a recipient offline everywhere gets a device push whose
+            // payload says only who wrote — never what.
+            push_hook: Some(wxlike_push::DispatchHook::new(
+                Arc::new(PlatformDevices(platform.clone())),
+                wxlike_push::provider_from_env(),
+            )),
             ..Default::default()
         },
     )
@@ -148,6 +154,22 @@ struct HubSink(wxlike_net::HubHandle);
 impl wxlike_platform::EventSink for HubSink {
     async fn publish(&self, env: wxlike_core::Envelope) -> anyhow::Result<()> {
         self.0.publish(&env).await
+    }
+}
+
+/// The platform's `devices` table behind the push dispatcher's directory
+/// trait (WP-06). Adapter lives here for the same layering reason as below.
+struct PlatformDevices(std::sync::Arc<wxlike_platform::Platform>);
+
+#[async_trait::async_trait]
+impl wxlike_push::DeviceDirectory for PlatformDevices {
+    async fn devices_of(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        Ok(self
+            .0
+            .devices_of(user_id)?
+            .into_iter()
+            .map(|d| (d.platform, d.device_token))
+            .collect())
     }
 }
 
