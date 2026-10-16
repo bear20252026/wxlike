@@ -13,7 +13,7 @@
 1. **一切业务逻辑必须在 Rust**（workspace 内 crate）。前端（Tauri/TS）只允许 UI 渲染与调用 Rust command；发现业务逻辑写进 TS 即验收不通过。
 2. 单一 workspace（`wxlike/`），新模块一律新建 crate 并加入 members；禁止引入第二套构建体系（不得用 Go/Java/Python 写服务端组件）。
 3. 错误处理：库 crate 用 `thiserror` 定义错误枚举；二进制与边界用 `anyhow`。禁止 `unwrap()/expect()` 出现在非测试代码路径（`expect` 仅允许在启动期配置加载）。
-4. 依赖政策：新增依赖需在 PR 描述说明理由；优先纯 Rust 实现（RustCrypto 系）；**禁止引入任何闭源 IM SDK / 云厂商绑定 SDK**；禁止 GPL 依赖（含传递）。
+4. 依赖政策：新增依赖需在 PR 描述说明理由；优先纯 Rust 实现（RustCrypto 系）；**禁止引入任何闭源 IM SDK / 云厂商绑定 SDK**。依赖政策修订（2026-10-16，项目转 GPL-3.0）：GPL 生态依赖允许；Apache/MIT 合入保留原许可与声明；AGPL 代码 PR 单独评审（模块级标注）。
 5. 所有网络协议变更必须改 `wxlike-core::types` 并 bump `Envelope::version`，兼容旧版本字段（`#[serde(default)]`）。
 6. 无正当理由禁止 `unsafe`；确需使用时必须在 PR 中附 safety 注释与替代方案对比。
 

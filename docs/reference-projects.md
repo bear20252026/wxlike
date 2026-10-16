@@ -133,8 +133,8 @@ TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许
    - teamgram-server：MTProto 服务端语义参考——但注意其核心功能与付费版的分界恰好说明"群聊/通话"是 IM 后端的主要工作量所在（与我们任务书 WP-04/08 的预估互相印证）
 
 5. **明确排除**
-   - Telegram GPL-3.0 客户端代码：只学交互与性能优化思路（消息列表回收复用、可复现构建），不进 MIT 仓库
-   - PaperPhone-Plus（AGPL-3.0）：其 X25519+ML-KEM-768 抗量子混合加密是 WP-12 的远期方向记录，代码零接触
+   - ~~Telegram GPL-3.0 客户端代码：不进仓库~~ **已解锁（2026-10-16 项目转 GPL-3.0）**：交互范式与性能优化代码可合法借鉴，按文件保留 GPL 声明
+   - PaperPhone-Plus（AGPL-3.0）：X25519+ML-KEM-768 抗量子混合加密升格为 WP-12 远期可引入项（AGPL→GPL 组合依 GPLv3 §13 可行），引入时保留 AGPL 模块头单独评审
    - hungry-rs：3★ WIP，跳过
    - sandcat-backend：仅作"SQLite 不够用之后"的 MongoDB 分片策略阅读材料（其 30-50% 提升是 README 自述，未经独立验证）
 
