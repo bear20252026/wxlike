@@ -92,3 +92,54 @@ box-im 用原生 WebRTC 摆脱收费 SDK。wxlike 对应：`str0m`/`webrtc-rs` �
 - LQRWeChat 依赖融云 SDK（服务端是融云开源的 Node "嗨豹"）——wxlike **不引入任何收费/闭源 IM SDK**，box-im 的自研路线一致
 - fake-world 是 **GPL v3**：只借鉴思想，不复制代码，否则 wxlike 被传染
 - WeChatArkTS 主要是 UI 仿制，鸿蒙端若做，参考其页面清单即可
+
+---
+
+## 全球参考项目（第二批，已核实 2026-10-16，全部真实存在）
+
+### 核实结果速览
+
+| 项目 | 实测 | 声称 | 许可证 | 结论 |
+|------|------|------|--------|------|
+| [HuLa](https://github.com/HuLaSpark/HuLa) | **7.8k★**，1226 commits | 7.7k+ | **Apache-2.0** | ✅ 完整跨平台 IM 客户端（非 UI 演示） |
+| [iroh](https://github.com/n0-computer/iroh) | **12.7k★**，n0-computer 出品 | — | **Apache-2.0 OR MIT** | ✅ 生产级 P2P 网络库（公共中继跑自家代码） |
+| [teamgram-server](https://github.com/teamgram/teamgram-server) | 2.3k★，Go，MTProto API 228 | — | Apache-2.0 | ✅ 真实，但社区版仅私聊+基础群；频道/通话是**付费企业版** |
+| [grammers](https://github.com/Lonami/grammers) | 815★，Rust MTProto | — | MIT/Apache 双许可 | ⚠️ GitHub 已归档（2026-02），迁往 Codeberg；未做安全审计 |
+| [sandcat-backend](https://github.com/Xu-Mj/sandcat-backend) | 97★，513 commits | — | MIT | ✅ 小而真：Kafka+MongoDB+PG+Redis+MinIO 微服务 |
+| [PaperPhone-Plus](https://github.com/619dev/Paperphone-plus) | 126★ | — | **AGPL-3.0** | ⚠️ 真，但网络服务也要开源修改——**严格只学思想** |
+| [Mimir](https://github.com/Mimir-IM/mimir) | 39★，19 commits | — | MPL-2.0 | ⚠️ 早期项目，但 UniFFI 绑定（Android JNI/iOS Swift）模式可学 |
+| [hungry-rs](https://github.com/dimentyy/hungry-rs) | **3★**，WIP | — | MIT | ❌ 作者计划完工后重建仓库——无参考价值 |
+
+TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许可（"单实例 2.5 万活跃 bot"出自其 README，属实）；Telegram 官方客户端（DrKLO/Telegram、Telegram-iOS、tdesktop）均为 **GPL-3.0**。
+
+### 对 wxlike 工作包的直接影响
+
+1. **WP-11 UI：HuLa 是最大加速器（Apache-2.0，可合法借用代码）**
+   - Vue3+Tauri 覆盖五端，已实现：撤回/@/已读/回复/表情包/链接预览/消息点赞/群管理/在线状态/音视频通话/多窗口/截图/自动更新/i18n——正是我们 WP-11 的 15 人日清单，且远超
+   - ⚠️ 架构不学：HuLa 的业务逻辑在 TS/Vue 层，违反我们"逻辑必须 Rust"的铁律。**借 UI/交互与代码（保留 Apache 声明），架构坚持 wxlike 分层**
+   - 附带 HuLa-Server（独立服务端仓库）可作对照
+
+2. **WP-08 音视频：iroh 直改技术选型（12.7k★，生产级）**
+   - 原计划：str0m + 自建 STUN/TURN。现在：**iroh 打洞 + 公共中继回退**，砍掉 TURN 基础设施建设，且 Apache/MIT 双许可
+   - 附带能力：`iroh-blobs`（BLAKE3 内容寻址大文件传输）可作 WP-05 媒体传输的 P2P 通道；`iroh-gossip` 可作群消息广播备选
+   - 信令仍走我们的 QUIC 长连接（`MsgBody::Custom{kind:"rtc-signal"}`）不变
+
+3. **移动端 FFI：UniFFI 路线确立（Mimir/TDLib 双重先例）**
+   - Mimir 验证了 UniFFI → Kotlin/Swift 绑定的可行性；TDLib 本身就是"核心库+原生壳"模式的祖师爷（C++ 版）
+   - 原计划 cargo-ndk+手写 JNI → 改为 **UniFFI 生成绑定**，手写 JNI 面大幅缩减
+
+4. **协议设计阅读材料（只读不抄）**
+   - MTProto 分层（传输/加密/API）与二进制序列化：grammers（Rust，用 Codeberg 上游）源码是最佳读物；TDLib 的 API 对象体系是设计范本
+   - teamgram-server：MTProto 服务端语义参考——但注意其核心功能与付费版的分界恰好说明"群聊/通话"是 IM 后端的主要工作量所在（与我们任务书 WP-04/08 的预估互相印证）
+
+5. **明确排除**
+   - Telegram GPL-3.0 客户端代码：只学交互与性能优化思路（消息列表回收复用、可复现构建），不进 MIT 仓库
+   - PaperPhone-Plus（AGPL-3.0）：其 X25519+ML-KEM-768 抗量子混合加密是 WP-12 的远期方向记录，代码零接触
+   - hungry-rs：3★ WIP，跳过
+   - sandcat-backend：仅作"SQLite 不够用之后"的 MongoDB 分片策略阅读材料（其 30-50% 提升是 README 自述，未经独立验证）
+
+### 对任务书估计的修订
+
+- WP-08a 语音：iroh 替代自建 TURN → **25 人日下调至 18–20 人日**（打洞/中继/信令封装仍需做）
+- WP-11 UI：HuLa 交互代码可借鉴 → **15 人日下调至 10–12 人日**（Rust command 层不可省）
+- 移动端壳（原 WP 清单外的后续项）：UniFFI 确立后，Android/iOS 各 8–10 人日（原手写 JNI 估 15+）
