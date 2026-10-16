@@ -5,8 +5,8 @@
 //! table maps users to the hub they are connected to.
 //!
 //! Backends:
-//! - [`MemoryMq`] — tokio channels, zero deps, tests and single-node dev.
-//! - `RedisMq` (feature `redis`) — LPUSH/BRPOP queues + Hash routes,
+//! - [`memory::MemoryMq`] — tokio channels, zero deps, tests and single-node dev.
+//! - `redis_backend::RedisMq` (feature `redis`) — LPUSH/BRPOP queues + Hash routes,
 //!   same semantics as box-im's Redis Lists.
 
 pub mod memory;

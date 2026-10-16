@@ -1,6 +1,6 @@
 //! wxlike-container: JS engine host for dynamic pages.
 //!
-//! Engine is abstracted behind [`JsEngine`] so the runtime can be swapped
+//! Engine is abstracted behind [`engine::BoaEngine`] so the runtime can be swapped
 //! (Boa now; quickjs-ng when Windows build story settles).
 
 pub mod bridge;

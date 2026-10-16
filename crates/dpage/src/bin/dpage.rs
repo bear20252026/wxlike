@@ -1,9 +1,11 @@
 //! dpage CLI: pack / unpack / inspect dynamic page packages.
 //!
 //! Usage:
-//!   dpage pack <dir> <out.dpage>
-//!   dpage unpack <in.dpage> <dir>
-//!   dpage info <in.dpage>
+//! ```text
+//! dpage pack <dir> <out.dpage>
+//! dpage unpack <in.dpage> <dir>
+//! dpage info <in.dpage>
+//! ```
 
 use std::path::Path;
 use wxlike_dpage::{pack_dir, peek, unpack};
