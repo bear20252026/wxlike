@@ -113,6 +113,15 @@ impl Db {
                 PRIMARY KEY (group_id, user_id)
             );
             CREATE INDEX IF NOT EXISTS idx_gm_user ON group_members(user_id);
+
+            CREATE TABLE IF NOT EXISTS media (
+                id            TEXT PRIMARY KEY,
+                size          INTEGER NOT NULL,
+                content_type  TEXT NOT NULL DEFAULT 'application/octet-stream',
+                uploader      TEXT NOT NULL DEFAULT '',
+                has_thumb     INTEGER NOT NULL DEFAULT 0,
+                created_at    INTEGER NOT NULL
+            );
             "#,
         )?;
         Ok(())

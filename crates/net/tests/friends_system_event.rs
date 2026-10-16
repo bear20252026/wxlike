@@ -61,6 +61,7 @@ async fn friend_request_reaches_online_peer_through_hub() {
     let platform = Platform::in_memory_with(PlatformOptions {
         session_ttl_ms: 60_000,
         pbkdf2_rounds: 1_000,
+        ..Default::default()
     })
     .unwrap()
     .shared();

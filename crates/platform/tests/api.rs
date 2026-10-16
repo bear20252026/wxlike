@@ -16,6 +16,7 @@ fn app() -> Router {
     let opts = PlatformOptions {
         session_ttl_ms: 60_000,
         pbkdf2_rounds: 1_000,
+        ..Default::default()
     };
     Platform::router(Platform::in_memory_with(opts).unwrap().shared())
 }
@@ -251,6 +252,7 @@ async fn expired_token_is_401() {
     let platform = Platform::in_memory_with(PlatformOptions {
         session_ttl_ms: 0,
         pbkdf2_rounds: 1_000,
+        ..Default::default()
     })
     .unwrap()
     .shared();
@@ -325,6 +327,7 @@ async fn concurrent_registers_are_serialized() {
     let platform = Platform::in_memory_with(PlatformOptions {
         session_ttl_ms: 60_000,
         pbkdf2_rounds: 500,
+        ..Default::default()
     })
     .unwrap()
     .shared();

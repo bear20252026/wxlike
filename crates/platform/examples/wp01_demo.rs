@@ -52,6 +52,7 @@ fn main() -> anyhow::Result<()> {
         let platform = Platform::in_memory_with(PlatformOptions {
             session_ttl_ms: 60 * 60 * 1000,
             pbkdf2_rounds: 1_000,
+        ..Default::default()
         })?
         .shared();
         let app = Platform::router(platform);

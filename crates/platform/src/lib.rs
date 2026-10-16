@@ -22,6 +22,7 @@ mod db;
 mod error;
 mod friends;
 mod groups;
+mod media;
 mod users;
 mod validate;
 
@@ -34,7 +35,20 @@ use wxlike_core::{Envelope, MsgBody, MsgKind};
 pub use crate::auth::{hash_password, random_hex, verify_password, Authed};
 pub use crate::db::Db;
 pub use crate::error::{ApiError, PlatformError, Result};
+pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
+
+/// A throwaway media root for an in-memory platform, so tests never touch the
+/// caller's working directory.
+fn temp_media_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "wxlike-media-{}-{}",
+        std::process::id(),
+        wxlike_core::types::now_ms()
+    ));
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
 
 /// Thirty days, as required by WP-01.
 pub const DEFAULT_SESSION_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
@@ -43,6 +57,9 @@ pub const DEFAULT_SESSION_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 pub struct PlatformOptions {
     pub session_ttl_ms: u64,
     pub pbkdf2_rounds: u32,
+    /// Upload cap enforced inside the handler. Defaults to the contract's
+    /// 100 MB; tests lower it to exercise the same 413 path without allocating.
+    pub max_media_bytes: usize,
 }
 
 impl Default for PlatformOptions {
@@ -50,6 +67,7 @@ impl Default for PlatformOptions {
         Self {
             session_ttl_ms: DEFAULT_SESSION_TTL_MS,
             pbkdf2_rounds: auth::DEFAULT_ROUNDS,
+            max_media_bytes: media::MAX_MEDIA_BYTES,
         }
     }
 }
@@ -101,6 +119,8 @@ pub struct Platform {
     sink: std::sync::Mutex<Option<Arc<dyn EventSink>>>,
     /// group_id -> member ids, invalidated on every membership change (WP-04).
     group_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+    /// swappable object store behind `/api/media` (WP-05).
+    media: std::sync::Mutex<Arc<dyn media::MediaStore>>,
 }
 
 impl Platform {
@@ -114,6 +134,8 @@ impl Platform {
             options,
             sink: std::sync::Mutex::new(None),
             group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            // an in-memory platform must not write into the working directory
+            media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(temp_media_dir()))),
         })
     }
 
@@ -128,6 +150,9 @@ impl Platform {
             options,
             sink: std::sync::Mutex::new(None),
             group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(
+                media::default_media_dir(),
+            ))),
         })
     }
 
@@ -214,6 +239,7 @@ impl Platform {
             .merge(users::routes())
             .merge(friends::routes())
             .merge(groups::routes())
+            .merge(media::routes())
             .with_state(state)
     }
 

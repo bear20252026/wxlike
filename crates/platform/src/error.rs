@@ -23,6 +23,8 @@ pub enum PlatformError {
     Unauthorized,
     #[error("not permitted")]
     Forbidden,
+    #[error("payload too large")]
+    PayloadTooLarge,
 }
 
 /// HTTP-visible error: status plus a client-safe message (no SQL text leaks).
@@ -55,6 +57,9 @@ impl From<PlatformError> for ApiError {
             }
             PlatformError::Unauthorized => Self::new(StatusCode::UNAUTHORIZED, "unauthorized"),
             PlatformError::Forbidden => Self::new(StatusCode::FORBIDDEN, "not permitted"),
+            PlatformError::PayloadTooLarge => {
+                Self::new(StatusCode::PAYLOAD_TOO_LARGE, "media too large")
+            }
         }
     }
 }

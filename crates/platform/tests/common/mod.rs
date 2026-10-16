@@ -1,6 +1,10 @@
 //! Shared helpers for platform integration tests: a real axum router driven by
 //! `tower::oneshot`, plus an `EventSink` recorder that captures the system
 //! envelopes the platform pushes through the hub abstraction.
+//!
+//! Each `tests/*.rs` file compiles its own copy of this module and uses a
+//! different subset of it, so unused helpers are expected, not dead code.
+#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +21,7 @@ pub fn platform() -> PlatformState {
     let opts = PlatformOptions {
         session_ttl_ms: 60_000,
         pbkdf2_rounds: 1_000,
+        ..Default::default()
     };
     Platform::in_memory_with(opts).unwrap().shared()
 }

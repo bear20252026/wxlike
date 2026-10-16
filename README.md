@@ -106,6 +106,35 @@ cargo run -p wxlike-net --release --example bench_group   # 200 人群 50msg/s �
 
 基准数据与两个"假数字"的排查过程见 [docs/bench/wp04_group.md](docs/bench/wp04_group.md)。
 
+## 媒体消息（WP-05）
+
+`media_id` **就是** 内容的 SHA-256（hex），所以"同一文件传两次"天然只有一份——
+去重来自寻址方式，不是额外记账。落盘路径 `WXLIKE_MEDIA_DIR`（默认 `data/media`），
+按 `{前2位}/{sha}` 分片，缩略图 `{sha}.thumb.png` 同目录。
+
+```bash
+cargo test -p wxlike-platform --test media      # 14 项
+cargo test -p wxlike-net --test media_delivery  # 2 项端到端
+```
+
+要点：
+
+- **抽象**：`trait MediaStore`（put/get/size_of/put_thumb/get_thumb），`LocalDirStore` 是今天，
+  MinIO/S3 换个实现即可，handler 不动。测试里注入过内存实现验证这条缝真的独立。
+- **路径穿越**：id 在拼路径**之前**就校验为"恰好 64 位十六进制"，不是事后过滤——
+  `../../etc/passwd`、`..%2f` 变体、长度差一位、合法长度但非 hex 全部 404，且没有任何文件读操作发生。
+- **摘要校验**：客户端可带 `sha256` 字段，与实际内容不符直接 422（大写也认，比较前统一小写）。
+- **Content-Type 不认客户端声明**：按 magic bytes 嗅探（PNG/JPEG/GIF/WEBP），
+  声明 `text/plain` 的 PNG 仍以 `image/png` 回。
+- **Range**：`bytes=a-b` / `a-` / `-N`（后缀式）都支持，返回 206 + `Content-Range`，
+  越界回 416 + `bytes */total`；`Accept-Ranges: bytes` 恒在。
+- **大小上限**：路由层 `DefaultBodyLimit` 卡 100MB（契约值），handler 内还有
+  `options.max_media_bytes` 二次检查并回 413——后者可注入小值，好让 413 路径
+  在测试里真的跑得到，而不是分配 100MB 或干脆没覆盖。
+- **缩略图**：最长边 256，保持宽高比（1024x768 → 256x192）；已小于 256 的不放大；
+  解不了的"图片"不报错，只是没有 thumb（`has_thumb:false`，`?thumb=1` 回 404）。
+- **消息侧只传引用**：`MsgBody::Bytes(media_id.as_bytes())`，帧里没有图像字节。
+
 ## MQ 与多节点路由（Rust 移植自 box-im 的 MIT 设计）
 
 每个 hub 消费自己的队列 `wxlike:msg:hub:{hub_id}`；路由表记录 `用户 → hub`。
@@ -147,7 +176,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 
 ```bash
 cargo build
-cargo test                 # 132 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 可靠队列
+cargo test                 # 148 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 媒体 / 可靠队列
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443
