@@ -23,6 +23,7 @@ mod error;
 mod friends;
 mod groups;
 mod media;
+mod moments;
 mod users;
 mod validate;
 mod wallet;
@@ -261,6 +262,7 @@ impl Platform {
             .merge(friends::routes())
             .merge(groups::routes())
             .merge(media::routes())
+            .merge(moments::routes())
             .merge(wallet::routes())
             .with_state(state)
     }

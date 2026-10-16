@@ -154,6 +154,37 @@ impl Db {
                 created_at    INTEGER NOT NULL,
                 expire_at     INTEGER NOT NULL
             );
+
+            -- WP-07 moments. `seq` is the paging cursor (monotonic, so equal
+            -- timestamps cannot create duplicates or gaps); `id` is the public id.
+            CREATE TABLE IF NOT EXISTS moments (
+                seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          TEXT NOT NULL UNIQUE,
+                author      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                text        TEXT NOT NULL DEFAULT '',
+                media       TEXT NOT NULL DEFAULT '[]',
+                visibility  TEXT NOT NULL DEFAULT 'friends',
+                deleted     INTEGER NOT NULL DEFAULT 0,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_moments_author ON moments(author, seq);
+            CREATE TABLE IF NOT EXISTS moment_likes (
+                moment_id   TEXT NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+                user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at  INTEGER NOT NULL,
+                PRIMARY KEY (moment_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS moment_comments (
+                seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          TEXT NOT NULL UNIQUE,
+                moment_id   TEXT NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+                author      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                text        TEXT NOT NULL,
+                reply_to    TEXT NOT NULL DEFAULT '',
+                deleted     INTEGER NOT NULL DEFAULT 0,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mc_moment ON moment_comments(moment_id, seq);
             "#,
         )?;
         Ok(())

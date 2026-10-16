@@ -78,6 +78,34 @@ cargo test -p wxlike-net --test friends_system_event
 `platform` 不依赖 `net`：事件通过 `trait EventSink` 反向注入，server 挂 `HubHandle`，
 测试挂 recorder——所以业务层可以单测，不必起 QUIC。
 
+## 朋友圈（WP-07）
+
+**可见性按"读时"判定，不是发快照**。`friends` 可见的 moment 谁能看，取决于*此刻*谁是
+互为好友——所以解除好友后，对方那些仅好友可见的历史立刻从你的 feed 和详情里消失
+（A1 要的就是这条）。另一种设计是发布时把受众 ACL 物化下来，那样解除好友后历史仍会
+继续可见，我们没选它，这段就是任务书要求的"需文档说明选择"。
+
+feed 本身按契约只含**自己 + 好友**的动态，所以陌生人的 `public` 帖不会进你的时间线；
+`public` 只放宽"按 id 打开某一条"的权限。
+
+游标方向：**feed 是时间倒序**（契约要求），所以 `since` 是水位线——传上一页返回的
+`next_cursor` 拿"严格更早"的一页。这与钱包流水、通讯录增量的升序游标方向相反——
+倒序分页必然如此，不是两套设计打架。页大小上限 50。
+
+- 发布：文本上限 5000（超限拒绝）、图片最多 9 张（九宫格）、`media_ids` 必须已存在
+  （引用不存在的对象是 422，不留悬空引用）；纯文本空白且无图 → 422。
+- 点赞幂等：重复点赞仍 200 且 `added:false`，只有一行；取消点赞不存在的行是 no-op。
+- 评论树用邻接表表达：`reply_to` 指父评论 id，附带 `reply_to_name` 供展示，
+  客户端据此还原树形；**回复必须指向同一 moment 下的评论**，跨帖回复 422。
+- 删除是软删（`deleted=1`），详情/feed 都立刻消失，二次删除是 404 而不是怪异错误；
+  只有作者能删（他人 403）。
+- 陌生人访问 `friends` 可见的 moment 一律 404（不是 403）——不给"存在但看不见"这种
+  可被探测的信息。
+
+```bash
+cargo test -p wxlike-platform --test moments    # 14 项
+```
+
 ## 钱包 / 红包 / 转账（WP-09，虚拟记账）
 
 **边界**：这是虚拟记账闭环，不接任何真实支付渠道——真实货币收单属于持牌合规问题，
@@ -208,7 +236,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 
 ```bash
 cargo build
-cargo test                 # 164 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 媒体 / 钱包 / 可靠队列
+cargo test                 # 178 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 媒体 / 钱包 / 朋友圈 / 可靠队列
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443
