@@ -79,7 +79,7 @@ pub(crate) fn system_envelope(
     text: &str,
 ) -> Envelope {
     Envelope {
-        version: 1,
+        version: wxlike_core::PROTOCOL_VERSION,
         conv_id: conv_id.to_string(),
         sender: sender.to_string(),
         to,
@@ -87,6 +87,10 @@ pub(crate) fn system_envelope(
         kind: MsgKind::System,
         body: MsgBody::Notice(text.to_string()),
         sent_at_ms: wxlike_core::types::now_ms(),
+        // its own dedup id, so a retried event cannot double-notify
+        msg_id: Envelope::new_msg_id(),
+        quote_of: None,
+        receipt: None,
     }
 }
 

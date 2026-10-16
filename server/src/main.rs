@@ -35,7 +35,19 @@ async fn main() -> anyhow::Result<()> {
     let router = build_router(&mq_mode)?;
     println!("[wxlike-server] hub '{hub_id}' mq={mq_mode}");
 
-    let hub = wxlike_net::run_mq_hub(hub_id.clone(), quic_addr, router).await?;
+    // The hub persists messages: msg_id dedup, recall and receipt routing
+    // (WP-03) all need a store attached.
+    let store = Arc::new(wxlike_core::Store::open(db_path)?);
+    let hub = wxlike_net::run_mq_hub_with(
+        hub_id.clone(),
+        quic_addr,
+        router,
+        wxlike_net::MqHubOptions {
+            storage: Some(store),
+            ..Default::default()
+        },
+    )
+    .await?;
     let hub_addr = hub.local_addr()?;
     println!("[wxlike-server] QUIC hub on {hub_addr}");
 

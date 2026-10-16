@@ -110,7 +110,7 @@ WXLIKE_HUB_ID=hub-2 WXLIKE_MQ=redis WXLIKE_QUIC=0.0.0.0:9444 WXLIKE_HTTP=0.0.0.0
 
 ```bash
 cargo build
-cargo test                 # 64 tests: E2EE 往返 / 存储 / 打包 / 分帧 / 双向中继 / 桥 / 平台 API / 好友关系
+cargo test                 # 92 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443
@@ -127,6 +127,37 @@ cargo run -p wxlike-container --example run_demo_page
 cargo run -p wxlike-dpage --bin dpage -- pack <dir> <out.dpage>
 cargo run -p wxlike-dpage --bin dpage -- info <in.dpage>
 ```
+
+## 消息语义（WP-03：Envelope v2）
+
+协议 `version: 2`，新增 `msg_id`（客户端生成的 16 字节去重键）、`quote_of`（引用）、
+`receipt`（已投/已读回执），以及 `MsgBody::Recall` / `MsgBody::Custom{kind,payload}`。
+v1 的字节仍可解码（bincode 是位置式编码，`from_bytes` 显式回退到 v1 布局并升级，
+`msg_id` 保持全零表示"无去重键"）。`Custom` 的 payload 以 JSON 文本承载——
+bincode 不支持 `deserialize_any`，直接放 `serde_json::Value` 会在编组时炸掉。
+
+hub 的入站顺序（`crates/net/src/mq_hub.rs`）：
+
+1. **发送者校验**：帧里的 `sender` 必须等于该连接 `Hello` 的身份，否则整帧丢弃——
+   这挡住了伪造他人的撤回；
+2. **控制帧**（回执 / 撤回）：只路由、不进消息表。回执按 `msg_id` 反查原作者后定向回投
+   （收件人列表去重，避免作者被通知两次）；撤回只有在存储层认可时才转发，
+   因此被拒绝的撤回连痕迹都不留；
+3. **内容帧去重**：hub 内 10 万条 LRU 快路径 + `messages.msg_id` 部分 UNIQUE 索引兜底，
+   重复投递静默丢弃、不报错。
+
+撤回是**破坏性**的：目标行的 body 被占位文本覆盖并置 `withdrawn=1`，原文再也读不出来
+（`list_messages` / `sync_since` 同样只回占位）。多端同步靠 `device_cursor(device, conv, last_seq)`，
+`sync_since` 只回增量，第二台设备登录时全量补齐。
+
+```bash
+# 端到端：去重 / 撤回 / 回执路由 / 伪造拦截
+cargo test -p wxlike-net --test reliable_msg     # 8 项
+cargo test -p wxlike-core --test envelope_v2     # 19 项
+```
+
+手动演示（两个终端）：`cargo run -p wxlike-net --example chat -- 127.0.0.1:9443 alice`，
+普通行广播、`bob> xxx` 定向、`:recall` 撤回上一条、`:read` 给最后收到的消息发已读回执。
 
 ## 动态页包（DPG1）
 
