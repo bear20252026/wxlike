@@ -119,7 +119,13 @@ async fn offline_recipient_is_reported_not_crashing() {
 
     // nobody named "ghost" anywhere: must not crash, just drop
     alice
-        .send(&Envelope::direct("dm", "alice", vec!["ghost".into()], 1, "anyone?"))
+        .send(&Envelope::direct(
+            "dm",
+            "alice",
+            vec!["ghost".into()],
+            1,
+            "anyone?",
+        ))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await; // let hub process

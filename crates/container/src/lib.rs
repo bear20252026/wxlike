@@ -27,9 +27,7 @@ impl Container {
     /// Returns the title the page set via `wxhost.setTitle` (if any).
     pub fn start(&mut self, payload_json: &str) -> anyhow::Result<String> {
         let code = self.page.main_js()?;
-        self.engine
-            .eval(code)
-            .context("eval entry script")?;
+        self.engine.eval(code).context("eval entry script")?;
         let payload = serde_json::Value::parse_js(payload_json);
         self.engine
             .call_global("onLoad", &[payload])

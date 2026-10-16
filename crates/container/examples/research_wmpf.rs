@@ -57,17 +57,26 @@ fn run() -> anyhow::Result<()> {
     match eng.eval(&code) {
         Ok(summary) => {
             println!("[research] EVAL OK, result: {}", truncate(&summary, 120));
-            println!("[research] logs so far: {:?}", eng.logs().iter().take(5).collect::<Vec<_>>());
+            println!(
+                "[research] logs so far: {:?}",
+                eng.logs().iter().take(5).collect::<Vec<_>>()
+            );
             println!("[research] NOTE: eval succeeding does not mean the runtime works; exercise APIs to learn more.");
         }
         Err(e) => {
             println!("[research] EVAL FAILED: {e:#}");
-            println!("[research] this identifies the next missing shim — iterate: add global, retry.");
+            println!(
+                "[research] this identifies the next missing shim — iterate: add global, retry."
+            );
         }
     }
     Ok(())
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n { s.to_string() } else { format!("{}…", &s[..n]) }
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..n])
+    }
 }

@@ -28,9 +28,15 @@ impl Client {
         // QUIC streams are lazy: the server only sees the stream once data
         // arrives. The Hello frame materializes the stream and registers us.
         let user_id = user_id.into();
-        framing::write_frame(&mut send, &WireFrame::Hello { user_id: user_id.clone() }.to_bytes()?)
-            .await
-            .context("send hello")?;
+        framing::write_frame(
+            &mut send,
+            &WireFrame::Hello {
+                user_id: user_id.clone(),
+            }
+            .to_bytes()?,
+        )
+        .await
+        .context("send hello")?;
         Ok(Self {
             send: Arc::new(Mutex::new(send)),
             recv: Arc::new(Mutex::new(recv)),
@@ -39,7 +45,10 @@ impl Client {
     }
 
     /// Back-compat constructor used by the broadcast-hub tests/examples.
-    pub async fn connect_anonymous(server_addr: SocketAddr, server_name: &str) -> anyhow::Result<Self> {
+    pub async fn connect_anonymous(
+        server_addr: SocketAddr,
+        server_name: &str,
+    ) -> anyhow::Result<Self> {
         let conn = crate::transport::connect_insecure(server_addr, server_name).await?;
         let (mut send, recv) = conn.open_bi().await.context("open control stream")?;
         framing::write_frame(&mut send, &WireFrame::Ping.to_bytes()?)

@@ -52,9 +52,14 @@ pub fn pack_dir(dir: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     let manifest_path = dir.join("manifest.json");
     let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)
         .with_context(|| format!("parse {}", manifest_path.display()))?;
+    let _ = &manifest; // validated here; embedded into the file map below
 
     let mut files = FileMap::default();
-    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut FileMap) -> anyhow::Result<()> {
+    fn walk(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        out: &mut FileMap,
+    ) -> anyhow::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -116,7 +121,11 @@ pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
     for f in files.0 {
         map.insert(f.path, f.data);
     }
-    Ok(Page { id, manifest, files: map })
+    Ok(Page {
+        id,
+        manifest,
+        files: map,
+    })
 }
 
 fn format_blob(id: u32, payload: Vec<u8>) -> Vec<u8> {

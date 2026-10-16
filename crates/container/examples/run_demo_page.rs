@@ -32,11 +32,20 @@ fn main() -> anyhow::Result<()> {
     let blob = pack_dir(Path::new(&page_dir))?;
     let out = tmp.join("hello.dpage");
     std::fs::write(&out, &blob)?;
-    println!("   -> {} ({} bytes, stub + zstd payload)", out.display(), blob.len());
+    println!(
+        "   -> {} ({} bytes, stub + zstd payload)",
+        out.display(),
+        blob.len()
+    );
 
     println!("2) unpacking into container");
     let page = wxlike_dpage::unpack(&blob)?;
-    println!("   page '{}' id={:08x}, {} files", page.manifest.name, page.id, page.files.len());
+    println!(
+        "   page '{}' id={:08x}, {} files",
+        page.manifest.name,
+        page.id,
+        page.files.len()
+    );
 
     println!("3) starting container lifecycle");
     let mut container = Container::load(page)?;

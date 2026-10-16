@@ -32,7 +32,9 @@ pub struct MqHubOptions {
 
 impl Default for MqHubOptions {
     fn default() -> Self {
-        Self { offline: MemoryOffline::new(500) }
+        Self {
+            offline: MemoryOffline::new(500),
+        }
     }
 }
 
@@ -95,7 +97,9 @@ pub async fn run_mq_hub_with(
     let ep = endpoint.clone();
     let accept_loop = tokio::spawn(async move {
         loop {
-            let Some(incoming) = ep.accept().await else { break };
+            let Some(incoming) = ep.accept().await else {
+                break;
+            };
             let Ok(conn) = incoming.await else { continue };
             let peers = accept_peers.clone();
             let router = accept_router.clone();
@@ -154,7 +158,9 @@ async fn serve_conn(
     let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
 
     // first frame must be Hello{user_id}
-    let hello = framing::read_frame(&mut recv).await.context("await hello")?;
+    let hello = framing::read_frame(&mut recv)
+        .await
+        .context("await hello")?;
     let user_id = match WireFrame::from_bytes(&hello)? {
         WireFrame::Hello { user_id } => user_id,
         _ => anyhow::bail!("first frame was not Hello"),
@@ -173,7 +179,10 @@ async fn serve_conn(
     match offline.drain(&user_id).await {
         Ok(frames) => {
             if !frames.is_empty() {
-                eprintln!("[mq-hub] flushing {} parked message(s) to {user_id}", frames.len());
+                eprintln!(
+                    "[mq-hub] flushing {} parked message(s) to {user_id}",
+                    frames.len()
+                );
                 let mut s = send.lock().await;
                 for frame in frames {
                     if let Err(err) = framing::write_frame(&mut *s, &frame).await {
@@ -196,7 +205,9 @@ async fn serve_conn(
                 break Err(err.into());
             }
         };
-        let Ok(wire) = WireFrame::from_bytes(&frame) else { continue };
+        let Ok(wire) = WireFrame::from_bytes(&frame) else {
+            continue;
+        };
         let env = match wire {
             WireFrame::Msg(env) => env,
             WireFrame::Ping | WireFrame::Hello { .. } => continue,

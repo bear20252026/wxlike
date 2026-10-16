@@ -57,7 +57,13 @@ pub fn seal(key: [u8; 32], plaintext: &[u8]) -> Vec<u8> {
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad: b"wxlike-dm" })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad: b"wxlike-dm",
+            },
+        )
         .expect("encryption cannot fail with valid key");
     let mut out = Vec::with_capacity(SEAL_OVERHEAD + plaintext.len());
     out.extend_from_slice(&nonce_bytes);
@@ -71,7 +77,10 @@ pub fn open(key: [u8; 32], sealed: &[u8]) -> anyhow::Result<Vec<u8>> {
     let pt = cipher
         .decrypt(
             Nonce::from_slice(&sealed[..12]),
-            Payload { msg: &sealed[12..], aad: b"wxlike-dm" },
+            Payload {
+                msg: &sealed[12..],
+                aad: b"wxlike-dm",
+            },
         )
         .map_err(|_| anyhow::anyhow!("decryption failed (wrong key or tampered data)"))?;
     Ok(pt)

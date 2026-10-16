@@ -142,7 +142,11 @@ mod tests {
         let h1 = tokio::spawn(async move { c1.consume("q").await.unwrap() });
         let h2 = tokio::spawn(async move { c2.consume("q").await.unwrap() });
         let (a, b) = tokio::join!(h1, h2);
-        assert_ne!(a.unwrap(), b.unwrap(), "each message to exactly one consumer");
+        assert_ne!(
+            a.unwrap(),
+            b.unwrap(),
+            "each message to exactly one consumer"
+        );
     }
 
     #[tokio::test]
@@ -165,9 +169,15 @@ mod tests {
         let routes = MemoryRoutes::new();
         routes.register_hub("hub-a").await.unwrap();
         routes.bind_user("alice", "hub-a").await.unwrap();
-        assert_eq!(routes.route_of("alice").await.unwrap(), Some("hub-a".into()));
+        assert_eq!(
+            routes.route_of("alice").await.unwrap(),
+            Some("hub-a".into())
+        );
         routes.unbind_user("alice", "hub-b").await.unwrap(); // wrong hub: no-op
-        assert_eq!(routes.route_of("alice").await.unwrap(), Some("hub-a".into()));
+        assert_eq!(
+            routes.route_of("alice").await.unwrap(),
+            Some("hub-a".into())
+        );
         routes.unbind_user("alice", "hub-a").await.unwrap();
         assert_eq!(routes.route_of("alice").await.unwrap(), None);
         assert_eq!(routes.list_hubs().await.unwrap(), vec!["hub-a".to_string()]);

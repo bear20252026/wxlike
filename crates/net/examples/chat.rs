@@ -44,7 +44,9 @@ async fn main() -> anyhow::Result<()> {
         seq += 1;
         // "name> text" directs to one user; plain text broadcasts
         let env = match line.split_once("> ") {
-            Some((to, text)) => Envelope::direct("conv1", who.clone(), vec![to.trim().into()], seq, text),
+            Some((to, text)) => {
+                Envelope::direct("conv1", who.clone(), vec![to.trim().into()], seq, text)
+            }
             None => Envelope::text("conv1", who.clone(), seq, line),
         };
         client.send(&env).await?;

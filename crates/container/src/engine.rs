@@ -21,6 +21,12 @@ pub struct BoaEngine {
     ctx: Context,
 }
 
+impl Default for BoaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BoaEngine {
     pub fn new() -> Self {
         BRIDGE.with(|b| *b.borrow_mut() = BridgeState::default());
@@ -105,10 +111,12 @@ fn install_bridge(ctx: &mut Context) -> JsResult<()> {
             Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
             None => return Ok(JsValue::undefined()),
         };
-        Ok(match BRIDGE.with(|b| b.borrow().storage.get(&key).cloned()) {
-            Some(v) => JsValue::from(boa_engine::JsString::from(v)),
-            None => JsValue::undefined(),
-        })
+        Ok(
+            match BRIDGE.with(|b| b.borrow().storage.get(&key).cloned()) {
+                Some(v) => JsValue::from(boa_engine::JsString::from(v)),
+                None => JsValue::undefined(),
+            },
+        )
     }
 
     fn wx_now_ms(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
@@ -116,11 +124,31 @@ fn install_bridge(ctx: &mut Context) -> JsResult<()> {
     }
 
     let obj = ObjectInitializer::new(ctx)
-        .function(NativeFunction::from_fn_ptr(wx_log), boa_engine::js_string!("log"), 0)
-        .function(NativeFunction::from_fn_ptr(wx_set_title), boa_engine::js_string!("setTitle"), 1)
-        .function(NativeFunction::from_fn_ptr(wx_store_set), boa_engine::js_string!("storeSet"), 2)
-        .function(NativeFunction::from_fn_ptr(wx_store_get), boa_engine::js_string!("storeGet"), 1)
-        .function(NativeFunction::from_fn_ptr(wx_now_ms), boa_engine::js_string!("nowMs"), 0)
+        .function(
+            NativeFunction::from_fn_ptr(wx_log),
+            boa_engine::js_string!("log"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(wx_set_title),
+            boa_engine::js_string!("setTitle"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(wx_store_set),
+            boa_engine::js_string!("storeSet"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(wx_store_get),
+            boa_engine::js_string!("storeGet"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(wx_now_ms),
+            boa_engine::js_string!("nowMs"),
+            0,
+        )
         .build();
     ctx.register_global_property(boa_engine::js_string!("wxhost"), obj, Attribute::all())?;
     Ok(())

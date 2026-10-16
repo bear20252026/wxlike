@@ -6,7 +6,9 @@ use wxlike_core::Envelope;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum WireFrame {
     /// First frame on a client's stream; registers `user_id` on the hub.
-    Hello { user_id: String },
+    Hello {
+        user_id: String,
+    },
     Msg(Envelope),
     /// Keepalive; also materializes the QUIC stream (lazy-open semantics).
     Ping,

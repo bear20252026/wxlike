@@ -45,7 +45,9 @@ impl OfflineStore for MemoryOffline {
 
     async fn drain(&self, user: &str) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut m = self.inner.lock().await;
-        Ok(m.remove(user).map(|dq| dq.into_iter().collect()).unwrap_or_default())
+        Ok(m.remove(user)
+            .map(|dq| dq.into_iter().collect())
+            .unwrap_or_default())
     }
 }
 
@@ -58,8 +60,14 @@ mod tests {
         let store = MemoryOffline::new(3);
         store.enqueue("bob", b"m1".to_vec()).await.unwrap();
         store.enqueue("bob", b"m2".to_vec()).await.unwrap();
-        assert_eq!(store.drain("bob").await.unwrap(), vec![b"m1".to_vec(), b"m2".to_vec()]);
-        assert!(store.drain("bob").await.unwrap().is_empty(), "drain empties");
+        assert_eq!(
+            store.drain("bob").await.unwrap(),
+            vec![b"m1".to_vec(), b"m2".to_vec()]
+        );
+        assert!(
+            store.drain("bob").await.unwrap().is_empty(),
+            "drain empties"
+        );
     }
 
     #[tokio::test]
@@ -68,6 +76,9 @@ mod tests {
         for m in ["a", "b", "c"] {
             store.enqueue("u", m.as_bytes().to_vec()).await.unwrap();
         }
-        assert_eq!(store.drain("u").await.unwrap(), vec![b"b".to_vec(), b"c".to_vec()]);
+        assert_eq!(
+            store.drain("u").await.unwrap(),
+            vec![b"b".to_vec(), b"c".to_vec()]
+        );
     }
 }

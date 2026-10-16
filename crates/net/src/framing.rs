@@ -8,9 +8,8 @@ pub async fn write_frame<W: tokio::io::AsyncWriteExt + Unpin>(
     w: &mut W,
     payload: &[u8],
 ) -> io::Result<()> {
-    let len = u32::try_from(payload.len()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "frame exceeds u32 length")
-    })?;
+    let len = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame exceeds u32 length"))?;
     w.write_all(&len.to_be_bytes()).await?;
     w.write_all(payload).await?;
     w.flush().await
@@ -39,10 +38,9 @@ mod tests {
     async fn frame_roundtrip() {
         let (mut client, mut server) = tokio::io::duplex(1024);
         let payload = b"hello frame".to_vec();
-        let (w, r) = tokio::join!(
-            async { write_frame(&mut client, &payload).await },
-            async { read_frame(&mut server).await }
-        );
+        let (w, r) = tokio::join!(async { write_frame(&mut client, &payload).await }, async {
+            read_frame(&mut server).await
+        });
         w.unwrap();
         assert_eq!(r.unwrap(), payload);
     }

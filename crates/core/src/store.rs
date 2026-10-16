@@ -115,9 +115,9 @@ impl Store {
     }
 
     pub fn list_conversations(&self) -> anyhow::Result<Vec<Conversation>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, title, updated_at_ms FROM conversations ORDER BY updated_at_ms DESC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, updated_at_ms FROM conversations ORDER BY updated_at_ms DESC",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(Conversation {
                 id: r.get(0)?,

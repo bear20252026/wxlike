@@ -40,7 +40,9 @@ pub async fn run_hub(addr: std::net::SocketAddr) -> anyhow::Result<Hub> {
     let ep = endpoint.clone();
     let accept_loop = tokio::spawn(async move {
         loop {
-            let Some(incoming) = ep.accept().await else { break };
+            let Some(incoming) = ep.accept().await else {
+                break;
+            };
             let Ok(conn) = incoming.await else { continue };
             let peers = peers.clone();
             let next_id = next_id.clone();
@@ -52,7 +54,10 @@ pub async fn run_hub(addr: std::net::SocketAddr) -> anyhow::Result<Hub> {
         }
     });
 
-    Ok(Hub { endpoint, accept_loop })
+    Ok(Hub {
+        endpoint,
+        accept_loop,
+    })
 }
 
 async fn serve_conn(
@@ -81,7 +86,9 @@ async fn serve_conn(
                 return Err(err.into());
             }
         };
-        let Ok(wire) = WireFrame::from_bytes(&frame) else { continue };
+        let Ok(wire) = WireFrame::from_bytes(&frame) else {
+            continue;
+        };
         let env = match wire {
             WireFrame::Msg(env) => env,
             WireFrame::Ping | WireFrame::Hello { .. } => continue,

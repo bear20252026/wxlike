@@ -33,7 +33,12 @@ pub enum MsgBody {
 
 impl Envelope {
     /// Conversation broadcast (no explicit recipients).
-    pub fn text(conv_id: impl Into<String>, sender: impl Into<String>, seq: u64, text: impl Into<String>) -> Self {
+    pub fn text(
+        conv_id: impl Into<String>,
+        sender: impl Into<String>,
+        seq: u64,
+        text: impl Into<String>,
+    ) -> Self {
         Self::direct(conv_id, sender, Vec::new(), seq, text)
     }
 

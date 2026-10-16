@@ -21,7 +21,10 @@ pub fn make_server_endpoint(addr: std::net::SocketAddr) -> anyhow::Result<quinn:
         .with_protocol_versions(&[&rustls::version::TLS13])
         .context("protocol versions")?
         .with_no_client_auth()
-        .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+        .with_single_cert(
+            vec![cert_der],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
+        )
         .context("server cert")?;
     server_crypto.alpn_protocols = vec![b"wxlike/1".to_vec()];
     let quic_server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)

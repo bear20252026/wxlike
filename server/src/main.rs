@@ -32,18 +32,16 @@ async fn main() -> anyhow::Result<()> {
     println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints)");
     std::mem::forget(hub); // run until process exit
 
-    let app = axum::Router::new()
-        .route("/health", get(health))
-        .route(
-            "/endpoints",
-            get(move || async move {
-                Json(serde_json::json!({
-                    "hub": hub_id,
-                    "quic": hub_addr.to_string(),
-                    "alpn": "wxlike/1",
-                }))
-            }),
-        );
+    let app = axum::Router::new().route("/health", get(health)).route(
+        "/endpoints",
+        get(move || async move {
+            Json(serde_json::json!({
+                "hub": hub_id,
+                "quic": hub_addr.to_string(),
+                "alpn": "wxlike/1",
+            }))
+        }),
+    );
 
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
     axum::serve(listener, app).await?;
@@ -60,7 +58,8 @@ fn build_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
         "redis" => {
             #[cfg(feature = "redis")]
             {
-                let url = std::env::var("WXLIKE_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+                let url = std::env::var("WXLIKE_REDIS_URL")
+                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
                 let mq = Arc::new(wxlike_mq::redis_backend::RedisMq::connect(&url)?);
                 let routes = Arc::new(wxlike_mq::redis_backend::RedisRoutes::connect(&url)?);
                 Ok(wxlike_mq::MqRouter::new(mq, routes))
