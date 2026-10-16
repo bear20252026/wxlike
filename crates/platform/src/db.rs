@@ -122,6 +122,38 @@ impl Db {
                 has_thumb     INTEGER NOT NULL DEFAULT 0,
                 created_at    INTEGER NOT NULL
             );
+
+            -- WP-09: a virtual ledger only. Amounts are integer minor units
+            -- (分), never floats, so conservation is exact.
+            CREATE TABLE IF NOT EXISTS wallets (
+                user_id   TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                balance   INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0)
+            );
+            CREATE TABLE IF NOT EXISTS ledger (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kind         TEXT NOT NULL,
+                amount       INTEGER NOT NULL,
+                counterparty TEXT NOT NULL DEFAULT '',
+                ref_id       TEXT NOT NULL DEFAULT '',
+                memo         TEXT NOT NULL DEFAULT '',
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger(user_id, id);
+            CREATE TABLE IF NOT EXISTS redpackets (
+                id            TEXT PRIMARY KEY,
+                from_uid      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                conv_id       TEXT NOT NULL DEFAULT '',
+                total         INTEGER NOT NULL,
+                count         INTEGER NOT NULL,
+                claimed       INTEGER NOT NULL DEFAULT 0,
+                claimed_total INTEGER NOT NULL DEFAULT 0,
+                claimers      TEXT NOT NULL DEFAULT '[]',
+                memo          TEXT NOT NULL DEFAULT '',
+                status        TEXT NOT NULL DEFAULT 'open',
+                created_at    INTEGER NOT NULL,
+                expire_at     INTEGER NOT NULL
+            );
             "#,
         )?;
         Ok(())

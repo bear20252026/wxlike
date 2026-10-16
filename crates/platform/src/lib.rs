@@ -25,6 +25,7 @@ mod groups;
 mod media;
 mod users;
 mod validate;
+mod wallet;
 
 use std::sync::Arc;
 
@@ -37,6 +38,26 @@ pub use crate::db::Db;
 pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
+pub use crate::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
+
+/// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
+/// tests call [`Platform::sweep_expired_redpackets`] directly so the expiry path
+/// is deterministic instead of sleeping for a day.
+pub fn spawn_redpacket_sweeper(
+    state: PlatformState,
+    every: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(every).await;
+            match state.sweep_expired_redpackets() {
+                Ok(0) => {}
+                Ok(n) => println!("[platform] refunded {n} expired red packet(s)"),
+                Err(err) => eprintln!("[platform] redpacket sweep failed: {err}"),
+            }
+        }
+    })
+}
 
 /// A throwaway media root for an in-memory platform, so tests never touch the
 /// caller's working directory.
@@ -240,6 +261,7 @@ impl Platform {
             .merge(friends::routes())
             .merge(groups::routes())
             .merge(media::routes())
+            .merge(wallet::routes())
             .with_state(state)
     }
 

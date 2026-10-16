@@ -78,6 +78,38 @@ cargo test -p wxlike-net --test friends_system_event
 `platform` 不依赖 `net`：事件通过 `trait EventSink` 反向注入，server 挂 `HubHandle`，
 测试挂 recorder——所以业务层可以单测，不必起 QUIC。
 
+## 钱包 / 红包 / 转账（WP-09，虚拟记账）
+
+**边界**：这是虚拟记账闭环，不接任何真实支付渠道——真实货币收单属于持牌合规问题，
+不在本仓库范围。资金进入系统的唯一入口是 domain 层的 `Platform::fund()`，
+**没有对应的 HTTP 接口**，那条缝正是将来接持牌渠道结算回调的位置。
+
+金额一律用整数最小单位（分），不用浮点，守恒检查才能精确成立。
+`wallets.balance` 带 `CHECK (balance >= 0)`，即使应用层逻辑写错，SQLite 也会挡住负余额。
+
+- **转账 = 一个事务**：双方余额变动 + 两条流水（`transfer_out` / `transfer_in`，共享同一
+  `ref_id`）一起提交或一起不提交。余额不足时整个事务回滚，**不产生任何流水**。
+- **守恒不变量是 `money_supply()`**：所有钱包余额 + 未领取红包的剩余托管额。
+  只看钱包会"凭空少钱"——红包创建时总额已从发送方扣走，但还没人领，这笔钱在 escrow 里。
+- **红包创建即冻结**：总额从发送方余额扣走并入账 `redpacket_out`；
+  每份额随机但**保证剩余名额都还能拿到 >=1**，最后一份吃掉余数，所以份额之和恰等于总额。
+- 发红包的人**不能领自己的包**（403）；同一人重复领（409）；领完即 `finished`，再领 409。
+- **24 小时未领完自动退回**：`spawn_redpacket_sweeper`（server 每 60s 跑一次），
+  退款本身也是一条流水 `redpacket_refund`；扫描幂等，跑第二次返回 0。
+  测试直接改 `expire_at` 再调 `sweep_expired_redpackets()`，不靠 sleep 一天。
+- **流水游标是升序**（`id > since ORDER BY id`），和通讯录增量同一套语义。
+  这里原本写成了 `id > since` 配 `ORDER BY id DESC`——翻页会把最新那几行重复读回来，
+  是分页最经典的一种错，测试里用"走完全部、每行恰好见一次"钉住。
+- 转账/红包/领取各产生 `MsgBody::Custom{kind:"wallet.*"}` 进会话；
+  红包可带 `conv_id` 指定发到哪个会话，不带则落在以该红包 id 命名的通道里（文档化的回退）。
+
+```bash
+cargo test -p wxlike-platform --test wallet    # 16 项
+```
+
+灵魂测试：同一账户 **100 并发各转 1 分** → 余额精确 -100、流水恰好 100 条、
+`money_supply` 分毫不动；红包 3 份被 5 人并发抢 → 恰好 3 人成功、2 人 409、份额之和 == 冻结总额。
+
 ## 群聊（WP-04）
 
 群 id 直接当 `Envelope.conv_id` 用。hub 收到群消息时按**成员表**投递（不再是
@@ -176,7 +208,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 
 ```bash
 cargo build
-cargo test                 # 148 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 媒体 / 可靠队列
+cargo test                 # 164 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 媒体 / 钱包 / 可靠队列
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443

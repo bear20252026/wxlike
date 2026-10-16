@@ -63,6 +63,11 @@ async fn main() -> anyhow::Result<()> {
     // Friend/group lifecycle events are pushed through the hub, so online peers
     // see them the same way they see chat traffic (WP-02).
     platform.set_event_sink(Arc::new(HubSink(hub.handle())));
+    // Unclaimed red packets must come back after 24 h even if nobody asks (WP-09).
+    let _sweeper = wxlike_platform::spawn_redpacket_sweeper(
+        platform.clone(),
+        std::time::Duration::from_secs(60),
+    );
     println!("[wxlike-server] platform db = {}", db_env);
     println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints, /api/*)");
     std::mem::forget(hub); // run until process exit
