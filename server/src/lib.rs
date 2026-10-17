@@ -133,6 +133,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         )
         .merge(wxlike_platform::Platform::router(platform.clone()))
         .merge(wxlike_video::routes(video_state))
+        .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone()))
         .merge(history_routes(deps))
         .merge(dev_routes(platform.clone()));
@@ -152,6 +153,23 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         http_addr,
         quic_addr,
     })
+}
+
+/// P3 ADR-8: the WebSocket gateway. Upgraded sockets speak the SAME wire
+/// protocol (bincode WireFrame, Hello first) as QUIC streams — one binary WS
+/// message per frame — and enter the hub through the same serve path, so
+/// multi-device fan-out, parking, dedup and receipts behave identically.
+fn ws_routes(handle: HubHandle) -> Router {
+    use axum::extract::ws::WebSocketUpgrade;
+    Router::new().route(
+        "/ws",
+        get(move |upgrade: WebSocketUpgrade| async move {
+            upgrade.on_upgrade(move |socket| async move {
+                let conn = wxlike_net::conn::ws::peer_conn(socket);
+                let _ = handle.attach_transport(conn).await;
+            })
+        }),
+    )
 }
 
 fn presence_routes(handle: HubHandle) -> Router {
