@@ -375,3 +375,143 @@ fn fetch_limit_is_capped_to_protect_the_server() {
     assert_eq!(rows.len(), 12);
     assert_eq!(next, None);
 }
+
+// ---------------------------------------------------------------------------
+// P3 sync-service（OpenIM 五层差分）+ read-service 门槛
+// ---------------------------------------------------------------------------
+
+use wxlike_message::{read_receipt_allowed, SyncDirective, DELTA_MAX};
+
+#[test]
+fn five_layer_digest_up_to_date() {
+    let s = store();
+    // 第 1 层：版本一致 → 无事可做
+    assert_eq!(s.sync_plan(GROUP, 0).unwrap(), SyncDirective::UpToDate);
+    s.append_member_change(GROUP, "join", "u1", "{}").unwrap();
+    assert_eq!(s.sync_plan(GROUP, 1).unwrap(), SyncDirective::UpToDate);
+}
+
+#[test]
+fn five_layer_delta_pull_within_threshold() {
+    let s = store();
+    for i in 0..5 {
+        s.append_member_change(GROUP, "join", &format!("u{i}"), "{}")
+            .unwrap();
+    }
+    // 第 2 层：差 5 个版本 → 按游标拉增量，增量内容有序
+    match s.sync_plan(GROUP, 2).unwrap() {
+        SyncDirective::Delta { since_version } => {
+            assert_eq!(since_version, 2);
+            let delta = s.member_changes_since(GROUP, 2, 100).unwrap();
+            assert_eq!(delta.len(), 3);
+            assert_eq!(delta[0].user_id, "u2");
+            let versions: Vec<u64> = delta.iter().map(|c| c.version).collect();
+            assert!(versions.windows(2).all(|w| w[0] < w[1]), "strictly ordered");
+        }
+        other => panic!("expected Delta, got {other:?}"),
+    }
+}
+
+#[test]
+fn five_layer_full_resync_on_broken_version_chain() {
+    let s = store();
+    s.append_member_change(GROUP, "join", "u1", "{}").unwrap();
+    // 第 3 层：客户端版本超前（换库/清库/伪造）→ 全量兜底
+    assert_eq!(s.sync_plan(GROUP, 99).unwrap(), SyncDirective::FullResync);
+}
+
+#[test]
+fn five_layer_batch_collapse_when_delta_too_wide() {
+    let s = store();
+    for i in 0..(DELTA_MAX + 5) {
+        s.append_member_change(GROUP, "join", &format!("u{i}"), "{}")
+            .unwrap();
+    }
+    // 第 4 层：差值超过阈值 → 直接收口为全量（省往返）
+    assert_eq!(s.sync_plan(GROUP, 0).unwrap(), SyncDirective::BatchCollapse);
+    // 但差一点就回到增量
+    assert!(matches!(
+        s.sync_plan(GROUP, DELTA_MAX).unwrap(),
+        SyncDirective::Delta { .. }
+    ));
+}
+
+#[test]
+fn member_snapshot_supports_lazy_paging() {
+    let s = store();
+    let members: Vec<String> = (0..50).map(|i| format!("user-{:03}", i * 7 % 50)).collect();
+    s.reset_member_snapshot(GROUP, &members).unwrap();
+
+    // 第 5 层：懒加载分页，页大小受控，重复成员幂等
+    s.reset_member_snapshot(GROUP, &members).unwrap();
+    let (page1, next) = s.member_snapshot(GROUP, "", 20).unwrap();
+    assert_eq!(page1.len(), 20);
+    assert!(next.is_some());
+    let (page2, next2) = s
+        .member_snapshot(GROUP, next.as_deref().unwrap(), 20)
+        .unwrap();
+    assert_eq!(page2.len(), 20);
+    let (page3, none) = s
+        .member_snapshot(GROUP, next2.as_deref().unwrap(), 20)
+        .unwrap();
+    assert_eq!(page3.len(), 10, "50 unique members: last short page");
+    assert_eq!(none, None);
+    // 三页拼接无重复（排序 + 游标互斥的语义）
+    let mut all: Vec<String> = page1;
+    all.extend(page2);
+    all.extend(page3);
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 50);
+}
+
+#[test]
+fn snapshot_rebuild_replaces_stale_members() {
+    let s = store();
+    s.reset_member_snapshot(GROUP, &["a".into(), "b".into(), "c".into()])
+        .unwrap();
+    // 有人退群后重建快照：旧成员必须消失（真相源语义）
+    s.reset_member_snapshot(GROUP, &["a".into(), "c".into()])
+        .unwrap();
+    let (all, none) = s.member_snapshot(GROUP, "", 100).unwrap();
+    assert_eq!(all, vec!["a".to_string(), "c".to_string()]);
+    assert_eq!(none, None);
+}
+
+#[test]
+fn read_receipt_gate_defaults_off_for_ten_thousand() {
+    // 蓝图第六轮 18：已读回执仅 1:1 与 ≤500 人群；万人群/频道默认只做未读
+    assert!(read_receipt_allowed(wxlike_message::OwnerType::Direct, 2));
+    assert!(read_receipt_allowed(wxlike_message::OwnerType::Group, 500));
+    assert!(!read_receipt_allowed(wxlike_message::OwnerType::Group, 501));
+    assert!(!read_receipt_allowed(
+        wxlike_message::OwnerType::Channel,
+        10_000
+    ));
+    // 显式开关位：属主侧仍可对 500 内频道开启
+    assert!(read_receipt_allowed(
+        wxlike_message::OwnerType::Channel,
+        100
+    ));
+}
+
+#[test]
+fn member_changes_reopen_persistently() {
+    let dir = std::env::temp_dir().join(format!(
+        "wxlike-sync-{}-{}",
+        wxlike_core::types::now_ms(),
+        std::process::id()
+    ));
+    let path = dir.join("sync.db");
+    {
+        let s = MessageStore::open(Some(path.to_str().unwrap())).unwrap();
+        s.append_member_change(GROUP, "join", "u1", "{}").unwrap();
+        s.append_member_change(GROUP, "join", "u2", "{}").unwrap();
+    }
+    let s = MessageStore::open(Some(path.to_str().unwrap())).unwrap();
+    assert_eq!(s.member_head_version(GROUP).unwrap(), 2);
+    let delta = s.member_changes_since(GROUP, 1, 10).unwrap();
+    assert_eq!(delta.len(), 1);
+    assert_eq!(delta[0].user_id, "u2");
+    std::fs::remove_dir_all(&dir).ok();
+}

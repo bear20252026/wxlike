@@ -238,6 +238,26 @@ impl MessageStore {
                 sent_at_ms    INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ephemeral_owner ON ephemeral(owner_type, owner_id, rowid_hint);
+
+            -- sync-service：成员变更日志（version 单调，五层差分的增量源）
+            CREATE TABLE IF NOT EXISTS member_log (
+                owner_type TEXT NOT NULL,
+                owner_id   TEXT NOT NULL,
+                version    INTEGER NOT NULL,
+                kind       TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                payload    TEXT NOT NULL DEFAULT '',
+                at_ms      INTEGER NOT NULL,
+                PRIMARY KEY (owner_type, owner_id, version)
+            );
+
+            -- 成员快照：全量兜底与懒加载分页的真相源
+            CREATE TABLE IF NOT EXISTS member_snapshot (
+                owner_type TEXT NOT NULL,
+                owner_id   TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                PRIMARY KEY (owner_type, owner_id, user_id)
+            );
             "#,
         )?;
         Ok(Self {
@@ -635,7 +655,7 @@ fn bump_change(
     msg_id: &str,
     kind: &str,
     actor: &str,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<i64> {
     // change version 使用独立的 owner_seq 行（owner_id 加 '#change' 后缀）
     tx.execute(
         "INSERT INTO owner_seq(owner_type, owner_id, seq) VALUES(?1, ?2 || '#change', 1)
@@ -660,7 +680,7 @@ fn bump_change(
             wxlike_core::types::now_ms() as i64
         ],
     )?;
-    Ok(())
+    Ok(version)
 }
 
 fn row_to_mail(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessage> {
@@ -689,5 +709,191 @@ fn is_unique(e: &rusqlite::Error) -> bool {
     match e {
         rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.contains("UNIQUE"),
         _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sync-service（OpenIM 五层差分契约的总蓝图落法）+ read-service 门槛
+// ---------------------------------------------------------------------------
+
+/// 成员变更日志行（蓝图 4.1 表 ③ 的 crate 内落法）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberChange {
+    pub version: u64,
+    pub kind: String,
+    pub user_id: String,
+    pub payload: String,
+}
+
+/// 五层同步决策：客户端报 `(自己持有的版本, 自己持有的成员数)`，服务端按
+/// 契约给出下一动作。阈值：增量 > [`DELTA_MAX`] 时收口为全量（第 4 层）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncDirective {
+    /// 第 1 层：版本一致，无事可做。
+    UpToDate,
+    /// 第 2 层：版本差在阈值内，按 `since_version` 拉增量。
+    Delta { since_version: u64 },
+    /// 第 3 层：版本链断裂（客户端版本超前/未知属主），全量快照兜底。
+    FullResync,
+    /// 第 4 层：版本差超过 [`DELTA_MAX`]，直接收口为全量（比逐段拉省往返）。
+    BatchCollapse,
+}
+
+/// 增量拉取上限：超过它改走全量（第 4 层收口阈值）。
+pub const DELTA_MAX: u64 = 200;
+
+impl MessageStore {
+    /// 成员变更入账（join/leave/role_change/mute…），version 单点原子。
+    pub fn append_member_change(
+        &self,
+        owner: (OwnerType, &str),
+        kind: &str,
+        user_id: &str,
+        payload: &str,
+    ) -> Result<u64> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        let version = bump_change(&tx, ot, oid, user_id, kind, "system")? as u64;
+        // 复用 mailbox_change 的 version 序列，但成员日志单独成表
+        tx.execute(
+            "INSERT INTO member_log(owner_type, owner_id, version, kind, user_id, payload, at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                ot,
+                oid,
+                version as i64,
+                kind,
+                user_id,
+                payload,
+                wxlike_core::types::now_ms() as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(version)
+    }
+
+    /// 成员日志头版本（摘要判断的基准）。
+    pub fn member_head_version(&self, owner: (OwnerType, &str)) -> Result<u64> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let c = self.c();
+        Ok(c.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM member_log
+             WHERE owner_type = ?1 AND owner_id = ?2",
+            params![ot, oid],
+            |r| r.get::<_, i64>(0).map(|v| v as u64),
+        )?)
+    }
+
+    /// 增量拉取（第 2 层）。
+    pub fn member_changes_since(
+        &self,
+        owner: (OwnerType, &str),
+        since_version: u64,
+        limit: usize,
+    ) -> Result<Vec<MemberChange>> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let limit = limit.clamp(1, 1000) as i64;
+        let c = self.c();
+        let mut stmt = c.prepare(
+            "SELECT version, kind, user_id, payload FROM member_log
+             WHERE owner_type = ?1 AND owner_id = ?2 AND version > ?3 ORDER BY version LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![ot, oid, since_version as i64, limit], |r| {
+                Ok(MemberChange {
+                    version: r.get::<_, i64>(0)? as u64,
+                    kind: r.get(1)?,
+                    user_id: r.get(2)?,
+                    payload: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 五层契约的第 1/3/4 层：给定客户端摘要，决定下一步。
+    pub fn sync_plan(
+        &self,
+        owner: (OwnerType, &str),
+        client_version: u64,
+    ) -> Result<SyncDirective> {
+        let head = self.member_head_version(owner)?;
+        if client_version > head {
+            // 版本链断裂：客户端比服务端还新（换库/清库/伪造）→ 全量兜底
+            return Ok(SyncDirective::FullResync);
+        }
+        if client_version == head {
+            return Ok(SyncDirective::UpToDate);
+        }
+        if head - client_version > DELTA_MAX {
+            return Ok(SyncDirective::BatchCollapse);
+        }
+        Ok(SyncDirective::Delta {
+            since_version: client_version,
+        })
+    }
+
+    /// 成员快照（第 3 层兜底 / 第 5 层懒加载的分页源）：按 user_id 排序分页，
+    /// 页大小受控，万人群不做全量拉取。
+    pub fn member_snapshot(
+        &self,
+        owner: (OwnerType, &str),
+        after_user: &str,
+        limit: usize,
+    ) -> Result<(Vec<String>, Option<String>)> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let limit = limit.clamp(1, 1000) as i64;
+        let c = self.c();
+        let mut stmt = c.prepare(
+            "SELECT user_id FROM member_snapshot
+             WHERE owner_type = ?1 AND owner_id = ?2 AND user_id > ?3
+             ORDER BY user_id LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![ot, oid, after_user, limit], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if rows.len() < limit as usize {
+            return Ok((rows, None));
+        }
+        let next = rows.last().cloned();
+        Ok((rows, next))
+    }
+
+    /// 全量重建成员快照（member log 重放的责任在 community 层；这里只存真相）。
+    pub fn reset_member_snapshot(
+        &self,
+        owner: (OwnerType, &str),
+        members: &[String],
+    ) -> Result<()> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM member_snapshot WHERE owner_type = ?1 AND owner_id = ?2",
+            params![ot, oid],
+        )?;
+        for user in members {
+            tx.execute(
+                "INSERT OR IGNORE INTO member_snapshot(owner_type, owner_id, user_id)
+                 VALUES(?1, ?2, ?3)",
+                params![ot, oid, user],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// read-service 门槛（蓝图第六轮 18）：已读回执只保留在 1:1 与 ≤500 人群，
+/// 万人群/频道默认只做未读。这是默认关闭的开关，不是禁令——属主可显式开。
+pub const READ_RECEIPT_MAX_MEMBERS: u64 = 500;
+
+pub fn read_receipt_allowed(owner: OwnerType, member_count: u64) -> bool {
+    match owner {
+        OwnerType::Direct => true,
+        OwnerType::Group | OwnerType::Channel => member_count <= READ_RECEIPT_MAX_MEMBERS,
     }
 }
