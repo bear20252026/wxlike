@@ -2,6 +2,7 @@
 
 pub mod crypto;
 pub mod e2ee;
+pub mod msgmeta;
 pub mod store;
 pub mod types;
 

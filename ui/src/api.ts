@@ -233,6 +233,186 @@ export function closeSearch(): void {
 }
 
 // ---------------------------------------------------------------------------
+// P2: rich messages (voice / file / sticker / video)
+// ---------------------------------------------------------------------------
+
+export async function sendVoice(
+  convId: string,
+  to: string[],
+  mediaId: string,
+  durationMs: number,
+  waveform: number[],
+): Promise<void> {
+  await invoke("send_voice", { conv_id: convId, to, media_id: mediaId, duration_ms: durationMs, waveform });
+}
+
+export async function uploadAndSendFile(convId: string, to: string[], file: File): Promise<void> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const up = await invoke<{ media_id: string }>("upload_media", {
+    bytes: Array.from(bytes),
+    content_type: file.type || "application/octet-stream",
+    sha256: null,
+  });
+  await invoke("send_file", {
+    conv_id: convId, to, media_id: up.media_id,
+    name: file.name, size: bytes.length, sha256: "",
+  });
+}
+
+export async function sendSticker(
+  convId: string,
+  to: string[],
+  mediaId: string,
+  pack: string,
+  id: string,
+): Promise<void> {
+  await invoke("send_sticker", { conv_id: convId, to, media_id: mediaId, pack, id });
+}
+
+/** Uploads to video-service and returns the ingest reply (ids + urls). */
+export async function uploadVideo(file: File): Promise<{
+  video_id: string; playlist_url: string; play_url: string; thumb_url: string;
+  duration_ms: number; width: number; height: number;
+}> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return invoke("upload_video", { bytes: Array.from(bytes) });
+}
+
+export async function sendVideo(
+  convId: string,
+  to: string[],
+  ingest: Awaited<ReturnType<typeof uploadVideo>>,
+): Promise<void> {
+  await invoke("send_video", {
+    conv_id: convId, to,
+    payload: {
+      video_id: ingest.video_id,
+      playlist_url: ingest.playlist_url,
+      play_url: ingest.play_url,
+      thumb_media_id: "", // P2 thumb lives in video-service; media-id thumb arrives with P5
+      duration_ms: ingest.duration_ms,
+      speeds: [0.5, 1.0, 1.5, 2.0],
+    },
+  });
+}
+
+export async function fetchVideoDataUrl(path: string): Promise<string> {
+  const blob = await invoke<{ base64: string; content_type: string }>("download_video", { path });
+  return `data:${blob.content_type};base64,${blob.base64}`;
+}
+
+/** Starts a voice recording; `stop()` finishes it and derives duration +
+ * display waveform from the decoded PCM. Mic permission refused / API missing
+ * rejects with a user-readable message; the hard cap is 60 s. */
+export async function startVoiceRecording(): Promise<{
+  stop: () => Promise<{ blob: Blob; durationMs: number; waveform: number[] }>;
+}> {
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    throw new Error("此环境不支持录音");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const chunks: Blob[] = [];
+  const rec = new MediaRecorder(stream);
+  rec.ondataavailable = (e) => chunks.push(e.data);
+  rec.start();
+  const started = Date.now();
+  let stopped = false;
+
+  const finish = async (): Promise<{ blob: Blob; durationMs: number; waveform: number[] }> => {
+    if (!stopped) {
+      stopped = true;
+      if (rec.state !== "inactive") rec.stop();
+      await new Promise<void>((resolve) => {
+        rec.onstop = () => resolve();
+      });
+      for (const t of stream.getTracks()) t.stop();
+    }
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    const durationMs = Math.max(200, Date.now() - started);
+    let waveform: number[];
+    try {
+      const ctx = new AudioContext();
+      const audio = await ctx.decodeAudioData(await blob.arrayBuffer());
+      const data = audio.getChannelData(0);
+      const bars = 40;
+      const step = Math.max(1, Math.floor(data.length / bars));
+      const peaks: number[] = [];
+      for (let b = 0; b < bars; b++) {
+        let peak = 0;
+        for (let i = b * step; i < Math.min((b + 1) * step, data.length); i++) {
+          const v = Math.abs(data[i]);
+          if (v > peak) peak = v;
+        }
+        peaks.push(peak);
+      }
+      const max = Math.max(...peaks, 0.01);
+      waveform = peaks.map((p) => Math.max(1, Math.round((p / max) * 100)));
+      void ctx.close();
+    } catch {
+      // decode unsupported in this webview: flat-but-valid bars, duration is real
+      waveform = new Array(40).fill(8);
+    }
+    return { blob, durationMs, waveform };
+  };
+
+  // hard cap: 60 s, then it stops itself
+  window.setTimeout(() => {
+    if (!stopped) void finish();
+  }, 60_000);
+
+  return { stop: finish };
+}
+
+export async function uploadVoiceBlob(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const up = await invoke<{ media_id: string }>("upload_media", {
+    bytes: Array.from(bytes),
+    content_type: blob.type || "audio/webm",
+    sha256: null,
+  });
+  return up.media_id;
+}
+
+// ---------------------------------------------------------------------------
+// P2: local message library
+// ---------------------------------------------------------------------------
+
+export async function openLocalDb(path: string): Promise<void> {
+  await invoke("local_open", { path });
+}
+
+export async function localReady(): Promise<boolean> {
+  return invoke<boolean>("local_ready");
+}
+
+/** Loads one page from the on-disk library into the chat store. */
+export async function loadLocalHistory(convId: string, meId: string, limit = 50): Promise<boolean> {
+  const reply = await invoke<{ messages: HistoryRow[]; next_before_seq: number | null }>(
+    "local_history",
+    { conv_id: convId, before_seq: 0, limit },
+  );
+  const mapped = (reply.messages ?? []).map((r) => rowToMsg(r, meId));
+  if (mapped.length > 0) {
+    const chats = { ...appStore.get(chatsAtom) };
+    chats[convId] = mergeMessages(chats[convId] ?? [], mapped);
+    appStore.set(chatsAtom, chats);
+  }
+  return reply.next_before_seq != null;
+}
+
+// ---------------------------------------------------------------------------
+// P2: avatar
+// ---------------------------------------------------------------------------
+
+export async function uploadAvatar(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return invoke<string>("upload_avatar", {
+    bytes: Array.from(bytes),
+    content_type: file.type || "image/png",
+  });
+}
+
+// ---------------------------------------------------------------------------
 // P1: server history (cloud sync)
 // ---------------------------------------------------------------------------
 
@@ -457,10 +637,10 @@ export function onInbound(payload: unknown): void {
     };
     appendChat(ev.conv_id, msg);
     // P1 read receipt: a message seen while its chat is open counts as read
-    if (!mine && ev.msgId) {
+    if (!mine && ev.msg_id) {
       const current = appStore.get(viewAtom);
       const isCurrent = current.screen === "chat" && current.convId === ev.conv_id;
-      if (isCurrent) sendReadReceipt(ev.conv_id, ev.msgId);
+      if (isCurrent) sendReadReceipt(ev.conv_id, ev.msg_id);
     }
   }
 
@@ -491,6 +671,14 @@ function previewOf(ev: InboundEvent): string {
       return "[转发] " + (ev.text ?? "");
     case "msg.merge":
       return "[合并转发]";
+    case "msg.voice":
+      return "[语音]";
+    case "msg.file":
+      return "[文件]";
+    case "msg.sticker":
+      return "[贴纸]";
+    case "msg.video":
+      return "[视频]";
     case "e2ee":
       return ev.decrypt_failed ? "[加密消息]" : "[密] " + (ev.text ?? "");
     case "typing":

@@ -1,0 +1,20 @@
+[package]
+name = "wxlike-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wxlike-core = { path = "../core" }
+tokio = { workspace = true }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
