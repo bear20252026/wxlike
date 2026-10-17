@@ -9,7 +9,10 @@
 >    支付账本四层架构 cala-ledger/dtmrs/Hyperswitch 范式/obix）
 > → ⑥ 第四轮补充（**ADR-13 直播=频道级能力**：Discord 语言分层启示、
 >    Rust 媒体面选型 Xiu/mediasoup/atm0s、弹幕复用读扩散管道、
->    Flutter-OH 主仓库在 GitCode 不在 GitHub）。
+>    Flutter-OH 主仓库在 GitCode 不在 GitHub）
+> → ⑦ 第五轮补充（**ADR-14 小程序自研运行时**：Rong 多引擎逻辑层 + LingXia/Wry 视图层 +
+>    Wasmtime 沙箱 + 自研 publish/invoke Bridge 契约，非微信兼容路线；
+>    详见 [miniprogram-blueprint.md](miniprogram-blueprint.md)）。
 > 已有文档全部保留未删改；本文负责**合并、去重、映射到 wxlike 现有代码、并补充遗漏项**。
 > 图例：✅ 已实现有验证 · ⚠️ 部分 · ❌ 未实现 · 🔶 需按新决策重做 · ➖ 排除。
 
@@ -45,6 +48,7 @@
 | **ADR-11 移动端基座（第三轮新增）** | **Flutter 统一 iOS/Android/鸿蒙**：鸿蒙走 Flutter-OH 社区适配 + ArkTS 桥接系统能力（通知栏/后台保活/分布式调度）；ArkUI-X 降为"鸿蒙战略优先"备选（版本碎片化：HarmonyOS 3.0/4.0/NEXT 的 API 行为不一致，@State/@Builder 兼容成本持续存在）；KMP-CMP（2026-09 首版）与 RN-OH 排除。桌面 Tauri 2 默认、复杂富媒体消息流可切 Flutter Desktop；Web 独立工程 | 依据：壹信 IM 生产案例（Flutter 3.22 + 自研鸿蒙插件，市级政务平台日均 180 万条消息、滚动 60FPS、鸿蒙 NEXT Beta 兼容认证）（P5） |
 | **ADR-12 支付账本架构（第三轮新增）** | **四层解耦**：①账本核心=事件溯源+复式记账（`cala-ledger` 嵌入 PG：余额=重放分录、禁止原地 UPDATE、persistent outbox）；②交易协调=FSM（Initialized→Authorized→Settled→Failed）+幂等键+`dtmrs` Saga 编排（补偿替代全局原子）；③渠道适配=`ChannelConnector` trait（Hyperswitch 范式，对接自有银行/清算接口，**适配器只发送划拨指令、绝不碰账本**）；④对账审计=独立服务消费 outbox+渠道回执双向核对（长短款进人工队列）+maker-checker 双人复核。与 ADR-5 衔接：现有 wallet.rs 为演示级单式账本，接真实渠道时迁移 cala 双式账本，`money_supply` 守恒断言保留为对账基线。高性能备选：ousia-ledger 两阶段执行 / TigerBeetle | P4（真实渠道阶段）；虚拟钱包演示期不动 |
 | **ADR-13 直播=频道级能力（第四轮新增）** | 参照 Discord：**频道即形态**（文字频道/语音频道/直播频道），直播不是独立模块。直播频道内部 **SFU 架构**（主播推一路流、SFU 选择性转发、观众拉流——非 MCU 混流）；**弹幕/实时评论复用读扩散消息管道**（绝不另建一套消息系统）；**直播信令（加入/离开/切流）走独立高优先级通道**，不与聊天流混排。语言分层启示（Discord=Elixir/OTP 网关 + Rust 消息与媒体代理 + 25,000 SFU）：我们坚持全 Rust = Tokio 网关 + Rust SFU，代价是自行实现 BEAM 级监督与背压（P3 慢消费者隔离已列） | 媒体面选型：**Xiu**（纯 Rust 协议最全：RTMP 集群/RTSP/WebRTC WHIP-WHEP/HTTP-FLV/HLS，OBS 可推流）或 mediasoup Rust crate（SFU 语义 Simulcast/SVC 最成熟）；atm0s-media-server 重构期只观察。成熟产品的形态差异：微信=小程序直播/视频号（电商工具）、TG=群通话 RTMP+WebRTC 双模式、Discord=语音频道延伸（P5） |
+| **ADR-14 小程序自研运行时（第五轮新增）** | **不走微信兼容路线**：自定义 DSL 与运行时契约，四层拼装——逻辑执行=**Rong**（一套 Rust API 驱动 QuickJS/JSC/ArkJS，`#[js_class]` 绑定 + Worker 池有界执行 + 内置 Timer/HTTP/FS/SQLite 模块）；视图=**Wry**（子 WebView 子面板嵌入 IM，互不侵入渲染栈）或 **LingXia**（完整宿主骨架，lingxia-webview 已抹平四平台差异）；沙箱=**Wasmtime**（fuel/epoch + host functions，第三方不可信代码两级信任模型）；Bridge=自研 **publish/invoke 双通道契约**（setData 异步合帧 + 能力调用请求响应 + bridgeId 路由，权限中间件统一）。**包管理在 Rust 后端**（签名/摘要/体积限制，格式复用 DPG1 补签名）；**payment.request 只转发独立 payment-service**。与现有资产衔接：container（Boa 引擎/wxhost 桥）+ dpage（DPG1）即雏形，升级路径 Boa→Rong、wxhost→双通道 Bridge、DPG1+签名 | 详见 [miniprogram-blueprint.md](miniprogram-blueprint.md)（含 M1–M5 分阶段与全量参考链接表）（P5+ 独立轨道） |
 
 ---
 
@@ -66,6 +70,7 @@
 | 支付账本 | cala-ledger（嵌入式复式记账+事件溯源）+ dtmrs Saga + obix outbox | ❌ wallet.rs 为演示级单式账本（有守恒断言） | ADR-12：真实渠道阶段迁移（P4） |
 | 音视频 | str0m（已选）/ rvoip | ✅ str0m + 状态机 + 回环验证 | UI 接入 + 真机（P2），房间制（P4） |
 | 直播媒体面（SFU） | Xiu（RTMP/RTSP/WebRTC/HTTP-FLV/HLS）或 mediasoup Rust crate（Simulcast/SVC） | ❌ 无 | ADR-13：P5 直播频道 |
+| 小程序运行时 | Rong（多引擎逻辑层）+ Wry/LingXia（视图）+ Wasmtime（沙箱）+ 自研 Bridge | ⚠️ container（Boa 宿主/wxhost 桥）+ dpage（DPG1 包格式）研究级雏形 | ADR-14：P5+ 独立轨道，见 miniprogram-blueprint.md |
 | 搜索 | PG 全文 → Meilisearch/ES | ❌ | P3（读扩散下必须服务端搜） |
 | 容器化 | Docker Compose → k8s | ✅ compose | k8s 远期（P6） |
 | 密码哈希 | argon2id | ✅ PBKDF2-100k | 可选升级（P4） |
@@ -159,7 +164,7 @@ CREATE TABLE group_member_log (
 · ❌ **直播频道（ADR-13，P5：SFU + 弹幕复用读扩散 + 信令独立通道）** · ❌ RTMP ingest / OBS 推流（Xiu 覆盖）· ❌ 屏幕共享直播（Discord Go Live 形态）
 
 ### 5.7 支付 / 小程序
-✅ 虚拟转账/红包/流水（事务守恒）· ⚠️ 红包卡片"消息变更"回写缺失（ADR-5，P4）· ❌ 充值/提现/支付密码/对账（持牌边界内，P4）· ⚠️ 小程序容器雏形（Boa+DPG1）→ 产品化（包管理/审核/JSBridge/回调转发，P5+）
+✅ 虚拟转账/红包/流水（事务守恒）· ⚠️ 红包卡片"消息变更"回写缺失（ADR-5，P4）· ❌ 充值/提现/支付密码/对账（持牌边界内，P4）· ⚠️ 小程序容器雏形（Boa+DPG1）→ **ADR-14 自研运行时（Rong/LingXia/Wry/Wasmtime + publish-invoke Bridge，包格式复用 DPG1 补签名），详见 miniprogram-blueprint.md（P5+）**
 
 **支付四层架构（ADR-12，真实渠道阶段落地）**：账本核心（cala-ledger 事件溯源+复式记账——余额永远由重放分录得出，任何并发与守恒问题收敛在这层解决）→ 交易协调（FSM 状态机+幂等键防双重扣款，dtmrs 嵌入式 Saga 用"扣款撤销"补偿收敛跨服务一致性，选编排 Orchestration 而非编舞以保审计路径）→ 渠道适配（`ChannelConnector` trait 逐渠道实现认证/请求/解析，对接自有银行企业网银/银企直连/内部清算文件接口——这是"完全自建渠道"的真正工作量所在）→ 对账审计（obix outbox 可靠流出账本事件，与渠道结算文件双向核对，长短款人工队列；提现/调账 maker-checker 双人复核）。边界铁律：**消息网关与群信箱永不执行资金操作；红包在聊天里只是一条自定义消息卡片**。
 
@@ -297,6 +302,8 @@ CREATE TABLE group_member_log (
 12. **弹幕不单独建消息系统（第四轮）**：弹幕就是读扩散管道里的高频消息，P3 分层推送（goim 思路）直接承载；Rust 弹幕压测 45 万 QPS / p99 9.8ms 证明该层选 Rust 有数据优势。→ P3/P5
 13. **语言分层认知（Discord 启示，第四轮）**：长连接网关与媒体转发对语言特性的要求完全不同（BEAM 轻进程容错 vs 无 GC 媒体帧处理）；全 Rust 路线的代价是自行实现监督与背压——P3 网关改造的慢消费者隔离要按这个标准设计。→ P3
 14. **atm0s-media-server 重构期纪律（第四轮）**：sans-io-runtime 重写分支的 RTMP/SIP 未完成；需要 RTMP 时切 legacy 分支，生产媒体面首选 Xiu。→ P5 选型纪律
+15. **小程序包格式复用 DPG1（第五轮）**：仓库已有自有包格式（magic+版本+id+zstd+manifest），做小程序只需补签名字段与 capabilities 声明，**无需兼容微信也无需新造格式**——此前各轮未点明的现成资产。→ ADR-14
+16. **小程序与 IM 渲染栈隔离（第五轮）**：小程序视图以 Wry 子 WebView 子面板存在，聊天列表/消息流仍由 Flutter/Tauri 原生渲染，两者只经 Bridge 通信——小程序崩溃不拖垮 IM 主界面。→ ADR-14
 
 ---
 
@@ -309,7 +316,7 @@ CREATE TABLE group_member_log (
 | **P2 真机验收 + 体验** | 双机音视频验收 · tauri dev 演示 · Redis 真机 · **语音条/文件消息/贴纸 · 消息列表虚拟化 · 本地消息库 · 头像接媒体 · mac/Linux 构建验证** | 1–2 周 |
 | **P3 万人群新架构** | 读扩散管道（信箱/游标/版本差分/ZSET 未读，五层同步契约）· **Transport trait + WS 网关** · **多设备多连接改造** · 频道层 · 话题层 · 群管理补齐（禁言/公告/审批/邀请链接/慢速/成员搜索）· 拉黑 · 服务端未读态 · **通知聚合 + 慢消费者隔离 · 会话 Pin/免打扰/归档 · NATS backend（MQ trait 新实现）· 弹幕式高频消息（读扩散承载+分层推送）** | 4–6 周 |
 | **P4 账号 / 隐私 / 资金** | 找回+captcha/限流 · argon2id（可选）· 2FA · 秘密聊天完整+消失消息 · 红包卡片消息变更回写 · 支付密码 · 钱包对账 · 通话房间制 · 设备管理页 · **支付四层架构落地（ADR-12：cala-ledger 账本核心 → obix 事件流 → dtmrs Saga → ChannelConnector 渠道适配，初始化顺序照第三轮建议）** | 3–4 周 |
-| **P5 移动端与多语言 + 直播** | **Flutter 统一基座（ADR-11）**：Android · iOS · 鸿蒙（Flutter-OH + ArkTS 桥接，后台保活专项；仓库在 GitCode）· Rust core 经 UniFFI/cargo-ndk 出绑定 · Web 独立工程 · 多语言 · 数据导出 · **直播频道（ADR-13：Xiu RTMP ingest + WebRTC 播放闭环起步；mediasoup 评估 Simulcast；信令独立通道；弹幕复用读扩散）** | 4–8 周 |
+| **P5 移动端与多语言 + 直播** | **Flutter 统一基座（ADR-11）**：Android · iOS · 鸿蒙（Flutter-OH + ArkTS 桥接，后台保活专项；仓库在 GitCode）· Rust core 经 UniFFI/cargo-ndk 出绑定 · Web 独立工程 · 多语言 · 数据导出 · **直播频道（ADR-13：Xiu RTMP ingest + WebRTC 播放闭环起步；mediasoup 评估 Simulcast；信令独立通道；弹幕复用读扩散）** · **小程序 M1–M5（ADR-14：Rong 逻辑层 → Wry/LingXia 视图 Bridge 闭环 → 多引擎多平台 → Wasmtime 沙箱 → 包管理/签名/权限接后端）** | 4–8 周（小程序可与移动端并行推进，独立轨道） |
 | **P6 发布工程与规模** | 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署文档 · **PG 迁移+分片 · 管理后台（最小 CLI 起步）· k8s · 备份 · SLO 固化** | 2–4 周 |
 
 ---
