@@ -6,7 +6,10 @@
 > → ④ 第二轮补充（Rust 技术栈选型 / 万人群读扩散数据模型 / 前后端功能服务清单 /
 >    支付与小程序解耦 / 七端策略 / WuKongIM·OpenIM·goim 等新参考系）
 > → ⑤ 第三轮补充（**P0 决策全部确认**：云同步=TG 式、移动端=Flutter 基座；
->    支付账本四层架构 cala-ledger/dtmrs/Hyperswitch 范式/obix）。
+>    支付账本四层架构 cala-ledger/dtmrs/Hyperswitch 范式/obix）
+> → ⑥ 第四轮补充（**ADR-13 直播=频道级能力**：Discord 语言分层启示、
+>    Rust 媒体面选型 Xiu/mediasoup/atm0s、弹幕复用读扩散管道、
+>    Flutter-OH 主仓库在 GitCode 不在 GitHub）。
 > 已有文档全部保留未删改；本文负责**合并、去重、映射到 wxlike 现有代码、并补充遗漏项**。
 > 图例：✅ 已实现有验证 · ⚠️ 部分 · ❌ 未实现 · 🔶 需按新决策重做 · ➖ 排除。
 
@@ -41,6 +44,7 @@
 | ADR-10 | **认证模型** | 维持 DB session token（支持即时吊销），**网关层加 JWT(RS256) 校验可选**——JWT 无状态的代价是吊销需黑名单，当前规模 DB token 更简单。两者可并存（JWT 给网关，DB token 给敏感操作） | auth.rs（P4 评估） |
 | **ADR-11 移动端基座（第三轮新增）** | **Flutter 统一 iOS/Android/鸿蒙**：鸿蒙走 Flutter-OH 社区适配 + ArkTS 桥接系统能力（通知栏/后台保活/分布式调度）；ArkUI-X 降为"鸿蒙战略优先"备选（版本碎片化：HarmonyOS 3.0/4.0/NEXT 的 API 行为不一致，@State/@Builder 兼容成本持续存在）；KMP-CMP（2026-09 首版）与 RN-OH 排除。桌面 Tauri 2 默认、复杂富媒体消息流可切 Flutter Desktop；Web 独立工程 | 依据：壹信 IM 生产案例（Flutter 3.22 + 自研鸿蒙插件，市级政务平台日均 180 万条消息、滚动 60FPS、鸿蒙 NEXT Beta 兼容认证）（P5） |
 | **ADR-12 支付账本架构（第三轮新增）** | **四层解耦**：①账本核心=事件溯源+复式记账（`cala-ledger` 嵌入 PG：余额=重放分录、禁止原地 UPDATE、persistent outbox）；②交易协调=FSM（Initialized→Authorized→Settled→Failed）+幂等键+`dtmrs` Saga 编排（补偿替代全局原子）；③渠道适配=`ChannelConnector` trait（Hyperswitch 范式，对接自有银行/清算接口，**适配器只发送划拨指令、绝不碰账本**）；④对账审计=独立服务消费 outbox+渠道回执双向核对（长短款进人工队列）+maker-checker 双人复核。与 ADR-5 衔接：现有 wallet.rs 为演示级单式账本，接真实渠道时迁移 cala 双式账本，`money_supply` 守恒断言保留为对账基线。高性能备选：ousia-ledger 两阶段执行 / TigerBeetle | P4（真实渠道阶段）；虚拟钱包演示期不动 |
+| **ADR-13 直播=频道级能力（第四轮新增）** | 参照 Discord：**频道即形态**（文字频道/语音频道/直播频道），直播不是独立模块。直播频道内部 **SFU 架构**（主播推一路流、SFU 选择性转发、观众拉流——非 MCU 混流）；**弹幕/实时评论复用读扩散消息管道**（绝不另建一套消息系统）；**直播信令（加入/离开/切流）走独立高优先级通道**，不与聊天流混排。语言分层启示（Discord=Elixir/OTP 网关 + Rust 消息与媒体代理 + 25,000 SFU）：我们坚持全 Rust = Tokio 网关 + Rust SFU，代价是自行实现 BEAM 级监督与背压（P3 慢消费者隔离已列） | 媒体面选型：**Xiu**（纯 Rust 协议最全：RTMP 集群/RTSP/WebRTC WHIP-WHEP/HTTP-FLV/HLS，OBS 可推流）或 mediasoup Rust crate（SFU 语义 Simulcast/SVC 最成熟）；atm0s-media-server 重构期只观察。成熟产品的形态差异：微信=小程序直播/视频号（电商工具）、TG=群通话 RTMP+WebRTC 双模式、Discord=语音频道延伸（P5） |
 
 ---
 
@@ -61,6 +65,7 @@
 | 认证 | JWT RS256（网关无状态） | ⚠️ DB session token（可即时吊销） | ADR-10：并存评估（P4） |
 | 支付账本 | cala-ledger（嵌入式复式记账+事件溯源）+ dtmrs Saga + obix outbox | ❌ wallet.rs 为演示级单式账本（有守恒断言） | ADR-12：真实渠道阶段迁移（P4） |
 | 音视频 | str0m（已选）/ rvoip | ✅ str0m + 状态机 + 回环验证 | UI 接入 + 真机（P2），房间制（P4） |
+| 直播媒体面（SFU） | Xiu（RTMP/RTSP/WebRTC/HTTP-FLV/HLS）或 mediasoup Rust crate（Simulcast/SVC） | ❌ 无 | ADR-13：P5 直播频道 |
 | 搜索 | PG 全文 → Meilisearch/ES | ❌ | P3（读扩散下必须服务端搜） |
 | 容器化 | Docker Compose → k8s | ✅ compose | k8s 远期（P6） |
 | 密码哈希 | argon2id | ✅ PBKDF2-100k | 可选升级（P4） |
@@ -151,6 +156,7 @@ CREATE TABLE group_member_log (
 
 ### 5.6 音视频
 ⚠️ 1:1 语音/视频（str0m 库+回环验证，缺 UI 接入与双机真机）· ❌ 群通话房间（ADR-7，P4）· ❌ 多人/屏幕共享/通话记录 · ⚠️ STUN 内置+TURN 接口
+· ❌ **直播频道（ADR-13，P5：SFU + 弹幕复用读扩散 + 信令独立通道）** · ❌ RTMP ingest / OBS 推流（Xiu 覆盖）· ❌ 屏幕共享直播（Discord Go Live 形态）
 
 ### 5.7 支付 / 小程序
 ✅ 虚拟转账/红包/流水（事务守恒）· ⚠️ 红包卡片"消息变更"回写缺失（ADR-5，P4）· ❌ 充值/提现/支付密码/对账（持牌边界内，P4）· ⚠️ 小程序容器雏形（Boa+DPG1）→ 产品化（包管理/审核/JSBridge/回调转发，P5+）
@@ -174,6 +180,8 @@ CREATE TABLE group_member_log (
 |---|---|---|---|
 | Windows / macOS / Linux | **Tauri 2（现状）** | 与 Rust 同栈、包体 ~10MB；WebView 渲染差异与 IPC 性能需验证；文字/图片/文件消息为主 → 合理 | ✅ Win 已有 / mac·Linux P2 |
 | Android / iOS / 鸿蒙 | **Flutter 统一基座（ADR-11 ✅ 已确认）**：iOS/Android 原生 Flutter + Rust core（UniFFI/cargo-ndk 绑定）；鸿蒙走 Flutter-OH 社区适配 + ArkTS 桥接（通知/后台保活/分布式调度）。备选：鸿蒙战略优先时切 ArkUI-X（接受版本碎片化成本） | Flutter-OH 有 IM 生产案例背书 | P5 |
+
+**Flutter-OH 仓库地址勘误（第四轮实证）**：主仓库**不在 GitHub**，2026 年已整体迁移至 **GitCode `openharmony-tpc/flutter_flutter`**（AtomGit 镜像同步；组织 CPF-Flutter）。生产用 **3.27.4 稳定分支**，新特性 `oh-3.35.7-dev`，3.41 已发布；兼容库在 `openharmony-tpc/flutter_packages`。在 GitHub 上找会扑空。
 | Web | **独立前端工程**（复用后端 API + WS 协议） | 浏览器无 QUIC（WebTransport 未普及）；**Transport trait 是前置**（ADR-8） | P5 |
 | 本地消息库（全端） | 客户端 SQLite（打开即渲染，不等服务器）；万人群只缓存近期窗口+主动漫游区间 | 现有 UI 无本地库 | P2 |
 
@@ -258,6 +266,19 @@ CREATE TABLE group_member_log (
 
 **初始化顺序（第三轮建议，采纳）**：先嵌 cala-ledger 跑通复式记账+outbox → 引 obix 消费账本事件 → 跨服务补偿叠加 dtmrs → 真正写银行/清算适配器时再对照 Hyperswitch 的 trait 模式，避免渠道复杂度过早侵入账本核心。
 
+### 7.7 直播 / 媒体面 / 弹幕（第四轮新增，ADR-13 配套）
+
+| 项目 | 栈 | 链接 | 许可 | 借什么 | 用在哪 |
+|---|---|---|---|---|---|
+| Xiu | Rust | https://github.com/harlanc/xiu | ⚠️待核 | 纯 Rust 直播服务器，协议最全：RTMP（含集群）/RTSP/WebRTC（WHIP/WHEP）/HTTP-FLV/HLS；OBS 可推流；cargo install/Docker 皆可 | P5 直播频道媒体面**首选** |
+| atm0s-media-server | Rust | https://github.com/8xFF/atm0s-media-server（RTMP 需 legacy 分支 `tree/legacy`） | ⚠️待核 | 去中心化全球 SFU（WebRTC/WHIP/WHEP/RTMP/SIP；atm0s-sdn + Quinn 虚拟网络）。**重构期警告：sans-io-runtime 重写中，RTMP/SIP 未完成** | 长期观察，暂不作生产依赖 |
+| mediasoup（Rust crate） | Rust/C++ | https://github.com/versatica/mediasoup （crate 在 `v3/rust/`；docs.rs/mediasoup） | ✅ ISC（待核复核） | SFU 语义最成熟：Simulcast/SVC/选择性转发（57 个版本） | P5 复杂自适应转发评估 |
+| discord/sorted_set_nif | Rust | https://github.com/discord/sorted_set_nif | ⚠️待核 | **Discord 官方开源**的 Rustler NIF：有序集合（成员列表）高性能维护——看 Discord 怎么用 Rust 增强 Elixir 网关 | 网关数据结构参考 |
+| Discord 架构文档（社区整理） | 文档 | https://github.com/babushkai/system-design-patterns/blob/codex/article-reading-redesign/08-case-studies/08-discord.md | ➖ | Elixir/OTP 网关 + Rust 消息存储与媒体代理 + Cassandra（消息）/ScyllaDB（附件）/Redis（会话·PubSub）分治；sub-100ms 投递；10 万成员 mega-guild 设计目标 | ADR-13 全局参考 |
+| blivedm_rs | Rust | https://github.com/isomoes/blivedm_rs（备选 fork：https://github.com/jiahaoxiang2000/blivedm_rs，使用前对比 commit 活跃度） | ⚠️待核 | B 站直播间弹幕 WS 客户端（Tokio 高并发、TTS、Cookie 检测） | 弹幕协议/高频消息参考 |
+
+**数据点（第四轮）**：Rust 弹幕场景压测 **QPS ≈ 45 万/s，p99 ≈ 9.8ms**——弹幕/信令层选 Rust 有数据支撑，代价是工程迭代速度慢于 Go，纳入权衡。
+
 ---
 
 ## 第八部分：第二轮之外的新增补充（此前所有轮次都没覆盖到的）
@@ -272,6 +293,10 @@ CREATE TABLE group_member_log (
 8. **管理后台**：用户/群/频道管理、封禁、举报处理、内容审核入口——成熟产品全有，当前为零。→ P6（先做最小 CLI 工具）
 9. **会话级 Pin/免打扰/归档的协议字段**：客户端列表体验的地基，服务端要有 per-user 会话属性表。→ P3
 10. **SLO 定义**：把 p99<50ms（投递）、断连率 0、可用性目标写成 docs/slo.md 并挂告警——压测已达标但没固化成 SLO。→ P6
+11. **直播信令独立通道（第四轮）**：直播的加入/离开/切流信令走独立高优先级通道，绝不混入普通聊天消息流——聊天管道再快也不能让信令排队。→ P5
+12. **弹幕不单独建消息系统（第四轮）**：弹幕就是读扩散管道里的高频消息，P3 分层推送（goim 思路）直接承载；Rust 弹幕压测 45 万 QPS / p99 9.8ms 证明该层选 Rust 有数据优势。→ P3/P5
+13. **语言分层认知（Discord 启示，第四轮）**：长连接网关与媒体转发对语言特性的要求完全不同（BEAM 轻进程容错 vs 无 GC 媒体帧处理）；全 Rust 路线的代价是自行实现监督与背压——P3 网关改造的慢消费者隔离要按这个标准设计。→ P3
+14. **atm0s-media-server 重构期纪律（第四轮）**：sans-io-runtime 重写分支的 RTMP/SIP 未完成；需要 RTMP 时切 legacy 分支，生产媒体面首选 Xiu。→ P5 选型纪律
 
 ---
 
@@ -282,9 +307,9 @@ CREATE TABLE group_member_log (
 | **P0 决策锁定** | 云同步路线确认（建议维持 TG 式）· 读扩散立项 · **移动端优先级 + 鸿蒙取舍（ArkUI-X vs Flutter 适配）** | 口头确认 |
 | **P1 已采纳第一批** | E2EE 接入客户端（回退日志+秘密聊天雏形）· 消息操作五件套 · **UI 历史消息加载** · 已读回执 UI | 1–2 周 |
 | **P2 真机验收 + 体验** | 双机音视频验收 · tauri dev 演示 · Redis 真机 · **语音条/文件消息/贴纸 · 消息列表虚拟化 · 本地消息库 · 头像接媒体 · mac/Linux 构建验证** | 1–2 周 |
-| **P3 万人群新架构** | 读扩散管道（信箱/游标/版本差分/ZSET 未读，五层同步契约）· **Transport trait + WS 网关** · **多设备多连接改造** · 频道层 · 话题层 · 群管理补齐（禁言/公告/审批/邀请链接/慢速/成员搜索）· 拉黑 · 服务端未读态 · **通知聚合 + 慢消费者隔离 · 会话 Pin/免打扰/归档 · NATS backend（MQ trait 新实现）** | 4–6 周 |
+| **P3 万人群新架构** | 读扩散管道（信箱/游标/版本差分/ZSET 未读，五层同步契约）· **Transport trait + WS 网关** · **多设备多连接改造** · 频道层 · 话题层 · 群管理补齐（禁言/公告/审批/邀请链接/慢速/成员搜索）· 拉黑 · 服务端未读态 · **通知聚合 + 慢消费者隔离 · 会话 Pin/免打扰/归档 · NATS backend（MQ trait 新实现）· 弹幕式高频消息（读扩散承载+分层推送）** | 4–6 周 |
 | **P4 账号 / 隐私 / 资金** | 找回+captcha/限流 · argon2id（可选）· 2FA · 秘密聊天完整+消失消息 · 红包卡片消息变更回写 · 支付密码 · 钱包对账 · 通话房间制 · 设备管理页 · **支付四层架构落地（ADR-12：cala-ledger 账本核心 → obix 事件流 → dtmrs Saga → ChannelConnector 渠道适配，初始化顺序照第三轮建议）** | 3–4 周 |
-| **P5 移动端与多语言** | **Flutter 统一基座（ADR-11）**：Android · iOS · 鸿蒙（Flutter-OH + ArkTS 桥接，后台保活专项）· Rust core 经 UniFFI/cargo-ndk 出绑定 · Web 独立工程 · 多语言 · 数据导出 | 4–8 周 |
+| **P5 移动端与多语言 + 直播** | **Flutter 统一基座（ADR-11）**：Android · iOS · 鸿蒙（Flutter-OH + ArkTS 桥接，后台保活专项；仓库在 GitCode）· Rust core 经 UniFFI/cargo-ndk 出绑定 · Web 独立工程 · 多语言 · 数据导出 · **直播频道（ADR-13：Xiu RTMP ingest + WebRTC 播放闭环起步；mediasoup 评估 Simulcast；信令独立通道；弹幕复用读扩散）** | 4–8 周 |
 | **P6 发布工程与规模** | 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署文档 · **PG 迁移+分片 · 管理后台（最小 CLI 起步）· k8s · 备份 · SLO 固化** | 2–4 周 |
 
 ---
@@ -293,4 +318,4 @@ CREATE TABLE group_member_log (
 
 **wxlike 已经有的是一个经过对抗测试的 Rust IM"引擎层"**（协议/加密/传输/存储/群路由/通话内核，约 2.2 万行、254 测试）；要成为七端、万人群、带支付与小程序的完整产品，缺的是**读扩散管道、多设备、频道话题（P3）+ 移动端（P5）+ 产品化外壳（P1/P2）**。参考系已齐：WuKongIM 给万人群架构答案、OpenIM 给同步契约、goim 给弹幕推送、HuLa/唐僧叨叨给前端与功能模型、TDLib 给核心库范式、**cala/dtmrs/Hyperswitch/obix 给支付账本四层**——全部是"重新实现于 Rust 之上的参考"，没有一个是拿来即用；这正是路线图把 P3（读扩散）和 P5（移动端）定为最大工程块的原因。
 
-**P0 已于 2026-10-16 全部锁定（云同步=Telegram 式、移动端=Flutter 基座、读扩散立项），支付账本架构（ADR-12）与移动端基座（ADR-11）同步入册——路线图自 P1 起全面可执行，无阻塞项。**
+**P0 已于 2026-10-16 全部锁定（云同步=Telegram 式、移动端=Flutter 基座、读扩散立项），支付账本架构（ADR-12）与移动端基座（ADR-11）同步入册——路线图自 P1 起全面可执行，无阻塞项。第四轮补充直播为频道级能力（ADR-13）：工程量集中在媒体面（Xiu/mediasoup），弹幕与互动几乎免费搭读扩散管道的车——这是把直播排在 P5（读扩散落地之后）而非单独立项的原因。**
