@@ -80,6 +80,31 @@ fn conv(a: &str, b: &str) -> String {
 
 /// ureq 2.x yields `Err(Status(code, ..))` for 4xx/5xx: normalize both
 /// branches to the numeric status.
+/// Eventual-consistency helper: the Tantivy writer commits in a background
+/// thread (ADR-22 keeps fsync off the gateway), so tests poll for the
+/// expected hit count instead of assuming synchronous visibility.
+fn search_until(token: &str, q: &str, min_results: usize, base: &str) -> Vec<serde_json::Value> {
+    let mut last: Option<serde_json::Value> = None;
+    for _ in 0..50 {
+        let hits: serde_json::Value = ureq::get(&format!("{base}/api/search/messages?q={q}"))
+            .set("Authorization", &format!("Bearer {token}"))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        let results = hits["results"].as_array().cloned().unwrap_or_default();
+        if results.len() >= min_results {
+            return results;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        last = Some(hits);
+    }
+    panic!(
+        "search '{q}' never reached {min_results} hits; last response: {:?}",
+        last.unwrap_or(serde_json::json!(null))
+    );
+}
+
 fn status_of(res: Result<ureq::Response, ureq::Error>) -> u16 {
     match res {
         Ok(r) => r.status(),
@@ -226,33 +251,26 @@ async fn search_only_covers_conversations_i_may_see() {
     send_text(&alice_c, &ac, vec![carol.clone()], "hello carol").await;
     wait_store_settles().await;
 
-    let search = |token: &str, q: &str| -> Vec<serde_json::Value> {
-        ureq::get(&format!("{}/api/search/messages?q={q}", stack.http))
-            .set("Authorization", &format!("Bearer {token}"))
-            .call()
-            .unwrap()
-            .into_json::<serde_json::Value>()
-            .unwrap()["results"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
+    let search = |token: &str, q: &str, min: usize| -> Vec<serde_json::Value> {
+        search_until(token, q, min, &stack.http)
     };
 
     // bob sees both hits (his conversation with alice)
     let hits = search(
         &stack.platform.create_session(&bob, 60_000).unwrap(),
         "pineapple",
+        2,
     );
     assert_eq!(hits.len(), 2, "{hits:?}");
 
     // carol's allowed set contains only her alice pair: zero pineapple hits
-    let hits = search(&carol_tok, "pineapple");
+    let hits = search(&carol_tok, "pineapple", 0);
     assert!(
         hits.is_empty(),
         "carol must not read alice-bob history: {hits:?}"
     );
     // but her own conversation is searchable
-    let hits = search(&carol_tok, "carol");
+    let hits = search(&carol_tok, "carol", 1);
     assert_eq!(hits.len(), 1);
 
     // empty query is a 422, not a full dump
@@ -276,16 +294,7 @@ async fn search_needle_wildcards_stay_literal() {
     send_text(&alice_c, &conv_id, vec![bob.clone()], "1x0y0z% match_").await;
     wait_store_settles().await;
 
-    let hits: serde_json::Value = ureq::get(&format!(
-        "{}/api/search/messages?q=100%25%20match_",
-        stack.http
-    ))
-    .set("Authorization", &format!("Bearer {alice_tok}"))
-    .call()
-    .unwrap()
-    .into_json()
-    .unwrap();
-    let results = hits["results"].as_array().unwrap();
+    let results = search_until(&alice_tok, "100%25%20match_", 1, &stack.http);
     assert_eq!(results.len(), 1, "wildcards are literal: {results:?}");
     assert_eq!(results[0]["text"], serde_json::json!("100% match_"));
 }

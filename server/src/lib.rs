@@ -29,6 +29,10 @@ use wxlike_platform::{Authed, Platform, PlatformState};
 pub struct HistoryDeps {
     pub platform: PlatformState,
     pub store: Arc<Store>,
+    /// P3 ADR-22: read-only Tantivy replica over the mailbox (a projection —
+    /// visibility is always re-checked against the store; the writer lives in
+    /// the background indexer thread).
+    pub search: std::sync::Arc<wxlike_search::SearchIndex>,
 }
 
 /// A running stack: one QUIC hub + one HTTP router over one SQLite file.
@@ -71,6 +75,55 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);
     let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
 
+    // P3 ADR-22: the Tantivy writer runs in its own thread (commit/fsync
+    // off the gateway path — blocking the hub on a search commit stalled
+    // deliveries in testing); the query side is a read-only replica whose
+    // reader reloads before each search, so a committed batch is visible.
+    static SEARCH_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let search_dir = match &opts.db_path {
+        Some(path) => {
+            let mut dir = std::path::PathBuf::from(path);
+            dir.pop();
+            dir.join("search-index")
+        }
+        None => std::env::temp_dir().join(format!(
+            "wxlike-search-{}-{}-{}",
+            std::process::id(),
+            wxlike_core::types::now_ms(),
+            SEARCH_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )),
+    };
+    let search: Arc<wxlike_search::SearchIndex> = Arc::new(
+        wxlike_search::SearchIndex::open_query(&search_dir).unwrap_or_else(|_| {
+            wxlike_search::SearchIndex::in_memory().expect("fallback in-memory index")
+        }),
+    );
+    {
+        struct Indexer(wxlike_search::IndexerHandle);
+        impl wxlike_core::store::AppendListener for Indexer {
+            fn on_append(&self, conv_id: &str, seq: i64, env: &wxlike_core::Envelope) {
+                // searchable text = the preview line (all kinds have one);
+                // recall filtering happens at query time against the store
+                let text = env.body.preview_text();
+                if text.trim().is_empty() {
+                    return;
+                }
+                self.0.submit(conv_id, seq, &env.sender, text);
+            }
+        }
+        // the writer thread owns its own index instance on the same directory
+        // (tantivy allows exactly one writer per directory)
+        let writer_index =
+            wxlike_search::SearchIndex::open_writer(&search_dir).unwrap_or_else(|err| {
+                // a writer that silently goes to RAM would make docs vanish
+                // from the dir-backed query side — fail loud instead
+                panic!("open tantivy writer at {search_dir:?}: {err:#}");
+            });
+        store.set_append_listener(Arc::new(Indexer(wxlike_search::IndexerHandle::spawn(
+            writer_index,
+        ))));
+    }
+
     // video-service (P2 minimal, ADR-21): colocated with the server until
     // the load split (Q7); its storage lives beside the platform db.
     let video_root = match &opts.db_path {
@@ -88,6 +141,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let video_state = wxlike_video::VideoState {
         store: wxlike_video::VideoStore::new(video_root),
     };
+
     let hub = wxlike_net::run_mq_hub_with(
         opts.hub_id.clone(),
         opts.quic_bind,
@@ -113,10 +167,11 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         platform.clone(),
         std::time::Duration::from_secs(60),
     );
-    std::mem::forget(hub); // run until process exit; the handle above was cloned    let hub_id = opts.hub_id.clone();
+    std::mem::forget(hub); // run until process exit; the handle above was cloned
     let deps = Arc::new(HistoryDeps {
         platform: platform.clone(),
         store: store.clone(),
+        search: search.clone(),
     });
     let app = Router::new()
         .route("/health", get(health))
@@ -381,11 +436,33 @@ async fn search_messages(
     }
     let convs = allowed_convs(&deps.platform, &deps.store, &authed.user_id);
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
-    let rows = deps
-        .store
-        .search_messages(needle, &convs, limit)
+
+    // index search (candidate generation) -> store truth (withdraw check +
+    // authoritative rendering). The index is a projection; the store rules.
+    let candidates = deps
+        .search
+        .search(needle, &convs, limit)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let results: Vec<_> = rows.iter().map(message_json).collect();
+
+    let mut results = Vec::new();
+    for hit in candidates {
+        if !convs.contains(&hit.conv_id) {
+            continue; // re-check: the index could be stale relative to authz
+        }
+        if deps
+            .store
+            .is_withdrawn_by_seq(&hit.conv_id, hit.seq)
+            .unwrap_or(true)
+        {
+            continue; // recalled rows never surface through search
+        }
+        if let Ok(Some(row)) = deps.store.message_at(&hit.conv_id, hit.seq) {
+            results.push(message_json(&row));
+        }
+        if results.len() >= limit {
+            break;
+        }
+    }
     Ok(Json(serde_json::json!({
         "query": needle,
         "results": results,

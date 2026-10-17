@@ -19,6 +19,7 @@
 | boa_engine | 0.20 | MIT/Apache-2.0 | JS engine in the research container |
 | image, zstd, sha2, chacha20poly1305, hkdf, x25519-dalek, pbkdf2, rand, hex, base64 | — | MIT/Apache-2.0 | media/crypto primitives |
 | ureq | 2.x | MIT | UI-side HTTP client |
+| **tantivy** | 0.22.1 | MIT | P3 full-text search index (ADR-22) — replaces the transitional P1 substring search; ngram tokenizer for CJK |
 | tracing / tracing-subscriber | 0.1/0.3 | MIT | observability |
 | serde / serde_json / bincode | 1.x | MIT | serialization |
 
@@ -53,8 +54,10 @@ https://github.com/bluexsx/box-im
 
 ## Borrow-first roadmap (where the wheel must NOT be reinvented)
 
-- P3 search → **Tantivy or Meilisearch** as a real dependency (replaces the
-  transitional P1 substring search).
+- P3 search → **Tantivy** ✅ DONE (2026-10-17): crates/search wraps tantivy
+  0.22.1; server indexes via the store's append listener into a background
+  batch-commit thread (fsync off the gateway path), query side is a read-only
+  replica; recall/authorization rulings stay in the authoritative store.
 - P3 queue → **NATS** via `async-nats` behind the existing `MessageQueue` trait.
 - P4 ledger → **cala-ledger** (double-entry core) + **obix** (outbox) +
   **dtmrs** (saga) embedded, per ADR-12.

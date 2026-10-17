@@ -24,6 +24,17 @@ use rusqlite::{params, Connection, OptionalExtension as _};
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// P3 search-index hook: fired after every successful (non-duplicate)
+    /// append with `(conv_id, seq, envelope)`. The search service subscribes
+    /// to keep its Tantivy index in step with the authoritative store; the
+    /// store itself never reads it back (index is disposable).
+    append_listener: Mutex<Option<std::sync::Arc<dyn AppendListener>>>,
+}
+
+/// Callback contract for index builders. Sync by design: the caller owns
+/// any batching/commit cadence off-thread.
+pub trait AppendListener: Send + Sync {
+    fn on_append(&self, conv_id: &str, seq: i64, env: &Envelope);
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +96,7 @@ impl Store {
         )?;
         let store = Self {
             conn: Mutex::new(conn),
+            append_listener: Mutex::new(None),
         };
         store.add_missing_columns()?;
         Ok(store)
@@ -173,10 +185,33 @@ impl Store {
                 recipients
             ],
         ) {
-            Ok(_) => Ok(Some(c.last_insert_rowid())),
+            Ok(_) => {
+                let seq = c.last_insert_rowid();
+                drop(c);
+                if let Some(listener) = self.listener() {
+                    listener.on_append(&env.conv_id, seq, env);
+                }
+                Ok(Some(seq))
+            }
             Err(e) if is_unique(&e) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Subscribes the search index (P3). One listener per store: the search
+    /// service is the only consumer by design.
+    pub fn set_append_listener(&self, listener: std::sync::Arc<dyn AppendListener>) {
+        *self
+            .append_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(listener);
+    }
+
+    fn listener(&self) -> Option<std::sync::Arc<dyn AppendListener>> {
+        self.append_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// For callers that treat a duplicate as a mistake rather than noise.
@@ -272,6 +307,18 @@ impl Store {
         Ok(hits)
     }
 
+    /// One message by `(conv, seq)` — the shape a search-index hit carries
+    /// when it comes back for authoritative rendering.
+    pub fn message_at(&self, conv_id: &str, seq: i64) -> anyhow::Result<Option<StoredMessage>> {
+        let c = self.c();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conv_id = ?1 AND seq = ?2"
+        ))?;
+        Ok(stmt
+            .query_row(params![conv_id, seq], row_to_message)
+            .optional()?)
+    }
+
     /// Who authored `msg_id` — the hub needs this to route a receipt back.
     pub fn sender_of(&self, msg_id: &MsgId) -> anyhow::Result<Option<String>> {
         Ok(self
@@ -307,6 +354,22 @@ impl Store {
             params![target.as_slice(), placeholder, by_sender],
         )?;
         Ok(changed == 1)
+    }
+
+    /// Withdrawal check by `(conv, seq)` — the shape a search-index hit
+    /// carries. Recall filtering stays authoritative: the index is never
+    /// asked "is this visible", the store is.
+    pub fn is_withdrawn_by_seq(&self, conv_id: &str, seq: i64) -> anyhow::Result<bool> {
+        Ok(self
+            .c()
+            .query_row(
+                "SELECT withdrawn FROM messages WHERE conv_id = ?1 AND seq = ?2",
+                params![conv_id, seq],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            != 0)
     }
 
     pub fn is_withdrawn(&self, msg_id: &MsgId) -> anyhow::Result<bool> {
