@@ -1,0 +1,9 @@
+[package]
+name = "wxlike-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tantivy = "0.22"
+anyhow = { workspace = true }
