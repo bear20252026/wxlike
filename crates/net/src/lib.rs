@@ -2,6 +2,7 @@
 //! and MQ-routed hub for multi-node deployment.
 
 pub mod client;
+pub mod conn;
 pub mod framing;
 pub mod membership;
 pub mod metrics;
@@ -12,6 +13,7 @@ pub mod transport;
 pub mod wire;
 
 pub use client::Client;
+pub use conn::PeerConn;
 pub use membership::Membership;
 pub use metrics::{prometheus_text, HubMetrics};
 pub use mq_hub::{

@@ -25,6 +25,9 @@ serde_json = { workspace = true }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 tracing = "0.1"
+# P3 ADR-8: WebSocket carrier for the hub (browsers have no QUIC). axum is
+# already in the monolith's tree; the "ws" feature is what we actually need.
+axum = { version = "0.8", features = ["ws"] }
 
 [dev-dependencies]
 futures-util = "0.3"

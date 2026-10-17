@@ -29,9 +29,14 @@ use wxlike_core::types::{MsgBody, MsgId, NO_MSG_ID};
 use wxlike_core::{Envelope, Store};
 use wxlike_mq::{hub_queue, MqRouter};
 
-use crate::framing;
+use crate::conn::PeerConn;
 use crate::offline::{MemoryOffline, OfflineStore};
 use crate::wire::WireFrame;
+
+/// One bound connection of one user (ADR-4 multi-device): the peers table is
+/// `user -> {conn_id -> PeerConn}`, so N devices stay live at once and a
+/// delivery fans to every one of them.
+pub type ConnId = u64;
 
 /// Default dedup cache size required by the task book (>= 100k entries).
 pub const DEFAULT_DEDUP_CAP: usize = 100_000;
@@ -111,13 +116,14 @@ impl Drop for MqHub {
     }
 }
 
-type SendStream = Arc<Mutex<quinn::SendStream>>;
-type Peers = Arc<RwLock<HashMap<String, SendStream>>>;
+type Peers = Arc<RwLock<HashMap<String, HashMap<ConnId, PeerConn>>>>;
 
 /// Everything the routing tasks share.
 struct HubState {
     hub_id: String,
     peers: Peers,
+    /// Connection id allocator (multi-device: several conns share one user).
+    next_conn: std::sync::atomic::AtomicU64,
     router: MqRouter,
     offline: Arc<dyn OfflineStore>,
     storage: Option<Arc<Store>>,
@@ -143,6 +149,29 @@ impl HubHandle {
     /// Number of users currently bound to this hub (tests + metrics).
     pub async fn online_users(&self) -> usize {
         self.state.peers.read().await.len()
+    }
+
+    /// How many live connections `user` holds **on this hub** (multi-device
+    /// view; the route table only knows the hub, this knows the devices).
+    pub async fn conn_count(&self, user: &str) -> usize {
+        self.state
+            .peers
+            .read()
+            .await
+            .get(user)
+            .map(|c| c.len())
+            .unwrap_or(0)
+    }
+
+    /// Attaches an already-established transport (WS route path, ADR-8):
+    /// identical lifecycle to a QUIC connection — Hello, bind, drain, serve.
+    pub fn attach_transport(&self, conn: PeerConn) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            if let Err(err) = serve_transport(state, conn).await {
+                eprintln!("[mq-hub] attached conn error: {err:#}");
+            }
+        })
     }
 
     /// Whether `user` has a live connection bound on any hub in the mesh
@@ -236,6 +265,7 @@ pub async fn run_mq_hub_with(
     let state = Arc::new(HubState {
         hub_id: hub_id.clone(),
         peers: Arc::new(RwLock::new(HashMap::new())),
+        next_conn: std::sync::atomic::AtomicU64::new(1),
         router,
         offline: options.offline.clone(),
         storage: options.storage.clone(),
@@ -344,25 +374,36 @@ async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) {
 }
 
 async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Result<()> {
-    let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
+    let (send, recv) = conn.accept_bi().await.context("accept control stream")?;
+    serve_transport(state, PeerConn::quic(send, recv)).await
+}
 
-    // first frame must be Hello{user_id}
-    let hello = framing::read_frame(&mut recv)
-        .await
-        .context("await hello")?;
+/// One bound connection of any carrier (QUIC stream pair or WS): Hello →
+/// register → drain parked → serve until the peer goes away (ADR-4/8).
+///
+/// Multi-device unbind: a closing connection removes only its own conn id;
+/// the route row and the user's other devices stay live until the LAST
+/// connection of that user on this hub closes.
+async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result<()> {
+    // first frame must be Hello{user_id} — identical on every carrier
+    let hello = conn.read_frame().await.context("await hello")?;
     let user_id = match WireFrame::from_bytes(&hello)? {
         WireFrame::Hello { user_id } => user_id,
         _ => anyhow::bail!("first frame was not Hello"),
     };
 
-    let send = Arc::new(Mutex::new(send));
+    let conn_id = state
+        .next_conn
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     state
         .peers
         .write()
         .await
-        .insert(user_id.clone(), send.clone());
+        .entry(user_id.clone())
+        .or_default()
+        .insert(conn_id, conn.clone());
     state.metrics.connected();
-    tracing::debug!(hub = %state.hub_id, user = %user_id, "user bound");
+    tracing::debug!(hub = %state.hub_id, user = %user_id, conn = conn_id, "conn bound");
 
     state
         .router
@@ -382,9 +423,8 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
                     count = frames.len(),
                     "flushing parked messages"
                 );
-                let mut s = send.lock().await;
                 for frame in frames {
-                    if let Err(err) = framing::write_frame(&mut *s, &frame).await {
+                    if let Err(err) = conn.send_frame(&frame).await {
                         eprintln!("[mq-hub] parked deliver to {user_id} failed: {err}");
                         break;
                     }
@@ -395,13 +435,13 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
     }
 
     let res = loop {
-        let frame = match framing::read_frame(&mut recv).await {
+        let frame = match conn.read_frame().await {
             Ok(f) => f,
             Err(err) => {
-                if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                if is_disconnect(&err) {
                     break Ok(());
                 }
-                break Err(err.into());
+                break Err(err);
             }
         };
         let Ok(wire) = WireFrame::from_bytes(&frame) else {
@@ -427,11 +467,24 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
         }
     };
 
-    // only unbind if this stream is still the user's current one
-    let current = state.peers.read().await.get(&user_id).cloned();
-    if current.map(|s| Arc::ptr_eq(&s, &send)).unwrap_or(false) {
-        state.peers.write().await.remove(&user_id);
-        state.metrics.disconnected();
+    // remove exactly this connection; unbind the route only when the user's
+    // last connection on this hub is gone (ADR-4)
+    let mut keep_bound = false;
+    {
+        let mut peers = state.peers.write().await;
+        if let Some(conns) = peers.get_mut(&user_id) {
+            conns.remove(&conn_id);
+            if conns.is_empty() {
+                peers.remove(&user_id);
+            } else {
+                keep_bound = true;
+            }
+        }
+    }
+    state.metrics.disconnected();
+    if keep_bound {
+        tracing::debug!(hub = %state.hub_id, user = %user_id, conn = conn_id, "conn unbound (devices remain)");
+    } else {
         tracing::debug!(hub = %state.hub_id, user = %user_id, "user unbound");
         let _ = state
             .router
@@ -440,6 +493,13 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
             .await;
     }
     res
+}
+
+/// QUIC close surfaces as UnexpectedEof on the stream; WS close as a generic
+/// error message. Both mean "the peer is gone", not "the transport is broken".
+fn is_disconnect(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}");
+    text.contains("EOF") || text.contains("closed") || text.contains("connection lost")
 }
 
 /// Everything a hub does with one frame arriving from a connected client.
@@ -707,41 +767,53 @@ async fn route_envelope(
     fanout(state, env, &env.to, park_offline).await
 }
 
-/// Write to every local peer except the sender. Each peer owns its own send
-/// stream, so the writes are dispatched together rather than serialized.
+/// Write to every local connection except the sender's. Multi-device: each
+/// user may hold several conns and all of them get the frame (client-side
+/// dedup by msg_id keeps echoes harmless).
 async fn deliver_local(state: &Arc<HubState>, env: &Envelope) {
     let frame = match WireFrame::Msg(env.clone()).to_bytes() {
         Ok(f) => f,
         Err(_) => return,
     };
-    let tasks: Vec<_> = {
+    let targets: Vec<PeerConn> = {
         let map = state.peers.read().await;
         map.iter()
             .filter(|(user, _)| **user != env.sender)
             .filter(|(user, _)| env.to.is_empty() || env.to.contains(user))
-            .map(|(user, send)| {
-                let user = user.clone();
-                let send = send.clone();
-                let frame = frame.clone();
-                tokio::spawn(async move {
-                    let mut s = send.lock().await;
-                    if let Err(err) = framing::write_frame(&mut *s, &frame).await {
-                        eprintln!("[mq-hub] local deliver to {user} failed: {err}");
-                    }
-                })
-            })
+            .flat_map(|(_, conns)| conns.values().cloned())
             .collect()
     };
+    let tasks: Vec<_> = targets
+        .into_iter()
+        .map(|conn| {
+            let frame = frame.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.send_frame(&frame).await {
+                    eprintln!("[mq-hub] local deliver failed: {err}");
+                }
+            })
+        })
+        .collect();
     futures_util::future::join_all(tasks).await;
 }
 
+/// Write one frame to EVERY live connection of `user` (multi-device fan-out,
+/// ADR-4). A user with two phones sees each message on both.
 async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) {
-    let send = state.peers.read().await.get(user).cloned();
-    if let Some(send) = send {
-        let mut s = send.lock().await;
-        if let Err(err) = framing::write_frame(&mut *s, frame).await {
-            eprintln!("[mq-hub] deliver to {user} failed: {err}");
+    let conns: Vec<PeerConn> = {
+        let map = state.peers.read().await;
+        match map.get(user) {
+            Some(c) => c.values().cloned().collect(),
+            None => return,
         }
+    };
+    for conn in conns {
+        let frame = frame.to_vec();
+        tokio::spawn(async move {
+            if let Err(err) = conn.send_frame(&frame).await {
+                eprintln!("[mq-hub] deliver failed: {err}");
+            }
+        });
     }
 }
 
