@@ -1,12 +1,29 @@
 # Third-party notices
 
 > **License change (2026-10-16): wxlike is now GPL-3.0** (was MIT at first commit).
-> Project positioning: research/experiment, not commercial. Consequences:
-> - GPL-3.0 ecosystem code (e.g. Telegram official clients) may now be borrowed with attribution.
-> - Apache/MIT/MPL code incorporated stays under its original license within this project.
-> - AGPL-3.0 code (PaperPhone-plus): AGPL-to-GPL combination is designed to work (GPLv3 sec 13),
->   but treat as case-by-case; keep module-level license headers.
-> - Original wxlike code is relicensable at will (sole copyright holder at change time).
+> Project positioning: research/experiment, not commercial (contract §1.4 内部测试模式).
+> Per contract §7.2 the standing obligation is **origin recording** in this file;
+> the reactivation clause restores full license vetting before any public release.
+> **Policy (2026-10-17): prefer existing crates/projects over hand-writing** —
+> every new dependency or ported design MUST be added here in the same PR.
+
+## Dependency inventory (cargo crates, transitive deps via Cargo.lock)
+
+| crate | version | license | used for |
+|---|---|---|---|
+| tokio / axum / tower / hyper | 1.x / 0.8 | MIT | async runtime, HTTP data plane |
+| quinn / rustls / rcgen / ring | 0.11 / 0.23 | MIT/Apache-2.0 | QUIC + TLS transport |
+| **vodozemac** | latest | Apache-2.0 | E2EE Olm/Megolm ratchet (WP-12; hand-rolled ratchets are banned by design) |
+| **str0m** | latest | ISC/Apache-2.0 | WebRTC media (WP-08) |
+| rusqlite (bundled) | 0.32 | MIT | SQLite storage (server + client local library) |
+| boa_engine | 0.20 | MIT/Apache-2.0 | JS engine in the research container |
+| image, zstd, sha2, chacha20poly1305, hkdf, x25519-dalek, pbkdf2, rand, hex, base64 | — | MIT/Apache-2.0 | media/crypto primitives |
+| ureq | 2.x | MIT | UI-side HTTP client |
+| tracing / tracing-subscriber | 0.1/0.3 | MIT | observability |
+| serde / serde_json / bincode | 1.x | MIT | serialization |
+
+(Exhaustive transitive list: `Cargo.lock`; only load-bearing crates are
+itemized here.)
 
 ## box-im (bluexsx/box-im) — MIT
 
@@ -23,9 +40,34 @@ No Java source is included; this is an independent Rust implementation of the
 published design. box-im is Copyright its authors, MIT licensed:
 https://github.com/bluexsx/box-im
 
+## Ported designs (no code copied yet; origin recorded per contract §7.2)
+
+- **OpenIM** (openimsdk/open-im-server, Apache-2.0): the five-layer sync
+  contract (digest → delta → fallback full → batch threshold → lazy member
+  paging) is the required protocol shape for the P3 sync-service. Origin must
+  stay attached to that module's docs.
+- **WuKongIM / goim**: channel subscription model and layered (active-realtime
+  / inactive-aggregated) push — reference shapes for P3 gateway/push work.
+- **Telegram clients** (GPL-3.0): message-list recycling and weak-network
+  patterns for the virtualized list work.
+
+## Borrow-first roadmap (where the wheel must NOT be reinvented)
+
+- P3 search → **Tantivy or Meilisearch** as a real dependency (replaces the
+  transitional P1 substring search).
+- P3 queue → **NATS** via `async-nats` behind the existing `MessageQueue` trait.
+- P4 ledger → **cala-ledger** (double-entry core) + **obix** (outbox) +
+  **dtmrs** (saga) embedded, per ADR-12.
+- P4 auth hardening → `argon2` crate, TOTP crate (RFC 6238).
+- P5 mobile → Flutter + UniFFI/cargo-ndk; live ingest → **Xiu** (external
+  process); sandbox → **Wasmtime**; mini-app runtime per miniprogram-blueprint.
+- P6 admin → **adminx** embedded in Axum; observability → OpenTelemetry/Loki/
+  Prometheus (configuration, not code).
+
 ## Design-study references (ideas only, no code)
 
 - LiangNiang/fake-world (GPL-3.0): local-first architecture principle and
   AI-generated chat-record concept. License-compatible with wxlike's GPL-3.0; keep per-file attribution when copying.
 
-Everything else in wxlike is original code.
+Everything else in wxlike is original code as of 2026-10-17 (P2 merged);
+the inventory above is updated with every borrowing PR.
