@@ -1,40 +1,43 @@
-//! WP-11 A2: the command layer is exercised against a REAL server — an
-//! in-process platform (axum + SQLite) and a live QUIC hub. Mocks are banned
-//! at this boundary by the task book; these tests drive the same `AppState`
-//! methods the Tauri commands call.
+//! WP-11 A2 + P1: the command layer is exercised against a REAL server — an
+//! in-process stack (platform HTTP + SQLite + MQ hub with storage) and a live
+//! QUIC hub. Mocks are banned at this boundary by the task book; these tests
+//! drive the same `AppState` methods the Tauri commands call.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use wxlike_platform::{Platform, PlatformState};
+use wxlike_platform::Platform;
 use wxlike_ui_lib::AppState;
 
-/// Boots a real platform HTTP server + QUIC hub on OS-assigned ports.
+/// Boots a fresh real server stack per test: platform HTTP + QUIC hub **with
+/// message storage**, so history/search/typing semantics are the deployed
+/// ones. Per-test isolation is not optional here — wallet and friend events
+/// are broadcast on the hub, so a shared hub would leak one test's traffic
+/// into another's event stream. The hub + HTTP tasks live on this test's
+/// runtime, which outlives the assertions.
 async fn stack() -> (String, std::net::SocketAddr, Arc<Platform>) {
-    let platform: PlatformState = Platform::in_memory().unwrap().shared();
-    let app = Platform::router(platform.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    let router = wxlike_mq::MqRouter::new(
-        Arc::new(wxlike_mq::memory::MemoryMq::new()),
-        wxlike_mq::memory::MemoryRoutes::new(),
-    );
-    let hub = wxlike_net::run_mq_hub("ui-test-hub", "127.0.0.1:0".parse().unwrap(), router)
+    let stack = wxlike_server::start_stack(wxlike_server::StackOptions::default())
         .await
         .unwrap();
-    let quic = hub.local_addr().unwrap();
-    // keep the hub alive for the whole test process
-    std::mem::forget(hub);
-
-    (format!("http://{addr}"), quic, platform)
+    (
+        format!("http://{}", stack.http_addr),
+        stack.quic_addr,
+        stack.platform.clone(),
+    )
 }
 
+/// Distinct usernames per test would matter only on a shared platform; kept
+/// so tests stay copy-pasteable if the stack ever becomes shared again.
+fn who_name(base: &str) -> String {
+    base.to_string()
+}
+
+/// Unique pin dir per call: each test gets a fresh hub with a fresh
+/// certificate, so TOFU pins must not leak across tests in one process.
 fn pins() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("wxlike-ui-pins-{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("wxlike-ui-pins-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join("pins.json")
 }
@@ -44,16 +47,16 @@ async fn auth_register_login_and_profile() {
     let (http, _quic, _platform) = stack().await;
     let state = AppState::new(&http);
 
-    let reply = state.register("alice", "s3cret").unwrap();
+    let reply = state.register(&who_name("alice"), "s3cret").unwrap();
     assert!(!reply["token"].as_str().unwrap().is_empty());
     assert_eq!(reply["user_id"].as_str().unwrap().len(), 16);
 
     let me = state.me().unwrap();
-    assert_eq!(me["name"], "alice");
+    assert_eq!(me["name"], serde_json::json!(who_name("alice")));
 
     // wrong password is refused and leaves no session behind
     let fresh = AppState::new(&http);
-    let err = fresh.login("alice", "wrong").unwrap_err();
+    let err = fresh.login(&who_name("alice"), "wrong").unwrap_err();
     assert!(
         err.contains("401") || err.to_lowercase().contains("unauthorized"),
         "{err}"
@@ -61,23 +64,23 @@ async fn auth_register_login_and_profile() {
 
     // profile round trip through the command layer
     state
-        .update_profile(Some("alice2"), None, Some("hi there"))
+        .update_profile(Some(&who_name("alice2")), None, Some("hi there"))
         .unwrap();
     let me = state.me().unwrap();
-    assert_eq!(me["name"], "alice2");
+    assert_eq!(me["name"], serde_json::json!(who_name("alice2")));
     assert_eq!(me["signature"], "hi there");
 
     // duplicate registration is a conflict the UI can show. The profile was
     // renamed to alice2 above, so THAT is the live (taken) name now.
     let other = AppState::new(&http);
-    let err = other.register("alice2", "x").unwrap_err();
+    let err = other.register(&who_name("alice2"), "x").unwrap_err();
     assert!(
         err.contains("409") || err.contains("already exists"),
         "{err}"
     );
     // and the freed name is registrable again (the old row was renamed)
     let third = AppState::new(&http);
-    third.register("alice", "pw").unwrap();
+    third.register(&who_name("alice"), "pw").unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -85,11 +88,11 @@ async fn friend_request_accept_flow() {
     let (http, _quic, _platform) = stack().await;
     let alice = AppState::new(&http);
     let bob = AppState::new(&http);
-    let bob_id = bob.register("bob", "pw").unwrap()["user_id"]
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
-    alice.register("alice", "pw").unwrap();
+    alice.register(&who_name("alice"), "pw").unwrap();
 
     // alice applies; bob sees the incoming request and accepts
     alice.friend_request(&bob_id, "加个好友？").unwrap();
@@ -125,15 +128,15 @@ async fn group_create_list_and_info() {
     let (http, _quic, _platform) = stack().await;
     let alice = AppState::new(&http);
     let bob = AppState::new(&http);
-    let bob_id = bob.register("bob", "pw").unwrap()["user_id"]
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
-    let carol_id = AppState::new(&http).register("carol", "pw").unwrap()["user_id"]
+    let carol_id = AppState::new(&http).register(&who_name("carol"), "pw").unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
-    alice.register("alice", "pw").unwrap();
+    alice.register(&who_name("alice"), "pw").unwrap();
     alice.friend_request(&bob_id, "").unwrap();
     let req = bob.friend_requests_incoming().unwrap().as_array().unwrap()[0]["id"]
         .as_str()
@@ -142,7 +145,7 @@ async fn group_create_list_and_info() {
     bob.friend_accept(&req).unwrap();
     alice.friend_request(&carol_id, "").unwrap();
     let carol = AppState::new(&http);
-    carol.login("carol", "pw").unwrap();
+    carol.login(&who_name("carol"), "pw").unwrap();
     let req = carol
         .friend_requests_incoming()
         .unwrap()
@@ -175,11 +178,11 @@ async fn wallet_transfer_redpacket_conservation() {
     let (http, _quic, platform) = stack().await;
     let alice = AppState::new(&http);
     let bob = AppState::new(&http);
-    let bob_id = bob.register("bob", "pw").unwrap()["user_id"]
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
-    let alice_id = alice.register("alice", "pw").unwrap()["user_id"]
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -224,7 +227,7 @@ async fn wallet_transfer_redpacket_conservation() {
 async fn media_upload_download_roundtrip() {
     let (http, _quic, _platform) = stack().await;
     let state = AppState::new(&http);
-    state.register("alice", "pw").unwrap();
+    state.register(&who_name("alice"), "pw").unwrap();
 
     // 4 KiB of pseudo-random bytes: the object store is content-addressed,
     // so the returned id must be the sha256 of exactly these bytes
@@ -263,17 +266,20 @@ async fn send_and_receive_over_live_hub() {
     let (http, quic, _platform) = stack().await;
     let alice = AppState::new(&http);
     let bob = AppState::new(&http);
-    let bob_id = bob.register("bob", "pw").unwrap()["user_id"]
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
-    alice.register("alice", "pw").unwrap();
+    alice.register(&who_name("alice"), "pw").unwrap();
 
-    // both connect to the real hub with TOFU
+    // both clients in this test must share one pin store: mallory connects
+    // AFTER alice pinned the honest hub's certificate, so the rogue hub under
+    // the same name must be refused
+    let shared_pins = pins();
     alice
-        .connect_hub(&quic.to_string(), &alice.user_id().unwrap(), &pins())
+        .connect_hub(&quic.to_string(), &alice.user_id().unwrap(), &shared_pins)
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob_id, &shared_pins)
         .unwrap();
     assert!(alice.is_connected() && bob.is_connected());
 
@@ -326,9 +332,9 @@ async fn send_and_receive_over_live_hub() {
         .await
         .unwrap();
     let other = AppState::new(&http);
-    other.register("mallory", "pw").unwrap();
+    other.register(&who_name("mallory"), "pw").unwrap();
     let err = other
-        .connect_hub(&rogue.local_addr().unwrap().to_string(), "mallory", &pins())
+        .connect_hub(&rogue.local_addr().unwrap().to_string(), "mallory", &shared_pins)
         .unwrap_err();
     assert!(
         err.contains("fingerprint changed") || err.to_lowercase().contains("handshake"),
@@ -345,3 +351,243 @@ async fn conversation_ids_are_deterministic() {
     );
     assert!(wxlike_ui_lib::direct_conv_id("a", "b").starts_with("d-"));
 }
+
+// ---------------------------------------------------------------------------
+// P1: five message operations + history + secret chat (against the real stack)
+// ---------------------------------------------------------------------------
+
+fn hex_id(v: &serde_json::Value) -> String {
+    v.as_str().unwrap_or_default().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_history_pagination_and_read_receipts() {
+    let (http, quic, _platform) = stack().await;
+    let alice = AppState::new(&http);
+    let bob = AppState::new(&http);
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
+
+    // six messages; bob collects them live (and thus the msg ids)
+    let mut bob_saw = Vec::new();
+    for i in 0..6 {
+        alice.send_text(&conv, vec![bob_id.clone()], &format!("page {i}")).unwrap();
+    }
+    for _ in 0..6 {
+        let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+            .await.unwrap().unwrap().expect("event");
+        bob_saw.push(ev);
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // page 1: newest 4 in ascending order, cursor set
+    let page1 = alice.load_history(&conv, 0, 4).unwrap();
+    let msgs1 = page1["messages"].as_array().unwrap();
+    assert_eq!(msgs1.len(), 4);
+    assert_eq!(msgs1[0]["text"], "page 2");
+    assert_eq!(msgs1[3]["text"], "page 5");
+    let cursor = page1["next_before_seq"].as_i64().unwrap();
+    let page2 = alice.load_history(&conv, cursor, 4).unwrap();
+    let msgs2 = page2["messages"].as_array().unwrap();
+    assert_eq!(msgs2.len(), 2, "rest of the conversation");
+    assert_eq!(msgs2[0]["text"], "page 0");
+    assert!(page2["next_before_seq"].is_null());
+
+    // read receipt: bob acks the newest message; alice's hub event is a
+    // receipt naming that message
+    let last_id = hex_id(&bob_saw[5]["msg_id"]);
+    assert_eq!(bob_saw[5]["text"], "page 5");
+    bob.send_read_receipt(&conv, &last_id).unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(5), alice.next_event())
+        .await.unwrap().unwrap().expect("receipt event");
+    assert_eq!(ev["kind"], "receipt");
+    assert_eq!(ev["receipt"]["state"], "read");
+    assert_eq!(hex_id(&ev["receipt"]["target"]), last_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_typing_is_transient() {
+    let (http, quic, platform) = stack().await;
+    let alice = AppState::new(&http);
+    let bob = AppState::new(&http);
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
+
+    // typing reaches bob, then a real message follows. A typing frame sent
+    // before the hub binds bob is correctly dropped (transient = never
+    // parked), and a real client re-sends on every keystroke — so the test
+    // retries the same way instead of assuming atomic binding.
+    let mut ev = None;
+    for _ in 0..10 {
+        alice.send_typing(&conv, vec![bob_id.clone()]).unwrap();
+        match tokio::time::timeout(Duration::from_secs(2), bob.next_event()).await {
+            Ok(Ok(Some(e))) => {
+                ev = Some(e);
+                break;
+            }
+            _ => continue,
+        }
+    }
+    let ev = ev.expect("typing arrives within the retry budget");
+    assert_eq!(ev["kind"], "typing");
+
+    alice.send_text(&conv, vec![bob_id.clone()], "actual content").unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+        .await.unwrap().unwrap().expect("content arrives");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // server history contains the content and nothing else
+    let bob_token = platform.create_session(&bob_id, 60_000).unwrap();
+    let rows: serde_json::Value = ureq::get(&format!("{http}/api/history/{conv}"))
+        .set("Authorization", &format!("Bearer {bob_token}"))
+        .call().unwrap()
+        .into_json().unwrap();
+    let msgs = rows["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1, "typing left no stored row: {msgs:?}");
+    assert_eq!(msgs[0]["text"], "actual content");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_forward_merge_and_favorites() {
+    let (http, quic, _platform) = stack().await;
+    let alice = AppState::new(&http);
+    let bob = AppState::new(&http);
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
+
+    // original message arrives at bob's (for the id)…
+    alice.send_text(&conv, vec![bob_id.clone()], "要被转发的消息").unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+        .await.unwrap().unwrap().expect("original arrives");
+    let origin_id = hex_id(&ev["msg_id"]);
+
+    // …alice forwards it (single) — bob sees msg.forward
+    let snapshot = serde_json::json!({
+        "origin_conv": conv,
+        "origin_msg_id": origin_id,
+        "kind": "text",
+        "text": "要被转发的消息",
+        "sender": alice_id,
+    });
+    alice.forward_message(&conv, vec![bob_id.clone()], &snapshot).unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+        .await.unwrap().unwrap().expect("forward arrives");
+    assert_eq!(ev["kind"], "msg.forward");
+    assert_eq!(ev["payload"]["origin_msg_id"], origin_id);
+
+    // merge forward of two items
+    let mut second = snapshot.clone();
+    second["text"] = "第二条".into();
+    let items = vec![snapshot.clone(), second];
+    alice.merge_forward(&conv, vec![bob_id.clone()], &items).unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+        .await.unwrap().unwrap().expect("merge arrives");
+    assert_eq!(ev["kind"], "msg.merge");
+    assert_eq!(ev["payload"]["items"].as_array().unwrap().len(), 2);
+
+    // empty merge is refused client-side
+    assert!(alice.merge_forward(&conv, vec![bob_id.clone()], &[]).is_err());
+
+    // favorite the forward, list it, remove it
+    let fav = alice.favorite_add(&serde_json::json!({
+        "source_conv": conv, "source_msg_id": origin_id,
+        "kind": "text", "text": "要被转发的消息", "sender": alice_id,
+    })).unwrap();
+    let fav_id = hex_id(&fav["id"]);
+    let list = alice.favorites_list(10).unwrap();
+    let rows = list["favorites"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(hex_id(&rows[0]["id"]), fav_id);
+    alice.favorite_remove(&fav_id).unwrap();
+    let list = alice.favorites_list(10).unwrap();
+    assert!(list["favorites"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_secret_chat_roundtrip_through_real_stack() {
+    let (http, quic, _platform) = stack().await;
+    let alice = AppState::new(&http);
+    let bob = AppState::new(&http);
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+
+    // both publish pre-key bundles, then alice opens a secret conversation
+    let fp_a = alice.secret_enable().unwrap();
+    let fp_b = bob.secret_enable().unwrap();
+    assert_eq!(fp_a.len(), 43, "ed25519 fingerprint as base64: {fp_a}");
+    assert_ne!(fp_a, fp_b);
+    assert!(alice.secret_enabled() && bob.secret_enabled());
+
+    let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
+    alice.send_secret_text(&conv, vec![bob_id.clone()], "s3cret payload").unwrap();
+
+    let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+        .await.unwrap().unwrap().expect("sealed message arrives");
+    assert_eq!(ev["kind"], "e2ee");
+    assert_eq!(ev["encrypted"], serde_json::json!(true));
+    assert_eq!(ev["text"], "s3cret payload", "decrypted at the UI layer");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_secret_chat_falls_back_to_cleartext_without_peer_bundle() {
+    let (http, quic, _platform) = stack().await;
+    let alice = AppState::new(&http);
+    let bob = AppState::new(&http);
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+
+    // only alice enables E2EE; bob never publishes a bundle
+    alice.secret_enable().unwrap();
+    let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
+    // documented P1 fallback: warn + send cleartext so the message is not lost
+    alice.send_secret_text(&conv, vec![bob_id.clone()], "fallback text").unwrap();
+
+    let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+        .await.unwrap().unwrap().expect("fallback message arrives");
+    assert_eq!(ev["kind"], "text", "fell back to a normal message: {ev}");
+    assert_eq!(ev["text"], "fallback text");
+}
+

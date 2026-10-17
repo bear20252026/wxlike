@@ -21,13 +21,16 @@ wxlike-net = { path = "../../crates/net" }
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 # command-layer tests drive a REAL in-process server (platform + QUIC hub),
 # never a mock — the task book forbids mock stand-ins at this boundary.
 wxlike-platform = { path = "../../crates/platform" }
 wxlike-mq = { path = "../../crates/mq" }
+wxlike-server = { path = "../../server" }
 axum = { version = "0.8", features = ["macros", "multipart"] }
+ureq = { version = "2", features = ["json"] }
 
 [lib]
 name = "wxlike_ui_lib"

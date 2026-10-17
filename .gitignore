@@ -6,3 +6,4 @@ alice.log
 ui/node_modules
 ui/src-tauri/target
 ui/src-tauri/gen
+ui/src-tauri/data/

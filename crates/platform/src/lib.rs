@@ -21,6 +21,7 @@ mod auth;
 mod db;
 mod devices;
 mod error;
+mod favorites;
 mod friends;
 mod groups;
 mod keys;
@@ -40,6 +41,7 @@ pub use crate::auth::{hash_password, random_hex, verify_password, Authed};
 pub use crate::db::Db;
 pub use crate::devices::{DeviceReg, DeviceRow};
 pub use crate::error::{ApiError, PlatformError, Result};
+pub use crate::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
 pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
@@ -269,6 +271,7 @@ impl Platform {
             .merge(wallet::routes())
             .merge(keys::routes())
             .merge(devices::routes())
+            .merge(favorites::routes())
             .with_state(state)
     }
 

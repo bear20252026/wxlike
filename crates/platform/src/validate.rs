@@ -122,6 +122,23 @@ pub fn device_platform(s: &str) -> Result<&str> {
     Ok(s)
 }
 
+/// Conversation ids: direct chats are `d-{user}~{user}`, groups are bare hex,
+/// later pillars add their own prefixed forms — a conservative shared
+/// alphabet (alphanumeric plus `-` `~` `_`) covers them all without letting a
+/// conversation id smuggle path or SQL metacharacters.
+pub fn conv(s: &str) -> Result<&str> {
+    if s.is_empty() || s.len() > MAX_ID_CHARS * 2 {
+        return Err(PlatformError::BadInput("conversation id malformed"));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '~' || c == '_')
+    {
+        return Err(PlatformError::BadInput("conversation id malformed"));
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

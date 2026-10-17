@@ -23,13 +23,23 @@ pub type MsgId = [u8; 16];
 /// The all-zero id: "no dedup key", i.e. a version-1 message.
 pub const NO_MSG_ID: MsgId = [0u8; 16];
 
-/// `MsgBody::Custom` kinds reserved by the task book (WP-04/06/08/09).
+/// `MsgBody::Custom` kinds reserved by the task book (WP-04/06/08/09) plus the
+/// P1 message-operation set (contract §3.5).
 pub mod custom_kind {
     pub const MENTION: &str = "mention";
     pub const RTC_SIGNAL: &str = "rtc-signal";
     pub const WALLET_TRANSFER: &str = "wallet.transfer";
     pub const WALLET_REDPACKET: &str = "wallet.redpacket";
     pub const WALLET_CLAIM: &str = "wallet.redpacket.claim";
+    /// Transient "X is typing…" signal: online-only, never persisted, never
+    /// parked (the P3 `high_priority` channel; transitional handling in P1).
+    pub const TYPING: &str = "typing";
+    /// Single forwarded message; payload carries a snapshot of the original.
+    pub const FORWARD: &str = "msg.forward";
+    /// Merged forward of several messages in one bundle.
+    pub const MERGE_FORWARD: &str = "msg.merge";
+    /// Sealed 1:1 secret-chat payload (P1 E2EE wiring, ADR-1 optional mode).
+    pub const E2EE_DM: &str = "e2ee.dm";
 }
 
 /// Serde adapter for JSON payloads inside a bincode frame.
@@ -140,6 +150,12 @@ impl Envelope {
 
     pub fn is_recall(&self) -> bool {
         matches!(self.body, MsgBody::Recall { .. })
+    }
+
+    /// Transient typing indicator (`Custom{kind:"typing"}`): delivered to
+    /// online recipients only, never persisted or parked.
+    pub fn is_typing(&self) -> bool {
+        matches!(&self.body, MsgBody::Custom { kind, .. } if kind == custom_kind::TYPING)
     }
 
     /// The message this envelope refers to: recall target, quote, or the
@@ -277,5 +293,34 @@ impl MsgBody {
 
     pub fn recalled() -> Self {
         MsgBody::Notice(Self::RECALLED_TEXT.to_string())
+    }
+
+    /// The text a list/search result shows for this body ("preview line").
+    ///
+    /// Feature payloads (red packets, forwards…) get a human-readable tag
+    /// instead of leaking their JSON; images show as `[图片]` like the
+    /// mature clients do.
+    pub fn preview_text(&self) -> String {
+        match self {
+            MsgBody::Text(t) => t.clone(),
+            MsgBody::Bytes(_) => "[图片/媒体]".to_string(),
+            MsgBody::Notice(n) => n.clone(),
+            MsgBody::Recall { .. } => Self::RECALLED_TEXT.to_string(),
+            MsgBody::Custom { kind, payload } => match kind.as_str() {
+                custom_kind::WALLET_REDPACKET => "[红包]".to_string(),
+                custom_kind::WALLET_TRANSFER => "[转账]".to_string(),
+                custom_kind::WALLET_CLAIM => "[红包领取]".to_string(),
+                custom_kind::FORWARD => format!(
+                    "[转发] {}",
+                    payload.get("text").and_then(|v| v.as_str()).unwrap_or("")
+                ),
+                custom_kind::MERGE_FORWARD => format!(
+                    "[合并转发] {}",
+                    payload.get("title").and_then(|v| v.as_str()).unwrap_or("")
+                ),
+                custom_kind::E2EE_DM => "[加密消息]".to_string(),
+                other => format!("[{other}]"),
+            },
+        }
     }
 }

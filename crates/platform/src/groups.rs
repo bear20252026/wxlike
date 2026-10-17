@@ -365,6 +365,16 @@ impl Platform {
         Ok(())
     }
 
+    /// Every group `user_id` belongs to (P1 search authorization: the set of
+    /// conversations whose history and search results this user may see).
+    pub fn groups_of_user(&self, user_id: &str) -> Result<Vec<String>> {
+        let c = self.db().lock();
+        let mut stmt =
+            c.prepare("SELECT group_id FROM group_members WHERE user_id = ?1 ORDER BY group_id")?;
+        let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // ---- membership cache (used by the hub through Membership) ----
 
     pub fn cached_members(&self, group_id: &str) -> Result<Option<Vec<String>>> {

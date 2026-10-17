@@ -158,7 +158,7 @@ impl HubHandle {
     }
 
     pub async fn publish(&self, env: &Envelope) -> anyhow::Result<()> {
-        route_envelope(&self.state, env).await
+        route_envelope(&self.state, env, true).await
     }
 
     /// Messages stored for a conversation, when this hub has a store attached.
@@ -473,6 +473,14 @@ async fn handle_inbound(
         }
     }
 
+    // Transient signals (typing indicators) are the transitional form of the
+    // P3 `high_priority` channel: routed to whoever is online right now,
+    // never persisted, never parked — a user who connects later must not see
+    // "对方正在输入" from an hour ago (contract §3.5).
+    if env.is_typing() {
+        return route_or_fanout(state, env, members, false).await;
+    }
+
     // Control frames (receipts, recalls) are never conversation content: they
     // are routed, and the dedup cache keeps a replay from notifying twice.
     if env.receipt.is_some() {
@@ -500,7 +508,7 @@ async fn handle_inbound(
         }
         let mut directed = env.clone();
         directed.to = recipients;
-        return route_envelope(state, &directed).await;
+        return route_envelope(state, &directed, true).await;
     }
 
     if env.is_recall() {
@@ -520,7 +528,7 @@ async fn handle_inbound(
             eprintln!("[mq-hub] recall refused (unknown or not the author's own)");
             return Ok(());
         }
-        return route_or_fanout(state, env, members).await;
+        return route_or_fanout(state, env, members, true).await;
     }
 
     // 3. content frames: dedup, then persist, then route
@@ -536,15 +544,17 @@ async fn handle_inbound(
         }
     }
 
-    route_or_fanout(state, env, members).await
+    route_or_fanout(state, env, members, true).await
 }
 
 /// Group conversations fan out by the member table; everything else keeps the
-/// directed/broadcast semantics.
+/// directed/broadcast semantics. `park_offline` = also queue for recipients
+/// that are away (content frames); transient signals skip the inbox.
 async fn route_or_fanout(
     state: &Arc<HubState>,
     env: &Envelope,
     members: Option<Vec<String>>,
+    park_offline: bool,
 ) -> anyhow::Result<()> {
     match members {
         Some(members) => {
@@ -553,9 +563,9 @@ async fn route_or_fanout(
                 .filter(|m| **m != env.sender)
                 .cloned()
                 .collect();
-            fanout(state, env, &recipients).await
+            fanout(state, env, &recipients, park_offline).await
         }
-        None => route_envelope(state, env).await,
+        None => route_envelope(state, env, park_offline).await,
     }
 }
 
@@ -570,6 +580,7 @@ async fn fanout(
     state: &Arc<HubState>,
     env: &Envelope,
     recipients: &[String],
+    park_offline: bool,
 ) -> anyhow::Result<()> {
     let mut seen = std::collections::HashSet::new();
     let unique: Vec<&String> = recipients.iter().filter(|r| seen.insert(*r)).collect();
@@ -589,6 +600,11 @@ async fn fanout(
                 }
                 Some(h) => state.router.mq.publish(&hub_queue(&h), frame).await?,
                 None => {
+                    if !park_offline {
+                        // transient signal (typing): a user who is not online
+                        // simply misses it; there is nothing to store
+                        return Ok(());
+                    }
                     // nowhere online: park for later, then wake their devices
                     state.offline.enqueue(&rcpt, frame).await?;
                     state.metrics.offline_parked(1);
@@ -665,7 +681,12 @@ fn mention_variant(env: &Envelope, rcpt: &str) -> Envelope {
 
 /// Deliver locally if recipients are here; publish to their hub otherwise.
 /// Empty `to` = broadcast: everyone local except sender, plus every other hub.
-async fn route_envelope(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result<()> {
+/// `park_offline` = queue directed frames whose recipient is away.
+async fn route_envelope(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    park_offline: bool,
+) -> anyhow::Result<()> {
     if env.to.is_empty() {
         // broadcast: everyone local (minus the sender) plus every other hub
         deliver_local(state, env).await;
@@ -683,7 +704,7 @@ async fn route_envelope(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result
     }
     // directed traffic uses the same per-recipient path as group fan-out:
     // concurrent writes, parked when the recipient is nowhere online
-    fanout(state, env, &env.to).await
+    fanout(state, env, &env.to, park_offline).await
 }
 
 /// Write to every local peer except the sender. Each peer owns its own send

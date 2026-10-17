@@ -194,6 +194,84 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Newest-first page of a conversation for UI history loading (P1).
+    ///
+    /// Returns up to `limit` messages with `seq < before_seq` (so the first
+    /// page is `before_seq = 0` meaning "no bound"), in ascending order so the
+    /// caller can prepend them directly. `next_before_seq` is what the caller
+    /// passes next time — `None` when the conversation's start was reached.
+    pub fn page_messages(
+        &self,
+        conv_id: &str,
+        before_seq: i64,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<StoredMessage>, Option<i64>)> {
+        let limit = limit.clamp(1, 200);
+        let c = self.c();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE conv_id = ?1 AND (?2 = 0 OR seq < ?2)
+             ORDER BY seq DESC LIMIT ?3"
+        ))?;
+        let mut rows = stmt
+            .query_map(params![conv_id, before_seq, limit], row_to_message)?
+            .collect::<Result<Vec<_>, _>>()?;
+        if rows.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        // rows arrive DESC; the page cursor is its OLDEST row so the next
+        // page asks for strictly older messages
+        let next_before = rows[rows.len() - 1].seq;
+        let exhausted = (rows.len() as i64) < limit as i64;
+        rows.reverse();
+        Ok((rows, if exhausted { None } else { Some(next_before) }))
+    }
+
+    /// Substring search over stored messages, restricted to the
+    /// conversations in `conv_filter` (empty filter = no result: callers pass
+    /// the conversations the requesting user is allowed to see).
+    ///
+    /// Matching happens in Rust on the decoded body, not in SQL: bodies are
+    /// bincode blobs whose length prefix makes `CAST(body AS TEXT) LIKE …`
+    /// unreliable (embedded NULs), and Rust's `to_lowercase` folds non-ASCII
+    /// correctly where SQLite's LIKE only folds ASCII. `%`/`_` in the needle
+    /// are literal characters. Recalled rows are skipped, results are newest
+    /// first, capped at `limit`. This is the P1 search protocol's backing
+    /// store; the P3 search-service replaces it with a Tantivy/Meilisearch
+    /// index fed by events.
+    pub fn search_messages(
+        &self,
+        needle: &str,
+        conv_filter: &[String],
+        limit: usize,
+    ) -> anyhow::Result<Vec<StoredMessage>> {
+        if conv_filter.is_empty() || needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 100);
+        let needle = needle.to_lowercase();
+        let mut hits = Vec::new();
+        for conv in conv_filter {
+            for row in self.list_messages(conv)? {
+                if row.withdrawn {
+                    continue;
+                }
+                if row
+                    .envelope
+                    .body
+                    .preview_text()
+                    .to_lowercase()
+                    .contains(&needle)
+                {
+                    hits.push(row);
+                }
+            }
+        }
+        hits.sort_by_key(|m| std::cmp::Reverse(m.seq));
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
     /// Who authored `msg_id` — the hub needs this to route a receipt back.
     pub fn sender_of(&self, msg_id: &MsgId) -> anyhow::Result<Option<String>> {
         Ok(self
