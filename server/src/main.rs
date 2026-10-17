@@ -121,8 +121,9 @@ async fn main() -> anyhow::Result<()> {
                 }))
             }),
         )
-        .merge(wxlike_platform::Platform::router(platform))
-        .merge(presence_router);
+        .merge(wxlike_platform::Platform::router(platform.clone()))
+        .merge(presence_router)
+        .merge(dev_routes(platform.clone()));
 
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
     axum::serve(listener, app).await?;
@@ -174,12 +175,12 @@ fn url_consumer(url: &str) -> String {
 /// Prometheus exposition (WP-13): connections, throughput, parked backlog,
 /// delivery latency histogram (p99 via histogram_quantile).
 async fn metrics() -> impl IntoResponse {
-    let text = wxlike_net::prometheus_text();
+    let mut text = wxlike_net::prometheus_text();
     if text.is_empty() {
-        return axum::response::Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .body::<axum::body::Body>("metrics recorder unavailable".to_string().into())
-            .unwrap_or_default();
+        // exposition-format comment: a cold-but-healthy hub scrapes 200
+        text = "# wxlike hub metrics: nothing recorded yet
+"
+        .to_string();
     }
     axum::response::Response::builder()
         .status(StatusCode::OK)
@@ -187,6 +188,38 @@ async fn metrics() -> impl IntoResponse {
         .header(header::CACHE_CONTROL, "no-store")
         .body::<axum::body::Body>(text.into())
         .unwrap_or_default()
+}
+
+/// Virtual-money faucet for demos and the UI integration tests (WP-09 is a
+/// closed virtual ledger; real funding is a licensed channel and stays out).
+/// Opt-in per process: `WXLIKE_DEV_FAUCET=1`.
+fn dev_routes(platform: std::sync::Arc<wxlike_platform::Platform>) -> axum::Router {
+    let _ = &platform;
+    let mut app = axum::Router::new();
+    if std::env::var("WXLIKE_DEV_FAUCET").as_deref() == Ok("1") {
+        let state = platform;
+        app = app.route(
+            "/api/dev/fund",
+            axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                let state = state.clone();
+                async move {
+                    let user_id = body["user_id"].as_str().unwrap_or_default();
+                    let amount = body["amount"].as_i64().unwrap_or(0);
+                    match state.fund(user_id, amount, "dev faucet") {
+                        Ok(()) => (StatusCode::NO_CONTENT, "".to_string()),
+                        Err(err) => (
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("{{\"error\":\"{err}\"}}"),
+                        ),
+                    }
+                }
+            }),
+        );
+        println!(
+            "[wxlike-server] dev faucet enabled (WXLIKE_DEV_FAUCET=1) — never enable in production"
+        );
+    }
+    app
 }
 
 async fn health() -> Json<serde_json::Value> {

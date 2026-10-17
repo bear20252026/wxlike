@@ -57,7 +57,7 @@ struct Tally {
 
 fn env_for(seq: u64, body: &str, sender: &str, to: &str) -> Envelope {
     let mut id = [0u8; 16];
-    id[..8].copy_from_slice(&(seq as u64).to_le_bytes());
+    id[..8].copy_from_slice(&seq.to_le_bytes());
     id[8..].copy_from_slice(&(wxlike_core::types::now_ms() as u64).to_le_bytes());
     Envelope {
         version: PROTOCOL_VERSION,

@@ -2,62 +2,13 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>wxlike</title>
-  <style>
-    body { font-family: "Segoe UI", sans-serif; margin: 0; display: flex; height: 100vh; }
-    aside { width: 240px; background: #ededed; padding: 12px; box-sizing: border-box; }
-    main { flex: 1; display: flex; flex-direction: column; }
-    #log { flex: 1; overflow-y: auto; padding: 16px; }
-    footer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #ddd; }
-    input { flex: 1; padding: 8px; }
-    .me { text-align: right; color: #95ec69; background: #95ec6933; margin: 4px 0; padding: 6px 10px; border-radius: 6px; }
-    .peer { margin: 4px 0; padding: 6px 10px; border-radius: 6px; background: #fff; }
-    h3 { margin: 0 0 12px; }
-  </style>
+  <link rel="stylesheet" href="./styles.css" />
+  <style>html,body{margin:0;height:100%}</style>
 </head>
 <body>
-  <aside>
-    <h3>wxlike</h3>
-    <div>状态: <span id="health">检测中</span></div>
-    <div>服务器: <input id="addr" value="127.0.0.1:9443" style="width:100%; margin-top:8px" /></div>
-    <button onclick="connect()">连接</button>
-  </aside>
-  <main>
-    <div id="log"></div>
-    <footer>
-      <input id="msg" placeholder="输入消息，回车发送" onkeydown="if(event.key==='Enter') send()" />
-      <button onclick="send()">发送</button>
-    </footer>
-  </main>
-  <script>
-    const { invoke } = window.__TAURI__.core;
-    async function refreshHealth() {
-      document.getElementById("health").textContent = await invoke("health_cmd");
-    }
-    async function connect() {
-      const addr = document.getElementById("addr").value;
-      const r = await invoke("connect_hub", { addr, name: "ui-" + Math.random().toString(16).slice(2, 6) });
-      append("peer", "已连接: " + r);
-    }
-    async function send() {
-      const v = document.getElementById("msg").value.trim();
-      if (!v) return;
-      await invoke("send_text", { text: v });
-      document.getElementById("msg").value = "";
-      append("me", v);
-    }
-    function append(cls, text) {
-      const d = document.createElement("div");
-      d.className = cls; d.textContent = text;
-      document.getElementById("log").appendChild(d);
-      d.scrollIntoView();
-    }
-    window.addEventListener("DOMContentLoaded", async () => {
-      await refreshHealth();
-      await invoke("start_recv_pump"); // events: "im-in" -> { sender, text }
-      const { listen } = window.__TAURI__.event;
-      await listen("im-in", (e) => append("peer", e.payload.sender + ": " + e.payload.text));
-    });
-  </script>
+  <div id="app"></div>
+  <script src="./app.js"></script>
 </body>
 </html>

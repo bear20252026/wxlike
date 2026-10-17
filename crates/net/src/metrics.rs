@@ -37,9 +37,39 @@ impl HubMetrics {
         // recorded before installation are lost, and the hub records from
         // its very first connection.
         let _ = handle();
-        Self {
-            hub_id: hub_id.into(),
-        }
+        let id = hub_id.into().clone();
+        // Describe the series up front so a cold hub (zero connections, zero
+        // messages) still exposes them on the first scrape.
+        metrics::describe_gauge!(
+            "wxlike_hub_connections",
+            metrics::Unit::Count,
+            "users currently bound to this hub"
+        );
+        metrics::describe_counter!(
+            "wxlike_hub_messages_total",
+            metrics::Unit::Count,
+            "envelopes accepted for routing"
+        );
+        metrics::describe_gauge!(
+            "wxlike_offline_parked",
+            metrics::Unit::Count,
+            "frames parked for offline users"
+        );
+        metrics::describe_histogram!(
+            "wxlike_delivery_seconds",
+            metrics::Unit::Seconds,
+            "inbound to routing-done latency"
+        );
+        // describe_* alone does not materialize a series in the exporter
+        // (describe-only render is empty), so record the info gauge now: a
+        // cold hub still produces a non-empty exposition that identifies it.
+        metrics::gauge!(
+            "wxlike_hub_info",
+            "hub" => id.clone(),
+            "version" => env!("CARGO_PKG_VERSION").to_string()
+        )
+        .set(1.0);
+        Self { hub_id: id }
     }
 
     pub fn connected(&self) {
@@ -105,6 +135,14 @@ pub fn prometheus_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_hub_still_renders_the_info_series() {
+        let _m = HubMetrics::new("cold-hub-probe");
+        let text = prometheus_text();
+        assert!(text.contains("wxlike_hub_info"), "{text}");
+        assert!(text.contains("cold-hub-probe"), "{text}");
+    }
 
     #[test]
     fn text_contains_all_hub_series() {

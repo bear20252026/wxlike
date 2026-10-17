@@ -4,7 +4,7 @@
 //! `Output`, and the *host* moves bytes. That is what makes the acceptance
 //! tests possible without TURN or even real network — two sessions in one
 //! process negotiate and exchange **real DTLS/SRTP** through [`pump`] (a
-//! virtual wire) or through real loopback UDP sockets ([`pump_udp`]). The
+//! virtual wire) or through real loopback UDP sockets ([`LoopbackPair`]). The
 //! crypto path is the production one; only the wire differs.
 //!
 //! Negotiation is sample-level SDP: audio (+video for WP-08b) m-lines with

@@ -4,7 +4,7 @@
 //! Design for testability: every method is **synchronous and pure with
 //! respect to the clock** — signals that must go out are collected into the
 //! return value, and time-based behavior (ring timeout, peer-silence
-//! watchdog) is driven by [`CallManager::check_deadlines`] with the caller's
+//! watchdog) is driven by [`CallManager::check_deadlines`](crate::call::CallManager::check_deadlines) with the caller's
 //! `now`. The async shell (presence check, sending envelopes over QUIC) is
 //! one thin layer at the edges.
 //!
