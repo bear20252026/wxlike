@@ -3,6 +3,10 @@
  * through `api.ts`. HuLa-inspired bits from the task book's checklist live
  * here: swipeable session rows, expanding search, distinct bubbles, image
  * grid, chat transition, and a full dark-mode theme (see styles.css).
+ *
+ * P1 additions: paged history ("加载更早"), typing indicator, read-receipt
+ * marks on own bubbles, the bubble action menu (收藏/转发/复制/撤回/多选),
+ * merge-forward selection, in-chat search, secret-chat toggle, favorites tab.
  */
 
 import { appStore, toast, type ChatMsg, type Session } from "./state";
@@ -10,11 +14,16 @@ import {
   balanceAtom,
   chatsAtom,
   connectedAtom,
+  favoritesAtom,
   friendsAtom,
+  historyCursorAtom,
   meAtom,
   requestsAtom,
+  searchHitsAtom,
+  selectModeAtom,
   searchOpenAtom,
   sessionsAtom,
+  typingAtom,
   viewAtom,
 } from "./state";
 import * as api from "./api";
@@ -39,6 +48,9 @@ function on<K extends keyof HTMLElementEventMap>(
 ): void {
   el.addEventListener(kind, fn as EventListener);
 }
+
+/** Conversations where the secret-chat toggle is on (P1 prototype). */
+const secretConvs = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // auth screen
@@ -96,7 +108,7 @@ function renderAuth(root: El): void {
 }
 
 // ---------------------------------------------------------------------------
-// main shell (sessions / friends / me)
+// main shell (sessions / friends / favorites / me)
 // ---------------------------------------------------------------------------
 
 function renderMain(root: El): void {
@@ -131,10 +143,16 @@ function renderMain(root: El): void {
   // -- tabs
   const tabs = h("div", "tabs");
   const tabBtns: Record<string, El> = {};
-  for (const [key, label] of [["chats", "聊天"], ["friends", "通讯录"], ["me", "我"]] as const) {
+  const tabDefs: [string, string][] = [
+    ["chats", "聊天"],
+    ["friends", "通讯录"],
+    ["favorites", "收藏"],
+    ["me", "我"],
+  ];
+  for (const [key, label] of tabDefs) {
     const b = h("button", `tab ${tab === key ? "active" : ""}`, label);
     b.dataset.tab = key;
-    on(b, "click", () => appStore.set(viewAtom, { screen: "main", tab: key }));
+    on(b, "click", () => appStore.set(viewAtom, { screen: "main", tab: key as never }));
     tabBtns[key] = b;
     tabs.append(b);
   }
@@ -159,10 +177,20 @@ function renderMain(root: El): void {
     clear(list);
     if (active === "chats") drawSessions(list, searchInput.value);
     else if (active === "friends") drawFriends(list);
+    else if (active === "favorites") drawFavorites(list);
     else drawMe(list);
   };
 
-  for (const atom of [sessionsAtom, friendsAtom, requestsAtom, viewAtom, balanceAtom, meAtom, connectedAtom]) {
+  for (const atom of [
+    sessionsAtom,
+    friendsAtom,
+    requestsAtom,
+    viewAtom,
+    balanceAtom,
+    meAtom,
+    connectedAtom,
+    favoritesAtom,
+  ]) {
     appStore.sub(atom, () => {
       drawList();
       syncTabHighlight();
@@ -171,6 +199,7 @@ function renderMain(root: El): void {
   on(searchInput, "input", drawList);
   on(themeBtn, "click", () => api.toggleDark());
 
+  if (tab === "favorites") void api.favoritesLoad().catch(() => undefined);
   drawList();
 }
 
@@ -333,6 +362,26 @@ async function createGroupDialog(): Promise<void> {
   }
 }
 
+function drawFavorites(list: El): void {
+  const rows = appStore.get(favoritesAtom);
+  const head = h("div", "list-head", `收藏 (${rows.length})`);
+  list.append(head);
+  if (rows.length === 0) {
+    list.append(h("div", "empty", "长按/右键消息可以收藏"));
+    return;
+  }
+  for (const f of rows) {
+    const row = h("div", "fav-row");
+    const main = h("div", "fav-main");
+    main.append(h("div", "fav-text", f.text || `[${f.kind}]`));
+    main.append(h("div", "fav-meta", `${f.sender.slice(0, 8)} · ${timeShort(f.sent_at_ms)}`));
+    const del = h("button", "btn tiny", "删除");
+    on(del, "click", () => void api.favoriteRemove(f.id).catch((e) => toast(String(e).slice(0, 100))));
+    row.append(main, del);
+    list.append(row);
+  }
+}
+
 function drawMe(list: El): void {
   const me = appStore.get(meAtom);
   const balance = appStore.get(balanceAtom);
@@ -352,7 +401,11 @@ function drawMe(list: El): void {
   on(save, "click", () => {
     void api.invokeUpdateProfile(sig.value).catch((e) => toast(String(e).slice(0, 120)));
   });
-  list.append(card, wallet, sig, save);
+  const secret = h("button", "btn", "启用秘密聊天 (E2EE)");
+  on(secret, "click", () => {
+    void api.secretEnable().catch((e) => toast(String(e).slice(0, 120)));
+  });
+  list.append(card, wallet, sig, save, secret);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,9 +415,19 @@ function drawMe(list: El): void {
 function renderChat(root: El, convId: string, title: string, isGroup: boolean): void {
   clear(root);
   const back = h("button", "icon-btn", "←");
-  on(back, "click", () => appStore.set(viewAtom, { screen: "main", tab: "chats" }));
+  on(back, "click", () => {
+    api.stopSelect();
+    appStore.set(viewAtom, { screen: "main", tab: "chats" });
+  });
   const head = h("div", "chat-head");
-  head.append(back, h("div", "chat-title", title));
+  const headMain = h("div", "chat-head-main");
+  headMain.append(h("div", "chat-title", title));
+  const typingLine = h("div", "typing-line");
+  headMain.append(typingLine);
+  const searchBtn = h("button", "icon-btn", "🔍");
+  searchBtn.title = "在聊天中搜索";
+  on(searchBtn, "click", () => void chatSearchDialog(convId));
+  head.append(back, headMain, searchBtn);
 
   const packets = h("div", "chat-body");
   const footer = h("div", "chat-footer");
@@ -377,9 +440,28 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   const input = h("input", "chat-input") as HTMLInputElement;
   input.placeholder = "输入消息，回车发送";
   const send = h("button", "btn primary", "发送");
-  footer.append(img, red, input, send, imgInput);
+  const lock = h("button", "icon-btn", isGroup ? "" : secretConvs.has(convId) ? "🔒" : "🔓");
+  if (!isGroup) {
+    lock.title = "秘密聊天开关（端到端加密）";
+    on(lock, "click", () => {
+      if (secretConvs.has(convId)) {
+        secretConvs.delete(convId);
+        lock.textContent = "🔓";
+        toast("已切换为普通消息");
+      } else {
+        secretConvs.add(convId);
+        lock.textContent = "🔒";
+        toast("秘密聊天已开启：本会话消息将加密发送");
+      }
+    });
+  }
+  footer.append(img, red, input, send, lock, imgInput);
 
-  root.append(head, packets, footer);
+  // selection bar (merge forward): replaces nothing, sits above the footer
+  const selectBar = h("div", "select-bar");
+  selectBar.hidden = true;
+
+  root.append(head, packets, selectBar, footer);
 
   const me = appStore.get(meAtom);
   const to: string[] = [];
@@ -389,12 +471,62 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
     to.push(parts.find((p) => p !== me.user_id) ?? "");
   }
 
-  // 图片九宫格: consecutive image messages lay out in a grid
+  // -- typing indicator (P1): peer names fade out after 5s
+  const syncTyping = (): void => {
+    const who = appStore.get(typingAtom)[convId];
+    typingLine.textContent = who ? "对方正在输入…" : "";
+  };
+  appStore.sub(typingAtom, syncTyping);
+  syncTyping();
+
+  // -- selection mode (merge forward)
+  const syncSelectBar = (): void => {
+    const sel = appStore.get(selectModeAtom);
+    const active = sel !== null && sel.convId === convId;
+    selectBar.hidden = !active;
+    if (!active) return;
+    clear(selectBar);
+    const count = h("span", "sel-count", `已选 ${sel.seqs.length} 条`);
+    const merge = h("button", "btn tiny primary", "合并转发");
+    on(merge, "click", () => {
+      const msgs = (appStore.get(chatsAtom)[convId] ?? []).filter((m) => sel.seqs.includes(m.seq));
+      if (msgs.length === 0) {
+        toast("先勾选要转发的消息");
+        return;
+      }
+      void mergeForwardDialog(convId, msgs);
+    });
+    const cancel = h("button", "btn tiny", "取消");
+    on(cancel, "click", () => api.stopSelect());
+    selectBar.append(count, merge, cancel);
+  };
+  appStore.sub(selectModeAtom, syncSelectBar);
+  syncSelectBar();
+
+  // -- message list
   const draw = (): void => {
+    const sel = appStore.get(selectModeAtom);
+    const selecting = sel !== null && sel.convId === convId;
     const messages = appStore.get(chatsAtom)[convId] ?? [];
     clear(packets);
+    // P1: paged history — offer the next page while the cursor is set
+    const cursor = appStore.get(historyCursorAtom)[convId];
+    if (cursor !== null && cursor !== undefined) {
+      const more = h("button", "history-more", "加载更早的消息");
+      on(more, "click", () => {
+        const meNow = appStore.get(meAtom);
+        if (!meNow) return;
+        void api.loadHistory(convId, meNow.user_id).catch((e) => toast(String(e).slice(0, 100)));
+      });
+      packets.append(more);
+    }
     let grid: El | null = null;
     for (const m of messages) {
+      if (selecting) {
+        packets.append(selectableRow(m, sel.seqs.includes(m.seq), convId));
+        grid = null;
+        continue;
+      }
       if (m.kind === "image") {
         if (grid === null) {
           grid = h("div", m.mine ? "img-grid mine" : "img-grid");
@@ -404,22 +536,30 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
         continue;
       }
       grid = null;
-      packets.append(renderMsg(m));
+      packets.append(renderMsg(m, convId, to, isGroup));
     }
     packets.scrollTop = packets.scrollHeight;
   };
   appStore.sub(chatsAtom, draw);
+  appStore.sub(historyCursorAtom, draw);
   draw();
 
   const doSend = (): void => {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
-    void api.sendText(convId, to, text).catch((e) => toast(String(e).slice(0, 120)));
+    const secret = !isGroup && secretConvs.has(convId);
+    const p = secret
+      ? api.sendSecretText(convId, to, text)
+      : api.sendText(convId, to, text);
+    p.catch((e) => toast(String(e).slice(0, 120)));
   };
   on(send, "click", doSend);
   on(input, "keydown", (e) => {
     if (e.key === "Enter") doSend();
+  });
+  on(input, "input", () => {
+    if (input.value.trim()) api.typingThrottled(convId, to);
   });
   on(img, "click", () => imgInput.click());
   on(imgInput, "change", () => {
@@ -430,6 +570,20 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   on(red, "click", () => void redpacketDialog(convId, to));
 }
 
+function selectableRow(m: ChatMsg, checked: boolean, convId: string): El {
+  const row = h("div", `msg-row select ${m.mine ? "mine" : "theirs"}`);
+  const box = h("input") as HTMLInputElement;
+  box.type = "checkbox";
+  box.checked = checked;
+  on(box, "change", () => {
+    api.toggleSelect(convId, m.seq);
+  });
+  const bubble = h("div", `bubble ${m.mine ? "out" : "in"}`);
+  bubble.append(h("span", "msg-text", m.text || `[${m.kind}]`));
+  row.append(box, bubble);
+  return row;
+}
+
 function bubbleWrap(inner: El, m: ChatMsg): El {
   const row = h("div", `msg-row ${m.mine ? "mine" : "theirs"}`);
   const bubble = h("div", `bubble ${m.mine ? "out" : "in"}`);
@@ -438,12 +592,16 @@ function bubbleWrap(inner: El, m: ChatMsg): El {
   return row;
 }
 
-function renderMsg(m: ChatMsg): El {
+function renderMsg(m: ChatMsg, convId: string, _to: string[], isGroup: boolean): El {
   if (m.kind === "system") return h("div", "sys-msg", m.text ?? "");
   let inner: El;
   switch (m.kind) {
     case "text":
       inner = h("span", "msg-text", m.text ?? "");
+      break;
+    case "e2ee":
+      inner = h("span", `msg-text ${m.decryptFailed ? "e2ee-bad" : "e2ee-ok"}`);
+      inner.textContent = (m.encrypted ? "🔐 " : "") + (m.text ?? "");
       break;
     case "redpacket":
       inner = h("div", "redpacket");
@@ -465,10 +623,162 @@ function renderMsg(m: ChatMsg): El {
         inner.append(grab);
       }
       break;
+    case "msg.forward": {
+      inner = h("div", "fwd-card");
+      inner.append(h("div", "fwd-head", "↪️ 转发消息"));
+      inner.append(h("div", "fwd-text", m.text ?? String(m.payload?.text ?? "")));
+      break;
+    }
+    case "msg.merge": {
+      const items = (m.payload?.items as ChatMsg[] | undefined) ?? [];
+      inner = h("div", "fwd-card");
+      inner.append(h("div", "fwd-head", `🗂 ${m.payload?.title ?? "聊天记录"}`));
+      for (const it of items.slice(0, 4)) {
+        inner.append(h("div", "fwd-item", `${String(it.sender).slice(0, 8)}: ${it.text ?? ""}`));
+      }
+      if (items.length > 4) inner.append(h("div", "fwd-item", `…共 ${items.length} 条`));
+      break;
+    }
     default:
-      inner = h("span", "msg-text", "[不支持的消息]");
+      inner = h("span", "msg-text", `[不支持的消息: ${m.kind}]`);
   }
-  return bubbleWrap(inner, m);
+  const wrap = bubbleWrap(inner, m);
+  // own messages carry the read-receipt mark (P1): ✓✓ once read, ✓ sent
+  if (m.mine && (m.kind === "text" || m.kind === "e2ee")) {
+    const mark = h("span", `read-mark ${m.read ? "read" : ""}`, m.read ? "✓✓" : "✓");
+    wrap.append(mark);
+  }
+  if (!isGroup) {
+    on(wrap, "contextmenu", (e) => {
+      e.preventDefault();
+      showMsgMenu(e as MouseEvent, m, convId);
+    });
+  }
+  return wrap;
+}
+
+/** The P1 bubble action menu (right-click / long-press). */
+function showMsgMenu(ev: MouseEvent, m: ChatMsg, convId: string): void {
+  hideMsgMenu();
+  const menu = h("div", "msg-menu");
+  const me = appStore.get(meAtom);
+  const addItem = (label: string, fn: () => void): void => {
+    const it = h("button", "msg-menu-item", label);
+    on(it, "click", () => {
+      hideMsgMenu();
+      fn();
+    });
+    menu.append(it);
+  };
+  addItem("复制", () => {
+    void navigator.clipboard?.writeText(m.text ?? "").then(
+      () => toast("已复制"),
+      () => toast("复制失败"),
+    );
+  });
+  if (m.kind === "text" || m.kind === "e2ee" || m.kind === "msg.forward") {
+    addItem("收藏", () => {
+      void api.favoriteAdd(m, convId).catch((e) => toast(String(e).slice(0, 100)));
+    });
+    addItem("转发", () => void forwardDialog(m, convId));
+  }
+  if (m.mine && me && m.msgId) {
+    addItem("撤回", () => {
+      void api.recallMsg(convId, m.msgId ?? "").catch((e) => toast(String(e).slice(0, 100)));
+    });
+  }
+  addItem("多选", () => api.startSelect(convId));
+  menu.style.left = `${Math.min(ev.clientX, window.innerWidth - 150)}px`;
+  menu.style.top = `${Math.min(ev.clientY, window.innerHeight - 200)}px`;
+  document.body.append(menu);
+  // click-away closes it
+  window.setTimeout(() => {
+    document.addEventListener("pointerdown", function away() {
+      document.removeEventListener("pointerdown", away);
+      hideMsgMenu();
+    });
+  }, 0);
+}
+
+function hideMsgMenu(): void {
+  for (const el of document.querySelectorAll(".msg-menu")) el.remove();
+}
+
+async function forwardDialog(m: ChatMsg, fromConv: string): Promise<void> {
+  const target = await pickConversation("转发到会话");
+  if (!target) return;
+  const snapshot = api.snapshotOf(m, fromConv);
+  try {
+    await api.forwardMessage(target.convId, target.to, snapshot);
+    toast(`已转发到 ${target.title}`);
+  } catch (e) {
+    toast(String(e).slice(0, 100));
+  }
+}
+
+async function mergeForwardDialog(fromConv: string, msgs: ChatMsg[]): Promise<void> {
+  const target = await pickConversation("合并转发到会话");
+  if (!target) return;
+  const items = msgs.map((m) => api.snapshotOf(m, fromConv));
+  try {
+    await api.mergeForward(target.convId, target.to, items);
+    api.stopSelect();
+    toast(`已合并转发 ${items.length} 条到 ${target.title}`);
+  } catch (e) {
+    toast(String(e).slice(0, 100));
+  }
+}
+
+interface ConvTarget {
+  convId: string;
+  title: string;
+  to: string[];
+}
+
+/** Conversation picker built on prompt() — same style as the other dialogs. */
+async function pickConversation(promptTitle: string): Promise<ConvTarget | null> {
+  const sessions = appStore.get(sessionsAtom);
+  const friends = appStore.get(friendsAtom);
+  const me = appStore.get(meAtom);
+  if (!me) return null;
+  const lines = [
+    ...sessions.map((s, i) => `${i + 1}. ${s.title} (${s.convId.slice(0, 12)}…)`),
+    ...friends.map((f, i) => `${sessions.length + i + 1}. 好友 ${f.remark || f.friend_id}`),
+  ];
+  const sel = window.prompt(`${promptTitle} — 输入序号:\n${lines.join("\n")}`);
+  if (!sel) return null;
+  const idx = parseInt(sel.trim(), 10) - 1;
+  if (Number.isNaN(idx) || idx < 0) return null;
+  if (idx < sessions.length) {
+    const s = sessions[idx];
+    const to = s.isGroup ? [] : [s.convId.slice(2).split("~").find((p) => p !== me.user_id) ?? ""];
+    return { convId: s.convId, title: s.title, to };
+  }
+  const f = friends[idx - sessions.length];
+  if (!f) return null;
+  const convId = `d-${[me.user_id, f.friend_id].sort().join("~")}`;
+  return { convId, title: f.remark || f.friend_id, to: [f.friend_id] };
+}
+
+/** Cloud search across my conversations (per-conv scoping arrives with the
+ * P3 search-service; the endpoint already authorizes per user). */
+async function chatSearchDialog(_convId: string): Promise<void> {
+  const q = window.prompt("搜索聊天记录（云端）:");
+  if (!q) return;
+  try {
+    await api.searchMessages(q.trim());
+    const hits = appStore.get(searchHitsAtom) ?? [];
+    if (hits.length === 0) {
+      toast("没有匹配的消息");
+      return;
+    }
+    const lines = hits.map(
+      (r, i) => `${i + 1}. ${String(r.sender).slice(0, 8)}: ${r.text ?? ""} (${timeShort(r.sent_at_ms)})`,
+    );
+    toast(`找到 ${hits.length} 条（前 3 条）:\n` + lines.slice(0, 3).join("\n"));
+  } catch (e) {
+    toast(String(e).slice(0, 100));
+  }
 }
 
 function imageCell(m: ChatMsg): El {
@@ -527,6 +837,7 @@ export function renderRoot(root: El): void {
     api.applyTheme();
     const v = appStore.get(viewAtom);
     clear(root);
+    hideMsgMenu();
     switch (v.screen) {
       case "auth":
         renderAuth(root);

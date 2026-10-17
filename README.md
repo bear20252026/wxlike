@@ -311,6 +311,52 @@ cargo test -p wxlike-platform --test keys      # 8 项（认领不重复/目录�
 cargo test -p wxlike-net --test tofu           # 5 项（首连钉扎/伪造证书拒绝/跨名隔离）
 ```
 
+## P1 体验补齐（合同 §第五条 P1：五件套 + 历史 + 回执 + 秘密聊天）
+
+P1 四项交付全部落地，新增 24 项测试（下限 10）：
+
+**① E2EE 接入客户端消息路径**（秘密聊天雏形 + 回退日志）：UI Rust 层持有本会话
+Olm 账户（`AppState.secret`），`secret_enable` 发布预密钥目录；锁形开关开启后
+`send_secret_text` 以 `Custom{kind:"e2ee.dm"}` 密文进消息路径，接收端经
+`render_event` 解密后渲染 🔐 气泡。**回退是文档化行为**：对端无预密钥/预密钥耗尽/
+加密失败时 warn 日志 + 明文发送（消息不丢），P4 完整秘密聊天时改为拒绝。
+
+**② 消息操作五件套**：
+- **正在输入**：`Custom{kind:"typing"}` 瞬态帧——hub 在 `handle_inbound` 早期识别，
+  只投在线（`route_or_fanout(..., park_offline=false)`），**不落库、不暂存、不推送**；
+  这是 P3 `high_priority` 通道的过渡形态。前端 2.5s 节流发送、5s 自动消失。
+- **转发/合并转发**：`msg.forward`（单条快照）/`msg.merge`（多条 bundle），快照式——
+  原文撤回不影响已转发副本；右键菜单 + 多选栏（checkbox）驱动。
+- **收藏**：`crates/platform/src/favorites.rs`，**快照存储**（原文撤回/删除后自己的
+  收藏还在），结构化列 + `created_at` 游标分页；全部按 owner 隔离，他人收藏一律 404
+  （反探测）。
+- **搜索协议**：`Store::search_messages` 在 Rust 侧对解码后的 preview 文本做
+  大小写折叠子串匹配（SQLite `CAST(blob) LIKE` 对带长度前缀的 bincode 不可靠且只折
+  ASCII），服务端 `GET /api/search/messages` 只在**授权会话集**内搜
+  （组=成员表，直聊=conv 两半），跨用户零泄漏。
+
+**③ UI 历史消息加载**（云同步闭环）：`Store::page_messages`（newest-first 翻页，
+`next_before_seq` 指向本页最旧一行）→ server `GET /api/history/{conv_id}`（同一条
+鉴权规则）→ UI「加载更早的消息」按钮，按 `msg_id` 去重合并。撤回行回占位文本，
+原文不可读回。
+
+**④ 已读回执 UI**：打开会话/聊天窗内收到消息即回发 `Receipt::Read`（hub 按
+`msg_id` 反查原作者定向回投），自己气泡 ✓ → ✓✓。
+
+测试：`core/store_page_search`(6) · `platform/favorites`(5) · `net/typing_channel`(3)
+· `server/history_search_api`(5) · `ui/ui_commands` p1_*(5)。演示命令序列见
+`server/tests/history_search_api.rs`（真实栈：起 stack→注册→QUIC 收发→翻页→鉴权拒绝）。
+
+```bash
+cargo test -p wxlike-server --test history_search_api   # 5 项（翻页/鉴权/搜索范围/通配符字面量/瞬态帧）
+cargo test -p wxlike-net --test typing_channel           # 3 项（在线送达/不落库/不暂存）
+cargo test -p wxlike-platform --test favorites           # 5 项（快照/所有权/分页/校验/HTTP 面）
+```
+
+服务结构说明：`server/src/lib.rs` 现承载全部装配（`start_stack`：platform + hub +
+HTTP 路由），`main.rs` 只读环境变量——集成测试直接 `wxlike_server::start_stack`
+起真实栈，不写 mock。
+
 ## 系统推送（WP-06）
 
 `crates/push`：`PushProvider` trait + `NoopProvider`（默认，带计数）+

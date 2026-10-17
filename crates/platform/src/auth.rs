@@ -73,7 +73,7 @@ pub struct Authed {
 }
 
 impl Authed {
-    fn bearer_from(headers: &axum::http::HeaderMap) -> Option<&str> {
+    pub fn bearer_from(headers: &axum::http::HeaderMap) -> Option<&str> {
         let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
         let (_, token) = raw.split_once(char::is_whitespace)?;
         let scheme = &raw[..raw.len() - token.len() - 1];

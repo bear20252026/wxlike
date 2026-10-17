@@ -209,6 +209,23 @@ impl Db {
                 last_seen     INTEGER NOT NULL,
                 PRIMARY KEY (user_id, platform)
             );
+
+            -- P1 favorites: a snapshot per favorited message (survives the
+            -- original being recalled or deleted). Structured columns, not a
+            -- JSON blob, so paging stays an index walk.
+            CREATE TABLE IF NOT EXISTS favorites (
+                id            TEXT PRIMARY KEY,
+                user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                source_conv   TEXT NOT NULL DEFAULT '',
+                source_msg_id TEXT NOT NULL DEFAULT '',
+                kind          TEXT NOT NULL DEFAULT 'text',
+                text          TEXT NOT NULL DEFAULT '',
+                media_id      TEXT NOT NULL DEFAULT '',
+                sender        TEXT NOT NULL DEFAULT '',
+                sent_at_ms    INTEGER NOT NULL DEFAULT 0,
+                created_at    INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, created_at);
             "#,
         )?;
         Ok(())

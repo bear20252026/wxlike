@@ -23,11 +23,13 @@
 
 use std::io::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 use tauri::Manager as _;
-use wxlike_core::{Envelope, MsgBody};
+use wxlike_core::custom_kind;
+use wxlike_core::e2ee::Crypto;
+use wxlike_core::{Envelope, MsgBody, MsgId};
 use wxlike_net::Client;
 
 /// Deterministic 1:1 conversation id (mirror of the platform's rule; kept
@@ -118,6 +120,28 @@ impl Http {
         }
     }
 
+    /// 2xx-or-bust for endpoints that return no body (204 and friends).
+    fn expect_empty(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        let resp = match body {
+            Some(v) => self.req(method, path).send_json(v.clone()),
+            None => self.req(method, path).call(),
+        };
+        match resp {
+            Ok(resp) if resp.status() < 300 => Ok(()),
+            Ok(resp) => Err(format!("request failed ({})", resp.status())),
+            Err(ureq::Error::Status(status, resp)) => {
+                let msg = resp.into_string().unwrap_or_default();
+                Err(format!("{msg} ({status})"))
+            }
+            Err(err) => Err(format!("{method} {path}: {err}")),
+        }
+    }
+
     /// Uploads bytes as the platform's multipart form (`bytes` + `sha256`).
     fn upload(
         &self,
@@ -204,12 +228,22 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// 32-char hex → 16-byte msg id (no panics on odd input).
+fn decode_msg_id(s: &str) -> Option<MsgId> {
+    let bytes = hex::decode(s).ok()?;
+    <[u8; 16]>::try_from(bytes).ok()
+}
+
 /// One window's whole backend state. Managed by Tauri; tests drive it via `Arc`.
 pub struct AppState {
     http: Mutex<Http>,
     client: Mutex<Option<Client>>,
     hub_addr: Mutex<Option<String>>,
     seq: AtomicU64,
+    /// P1 secret chat: the local Olm account, held for the app session
+    /// (key persistence lands with P4's full secret chats). Shared with the
+    /// receive pump so inbound sealed payloads decrypt before emit.
+    secret: Arc<Mutex<Option<Crypto>>>,
 }
 
 impl AppState {
@@ -219,6 +253,7 @@ impl AppState {
             client: Mutex::new(None),
             hub_addr: Mutex::new(None),
             seq: AtomicU64::new(1),
+            secret: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -503,9 +538,254 @@ impl AppState {
         Ok(())
     }
 
+    // ---- P1: typing / forward / merge forward --------------------------------
+
+    /// Transient "I'm typing" ping. The hub routes it online-only; it is
+    /// never stored, so nothing is sent back on reconnect.
+    pub fn send_typing(&self, conv_id: &str, to: Vec<String>) -> Result<(), String> {
+        self.send_body(
+            conv_id,
+            to,
+            MsgBody::Custom {
+                kind: custom_kind::TYPING.into(),
+                payload: serde_json::json!({ "conv_id": conv_id }),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Forwards one message into another conversation as a structured
+    /// snapshot (the original stays where it is; a recall does not follow).
+    pub fn forward_message(
+        &self,
+        to_conv: &str,
+        to: Vec<String>,
+        item: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.send_body(
+            to_conv,
+            to,
+            MsgBody::Custom {
+                kind: custom_kind::FORWARD.into(),
+                payload: item.clone(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Recalls one of my own messages (hub verifies authorship; a forged
+    /// recall is dropped server-side, WP-03 A3).
+    pub fn recall_msg(&self, conv_id: &str, target_hex: &str) -> Result<(), String> {
+        let target: MsgId = decode_msg_id(target_hex).ok_or("bad msg id")?;
+        let me = self.user_id()?;
+        let env = Envelope::recall(conv_id, me, target);
+        let client = self.client()?;
+        wait(client.send(&env)).map_err(|e| format!("send: {e:#}"))?;
+        Ok(())
+    }
+
+    /// Read receipt for everything up to `up_to_hex` (P1): the hub routes it
+    /// back to the original author, whose UI flips ✓ to ✓✓.
+    pub fn send_read_receipt(&self, conv_id: &str, up_to_hex: &str) -> Result<(), String> {
+        let up_to: MsgId = decode_msg_id(up_to_hex).ok_or("bad msg id")?;
+        let me = self.user_id()?;
+        let mut env = Envelope::with_body(
+            conv_id,
+            me,
+            Vec::new(),
+            0,
+            MsgBody::Notice(String::new()),
+        );
+        env.kind = wxlike_core::MsgKind::System;
+        env.quote_of = Some(up_to);
+        env.receipt = Some(wxlike_core::Receipt::Read { up_to_msg_id: up_to });
+        let client = self.client()?;
+        wait(client.send(&env)).map_err(|e| format!("send: {e:#}"))?;
+        Ok(())
+    }
+
+    /// Merged forward: several messages bundled into one card.
+    pub fn merge_forward(
+        &self,
+        to_conv: &str,
+        to: Vec<String>,
+        items: &[serde_json::Value],
+    ) -> Result<(), String> {
+        if items.is_empty() {
+            return Err("没有选中要合并转发的消息".into());
+        }
+        self.send_body(
+            to_conv,
+            to,
+            MsgBody::Custom {
+                kind: custom_kind::MERGE_FORWARD.into(),
+                payload: serde_json::json!({
+                    "title": format!("{} 条聊天记录", items.len()),
+                    "items": items,
+                }),
+            },
+        )?;
+        Ok(())
+    }
+
+    // ---- P1: history + search (cloud sync through the data plane) ------------
+
+    /// One page of server-side history for a conversation; `before_seq = 0`
+    /// means "newest page". Returns the raw reply (`messages` +
+    /// `next_before_seq`), already mapped to the event payload shape.
+    pub fn load_history(
+        &self,
+        conv_id: &str,
+        before_seq: i64,
+        limit: usize,
+    ) -> Result<serde_json::Value, String> {
+        self.http().expect_json(
+            "GET",
+            &format!("/api/history/{conv_id}?before_seq={before_seq}&limit={limit}"),
+            None,
+        )
+    }
+
+    pub fn search_messages(&self, q: &str, limit: usize) -> Result<serde_json::Value, String> {
+        self.http().expect_json(
+            "GET",
+            &format!("/api/search/messages?q={}&limit={limit}", urlencode(q)),
+            None,
+        )
+    }
+
+    // ---- P1: favorites -------------------------------------------------------
+
+    pub fn favorite_add(&self, item: &serde_json::Value) -> Result<serde_json::Value, String> {
+        self.http()
+            .expect_json("POST", "/api/favorites", Some(item))
+    }
+
+    pub fn favorites_list(&self, limit: usize) -> Result<serde_json::Value, String> {
+        self.http()
+            .expect_json("GET", &format!("/api/favorites?limit={limit}"), None)
+    }
+
+    pub fn favorite_remove(&self, id: &str) -> Result<(), String> {
+        self.http()
+            .expect_empty("DELETE", &format!("/api/favorites/{id}"), None)
+    }
+
+    // ---- P1: E2EE secret chat (prototype + documented fallback) --------------
+
+    /// Enables the local Olm account and publishes its pre-key bundle to the
+    /// platform directory. Idempotent: enabling twice keeps the same keys.
+    pub fn secret_enable(&self) -> Result<String, String> {
+        {
+            let guard = self
+                .secret
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(crypto) = guard.as_ref() {
+                return Ok(crypto.device().identity_fingerprint());
+            }
+        }
+        let me = self.user_id()?;
+        let mut crypto = Crypto::new(wxlike_core::e2ee::Device::new());
+        let bundle = crypto.bundle_refilled(&me);
+        self.http().expect_empty(
+            "POST",
+            "/api/keys",
+            Some(&serde_json::to_value(&bundle).map_err(|e| e.to_string())?),
+        )?;
+        let fingerprint = crypto.device().identity_fingerprint();
+        *self.secret.lock().unwrap_or_else(PoisonError::into_inner) = Some(crypto);
+        Ok(fingerprint)
+    }
+
+    pub fn secret_enabled(&self) -> bool {
+        self.secret
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Sends one secret-chat message. On any crypto-side failure (no peer
+    /// bundle, drained pre-keys) the send **falls back to cleartext** with a
+    /// warn log — the P1 contract's documented fallback behavior; a future
+    /// milestone makes refusal the default once key management is complete.
+    pub fn send_secret_text(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        text: &str,
+    ) -> Result<(), String> {
+        let peer = to
+            .first()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| "秘密聊天需要明确的接收方".to_string())?
+            .clone();
+        let sealed = {
+            let mut guard = self
+                .secret
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let Some(crypto) = guard.as_mut() else {
+                return Err("secret chat not enabled".into());
+            };
+            let bundle = if crypto.has_session_with(&peer) {
+                None
+            } else {
+                let fetched = self
+                    .http()
+                    .expect_json("GET", &format!("/api/keys/{peer}"), None)
+                    .ok()
+                    .and_then(|v| {
+                        serde_json::from_value::<wxlike_core::e2ee::PreKeyBundle>(v).ok()
+                    });
+                match fetched {
+                    Some(p) if !p.identity.is_empty() && !p.one_time_keys.is_empty() => Some(p),
+                    // never published, drained, or undecodable: fall back
+                    _ => {
+                        eprintln!(
+                            "[e2ee] no claimable pre-key for {peer}; falling back to cleartext"
+                        );
+                        None
+                    }
+                }
+            };
+            match bundle {
+                Some(b) => crypto
+                    .encrypt_dm(&peer, &b, text.as_bytes())
+                    .map(Some)
+                    .unwrap_or_else(|err| {
+                        eprintln!(
+                            "[e2ee] encrypt to {peer} failed ({err}); falling back to cleartext"
+                        );
+                        None
+                    }),
+                None => None,
+            }
+        };
+        match sealed {
+            Some(sealed) => {
+                let payload = serde_json::json!({
+                    "peer": peer,
+                    "pre_key": sealed.pre_key,
+                    "body": sealed.body,
+                });
+                self.send_body(
+                    conv_id,
+                    to,
+                    MsgBody::Custom {
+                        kind: custom_kind::E2EE_DM.into(),
+                        payload,
+                    },
+                )?;
+                Ok(())
+            }
+            None => self.send_text(conv_id, to, text),
+        }
+    }
+
     /// The next envelope from the hub, as the structured event payload the
-    /// frontend renders. `None` when not connected. (The live pump in the
-    /// running app loops on this; tests call it directly.)
+    /// frontend renders (`None` when not connected; the live pump in the
+    /// running app loops on this, tests call it directly).
     pub async fn next_event(&self) -> Result<Option<serde_json::Value>, String> {
         let Some(client) = self
             .client
@@ -519,7 +799,7 @@ impl AppState {
             .next_envelope()
             .await
             .map_err(|e| format!("recv: {e:#}"))?;
-        Ok(Some(event_payload(&env)))
+        Ok(Some(self.render_event(&env)))
     }
 
     /// The receiver pump: forwards hub envelopes to the webview as `im-in`.
@@ -532,12 +812,13 @@ impl AppState {
         else {
             return Err("未连接到服务器".into());
         };
+        let secret = self.secret.clone();
         tauri::async_runtime::spawn(async move {
             use tauri::Emitter as _;
             loop {
                 match client.next_envelope().await {
                     Ok(env) => {
-                        let _ = app.emit("im-in", event_payload(&env));
+                        let _ = app.emit("im-in", render_event_with(&env, &secret));
                     }
                     Err(_) => {
                         let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
@@ -548,6 +829,12 @@ impl AppState {
         });
         Ok(())
     }
+
+    /// Event payload with the local secret account applied (sealed messages
+    /// come out as cleartext for the UI, or as a marked failure).
+    fn render_event(&self, env: &Envelope) -> serde_json::Value {
+        render_event_with(env, &self.secret)
+    }
 }
 
 /// A downloaded object for the webview: base64 (data-URL ready) + type.
@@ -557,14 +844,32 @@ pub struct MediaBlob {
     pub content_type: String,
 }
 
-/// Maps an envelope to the event payload the UI renders.
-fn event_payload(env: &Envelope) -> serde_json::Value {
+/// Maps an envelope to the event payload the UI renders. Sealed secret-chat
+/// payloads are decrypted here (the fallback path marks failures instead of
+/// dropping the card).
+fn render_event_with(env: &Envelope, secret: &Mutex<Option<Crypto>>) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "sender": env.sender,
         "conv_id": env.conv_id,
         "seq": env.seq,
         "sent_at_ms": env.sent_at_ms,
+        "msg_id": hex(&env.msg_id),
+        "quote_of": env.quote_of.map(|m| hex(&m)),
     });
+    if let Some(receipt) = env.receipt {
+        payload["kind"] = "receipt".into();
+        payload["receipt"] = serde_json::json!({
+            "state": match receipt {
+                wxlike_core::Receipt::Delivered => "delivered",
+                wxlike_core::Receipt::Read { .. } => "read",
+            },
+            "target": env
+                .refers_to()
+                .map(|m| hex(&m))
+                .unwrap_or_default(),
+        });
+        return payload;
+    }
     match &env.body {
         MsgBody::Text(t) => {
             payload["kind"] = "text".into();
@@ -585,9 +890,63 @@ fn event_payload(env: &Envelope) -> serde_json::Value {
         MsgBody::Custom { kind, payload: p } => {
             payload["kind"] = kind.as_str().into();
             payload["payload"] = p.clone();
+            if kind == custom_kind::E2EE_DM {
+                payload["kind"] = "e2ee".into();
+                match try_decrypt_secret(secret, p) {
+                    Some(Ok(text)) => {
+                        payload["text"] = text.into();
+                        payload["encrypted"] = true.into();
+                    }
+                    Some(Err(err)) => {
+                        eprintln!("[e2ee] inbound decrypt failed: {err}");
+                        payload["text"] = "[加密消息·无法解密]".into();
+                        payload["decrypt_failed"] = true.into();
+                    }
+                    None => {
+                        payload["text"] = "[加密消息·本端未启用或格式不符]".into();
+                        payload["decrypt_failed"] = true.into();
+                    }
+                }
+            }
         }
     }
     payload
+}
+
+/// Standalone decryption used by [`render_event_with`] (kept separate so the
+/// borrow of the secret lock stays short).
+fn try_decrypt_secret(
+    secret: &Mutex<Option<Crypto>>,
+    payload: &serde_json::Value,
+) -> Option<Result<String, String>> {
+    let peer = payload.get("peer")?.as_str()?.to_string();
+    let sealed = wxlike_core::e2ee::Sealed {
+        pre_key: payload.get("pre_key")?.as_bool()?,
+        body: payload.get("body")?.as_str()?.to_string(),
+    };
+    let mut guard = secret.lock().unwrap_or_else(PoisonError::into_inner);
+    let crypto = guard.as_mut()?;
+    Some(
+        crypto
+            .decrypt_dm(&peer, &sealed)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(|err| format!("{err}")),
+    )
+}
+
+/// Minimal percent-encoder for one query value (the search box can carry
+/// anything the user typed, including `&` or CJK).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +1187,115 @@ pub mod commands {
     ) -> Result<(), String> {
         state.start_recv_pump(app)
     }
+
+    // ---- P1 commands: five message operations + history + secret chat ------
+
+    #[tauri::command]
+    pub fn send_typing(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        to: Vec<String>,
+    ) -> Result<(), String> {
+        state.send_typing(&conv_id, to)
+    }
+
+    #[tauri::command]
+    pub fn forward_message(
+        state: tauri::State<'_, AppState>,
+        to_conv: String,
+        to: Vec<String>,
+        item: serde_json::Value,
+    ) -> Result<(), String> {
+        state.forward_message(&to_conv, to, &item)
+    }
+
+    #[tauri::command]
+    pub fn recall_msg(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        target: String,
+    ) -> Result<(), String> {
+        state.recall_msg(&conv_id, &target)
+    }
+
+    #[tauri::command]
+    pub fn send_read_receipt(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        up_to: String,
+    ) -> Result<(), String> {
+        state.send_read_receipt(&conv_id, &up_to)
+    }
+
+    #[tauri::command]
+    pub fn merge_forward(
+        state: tauri::State<'_, AppState>,
+        to_conv: String,
+        to: Vec<String>,
+        items: Vec<serde_json::Value>,
+    ) -> Result<(), String> {
+        state.merge_forward(&to_conv, to, &items)
+    }
+
+    #[tauri::command]
+    pub fn load_history(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        before_seq: i64,
+        limit: usize,
+    ) -> Result<serde_json::Value, String> {
+        state.load_history(&conv_id, before_seq, limit)
+    }
+
+    #[tauri::command]
+    pub fn search_messages(
+        state: tauri::State<'_, AppState>,
+        q: String,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value, String> {
+        state.search_messages(&q, limit.unwrap_or(20))
+    }
+
+    #[tauri::command]
+    pub fn favorite_add(
+        state: tauri::State<'_, AppState>,
+        item: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        state.favorite_add(&item)
+    }
+
+    #[tauri::command]
+    pub fn favorites_list(
+        state: tauri::State<'_, AppState>,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value, String> {
+        state.favorites_list(limit.unwrap_or(20))
+    }
+
+    #[tauri::command]
+    pub fn favorite_remove(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+        state.favorite_remove(&id)
+    }
+
+    #[tauri::command]
+    pub fn secret_enable(state: tauri::State<'_, AppState>) -> Result<String, String> {
+        state.secret_enable()
+    }
+
+    #[tauri::command]
+    pub fn secret_enabled(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+        Ok(state.secret_enabled())
+    }
+
+    #[tauri::command]
+    pub fn send_secret_text(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        to: Vec<String>,
+        text: String,
+    ) -> Result<(), String> {
+        state.send_secret_text(&conv_id, to, &text)
+    }
 } // mod commands
 
 /// Runs the app. Kept in the library so `main.rs` stays a two-liner and the
@@ -865,6 +1333,19 @@ pub fn run() {
             commands::send_image,
             commands::send_redpacket_msg,
             commands::start_recv_pump,
+            commands::send_typing,
+            commands::forward_message,
+            commands::recall_msg,
+            commands::send_read_receipt,
+            commands::merge_forward,
+            commands::load_history,
+            commands::search_messages,
+            commands::favorite_add,
+            commands::favorites_list,
+            commands::favorite_remove,
+            commands::secret_enable,
+            commands::secret_enabled,
+            commands::send_secret_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
