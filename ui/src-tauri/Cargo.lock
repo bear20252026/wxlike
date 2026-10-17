@@ -6329,6 +6329,7 @@ dependencies = [
  "wxlike-net",
  "wxlike-platform",
  "wxlike-push",
+ "wxlike-video",
 ]
 
 [[package]]
@@ -6339,6 +6340,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "hex",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6352,6 +6354,21 @@ dependencies = [
  "wxlike-net",
  "wxlike-platform",
  "wxlike-server",
+]
+
+[[package]]
+name = "wxlike-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "wxlike-core",
 ]
 
 [[package]]

@@ -244,6 +244,9 @@ pub struct AppState {
     /// (key persistence lands with P4's full secret chats). Shared with the
     /// receive pump so inbound sealed payloads decrypt before emit.
     secret: Arc<Mutex<Option<Crypto>>>,
+    /// P2 local message library (client-side SQLite): the chat opens from
+    /// disk instantly, the server history only *adds* older rows.
+    local: Arc<Mutex<Option<LocalStore>>>,
 }
 
 impl AppState {
@@ -254,6 +257,7 @@ impl AppState {
             hub_addr: Mutex::new(None),
             seq: AtomicU64::new(1),
             secret: Arc::new(Mutex::new(None)),
+            local: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -498,6 +502,10 @@ impl AppState {
         let me = self.user_id()?;
         let env = Envelope::with_body(conv_id, me, to, self.next_seq(), body);
         wait(client.send(&env)).map_err(|e| format!("send: {e:#}"))?;
+        // own echo lands in the local library too (decrypted form for e2ee)
+        if !env.is_recall() && !env.is_typing() {
+            self.local_append(&render_event_with(&env, &self.secret));
+        }
         Ok(env)
     }
 
@@ -536,6 +544,229 @@ impl AppState {
             },
         )?;
         Ok(())
+    }
+
+    // ---- P2: rich message types (voice / file / sticker / video) ------------
+
+    /// Voice note: bars arrive precomputed by the webview (decoded from the
+    /// recording), so the Rust side only validates and sends.
+    pub fn send_voice(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        media_id: &str,
+        duration_ms: u32,
+        waveform: Vec<u8>,
+    ) -> Result<(), String> {
+        let payload = wxlike_core::msgmeta::VoicePayload {
+            media_id: media_id.to_string(),
+            duration_ms,
+            waveform,
+            asr: None, // 转文字占位: provider lands at P4
+        };
+        payload.validate().map_err(|e| e)?;
+        self.send_body(
+            conv_id,
+            to,
+            MsgBody::Custom {
+                kind: "msg.voice".into(),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn send_file(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        media_id: &str,
+        name: &str,
+        size: u64,
+        sha256: &str,
+    ) -> Result<(), String> {
+        let payload = wxlike_core::msgmeta::FilePayload {
+            media_id: media_id.to_string(),
+            name: name.to_string(),
+            size,
+            sha256: sha256.to_string(),
+        };
+        payload.validate().map_err(|e| e)?;
+        self.send_body(
+            conv_id,
+            to,
+            MsgBody::Custom {
+                kind: "msg.file".into(),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn send_sticker(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        media_id: &str,
+        pack: &str,
+        id: &str,
+    ) -> Result<(), String> {
+        let payload = wxlike_core::msgmeta::StickerPayload {
+            media_id: media_id.to_string(),
+            pack: pack.to_string(),
+            id: id.to_string(),
+        };
+        payload.validate().map_err(|e| e)?;
+        self.send_body(
+            conv_id,
+            to,
+            MsgBody::Custom {
+                kind: "msg.sticker".into(),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Uploads bytes to video-service (P2 minimal: single-res HLS + thumb +
+    /// progressive MP4) and returns its ingest reply verbatim.
+    pub fn upload_video(&self, bytes: Vec<u8>) -> Result<serde_json::Value, String> {
+        let boundary = "wxlike-ui-video-9a2f1";
+        let mut body = Vec::with_capacity(bytes.len() + 256);
+        let _ = write!(
+            body,
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"bytes\"; filename=\"video\"\r\nContent-Type: video/mp4\r\n\r\n"
+        );
+        body.extend_from_slice(&bytes);
+        let _ = write!(body, "\r\n--{boundary}--\r\n");
+
+        let resp = self
+            .http()
+            .req("POST", "/api/video")
+            .set(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .set("Content-Length", &body.len().to_string())
+            .send_bytes(&body)
+            .map_err(|e| match e {
+                ureq::Error::Status(status, r) => {
+                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
+                    msg
+                }
+                other => format!("upload video: {other}"),
+            })?;
+        resp.into_json::<serde_json::Value>()
+            .map_err(|e| format!("upload video decode: {e}"))
+    }
+
+    /// Downloads a video-service artifact (`/api/video/{id}/play.mp4` or
+    /// `thumb.png`) for the webview. The path allowlist mirrors the server's.
+    pub fn download_video(&self, path: &str) -> Result<MediaBlob, String> {
+        let ok = path.starts_with("/api/video/")
+            && (path.ends_with("/play.mp4") || path.ends_with("/thumb.png"))
+            && !path.contains("..");
+        if !ok {
+            return Err("video path outside /api/video".into());
+        }
+        let resp = self
+            .http()
+            .req("GET", path)
+            .call()
+            .map_err(|e| match e {
+                ureq::Error::Status(404, _) => "video not found".to_string(),
+                other => format!("download video: {other}"),
+            })?;
+        let content_type = resp.content_type().to_string();
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("video read: {e}"))?;
+        Ok(MediaBlob {
+            base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+            content_type,
+        })
+    }
+
+    pub fn send_video(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        payload: &serde_json::Value,
+    ) -> Result<(), String> {
+        let parsed: wxlike_core::msgmeta::VideoPayload =
+            serde_json::from_value(payload.clone()).map_err(|e| format!("bad video payload: {e}"))?;
+        parsed.validate().map_err(|e| e)?;
+        self.send_body(
+            conv_id,
+            to,
+            MsgBody::Custom {
+                kind: "msg.video".into(),
+                payload: payload.clone(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Avatar (P2: 头像接媒体): upload the bytes as media, then point the
+    /// profile at the media id. The id is what other clients fetch and render.
+    pub fn upload_avatar(&self, bytes: Vec<u8>, content_type: &str) -> Result<String, String> {
+        let up = self.upload_media(bytes, content_type, None)?;
+        let media_id = up["media_id"]
+            .as_str()
+            .ok_or("upload returned no media_id")?
+            .to_string();
+        self.update_profile(None, Some(&media_id), None)?;
+        Ok(media_id)
+    }
+
+    // ---- P2: local message library ------------------------------------------
+
+    /// Opens (or creates) the client-side SQLite message store. Called once
+    /// at app start with the app-data path; tests pass a temp path.
+    pub fn local_open(&self, path: &std::path::Path) -> Result<(), String> {
+        let store = LocalStore::open(path).map_err(|e| format!("local db: {e:#}"))?;
+        *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
+        Ok(())
+    }
+
+    pub fn local_ready(&self) -> bool {
+        self.local
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Newest-first local page for a conversation (`before_seq = 0` = latest),
+    /// shaped exactly like the hub event payload so the frontend merges both
+    /// with one code path.
+    pub fn local_history(
+        &self,
+        conv_id: &str,
+        before_seq: i64,
+        limit: usize,
+    ) -> Result<serde_json::Value, String> {
+        let guard = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(store) = guard.as_ref() else {
+            return Ok(serde_json::json!({"messages": [], "next_before_seq": null}));
+        };
+        let rows = store
+            .page(conv_id, before_seq, limit)
+            .map_err(|e| format!("local page: {e:#}"))?;
+        let messages: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
+        let next = rows.last().map(|r| r.seq).filter(|_| rows.len() == limit);
+        Ok(serde_json::json!({ "messages": messages, "next_before_seq": next }))
+    }
+
+    /// Persists one event payload (called by the pump for every inbound
+    /// envelope and by the senders for their own echoes).
+    pub fn local_append(&self, payload: &serde_json::Value) {
+        let guard = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(store) = guard.as_ref() {
+            if let Err(err) = store.append(payload) {
+                eprintln!("[local-db] append failed: {err:#}");
+            }
+        }
     }
 
     // ---- P1: typing / forward / merge forward --------------------------------
@@ -799,7 +1030,9 @@ impl AppState {
             .next_envelope()
             .await
             .map_err(|e| format!("recv: {e:#}"))?;
-        Ok(Some(self.render_event(&env)))
+        let payload = self.render_event(&env);
+        self.local_append(&payload);
+        Ok(Some(payload))
     }
 
     /// The receiver pump: forwards hub envelopes to the webview as `im-in`.
@@ -813,12 +1046,20 @@ impl AppState {
             return Err("未连接到服务器".into());
         };
         let secret = self.secret.clone();
+        let local = self.local.clone();
         tauri::async_runtime::spawn(async move {
             use tauri::Emitter as _;
             loop {
                 match client.next_envelope().await {
                     Ok(env) => {
-                        let _ = app.emit("im-in", render_event_with(&env, &secret));
+                        let payload = render_event_with(&env, &secret);
+                        {
+                            let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
+                            if let Some(store) = guard.as_ref() {
+                                let _ = store.append(&payload);
+                            }
+                        }
+                        let _ = app.emit("im-in", payload);
                     }
                     Err(_) => {
                         let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
@@ -834,6 +1075,170 @@ impl AppState {
     /// come out as cleartext for the UI, or as a marked failure).
     fn render_event(&self, env: &Envelope) -> serde_json::Value {
         render_event_with(env, &self.secret)
+    }
+}
+
+/// P2 local message library: the client's own SQLite mirror of the
+/// conversations it has seen. "打开即渲染" — the chat list paints from here
+/// before the network answers; the server history only contributes *older*
+/// rows (and authoritative recall state).
+///
+/// Rows are the same JSON event payloads the webview renders, so the
+/// frontend merges hub-live, local, and server pages with one function.
+pub struct LocalStore {
+    conn: Mutex<rusqlite::Connection>,
+}
+
+pub struct LocalRow {
+    pub seq: i64,
+    pub conv_id: String,
+    pub sender: String,
+    pub kind: String,
+    pub text: Option<String>,
+    pub media_id: Option<String>,
+    pub payload: Option<serde_json::Value>,
+    pub msg_id: Option<String>,
+    pub quote_of: Option<String>,
+    pub sent_at_ms: i64,
+}
+
+impl LocalRow {
+    fn to_json(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "conv_id": self.conv_id,
+            "seq": self.seq,
+            "sender": self.sender,
+            "kind": self.kind,
+            "sent_at_ms": self.sent_at_ms,
+        });
+        if let Some(t) = &self.text {
+            v["text"] = t.as_str().into();
+        }
+        if let Some(m) = &self.media_id {
+            v["media_id"] = m.as_str().into();
+        }
+        if let Some(p) = &self.payload {
+            v["payload"] = p.clone();
+        }
+        if let Some(id) = &self.msg_id {
+            v["msg_id"] = id.as_str().into();
+        }
+        if let Some(q) = &self.quote_of {
+            v["quote_of"] = q.as_str().into();
+        }
+        v
+    }
+}
+
+impl LocalStore {
+    pub fn open(path: &std::path::Path) -> anyhow::Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let conn = rusqlite::Connection::open(path)?;
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE IF NOT EXISTS local_messages (
+                conv_id    TEXT NOT NULL,
+                seq        INTEGER NOT NULL,
+                msg_id     TEXT NOT NULL,
+                sender     TEXT NOT NULL DEFAULT '',
+                kind       TEXT NOT NULL DEFAULT 'text',
+                text       TEXT,
+                media_id   TEXT,
+                payload    TEXT,
+                quote_of   TEXT,
+                sent_at_ms INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (conv_id, seq, msg_id)
+            );
+            "#,
+        )?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// One event payload → one row. Typing signals and receipts are refused
+    /// by design: they are transient, and the local library must not replay
+    /// "正在输入" on the next launch.
+    pub fn append(&self, payload: &serde_json::Value) -> anyhow::Result<()> {
+        let kind = payload["kind"].as_str().unwrap_or_default();
+        if kind == "typing" || kind == "receipt" {
+            return Ok(());
+        }
+        let conv_id = payload["conv_id"].as_str().unwrap_or_default().to_string();
+        if conv_id.is_empty() {
+            return Ok(()); // not a conversation event
+        }
+        let seq = payload["seq"].as_i64().unwrap_or(0);
+        let msg_id = payload["msg_id"].as_str().unwrap_or_default().to_string();
+        let sender = payload["sender"].as_str().unwrap_or_default().to_string();
+        let text = payload["text"].as_str().map(str::to_string);
+        let media_id = payload["media_id"].as_str().map(str::to_string);
+        let quote_of = payload["quote_of"].as_str().map(str::to_string);
+        let payload_json = payload.get("payload").map(|p| p.to_string());
+        let sent_at_ms = payload["sent_at_ms"].as_i64().unwrap_or(0);
+        self.lock().execute(
+            "INSERT OR IGNORE INTO local_messages
+             (conv_id, seq, msg_id, sender, kind, text, media_id, payload, quote_of, sent_at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                conv_id,
+                seq,
+                msg_id,
+                sender,
+                kind,
+                text,
+                media_id,
+                payload_json,
+                quote_of,
+                sent_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Newest-first page (`before_seq = 0` = latest), returned ascending so
+    /// the caller prepends directly; `limit`-sized pages, shorter page = end.
+    pub fn page(
+        &self,
+        conv_id: &str,
+        before_seq: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<LocalRow>> {
+        let limit = limit.clamp(1, 500) as i64;
+        let mut rows = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT seq, conv_id, sender, kind, text, media_id, payload, msg_id, quote_of, sent_at_ms
+                 FROM local_messages
+                 WHERE conv_id = ?1 AND (?2 = 0 OR seq < ?2)
+                 ORDER BY seq DESC LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![conv_id, before_seq, limit], |r| {
+                let payload_text: Option<String> = r.get(6)?;
+                Ok(LocalRow {
+                    seq: r.get(0)?,
+                    conv_id: r.get(1)?,
+                    sender: r.get(2)?,
+                    kind: r.get(3)?,
+                    text: r.get(4)?,
+                    media_id: r.get(5)?,
+                    payload: payload_text.and_then(|t| serde_json::from_str(&t).ok()),
+                    msg_id: r.get(7)?,
+                    quote_of: r.get(8)?,
+                    sent_at_ms: r.get(9)?,
+                })
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        rows.reverse();
+        Ok(rows)
     }
 }
 
@@ -1296,6 +1701,114 @@ pub mod commands {
     ) -> Result<(), String> {
         state.send_secret_text(&conv_id, to, &text)
     }
+
+    // ---- P2 commands: rich messages + video + avatar + local library ------
+
+    #[tauri::command]
+    pub fn send_voice(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        to: Vec<String>,
+        media_id: String,
+        duration_ms: u32,
+        waveform: Vec<u8>,
+    ) -> Result<(), String> {
+        state.send_voice(&conv_id, to, &media_id, duration_ms, waveform)
+    }
+
+    #[tauri::command]
+    pub fn send_file(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        to: Vec<String>,
+        media_id: String,
+        name: String,
+        size: u64,
+        sha256: String,
+    ) -> Result<(), String> {
+        state.send_file(&conv_id, to, &media_id, &name, size, &sha256)
+    }
+
+    #[tauri::command]
+    pub fn send_sticker(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        to: Vec<String>,
+        media_id: String,
+        pack: String,
+        id: String,
+    ) -> Result<(), String> {
+        state.send_sticker(&conv_id, to, &media_id, &pack, &id)
+    }
+
+    #[tauri::command]
+    pub fn upload_video(
+        state: tauri::State<'_, AppState>,
+        bytes: Vec<u8>,
+    ) -> Result<serde_json::Value, String> {
+        state.upload_video(bytes)
+    }
+
+    #[tauri::command]
+    pub fn send_video(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        to: Vec<String>,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        state.send_video(&conv_id, to, &payload)
+    }
+
+    #[tauri::command]
+    pub fn download_video(
+        state: tauri::State<'_, AppState>,
+        path: String,
+    ) -> Result<MediaBlob, String> {
+        state.download_video(&path)
+    }
+
+    #[tauri::command]
+    pub fn upload_avatar(
+        state: tauri::State<'_, AppState>,
+        bytes: Vec<u8>,
+        content_type: String,
+    ) -> Result<String, String> {
+        state.upload_avatar(bytes, &content_type)
+    }
+
+    #[tauri::command]
+    pub fn local_open(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
+        state.local_open(std::path::Path::new(&path))
+    }
+
+    /// Opens the local message library at the app-data default; called once
+    /// at webview boot (tests open an explicit path instead).
+    #[tauri::command]
+    pub fn local_autopen(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+    ) -> Result<(), String> {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("wxlike-ui"));
+        state.local_open(&dir.join("messages.db"))
+    }
+
+    #[tauri::command]
+    pub fn local_ready(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+        Ok(state.local_ready())
+    }
+
+    #[tauri::command]
+    pub fn local_history(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        before_seq: i64,
+        limit: usize,
+    ) -> Result<serde_json::Value, String> {
+        state.local_history(&conv_id, before_seq, limit)
+    }
 } // mod commands
 
 /// Runs the app. Kept in the library so `main.rs` stays a two-liner and the
@@ -1346,6 +1859,17 @@ pub fn run() {
             commands::secret_enable,
             commands::secret_enabled,
             commands::send_secret_text,
+            commands::send_voice,
+            commands::send_file,
+            commands::send_sticker,
+            commands::upload_video,
+            commands::send_video,
+            commands::download_video,
+            commands::upload_avatar,
+            commands::local_open,
+            commands::local_autopen,
+            commands::local_ready,
+            commands::local_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

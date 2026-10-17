@@ -4868,6 +4868,24 @@ dependencies = [
  "wxlike-net",
  "wxlike-platform",
  "wxlike-push",
+ "wxlike-video",
+]
+
+[[package]]
+name = "wxlike-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "hex",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tower",
+ "tracing",
+ "wxlike-core",
 ]
 
 [[package]]

@@ -13,6 +13,7 @@ wxlike-mq = { path = "../crates/mq" }
 wxlike-platform = { path = "../crates/platform" }
 wxlike-core = { path = "../crates/core" }
 wxlike-push = { path = "../crates/push" }
+wxlike-video = { path = "../crates/video" }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 axum = "0.8"

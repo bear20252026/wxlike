@@ -357,6 +357,55 @@ cargo test -p wxlike-platform --test favorites           # 5 项（快照/所有
 HTTP 路由），`main.rs` 只读环境变量——集成测试直接 `wxlike_server::start_stack`
 起真实栈，不写 mock。
 
+## P2 真机验收 + 体验（合同 §第五条 P2）
+
+**① 消息类型扩展（新增测试 17 项，下限 8）**：语音条 / 文件 / 贴纸 / 视频四类，
+全部走 `MsgBody::Custom`（协议零新增变体），载荷 schema 在
+`core::msgmeta`（类型化 serde + 校验 + 波形算法）：
+- **语音条**：`msg.voice`，40 桶峰值保持波形（`waveform_from_samples`：桶内取峰、
+  按最响桶归一化 0–100、全静音不加 NaN）+ 时长 + `asr` 转文字占位（P4 接入）；
+  webview 端 MediaRecorder 录制、AudioContext 解码 PCM 算波形，播放时按进度点亮。
+- **文件**：`msg.file`，名字拒绝路径分隔符与 `..`（渲染安全），size/sha256 引用校验。
+- **贴纸**：`msg.sticker`，media 内容寻址 + pack/id 标签；图片消息右键"存为贴纸"。
+- **视频**：`msg.video`，引用 video-service（video_id/playlist_url/play_url/时长/
+  倍速档位）；气泡内缩略占位 + 原生 `<video>` 播放 + 0.5–2.0x 变速。
+
+**② video-service 最小版**（新 crate `wxlike-video`，ADR-21，合同"上传→播放闭环"）：
+上传 → FFprobe 元数据 → **一次编码两产物**（720p 封顶 MP4 faststart + `-c copy`
+切 4s HLS 分片，避免二次转码）→ 1s 缩略图 PNG → 原子落盘
+（`{root}/{video_id}/…`，video_id=源字节 SHA-256，重传幂等）。
+路由：`POST /api/video`（multipart）、`GET …/playlist.m3u8 | seg/{name} | thumb.png
+| play.mp4 | meta`；id 与分片名先校验后拼路径（`../` 变体全部 404，无文件读）。
+坏源上传失败即清理临时目录，不留半成品。演示：
+
+```bash
+ffmpeg -y -f lavfi -i testsrc=duration=3:size=640x360:rate=24 -shortest /tmp/demo.mp4
+curl --noproxy '*' -F bytes=@/tmp/demo.mp4 http://127.0.0.1:8099/api/video
+curl --noproxy '*' http://127.0.0.1:8099/api/video/{id}/playlist.m3u8   # #EXTM3U + seg_*.ts
+
+# 测试（ffmpeg 在 PATH 或 WXLIKE_FFMPEG 指定时；同 Redis 真机先例用 --ignored）
+cargo test -p wxlike-video -- --ignored        # 真实转码 3 项
+cargo test -p wxlike-video                     # 纯逻辑 4 项（无需 ffmpeg）
+```
+
+**③ 本地消息库**（客户端 SQLite，"打开即渲染"）：`ui/src-tauri` 的 `LocalStore`，
+app 启动即开（`local_autopen`），收发两侧落库（发送侧存解密后形态）；typing/回执
+**设计上不入库**。重启后 `local_history` 无网即读，服务端历史只补更早的行。
+
+**④ 头像接媒体**：`upload_avatar` = 媒体上传 + profile.avatar=media_id；公开资料带
+id，对端经 `/api/media/{id}` 渲染。"我"页可设置头像并即时回显。
+
+**⑤ 消息列表虚拟化**：聊天窗 DOM 只保留最近 300 个气泡，顶部"显示更早的 N 条"
+按需扩窗（与服务端分页是两层独立的"更早"）。
+
+**环境受限项（合同验收需甲方环境/真机，命令已备好）**：
+- WP-08 双机音视频（≥60s 不断流）：`cargo test -p wxlike-rtc` 34 项全绿 +
+  `--example` 双端脚本就绪，需两台真机实录。
+- WP-10 Redis 真机：本机无 Redis；`REDIS_URL=redis://… cargo test -p wxlike-mq
+  --features redis -- --ignored` 在有 Redis 的环境一键跑。
+- WP-11 tauri dev 真机演示：`cd ui && npm i && npx tauri dev`（构建链已验证）。
+- mac·Linux 构建验证：Tauri 2 前端与 Rust workspace 均为跨平台构建，需对应主机。
+
 ## 系统推送（WP-06）
 
 `crates/push`：`PushProvider` trait + `NoopProvider`（默认，带计数）+

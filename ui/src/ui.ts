@@ -387,10 +387,46 @@ function drawMe(list: El): void {
   const balance = appStore.get(balanceAtom);
   if (!me) return;
   const card = h("div", "me-card");
-  card.append(h("div", "face big", me.name.slice(0, 1).toUpperCase()));
+  const face = h("div", "face big", me.name.slice(0, 1).toUpperCase());
+  if (me.avatar) {
+    // P2 头像接媒体: the avatar field is a media id since the wiring landed
+    void api
+      .fetchMediaDataUrl(me.avatar, true)
+      .then((url) => {
+        const img = document.createElement("img");
+        img.src = url;
+        img.style.width = "100%";
+        img.style.height = "100%";
+        img.style.borderRadius = "16px";
+        img.style.objectFit = "cover";
+        face.replaceChildren(img);
+      })
+      .catch(() => undefined);
+  }
+  card.append(face);
   card.append(h("div", "me-name", me.name));
   card.append(h("div", "me-id", me.user_id));
   card.append(h("div", "me-sign", me.signature || "这个人很懒，什么都没写"));
+  const avatarInput = h("input") as HTMLInputElement;
+  avatarInput.type = "file";
+  avatarInput.accept = "image/*";
+  avatarInput.hidden = true;
+  const avatarBtn = h("button", "btn", "设置头像");
+  on(avatarBtn, "click", () => avatarInput.click());
+  on(avatarInput, "change", () => {
+    const file = avatarInput.files?.[0];
+    if (file) {
+      void api
+        .uploadAvatar(file)
+        .then(() => api.fetchMe())
+        .then(() => {
+          toast("头像已更新");
+          appStore.set(viewAtom, { screen: "main", tab: "me" });
+        })
+        .catch((e) => toast(String(e).slice(0, 120)));
+    }
+    avatarInput.value = "";
+  });
   const wallet = h("div", "wallet");
   wallet.append(h("span", "wallet-label", "钱包余额"));
   wallet.append(h("span", "wallet-amount", `${(balance / 100).toFixed(2)} 元`));
@@ -405,7 +441,7 @@ function drawMe(list: El): void {
   on(secret, "click", () => {
     void api.secretEnable().catch((e) => toast(String(e).slice(0, 120)));
   });
-  list.append(card, wallet, sig, save, secret);
+  list.append(card, avatarBtn, avatarInput, wallet, sig, save, secret);
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +473,21 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   imgInput.accept = "image/*";
   imgInput.hidden = true;
   const red = h("button", "icon-btn", "🧧");
+  const mic = h("button", "icon-btn", "🎤");
+  mic.title = "按住回车停止：录一段语音条";
+  const clip = h("button", "icon-btn", "📎");
+  clip.title = "发送文件";
+  const fileInput = h("input") as HTMLInputElement;
+  fileInput.type = "file";
+  fileInput.hidden = true;
+  const film = h("button", "icon-btn", "🎞");
+  film.title = "发送视频（云端转码 HLS）";
+  const videoInput = h("input") as HTMLInputElement;
+  videoInput.type = "file";
+  videoInput.accept = "video/*";
+  videoInput.hidden = true;
+  const sticker = h("button", "icon-btn", "😀");
+  sticker.title = "贴纸";
   const input = h("input", "chat-input") as HTMLInputElement;
   input.placeholder = "输入消息，回车发送";
   const send = h("button", "btn primary", "发送");
@@ -455,7 +506,7 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
       }
     });
   }
-  footer.append(img, red, input, send, lock, imgInput);
+  footer.append(img, red, mic, clip, film, sticker, input, send, lock, imgInput, fileInput, videoInput);
 
   // selection bar (merge forward): replaces nothing, sits above the footer
   const selectBar = h("div", "select-bar");
@@ -503,12 +554,24 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   appStore.sub(selectModeAtom, syncSelectBar);
   syncSelectBar();
 
-  // -- message list
+  // -- message list (windowed render: at most RENDER_WINDOW bubbles in the
+  // DOM; older ones load on demand — the "virtualization" contract item)
+  let renderWindow = 300;
   const draw = (): void => {
     const sel = appStore.get(selectModeAtom);
     const selecting = sel !== null && sel.convId === convId;
     const messages = appStore.get(chatsAtom)[convId] ?? [];
     clear(packets);
+    const start = Math.max(0, messages.length - renderWindow);
+    const visible = selecting ? messages : messages.slice(start);
+    if (start > 0 && !selecting) {
+      const older = h("button", "history-more", `显示更早的 ${start} 条消息`);
+      on(older, "click", () => {
+        renderWindow += 300;
+        draw();
+      });
+      packets.append(older);
+    }
     // P1: paged history — offer the next page while the cursor is set
     const cursor = appStore.get(historyCursorAtom)[convId];
     if (cursor !== null && cursor !== undefined) {
@@ -521,7 +584,7 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
       packets.append(more);
     }
     let grid: El | null = null;
-    for (const m of messages) {
+    for (const m of visible) {
       if (selecting) {
         packets.append(selectableRow(m, sel.seqs.includes(m.seq), convId));
         grid = null;
@@ -568,6 +631,30 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
     imgInput.value = "";
   });
   on(red, "click", () => void redpacketDialog(convId, to));
+  on(clip, "click", () => fileInput.click());
+  on(fileInput, "change", () => {
+    const file = fileInput.files?.[0];
+    if (file) {
+      toast(`正在发送文件 ${file.name}…`);
+      void api.uploadAndSendFile(convId, to, file).catch((e) => toast(String(e).slice(0, 120)));
+    }
+    fileInput.value = "";
+  });
+  on(film, "click", () => videoInput.click());
+  on(videoInput, "change", () => {
+    const file = videoInput.files?.[0];
+    if (file) {
+      toast("视频上传转码中，稍候片刻…");
+      void api
+        .uploadVideo(file)
+        .then((ingest) => api.sendVideo(convId, to, ingest))
+        .then(() => toast("视频已发送"))
+        .catch((e) => toast(String(e).slice(0, 140)));
+    }
+    videoInput.value = "";
+  });
+  on(sticker, "click", () => stickerDialog(convId, to));
+  on(mic, "click", () => void voiceRecordDialog(convId, to, mic));
 }
 
 function selectableRow(m: ChatMsg, checked: boolean, convId: string): El {
@@ -639,6 +726,136 @@ function renderMsg(m: ChatMsg, convId: string, _to: string[], isGroup: boolean):
       if (items.length > 4) inner.append(h("div", "fwd-item", `…共 ${items.length} 条`));
       break;
     }
+    case "msg.voice": {
+      inner = h("div", "voice-card");
+      const bars = (m.payload?.waveform as number[] | undefined) ?? new Array(40).fill(10);
+      const duration = Number(m.payload?.duration_ms ?? 0);
+      const wave = h("div", "voice-wave");
+      for (const b of bars) {
+        const bar = h("span", "voice-bar");
+        bar.style.height = `${Math.max(2, Math.min(100, b))}%`;
+        wave.append(bar);
+      }
+      const label = h("span", "voice-time", `${(duration / 1000).toFixed(1)}″`);
+      const asr = m.payload?.asr as string | undefined;
+      const play = h("button", "voice-play", "▶");
+      on(play, "click", () => {
+        if (play.dataset.playing === "1") return;
+        play.dataset.playing = "1";
+        play.textContent = "…";
+        void api
+          .fetchMediaDataUrl(m.mediaId ?? "", false)
+          .then((url) => {
+            const audio = new Audio(url);
+            void audio.play();
+            audio.onended = () => {
+              play.textContent = "▶";
+              play.dataset.playing = "";
+            };
+            // progress sweep across the bars
+            audio.ontimeupdate = () => {
+              const idx = Math.floor(
+                (audio.currentTime * 1000 / Math.max(duration, 1)) * bars.length,
+              );
+              wave.querySelectorAll(".voice-bar").forEach((el, i) => {
+                el.classList.toggle("played", i <= idx);
+              });
+            };
+          })
+          .catch(() => {
+            play.textContent = "▶";
+            play.dataset.playing = "";
+            toast("语音加载失败");
+          });
+      });
+      inner.append(play, wave, label);
+      inner.append(h("div", "voice-asr", asr ?? "转文字暂不可用（P4 接入）"));
+      break;
+    }
+    case "msg.file": {
+      const name = String(m.payload?.name ?? "文件");
+      const size = Number(m.payload?.size ?? 0);
+      inner = h("div", "file-card");
+      inner.append(h("div", "file-icon", "📄"));
+      const main = h("div", "file-main");
+      main.append(h("div", "file-name", name));
+      main.append(h("div", "file-size", formatBytes(size)));
+      inner.append(main);
+      const dl = h("button", "btn tiny", "下载");
+      on(dl, "click", () => {
+        void api
+          .fetchMediaDataUrl(m.mediaId ?? "", false)
+          .then((url) => {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = name;
+            a.click();
+          })
+          .catch((e) => toast(String(e).slice(0, 100)));
+      });
+      inner.append(dl);
+      break;
+    }
+    case "msg.sticker": {
+      inner = h("div", "sticker-card");
+      const cell = h("div", "sticker-img", "…");
+      void api
+        .fetchMediaDataUrl(m.mediaId ?? "", false)
+        .then((url) => {
+          const imgEl = document.createElement("img");
+          imgEl.src = url;
+          imgEl.width = 96;
+          imgEl.height = 96;
+          cell.replaceChildren(imgEl);
+        })
+        .catch(() => {
+          cell.textContent = "加载失败";
+        });
+      inner.append(cell);
+      break;
+    }
+    case "msg.video": {
+      const duration = Number(m.payload?.duration_ms ?? 0);
+      const playUrl = String(m.payload?.play_url ?? "");
+      inner = h("div", "video-card");
+      const screen = h("div", "video-thumb", "▶ 播放");
+      on(screen, "click", () => {
+        screen.textContent = "加载中…";
+        void api
+          .fetchVideoDataUrl(playUrl || `/api/video/${m.payload?.video_id}/play.mp4`)
+          .then((url) => {
+            const vid = document.createElement("video");
+            vid.src = url;
+            vid.controls = true;
+            vid.width = 280;
+            vid.playbackRate = Number(screen.dataset.speed ?? "1");
+            screen.replaceChildren(vid);
+          })
+          .catch(() => {
+            screen.textContent = "▶ 播放";
+            toast("视频加载失败");
+          });
+      });
+      inner.append(screen);
+      const bar = h("div", "video-bar");
+      bar.append(h("span", "video-dur", `${Math.round(duration / 1000)}s`));
+      const speed = h("select", "video-speed") as HTMLSelectElement;
+      for (const s of [0.5, 1.0, 1.5, 2.0]) {
+        const opt = document.createElement("option");
+        opt.value = String(s);
+        opt.textContent = `${s}x`;
+        if (s === 1.0) opt.selected = true;
+        speed.append(opt);
+      }
+      on(speed, "change", () => {
+        screen.dataset.speed = speed.value;
+        const vid = screen.querySelector("video");
+        if (vid) vid.playbackRate = Number(speed.value);
+      });
+      bar.append(speed);
+      inner.append(bar);
+      break;
+    }
     default:
       inner = h("span", "msg-text", `[不支持的消息: ${m.kind}]`);
   }
@@ -681,6 +898,16 @@ function showMsgMenu(ev: MouseEvent, m: ChatMsg, convId: string): void {
       void api.favoriteAdd(m, convId).catch((e) => toast(String(e).slice(0, 100)));
     });
     addItem("转发", () => void forwardDialog(m, convId));
+  }
+  if (m.kind === "image" && m.mediaId) {
+    addItem("存为贴纸", () => {
+      const pack = JSON.parse(localStorage.getItem("wxlike-stickers") ?? "[]") as {
+        media_id: string; pack: string; id: string;
+      }[];
+      pack.push({ media_id: m.mediaId ?? "", pack: "my", id: `s-${pack.length + 1}` });
+      localStorage.setItem("wxlike-stickers", JSON.stringify(pack.slice(-24)));
+      toast("已存为贴纸");
+    });
   }
   if (m.mine && me && m.msgId) {
     addItem("撤回", () => {
@@ -797,6 +1024,110 @@ function imageCell(m: ChatMsg): El {
       cell.textContent = "加载失败";
     });
   return cell;
+}
+
+/** P2 voice note: the 🎤 button starts, clicking again stops; the waveform
+ * is derived from the decoded PCM and travels inside the message payload. */
+async function voiceRecordDialog(convId: string, to: string[], micBtn: El): Promise<void> {
+  if (micBtn.dataset.recording === "1") {
+    micBtn.dataset.stopRequested = "1";
+    return;
+  }
+  let recording: Awaited<ReturnType<typeof api.startVoiceRecording>>;
+  try {
+    recording = await api.startVoiceRecording();
+  } catch (e) {
+    toast(String(e).slice(0, 120));
+    return;
+  }
+  micBtn.dataset.recording = "1";
+  micBtn.textContent = "⏹";
+  micBtn.title = "再次点击结束录音（最长 60 秒）";
+  toast("录音中…再次点击 ⏹ 结束");
+  const watch = window.setInterval(() => {
+    if (micBtn.dataset.stopRequested === "1") {
+      window.clearInterval(watch);
+      micBtn.dataset.stopRequested = "";
+    }
+  }, 100);
+  // the 60 s hard cap inside startVoiceRecording resolves stop() on its own
+  window.setTimeout(() => {
+    micBtn.dataset.stopRequested = "1";
+  }, 60_500);
+  try {
+    const { blob, durationMs, waveform } = await recording.stop();
+    window.clearInterval(watch);
+    const mediaId = await api.uploadVoiceBlob(blob);
+    await api.sendVoice(convId, to, mediaId, durationMs, waveform);
+    toast("语音已发送");
+  } catch (e) {
+    toast(String(e).slice(0, 120));
+  } finally {
+    window.clearInterval(watch);
+    micBtn.dataset.recording = "";
+    micBtn.textContent = "🎤";
+    micBtn.title = "录一段语音条";
+  }
+}
+
+/** P2 sticker panel: the local "my" pack (images saved from chats) plus a
+ * starter set of built-in emoji-art stickers. */
+function stickerDialog(convId: string, to: string[]): void {
+  hideMsgMenu();
+  const menu = h("div", "msg-menu sticker-panel");
+  const head = h("div", "fwd-head", "贴纸（点图片消息右键可存为贴纸）");
+  menu.append(head);
+  const grid = h("div", "sticker-grid");
+  const builtins = ["(◕‿◕)", "(｡◕‿◕｡)", "٩(◕‿◕)۶", "ʕ•ᴥ•ʔ", "(☞ﾟヮﾟ)☞", "(╯°□°）╯︵ ┻━┻"];
+  for (const face of builtins) {
+    const b = h("button", "sticker-item", face);
+    on(b, "click", () => {
+      hideMsgMenu();
+      void api
+        .sendSticker(convId, to, "", "builtin", encodeURIComponent(face))
+        .catch((e) => toast(String(e).slice(0, 100)));
+    });
+    grid.append(b);
+  }
+  // user-saved media stickers
+  const saved = JSON.parse(localStorage.getItem("wxlike-stickers") ?? "[]") as {
+    media_id: string; pack: string; id: string;
+  }[];
+  for (const s of saved.slice(-12)) {
+    const b = h("button", "sticker-item", "…");
+    void api
+      .fetchMediaDataUrl(s.media_id, true)
+      .then((url) => {
+        const img = document.createElement("img");
+        img.src = url;
+        img.width = 48;
+        img.height = 48;
+        b.replaceChildren(img);
+      })
+      .catch(() => b.textContent = "?");
+    on(b, "click", () => {
+      hideMsgMenu();
+      void api.sendSticker(convId, to, s.media_id, s.pack, s.id).catch((e) => toast(String(e).slice(0, 100)));
+    });
+    grid.append(b);
+  }
+  menu.append(grid);
+  menu.style.left = "70px";
+  menu.style.bottom = "70px";
+  document.body.append(menu);
+  window.setTimeout(() => {
+    document.addEventListener("pointerdown", function away() {
+      document.removeEventListener("pointerdown", away);
+      if (menu.isConnected) menu.remove();
+    });
+  }, 0);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 async function redpacketDialog(convId: string, to: string[]): Promise<void> {

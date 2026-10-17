@@ -70,6 +70,24 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
 
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);
     let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
+
+    // video-service (P2 minimal, ADR-21): colocated with the server until
+    // the load split (Q7); its storage lives beside the platform db.
+    let video_root = match &opts.db_path {
+        Some(path) => {
+            let mut dir = std::path::PathBuf::from(path);
+            dir.pop();
+            dir.join("video")
+        }
+        None => std::env::temp_dir().join(format!(
+            "wxlike-video-{}-{}",
+            std::process::id(),
+            wxlike_core::types::now_ms()
+        )),
+    };
+    let video_state = wxlike_video::VideoState {
+        store: wxlike_video::VideoStore::new(video_root),
+    };
     let hub = wxlike_net::run_mq_hub_with(
         opts.hub_id.clone(),
         opts.quic_bind,
@@ -114,6 +132,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             }),
         )
         .merge(wxlike_platform::Platform::router(platform.clone()))
+        .merge(wxlike_video::routes(video_state))
         .merge(presence_routes(handle.clone()))
         .merge(history_routes(deps))
         .merge(dev_routes(platform.clone()));

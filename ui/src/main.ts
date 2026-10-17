@@ -7,12 +7,17 @@
 import { appStore, toastAtom } from "./state";
 import { notifyLost, onInbound } from "./api";
 import { renderRoot } from "./ui";
-import { listen } from "./tauri";
+import { invoke, listen } from "./tauri";
 
 function main(): void {
   const root = document.getElementById("app");
   if (!root) throw new Error("#app missing");
   renderRoot(root as HTMLElement);
+
+  // P2 local message library: open before any traffic so the receive pump
+  // persists from the first envelope (fire-and-forget: a closed local db
+  // must never block the UI — history still works from the server)
+  void invoke("local_autopen").catch(() => undefined);
 
   // hub events → store
   void listen("im-in", (payload) => onInbound(payload));
