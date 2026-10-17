@@ -1,10 +1,12 @@
 # wxlike 总蓝图（汇总版）：技术方案 × 全功能对照 × 参考项目 × 路线图
 
-> 2026-10-16。**本文件是全部讨论的唯一汇总入口**，汇总四轮内容：
+> 2026-10-16。**本文件是全部讨论的唯一汇总入口**，汇总五轮内容：
 > ① 任务书（WORK_BREAKDOWN.md，14 WP）→ ② feature-comparison.md（WP 视角对照，149 行）
 > → ③ feature-gap-matrix.md（四大产品九域差距 + P0–P6 路线图，148 行）
 > → ④ 第二轮补充（Rust 技术栈选型 / 万人群读扩散数据模型 / 前后端功能服务清单 /
->    支付与小程序解耦 / 七端策略 / WuKongIM·OpenIM·goim 等新参考系）。
+>    支付与小程序解耦 / 七端策略 / WuKongIM·OpenIM·goim 等新参考系）
+> → ⑤ 第三轮补充（**P0 决策全部确认**：云同步=TG 式、移动端=Flutter 基座；
+>    支付账本四层架构 cala-ledger/dtmrs/Hyperswitch 范式/obix）。
 > 已有文档全部保留未删改；本文负责**合并、去重、映射到 wxlike 现有代码、并补充遗漏项**。
 > 图例：✅ 已实现有验证 · ⚠️ 部分 · ❌ 未实现 · 🔶 需按新决策重做 · ➖ 排除。
 
@@ -37,6 +39,8 @@
 | ADR-8 | **传输层抽象（新识别）** | 长连接入口需**同时支持 QUIC（桌面/移动）与 WebSocket（Web/浏览器）**。当前 `Client` 结构体直接持有 `quinn::SendStream`，QUIC 紧耦合——需要抽 `Transport` trait（framing 已独立，改造成本可控） | client.rs:15-16（P3，Web 端前置） |
 | ADR-9 | **网关无状态化** | 连接状态外移 Redis（设备→网关→最后路由），网关进程可水平扩展。当前 mq_hub 内存态 + 路由表 Redis，部分达标 | P3/P6 |
 | ADR-10 | **认证模型** | 维持 DB session token（支持即时吊销），**网关层加 JWT(RS256) 校验可选**——JWT 无状态的代价是吊销需黑名单，当前规模 DB token 更简单。两者可并存（JWT 给网关，DB token 给敏感操作） | auth.rs（P4 评估） |
+| **ADR-11 移动端基座（第三轮新增）** | **Flutter 统一 iOS/Android/鸿蒙**：鸿蒙走 Flutter-OH 社区适配 + ArkTS 桥接系统能力（通知栏/后台保活/分布式调度）；ArkUI-X 降为"鸿蒙战略优先"备选（版本碎片化：HarmonyOS 3.0/4.0/NEXT 的 API 行为不一致，@State/@Builder 兼容成本持续存在）；KMP-CMP（2026-09 首版）与 RN-OH 排除。桌面 Tauri 2 默认、复杂富媒体消息流可切 Flutter Desktop；Web 独立工程 | 依据：壹信 IM 生产案例（Flutter 3.22 + 自研鸿蒙插件，市级政务平台日均 180 万条消息、滚动 60FPS、鸿蒙 NEXT Beta 兼容认证）（P5） |
+| **ADR-12 支付账本架构（第三轮新增）** | **四层解耦**：①账本核心=事件溯源+复式记账（`cala-ledger` 嵌入 PG：余额=重放分录、禁止原地 UPDATE、persistent outbox）；②交易协调=FSM（Initialized→Authorized→Settled→Failed）+幂等键+`dtmrs` Saga 编排（补偿替代全局原子）；③渠道适配=`ChannelConnector` trait（Hyperswitch 范式，对接自有银行/清算接口，**适配器只发送划拨指令、绝不碰账本**）；④对账审计=独立服务消费 outbox+渠道回执双向核对（长短款进人工队列）+maker-checker 双人复核。与 ADR-5 衔接：现有 wallet.rs 为演示级单式账本，接真实渠道时迁移 cala 双式账本，`money_supply` 守恒断言保留为对账基线。高性能备选：ousia-ledger 两阶段执行 / TigerBeetle | P4（真实渠道阶段）；虚拟钱包演示期不动 |
 
 ---
 
@@ -55,6 +59,7 @@
 | 缓存/在线态/未读 | Redis ZSET/INCR | ⚠️ Redis 仅作 MQ backend；在线态在内存路由表 | 未读 ZSET 方案随读扩散（P3） |
 | 对象存储 | S3 兼容 | ⚠️ trait + LocalDirStore | compose 里 SeaweedFS 即用（P2） |
 | 认证 | JWT RS256（网关无状态） | ⚠️ DB session token（可即时吊销） | ADR-10：并存评估（P4） |
+| 支付账本 | cala-ledger（嵌入式复式记账+事件溯源）+ dtmrs Saga + obix outbox | ❌ wallet.rs 为演示级单式账本（有守恒断言） | ADR-12：真实渠道阶段迁移（P4） |
 | 音视频 | str0m（已选）/ rvoip | ✅ str0m + 状态机 + 回环验证 | UI 接入 + 真机（P2），房间制（P4） |
 | 搜索 | PG 全文 → Meilisearch/ES | ❌ | P3（读扩散下必须服务端搜） |
 | 容器化 | Docker Compose → k8s | ✅ compose | k8s 远期（P6） |
@@ -150,6 +155,8 @@ CREATE TABLE group_member_log (
 ### 5.7 支付 / 小程序
 ✅ 虚拟转账/红包/流水（事务守恒）· ⚠️ 红包卡片"消息变更"回写缺失（ADR-5，P4）· ❌ 充值/提现/支付密码/对账（持牌边界内，P4）· ⚠️ 小程序容器雏形（Boa+DPG1）→ 产品化（包管理/审核/JSBridge/回调转发，P5+）
 
+**支付四层架构（ADR-12，真实渠道阶段落地）**：账本核心（cala-ledger 事件溯源+复式记账——余额永远由重放分录得出，任何并发与守恒问题收敛在这层解决）→ 交易协调（FSM 状态机+幂等键防双重扣款，dtmrs 嵌入式 Saga 用"扣款撤销"补偿收敛跨服务一致性，选编排 Orchestration 而非编舞以保审计路径）→ 渠道适配（`ChannelConnector` trait 逐渠道实现认证/请求/解析，对接自有银行企业网银/银企直连/内部清算文件接口——这是"完全自建渠道"的真正工作量所在）→ 对账审计（obix outbox 可靠流出账本事件，与渠道结算文件双向核对，长短款人工队列；提现/调账 maker-checker 双人复核）。边界铁律：**消息网关与群信箱永不执行资金操作；红包在聊天里只是一条自定义消息卡片**。
+
 ### 5.8 推送
 ✅ 框架+FCM 实现+设备表 · ⚠️ FCM 真机 · ❌ APNs（接口位）· ❌ **通知聚合**（万人群必做，goim 分层推送思路，P3）· ❌ 厂商通道（国内安卓）
 
@@ -166,8 +173,7 @@ CREATE TABLE group_member_log (
 | 端 | 选型 | 关键约束 | 阶段 |
 |---|---|---|---|
 | Windows / macOS / Linux | **Tauri 2（现状）** | 与 Rust 同栈、包体 ~10MB；WebView 渲染差异与 IPC 性能需验证；文字/图片/文件消息为主 → 合理 | ✅ Win 已有 / mac·Linux P2 |
-| Android / iOS | **Flutter + Rust core（UniFFI/cargo-ndk 绑定）** | 移动端最成熟；聊天列表渲染可控 | P5 |
-| 鸿蒙 | 二选一：**ArkUI-X**（鸿蒙战略优先，一套 ArkTS 覆盖鸿蒙+Android+iOS）或 **Flutter 社区适配 + ArkTS 桥接**（复用移动端） | 无完美方案，按优先级取舍 | P5 决策 |
+| Android / iOS / 鸿蒙 | **Flutter 统一基座（ADR-11 ✅ 已确认）**：iOS/Android 原生 Flutter + Rust core（UniFFI/cargo-ndk 绑定）；鸿蒙走 Flutter-OH 社区适配 + ArkTS 桥接（通知/后台保活/分布式调度）。备选：鸿蒙战略优先时切 ArkUI-X（接受版本碎片化成本） | Flutter-OH 有 IM 生产案例背书 | P5 |
 | Web | **独立前端工程**（复用后端 API + WS 协议） | 浏览器无 QUIC（WebTransport 未普及）；**Transport trait 是前置**（ADR-8） | P5 |
 | 本地消息库（全端） | 客户端 SQLite（打开即渲染，不等服务器）；万人群只缓存近期窗口+主动漫游区间 | 现有 UI 无本地库 | P2 |
 
@@ -237,7 +243,20 @@ CREATE TABLE group_member_log (
 | PaperPhone-Plus | React+Axum | https://github.com/619dev/Paperphone-plus | ⚠️待核 | 微信风格 E2EE 全栈 | P4 参考 |
 | Tauri | Rust | https://github.com/tauri-apps/tauri | ✅ MIT/Apache-2.0 | 桌面/移动容器（现役） | 全端 |
 | Flutter | Dart | https://github.com/flutter/flutter | ✅ BSD-3 | 移动端 UI（P5） | P5 |
-| ArkUI-X | ArkTS | https://github.com/arkui-x （主仓 GitCode/Gitee） | ✅ Apache-2.0 | 鸿蒙三端（P5 决策） | P5 |
+| ArkUI-X | ArkTS | https://github.com/arkui-x （主仓 GitCode/Gitee） | ✅ Apache-2.0 | 鸿蒙三端（P5 备选） | P5 |
+
+### 7.6 支付基础设施（第三轮新增，ADR-12 配套）
+
+| 项目 | 栈 | 链接 | 许可 | 借什么 | 用在哪 |
+|---|---|---|---|---|---|
+| Cala (cala-ledger) | Rust | https://github.com/GaloyMoney/cala · 文档 https://docs.rs/cala-ledger | ⚠️待核（Galoy 系通常 Apache-2.0） | 嵌入式复式记账+事件溯源+persistent outbox（Galoy 曾支撑国家级钱包运营，ISO 27001） | P4 账本核心 |
+| ousia-ledger | Rust | https://github.com/TheOusia/ousia | ⚠️待核 | 两阶段执行（内存规划+单事务微秒级锁）、不可变 ValueObject（Alive→Reserved/Burned 单向转换） | 备选账本引擎 |
+| TigerBeetle / tb-rs | Zig / Rust 客户端 | https://github.com/tigerbeetle/tigerbeetle · https://github.com/dsp/tb | ⚠️待核（TigerBeetle Apache-2.0） | 专用金融账本数据库（PG 吞吐瓶颈时的存储备选） | 远期备选 |
+| dtmrs | Rust | https://github.com/jackwangfeng/dtmrs | ⚠️待核 | 嵌入式 Saga/TCC/二阶段消息/XA/workflow（分支可为本地函数，不强制 HTTP） | P4 交易协调 |
+| Hyperswitch | Rust | https://github.com/juspay/hyperswitch · https://docs.hyperswitch.io | ✅ Apache-2.0 | `ConnectorIntegration` 渠道适配 trait 范式、幂等键、FSM 状态机 | P4 渠道适配层设计 |
+| obix | Rust | https://github.com/GaloyMoney/obix | ⚠️待核 | 事务性 Outbox/Inbox（顺序持久存储+实时临时事件，pg_notify 防注入） | P4 账本事件流 |
+
+**初始化顺序（第三轮建议，采纳）**：先嵌 cala-ledger 跑通复式记账+outbox → 引 obix 消费账本事件 → 跨服务补偿叠加 dtmrs → 真正写银行/清算适配器时再对照 Hyperswitch 的 trait 模式，避免渠道复杂度过早侵入账本核心。
 
 ---
 
@@ -264,12 +283,14 @@ CREATE TABLE group_member_log (
 | **P1 已采纳第一批** | E2EE 接入客户端（回退日志+秘密聊天雏形）· 消息操作五件套 · **UI 历史消息加载** · 已读回执 UI | 1–2 周 |
 | **P2 真机验收 + 体验** | 双机音视频验收 · tauri dev 演示 · Redis 真机 · **语音条/文件消息/贴纸 · 消息列表虚拟化 · 本地消息库 · 头像接媒体 · mac/Linux 构建验证** | 1–2 周 |
 | **P3 万人群新架构** | 读扩散管道（信箱/游标/版本差分/ZSET 未读，五层同步契约）· **Transport trait + WS 网关** · **多设备多连接改造** · 频道层 · 话题层 · 群管理补齐（禁言/公告/审批/邀请链接/慢速/成员搜索）· 拉黑 · 服务端未读态 · **通知聚合 + 慢消费者隔离 · 会话 Pin/免打扰/归档 · NATS backend（MQ trait 新实现）** | 4–6 周 |
-| **P4 账号 / 隐私 / 资金** | 找回+captcha/限流 · argon2id（可选）· 2FA · 秘密聊天完整+消失消息 · **红包卡片消息变更回写 · 支付密码 · 钱包对账 · 通话房间制** · 设备管理页 | 2–3 周 |
-| **P5 移动端与多语言** | Android（Flutter + UniFFI core）· iOS · **鸿蒙（按 P0 决策）** · Web 独立工程 · 多语言 · 数据导出 | 4–8 周 |
+| **P4 账号 / 隐私 / 资金** | 找回+captcha/限流 · argon2id（可选）· 2FA · 秘密聊天完整+消失消息 · 红包卡片消息变更回写 · 支付密码 · 钱包对账 · 通话房间制 · 设备管理页 · **支付四层架构落地（ADR-12：cala-ledger 账本核心 → obix 事件流 → dtmrs Saga → ChannelConnector 渠道适配，初始化顺序照第三轮建议）** | 3–4 周 |
+| **P5 移动端与多语言** | **Flutter 统一基座（ADR-11）**：Android · iOS · 鸿蒙（Flutter-OH + ArkTS 桥接，后台保活专项）· Rust core 经 UniFFI/cargo-ndk 出绑定 · Web 独立工程 · 多语言 · 数据导出 | 4–8 周 |
 | **P6 发布工程与规模** | 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署文档 · **PG 迁移+分片 · 管理后台（最小 CLI 起步）· k8s · 备份 · SLO 固化** | 2–4 周 |
 
 ---
 
 ## 第十部分：一句话总纲
 
-**wxlike 已经有的是一个经过对抗测试的 Rust IM"引擎层"**（协议/加密/传输/存储/群路由/通话内核，约 2.2 万行、254 测试）；要成为七端、万人群、带支付与小程序的完整产品，缺的是**读扩散管道、多设备、频道话题（P3）+ 移动端（P5）+ 产品化外壳（P1/P2）**。参考系已齐：WuKongIM 给万人群架构答案、OpenIM 给同步契约、goim 给弹幕推送、HuLa/唐僧叨叨给前端与功能模型、TDLib 给核心库范式——**全部是"重新实现于 Rust 之上的参考"，没有一个是拿来即用**；这正是路线图把 P3（读扩散）和 P5（移动端）定为最大工程块的原因。
+**wxlike 已经有的是一个经过对抗测试的 Rust IM"引擎层"**（协议/加密/传输/存储/群路由/通话内核，约 2.2 万行、254 测试）；要成为七端、万人群、带支付与小程序的完整产品，缺的是**读扩散管道、多设备、频道话题（P3）+ 移动端（P5）+ 产品化外壳（P1/P2）**。参考系已齐：WuKongIM 给万人群架构答案、OpenIM 给同步契约、goim 给弹幕推送、HuLa/唐僧叨叨给前端与功能模型、TDLib 给核心库范式、**cala/dtmrs/Hyperswitch/obix 给支付账本四层**——全部是"重新实现于 Rust 之上的参考"，没有一个是拿来即用；这正是路线图把 P3（读扩散）和 P5（移动端）定为最大工程块的原因。
+
+**P0 已于 2026-10-16 全部锁定（云同步=Telegram 式、移动端=Flutter 基座、读扩散立项），支付账本架构（ADR-12）与移动端基座（ADR-11）同步入册——路线图自 P1 起全面可执行，无阻塞项。**
