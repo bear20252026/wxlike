@@ -16,7 +16,11 @@
 > → ⑧ 第六轮补充（**ADR-15 运营与合规体系**：审计日志/RBAC+MFA/内容审核管线/防泄密、
 >    频道分组与频道级角色、话题订阅、全局搜索本地+云端、撤回跨端状态同步、
 >    Bot 账号体系/开放 API/Webhook；新参考系 Stoat/Bonfire/Zulip/JuggleIM/
->    LiveKit/OpenVidu/adminx/Meilisearch/Tantivy/Gorush 等）。
+>    LiveKit/OpenVidu/adminx/Meilisearch/Tantivy/Gorush 等）
+> → ⑨ 第七轮终版收敛（**产品功能树 + 技术架构树 + 决策速查 + 九大不变式**：
+>    社交三支柱并列、消息类型注册表三通道、三账本命名空间、通知决策/传输分离、
+>    风控/审核/举报三层、media/video 分离、推荐搜索发现三层分离、
+>    陌生人消息请求、多租户预留——见第十一/十二/十三部分）。
 > 已有文档全部保留未删改；本文负责**合并、去重、映射到 wxlike 现有代码、并补充遗漏项**。
 > 图例：✅ 已实现有验证 · ⚠️ 部分 · ❌ 未实现 · 🔶 需按新决策重做 · ➖ 排除。
 
@@ -53,6 +57,15 @@
 | **ADR-12 支付账本架构（第三轮新增）** | **四层解耦**：①账本核心=事件溯源+复式记账（`cala-ledger` 嵌入 PG：余额=重放分录、禁止原地 UPDATE、persistent outbox）；②交易协调=FSM（Initialized→Authorized→Settled→Failed）+幂等键+`dtmrs` Saga 编排（补偿替代全局原子）；③渠道适配=`ChannelConnector` trait（Hyperswitch 范式，对接自有银行/清算接口，**适配器只发送划拨指令、绝不碰账本**）；④对账审计=独立服务消费 outbox+渠道回执双向核对（长短款进人工队列）+maker-checker 双人复核。与 ADR-5 衔接：现有 wallet.rs 为演示级单式账本，接真实渠道时迁移 cala 双式账本，`money_supply` 守恒断言保留为对账基线。高性能备选：ousia-ledger 两阶段执行 / TigerBeetle | P4（真实渠道阶段）；虚拟钱包演示期不动 |
 | **ADR-13 直播=频道级能力（第四轮新增）** | 参照 Discord：**频道即形态**（文字频道/语音频道/直播频道），直播不是独立模块。直播频道内部 **SFU 架构**（主播推一路流、SFU 选择性转发、观众拉流——非 MCU 混流）；**弹幕/实时评论复用读扩散消息管道**（绝不另建一套消息系统）；**直播信令（加入/离开/切流）走独立高优先级通道**，不与聊天流混排。语言分层启示（Discord=Elixir/OTP 网关 + Rust 消息与媒体代理 + 25,000 SFU）：我们坚持全 Rust = Tokio 网关 + Rust SFU，代价是自行实现 BEAM 级监督与背压（P3 慢消费者隔离已列） | 媒体面选型：**Xiu**（纯 Rust 协议最全：RTMP 集群/RTSP/WebRTC WHIP-WHEP/HTTP-FLV/HLS，OBS 可推流）或 mediasoup Rust crate（SFU 语义 Simulcast/SVC 最成熟）；atm0s-media-server 重构期只观察。成熟产品的形态差异：微信=小程序直播/视频号（电商工具）、TG=群通话 RTMP+WebRTC 双模式、Discord=语音频道延伸（P5） |
 | **ADR-14 小程序自研运行时（第五轮新增）** | **不走微信兼容路线**：自定义 DSL 与运行时契约，四层拼装——逻辑执行=**Rong**（一套 Rust API 驱动 QuickJS/JSC/ArkJS，`#[js_class]` 绑定 + Worker 池有界执行 + 内置 Timer/HTTP/FS/SQLite 模块）；视图=**Wry**（子 WebView 子面板嵌入 IM，互不侵入渲染栈）或 **LingXia**（完整宿主骨架，lingxia-webview 已抹平四平台差异）；沙箱=**Wasmtime**（fuel/epoch + host functions，第三方不可信代码两级信任模型）；Bridge=自研 **publish/invoke 双通道契约**（setData 异步合帧 + 能力调用请求响应 + bridgeId 路由，权限中间件统一）。**包管理在 Rust 后端**（签名/摘要/体积限制，格式复用 DPG1 补签名）；**payment.request 只转发独立 payment-service**。与现有资产衔接：container（Boa 引擎/wxhost 桥）+ dpage（DPG1）即雏形，升级路径 Boa→Rong、wxhost→双通道 Bridge、DPG1+签名 | 详见 [miniprogram-blueprint.md](miniprogram-blueprint.md)（含 M1–M5 分阶段与全量参考链接表）（P5+ 独立轨道） |
+| **ADR-16 社交三支柱 + 统一读扩散信箱（第七轮终版，修订 ADR-2）** | **三根并列支柱**：好友+单聊（direct，owner=规范化用户对）/ 群组（group，owner=group_id）/ 社区频道话题（channel，owner=channel_id）——三者**共用同一套读扩散信箱基础设施**，message-service 按 `owner_type` 区分，不写三套投递逻辑；序列号各 owner 独立生成；万人规模是 community 的 member_limit，群组默认上限另设。**此决策修订 ADR-2 的"小群保留写扩散"条款**；现 mq_hub 的写扇出转过渡实现（见第十二部分 Q1/Q2） | 技术树 C 消息与同步（P3 核心） |
+| **ADR-17 消息类型注册表 + 三通道分级（第七轮终版）** | 消息类型统一注册（type_id/payload_schema/render_target/lifecycle/channel_class），投递分三通道：**normal**（群信箱+占用序列号+持久化：文本/图/视频引用/文件/小程序卡片/广告卡片/红包卡片）、**high_priority**（独立 NATS 主题，不占序列号只投在线：直播信令/正在输入/实时弹幕）、**ephemeral**（落库不进时间线，只更新既有卡片：红包领取状态/广告回执/消息编辑状态） | message-service（P3） |
+| **ADR-18 三账本账户命名空间（第七轮终版）** | 单一 ledger-service 复式记账内核（cala-ledger），**wallet / advertiser / platform_marketing / platform_revenue 四类 account_type 隔离**——不是三个账本引擎。广告红包闭环=ad-account 扣费 → marketing 中转 → 用户钱包，**两笔独立分录**。新增 ad-account-service 与 marketing-account-service | 6 支付树（P4） |
+| **ADR-19 通知决策与传输分离（第七轮终版）** | **notification-service**（决策层：查在线状态只推离线设备、多设备去重只推最近活跃、聚合策略）产出 PushTask；**push-gateway**（传输层：APNs/FCM/华为/小米/OPPO/vivo）只负责发出去，**不知道免打扰与聚合** | 通知树（P3 决策层 / P5 厂商通道） |
+| **ADR-20 风控/审核/举报三层分离（第七轮终版）** | **risk-service**（前置毫秒级实时拦截：放行/限流/挑战/拒绝，不调用审核服务）· **moderation-service**（后置内容判定 API 能力层，供举报与发送流程调用）· **report-service**（举报工单流程层，状态流转+处置动作回调各业务服务） | 安全治理树（P4 管线 / P6 完整） |
+| **ADR-21 media-service 与 video-service 分离（第七轮终版）** | **media-service**（实时：WebRTC SFU、1:1 通话、群房间、直播信令与转发——有状态按房间调度需边缘节点）与 **video-service**（点播：上传→FFprobe→FFmpeg 多分辨率 HLS→缩略图→对象存储——无状态任务队列可水平扩展）分离；完成后发事件由 message-service 构造视频引用消息，**视频二进制不经过消息网关** | 媒体树（P2 真机 / P4 房间 / P5 点播） |
+| **ADR-22 推荐/搜索/发现三层分离（第七轮终版）** | **发现页**（展示层不持索引，community-service 聚合活跃度排序）· **search-service**（主动查询：Meilisearch/Tantivy，索引消息/群组/频道/社区/用户/话题，事件订阅更新）· **recommendation-service**（被动分发：消费行为事件流，双塔召回+Faiss、Wide&Deep 排序，产出推荐频道/视频/广告/好友） | 内容分发树（P3 搜索 / P6+ 推荐） |
+| **ADR-23 多租户预留（第七轮终版）** | 所有核心表带 `tenant_id`（默认 default），username 唯一索引为 (tenant_id, username)，ledger 分录 tenant_id 入分区键，鉴权中间件预留 tenant_id 提取——**当前不实现租户隔离逻辑**，是字段预留不是功能 | 全树（P3 建表时带上） |
+| **ADR-24 陌生人消息请求（第七轮终版）** | 非好友首条单聊进入 **message_requests 请求箱**：接受→正常会话，拒绝→屏蔽；"是否允许陌生人单聊"为产品配置。**流程必须在架构中存在，不可绕过关系层直入会话**（实证：现 mq_hub 入站无任何关系层拦截，是真新增） | relation-service（P3，与拉黑同批） |
 | **ADR-15 运营与合规体系（第六轮新增）** | 面向公众运营的三件套**以独立服务叠加，不推翻消息管道**：①**审计日志**——登录/发消息/文件下载/管理后台操作全量记录，按时间/用户/操作类型检索（安全事件唯一可追溯依据）；②**内容审核管线**——文本敏感词+图片/音频/视频多模态，先审后发/先发后审按场景配置，举报→审核→处置闭环（Lexfence 多模态微服务模式，REST API 调用）；③**RBAC+MFA 管理后台**——adminx（纯 Rust）直接嵌 Axum：RBAC/审计日志/TOTP/全文搜索；提现审核/封禁/数据导出等敏感操作 MFA 或双人复核（与 ADR-12 maker-checker 同源）。按场景可选防泄密：水印/防截屏/防转发/会话锁定；存储层加密 AES-256 或国密 SM 系列 | P4 起分批（审计日志随读扩散；完整运营面板 P6） |
 
 ---
@@ -81,7 +94,6 @@
 | 管理后台 | adminx（纯 Rust 嵌 Axum：RBAC/审计/TOTP/全文搜索） | ❌ | P6（最小 CLI 先行） |
 | 推送网关 | Gorush 模式 + 国内厂商通道（野火 push_server 参考） | ⚠️ FCM 实现完成，聚合未做 | P3 聚合 / P5 厂商通道 |
 | 开放 API 网关 | Apache ShenYu / Otoroshi（OAuth2/JWT/Webhook） | ❌ | P6+ 生态阶段 |
-| 搜索 | PG 全文 → Meilisearch/ES | ❌ | P3（读扩散下必须服务端搜） |
 | 容器化 | Docker Compose → k8s | ✅ compose | k8s 远期（P6） |
 | 密码哈希 | argon2id | ✅ PBKDF2-100k | 可选升级（P4） |
 
@@ -209,10 +221,9 @@ CREATE TABLE group_member_log (
 |---|---|---|---|
 | Windows / macOS / Linux | **Tauri 2（现状）** | 与 Rust 同栈、包体 ~10MB；WebView 渲染差异与 IPC 性能需验证；文字/图片/文件消息为主 → 合理 | ✅ Win 已有 / mac·Linux P2 |
 | Android / iOS / 鸿蒙 | **Flutter 统一基座（ADR-11 ✅ 已确认）**：iOS/Android 原生 Flutter + Rust core（UniFFI/cargo-ndk 绑定）；鸿蒙走 Flutter-OH 社区适配 + ArkTS 桥接（通知/后台保活/分布式调度）。备选：鸿蒙战略优先时切 ArkUI-X（接受版本碎片化成本） | Flutter-OH 有 IM 生产案例背书 | P5 |
-
-**Flutter-OH 仓库地址勘误（第四轮实证）**：主仓库**不在 GitHub**，2026 年已整体迁移至 **GitCode `openharmony-tpc/flutter_flutter`**（AtomGit 镜像同步；组织 CPF-Flutter）。生产用 **3.27.4 稳定分支**，新特性 `oh-3.35.7-dev`，3.41 已发布；兼容库在 `openharmony-tpc/flutter_packages`。在 GitHub 上找会扑空。
 | Web | **独立前端工程**（复用后端 API + WS 协议） | 浏览器无 QUIC（WebTransport 未普及）；**Transport trait 是前置**（ADR-8） | P5 |
 | 本地消息库（全端） | 客户端 SQLite（打开即渲染，不等服务器）；万人群只缓存近期窗口+主动漫游区间 | 现有 UI 无本地库 | P2 |
+**Flutter-OH 仓库地址勘误（第四轮实证）**：主仓库**不在 GitHub**，2026 年已整体迁移至 **GitCode `openharmony-tpc/flutter_flutter`**（AtomGit 镜像同步；组织 CPF-Flutter）。生产用 **3.27.4 稳定分支**，新特性 `oh-3.35.7-dev`，3.41 已发布；兼容库在 `openharmony-tpc/flutter_packages`。在 GitHub 上找会扑空。
 
 ---
 
@@ -339,7 +350,7 @@ CREATE TABLE group_member_log (
 
 | 阶段 | 内容（新增项加粗） | 规模 |
 |---|---|---|
-| **P0 决策锁定** | 云同步路线确认（建议维持 TG 式）· 读扩散立项 · **移动端优先级 + 鸿蒙取舍（ArkUI-X vs Flutter 适配）** | 口头确认 |
+| **P0 决策锁定 ✅（2026-10-16 三项全部确认）** | ① 云同步=Telegram 式服务端全量存储（ADR-1）② 移动端=Flutter 统一基座，鸿蒙 Flutter-OH+ArkTS 桥接（ADR-11）③ 读扩散立项（ADR-2→ADR-16 修订为三支柱统一信箱） | 已锁定，P1 起全面可执行 |
 | **P1 已采纳第一批** | E2EE 接入客户端（回退日志+秘密聊天雏形）· 消息操作五件套 · **UI 历史消息加载** · 已读回执 UI | 1–2 周 |
 | **P2 真机验收 + 体验** | 双机音视频验收 · tauri dev 演示 · Redis 真机 · **语音条/文件消息/贴纸 · 消息列表虚拟化 · 本地消息库 · 头像接媒体 · mac/Linux 构建验证** | 1–2 周 |
 | **P3 万人群新架构** | 读扩散管道（信箱/游标/版本差分/ZSET 未读，五层同步契约）· **Transport trait + WS 网关** · **多设备多连接改造** · 频道层 · 话题层 · 群管理补齐（禁言/公告/审批/邀请链接/慢速/成员搜索）· 拉黑 · 服务端未读态 · **通知聚合（+多级免打扰过滤） + 慢消费者隔离 · 会话 Pin/免打扰/归档 · NATS backend（MQ trait 新实现）· 弹幕式高频消息（读扩散承载+分层推送）· 撤回跨端状态同步（信箱变更事件）· 频道分组/频道级角色/话题订阅 · 审计日志起步 · Meilisearch/Tantivy 搜索接入** | 4–6 周 |
@@ -363,3 +374,255 @@ CREATE TABLE group_member_log (
 **wxlike 已经有的是一个经过对抗测试的 Rust IM"引擎层"**（协议/加密/传输/存储/群路由/通话内核，约 2.2 万行、254 测试）；要成为七端、万人群、带支付与小程序的完整产品，缺的是**读扩散管道、多设备、频道话题（P3）+ 移动端（P5）+ 产品化外壳（P1/P2）**。参考系已齐：WuKongIM 给万人群架构答案、OpenIM 给同步契约、goim 给弹幕推送、HuLa/唐僧叨叨给前端与功能模型、TDLib 给核心库范式、**cala/dtmrs/Hyperswitch/obix 给支付账本四层**——全部是"重新实现于 Rust 之上的参考"，没有一个是拿来即用；这正是路线图把 P3（读扩散）和 P5（移动端）定为最大工程块的原因。
 
 **P0 已于 2026-10-16 全部锁定（云同步=Telegram 式、移动端=Flutter 基座、读扩散立项），支付账本架构（ADR-12）与移动端基座（ADR-11）同步入册——路线图自 P1 起全面可执行，无阻塞项。第四轮补充直播为频道级能力（ADR-13）：工程量集中在媒体面（Xiu/mediasoup），弹幕与互动几乎免费搭读扩散管道的车——这是把直播排在 P5（读扩散落地之后）而非单独立项的原因。第六轮补上最后一块拼图：**运营与合规体系（ADR-15）**——审计日志/RBAC+MFA/审核管线/防泄密以独立服务叠加，消息管道不需要回头推翻。至此架构蓝图收敛：引擎层（已建成）→ 读扩散+多设备+频道话题（P3）→ 运营合规（P4/P6）→ 移动端与直播（P5）→ 发布工程（P6）。**
+
+---
+
+## 第十一部分：终版架构树（第七轮收敛，权威基线）
+
+> 以下两棵树 + 决策速查 + 九大不变式为最终收敛结果，**作为服务拆分、schema 设计、
+> API 边界、客户端会话列表聚合的基线**。与前面各部分冲突时，以本部分为准
+> （冲突点已标入 ADR-16：ADR-2 的"小群保留写扩散"条款被三支柱统一读扩散取代）。
+
+### 11.1 产品功能树（用户视角，最终版）
+
+```text
+类微信/类Discord平台
+├── 1. 账号与身份
+│   ├── 用户名+密码注册（不强制手机验证）
+│   ├── 可选邮箱验证（找回/防滥用）· 恢复码 · 多设备登录管理（远程下线）· 2FA(TOTP)
+│   ├── 个人资料（头像/昵称/简介/状态）· 二维码名片（username/user_id）
+│   └── 账号注销 / 数据导出
+├── 2. 社交结构（三大并列支柱）【ADR-16】
+│   ├── 2A. 好友关系+单聊 ★支柱A
+│   │   ├── 申请/新的朋友 · 备注/标签/分组 · 星标 · 拉黑 · 通讯录同步（可选）
+│   │   ├── 好友推荐（recommendation-service）· 共同群聊/共同好友
+│   │   ├── 单聊会话（owner=规范化用户对）：全消息类型/引用/转发/撤回/编辑/搜索/
+│   │   │   置顶/标记未读/已读回执(可选)/正在输入/消失消息(可选)/一键撤回本次全部
+│   │   └── 陌生人消息请求（ADR-24）：请求箱→接受/拒绝→屏蔽；可配置开关
+│   ├── 2B. 群组 Group ★支柱B
+│   │   ├── 成员上限可配置(默认500) · 群主/管理员(≤10) · 公告 · 禁言(定时解除)
+│   │   ├── 入群确认(40人+默认) · 群二维码(invite_token) · 群收款/群接龙 · 群文件
+│   │   ├── 群昵称 · @所有人(owner/admin) · 转让/解散 · 折叠/保存到通讯录/免打扰
+│   │   └── 群消息（owner=group_id，写扩散过渡→读扩散）
+│   └── 2C. 社区/频道/话题 ★支柱C
+│       ├── 社区 Community（万人 member_limit）：公告/社区级角色/成员管理/发现页入口
+│       ├── 频道 Channel：类型=文字/公告只读/语音/直播；频道级权限；邀请链接；
+│       │   消息（owner=channel_id，序列号独立）
+│       └── 话题 Thread：任意频道消息发起；回复聚合于父消息下不占主序列；
+│           订阅/取消订阅；话题内成员列表
+├── 3. 会话与消息
+│   ├── 统一会话列表（direct/group/channel 聚合，按最后消息时间）
+│   ├── 未读数（read-service 统一提供）· 免打扰/置顶/归档
+│   ├── 全局搜索（search-service：消息/群组/频道/社区/用户/话题）
+│   └── 消息类型注册表+三通道分级【ADR-17】
+│       ├── normal：文本/图/视频引用/文件/小程序卡片/广告卡片/红包卡片 → 信箱+序列号+持久化
+│       ├── high_priority：直播信令/正在输入/实时弹幕 → 独立 NATS 主题，不占序列号只投在线
+│       └── ephemeral：红包领取状态/广告回执/编辑状态 → 落库不进时间线，只更新卡片
+├── 4. 音视频与直播（独立媒体服务）【ADR-21】
+│   ├── 1:1 通话(WebRTC) · 群通话房间（独立于消息管道）· 直播频道（频道的一种类型）
+│   ├── RTMP ingest(OBS) · WebRTC/HLS 播放 · 连麦/桌面共享 · 屏幕共享
+│   └── 短视频（video-service 点播 HLS；消息只传结构化引用）
+├── 5. 内容与发现（三层分离）【ADR-22】
+│   ├── 发现页（展示层：分类/热门/新晋/标签——community-service 聚合排序）
+│   ├── 搜索（search-service：本地+云端+时间范围）
+│   ├── 推荐（recommendation-service：频道/视频/广告/好友）
+│   ├── 朋友圈/状态/动态（可选 feed-service/status-service）
+│   └── 邀请与裂变（链接/邀请码/奖励→余额体系）
+├── 6. 支付与钱包（三账本分离）【ADR-18】
+│   ├── wallet-service：充值/余额支付/红包/群收款/转账/支付密码/流水/提现冻结
+│   ├── ad-account-service：预付款/扣费/信用额度/退款
+│   ├── marketing-account-service：红包补贴/邀请奖励/广告红包（两笔独立分录）
+│   └── ledger-service：复式记账内核（account_type 隔离）
+├── 7. 小程序（容器统一，Bridge 分层）【ADR-14】
+│   ├── 入口/最近使用 · 聊天内小程序卡片（normal 通道）
+│   ├── host_bridge（生命周期/存储/网络/UI）· im_bridge（受限白名单：发消息/会话/拉起支付）
+│   └── 支付回调转发 → payment-service（不碰账本）
+├── 8. 广告
+│   ├── 信息流广告（ad_card 消息，normal 通道）· 会话列表广告 · 小程序广告
+│   ├── 广告红包/任务（ad-account → marketing → 用户钱包）
+│   └── 广告主后台（活动/定向/出价/预算/报表/CTR 预测）
+├── 9. 安全与治理（三层分离）【ADR-20】
+│   ├── risk-service（前置实时拦截：注册/发送/登录风控）
+│   ├── moderation-service（后置多模态判定，先审后发/先发后审）
+│   ├── report-service（举报工单：待处理→审核中→已处置→已反馈）
+│   ├── 隐私设置/聊天锁/隐藏会话 · 合规（青少年模式/日志留存/广告标识/协议）
+├── 10. 设置与辅助
+│   ├── 深色/主题/字号 · 多语言 · 无障碍（对比度/缩放/读屏）
+│   ├── 通知自定义（会话/关键词）· 数据导出 · 账号注销
+└── 11. 客服与申诉
+    ├── 应用内工单 · 封禁申诉 · 帮助中心/FAQ · 支付争议（联动 ledger 流水）
+```
+
+### 11.2 技术架构树（服务视角，最终版）
+
+```text
+平台技术架构
+├── A. 客户端层
+│   ├── 移动端：Flutter + Flutter-OH（ADR-11）· 桌面：Tauri 2 / Flutter Desktop
+│   ├── Web：独立工程（复用 API/WS 协议）
+│   └── 小程序容器：LingXia/Wry + 分层 Bridge（host_bridge + im_bridge 白名单）
+├── B. 接入层
+│   ├── WebSocket 网关（Tokio 无状态，连接态存 Redis）
+│   ├── HTTP API 网关（Axum；开放 API 可选 ShenYu/Otoroshi）· CDN
+│   └── push-gateway（APNs/FCM/华为/小米/OPPO/vivo——只发出去，不做决策）【ADR-19】
+├── C. 业务服务层
+│   ├── 社交三支柱【ADR-16】
+│   │   ├── relation-service：friendships/requests/blocklist/message_requests/saved_groups/共同聚合
+│   │   ├── group-service：CRUD/成员角色/公告/禁言/审批/邀请token/收款/接龙/文件/@校验/转让解散
+│   │   └── community-service + thread-service：社区/频道四类型/频道权限/成员/话题/订阅/发现聚合
+│   ├── 消息与同步【ADR-16/17】
+│   │   ├── message-service：读扩散信箱（owner_type+owner_id 分区，序列号独立）/
+│   │   │   类型注册表+三通道/撤回编辑（逻辑删除+变更广播）/批量撤回
+│   │   ├── sync-service：成员/权限/话题版本差分，五层策略
+│   │   └── read-service：已读游标(PG)/未读 ZSET/已读回执（可选，万人群默认关闭）
+│   ├── 通知与推送【ADR-19】
+│   │   ├── notification-service：在线查询/多设备去重/聚合 → PushTask
+│   │   └── push-gateway：传输层
+│   ├── 支付与账本【ADR-12/18】
+│   │   ├── ledger-service（cala 嵌 PG：四类 account_type/不可变分录/余额重放/obix outbox）
+│   │   ├── wallet-service · ad-account-service · marketing-account-service
+│   │   └── payment-service（渠道适配，不碰账本）
+│   ├── 内容分发【ADR-22】
+│   │   ├── recommendation-service（行为事件流→双塔+Faiss 召回→Wide&Deep 排序）
+│   │   ├── search-service（Meilisearch/Tantivy，事件订阅更新索引）
+│   │   └── feed-service/status-service（可选）
+│   ├── 媒体【ADR-21】
+│   │   ├── media-service（实时 SFU：通话/房间/直播信令与转发——有状态）
+│   │   └── video-service（点播：FFprobe/FFmpeg→HLS→缩略图——无状态任务队列）
+│   ├── 平台化
+│   │   ├── mini-app-service（包管理/签名/灰度/权限白名单/支付回调转发——不执行代码）
+│   │   └── ad-service（Ad Server：活动/定向/eCPM/频控/预算平滑 + 计费信标 + 扣费指令→ad-account）
+│   └── 安全治理【ADR-20】
+│       ├── risk-service（前置毫秒级拦截）· moderation-service（后置判定 API）
+│       └── report-service（工单流程，处置回调各服务）
+├── D. 数据层
+│   ├── PostgreSQL：用户/关系/群/社区/频道/话题/游标/账本分录/广告/审计日志(≥6个月)/全表 tenant_id【ADR-23】
+│   ├── Redis：在线态/设备映射/未读 ZSET/红包原子/频控滑窗
+│   ├── 队列：NATS（实时路由/high_priority/状态变更）· Kafka（离线审计/推送触发/埋点/索引更新）
+│   ├── 对象存储：图/音/文件 · media/live/{room} · video/{id} · mini-app/{app}/{ver}
+│   ├── 搜索索引（Meilisearch/Tantivy）· 账本存储（cala 嵌 PG）· 分析库（可选 ClickHouse）
+├── E. 基础设施层
+│   ├── OpenTelemetry 追踪（Jaeger/Tempo 7-30天）· Prometheus+Grafana · Loki（30-90天）
+│   ├── 配置中心（动态开关/灰度/分桶）· 管理后台（adminx：RBAC/MFA/工单/提现双人复核/只读 audit_log）
+│   ├── CI/CD（Rust workspace + Flutter 多端 + Tauri 打包）· 密钥管理
+└── F. 跨切面能力
+    ├── 事件埋点管道（三端统一 schema → ClickHouse/推荐特征；广告归因链路）
+    ├── 分层权限模型（平台 RBAC/社区角色/群角色/频道权限/小程序白名单/广告主权限）
+    └── 多租户预留【ADR-23】
+```
+
+### 11.3 决策落点速查
+
+| # | 决策 | 产品树位置 | 技术树位置 |
+|---|---|---|---|
+| 1 | 社交三支柱并列（ADR-16） | 2A/2B/2C | relation/group/community+thread-service |
+| 2 | 消息类型注册表+三通道（ADR-17） | 3 | message-service |
+| 3 | 三账本命名空间（ADR-18） | 6 | ledger+wallet+ad-account+marketing-account |
+| 4 | 推荐/搜索/发现三层分离（ADR-22） | 5 | recommendation/search/community 聚合 |
+| 5 | 风控/审核/举报三层分离（ADR-20） | 9 | risk/moderation/report-service |
+| 6 | media/video 分离（ADR-21） | 4 | media-service/video-service |
+| 7 | 通知决策/传输分离（ADR-19） | 3 通知 | notification-service/push-gateway |
+| 8 | 审计入 PG、运行日志入 Loki（ADR-15） | 9/10 | audit_log 表 / Loki / OTel |
+| 9 | 小程序 Bridge 分层（ADR-14） | 7 | host_bridge + im_bridge 白名单 |
+| 10 | 多租户预留（ADR-23） | 全树 | 全表 tenant_id + 鉴权中间件 |
+
+### 11.4 九大锁定不变式
+
+1. **社交三支柱并列**，共用读扩散信箱基础设施，`owner_type` 区分，不写三套投递逻辑；
+2. **三种 owner 序列号独立生成**（direct=规范化用户对 / group / channel）；万人是 community 的 member_limit，不是群组默认上限；
+3. **只有 normal 通道占用序列号并进时间线**（直播信令/正在输入/红包状态变更走独立通道）；
+4. **任何资金变动只经 ledger-service 复式记账接口**（wallet/ad/marketing 是账户命名空间，不是三个引擎）；
+5. **push-gateway 不知道免打扰与聚合**（只收已决策的 PushTask）；
+6. **小程序只能经权限白名单调 im_bridge 受限子集**（不可直接触账本/消息管道/管理接口）；
+7. **审计日志与运行日志永不混存**（管理后台操作记录来自 PG audit_log，故障日志来自 Loki）；
+8. **全表 tenant_id 但当前不实现租户隔离**（字段预留不是功能）；
+9. **陌生人单聊必须经 message_requests 流程**（是否允许是配置，流程必须存在）。
+
+---
+
+## 第十二部分：待确认疑问（需拍板，均已给出建议答案）
+
+| # | 疑问 | 建议答案 |
+|---|---|---|
+| Q1 | 终版树规定**三支柱全部走读扩散信箱**（含单聊），取代 ADR-2 的"小群保留写扩散"条款。确认吗？ | 建议确认（单信箱+owner_type 比双轨简单且够用）；现 mq_hub 写扇出标记为过渡实现 |
+| Q2 | 新 message-service 与现有 mq_hub 的关系：**新建独立服务逐步下线旧投递路径**，还是原地演进？ | 建议新建（读扩散数据模型与写扇出结构差异过大，原地演进会长期双轨并存） |
+| Q3 | 产品树钱包"充值（人民币，**微信虚拟支付**或自建渠道）"与 ADR-12"完全自建渠道"是否矛盾？ | 需确认渠道清单：若允许微信虚拟支付，payment-service 增加该渠道适配器即可（与"自建"不互斥，只是渠道来源） |
+| Q4 | 终版产品树**未出现 E2EE/秘密聊天**——保留（ADR-1，P4）还是移出范围？ | 建议保留（已建成 17 测试的库资产，弃用可惜）；树中补一行"秘密聊天（可选）" |
+| Q5 | 群收款/群接龙的范围与优先级？ | 依赖钱包与群服务就绪（P4 后）；建议接龙先做（纯消息）、收款后做（涉及账本） |
+| Q6 | recommendation/video/feed 三个重资源服务确认排 P6+/独立轨道？ | 建议确认（树内存在但非 MVP；video-service 因语音条/视频消息依赖，P5 先行） |
+| Q7 | ~20 个服务的拆分节奏：**模块化单体起步按阶段拆分**，还是直接微服务化？ | 强烈建议前者：进程内按树分层（crate 边界），P3/P6 按负载拆出网关/信箱/账本——工数差数倍 |
+| Q8 | 国内推送厂商通道（华为/小米/OPPO/vivo）需逐家开发者账号与审核——运营前置项确认 | 属实，P5 前置准备 |
+
+---
+
+## 第十三部分：路线表详细版（终版；每项标注现状/交付）
+
+> 状态：✅ 已实现有测试 · ⚠️ 雏形/部分 · ❌ 未实现。服务名对应 11.2 技术树节点。
+
+### P1 体验补齐（1–2 周，无阻塞）
+
+| 项 | 现状 | 交付 |
+|---|---|---|
+| E2EE 接入客户端消息路径（秘密聊天雏形+回退日志） | ⚠️ 库✅ | core::e2ee → ui 发送路径 + 回退 warn |
+| 消息操作五件套（转发/合并转发/收藏/正在输入/搜索协议） | ❌ | 协议+服务端+UI |
+| UI 历史消息加载（云同步闭环） | ⚠️ 存储✅ | list_messages → UI 分页 |
+| 已读回执 UI 呈现 | ⚠️ 协议✅ | 气泡已读标记 |
+
+### P2 真机验收 + 客户端体验（1–2 周）
+
+| 项 | 现状 | 交付 |
+|---|---|---|
+| WP-08 双机音视频验收 / WP-11 tauri dev 演示 / WP-10 Redis 真机 | ⚠️ | 三项验收记录 |
+| 语音条（波形/转文字占位）/ 文件消息 / 贴纸 / 视频首帧+倍速 | ❌ | 消息类型注册表首批扩展 |
+| 消息列表虚拟化 / 本地消息库（客户端 SQLite） | ❌ | 渲染与启动体验 |
+| 头像接媒体 / mac·Linux 构建验证 | ⚠️ | 资料页闭环 |
+
+### P3 读扩散核心 + 多设备 + 社群层（4–6 周，终版树主战场）
+
+| 项 | 现状 | 交付 |
+|---|---|---|
+| message-service 新建（ADR-16/17：owner_type 三态信箱/序列号/类型注册表/三通道/撤回变更事件/批量撤回） | ❌（现写扇出转过渡） | 新 crate/服务 |
+| sync-service（五层差分）/ read-service（游标+ZSET 未读，回执万人群默认关） | ❌ | 新建 |
+| Transport trait + WS 网关（ADR-8）/ 多设备多连接（ADR-4） | ⚠️ QUIC 紧耦合 | 网关改造 |
+| community/thread/频道权限/分组/频道级角色/话题订阅（ADR-16 支柱C） | ❌ | 新建 |
+| relation 增强：拉黑/message_requests/星标/标签/共同聚合（ADR-24） | ⚠️ 基础好友✅ | 补齐 |
+| 群管理补齐：公告/禁言/审批/邀请token/慢速/@所有人校验 | ⚠️ 基础✅ | 补齐 |
+| 通知聚合+多级过滤（ADR-19 决策层）/ NATS backend / 弹幕高频 / 审计日志起步 / Meilisearch 接入 / tenant_id 建表 | ❌ | 按清单 |
+
+### P4 运营合规 + 资金账本 + 通话（3–4 周）
+
+| 项 | 现状 | 交付 |
+|---|---|---|
+| 支付四层（ADR-12/18：cala→obix→dtmrs→Connector；四类 account_type） | ⚠️ 演示级钱包 | ledger/wallet/ad-account/marketing/payment 五件 |
+| 内容审核管线（risk/moderation/report 三层，ADR-20） | ❌ | 三服务 |
+| 红包卡片变更回写 / 支付密码 / 对账 / 找回+captcha / 2FA / 秘密聊天完整 / 设备管理页 | ❌/⚠️ | 按清单 |
+| 通话房间制 + 会议管控（ADR-7/21） | ⚠️ 1:1 库 | media-service 房间 |
+
+### P5 移动端 + 直播 + 小程序 + 点播（4–8 周，可与 P3/P4 并行轨道）
+
+| 项 | 现状 | 交付 |
+|---|---|---|
+| Flutter 移动端（ADR-11）+ UniFFI core 绑定 + 鸿蒙 Flutter-OH | ❌ | Android/iOS/鸿蒙 |
+| 直播频道（ADR-13：Xiu ingest + 播放 + 信令独立通道） | ❌ | media-service 扩展 |
+| 小程序 M1–M5（ADR-14：Rong→Bridge 闭环→多引擎→沙箱→后端集成） | ⚠️ container/dpage 雏形 | miniprogram-blueprint.md |
+| video-service 点播 HLS（ADR-21）/ Web 独立工程 / 多语言 / 数据导出 / 厂商推送通道 | ❌ | 按清单 |
+
+### P6 发布工程 + 规模（2–4 周）
+
+| 项 | 现状 | 交付 |
+|---|---|---|
+| 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署 | ❌ | 发布链 |
+| adminx 管理后台（RBAC/MFA/审计检索/工单/看板） | ❌ | 运营面板 |
+| PG 迁移+分片 · 存储加密 · Bot+开放 API/Webhook · SSO 预留 · 无障碍 · k8s · 备份 · SLO | ❌ | 规模化 |
+
+### P6+ 远期轨道
+
+recommendation-service（双塔+Faiss+Wide&Deep）· feed-service/status-service · 群收款/群接龙 · 多租户激活 · 国密升级 · 鸿蒙 ArkUI-X 备选切换评估
+
+---
+
+## 第十四部分：执行状态总结
+
+**已收敛**：引擎层 254 测试全绿在 main；架构蓝图 ADR-1~24、十四部分、九大不变式、P1–P6+ 详细路线表；四份专项文档（对照/差距/总蓝图/小程序）。
+**无阻塞**：P1 清单完全在已有范围内（E2EE 接线/五件套/历史加载/回执 UI），不需要任何新决策。
+**待拍板**：第十二部分 Q1–Q8（其中 Q1/Q2 影响读扩散实现方式，建议 P3 开工前确认；其余不阻塞 P1/P2）。
