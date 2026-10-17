@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/net", "crates/dpage", "crates/container", "crates/mq", "crates/platform", "server"]
+members = ["crates/core", "crates/net", "crates/dpage", "crates/container", "crates/mq", "crates/platform", "crates/push", "crates/rtc", "server"]
 exclude = ["ui"]
 
 [workspace.package]
@@ -15,7 +15,7 @@ serde_json = "1"
 bincode = "1.3"
 anyhow = "1"
 thiserror = "2"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "trace"] }
 quinn = "0.11"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pki-types = "1"

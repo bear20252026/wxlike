@@ -106,6 +106,22 @@ pub fn id(s: &str) -> Result<&str> {
     Ok(s)
 }
 
+/// WP-06: lowercase platform tag, small alphabet so it can never be confused
+/// with a path or SQL fragment downstream.
+pub fn device_platform(s: &str) -> Result<&str> {
+    let s = s.trim();
+    if s.is_empty() || s.len() > 32 {
+        return Err(PlatformError::BadInput("platform tag malformed"));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(PlatformError::BadInput("platform tag malformed"));
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

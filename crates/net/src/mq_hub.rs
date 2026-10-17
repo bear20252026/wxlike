@@ -36,6 +36,18 @@ use crate::wire::WireFrame;
 /// Default dedup cache size required by the task book (>= 100k entries).
 pub const DEFAULT_DEDUP_CAP: usize = 100_000;
 
+/// WP-06: fired when an envelope is parked for a user with **no online
+/// connection anywhere** (the route table knows about no hub for them).
+///
+/// The hook receives the envelope so the push layer can build its payload —
+/// which by design carries only who sent it, never the content (see
+/// `wxlike-push`). Best-effort: an error here never fails delivery, because
+/// the message itself is already safely parked in the offline store.
+#[async_trait::async_trait]
+pub trait OfflinePush: Send + Sync + 'static {
+    async fn user_offline(&self, user_id: &str, env: &Envelope);
+}
+
 /// Hub knobs. Defaults: in-memory offline inbox (cap 500), 100k dedup cache,
 /// no message store (routing only), no reclaim patrol.
 #[derive(Clone)]
@@ -50,6 +62,8 @@ pub struct MqHubOptions {
     /// with an ack-capable backend; `None` disables the patrol. The task book
     /// asks for >= 60s, so `wxlike-server` uses [`DEFAULT_CLAIM_IDLE_MS`].
     pub reclaim_idle_ms: Option<u64>,
+    /// WP-06: called when a recipient is offline everywhere. `None` = no push.
+    pub push_hook: Option<Arc<dyn OfflinePush>>,
 }
 
 /// Contract floor for reclaiming in-flight cross-node entries.
@@ -63,6 +77,7 @@ impl Default for MqHubOptions {
             dedup_cap: DEFAULT_DEDUP_CAP,
             membership: None,
             reclaim_idle_ms: None,
+            push_hook: None,
         }
     }
 }
@@ -109,6 +124,9 @@ struct HubState {
     seen: Arc<tokio::sync::Mutex<MsgIdLru>>,
     reclaim_idle_ms: Option<u64>,
     membership: Option<Arc<dyn crate::membership::Membership>>,
+    push_hook: Option<Arc<dyn OfflinePush>>,
+    /// WP-13: connections / throughput / parked / latency, per hub.
+    metrics: crate::metrics::HubMetrics,
 }
 
 /// Cloneable handle for routing envelopes into a running hub.
@@ -125,6 +143,18 @@ impl HubHandle {
     /// Number of users currently bound to this hub (tests + metrics).
     pub async fn online_users(&self) -> usize {
         self.state.peers.read().await.len()
+    }
+
+    /// Whether `user` has a live connection bound on any hub in the mesh
+    /// (route table, so it is true across nodes). WP-06/WP-08 presence.
+    pub async fn is_online(&self, user: &str) -> bool {
+        self.state
+            .router
+            .routes
+            .route_of(user)
+            .await
+            .map(|r| r.is_some())
+            .unwrap_or(false)
     }
 
     pub async fn publish(&self, env: &Envelope) -> anyhow::Result<()> {
@@ -212,6 +242,8 @@ pub async fn run_mq_hub_with(
         seen: Arc::new(Mutex::new(MsgIdLru::new(options.dedup_cap))),
         reclaim_idle_ms: options.reclaim_idle_ms,
         membership: options.membership.clone(),
+        push_hook: options.push_hook.clone(),
+        metrics: crate::metrics::HubMetrics::new(hub_id.clone()),
     });
 
     // accept loop
@@ -329,6 +361,8 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
         .write()
         .await
         .insert(user_id.clone(), send.clone());
+    state.metrics.connected();
+    tracing::debug!(hub = %state.hub_id, user = %user_id, "user bound");
 
     state
         .router
@@ -341,9 +375,12 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
     match state.offline.drain(&user_id).await {
         Ok(frames) => {
             if !frames.is_empty() {
-                eprintln!(
-                    "[mq-hub] flushing {} parked message(s) to {user_id}",
-                    frames.len()
+                state.metrics.offline_parked(-(frames.len() as i64));
+                tracing::info!(
+                    hub = %state.hub_id,
+                    user = %user_id,
+                    count = frames.len(),
+                    "flushing parked messages"
                 );
                 let mut s = send.lock().await;
                 for frame in frames {
@@ -374,7 +411,18 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
             WireFrame::Msg(env) => env,
             WireFrame::Ping | WireFrame::Hello { .. } => continue,
         };
-        if let Err(err) = handle_inbound(&state, &user_id, &env).await {
+        let started = std::time::Instant::now();
+        let outcome = handle_inbound(&state, &user_id, &env).await;
+        state.metrics.message_routed();
+        state.metrics.delivery_latency(started.elapsed());
+        tracing::trace!(
+            hub = %state.hub_id,
+            from = %user_id,
+            conv = %env.conv_id,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "envelope routed"
+        );
+        if let Err(err) = outcome {
             eprintln!("[mq-hub] inbound error: {err:#}");
         }
     };
@@ -383,6 +431,8 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
     let current = state.peers.read().await.get(&user_id).cloned();
     if current.map(|s| Arc::ptr_eq(&s, &send)).unwrap_or(false) {
         state.peers.write().await.remove(&user_id);
+        state.metrics.disconnected();
+        tracing::debug!(hub = %state.hub_id, user = %user_id, "user unbound");
         let _ = state
             .router
             .routes
@@ -527,6 +577,7 @@ async fn fanout(
     let tasks = unique.iter().map(|rcpt| {
         let state = state.clone();
         let rcpt = (*rcpt).clone();
+        let owned_env = env.clone();
         let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
             Ok(f) => f,
             Err(err) => return tokio::spawn(async move { Err(err) }),
@@ -537,7 +588,24 @@ async fn fanout(
                     deliver_to(&state, &rcpt, &frame).await;
                 }
                 Some(h) => state.router.mq.publish(&hub_queue(&h), frame).await?,
-                None => state.offline.enqueue(&rcpt, frame).await?,
+                None => {
+                    // nowhere online: park for later, then wake their devices
+                    state.offline.enqueue(&rcpt, frame).await?;
+                    state.metrics.offline_parked(1);
+                    tracing::debug!(
+                        hub = %state.hub_id,
+                        user = %rcpt,
+                        conv = %owned_env.conv_id,
+                        "recipient offline, frame parked"
+                    );
+                    if let Some(hook) = state.push_hook.clone() {
+                        // fire-and-forget: push failure must not roll back the
+                        // park, and must not delay the rest of the fan-out
+                        tokio::spawn(async move {
+                            hook.user_offline(&rcpt, &owned_env).await;
+                        });
+                    }
+                }
             }
             Ok(())
         })

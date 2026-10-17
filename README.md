@@ -16,9 +16,11 @@ wxlike/
 │  ├─ net/         # QUIC 长连接 · 分帧 · 广播 hub（单节点）/ MQ 路由 hub（多节点）
 │  ├─ dpage/       # 动态页包格式 DPG1：桩头(magic+id+len) + zstd 载荷（借鉴 CSO 桩+载荷设计）
 │  ├─ container/   # JS 引擎宿主（Boa）· wxhost 桥 · 页面生命周期 · 研究装载器
-│  └─ platform/    # ★ 业务数据面（WP-01）：axum HTTP + SQLite 账户/会话/资料，PBKDF2 口令哈希
-├─ server/         # 开发服务器：platform API + MQ 路由 hub（WXLIKE_MQ=memory|redis）
-└─ ui/             # Tauri2 脚手架（独立构建，见下）
+│  ├─ platform/    # ★ 业务数据面（WP-01）：axum HTTP + SQLite 账户/好友/群/钱包/媒体/朋友圈/预密钥
+│  ├─ push/        # ★ 系统推送（WP-06）：离线设备通知，payload 结构上不含消息正文
+│  └─ rtc/         # ★ 音视频通话（WP-08）：str0m 纯 Rust WebRTC + 通话状态机 + 信令
+├─ server/         # 开发服务器：platform API + MQ 路由 hub + /metrics + presence + 推送分发
+└─ ui/             # Tauri2 桌面端（独立构建，见下）
 ```
 
 ## 平台 API（WP-01：账户 / 会话 / 资料）
@@ -230,13 +232,15 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 [conv1] alice: directed just for bob           ← to=["bob"] 定向
 ```
 
-许可与移植声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（wxlike 本体 MIT；MQ 设计移植自 box-im MIT 设计，未含其 Java 代码）。
+许可与移植声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（wxlike 本体 GPL-3.0；MQ 设计移植自 box-im MIT 设计，未含其 Java 代码）。
 
 ## 快速开始
 
 ```bash
 cargo build
-cargo test                 # 178 tests: E2EE / 存储 / 打包 / 分帧 / 中继 / 桥 / 平台 API / 好友 / 消息语义 / 群聊 / 媒体 / 钱包 / 朋友圈 / 可靠队列
+cargo test                 # workspace 247 tests + ui 7（计数随代码走，以 CI 为准）
+                           # 覆盖：账户/好友/群聊/媒体/钱包/朋友圈/消息语义/可靠队列/
+                           #       E2EE(棘轮+预密钥+TOFU)/推送分发/音视频状态机与媒体回环/运维恢复
 
 # 起服务器
 ./target/debug/wxlike-server.exe            # HTTP :8099, QUIC :9443
@@ -285,6 +289,81 @@ cargo test -p wxlike-core --test envelope_v2     # 19 项
 手动演示（两个终端）：`cargo run -p wxlike-net --example chat -- 127.0.0.1:9443 alice`，
 普通行广播、`bob> xxx` 定向、`:recall` 撤回上一条、`:read` 给最后收到的消息发已读回执。
 
+## E2EE 强化（WP-12）
+
+`core::e2ee` 基于 **vodozemac**（Matrix 同款 Olm/Megolm 实现，Apache-2.0）——
+手写 double ratchet 最容易"happy path 全绿、上线即坏"，所以棘轮用审计过的库，
+我们只写库明确留给嵌入方的三件事：**128 条严格有序重排窗口**（vodozemac 原生 40，
+任务书要求 ≥64）、**重放拒绝**（Olm 密文可再生、Megolm 索引水位按 (群,发送者,会话) 记账）、
+**重复 pre-key 拆包**（会话未建立前 vodozemac 每条都包 pre-key，接收端第二次消费同一把
+一次性密钥必然失败——收发两侧都做了兼容）。
+
+预密钥目录 `POST/GET /api/keys`：**GET 是认领语义**，每次弹出一把一次性密钥，
+两个发起者永远拿不到同一把；库存见底返回空列表，属主 `bundle_refilled` 补货。
+QUIC 传输默认 **TOFU 钉扎**（首连记指纹进本地文件，之后证书变了直接拒绝），
+skip-verify 保留给 `--insecure-lab` 显式开关。群聊 Megolm sender-key，N 人群不做 O(N²)；
+成员变更轮换密钥，新成员读不到轮换前历史。威胁模型（保护什么/不保护什么——
+**元数据不隐藏**）见 [docs/threat-model.md](docs/threat-model.md)。
+
+```bash
+cargo test -p wxlike-core --test e2ee          # 17 项（1000 条交替/64 窗口乱序/篡改/重放/预密钥耗尽）
+cargo test -p wxlike-platform --test keys      # 8 项（认领不重复/目录建会话端到端）
+cargo test -p wxlike-net --test tofu           # 5 项（首连钉扎/伪造证书拒绝/跨名隔离）
+```
+
+## 系统推送（WP-06）
+
+`crates/push`：`PushProvider` trait + `NoopProvider`（默认，带计数）+
+`FcmProvider`（HTTP v1，凭据从 `WXLIKE_FCM_*` 环境变量注入，无凭据构造即失败回退 Noop；
+APNs 留 trait 槽位——需要苹果开发者账号，无法离线验收）。
+**payload 结构上没有正文字段**：只有 from_user + conv_id，聊天正文走 E2EE 不进推送。
+hub 在路由表查无任何在线连接时（且仅此时）触发 `OfflinePush` 钩子，
+分发到该用户全部注册设备；设备表 `POST/GET /api/devices` 按平台 upsert（最新 token 胜出）。
+
+```bash
+cargo test -p wxlike-platform --test devices    # 6 项（注册/替换/多端共存/鉴权）
+cargo test -p wxlike-push                       # 6 项（payload 永不含正文 + hub 离线触发端到端）
+```
+
+## 音视频通话（WP-08）
+
+`crates/rtc`，媒体走 **str0m**（纯 Rust WebRTC；任务书禁 libwebrtc C++ 绑定）：
+- **状态机**（`state`）：主叫/被叫各自角色化，非法迁移一律拒绝不留活尸；
+  离线呼叫**立即** Failed（30s 响铃超时、10s 对端静默看门狗由 `CallManager::check_deadlines` 驱动）；
+- **信令**（`signal`）：复用 QUIC 通道的 `MsgBody::Custom{kind:"rtc-signal"}`，
+  hub 的防伪造同样管着信令；双方同抢（glare）用 `(from, call_id)` 字典序仲裁，两侧必收敛同一结果；
+- **媒体**（`media`）：真实 ICE/DTLS/SRTP——虚拟线（进程内）与**真 UDP 回环**两条验证路径；
+  WP-08b 视频 m-line + `BitrateController` 码率阶梯（骤降快砍、余量缓爬、封顶）；
+- **ICE 配置**（`ice`）：内置最小 STUN binding 客户端（`WXLIKE_STUN_URL`），
+  TURN 是配置接口（`WXLIKE_TURN_URL`，部署侧起 coturn，无 TURN 时同网段可通即验收环境）；
+- **采集与编码**：`audio` feature（cpal + Opus，已验证 960 采样往返），
+  `camera` feature（nokhwa）；无头 CI 默认关闭。
+- server 暴露 `GET /api/presence/{user_id}`（路由表即真相）供呼叫前探测。
+
+```bash
+cargo test -p wxlike-rtc                        # 34 项（状态机/信令防伪造/媒体回环/码率阶梯/真实 hub 全流程）
+```
+
+## 运维基线（WP-13）
+
+- **可观测**：hub 连接数/吞吐/离线积压/投递延迟直方图（Prometheus 文本格式，
+  p99 用 `histogram_quantile` 原生查询）；`/metrics` + `WXLIKE_LOG` tracing 全链路 +
+  SQLite 慢查日志（>100ms 语句带 SQL 文本）。
+- **压测**（全量目标，release，报告 [docs/bench/wp13_hub.md](docs/bench/wp13_hub.md)）：
+  **10 000 并发连接、1 000 msg/s、60s：60 000 条全部送达、断连 0、p99 = 5ms**（预算 50ms）。
+
+```bash
+cargo run --release -p wxlike-net --example bench_hub    # 全量目标
+BENCH_CONNS=300 BENCH_RATE=200 BENCH_SECS=8 cargo run --release -p wxlike-net --example bench_hub  # 冒烟
+```
+
+- **崩溃恢复**：hub 被杀 → 同址重启 → 客户端 `connect_retry` 退避重连（30s 内），
+  暂存与已持久化消息零丢失（`cargo test -p wxlike-net --test ops_recovery`）。
+- **一键起栈**：`docker compose up -d --build`（redis + server + SeaweedFS S3；
+  MinIO 公共镜像已从 Docker Hub/quay 下架，任何 S3 端点都兼容 `MediaStore` trait）；
+  健康检查齐全，`curl http://127.0.0.1:8099/health` 与 `/metrics` 即验收。
+  `WXLIKE_DEV_FAUCET=1` 时额外挂载 `/api/dev/fund`（虚拟资金演示用，生产勿开）。
+
 ## 动态页包（DPG1）
 
 借鉴逆向研究所得的"桩 + 压缩载荷"思路（自研格式，非 CSO）：
@@ -309,16 +388,26 @@ cargo run -p wxlike-container --example research_wmpf -- <path-to-JS>
 
 **边界**：`source_recovered/wmpf_js/*` 是腾讯版权代码，仅限本地研究，禁止随任何构建产物分发。
 
-## UI（Tauri2，独立构建）
+## 桌面 UI（WP-11，Tauri2 + TypeScript + jotai）
 
-`ui/` 为 Tauri2 脚手架（已从 workspace exclude）。构建需 Node + tauri CLI：
+`ui/` 独立于 workspace 构建。**所有服务器交互都是 Rust command**——前端只渲染，
+从不自己开 HTTP/QUIC 连接（架构铁律 §0.1.1）；状态管理 jotai（vanilla API）；
+esbuild 打包进 `ui/dist`（frontendDist）。QUIC 连接走 WP-12 的 TOFU 钉扎，
+指纹落在应用数据目录。已覆盖：注册登录、会话列表（滑动操作/搜索展开/未读角标）、
+聊天气泡（收发分侧）、图片消息（九宫格 + 缩略图点击看原图）、好友（申请/同意/备注）、
+建群/群聊、红包（发送/拆/余额）、全量深色模式、聊天页转场。
 
 ```bash
+# 前置：Rust(MSVC) + Node ≥18 + WebView2（Win10/11 自带）+ VS Build Tools
 cd ui
-npm i -D @tauri-apps/cli && npx tauri dev     # 首次会编译 src-tauri
-```
+npm i
+npm run build            # tsc --noEmit + esbuild 打包到 dist/
+npx tauri dev            # 首次编译 src-tauri 后弹出窗口（干凈环境 ≤15 分钟）
 
-前端 `ui/dist/index.html` 是零依赖静态页，通过 `invoke` 调用 Rust 命令；`src-tauri` 已接 `wxlike-core/net` 作为命令后端。
+# 命令层的 Rust 侧测试（打真实 in-process 服务器，禁 mock）
+cd ui/src-tauri && cargo test --test ui_commands   # 7 项
+cargo clippy --all-targets                          # 0 warning（任务书 A4）
+```
 
 ## Rust 版本注意（已踩坑记录）
 
@@ -330,10 +419,8 @@ npm i -D @tauri-apps/cli && npx tauri dev     # 首次会编译 src-tauri
 
 ## 下一步
 
-1. **server 拆分业务/推送**（学 box-im）：`hub`（纯推送）+ `platform`（业务 API）+ 多节点路由表接口——详见 [docs/reference-projects.md](docs/reference-projects.md)
-2. **消息模型对齐**：`MsgBody::Custom{kind,payload}`（红包/位置/引用/撤回）、`msg_id` 去重、已读回执、withdrawn
-3. **多端同步**：设备级会话游标增量补拉
-4. UI：Tauri2 构建跑通，朋友圈九宫格/深色模式/滑动操作清单见参考文档
-5. E2EE：static-static 升级 double ratchet
-6. Android：`cargo-ndk` 出 .so + JNI 桥
-7. container：换 quickjs-ng 引擎，继续 WA* shim 迭代
+1. ~~消息模型对齐~~（WP-03 已完成）~~多端同步~~（device_cursor + sync_since 已完成）
+2. ~~UI~~（WP-11 已完成）、~~E2EE double ratchet~~（WP-12 vodozemac 已完成）
+3. Android：`cargo-ndk` 出 .so + JNI 桥
+4. container：换 quickjs-ng 引擎，继续 WA* shim 迭代
+5. 端到端最终验收剧本（任务书 §4：双机 + 双 hub + UI 全流程录屏）

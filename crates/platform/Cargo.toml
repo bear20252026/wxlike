@@ -14,6 +14,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
+# WP-13: statement-level profiling for the slow-query log
+tracing = "0.1"
 pbkdf2 = "0.12"
 sha2 = { workspace = true }
 rand = { workspace = true }

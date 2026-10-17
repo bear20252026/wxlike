@@ -19,7 +19,7 @@ pub struct Db {
 impl Db {
     /// `None` opens an in-memory database (tests, single-process demos).
     pub fn open(path: Option<&str>) -> Result<Self> {
-        let conn = match path {
+        let mut conn = match path {
             Some(p) => {
                 if let Some(dir) = std::path::Path::new(p).parent() {
                     if !dir.as_os_str().is_empty() {
@@ -37,6 +37,9 @@ impl Db {
             PRAGMA busy_timeout = 5000;
             "#,
         )?;
+        // WP-13 slow-query log: SQLite itself times every statement, so the
+        // threshold applies to what actually ran, not to lock acquisition.
+        conn.profile(Some(slow_sql_log));
         let db = Self {
             inner: Arc::new(Mutex::new(conn)),
         };
@@ -185,6 +188,27 @@ impl Db {
                 created_at  INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_mc_moment ON moment_comments(moment_id, seq);
+
+            -- WP-12: fetchable E2EE pre-key bundles. `otks` is a JSON array of
+            -- unclaimed one-time keys; claiming pops from it (see keys.rs).
+            CREATE TABLE IF NOT EXISTS prekey_bundles (
+                user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                identity         TEXT NOT NULL,
+                identity_signing TEXT NOT NULL DEFAULT '',
+                otks             TEXT NOT NULL DEFAULT '[]',
+                updated_at       INTEGER NOT NULL
+            );
+
+            -- WP-06: push targets. One row per (user, platform): a re-register
+            -- on the same platform replaces the token ("keep the latest"),
+            -- different platforms coexist.
+            CREATE TABLE IF NOT EXISTS devices (
+                user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                platform      TEXT NOT NULL,
+                device_token  TEXT NOT NULL,
+                last_seen     INTEGER NOT NULL,
+                PRIMARY KEY (user_id, platform)
+            );
             "#,
         )?;
         Ok(())
@@ -194,5 +218,16 @@ impl Db {
     /// connections survive that, so recovering the guard beats crashing.
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Statements slower than this land in the log with their text (truncated).
+const SLOW_SQL_MS: u64 = 100;
+
+/// Profile callback (rusqlite `trace` feature). A plain fn, as required.
+fn slow_sql_log(sql: &str, elapsed: std::time::Duration) {
+    if elapsed.as_millis() >= SLOW_SQL_MS as u128 {
+        let text: String = sql.chars().take(160).collect();
+        tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, stmt = %text, "slow sql");
     }
 }

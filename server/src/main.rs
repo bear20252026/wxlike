@@ -14,11 +14,25 @@
 
 use std::sync::Arc;
 
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // WXLIKE_LOG=e.g. "wxlike_server=debug,wxlike_net=debug,info" (RUST_LOG also honored)
+    let filter = std::env::var("WXLIKE_LOG")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .unwrap_or_else(|_| "info".into());
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|_| {
+                eprintln!("[wxlike-server] bad log filter '{filter}', falling back to info");
+                tracing_subscriber::EnvFilter::new("info")
+            }),
+        )
+        .init();
     let hub_id = std::env::var("WXLIKE_HUB_ID").unwrap_or_else(|_| "hub-1".into());
     let http_addr = std::env::var("WXLIKE_HTTP").unwrap_or_else(|_| "0.0.0.0:8099".into());
     let quic_addr: std::net::SocketAddr = std::env::var("WXLIKE_QUIC")
@@ -53,6 +67,12 @@ async fn main() -> anyhow::Result<()> {
             offline,
             membership: Some(Arc::new(PlatformMembership(platform.clone()))),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
+            // WP-06: a recipient offline everywhere gets a device push whose
+            // payload says only who wrote — never what.
+            push_hook: Some(wxlike_push::DispatchHook::new(
+                Arc::new(PlatformDevices(platform.clone())),
+                wxlike_push::provider_from_env(),
+            )),
             ..Default::default()
         },
     )
@@ -69,11 +89,28 @@ async fn main() -> anyhow::Result<()> {
         std::time::Duration::from_secs(60),
     );
     println!("[wxlike-server] platform db = {}", db_env);
-    println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints, /api/*)");
-    std::mem::forget(hub); // run until process exit
+    println!("[wxlike-server] HTTP  on {http_addr}  (GET /health /endpoints /metrics, /api/*)");
+
+    let presence_router = {
+        let handle = hub.handle(); // clone before the hub is forgotten below
+        axum::Router::new().route(
+            "/api/presence/{user_id}",
+            get(
+                move |axum::extract::Path(user_id): axum::extract::Path<String>| {
+                    let handle = handle.clone();
+                    async move {
+                        let online = handle.is_online(&user_id).await;
+                        axum::Json(serde_json::json!({ "user_id": user_id, "online": online }))
+                    }
+                },
+            ),
+        )
+    };
+    std::mem::forget(hub); // run until process exit (the handle above was cloned)
 
     let app = axum::Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route(
             "/endpoints",
             get(move || async move {
@@ -84,7 +121,9 @@ async fn main() -> anyhow::Result<()> {
                 }))
             }),
         )
-        .merge(wxlike_platform::Platform::router(platform));
+        .merge(wxlike_platform::Platform::router(platform.clone()))
+        .merge(presence_router)
+        .merge(dev_routes(platform.clone()));
 
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
     axum::serve(listener, app).await?;
@@ -133,6 +172,56 @@ fn url_consumer(url: &str) -> String {
     format!("{}-pid-{}", url, std::process::id())
 }
 
+/// Prometheus exposition (WP-13): connections, throughput, parked backlog,
+/// delivery latency histogram (p99 via histogram_quantile).
+async fn metrics() -> impl IntoResponse {
+    let mut text = wxlike_net::prometheus_text();
+    if text.is_empty() {
+        // exposition-format comment: a cold-but-healthy hub scrapes 200
+        text = "# wxlike hub metrics: nothing recorded yet
+"
+        .to_string();
+    }
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body::<axum::body::Body>(text.into())
+        .unwrap_or_default()
+}
+
+/// Virtual-money faucet for demos and the UI integration tests (WP-09 is a
+/// closed virtual ledger; real funding is a licensed channel and stays out).
+/// Opt-in per process: `WXLIKE_DEV_FAUCET=1`.
+fn dev_routes(platform: std::sync::Arc<wxlike_platform::Platform>) -> axum::Router {
+    let _ = &platform;
+    let mut app = axum::Router::new();
+    if std::env::var("WXLIKE_DEV_FAUCET").as_deref() == Ok("1") {
+        let state = platform;
+        app = app.route(
+            "/api/dev/fund",
+            axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                let state = state.clone();
+                async move {
+                    let user_id = body["user_id"].as_str().unwrap_or_default();
+                    let amount = body["amount"].as_i64().unwrap_or(0);
+                    match state.fund(user_id, amount, "dev faucet") {
+                        Ok(()) => (StatusCode::NO_CONTENT, "".to_string()),
+                        Err(err) => (
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("{{\"error\":\"{err}\"}}"),
+                        ),
+                    }
+                }
+            }),
+        );
+        println!(
+            "[wxlike-server] dev faucet enabled (WXLIKE_DEV_FAUCET=1) — never enable in production"
+        );
+    }
+    app
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "service": "wxlike-server",
@@ -148,6 +237,22 @@ struct HubSink(wxlike_net::HubHandle);
 impl wxlike_platform::EventSink for HubSink {
     async fn publish(&self, env: wxlike_core::Envelope) -> anyhow::Result<()> {
         self.0.publish(&env).await
+    }
+}
+
+/// The platform's `devices` table behind the push dispatcher's directory
+/// trait (WP-06). Adapter lives here for the same layering reason as below.
+struct PlatformDevices(std::sync::Arc<wxlike_platform::Platform>);
+
+#[async_trait::async_trait]
+impl wxlike_push::DeviceDirectory for PlatformDevices {
+    async fn devices_of(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        Ok(self
+            .0
+            .devices_of(user_id)?
+            .into_iter()
+            .map(|d| (d.platform, d.device_token))
+            .collect())
     }
 }
 

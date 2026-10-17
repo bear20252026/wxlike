@@ -17,8 +17,17 @@ serde = { workspace = true }
 async-trait = { workspace = true }
 futures-util = "0.3"
 rusqlite = { workspace = true }
+# WP-12 TOFU: SHA-256 certificate fingerprints for first-use pinning
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
+# WP-13: hub observability (Prometheus text format) + forwarding traces
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+tracing = "0.1"
 
 [dev-dependencies]
+futures-util = "0.3"
 # WP-02/A2 integration test drives the platform HTTP API against a live hub.
 wxlike-platform = { path = "../platform" }
 axum = { version = "0.8", features = ["macros", "multipart"] }
@@ -35,3 +44,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 [[example]]
 name = "bench_group"
 path = "../../scripts/bench_group.rs"
+
+# WP-13 A2: hub load benchmark (10k conns / 1k msg/s / 60s; see docs/bench).
+[[example]]
+name = "bench_hub"
+path = "../../scripts/bench_hub.rs"

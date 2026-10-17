@@ -1,0 +1,348 @@
+//! WP-12: the pre-key directory (`/api/keys`) — publish, inspect, and the
+//! claim semantics that guarantee no two callers ever share a one-time key.
+
+mod common;
+
+use axum::http::StatusCode;
+use serde_json::json;
+use wxlike_core::e2ee::{Crypto, Device, PreKeyBundle};
+use wxlike_platform::Platform;
+
+use common::{app, call, platform, req, signup};
+
+#[tokio::test]
+async fn publish_then_claim_round_trips_a_key() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+
+    let bundle = Crypto::new(Device::new()).bundle(&alice_id);
+    let (status, _) = call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&bundle).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, bob_id, bob_token) = {
+        let (id, token) = signup(&app, "bob").await;
+        (StatusCode::OK, id, token)
+    };
+    let _ = bob_id;
+    let (status, body) = call(
+        &app,
+        req(
+            "GET",
+            &format!("/api/keys/{alice_id}"),
+            None,
+            Some(&bob_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let claimed: PreKeyBundle = serde_json::from_value(body).unwrap();
+    assert_eq!(claimed.user_id, alice_id);
+    assert_eq!(claimed.identity, bundle.identity);
+    assert_eq!(
+        claimed.one_time_keys.len(),
+        1,
+        "a claim returns exactly one key"
+    );
+}
+
+#[tokio::test]
+async fn two_claims_never_share_a_key() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+    let (_, bob_token) = signup(&app, "bob").await;
+    let (_, carol_token) = signup(&app, "carol").await;
+
+    let bundle = Crypto::new(Device::new()).bundle(&alice_id);
+    call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&bundle).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+
+    let first: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    let second: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&carol_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    assert_ne!(
+        first.one_time_keys, second.one_time_keys,
+        "the directory hands out distinct one-time keys per claim"
+    );
+}
+
+#[tokio::test]
+async fn drained_bundle_reports_empty_and_refill_works() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+    let (_, bob_token) = signup(&app, "bob").await;
+
+    // publish exactly one one-time key
+    let one = PreKeyBundle {
+        user_id: alice_id.clone(),
+        identity: "a".repeat(43),
+        identity_signing: "b".repeat(43),
+        one_time_keys: vec!["c".repeat(43)],
+    };
+    call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&one).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+
+    let drain: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    assert_eq!(drain.one_time_keys.len(), 1);
+
+    let empty: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    assert!(
+        empty.one_time_keys.is_empty(),
+        "a drained bundle says so instead of re-handing the same key"
+    );
+    assert!(!empty.identity.is_empty(), "identity stays fetchable");
+
+    // the owner tops up by re-publishing
+    let fresh = Crypto::new(Device::new()).bundle(&alice_id);
+    call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&fresh).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+    let refilled: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    assert_eq!(refilled.one_time_keys.len(), 1);
+    assert_eq!(refilled.identity, fresh.identity, "re-publish replaces");
+}
+
+#[tokio::test]
+async fn publishing_someone_elses_bundle_is_forbidden() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, _) = signup(&app, "alice").await;
+    let (_, mallory_token) = signup(&app, "mallory").await;
+
+    let forged = PreKeyBundle {
+        user_id: alice_id,
+        identity: "x".repeat(43),
+        identity_signing: "y".repeat(43),
+        one_time_keys: vec!["z".repeat(43)],
+    };
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&forged).unwrap()),
+            Some(&mallory_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[tokio::test]
+async fn keys_endpoints_require_auth() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+
+    let (status, _) = call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(
+                json!({"user_id": alice_id, "identity": "i", "identity_signing": "s",
+                        "one_time_keys": ["k"]}),
+            ),
+            Some("not-a-token"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = call(&app, req("GET", "/api/keys", None, Some("not-a-token"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // and the owner's own view shows the empty state before any publish
+    let (status, body) = call(&app, req("GET", "/api/keys", None, Some(&alice_token))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["one_time_keys"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn claiming_for_an_unknown_user_is_404() {
+    let state = platform();
+    let app = app(state.clone());
+    let (_, bob_token) = signup(&app, "bob").await;
+    let (status, _) = call(
+        &app,
+        req("GET", "/api/keys/deadbeef00", None, Some(&bob_token)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// End-to-end through the directory: two real devices exchange a session
+/// exactly the way the client stack will (publish → claim → encrypt → decrypt).
+#[tokio::test]
+async fn directory_backed_session_establishment_works() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+    let (_, bob_token) = signup(&app, "bob").await;
+
+    let mut alice = Crypto::new(Device::new());
+    let mut bob = Crypto::new(Device::new());
+
+    // alice publishes her (refilled) bundle
+    let bundle = alice.bundle_refilled(&alice_id);
+    let (status, _) = call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&bundle).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // bob claims one key of hers and opens a session with it
+    let claimed: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    let sealed = bob
+        .encrypt_dm("alice", &claimed, b"hello through the directory")
+        .unwrap();
+    assert!(sealed.pre_key);
+    assert_eq!(
+        alice.decrypt_dm("bob", &sealed).unwrap(),
+        b"hello through the directory".to_vec()
+    );
+    assert!(alice.has_session_with("bob"));
+}
+
+/// Direct library-level check of the claim transaction (no HTTP), including
+/// the `Platform` public API surface used by non-HTTP embedders.
+#[test]
+fn claim_via_library_api_pops_distinctly() {
+    let platform = Platform::in_memory().unwrap();
+    platform.register("alice", "pw").unwrap();
+    let alice_id = platform.user_id_by_name("alice").unwrap().unwrap();
+
+    let bundle = Crypto::new(Device::new()).bundle(&alice_id);
+    platform.publish_keys(&alice_id, &bundle).unwrap();
+
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..3 {
+        let claimed = platform.claim_key(&alice_id).unwrap().unwrap();
+        assert_eq!(claimed.one_time_keys.len(), 1);
+        assert!(seen.insert(claimed.one_time_keys[0].clone()));
+    }
+    let drained = platform.claim_key(&alice_id).unwrap().unwrap();
+    // published 20 keys, claimed 3 — still plenty left
+    assert!(!drained.one_time_keys.is_empty());
+    assert_eq!(
+        platform.own_keys(&alice_id).unwrap().one_time_keys.len(),
+        20 - 4
+    );
+}

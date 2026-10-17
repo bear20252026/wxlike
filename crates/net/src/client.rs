@@ -18,16 +18,66 @@ pub struct Client {
 }
 
 impl Client {
+    /// Production constructor (WP-12): connects with trust-on-first-use and
+    /// pins the server certificate fingerprint in `pins_path`.
+    pub async fn connect_verified(
+        server_addr: SocketAddr,
+        server_name: &str,
+        user_id: impl Into<String>,
+        pins_path: impl AsRef<std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        let conn = crate::transport::connect_tofu(server_addr, server_name, pins_path).await?;
+        Self::hello(conn, user_id.into()).await
+    }
+
+    /// Lab constructor: skips certificate verification. Gate behind an
+    /// explicit `--insecure-lab` switch; use [`Client::connect_verified`]
+    /// everywhere else.
     pub async fn connect(
         server_addr: SocketAddr,
         server_name: &str,
         user_id: impl Into<String>,
     ) -> anyhow::Result<Self> {
         let conn = crate::transport::connect_insecure(server_addr, server_name).await?;
+        Self::hello(conn, user_id.into()).await
+    }
+
+    /// Reconnect with backoff until `deadline` elapses (WP-13 crash
+    /// recovery: a hub dying underneath a client must end in a successful
+    /// reconnect, not a dead UI). `Err` only when the deadline passes.
+    pub async fn connect_retry(
+        server_addr: SocketAddr,
+        server_name: &str,
+        user_id: &str,
+        deadline: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        let started = std::time::Instant::now();
+        let mut backoff = std::time::Duration::from_millis(200);
+        loop {
+            let attempt = tokio::time::timeout(
+                backoff * 4,
+                Self::connect(server_addr, server_name, user_id),
+            )
+            .await;
+            match attempt {
+                Ok(Ok(client)) => return Ok(client),
+                Ok(Err(err)) => {
+                    tracing::debug!("reconnect attempt failed: {err:#}");
+                }
+                Err(_) => tracing::debug!("reconnect attempt timed out"),
+            }
+            if started.elapsed() >= deadline {
+                anyhow::bail!("could not reconnect to {server_addr} within {:?}", deadline);
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(std::time::Duration::from_secs(2));
+        }
+    }
+
+    async fn hello(conn: quinn::Connection, user_id: String) -> anyhow::Result<Self> {
         let (mut send, recv) = conn.open_bi().await.context("open control stream")?;
         // QUIC streams are lazy: the server only sees the stream once data
         // arrives. The Hello frame materializes the stream and registers us.
-        let user_id = user_id.into();
         framing::write_frame(
             &mut send,
             &WireFrame::Hello {
