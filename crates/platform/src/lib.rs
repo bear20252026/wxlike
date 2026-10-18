@@ -18,6 +18,7 @@
 //! ```
 
 mod auth;
+mod communities;
 mod db;
 mod devices;
 mod error;
@@ -35,7 +36,9 @@ mod wallet;
 
 use std::sync::Arc;
 
-use axum::Router;
+use axum::extract::State;
+use axum::routing::get;
+use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
@@ -144,6 +147,15 @@ pub(crate) fn system_envelope(
     }
 }
 
+impl From<wxlike_message::MailError> for PlatformError {
+    fn from(e: wxlike_message::MailError) -> Self {
+        match e {
+            wxlike_message::MailError::Storage(r) => Self::Sqlite(r),
+            other => Self::Mail(other.to_string()),
+        }
+    }
+}
+
 pub struct Platform {
     db: Db,
     options: PlatformOptions,
@@ -152,6 +164,8 @@ pub struct Platform {
     group_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
     /// swappable object store behind `/api/media` (WP-05).
     media: std::sync::Mutex<Arc<dyn media::MediaStore>>,
+    /// P3 支柱 C 频道时间线的读扩散信箱（与主库同文件/同内存实例）。
+    message_store: Option<wxlike_message::MessageStore>,
 }
 
 impl Platform {
@@ -167,6 +181,7 @@ impl Platform {
             group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             // an in-memory platform must not write into the working directory
             media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(temp_media_dir()))),
+            message_store: Some(wxlike_message::MessageStore::open(None)?),
         })
     }
 
@@ -184,6 +199,7 @@ impl Platform {
             media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(
                 media::default_media_dir(),
             ))),
+            message_store: Some(wxlike_message::MessageStore::open(path)?),
         })
     }
 
@@ -278,7 +294,67 @@ impl Platform {
             .merge(favorites::routes())
             .merge(relations::routes())
             .merge(groups_admin::routes())
+            .merge(communities::routes())
+            .route(
+                "/api/audit/self",
+                get(
+                    |State(platform): State<PlatformState>, authed: Authed| async move {
+                        match platform.audit_of(&authed.user_id, 100) {
+                            Ok(rows) => Json(serde_json::json!({
+                                "entries": rows.into_iter().map(|(at, action, target, detail)| {
+                                    serde_json::json!({
+                                        "at_ms": at, "action": action,
+                                        "target": target, "detail": detail
+                                    })
+                                }).collect::<Vec<_>>()
+                            })),
+                            Err(_) => Json(serde_json::json!({ "entries": [] })),
+                        }
+                    },
+                ),
+            )
             .with_state(state)
+    }
+
+    /// P3 审计日志（不变式 7）：独立审计表，只写面。检索/留存策略归
+    /// P6 adminx；与运行日志（tracing → Loki）物理分离。
+    pub fn audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
+        let r = self.db().lock().execute(
+            "INSERT INTO audit_log(at_ms, actor, action, target, detail) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                wxlike_core::types::now_ms() as i64,
+                actor,
+                action,
+                target,
+                detail
+            ],
+        );
+        if let Err(err) = r {
+            eprintln!("[platform] audit write failed: {err}");
+        }
+    }
+
+    /// 审计读取面（自查自己的记录；全量检索归 P6 adminx + RBAC）。
+    pub fn audit_of(
+        &self,
+        actor: &str,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, String, String)>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let c = self.db().lock();
+        let mut stmt = c.prepare(
+            "SELECT at_ms, action, target, detail FROM audit_log
+             WHERE actor = ?1 ORDER BY at_ms DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![actor, limit], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Wires the hub (or a test recorder) that receives system envelopes.

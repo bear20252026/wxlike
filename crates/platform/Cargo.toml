@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 wxlike-core = { path = "../core" }
+wxlike-message = { path = "../message" }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

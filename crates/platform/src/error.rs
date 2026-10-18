@@ -19,6 +19,8 @@ pub enum PlatformError {
     BadInput(&'static str),
     #[error("not found")]
     NotFound,
+    #[error("mailbox failure: {0}")]
+    Mail(String),
     #[error("already exists: {0}")]
     Conflict(String),
     #[error("missing or invalid credentials")]
@@ -62,6 +64,9 @@ impl From<PlatformError> for ApiError {
             }
             PlatformError::Unauthorized => Self::new(StatusCode::UNAUTHORIZED, "unauthorized"),
             PlatformError::Forbidden => Self::new(StatusCode::FORBIDDEN, "not permitted"),
+            PlatformError::Mail(msg) => {
+                Self::new(StatusCode::INTERNAL_SERVER_ERROR, format!("mailbox: {msg}"))
+            }
             PlatformError::PayloadTooLarge => {
                 Self::new(StatusCode::PAYLOAD_TOO_LARGE, "media too large")
             }

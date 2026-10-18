@@ -169,6 +169,68 @@ impl Db {
                 requested_at INTEGER NOT NULL,
                 PRIMARY KEY (group_id, user_id)
             );
+
+            -- P3 支柱 C：社区/频道/话题（schema 形状借用 TangSengDaoDaoServer
+            -- 的群/成员表：角色 0 成员 1 群主 2 管理员；tenant_id 预留列）
+            CREATE TABLE IF NOT EXISTS communities (
+                id           TEXT PRIMARY KEY,
+                name         TEXT NOT NULL,
+                owner_uid    TEXT NOT NULL REFERENCES users(id),
+                member_limit INTEGER NOT NULL DEFAULT 10000,
+                announcement TEXT NOT NULL DEFAULT '',
+                tenant_id    TEXT NOT NULL DEFAULT 'default',
+                created_at   INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS community_members (
+                community_id TEXT NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+                user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role         INTEGER NOT NULL DEFAULT 0,
+                joined_at    INTEGER NOT NULL,
+                PRIMARY KEY (community_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS channels (
+                id           TEXT PRIMARY KEY,
+                community_id TEXT NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+                name         TEXT NOT NULL,
+                kind         TEXT NOT NULL DEFAULT 'text',
+                tenant_id    TEXT NOT NULL DEFAULT 'default',
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_channels_community ON channels(community_id);
+            CREATE TABLE IF NOT EXISTS threads (
+                id         TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+                root_seq   INTEGER NOT NULL,
+                title      TEXT NOT NULL DEFAULT '',
+                created_by TEXT NOT NULL REFERENCES users(id),
+                tenant_id  TEXT NOT NULL DEFAULT 'default',
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_threads_channel ON threads(channel_id);
+            CREATE TABLE IF NOT EXISTS thread_messages (
+                thread_id  TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender     TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS thread_subs (
+                thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                PRIMARY KEY (thread_id, user_id)
+            );
+
+            -- P3 审计日志（不变式 7：与运行日志——tracing/Loki——物理分离，
+            -- 这里是独立审计表；检索面随 P6 adminx 落地）
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                at_ms  INTEGER NOT NULL,
+                actor  TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor, at_ms);
             CREATE TABLE IF NOT EXISTS group_members (
                 group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

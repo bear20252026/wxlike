@@ -103,6 +103,8 @@ impl Platform {
                 PlatformError::Sqlite(e)
             }
         })?;
+        drop(c); // audit re-locks the same non-reentrant mutex
+        self.audit(&user_id, "user.register", &user_id, "");
         Ok(user_id)
     }
 
@@ -221,8 +223,12 @@ async fn login(
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
     let user_id = platform
         .verify_credentials(&req.name, &req.password)?
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "invalid credentials"))?;
+        .ok_or_else(|| {
+            platform.audit(&req.name, "user.login", "", "failed");
+            ApiError::new(StatusCode::UNAUTHORIZED, "invalid credentials")
+        })?;
     let token = platform.create_session(&user_id, platform.options().session_ttl_ms)?;
+    platform.audit(&user_id, "user.login", &user_id, "ok");
     Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
 }
 
