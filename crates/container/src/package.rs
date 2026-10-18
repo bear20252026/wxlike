@@ -35,7 +35,7 @@ pub struct Manifest {
     pub version: String,
     /// 入口脚本相对路径。
     pub entry: String,
-    /// 包清单声明的权限（可能包含白名单外的项，见 [`granted_permissions`]）。
+    /// 包清单声明的权限（可能包含白名单外的项，见 `granted_permissions`）。
     #[serde(default)]
     pub permissions: Vec<String>,
 }
