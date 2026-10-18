@@ -175,6 +175,10 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         platform.clone(),
         std::time::Duration::from_secs(60),
     );
+    // P4 对账任务：5 分钟一轮（比红包清扫器慢，避免与大表扫描抢锁）。
+    // 不通过时 reconcile 内部写审计并打日志，运营看板读 reconcile_runs。
+    let _reconciler =
+        wxlike_platform::spawn_reconciler(platform.clone(), std::time::Duration::from_secs(300));
     std::mem::forget(hub); // run until process exit; the handle above was cloned
     let deps = Arc::new(HistoryDeps {
         platform: platform.clone(),
@@ -602,6 +606,49 @@ impl wxlike_net::DeliveryPolicy for PlatformPolicy {
             Err(err) => {
                 tracing::warn!(group, user, "policy mute lookup failed (fail-open): {err}");
                 false
+            }
+        }
+    }
+
+    /// P4 发送闸门：风控限流 + 内容审核（ADR-20 前两层）。
+    ///
+    /// 失败语义是 **fail-open**：风控/审核查询出错时放行并记日志——拦截
+    /// 增强不能变成可用性单点（与 P3 投递策略同一约定）。
+    async fn send_gate(&self, from: &str, conv: &str, text: &str) -> wxlike_net::SendGate {
+        let now = wxlike_core::types::now_ms();
+        match self.0.risk().check(wxlike_risk::Action::Send, from, now) {
+            Ok(wxlike_risk::Verdict::Allow) => {}
+            Ok(wxlike_risk::Verdict::Throttle { retry_after_ms }) => {
+                return wxlike_net::SendGate::Throttle { retry_after_ms };
+            }
+            Ok(wxlike_risk::Verdict::Deny { reason }) => {
+                return wxlike_net::SendGate::Reject { reason };
+            }
+            Ok(wxlike_risk::Verdict::Challenge { .. }) => {
+                // 发送路径没有挑战交互，按限流处理
+                return wxlike_net::SendGate::Throttle {
+                    retry_after_ms: 1_000,
+                };
+            }
+            Err(err) => tracing::warn!(from, "risk check failed (fail-open): {err}"),
+        }
+        if let Err(err) = self.0.risk().record(wxlike_risk::Action::Send, from, now) {
+            tracing::warn!(from, "risk record failed: {err}");
+        }
+        match self.0.moderate_for_send(from, conv, text) {
+            Ok(v) => match v.decision.outcome {
+                wxlike_moderation::Outcome::Publish
+                | wxlike_moderation::Outcome::PublishFlagged => wxlike_net::SendGate::Allow,
+                wxlike_moderation::Outcome::Hold => wxlike_net::SendGate::Reject {
+                    reason: "held for review".into(),
+                },
+                wxlike_moderation::Outcome::Reject => wxlike_net::SendGate::Reject {
+                    reason: "blocked by moderation".into(),
+                },
+            },
+            Err(err) => {
+                tracing::warn!(from, conv, "moderation failed (fail-open): {err}");
+                wxlike_net::SendGate::Allow
             }
         }
     }

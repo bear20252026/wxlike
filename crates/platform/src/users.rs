@@ -37,6 +37,42 @@ pub struct Credentials {
     /// P4 2FA：启用 TOTP 后必填。
     #[serde(default)]
     pub totp_code: Option<String>,
+    /// P4 设备管理：设备标识与展示名（缺省时按"未知设备"记）。
+    #[serde(default)]
+    pub device_id: String,
+    #[serde(default)]
+    pub device_name: String,
+    /// P4 人机校验：风控要求挑战时必填（`POST /api/captcha` 取题）。
+    #[serde(default)]
+    pub captcha_id: Option<String>,
+    #[serde(default)]
+    pub captcha_answer: Option<String>,
+}
+
+impl Credentials {
+    fn captcha(&self) -> Option<(&str, &str)> {
+        match (self.captcha_id.as_deref(), self.captcha_answer.as_deref()) {
+            (Some(id), Some(answer)) => Some((id, answer)),
+            _ => None,
+        }
+    }
+}
+
+/// 来源标识：优先 `x-forwarded-for` 首段，其次 `x-real-ip` / `x-client-id`。
+///
+/// 没有来源头时返回 `None`——**不伪造一个 `"local"` 键**：那会把所有直连
+/// 客户端塞进同一个限流桶（测试/开发环境里 50 个账号互相连坐）。调用方对
+/// `None` 的处理是退化为按账号名计数，行为可预测。
+fn client_key(headers: &axum::http::HeaderMap) -> Option<String> {
+    for name in ["x-forwarded-for", "x-real-ip", "x-client-id"] {
+        if let Some(v) = headers.get(name).and_then(|v| v.to_str().ok()) {
+            let first = v.split(',').next().unwrap_or("").trim();
+            if !first.is_empty() {
+                return Some(first.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[derive(serde::Serialize)]
@@ -231,10 +267,25 @@ impl Platform {
 
 async fn register(
     State(platform): State<PlatformState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<Credentials>,
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
+    // P4 风控：注册按来源限流；命中挑战则必须过人机校验（428 让客户端取题）。
+    // 没有来源头（直连/内网）时按账号名计数——否则所有直连客户端共用一个桶。
+    let client = client_key(&headers);
+    let register_key = client
+        .clone()
+        .unwrap_or_else(|| format!("name:{}", req.name));
+    platform.risk_gate(wxlike_risk::Action::Register, &register_key, req.captcha())?;
     let user_id = platform.register(&req.name, &req.password)?;
-    let token = platform.create_session(&user_id, platform.options().session_ttl_ms)?;
+    platform.risk_record(wxlike_risk::Action::Register, &register_key)?;
+    let token = platform.create_session_for_device(
+        &user_id,
+        platform.options().session_ttl_ms,
+        &req.device_id,
+        &req.device_name,
+        client.as_deref().unwrap_or(""),
+    )?;
     Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
 }
 
@@ -271,16 +322,43 @@ async fn totp_disable(
 
 async fn login(
     State(platform): State<PlatformState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<Credentials>,
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
-    let user_id = platform
-        .verify_credentials(&req.name, &req.password)?
-        .ok_or_else(|| {
-            platform.audit(&req.name, "user.login", "", "failed");
-            ApiError::new(StatusCode::UNAUTHORIZED, "invalid credentials")
-        })?;
+    // 失败计数按账号 + 来源双键：只按账号会被"换号撞库"绕过，只按来源会
+    // 让同一 NAT 后的正常用户互相连坐——两个键都记，取更严的那个。
+    let account_key = format!("login:{}", req.name);
+    let client = client_key(&headers);
+    let mut checks = vec![(wxlike_risk::Action::Login, account_key.as_str())];
+    if let Some(c) = client.as_deref() {
+        checks.push((wxlike_risk::Action::Login, c));
+    }
+    platform.risk_gate_many(&checks, req.captcha())?;
+
+    let verified = platform.verify_credentials(&req.name, &req.password)?;
+    let Some(user_id) = verified else {
+        platform.risk_record(wxlike_risk::Action::Login, &account_key)?;
+        if let Some(c) = client.as_deref() {
+            platform.risk_record(wxlike_risk::Action::Login, c)?;
+        }
+        platform.audit(&req.name, "user.login", "", "failed");
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid credentials",
+        ));
+    };
+    platform.risk_clear(wxlike_risk::Action::Login, &account_key)?;
+    if let Some(c) = client.as_deref() {
+        platform.risk_clear(wxlike_risk::Action::Login, c)?;
+    }
     platform.totp_check_login(&user_id, req.totp_code.as_deref())?;
-    let token = platform.create_session(&user_id, platform.options().session_ttl_ms)?;
+    let token = platform.create_session_for_device(
+        &user_id,
+        platform.options().session_ttl_ms,
+        &req.device_id,
+        &req.device_name,
+        client.as_deref().unwrap_or(""),
+    )?;
     platform.audit(&user_id, "user.login", &user_id, "ok");
     Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
 }
@@ -320,5 +398,6 @@ async fn logout(
     authed: Authed,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.revoke_session(&authed.token)?;
+    platform.audit(&authed.user_id, "user.logout", "", "");
     Ok(StatusCode::NO_CONTENT)
 }

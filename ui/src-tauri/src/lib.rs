@@ -902,6 +902,25 @@ impl AppState {
             .expect_empty("DELETE", &format!("/api/favorites/{id}"), None)
     }
 
+    // ---- P4: device management (sessions, remote sign-out) -------------------
+
+    /// 设备列表：登录会话 + 推送令牌（页面合成一页展示）。
+    pub fn sessions_list(&self) -> Result<serde_json::Value, String> {
+        self.http().expect_json("GET", "/api/sessions", None)
+    }
+
+    /// 远程下线一台设备（按 sid；服务端立即删除会话行）。
+    pub fn session_revoke(&self, sid: &str) -> Result<(), String> {
+        self.http()
+            .expect_empty("POST", &format!("/api/sessions/{sid}/revoke"), None)
+    }
+
+    /// 一键退出其他设备（保留当前 token）。
+    pub fn sessions_revoke_others(&self) -> Result<serde_json::Value, String> {
+        self.http()
+            .expect_json("POST", "/api/sessions/revoke-others", None)
+    }
+
     // ---- P1: E2EE secret chat (prototype + documented fallback) --------------
 
     /// Enables the local Olm account and publishes its pre-key bundle to the
@@ -1670,6 +1689,28 @@ pub mod commands {
     }
 
     #[tauri::command]
+    pub fn sessions_list(
+        state: tauri::State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        state.sessions_list()
+    }
+
+    #[tauri::command]
+    pub fn session_revoke(
+        state: tauri::State<'_, AppState>,
+        sid: String,
+    ) -> Result<(), String> {
+        state.session_revoke(&sid)
+    }
+
+    #[tauri::command]
+    pub fn sessions_revoke_others(
+        state: tauri::State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        state.sessions_revoke_others()
+    }
+
+    #[tauri::command]
     pub fn favorites_list(
         state: tauri::State<'_, AppState>,
         limit: Option<usize>,
@@ -1855,6 +1896,9 @@ pub fn run() {
             commands::search_messages,
             commands::favorite_add,
             commands::favorites_list,
+            commands::sessions_list,
+            commands::session_revoke,
+            commands::sessions_revoke_others,
             commands::favorite_remove,
             commands::secret_enable,
             commands::secret_enabled,

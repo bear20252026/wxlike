@@ -19,5 +19,6 @@ pub mod call;
 pub mod capture;
 pub mod ice;
 pub mod media;
+pub mod room;
 pub mod signal;
 pub mod state;

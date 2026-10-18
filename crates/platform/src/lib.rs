@@ -30,8 +30,14 @@ mod keys;
 mod media;
 mod moments;
 mod notification;
+mod reconcile;
+mod recovery;
 mod relations;
+mod report;
+mod secret;
 mod security;
+mod sessions;
+mod trust;
 mod users;
 mod validate;
 mod wallet;
@@ -51,6 +57,7 @@ pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
 pub use crate::groups_admin::GroupInvite;
 pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
+pub use crate::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::relations::{StrangerRequest, StrangerState};
 pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
@@ -97,6 +104,13 @@ pub struct PlatformOptions {
     /// Upload cap enforced inside the handler. Defaults to the contract's
     /// 100 MB; tests lower it to exercise the same 413 path without allocating.
     pub max_media_bytes: usize,
+    /// 管理端点令牌（`x-admin-token`）。`None` = 管理面关闭：P6 的 adminx
+    /// 接手前，对账/审核/举报处置只能由进程内调用，不能从公网打。
+    pub admin_token: Option<String>,
+    /// 举报工单 SLA（超时进看板）。
+    pub report_sla_ms: u64,
+    /// 审核模式（合同 §3.14 可配置）：默认先审后发。
+    pub moderation_mode: wxlike_moderation::Mode,
 }
 
 impl Default for PlatformOptions {
@@ -105,6 +119,9 @@ impl Default for PlatformOptions {
             session_ttl_ms: DEFAULT_SESSION_TTL_MS,
             pbkdf2_rounds: auth::DEFAULT_ROUNDS,
             max_media_bytes: media::MAX_MEDIA_BYTES,
+            admin_token: None,
+            report_sla_ms: wxlike_report::DEFAULT_SLA_MS,
+            moderation_mode: wxlike_moderation::Mode::PreReview,
         }
     }
 }
@@ -169,6 +186,10 @@ pub struct Platform {
     media: std::sync::Mutex<Arc<dyn media::MediaStore>>,
     /// P3 支柱 C 频道时间线的读扩散信箱（与主库同文件/同内存实例）。
     message_store: Option<wxlike_message::MessageStore>,
+    /// P4 风控前置层（ADR-20 第一层）：进程内滑动窗口，不落库。
+    risk: wxlike_risk::RiskEngine,
+    /// P4 审核能力层（ADR-20 第二层）：模式可热切换。
+    moderation: std::sync::Mutex<wxlike_moderation::Pipeline>,
 }
 
 impl Platform {
@@ -177,6 +198,7 @@ impl Platform {
     }
 
     pub fn in_memory_with(options: PlatformOptions) -> Result<Self> {
+        let moderation_mode = options.moderation_mode;
         Ok(Self {
             db: Db::open(None)?,
             options,
@@ -185,6 +207,11 @@ impl Platform {
             // an in-memory platform must not write into the working directory
             media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(temp_media_dir()))),
             message_store: Some(wxlike_message::MessageStore::open(None)?),
+            risk: wxlike_risk::RiskEngine::with_defaults(),
+            moderation: std::sync::Mutex::new(wxlike_moderation::Pipeline::new(
+                moderation_mode,
+                wxlike_moderation::Moderator::with_builtin_rules(),
+            )),
         })
     }
 
@@ -194,6 +221,7 @@ impl Platform {
     }
 
     pub fn open_with(path: Option<&str>, options: PlatformOptions) -> Result<Self> {
+        let moderation_mode = options.moderation_mode;
         Ok(Self {
             db: Db::open(path)?,
             options,
@@ -203,6 +231,11 @@ impl Platform {
                 media::default_media_dir(),
             ))),
             message_store: Some(wxlike_message::MessageStore::open(path)?),
+            risk: wxlike_risk::RiskEngine::with_defaults(),
+            moderation: std::sync::Mutex::new(wxlike_moderation::Pipeline::new(
+                moderation_mode,
+                wxlike_moderation::Moderator::with_builtin_rules(),
+            )),
         })
     }
 
@@ -218,10 +251,44 @@ impl Platform {
         &self.options
     }
 
+    /// P4 风控引擎（server 的投递策略也会读它）。
+    pub fn risk(&self) -> &wxlike_risk::RiskEngine {
+        &self.risk
+    }
+
+    /// 审核管线。调用方拿锁后做一次判定即释放——判定是纯 CPU，不 await。
+    pub fn moderation(&self) -> std::sync::MutexGuard<'_, wxlike_moderation::Pipeline> {
+        self.moderation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 管理端点令牌校验：未配置时一律拒绝（P6 adminx 之前不暴露管理面）。
+    pub fn admin_ok(&self, presented: Option<&str>) -> bool {
+        match self.options.admin_token.as_deref() {
+            Some(expected) if !expected.is_empty() => presented == Some(expected),
+            _ => false,
+        }
+    }
+
     /// Issues a session token valid for `ttl_ms` (0 = already expired, used by
     /// tests to cover the expiry path without sleeping).
     pub fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String> {
+        self.create_session_for_device(user_id, ttl_ms, "", "", "")
+    }
+
+    /// 带设备信息的会话（P4 设备管理页：按设备下线、看最近活跃）。
+    /// 设备字段为空时与老会话等价，只多一个 `sid` 供设备页寻址。
+    pub fn create_session_for_device(
+        &self,
+        user_id: &str,
+        ttl_ms: u64,
+        device_id: &str,
+        device_name: &str,
+        ip: &str,
+    ) -> Result<String> {
         let token = auth::random_hex(auth::TOKEN_BYTES);
+        let sid = auth::random_hex(6);
         let now = wxlike_core::types::now_ms();
         let c = self.db.lock();
         let exists: Option<String> = c
@@ -235,12 +302,18 @@ impl Platform {
             return Err(PlatformError::NotFound);
         }
         c.execute(
-            "INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES(?1, ?2, ?3, ?4)",
+            "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, device_name, ip, last_seen)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 token,
                 user_id,
                 now as i64,
-                now.saturating_add(ttl_ms) as i64
+                now.saturating_add(ttl_ms) as i64,
+                sid,
+                device_id,
+                device_name,
+                ip,
+                now as i64
             ],
         )?;
         Ok(token)
@@ -299,6 +372,12 @@ impl Platform {
             .merge(groups_admin::routes())
             .merge(communities::routes())
             .merge(notification::routes())
+            .merge(recovery::routes())
+            .merge(sessions::routes())
+            .merge(secret::routes())
+            .merge(trust::routes())
+            .merge(report::routes())
+            .merge(reconcile::routes())
             .route(
                 "/api/audit/self",
                 get(

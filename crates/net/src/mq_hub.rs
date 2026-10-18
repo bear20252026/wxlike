@@ -539,6 +539,26 @@ async fn handle_inbound(
             && env.receipt.is_none()
             && !matches!(env.body, wxlike_core::MsgBody::Notice(_))
         {
+            // P4 发送闸门（风控 + 内容审核）：先看"这个人此刻能不能发、
+            // 这条内容能不能投"，再做关系裁决。挂起/拒绝的帧一律丢弃——
+            // 与拉黑同一处理哲学：不落库、不暂存、不扇出。
+            let text = match &env.body {
+                wxlike_core::MsgBody::Text(t) => t.as_str(),
+                _ => "",
+            };
+            match policy.send_gate(&env.sender, &env.conv_id, text).await {
+                crate::SendGate::Allow => {}
+                other => {
+                    tracing::info!(
+                        hub = %state.hub_id,
+                        from = %env.sender,
+                        conv = %env.conv_id,
+                        gate = ?other,
+                        "send gate dropped frame"
+                    );
+                    return Ok(());
+                }
+            }
             match apply_delivery_policy(state, policy.as_ref(), env, &members).await? {
                 PolicyOutcome::Deliver(owned) => owned,
                 PolicyOutcome::Drop => {
