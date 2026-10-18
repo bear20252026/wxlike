@@ -95,14 +95,24 @@ fn urls_are_relative_api_paths() {
 
 /// Synthesizes a 3s test clip with ffmpeg itself (no fixtures in the repo).
 fn make_sample_video(dir: &std::path::Path) -> std::path::PathBuf {
-    let out = dir.join("sample.mp4");
+    make_sample_video_sized(dir, 640, 360, "sample.mp4")
+}
+
+/// 指定分辨率的样片（多档阶梯用例用）。
+fn make_sample_video_sized(
+    dir: &std::path::Path,
+    width: u32,
+    height: u32,
+    name: &str,
+) -> std::path::PathBuf {
+    let out = dir.join(name);
     let status = std::process::Command::new(wxlike_video::ffmpeg_bin())
         .args([
             "-y",
             "-f",
             "lavfi",
             "-i",
-            "testsrc=duration=3:size=640x360:rate=24",
+            &format!("testsrc=duration=3:size={width}x{height}:rate=24"),
             "-f",
             "lavfi",
             "-i",
@@ -140,25 +150,34 @@ async fn ingest_produces_playlist_segments_and_thumb() {
     assert_eq!(first.height, 360, "360p source is never upscaled");
     assert_eq!(first.width, 640);
 
-    // playlist + segments + thumbnail all exist and are served
-    let playlist = st.store.playlist(&first.video_id).unwrap();
-    let text = String::from_utf8(playlist).unwrap();
-    assert!(text.contains("#EXTM3U"));
+    // master playlist 声明档位；每个档位的 playlist 再引用自己的分片
+    let master = String::from_utf8(st.store.playlist(&first.video_id).unwrap()).unwrap();
+    assert!(master.contains("#EXTM3U"));
+    assert_eq!(first.renditions.len(), 1, "360p 源只产出一档");
+    assert_eq!(first.renditions[0].height, 360);
     assert!(
-        text.contains("seg_"),
-        "playlist references segments: {text}"
+        master.contains("EXT-X-STREAM-INF") && master.contains("360/playlist.m3u8"),
+        "master 必须声明档位: {master}"
+    );
+    assert!(
+        master.contains("RESOLUTION=640x360"),
+        "分辨率由 -2 缩放算出: {master}"
     );
 
-    let segs: Vec<_> = text
+    let rendition = String::from_utf8(st.store.rendition_playlist(&first.video_id, 360).unwrap())
+        .expect("utf8 rendition playlist");
+    assert!(
+        rendition.contains("seg_"),
+        "档位播放列表引用分片: {rendition}"
+    );
+    let segs: Vec<_> = rendition
         .lines()
         .filter(|l| !l.starts_with('#') && !l.is_empty())
         .collect();
     assert!(!segs.is_empty());
     for seg in &segs {
-        let bytes = st
-            .store
-            .segment(&first.video_id, seg.trim_start_matches("./"))
-            .unwrap();
+        let name = format!("360/{}", seg.trim_start_matches("./"));
+        let bytes = st.store.segment(&first.video_id, &name).unwrap();
         assert!(!bytes.is_empty());
     }
 
@@ -246,23 +265,51 @@ async fn http_surface_serves_the_full_playback_loop() {
         .unwrap()
         .to_bytes();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
-    let seg = text
+    // master 的第一条非注释行是档位播放列表（如 `360/playlist.m3u8`）
+    let rendition = text
         .lines()
         .find(|l| !l.starts_with('#') && !l.is_empty())
+        .expect("master declares a rendition")
+        .trim_start_matches("./")
+        .to_string();
+    let height = rendition
+        .split_once('/')
+        .map(|(h, _)| h.to_string())
+        .expect("rendition path carries its height");
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/video/{video_id}/{rendition}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "rendition playlist");
+    let bytes = http_body_util::BodyExt::collect(res.into_body())
+        .await
         .unwrap()
+        .to_bytes();
+    let rtext = String::from_utf8(bytes.to_vec()).unwrap();
+    let seg = rtext
+        .lines()
+        .find(|l| !l.starts_with('#') && !l.is_empty())
+        .expect("rendition playlist references a segment")
         .trim_start_matches("./");
 
     let res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/video/{video_id}/seg/{seg}"))
+                .uri(format!("/api/video/{video_id}/{height}/seg/{seg}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.status(), StatusCode::OK, "rendition segment");
 
     // thumbnail endpoint
     let res = app
@@ -318,4 +365,60 @@ async fn corrupt_upload_fails_cleanly_and_leaves_no_dir() {
             || std::fs::read_dir(st.store.root().join(format!(".tmp-{id}"))).is_err(),
         "no temp dir remains"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs ffmpeg on PATH (or WXLIKE_FFMPEG): cargo test -p wxlike-video -- --ignored"]
+async fn ladder_produces_multiple_renditions() {
+    require_tools();
+    let st = state();
+    let dir = std::env::temp_dir().join(format!("wxlike-video-hd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 720p 源 → 阶梯只应产出 360 与 720（绝不上采样到 1080）
+    let sample = std::fs::read(make_sample_video_sized(&dir, 1280, 720, "hd.mp4")).unwrap();
+
+    let ing = st.store.ingest(&sample).await.unwrap();
+    let heights: Vec<u32> = ing.renditions.iter().map(|r| r.height).collect();
+    assert_eq!(heights, vec![360, 720], "阶梯按升序且不上采样");
+    assert_eq!(ing.height, 720, "play.mp4 取最高档");
+    assert_eq!(ing.width, 1280);
+    assert!(
+        ing.renditions[0].bandwidth_bps > 0 && ing.renditions[1].bandwidth_bps > 0,
+        "实测码率必须为正"
+    );
+    assert!(
+        ing.renditions[1].bandwidth_bps > ing.renditions[0].bandwidth_bps,
+        "720p 码率应高于 360p"
+    );
+
+    let master = String::from_utf8(st.store.playlist(&ing.video_id).unwrap()).unwrap();
+    assert!(master.contains("360/playlist.m3u8"), "{master}");
+    assert!(master.contains("720/playlist.m3u8"), "{master}");
+    assert!(master.contains("RESOLUTION=1280x720"), "{master}");
+
+    for r in &ing.renditions {
+        let list = String::from_utf8(
+            st.store
+                .rendition_playlist(&ing.video_id, r.height)
+                .unwrap(),
+        )
+        .unwrap();
+        let first_seg = list
+            .lines()
+            .find(|l| !l.starts_with('#') && !l.is_empty())
+            .expect("rendition references a segment")
+            .trim_start_matches("./");
+        let bytes = st
+            .store
+            .segment(&ing.video_id, &format!("{}/{first_seg}", r.height))
+            .unwrap();
+        assert!(!bytes.is_empty(), "{}p 分片可读", r.height);
+    }
+
+    // 最高档的渐进播放文件存在（webview <video> 用它）
+    assert!(st
+        .store
+        .dir_public(&ing.video_id)
+        .join("play.mp4")
+        .is_file());
 }
