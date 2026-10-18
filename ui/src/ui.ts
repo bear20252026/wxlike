@@ -27,6 +27,7 @@ import {
   viewAtom,
 } from "./state";
 import * as api from "./api";
+import ListenerSetter from "./vendor/tweb/listenerSetter";
 
 type El = HTMLElement;
 
@@ -48,6 +49,12 @@ function on<K extends keyof HTMLElementEventMap>(
 ): void {
   el.addEventListener(kind, fn as EventListener);
 }
+
+/**
+ * 菜单"点外面关闭"的监听器集中管理（借用 tweb `ListenerSetter`）。
+ * 之前的写法只在"下一次点击"时自清；菜单被切视图/重渲染关掉时监听器会挂着。
+ */
+const menuListeners = new ListenerSetter();
 
 /** Conversations where the secret-chat toggle is on (P1 prototype). */
 const secretConvs = new Set<string>();
@@ -1003,16 +1010,14 @@ function showMsgMenu(ev: MouseEvent, m: ChatMsg, convId: string): void {
   menu.style.left = `${Math.min(ev.clientX, window.innerWidth - 150)}px`;
   menu.style.top = `${Math.min(ev.clientY, window.innerHeight - 200)}px`;
   document.body.append(menu);
-  // click-away closes it
+  // click-away closes it（监听器登记在 menuListeners，hideMsgMenu 统一清理）
   window.setTimeout(() => {
-    document.addEventListener("pointerdown", function away() {
-      document.removeEventListener("pointerdown", away);
-      hideMsgMenu();
-    });
+    menuListeners.add(document)("pointerdown", () => hideMsgMenu(), { once: true });
   }, 0);
 }
 
 function hideMsgMenu(): void {
+  menuListeners.removeAll();
   for (const el of document.querySelectorAll(".msg-menu")) el.remove();
 }
 
@@ -1201,10 +1206,10 @@ function stickerDialog(convId: string, to: string[]): void {
   menu.style.bottom = "70px";
   document.body.append(menu);
   window.setTimeout(() => {
-    document.addEventListener("pointerdown", function away() {
-      document.removeEventListener("pointerdown", away);
+    menuListeners.add(document)("pointerdown", () => {
+      menuListeners.removeAll();
       if (menu.isConnected) menu.remove();
-    });
+    }, { once: true });
   }, 0);
 }
 
