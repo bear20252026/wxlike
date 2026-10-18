@@ -102,19 +102,19 @@ impl Platform {
         .optional()?)
     }
 
-    fn require_member(&self, community: &str, user: &str) -> Result<i64> {
+    pub(crate) fn require_member(&self, community: &str, user: &str) -> Result<i64> {
         self.community_role(community, user)?
             .ok_or(PlatformError::Forbidden)
     }
 
-    fn require_manager(&self, community: &str, user: &str) -> Result<()> {
+    pub(crate) fn require_manager(&self, community: &str, user: &str) -> Result<()> {
         match self.require_member(community, user)? {
             r if r == ROLE_OWNER || r == ROLE_ADMIN => Ok(()),
             _ => Err(PlatformError::Forbidden),
         }
     }
 
-    fn channel_community(&self, channel: &str) -> Result<Option<String>> {
+    pub(crate) fn channel_community(&self, channel: &str) -> Result<Option<String>> {
         let c = self.db().lock();
         Ok(c.query_row(
             "SELECT community_id FROM channels WHERE id = ?1",
@@ -126,7 +126,18 @@ impl Platform {
 
     /// 频道发送裁决：announce 型仅管理员/群主（Mattermost 广播频道语义）；
     /// 其余三型成员可发。直播/语音的时间线在此为过渡承载，P5 媒体面接管。
-    fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
+    /// 频道类型（`text|announce|voice|live`）；不存在返回 `None`。
+    pub(crate) fn channel_kind(&self, channel: &str) -> Result<Option<String>> {
+        let c = self.db().lock();
+        Ok(c.query_row(
+            "SELECT kind FROM channels WHERE id = ?1",
+            params![channel],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+
+    pub(crate) fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
         let Some(community) = self.channel_community(channel)? else {
             return Err(PlatformError::NotFound);
         };
