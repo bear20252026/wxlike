@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod engine;
+pub mod package;
 
 use anyhow::Context as _;
 use wxlike_dpage::Page;

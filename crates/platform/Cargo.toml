@@ -27,6 +27,8 @@ totp-rs = { version = "5", default-features = false, features = ["gen_secret"] }
 sha2 = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+# P5 直播推流凭据（HMAC-SHA256）；hmac 已在 pbkdf2 的依赖树里
+hmac = "0.12"
 async-trait = { workspace = true }
 
 [dev-dependencies]

@@ -8,3 +8,9 @@ wxlike-dpage = { path = "../dpage" }
 anyhow = { workspace = true }
 boa_engine = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+# P5 小程序包签名（ed25519，与 vodozemac 同一实现族）
+ed25519-dalek = { version = "2", features = ["rand_core"] }

@@ -27,6 +27,7 @@ mod friends;
 mod groups;
 mod groups_admin;
 mod keys;
+mod live;
 mod media;
 mod moments;
 mod notification;
@@ -111,6 +112,9 @@ pub struct PlatformOptions {
     pub report_sla_ms: u64,
     /// 审核模式（合同 §3.14 可配置）：默认先审后发。
     pub moderation_mode: wxlike_moderation::Mode,
+    /// 直播推流凭据的 HMAC 密钥。默认值仅供开发；部署必须用
+    /// `WXLIKE_LIVE_SECRET` 覆盖（ingest 节点与平台共享同一密钥）。
+    pub live_ingest_secret: String,
 }
 
 impl Default for PlatformOptions {
@@ -122,6 +126,7 @@ impl Default for PlatformOptions {
             admin_token: None,
             report_sla_ms: wxlike_report::DEFAULT_SLA_MS,
             moderation_mode: wxlike_moderation::Mode::PreReview,
+            live_ingest_secret: "dev-insecure-live-secret".to_string(),
         }
     }
 }
@@ -251,6 +256,11 @@ impl Platform {
         &self.options
     }
 
+    /// 读扩散信箱（频道时间线 / 弹幕不进时间线的断言面）。
+    pub fn message_store(&self) -> Option<&wxlike_message::MessageStore> {
+        self.message_store.as_ref()
+    }
+
     /// P4 风控引擎（server 的投递策略也会读它）。
     pub fn risk(&self) -> &wxlike_risk::RiskEngine {
         &self.risk
@@ -378,6 +388,7 @@ impl Platform {
             .merge(trust::routes())
             .merge(report::routes())
             .merge(reconcile::routes())
+            .merge(live::routes())
             .route(
                 "/api/audit/self",
                 get(

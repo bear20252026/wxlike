@@ -433,6 +433,24 @@ cargo test -p wxlike-net --test send_gate                          # 2
 cargo test -p wxlike-ledger --test conservation                    # 账本守恒
 ```
 
+## P5 第一增量：直播控制面 + 小程序包签名（合同 §第五条 P5）
+
+P5 是 8 周量级，本轮先交付**不依赖移动端工具链**的两块，其余项在
+[docs/p5-report.md](docs/p5-report.md) 逐条列明状态与阻塞原因（不含"已完成"的虚报）。
+
+- **直播控制面**（`platform::live`，9 项测试）：开播限 `live` 频道 + 社群管理员；
+  推流凭据是自包含的 `<exp>.<hmac>`（ingest 节点只需共享 secret），**停播后未过期
+  的凭据也立即失效**；观众计数/峰值落库；弹幕走 `high_priority`，只发给在房观众，
+  测试直接断言频道时间线为空（不变式 3），且弹幕同样过内容审核。
+- **小程序包签名**（`container::package`，7 项测试）：ed25519 验签 + 防降级 +
+  同版本拒装；`im_bridge` 授予面 = 清单声明 ∩ 宿主白名单，白名单外权限只记录不授予
+  （不变式 6）；入口路径 `../` 与非法版本号在清单校验阶段拒绝。
+
+```bash
+cargo test -p wxlike-platform --test p5_live     # 9
+cargo test -p wxlike-container --test package    # 7
+```
+
 ## 系统推送（WP-06）
 
 `crates/push`：`PushProvider` trait + `NoopProvider`（默认，带计数）+

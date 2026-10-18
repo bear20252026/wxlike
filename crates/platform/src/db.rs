@@ -134,6 +134,29 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_modqueue_created ON moderation_queue(created_at);
+
+            -- P5 直播会话（信令/弹幕独立于频道时间线，ADR-13）
+            CREATE TABLE IF NOT EXISTS live_sessions (
+                id           TEXT PRIMARY KEY,
+                channel_id   TEXT NOT NULL,
+                host         TEXT NOT NULL,
+                stream_key   TEXT NOT NULL UNIQUE,
+                state        TEXT NOT NULL,
+                recording    INTEGER NOT NULL DEFAULT 0,
+                started_at   INTEGER NOT NULL,
+                ended_at     INTEGER,
+                viewers      INTEGER NOT NULL DEFAULT 0,
+                peak_viewers INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_live_channel ON live_sessions(channel_id, state);
+
+            -- 在房观众：弹幕收件集来源
+            CREATE TABLE IF NOT EXISTS live_viewers (
+                session_id TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                joined_at  INTEGER NOT NULL,
+                PRIMARY KEY (session_id, user_id)
+            );
             "#,
         )?;
 
