@@ -14,6 +14,7 @@
 | 观众计数与峰值 | 同上（`live_viewers`） | 同上 | ✅ |
 | 弹幕路由（只发在房观众，不落库、不占序列号） | 同上 | 同上 | ✅ |
 | 小程序包签名（ed25519）+ 防降级 + 权限白名单 | `crates/container/src/package.rs` | 7 | ✅ |
+| 消息索引：**借用 tweb `SlicedArray`**（历史分页合并 + 实时插入） | `ui/src/vendor/tweb/slicedArray.ts` · `ui/src/msgIndex.ts` | 7（node 断言） | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
@@ -84,6 +85,22 @@ let granted = registry.install(&manifest_bytes, &sig)?;
 | 小程序 M1–M4（逻辑层/Bridge/多引擎/沙箱） | 🟡 M5 签名层完成 | 逻辑层已有 Boa 宿主与 DPD1 装载；Wasmtime 沙箱未接 |
 | 多语言 / 数据导出 | ⛔ 未开始 | 数据导出建议随 P6 账号注销一起做（同一份 dump） |
 | APNs / 国内厂商推送通道 | ⛔ 未开始 | 需要厂商证书；适配器可先按 FCM 客户端形状写，证书由部署方注入 |
+
+## 2.5 Telegram 代码借用（首次实际复制）
+
+按"能搬不重写"的要求，本轮首次实际复制第三方源码：
+
+- **来源**：`refs/tweb`（morethanwords/tweb，GPL-3.0，与本项目同许可）
+  `src/helpers/slicedArray.ts` → `ui/src/vendor/tweb/slicedArray.ts`
+- **借的是什么**：降序分块数组（`SlicedArray`/`Slice` 的 ends 追踪 + `insertSlice`
+  跨页合并）。这正是消息列表虚拟化的核心结构，自研等于重犯它的边界。
+- **替换掉的自研代码**：`ui/src/api.ts` 里手写的 `mergeMessages`（`Map` + `sort`，
+  每页 O(n log n)）。现在历史分页与实时消息都走 `MessageIndex`
+  （`ui/src/msgIndex.ts`），同 seq 覆盖、跨页去重、乱序插入由 tweb 的切片完成。
+- **适配**（三处，写在文件头）：去掉 `MOUNT_CLASS_TO` 调试挂载；内联
+  `indexOfAndSplice` 与 number-only `compareValue`；按本项目 `strict` 补变量初始化。
+- **回归**：`bash ui/scripts/check-msgindex.sh`（esbuild 打包 + node 断言 7 条：
+  乱序页、历史页、实时插入、同 seq 覆盖、幂等、窗口取尾）。
 
 ## 3. 设计说明（为什么这样切）
 

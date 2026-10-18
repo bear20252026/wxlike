@@ -6,7 +6,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && esbuild src/main.ts --bundle --format=iife --outfile=dist/app.js --minify",
-    "dev": "esbuild src/main.ts --bundle --format=iife --outfile=dist/app.js --watch"
+    "dev": "esbuild src/main.ts --bundle --format=iife --outfile=dist/app.js --watch",
+    "check:msgindex": "bash scripts/check-msgindex.sh"
   },
   "dependencies": {
     "jotai": "^2.10.0"

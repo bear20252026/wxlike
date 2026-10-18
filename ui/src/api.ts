@@ -3,6 +3,7 @@
  * Every server interaction lands here on its way to Rust.
  */
 
+import { MessageIndex } from "./msgIndex";
 import { invoke } from "./tauri";
 import {
   appStore,
@@ -429,7 +430,7 @@ export async function loadLocalHistory(convId: string, meId: string, limit = 50)
   const mapped = (reply.messages ?? []).map((r) => rowToMsg(r, meId));
   if (mapped.length > 0) {
     const chats = { ...appStore.get(chatsAtom) };
-    chats[convId] = mergeMessages(chats[convId] ?? [], mapped);
+    chats[convId] = mergeMessages(convId, chats[convId] ?? [], mapped);
     appStore.set(chatsAtom, chats);
   }
   return reply.next_before_seq != null;
@@ -480,11 +481,27 @@ function rowToMsg(row: HistoryRow, meId: string): ChatMsg {
   };
 }
 
-function mergeMessages(existing: ChatMsg[], incoming: ChatMsg[]): ChatMsg[] {
-  const byKey = new Map<string, ChatMsg>();
-  for (const m of existing) byKey.set(m.msgId || `s:${m.seq}`, m);
-  for (const m of incoming) byKey.set(m.msgId || `s:${m.seq}`, m);
-  return [...byKey.values()].sort((a, b) => a.seq - b.seq);
+/**
+ * 按会话缓存的 `MessageIndex`（tweb `SlicedArray` 支撑）。
+ *
+ * 手写版是 `Map + sort`（每页 O(n log n)）；现在分页合并交给 tweb 的切片
+ * 插入，同 seq 覆盖、跨页去重都由它完成。索引长度与原子数组对不上时重建，
+ * 防止外部直接改数组导致索引腐坏。
+ */
+const msgIndexes = new Map<string, MessageIndex>();
+
+function mergeMessages(convId: string, existing: ChatMsg[], incoming: ChatMsg[]): ChatMsg[] {
+  let index = msgIndexes.get(convId);
+  if (!index || index.size !== existing.length) {
+    index = MessageIndex.from(existing);
+    msgIndexes.set(convId, index);
+  }
+  return index.merge(incoming);
+}
+
+/** 退出登录/切换账号时清空索引缓存。 */
+export function resetMessageIndexes(): void {
+  msgIndexes.clear();
 }
 
 /** Loads one page of history and prepends it; returns false when exhausted. */
@@ -498,7 +515,7 @@ export async function loadHistory(convId: string, meId: string, limit = 30): Pro
   );
   const mapped = (reply.messages ?? []).map((r) => rowToMsg(r, meId));
   const chats = { ...appStore.get(chatsAtom) };
-  chats[convId] = mergeMessages(chats[convId] ?? [], mapped);
+  chats[convId] = mergeMessages(convId, chats[convId] ?? [], mapped);
   appStore.set(chatsAtom, chats);
   appStore.set(historyCursorAtom, { ...cursors, [convId]: reply.next_before_seq ?? null });
   return reply.next_before_seq != null;
@@ -573,11 +590,11 @@ function upsertSession(
 
 function appendChat(convId: string, msg: ChatMsg): void {
   const chats = { ...appStore.get(chatsAtom) };
-  const list = (chats[convId] ?? []).slice();
+  const existing = chats[convId] ?? [];
   const key = msg.msgId || `s:${msg.seq}`;
-  if (list.some((m) => (m.msgId || `s:${m.seq}`) === key)) return; // dedupe live echo
-  list.push(msg);
-  chats[convId] = list;
+  if (existing.some((m) => (m.msgId || `s:${m.seq}`) === key)) return; // dedupe live echo
+  // 新消息也走索引：tweb 的 insertSlice 会把更大的 seq 插到最新的那一块
+  chats[convId] = mergeMessages(convId, existing, [msg]);
   appStore.set(chatsAtom, chats);
 }
 

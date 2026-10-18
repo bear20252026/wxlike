@@ -449,9 +449,14 @@ P5 是 8 周量级，本轮先交付**不依赖移动端工具链**的两块，�
   同版本拒装；`im_bridge` 授予面 = 清单声明 ∩ 宿主白名单，白名单外权限只记录不授予
   （不变式 6）；入口路径 `../` 与非法版本号在清单校验阶段拒绝。
 
+- **消息索引（首次实际借用 Telegram 代码）**：`ui/src/vendor/tweb/slicedArray.ts`
+  复制自 tweb（GPL-3.0）的 `SlicedArray`，替换手写的 `Map + sort` 分页合并；
+  适配与来源见文件头与 `THIRD-PARTY-NOTICES.md`。
+
 ```bash
 cargo test -p wxlike-platform --test p5_live     # 9
 cargo test -p wxlike-container --test package    # 7
+bash ui/scripts/check-msgindex.sh                # 7（tweb 索引合并语义）
 ```
 
 ## 系统推送（WP-06）
