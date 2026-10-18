@@ -20,5 +20,6 @@ pub mod capture;
 pub mod ice;
 pub mod media;
 pub mod room;
+pub mod sfu;
 pub mod signal;
 pub mod state;

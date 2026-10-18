@@ -5,6 +5,41 @@
 > 用途、许可；**borrow-first 政策见 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)**。
 > 刷新单个仓库：`cd /d/mimo/test/refs/<repo> && git pull --ff-only`。
 
+## Tier 0 — 最高优先级参照（用户 2026-10-18 指定，全局适用）
+
+> **规则**：任何功能开工前，先查本表对应项目；能整段照搬就照搬（同语言时
+> vendoring/依赖），搬不了就**按原语境重写**（保留其分层与边界条件）。
+> 优先级：**Tier 0（本表）> Telegram 系（tweb/grammers/teamgram…）> 其余仓库**。
+>
+> **许可现实（已实测，2026-10-18）**：本表 8 个仓库中 5 个是 **AGPL-3.0**。
+> 合同 §7.2 内部测试模式允许使用，但**再激活条款**（对外发布/开源/商用）一旦
+> 触发，AGPL 代码必须替换或隔离——所以 AGPL 项目的正确用法是"读结构、重写实现"，
+> 而不是把文件复制进分发物。
+
+| 项目 | 上游 | 语言 | 许可（实测） | 可搬点 → 我们的缺口 | 本地镜像 |
+|---|---|---|---|---|---|
+| **Zulip** | https://github.com/zulip/zulip | Python + TS | **Apache-2.0** ✅ | **主题化线程模型**（topic/recipient 双层）、消息编辑历史、presence → 我们的 Thread/话题与编辑 | ❌ 未镜像（633 MB） |
+| **Rocket.Chat** | https://github.com/RocketChat/Rocket.Chat | TypeScript | **MIT**（`ee/`、`apps/meteor/ee/` 为企业许可） ✅ | 消息操作与权限矩阵、REST + Realtime API 形状、频道/团队模型 → 我们的权限与 API 契约 | ❌ 未镜像（2.1 GB） |
+| **Mattermost** | https://github.com/mattermost/mattermost | Go + TS | 源码 **AGPL-3.0**（`webapp/`、admin tools 为 Apache-2.0；编译产物 MIT） ⚠️ | 团队/频道/线程模型、插件架构、Webapp 组件组织 → 我们的 adminx 与插件面 | ❌ 未镜像（1.3 GB） |
+| **Signal-Desktop** | https://github.com/signalapp/Signal-Desktop | TypeScript | **AGPL-3.0** ⚠️ | 发送队列/重试、附件分片与断点、E2EE 会话 UI → 我们的媒体上传与秘密聊天 UI | ❌ 未镜像（1.2 GB） |
+| **Signal-Android** | https://github.com/signalapp/Signal-Android | Kotlin | **AGPL-3.0** ⚠️ | 会话状态机、媒体转码/压缩、通知聚合 → Flutter 端与推送聚合 | ❌ 未镜像（2.5 GB） |
+| **Element Web** | https://github.com/element-hq/element-web | TypeScript | **AGPL-3.0** ⚠️ | Matrix 客户端：房间列表虚拟化、E2EE 设备验证 UI、sliding sync → 我们的会话列表与设备页 | ✅ **`refs/element-web`** |
+| **Synapse** | https://github.com/element-hq/synapse | Python | **AGPL-3.0** ⚠️ | 事件 DAG、房间状态解析、联邦 → 读扩散/多端同步的对照模型 | ❌ 未镜像（629 MB） |
+| **Nextcloud Talk** | https://github.com/nextcloud/spreed | JS + PHP | **AGPL-3.0** ⚠️ | **群通话房间 UI**（参与者/静音/录制/举手）、通话信令 → 我们的 `rtc::room` 与通话页 | ❌ 未镜像（646 MB） |
+
+### 按缺口查表（先查这里，再查 Telegram）
+
+| 我们的缺口 | 先看 |
+|---|---|
+| 话题/线程、消息编辑历史 | **Zulip** |
+| 权限矩阵、REST/Realtime API 形状 | **Rocket.Chat** |
+| adminx 后台、插件面、团队/频道 | **Mattermost**（webapp Apache-2.0 部分可直接看） |
+| 附件分片/断点/发送队列 | **Signal-Desktop** |
+| 媒体压缩、通知聚合、移动端会话 | **Signal-Android** |
+| 设备验证 UI、房间列表虚拟化 | **Element Web**（已镜像） |
+| 同步/事件模型对照 | **Synapse** |
+| 群通话房间 UI 与管控 | **Nextcloud Talk** |
+
 ## P3 读扩散核心（下一阶段直接使用）
 
 | 目录 | 上游 | 许可 | 借什么 |
