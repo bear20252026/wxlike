@@ -21,7 +21,9 @@
 //! **被踢者不可再进**（ban 名单随房间生命周期）、**主持人离开自动移交**
 //! （移交给最早加入的管理员，没有则最早加入的成员；空房即结束）。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::sfu::{EgressBitrateAllocator, TrackId, DEFAULT_MAX_EGRESS_BPS};
 
 /// 房间内角色。
 #[derive(
@@ -97,6 +99,15 @@ pub struct LeaveOutcome {
     pub ended: bool,
 }
 
+/// 一次出口分配的结果（每个观众一份）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EgressPlan {
+    /// 各订阅轨的目标码率（顺序 = 订阅顺序）。
+    pub tracks: Vec<(TrackId, u64)>,
+    /// (current, desired) —— 交给 BWE/pacer 的目标区间。
+    pub bwe: (u64, u64),
+}
+
 #[derive(Clone, Debug)]
 pub struct Room {
     id: String,
@@ -109,6 +120,8 @@ pub struct Room {
     participants: BTreeMap<String, Participant>,
     /// 被踢名单：房间存活期间不可再进。
     banned: HashSet<String>,
+    /// 每个观众一个出口码率分配器（参照 atm0s 的 EgressBitrateAllocator）。
+    allocators: HashMap<String, EgressBitrateAllocator>,
     created_at: u64,
 }
 
@@ -135,6 +148,11 @@ impl Room {
                 joined_at: now_ms,
             },
         );
+        let mut allocators = HashMap::new();
+        allocators.insert(
+            host.to_string(),
+            EgressBitrateAllocator::new(DEFAULT_MAX_EGRESS_BPS),
+        );
         Ok(Self {
             id: id.to_string(),
             owner_conv: owner_conv.to_string(),
@@ -144,6 +162,7 @@ impl Room {
             capacity,
             participants,
             banned: HashSet::new(),
+            allocators,
             created_at: now_ms,
         })
     }
@@ -213,6 +232,11 @@ impl Room {
                 joined_at: now_ms,
             },
         );
+        // 进房即建出口分配器：订阅/结算都挂在它上面
+        self.allocators.insert(
+            user.to_string(),
+            EgressBitrateAllocator::new(DEFAULT_MAX_EGRESS_BPS),
+        );
         self.participants
             .get(user)
             .ok_or(RoomError::NoSuchParticipant)
@@ -223,6 +247,7 @@ impl Room {
         if self.participants.remove(user).is_none() {
             return Err(RoomError::NotMember);
         }
+        self.allocators.remove(user);
         if self.participants.is_empty() {
             return Ok(LeaveOutcome {
                 new_host: None,
@@ -291,6 +316,7 @@ impl Room {
             return Err(RoomError::Forbidden);
         }
         self.participants.remove(target);
+        self.allocators.remove(target);
         self.banned.insert(target.to_string());
         Ok(())
     }
@@ -358,6 +384,49 @@ impl Room {
             .collect();
         raised.sort_by_key(|p| (p.joined_at, p.user.clone()));
         raised
+    }
+
+    /// 观众订阅一路视频（`priority` 是权重：主讲 3、普通 1 之类）。
+    pub fn subscribe_video(&mut self, viewer: &str, track: TrackId, priority: u64) -> Result<()> {
+        let allocator = self
+            .allocators
+            .get_mut(viewer)
+            .ok_or(RoomError::NotMember)?;
+        allocator.set_video_track(track, priority);
+        Ok(())
+    }
+
+    pub fn unsubscribe_video(&mut self, viewer: &str, track: TrackId) -> Result<()> {
+        let allocator = self
+            .allocators
+            .get_mut(viewer)
+            .ok_or(RoomError::NotMember)?;
+        allocator.del_video_track(track);
+        Ok(())
+    }
+
+    /// 按当前出口估算结算一次分配。`estimate_bps` 来自 BWE（或部署上限）。
+    ///
+    /// 没有订阅任何轨时返回空 `tracks` 与兜底 BWE 值——调用方据此把 pacer
+    /// 降到探测档位，而不是继续按满码率发。
+    pub fn allocate_egress(&mut self, viewer: &str, estimate_bps: u64) -> Result<EgressPlan> {
+        let allocator = self
+            .allocators
+            .get_mut(viewer)
+            .ok_or(RoomError::NotMember)?;
+        allocator.set_egress_estimate(estimate_bps);
+        allocator.on_tick();
+        let mut tracks = Vec::new();
+        let mut bwe = (0u64, 0u64);
+        while let Some(out) = allocator.pop_output() {
+            match out {
+                crate::sfu::Output::Track(id, crate::sfu::Action::SetBitrate(bps)) => {
+                    tracks.push((id, bps));
+                }
+                crate::sfu::Output::BweConfig(current, desired) => bwe = (current, desired),
+            }
+        }
+        Ok(EgressPlan { tracks, bwe })
     }
 
     fn role_of(&self, user: &str) -> Result<Role> {

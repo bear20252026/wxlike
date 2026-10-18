@@ -42,12 +42,31 @@ No Java source is included; this is an independent Rust implementation of the
 published design. box-im is Copyright its authors, MIT licensed:
 https://github.com/bluexsx/box-im
 
+## Reference priority (Tier 0, user directive 2026-10-18)
+
+任何功能开工前先查这 8 个仓库；优先级 **Tier 0 > Telegram 系 > 其余 41 仓库**。
+明细与"按缺口查表"见 [docs/reference-mirror.md](docs/reference-mirror.md)。
+
+| 项目 | 许可（实测） | 主要用途 |
+|---|---|---|
+| Zulip | Apache-2.0 | 主题化线程模型、消息编辑历史 |
+| Rocket.Chat | MIT（`ee/` 除外） | 权限矩阵、REST/Realtime API 形状 |
+| Mattermost | 源码 AGPL-3.0（webapp Apache-2.0） | adminx、插件面、团队/频道 |
+| Signal-Desktop / Signal-Android | AGPL-3.0 | 发送队列、附件分片、媒体压缩、通知聚合 |
+| Element Web | AGPL-3.0 | 设备验证 UI、房间列表虚拟化 |
+| Synapse | AGPL-3.0 | 事件 DAG、同步模型对照 |
+| Nextcloud Talk (spreed) | AGPL-3.0 | 群通话房间 UI 与管控 |
+
+> 5/8 为 AGPL-3.0：内部测试可用（合同 §7.2），但再激活条款触发前必须替换或隔离。
+> 用法约定：**AGPL 项目读结构、重写实现；MIT/Apache 项目可直接复制并登记。**
+
 ## Vendored code (actual copies; origin recorded per contract §7.2)
 
 | file | upstream | license | what was taken / adapted |
 |---|---|---|---|
 | `ui/src/vendor/tweb/slicedArray.ts` | [morethanwords/tweb](https://github.com/morethanwords/tweb) · `src/helpers/slicedArray.ts` | **GPL-3.0** | 降序分块数组（`SlicedArray` + `Slice` 的 ends 追踪、`insertSlice` 合并）。适配三处，均写在文件头：去掉 `MOUNT_CLASS_TO` 调试挂载、内联 `indexOfAndSplice` 与 number-only `compareValue`、按本项目 `strict` 补变量初始化。用于 `ui/src/msgIndex.ts`（历史分页合并 + 实时消息插入）。 |
 | `ui/src/vendor/tweb/listenerSetter.ts` | 同上 · `src/helpers/listenerSetter.ts` | **GPL-3.0** | 事件监听器集中登记与清理（`add`/`remove`/`removeManual`/`addCleanup`/`removeAll`）。适配：去掉 tweb 内部类型 `EventListenerBase` 的 import 与 union 成员；`strict` 下补 `let listener: Listener \| undefined`。用于消息菜单/贴纸面板的"点外面关闭"——原来两处各写一遍自清监听器，切视图关菜单时会漏。 |
+| `crates/rtc/src/sfu.rs` | [8xFF/atm0s-media-server](https://github.com/8xFF/atm0s-media-server) · `packages/media_core/src/endpoint/internal/bitrate_allocator/egress.rs` | **MIT** | 出口码率分配算法（按权重比例分、BWE 目标 6/5、无轨道兜底）。**跨库重写**：类型换成我们的 `TrackId=u32`，去掉 `log`/`indexmap`/`sans-io-runtime` 依赖，`Vec` 保持插入序。前 3 个单测从上游等价移植。 |
 | `ui/scripts/check-msgindex.sh` | 本项目原创 | GPL-3.0 | 该 vendored 文件的回归脚本（esbuild 打包 + node 断言 7 条）。 |
 
 > 这是本仓库第一次**实际复制**第三方源码。选择 tweb 而非自研的原因：它的
