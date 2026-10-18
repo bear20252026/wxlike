@@ -84,7 +84,7 @@ struct TicketView<'a> {
 }
 
 impl Platform {
-    /// 创建工单（风控由调用方在路由层过闸：举报轰炸在 [`crate::recovery`] 的
+    /// 创建工单（风控由调用方在路由层过闸：举报轰炸在 `recovery` 模块的
     /// `risk_gate` 里拦）。
     pub fn create_report(
         &self,
