@@ -44,6 +44,8 @@ impl Db {
             inner: Arc::new(Mutex::new(conn)),
         };
         db.migrate()?;
+        db.migrate_friends_meta()?;
+        db.migrate_groups_admin()?;
         Ok(db)
     }
 
@@ -101,11 +103,71 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_cl_user ON contact_log(user_id, seq);
 
+            -- P3 ADR-24 拉黑：前置闸门（申请/陌生人请求/hub 收件过滤共用）
+            CREATE TABLE IF NOT EXISTS blocks (
+                user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, blocked_id)
+            );
+
+            -- P3 ADR-24 陌生人消息请求箱（不变式 9）：非好友首条消息不产生会话
+            CREATE TABLE IF NOT EXISTS message_requests (
+                id         TEXT PRIMARY KEY,
+                from_uid   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                to_uid     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                text       TEXT NOT NULL DEFAULT '',
+                status     TEXT NOT NULL DEFAULT 'pending',
+                created_at INTEGER NOT NULL,
+                UNIQUE (from_uid, to_uid, status)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mr_to ON message_requests(to_uid, status);
+
+            -- P3 用户设置：是否允许陌生人发起（默认允许；流程必须存在）
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id         TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                allow_strangers INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE TABLE IF NOT EXISTS groups (
                 id          TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
                 owner_uid   TEXT NOT NULL REFERENCES users(id),
                 created_at  INTEGER NOT NULL
+            );
+            -- P3 群管理补齐列（老库原地补列见 migrate_groups_admin）
+            -- announcement/approval/all_muted
+
+            -- P3 群公告（单条置顶）
+            CREATE TABLE IF NOT EXISTS group_announcement (
+                group_id  TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+                text      TEXT NOT NULL DEFAULT '',
+                media_id  TEXT NOT NULL DEFAULT '',
+                pinned_by TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL
+            );
+            -- P3 单人禁言（until_ms 定时自然解除）
+            CREATE TABLE IF NOT EXISTS group_mutes (
+                group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                until_ms INTEGER NOT NULL,
+                PRIMARY KEY (group_id, user_id)
+            );
+            -- P3 邀请 token（带过期；审批开的群入群转请求）
+            CREATE TABLE IF NOT EXISTS group_invites (
+                token      TEXT PRIMARY KEY,
+                group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                created_by TEXT NOT NULL REFERENCES users(id),
+                expires_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_gi_group ON group_invites(group_id);
+            -- P3 入群审批请求
+            CREATE TABLE IF NOT EXISTS group_join_requests (
+                group_id     TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                requested_at INTEGER NOT NULL,
+                PRIMARY KEY (group_id, user_id)
             );
             CREATE TABLE IF NOT EXISTS group_members (
                 group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -228,6 +290,52 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, created_at);
             "#,
         )?;
+        Ok(())
+    }
+
+    /// P3 群管理列（公告/审批开关/全员禁言）：老库原地补列。
+    fn migrate_groups_admin(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(groups)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("announcement", "TEXT NOT NULL DEFAULT ''"),
+            ("approval", "INTEGER NOT NULL DEFAULT 0"),
+            ("all_muted", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE groups ADD COLUMN {col} {ddl};"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// P3 关系元数据列（星标/标签/分组）：老库原地补列，无重写。
+    fn migrate_friends_meta(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(friends)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("starred", "INTEGER NOT NULL DEFAULT 0"),
+            ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+            ("friend_group", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE friends ADD COLUMN {col} {ddl};"))?;
+            }
+        }
         Ok(())
     }
 
