@@ -192,7 +192,7 @@ impl Platform {
             .ok_or(PlatformError::Forbidden)
     }
 
-    fn assert_manager(&self, group_id: &str, user_id: &str) -> Result<String> {
+    pub(crate) fn assert_manager(&self, group_id: &str, user_id: &str) -> Result<String> {
         let role = self.role_of(group_id, user_id)?;
         if role == ROLE_OWNER || role == ROLE_ADMIN {
             Ok(role)

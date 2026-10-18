@@ -56,6 +56,10 @@ pub struct FriendRow {
     pub remark: String,
     pub source: String,
     pub created_at: i64,
+    /// P3 关系元数据（成员私有）：星标 / 标签(数组) / 分组名。
+    pub starred: bool,
+    pub tags: serde_json::Value,
+    pub friend_group: String,
 }
 
 #[derive(Serialize)]
@@ -113,6 +117,10 @@ impl Platform {
         to_uid: &str,
         message: &str,
     ) -> Result<(String, String)> {
+        // P3 ADR-24: 拉黑是好友申请的前置闸门
+        if self.is_blocked(from_uid, to_uid)? {
+            return Err(PlatformError::Forbidden);
+        }
         let from_uid = validate::id(from_uid)?.to_string();
         let to_uid = validate::id(to_uid)?.to_string();
         let message = validate::note(message)?.to_string();
@@ -289,7 +297,8 @@ impl Platform {
     pub fn friends(&self, me: &str) -> Result<Vec<FriendRow>> {
         let c = self.db().lock();
         let mut stmt = c.prepare(
-            "SELECT friend_id, remark, source, created_at FROM friends WHERE user_id = ?1 ORDER BY created_at",
+            "SELECT friend_id, remark, source, created_at, starred, tags, friend_group
+             FROM friends WHERE user_id = ?1 ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![me], |r| {
             Ok(FriendRow {
@@ -297,6 +306,10 @@ impl Platform {
                 remark: r.get(1)?,
                 source: r.get(2)?,
                 created_at: r.get(3)?,
+                starred: r.get::<_, i64>(4)? != 0,
+                tags: serde_json::from_str(&r.get::<_, String>(5)?)
+                    .unwrap_or(serde_json::json!([])),
+                friend_group: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
