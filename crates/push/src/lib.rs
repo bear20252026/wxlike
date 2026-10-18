@@ -17,6 +17,12 @@
 //! offline. The [`PushProvider`] trait is the integration point; an
 //! `ApnsProvider` slots in behind it without touching callers.
 
+pub mod aggregator;
+pub use aggregator::{
+    should_notify, AggregatedPush, AggregatingDispatchHook, Aggregator, MuteLevel, MuteRule,
+    MuteRuleDirectory, PendingPush, AGGREGATION_WINDOW_MS,
+};
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wxlike_core::Envelope;
@@ -28,6 +34,9 @@ use wxlike_core::Envelope;
 pub struct PushPayload {
     pub from_user: String,
     pub conv_id: String,
+    /// P3 聚合摘要：窗口内折叠的消息条数。单条实时推送为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
 }
 
 impl PushPayload {
@@ -37,6 +46,7 @@ impl PushPayload {
         Self {
             from_user: env.sender.clone(),
             conv_id: env.conv_id.clone(),
+            count: None,
         }
     }
 }
@@ -221,6 +231,24 @@ impl DispatchHook {
             directory,
             provider,
         })
+    }
+
+    /// 向用户全部已注册设备发送一条已决策的通知（聚合摘要与单条实时共用）。
+    pub async fn dispatch_devices(
+        &self,
+        user_id: &str,
+        payload: &PushPayload,
+    ) -> anyhow::Result<usize> {
+        let devices = self.directory.devices_of(user_id).await?;
+        let mut sent = 0;
+        for (_platform, token) in devices {
+            if let Err(err) = self.provider.send(&token, payload).await {
+                eprintln!("[push] send to {user_id} failed: {err:#}");
+            } else {
+                sent += 1;
+            }
+        }
+        Ok(sent)
     }
 }
 

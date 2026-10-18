@@ -152,9 +152,16 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             membership: Some(Arc::new(PlatformMembership(platform.clone()))),
             policy: Some(Arc::new(PlatformPolicy(platform.clone()))),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
-            push_hook: Some(wxlike_push::DispatchHook::new(
-                Arc::new(PlatformDevices(platform.clone())),
-                wxlike_push::provider_from_env(),
+            push_hook: Some(wxlike_push::AggregatingDispatchHook::spawn(
+                wxlike_push::DispatchHook::new(
+                    Arc::new(PlatformDevices(platform.clone())),
+                    wxlike_push::provider_from_env(),
+                ),
+                Arc::new(PlatformRules(platform.clone())),
+                std::env::var("WXLIKE_PUSH_WINDOW_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30_000),
             )),
             ..Default::default()
         },
@@ -606,6 +613,18 @@ impl wxlike_net::DeliveryPolicy for PlatformPolicy {
         }
         // 不变式 9：非好友需对方接受过陌生人请求（接受→正常会话）
         self.0.stranger_accepted(from, to).unwrap_or(false)
+    }
+}
+
+/// P3 免打扰规则适配器：hub 决策层的查询落到平台通知设置表。
+struct PlatformRules(PlatformState);
+
+#[async_trait::async_trait]
+impl wxlike_push::MuteRuleDirectory for PlatformRules {
+    async fn rule_of(&self, user: &str, conv: &str) -> Option<wxlike_push::MuteRule> {
+        let raw = self.0.notification_rule(user, conv).ok()??;
+        let level = wxlike_push::MuteLevel::parse(&raw.level)?;
+        Some(wxlike_push::MuteRule::new(level, &raw.keywords))
     }
 }
 

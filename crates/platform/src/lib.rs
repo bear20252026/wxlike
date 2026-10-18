@@ -29,6 +29,7 @@ mod groups_admin;
 mod keys;
 mod media;
 mod moments;
+mod notification;
 mod relations;
 mod users;
 mod validate;
@@ -295,6 +296,7 @@ impl Platform {
             .merge(relations::routes())
             .merge(groups_admin::routes())
             .merge(communities::routes())
+            .merge(notification::routes())
             .route(
                 "/api/audit/self",
                 get(
