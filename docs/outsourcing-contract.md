@@ -1,6 +1,10 @@
 # 软件开发外包合同（wxlike 类微信即时通讯平台）
 
-> 文档版本 2026-10-16 v1.0。**本文件为外包合同草案模板，签署前须经法律专业人员审阅修订。**
+> 文档版本 2026-10-18 v1.1。**本文件为外包合同草案模板，签署前须经法律专业人员审阅修订。**
+>
+> **修订记录**：v1.1（2026-10-18）—— 第 8.1 条平台开源许可由 **GPL-3.0 改为 AGPL-3.0**
+> （甲方决定；理由：Tier 0 参照项目中 5 个为 AGPL-3.0，统一许可后可直接复用其代码，
+> 且本平台属网络服务，AGPL 的源码提供义务与项目定位一致）。第七条参考表与许可义务不变。
 > 配套技术文档作为合同附件，与本正文具有同等效力（效力顺序见第二条）。
 
 **合同编号**：WXLIKE-DEV-2026-001
@@ -280,7 +284,7 @@
 | Rocket.Chat | https://github.com/RocketChat/Rocket.Chat | MIT（待核复核） |
 | Mattermost | https://github.com/mattermost/mattermost | MIT（待核复核） |
 | Element Web | https://github.com/element-hq/element-web | Apache-2.0 |
-| Synapse | https://github.com/element-hq/synapse | AGPL-3.0（引入须模块级评审） |
+| Synapse | https://github.com/element-hq/synapse | AGPL-3.0（与本平台同许可，可直接复用） |
 | Telegram Android | https://github.com/DrKLO/Telegram | GPL-3.0 |
 | Telegram iOS | https://github.com/TelegramMessenger/Telegram-iOS | GPL-3.0 |
 | Telegram Desktop | https://github.com/telegramdesktop/tdesktop | GPL-3.0 |
@@ -346,7 +350,7 @@
 | Gorse | https://github.com/gorse-io/gorse | Apache-2.0 |
 | Faiss | https://github.com/facebookresearch/faiss | MIT |
 | ScaNN | https://github.com/google-research/google-research/tree/master/scann | Apache-2.0 |
-| Twitter The Algorithm | https://github.com/twitter/the-algorithm | AGPL-3.0（模块级评审） |
+| Twitter The Algorithm | https://github.com/twitter/the-algorithm | AGPL-3.0（同许可，可直接复用） |
 | LightFM | https://github.com/lyst/lightfm | 待核 |
 
 **推送 / 网关 / 多租户 / 前端**
@@ -379,7 +383,7 @@
 
 ## 第八条 知识产权
 
-8.1 本合同项下全部交付物（含源代码、设计文档、测试、脚本）的**著作权及其他知识产权归甲方所有**。甲方选择以 **GPL-3.0** 许可对外发布本平台（不影响甲乙双方之间的前述归属）。
+8.1 本合同项下全部交付物（含源代码、设计文档、测试、脚本）的**著作权及其他知识产权归甲方所有**。甲方选择以 **AGPL-3.0** 许可对外发布本平台（不影响甲乙双方之间的前述归属）。
 
 8.2 乙方保证交付物为原创或已获合法授权。在**内部测试范围内**，乙方按第七条 7.2 内部测试模式执行（来源不限，`THIRD-PARTY-NOTICES.md` 记录来源）；若触发 7.2 再激活条款（对外发布/开源/商用），乙方按该条款配合完成许可核验。因乙方引入代码的第三方主张（发生于内部测试期间的），由乙方承担责任并使甲方免责。
 

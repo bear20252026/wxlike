@@ -2,7 +2,7 @@
 name = "wxlike-ui"
 version = "0.1.0"
 edition = "2021"
-license = "GPL-3.0"
+license = "AGPL-3.0-only"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

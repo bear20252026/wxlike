@@ -1,6 +1,9 @@
 # Third-party notices
 
-> **License change (2026-10-16): wxlike is now GPL-3.0** (was MIT at first commit).
+> **License change (2026-10-18): wxlike is now AGPL-3.0** (was GPL-3.0 from 2026-10-16,
+> MIT at first commit). AGPL-3.0 absorbs GPL-3.0 code (GPLv3→AGPLv3 is the compatible
+> direction), so tweb's GPL-3.0 files stay as-is; AGPL-3.0 upstreams (Element, Synapse,
+> spreed, Signal) can now be copied directly, with the combined work remaining AGPL-3.0.
 > Project positioning: research/experiment, not commercial (contract §1.4 内部测试模式).
 > Per contract §7.2 the standing obligation is **origin recording** in this file;
 > the reactivation clause restores full license vetting before any public release.
@@ -57,8 +60,10 @@ https://github.com/bluexsx/box-im
 | Synapse | AGPL-3.0 | 事件 DAG、同步模型对照 |
 | Nextcloud Talk (spreed) | AGPL-3.0 | 群通话房间 UI 与管控 |
 
-> 5/8 为 AGPL-3.0：内部测试可用（合同 §7.2），但再激活条款触发前必须替换或隔离。
-> 用法约定：**AGPL 项目读结构、重写实现；MIT/Apache 项目可直接复制并登记。**
+> **2026-10-18 起本项目自身为 AGPL-3.0**：AGPL-3.0 上游代码可直接复制，合并后作品
+> 仍为 AGPL-3.0（与我们的许可一致，不再有"传染"冲突）；MIT/Apache 依旧可直接复制。
+> 唯一新增义务：本平台对外提供网络服务时须向用户提供源码（AGPL §13）——内部测试
+> 阶段不触发。
 
 ## Vendored code (actual copies; origin recorded per contract §7.2)
 

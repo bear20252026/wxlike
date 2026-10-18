@@ -201,7 +201,7 @@
 | HuLa | Apache-2.0（任务书已核） | ✅ 保留声明 |
 | 唐僧叨叨（Server/Web/Android） | Apache-2.0（任务书已核） | ✅ |
 | box-im | MIT（任务书已核） | ✅ |
-| Telegram Android / Desktop | GPL-3.0（与我们同许可） | ✅ |
+| Telegram Android / Desktop | GPL-3.0（可并入我们的 AGPL-3.0 作品） | ✅ |
 | TDLib | Boost 1.0 | ✅ |
 | grammers | MIT | ✅（待核复核） |
 | iroh | Apache-2.0/MIT 双许可 | ✅ |
