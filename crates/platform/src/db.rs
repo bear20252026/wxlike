@@ -220,6 +220,15 @@ impl Db {
                 PRIMARY KEY (thread_id, user_id)
             );
 
+            -- P3 多级免打扰（ADR-19 决策层）：每用户 × 每会话
+            CREATE TABLE IF NOT EXISTS notification_settings (
+                user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                conv_id  TEXT NOT NULL,
+                level    TEXT NOT NULL DEFAULT 'all',
+                keywords TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (user_id, conv_id)
+            );
+
             -- P3 审计日志（不变式 7：与运行日志——tracing/Loki——物理分离，
             -- 这里是独立审计表；检索面随 P6 adminx 落地）
             CREATE TABLE IF NOT EXISTS audit_log (

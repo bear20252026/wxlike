@@ -119,6 +119,9 @@ pub struct StrangerRequest {
 
 const MAX_STRANGER_TEXT: usize = 500;
 
+/// 免打扰级别合法值（通知规则与陌生人开关共用校验面）。
+pub const MUTE_LEVELS: [&str; 3] = ["all", "mention", "none"];
+
 impl Platform {
     /// 陌生人首条消息：非好友、未拉黑、对方允许 → 请求箱。已好友直接放行
     /// （调用方返回 Accepted 语义）；重复 pending 请求幂等更新文本。
