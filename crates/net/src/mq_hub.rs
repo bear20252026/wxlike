@@ -31,6 +31,7 @@ use wxlike_mq::{hub_queue, MqRouter};
 
 use crate::conn::PeerConn;
 use crate::offline::{MemoryOffline, OfflineStore};
+use crate::policy::DeliveryPolicy;
 use crate::wire::WireFrame;
 
 /// One bound connection of one user (ADR-4 multi-device): the peers table is
@@ -69,6 +70,9 @@ pub struct MqHubOptions {
     pub reclaim_idle_ms: Option<u64>,
     /// WP-06: called when a recipient is offline everywhere. `None` = no push.
     pub push_hook: Option<Arc<dyn OfflinePush>>,
+    /// P3 投递策略（拉黑/禁言/陌生人闸门）。`None` = 不过滤（既有测试与
+    /// 无关系层部署保持零成本）。
+    pub policy: Option<Arc<dyn DeliveryPolicy>>,
 }
 
 /// Contract floor for reclaiming in-flight cross-node entries.
@@ -83,6 +87,7 @@ impl Default for MqHubOptions {
             membership: None,
             reclaim_idle_ms: None,
             push_hook: None,
+            policy: None,
         }
     }
 }
@@ -131,6 +136,7 @@ struct HubState {
     reclaim_idle_ms: Option<u64>,
     membership: Option<Arc<dyn crate::membership::Membership>>,
     push_hook: Option<Arc<dyn OfflinePush>>,
+    policy: Option<Arc<dyn DeliveryPolicy>>,
     /// WP-13: connections / throughput / parked / latency, per hub.
     metrics: crate::metrics::HubMetrics,
 }
@@ -273,6 +279,7 @@ pub async fn run_mq_hub_with(
         reclaim_idle_ms: options.reclaim_idle_ms,
         membership: options.membership.clone(),
         push_hook: options.push_hook.clone(),
+        policy: options.policy.clone(),
         metrics: crate::metrics::HubMetrics::new(hub_id.clone()),
     });
 
@@ -523,6 +530,27 @@ async fn handle_inbound(
         Some(membership) => membership.members_of(&env.conv_id).await?,
         None => None,
     };
+
+    // 2.5 P3 delivery policy (blocklist / mute / stranger gate) — content and
+    // typing frames only; receipts, recalls and system (Notice) frames are
+    // exempt. Dropped frames are not persisted, parked or fanned out.
+    let env = if let Some(policy) = &state.policy {
+        if !env.is_recall()
+            && env.receipt.is_none()
+            && !matches!(env.body, wxlike_core::MsgBody::Notice(_))
+        {
+            match apply_delivery_policy(state, policy.as_ref(), env, &members).await? {
+                PolicyOutcome::Deliver(owned) => owned,
+                PolicyOutcome::Drop => {
+                    return Ok(());
+                }
+            }
+        } else {
+            env.clone()
+        }
+    } else {
+        env.clone()
+    };
     if let Some(members) = &members {
         if !members.iter().any(|m| m == &env.sender) {
             eprintln!(
@@ -538,7 +566,7 @@ async fn handle_inbound(
     // never persisted, never parked — a user who connects later must not see
     // "对方正在输入" from an hour ago (contract §3.5).
     if env.is_typing() {
-        return route_or_fanout(state, env, members, false).await;
+        return route_or_fanout(state, &env, members, false).await;
     }
 
     // Control frames (receipts, recalls) are never conversation content: they
@@ -588,7 +616,7 @@ async fn handle_inbound(
             eprintln!("[mq-hub] recall refused (unknown or not the author's own)");
             return Ok(());
         }
-        return route_or_fanout(state, env, members, true).await;
+        return route_or_fanout(state, &env, members, true).await;
     }
 
     // 3. content frames: dedup, then persist, then route
@@ -598,13 +626,13 @@ async fn handle_inbound(
             return Ok(()); // re-delivery is not an error
         }
         if let Some(store) = &state.storage {
-            if store.append(env, false)?.is_none() {
+            if store.append(&env, false)?.is_none() {
                 return Ok(()); // already persisted (e.g. hub restart)
             }
         }
     }
 
-    route_or_fanout(state, env, members, true).await
+    route_or_fanout(state, &env, members, true).await
 }
 
 /// Group conversations fan out by the member table; everything else keeps the
@@ -820,4 +848,73 @@ async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) {
 /// Dedup cache occupancy, exposed for tests and metrics.
 pub async fn dedup_len(handle: &HubHandle) -> usize {
     handle.state.seen.lock().await.len()
+}
+
+/// P3 策略裁决：返回 Deliver（可能是收件集收窄后的副本）或 Drop。
+///
+/// * 群帧：查一次 `muted`（全员禁言对管理员的豁免在实现方内部裁决）；
+/// * 直发帧：逐收件人查 `blocked` + `direct_allowed`，收件集只保留通过者；
+///   全部被拦 → Drop（不落库、不暂存——被拉黑者的消息无痕迹）。
+async fn apply_delivery_policy(
+    state: &Arc<HubState>,
+    policy: &dyn DeliveryPolicy,
+    env: &Envelope,
+    members: &Option<Vec<String>>,
+) -> anyhow::Result<PolicyOutcome> {
+    match members {
+        // 群帧：禁言裁决一次
+        Some(_) => {
+            if policy.muted(&env.conv_id, &env.sender).await {
+                tracing::info!(
+                    hub = %state.hub_id,
+                    from = %env.sender,
+                    conv = %env.conv_id,
+                    "muted sender frame dropped"
+                );
+                return Ok(PolicyOutcome::Drop);
+            }
+            Ok(PolicyOutcome::Deliver(env.clone()))
+        }
+        // 直发帧：逐收件人
+        None if !env.to.is_empty() => {
+            let mut kept = Vec::with_capacity(env.to.len());
+            for rcpt in &env.to {
+                if policy.blocked(&env.sender, rcpt).await {
+                    tracing::info!(
+                        hub = %state.hub_id,
+                        from = %env.sender,
+                        to = %rcpt,
+                        "blocked frame dropped"
+                    );
+                    continue;
+                }
+                if !policy.direct_allowed(&env.sender, rcpt).await {
+                    tracing::info!(
+                        hub = %state.hub_id,
+                        from = %env.sender,
+                        to = %rcpt,
+                        "stranger-gate frame dropped"
+                    );
+                    continue;
+                }
+                kept.push(rcpt.clone());
+            }
+            if kept.is_empty() {
+                return Ok(PolicyOutcome::Drop);
+            }
+            if kept.len() == env.to.len() {
+                return Ok(PolicyOutcome::Deliver(env.clone()));
+            }
+            let mut adjusted = env.clone();
+            adjusted.to = kept;
+            Ok(PolicyOutcome::Deliver(adjusted))
+        }
+        // 广播（to 为空）：历史语义，不做关系过滤
+        _ => Ok(PolicyOutcome::Deliver(env.clone())),
+    }
+}
+
+enum PolicyOutcome {
+    Deliver(Envelope),
+    Drop,
 }
