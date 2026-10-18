@@ -441,7 +441,92 @@ function drawMe(list: El): void {
   on(secret, "click", () => {
     void api.secretEnable().catch((e) => toast(String(e).slice(0, 120)));
   });
-  list.append(card, avatarBtn, avatarInput, wallet, sig, save, secret);
+
+  // P4 设备管理：登录会话 + 推送令牌，可远程下线（服务端立即失效）
+  const devicesBtn = h("button", "btn", "设备管理");
+  const devicesPanel = h("div", "devices");
+  devicesPanel.hidden = true;
+  on(devicesBtn, "click", () => {
+    devicesPanel.hidden = !devicesPanel.hidden;
+    if (!devicesPanel.hidden) void drawDevices(devicesPanel);
+  });
+
+  list.append(card, avatarBtn, avatarInput, wallet, sig, save, secret, devicesBtn, devicesPanel);
+}
+
+/** 相对时间：设备页只需要"多久没活跃"，不需要绝对时间。 */
+function since(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
+}
+
+async function drawDevices(host: El): Promise<void> {
+  clear(host);
+  host.append(h("div", "devices-title", "登录设备"));
+  let reply: api.SessionsReply;
+  try {
+    reply = await api.sessionsList();
+  } catch (e) {
+    host.append(h("div", "devices-empty", String(e).slice(0, 120)));
+    return;
+  }
+  if (reply.sessions.length === 0) {
+    host.append(h("div", "devices-empty", "没有其他登录记录"));
+    return;
+  }
+  for (const s of reply.sessions) {
+    const row = h("div", "device-row");
+    const label = s.device_name || s.device_id || "未知设备";
+    const title = h("div", "device-name", s.current ? `${label}（本机）` : label);
+    const meta = h(
+      "div",
+      "device-meta",
+      [s.ip || "未知 IP", `活跃 ${since(s.last_seen)}`].join(" · "),
+    );
+    const left = h("div", "device-info");
+    left.append(title, meta);
+    row.append(left);
+    if (!s.current) {
+      const kick = h("button", "btn small", "下线") as HTMLButtonElement;
+      on(kick, "click", () => {
+        kick.disabled = true;
+        void api
+          .sessionRevoke(s.sid)
+          .then(() => drawDevices(host))
+          .catch((e) => {
+            kick.disabled = false;
+            toast(String(e).slice(0, 120));
+          });
+      });
+      row.append(kick);
+    }
+    host.append(row);
+  }
+  if (reply.push_devices.length > 0) {
+    const push = h("div", "devices-title", "推送令牌");
+    host.append(push);
+    for (const d of reply.push_devices) {
+      host.append(h("div", "device-meta", `${d.platform} · ${d.device_token.slice(0, 12)}…`));
+    }
+  }
+  const others = h("button", "btn danger", "退出其他所有设备") as HTMLButtonElement;
+  on(others, "click", () => {
+    others.disabled = true;
+    void api
+      .sessionsRevokeOthers()
+      .then((n) => {
+        toast(n > 0 ? `已下线 ${n} 台设备` : "没有其他设备");
+        return drawDevices(host);
+      })
+      .catch((e) => {
+        others.disabled = false;
+        toast(String(e).slice(0, 120));
+      });
+  });
+  host.append(others);
 }
 
 // ---------------------------------------------------------------------------

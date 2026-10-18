@@ -14,6 +14,23 @@
 //! 失败语义：实现方在裁决查询出错时**放行**（fail-open）并自行记日志——
 //! 拦截增强不能变成可用性单点。
 
+/// P4 发送闸门结果（风控 + 内容审核）。
+///
+/// 与 `blocked`/`muted` 的区别：那两条是**关系裁决**（谁可以给谁发），
+/// 这条是**行为裁决**（这个人此刻还能不能发、这条内容能不能投递）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendGate {
+    Allow,
+    /// 降速：帧丢弃，调用方应提示"发送过快"。
+    Throttle {
+        retry_after_ms: u64,
+    },
+    /// 拒绝：硬违规或封禁。
+    Reject {
+        reason: String,
+    },
+}
+
 #[async_trait::async_trait]
 pub trait DeliveryPolicy: Send + Sync + 'static {
     /// 收件人 `to` 已拉黑发送者 `from`：该帧对此收件人不存在。
@@ -24,4 +41,12 @@ pub trait DeliveryPolicy: Send + Sync + 'static {
 
     /// `from` 可直发 `to`（好友，或对方接受过其陌生人请求——不变式 9）。
     async fn direct_allowed(&self, from: &str, to: &str) -> bool;
+
+    /// P4 发送闸门：风控限流 + 内容审核（ADR-20 前两层）。
+    ///
+    /// 默认放行——保持 P3 的既有实现与测试不动；只有注入真实平台的部署
+    /// 才覆盖它。返回非 `Allow` 时 hub 丢弃该帧（不落库、不暂存、不扇出）。
+    async fn send_gate(&self, _from: &str, _conv: &str, _text: &str) -> SendGate {
+        SendGate::Allow
+    }
 }

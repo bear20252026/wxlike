@@ -29,6 +29,24 @@ pub enum PlatformError {
     Forbidden,
     #[error("payload too large")]
     PayloadTooLarge,
+    /// P4 风控限流/拒绝（429）。
+    #[error("too many requests")]
+    RateLimited { retry_after_ms: u64 },
+    /// P4 需要人机校验（428）。
+    #[error("human verification required")]
+    CaptchaRequired,
+    /// 管理面未启用或令牌错误（403）。
+    #[error("admin endpoint unavailable")]
+    AdminRequired,
+    /// 内部依赖不可用（如风控引擎锁中毒）→ 500，不伪装成客户端错误。
+    #[error("internal dependency unavailable: {0}")]
+    Internal(String),
+}
+
+impl From<wxlike_risk::RiskError> for PlatformError {
+    fn from(e: wxlike_risk::RiskError) -> Self {
+        Self::Internal(e.to_string())
+    }
 }
 
 /// HTTP-visible error: status plus a client-safe message (no SQL text leaks).
@@ -70,6 +88,18 @@ impl From<PlatformError> for ApiError {
             PlatformError::PayloadTooLarge => {
                 Self::new(StatusCode::PAYLOAD_TOO_LARGE, "media too large")
             }
+            PlatformError::RateLimited { retry_after_ms } => Self::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("rate limited, retry after {retry_after_ms} ms"),
+            ),
+            PlatformError::CaptchaRequired => Self::new(
+                StatusCode::PRECONDITION_REQUIRED,
+                "human verification required",
+            ),
+            PlatformError::AdminRequired => {
+                Self::new(StatusCode::FORBIDDEN, "admin endpoint unavailable")
+            }
+            PlatformError::Internal(msg) => Self::new(StatusCode::INTERNAL_SERVER_ERROR, msg),
         }
     }
 }

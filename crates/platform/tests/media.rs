@@ -18,6 +18,7 @@ fn test_platform(max_media_bytes: usize) -> PlatformState {
         session_ttl_ms: 60_000,
         pbkdf2_rounds: 1_000,
         max_media_bytes,
+        ..Default::default()
     };
     Platform::in_memory_with(opts).unwrap().shared()
 }

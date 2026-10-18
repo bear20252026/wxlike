@@ -5632,6 +5632,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-moderation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "wxlike-mq"
 version = "0.1.0"
 dependencies = [
@@ -5701,6 +5710,9 @@ dependencies = [
  "tracing",
  "wxlike-core",
  "wxlike-message",
+ "wxlike-moderation",
+ "wxlike-report",
+ "wxlike-risk",
 ]
 
 [[package]]
@@ -5720,6 +5732,24 @@ dependencies = [
  "wxlike-mq",
  "wxlike-net",
  "wxlike-platform",
+]
+
+[[package]]
+name = "wxlike-report"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "wxlike-risk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5769,10 +5799,13 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "wxlike-core",
+ "wxlike-moderation",
  "wxlike-mq",
  "wxlike-net",
  "wxlike-platform",
  "wxlike-push",
+ "wxlike-report",
+ "wxlike-risk",
  "wxlike-search",
  "wxlike-video",
 ]

@@ -47,7 +47,130 @@ impl Db {
         db.migrate_friends_meta()?;
         db.migrate_groups_admin()?;
         db.migrate_security_columns()?;
+        db.migrate_p4()?;
         Ok(db)
+    }
+
+    /// P4 表：人机校验、恢复码、对账、举报工单、秘密聊天设置、审核挂起队列，
+    /// 以及会话的设备列（设备管理页要按设备下线）。
+    fn migrate_p4(&self) -> Result<()> {
+        let c = self.lock();
+        c.execute_batch(
+            r#"
+            -- 人机校验（captcha）：只存答案摘要，一次性使用
+            CREATE TABLE IF NOT EXISTS captcha (
+                id          TEXT PRIMARY KEY,
+                answer_hash TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                expires_at  INTEGER NOT NULL,
+                used        INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- 恢复码：一次性，摘要存储
+            CREATE TABLE IF NOT EXISTS recovery_codes (
+                user_id    TEXT PRIMARY KEY,
+                code_hash  TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                used_at    INTEGER
+            );
+
+            -- 对账运行记录（每次 reconcile 一行，便于看趋势与追责）
+            CREATE TABLE IF NOT EXISTS reconcile_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                at_ms         INTEGER NOT NULL,
+                users_checked INTEGER NOT NULL,
+                wallet_sum    INTEGER NOT NULL,
+                escrow        INTEGER NOT NULL,
+                supply        INTEGER NOT NULL,
+                funded_total  INTEGER NOT NULL,
+                mismatches    INTEGER NOT NULL,
+                detail        TEXT NOT NULL,
+                ok            INTEGER NOT NULL
+            );
+
+            -- 举报工单（状态机在 wxlike-report，这里只持久化）
+            CREATE TABLE IF NOT EXISTS reports (
+                id           TEXT PRIMARY KEY,
+                reporter     TEXT NOT NULL,
+                target_kind  TEXT NOT NULL,
+                target_id    TEXT NOT NULL,
+                reason       TEXT NOT NULL,
+                detail       TEXT NOT NULL,
+                state        TEXT NOT NULL,
+                action_json  TEXT,
+                handler      TEXT,
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL,
+                history_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter, created_at);
+            CREATE INDEX IF NOT EXISTS idx_reports_state ON reports(state, created_at);
+
+            -- 秘密聊天：会话级消失消息 TTL（0/缺行 = 关闭）
+            CREATE TABLE IF NOT EXISTS secret_settings (
+                conv_id    TEXT PRIMARY KEY,
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                ttl_ms     INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            );
+
+            -- 秘密聊天：安全码核对状态（每会话每用户一行）
+            CREATE TABLE IF NOT EXISTS secret_verifications (
+                conv_id       TEXT NOT NULL,
+                user_id       TEXT NOT NULL,
+                peer_identity TEXT NOT NULL,
+                verified_at   INTEGER NOT NULL,
+                PRIMARY KEY (conv_id, user_id)
+            );
+
+            -- 先审后发：挂起待审的消息（审核通过后才允许投递）
+            CREATE TABLE IF NOT EXISTS moderation_queue (
+                id         TEXT PRIMARY KEY,
+                conv_id    TEXT NOT NULL DEFAULT '',
+                sender     TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                labels     TEXT NOT NULL,
+                decision   TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_modqueue_created ON moderation_queue(created_at);
+            "#,
+        )?;
+
+        // 会话表补设备列（设备管理页：按设备下线、最近活跃）
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(sessions)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("sid", "TEXT"),
+            ("device_id", "TEXT NOT NULL DEFAULT ''"),
+            ("device_name", "TEXT NOT NULL DEFAULT ''"),
+            ("ip", "TEXT NOT NULL DEFAULT ''"),
+            ("last_seen", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE sessions ADD COLUMN {col} {ddl};"))?;
+            }
+        }
+        // 老会话没有 sid：补一个（12 hex），保证设备页能寻址
+        let missing: Vec<String> = {
+            let mut stmt = c.prepare("SELECT token FROM sessions WHERE sid IS NULL OR sid = ''")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for token in missing {
+            let sid = crate::auth::random_hex(6);
+            c.execute(
+                "UPDATE sessions SET sid = ?1 WHERE token = ?2",
+                rusqlite::params![sid, token],
+            )?;
+        }
+        Ok(())
     }
 
     fn migrate(&self) -> Result<()> {

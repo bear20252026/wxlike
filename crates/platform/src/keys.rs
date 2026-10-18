@@ -71,6 +71,17 @@ impl Platform {
         Ok(())
     }
 
+    /// 对方当前发布的身份公钥（秘密聊天安全码用；不消费一次性密钥）。
+    pub fn public_identity(&self, user_id: &str) -> Result<Option<String>> {
+        let c = self.db().lock();
+        Ok(c.query_row(
+            "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+
     /// The caller's own bundle as stored (no claim). Lets a client see how
     /// many one-time keys it still has published and decide to top up.
     pub fn own_keys(&self, user_id: &str) -> Result<PreKeyBundle> {

@@ -220,6 +220,41 @@ export async function favoriteRemove(id: string): Promise<void> {
   await favoritesLoad();
 }
 
+/** P4 设备管理：登录会话（可远程下线）+ 推送令牌。 */
+export interface SessionRow {
+  sid: string;
+  device_id: string;
+  device_name: string;
+  ip: string;
+  created_at: number;
+  last_seen: number;
+  current: boolean;
+}
+
+export interface PushDeviceRow {
+  platform: string;
+  device_token: string;
+}
+
+export interface SessionsReply {
+  sessions: SessionRow[];
+  push_devices: PushDeviceRow[];
+}
+
+export async function sessionsList(): Promise<SessionsReply> {
+  const reply = await invoke<SessionsReply>("sessions_list");
+  return { sessions: reply.sessions ?? [], push_devices: reply.push_devices ?? [] };
+}
+
+export async function sessionRevoke(sid: string): Promise<void> {
+  await invoke("session_revoke", { sid });
+}
+
+export async function sessionsRevokeOthers(): Promise<number> {
+  const reply = await invoke<{ revoked: number }>("sessions_revoke_others");
+  return reply.revoked ?? 0;
+}
+
 export async function searchMessages(q: string): Promise<void> {
   const reply = await invoke<{ results: Record<string, unknown>[] }>("search_messages", {
     q,

@@ -65,7 +65,13 @@ https://github.com/bluexsx/box-im
   ignored like Redis; docker-compose ships a nats:2 service.
 - P4 ledger → **cala-ledger** (double-entry core) + **obix** (outbox) +
   **dtmrs** (saga) embedded, per ADR-12.
-- P4 auth hardening → `argon2` crate, TOTP crate (RFC 6238).
+- P4 auth hardening → `argon2` crate, TOTP crate (RFC 6238) ✅ DONE 2026-10-18.
+- P4 governance → **no third-party code**: `wxlike-risk` (sliding window),
+  `wxlike-moderation` (normalize + trie), `wxlike-report` (state machine) are
+  original. Design shapes only: Hyperswitch's FSM/idempotency discipline
+  (Apache-2.0) and the "Lexfence 式独立审核微服务" boundary from ADR-15;
+  neither contributed code.
+- P4 rooms → `wxlike-rtc::room` is original; str0m remains the media stack.
 - P5 mobile → Flutter + UniFFI/cargo-ndk; live ingest → **Xiu** (external
   process); sandbox → **Wasmtime**; mini-app runtime per miniprogram-blueprint.
 - P6 admin → **adminx** embedded in Axum; observability → OpenTelemetry/Loki/

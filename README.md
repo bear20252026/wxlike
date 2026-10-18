@@ -406,6 +406,33 @@ id，对端经 `/api/media/{id}` 渲染。"我"页可设置头像并即时回显
 - WP-11 tauri dev 真机演示：`cd ui && npm i && npx tauri dev`（构建链已验证）。
 - mac·Linux 构建验证：Tauri 2 前端与 Rust workspace 均为跨平台构建，需对应主机。
 
+## P4 运营合规 + 账本 + 通话房间（合同 §第五条 P4）
+
+三项独立能力 + 一条发送闸门，**新增测试 58 项**（合同下限 18）。完整三件套索引见
+[docs/p4-report.md](docs/p4-report.md)，这里只列关键结论：
+
+- **三层治理不互相调用**（ADR-20）：`wxlike-risk`（进程内滑动窗口，零 I/O）/
+  `wxlike-moderation`（归一化 + trie，变形绕过 `p0rn`、`ＰＯＲＮ`、`傻 逼`、零宽字符全部命中）/
+  `wxlike-report`（状态机，非法流转即 409）。发送侧经 `DeliveryPolicy::send_gate`
+  在 hub 帧级拦截——被拒/被挂起的帧不落库、不扇出。
+- **对账三条线**：逐用户 `balance == SUM(带符号流水)`、`供给 == 钱包 + escrow == 发行量`、
+  红包算术。5 分钟一轮，异常写 `reconcile_runs` + 审计 `wallet.reconcile`。
+- **通话房间**（`rtc::room`）：名册/静音/踢人（禁入）/锁门/录制/主持人移交，纯内存
+  状态机，不占群信箱序列号。
+- **账号面补齐**：恢复码（一次性、argon2id 摘要、重置即吊销全部会话）、算术 captcha
+  （一次性 + 5 分钟）、按来源限流（428 触发取题）、设备管理（`/api/sessions` 列表 +
+  按 sid 远程下线 + 一键退出其他设备，UI 在"我"页）。
+- **秘密聊天产品面**：会话开关、消失消息 TTL（30s/5m/1h/1d/7d）、60 位安全码
+  （两端一致，对方换设备即失效）。
+
+```bash
+cargo test -p wxlike-risk -p wxlike-moderation -p wxlike-report   # 26
+cargo test -p wxlike-platform --test p4_ops                        # 16
+cargo test -p wxlike-rtc --test room                               # 13
+cargo test -p wxlike-net --test send_gate                          # 2
+cargo test -p wxlike-ledger --test conservation                    # 账本守恒
+```
+
 ## 系统推送（WP-06）
 
 `crates/push`：`PushProvider` trait + `NoopProvider`（默认，带计数）+
@@ -519,3 +546,4 @@ cargo clippy --all-targets                          # 0 warning（任务书 A4�
 3. Android：`cargo-ndk` 出 .so + JNI 桥
 4. container：换 quickjs-ng 引擎，继续 WA* shim 迭代
 5. 端到端最终验收剧本（任务书 §4：双机 + 双 hub + UI 全流程录屏）
+6. P5：Flutter 三端 / 直播频道 / 小程序 M1–M5 / video 完整版 / Web 工程
