@@ -12,12 +12,21 @@ serde_json = { workspace = true }
 
 # optional redis backend (feature "redis")
 redis = { version = "0.27", default-features = false, features = ["tokio-comp"], optional = true }
+# P3 ADR blueprint: NATS as the realtime channel backend (feature "nats")
+async-nats = { version = "0.42", optional = true }
+futures-util = "0.3"
 
 [features]
 default = []
 redis = ["dep:redis"]
+nats = ["dep:async-nats"]
 
 # the streams tests reference the feature-gated backend
 [[test]]
 name = "streams_redis"
 required-features = ["redis"]
+
+# P3 NATS backend tests (need a live nats-server; same --ignored convention)
+[[test]]
+name = "nats_backend"
+required-features = ["nats"]

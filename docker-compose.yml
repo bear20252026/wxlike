@@ -69,3 +69,17 @@ volumes:
   redis-data:
   server-data:
   s3-data:
+
+  # P3 realtime channel: JetStream durable queues for cross-hub routing
+  # (WXLIKE_MQ=nats). Optional — memory backend stays the default.
+  nats:
+    image: nats:2
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

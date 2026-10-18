@@ -15,6 +15,7 @@ wxlike-core = { path = "../crates/core" }
 wxlike-push = { path = "../crates/push" }
 wxlike-video = { path = "../crates/video" }
 wxlike-search = { path = "../crates/search" }
+async-nats = { version = "0.42", optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
@@ -29,6 +30,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 redis = ["wxlike-mq/redis"]
+nats = ["wxlike-mq/nats", "dep:async-nats"]
 
 [dev-dependencies]
 # integration tests drive the real HTTP surface (ureq matches the UI's client)

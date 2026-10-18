@@ -69,7 +69,7 @@ impl Default for StackOptions {
 
 /// Boots the whole stack on the given binds (OS-assigned ports with `:0`).
 pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
-    let router = build_mq_router(&opts.mq_mode)?;
+    let router = build_mq_router(&opts.mq_mode).await?;
     let platform = Platform::open(opts.db_path.as_deref())?.shared();
 
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);
@@ -242,7 +242,13 @@ fn presence_routes(handle: HubHandle) -> Router {
     )
 }
 
-fn build_mq_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
+/// The NatsRoutes table shares the backend's JetStream context.
+#[cfg(feature = "nats")]
+fn mq_context(mq: &wxlike_mq::nats_backend::NatsMq) -> async_nats::jetstream::Context {
+    mq.context()
+}
+
+async fn build_mq_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
     match mq_mode {
         "memory" => {
             let mq = Arc::new(wxlike_mq::memory::MemoryMq::new());
@@ -273,7 +279,22 @@ fn build_mq_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
                 anyhow::bail!("server built without --features redis; rebuild with: cargo build -p wxlike-server --features redis")
             }
         }
-        other => anyhow::bail!("unknown mq mode '{other}' (memory|redis)"),
+        "nats" => {
+            #[cfg(feature = "nats")]
+            {
+                let url =
+                    std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
+                let mq = Arc::new(wxlike_mq::nats_backend::NatsMq::connect(&url).await?);
+                let routes =
+                    Arc::new(wxlike_mq::nats_backend::NatsRoutes::connect(&mq_context(&mq)).await?);
+                Ok(wxlike_mq::MqRouter::with_reliable(mq.clone(), routes, mq))
+            }
+            #[cfg(not(feature = "nats"))]
+            {
+                anyhow::bail!("server built without --features nats; rebuild with: cargo build -p wxlike-server --features nats")
+            }
+        }
+        other => anyhow::bail!("unknown mq mode '{other}' (memory|redis|nats)"),
     }
 }
 
