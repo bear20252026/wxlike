@@ -105,6 +105,26 @@ fn search_until(token: &str, q: &str, min_results: usize, base: &str) -> Vec<ser
     );
 }
 
+/// 好友流程（不变式 9 生效后，直发帧要求好友或已接受陌生人）。
+async fn befriend(stack: &TestStack, _a_uid: &str, a_tok: &str, b_uid: &str, b_tok: &str) {
+    ureq::post(&format!("{}/api/friends/requests", stack.http))
+        .set("Authorization", &format!("Bearer {a_tok}"))
+        .send_json(serde_json::json!({"to_user_id": b_uid, "message": ""}))
+        .unwrap();
+    let incoming: serde_json::Value =
+        ureq::get(&format!("{}/api/friends/requests/incoming", stack.http))
+            .set("Authorization", &format!("Bearer {b_tok}"))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+    let id = incoming[0]["id"].as_str().unwrap().to_string();
+    ureq::post(&format!("{}/api/friends/requests/{id}/accept", stack.http))
+        .set("Authorization", &format!("Bearer {b_tok}"))
+        .call()
+        .unwrap();
+}
+
 fn status_of(res: Result<ureq::Response, ureq::Error>) -> u16 {
     match res {
         Ok(r) => r.status(),
@@ -128,11 +148,12 @@ async fn wait_store_settles() {
 async fn history_pages_and_marks_recalled_rows() {
     let stack = boot().await;
     let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
-    let (bob, _) = register(&stack, &format!("{}-bob", who()));
+    let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let conv_id = conv(&alice, &bob);
 
     let alice_c = connect(&stack, &alice).await;
     let bob_c = connect(&stack, &bob).await;
+    befriend(&stack, &alice, &alice_tok, &bob, &bob_tok).await;
     let _ = bob_c; // online so the frames are delivered, not parked
 
     let mut ids = Vec::new();
@@ -235,13 +256,18 @@ async fn history_denies_outsiders() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn search_only_covers_conversations_i_may_see() {
     let stack = boot().await;
-    let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
+    let (alice, _alice_tok) = register(&stack, &format!("{}-alice", who()));
     let (bob, _) = register(&stack, &format!("{}-bob", who()));
     let (carol, carol_tok) = register(&stack, &format!("{}-carol", who()));
 
     let alice_c = connect(&stack, &alice).await;
     let bob_c = connect(&stack, &bob).await;
     let _carol_c = connect(&stack, &carol).await;
+    let alice_tok = stack.platform.create_session(&alice, 60_000).unwrap();
+    let bob_tok2 = stack.platform.create_session(&bob, 60_000).unwrap();
+    let carol_tok2 = stack.platform.create_session(&carol, 60_000).unwrap();
+    befriend(&stack, &alice, &alice_tok, &bob, &bob_tok2).await;
+    befriend(&stack, &alice, &alice_tok, &carol, &carol_tok2).await;
 
     // alice↔bob talk about pineapples; alice↔carol never do
     let ab = conv(&alice, &bob);
@@ -283,13 +309,16 @@ async fn search_only_covers_conversations_i_may_see() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn search_needle_wildcards_stay_literal() {
     let stack = boot().await;
-    let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
+    let (alice, _alice_tok) = register(&stack, &format!("{}-alice", who()));
     let (bob, _) = register(&stack, &format!("{}-bob", who()));
     let conv_id = conv(&alice, &bob);
 
     let alice_c = connect(&stack, &alice).await;
     let bob_c = connect(&stack, &bob).await;
     let _ = bob_c;
+    let alice_tok = stack.platform.create_session(&alice, 60_000).unwrap();
+    let bob_tok2 = stack.platform.create_session(&bob, 60_000).unwrap();
+    befriend(&stack, &alice, &alice_tok, &bob, &bob_tok2).await;
     send_text(&alice_c, &conv_id, vec![bob.clone()], "100% match_").await;
     send_text(&alice_c, &conv_id, vec![bob.clone()], "1x0y0z% match_").await;
     wait_store_settles().await;
@@ -302,12 +331,13 @@ async fn search_needle_wildcards_stay_literal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typing_and_forward_kinds_flow_through_the_hub() {
     let stack = boot().await;
-    let (alice, _) = register(&stack, &format!("{}-alice", who()));
+    let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
     let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let conv_id = conv(&alice, &bob);
 
     let alice_c = connect(&stack, &alice).await;
     let bob_c = connect(&stack, &bob).await;
+    befriend(&stack, &alice, &alice_tok, &bob, &bob_tok).await;
     wait_bound(&stack, 2).await;
 
     // typing: delivered, but never in history
@@ -322,10 +352,16 @@ async fn typing_and_forward_kinds_flow_through_the_hub() {
         },
     );
     alice_c.send(&typing).await.unwrap();
-    let ev = tokio::time::timeout(Duration::from_secs(15), bob_c.next_envelope())
-        .await
-        .unwrap()
-        .unwrap();
+    // befriend 的系统事件帧先于 typing 到达：逐条跳过直到 typing 帧
+    let ev = loop {
+        let env = tokio::time::timeout(Duration::from_secs(15), bob_c.next_envelope())
+            .await
+            .unwrap()
+            .unwrap();
+        if env.is_typing() {
+            break env;
+        }
+    };
     assert!(ev.is_typing(), "the peer sees the typing ping");
 
     // forward: a Custom msg.forward lands in history like any content frame

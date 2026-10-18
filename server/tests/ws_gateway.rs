@@ -37,8 +37,14 @@ impl WsClient {
             .unwrap();
     }
 
-    async fn send_text(&mut self, conv_id: &str, to: Vec<String>, text: &str) -> Envelope {
-        let env = Envelope::direct(conv_id, "carol", to, 0, text);
+    async fn send_text(
+        &mut self,
+        sender: &str,
+        conv_id: &str,
+        to: Vec<String>,
+        text: &str,
+    ) -> Envelope {
+        let env = Envelope::direct(conv_id, sender, to, 0, text);
         let frame = WireFrame::Msg(env.clone()).to_bytes().unwrap();
         self.send_frame(&frame).await;
         env
@@ -58,51 +64,113 @@ impl WsClient {
             }
         }
     }
+
+    /// 跳过系统帧（Notice，好友/群事件）只取内容帧——befriend 的系统事件
+    /// 必然先于被测内容到达。
+    async fn next_text_frame(&mut self) -> Envelope {
+        loop {
+            match self.next_frame().await {
+                WireFrame::Msg(env) => {
+                    if !matches!(env.body, MsgBody::Notice(_)) {
+                        return env;
+                    }
+                }
+                other => panic!("expected envelope, got {other:?}"),
+            }
+        }
+    }
 }
 
 use wxlike_net::wire::WireFrame;
 
+/// HTTP 注册，返回 (user_id, token)。
+fn register(stack: &wxlike_server::Stack, name: &str) -> (String, String) {
+    let r: serde_json::Value = ureq::post(&format!("http://{}/api/register", stack.http_addr))
+        .send_json(serde_json::json!({"name": name, "password": "pw"}))
+        .unwrap()
+        .into_json()
+        .unwrap();
+    (
+        r["user_id"].as_str().unwrap().to_string(),
+        r["token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// 好友流程（不变式 9：直发双方须为好友或已接受陌生人）。
+fn befriend(stack: &wxlike_server::Stack, _a: &str, a_tok: &str, b: &str, b_tok: &str) {
+    ureq::post(&format!("http://{}/api/friends/requests", stack.http_addr))
+        .set("Authorization", &format!("Bearer {a_tok}"))
+        .send_json(serde_json::json!({"to_user_id": b, "message": ""}))
+        .unwrap();
+    let incoming: serde_json::Value = ureq::get(&format!(
+        "http://{}/api/friends/requests/incoming",
+        stack.http_addr
+    ))
+    .set("Authorization", &format!("Bearer {b_tok}"))
+    .call()
+    .unwrap()
+    .into_json()
+    .unwrap();
+    let id = incoming[0]["id"].as_str().unwrap().to_string();
+    ureq::post(&format!(
+        "http://{}/api/friends/requests/{id}/accept",
+        stack.http_addr
+    ))
+    .set("Authorization", &format!("Bearer {b_tok}"))
+    .call()
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ws_client_and_quic_client_interoperate() {
     let stack = start_stack(StackOptions::default()).await.unwrap();
-    let http = format!("http://{}", stack.http_addr);
+    let _http = format!("http://{}", stack.http_addr);
 
     // alice over QUIC, carol over WS — the hub must not care
-    let alice = Client::connect(stack.quic_addr, "localhost", "alice")
+    let http = format!("http://{}", stack.http_addr);
+    let (alice_uid, alice_tok) = register(&stack, "alice");
+    let (carol_uid, carol_tok) = register(&stack, "carol");
+
+    let alice = Client::connect(stack.quic_addr, "localhost", &alice_uid)
         .await
         .unwrap();
     let ws_url = format!("ws://{}/ws", stack.http_addr);
-    let mut carol_ws = WsClient::connect(&ws_url, "carol").await;
+    let mut carol_ws = WsClient::connect(&ws_url, &carol_uid).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let conv = wxlike_platform::direct_conv_id("alice", "carol");
+    // 不变式 9 生效后，直发双方须为好友
+    befriend(&stack, &alice_uid, &alice_tok, &carol_uid, &carol_tok);
+
+    let conv = wxlike_platform::direct_conv_id(&alice_uid, &carol_uid);
 
     // QUIC -> WS
     alice
         .send(&Envelope::direct(
             &conv,
-            "alice",
-            vec!["carol".into()],
+            &alice_uid,
+            vec![carol_uid.clone()],
             1,
             "from desktop",
         ))
         .await
         .unwrap();
-    let env = match carol_ws.next_frame().await {
-        WireFrame::Msg(env) => env,
-        other => panic!("expected envelope, got {other:?}"),
-    };
+    let env = carol_ws.next_text_frame().await;
     assert!(matches!(&env.body, MsgBody::Text(t) if t == "from desktop"));
 
     // WS -> QUIC
     let sent = carol_ws
-        .send_text(&conv, vec!["alice".into()], "from browser")
+        .send_text(&carol_uid, &conv, vec![alice_uid.clone()], "from browser")
         .await;
-    let env = tokio::time::timeout(Duration::from_secs(15), alice.next_envelope())
-        .await
-        .expect("quic peer received")
-        .unwrap();
-    assert_eq!(env.msg_id, sent.msg_id, "same envelope crossed carriers");
+    // befriend 系统事件帧先于内容到达：按 msg_id 匹配目标帧
+    let env = loop {
+        let env = tokio::time::timeout(Duration::from_secs(15), alice.next_envelope())
+            .await
+            .expect("quic peer received")
+            .unwrap();
+        if env.msg_id == sent.msg_id {
+            break env;
+        }
+    };
     assert!(matches!(&env.body, MsgBody::Text(t) if t == "from browser"));
 
     // the hub persisted both sides identically (transport-agnostic storage)
@@ -120,14 +188,18 @@ async fn ws_connection_participates_in_parking_like_quic() {
 
     // carol (WS) never connects; alice (QUIC) writes; a WS device connecting
     // later must flush the parked frame exactly like the QUIC path
-    let alice = Client::connect(stack.quic_addr, "localhost", "alice")
+    let (alice_uid, alice_tok) = register(&stack, "alice");
+    let (carol_uid, carol_tok) = register(&stack, "carol");
+    let alice = Client::connect(stack.quic_addr, "localhost", &alice_uid)
         .await
         .unwrap();
+    befriend(&stack, &alice_uid, &alice_tok, &carol_uid, &carol_tok);
+    let conv = wxlike_platform::direct_conv_id(&alice_uid, &carol_uid);
     alice
         .send(&Envelope::direct(
-            "d-alice~carol",
-            "alice",
-            vec!["carol".into()],
+            &conv,
+            &alice_uid,
+            vec![carol_uid.clone()],
             1,
             "while you were away",
         ))
@@ -135,11 +207,8 @@ async fn ws_connection_participates_in_parking_like_quic() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(400)).await;
 
-    let mut carol_ws = WsClient::connect(&ws_url, "carol").await;
-    let env = match carol_ws.next_frame().await {
-        WireFrame::Msg(env) => env,
-        other => panic!("expected parked envelope, got {other:?}"),
-    };
+    let mut carol_ws = WsClient::connect(&ws_url, &carol_uid).await;
+    let env = carol_ws.next_text_frame().await;
     assert!(matches!(&env.body, MsgBody::Text(t) if t == "while you were away"));
 
     // and the WS device going away must release the route: a second alice
@@ -147,7 +216,7 @@ async fn ws_connection_participates_in_parking_like_quic() {
     drop(carol_ws);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
-        !stack.hub.is_online("carol").await,
+        !stack.hub.is_online(&carol_uid).await,
         "ws close must unbind like a quic close"
     );
 }

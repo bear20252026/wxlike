@@ -150,6 +150,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             storage: Some(store.clone()),
             offline,
             membership: Some(Arc::new(PlatformMembership(platform.clone()))),
+            policy: Some(Arc::new(PlatformPolicy(platform.clone()))),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
             push_hook: Some(wxlike_push::DispatchHook::new(
                 Arc::new(PlatformDevices(platform.clone())),
@@ -569,6 +570,42 @@ impl wxlike_push::DeviceDirectory for PlatformDevices {
             .into_iter()
             .map(|d| (d.platform, d.device_token))
             .collect())
+    }
+}
+
+/// P3 投递策略适配器：把 hub 的裁决咨询翻译成平台关系/禁言表查询。
+/// 查询失败一律放行（fail-open）——拦截增强不得成为可用性单点。
+struct PlatformPolicy(PlatformState);
+
+#[async_trait::async_trait]
+impl wxlike_net::DeliveryPolicy for PlatformPolicy {
+    async fn blocked(&self, from: &str, to: &str) -> bool {
+        match self.0.is_blocked(from, to) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(from, to, "policy blocked lookup failed (fail-open): {err}");
+                false
+            }
+        }
+    }
+
+    async fn muted(&self, group: &str, user: &str) -> bool {
+        match self.0.is_muted(group, user) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(group, user, "policy mute lookup failed (fail-open): {err}");
+                false
+            }
+        }
+    }
+
+    async fn direct_allowed(&self, from: &str, to: &str) -> bool {
+        let friends = self.0.are_friends(from, to).unwrap_or(false);
+        if friends {
+            return true;
+        }
+        // 不变式 9：非好友需对方接受过陌生人请求（接受→正常会话）
+        self.0.stranger_accepted(from, to).unwrap_or(false)
     }
 }
 
