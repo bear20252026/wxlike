@@ -465,7 +465,8 @@ impl Platform {
                     &id,
                     &serde_json::json!({
                         "claimer": by, "amount": share,
-                        "finished": status_now_finished(&id, claimed_total + share, count),
+                        // 与同事务 SQL 的 claimed + 1 >= count 同口径（笔数 vs 份数）
+                        "finished": status_now_finished(claimed, count),
                     })
                     .to_string(),
                 );
@@ -699,8 +700,10 @@ async fn ledger(
 }
 
 /// 领取后是否已领完（纯函数便于测试）。
-fn status_now_finished(_id: &str, claimed_total: i64, count: i64) -> bool {
-    claimed_total >= count
+/// `claimed_before` = 本笔领取前的已领**笔数**；与同事务 SQL 的
+/// `claimed + 1 >= count` 同口径。
+fn status_now_finished(claimed_before: i64, count: i64) -> bool {
+    claimed_before + 1 >= count
 }
 
 #[cfg(test)]
@@ -730,6 +733,51 @@ mod ephemeral_tests {
             .fetch((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
             .unwrap();
         assert!(timeline.is_empty(), "ephemeral 不占时间线");
+    }
+
+    #[test]
+    fn finished_flag_uses_claim_count_not_amount() {
+        // 回归：300 分 2 份，第 1 人领 150 分后 finished 必须仍为 false
+        // （量纲 = 笔数 vs 份数，不能拿金额比份数）
+        let p = Platform::in_memory().unwrap();
+        let a = p.register("alice", "pw").unwrap();
+        let b = p.register("bob", "pw").unwrap();
+        let c = p.register("carol", "pw").unwrap();
+        p.fund(&a, 10_000, "test").unwrap();
+        let rp = p.create_redpacket(&a, 300, 2, "包", Some("d-a~b")).unwrap();
+
+        let store = p.message_store.as_ref().unwrap();
+        let last_finished = |after: i64| -> bool {
+            let (updates, _) = store
+                .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), after, 10)
+                .unwrap();
+            let last = updates.last().unwrap();
+            last.target_msg_id == rp && last.payload.contains("\"finished\":true")
+        };
+
+        p.claim_redpacket(&rp, &b).unwrap();
+        let (updates, _) = store
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .unwrap();
+        assert_eq!(updates.len(), 1);
+        assert!(
+            !updates[0].payload.contains("\"finished\":true"),
+            "第 1 笔领取后未领完: {}",
+            updates[0].payload
+        );
+        let cursor = updates[0].rowid; // 从首条 rowid 之后取增量
+
+        p.claim_redpacket(&rp, &c).unwrap();
+        let (updates, _) = store
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), cursor, 10)
+            .unwrap();
+        assert_eq!(updates.len(), 1);
+        assert!(
+            updates[0].payload.contains("\"finished\":true"),
+            "第 2 笔领取后领完: {}",
+            updates[0].payload
+        );
+        let _ = last_finished(0);
     }
 
     #[test]
