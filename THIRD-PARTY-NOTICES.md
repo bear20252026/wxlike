@@ -42,6 +42,17 @@ No Java source is included; this is an independent Rust implementation of the
 published design. box-im is Copyright its authors, MIT licensed:
 https://github.com/bluexsx/box-im
 
+## Vendored code (actual copies; origin recorded per contract §7.2)
+
+| file | upstream | license | what was taken / adapted |
+|---|---|---|---|
+| `ui/src/vendor/tweb/slicedArray.ts` | [morethanwords/tweb](https://github.com/morethanwords/tweb) · `src/helpers/slicedArray.ts` | **GPL-3.0** | 降序分块数组（`SlicedArray` + `Slice` 的 ends 追踪、`insertSlice` 合并）。适配三处，均写在文件头：去掉 `MOUNT_CLASS_TO` 调试挂载、内联 `indexOfAndSplice` 与 number-only `compareValue`、按本项目 `strict` 补变量初始化。用于 `ui/src/msgIndex.ts`（历史分页合并 + 实时消息插入）。 |
+| `ui/scripts/check-msgindex.sh` | 本项目原创 | GPL-3.0 | 该 vendored 文件的回归脚本（esbuild 打包 + node 断言 7 条）。 |
+
+> 这是本仓库第一次**实际复制**第三方源码。选择 tweb 而非自研的原因：它的
+> 切片合并算法（跨页去重、乱序插入、ends 语义）是消息列表虚拟化的核心，
+> 自写一遍等于重犯它已经踩过的边界。GPL-3.0 与本项目许可一致。
+
 ## Ported designs (no code copied yet; origin recorded per contract §7.2)
 
 - **OpenIM** (openimsdk/open-im-server, Apache-2.0): the five-layer sync
@@ -82,5 +93,5 @@ https://github.com/bluexsx/box-im
 - LiangNiang/fake-world (GPL-3.0): local-first architecture principle and
   AI-generated chat-record concept. License-compatible with wxlike's GPL-3.0; keep per-file attribution when copying.
 
-Everything else in wxlike is original code as of 2026-10-17 (P2 merged);
-the inventory above is updated with every borrowing PR.
+Everything else in wxlike is original code as of 2026-10-18 (P4 + P5 first
+increment merged); the inventory above is updated with every borrowing PR.
