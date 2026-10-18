@@ -47,6 +47,7 @@ https://github.com/bluexsx/box-im
 | file | upstream | license | what was taken / adapted |
 |---|---|---|---|
 | `ui/src/vendor/tweb/slicedArray.ts` | [morethanwords/tweb](https://github.com/morethanwords/tweb) · `src/helpers/slicedArray.ts` | **GPL-3.0** | 降序分块数组（`SlicedArray` + `Slice` 的 ends 追踪、`insertSlice` 合并）。适配三处，均写在文件头：去掉 `MOUNT_CLASS_TO` 调试挂载、内联 `indexOfAndSplice` 与 number-only `compareValue`、按本项目 `strict` 补变量初始化。用于 `ui/src/msgIndex.ts`（历史分页合并 + 实时消息插入）。 |
+| `ui/src/vendor/tweb/listenerSetter.ts` | 同上 · `src/helpers/listenerSetter.ts` | **GPL-3.0** | 事件监听器集中登记与清理（`add`/`remove`/`removeManual`/`addCleanup`/`removeAll`）。适配：去掉 tweb 内部类型 `EventListenerBase` 的 import 与 union 成员；`strict` 下补 `let listener: Listener \| undefined`。用于消息菜单/贴纸面板的"点外面关闭"——原来两处各写一遍自清监听器，切视图关菜单时会漏。 |
 | `ui/scripts/check-msgindex.sh` | 本项目原创 | GPL-3.0 | 该 vendored 文件的回归脚本（esbuild 打包 + node 断言 7 条）。 |
 
 > 这是本仓库第一次**实际复制**第三方源码。选择 tweb 而非自研的原因：它的

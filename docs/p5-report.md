@@ -102,6 +102,15 @@ let granted = registry.install(&manifest_bytes, &sig)?;
 - **回归**：`bash ui/scripts/check-msgindex.sh`（esbuild 打包 + node 断言 7 条：
   乱序页、历史页、实时插入、同 seq 覆盖、幂等、窗口取尾）。
 
+第二轮借用（同一来源，`ui/src/vendor/tweb/listenerSetter.ts`）：
+
+- **借的是什么**：`ListenerSetter`（监听器集中登记 + `removeAll` 一次性清理）。
+- **修掉的问题**：消息菜单与贴纸面板各自手写 `document.addEventListener`
+  + 命名函数自清；菜单被切视图/重渲染关掉时监听器会残留，越积越多。
+  现在两处都登记到同一个 `menuListeners`，`hideMsgMenu()` 统一清理。
+- **适配**：去掉 tweb 内部类型 `EventListenerBase`；`strict` 下补
+  `let listener: Listener | undefined`。
+
 ## 3. 设计说明（为什么这样切）
 
 - **弹幕不进时间线**：合同不变式 3 规定只有 normal 通道占用序列号。弹幕高频、
