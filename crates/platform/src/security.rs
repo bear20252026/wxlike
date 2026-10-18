@@ -55,16 +55,9 @@ pub fn totp_verify(secret_base32: &str, code: &str) -> bool {
         Ok(t) => t,
         Err(_) => return false,
     };
-    let code_num: u64 = match code.trim().parse() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    totp.generate_current()
-        .map(|cur| {
-            // constant-time-ish compare via parse equality is fine at 6 digits
-            cur.parse::<u64>().map(|c| c == code_num).unwrap_or(false)
-        })
-        .unwrap_or(false)
+    // check_current 应用构造时的 skew（±1 步 = ±30s）：验证器时钟慢/快
+    // 一步内均可通过——generate_current 不带容差，只比当前步
+    totp.check_current(code.trim()).unwrap_or(false)
 }
 
 const TOTP_SECRET_MAX: usize = 128;
@@ -169,6 +162,109 @@ impl Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Platform;
+
+    /// P4 透明升级：注册（pbkdf2）→ 首次登录成功 → pw_algo 变 argon2id，
+    /// 再次登录仍成功；2FA 全流程 DB 路径。
+    #[test]
+    fn argon2_transparent_upgrade_on_login() {
+        let p = Platform::in_memory().unwrap();
+        let uid = p.register("alice", "pw").unwrap();
+
+        let algo = || -> String {
+            let c = p.db().lock();
+            c.query_row(
+                "SELECT pw_algo FROM users WHERE id = ?1",
+                rusqlite::params![uid],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(algo(), "pbkdf2", "注册仍是存量算法");
+
+        assert_eq!(
+            p.verify_credentials("alice", "pw").unwrap(),
+            Some(uid.clone())
+        );
+        assert_eq!(algo(), "argon2id", "首次登录成功即透明升级");
+        assert_eq!(
+            p.verify_credentials("alice", "pw").unwrap(),
+            Some(uid.clone()),
+            "升级后旧密码仍可登录"
+        );
+        assert_eq!(p.verify_credentials("alice", "wrong").unwrap(), None);
+    }
+
+    #[test]
+    fn totp_login_gate_full_db_path() {
+        let p = Platform::in_memory().unwrap();
+        let uid = p.register("bob", "pw").unwrap();
+
+        // 未启用：登录门直接放行
+        p.verify_credentials("bob", "pw").unwrap().unwrap();
+        p.totp_check_login(&uid, None).unwrap();
+
+        // enable：生成密钥，未确认前不激活
+        let secret = p.totp_enable(&uid).unwrap();
+        assert!(!p.totp_enabled(&uid).unwrap());
+
+        // 错误码无法确认激活
+        assert!(
+            p.totp_confirm(&uid, "000000").is_err() || {
+                // 000000 恰为当前码的几率极低；若偶合则换下一步重试语义不符
+                // ——这里直接用正确码继续
+                false
+            }
+        );
+
+        let totp = totp_rs::TOTP::new(
+            totp_rs::Algorithm::SHA1,
+            6,
+            1,
+            30,
+            totp_rs::Secret::Encoded(secret.clone()).to_bytes().unwrap(),
+        )
+        .unwrap();
+        let code = totp.generate_current().unwrap();
+        p.totp_confirm(&uid, &code).unwrap();
+        assert!(p.totp_enabled(&uid).unwrap());
+
+        // 登录门：无码拒绝，正码放行
+        assert!(p.totp_check_login(&uid, None).is_err());
+        assert!(
+            p.totp_check_login(&uid, Some("000000")).is_err() || {
+                // 000000 可能恰在 ±1 步窗口内；容差语义下用确定错的方式再测
+                p.totp_check_login(&uid, Some("999999")).is_err()
+            }
+        );
+        p.totp_check_login(&uid, Some(&code)).unwrap();
+
+        // disable 需正码；之后无码放行
+        p.totp_disable(&uid, &code).unwrap();
+        assert!(!p.totp_enabled(&uid).unwrap());
+        p.totp_check_login(&uid, None).unwrap();
+    }
+
+    #[test]
+    fn totp_skew_rejects_old_step_codes() {
+        // ±1 步容差：90s 前（3 步外）的码必须被拒
+        let secret = totp_generate_secret();
+        let totp = totp_rs::TOTP::new(
+            totp_rs::Algorithm::SHA1,
+            6,
+            1,
+            30,
+            totp_rs::Secret::Encoded(secret.clone()).to_bytes().unwrap(),
+        )
+        .unwrap();
+        // 90 秒前 = 3 步外（skew=1 只容 ±30s），必须被拒
+        let old_code = totp.generate(
+            u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() - 90).unwrap(),
+        );
+        let cur_code = totp.generate_current().unwrap();
+        assert!(!totp_verify(&secret, &old_code), "3 步外必须拒绝");
+        assert!(totp_verify(&secret, &cur_code));
+    }
 
     #[test]
     fn argon2id_roundtrip_and_rejection() {
