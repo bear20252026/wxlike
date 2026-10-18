@@ -8,17 +8,19 @@
 
 | 交付 | 代码 | 测试 | 状态 |
 |---|---|---|---|
+| video 多分辨率阶梯（360/720/1080 + master playlist） | `crates/video/src/lib.rs` | 1（真实转码） | ✅ |
 | 直播会话控制面（开播授权/停播/状态） | `crates/platform/src/live.rs` | 9 | ✅ |
 | RTMP 推流凭据（HMAC 自包含、过期/篡改/停播即拒） | 同上 | 同上 | ✅ |
 | 观众计数与峰值 | 同上（`live_viewers`） | 同上 | ✅ |
 | 弹幕路由（只发在房观众，不落库、不占序列号） | 同上 | 同上 | ✅ |
 | 小程序包签名（ed25519）+ 防降级 + 权限白名单 | `crates/container/src/package.rs` | 7 | ✅ |
 
-**新增测试 16 项**（合同 P5 下限 15）。
+**新增测试 17 项**（合同 P5 下限 15）。
 
 ```bash
 cargo test -p wxlike-platform --test p5_live     # 9
 cargo test -p wxlike-container --test package    # 7
+cargo test -p wxlike-video -- --ignored          # 4（真实 ffmpeg 转码，含多档阶梯）
 ```
 
 ### 1.1 直播控制面
@@ -78,7 +80,7 @@ let granted = registry.install(&manifest_bytes, &sig)?;
 | Flutter Android/iOS + 鸿蒙（UniFFI 绑定） | ⛔ 未开始 | 本机无 Android SDK / Flutter / 鸿蒙工具链，无法产出可验证安装包；Rust 侧 API 面已稳定，绑定层可在有工具链的机器上一次性生成 |
 | Web 独立工程 | ⛔ 未开始 | 与桌面端共用 `api.ts` 契约，建议直接抽取共享包后建 Vite 工程 |
 | 直播媒体面（RTMP ingest + HLS 分发 + 连麦） | 🟡 控制面完成 | ingest 走外部 Xiu 进程、HLS 走静态分发；本仓库只提供授权/凭据/状态，不在进程内跑媒体服务器 |
-| video-service 多分辨率 | ⛔ 未开始 | 现为单档 720p 封顶；多档需改 `run_pipeline` 为梯次转码 + master playlist，并同步改分片路由与 4 个 `--ignored` 用例 |
+| video-service 多分辨率 | ✅ 已完成 | 360/720/1080 阶梯（只降不升）+ master playlist + 档位分片路由；真实 ffmpeg 用例 `ladder_produces_multiple_renditions` 验证 720p 源产出 360/720 两档 |
 | 小程序 M1–M4（逻辑层/Bridge/多引擎/沙箱） | 🟡 M5 签名层完成 | 逻辑层已有 Boa 宿主与 DPD1 装载；Wasmtime 沙箱未接 |
 | 多语言 / 数据导出 | ⛔ 未开始 | 数据导出建议随 P6 账号注销一起做（同一份 dump） |
 | APNs / 国内厂商推送通道 | ⛔ 未开始 | 需要厂商证书；适配器可先按 FCM 客户端形状写，证书由部署方注入 |
