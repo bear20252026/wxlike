@@ -12,9 +12,13 @@
 //!   dies mid-delivery loses the message.
 //! - `streams::RedisStreamsMq` (feature `redis`) — XADD/XREADGROUP/XACK with a
 //!   shared consumer group, plus XAUTOCLAIM for stale in-flight entries.
+//! - `nats_backend::NatsMq` (feature `nats`) — JetStream durable pull
+//!   consumers (at-least-once, server-side ack_wait redelivery) + KV routes.
 
 pub mod memory;
 
+#[cfg(feature = "nats")]
+pub mod nats_backend;
 #[cfg(feature = "redis")]
 pub mod redis_backend;
 #[cfg(feature = "redis")]
