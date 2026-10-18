@@ -2,8 +2,11 @@
 
 Rust 跨平台 IM（微信形态）骨架 + 本地复用研究容器。自研协议与实现，**不含任何腾讯代码进入分发物**。
 
-> **许可：GPL-3.0**（2026-10-16 起）。项目定位为研究实验，非商用——借鉴引用遵循
-> [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。研究定位下已解锁 GPL 生态借鉴
+> **许可：AGPL-3.0**（2026-10-18 起，原 GPL-3.0）。项目定位为研究实验，非商用——借鉴引用遵循
+> [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。AGPL 与 GPL-3.0 同族且**允许并入**：
+> GPL-3.0 代码（tweb 等）可直接用于本仓库；AGPL-3.0 代码（Element/Synapse/spreed/Signal）
+> 也可直接复制，合并后的作品整体为 AGPL-3.0。代价是本平台**对外提供网络服务时须向用户
+> 提供源码**（AGPL §13），这正是本项目"研究/内部测试"定位下不产生实际义务的原因
 > （Telegram 客户端交互范式、MTProto 分层设计等）。
 
 ## 架构
@@ -232,7 +235,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 [conv1] alice: directed just for bob           ← to=["bob"] 定向
 ```
 
-许可与移植声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（wxlike 本体 GPL-3.0；MQ 设计移植自 box-im MIT 设计，未含其 Java 代码）。
+许可与移植声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（wxlike 本体 **AGPL-3.0**；MQ 设计移植自 box-im MIT 设计，未含其 Java 代码）。
 
 ## 快速开始
 
@@ -450,7 +453,7 @@ P5 是 8 周量级，本轮先交付**不依赖移动端工具链**的两块，�
   （不变式 6）；入口路径 `../` 与非法版本号在清单校验阶段拒绝。
 
 - **消息索引（首次实际借用 Telegram 代码）**：`ui/src/vendor/tweb/slicedArray.ts`
-  复制自 tweb（GPL-3.0）的 `SlicedArray`，替换手写的 `Map + sort` 分页合并；
+  复制自 tweb（GPL-3.0，可并入 AGPL-3.0 作品）的 `SlicedArray`，替换手写的 `Map + sort` 分页合并；
   同源的 `ListenerSetter` 用于菜单外点关闭的监听器清理。适配与来源见文件头与
   `THIRD-PARTY-NOTICES.md`。
 

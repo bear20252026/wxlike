@@ -250,7 +250,7 @@ CREATE TABLE group_member_log (
 | Rocket.Chat | JS | https://github.com/RocketChat/Rocket.Chat | ✅ MIT（待核复核） | 私有化部署形态、频道/角色模型 | P3 频道权限 |
 | Mattermost | Go | https://github.com/mattermost/mattermost | ⚠️MIT 待核 | 企业级群管理、合规 | P6 管理后台 |
 | Element Web | TS | https://github.com/element-hq/element-web | ✅ Apache-2.0 | Matrix 客户端 E2EE 交互（密钥验证 UI） | P4 秘密聊天 |
-| Synapse | Python | https://github.com/element-hq/synapse | ⚠️ 已改 AGPL-3.0（按依赖政策模块级评审） | 联邦/房间模型 | 参考 |
+| Synapse | Python | https://github.com/element-hq/synapse | ✅ AGPL-3.0（与本项目同许可，可直接复用） | 联邦/房间模型 | 参考 |
 | Telegram Android | Java/Kotlin | https://github.com/DrKLO/Telegram | ✅ GPL-3.0 | 消息列表回收复用、弱网策略 | P2 虚拟列表 |
 | Telegram iOS | Swift | https://github.com/TelegramMessenger/Telegram-iOS | ✅ GPL-3.0 | 移动端内存管理 | P5 |
 | Telegram Desktop | C++/Qt | https://github.com/telegramdesktop/tdesktop | ✅ GPL-3.0 | 桌面网络层 | P2 |

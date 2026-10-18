@@ -151,7 +151,7 @@ container 现役引擎，纯 Rust 无 C 依赖，Test262 ≈94%。过渡期继�
 | Rocket.Chat | JS | https://github.com/RocketChat/Rocket.Chat | ✅ MIT（待核复核） | 📐 私有化部署、频道/角色 |
 | Mattermost | Go | https://github.com/mattermost/mattermost | ⚠️MIT 待核 | 📐 企业群管理、合规 |
 | Element Web | TS | https://github.com/element-hq/element-web | ✅ Apache-2.0 | 📐 E2EE 密钥验证交互 |
-| Synapse | Python | https://github.com/element-hq/synapse | ⚠️ 已改 AGPL-3.0（模块级评审） | 📐 联邦/房间模型 |
+| Synapse | Python | https://github.com/element-hq/synapse | ✅ AGPL-3.0（同许可，可直接复用） | 📐 联邦/房间模型 |
 | Telegram Android | Java/Kotlin | https://github.com/DrKLO/Telegram | ✅ GPL-3.0 | 📐 消息列表回收复用、弱网 |
 | Telegram iOS | Swift | https://github.com/TelegramMessenger/Telegram-iOS | ✅ GPL-3.0 | 📐 移动端内存管理 |
 | Telegram Desktop | C++/Qt | https://github.com/telegramdesktop/tdesktop | ✅ GPL-3.0 | 📐 桌面网络层 |
