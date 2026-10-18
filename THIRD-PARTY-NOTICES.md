@@ -58,7 +58,7 @@ https://github.com/bluexsx/box-im
 | Signal-Desktop / Signal-Android | AGPL-3.0 | 发送队列、附件分片、媒体压缩、通知聚合 |
 | Element Web | AGPL-3.0 | 设备验证 UI、房间列表虚拟化 |
 | Synapse | AGPL-3.0 | 事件 DAG、同步模型对照 |
-| Nextcloud Talk (spreed) | AGPL-3.0 | 群通话房间 UI 与管控 |
+| Nextcloud Talk (spreed) | AGPL-3.0 | 群通话房间 UI 与管控（**已浅克隆 `refs/spreed`**；`force-mute`/举手/锁门/录制的控制集与我们的 `rtc::room` + `/api/call/*` 对齐，未复制代码） |
 
 > **2026-10-18 起本项目自身为 AGPL-3.0**：AGPL-3.0 上游代码可直接复制，合并后作品
 > 仍为 AGPL-3.0（与我们的许可一致，不再有"传染"冲突）；MIT/Apache 依旧可直接复制。

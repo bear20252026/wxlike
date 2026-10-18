@@ -5723,6 +5723,7 @@ dependencies = [
  "wxlike-moderation",
  "wxlike-report",
  "wxlike-risk",
+ "wxlike-rtc",
 ]
 
 [[package]]

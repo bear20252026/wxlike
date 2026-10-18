@@ -100,7 +100,7 @@ pub struct LeaveOutcome {
 }
 
 /// 一次出口分配的结果（每个观众一份）。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct EgressPlan {
     /// 各订阅轨的目标码率（顺序 = 订阅顺序）。
     pub tracks: Vec<(TrackId, u64)>,
@@ -300,6 +300,21 @@ impl Room {
             Track::Video => p.video_muted = muted,
         }
         Ok(muted)
+    }
+
+    /// 全员静音/解除（**参照 Nextcloud Talk 的 force-mute**）：仅主持人/管理员。
+    /// 返回受影响人数；主持人与管理员也会被静音（自己再解除即可，语义更简单）。
+    pub fn mute_all(&mut self, actor: &str, track: Track, muted: bool) -> Result<usize> {
+        if !self.role_of(actor)?.can_moderate() {
+            return Err(RoomError::Forbidden);
+        }
+        for p in self.participants.values_mut() {
+            match track {
+                Track::Audio => p.audio_muted = muted,
+                Track::Video => p.video_muted = muted,
+            }
+        }
+        Ok(self.participants.len())
     }
 
     /// 踢人：主持人/管理员可踢；不能踢主持人；管理员不能踢管理员。
