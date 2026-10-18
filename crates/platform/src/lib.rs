@@ -18,6 +18,7 @@
 //! ```
 
 mod auth;
+mod call;
 mod communities;
 mod db;
 mod devices;
@@ -52,6 +53,7 @@ use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
 pub use crate::auth::{hash_password, random_hex, verify_password, Authed};
+pub use crate::call::CallRegistry;
 pub use crate::db::Db;
 pub use crate::devices::{DeviceReg, DeviceRow};
 pub use crate::error::{ApiError, PlatformError, Result};
@@ -195,6 +197,8 @@ pub struct Platform {
     risk: wxlike_risk::RiskEngine,
     /// P4 审核能力层（ADR-20 第二层）：模式可热切换。
     moderation: std::sync::Mutex<wxlike_moderation::Pipeline>,
+    /// P4/P5 通话房间注册表（进程内，重启即散）。
+    calls: CallRegistry,
 }
 
 impl Platform {
@@ -212,6 +216,7 @@ impl Platform {
             // an in-memory platform must not write into the working directory
             media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(temp_media_dir()))),
             message_store: Some(wxlike_message::MessageStore::open(None)?),
+            calls: CallRegistry::default(),
             risk: wxlike_risk::RiskEngine::with_defaults(),
             moderation: std::sync::Mutex::new(wxlike_moderation::Pipeline::new(
                 moderation_mode,
@@ -236,6 +241,7 @@ impl Platform {
                 media::default_media_dir(),
             ))),
             message_store: Some(wxlike_message::MessageStore::open(path)?),
+            calls: CallRegistry::default(),
             risk: wxlike_risk::RiskEngine::with_defaults(),
             moderation: std::sync::Mutex::new(wxlike_moderation::Pipeline::new(
                 moderation_mode,
@@ -389,6 +395,7 @@ impl Platform {
             .merge(report::routes())
             .merge(reconcile::routes())
             .merge(live::routes())
+            .merge(call::routes())
             .route(
                 "/api/audit/self",
                 get(

@@ -26,7 +26,7 @@
 | **Signal-Android** | https://github.com/signalapp/Signal-Android | Kotlin | **AGPL-3.0** ⚠️ | 会话状态机、媒体转码/压缩、通知聚合 → Flutter 端与推送聚合 | ❌ 未镜像（2.5 GB） |
 | **Element Web** | https://github.com/element-hq/element-web | TypeScript | **AGPL-3.0** ⚠️ | Matrix 客户端：房间列表虚拟化、E2EE 设备验证 UI、sliding sync → 我们的会话列表与设备页 | ✅ **`refs/element-web`** |
 | **Synapse** | https://github.com/element-hq/synapse | Python | **AGPL-3.0** ⚠️ | 事件 DAG、房间状态解析、联邦 → 读扩散/多端同步的对照模型 | ❌ 未镜像（629 MB） |
-| **Nextcloud Talk** | https://github.com/nextcloud/spreed | JS + PHP | **AGPL-3.0** ⚠️ | **群通话房间 UI**（参与者/静音/录制/举手）、通话信令 → 我们的 `rtc::room` 与通话页 | ❌ 未镜像（646 MB） |
+| **Nextcloud Talk** | https://github.com/nextcloud/spreed | JS + PHP | **AGPL-3.0** ⚠️ | **群通话房间 UI**（参与者/静音/录制/举手/force-mute）、通话信令 → 我们的 `rtc::room` 与通话页 | ✅ **`refs/spreed`**（84 MB 浅克隆） |
 
 ### 按缺口查表（先查这里，再查 Telegram）
 

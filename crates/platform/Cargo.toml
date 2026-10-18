@@ -10,6 +10,8 @@ wxlike-message = { path = "../message" }
 wxlike-risk = { path = "../risk" }
 wxlike-moderation = { path = "../moderation" }
 wxlike-report = { path = "../report" }
+# P4/P5 通话房间状态机（rtc::room）与出口码率分配（rtc::sfu）
+wxlike-rtc = { path = "../rtc" }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

@@ -15,6 +15,7 @@
 | 弹幕路由（只发在房观众，不落库、不占序列号） | 同上 | 同上 | ✅ |
 | 小程序包签名（ed25519）+ 防降级 + 权限白名单 | `crates/container/src/package.rs` | 7 | ✅ |
 | 消息索引：**借用 tweb `SlicedArray`**（历史分页合并 + 实时插入） | `ui/src/vendor/tweb/slicedArray.ts` · `ui/src/msgIndex.ts` | 7（node 断言） | ✅ |
+| **通话房间 HTTP 控制面**（开播/进出/静音/全员静音/踢人/锁门/录制/移交/举手/出口分配） | `crates/platform/src/call.rs` · `crates/rtc/src/{room,sfu}.rs` | 13 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
