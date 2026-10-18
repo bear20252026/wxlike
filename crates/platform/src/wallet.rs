@@ -315,7 +315,8 @@ impl Platform {
         }
         let id = crate::auth::random_hex(8);
         let conv_id = match conv_id {
-            Some(c) if !c.is_empty() => validate::id(c)?.to_string(),
+            // 直聊会话 id 含 `~`，必须走 conv 校验（id 校验会拒真会话——存量 bug）
+            Some(c) if !c.is_empty() => validate::conv(c)?.to_string(),
             _ => id.clone(),
         };
         let now = wxlike_core::types::now_ms() as i64;
@@ -449,7 +450,41 @@ impl Platform {
         )?;
         Self::log(&tx, &by, kind::REDPACKET_IN, share, "", &id, "")?;
         tx.commit()?;
+        drop(c);
+
+        // P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片
+        // （不占时间线、不占序列号——不变式 3）。发红包时未带 conv 的包
+        // 没有卡片可回写，跳过。
+        if let Some(conv) = self.redpacket_conv(&id)? {
+            if let Some(store) = self.message_store.as_ref() {
+                let _ = store.append_ephemeral(
+                    (wxlike_message::OwnerType::Direct, &conv),
+                    &by,
+                    "wallet.redpacket.claim",
+                    &format!("claim-{id}-{}", crate::auth::random_hex(4)),
+                    &id,
+                    &serde_json::json!({
+                        "claimer": by, "amount": share,
+                        "finished": status_now_finished(&id, claimed_total + share, count),
+                    })
+                    .to_string(),
+                );
+            }
+        }
         Ok(share)
+    }
+
+    /// 红包卡片所在会话（发红包时可带 conv_id；未带则无卡片）。
+    fn redpacket_conv(&self, id: &str) -> Result<Option<String>> {
+        let c = self.db().lock();
+        let conv: Option<String> = c
+            .query_row(
+                "SELECT conv_id FROM redpackets WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(conv.filter(|s| !s.is_empty()))
     }
 
     /// Refunds whatever is unclaimed on expired packets. Idempotent: the status
@@ -661,4 +696,55 @@ async fn ledger(
         // a full page means there may be more; anything less is the tail
         "has_more": rows.len() as i64 == limit.clamp(1, 200),
     })))
+}
+
+/// 领取后是否已领完（纯函数便于测试）。
+fn status_now_finished(_id: &str, claimed_total: i64, count: i64) -> bool {
+    claimed_total >= count
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use crate::Platform;
+
+    #[test]
+    fn claim_writes_ephemeral_card_update() {
+        let p = Platform::in_memory().unwrap();
+        let a = p.register("alice", "pw").unwrap();
+        let b = p.register("bob", "pw").unwrap();
+        p.fund(&a, 10_000, "test").unwrap();
+
+        // 带会话发红包 → bob 领取 → ephemeral 回写进该会话
+        let rp = p.create_redpacket(&a, 300, 2, "包", Some("d-a~b")).unwrap();
+        let _ = p.claim_redpacket(&rp, &b).unwrap();
+
+        let store = p.message_store.as_ref().unwrap();
+        let (updates, _) = store
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .unwrap();
+        assert_eq!(updates.len(), 1, "claim 写了一条卡片更新");
+        assert_eq!(updates[0].target_msg_id, rp);
+        assert!(updates[0].payload.contains(&b));
+        // 频道主时间线不受影响（不变式 3）
+        let (timeline, _) = store
+            .fetch((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .unwrap();
+        assert!(timeline.is_empty(), "ephemeral 不占时间线");
+    }
+
+    #[test]
+    fn claim_without_conv_writes_no_card() {
+        let p = Platform::in_memory().unwrap();
+        let a = p.register("alice", "pw").unwrap();
+        let b = p.register("bob", "pw").unwrap();
+        p.fund(&a, 1_000, "test").unwrap();
+        let rp = p.create_redpacket(&a, 100, 1, "包", None).unwrap();
+        p.claim_redpacket(&rp, &b).unwrap();
+        // 无会话的包无卡片可回写——不 panic 即可（存储面无 ephemeral 行）
+        let store = p.message_store.as_ref().unwrap();
+        let (updates, _) = store
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .unwrap();
+        assert!(updates.is_empty());
+    }
 }

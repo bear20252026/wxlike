@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
+use serde::Deserialize;
 
 use crate::auth::{self, Authed};
 use crate::error::{ApiError, PlatformError, Result};
@@ -20,6 +21,9 @@ pub fn routes() -> Router<PlatformState> {
     Router::new()
         .route("/api/register", post(register))
         .route("/api/login", post(login))
+        .route("/api/2fa/enable", post(totp_enable))
+        .route("/api/2fa/confirm", post(totp_confirm))
+        .route("/api/2fa/disable", post(totp_disable))
         .route("/api/me", get(me))
         .route("/api/profile", put(update_profile))
         .route("/api/profile/{user_id}", get(public_profile))
@@ -30,6 +34,9 @@ pub fn routes() -> Router<PlatformState> {
 pub struct Credentials {
     pub name: String,
     pub password: String,
+    /// P4 2FA：启用 TOTP 后必填。
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -110,12 +117,14 @@ impl Platform {
 
     /// `Ok(None)` = unknown user or wrong password (callers render 401 without
     /// distinguishing the two, so accounts cannot be enumerated by timing).
+    /// P4：登录校验按 `pw_algo` 分派（pbkdf2 存量 / argon2id 新户），成功后
+    /// 透明升级到 argon2id（用户无感）。
     pub fn verify_credentials(&self, name: &str, password: &str) -> Result<Option<String>> {
         let name = validate::name(name)?;
-        let row: Option<(String, String, String, i64)> = {
+        let row: Option<(String, String, String, i64, String)> = {
             let c = self.db().lock();
             c.query_row(
-                "SELECT id, pw_salt, pw_hash, pw_rounds FROM users WHERE name = ?1",
+                "SELECT id, pw_salt, pw_hash, pw_rounds, pw_algo FROM users WHERE name = ?1",
                 params![name],
                 |r| {
                     Ok((
@@ -123,24 +132,36 @@ impl Platform {
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                         r.get::<_, i64>(3)?,
+                        r.get::<_, String>(4)?,
                     ))
                 },
             )
             .optional()?
         };
-        let Some((user_id, salt, hash, rounds)) = row else {
+        let Some((user_id, salt, hash, rounds, algo)) = row else {
             return Ok(None);
         };
-        let rounds = if rounds <= 0 {
-            auth::DEFAULT_ROUNDS
-        } else {
-            rounds as u32
+        let ok = match algo.as_str() {
+            "argon2id" => crate::security::verify_argon2id(password, &hash),
+            _ => {
+                let rounds = if rounds <= 0 {
+                    auth::DEFAULT_ROUNDS
+                } else {
+                    rounds as u32
+                };
+                auth::verify_password(password, &salt, &hash, rounds)?
+            }
         };
-        if auth::verify_password(password, &salt, &hash, rounds)? {
-            Ok(Some(user_id))
-        } else {
-            Ok(None)
+        if !ok {
+            return Ok(None);
         }
+        // 透明升级：老算法成功一次即重哈希（失败不阻断登录）
+        if algo != "argon2id" {
+            if let Err(err) = self.upgrade_password_to_argon2id(&user_id, password) {
+                tracing::warn!(user = %user_id, "argon2 upgrade failed: {err}");
+            }
+        }
+        Ok(Some(user_id))
     }
 
     pub fn profile_of(&self, user_id: &str) -> Result<Profile> {
@@ -217,6 +238,37 @@ async fn register(
     Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
 }
 
+async fn totp_enable(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let secret = platform.totp_enable(&authed.user_id)?;
+    Ok(Json(serde_json::json!({ "secret": secret })))
+}
+
+#[derive(Deserialize)]
+struct TotpCode {
+    code: String,
+}
+
+async fn totp_confirm(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Json(body): Json<TotpCode>,
+) -> std::result::Result<StatusCode, ApiError> {
+    platform.totp_confirm(&authed.user_id, &body.code)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn totp_disable(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Json(body): Json<TotpCode>,
+) -> std::result::Result<StatusCode, ApiError> {
+    platform.totp_disable(&authed.user_id, &body.code)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn login(
     State(platform): State<PlatformState>,
     Json(req): Json<Credentials>,
@@ -227,6 +279,7 @@ async fn login(
             platform.audit(&req.name, "user.login", "", "failed");
             ApiError::new(StatusCode::UNAUTHORIZED, "invalid credentials")
         })?;
+    platform.totp_check_login(&user_id, req.totp_code.as_deref())?;
     let token = platform.create_session(&user_id, platform.options().session_ttl_ms)?;
     platform.audit(&user_id, "user.login", &user_id, "ok");
     Ok((StatusCode::OK, Json(AuthReply { user_id, token })))

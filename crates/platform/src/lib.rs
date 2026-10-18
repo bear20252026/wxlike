@@ -31,6 +31,7 @@ mod media;
 mod moments;
 mod notification;
 mod relations;
+mod security;
 mod users;
 mod validate;
 mod wallet;
@@ -51,6 +52,7 @@ pub use crate::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
 pub use crate::groups_admin::GroupInvite;
 pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
 pub use crate::relations::{StrangerRequest, StrangerState};
+pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 

@@ -46,6 +46,7 @@ impl Db {
         db.migrate()?;
         db.migrate_friends_meta()?;
         db.migrate_groups_admin()?;
+        db.migrate_security_columns()?;
         Ok(db)
     }
 
@@ -54,14 +55,17 @@ impl Db {
         c.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS users (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL UNIQUE,
-                pw_salt     TEXT NOT NULL,
-                pw_hash     TEXT NOT NULL,
-                pw_rounds   INTEGER NOT NULL,
-                avatar      TEXT NOT NULL DEFAULT '',
-                signature   TEXT NOT NULL DEFAULT '',
-                created_at  INTEGER NOT NULL
+                id           TEXT PRIMARY KEY,
+                name         TEXT NOT NULL UNIQUE,
+                pw_salt      TEXT NOT NULL,
+                pw_hash      TEXT NOT NULL,
+                pw_rounds    INTEGER NOT NULL,
+                pw_algo      TEXT NOT NULL DEFAULT 'pbkdf2',
+                totp_secret  TEXT,
+                totp_enabled INTEGER NOT NULL DEFAULT 0,
+                avatar       TEXT NOT NULL DEFAULT '',
+                signature    TEXT NOT NULL DEFAULT '',
+                created_at   INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS sessions (
                 token       TEXT PRIMARY KEY,
@@ -361,6 +365,29 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, created_at);
             "#,
         )?;
+        Ok(())
+    }
+
+    /// P4 安全列（pw_algo/totp_*）：老库原地补列。
+    fn migrate_security_columns(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(users)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("pw_algo", "TEXT NOT NULL DEFAULT 'pbkdf2'"),
+            ("totp_secret", "TEXT"),
+            ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE users ADD COLUMN {col} {ddl};"))?;
+            }
+        }
         Ok(())
     }
 
