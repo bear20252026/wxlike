@@ -7136,6 +7136,7 @@ dependencies = [
  "wxlike-mq",
  "wxlike-net",
  "wxlike-platform",
+ "wxlike-rtc",
  "wxlike-server",
 ]
 

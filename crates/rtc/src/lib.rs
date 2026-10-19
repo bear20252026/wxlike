@@ -17,6 +17,7 @@
 /// running one is an ops decision, see docs).
 pub mod call;
 pub mod capture;
+pub mod host;
 pub mod ice;
 pub mod media;
 pub mod room;

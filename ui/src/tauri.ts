@@ -8,7 +8,12 @@ type Json = Record<string, unknown>;
 
 interface TauriBridge {
   core: { invoke: (cmd: string, args?: Json) => Promise<unknown> };
-  event: { listen: (event: string, handler: (e: { payload: unknown }) => void) => Promise<void> };
+  event: {
+    listen: (
+      event: string,
+      handler: (e: { payload: unknown }) => void,
+    ) => Promise<() => void>;
+  };
 }
 
 declare global {
@@ -27,6 +32,11 @@ export async function invoke<T = unknown>(cmd: string, args?: Json): Promise<T> 
   return bridge().core.invoke(cmd, args) as Promise<T>;
 }
 
-export function listen(event: string, handler: (payload: unknown) => void): Promise<void> {
-  return bridge().event.listen(event, (e) => handler(e.payload));
+/** 订阅事件，返回退订函数——离开页面必须调用，否则回调会打到已卸载的 DOM。 */
+export async function listen(
+  event: string,
+  handler: (payload: unknown) => void,
+): Promise<() => void> {
+  const un = await bridge().event.listen(event, (e) => handler(e.payload));
+  return typeof un === "function" ? un : () => {};
 }
