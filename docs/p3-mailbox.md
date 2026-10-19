@@ -50,6 +50,13 @@ channel:      hub → MessageStore::append(OwnerType::Channel) → 信箱
   注册表新增 `system`（群提示属于时间线，要计入未读）。
 * ✅ 端到端验收：`server/tests/mailbox_mirror.rs`（真 QUIC + 真 HTTP）——
   两条直聊 → 未读 2 → 读完 0；撤回后序列号不回退。
+* ✅ **步骤 3 第一刀：history 的顺序改由信箱决定**。
+  `MessageStore::fetch_before` 给出这一页的 `(seq, msg_id)`，
+  `Store::by_msg_ids` 按 id 取正文——信箱管顺序、归档管正文，两边都不丢。
+  客户端拿到的 `seq` 从此是**会话内**序列号（1,2,3…），与未读/同步同一套编号；
+  归档的全局 AUTOINCREMENT 不再泄露给客户端。
+  老数据（镜像之前写入的）没有信箱行 → 自动退回归档分页，历史不丢。
+  验收：`history_pages_by_mailbox_seq`（3 条 → seq 1,2,3；`before_seq=2` → 1 条）。
 
 ## 正确的下一步（按顺序）
 

@@ -415,6 +415,50 @@ impl MessageStore {
         Ok(c.last_insert_rowid())
     }
 
+    /// 倒序取一页：`before_seq` 之前的 `limit` 条（history 的翻页语义）。
+    ///
+    /// 返回 (升序 rows, next_before)：`next_before` 是这一页最老的 seq，
+    /// 下一页拿它继续往前翻；`None` = 已经到头。
+    ///
+    /// 为什么单独一个方法而不是给 `fetch` 加参数：两者的游标语义相反
+    /// （增量同步用 after，历史翻页用 before），混在一个签名里迟早传错。
+    pub fn fetch_before(
+        &self,
+        owner: (OwnerType, &str),
+        before_seq: u64,
+        limit: usize,
+    ) -> Result<(Vec<MailMessage>, Option<u64>)> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let limit = limit.clamp(1, 200);
+        let c = self.c();
+        let mut stmt = c.prepare(
+            "SELECT seq, msg_id, sender, type_id, payload, sent_at_ms, withdrawn
+               FROM mailbox
+              WHERE owner_type = ?1 AND owner_id = ?2 AND (?3 = 0 OR seq < ?3)
+              ORDER BY seq DESC LIMIT ?4",
+        )?;
+        let mut rows = stmt
+            .query_map(params![ot, oid, before_seq as i64, limit as i64], |r| {
+                Ok(MailMessage {
+                    seq: r.get::<_, i64>(0)? as u64,
+                    msg_id: r.get(1)?,
+                    sender: r.get(2)?,
+                    type_id: r.get(3)?,
+                    payload: r.get(4)?,
+                    sent_at_ms: r.get::<_, i64>(5)? as u64,
+                    withdrawn: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if rows.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        let next_before = rows[rows.len() - 1].seq;
+        let exhausted = rows.len() < limit;
+        rows.reverse();
+        Ok((rows, if exhausted { None } else { Some(next_before) }))
+    }
+
     /// 拉取属主某属主内 `after_seq` 之后的 timeline（升序、限量）。
     /// 返回 `next_after`：客户端持续翻页的游标；`None` = 已到头。
     pub fn fetch(
