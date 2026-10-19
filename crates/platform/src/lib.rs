@@ -33,6 +33,7 @@ mod media;
 mod moments;
 mod notification;
 pub mod perms;
+mod read;
 mod reconcile;
 mod recovery;
 mod relations;
@@ -406,6 +407,7 @@ impl Platform {
             .merge(sessions::routes())
             .merge(secret::routes())
             .merge(trust::routes())
+            .merge(read::routes())
             .merge(report::routes())
             .merge(reconcile::routes())
             .merge(live::routes())
