@@ -2398,6 +2398,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if 1.0.5",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "measure_time"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5771,11 +5781,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cpal",
+ "hmac 0.12.1",
+ "md-5",
  "nokhwa",
  "opus",
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha1",
  "str0m",
  "thiserror 2.0.21",
  "tokio",

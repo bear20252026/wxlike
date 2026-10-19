@@ -1,16 +1,15 @@
-//! NAT traversal configuration (WP-08a): STUN is built in as a tiny client,
-//! TURN is a configuration interface.
+//! NAT traversal configuration (WP-08a).
+//!
+//! * STUN: 内置一个极简客户端（本文件）。
+//! * TURN: 配置在这里解析，真正的分配/通道/续期实现在 [`crate::turn`]。
 //!
 //! * `WXLIKE_STUN_URL` — `stun:host:port` (default: Google's public STUN).
 //!   The host uses [`stun_bind`] to discover its server-reflexive address and
 //!   adds it as a candidate next to its host candidates.
 //! * `WXLIKE_TURN_URL` — `turn:host:port` plus `WXLIKE_TURN_USER` /
-//!   `WXLIKE_TURN_PASS`. str0m moves bytes sans-I/O, so a TURN
-//!   **allocation** (the socket relay) is host work; this module parses and
-//!   exposes the configuration, and the allocation itself is left to the
-//!   deployment (running coturn is an ops decision, not a library one).
-//!   Without TURN, same-segment connections work — that is the acceptance
-//!   environment the task book defines for offline verification.
+//!   `WXLIKE_TURN_PASS`。配了就走全程中继（见 `crate::turn` 与
+//!   `callrtc::Transport`）：跨 NAT 只有这条路能通。
+//!   没配时靠 host candidate，同网段可通——这是任务书定义的离线验收环境。
 
 use std::net::{SocketAddr, UdpSocket};
 

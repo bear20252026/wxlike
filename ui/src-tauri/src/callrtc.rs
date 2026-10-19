@@ -178,22 +178,8 @@ impl CallEngine {
     ) -> Result<String, String> {
         self.shutdown();
 
-        let socket = UdpSocket::bind(bind_addr()).map_err(|e| format!("绑定媒体端口失败: {e}"))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| format!("设置非阻塞失败: {e}"))?;
-        let local = socket.local_addr().map_err(|e| e.to_string())?;
-        // 绑 0.0.0.0 时不能把这个地址写进 SDP（对端不可达），换成本机网卡地址
-        let advertise = if local.ip().is_unspecified() {
-            SocketAddr::new(
-                IpAddr::V4(primary_ipv4().unwrap_or(Ipv4Addr::LOCALHOST)),
-                local.port(),
-            )
-        } else {
-            local
-        };
-
-        let mut host = CallHost::new(me, conv.clone(), advertise);
+        let transport = Transport::open()?;
+        let mut host = CallHost::new(me, conv.clone(), transport.local());
         let (call_id, effects) = host.start(&peer, video, true);
 
         let (tx, rx) = channel();
@@ -215,7 +201,7 @@ impl CallEngine {
         let handle = std::thread::Builder::new()
             .name("wxlike-call".into())
             .spawn(move || {
-                run(app, cfg, host, socket, advertise, rx, stop, status, effects);
+                run(app, cfg, host, transport, rx, stop, status, effects);
             })
             .map_err(|e| format!("启动通话线程失败: {e}"))?;
         *self.join.lock().unwrap() = Some(handle);
@@ -255,6 +241,99 @@ impl Drop for CallEngine {
     }
 }
 
+/// 媒体传输：要么直连（自带 UDP socket），要么全程走 TURN 中继。
+///
+/// 配了 `WXLIKE_TURN_URL` 就**只**用中继，并且 SDP 里只放中继地址。理由：
+/// host 候选在跨 NAT 时根本到不了对端，同时放两个会让 ICE 先试直连、失败后
+/// 再回退，白白多几秒"正在连接"；而"看起来有候选但打不通"是最难解释的故障。
+struct Transport {
+    /// 写进 SDP 的本端地址。
+    local: SocketAddr,
+    direct: Option<UdpSocket>,
+    turn: Option<wxlike_rtc::turn::TurnClient>,
+}
+
+impl Transport {
+    fn open() -> Result<Self, String> {
+        if let Some(cfg) = wxlike_rtc::ice::TurnConfig::from_env() {
+            let turn = wxlike_rtc::turn::TurnClient::allocate(&cfg)
+                .map_err(|e| format!("TURN 分配失败（检查 WXLIKE_TURN_* 与服务器可达性）: {e}"))?;
+            turn.set_read_timeout(Duration::from_millis(1));
+            let local = turn.relayed_addr();
+            eprintln!("[call] TURN 中继就绪：本端 {local} via {}", turn.server());
+            return Ok(Self {
+                local,
+                direct: None,
+                turn: Some(turn),
+            });
+        }
+        let socket = UdpSocket::bind(bind_addr()).map_err(|e| format!("绑定媒体端口失败: {e}"))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| format!("设置非阻塞失败: {e}"))?;
+        let raw = socket.local_addr().map_err(|e| e.to_string())?;
+        // 绑 0.0.0.0 时不能把这个地址写进 SDP（对端不可达），换成本机网卡地址
+        let local = if raw.ip().is_unspecified() {
+            SocketAddr::new(
+                IpAddr::V4(primary_ipv4().unwrap_or(Ipv4Addr::LOCALHOST)),
+                raw.port(),
+            )
+        } else {
+            raw
+        };
+        Ok(Self {
+            local,
+            direct: Some(socket),
+            turn: None,
+        })
+    }
+
+    fn local(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// 发一包。中继模式下首次给某对端发之前要绑通道（阻塞一个 RTT，只发生一次）。
+    fn send(&mut self, to: SocketAddr, bytes: &[u8]) {
+        if let Some(turn) = self.turn.as_mut() {
+            if !turn.has_channel(to) {
+                turn.set_read_timeout(Duration::from_secs(3));
+                let bound = turn.bind_channel(to);
+                turn.set_read_timeout(Duration::from_millis(1));
+                if let Err(err) = bound {
+                    eprintln!("[call] TURN 绑通道失败（{to}）: {err}");
+                    return;
+                }
+            }
+            let _ = turn.send(to, bytes);
+            return;
+        }
+        if let Some(sock) = &self.direct {
+            let _ = sock.send_to(bytes, to);
+        }
+    }
+
+    /// 收包并喂回宿主。中继模式下顺手续期分配。
+    fn poll(&mut self, host: &mut CallHost) -> Vec<Effect> {
+        let mut out = Vec::new();
+        let local = self.local;
+        if let Some(turn) = self.turn.as_mut() {
+            turn.maybe_refresh();
+            let mut buf = vec![0u8; 2048];
+            while let Some((peer, data)) = turn.recv(&mut buf) {
+                out.extend(host.handle_datagram(peer, local, &data));
+            }
+            return out;
+        }
+        if let Some(sock) = &self.direct {
+            let mut buf = [0u8; 2048];
+            while let Ok((n, from)) = sock.recv_from(&mut buf) {
+                out.extend(host.handle_datagram(from, local, &buf[..n]));
+            }
+        }
+        out
+    }
+}
+
 fn bind_addr() -> String {
     std::env::var("WXLIKE_MEDIA_BIND").unwrap_or_else(|_| "0.0.0.0:0".into())
 }
@@ -275,14 +354,12 @@ fn run(
     app: AppHandle,
     cfg: RelayCfg,
     mut host: CallHost,
-    socket: UdpSocket,
-    advertise: SocketAddr,
+    mut transport: Transport,
     rx: Receiver<Cmd>,
     stop: Arc<AtomicBool>,
     status: Arc<Mutex<EngineStatus>>,
     first: Vec<Effect>,
 ) {
-    let mut buf = vec![0u8; 2048];
     let mut last_poll = Instant::now() - Duration::from_secs(1);
     let conn = Connection::new(&cfg);
     let mut audio_frames = 0u64;
@@ -331,16 +408,8 @@ fn run(
         // 3. 推进时钟 + 媒体
         pending.extend(host.tick(Instant::now()));
 
-        // 4. 收 UDP
-        loop {
-            match socket.recv_from(&mut buf) {
-                Ok((n, from)) => {
-                    pending.extend(host.handle_datagram(from, advertise, &buf[..n]));
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
-            }
-        }
+        // 4. 收包（直连 socket 或 TURN 中继）
+        pending.extend(transport.poll(&mut host));
 
         // 5. 信令：每 300ms 拉一次
         if last_poll.elapsed() >= Duration::from_millis(300) {
@@ -364,9 +433,7 @@ fn run(
                         eprintln!("[call] 发送信令失败: {err}");
                     }
                 }
-                Effect::Transmit { to, bytes } => {
-                    let _ = socket.send_to(&bytes, to);
-                }
+                Effect::Transmit { to, bytes } => transport.send(to, &bytes),
                 Effect::Audio { payload, .. } => {
                     audio_frames += 1;
                     #[cfg(feature = "audio")]

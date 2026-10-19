@@ -29,6 +29,8 @@
 | **桌面端接线**：引擎线程（10ms 节拍）+ 中继收发 + `call://rtc` 事件 + 通话页按钮 | `ui/src-tauri/src/callrtc.rs` · `ui/src/callpage.ts` | tsc + esbuild | ✅ |
 | **真实声卡**：麦克风 → 48k 单声道 20ms 帧 → Opus → RTP；RTP → Opus → 扬声器（`--features audio`） | `crates/rtc/src/audio_io.rs` · `crates/rtc/src/capture.rs` | 需真机 | ✅ |
 | **DSP 小件**：有状态线性重采样（跨缓冲相位连续）、20ms 分帧、声道平均 | `crates/rtc/src/dsp.rs` | 8 | ✅ |
+| **TURN 客户端**：Allocate（401 挑战 + MESSAGE-INTEGRITY）、CreatePermission、ChannelBind、Refresh | `crates/rtc/src/turn.rs` | 6 | ✅ |
+| **中继路径**：对着最小 TURN 服务器双向转发媒体 | `crates/rtc/tests/turn_alloc.rs` | 2 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
@@ -191,3 +193,36 @@ CMake ≥ 4 会直接拒绝。`ui/src-tauri/.cargo/config.toml` 里固定了
 
 没有声卡时引擎不报错：`AudioLeg::start` 逐项降级（无麦克风就只收不发），
 通话照常建立，UI 上 ↑ 帧数停在 0——这个区分本身就是一个有用的诊断信号。
+
+## 跨 NAT：TURN
+
+`WXLIKE_TURN_URL=turn:host:3478` + `WXLIKE_TURN_USER` / `WXLIKE_TURN_PASS`
+一配，`callrtc::Transport` 就改走全程中继：
+
+```
+start() → TurnClient::allocate（401 挑战 → 带 MI 重发 → 拿到 relayed 地址）
+        → SDP 里只放这一个 candidate
+        → 每包 Effect::Transmit 都 ChannelData 包一层发给 TURN 服务器
+        → 回流从服务器来，解出 (peer, data) 再喂给 str0m
+```
+
+**为什么不"直连优先、失败再中继"**：同时放 host 和 relay 两个候选，ICE 会先
+试直连、等超时再回退，用户看到的是几秒钟的"正在连接"；而"有候选但打不通"
+是最难解释的一类故障。配了 TURN 就是明确表态"我要中继"，行为可预期。
+
+TURN 鉴权有两个极易写错的地方，测试专门守着：
+
+1. **HMAC 覆盖的头部里 length 必须已经算上 MESSAGE-INTEGRITY 那 24 字节**
+   （RFC 5389 §15.4）。写错的实现自签自验能过、真实服务器只会回 401——
+   `integrity_is_verifiable_by_receiver` 同时验证"对的 key 通过 / 错的 key 失败 /
+   改一字节失败"。
+2. **属性必须 4 字节对齐**。错一位，后面所有属性解析全乱。
+
+还有一个踩过的坑：**不能按首字节判断是不是 ChannelData**。裸数据的第一个字节
+完全可能落在 `0x40–0x7F`（正好是通道号高位），`"world"` 的 `'w'` 就是 `0x77`。
+真实 TURN 服务器按来源 socket 区分，测试里的服务器最初按首字节判断，结果
+反向路径静默丢包——这类 bug 在真机上表现为"单向没声音"，极难定位。
+
+未做：TCP/TLS 传输、Even-Port。不影响"能打通"，只影响极端网络下的成功率。
+部署侧仍需一台 coturn（`turnserver --lt-cred-mech --realm=... --user=user:pass`），
+这是运维决策，不进代码。
