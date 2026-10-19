@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 wxlike-core = { path = "../core" }
 wxlike-mq = { path = "../mq" }
+wxlike-message = { path = "../message" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 quinn = { workspace = true }

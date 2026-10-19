@@ -60,6 +60,8 @@ pub trait OfflinePush: Send + Sync + 'static {
 pub struct MqHubOptions {
     pub offline: Arc<dyn OfflineStore>,
     pub storage: Option<Arc<Store>>,
+    /// 见 [`HubState::mailbox`]。
+    pub mailbox: Option<Arc<wxlike_message::MessageStore>>,
     pub dedup_cap: usize,
     /// Group membership source (WP-04). Without it a `conv_id` is never treated
     /// as a group, so group messages would fall back to plain broadcast.
@@ -83,6 +85,7 @@ impl Default for MqHubOptions {
         Self {
             offline: MemoryOffline::new(500),
             storage: None,
+            mailbox: None,
             dedup_cap: DEFAULT_DEDUP_CAP,
             membership: None,
             reclaim_idle_ms: None,
@@ -132,6 +135,9 @@ struct HubState {
     router: MqRouter,
     offline: Arc<dyn OfflineStore>,
     storage: Option<Arc<Store>>,
+    /// P3 读扩散信箱：内容帧除了落 `Store`（归档/扇出），也镜像进信箱，
+    /// 未读与多端同步才有统一真相。`None` = 不镜像（老部署/纯路由测试）。
+    mailbox: Option<Arc<wxlike_message::MessageStore>>,
     seen: Arc<tokio::sync::Mutex<MsgIdLru>>,
     reclaim_idle_ms: Option<u64>,
     membership: Option<Arc<dyn crate::membership::Membership>>,
@@ -275,6 +281,7 @@ pub async fn run_mq_hub_with(
         router,
         offline: options.offline.clone(),
         storage: options.storage.clone(),
+        mailbox: options.mailbox.clone(),
         seen: Arc::new(Mutex::new(MsgIdLru::new(options.dedup_cap))),
         reclaim_idle_ms: options.reclaim_idle_ms,
         membership: options.membership.clone(),
@@ -626,6 +633,15 @@ async fn handle_inbound(
         // Only effective when the store accepts it: an unknown id or a recall
         // of someone else's message is dropped before it can reach peers, so a
         // forged recall leaves no trace at all (WP-03 A3).
+        // 信箱里的那份也要撤（时间线与未读都以它为准）
+        if let (Some(mailbox), Some(target)) = (&state.mailbox, env.refers_to()) {
+            let owner = if env.conv_id.starts_with("d-") {
+                wxlike_message::OwnerType::Direct
+            } else {
+                wxlike_message::OwnerType::Group
+            };
+            let _ = mailbox.withdraw((owner, &env.conv_id), &hex::encode(target), &env.sender);
+        }
         let permitted = match (&state.storage, env.refers_to()) {
             (Some(store), Some(target)) => store.withdraw(&target, &env.sender)?,
             // no store on this hub: forward, peers apply it to their own copies
@@ -648,6 +664,28 @@ async fn handle_inbound(
         if let Some(store) = &state.storage {
             if store.append(&env, false)?.is_none() {
                 return Ok(()); // already persisted (e.g. hub restart)
+            }
+        }
+        // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
+        // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。
+        if let Some(mailbox) = &state.mailbox {
+            if let Some((type_id, payload)) = wxlike_message::mirror_of(&env) {
+                let owner = if env.conv_id.starts_with("d-") {
+                    wxlike_message::OwnerType::Direct
+                } else {
+                    wxlike_message::OwnerType::Group
+                };
+                let msg_id = hex::encode(env.msg_id);
+                if let Err(err) = mailbox.append(
+                    (owner, &env.conv_id),
+                    &env.sender,
+                    &type_id,
+                    &msg_id,
+                    &payload,
+                ) {
+                    // 镜像失败不该阻断投递：归档已成功，用户仍能收到消息
+                    eprintln!("[mq-hub] mailbox mirror failed: {err}");
+                }
             }
         }
     }

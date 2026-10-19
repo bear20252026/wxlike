@@ -11,6 +11,7 @@ path = "src/main.rs"
 wxlike-net = { path = "../crates/net" }
 wxlike-mq = { path = "../crates/mq" }
 wxlike-platform = { path = "../crates/platform" }
+wxlike-message = { path = "../crates/message" }
 wxlike-risk = { path = "../crates/risk" }
 wxlike-moderation = { path = "../crates/moderation" }
 wxlike-report = { path = "../crates/report" }
