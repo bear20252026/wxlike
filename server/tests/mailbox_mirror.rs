@@ -169,3 +169,58 @@ async fn recall_withdraws_from_the_mailbox_too() {
     let u = unread(&base, &conv, &tb);
     assert_eq!(u["head_seq"], 1, "序列号不回退：{u}");
 }
+
+/// P3 步骤 3 的关键一步：**history 的顺序由信箱决定**。
+///
+/// 客户端拿到的 `seq` 必须是会话内序列号（1,2,3…），而不是归档表的全局
+/// AUTOINCREMENT——否则前端翻页游标与未读/同步用的编号是两套，永远对不上。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_pages_by_mailbox_seq() {
+    let stack = start_stack(opts("history")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+    befriend(&base, &ta, &bob, &tb);
+    let conv = format!("d-{alice}~{bob}");
+
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+        .await
+        .unwrap();
+    let _bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    for i in 0..3 {
+        let env = Envelope::direct(&conv, alice.clone(), vec![bob.clone()], 0, format!("m{i}"));
+        alice_c.send(&env).await.expect("send");
+    }
+    assert_eq!(wait_unread(&base, &conv, &tb, 3)["unread"], 3);
+
+    let page: Value = ureq::get(&format!("{base}/api/history/{conv}?limit=50"))
+        .set("Authorization", &format!("Bearer {tb}"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let msgs = page["messages"].as_array().expect("messages");
+    assert_eq!(msgs.len(), 3, "{page}");
+    let seqs: Vec<i64> = msgs.iter().map(|m| m["seq"].as_i64().unwrap()).collect();
+    assert_eq!(
+        seqs,
+        vec![1, 2, 3],
+        "客户端看到的应是会话内序列号，不是全局 seq：{page}"
+    );
+    assert_eq!(msgs[0]["text"], "m0", "{page}");
+
+    // 往前翻一页：before_seq 也是信箱序列号
+    let page: Value = ureq::get(&format!("{base}/api/history/{conv}?before_seq=2"))
+        .set("Authorization", &format!("Bearer {tb}"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let msgs = page["messages"].as_array().expect("messages");
+    assert_eq!(msgs.len(), 1, "before_seq=2 之前只有第 1 条：{page}");
+    assert_eq!(msgs[0]["seq"], 1, "{page}");
+}

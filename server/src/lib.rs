@@ -29,6 +29,8 @@ use wxlike_platform::{Authed, Platform, PlatformState};
 pub struct HistoryDeps {
     pub platform: PlatformState,
     pub store: Arc<Store>,
+    /// P3：排序与翻页游标以信箱为准（归档只提供正文）。
+    pub mailbox: Arc<wxlike_message::MessageStore>,
     /// P3 ADR-22: read-only Tantivy replica over the mailbox (a projection —
     /// visibility is always re-checked against the store; the writer lives in
     /// the background indexer thread).
@@ -220,6 +222,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let deps = Arc::new(HistoryDeps {
         platform: platform.clone(),
         store: store.clone(),
+        mailbox: mailbox.clone(),
         search: search.clone(),
     });
     let app = Router::new()
@@ -414,10 +417,15 @@ pub fn allowed_convs(platform: &Platform, store: &Store, user_id: &str) -> Vec<S
 /// One history/search row in the wire shape the UI renders (mirrors the hub
 /// event payload so the client maps both the same way).
 pub fn message_json(row: &StoredMessage) -> serde_json::Value {
+    message_json_with_seq(row, row.seq)
+}
+
+/// 同上，但用调用方给的序列号（history 用信箱序列号，search 用归档 seq）。
+pub fn message_json_with_seq(row: &StoredMessage, seq: i64) -> serde_json::Value {
     let env = &row.envelope;
     let mut v = serde_json::json!({
         "conv_id": env.conv_id,
-        "seq": row.seq,
+        "seq": seq,
         "sender": env.sender,
         "to": env.to,
         "msg_id": hex(env.msg_id),
@@ -496,11 +504,50 @@ async fn history_page(
         return Err((StatusCode::FORBIDDEN, "not your conversation".into()));
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let (rows, next) = deps
-        .store
-        .page_messages(&conv_id, q.before_seq.unwrap_or(0), limit)
+    let before = q.before_seq.unwrap_or(0);
+    let owner = deps
+        .platform
+        .owner_kind_of(&conv_id)
+        .unwrap_or(wxlike_message::OwnerType::Group);
+
+    // P3：**信箱决定顺序**，归档只提供正文。
+    // 这样翻页游标是会话内序列号（1,2,3…），与未读/同步用的是同一套编号；
+    // 归档的全局 seq 不再泄露给客户端。
+    let (page, next) = deps
+        .mailbox
+        .fetch_before((owner, &conv_id), before.max(0) as u64, limit)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let messages: Vec<_> = rows.iter().map(message_json).collect();
+
+    if page.is_empty() {
+        // 老数据（镜像之前写入的）没有信箱行：退回归档分页，保证历史不丢
+        let (rows, next) = deps
+            .store
+            .page_messages(&conv_id, before, limit)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let messages: Vec<_> = rows.iter().map(message_json).collect();
+        return Ok(Json(serde_json::json!({
+            "conv_id": conv_id,
+            "messages": messages,
+            "next_before_seq": next,
+        })));
+    }
+
+    let ids: Vec<Vec<u8>> = page
+        .iter()
+        .filter_map(|m| hex::decode(&m.msg_id).ok())
+        .collect();
+    let bodies = deps
+        .store
+        .by_msg_ids(&ids)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let messages: Vec<_> = page
+        .iter()
+        .filter_map(|m| {
+            let id = hex::decode(&m.msg_id).ok()?;
+            let row = bodies.get(&id)?;
+            Some(message_json_with_seq(row, m.seq as i64))
+        })
+        .collect();
     Ok(Json(serde_json::json!({
         "conv_id": conv_id,
         "messages": messages,

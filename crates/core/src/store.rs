@@ -262,6 +262,31 @@ impl Store {
         Ok((rows, if exhausted { None } else { Some(next_before) }))
     }
 
+    /// 按 msg_id 批量取归档行（信箱只存 id，正文还在归档里）。
+    ///
+    /// 信箱是**排序与未读**的真相，归档是**正文**的真相；history 先问信箱
+    /// 要这一页有哪些 id、按什么顺序，再来这里取正文——这样翻页游标换成
+    /// 信箱序列号，而正文仍然无损。
+    pub fn by_msg_ids(
+        &self,
+        ids: &[Vec<u8>],
+    ) -> anyhow::Result<std::collections::HashMap<Vec<u8>, StoredMessage>> {
+        let mut out = std::collections::HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let c = self.c();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE msg_id = ?1"
+        ))?;
+        for id in ids {
+            if let Ok(row) = stmt.query_row(params![id], row_to_message) {
+                out.insert(id.clone(), row);
+            }
+        }
+        Ok(out)
+    }
+
     /// Substring search over stored messages, restricted to the
     /// conversations in `conv_filter` (empty filter = no result: callers pass
     /// the conversations the requesting user is allowed to see).
