@@ -542,7 +542,7 @@ async fn handle_inbound(
     // 2.5 P3 delivery policy (blocklist / mute / stranger gate) — content and
     // typing frames only; receipts, recalls and system (Notice) frames are
     // exempt. Dropped frames are not persisted, parked or fanned out.
-    let env = if let Some(policy) = &state.policy {
+    let mut env = if let Some(policy) = &state.policy {
         if !env.is_recall()
             && env.receipt.is_none()
             && !matches!(env.body, wxlike_core::MsgBody::Notice(_))
@@ -669,6 +669,11 @@ async fn handle_inbound(
         }
         // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
         // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。
+        //
+        // 顺带把**信箱序列号**写回 envelope：扇出到每个收件人的帧都带同一个
+        // 会话内序号（1,2,3…），客户端因此有了服务端权威的排序，与未读、
+        // ack、sync_plan 用的是同一套编号。之前 seq 是发送方填的（通常 0），
+        // 客户端只能按到达顺序排——多端之间会不一致。
         if let Some(mailbox) = &state.mailbox {
             if let Some((type_id, payload)) = wxlike_message::mirror_of(&env) {
                 let owner = if env.conv_id.starts_with("d-") {
@@ -677,15 +682,22 @@ async fn handle_inbound(
                     wxlike_message::OwnerType::Group
                 };
                 let msg_id = hex::encode(env.msg_id);
-                if let Err(err) = mailbox.append(
+                match mailbox.append(
                     (owner, &env.conv_id),
                     &env.sender,
                     &type_id,
                     &msg_id,
                     &payload,
                 ) {
+                    Ok(Some(seq)) => env.seq = seq,
+                    // 重复 msg_id：信箱已有这一条，沿用它的序号
+                    Ok(None) => {
+                        if let Ok(seq) = mailbox.head_seq((owner, &env.conv_id)) {
+                            env.seq = seq;
+                        }
+                    }
                     // 镜像失败不该阻断投递：归档已成功，用户仍能收到消息
-                    eprintln!("[mq-hub] mailbox mirror failed: {err}");
+                    Err(err) => eprintln!("[mq-hub] mailbox mirror failed: {err}"),
                 }
             }
         }

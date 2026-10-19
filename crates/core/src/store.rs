@@ -10,8 +10,9 @@
 //!   silently instead of being stored twice;
 //! * **recall** — the target row is flagged `withdrawn` and its body is
 //!   overwritten with the placeholder, so the original text cannot be read back;
-//! * **multi-device sync** — `device_cursor` remembers how far each device has
-//!   seen each conversation, so `sync_since` returns only the delta.
+//! * **多端同步**：已移出本 crate。游标与增量由 `wxlike_message` 的信箱
+//!   （`head_seq` / `ack` / `changes` / `sync_plan`）承担，这里不再保存
+//!   "某台设备看到哪了"——两套游标是 P3 收尾要消除的平行机制。
 //!
 //! Legacy databases are upgraded in place by [`Store::open`]: missing columns
 //! are added, nothing is rewritten.
@@ -85,13 +86,6 @@ impl Store {
                 FOREIGN KEY(conv_id) REFERENCES conversations(id)
             );
             CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, seq);
-            CREATE TABLE IF NOT EXISTS device_cursor (
-                device_id  TEXT NOT NULL,
-                conv_id    TEXT NOT NULL,
-                last_seq   INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (device_id, conv_id)
-            );
             "#,
         )?;
         let store = Self {
@@ -408,73 +402,6 @@ impl Store {
             .optional()?
             .unwrap_or(0)
             != 0)
-    }
-
-    /// Messages in `conv_id` this device has not received yet. The cursor then
-    /// advances to the last row returned.
-    pub fn sync_since(&self, device_id: &str, conv_id: &str) -> anyhow::Result<Vec<StoredMessage>> {
-        let (rows, last) = {
-            let cursor = self.device_cursor(device_id, conv_id)?;
-            let c = self.c();
-            let mut stmt = c.prepare(&format!(
-                "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conv_id = ?1 AND seq > ?2 ORDER BY seq"
-            ))?;
-            let rows = stmt
-                .query_map(params![conv_id, cursor], row_to_message)?
-                .collect::<Result<Vec<_>, _>>()?;
-            let last = rows.last().map(|r| r.seq);
-            (rows, last)
-        };
-        if let Some(seq) = last {
-            self.set_device_cursor(device_id, conv_id, seq)?;
-        }
-        Ok(rows)
-    }
-
-    pub fn device_cursor(&self, device_id: &str, conv_id: &str) -> anyhow::Result<i64> {
-        Ok(self
-            .c()
-            .query_row(
-                "SELECT last_seq FROM device_cursor WHERE device_id = ?1 AND conv_id = ?2",
-                params![device_id, conv_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?
-            .unwrap_or(0))
-    }
-
-    pub fn set_device_cursor(
-        &self,
-        device_id: &str,
-        conv_id: &str,
-        last_seq: i64,
-    ) -> anyhow::Result<()> {
-        self.c().execute(
-            "INSERT INTO device_cursor(device_id, conv_id, last_seq, updated_at) VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(device_id, conv_id) DO UPDATE SET last_seq = excluded.last_seq, updated_at = excluded.updated_at",
-            params![device_id, conv_id, last_seq, crate::types::now_ms() as i64],
-        )?;
-        Ok(())
-    }
-
-    /// Records that a device saw this message. Receipts and legacy (zero-id)
-    /// envelopes are ignored, so an ack can never corrupt a cursor.
-    pub fn note_seen(&self, device_id: &str, env: &Envelope) -> anyhow::Result<()> {
-        if env.receipt.is_some() || env.msg_id == NO_MSG_ID {
-            return Ok(());
-        }
-        let seq: Option<i64> = self
-            .c()
-            .query_row(
-                "SELECT seq FROM messages WHERE msg_id = ?1",
-                params![env.msg_id.as_slice()],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?;
-        match seq {
-            Some(seq) => self.set_device_cursor(device_id, &env.conv_id, seq),
-            None => Ok(()),
-        }
     }
 
     pub fn list_conversations(&self) -> anyhow::Result<Vec<Conversation>> {

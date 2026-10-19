@@ -224,3 +224,48 @@ async fn history_pages_by_mailbox_seq() {
     assert_eq!(msgs.len(), 1, "before_seq=2 之前只有第 1 条：{page}");
     assert_eq!(msgs[0]["seq"], 1, "{page}");
 }
+
+/// 扇出到客户端的帧必须带**信箱序列号**（1,2,3…），不是发送方填的 0。
+///
+/// 这是"顺序权威"的最后一环：HTTP 历史、未读、同步都用信箱序列号，
+/// 如果实时帧还是 0，客户端只能按到达顺序排，多端之间就会不一致。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fanout_carries_mailbox_seq() {
+    let stack = start_stack(opts("fanout-seq")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+    befriend(&base, &ta, &bob, &tb);
+    let conv = format!("d-{alice}~{bob}");
+
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+        .await
+        .unwrap();
+    let bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    for text in ["first", "second"] {
+        let env = Envelope::direct(&conv, alice.clone(), vec![bob.clone()], 0, text);
+        alice_c.send(&env).await.expect("send");
+    }
+
+    let mut got: Vec<(u64, String)> = Vec::new();
+    while got.len() < 2 {
+        let env = tokio::time::timeout(Duration::from_secs(5), bob_c.next_envelope())
+            .await
+            .expect("等不到帧")
+            .expect("读帧失败");
+        if let wxlike_core::MsgBody::Text(t) = &env.body {
+            if env.conv_id == conv {
+                got.push((env.seq, t.clone()));
+            }
+        }
+    }
+    assert_eq!(
+        got,
+        vec![(1, "first".to_string()), (2, "second".to_string())],
+        "实时帧应带信箱序列号"
+    );
+}
