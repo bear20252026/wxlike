@@ -231,8 +231,17 @@ TURN 鉴权有两个极易写错的地方，测试专门守着：
 ## 多方通话：mesh，以及踩到的一个真 bug
 
 `CallHost::start_many` 对每个对端开一条独立 `MediaSession`，共用同一个 socket
-（`CallManager` 本来就按 call_id 存多通电话）。4 人以内上行完全够
-（3 路 × ~40 kbps Opus），再多人必须 SFU——UI 上超过 4 人会明确提示而不是假装能用。
+（`CallManager` 本来就按 call_id 存多通电话）。
+
+**上限不是拍脑袋定的**，照 Nextcloud Talk 的 `docs/scalability.md`：mesh 的带宽是
+`单流码率 × (人数 − 1)`。视频 1 Mbps，音频约 50 kbps——所以音频-only 的 mesh
+在 8 人时每人约 350 kbps 上行，完全可接受；Talk 自己的说法是音频-only 到
+20 人"可能可行"，真正的瓶颈是浏览器解码与信令负载。我们是桌面端、且目前只有
+音频，UI 定 8 人为提示线，超过就明说需要 SFU，而不是假装能用。
+
+（Talk 超过这个量级用 HPB——一台 Janus 构成的 SFU。我们若要写 SFU，
+`refs/atm0s-media-server` 是唯一同栈参考：Rust + str0m，分层为
+`transport_webrtc` / `media_core` / `media_connector` / `media_runner`。）
 
 **这个测试抓到一个一对一时永远看不见的 bug**：原来 `handle_datagram` 把每个
 入向包喂给**所有**在进行的会话。一对一时只有一个会话，所以没问题；多人时
