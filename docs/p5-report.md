@@ -289,29 +289,3 @@ SFU 永远 answerer（客户端 offer，服务端 answer，候选直接写在 SD
 * 客户端：把 `callrtc::Transport` 从"直连/中继"扩成"直连/中继/SFU"，
   连上 SFU 后只保留一条会话，不再按人数开 N 条
 * 房间与节点的对应关系：哪个房间落在哪个 SFU 节点（单节点时是常量）
-
-## P3 起步：未读数与已读游标（`crates/platform/src/read.rs`）
-
-参照 open-im-server 的会话模型（`refs/open-im-server/pkg/common/storage/model/conversation.go`：
-每个 `(owner, conversation)` 一行 `max_seq` / `has_read_seq`，未读是两者之差，
-**不为每条消息写已读标记**）。
-
-**一处必须偏离参考**：它的 `max_seq` 是每会话序列号，我们现在的
-`messages.seq` 是**全局** AUTOINCREMENT，不同会话交错增长——所以不能做差值，
-未读必须是 `COUNT(*) WHERE conv_id = ? AND seq > read_seq`（区间计数走索引）。
-等 message-service 建好每会话序列号，再换回差值。
-
-三条硬性质，都有测试：
-
-1. **不串会话**：交错发 a,b,a,b,a，a 的未读是 3 不是 5；
-2. **游标只前进**：第二台设备报旧游标不会让未读反弹；
-3. **不越权**：别人的会话 404（不是 403——不泄露"这个会话存在"）。
-
-两个踩过的坑：
-
-* `Option<Json<T>>` 处理不了**空 body**（只处理"没有 Content-Type"），
-  上报已读时 `POST` 空 body 会 400；改成 `Bytes` 手动判空。
-* `Platform` 的 DB 是**非重入** Mutex，在持锁分支里调另一个会加锁的方法
-  直接死锁（测试跑了 20 分钟才发现）。锁的作用域必须收紧。
-* Platform 可能在没有 `messages` 表的库上单独使用（纯控制面测试），
-  这时未读按 0 算而不是 500。

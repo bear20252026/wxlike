@@ -200,13 +200,6 @@ impl Db {
         let c = self.lock();
         c.execute_batch(
             r#"
-            CREATE TABLE IF NOT EXISTS read_cursor (
-                user_id    TEXT NOT NULL,
-                conv_id    TEXT NOT NULL,
-                read_seq   INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY(user_id, conv_id)
-            );
             CREATE TABLE IF NOT EXISTS users (
                 id           TEXT PRIMARY KEY,
                 name         TEXT NOT NULL UNIQUE,
