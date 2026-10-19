@@ -615,7 +615,7 @@ CREATE TABLE group_member_log (
 
 | 项 | 现状 | 交付 |
 |---|---|---|
-| 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署 | ❌ | 发布链 |
+| 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署 | ⚠️ **原生部署已可用**（macOS launchd / Linux systemd / Docker，见 `deploy/`）；安装包、TLS 反代、FCM 未做 | 发布链 |
 | adminx 管理后台（RBAC/MFA/审计检索/工单/看板） | ❌ | 运营面板 |
 | PG 迁移+分片 · 存储加密 · Bot+开放 API/Webhook · SSO 预留 · 无障碍 · k8s · 备份 · SLO | ❌ | 规模化 |
 

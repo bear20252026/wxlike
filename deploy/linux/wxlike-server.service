@@ -1,0 +1,31 @@
+[Unit]
+Description=wxlike server (platform HTTP + QUIC hub)
+Documentation=https://github.com/bear20252026/wxlike
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__DATA__
+ExecStart=__BIN__
+Environment=WXLIKE_DB=__DATA__/wxlike.db
+Environment=WXLIKE_MEDIA_DIR=__DATA__/media
+Environment=WXLIKE_HTTP=__HTTP__
+Environment=WXLIKE_QUIC=__QUIC__
+Environment=WXLIKE_LOG=info
+Restart=always
+RestartSec=3
+
+# 只读系统 + 可写数据目录：进程被攻破时影响面最小
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=__DATA__
+# QUIC/媒体要开 UDP 端口，不能限制地址族
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
