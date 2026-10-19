@@ -66,6 +66,20 @@ fn befriend(base: &str, a_tok: &str, b_uid: &str, b_tok: &str) {
         .unwrap();
 }
 
+/// 轮询直到未读达到期望值（最多 5s）。
+///
+/// 固定 sleep 在慢 runner 上会 flake：CI 的 Windows 任务就出现过
+/// "两条消息只镜像了一条"——不是逻辑错，是 400ms 不够。等状态而不是等时间。
+fn wait_unread(base: &str, conv: &str, token: &str, want: u64) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut last = unread(base, conv, token);
+    while last["unread"].as_u64() != Some(want) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        last = unread(base, conv, token);
+    }
+    last
+}
+
 fn unread(base: &str, conv: &str, token: &str) -> Value {
     ureq::get(&format!("{base}/api/conv/{conv}/unread"))
         .set("Authorization", &format!("Bearer {token}"))
@@ -99,10 +113,8 @@ async fn direct_message_lands_in_the_mailbox() {
         let env = Envelope::direct(&conv, alice.clone(), vec![bob.clone()], 0, text);
         alice_c.send(&env).await.expect("send");
     }
-    // 等 hub 处理完（QUIC 投递 + 落库 + 镜像）
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    let u = unread(&base, &conv, &tb);
+    // 等 hub 处理完（QUIC 投递 + 落库 + 镜像）——等状态，不等时间
+    let u = wait_unread(&base, &conv, &tb, 2);
     assert_eq!(u["owner"], "direct", "{u}");
     assert_eq!(u["unread"], 2, "两条直聊必须计入未读（镜像到信箱）：{u}");
     assert_eq!(u["head_seq"], 2, "{u}");
@@ -144,8 +156,7 @@ async fn recall_withdraws_from_the_mailbox_too() {
     let env = Envelope::direct(&conv, alice.clone(), vec![bob.clone()], 0, "oops");
     let msg_id = env.msg_id;
     alice_c.send(&env).await.expect("send");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(unread(&base, &conv, &tb)["unread"], 1);
+    assert_eq!(wait_unread(&base, &conv, &tb, 1)["unread"], 1);
 
     alice_c
         .send(&Envelope::recall(&conv, alice.clone(), msg_id))
