@@ -32,6 +32,7 @@
 | **TURN 客户端**：Allocate（401 挑战 + MESSAGE-INTEGRITY）、CreatePermission、ChannelBind、Refresh | `crates/rtc/src/turn.rs` | 6 | ✅ |
 | **中继路径**：对着最小 TURN 服务器双向转发媒体 | `crates/rtc/tests/turn_alloc.rs` | 2 | ✅ |
 | **多方通话（mesh）**：一人同时与两人通话，音频到达每一路 | `crates/rtc/tests/mesh_udp.rs` | 2 | ✅ |
+| **服务端 SFU**：三人经服务端转发，A 的声音到达 B、C 且不回给自己 | `crates/sfu/tests/three_party.rs` | 3 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
@@ -251,3 +252,40 @@ B 的 DTLS 包会被 C 的会话也吃一遍，str0m 按来源当成新的连通
 修法是按来源路由：`Effect::Transmit` 里的 `destination` 就是该会话的对端地址，
 第一次发出去时记下 `远端地址 → call_id`，之后入向包只投给对应的那一条。
 未知来源（还没发过包）才回退到广播。这条路由表在通话结束时清理。
+
+## 服务端 SFU（`crates/sfu`）
+
+mesh 的上行是 `码率 × (人数−1)`，几十人就是灾难。SFU 把它变成
+`1 路上行 + 每人 1 路下行`，带宽与 CPU 从平方关系回到线性。
+
+实现只做三件事，因为这三件就是 SFU 的全部：
+
+```
+每人一个 UDP socket（包从哪进就是谁，省掉 ICE ufrag 解复用）
+SFU 永远 answerer（客户端 offer，服务端 answer，候选直接写在 SDP 里）
+收到谁的 MediaData 就原样写给其他每个人的 write_audio（不解码、不混流）
+```
+
+最后一条是 SFU 与 MCU 的本质区别，也是它能扛几百人的原因：服务端只搬字节。
+
+**踩到的坑（测试里已写明）**：`MediaSession::step()` 每次只吐**一个** output。
+测试的泵包循环原先只发第一次调用的数据报，第二次的事件调用把数据报丢了——
+现象是 ICE `Completed` 但永远不 `Connected`，非常像网络问题。改成两次都发之后
+0.6 秒就连上了。
+
+### 容量：能到多少人
+
+音频 20ms 一帧、每人 50 包/秒，转发量 = 发布者 × 订阅者 × 50。
+
+* **单节点**：100 人全互联约 50 万包/秒，可以但很重；实际单节点舒服的区间是
+  几十人。这就是本模块的边界——`一个房间 = 一个节点`。
+* **几百人**：必须级联。每人只在本节点内转发，跨节点各一条上行
+  （atm0s 的 `media_connector` 就是这个角色）。我们的 `SfuRoom` 已经把
+  "房间"和"节点"画成等号，级联是下一层的事，不需要改这一层的接口。
+
+### 还没接的（下一步）
+
+* HTTP 端点：`POST /api/call/{conv}/sfu`（收 offer、回 answer + 媒体地址）
+* 客户端：把 `callrtc::Transport` 从"直连/中继"扩成"直连/中继/SFU"，
+  连上 SFU 后只保留一条会话，不再按人数开 N 条
+* 房间与节点的对应关系：哪个房间落在哪个 SFU 节点（单节点时是常量）

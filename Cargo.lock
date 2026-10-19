@@ -5836,6 +5836,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-sfu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "str0m",
+ "wxlike-rtc",
+]
+
+[[package]]
 name = "wxlike-video"
 version = "0.1.0"
 dependencies = [
