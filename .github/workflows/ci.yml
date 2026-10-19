@@ -49,6 +49,18 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # macOS 是"Mac mini 自建服务器"的目标平台，必须进矩阵——
+  # 不进矩阵就等于没人验证过，等到客户机上才发现编不过是最贵的失败。
+  test-macos:
+    name: test (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: test
+        run: cargo test --workspace
+
   doc:
     name: doc (rustdoc links)
     runs-on: ubuntu-latest

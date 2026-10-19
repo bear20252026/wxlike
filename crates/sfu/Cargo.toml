@@ -14,3 +14,7 @@ str0m = { version = "0.9", default-features = false, features = ["sha1"] }
 
 [target.'cfg(windows)'.dependencies]
 str0m = { version = "0.9", default-features = false, features = ["sha1", "wincrypto"] }
+
+# 与 rtc 一致：Unix 走 openssl（vendored，不依赖系统库，macOS 上免 brew）
+[target.'cfg(unix)'.dependencies]
+str0m = { version = "0.9", default-features = false, features = ["sha1", "openssl", "vendored"] }

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd 服务定义：Mac mini 上原生运行 wxlike 服务端。
+
+  安装脚本会把下面的占位符替换成绝对路径后拷到
+  ~/Library/LaunchAgents/com.wxlike.server.plist
+
+  为什么用 LaunchAgent 而不是 LaunchDaemon：
+  单机自建（Mac mini 当服务器）通常以登录用户身份运行，数据放在
+  ~/Library/Application Support 下，不需要 root，也不需要开机前启动。
+  真要开机即起（无人登录），把同样的文件放到 /Library/LaunchDaemons
+  并加上 UserName 键即可。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wxlike.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BIN__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WXLIKE_DB</key>
+    <string>__DATA__/wxlike.db</string>
+    <key>WXLIKE_MEDIA_DIR</key>
+    <string>__DATA__/media</string>
+    <key>WXLIKE_HTTP</key>
+    <string>__HTTP__</string>
+    <key>WXLIKE_QUIC</key>
+    <string>__QUIC__</string>
+    <key>WXLIKE_LOG</key>
+    <string>info</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__DATA__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- 崩溃重启不要太急：10 秒一次，避免端口被反复抢 -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOGS__/server.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/server.err.log</string>
+</dict>
+</plist>
