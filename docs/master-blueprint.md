@@ -586,7 +586,7 @@ CREATE TABLE group_member_log (
 | 项 | 现状 | 交付 |
 |---|---|---|
 | message-service 新建（ADR-16/17：owner_type 三态信箱/序列号/类型注册表/三通道/撤回变更事件/批量撤回） | ❌（现写扇出转过渡） | 新 crate/服务 |
-| sync-service（五层差分）/ read-service（游标+ZSET 未读，回执万人群默认关） | ❌ | 新建 |
+| sync-service（五层差分）/ read-service（游标+ZSET 未读，回执万人群默认关） | ⚠️ **库已有**：`crates/message` 有三态信箱、每属主序列号、`ack`/`unread`、五层 `sync_plan`；只接了 channel/wallet，direct/group 仍走 `core::Store` 扇出。缺的是接线，见 `docs/p3-mailbox.md` | 接线 + HTTP 暴露 |
 | Transport trait + WS 网关（ADR-8）/ 多设备多连接（ADR-4） | ⚠️ QUIC 紧耦合 | 网关改造 |
 | community/thread/频道权限/分组/频道级角色/话题订阅（ADR-16 支柱C） | ❌ | 新建 |
 | relation 增强：拉黑/message_requests/星标/标签/共同聚合（ADR-24） | ⚠️ 基础好友✅ | 补齐 |

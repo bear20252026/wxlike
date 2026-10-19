@@ -289,3 +289,14 @@ SFU 永远 answerer（客户端 offer，服务端 answer，候选直接写在 SD
 * 客户端：把 `callrtc::Transport` 从"直连/中继"扩成"直连/中继/SFU"，
   连上 SFU 后只保留一条会话，不再按人数开 N 条
 * 房间与节点的对应关系：哪个房间落在哪个 SFU 节点（单节点时是常量）
+
+## P3 纠错：未读/序列号早就在 `crates/message` 里
+
+上一版我在 `platform` 层新写了 `read_cursor` + 未读接口，写完才发现
+`crates/message::MessageStore` 已经实现了完整的一套：三态属主、每属主序列号、
+`ack` 单调游标、`unread = head − cursor`、撤回、变更流、**五层 `sync_plan`**、
+成员分页。重复实现已回滚（`45ddbc3`），细节与后续计划见 `docs/p3-mailbox.md`。
+
+真正的缺口不是“没有未读”，而是**只有 channel 和 wallet 在用信箱**，
+direct/group 还在 `core::Store` + 扇出。下一步是把 direct/group 也写进信箱，
+再把 `unread` / `ack` / `sync_plan` 直接用 HTTP 暴露——不新建表、不新建游标。
