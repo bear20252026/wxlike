@@ -92,7 +92,14 @@ WXLIKE_STUN_URL     stun:host:3478
 WXLIKE_TURN_URL     turn:host:3478 + WXLIKE_TURN_USER / WXLIKE_TURN_PASS
 WXLIKE_SFU_ADVERTISE  对外宣告的媒体 IP（NAT 后面必须显式指定）
 WXLIKE_SFU_PORT       SFU 端口段起点
+
+# 安全相关（公网部署必看）
+WXLIKE_LIVE_INGEST_SECRET  直播推流密钥；**不设置时用公开的开发默认值**
 ```
+
+> **⚠️ 公网部署必须设置 `WXLIKE_LIVE_INGEST_SECRET`**。
+> 默认值 `dev-insecure-live-secret` 写在源码里，任何人都能拿它推流。
+> `wxlike-server --check` 会明确提示当前是否已设置。
 
 ## 备份
 
