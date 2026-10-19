@@ -60,7 +60,8 @@ pub trait OfflinePush: Send + Sync + 'static {
 pub struct MqHubOptions {
     pub offline: Arc<dyn OfflineStore>,
     pub storage: Option<Arc<Store>>,
-    /// 见 [`HubState::mailbox`]。
+    /// P3 读扩散信箱。内容帧落 `Store`（归档/扇出）之后同时镜像进它，
+    /// 未读与多端同步才有统一真相。`None` = 不镜像。
     pub mailbox: Option<Arc<wxlike_message::MessageStore>>,
     pub dedup_cap: usize,
     /// Group membership source (WP-04). Without it a `conv_id` is never treated
