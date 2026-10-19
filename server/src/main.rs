@@ -110,61 +110,60 @@ fn print_check(cfg: &Config) {
 /// macOS/Linux 下 **SIGTERM 才是主角**：`launchctl bootout`、`systemctl stop`、
 /// `docker stop` 发的都是它。只接 SIGINT（Ctrl-C）等于"用 supervisor 停服务
 /// 时必然硬杀"。
+#[cfg(unix)]
 struct Signals {
-    #[cfg(unix)]
     term: Option<tokio::signal::unix::Signal>,
-    #[cfg(unix)]
     int: Option<tokio::signal::unix::Signal>,
 }
 
+#[cfg(not(unix))]
+struct Signals;
+
+#[cfg(unix)]
 impl Signals {
     fn install() -> Self {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{signal, SignalKind};
-            let term = signal(SignalKind::terminate()).ok();
-            let int = signal(SignalKind::interrupt()).ok();
-            if term.is_none() && int.is_none() {
-                tracing::warn!("SIGTERM/SIGINT 都注册失败，只能靠 ctrl_c");
-            }
-            return Self { term, int };
+        use tokio::signal::unix::{signal, SignalKind};
+        let term = signal(SignalKind::terminate()).ok();
+        let int = signal(SignalKind::interrupt()).ok();
+        if term.is_none() && int.is_none() {
+            tracing::warn!("SIGTERM/SIGINT 都注册失败，只能靠 ctrl_c");
         }
-        #[cfg(not(unix))]
-        {
-            Self {}
-        }
+        Self { term, int }
     }
 
     async fn wait(&mut self) {
-        #[cfg(unix)]
-        {
-            match (self.term.as_mut(), self.int.as_mut()) {
-                (Some(term), Some(int)) => {
-                    tokio::select! {
-                        _ = term.recv() => tracing::info!("收到 SIGTERM"),
-                        _ = int.recv() => tracing::info!("收到 SIGINT"),
-                    }
-                }
-                (Some(term), None) => {
-                    term.recv().await;
-                    tracing::info!("收到 SIGTERM");
-                }
-                (None, Some(int)) => {
-                    int.recv().await;
-                    tracing::info!("收到 SIGINT");
-                }
-                (None, None) => {
-                    let _ = tokio::signal::ctrl_c().await;
-                    tracing::info!("收到 Ctrl-C");
+        match (self.term.as_mut(), self.int.as_mut()) {
+            (Some(term), Some(int)) => {
+                tokio::select! {
+                    _ = term.recv() => tracing::info!("收到 SIGTERM"),
+                    _ = int.recv() => tracing::info!("收到 SIGINT"),
                 }
             }
-            return;
+            (Some(term), None) => {
+                term.recv().await;
+                tracing::info!("收到 SIGTERM");
+            }
+            (None, Some(int)) => {
+                int.recv().await;
+                tracing::info!("收到 SIGINT");
+            }
+            (None, None) => {
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!("收到 Ctrl-C");
+            }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!("收到 Ctrl-C");
-        }
+    }
+}
+
+#[cfg(not(unix))]
+impl Signals {
+    fn install() -> Self {
+        Self
+    }
+
+    async fn wait(&mut self) {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("收到 Ctrl-C");
     }
 }
 
