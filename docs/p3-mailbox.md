@@ -75,3 +75,20 @@ channel:      hub → MessageStore::append(OwnerType::Channel) → 信箱
 就在那里，`lib.rs` 顶部注释写得清清楚楚（三支柱、owner_type、序列号），
 我却从 `platform/read.rs` 从零写起。开工前的三步里应该加第 0 步：
 **先 `grep` 本仓库有没有同名能力**。
+
+### 步骤 3 收尾（2026-10-19）
+
+* ✅ **扇出携带信箱序列号**：hub 镜像成功后用返回的 seq 回填 `env.seq`，
+  发给每个收件人的帧都带同一个会话内序号。之前 `seq` 是发送方填的（通常 0），
+  客户端只能按到达顺序排，多端之间会不一致。
+  验收：`fanout_carries_mailbox_seq`（实时收到 `(1,"first"),(2,"second")`）。
+* ✅ **删除 `device_cursor` / `sync_since` / `note_seen`**：整套设备游标只有它自己
+  的测试在调用，真正的多端同步早已走信箱（`head_seq`/`ack`/`changes`/`sync_plan`）。
+  留着就是第二套游标——审计点名要删的平行机制。
+  `core::Store` 现在只剩两个职责：**存正文**、**供搜索**。
+
+### 还差最后一步
+
+`core::Store` 仍承担**扇出的收件人来源**（群成员表）。彻底退化为归档需要把
+"谁该收这条消息"也搬到信箱的成员快照（`member_snapshot`）——那是把
+`Membership` trait 与信箱成员表合并，属于下一步。
