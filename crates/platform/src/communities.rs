@@ -137,11 +137,11 @@ impl Platform {
         .optional()?)
     }
 
-    pub(crate) fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
+    pub fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
         let Some(community) = self.channel_community(channel)? else {
             return Err(PlatformError::NotFound);
         };
-        let role = self.require_member(&community, user)?;
+        self.require_member(&community, user)?;
         let kind: String = {
             let c = self.db().lock();
             c.query_row(
@@ -150,11 +150,13 @@ impl Platform {
                 |r| r.get(0),
             )?
         };
-        if kind == "announce" {
-            Ok(role == ROLE_OWNER || role == ROLE_ADMIN)
+        // 权限点化：公告频道要 `post-announce`，其余要 `post-message`
+        let perm = if kind == "announce" {
+            crate::perms::Perm::PostInAnnounce
         } else {
-            Ok(true)
-        }
+            crate::perms::Perm::PostMessage
+        };
+        self.can(&community, user, perm)
     }
 
     // ---- 社区 ----
