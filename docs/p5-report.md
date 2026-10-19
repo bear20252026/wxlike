@@ -19,6 +19,7 @@
 | 同上 **HTTP 层契约**（204/200/403/404/409/422 的真实状态码） | `crates/platform/tests/call_http.rs` | 3 | ✅ |
 | **通话页 UI**（参与者网格 + 底部控制条 + 参与者菜单 + 4 s 轮询） | `ui/src/callpage.ts` · `ui/src/styles.css` | tsc + esbuild | ✅ |
 | **设备验证页**（12 组安全码 + 身份指纹 + 标记已验证） | `ui/src/callpage.ts` · `ui/src/api.ts` · `ui/src-tauri/src/lib.rs` | tsc + esbuild | ✅ |
+| **权限矩阵**（Rocket.Chat 的 roles × permissions：9 个权限点 / 3 个角色；提权仅群主、同级不可互踢） | `crates/platform/src/perms.rs` | 10 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 

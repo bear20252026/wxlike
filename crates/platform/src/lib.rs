@@ -32,6 +32,7 @@ mod live;
 mod media;
 mod moments;
 mod notification;
+pub mod perms;
 mod reconcile;
 mod recovery;
 mod relations;
@@ -60,6 +61,7 @@ pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
 pub use crate::groups_admin::GroupInvite;
 pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
+pub use crate::perms::Perm;
 pub use crate::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::relations::{StrangerRequest, StrangerState};
 pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
@@ -396,6 +398,7 @@ impl Platform {
             .merge(reconcile::routes())
             .merge(live::routes())
             .merge(call::routes())
+            .merge(perms::routes())
             .route(
                 "/api/audit/self",
                 get(
