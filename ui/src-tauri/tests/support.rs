@@ -2,6 +2,7 @@
 //! per-test TOFU pin dirs. `ui_commands.rs` keeps its own copy of `stack`
 //! (same shape) because each test binary links its own harness.
 
+#![allow(dead_code)] // 共享测试夹具：各测试二进制只用到其中一部分
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,7 +43,14 @@ pub fn hex_id(v: &serde_json::Value) -> String {
 }
 
 /// A connected pair sharing one conversation (the common fixture).
-pub async fn connected_pair() -> (String, std::net::SocketAddr, Arc<Platform>, AppState, AppState, String) {
+pub async fn connected_pair() -> (
+    String,
+    std::net::SocketAddr,
+    Arc<Platform>,
+    AppState,
+    AppState,
+    String,
+) {
     let (http, quic, platform) = stack().await;
     let alice = AppState::new(&http);
     let bob = AppState::new(&http);
@@ -54,8 +62,11 @@ pub async fn connected_pair() -> (String, std::net::SocketAddr, Arc<Platform>, A
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
     (http, quic, platform, alice, bob, conv)
 }

@@ -27,6 +27,8 @@
 | **客户端宿主层**：`CallHost` 把状态机 / str0m / 真 UDP socket 接在一起（候选注入早于 offer） | `crates/rtc/src/host.rs` | — | ✅ |
 | **两通客户端真打通**：127.0.0.1 上真 UDP，ICE+DTLS 连通且音频帧到达 | `crates/rtc/tests/host_udp.rs` | 2 | ✅ |
 | **桌面端接线**：引擎线程（10ms 节拍）+ 中继收发 + `call://rtc` 事件 + 通话页按钮 | `ui/src-tauri/src/callrtc.rs` · `ui/src/callpage.ts` | tsc + esbuild | ✅ |
+| **真实声卡**：麦克风 → 48k 单声道 20ms 帧 → Opus → RTP；RTP → Opus → 扬声器（`--features audio`） | `crates/rtc/src/audio_io.rs` · `crates/rtc/src/capture.rs` | 需真机 | ✅ |
+| **DSP 小件**：有状态线性重采样（跨缓冲相位连续）、20ms 分帧、声道平均 | `crates/rtc/src/dsp.rs` | 8 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
@@ -161,3 +163,31 @@ callpage.ts（按钮 + "已连通 · N 帧" 徽标）
 
 仍未接的：麦克风采集与播放（`rtc` 的 `audio` feature 需要声卡与 libopus，
 CI 无设备），所以目前 `audio_frames` 是"媒体面在流动"的证据，不是"能听见声音"。
+
+## 声音怎么过去的（`audio` feature）
+
+```
+麦克风（任意采样率/声道）
+   → interleaved_to_mono（取平均，不是取左声道）
+   → Resampler（有状态线性插值，跨缓冲保持相位）
+   → FrameChunker（20ms = 960 样本）
+   → OpusCodec::encode → host.write_audio → RTP
+                                                   ↓
+扬声器 ← mono_to_interleaved ← Resampler(48k→设备率) ← OpusCodec::decode ← Effect::Audio
+```
+
+三个容易踩的坑，都在 `dsp.rs` 里有测试钉住：
+
+1. **重采样必须有状态**。每块输入独立插值会在每个缓冲边界产生相位跳变，
+   听感是每 10–20ms 一声轻"咔"——单块测试完全测不出来，`chunk_boundaries_do_not_drop_samples`
+   用"分两次喂 vs 一次喂总长度必须一致"来守。
+2. **立体声要取平均**。取左声道会让"只用右耳麦"的人彻底没声音。
+3. **播放队列必须有上限**（400ms，超了丢最旧）。时钟漂移会让队列单调增长，
+   没有上限时延迟会从 20ms 一路涨到几秒。
+
+构建注意：`audiopus_sys` 的 vendored libopus 写着 `cmake_minimum_required(VERSION 3.1)`，
+CMake ≥ 4 会直接拒绝。`ui/src-tauri/.cargo/config.toml` 里固定了
+`CMAKE_POLICY_VERSION_MINIMUM=3.5`，所以 `cargo build --features audio` 开箱即用。
+
+没有声卡时引擎不报错：`AudioLeg::start` 逐项降级（无麦克风就只收不发），
+通话照常建立，UI 上 ↑ 帧数停在 0——这个区分本身就是一个有用的诊断信号。

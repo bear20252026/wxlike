@@ -24,8 +24,11 @@ async fn p2_voice_file_sticker_roundtrip() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // voice: upload the "audio" then send the payload with a 40-bar waveform
@@ -34,7 +37,13 @@ async fn p2_voice_file_sticker_roundtrip() {
     let audio_id = up["media_id"].as_str().unwrap().to_string();
     let waveform: Vec<u8> = (0..40u32).map(|i| (i * 5 % 100) as u8 + 1).collect();
     alice
-        .send_voice(&conv, vec![bob_id.clone()], &audio_id, 3200, waveform.clone())
+        .send_voice(
+            &conv,
+            vec![bob_id.clone()],
+            &audio_id,
+            3200,
+            waveform.clone(),
+        )
         .unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(15), bob.next_event())
         .await
@@ -51,11 +60,9 @@ async fn p2_voice_file_sticker_roundtrip() {
     );
 
     // client-side validation: a malformed payload is refused before send
-    assert!(
-        alice
-            .send_voice(&conv, vec![bob_id.clone()], "short", 100, waveform.clone())
-            .is_err()
-    );
+    assert!(alice
+        .send_voice(&conv, vec![bob_id.clone()], "short", 100, waveform.clone())
+        .is_err());
     assert!(
         alice
             .send_voice(&conv, vec![bob_id.clone()], &audio_id, 0, waveform)
@@ -65,10 +72,19 @@ async fn p2_voice_file_sticker_roundtrip() {
 
     // file
     let file_bytes: Vec<u8> = (0..1024u32).map(|i| (i % 255) as u8).collect();
-    let fup = alice.upload_media(file_bytes, "application/pdf", None).unwrap();
+    let fup = alice
+        .upload_media(file_bytes, "application/pdf", None)
+        .unwrap();
     let file_id = fup["media_id"].as_str().unwrap().to_string();
     alice
-        .send_file(&conv, vec![bob_id.clone()], &file_id, "季度报表.pdf", 1024, "")
+        .send_file(
+            &conv,
+            vec![bob_id.clone()],
+            &file_id,
+            "季度报表.pdf",
+            1024,
+            "",
+        )
         .unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(15), bob.next_event())
         .await
@@ -79,11 +95,9 @@ async fn p2_voice_file_sticker_roundtrip() {
     assert_eq!(ev["payload"]["name"], "季度报表.pdf");
     assert_eq!(ev["payload"]["size"], 1024);
     // path-shaped names are refused client-side
-    assert!(
-        alice
-            .send_file(&conv, vec![bob_id.clone()], &file_id, "../evil", 1, "")
-            .is_err()
-    );
+    assert!(alice
+        .send_file(&conv, vec![bob_id.clone()], &file_id, "../evil", 1, "")
+        .is_err());
 
     // sticker
     alice
@@ -156,7 +170,10 @@ async fn p2_avatar_wired_to_media_store() {
         .unwrap()
         .into_json()
         .unwrap();
-    assert_eq!(profile["avatar"], media_id, "public profile carries the avatar id");
+    assert_eq!(
+        profile["avatar"], media_id,
+        "public profile carries the avatar id"
+    );
     let blob = bob.download_media(&media_id, false).unwrap();
     let decoded =
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &blob.base64).unwrap();
@@ -183,8 +200,11 @@ async fn p2_local_message_library_survives_restart() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     bob.local_open(&db).unwrap();
     assert!(bob.local_ready());
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
@@ -238,8 +258,11 @@ async fn p2_video_upload_transcode_and_message() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // synthesize a 1-second clip (ffmpeg is on PATH per the ignore note)
@@ -266,8 +289,15 @@ async fn p2_video_upload_transcode_and_message() {
     let ingest = alice.upload_video(bytes).unwrap();
     let video_id = ingest["video_id"].as_str().unwrap().to_string();
     assert_eq!(video_id.len(), 64);
-    assert_eq!(ingest["duration_ms"].as_u64().unwrap(), 1000, "ffprobe duration");
-    assert!(ingest["playlist_url"].as_str().unwrap().ends_with("playlist.m3u8"));
+    assert_eq!(
+        ingest["duration_ms"].as_u64().unwrap(),
+        1000,
+        "ffprobe duration"
+    );
+    assert!(ingest["playlist_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("playlist.m3u8"));
     assert!(ingest["play_url"].as_str().unwrap().ends_with("play.mp4"));
 
     // send the message reference (the same shape api.ts's sendVideo builds)
@@ -279,7 +309,9 @@ async fn p2_video_upload_transcode_and_message() {
         "duration_ms": ingest["duration_ms"],
         "speeds": [0.5, 1.0, 1.5, 2.0],
     });
-    alice.send_video(&conv, vec![bob_id.clone()], &payload).unwrap();
+    alice
+        .send_video(&conv, vec![bob_id.clone()], &payload)
+        .unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(15), bob.next_event())
         .await
         .unwrap()
@@ -289,7 +321,9 @@ async fn p2_video_upload_transcode_and_message() {
     assert_eq!(ev["payload"]["video_id"], video_id);
 
     // the progressive MP4 plays back through the allowlisted downloader
-    let blob = bob.download_video(ingest["play_url"].as_str().unwrap()).unwrap();
+    let blob = bob
+        .download_video(ingest["play_url"].as_str().unwrap())
+        .unwrap();
     assert_eq!(blob.content_type, "video/mp4");
     assert!(!blob.base64.is_empty());
 

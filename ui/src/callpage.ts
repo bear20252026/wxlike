@@ -202,8 +202,13 @@ export function renderCallPage(root: El, convId: string, title: string, isGroup:
       const peer = convId.slice(2).split("~").find((x) => x !== me.user_id) ?? "";
       const live = rtc?.active && rtc.conv === convId;
       if (live && rtc?.connected) {
+        // ↓ 收到的帧 / ↑ 自己发出去的帧：两个都在涨才说明是双向通话
         bar.append(
-          h("span", "call-btn rtc on", `🎧 已连通 · ${rtc.audio_frames} 帧`),
+          h(
+            "span",
+            "call-btn rtc on",
+            `🎧 已连通 · ↓${rtc.audio_frames} ↑${rtc.mic_frames}`,
+          ),
         );
       } else if (live && rtc?.ringing) {
         const pick = btn("📞 接听", "rtc", false, () => void api.callRtcAccept());

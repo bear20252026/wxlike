@@ -26,6 +26,12 @@ sha2 = "0.10"
 hex = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+[features]
+# 真实声卡（cpal + libopus，需要 cmake 构建 vendored opus）。
+# 关掉时引擎照常跑，只是听不见声音——CI 与无头环境用默认值。
+default = []
+audio = ["wxlike-rtc/audio"]
+
 [dev-dependencies]
 # command-layer tests drive a REAL in-process server (platform + QUIC hub),
 # never a mock — the task book forbids mock stand-ins at this boundary.

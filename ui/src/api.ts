@@ -841,6 +841,8 @@ export interface CallRtcStatus {
   connected: boolean;
   phase: string;
   audio_frames: number;
+  /** 本端麦克风编码后送出的帧数（未编译 `audio` feature 时恒为 0）。 */
+  mic_frames: number;
 }
 
 /** 发起语音直连：开媒体端口、offer 进中继。房间控制面另行 `callAction`。 */

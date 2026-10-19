@@ -671,14 +671,10 @@ impl AppState {
         if !ok {
             return Err("video path outside /api/video".into());
         }
-        let resp = self
-            .http()
-            .req("GET", path)
-            .call()
-            .map_err(|e| match e {
-                ureq::Error::Status(404, _) => "video not found".to_string(),
-                other => format!("download video: {other}"),
-            })?;
+        let resp = self.http().req("GET", path).call().map_err(|e| match e {
+            ureq::Error::Status(404, _) => "video not found".to_string(),
+            other => format!("download video: {other}"),
+        })?;
         let content_type = resp.content_type().to_string();
         let mut bytes = Vec::new();
         resp.into_reader()
@@ -696,8 +692,8 @@ impl AppState {
         to: Vec<String>,
         payload: &serde_json::Value,
     ) -> Result<(), String> {
-        let parsed: wxlike_core::msgmeta::VideoPayload =
-            serde_json::from_value(payload.clone()).map_err(|e| format!("bad video payload: {e}"))?;
+        let parsed: wxlike_core::msgmeta::VideoPayload = serde_json::from_value(payload.clone())
+            .map_err(|e| format!("bad video payload: {e}"))?;
         parsed.validate()?;
         self.send_body(
             conv_id,
@@ -822,16 +818,13 @@ impl AppState {
     pub fn send_read_receipt(&self, conv_id: &str, up_to_hex: &str) -> Result<(), String> {
         let up_to: MsgId = decode_msg_id(up_to_hex).ok_or("bad msg id")?;
         let me = self.user_id()?;
-        let mut env = Envelope::with_body(
-            conv_id,
-            me,
-            Vec::new(),
-            0,
-            MsgBody::Notice(String::new()),
-        );
+        let mut env =
+            Envelope::with_body(conv_id, me, Vec::new(), 0, MsgBody::Notice(String::new()));
         env.kind = wxlike_core::MsgKind::System;
         env.quote_of = Some(up_to);
-        env.receipt = Some(wxlike_core::Receipt::Read { up_to_msg_id: up_to });
+        env.receipt = Some(wxlike_core::Receipt::Read {
+            up_to_msg_id: up_to,
+        });
         let client = self.client()?;
         wait(client.send(&env)).map_err(|e| format!("send: {e:#}"))?;
         Ok(())
@@ -929,10 +922,7 @@ impl AppState {
     /// platform directory. Idempotent: enabling twice keeps the same keys.
     pub fn secret_enable(&self) -> Result<String, String> {
         {
-            let guard = self
-                .secret
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let guard = self.secret.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(crypto) = guard.as_ref() {
                 return Ok(crypto.device().identity_fingerprint());
             }
@@ -973,10 +963,7 @@ impl AppState {
             .ok_or_else(|| "秘密聊天需要明确的接收方".to_string())?
             .clone();
         let sealed = {
-            let mut guard = self
-                .secret
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut guard = self.secret.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(crypto) = guard.as_mut() else {
                 return Err("secret chat not enabled".into());
             };
@@ -1417,7 +1404,10 @@ pub mod commands {
         let mut body = serde_json::Map::new();
         match action.as_str() {
             "mute" | "mute-all" => {
-                body.insert("track".into(), serde_json::json!(track.unwrap_or_else(|| "audio".into())));
+                body.insert(
+                    "track".into(),
+                    serde_json::json!(track.unwrap_or_else(|| "audio".into())),
+                );
                 body.insert("muted".into(), serde_json::json!(value.unwrap_or(true)));
                 if let Some(t) = target {
                     body.insert("target".into(), serde_json::json!(t));
@@ -1445,9 +1435,7 @@ pub mod commands {
         } else {
             Some(serde_json::Value::Object(body))
         };
-        state
-            .http()
-            .expect_empty("POST", &path, payload.as_ref())?;
+        state.http().expect_empty("POST", &path, payload.as_ref())?;
         Ok(serde_json::json!({ "ok": true }))
     }
 
@@ -1480,11 +1468,9 @@ pub mod commands {
         state: tauri::State<'_, AppState>,
         peer: String,
     ) -> Result<serde_json::Value, String> {
-        state.http().expect_json(
-            "GET",
-            &format!("/api/secret/{peer}/safety-number"),
-            None,
-        )
+        state
+            .http()
+            .expect_json("GET", &format!("/api/secret/{peer}/safety-number"), None)
     }
 
     /// 口头/扫码比对通过后落一条验证记录。
@@ -1804,17 +1790,12 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub fn sessions_list(
-        state: tauri::State<'_, AppState>,
-    ) -> Result<serde_json::Value, String> {
+    pub fn sessions_list(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
         state.sessions_list()
     }
 
     #[tauri::command]
-    pub fn session_revoke(
-        state: tauri::State<'_, AppState>,
-        sid: String,
-    ) -> Result<(), String> {
+    pub fn session_revoke(state: tauri::State<'_, AppState>, sid: String) -> Result<(), String> {
         state.session_revoke(&sid)
     }
 

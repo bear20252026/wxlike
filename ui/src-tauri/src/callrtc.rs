@@ -9,6 +9,10 @@
 //! 反而更容易把节拍拖歪。一个线程 + `UdpSocket::set_nonblocking` + 10ms
 //! 睡眠，节奏稳定且代码只有一屏。
 //!
+//! 打开 `audio` feature 时还会接上真实声卡：麦克风 → Opus → `write_audio`，
+//! `Effect::Audio` → Opus 解码 → 扬声器。没有声卡（CI / 无头）时这一步静默
+//! 跳过，引擎照常跑，只是听不见声音。
+//!
 //! 线程里的循环每轮做四件事：
 //! 1. 收 UI 命令（接听 / 挂断）；
 //! 2. `host.tick` 推进状态机与媒体，把 `Transmit` 真发出去；
@@ -45,6 +49,8 @@ pub struct EngineStatus {
     pub phase: String,
     /// 收到的音频帧计数（没有声卡时也能证明媒体面在流动）。
     pub audio_frames: u64,
+    /// 本端麦克风编码后送出的帧数（`audio` feature 关闭时恒为 0）。
+    pub mic_frames: u64,
 }
 
 /// 引擎句柄，挂在 Tauri 的 managed state 里。
@@ -54,6 +60,99 @@ pub struct CallEngine {
     tx: Mutex<Option<Sender<Cmd>>>,
     status: Arc<Mutex<EngineStatus>>,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// 声卡一侧：麦克风采集 + Opus 编解码 + 播放。
+///
+/// 只在 `audio` feature 下存在。任何一步失败（没设备、格式不支持）都退化成
+/// `None` 并打印一行原因——通话本身不能因为没麦克风就起不来。
+#[cfg(feature = "audio")]
+struct AudioLeg {
+    /// 只为持有流（drop 即停采集），不直接读。
+    _mic: Option<wxlike_rtc::audio_io::MicStream>,
+    speaker: Option<wxlike_rtc::audio_io::SpeakerSink>,
+    codec: Option<wxlike_rtc::capture::OpusCodec>,
+    rx: std::sync::mpsc::Receiver<Vec<i16>>,
+    /// 编码后的帧数，用来判断"麦克风真的在工作"。
+    sent: u64,
+}
+
+#[cfg(feature = "audio")]
+impl AudioLeg {
+    fn start() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mic = match wxlike_rtc::audio_io::MicStream::start(tx) {
+            Ok(m) => {
+                eprintln!(
+                    "[call] 麦克风已开: {} Hz / {} ch",
+                    m.device_rate(),
+                    m.device_channels()
+                );
+                Some(m)
+            }
+            Err(err) => {
+                eprintln!("[call] 麦克风不可用，只收不发: {err}");
+                None
+            }
+        };
+        let speaker = match wxlike_rtc::audio_io::SpeakerSink::new() {
+            Ok(sp) => {
+                eprintln!(
+                    "[call] 扬声器已开: {} Hz / {} ch",
+                    sp.device_rate(),
+                    sp.device_channels()
+                );
+                Some(sp)
+            }
+            Err(err) => {
+                eprintln!("[call] 扬声器不可用，只发不收: {err}");
+                None
+            }
+        };
+        let codec = match wxlike_rtc::capture::OpusCodec::new() {
+            Ok(c) => Some(c),
+            Err(err) => {
+                eprintln!("[call] Opus 初始化失败: {err}");
+                None
+            }
+        };
+        Self {
+            _mic: mic,
+            speaker,
+            codec,
+            rx,
+            sent: 0,
+        }
+    }
+
+    /// 把麦克风攒下的 PCM 帧编码后写进媒体会话。
+    fn pump_mic(&mut self, host: &mut CallHost, call_id: &str) {
+        let Some(codec) = self.codec.as_mut() else {
+            return;
+        };
+        while let Ok(pcm) = self.rx.try_recv() {
+            match codec.encode(&pcm) {
+                Ok(bytes) => {
+                    // 还没连上时 write_audio 会报错：正常，丢帧即可
+                    if host.write_audio(call_id, &bytes).is_ok() {
+                        self.sent += 1;
+                    }
+                }
+                Err(err) => eprintln!("[call] Opus 编码失败: {err}"),
+            }
+        }
+    }
+
+    /// 对端音频帧 → PCM → 扬声器。
+    fn play(&mut self, payload: &[u8]) {
+        let (Some(codec), Some(speaker)) = (self.codec.as_mut(), self.speaker.as_mut()) else {
+            return;
+        };
+        match codec.decode(payload) {
+            Ok(pcm) => speaker.push(&pcm),
+            Err(err) => eprintln!("[call] Opus 解码失败: {err}"),
+        }
+    }
 }
 
 /// 连服务端中继所需的最小上下文。
@@ -108,6 +207,7 @@ impl CallEngine {
             connected: false,
             phase: "calling".into(),
             audio_frames: 0,
+            mic_frames: 0,
         };
 
         let stop = self.stop.clone();
@@ -186,6 +286,8 @@ fn run(
     let mut last_poll = Instant::now() - Duration::from_secs(1);
     let conn = Connection::new(&cfg);
     let mut audio_frames = 0u64;
+    #[cfg(feature = "audio")]
+    let mut audio = AudioLeg::start();
 
     let publish = |st: &Arc<Mutex<EngineStatus>>, app: &AppHandle| {
         let snapshot = st.lock().map(|s| s.clone()).unwrap_or_default();
@@ -216,10 +318,20 @@ fn run(
             pending.extend(effects);
         }
 
-        // 2. 推进时钟 + 媒体
+        // 2. 麦克风 → 编码 → 媒体（先喂再泵，编码帧能赶在同一轮发出去）
+        #[cfg(feature = "audio")]
+        {
+            let ids = host.manager().live_calls();
+            if let Some(id) = ids.first() {
+                let id = id.clone();
+                audio.pump_mic(&mut host, &id);
+            }
+        }
+
+        // 3. 推进时钟 + 媒体
         pending.extend(host.tick(Instant::now()));
 
-        // 3. 收 UDP
+        // 4. 收 UDP
         loop {
             match socket.recv_from(&mut buf) {
                 Ok((n, from)) => {
@@ -230,7 +342,7 @@ fn run(
             }
         }
 
-        // 4. 信令：每 300ms 拉一次
+        // 5. 信令：每 300ms 拉一次
         if last_poll.elapsed() >= Duration::from_millis(300) {
             last_poll = Instant::now();
             match conn.take(host.conv()) {
@@ -243,7 +355,7 @@ fn run(
             }
         }
 
-        // 5. 落地所有副作用
+        // 6. 落地所有副作用
         let mut ended = false;
         for effect in pending.drain(..) {
             match effect {
@@ -255,8 +367,12 @@ fn run(
                 Effect::Transmit { to, bytes } => {
                     let _ = socket.send_to(&bytes, to);
                 }
-                Effect::Audio { .. } => {
+                Effect::Audio { payload, .. } => {
                     audio_frames += 1;
+                    #[cfg(feature = "audio")]
+                    audio.play(&payload);
+                    #[cfg(not(feature = "audio"))]
+                    let _ = &payload;
                 }
                 Effect::Connected { call_id } => {
                     if let Ok(mut s) = status.lock() {
@@ -279,7 +395,11 @@ fn run(
         }
 
         // 有新来电时把 call_id / ringing 同步给 UI
-        sync_status(&host, &status, &app, audio_frames);
+        #[cfg(feature = "audio")]
+        let mic_frames = audio.sent;
+        #[cfg(not(feature = "audio"))]
+        let mic_frames = 0u64;
+        sync_status(&host, &status, &app, audio_frames, mic_frames);
 
         if ended {
             break;
@@ -302,6 +422,7 @@ fn sync_status(
     status: &Arc<Mutex<EngineStatus>>,
     app: &AppHandle,
     audio_frames: u64,
+    mic_frames: u64,
 ) {
     let live = host.manager().live_calls();
     let mut changed = false;
@@ -315,8 +436,9 @@ fn sync_status(
             }
             changed = true;
         }
-        if s.audio_frames != audio_frames {
+        if s.audio_frames != audio_frames || s.mic_frames != mic_frames {
             s.audio_frames = audio_frames;
+            s.mic_frames = mic_frames;
             changed = true;
         }
     }
