@@ -22,6 +22,8 @@
 | **权限矩阵**（Rocket.Chat 的 roles × permissions：9 个权限点 / 3 个角色；提权仅群主、同级不可互踢） | `crates/platform/src/perms.rs` | 10 | ✅ |
 | **通话信令中继**（offer/answer/ICE；`from` 强制改写、收件人必须在房、队列 64 条有界丢最旧） | `crates/rtc/src/{signal,room}.rs` · `crates/platform/src/call.rs` | 6（平台 5 + HTTP 1） | ✅ |
 | 信令桥（Tauri 命令 + TS 封装，前端只透传 SDP） | `ui/src-tauri/src/lib.rs` · `ui/src/api.ts` | tsc + esbuild | ✅ |
+| **端到端媒体协商**：SDP 走中继 → 两端完成 ICE/DTLS/SRTP → 音频双向到达 | `crates/platform/tests/call_media.rs` | 2 | ✅ |
+| **真 socket 冒烟**：axum 起在真实 TCP 端口，裸 HTTP/1.1 驱动（204 空 body、409 错误体、401） | `crates/platform/tests/call_tcp.rs` | 1 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 

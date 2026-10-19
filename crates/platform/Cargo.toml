@@ -34,7 +34,13 @@ hmac = "0.12"
 async-trait = { workspace = true }
 
 [dev-dependencies]
+# 端到端媒体协商测试要匹配 `wxlike_rtc::media::pump` 返回的 `str0m::Event`
+str0m = { version = "0.9", default-features = false, features = ["sha1"] }
 time = "0.3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 futures-util = "0.3"
+
+# Windows 的加密后端必须与 rtc 一致，否则 cargo 会编两份 str0m
+[target.'cfg(windows)'.dev-dependencies]
+str0m = { version = "0.9", default-features = false, features = ["sha1", "wincrypto"] }
