@@ -44,7 +44,12 @@ channel:      hub → MessageStore::append(OwnerType::Channel) → 信箱
   `MessageStore::{head_seq,unread,ack,sync_plan}`，没有新表。
   新增 `conv_owner(conv_id, owner_type)` 只解决"conv_id → 属主"的映射
   （direct 靠 `d-` 前缀推导，群/频道建的时候落表）。
-* ⬜ **步骤 1 未做**：direct/group 仍未写进信箱，所以它们的未读是 0。
+* ✅ **步骤 1 已完成**：hub 在内容帧落 `Store` 之后，用 `wxlike_message::mirror_of`
+  把 envelope 镜像进信箱（`d-` → Direct，其余 → Group）；撤回同时撤信箱那份。
+  未注册类型 / 回执 / 正在输入 / 裸 Bytes **不镜像**——宁可漏也不要塞脏数据。
+  注册表新增 `system`（群提示属于时间线，要计入未读）。
+* ✅ 端到端验收：`server/tests/mailbox_mirror.rs`（真 QUIC + 真 HTTP）——
+  两条直聊 → 未读 2 → 读完 0；撤回后序列号不回退。
 
 ## 正确的下一步（按顺序）
 

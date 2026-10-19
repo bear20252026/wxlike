@@ -96,6 +96,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let platform = Platform::open(opts.db_path.as_deref())?.shared();
 
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);
+    let mailbox = Arc::new(wxlike_message::MessageStore::open(opts.db_path.as_deref())?);
     let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
 
     // P3 ADR-22: the Tantivy writer runs in its own thread (commit/fsync
@@ -171,6 +172,10 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         router,
         wxlike_net::MqHubOptions {
             storage: Some(store.clone()),
+            // 信箱：读扩散的唯一真相。用**独立连接**打开同一个库——
+            // MessageStore 的序列号分配是 `UPDATE … RETURNING`（原子），
+            // 加上 WAL + busy_timeout，两个连接并发写是安全的。
+            mailbox: Some(mailbox.clone()),
             offline,
             membership: Some(Arc::new(PlatformMembership(platform.clone()))),
             policy: Some(Arc::new(PlatformPolicy(platform.clone()))),

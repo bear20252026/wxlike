@@ -74,6 +74,7 @@ pub fn channel_class_of(type_id: &str) -> Option<ChannelClass> {
     match type_id {
         // normal: 进时间线的全部内容形态
         "text"
+        | "system"
         | "image"
         | rich_kind::FILE
         | rich_kind::STICKER
@@ -91,6 +92,27 @@ pub fn channel_class_of(type_id: &str) -> Option<ChannelClass> {
         // ephemeral: 卡片状态回写
         "wallet.redpacket.claim" | "ad.receipt" | "msg.edit.state" => Some(ChannelClass::Ephemeral),
         _ => None,
+    }
+}
+
+/// Envelope → 时间线条目 `(type_id, payload)`。
+///
+/// `None` 表示**不进时间线**：回执、正在输入、撤回（撤回走 `withdraw`）、
+/// 以及注册表里没有的类型。宁可漏镜像也不要塞错——信箱是未读与同步的唯一
+/// 真相，脏数据会一直跟着用户。
+pub fn mirror_of(env: &wxlike_core::Envelope) -> Option<(String, String)> {
+    use wxlike_core::types::MsgBody;
+    match &env.body {
+        MsgBody::Text(text) => Some(("text".to_string(), text.clone())),
+        // 系统提示（入群/改名/撤回占位）也在时间线上，要计入未读
+        MsgBody::Notice(text) => Some(("system".to_string(), text.clone())),
+        MsgBody::Custom { kind, payload } => match channel_class_of(kind) {
+            Some(ChannelClass::Normal) => Some((kind.clone(), payload.to_string())),
+            // high_priority / ephemeral / 未注册：不进时间线
+            _ => None,
+        },
+        // 裸字节没有类型信息（历史遗留的 Blob 路径）：不猜，跳过
+        MsgBody::Bytes(_) | MsgBody::Recall { .. } => None,
     }
 }
 
