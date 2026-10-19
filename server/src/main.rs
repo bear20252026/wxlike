@@ -100,43 +100,77 @@ fn print_check(cfg: &Config) {
     );
 }
 
-/// 等一个"要求停止"的信号。
+/// 信号监听器：**尽早安装**，之后才去启动服务。
+///
+/// 为什么必须先装再启动：注册之前到达的 SIGTERM 走默认动作，进程直接被杀
+/// （退出码 None），看起来像"优雅关闭没生效"。CI 的 Linux 任务就是这么红的——
+/// 测试看到 "HTTP on" 那行才发信号，而那行是在 `start_stack` 之后、注册之前
+/// 打印的，中间有个窗口。macOS 上侥幸没踩到，Linux 上必踩。
 ///
 /// macOS/Linux 下 **SIGTERM 才是主角**：`launchctl bootout`、`systemctl stop`、
 /// `docker stop` 发的都是它。只接 SIGINT（Ctrl-C）等于"用 supervisor 停服务
 /// 时必然硬杀"。
-async fn wait_for_signal() {
+struct Signals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut term = match signal(SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(err) => {
-                tracing::warn!(%err, "注册 SIGTERM 失败，退回只接 SIGINT");
-                let _ = tokio::signal::ctrl_c().await;
-                return;
+    term: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    int: Option<tokio::signal::unix::Signal>,
+}
+
+impl Signals {
+    fn install() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let term = signal(SignalKind::terminate()).ok();
+            let int = signal(SignalKind::interrupt()).ok();
+            if term.is_none() && int.is_none() {
+                tracing::warn!("SIGTERM/SIGINT 都注册失败，只能靠 ctrl_c");
             }
-        };
-        let mut int = match signal(SignalKind::interrupt()) {
-            Ok(s) => s,
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-                return;
-            }
-        };
-        tokio::select! {
-            _ = term.recv() => tracing::info!("收到 SIGTERM"),
-            _ = int.recv() => tracing::info!("收到 SIGINT"),
+            return Self { term, int };
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("收到 Ctrl-C");
+
+    async fn wait(&mut self) {
+        #[cfg(unix)]
+        {
+            match (self.term.as_mut(), self.int.as_mut()) {
+                (Some(term), Some(int)) => {
+                    tokio::select! {
+                        _ = term.recv() => tracing::info!("收到 SIGTERM"),
+                        _ = int.recv() => tracing::info!("收到 SIGINT"),
+                    }
+                }
+                (Some(term), None) => {
+                    term.recv().await;
+                    tracing::info!("收到 SIGTERM");
+                }
+                (None, Some(int)) => {
+                    int.recv().await;
+                    tracing::info!("收到 SIGINT");
+                }
+                (None, None) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                    tracing::info!("收到 Ctrl-C");
+                }
+            }
+            return;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("收到 Ctrl-C");
+        }
     }
 }
 
 async fn run(cfg: Config) -> anyhow::Result<()> {
+    // 先装信号，再启动：注册前收到的 SIGTERM 会直接杀进程
+    let mut signals = Signals::install();
     std::fs::create_dir_all(&cfg.media_dir)?;
     if let Some(path) = cfg.db_path.as_deref() {
         if let Some(dir) = std::path::Path::new(path).parent() {
@@ -164,7 +198,7 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     );
     println!("[wxlike-server] 前台运行中，等待 SIGTERM/SIGINT");
 
-    wait_for_signal().await;
+    signals.wait().await;
     println!(
         "[wxlike-server] graceful shutdown 开始（排空上限 {}s）",
         cfg.grace.as_secs()
