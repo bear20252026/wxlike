@@ -843,15 +843,22 @@ export interface CallRtcStatus {
   audio_frames: number;
   /** 本端麦克风编码后送出的帧数（未编译 `audio` feature 时恒为 0）。 */
   mic_frames: number;
+  /** 对端总数（1 = 直聊，>1 = 多方 mesh）。 */
+  peers: number;
+  /** 其中已连通的数量。 */
+  connected_peers: number;
 }
 
-/** 发起语音直连：开媒体端口、offer 进中继。房间控制面另行 `callAction`。 */
+/**
+ * 发起语音直连：对每个对端开一条媒体会话（mesh）。
+ * 房间控制面另行 `callAction`；返回每条会话的本地 call_id。
+ */
 export async function callRtcStart(
   convId: string,
-  peer: string,
+  peers: string[],
   video = false,
-): Promise<string> {
-  return invoke<string>("call_rtc_start", { conv: convId, peer, video });
+): Promise<string[]> {
+  return invoke<string[]>("call_rtc_start", { conv: convId, peers, video });
 }
 
 export async function callRtcAccept(): Promise<void> {

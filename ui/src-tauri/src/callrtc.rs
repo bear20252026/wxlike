@@ -51,6 +51,10 @@ pub struct EngineStatus {
     pub audio_frames: u64,
     /// 本端麦克风编码后送出的帧数（`audio` feature 关闭时恒为 0）。
     pub mic_frames: u64,
+    /// 本通通话的对端总数（1 = 一对一直聊，>1 = 多方 mesh）。
+    pub peers: usize,
+    /// 其中已连通的对端数。
+    pub connected_peers: usize,
 }
 
 /// 引擎句柄，挂在 Tauri 的 managed state 里。
@@ -166,21 +170,25 @@ impl CallEngine {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// 发起通话：开线程，返回本地 call_id。
+    /// 发起通话：每个对端一条媒体会话，返回各自的本地 call_id。
     pub fn start(
         &self,
         app: AppHandle,
         cfg: RelayCfg,
         me: String,
         conv: String,
-        peer: String,
+        peers: Vec<String>,
         video: bool,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<String>, String> {
         self.shutdown();
+        if peers.is_empty() {
+            return Err("没有可呼叫的对端".into());
+        }
 
         let transport = Transport::open()?;
         let mut host = CallHost::new(me, conv.clone(), transport.local());
-        let (call_id, effects) = host.start(&peer, video, true);
+        let (call_ids, effects) = host.start_many(&peers, video);
+        let call_id = call_ids.first().cloned().unwrap_or_default();
 
         let (tx, rx) = channel();
         *self.tx.lock().unwrap() = Some(tx);
@@ -194,6 +202,8 @@ impl CallEngine {
             phase: "calling".into(),
             audio_frames: 0,
             mic_frames: 0,
+            peers: peers.len(),
+            connected_peers: 0,
         };
 
         let stop = self.stop.clone();
@@ -205,7 +215,7 @@ impl CallEngine {
             })
             .map_err(|e| format!("启动通话线程失败: {e}"))?;
         *self.join.lock().unwrap() = Some(handle);
-        Ok(call_id)
+        Ok(call_ids)
     }
 
     pub fn send(&self, cmd: Cmd) {
@@ -398,9 +408,10 @@ fn run(
         // 2. 麦克风 → 编码 → 媒体（先喂再泵，编码帧能赶在同一轮发出去）
         #[cfg(feature = "audio")]
         {
+            // mesh 下每人一条会话，麦克风必须喂给每一条——只喂第一条的话，
+            // 多人通话里只有一个人能听到你。
             let ids = host.manager().live_calls();
-            if let Some(id) = ids.first() {
-                let id = id.clone();
+            for id in ids {
                 audio.pump_mic(&mut host, &id);
             }
         }
@@ -503,9 +514,14 @@ fn sync_status(
             }
             changed = true;
         }
-        if s.audio_frames != audio_frames || s.mic_frames != mic_frames {
+        let connected_peers = host.connected_count();
+        if s.audio_frames != audio_frames
+            || s.mic_frames != mic_frames
+            || s.connected_peers != connected_peers
+        {
             s.audio_frames = audio_frames;
             s.mic_frames = mic_frames;
+            s.connected_peers = connected_peers;
             changed = true;
         }
     }

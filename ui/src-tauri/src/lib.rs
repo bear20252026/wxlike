@@ -1958,9 +1958,9 @@ pub mod commands {
         state: tauri::State<'_, AppState>,
         engine: tauri::State<'_, callrtc::CallEngine>,
         conv: String,
-        peer: String,
+        peers: Vec<String>,
         video: Option<bool>,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<String>, String> {
         let me = state.user_id()?;
         let (base, token) = {
             let http = state.http();
@@ -1972,7 +1972,7 @@ pub mod commands {
             callrtc::RelayCfg { base, token },
             me,
             conv,
-            peer,
+            peers,
             video.unwrap_or(false),
         )
     }

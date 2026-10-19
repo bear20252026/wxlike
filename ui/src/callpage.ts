@@ -197,35 +197,41 @@ export function renderCallPage(root: El, convId: string, title: string, isGroup:
         ),
       );
     }
-    // 语音直连只对 1:1 生效：群通话要 SFU，客户端点对点拼不起来
-    if (convId.startsWith("d-") && me) {
-      const peer = convId.slice(2).split("~").find((x) => x !== me.user_id) ?? "";
+    // 语音直连：对房里除自己以外的每个人各开一条媒体会话（mesh）。
+    // 人数多了要 SFU，这里给出上限提示而不是假装能用。
+    const others = st.participants
+      .filter((p) => p.user !== me?.user_id)
+      .map((p) => p.user);
+    if (me && others.length > 0) {
       const live = rtc?.active && rtc.conv === convId;
-      if (live && rtc?.connected) {
-        // ↓ 收到的帧 / ↑ 自己发出去的帧：两个都在涨才说明是双向通话
+      if (live && rtc && rtc.connected_peers > 0) {
+        const total = rtc.peers;
         bar.append(
           h(
             "span",
             "call-btn rtc on",
-            `🎧 已连通 · ↓${rtc.audio_frames} ↑${rtc.mic_frames}`,
+            `🎧 ${rtc.connected_peers}/${total} · ↓${rtc.audio_frames} ↑${rtc.mic_frames}`,
           ),
         );
-      } else if (live && rtc?.ringing) {
-        const pick = btn("📞 接听", "rtc", false, () => void api.callRtcAccept());
-        bar.append(pick);
+      } else if (live && rtc && rtc.ringing) {
+        bar.append(btn("📞 接听", "rtc", false, () => void api.callRtcAccept()));
       } else {
         const on = live === true;
-        const go = btn(on ? "🎧 拨号中…" : "🎧 语音直连", "rtc", on, () => {
-          void (async () => {
-            try {
-              await api.callRtcStart(convId, peer, false);
-              await refresh();
-            } catch (e) {
-              toast(String(e).slice(0, 120));
+        bar.append(
+          btn(on ? "🎧 拨号中…" : `🎧 语音直连（${others.length}）`, "rtc", on, () => {
+            if (others.length > 4) {
+              toast("mesh 上限 4 人；更多人需要 SFU（尚未实现）");
             }
-          })();
-        });
-        bar.append(go);
+            void (async () => {
+              try {
+                await api.callRtcStart(convId, others, false);
+                await refresh();
+              } catch (e) {
+                toast(String(e).slice(0, 120));
+              }
+            })();
+          }),
+        );
       }
     }
     const leave = h("button", "call-btn hangup", "📞 挂断");
