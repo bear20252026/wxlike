@@ -27,6 +27,7 @@ import {
   viewAtom,
 } from "./state";
 import * as api from "./api";
+import { renderCallPage, renderVerifyPage, stopCallPolling } from "./callpage";
 import ListenerSetter from "./vendor/tweb/listenerSetter";
 
 type El = HTMLElement;
@@ -540,6 +541,15 @@ async function drawDevices(host: El): Promise<void> {
 // chat view
 // ---------------------------------------------------------------------------
 
+/** 直聊会话 id 形如 `d-<a>~<b>`；返回"对方"的 id（群聊返回 null）。 */
+function directPeer(convId: string): string | null {
+  if (!convId.startsWith("d-")) return null;
+  const [a, b] = convId.slice(2).split("~");
+  const me = appStore.get(meAtom)?.user_id;
+  if (!a || !b || !me) return null;
+  return a === me ? b : a;
+}
+
 function renderChat(root: El, convId: string, title: string, isGroup: boolean): void {
   clear(root);
   const back = h("button", "icon-btn", "←");
@@ -555,7 +565,24 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   const searchBtn = h("button", "icon-btn", "🔍");
   searchBtn.title = "在聊天中搜索";
   on(searchBtn, "click", () => void chatSearchDialog(convId));
-  head.append(back, headMain, searchBtn);
+  const callBtn = h("button", "icon-btn", "📞");
+  callBtn.title = "发起通话";
+  on(callBtn, "click", () =>
+    appStore.set(viewAtom, { screen: "call", convId, title, isGroup }),
+  );
+  head.append(back, headMain, callBtn, searchBtn);
+  // 直聊才谈得上"对端设备"：群聊没有单一对端身份可验证
+  if (!isGroup) {
+    const peer = directPeer(convId);
+    if (peer) {
+      const verifyBtn = h("button", "icon-btn", "🛡");
+      verifyBtn.title = "验证对端设备";
+      on(verifyBtn, "click", () =>
+        appStore.set(viewAtom, { screen: "verify", peerId: peer, title }),
+      );
+      head.append(verifyBtn);
+    }
+  }
 
   const packets = h("div", "chat-body");
   const footer = h("div", "chat-footer");
@@ -1259,6 +1286,8 @@ export function renderRoot(root: El): void {
     const v = appStore.get(viewAtom);
     clear(root);
     hideMsgMenu();
+    // 通话页的轮询必须在视图切换时停掉（否则会对已卸载的 DOM 继续刷新）
+    stopCallPolling();
     switch (v.screen) {
       case "auth":
         renderAuth(root);
@@ -1268,6 +1297,12 @@ export function renderRoot(root: El): void {
         break;
       case "chat":
         renderChat(root, v.convId, v.title, v.isGroup);
+        break;
+      case "call":
+        renderCallPage(root, v.convId, v.title, v.isGroup);
+        break;
+      case "verify":
+        renderVerifyPage(root, v.peerId, v.title);
         break;
     }
   };

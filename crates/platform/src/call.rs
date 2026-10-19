@@ -309,7 +309,9 @@ pub struct TargetBody {
 
 #[derive(serde::Deserialize)]
 pub struct MuteBody {
-    pub target: String,
+    /// `mute` 必填；`mute-all` 不需要（全员）。
+    #[serde(default)]
+    pub target: Option<String>,
     /// "audio" | "video"
     pub track: String,
     pub muted: bool,
@@ -350,13 +352,19 @@ async fn start(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<StartBody>,
+    // 空 body 也合法（客户端只想用默认容量）。这里刻意不用 `Json<T>`：
+    // 它会把空 body 直接判成 400，而"开房不带参数"是正常用法。
+    body: axum::body::Bytes,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.start_call(
-        &conv,
-        &authed.user_id,
-        body.capacity.unwrap_or(DEFAULT_CAPACITY),
-    )?;
+    let capacity = if body.is_empty() {
+        DEFAULT_CAPACITY
+    } else {
+        serde_json::from_slice::<StartBody>(&body)
+            .ok()
+            .and_then(|b| b.capacity)
+            .unwrap_or(DEFAULT_CAPACITY)
+    };
+    platform.start_call(&conv, &authed.user_id, capacity)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -384,7 +392,11 @@ async fn mute(
     Path(conv): Path<String>,
     Json(body): Json<MuteBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    let target = validate::id(&body.target)?.to_string();
+    let raw = body
+        .target
+        .as_deref()
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "target"))?;
+    let target = validate::id(raw)?.to_string();
     let track = match body.track.as_str() {
         "audio" => Track::Audio,
         "video" => Track::Video,

@@ -11,7 +11,9 @@ import { atom, createStore } from "jotai/vanilla";
 export type View =
   | { screen: "auth" }
   | { screen: "main"; tab: "chats" | "friends" | "me" | "favorites" }
-  | { screen: "chat"; convId: string; title: string; isGroup: boolean };
+  | { screen: "chat"; convId: string; title: string; isGroup: boolean }
+  | { screen: "call"; convId: string; title: string; isGroup: boolean }
+  | { screen: "verify"; peerId: string; title: string };
 
 export interface Me {
   user_id: string;
