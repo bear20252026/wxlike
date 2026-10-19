@@ -24,6 +24,9 @@
 | 信令桥（Tauri 命令 + TS 封装，前端只透传 SDP） | `ui/src-tauri/src/lib.rs` · `ui/src/api.ts` | tsc + esbuild | ✅ |
 | **端到端媒体协商**：SDP 走中继 → 两端完成 ICE/DTLS/SRTP → 音频双向到达 | `crates/platform/tests/call_media.rs` | 2 | ✅ |
 | **真 socket 冒烟**：axum 起在真实 TCP 端口，裸 HTTP/1.1 驱动（204 空 body、409 错误体、401） | `crates/platform/tests/call_tcp.rs` | 1 | ✅ |
+| **客户端宿主层**：`CallHost` 把状态机 / str0m / 真 UDP socket 接在一起（候选注入早于 offer） | `crates/rtc/src/host.rs` | — | ✅ |
+| **两通客户端真打通**：127.0.0.1 上真 UDP，ICE+DTLS 连通且音频帧到达 | `crates/rtc/tests/host_udp.rs` | 2 | ✅ |
+| **桌面端接线**：引擎线程（10ms 节拍）+ 中继收发 + `call://rtc` 事件 + 通话页按钮 | `ui/src-tauri/src/callrtc.rs` · `ui/src/callpage.ts` | tsc + esbuild | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
@@ -130,3 +133,31 @@ let granted = registry.install(&manifest_bytes, &sig)?;
   平台侧，避免 ingest 被停播后的旧凭据复用。
 - **签名与包体分离**：包体按内容寻址（sha256），签名旁挂 `(key_id, sig)`，
   密钥轮换不影响已发布包；注册表单独负责防降级，这是验签挡不住的一层。
+
+## 媒体接线（P5 收尾）
+
+链路上的每一层现在都有人负责，且边界清晰：
+
+```
+CallManager（纯状态机，无 IO）
+      ↓  Action::Send / Ended
+CallHost（host.rs：注入候选、泵媒体、把 Datagram 变成 Transmit）
+      ↓  Effect::Signal / Transmit / Audio / Connected / Ended
+callrtc.rs（唯一碰 socket 与 HTTP 的地方，10ms 节拍，专用线程）
+      ↓  tauri 命令 + call://rtc 事件
+callpage.ts（按钮 + "已连通 · N 帧" 徽标）
+```
+
+几个刻意的选择：
+
+* **候选必须在 offer 之前注入**。`CallManager::set_local_candidates` 就是为了
+  这一点存在的——漏了它 SDP 里没有 candidate 行，ICE 会永远停在 checking，
+  而表面上"信令都通了"，极难查。`host_udp.rs` 里有一条断言专门守这个退化路径。
+* **引擎用阻塞线程而不是 tokio 任务**：`ureq` 是同步的，媒体要 10ms 固定节拍，
+  混进 async 运行时要不停 `spawn_blocking`，节拍反而容易拖歪。
+* **绑 `0.0.0.0` 时换成本机网卡地址**再写进 SDP（`primary_ipv4`），否则对端
+  拿到的是不可达候选。`WXLIKE_MEDIA_BIND` 可覆盖绑定地址。
+* **群通话不接客户端点对点**：多方要 SFU，按钮只对 `d-` 直聊出现，不做假功能。
+
+仍未接的：麦克风采集与播放（`rtc` 的 `audio` feature 需要声卡与 libopus，
+CI 无设备），所以目前 `audio_frames` 是"媒体面在流动"的证据，不是"能听见声音"。

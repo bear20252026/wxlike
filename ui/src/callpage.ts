@@ -10,6 +10,7 @@
 
 import * as api from "./api";
 import { appStore, meAtom, toast, viewAtom } from "./state";
+import { listen } from "./tauri";
 
 type El = HTMLElement;
 
@@ -27,11 +28,22 @@ function clear(el: El): void {
 /** 轮询句柄：离开页面时必须停掉，否则会对已卸载的 DOM 继续刷新。 */
 let poll: number | null = null;
 
+/** 本地媒体引擎的最近一次快照（`call://rtc` 推送）。 */
+let rtc: api.CallRtcStatus | null = null;
+let rtcUnsub: (() => void) | null = null;
+
 export function stopCallPolling(): void {
   if (poll !== null) {
     window.clearInterval(poll);
     poll = null;
   }
+  if (rtcUnsub) {
+    rtcUnsub();
+    rtcUnsub = null;
+  }
+  rtc = null;
+  // 离开通话页就挂断媒体：线程不挂会一直占着 UDP 端口和麦克风
+  void api.callRtcHangup().catch(() => {});
 }
 
 function mmss(ms: number): string {
@@ -185,8 +197,37 @@ export function renderCallPage(root: El, convId: string, title: string, isGroup:
         ),
       );
     }
+    // 语音直连只对 1:1 生效：群通话要 SFU，客户端点对点拼不起来
+    if (convId.startsWith("d-") && me) {
+      const peer = convId.slice(2).split("~").find((x) => x !== me.user_id) ?? "";
+      const live = rtc?.active && rtc.conv === convId;
+      if (live && rtc?.connected) {
+        bar.append(
+          h("span", "call-btn rtc on", `🎧 已连通 · ${rtc.audio_frames} 帧`),
+        );
+      } else if (live && rtc?.ringing) {
+        const pick = btn("📞 接听", "rtc", false, () => void api.callRtcAccept());
+        bar.append(pick);
+      } else {
+        const on = live === true;
+        const go = btn(on ? "🎧 拨号中…" : "🎧 语音直连", "rtc", on, () => {
+          void (async () => {
+            try {
+              await api.callRtcStart(convId, peer, false);
+              await refresh();
+            } catch (e) {
+              toast(String(e).slice(0, 120));
+            }
+          })();
+        });
+        bar.append(go);
+      }
+    }
     const leave = h("button", "call-btn hangup", "📞 挂断");
-    leave.addEventListener("click", () => void act(convId, "leave"));
+    leave.addEventListener("click", () => {
+      void api.callRtcHangup().catch(() => {});
+      void act(convId, "leave");
+    });
     bar.append(leave);
   };
   redraw = draw;
@@ -218,6 +259,17 @@ export function renderCallPage(root: El, convId: string, title: string, isGroup:
     }
     await refresh();
   };
+
+  void listen("call://rtc", (payload) => {
+    rtc = payload as api.CallRtcStatus;
+    draw();
+  }).then((un) => {
+    rtcUnsub = un;
+  });
+  void api.callRtcStatus().then((st) => {
+    rtc = st;
+    draw();
+  });
 
   void bootstrap();
   poll = window.setInterval(() => void refresh(), 4000);

@@ -832,6 +832,38 @@ export async function callAction(
 
 /** 通话信令：内容结构由 `wxlike-rtc` 的 `SignalContent` 定义（invite/accept/
  * reject/cancel/hangup/candidate），前端只透传，不解释 SDP。 */
+/** 本地通话引擎状态（`call://rtc` 事件的负载）。 */
+export interface CallRtcStatus {
+  active: boolean;
+  conv: string;
+  call_id: string;
+  ringing: boolean;
+  connected: boolean;
+  phase: string;
+  audio_frames: number;
+}
+
+/** 发起语音直连：开媒体端口、offer 进中继。房间控制面另行 `callAction`。 */
+export async function callRtcStart(
+  convId: string,
+  peer: string,
+  video = false,
+): Promise<string> {
+  return invoke<string>("call_rtc_start", { conv: convId, peer, video });
+}
+
+export async function callRtcAccept(): Promise<void> {
+  return invoke<void>("call_rtc_accept");
+}
+
+export async function callRtcHangup(): Promise<void> {
+  return invoke<void>("call_rtc_hangup");
+}
+
+export async function callRtcStatus(): Promise<CallRtcStatus> {
+  return invoke<CallRtcStatus>("call_rtc_status");
+}
+
 export async function callSignalPost(
   convId: string,
   signal: Record<string, unknown>,

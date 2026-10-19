@@ -32,6 +32,8 @@ use wxlike_core::e2ee::Crypto;
 use wxlike_core::{Envelope, MsgBody, MsgId};
 use wxlike_net::Client;
 
+pub mod callrtc;
+
 /// Deterministic 1:1 conversation id (mirror of the platform's rule; kept
 /// local so the UI crate does not need the server's data plane).
 pub fn direct_conv_id(a: &str, b: &str) -> String {
@@ -564,7 +566,7 @@ impl AppState {
             waveform,
             asr: None, // 转文字占位: provider lands at P4
         };
-        payload.validate().map_err(|e| e)?;
+        payload.validate()?;
         self.send_body(
             conv_id,
             to,
@@ -591,7 +593,7 @@ impl AppState {
             size,
             sha256: sha256.to_string(),
         };
-        payload.validate().map_err(|e| e)?;
+        payload.validate()?;
         self.send_body(
             conv_id,
             to,
@@ -616,7 +618,7 @@ impl AppState {
             pack: pack.to_string(),
             id: id.to_string(),
         };
-        payload.validate().map_err(|e| e)?;
+        payload.validate()?;
         self.send_body(
             conv_id,
             to,
@@ -696,7 +698,7 @@ impl AppState {
     ) -> Result<(), String> {
         let parsed: wxlike_core::msgmeta::VideoPayload =
             serde_json::from_value(payload.clone()).map_err(|e| format!("bad video payload: {e}"))?;
-        parsed.validate().map_err(|e| e)?;
+        parsed.validate()?;
         self.send_body(
             conv_id,
             to,
@@ -1963,6 +1965,59 @@ pub mod commands {
     ) -> Result<serde_json::Value, String> {
         state.local_history(&conv_id, before_seq, limit)
     }
+
+    // -- P5: 本地通话引擎（信令中继 + 真 UDP 媒体） --------------------------
+
+    /// 发起通话：开媒体端口、把 offer 投进中继，返回本地 call_id。
+    /// 房间控制面（`call_action` start）仍由调用方先做——两者是不同层次：
+    /// 前者管"谁在房里"，这里管"声音怎么过去"。
+    #[tauri::command]
+    pub fn call_rtc_start(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        engine: tauri::State<'_, callrtc::CallEngine>,
+        conv: String,
+        peer: String,
+        video: Option<bool>,
+    ) -> Result<String, String> {
+        let me = state.user_id()?;
+        let (base, token) = {
+            let http = state.http();
+            let token = http.token.clone().ok_or("未登录")?;
+            (http.base.clone(), token)
+        };
+        engine.start(
+            app,
+            callrtc::RelayCfg { base, token },
+            me,
+            conv,
+            peer,
+            video.unwrap_or(false),
+        )
+    }
+
+    /// 接听当前响铃中的来电。
+    #[tauri::command]
+    pub fn call_rtc_accept(engine: tauri::State<'_, callrtc::CallEngine>) -> Result<(), String> {
+        engine.accept();
+        Ok(())
+    }
+
+    /// 挂断并停掉引擎线程。
+    #[tauri::command]
+    pub fn call_rtc_hangup(engine: tauri::State<'_, callrtc::CallEngine>) -> Result<(), String> {
+        engine.hangup();
+        engine.shutdown();
+        Ok(())
+    }
+
+    /// 引擎状态快照（UI 首屏拿一次，之后靠 `call://rtc` 事件）。
+    #[tauri::command]
+    pub fn call_rtc_status(
+        engine: tauri::State<'_, callrtc::CallEngine>,
+    ) -> Result<callrtc::EngineStatus, String> {
+        Ok(engine.status())
+    }
 } // mod commands
 
 /// Runs the app. Kept in the library so `main.rs` stays a two-liner and the
@@ -1971,12 +2026,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new("http://127.0.0.1:8099"))
+        .manage(callrtc::CallEngine::default())
         .invoke_handler(tauri::generate_handler![
             commands::set_server,
             commands::call_state,
             commands::call_action,
             commands::call_signal_post,
             commands::call_signal_take,
+            commands::call_rtc_start,
+            commands::call_rtc_accept,
+            commands::call_rtc_hangup,
+            commands::call_rtc_status,
             commands::safety_number,
             commands::verify_peer,
             commands::register,

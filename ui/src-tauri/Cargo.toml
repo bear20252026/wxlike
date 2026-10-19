@@ -16,6 +16,8 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 wxlike-core = { path = "../../crates/core" }
 wxlike-net = { path = "../../crates/net" }
+# 通话引擎：CallHost + str0m 媒体（纯 Rust，无 libwebrtc）
+wxlike-rtc = { path = "../../crates/rtc" }
 # WP-11: all backend interaction goes through these Rust commands (the
 # frontend never speaks HTTP/QUIC itself). ureq = small sync client on rustls.
 ureq = { version = "2", features = ["json"] }

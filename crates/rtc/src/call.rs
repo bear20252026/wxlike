@@ -15,6 +15,7 @@
 //! caller and the other yields its own call and answers the winner's.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use crate::media::MediaSession;
@@ -59,6 +60,10 @@ pub struct CallManager {
     me: String,
     calls: HashMap<String, Call>,
     seq: i64,
+    /// 本端媒体候选（真实 socket 的地址）。为空时退化为"无候选"模式，
+    /// 仅供纯状态机测试使用——真机上必须先 [`CallManager::set_local_candidates`]
+    /// 再 `start`/收 invite，否则 SDP 里没有 candidate 行，ICE 永远连不上。
+    local_candidates: Vec<SocketAddr>,
 }
 
 fn new_call_id(me: &str) -> String {
@@ -78,8 +83,24 @@ impl CallManager {
         Self {
             me: me.into(),
             calls: HashMap::new(),
+            local_candidates: Vec::new(),
             seq: 0,
         }
+    }
+
+    /// 声明本端媒体候选地址（宿主绑定真实 UDP socket 之后调用）。
+    /// 必须在 `start` / 收到 invite **之前**设置。
+    pub fn set_local_candidates(&mut self, addrs: Vec<SocketAddr>) {
+        self.local_candidates = addrs;
+    }
+
+    /// 建媒体会话并挂上本端候选。
+    fn new_media(&self, controlling: bool) -> MediaSession {
+        let mut media = MediaSession::new(controlling);
+        for addr in &self.local_candidates {
+            media.add_host_candidate(*addr);
+        }
+        media
     }
 
     pub fn me(&self) -> &str {
@@ -133,7 +154,7 @@ impl CallManager {
             return (call_id, actions);
         }
 
-        let mut media = MediaSession::new(true);
+        let mut media = self.new_media(true);
         let offer = media.offer(video).ok();
         let mut state = CallState::caller();
         state.apply(Event::LocalInvite);
@@ -281,7 +302,7 @@ impl CallManager {
         sdp: serde_json::Value,
         video: bool,
     ) -> Vec<Action> {
-        let media = MediaSession::new(false);
+        let media = self.new_media(false);
         let call_id = signal.call_id.clone();
         let peer = signal.from.clone();
         let mut state = CallState::callee();
@@ -399,6 +420,20 @@ impl CallManager {
     }
 
     /// The media session of a call (host pumps datagrams / writes frames).
+    /// 当前所有未结束的通话 id（宿主用来逐通泵媒体）。
+    pub fn live_calls(&self) -> Vec<String> {
+        self.calls
+            .iter()
+            .filter(|(_, c)| c.live())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// 只读媒体视图（查连通状态、m-line 用）。
+    pub fn media_ref(&self, call_id: &str) -> Option<&MediaSession> {
+        self.calls.get(call_id)?.media.as_ref()
+    }
+
     pub fn media_mut(&mut self, call_id: &str) -> Option<&mut MediaSession> {
         self.calls.get_mut(call_id).and_then(|c| c.media.as_mut())
     }
