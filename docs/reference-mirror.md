@@ -40,6 +40,8 @@
 | 设备验证 UI、房间列表虚拟化 | **Element Web**（已镜像） |
 | 同步/事件模型对照 | **Synapse** |
 | 群通话房间 UI 与管控 | **Nextcloud Talk** |
+| 多方通话（mesh 上限 / 何时上 SFU） | **Nextcloud Talk** `docs/scalability.md`：带宽 = 1 Mbps × (人数−1)（视频）/ ~50 kbps（音频），音频-only 可达 ~20 人 |
+| SFU 架构（真要写的时候） | **`refs/atm0s-media-server`**：Rust + **str0m**（与我们同一套栈），分层 `transport_webrtc` / `media_core` / `media_connector` / `media_runner`，按层参照重写而非 vendoring |
 
 ## P3 读扩散核心（下一阶段直接使用）
 
@@ -73,7 +75,7 @@
 | `dimina/` | didi/dimina | 小程序容器架构文档对照 |
 | `blivedm_rs/` | isomoes/blivedm_rs | B 站弹幕 WS 客户端（弹幕协议参考） |
 | `mimir/` | Mimir-IM/mimir | UniFFI 跨平台绑定范式 |
-| `atm0s-media-server/` | 8xFF/atm0s-media-server | 去中心 SFU（观察，重构期不用） |
+| `atm0s-media-server/` | 8xFF/atm0s-media-server | 去中心 SFU（**观察**：重构期不 vendoring，但它是唯一与我们同栈（Rust + str0m）的 SFU，做多人通话时按层参照） |
 | `tweb/` | morethanwords/tweb | Telegram Web（GPL）——P5 Web 端架构参考 |
 
 ## 其余（骨架/协议/推送/设计研究）

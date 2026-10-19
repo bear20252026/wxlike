@@ -219,8 +219,10 @@ export function renderCallPage(root: El, convId: string, title: string, isGroup:
         const on = live === true;
         bar.append(
           btn(on ? "🎧 拨号中…" : `🎧 语音直连（${others.length}）`, "rtc", on, () => {
-            if (others.length > 4) {
-              toast("mesh 上限 4 人；更多人需要 SFU（尚未实现）");
+            // 音频 mesh 的上行 ≈ 50 kbps × 人数（Nextcloud Talk 的算法）；
+            // 8 人约 350 kbps，再多人就该上 SFU 了。
+            if (others.length > 8) {
+              toast("音频 mesh 建议 ≤ 8 人；更多人需要 SFU（尚未实现）");
             }
             void (async () => {
               try {
