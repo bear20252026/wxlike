@@ -31,6 +31,7 @@
 | **DSP 小件**：有状态线性重采样（跨缓冲相位连续）、20ms 分帧、声道平均 | `crates/rtc/src/dsp.rs` | 8 | ✅ |
 | **TURN 客户端**：Allocate（401 挑战 + MESSAGE-INTEGRITY）、CreatePermission、ChannelBind、Refresh | `crates/rtc/src/turn.rs` | 6 | ✅ |
 | **中继路径**：对着最小 TURN 服务器双向转发媒体 | `crates/rtc/tests/turn_alloc.rs` | 2 | ✅ |
+| **多方通话（mesh）**：一人同时与两人通话，音频到达每一路 | `crates/rtc/tests/mesh_udp.rs` | 2 | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
@@ -226,3 +227,18 @@ TURN 鉴权有两个极易写错的地方，测试专门守着：
 未做：TCP/TLS 传输、Even-Port。不影响"能打通"，只影响极端网络下的成功率。
 部署侧仍需一台 coturn（`turnserver --lt-cred-mech --realm=... --user=user:pass`），
 这是运维决策，不进代码。
+
+## 多方通话：mesh，以及踩到的一个真 bug
+
+`CallHost::start_many` 对每个对端开一条独立 `MediaSession`，共用同一个 socket
+（`CallManager` 本来就按 call_id 存多通电话）。4 人以内上行完全够
+（3 路 × ~40 kbps Opus），再多人必须 SFU——UI 上超过 4 人会明确提示而不是假装能用。
+
+**这个测试抓到一个一对一时永远看不见的 bug**：原来 `handle_datagram` 把每个
+入向包喂给**所有**在进行的会话。一对一时只有一个会话，所以没问题；多人时
+B 的 DTLS 包会被 C 的会话也吃一遍，str0m 按来源当成新的连通性检查处理，
+结果一条通了、另一条卡在 checking——表现是"三方通话只有一个人连上"。
+
+修法是按来源路由：`Effect::Transmit` 里的 `destination` 就是该会话的对端地址，
+第一次发出去时记下 `远端地址 → call_id`，之后入向包只投给对应的那一条。
+未知来源（还没发过包）才回退到广播。这条路由表在通话结束时清理。
