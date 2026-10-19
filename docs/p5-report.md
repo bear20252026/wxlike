@@ -20,6 +20,8 @@
 | **通话页 UI**（参与者网格 + 底部控制条 + 参与者菜单 + 4 s 轮询） | `ui/src/callpage.ts` · `ui/src/styles.css` | tsc + esbuild | ✅ |
 | **设备验证页**（12 组安全码 + 身份指纹 + 标记已验证） | `ui/src/callpage.ts` · `ui/src/api.ts` · `ui/src-tauri/src/lib.rs` | tsc + esbuild | ✅ |
 | **权限矩阵**（Rocket.Chat 的 roles × permissions：9 个权限点 / 3 个角色；提权仅群主、同级不可互踢） | `crates/platform/src/perms.rs` | 10 | ✅ |
+| **通话信令中继**（offer/answer/ICE；`from` 强制改写、收件人必须在房、队列 64 条有界丢最旧） | `crates/rtc/src/{signal,room}.rs` · `crates/platform/src/call.rs` | 6（平台 5 + HTTP 1） | ✅ |
+| 信令桥（Tauri 命令 + TS 封装，前端只透传 SDP） | `ui/src-tauri/src/lib.rs` · `ui/src/api.ts` | tsc + esbuild | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 

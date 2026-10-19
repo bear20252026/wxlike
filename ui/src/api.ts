@@ -830,6 +830,21 @@ export async function callAction(
   });
 }
 
+/** 通话信令：内容结构由 `wxlike-rtc` 的 `SignalContent` 定义（invite/accept/
+ * reject/cancel/hangup/candidate），前端只透传，不解释 SDP。 */
+export async function callSignalPost(
+  convId: string,
+  signal: Record<string, unknown>,
+): Promise<{ dropped: number }> {
+  return invoke<{ dropped: number }>("call_signal_post", { conv: convId, signal });
+}
+
+export async function callSignalTake(
+  convId: string,
+): Promise<{ signals: Record<string, unknown>[] }> {
+  return invoke<{ signals: Record<string, unknown>[] }>("call_signal_take", { conv: convId });
+}
+
 export interface SafetyInfo {
   safety_number: string;
   peer_identity: string;

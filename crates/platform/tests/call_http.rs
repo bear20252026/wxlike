@@ -13,16 +13,24 @@ use wxlike_platform::Platform;
 
 /// 建一个 alice 拥有、bob/carol 在群、dave 群外的三人群，返回
 /// `(router, alice_id, alice_token, dave_token, "conv|dave_id")`。
-async fn group_room() -> (Router, String, String, String, String, String) {
+async fn group_room() -> (Router, String, String, String, String, String, String) {
     let state = platform();
     let (alice, ta) = signup(&Platform::router(state.clone()), "alice").await;
     let (bob, _tb) = signup(&Platform::router(state.clone()), "bob").await;
     let (carol, tc) = signup(&Platform::router(state.clone()), "carol").await;
     let (dave, td) = signup(&Platform::router(state.clone()), "dave").await;
     let conv = state
-        .create_group(&alice, "通话群", &[bob, carol])
+        .create_group(&alice, "通话群", &[bob, carol.clone()])
         .expect("create group");
-    (app(state), alice, ta, td, tc, format!("{conv}|{dave}"))
+    (
+        app(state),
+        alice,
+        ta,
+        td,
+        tc,
+        carol,
+        format!("{conv}|{dave}"),
+    )
 }
 
 fn split(pair: &str) -> (&str, &str) {
@@ -32,7 +40,7 @@ fn split(pair: &str) -> (&str, &str) {
 
 #[tokio::test]
 async fn lifecycle_over_http() {
-    let (app, _alice, ta, _td, _tc, pair) = group_room().await;
+    let (app, _alice, ta, _td, _tc, _carol, pair) = group_room().await;
     let (conv, _dave) = split(&pair);
     let (_bob, tb) = signup(&app, "bob2").await;
     // bob2 不在群里：先确认 403
@@ -139,7 +147,7 @@ async fn lifecycle_over_http() {
 
 #[tokio::test]
 async fn outsider_and_missing_room_errors() {
-    let (app, _alice, ta, td, tc, pair) = group_room().await;
+    let (app, _alice, ta, td, tc, _carol, pair) = group_room().await;
     let (conv, _dave) = split(&pair);
 
     // 群内成员在没开房时 join → 404（成员资格先过，房间不存在才 404）
@@ -225,4 +233,81 @@ async fn direct_conversation_call() {
     assert_eq!(status, 403, "第三方进不了直聊");
     let _ = carol;
     let _ = Platform::router;
+}
+
+/// 信令中继的 HTTP 面：offer 投递 + 读即清 + 收件人不在房里的拒绝。
+#[tokio::test]
+async fn signaling_over_http() {
+    let (app, alice, ta, _td, tc, carol, pair) = group_room().await;
+    let (conv, _dave) = split(&pair);
+    call(
+        &app,
+        req("POST", &format!("/api/call/{conv}/start"), None, Some(&ta)),
+    )
+    .await;
+    let (status, _) = call(
+        &app,
+        req("POST", &format!("/api/call/{conv}/join"), None, Some(&tc)),
+    )
+    .await;
+    assert_eq!(status, 204);
+
+    // alice → carol 的 offer（from 字段故意填成别人，服务端必须改写）
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            &format!("/api/call/{conv}/signal"),
+            Some(json!({
+                "v": 1,
+                "call_id": "call-1",
+                "from": alice,
+                "to": carol,
+                "content": {"type": "invite", "sdp": {"type": "offer"}, "video": true}
+            })),
+            Some(&ta),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["dropped"], json!(0));
+
+    // 收件人不是 alice，所以 alice 队列里没有东西（投递不会抄送发送者）
+    let (status, body) = call(
+        &app,
+        req("GET", &format!("/api/call/{conv}/signal"), None, Some(&ta)),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["signals"], json!([]));
+
+    // 收件人 carol 能拿到
+    let (status, body) = call(
+        &app,
+        req("GET", &format!("/api/call/{conv}/signal"), None, Some(&tc)),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let signals = body["signals"].as_array().unwrap();
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0]["call_id"], json!("call-1"));
+    assert_eq!(signals[0]["from"], json!(alice));
+
+    // 收件人不在房里 → 404（NoSuchParticipant；不区分"不存在"和"没进房"，
+    // 免得把用户 id 空间当成探测面）
+    let (status, _) = call(
+        &app,
+        req(
+            "POST",
+            &format!("/api/call/{conv}/signal"),
+            Some(json!({
+                "v": 1, "call_id": "call-2", "from": alice,
+                "to": "deadbeefdeadbeef",
+                "content": {"type": "hangup"}
+            })),
+            Some(&ta),
+        ),
+    )
+    .await;
+    assert_eq!(status, 404);
 }
