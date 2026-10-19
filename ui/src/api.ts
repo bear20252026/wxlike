@@ -775,3 +775,71 @@ export function openSession(session: Session): void {
   }
   go({ screen: "chat", convId: session.convId, title: session.title, isGroup: session.isGroup });
 }
+
+// ---------------------------------------------------------------------------
+// P4/P5: 通话房间控制面 + 设备验证（全部经 Tauri 命令，前端不碰 HTTP）
+// ---------------------------------------------------------------------------
+
+export interface CallParticipant {
+  user: string;
+  role: string;
+  audio_muted: boolean;
+  video_muted: boolean;
+  hand_raised: boolean;
+  joined_at: number;
+}
+
+export interface CallState {
+  conv_id: string;
+  live: boolean;
+  host?: string | null;
+  locked?: boolean;
+  recording?: boolean;
+  participants: CallParticipant[];
+}
+
+export type CallAction =
+  | "start"
+  | "join"
+  | "leave"
+  | "mute"
+  | "mute-all"
+  | "kick"
+  | "lock"
+  | "record"
+  | "hand"
+  | "transfer"
+  | "egress";
+
+export async function callState(convId: string): Promise<CallState> {
+  return invoke<CallState>("call_state", { conv: convId });
+}
+
+export async function callAction(
+  convId: string,
+  action: CallAction,
+  opts: { target?: string; track?: "audio" | "video"; value?: boolean; capacity?: number } = {},
+): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("call_action", {
+    conv: convId,
+    action,
+    target: opts.target ?? null,
+    track: opts.track ?? null,
+    value: opts.value ?? null,
+    capacity: opts.capacity ?? null,
+  });
+}
+
+export interface SafetyInfo {
+  safety_number: string;
+  peer_identity: string;
+  verified_at: number | null;
+}
+
+export async function safetyNumber(peer: string): Promise<SafetyInfo> {
+  return invoke<SafetyInfo>("safety_number", { peer });
+}
+
+export async function verifyPeer(peer: string, peerIdentity: string): Promise<void> {
+  await invoke("verify_peer", { peer, peer_identity: peerIdentity });
+}

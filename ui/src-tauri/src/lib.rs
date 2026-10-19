@@ -1386,6 +1386,96 @@ pub mod commands {
 
     use super::*;
 
+    // -- P4/P5: 通话房间控制面 + 设备验证（前端不碰 HTTP，全部经此桥） --------
+
+    /// 房间快照：`live=false` 表示当前没有通话。
+    #[tauri::command]
+    pub fn call_state(
+        state: tauri::State<'_, AppState>,
+        conv: String,
+    ) -> Result<serde_json::Value, String> {
+        state
+            .http()
+            .expect_json("GET", &format!("/api/call/{conv}"), None)
+    }
+
+    /// 统一入口：`action` ∈ start/join/leave/mute/mute-all/kick/lock/record/
+    /// hand/transfer/egress。参数按动作取用，其余忽略。
+    #[tauri::command]
+    pub fn call_action(
+        state: tauri::State<'_, AppState>,
+        conv: String,
+        action: String,
+        target: Option<String>,
+        track: Option<String>,
+        value: Option<bool>,
+        capacity: Option<usize>,
+    ) -> Result<serde_json::Value, String> {
+        let path = format!("/api/call/{conv}/{action}");
+        let mut body = serde_json::Map::new();
+        match action.as_str() {
+            "mute" | "mute-all" => {
+                body.insert("track".into(), serde_json::json!(track.unwrap_or_else(|| "audio".into())));
+                body.insert("muted".into(), serde_json::json!(value.unwrap_or(true)));
+                if let Some(t) = target {
+                    body.insert("target".into(), serde_json::json!(t));
+                }
+            }
+            "kick" | "transfer" => {
+                let t = target.ok_or_else(|| "target is required".to_string())?;
+                body.insert("target".into(), serde_json::json!(t));
+            }
+            "lock" | "record" | "hand" => {
+                body.insert("value".into(), serde_json::json!(value.unwrap_or(true)));
+            }
+            "start" => {
+                body.insert("capacity".into(), serde_json::json!(capacity));
+            }
+            _ => {}
+        }
+        if action == "egress" {
+            return state.http().expect_json("GET", &path, None);
+        }
+        // 控制类端点一律 204：必须走 expect_empty——`into_json` 会把空 body
+        // 当成 decode 错误（"EOF"），这里踩过一次。
+        let payload = if body.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(body))
+        };
+        state
+            .http()
+            .expect_empty("POST", &path, payload.as_ref())?;
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// 安全码（12×5 数字）+ 对端身份指纹 + 我是否已标记验证。
+    #[tauri::command]
+    pub fn safety_number(
+        state: tauri::State<'_, AppState>,
+        peer: String,
+    ) -> Result<serde_json::Value, String> {
+        state.http().expect_json(
+            "GET",
+            &format!("/api/secret/{peer}/safety-number"),
+            None,
+        )
+    }
+
+    /// 口头/扫码比对通过后落一条验证记录。
+    #[tauri::command]
+    pub fn verify_peer(
+        state: tauri::State<'_, AppState>,
+        peer: String,
+        peer_identity: String,
+    ) -> Result<(), String> {
+        state.http().expect_empty(
+            "PUT",
+            &format!("/api/secret/{peer}/verify"),
+            Some(&serde_json::json!({ "peer_identity": peer_identity })),
+        )
+    }
+
     #[tauri::command]
     pub fn set_server(state: tauri::State<'_, AppState>, base_url: String) -> Result<(), String> {
         state.set_server(&base_url);
@@ -1860,6 +1950,10 @@ pub fn run() {
         .manage(AppState::new("http://127.0.0.1:8099"))
         .invoke_handler(tauri::generate_handler![
             commands::set_server,
+            commands::call_state,
+            commands::call_action,
+            commands::safety_number,
+            commands::verify_peer,
             commands::register,
             commands::login,
             commands::logout,

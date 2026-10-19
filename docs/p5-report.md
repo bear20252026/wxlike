@@ -16,6 +16,9 @@
 | 小程序包签名（ed25519）+ 防降级 + 权限白名单 | `crates/container/src/package.rs` | 7 | ✅ |
 | 消息索引：**借用 tweb `SlicedArray`**（历史分页合并 + 实时插入） | `ui/src/vendor/tweb/slicedArray.ts` · `ui/src/msgIndex.ts` | 7（node 断言） | ✅ |
 | **通话房间 HTTP 控制面**（开播/进出/静音/全员静音/踢人/锁门/录制/移交/举手/出口分配） | `crates/platform/src/call.rs` · `crates/rtc/src/{room,sfu}.rs` | 13 | ✅ |
+| 同上 **HTTP 层契约**（204/200/403/404/409/422 的真实状态码） | `crates/platform/tests/call_http.rs` | 3 | ✅ |
+| **通话页 UI**（参与者网格 + 底部控制条 + 参与者菜单 + 4 s 轮询） | `ui/src/callpage.ts` · `ui/src/styles.css` | tsc + esbuild | ✅ |
+| **设备验证页**（12 组安全码 + 身份指纹 + 标记已验证） | `ui/src/callpage.ts` · `ui/src/api.ts` · `ui/src-tauri/src/lib.rs` | tsc + esbuild | ✅ |
 
 **新增测试 17 项**（合同 P5 下限 15）。
 
