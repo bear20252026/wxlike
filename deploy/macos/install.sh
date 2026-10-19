@@ -44,6 +44,9 @@ cargo build --release -p wxlike-server
 mkdir -p "$BIN_DIR" "$DATA" "$DATA/media" "$LOGS" "$HOME/Library/LaunchAgents"
 install -m 0755 "$REPO_ROOT/target/release/wxlike-server" "$BIN"
 
+say "启动前自检（打印解析后的配置）"
+WXLIKE_DB="$DATA/wxlike.db" WXLIKE_MEDIA_DIR="$DATA/media"   WXLIKE_HTTP="$HTTP_BIND" WXLIKE_QUIC="$QUIC_BIND" "$BIN" --check
+
 say "渲染 launchd 配置 → $PLIST_DST"
 sed -e "s|__BIN__|$BIN|g" \
     -e "s|__DATA__|$DATA|g" \

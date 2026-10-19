@@ -29,6 +29,8 @@ hex = { workspace = true }
 # WP-13: request/tracing observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 平台数据目录惯例（macOS ~/Library/Application Support、Linux ~/.local/share）
+dirs = "6"
 
 [features]
 default = []
@@ -41,3 +43,5 @@ ureq = { version = "2", features = ["json"] }
 # P3 ADR-8: the WS-gateway test is a real browser-shaped client
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+# 优雅关闭测试要发真 SIGTERM（Child::kill 发的是 SIGKILL）
+libc = "0.2"
