@@ -200,6 +200,10 @@ impl Db {
         let c = self.lock();
         c.execute_batch(
             r#"
+            CREATE TABLE IF NOT EXISTS conv_owner (
+                conv_id    TEXT PRIMARY KEY,
+                owner_type TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS users (
                 id           TEXT PRIMARY KEY,
                 name         TEXT NOT NULL UNIQUE,

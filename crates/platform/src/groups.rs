@@ -141,6 +141,7 @@ impl Platform {
         }
         drop(c);
         self.invalidate_group(&id);
+        self.set_owner_kind(&id, wxlike_message::OwnerType::Group)?;
         Ok(id)
     }
 

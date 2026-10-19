@@ -37,6 +37,15 @@ channel:      hub → MessageStore::append(OwnerType::Channel) → 信箱
 * 多设备同步没有统一的版本链；
 * 撤回、变更事件在两条路径上语义不同。
 
+## 进度（2026-10-19）
+
+* ✅ **步骤 2 的 channel 部分已完成**：`GET /api/conv/{c}/unread`、
+  `POST /api/conv/{c}/read`、`GET /api/conv/{c}/sync?version=` 直接调
+  `MessageStore::{head_seq,unread,ack,sync_plan}`，没有新表。
+  新增 `conv_owner(conv_id, owner_type)` 只解决"conv_id → 属主"的映射
+  （direct 靠 `d-` 前缀推导，群/频道建的时候落表）。
+* ⬜ **步骤 1 未做**：direct/group 仍未写进信箱，所以它们的未读是 0。
+
 ## 正确的下一步（按顺序）
 
 1. **direct/group 也写进信箱**：hub 的 append 路径改成

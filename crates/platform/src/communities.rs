@@ -278,6 +278,8 @@ impl Platform {
                 wxlike_core::types::now_ms() as i64
             ],
         )?;
+        // 信箱按属主组织，HTTP 拿到的是 conv_id，所以要落一张映射
+        self.set_owner_kind(&id, wxlike_message::OwnerType::Channel)?;
         Ok(id)
     }
 
