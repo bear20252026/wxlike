@@ -41,6 +41,8 @@ pub fn routes() -> Router<PlatformState> {
         .route("/api/call/{conv}/hand", post(hand))
         .route("/api/call/{conv}/transfer", post(transfer))
         .route("/api/call/{conv}/egress", get(egress))
+        .route("/api/call/{conv}/signal", post(post_signal))
+        .route("/api/call/{conv}/signal", get(take_signals))
 }
 
 /// 进程内房间注册表。通话状态不落库：进程重启 = 所有通话结束。
@@ -285,6 +287,27 @@ impl Platform {
         })
     }
 
+    /// 投递通话信令（offer/answer/ICE）。返回被队列上限挤掉的条数。
+    pub fn post_call_signal(
+        &self,
+        conv: &str,
+        actor: &str,
+        signal: wxlike_rtc::signal::Signal,
+    ) -> Result<usize> {
+        self.with_room(conv, |room| {
+            room.post_signal(actor, signal).map_err(map_room_error)
+        })
+    }
+
+    /// 取走发给我的信令（读即清）。
+    pub fn take_call_signals(
+        &self,
+        conv: &str,
+        user: &str,
+    ) -> Result<Vec<wxlike_rtc::signal::Signal>> {
+        self.with_room(conv, |room| room.take_signals(user).map_err(map_room_error))
+    }
+
     /// 主持人离开后若房间移交，返回新主持人（供上层广播系统事件）。
     pub fn call_host(&self, conv: &str) -> Option<String> {
         let guard = self.calls.lock();
@@ -471,6 +494,25 @@ async fn transfer(
     let target = require_body_target(&body)?;
     platform.transfer_call(&conv, &authed.user_id, &target)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn post_signal(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(conv): Path<String>,
+    Json(signal): Json<wxlike_rtc::signal::Signal>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let dropped = platform.post_call_signal(&conv, &authed.user_id, signal)?;
+    Ok(Json(serde_json::json!({ "dropped": dropped })))
+}
+
+async fn take_signals(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(conv): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let signals = platform.take_call_signals(&conv, &authed.user_id)?;
+    Ok(Json(serde_json::json!({ "signals": signals })))
 }
 
 async fn egress(

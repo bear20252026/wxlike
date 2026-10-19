@@ -1449,6 +1449,29 @@ pub mod commands {
         Ok(serde_json::json!({ "ok": true }))
     }
 
+    /// 投递一条通话信令（offer/answer/ICE）。`from` 由服务端改写，别信客户端。
+    #[tauri::command]
+    pub fn call_signal_post(
+        state: tauri::State<'_, AppState>,
+        conv: String,
+        signal: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        state
+            .http()
+            .expect_json("POST", &format!("/api/call/{conv}/signal"), Some(&signal))
+    }
+
+    /// 取走发给我的信令（读即清，服务端队列有界）。
+    #[tauri::command]
+    pub fn call_signal_take(
+        state: tauri::State<'_, AppState>,
+        conv: String,
+    ) -> Result<serde_json::Value, String> {
+        state
+            .http()
+            .expect_json("GET", &format!("/api/call/{conv}/signal"), None)
+    }
+
     /// 安全码（12×5 数字）+ 对端身份指纹 + 我是否已标记验证。
     #[tauri::command]
     pub fn safety_number(
@@ -1952,6 +1975,8 @@ pub fn run() {
             commands::set_server,
             commands::call_state,
             commands::call_action,
+            commands::call_signal_post,
+            commands::call_signal_take,
             commands::safety_number,
             commands::verify_peer,
             commands::register,

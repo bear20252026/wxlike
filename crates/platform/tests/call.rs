@@ -239,3 +239,118 @@ fn capacity_is_enforced() {
     f.p.join_call(&f.conv, &f.bob).unwrap();
     assert!(f.p.join_call(&f.conv, &f.carol).is_err(), "满员拒绝");
 }
+
+// -- 通话信令中继（offer/answer/ICE）：媒体面协商的前置 ----------------------
+
+use wxlike_rtc::signal::{Signal, SignalContent};
+
+fn invite(call_id: &str, from: &str, to: &str) -> Signal {
+    Signal::new(
+        call_id,
+        from,
+        to,
+        SignalContent::Invite {
+            sdp: serde_json::json!({"type": "offer", "sdp": "v=0"}),
+            video: true,
+        },
+    )
+}
+
+#[test]
+fn signals_relay_between_participants() {
+    let f = fixture();
+    f.p.start_call(&f.conv, &f.alice, 8).unwrap();
+    f.p.join_call(&f.conv, &f.bob).unwrap();
+
+    // alice 发 offer 给 bob
+    let dropped =
+        f.p.post_call_signal(&f.conv, &f.alice, invite("c1", &f.alice, &f.bob))
+            .unwrap();
+    assert_eq!(dropped, 0);
+
+    let got = f.p.take_call_signals(&f.conv, &f.bob).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].call_id, "c1");
+    assert_eq!(got[0].from, f.alice);
+
+    // 读即清：再取一次为空
+    assert!(f.p.take_call_signals(&f.conv, &f.bob).unwrap().is_empty());
+    // alice 自己队列里没有东西
+    assert!(f.p.take_call_signals(&f.conv, &f.alice).unwrap().is_empty());
+}
+
+#[test]
+fn forged_sender_is_overwritten() {
+    let f = fixture();
+    f.p.start_call(&f.conv, &f.alice, 8).unwrap();
+    f.p.join_call(&f.conv, &f.bob).unwrap();
+
+    // bob 谎称自己是 alice
+    let mut forged = invite("c1", &f.alice, &f.alice);
+    forged.from = f.alice.clone();
+    f.p.post_call_signal(&f.conv, &f.bob, forged).unwrap();
+    let got = f.p.take_call_signals(&f.conv, &f.alice).unwrap();
+    assert_eq!(got[0].from, f.bob, "from 必须被改写成真实发送者");
+}
+
+#[test]
+fn signals_rejected_for_outsiders_and_absent_recipients() {
+    let f = fixture();
+    f.p.start_call(&f.conv, &f.alice, 8).unwrap();
+    f.p.join_call(&f.conv, &f.bob).unwrap();
+
+    // 收件人不在房里
+    assert!(f
+        .p
+        .post_call_signal(&f.conv, &f.alice, invite("c1", &f.alice, &f.carol))
+        .is_err());
+    // 群外用户发不了
+    assert!(f
+        .p
+        .post_call_signal(&f.conv, &f.dave, invite("c1", &f.dave, &f.alice))
+        .is_err());
+    // 非成员取不到（会先被成员判定挡住）
+    assert!(f.p.take_call_signals(&f.conv, &f.dave).is_err());
+}
+
+#[test]
+fn signal_queue_is_bounded_and_drops_oldest() {
+    let f = fixture();
+    f.p.start_call(&f.conv, &f.alice, 8).unwrap();
+    f.p.join_call(&f.conv, &f.bob).unwrap();
+
+    let mut dropped = 0;
+    for i in 0..70 {
+        let mut sig = invite(&format!("c{i}"), &f.alice, &f.bob);
+        sig.content = SignalContent::Candidate {
+            sdp_mid: "0".into(),
+            sdp_mline_index: 0,
+            candidate: format!("cand-{i}"),
+        };
+        dropped += f.p.post_call_signal(&f.conv, &f.alice, sig).unwrap();
+    }
+    assert_eq!(dropped, 6, "70 条塞进 64 的队列，丢 6 条最旧");
+    let got = f.p.take_call_signals(&f.conv, &f.bob).unwrap();
+    assert_eq!(got.len(), 64);
+    // 留下的是最新的那批
+    match &got[0].content {
+        SignalContent::Candidate { candidate, .. } => assert_eq!(candidate, "cand-6"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn leaving_clears_pending_signals() {
+    let f = fixture();
+    f.p.start_call(&f.conv, &f.alice, 8).unwrap();
+    f.p.join_call(&f.conv, &f.bob).unwrap();
+    f.p.post_call_signal(&f.conv, &f.alice, invite("c1", &f.alice, &f.bob))
+        .unwrap();
+
+    f.p.leave_call(&f.conv, &f.bob).unwrap();
+    f.p.join_call(&f.conv, &f.bob).unwrap();
+    assert!(
+        f.p.take_call_signals(&f.conv, &f.bob).unwrap().is_empty(),
+        "离房即丢弃积压，避免重连时读到陈旧 offer"
+    );
+}

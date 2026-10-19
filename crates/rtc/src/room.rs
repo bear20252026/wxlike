@@ -108,6 +108,9 @@ pub struct EgressPlan {
     pub bwe: (u64, u64),
 }
 
+/// 每个收件人的信令积压上限（ICE trickle 高峰够用，又不至于 OOM）。
+pub const SIGNAL_QUEUE_CAP: usize = 64;
+
 #[derive(Clone, Debug)]
 pub struct Room {
     id: String,
@@ -122,6 +125,8 @@ pub struct Room {
     banned: HashSet<String>,
     /// 每个观众一个出口码率分配器（参照 atm0s 的 EgressBitrateAllocator）。
     allocators: HashMap<String, EgressBitrateAllocator>,
+    /// 通话信令队列（offer/answer/ICE），只在房间存活期间存在。
+    signals: crate::signal::SignalBox,
     created_at: u64,
 }
 
@@ -163,6 +168,7 @@ impl Room {
             participants,
             banned: HashSet::new(),
             allocators,
+            signals: crate::signal::SignalBox::new(SIGNAL_QUEUE_CAP),
             created_at: now_ms,
         })
     }
@@ -248,6 +254,7 @@ impl Room {
             return Err(RoomError::NotMember);
         }
         self.allocators.remove(user);
+        self.signals.forget(user);
         if self.participants.is_empty() {
             return Ok(LeaveOutcome {
                 new_host: None,
@@ -302,6 +309,32 @@ impl Room {
         Ok(muted)
     }
 
+    /// 投递一条通话信令：只有房间成员能发，收件人也必须在房里。
+    /// `from` 一律被改写成 `actor`——客户端自报的 from 不可信。
+    pub fn post_signal(&mut self, actor: &str, mut signal: crate::signal::Signal) -> Result<usize> {
+        if self.participant(actor).is_none() {
+            return Err(RoomError::NotMember);
+        }
+        if self.participant(&signal.to).is_none() {
+            return Err(RoomError::NoSuchParticipant);
+        }
+        signal.from = actor.to_string();
+        Ok(self.signals.push(signal))
+    }
+
+    /// 取走发给我的信令（读即清）。非成员拿不到任何东西。
+    pub fn take_signals(&mut self, user: &str) -> Result<Vec<crate::signal::Signal>> {
+        if self.participant(user).is_none() {
+            return Err(RoomError::NotMember);
+        }
+        Ok(self.signals.drain(user))
+    }
+
+    /// 当前积压条数（诊断/测试用）。
+    pub fn pending_signals(&self, user: &str) -> usize {
+        self.signals.pending(user)
+    }
+
     /// 全员静音/解除（**参照 Nextcloud Talk 的 force-mute**）：仅主持人/管理员。
     /// 返回受影响人数；主持人与管理员也会被静音（自己再解除即可，语义更简单）。
     pub fn mute_all(&mut self, actor: &str, track: Track, muted: bool) -> Result<usize> {
@@ -332,6 +365,7 @@ impl Room {
         }
         self.participants.remove(target);
         self.allocators.remove(target);
+        self.signals.forget(target);
         self.banned.insert(target.to_string());
         Ok(())
     }

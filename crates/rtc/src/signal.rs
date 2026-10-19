@@ -22,6 +22,60 @@ fn direct_conv_id(a: &str, b: &str) -> String {
     format!("d-{x}~{y}")
 }
 
+/// 每个收件人一个有界队列：信令只在房间存活期间存在，不落库、不占消息序列号
+/// （ADR-7 / 不变式 3——通话信令绝不消耗会话 seq）。
+///
+/// 有界是必须的：ICE trickle 在弱网下会短时间刷几十条候选，无界队列等于
+/// 给对端塞一个 OOM。满了丢**最旧**的一条，新候选永远比旧候选有用。
+#[derive(Debug, Default, Clone)]
+pub struct SignalBox {
+    per_user: std::collections::HashMap<String, std::collections::VecDeque<Signal>>,
+    cap: usize,
+}
+
+impl SignalBox {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            per_user: std::collections::HashMap::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    /// 入队；返回因超限被丢弃的条数（0 表示没丢）。
+    pub fn push(&mut self, signal: Signal) -> usize {
+        let cap = self.cap;
+        let q = self.per_user.entry(signal.to.clone()).or_default();
+        q.push_back(signal);
+        let mut dropped = 0;
+        while q.len() > cap {
+            q.pop_front();
+            dropped += 1;
+        }
+        dropped
+    }
+
+    /// 取走某人的全部信令（读即清）。
+    pub fn drain(&mut self, user: &str) -> Vec<Signal> {
+        self.per_user
+            .remove(user)
+            .map(|q| q.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn pending(&self, user: &str) -> usize {
+        self.per_user.get(user).map(|q| q.len()).unwrap_or(0)
+    }
+
+    /// 有人离房/被踢：把发给他的积压清掉。
+    pub fn forget(&mut self, user: &str) {
+        self.per_user.remove(user);
+    }
+
+    pub fn total(&self) -> usize {
+        self.per_user.values().map(|q| q.len()).sum()
+    }
+}
+
 /// Everything both sides need to agree on a call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signal {
