@@ -1,0 +1,4 @@
+# audiopus_sys 的 vendored libopus 里写着 `cmake_minimum_required(VERSION 3.1)`，
+# CMake ≥ 4 直接拒绝配置。这个变量让它按 3.5 的策略继续，不影响其它构建。
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

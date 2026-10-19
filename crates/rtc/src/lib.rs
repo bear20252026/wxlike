@@ -13,10 +13,13 @@
 //!
 //! NAT traversal: host candidates work on the same network segment with no
 //! configuration; `WXLIKE_STUN_URL` adds a STUN server; `WXLIKE_TURN_URL`
+#[cfg(feature = "audio")]
+pub mod audio_io;
 /// is the interface point for relayed setups (no bundled TURN server —
 /// running one is an ops decision, see docs).
 pub mod call;
 pub mod capture;
+pub mod dsp;
 pub mod host;
 pub mod ice;
 pub mod media;

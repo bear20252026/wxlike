@@ -132,7 +132,9 @@ async fn group_create_list_and_info() {
         .as_str()
         .unwrap()
         .to_string();
-    let carol_id = AppState::new(&http).register(&who_name("carol"), "pw").unwrap()["user_id"]
+    let carol_id = AppState::new(&http)
+        .register(&who_name("carol"), "pw")
+        .unwrap()["user_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -334,7 +336,11 @@ async fn send_and_receive_over_live_hub() {
     let other = AppState::new(&http);
     other.register(&who_name("mallory"), "pw").unwrap();
     let err = other
-        .connect_hub(&rogue.local_addr().unwrap().to_string(), "mallory", &shared_pins)
+        .connect_hub(
+            &rogue.local_addr().unwrap().to_string(),
+            "mallory",
+            &shared_pins,
+        )
         .unwrap_err();
     assert!(
         err.contains("fingerprint changed") || err.to_lowercase().contains("handshake"),
@@ -373,18 +379,26 @@ async fn p1_history_pagination_and_read_receipts() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // six messages; bob collects them live (and thus the msg ids)
     let mut bob_saw = Vec::new();
     for i in 0..6 {
-        alice.send_text(&conv, vec![bob_id.clone()], &format!("page {i}")).unwrap();
+        alice
+            .send_text(&conv, vec![bob_id.clone()], &format!("page {i}"))
+            .unwrap();
     }
     for _ in 0..6 {
         let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-            .await.unwrap().unwrap().expect("event");
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("event");
         bob_saw.push(ev);
     }
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -408,7 +422,10 @@ async fn p1_history_pagination_and_read_receipts() {
     assert_eq!(bob_saw[5]["text"], "page 5");
     bob.send_read_receipt(&conv, &last_id).unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(5), alice.next_event())
-        .await.unwrap().unwrap().expect("receipt event");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("receipt event");
     assert_eq!(ev["kind"], "receipt");
     assert_eq!(ev["receipt"]["state"], "read");
     assert_eq!(hex_id(&ev["receipt"]["target"]), last_id);
@@ -427,8 +444,11 @@ async fn p1_typing_is_transient() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // typing reaches bob, then a real message follows. A typing frame sent
@@ -449,17 +469,24 @@ async fn p1_typing_is_transient() {
     let ev = ev.expect("typing arrives within the retry budget");
     assert_eq!(ev["kind"], "typing");
 
-    alice.send_text(&conv, vec![bob_id.clone()], "actual content").unwrap();
+    alice
+        .send_text(&conv, vec![bob_id.clone()], "actual content")
+        .unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await.unwrap().unwrap().expect("content arrives");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("content arrives");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // server history contains the content and nothing else
     let bob_token = platform.create_session(&bob_id, 60_000).unwrap();
     let rows: serde_json::Value = ureq::get(&format!("{http}/api/history/{conv}"))
         .set("Authorization", &format!("Bearer {bob_token}"))
-        .call().unwrap()
-        .into_json().unwrap();
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
     let msgs = rows["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 1, "typing left no stored row: {msgs:?}");
     assert_eq!(msgs[0]["text"], "actual content");
@@ -478,14 +505,22 @@ async fn p1_forward_merge_and_favorites() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // original message arrives at bob's (for the id)…
-    alice.send_text(&conv, vec![bob_id.clone()], "要被转发的消息").unwrap();
+    alice
+        .send_text(&conv, vec![bob_id.clone()], "要被转发的消息")
+        .unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await.unwrap().unwrap().expect("original arrives");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("original arrives");
     let origin_id = hex_id(&ev["msg_id"]);
 
     // …alice forwards it (single) — bob sees msg.forward
@@ -496,9 +531,14 @@ async fn p1_forward_merge_and_favorites() {
         "text": "要被转发的消息",
         "sender": alice_id,
     });
-    alice.forward_message(&conv, vec![bob_id.clone()], &snapshot).unwrap();
+    alice
+        .forward_message(&conv, vec![bob_id.clone()], &snapshot)
+        .unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await.unwrap().unwrap().expect("forward arrives");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("forward arrives");
     assert_eq!(ev["kind"], "msg.forward");
     assert_eq!(ev["payload"]["origin_msg_id"], origin_id);
 
@@ -506,20 +546,29 @@ async fn p1_forward_merge_and_favorites() {
     let mut second = snapshot.clone();
     second["text"] = "第二条".into();
     let items = vec![snapshot.clone(), second];
-    alice.merge_forward(&conv, vec![bob_id.clone()], &items).unwrap();
+    alice
+        .merge_forward(&conv, vec![bob_id.clone()], &items)
+        .unwrap();
     let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await.unwrap().unwrap().expect("merge arrives");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("merge arrives");
     assert_eq!(ev["kind"], "msg.merge");
     assert_eq!(ev["payload"]["items"].as_array().unwrap().len(), 2);
 
     // empty merge is refused client-side
-    assert!(alice.merge_forward(&conv, vec![bob_id.clone()], &[]).is_err());
+    assert!(alice
+        .merge_forward(&conv, vec![bob_id.clone()], &[])
+        .is_err());
 
     // favorite the forward, list it, remove it
-    let fav = alice.favorite_add(&serde_json::json!({
-        "source_conv": conv, "source_msg_id": origin_id,
-        "kind": "text", "text": "要被转发的消息", "sender": alice_id,
-    })).unwrap();
+    let fav = alice
+        .favorite_add(&serde_json::json!({
+            "source_conv": conv, "source_msg_id": origin_id,
+            "kind": "text", "text": "要被转发的消息", "sender": alice_id,
+        }))
+        .unwrap();
     let fav_id = hex_id(&fav["id"]);
     let list = alice.favorites_list(10).unwrap();
     let rows = list["favorites"].as_array().unwrap();
@@ -543,8 +592,11 @@ async fn p1_secret_chat_roundtrip_through_real_stack() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
 
     // both publish pre-key bundles, then alice opens a secret conversation
     let fp_a = alice.secret_enable().unwrap();
@@ -554,10 +606,15 @@ async fn p1_secret_chat_roundtrip_through_real_stack() {
     assert!(alice.secret_enabled() && bob.secret_enabled());
 
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
-    alice.send_secret_text(&conv, vec![bob_id.clone()], "s3cret payload").unwrap();
+    alice
+        .send_secret_text(&conv, vec![bob_id.clone()], "s3cret payload")
+        .unwrap();
 
     let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await.unwrap().unwrap().expect("sealed message arrives");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("sealed message arrives");
     assert_eq!(ev["kind"], "e2ee");
     assert_eq!(ev["encrypted"], serde_json::json!(true));
     assert_eq!(ev["text"], "s3cret payload", "decrypted at the UI layer");
@@ -576,18 +633,25 @@ async fn p1_secret_chat_falls_back_to_cleartext_without_peer_bundle() {
         .as_str()
         .unwrap()
         .to_string();
-    alice.connect_hub(&quic.to_string(), &alice_id, &pins()).unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins()).unwrap();
+    alice
+        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+        .unwrap();
 
     // only alice enables E2EE; bob never publishes a bundle
     alice.secret_enable().unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
     // documented P1 fallback: warn + send cleartext so the message is not lost
-    alice.send_secret_text(&conv, vec![bob_id.clone()], "fallback text").unwrap();
+    alice
+        .send_secret_text(&conv, vec![bob_id.clone()], "fallback text")
+        .unwrap();
 
     let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await.unwrap().unwrap().expect("fallback message arrives");
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("fallback message arrives");
     assert_eq!(ev["kind"], "text", "fell back to a normal message: {ev}");
     assert_eq!(ev["text"], "fallback text");
 }
-

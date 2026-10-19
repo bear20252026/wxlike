@@ -8,8 +8,9 @@
 //! Payloads are opaque bytes at the media layer, so the codec here only has
 //! to agree with itself: Opus 48 kHz mono, 20 ms frames (960 samples).
 
-/// Opus frame duration in samples at 48 kHz (20 ms).
-pub const FRAME_SAMPLES: usize = 960;
+/// Opus frame duration in samples at 48 kHz (20 ms)。
+/// 唯一定义在 [`crate::dsp`]，这里只做转发，免得两个常量各走各的。
+pub use crate::dsp::FRAME_SAMPLES;
 /// Opus frame duration in bytes of PCM input (i16 mono).
 pub const FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 
