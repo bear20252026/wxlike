@@ -40,8 +40,20 @@
 
   <key>RunAtLoad</key>
   <true/>
+
+  <!--
+    只在这两种情况下重启：
+      Crashed        —— 异常退出（信号崩溃/非零退出码）
+      SuccessfulExit=false —— 正常退出不重启
+    这样 launchctl bootout 停服务后不会又被拉起来，而真崩溃时会自愈。
+  -->
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>Crashed</key>
+    <true/>
+  </dict>
 
   <!-- 崩溃重启不要太急：10 秒一次，避免端口被反复抢 -->
   <key>ThrottleInterval</key>

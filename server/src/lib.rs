@@ -42,6 +42,29 @@ pub struct Stack {
     pub hub: HubHandle,
     pub http_addr: std::net::SocketAddr,
     pub quic_addr: std::net::SocketAddr,
+    /// 通知 HTTP 服务停止接新连接并排空在飞请求。
+    shutdown: tokio::sync::watch::Sender<bool>,
+    http_task: tokio::task::JoinHandle<()>,
+}
+
+impl Stack {
+    /// 优雅关闭：停止接新请求 → 等在飞请求完成（上限 `grace`）→ WAL 落盘。
+    ///
+    /// 调用方拿到信号（SIGTERM/SIGINT）后调它，然后正常退出进程。
+    /// QUIC hub 与 MQ 不单独拆——进程退出时一并回收；这里保证的是
+    /// **HTTP 请求不被腰斩**与**SQLite 干净落盘**这两件会留下可见损坏的事。
+    pub async fn shutdown(self, grace: std::time::Duration) {
+        let _ = self.shutdown.send(true);
+        match tokio::time::timeout(grace, self.http_task).await {
+            Ok(Ok(())) => tracing::info!("http 已排空并停止"),
+            Ok(Err(err)) => tracing::warn!(%err, "http 任务异常结束"),
+            Err(_) => tracing::warn!(
+                "在 {:?} 内没排空完，强制退出（未完成的请求会被切断）",
+                grace
+            ),
+        }
+        self.platform.checkpoint_wal();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -207,8 +230,25 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
 
     let listener = tokio::net::TcpListener::bind(&opts.http_bind).await?;
     let http_addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        if let Err(err) = axum::serve(listener, app).await {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let http_task = tokio::spawn(async move {
+        // with_graceful_shutdown：收到信号后不再 accept，已建立的连接把
+        // 手头请求处理完。没有它，launchd 的 SIGTERM 会直接切断在飞请求。
+        let stop = async move {
+            // 注意：发送端全部被 drop（例如调用方直接丢掉 Stack）时 `changed()`
+            // 返回 Err。那**不是**停止请求——测试与嵌入式用法会丢掉 Stack 但
+            // 希望服务继续跑。只有真正收到 `true` 才停。
+            while shutdown_rx.changed().await.is_ok() {
+                if *shutdown_rx.borrow() {
+                    return;
+                }
+            }
+            std::future::pending::<()>().await;
+        };
+        if let Err(err) = axum::serve(listener, app)
+            .with_graceful_shutdown(stop)
+            .await
+        {
             eprintln!("[wxlike-server] http serve failed: {err}");
         }
     });
@@ -219,6 +259,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         hub: handle.clone(),
         http_addr,
         quic_addr,
+        shutdown: shutdown_tx,
+        http_task,
     })
 }
 

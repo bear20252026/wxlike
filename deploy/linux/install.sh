@@ -45,6 +45,9 @@ id -u "$USER_NAME" >/dev/null 2>&1 || {
 install -d -o "$USER_NAME" -g "$USER_NAME" "$DATA" "$DATA/media"
 install -m 0755 "$REPO_ROOT/target/release/wxlike-server" "$BIN"
 
+say "启动前自检（打印解析后的配置）"
+WXLIKE_DB="$DATA/wxlike.db" WXLIKE_MEDIA_DIR="$DATA/media"   WXLIKE_HTTP="$HTTP_BIND" WXLIKE_QUIC="$QUIC_BIND" "$BIN" --check
+
 say "写 systemd unit → $UNIT_DST"
 sed -e "s|__USER__|$USER_NAME|g" \
     -e "s|__BIN__|$BIN|g" \

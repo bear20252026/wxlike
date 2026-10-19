@@ -1,23 +1,181 @@
-//! wxlike dev server: platform HTTP API (axum) + MQ-routed QUIC hub.
+//! wxlike server: platform HTTP API (axum) + MQ-routed QUIC hub.
 //!
-//! Everything real lives in [`wxlike_server::start_stack`]; this binary only
-//! reads the environment and keeps the process alive.
+//! Everything real lives in [`wxlike_server::start_stack`]; this binary is the
+//! **service shell**: 解析配置、按平台惯例定路径、前台运行、接信号、优雅退出。
+//! 业务逻辑一行都不在这里，也不为任何操作系统做特殊适配。
 //!
-//! Backend selection (env):
-//!   WXLIKE_HUB_ID      hub identity, default "hub-1"
-//!   WXLIKE_MQ          "memory" (default) | "redis" (needs --features redis)
-//!   WXLIKE_REDIS_URL   default redis://127.0.0.1:6379
-//!   WXLIKE_DB          platform SQLite path, default "data/wxlike.db" (":memory:" allowed)
-//!   WXLIKE_HTTP        HTTP bind address, default 0.0.0.0:8099
-//!   WXLIKE_QUIC        QUIC bind address, default 0.0.0.0:9443
+//! 为什么前台运行：launchd 与 systemd 都要求进程在前台，由它们监控生命周期。
+//! 自己 fork 到后台反而会让 supervisor 以为服务已退出（反复拉起或直接放弃）。
+//! 同理不需要 PID 文件——supervisor 自己知道 PID。
 //!
-//! Run two hubs against one Redis to see cross-node routing:
-//!   WXLIKE_HUB_ID=hub-1 ./wxlike-server &
-//!   WXLIKE_HUB_ID=hub-2 ./wxlike-server -- (different ports via WXLIKE_QUIC/WXLIKE_HTTP)
+//! 配置（全部走环境变量，容器/systemd/launchd 三处给法一致）：
+//!   WXLIKE_HUB_ID        hub 标识，默认 "hub-1"
+//!   WXLIKE_MQ            "memory"（默认）| "redis"（需 --features redis）
+//!   WXLIKE_REDIS_URL     默认 redis://127.0.0.1:6379
+//!   WXLIKE_DB            SQLite 路径；默认 <平台数据目录>/wxlike/wxlike.db（":memory:" 允许）
+//!   WXLIKE_MEDIA_DIR     媒体目录；默认 <平台数据目录>/wxlike/media
+//!   WXLIKE_HTTP          HTTP 绑定，默认 0.0.0.0:8099
+//!   WXLIKE_QUIC          QUIC 绑定，默认 0.0.0.0:9443
+//!   WXLIKE_SHUTDOWN_GRACE 排空在飞请求的上限秒数，默认 10
+//!
+//! 数据目录按平台惯例（`dirs` crate）：
+//!   macOS   ~/Library/Application Support/wxlike
+//!   Linux   ~/.local/share/wxlike
+//!   Windows %APPDATA%\wxlike
+//!
+//! 自检：`wxlike-server --check` 打印解析后的全部配置后退出，不绑定端口。
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::time::Duration;
+
+/// 解析后的运行配置。`--check` 打印的就是它。
+struct Config {
+    hub_id: String,
+    mq_mode: String,
+    db_env: String,
+    db_path: Option<String>,
+    media_dir: PathBuf,
+    http: String,
+    quic: String,
+    grace: Duration,
+}
+
+/// 平台数据目录下的 wxlike 目录。
+fn data_dir() -> PathBuf {
+    dirs::data_dir()
+        .map(|d| d.join("wxlike"))
+        .unwrap_or_else(|| PathBuf::from("data"))
+}
+
+fn resolve() -> Config {
+    let base = data_dir();
+    let db_env = std::env::var("WXLIKE_DB")
+        .unwrap_or_else(|_| base.join("wxlike.db").to_string_lossy().to_string());
+    let db_path = if db_env == ":memory:" {
+        None
+    } else {
+        Some(db_env.clone())
+    };
+    let media_dir = std::env::var("WXLIKE_MEDIA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| base.join("media"));
+    let grace = std::env::var("WXLIKE_SHUTDOWN_GRACE")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(10));
+    Config {
+        hub_id: std::env::var("WXLIKE_HUB_ID").unwrap_or_else(|_| "hub-1".into()),
+        mq_mode: std::env::var("WXLIKE_MQ").unwrap_or_else(|_| "memory".into()),
+        db_env,
+        db_path,
+        media_dir,
+        http: std::env::var("WXLIKE_HTTP").unwrap_or_else(|_| "0.0.0.0:8099".into()),
+        quic: std::env::var("WXLIKE_QUIC").unwrap_or_else(|_| "0.0.0.0:9443".into()),
+        grace,
+    }
+}
+
+fn print_check(cfg: &Config) {
+    println!("wxlike-server 配置自检（不绑定端口、不写库）");
+    println!("  hub            {}", cfg.hub_id);
+    println!("  MQ             {}", cfg.mq_mode);
+    println!("  数据库         {}", cfg.db_env);
+    println!("  媒体目录       {}", cfg.media_dir.display());
+    println!("  HTTP 绑定      {}", cfg.http);
+    println!("  QUIC 绑定      {}", cfg.quic);
+    println!("  关闭排空上限   {}s", cfg.grace.as_secs());
+    println!(
+        "  TURN           {}",
+        std::env::var("WXLIKE_TURN_URL").unwrap_or_else(|_| "（未配置）".into())
+    );
+    println!(
+        "  STUN           {}",
+        std::env::var("WXLIKE_STUN_URL").unwrap_or_else(|_| "（默认公共 STUN）".into())
+    );
+    println!(
+        "  SFU 广告地址   {}",
+        std::env::var("WXLIKE_SFU_ADVERTISE").unwrap_or_else(|_| "（自动探测）".into())
+    );
+}
+
+/// 等一个"要求停止"的信号。
+///
+/// macOS/Linux 下 **SIGTERM 才是主角**：`launchctl bootout`、`systemctl stop`、
+/// `docker stop` 发的都是它。只接 SIGINT（Ctrl-C）等于"用 supervisor 停服务
+/// 时必然硬杀"。
+async fn wait_for_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(%err, "注册 SIGTERM 失败，退回只接 SIGINT");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        let mut int = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = term.recv() => tracing::info!("收到 SIGTERM"),
+            _ = int.recv() => tracing::info!("收到 SIGINT"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("收到 Ctrl-C");
+    }
+}
+
+async fn run(cfg: Config) -> anyhow::Result<()> {
+    std::fs::create_dir_all(&cfg.media_dir)?;
+    if let Some(path) = cfg.db_path.as_deref() {
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            if !dir.as_os_str().is_empty() {
+                std::fs::create_dir_all(dir)?;
+            }
+        }
+    }
+
+    println!("[wxlike-server] hub '{}' mq={}", cfg.hub_id, cfg.mq_mode);
+    let stack = wxlike_server::start_stack(wxlike_server::StackOptions {
+        hub_id: cfg.hub_id.clone(),
+        db_path: cfg.db_path.clone(),
+        mq_mode: cfg.mq_mode.clone(),
+        http_bind: cfg.http.parse()?,
+        quic_bind: cfg.quic.parse()?,
+    })
+    .await?;
+
+    println!("[wxlike-server] QUIC hub on {}", stack.quic_addr);
+    println!("[wxlike-server] platform db = {}", cfg.db_env);
+    println!(
+        "[wxlike-server] HTTP  on {}  (GET /health /endpoints /metrics, /api/*)",
+        stack.http_addr
+    );
+    println!("[wxlike-server] 前台运行中，等待 SIGTERM/SIGINT");
+
+    wait_for_signal().await;
+    println!(
+        "[wxlike-server] graceful shutdown 开始（排空上限 {}s）",
+        cfg.grace.as_secs()
+    );
+    stack.shutdown(cfg.grace).await;
+    println!("[wxlike-server] graceful shutdown 完成");
+    Ok(())
+}
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // WXLIKE_LOG=e.g. "wxlike_server=debug,wxlike_net=debug,info" (RUST_LOG also honored)
+async fn main() -> ExitCode {
     let filter = std::env::var("WXLIKE_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
         .unwrap_or_else(|_| "info".into());
@@ -29,37 +187,20 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .init();
-    let hub_id = std::env::var("WXLIKE_HUB_ID").unwrap_or_else(|_| "hub-1".into());
-    let http_addr = std::env::var("WXLIKE_HTTP").unwrap_or_else(|_| "0.0.0.0:8099".into());
-    let quic_addr: std::net::SocketAddr = std::env::var("WXLIKE_QUIC")
-        .unwrap_or_else(|_| "0.0.0.0:9443".into())
-        .parse()?;
-    let mq_mode = std::env::var("WXLIKE_MQ").unwrap_or_else(|_| "memory".into());
-    let db_env = std::env::var("WXLIKE_DB").unwrap_or_else(|_| "data/wxlike.db".into());
-    let db_path = if db_env == ":memory:" {
-        None
-    } else {
-        Some(db_env.clone())
-    };
 
-    println!("[wxlike-server] hub '{hub_id}' mq={mq_mode}");
-    let stack = wxlike_server::start_stack(wxlike_server::StackOptions {
-        hub_id: hub_id.clone(),
-        db_path,
-        mq_mode: mq_mode.clone(),
-        http_bind: http_addr.parse()?,
-        quic_bind: quic_addr,
-    })
-    .await?;
+    let cfg = resolve();
+    if std::env::args().any(|a| a == "--check") {
+        print_check(&cfg);
+        return ExitCode::SUCCESS;
+    }
 
-    println!("[wxlike-server] QUIC hub on {}", stack.quic_addr);
-    println!("[wxlike-server] platform db = {db_env}");
-    println!(
-        "[wxlike-server] HTTP  on {}  (GET /health /endpoints /metrics, /api/*)",
-        stack.http_addr
-    );
-
-    tokio::signal::ctrl_c().await?;
-    println!("[wxlike-server] shutting down");
-    Ok(())
+    match run(cfg).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("[wxlike-server] 启动失败: {err:#}");
+            // 非零退出：launchd 的 KeepAlive.SuccessfulExit=false 与 systemd 的
+            // Restart=always 都靠退出码区分"正常停止"与"崩了"。
+            ExitCode::FAILURE
+        }
+    }
 }
