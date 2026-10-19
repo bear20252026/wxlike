@@ -2,7 +2,7 @@
 //! multiple consumers on one queue split messages, mirroring BRPOP.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use async_trait::async_trait;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -43,7 +43,10 @@ impl MemoryMq {
 impl MessageQueue for MemoryMq {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> anyhow::Result<()> {
         let q = self.queue(queue).await;
-        q.buf.lock().unwrap().push_back(payload);
+        q.buf
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(payload);
         q.notify.notify_one();
         Ok(())
     }
@@ -52,7 +55,12 @@ impl MessageQueue for MemoryMq {
         let q = self.queue(queue).await;
         loop {
             let notified = q.notify.notified();
-            if let Some(payload) = q.buf.lock().unwrap().pop_front() {
+            if let Some(payload) = q
+                .buf
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front()
+            {
                 return Ok(payload);
             }
             notified.await;
@@ -94,14 +102,17 @@ impl RelQueue {
     }
 
     fn push(&self, payload: Vec<u8>) -> String {
-        let mut counter = self.counter.lock().unwrap();
+        let mut counter = self.counter.lock().unwrap_or_else(PoisonError::into_inner);
         *counter += 1;
         let id = format!("{}-0", *counter);
-        self.entries.lock().unwrap().push_back(Entry {
-            id: id.clone(),
-            payload,
-            claimed: None,
-        });
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(Entry {
+                id: id.clone(),
+                payload,
+                claimed: None,
+            });
         self.notify.notify_waiters();
         id
     }
@@ -117,11 +128,14 @@ impl MemoryReliableMq {
 
     /// Rebind this instance's consumer name (a "second process" in tests).
     pub fn set_consumer(&self, consumer: &str) {
-        *self.consumer.lock().unwrap() = consumer.to_string();
+        *self.consumer.lock().unwrap_or_else(PoisonError::into_inner) = consumer.to_string();
     }
 
     fn here(&self) -> String {
-        self.consumer.lock().unwrap().clone()
+        self.consumer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     async fn queue(&self, name: &str) -> Arc<RelQueue> {
@@ -157,7 +171,7 @@ impl ReliableQueue for MemoryReliableMq {
         loop {
             let notified = q.notify.notified();
             {
-                let mut entries = q.entries.lock().unwrap();
+                let mut entries = q.entries.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(entry) = entries.iter_mut().find(|e| e.claimed.is_none()) {
                     let id = entry.id.clone();
                     let payload = entry.payload.clone();
@@ -171,7 +185,7 @@ impl ReliableQueue for MemoryReliableMq {
 
     async fn ack(&self, queue: &str, id: &str) -> anyhow::Result<()> {
         let q = self.queue(queue).await;
-        let mut entries = q.entries.lock().unwrap();
+        let mut entries = q.entries.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(pos) = entries.iter().position(|e| e.id == id) {
             entries.remove(pos);
         }
@@ -186,7 +200,7 @@ impl ReliableQueue for MemoryReliableMq {
         let q = self.queue(queue).await;
         let me = self.here();
         let mut out = Vec::new();
-        let mut entries = q.entries.lock().unwrap();
+        let mut entries = q.entries.lock().unwrap_or_else(PoisonError::into_inner);
         for entry in entries.iter_mut() {
             let stale = match &entry.claimed {
                 Some((who, at)) => {
@@ -206,7 +220,7 @@ impl ReliableQueue for MemoryReliableMq {
         let q = self.queue(queue).await;
         // scoped so the guard is dropped before the future resolves
         let count = {
-            let entries = q.entries.lock().unwrap();
+            let entries = q.entries.lock().unwrap_or_else(PoisonError::into_inner);
             entries.iter().filter(|e| e.claimed.is_some()).count()
         };
         Ok(count as u64)

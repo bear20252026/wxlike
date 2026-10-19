@@ -93,7 +93,16 @@ impl Default for StackOptions {
 /// Boots the whole stack on the given binds (OS-assigned ports with `:0`).
 pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let router = build_mq_router(&opts.mq_mode).await?;
-    let platform = Platform::open(opts.db_path.as_deref())?.shared();
+    // 直播推流密钥：默认值是公开的（"dev-insecure-live-secret"），公网部署必须覆盖。
+    // 这里在装配层读环境变量，而不是让库的 Default 去读——库保持纯，配置留在边界。
+    let mut platform_options = wxlike_platform::PlatformOptions::default();
+    match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
+        Ok(secret) if !secret.is_empty() => platform_options.live_ingest_secret = secret,
+        _ => tracing::warn!(
+            "WXLIKE_LIVE_INGEST_SECRET 未设置：直播推流密钥是公开的开发默认值，公网部署必须设置"
+        ),
+    }
+    let platform = Platform::open_with(opts.db_path.as_deref(), platform_options)?.shared();
 
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);
     let mailbox = Arc::new(wxlike_message::MessageStore::open(opts.db_path.as_deref())?);

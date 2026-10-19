@@ -557,7 +557,7 @@ npm run build            # tsc --noEmit + esbuild 打包到 dist/
 npx tauri dev            # 首次编译 src-tauri 后弹出窗口（干凈环境 ≤15 分钟）
 
 # 命令层的 Rust 侧测试（打真实 in-process 服务器，禁 mock）
-cd ui/src-tauri && cargo test --test ui_commands   # 7 项
+cd ui/src-tauri && cargo test --test ui_commands   # 16 项
 cargo clippy --all-targets                          # 0 warning（任务书 A4）
 ```
 

@@ -98,6 +98,13 @@ fn print_check(cfg: &Config) {
         "  SFU 广告地址   {}",
         std::env::var("WXLIKE_SFU_ADVERTISE").unwrap_or_else(|_| "（自动探测）".into())
     );
+    println!(
+        "  直播推流密钥   {}",
+        match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
+            Ok(v) if !v.is_empty() => format!("已设置（{} 字符）", v.len()),
+            _ => "⚠️ 未设置，使用公开的开发默认值——公网部署必须设置".to_string(),
+        }
+    );
 }
 
 /// 信号监听器：**尽早安装**，之后才去启动服务。

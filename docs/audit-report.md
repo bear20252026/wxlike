@@ -129,3 +129,24 @@ core+net+mq+platform+message+...+video+search ← server（组合根/装配层�
 4. **最高优先下一步**（按序）：① P3 步骤 3/4 收尾（删平行机制 + device_cursor 迁移）→ 信箱成为唯一真相；② 抽 `wxlike-client` crate 消解 2080 行协议代码；③ SQLite async 化定型（含 SQL 的全链路基线补测）；④ 修本机 CRLF 四文件；⑤ P5 环境受限项（Flutter 工具链）寻找 CI 云构建替代路径。
 
 > 审计证据可复现：`cargo test --workspace`（517/0/4）、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --check`、`git log --oneline`（112→114 commits）、`git ls-files --eol`（CRLF 残留清单）。
+
+---
+
+## 八、处理记录（按本报告修改，2026-10-19）
+
+| 编号 | 意见 | 处理 |
+|---|---|---|
+| P2-3 | 工作副本 CRLF（4 文件） | ✅ 已 `rm` + 检出重写，`git ls-files --eol` 复查 `w/crlf` 为 0；**根因是 Windows 下用文本模式写文件**，后续编辑 `deploy/**`、`*.sh` 一律 `newline='
+'` |
+| P2-4 | `mq/memory.rs` 10 处 `lock().unwrap()` | ✅ 全部改为 `unwrap_or_else(PoisonError::into_inner)`，与全库一致 |
+| P2-7 | 直播推流密钥默认值 | ✅ 装配层支持 `WXLIKE_LIVE_INGEST_SECRET` 覆盖，未设置时 `tracing::warn!`；`--check` 打印是否已设置；`deploy/README.md` 加粗告警 |
+| P3-10 | `ui/src-tauri/data/media/` 残留 | ✅ 核查为**未跟踪**（`.gitignore:9` 已覆盖 `ui/src-tauri/data/`），报告该项为误报，无需改动 |
+| P3-11 | README 测试数滞后 | ✅ `ui_commands 7 项` → `16 项` |
+| P3-13 | 两套里程碑口径 | ✅ `WORK_BREAKDOWN` 的 M1–M4 表前加口径说明，指向蓝图 P1–P6 |
+| P1-1 | async 路径同步 SQLite | ⬜ 未做：需要专用 SQL 线程 + 通道，属架构级改动，单独一轮 |
+| P1-2 | P3 双写过渡态 | ⬜ 未做：`core::Store` 退化为归档是 p3-mailbox 步骤 3，需与扇出改造一起做 |
+| P2-5 | server 端点下沉 / 抽 `wxlike-client` | ⬜ 未做：2080 行搬迁，按报告建议排在 P3 收尾之后 |
+| P2-6 | `is_disconnect` 字符串匹配 | ⬜ 未做：需先确认 quinn 的错误分类 API |
+| P2-8 | 风控 fail-open | ⬜ 未做：报告本身建议 P6 加熔断计数而非改 fail-closed |
+| P3-9 | SFU 只转发音频 | ⬜ 已知边界（`video` 字段标注），等视频采集接入 |
+| P3-12 | 无 git tag | ⬜ 未做：建议按阶段补 `p1…p5-d1`，需要与发布节奏一起定 |
