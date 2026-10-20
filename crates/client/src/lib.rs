@@ -8,6 +8,8 @@
 //! （那是 `wxlike-core::Store` 的事）。它只负责"把请求发出去、把错误翻译成
 //! 人能读的话"。
 
+pub mod execute;
+
 use std::io::{Read as _, Write as _};
 
 /// 平台 HTTP 客户端：base URL + bearer token。
