@@ -34,10 +34,16 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
 mod db;
+mod jobs;
 mod range;
 mod stats;
 mod timing;
 
+pub use jobs::{
+    backoff_ms, deliver_callback, spawn_worker, CallbackBody, CallbackState, Delivery, Job,
+    JobFailure, JobState, JobSubmit, WorkerReport, BASE_DELAY_MS, CALLBACK_TIMEOUT_MS,
+    MAX_DELAY_MS, MAX_ERROR_CHARS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS, WORKER_POLL,
+};
 pub use range::{parse_range, read_range, serve_range, ByteRange, Served};
 pub use stats::{
     ViewerWatch, WatchError, WatchEvent, WatchEventRecord, WatchStats, DEFAULT_VIEWER_PAGE,
@@ -191,8 +197,8 @@ pub fn tools_available() -> bool {
 /// `thumb.png` · `meta.json`. A rename-into-place after a full temp
 /// transcode keeps partial jobs invisible.
 ///
-/// Zone E adds a sibling: `{root}/video.db`（播放统计，见 `db` 模块）。对象目录
-/// 本身仍然只在转码完整成功后出现，所以老代码的"目录存在=可播"这条不变式没被改动。
+/// Zone E adds a sibling: `{root}/video.db`（播放统计 + 转码作业，见 `db` 模块）。
+/// 对象目录本身仍然只在转码完整成功后出现，所以老代码的"目录存在=可播"这条不变式没被改动。
 #[derive(Clone)]
 pub struct VideoStore {
     inner: Arc<Inner>,
@@ -713,10 +719,11 @@ pub fn routes(state: VideoState) -> Router {
         .route("/api/video/{video_id}/play.mp4", get(play_mp4))
         .route("/api/video/{video_id}/thumb.png", get(thumb))
         // Zone E 新增的面（各自带 handler，路径都在自己模块里）：
-        //   stats → 播放时长统计（E1）
+        //   stats → 播放时长统计（E1）、jobs → 异步转码流水线（E3）
         .route("/api/video/{video_id}/select", get(select))
         .with_state(state.clone());
-    vod.merge(stats::routes(state))
+    vod.merge(stats::routes(state.clone()))
+        .merge(jobs::routes(state))
         .layer(DefaultBodyLimit::max(MAX_VIDEO_BYTES))
 }
 

@@ -5950,6 +5950,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "ureq",
  "wxlike-core",
 ]
 

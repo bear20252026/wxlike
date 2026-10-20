@@ -18,6 +18,8 @@ tracing = "0.1"
 rusqlite = { workspace = true }
 # E1 补缺省 session_id 用（形状照搬 platform 的 random_hex；rand 已在 workspace 依赖里）
 rand = { workspace = true }
+# E3 作业完成后的出站回调（与 crates/client 同一个 ureq 大版本，阻塞 IO 跑 spawn_blocking）
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
