@@ -696,10 +696,7 @@ async fn forward_message(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // 路径与 body 都带目标会话：不一致说明调用方拼错了，宁可 400 也别猜
     if body.to_conv != to_conv {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "to_conv 与路径不一致".to_string(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "to_conv 与路径不一致".to_string()));
     }
     for conv in [&body.from_conv, &to_conv] {
         if !authorize_conv(&deps.platform, &authed.user_id, conv) {
