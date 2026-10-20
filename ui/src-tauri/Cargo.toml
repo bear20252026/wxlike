@@ -8,6 +8,8 @@ license = "AGPL-3.0-only"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# 客户端协议层（与未来 Flutter/UniFFI 共用）
+wxlike-client = { path = "../../crates/client" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
