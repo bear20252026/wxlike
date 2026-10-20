@@ -94,6 +94,38 @@ pub struct GroupSummary {
 }
 
 impl Platform {
+    /// 把群成员快照同步进信箱（P3：信箱成为成员与顺序的唯一真相）。
+    ///
+    /// 成员变更是低频操作，直接**全量重置**而不是增量：漏写一条增量会让某个
+    /// 人永远收不到消息，而全量重置最多多花几毫秒。宁可慢一点，不要漏。
+    ///
+    /// 没有信箱（纯控制面测试/演示）时静默跳过——那些场景没有投递。
+    pub(crate) fn sync_mailbox_members(&self, group_id: &str) {
+        let Some(store) = self.message_store.as_ref() else {
+            return;
+        };
+        let Ok(ids) = self.group_member_ids(group_id) else {
+            return;
+        };
+        if let Err(err) =
+            store.reset_member_snapshot((wxlike_message::OwnerType::Group, group_id), &ids)
+        {
+            // 同步失败不该让建群/拉人失败：下次成员变更会再重置一次
+            eprintln!("[platform] 信箱成员快照同步失败（{group_id}）: {err}");
+        }
+    }
+
+    /// 群成员 id 列表（不含角色等展示字段）。
+    fn group_member_ids(&self, group_id: &str) -> Result<Vec<String>> {
+        let c = self.db().lock();
+        let mut stmt =
+            c.prepare("SELECT user_id FROM group_members WHERE group_id = ?1 ORDER BY joined_at")?;
+        let rows = stmt
+            .query_map(rusqlite::params![group_id], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn create_group(&self, owner: &str, name: &str, member_ids: &[String]) -> Result<String> {
         let name = validate::name(name)?;
         let owner = validate::id(owner)?.to_string();
@@ -142,6 +174,7 @@ impl Platform {
         drop(c);
         self.invalidate_group(&id);
         self.set_owner_kind(&id, wxlike_message::OwnerType::Group)?;
+        self.sync_mailbox_members(&id);
         Ok(id)
     }
 
@@ -297,6 +330,9 @@ impl Platform {
         }
         drop(c);
         self.invalidate_group(&group_id);
+        if added > 0 {
+            self.sync_mailbox_members(&group_id);
+        }
         Ok(added)
     }
 
@@ -321,6 +357,7 @@ impl Platform {
         )?;
         drop(c);
         self.invalidate_group(&group_id);
+        self.sync_mailbox_members(&group_id);
         Ok(())
     }
 
@@ -349,6 +386,7 @@ impl Platform {
         )?;
         drop(c);
         self.invalidate_group(&group_id);
+        self.sync_mailbox_members(&group_id);
         Ok(())
     }
 

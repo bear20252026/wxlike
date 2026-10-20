@@ -269,3 +269,59 @@ async fn fanout_carries_mailbox_seq() {
         "实时帧应带信箱序列号"
     );
 }
+
+/// 群消息的收件人来自**信箱的成员快照**（不是平台成员表）。
+///
+/// 这条测试同时验证两件事：
+/// 1. 建群时平台把成员写进了信箱（否则这里会退回平台成员表，虽然也能通，
+///    但那就说明步骤 5 没生效）；
+/// 2. 扇出确实按信箱名单投递——bob 收到、并带信箱序列号。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_fans_out_from_mailbox_members() {
+    let stack = start_stack(opts("group")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+
+    let group = stack
+        .platform
+        .create_group(&alice, "team", std::slice::from_ref(&bob))
+        .expect("group");
+
+    // 成员快照已经写进信箱——步骤 5 的前提
+    let snap = stack
+        .platform
+        .message_store()
+        .expect("mailbox")
+        .members((wxlike_message::OwnerType::Group, &group))
+        .expect("members");
+    assert!(snap.contains(&alice) && snap.contains(&bob), "{snap:?}");
+
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+        .await
+        .unwrap();
+    let bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // 群消息不带显式收件人：由成员名单决定扇出
+    let env = Envelope::direct(&group, alice.clone(), Vec::new(), 0, "hello group");
+    alice_c.send(&env).await.expect("send");
+
+    let got = tokio::time::timeout(Duration::from_secs(5), bob_c.next_envelope())
+        .await
+        .expect("bob 应收到群消息")
+        .expect("read");
+    assert_eq!(got.conv_id, group);
+    assert_eq!(got.seq, 1, "群消息也应带信箱序列号");
+    if let wxlike_core::MsgBody::Text(t) = &got.body {
+        assert_eq!(t, "hello group");
+    } else {
+        panic!("expected text");
+    }
+
+    // 未读同样按信箱算
+    assert_eq!(wait_unread(&base, &group, &tb, 1)["unread"], 1);
+    let _ = ta;
+}
