@@ -1,0 +1,13 @@
+[package]
+name = "wxlike-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+# 与 UI 侧保持一致：阻塞式 HTTP，命令跑在 tauri 的阻塞线程池里
+ureq = { version = "2", features = ["json"] }

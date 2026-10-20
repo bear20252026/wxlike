@@ -34,181 +34,7 @@ use wxlike_net::Client;
 
 pub mod callrtc;
 
-/// Deterministic 1:1 conversation id (mirror of the platform's rule; kept
-/// local so the UI crate does not need the server's data plane).
-pub fn direct_conv_id(a: &str, b: &str) -> String {
-    let (mut x, mut y) = (a.to_string(), b.to_string());
-    if x > y {
-        std::mem::swap(&mut x, &mut y);
-    }
-    format!("d-{x}~{y}")
-}
-
-/// HTTP client state: base URL + bearer token.
-#[derive(Clone, Debug)]
-pub struct Http {
-    pub base: String,
-    pub token: Option<String>,
-}
-
-impl Http {
-    pub fn new(base: impl Into<String>) -> Self {
-        Self {
-            base: base.into(),
-            token: None,
-        }
-    }
-
-    fn req(&self, method: &str, path: &str) -> ureq::Request {
-        let url = format!("{}{}", self.base.trim_end_matches('/'), path);
-        let req = match method {
-            "GET" => ureq::get(&url),
-            "POST" => ureq::post(&url),
-            "PUT" => ureq::put(&url),
-            "DELETE" => ureq::delete(&url),
-            other => unreachable!("ui only uses GET/POST/PUT/DELETE, got {other}"),
-        };
-        let req = req.timeout(std::time::Duration::from_secs(10));
-        match &self.token {
-            Some(token) => req.set("Authorization", &format!("Bearer {token}")),
-            None => req,
-        }
-    }
-
-    /// JSON request -> (status, parsed body). Errors carry the server's
-    /// `error` message so the UI can show why, not just that.
-    fn json(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&serde_json::Value>,
-    ) -> Result<(u16, serde_json::Value), String> {
-        let resp = match body {
-            Some(v) => self.req(method, path).send_json(v.clone()),
-            None => self.req(method, path).call(),
-        };
-        match resp {
-            Ok(resp) => {
-                let status = resp.status();
-                let value = resp
-                    .into_json::<serde_json::Value>()
-                    .map_err(|e| format!("decode {path}: {e}"))?;
-                Ok((status, value))
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                let value = resp
-                    .into_json::<serde_json::Value>()
-                    .unwrap_or(serde_json::json!({"error": format!("HTTP {status}")}));
-                Ok((status, value))
-            }
-            Err(err) => Err(format!("{method} {path}: {err}")),
-        }
-    }
-
-    fn expect_json(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
-        let (status, value) = self.json(method, path, body)?;
-        if (200..300).contains(&status) {
-            Ok(value)
-        } else {
-            Err(format!(
-                "{} ({status})",
-                value["error"].as_str().unwrap_or("request failed")
-            ))
-        }
-    }
-
-    /// 2xx-or-bust for endpoints that return no body (204 and friends).
-    fn expect_empty(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&serde_json::Value>,
-    ) -> Result<(), String> {
-        let resp = match body {
-            Some(v) => self.req(method, path).send_json(v.clone()),
-            None => self.req(method, path).call(),
-        };
-        match resp {
-            Ok(resp) if resp.status() < 300 => Ok(()),
-            Ok(resp) => Err(format!("request failed ({})", resp.status())),
-            Err(ureq::Error::Status(status, resp)) => {
-                let msg = resp.into_string().unwrap_or_default();
-                Err(format!("{msg} ({status})"))
-            }
-            Err(err) => Err(format!("{method} {path}: {err}")),
-        }
-    }
-
-    /// Uploads bytes as the platform's multipart form (`bytes` + `sha256`).
-    fn upload(
-        &self,
-        bytes: &[u8],
-        content_type: &str,
-        sha256: Option<&str>,
-    ) -> Result<serde_json::Value, String> {
-        use sha2::Digest as _;
-        let digest = hex(sha2::Sha256::digest(bytes).as_slice());
-        let boundary = "wxlike-ui-form-7f3c9";
-        let mut body = Vec::with_capacity(bytes.len() + 256);
-        let part = |field: &str, value: &str, body: &mut Vec<u8>| {
-            let _ = write!(
-                body,
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"\r\n\r\n{value}\r\n"
-            );
-        };
-        part(
-            "sha256",
-            &sha256.map(str::to_string).unwrap_or(digest),
-            &mut body,
-        );
-        let _ = write!(
-            body,
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"bytes\"; filename=\"blob\"\r\nContent-Type: {content_type}\r\n\r\n"
-        );
-        body.extend_from_slice(bytes);
-        let _ = write!(body, "\r\n--{boundary}--\r\n");
-
-        let resp = self
-            .req("POST", "/api/media")
-            .set(
-                "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
-            )
-            .send_bytes(&body)
-            .map_err(|e| match e {
-                ureq::Error::Status(status, r) => {
-                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
-                    msg
-                }
-                other => format!("upload: {other}"),
-            })?;
-        resp.into_json::<serde_json::Value>()
-            .map_err(|e| format!("upload decode: {e}"))
-    }
-
-    /// Downloads an object; returns (bytes, content type).
-    fn download(&self, media_id: &str, thumb: bool) -> Result<(Vec<u8>, String), String> {
-        let suffix = if thumb { "?thumb=1" } else { "" };
-        let resp = self
-            .req("GET", &format!("/api/media/{media_id}{suffix}"))
-            .call()
-            .map_err(|e| match e {
-                ureq::Error::Status(404, _) => "media not found".to_string(),
-                other => format!("download: {other}"),
-            })?;
-        let content_type = resp.content_type().to_string();
-        let mut bytes = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("download read: {e}"))?;
-        Ok((bytes, content_type))
-    }
-}
+pub use wxlike_client::{direct_conv_id, Http};
 
 /// Runs `fut` to completion from sync command code. Commands execute on
 /// tauri's blocking pool (no ambient runtime) so plain `block_on` is fine
@@ -1379,14 +1205,13 @@ pub mod commands {
 
     /// 房间快照：`live=false` 表示当前没有通话。
     /// P3 未读数：服务端信箱是唯一真相（`MessageStore::unread`）。
+    /// 走 `wxlike-client` 的领域方法，而不是在这里拼 URL——移动端要复用的正是这一层。
     #[tauri::command]
     pub fn conv_unread(
         state: tauri::State<'_, AppState>,
         conv: String,
     ) -> Result<serde_json::Value, String> {
-        state
-            .http()
-            .expect_json("GET", &format!("/api/conv/{conv}/unread"), None)
+        state.http().conv_unread(&conv)
     }
 
     /// 把已读游标推到最新（空 body = 读到最新）。返回推送后的快照。
@@ -1395,9 +1220,7 @@ pub mod commands {
         state: tauri::State<'_, AppState>,
         conv: String,
     ) -> Result<serde_json::Value, String> {
-        state
-            .http()
-            .expect_json("POST", &format!("/api/conv/{conv}/read"), Some(&serde_json::json!({})))
+        state.http().mark_conv_read(&conv)
     }
 
     #[tauri::command]

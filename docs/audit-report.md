@@ -145,7 +145,7 @@ core+net+mq+platform+message+...+video+search ← server（组合根/装配层�
 | P3-13 | 两套里程碑口径 | ✅ `WORK_BREAKDOWN` 的 M1–M4 表前加口径说明，指向蓝图 P1–P6 |
 | P1-1 | async 路径同步 SQLite | ⬜ 未做：需要专用 SQL 线程 + 通道，属架构级改动，单独一轮 |
 | P1-2 | P3 双写过渡态 | ⬜ 未做：`core::Store` 退化为归档是 p3-mailbox 步骤 3，需与扇出改造一起做 |
-| P2-5 | server 端点下沉 / 抽 `wxlike-client` | ⬜ 未做：2080 行搬迁，按报告建议排在 P3 收尾之后 |
+| P2-5 | server 端点下沉 / 抽 `wxlike-client` | 🔶 **第一刀已落**：新建 `crates/client`（`wxlike-client`），把 HTTP 传输 + 鉴权头 + 错误消息提取 + 上传/下载 + `direct_conv_id` 搬出 Tauri，`ui/src-tauri/src/lib.rs` 2080 → 1930 行，`Http` 由 re-export 提供（60 处调用点零改动）；新增领域方法 `register/login/me/conv_unread/mark_conv_read/conv_sync`，`conv_unread` 命令已改走它。剩：其余约 60 个业务命令与本地库编排仍在壳里 |
 | P2-6 | `is_disconnect` 字符串匹配 | ⬜ 未做：需先确认 quinn 的错误分类 API |
 | P2-8 | 风控 fail-open | ⬜ 未做：报告本身建议 P6 加熔断计数而非改 fail-closed |
 | P3-9 | SFU 只转发音频 | ⬜ 已知边界（`video` 字段标注），等视频采集接入 |
