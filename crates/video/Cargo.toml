@@ -14,11 +14,14 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 tracing = "0.1"
-# E1 播放统计（rusqlite 已由 wxlike-core 引入，不新增锁版本）
+# E1 播放统计 + E3 转码作业队列（rusqlite 已由 wxlike-core 引入，不新增锁版本）
 rusqlite = { workspace = true }
-# E1 补缺省 session_id 用（形状照搬 platform 的 random_hex；rand 已在 workspace 依赖里）
+# E2 自包含推流凭据 HMAC-SHA256：与 crates/platform/src/live.rs 同一签名方案，
+# 但**不查库**（接入节点可能在另一台机器上）。hmac 已在 pbkdf2 的依赖树里。
+hmac = "0.12"
+# E1 补 session_id 用（形状照搬 platform 的 random_hex）
 rand = { workspace = true }
-# E3 作业完成后的出站回调（与 crates/client 同一个 ureq 大版本，阻塞 IO 跑 spawn_blocking）
+# E3 出站回调（与 crates/client 同一个 ureq 大版本，阻塞 IO 跑 spawn_blocking）
 ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]

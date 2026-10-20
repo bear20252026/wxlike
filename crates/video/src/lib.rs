@@ -35,6 +35,7 @@ use sha2::Digest as _;
 
 mod db;
 mod jobs;
+mod live;
 mod range;
 mod stats;
 mod timing;
@@ -43,6 +44,12 @@ pub use jobs::{
     backoff_ms, deliver_callback, spawn_worker, CallbackBody, CallbackState, Delivery, Job,
     JobFailure, JobState, JobSubmit, WorkerReport, BASE_DELAY_MS, CALLBACK_TIMEOUT_MS,
     MAX_DELAY_MS, MAX_ERROR_CHARS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS, WORKER_POLL,
+};
+pub use live::{
+    check_live_segment_name, check_stream_key, ingest_secret_from_env, ingest_token, live_playlist,
+    live_url, playlist_of, sign_ingest, verify_ingest_token, LiveSegment, LiveWindow,
+    LIVE_DEFAULT_WINDOW, LIVE_MAX_WINDOW, LIVE_SECRET_ENV, LIVE_SEGMENT_MS_HEADER, LIVE_TARGET_MS,
+    LIVE_TOKEN_HEADER, LIVE_WINDOW_ENV,
 };
 pub use range::{parse_range, read_range, serve_range, ByteRange, Served};
 pub use stats::{
@@ -197,8 +204,9 @@ pub fn tools_available() -> bool {
 /// `thumb.png` · `meta.json`. A rename-into-place after a full temp
 /// transcode keeps partial jobs invisible.
 ///
-/// Zone E adds a sibling: `{root}/video.db`（播放统计 + 转码作业，见 `db` 模块）。
-/// 对象目录本身仍然只在转码完整成功后出现，所以老代码的"目录存在=可播"这条不变式没被改动。
+/// Zone E adds two siblings: `{root}/video.db`（播放统计 + 转码作业，见 `db` 模块）
+/// 与 `{root}/live/{stream_key}/`（直播窗口，见 `live` 模块）。对象目录本身仍然
+/// 只在转码完整成功后出现，所以老代码的"目录存在=可播"这条不变式没被改动。
 #[derive(Clone)]
 pub struct VideoStore {
     inner: Arc<Inner>,
@@ -718,12 +726,14 @@ pub fn routes(state: VideoState) -> Router {
         )
         .route("/api/video/{video_id}/play.mp4", get(play_mp4))
         .route("/api/video/{video_id}/thumb.png", get(thumb))
-        // Zone E 新增的面（各自带 handler，路径都在自己模块里）：
-        //   stats → 播放时长统计（E1）、jobs → 异步转码流水线（E3）
+        // Zone E 新增的三面（各自带 handler，路径都在自己模块里）：
+        //   stats → 播放时长统计（E1）、jobs → 异步转码流水线（E3）、
+        //   live  → 直播窗口与推流授权（E2）
         .route("/api/video/{video_id}/select", get(select))
         .with_state(state.clone());
     vod.merge(stats::routes(state.clone()))
-        .merge(jobs::routes(state))
+        .merge(jobs::routes(state.clone()))
+        .merge(live::routes(state))
         .layer(DefaultBodyLimit::max(MAX_VIDEO_BYTES))
 }
 
