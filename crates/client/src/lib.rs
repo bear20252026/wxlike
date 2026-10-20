@@ -229,6 +229,39 @@ impl Http {
         )
     }
 
+    /// 带幂等键的 POST：服务端用同一个 key 重放时返回**第一次**的结果。
+    ///
+    /// 为什么只给写命令开这个口子：agent 会重试，而"建群"重试两次就是两个群。
+    pub fn post_idempotent(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        key: &str,
+    ) -> Result<serde_json::Value, String> {
+        let resp = self
+            .req("POST", path)
+            .set("Idempotency-Key", key)
+            .send_json(body.clone())
+            .map_err(|e| match e {
+                ureq::Error::Status(status, r) => {
+                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
+                    format!("{msg} ({status})")
+                }
+                other => format!("POST {path}: {other}"),
+            })?;
+        resp.into_json::<serde_json::Value>()
+            .map_err(|e| format!("decode {path}: {e}"))
+    }
+
+    /// 把已读游标推到指定 seq。
+    pub fn mark_conv_read_upto(&self, conv: &str, seq: u64) -> Result<serde_json::Value, String> {
+        self.expect_json(
+            "POST",
+            &format!("/api/conv/{conv}/read"),
+            Some(&serde_json::json!({ "seq": seq })),
+        )
+    }
+
     /// 五层差分指令（客户端据此决定全量拉还是增量拉）。
     pub fn conv_sync(&self, conv: &str, version: u64) -> Result<serde_json::Value, String> {
         self.expect_json(

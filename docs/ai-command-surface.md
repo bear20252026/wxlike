@@ -291,3 +291,38 @@ $ wxlike-cli ... run --cmd 'conv.sync={"conv":"540a2aaaf0153369","version":0}'
 3. **通知不回包**。`notifications/initialized` 没有 `id`，回了包会让客户端困惑。
 
 MCP 层一共 260 行，其中 7 项测试；不含任何业务逻辑。
+
+## 十二、P3 落地：写命令 + 幂等（审计仍待做）
+
+已实现（HTTP 控制面能做的写操作）：
+
+| 命令 | 端点 | 说明 |
+|---|---|---|
+| `conv.ack` | `POST /api/conv/{c}/read` | 缺省推到最新，可指定 `seq` |
+| `group.create` | `POST /api/groups` + `Idempotency-Key` | **键必填** |
+| `group.add_member` | `POST /api/groups/{g}/members` | |
+| `group.kick` | `DELETE /api/groups/{g}/members/{u}` | 需 `--allow-destructive` |
+
+**幂等是真的，不是装饰**：服务端新增 `idempotency(key, response, created_at)` 表，
+`create_group` 处理器看到 `Idempotency-Key` 就先查表——同一个 key 返回第一次的
+结果。实测连发两次建群，`group_id` 完全相同。
+
+为什么放在服务端而不是命令层：重试可能来自 CLI、MCP、UI 任意入口，
+只有服务端记住才有效。
+
+### 明确不做的事
+
+`msg.send` / `msg.forward` / `msg.recall` **走 QUIC 数据面**，HTTP 控制面发不了。
+执行器直接返回：
+
+```
+msg.send 走 QUIC 数据面，HTTP 控制面无法发送；请用客户端，或等 hub 侧接口
+```
+
+这比"发一个看起来成功的假请求"好：agent 会立刻知道自己用错了通道。
+
+### 还没做的
+
+* **审计**：每个写命令应落一条 `actor=agent:<id> command=… conv=… result=…`。
+  表（P4 的 `audit`）已有，缺的是在入口统一记一笔的中间件。下一轮。
+* `msg.*` 的 hub 侧接口（让 HTTP 也能发消息，需要把 hub 的 append+扇出抽成可复用函数）。
