@@ -160,7 +160,7 @@ core+net+mq+platform+message+...+video+search ← server（组合根/装配层�
 | # | 问题 | 修法 |
 |---|---|---|
 | 1 | **dpage 解包不校验路径 → 任意文件写（blocker）** | `unpack()` 里逐条校验 `safe_rel_path`（拒绝绝对路径、`..`、盘符、反斜杠），**一个越界条目整包拒绝**；CLI 落盘处再挡一次（防御纵深）。规则与 `container::package` 的 entry 校验一致 |
-| 2 | 推流密钥默认公开值 | 默认值改为空串；装配层未配置时生成**随机密钥**；二进制**拒绝启动**（`WXLIKE_DEV_INSECURE=1` 显式放行）。实测退出码 1 |
+| 2 | 推流密钥默认公开值 | 默认值改为空串；**库层 `normalize_options` 把空密钥归一化成随机值**（`open_with` 与 `in_memory_with` 都走它——空串是合法 HMAC key，签出来的 token 谁都能伪造，与公开默认值是同一类洞）；二进制**拒绝启动**（`WXLIKE_DEV_INSECURE=1` 显式放行）。实测退出码 1 |
 | 3 | 生产重连走 skip-verify TLS | 新增 `Client::connect_retry_verified`（TOFU + pins + 退避）；旧 `connect_retry` 更名 `connect_retry_insecure` 并 `#[doc(hidden)]`；`connect_insecure` 不再从 `lib.rs` 导出（`pub(crate)`） |
 | 4 | 搜索索引读侧静默降级内存 | 读侧改为 `?` 返回错误（与写侧一致），不再"看着能用、结果全空"；写侧的 `panic!` 也改成返回错误（库代码不该打死进程） |
 | 5 | Tauri `local_open` 任意路径 | 归一化后必须落在 `app_data_dir` 内；按**路径分量**判断（`/data/application` 不是 `/data/app` 的子目录） |
@@ -172,3 +172,10 @@ core+net+mq+platform+message+...+video+search ← server（组合根/装配层�
 
 关于审计提到的 `live.rs:104` 硬编码兜底 key：与审计判断一致，HMAC 接受任意长度 key，
 该分支实际不可达，本次未改。
+
+### 补充：空密钥这一层是自己抓出来的
+
+第一版只做了"默认值改空串 + 二进制拒绝启动"，写完才意识到 **HMAC 接受任意长度 key**，
+空串签出来的 ingest token 与公开默认值是同一类洞。而"二进制拒绝启动"只挡住一条入口，
+测试与嵌入式用法照样能拿到空密钥。所以加了库层归一化，并用
+`empty_ingest_secret_is_never_used` 断言三件事：非空、两实例不同、跨实例 token 不可互认。
