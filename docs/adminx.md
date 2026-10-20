@@ -78,6 +78,29 @@ WXLIKE_ADMIN_TOKEN=<token> wxlike-admin
 `wxlike-admin --check` 打印解析后的配置（**不打印令牌**）并验三件事：平台库能只读打开、
 必需表齐不齐、账号库可写。不绑端口、不写业务库，适合放进部署流水线。
 
+### 3.1 部署前置：平台侧还差一行（给集成方，不在本卡所有权内）
+
+`server/src/lib.rs` 组装 `PlatformOptions` 时**没有**设 `admin_token`，所以真实部署里
+`/api/admin/*` 一律 403（`admin_ok()` 在未配置时恒 false）。adminx 的写面因此现在还
+走不通——2026-10-20 的端到端冒烟把这条照得很清楚：MFA 会话齐备、请求发出去了，
+平台回 `403 admin endpoint unavailable`，adminx 如实报 502 并留痕 `upstream_error`。
+
+需要的是 `server/src/lib.rs`（热点文件，§6.1）里一处三行：
+
+```rust
+let mut platform_options = wxlike_platform::PlatformOptions::default();
+// 管理面令牌：未配置 = 管理端点关闭（平台侧已是这个语义，这里只是把它接到环境）。
+platform_options.admin_token = std::env::var("WXLIKE_ADMIN_TOKEN")
+    .ok()
+    .map(|v| v.trim().to_string())
+    .filter(|v| !v.is_empty());
+```
+
+变量名与 adminx 的读面令牌**故意同名**：一套部署里由运维决定要不要拆成两个
+（adminx 侧支持 `WXLIKE_ADMIN_PLATFORM_TOKEN` 覆盖）。合并这行之后，本卡 §13 的第 4 项
+才算真的可验。
+
+
 **启动即失败的两类情况**（都刻意为之，宁可起不来也不要起一个空看板）：
 
 1. 缺 `WXLIKE_ADMIN_TOKEN`；
@@ -305,19 +328,45 @@ cargo clippy -p wxlike-admin --all-targets -- -D warnings
 | D3：每次写都留痕 | `mfa_triage_reaches_the_platform_and_is_attributed_to_the_operator` / `target_shape_is_checked_before_the_socket_and_logged` / `dead_platform_is_a_transport_error_with_a_trail` |
 | D3：RBAC | `role_matrix_who_can_do_what` / `static_token_cannot_write_at_all` |
 
-实测结果与输出贴在 PR 描述里（本文件不重复粘贴，避免它腐烂）。
+实测输出见 §13（本机真进程跑出来的，不是抄的口号）；PR 描述里再贴一次命令与退出码。
 
 ---
 
-## 13. 手工验收清单（需要真人 / 真机，我在这台机器上做不了）
+## 13. 端到端实测（2026-10-20，本机 Windows，真进程 + 真 curl）
 
-代码全部落地、自动化测试全绿，但下面几条**只有真部署才能验**。留给部署的人逐条打勾：
+起 `wxlike-server`（18099）+ `wxlike-admin`（18090），跑完整流程，实测结果：
 
-1. [ ] 浏览器打开 `http://127.0.0.1:8090`，填令牌 → 看板五个数字与 `wxlike-server` 的 `/metrics` 不矛盾；
-2. [ ] 不填令牌直接访问 `/api/stats` → 401，页面上能看到错误消息而不是空白卡；
-3. [ ] `account add --role viewer` 的账号登录 → 工单页的按钮点了全部报"需要 write 级权限"；
-4. [ ] `superadmin` 走完 enroll/confirm/重新登录 → 分诊一张真工单，平台侧 `GET /api/admin/reports?state=triaged` 能看到它，且 `handler` 是后台账号名；
-5. [ ] 杀掉 `wxlike-server` 再点处置 → 502 且留痕 `transport_error`；重启平台后 `/health` 恢复 `ok`；
-6. [ ] 审计检索 `command=msg.send` 在有一台 agent 真跑过的环境里返回非空（需要 `wxlike-mcp` 或 CLI 先跑过写命令）；
-7. [ ] `systemctl stop wxlike-admin` / `launchctl bootout` → 日志出现 `graceful shutdown 完成`，退出码 0；
-8. [ ] 审计行数上到 10⁶ 级时，`/api/audit?from=&to=` 不带 `actor` 的耗时（这时 §9 里那两个索引必须已经补上）。
+| 步骤 | 结果 |
+|---|---|
+| 缺 `WXLIKE_ADMIN_TOKEN` 起真二进制 | 退出码 **1**，stderr 点名变量与生成办法 ✅ |
+| `--check` | 打印 平台库可读 `read_only` / 表齐全 是 / 账号库可写；令牌只报长度 ✅ |
+| `GET /health` 无令牌 | 200，`writes_platform_db:false`、`accounts_present:false` ✅ |
+| `GET /api/stats` 无令牌 / 错令牌 | 401 / 401 ✅ |
+| 带 `x-wxlike-command: group.create` 打平台后 `GET /api/audit?command=group.create` | `total:1`，`actor` 是那个用户 id，`detail:"status=200 method=POST"` ✅ |
+| 真实举报 → `GET /api/reports` | 工单以 `state:"open"`、`reason:"spam"` 出现，`overdue:false` ✅ |
+| `GET /` | `<!doctype html>` + `<html lang="zh-CN">` ✅ |
+| `POST /api/stats` | **405**（读面不存在写路由）✅ |
+| CLI `account add` → 登录 → 写 | 会话 `mfa:false`；写 → **403**，消息里带"该怎么修" ✅ |
+| CLI `totp-init` → 用真 TOTP 算法出码 → `totp-confirm` → 带码登录 | `mfa:true` ✅ |
+| 有 MFA 的写 | **502 `upstream refused the admin token (platform 403: admin endpoint unavailable)`** ← §3.1 那一行没接，不是 adminx 的判定 |
+| `GET /api/oplog` | 两条：`denied`（无 MFA）+ `upstream_error`（平台 403），字段含 actor/op/capability/target/upstream 路径/mfa ✅ |
+| 读一轮之后平台库 md5 | `b9263bbf…` → 同一值，**未改动** ✅ |
+
+## 14. 手工验收清单（这台机器验不了的，留给部署的人逐条打勾）
+
+1. [ ] **§3.1 那一行接上之后**：`superadmin` 带 MFA 的会话分诊一张真工单，
+   `GET /api/admin/reports?state=triaged` 能看到它，且 `handler` 是后台账号名；
+   `/api/oplog` 出现 `status:"ok"`；
+2. [ ] 审核模式经后台切 `post_review` 后，正在跑的 `wxlike-server` 行为真的变了
+   （这条在自动化里已用内存态证明，真部署再确认一次）；
+3. [ ] 浏览器里填令牌 → 看板数字与 `wxlike-server` 的 `/metrics` 不矛盾；不填令牌时
+   页面显示 401 文案而不是空白卡；
+4. [ ] `account add --role viewer` 的账号登录 → 工单页按钮全部报"需要 write 级权限"；
+5. [ ] 杀掉 `wxlike-server` 再点处置 → 502 + 留痕 `transport_error`；重启后 `/health` 恢复；
+6. [ ] **Linux/macOS** 上 `systemctl stop wxlike-admin` / `launchctl bootout` → 日志出现
+   `graceful shutdown 完成`、退出码 0。（本机是 Windows，`kill -INT` 走不到 unix 信号分支，
+   这条只能在那两个平台验）；
+7. [ ] 审计行数上到 10⁶ 级时，`/api/audit?from=&to=` 不带 `actor` 的耗时——这时 §9 那两个
+   索引必须已经补上；
+8. [ ] 公网部署前：反代 + TLS + 登录限流（§11）。默认只绑 127.0.0.1 是最后一道，不是全部。
+
