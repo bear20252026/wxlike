@@ -42,21 +42,69 @@ impl Client {
         Self::hello(conn, user_id.into()).await
     }
 
-    /// Reconnect with backoff until `deadline` elapses (WP-13 crash
-    /// recovery: a hub dying underneath a client must end in a successful
-    /// reconnect, not a dead UI). `Err` only when the deadline passes.
-    pub async fn connect_retry(
+    /// **生产重连**：带退避重试，且每次都走 TOFU + 证书固定。
+    ///
+    /// 之前的生产重连助手 `connect_retry` 内部调的是跳过校验的 `connect`——
+    /// 重连路径比首次连接更容易被中间人利用（攻击者只要让首次连接失败、
+    /// 在重连时出现即可）。所以这里单独开一个"verified + 重试"的入口，
+    /// 而不是给旧函数加参数。
+    pub async fn connect_retry_verified(
+        server_addr: SocketAddr,
+        server_name: &str,
+        user_id: &str,
+        pins_path: impl AsRef<std::path::Path>,
+        deadline: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        Self::retry_with(
+            deadline,
+            |addr, name: String| {
+                let pins = pins_path.as_ref().to_path_buf();
+                let user = user_id.to_string();
+                async move { Self::connect_verified(addr, &name, user, pins).await }
+            },
+            server_addr,
+            server_name,
+        )
+        .await
+    }
+
+    /// 实验室用的重连（跳过校验）。**不要在生产调用**——用
+    /// [`Client::connect_retry_verified`]。
+    #[doc(hidden)]
+    pub async fn connect_retry_insecure(
         server_addr: SocketAddr,
         server_name: &str,
         user_id: &str,
         deadline: std::time::Duration,
     ) -> anyhow::Result<Self> {
+        Self::retry_with(
+            deadline,
+            |addr, name: String| {
+                let user = user_id.to_string();
+                async move { Self::connect(addr, &name, user).await }
+            },
+            server_addr,
+            server_name,
+        )
+        .await
+    }
+
+    async fn retry_with<F, Fut>(
+        deadline: std::time::Duration,
+        attempt_fn: F,
+        server_addr: SocketAddr,
+        server_name: &str,
+    ) -> anyhow::Result<Self>
+    where
+        F: Fn(SocketAddr, String) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<Self>>,
+    {
         let started = std::time::Instant::now();
         let mut backoff = std::time::Duration::from_millis(200);
         loop {
             let attempt = tokio::time::timeout(
                 backoff * 4,
-                Self::connect(server_addr, server_name, user_id),
+                attempt_fn(server_addr, server_name.to_string()),
             )
             .await;
             match attempt {

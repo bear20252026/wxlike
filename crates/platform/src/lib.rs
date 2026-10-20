@@ -132,7 +132,8 @@ impl Default for PlatformOptions {
             admin_token: None,
             report_sla_ms: wxlike_report::DEFAULT_SLA_MS,
             moderation_mode: wxlike_moderation::Mode::PreReview,
-            live_ingest_secret: "dev-insecure-live-secret".to_string(),
+            // 空 = 未配置。装配层必须填（随机或来自 env），不允许存在"公开默认值"。
+            live_ingest_secret: String::new(),
         }
     }
 }

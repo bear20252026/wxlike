@@ -151,9 +151,14 @@ async fn hub_crash_restart_reconnect_and_nothing_lost() {
 
     // the connected client reconnects on its own within the task book's 30 s
     let started = std::time::Instant::now();
-    let alice2 = Client::connect_retry(addr, "localhost", "alice", Duration::from_secs(30))
-        .await
-        .expect("reconnect inside the deadline");
+    // 用**生产重连**（TOFU + 证书固定），不是跳过校验的那条：
+    // 重连路径比首次连接更容易被中间人利用
+    let pins = std::env::temp_dir().join(format!("wxlike-pins-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&pins);
+    let alice2 =
+        Client::connect_retry_verified(addr, "localhost", "alice", &pins, Duration::from_secs(30))
+            .await
+            .expect("reconnect inside the deadline");
     assert!(
         started.elapsed() < Duration::from_secs(30),
         "reconnect took {:?}",
@@ -199,11 +204,13 @@ async fn connect_retry_respects_deadline() {
     // nothing binds this: an address in the 127.x range with no listener
     let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
     let started = std::time::Instant::now();
-    let err = match Client::connect_retry(addr, "localhost", "alice", Duration::from_secs(2)).await
-    {
-        Err(err) => err,
-        Ok(_) => panic!("nothing is listening; connect must fail"),
-    };
+    let err =
+        match Client::connect_retry_insecure(addr, "localhost", "alice", Duration::from_secs(2))
+            .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("nothing is listening; connect must fail"),
+        };
     assert!(
         started.elapsed() >= Duration::from_secs(2),
         "too fast: {err:#}"

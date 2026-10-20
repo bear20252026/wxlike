@@ -102,7 +102,7 @@ fn print_check(cfg: &Config) {
         "  直播推流密钥   {}",
         match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
             Ok(v) if !v.is_empty() => format!("已设置（{} 字符）", v.len()),
-            _ => "⚠️ 未设置，使用公开的开发默认值——公网部署必须设置".to_string(),
+            _ => "⚠️ 未设置——启动会被拒绝（开发用 WXLIKE_DEV_INSECURE=1）".to_string(),
         }
     );
 }
@@ -177,6 +177,21 @@ impl Signals {
 async fn run(cfg: Config) -> anyhow::Result<()> {
     // 先装信号，再启动：注册前收到的 SIGTERM 会直接杀进程
     let mut signals = Signals::install();
+
+    // 生产必须显式给推流密钥：缺了就拒绝启动，而不是"警告后继续"。
+    // 警告会被忽略，而"知道默认 key 就能签 ingest token"是真实可利用的洞。
+    // 开发/CI 用 WXLIKE_DEV_INSECURE=1 显式放行（会退化成随机密钥）。
+    let secret_missing = std::env::var("WXLIKE_LIVE_INGEST_SECRET")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    let dev_insecure = matches!(std::env::var("WXLIKE_DEV_INSECURE").as_deref(), Ok("1"));
+    if secret_missing && !dev_insecure {
+        anyhow::bail!(
+            "WXLIKE_LIVE_INGEST_SECRET 未设置：拒绝启动。
+             公网部署必须配置它（否则任何人都能用已知密钥签直播 ingest token）；
+             本地开发可设 WXLIKE_DEV_INSECURE=1 放行（会生成本次启动的随机密钥）。"
+        );
+    }
     std::fs::create_dir_all(&cfg.media_dir)?;
     if let Some(path) = cfg.db_path.as_deref() {
         if let Some(dir) = std::path::Path::new(path).parent() {

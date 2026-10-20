@@ -101,6 +101,27 @@ pub fn peek(blob: &[u8]) -> anyhow::Result<(u32, u32)> {
     ))
 }
 
+/// 包内路径是否安全（相对、无 `..`、无盘符、无反斜杠）。
+///
+/// 小程序包是**不可信输入**：`unpack` 出来的 `files` 会被写盘，所以校验放在
+/// 这里——每个消费者都自动安全，而不是指望调用方记得查。规则与
+/// `container::package` 的 entry 校验一致，两处不该有两套标准。
+pub fn safe_rel_path(path: &str) -> bool {
+    // 用 char::from 写控制字符，避免源码里的转义歧义（反斜杠 = 92，冒号 = 58）
+    let backslash = char::from(92u8);
+    let colon = char::from(58u8);
+    if path.is_empty() || path.starts_with('/') || path.contains(backslash) {
+        return false;
+    }
+    // Windows 盘符（`C:...`）与 UNC 前缀
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == colon as u8 {
+        return false;
+    }
+    path.split('/')
+        .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
 pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
     let (version, id) = peek(blob)?;
     anyhow::ensure!(version == 1, "unsupported dpage version {version}");
@@ -119,6 +140,12 @@ pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
     let manifest: Manifest = serde_json::from_slice(&manifest_entry.data)?;
     let mut map = std::collections::BTreeMap::new();
     for f in files.0 {
+        // 一个条目越界就整包拒绝：带 `../` 的包不是"部分合法"，是恶意
+        anyhow::ensure!(
+            safe_rel_path(&f.path),
+            "unsafe path in package: {:?}",
+            f.path
+        );
         map.insert(f.path, f.data);
     }
     Ok(Page {
@@ -164,6 +191,49 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("main.js"), b"wxhost.log('hello from page');").unwrap();
         std::fs::write(dir.join("style.css"), b"body{}").unwrap();
+    }
+
+    /// 小程序包是不可信输入：带越界路径的包必须**整包拒绝**。
+    /// 这条测试就是那个 blocker 的回归防线。
+    #[test]
+    fn unpack_rejects_unsafe_paths() {
+        let manifest = br#"{"name":"evil","main_js":"main.js","title":"x"}"#.to_vec();
+        let bad_paths = [
+            "../evil.txt",
+            "/etc/passwd",
+            "a/../../b",
+            "C:/windows/system32/x",
+            "sub/./x",
+            "sub//x",
+            "",
+        ];
+        for bad in bad_paths {
+            let files = FileMap(vec![
+                FileEntry {
+                    path: "manifest.json".into(),
+                    data: manifest.clone(),
+                },
+                FileEntry {
+                    path: bad.to_string(),
+                    data: b"pwned".to_vec(),
+                },
+            ]);
+            let payload =
+                zstd::stream::encode_all(bincode::serialize(&files).unwrap().as_slice(), 3)
+                    .unwrap();
+            let blob = format_blob(1, payload);
+            assert!(
+                unpack(&blob).is_err(),
+                "必须拒绝越界路径 {bad:?}，否则能写到包外"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_rel_path_accepts_normal_paths() {
+        for ok in ["manifest.json", "assets/app.js", "a/b/c.css"] {
+            assert!(safe_rel_path(ok), "{ok} 应当合法");
+        }
     }
 
     #[test]
