@@ -34,10 +34,12 @@ impl Executor {
             .policy
             .authorize(id, params)
             .map_err(|e| e.to_string())?;
+        // 这一次调用的所有请求都带上命令 id，服务端才能记对审计
+        let http = self.http.with_command(spec.id);
         match spec.id {
-            "me.info" => self.http.expect_json("GET", "/api/me", None),
-            "conv.unread" => self.http.conv_unread(str_param(params, "conv")?),
-            "conv.sync" => self.http.conv_sync(
+            "me.info" => http.expect_json("GET", "/api/me", None),
+            "conv.unread" => http.conv_unread(str_param(params, "conv")?),
+            "conv.sync" => http.conv_sync(
                 str_param(params, "conv")?,
                 params["version"].as_u64().unwrap_or(0),
             ),
@@ -45,7 +47,7 @@ impl Executor {
                 let conv = str_param(params, "conv")?;
                 let before = params["before_seq"].as_i64().unwrap_or(0);
                 let limit = params["limit"].as_u64().unwrap_or(50);
-                self.http.expect_json(
+                http.expect_json(
                     "GET",
                     &format!("/api/history/{conv}?before_seq={before}&limit={limit}"),
                     None,
@@ -54,7 +56,7 @@ impl Executor {
             "msg.search" => {
                 let q = str_param(params, "q")?;
                 let limit = params["limit"].as_u64().unwrap_or(20);
-                self.http.expect_json(
+                http.expect_json(
                     "GET",
                     &format!("/api/search/messages?q={}&limit={limit}", urlencode(q)),
                     None,
@@ -70,13 +72,13 @@ impl Executor {
                 self.http
                     .expect_json("GET", &format!("/api/groups/{conv}/members"), None)
             }
-            "conv.list" => self.conv_list(),
+            "conv.list" => self.conv_list(&http),
             // ---- 写 ----
             "conv.ack" => {
                 let conv = str_param(params, "conv")?;
                 match params["seq"].as_u64() {
-                    Some(seq) => self.http.mark_conv_read_upto(conv, seq),
-                    None => self.http.mark_conv_read(conv),
+                    Some(seq) => http.mark_conv_read_upto(conv, seq),
+                    None => http.mark_conv_read(conv),
                 }
             }
             "group.create" => {
@@ -87,7 +89,7 @@ impl Executor {
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!([]));
                 // 幂等键**必填**：建群重试两次就是两个群，没有键就没有安全网
-                self.http.post_idempotent(
+                http.post_idempotent(
                     "/api/groups",
                     &serde_json::json!({ "name": name, "member_ids": members }),
                     key,
@@ -99,7 +101,7 @@ impl Executor {
                     .get("user_ids")
                     .cloned()
                     .ok_or_else(|| "缺少参数 user_ids".to_string())?;
-                self.http.expect_json(
+                http.expect_json(
                     "POST",
                     &format!("/api/groups/{conv}/members"),
                     Some(&serde_json::json!({ "user_ids": ids })),
@@ -121,12 +123,12 @@ impl Executor {
     }
 
     /// 会话清单：群 + 直聊（由好友列表推导），并附未读。
-    fn conv_list(&self) -> Result<Value, String> {
-        let me = self.http.expect_json("GET", "/api/me", None)?;
+    fn conv_list(&self, http: &Http) -> Result<Value, String> {
+        let me = http.expect_json("GET", "/api/me", None)?;
         let me_id = me["user_id"].as_str().unwrap_or_default().to_string();
 
         let mut out: Vec<Value> = Vec::new();
-        if let Ok(groups) = self.http.expect_json("GET", "/api/groups/mine", None) {
+        if let Ok(groups) = http.expect_json("GET", "/api/groups/mine", None) {
             for g in groups.as_array().cloned().unwrap_or_default() {
                 let id = g["id"].as_str().unwrap_or_default().to_string();
                 out.push(json!({
@@ -137,7 +139,7 @@ impl Executor {
                 }));
             }
         }
-        if let Ok(friends) = self.http.expect_json("GET", "/api/friends", None) {
+        if let Ok(friends) = http.expect_json("GET", "/api/friends", None) {
             for f in friends.as_array().cloned().unwrap_or_default() {
                 let uid = f["friend_id"].as_str().unwrap_or_default().to_string();
                 if uid.is_empty() {
@@ -159,7 +161,7 @@ impl Executor {
                 item["note"] = json!("不在白名单，未读数不查");
                 continue;
             }
-            match self.http.conv_unread(&conv) {
+            match http.conv_unread(&conv) {
                 Ok(u) => item["unread"] = u["unread"].clone(),
                 Err(e) => item["unread_error"] = json!(e),
             }

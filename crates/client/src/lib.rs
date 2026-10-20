@@ -17,6 +17,9 @@ use std::io::{Read as _, Write as _};
 pub struct Http {
     pub base: String,
     pub token: Option<String>,
+    /// 当前请求代表哪条命令（`msg.send` 之类）。有值时随请求发出，
+    /// 服务端据此落审计——**命令 id 是调用方的语义，服务端猜不出来**。
+    pub command: Option<String>,
 }
 
 impl Http {
@@ -24,6 +27,7 @@ impl Http {
         Self {
             base: base.into(),
             token: None,
+            command: None,
         }
     }
 
@@ -37,6 +41,10 @@ impl Http {
             other => unreachable!("ui only uses GET/POST/PUT/DELETE, got {other}"),
         };
         let req = req.timeout(std::time::Duration::from_secs(10));
+        let req = match &self.command {
+            Some(id) => req.set("X-Wxlike-Command", id),
+            None => req,
+        };
         match &self.token {
             Some(token) => req.set("Authorization", &format!("Bearer {token}")),
             None => req,
@@ -227,6 +235,14 @@ impl Http {
             &format!("/api/conv/{conv}/read"),
             Some(&serde_json::json!({})),
         )
+    }
+
+    /// 复制一份并打上命令标记：这一次调用（以及它发的每个请求）都会带
+    /// `X-Wxlike-Command`，服务端据此落审计。
+    pub fn with_command(&self, id: &str) -> Self {
+        let mut next = self.clone();
+        next.command = Some(id.to_string());
+        next
     }
 
     /// 带幂等键的 POST：服务端用同一个 key 重放时返回**第一次**的结果。

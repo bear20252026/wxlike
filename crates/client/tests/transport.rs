@@ -117,3 +117,16 @@ fn direct_conv_id_is_order_independent() {
     );
     assert_eq!(direct_conv_id("alice", "bob"), "d-alice~bob");
 }
+
+/// 命令标记必须真的发出去：服务端靠它落审计。
+#[test]
+fn command_header_is_sent_with_the_request() {
+    let (base, rx) = one_shot("200 OK", r#"{"unread":0,"head_seq":0,"read_seq":0}"#);
+    let http = Http::new(base).with_command("conv.unread");
+    http.conv_unread("d-a~b").expect("unread");
+    let request = rx.recv().expect("captured").to_lowercase();
+    assert!(
+        request.contains("x-wxlike-command: conv.unread"),
+        "请求里没有命令标记：{request}"
+    );
+}
