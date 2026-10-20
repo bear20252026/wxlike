@@ -64,6 +64,7 @@
 | `flare-core/` | flare-im/flare-core | 待核 | Transport trait 心跳/重连/慢消费者隔离 |
 | `tantivy/` | quickwit-oss/tantivy | MIT | **P3 搜索真依赖**（替换 P1 过渡层时的嵌入对象） |
 | `HuLa/` · `HuLa-IM-Tauri/` | HuLaSpark | Apache-2.0 | 前端工程组织、Tauri 多端配置 |
+| `box-im/` | bluexsx/box-im | **MIT**（2026-10 仍活跃） | **移动端/网页端 UI 面（Zone A/B）**：`im-uniapp` 6,674 行（chat.vue / chat-box.vue / 群已读 / @提醒 / 语音录制 / 视频通话页）+ `im-web` 13,827 行。本地唯一一份"能跑起来的 uni-app IM 客户端" |
 | `TangSengDaoDaoServer/` · `TangSengDaoDaoWeb/` | TangSengDaoDao | Apache-2.0 | 微信还原度最高的消息操作/会话模型 |
 
 ## P4 支付账本 + 安全（嵌入对象，不手写）
@@ -113,3 +114,24 @@
 引用位置、原许可），② 被移植文件头部保留原许可声明（GPL/AGPL 级别的按模块隔离），
 ③ 在 PR 描述注明"借鉴范围"。内部测试模式下全部来源可接纳（合同 7.2）；再激活
 条款触发时按此清单做许可核验。
+
+## 附：外部"仿微信项目榜单"的核实结果（2026-10-20）
+
+有人给了一份按 star 排序的 11 个仿微信项目清单。逐个查 GitHub API 后发现
+**star 与"能不能用"几乎不相关**，且许可证问题被完全忽略：
+
+| 仓库 | 真实 star | 许可 | 最后推送 | 判断 |
+|---|---|---|---|---|
+| trazyn/weweChat | 5,700 | MIT | 2021-04 | **已归档**（archived） |
+| GitLqr/LQRWeChat | 3,422 | MIT | 2026-06 | 最近 3 次提交全是 README，代码停在 2023 前 |
+| bluexsx/box-im | 697 | MIT | 2026-10 | **唯一活跃且对口**：uni-app + Vue 前端，见上表 |
+| arden-kfc/vue-WeChat | 2,110 | **无 LICENSE** | 2023-03 | 不能复制 |
+| nacker/LZEasemob3 | 1,925 | **无 LICENSE** | 2021-08 | 不能复制 |
+| CoderMikeHe/WeChat | 1,203 | MIT | 2021-04 | ObjC，对 Flutter 无用 |
+| wxxsw/SwiftUI-WeChat | 1,190 | MIT | 2022-03 | SwiftUI，无用 |
+| ausboyue/Wechat_HarmonyOS | 492 | **无 LICENSE** | 2025-05 | 不能复制 |
+| jiaopianjun/vue-wechat-desktop | 25 | **无 LICENSE** | 2023-01 | 不能复制 |
+| shanyu-e/fake-world | **0** | GPL-3.0 | 2025-12 | 榜单称 33.3k 星是**编的**；本地实测全仓 594 行 TS，"效果虚构"的警告成立 |
+
+**结论**：除 `box-im` 外，这份榜单对本项目没有新增价值。四个无许可证项目
+按版权默认规则（保留所有权利）**一行都不能抄**；三个 iOS/ObjC 项目与 Flutter 无关。
