@@ -134,11 +134,6 @@ export async function request<T = unknown>(
   return body as T;
 }
 
-/** A write that answers `204` / no body. */
-export async function requestEmpty(method: string, path: string): Promise<void> {
-  await request(method, path);
-}
-
 /** POSTs a prepared form; the media/video endpoints reject unknown field names. */
 export async function postForm<T = unknown>(path: string, form: FormData): Promise<T> {
   const tok = token();

@@ -20,7 +20,7 @@ const MESSAGES = "messages";
 const OUTBOX = "outbox";
 
 /** Rows kept per conversation (the desktop keeps everything; a browser tab should not). */
-export const MSG_KEEP = 200;
+const MSG_KEEP = 200;
 
 /** `wxlike_core::outbox::MAX_ATTEMPTS`. */
 const MAX_ATTEMPTS = 5;
