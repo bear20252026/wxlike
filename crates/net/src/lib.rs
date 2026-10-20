@@ -4,6 +4,7 @@
 pub mod client;
 pub mod conn;
 pub mod framing;
+pub mod heartbeat;
 pub mod membership;
 pub mod metrics;
 pub mod mq_hub;

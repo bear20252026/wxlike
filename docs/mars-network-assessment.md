@@ -204,6 +204,37 @@ outbox(task_id PK, conv_id, kind, payload, attempts, next_retry_at,
 * `flush_marks_sent_and_stops_at_the_first_retryable_failure`——第 3 条**没被尝试**；
 * `pending_tasks_survive_a_restart`——文件库关掉再开，未发送的还在。
 
+### P1.5 ✅ 已落地（2026-10-20）：自适应心跳 + 按网络指纹持久化
+
+`crates/net/src/heartbeat.rs`（8 项单元测试 + 1 项接线测试）。
+
+| 参数 | 值 | 与 Mars 的关系 |
+|---|---|---|
+| 间隔区间 | **15–60 秒** | Mars 是 3.5–10 分钟，见下方偏离说明 |
+| 步长 | 5 秒 | Mars `HeartStep` 是 60 秒 |
+| 连续成功几次算稳 | 4 | Mars `BaseSuccCount` 是 5 |
+| 连续失败几次回最短 | 2 | 与 Mars `MaxHeartFailCount` 相同 |
+| 弱网判据 | RTT ≥ 800ms 不加长 | Mars 用最小速率 12/4 KB/s |
+| 空闲超时 | `3 × 间隔`，夹在 45–180 秒 | Mars 没有这个概念（TCP 自带） |
+
+**必须偏离的一处（重要）**：Mars 的 3.5–10 分钟能成立，是因为它是 TCP 长连 +
+应用层心跳——TCP 有 keepalive 选项，长间隔只影响"多久发现掉线"。QUIC 没有等价
+选项，保活全靠 PING 帧，`max_idle_timeout` 才是判定死亡的依据。照抄 10 分钟会
+得到"手机放兜里 10 分钟，服务端才知道它掉线"。
+
+**按网络指纹持久化**（Mars 最值钱的设计）：`HeartbeatStore` 把
+`wifi:home → {interval, stable}` 存成 JSON，换网络重新试探、回旧网络直接复用。
+测试 `profiles_do_not_share_their_converged_value` 断言 WiFi 的 45 秒不会套到 4G 上。
+
+**桌面端的现实**：没有可移植的"当前是 WiFi 还是 4G"API（要读路由表 /
+NetworkManager，每平台一套）。所以 `NetProfile::from_env()` 只认
+`WXLIKE_NET_KIND` / `WXLIKE_NET_DETAIL`，不设就是 `unknown`——按最保守的 15 秒
+起步。宁可保守，也不要猜错：猜成 WiFi 会让蜂窝网络上的心跳变长，直接表现为
+"掉线发现慢"。移动端接 Flutter 时由平台 API 填这个值即可。
+
+**一处限制**：收敛结果在**下一次连接**时生效。QUIC 的 `TransportConfig` 是
+连接级不可变的，改不了已建连接的保活间隔——这不是偷懒，是协议形状决定的。
+
 ### P2（中）：网络诊断页（SDT 的形状）
 
 `dnschecker / httpchecker / pingchecker / tcpchecker` 四个 checker + 一份报告，

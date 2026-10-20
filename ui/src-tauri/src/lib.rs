@@ -421,6 +421,7 @@ impl AppState {
         let secret = self.secret.clone();
         std::thread::spawn(move || {
             use tauri::Emitter as _;
+            let mut next_sample = std::time::Instant::now();
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 let client = client_slot
@@ -430,6 +431,13 @@ impl AppState {
                 let Some(client) = client else {
                     continue;
                 };
+                // 自适应心跳：按策略给的时间点采一次 RTT/存活状态。
+                // 收敛结果在**下一次连接**时生效——QUIC 的 TransportConfig 是
+                // 连接级不可变的，改不了已建连接的保活间隔。
+                if std::time::Instant::now() >= next_sample {
+                    let interval = client.sample_heartbeat();
+                    next_sample = std::time::Instant::now() + interval;
+                }
                 let now = wxlike_core::types::now_ms() as i64;
                 let report = outbox.flush_with(now, 20, |task| {
                     let env: Envelope = match serde_json::from_value(task.payload.clone()) {
@@ -692,6 +700,14 @@ impl AppState {
         // 放同一文件是为了"一条消息要么在库里、要么在队列里"，备份/迁移不用管两处。
         let outbox = wxlike_core::outbox::Outbox::open(Some(&path.to_string_lossy()))
             .map_err(|e| format!("outbox: {e:#}"))?;
+        // 自适应心跳：按网络指纹存收敛结果，放在库文件同目录。
+        // 桌面端拿不到"WiFi 还是 4G"，所以用 `WXLIKE_NET_KIND` 显式指定，
+        // 不指定就是 unknown（按最保守的 15 秒起步，收敛后自动变长）。
+        let hb_dir = path.parent().map(std::path::Path::to_path_buf);
+        let _ = wxlike_net::heartbeat::Heartbeat::init(
+            wxlike_net::heartbeat::NetProfile::from_env(),
+            wxlike_net::heartbeat::store_in(hb_dir.as_deref()),
+        );
         *self.outbox.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(outbox));
         *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
         Ok(())

@@ -60,3 +60,30 @@ async fn connection_survives_the_default_idle_timeout() {
 
     let _ = std::fs::remove_file(&pins);
 }
+
+/// 自适应心跳的接线：真连一次，采样要能拿到 RTT 并给出区间内的下一次间隔。
+///
+/// 这条测的是"plumbing 通不通"（`Client` 保留了连接句柄、能读 RTT），
+/// 策略本身的数学在 `crates/net/src/heartbeat.rs` 的单元测试里。
+#[tokio::test]
+async fn client_can_sample_its_own_heartbeat() {
+    let pins = std::env::temp_dir().join(format!("wxlike-hb-wire-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&pins);
+    let (_hub, addr) = hub();
+
+    let client = wxlike_net::Client::connect_verified(addr, "localhost", "alice", &pins)
+        .await
+        .expect("connect");
+
+    assert!(client.is_alive(), "刚连上应当是活的");
+    // 本机回环，RTT 不可能到秒级
+    assert!(client.rtt_ms() < 5_000, "rtt={}ms", client.rtt_ms());
+
+    let next = client.sample_heartbeat();
+    assert!(
+        next >= std::time::Duration::from_secs(15) && next <= std::time::Duration::from_secs(60),
+        "采样后应给出 15–60 秒的下一间隔，实际 {next:?}"
+    );
+
+    let _ = std::fs::remove_file(&pins);
+}

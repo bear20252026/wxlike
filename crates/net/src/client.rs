@@ -14,6 +14,9 @@ use crate::wire::WireFrame;
 pub struct Client {
     send: Arc<Mutex<quinn::SendStream>>,
     recv: Arc<Mutex<quinn::RecvStream>>,
+    /// 保留连接句柄：读 RTT 与存活状态，喂给自适应心跳
+    /// （`crate::heartbeat`）。流本身不足以判断"连接是否还活着"。
+    conn: quinn::Connection,
     pub user_id: String,
 }
 
@@ -138,6 +141,7 @@ impl Client {
         Ok(Self {
             send: Arc::new(Mutex::new(send)),
             recv: Arc::new(Mutex::new(recv)),
+            conn,
             user_id,
         })
     }
@@ -155,8 +159,32 @@ impl Client {
         Ok(Self {
             send: Arc::new(Mutex::new(send)),
             recv: Arc::new(Mutex::new(recv)),
+            conn,
             user_id: String::new(),
         })
+    }
+
+    /// 喂一条心跳观测给自适应策略，返回**下一次**该采样的间隔。
+    ///
+    /// `crates/net` 不自己起定时器：要算的就是"多久采一次"，自己调度会形成
+    /// 循环依赖。调用方（客户端的维护线程）按返回的间隔下次再来即可。
+    pub fn sample_heartbeat(&self) -> std::time::Duration {
+        let sample = match self.conn.close_reason() {
+            None => crate::heartbeat::HeartSample::ok(self.conn.rtt().as_millis() as u64),
+            // 连接已经关了：按超时失败处理，让策略回落到最短间隔
+            Some(_) => crate::heartbeat::HeartSample::failed(true),
+        };
+        crate::heartbeat::Heartbeat::current().record(sample)
+    }
+
+    /// 当前连接是否还活着。
+    pub fn is_alive(&self) -> bool {
+        self.conn.close_reason().is_none()
+    }
+
+    /// 平滑 RTT（毫秒）。没连上时是 0。
+    pub fn rtt_ms(&self) -> u64 {
+        self.conn.rtt().as_millis() as u64
     }
 
     pub async fn send(&self, env: &Envelope) -> anyhow::Result<()> {
