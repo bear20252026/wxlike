@@ -206,12 +206,26 @@ pub struct Platform {
     calls: CallRegistry,
 }
 
+/// 把"未配置"的选项归一化成可安全使用的值。
+///
+/// 只处理一件事，但它很关键：**推流密钥不能为空**。空串是合法的 HMAC key，
+/// 签出来的 ingest token 谁都能伪造——与"公开默认值"是同一类洞，只是更隐蔽。
+/// 二进制的"缺 env 就拒绝启动"是第一道闸；这里保证**任何** `Platform` 实例
+/// （含测试与嵌入式用法）都不会拿空密钥签名。
+fn normalize_options(mut options: PlatformOptions) -> PlatformOptions {
+    if options.live_ingest_secret.trim().is_empty() {
+        options.live_ingest_secret = auth::random_hex(32);
+    }
+    options
+}
+
 impl Platform {
     pub fn in_memory() -> Result<Self> {
         Self::in_memory_with(PlatformOptions::default())
     }
 
     pub fn in_memory_with(options: PlatformOptions) -> Result<Self> {
+        let options = normalize_options(options);
         let moderation_mode = options.moderation_mode;
         Ok(Self {
             db: Db::open(None)?,
@@ -248,6 +262,7 @@ impl Platform {
     }
 
     pub fn open_with(path: Option<&str>, options: PlatformOptions) -> Result<Self> {
+        let options = normalize_options(options);
         let moderation_mode = options.moderation_mode;
         Ok(Self {
             db: Db::open(path)?,

@@ -219,3 +219,27 @@ async fn danmaku_is_moderated() {
         .await
         .is_err());
 }
+
+/// 推流密钥**不允许为空**。
+///
+/// 空串是合法的 HMAC key，签出来的 ingest token 谁都能伪造——与"公开默认值"
+/// 是同一类洞，只是更隐蔽。所以 `Platform::open_with` 在密钥为空时兜底成
+/// 随机值：不管调用方怎么构造，都不会有实例拿空密钥签名。
+#[test]
+fn empty_ingest_secret_is_never_used() {
+    let p = Platform::in_memory().expect("platform");
+    let secret = &p.options().live_ingest_secret;
+    assert!(!secret.trim().is_empty(), "默认构造也必须生成密钥");
+    assert_ne!(secret, "dev-insecure-live-secret", "不许用公开默认值");
+
+    // 两个实例的密钥必须不同：相同就说明它其实是常量
+    let q = Platform::in_memory().expect("platform");
+    assert_ne!(secret, &q.options().live_ingest_secret);
+
+    // 跨实例的凭据不可互认（同密钥才会通过）
+    let f = fixture();
+    let token = f.platform.ingest_token(&f.channel, 60_000);
+    assert!(q
+        .verify_ingest(&f.channel, &token, wxlike_core::types::now_ms())
+        .is_err());
+}
