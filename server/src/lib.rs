@@ -387,6 +387,8 @@ pub fn history_routes(deps: Arc<HistoryDeps>) -> Router {
     Router::new()
         .route("/api/history/{conv_id}", get(history_page))
         .route("/api/conv/{conv_id}/send", post(send_message))
+        .route("/api/conv/{conv_id}/recall", post(recall_message))
+        .route("/api/conv/{conv_id}/forward", post(forward_message))
         .route("/api/search/messages", get(search_messages))
         .with_state(deps)
 }
@@ -622,6 +624,138 @@ async fn send_message(
         "msg_id": hex(env.msg_id),
         "conv_id": conv_id,
         "accepted": true,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct RecallBody {
+    msg_id: String,
+}
+
+/// `POST /api/conv/{conv}/recall`：撤回自己的消息。
+///
+/// hub 内部对非作者是**静默丢弃**（不给探测口），但 HTTP 调用方需要知道
+/// 到底成没成，所以这里先查作者再提交——鉴权在入口做，语义才清楚。
+async fn recall_message(
+    State(deps): State<Arc<HistoryDeps>>,
+    authed: HistoryAuth,
+    Path(conv_id): Path<String>,
+    Json(body): Json<RecallBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !authorize_conv(&deps.platform, &authed.user_id, &conv_id) {
+        return Err((StatusCode::FORBIDDEN, "not your conversation".into()));
+    }
+    let id = hex::decode(body.msg_id.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "msg_id must be hex".to_string()))?;
+    if id.len() != 16 {
+        return Err((StatusCode::BAD_REQUEST, "msg_id must be 16 bytes".into()));
+    }
+    let mut target: MsgId = [0u8; 16];
+    target.copy_from_slice(&id);
+
+    let author = deps
+        .store
+        .author_of(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    match author {
+        None => return Err((StatusCode::NOT_FOUND, "no such message".into())),
+        Some(author) if author != authed.user_id => {
+            return Err((StatusCode::FORBIDDEN, "只能撤回自己的消息".into()))
+        }
+        Some(_) => {}
+    }
+
+    let env = Envelope::recall(&conv_id, authed.user_id.clone(), target);
+    deps.hub
+        .submit(&authed.user_id, &env)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "recalled": true,
+        "msg_id": body.msg_id,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct ForwardBody {
+    from_conv: String,
+    to_conv: String,
+    msg_id: String,
+    idempotency_key: String,
+}
+
+/// `POST /api/conv/{conv}/forward`：把一条消息转发到另一个会话。
+///
+/// `conv` 是**目标**会话；`from_conv` 必须在 body 里，且两边都要鉴权——
+/// 只查目标会让 agent 把任意会话的内容转发出去。
+async fn forward_message(
+    State(deps): State<Arc<HistoryDeps>>,
+    authed: HistoryAuth,
+    Path(to_conv): Path<String>,
+    Json(body): Json<ForwardBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // 路径与 body 都带目标会话：不一致说明调用方拼错了，宁可 400 也别猜
+    if body.to_conv != to_conv {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "to_conv 与路径不一致".to_string(),
+        ));
+    }
+    for conv in [&body.from_conv, &to_conv] {
+        if !authorize_conv(&deps.platform, &authed.user_id, conv) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("not your conversation: {conv}"),
+            ));
+        }
+    }
+    let id = hex::decode(body.msg_id.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "msg_id must be hex".to_string()))?;
+    let mut found = deps
+        .store
+        .by_msg_ids(std::slice::from_ref(&id))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(row) = found.remove(&id) else {
+        return Err((StatusCode::NOT_FOUND, "no such message".into()));
+    };
+    if row.withdrawn {
+        return Err((StatusCode::CONFLICT, "源消息已撤回".into()));
+    }
+
+    let to = match to_conv.strip_prefix("d-") {
+        Some(pair) => pair
+            .split('~')
+            .filter(|u| *u != authed.user_id)
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    let mut env = Envelope::with_body(
+        &to_conv,
+        authed.user_id.clone(),
+        to,
+        0,
+        row.envelope.body.clone(),
+    );
+    // 幂等：同 key + 同目标会话 → 同 msg_id
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(body.idempotency_key.as_bytes());
+    hasher.update(authed.user_id.as_bytes());
+    hasher.update(to_conv.as_bytes());
+    let digest = hasher.finalize();
+    let mut new_id: MsgId = [0u8; 16];
+    new_id.copy_from_slice(&digest[..16]);
+    env.msg_id = new_id;
+
+    deps.hub
+        .submit(&authed.user_id, &env)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "forwarded": true,
+        "conv_id": to_conv,
+        "msg_id": hex(env.msg_id),
     })))
 }
 

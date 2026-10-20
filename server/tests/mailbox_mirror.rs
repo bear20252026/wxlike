@@ -387,3 +387,99 @@ async fn http_send_denies_outsiders() {
     };
     assert_eq!(status, 403, "carol={carol} 不在会话里");
 }
+
+/// 撤回：作者可以，别人不行。hub 内部对非作者是静默丢弃（不给探测口），
+/// 但 HTTP 层要先查作者再提交，否则调用方分不清"撤回了"和"被无视了"。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http_recall_checks_the_author() {
+    let stack = start_stack(opts("recall-http")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+    befriend(&base, &ta, &bob, &tb);
+    let conv = format!("d-{alice}~{bob}");
+
+    let sent: Value = ureq::post(&format!("{base}/api/conv/{conv}/send"))
+        .set("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({"text": "oops", "idempotency_key": "r1"}))
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let msg_id = sent["msg_id"].as_str().unwrap().to_string();
+
+    // bob 撤回 alice 的消息 → 403
+    let res = ureq::post(&format!("{base}/api/conv/{conv}/recall"))
+        .set("Authorization", &format!("Bearer {tb}"))
+        .send_json(serde_json::json!({"msg_id": msg_id}));
+    let status = match res {
+        Ok(r) => r.status(),
+        Err(ureq::Error::Status(code, _)) => code,
+        Err(e) => panic!("transport: {e}"),
+    };
+    assert_eq!(status, 403, "非作者不该能撤回");
+
+    // 作者撤回 → 成功，历史里那条变成已撤回
+    let ok: Value = ureq::post(&format!("{base}/api/conv/{conv}/recall"))
+        .set("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({"msg_id": msg_id}))
+        .expect("recall")
+        .into_json()
+        .unwrap();
+    assert_eq!(ok["recalled"], true, "{ok}");
+
+    let page: Value = ureq::get(&format!("{base}/api/history/{conv}?limit=10"))
+        .set("Authorization", &format!("Bearer {tb}"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let msgs = page["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1, "{page}");
+    assert_eq!(msgs[0]["withdrawn"], true, "撤回标记没落到 history：{page}");
+}
+
+/// 转发：两边会话都要鉴权；目标会话收到一条新消息，且幂等。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http_forward_copies_into_the_target_conversation() {
+    let stack = start_stack(opts("forward")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+    let (carol, tc) = register(&base, "carol");
+    befriend(&base, &ta, &bob, &tb);
+    befriend(&base, &ta, &carol, &tc);
+    let ab = format!("d-{alice}~{bob}");
+    let ac = format!("d-{alice}~{carol}");
+
+    let sent: Value = ureq::post(&format!("{base}/api/conv/{ab}/send"))
+        .set("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({"text": "forward me", "idempotency_key": "f1"}))
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let msg_id = sent["msg_id"].as_str().unwrap().to_string();
+
+    let fwd: Value = ureq::post(&format!("{base}/api/conv/{ac}/forward"))
+        .set("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({
+            "from_conv": ab, "to_conv": ac, "msg_id": msg_id, "idempotency_key": "fwd-1"
+        }))
+        .expect("forward")
+        .into_json()
+        .unwrap();
+    assert_eq!(fwd["forwarded"], true, "{fwd}");
+
+    // 幂等：同 key 重发不该多一条
+    let again: Value = ureq::post(&format!("{base}/api/conv/{ac}/forward"))
+        .set("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({
+            "from_conv": ab, "to_conv": ac, "msg_id": msg_id, "idempotency_key": "fwd-1"
+        }))
+        .unwrap()
+        .into_json()
+        .unwrap();
+    assert_eq!(again["msg_id"], fwd["msg_id"], "同 key 必须同 msg_id");
+
+    let u = wait_unread(&base, &ac, &tc, 1);
+    assert_eq!(u["unread"], 1, "carol 只该收到一条：{u}");
+}

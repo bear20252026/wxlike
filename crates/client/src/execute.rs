@@ -125,10 +125,30 @@ impl Executor {
                     key,
                 )
             }
-            // 仍需数据面能力的命令：明确拒绝，不假装成功
-            other @ ("msg.forward" | "msg.recall") => Err(format!(
-                "{other} 走 QUIC 数据面，HTTP 控制面暂不支持；请用客户端"
-            )),
+            "msg.recall" => {
+                let conv = str_param(params, "conv")?;
+                let msg_id = str_param(params, "msg_id")?;
+                http.expect_json(
+                    "POST",
+                    &format!("/api/conv/{conv}/recall"),
+                    Some(&serde_json::json!({ "msg_id": msg_id })),
+                )
+            }
+            "msg.forward" => {
+                let from = str_param(params, "from_conv")?;
+                let to = str_param(params, "to_conv")?;
+                let msg_id = str_param(params, "msg_id")?;
+                let key = str_param(params, "idempotency_key")?;
+                // 路径里是**目标**会话；来源会话在 body，两边都由服务端鉴权
+                http.post_idempotent(
+                    &format!("/api/conv/{to}/forward"),
+                    &serde_json::json!({
+                        "from_conv": from, "to_conv": to,
+                        "msg_id": msg_id, "idempotency_key": key,
+                    }),
+                    key,
+                )
+            }
             other => Err(format!("尚未实现: {other}")),
         }
     }
@@ -240,22 +260,6 @@ mod tests {
             .run("group.create", &json!({"name": "t", "member_ids": []}))
             .unwrap_err();
         assert!(err.contains("idempotency_key"), "{err}");
-    }
-
-    /// 走数据面的命令要明确拒绝，而不是发一个假请求。
-    #[test]
-    fn data_plane_commands_are_refused_explicitly() {
-        let exec = Executor::new(
-            Http::new("http://127.0.0.1:1"),
-            Policy::new(["*"], true, false),
-        );
-        let err = exec
-            .run(
-                "msg.forward",
-                &json!({"from_conv": "g-1", "to_conv": "g-2", "msg_id": "m", "idempotency_key": "k"}),
-            )
-            .unwrap_err();
-        assert!(err.contains("QUIC"), "{err}");
     }
 
     #[test]
