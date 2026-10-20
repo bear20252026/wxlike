@@ -114,9 +114,20 @@ impl Executor {
                     .expect_empty("DELETE", &format!("/api/groups/{conv}/members/{uid}"), None)
                     .map(|()| serde_json::json!({ "removed": uid }))
             }
-            // 走数据面（QUIC）的命令：HTTP 控制面做不了，明确说出来而不是假装成功
-            other @ ("msg.send" | "msg.forward" | "msg.recall") => Err(format!(
-                "{other} 走 QUIC 数据面，HTTP 控制面无法发送；请用客户端，或等 hub 侧接口"
+            "msg.send" => {
+                let conv = str_param(params, "conv")?;
+                let text = str_param(params, "text")?;
+                let key = str_param(params, "idempotency_key")?;
+                // 服务端把 key 派生成 msg_id：重试落在同一条消息上
+                self.http.post_idempotent(
+                    &format!("/api/conv/{conv}/send"),
+                    &serde_json::json!({ "text": text, "idempotency_key": key }),
+                    key,
+                )
+            }
+            // 仍需数据面能力的命令：明确拒绝，不假装成功
+            other @ ("msg.forward" | "msg.recall") => Err(format!(
+                "{other} 走 QUIC 数据面，HTTP 控制面暂不支持；请用客户端"
             )),
             other => Err(format!("尚未实现: {other}")),
         }
@@ -240,8 +251,8 @@ mod tests {
         );
         let err = exec
             .run(
-                "msg.send",
-                &json!({"conv": "g-1", "text": "hi", "idempotency_key": "k"}),
+                "msg.forward",
+                &json!({"from_conv": "g-1", "to_conv": "g-2", "msg_id": "m", "idempotency_key": "k"}),
             )
             .unwrap_err();
         assert!(err.contains("QUIC"), "{err}");

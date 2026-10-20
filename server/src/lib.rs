@@ -17,7 +17,7 @@ use std::sync::Arc;
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use wxlike_core::store::StoredMessage;
 use wxlike_core::{Envelope, MsgBody, MsgId, Store};
@@ -31,6 +31,8 @@ pub struct HistoryDeps {
     pub store: Arc<Store>,
     /// P3：排序与翻页游标以信箱为准（归档只提供正文）。
     pub mailbox: Arc<wxlike_message::MessageStore>,
+    /// 发送走 hub 的入站路径（与 QUIC 帧同一条），不另写一套。
+    pub hub: HubHandle,
     /// P3 ADR-22: read-only Tantivy replica over the mailbox (a projection —
     /// visibility is always re-checked against the store; the writer lives in
     /// the background indexer thread).
@@ -223,6 +225,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         platform: platform.clone(),
         store: store.clone(),
         mailbox: mailbox.clone(),
+        hub: handle.clone(),
         search: search.clone(),
     });
     let app = Router::new()
@@ -383,6 +386,7 @@ fn url_consumer(url: &str) -> String {
 pub fn history_routes(deps: Arc<HistoryDeps>) -> Router {
     Router::new()
         .route("/api/history/{conv_id}", get(history_page))
+        .route("/api/conv/{conv_id}/send", post(send_message))
         .route("/api/search/messages", get(search_messages))
         .with_state(deps)
 }
@@ -552,6 +556,72 @@ async fn history_page(
         "conv_id": conv_id,
         "messages": messages,
         "next_before_seq": next,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct SendBody {
+    text: String,
+    /// 幂等键：同一个键重试会落在**同一条消息**上（msg_id 由它派生）。
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+/// `POST /api/conv/{conv}/send`：HTTP 控制面的发消息入口。
+///
+/// 走的是 hub 的入站路径（`HubHandle::submit`），因此投递策略、落库、
+/// 镜像信箱、扇出与 QUIC 帧**完全一致**——不另写一套发送逻辑。
+async fn send_message(
+    State(deps): State<Arc<HistoryDeps>>,
+    authed: HistoryAuth,
+    Path(conv_id): Path<String>,
+    Json(body): Json<SendBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !authorize_conv(&deps.platform, &authed.user_id, &conv_id) {
+        return Err((StatusCode::FORBIDDEN, "not your conversation".into()));
+    }
+    let text = body.text.trim();
+    if text.is_empty() || text.chars().count() > 5_000 {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "text required".into()));
+    }
+
+    // 直聊必须显式给收件人：hub 对非群会话按 `env.to` 投递
+    let to = match conv_id.strip_prefix("d-") {
+        Some(pair) => pair
+            .split('~')
+            .filter(|u| *u != authed.user_id)
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    let mut env = Envelope::direct(&conv_id, authed.user_id.clone(), to, 0, text);
+    if let Some(key) = body
+        .idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    {
+        // 幂等：同 key → 同 msg_id → 被既有的去重与唯一索引挡住
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        hasher.update(authed.user_id.as_bytes());
+        hasher.update(conv_id.as_bytes());
+        let digest = hasher.finalize();
+        let mut id: MsgId = [0u8; 16];
+        id.copy_from_slice(&digest[..16]);
+        env.msg_id = id;
+    }
+
+    deps.hub
+        .submit(&authed.user_id, &env)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "msg_id": hex(env.msg_id),
+        "conv_id": conv_id,
+        "accepted": true,
     })))
 }
 

@@ -199,6 +199,15 @@ impl HubHandle {
             .unwrap_or(false)
     }
 
+    /// 以某个用户身份提交一条消息，走**与 QUIC 帧完全相同**的路径：
+    /// 发送者校验 → 投递策略 → 落库 → 镜像信箱 → 扇出。
+    ///
+    /// 给 HTTP 控制面（`POST /api/conv/{c}/send`）用。刻意不新写一条发送路径：
+    /// 两套发送逻辑迟早会在"镜像了没""撤回了没"上分叉。
+    pub async fn submit(&self, sender: &str, env: &Envelope) -> anyhow::Result<()> {
+        handle_inbound(&self.state, sender, env).await
+    }
+
     pub async fn publish(&self, env: &Envelope) -> anyhow::Result<()> {
         route_envelope(&self.state, env, true).await
     }

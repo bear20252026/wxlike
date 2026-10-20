@@ -359,3 +359,54 @@ cmd.group.create  /api/groups  status=200 method=POST
 
 测试：`crates/platform/tests/audit.rs`（3 项：成功留痕 / 无头不记 / 失败也记）、
 `crates/client/tests/transport.rs`（命令头真的发出去了）。
+
+## 十四、`msg.send` 走 HTTP：复用 hub 的入站路径
+
+新增 `POST /api/conv/{conv}/send`，实现方式是**不新写发送逻辑**：
+
+```rust
+// net：一个薄入口
+pub async fn submit(&self, sender: &str, env: &Envelope) -> anyhow::Result<()> {
+    handle_inbound(&self.state, sender, env).await   // 与 QUIC 帧同一条
+}
+```
+
+因此投递策略（拉黑/禁言/陌生人闸门）、落库、镜像信箱、扇出**完全一致**。
+两套发送路径迟早会在"镜像了没""撤回了没"上分叉，这是刻意避开的。
+
+### 幂等的实现方式
+
+`idempotency_key` 在服务端被派生成 `msg_id`：
+
+```
+msg_id = sha256(key ‖ sender ‖ conv)[0..16]
+```
+
+于是重试天然落在**同一条消息**上——既有的 `state.seen` 去重与 `messages.msg_id`
+唯一索引直接生效，不需要第二套去重表。
+
+实测：
+
+```
+$ wxlike-cli ... run --cmd 'msg.send={"conv":"d-…","text":"from the agent","idempotency_key":"a1"}'
+{"accepted":true,"conv_id":"d-…","msg_id":"01f043097a782003800738a27e4bcb1f"}
+
+$ wxlike-cli ... run --cmd 'conv.unread={"conv":"d-…"}'   # 以 bob 身份
+{"head_seq":1,"owner":"direct","read_seq":0,"unread":1}
+```
+
+### 授权
+
+`authorize_conv` 复用 history 的那一套：直聊必须是一方，群必须成员。
+`http_send_denies_outsiders` 断言非参与者拿 403。
+
+### 现在的命令面完成度
+
+| 能力 | 状态 |
+|---|---|
+| 读（会话/消息/成员/自查） | ✅ |
+| 写（发消息 / 标记已读 / 建群 / 拉人） | ✅ |
+| 破坏性（踢人） | ✅ 需 `--allow-destructive` |
+| 幂等 | ✅ 服务端派生 msg_id |
+| 审计 | ✅ 中间件 |
+| 转发 / 撤回 | ⬜ 仍需数据面能力 |
