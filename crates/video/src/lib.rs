@@ -21,6 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context as _;
 use axum::extract::multipart::Multipart;
@@ -31,6 +32,17 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
+
+mod db;
+mod range;
+mod stats;
+mod timing;
+
+pub use range::{parse_range, read_range, serve_range, ByteRange, Served};
+pub use stats::{
+    ViewerWatch, WatchError, WatchEvent, WatchEventRecord, WatchStats, DEFAULT_VIEWER_PAGE,
+    MAX_VIEWER_PAGE, MAX_WATCHED_MS, MAX_WATCH_ID_CHARS, STATS_TOKEN_ENV, STATS_TOKEN_HEADER,
+};
 
 /// Upload cap for the video endpoint: 500 MB, generous for a research VOD
 /// service but bounded so a bad client cannot stream forever.
@@ -52,6 +64,46 @@ pub fn rendition_heights(src_h: u32) -> Vec<u32> {
     }
     out.sort_unstable();
     out.dedup();
+    out
+}
+
+/// 选流时最多允许用掉可用带宽的这几成。
+///
+/// 为什么留两成：`available_bps` 是客户端上一段的**实测**值，用它跑满档必然
+/// 卡在下一段的抖动上。留余量这条规则写在 Rust 里（不是 TS/Dart 里），三端
+/// 才会选到同一档。
+pub const SELECTION_HEADROOM_PCT: u64 = 80;
+
+/// 实测可用带宽 → 本轮可用额度。
+pub fn usable_bandwidth(available_bps: u64) -> u64 {
+    available_bps.saturating_mul(SELECTION_HEADROOM_PCT) / 100
+}
+
+/// 按码率选档：返回**放得下**的最高档；一档都放不下时给最低档
+/// （宁可糊一点，也不要黑屏）；空阶梯返回 `None`。
+///
+/// `renditions` 不必预先排序（内部按高度取最大）。
+pub fn select_rendition(renditions: &[Rendition], available_bps: u64) -> Option<&Rendition> {
+    let usable = usable_bandwidth(available_bps);
+    let fit = renditions
+        .iter()
+        .filter(|r| r.bandwidth_bps <= usable)
+        .max_by_key(|r| r.height);
+    fit.or_else(|| renditions.iter().min_by_key(|r| r.height))
+}
+
+/// master playlist（`#EXTM3U` + 每档一条 `#EXT-X-STREAM-INF`）。
+///
+/// 纯函数：格式、升序、BANDWIDTH/RESOLUTION/NAME 的取值都在这里，不需要 ffmpeg
+/// 就能断言。入参顺序即输出顺序——调用方（`run_pipeline`）按阶梯升序传进来。
+pub fn master_playlist(renditions: &[Rendition]) -> String {
+    let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+    for r in renditions {
+        out.push_str(&format!(
+            "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{},NAME=\"{}p\"\n{}\n",
+            r.bandwidth_bps, r.width, r.height, r.height, r.playlist
+        ));
+    }
     out
 }
 
@@ -138,22 +190,57 @@ pub fn tools_available() -> bool {
 /// `{root}/{video_id}/source` · `hls/playlist.m3u8` · `hls/seg_NNN.ts` ·
 /// `thumb.png` · `meta.json`. A rename-into-place after a full temp
 /// transcode keeps partial jobs invisible.
+///
+/// Zone E adds a sibling: `{root}/video.db`（播放统计，见 `db` 模块）。对象目录
+/// 本身仍然只在转码完整成功后出现，所以老代码的"目录存在=可播"这条不变式没被改动。
 #[derive(Clone)]
 pub struct VideoStore {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     root: PathBuf,
+    /// 懒建：只有第一个统计/作业请求才会打开 `video.db`。
+    /// 纯 VOD 部署（不碰 E1/E3 的接口）因此依旧一个文件都不多建。
+    db: Mutex<Option<Arc<db::VideoDb>>>,
 }
 
 impl VideoStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let inner = Inner {
+            root: root.into(),
+            db: Mutex::new(None),
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.inner.root
+    }
+
+    /// 播放统计与转码作业共用的库（`{root}/video.db`）。
+    pub(crate) fn db(&self) -> anyhow::Result<Arc<db::VideoDb>> {
+        let mut guard = self.inner.db.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(db) = guard.as_ref() {
+            return Ok(Arc::clone(db));
+        }
+        std::fs::create_dir_all(self.root())
+            .with_context(|| format!("create video root {}", self.root().display()))?;
+        let opened = Arc::new(db::VideoDb::open(&self.root().join("video.db"))?);
+        *guard = Some(Arc::clone(&opened));
+        Ok(opened)
+    }
+
+    /// 内容寻址 id：源字节的 SHA-256。`video_id` 与 `job_id` 是同一个值——
+    /// 幂等性就从这里来。
+    pub fn content_id(&self, bytes: &[u8]) -> String {
+        hex::encode(sha2::Sha256::digest(bytes))
     }
 
     fn dir(&self, video_id: &str) -> PathBuf {
-        self.root.join(video_id)
+        self.root().join(video_id)
     }
 
     pub fn contains(&self, video_id: &str) -> bool {
@@ -215,7 +302,7 @@ impl VideoStore {
 
 /// The ingest result: what the message-side reference needs plus the
 /// human-facing dimensions.
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Ingested {
     pub video_id: String,
     pub playlist_url: String,
@@ -231,6 +318,22 @@ pub struct Ingested {
     pub renditions: Vec<Rendition>,
 }
 
+impl Ingested {
+    /// 由元数据造引用。地址是相对路径，与 `meta.json` 同源于内容哈希。
+    pub fn from_meta(video_id: &str, meta: &VideoMeta) -> Self {
+        Self {
+            video_id: video_id.to_string(),
+            playlist_url: playlist_url(video_id),
+            play_url: play_url(video_id),
+            thumb_url: thumb_url(video_id),
+            duration_ms: meta.duration_ms,
+            width: meta.width,
+            height: meta.height,
+            renditions: meta.renditions.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ingest pipeline
 // ---------------------------------------------------------------------------
@@ -243,19 +346,9 @@ impl VideoStore {
     /// transcode happens in a sibling temp dir and is renamed into place
     /// only when every artifact exists.
     pub async fn ingest(&self, bytes: &[u8]) -> anyhow::Result<Ingested> {
-        let video_id = hex::encode(sha2::Sha256::digest(bytes));
+        let video_id = self.content_id(bytes);
         if self.contains(&video_id) {
-            let meta = self.meta(&video_id)?;
-            return Ok(Ingested {
-                video_id: video_id.clone(),
-                playlist_url: playlist_url(&video_id),
-                play_url: play_url(&video_id),
-                thumb_url: thumb_url(&video_id),
-                duration_ms: meta.duration_ms,
-                width: meta.width,
-                height: meta.height,
-                renditions: meta.renditions,
-            });
+            return self.ingested_from_meta(&video_id);
         }
 
         let store = self.clone();
@@ -265,34 +358,44 @@ impl VideoStore {
             .await
             .context("transcode task panicked")??;
 
-        Ok(Ingested {
-            video_id: video_id.clone(),
-            playlist_url: playlist_url(&video_id),
-            play_url: play_url(&video_id),
-            thumb_url: thumb_url(&video_id),
-            duration_ms: meta.duration_ms,
-            width: meta.width,
-            height: meta.height,
-            renditions: meta.renditions,
-        })
+        Ok(Ingested::from_meta(&video_id, &meta))
+    }
+
+    /// 由已落盘的 `meta.json` 造出消息侧要的引用（不重跑 ffmpeg）。
+    ///
+    /// 同步上传、作业队列、重复上传三条路都收敛到这里，所以"对象存在"和
+    /// "客户端拿到的地址"不可能对不上。
+    pub fn ingested_from_meta(&self, video_id: &str) -> anyhow::Result<Ingested> {
+        let meta = self.meta(video_id)?;
+        Ok(Ingested::from_meta(video_id, &meta))
     }
 
     /// The blocking pipeline: probe → transcode → thumb → rename into place.
     fn transcode(&self, video_id: &str, bytes: &[u8]) -> anyhow::Result<VideoMeta> {
         let final_dir = self.dir(video_id);
         let temp_dir = self
-            .root
+            .root()
             .join(format!(".tmp-{video_id}-{}", wxlike_core::types::now_ms()));
         std::fs::create_dir_all(temp_dir.join("hls"))
             .with_context(|| "create temp transcode dir".to_string())?;
 
         let result = self.run_pipeline(video_id, bytes, &temp_dir);
         match result {
-            Ok(meta) => {
-                std::fs::rename(&temp_dir, &final_dir)
-                    .with_context(|| "move transcoded artifacts into place".to_string())?;
-                Ok(meta)
-            }
+            Ok(meta) => match std::fs::rename(&temp_dir, &final_dir) {
+                Ok(()) => Ok(meta),
+                Err(err) => {
+                    // 同内容并发转码（同步上传撞上班里的同一个作业）时，赢家的
+                    // 目录已经在那儿了。此时"对象存在"是真话，不是降级——
+                    // 清掉自己的临时目录，返回同一份结果。
+                    if self.contains(video_id) {
+                        std::fs::remove_dir_all(&temp_dir).ok();
+                        tracing::debug!(video_id, error = %err, "并发转码：采用已存在的对象");
+                        return Ok(meta);
+                    }
+                    std::fs::remove_dir_all(&temp_dir).ok();
+                    Err(err).with_context(|| "move transcoded artifacts into place".to_string())
+                }
+            },
             Err(err) => {
                 std::fs::remove_dir_all(&temp_dir).ok();
                 Err(err)
@@ -408,13 +511,7 @@ impl VideoStore {
             .with_context(|| "copy best rendition to play.mp4".to_string())?;
 
         // master playlist：按升序声明各档，播放器自行选档
-        let mut master = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
-        for r in &renditions {
-            master.push_str(&format!(
-                "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{},NAME=\"{}p\"\n{}\n",
-                r.bandwidth_bps, r.width, r.height, r.height, r.playlist
-            ));
-        }
+        let master = master_playlist(&renditions);
         std::fs::write(hls_root.join("master.m3u8"), master.as_bytes())
             .with_context(|| "write master playlist".to_string())?;
         // 固定路径兼容：老客户端只认 `hls/playlist.m3u8`
@@ -600,7 +697,7 @@ pub struct VideoState {
 }
 
 pub fn routes(state: VideoState) -> Router {
-    Router::new()
+    let vod = Router::new()
         .route("/api/video", post(upload))
         .route("/api/video/{video_id}", get(meta))
         .route("/api/video/{video_id}/playlist.m3u8", get(playlist))
@@ -615,8 +712,12 @@ pub fn routes(state: VideoState) -> Router {
         )
         .route("/api/video/{video_id}/play.mp4", get(play_mp4))
         .route("/api/video/{video_id}/thumb.png", get(thumb))
+        // Zone E 新增的面（各自带 handler，路径都在自己模块里）：
+        //   stats → 播放时长统计（E1）
+        .route("/api/video/{video_id}/select", get(select))
+        .with_state(state.clone());
+    vod.merge(stats::routes(state))
         .layer(DefaultBodyLimit::max(MAX_VIDEO_BYTES))
-        .with_state(state)
 }
 
 async fn upload(
@@ -713,23 +814,102 @@ async fn segment_in_rendition(
     Ok(([(header::CONTENT_TYPE, "video/mp2t")], body))
 }
 
+/// `play.mp4`：**支持 `Range`**（E1 的第一块欠账）。
+///
+/// `<video>` 拖进度条靠的就是这条：206 + `Content-Range` + `Accept-Ranges`。
+/// 读盘跑在 blocking 池里，而且只读请求那一段，不再整文件进内存。
 async fn play_mp4(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    headers: axum::http::HeaderMap,
+) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
     check_id(&video_id)?;
-    let body = std::fs::read(state.store.dir_public(&video_id).join("play.mp4"))
-        .map_err(|e| not_found_if_missing(e.into()))?;
-    Ok(([(header::CONTENT_TYPE, "video/mp4")], body))
+    let path = state.store.dir_public(&video_id).join("play.mp4");
+    Ok(serve_file(path, "video/mp4", headers).await)
 }
 
+/// 缩略图同样走 Range 路径（长图渐进加载、以及断线重传）。
 async fn thumb(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    headers: axum::http::HeaderMap,
+) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
     check_id(&video_id)?;
-    let body = state.store.thumb(&video_id).map_err(not_found_if_missing)?;
-    Ok(([(header::CONTENT_TYPE, "image/png")], body))
+    let path = state.store.dir_public(&video_id).join("thumb.png");
+    Ok(serve_file(path, "image/png", headers).await)
+}
+
+/// 阻塞文件响应统一走这里（206/416/404 的判定在 `range` 模块）。
+///
+/// 点播与直播的分片/清单共用这一条：两份 Range 实现必然漂移，而漂移的代价是
+/// 某一类客户端拖不动进度条。
+pub(crate) async fn serve_file(
+    path: PathBuf,
+    content_type: &'static str,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    tokio::task::spawn_blocking(move || range::respond_with_range(&path, content_type, &headers))
+        .await
+        .unwrap_or_else(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("file task: {err}"),
+            )
+                .into_response()
+        })
+}
+
+/// 选流（Track B 的"按码率选流"）：规则写在 Rust 里，三端才可能选到同一档。
+///
+/// `?kbps=1200` 是客户端上一段的**实测**可用带宽（千比特/秒）。服务端按
+/// [`SELECTION_HEADROOM_PCT`] 留余量后挑最高档；一档都放不下时给最低档。
+async fn select(
+    State(state): State<VideoState>,
+    AxumPath(video_id): AxumPath<String>,
+    axum::extract::Query(q): axum::extract::Query<SelectQuery>,
+) -> std::result::Result<Json<SelectedRendition>, (StatusCode, String)> {
+    check_id(&video_id)?;
+    let kbps = q.kbps.ok_or((
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "need ?kbps=<measured available kbps>".to_string(),
+    ))?;
+    if kbps == 0 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "kbps must be positive".to_string(),
+        ));
+    }
+    let meta = state.store.meta(&video_id).map_err(not_found_if_missing)?;
+    let available_bps = kbps.saturating_mul(1_000);
+    let chosen = select_rendition(&meta.renditions, available_bps)
+        .ok_or((StatusCode::NOT_FOUND, "video has no renditions".to_string()))?;
+    Ok(Json(SelectedRendition {
+        video_id,
+        available_bps,
+        usable_bps: usable_bandwidth(available_bps),
+        rendition: chosen.clone(),
+        all_heights: meta.renditions.iter().map(|r| r.height).collect(),
+    }))
+}
+
+/// `GET /api/video/{id}/select` 的查询参数。
+#[derive(serde::Deserialize, Debug)]
+pub struct SelectQuery {
+    /// 实测可用带宽，千比特/秒
+    pub kbps: Option<u64>,
+}
+
+/// 选流结论：客户端要的档位，外加"为什么是这档"的两个数。
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct SelectedRendition {
+    pub video_id: String,
+    /// 客户端报来的可用带宽
+    pub available_bps: u64,
+    /// 留完余量后本轮可用额度
+    pub usable_bps: u64,
+    pub rendition: Rendition,
+    /// 这个对象一共有哪几档（便于客户端理解"为什么给了我 360p"）
+    pub all_heights: Vec<u32>,
 }
 
 /// Ids are content hashes: anything else is a 404-shaped refusal, decided
