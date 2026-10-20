@@ -415,6 +415,18 @@ impl MessageStore {
         Ok(c.last_insert_rowid())
     }
 
+    /// 某条消息在属主内的序列号（不存在返回 `None`）。
+    pub fn seq_of(&self, owner: (OwnerType, &str), msg_id: &str) -> Result<Option<u64>> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let c = self.c();
+        Ok(c.query_row(
+            "SELECT seq FROM mailbox WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3",
+            params![ot, oid, msg_id],
+            |r| r.get::<_, i64>(0).map(|v| v as u64),
+        )
+        .optional()?)
+    }
+
     /// 倒序取一页：`before_seq` 之前的 `limit` 条（history 的翻页语义）。
     ///
     /// 返回 (升序 rows, next_before)：`next_before` 是这一页最老的 seq，

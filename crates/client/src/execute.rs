@@ -9,6 +9,9 @@ use wxlike_cmd::policy::Policy;
 
 use crate::Http;
 
+/// 兜底错误的标记：测试据此判断"catalog 里说有、执行器里没做"。
+pub const UNIMPLEMENTED: &str = "尚未实现";
+
 /// 命令执行器：把 catalog 里的 id 翻译成 HTTP 调用。
 ///
 /// CLI 与 MCP server 共用这一份——**执行逻辑只有一处**，协议层（命令行 /
@@ -62,6 +65,37 @@ impl Executor {
                     None,
                 )
             }
+            "msg.get" => {
+                let conv = str_param(params, "conv")?;
+                let msg_id = str_param(params, "msg_id")?;
+                http.expect_json("GET", &format!("/api/conv/{conv}/msg/{msg_id}"), None)
+            }
+            "msg.list" => {
+                // history 是 before_seq 语义；这里按区间取：先翻到 to_seq 之前，
+                // 再按 from_seq 过滤。命令语义是"给我这一段"，不该让调用方懂翻页。
+                let conv = str_param(params, "conv")?;
+                let from = params["from_seq"].as_u64().unwrap_or(1);
+                let to = params["to_seq"].as_u64().unwrap_or(u64::MAX);
+                let limit = (to.saturating_sub(from) + 1).min(200);
+                let before = if to == u64::MAX { 0 } else { to + 1 };
+                let page = http.expect_json(
+                    "GET",
+                    &format!("/api/history/{conv}?before_seq={before}&limit={limit}"),
+                    None,
+                )?;
+                let rows: Vec<Value> = page["messages"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|m| {
+                        let seq = m["seq"].as_u64().unwrap_or(0);
+                        seq >= from && seq <= to
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "conv": conv, "count": rows.len(), "messages": rows }))
+            }
+            "me.sessions" => http.expect_json("GET", "/api/sessions", None),
             "group.info" => {
                 let conv = str_param(params, "conv")?;
                 self.http
@@ -149,7 +183,7 @@ impl Executor {
                     key,
                 )
             }
-            other => Err(format!("尚未实现: {other}")),
+            other => Err(format!("{UNIMPLEMENTED}: {other}")),
         }
     }
 
@@ -260,6 +294,51 @@ mod tests {
             .run("group.create", &json!({"name": "t", "member_ids": []}))
             .unwrap_err();
         assert!(err.contains("idempotency_key"), "{err}");
+    }
+
+    /// **防漂移**：catalog 里声明有、执行器里没做，是对 agent 撒谎。
+    /// 这条测试遍历全部命令——加命令忘了实现，CI 立刻红。
+    #[test]
+    fn every_catalog_command_is_implemented() {
+        // 用一个"立刻回 400"的本地服务器：命令发不发得出去不重要，
+        // 重要的是它**走到了网络**（而不是命中"尚未实现"兜底）。
+        // 直连 127.0.0.1:1 会因重试把这条测试拖到 30s+。
+        // 换行用 (13,10) 拼，避免源码里的转义歧义。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let crlf = String::from_utf8(vec![13, 10]).expect("crlf");
+            let resp = format!(
+                "HTTP/1.1 400 Bad Request{crlf}Content-Type: application/json{crlf}                 Content-Length: 17{crlf}Connection: close{crlf}{crlf}{{\"error\":\"nope\"}}"
+            );
+            for sock in listener.incoming().flatten() {
+                let mut sock = sock;
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        let exec = Executor::new(
+            Http::new(format!("http://{addr}")),
+            Policy::new(["*"], true, true),
+        );
+        let params = json!({
+            "conv": "d-a~b", "to_conv": "d-a~b", "from_conv": "d-a~b",
+            "name": "t", "text": "x", "msg_id": "00000000000000000000000000000000",
+            "idempotency_key": "k", "user_ids": ["u"], "user_id": "u",
+            "q": "x", "from_seq": 1, "version": 0,
+        });
+        for spec in wxlike_cmd::CATALOG {
+            match exec.run(spec.id, &params) {
+                Ok(_) => {}
+                Err(e) => assert!(
+                    !e.contains(UNIMPLEMENTED),
+                    "{} 在 catalog 里但执行器没实现",
+                    spec.id
+                ),
+            }
+        }
     }
 
     #[test]
