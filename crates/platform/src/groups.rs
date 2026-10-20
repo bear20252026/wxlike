@@ -96,6 +96,41 @@ pub struct GroupSummary {
 }
 
 impl Platform {
+    /// 幂等重放：同一个 key 已经执行过就返回**当时**的结果。
+    ///
+    /// 为什么放在平台层而不是命令层：重试可能来自 CLI、MCP、UI 任意一个入口，
+    /// 只有服务端记住才有效。键由调用方给（`Idempotency-Key` 头）。
+    pub fn replay_idempotent(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        let c = self.db().lock();
+        let row: Option<String> = c
+            .query_row(
+                "SELECT response FROM idempotency WHERE key = ?1",
+                rusqlite::params![key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        drop(c);
+        match row {
+            Some(text) => Ok(Some(
+                serde_json::from_str(&text).map_err(PlatformError::Codec)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub fn remember_idempotent(&self, key: &str, response: &serde_json::Value) -> Result<()> {
+        self.db().lock().execute(
+            "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3)
+             ON CONFLICT(key) DO NOTHING",
+            rusqlite::params![
+                key,
+                serde_json::to_string(response).map_err(PlatformError::Codec)?,
+                wxlike_core::types::now_ms() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     /// 把群成员快照同步进信箱（P3：信箱成为成员与顺序的唯一真相）。
     ///
     /// 成员变更是低频操作，直接**全量重置**而不是增量：漏写一条增量会让某个
@@ -470,8 +505,21 @@ pub(crate) fn group_notice(
 async fn create_group(
     State(platform): State<PlatformState>,
     authed: Authed,
+    headers: axum::http::HeaderMap,
     Json(body): Json<CreateGroup>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    // agent 会重试：带同一个 Idempotency-Key 时返回第一次的结果，不新建群
+    let idem = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    if let Some(key) = &idem {
+        if let Some(prev) = platform.replay_idempotent(key)? {
+            return Ok((StatusCode::OK, Json(prev)));
+        }
+    }
+
     let id = platform.create_group(&authed.user_id, &body.name, &body.member_ids)?;
     let others: Vec<String> = body.member_ids.to_vec();
     if !others.is_empty() {
@@ -487,10 +535,11 @@ async fn create_group(
         );
         platform.emit(env).await;
     }
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({ "group_id": id, "members": others.len() + 1 })),
-    ))
+    let reply = serde_json::json!({ "group_id": id, "members": others.len() + 1 });
+    if let Some(key) = &idem {
+        platform.remember_idempotent(key, &reply)?;
+    }
+    Ok((StatusCode::OK, Json(reply)))
 }
 
 async fn add_members(

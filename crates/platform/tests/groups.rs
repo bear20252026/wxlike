@@ -695,3 +695,41 @@ async fn members_list_is_for_members_only() {
     let (status, _) = common::call(&router, r).await;
     assert_eq!(status, 403, "非成员不该看到成员列表");
 }
+
+/// 幂等重放：agent 重试建群时带同一个 `Idempotency-Key`，
+/// 必须返回**同一个群**，而不是建出两个。
+#[tokio::test]
+async fn idempotency_key_makes_group_create_replayable() {
+    let router = app(common::platform());
+    let (_alice, ta) = signup(&router, "alice").await;
+
+    let mk = || {
+        let mut r = req(
+            "POST",
+            "/api/groups",
+            Some(json!({"name": "team", "member_ids": []})),
+            Some(&ta),
+        );
+        r.headers_mut()
+            .insert("idempotency-key", "key-1".parse().unwrap());
+        r
+    };
+
+    let (s1, b1) = common::call(&router, mk()).await;
+    assert_eq!(s1, 200, "{b1}");
+    let (s2, b2) = common::call(&router, mk()).await;
+    assert_eq!(s2, 200, "{b2}");
+    assert_eq!(b1["group_id"], b2["group_id"], "同一个 key 必须是同一个群");
+
+    // 换一个 key 才是新群
+    let mut r = req(
+        "POST",
+        "/api/groups",
+        Some(json!({"name": "team", "member_ids": []})),
+        Some(&ta),
+    );
+    r.headers_mut()
+        .insert("idempotency-key", "key-2".parse().unwrap());
+    let (_, b3) = common::call(&router, r).await;
+    assert_ne!(b3["group_id"], b1["group_id"]);
+}

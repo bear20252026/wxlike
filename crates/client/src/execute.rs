@@ -71,11 +71,52 @@ impl Executor {
                     .expect_json("GET", &format!("/api/groups/{conv}/members"), None)
             }
             "conv.list" => self.conv_list(),
-            // 写与破坏性命令：P3 才实现。这里明确报"未实现"而不是静默成功。
-            // 调用方会补上 id 前缀，这里不要重复
-            other => Err(format!(
-                "尚未在 CLI 实现（P1 只做只读；写命令见 P3）: {other}"
+            // ---- 写 ----
+            "conv.ack" => {
+                let conv = str_param(params, "conv")?;
+                match params["seq"].as_u64() {
+                    Some(seq) => self.http.mark_conv_read_upto(conv, seq),
+                    None => self.http.mark_conv_read(conv),
+                }
+            }
+            "group.create" => {
+                let name = str_param(params, "name")?;
+                let key = str_param(params, "idempotency_key")?;
+                let members = params
+                    .get("member_ids")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                // 幂等键**必填**：建群重试两次就是两个群，没有键就没有安全网
+                self.http.post_idempotent(
+                    "/api/groups",
+                    &serde_json::json!({ "name": name, "member_ids": members }),
+                    key,
+                )
+            }
+            "group.add_member" => {
+                let conv = str_param(params, "conv")?;
+                let ids = params
+                    .get("user_ids")
+                    .cloned()
+                    .ok_or_else(|| "缺少参数 user_ids".to_string())?;
+                self.http.expect_json(
+                    "POST",
+                    &format!("/api/groups/{conv}/members"),
+                    Some(&serde_json::json!({ "user_ids": ids })),
+                )
+            }
+            "group.kick" => {
+                let conv = str_param(params, "conv")?;
+                let uid = str_param(params, "user_id")?;
+                self.http
+                    .expect_empty("DELETE", &format!("/api/groups/{conv}/members/{uid}"), None)
+                    .map(|()| serde_json::json!({ "removed": uid }))
+            }
+            // 走数据面（QUIC）的命令：HTTP 控制面做不了，明确说出来而不是假装成功
+            other @ ("msg.send" | "msg.forward" | "msg.recall") => Err(format!(
+                "{other} 走 QUIC 数据面，HTTP 控制面无法发送；请用客户端，或等 hub 侧接口"
             )),
+            other => Err(format!("尚未实现: {other}")),
         }
     }
 
@@ -173,6 +214,35 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("not allowed"), "{err}");
         assert!(!err.contains("connect"), "不该走到网络：{err}");
+    }
+
+    /// 建群没有幂等键 = 直接拒绝：重试一次就是两个群。
+    #[test]
+    fn group_create_requires_an_idempotency_key() {
+        let exec = Executor::new(
+            Http::new("http://127.0.0.1:1"),
+            Policy::new(["*"], true, false),
+        );
+        let err = exec
+            .run("group.create", &json!({"name": "t", "member_ids": []}))
+            .unwrap_err();
+        assert!(err.contains("idempotency_key"), "{err}");
+    }
+
+    /// 走数据面的命令要明确拒绝，而不是发一个假请求。
+    #[test]
+    fn data_plane_commands_are_refused_explicitly() {
+        let exec = Executor::new(
+            Http::new("http://127.0.0.1:1"),
+            Policy::new(["*"], true, false),
+        );
+        let err = exec
+            .run(
+                "msg.send",
+                &json!({"conv": "g-1", "text": "hi", "idempotency_key": "k"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("QUIC"), "{err}");
     }
 
     #[test]

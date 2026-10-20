@@ -200,6 +200,13 @@ impl Db {
         let c = self.lock();
         c.execute_batch(
             r#"
+            -- 幂等重放：agent 会重试，同一个 key 必须返回第一次的结果。
+            -- 只存"写操作"的结果，读操作不需要。
+            CREATE TABLE IF NOT EXISTS idempotency (
+                key        TEXT PRIMARY KEY,
+                response   TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS conv_owner (
                 conv_id    TEXT PRIMARY KEY,
                 owner_type TEXT NOT NULL
