@@ -51,7 +51,7 @@ pub fn make_server_endpoint(addr: std::net::SocketAddr) -> anyhow::Result<quinn:
 ///
 /// Production code must call [`connect_tofu`] instead; keep this behind an
 /// explicit `--insecure-lab` switch wherever it is used.
-pub async fn connect_insecure(
+pub(crate) async fn connect_insecure(
     server_addr: std::net::SocketAddr,
     server_name: &str,
 ) -> anyhow::Result<Connection> {

@@ -102,9 +102,14 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let mut platform_options = wxlike_platform::PlatformOptions::default();
     match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
         Ok(secret) if !secret.is_empty() => platform_options.live_ingest_secret = secret,
-        _ => tracing::warn!(
-            "WXLIKE_LIVE_INGEST_SECRET 未设置：直播推流密钥是公开的开发默认值，公网部署必须设置"
-        ),
+        _ => {
+            // 不再用公开常量兜底：那等于把推流密钥写在源码里。
+            // 随机密钥的代价是"重启后旧 ingest token 失效"——可接受，它本来就是短期的。
+            platform_options.live_ingest_secret = wxlike_platform::random_hex(32);
+            tracing::warn!(
+                "WXLIKE_LIVE_INGEST_SECRET 未设置：已生成本次启动的随机密钥（重启后旧推流 token 失效）"
+            );
+        }
     }
     let platform = Platform::open_with(opts.db_path.as_deref(), platform_options)?.shared();
 
@@ -130,10 +135,11 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             SEARCH_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )),
     };
+    // 读侧**不再静默降级到内存索引**：那会让搜索"看着能用、结果全空"，
+    // 与写侧刻意 panic 的策略矛盾。索引打不开就是配置/磁盘问题，必须启动失败。
     let search: Arc<wxlike_search::SearchIndex> = Arc::new(
-        wxlike_search::SearchIndex::open_query(&search_dir).unwrap_or_else(|_| {
-            wxlike_search::SearchIndex::in_memory().expect("fallback in-memory index")
-        }),
+        wxlike_search::SearchIndex::open_query(&search_dir)
+            .map_err(|e| anyhow::anyhow!("open tantivy query index at {search_dir:?}: {e}"))?,
     );
     {
         struct Indexer(wxlike_search::IndexerHandle);
@@ -150,12 +156,10 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         }
         // the writer thread owns its own index instance on the same directory
         // (tantivy allows exactly one writer per directory)
-        let writer_index =
-            wxlike_search::SearchIndex::open_writer(&search_dir).unwrap_or_else(|err| {
-                // a writer that silently goes to RAM would make docs vanish
-                // from the dir-backed query side — fail loud instead
-                panic!("open tantivy writer at {search_dir:?}: {err:#}");
-            });
+        // 写侧同样返回错误而不是 panic：库代码不该把进程打死，
+        // 由 `start_stack` 的调用方（二进制）决定怎么报错退出。
+        let writer_index = wxlike_search::SearchIndex::open_writer(&search_dir)
+            .map_err(|e| anyhow::anyhow!("open tantivy writer at {search_dir:?}: {e}"))?;
         store.set_append_listener(Arc::new(Indexer(wxlike_search::IndexerHandle::spawn(
             writer_index,
         ))));

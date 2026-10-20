@@ -257,13 +257,26 @@ mod tests {
             totp_rs::Secret::Encoded(secret.clone()).to_bytes().unwrap(),
         )
         .unwrap();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
         // 90 秒前 = 3 步外（skew=1 只容 ±30s），必须被拒
-        let old_code = totp.generate(
-            u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() - 90).unwrap(),
-        );
+        let old_code = totp.generate(u64::try_from(now - 90).unwrap());
         let cur_code = totp.generate_current().unwrap();
         assert!(!totp_verify(&secret, &old_code), "3 步外必须拒绝");
         assert!(totp_verify(&secret, &cur_code));
+
+        // **真正的回归点**：±1 步（±30s）必须被接受。
+        // 修复前用的是不带容差的比较，"90s 前被拒 + 当前通过"在修复前后都成立，
+        // 所以只断言那两条的测试拦不住这个 bug 回归。
+        let prev_code = totp.generate(u64::try_from(now - 30).unwrap());
+        let next_code = totp.generate(u64::try_from(now + 30).unwrap());
+        assert!(
+            totp_verify(&secret, &prev_code),
+            "-1 步必须接受（时钟慢一步）"
+        );
+        assert!(
+            totp_verify(&secret, &next_code),
+            "+1 步必须接受（时钟快一步）"
+        );
     }
 
     #[test]

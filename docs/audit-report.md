@@ -150,3 +150,25 @@ core+net+mq+platform+message+...+video+search ← server（组合根/装配层�
 | P2-8 | 风控 fail-open | ⬜ 未做：报告本身建议 P6 加熔断计数而非改 fail-closed |
 | P3-9 | SFU 只转发音频 | ⬜ 已知边界（`video` 字段标注），等视频采集接入 |
 | P3-12 | 无 git tag | ⬜ 未做：建议按阶段补 `p1…p5-d1`，需要与发布节奏一起定 |
+
+---
+
+## 九、安全审计整改（2026-10-20）
+
+按第二轮安全审计逐条修，全部有回归测试。
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **dpage 解包不校验路径 → 任意文件写（blocker）** | `unpack()` 里逐条校验 `safe_rel_path`（拒绝绝对路径、`..`、盘符、反斜杠），**一个越界条目整包拒绝**；CLI 落盘处再挡一次（防御纵深）。规则与 `container::package` 的 entry 校验一致 |
+| 2 | 推流密钥默认公开值 | 默认值改为空串；装配层未配置时生成**随机密钥**；二进制**拒绝启动**（`WXLIKE_DEV_INSECURE=1` 显式放行）。实测退出码 1 |
+| 3 | 生产重连走 skip-verify TLS | 新增 `Client::connect_retry_verified`（TOFU + pins + 退避）；旧 `connect_retry` 更名 `connect_retry_insecure` 并 `#[doc(hidden)]`；`connect_insecure` 不再从 `lib.rs` 导出（`pub(crate)`） |
+| 4 | 搜索索引读侧静默降级内存 | 读侧改为 `?` 返回错误（与写侧一致），不再"看着能用、结果全空"；写侧的 `panic!` 也改成返回错误（库代码不该打死进程） |
+| 5 | Tauri `local_open` 任意路径 | 归一化后必须落在 `app_data_dir` 内；按**路径分量**判断（`/data/application` 不是 `/data/app` 的子目录） |
+| 6 | TOTP 假回归测试 | 补上真正的断言：**±30 秒（±1 步）的码必须被接受**。原来只断言"90s 前被拒 + 当前通过"，那两条在修复前后都成立 |
+
+回归测试：`unpack_rejects_unsafe_paths`（7 种越界路径）、`safe_rel_path_accepts_normal_paths`、
+`totp_skew_rejects_old_step_codes`（含 ±1 步）、`normalize_path_blocks_traversal`、
+`ops_recovery::*`（改用 verified 重连）。
+
+关于审计提到的 `live.rs:104` 硬编码兜底 key：与审计判断一致，HMAC 接受任意长度 key，
+该分支实际不可达，本次未改。

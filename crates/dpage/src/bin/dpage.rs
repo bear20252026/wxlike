@@ -8,7 +8,7 @@
 //! ```
 
 use std::path::Path;
-use wxlike_dpage::{pack_dir, peek, unpack};
+use wxlike_dpage::{pack_dir, peek, safe_rel_path, unpack};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -37,6 +37,8 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             let dir = Path::new(&args[3]);
             std::fs::create_dir_all(dir)?;
             for (path, data) in &page.files {
+                // unpack 已校验；这里再挡一次，防止将来有人绕过 unpack 直接喂 files
+                anyhow::ensure!(safe_rel_path(path), "unsafe path: {path:?}");
                 let out = dir.join(path);
                 if let Some(parent) = out.parent() {
                     std::fs::create_dir_all(parent)?;

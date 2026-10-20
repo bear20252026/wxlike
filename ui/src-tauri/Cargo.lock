@@ -7196,6 +7196,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "ureq",
+ "wxlike-cmd",
+]
+
+[[package]]
+name = "wxlike-cmd"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -7377,6 +7385,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "tracing-subscriber",

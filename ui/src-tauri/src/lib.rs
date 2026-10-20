@@ -36,6 +36,25 @@ pub mod callrtc;
 
 pub use wxlike_client::{direct_conv_id, Http};
 
+/// 词法归一化路径：消掉 `.`、折叠 `..`，不做符号链接解析。
+///
+/// 这里防的是"webview 传 `../../x`"这类**字符串级**越界；符号链接穿越不在
+/// 威胁模型内（能改应用数据目录的符号链接的人已经拿到了同等权限）。
+fn normalize_path(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// Runs `fut` to completion from sync command code. Commands execute on
 /// tauri's blocking pool (no ambient runtime) so plain `block_on` is fine
 /// there; tests call the same methods from inside a tokio runtime, where
@@ -1758,9 +1777,29 @@ pub mod commands {
         state.upload_avatar(bytes, &content_type)
     }
 
+    /// 打开本地消息库。**只允许应用数据目录内的路径**。
+    ///
+    /// webview 传什么进来都不该直接交给 SQLite：一旦前端被 XSS，`../../` 就能
+    /// 在磁盘任意位置建库/读库。这里按"归一化后必须落在 app_data_dir 内"判断，
+    /// 而不是只查前缀字符串（`/data2` 不是 `/data` 的子目录）。
     #[tauri::command]
-    pub fn local_open(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
-        state.local_open(std::path::Path::new(&path))
+    pub fn local_open(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        path: String,
+    ) -> Result<(), String> {
+        let base = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("wxlike-ui"));
+        let base = normalize_path(&base);
+        let want = normalize_path(std::path::Path::new(&path));
+        if !want.starts_with(&base) {
+            return Err(format!(
+                "local_open 只允许应用数据目录内的库（拒绝 {path}）"
+            ));
+        }
+        state.local_open(&want)
     }
 
     /// Opens the local message library at the app-data default; called once
@@ -1924,4 +1963,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `local_open` 的路径守卫：`..` 越界必须被挡，前缀相似但不同目录也要挡。
+    #[test]
+    fn normalize_path_blocks_traversal() {
+        let base = normalize_path(std::path::Path::new("/data/app"));
+        assert!(normalize_path(std::path::Path::new("/data/app/messages.db")).starts_with(&base));
+        assert!(!normalize_path(std::path::Path::new("/data/app/../../etc/passwd"))
+            .starts_with(&base));
+        assert!(!normalize_path(std::path::Path::new("/data/application/x")).starts_with(&base));
+    }
 }

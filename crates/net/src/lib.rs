@@ -23,4 +23,4 @@ pub use mq_hub::{
 };
 pub use policy::{DeliveryPolicy, SendGate};
 pub use server::run_hub;
-pub use transport::{cert_fingerprint, connect_insecure, connect_tofu, TofuPins};
+pub use transport::{cert_fingerprint, connect_tofu, TofuPins};
