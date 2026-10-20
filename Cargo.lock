@@ -5648,6 +5648,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "ureq",
+ "wxlike-cmd",
 ]
 
 [[package]]
@@ -5709,6 +5710,15 @@ dependencies = [
  "rusqlite",
  "thiserror 2.0.21",
  "wxlike-core",
+]
+
+[[package]]
+name = "wxlike-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wxlike-client",
+ "wxlike-cmd",
 ]
 
 [[package]]

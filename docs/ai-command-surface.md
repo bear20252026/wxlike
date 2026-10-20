@@ -243,3 +243,51 @@ $ wxlike-cli ... run --cmd 'conv.sync={"conv":"540a2aaaf0153369","version":0}'
 顺带补了一个缺口：平台原本**没有** `GET /api/groups/{id}/members`
 （只有 POST 拉人），`group.members` 无从读起。现在加了，且只对群成员开放——
 非成员拿 403 而不是空数组，空数组会泄露"群存在但你没在里面"。
+
+## 十一、P2 落地：`wxlike-mcp`（stdio，三个元工具）
+
+```jsonc
+// claude_desktop_config.json / .mcp.json
+{
+  "mcpServers": {
+    "wxlike": {
+      "command": "/abs/path/wxlike-mcp",
+      "env": {
+        "WXLIKE_SERVER": "http://127.0.0.1:8099",
+        "WXLIKE_TOKEN": "…",
+        "WXLIKE_AGENT_ALLOW_CONV": "d-*~alice,g-abc",
+        "WXLIKE_AGENT_ALLOW_WRITE": "1"
+      }
+    }
+  }
+}
+```
+
+实测（真 stdio 管道）：
+
+```
+> {"jsonrpc":"2.0","id":1,"method":"initialize"}
+< {"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},
+            "serverInfo":{"name":"wxlike","version":"0.1.0"}}}
+
+> {"jsonrpc":"2.0","id":2,"method":"tools/call",
+   "params":{"name":"im_inspect","arguments":{}}}
+< {"result":{"content":[{"text":"{ \"conv.list\": [], \"me.info\": {...} }"}],
+            "isError":false}}
+
+> {"jsonrpc":"2.0","id":3,"method":"tools/call",
+   "params":{"name":"im_execute",
+             "arguments":{"command":"group.kick","params":{"conv":"g-1","user_id":"u2"}}}}
+< {"result":{"content":[{"text":"group.kick is destructive and destructive access
+                          was not granted (add --allow-destructive)"}],"isError":true}}
+```
+
+三件事值得记：
+
+1. **执行器只有一份**。`Executor` 从 CLI 搬进 `wxlike-client`，CLI 与 MCP 都调它。
+   协议层各自只负责"把参数喂进去、把结果包出来"。
+2. **权限拒绝是工具错误，不是协议错误**。`isError: true` 让 agent 读到原因并自己
+   纠正；如果返回 JSON-RPC error，多数客户端会当成连接故障直接放弃。
+3. **通知不回包**。`notifications/initialized` 没有 `id`，回了包会让客户端困惑。
+
+MCP 层一共 260 行，其中 7 项测试；不含任何业务逻辑。
