@@ -27,6 +27,8 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
+# 幂等键 → 稳定的 msg_id（重试要落在同一条消息上）
+sha2 = { workspace = true }
 # WP-13: request/tracing observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

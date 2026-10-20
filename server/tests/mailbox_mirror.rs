@@ -325,3 +325,65 @@ async fn group_fans_out_from_mailbox_members() {
     assert_eq!(wait_unread(&base, &group, &tb, 1)["unread"], 1);
     let _ = ta;
 }
+
+/// HTTP 控制面发消息：走 hub 的入站路径，因此投递策略、落库、镜像、扇出
+/// 与 QUIC 帧完全一致。这条测试盯的是"没走第二条发送路径"。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http_send_reuses_the_hub_path_and_is_idempotent() {
+    let stack = start_stack(opts("http-send")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+    befriend(&base, &ta, &bob, &tb);
+    let conv = format!("d-{alice}~{bob}");
+
+    let send = |key: &str| -> Value {
+        ureq::post(&format!("{base}/api/conv/{conv}/send"))
+            .set("Authorization", &format!("Bearer {ta}"))
+            .send_json(serde_json::json!({"text": "hello over http", "idempotency_key": key}))
+            .expect("send")
+            .into_json()
+            .unwrap()
+    };
+
+    let first = send("key-1");
+    assert_eq!(first["accepted"], true, "{first}");
+    // 同一个幂等键重发：msg_id 相同，不会产生第二条
+    let again = send("key-1");
+    assert_eq!(first["msg_id"], again["msg_id"], "同 key 必须同 msg_id");
+
+    let u = wait_unread(&base, &conv, &tb, 1);
+    assert_eq!(u["unread"], 1, "重试不该变成两条：{u}");
+
+    // 内容确实落库，且从 history 读得到
+    let page: Value = ureq::get(&format!("{base}/api/history/{conv}?limit=10"))
+        .set("Authorization", &format!("Bearer {tb}"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let msgs = page["messages"].as_array().expect("messages");
+    assert_eq!(msgs.len(), 1, "{page}");
+    assert_eq!(msgs[0]["text"], "hello over http");
+}
+
+/// 非会话参与者不能往这个会话发消息。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http_send_denies_outsiders() {
+    let stack = start_stack(opts("http-send-deny")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, _ta) = register(&base, "alice");
+    let (bob, _tb) = register(&base, "bob");
+    let (carol, tc) = register(&base, "carol");
+    let conv = format!("d-{alice}~{bob}");
+
+    let res = ureq::post(&format!("{base}/api/conv/{conv}/send"))
+        .set("Authorization", &format!("Bearer {tc}"))
+        .send_json(serde_json::json!({"text": "sneaky", "idempotency_key": "k"}));
+    let status = match res {
+        Ok(r) => r.status(),
+        Err(ureq::Error::Status(code, _)) => code,
+        Err(e) => panic!("transport: {e}"),
+    };
+    assert_eq!(status, 403, "carol={carol} 不在会话里");
+}
