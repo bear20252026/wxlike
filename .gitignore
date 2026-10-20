@@ -8,3 +8,5 @@ ui/src-tauri/target
 ui/src-tauri/gen
 ui/src-tauri/data/
 ui/dist/app.js
+# A5 网页端产物（scripts/build-web.sh 生成）
+ui/dist-web/
