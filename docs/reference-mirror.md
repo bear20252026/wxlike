@@ -135,3 +135,23 @@
 
 **结论**：除 `box-im` 外，这份榜单对本项目没有新增价值。四个无许可证项目
 按版权默认规则（保留所有权利）**一行都不能抄**；三个 iOS/ObjC 项目与 Flutter 无关。
+
+## 附二：朋友圈 UI 参考（用户指定，内部娱乐测试用）
+
+我们的现状：`crates/platform/src/moments.rs` **有 10 个公开方法**（服务端就绪），
+但 `ui/src` 里 grep 不到任何 `moment` / `朋友圈` —— **朋友圈是"后端有、前端零"**。
+这两份参考正好补这个洞。
+
+| 目录 | 上游 | 许可 | 规模 | 借什么 |
+|---|---|---|---|---|
+| `refs/hpf-circle/` | github.com/ighsix/HighPerformanceFriendsCircle | **无 LICENSE** | 3,833 行 Java（Android） | README 里写清了 5 条性能手法：滑动时**不加载图片**、停止后再加载；Adapter 填充时不做计算；复杂变换（String→Spannable）提前在 Bean 里算好；**弱引用缓存 View**；减少布局层级。**只借思路，不抄代码** |
+| `refs/false-world/` | gitee.com/white_wen/false-world | **木兰宽松许可证第 2 版（MulanPSL-2.0）** | 8,035 行 Java + 153 个 XML 布局 | 朋友圈列表 / 详情 / 九宫格 / 评论点赞的**布局结构与交互还原**（自称 99%） |
+
+> **许可证更正**：`false-world` **有** LICENSE，是 MulanPSL-2.0（OSI 认证的宽松许可，
+> 中国主导）。它比"无许可"宽松得多——**保留版权声明即可进分发物**。
+> `hpf-circle` 确实没有 LICENSE，按用户指示**仅限内部娱乐测试**：放在 `refs/`
+> （仓库外、不进分发物）、只读、不复制代码进 `wxlike` 源码。
+
+**为什么不影响合规**：`refs/` 不在 git 仓库内、不进任何构建产物；我们只吸收
+**思路与交互设计**（不受版权保护），不复制实现代码。若将来要把某段代码搬进源码，
+必须先把许可问题解决（false-world 可，hpf-circle 不可）。
