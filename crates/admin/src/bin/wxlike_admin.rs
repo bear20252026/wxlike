@@ -153,14 +153,34 @@ fn account_command(args: &[String]) -> anyhow::Result<()> {
 
 /// SIGTERM/SIGINT。与 `wxlike-server` 同理：supervisor 发的是 SIGTERM，
 /// 只接 Ctrl-C 等于"用 systemctl stop 停服务时必然硬杀"。
+///
+/// 注册失败不退而崩溃：退回 `ctrl_c`，至少 Ctrl-C 还能优雅停
+/// （`launchctl`/`systemctl` 在受限环境里拿不到信号时，崩掉比退化成 ctrl_c 更难查）。
 #[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
-    let mut term = signal(SignalKind::terminate()).expect("注册 SIGTERM");
-    let mut int = signal(SignalKind::interrupt()).expect("注册 SIGINT");
-    tokio::select! {
-        _ = term.recv() => tracing::info!("收到 SIGTERM"),
-        _ = int.recv() => tracing::info!("收到 SIGINT"),
+    let term = signal(SignalKind::terminate()).ok();
+    let int = signal(SignalKind::interrupt()).ok();
+    match (term, int) {
+        (Some(mut t), Some(mut i)) => {
+            tokio::select! {
+                _ = t.recv() => tracing::info!("收到 SIGTERM"),
+                _ = i.recv() => tracing::info!("收到 SIGINT"),
+            }
+        }
+        (Some(mut t), None) => {
+            t.recv().await;
+            tracing::info!("收到 SIGTERM");
+        }
+        (None, Some(mut i)) => {
+            i.recv().await;
+            tracing::info!("收到 SIGINT");
+        }
+        (None, None) => {
+            tracing::warn!("SIGTERM/SIGINT 都注册失败，只能靠 Ctrl-C 优雅停止");
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("收到 Ctrl-C");
+        }
     }
 }
 
