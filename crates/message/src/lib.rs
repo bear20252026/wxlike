@@ -929,6 +929,24 @@ impl MessageStore {
     }
 
     /// 全量重建成员快照（member log 重放的责任在 community 层；这里只存真相）。
+    /// 属主的**全部**成员（扇出用）。
+    ///
+    /// 与 `member_snapshot` 的区别：那个是给客户端"万人群懒加载"用的分页接口，
+    /// 这里是服务端投递要的完整名单。名字分开是为了防止有人拿分页接口去扇出
+    /// ——那会静默丢掉第 1000 人之后的所有成员。
+    pub fn members(&self, owner: (OwnerType, &str)) -> Result<Vec<String>> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let c = self.c();
+        let mut stmt = c.prepare(
+            "SELECT user_id FROM member_snapshot
+              WHERE owner_type = ?1 AND owner_id = ?2 ORDER BY user_id",
+        )?;
+        let rows = stmt
+            .query_map(params![ot, oid], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn reset_member_snapshot(
         &self,
         owner: (OwnerType, &str),

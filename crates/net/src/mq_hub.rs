@@ -534,9 +534,24 @@ async fn handle_inbound(
 
     // 2. group scoping, before anything is persisted: a message from someone who
     // is not a member is dropped and never stored (WP-04 A4).
-    let members = match &state.membership {
-        Some(membership) => membership.members_of(&env.conv_id).await?,
-        None => None,
+    // P3：**成员名单也归信箱**（`member_snapshot`）。平台在每次成员变更时全量
+    // 重置快照（建群/拉人/踢人/退群），这里直接读它。
+    //
+    // 信箱里没有成员时（老群、或部署没接信箱）退回平台成员表——这是迁移期
+    // 的兜底，不是第二套真相：一旦成员变更过一次，快照就补上了。
+    let from_mailbox = match (&state.mailbox, env.conv_id.starts_with("d-")) {
+        (Some(mailbox), false) => mailbox
+            .members((wxlike_message::OwnerType::Group, &env.conv_id))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let members = if from_mailbox.is_empty() {
+        match &state.membership {
+            Some(membership) => membership.members_of(&env.conv_id).await?,
+            None => None,
+        }
+    } else {
+        Some(from_mailbox)
     };
 
     // 2.5 P3 delivery policy (blocklist / mute / stranger gate) — content and

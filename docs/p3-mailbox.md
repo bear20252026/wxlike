@@ -92,3 +92,23 @@ channel:      hub → MessageStore::append(OwnerType::Channel) → 信箱
 `core::Store` 仍承担**扇出的收件人来源**（群成员表）。彻底退化为归档需要把
 "谁该收这条消息"也搬到信箱的成员快照（`member_snapshot`）——那是把
 `Membership` trait 与信箱成员表合并，属于下一步。
+
+### 步骤 5 完成：成员名单也归信箱（2026-10-19）
+
+扇出要回答"发给谁"。以前这个答案来自平台的 `group_members` 表；现在来自
+信箱的 `member_snapshot`：
+
+* 平台在**每次成员变更**（建群 / 拉人 / 踢人 / 退群）后**全量重置**快照
+  （`sync_mailbox_members`）。选全量而不是增量：漏一条增量会让某个人永远收不到
+  消息，而且没有任何报错；全量重置最多多花几毫秒。
+* hub 扇出先读 `MessageStore::members(owner)`；为空时（老群 / 未接信箱）
+  退回平台成员表——这是迁移期兜底，成员变更过一次就补上了。
+* `members()` 与 `member_snapshot()` 刻意分开命名：后者是给客户端万人群懒加载
+  的分页接口，**拿它去扇出会静默丢掉第 1000 人之后的成员**。
+
+验收：
+* `mailbox_members`（3 项）：建群 / 拉人 / 踢人 / 退群后快照正确；
+* `group_fans_out_from_mailbox_members`：群消息按快照投递，bob 收到且 seq=1。
+
+至此 P3 的读扩散闭环：**顺序、未读、已读、同步、成员，全部以信箱为准**，
+`core::Store` 只剩"存正文 + 供搜索"。
