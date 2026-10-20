@@ -66,6 +66,9 @@ mod unix {
             .env("WXLIKE_HTTP", "127.0.0.1:0")
             .env("WXLIKE_QUIC", "127.0.0.1:0")
             .env("WXLIKE_MEDIA_DIR", &media)
+            // 推流密钥缺失时二进制会**拒绝启动**（安全审计要求）。
+            // 测试用显式开发开关放行——这也顺带证明了那条拒绝逻辑存在。
+            .env("WXLIKE_DEV_INSECURE", "1")
             .env("WXLIKE_LOG", "info")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
