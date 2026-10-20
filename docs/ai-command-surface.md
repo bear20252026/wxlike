@@ -178,3 +178,43 @@ P0/P1 是纯增量，不碰现有 67 个 Tauri 命令；P2 之后桌面端再逐
 **WordCraft 真正的可迁移资产不是"422 条命令"，是"命令是一等公民、入口是可替换驱动器"这个结构。**
 我们照搬结构，把命令面控制在 18 条，把权限做成启动参数，把审计和幂等补上——
 这三样是他们不需要、我们必须有的。
+
+## 九、已落地：`wxlike-cmd` 与权限控制中心（P0）
+
+`crates/cmd`（`wxlike-cmd`）已经能跑：
+
+```
+$ cargo run -p wxlike-cmd --bin wxlike-cmd -- list
+$ WXLIKE_AGENT_ALLOW_CONV='d-*~alice,g-abc' WXLIKE_AGENT_ALLOW_WRITE=1     cargo run -p wxlike-cmd --bin wxlike-cmd -- policy
+```
+
+`policy` 会逐条打印"这条命令在当前策略下能不能执行，不能的话为什么"：
+
+```
+权限控制中心 · 当前生效策略
+  会话白名单   d-*~alice, g-abc
+  写权限       开
+  破坏性权限   关
+
+group.kick           destructive 拒绝 — group.kick is destructive and destructive
+                                    access was not granted (add --allow-destructive)
+
+可执行 16 / 18 条
+```
+
+### 中心做什么（`policy.rs`，14 项测试）
+
+| 判断 | 规则 |
+|---|---|
+| 命令存在吗 | 先查 catalog，再谈权限——避免用错误消息探测命令表 |
+| 能力够吗 | `Read` 永远可以；`Write` 要 `--allow-write`；`Destructive` 要 `--allow-destructive` |
+| 会话在名单里吗 | 支持 `*` 通配；**空名单 = 一个都不许**（与 WordCraft 不给 root 同理） |
+| 转发查几边 | `msg.forward` 的 `from_conv` 与 `to_conv` **都要**在名单里，否则能把白名单内容转出去 |
+| 配置矛盾怎么办 | 只开破坏性不开写 → 按"写也没开"拒绝，不出现"能踢人不能发言"的怪状态 |
+| 拒绝怎么说 | 带具体会话 id + 该开哪个开关，agent 读到能自己纠正 |
+
+### 三条刻意选择
+
+1. **不做正则**：通配只支持 `*`，避免灾难性回溯，也让人能预测。
+2. **不写在 handler 里**：`authorize()` 是唯一入口，命令实现不碰权限。
+3. **不做 AI 专用命令**：`msg.send` 与人类发消息是同一条命令、同一套参数。

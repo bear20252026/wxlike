@@ -5642,6 +5642,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-cmd"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "wxlike-container"
 version = "0.1.0"
 dependencies = [
