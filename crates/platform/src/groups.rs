@@ -41,6 +41,8 @@ pub fn routes() -> Router<PlatformState> {
         .route("/api/groups/mine", get(my_groups))
         .route("/api/groups/{group_id}", get(group_info))
         .route("/api/groups/{group_id}/members", post(add_members))
+        // 读成员列表：P3 命令面（`group.members`）与客户端成员页都要它
+        .route("/api/groups/{group_id}/members", get(list_members))
         .route("/api/groups/{group_id}/leave", post(leave))
         .route(
             "/api/groups/{group_id}/members/{user_id}",
@@ -601,6 +603,19 @@ async fn group_info(
         my_role,
         members: platform.group_members(&group_id)?,
     }))
+}
+
+/// 群成员列表。只对群成员开放——非成员拿到 403 而不是空列表，
+/// 否则"这个群有多少人"就成了公开信息。
+async fn list_members(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(group_id): Path<String>,
+) -> std::result::Result<Json<Vec<MemberRow>>, ApiError> {
+    if !platform.is_member(&group_id, &authed.user_id)? {
+        return Err(PlatformError::Forbidden.into());
+    }
+    Ok(Json(platform.group_members(&group_id)?))
 }
 
 async fn my_groups(

@@ -1,0 +1,14 @@
+[package]
+name = "wxlike-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wxlike-cli"
+path = "src/main.rs"
+
+[dependencies]
+wxlike-cmd = { path = "../cmd" }
+wxlike-client = { path = "../client" }
+serde_json = { workspace = true }

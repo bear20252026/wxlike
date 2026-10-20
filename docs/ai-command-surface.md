@@ -218,3 +218,28 @@ group.kick           destructive 拒绝 — group.kick is destructive and destru
 1. **不做正则**：通配只支持 `*`，避免灾难性回溯，也让人能预测。
 2. **不写在 handler 里**：`authorize()` 是唯一入口，命令实现不碰权限。
 3. **不做 AI 专用命令**：`msg.send` 与人类发消息是同一条命令、同一套参数。
+
+## 十、P1 落地：`wxlike-cli`（第一次真的执行）
+
+```
+$ WXLIKE_AGENT_ALLOW_CONV='*' WXLIKE_TOKEN=$T wxlike-cli --server http://127.0.0.1:8099 inspect
+{
+  "conv.list": [{"conv":"540a2aaaf0153369","kind":"group","title":"team","members":1,"unread":0}],
+  "me.info":   {"user_id":"d909f4ddae66e4a7","name":"alice", ...}
+}
+
+$ wxlike-cli ... run --cmd 'conv.sync={"conv":"540a2aaaf0153369","version":0}'
+{"directive": "up_to_date"}
+```
+
+**权限先于网络**：白名单为空时 `conv.unread` 直接返回
+`conversation d-x~y is not allowed ... (grant it with --allow-conv)`，
+**不会发出任何请求**（有测试：把 server 指到 `127.0.0.1:1`，错误里不能出现 connect）。
+
+已实现（只读）：`me.info` / `conv.list`（群 + 直聊，附未读）/ `conv.unread` /
+`conv.history` / `conv.sync` / `msg.search` / `group.info` / `group.members`。
+写与破坏性命令明确报"尚未在 CLI 实现"，不静默成功。
+
+顺带补了一个缺口：平台原本**没有** `GET /api/groups/{id}/members`
+（只有 POST 拉人），`group.members` 无从读起。现在加了，且只对群成员开放——
+非成员拿 403 而不是空数组，空数组会泄露"群存在但你没在里面"。
