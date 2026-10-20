@@ -24,6 +24,30 @@ use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::Digest as _;
 
+/// 保活与空闲参数：**两端必须一致地宽松**。
+///
+/// quinn 0.11 的默认值是 `max_idle_timeout = 30s`、`keep_alive_interval = None`——
+/// 也就是说**空闲 30 秒连接就死**，且不发任何包维持 NAT 映射。桌面/服务端勉强能用，
+/// 移动端一进后台必断：运营商 NAT 的 UDP 映射常见 30–120 秒过期。
+///
+/// 参数取值的依据（`refs/mars/mars/stn/config.h`，腾讯 Mars 在移动网络上的经验值）：
+/// 它的应用层心跳区间是 **3.5–10 分钟**，但那是 TCP 长连；QUIC 没有 TCP 的
+/// keepalive 选项，只能靠 PING 帧，所以取更保守的 30 秒。
+///
+/// * `keep_alive = 30s`：空闲时每 30 秒一个 PING，约 2 包/分钟，流量可忽略；
+/// * `idle = 90s`：留出 3 个心跳周期的余量——单个 PING 丢了不至于直接断连，
+///   而真失联时 90 秒内必然判定（比 TCP 默认的 2 小时快得多）。
+pub fn transport_config() -> quinn::TransportConfig {
+    let mut cfg = quinn::TransportConfig::default();
+    cfg.keep_alive_interval(Some(std::time::Duration::from_secs(30)));
+    cfg.max_idle_timeout(Some(
+        std::time::Duration::from_secs(90)
+            .try_into()
+            .expect("90s fits in VarInt"),
+    ));
+    cfg
+}
+
 /// Bind a QUIC endpoint that accepts connections with a fresh self-signed cert.
 pub fn make_server_endpoint(addr: std::net::SocketAddr) -> anyhow::Result<quinn::Endpoint> {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into(), "wxlike.dev".into()])?;
@@ -43,7 +67,8 @@ pub fn make_server_endpoint(addr: std::net::SocketAddr) -> anyhow::Result<quinn:
     server_crypto.alpn_protocols = vec![b"wxlike/1".to_vec()];
     let quic_server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
         .context("quic server crypto from rustls config")?;
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_server_crypto));
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_server_crypto));
+    server_config.transport_config(Arc::new(transport_config()));
 
     let endpoint = quinn::Endpoint::server(server_config, addr).context("bind server endpoint")?;
     Ok(endpoint)
@@ -69,7 +94,9 @@ pub(crate) async fn connect_insecure(
     let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?).context("client endpoint")?;
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .context("quic crypto from rustls config")?;
-    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(quic_crypto)));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    client_config.transport_config(Arc::new(transport_config()));
+    endpoint.set_default_client_config(client_config);
     let conn = endpoint
         .connect(server_addr, server_name)
         .context("connect")?
@@ -178,7 +205,9 @@ pub async fn connect_tofu(
     let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?).context("client endpoint")?;
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .context("quic crypto from rustls config")?;
-    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(quic_crypto)));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    client_config.transport_config(Arc::new(transport_config()));
+    endpoint.set_default_client_config(client_config);
     let conn = endpoint
         .connect(server_addr, server_name)
         .context("connect")?

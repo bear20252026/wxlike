@@ -41,7 +41,18 @@
 | 同步/事件模型对照 | **Synapse** |
 | 群通话房间 UI 与管控 | **Nextcloud Talk** |
 | 多方通话（mesh 上限 / 何时上 SFU） | **Nextcloud Talk** `docs/scalability.md`：带宽 = 1 Mbps × (人数−1)（视频）/ ~50 kbps（音频），音频-only 可达 ~20 人 |
+| **移动端保活 / 心跳 / 弱网调参** | **Tencent Mars**（`refs/mars`，MIT）：`stn/config.h` 是 WiFi/GPRS **两套完整参数表**（首包 12s/15s、最小速率 12/4 KB/s、任务延迟 1.5s/3s），`stn/src/smart_heartbeat.cc` 是 **3.5–10 分钟自适应心跳 + 按网络指纹持久化**，`anti_avalanche` 是频率/流量双漏斗。详见 [mars-network-assessment.md](mars-network-assessment.md) |
 | SFU 架构（真要写的时候） | **`refs/atm0s-media-server`**：Rust + **str0m**（与我们同一套栈），分层 `transport_webrtc` / `media_core` / `media_connector` / `media_runner`，按层参照重写而非 vendoring |
+
+## 网络层参考（移动端调度，2026-10-20 新增）
+
+| 目录 | 上游 | 许可 | 借什么 |
+|---|---|---|---|
+| `mars/` | Tencent/mars | **MIT**（`LICENSE` 混排第三方 OpenSSL/Boost/Apache-2.0/Zlib/BSD） | **只借策略不借实现**（C++/boost，服务端接入层不开源）：智能心跳区间与网络指纹持久化、长短连任务降级、防雪崩双漏斗、动态超时参数表、僵尸任务（发送队列持久化）。评估见 [mars-network-assessment.md](mars-network-assessment.md) |
+
+> 注意：`refs/mars` 是 **sparse-checkout**（只取 `mars/comm`、`mars/stn`、`mars/sdt`、
+> `mars/xlog`、`samples`），不是完整克隆。需要别的目录时：
+> `cd refs/mars && git sparse-checkout add mars/boot`。
 
 ## P3 读扩散核心（下一阶段直接使用）
 
