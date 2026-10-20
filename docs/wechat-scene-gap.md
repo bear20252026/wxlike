@@ -4,6 +4,9 @@
 > `../source_recovered/analysis/rtti/rtti_wechatwin.tsv`。
 > 采样对象：**WeChatWin 3.9.12.56**（`work/exe1/extracted/[3.9.12.56]/WeChatWin.dll`，**32 位**，75 MB）。
 > 本文所有 wxlike 侧结论都经本机 grep 复核，标注 `文件:行`。
+>
+> **更正记录 2026-10-19**：首版（随 `5891ca3` 进入 main）称"MMTLS 从未公开、值得从二进制复原报文格式"——**该判断作废**，
+> 报文与握手语义已有公开实现（见 §2.1）。§1 的 scene 差距表与 §2 的 wxlike 侧缺陷清单不受影响。
 
 ---
 
@@ -52,13 +55,11 @@
 
 二进制里 `Audit` 类**只出现在 mmtls**：`mmtls::StageAudit`、`mmtls::W4HandShakeStage::$Audit`、`mmtls::W4enCriticalAudit::$Audit`。注意 `W4` 前缀是 MSVC 对 **enum** 的标记 → 即"按阶段枚举 + 按关键事件枚举"两套内建审计点。
 
-**来源核实（重要，勿当免责依据）**：曾假设该概念来自开源 Tencent/mars（Apache-2.0）的 stn 阶段打点。
-`gh api search/code?q=StageAudit+repo:Tencent/mars` → **命中 0**；全 GitHub C++ 检索的 25 条命中全是无关字符串误配。
-本二进制的 `mars::stn` 侧也没有同名类。所以 **`StageAudit` 目前是 mmtls 专有命名，没有公开出处可参照**。
-结论：只可作为**概念级启发**（"状态机自带阶段审计"这个思想），实现必须独立设计；
-不要按类名照搬结构，也不要在本文件之外声称"参照开源"。
-顺带纠正上一轮的一处口误：本二进制 `mars::stn` 的高频虚槽来自 `XVShortLink`/`MMStnCallbackBridge`
-等回调与链接类，**与 StageAudit 无关**。
+**来源核实（2026-10-19 二次修正，此前两个版本都错）**：
+- 曾写"该概念来自开源 mars 的 stn 阶段打点" → 把 mars 整包（`tarball/master`，4841 文件）拉下来 grep：`StageAudit` **0 命中**，`kStage*` 也没有。所以**这个名字不是来自 mars**。
+- 后写"mmtls 专有命名，无公开出处" → **也错**。MMTLS 握手与报文有公开实现：`anonymous5l/mmtls` ★85、`duo/gommtls` ★50、`SuperSocks5/mmtls` ★75、`leafzz/mmtls-demo` ★92（前两个实测含 `ClientHello`/`NewSessionTicket`）。
+- **正确结论**：要看握手语义与阶段划分，**读公开的 mmtls 库即可，不必从微信二进制里挖**。本节从二进制得到的只有"类名与分层形状"，价值是**佐证**，不是情报。
+- 本二进制 `mars::stn` 的高频虚槽来自 `XVShortLink`/`MMStnCallbackBridge` 等回调与链接类，与 StageAudit 无关。
 
 wxlike 现状（grep 复核）：审计是 **HTTP 形状**的——`Platform::audit()`（[platform/src/lib.rs:445](../crates/platform/src/lib.rs)）fire-and-forget，加上只在带 `X-Wxlike-Command` 时才记录中间件（[audit_mw.rs:23](../crates/platform/src/audit_mw.rs)）。三个真正跑状态机的地方**零审计零指标**：
 
@@ -88,6 +89,7 @@ wxlike 现状（grep 复核）：审计是 **HTTP 形状**的——`Platform::au
 ### 2.3 `HttpHandler` —— 载体兜底，但 wxlike 的问题更基本
 
 `mmtls::HttpHandler` 也是 `DataPackInterface` 实现者（虚槽在 `0x1300eae0`/`0x1300f100`/`0x1300eb10`）——**握手报文可以直接封进 HTTP**，用于代理/仅 80·443 出站的环境。
+这条只作**设计参照**（"载体要能退化到 HTTP 友好形态"）；报文封装格式本身看公开 mmtls 库即可，**不用挖二进制**（见 §2.1 更正）。
 
 wxlike 侧：**没有 `Transport` trait**（ADR-8 的说法与代码不符）。实际抽象是两个单方法 trait `FrameTx`/`FrameRx`（[net/src/conn.rs:22-31](../crates/net/src/conn.rs)），4 个实现（QUIC×2 + WS×2），QUIC 用长度前缀、WS 用"一条二进制消息=一帧"。
 

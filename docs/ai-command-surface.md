@@ -410,3 +410,37 @@ $ wxlike-cli ... run --cmd 'conv.unread={"conv":"d-…"}'   # 以 bob 身份
 | 幂等 | ✅ 服务端派生 msg_id |
 | 审计 | ✅ 中间件 |
 | 转发 / 撤回 | ⬜ 仍需数据面能力 |
+
+## 十五、`msg.forward` / `msg.recall`：命令面 18/18 全通
+
+两个端点都走 hub 的入站路径，因此撤回会同时撤掉归档与信箱、转发会正常落库
+与扇出——不需要任何特判。
+
+| 端点 | 关键点 |
+|---|---|
+| `POST /api/conv/{c}/recall` | **先查作者再提交**。hub 对非作者是静默丢弃（不给探测口），但 HTTP 调用方需要知道成没成：非作者 403、不存在 404 |
+| `POST /api/conv/{c}/forward` | 路径是**目标**会话，`from_conv` 在 body；**两边都鉴权**（只查目标就能把任意会话内容转出去）；路径与 body 的 `to_conv` 不一致 → 400 |
+
+转发同样幂等：`msg_id = sha256(key ‖ sender ‖ to_conv)[0..16]`。
+
+实测：
+
+```
+$ wxlike-cli ... run --cmd 'msg.forward={"from_conv":"d-…ab","to_conv":"d-…ac","msg_id":"0ef6…","idempotency_key":"f1"}'
+{"forwarded":true,"conv_id":"d-…ac","msg_id":"11c2…"}
+
+$ wxlike-cli ... run --cmd 'msg.recall={"conv":"d-…ab","msg_id":"0ef6…"}'
+{"recalled":true,"msg_id":"0ef6…"}
+```
+
+### 命令面完成度：18/18
+
+| 域 | 命令 | 状态 |
+|---|---|---|
+| 会话 | list / unread / history / sync | ✅ |
+| 消息 | list / search / get | ✅ |
+| 成员 | members / info | ✅ |
+| 自查 | me.info / me.sessions | ✅ |
+| 写 | send / ack / forward | ✅ |
+| 群管 | create / add_member | ✅ |
+| 破坏性 | kick / recall | ✅（需 `--allow-destructive`） |

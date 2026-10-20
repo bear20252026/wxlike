@@ -256,6 +256,17 @@ impl Store {
         Ok((rows, if exhausted { None } else { Some(next_before) }))
     }
 
+    /// 某条消息的作者（撤回鉴权用）。不存在返回 `None`。
+    pub fn author_of(&self, msg_id: &[u8]) -> anyhow::Result<Option<String>> {
+        let c = self.c();
+        Ok(c.query_row(
+            "SELECT sender FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+    }
+
     /// 按 msg_id 批量取归档行（信箱只存 id，正文还在归档里）。
     ///
     /// 信箱是**排序与未读**的真相，归档是**正文**的真相；history 先问信箱
