@@ -389,6 +389,7 @@ pub fn history_routes(deps: Arc<HistoryDeps>) -> Router {
         .route("/api/conv/{conv_id}/send", post(send_message))
         .route("/api/conv/{conv_id}/recall", post(recall_message))
         .route("/api/conv/{conv_id}/forward", post(forward_message))
+        .route("/api/conv/{conv_id}/msg/{msg_id}", get(one_message))
         .route("/api/search/messages", get(search_messages))
         .with_state(deps)
 }
@@ -754,6 +755,49 @@ async fn forward_message(
         "conv_id": to_conv,
         "msg_id": hex(env.msg_id),
     })))
+}
+
+/// `GET /api/conv/{conv}/msg/{msg_id}`：取单条消息。
+///
+/// 信箱只存 id 与顺序，正文在归档里——所以先按 id 取归档行，再用**信箱的**
+/// 序列号回填 `seq`，与 history 保持同一套编号。
+async fn one_message(
+    State(deps): State<Arc<HistoryDeps>>,
+    authed: HistoryAuth,
+    Path((conv_id, msg_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !authorize_conv(&deps.platform, &authed.user_id, &conv_id) {
+        return Err((StatusCode::FORBIDDEN, "not your conversation".into()));
+    }
+    let id = hex::decode(msg_id.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "msg_id must be hex".to_string()))?;
+    let mut found = deps
+        .store
+        .by_msg_ids(std::slice::from_ref(&id))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(row) = found.remove(&id) else {
+        return Err((StatusCode::NOT_FOUND, "no such message".into()));
+    };
+    // 跨会话取消息要拒绝：否则知道 msg_id 就能读到别人会话的内容
+    if row.envelope.conv_id != conv_id {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no such message in this conversation".into(),
+        ));
+    }
+    let owner = if conv_id.starts_with("d-") {
+        wxlike_message::OwnerType::Direct
+    } else {
+        wxlike_message::OwnerType::Group
+    };
+    let seq = deps
+        .mailbox
+        .seq_of((owner, &conv_id), &msg_id)
+        .ok()
+        .flatten()
+        .map(|s| s as i64)
+        .unwrap_or(row.seq);
+    Ok(Json(message_json_with_seq(&row, seq)))
 }
 
 #[derive(serde::Deserialize, Default)]

@@ -444,3 +444,36 @@ $ wxlike-cli ... run --cmd 'msg.recall={"conv":"d-…ab","msg_id":"0ef6…"}'
 | 写 | send / ack / forward | ✅ |
 | 群管 | create / add_member | ✅ |
 | 破坏性 | kick / recall | ✅（需 `--allow-destructive`） |
+
+## 十六、补完 `msg.list` / `msg.get` / `me.sessions`：catalog 不再撒谎
+
+这三条之前只在 catalog 里存在，执行器没实现——**catalog 说有、实际不能用，
+是对 agent 撒谎**，比没有更糟。
+
+| 命令 | 实现 |
+|---|---|
+| `msg.list` | 按 `from_seq..to_seq` 取区间：内部用 history 的 before 语义翻页再过滤，命令语义是"给我这一段"，不该让调用方懂翻页 |
+| `msg.get` | 新增 `GET /api/conv/{c}/msg/{id}`；**跨会话取消息返回 404**（否则知道 msg_id 就能读别人会话）；`seq` 用信箱序列号回填，与 history 一致 |
+| `me.sessions` | `GET /api/sessions` |
+
+### 防漂移测试
+
+```rust
+#[test]
+fn every_catalog_command_is_implemented() {
+    for spec in wxlike_cmd::CATALOG {
+        match exec.run(spec.id, &params) {
+            Ok(_) => {}
+            Err(e) => assert!(!e.contains(UNIMPLEMENTED), "{} 未实现", spec.id),
+        }
+    }
+}
+```
+
+遍历全部命令，命中"尚未实现"兜底就失败。**加命令忘了实现，CI 立刻红。**
+
+测试里用一个"立刻回 400"的本地服务器而不是 `127.0.0.1:1`：后者会因重试把
+这条测试拖到 36 秒，前者 0.03 秒。
+
+实测：`msg.list 1..2` → `['m1','m2']`；`msg.get` → `seq=3, text=m3`；
+`me.sessions` → 返回当前会话（`current: true`）。
