@@ -36,6 +36,27 @@ pub mod callrtc;
 
 pub use wxlike_client::{direct_conv_id, Http};
 
+/// 把 `host:port` / `host` 拆开。IPv6 的 `[::1]:80` 也认。
+fn split_host_port(s: &str, default_port: u16) -> (String, u16) {
+    if let Some(rest) = s.strip_prefix('[') {
+        if let Some((host, tail)) = rest.split_once(']') {
+            let port = tail
+                .strip_prefix(':')
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(default_port);
+            return (host.to_string(), port);
+        }
+    }
+    match s.rsplit_once(':') {
+        Some((host, port)) => match port.parse::<u16>() {
+            Ok(p) => (host.to_string(), p),
+            // 冒号后面不是端口（IPv6 没括号），整体当 host
+            Err(_) => (s.to_string(), default_port),
+        },
+        None => (s.to_string(), default_port),
+    }
+}
+
 /// 词法归一化路径：消掉 `.`、折叠 `..`，不做符号链接解析。
 ///
 /// 这里防的是"webview 传 `../../x`"这类**字符串级**越界；符号链接穿越不在
@@ -711,6 +732,22 @@ impl AppState {
         *self.outbox.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(outbox));
         *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
         Ok(())
+    }
+
+    /// 控制面地址（`http://host:port`），诊断用。
+    fn http_base(&self) -> String {
+        self.http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .base
+            .clone()
+    }
+
+    fn hub_addr(&self) -> Option<String> {
+        self.hub_addr
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn outbox(&self) -> Option<Arc<wxlike_core::outbox::Outbox>> {
@@ -1722,6 +1759,40 @@ pub mod commands {
             .map_err(|e| e.to_string())
     }
 
+    /// 网络诊断：DNS → TCP → HTTP → QUIC，四步顺序短路。
+    ///
+    /// 目标从当前连接推导（控制面 base + hub 地址），所以用户不需要填任何东西。
+    /// 没连过 hub 也能跑——DNS/TCP/HTTP 三步照样能定位"为什么连不上"。
+    #[tauri::command]
+    pub fn net_diag(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        let base = state.http_base();
+        let rest = base
+            .strip_prefix("http://")
+            .or_else(|| base.strip_prefix("https://"))
+            .unwrap_or(&base)
+            .trim_end_matches('/');
+        let (host, http_port) = split_host_port(rest, 80);
+        let quic_port = state
+            .hub_addr()
+            .and_then(|a| a.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()))
+            .unwrap_or(9443);
+
+        let pins = app
+            .path()
+            .app_data_dir()
+            .map(|dir| dir.join("tofu-pins.json"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("wxlike-tofu-pins.json"));
+        let mut opts = wxlike_net::diag::DiagOptions::new(pins);
+        opts.user_id = state.user_id().ok();
+        let target = wxlike_net::diag::DiagTarget::new(host, http_port, quic_port);
+
+        let report = wait(wxlike_net::diag::run(&target, &opts));
+        serde_json::to_value(&report).map_err(|e| e.to_string())
+    }
+
     /// 用户点"删除"：放弃这条消息。
     #[tauri::command]
     pub fn outbox_drop(state: tauri::State<'_, AppState>, task_id: String) -> Result<(), String> {
@@ -2126,6 +2197,7 @@ pub fn run() {
             commands::outbox_status,
             commands::outbox_retry,
             commands::outbox_drop,
+            commands::net_diag,
             commands::send_image,
             commands::send_redpacket_msg,
             commands::start_recv_pump,

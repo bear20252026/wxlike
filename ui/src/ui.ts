@@ -459,7 +459,72 @@ function drawMe(list: El): void {
     if (!devicesPanel.hidden) void drawDevices(devicesPanel);
   });
 
-  list.append(card, avatarBtn, avatarInput, wallet, sig, save, secret, devicesBtn, devicesPanel);
+  // 网络诊断：DNS → TCP → HTTP → QUIC，卡在哪一跳一目了然
+  const diagBtn = h("button", "btn", "网络诊断");
+  const diagPanel = h("div", "devices");
+  diagPanel.hidden = true;
+  on(diagBtn, "click", () => {
+    diagPanel.hidden = !diagPanel.hidden;
+    if (!diagPanel.hidden) void drawDiag(diagPanel);
+  });
+
+  list.append(
+    card,
+    avatarBtn,
+    avatarInput,
+    wallet,
+    sig,
+    save,
+    secret,
+    devicesBtn,
+    devicesPanel,
+    diagBtn,
+    diagPanel,
+  );
+}
+
+const DIAG_LABELS: Record<string, string> = {
+  dns: "域名解析",
+  tcp: "TCP 连接",
+  http: "HTTP 探活",
+  quic: "QUIC 握手",
+};
+
+const DIAG_STATUS: Record<string, string> = {
+  ok: "通过",
+  failed: "失败",
+  skipped: "跳过",
+};
+
+/** 网络诊断面板。诊断比普通请求慢（每步上限 5 秒），所以先渲染"检测中"。 */
+async function drawDiag(host: El): Promise<void> {
+  clear(host);
+  host.append(h("div", "devices-title", "网络诊断"));
+  host.append(h("div", "devices-empty", "检测中…"));
+  let report: api.DiagReport;
+  try {
+    report = await api.netDiag();
+  } catch (e) {
+    clear(host);
+    host.append(h("div", "devices-title", "网络诊断"));
+    host.append(h("div", "devices-empty", String(e).slice(0, 160)));
+    return;
+  }
+  clear(host);
+  host.append(h("div", "devices-title", "网络诊断"));
+  host.append(h("div", "devices-empty", report.summary));
+  for (const s of report.steps) {
+    const row = h("div", "device-row");
+    const left = h("div", "device-info");
+    const label = DIAG_LABELS[s.step] ?? s.step;
+    const state = DIAG_STATUS[s.status.status] ?? s.status.status;
+    left.append(h("div", "device-name", `${label} · ${state}`));
+    left.append(
+      h("div", "device-meta", s.elapsed_ms > 0 ? `${s.elapsed_ms}ms · ${s.status.detail}` : s.status.detail),
+    );
+    row.append(left);
+    host.append(row);
+  }
 }
 
 /** 相对时间：设备页只需要"多久没活跃"，不需要绝对时间。 */

@@ -774,6 +774,26 @@ export function applyTheme(): void {
   document.documentElement.dataset.theme = appStore.get(darkAtom) ? "dark" : "light";
 }
 
+/** 网络诊断的一步结论。 */
+export interface DiagStep {
+  step: "dns" | "tcp" | "http" | "quic";
+  elapsed_ms: number;
+  status: { status: "ok" | "failed" | "skipped"; detail: string };
+}
+
+export interface DiagReport {
+  host: string;
+  http_port: number;
+  quic_port: number;
+  steps: DiagStep[];
+  summary: string;
+}
+
+/** 跑一次网络诊断：DNS → TCP → HTTP → QUIC，四步顺序短路。 */
+export async function netDiag(): Promise<DiagReport> {
+  return invoke<DiagReport>("net_diag");
+}
+
 /** 发送队列：待发条数与彻底失败的消息。 */
 export interface OutboxStatus {
   pending: number;

@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod conn;
+pub mod diag;
 pub mod framing;
 pub mod heartbeat;
 pub mod membership;
