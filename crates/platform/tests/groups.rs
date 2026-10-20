@@ -656,3 +656,42 @@ async fn domain_layer_permissions() {
     assert_eq!(state.group_header(&id).unwrap().unwrap().1, "g");
     assert!(state.group_header("nosuchgroup").unwrap().is_none());
 }
+
+/// 群成员列表只对成员开放：非成员拿 403，而不是空数组。
+/// 空数组会泄露"这个群存在但你没在里面"，403 连存在性都不确认。
+#[tokio::test]
+async fn members_list_is_for_members_only() {
+    let router = app(common::platform());
+    let (alice, ta) = signup(&router, "alice").await;
+    let (_bob, tb) = signup(&router, "bob").await;
+
+    let r = req(
+        "POST",
+        "/api/groups",
+        Some(json!({"name": "team", "member_ids": []})),
+        Some(&ta),
+    );
+    let (_, body) = common::call(&router, r).await;
+    let gid = body["group_id"].as_str().expect("group_id").to_string();
+
+    let r = req(
+        "GET",
+        &format!("/api/groups/{gid}/members"),
+        None,
+        Some(&ta),
+    );
+    let (status, body) = common::call(&router, r).await;
+    assert_eq!(status, 200, "{body}");
+    let rows = body.as_array().expect("array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["user_id"], json!(alice));
+
+    let r = req(
+        "GET",
+        &format!("/api/groups/{gid}/members"),
+        None,
+        Some(&tb),
+    );
+    let (status, _) = common::call(&router, r).await;
+    assert_eq!(status, 403, "非成员不该看到成员列表");
+}
