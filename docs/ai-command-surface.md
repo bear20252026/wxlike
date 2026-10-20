@@ -326,3 +326,36 @@ msg.send 走 QUIC 数据面，HTTP 控制面无法发送；请用客户端，或
 * **审计**：每个写命令应落一条 `actor=agent:<id> command=… conv=… result=…`。
   表（P4 的 `audit`）已有，缺的是在入口统一记一笔的中间件。下一轮。
 * `msg.*` 的 hub 侧接口（让 HTTP 也能发消息，需要把 hub 的 append+扇出抽成可复用函数）。
+
+## 十三、审计落地：`X-Wxlike-Command` + 中间件
+
+每个命令调用都留一条：
+
+```
+cmd.group.create  /api/groups  status=200 method=POST
+```
+
+（实测 `GET /api/audit/self` 读回）
+
+### 为什么是中间件
+
+写命令有十几个入口，每个 handler 手写一次 `audit()` 一定会漏。中间件只有一处。
+放在 `Platform::router` 的 `.layer()` 上，**覆盖所有路由**，包括未来新增的。
+
+### 为什么用请求头而不是 URL
+
+同一个 `POST /api/groups` 既可能是人点按钮，也可能是 agent 执行 `group.create`。
+**命令 id 是调用方的语义，服务端猜不出来**——只有调用方知道自己在执行哪条命令。
+所以 `wxlike-client` 的 `Http::with_command(id)` 会给这次调用的每个请求打上标记，
+`Executor` 在执行前统一加。
+
+### 三个刻意的选择
+
+| 选择 | 理由 |
+|---|---|
+| 没有命令头 → 不记 | 否则 `/health`、`/metrics` 会淹掉审计 |
+| 失败的命令也记（`status=4xx`） | 审计的价值恰恰在"它试过但被拒了" |
+| actor 解析失败记空串 | 请求本来会被 401 挡掉，但"有人拿着坏 token 试过"仍值得留痕 |
+
+测试：`crates/platform/tests/audit.rs`（3 项：成功留痕 / 无头不记 / 失败也记）、
+`crates/client/tests/transport.rs`（命令头真的发出去了）。

@@ -17,6 +17,7 @@
 //! # let _ = app; Ok(()) }
 //! ```
 
+mod audit_mw;
 mod auth;
 mod call;
 mod communities;
@@ -431,7 +432,12 @@ impl Platform {
                     },
                 ),
             )
-            .with_state(state)
+            .with_state(state.clone())
+            // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                audit_mw::command_audit,
+            ))
     }
 
     /// P3 审计日志（不变式 7）：独立审计表，只写面。检索/留存策略归
