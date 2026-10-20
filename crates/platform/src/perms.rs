@@ -33,6 +33,10 @@ pub enum Perm {
     PostMessage,
     /// 在公告频道发消息（Rocket.Chat: `post-readonly` 的反面）
     PostInAnnounce,
+    /// 发带附件的消息（图/文件/语音/视频/贴纸）——Zone C · C2 的消息类型闸门
+    PostMedia,
+    /// 在频道里开新话题
+    CreateThread,
     /// 新建频道
     CreateChannel,
     /// 改名/改类型/删频道
@@ -54,6 +58,8 @@ impl Perm {
         match self {
             Perm::PostMessage => "post-message",
             Perm::PostInAnnounce => "post-announce",
+            Perm::PostMedia => "post-media",
+            Perm::CreateThread => "create-thread",
             Perm::CreateChannel => "create-channel",
             Perm::ManageChannel => "manage-channel",
             Perm::ManageMembers => "manage-members",
@@ -68,6 +74,8 @@ impl Perm {
         Some(match s {
             "post-message" => Perm::PostMessage,
             "post-announce" => Perm::PostInAnnounce,
+            "post-media" => Perm::PostMedia,
+            "create-thread" => Perm::CreateThread,
             "create-channel" => Perm::CreateChannel,
             "manage-channel" => Perm::ManageChannel,
             "manage-members" => Perm::ManageMembers,

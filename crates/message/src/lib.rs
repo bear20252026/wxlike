@@ -427,6 +427,19 @@ impl MessageStore {
         .optional()?)
     }
 
+    /// 某条消息的作者（不存在返回 `None`）。撤回鉴权用：调用方据此决定
+    /// 走 `withdraw`（本人）还是 `withdraw_as`（管理员代撤）。
+    pub fn sender_of(&self, owner: (OwnerType, &str), msg_id: &str) -> Result<Option<String>> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let c = self.c();
+        Ok(c.query_row(
+            "SELECT sender FROM mailbox WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3",
+            params![ot, oid, msg_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+
     /// 倒序取一页：`before_seq` 之前的 `limit` 条（history 的翻页语义）。
     ///
     /// 返回 (升序 rows, next_before)：`next_before` 是这一页最老的 seq，
@@ -585,6 +598,27 @@ impl MessageStore {
             "UPDATE mailbox SET withdrawn = 1
              WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4 AND withdrawn = 0",
             params![ot, oid, msg_id, actor],
+        )?;
+        if touched != 1 {
+            return Err(MailError::WithdrawRefused);
+        }
+        bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 管理员代撤（频道/群管层用）：与 [`MessageStore::withdraw`] 的唯一区别是
+    /// **不要求 actor 是作者**——权限判断归调用方（平台层的 `delete-any-message`
+    /// 权限点），信箱只多开一个入口；变更事件里的 actor 仍是动手的那个人，
+    /// 谁撤的必须可查（不变式 7）。
+    pub fn withdraw_as(&self, owner: (OwnerType, &str), msg_id: &str, actor: &str) -> Result<()> {
+        let (ot, oid) = self.owner_pair(owner)?;
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        let touched = tx.execute(
+            "UPDATE mailbox SET withdrawn = 1
+             WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND withdrawn = 0",
+            params![ot, oid, msg_id],
         )?;
         if touched != 1 {
             return Err(MailError::WithdrawRefused);
