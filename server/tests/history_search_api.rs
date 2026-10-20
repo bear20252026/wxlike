@@ -85,7 +85,10 @@ fn conv(a: &str, b: &str) -> String {
 /// expected hit count instead of assuming synchronous visibility.
 fn search_until(token: &str, q: &str, min_results: usize, base: &str) -> Vec<serde_json::Value> {
     let mut last: Option<serde_json::Value> = None;
-    for _ in 0..50 {
+    // 50 × 200ms = 10s 在慢 runner 上不够：CI 的 Windows 任务里，多个测试并发
+    // 建 Tantivy writer，commit 明显滞后，实测 18s 才齐。断言的是"最终可见"，
+    // 就该给它足够的时间——否则 flake 会把真实问题淹掉。
+    for _ in 0..100 {
         let hits: serde_json::Value = ureq::get(&format!("{base}/api/search/messages?q={q}"))
             .set("Authorization", &format!("Bearer {token}"))
             .call()
