@@ -774,6 +774,44 @@ export function applyTheme(): void {
   document.documentElement.dataset.theme = appStore.get(darkAtom) ? "dark" : "light";
 }
 
+/** 发送队列：待发条数与彻底失败的消息。 */
+export interface OutboxStatus {
+  pending: number;
+  failed: Array<{
+    task_id: string;
+    conv_id: string;
+    attempts: number;
+    error: string | null;
+    payload: unknown;
+  }>;
+}
+
+export async function fetchOutbox(): Promise<OutboxStatus> {
+  return invoke<OutboxStatus>("outbox_status");
+}
+
+/** 用户点"重发"：清零计数，后台泵会再试。 */
+export async function retryOutbox(taskId: string): Promise<void> {
+  await invoke("outbox_retry", { task_id: taskId });
+}
+
+/** 用户点"删除"：放弃这条。 */
+export async function dropOutbox(taskId: string): Promise<void> {
+  await invoke("outbox_drop", { task_id: taskId });
+}
+
+/** 后台重发泵的进度事件：补发成功 / 彻底失败都要让用户知道。 */
+export function onOutbox(payload: unknown): void {
+  const ev = payload as { sent?: number; retrying?: number; failed?: number; pending?: number };
+  if ((ev.failed ?? 0) > 0) {
+    toast(`${ev.failed} 条消息发送失败，可在会话里重发`);
+    return;
+  }
+  if ((ev.sent ?? 0) > 0) {
+    toast(`已补发 ${ev.sent} 条消息`);
+  }
+}
+
 export function notifyLost(): void {
   appStore.set(connectedAtom, false);
   toast("与服务器断开，请重连");

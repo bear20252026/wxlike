@@ -5,7 +5,7 @@
  */
 
 import { appStore, toastAtom } from "./state";
-import { notifyLost, onInbound } from "./api";
+import { notifyLost, onInbound, onOutbox } from "./api";
 import { renderRoot } from "./ui";
 import { invoke, listen } from "./tauri";
 
@@ -22,6 +22,8 @@ function main(): void {
   // hub events → store
   void listen("im-in", (payload) => onInbound(payload));
   void listen("im-down", () => notifyLost());
+  // 发送队列的补发/失败事件
+  void listen("im-outbox", (payload) => onOutbox(payload));
 
   // transient toasts from anywhere in the UI
   let hideTimer = 0;

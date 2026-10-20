@@ -176,12 +176,33 @@ TCP keepalive 选项，只能靠 PING 帧维持 NAT 映射，所以取更保守�
 > 这条测试在修复前跑过：`空闲 40s 后连接被关闭：Some(TimedOut)`。
 > 也就是说它不是"写了就绿"的装饰——**先让它红过**。
 
-### P1（中）：客户端发送队列 + 任务级重试
+### P1 ✅ 已落地（2026-10-20）：客户端发送队列（outbox）
 
-参照 `zombie_task_manager` 的形状（`SaveTask/StopTask/HasTask` + 成本计时），
-在客户端本地库加一张 `outbox(task_id, conv, payload, attempts, next_retry_at)`，
-启动时重放。重试间隔照抄 `DEF_TASK_RETRY_INTERNAL = 1s`、`DEF_TASK_RETRY_COUNT = 1`
-（Mars 的任务级重试只重 1 次，剩下靠上层——这点很克制，值得学）。
+`crates/core/src/outbox.rs`，照 `zombie_task_manager` 的形状
+（`SaveTask/StopTask/HasTask` + 重启续跑）：
+
+```sql
+outbox(task_id PK, conv_id, kind, payload, attempts, next_retry_at,
+       created_at, last_error, state)   -- pending | sent | failed
+```
+
+| 决策 | 值 / 理由 |
+|---|---|
+| 重试次数 | **5 次**（Mars 是 1 次 + `RetryTasks` 连接级重投；我们还没有那个机制，队列自己扛） |
+| 退避 | 1s → 2s → 4s → 8s → 16s，上限 30s（Mars 的 `DEF_TASK_RETRY_INTERNAL` 是 1s） |
+| 幂等 | `task_id = msg_id`：重试原样重发同一条 envelope，服务端按 `msg_id` 去重 |
+| 非重试错误 | `SendFailure::permanent`（403 不是群成员…）**一次判死**，不让用户等 30 秒才看到失败 |
+| 一轮内遇错即停 | 可重试失败通常意味着连接坏了，继续发只会让每条都 +1 次尝试——Mars `anti_avalanche` 的同一种考虑 |
+
+接入：`send_body` 发送失败 → `queue_for_retry` 落盘（`ui/src-tauri/src/lib.rs`）；
+`connect_hub` 成功后起一个**独立 OS 线程**每秒 flush 一轮；命令
+`outbox_status` / `outbox_retry` / `outbox_drop` 给 UI；事件 `im-outbox` 报告
+`{sent, retrying, failed, pending}`。
+
+8 项测试，其中两条是关键性质：
+
+* `flush_marks_sent_and_stops_at_the_first_retryable_failure`——第 3 条**没被尝试**；
+* `pending_tasks_survive_a_restart`——文件库关掉再开，未发送的还在。
 
 ### P2（中）：网络诊断页（SDT 的形状）
 

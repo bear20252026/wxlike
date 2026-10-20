@@ -84,7 +84,9 @@ fn decode_msg_id(s: &str) -> Option<MsgId> {
 /// One window's whole backend state. Managed by Tauri; tests drive it via `Arc`.
 pub struct AppState {
     http: Mutex<Http>,
-    client: Mutex<Option<Client>>,
+    /// `Arc` 是为了让后台泵能跨线程持有它（重连会替换里面的 Client，
+    /// 泵每轮重新读一次，所以必须共享同一个槽而不是拷贝一份）。
+    client: Arc<Mutex<Option<Client>>>,
     hub_addr: Mutex<Option<String>>,
     seq: AtomicU64,
     /// P1 secret chat: the local Olm account, held for the app session
@@ -94,17 +96,26 @@ pub struct AppState {
     /// P2 local message library (client-side SQLite): the chat opens from
     /// disk instantly, the server history only *adds* older rows.
     local: Arc<Mutex<Option<LocalStore>>>,
+    /// 发送队列：`send()` 失败的消息落盘，连上后自动重发。
+    /// 进程被杀也不丢——见 `wxlike_core::outbox`。
+    outbox: Mutex<Option<Arc<wxlike_core::outbox::Outbox>>>,
+    /// 重发泵只起一次：每次 `connect_hub` 都 spawn 一个的话，
+    /// 重连三次就有三个线程同时抢同一条任务（靠数据库状态不会重发两次，
+    /// 但白烧 CPU）。
+    outbox_pump: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             http: Mutex::new(Http::new(base_url)),
-            client: Mutex::new(None),
+            client: Arc::new(Mutex::new(None)),
             hub_addr: Mutex::new(None),
             seq: AtomicU64::new(1),
             secret: Arc::new(Mutex::new(None)),
             local: Arc::new(Mutex::new(None)),
+            outbox: Mutex::new(None),
+            outbox_pump: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -348,12 +359,120 @@ impl AppState {
         let client = self.client()?;
         let me = self.user_id()?;
         let env = Envelope::with_body(conv_id, me, to, self.next_seq(), body);
-        wait(client.send(&env)).map_err(|e| format!("send: {e:#}"))?;
-        // own echo lands in the local library too (decrypted form for e2ee)
-        if !env.is_recall() && !env.is_typing() {
-            self.local_append(&render_event_with(&env, &self.secret));
+        match wait(client.send(&env)) {
+            Ok(()) => {
+                self.append_own_echo(&env);
+                Ok(env)
+            }
+            // 连接问题不该变成"用户手动重发"：落盘排队，后台泵连上就发
+            Err(err) => self.queue_for_retry(&env, &err),
         }
-        Ok(env)
+    }
+
+    /// 自己的消息落本地库（e2ee 时是解密后的形式）。
+    fn append_own_echo(&self, env: &Envelope) {
+        if env.is_recall() || env.is_typing() {
+            return;
+        }
+        self.local_append(&render_event_with(env, &self.secret));
+    }
+
+    /// 发送失败 → 写进 outbox，等后台泵重发。
+    ///
+    /// `task_id` 用 `msg_id`：重试时把**同一条 envelope** 原样重发，服务端按
+    /// `msg_id` 去重，所以重试不会变成两条消息。这也是 `enqueue_with_id`
+    /// 存在的原因——同一个 id 重复入队是空操作。
+    fn queue_for_retry(&self, env: &Envelope, err: &anyhow::Error) -> Result<Envelope, String> {
+        let Some(outbox) = self.outbox() else {
+            // 没打开本地库 = 无处落盘，只能如实报错（总比假装成功好）
+            return Err(format!("send: {err:#}"));
+        };
+        let payload =
+            serde_json::to_value(env).map_err(|e| format!("outbox encode: {e}"))?;
+        outbox
+            .enqueue_with_id(
+                &hex(&env.msg_id),
+                &env.conv_id,
+                "envelope",
+                &payload,
+                wxlike_core::types::now_ms() as i64,
+            )
+            .map_err(|e| format!("outbox: {e:#}"))?;
+        Ok(env.clone())
+    }
+
+    /// 后台重发泵：每秒看一次队列。
+    ///
+    /// 用**独立 OS 线程**而不是 async 任务：`wait()` 在 async 上下文里要走
+    /// `block_in_place`，而这里本来就是阻塞式的发送调用，放线程里更直白，
+    /// 也不会和收包泵抢同一个 runtime 的工作线程。
+    pub fn start_outbox_pump(&self, app: tauri::AppHandle) {
+        let Some(outbox) = self.outbox() else {
+            return;
+        };
+        if self
+            .outbox_pump
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return; // 已经在跑了
+        }
+        let client_slot = self.client.clone();
+        let local = self.local.clone();
+        let secret = self.secret.clone();
+        std::thread::spawn(move || {
+            use tauri::Emitter as _;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let client = client_slot
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                let Some(client) = client else {
+                    continue;
+                };
+                let now = wxlike_core::types::now_ms() as i64;
+                let report = outbox.flush_with(now, 20, |task| {
+                    let env: Envelope = match serde_json::from_value(task.payload.clone()) {
+                        Ok(env) => env,
+                        // 坏 payload 重试一万次也不会变好
+                        Err(e) => {
+                            return Err(wxlike_core::outbox::SendFailure::permanent(format!(
+                                "payload 解不开: {e}"
+                            )))
+                        }
+                    };
+                    match wait(client.send(&env)) {
+                        Ok(()) => {
+                            if !env.is_recall() && !env.is_typing() {
+                                let payload = render_event_with(&env, &secret);
+                                let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
+                                if let Some(store) = guard.as_ref() {
+                                    let _ = store.append(&payload);
+                                }
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(wxlike_core::outbox::SendFailure::retryable(format!(
+                            "{e:#}"
+                        ))),
+                    }
+                });
+                if let Ok(report) = report {
+                    if report.sent > 0 || report.failed > 0 {
+                        let pending = outbox.pending_count().unwrap_or(0);
+                        let _ = app.emit(
+                            "im-outbox",
+                            serde_json::json!({
+                                "sent": report.sent,
+                                "retrying": report.retrying,
+                                "failed": report.failed,
+                                "pending": pending,
+                            }),
+                        );
+                    }
+                }
+            }
+        });
     }
 
     pub fn send_text(&self, conv_id: &str, to: Vec<String>, text: &str) -> Result<(), String> {
@@ -569,8 +688,20 @@ impl AppState {
     /// at app start with the app-data path; tests pass a temp path.
     pub fn local_open(&self, path: &std::path::Path) -> Result<(), String> {
         let store = LocalStore::open(path).map_err(|e| format!("local db: {e:#}"))?;
+        // 发送队列与本地消息库**同一个文件**、各自一条连接（WAL + busy_timeout）。
+        // 放同一文件是为了"一条消息要么在库里、要么在队列里"，备份/迁移不用管两处。
+        let outbox = wxlike_core::outbox::Outbox::open(Some(&path.to_string_lossy()))
+            .map_err(|e| format!("outbox: {e:#}"))?;
+        *self.outbox.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(outbox));
         *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
         Ok(())
+    }
+
+    fn outbox(&self) -> Option<Arc<wxlike_core::outbox::Outbox>> {
+        self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn local_ready(&self) -> bool {
@@ -1533,7 +1664,53 @@ pub mod commands {
             .app_data_dir()
             .map(|dir| dir.join("tofu-pins.json"))
             .unwrap_or_else(|_| std::env::temp_dir().join("wxlike-tofu-pins.json"));
-        state.connect_hub(&addr, &user_id, &pins)
+        let out = state.connect_hub(&addr, &user_id, &pins)?;
+        // 连上才起泵：没连接时它只会每秒空转一次，无害但没必要
+        state.start_outbox_pump(app.clone());
+        Ok(out)
+    }
+
+    /// 发送队列状态：还有几条没发出去、哪几条彻底失败（UI 显示"重发/删除"）。
+    #[tauri::command]
+    pub fn outbox_status(
+        state: tauri::State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        let Some(ob) = state.outbox() else {
+            return Ok(serde_json::json!({ "pending": 0, "failed": [] }));
+        };
+        let pending = ob.pending_count().map_err(|e| e.to_string())?;
+        let failed = ob.failed(50).map_err(|e| e.to_string())?;
+        let failed: Vec<serde_json::Value> = failed
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "task_id": t.task_id,
+                    "conv_id": t.conv_id,
+                    "attempts": t.attempts,
+                    "error": t.last_error,
+                    "payload": t.payload,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "pending": pending, "failed": failed }))
+    }
+
+    /// 用户点"重发"：清零计数，交给后台泵。
+    #[tauri::command]
+    pub fn outbox_retry(
+        state: tauri::State<'_, AppState>,
+        task_id: String,
+    ) -> Result<(), String> {
+        let ob = state.outbox().ok_or("本地库未打开")?;
+        ob.requeue(&task_id, wxlike_core::types::now_ms() as i64)
+            .map_err(|e| e.to_string())
+    }
+
+    /// 用户点"删除"：放弃这条消息。
+    #[tauri::command]
+    pub fn outbox_drop(state: tauri::State<'_, AppState>, task_id: String) -> Result<(), String> {
+        let ob = state.outbox().ok_or("本地库未打开")?;
+        ob.remove(&task_id).map(|_| ()).map_err(|e| e.to_string())
     }
 
     #[tauri::command]
@@ -1930,6 +2107,9 @@ pub fn run() {
             commands::conversation_id,
             commands::connect_hub,
             commands::send_text,
+            commands::outbox_status,
+            commands::outbox_retry,
+            commands::outbox_drop,
             commands::send_image,
             commands::send_redpacket_msg,
             commands::start_recv_pump,
