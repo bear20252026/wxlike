@@ -201,7 +201,7 @@ $ ffprobe <video_root>/live/<key>/index.m3u8             → format: hls  durati
 | E3 | 回调端点落在平台 | `crates/platform/src/lib.rs` 是热点文件，Zone E 不许改 | §8 第 2 条给了现成的接入方式 |
 | 全部 | `cd ui && npx tsc --noEmit` | 这个 worktree 没有 `ui/node_modules`（不越界装依赖、不碰 ui） | 本卡零 UI 改动；集成方在 main 上跑即可 |
 
-## 8. 需要集成方代合的三件事（Zone E 所有权之外）
+## 8. 需要集成方代合的四件事（Zone E 所有权之外）
 
 1. **`THIRD-PARTY-NOTICES.md`**（§3.6）。本卡**没有复制任何外部源码**，
    "Vendored code" 表不需要新行；依赖表加一行、"Ported designs" 加四条：
@@ -229,6 +229,13 @@ $ ffprobe <video_root>/live/<key>/index.m3u8             → format: hls  durati
    `POST /api/video/jobs` 首次提交时自起（`VideoStore::start_worker`，按存储根目录幂等）。
    Q7 装配分离开进程后，应在二进制里显式 `wxlike_video::spawn_worker(store, WORKER_POLL)`
    并去掉自起逻辑。
+
+4. **命令面 catalog（§1.2 的设计规矩）没登记**。本卡的 11 条新路由只在 HTTP 面上，
+   `crates/cmd` 的 catalog 一条都没加——那是别的区的所有权。按"新增功能 = catalog
+   加一条 + 一个入口实现"的规矩，至少要登记这几条（Tauri/MCP/CLI 才能看到同一份能力）：
+   `video.select`（读）、`video.stats`（读）、`video.job.create`（写）、
+   `video.job.retry`（写）、`video.view.report`（写）。
+   HTTP 面已经能用，登记只是把它们暴露给 agent 侧；需要谁做、什么时候做由集成方定。
 
 另外两件是建议、不是必须：`GET /api/video/{id}/view` 目前是**自报身份**且公开可写
 （点播面本来就无鉴权），要防伪造成交侧在 `crates/cmd` 加一条带鉴权的入口；
