@@ -1378,6 +1378,28 @@ pub mod commands {
     // -- P4/P5: 通话房间控制面 + 设备验证（前端不碰 HTTP，全部经此桥） --------
 
     /// 房间快照：`live=false` 表示当前没有通话。
+    /// P3 未读数：服务端信箱是唯一真相（`MessageStore::unread`）。
+    #[tauri::command]
+    pub fn conv_unread(
+        state: tauri::State<'_, AppState>,
+        conv: String,
+    ) -> Result<serde_json::Value, String> {
+        state
+            .http()
+            .expect_json("GET", &format!("/api/conv/{conv}/unread"), None)
+    }
+
+    /// 把已读游标推到最新（空 body = 读到最新）。返回推送后的快照。
+    #[tauri::command]
+    pub fn conv_mark_read(
+        state: tauri::State<'_, AppState>,
+        conv: String,
+    ) -> Result<serde_json::Value, String> {
+        state
+            .http()
+            .expect_json("POST", &format!("/api/conv/{conv}/read"), Some(&serde_json::json!({})))
+    }
+
     #[tauri::command]
     pub fn call_state(
         state: tauri::State<'_, AppState>,
@@ -2010,6 +2032,8 @@ pub fn run() {
         .manage(callrtc::CallEngine::default())
         .invoke_handler(tauri::generate_handler![
             commands::set_server,
+            commands::conv_unread,
+            commands::conv_mark_read,
             commands::call_state,
             commands::call_action,
             commands::call_signal_post,

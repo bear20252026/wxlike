@@ -586,6 +586,29 @@ function upsertSession(
     sessions.unshift({ convId, title, isGroup, lastText, lastAtMs: at, unread: unreadDelta });
   }
   appStore.set(sessionsAtom, sessions);
+  // 本地增量只负责"立刻有反馈"；真正的未读数以服务端信箱为准，
+  // 收到消息后异步校正一次（离线期间收到的、别的设备读过的都能对上）。
+  void fetchConvUnread(convId)
+    .then((u) => {
+      const cur = appStore.get(sessionsAtom);
+      appStore.set(
+        sessionsAtom,
+        cur.map((s) => (s.convId === convId ? { ...s, unread: u.unread } : s)),
+      );
+    })
+    .catch(() => undefined);
+}
+
+/** 服务端未读（信箱是唯一真相；本地增量只用于即时反馈）。 */
+export async function fetchConvUnread(
+  convId: string,
+): Promise<{ unread: number; head_seq: number; read_seq: number }> {
+  return invoke("conv_unread", { conv: convId });
+}
+
+/** 打开会话即 ack：把游标推到最新（区别于本地 markRead(conv,msgId)）。 */
+export async function ackConv(convId: string): Promise<void> {
+  await invoke("conv_mark_read", { conv: convId });
 }
 
 function appendChat(convId: string, msg: ChatMsg): void {
@@ -762,6 +785,8 @@ export function openSession(session: Session): void {
     s.convId === session.convId ? { ...s, unread: 0 } : s,
   );
   appStore.set(sessionsAtom, sessions);
+  // 本地清零只是 UI；服务端游标也要推（否则重装/换设备后未读会回来）
+  void ackConv(session.convId).catch(() => undefined);
   const me = appStore.get(meAtom);
   if (me) {
     void loadHistory(session.convId, me.user_id)
