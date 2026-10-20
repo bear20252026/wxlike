@@ -688,3 +688,210 @@ async fn like_counts_and_names_are_projected_in_detail() {
     assert_eq!(d["author_name"].as_str().unwrap(), "alice");
     assert_eq!(d["like_count"].as_i64(), Some(1));
 }
+
+/// 私密动态：**只有作者自己看得到**，连好友也不行。
+///
+/// 这条同时盯两个入口：详情（`can_see_moment`）与 feed（SQL 的可见性过滤）。
+/// 只挡一个入口的隐私是最难查的——用户在列表里看得见、点进去 404。
+#[tokio::test]
+async fn a_private_moment_is_invisible_to_friends_but_not_to_its_author() {
+    let (_st, app) = scene().await;
+    let (_alice, at) = signup(&app, "alice").await;
+    let (bob, bt) = signup(&app, "bob").await;
+    let req_id = befriend(&app, &at, &bob).await;
+    call(
+        &app,
+        req(
+            "POST",
+            &format!("/api/friends/requests/{req_id}/accept"),
+            None,
+            Some(&bt),
+        ),
+    )
+    .await;
+
+    let (status, body) = publish(
+        &app,
+        &at,
+        json!({"text": "只有我自己", "visibility": "private"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["moment_id"].as_str().unwrap().to_string();
+
+    // 作者：详情 200
+    assert_eq!(detail(&app, &at, &id).await.0, StatusCode::OK);
+    // 好友：详情 404（不泄露"存在但你看不到"）
+    assert_eq!(detail(&app, &bt, &id).await.0, StatusCode::NOT_FOUND);
+
+    // feed：作者看得到，好友看不到
+    let a_feed = feed(&app, &at, "").await;
+    let ids: Vec<&str> = a_feed["moments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["moment_id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&id.as_str()),
+        "作者自己的 feed 应当有：{a_feed}"
+    );
+
+    let b_feed = feed(&app, &bt, "").await;
+    let ids: Vec<&str> = b_feed["moments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["moment_id"].as_str())
+        .collect();
+    assert!(
+        !ids.contains(&id.as_str()),
+        "好友的 feed 不该出现私密动态：{b_feed}"
+    );
+}
+
+/// 删评论：评论作者可删自己的，动态作者可删任何人的，第三人不行。
+#[tokio::test]
+async fn comment_deletion_follows_the_wechat_rule() {
+    let (_st, app) = scene().await;
+    let (_alice, at) = signup(&app, "alice").await;
+    let (bob, bt) = signup(&app, "bob").await;
+    let (carol, ct) = signup(&app, "carol").await;
+    for (uid, tok) in [(&bob, &bt), (&carol, &ct)] {
+        let req_id = befriend(&app, &at, uid).await;
+        call(
+            &app,
+            req(
+                "POST",
+                &format!("/api/friends/requests/{req_id}/accept"),
+                None,
+                Some(tok),
+            ),
+        )
+        .await;
+    }
+
+    let (_, body) = publish(&app, &at, json!({"text": "动态"})).await;
+    let moment_id = body["moment_id"].as_str().unwrap().to_string();
+
+    let mut comment_ids = Vec::new();
+    for text in ["bob 的评论", "又一条", "第三条"] {
+        let (status, body) = call(
+            &app,
+            req(
+                "POST",
+                &format!("/api/moments/{moment_id}/comments"),
+                Some(json!({"text": text})),
+                Some(&bt),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        comment_ids.push(body["comment_id"].as_str().unwrap().to_string());
+    }
+
+    // 1) 评论作者删自己的
+    let status = call(
+        &app,
+        req(
+            "DELETE",
+            &format!("/api/moments/{moment_id}/comments/{}", comment_ids[0]),
+            None,
+            Some(&bt),
+        ),
+    )
+    .await
+    .0;
+    assert_eq!(status, StatusCode::NO_CONTENT, "评论作者应当能删自己的");
+
+    // 2) 动态作者删别人的
+    let status = call(
+        &app,
+        req(
+            "DELETE",
+            &format!("/api/moments/{moment_id}/comments/{}", comment_ids[1]),
+            None,
+            Some(&at),
+        ),
+    )
+    .await
+    .0;
+    assert_eq!(status, StatusCode::NO_CONTENT, "动态作者应当能删别人的");
+
+    // 3) 第三人不行（carol 既不是评论作者也不是动态作者）
+    let status = call(
+        &app,
+        req(
+            "DELETE",
+            &format!("/api/moments/{moment_id}/comments/{}", comment_ids[2]),
+            None,
+            Some(&ct),
+        ),
+    )
+    .await
+    .0;
+    assert_eq!(status, StatusCode::NOT_FOUND, "第三人删不了");
+
+    // 删掉的从详情里消失，剩下的还在
+    let (status, body) = detail(&app, &at, &moment_id).await;
+    assert_eq!(status, StatusCode::OK);
+    let texts: Vec<&str> = body["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["第三条"], "只该剩下没被删的那条：{body}");
+}
+
+/// 删评论后 feed 的评论计数要跟着降——计数是 `deleted = 0` 的子查询，
+/// 所以这条同时验证了"软删除"没有留下幽灵计数。
+#[tokio::test]
+async fn deleting_a_comment_lowers_the_feed_count() {
+    let (_st, app) = scene().await;
+    let (_alice, at) = signup(&app, "alice").await;
+
+    let (_, body) = publish(&app, &at, json!({"text": "计数"})).await;
+    let moment_id = body["moment_id"].as_str().unwrap().to_string();
+
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let (_, body) = call(
+            &app,
+            req(
+                "POST",
+                &format!("/api/moments/{moment_id}/comments"),
+                Some(json!({"text": format!("c{i}")})),
+                Some(&at),
+            ),
+        )
+        .await;
+        ids.push(body["comment_id"].as_str().unwrap().to_string());
+    }
+
+    let count = |feed_body: &serde_json::Value| -> i64 {
+        feed_body["moments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["moment_id"].as_str() == Some(moment_id.as_str()))
+            .expect("moment in feed")["comment_count"]
+            .as_i64()
+            .unwrap()
+    };
+    assert_eq!(count(&feed(&app, &at, "").await), 3);
+
+    let status = call(
+        &app,
+        req(
+            "DELETE",
+            &format!("/api/moments/{moment_id}/comments/{}", ids[0]),
+            None,
+            Some(&at),
+        ),
+    )
+    .await
+    .0;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(count(&feed(&app, &at, "").await), 2);
+}

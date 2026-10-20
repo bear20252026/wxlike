@@ -46,6 +46,10 @@ pub fn routes() -> Router<PlatformState> {
         .route("/api/moments/{moment_id}/likes", post(like))
         .route("/api/moments/{moment_id}/likes", delete(unlike))
         .route("/api/moments/{moment_id}/comments", post(comment))
+        .route(
+            "/api/moments/{moment_id}/comments/{comment_id}",
+            delete(remove_comment),
+        )
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -53,6 +57,8 @@ pub fn routes() -> Router<PlatformState> {
 pub enum Visibility {
     Public,
     Friends,
+    /// 仅自己可见（微信的"私密"）。**不进任何人的 feed**，包括好友的。
+    Private,
 }
 
 impl Visibility {
@@ -60,6 +66,7 @@ impl Visibility {
         match self {
             Visibility::Public => "public",
             Visibility::Friends => "friends",
+            Visibility::Private => "private",
         }
     }
 }
@@ -240,6 +247,10 @@ impl Platform {
         if visibility == "public" {
             return Ok(true);
         }
+        // 私密：连好友也看不到（viewer == author 已在上面返回）
+        if visibility == "private" {
+            return Ok(false);
+        }
         self.are_friends(author, viewer)
     }
 
@@ -286,6 +297,22 @@ impl Platform {
         let changed = c.execute(
             "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
             params![moment_id, by],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// 删评论。**动态作者可以删任何人的评论，评论作者可以删自己的**——
+    /// 这是微信的行为，也是唯一不会让作者"被挂在自己动态下面"的规则。
+    /// 软删除（`deleted = 1`）：feed 的计数与详情都按 `deleted = 0` 过滤，
+    /// 硬删会让分页游标与计数对不上。
+    pub fn delete_comment(&self, moment_id: &str, comment_id: &str, by: &str) -> Result<bool> {
+        let c = self.db().lock();
+        let changed = c.execute(
+            "UPDATE moment_comments SET deleted = 1
+             WHERE id = ?1 AND moment_id = ?2 AND deleted = 0
+               AND (author = ?3
+                    OR ?3 = (SELECT author FROM moments WHERE id = ?2))",
+            params![comment_id, moment_id, by],
         )?;
         Ok(changed == 1)
     }
@@ -384,16 +411,23 @@ impl Platform {
                     (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
                     (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
              FROM moments m JOIN users u ON u.id = m.author
-             WHERE m.deleted = 0 AND m.author IN ({placeholders}) AND m.seq < ?{}
+             -- 私密动态只进作者自己的 feed。没有这一条，好友会在 feed 里
+             -- 看到本该「仅自己可见」的内容——而详情接口是挡住的，两处不一致
+             -- 是最难查的一类隐私泄漏。
+             WHERE m.deleted = 0 AND m.author IN ({placeholders})
+               AND (m.visibility <> 'private' OR m.author = ?{})
+               AND m.seq < ?{}
              ORDER BY m.seq DESC LIMIT ?{}",
             authors.len() + 1,
-            authors.len() + 2
+            authors.len() + 2,
+            authors.len() + 3
         );
         let mut stmt = c.prepare(&sql)?;
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         for a in &authors {
             params_vec.push(Box::new(a.clone()));
         }
+        params_vec.push(Box::new(me.to_string()));
         params_vec.push(Box::new(upper));
         params_vec.push(Box::new(limit + 1)); // one extra row tells us if there is more
         let refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| &**p).collect();
@@ -534,6 +568,27 @@ async fn unlike(
     Ok(Json(
         serde_json::json!({ "liked": false, "removed": removed }),
     ))
+}
+
+async fn remove_comment(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path((moment_id, comment_id)): Path<(String, String)>,
+) -> std::result::Result<StatusCode, ApiError> {
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
+    let comment_id = validate::id(&comment_id)
+        .map_err(ApiError::from)?
+        .to_string();
+    require_visible(&platform, &moment_id, &authed.user_id)
+        .await
+        .map_err(ApiError::from)?;
+    if !platform.delete_comment(&moment_id, &comment_id, &authed.user_id)? {
+        // 不是评论作者、也不是动态作者；或者已经删过了
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "no such comment"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn comment(
