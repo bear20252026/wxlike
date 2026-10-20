@@ -1052,13 +1052,22 @@ async fn c4_community_thread_rollup_and_role_endpoints() {
     assert_eq!(st, StatusCode::OK, "{body}");
     let rows = body["threads"].as_array().unwrap();
     assert_eq!(rows.len(), 2, "跨频道汇总");
-    // 最新在前
-    assert_eq!(rows[0]["thread_id"], json!(ids[1]));
-    assert_eq!(rows[1]["thread_id"], json!(ids[0]));
-    assert_eq!(rows[1]["replies"], json!(2));
-    assert_eq!(rows[1]["channel_name"], json!("综合"));
+    // 排序契约是 `(created_at DESC, id DESC)`：同一毫秒建的话题也要有确定次序，
+    // 否则翻页会出现"同一条在两页都出现"或"两页都不出现"。测创建先后是假断言——
+    // 两个话题可以落在同一毫秒里。
+    let key = |r: &serde_json::Value| {
+        (
+            r["created_at"].as_i64().unwrap(),
+            r["thread_id"].as_str().unwrap().to_string(),
+        )
+    };
+    assert!(key(&rows[0]) >= key(&rows[1]), "最新在前，同刻按 id 倒序");
+    let by_id = |want: &str| rows.iter().find(|r| r["thread_id"] == json!(want)).unwrap();
+    assert_eq!(by_id(&ids[0])["replies"], json!(2), "回复数按话题给");
+    assert_eq!(by_id(&ids[0])["channel_name"], json!("综合"));
+    assert_eq!(by_id(&ids[1])["channel_name"], json!("招聘"));
     assert_eq!(
-        rows[1]["subscribed"],
+        by_id(&ids[0])["subscribed"],
         json!(false),
         "carol 没订阅：列表里看得到，但不算订阅"
     );

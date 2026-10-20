@@ -786,7 +786,7 @@ impl Platform {
         let c = self.db().lock();
         let mut stmt = c.prepare(
             "SELECT id, channel_id, root_seq, title, created_by, created_at
-             FROM threads WHERE channel_id = ?1 ORDER BY created_at",
+             FROM threads WHERE channel_id = ?1 ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map(params![channel], |r| {
             Ok(ThreadRow {
@@ -822,7 +822,7 @@ impl Platform {
              FROM threads t
              JOIN channels ch ON ch.id = t.channel_id
              WHERE ch.community_id = ?1
-             ORDER BY t.created_at DESC LIMIT ?3",
+             ORDER BY t.created_at DESC, t.id DESC LIMIT ?3",
         )?;
         let rows = stmt
             .query_map(params![community, user, limit], |r| {

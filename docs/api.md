@@ -175,6 +175,8 @@ paths:
       description: >
         一个入口拿到"这个社区正在讨论什么"，客户端不必先枚举频道再逐个问。
         `subscribed` 是"我"的状态；没订阅也能在频道时间线里看到话题根消息。
+        排序是 `(created_at DESC, id DESC)`：同一毫秒建的两个话题也要有确定次序，
+        否则带 limit 翻页会出现"同一条在两页都出现"或"两页都不出现"。
       operationId: communityThreads
       parameters:
         - { $ref: '#/components/parameters/communityId' }
