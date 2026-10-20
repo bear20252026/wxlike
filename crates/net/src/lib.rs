@@ -1,6 +1,7 @@
 //! wxlike-net: QUIC long-connection transport, broadcast hub (legacy),
 //! and MQ-routed hub for multi-node deployment.
 
+pub mod avalanche;
 pub mod client;
 pub mod conn;
 pub mod diag;

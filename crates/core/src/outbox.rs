@@ -50,6 +50,12 @@ pub struct OutboxTask {
 pub struct SendFailure {
     pub message: String,
     pub retryable: bool,
+    /// 被本地漏斗挡下：**不计入尝试次数**。
+    ///
+    /// 这一条很关键：限流不是"这条消息发不出去"，是"现在别发"。把它算成失败，
+    /// 用户会看到"发送失败"——而实际上再等一秒就好了，而且重试 5 次就把额度烧光、
+    /// 消息直接进 failed 状态。
+    pub throttled: bool,
 }
 
 impl SendFailure {
@@ -57,6 +63,7 @@ impl SendFailure {
         Self {
             message: message.into(),
             retryable: true,
+            throttled: false,
         }
     }
 
@@ -64,6 +71,16 @@ impl SendFailure {
         Self {
             message: message.into(),
             retryable: false,
+            throttled: false,
+        }
+    }
+
+    /// 本地限流：这一轮到此为止，**不动 attempts**。
+    pub fn throttled(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+            throttled: true,
         }
     }
 }
@@ -76,6 +93,8 @@ pub struct FlushReport {
     pub retrying: u32,
     /// 失败且不再重试（非重试错误，或次数用尽）
     pub failed: u32,
+    /// 被本地漏斗挡下（不计尝试次数，下一轮再来）
+    pub throttled: u32,
 }
 
 pub struct Outbox {
@@ -304,6 +323,12 @@ impl Outbox {
                     self.mark_sent(&task.task_id)?;
                     report.sent += 1;
                 }
+                // 本地限流：不记账、这一轮结束。连"失败"都不算——
+                // 否则用户会看到"发送失败"，而实际只是等一下就好。
+                Err(fail) if fail.throttled => {
+                    report.throttled += 1;
+                    break;
+                }
                 Err(fail) if fail.retryable => {
                     // 连接层大概率已经坏了：剩下的任务这一轮不再试
                     let next = self.record_failure(&task.task_id, &fail.message, now_ms)?;
@@ -488,6 +513,29 @@ mod tests {
         let due = ob.due(t, 10).unwrap();
         assert_eq!(due.len(), 1, "同 task_id 不该出现两行");
         assert_eq!(due[0].payload["v"], 1, "先入队的为准，不被覆盖");
+    }
+
+    /// 被本地漏斗挡下**不能**算一次失败：否则等 1 秒就能发出去的消息，
+    /// 会先被记 5 次失败直接进 failed 状态。
+    #[test]
+    fn a_throttled_send_does_not_burn_an_attempt() {
+        let ob = Outbox::open(None).unwrap();
+        let id = ob.enqueue("c", "text", &json!({})).unwrap();
+
+        for _ in 0..3 {
+            let report = ob
+                .flush_with(now(), 10, |_| Err(SendFailure::throttled("本地限流")))
+                .unwrap();
+            assert_eq!(report.throttled, 1);
+            assert_eq!(report.failed, 0);
+            assert_eq!(report.retrying, 0);
+        }
+
+        // 仍是 0 次尝试、仍然 pending、仍然到点可发
+        let due = ob.due(now() + 1, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].task_id, id);
+        assert_eq!(due[0].attempts, 0, "限流不该累加 attempts");
     }
 
     /// 进程重启续跑：文件库关掉再打开，pending 还在。

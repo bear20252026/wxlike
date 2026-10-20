@@ -124,6 +124,9 @@ pub struct AppState {
     /// 重连三次就有三个线程同时抢同一条任务（靠数据库状态不会重发两次，
     /// 但白烧 CPU）。
     outbox_pump: std::sync::atomic::AtomicBool,
+    /// 本地防雪崩：给**自动重发**用的频率/流量漏斗。
+    /// 用户手点发送不走它（`set_active` 的语义见 `crates/net/src/avalanche.rs`）。
+    avalanche: Arc<wxlike_net::avalanche::Avalanche>,
 }
 
 impl AppState {
@@ -137,6 +140,9 @@ impl AppState {
             local: Arc::new(Mutex::new(None)),
             outbox: Mutex::new(None),
             outbox_pump: std::sync::atomic::AtomicBool::new(false),
+            avalanche: Arc::new(wxlike_net::avalanche::Avalanche::new(
+                wxlike_net::avalanche::AvalancheConfig::messages(),
+            )),
         }
     }
 
@@ -440,6 +446,7 @@ impl AppState {
         let client_slot = self.client.clone();
         let local = self.local.clone();
         let secret = self.secret.clone();
+        let avalanche = self.avalanche.clone();
         std::thread::spawn(move || {
             use tauri::Emitter as _;
             let mut next_sample = std::time::Instant::now();
@@ -470,6 +477,20 @@ impl AppState {
                             )))
                         }
                     };
+                    // 本地防雪崩：弱网下重发风暴会把流量打光、把连接堵死。
+                    // 键用 conv_id——同一条命令不同会话互不牵连。
+                    let bytes = task.payload.to_string().len();
+                    if let wxlike_net::avalanche::Verdict::Deny {
+                        reason,
+                        retry_after_ms,
+                    } = avalanche.check(&task.conv_id, bytes, now)
+                    {
+                        return Err(wxlike_core::outbox::SendFailure::throttled(format!(
+                            "本地限流（{}），{}ms 后再试",
+                            reason.as_str(),
+                            retry_after_ms
+                        )));
+                    }
                     match wait(client.send(&env)) {
                         Ok(()) => {
                             if !env.is_recall() && !env.is_typing() {
@@ -487,7 +508,7 @@ impl AppState {
                     }
                 });
                 if let Ok(report) = report {
-                    if report.sent > 0 || report.failed > 0 {
+                    if report.sent > 0 || report.failed > 0 || report.throttled > 0 {
                         let pending = outbox.pending_count().unwrap_or(0);
                         let _ = app.emit(
                             "im-outbox",
@@ -495,6 +516,7 @@ impl AppState {
                                 "sent": report.sent,
                                 "retrying": report.retrying,
                                 "failed": report.failed,
+                                "throttled": report.throttled,
                                 "pending": pending,
                             }),
                         );
