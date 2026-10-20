@@ -7,9 +7,11 @@
 //!   a local file; every later connection must present the same certificate.
 //!   A man-in-the-middle that appears *before* the first connection is not
 //!   detected (that is what TOFU means), but one that appears *after* is.
-//! * [`connect_insecure`] — skip-verify, for the lab only. Callers must gate
-//!   it behind an explicit `--insecure-lab` switch; it exists so examples and
-//!   multi-hub test meshes with throwaway certificates keep working.
+//! * `connect_insecure` — skip-verify, **crate-private and test-only**. It is
+//!   not exported: a public skip-verify entry point is a foot-gun that every
+//!   caller eventually reaches for. Production code goes through
+//!   [`connect_tofu`] (or `Client::connect_verified`), which pins the leaf
+//!   certificate.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
