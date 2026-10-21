@@ -1,8 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 联网权限。**必须写在 main 里**：Flutter 模板只在
+         `src/debug/AndroidManifest.xml` 加了它（给 hot reload 用），所以 debug 包
+         能联网、release 包装上就废——症状是
+         `Connect error: Permission denied (os error 13)`，
+         看起来像服务端没起，其实是根本没有联网权限。2026-10-21 真机抓到的。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="wxlike_mobile"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -30,6 +38,12 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- `usesCleartextTraffic="true"` 是**内部测试的临时放行**：Android 9+
+             默认禁止明文 HTTP，而开发服务端就是 http://<局域网 IP>:8099。
+             上生产前必须换成 `networkSecurityConfig` 只放行自家域名（或者干脆
+             全站 HTTPS 后删掉这个属性）——记在 docs/mobile-acceptance.md 的
+             已知偏差里，不是忘了。 -->
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
