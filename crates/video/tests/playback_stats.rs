@@ -12,11 +12,16 @@ use wxlike_video::{
 };
 
 /// 手搭一个"已转码完成"的对象：`duration_ms = 3000`，完成度才算得出。
+///
+/// 目录名带进程内自增序号：只靠 `pid + 毫秒` 时，同一毫秒启动的两个并行用例会共用
+/// 一个目录，一个在写 `meta.json`、另一个在读，读到半截就是随机失败。
 fn fake_object() -> (VideoState, String) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "wxlike-video-stats-{}-{}",
+        "wxlike-video-stats-{}-{}-{}",
         std::process::id(),
-        wxlike_core::types::now_ms()
+        wxlike_core::types::now_ms(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let store = VideoStore::new(dir);
     let id = "d".repeat(64);

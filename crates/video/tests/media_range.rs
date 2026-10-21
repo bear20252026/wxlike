@@ -17,11 +17,18 @@ fn known_bytes() -> Vec<u8> {
 }
 
 /// 手搭一个"已经转码完成"的对象：`meta.json` + `play.mp4` + `thumb.png`。
+///
+/// 目录名必须**每个用例都不同**：只靠 `pid + 毫秒` 时，同一毫秒启动的两个并行用例
+/// 会共用一个目录，`std::fs::write` 先截断后写入的窗口里另一个用例正好在读，
+/// 就会看到 0 字节的文件（实测在 Linux 上表现为 `thumb.png` 返回 200 而不是 206）。
+/// 加一个进程内自增序号，这条竞态就没有了。
 fn fake_object() -> (VideoState, String) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "wxlike-video-range-{}-{}",
+        "wxlike-video-range-{}-{}-{}",
         std::process::id(),
-        wxlike_core::types::now_ms()
+        wxlike_core::types::now_ms(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let store = VideoStore::new(dir);
     let id = "b".repeat(64);

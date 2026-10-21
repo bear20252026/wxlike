@@ -231,10 +231,11 @@ impl Db {
                 have.push(name?);
             }
         }
-        for (col, ddl) in [("muted", "INTEGER NOT NULL DEFAULT 0")] {
-            if !have.iter().any(|name| name == col) {
-                c.execute_batch(&format!("ALTER TABLE thread_subs ADD COLUMN {col} {ddl};"))?;
-            }
+        // 目前只有一个待补列。单元素 `for` 会被 clippy 拦（single_element_loop），
+        // 直接展开；将来要补第二列时再改成 `vec![...]` 遍历。
+        let (col, ddl) = ("muted", "INTEGER NOT NULL DEFAULT 0");
+        if !have.iter().any(|name| name == col) {
+            c.execute_batch(&format!("ALTER TABLE thread_subs ADD COLUMN {col} {ddl};"))?;
         }
         Ok(())
     }

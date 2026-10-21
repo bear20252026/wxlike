@@ -587,8 +587,8 @@ CREATE TABLE group_member_log (
 |---|---|---|
 | message-service 新建（ADR-16/17：owner_type 三态信箱/序列号/类型注册表/三通道/撤回变更事件/批量撤回） | ❌（现写扇出转过渡） | 新 crate/服务 |
 | sync-service（五层差分）/ read-service（游标+ZSET 未读，回执万人群默认关） | ⚠️ **库已有**：`crates/message` 有三态信箱、每属主序列号、`ack`/`unread`、五层 `sync_plan`；只接了 channel/wallet，direct/group 仍走 `core::Store` 扇出。缺的是接线，见 `docs/p3-mailbox.md` | 接线 + HTTP 暴露 |
-| Transport trait + WS 网关（ADR-8）/ 多设备多连接（ADR-4） | ⚠️ QUIC 紧耦合 | 网关改造 |
-| community/thread/频道权限/分组/频道级角色/话题订阅（ADR-16 支柱C） | ❌ | 新建 |
+| Transport trait + WS 网关（ADR-8）/ 多设备多连接（ADR-4） | ⚠️ **网页端 `/ws` 通道已通**（Zone A：浏览器 bincode WireFrame + HTTP 会话层）；QUIC 仍是原生端主路，多设备多连接未做 | 网关改造 |
+| community/thread/频道权限/分组/频道级角色/话题订阅（ADR-16 支柱C） | ✅ **Zone C 已合**：频道角色矩阵（四档 owner/moderator/member/guest）、话题订阅与静音、频道成员快照、翻页不重不漏；HTTP 契约见 `docs/api.md`。缺：频道分组 | 频道分组 |
 | relation 增强：拉黑/message_requests/星标/标签/共同聚合（ADR-24） | ⚠️ 基础好友✅ | 补齐 |
 | 群管理补齐：公告/禁言/审批/邀请token/慢速/@所有人校验 | ⚠️ 基础✅ | 补齐 |
 | 通知聚合+多级过滤（ADR-19 决策层）/ NATS backend / 弹幕高频 / 审计日志起步 / Meilisearch 接入 / tenant_id 建表 | ❌ | 按清单 |
@@ -606,17 +606,17 @@ CREATE TABLE group_member_log (
 
 | 项 | 现状 | 交付 |
 |---|---|---|
-| Flutter 移动端（ADR-11）+ UniFFI core 绑定 + 鸿蒙 Flutter-OH | ❌ | Android/iOS/鸿蒙 |
-| 直播频道（ADR-13：Xiu ingest + 播放 + 信令独立通道） | ❌ | media-service 扩展 |
+| Flutter 移动端（ADR-11）+ UniFFI core 绑定 + 鸿蒙 Flutter-OH | ⚠️ **Zone B 已合**：`crates/ffi` UniFFI 绑定（Kotlin/Dart）+ Flutter 三屏 + 本地缓存；真机清单见 `docs/mobile-acceptance.md`。缺：鸿蒙、真机验收 | 鸿蒙 + 真机验收 |
+| 直播频道（ADR-13：Xiu ingest + 播放 + 信令独立通道） | ⚠️ **Zone E 已合**：推流凭据门（HMAC）+ 滚动窗口 HLS 打包 + 接入节点；RTMP 终止仍靠外部 Xiu/ffmpeg（ADR-21 明确不在进程内跑媒体服务器）。缺：OBS 实推验收、信令独立通道 | 实推验收 + 信令 |
 | 小程序 M1–M5（ADR-14：Rong→Bridge 闭环→多引擎→沙箱→后端集成） | ⚠️ container/dpage 雏形 | miniprogram-blueprint.md |
-| video-service 点播 HLS（ADR-21）/ Web 独立工程 / 多语言 / 数据导出 / 厂商推送通道 | ❌ | 按清单 |
+| video-service 点播 HLS（ADR-21）/ Web 独立工程 / 多语言 / 数据导出 / 厂商推送通道 | ⚠️ **点播与 Web 已有**：Zone E 的 Range/选流/播放统计/转码作业队列；Zone A 的 Web 独立包与 `/app` 托管。缺：多语言、数据导出、厂商推送 | 多语言 + 导出 + 推送 |
 
 ### P6 发布工程 + 规模（2–4 周）
 
 | 项 | 现状 | 交付 |
 |---|---|---|
 | 安装包/bundle · release CI · TLS 反代 · TURN/FCM 部署 | ⚠️ **原生部署已可用**（macOS launchd / Linux systemd / Docker，见 `deploy/`）；安装包、TLS 反代、FCM 未做 | 发布链 |
-| adminx 管理后台（RBAC/MFA/审计检索/工单/看板） | ❌ | 运营面板 |
+| adminx 管理后台（RBAC/MFA/审计检索/工单/看板） | ✅ **Zone D 已合**：只读面 + RBAC + MFA + 审计检索 + 工单，独立二进制 `wxlike-admin`；`WXLIKE_ADMIN_TOKEN` 已接到平台（未设 = 管理面关闭）。缺：双人复核、看板 | 双人复核 |
 | PG 迁移+分片 · 存储加密 · Bot+开放 API/Webhook · SSO 预留 · 无障碍 · k8s · 备份 · SLO | ❌ | 规模化 |
 
 ### P6+ 远期轨道
@@ -627,6 +627,19 @@ recommendation-service（双塔+Faiss+Wide&Deep）· feed-service/status-service
 
 ## 第十四部分：执行状态总结
 
-**已收敛**：引擎层 254 测试全绿在 main；架构蓝图 ADR-1~24、十四部分、九大不变式、P1–P6+ 详细路线表；四份专项文档（对照/差距/总蓝图/小程序）。
+**2026-10-20 晚（五条轨道合并后）**：22 个 crate、71,206 行 Rust、7,113 行 TS/Dart、
+737 个测试函数（`cargo test --workspace` 实测 770 passed / 0 failed / 9 ignored）；
+CI 五关全绿。P3 读扩散闭环（顺序/未读/同步/成员以信箱为准）、命令面 18/18、
+Mars 五项网络策略、两轮安全审计整改全部完成；Zone A/B/C/D/E 五条并行轨道已合入。
+
+**下一步的四个真缺口**（都是"接线"不是"重写"）：
+1. 视频回调落平台：`POST /api/video/callback`（platform 路由 + cmd catalog 一条）；
+2. 视频能力进命令面：`video.select/stats/job.create/job.retry/view.report` 五条
+   （HTTP 面已可用，agent 侧还看不见）；
+3. 朋友圈的"赞/评论通知"与"按人可见（部分可见/不给谁看）"——见 `docs/wechat-parity-matrix.md`；
+4. 多设备多连接（ADR-4）与频道分组。
+
+**已收敛**：架构蓝图 ADR-1~24、十四部分、九大不变式、P1–P6+ 详细路线表；
+专项文档（对照/差距/总蓝图/小程序/并行轨道/任务分工/AI 命令面/审计/网络评估）。
 **无阻塞**：P1 清单完全在已有范围内（E2EE 接线/五件套/历史加载/回执 UI），不需要任何新决策。
-**待拍板**：第十二部分 Q1–Q8（其中 Q1/Q2 影响读扩散实现方式，建议 P3 开工前确认；其余不阻塞 P1/P2）。
+**待拍板**：第十二部分 Q1–Q8 已拍板；新增待定只有"双人复核要不要现在做"（adminx 留了接法）。

@@ -93,10 +93,29 @@ Cargo.lock                      # 各轨道都会改，合并时以 main 为准�
 4. 绿了才 push（一次 CI）；
 5. 冲突时以 main 的语义为准，轨道的改动**重做**而不是硬合。
 
-## 六、进度快照（2026-10-20）
+## 六、进度快照
 
-- 规模：20 个 crate、50,081 行 Rust、602 个测试、CI 五关（macos/linux/windows/lint/doc）。
-- 加权进度约 **43%**（P1 90% / P2 75% / P3 50% / P4 65% / P5 15% / P6 25%，
+### 2026-10-20（五条轨道合并后）
+
+- 规模：**22 个 crate、71,206 行 Rust、7,113 行 TS/Dart、737 个测试**，
+  CI 五关（macos / linux / windows / lint / doc）。
+- 五条轨道全部合入 main（`a6a6d09`）：Zone A 网页端、Zone B 移动端（UniFFI + Flutter）、
+  Zone C 社群层、Zone D adminx、Zone E 点播/直播。
+- 合并实测：`cargo test --workspace` **770 passed / 0 failed / 9 ignored**；
+  `clippy --workspace --all-targets -D warnings` 干净；`tsc --noEmit` 干净。
+- **集成期抓到两处 git 看不见的语义冲突**（这是并行开发的真实代价，记下来）：
+  1. main 给 `SendFailure` 加了 `throttled` 字段，Zone B 的 FFI 侧仍用字面量构造 →
+     编译失败。改法不是补一个 `throttled: false`，而是改用 `retryable()/permanent()`
+     构造器——下次再加字段，所有调用点自动跟着走。
+  2. `PlatformOptions.admin_token` 从来没有被 `server/src/lib.rs` 接上环境变量，
+     所以 `/api/admin/*` 在生产里恒 403（adminx 自己的冒烟测试照出了这条）。
+     现在按 `WXLIKE_ADMIN_TOKEN` 接线，未设置 = 管理面关闭。
+- 加权进度约 **58%**（P1 90% / P2 80% / P3 75% / P4 65% / P5 45% / P6 35%，
   权重取蓝图工期）。
-- 本轮已闭环：Mars 的保活、发送队列、自适应心跳、网络诊断；
+
+### 2026-10-20（轨道开工前，留作对照）
+
+- 规模：20 个 crate、50,081 行 Rust、602 个测试。
+- 加权进度约 **43%**（P1 90% / P2 75% / P3 50% / P4 65% / P5 15% / P6 25%）。
+- 当时已闭环：Mars 的保活、发送队列、自适应心跳、网络诊断；
   命令面 18/18 + MCP + 审计；P3 信箱接线（顺序/未读/同步/成员）。
