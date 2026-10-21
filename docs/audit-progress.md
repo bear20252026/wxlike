@@ -20,8 +20,11 @@
 | #14 | P1 | ⚠️ 一半 | `12bd86c` | Range 不再读整个对象；**下载鉴权未做**（需签名 URL） |
 | #19 | P2 | ⚠️ 一半 | `b65057d` | 限流来源只认真实 peer；**算术 captcha 未换** |
 | #21 | P1 | ✅ 完整 | `69c4d4d` | 桌面锁文件同步 TLS 修复；纠正"必须升 ureq 3"的错误判断 |
+| #5 | P1 | ✅ 完整 | `cc0a516` | 已启用 2FA 后重新 enroll 必须先证明身份（当前码或密码） |
+| #16 | P1 | ✅ 完整 | `47812b2` | compose 的 nats 缩进错 + 缺启动凭据；实测 `up` 后 health 通过 |
+| #18 | P2 | ⚠️ 大部分 | `8573b24` | Web（tsc + bincode 自测）与 Flutter（analyze + test）进 CI；**Tauri 未接** |
 
-合计：**4 条完整、3 条部分**。
+合计：**6 条完整、4 条部分**。
 
 ### 逐条说明
 
@@ -64,7 +67,6 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 
 | issue | 严重度 | 为什么没做 | 需要什么 |
 |---|---|---|---|
-| #5 | P1 | 修它会改 `/api/2fa/enable` 的**请求契约**（已启用时要求旧 TOTP 或密码），UI 的 2FA 设置页要同步改 | 改 handler + body 结构 + UI，约半天 |
 | #7 | P1 | 视频入口匿名：要认证 + 所有权 + 配额 + 有界队列，涉及 `video` crate 与三端调用 | 给 `VideoStore` 加 owner，`/api/video*` 挂 Authed，加并发/磁盘预算 |
 | #8 | P1 | `callback_url` SSRF：要做目标 allowlist + DNS/IP 校验 + 禁重定向 | 新增 URL 校验模块 + 出口隔离，需网络层配合 |
 | #9 | P1 | 跨节点确认不以投递成功为条件：要 durable inbox + 两阶段确认 | 改 `mq_hub` 消费路径，影响面大 |
@@ -72,11 +74,33 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 | #11 | P1 | 去重先于持久化：要"消息 + 投递任务"同一事务 | 改 `handle_inbound` 的顺序与失败恢复 |
 | #13 | P1 | 空 `to` 广播 / 伪造 Notice：要收紧 `policy` 并给服务端内部事件开独立入口 | 改 `DeliveryPolicy` + 新增内部 publish 通道 |
 | #15 | P1 | 秘密聊天闭环：设置没接入发送/转发、TTL 不落实、密钥只在进程内 | 大工程（持久化 + 多端 + 搜索一致性），也是 #4 往返失败的上游 |
-| #16 | P1 | `docker-compose.yml` 的 nats 缩进错 + 没传 secret | 小改动，但**本机没有 docker，改完无法验证**——不做假的"已修" |
 | #17 | P1 | 后半（同步 FFI 阻塞主 isolate）：要把 ureq 调用搬进后台 isolate | 改 `service.dart` + 生成的绑定调用方式 |
-| #18 | P2 | CI 覆盖面：Tauri 独立 workspace / Web tsc / Flutter test 仍不在 CI | 三个 job，各需 3–8 分钟；Android 关已在本轮加过 |
+| #18 剩余 | P2 | 只剩 Tauri：它在独立 workspace，Linux 上要 `libwebkit2gtk-4.1-dev` 等系统依赖 | 一个 job + apt 依赖，失败模式是"apt 版本不对"而非代码 |
 | #20 | P2 | Redis Stream 无保留策略、路由无租约 | 改 `mq` crate 的 XADD/XACK 与 `RedisRoutes` |
 | #22 | P2 | ureq 3 迁移：7 张卡、三处 API 破坏性变更 | 已有任务单 `docs/task-ureq3-migration.md`，需 2–3 人日 |
+
+## 二点五、本轮补的三条（2026-10-21 下半场）
+
+**#5（完整）**——`confirm_identity(user_id, code, password)`：当前第二因子
+或密码任一通过；`/api/2fa/enable` 在**已启用**时先过它，否则 403 + 审计。
+首次 enroll 不需要凭据（那时没什么可保护的）。
+
+**#16（完整）**——`nats` 原来被缩进在 `volumes:` 下面，`docker compose config`
+直接报错，"一条命令启动"从未成立；server 也没拿到启动凭据。修完实测：
+
+```
+docker compose config                      # 通过
+docker compose up -d --build               # redis / s3 / server 全 healthy
+curl :8099/health                          # {"ok":true,...}
+docker compose --profile nats up -d nats   # nats 起来
+```
+
+顺带补了 `.dockerignore`（之前没有，build context 会包含整个 `target/`）。
+
+**#18（大部分）**——新增 `web` 与 `flutter` 两个 CI job。web 那关特别重要：
+`ui/src/web/wire.ts` 是**手写的 bincode**，变体序号必须与 Rust 的
+`WireFrame` 顺序一致——#3 改了顺序，而它的 fixtures 在此之前从没在 CI 跑过。
+两个 job 第一次跑就绿。Tauri 没接（要 apt 系统依赖，失败模式与代码无关）。
 
 ## 三、为什么没有"全部完成"
 
