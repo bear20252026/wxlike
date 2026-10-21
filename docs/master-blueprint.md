@@ -632,10 +632,13 @@ recommendation-service（双塔+Faiss+Wide&Deep）· feed-service/status-service
 CI 五关全绿。P3 读扩散闭环（顺序/未读/同步/成员以信箱为准）、命令面 18/18、
 Mars 五项网络策略、两轮安全审计整改全部完成；Zone A/B/C/D/E 五条并行轨道已合入。
 
-**下一步的四个真缺口**（都是"接线"不是"重写"）：
-1. 视频回调落平台：`POST /api/video/callback`（platform 路由 + cmd catalog 一条）；
-2. 视频能力进命令面：`video.select/stats/job.create/job.retry/view.report` 五条
-   （HTTP 面已可用，agent 侧还看不见）；
+**已闭环的两个缺口（2026-10-20 晚）**：
+1. ✅ 视频回调落平台：`POST /api/video/callback` + `GET /api/video/ref/{id}`，
+   令牌未配置即关闭，外部 URL 一律 422（`crates/platform/src/video_refs.rs`，6 条测试）；
+2. ✅ 视频能力进命令面：`video.select / stats / job.get / job.create / job.retry /
+   view.report` 六条，catalog 共 26 条，agent 与人类看到同一份能力。
+
+**下一步的两个真缺口**：
 3. 朋友圈的"赞/评论通知"与"按人可见（部分可见/不给谁看）"——见 `docs/wechat-parity-matrix.md`；
 4. 多设备多连接（ADR-4）与频道分组。
 
