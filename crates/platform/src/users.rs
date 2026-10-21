@@ -59,21 +59,59 @@ impl Credentials {
     }
 }
 
-/// 来源标识：优先 `x-forwarded-for` 首段，其次 `x-real-ip` / `x-client-id`。
+/// 可选的连接对端地址。
 ///
-/// 没有来源头时返回 `None`——**不伪造一个 `"local"` 键**：那会把所有直连
-/// 客户端塞进同一个限流桶（测试/开发环境里 50 个账号互相连坐）。调用方对
-/// `None` 的处理是退化为按账号名计数，行为可预测。
-fn client_key(headers: &axum::http::HeaderMap) -> Option<String> {
-    for name in ["x-forwarded-for", "x-real-ip", "x-client-id"] {
-        if let Some(v) = headers.get(name).and_then(|v| v.to_str().ok()) {
+/// `axum::extract::ConnectInfo<T>` 在缺失时直接 500，而测试里用
+/// `Router::oneshot` 调用根本没有 connect info。这里自己包一层：有就取，
+/// 没有就是 `None`（调用方退化为按账号名计数）。
+struct PeerAddr(Option<std::net::SocketAddr>);
+
+impl<S> axum::extract::FromRequestParts<S> for PeerAddr
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        Ok(PeerAddr(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0),
+        ))
+    }
+}
+
+/// 来源标识：**默认只认真实 peer 地址**（issue #19）。
+///
+/// 以前是无条件读 `x-forwarded-for` / `x-real-ip` / `x-client-id`。这三个头
+/// 客户端都能自己填，于是"换一个头值 = 换一个限流桶"——注册与登录失败计数
+/// 形同虚设（换号 + 换头可以无限撞库）。
+///
+/// 现在的规则：
+/// - `trust_proxy == false`（默认）：只看连接的对端 IP，转发头**完全不读**；
+/// - `trust_proxy == true`：说明部署在受信反向代理后面，才采信
+///   `x-forwarded-for` 首段（`x-client-id` 已删除：它不是标准头，没有可信来源）。
+///
+/// 没有 peer 信息时返回 `None`——**不伪造一个 `"local"` 键**：那会把所有直连
+/// 客户端塞进同一个桶。调用方对 `None` 的处理是退化为按账号名计数。
+fn client_key(
+    peer: Option<std::net::SocketAddr>,
+    headers: &axum::http::HeaderMap,
+    trust_proxy: bool,
+) -> Option<String> {
+    if trust_proxy {
+        if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             let first = v.split(',').next().unwrap_or("").trim();
             if !first.is_empty() {
                 return Some(first.to_string());
             }
         }
     }
-    None
+    peer.map(|addr| addr.ip().to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -268,12 +306,13 @@ impl Platform {
 
 async fn register(
     State(platform): State<PlatformState>,
+    PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,
     ApiJson(req): ApiJson<Credentials>,
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
     // P4 风控：注册按来源限流；命中挑战则必须过人机校验（428 让客户端取题）。
-    // 没有来源头（直连/内网）时按账号名计数——否则所有直连客户端共用一个桶。
-    let client = client_key(&headers);
+    // 来源默认取真实 peer（issue #19），没有时按账号名计数。
+    let client = client_key(peer, &headers, platform.options().trust_proxy);
     let register_key = client
         .clone()
         .unwrap_or_else(|| format!("name:{}", req.name));
@@ -323,13 +362,14 @@ async fn totp_disable(
 
 async fn login(
     State(platform): State<PlatformState>,
+    PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,
     ApiJson(req): ApiJson<Credentials>,
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
     // 失败计数按账号 + 来源双键：只按账号会被"换号撞库"绕过，只按来源会
     // 让同一 NAT 后的正常用户互相连坐——两个键都记，取更严的那个。
     let account_key = format!("login:{}", req.name);
-    let client = client_key(&headers);
+    let client = client_key(peer, &headers, platform.options().trust_proxy);
     let mut checks = vec![(wxlike_risk::Action::Login, account_key.as_str())];
     if let Some(c) = client.as_deref() {
         checks.push((wxlike_risk::Action::Login, c));
@@ -348,11 +388,22 @@ async fn login(
             "invalid credentials",
         ));
     };
+    // **全部因子通过之后才清空失败计数**（issue #6）。
+    //
+    // 原来这里先 `risk_clear` 再校验 TOTP：知道密码的人可以拿错误的 6 位码
+    // 无限尝试，每次失败都把计数清零——等于 TOTP 没有失败限流。
+    if let Err(err) = platform.totp_check_login(&user_id, req.totp_code.as_deref()) {
+        platform.risk_record(wxlike_risk::Action::Login, &account_key)?;
+        if let Some(c) = client.as_deref() {
+            platform.risk_record(wxlike_risk::Action::Login, c)?;
+        }
+        platform.audit(&req.name, "user.login", "", "totp_failed");
+        return Err(err.into());
+    }
     platform.risk_clear(wxlike_risk::Action::Login, &account_key)?;
     if let Some(c) = client.as_deref() {
         platform.risk_clear(wxlike_risk::Action::Login, c)?;
     }
-    platform.totp_check_login(&user_id, req.totp_code.as_deref())?;
     let token = platform.create_session_for_device(
         &user_id,
         platform.options().session_ttl_ms,

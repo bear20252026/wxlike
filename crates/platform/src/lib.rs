@@ -128,6 +128,11 @@ pub struct PlatformOptions {
     /// 回调会写"这条视频现在能播了"的引用，敞开等于让人往你的消息里塞任意
     /// 播放地址；所以和 `admin_token` 一样：**没配就是关**，不是"没配就放行"。
     pub video_callback_token: Option<String>,
+    /// 部署在**受信反向代理**后面时为 `true`（issue #19）。
+    ///
+    /// 默认 `false`：限流的"来源"只取连接的对端 IP，不读 `x-forwarded-for`。
+    /// 直连部署下那个头是客户端随便填的，信它等于把限流桶的钥匙交出去。
+    pub trust_proxy: bool,
 }
 
 impl Default for PlatformOptions {
@@ -142,6 +147,7 @@ impl Default for PlatformOptions {
             // 空 = 未配置。装配层必须填（随机或来自 env），不允许存在"公开默认值"。
             live_ingest_secret: String::new(),
             video_callback_token: None,
+            trust_proxy: false,
         }
     }
 }

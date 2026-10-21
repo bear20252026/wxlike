@@ -412,9 +412,14 @@ async fn serve_http(
             }
             std::future::pending::<()>().await;
         };
-        if let Err(err) = axum::serve(listener, app)
-            .with_graceful_shutdown(stop)
-            .await
+        // `into_make_service_with_connect_info` 让 handler 能拿到**真实对端地址**：
+        // 限流的来源默认用它，而不是客户端可伪造的 `x-forwarded-for`（issue #19）。
+        if let Err(err) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(stop)
+        .await
         {
             eprintln!("[wxlike-server] http serve failed: {err}");
         }

@@ -180,9 +180,51 @@ fn captcha_is_single_use_and_wrong_answer_rejected() {
     assert!(p.solve_captcha(&id, &answer).is_err(), "同一题不能二次使用");
 }
 
+/// issue #19：**默认部署下转发头无效**。
+///
+/// 直连时 `x-forwarded-for` 是客户端自己填的，信它等于"换个头 = 换个限流桶"，
+/// 注册/登录失败计数形同虚设。这里用同一个 peer 地址、每次换一个头值：
+/// 桶必须还是同一个（第 3 次照样 428）。
+#[tokio::test]
+async fn forwarded_headers_cannot_reset_the_register_bucket() {
+    let state = platform(); // trust_proxy 默认 false
+    let router = app(state.clone());
+
+    let peer: std::net::SocketAddr = "10.9.9.9:5555".parse().unwrap();
+    for (i, name) in ["v1", "v2", "v3"].iter().enumerate() {
+        let mut r = req_with(
+            "POST",
+            "/api/register",
+            Some(json!({"name": name, "password": "pw"})),
+            // 每次都换一个头：如果它被采信，就会换到一个新桶
+            &[("x-forwarded-for", &format!("203.0.113.{i}"))],
+        );
+        r.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        let (st, body) = call(&router, r).await;
+        if i < 2 {
+            assert_eq!(st, StatusCode::OK, "{name}: {body}");
+        } else {
+            assert_eq!(
+                st,
+                StatusCode::PRECONDITION_REQUIRED,
+                "换转发头不该换到新桶（来源应当只认 peer）：{body}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn register_challenge_requires_captcha() {
-    let state = platform();
+    // 这条验证的是**受信代理**部署下的行为：`x-forwarded-for` 就是来源。
+    // 默认（trust_proxy=false）下这个头根本不读——见下面那条测试（issue #19）。
+    let state = wxlike_platform::Platform::in_memory_with(wxlike_platform::PlatformOptions {
+        session_ttl_ms: 60_000,
+        pbkdf2_rounds: 1_000,
+        trust_proxy: true,
+        ..Default::default()
+    })
+    .unwrap()
+    .shared();
     let router = app(state.clone());
 
     // 默认阈值：同来源第 3 次注册起要求人机校验

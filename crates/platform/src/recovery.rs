@@ -330,15 +330,19 @@ async fn reset(
     State(platform): State<PlatformState>,
     ApiJson(body): ApiJson<ResetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.risk_gate(
-        wxlike_risk::Action::Login,
-        &format!("recovery:{}", body.name),
-        None,
-    )?;
-    platform.reset_password_with_code(&body.name, &body.recovery_code, &body.new_password)?;
-    platform.risk_record(
-        wxlike_risk::Action::Login,
-        &format!("recovery:{}", body.name),
-    )?;
-    Ok(StatusCode::NO_CONTENT)
+    let key = format!("recovery:{}", body.name);
+    platform.risk_gate(wxlike_risk::Action::Login, &key, None)?;
+    // **失败要计数、成功要清空**（issue #19）。原来是反的：`?` 让失败直接返回
+    // 而不记录，成功却调了 `risk_record`——于是无效恢复码可以无限猜，
+    // 而真的重置成功反而给这个账号攒了一次"失败"。
+    match platform.reset_password_with_code(&body.name, &body.recovery_code, &body.new_password) {
+        Ok(_) => {
+            platform.risk_clear(wxlike_risk::Action::Login, &key)?;
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(err) => {
+            platform.risk_record(wxlike_risk::Action::Login, &key)?;
+            Err(err.into())
+        }
+    }
 }
