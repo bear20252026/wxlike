@@ -45,6 +45,7 @@ mod sessions;
 mod trust;
 mod users;
 mod validate;
+mod video_refs;
 mod wallet;
 
 use std::sync::Arc;
@@ -121,6 +122,11 @@ pub struct PlatformOptions {
     /// 直播推流凭据的 HMAC 密钥。默认值仅供开发；部署必须用
     /// `WXLIKE_LIVE_SECRET` 覆盖（ingest 节点与平台共享同一密钥）。
     pub live_ingest_secret: String,
+    /// 视频转码回调的令牌（`x-wxlike-video-token`）。`None` = 回调接口关闭。
+    ///
+    /// 回调会写"这条视频现在能播了"的引用，敞开等于让人往你的消息里塞任意
+    /// 播放地址；所以和 `admin_token` 一样：**没配就是关**，不是"没配就放行"。
+    pub video_callback_token: Option<String>,
 }
 
 impl Default for PlatformOptions {
@@ -134,6 +140,7 @@ impl Default for PlatformOptions {
             moderation_mode: wxlike_moderation::Mode::PreReview,
             // 空 = 未配置。装配层必须填（随机或来自 env），不允许存在"公开默认值"。
             live_ingest_secret: String::new(),
+            video_callback_token: None,
         }
     }
 }
@@ -430,6 +437,7 @@ impl Platform {
             .merge(live::routes())
             .merge(call::routes())
             .merge(perms::routes())
+            .merge(video_refs::routes())
             .route(
                 "/api/audit/self",
                 get(

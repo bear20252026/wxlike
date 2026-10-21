@@ -158,6 +158,24 @@ impl Db {
                 joined_at  INTEGER NOT NULL,
                 PRIMARY KEY (session_id, user_id)
             );
+
+            -- 视频转码回调落下的引用（见 `video_refs.rs`）：只存"能播了"这件事，
+            -- 不存字节。`video_id` 是主键，重试回调覆盖同一行。
+            CREATE TABLE IF NOT EXISTS video_refs (
+                video_id      TEXT PRIMARY KEY,
+                job_id        TEXT NOT NULL,
+                state         TEXT NOT NULL,
+                playlist_url  TEXT NOT NULL DEFAULT '',
+                play_url      TEXT NOT NULL DEFAULT '',
+                thumb_url     TEXT NOT NULL DEFAULT '',
+                duration_ms   INTEGER NOT NULL DEFAULT 0,
+                width         INTEGER NOT NULL DEFAULT 0,
+                height        INTEGER NOT NULL DEFAULT 0,
+                renditions    TEXT NOT NULL DEFAULT '[]',
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_video_refs_job ON video_refs(job_id);
             "#,
         )?;
 

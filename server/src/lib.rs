@@ -120,6 +120,11 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
+    // 视频转码回调的令牌：未配置 = 回调接口关闭（平台侧已是这个语义）。
+    platform_options.video_callback_token = std::env::var("WXLIKE_VIDEO_CALLBACK_TOKEN")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let platform = Platform::open_with(opts.db_path.as_deref(), platform_options)?.shared();
 
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);

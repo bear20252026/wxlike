@@ -143,7 +143,7 @@ impl Executor {
                 // 但能力等级是 Write——没开写权限时根本走不到这里。
                 let path = str_param(params, "path")?;
                 let bytes =
-                    std::fs::read(&path).map_err(|e| format!("读不到本地文件 {path}: {e}"))?;
+                    std::fs::read(path).map_err(|e| format!("读不到本地文件 {path}: {e}"))?;
                 let callback = params.get("callback_url").and_then(|v| v.as_str());
                 http.post_video_job(&bytes, callback)
             }
