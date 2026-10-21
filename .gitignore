@@ -1,5 +1,7 @@
 /target
 /target-199
+# 桌面独立工程（ui/src-tauri）的检查用构建目录
+/target-tauri
 # cargo-mutants 的产物（变异体清单与日志，不进仓库）
 /mutants.out*/
 server.log

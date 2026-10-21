@@ -59,6 +59,11 @@ yanked = "warn"
 # 而不是把整个检查关掉。
 # 四条"无人维护"（unmaintained）公告：不是漏洞，但也没有修复版本可升。
 # 登记在这里是**知情接受**，不是把检查关掉——新出现的公告仍会红。
+# 曾经挂过 RUSTSEC-2026-0381（webpki-roots 的 emSign 根证书），现已删除：
+# `webpki-roots 0.26.11` 本身不含根证书库、转导出 `webpki-root-certs 1.x`，
+# 公告把 `=0.26.11` 列为 unaffected；根图的 1.x 已到 1.0.10。
+# 桌面独立工程（ui/src-tauri）原来还停在 1.0.9 / rustls-webpki 0.103.15，
+# 已单独 cargo update 修掉。**别再把这条豁免加回来**——先看 issue #21。
 ignore = [
     # bincode 1.x 停止维护；wire 格式迁到 bincode 2 是独立任务（跨端要同步改）
     "RUSTSEC-2025-0141",
@@ -68,12 +73,6 @@ ignore = [
     "RUSTSEC-2024-0384",
     # paste，经 boa_string（小程序容器的 JS 引擎）传递引入
     "RUSTSEC-2024-0436",
-    # webpki-roots 0.26.11 的 emSign 根证书问题：这条**修不了**，只能等。
-    # 它由 `ureq 2.x` 锁死（ureq 3 才换到 webpki-roots 1.x），而 ureq 3 是破坏性
-    # API 变更，要改 admin/client/video 三处调用。风险面也有限：ureq 只用于
-    # **我们自己对自家服务**发 HTTPS 请求，不是浏览器式的任意站点访问。
-    # 迁移 ureq 3 已记进待办，不在这里假装已解决。
-    "RUSTSEC-2026-0381",
 ]
 
 [sources]
