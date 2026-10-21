@@ -97,3 +97,77 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc
         run: cargo doc --no-deps --workspace
+
+  # Android 出包：**这一关要回答的是"新检出能不能出 APK"**。
+  #
+  # 之前没有任何 CI 覆盖移动端，所以"apps/mobile 能编出包"只在我本机成立过；
+  # 生成物（Dart 绑定、.so）都不入库，任何一次 Rust 改动都可能让移动端静默坏掉，
+  # 而 CI 全绿。这个 job 就是把那条路径钉住。
+  #
+  # 成本：约 10–14 分钟（首次 gradle 下载更久）。缓存了 cargo target、gradle、
+  # Flutter SDK。嫌慢可以加 `paths:` 过滤，但那就等于放弃"每次都能出包"的保证。
+  android:
+    name: android (apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 交叉编译到 arm64（真机；x86_64 只有模拟器要，CI 不编）
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-arm64
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.0
+          channel: stable
+          cache: true
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('apps/mobile/android/**/*.gradle*', 'apps/mobile/android/gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Android SDK 组件
+        # `flutter.ndkVersion` 是 28.2.13676358（Flutter 3.47 的默认值）。
+        # runner 预装的 NDK 比它旧，AGP 会直接报 "NDK not configured"，
+        # 所以显式装一次——版本写死在这里，别指望"runner 上应该会有"。
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "ndk;28.2.13676358" > /dev/null
+
+      - name: 生成 UniFFI 绑定
+        # Dart 绑定不入库（`apps/mobile/lib/src/rust/`），少了它 flutter analyze
+        # 会报上百个"类型不存在"。这个脚本先 build cdylib 再从产物读接口形状。
+        run: bash crates/ffi/regenerate.sh
+
+      - name: 交叉编译 libwxlike_ffi.so
+        run: |
+          cargo ndk -t arm64-v8a -o apps/mobile/android/app/src/main/jniLibs \
+            build -p wxlike-ffi --release
+          # release 产物带符号表，strip 掉能少一半；apk 体积直接受影响
+          STRIP=$(find "$ANDROID_HOME/ndk" -name 'llvm-strip' -type f | sort | tail -1)
+          "$STRIP" --strip-unneeded apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libwxlike_ffi.so
+
+      - name: 构建 APK
+        run: |
+          cd apps/mobile
+          flutter pub get
+          # release 用 debug 签名（模板默认），CI 只验证"能出包"，不发布
+          flutter build apk --release --target-platform android-arm64
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wxlike-android-apk
+          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
