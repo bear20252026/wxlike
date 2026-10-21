@@ -1,0 +1,236 @@
+//! 写操作转发（D3 的落地方式）。
+//!
+//! adminx **不直接写平台库**：任何会改数据的动作都变成一次对平台管理端点的
+//! HTTP 调用（`x-admin-token` + `x-admin-actor`）。这样：
+//!
+//! * 平台进程里的内存态（审核模式、风控窗口、群成员缓存、通话房间）仍然只有
+//!   一个持有者——绕过它改库会出现"后台显示改了、服务其实没改"的静默降级；
+//! * 业务规则（工单能不能这么流转、放行后要不要投递）只有一份实现；
+//! * 谁做的：`x-admin-actor` 带的是**验过 MFA 的后台账号名**，平台的审计日志
+//!   因此能落到具体的人，而不是一个匿名 "admin"。
+//!
+//! `ureq` 是阻塞客户端，所以调用放在 `spawn_blocking` 里：一次 10 秒的网络
+//! 超时不该占住 tokio 的工作线程。
+
+use std::time::Duration;
+
+use crate::error::{AdminError, Result};
+
+/// 单次转发上限。平台是本机进程，超过这个时间就是它卡住了，不是网络抖。
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 目标 id 的形状：平台生成的都是 hex，群/会话 id 允许 `-_`。
+///
+/// 为什么要验：`{id}` 会被拼进转发 URL 的路径段。axum 的 `Path<String>` 会做
+///百分号解码，所以 `/api/op/reports/%2F..%2Fevil` 里的 `id` 是真字符串 `/../evil`。
+/// 不验就等于把后台变成 SSRF/路径穿越的跳板。
+pub fn check_target(id: &str) -> Result<String> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 64 {
+        return Err(AdminError::bad_input("目标 id 长度需在 1..=64"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(AdminError::bad_input(format!(
+            "目标 id {id:?} 形状不对：只允许 ASCII 字母数字与 - _ .（这是路径段，不能含 / 或编码字符）"
+        )));
+    }
+    Ok(id.to_string())
+}
+
+/// 把目录里的路径模板换成真实路径。
+pub fn render_path(template: &str, target: Option<&str>) -> Result<String> {
+    match (template.contains("{id}"), target) {
+        (true, Some(t)) => Ok(template.replace("{id}", &check_target(t)?)),
+        (true, None) => Err(AdminError::bad_input(format!(
+            "操作需要目标 id，路径模板 {template} 里的 {{id}} 没得替换"
+        ))),
+        (false, _) => Ok(template.to_string()),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Upstream {
+    base: String,
+    token: String,
+    timeout: Duration,
+}
+
+/// 一次转发的结论。
+#[derive(Clone, Debug)]
+pub struct Reply {
+    pub status: u16,
+    pub body: serde_json::Value,
+}
+
+impl Reply {
+    /// 平台返回的 `error` 字段（用于留痕与给运维的提示）。
+    pub fn error_message(&self) -> Option<&str> {
+        self.body.get("error").and_then(|v| v.as_str())
+    }
+}
+
+impl Upstream {
+    pub fn new(base: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            base: base.into().trim_end_matches('/').to_string(),
+            token: token.into(),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// 发一次管理请求。非 2xx 一律转成 [`AdminError::Upstream`]，
+    /// 由调用方决定"留痕写什么状态"（写失败也必须留痕）。
+    pub async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        actor: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<Reply> {
+        let this = self.clone();
+        let method = method.to_string();
+        let path = path.to_string();
+        let actor = actor.to_string();
+        // 阻塞 I/O 挪到专用线程：10 秒超时不能占住工作线程
+        tokio::task::spawn_blocking(move || this.call_blocking(&method, &path, &actor, body))
+            .await
+            .map_err(|e| AdminError::upstream(0, format!("转发任务被终止: {e}")))?
+    }
+
+    fn call_blocking(
+        &self,
+        method: &str,
+        path: &str,
+        actor: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<Reply> {
+        let url = format!("{}{}", self.base, path);
+        let mut req = match method {
+            "POST" => ureq::post(&url),
+            "PUT" => ureq::put(&url),
+            other => {
+                return Err(AdminError::bad_input(format!(
+                    "目录里出现了不支持的方法 {other}"
+                )))
+            }
+        };
+        req = req
+            .timeout(self.timeout)
+            .set("x-admin-token", &self.token)
+            .set("x-admin-actor", actor)
+            .set("content-type", "application/json");
+        let sent = match body {
+            Some(v) => req.send_json(v),
+            None => req.call(),
+        };
+        match sent {
+            Ok(resp) => {
+                let (status, value) = read_json(resp);
+                Ok(Reply {
+                    status,
+                    body: value,
+                })
+            }
+            // 非 2xx：ureq 给的是 Status 错误，但平台已经把结论写在 body 里
+            Err(ureq::Error::Status(status, resp)) => {
+                let (code, value) = read_json(resp);
+                Err(AdminError::upstream(code, error_text(&value, status)))
+            }
+            Err(err) => Err(AdminError::upstream(0, format!("连不上平台 {url}: {err}"))),
+        }
+    }
+}
+
+/// 读响应体。**空 body（204）解出 Null，不算错误**——平台的
+/// `moderation.reject` / `moderation.mode` 就是返回 204 的。
+fn read_json(resp: ureq::Response) -> (u16, serde_json::Value) {
+    let status = resp.status();
+    let value = resp
+        .into_json::<serde_json::Value>()
+        .unwrap_or(serde_json::Value::Null);
+    (status, value)
+}
+
+/// 上游正文只在确实是 JSON 的 `error` 字段时转述，否则只说状态码——
+/// 不把平台的内部文本原样透给浏览器。
+fn error_text(body: &serde_json::Value, status: u16) -> String {
+    match body.get("error").and_then(|v| v.as_str()) {
+        Some(m) if m.len() <= 200 => m.to_string(),
+        _ => format!("HTTP {status}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_ids_are_shape_checked() {
+        assert_eq!(check_target("a1b2c3").unwrap(), "a1b2c3");
+        // 波浪号不在允许集里：直聊 id 不该出现在工单/挂起目标里，拒掉比放行安全
+        assert!(check_target("d-bob~alice").is_err());
+        assert!(check_target("").is_err());
+        assert!(check_target("/../../etc/passwd").is_err());
+        assert!(check_target("a/b").is_err());
+        assert!(check_target("a\nb").is_err());
+        assert!(check_target(&"x".repeat(65)).is_err());
+        assert_eq!(check_target("g-1_2.3").unwrap(), "g-1_2.3");
+    }
+
+    #[test]
+    fn path_template_renders_only_for_valid_targets() {
+        assert_eq!(
+            render_path("/api/admin/reports/{id}/triage", Some("abc")).unwrap(),
+            "/api/admin/reports/abc/triage"
+        );
+        assert!(render_path("/api/admin/reports/{id}/triage", None).is_err());
+        let err = render_path("/api/admin/reports/{id}/triage", Some("..%2F")).unwrap_err();
+        assert!(err.to_string().contains("形状不对"), "{err}");
+        assert_eq!(
+            render_path("/api/admin/reconcile", None).unwrap(),
+            "/api/admin/reconcile"
+        );
+    }
+
+    #[test]
+    fn base_url_is_normalised() {
+        let u = Upstream::new("http://127.0.0.1:8099/", "tok");
+        assert_eq!(u.base(), "http://127.0.0.1:8099");
+    }
+
+    #[tokio::test]
+    async fn transport_failure_is_an_upstream_error_not_a_panic() {
+        // 端口 1 上一定没有平台：必须是干净的 502 语义，不能崩也不能当成功
+        let u = Upstream::new("http://127.0.0.1:1", "tok").with_timeout(Duration::from_millis(300));
+        let err = u
+            .call("POST", "/api/admin/reconcile", "ops", None)
+            .await
+            .unwrap_err();
+        match err {
+            AdminError::Upstream { status, detail } => {
+                assert_eq!(status, 0, "连不上就没有上游状态码");
+                assert!(detail.contains("连不上平台"), "{detail}");
+            }
+            other => panic!("不该是 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_method_is_refused_before_the_socket() {
+        let u = Upstream::new("http://127.0.0.1:1", "tok");
+        let err = u.call("DELETE", "/x", "ops", None).await.unwrap_err();
+        assert!(err.to_string().contains("不支持的方法"), "{err}");
+    }
+}

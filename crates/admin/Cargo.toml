@@ -1,0 +1,37 @@
+[package]
+name = "wxlike-admin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wxlike-admin"
+path = "src/bin/wxlike_admin.rs"
+
+[dependencies]
+# 只借用平台层已经实现的凭据原语（argon2id 参数、TOTP 容差），不在这里重写一遍
+wxlike-platform = { path = "../platform" }
+# 举报工单的状态机与类型（工单看板只做展示与流转编排，规则不复制）
+wxlike-report = { path = "../report" }
+wxlike-core = { path = "../core" }
+tokio = { workspace = true }
+axum = { version = "0.8" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 写操作转发到平台管理面。ureq 不是新增第三方代码：crates/client 用的是同一个
+# 主版本，Cargo.lock 里已存在（见 THIRD-PARTY-NOTICES.md 的依赖清单）。
+ureq = { version = "2", features = ["json"] }
+# 数据目录按平台惯例，与 wxlike-server 保持同一路径解析
+dirs = "6"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# 测试里要**生成**当前动态码（平台只在库里验码，不导出造码函数）。
+# totp-rs 不是新增第三方代码：wxlike-platform 已用同一个主版本。
+totp-rs = { version = "5", default-features = false, features = ["gen_secret"] }
