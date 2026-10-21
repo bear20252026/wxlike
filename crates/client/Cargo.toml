@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+wxlike-limits = { path = "../limits" }
 # 命令目录（纯数据：id / 能力等级 / 参数说明）
 wxlike-cmd = { path = "../cmd" }
 serde = { workspace = true }

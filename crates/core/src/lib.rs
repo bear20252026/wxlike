@@ -2,7 +2,8 @@
 
 pub mod crypto;
 pub mod e2ee;
-pub mod limits;
+/// 数值约定（实现在零依赖的 `wxlike-limits`，这里只做转发）。
+pub use wxlike_limits as limits;
 pub mod msgmeta;
 pub mod outbox;
 pub mod retry;

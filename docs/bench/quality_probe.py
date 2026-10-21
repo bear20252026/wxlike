@@ -26,8 +26,8 @@ def rust_files():
             for f in fn:
                 if not f.endswith(".rs"):
                     continue
-                p = os.path.join(dp, f)
-                if "/tests/" in p.replace("\\", "/"):
+                p = os.path.join(dp, f).replace("\\", "/")
+                if "/tests/" in p:
                     continue
                 yield p
 

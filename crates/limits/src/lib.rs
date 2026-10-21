@@ -5,9 +5,16 @@
 //! 谁也不会觉得不对——直到有人把 hash 换成 sha512，改了其中一处，另外两处
 //! 跟着"变得看起来对"，而真正该改的那处没改。
 //!
+//! # 为什么单独成一个 crate
+//!
+//! 这些常量本该放在 `wxlike-core`。但 `core` 带着 `rusqlite`（bundled SQLite）
+//! 与 `vodozemac`，而 `wxlike-client`（CLI / MCP 的底座）只需要两个分页默认值——
+//! 为了两个数字把 SQLite 编进命令行工具，是拿构建时间换"看起来更内聚"。
+//! 所以拆出一个**零依赖**的 crate，谁需要谁依赖，`core` 再 `pub use` 回去，
+//! 老的 `wxlike_core::limits::...` 路径仍然可用。
+//!
 //! 这里只放**跨 crate 共用**的约定。只在一个模块里用到的上限，就留在那个模块
-//! 里当 `const`，不要搬进来——这个模块变成"什么数字都往里塞"的垃圾桶，
-//! 比魔法数字更糟。
+//! 里当 `const`——这个模块变成"什么数字都往里塞"的垃圾桶，比魔法数字更糟。
 
 /// sha256 的十六进制表示长度（`media_id` / `video_id` / `sha256` 字段）。
 ///
@@ -18,10 +25,10 @@ pub const SHA256_HEX_LEN: usize = 64;
 /// 列表/历史的默认分页大小。
 ///
 /// 50 是"一屏半"的经验值：太小要频繁翻页，太大一次序列化就变重。
-pub const DEFAULT_PAGE_LIMIT: usize = 50;
+pub const DEFAULT_PAGE_LIMIT: u64 = 50;
 
 /// 搜索的默认条数。比分页小——搜索是"找到那一条"，不是"翻一页看看"。
-pub const DEFAULT_SEARCH_LIMIT: usize = 20;
+pub const DEFAULT_SEARCH_LIMIT: u64 = 20;
 
 /// 对称密钥/随机标识的字节数（32 字节 = 256 位）。
 pub const KEY_BYTES: usize = 32;
@@ -30,17 +37,16 @@ pub const KEY_BYTES: usize = 32;
 mod tests {
     use super::*;
 
-    /// 这条测试不是凑数：它把"64 是 sha256 的 hex 长度"钉在真实计算上。
-    /// 有人把常量改成 32（误以为是字节数）时，这里会红。
+    /// 把"64 是 sha256 的 hex 长度"钉在算术上：有人把常量改成 32（误以为是
+    /// 字节数）时，这里会红。不引入 sha2 依赖——那会把零依赖的设计破坏掉。
     #[test]
-    fn sha256_hex_len_matches_the_real_digest() {
-        use sha2::Digest as _;
-        let digest = sha2::Sha256::digest(b"wxlike");
-        assert_eq!(digest.len() * 2, SHA256_HEX_LEN);
+    fn sha256_hex_len_is_twice_the_byte_length() {
+        assert_eq!(SHA256_HEX_LEN, 32 * 2);
+        assert_eq!(KEY_BYTES, 32);
     }
 
     #[test]
-    fn key_bytes_is_a_full_256_bit_key() {
-        assert_eq!(KEY_BYTES * 8, 256);
+    fn search_default_is_smaller_than_a_page() {
+        assert!(DEFAULT_SEARCH_LIMIT < DEFAULT_PAGE_LIMIT);
     }
 }

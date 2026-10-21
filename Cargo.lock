@@ -6248,6 +6248,7 @@ dependencies = [
  "sha2 0.10.9",
  "ureq",
  "wxlike-cmd",
+ "wxlike-limits",
 ]
 
 [[package]]
@@ -6289,6 +6290,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "vodozemac",
+ "wxlike-limits",
  "x25519-dalek 2.0.1",
 ]
 
@@ -6326,6 +6328,10 @@ dependencies = [
  "thiserror 2.0.21",
  "wxlike-core",
 ]
+
+[[package]]
+name = "wxlike-limits"
+version = "0.1.0"
 
 [[package]]
 name = "wxlike-mcp"

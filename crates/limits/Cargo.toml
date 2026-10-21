@@ -1,0 +1,8 @@
+[package]
+name = "wxlike-limits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# 刻意零依赖：见 src/lib.rs 顶部"为什么单独成 crate"。
+[dependencies]
