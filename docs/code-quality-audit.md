@@ -371,19 +371,28 @@ search、video、hub、router 全串在一个函数里。
 
 ## 五、整改方案（四波，按风险从低到高）
 
-### 第 0 波：先装闸门（半天，必须先做）
+### 第 0 波：先装闸门（已完成）
 
 没有闸门的重构会反弹。这一波不改业务代码。
 
-1. **`clippy.toml`**：`too-many-lines-threshold = 60`、`cognitive-complexity-threshold = 20`，
-   在 CI 的 clippy 里加 `-W clippy::too_many_lines -W clippy::cognitive_complexity`。
-   先用 `-W`（警告）跑一周，收集存量，再改 `-D`。
-2. **`scripts/quality-gate.py`**：以本报告的基线（`docs/bench/quality-baseline.json`）
-   为准，**只允许变好**：函数 >60 行数、嵌套 >3 数、魔法数字数、重复窗口数
-   任一变大就红。基线数字：`47 / 65 / 431 / 89`。
-3. **CI 加一个 job** `quality`：跑探针 + 比对基线，输出差值表。
+1. **`clippy.toml`**（新增）：`too-many-lines-threshold = 60`、
+   `cognitive-complexity-threshold = 20`、`too-many-arguments-threshold = 8`、
+   `type-complexity-threshold = 250`。CI 的 clippy 改成
+   `-D warnings -W clippy::too_many_lines`——**只降级这一条**，存量 47 个长函数
+   在日志里露头但不拦构建（先收一周，再考虑改 `-D`）。
+2. **`scripts/quality-gate.py`**（新增）：跑探针 → 与
+   `docs/bench/quality-baseline.json` 逐项比对 → 任何一项变差就退出码 1，
+   并打印"基线 → 当前（+N）"。除数值外还比对 `文件::函数名` 名单：
+   数量不变但换了个函数变长，同样算退化。`--update` 只允许把基线**收紧**，
+   变差时拒绝更新。
+3. **CI 新增 `quality` job**：`python scripts/quality-gate.py`，不跑 cargo，十几秒。
 
-**验收**：故意写一个 70 行函数，CI 必须红。
+**当前基线**：函数 >60 行 **47**、>100 行 **14**、嵌套 >3 层 **65**、
+跨文件重复窗口 **89**、魔法数字总数 **624**（top-20 占 431）。
+
+**验收（已实测）**：临时塞一个 70 行函数，闸门输出
+`函数 >60 行：47 → 48（+1）` 与 `魔法数字总数：624 → 680（+56）`，退出码 1；
+删掉后恢复通过。
 
 ### 第 1 波：消灭语义重复（1–2 天，低风险高收益）
 
@@ -429,7 +438,7 @@ search、video、hub、router 全串在一个函数里。
 | 函数 >100 行 | 14 | ≤6 | ≤4（只允许 DDL/声明式） |
 | 嵌套 >3 层 | 65 | ≤30 | ≤25 |
 | 跨文件重复窗口 | 89 | ≤60 | ≤40 |
-| 魔法数字（top20 计数） | 431 | ≤200 | ≤150 |
+| 魔法数字总数（top20 占 431） | 624 | ≤350 | ≤200 |
 | `Platform` 对外方法 | 275 | 275 | ≤120 |
 | `run()` 行数 | 220 | ≤30 | ≤30 |
 

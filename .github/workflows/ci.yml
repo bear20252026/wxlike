@@ -25,7 +25,23 @@ jobs:
       - name: fmt
         run: cargo fmt --check
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # `-W clippy::too_many_lines` 放在 `-D warnings` 之后：只降级这一条，
+        # 其余仍是硬错。阈值在 clippy.toml（60 行）。存量 47 个长函数只打印
+        # 不拦构建——拦"变差"是 quality job 的事。
+        run: cargo clippy --workspace --all-targets -- -D warnings -W clippy::too_many_lines
+
+  # 质量闸门：审计基线只许变好（docs/code-quality-audit.md）。
+  # 不跑 cargo，纯静态统计，十几秒；失败信息直接说清哪项退化了。
+  quality:
+    name: quality (metrics gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: metrics gate
+        run: python scripts/quality-gate.py
 
   test-linux:
     name: test (linux)

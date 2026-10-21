@@ -1,0 +1,1272 @@
+{
+ "total_files": 130,
+ "total_lines": 46821,
+ "fn_total": 2184,
+ "count_len_gt30": 237,
+ "count_len_gt60": 47,
+ "count_len_gt100": 14,
+ "count_nest_gt3": 65,
+ "count_mixed_sql_http": 1,
+ "magic_total": 624,
+ "magic_unique": 111,
+ "long_fn_keys": [
+  "crates\\admin\\src\\http.rs::run_op",
+  "crates\\client\\src\\execute.rs::run",
+  "crates\\message\\src\\lib.rs::open",
+  "crates\\net\\src\\diag.rs::run",
+  "crates\\net\\src\\mq_hub.rs::handle_inbound",
+  "crates\\net\\src\\mq_hub.rs::run_mq_hub_with",
+  "crates\\net\\src\\mq_hub.rs::serve_transport",
+  "crates\\platform\\src\\db.rs::migrate",
+  "crates\\platform\\src\\db.rs::migrate_p4",
+  "crates\\platform\\src\\reconcile.rs::reconcile",
+  "crates\\rtc\\src\\turn.rs::allocate",
+  "crates\\video\\src\\lib.rs::run_pipeline",
+  "server/src\\lib.rs::start_stack",
+  "ui/src-tauri/src\\callrtc.rs::run"
+ ],
+ "deep_fn_keys": [
+  "crates\\admin\\src\\bin\\wxlike_admin.rs::main",
+  "crates\\admin\\src\\error.rs::parts",
+  "crates\\admin\\src\\http.rs::build_payload",
+  "crates\\admin\\src\\http.rs::payload_builder_matches_the_catalog_declaration",
+  "crates\\admin\\src\\http.rs::run_op",
+  "crates\\admin\\src\\read.rs::open",
+  "crates\\cli\\src\\main.rs::main",
+  "crates\\cmd\\src\\policy.rs::authorize",
+  "crates\\container\\examples\\research_wmpf.rs::run",
+  "crates\\core\\src\\e2ee.rs::drain_parked",
+  "crates\\core\\src\\outbox.rs::flush_with",
+  "crates\\dpage\\src\\bin\\dpage.rs::run",
+  "crates\\dpage\\src\\lib.rs::pack_dir",
+  "crates\\ffi\\src\\client.rs::conversations",
+  "crates\\ffi\\src\\client.rs::send_now",
+  "crates\\ffi\\src\\client.rs::spawn_pump",
+  "crates\\ledger\\src\\lib.rs::open",
+  "crates\\mcp\\src\\main.rs::call_tool",
+  "crates\\mcp\\src\\main.rs::handle_line",
+  "crates\\mcp\\src\\main.rs::tools",
+  "crates\\message\\src\\lib.rs::open",
+  "crates\\moderation\\src\\lib.rs::new",
+  "crates\\net\\examples\\chat.rs::main",
+  "crates\\net\\src\\diag.rs::run",
+  "crates\\net\\src\\mq_hub.rs::apply_delivery_policy",
+  "crates\\net\\src\\mq_hub.rs::fanout",
+  "crates\\net\\src\\mq_hub.rs::handle_inbound",
+  "crates\\net\\src\\mq_hub.rs::run_mq_hub_with",
+  "crates\\net\\src\\mq_hub.rs::serve_transport",
+  "crates\\net\\src\\offline.rs::open",
+  "crates\\net\\src\\server.rs::run_hub",
+  "crates\\net\\src\\server.rs::serve_conn",
+  "crates\\platform\\src\\db.rs::open",
+  "crates\\platform\\src\\lib.rs::router",
+  "crates\\platform\\src\\lib.rs::spawn_redpacket_sweeper",
+  "crates\\platform\\src\\reconcile.rs::spawn_reconciler",
+  "crates\\platform\\src\\recovery.rs::risk_gate_many",
+  "crates\\platform\\src\\report.rs::report_queue",
+  "crates\\push\\src\\aggregator.rs::spawn",
+  "crates\\push\\src\\lib.rs::fcm_send_posts_expected_wire_format",
+  "crates\\risk\\src\\lib.rs::decide",
+  "crates\\rtc\\src\\audio_io.rs::new",
+  "crates\\rtc\\src\\audio_io.rs::start",
+  "crates\\rtc\\src\\call.rs::check_deadlines",
+  "crates\\rtc\\src\\host.rs::drain",
+  "crates\\rtc\\src\\host.rs::pump_media",
+  "crates\\rtc\\src\\ice.rs::parse_xor_mapped_address",
+  "crates\\rtc\\src\\media.rs::step",
+  "crates\\rtc\\src\\turn.rs::maybe_refresh",
+  "crates\\search\\src\\lib.rs::spawn",
+  "crates\\sfu\\src\\lib.rs::poll",
+  "crates\\video\\src\\bin\\wxlike-live-ingest.rs::run",
+  "crates\\video\\src\\bin\\wxlike-live-ingest.rs::send",
+  "crates\\video\\src\\jobs.rs::deliver_callback",
+  "crates\\video\\src\\jobs.rs::read_job_fields",
+  "crates\\video\\src\\jobs.rs::spawn_worker",
+  "crates\\video\\src\\lib.rs::transcode",
+  "server/src\\lib.rs::dev_routes",
+  "server/src\\lib.rs::start_stack",
+  "ui/src-tauri/src\\callrtc.rs::pump_mic",
+  "ui/src-tauri/src\\callrtc.rs::run",
+  "ui/src-tauri/src\\lib.rs::render_event_with",
+  "ui/src-tauri/src\\lib.rs::send_secret_text",
+  "ui/src-tauri/src\\lib.rs::start_outbox_pump",
+  "ui/src-tauri/src\\lib.rs::start_recv_pump"
+ ],
+ "largest_files": [
+  [
+   "ui/src-tauri/src\\lib.rs",
+   2272
+  ],
+  [
+   "crates\\platform\\src\\communities.rs",
+   1534
+  ],
+  [
+   "crates\\admin\\src\\read.rs",
+   1326
+  ],
+  [
+   "server/src\\lib.rs",
+   1055
+  ],
+  [
+   "crates\\admin\\src\\accounts.rs",
+   1036
+  ],
+  [
+   "crates\\message\\src\\lib.rs",
+   1030
+  ],
+  [
+   "crates\\video\\src\\lib.rs",
+   1018
+  ],
+  [
+   "crates\\net\\src\\mq_hub.rs",
+   1016
+  ],
+  [
+   "crates\\admin\\src\\http.rs",
+   1013
+  ],
+  [
+   "crates\\video\\src\\jobs.rs",
+   949
+  ],
+  [
+   "crates\\ffi\\src\\client.rs",
+   821
+  ],
+  [
+   "crates\\platform\\src\\wallet.rs",
+   799
+  ],
+  [
+   "crates\\rtc\\src\\turn.rs",
+   702
+  ],
+  [
+   "crates\\platform\\src\\db.rs",
+   676
+  ],
+  [
+   "crates\\platform\\src\\groups.rs",
+   676
+  ],
+  [
+   "crates\\platform\\src\\moments.rs",
+   634
+  ],
+  [
+   "crates\\rtc\\src\\call.rs",
+   631
+  ],
+  [
+   "crates\\video\\src\\live.rs",
+   630
+  ],
+  [
+   "crates\\core\\src\\e2ee.rs",
+   621
+  ],
+  [
+   "crates\\platform\\src\\lib.rs",
+   580
+  ]
+ ],
+ "long_fns": [
+  {
+   "file": "crates\\platform\\src\\db.rs",
+   "name": "migrate",
+   "line": 261,
+   "len": 328,
+   "nest": 0,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\client\\src\\execute.rs",
+   "name": "run",
+   "line": 34,
+   "len": 220,
+   "nest": 3,
+   "sql": false,
+   "http": false,
+   "io": true,
+   "pub": true
+  },
+  {
+   "file": "server/src\\lib.rs",
+   "name": "start_stack",
+   "line": 101,
+   "len": 204,
+   "nest": 4,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "handle_inbound",
+   "line": 530,
+   "len": 202,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\platform\\src\\db.rs",
+   "name": "migrate_p4",
+   "line": 57,
+   "len": 160,
+   "nest": 2,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\video\\src\\lib.rs",
+   "name": "run_pipeline",
+   "line": 420,
+   "len": 157,
+   "nest": 2,
+   "sql": false,
+   "http": false,
+   "io": true,
+   "pub": false
+  },
+  {
+   "file": "ui/src-tauri/src\\callrtc.rs",
+   "name": "run",
+   "line": 363,
+   "len": 133,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\admin\\src\\http.rs",
+   "name": "run_op",
+   "line": 527,
+   "len": 132,
+   "nest": 4,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\platform\\src\\reconcile.rs",
+   "name": "reconcile",
+   "line": 73,
+   "len": 129,
+   "nest": 3,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\net\\src\\diag.rs",
+   "name": "run",
+   "line": 155,
+   "len": 124,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "run_mq_hub_with",
+   "line": 272,
+   "len": 118,
+   "nest": 8,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\message\\src\\lib.rs",
+   "name": "open",
+   "line": 177,
+   "len": 112,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": true,
+   "pub": true
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "serve_transport",
+   "line": 411,
+   "len": 110,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\rtc\\src\\turn.rs",
+   "name": "allocate",
+   "line": 298,
+   "len": 103,
+   "nest": 2,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\cli\\src\\main.rs",
+   "name": "main",
+   "line": 41,
+   "len": 100,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\platform\\src\\wallet.rs",
+   "name": "claim_redpacket",
+   "line": 381,
+   "len": 96,
+   "nest": 3,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\message\\examples\\bench_mailbox.rs",
+   "name": "main",
+   "line": 16,
+   "len": 94,
+   "nest": 3,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "ui/src-tauri/src\\lib.rs",
+   "name": "start_outbox_pump",
+   "line": 436,
+   "len": 92,
+   "nest": 7,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\admin\\src\\bin\\wxlike_admin.rs",
+   "name": "account_command",
+   "line": 68,
+   "len": 85,
+   "nest": 3,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\video\\src\\bin\\wxlike-live-ingest.rs",
+   "name": "run",
+   "line": 77,
+   "len": 84,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": true,
+   "pub": false
+  },
+  {
+   "file": "crates\\net\\examples\\chat.rs",
+   "name": "main",
+   "line": 13,
+   "len": 81,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "ui/src-tauri/src\\lib.rs",
+   "name": "run",
+   "line": 2176,
+   "len": 81,
+   "nest": 0,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\container\\src\\engine.rs",
+   "name": "install_bridge",
+   "line": 77,
+   "len": 79,
+   "nest": 2,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\admin\\src\\read.rs",
+   "name": "stats",
+   "line": 217,
+   "len": 78,
+   "nest": 3,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\search\\src\\lib.rs",
+   "name": "search",
+   "line": 169,
+   "len": 75,
+   "nest": 2,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\video\\src\\jobs.rs",
+   "name": "submit_job",
+   "line": 281,
+   "len": 74,
+   "nest": 2,
+   "sql": true,
+   "http": false,
+   "io": true,
+   "pub": true
+  },
+  {
+   "file": "crates\\admin\\src\\http.rs",
+   "name": "build_payload",
+   "line": 708,
+   "len": 72,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\ledger\\src\\lib.rs",
+   "name": "transfer",
+   "line": 201,
+   "len": 72,
+   "nest": 2,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "fanout",
+   "line": 762,
+   "len": 72,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\platform\\src\\media.rs",
+   "name": "download",
+   "line": 415,
+   "len": 70,
+   "nest": 2,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\video\\src\\stats.rs",
+   "name": "record_watch",
+   "line": 135,
+   "len": 70,
+   "nest": 2,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "ui/src-tauri/src\\lib.rs",
+   "name": "send_secret_text",
+   "line": 1005,
+   "len": 70,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\admin\\src\\bin\\wxlike_admin.rs",
+   "name": "main",
+   "line": 234,
+   "len": 68,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\platform\\src\\moments.rs",
+   "name": "feed",
+   "line": 392,
+   "len": 68,
+   "nest": 2,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\risk\\src\\lib.rs",
+   "name": "decide",
+   "line": 191,
+   "len": 68,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  }
+ ],
+ "deep_fns": [
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "run_mq_hub_with",
+   "line": 272,
+   "len": 118,
+   "nest": 8,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "ui/src-tauri/src\\lib.rs",
+   "name": "start_outbox_pump",
+   "line": 436,
+   "len": 92,
+   "nest": 7,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "handle_inbound",
+   "line": 530,
+   "len": 202,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\cli\\src\\main.rs",
+   "name": "main",
+   "line": 41,
+   "len": 100,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\admin\\src\\http.rs",
+   "name": "build_payload",
+   "line": 708,
+   "len": 72,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "fanout",
+   "line": 762,
+   "len": 72,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\rtc\\src\\call.rs",
+   "name": "check_deadlines",
+   "line": 371,
+   "len": 50,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "ui/src-tauri/src\\lib.rs",
+   "name": "start_recv_pump",
+   "line": 1098,
+   "len": 34,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\rtc\\src\\turn.rs",
+   "name": "maybe_refresh",
+   "line": 541,
+   "len": 29,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "ui/src-tauri/src\\callrtc.rs",
+   "name": "run",
+   "line": 363,
+   "len": 133,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\net\\src\\mq_hub.rs",
+   "name": "serve_transport",
+   "line": 411,
+   "len": 110,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\admin\\src\\bin\\wxlike_admin.rs",
+   "name": "main",
+   "line": 234,
+   "len": 68,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\rtc\\src\\audio_io.rs",
+   "name": "new",
+   "line": 121,
+   "len": 68,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\rtc\\src\\audio_io.rs",
+   "name": "start",
+   "line": 31,
+   "len": 65,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "ui/src-tauri/src\\lib.rs",
+   "name": "render_event_with",
+   "line": 1314,
+   "len": 65,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\ffi\\src\\client.rs",
+   "name": "send_now",
+   "line": 245,
+   "len": 52,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\mcp\\src\\main.rs",
+   "name": "call_tool",
+   "line": 142,
+   "len": 51,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\platform\\src\\lib.rs",
+   "name": "router",
+   "line": 415,
+   "len": 51,
+   "nest": 5,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\rtc\\src\\host.rs",
+   "name": "pump_media",
+   "line": 213,
+   "len": 49,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\rtc\\src\\media.rs",
+   "name": "step",
+   "line": 169,
+   "len": 48,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\rtc\\src\\ice.rs",
+   "name": "parse_xor_mapped_address",
+   "line": 114,
+   "len": 45,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\video\\src\\jobs.rs",
+   "name": "read_job_fields",
+   "line": 905,
+   "len": 44,
+   "nest": 5,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "server/src\\lib.rs",
+   "name": "start_stack",
+   "line": 101,
+   "len": 204,
+   "nest": 4,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates\\admin\\src\\http.rs",
+   "name": "run_op",
+   "line": 527,
+   "len": 132,
+   "nest": 4,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates\\net\\src\\diag.rs",
+   "name": "run",
+   "line": 155,
+   "len": 124,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": true
+  }
+ ],
+ "mixed_fns": [
+  {
+   "file": "crates\\platform\\src\\video_refs.rs",
+   "name": "store_callback",
+   "line": 173,
+   "len": 59,
+   "nest": 1,
+   "sql": true,
+   "http": true,
+   "io": false,
+   "pub": false
+  }
+ ],
+ "magic_top": [
+  [
+   300,
+   58
+  ],
+  [
+   64,
+   44
+  ],
+  [
+   50,
+   43
+  ],
+  [
+   20,
+   41
+  ],
+  [
+   360,
+   28
+  ],
+  [
+   12,
+   23
+  ],
+  [
+   32,
+   22
+  ],
+  [
+   30,
+   22
+  ],
+  [
+   720,
+   20
+  ],
+  [
+   250,
+   19
+  ],
+  [
+   80,
+   15
+  ],
+  [
+   640,
+   15
+  ],
+  [
+   204,
+   14
+  ],
+  [
+   15,
+   13
+  ],
+  [
+   256,
+   11
+  ],
+  [
+   2048,
+   11
+  ],
+  [
+   900,
+   9
+  ],
+  [
+   1280,
+   8
+  ],
+  [
+   1080,
+   8
+  ],
+  [
+   5000,
+   7
+  ]
+ ],
+ "magic_sites": {
+  "300": [
+   "crates\\admin\\src\\upstream.rs:216",
+   "crates\\client\\src\\lib.rs:113",
+   "crates\\client\\tests\\zone_c_surface.rs:110",
+   "crates\\mq\\tests\\nats_backend.rs:79",
+   "crates\\mq\\tests\\streams_redis.rs:104"
+  ],
+  "64": [
+   "crates\\admin\\src\\upstream.rs:29",
+   "crates\\admin\\src\\bin\\wxlike_admin.rs:54",
+   "crates\\container\\src\\package.rs:56",
+   "crates\\container\\src\\package.rs:66",
+   "crates\\container\\src\\package.rs:143"
+  ],
+  "50": [
+   "crates\\admin\\src\\web.rs:182",
+   "crates\\admin\\src\\bin\\wxlike_admin.rs:228",
+   "crates\\client\\src\\execute.rs:52",
+   "crates\\client\\src\\execute.rs:106",
+   "crates\\core\\src\\msgmeta.rs:318"
+  ],
+  "20": [
+   "crates\\client\\src\\execute.rs:61",
+   "crates\\message\\tests\\mailbox_contract.rs:494",
+   "crates\\message\\tests\\mailbox_contract.rs:495",
+   "crates\\message\\tests\\mailbox_contract.rs:498",
+   "crates\\message\\tests\\mailbox_contract.rs:500"
+  ],
+  "360": [
+   "crates\\video\\tests\\jobs_pipeline.rs:57",
+   "crates\\video\\tests\\jobs_pipeline.rs:161",
+   "crates\\video\\tests\\jobs_queue.rs:44",
+   "crates\\video\\tests\\jobs_queue.rs:46",
+   "crates\\video\\tests\\ladder_rules.rs:24"
+  ],
+  "12": [
+   "crates\\core\\src\\crypto.rs:56",
+   "crates\\message\\tests\\mailbox_contract.rs:416",
+   "crates\\message\\tests\\mailbox_contract.rs:422",
+   "crates\\platform\\src\\db.rs:548",
+   "crates\\platform\\src\\live.rs:167"
+  ],
+  "32": [
+   "crates\\admin\\src\\accounts.rs:478",
+   "crates\\admin\\src\\config.rs:56",
+   "crates\\admin\\src\\bin\\wxlike_admin.rs:255",
+   "crates\\container\\src\\package.rs:219",
+   "crates\\core\\src\\crypto.rs:24"
+  ],
+  "30": [
+   "crates\\admin\\src\\accounts.rs:762",
+   "crates\\admin\\tests\\common\\mod.rs:218",
+   "crates\\core\\src\\msgmeta.rs:305",
+   "crates\\core\\src\\msgmeta.rs:423",
+   "crates\\net\\src\\avalanche.rs:64"
+  ],
+  "720": [
+   "crates\\platform\\tests\\video_callback.rs:60",
+   "crates\\platform\\tests\\video_callback.rs:61",
+   "crates\\video\\tests\\jobs_pipeline.rs:43",
+   "crates\\video\\tests\\jobs_pipeline.rs:57",
+   "crates\\video\\tests\\ladder_rules.rs:24"
+  ],
+  "250": [
+   "crates\\core\\src\\msgmeta.rs:296",
+   "crates\\net\\tests\\group_routing.rs:139",
+   "crates\\net\\tests\\group_routing.rs:190",
+   "crates\\net\\tests\\group_routing.rs:234",
+   "crates\\net\\tests\\group_routing.rs:313"
+  ],
+  "80": [
+   "crates\\net\\src\\diag.rs:473",
+   "crates\\platform\\tests\\call_media.rs:110",
+   "crates\\platform\\tests\\call_media.rs:111",
+   "crates\\platform\\tests\\call_media.rs:115",
+   "crates\\platform\\tests\\call_media.rs:119"
+  ],
+  "640": [
+   "crates\\video\\tests\\jobs_pipeline.rs:161",
+   "crates\\video\\tests\\jobs_queue.rs:43",
+   "crates\\video\\tests\\jobs_queue.rs:47",
+   "crates\\video\\tests\\ladder_rules.rs:51",
+   "crates\\video\\tests\\ladder_rules.rs:92"
+  ],
+  "204": [
+   "crates\\ffi\\tests\\client.rs:150",
+   "crates\\ffi\\tests\\client.rs:180",
+   "crates\\platform\\tests\\call_http.rs:65",
+   "crates\\platform\\tests\\call_http.rs:97",
+   "crates\\platform\\tests\\call_http.rs:139"
+  ],
+  "15": [
+   "crates\\admin\\tests\\common\\mod.rs:295",
+   "crates\\net\\tests\\delivery_policy.rs:164",
+   "crates\\net\\tests\\delivery_policy.rs:210",
+   "crates\\net\\tests\\delivery_policy.rs:264",
+   "crates\\net\\tests\\delivery_policy.rs:306"
+  ],
+  "256": [
+   "crates\\admin\\src\\accounts.rs:255",
+   "crates\\client\\src\\lib.rs:133",
+   "crates\\client\\src\\lib.rs:181",
+   "crates\\net\\src\\avalanche.rs:66",
+   "crates\\net\\src\\diag.rs:401"
+  ],
+  "2048": [
+   "crates\\client\\src\\execute.rs:382",
+   "crates\\rtc\\tests\\host_udp.rs:77",
+   "crates\\rtc\\tests\\mesh_udp.rs:22",
+   "crates\\rtc\\tests\\mesh_udp.rs:130",
+   "crates\\rtc\\tests\\turn_alloc.rs:49"
+  ],
+  "900": [
+   "crates\\net\\src\\avalanche.rs:281",
+   "crates\\net\\tests\\group_routing.rs:161",
+   "crates\\net\\tests\\group_routing.rs:253",
+   "crates\\net\\tests\\group_routing.rs:263",
+   "crates\\net\\tests\\reliable_msg.rs:191"
+  ],
+  "1280": [
+   "crates\\platform\\tests\\video_callback.rs:59",
+   "crates\\video\\tests\\jobs_pipeline.rs:43",
+   "crates\\video\\tests\\ladder_rules.rs:51",
+   "crates\\video\\tests\\ladder_rules.rs:93",
+   "crates\\video\\tests\\ladder_rules.rs:125"
+  ],
+  "1080": [
+   "crates\\video\\tests\\ladder_rules.rs:24",
+   "crates\\video\\tests\\ladder_rules.rs:24",
+   "crates\\video\\tests\\ladder_rules.rs:28",
+   "crates\\video\\tests\\ladder_rules.rs:31",
+   "crates\\video\\tests\\ladder_rules.rs:94"
+  ],
+  "5000": [
+   "crates\\admin\\src\\accounts.rs:166",
+   "crates\\core\\src\\store.rs:72",
+   "crates\\ledger\\src\\lib.rs:99",
+   "crates\\message\\src\\lib.rs:193",
+   "crates\\net\\src\\diag.rs:502"
+  ]
+ },
+ "dup_windows": 89,
+ "dup_sample": [
+  [
+   [
+    "crates\\admin\\src\\rbac.rs",
+    28
+   ],
+   [
+    "crates\\cmd\\src\\lib.rs",
+    27
+   ]
+  ],
+  [
+   [
+    "crates\\admin\\src\\rbac.rs",
+    29
+   ],
+   [
+    "crates\\cmd\\src\\lib.rs",
+    28
+   ]
+  ],
+  [
+   [
+    "crates\\admin\\src\\rbac.rs",
+    30
+   ],
+   [
+    "crates\\cmd\\src\\lib.rs",
+    29
+   ]
+  ],
+  [
+   [
+    "crates\\admin\\src\\rbac.rs",
+    31
+   ],
+   [
+    "crates\\cmd\\src\\lib.rs",
+    30
+   ]
+  ],
+  [
+   [
+    "crates\\admin\\src\\rbac.rs",
+    32
+   ],
+   [
+    "crates\\cmd\\src\\lib.rs",
+    31
+   ]
+  ],
+  [
+   [
+    "crates\\admin\\src\\rbac.rs",
+    33
+   ],
+   [
+    "crates\\cmd\\src\\lib.rs",
+    32
+   ]
+  ],
+  [
+   [
+    "crates\\cli\\src\\main.rs",
+    166
+   ],
+   [
+    "crates\\cmd\\src\\bin\\wxlike-cmd.rs",
+    55
+   ]
+  ],
+  [
+   [
+    "crates\\core\\src\\outbox.rs",
+    134
+   ],
+   [
+    "crates\\ffi\\src\\cache.rs",
+    71
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    83
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    177
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    84
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    178
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    85
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    179
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    86
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    180
+   ]
+  ]
+ ],
+ "deps": {
+  "admin": [
+   "core",
+   "platform",
+   "report"
+  ],
+  "cli": [
+   "client",
+   "cmd"
+  ],
+  "client": [
+   "cmd"
+  ],
+  "cmd": [],
+  "container": [
+   "dpage"
+  ],
+  "core": [],
+  "dpage": [],
+  "ffi": [
+   "client",
+   "cmd",
+   "core"
+  ],
+  "ledger": [
+   "core"
+  ],
+  "mcp": [
+   "client",
+   "cmd"
+  ],
+  "message": [
+   "core"
+  ],
+  "moderation": [],
+  "mq": [],
+  "net": [
+   "core",
+   "message",
+   "mq",
+   "platform"
+  ],
+  "platform": [
+   "core",
+   "message",
+   "moderation",
+   "report",
+   "risk",
+   "rtc"
+  ],
+  "push": [
+   "core",
+   "mq",
+   "net",
+   "platform"
+  ],
+  "report": [],
+  "risk": [],
+  "rtc": [
+   "core",
+   "mq",
+   "net"
+  ],
+  "search": [],
+  "sfu": [
+   "rtc"
+  ],
+  "video": [
+   "core"
+  ]
+ }
+}

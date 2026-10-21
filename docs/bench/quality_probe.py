@@ -189,6 +189,16 @@ report = {
     "count_len_gt100": sum(1 for r in fns if r["len"] > 100),
     "count_nest_gt3": sum(1 for r in fns if r["nest"] > 3),
     "count_mixed_sql_http": sum(1 for r in fns if r["sql"] and r["http"]),
+    # 闸门用总量：top-20 只是展示，判断"有没有变差"要看全部
+    "magic_total": sum(magic.values()),
+    "magic_unique": len(magic),
+    # 超长函数的"身份证"：数量不变但换了个函数变长，也要能看出来
+    "long_fn_keys": sorted(
+        f"{r['file']}::{r['name']}" for r in fns if r["len"] > 100
+    ),
+    "deep_fn_keys": sorted(
+        f"{r['file']}::{r['name']}" for r in fns if r["nest"] > 3
+    ),
     "largest_files": sorted(files_info, key=lambda x: -x[1])[:20],
     "long_fns": sorted([r for r in fns if r["len"] > 60], key=lambda r: -r["len"])[:35],
     "deep_fns": sorted([r for r in fns if r["nest"] > 3], key=lambda r: (-r["nest"], -r["len"]))[:25],
