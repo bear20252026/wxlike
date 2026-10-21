@@ -30,6 +30,14 @@ services:
       WXLIKE_MEDIA_DIR: /data/media
       WXLIKE_HTTP: 0.0.0.0:8099
       WXLIKE_QUIC: 0.0.0.0:9443
+      # 直播推流凭据的 HMAC 密钥。**没配时 server 会拒绝启动**（这是有意的：
+      # 一个公开的默认密钥等于没有密钥）。
+      #
+      # 本地开发用 `WXLIKE_DEV_INSECURE=1` 放行（每次启动生成随机密钥，
+      # 重启后旧的推流 token 失效——本机无所谓）。
+      # 生产：`WXLIKE_DEV_INSECURE=0 WXLIKE_LIVE_INGEST_SECRET=<强随机> docker compose up -d`
+      WXLIKE_DEV_INSECURE: "${WXLIKE_DEV_INSECURE:-1}"
+      WXLIKE_LIVE_INGEST_SECRET: "${WXLIKE_LIVE_INGEST_SECRET:-}"
     ports:
       - "8099:8099"
       - "9443:9443/udp"
@@ -44,6 +52,29 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+
+  # P3 realtime channel: JetStream durable queues for cross-hub routing.
+  #
+  # 放在 `profiles: ["nats"]` 下：默认 `docker compose up` **不启动**它
+  # （memory 后端仍是默认）。要用就 `docker compose --profile nats up -d`。
+  #
+  # 之前这段被缩进在 `volumes:` 下面 —— 那不是合法 volume 配置，
+  # `docker compose config` 直接报
+  # `volumes.nats additional properties 'command','healthcheck','image','ports' not allowed`，
+  # 也就是"一条命令启动"的承诺从来没成立过（issue #16）。
+  nats:
+    image: nats:2
+    command: ["-js", "-m", "8222"]
+    profiles: ["nats"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # S3-compatible object storage for the media backend (WP-05/WP-13).
   # MinIO pulled its public images off Docker Hub and quay.io in 2025
@@ -69,17 +100,3 @@ volumes:
   redis-data:
   server-data:
   s3-data:
-
-  # P3 realtime channel: JetStream durable queues for cross-hub routing
-  # (WXLIKE_MQ=nats). Optional — memory backend stays the default.
-  nats:
-    image: nats:2
-    command: ["-js", "-m", "8222"]
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 10

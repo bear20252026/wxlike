@@ -1,0 +1,43 @@
+# Docker build context 的排除表（issue #16）。
+#
+# 没有这个文件时，`docker compose build` 会把整个仓库（含 `target/`，
+# 几十 GB 的编译产物）打进 context 再上传给 daemon——第一次 build 可能直接
+# 因为磁盘/超时失败，而且每次都重传。
+#
+# Dockerfile 只 COPY 了 `Cargo.toml`、`Cargo.lock`、`crates/`、`server/`、
+# `scripts/`，所以其它一切都可以排除。
+
+# Rust 构建产物（本地 target 与本仓库用过的独立 target 目录）
+target
+target-*/
+mutants.out*
+*.profraw
+
+# 前端 / 移动端的依赖与产物
+ui/node_modules
+ui/dist
+ui/dist-web
+apps/mobile/build
+apps/mobile/.dart_tool
+apps/mobile/.flutter-plugins*
+apps/mobile/android/.gradle
+apps/mobile/android/app/src/main/jniLibs
+apps/mobile/lib/src/rust
+
+# UniFFI 生成物（Dockerfile 不构建 FFI，但别让它们进 context）
+crates/ffi/generated
+
+# 参考仓库（41 个 clone，CI 与构建都不需要）
+refs
+
+# 版本控制与本地数据
+.git
+.gitignore
+.gitattributes
+.workbuddy-ai
+data
+
+# 文档与日志（镜像里不需要）
+docs
+*.log
+*.md
