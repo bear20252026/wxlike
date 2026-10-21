@@ -170,9 +170,20 @@ jobs:
         run: |
           cargo ndk -t arm64-v8a -o apps/mobile/android/app/src/main/jniLibs \
             build -p wxlike-ffi --release
-          # release 产物带符号表，strip 掉能少一半；apk 体积直接受影响
-          STRIP=$(find "$ANDROID_HOME/ndk" -name 'llvm-strip' -type f | sort | tail -1)
-          "$STRIP" --strip-unneeded apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libwxlike_ffi.so
+          # release 产物带符号表，strip 掉能少一半；apk 体积直接受影响。
+          # 两个坑都在这里踩过：
+          #  1. **不要加 `-type f`**：NDK 里的 llvm-strip 是指向 llvm-strip-18 的
+          #     符号链接，`-type f` 会把它们全过滤掉，STRIP 变成空串，
+          #     下一行就成了"空命令"→ exit 127（本地是 llvm-strip.exe 普通文件，
+          #     所以本地永远不暴露）；
+          #  2. 取不到就跳过，别让"少 strip 一次"把整个 job 弄红。
+          STRIP=$(find "$ANDROID_HOME/ndk" -name 'llvm-strip' 2>/dev/null | sort | tail -1)
+          if [ -n "$STRIP" ] && [ -x "$STRIP" ]; then
+            "$STRIP" --strip-unneeded apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libwxlike_ffi.so
+            ls -lh apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libwxlike_ffi.so
+          else
+            echo "警告：找不到可执行的 llvm-strip，跳过 strip（apk 会大一些）" >&2
+          fi
 
       - name: 构建 APK
         run: |

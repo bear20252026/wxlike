@@ -112,8 +112,9 @@ cargo ndk "${NDK_ARGS[@]}" \
 # release 的 .so 还带符号表，strip 掉能少一半以上。找不到 llvm-strip 就跳过——
 # 大一点总比因为缺工具直接失败好。
 if [[ "$MODE" == "release" ]]; then
-  STRIP=$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/ndk" -name 'llvm-strip*' -type f 2>/dev/null | sort | tail -1 || true)
-  if [[ -n "$STRIP" ]]; then
+  # 注意**不要**加 `-type f`：NDK 里 llvm-strip 是指向 llvm-strip-18 的符号链接。
+  STRIP=$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/ndk" -name 'llvm-strip*' 2>/dev/null | sort | tail -1 || true)
+  if [[ -n "$STRIP" && -x "$STRIP" ]]; then
     for abi in "${ABIS[@]}"; do
       so="apps/mobile/android/app/src/main/jniLibs/$abi/libwxlike_ffi.so"
       [[ -f "$so" ]] && "$STRIP" --strip-unneeded "$so"
