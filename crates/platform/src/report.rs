@@ -62,11 +62,66 @@ pub struct NoteBody {
     pub note: String,
 }
 
-#[derive(serde::Deserialize)]
+/// 处置请求体。
+///
+/// `Action` 是**内部标签**枚举（`#[serde(tag = "action")]`），它的原生形状
+/// 本来就是平铺的：
+///
+/// ```json
+/// {"action": "mute", "duration_ms": 60000, "note": "禁言一小时"}
+/// ```
+///
+/// 但历史上 `ActBody { action: Action }` 直接 derive 出来的形状是**嵌套**的
+/// （`{"action": {"action": "warn"}}`）——同一个键出现两次，很难看，也让
+/// 客户端和文档各写各的。`crates/admin` 早就遇到过同一个问题，做法是
+/// "两种都收、在边界归一化"（见 `admin::accounts::parse_action`）。这里照做：
+///
+/// - **平铺是规范形状**，文档与 curl 示例都用它；
+/// - **嵌套仍然接受**，因为已经发出去的调用方不该被一次格式调整打断；
+/// - 缺 `action` 一律 422，不猜默认值——"默默按 warn 处理"是最坏的兜底。
+#[derive(Debug)]
 pub struct ActBody {
     pub action: Action,
-    #[serde(default)]
     pub note: String,
+}
+
+impl<'de> serde::Deserialize<'de> for ActBody {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let note = raw
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        // 平铺：整个对象就是 Action 的形状（多出来的 `note` 会被忽略）
+        let action = match serde_json::from_value::<Action>(raw.clone()) {
+            Ok(action) => action,
+            Err(flat_err) => match raw.get("action") {
+                // 嵌套（旧形状）：`{"action": {"action": "warn"}}`
+                Some(inner) => {
+                    serde_json::from_value::<Action>(inner.clone()).map_err(|nested| {
+                        D::Error::custom(format!(
+                            "action 不合法：flat={flat_err}; nested={nested}\
+                         （可选 warn / mute{{\"duration_ms\":N}} / ban / remove_content / none）"
+                        ))
+                    })?
+                }
+                None => {
+                    return Err(D::Error::custom(format!(
+                        "缺少 action：{flat_err}\
+                         （可选 warn / mute{{\"duration_ms\":N}} / ban / remove_content / none）"
+                    )))
+                }
+            },
+        };
+        Ok(Self { action, note })
+    }
 }
 
 #[derive(serde::Deserialize, Default)]

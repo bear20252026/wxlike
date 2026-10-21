@@ -755,10 +755,20 @@ fn build_payload(op: &Op, body: &OpBody) -> Result<Option<serde_json::Value>> {
                 }
             }
             let action = crate::accounts::parse_action(&merged)?;
-            Ok(Some(serde_json::json!({
-                "action": serde_json::to_value(action).map_err(AdminError::Codec)?,
-                "note": note,
-            })))
+            // 转发给平台时用**平铺**形状：`Action` 是内部标签枚举，
+            // 序列化出来就是 `{"action":"mute","duration_ms":60000}`。
+            // 以前这里包了一层 `{"action": {...}}`，导致平台收到的是嵌套的
+            // `{"action":{"action":"mute"}}`——同一个键出现两次。
+            let mut payload = match serde_json::to_value(action).map_err(AdminError::Codec)? {
+                serde_json::Value::Object(map) => map,
+                other => {
+                    return Err(AdminError::bad_input(format!(
+                        "action 序列化后应当是对象，得到 {other}"
+                    )))
+                }
+            };
+            payload.insert("note".into(), serde_json::Value::String(note));
+            Ok(Some(serde_json::Value::Object(payload)))
         }
         "mode" => {
             let raw = body.mode.as_deref().ok_or_else(|| {
@@ -957,7 +967,8 @@ mod tests {
                 "note" => assert_eq!(out.unwrap()["note"], "依据"),
                 "action+note" => {
                     let v = out.unwrap();
-                    assert_eq!(v["action"], serde_json::json!({"action": "warn"}));
+                    // 平铺：action 就是那个字符串，不是再包一层的对象
+                    assert_eq!(v["action"], "warn");
                     assert_eq!(v["note"], "依据");
                 }
                 _ => assert_eq!(out.unwrap()["mode"], "pre_review"),
@@ -987,15 +998,19 @@ mod tests {
             ..Default::default()
         };
         let sent = build_payload(op, &mute).unwrap().unwrap();
-        assert_eq!(sent["action"]["duration_ms"], 60_000);
-        // 平铺进 action 字段时也要带时长：平台的 ActBody 收的是嵌套 Action
+        // 平铺：action 是字符串，时长与 note 在顶层
+        assert_eq!(sent["action"], "mute");
+        assert_eq!(sent["duration_ms"], 60_000);
+        assert_eq!(sent["note"], "广告");
+        // 客户端直接写整个对象时，也要归一成平铺（不是再包一层）
         let nested = OpBody {
             note: Some("广告".into()),
             action: Some(serde_json::json!({"action": "ban"})),
             ..Default::default()
         };
         let sent = build_payload(op, &nested).unwrap().unwrap();
-        assert_eq!(sent["action"], serde_json::json!({"action": "ban"}));
+        assert_eq!(sent["action"], "ban");
+        assert!(sent.get("note").is_some());
     }
 
     #[test]

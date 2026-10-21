@@ -146,14 +146,13 @@ async fn lifecycle_over_http_moves_through_every_state() {
     assert_eq!(body["state"], "triaged");
     assert_eq!(body["history"][0]["actor"], "mod-alice", "审计要记到具体人");
 
-    // 处置（`Action` 是 internally-tagged 枚举，所以是嵌套的
-    // `{"action": {"action": "warn"}}`——形状确实别扭，但这是现状，不是测试写错）
+    // 处置：`action` 是**平铺**的（`Action` 是内部标签枚举，这就是它的原生形状）
     let (status, body) = common::call(
         &app,
         admin_req(
             "POST",
             &format!("/api/admin/reports/{id}/act"),
-            Some(json!({"action": {"action": "warn"}, "note": "警告一次"})),
+            Some(json!({"action": "warn", "note": "警告一次"})),
             Some(ADMIN_TOKEN),
         ),
     )
@@ -213,7 +212,7 @@ async fn acting_before_triage_is_a_client_error_not_a_500() {
         admin_req(
             "POST",
             &format!("/api/admin/reports/{id}/act"),
-            Some(json!({"action": {"action": "ban"}, "note": "跳过分诊"})),
+            Some(json!({"action": "ban", "note": "跳过分诊"})),
             Some(ADMIN_TOKEN),
         ),
     )
@@ -246,4 +245,97 @@ async fn unknown_reason_is_422() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+/// 建一张已分诊的工单（处置的前置状态）。
+async fn triaged_ticket(app: &axum::Router, alice: &str, bob_id: &str) -> String {
+    let id = report_as(app, alice, bob_id).await;
+    let (status, body) = common::call(
+        app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/triage"),
+            Some(json!({"note": "受理"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    id
+}
+
+/// `action` 的两种形状：**平铺是规范形状**，旧的嵌套仍然接受。
+///
+/// 为什么要留旧形状：`ActBody { action: Action }` 直接 derive 出来的就是嵌套的
+/// `{"action": {"action": "warn"}}`，已经有调用方按那个形状发了。一次格式
+/// 调整就把他们打断，是最没必要的一种破坏。缺 `action` 仍然一律 422——
+/// "默默按 warn 处理"是最坏的兜底。
+#[tokio::test]
+async fn act_accepts_flat_and_legacy_nested_shapes_but_not_a_missing_action() {
+    let app = Platform::router(platform_with_admin());
+    let (alice_id, alice) = common::signup(&app, "alice").await;
+    let (bob_id, _bob) = common::signup(&app, "bob").await;
+    let _ = alice_id;
+
+    // 1) 平铺 + mute 的额外字段
+    let id = triaged_ticket(&app, &alice, &bob_id).await;
+    let (status, body) = common::call(
+        &app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/act"),
+            Some(json!({"action": "mute", "duration_ms": 60_000, "note": "禁言一分钟"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "平铺形状必须能用：{body}");
+    assert_eq!(body["state"], "actioned");
+
+    // 2) 旧嵌套形状仍然接受
+    let id = triaged_ticket(&app, &alice, &bob_id).await;
+    let (status, body) = common::call(
+        &app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/act"),
+            Some(json!({"action": {"action": "warn"}, "note": "旧客户端"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "旧的嵌套形状要向后兼容：{body}");
+
+    // 3) 缺 action：422，且错误里要说清可选值
+    let id = triaged_ticket(&app, &alice, &bob_id).await;
+    let (status, body) = common::call(
+        &app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/act"),
+            Some(json!({"note": "忘了写 action"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let text = body.to_string();
+    assert!(
+        text.contains("action") && text.contains("warn"),
+        "错误要告诉调用方可选值：{body}"
+    );
+
+    // 4) 不认识的 action：也是 422，不是 500
+    let id = triaged_ticket(&app, &alice, &bob_id).await;
+    let (status, _) = common::call(
+        &app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/act"),
+            Some(json!({"action": "explode", "note": "不存在"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

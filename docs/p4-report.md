@@ -63,7 +63,9 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8099/api/admin/reports/<tid>/tria
   -H 'x-admin-token: s3cret' -H 'content-type: application/json' -d '{"note":"受理"}'
 curl -s --noproxy '*' -X POST http://127.0.0.1:8099/api/admin/reports/<tid>/act \
   -H 'x-admin-token: s3cret' -H 'content-type: application/json' \
-  -d '{"action":{"action":"mute","duration_ms":3600000},"note":"禁言1小时"}'
+  -d '{"action":"mute","duration_ms":3600000,"note":"禁言1小时"}'
+# 注：`action` 是平铺的（内部标签枚举的原生形状）。旧写法
+# `{"action":{"action":"mute",...}}` 仍然接受，但新代码请用平铺。
 curl -s --noproxy '*' -X POST http://127.0.0.1:8099/api/admin/reports/<tid>/close \
   -H 'x-admin-token: s3cret' -H 'content-type: application/json' -d '{"note":"已通知"}'
 ```
