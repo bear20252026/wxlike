@@ -46,6 +46,71 @@
 
 ---
 
+## 0.5 2026-10-21 真机实测（MI 8 / Android 10 / arm64）
+
+第一次真的把 release 包装到手机、连真服务端跑。**测出 1 个 blocker + 3 个缺陷**，
+全部是单测和 CI 抓不到的（它们跑在宿主上，只验证"能编"，不验证"能联网"）。
+
+### 环境与操作要点（下次直接照做）
+
+```sh
+# 1) 服务端（主机，HTTP 只监听回环，靠 adb reverse 转发）
+WXLIKE_DEV_INSECURE=1 WXLIKE_DB=... WXLIKE_HTTP=127.0.0.1:8099 ./target/debug/wxlike-server
+adb reverse tcp:8099 tcp:8099          # 手机上的 127.0.0.1:8099 → 主机
+
+# 2) 装包：MIUI 会拦 adb install
+#    INSTALL_FAILED_USER_RESTRICTED: Install canceled by user
+adb shell settings put secure install_non_market_apps 1   # ← 关键，不是 adb_install_need_confirm
+adb install -r app-release.apk
+
+# 3) 锁竖屏，否则截图/坐标全乱
+adb shell settings put system accelerometer_rotation 0
+adb shell settings put system user_rotation 0
+```
+
+两个操作坑：
+
+- **`adb shell input text` 会被中文输入法吞掉**：讯飞把 `Alice` 变成候选
+  `Alice / 阿里 / 阿狸`，按空格选中候选后落到输入框里的是 `A里`。
+  用**纯数字**账号（`20261021`）绕过，数字不触发拼音组合。
+- **坐标要用 `uiautomator dump` 取**，不要从截图估。截图被缩放过（1080×2248 的屏
+  出的是 540×1080 的图），按图估坐标会点到框外。例如输入框真实 bounds 是
+  `[33,1931][815,2029]`，中心 `(424,1980)`。
+
+### 通过项
+
+| 项 | 结果 |
+|---|---|
+| 装包并启动 | ✅ 登录屏正常，`.so` 加载成功（没有"打开失败"） |
+| 注册 | ✅ `POST /api/register` 成功，进会话列表 |
+| 在线状态 | ✅ 标题栏绿点"在线"，显示用户 id 前 16 位 |
+| 会话列表 | ✅ 建群后点刷新能看到（"真机测试群 · 2 人"） |
+| 发消息 | ✅ 气泡显示、服务端落库（seq 1） |
+| 对方可见 | ✅ 另一账号用 token 拉到同一条（内容/发送者/seq 都对） |
+| 离线入队 | ✅ 断开 `adb reverse` 后发消息 → "待发送 · 第 2 次" + 重试/删除按钮，不是静默失败 |
+| 手动重试 | ✅ 恢复通道后点"重试"→ 服务端 seq 3 收到 |
+
+### 不通过项（真机才暴露）
+
+1. **release 包缺 INTERNET 权限（blocker，已修）**。
+   症状：`Connect error: Permission denied (os error 13)`——看起来像服务端没起，
+   其实是 EACCES。Flutter 模板只把 `<uses-permission INTERNET>` 放在
+   `src/debug/AndroidManifest.xml`，main 里没有，所以 **debug 能联网、release 不能**。
+   已补进 `src/main/AndroidManifest.xml`（连同 `usesCleartextTraffic`）。
+2. **聊天屏没有实时接收**。对方发的消息不会自己出现；退出重进才看到。
+   `chat.dart` 里没有 Timer/轮询，也没有订阅 QUIC/WS 推送。
+   → 清单 §2 的"对方 3 秒内看到"**不通过**。这不是 bug 而是没实现，
+   但文档此前没写，容易被当成偶发。
+3. **网络恢复后不自动补发**。断开通道 → 消息入队 → 恢复通道 → 等了 10 秒仍是
+   "待发送 · 第 2 次"，必须手动点重试。Mars 那套"网络变化触发队列泵"在
+   FFI/移动端这一层没接上（`core::outbox` 本身有 `flush`，缺的是触发源）。
+4. **重试成功后消息不进列表**。服务端已收到（seq 3），UI 里那条"待发送"气泡
+   消失了，但正常气泡没出现——要退出重进才显示。发送成功的返回值没 append 到
+   `_messages`。
+
+> 这三条（2/3/4）都没修，因为它们是**功能缺口**不是编译错误，要单独排期。
+> 记在这里是为了让下一次验收不用重新发现一遍。
+
 ## 1. 起环境（每次验收前）
 
 ```sh
