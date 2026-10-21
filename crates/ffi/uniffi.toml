@@ -1,0 +1,15 @@
+# UniFFI 生成配置。只有 `[bindings.dart]` 这一段是我们的：Kotlin/Swift 后端忽略它。
+#
+# `library_name` 必须显式写成 crate 名。uniffi-bindgen-dart 把这一个值同时用作
+#   1) Dart 侧 `DynamicLibrary.open` 的默认名，和
+#   2) 运行时辅助符号的名字 `ffi_<library_name>_rustbuffer_from_bytes` 等。
+# 它的默认值是 `uniffi_<namespace>`（那是 Kotlin `System.loadLibrary` 的约定），
+# 而 uniffi 0.32 真正导出的符号是 `ffi_wxlike_ffi_*` —— 用默认值的话绑定的
+# 每个调用都会在 lookup 上炸掉（本机 dart:ffi 冒烟测试抓到过：
+# "Failed to lookup symbol 'ffi_uniffi_wxlike_ffi_rustbuffer_from_bytes'"）。
+#
+# Android 上的实际文件名是 `libwxlike_ffi.so`，由 Dart 侧
+# `configureDefaultBindings(libraryPath: ...)` 显式给，不依赖这里的值。
+[bindings.dart]
+library_name = "wxlike_ffi"
+module_name = "wxlike_ffi"

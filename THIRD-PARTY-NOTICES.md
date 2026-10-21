@@ -23,6 +23,8 @@
 | image, zstd, sha2, chacha20poly1305, hkdf, x25519-dalek, pbkdf2, rand, hex, base64 | — | MIT/Apache-2.0 | media/crypto primitives |
 | ureq | 2.x | MIT | UI-side HTTP client |
 | **tower-http** | 0.7 (`fs`, `set-header`) | MIT | A2 静态托管：`ServeDir`/`ServeFile` 发 `ui/dist-web`，并给壳/资源分别打 `no-store` / `immutable`（Zone A 请求，用户批准新增） |
+| **uniffi** | 0.32.2 + `scaffolding-ffi-buffer-fns` | MPL-2.0 | Zone B 的绑定生成器（`crates/ffi`，ADR-11）。Rust 侧只贡献 `#[derive(uniffi::*)]` 元数据；生成的 Kotlin 与 Dart 都不进 git（`crates/ffi/generated/`、`apps/mobile/lib/src/rust/`），由 `crates/ffi/regenerate.sh` 重建。 |
+| **uniffi-bindgen-dart** | 0.2.0 | MIT | [nchapman/uniffi-bindgen-dart](https://github.com/nchapman/uniffi-bindgen-dart) · 第三方 Dart 后端。UniFFI 官方只有 Kotlin/Swift/Python/Ruby，Flutter 侧必须有这一个；它依赖 `uniffi_bindgen 0.32.2`（与主 crate 同版本，不是 fork）。**只在生成期用**（`crates/ffi` 的 `dart` feature，`cargo build -p wxlike-ffi` 默认不带），不进手机上的 .so。产物 `apps/mobile/lib/src/rust/wxlike_ffi.dart` 是生成代码，重新生成走 `crates/ffi/regenerate.sh`。 |
 | **tantivy** | 0.22.1 | MIT | P3 full-text search index (ADR-22) — replaces the transitional P1 substring search; ngram tokenizer for CJK |
 | **async-nats** | 0.42.0 | Apache-2.0 | P3 realtime channel backend (JetStream durable queues + KV routes) — the official Rust NATS client; no broker hand-written |
 | tracing / tracing-subscriber | 0.1/0.3 | MIT | observability |
