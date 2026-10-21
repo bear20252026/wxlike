@@ -228,9 +228,12 @@ impl WxlikeClient {
             &json!({ "conv": conv, "text": text, "idempotency_key": task.task_id }),
         ) {
             Ok(reply) => Ok(reply["msg_id"].as_str().unwrap_or_default().to_string()),
-            Err(err) => Err(SendFailure {
-                retryable: classify(&err).retryable(),
-                message: err,
+            // 用构造器而不是字面量：`SendFailure` 以后再加字段（比如 `throttled`），
+            // 这里不会再因为少一个字段而编译不过。
+            Err(err) => Err(if classify(&err).retryable() {
+                SendFailure::retryable(err)
+            } else {
+                SendFailure::permanent(err)
             }),
         }
     }
