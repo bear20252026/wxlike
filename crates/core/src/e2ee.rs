@@ -312,11 +312,7 @@ impl Crypto {
     /// 结果落进了"没有 bundle 就发明文"的分支（issue #4）。
     ///
     /// fail closed：会话不存在时报错，绝不退化成明文。
-    pub fn encrypt_dm_existing(
-        &mut self,
-        peer_user_id: &str,
-        plaintext: &[u8],
-    ) -> Result<Sealed> {
+    pub fn encrypt_dm_existing(&mut self, peer_user_id: &str, plaintext: &[u8]) -> Result<Sealed> {
         let state = self
             .dm
             .get_mut(peer_user_id)

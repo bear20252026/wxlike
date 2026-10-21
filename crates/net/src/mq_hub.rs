@@ -83,6 +83,11 @@ pub struct MqHubOptions {
     /// 测试与本地开发用 [`crate::auth::StaticAuth`]；生产用装配层基于
     /// session 表的实现。
     pub auth: Option<Arc<dyn crate::auth::HubAuthenticator>>,
+    /// QUIC 证书的持久化目录（issue #12）。`None` = 每次启动生成新证书（测试用）。
+    ///
+    /// 生产必须给：客户端按 TOFU 记住叶证书指纹，服务端一重启指纹就变，
+    /// 旧客户端会遭遇与中间人攻击一模一样的拒绝。
+    pub cert_dir: Option<std::path::PathBuf>,
 }
 
 /// Contract floor for reclaiming in-flight cross-node entries.
@@ -100,6 +105,7 @@ impl Default for MqHubOptions {
             push_hook: None,
             policy: None,
             auth: None,
+            cert_dir: None,
         }
     }
 }
@@ -305,7 +311,10 @@ pub async fn run_mq_hub_with(
     options: MqHubOptions,
 ) -> anyhow::Result<MqHub> {
     let hub_id = hub_id.into();
-    let endpoint = crate::transport::make_server_endpoint(addr)?;
+    let endpoint = match options.cert_dir.as_deref() {
+        Some(dir) => crate::transport::make_server_endpoint_persistent(addr, dir)?,
+        None => crate::transport::make_server_endpoint(addr)?,
+    };
 
     router
         .routes

@@ -276,6 +276,11 @@ async fn build_hub(
             auth: Some(Arc::new(SessionAuth {
                 platform: platform.clone(),
             })),
+            // QUIC 证书要跟着数据目录走：换了证书，所有客户端 pin 都对不上，
+            // 表现与"有人做中间人"完全相同（issue #12）。
+            // 跟着数据目录走：内存库（测试）每次给一个唯一临时目录，
+            // 文件库用 db 的父目录 —— 重启后证书不变，pin 仍然匹配。
+            cert_dir: Some(sidecar_dir(opts.db_path.as_deref(), "quic")),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
             push_hook: Some(wxlike_push::AggregatingDispatchHook::spawn(
                 wxlike_push::DispatchHook::new(

@@ -54,12 +54,77 @@ pub fn server_transport_config() -> quinn::TransportConfig {
     cfg
 }
 
+/// 与 [`make_server_endpoint`] 相同，但**证书持久化**在 `dir` 里（issue #12）。
+///
+/// 首次调用生成自签证书并写 `quic-cert.der` / `quic-key.der`，之后每次启动复用。
+/// 这样客户端 pin 的叶证书指纹在重启后仍然匹配——否则"服务端正常重启"与
+/// "有人换了证书"在客户端看起来完全一样，TOFU 就退化成了每次都要重新信任。
+///
+/// 目录不可写时**直接失败**，不悄悄退回"每次生成新证书"：那会把一个部署问题
+/// 变成"所有人下次连不上"。
+pub fn make_server_endpoint_persistent(
+    addr: std::net::SocketAddr,
+    dir: &Path,
+) -> anyhow::Result<quinn::Endpoint> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create cert dir {}", dir.display()))?;
+    let cert_path = dir.join("quic-cert.der");
+    let key_path = dir.join("quic-key.der");
+
+    let (cert_der, key_der) = match (cert_path.exists(), key_path.exists()) {
+        (true, true) => {
+            let cert = std::fs::read(&cert_path)
+                .with_context(|| format!("read {}", cert_path.display()))?;
+            let key = std::fs::read(&key_path)
+                .with_context(|| format!("read {}", key_path.display()))?;
+            (CertificateDer::from(cert), PrivatePkcs8KeyDer::from(key))
+        }
+        (false, false) => {
+            let ck =
+                rcgen::generate_simple_self_signed(vec!["localhost".into(), "wxlike.dev".into()])?;
+            let cert = ck.cert.der().to_vec();
+            let key = ck.key_pair.serialize_der();
+            std::fs::write(&cert_path, &cert)
+                .with_context(|| format!("write {}", cert_path.display()))?;
+            std::fs::write(&key_path, &key)
+                .with_context(|| format!("write {}", key_path.display()))?;
+            tracing::info!(
+                cert = %cert_path.display(),
+                fingerprint = %cert_fingerprint(&CertificateDer::from(cert.clone())),
+                "generated a new QUIC certificate (first start in this data dir)"
+            );
+            (CertificateDer::from(cert), PrivatePkcs8KeyDer::from(key))
+        }
+        // 一半有一半没有：说明有人删了其中一个。不能猜，否则会生成新证书
+        // 让所有客户端被 pin 拒绝，而日志里看不出为什么。
+        (c, k) => anyhow::bail!(
+            "incomplete QUIC cert material in {}: cert={c} key={k}；             要么两个都保留，要么两个都删掉重新生成（后者会让客户端需要重新 pin）",
+            dir.display()
+        ),
+    };
+
+    endpoint_from_cert(addr, cert_der, key_der)
+}
+
 /// Bind a QUIC endpoint that accepts connections with a fresh self-signed cert.
+///
+/// **每次调用都换证书**，只适合测试：客户端按 TOFU 记住叶证书指纹，
+/// 服务端一重启指纹就变，旧客户端会遭遇与中间人攻击一模一样的拒绝。
+/// 生产用 [`make_server_endpoint_persistent`]。
 pub fn make_server_endpoint(addr: std::net::SocketAddr) -> anyhow::Result<quinn::Endpoint> {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into(), "wxlike.dev".into()])?;
-    let cert_der = ck.cert.der().clone();
-    let key_der = PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+    endpoint_from_cert(
+        addr,
+        ck.cert.der().clone(),
+        PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()),
+    )
+}
 
+/// 用给定的证书/私钥 bind 端点。两条入口（每次新建 / 持久化）共用这段。
+fn endpoint_from_cert(
+    addr: std::net::SocketAddr,
+    cert_der: CertificateDer<'static>,
+    key_der: PrivatePkcs8KeyDer<'static>,
+) -> anyhow::Result<quinn::Endpoint> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut server_crypto = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])
