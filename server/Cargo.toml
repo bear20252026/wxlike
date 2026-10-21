@@ -23,6 +23,8 @@ async-nats = { version = "0.42", optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
+# A2: /app 静态托管（ServeDir / ServeFile）
+tower-http = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -22,6 +22,7 @@
 | boa_engine | 0.20 | MIT/Apache-2.0 | JS engine in the research container |
 | image, zstd, sha2, chacha20poly1305, hkdf, x25519-dalek, pbkdf2, rand, hex, base64 | — | MIT/Apache-2.0 | media/crypto primitives |
 | ureq | 2.x | MIT | UI-side HTTP client |
+| **tower-http** | 0.7 (`fs`, `set-header`) | MIT | A2 静态托管：`ServeDir`/`ServeFile` 发 `ui/dist-web`，并给壳/资源分别打 `no-store` / `immutable`（Zone A 请求，用户批准新增） |
 | **tantivy** | 0.22.1 | MIT | P3 full-text search index (ADR-22) — replaces the transitional P1 substring search; ngram tokenizer for CJK |
 | **async-nats** | 0.42.0 | Apache-2.0 | P3 realtime channel backend (JetStream durable queues + KV routes) — the official Rust NATS client; no broker hand-written |
 | tracing / tracing-subscriber | 0.1/0.3 | MIT | observability |
