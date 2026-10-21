@@ -12,8 +12,21 @@
 > 422 输入非法 · 428 需要人机校验 · 429 限流。
 >
 > **请求体解析失败也是这个形状**：`422 {"error": "请求体不合法（字段 name）：..."}`。
-> 不用 axum 默认的 `Json`（它会返回纯文本），统一走
-> `wxlike_platform::extract::ApiJson`；错误里带字段路径，调用方不用猜是哪一项。
+> 不用 axum 默认的 `Json`（它会返回纯文本），统一走 `wxlike_api::ApiJson`
+> （`wxlike_platform::extract` 只是转发）；错误里带字段路径，调用方不用猜是哪一项。
+>
+> 这份契约**只有一份实现**：`crates/api`（`wxlike-api`）。它只依赖 axum 与
+> serde，所以 `platform` / `video` / `admin` / `server` 共用同一个 `ApiError`，
+> 而不是各自定义一遍。加新服务时直接依赖它，不要复制。
+>
+> **已知偏差（两条，都不是"忘了"）**：
+>
+> 1. `multipart` 提取失败（请求根本不是 multipart）仍由 axum 渲染成纯文本。
+>    客户端总是发 multipart，实际不会遇到；要统一得包一层自定义提取器。
+> 2. `video` 的 500 分支曾经把 anyhow 链整段回显（可能含绝对路径）。
+>    `not_found_if_missing` 已改成"日志记全量、客户端只看
+>    `video storage failure`"，但其它 500 构造点仍是 `format!("{e:#}")`。
+>    收紧它要逐个判断哪些消息对调用方有意义，属单独一项。
 
 ## Zone C：社群层（社区 / 频道 / 话题）
 

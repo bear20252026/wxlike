@@ -1,9 +1,9 @@
 {
- "total_files": 133,
- "total_lines": 42247,
- "fn_total": 1925,
- "count_len_gt30": 215,
- "count_len_gt60": 42,
+ "total_files": 134,
+ "total_lines": 42315,
+ "fn_total": 1935,
+ "count_len_gt30": 214,
+ "count_len_gt60": 41,
  "count_len_gt100": 10,
  "count_nest_gt3": 63,
  "count_mixed_sql_http": 1,
@@ -105,19 +105,19 @@
   ],
   [
    "crates/video/src/lib.rs",
-   1019
+   1025
   ],
   [
    "crates/net/src/mq_hub.rs",
    1015
   ],
   [
-   "crates/video/src/jobs.rs",
-   951
-  ],
-  [
    "crates/admin/src/read.rs",
    945
+  ],
+  [
+   "crates/video/src/jobs.rs",
+   944
   ],
   [
    "crates/admin/src/http.rs",
@@ -148,12 +148,12 @@
    634
   ],
   [
-   "crates/video/src/live.rs",
-   629
-  ],
-  [
    "crates/core/src/e2ee.rs",
    620
+  ],
+  [
+   "crates/video/src/live.rs",
+   606
   ],
   [
    "crates/rtc/src/turn.rs",
@@ -183,7 +183,7 @@
   {
    "file": "crates/video/src/lib.rs",
    "name": "run_pipeline",
-   "line": 420,
+   "line": 421,
    "len": 157,
    "nest": 2,
    "sql": false,
@@ -414,7 +414,7 @@
   {
    "file": "crates/video/src/jobs.rs",
    "name": "submit_job",
-   "line": 284,
+   "line": 285,
    "len": 74,
    "nest": 2,
    "sql": true,
@@ -458,7 +458,7 @@
   {
    "file": "crates/video/src/stats.rs",
    "name": "record_watch",
-   "line": 135,
+   "line": 136,
    "len": 70,
    "nest": 2,
    "sql": true,
@@ -790,7 +790,7 @@
   {
    "file": "crates/video/src/jobs.rs",
    "name": "read_job_fields",
-   "line": 908,
+   "line": 901,
    "len": 44,
    "nest": 5,
    "sql": false,
@@ -989,7 +989,7 @@
    "crates/platform/src/report.rs:366",
    "crates/platform/src/video_refs.rs:199",
    "crates/platform/src/video_refs.rs:317",
-   "crates/video/src/jobs.rs:785"
+   "crates/video/src/jobs.rs:786"
   ],
   "128": [
    "crates/net/src/avalanche.rs:54",
@@ -1030,7 +1030,7 @@
   ],
   "13": [
    "crates/platform/src/db.rs:640",
-   "crates/video/src/jobs.rs:787"
+   "crates/video/src/jobs.rs:788"
   ],
   "15": [
    "crates/risk/src/lib.rs:52",
@@ -1175,6 +1175,7 @@
    "platform",
    "report"
   ],
+  "api": [],
   "cli": [
    "client",
    "cmd"
@@ -1213,6 +1214,7 @@
    "mq"
   ],
   "platform": [
+   "api",
    "core",
    "message",
    "moderation",
@@ -1234,11 +1236,13 @@
    "rtc"
   ],
   "video": [
+   "api",
    "core"
   ]
  },
  "dev_deps": {
   "admin": [],
+  "api": [],
   "cli": [],
   "client": [],
   "cmd": [],

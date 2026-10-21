@@ -26,12 +26,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::Context as _;
 use axum::extract::multipart::Multipart;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, State};
-use axum::http::{header, StatusCode};
+use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
+use wxlike_api::{ApiError, ApiResult};
 
 mod db;
 mod jobs;
@@ -737,28 +738,25 @@ pub fn routes(state: VideoState) -> Router {
         .layer(DefaultBodyLimit::max(MAX_VIDEO_BYTES))
 }
 
-async fn upload(
-    State(state): State<VideoState>,
-    mut form: Multipart,
-) -> std::result::Result<Json<Ingested>, (StatusCode, String)> {
+async fn upload(State(state): State<VideoState>, mut form: Multipart) -> ApiResult<Json<Ingested>> {
     let bytes = read_field(&mut form)
         .await
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        .map_err(ApiError::unprocessable)?;
     if bytes.is_empty() {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "empty upload".into()));
+        return Err(ApiError::unprocessable("empty upload"));
     }
     let ingested = state
         .store
         .ingest(&bytes)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("ingest: {e:#}")))?;
+        .map_err(|e| ApiError::internal(format!("ingest: {e:#}")))?;
     Ok(Json(ingested))
 }
 
 async fn meta(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
-) -> std::result::Result<Json<VideoMeta>, (StatusCode, String)> {
+) -> ApiResult<Json<VideoMeta>> {
     check_id(&video_id)?;
     state
         .store
@@ -770,7 +768,7 @@ async fn meta(
 async fn playlist(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> ApiResult<impl IntoResponse> {
     check_id(&video_id)?;
     let body = state
         .store
@@ -785,7 +783,7 @@ async fn playlist(
 async fn segment(
     State(state): State<VideoState>,
     AxumPath((video_id, name)): AxumPath<(String, String)>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> ApiResult<impl IntoResponse> {
     check_id(&video_id)?;
     check_segment_name(&name)?;
     let body = state
@@ -799,12 +797,12 @@ async fn segment(
 async fn rendition_playlist(
     State(state): State<VideoState>,
     AxumPath((video_id, rendition)): AxumPath<(String, String)>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> ApiResult<impl IntoResponse> {
     check_id(&video_id)?;
     check_rendition(&rendition)?;
     let height: u32 = rendition
         .parse()
-        .map_err(|_| (StatusCode::NOT_FOUND, "malformed rendition".to_string()))?;
+        .map_err(|_| ApiError::not_found("malformed rendition"))?;
     let body = state
         .store
         .rendition_playlist(&video_id, height)
@@ -820,7 +818,7 @@ async fn rendition_playlist(
 async fn segment_in_rendition(
     State(state): State<VideoState>,
     AxumPath((video_id, rendition, name)): AxumPath<(String, String, String)>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> ApiResult<impl IntoResponse> {
     check_id(&video_id)?;
     check_rendition(&rendition)?;
     check_segment_name(&name)?;
@@ -839,7 +837,7 @@ async fn play_mp4(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
-) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
+) -> ApiResult<axum::response::Response> {
     check_id(&video_id)?;
     let path = state.store.dir_public(&video_id).join("play.mp4");
     Ok(serve_file(path, "video/mp4", headers).await)
@@ -850,7 +848,7 @@ async fn thumb(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
-) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
+) -> ApiResult<axum::response::Response> {
     check_id(&video_id)?;
     let path = state.store.dir_public(&video_id).join("thumb.png");
     Ok(serve_file(path, "image/png", headers).await)
@@ -867,13 +865,7 @@ pub(crate) async fn serve_file(
 ) -> axum::response::Response {
     tokio::task::spawn_blocking(move || range::respond_with_range(&path, content_type, &headers))
         .await
-        .unwrap_or_else(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("file task: {err}"),
-            )
-                .into_response()
-        })
+        .unwrap_or_else(|err| ApiError::internal(format!("file task: {err}")).into_response())
 }
 
 /// 选流（Track B 的"按码率选流"）：规则写在 Rust 里，三端才可能选到同一档。
@@ -884,22 +876,18 @@ async fn select(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
     axum::extract::Query(q): axum::extract::Query<SelectQuery>,
-) -> std::result::Result<Json<SelectedRendition>, (StatusCode, String)> {
+) -> ApiResult<Json<SelectedRendition>> {
     check_id(&video_id)?;
-    let kbps = q.kbps.ok_or((
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "need ?kbps=<measured available kbps>".to_string(),
-    ))?;
+    let kbps = q
+        .kbps
+        .ok_or_else(|| ApiError::unprocessable("need ?kbps=<measured available kbps>"))?;
     if kbps == 0 {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "kbps must be positive".to_string(),
-        ));
+        return Err(ApiError::unprocessable("kbps must be positive"));
     }
     let meta = state.store.meta(&video_id).map_err(not_found_if_missing)?;
     let available_bps = kbps.saturating_mul(1_000);
     let chosen = select_rendition(&meta.renditions, available_bps)
-        .ok_or((StatusCode::NOT_FOUND, "video has no renditions".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("video has no renditions"))?;
     Ok(Json(SelectedRendition {
         video_id,
         available_bps,
@@ -931,20 +919,20 @@ pub struct SelectedRendition {
 
 /// Ids are content hashes: anything else is a 404-shaped refusal, decided
 /// before any path is joined (same rule as the media store).
-pub fn check_id(video_id: &str) -> Result<(), (StatusCode, String)> {
+pub fn check_id(video_id: &str) -> ApiResult<()> {
     if video_id.len() == wxlike_core::limits::SHA256_HEX_LEN
         && video_id.chars().all(|c| c.is_ascii_hexdigit())
     {
         Ok(())
     } else {
-        Err((StatusCode::NOT_FOUND, "malformed video id".into()))
+        Err(ApiError::not_found("malformed video id"))
     }
 }
 
 /// Segment names come from the playlist ffmpeg wrote: `seg_NNN.ts`（单档老对象）
 /// or `720/seg_NNN.ts`（多档，由 `segment_in_rendition` 拼出）。其余一律拒绝，
 /// 且在碰文件系统之前拒绝。
-pub fn check_segment_name(name: &str) -> Result<(), (StatusCode, String)> {
+pub fn check_segment_name(name: &str) -> ApiResult<()> {
     let parts: Vec<&str> = name.split('/').collect();
     let file_ok = |f: &str| {
         !f.is_empty()
@@ -967,17 +955,17 @@ pub fn check_segment_name(name: &str) -> Result<(), (StatusCode, String)> {
     if ok {
         Ok(())
     } else {
-        Err((StatusCode::NOT_FOUND, "malformed segment name".into()))
+        Err(ApiError::not_found("malformed segment name"))
     }
 }
 
 /// 档位目录：2–4 位数字（360/720/1080）。
-pub fn check_rendition(rendition: &str) -> Result<(), (StatusCode, String)> {
+pub fn check_rendition(rendition: &str) -> ApiResult<()> {
     let ok = (2..=4).contains(&rendition.len()) && rendition.chars().all(|c| c.is_ascii_digit());
     if ok {
         Ok(())
     } else {
-        Err((StatusCode::NOT_FOUND, "malformed rendition".into()))
+        Err(ApiError::not_found("malformed rendition"))
     }
 }
 
@@ -991,14 +979,32 @@ pub fn check_segment_ok(name: &str) -> bool {
     check_segment_name(name).is_ok()
 }
 
-fn not_found_if_missing(err: anyhow::Error) -> (StatusCode, String) {
-    // missing artifacts surface as 404; everything else is a 500
-    let text = format!("{err:#}");
-    if text.contains("No such file") || text.contains("os error 2") {
-        (StatusCode::NOT_FOUND, text)
-    } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, text)
+/// 产物缺失 → 404，其余 → 500。
+///
+/// **不能靠错误文案判断**。原来的实现是
+/// `text.contains("No such file") || text.contains("os error 2")`——那是 Unix 的
+/// 说法；Windows 上同一条路径报的是「系统找不到指定的路径。(os error 3)」，
+/// 于是"视频不存在"在 Windows 上返回 **500**，客户端看到的是"服务端炸了"
+/// 而不是"这条还没转完"。这类 bug 只在另一个平台上现形，本地永远绿。
+///
+/// 改成看 [`std::io::ErrorKind`]：`anyhow` 的 `chain()` 会遍历 context 链，
+/// 所以包了 `.context("read meta for {id}")` 也能找到底下那个 `io::Error`。
+fn not_found_if_missing(err: anyhow::Error) -> ApiError {
+    let missing = err
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io| io.kind() == std::io::ErrorKind::NotFound);
+
+    if missing {
+        // 404 的文案对调用方有意义（哪个对象缺失），保留。
+        return ApiError::not_found(format!("{err:#}"));
     }
+
+    // 500 不回显 anyhow 链：它可能带绝对路径（"read meta for /srv/...")。
+    // 细节进日志，客户端只看到一句概括——`ApiError` 的 message 是回显给
+    // 调用方的，这条约束写在 `wxlike-api` 的 crate 文档里。
+    tracing::error!(error = %format!("{err:#}"), "video artifact read failed");
+    ApiError::internal("video storage failure")
 }
 
 async fn read_field(form: &mut Multipart) -> Result<Vec<u8>, String> {

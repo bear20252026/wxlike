@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 wxlike-core = { path = "../core" }
+# 错误契约与平台共用一份：以前这里是 `(StatusCode, String)`（纯文本）
+wxlike-api = { path = "../api" }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 anyhow = { workspace = true }

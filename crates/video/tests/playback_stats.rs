@@ -106,8 +106,11 @@ async fn get_json_with(
     )
 }
 
-/// 错误体在本 crate 里是纯文本（沿用 `upload`/`meta` 既有的
-/// `(StatusCode, String)` 形状），断言文案要用原文而不是 JSON。
+/// 取原始响应体（文本），用于断言错误文案里**必须出现/不能出现**的片段。
+///
+/// 错误体现在是统一的 `{"error": "..."}`（见 `error_contract.rs`），
+/// 这里保留文本形式是因为断言的是"文案里有没有提到某个配置名"，
+/// 而不是形状——形状由 `error_contract.rs` 单独守。
 async fn get_raw(
     app: &axum::Router,
     uri: &str,
@@ -273,11 +276,17 @@ async fn watch_events_are_recorded_aggregated_and_gated() {
     // 没配 token：明确 503，绝不返回空名单假装"没人看"
     let (status, body) = get_raw(&app, &viewers_uri, &[]).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    // 解析出来再断言：确认它**是**统一形状，而不是碰巧文本里含那个词。
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|e| panic!("错误体必须是 JSON（{e}）: {body}"));
+    let msg = parsed["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("错误体必须有 error 字段: {body}"));
     assert!(
-        body.contains(STATS_TOKEN_ENV),
+        msg.contains(STATS_TOKEN_ENV),
         "错误要说清缺哪个配置: {body}"
     );
-    assert!(!body.contains("u1"), "503 的说明里不能漏出身份: {body}");
+    assert!(!msg.contains("u1"), "503 的说明里不能漏出身份: {body}");
 
     std::env::set_var(STATS_TOKEN_ENV, "list-token");
     // 配了但没带 → 403（这是"你没权限"，跟"服务没配"不是一回事）

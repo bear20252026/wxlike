@@ -14,6 +14,7 @@ use std::path::Path;
 use anyhow::Context as _;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use wxlike_api::ApiError;
 
 /// 闭区间字节范围（保证 `start <= end`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,11 +175,10 @@ pub fn respond_with_range(
 }
 
 /// 缺失对象一律 404（与媒体下载同一个形状）。
+///
+/// 以前这里手拼 `r#"{"error":"..."}"#`：形状对，但**契约是硬编码字符串**——
+/// 改一个键名就得回来改字面量，而且没人保证它和平台的错误体一致。
+/// 现在走 `ApiError`，一份定义。
 fn missing() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        [(header::CONTENT_TYPE, "application/json")],
-        r#"{"error":"no such video artifact"}"#,
-    )
-        .into_response()
+    ApiError::not_found("no such video artifact").into_response()
 }

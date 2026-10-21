@@ -1,9 +1,18 @@
-//! Error types for the platform service: a `thiserror` enum for library code
-//! and an HTTP-facing wrapper that renders `{ "error": ... }` bodies.
+//! 平台错误：库层的 `PlatformError` + 它的 HTTP 映射。
+//!
+//! **HTTP 错误契约本身不在这里**——`ApiError` / `ApiJson` 已提到
+//! `wxlike-api`，因为 `wxlike-video` 也要用同一份形状。这个模块只保留
+//! 两件平台专属的事：
+//!
+//! 1. `PlatformError`：库层错误枚举（带 SQLite / IO 来源，供 `?` 传播）；
+//! 2. `From<PlatformError> for ApiError`：**脱敏映射**——SQL 与 IO 的细节
+//!    留在服务端日志里，客户端只看到 "database failure" 这种概括。
 
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
+
+/// 错误契约的唯一实现，这里只做转发，保持 `wxlike_platform::error::ApiError`
+/// 这个路径对既有调用点有效。
+pub use wxlike_api::ApiError;
 
 pub type Result<T> = std::result::Result<T, PlatformError>;
 
@@ -49,21 +58,6 @@ impl From<wxlike_risk::RiskError> for PlatformError {
     }
 }
 
-/// HTTP-visible error: status plus a client-safe message (no SQL text leaks).
-pub struct ApiError {
-    pub status: StatusCode,
-    pub message: String,
-}
-
-impl ApiError {
-    pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            message: message.into(),
-        }
-    }
-}
-
 impl From<PlatformError> for ApiError {
     fn from(e: PlatformError) -> Self {
         // Client-safe messages only: SQL and IO details stay in the server log.
@@ -101,15 +95,5 @@ impl From<PlatformError> for ApiError {
             }
             PlatformError::Internal(msg) => Self::new(StatusCode::INTERNAL_SERVER_ERROR, msg),
         }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
     }
 }

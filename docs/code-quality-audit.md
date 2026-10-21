@@ -457,6 +457,7 @@ search、video、hub、router 全串在一个函数里。
 | 2 | `run()` 处理表 | ✅ | 220 行 → 15 行；顺手修掉两条绕过审计标记的命令 |
 | 2 | `migrate` / `migrate_p4` | ✅ | DDL 抽成 `SCHEMA` / `SCHEMA_P4`；新增表结构快照测试 |
 | 2 | `start_stack` | ✅ | 204 行 → 55 行，拆成 5 个 `build_*` |
+| 2 | 错误契约收口（`crates/api`） | ✅ | 新增零业务依赖的 `wxlike-api`；`video` 的 30 处 `(StatusCode, String)` → `ApiResult`，顺带修掉 Windows 上"视频不存在返回 500" |
 | 2 | `mq_hub` 拆帧 | ⏳ | 主链路，需先补帧级测试 |
 | 3 | `Platform` 门面化 / 抽 `crates/wire` | ⏳ | 单独排期 |
 
@@ -464,7 +465,7 @@ search、video、hub、router 全串在一个函数里。
 
 | 指标 | 审计时 | 现在 |
 |---|---|---|
-| 函数 >60 行 | 46 | **42** |
+| 函数 >60 行 | 46 | **41** |
 | 函数 >100 行 | 14 | **10** |
 | 嵌套 >3 层 | 63 | 63 |
 | 跨文件重复窗口 | 78 | 78 |

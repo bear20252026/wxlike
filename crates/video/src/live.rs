@@ -34,6 +34,7 @@ use axum::{Json, Router};
 use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use wxlike_api::{ApiError, ApiResult};
 
 use crate::{timing::constant_time_eq, VideoState, VideoStore};
 
@@ -439,25 +440,23 @@ pub struct LiveAppendReply {
 /// * 401 = 没带头 / 签名不对 / 已过期（接入节点的问题，重试也没用）
 ///
 /// 把这两种混成一个 403，运维就只能靠猜。
-fn authorize(stream_key: &str, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+fn authorize(stream_key: &str, headers: &HeaderMap) -> ApiResult<()> {
     let Some(secret) = ingest_secret_from_env() else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("{LIVE_SECRET_ENV} is not set; refusing all ingest (no dev default secret)"),
-        ));
+        return Err(ApiError::unavailable(format!(
+            "{LIVE_SECRET_ENV} is not set; refusing all ingest (no dev default secret)"
+        )));
     };
     let Some(token) = headers
         .get(LIVE_TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
     else {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            format!("missing {LIVE_TOKEN_HEADER}"),
-        ));
+        return Err(ApiError::unauthorized(format!(
+            "missing {LIVE_TOKEN_HEADER}"
+        )));
     };
     verify_ingest_token(&secret, stream_key, &token, wxlike_core::types::now_ms())
-        .map_err(|err| (StatusCode::UNAUTHORIZED, err.to_string()))
+        .map_err(|err| ApiError::unauthorized(err.to_string()))
 }
 
 /// 拉直播清单。
@@ -467,12 +466,12 @@ fn authorize(stream_key: &str, headers: &HeaderMap) -> Result<(), (StatusCode, S
 async fn get_playlist(
     State(state): State<VideoState>,
     AxumPath(stream_key): AxumPath<String>,
-) -> std::result::Result<Response, (StatusCode, String)> {
+) -> ApiResult<Response> {
     check_stream_key(&stream_key).map_err(not_found)?;
     let bytes = state
         .store
         .live_playlist_bytes(&stream_key)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
     Ok(match bytes {
         Some(body) => (
             StatusCode::OK,
@@ -483,13 +482,10 @@ async fn get_playlist(
             body,
         )
             .into_response(),
-        // 没有会话就是 404：回一份空清单会让播放器以为"在播但没内容"
-        None => (
-            StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "application/json")],
-            r#"{"error":"no live session"}"#,
-        )
-            .into_response(),
+        // 没有会话就是 404：回一份空清单会让播放器以为"在播但没内容"。
+        // 以前这里手拼 `{"error":"no live session"}`——形状对、但是硬编码的字符串，
+        // 多一个字段就得改字面量。现在走统一契约。
+        None => ApiError::not_found("no live session").into_response(),
     })
 }
 
@@ -498,7 +494,7 @@ async fn get_segment(
     State(state): State<VideoState>,
     AxumPath((stream_key, name)): AxumPath<(String, String)>,
     headers: HeaderMap,
-) -> std::result::Result<Response, (StatusCode, String)> {
+) -> ApiResult<Response> {
     check_stream_key(&stream_key).map_err(not_found)?;
     check_live_segment_name(&name).map_err(not_found)?;
     let path = state.store.live_segment_path(&stream_key, &name);
@@ -511,35 +507,32 @@ async fn push_segment(
     AxumPath((stream_key, name)): AxumPath<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
-) -> std::result::Result<(StatusCode, Json<LiveAppendReply>), (StatusCode, String)> {
+) -> ApiResult<(StatusCode, Json<LiveAppendReply>)> {
     check_stream_key(&stream_key).map_err(bad_request)?;
     authorize(&stream_key, &headers)?;
     check_live_segment_name(&name).map_err(bad_request)?;
     let duration_ms = header_ms(&headers)?;
     if duration_ms == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("{LIVE_SEGMENT_MS_HEADER} must be positive"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "{LIVE_SEGMENT_MS_HEADER} must be positive"
+        )));
     }
     // 已经结束的会话、以及重推的同一片，都在落盘之前拒掉：
     // 后者一旦落盘就会在清单里写出两条相同的 `#EXTINF`。
     let existing = state
         .store
         .live_window(&stream_key)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
     if let Some(window) = existing {
         if window.ended {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("live session {stream_key} already ended"),
-            ));
+            return Err(ApiError::conflict(format!(
+                "live session {stream_key} already ended"
+            )));
         }
         if window.contains_name(&name) {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("segment {name} was already packed into this session"),
-            ));
+            return Err(ApiError::conflict(format!(
+                "segment {name} was already packed into this session"
+            )));
         }
     }
     let store = state.store.clone();
@@ -548,13 +541,8 @@ async fn push_segment(
         store.live_append_segment(&key, &name, &body, duration_ms)
     })
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("packager task: {e}"),
-        )
-    })?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    .map_err(|e| ApiError::internal(format!("packager task: {e}")))?
+    .map_err(|e| ApiError::internal(format!("{e:#}")))?;
     let last_seq = window
         .segments
         .last()
@@ -577,53 +565,42 @@ async fn stop_session(
     State(state): State<VideoState>,
     AxumPath(stream_key): AxumPath<String>,
     headers: HeaderMap,
-) -> std::result::Result<Json<LiveWindow>, (StatusCode, String)> {
+) -> ApiResult<Json<LiveWindow>> {
     check_stream_key(&stream_key).map_err(bad_request)?;
     authorize(&stream_key, &headers)?;
     let store = state.store.clone();
     let key = stream_key.clone();
     let result = tokio::task::spawn_blocking(move || store.live_end(&key))
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("packager task: {e}"),
-            )
-        })?;
+        .map_err(|e| ApiError::internal(format!("packager task: {e}")))?;
     match result {
         Ok(window) => Ok(Json(window)),
         // 没推过流、或已经停过：404，而不是"成功停了一个空会话"
         Err(err) if err.to_string().contains("no live session") => {
-            Err((StatusCode::NOT_FOUND, err.to_string()))
+            Err(ApiError::not_found(err.to_string()))
         }
-        Err(err) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}"))),
+        Err(err) => Err(ApiError::internal(format!("{err:#}"))),
     }
 }
 
 /// 毫秒时长头：缺失/非数字都是 400，不猜时长（清单里的 `TARGETDURATION` 与
 /// `#EXTINF` 一旦打架，播放器会整段拒收）。
-fn header_ms(headers: &HeaderMap) -> Result<u64, (StatusCode, String)> {
+fn header_ms(headers: &HeaderMap) -> ApiResult<u64> {
     let raw = headers
         .get(LIVE_SEGMENT_MS_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("missing {LIVE_SEGMENT_MS_HEADER}"),
-        ))?;
+        .ok_or_else(|| ApiError::bad_request(format!("missing {LIVE_SEGMENT_MS_HEADER}")))?;
     raw.parse::<u64>().map_err(|err| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("{LIVE_SEGMENT_MS_HEADER} is not a number: {err}"),
-        )
+        ApiError::bad_request(format!("{LIVE_SEGMENT_MS_HEADER} is not a number: {err}"))
     })
 }
 
-fn not_found(msg: String) -> (StatusCode, String) {
-    (StatusCode::NOT_FOUND, msg)
+fn not_found(msg: String) -> ApiError {
+    ApiError::not_found(msg)
 }
 
-fn bad_request(msg: String) -> (StatusCode, String) {
-    (StatusCode::BAD_REQUEST, msg)
+fn bad_request(msg: String) -> ApiError {
+    ApiError::bad_request(msg)
 }

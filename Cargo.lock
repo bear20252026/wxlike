@@ -6230,6 +6230,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tokio",
+]
+
+[[package]]
 name = "wxlike-cli"
 version = "0.1.0"
 dependencies = [
@@ -6435,6 +6446,7 @@ dependencies = [
  "totp-rs",
  "tower",
  "tracing",
+ "wxlike-api",
  "wxlike-core",
  "wxlike-message",
  "wxlike-moderation",
@@ -6575,6 +6587,7 @@ dependencies = [
  "tower",
  "tracing",
  "ureq",
+ "wxlike-api",
  "wxlike-core",
 ]
 

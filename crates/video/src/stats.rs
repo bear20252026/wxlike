@@ -21,6 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use wxlike_api::{ApiError, ApiJson, ApiResult};
 
 use crate::{timing::constant_time_eq, VideoState, VideoStore};
 
@@ -326,29 +327,27 @@ pub(crate) fn routes(state: VideoState) -> Router {
 async fn record_view(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
-    Json(event): Json<WatchEvent>,
-) -> std::result::Result<(StatusCode, Json<WatchEventRecord>), (StatusCode, String)> {
+    ApiJson(event): ApiJson<WatchEvent>,
+) -> ApiResult<(StatusCode, Json<WatchEventRecord>)> {
     crate::check_id(&video_id)?;
     match state.store.record_watch(&video_id, &event) {
         Ok(record) => Ok((StatusCode::CREATED, Json(record))),
-        Err(WatchError::Invalid(msg)) => Err((StatusCode::UNPROCESSABLE_ENTITY, msg)),
-        Err(WatchError::UnknownVideo) => Err((StatusCode::NOT_FOUND, "no such video".to_string())),
-        Err(err @ WatchError::Store(_)) => {
-            Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
-        }
+        Err(WatchError::Invalid(msg)) => Err(ApiError::unprocessable(msg)),
+        Err(WatchError::UnknownVideo) => Err(ApiError::not_found("no such video")),
+        Err(err @ WatchError::Store(_)) => Err(ApiError::internal(err.to_string())),
     }
 }
 
 async fn get_stats(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
-) -> std::result::Result<Json<WatchStats>, (StatusCode, String)> {
+) -> ApiResult<Json<WatchStats>> {
     crate::check_id(&video_id)?;
     state
         .store
         .watch_stats(&video_id)
         .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+        .map_err(|e| ApiError::internal(format!("{e:#}")))
 }
 
 async fn get_viewers(
@@ -356,7 +355,7 @@ async fn get_viewers(
     AxumPath(video_id): AxumPath<String>,
     headers: HeaderMap,
     Query(page): Query<ViewerPage>,
-) -> std::result::Result<Json<Vec<ViewerWatch>>, (StatusCode, String)> {
+) -> ApiResult<Json<Vec<ViewerWatch>>> {
     crate::check_id(&video_id)?;
     require_stats_token(&headers)?;
     let limit = page.limit.unwrap_or(DEFAULT_VIEWER_PAGE);
@@ -364,23 +363,22 @@ async fn get_viewers(
         .store
         .watch_viewers(&video_id, limit)
         .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+        .map_err(|e| ApiError::internal(format!("{e:#}")))
 }
 
 /// 按人名单的门：没配 `WXLIKE_VIDEO_STATS_TOKEN` 就直接拒绝。
 ///
 /// 用 503 而不是 403：这是"服务没配这项能力"，不是"你没权限"。让运维看一眼
 /// 就知道去配环境变量，而不是去查用户角色。
-fn require_stats_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+fn require_stats_token(headers: &HeaderMap) -> ApiResult<()> {
     let expected = std::env::var(STATS_TOKEN_ENV)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let Some(expected) = expected else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("viewer identity breakdown needs {STATS_TOKEN_ENV} to be configured"),
-        ));
+        return Err(ApiError::unavailable(format!(
+            "viewer identity breakdown needs {STATS_TOKEN_ENV} to be configured"
+        )));
     };
     let given = headers
         .get(STATS_TOKEN_HEADER)
@@ -390,10 +388,9 @@ fn require_stats_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)> 
     if constant_time_eq(given.as_bytes(), expected.as_bytes()) {
         Ok(())
     } else {
-        Err((
-            StatusCode::FORBIDDEN,
-            format!("viewer identity breakdown needs a matching {STATS_TOKEN_HEADER}"),
-        ))
+        Err(ApiError::forbidden(format!(
+            "viewer identity breakdown needs a matching {STATS_TOKEN_HEADER}"
+        )))
     }
 }
 

@@ -1,0 +1,19 @@
+[package]
+name = "wxlike-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# 这个 crate 的**唯一职责**是定义 HTTP 错误契约。它刻意只依赖 axum 与 serde：
+# 任何业务 crate（platform / video / admin / server）都能用它，而不会因为
+# 引了它就把 SQLite、ffmpeg、QUIC 一起编进来。
+[dependencies]
+axum = { version = "0.8", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# 已在依赖树里（axum 用它）：把"哪个字段错了"报给调用方，不新增 crate
+serde_path_to_error = "0.1"
+
+[dev-dependencies]
+# 只为 `#[tokio::test]` 跑 `into_response()` 的异步断言（不进生产依赖）
+tokio = { workspace = true }

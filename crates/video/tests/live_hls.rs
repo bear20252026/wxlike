@@ -114,7 +114,10 @@ async fn live_ingest_authorizes_packs_and_serves_a_rolling_window() {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert!(
-        body.as_str().unwrap_or_default().contains(LIVE_SECRET_ENV),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(LIVE_SECRET_ENV),
         "错误要说清缺哪个配置: {body}"
     );
 

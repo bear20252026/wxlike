@@ -32,6 +32,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{params, Error as SqliteError, Row};
 use serde::{Deserialize, Serialize};
+use wxlike_api::{ApiError, ApiResult};
 
 use crate::{Ingested, VideoState, VideoStore};
 
@@ -831,17 +832,17 @@ pub(crate) fn routes(state: VideoState) -> Router {
 async fn create_job(
     State(state): State<VideoState>,
     mut form: Multipart,
-) -> std::result::Result<(StatusCode, Json<JobSubmit>), (StatusCode, String)> {
+) -> ApiResult<(StatusCode, Json<JobSubmit>)> {
     let (bytes, callback_url) = read_job_fields(&mut form)
         .await
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        .map_err(ApiError::unprocessable)?;
     if bytes.is_empty() {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "empty upload".into()));
+        return Err(ApiError::unprocessable("empty upload"));
     }
     let submit = state
         .store
         .submit_job(&bytes, callback_url.as_deref())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("submit: {e:#}")))?;
+        .map_err(|e| ApiError::internal(format!("submit: {e:#}")))?;
     // 后台执行器随第一次提交起来（见 `VideoStore::start_worker`）
     state.store.start_worker();
     let status = if submit.newly_queued {
@@ -855,14 +856,14 @@ async fn create_job(
 async fn get_job(
     State(state): State<VideoState>,
     AxumPath(job_id): AxumPath<String>,
-) -> std::result::Result<Json<Job>, (StatusCode, String)> {
+) -> ApiResult<Json<Job>> {
     crate::check_id(&job_id)?;
     state
         .store
         .job(&job_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "no such job".to_string()))
+        .ok_or_else(|| ApiError::not_found("no such job"))
 }
 
 /// 人工重试一个终态作业。
@@ -872,33 +873,25 @@ async fn get_job(
 async fn retry_job(
     State(state): State<VideoState>,
     AxumPath(job_id): AxumPath<String>,
-) -> std::result::Result<Json<Job>, (StatusCode, String)> {
+) -> ApiResult<Json<Job>> {
     crate::check_id(&job_id)?;
     let current = state
         .store
         .job(&job_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
-        .ok_or((StatusCode::NOT_FOUND, "no such job".to_string()))?;
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?
+        .ok_or_else(|| ApiError::not_found("no such job"))?;
     if current.state != JobState::Failed {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "job is {:?}, only a failed job can be retried",
-                current.state
-            ),
-        ));
+        return Err(ApiError::conflict(format!(
+            "job is {:?}, only a failed job can be retried",
+            current.state
+        )));
     }
     state
         .store
         .requeue_job(&job_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?
         .map(Json)
-        .ok_or_else(|| {
-            (
-                StatusCode::CONFLICT,
-                "job left the failed state mid-retry".to_string(),
-            )
-        })
+        .ok_or_else(|| ApiError::conflict("job left the failed state mid-retry"))
 }
 
 /// 一次遍历把 `bytes` 与可选的 `callback_url` 都读出来。

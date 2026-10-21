@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 wxlike-core = { path = "../core" }
+# HTTP 错误契约的唯一实现（`{"error": ...}` + `ApiJson`）
+wxlike-api = { path = "../api" }
 wxlike-message = { path = "../message" }
 wxlike-risk = { path = "../risk" }
 wxlike-moderation = { path = "../moderation" }
