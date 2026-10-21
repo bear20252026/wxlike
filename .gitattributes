@@ -1,3 +1,1 @@
-# shell 脚本必须是 LF：CRLF 会让 macOS/Linux 上直接报 “bad interpreter: ^M”
-*.sh text eol=lf
-deploy/** text eol=lf
+crates/platform/tests/schema_snapshot.txt text eol=lf

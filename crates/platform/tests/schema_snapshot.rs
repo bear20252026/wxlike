@@ -97,12 +97,16 @@ fn schema_matches_the_committed_snapshot() {
         return;
     }
 
-    let expected = std::fs::read_to_string(snapshot_path()).unwrap_or_else(|_| {
-        panic!(
-            "缺少快照 {}；用 WXLIKE_UPDATE_SCHEMA=1 生成",
-            snapshot_path().display()
-        )
-    });
+    // 换行必须归一化：Windows 的 git 检出会把快照转成 CRLF，而 `dump_schema`
+    // 生成的是 LF。比较"结构"时不该被行尾符号判红。
+    let expected = std::fs::read_to_string(snapshot_path())
+        .unwrap_or_else(|_| {
+            panic!(
+                "缺少快照 {}；用 WXLIKE_UPDATE_SCHEMA=1 生成",
+                snapshot_path().display()
+            )
+        })
+        .replace("\r\n", "\n");
     assert_eq!(
         actual, expected,
         "表结构变了：确认改动无误后跑 `WXLIKE_UPDATE_SCHEMA=1 cargo test -p wxlike-platform --test schema_snapshot`，\
