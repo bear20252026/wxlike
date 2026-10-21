@@ -13,18 +13,17 @@
 //! WXLIKE_UPDATE_SCHEMA=1 cargo test -p wxlike-platform --test schema_snapshot
 //! ```
 //!
+//! 格式刻意是**纯文本、一行一列**，不是 JSON：
+//! `serde_json::Map` 的键序受 `preserve_order` feature 影响，而 feature 由
+//! 整个依赖图统一决定——同一份代码在 Windows 与 Linux 上可能序列化出不同
+//! 顺序（这次就踩了：Windows CI 红，Linux 绿）。快照的价值在"可比"，
+//! 任何依赖序列化实现细节的格式都是陷阱。
+//!
 //! 只记录**结构**（列名/类型/非空/主键），不记录索引与触发器——那些由
-//! `IF NOT EXISTS` 保证幂等，且改动频率低；把它们也纳入快照会让 diff 变得
-//! 难读，反而没人看。
+//! `IF NOT EXISTS` 保证幂等、改动频率低；纳入快照只会让 diff 难读。
 
-use serde_json::{json, Map, Value};
-
-fn snapshot_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/schema_snapshot.json")
-}
-
-/// 读出 `表名 → 列定义`，全部排序，保证跨平台/跨次运行可比。
-fn dump_schema(path: &str) -> Value {
+/// 读出 `表.列 类型 非空 主键` 的排序行，保证跨平台/跨次运行逐字节可比。
+fn dump_schema(path: &str) -> String {
     let conn = rusqlite::Connection::open(path).expect("open platform db");
     let mut tables: Vec<String> = conn
         .prepare(
@@ -38,26 +37,33 @@ fn dump_schema(path: &str) -> Value {
         .unwrap();
     tables.sort();
 
-    let mut out = Map::new();
+    let mut out = String::new();
     for table in tables {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
             .unwrap();
-        let cols: Vec<Value> = stmt
+        let cols: Vec<(String, String, i64, i64)> = stmt
             .query_map([], |r| {
-                Ok(json!({
-                    "name": r.get::<_, String>(1)?,
-                    "type": r.get::<_, String>(2)?,
-                    "notnull": r.get::<_, i64>(3)?,
-                    "pk": r.get::<_, i64>(5)?,
-                }))
+                Ok((
+                    r.get::<_, String>(1)?, // name
+                    r.get::<_, String>(2)?, // type
+                    r.get::<_, i64>(3)?,    // notnull
+                    r.get::<_, i64>(5)?,    // pk
+                ))
             })
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        out.insert(table, Value::Array(cols));
+        // PRAGMA 的列序就是建表序，不改；表之间按名字排序。
+        for (name, ty, notnull, pk) in cols {
+            out.push_str(&format!("{table}.{name} {ty} notnull={notnull} pk={pk}\n"));
+        }
     }
-    Value::Object(out)
+    out
+}
+
+fn snapshot_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/schema_snapshot.txt")
 }
 
 #[test]
@@ -82,15 +88,12 @@ fn schema_matches_the_committed_snapshot() {
     .expect("platform opens and migrates");
 
     let actual = dump_schema(&db_str);
-    let text = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&actual).expect("serialise schema")
-    );
 
     if std::env::var("WXLIKE_UPDATE_SCHEMA").is_ok() {
-        std::fs::write(snapshot_path(), &text).expect("write snapshot");
+        std::fs::write(snapshot_path(), &actual).expect("write snapshot");
         eprintln!("快照已更新：{}", snapshot_path().display());
         drop(platform);
+        std::fs::remove_dir_all(&dir).ok();
         return;
     }
 
@@ -101,7 +104,7 @@ fn schema_matches_the_committed_snapshot() {
         )
     });
     assert_eq!(
-        text, expected,
+        actual, expected,
         "表结构变了：确认改动无误后跑 `WXLIKE_UPDATE_SCHEMA=1 cargo test -p wxlike-platform --test schema_snapshot`，\
          并把快照一起提交"
     );
