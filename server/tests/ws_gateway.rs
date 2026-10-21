@@ -206,7 +206,7 @@ async fn ws_connection_participates_in_parking_like_quic() {
     // later must flush the parked frame exactly like the QUIC path
     let (alice_uid, alice_tok) = register(&stack, "alice");
     let (carol_uid, carol_tok) = register(&stack, "carol");
-    let alice = Client::connect(stack.quic_addr, "localhost", &alice_uid)
+    let alice = Client::connect(stack.quic_addr, "localhost", &alice_tok)
         .await
         .unwrap();
     befriend(&stack, &alice_uid, &alice_tok, &carol_uid, &carol_tok);
