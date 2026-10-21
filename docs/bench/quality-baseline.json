@@ -1,10 +1,10 @@
 {
  "total_files": 132,
- "total_lines": 41954,
+ "total_lines": 41968,
  "fn_total": 1914,
- "count_len_gt30": 212,
- "count_len_gt60": 45,
- "count_len_gt100": 13,
+ "count_len_gt30": 211,
+ "count_len_gt60": 43,
+ "count_len_gt100": 11,
  "count_nest_gt3": 63,
  "count_mixed_sql_http": 1,
  "magic_total": 159,
@@ -16,8 +16,6 @@
   "crates/net/src/mq_hub.rs::handle_inbound",
   "crates/net/src/mq_hub.rs::run_mq_hub_with",
   "crates/net/src/mq_hub.rs::serve_transport",
-  "crates/platform/src/db.rs::migrate",
-  "crates/platform/src/db.rs::migrate_p4",
   "crates/platform/src/reconcile.rs::reconcile",
   "crates/rtc/src/turn.rs::allocate",
   "crates/video/src/lib.rs::run_pipeline",
@@ -140,7 +138,7 @@
   ],
   [
    "crates/platform/src/db.rs",
-   675
+   680
   ],
   [
    "crates/platform/src/groups.rs",
@@ -173,17 +171,6 @@
  ],
  "long_fns": [
   {
-   "file": "crates/platform/src/db.rs",
-   "name": "migrate",
-   "line": 261,
-   "len": 328,
-   "nest": 0,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
    "file": "server/src/lib.rs",
    "name": "start_stack",
    "line": 101,
@@ -201,17 +188,6 @@
    "len": 202,
    "nest": 6,
    "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/platform/src/db.rs",
-   "name": "migrate_p4",
-   "line": 57,
-   "len": 160,
-   "nest": 2,
-   "sql": true,
    "http": false,
    "io": false,
    "pub": false
@@ -556,6 +532,28 @@
    "http": false,
    "io": false,
    "pub": true
+  },
+  {
+   "file": "server/src/lib.rs",
+   "name": "forward_message",
+   "line": 711,
+   "len": 67,
+   "nest": 2,
+   "sql": false,
+   "http": true,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "crates/platform/examples/wp01_demo.rs",
+   "name": "main",
+   "line": 48,
+   "len": 66,
+   "nest": 2,
+   "sql": false,
+   "http": false,
+   "io": false,
+   "pub": false
   }
  ],
  "deep_fns": [
@@ -954,7 +952,7 @@
   ],
   "12": [
    "crates/core/src/crypto.rs:56",
-   "crates/platform/src/db.rs:548",
+   "crates/platform/src/db.rs:521",
    "crates/platform/src/live.rs:167",
    "crates/platform/src/report.rs:275",
    "crates/platform/src/video_refs.rs:198"
@@ -1029,10 +1027,10 @@
   ],
   "19": [
    "crates/admin/src/web.rs:224",
-   "crates/platform/src/db.rs:446"
+   "crates/platform/src/db.rs:419"
   ],
   "13": [
-   "crates/platform/src/db.rs:139",
+   "crates/platform/src/db.rs:640",
    "crates/video/src/jobs.rs:787"
   ],
   "15": [

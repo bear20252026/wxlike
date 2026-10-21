@@ -55,129 +55,9 @@ impl Db {
     /// P4 表：人机校验、恢复码、对账、举报工单、秘密聊天设置、审核挂起队列，
     /// 以及会话的设备列（设备管理页要按设备下线）。
     fn migrate_p4(&self) -> Result<()> {
+        // 建表之后还有"老库补列 + 回填"的活，所以这里要留住连接。
         let c = self.lock();
-        c.execute_batch(
-            r#"
-            -- 人机校验（captcha）：只存答案摘要，一次性使用
-            CREATE TABLE IF NOT EXISTS captcha (
-                id          TEXT PRIMARY KEY,
-                answer_hash TEXT NOT NULL,
-                created_at  INTEGER NOT NULL,
-                expires_at  INTEGER NOT NULL,
-                used        INTEGER NOT NULL DEFAULT 0
-            );
-
-            -- 恢复码：一次性，摘要存储
-            CREATE TABLE IF NOT EXISTS recovery_codes (
-                user_id    TEXT PRIMARY KEY,
-                code_hash  TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                used_at    INTEGER
-            );
-
-            -- 对账运行记录（每次 reconcile 一行，便于看趋势与追责）
-            CREATE TABLE IF NOT EXISTS reconcile_runs (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                at_ms         INTEGER NOT NULL,
-                users_checked INTEGER NOT NULL,
-                wallet_sum    INTEGER NOT NULL,
-                escrow        INTEGER NOT NULL,
-                supply        INTEGER NOT NULL,
-                funded_total  INTEGER NOT NULL,
-                mismatches    INTEGER NOT NULL,
-                detail        TEXT NOT NULL,
-                ok            INTEGER NOT NULL
-            );
-
-            -- 举报工单（状态机在 wxlike-report，这里只持久化）
-            CREATE TABLE IF NOT EXISTS reports (
-                id           TEXT PRIMARY KEY,
-                reporter     TEXT NOT NULL,
-                target_kind  TEXT NOT NULL,
-                target_id    TEXT NOT NULL,
-                reason       TEXT NOT NULL,
-                detail       TEXT NOT NULL,
-                state        TEXT NOT NULL,
-                action_json  TEXT,
-                handler      TEXT,
-                created_at   INTEGER NOT NULL,
-                updated_at   INTEGER NOT NULL,
-                history_json TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter, created_at);
-            CREATE INDEX IF NOT EXISTS idx_reports_state ON reports(state, created_at);
-
-            -- 秘密聊天：会话级消失消息 TTL（0/缺行 = 关闭）
-            CREATE TABLE IF NOT EXISTS secret_settings (
-                conv_id    TEXT PRIMARY KEY,
-                enabled    INTEGER NOT NULL DEFAULT 1,
-                ttl_ms     INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL
-            );
-
-            -- 秘密聊天：安全码核对状态（每会话每用户一行）
-            CREATE TABLE IF NOT EXISTS secret_verifications (
-                conv_id       TEXT NOT NULL,
-                user_id       TEXT NOT NULL,
-                peer_identity TEXT NOT NULL,
-                verified_at   INTEGER NOT NULL,
-                PRIMARY KEY (conv_id, user_id)
-            );
-
-            -- 先审后发：挂起待审的消息（审核通过后才允许投递）
-            CREATE TABLE IF NOT EXISTS moderation_queue (
-                id         TEXT PRIMARY KEY,
-                conv_id    TEXT NOT NULL DEFAULT '',
-                sender     TEXT NOT NULL,
-                text       TEXT NOT NULL,
-                labels     TEXT NOT NULL,
-                decision   TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_modqueue_created ON moderation_queue(created_at);
-
-            -- P5 直播会话（信令/弹幕独立于频道时间线，ADR-13）
-            CREATE TABLE IF NOT EXISTS live_sessions (
-                id           TEXT PRIMARY KEY,
-                channel_id   TEXT NOT NULL,
-                host         TEXT NOT NULL,
-                stream_key   TEXT NOT NULL UNIQUE,
-                state        TEXT NOT NULL,
-                recording    INTEGER NOT NULL DEFAULT 0,
-                started_at   INTEGER NOT NULL,
-                ended_at     INTEGER,
-                viewers      INTEGER NOT NULL DEFAULT 0,
-                peak_viewers INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_live_channel ON live_sessions(channel_id, state);
-
-            -- 在房观众：弹幕收件集来源
-            CREATE TABLE IF NOT EXISTS live_viewers (
-                session_id TEXT NOT NULL,
-                user_id    TEXT NOT NULL,
-                joined_at  INTEGER NOT NULL,
-                PRIMARY KEY (session_id, user_id)
-            );
-
-            -- 视频转码回调落下的引用（见 `video_refs.rs`）：只存"能播了"这件事，
-            -- 不存字节。`video_id` 是主键，重试回调覆盖同一行。
-            CREATE TABLE IF NOT EXISTS video_refs (
-                video_id      TEXT PRIMARY KEY,
-                job_id        TEXT NOT NULL,
-                state         TEXT NOT NULL,
-                playlist_url  TEXT NOT NULL DEFAULT '',
-                play_url      TEXT NOT NULL DEFAULT '',
-                thumb_url     TEXT NOT NULL DEFAULT '',
-                duration_ms   INTEGER NOT NULL DEFAULT 0,
-                width         INTEGER NOT NULL DEFAULT 0,
-                height        INTEGER NOT NULL DEFAULT 0,
-                renditions    TEXT NOT NULL DEFAULT '[]',
-                attempts      INTEGER NOT NULL DEFAULT 0,
-                updated_at_ms INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_video_refs_job ON video_refs(job_id);
-            "#,
-        )?;
+        c.execute_batch(SCHEMA_P4)?;
 
         // 会话表补设备列（设备管理页：按设备下线、最近活跃）
         let mut have = Vec::new();
@@ -259,9 +139,102 @@ impl Db {
     }
 
     fn migrate(&self) -> Result<()> {
+        self.lock().execute_batch(SCHEMA)?;
+        Ok(())
+    }
+
+    /// P4 安全列（pw_algo/totp_*）：老库原地补列。
+    fn migrate_security_columns(&self) -> Result<()> {
         let c = self.lock();
-        c.execute_batch(
-            r#"
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(users)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("pw_algo", "TEXT NOT NULL DEFAULT 'pbkdf2'"),
+            ("totp_secret", "TEXT"),
+            ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE users ADD COLUMN {col} {ddl};"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// P3 群管理列（公告/审批开关/全员禁言）：老库原地补列。
+    fn migrate_groups_admin(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(groups)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("announcement", "TEXT NOT NULL DEFAULT ''"),
+            ("approval", "INTEGER NOT NULL DEFAULT 0"),
+            ("all_muted", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE groups ADD COLUMN {col} {ddl};"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// P3 关系元数据列（星标/标签/分组）：老库原地补列，无重写。
+    fn migrate_friends_meta(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(friends)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("starred", "INTEGER NOT NULL DEFAULT 0"),
+            ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+            ("friend_group", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE friends ADD COLUMN {col} {ddl};"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A poisoned lock only happens if SQL panicked mid-statement; SQLite
+    /// connections survive that, so recovering the guard beats crashing.
+    pub fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Statements slower than this land in the log with their text (truncated).
+const SLOW_SQL_MS: u64 = 100;
+
+/// Profile callback (rusqlite `trace` feature). A plain fn, as required.
+fn slow_sql_log(sql: &str, elapsed: std::time::Duration) {
+    if elapsed.as_millis() >= SLOW_SQL_MS as u128 {
+        let text: String = sql.chars().take(160).collect();
+        tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, stmt = %text, "slow sql");
+    }
+}
+
+/// 全部建表语句（幂等：`IF NOT EXISTS`）。
+///
+/// 表结构是**数据**，不是逻辑：放在函数外面，评审时能整块看 diff，
+/// 也不用在 300 行的函数里找"这次改的是哪张表"。
+const SCHEMA: &str = r#"
             -- 幂等重放：agent 会重试，同一个 key 必须返回第一次的结果。
             -- 只存"写操作"的结果，读操作不需要。
             CREATE TABLE IF NOT EXISTS idempotency (
@@ -582,94 +555,126 @@ impl Db {
                 created_at    INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, created_at);
-            "#,
-        )?;
-        Ok(())
-    }
+            "#;
 
-    /// P4 安全列（pw_algo/totp_*）：老库原地补列。
-    fn migrate_security_columns(&self) -> Result<()> {
-        let c = self.lock();
-        let mut have = Vec::new();
-        {
-            let mut stmt = c.prepare("PRAGMA table_info(users)")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            for name in rows {
-                have.push(name?);
-            }
-        }
-        for (col, ddl) in [
-            ("pw_algo", "TEXT NOT NULL DEFAULT 'pbkdf2'"),
-            ("totp_secret", "TEXT"),
-            ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            if !have.iter().any(|name| name == col) {
-                c.execute_batch(&format!("ALTER TABLE users ADD COLUMN {col} {ddl};"))?;
-            }
-        }
-        Ok(())
-    }
+/// P4 表：人机校验、恢复码、对账、举报工单、秘密聊天设置、审核挂起队列。
+const SCHEMA_P4: &str = r#"
+            -- 人机校验（captcha）：只存答案摘要，一次性使用
+            CREATE TABLE IF NOT EXISTS captcha (
+                id          TEXT PRIMARY KEY,
+                answer_hash TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                expires_at  INTEGER NOT NULL,
+                used        INTEGER NOT NULL DEFAULT 0
+            );
 
-    /// P3 群管理列（公告/审批开关/全员禁言）：老库原地补列。
-    fn migrate_groups_admin(&self) -> Result<()> {
-        let c = self.lock();
-        let mut have = Vec::new();
-        {
-            let mut stmt = c.prepare("PRAGMA table_info(groups)")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            for name in rows {
-                have.push(name?);
-            }
-        }
-        for (col, ddl) in [
-            ("announcement", "TEXT NOT NULL DEFAULT ''"),
-            ("approval", "INTEGER NOT NULL DEFAULT 0"),
-            ("all_muted", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            if !have.iter().any(|name| name == col) {
-                c.execute_batch(&format!("ALTER TABLE groups ADD COLUMN {col} {ddl};"))?;
-            }
-        }
-        Ok(())
-    }
+            -- 恢复码：一次性，摘要存储
+            CREATE TABLE IF NOT EXISTS recovery_codes (
+                user_id    TEXT PRIMARY KEY,
+                code_hash  TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                used_at    INTEGER
+            );
 
-    /// P3 关系元数据列（星标/标签/分组）：老库原地补列，无重写。
-    fn migrate_friends_meta(&self) -> Result<()> {
-        let c = self.lock();
-        let mut have = Vec::new();
-        {
-            let mut stmt = c.prepare("PRAGMA table_info(friends)")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            for name in rows {
-                have.push(name?);
-            }
-        }
-        for (col, ddl) in [
-            ("starred", "INTEGER NOT NULL DEFAULT 0"),
-            ("tags", "TEXT NOT NULL DEFAULT '[]'"),
-            ("friend_group", "TEXT NOT NULL DEFAULT ''"),
-        ] {
-            if !have.iter().any(|name| name == col) {
-                c.execute_batch(&format!("ALTER TABLE friends ADD COLUMN {col} {ddl};"))?;
-            }
-        }
-        Ok(())
-    }
+            -- 对账运行记录（每次 reconcile 一行，便于看趋势与追责）
+            CREATE TABLE IF NOT EXISTS reconcile_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                at_ms         INTEGER NOT NULL,
+                users_checked INTEGER NOT NULL,
+                wallet_sum    INTEGER NOT NULL,
+                escrow        INTEGER NOT NULL,
+                supply        INTEGER NOT NULL,
+                funded_total  INTEGER NOT NULL,
+                mismatches    INTEGER NOT NULL,
+                detail        TEXT NOT NULL,
+                ok            INTEGER NOT NULL
+            );
 
-    /// A poisoned lock only happens if SQL panicked mid-statement; SQLite
-    /// connections survive that, so recovering the guard beats crashing.
-    pub fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
+            -- 举报工单（状态机在 wxlike-report，这里只持久化）
+            CREATE TABLE IF NOT EXISTS reports (
+                id           TEXT PRIMARY KEY,
+                reporter     TEXT NOT NULL,
+                target_kind  TEXT NOT NULL,
+                target_id    TEXT NOT NULL,
+                reason       TEXT NOT NULL,
+                detail       TEXT NOT NULL,
+                state        TEXT NOT NULL,
+                action_json  TEXT,
+                handler      TEXT,
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL,
+                history_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter, created_at);
+            CREATE INDEX IF NOT EXISTS idx_reports_state ON reports(state, created_at);
 
-/// Statements slower than this land in the log with their text (truncated).
-const SLOW_SQL_MS: u64 = 100;
+            -- 秘密聊天：会话级消失消息 TTL（0/缺行 = 关闭）
+            CREATE TABLE IF NOT EXISTS secret_settings (
+                conv_id    TEXT PRIMARY KEY,
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                ttl_ms     INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            );
 
-/// Profile callback (rusqlite `trace` feature). A plain fn, as required.
-fn slow_sql_log(sql: &str, elapsed: std::time::Duration) {
-    if elapsed.as_millis() >= SLOW_SQL_MS as u128 {
-        let text: String = sql.chars().take(160).collect();
-        tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, stmt = %text, "slow sql");
-    }
-}
+            -- 秘密聊天：安全码核对状态（每会话每用户一行）
+            CREATE TABLE IF NOT EXISTS secret_verifications (
+                conv_id       TEXT NOT NULL,
+                user_id       TEXT NOT NULL,
+                peer_identity TEXT NOT NULL,
+                verified_at   INTEGER NOT NULL,
+                PRIMARY KEY (conv_id, user_id)
+            );
+
+            -- 先审后发：挂起待审的消息（审核通过后才允许投递）
+            CREATE TABLE IF NOT EXISTS moderation_queue (
+                id         TEXT PRIMARY KEY,
+                conv_id    TEXT NOT NULL DEFAULT '',
+                sender     TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                labels     TEXT NOT NULL,
+                decision   TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_modqueue_created ON moderation_queue(created_at);
+
+            -- P5 直播会话（信令/弹幕独立于频道时间线，ADR-13）
+            CREATE TABLE IF NOT EXISTS live_sessions (
+                id           TEXT PRIMARY KEY,
+                channel_id   TEXT NOT NULL,
+                host         TEXT NOT NULL,
+                stream_key   TEXT NOT NULL UNIQUE,
+                state        TEXT NOT NULL,
+                recording    INTEGER NOT NULL DEFAULT 0,
+                started_at   INTEGER NOT NULL,
+                ended_at     INTEGER,
+                viewers      INTEGER NOT NULL DEFAULT 0,
+                peak_viewers INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_live_channel ON live_sessions(channel_id, state);
+
+            -- 在房观众：弹幕收件集来源
+            CREATE TABLE IF NOT EXISTS live_viewers (
+                session_id TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                joined_at  INTEGER NOT NULL,
+                PRIMARY KEY (session_id, user_id)
+            );
+
+            -- 视频转码回调落下的引用（见 `video_refs.rs`）：只存"能播了"这件事，
+            -- 不存字节。`video_id` 是主键，重试回调覆盖同一行。
+            CREATE TABLE IF NOT EXISTS video_refs (
+                video_id      TEXT PRIMARY KEY,
+                job_id        TEXT NOT NULL,
+                state         TEXT NOT NULL,
+                playlist_url  TEXT NOT NULL DEFAULT '',
+                play_url      TEXT NOT NULL DEFAULT '',
+                thumb_url     TEXT NOT NULL DEFAULT '',
+                duration_ms   INTEGER NOT NULL DEFAULT 0,
+                width         INTEGER NOT NULL DEFAULT 0,
+                height        INTEGER NOT NULL DEFAULT 0,
+                renditions    TEXT NOT NULL DEFAULT '[]',
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_video_refs_job ON video_refs(job_id);
+            "#;

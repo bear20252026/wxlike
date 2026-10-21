@@ -33,20 +33,12 @@ pub const DEFAULT_SEARCH_LIMIT: u64 = 20;
 /// 对称密钥/随机标识的字节数（32 字节 = 256 位）。
 pub const KEY_BYTES: usize = 32;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 把"64 是 sha256 的 hex 长度"钉在算术上：有人把常量改成 32（误以为是
-    /// 字节数）时，这里会红。不引入 sha2 依赖——那会把零依赖的设计破坏掉。
-    #[test]
-    fn sha256_hex_len_is_twice_the_byte_length() {
-        assert_eq!(SHA256_HEX_LEN, 32 * 2);
-        assert_eq!(KEY_BYTES, 32);
-    }
-
-    #[test]
-    fn search_default_is_smaller_than_a_page() {
-        assert!(DEFAULT_SEARCH_LIMIT < DEFAULT_PAGE_LIMIT);
-    }
-}
+// 这三条用**编译期断言**而不是测试：条件全是常量，写成 `#[test]` 只会在运行时
+// 做一次恒真判断（clippy 1.99 会直接报 `assertions_on_constants`）。
+// 放在模块级 `const _` 里，编译不过就是编译不过。
+const _: () = assert!(SHA256_HEX_LEN == 32 * 2, "hex 长度 = 32 字节 × 2");
+const _: () = assert!(KEY_BYTES == 32, "对称密钥 32 字节 = 256 位");
+const _: () = assert!(
+    DEFAULT_SEARCH_LIMIT < DEFAULT_PAGE_LIMIT,
+    "搜索默认条数应当小于一页"
+);

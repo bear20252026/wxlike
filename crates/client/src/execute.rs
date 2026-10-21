@@ -32,7 +32,7 @@ impl Executor {
 
     /// 执行一条命令。**权限先于网络**：被拒的命令不会发出任何请求。
     ///
-    /// 分派走 [`HANDLERS`] 表而不是 `match`：加一条命令 = catalog 加一条 +
+    /// 分派走 `HANDLERS` 表而不是 `match`：加一条命令 = catalog 加一条 +
     /// 表里加一行，**这个函数不用改**（开放-封闭）。表与 catalog 的一致性
     /// 由 `every_catalog_command_is_implemented` 守着。
     pub fn run(&self, id: &str, params: &Value) -> Result<Value, String> {
