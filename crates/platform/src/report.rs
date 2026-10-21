@@ -79,10 +79,28 @@ pub struct NoteBody {
 /// - **平铺是规范形状**，文档与 curl 示例都用它；
 /// - **嵌套仍然接受**，因为已经发出去的调用方不该被一次格式调整打断；
 /// - 缺 `action` 一律 422，不猜默认值——"默默按 warn 处理"是最坏的兜底。
+///
+/// # 兼容分支的删除条件
+///
+/// 嵌套形状**不是永久契约**，它有一个明确的退出条件：
+///
+/// 1. `act` handler 在收到嵌套形状时打一条 `WARN` 日志（带工单 id 与操作人）；
+/// 2. 连续 **30 天**没有这条日志，说明已无调用方使用；
+/// 3. 届时删掉 `parse_action_value` 的对象分支、`legacy_shape` 字段与对应的
+///    兼容测试——**删代码，不是加开关**。
+///
+/// 没有第 2 步的观测，第 3 步就永远做不了；这也是为什么 `legacy_shape` 要
+/// 跟着数据从 `Deserialize` 里传出来，而不是在反序列化时直接打日志。
 #[derive(Debug)]
 pub struct ActBody {
     pub action: Action,
     pub note: String,
+    /// 请求用的是旧的嵌套形状（`{"action":{"action":"warn"}}`）。
+    ///
+    /// `Deserialize` 只**记录**这个事实、不打日志——反序列化应当是纯函数，
+    /// 副作用留给 handler（那里有 tracing span、能带上请求 id 与操作人）。
+    /// 有了这个标记，运维才能回答"还有谁在用旧形状"，进而决定何时删掉兼容分支。
+    pub legacy_shape: bool,
 }
 
 impl<'de> serde::Deserialize<'de> for ActBody {
@@ -98,28 +116,47 @@ impl<'de> serde::Deserialize<'de> for ActBody {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let action = parse_action_value(&raw).map_err(D::Error::custom)?;
-        Ok(Self { action, note })
+        let (action, legacy_shape) = parse_action_value(&raw).map_err(D::Error::custom)?;
+        Ok(Self {
+            action,
+            note,
+            legacy_shape,
+        })
     }
 }
 
-/// 从请求体里取出 `Action`：先按**平铺**解析（规范形状），失败再试旧的嵌套形状。
+/// 从请求体里取出 `Action`，并告诉调用方"这是不是旧形状"。
 ///
-/// 拆成独立函数是为了压平嵌套：写在 `Deserialize` 里会变成
-/// `match` 套 `match` 再套闭包，深度 4 层——质量闸门会拦（实测拦过一次）。
-fn parse_action_value(raw: &serde_json::Value) -> std::result::Result<Action, String> {
-    const HELP: &str = "（可选 warn / mute{\"duration_ms\":N} / ban / remove_content / none）";
+/// 三条分支各有各的话，**不拼接 serde 的内部错误**：
+///
+/// 1. 没有 `action` → "缺少 action"（附可选值）；
+/// 2. `action` 不是对象（规范形状）→ 直接按 `Action` 解析，报 serde 的具体原因
+///    （比如 mute 缺 `duration_ms`）；
+/// 3. `action` 是对象 → 只可能是旧的嵌套形状，或把 tag 写丢了。
+///
+/// 以前这里对**任何**失败都去试嵌套，于是 `{"action": 42}` 会得到
+/// `flat=...; nested=...` 两句一模一样的错——噪音盖住了病因。
+fn parse_action_value(raw: &serde_json::Value) -> std::result::Result<(Action, bool), String> {
+    const HELP: &str = "可选：warn / mute{\"duration_ms\":N} / ban / remove_content / none";
 
-    let flat_err = match serde_json::from_value::<Action>(raw.clone()) {
-        Ok(action) => return Ok(action),
-        Err(err) => err,
+    let Some(value) = raw.get("action") else {
+        return Err(format!("缺少 action。{HELP}"));
     };
-    // 平铺失败：只可能是"嵌套"或"根本没写 action"
-    let Some(inner) = raw.get("action") else {
-        return Err(format!("缺少 action：{flat_err}{HELP}"));
-    };
-    serde_json::from_value::<Action>(inner.clone())
-        .map_err(|nested| format!("action 不合法：flat={flat_err}; nested={nested}{HELP}"))
+
+    // 规范形状：action 是字符串（mute 的时长写在同一层）
+    if !value.is_object() {
+        let action = serde_json::from_value::<Action>(raw.clone())
+            .map_err(|err| format!("action 不合法（{err}）。{HELP}"))?;
+        return Ok((action, false));
+    }
+
+    // action 是对象：旧的嵌套形状，或者把 tag 写丢了
+    match serde_json::from_value::<Action>(value.clone()) {
+        Ok(action) => Ok((action, true)),
+        Err(_) => Err(format!(
+            "action 写成对象时必须是旧的嵌套形状              {{\"action\":{{\"action\":\"warn\"}}}}；推荐改成平铺 {{\"action\":\"warn\"}}。{HELP}"
+        )),
+    }
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -454,6 +491,16 @@ async fn act(
     Json(body): Json<ActBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
     require_admin(&platform, &headers)?;
+    // 兼容分支的**观测点**：只有知道还有谁在用旧形状，才能决定何时删掉它。
+    // 日志放在 handler 而不是 `Deserialize` 里：反序列化是纯函数，
+    // 而这里能带上工单 id、操作人，也能进 tracing span。
+    if body.legacy_shape {
+        tracing::warn!(
+            report_id = %id,
+            actor = %admin_actor(&headers),
+            "report.act 收到旧的嵌套 action 形状（{{\"action\":{{\"action\":\"…\"}}}}）；建议客户端改用平铺"
+        );
+    }
     Ok(Json(platform.act_on_report(
         &id,
         &admin_actor(&headers),

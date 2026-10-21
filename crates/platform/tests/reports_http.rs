@@ -321,13 +321,13 @@ async fn act_accepts_flat_and_legacy_nested_shapes_but_not_a_missing_action() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let text = body.to_string();
     assert!(
-        text.contains("action") && text.contains("warn"),
-        "错误要告诉调用方可选值：{body}"
+        text.contains("缺少 action") && text.contains("warn"),
+        "错误要说清「缺了什么」并列出可选值：{body}"
     );
 
     // 4) 不认识的 action：也是 422，不是 500
     let id = triaged_ticket(&app, &alice, &bob_id).await;
-    let (status, _) = common::call(
+    let (status, body) = common::call(
         &app,
         admin_req(
             "POST",
@@ -338,4 +338,45 @@ async fn act_accepts_flat_and_legacy_nested_shapes_but_not_a_missing_action() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body.to_string().contains("action 不合法"),
+        "未知 action 要说「不合法」，不是让调用方猜：{body}"
+    );
+
+    // 5) action 是数字：只报一条错，不要拼接两段 serde 内部错误
+    let id = triaged_ticket(&app, &alice, &bob_id).await;
+    let (status, body) = common::call(
+        &app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/act"),
+            Some(json!({"action": 42, "note": "写错类型"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let text = body.to_string();
+    assert!(
+        !text.contains("flat=") && !text.contains("nested="),
+        "不该把两段 serde 内部错误拼给调用方：{body}"
+    );
+
+    // 6) action 是对象但漏了 tag：要明确告诉他"要么补 tag，要么改平铺"
+    let id = triaged_ticket(&app, &alice, &bob_id).await;
+    let (status, body) = common::call(
+        &app,
+        admin_req(
+            "POST",
+            &format!("/api/admin/reports/{id}/act"),
+            Some(json!({"action": {"duration_ms": 60_000}, "note": "漏了 tag"})),
+            Some(ADMIN_TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body.to_string().contains("平铺"),
+        "漏 tag 时要指出正确写法：{body}"
+    );
 }
