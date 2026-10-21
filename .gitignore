@@ -1,5 +1,7 @@
 /target
 /target-199
+# cargo-mutants 的产物（变异体清单与日志，不进仓库）
+/mutants.out*/
 server.log
 bob.log
 alice.log
