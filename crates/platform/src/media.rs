@@ -10,6 +10,7 @@
 //! [`MediaStore`] is the seam: [`LocalDirStore`] serves today, an S3/MinIO
 //! implementation would plug in without touching the handlers.
 
+use std::io::{Read as _, Seek as _};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -125,14 +126,24 @@ impl MediaStore for LocalDirStore {
         if !path.exists() {
             return Ok(None);
         }
-        let all = std::fs::read(&path)?;
-        let total = all.len() as u64;
-        let start = start.min(total.saturating_sub(1));
-        let end = end.min(total.saturating_sub(1));
-        if start > end || total == 0 {
+        // **只读请求的那一段**（issue #14）。以前是 `fs::read` 整个文件再切片：
+        // 一个 1 KiB 的 Range 会为一个 100 MiB 的对象分配 100 MiB，并发几个
+        // 就能把服务端内存打满。这里 seek 到位、按长度读。
+        let mut file = std::fs::File::open(&path)?;
+        let total = file.metadata()?.len();
+        if total == 0 {
             return Ok(Some(Vec::new()));
         }
-        Ok(Some(all[start as usize..=end as usize].to_vec()))
+        let start = start.min(total - 1);
+        let end = end.min(total - 1);
+        if start > end {
+            return Ok(Some(Vec::new()));
+        }
+        let len = usize::try_from(end - start + 1).unwrap_or(0);
+        let mut buf = vec![0u8; len];
+        file.seek(std::io::SeekFrom::Start(start))?;
+        file.read_exact(&mut buf)?;
+        Ok(Some(buf))
     }
 
     async fn size_of(&self, sha_hex: &str) -> Result<Option<u64>> {
@@ -452,9 +463,16 @@ async fn download(
         None => (0, total.saturating_sub(1)),
     };
 
-    // this handler answers with a bare `Response`, so errors are mapped inline
-    let bytes = if start == 0 && end + 1 == total {
-        object.bytes
+    // this handler answers with a bare `Response`, so errors are mapped inline.
+    //
+    // **总是按 Range 取**：`resolve` 只给了长度与类型（issue #14）。
+    // 缩略图很小、且存在另一条路径里，单独取。
+    let bytes = if want_thumb {
+        match platform.media_store().get_thumb(&media_id).await {
+            Ok(Some(b)) => b,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(err) => return ApiError::from(err).into_response(),
+        }
     } else {
         match platform.media_store().get(&media_id, start, end).await {
             Ok(Some(b)) => b,
@@ -512,19 +530,18 @@ async fn resolve(
         // not a valid id: no filesystem lookup at all
         Err(_) => return Ok(None),
     }
-    let Some(meta) = platform.media_meta(media_id)? else {
+    let Some((total, content_type, _has_thumb)) = platform.media_meta(media_id)? else {
         return Ok(None);
     };
-    let bytes = match store.get(media_id, 0, meta.0.saturating_sub(1)).await? {
-        Some(b) => b,
-        None => return Ok(None),
-    };
+    // **不再读整个对象**（issue #14）：`resolve` 只需要长度与类型，
+    // 真正要发的字节由 `download` 按 Range 取。以前这里无条件
+    // `get(0, total-1)`，于是"取 1 KiB"也先把 100 MiB 读进内存。
     Ok(Some(StoredObject {
-        bytes,
+        bytes: Vec::new(),
         start: 0,
-        end: meta.0.saturating_sub(1),
-        total: meta.0,
-        content_type: meta.1,
+        end: total.saturating_sub(1),
+        total,
+        content_type,
     }))
 }
 
