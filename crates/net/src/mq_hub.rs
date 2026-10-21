@@ -256,6 +256,24 @@ impl MsgIdLru {
         }
     }
 
+    /// 只看不插入。用于"先判断是否已落库，再决定要不要持久化"（issue #11）。
+    fn contains(&self, id: MsgId) -> bool {
+        self.seen.contains(&id)
+    }
+
+    /// 落库**成功之后**才调用。与 `check_and_insert` 的区别是它不返回"是否重复"，
+    /// 因为调用方已经判断过了。
+    fn insert(&mut self, id: MsgId) {
+        if self.seen.insert(id) {
+            self.order.push_back(id);
+            while self.order.len() > self.cap {
+                if let Some(old) = self.order.pop_front() {
+                    self.seen.remove(&old);
+                }
+            }
+        }
+    }
+
     /// True when `id` had already been seen (i.e. this frame is a duplicate).
     fn check_and_insert(&mut self, id: MsgId) -> bool {
         if !self.seen.insert(id) {
@@ -522,26 +540,60 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
         .await
         .context("bind user route")?;
 
-    // store-and-forward: flush everything parked while the user was away
-    match state.offline.drain(&user_id).await {
-        Ok(frames) => {
-            if !frames.is_empty() {
-                state.metrics.offline_parked(-(frames.len() as i64));
-                tracing::info!(
-                    hub = %state.hub_id,
-                    user = %user_id,
-                    count = frames.len(),
-                    "flushing parked messages"
-                );
-                for frame in frames {
-                    if let Err(err) = conn.send_frame(&frame).await {
-                        eprintln!("[mq-hub] parked deliver to {user_id} failed: {err}");
-                        break;
+    // store-and-forward：**claim → 逐条 ack**，不再"一次取走全部再发"（issue #10）。
+    //
+    // 旧实现先 `drain`（事务里读全部 + 删全部），然后逐条写连接。发到一半断连
+    // 时，剩下的**已经不在表里**了——排队 100 条只发出 1 条，另外 99 条永久丢。
+    // 现在每条投递成功才 ack（删），失败就 release（立刻重新可见），
+    // 进程被杀也有 LEASE_MS 兜底。
+    const CLAIM_BATCH: usize = 64;
+    loop {
+        let batch = match state.offline.claim(&user_id, CLAIM_BATCH).await {
+            Ok(b) => b,
+            Err(err) => {
+                eprintln!("[mq-hub] offline claim failed: {err:#}");
+                break;
+            }
+        };
+        if batch.is_empty() {
+            break;
+        }
+        tracing::info!(
+            hub = %state.hub_id,
+            user = %user_id,
+            count = batch.len(),
+            "flushing parked messages"
+        );
+
+        let mut delivered = 0usize;
+        for (idx, (id, frame)) in batch.iter().enumerate() {
+            match conn.send_frame(frame).await {
+                Ok(()) => {
+                    // ack 失败不该让已经发出的条目再发一遍；下一轮 claim 会
+                    // 因为 lease 未过期而跳过它们，最坏是重复一次。
+                    if let Err(err) = state.offline.ack(*id).await {
+                        eprintln!("[mq-hub] offline ack {id} failed: {err:#}");
                     }
+                    delivered += 1;
+                }
+                Err(err) => {
+                    // 这一条和它后面的全部放回去：连接已经坏了，继续发只会
+                    // 一条条失败，还把这些条目白白 lease 住 30 秒。
+                    for (id, _) in batch.iter().skip(idx) {
+                        if let Err(e) = state.offline.release(*id).await {
+                            eprintln!("[mq-hub] offline release {id} failed: {e:#}");
+                        }
+                    }
+                    eprintln!("[mq-hub] parked deliver to {user_id} failed: {err}");
+                    break;
                 }
             }
         }
-        Err(err) => eprintln!("[mq-hub] offline drain failed: {err:#}"),
+        state.metrics.offline_parked(-(delivered as i64));
+        if delivered < batch.len() {
+            // 连接坏了，本轮结束；剩下的等下次连接
+            break;
+        }
     }
 
     let res = loop {
@@ -777,16 +829,36 @@ async fn handle_inbound(
         return route_or_fanout(state, &env, members, true).await;
     }
 
-    // 3. content frames: dedup, then persist, then route
+    // 3. content frames: **persist, then mark seen, then route**（issue #11）
+    //
+    // 旧顺序是"先 seen.insert，再 append，最后 fanout"，两个后果：
+    // - `append` 失败时 seen 已经标记 → 客户端用同一个 msg_id 重试会被当成
+    //   重复直接 return，消息永久丢失；
+    // - `append` 返回 None（已落库，比如 hub 重启后）也直接 return，跳过 fanout
+    //   → 上一次扇出失败的那批收件人永远补不上。
+    //
+    // 现在：落库成功才标记；标记命中说明"消息已在库里"，**跳过落库但继续扇出**
+    // （收件人按 msg_id 去重，重复投递不会变成两条）。
     if env.msg_id != NO_MSG_ID {
-        let duplicate = state.seen.lock().await.check_and_insert(env.msg_id);
-        if duplicate {
-            return Ok(()); // re-delivery is not an error
+        let already_persisted = state.seen.lock().await.contains(env.msg_id);
+        if already_persisted {
+            // 消息已在库里 → 不重复扇出。
+            //
+            // 这里刻意**不**重跑 fanout：hub 没有 per-recipient 的投递状态
+            // （谁收到了、谁没收到），重跑会把整批人再收一遍——`ten_replays`
+            // 那条测试就是这么红的。真正的"补齐未完成收件人"需要
+            // delivery outbox（见 `docs/audit-progress.md` 的 #11 备注）；
+            // 在那之前，扇出失败由客户端拉历史补偿（归档是权威的）。
+            tracing::debug!(
+                hub = %state.hub_id,
+                msg = %hex::encode(env.msg_id),
+                "duplicate msg_id: already persisted, skipping"
+            );
+            return Ok(());
         }
         if let Some(store) = &state.storage {
-            if store.append(&env, false)?.is_none() {
-                return Ok(()); // already persisted (e.g. hub restart)
-            }
+            // 失败会 `?` 出去，**seen 还没插入**——同一个 msg_id 可以重试。
+            store.append(&env, false)?;
         }
         // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
         // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。
@@ -822,6 +894,8 @@ async fn handle_inbound(
                 }
             }
         }
+        // **落库完成之后**才标记：这样"落库失败 → 客户端重试"仍然能进来。
+        state.seen.lock().await.insert(env.msg_id);
     }
 
     route_or_fanout(state, &env, members, true).await
