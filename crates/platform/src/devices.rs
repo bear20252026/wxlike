@@ -12,6 +12,7 @@ use rusqlite::params;
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -93,7 +94,7 @@ impl Platform {
 async fn register(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(reg): Json<DeviceReg>,
+    ApiJson(reg): ApiJson<DeviceReg>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.register_device(&authed.user_id, &reg)?;
     Ok(StatusCode::NO_CONTENT)

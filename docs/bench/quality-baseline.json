@@ -1,7 +1,7 @@
 {
- "total_files": 132,
- "total_lines": 42023,
- "fn_total": 1921,
+ "total_files": 133,
+ "total_lines": 42247,
+ "fn_total": 1925,
  "count_len_gt30": 215,
  "count_len_gt60": 42,
  "count_len_gt100": 10,
@@ -93,11 +93,11 @@
   ],
   [
    "crates/platform/src/communities.rs",
-   1416
+   1417
   ],
   [
    "server/src/lib.rs",
-   1109
+   1110
   ],
   [
    "crates/message/src/lib.rs",
@@ -121,7 +121,7 @@
   ],
   [
    "crates/admin/src/http.rs",
-   857
+   871
   ],
   [
    "crates/ffi/src/client.rs",
@@ -133,7 +133,7 @@
   ],
   [
    "crates/platform/src/wallet.rs",
-   708
+   709
   ],
   [
    "crates/platform/src/db.rs",
@@ -141,11 +141,11 @@
   ],
   [
    "crates/platform/src/groups.rs",
-   675
+   676
   ],
   [
    "crates/platform/src/moments.rs",
-   633
+   634
   ],
   [
    "crates/video/src/live.rs",
@@ -165,7 +165,7 @@
   ],
   [
    "crates/platform/src/groups_admin.rs",
-   548
+   549
   ]
  ],
  "long_fns": [
@@ -205,7 +205,7 @@
   {
    "file": "crates/admin/src/http.rs",
    "name": "run_op",
-   "line": 527,
+   "line": 531,
    "len": 132,
    "nest": 4,
    "sql": false,
@@ -293,7 +293,7 @@
   {
    "file": "crates/platform/src/wallet.rs",
    "name": "claim_redpacket",
-   "line": 381,
+   "line": 382,
    "len": 96,
    "nest": 3,
    "sql": true,
@@ -343,6 +343,17 @@
    "sql": false,
    "http": false,
    "io": true,
+   "pub": false
+  },
+  {
+   "file": "crates/admin/src/http.rs",
+   "name": "build_payload",
+   "line": 712,
+   "len": 82,
+   "nest": 6,
+   "sql": false,
+   "http": false,
+   "io": false,
    "pub": false
   },
   {
@@ -410,17 +421,6 @@
    "http": false,
    "io": true,
    "pub": true
-  },
-  {
-   "file": "crates/admin/src/http.rs",
-   "name": "build_payload",
-   "line": 708,
-   "len": 72,
-   "nest": 6,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
   },
   {
    "file": "crates/ledger/src/lib.rs",
@@ -491,7 +491,7 @@
   {
    "file": "crates/platform/src/moments.rs",
    "name": "feed",
-   "line": 392,
+   "line": 393,
    "len": 68,
    "nest": 2,
    "sql": true,
@@ -524,7 +524,7 @@
   {
    "file": "server/src/lib.rs",
    "name": "forward_message",
-   "line": 766,
+   "line": 767,
    "len": 67,
    "nest": 2,
    "sql": false,
@@ -603,8 +603,8 @@
   {
    "file": "crates/admin/src/http.rs",
    "name": "build_payload",
-   "line": 708,
-   "len": 72,
+   "line": 712,
+   "len": 82,
    "nest": 6,
    "sql": false,
    "http": false,
@@ -746,7 +746,7 @@
   {
    "file": "crates/platform/src/lib.rs",
    "name": "router",
-   "line": 415,
+   "line": 416,
    "len": 51,
    "nest": 5,
    "sql": false,
@@ -801,7 +801,7 @@
   {
    "file": "crates/admin/src/http.rs",
    "name": "run_op",
-   "line": 527,
+   "line": 531,
    "len": 132,
    "nest": 4,
    "sql": false,
@@ -836,7 +836,7 @@
   {
    "file": "crates/platform/src/video_refs.rs",
    "name": "store_callback",
-   "line": 173,
+   "line": 174,
    "len": 59,
    "nest": 1,
    "sql": true,
@@ -929,8 +929,8 @@
  ],
  "magic_sites": {
   "20": [
-   "crates/platform/src/favorites.rs:204",
-   "crates/platform/src/moments.rs:626",
+   "crates/platform/src/favorites.rs:205",
+   "crates/platform/src/moments.rs:627",
    "crates/platform/src/reconcile.rs:332",
    "crates/risk/src/lib.rs:115",
    "crates/rtc/src/ice.rs:108"
@@ -945,16 +945,16 @@
   "50": [
    "crates/admin/src/web.rs:182",
    "crates/admin/src/bin/wxlike_admin.rs:228",
-   "crates/platform/src/communities.rs:1200",
-   "crates/platform/src/communities.rs:1222",
+   "crates/platform/src/communities.rs:1201",
+   "crates/platform/src/communities.rs:1223",
    "crates/platform/src/reconcile.rs:342"
   ],
   "12": [
    "crates/core/src/crypto.rs:56",
    "crates/platform/src/db.rs:521",
-   "crates/platform/src/live.rs:167",
-   "crates/platform/src/report.rs:275",
-   "crates/platform/src/video_refs.rs:198"
+   "crates/platform/src/live.rs:168",
+   "crates/platform/src/report.rs:366",
+   "crates/platform/src/video_refs.rs:199"
   ],
   "64": [
    "crates/admin/src/upstream.rs:29",
@@ -972,7 +972,7 @@
   ],
   "512": [
    "crates/admin/src/accounts.rs:744",
-   "crates/admin/src/http.rs:787",
+   "crates/admin/src/http.rs:801",
    "crates/container/examples/research_wmpf.rs:14",
    "crates/net/src/avalanche.rs:55",
    "crates/net/src/diag.rs:333"
@@ -986,28 +986,28 @@
   ],
   "11": [
    "crates/admin/src/read.rs:675",
-   "crates/platform/src/report.rs:275",
-   "crates/platform/src/video_refs.rs:198",
-   "crates/platform/src/video_refs.rs:316",
+   "crates/platform/src/report.rs:366",
+   "crates/platform/src/video_refs.rs:199",
+   "crates/platform/src/video_refs.rs:317",
    "crates/video/src/jobs.rs:785"
   ],
   "128": [
    "crates/net/src/avalanche.rs:54",
-   "crates/platform/src/favorites.rs:78",
-   "crates/platform/src/keys.rs:42",
-   "crates/platform/src/keys.rs:49",
+   "crates/platform/src/favorites.rs:79",
+   "crates/platform/src/keys.rs:43",
+   "crates/platform/src/keys.rs:50",
    "crates/search/src/lib.rs:291"
   ],
   "30": [
    "crates/net/src/avalanche.rs:64",
-   "crates/platform/src/secret.rs:41",
-   "crates/platform/src/secret.rs:147",
+   "crates/platform/src/secret.rs:42",
+   "crates/platform/src/secret.rs:148",
    "crates/platform/src/security.rs:54",
    "crates/risk/src/lib.rs:118"
   ],
   "300": [
    "crates/client/src/lib.rs:113",
-   "server/src/lib.rs:129",
+   "server/src/lib.rs:130",
    "ui/src-tauri/src/callrtc.rs:426"
   ],
   "17": [
@@ -1045,7 +1045,7 @@
    "crates/rtc/src/turn.rs:573"
   ]
  },
- "dup_windows": 78,
+ "dup_windows": 66,
  "dup_sample": [
   [
    [

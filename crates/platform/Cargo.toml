@@ -18,6 +18,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+# 已在依赖树里（axum 依赖它）：用来把"哪个字段错了"报给调用方，不新增 crate
+serde_path_to_error = "0.1"
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
 # WP-13: statement-level profiling for the slow-query log

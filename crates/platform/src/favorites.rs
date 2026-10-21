@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -184,7 +185,7 @@ fn row_to_favorite(r: &rusqlite::Row<'_>) -> rusqlite::Result<Favorite> {
 async fn create(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(input): Json<FavoriteInput>,
+    ApiJson(input): ApiJson<FavoriteInput>,
 ) -> std::result::Result<(StatusCode, Json<Favorite>), ApiError> {
     let favorite = platform.add_favorite(&authed.user_id, &input)?;
     Ok((StatusCode::CREATED, Json(favorite)))

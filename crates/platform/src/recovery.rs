@@ -31,6 +31,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -327,7 +328,7 @@ pub struct ResetBody {
 
 async fn reset(
     State(platform): State<PlatformState>,
-    Json(body): Json<ResetBody>,
+    ApiJson(body): ApiJson<ResetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.risk_gate(
         wxlike_risk::Action::Login,

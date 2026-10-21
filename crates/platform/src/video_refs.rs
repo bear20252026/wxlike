@@ -25,6 +25,7 @@ use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::{Platform, PlatformState};
 
 /// 回调令牌的环境变量名（装配层读它，本模块不直接读 env——测试要能注入）。
@@ -159,7 +160,7 @@ fn validate(result: &CallbackResult) -> Result<()> {
 async fn callback(
     State(platform): State<PlatformState>,
     headers: HeaderMap,
-    Json(body): Json<CallbackBody>,
+    ApiJson(body): ApiJson<CallbackBody>,
 ) -> std::result::Result<Json<VideoRefView>, ApiError> {
     store_callback(&platform, &headers, body)
         .map_err(explain)

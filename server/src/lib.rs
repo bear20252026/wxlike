@@ -25,6 +25,7 @@ use axum::{Json, Router};
 use wxlike_core::store::StoredMessage;
 use wxlike_core::{Envelope, MsgBody, MsgId, Store};
 use wxlike_net::HubHandle;
+use wxlike_platform::extract::ApiJson;
 use wxlike_platform::{Authed, Platform, PlatformState};
 
 /// Shared by the history/search handlers (they need the platform for
@@ -652,7 +653,7 @@ async fn send_message(
     State(deps): State<Arc<HistoryDeps>>,
     authed: HistoryAuth,
     Path(conv_id): Path<String>,
-    Json(body): Json<SendBody>,
+    ApiJson(body): ApiJson<SendBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !authorize_conv(&deps.platform, &authed.user_id, &conv_id) {
         return Err((StatusCode::FORBIDDEN, "not your conversation".into()));
@@ -715,7 +716,7 @@ async fn recall_message(
     State(deps): State<Arc<HistoryDeps>>,
     authed: HistoryAuth,
     Path(conv_id): Path<String>,
-    Json(body): Json<RecallBody>,
+    ApiJson(body): ApiJson<RecallBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !authorize_conv(&deps.platform, &authed.user_id, &conv_id) {
         return Err((StatusCode::FORBIDDEN, "not your conversation".into()));
@@ -767,7 +768,7 @@ async fn forward_message(
     State(deps): State<Arc<HistoryDeps>>,
     authed: HistoryAuth,
     Path(to_conv): Path<String>,
-    Json(body): Json<ForwardBody>,
+    ApiJson(body): ApiJson<ForwardBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // 路径与 body 都带目标会话：不一致说明调用方拼错了，宁可 400 也别猜
     if body.to_conv != to_conv {
@@ -961,7 +962,7 @@ fn dev_routes(platform: PlatformState) -> Router {
         let state = platform;
         app = app.route(
             "/api/dev/fund",
-            axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+            axum::routing::post(move |ApiJson(body): ApiJson<serde_json::Value>| {
                 let state = state.clone();
                 async move {
                     let user_id = body["user_id"].as_str().unwrap_or_default();

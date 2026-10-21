@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -1068,7 +1069,7 @@ struct CommunityBody {
 async fn create_community(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<CommunityBody>,
+    ApiJson(body): ApiJson<CommunityBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let id = platform.create_community(&authed.user_id, &body.name, body.member_limit)?;
     Ok((
@@ -1122,7 +1123,7 @@ async fn create_channel(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ChannelBody>,
+    ApiJson(body): ApiJson<ChannelBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let channel = platform.create_channel(&id, &authed.user_id, &body.name, &body.kind)?;
     Ok((
@@ -1152,7 +1153,7 @@ async fn send_channel_message(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ChannelMessageBody>,
+    ApiJson(body): ApiJson<ChannelMessageBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let (seq, msg_id) = platform
         .send_channel_message(
@@ -1174,7 +1175,7 @@ async fn recall_channel_message(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<RecallBody>,
+    ApiJson(body): ApiJson<RecallBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.recall_channel_message(&id, &authed.user_id, &body.msg_id)?;
     Ok(StatusCode::NO_CONTENT)
@@ -1238,7 +1239,7 @@ async fn create_thread(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ThreadBody>,
+    ApiJson(body): ApiJson<ThreadBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let thread = platform.create_thread(&id, &authed.user_id, body.root_seq, &body.title)?;
     Ok((
@@ -1251,7 +1252,7 @@ async fn create_thread_in_community(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ThreadBody>,
+    ApiJson(body): ApiJson<ThreadBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let channel = body
         .channel_id
@@ -1306,7 +1307,7 @@ async fn set_channel_role(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ChannelRoleBody>,
+    ApiJson(body): ApiJson<ChannelRoleBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let role = platform.set_channel_role(&id, &authed.user_id, &body.user_id, &body.role)?;
     Ok(Json(
@@ -1332,7 +1333,7 @@ async fn send_thread_reply(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ThreadReplyBody>,
+    ApiJson(body): ApiJson<ThreadReplyBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let seq = platform
         .send_thread_reply(&id, &authed.user_id, &body.text)
@@ -1408,7 +1409,7 @@ async fn set_thread_subscription(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<SubscriptionBody>,
+    ApiJson(body): ApiJson<SubscriptionBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_thread_subscription(&id, &authed.user_id, body.muted)?;
     Ok(StatusCode::NO_CONTENT)

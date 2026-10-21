@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -397,7 +398,7 @@ async fn set_announcement(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group): Path<String>,
-    Json(body): Json<AnnouncementBody>,
+    ApiJson(body): ApiJson<AnnouncementBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_announcement(&group, &authed.user_id, &body.text, &body.media_id)?;
     Ok(StatusCode::NO_CONTENT)
@@ -427,7 +428,7 @@ async fn set_mute(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path((group, uid)): Path<(String, String)>,
-    Json(body): Json<MuteBody>,
+    ApiJson(body): ApiJson<MuteBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_member_mute(&group, &authed.user_id, &uid, body.until_ms)?;
     Ok(StatusCode::NO_CONTENT)
@@ -451,7 +452,7 @@ async fn set_all_mute(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group): Path<String>,
-    Json(body): Json<AllMuteBody>,
+    ApiJson(body): ApiJson<AllMuteBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_all_mute(&group, &authed.user_id, body.on)?;
     Ok(StatusCode::NO_CONTENT)
@@ -471,7 +472,7 @@ async fn set_approval(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group): Path<String>,
-    Json(body): Json<ApprovalBody>,
+    ApiJson(body): ApiJson<ApprovalBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_join_approval(&group, &authed.user_id, body.on)?;
     Ok(StatusCode::NO_CONTENT)
@@ -481,7 +482,7 @@ async fn create_invite(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group): Path<String>,
-    Json(body): Json<InviteBody>,
+    ApiJson(body): ApiJson<InviteBody>,
 ) -> std::result::Result<Json<GroupInvite>, ApiError> {
     Ok(Json(platform.create_invite(
         &group,
@@ -539,7 +540,7 @@ async fn mention_all(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group): Path<String>,
-    Json(body): Json<MentionAllBody>,
+    ApiJson(body): ApiJson<MentionAllBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let text = platform
         .mention_all(&group, &authed.user_id, &body.text)

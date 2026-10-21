@@ -31,6 +31,7 @@ use sha2::Sha256;
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -397,7 +398,7 @@ async fn start(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(channel): Path<String>,
-    Json(body): Json<StartBody>,
+    ApiJson(body): ApiJson<StartBody>,
 ) -> std::result::Result<Json<StartReply>, ApiError> {
     let session = platform.start_live(&channel, &authed.user_id, body.recording)?;
     let token = platform.ingest_token(&session.stream_key, INGEST_TTL_MS);
@@ -450,7 +451,7 @@ async fn danmaku(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(channel): Path<String>,
-    Json(body): Json<DanmakuBody>,
+    ApiJson(body): ApiJson<DanmakuBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let delivered = platform
         .send_danmaku(&channel, &authed.user_id, &body.text)
@@ -461,7 +462,7 @@ async fn danmaku(
 /// RTMP `on_publish` 回调：ingest 节点持共享 secret 调用，无用户 token。
 async fn authorize_ingest(
     State(platform): State<PlatformState>,
-    Json(body): Json<IngestAuthBody>,
+    ApiJson(body): ApiJson<IngestAuthBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.verify_ingest(&body.stream_key, &body.token, wxlike_core::types::now_ms())?;
     Ok(StatusCode::NO_CONTENT)

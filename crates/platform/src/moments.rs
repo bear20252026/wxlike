@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -462,7 +463,7 @@ impl Platform {
 async fn publish(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<PublishBody>,
+    ApiJson(body): ApiJson<PublishBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let id = platform.publish_moment(
         &authed.user_id,
@@ -595,7 +596,7 @@ async fn comment(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(moment_id): Path<String>,
-    Json(body): Json<CommentBody>,
+    ApiJson(body): ApiJson<CommentBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let moment_id = validate::id(&moment_id)
         .map_err(ApiError::from)?

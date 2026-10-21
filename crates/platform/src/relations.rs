@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -336,7 +337,7 @@ struct StrangerBody {
 async fn send_stranger_message(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<StrangerBody>,
+    ApiJson(body): ApiJson<StrangerBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     match platform.send_stranger_message(&authed.user_id, &body.to_uid, &body.text)? {
         StrangerState::Queued => Ok(Json(
@@ -391,7 +392,7 @@ async fn patch_friend_meta(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(uid): Path<String>,
-    Json(body): Json<FriendPatch>,
+    ApiJson(body): ApiJson<FriendPatch>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.patch_friend_meta(&authed.user_id, &uid, body.starred, body.tags, body.group)?;
     Ok(StatusCode::NO_CONTENT)
@@ -414,7 +415,7 @@ struct StrangerSetting {
 async fn set_stranger_setting(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<StrangerSetting>,
+    ApiJson(body): ApiJson<StrangerSetting>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_allow_strangers(&authed.user_id, body.allow)?;
     Ok(StatusCode::NO_CONTENT)

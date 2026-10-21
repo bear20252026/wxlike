@@ -25,6 +25,7 @@ use serde::Serialize;
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -506,7 +507,7 @@ async fn create_group(
     State(platform): State<PlatformState>,
     authed: Authed,
     headers: axum::http::HeaderMap,
-    Json(body): Json<CreateGroup>,
+    ApiJson(body): ApiJson<CreateGroup>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     // agent 会重试：带同一个 Idempotency-Key 时返回第一次的结果，不新建群
     let idem = headers
@@ -546,7 +547,7 @@ async fn add_members(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group_id): Path<String>,
-    Json(body): Json<MemberIds>,
+    ApiJson(body): ApiJson<MemberIds>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let added = platform.add_members(&group_id, &authed.user_id, &body.user_ids)?;
     if added > 0 {
@@ -625,7 +626,7 @@ async fn remark_mine(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group_id): Path<String>,
-    Json(body): Json<RemarkMine>,
+    ApiJson(body): ApiJson<RemarkMine>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_my_remark(&group_id, &authed.user_id, &body.remark)?;
     Ok(StatusCode::OK)

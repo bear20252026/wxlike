@@ -17,6 +17,7 @@ use serde::Serialize;
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{direct_conv_id, system_envelope, Platform, PlatformState};
 
@@ -407,7 +408,7 @@ impl Platform {
 async fn create_request(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<RequestBody>,
+    ApiJson(body): ApiJson<RequestBody>,
 ) -> std::result::Result<(StatusCode, Json<RequestRow>), ApiError> {
     let message = body.message.clone().unwrap_or_default();
     let (req_id, to_uid) =
@@ -491,7 +492,7 @@ async fn set_remark(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(user_id): Path<String>,
-    Json(body): Json<RemarkBody>,
+    ApiJson(body): ApiJson<RemarkBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_remark(&authed.user_id, &user_id, &body.remark)?;
     Ok(StatusCode::OK)

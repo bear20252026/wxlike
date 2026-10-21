@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -124,7 +125,7 @@ async fn set_notification_rule(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<RuleBody>,
+    ApiJson(body): ApiJson<RuleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_notification_rule(&authed.user_id, &conv, &body.level, &body.keywords)?;
     Ok(StatusCode::NO_CONTENT)

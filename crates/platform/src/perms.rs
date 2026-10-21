@@ -23,6 +23,7 @@ use serde::Serialize;
 use crate::auth::Authed;
 use crate::communities::{ROLE_ADMIN, ROLE_MEMBER, ROLE_OWNER};
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -323,7 +324,7 @@ async fn set_role(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path((id, user)): Path<(String, String)>,
-    Json(body): Json<RoleBody>,
+    ApiJson(body): ApiJson<RoleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_member_role(&id, &authed.user_id, &user, &body.role)?;
     Ok(StatusCode::NO_CONTENT)
@@ -350,7 +351,7 @@ async fn update_channel(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(id): Path<String>,
-    Json(body): Json<ChannelPatch>,
+    ApiJson(body): ApiJson<ChannelPatch>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.update_channel(
         &id,

@@ -32,6 +32,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -228,7 +229,7 @@ async fn configure(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<SecretConfig>,
+    ApiJson(body): ApiJson<SecretConfig>,
 ) -> std::result::Result<Json<SecretState>, ApiError> {
     let state = platform.set_secret_chat(&authed.user_id, &conv, body.enabled, body.ttl_ms)?;
     platform.audit(
@@ -286,7 +287,7 @@ async fn verify(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(peer): Path<String>,
-    Json(body): Json<VerifyBody>,
+    ApiJson(body): ApiJson<VerifyBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let peer = validate::id(&peer)?.to_string();
     platform.verify_peer(&authed.user_id, &peer, &body.peer_identity)?;

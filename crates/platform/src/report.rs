@@ -18,6 +18,7 @@ use wxlike_report::{Action, Reason, State as TicketState, Ticket};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -422,7 +423,7 @@ fn admin_actor(headers: &HeaderMap) -> String {
 async fn create(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<ReportBody>,
+    ApiJson(body): ApiJson<ReportBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     // 举报轰炸过风控闸（Throttle/Deny 都落到 429）
     platform.risk_gate(wxlike_risk::Action::Report, &authed.user_id, None)?;
@@ -474,7 +475,7 @@ async fn triage(
     State(platform): State<PlatformState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<NoteBody>,
+    ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
     require_admin(&platform, &headers)?;
     Ok(Json(platform.triage_report(
@@ -488,7 +489,7 @@ async fn act(
     State(platform): State<PlatformState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<ActBody>,
+    ApiJson(body): ApiJson<ActBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
     require_admin(&platform, &headers)?;
     // 兼容分支的**观测点**：只有知道还有谁在用旧形状，才能决定何时删掉它。
@@ -513,7 +514,7 @@ async fn close(
     State(platform): State<PlatformState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<NoteBody>,
+    ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
     require_admin(&platform, &headers)?;
     Ok(Json(platform.close_report(
@@ -527,7 +528,7 @@ async fn reject(
     State(platform): State<PlatformState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<NoteBody>,
+    ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
     require_admin(&platform, &headers)?;
     Ok(Json(platform.reject_report(

@@ -38,6 +38,7 @@ use crate::read::{
 };
 use crate::upstream::{self, Upstream};
 use crate::web;
+use wxlike_platform::extract::ApiJson;
 
 /// 留痕 detail 的截断标记。上游响应体是"回显"，可以截；
 /// 判定字段（op / target / status）本身永不截。
@@ -416,7 +417,10 @@ struct LoginReply {
     session: Session,
 }
 
-async fn login(State(app): State<Shared>, Json(body): Json<LoginBody>) -> Result<Json<LoginReply>> {
+async fn login(
+    State(app): State<Shared>,
+    ApiJson(body): ApiJson<LoginBody>,
+) -> Result<Json<LoginReply>> {
     let (session, token) = app.accounts.login(
         &body.username,
         &body.password,
@@ -473,7 +477,7 @@ async fn totp_enroll(
 async fn totp_confirm(
     State(app): State<Shared>,
     headers: HeaderMap,
-    Json(body): Json<CodeBody>,
+    ApiJson(body): ApiJson<CodeBody>,
 ) -> Result<Json<serde_json::Value>> {
     let session = require_session(&app, &headers)?;
     app.accounts.totp_confirm(&session.actor, &body.code)?;
@@ -486,7 +490,7 @@ async fn totp_confirm(
 async fn totp_disable(
     State(app): State<Shared>,
     headers: HeaderMap,
-    Json(body): Json<CodeBody>,
+    ApiJson(body): ApiJson<CodeBody>,
 ) -> Result<StatusCode> {
     let session = require_session(&app, &headers)?;
     app.accounts.totp_disable(&session.actor, &body.code)?;
@@ -528,7 +532,7 @@ async fn run_op(
     State(app): State<Shared>,
     headers: HeaderMap,
     Path(op_id): Path<String>,
-    body: Json<serde_json::Value>,
+    body: ApiJson<serde_json::Value>,
 ) -> Result<Json<OpReply>> {
     let session = require_session(&app, &headers)?;
     let body = parse_op_body(&body.0)?;

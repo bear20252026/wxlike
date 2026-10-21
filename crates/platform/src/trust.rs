@@ -24,6 +24,7 @@ use wxlike_moderation::{Decision, Mode};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::{Platform, PlatformState};
 
 pub fn routes() -> Router<PlatformState> {
@@ -194,7 +195,7 @@ struct CheckBody {
 async fn check(
     State(platform): State<PlatformState>,
     _authed: Authed,
-    Json(body): Json<CheckBody>,
+    ApiJson(body): ApiJson<CheckBody>,
 ) -> std::result::Result<Json<Decision>, ApiError> {
     Ok(Json(platform.moderate(&body.text)))
 }
@@ -243,7 +244,7 @@ struct ModeBody {
 async fn set_mode(
     State(platform): State<PlatformState>,
     headers: HeaderMap,
-    Json(body): Json<ModeBody>,
+    ApiJson(body): ApiJson<ModeBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     require_admin(&platform, &headers)?;
     platform.set_moderation_mode(body.mode);

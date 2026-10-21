@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::auth::{self, Authed};
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -268,7 +269,7 @@ impl Platform {
 async fn register(
     State(platform): State<PlatformState>,
     headers: axum::http::HeaderMap,
-    Json(req): Json<Credentials>,
+    ApiJson(req): ApiJson<Credentials>,
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
     // P4 风控：注册按来源限流；命中挑战则必须过人机校验（428 让客户端取题）。
     // 没有来源头（直连/内网）时按账号名计数——否则所有直连客户端共用一个桶。
@@ -305,7 +306,7 @@ struct TotpCode {
 async fn totp_confirm(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<TotpCode>,
+    ApiJson(body): ApiJson<TotpCode>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.totp_confirm(&authed.user_id, &body.code)?;
     Ok(StatusCode::NO_CONTENT)
@@ -314,7 +315,7 @@ async fn totp_confirm(
 async fn totp_disable(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<TotpCode>,
+    ApiJson(body): ApiJson<TotpCode>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.totp_disable(&authed.user_id, &body.code)?;
     Ok(StatusCode::NO_CONTENT)
@@ -323,7 +324,7 @@ async fn totp_disable(
 async fn login(
     State(platform): State<PlatformState>,
     headers: axum::http::HeaderMap,
-    Json(req): Json<Credentials>,
+    ApiJson(req): ApiJson<Credentials>,
 ) -> std::result::Result<(StatusCode, Json<AuthReply>), ApiError> {
     // 失败计数按账号 + 来源双键：只按账号会被"换号撞库"绕过，只按来源会
     // 让同一 NAT 后的正常用户互相连坐——两个键都记，取更严的那个。
@@ -373,7 +374,7 @@ async fn me(
 async fn update_profile(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(patch): Json<ProfilePatch>,
+    ApiJson(patch): ApiJson<ProfilePatch>,
 ) -> std::result::Result<Json<Profile>, ApiError> {
     Ok(Json(platform.update_profile(&authed.user_id, &patch)?))
 }

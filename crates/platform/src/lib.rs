@@ -24,6 +24,7 @@ mod communities;
 mod db;
 mod devices;
 mod error;
+pub mod extract;
 mod favorites;
 mod friends;
 mod groups;

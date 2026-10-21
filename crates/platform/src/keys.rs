@@ -18,6 +18,7 @@ use wxlike_core::e2ee::PreKeyBundle;
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -153,7 +154,7 @@ impl Platform {
 async fn publish(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(bundle): Json<PreKeyBundle>,
+    ApiJson(bundle): ApiJson<PreKeyBundle>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.publish_keys(&authed.user_id, &bundle)?;
     Ok(StatusCode::NO_CONTENT)

@@ -21,6 +21,7 @@ use wxlike_rtc::room::{EgressPlan, Participant, Room, RoomError, Track};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -413,7 +414,7 @@ async fn mute(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<MuteBody>,
+    ApiJson(body): ApiJson<MuteBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let raw = body
         .target
@@ -433,7 +434,7 @@ async fn mute_all(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<MuteBody>,
+    ApiJson(body): ApiJson<MuteBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let track = match body.track.as_str() {
         "audio" => Track::Audio,
@@ -448,7 +449,7 @@ async fn kick(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<TargetBody>,
+    ApiJson(body): ApiJson<TargetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let target = require_body_target(&body)?;
     platform.kick_from_call(&conv, &authed.user_id, &target)?;
@@ -459,7 +460,7 @@ async fn lock(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<ToggleBody>,
+    ApiJson(body): ApiJson<ToggleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.lock_call(&conv, &authed.user_id, body.value)?;
     Ok(StatusCode::NO_CONTENT)
@@ -469,7 +470,7 @@ async fn record(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<ToggleBody>,
+    ApiJson(body): ApiJson<ToggleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.record_call(&conv, &authed.user_id, body.value)?;
     Ok(StatusCode::NO_CONTENT)
@@ -479,7 +480,7 @@ async fn hand(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<ToggleBody>,
+    ApiJson(body): ApiJson<ToggleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.hand_in_call(&conv, &authed.user_id, body.value)?;
     Ok(StatusCode::NO_CONTENT)
@@ -489,7 +490,7 @@ async fn transfer(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(body): Json<TargetBody>,
+    ApiJson(body): ApiJson<TargetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let target = require_body_target(&body)?;
     platform.transfer_call(&conv, &authed.user_id, &target)?;
@@ -500,7 +501,7 @@ async fn post_signal(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(conv): Path<String>,
-    Json(signal): Json<wxlike_rtc::signal::Signal>,
+    ApiJson(signal): ApiJson<wxlike_rtc::signal::Signal>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let dropped = platform.post_call_signal(&conv, &authed.user_id, signal)?;
     Ok(Json(serde_json::json!({ "dropped": dropped })))

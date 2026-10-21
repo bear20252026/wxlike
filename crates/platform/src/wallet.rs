@@ -26,6 +26,7 @@ use serde::Serialize;
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -583,7 +584,7 @@ fn draw_share(remaining_money: i64, remaining_slots: i64) -> i64 {
 async fn transfer(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<TransferBody>,
+    ApiJson(body): ApiJson<TransferBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let memo = body.memo.clone().unwrap_or_default();
     let ref_id = platform.transfer(&authed.user_id, &body.to_uid, body.amount, &memo)?;
@@ -608,7 +609,7 @@ async fn transfer(
 async fn create_redpacket(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Json(body): Json<RedpacketBody>,
+    ApiJson(body): ApiJson<RedpacketBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let memo = body.memo.clone().unwrap_or_default();
     let id = platform.create_redpacket(

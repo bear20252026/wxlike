@@ -176,6 +176,11 @@ for path in rust_files():
         chunk = [l for l in norm[i:i + win] if l and not l.startswith("//")]
         if len(chunk) < win - 1:
             continue
+        # 全是 `use` 的窗口不算重复：二十个模块共享同一段导入头是 Rust 的常态，
+        # 它不产生"改一处要改二十处"的维护成本（改的是 crate 路径，一次全局替换）。
+        # 真正的重复是逻辑重复，而逻辑块里不可能只有 import。
+        if all(l.startswith(("use ", "pub use ")) for l in chunk):
+            continue
         h = hashlib.md5("\n".join(chunk).encode()).hexdigest()
         if h in seen and seen[h][0] != path:
             dups.append([seen[h], [path, i + 1]])
