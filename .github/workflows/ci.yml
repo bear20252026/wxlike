@@ -198,3 +198,61 @@ jobs:
           name: wxlike-android-apk
           path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+
+  # Web 前端：typecheck + 手写 bincode 的自测（issue #18）。
+  #
+  # `ui/src/web/wire.ts` 是**手写的 bincode 编解码**（浏览器没有 bincode），
+  # 它的变体序号必须与 Rust 的 `WireFrame` 声明顺序一致。改协议时那边编译
+  # 不会报错、这边也不报——只有运行时帧解析错位。`wire.selftest.mjs` 里
+  # 的 fixtures 就是钉这个的，但在此之前它从没在 CI 跑过。
+  web:
+    name: web (tsc + wire selftest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+      - name: typecheck
+        run: npm run typecheck
+        working-directory: ui
+      - name: wire bincode selftest
+        run: npm run test:wire
+        working-directory: ui
+      - name: message index contract
+        run: npm run check:msgindex
+        working-directory: ui
+
+  # Flutter：analyze + test（issue #18）。
+  #
+  # 绑定是生成物（`apps/mobile/lib/src/rust/` 不入库），所以要先跑
+  # `regenerate.sh` —— 少了它 `flutter analyze` 会报上百个"类型不存在"。
+  flutter:
+    name: flutter (analyze + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: flutter-bindgen
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.0
+          channel: stable
+          cache: true
+      - name: 生成 UniFFI Dart 绑定
+        run: bash crates/ffi/regenerate.sh
+      - name: pub get
+        run: flutter pub get
+        working-directory: apps/mobile
+      - name: analyze
+        run: flutter analyze
+        working-directory: apps/mobile
+      - name: test
+        run: flutter test
+        working-directory: apps/mobile
