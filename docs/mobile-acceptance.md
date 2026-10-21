@@ -18,10 +18,26 @@
 | B1/B3 | `flutter test` | 8 个测试全绿，其中 2 个是**真过 FFI** 的跨界冒烟（加载宿主 `wxlike_ffi.dll`，走完登录→列表→历史→发送→断网读缓存→退避后按同一幂等键补发→服务端拒绝→推送注册→登出清库） |
 | B2 | `dart analyze lib test tool` | 无告警（生成物已在 `analysis_options.yaml` 排除） |
 | B1b | `bash apps/mobile/tool/build-rust.sh` | 产出 `arm64-v8a` 与 `x86_64` 的 `libwxlike_ffi.so`（`-C strip=symbols -C debuginfo=0`，未剥前 58 MB） |
-| B2 | `flutter build apk --debug` | **通过**：`build/app/outputs/flutter-apk/app-debug.apk`，168 MB。大是因为 debug 引擎的 `libflutter.so` 本身就上百 MB 且带两个 ABI；我们的部分只有 `libwxlike_ffi.so` 7.1 MB (arm64) / 8.0 MB (x86_64)（脚本里加了 `-C strip=symbols -C debuginfo=0`，没加之前是 58 MB）。release 装出来的体积要在真机验收时另记一笔。 |
+| B2 | `bash apps/mobile/build_android.sh`（**2026-10-21 复验**） | **通过**：`app-release.apk` **21.1 MB**（arm64，`libwxlike_ffi.so` 4.37 MB 已 strip、`libapp.so` 4.69 MB）。这一条是"新检出能不能出包"的答案——见下面的说明。 |
+| B2 | `flutter build apk --debug` | **通过**：`build/app/outputs/flutter-apk/app-debug.apk`，162 MB（10-21 复测；10-20 记录是 168 MB）。大是因为 debug 引擎的 `libflutter.so` 本身就上百 MB 且带两个 ABI；我们的部分只有 `libwxlike_ffi.so` 7.1 MB (arm64) / 8.0 MB (x86_64)（脚本里加了 `-C strip=symbols -C debuginfo=0`，没加之前是 58 MB）。release 装出来的体积要在真机验收时另记一笔。 |
 | B1 | `cargo clippy -p wxlike-ffi --all-targets -- -D warnings` | 通过。顺带把六关在本机跑了一遍（`feat/zone-b` 上）：`cargo build --workspace`、`cargo test --workspace`、`cargo fmt --all -- --check`、`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` **全绿**。MSVC `link.exe` 那句"正在创建库 …"会在 build/test 的链接步骤以 `linker_messages` 告警形式出现（rustc 1.97 的新 lint），但它不影响 `-D warnings` 的 clippy 关——clippy 不链接。Zone B 自己的 crate 与测试文件都单独 allow 掉并写了原因。`cd ui && npx tsc --noEmit` 没跑：本区零 TS 改动，且 worktree 里没有 `ui/node_modules`。 |
 | B1 | Kotlin **编译** | ⚠️ 只做到"引用能解析"：本机没有 kotlinc，从 Gradle 缓存手拼编译器。JNA 5.6.0 下 `com.sun.jna.internal.Cleaner.register` 找不到；换 JNA 5.14.0 后该引用解析通过，编译器随后在无关的内部代码生成上崩了。**需要在有 Android Studio / 正常 kotlinc 的机器上补一次**（§9 给了确切命令）。不影响 App——移动端走 Dart 绑定，Kotlin 那一路是卡面要求的能力证明。 |
 | B4 | — | **没验**：需要你的 Google Cloud 项目与 `google-services.json`，见 §6。已验的是 Rust 侧那段：`POST /api/devices` 的 body 与鉴权头（跨界冒烟里就在打这条） |
+
+### 为什么新检出直接 `flutter build apk` 会失败
+
+不是工程坏了，是**顺序**。仓库里不提交两样生成物：
+
+| 不提交 | 症状 | 谁生成 |
+|---|---|---|
+| `lib/src/rust/wxlike_ffi.dart` | `flutter analyze` 报 109 个 error，全是"`OutboxSummary` 不是类型"这类——因为整个绑定的类型都来自这个文件 | `crates/ffi/regenerate.sh` |
+| `jniLibs/*/libwxlike_ffi.so` | 编译能过，运行到 `DynamicLibrary.open` 时失败（Dart 侧显示"打开失败"） | `cargo ndk` |
+
+一条命令按顺序补出来：`apps/mobile/build_android.sh`（2026-10-21 加，实测出 21.1 MB 的 release 包）。
+
+**`gradlew` / `gradle-wrapper.jar` 不在其中**：Flutter 构建前会自己注入
+（`injectGradleWrapperIfNeeded`）。实测把这三个文件删掉后 `flutter build apk`
+仍然成功并重新生成——所以"缺 gradle wrapper"不是原因，别去补它。
 
 > 跨界冒烟为什么把假服务端放在**子进程**里：绑定层在 Dart 侧是同步调用，主 isolate
 > 卡在 FFI 里时，同进程的 `HttpServer` 根本没机会 accept，症状是每个请求都"超时"，
@@ -40,13 +56,9 @@ WXLIKE_DEV_INSECURE=1 WXLIKE_DB=/tmp/wx/wxlike.db WXLIKE_HTTP=0.0.0.0:8099 \
 # 手机能连到的地址（不是 127.0.0.1！）
 ipconfig | grep -A1 "无线局域网适配器"
 
-# Rust → 绑定 + .so（lib/src/rust/ 与 jniLibs 都不进 git，新检出必须先跑这两条）
+# Rust → 绑定 + .so → APK（一条命令；新检出必须先跑）
 cd ../..                     # 仓库根
-bash crates/ffi/regenerate.sh
-cd apps/mobile && bash tool/build-rust.sh
-
-# APK
-flutter build apk --debug
+apps/mobile/build_android.sh --debug
 
 # 装
 adb install -r build/app/outputs/flutter-apk/app-debug.apk

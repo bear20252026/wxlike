@@ -5,7 +5,8 @@
 #
 # 产出两处：
 #   crates/ffi/generated/kotlin/  —— B1 验收用的 Kotlin（不提交，.gitignore）
-#   apps/mobile/lib/src/rust/     —— Flutter 直接 import 的 Dart（提交进仓库）
+#   apps/mobile/lib/src/rust/     —— Flutter 直接 import 的 Dart（**不提交**，见 .gitignore：
+#                                    生成物靠本脚本重建，和 ui/dist/app.js 同一个口径）
 #
 # 先 build 再 generate：proc-macro 模式的 UniFFI 没有 .udl 文件，接口形状是
 # 从**编译产物**里读出来的（`--library`），所以必须先有 cdylib。
