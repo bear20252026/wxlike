@@ -83,6 +83,19 @@ https://github.com/bluexsx/box-im
 
 ## Ported designs (no code copied yet; origin recorded per contract §7.2)
 
+- **Rocket.Chat** (RocketChat/Rocket.Chat, MIT — `ee/` excluded and not consulted):
+  the **channel-role** layer of `crates/platform/src/communities.rs` (Zone C · C2)
+  follows its `app/authorization` shape — roles own permission *strings*, an
+  endpoint asks `can(user, 'post-media')` and never inspects which role a user
+  holds. Names are kept comparable to upstream (`post-message`, `post-announce`,
+  `delete-any-message`, `manage-roles`) and the four channel tiers
+  (`owner`/`moderator`/`member`/`guest`) are theirs. No source file was copied:
+  the repo is not mirrored locally (size), and the judgement logic lives in our
+  own pure functions (`channel_role_perms`, `perm_for_type`) on our `Perm` enum.
+- **Zulip** (zulip/zulip, Apache-2.0): "topic is a first-class attribute of a
+  message" — the reason thread replies keep their own sequence and never enter
+  the channel timeline (invariant 3). Concept only, no code.
+
 - **OpenIM** (openimsdk/open-im-server, Apache-2.0): the five-layer sync
   contract (digest → delta → fallback full → batch threshold → lazy member
   paging) is the required protocol shape for the P3 sync-service. Origin must

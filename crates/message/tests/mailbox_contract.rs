@@ -191,6 +191,53 @@ fn withdraw_is_logical_delete_with_author_check_and_change_event() {
     assert_eq!(changes.len(), 1, "重复撤回不产生第二条事件");
 }
 
+/// 频道/群管的"代撤"入口：`withdraw` 那条作者检查是**给用户的**保证，
+/// 管理员走 `withdraw_as`——权限判断不归信箱管，但变更事件必须记动手的人。
+#[test]
+fn withdraw_as_lets_a_moderator_act_but_still_records_who() {
+    let s = store();
+    s.append(CHANNEL, "alice", "text", "m1", "{}").unwrap();
+
+    // 作者查得到（撤回鉴权靠它，不再靠 fetch 整页扫）
+    assert_eq!(
+        s.sender_of(CHANNEL, "m1").unwrap().as_deref(),
+        Some("alice")
+    );
+    assert_eq!(
+        s.sender_of(CHANNEL, "nope").unwrap(),
+        None,
+        "查不到不是错，调用方据此回 404"
+    );
+
+    // 本人仍然撤不动别人的：作者检查没被绕过
+    s.append(CHANNEL, "bob", "text", "m2", "{}").unwrap();
+    assert!(matches!(
+        s.withdraw(CHANNEL, "m1", "bob"),
+        Err(MailError::WithdrawRefused)
+    ));
+
+    // 代撤：动手的是 mod，事件里的 actor 也是 mod
+    s.withdraw_as(CHANNEL, "m1", "mod").unwrap();
+    let (rows, _) = s.fetch(CHANNEL, 0, 10).unwrap();
+    assert!(rows[0].withdrawn);
+    assert_eq!(rows[0].seq, 1, "代撤同样是逻辑删除");
+    let (changes, _) = s.changes(CHANNEL, 0, 10).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].actor, "mod", "谁撤的要可查（不变式 7）");
+
+    // 已撤回/不存在都不给二次事件
+    assert!(matches!(
+        s.withdraw_as(CHANNEL, "m1", "mod"),
+        Err(MailError::WithdrawRefused)
+    ));
+    assert!(matches!(
+        s.withdraw_as(CHANNEL, "ghost", "mod"),
+        Err(MailError::WithdrawRefused)
+    ));
+    let (changes, _) = s.changes(CHANNEL, 0, 10).unwrap();
+    assert_eq!(changes.len(), 1);
+}
+
 #[test]
 fn batch_withdraw_is_all_or_nothing() {
     let s = store();

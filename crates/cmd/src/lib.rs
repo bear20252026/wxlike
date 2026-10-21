@@ -58,7 +58,7 @@ pub struct CommandSpec {
     pub needs_conv: bool,
 }
 
-/// 首批 18 条。**加功能先加这里**，再去实现执行器。
+/// 现有 20 条（首批 18 + Zone C 的社区/频道 2 条）。**加功能先加这里**，再去实现执行器。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己），再写，最后危险操作。
 pub const CATALOG: &[CommandSpec] = &[
@@ -126,6 +126,21 @@ pub const CATALOG: &[CommandSpec] = &[
         summary: "群基本信息与我的角色",
         params: "{conv: string}",
         capability: Capability::Read,
+        needs_conv: true,
+    },
+    CommandSpec {
+        id: "community.threads",
+        summary: "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）",
+        params: "{community: string, limit?: number}",
+        capability: Capability::Read,
+        needs_conv: false,
+    },
+    CommandSpec {
+        id: "channel.roles",
+        summary: "频道角色名单：谁在这个频道里是 owner/moderator/member/guest，含继承标记",
+        params: "{conv: string}",
+        capability: Capability::Read,
+        // conv 在这里是频道 id：会话白名单同样管得住它
         needs_conv: true,
     },
     CommandSpec {
@@ -219,7 +234,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 18, "首批就 18 条，加命令要同时改这个数字");
+        assert_eq!(CATALOG.len(), 20, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         for spec in CATALOG {
             assert!(ids.insert(spec.id), "重复的命令 id: {}", spec.id);
@@ -246,6 +261,8 @@ mod tests {
                 "msg.get",
                 "group.members",
                 "group.info",
+                "community.threads",
+                "channel.roles",
                 "me.info",
                 "me.sessions",
                 "msg.send",
