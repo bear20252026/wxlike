@@ -109,6 +109,13 @@ jobs:
   android:
     name: android (apk)
     runs-on: ubuntu-latest
+    # **必须显式设**：runner 上 `$ANDROID_HOME` 是空的（实测），
+    # 于是 `"$ANDROID_HOME/cmdline-tools/..."` 变成一条空命令，
+    # 报 `line 5: : command not found` + exit 127 —— 看起来像 sdkmanager 坏了，
+    # 其实只是环境变量没设。这是第一次跑 CI 就踩到的。
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -142,8 +149,17 @@ jobs:
         # 所以显式装一次——版本写死在这里，别指望"runner 上应该会有"。
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          # 先确认它真的在：路径变了要立刻说清楚，而不是等到后面报一堆
+          # "NDK not configured" 让人去猜。
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager 不在 $SDKMANAGER；runner 镜像可能变了，检查 ANDROID_HOME" >&2
+            ls "$ANDROID_HOME" >&2 || true
+            exit 1
+          fi
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" --install "ndk;28.2.13676358" > /dev/null
+          # compileSdk=36 / build-tools 36 / NDK 28.2 —— 三个都显式要，
+          # 不依赖 runner 预装了什么版本
+          "$SDKMANAGER" --install             "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0" > /dev/null
 
       - name: 生成 UniFFI 绑定
         # Dart 绑定不入库（`apps/mobile/lib/src/rust/`），少了它 flutter analyze
