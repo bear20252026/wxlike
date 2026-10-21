@@ -299,7 +299,7 @@ async function resumeSession(): Promise<void> {
     return;
   }
   try {
-    await hub.connect(session.wsUrl(), session.userIdSafe());
+    await hub.connect(session.wsUrl(), session.token() ?? "");
   } catch (err) {
     console.warn("[web] 自动重连失败:", String(err));
   }

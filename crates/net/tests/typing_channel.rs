@@ -22,6 +22,9 @@ async fn stack() -> (
         "127.0.0.1:0".parse().unwrap(),
         router,
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             storage: Some(store.clone()),
             ..Default::default()
         },

@@ -76,6 +76,13 @@ pub struct MqHubOptions {
     /// P3 投递策略（拉黑/禁言/陌生人闸门）。`None` = 不过滤（既有测试与
     /// 无关系层部署保持零成本）。
     pub policy: Option<Arc<dyn DeliveryPolicy>>,
+    /// **长连接的身份来源**（issue #3）。`Hello` 只带 token，身份由它解析。
+    ///
+    /// `None` 表示**拒绝所有连接**，不是"不校验"：一个没有认证器的 hub
+    /// 就是"任何人报个 user_id 就能冒充"的服务，默默放行比拒绝更危险。
+    /// 测试与本地开发用 [`crate::auth::StaticAuth`]；生产用装配层基于
+    /// session 表的实现。
+    pub auth: Option<Arc<dyn crate::auth::HubAuthenticator>>,
 }
 
 /// Contract floor for reclaiming in-flight cross-node entries.
@@ -92,6 +99,7 @@ impl Default for MqHubOptions {
             reclaim_idle_ms: None,
             push_hook: None,
             policy: None,
+            auth: None,
         }
     }
 }
@@ -144,6 +152,8 @@ struct HubState {
     membership: Option<Arc<dyn crate::membership::Membership>>,
     push_hook: Option<Arc<dyn OfflinePush>>,
     policy: Option<Arc<dyn DeliveryPolicy>>,
+    /// 身份来源。**`None` = 拒绝所有连接**（fail closed，见 `crate::auth`）。
+    auth: Option<Arc<dyn crate::auth::HubAuthenticator>>,
     /// WP-13: connections / throughput / parked / latency, per hub.
     metrics: crate::metrics::HubMetrics,
 }
@@ -260,12 +270,31 @@ impl MsgIdLru {
 }
 
 /// Bind a QUIC hub that routes via `router` (memory or redis backend).
+/// 便捷入口：**用 `StaticAuth`（token 原样当 `user_id`，不校验凭据）**。
+///
+/// 这是给测试与本地开发用的——它不查 session 表，任何非空字符串都能进来。
+/// 生产必须用 [`run_mq_hub_with`] 注入真认证器（见 `crate::auth`）。
+/// 为了不让它被误用，每次调用都会打一条 `warn` 日志。
 pub async fn run_mq_hub(
     hub_id: impl Into<String>,
     addr: std::net::SocketAddr,
     router: MqRouter,
 ) -> anyhow::Result<MqHub> {
-    run_mq_hub_with(hub_id, addr, router, MqHubOptions::default()).await
+    let hub_id = hub_id.into();
+    tracing::warn!(
+        hub = %hub_id,
+        "run_mq_hub 使用 StaticAuth（不校验凭据），仅用于测试与本地开发；         生产请用 run_mq_hub_with 注入基于 session 表的认证器"
+    );
+    run_mq_hub_with(
+        hub_id,
+        addr,
+        router,
+        MqHubOptions {
+            auth: Some(Arc::new(crate::auth::StaticAuth)),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Same, with explicit options (offline store, message store, dedup cap).
@@ -297,6 +326,7 @@ pub async fn run_mq_hub_with(
         membership: options.membership.clone(),
         push_hook: options.push_hook.clone(),
         policy: options.policy.clone(),
+        auth: options.auth.clone(),
         metrics: crate::metrics::HubMetrics::new(hub_id.clone()),
     });
 
@@ -408,13 +438,60 @@ async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Re
 /// Multi-device unbind: a closing connection removes only its own conn id;
 /// the route row and the user's other devices stay live until the LAST
 /// connection of that user on this hub closes.
+/// 拒绝握手：**先把原因发出去再关**。
+///
+/// 发不出去也不影响拒绝本身（对端可能已经走了），所以忽略发送错误——
+/// 但绝不因为发送失败就改成放行。
+async fn reject_hello(conn: &PeerConn, reason: &str) {
+    let frame = WireFrame::HelloReject {
+        reason: reason.to_string(),
+    };
+    if let Ok(bytes) = frame.to_bytes() {
+        let _ = conn.send_frame(&bytes).await;
+        // **QUIC 的 close 会丢掉未发出的流数据**：`write_all` 只是把帧交给
+        // quinn 的发送缓冲，随后 `conn` 被 drop / 连接 close 时缓冲直接丢弃。
+        // 实测表现就是客户端只看到 `closed by peer: 0`，拿不到原因。
+        // 这里等一小会儿让帧真正上路——拒绝路径本来就要关连接，多 100ms
+        // 没有代价；WS 载体是立即发出的，这段等待对它无影响。
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result<()> {
-    // first frame must be Hello{user_id} — identical on every carrier
+    // 首帧必须是 Hello{token}——**客户端不自报身份**（issue #3 / A01）。
     let hello = conn.read_frame().await.context("await hello")?;
-    let user_id = match WireFrame::from_bytes(&hello)? {
-        WireFrame::Hello { user_id } => user_id,
+    let token = match WireFrame::from_bytes(&hello)? {
+        WireFrame::Hello { token } => token,
         _ => anyhow::bail!("first frame was not Hello"),
     };
+
+    // fail closed：没有认证器就拒绝。**不要**在这里"为了兼容"放行——
+    // 一个不校验身份的 hub，等于把"知道 user_id 就能冒充"变成协议特性。
+    let Some(auth) = state.auth.as_ref() else {
+        tracing::error!(
+            hub = %state.hub_id,
+            "hub has no authenticator configured; refusing every connection"
+        );
+        reject_hello(&conn, "hub is not accepting connections (no authenticator)").await;
+        anyhow::bail!("hub is not accepting connections (no authenticator)");
+    };
+    let Some(identity) = auth.authenticate(&token) else {
+        tracing::warn!(hub = %state.hub_id, "hello rejected: invalid or expired credential");
+        reject_hello(&conn, "invalid or expired credential").await;
+        anyhow::bail!("invalid credential");
+    };
+    let user_id = identity.user_id.clone();
+
+    // 告诉客户端它是谁：`user_id` 由服务端给出，客户端不再自己拼。
+    conn.send_frame(
+        &WireFrame::HelloAck {
+            user_id: user_id.clone(),
+            session_id: identity.session_id.clone(),
+        }
+        .to_bytes()?,
+    )
+    .await
+    .context("send hello ack")?;
 
     let conn_id = state
         .next_conn
@@ -473,7 +550,18 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
         };
         let env = match wire {
             WireFrame::Msg(env) => env,
-            WireFrame::Ping | WireFrame::Hello { .. } => continue,
+            WireFrame::Ping => {
+                // 心跳顺带复查凭据：HTTP 那边退出登录/远程下线之后，
+                // 这条 QUIC/WS 连接不该还能收消息。最坏延迟 = 一个心跳周期。
+                if state.auth.as_ref().is_some_and(|a| a.is_revoked(&token)) {
+                    tracing::info!(hub = %state.hub_id, user = %user_id, "credential revoked; closing long connection");
+                    break Err(anyhow::anyhow!("credential revoked"));
+                }
+                continue;
+            }
+            WireFrame::Hello { .. }
+            | WireFrame::HelloAck { .. }
+            | WireFrame::HelloReject { .. } => continue,
         };
         let started = std::time::Instant::now();
         let outcome = handle_inbound(&state, &user_id, &env).await;

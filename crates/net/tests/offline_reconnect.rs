@@ -23,6 +23,9 @@ async fn hub(offline: Arc<dyn wxlike_net::offline::OfflineStore>) -> (MqHub, std
         "127.0.0.1:0".parse().unwrap(),
         MqRouter::new(Arc::new(MemoryMq::new()), MemoryRoutes::new()),
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             offline,
             ..Default::default()
         },
@@ -163,6 +166,9 @@ async fn cross_hub_delivery_acks_the_queue() {
         "127.0.0.1:0".parse().unwrap(),
         router_a,
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             reclaim_idle_ms: Some(60_000),
             ..Default::default()
         },
@@ -174,6 +180,9 @@ async fn cross_hub_delivery_acks_the_queue() {
         "127.0.0.1:0".parse().unwrap(),
         router_b,
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             reclaim_idle_ms: Some(60_000),
             ..Default::default()
         },

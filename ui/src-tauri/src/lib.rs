@@ -207,6 +207,14 @@ impl AppState {
         )
     }
 
+    /// 当前登录凭据。`None` = 还没登录。
+    ///
+    /// 连 hub 与网络诊断都要用它：hub 只从凭据解析身份，不接受客户端自报
+    /// `user_id`（issue #3）。测试与前端也不该直接拿整个 `Http`。
+    pub fn auth_token(&self) -> Option<String> {
+        self.http().token.clone()
+    }
+
     pub fn user_id(&self) -> Result<String, String> {
         Ok(self.me()?["user_id"]
             .as_str()
@@ -348,17 +356,19 @@ impl AppState {
 
     /// Connects to the QUIC hub with TOFU pinning. `pins_path` is where the
     /// hub certificate fingerprint is remembered between runs.
+    /// `token` 是**凭据**，不是 user_id：hub 从它解析身份并回 `HelloAck`
+    /// （issue #3）。`Client::user_id` 是服务端给的，不是我们传的。
     pub fn connect_hub(
         &self,
         addr: &str,
-        user_id: &str,
+        token: &str,
         pins_path: &std::path::Path,
     ) -> Result<String, String> {
         let sock: std::net::SocketAddr = addr.parse().map_err(|e| format!("bad addr: {e}"))?;
         let client = wait(Client::connect_verified(
             sock,
             "localhost",
-            user_id,
+            token,
             pins_path,
         ))
         .map_err(|e| format!("connect: {e:#}"))?;
@@ -1013,64 +1023,56 @@ impl AppState {
             .filter(|p| !p.is_empty())
             .ok_or_else(|| "秘密聊天需要明确的接收方".to_string())?
             .clone();
+        // **fail closed**：秘密聊天里任何一步失败都取消发送，绝不退化成明文。
+        //
+        // 以前的逻辑是"没有 bundle → `sealed = None` → `send_text`"，
+        // 而 `has_session_with(&peer)` 为真时 `bundle` 恰好是 `None`——
+        // 于是**第二次发送必发明文**（issue #4）。加密失败也只 eprintln 后发明文。
+        //
+        // 现在两条路分开：有会话就 `encrypt_dm_existing`（不需要 bundle），
+        // 没会话才取 bundle 建会话。取不到就报错，不猜。
         let sealed = {
             let mut guard = self.secret.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(crypto) = guard.as_mut() else {
                 return Err("secret chat not enabled".into());
             };
-            let bundle = if crypto.has_session_with(&peer) {
-                None
+            if crypto.has_session_with(&peer) {
+                crypto.encrypt_dm_existing(&peer, text.as_bytes())
             } else {
-                let fetched = self
+                let bundle = self
                     .http()
                     .expect_json("GET", &format!("/api/keys/{peer}"), None)
                     .ok()
                     .and_then(|v| {
                         serde_json::from_value::<wxlike_core::e2ee::PreKeyBundle>(v).ok()
-                    });
-                match fetched {
-                    Some(p) if !p.identity.is_empty() && !p.one_time_keys.is_empty() => Some(p),
-                    // never published, drained, or undecodable: fall back
-                    _ => {
-                        eprintln!(
-                            "[e2ee] no claimable pre-key for {peer}; falling back to cleartext"
-                        );
-                        None
-                    }
-                }
-            };
-            match bundle {
-                Some(b) => crypto
-                    .encrypt_dm(&peer, &b, text.as_bytes())
-                    .map(Some)
-                    .unwrap_or_else(|err| {
-                        eprintln!(
-                            "[e2ee] encrypt to {peer} failed ({err}); falling back to cleartext"
-                        );
-                        None
-                    }),
-                None => None,
+                    })
+                    .filter(|p| !p.identity.is_empty() && !p.one_time_keys.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "对方（{peer}）没有可用的预密钥：秘密聊天不能发送明文，已取消发送"
+                        )
+                    })?;
+                crypto.encrypt_dm(&peer, &bundle, text.as_bytes())
             }
         };
-        match sealed {
-            Some(sealed) => {
-                let payload = serde_json::json!({
-                    "peer": peer,
-                    "pre_key": sealed.pre_key,
-                    "body": sealed.body,
-                });
-                self.send_body(
-                    conv_id,
-                    to,
-                    MsgBody::Custom {
-                        kind: custom_kind::E2EE_DM.into(),
-                        payload,
-                    },
-                )?;
-                Ok(())
-            }
-            None => self.send_text(conv_id, to, text),
-        }
+        let sealed = sealed.map_err(|err| {
+            format!("秘密聊天加密失败，已取消发送（不会退化成明文）：{err}")
+        })?;
+
+        let payload = serde_json::json!({
+            "peer": peer,
+            "pre_key": sealed.pre_key,
+            "body": sealed.body,
+        });
+        self.send_body(
+            conv_id,
+            to,
+            MsgBody::Custom {
+                kind: custom_kind::E2EE_DM.into(),
+                payload,
+            },
+        )?;
+        Ok(())
     }
 
     /// The next envelope from the hub, as the structured event payload the
@@ -1356,7 +1358,7 @@ fn render_event_with(env: &Envelope, secret: &Mutex<Option<Crypto>>) -> serde_js
             payload["payload"] = p.clone();
             if kind == custom_kind::E2EE_DM {
                 payload["kind"] = "e2ee".into();
-                match try_decrypt_secret(secret, p) {
+                match try_decrypt_secret(secret, p, &env.sender) {
                     Some(Ok(text)) => {
                         payload["text"] = text.into();
                         payload["encrypted"] = true.into();
@@ -1382,8 +1384,15 @@ fn render_event_with(env: &Envelope, secret: &Mutex<Option<Crypto>>) -> serde_js
 fn try_decrypt_secret(
     secret: &Mutex<Option<Crypto>>,
     payload: &serde_json::Value,
+    sender: &str,
 ) -> Option<Result<String, String>> {
-    let peer = payload.get("peer")?.as_str()?.to_string();
+    // **对端是发送者**，不是 payload 里的 `peer`。
+    //
+    // `peer` 是"发送者眼中的收件人"——对我们来说就是**自己**。拿它当对端去
+    // 解密，必然找不到会话（或者找到一条通向自己的空会话），结果是
+    // `decryption failed (wrong session, ...)`。秘密聊天的往返测试一直红在
+    // 这里：消息确实加密发出来了，只是收方按错的 id 找密钥。
+    let peer = sender.to_string();
     let sealed = wxlike_core::e2ee::Sealed {
         pre_key: payload.get("pre_key")?.as_bool()?,
         body: payload.get("body")?.as_str()?.to_string(),
@@ -1733,13 +1742,16 @@ pub mod commands {
         state: tauri::State<'_, AppState>,
         addr: String,
     ) -> Result<String, String> {
-        let user_id = state.user_id()?;
+        // 连 hub 用**凭据**，不是 user_id（issue #3）
+        let token = state
+            .auth_token()
+            .ok_or_else(|| "未登录：没有可用的凭据".to_string())?;
         let pins = app
             .path()
             .app_data_dir()
             .map(|dir| dir.join("tofu-pins.json"))
             .unwrap_or_else(|_| std::env::temp_dir().join("wxlike-tofu-pins.json"));
-        let out = state.connect_hub(&addr, &user_id, &pins)?;
+        let out = state.connect_hub(&addr, &token, &pins)?;
         // 连上才起泵：没连接时它只会每秒空转一次，无害但没必要
         state.start_outbox_pump(app.clone());
         Ok(out)
@@ -1808,7 +1820,8 @@ pub mod commands {
             .map(|dir| dir.join("tofu-pins.json"))
             .unwrap_or_else(|_| std::env::temp_dir().join("wxlike-tofu-pins.json"));
         let mut opts = wxlike_net::diag::DiagOptions::new(pins);
-        opts.user_id = state.user_id().ok();
+        // 诊断走的是同一个 `Hello`：要**凭据**，不是 user_id（issue #3）
+        opts.token = state.auth_token();
         let target = wxlike_net::diag::DiagTarget::new(host, http_port, quic_port);
 
         let report = wait(wxlike_net::diag::run(&target, &opts));

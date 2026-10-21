@@ -91,7 +91,13 @@ async fn serve_conn(
         };
         let env = match wire {
             WireFrame::Msg(env) => env,
-            WireFrame::Ping | WireFrame::Hello { .. } => continue,
+            // 这个 hub 是**广播转发器**（`crates/net/tests` 的用例），不做认证：
+            // 它不绑定身份、不读离线队列、不落库，所以冒充在这里没有收益。
+            // 生产路径走 `mq_hub`（带 `HubAuthenticator`）。
+            WireFrame::Ping
+            | WireFrame::Hello { .. }
+            | WireFrame::HelloAck { .. }
+            | WireFrame::HelloReject { .. } => continue,
         };
         let _ = env;
         let map = peers.lock().await;

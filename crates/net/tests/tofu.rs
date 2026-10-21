@@ -136,22 +136,26 @@ fn pin_store_round_trips_and_survives_reload() {
 /// all), using the same pin store a desktop app would keep.
 #[tokio::test]
 async fn client_connect_verified_uses_tofu() {
-    use wxlike_net::Client;
-
     let pins_path = pin_file("client");
     let _ = std::fs::remove_file(&pins_path);
     let (_hub, addr) = free_endpoint();
 
-    let client = Client::connect_verified(addr, "localhost", "alice", &pins_path)
+    // 只测**传输层**的 pin：`free_endpoint` 是裸 QUIC endpoint，不读帧、
+    // 不回 `HelloAck`，所以这里不能走 `Client::connect_verified`（那要等握手
+    // 应答）。应用层握手由 `hub_auth.rs` 用真 hub 覆盖。
+    //
+    // 顺带说明语义变化：`user_id` 不再是客户端传进去的，而是 `HelloAck`
+    // 告诉客户端的（issue #3）——所以这个测试也不该再断言 "alice"。
+    let conn = wxlike_net::transport::connect_tofu(addr, "localhost", &pins_path)
         .await
         .unwrap();
-    assert_eq!(client.user_id, "alice");
+    assert!(conn.close_reason().is_none());
     assert_eq!(TofuPins::load(&pins_path).len(), 1);
 
     // a different hub under the pinned name is refused at the transport layer
     let (_other, other_addr) = free_endpoint();
     assert!(
-        Client::connect_verified(other_addr, "localhost", "alice", &pins_path)
+        wxlike_net::transport::connect_tofu(other_addr, "localhost", &pins_path)
             .await
             .is_err()
     );

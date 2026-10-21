@@ -112,9 +112,12 @@ pub struct DiagOptions {
     /// TOFU 证书固定文件。诊断**不跳过校验**——跳过校验的诊断会告诉你
     /// "QUIC 通"，而实际可能连的是中间人。
     pub pins: PathBuf,
-    /// 给了就在 QUIC 步骤里再走一次 `hello`（证明"服务端认这个用户"，
-    /// 而不只是"端口开着"）
-    pub user_id: Option<String>,
+    /// 给了就在 QUIC 步骤里再走一次 `hello`（证明"服务端接受这份凭据"，
+    /// 而不只是"端口开着"）。
+    ///
+    /// 这里是 **token**，不是 `user_id`：hub 的身份只从凭据解析
+    /// （issue #3），自报 `user_id` 的握手会被拒绝。
+    pub token: Option<String>,
 }
 
 impl DiagOptions {
@@ -123,7 +126,7 @@ impl DiagOptions {
             per_step_timeout: Duration::from_secs(5),
             server_name: "localhost".into(),
             pins: pins.into(),
-            user_id: None,
+            token: None,
         }
     }
 }
@@ -358,16 +361,16 @@ async fn quic_probe(addr: SocketAddr, opts: &DiagOptions) -> Result<String, Stri
     .map_err(|e| format!("握手失败：{e:#}"))?;
 
     let rtt = conn.rtt().as_millis();
-    let detail = match &opts.user_id {
-        // 给了 user_id 就再走一次 hello：证明服务端认这个用户，
+    let detail = match &opts.token {
+        // 给了凭据就再走一次 hello：证明服务端接受这份凭据，
         // 而不只是"端口开着、握手能成"
-        Some(user) => {
+        Some(token) => {
             let (mut send, recv) = tokio::time::timeout(opts.per_step_timeout, conn.open_bi())
                 .await
                 .map_err(|_| "开控制流超时".to_string())?
                 .map_err(|e| format!("开控制流失败：{e}"))?;
             let frame = crate::wire::WireFrame::Hello {
-                user_id: user.clone(),
+                token: token.clone(),
             }
             .to_bytes()
             .map_err(|e| format!("编码 hello 失败：{e}"))?;
@@ -375,7 +378,7 @@ async fn quic_probe(addr: SocketAddr, opts: &DiagOptions) -> Result<String, Stri
                 .await
                 .map_err(|e| format!("发 hello 失败：{e}"))?;
             drop(recv);
-            format!("握手成功（RTT {rtt}ms，已用 {user} 完成 hello）")
+            format!("握手成功（RTT {rtt}ms，hello 已被接受：凭据有效）")
         }
         None => format!("握手成功（RTT {rtt}ms）"),
     };

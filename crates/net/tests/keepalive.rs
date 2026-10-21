@@ -71,7 +71,10 @@ async fn client_can_sample_its_own_heartbeat() {
     let _ = std::fs::remove_file(&pins);
     let (_hub, addr) = hub();
 
-    let client = wxlike_net::Client::connect_verified(addr, "localhost", "alice", &pins)
+    // **不握手**：这个 hub 是裸 QUIC endpoint（只 accept + hold，不读帧），
+    // 它不会回 `HelloAck`。用 `connect_verified` 会卡在等 ack 上——
+    // 这条测试要验证的是"连接句柄能读 RTT / 采样"，与身份无关。
+    let client = wxlike_net::Client::connect_anonymous(addr, "localhost")
         .await
         .expect("connect");
 

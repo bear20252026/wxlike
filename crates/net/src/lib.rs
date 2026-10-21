@@ -1,6 +1,7 @@
 //! wxlike-net: QUIC long-connection transport, broadcast hub (legacy),
 //! and MQ-routed hub for multi-node deployment.
 
+pub mod auth;
 pub mod avalanche;
 pub mod client;
 pub mod conn;
@@ -16,6 +17,7 @@ pub mod server;
 pub mod transport;
 pub mod wire;
 
+pub use auth::{HubAuthenticator, HubIdentity, StaticAuth};
 pub use client::Client;
 pub use conn::PeerConn;
 pub use membership::Membership;

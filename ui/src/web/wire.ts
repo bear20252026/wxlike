@@ -58,9 +58,19 @@ export interface Envelope {
   readonly receipt: Receipt | null;
 }
 
-/** `WireFrame` (`crates/net/src/wire.rs`) — the server has no `Pong` variant. */
+/**
+ * `WireFrame` (`crates/net/src/wire.rs`) — the server has no `Pong` variant.
+ *
+ * **变体序号必须与 Rust 的声明顺序一致**（bincode 写的是 index）：
+ * 0 Hello / 1 HelloAck / 2 HelloReject / 3 Msg / 4 Ping。
+ *
+ * `Hello` 只带 `token`，不带 `user_id`：身份由服务端解析（issue #3）。
+ * 客户端从 `HelloAck` 得知自己是谁。
+ */
 export type WireFrame =
-  | { readonly t: "Hello"; readonly user_id: string }
+  | { readonly t: "Hello"; readonly token: string }
+  | { readonly t: "HelloAck"; readonly user_id: string; readonly session_id: string }
+  | { readonly t: "HelloReject"; readonly reason: string }
   | { readonly t: "Msg"; readonly env: Envelope }
   | { readonly t: "Ping" };
 
@@ -141,7 +151,9 @@ class BinWriter {
   /** Size of `value` once encoded — used to size the buffer exactly. */
   static sizeOfFrame(frame: WireFrame): number {
     let n = 4; // variant index
-    if (frame.t === "Hello") return n + strBytes(frame.user_id);
+    if (frame.t === "Hello") return n + strBytes(frame.token);
+    if (frame.t === "HelloAck") return n + strBytes(frame.user_id) + strBytes(frame.session_id);
+    if (frame.t === "HelloReject") return n + strBytes(frame.reason);
     if (frame.t === "Ping") return n;
     const e = frame.env;
     n += 1; // version
@@ -326,14 +338,23 @@ function writeFrame(w: BinWriter, frame: WireFrame): void {
   switch (frame.t) {
     case "Hello":
       w.u32(0);
+      w.str(frame.token);
+      return;
+    case "HelloAck":
+      w.u32(1);
       w.str(frame.user_id);
+      w.str(frame.session_id);
+      return;
+    case "HelloReject":
+      w.u32(2);
+      w.str(frame.reason);
       return;
     case "Msg":
-      w.u32(1);
+      w.u32(3);
       writeEnvelope(w, frame.env);
       return;
     case "Ping":
-      w.u32(2);
+      w.u32(4);
       return;
   }
 }
@@ -396,10 +417,14 @@ export function decodeFrame(bytes: Uint8Array): WireFrame {
 function readFrame(r: BinReader): WireFrame {
   switch (r.u32()) {
     case 0:
-      return { t: "Hello", user_id: r.str() };
+      return { t: "Hello", token: r.str() };
     case 1:
-      return { t: "Msg", env: readEnvelope(r) };
+      return { t: "HelloAck", user_id: r.str(), session_id: r.str() };
     case 2:
+      return { t: "HelloReject", reason: r.str() };
+    case 3:
+      return { t: "Msg", env: readEnvelope(r) };
+    case 4:
       return { t: "Ping" };
     default:
       throw new Error("bincode: unknown WireFrame variant");

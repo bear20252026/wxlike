@@ -140,7 +140,7 @@ export const commands: Record<string, (args: Json, ctx: WebCtx) => Promise<unkno
    * the hub registers this device with `Hello{user_id}`.
    */
   async connect_hub(_args, ctx) {
-    await ctx.hub.connect(session.wsUrl(), session.userId());
+    await ctx.hub.connect(session.wsUrl(), session.token() ?? "");
     return `ws ${session.wsUrl()}`;
   },
 

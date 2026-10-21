@@ -20,14 +20,27 @@ struct WsClient {
 }
 
 impl WsClient {
-    async fn connect(url: &str, user_id: &str) -> Self {
+    /// 握手：发**凭据**（不是 user_id），等 `HelloAck` 确认服务端认出的身份。
+    ///
+    /// 返回 `(client, 服务端认定的 user_id)`——测试要断言"服务端解析出的身份
+    /// 与我们注册的那个一致"，而不是我们自己传什么就信什么（issue #3）。
+    async fn connect(url: &str, token: &str) -> (Self, String) {
         let (socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
         let mut me = Self { socket };
         let hello = WireFrame::Hello {
-            user_id: user_id.to_string(),
+            token: token.to_string(),
         };
         me.send_frame(&hello.to_bytes().unwrap()).await;
-        me
+
+        let frame = me.socket.next().await.unwrap().unwrap();
+        let bytes = match frame {
+            Message::Binary(b) => b,
+            other => panic!("expected binary HelloAck, got {other:?}"),
+        };
+        match WireFrame::from_bytes(&bytes).unwrap() {
+            WireFrame::HelloAck { user_id, .. } => (me, user_id),
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
     }
 
     async fn send_frame(&mut self, bytes: &[u8]) {
@@ -131,11 +144,14 @@ async fn ws_client_and_quic_client_interoperate() {
     let (alice_uid, alice_tok) = register(&stack, "alice");
     let (carol_uid, carol_tok) = register(&stack, "carol");
 
-    let alice = Client::connect(stack.quic_addr, "localhost", &alice_uid)
+    // 第三个参数是**凭据**：hub 从 token 解析身份（issue #3）
+    let alice = Client::connect(stack.quic_addr, "localhost", &alice_tok)
         .await
         .unwrap();
+    assert_eq!(alice.user_id, alice_uid, "服务端解析出的身份应与注册时一致");
     let ws_url = format!("ws://{}/ws", stack.http_addr);
-    let mut carol_ws = WsClient::connect(&ws_url, &carol_uid).await;
+    let (mut carol_ws, ws_uid) = WsClient::connect(&ws_url, &carol_tok).await;
+    assert_eq!(ws_uid, carol_uid, "WS 侧身份也应来自服务端解析");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // 不变式 9 生效后，直发双方须为好友
@@ -207,7 +223,7 @@ async fn ws_connection_participates_in_parking_like_quic() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(400)).await;
 
-    let mut carol_ws = WsClient::connect(&ws_url, &carol_uid).await;
+    let (mut carol_ws, _) = WsClient::connect(&ws_url, &carol_tok).await;
     let env = carol_ws.next_text_frame().await;
     assert!(matches!(&env.body, MsgBody::Text(t) if t == "while you were away"));
 

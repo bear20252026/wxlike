@@ -271,6 +271,11 @@ async fn build_hub(
             offline,
             membership: Some(Arc::new(PlatformMembership(platform.clone()))),
             policy: Some(Arc::new(PlatformPolicy(platform.clone()))),
+            // 身份只从凭据解析：`Hello` 不再接受客户端自报的 user_id（issue #3）。
+            // 没有这一行，hub 会拒绝所有连接（fail closed）——这是故意的。
+            auth: Some(Arc::new(SessionAuth {
+                platform: platform.clone(),
+            })),
             reclaim_idle_ms: Some(wxlike_net::DEFAULT_CLAIM_IDLE_MS),
             push_hook: Some(wxlike_push::AggregatingDispatchHook::spawn(
                 wxlike_push::DispatchHook::new(
@@ -287,6 +292,59 @@ async fn build_hub(
         },
     )
     .await
+}
+
+/// 把 platform 的 `sessions` 表包装成 hub 的认证器（issue #3 / A01）。
+///
+/// hub 不认识 session 表，也不该认识——`crates/net` 只定义
+/// [`wxlike_net::HubAuthenticator`]，实现由装配层给。这里就是那一层：
+/// `Hello { token }` 里的 token 走 `Platform::lookup_token`（它自己会删过期行），
+/// 解析出 `user_id` 后才注册 peers、才 `drain` 离线队列。
+struct SessionAuth {
+    platform: PlatformState,
+}
+
+impl wxlike_net::HubAuthenticator for SessionAuth {
+    fn authenticate(&self, token: &str) -> Option<wxlike_net::HubIdentity> {
+        if token.is_empty() {
+            return None;
+        }
+        match self.platform.lookup_token(token) {
+            Ok(Some(user_id)) => Some(wxlike_net::HubIdentity {
+                user_id,
+                // 发给客户端的会话标识**不是 token 本身**：用它的指纹，
+                // 客户端拿去做"这是我的哪个设备"的对照，泄露了也换不来凭据。
+                session_id: session_fingerprint(token),
+            }),
+            Ok(None) => None,
+            Err(err) => {
+                // 库坏了不等于"凭据无效"，但也不能放行——两者都返回 None，
+                // 区别只在日志里，运维能从 error 与 warn 分开看。
+                tracing::error!(error = %err, "lookup_token failed during hub hello");
+                None
+            }
+        }
+    }
+
+    fn is_revoked(&self, token: &str) -> bool {
+        // 会话被删（退出登录 / 远程下线）或过期 → 长连接也该断。
+        // `lookup_token` 对过期行会顺手删掉，所以这里直接复用它的语义。
+        // 查库失败按"没被吊销"处理：网络抖动不该把所有人踢下线，
+        // 真正的过期会在下一次成功查询时生效。
+        match self.platform.lookup_token(token) {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(err) => {
+                tracing::error!(error = %err, "lookup_token failed during hub heartbeat");
+                false
+            }
+        }
+    }
+}
+
+/// token 的短指纹（16 hex）。用既有的 `sha256_hex`，不再写第二份 hash。
+fn session_fingerprint(token: &str) -> String {
+    wxlike_core::msgmeta::sha256_hex(token.as_bytes())[..16].to_string()
 }
 
 /// 拼路由：健康检查、平台、视频、WS、在线状态、历史、静态页、开发辅助。

@@ -59,6 +59,9 @@ async fn hub_with(policy: StaticPolicy) -> (std::sync::Arc<Store>, std::net::Soc
         "127.0.0.1:0".parse().unwrap(),
         router,
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             storage: Some(store.clone()),
             policy: Some(std::sync::Arc::new(policy)),
             ..Default::default()
@@ -182,6 +185,9 @@ async fn muted_group_member_frames_are_dropped_managers_pass() {
         "127.0.0.1:0".parse().unwrap(),
         router,
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             storage: Some(store.clone()),
             policy: Some(std::sync::Arc::new(StaticPolicyMuted)),
             membership: Some(std::sync::Arc::new(StaticMembership)),
@@ -278,6 +284,9 @@ async fn no_policy_keeps_everything_delivering() {
         "127.0.0.1:0".parse().unwrap(),
         router,
         MqHubOptions {
+            // 测试用 StaticAuth：token 原样当 user_id（生产走 session 表）。
+            // 不注入的话 hub 会 fail closed 拒绝连接——这是 issue #3 的默认值。
+            auth: Some(std::sync::Arc::new(wxlike_net::auth::StaticAuth)),
             storage: Some(store.clone()),
             ..Default::default()
         },

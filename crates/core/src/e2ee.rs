@@ -304,6 +304,41 @@ impl Crypto {
         })
     }
 
+    /// 用**已有会话**加密；没有会话就是错误（`NoSession`）。
+    ///
+    /// 与 [`Crypto::encrypt_dm`] 的区别只有一点，但很关键：**它不会新建会话，
+    /// 也不需要 bundle**。秘密聊天里"第二次及以后的消息"必须走这条——
+    /// 以前调用层自己判断 `has_session_with` 然后传 `bundle = None`，
+    /// 结果落进了"没有 bundle 就发明文"的分支（issue #4）。
+    ///
+    /// fail closed：会话不存在时报错，绝不退化成明文。
+    pub fn encrypt_dm_existing(
+        &mut self,
+        peer_user_id: &str,
+        plaintext: &[u8],
+    ) -> Result<Sealed> {
+        let state = self
+            .dm
+            .get_mut(peer_user_id)
+            .ok_or(CryptoError::NoSession)?;
+        let message = state
+            .session
+            .encrypt(plaintext)
+            .map_err(|_| CryptoError::DecryptFailed)?;
+        Ok(match message {
+            // 已有会话却产生 PreKey 消息是 olm 的正常行为（对方还没回），
+            // 但**不能**标成 `pre_key: true`：那会让接收方以为要新建会话。
+            OlmMessage::PreKey(pre_key) => Sealed {
+                pre_key: false,
+                body: pre_key.message().to_base64(),
+            },
+            OlmMessage::Normal(m) => Sealed {
+                pre_key: false,
+                body: m.to_base64(),
+            },
+        })
+    }
+
     /// Opens a message from `peer_user_id`, creating the inbound session when
     /// the message carries a pre-key.
     ///

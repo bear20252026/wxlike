@@ -279,9 +279,9 @@ async fn send_and_receive_over_live_hub() {
     // the same name must be refused
     let shared_pins = pins();
     alice
-        .connect_hub(&quic.to_string(), &alice.user_id().unwrap(), &shared_pins)
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &shared_pins)
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &shared_pins)
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &shared_pins)
         .unwrap();
     assert!(alice.is_connected() && bob.is_connected());
 
@@ -380,9 +380,9 @@ async fn p1_history_pagination_and_read_receipts() {
         .unwrap()
         .to_string();
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
@@ -445,9 +445,9 @@ async fn p1_typing_is_transient() {
         .unwrap()
         .to_string();
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
@@ -506,9 +506,9 @@ async fn p1_forward_merge_and_favorites() {
         .unwrap()
         .to_string();
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
@@ -593,9 +593,9 @@ async fn p1_secret_chat_roundtrip_through_real_stack() {
         .unwrap()
         .to_string();
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
 
     // both publish pre-key bundles, then alice opens a secret conversation
@@ -620,8 +620,13 @@ async fn p1_secret_chat_roundtrip_through_real_stack() {
     assert_eq!(ev["text"], "s3cret payload", "decrypted at the UI layer");
 }
 
+/// 秘密聊天在拿不到对方预密钥时**必须拒绝发送**，绝不退化成明文（issue #4）。
+///
+/// 这条测试原来叫 `..._falls_back_to_cleartext_without_peer_bundle`，断言的是
+/// `ev["kind"] == "text"`——把"秘密模式发明文"固化成了契约。护栏变成了锚：
+/// 想修这个 bug 得先改一条名字看起来像"保护降级行为"的测试。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn p1_secret_chat_falls_back_to_cleartext_without_peer_bundle() {
+async fn p1_secret_chat_refuses_to_send_without_peer_bundle() {
     let (http, quic, _platform) = stack().await;
     let alice = AppState::new(&http);
     let bob = AppState::new(&http);
@@ -634,24 +639,69 @@ async fn p1_secret_chat_falls_back_to_cleartext_without_peer_bundle() {
         .unwrap()
         .to_string();
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
 
     // only alice enables E2EE; bob never publishes a bundle
     alice.secret_enable().unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
-    // documented P1 fallback: warn + send cleartext so the message is not lost
+
+    let err = alice
+        .send_secret_text(&conv, vec![bob_id.clone()], "must not leak")
+        .expect_err("没有对方预密钥时，秘密聊天必须拒绝发送");
+    assert!(
+        err.contains("预密钥"),
+        "错误要告诉用户为什么发不出去：{err}"
+    );
+
+    // 而且真的什么都没发：bob 一秒内不该收到任何事件，更不该收到明文
+    let got = tokio::time::timeout(Duration::from_millis(900), bob.next_event()).await;
+    assert!(
+        got.is_err(),
+        "拒绝发送之后不该有消息到达（收到任何东西都说明退化了）：{got:?}"
+    );
+}
+
+/// 会话建立之后，**每一条**都必须继续加密（旧实现第 2 条就发明文）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_secret_chat_keeps_encrypting_after_the_first_message() {
+    let (http, quic, _platform) = stack().await;
+    let alice = AppState::new(&http);
+    let bob = AppState::new(&http);
+    let bob_id = bob.register(&who_name("bob"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let alice_id = alice.register(&who_name("alice"), "pw").unwrap()["user_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     alice
-        .send_secret_text(&conv, vec![bob_id.clone()], "fallback text")
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
+        .unwrap();
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
 
-    let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
-        .await
-        .unwrap()
-        .unwrap()
-        .expect("fallback message arrives");
-    assert_eq!(ev["kind"], "text", "fell back to a normal message: {ev}");
-    assert_eq!(ev["text"], "fallback text");
+    alice.secret_enable().unwrap();
+    bob.secret_enable().unwrap();
+    let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
+
+    for i in 1..=3 {
+        let text = format!("secret-{i}");
+        alice
+            .send_secret_text(&conv, vec![bob_id.clone()], &text)
+            .unwrap_or_else(|e| panic!("第 {i} 条发送失败：{e}"));
+        let ev = tokio::time::timeout(Duration::from_secs(5), bob.next_event())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_or_else(|| panic!("第 {i} 条没有到达"));
+        assert_eq!(
+            ev["kind"], "e2ee",
+            "第 {i} 条必须是加密的——旧实现在这里有会话就发明文：{ev}"
+        );
+        assert_eq!(ev["text"], text, "第 {i} 条解密后的正文");
+    }
 }

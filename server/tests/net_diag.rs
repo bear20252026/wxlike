@@ -30,7 +30,8 @@ fn register(base: &str, name: &str) -> String {
         .expect("register")
         .into_json()
         .unwrap();
-    reply["user_id"].as_str().expect("user_id").to_string()
+    // 诊断要的是**凭据**：hub 的 hello 只认 token（issue #3）
+    reply["token"].as_str().expect("token").to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -45,7 +46,7 @@ async fn all_four_steps_pass_against_a_real_hub() {
     let target = DiagTarget::new("127.0.0.1", stack.http_addr.port(), stack.quic_addr.port());
     let mut o = DiagOptions::new(&pins);
     o.per_step_timeout = Duration::from_secs(5);
-    o.user_id = Some(alice.clone());
+    o.token = Some(alice.clone());
 
     let report = wxlike_net::diag::run(&target, &o).await;
     assert!(report.ok(), "四步应当全过：{report:#?}");
@@ -59,7 +60,8 @@ async fn all_four_steps_pass_against_a_real_hub() {
         "{}",
         report.steps[2].status.detail()
     );
-    // QUIC 那步要走完 hello（给了 user_id 就必须证明服务端认这个用户）
+    // QUIC 那步要走完 hello（给了凭据就必须证明服务端接受它——issue #3 之后
+    // hub 只认 token，不再接受自报的 user_id）
     assert!(
         report.steps[3].status.detail().contains("hello"),
         "{}",

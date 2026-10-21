@@ -23,14 +23,17 @@ pub struct Client {
 impl Client {
     /// Production constructor (WP-12): connects with trust-on-first-use and
     /// pins the server certificate fingerprint in `pins_path`.
+    ///
+    /// 第二个参数是**凭据**（HTTP 登录拿到的 token），不是 `user_id`：
+    /// 身份由服务端解析后通过 [`WireFrame::HelloAck`] 告知（issue #3）。
     pub async fn connect_verified(
         server_addr: SocketAddr,
         server_name: &str,
-        user_id: impl Into<String>,
+        token: impl Into<String>,
         pins_path: impl AsRef<std::path::Path>,
     ) -> anyhow::Result<Self> {
         let conn = crate::transport::connect_tofu(server_addr, server_name, pins_path).await?;
-        Self::hello(conn, user_id.into()).await
+        Self::hello(conn, token.into()).await
     }
 
     /// Lab constructor: skips certificate verification. Gate behind an
@@ -125,19 +128,29 @@ impl Client {
         }
     }
 
-    async fn hello(conn: quinn::Connection, user_id: String) -> anyhow::Result<Self> {
-        let (mut send, recv) = conn.open_bi().await.context("open control stream")?;
+    /// 握手：发凭据，等 `HelloAck` 告诉我们**自己是谁**。
+    ///
+    /// 顺序很重要——先收 ack 再返回 `Client`，否则调用方会拿到一个
+    /// `user_id` 还是空的连接，第一条消息的 `sender` 就是空串。
+    /// 认证失败时服务端直接关连接，这里表现为读帧出错。
+    async fn hello(conn: quinn::Connection, token: String) -> anyhow::Result<Self> {
+        let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
         // QUIC streams are lazy: the server only sees the stream once data
-        // arrives. The Hello frame materializes the stream and registers us.
-        framing::write_frame(
-            &mut send,
-            &WireFrame::Hello {
-                user_id: user_id.clone(),
-            }
-            .to_bytes()?,
-        )
-        .await
-        .context("send hello")?;
+        // arrives. The Hello frame materializes the stream and authenticates us.
+        framing::write_frame(&mut send, &WireFrame::Hello { token }.to_bytes()?)
+            .await
+            .context("send hello")?;
+
+        let frame = framing::read_frame(&mut recv)
+            .await
+            .context("await hello ack (认证失败时服务端会直接关连接)")?;
+        let user_id = match WireFrame::from_bytes(&frame)? {
+            WireFrame::HelloAck { user_id, .. } => user_id,
+            // 服务端明确拒绝：把原因原样带出去，别让调用方去猜"是网断了还是凭据废了"
+            WireFrame::HelloReject { reason } => anyhow::bail!("credential rejected: {reason}"),
+            other => anyhow::bail!("expected HelloAck, got {other:?}"),
+        };
+
         Ok(Self {
             send: Arc::new(Mutex::new(send)),
             recv: Arc::new(Mutex::new(recv)),
@@ -177,6 +190,17 @@ impl Client {
         crate::heartbeat::Heartbeat::current().record(sample)
     }
 
+    /// 发一次心跳。
+    ///
+    /// 服务端在收到 `Ping` 时会顺带复查凭据（`HubAuthenticator::is_revoked`），
+    /// 所以这个函数也是"吊销能不能踢掉长连接"的触发点。客户端的维护线程
+    /// 按 [`Client::sample_heartbeat`] 给出的间隔调它即可。
+    pub async fn ping(&self) -> anyhow::Result<()> {
+        let mut s = self.send.lock().await;
+        framing::write_frame(&mut *s, &WireFrame::Ping.to_bytes()?).await?;
+        Ok(())
+    }
+
     /// 当前连接是否还活着。
     pub fn is_alive(&self) -> bool {
         self.conn.close_reason().is_none()
@@ -202,7 +226,11 @@ impl Client {
             match WireFrame::from_bytes(&frame)? {
                 WireFrame::Msg(env) => return Ok(env),
                 WireFrame::Ping => continue,
-                WireFrame::Hello { .. } => continue,
+                WireFrame::Hello { .. }
+                | WireFrame::HelloAck { .. }
+                | WireFrame::HelloReject { .. } => {
+                    continue;
+                }
             }
         }
     }
