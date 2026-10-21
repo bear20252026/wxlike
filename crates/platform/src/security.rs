@@ -140,6 +140,32 @@ impl Platform {
         Ok(())
     }
 
+    /// 敏感操作的**身份确认**：当前第二因子或密码，任一通过即可（issue #5）。
+    ///
+    /// 用途是"已启用 2FA 之后重新 enroll"。没有这一步，持有 Bearer 的人可以直接
+    /// 调 `/api/2fa/enable` —— 它会把 `totp_secret` 换成新的并把
+    /// `totp_enabled` 清成 0，二次认证就被悄悄关掉了，接着生成恢复码、重置密码、
+    /// 踢掉原用户的所有会话。
+    ///
+    /// 两个都为空的调用返回 `false`（不是"通过"）：不能因为调用方忘了带凭据
+    /// 就当成验证成功。
+    pub fn confirm_identity(&self, user_id: &str, code: &str, password: &str) -> Result<bool> {
+        if !code.is_empty() {
+            if let Some(secret) = self.totp_secret_of(user_id)? {
+                if totp_verify(&secret, code) {
+                    return Ok(true);
+                }
+            }
+        }
+        if !password.is_empty() {
+            let name = self.profile_of(user_id)?.name;
+            if let Some(uid) = self.verify_credentials(&name, password)? {
+                return Ok(uid == user_id);
+            }
+        }
+        Ok(false)
+    }
+
     /// 2FA 校验（登录路径调用）：未启用 → Ok(())；启用 → 验证码必须正确。
     pub fn totp_check_login(&self, user_id: &str, code: Option<&str>) -> Result<()> {
         if !self.totp_enabled(user_id)? {

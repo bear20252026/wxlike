@@ -329,10 +329,39 @@ async fn register(
     Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
 }
 
+/// 重新 enroll 时要求带上**当前第二因子或密码**（issue #5）。
+///
+/// 两者都可空：首次 enroll（还没启用）不需要任何凭据——那时候也没什么可保护
+/// 的；但**已启用**之后必须证明是本人，否则持有 Bearer 的人可以直接把
+/// `totp_enabled` 清成 0，二次认证就没了。
+#[derive(Deserialize, Default)]
+pub struct TotpEnroll {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub password: String,
+}
+
 async fn totp_enable(
     State(platform): State<PlatformState>,
     authed: Authed,
+    ApiJson(body): ApiJson<TotpEnroll>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    if platform.totp_enabled(&authed.user_id)? {
+        if !platform.confirm_identity(&authed.user_id, &body.code, &body.password)? {
+            platform.audit(
+                &authed.user_id,
+                "user.2fa.re_enroll",
+                &authed.user_id,
+                "denied",
+            );
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "re-enrolling 2FA requires the current code or password",
+            ));
+        }
+        platform.audit(&authed.user_id, "user.2fa.re_enroll", &authed.user_id, "ok");
+    }
     let secret = platform.totp_enable(&authed.user_id)?;
     Ok(Json(serde_json::json!({ "secret": secret })))
 }

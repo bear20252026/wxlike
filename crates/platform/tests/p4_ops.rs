@@ -537,3 +537,79 @@ async fn admin_endpoints_reject_without_token() {
     .await;
     assert_eq!(st, StatusCode::OK, "带令牌可触发对账");
 }
+
+/// issue #5：**已启用 2FA 之后重新 enroll 必须先证明身份**。
+///
+/// 漏洞是：`/api/2fa/enable` 只要求 Authed，底层直接
+/// `SET totp_secret = 新密钥, totp_enabled = 0`。持有 Bearer 的人可以
+/// 先调它把 2FA 关掉，再生成恢复码、重置密码、踢掉原用户所有会话。
+#[tokio::test]
+async fn re_enrolling_2fa_requires_the_current_factor() {
+    let state = platform();
+    let router = app(state.clone());
+    let (uid, tok) = common::signup(&router, "tfa").await;
+
+    // 首次 enroll：还没启用，不需要凭据
+    let (st, body) = call(
+        &router,
+        req("POST", "/api/2fa/enable", Some(json!({})), Some(&tok)),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "首次 enroll 应当直接给密钥：{body}");
+    let secret = body["secret"].as_str().expect("secret").to_string();
+
+    // 用当前验证码确认，2FA 真正启用
+    let code = totp_now(&secret);
+    let (st, body) = call(
+        &router,
+        req(
+            "POST",
+            "/api/2fa/confirm",
+            Some(json!({"code": code})),
+            Some(&tok),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "confirm 失败：{body}");
+    assert!(state.totp_enabled(&uid).unwrap(), "2FA 应当已启用");
+
+    // 关键断言：已启用 + 不带任何凭据 → 拒绝，且**不改变**启用状态
+    let (st, body) = call(
+        &router,
+        req("POST", "/api/2fa/enable", Some(json!({})), Some(&tok)),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "只有 Bearer 就能重新 enroll 等于绕过 2FA：{body}"
+    );
+    assert!(
+        state.totp_enabled(&uid).unwrap(),
+        "被拒之后启用状态不能变（不能先清再报错）"
+    );
+
+    // 带密码 → 放行
+    let (st, body) = call(
+        &router,
+        req(
+            "POST",
+            "/api/2fa/enable",
+            Some(json!({"password": "pw"})),
+            Some(&tok),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "带正确密码应当放行：{body}");
+}
+
+/// 用与 `totp_verify` 相同的参数（SHA1 / 6 位 / ±1 步 / 30 秒）算当前码。
+fn totp_now(secret_base32: &str) -> String {
+    let bytes = totp_rs::Secret::Encoded(secret_base32.to_string())
+        .to_bytes()
+        .expect("base32 secret");
+    totp_rs::TOTP::new(totp_rs::Algorithm::SHA1, 6, 1, 30, bytes)
+        .expect("totp")
+        .generate_current()
+        .expect("code")
+}
