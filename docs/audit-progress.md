@@ -3,6 +3,11 @@
 > 对应 `#3`–`#23` 共 20 条任务（`#1`/`#2` 是已关闭的交付记录）。
 > 这份账的目的是**说清哪些真做完了、哪些没做、没做的卡在哪**——
 > 不是"看起来都修了"。
+>
+> **CI 状态：`ff2859c` 七关全绿**（lint / quality / test×3 / doc / android）。
+> 改协议带出来的三处测试回归（`history_search_api`、`mailbox_mirror`、
+> `policy_integration`、`ws_gateway`）已全部修完——它们都是"还在用
+> `user_id` 当凭据连接"，现在统一用注册返回的 token。
 
 ## 一、本轮已闭环（6 条 + 1 条部分）
 
