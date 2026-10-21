@@ -23,8 +23,10 @@
 | #5 | P1 | ✅ 完整 | `cc0a516` | 已启用 2FA 后重新 enroll 必须先证明身份（当前码或密码） |
 | #16 | P1 | ✅ 完整 | `47812b2` | compose 的 nats 缩进错 + 缺启动凭据；实测 `up` 后 health 通过 |
 | #18 | P2 | ⚠️ 大部分 | `8573b24` | Web（tsc + bincode 自测）与 Flutter（analyze + test）进 CI；**Tauri 未接** |
+| #10 | P1 | ✅ 完整 | `1a1ed05` | 离线队列 claim/ack/release + 30s lease；发一半断连不再丢 |
+| #11 | P1 | ⚠️ 一半 | `1a1ed05` | 落库成功后才标记 seen（失败可重试）；**per-recipient 补投未做** |
 
-合计：**6 条完整、4 条部分**。
+合计：**7 条完整、5 条部分**。
 
 ### 逐条说明
 
@@ -70,8 +72,7 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 | #7 | P1 | 视频入口匿名：要认证 + 所有权 + 配额 + 有界队列，涉及 `video` crate 与三端调用 | 给 `VideoStore` 加 owner，`/api/video*` 挂 Authed，加并发/磁盘预算 |
 | #8 | P1 | `callback_url` SSRF：要做目标 allowlist + DNS/IP 校验 + 禁重定向 | 新增 URL 校验模块 + 出口隔离，需网络层配合 |
 | #9 | P1 | 跨节点确认不以投递成功为条件：要 durable inbox + 两阶段确认 | 改 `mq_hub` 消费路径，影响面大 |
-| #10 | P1 | 离线队列先删后发：要 lease/claim 状态机 | 改 `SqliteOffline` schema + 消费循环 |
-| #11 | P1 | 去重先于持久化：要"消息 + 投递任务"同一事务 | 改 `handle_inbound` 的顺序与失败恢复 |
+| #11 剩余 | P1 | "重复 msg_id 补投未完成收件人"要 per-recipient 投递状态（delivery outbox） | 新表 + 扇出路径改造，1–2 天 |
 | #13 | P1 | 空 `to` 广播 / 伪造 Notice：要收紧 `policy` 并给服务端内部事件开独立入口 | 改 `DeliveryPolicy` + 新增内部 publish 通道 |
 | #15 | P1 | 秘密聊天闭环：设置没接入发送/转发、TTL 不落实、密钥只在进程内 | 大工程（持久化 + 多端 + 搜索一致性），也是 #4 往返失败的上游 |
 | #17 | P1 | 后半（同步 FFI 阻塞主 isolate）：要把 ureq 调用搬进后台 isolate | 改 `service.dart` + 生成的绑定调用方式 |
@@ -101,6 +102,21 @@ docker compose --profile nats up -d nats   # nats 起来
 `ui/src/web/wire.ts` 是**手写的 bincode**，变体序号必须与 Rust 的
 `WireFrame` 顺序一致——#3 改了顺序，而它的 fixtures 在此之前从没在 CI 跑过。
 两个 job 第一次跑就绿。Tauri 没接（要 apt 系统依赖，失败模式与代码无关）。
+
+## 二点六、消息可靠性两条（#10 / #11）
+
+**#10（完整）**——`OfflineStore` 从 `drain`（读全部+删全部再发）改成
+`claim`/`ack`/`release` + 30s lease。`SqliteOffline` 加 `claimed_until` 列并
+带老库 `ALTER` 迁移；hub 的消费循环 `claim(64) → 逐条发 → 成功 ack / 失败
+release 剩余`。**发一半断连不再丢**，进程被杀也不会（lease 到期自动回来）。
+
+**#11（一半）**——落库**成功之后**才标记 `seen`：`append` 失败时客户端用同一个
+msg_id 重试能真正进来（以前会被去重缓存当成重复直接吞掉）。
+
+没做的：重复 msg_id 时"补投未完成的收件人"。试过重跑 fanout，
+`ten_replays_of_one_msg_id_are_delivered_once` 立刻红——hub 没有 per-recipient
+投递状态，重跑会把整批人再收一遍。正确解是 delivery outbox（消息 + 每个收件人
+的投递任务同一事务），1–2 天；在那之前扇出失败靠客户端拉历史补偿。
 
 ## 三、为什么没有"全部完成"
 
