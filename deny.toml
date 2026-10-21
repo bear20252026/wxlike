@@ -1,0 +1,82 @@
+# cargo-deny 配置：许可证 / 安全公告 / 依赖来源三道闸。
+#
+# 为什么这个项目需要它：`THIRD-PARTY-NOTICES.md` 里逐条登记了每个依赖的许可，
+# 但那是**人写的**——新加一个依赖时没人会主动去登记。这里让工具来盯：
+# 出现清单外的许可证、或 RustSec 报了已知漏洞，`cargo deny check` 直接红。
+#
+# 用法：
+#   cargo deny check            # 全查
+#   cargo deny check licenses   # 只查许可证
+#   cargo deny check advisories # 只查 CVE
+
+[licenses]
+# 与本项目 AGPL-3.0 兼容、且已在 THIRD-PARTY-NOTICES 里登记过的许可证。
+# 加白名单前先确认两件事：**能兼容 AGPL**、**已在清单里登记**。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "BSL-1.0",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+    # UniFFI 的绑定生成器（crates/ffi）
+    "MPL-2.0",
+    # webpki-roots 的根证书**数据**（Mozilla CA bundle），宽松许可，兼容 AGPL
+    "CDLA-Permissive-2.0",
+    # 本项目自身
+    "AGPL-3.0-only",
+]
+# 许可证文本识别需要一点模糊匹配：有些 crate 的 LICENSE 文件是拼接的。
+confidence-threshold = 0.9
+
+[bans]
+# 同一个 crate 出现多个版本不一定是错（serde 生态很常见），但要能看见。
+multiple-versions = "warn"
+# 内部 crate 全用 `path = "..."`，没有版本号；这是 workspace 的常态，
+# 不构成风险（它们不发布）。真正的风险是 `path = "../refs/..."` 这种仓库外路径，
+# 那条由 CI 的"只能克隆 wxlike"约束管着，不靠这个 lint。
+wildcards = "warn"
+# 内部 crate 用 `path = "../core"` 引用，本来就不该写版本号。
+allow-wildcard-paths = true
+# 已知要避免的依赖：这里现在是空的，不是忘了写。
+#
+# `openssl` 曾经想 ban 掉（统一 rustls/ring），但 `str0m`（WebRTC 的 DTLS 实现）
+# 在非 Windows 目标上依赖它——`cargo tree --target all -i openssl` 能看到。
+# 想真正去掉，得换掉 str0m 或给它关掉 openssl feature，那是独立任务，
+# 不是配置能解决的。**配置里写一个永远失败的 ban，只会让人习惯性忽略这条检查。**
+deny = []
+
+[advisories]
+# 被 yank 的版本：**警告而不是拒绝**。撤回的含义是"作者不建议新项目用这个版本"，
+# 不等于有漏洞；直接 deny 会让一个传递依赖（cipher → inout）卡住整个仓库。
+yanked = "warn"
+# 已知漏洞：这里留空是**故意的**——有豁免必须写在这里并注明原因，
+# 而不是把整个检查关掉。
+# 四条"无人维护"（unmaintained）公告：不是漏洞，但也没有修复版本可升。
+# 登记在这里是**知情接受**，不是把检查关掉——新出现的公告仍会红。
+ignore = [
+    # bincode 1.x 停止维护；wire 格式迁到 bincode 2 是独立任务（跨端要同步改）
+    "RUSTSEC-2025-0141",
+    # fxhash，经 sctp-proto（WebRTC 数据通道）传递引入
+    "RUSTSEC-2025-0057",
+    # instant，经 measure_time（rtc 的计时）传递引入
+    "RUSTSEC-2024-0384",
+    # paste，经 boa_string（小程序容器的 JS 引擎）传递引入
+    "RUSTSEC-2024-0436",
+    # webpki-roots 0.26.11 的 emSign 根证书问题：这条**修不了**，只能等。
+    # 它由 `ureq 2.x` 锁死（ureq 3 才换到 webpki-roots 1.x），而 ureq 3 是破坏性
+    # API 变更，要改 admin/client/video 三处调用。风险面也有限：ureq 只用于
+    # **我们自己对自家服务**发 HTTPS 请求，不是浏览器式的任意站点访问。
+    # 迁移 ureq 3 已记进待办，不在这里假装已解决。
+    "RUSTSEC-2026-0381",
+]
+
+[sources]
+# 只允许 crates.io：git 依赖会绕过许可证与漏洞检查，也会让 CI 变慢。
+unknown-registry = "deny"
+unknown-git = "deny"

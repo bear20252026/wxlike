@@ -711,13 +711,13 @@ async fn domain_api_directly_persists_without_a_sink() {
     assert!(state.are_friends(&bob, &alice).unwrap());
     assert_eq!(state.friends(&alice).unwrap().len(), 1);
     // seq is a global log position, not a per-user counter
-    let alog = state.changes(&alice, 0, 10).unwrap();
+    let entries = state.changes(&alice, 0, 10).unwrap();
     assert_eq!(
-        alog.iter().map(|c| c.kind.as_str()).collect::<Vec<_>>(),
+        entries.iter().map(|c| c.kind.as_str()).collect::<Vec<_>>(),
         vec!["request", "accepted"]
     );
-    assert_eq!(state.changes_head(&alice).unwrap(), alog[1].seq);
-    assert_eq!(state.changes(&alice, alog[0].seq, 10).unwrap().len(), 1);
+    assert_eq!(state.changes_head(&alice).unwrap(), entries[1].seq);
+    assert_eq!(state.changes(&alice, entries[0].seq, 10).unwrap().len(), 1);
     // self, unknown target and malformed ids are refused at the domain layer too
     assert!(state.send_friend_request(&alice, &alice, "").is_err());
     assert!(state.send_friend_request(&alice, "zz!", "").is_err());

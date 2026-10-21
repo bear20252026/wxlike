@@ -44,6 +44,15 @@ jobs:
           python-version: "3.12"
       - name: metrics gate
         run: python scripts/quality-gate.py
+      # 预编译二进制，不编译（typos/deny 各自 cargo install 要几分钟）
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: typos-cli,cargo-deny
+      - name: typos（拼写）
+        run: typos
+      # 许可证 / 安全公告 / 依赖来源：配置见 deny.toml，豁免必须写原因
+      - name: supply chain（licenses / advisories / bans / sources）
+        run: cargo deny check
 
   test-linux:
     name: test (linux)

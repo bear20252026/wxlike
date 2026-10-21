@@ -216,7 +216,7 @@ class BinWriter {
 
   done(): Uint8Array {
     if (this.off !== this.buf.byteLength) {
-      // sizing bug: never ship a frame with padding, the server would mis-read it
+      // sizing bug: never ship a frame with padding, the server would misread it
       throw new Error(`encoder reserved ${this.buf.byteLength} bytes, wrote ${this.off}`);
     }
     return new Uint8Array(this.buf);
@@ -388,7 +388,7 @@ export function decodeFrame(bytes: Uint8Array): WireFrame {
   const r = new BinReader(bytes);
   const frame = readFrame(r);
   // `bincode::serialize` on the hub side writes exactly one frame per message,
-  // so leftovers mean we mis-parsed a field — surface it instead of shrugging.
+  // so leftovers mean we misparsed a field — surface it instead of shrugging.
   if (!r.eof()) throw new Error(`bincode: ${r.leftover()} trailing bytes unconsumed`);
   return frame;
 }

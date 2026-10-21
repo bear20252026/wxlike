@@ -1,0 +1,36 @@
+# typos 配置：把"领域缩写"与"刻意的短名"排除，剩下的才是真错字。
+#
+# 用法：
+#   typos                      # 全仓库扫
+#   typos --format brief       # 一行一条，适合贴进 issue
+#
+# 加词的原则：**只加确实不是错字的**。为了让 CI 变绿而把真错字塞进白名单，
+# 等于把工具关掉。
+
+[default.extend-words]
+# owner type / owner id：`MessageStore::owner_pair` 的返回值，全仓库都这么叫
+ot = "ot"
+oid = "oid"
+# 消息类型 id 的缩写（type_id 的配套变量名）
+tid = "tid"
+# 测试里给审核规则起的短名（"b" / "a" 的规则标签）
+ba = "ba"
+# 上游项目名：Lonami/grammers（Telegram 的 Rust 客户端库），不是 "grammars"
+grammers = "grammers"
+# 引用第三方 API 的字段名：box-im 的 `chat-group-readed`
+readed = "readed"
+# 两个都是合法拼写，只是不是 typos 的首选；改了只是 churn
+clonable = "clonable"
+unparseable = "unparseable"
+
+[files]
+# 生成物与第三方镜像不参与检查
+extend-exclude = [
+    "ui/node_modules",
+    "ui/dist",
+    "ui/dist-web",
+    "crates/ffi/generated",
+    "apps/mobile/lib/src/rust",
+    "target",
+    "refs",
+]

@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn unknown_op_is_reported_before_permissions() {
-        let err = authorize("report.detele", Role::Superadmin, true, true).unwrap_err();
+        let err = authorize("report.not_in_catalog", Role::Superadmin, true, true).unwrap_err();
         assert!(matches!(err, Deny::UnknownOp(_)), "{err:?}");
         // 消息里要给出"怎么列目录"
         assert!(err.to_string().contains("/api/ops"));
