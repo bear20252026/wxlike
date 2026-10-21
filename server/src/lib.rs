@@ -98,106 +98,166 @@ impl Default for StackOptions {
 }
 
 /// Boots the whole stack on the given binds (OS-assigned ports with `:0`).
+///
+/// 这个函数只做**编排**：读配置 → 开存储 → 起 hub → 拼路由 → 起 HTTP。
+/// 每一步的细节都在下面几个 `build_*` 里，改一步不用在 200 行里找位置。
 pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let router = build_mq_router(&opts.mq_mode).await?;
-    // 直播推流密钥：默认值是公开的（"dev-insecure-live-secret"），公网部署必须覆盖。
-    // 这里在装配层读环境变量，而不是让库的 Default 去读——库保持纯，配置留在边界。
-    let mut platform_options = wxlike_platform::PlatformOptions::default();
+    let platform =
+        Platform::open_with(opts.db_path.as_deref(), platform_options_from_env())?.shared();
+
+    let store = Arc::new(Store::open(opts.db_path.as_deref())?);
+    let mailbox = Arc::new(wxlike_message::MessageStore::open(opts.db_path.as_deref())?);
+    let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
+    let search = build_search(opts.db_path.as_deref(), &store)?;
+    let video_state = wxlike_video::VideoState {
+        store: wxlike_video::VideoStore::new(sidecar_dir(opts.db_path.as_deref(), "video")),
+    };
+
+    let hub = build_hub(&opts, router, &store, &mailbox, offline, &platform).await?;
+    let quic_addr = hub.local_addr()?;
+    let handle = hub.handle();
+
+    platform.set_event_sink(Arc::new(HubSink(handle.clone())));
+    // 红包清扫 60s 一轮；对账 300s 一轮（比清扫慢，避免与大表扫描抢锁）。
+    // 对账不通过时由 reconcile 内部写审计并打日志，运营看板读 reconcile_runs。
+    let _sweeper = wxlike_platform::spawn_redpacket_sweeper(
+        platform.clone(),
+        std::time::Duration::from_secs(60),
+    );
+    let _reconciler =
+        wxlike_platform::spawn_reconciler(platform.clone(), std::time::Duration::from_secs(300));
+    std::mem::forget(hub); // run until process exit; the handle above was cloned
+
+    let deps = Arc::new(HistoryDeps {
+        platform: platform.clone(),
+        store: store.clone(),
+        mailbox: mailbox.clone(),
+        hub: handle.clone(),
+        search,
+    });
+    let app = build_app(
+        opts.hub_id.clone(),
+        quic_addr,
+        platform.clone(),
+        video_state,
+        handle.clone(),
+        deps,
+    );
+    let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app).await?;
+
+    Ok(Stack {
+        platform,
+        store,
+        hub: handle,
+        http_addr,
+        quic_addr,
+        shutdown: shutdown_tx,
+        http_task,
+    })
+}
+
+/// 平台选项：三条凭据都**没有公开默认值**。
+///
+/// 推流密钥没配就随机生成（重启后旧 token 失效，可接受——它本来就是短期的）；
+/// 管理面与视频回调没配就是**关闭**，不是"放行"。默认值等于把这三件事一起敞开。
+fn platform_options_from_env() -> wxlike_platform::PlatformOptions {
+    let mut options = wxlike_platform::PlatformOptions::default();
     match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
-        Ok(secret) if !secret.is_empty() => platform_options.live_ingest_secret = secret,
+        Ok(secret) if !secret.is_empty() => options.live_ingest_secret = secret,
         _ => {
-            // 不再用公开常量兜底：那等于把推流密钥写在源码里。
-            // 随机密钥的代价是"重启后旧 ingest token 失效"——可接受，它本来就是短期的。
-            platform_options.live_ingest_secret = wxlike_platform::random_hex(32);
+            options.live_ingest_secret = wxlike_platform::random_hex(32);
             tracing::warn!(
                 "WXLIKE_LIVE_INGEST_SECRET 未设置：已生成本次启动的随机密钥（重启后旧推流 token 失效）"
             );
         }
     }
-    // 管理面令牌：未配置 = 管理端点关闭（平台侧已是这个语义，这里只是把它接到环境）。
-    // 不设默认值——默认值等于把管理面敞开，和推流密钥是同一个道理。
-    platform_options.admin_token = std::env::var("WXLIKE_ADMIN_TOKEN")
+    options.admin_token = non_empty_env("WXLIKE_ADMIN_TOKEN");
+    options.video_callback_token = non_empty_env("WXLIKE_VIDEO_CALLBACK_TOKEN");
+    options
+}
+
+/// 读一个"配了就用、没配就是 `None`"的环境变量；空串与纯空白算没配。
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
         .ok()
         .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    // 视频转码回调的令牌：未配置 = 回调接口关闭（平台侧已是这个语义）。
-    platform_options.video_callback_token = std::env::var("WXLIKE_VIDEO_CALLBACK_TOKEN")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let platform = Platform::open_with(opts.db_path.as_deref(), platform_options)?.shared();
+        .filter(|v| !v.is_empty())
+}
 
-    let store = Arc::new(Store::open(opts.db_path.as_deref())?);
-    let mailbox = Arc::new(wxlike_message::MessageStore::open(opts.db_path.as_deref())?);
-    let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
-
-    // P3 ADR-22: the Tantivy writer runs in its own thread (commit/fsync
-    // off the gateway path — blocking the hub on a search commit stalled
-    // deliveries in testing); the query side is a read-only replica whose
-    // reader reloads before each search, so a committed batch is visible.
-    static SEARCH_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let search_dir = match &opts.db_path {
+/// 与数据库同级的子目录（`<db 所在目录>/<name>`）；内存库给一个唯一临时目录。
+///
+/// 两处（搜索索引、视频对象）原本各写了一遍"pop 再 join"，改动时容易只改一处。
+fn sidecar_dir(db_path: Option<&str>, name: &str) -> std::path::PathBuf {
+    match db_path {
         Some(path) => {
             let mut dir = std::path::PathBuf::from(path);
             dir.pop();
-            dir.join("search-index")
+            dir.join(name)
         }
-        None => std::env::temp_dir().join(format!(
-            "wxlike-search-{}-{}-{}",
-            std::process::id(),
-            wxlike_core::types::now_ms(),
-            SEARCH_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        )),
-    };
-    // 读侧**不再静默降级到内存索引**：那会让搜索"看着能用、结果全空"，
-    // 与写侧刻意 panic 的策略矛盾。索引打不开就是配置/磁盘问题，必须启动失败。
+        None => {
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            std::env::temp_dir().join(format!(
+                "wxlike-{name}-{}-{}-{}",
+                std::process::id(),
+                wxlike_core::types::now_ms(),
+                SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ))
+        }
+    }
+}
+
+/// 打开搜索索引，并把写侧挂到 store 的 append 监听上。
+///
+/// 读侧**不静默降级到内存索引**：那会让搜索"看着能用、结果全空"，与写侧
+/// 刻意返回错误而不是 panic 的策略矛盾。索引打不开就是配置/磁盘问题，必须
+/// 启动失败。
+fn build_search(
+    db_path: Option<&str>,
+    store: &Store,
+) -> anyhow::Result<Arc<wxlike_search::SearchIndex>> {
+    // P3 ADR-22: the Tantivy writer runs in its own thread (commit/fsync off the
+    // gateway path — blocking the hub on a search commit stalled deliveries in
+    // testing); the query side is a read-only replica whose reader reloads
+    // before each search, so a committed batch is visible.
+    let search_dir = sidecar_dir(db_path, "search-index");
     let search: Arc<wxlike_search::SearchIndex> = Arc::new(
         wxlike_search::SearchIndex::open_query(&search_dir)
             .map_err(|e| anyhow::anyhow!("open tantivy query index at {search_dir:?}: {e}"))?,
     );
-    {
-        struct Indexer(wxlike_search::IndexerHandle);
-        impl wxlike_core::store::AppendListener for Indexer {
-            fn on_append(&self, conv_id: &str, seq: i64, env: &wxlike_core::Envelope) {
-                // searchable text = the preview line (all kinds have one);
-                // recall filtering happens at query time against the store
-                let text = env.body.preview_text();
-                if text.trim().is_empty() {
-                    return;
-                }
-                self.0.submit(conv_id, seq, &env.sender, text);
+
+    struct Indexer(wxlike_search::IndexerHandle);
+    impl wxlike_core::store::AppendListener for Indexer {
+        fn on_append(&self, conv_id: &str, seq: i64, env: &wxlike_core::Envelope) {
+            // searchable text = the preview line (all kinds have one);
+            // recall filtering happens at query time against the store
+            let text = env.body.preview_text();
+            if text.trim().is_empty() {
+                return;
             }
+            self.0.submit(conv_id, seq, &env.sender, text);
         }
-        // the writer thread owns its own index instance on the same directory
-        // (tantivy allows exactly one writer per directory)
-        // 写侧同样返回错误而不是 panic：库代码不该把进程打死，
-        // 由 `start_stack` 的调用方（二进制）决定怎么报错退出。
-        let writer_index = wxlike_search::SearchIndex::open_writer(&search_dir)
-            .map_err(|e| anyhow::anyhow!("open tantivy writer at {search_dir:?}: {e}"))?;
-        store.set_append_listener(Arc::new(Indexer(wxlike_search::IndexerHandle::spawn(
-            writer_index,
-        ))));
     }
+    // the writer thread owns its own index instance on the same directory
+    // (tantivy allows exactly one writer per directory)
+    let writer_index = wxlike_search::SearchIndex::open_writer(&search_dir)
+        .map_err(|e| anyhow::anyhow!("open tantivy writer at {search_dir:?}: {e}"))?;
+    store.set_append_listener(Arc::new(Indexer(wxlike_search::IndexerHandle::spawn(
+        writer_index,
+    ))));
+    Ok(search)
+}
 
-    // video-service (P2 minimal, ADR-21): colocated with the server until
-    // the load split (Q7); its storage lives beside the platform db.
-    let video_root = match &opts.db_path {
-        Some(path) => {
-            let mut dir = std::path::PathBuf::from(path);
-            dir.pop();
-            dir.join("video")
-        }
-        None => std::env::temp_dir().join(format!(
-            "wxlike-video-{}-{}",
-            std::process::id(),
-            wxlike_core::types::now_ms()
-        )),
-    };
-    let video_state = wxlike_video::VideoState {
-        store: wxlike_video::VideoStore::new(video_root),
-    };
-
-    let hub = wxlike_net::run_mq_hub_with(
+/// 起 QUIC hub：信箱、成员、策略、离线队列、推送钩子都在这里接上。
+async fn build_hub(
+    opts: &StackOptions,
+    router: wxlike_mq::MqRouter,
+    store: &Arc<Store>,
+    mailbox: &Arc<wxlike_message::MessageStore>,
+    offline: Arc<dyn wxlike_net::offline::OfflineStore>,
+    platform: &PlatformState,
+) -> anyhow::Result<wxlike_net::MqHub> {
+    wxlike_net::run_mq_hub_with(
         opts.hub_id.clone(),
         opts.quic_bind,
         router,
@@ -225,38 +285,32 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             ..Default::default()
         },
     )
-    .await?;
-    let quic_addr = hub.local_addr()?;
-    let handle = hub.handle();
+    .await
+}
 
-    platform.set_event_sink(Arc::new(HubSink(handle.clone())));
-    let _sweeper = wxlike_platform::spawn_redpacket_sweeper(
-        platform.clone(),
-        std::time::Duration::from_secs(60),
-    );
-    // P4 对账任务：5 分钟一轮（比红包清扫器慢，避免与大表扫描抢锁）。
-    // 不通过时 reconcile 内部写审计并打日志，运营看板读 reconcile_runs。
-    let _reconciler =
-        wxlike_platform::spawn_reconciler(platform.clone(), std::time::Duration::from_secs(300));
-    std::mem::forget(hub); // run until process exit; the handle above was cloned
-    let deps = Arc::new(HistoryDeps {
-        platform: platform.clone(),
-        store: store.clone(),
-        mailbox: mailbox.clone(),
-        hub: handle.clone(),
-        search: search.clone(),
-    });
-    let app = Router::new()
+/// 拼路由：健康检查、平台、视频、WS、在线状态、历史、静态页、开发辅助。
+fn build_app(
+    hub_id: String,
+    quic_addr: std::net::SocketAddr,
+    platform: PlatformState,
+    video_state: wxlike_video::VideoState,
+    handle: HubHandle,
+    deps: Arc<HistoryDeps>,
+) -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route(
             "/endpoints",
-            get(move || async move {
-                Json(serde_json::json!({
-                    "hub": opts.hub_id,
-                    "quic": quic_addr.to_string(),
-                    "alpn": "wxlike/1",
-                }))
+            get(move || {
+                let hub_id = hub_id.clone();
+                async move {
+                    Json(serde_json::json!({
+                        "hub": hub_id,
+                        "quic": quic_addr.to_string(),
+                        "alpn": "wxlike/1",
+                    }))
+                }
             }),
         )
         .merge(wxlike_platform::Platform::router(platform.clone()))
@@ -265,9 +319,19 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         .merge(presence_routes(handle.clone()))
         .merge(history_routes(deps))
         .merge(web_static::routes())
-        .merge(dev_routes(platform.clone()));
+        .merge(dev_routes(platform))
+}
 
-    let listener = tokio::net::TcpListener::bind(&opts.http_bind).await?;
+/// 起 HTTP 服务并返回（地址、停机信号、任务句柄）。
+async fn serve_http(
+    bind: std::net::SocketAddr,
+    app: Router,
+) -> anyhow::Result<(
+    std::net::SocketAddr,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+)> {
+    let listener = tokio::net::TcpListener::bind(bind).await?;
     let http_addr = listener.local_addr()?;
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let http_task = tokio::spawn(async move {
@@ -291,16 +355,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             eprintln!("[wxlike-server] http serve failed: {err}");
         }
     });
-
-    Ok(Stack {
-        platform,
-        store,
-        hub: handle.clone(),
-        http_addr,
-        quic_addr,
-        shutdown: shutdown_tx,
-        http_task,
-    })
+    Ok((http_addr, shutdown_tx, http_task))
 }
 
 /// P3 ADR-8: the WebSocket gateway. Upgraded sockets speak the SAME wire

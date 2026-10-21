@@ -1,10 +1,10 @@
 {
  "total_files": 132,
- "total_lines": 41968,
- "fn_total": 1914,
- "count_len_gt30": 211,
- "count_len_gt60": 43,
- "count_len_gt100": 11,
+ "total_lines": 42023,
+ "fn_total": 1921,
+ "count_len_gt30": 215,
+ "count_len_gt60": 42,
+ "count_len_gt100": 10,
  "count_nest_gt3": 63,
  "count_mixed_sql_http": 1,
  "magic_total": 159,
@@ -19,7 +19,6 @@
   "crates/platform/src/reconcile.rs::reconcile",
   "crates/rtc/src/turn.rs::allocate",
   "crates/video/src/lib.rs::run_pipeline",
-  "server/src/lib.rs::start_stack",
   "ui/src-tauri/src/callrtc.rs::run"
  ],
  "deep_fn_keys": [
@@ -79,7 +78,7 @@
   "crates/video/src/jobs.rs::spawn_worker",
   "crates/video/src/lib.rs::transcode",
   "server/src/lib.rs::dev_routes",
-  "server/src/lib.rs::start_stack",
+  "server/src/lib.rs::serve_http",
   "ui/src-tauri/src/callrtc.rs::pump_mic",
   "ui/src-tauri/src/callrtc.rs::run",
   "ui/src-tauri/src/lib.rs::render_event_with",
@@ -98,7 +97,7 @@
   ],
   [
    "server/src/lib.rs",
-   1054
+   1109
   ],
   [
    "crates/message/src/lib.rs",
@@ -170,17 +169,6 @@
   ]
  ],
  "long_fns": [
-  {
-   "file": "server/src/lib.rs",
-   "name": "start_stack",
-   "line": 101,
-   "len": 204,
-   "nest": 4,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": true
-  },
   {
    "file": "crates/net/src/mq_hub.rs",
    "name": "handle_inbound",
@@ -536,7 +524,7 @@
   {
    "file": "server/src/lib.rs",
    "name": "forward_message",
-   "line": 711,
+   "line": 766,
    "len": 67,
    "nest": 2,
    "sql": false,
@@ -554,6 +542,17 @@
    "http": false,
    "io": false,
    "pub": false
+  },
+  {
+   "file": "crates/platform/src/media.rs",
+   "name": "store_media",
+   "line": 261,
+   "len": 66,
+   "nest": 2,
+   "sql": true,
+   "http": false,
+   "io": false,
+   "pub": true
   }
  ],
  "deep_fns": [
@@ -800,17 +799,6 @@
    "pub": false
   },
   {
-   "file": "server/src/lib.rs",
-   "name": "start_stack",
-   "line": 101,
-   "len": 204,
-   "nest": 4,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": true
-  },
-  {
    "file": "crates/admin/src/http.rs",
    "name": "run_op",
    "line": 527,
@@ -830,6 +818,17 @@
    "sql": false,
    "http": false,
    "io": false,
+   "pub": true
+  },
+  {
+   "file": "crates/message/src/lib.rs",
+   "name": "open",
+   "line": 177,
+   "len": 112,
+   "nest": 4,
+   "sql": false,
+   "http": false,
+   "io": true,
    "pub": true
   }
  ],
@@ -1008,7 +1007,7 @@
   ],
   "300": [
    "crates/client/src/lib.rs:113",
-   "server/src/lib.rs:240",
+   "server/src/lib.rs:129",
    "ui/src-tauri/src/callrtc.rs:426"
   ],
   "17": [
