@@ -98,30 +98,28 @@ impl<'de> serde::Deserialize<'de> for ActBody {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-
-        // 平铺：整个对象就是 Action 的形状（多出来的 `note` 会被忽略）
-        let action = match serde_json::from_value::<Action>(raw.clone()) {
-            Ok(action) => action,
-            Err(flat_err) => match raw.get("action") {
-                // 嵌套（旧形状）：`{"action": {"action": "warn"}}`
-                Some(inner) => {
-                    serde_json::from_value::<Action>(inner.clone()).map_err(|nested| {
-                        D::Error::custom(format!(
-                            "action 不合法：flat={flat_err}; nested={nested}\
-                         （可选 warn / mute{{\"duration_ms\":N}} / ban / remove_content / none）"
-                        ))
-                    })?
-                }
-                None => {
-                    return Err(D::Error::custom(format!(
-                        "缺少 action：{flat_err}\
-                         （可选 warn / mute{{\"duration_ms\":N}} / ban / remove_content / none）"
-                    )))
-                }
-            },
-        };
+        let action = parse_action_value(&raw).map_err(D::Error::custom)?;
         Ok(Self { action, note })
     }
+}
+
+/// 从请求体里取出 `Action`：先按**平铺**解析（规范形状），失败再试旧的嵌套形状。
+///
+/// 拆成独立函数是为了压平嵌套：写在 `Deserialize` 里会变成
+/// `match` 套 `match` 再套闭包，深度 4 层——质量闸门会拦（实测拦过一次）。
+fn parse_action_value(raw: &serde_json::Value) -> std::result::Result<Action, String> {
+    const HELP: &str = "（可选 warn / mute{\"duration_ms\":N} / ban / remove_content / none）";
+
+    let flat_err = match serde_json::from_value::<Action>(raw.clone()) {
+        Ok(action) => return Ok(action),
+        Err(err) => err,
+    };
+    // 平铺失败：只可能是"嵌套"或"根本没写 action"
+    let Some(inner) = raw.get("action") else {
+        return Err(format!("缺少 action：{flat_err}{HELP}"));
+    };
+    serde_json::from_value::<Action>(inner.clone())
+        .map_err(|nested| format!("action 不合法：flat={flat_err}; nested={nested}{HELP}"))
 }
 
 #[derive(serde::Deserialize, Default)]
