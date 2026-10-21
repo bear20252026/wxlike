@@ -21,11 +21,14 @@ use anyhow::Context as _;
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// 最多尝试几次（含首次）。超过就进入 `failed`，等用户点重试。
-pub const MAX_ATTEMPTS: u32 = 5;
-/// 首次重试延迟。与 Mars 的 `DEF_TASK_RETRY_INTERNAL`（1s）一致。
-pub const BASE_DELAY_MS: u64 = 1_000;
-/// 退避上限。再长用户就该看到"发送失败"了，而不是无限转圈。
-pub const MAX_DELAY_MS: u64 = 30_000;
+///
+/// 数值来自 [`crate::retry::Backoff::DEFAULT`]——退避策略全仓库只有一份，
+/// 这里保留常量名是为了不破坏已有调用点。
+pub const MAX_ATTEMPTS: u32 = crate::retry::Backoff::DEFAULT.max_attempts;
+/// 首次重试延迟（见 `retry::Backoff`）。
+pub const BASE_DELAY_MS: u64 = crate::retry::Backoff::DEFAULT.base_ms;
+/// 退避上限（见 `retry::Backoff`）。
+pub const MAX_DELAY_MS: u64 = crate::retry::Backoff::DEFAULT.max_ms;
 
 /// 一条待发送的消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,9 +355,9 @@ impl Outbox {
 /// 指数退避：1s、2s、4s、8s、16s，上限 30s。
 ///
 /// `attempts` 是**已经失败的次数**（首次失败传 1）。
+/// 实现只有一份：`crate::retry::Backoff::DEFAULT`。
 pub fn backoff_ms(attempts: u32) -> u64 {
-    let shift = attempts.saturating_sub(1).min(6);
-    (BASE_DELAY_MS << shift).min(MAX_DELAY_MS)
+    crate::retry::Backoff::DEFAULT.delay_ms(attempts)
 }
 
 fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxTask> {

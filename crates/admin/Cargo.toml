@@ -14,6 +14,8 @@ wxlike-platform = { path = "../platform" }
 # 举报工单的状态机与类型（工单看板只做展示与流转编排，规则不复制）
 wxlike-report = { path = "../report" }
 wxlike-core = { path = "../core" }
+# 权限模型只有一份：后台的角色矩阵复用命令面的 `Capability`，不复制枚举
+wxlike-cmd = { path = "../cmd" }
 tokio = { workspace = true }
 axum = { version = "0.8" }
 serde = { workspace = true }

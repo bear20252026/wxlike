@@ -1,14 +1,14 @@
 {
- "total_files": 130,
- "total_lines": 46821,
- "fn_total": 2184,
- "count_len_gt30": 237,
- "count_len_gt60": 47,
+ "total_files": 132,
+ "total_lines": 41920,
+ "fn_total": 1914,
+ "count_len_gt30": 213,
+ "count_len_gt60": 46,
  "count_len_gt100": 14,
- "count_nest_gt3": 65,
+ "count_nest_gt3": 63,
  "count_mixed_sql_http": 1,
- "magic_total": 624,
- "magic_unique": 111,
+ "magic_total": 162,
+ "magic_unique": 43,
  "long_fn_keys": [
   "crates\\admin\\src\\http.rs::run_op",
   "crates\\client\\src\\execute.rs::run",
@@ -29,7 +29,6 @@
   "crates\\admin\\src\\bin\\wxlike_admin.rs::main",
   "crates\\admin\\src\\error.rs::parts",
   "crates\\admin\\src\\http.rs::build_payload",
-  "crates\\admin\\src\\http.rs::payload_builder_matches_the_catalog_declaration",
   "crates\\admin\\src\\http.rs::run_op",
   "crates\\admin\\src\\read.rs::open",
   "crates\\cli\\src\\main.rs::main",
@@ -65,7 +64,6 @@
   "crates\\platform\\src\\recovery.rs::risk_gate_many",
   "crates\\platform\\src\\report.rs::report_queue",
   "crates\\push\\src\\aggregator.rs::spawn",
-  "crates\\push\\src\\lib.rs::fcm_send_posts_expected_wire_format",
   "crates\\risk\\src\\lib.rs::decide",
   "crates\\rtc\\src\\audio_io.rs::new",
   "crates\\rtc\\src\\audio_io.rs::start",
@@ -95,83 +93,83 @@
  "largest_files": [
   [
    "ui/src-tauri/src\\lib.rs",
-   2272
+   2257
   ],
   [
    "crates\\platform\\src\\communities.rs",
-   1534
-  ],
-  [
-   "crates\\admin\\src\\read.rs",
-   1326
+   1416
   ],
   [
    "server/src\\lib.rs",
-   1055
-  ],
-  [
-   "crates\\admin\\src\\accounts.rs",
-   1036
+   1054
   ],
   [
    "crates\\message\\src\\lib.rs",
-   1030
+   1029
   ],
   [
    "crates\\video\\src\\lib.rs",
-   1018
+   1019
   ],
   [
    "crates\\net\\src\\mq_hub.rs",
-   1016
-  ],
-  [
-   "crates\\admin\\src\\http.rs",
-   1013
+   1015
   ],
   [
    "crates\\video\\src\\jobs.rs",
-   949
+   951
+  ],
+  [
+   "crates\\admin\\src\\read.rs",
+   945
+  ],
+  [
+   "crates\\admin\\src\\http.rs",
+   857
   ],
   [
    "crates\\ffi\\src\\client.rs",
-   821
+   820
+  ],
+  [
+   "crates\\admin\\src\\accounts.rs",
+   749
   ],
   [
    "crates\\platform\\src\\wallet.rs",
-   799
-  ],
-  [
-   "crates\\rtc\\src\\turn.rs",
-   702
+   708
   ],
   [
    "crates\\platform\\src\\db.rs",
-   676
+   675
   ],
   [
    "crates\\platform\\src\\groups.rs",
-   676
+   675
   ],
   [
    "crates\\platform\\src\\moments.rs",
-   634
-  ],
-  [
-   "crates\\rtc\\src\\call.rs",
-   631
+   633
   ],
   [
    "crates\\video\\src\\live.rs",
-   630
+   629
   ],
   [
    "crates\\core\\src\\e2ee.rs",
-   621
+   620
   ],
   [
-   "crates\\platform\\src\\lib.rs",
-   580
+   "crates\\rtc\\src\\turn.rs",
+   601
+  ],
+  [
+   "ui/src-tauri/src\\callrtc.rs",
+   574
+  ],
+  [
+   "crates\\platform\\src\\groups_admin.rs",
+   548
   ]
  ],
  "long_fns": [
@@ -453,7 +451,7 @@
   {
    "file": "crates\\video\\src\\jobs.rs",
    "name": "submit_job",
-   "line": 281,
+   "line": 284,
    "len": 74,
    "nest": 2,
    "sql": true,
@@ -497,7 +495,7 @@
   {
    "file": "crates\\platform\\src\\media.rs",
    "name": "download",
-   "line": 415,
+   "line": 417,
    "len": 70,
    "nest": 2,
    "sql": false,
@@ -796,7 +794,7 @@
   {
    "file": "crates\\video\\src\\jobs.rs",
    "name": "read_job_fields",
-   "line": 905,
+   "line": 908,
    "len": 44,
    "nest": 5,
    "sql": false,
@@ -853,128 +851,93 @@
  ],
  "magic_top": [
   [
-   300,
-   58
-  ],
-  [
-   64,
-   44
-  ],
-  [
-   50,
-   43
-  ],
-  [
    20,
-   41
-  ],
-  [
-   360,
-   28
-  ],
-  [
-   12,
-   23
+   26
   ],
   [
    32,
-   22
-  ],
-  [
-   30,
-   22
-  ],
-  [
-   720,
-   20
-  ],
-  [
-   250,
    19
   ],
   [
-   80,
-   15
+   50,
+   17
   ],
   [
-   640,
-   15
-  ],
-  [
-   204,
+   12,
    14
   ],
   [
-   15,
-   13
-  ],
-  [
-   256,
-   11
-  ],
-  [
-   2048,
-   11
-  ],
-  [
-   900,
-   9
-  ],
-  [
-   1280,
-   8
-  ],
-  [
-   1080,
-   8
+   64,
+   10
   ],
   [
    5000,
-   7
+   6
+  ],
+  [
+   512,
+   6
+  ],
+  [
+   256,
+   5
+  ],
+  [
+   11,
+   5
+  ],
+  [
+   128,
+   5
+  ],
+  [
+   30,
+   5
+  ],
+  [
+   300,
+   3
+  ],
+  [
+   17,
+   3
+  ],
+  [
+   2048,
+   3
+  ],
+  [
+   600,
+   2
+  ],
+  [
+   19,
+   2
+  ],
+  [
+   13,
+   2
+  ],
+  [
+   15,
+   2
+  ],
+  [
+   3478,
+   2
+  ],
+  [
+   1500,
+   2
   ]
  ],
  "magic_sites": {
-  "300": [
-   "crates\\admin\\src\\upstream.rs:216",
-   "crates\\client\\src\\lib.rs:113",
-   "crates\\client\\tests\\zone_c_surface.rs:110",
-   "crates\\mq\\tests\\nats_backend.rs:79",
-   "crates\\mq\\tests\\streams_redis.rs:104"
-  ],
-  "64": [
-   "crates\\admin\\src\\upstream.rs:29",
-   "crates\\admin\\src\\bin\\wxlike_admin.rs:54",
-   "crates\\container\\src\\package.rs:56",
-   "crates\\container\\src\\package.rs:66",
-   "crates\\container\\src\\package.rs:143"
-  ],
-  "50": [
-   "crates\\admin\\src\\web.rs:182",
-   "crates\\admin\\src\\bin\\wxlike_admin.rs:228",
-   "crates\\client\\src\\execute.rs:52",
-   "crates\\client\\src\\execute.rs:106",
-   "crates\\core\\src\\msgmeta.rs:318"
-  ],
   "20": [
    "crates\\client\\src\\execute.rs:61",
-   "crates\\message\\tests\\mailbox_contract.rs:494",
-   "crates\\message\\tests\\mailbox_contract.rs:495",
-   "crates\\message\\tests\\mailbox_contract.rs:498",
-   "crates\\message\\tests\\mailbox_contract.rs:500"
-  ],
-  "360": [
-   "crates\\video\\tests\\jobs_pipeline.rs:57",
-   "crates\\video\\tests\\jobs_pipeline.rs:161",
-   "crates\\video\\tests\\jobs_queue.rs:44",
-   "crates\\video\\tests\\jobs_queue.rs:46",
-   "crates\\video\\tests\\ladder_rules.rs:24"
-  ],
-  "12": [
-   "crates\\core\\src\\crypto.rs:56",
-   "crates\\message\\tests\\mailbox_contract.rs:416",
-   "crates\\message\\tests\\mailbox_contract.rs:422",
-   "crates\\platform\\src\\db.rs:548",
-   "crates\\platform\\src\\live.rs:167"
+   "crates\\platform\\src\\favorites.rs:204",
+   "crates\\platform\\src\\moments.rs:626",
+   "crates\\platform\\src\\reconcile.rs:332",
+   "crates\\risk\\src\\lib.rs:115"
   ],
   "32": [
    "crates\\admin\\src\\accounts.rs:478",
@@ -983,174 +946,115 @@
    "crates\\container\\src\\package.rs:219",
    "crates\\core\\src\\crypto.rs:24"
   ],
-  "30": [
-   "crates\\admin\\src\\accounts.rs:762",
-   "crates\\admin\\tests\\common\\mod.rs:218",
-   "crates\\core\\src\\msgmeta.rs:305",
-   "crates\\core\\src\\msgmeta.rs:423",
-   "crates\\net\\src\\avalanche.rs:64"
+  "50": [
+   "crates\\admin\\src\\web.rs:182",
+   "crates\\admin\\src\\bin\\wxlike_admin.rs:228",
+   "crates\\client\\src\\execute.rs:52",
+   "crates\\client\\src\\execute.rs:106",
+   "crates\\platform\\src\\communities.rs:1200"
   ],
-  "720": [
-   "crates\\platform\\tests\\video_callback.rs:60",
-   "crates\\platform\\tests\\video_callback.rs:61",
-   "crates\\video\\tests\\jobs_pipeline.rs:43",
-   "crates\\video\\tests\\jobs_pipeline.rs:57",
-   "crates\\video\\tests\\ladder_rules.rs:24"
+  "12": [
+   "crates\\core\\src\\crypto.rs:56",
+   "crates\\platform\\src\\db.rs:548",
+   "crates\\platform\\src\\live.rs:167",
+   "crates\\platform\\src\\report.rs:275",
+   "crates\\platform\\src\\video_refs.rs:198"
   ],
-  "250": [
-   "crates\\core\\src\\msgmeta.rs:296",
-   "crates\\net\\tests\\group_routing.rs:139",
-   "crates\\net\\tests\\group_routing.rs:190",
-   "crates\\net\\tests\\group_routing.rs:234",
-   "crates\\net\\tests\\group_routing.rs:313"
-  ],
-  "80": [
-   "crates\\net\\src\\diag.rs:473",
-   "crates\\platform\\tests\\call_media.rs:110",
-   "crates\\platform\\tests\\call_media.rs:111",
-   "crates\\platform\\tests\\call_media.rs:115",
-   "crates\\platform\\tests\\call_media.rs:119"
-  ],
-  "640": [
-   "crates\\video\\tests\\jobs_pipeline.rs:161",
-   "crates\\video\\tests\\jobs_queue.rs:43",
-   "crates\\video\\tests\\jobs_queue.rs:47",
-   "crates\\video\\tests\\ladder_rules.rs:51",
-   "crates\\video\\tests\\ladder_rules.rs:92"
-  ],
-  "204": [
-   "crates\\ffi\\tests\\client.rs:150",
-   "crates\\ffi\\tests\\client.rs:180",
-   "crates\\platform\\tests\\call_http.rs:65",
-   "crates\\platform\\tests\\call_http.rs:97",
-   "crates\\platform\\tests\\call_http.rs:139"
-  ],
-  "15": [
-   "crates\\admin\\tests\\common\\mod.rs:295",
-   "crates\\net\\tests\\delivery_policy.rs:164",
-   "crates\\net\\tests\\delivery_policy.rs:210",
-   "crates\\net\\tests\\delivery_policy.rs:264",
-   "crates\\net\\tests\\delivery_policy.rs:306"
-  ],
-  "256": [
-   "crates\\admin\\src\\accounts.rs:255",
-   "crates\\client\\src\\lib.rs:133",
-   "crates\\client\\src\\lib.rs:181",
-   "crates\\net\\src\\avalanche.rs:66",
-   "crates\\net\\src\\diag.rs:401"
-  ],
-  "2048": [
-   "crates\\client\\src\\execute.rs:382",
-   "crates\\rtc\\tests\\host_udp.rs:77",
-   "crates\\rtc\\tests\\mesh_udp.rs:22",
-   "crates\\rtc\\tests\\mesh_udp.rs:130",
-   "crates\\rtc\\tests\\turn_alloc.rs:49"
-  ],
-  "900": [
-   "crates\\net\\src\\avalanche.rs:281",
-   "crates\\net\\tests\\group_routing.rs:161",
-   "crates\\net\\tests\\group_routing.rs:253",
-   "crates\\net\\tests\\group_routing.rs:263",
-   "crates\\net\\tests\\reliable_msg.rs:191"
-  ],
-  "1280": [
-   "crates\\platform\\tests\\video_callback.rs:59",
-   "crates\\video\\tests\\jobs_pipeline.rs:43",
-   "crates\\video\\tests\\ladder_rules.rs:51",
-   "crates\\video\\tests\\ladder_rules.rs:93",
-   "crates\\video\\tests\\ladder_rules.rs:125"
-  ],
-  "1080": [
-   "crates\\video\\tests\\ladder_rules.rs:24",
-   "crates\\video\\tests\\ladder_rules.rs:24",
-   "crates\\video\\tests\\ladder_rules.rs:28",
-   "crates\\video\\tests\\ladder_rules.rs:31",
-   "crates\\video\\tests\\ladder_rules.rs:94"
+  "64": [
+   "crates\\admin\\src\\upstream.rs:29",
+   "crates\\admin\\src\\bin\\wxlike_admin.rs:54",
+   "crates\\container\\src\\package.rs:56",
+   "crates\\container\\src\\package.rs:66",
+   "crates\\container\\src\\package.rs:143"
   ],
   "5000": [
    "crates\\admin\\src\\accounts.rs:166",
    "crates\\core\\src\\store.rs:72",
    "crates\\ledger\\src\\lib.rs:99",
    "crates\\message\\src\\lib.rs:193",
-   "crates\\net\\src\\diag.rs:502"
+   "crates\\net\\src\\offline.rs:101"
+  ],
+  "512": [
+   "crates\\admin\\src\\accounts.rs:744",
+   "crates\\admin\\src\\http.rs:787",
+   "crates\\container\\examples\\research_wmpf.rs:14",
+   "crates\\net\\src\\avalanche.rs:55",
+   "crates\\net\\src\\diag.rs:333"
+  ],
+  "256": [
+   "crates\\admin\\src\\accounts.rs:255",
+   "crates\\client\\src\\lib.rs:133",
+   "crates\\client\\src\\lib.rs:181",
+   "crates\\net\\src\\avalanche.rs:66",
+   "ui/src-tauri/src\\lib.rs:652"
+  ],
+  "11": [
+   "crates\\admin\\src\\read.rs:675",
+   "crates\\platform\\src\\report.rs:275",
+   "crates\\platform\\src\\video_refs.rs:198",
+   "crates\\platform\\src\\video_refs.rs:316",
+   "crates\\video\\src\\jobs.rs:785"
+  ],
+  "128": [
+   "crates\\net\\src\\avalanche.rs:54",
+   "crates\\platform\\src\\favorites.rs:78",
+   "crates\\platform\\src\\keys.rs:42",
+   "crates\\platform\\src\\keys.rs:49",
+   "crates\\search\\src\\lib.rs:291"
+  ],
+  "30": [
+   "crates\\net\\src\\avalanche.rs:64",
+   "crates\\platform\\src\\secret.rs:41",
+   "crates\\platform\\src\\secret.rs:147",
+   "crates\\platform\\src\\security.rs:54",
+   "crates\\risk\\src\\lib.rs:118"
+  ],
+  "300": [
+   "crates\\client\\src\\lib.rs:113",
+   "server/src\\lib.rs:240",
+   "ui/src-tauri/src\\callrtc.rs:426"
+  ],
+  "17": [
+   "crates\\rtc\\src\\turn.rs:316",
+   "crates\\rtc\\src\\turn.rs:359",
+   "crates\\rtc\\src\\turn.rs:550"
+  ],
+  "2048": [
+   "crates\\sfu\\src\\lib.rs:169",
+   "ui/src-tauri/src\\callrtc.rs:331",
+   "ui/src-tauri/src\\callrtc.rs:338"
+  ],
+  "600": [
+   "crates\\admin\\src\\web.rs:25",
+   "crates\\admin\\src\\web.rs:28"
+  ],
+  "19": [
+   "crates\\admin\\src\\web.rs:224",
+   "crates\\platform\\src\\db.rs:446"
+  ],
+  "13": [
+   "crates\\platform\\src\\db.rs:139",
+   "crates\\video\\src\\jobs.rs:787"
+  ],
+  "15": [
+   "crates\\risk\\src\\lib.rs:52",
+   "crates\\video\\src\\bin\\wxlike-live-ingest.rs:301"
+  ],
+  "3478": [
+   "crates\\rtc\\src\\ice.rs:36",
+   "crates\\rtc\\src\\ice.rs:60"
+  ],
+  "1500": [
+   "crates\\rtc\\src\\turn.rs:554",
+   "crates\\rtc\\src\\turn.rs:573"
   ]
  },
- "dup_windows": 89,
+ "dup_windows": 78,
  "dup_sample": [
   [
    [
-    "crates\\admin\\src\\rbac.rs",
-    28
-   ],
-   [
-    "crates\\cmd\\src\\lib.rs",
-    27
-   ]
-  ],
-  [
-   [
-    "crates\\admin\\src\\rbac.rs",
-    29
-   ],
-   [
-    "crates\\cmd\\src\\lib.rs",
-    28
-   ]
-  ],
-  [
-   [
-    "crates\\admin\\src\\rbac.rs",
-    30
-   ],
-   [
-    "crates\\cmd\\src\\lib.rs",
-    29
-   ]
-  ],
-  [
-   [
-    "crates\\admin\\src\\rbac.rs",
-    31
-   ],
-   [
-    "crates\\cmd\\src\\lib.rs",
-    30
-   ]
-  ],
-  [
-   [
-    "crates\\admin\\src\\rbac.rs",
-    32
-   ],
-   [
-    "crates\\cmd\\src\\lib.rs",
-    31
-   ]
-  ],
-  [
-   [
-    "crates\\admin\\src\\rbac.rs",
-    33
-   ],
-   [
-    "crates\\cmd\\src\\lib.rs",
-    32
-   ]
-  ],
-  [
-   [
-    "crates\\cli\\src\\main.rs",
-    166
-   ],
-   [
-    "crates\\cmd\\src\\bin\\wxlike-cmd.rs",
-    55
-   ]
-  ],
-  [
-   [
     "crates\\core\\src\\outbox.rs",
-    134
+    137
    ],
    [
     "crates\\ffi\\src\\cache.rs",
@@ -1196,10 +1100,81 @@
     "crates\\message\\src\\lib.rs",
     180
    ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    87
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    181
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    88
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    182
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    89
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    183
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    90
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    184
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    91
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    185
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    92
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    186
+   ]
+  ],
+  [
+   [
+    "crates\\ledger\\src\\lib.rs",
+    93
+   ],
+   [
+    "crates\\message\\src\\lib.rs",
+    187
+   ]
   ]
  ],
  "deps": {
   "admin": [
+   "cmd",
    "core",
    "platform",
    "report"
@@ -1222,9 +1197,7 @@
    "cmd",
    "core"
   ],
-  "ledger": [
-   "core"
-  ],
+  "ledger": [],
   "mcp": [
    "client",
    "cmd"
@@ -1237,8 +1210,7 @@
   "net": [
    "core",
    "message",
-   "mq",
-   "platform"
+   "mq"
   ],
   "platform": [
    "core",
@@ -1250,16 +1222,12 @@
   ],
   "push": [
    "core",
-   "mq",
-   "net",
-   "platform"
+   "net"
   ],
   "report": [],
   "risk": [],
   "rtc": [
-   "core",
-   "mq",
-   "net"
+   "core"
   ],
   "search": [],
   "sfu": [
@@ -1268,5 +1236,39 @@
   "video": [
    "core"
   ]
+ },
+ "dev_deps": {
+  "admin": [],
+  "cli": [],
+  "client": [],
+  "cmd": [],
+  "container": [],
+  "core": [],
+  "dpage": [],
+  "ffi": [],
+  "ledger": [
+   "core"
+  ],
+  "mcp": [],
+  "message": [],
+  "moderation": [],
+  "mq": [],
+  "net": [
+   "platform"
+  ],
+  "platform": [],
+  "push": [
+   "mq",
+   "platform"
+  ],
+  "report": [],
+  "risk": [],
+  "rtc": [
+   "mq",
+   "net"
+  ],
+  "search": [],
+  "sfu": [],
+  "video": []
  }
 }

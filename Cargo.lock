@@ -6223,6 +6223,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "wxlike-cmd",
  "wxlike-core",
  "wxlike-platform",
  "wxlike-report",
@@ -6253,6 +6254,7 @@ dependencies = [
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
 ]
 

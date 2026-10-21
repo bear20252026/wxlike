@@ -49,54 +49,6 @@ fn list(query: &str) {
 }
 
 fn policy() {
-    let p = Policy::from_env();
-    let convs = p.conv_patterns();
-    println!("权限控制中心 · 当前生效策略");
-    println!(
-        "  会话白名单   {}",
-        if convs.is_empty() {
-            "（空 = 任何会话都不允许）".to_string()
-        } else {
-            convs.join(", ")
-        }
-    );
-    println!("  写权限       {}", yes_no(p.allow_write()));
-    println!("  破坏性权限   {}", yes_no(p.allow_destructive()));
-    println!();
-    println!("{:<20} {:<12} 判定", "ID", "能力");
-    let mut allowed = 0usize;
-    for s in CATALOG {
-        // 用一个占位会话试权限：只关心"这条命令在当前策略下能不能过"。
-        let probe = serde_json::json!({
-            "conv": probe_conv(&p),
-            "to_conv": probe_conv(&p),
-            "from_conv": probe_conv(&p),
-        });
-        match p.authorize(s.id, &probe) {
-            Ok(_) => {
-                allowed += 1;
-                println!("{:<20} {:<12} 允许", s.id, s.capability);
-            }
-            Err(err) => println!("{:<20} {:<12} 拒绝 — {err}", s.id, s.capability),
-        }
-    }
-    println!();
-    println!("可执行 {allowed} / {} 条", CATALOG.len());
-}
-
-/// 拿白名单里的第一个模式当探针；没有白名单就随便给一个必然被拒的 id。
-fn probe_conv(p: &Policy) -> String {
-    match p.conv_patterns().first() {
-        Some(pat) if !pat.contains('*') => pat.clone(),
-        Some(pat) => pat.replace('*', "probe"),
-        None => "probe".to_string(),
-    }
-}
-
-fn yes_no(v: bool) -> &'static str {
-    if v {
-        "开"
-    } else {
-        "关"
-    }
+    // 与 `wxlike-cli policy` 共用同一份渲染（`policy::render`）。
+    print!("{}", wxlike_cmd::policy::render(&Policy::from_env()));
 }

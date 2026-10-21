@@ -19,24 +19,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use wxlike_report::Action;
 
-/// 操作危险等级。默认只给 `Read`，写要显式授予，破坏性再开一层。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Capability {
-    Read,
-    Write,
-    Destructive,
-}
-
-impl Capability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Capability::Read => "read",
-            Capability::Write => "write",
-            Capability::Destructive => "destructive",
-        }
-    }
-}
+/// 操作危险等级——**直接复用 `wxlike_cmd::Capability`**，不在这里定义第二份。
+///
+/// 为什么这件事重要：权限模型有两个定义时，"什么算破坏性"可以给出两个答案，
+/// 而且编译器不会拦。这里只做 `pub use`，后台与 agent 侧永远看到同一组等级。
+pub use wxlike_cmd::Capability;
 
 /// 后台角色。能力是**累积**的：高级角色自动能做低级的所有事。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

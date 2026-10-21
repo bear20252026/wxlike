@@ -932,7 +932,9 @@ pub struct SelectedRendition {
 /// Ids are content hashes: anything else is a 404-shaped refusal, decided
 /// before any path is joined (same rule as the media store).
 pub fn check_id(video_id: &str) -> Result<(), (StatusCode, String)> {
-    if video_id.len() == 64 && video_id.chars().all(|c| c.is_ascii_hexdigit()) {
+    if video_id.len() == wxlike_core::limits::SHA256_HEX_LEN
+        && video_id.chars().all(|c| c.is_ascii_hexdigit())
+    {
         Ok(())
     } else {
         Err((StatusCode::NOT_FOUND, "malformed video id".into()))

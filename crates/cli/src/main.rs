@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use serde_json::{json, Value};
 use wxlike_client::execute::Executor;
 use wxlike_cmd::policy::Policy;
-use wxlike_cmd::{search, CATALOG};
+use wxlike_cmd::search;
 
 /// 解析 `--cmd`：`id` 或 `id={json}`。
 fn parse_cmd(raw: &str) -> Result<(String, Value), String> {
@@ -161,35 +161,9 @@ fn collect_flag_values(args: &[String], name: &str) -> Vec<String> {
 }
 
 fn dump_policy(p: &Policy) {
-    println!("权限控制中心 · 当前生效策略");
-    let convs = p.conv_patterns();
-    println!(
-        "  会话白名单   {}",
-        if convs.is_empty() {
-            "（空 = 任何会话都不允许）".to_string()
-        } else {
-            convs.join(", ")
-        }
-    );
-    println!(
-        "  写权限       {}",
-        if p.allow_write() { "开" } else { "关" }
-    );
-    println!(
-        "  破坏性权限   {}",
-        if p.allow_destructive() { "开" } else { "关" }
-    );
-    println!();
-    println!("{:<20} {:<12} 判定", "ID", "能力");
-    for s in CATALOG {
-        let probe = json!({
-            "conv": p.conv_patterns().first().map(|c| c.replace('*', "probe")).unwrap_or_else(|| "probe".into()),
-        });
-        match p.authorize(s.id, &probe) {
-            Ok(_) => println!("{:<20} {:<12} 允许", s.id, s.capability),
-            Err(e) => println!("{:<20} {:<12} 拒绝 — {e}", s.id, s.capability),
-        }
-    }
+    // 渲染逻辑在 `wxlike_cmd::policy::render`：另一个二进制 `wxlike-cmd`
+    // 也打印同一张表，两处各写一遍必然漂移（已经漂过一次）。
+    print!("{}", wxlike_cmd::policy::render(p));
 }
 
 #[cfg(test)]

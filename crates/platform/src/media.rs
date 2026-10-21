@@ -81,7 +81,9 @@ impl LocalDirStore {
     /// The id is validated *before* any path is built: hex-only, exactly 64
     /// chars. This is the traversal defence, not a filter on top of it.
     fn check_id(sha_hex: &str) -> Result<()> {
-        if sha_hex.len() != 64 || !sha_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if sha_hex.len() != wxlike_core::limits::SHA256_HEX_LEN
+            || !sha_hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             return Err(PlatformError::BadInput("malformed media id"));
         }
         Ok(())

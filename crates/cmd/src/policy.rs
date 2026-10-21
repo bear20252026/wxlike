@@ -245,6 +245,75 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     true
 }
 
+/// 把当前策略渲染成给人看的表格。
+///
+/// **两个二进制共用这一份**（`wxlike-cli policy` 与 `wxlike-cmd policy`）：
+/// 以前各写一遍，文案已经漂移（一处内联 `if/else`，一处用 `yes_no()`）。
+/// 返回 `String` 而不是直接 `println!`，是为了能写快照测试。
+pub fn render(p: &Policy) -> String {
+    let mut out = String::new();
+    out.push_str("权限控制中心 · 当前生效策略\n");
+    let convs = p.conv_patterns();
+    out.push_str(&format!(
+        "  会话白名单   {}\n",
+        if convs.is_empty() {
+            "（空 = 任何会话都不允许）".to_string()
+        } else {
+            convs.join(", ")
+        }
+    ));
+    out.push_str(&format!("  写权限       {}\n", yes_no(p.allow_write())));
+    out.push_str(&format!(
+        "  破坏性权限   {}\n",
+        yes_no(p.allow_destructive())
+    ));
+    out.push('\n');
+    out.push_str(&format!("{:<20} {:<12} 判定\n", "ID", "能力"));
+
+    let mut allowed = 0usize;
+    for spec in crate::CATALOG {
+        // 用一个占位会话试权限：只关心"这条命令在当前策略下能不能过"。
+        // 三个键都给：`msg.forward` 要同时校验 from/to 两个会话。
+        let probe = serde_json::json!({
+            "conv": probe_conv(p),
+            "to_conv": probe_conv(p),
+            "from_conv": probe_conv(p),
+        });
+        match p.authorize(spec.id, &probe) {
+            Ok(_) => {
+                allowed += 1;
+                out.push_str(&format!("{:<20} {:<12} 允许\n", spec.id, spec.capability));
+            }
+            Err(err) => out.push_str(&format!(
+                "{:<20} {:<12} 拒绝 — {err}\n",
+                spec.id, spec.capability
+            )),
+        }
+    }
+    out.push_str(&format!(
+        "\n可执行 {allowed} / {} 条\n",
+        crate::CATALOG.len()
+    ));
+    out
+}
+
+/// 拿白名单里的第一个模式当探针；没有白名单就随便给一个必然被拒的 id。
+fn probe_conv(p: &Policy) -> String {
+    match p.conv_patterns().first() {
+        Some(pat) if !pat.contains('*') => pat.clone(),
+        Some(pat) => pat.replace('*', "probe"),
+        None => "probe".to_string(),
+    }
+}
+
+fn yes_no(v: bool) -> &'static str {
+    if v {
+        "开"
+    } else {
+        "关"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +423,39 @@ mod tests {
         let p = Policy::none();
         let err = p.authorize("msg.send_for_ai", &json!({})).unwrap_err();
         assert!(matches!(err, Deny::UnknownCommand(_)), "{err:?}");
+    }
+
+    /// 渲染出来的表必须**每条命令一行**，且两个二进制看到同一份文案。
+    /// 这条测试挡的是"改了一处、另一处还是旧文案"。
+    #[test]
+    fn rendered_policy_covers_every_command_once() {
+        let p = Policy::new(["g-1"], true, false);
+        let text = render(&p);
+        assert!(text.contains("权限控制中心"), "{text}");
+        assert!(text.contains("g-1"), "白名单要显示出来：{text}");
+
+        let rows = text
+            .lines()
+            .filter(|l| l.contains(" 允许") || l.contains(" 拒绝 — "))
+            .count();
+        assert_eq!(rows, crate::CATALOG.len(), "每条命令一行：{text}");
+
+        // 同一份策略渲染两次必须逐字节相同（不能有隐藏的随机/时间因素）
+        assert_eq!(text, render(&p));
+    }
+
+    /// 空策略下：不挂会话的读命令可用，写命令一律拒绝。
+    #[test]
+    fn rendered_policy_reflects_the_empty_policy() {
+        let text = render(&Policy::none());
+        assert!(text.contains("（空 = 任何会话都不允许）"), "{text}");
+        assert!(text.contains("  写权限       关"), "{text}");
+        assert!(text.contains("msg.send"), "{text}");
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("msg.send") && l.contains("拒绝")),
+            "空策略下写命令必须被拒：{text}"
+        );
     }
 
     #[test]

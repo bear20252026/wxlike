@@ -36,11 +36,15 @@ use serde::{Deserialize, Serialize};
 use crate::{Ingested, VideoState, VideoStore};
 
 /// 作业最多尝试几次（含首次）。超过进 `failed`，等运营点重试。
-pub const MAX_JOB_ATTEMPTS: u32 = 5;
-/// 首次重试延迟（与 outbox 的 `BASE_DELAY_MS` 一致）。
-pub const BASE_DELAY_MS: u64 = 1_000;
-/// 退避上限（与 outbox 一致）。
-pub const MAX_DELAY_MS: u64 = 30_000;
+///
+/// 与客户端发送队列共用同一套退避策略（`wxlike_core::retry::Backoff::DEFAULT`）。
+/// 以前这里写着"与 outbox 的 `BASE_DELAY_MS` 一致"——**注释就是重复的证据**，
+/// 现在改成同一个常量源，漂移不再可能。
+pub const MAX_JOB_ATTEMPTS: u32 = wxlike_core::retry::Backoff::DEFAULT.max_attempts;
+/// 首次重试延迟（见 `wxlike_core::retry::Backoff`）。
+pub const BASE_DELAY_MS: u64 = wxlike_core::retry::Backoff::DEFAULT.base_ms;
+/// 退避上限（见 `wxlike_core::retry::Backoff`）。
+pub const MAX_DELAY_MS: u64 = wxlike_core::retry::Backoff::DEFAULT.max_ms;
 /// 一轮 worker 只取这么几个作业：**串行转码**。阶梯转码是 CPU 密集型
 /// （libx264 每档一遍），并行 4 个只会让 4 个都变慢并拖住整台机器。
 /// 要真并发是给 video-service 单独开进程（Q7），不是在这里堆线程。
@@ -218,11 +222,10 @@ impl JobFailure {
 }
 
 /// 第 `attempts` 次失败之后等多久（1/2/4/8/16/30s 封顶）。
+///
+/// 与发送队列共用 `wxlike_core::retry::Backoff`，不在这里维护第二份公式。
 pub fn backoff_ms(attempts: u32) -> u64 {
-    let shift = attempts.saturating_sub(1).min(6);
-    BASE_DELAY_MS
-        .saturating_mul(1u64 << shift)
-        .min(MAX_DELAY_MS)
+    wxlike_core::retry::Backoff::DEFAULT.delay_ms(attempts)
 }
 
 /// 一轮 worker 的结论（进日志，也是验收断言点）。

@@ -57,7 +57,9 @@ pub struct VoicePayload {
 
 impl VoicePayload {
     pub fn validate(&self) -> Result<(), String> {
-        if self.media_id.len() != 64 || !self.media_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        if self.media_id.len() != crate::limits::SHA256_HEX_LEN
+            || !self.media_id.chars().all(|c| c.is_ascii_hexdigit())
+        {
             return Err("voice media_id must be a sha256 hex".into());
         }
         if self.duration_ms == 0 || self.duration_ms > 10 * 60 * 1000 {
@@ -130,7 +132,9 @@ pub struct FilePayload {
 
 impl FilePayload {
     pub fn validate(&self) -> Result<(), String> {
-        if self.media_id.len() != 64 || !self.media_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        if self.media_id.len() != crate::limits::SHA256_HEX_LEN
+            || !self.media_id.chars().all(|c| c.is_ascii_hexdigit())
+        {
             return Err("file media_id must be a sha256 hex".into());
         }
         let name = self.name.trim();
@@ -148,7 +152,8 @@ impl FilePayload {
             return Err("file size must be positive".into());
         }
         if !self.sha256.is_empty()
-            && (self.sha256.len() != 64 || !self.sha256.chars().all(|c| c.is_ascii_hexdigit()))
+            && (self.sha256.len() != crate::limits::SHA256_HEX_LEN
+                || !self.sha256.chars().all(|c| c.is_ascii_hexdigit()))
         {
             return Err("file sha256 must be empty or sha256 hex".into());
         }
@@ -171,7 +176,9 @@ pub struct StickerPayload {
 
 impl StickerPayload {
     pub fn validate(&self) -> Result<(), String> {
-        if self.media_id.len() != 64 || !self.media_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        if self.media_id.len() != crate::limits::SHA256_HEX_LEN
+            || !self.media_id.chars().all(|c| c.is_ascii_hexdigit())
+        {
             return Err("sticker media_id must be a sha256 hex".into());
         }
         for label in [&self.pack, &self.id] {
@@ -217,7 +224,9 @@ impl VideoPayload {
     pub const DEFAULT_SPEEDS: [f32; 4] = [0.5, 1.0, 1.5, 2.0];
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.video_id.len() != 64 || !self.video_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        if self.video_id.len() != crate::limits::SHA256_HEX_LEN
+            || !self.video_id.chars().all(|c| c.is_ascii_hexdigit())
+        {
             return Err("video_id must be a sha256 hex".into());
         }
         if !self.playlist_url.starts_with("/api/video/")
@@ -236,7 +245,7 @@ impl VideoPayload {
         // empty is legal until the thumbnail is mirrored into the media store
         // (P2: it lives in video-service; P5 mirrors it for inline grids)
         if !self.thumb_media_id.is_empty()
-            && (self.thumb_media_id.len() != 64
+            && (self.thumb_media_id.len() != crate::limits::SHA256_HEX_LEN
                 || !self.thumb_media_id.chars().all(|c| c.is_ascii_hexdigit()))
         {
             return Err("thumb_media_id must be empty or a sha256 hex".into());

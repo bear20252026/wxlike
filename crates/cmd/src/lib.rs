@@ -17,7 +17,15 @@ pub mod policy;
 use std::fmt;
 
 /// 命令的危险等级。默认只给 `Read`，写要显式开，破坏性再开一层。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// **这是全仓库唯一的一份**。`wxlike-admin` 的 RBAC 直接复用这个类型，
+/// 不再自己定义一遍——权限模型有两个定义，就一定会出现"两边对破坏性
+/// 的理解不一样"而没人发现。序列化统一成 `read` / `write` / `destructive`，
+/// 与 `as_str()` 一字不差（有测试钉住）。
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Capability {
     /// 只读：看会话、看历史、看成员、看自己的状态。
     Read,
@@ -341,6 +349,21 @@ mod tests {
             let spec = get(id).unwrap();
             assert!(!spec.needs_conv, "{id} 不该要求 conv");
             assert_eq!(spec.capability, Capability::Write, "{id}");
+        }
+    }
+
+    /// 序列化出来的词必须与 `as_str()` 一字不差。
+    ///
+    /// 后台（`wxlike-admin`）把 `Capability` 直接放进 JSON 响应，agent 侧用
+    /// `as_str()` 打日志/审计。两边若漂移，"destructive" 可能在一边叫
+    /// "destructive"、另一边叫 "danger"，而没有任何测试会发现。
+    #[test]
+    fn capability_serialises_to_the_same_words_as_as_str() {
+        for cap in [Capability::Read, Capability::Write, Capability::Destructive] {
+            let json = serde_json::to_string(&cap).unwrap();
+            assert_eq!(json, format!("\"{}\"", cap.as_str()), "{cap:?}");
+            let back: Capability = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, cap, "往返必须相等");
         }
     }
 

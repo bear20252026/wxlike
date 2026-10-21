@@ -2,6 +2,10 @@
 
 刻意不依赖任何第三方库：只要 python 3.11+。
 字符串/字符字面量用状态机跳过，避免正则转义把大括号数错。
+
+口径：**只看生产代码**——不含 `tests/` 目录，也不含文件内 `#[cfg(test)]`
+之后的模块。测试里的 `assert_eq!(x, 250)` 不是"魔法数字"，把它算进去会让
+指标失去意义。
 """
 import os
 import re
@@ -10,21 +14,34 @@ import hashlib
 import collections
 
 ROOTS = ["crates", "server/src", "ui/src-tauri/src"]
-SKIP = ("target", "node_modules", ".git", "/tests/", "\\tests\\")
+
+TEST_MODULE_RE = re.compile(r"^\s*#\[cfg\(test\)\]")
 
 
-def rust_files(include_tests=False):
+def rust_files():
     for root in ROOTS:
-        for dp, dn, fn in os.walk(root):
+        for dp, _dn, fn in os.walk(root):
             if any(s in dp for s in ("target", "node_modules", ".git")):
                 continue
             for f in fn:
                 if not f.endswith(".rs"):
                     continue
                 p = os.path.join(dp, f)
-                if not include_tests and ("/tests/" in p.replace("\\", "/")):
+                if "/tests/" in p.replace("\\", "/"):
                     continue
                 yield p
+
+
+def production_lines(path):
+    """生产代码的行：截到第一个 `#[cfg(test)]` 之前。"""
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except Exception:
+        return []
+    for i, line in enumerate(lines):
+        if TEST_MODULE_RE.match(line):
+            return lines[:i]
+    return lines
 
 
 def strip_code(line):
@@ -79,9 +96,8 @@ fn_re = re.compile(
 fns = []
 files_info = []
 for path in rust_files():
-    try:
-        lines = open(path, encoding="utf-8").read().split("\n")
-    except Exception:
+    lines = production_lines(path)
+    if not lines:
         continue
     files_info.append((path, len(lines)))
     i = 0
@@ -128,14 +144,12 @@ for path in rust_files():
 
 # 魔法数字：两位以上、非 0/1/10/100/1000、且不在 const/static 行
 num_re = re.compile(r"(?<![\w.])(\d{2,})(?![\w.])")
-BORING = {0, 1, 2, 10, 16, 100, 1000, 24, 60, 3600, 1024, 255, 404, 200, 201, 202, 206, 400, 401, 403, 409, 416, 422, 429, 500, 502}
+BORING = {0, 1, 2, 10, 16, 100, 1000, 24, 60, 3600, 1024, 255,
+          200, 201, 202, 206, 400, 401, 403, 404, 409, 416, 422, 429, 500, 502}
 magic = collections.Counter()
 magic_sites = collections.defaultdict(list)
-for path in rust_files(include_tests=True):
-    try:
-        lines = open(path, encoding="utf-8").read().split("\n")
-    except Exception:
-        continue
+for path in rust_files():
+    lines = production_lines(path)
     for n, line in enumerate(lines, 1):
         s = line.strip()
         if s.startswith("//"):
@@ -156,10 +170,7 @@ win = 8
 seen = {}
 dups = []
 for path in rust_files():
-    try:
-        raw = open(path, encoding="utf-8").read().split("\n")
-    except Exception:
-        continue
+    raw = production_lines(path)
     norm = [re.sub(r"\s+", " ", l).strip() for l in raw]
     for i in range(0, max(0, len(norm) - win)):
         chunk = [l for l in norm[i:i + win] if l and not l.startswith("//")]
@@ -171,14 +182,18 @@ for path in rust_files():
         elif h not in seen:
             seen[h] = [path, i + 1]
 
-# 依赖图
+# 依赖图（区分生产依赖与 dev 依赖：反向边在测试里是正常的，不算架构缺陷）
 deps = {}
+dev_deps = {}
 for crate in sorted(os.listdir("crates")):
     tom = os.path.join("crates", crate, "Cargo.toml")
     if not os.path.exists(tom):
         continue
     txt = open(tom, encoding="utf-8").read()
-    deps[crate] = sorted(set(re.findall(r"wxlike-(\w+)\s*=\s*\{\s*path", txt)))
+    dev_part = txt.split("[dev-dependencies]")[1] if "[dev-dependencies]" in txt else ""
+    prod_part = txt.split("[dev-dependencies]")[0]
+    deps[crate] = sorted(set(re.findall(r"wxlike-(\w+)\s*=\s*\{\s*path", prod_part)))
+    dev_deps[crate] = sorted(set(re.findall(r"wxlike-(\w+)\s*=\s*\{\s*path", dev_part)))
 
 report = {
     "total_files": len(files_info),
@@ -208,5 +223,6 @@ report = {
     "dup_windows": len(dups),
     "dup_sample": dups[:12],
     "deps": deps,
+    "dev_deps": dev_deps,
 }
 print(json.dumps(report, ensure_ascii=False, indent=1))

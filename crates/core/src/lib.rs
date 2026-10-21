@@ -2,8 +2,10 @@
 
 pub mod crypto;
 pub mod e2ee;
+pub mod limits;
 pub mod msgmeta;
 pub mod outbox;
+pub mod retry;
 pub mod store;
 pub mod types;
 
