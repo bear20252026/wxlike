@@ -411,6 +411,23 @@ mod tests {
         assert!(!glob_match("g.a", "gxa"));
     }
 
+    /// 多个通配段、且**中段长度 > 1** 的用例。
+    ///
+    /// 为什么专门写这一条：`glob_match` 里推进位置的写法是
+    /// `rest = &rest[i + part.len()..]`。变异测试发现把 `+` 改成 `-` 或 `*`
+    /// 都能"通过"——因为原有用例里中段要么只有一个、要么长度为 1，
+    /// 算错位置也碰巧还能匹配上。下面这个用例让三种写法给出不同结果：
+    /// `+` → true；`-` → 下标下溢 panic；`*` → 跳过 `X`，返回 false。
+    #[test]
+    fn wildcards_advance_by_segment_length_not_by_accident() {
+        assert!(
+            glob_match("a*BBB*X*d", "a??BBBXd"),
+            "中段 BBB 长 3，推进位置必须是 i+len"
+        );
+        // 中段出现在开头附近：`i - len` 会下溢，这里必须正常返回
+        assert!(glob_match("a*bc*d", "abcd"));
+    }
+
     #[test]
     fn missing_conv_param_is_reported_as_such() {
         let p = Policy::new(["*"], true, true);
@@ -456,6 +473,80 @@ mod tests {
                 .any(|l| l.starts_with("msg.send") && l.contains("拒绝")),
             "空策略下写命令必须被拒：{text}"
         );
+    }
+
+    /// 开关为"开"时，表格里必须真的写"开"。
+    ///
+    /// 变异测试发现：把 `allow_write()` 改成恒 false、`allow_destructive()`
+    /// 改成恒 true/false，测试全绿——因为原来的渲染测试只验了空策略下的"关"。
+    /// 渲染是**给人看的运维界面**，写错一个开关的读数比崩溃更难发现。
+    #[test]
+    fn render_shows_switches_as_enabled_when_granted() {
+        let text = render(&Policy::new(["g-1"], true, true));
+        assert!(text.contains("写权限       开"), "{text}");
+        assert!(text.contains("破坏性权限   开"), "{text}");
+
+        let text = render(&Policy::new(["g-1"], false, false));
+        assert!(text.contains("写权限       关"), "{text}");
+        assert!(text.contains("破坏性权限   关"), "{text}");
+    }
+
+    /// 渲染时的"探针会话"必须来自白名单，而不是随便一个字符串。
+    ///
+    /// 这条挡三种变异：探针返回空串（→ 所有会话命令都报"缺参数"）、
+    /// 返回一个不在名单里的假 id（→ 全被拒）、以及把带 `*` 的模式原样当会话。
+    #[test]
+    fn render_probes_with_a_conversation_from_the_allowlist() {
+        // 具体会话：conv.unread 必须显示"允许"
+        let text = render(&Policy::new(["g-1"], true, false));
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("conv.unread") && l.contains("允许")),
+            "探针必须用白名单里的 g-1：{text}"
+        );
+
+        // 通配模式：探针要把 `*` 换成真实片段，否则 `g-*` 匹配不上自己
+        let text = render(&Policy::new(["g-*"], true, false));
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("conv.unread") && l.contains("允许")),
+            "带 * 的模式必须换成具体会话再试：{text}"
+        );
+
+        // 计数必须是真数出来的，不是恒 0（`allowed += 1` 被改成 `*= 1` 时会露馅）
+        assert!(
+            !text.contains("可执行 0 /"),
+            "有可用命令时计数不该是 0：{text}"
+        );
+    }
+
+    /// `from_env` 三个开关都要真的读环境变量。
+    ///
+    /// 这条会改进程级环境变量，所以**只能有这一个测试碰这三个键**。
+    /// 变异测试发现 `env_flag` 恒 true / 恒 false 都能存活——因为之前
+    /// `from_env` 一次都没被测过。
+    #[test]
+    fn from_env_reads_all_three_switches() {
+        std::env::set_var("WXLIKE_AGENT_ALLOW_CONV", "g-1, d-*~alice");
+        std::env::set_var("WXLIKE_AGENT_ALLOW_WRITE", "yes");
+        std::env::set_var("WXLIKE_AGENT_ALLOW_DESTRUCTIVE", "1");
+        let p = Policy::from_env();
+        assert_eq!(
+            p.conv_patterns(),
+            ["g-1".to_string(), "d-*~alice".to_string()]
+        );
+        assert!(p.allow_write(), "yes 应当算开");
+        assert!(p.allow_destructive(), "1 应当算开");
+
+        // 关掉：未设置 / 0 都算关
+        std::env::remove_var("WXLIKE_AGENT_ALLOW_WRITE");
+        std::env::set_var("WXLIKE_AGENT_ALLOW_DESTRUCTIVE", "0");
+        let p = Policy::from_env();
+        assert!(!p.allow_write(), "没设置就是关");
+        assert!(!p.allow_destructive(), "0 就是关");
+
+        std::env::remove_var("WXLIKE_AGENT_ALLOW_CONV");
+        std::env::remove_var("WXLIKE_AGENT_ALLOW_DESTRUCTIVE");
     }
 
     #[test]
