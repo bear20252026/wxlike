@@ -121,6 +121,57 @@ impl Executor {
                     .expect_json("GET", &format!("/api/groups/{conv}/members"), None)
             }
             "conv.list" => self.conv_list(&http),
+            // ---- 读：视频 / 点播 ----
+            "video.select" => {
+                let id = str_param(params, "video_id")?;
+                let kbps = params["kbps"].as_u64().ok_or_else(|| {
+                    "缺少参数 kbps（客户端上一段的实测可用带宽，千比特/秒）".to_string()
+                })?;
+                http.expect_json("GET", &format!("/api/video/{id}/select?kbps={kbps}"), None)
+            }
+            "video.stats" => {
+                let id = str_param(params, "video_id")?;
+                http.expect_json("GET", &format!("/api/video/{id}/stats"), None)
+            }
+            "video.job.get" => {
+                let id = str_param(params, "job_id")?;
+                http.expect_json("GET", &format!("/api/video/jobs/{id}"), None)
+            }
+            // ---- 写：视频 / 点播 ----
+            "video.job.create" => {
+                // 读本地文件是 agent 侧唯一碰磁盘的地方：路径由调用方给，
+                // 但能力等级是 Write——没开写权限时根本走不到这里。
+                let path = str_param(params, "path")?;
+                let bytes =
+                    std::fs::read(&path).map_err(|e| format!("读不到本地文件 {path}: {e}"))?;
+                let callback = params.get("callback_url").and_then(|v| v.as_str());
+                http.post_video_job(&bytes, callback)
+            }
+            "video.job.retry" => {
+                let id = str_param(params, "job_id")?;
+                http.expect_json("POST", &format!("/api/video/jobs/{id}/retry"), None)
+            }
+            "video.view.report" => {
+                let id = str_param(params, "video_id")?;
+                let viewer = str_param(params, "viewer")?;
+                let watched = params["watched_ms"].as_u64().ok_or_else(|| {
+                    "缺少参数 watched_ms（本次**新增**时长，必须为正）".to_string()
+                })?;
+                http.expect_json(
+                    "POST",
+                    &format!("/api/video/{id}/view"),
+                    Some(&serde_json::json!({
+                        "viewer": viewer,
+                        "watched_ms": watched,
+                        "position_ms": params["position_ms"].as_u64().unwrap_or(0),
+                        "completed": params["completed"].as_bool().unwrap_or(false),
+                        "session_id": params
+                            .get("session_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default(),
+                    })),
+                )
+            }
             // ---- 写 ----
             "conv.ack" => {
                 let conv = str_param(params, "conv")?;

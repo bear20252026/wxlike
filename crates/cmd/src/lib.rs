@@ -58,7 +58,8 @@ pub struct CommandSpec {
     pub needs_conv: bool,
 }
 
-/// 现有 20 条（首批 18 + Zone C 的社区/频道 2 条）。**加功能先加这里**，再去实现执行器。
+/// 现有 26 条（首批 18 + Zone C 的社区/频道 2 条 + Zone E 的视频/点播 6 条）。
+/// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己），再写，最后危险操作。
 pub const CATALOG: &[CommandSpec] = &[
@@ -193,6 +194,50 @@ pub const CATALOG: &[CommandSpec] = &[
         capability: Capability::Write,
         needs_conv: true,
     },
+    // ---- 读：视频 / 点播 ----
+    CommandSpec {
+        id: "video.select",
+        summary: "按实测带宽选一档码率（服务端留余量，三端选到同一档）",
+        params: "{video_id: string, kbps: number}",
+        capability: Capability::Read,
+        needs_conv: false,
+    },
+    CommandSpec {
+        id: "video.stats",
+        summary: "点播观看统计：条数 / 独立观众 / 总时长 / 人均时长",
+        params: "{video_id: string}",
+        capability: Capability::Read,
+        needs_conv: false,
+    },
+    CommandSpec {
+        id: "video.job.get",
+        summary: "查一个转码作业的状态与失败原因",
+        params: "{job_id: string}",
+        capability: Capability::Read,
+        needs_conv: false,
+    },
+    // ---- 写：视频 / 点播 ----
+    CommandSpec {
+        id: "video.job.create",
+        summary: "提交一个本地视频文件转码（读本地路径，上传后入队）",
+        params: "{path: string, callback_url?: string}",
+        capability: Capability::Write,
+        needs_conv: false,
+    },
+    CommandSpec {
+        id: "video.job.retry",
+        summary: "重试一个失败的转码作业（同一条作业，不新建）",
+        params: "{job_id: string}",
+        capability: Capability::Write,
+        needs_conv: false,
+    },
+    CommandSpec {
+        id: "video.view.report",
+        summary: "上报一次观看心跳（本次新增时长必须为正）",
+        params: "{video_id: string, viewer: string, watched_ms: number, position_ms?: number, completed?: boolean, session_id?: string}",
+        capability: Capability::Write,
+        needs_conv: false,
+    },
     // ---- 破坏性 ----
     CommandSpec {
         id: "group.kick",
@@ -234,7 +279,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 20, "命令数变了：快照测试要一起加 id");
+        assert_eq!(CATALOG.len(), 26, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         for spec in CATALOG {
             assert!(ids.insert(spec.id), "重复的命令 id: {}", spec.id);
@@ -270,10 +315,33 @@ mod tests {
                 "msg.forward",
                 "group.create",
                 "group.add_member",
+                "video.select",
+                "video.stats",
+                "video.job.get",
+                "video.job.create",
+                "video.job.retry",
+                "video.view.report",
                 "group.kick",
                 "msg.recall",
             ]
         );
+    }
+
+    /// 视频命令不挂在会话上：`needs_conv = false`，但写命令仍然要 `--allow-write`。
+    /// 这条测试锁的是设计决定，不是实现细节——以后有人给 `video.*` 加 `conv`
+    /// 就会红，逼他先想清楚"视频是不是会话资产"。
+    #[test]
+    fn video_commands_are_capability_gated_not_conv_gated() {
+        for id in ["video.select", "video.stats", "video.job.get"] {
+            let spec = get(id).unwrap();
+            assert!(!spec.needs_conv, "{id} 不该要求 conv");
+            assert_eq!(spec.capability, Capability::Read, "{id}");
+        }
+        for id in ["video.job.create", "video.job.retry", "video.view.report"] {
+            let spec = get(id).unwrap();
+            assert!(!spec.needs_conv, "{id} 不该要求 conv");
+            assert_eq!(spec.capability, Capability::Write, "{id}");
+        }
     }
 
     #[test]

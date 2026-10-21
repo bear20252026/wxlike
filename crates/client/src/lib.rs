@@ -167,6 +167,48 @@ impl Http {
             .map_err(|e| format!("upload decode: {e}"))
     }
 
+    /// 提交一个转码作业（multipart：`bytes` 文件 + 可选 `callback_url`）。
+    ///
+    /// 与 [`Self::upload`] 的区别只是目标路由和字段名——两处都用 `send_bytes` 手搭
+    /// multipart，因为 `ureq` 的 `multipart` feature 会拖进 `mime` 依赖树，
+    /// 而这里只需要两个字段。
+    pub fn post_video_job(
+        &self,
+        bytes: &[u8],
+        callback_url: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let boundary = "wxlike-video-form-4b1d2";
+        let mut body = Vec::with_capacity(bytes.len() + 256);
+        if let Some(url) = callback_url {
+            let _ = write!(
+                body,
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"callback_url\"\r\n\r\n{url}\r\n"
+            );
+        }
+        let _ = write!(
+            body,
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"bytes\"; filename=\"source\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        );
+        body.extend_from_slice(bytes);
+        let _ = write!(body, "\r\n--{boundary}--\r\n");
+
+        let resp = self
+            .req("POST", "/api/video/jobs")
+            .set(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send_bytes(&body)
+            .map_err(|e| match e {
+                ureq::Error::Status(status, r) => {
+                    r.into_string().unwrap_or_else(|_| format!("HTTP {status}"))
+                }
+                other => format!("video job submit: {other}"),
+            })?;
+        resp.into_json::<serde_json::Value>()
+            .map_err(|e| format!("video job decode: {e}"))
+    }
+
     /// Downloads an object; returns (bytes, content type).
     pub fn download(&self, media_id: &str, thumb: bool) -> Result<(Vec<u8>, String), String> {
         let suffix = if thumb { "?thumb=1" } else { "" };

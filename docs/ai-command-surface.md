@@ -145,9 +145,11 @@ actor=agent:<token_id>  command=msg.send  conv=g-abc  result=ok  idem=...
 | 消息 | `msg.list` / `msg.search` / `msg.get` | Read |
 | 成员 | `group.members` / `group.info` | Read |
 | 社群 | `community.threads` / `channel.roles` | Read |
+| 视频 | `video.select` / `video.stats` / `video.job.get` | Read |
 | 自查 | `me.info` / `me.sessions` | Read |
 | 写 | `msg.send` / `conv.ack` / `msg.forward` | Write |
 | 群管理 | `group.create` / `group.add_member` | Write |
+| 视频写 | `video.job.create` / `video.job.retry` / `video.view.report` | Write |
 | 破坏性 | `group.kick` / `msg.recall` | Destructive |
 
 `conv.history` 直接复用刚做完的信箱分页（`fetch_before`），`conv.unread` 复用
@@ -159,6 +161,18 @@ actor=agent:<token_id>  command=msg.send  conv=g-abc  result=ok  idem=...
 > 与 `POST/DELETE /api/channel/{id}/roles` 是写操作，暂未开命令——要写命令
 > 先按 §六 的规矩想清楚"给 agent 开这个能力意味着什么"。
 > 契约与验收见 [api.md](api.md)。
+
+> **2026-10-20（Zone E 代合）**：补了视频/点播 6 条，共 **26 条**。分界刻意不在"读/写"，
+> 而在**谁能承担后果**：
+> - 读三条（`select` / `stats` / `job.get`）在只读模式下可用——agent 看播放数据、
+>   查转码失败原因都不需要写权限；
+> - 写三条里 `job.create` 是唯一读本地磁盘的（`path` 由调用方给，上传后入队），
+>   所以它必须是 Write：没开 `--allow-write` 时连文件都不会打开；
+> - `view.report` 是**自报身份**（点播面本来无鉴权），给 agent 开这条等于允许它
+>   污染观看统计——默认不给，开了要自己认。
+>
+> 没有登记 `video.job.create` 之外的上传路径：`POST /api/video` 是同步转码，
+> 会阻塞请求，不适合 agent 调用。
 
 ## 六、分期与验收
 
