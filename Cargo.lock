@@ -6555,13 +6555,17 @@ dependencies = [
  "anyhow",
  "axum",
  "hex",
+ "hmac 0.12.1",
  "http-body-util",
+ "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
  "tower",
  "tracing",
+ "ureq",
  "wxlike-core",
 ]
 
