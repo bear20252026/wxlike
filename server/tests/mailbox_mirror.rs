@@ -99,10 +99,10 @@ async fn direct_message_lands_in_the_mailbox() {
     let conv = format!("d-{alice}~{bob}");
 
     // 两个客户端连上 hub
-    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &ta)
         .await
         .expect("alice connect");
-    let bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+    let bob_c = Client::connect(stack.quic_addr, "localhost", &tb)
         .await
         .expect("bob connect");
     // 让 hello 帧先走完，避免后续帧被当成未注册连接
@@ -145,10 +145,10 @@ async fn recall_withdraws_from_the_mailbox_too() {
     befriend(&base, &ta, &bob, &tb);
     let conv = format!("d-{alice}~{bob}");
 
-    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &ta)
         .await
         .unwrap();
-    let _bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+    let _bob_c = Client::connect(stack.quic_addr, "localhost", &tb)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -183,10 +183,10 @@ async fn history_pages_by_mailbox_seq() {
     befriend(&base, &ta, &bob, &tb);
     let conv = format!("d-{alice}~{bob}");
 
-    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &ta)
         .await
         .unwrap();
-    let _bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+    let _bob_c = Client::connect(stack.quic_addr, "localhost", &tb)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -238,10 +238,10 @@ async fn fanout_carries_mailbox_seq() {
     befriend(&base, &ta, &bob, &tb);
     let conv = format!("d-{alice}~{bob}");
 
-    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &ta)
         .await
         .unwrap();
-    let bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+    let bob_c = Client::connect(stack.quic_addr, "localhost", &tb)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -297,10 +297,10 @@ async fn group_fans_out_from_mailbox_members() {
         .expect("members");
     assert!(snap.contains(&alice) && snap.contains(&bob), "{snap:?}");
 
-    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &ta)
         .await
         .unwrap();
-    let bob_c = Client::connect(stack.quic_addr, "localhost", &bob)
+    let bob_c = Client::connect(stack.quic_addr, "localhost", &tb)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;

@@ -38,7 +38,10 @@ fn register(stack: &TestStack, name: &str) -> (String, String) {
         .into_json()
         .unwrap();
     (
-        reply["user_id"].as_str().unwrap().to_string(),
+        reply["user_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("register {name} 失败：{reply}"))
+            .to_string(),
         reply["token"].as_str().unwrap().to_string(),
     )
 }
@@ -154,8 +157,8 @@ async fn history_pages_and_marks_recalled_rows() {
     let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let conv_id = conv(&alice, &bob);
 
-    let alice_c = connect(&stack, &alice).await;
-    let bob_c = connect(&stack, &bob).await;
+    let alice_c = connect(&stack, &alice_tok).await;
+    let bob_c = connect(&stack, &bob_tok).await;
     befriend(&stack, &alice, &alice_tok, &bob, &bob_tok).await;
     let _ = bob_c; // online so the frames are delivered, not parked
 
@@ -209,13 +212,13 @@ async fn history_pages_and_marks_recalled_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_denies_outsiders() {
     let stack = boot().await;
-    let (alice, _) = register(&stack, &format!("{}-alice", who()));
-    let (bob, _) = register(&stack, &format!("{}-bob", who()));
+    let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
+    let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let (_mallory, mallory_tok) = register(&stack, &format!("{}-mallory", who()));
     let conv_id = conv(&alice, &bob);
 
-    let alice_c = connect(&stack, &alice).await;
-    let _bob_c = connect(&stack, &bob).await;
+    let alice_c = connect(&stack, &alice_tok).await;
+    let _bob_c = connect(&stack, &bob_tok).await;
     send_text(&alice_c, &conv_id, vec![bob.clone()], "secret between us").await;
     wait_store_settles().await;
 
@@ -259,13 +262,13 @@ async fn history_denies_outsiders() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn search_only_covers_conversations_i_may_see() {
     let stack = boot().await;
-    let (alice, _alice_tok) = register(&stack, &format!("{}-alice", who()));
-    let (bob, _) = register(&stack, &format!("{}-bob", who()));
+    let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
+    let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let (carol, carol_tok) = register(&stack, &format!("{}-carol", who()));
 
-    let alice_c = connect(&stack, &alice).await;
-    let bob_c = connect(&stack, &bob).await;
-    let _carol_c = connect(&stack, &carol).await;
+    let alice_c = connect(&stack, &alice_tok).await;
+    let bob_c = connect(&stack, &bob_tok).await;
+    let _carol_c = connect(&stack, &carol_tok).await;
     let alice_tok = stack.platform.create_session(&alice, 60_000).unwrap();
     let bob_tok2 = stack.platform.create_session(&bob, 60_000).unwrap();
     let carol_tok2 = stack.platform.create_session(&carol, 60_000).unwrap();
@@ -312,12 +315,12 @@ async fn search_only_covers_conversations_i_may_see() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn search_needle_wildcards_stay_literal() {
     let stack = boot().await;
-    let (alice, _alice_tok) = register(&stack, &format!("{}-alice", who()));
-    let (bob, _) = register(&stack, &format!("{}-bob", who()));
+    let (alice, alice_tok) = register(&stack, &format!("{}-alice", who()));
+    let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let conv_id = conv(&alice, &bob);
 
-    let alice_c = connect(&stack, &alice).await;
-    let bob_c = connect(&stack, &bob).await;
+    let alice_c = connect(&stack, &alice_tok).await;
+    let bob_c = connect(&stack, &bob_tok).await;
     let _ = bob_c;
     let alice_tok = stack.platform.create_session(&alice, 60_000).unwrap();
     let bob_tok2 = stack.platform.create_session(&bob, 60_000).unwrap();
@@ -338,8 +341,8 @@ async fn typing_and_forward_kinds_flow_through_the_hub() {
     let (bob, bob_tok) = register(&stack, &format!("{}-bob", who()));
     let conv_id = conv(&alice, &bob);
 
-    let alice_c = connect(&stack, &alice).await;
-    let bob_c = connect(&stack, &bob).await;
+    let alice_c = connect(&stack, &alice_tok).await;
+    let bob_c = connect(&stack, &bob_tok).await;
     befriend(&stack, &alice, &alice_tok, &bob, &bob_tok).await;
     wait_bound(&stack, 2).await;
 

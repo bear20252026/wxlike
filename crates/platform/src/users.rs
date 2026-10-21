@@ -453,3 +453,51 @@ async fn logout(
     platform.audit(&authed.user_id, "user.logout", "", "");
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod client_key_tests {
+    use super::*;
+
+    fn headers(pairs: &[(&'static str, &'static str)]) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    /// issue #19 的核心：**默认不采信转发头**。
+    ///
+    /// 直连部署下 `x-forwarded-for` 是客户端自己填的，信它等于"换个头 = 换个
+    /// 限流桶"。这条在函数层次断言，比走 HTTP 撞阈值直接得多。
+    #[test]
+    fn forwarded_headers_are_ignored_unless_trusted() {
+        let h = headers(&[
+            ("x-forwarded-for", "203.0.113.7, 10.0.0.1"),
+            ("x-real-ip", "203.0.113.8"),
+            ("x-client-id", "anything"),
+        ]);
+        let peer: std::net::SocketAddr = "10.0.0.1:5555".parse().unwrap();
+
+        assert_eq!(
+            client_key(Some(peer), &h, false).as_deref(),
+            Some("10.0.0.1"),
+            "默认必须只看真实 peer"
+        );
+        assert_eq!(
+            client_key(Some(peer), &h, true).as_deref(),
+            Some("203.0.113.7"),
+            "受信代理部署下取 XFF 首段"
+        );
+    }
+
+    /// 没有 peer 时返回 `None`（调用方退化为按账号名计数），
+    /// **不**伪造一个 "local" 键把所有直连客户端塞进同一个桶。
+    #[test]
+    fn no_peer_means_no_source_key() {
+        let h = headers(&[("x-real-ip", "203.0.113.8")]);
+        assert_eq!(client_key(None, &h, false), None);
+        // 即使带了别的转发头，没有 peer 也不认
+        assert_eq!(client_key(None, &h, true), None);
+    }
+}

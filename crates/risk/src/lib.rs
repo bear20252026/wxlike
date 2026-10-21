@@ -108,8 +108,13 @@ pub struct RiskConfig {
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
-            register_challenge_at: 3,
-            register_deny_at: 10,
+            // 注册按**来源**计数（issue #19 之后来源是真实 peer IP）。
+            //
+            // 原来是 3：一个公司网络、一个运营商 NAT、一台 CI runner 上三个人
+            // 注册就会有人被要求 captcha——"共享出口连坐"比"脚本注册"更常见。
+            // 50 次/小时对正常出口绰绰有余，对脚本仍然是一道墙；deny 在 200。
+            register_challenge_at: 50,
+            register_deny_at: 200,
             login_fail_challenge_at: 5,
             login_fail_deny_at: 12,
             send_throttle_at: 20,
