@@ -14,6 +14,9 @@
 
 use std::sync::Arc;
 
+/// A2：`/app` 静态托管（`WXLIKE_WEB_DIR`）。
+mod web_static;
+
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
@@ -111,6 +114,12 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             );
         }
     }
+    // 管理面令牌：未配置 = 管理端点关闭（平台侧已是这个语义，这里只是把它接到环境）。
+    // 不设默认值——默认值等于把管理面敞开，和推流密钥是同一个道理。
+    platform_options.admin_token = std::env::var("WXLIKE_ADMIN_TOKEN")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let platform = Platform::open_with(opts.db_path.as_deref(), platform_options)?.shared();
 
     let store = Arc::new(Store::open(opts.db_path.as_deref())?);
@@ -250,6 +259,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone()))
         .merge(history_routes(deps))
+        .merge(web_static::routes())
         .merge(dev_routes(platform.clone()));
 
     let listener = tokio::net::TcpListener::bind(&opts.http_bind).await?;

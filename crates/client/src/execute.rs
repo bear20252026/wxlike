@@ -101,6 +101,20 @@ impl Executor {
                 self.http
                     .expect_json("GET", &format!("/api/groups/{conv}"), None)
             }
+            "community.threads" => {
+                let community = str_param(params, "community")?;
+                let limit = params["limit"].as_u64().unwrap_or(50);
+                http.expect_json(
+                    "GET",
+                    &format!("/api/community/{community}/threads?limit={limit}"),
+                    None,
+                )
+            }
+            "channel.roles" => {
+                // 路径里是频道 id：`Policy` 的会话白名单按 conv 参数管住它
+                let conv = str_param(params, "conv")?;
+                http.expect_json("GET", &format!("/api/channel/{conv}/roles"), None)
+            }
             "group.members" => {
                 let conv = str_param(params, "conv")?;
                 self.http
@@ -325,6 +339,7 @@ mod tests {
         );
         let params = json!({
             "conv": "d-a~b", "to_conv": "d-a~b", "from_conv": "d-a~b",
+            "community": "c0ffee01",
             "name": "t", "text": "x", "msg_id": "00000000000000000000000000000000",
             "idempotency_key": "k", "user_ids": ["u"], "user_id": "u",
             "q": "x", "from_seq": 1, "version": 0,

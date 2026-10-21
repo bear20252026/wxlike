@@ -48,6 +48,7 @@ impl Db {
         db.migrate_groups_admin()?;
         db.migrate_security_columns()?;
         db.migrate_p4()?;
+        db.migrate_communities()?;
         Ok(db)
     }
 
@@ -192,6 +193,48 @@ impl Db {
                 "UPDATE sessions SET sid = ?1 WHERE token = ?2",
                 rusqlite::params![sid, token],
             )?;
+        }
+        Ok(())
+    }
+
+    /// Zone C · C1/C3：频道级角色表 + 话题订阅的静音列。
+    ///
+    /// `channel_role` 是**新表**，直接建；`thread_subs.muted` 走"老库原地补列"
+    /// （与 `migrate_groups_admin` 同一手法）：没有旧行要搬迁，缺列就是缺功能。
+    ///
+    /// 角色名写字符串而不是复用 `community_members` 的整数编号：社区级三档
+    /// （0 成员 / 1 群主 / 2 管理员）里**没有 guest**，而频道级必须能表达
+    /// "只看不能传附件"。整数字典两套并存迟早会有人拿错，字符串自带可读性。
+    fn migrate_communities(&self) -> Result<()> {
+        let c = self.lock();
+        c.execute_batch(
+            r#"
+            -- 频道级角色：有行才覆盖社区角色，无行则继承（见 communities.rs）
+            CREATE TABLE IF NOT EXISTS channel_role (
+                channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+                user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role       TEXT NOT NULL CHECK (role IN ('owner','moderator','member','guest')),
+                granted_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_channel_role_user
+                ON channel_role(user_id, channel_id);
+            "#,
+        )?;
+
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(thread_subs)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [("muted", "INTEGER NOT NULL DEFAULT 0")] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE thread_subs ADD COLUMN {col} {ddl};"))?;
+            }
         }
         Ok(())
     }

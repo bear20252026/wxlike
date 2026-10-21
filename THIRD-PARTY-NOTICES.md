@@ -22,6 +22,10 @@
 | boa_engine | 0.20 | MIT/Apache-2.0 | JS engine in the research container |
 | image, zstd, sha2, chacha20poly1305, hkdf, x25519-dalek, pbkdf2, rand, hex, base64 | — | MIT/Apache-2.0 | media/crypto primitives |
 | ureq | 2.x | MIT | UI-side HTTP client |
+| rusqlite / rand / hmac / ureq | 0.32 / 0.8 / 0.12 / 2.12 | MIT/Apache-2.0 | **已在 Cargo.lock 里**：`crates/video` 新增对这四个既有 crate 的依赖边（播放统计与作业队列的库、缺省 session_id、推流凭据 HMAC、出站回调与接入节点推片）。Cargo.lock 只 +4 行，无新包 |
+| **tower-http** | 0.7 (`fs`, `set-header`) | MIT | A2 静态托管：`ServeDir`/`ServeFile` 发 `ui/dist-web`，并给壳/资源分别打 `no-store` / `immutable`（Zone A 请求，用户批准新增） |
+| **uniffi** | 0.32.2 + `scaffolding-ffi-buffer-fns` | MPL-2.0 | Zone B 的绑定生成器（`crates/ffi`，ADR-11）。Rust 侧只贡献 `#[derive(uniffi::*)]` 元数据；生成的 Kotlin 与 Dart 都不进 git（`crates/ffi/generated/`、`apps/mobile/lib/src/rust/`），由 `crates/ffi/regenerate.sh` 重建。 |
+| **uniffi-bindgen-dart** | 0.2.0 | MIT | [nchapman/uniffi-bindgen-dart](https://github.com/nchapman/uniffi-bindgen-dart) · 第三方 Dart 后端。UniFFI 官方只有 Kotlin/Swift/Python/Ruby，Flutter 侧必须有这一个；它依赖 `uniffi_bindgen 0.32.2`（与主 crate 同版本，不是 fork）。**只在生成期用**（`crates/ffi` 的 `dart` feature，`cargo build -p wxlike-ffi` 默认不带），不进手机上的 .so。产物 `apps/mobile/lib/src/rust/wxlike_ffi.dart` 是生成代码，重新生成走 `crates/ffi/regenerate.sh`。 |
 | **tantivy** | 0.22.1 | MIT | P3 full-text search index (ADR-22) — replaces the transitional P1 substring search; ngram tokenizer for CJK |
 | **async-nats** | 0.42.0 | Apache-2.0 | P3 realtime channel backend (JetStream durable queues + KV routes) — the official Rust NATS client; no broker hand-written |
 | tracing / tracing-subscriber | 0.1/0.3 | MIT | observability |
@@ -79,6 +83,27 @@ https://github.com/bluexsx/box-im
 > 自写一遍等于重犯它已经踩过的边界。GPL-3.0 与本项目许可一致。
 
 ## Ported designs (no code copied yet; origin recorded per contract §7.2)
+
+- **Rocket.Chat** (RocketChat/Rocket.Chat, MIT — `ee/` excluded and not consulted):
+  the **channel-role** layer of `crates/platform/src/communities.rs` (Zone C · C2)
+  follows its `app/authorization` shape — roles own permission *strings*, an
+  endpoint asks `can(user, 'post-media')` and never inspects which role a user
+  holds. Names are kept comparable to upstream (`post-message`, `post-announce`,
+  `delete-any-message`, `manage-roles`) and the four channel tiers
+  (`owner`/`moderator`/`member`/`guest`) are theirs. No source file was copied:
+  the repo is not mirrored locally (size), and the judgement logic lives in our
+  own pure functions (`channel_role_perms`, `perm_for_type`) on our `Perm` enum.
+- **Zulip** (zulip/zulip, Apache-2.0): "topic is a first-class attribute of a
+  message" — the reason thread replies keep their own sequence and never enter
+  the channel timeline (invariant 3). Concept only, no code.
+- **本仓库 `crates/core/src/outbox.rs`** (Zone E): 转码作业队列的状态机/退避/幂等入队/
+  `throttled 不烧次数` → `crates/video/src/jobs.rs`（同仓库参照重写，两处偏离写在模块头）。
+- **本仓库 `crates/platform/src/media.rs`** (Zone E): `Range` 解析与 206/416/Accept-Ranges
+  语义 → `crates/video/src/range.rs`。日后应统一到 `crates/core`，删掉其中一份。
+- **本仓库 `crates/platform/src/live.rs`** (Zone E): 自包含推流凭据
+  `<exp>.<hmac(stream_key|exp)>` 与 `constant_time_eq` → `crates/video/src/live.rs`
+  （差别：打包器侧**不查库**）。
+- **本仓库 `crates/ledger`** (Zone E): append-only 事件 + 重放聚合 → `crates/video/src/stats.rs`。
 
 - **OpenIM** (openimsdk/open-im-server, Apache-2.0): the five-layer sync
   contract (digest → delta → fallback full → batch threshold → lazy member

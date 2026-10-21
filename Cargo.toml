@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/net", "crates/dpage", "crates/container", "crates/mq", "crates/platform", "crates/push", "crates/rtc", "crates/sfu", "crates/client", "crates/cmd", "crates/cli", "crates/mcp", "crates/video", "crates/message", "crates/search", "crates/ledger", "crates/risk", "crates/moderation", "crates/report", "server"]
+members = ["crates/core", "crates/net", "crates/dpage", "crates/container", "crates/mq", "crates/platform", "crates/push", "crates/rtc", "crates/sfu", "crates/client", "crates/ffi", "crates/cmd", "crates/cli", "crates/mcp", "crates/video", "crates/message", "crates/search", "crates/ledger", "crates/risk", "crates/moderation", "crates/report", "crates/admin", "server"]
 exclude = ["ui"]
 
 [workspace.package]
@@ -29,3 +29,5 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 async-trait = "0.1"
+# A2 静态托管：/app 直接发网页（ServeDir/ServeFile）
+tower-http = { version = "0.7", features = ["fs", "set-header"] }

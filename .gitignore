@@ -8,3 +8,12 @@ ui/src-tauri/target
 ui/src-tauri/gen
 ui/src-tauri/data/
 ui/dist/app.js
+# A5 网页端产物（scripts/build-web.sh 生成）
+ui/dist-web/
+
+# Zone B：绑定生成产物与交叉编译出来的 .so（都靠脚本重建，不进 git）
+crates/ffi/generated/
+apps/mobile/android/app/src/main/jniLibs/*/libwxlike_ffi.so
+
+# UniFFI 生成的 Dart 绑定：`bash crates/ffi/regenerate.sh` 重建（同 ui/dist/app.js 的口径，生成物不进 git）
+apps/mobile/lib/src/rust/

@@ -144,6 +144,7 @@ actor=agent:<token_id>  command=msg.send  conv=g-abc  result=ok  idem=...
 | 会话 | `conv.list` / `conv.unread` / `conv.history` / `conv.sync` | Read |
 | 消息 | `msg.list` / `msg.search` / `msg.get` | Read |
 | 成员 | `group.members` / `group.info` | Read |
+| 社群 | `community.threads` / `channel.roles` | Read |
 | 自查 | `me.info` / `me.sessions` | Read |
 | 写 | `msg.send` / `conv.ack` / `msg.forward` | Write |
 | 群管理 | `group.create` / `group.add_member` | Write |
@@ -151,6 +152,13 @@ actor=agent:<token_id>  command=msg.send  conv=g-abc  result=ok  idem=...
 
 `conv.history` 直接复用刚做完的信箱分页（`fetch_before`），`conv.unread` 复用
 `MessageStore::unread`——**catalog 不是新实现，是给已有能力起名字**。
+
+> **2026-10-20（Zone C · C4）**：加了 `community.threads`（跨频道的话题汇总）和
+> `channel.roles`（频道角色名单）两条，共 **20 条**。`channel.roles` 的 `conv`
+> 是频道 id，所以会话白名单一样管得住它。HTTP 侧的 `POST /api/community/{id}/threads`
+> 与 `POST/DELETE /api/channel/{id}/roles` 是写操作，暂未开命令——要写命令
+> 先按 §六 的规矩想清楚"给 agent 开这个能力意味着什么"。
+> 契约与验收见 [api.md](api.md)。
 
 ## 六、分期与验收
 
