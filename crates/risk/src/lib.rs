@@ -105,6 +105,13 @@ pub struct RiskConfig {
     pub report_deny_at: usize,
 }
 
+/// 同来源一小时内注册多少次起要求人机校验。
+///
+/// 50 而不是 3：共享出口（公司网络 / 运营商 NAT / CI runner）上三个人注册
+/// 就有人被要求 captcha 是误伤，比脚本注册更常见。deny 在 200。
+const REGISTER_CHALLENGE_AT: usize = 50;
+const REGISTER_DENY_AT: usize = 200;
+
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
@@ -113,8 +120,8 @@ impl Default for RiskConfig {
             // 原来是 3：一个公司网络、一个运营商 NAT、一台 CI runner 上三个人
             // 注册就会有人被要求 captcha——"共享出口连坐"比"脚本注册"更常见。
             // 50 次/小时对正常出口绰绰有余，对脚本仍然是一道墙；deny 在 200。
-            register_challenge_at: 50,
-            register_deny_at: 200,
+            register_challenge_at: REGISTER_CHALLENGE_AT,
+            register_deny_at: REGISTER_DENY_AT,
             login_fail_challenge_at: 5,
             login_fail_deny_at: 12,
             send_throttle_at: 20,

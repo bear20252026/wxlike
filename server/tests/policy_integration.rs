@@ -65,16 +65,9 @@ async fn blocked_users_direct_messages_never_arrive() {
     let stack = boot().await;
     let http = format!("http://{}", stack.http_addr);
 
-    let alice = Client::connect(stack.quic_addr, "localhost", "alice")
-        .await
-        .unwrap();
-    let bob = Client::connect(stack.quic_addr, "localhost", "bob")
-        .await
-        .unwrap();
-    let mallory = Client::connect(stack.quic_addr, "localhost", "mallory")
-        .await
-        .unwrap();
-    wait_bound(&stack, 3).await;
+    // 这里原来用字符串身份"先连上"，但 hub 现在只认凭据（issue #3）。
+    // 真正的连接在下面拿到 token 之后建；这条测试关心的是**拉黑后不投递**，
+    // 不需要提前占位。
 
     // alice 经 HTTP 拉黑 mallory
     let mallory_id: serde_json::Value = ureq::post(&format!("{http}/api/register"))
@@ -84,7 +77,7 @@ async fn blocked_users_direct_messages_never_arrive() {
         .unwrap();
     let _ = mallory_id;
     // 用平台 seam 拿真实 id（QUIC 身份是注册名映射，测试内直接注册同名拿 id）
-    let (mallory_uid, _mallory_tok) = {
+    let (mallory_uid, mallory_tok) = {
         // mallory 已以用户名注册过吗？此测试用 QUIC 名即用户名——先注册拿 id
         let reply: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": "mallory2", "password": "pw"}))
@@ -116,7 +109,7 @@ async fn blocked_users_direct_messages_never_arrive() {
 
     // mallory2（被拉黑者）直发 alice2 → 拦截
     let conv_bad = direct(&mallory_uid, &alice_uid);
-    Client::connect(stack.quic_addr, "localhost", &mallory_uid)
+    Client::connect(stack.quic_addr, "localhost", &mallory_tok)
         .await
         .unwrap()
         .send(&Envelope::direct(
@@ -159,10 +152,10 @@ async fn blocked_users_direct_messages_never_arrive() {
         .call()
         .unwrap();
 
-    let bob2 = Client::connect(stack.quic_addr, "localhost", &bob_uid)
+    let bob2 = Client::connect(stack.quic_addr, "localhost", &bob_tok)
         .await
         .unwrap();
-    let alice2 = Client::connect(stack.quic_addr, "localhost", &alice_uid)
+    let alice2 = Client::connect(stack.quic_addr, "localhost", &alice_tok)
         .await
         .unwrap();
     wait_bound(&stack, 2).await;
@@ -189,9 +182,6 @@ async fn blocked_users_direct_messages_never_arrive() {
     let stored = stack.store.list_messages(&conv_bad).unwrap();
     assert!(stored.is_empty(), "blocked frame must not persist");
     assert_eq!(stack.store.list_messages(&conv_ok).unwrap().len(), 1);
-    let _ = alice;
-    let _ = bob;
-    let _ = mallory;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -252,10 +242,10 @@ async fn muted_members_group_frames_are_dropped() {
         .send_json(serde_json::json!({"until_ms": wxlike_core::types::now_ms() + 1_000}))
         .unwrap();
 
-    let loud_c = Client::connect(stack.quic_addr, "localhost", &loud)
+    let loud_c = Client::connect(stack.quic_addr, "localhost", &loud_tok)
         .await
         .unwrap();
-    let fan_c = Client::connect(stack.quic_addr, "localhost", &fan)
+    let fan_c = Client::connect(stack.quic_addr, "localhost", &fan_tok)
         .await
         .unwrap();
     wait_bound(&stack, 2).await;
@@ -266,7 +256,7 @@ async fn muted_members_group_frames_are_dropped() {
         .await
         .unwrap();
     // owner 群帧 → 扇出
-    let owner_c = Client::connect(stack.quic_addr, "localhost", &owner)
+    let owner_c = Client::connect(stack.quic_addr, "localhost", &owner_tok)
         .await
         .unwrap();
     owner_c
@@ -316,10 +306,10 @@ async fn stranger_gate_enforces_invariant_nine() {
     let (alice, alice_tok) = reg("alice");
     let (carol, carol_tok) = reg("carol");
 
-    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice)
+    let alice_c = Client::connect(stack.quic_addr, "localhost", &alice_tok)
         .await
         .unwrap();
-    let carol_c = Client::connect(stack.quic_addr, "localhost", &carol)
+    let carol_c = Client::connect(stack.quic_addr, "localhost", &carol_tok)
         .await
         .unwrap();
     wait_bound(&stack, 2).await;
@@ -388,8 +378,8 @@ async fn redpackets_from_muted_members_are_also_gated() {
             r["token"].as_str().unwrap().to_string(),
         )
     };
-    let (owner, _owner_tok) = reg("owner");
-    let (loud, _loud_tok) = reg("loud");
+    let (owner, owner_tok) = reg("owner");
+    let (loud, loud_tok) = reg("loud");
     // 平台 seam 建群（create_group 不要求好友关系）
     let group = stack
         .platform
@@ -400,10 +390,10 @@ async fn redpackets_from_muted_members_are_also_gated() {
         .set_member_mute(&group, &owner, &loud, wxlike_core::types::now_ms() + 5_000)
         .unwrap();
 
-    let loud_c = Client::connect(stack.quic_addr, "localhost", &loud)
+    let loud_c = Client::connect(stack.quic_addr, "localhost", &loud_tok)
         .await
         .unwrap();
-    let owner_c = Client::connect(stack.quic_addr, "localhost", &owner)
+    let owner_c = Client::connect(stack.quic_addr, "localhost", &owner_tok)
         .await
         .unwrap();
     wait_bound(&stack, 2).await;

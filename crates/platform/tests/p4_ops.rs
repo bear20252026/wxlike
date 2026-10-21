@@ -214,6 +214,7 @@ async fn shared_egress_does_not_get_challenged() {
     }
 }
 
+#[tokio::test]
 async fn login_lockout_requires_captcha_then_clears() {
     let state = platform();
     let router = app(state.clone());
