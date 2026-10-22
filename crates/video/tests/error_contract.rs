@@ -16,7 +16,7 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use tower::ServiceExt as _;
-use wxlike_video::{routes, VideoState, VideoStore, LIVE_SECRET_ENV};
+use wxlike_video::{routes, VideoPolicy, VideoState, VideoStore, LIVE_SECRET_ENV};
 
 /// 每个用例一个独立目录：视频存储会建子目录，共用目录会让并行用例互相踩。
 fn app() -> axum::Router {
@@ -27,8 +27,10 @@ fn app() -> axum::Router {
         wxlike_core::types::now_ms(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    // 错误契约测试关心的是"错的时候长什么样"，不是"谁能调"：装一个
+    // 本地信任的认证器，让控制面进得去（401 的契约另有专门用例）。
     routes(VideoState {
-        store: VideoStore::new(dir),
+        store: VideoStore::new(dir).with_policy(VideoPolicy::trusted_local("tester")),
     })
 }
 

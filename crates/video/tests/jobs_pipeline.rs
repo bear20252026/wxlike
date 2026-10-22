@@ -11,12 +11,17 @@ use std::time::Duration;
 use support::{make_sample_video, require_tools, spawn_sink, temp_root};
 use tower::ServiceExt as _;
 use wxlike_video::{
-    routes, CallbackState, Ingested, Job, JobState, VideoState, VideoStore, MAX_JOB_ATTEMPTS,
+    routes, CallbackPolicy, CallbackState, Ingested, Job, JobState, VideoPolicy, VideoState,
+    VideoStore, MAX_JOB_ATTEMPTS,
 };
 
 fn state(tag: &str) -> VideoState {
+    // 回调测试打的是本机 sink：白名单里放 127.0.0.1，并显式允许私网
+    // （issue #8 的默认策略是"只放行公网"，测试要自己把这道门打开）。
+    let policy = VideoPolicy::default()
+        .with_callbacks(CallbackPolicy::allow_hosts(["127.0.0.1".to_string()]).allow_private(true));
     VideoState {
-        store: VideoStore::new(temp_root(tag)),
+        store: VideoStore::new(temp_root(tag)).with_policy(policy),
     }
 }
 
@@ -45,7 +50,10 @@ async fn submitted_job_transcodes_becomes_playable_and_calls_back() {
 
     // 提交（异步面）：立刻返回，不举着连接等 ffmpeg
     let (url, sink) = spawn_sink(200, "OK");
-    let submit = st.store.submit_job(&sample, Some(url.as_str())).unwrap();
+    let submit = st
+        .store
+        .submit_job(&sample, "tester", Some(url.as_str()))
+        .unwrap();
     assert!(submit.newly_queued);
     assert_eq!(submit.job.state, JobState::Pending);
 
@@ -106,7 +114,7 @@ async fn submitted_job_transcodes_becomes_playable_and_calls_back() {
     );
 
     // 同一份字节再提交：直接可播，不再转一遍
-    let again = st.store.submit_job(&sample, None).unwrap();
+    let again = st.store.submit_job(&sample, "tester", None).unwrap();
     assert!(!again.newly_queued);
     assert_eq!(again.job.state, JobState::Succeeded);
     assert_eq!(again.job.result.as_ref(), Some(&result));
@@ -119,7 +127,7 @@ async fn garbage_upload_fails_with_a_readable_error_and_can_be_retried() {
     let st = state("pipeline-garbage");
     let job = st
         .store
-        .submit_job(b"this is not a video", None)
+        .submit_job(b"this is not a video", "tester", None)
         .unwrap()
         .job;
 
@@ -162,7 +170,7 @@ async fn job_result_and_sync_upload_agree_on_every_field() {
 
     // 同一条字节：同步上传（老路径）与作业（新路径）必须给出完全一致的引用
     let uploaded: Ingested = st.store.ingest(&sample).await.unwrap();
-    let submit = st.store.submit_job(&sample, None).unwrap();
+    let submit = st.store.submit_job(&sample, "tester", None).unwrap();
     let job = poll_until_done(&st.store, &submit.job.job_id, 10).await;
     assert_eq!(job.state, JobState::Succeeded);
     assert_eq!(

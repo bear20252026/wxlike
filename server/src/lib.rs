@@ -112,7 +112,10 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
     let search = build_search(opts.db_path.as_deref(), &store)?;
     let video_state = wxlike_video::VideoState {
-        store: wxlike_video::VideoStore::new(sidecar_dir(opts.db_path.as_deref(), "video")),
+        // 控制面（上传/建作业/查作业/重试）要认证、配额与回调白名单（issue #7 #8）。
+        // 忘了装认证器的后果是"视频控制面不可用"，不是"谁都能用"。
+        store: wxlike_video::VideoStore::new(sidecar_dir(opts.db_path.as_deref(), "video"))
+            .with_policy(video_policy_from_env(platform.clone())),
     };
 
     let hub = build_hub(&opts, router, &store, &mailbox, offline, &platform).await?;
@@ -297,6 +300,61 @@ async fn build_hub(
         },
     )
     .await
+}
+
+/// 视频控制面的认证器：**平台会话表就是真相**。
+///
+/// 与 hub 的 `SessionAuth` 同一份凭据、同一个 `lookup_token`——视频面不该有
+/// 第二套"谁能上传"的答案。认 `Authorization: Bearer <token>`。
+struct SessionVideoAuth {
+    platform: PlatformState,
+}
+
+impl wxlike_video::VideoAuth for SessionVideoAuth {
+    fn caller(&self, headers: &axum::http::HeaderMap) -> Option<String> {
+        let token = headers
+            .get(axum::http::header::AUTHORIZATION)?
+            .to_str()
+            .ok()?
+            .strip_prefix("Bearer ")?
+            .trim();
+        if token.is_empty() {
+            return None;
+        }
+        match self.platform.lookup_token(token) {
+            Ok(found) => found,
+            Err(err) => {
+                // 库坏了不等于"凭据有效"：拒绝并留日志（与 hub 同一约定）
+                tracing::error!(error = %err, "lookup_token failed during video auth");
+                None
+            }
+        }
+    }
+}
+
+/// 视频控制面策略：认证器 + 回调白名单（都是运维配置，不是用户输入）。
+///
+/// - `WXLIKE_VIDEO_CALLBACK_ALLOW=host1,host2`：允许客户端把回调发到这些主机。
+///   **不配就是不允许**——回调是服务端发起的出站请求，默认放开等于把内网
+///   探测能力借给任何能提交作业的人。
+/// - `WXLIKE_VIDEO_CALLBACK_ALLOW_PRIVATE=1`：额外允许私网/回环目标（本地联调）。
+fn video_policy_from_env(platform: PlatformState) -> wxlike_video::VideoPolicy {
+    let hosts: Vec<String> = non_empty_env("WXLIKE_VIDEO_CALLBACK_ALLOW")
+        .map(|raw| {
+            raw.split(',')
+                .map(|h| h.trim().to_string())
+                .filter(|h| !h.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let callbacks = wxlike_video::CallbackPolicy::allow_hosts(hosts)
+        .allow_private(non_empty_env("WXLIKE_VIDEO_CALLBACK_ALLOW_PRIVATE").as_deref() == Some("1"))
+        // 与平台侧的 `/api/video/callback` 用同一个共享令牌：不配对配置的话
+        // 回调会一直 401（平台侧"未配置令牌 = 接口关闭"）。
+        .with_token(non_empty_env("WXLIKE_VIDEO_CALLBACK_TOKEN"));
+    wxlike_video::VideoPolicy::default()
+        .with_auth(std::sync::Arc::new(SessionVideoAuth { platform }))
+        .with_callbacks(callbacks)
 }
 
 /// 把 platform 的 `sessions` 表包装成 hub 的认证器（issue #3 / A01）。

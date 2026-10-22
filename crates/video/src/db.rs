@@ -36,6 +36,10 @@ impl VideoDb {
             .context("set busy_timeout")?;
         conn.execute_batch(SCHEMA)
             .context("video-service schema (jobs + watch_events)")?;
+        // 老库迁移：`owner` 是 issue #7 加的列，已经在跑的部署里没有它。
+        // 用 `pragma_table_info` 判断而不是 `ALTER ... IF NOT EXISTS`（SQLite
+        // 没有后者），失败时宁可报错也不要静默跳过。
+        ensure_column(&conn, "video_jobs", "owner", "TEXT NOT NULL DEFAULT ''")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -44,6 +48,20 @@ impl VideoDb {
     pub(crate) fn c(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// 给已有的表补一列（幂等）。老库没有这一列时补上，新库直接跳过。
+fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+    if existing.iter().any(|c| c == column) {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+        .with_context(|| format!("add column {table}.{column}"))?;
+    Ok(())
 }
 
 const SCHEMA: &str = r#"
@@ -70,6 +88,8 @@ CREATE INDEX IF NOT EXISTS watch_events_video
 -- E3 转码作业 + 出站回调，状态机形状照搬 crates/core/src/outbox.rs
 CREATE TABLE IF NOT EXISTS video_jobs (
     job_id                TEXT PRIMARY KEY,
+    -- 提交者（issue #7）：查作业/重试只对自己的人开放
+    owner                 TEXT NOT NULL DEFAULT '',
     -- pending: 待转码；running: 在飞；succeeded: 可播；failed: 不再自动重试
     state                 TEXT NOT NULL,
     attempts              INTEGER NOT NULL DEFAULT 0,
@@ -92,4 +112,19 @@ CREATE TABLE IF NOT EXISTS video_jobs (
 CREATE INDEX IF NOT EXISTS video_jobs_ready ON video_jobs(state, next_retry_at);
 CREATE INDEX IF NOT EXISTS video_jobs_cb_ready
     ON video_jobs(callback_state, callback_next_retry_at);
+-- 配额查询的热路径：按人统计在飞/排队作业与字节数
+CREATE INDEX IF NOT EXISTS video_jobs_owner ON video_jobs(owner, state);
+
+-- 同步上传（`POST /api/video`）不建作业，但同样要记归属：
+-- 否则"谁传的这条视频"只存在于调用方的记忆里。
+CREATE TABLE IF NOT EXISTS video_owners (
+    video_id   TEXT NOT NULL,
+    owner      TEXT NOT NULL,
+    -- 源字节大小：同步上传也吃磁盘，配额要按人算总占用
+    size       INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    -- 同一份字节可以被多个人上传（内容寻址去重），所以归属是多对多
+    PRIMARY KEY (video_id, owner)
+);
+CREATE INDEX IF NOT EXISTS video_owners_owner ON video_owners(owner);
 "#;
