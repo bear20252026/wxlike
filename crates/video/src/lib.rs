@@ -37,14 +37,16 @@ use wxlike_api::{ApiError, ApiResult};
 mod db;
 mod jobs;
 mod live;
+pub mod policy;
 mod range;
 mod stats;
 mod timing;
 
 pub use jobs::{
-    backoff_ms, deliver_callback, spawn_worker, CallbackBody, CallbackState, Delivery, Job,
-    JobFailure, JobState, JobSubmit, WorkerReport, BASE_DELAY_MS, CALLBACK_TIMEOUT_MS,
-    MAX_DELAY_MS, MAX_ERROR_CHARS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS, WORKER_POLL,
+    backoff_ms, deliver_callback, deliver_callback_signed, spawn_worker, CallbackBody,
+    CallbackState, Delivery, Job, JobFailure, JobState, JobSubmit, RejectKind, Rejected,
+    WorkerReport, BASE_DELAY_MS, CALLBACK_TIMEOUT_MS, CALLBACK_TOKEN_HEADER, MAX_DELAY_MS,
+    MAX_ERROR_CHARS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS, WORKER_POLL,
 };
 pub use live::{
     check_live_segment_name, check_stream_key, ingest_secret_from_env, ingest_token, live_playlist,
@@ -52,6 +54,7 @@ pub use live::{
     LIVE_DEFAULT_WINDOW, LIVE_MAX_WINDOW, LIVE_SECRET_ENV, LIVE_SEGMENT_MS_HEADER, LIVE_TARGET_MS,
     LIVE_TOKEN_HEADER, LIVE_WINDOW_ENV,
 };
+pub use policy::{CallbackPolicy, VideoAuth, VideoPolicy};
 pub use range::{parse_range, read_range, serve_range, ByteRange, Served};
 pub use stats::{
     ViewerWatch, WatchError, WatchEvent, WatchEventRecord, WatchStats, DEFAULT_VIEWER_PAGE,
@@ -218,6 +221,8 @@ struct Inner {
     /// 懒建：只有第一个统计/作业请求才会打开 `video.db`。
     /// 纯 VOD 部署（不碰 E1/E3 的接口）因此依旧一个文件都不多建。
     db: Mutex<Option<Arc<db::VideoDb>>>,
+    /// 控制面准入（认证、配额、回调目标）。见 `policy` 模块与 issue #7/#8。
+    policy: Arc<policy::VideoPolicy>,
 }
 
 impl VideoStore {
@@ -225,10 +230,28 @@ impl VideoStore {
         let inner = Inner {
             root: root.into(),
             db: Mutex::new(None),
+            // 默认**关死**控制面：没有认证器就不接受上传/建作业/重试。
+            // 装配层（server）必须显式装上认证器——忘了装是"不能用"，
+            // 不是"谁都能用"。
+            policy: Arc::new(policy::VideoPolicy::default()),
         };
         Self {
             inner: Arc::new(inner),
         }
+    }
+
+    /// 装上控制面策略（认证器、配额、回调目标）。
+    pub fn with_policy(mut self, policy: policy::VideoPolicy) -> Self {
+        self.inner = Arc::new(Inner {
+            root: self.inner.root.clone(),
+            db: Mutex::new(None),
+            policy: Arc::new(policy),
+        });
+        self
+    }
+
+    pub fn policy(&self) -> &policy::VideoPolicy {
+        &self.inner.policy
     }
 
     pub fn root(&self) -> &Path {
@@ -712,8 +735,12 @@ pub struct VideoState {
 }
 
 pub fn routes(state: VideoState) -> Router {
-    let vod = Router::new()
-        .route("/api/video", post(upload))
+    // **播放面与控制面分开**（issue #7）。
+    //
+    // 播放面必须匿名可用：`<video src>` 与 HLS 播放器不会给图片/分片请求带
+    // `Authorization`（与 #14 的媒体面同一个约束）。控制面（上传、建作业、
+    // 查/重试作业）则必须在**解析请求体之前**就认出调用者——见 `policy::guard`。
+    let playback = Router::new()
         .route("/api/video/{video_id}", get(meta))
         .route("/api/video/{video_id}/playlist.m3u8", get(playlist))
         .route("/api/video/{video_id}/seg/{name}", get(segment))
@@ -727,29 +754,60 @@ pub fn routes(state: VideoState) -> Router {
         )
         .route("/api/video/{video_id}/play.mp4", get(play_mp4))
         .route("/api/video/{video_id}/thumb.png", get(thumb))
-        // Zone E 新增的三面（各自带 handler，路径都在自己模块里）：
-        //   stats → 播放时长统计（E1）、jobs → 异步转码流水线（E3）、
-        //   live  → 直播窗口与推流授权（E2）
         .route("/api/video/{video_id}/select", get(select))
         .with_state(state.clone());
-    vod.merge(stats::routes(state.clone()))
+
+    let control = Router::new()
+        .route("/api/video", post(upload))
+        .with_state(state.clone())
         .merge(jobs::routes(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            policy::guard,
+        ));
+
+    playback
+        .merge(control)
+        // Zone E 的两面自带凭据（stats 用上报 token、live 用推流签名），
+        // 不套控制面的闸门。
+        .merge(stats::routes(state.clone()))
         .merge(live::routes(state))
         .layer(DefaultBodyLimit::max(MAX_VIDEO_BYTES))
 }
 
-async fn upload(State(state): State<VideoState>, mut form: Multipart) -> ApiResult<Json<Ingested>> {
+async fn upload(
+    State(state): State<VideoState>,
+    headers: axum::http::HeaderMap,
+    mut form: Multipart,
+) -> ApiResult<Json<Ingested>> {
+    // 同步上传也要登录（issue #7）：500 MiB 的匿名上传是"带宽 + 磁盘 + CPU
+    // 三份资源任人取用"，不是"一个方便的调试入口"。
+    let caller = policy::require_caller(state.store.policy(), &headers)?;
     let bytes = read_field(&mut form)
         .await
         .map_err(ApiError::unprocessable)?;
     if bytes.is_empty() {
         return Err(ApiError::unprocessable("empty upload"));
     }
+    state
+        .store
+        .check_upload_quota(&caller, bytes.len() as u64)
+        .map_err(|err| match err.downcast_ref::<jobs::Rejected>() {
+            Some(rejected) => ApiError::new(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                rejected.message.clone(),
+            ),
+            None => ApiError::internal(format!("quota: {err:#}")),
+        })?;
     let ingested = state
         .store
         .ingest(&bytes)
         .await
         .map_err(|e| ApiError::internal(format!("ingest: {e:#}")))?;
+    state
+        .store
+        .set_owner(&ingested.video_id, &caller, bytes.len() as u64)
+        .map_err(|e| ApiError::internal(format!("owner: {e:#}")))?;
     Ok(Json(ingested))
 }
 

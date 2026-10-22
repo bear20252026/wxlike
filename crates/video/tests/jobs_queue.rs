@@ -26,7 +26,14 @@ fn store(tag: &str) -> VideoStore {
         std::process::id(),
         wxlike_core::types::now_ms()
     ));
-    VideoStore::new(dir)
+    // 回调用例打本机 sink：白名单 + 显式允许私网（issue #8）
+    VideoStore::new(dir).with_policy(
+        // 本地信任的认证器：这些用例测的是队列语义，不是准入（准入在 video_access.rs）
+        wxlike_video::VideoPolicy::trusted_local("tester").with_callbacks(
+            wxlike_video::CallbackPolicy::allow_hosts(["127.0.0.1".to_string()])
+                .allow_private(true),
+        ),
+    )
 }
 
 fn bytes_of(tag: &str) -> Vec<u8> {
@@ -81,7 +88,7 @@ fn submit_is_idempotent_by_content_hash() {
     let bytes = bytes_of("same-bytes");
     let expect_id = store.content_id(&bytes);
 
-    let first = store.submit_job(&bytes, None).unwrap();
+    let first = store.submit_job(&bytes, "tester", None).unwrap();
     assert!(first.newly_queued);
     assert_eq!(first.job.job_id, expect_id);
     assert_eq!(first.job.job_id.len(), 64, "job_id 就是内容哈希");
@@ -96,23 +103,28 @@ fn submit_is_idempotent_by_content_hash() {
     );
 
     // 同一份字节再提交：不新增、不重排、id 不变
-    let again = store.submit_job(&bytes, None).unwrap();
+    let again = store.submit_job(&bytes, "tester", None).unwrap();
     assert!(!again.newly_queued, "重复提交不该产生第二个作业");
     assert_eq!(again.job.job_id, expect_id);
     assert_eq!(again.job.state, JobState::Pending);
 
     // 不同字节 = 不同作业
-    let other = store.submit_job(&bytes_of("other"), None).unwrap();
+    let other = store
+        .submit_job(&bytes_of("other"), "tester", None)
+        .unwrap();
     assert_ne!(other.job.job_id, expect_id);
 
     // 空字节直接拒绝：空文件转不出任何东西，也不该占一个作业号
-    assert!(store.submit_job(b"", None).is_err());
+    assert!(store.submit_job(b"", "tester", None).is_err());
 }
 
 #[test]
 fn due_respects_the_clock_and_reclaims_stale_running() {
     let store = store("due");
-    let job = store.submit_job(&bytes_of("due"), None).unwrap().job;
+    let job = store
+        .submit_job(&bytes_of("due"), "tester", None)
+        .unwrap()
+        .job;
 
     // 现在到点
     assert_eq!(store.due_jobs(now() + 1, 4).unwrap().len(), 1);
@@ -144,7 +156,10 @@ fn due_respects_the_clock_and_reclaims_stale_running() {
 #[test]
 fn failures_burn_attempts_then_go_terminal() {
     let store = store("fail");
-    let job = store.submit_job(&bytes_of("fail"), None).unwrap().job;
+    let job = store
+        .submit_job(&bytes_of("fail"), "tester", None)
+        .unwrap()
+        .job;
 
     for attempt in 1..MAX_JOB_ATTEMPTS {
         let updated = store
@@ -187,7 +202,10 @@ fn failures_burn_attempts_then_go_terminal() {
 #[test]
 fn throttled_does_not_burn_attempts_and_permanent_fails_at_once() {
     let store = store("throttle");
-    let throttled = store.submit_job(&bytes_of("throttle-a"), None).unwrap().job;
+    let throttled = store
+        .submit_job(&bytes_of("throttle-a"), "tester", None)
+        .unwrap()
+        .job;
     for _ in 0..8 {
         let updated = store
             .fail_job(&throttled.job_id, &JobFailure::throttled("cpu busy"))
@@ -196,7 +214,10 @@ fn throttled_does_not_burn_attempts_and_permanent_fails_at_once() {
         assert_eq!(updated.state, JobState::Pending);
     }
 
-    let permanent = store.submit_job(&bytes_of("throttle-b"), None).unwrap().job;
+    let permanent = store
+        .submit_job(&bytes_of("throttle-b"), "tester", None)
+        .unwrap()
+        .job;
     let done = store
         .fail_job(
             &permanent.job_id,
@@ -210,7 +231,10 @@ fn throttled_does_not_burn_attempts_and_permanent_fails_at_once() {
 #[test]
 fn requeue_only_touches_failed_jobs() {
     let store = store("requeue");
-    let pending = store.submit_job(&bytes_of("requeue-p"), None).unwrap().job;
+    let pending = store
+        .submit_job(&bytes_of("requeue-p"), "tester", None)
+        .unwrap()
+        .job;
     assert!(
         store.requeue_job(&pending.job_id).unwrap().is_none(),
         "还在排队的作业不能'重试'——那会绕过退避"
@@ -218,7 +242,10 @@ fn requeue_only_touches_failed_jobs() {
     let missing = "f".repeat(64);
     assert!(store.requeue_job(&missing).unwrap().is_none());
 
-    let running = store.submit_job(&bytes_of("requeue-r"), None).unwrap().job;
+    let running = store
+        .submit_job(&bytes_of("requeue-r"), "tester", None)
+        .unwrap()
+        .job;
     store.claim_job(&running.job_id).unwrap();
     assert!(store.requeue_job(&running.job_id).unwrap().is_none());
 }
@@ -226,7 +253,10 @@ fn requeue_only_touches_failed_jobs() {
 #[test]
 fn success_stores_the_result_and_clears_staged_bytes() {
     let store = store("success");
-    let job = store.submit_job(&bytes_of("success"), None).unwrap().job;
+    let job = store
+        .submit_job(&bytes_of("success"), "tester", None)
+        .unwrap()
+        .job;
     assert!(store.pending_dir(&job.job_id).join("source").is_file());
 
     let result = ingested(&job.job_id);
@@ -251,7 +281,10 @@ fn success_stores_the_result_and_clears_staged_bytes() {
 #[tokio::test]
 async fn missing_staged_source_is_a_retryable_failure_not_a_panic() {
     let store = store("missing-src");
-    let job = store.submit_job(&bytes_of("missing"), None).unwrap().job;
+    let job = store
+        .submit_job(&bytes_of("missing"), "tester", None)
+        .unwrap()
+        .job;
     std::fs::remove_file(store.pending_dir(&job.job_id).join("source")).unwrap();
 
     let updated = store.run_job(&job.job_id).await.unwrap();
@@ -271,7 +304,10 @@ async fn missing_staged_source_is_a_retryable_failure_not_a_panic() {
 #[tokio::test]
 async fn corrupted_staged_source_fails_permanently() {
     let store = store("size-mismatch");
-    let job = store.submit_job(&bytes_of("size"), None).unwrap().job;
+    let job = store
+        .submit_job(&bytes_of("size"), "tester", None)
+        .unwrap()
+        .job;
     // 暂存字节被动过（长度与作业记录不符）——重试也没用，直接终态
     std::fs::write(store.pending_dir(&job.job_id).join("source"), b"shorter").unwrap();
     let updated = store.run_job(&job.job_id).await.unwrap();
@@ -291,7 +327,7 @@ async fn corrupted_staged_source_fails_permanently() {
 fn callback_state_transitions() {
     let store = store("callback");
     let job = store
-        .submit_job(&bytes_of("cb"), Some("http://127.0.0.1:1/cb"))
+        .submit_job(&bytes_of("cb"), "tester", Some("http://127.0.0.1:1/cb"))
         .unwrap()
         .job;
     assert_eq!(job.callback_state, CallbackState::Pending);
@@ -331,7 +367,7 @@ fn callback_state_transitions() {
 
     // 4xx：对端明确拒绝，一次就停
     let other = store
-        .submit_job(&bytes_of("cb2"), Some("http://127.0.0.1:1/cb"))
+        .submit_job(&bytes_of("cb2"), "tester", Some("http://127.0.0.1:1/cb"))
         .unwrap()
         .job;
     store
@@ -365,7 +401,7 @@ fn callback_state_transitions() {
 
     // 第三个作业：刚成功、没重试过 → 立刻到点
     let fresh = store
-        .submit_job(&bytes_of("cb3"), Some("http://127.0.0.1:1/cb"))
+        .submit_job(&bytes_of("cb3"), "tester", Some("http://127.0.0.1:1/cb"))
         .unwrap()
         .job;
     store
@@ -380,7 +416,7 @@ fn callback_state_transitions() {
 fn manual_requeue_rearms_the_callback() {
     let store = store("rearm");
     let job = store
-        .submit_job(&bytes_of("rearm"), Some("http://127.0.0.1:1/cb"))
+        .submit_job(&bytes_of("rearm"), "tester", Some("http://127.0.0.1:1/cb"))
         .unwrap()
         .job;
     store
@@ -481,7 +517,10 @@ async fn worker_round_drives_a_job_to_terminal_without_ffmpeg() {
     // 假字节过不了 ffprobe → 每轮失败一次，五轮之后终态。
     // 这条验证的是"退避 + 领取 + 记账"这条执行链，不是画质。
     let st = store("round");
-    let job = st.submit_job(&bytes_of("round"), None).unwrap().job;
+    let job = st
+        .submit_job(&bytes_of("round"), "tester", None)
+        .unwrap()
+        .job;
     let mut states = Vec::new();
     for _ in 0..MAX_JOB_ATTEMPTS {
         // 手工把到点时间拉到"现在"，否则要真等 1/2/4/8/16 秒
@@ -624,7 +663,10 @@ async fn retry_route_distinguishes_unknown_and_not_failed() {
     // 独立 store：这个 store 不走 HTTP 提交，因此没有后台 worker 参与
     let st = store("retry");
     let app = routes(VideoState { store: st.clone() });
-    let job = st.submit_job(&bytes_of("retry-route"), None).unwrap().job;
+    let job = st
+        .submit_job(&bytes_of("retry-route"), "tester", None)
+        .unwrap()
+        .job;
 
     // 还在排队 → 409（重试它等于绕过退避，白烧一遍 ffmpeg）
     let res = app

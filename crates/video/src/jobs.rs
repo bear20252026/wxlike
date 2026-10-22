@@ -27,10 +27,10 @@ use std::time::Duration;
 use anyhow::Context as _;
 use axum::extract::multipart::Multipart;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::{params, Error as SqliteError, Row};
+use rusqlite::{params, Error as SqliteError, OptionalExtension as _, Row};
 use serde::{Deserialize, Serialize};
 use wxlike_api::{ApiError, ApiResult};
 
@@ -145,6 +145,8 @@ impl CallbackState {
 pub struct Job {
     /// == `video_id`（源字节的 SHA-256）
     pub job_id: String,
+    /// 提交者（issue #7）：查作业/重试只对自己的人开放
+    pub owner: String,
     pub state: JobState,
     pub attempts: u32,
     pub next_retry_at: i64,
@@ -246,10 +248,13 @@ pub struct WorkerReport {
     pub callbacks_failed: u32,
 }
 
+/// `owner` 在 [`JOB_SELECT_COLUMNS`] 里的下标（追加在最后，既有下标不位移）。
+const OWNER_COLUMN: usize = 14;
+
 /// 作业行的全部列（三条查询共用一份，少写一遍就会错一位）。
 const JOB_SELECT_COLUMNS: &str = "job_id, state, attempts, next_retry_at, created_at, updated_at,
             last_error, source_size, result, callback_state, callback_url,
-            callback_attempts, callback_next_retry_at, callback_error";
+            callback_attempts, callback_next_retry_at, callback_error, owner";
 
 /// 到点该转的作业（含卡住的 `running`）。
 ///
@@ -277,19 +282,51 @@ static DUE_CALLBACKS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
     )
 });
 
+/// 提交被**策略**拒绝（不是服务端故障）。
+///
+/// 分成两类是为了让 HTTP 层给出正确的状态码：配额是"等一下再来"（429），
+/// 回调地址是"你这个参数不对"（400）。混成一个 `anyhow` 字符串的话，
+/// 调用方只能靠 grep 消息文本猜。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejected {
+    pub kind: RejectKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectKind {
+    /// 超出配额/并发预算
+    Quota,
+    /// 回调地址不合法或不在允许列表
+    BadCallback,
+}
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for Rejected {}
+
 impl VideoStore {
     /// 提交一个转码作业：入库 + 落盘源字节就返回，转码在后台。
     ///
     /// 已经可播的内容直接回现成结果（`newly_queued = false`），同时保证作业行
     /// 存在——否则"提交返回 200 但查作业 404"这种不一致会让客户端没法轮询。
+    ///
+    /// `owner` 是提交者（issue #7）：作业归属于他，别人查不到也重试不了。
+    /// 配额与回调地址在**这里**就判掉，别等 worker 转完才发现不该收。
     pub fn submit_job(
         &self,
         bytes: &[u8],
+        owner: &str,
         callback_url: Option<&str>,
     ) -> anyhow::Result<JobSubmit> {
         anyhow::ensure!(!bytes.is_empty(), "empty upload");
         let job_id = self.content_id(bytes);
-        let url = callback_url
+        let policy = self.policy();
+        let url = match callback_url
             .map(str::trim)
             .filter(|u| !u.is_empty())
             .map(str::to_string)
@@ -298,17 +335,29 @@ impl VideoStore {
                     .ok()
                     .map(|u| u.trim().to_string())
                     .filter(|u| !u.is_empty())
-            });
+            }) {
+            // 客户端给的地址要过白名单（issue #8）；服务端默认地址是运维自己
+            // 配的，不再套一遍白名单，否则环境变量与 allowlist 要写两遍。
+            Some(url) if callback_url.is_some() => {
+                let checked = policy.callbacks.check(&url).map_err(|message| Rejected {
+                    kind: RejectKind::BadCallback,
+                    message,
+                })?;
+                Some(checked)
+            }
+            other => other,
+        };
+        self.check_quota(owner, bytes.len() as u64)?;
         let now = wxlike_core::types::now_ms() as i64;
         let db = self.db()?;
 
         if self.contains(&job_id) {
             let result = self.ingested_from_meta(&job_id)?;
             db.c().execute(
-                "INSERT INTO video_jobs(job_id, state, attempts, next_retry_at, created_at,
+                "INSERT INTO video_jobs(job_id, owner, state, attempts, next_retry_at, created_at,
                                         updated_at, source_size, result, callback_state,
                                         callback_url, callback_next_retry_at)
-                 VALUES(?1, 'succeeded', 0, ?2, ?2, ?2, ?3, ?4, ?5, ?6, ?2)
+                 VALUES(?1, ?7, 'succeeded', 0, ?2, ?2, ?2, ?3, ?4, ?5, ?6, ?2)
                  ON CONFLICT(job_id) DO UPDATE SET
                     state = 'succeeded',
                     result = excluded.result,
@@ -322,7 +371,8 @@ impl VideoStore {
                     bytes.len() as i64,
                     serde_json::to_string(&result)?,
                     CallbackState::for_url(&url).as_str(),
-                    url
+                    url,
+                    owner
                 ],
             )?;
             return Ok(JobSubmit {
@@ -339,22 +389,156 @@ impl VideoStore {
         std::fs::rename(&tmp, pending.join("source"))?;
 
         let inserted = db.c().execute(
-            "INSERT INTO video_jobs(job_id, state, attempts, next_retry_at, created_at,
+            "INSERT INTO video_jobs(job_id, owner, state, attempts, next_retry_at, created_at,
                                     updated_at, source_size, callback_state, callback_url)
-             VALUES(?1, 'pending', 0, ?2, ?2, ?2, ?3, ?4, ?5)
+             VALUES(?1, ?6, 'pending', 0, ?2, ?2, ?2, ?3, ?4, ?5)
              ON CONFLICT(job_id) DO NOTHING",
             params![
                 job_id,
                 now,
                 bytes.len() as i64,
                 CallbackState::for_url(&url).as_str(),
-                url
+                url,
+                owner
             ],
         )?;
         Ok(JobSubmit {
             job: self.job(&job_id)?.context("job row vanished")?,
             newly_queued: inserted == 1,
         })
+    }
+
+    // ---- 归属与配额（issue #7）------------------------------------------
+
+    /// 记一条同步上传的归属（`POST /api/video` 不建作业，但同样要知道是谁传的）。
+    pub fn set_owner(&self, video_id: &str, owner: &str, size: u64) -> anyhow::Result<()> {
+        let db = self.db()?;
+        db.c().execute(
+            "INSERT INTO video_owners(video_id, owner, size, created_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(video_id, owner) DO NOTHING",
+            params![
+                video_id,
+                owner,
+                size as i64,
+                wxlike_core::types::now_ms() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 这个人已经上传占用的源字节总量。
+    pub fn user_upload_bytes(&self, owner: &str) -> anyhow::Result<u64> {
+        let db = self.db()?;
+        let bytes: i64 = db.c().query_row(
+            "SELECT COALESCE(SUM(size), 0) FROM video_owners WHERE owner = ?1",
+            params![owner],
+            |row| row.get(0),
+        )?;
+        Ok(bytes.max(0) as u64)
+    }
+
+    /// 同步上传的磁盘配额（`POST /api/video` 不建作业，但同样落盘）。
+    pub fn check_upload_quota(&self, owner: &str, incoming: u64) -> anyhow::Result<()> {
+        let policy = self.policy();
+        let used = self.user_upload_bytes(owner)?;
+        if used.saturating_add(incoming) > policy.max_user_bytes {
+            return Err(Rejected {
+                kind: RejectKind::Quota,
+                message: format!(
+                    "上传总量超出个人额度（{} MiB）",
+                    policy.max_user_bytes / (1024 * 1024)
+                ),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// 这条内容是不是这个人传的（含"同一份字节的另一次上传"）。
+    pub fn owns_video(&self, video_id: &str, owner: &str) -> anyhow::Result<bool> {
+        let db = self.db()?;
+        let found: Option<i64> = db
+            .c()
+            .query_row(
+                "SELECT 1 FROM video_owners WHERE video_id = ?1 AND owner = ?2",
+                params![video_id, owner],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// 作业归属：**不泄露存在性**——不存在与"是别人的"都是 `false`。
+    pub fn job_owned_by(&self, job_id: &str, owner: &str) -> anyhow::Result<bool> {
+        let db = self.db()?;
+        let found: Option<i64> = db
+            .c()
+            .query_row(
+                "SELECT 1 FROM video_jobs WHERE job_id = ?1 AND owner = ?2",
+                params![job_id, owner],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// 这个用户当前排队/在飞的作业数与被占字节数。
+    pub fn user_usage(&self, owner: &str) -> anyhow::Result<(u32, u64)> {
+        let db = self.db()?;
+        let (count, bytes): (i64, i64) = db.c().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(source_size), 0) FROM video_jobs
+             WHERE owner = ?1 AND state IN ('pending', 'running')",
+            params![owner],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((count.max(0) as u32, bytes.max(0) as u64))
+    }
+
+    /// 全站排队中的源字节（磁盘预算）。
+    pub fn total_pending_bytes(&self) -> anyhow::Result<u64> {
+        let db = self.db()?;
+        let bytes: i64 = db.c().query_row(
+            "SELECT COALESCE(SUM(source_size), 0) FROM video_jobs
+             WHERE state IN ('pending', 'running')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(bytes.max(0) as u64)
+    }
+
+    /// 配额闸门。超了就返回 [`Rejected`]，让 HTTP 层回 429 而不是 500。
+    fn check_quota(&self, owner: &str, incoming: u64) -> anyhow::Result<()> {
+        let policy = self.policy();
+        let (jobs, bytes) = self.user_usage(owner)?;
+        if jobs >= policy.max_user_jobs {
+            return Err(Rejected {
+                kind: RejectKind::Quota,
+                message: format!(
+                    "排队中的转码作业过多（{jobs}/{}），等前面的转完再传",
+                    policy.max_user_jobs
+                ),
+            }
+            .into());
+        }
+        if bytes.saturating_add(incoming) > policy.max_user_bytes {
+            return Err(Rejected {
+                kind: RejectKind::Quota,
+                message: format!(
+                    "排队中的源文件超出个人额度（{} MiB），等前面的转完再传",
+                    policy.max_user_bytes / (1024 * 1024)
+                ),
+            }
+            .into());
+        }
+        let total = self.total_pending_bytes()?;
+        if total.saturating_add(incoming) > policy.max_total_bytes {
+            return Err(Rejected {
+                kind: RejectKind::Quota,
+                message: "转码队列已满，稍后再试".to_string(),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     /// 查作业。`None` = 没提交过。
@@ -538,7 +722,14 @@ impl VideoStore {
                 continue;
             };
             let body = CallbackBody::from_job(&job);
-            let delivery = deliver_callback(&url, &body).await;
+            // 提交时查过一次，发之前**再查一次**：只查一次的话，攻击者让域名
+            // 先解析到公网、回调时再指向 169.254.169.254 就绕过去了（issue #8）。
+            let delivery = match self.policy().callbacks.resolve(&url).await {
+                Err(message) => Delivery::Permanent(message),
+                Ok(()) => {
+                    deliver_callback_signed(&url, &body, self.policy().callbacks.token()).await
+                }
+            };
             self.record_callback(&job.job_id, &delivery)?;
             match delivery {
                 Delivery::Delivered => report.callbacks_delivered += 1,
@@ -642,6 +833,9 @@ impl CallbackState {
     }
 }
 
+/// 出站回调的共享令牌头（与 `wxlike_platform::video_refs::CALLBACK_TOKEN_HEADER` 同值）。
+pub const CALLBACK_TOKEN_HEADER: &str = "x-wxlike-video-token";
+
 /// 回调体：作业号 + 结果。平台侧拿到这一份就能把消息里的视频引用补齐。
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct CallbackBody {
@@ -690,17 +884,36 @@ enum Sent {
     Transport(String),
 }
 
-/// 发一次回调。阻塞 IO 走 `spawn_blocking`（与 ffmpeg 同一套处理）。
+/// 发一次回调（不带令牌；测试与内部调用用）。
 pub async fn deliver_callback(url: &str, body: &CallbackBody) -> Delivery {
+    deliver_callback_signed(url, body, None).await
+}
+
+/// 发一次回调，带上服务间共享令牌。
+///
+/// 平台侧的 `/api/video/callback` 是"未配置令牌 = 接口关闭"，所以视频侧不带
+/// 这个头的话，配了令牌的部署里回调永远是 401——两边必须成对配置
+/// （`WXLIKE_VIDEO_CALLBACK_TOKEN`）。
+pub async fn deliver_callback_signed(
+    url: &str,
+    body: &CallbackBody,
+    token: Option<&str>,
+) -> Delivery {
     let json = match serde_json::to_string(body) {
         Ok(json) => json,
         Err(err) => return Delivery::Permanent(format!("serialize callback: {err}")),
     };
     let url = url.to_string();
+    let token = token.map(str::to_string);
     let sent = tokio::task::spawn_blocking(move || -> Result<Sent, String> {
-        let request = ureq::post(&url)
+        let mut request = ureq::post(&url)
             .timeout(Duration::from_millis(CALLBACK_TIMEOUT_MS))
+            // 不跟随重定向：跟随等于把"目标白名单"交给对端决定（issue #8）。
+            // POST 的 3xx 在 ureq 里本来也不跟，这里显式关掉 GET 风格的跟随。
             .set("content-type", "application/json");
+        if let Some(token) = token.as_deref() {
+            request = request.set(CALLBACK_TOKEN_HEADER, token);
+        }
         match request.send_string(&json) {
             Ok(response) => Ok(Sent::Status(response.status())),
             // ureq 把 >=400 当错误抛出，状态码要从错误里取回来
@@ -767,6 +980,7 @@ fn row_to_job(row: &Row<'_>) -> Result<Job, SqliteError> {
     let callback_state = parse_callback_state_column(row.get::<_, String>(9)?)?;
     Ok(Job {
         job_id: row.get(0)?,
+        owner: row.get(OWNER_COLUMN)?,
         state,
         attempts: row.get::<_, i64>(2)?.max(0) as u32,
         next_retry_at: row.get(3)?,
@@ -831,8 +1045,10 @@ pub(crate) fn routes(state: VideoState) -> Router {
 /// 新入队回 202（后台才转），命中已有对象回 200（已经可播，`newly_queued=false`）。
 async fn create_job(
     State(state): State<VideoState>,
+    headers: HeaderMap,
     mut form: Multipart,
 ) -> ApiResult<(StatusCode, Json<JobSubmit>)> {
+    let caller = crate::policy::require_caller(state.store.policy(), &headers)?;
     let (bytes, callback_url) = read_job_fields(&mut form)
         .await
         .map_err(ApiError::unprocessable)?;
@@ -841,8 +1057,8 @@ async fn create_job(
     }
     let submit = state
         .store
-        .submit_job(&bytes, callback_url.as_deref())
-        .map_err(|e| ApiError::internal(format!("submit: {e:#}")))?;
+        .submit_job(&bytes, &caller, callback_url.as_deref())
+        .map_err(reject_or_internal)?;
     // 后台执行器随第一次提交起来（见 `VideoStore::start_worker`）
     state.store.start_worker();
     let status = if submit.newly_queued {
@@ -855,15 +1071,38 @@ async fn create_job(
 
 async fn get_job(
     State(state): State<VideoState>,
+    headers: HeaderMap,
     AxumPath(job_id): AxumPath<String>,
 ) -> ApiResult<Json<Job>> {
+    let caller = crate::policy::require_caller(state.store.policy(), &headers)?;
     crate::check_id(&job_id)?;
-    state
+    let job = state
         .store
         .job(&job_id)
         .map_err(|e| ApiError::internal(format!("{e:#}")))?
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found("no such job"))
+        .ok_or_else(|| ApiError::not_found("no such job"))?;
+    // 别人的作业一律 404：不确认它存在，也不泄露它的状态
+    let also_uploaded = state
+        .store
+        .owns_video(&job_id, &caller)
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
+    if job.owner != caller && !also_uploaded {
+        return Err(ApiError::not_found("no such job"));
+    }
+    Ok(Json(job))
+}
+
+/// `submit_job` 的拒绝映射：配额 → 429，回调地址 → 400，其余是服务端故障。
+fn reject_or_internal(err: anyhow::Error) -> ApiError {
+    if let Some(rejected) = err.downcast_ref::<Rejected>() {
+        return match rejected.kind {
+            RejectKind::Quota => {
+                ApiError::new(StatusCode::TOO_MANY_REQUESTS, rejected.message.clone())
+            }
+            RejectKind::BadCallback => ApiError::bad_request(rejected.message.clone()),
+        };
+    }
+    ApiError::internal(format!("submit: {err:#}"))
 }
 
 /// 人工重试一个终态作业。
@@ -872,14 +1111,20 @@ async fn get_job(
 /// 200 = 已重新入队。
 async fn retry_job(
     State(state): State<VideoState>,
+    headers: HeaderMap,
     AxumPath(job_id): AxumPath<String>,
 ) -> ApiResult<Json<Job>> {
+    let caller = crate::policy::require_caller(state.store.policy(), &headers)?;
     crate::check_id(&job_id)?;
     let current = state
         .store
         .job(&job_id)
         .map_err(|e| ApiError::internal(format!("{e:#}")))?
         .ok_or_else(|| ApiError::not_found("no such job"))?;
+    // 重试会改共享状态：只有提交者本人能按，别人连"它存在"都不该知道
+    if current.owner != caller {
+        return Err(ApiError::not_found("no such job"));
+    }
     if current.state != JobState::Failed {
         return Err(ApiError::conflict(format!(
             "job is {:?}, only a failed job can be retried",
