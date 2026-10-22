@@ -10,7 +10,7 @@
 > （`p2_messages` 三条）**一直红到本轮**——因为 Tauri 测试没进 CI，没人跑。
 > 这正好是 #18 收尾的理由，见 §二点七。
 
-## 一、已闭环（11 条 + 5 条部分）
+## 一、已闭环（13 条 + 4 条部分）
 
 | issue | 严重度 | 状态 | 提交 | 一句话 |
 |---|---|---|---|---|
@@ -25,12 +25,13 @@
 | #16 | P1 | ✅ 完整 | `47812b2` | compose 的 nats 缩进错 + 缺启动凭据；实测 `up` 后 health 通过 |
 | #18 | P2 | ✅ 完整 | `8573b24` + 本轮 | Web / Flutter / **桌面（Tauri 命令层）** 三端全进 CI |
 | #10 | P1 | ✅ 完整 | `1a1ed05` | 离线队列 claim/ack/release + 30s lease；发一半断连不再丢 |
-| #11 | P1 | ⚠️ 一半 | `1a1ed05` | 落库成功后才标记 seen（失败可重试）；**per-recipient 补投未做** |
+| #11 | P1 | ✅ 完整 | `1a1ed05` + 本轮 | 落库成功后才标记 seen；**delivery outbox 按收件人记账，重试只补没收到的人** |
 | #15 | P1 | ⚠️ 大部分 | 本轮 | 密钥加密落盘、开关进服务端、明文/转发拦住、TTL 过滤；**多设备与搜索未做** |
 | #7 | P1 | ✅ 完整 | 本轮 | 视频控制面要登录 + 归属 + 配额；播放面与控制面拆开 |
 | #8 | P1 | ✅ 完整 | 本轮 | 回调目标默认只认管理员白名单；私网/回环/重绑定/重定向全拒 |
+| #9 | P1 | ✅ 完整 | 本轮 | 跨节点消费"投递成功才 ack"；目标 hub 上没人就落他的离线队列 |
 
-合计：**11 条完整、5 条部分**。
+合计：**13 条完整、4 条部分**。
 
 ### 逐条说明
 
@@ -69,12 +70,10 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 
 **#21（完整，上一轮）**——见提交 `69c4d4d`。
 
-## 二、还没做（5 条）
+## 二、还没做（3 条）
 
 | issue | 严重度 | 为什么没做 | 需要什么 |
 |---|---|---|---|
-| #9 | P1 | 跨节点确认不以投递成功为条件：要 durable inbox + 两阶段确认 | 改 `mq_hub` 消费路径，影响面大 |
-| #11 剩余 | P1 | "重复 msg_id 补投未完成收件人"要 per-recipient 投递状态（delivery outbox） | 新表 + 扇出路径改造，1–2 天 |
 | #13 | P1 | 空 `to` 广播 / 伪造 Notice：要收紧 `policy` 并给服务端内部事件开独立入口 | 改 `DeliveryPolicy` + 新增内部 publish 通道 |
 | #17 | P1 | 后半（同步 FFI 阻塞主 isolate）：要把 ureq 调用搬进后台 isolate | 改 `service.dart` + 生成的绑定调用方式 |
 | #20 | P2 | Redis Stream 无保留策略、路由无租约 | 改 `mq` crate 的 XADD/XACK 与 `RedisRoutes` |
@@ -110,13 +109,13 @@ docker compose --profile nats up -d nats   # nats 起来
 带老库 `ALTER` 迁移；hub 的消费循环 `claim(64) → 逐条发 → 成功 ack / 失败
 release 剩余`。**发一半断连不再丢**，进程被杀也不会（lease 到期自动回来）。
 
-**#11（一半）**——落库**成功之后**才标记 `seen`：`append` 失败时客户端用同一个
-msg_id 重试能真正进来（以前会被去重缓存当成重复直接吞掉）。
+**#11**——分两步：先做到"落库**成功之后**才标记 `seen`"（`append` 失败时客户端
+用同一个 msg_id 重试能真正进来）；后来用 delivery outbox 补齐了"重复 msg_id 时
+只补没收到的收件人"，见 §二点九。
 
-没做的：重复 msg_id 时"补投未完成的收件人"。试过重跑 fanout，
-`ten_replays_of_one_msg_id_are_delivered_once` 立刻红——hub 没有 per-recipient
-投递状态，重跑会把整批人再收一遍。正确解是 delivery outbox（消息 + 每个收件人
-的投递任务同一事务），1–2 天；在那之前扇出失败靠客户端拉历史补偿。
+当时试过直接重跑 fanout，`ten_replays_of_one_msg_id_are_delivered_once` 立刻红——
+hub 没有 per-recipient 投递状态，重跑会把整批人再收一遍。所以那次没硬来，
+留到 outbox 落地。
 
 ## 二点七、秘密聊天闭环（#15 / #4）与桌面端进 CI（#18）
 
@@ -216,6 +215,64 @@ URL，那是另一条任务。
 详见 `docs/video-control-plane.md`，验收用例在
 `crates/video/tests/video_access.rs`（8 条，含令牌与白名单的边界）。
 
+## 二点九、投递可靠性：确认、补投与 durable inbox（#9 / #11）
+
+这两条是同一个问题的两面，改的是同一段代码：
+
+- **#9**：跨节点消费 `consume_entry` 之后无条件 ack——目标 hub 上没人连着、
+  写连接失败，都算"投递完成"，消息只剩源端归档；
+- **#11**：`seen` 命中就 `return`，所以"客户端用正确的幂等 id 重试"反而补不上
+  上次失败的收件人。
+
+### 现在的语义分三层
+
+| 层 | 在哪 | 含义 |
+|---|---|---|
+| 已持久化 | `messages` | 归档是权威（拉历史能找回） |
+| 已投递 | `delivery_outbox(msg_id, recipient, state)` | 交给了实时连接**或**收件人的离线队列 |
+| 已读 | 信箱游标 | 与投递无关 |
+
+### 扇出
+
+`fanout_content` 只投 `state = 'pending'` 的收件人：
+
+1. 落库成功后 `ensure_deliveries(msg_id, recipients)`（幂等，`ON CONFLICT DO NOTHING`）；
+2. 逐个投递，成功当场 `mark_delivered`；
+3. 同 msg_id 再来一次（客户端重试）→ 只补还 pending 的人。已投递的人
+   一条都不会再收（`ten_replays_of_one_msg_id_are_delivered_once` 仍然绿）。
+
+### 投递的去路
+
+`deliver_via_route` 三条分支，返回 `Err` 表示**没交出去**：
+
+- 在本 hub → `deliver_to` **await** 每个连接的写（以前是 `spawn` 后立刻返回，
+  调用方永远不知道有没有人收到）；写成功数 > 0 算完成，否则落离线队列；
+- 在别的 hub → 投给那个 hub 的队列；publish 失败 → 任务留 pending，下次重试；
+- 谁都不知道他在哪 → 落离线队列。
+
+跨节点消费（`deliver_bytes`）现在返回 `Result`：**`Ok` 才 ack**。目标 hub 上
+没人连着就 `park` 进它自己的离线队列（claim/ack + 30s lease，就是 #10 那张表）；
+`park` 失败则不 ack，等 lease 到期由 patrol 重投。
+
+### 还没做到"端到端已读确认"
+
+离线队列的 ack 仍然是"**写进 socket**"就算，不是"客户端处理完"。所以
+"socket 写成功但客户端随即崩溃"这个窗口里，消息只在归档里，靠客户端重连后
+拉历史/同步补偿。真正的端到端确认要加一个 `Ack{msg_id}` 帧并让 claim/ack
+等它——那是协议改动，单独排期。文档里不把它说成"已解决"。
+
+### 验收
+
+`crates/net/tests/delivery_outbox.rs`（3 条，都带故障注入）：
+
+- `offline_recipient_gets_a_durable_copy_instead_of_a_lost_ack` —— 人不在线 →
+  离线队列里有 1 条，投递任务记为 delivered，重连能取到；
+- `replay_fills_the_missing_recipient_without_duplicating` —— 落队列注入失败 →
+  任务留 pending；同 ID 重试 3 次后 carol 补齐（且只有 1 条），bob 一条没多收，
+  归档仍然只有 1 行；
+- `cross_hub_frame_for_an_absent_user_is_parked_not_dropped` —— 路由指向 hub-b
+  但人不在 → hub-b 落**自己**的离线队列，源 hub 不重复存。
+
 ## 三、为什么没有"全部完成"
 
 单条 #3 就改了 8 个 crate（`net`/`server`/`platform`/`core`/`ui`/`ui/src-tauri`
@@ -223,18 +280,18 @@ URL，那是另一条任务。
 桌面的连接参数、诊断工具、18 处测试构造点全部要同步。这类改动不能切碎，
 切碎了就是"改一半的协议"，比不改更危险。
 
-剩下的 5 条里 #9 / #13 是**改消息主链路**（durable inbox、投递策略），#11 剩余要
-新建 delivery outbox，#15 剩余要多设备密钥分发，#20 要改 Redis 保留策略，
-#22 有现成任务单但工作量是 2–3 人日。
+剩下的 3 条（#14 / #15 / #17 / #19 的部分项）都是"改一半也算数"的增量：
+媒体签名 URL、多设备密钥分发、FFI 后台 isolate、人机校验。#20 / #22 是运维与
+依赖债，改动面清楚但工作量在 1–3 人日。
 
 按"能不能验证"排序，我优先做了**改完就能用测试钉住**的那些（#3 #6 #12 #19），
 以及**只改一行就能止住泄漏**的那些（#4 的 fail-closed、#14 的读放大）。
 
 ## 四、下一步建议顺序
 
-1. **#9 + #11 剩余**（2–3 天）——durable inbox 与 per-recipient 投递状态，
-   两者是同一件事的两半，一起做才有意义。
-2. **#13**（半天）——空 `to` 广播 / 伪造 Notice 的收紧，改动小但影响面宽。
+1. **#13**（半天）——空 `to` 广播 / 伪造 Notice 的收紧，改动小但影响面宽。
+2. **端到端投递确认**（1–2 天）——加 `Ack{msg_id}` 帧，让离线队列的 ack 等客户端
+   处理完（现在只等"写进 socket"，见 §二点九）。
 3. **#15 剩余**（3–5 天）——多设备 bundle、搜索过滤、本地真删除。
 4. **#20**（1 天）——Redis Stream 保留策略与路由租约。
 5. **#22**（2–3 人日）——ureq 3 迁移，有现成任务单

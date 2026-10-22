@@ -65,6 +65,12 @@ pub struct WxlikeClient {
     /// 停机时通过这个把线程从 `recv_timeout` 里叫醒。
     wake: Mutex<Sender<()>>,
     pump_error: Mutex<String>,
+    /// 同一时刻只允许一条发送路径在飞。
+    ///
+    /// 补发线程与"用户点发送/点重试"会同时看到同一条 pending 任务：不加锁时
+    /// 两边各发一次（同一个幂等键，服务端会去重，但请求翻倍，测试里就是
+    /// `bodies.len()` 变成 3）。这是真并发 bug，不是测试抖动。
+    send_lock: Mutex<()>,
     policy: Policy,
     outbox: Outbox,
     cache: Cache,
@@ -338,6 +344,7 @@ impl WxlikeClient {
             online: AtomicBool::new(false),
             stop: Arc::new(AtomicBool::new(false)),
             wake: Mutex::new(wake_tx),
+            send_lock: Mutex::new(()),
             pump_error: Mutex::new(String::new()),
             // 移动端是"用户自己的客户端"：会话边界由服务端的鉴权与成员判定给，
             // 本地这层只关掉破坏性命令（撤回/踢人留给桌面端与后台）。
@@ -613,6 +620,10 @@ impl WxlikeClient {
         self.policy
             .authorize("msg.send", &params)
             .map_err(|deny| classify(&deny.to_string()))?;
+        let _sending = self
+            .send_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let task_id = self
             .outbox
             .enqueue(&conv, "text", &params)
@@ -631,6 +642,10 @@ impl WxlikeClient {
 
     /// 跑一轮补发（到点的任务逐条发；碰到可重试的失败就停，见 `Outbox::flush_with`）。
     pub fn flush_outbox(&self) -> Result<FlushReport, WxlikeError> {
+        let _sending = self
+            .send_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let report = self
             .outbox
             .flush_with(Self::now_ms(), FLUSH_BATCH, |task| {
@@ -669,6 +684,12 @@ impl WxlikeClient {
 
     /// 用户点"重试"：清零退避计数，立刻再发这一条。
     pub fn retry_outbox(&self, task_id: String) -> Result<OutboxSummary, WxlikeError> {
+        // 持锁再 requeue：否则补发线程可能在 requeue 之后、send_now 之前
+        // 抢到这条任务，于是同一条消息发两次。
+        let _sending = self
+            .send_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.outbox
             .requeue(&task_id, Self::now_ms())
             .map_err(|e| WxlikeError::unexpected(format!("requeue: {e}")))?;

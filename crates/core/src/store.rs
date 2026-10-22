@@ -86,6 +86,21 @@ impl Store {
                 FOREIGN KEY(conv_id) REFERENCES conversations(id)
             );
             CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, seq);
+            -- 投递任务：一条消息对**每个收件人**的投递状态。
+            -- 归档成功但投递失败时，同 msg_id 重试能靠这张表补齐没收到的人；
+            -- 没有它就只能"整批重投"或"整批放弃"，前者重复、后者丢。
+            CREATE TABLE IF NOT EXISTS delivery_outbox (
+                msg_id     TEXT NOT NULL,
+                recipient  TEXT NOT NULL,
+                -- pending: 还没交出去；delivered: 已交给实时连接或离线队列
+                state      TEXT NOT NULL DEFAULT 'pending',
+                attempts   INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (msg_id, recipient)
+            );
+            CREATE INDEX IF NOT EXISTS idx_delivery_pending
+                ON delivery_outbox(state, updated_at);
             "#,
         )?;
         let store = Self {
@@ -212,6 +227,69 @@ impl Store {
     pub fn append_message(&self, env: &Envelope, sealed: bool) -> anyhow::Result<i64> {
         self.append(env, sealed)?
             .context("message already stored (duplicate msg_id)")
+    }
+
+    // ---- 投递任务（issue #11）------------------------------------------------
+    //
+    // 语义分三层，别混：
+    // - **已持久化**：`messages` 里有这一行（归档是权威）；
+    // - **已投递**：`delivery_outbox` 里这个收件人是 `delivered`（交给了实时连接
+    //   或收件人的离线队列）；
+    // - **已读**：信箱游标，与这里无关。
+    //
+    // 同一条消息被重复提交时，`ensure_deliveries` 不会把已投递的人改回 pending，
+    // 所以重试只会补没收到的人（#11 的验收点）。
+
+    /// 登记每个收件人的投递任务（幂等）。已存在的行**不改状态**。
+    pub fn ensure_deliveries(&self, msg_id: &str, recipients: &[String]) -> anyhow::Result<()> {
+        if msg_id.is_empty() || recipients.is_empty() {
+            return Ok(());
+        }
+        let now = crate::types::now_ms() as i64;
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        for rcpt in recipients {
+            tx.execute(
+                "INSERT INTO delivery_outbox(msg_id, recipient, state, attempts, created_at, updated_at)
+                 VALUES(?1, ?2, 'pending', 0, ?3, ?3)
+                 ON CONFLICT(msg_id, recipient) DO NOTHING",
+                params![msg_id, rcpt, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 还没交出去的收件人。
+    pub fn pending_deliveries(&self, msg_id: &str) -> anyhow::Result<Vec<String>> {
+        let c = self.c();
+        let mut stmt = c.prepare(
+            "SELECT recipient FROM delivery_outbox WHERE msg_id = ?1 AND state = 'pending'
+             ORDER BY created_at, recipient",
+        )?;
+        let rows = stmt.query_map(params![msg_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 记一次投递成功。`attempts` 也顺带记下"试了几次才成"。
+    pub fn mark_delivered(&self, msg_id: &str, recipient: &str) -> anyhow::Result<()> {
+        let now = crate::types::now_ms() as i64;
+        self.c().execute(
+            "UPDATE delivery_outbox
+                SET state = 'delivered', attempts = attempts + 1, updated_at = ?3
+              WHERE msg_id = ?1 AND recipient = ?2",
+            params![msg_id, recipient, now],
+        )?;
+        Ok(())
+    }
+
+    /// 清理太老的投递记录（默认保留窗口见调用方）。返回删掉的行数。
+    pub fn prune_deliveries(&self, older_than_ms: i64) -> anyhow::Result<usize> {
+        let cutoff = crate::types::now_ms() as i64 - older_than_ms;
+        Ok(self.c().execute(
+            "DELETE FROM delivery_outbox WHERE updated_at < ?1",
+            params![cutoff],
+        )?)
     }
 
     pub fn list_messages(&self, conv_id: &str) -> anyhow::Result<Vec<StoredMessage>> {
