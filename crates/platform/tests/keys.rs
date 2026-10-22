@@ -116,14 +116,10 @@ async fn drained_bundle_reports_empty_and_refill_works() {
     let (alice_id, alice_token) = signup(&app, "alice").await;
     let (_, bob_token) = signup(&app, "bob").await;
 
-    // publish exactly one one-time key
-    let one = PreKeyBundle {
-        user_id: alice_id.clone(),
-        identity: "a".repeat(43),
-        identity_signing: "b".repeat(43),
-        one_time_keys: vec!["c".repeat(43)],
-    };
-    call(
+    // publish exactly one one-time key — a real signed bundle (the directory
+    // rejects hand-crafted key strings since AR-1: shape + signature checks)
+    let one = Crypto::new(Device::new()).bundle_limited(&alice_id, 1);
+    let (status, body) = call(
         &app,
         req(
             "POST",
@@ -133,6 +129,7 @@ async fn drained_bundle_reports_empty_and_refill_works() {
         ),
     )
     .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 
     let drain: PreKeyBundle = serde_json::from_value(
         call(
@@ -212,6 +209,8 @@ async fn publishing_someone_elses_bundle_is_forbidden() {
         identity: "x".repeat(43),
         identity_signing: "y".repeat(43),
         one_time_keys: vec!["z".repeat(43)],
+        one_time_key_signatures: Vec::new(),
+        signature: String::new(),
     };
     let (status, body) = call(
         &app,
@@ -345,4 +344,97 @@ fn claim_via_library_api_pops_distinctly() {
         platform.own_keys(&alice_id).unwrap().one_time_keys.len(),
         20 - 4
     );
+}
+
+// ---------------------------------------------------------------------------
+// AR-1 (audit round 4, C-1): the directory refuses to store junk.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn publishing_an_unsigned_bundle_is_rejected() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+
+    // keys are real curve points, but nobody signed the bundle
+    let mut unsigned = Crypto::new(Device::new()).bundle(&alice_id);
+    unsigned.signature.clear();
+    unsigned.one_time_key_signatures.clear();
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&unsigned).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+#[tokio::test]
+async fn publishing_non_curve_key_material_is_rejected() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+
+    // 43 chars of base64-looking garbage: not a Curve25519 point
+    let garbage = PreKeyBundle {
+        user_id: alice_id,
+        identity: "a".repeat(43),
+        identity_signing: "b".repeat(43),
+        one_time_keys: vec!["c".repeat(43)],
+        one_time_key_signatures: vec!["d".repeat(86)],
+        signature: "e".repeat(86),
+    };
+    let (status, _) = call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&garbage).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn claim_returns_a_bundle_senders_can_verify() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+    let (_, bob_token) = signup(&app, "bob").await;
+
+    let bundle = Crypto::new(Device::new()).bundle(&alice_id);
+    call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&bundle).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+
+    let claimed: PreKeyBundle = serde_json::from_value(
+        call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await
+        .1,
+    )
+    .unwrap();
+    // the claimed subset must pass the client-side trust check on its own —
+    // this is the check `Crypto::encrypt_dm` runs before opening a session
+    claimed.verify_signature().unwrap();
 }

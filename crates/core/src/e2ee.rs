@@ -75,6 +75,8 @@ pub enum CryptoError {
     ReadOnlyGroup,
     #[error("bad key material: {0}")]
     BadKey(String),
+    #[error("pre-key bundle failed signature verification: server-supplied keys are not trusted")]
+    UnverifiedBundle,
     #[error("peer published no one-time prekey")]
     NoPreKey,
     #[error("stored crypto state is unreadable: {0}")]
@@ -141,7 +143,93 @@ pub struct PreKeyBundle {
     /// Ed25519 identity key: for out-of-band verification (safety numbers).
     pub identity_signing: String,
     /// Unclaimed one-time prekeys.
+    #[serde(default)]
     pub one_time_keys: Vec<String>,
+    /// Signature (base64) for each entry of `one_time_keys`, same order.
+    /// A claim pops one (key, signature) pair, so the subset a sender
+    /// receives stays verifiable on its own.
+    #[serde(default)]
+    pub one_time_key_signatures: Vec<String>,
+    /// Ed25519 signature (base64) by the owner's `identity_signing` key over
+    /// `(user_id, identity)` — the binding that stops a zero-trust directory
+    /// from swapping someone's identity key. A bundle without valid
+    /// signatures is **rejected** by [`Crypto::encrypt_dm`]: "the server
+    /// returned this key" is not evidence the key is the owner's.
+    ///
+    /// `#[serde(default)]` keeps old JSON parseable at the transport layer;
+    /// verification still fails closed on the empty value.
+    #[serde(default)]
+    pub signature: String,
+}
+
+/// Length-prefixed field framing for signing inputs: no delimiter that could
+/// appear inside a field, so no crafted (user_id, identity) pair can be
+/// rearranged into another bundle's signing input.
+fn push_field(buf: &mut Vec<u8>, s: &str) {
+    buf.extend_from_slice(&(s.len() as u64).to_be_bytes());
+    buf.extend_from_slice(s.as_bytes());
+}
+
+/// Domain-separated signing input for a single one-time key.
+fn one_time_key_input(key: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(24 + key.len());
+    buf.extend_from_slice(b"wxlike-otk-v1");
+    push_field(&mut buf, key);
+    buf
+}
+
+impl PreKeyBundle {
+    /// Canonical byte string covered by `signature`: user id + Curve25519
+    /// identity key. The OTKs are covered individually (see
+    /// [`PreKeyBundle::one_time_key_signatures`]) because a claim hands a
+    /// sender only a subset of them.
+    pub fn signing_input(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(96);
+        buf.extend_from_slice(b"wxlike-prekey-bundle-v1");
+        push_field(&mut buf, &self.user_id);
+        push_field(&mut buf, &self.identity);
+        buf
+    }
+
+    /// Fail-closed signature check: the identity binding must verify, and
+    /// every one-time key must carry a valid signature by the same Ed25519
+    /// key (this is what stops the directory from splicing a fresh-looking
+    /// OTK onto someone else's identity). Empty/garbage signature, wrong key,
+    /// length mismatch, or any tampered field ⇒ [`CryptoError::UnverifiedBundle`].
+    pub fn verify_signature(&self) -> Result<()> {
+        let signing = vodozemac::Ed25519PublicKey::from_base64(&self.identity_signing)
+            .map_err(|e| CryptoError::BadKey(format!("identity_signing malformed: {e}")))?;
+        let signature = vodozemac::Ed25519Signature::from_base64(&self.signature)
+            .map_err(|_| CryptoError::UnverifiedBundle)?;
+        signing
+            .verify(&self.signing_input(), &signature)
+            .map_err(|_| CryptoError::UnverifiedBundle)?;
+        if self.one_time_keys.len() != self.one_time_key_signatures.len() {
+            return Err(CryptoError::UnverifiedBundle);
+        }
+        for (key, sig) in self.one_time_keys.iter().zip(&self.one_time_key_signatures) {
+            let sig = vodozemac::Ed25519Signature::from_base64(sig)
+                .map_err(|_| CryptoError::UnverifiedBundle)?;
+            signing
+                .verify(&one_time_key_input(key), &sig)
+                .map_err(|_| CryptoError::UnverifiedBundle)?;
+        }
+        Ok(())
+    }
+
+    /// Structural check: every Curve25519/Ed25519 field must decode to a real
+    /// curve point. Keeps garbage out of the server-side directory so a
+    /// poisoned bundle cannot make a user unreachable ("publishes keys nobody
+    /// can start a session with").
+    pub fn validate_shape(&self) -> Result<()> {
+        parse_pub(&self.identity).map_err(|e| CryptoError::BadKey(format!("identity: {e}")))?;
+        vodozemac::Ed25519PublicKey::from_base64(&self.identity_signing)
+            .map_err(|e| CryptoError::BadKey(format!("identity_signing: {e}")))?;
+        for (i, key) in self.one_time_keys.iter().enumerate() {
+            parse_pub(key).map_err(|e| CryptoError::BadKey(format!("one_time_keys[{i}]: {e}")))?;
+        }
+        Ok(())
+    }
 }
 
 /// A sealed payload on the wire. `pre_key == true` means "this opens a session".
@@ -171,18 +259,39 @@ impl Device {
 
     /// The bundle other users fetch to start a session with us.
     pub fn bundle(&self, user_id: &str) -> PreKeyBundle {
+        self.bundle_limited(user_id, usize::MAX)
+    }
+
+    /// Same as [`Device::bundle`], publishing at most `max_otks` one-time keys.
+    /// Exists so callers (and the drained-directory tests) can publish a thin
+    /// bundle; signatures cover whichever keys are actually published.
+    pub fn bundle_limited(&self, user_id: &str, max_otks: usize) -> PreKeyBundle {
         let keys = self.account.identity_keys();
-        PreKeyBundle {
+        let otks: Vec<String> = self
+            .account
+            .one_time_keys()
+            .values()
+            .take(max_otks)
+            .map(|k| k.to_base64())
+            .collect();
+        // Each OTK is signed on its own: a claim pops one (key, signature)
+        // pair, and the subset must still verify standalone.
+        let otk_sigs = otks
+            .iter()
+            .map(|k| self.account.sign(one_time_key_input(k)).to_base64())
+            .collect();
+        let mut bundle = PreKeyBundle {
             user_id: user_id.to_string(),
             identity: keys.curve25519.to_base64(),
             identity_signing: keys.ed25519.to_base64(),
-            one_time_keys: self
-                .account
-                .one_time_keys()
-                .values()
-                .map(|k| k.to_base64())
-                .collect(),
-        }
+            one_time_keys: otks,
+            one_time_key_signatures: otk_sigs,
+            signature: String::new(),
+        };
+        // The Ed25519 half of the account signs the identity binding.
+        // `Account::sign` is Matrix's own device-key signing operation.
+        bundle.signature = self.account.sign(bundle.signing_input()).to_base64();
+        bundle
     }
 
     pub fn one_time_key_count(&self) -> usize {
@@ -208,6 +317,23 @@ impl Device {
 
     pub fn identity_fingerprint(&self) -> String {
         self.account.identity_keys().curve25519.to_base64()
+    }
+
+    /// Human-comparable safety number over the Ed25519 signing key: the value
+    /// two users compare out-of-band to confirm no MITM sits between them
+    /// (the TOFU first-connect window in `docs/threat-model.md`). Grouped
+    /// hex of SHA-256 over the public key, so a mis-transcription breaks the
+    /// check instead of silently matching.
+    pub fn safety_number(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let keys = self.account.identity_keys();
+        let digest = hex::encode(Sha256::digest(keys.ed25519.as_bytes()));
+        digest
+            .as_bytes()
+            .chunks(4)
+            .map(|c| std::str::from_utf8(c).unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Rebuilds a device from a stored account pickle (restart / new process).
@@ -328,6 +454,11 @@ impl Crypto {
         self.device.bundle(user_id)
     }
 
+    /// See [`Device::bundle_limited`].
+    pub fn bundle_limited(&self, user_id: &str, max_otks: usize) -> PreKeyBundle {
+        self.device.bundle_limited(user_id, max_otks)
+    }
+
     /// Publishes a fresh bundle when prekeys run low; returns the bundle.
     pub fn bundle_refilled(&mut self, user_id: &str) -> PreKeyBundle {
         self.device.top_up_one_time_keys();
@@ -349,6 +480,12 @@ impl Crypto {
     ) -> Result<Sealed> {
         let had_session = self.dm.contains_key(peer_user_id);
         if !had_session {
+            // Zero-trust key directory (docs/threat-model.md): the bundle came
+            // from the server, which may have swapped the identity key. Only
+            // a signature by the owner's Ed25519 key makes it usable. This
+            // fails closed — an unsigned or tampered bundle never starts a
+            // session, mirroring `encrypt_dm_existing`'s no-plaintext rule.
+            peer_bundle.verify_signature()?;
             let identity = parse_pub(&peer_bundle.identity)?;
             let otk = peer_bundle
                 .one_time_keys
