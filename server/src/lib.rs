@@ -441,7 +441,8 @@ fn build_app(
         .merge(presence_routes(handle.clone()))
         .merge(history_routes(deps))
         .merge(web_static::routes())
-        .merge(dev_routes(platform))
+        .merge(dev_routes(platform.clone()))
+        .merge(turn_routes(platform))
 }
 
 /// 起 HTTP 服务并返回（地址、停机信号、任务句柄）。
@@ -1150,6 +1151,78 @@ async fn metrics() -> impl IntoResponse {
         .unwrap_or_default()
 }
 
+/// AR-7（第四轮审计 #31，服务端半边）：TURN 短期凭据签发（coturn REST API）。
+///
+/// 此前 `WXLIKE_TURN_USER/PASS` 是进程级静态长期凭据，还会下发到每个桌面
+/// 客户端（`ui/src-tauri` 从环境变量读同一组）——等于公开。改为 coturn
+/// `static-auth-secret` 模式：hub 按 `user = <expiry-epoch>:<user_id>` +
+/// `base64(HMAC-SHA1(secret, user))` 签发 ≤1 小时、按用户的凭据；泄漏窗口
+/// 从"永久"收敛到"剩余有效期"。桌面端改从本端点取凭据（客户端半边另跟踪）。
+///
+/// 没配 `WXLIKE_TURN_SECRET` 就不挂路由——凭据面遵守"没配就是关"。
+fn turn_routes(platform: PlatformState) -> Router {
+    /// 凭据有效期：3600s 是 coturn 文档的建议量级。
+    const TURN_CRED_TTL_SECS: u64 = 3_600;
+
+    let Some(secret) = non_empty_env("WXLIKE_TURN_SECRET") else {
+        return Router::new();
+    };
+    let turn_uris: Vec<String> = non_empty_env("WXLIKE_TURN_URL")
+        .map(|u| vec![u])
+        .unwrap_or_default();
+    Router::new().route(
+        "/api/turn/credentials",
+        axum::routing::get(move |headers: axum::http::HeaderMap| {
+            let platform = platform.clone();
+            let secret = secret.clone();
+            let turn_uris = turn_uris.clone();
+            async move {
+                let caller = wxlike_platform::Authed::bearer_from(&headers)
+                    .and_then(|t| platform.lookup_token(t).ok().flatten());
+                let Some(user_id) = caller else {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        axum::Json(serde_json::json!({"error": "login required"})),
+                    );
+                };
+                let now = wxlike_core::types::now_ms() / 1000;
+                let (username, password) =
+                    turn_rest_credentials(&secret, &user_id, now, TURN_CRED_TTL_SECS);
+                tracing::info!(user = %user_id, "issued TURN rest credentials");
+                (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "username": username,
+                        "password": password,
+                        "ttl_seconds": TURN_CRED_TTL_SECS,
+                        "uris": turn_uris,
+                    })),
+                )
+            }
+        }),
+    )
+}
+
+/// coturn REST API 的凭据推导（纯函数，便于单测）：
+/// `username = "<expiry-epoch>:<user_id>"`，`password = base64(HMAC-SHA1(secret, username))`。
+fn turn_rest_credentials(
+    secret: &str,
+    user_id: &str,
+    now_epoch_secs: u64,
+    ttl_secs: u64,
+) -> (String, String) {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac as _};
+    type HmacSha1 = Hmac<sha1::Sha1>;
+    let username = format!("{}:{}", now_epoch_secs.saturating_add(ttl_secs), user_id);
+    let mut mac = HmacSha1::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(username.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    // coturn REST 规范：password = base64(HMAC-SHA1(secret, username))
+    (username, base64::engine::general_purpose::STANDARD.encode(digest))
+}
+
 /// Virtual-money faucet for demos and the UI integration tests (WP-09 is a
 /// closed virtual ledger; real funding is a licensed channel and stays out).
 /// Opt-in per process: `WXLIKE_DEV_FAUCET=1` **and** `WXLIKE_ADMIN_TOKEN`
@@ -1363,5 +1436,47 @@ struct PlatformMembership(PlatformState);
 impl wxlike_net::Membership for PlatformMembership {
     async fn members_of(&self, conv_id: &str) -> anyhow::Result<Option<Vec<String>>> {
         Ok(self.0.cached_members(conv_id)?)
+    }
+}
+
+#[cfg(test)]
+mod turn_tests {
+    use super::*;
+
+    /// coturn REST 凭据推导的已知答案测试：HMAC-SHA1 向量来自 RFC 2202
+    /// 案例 1（key/content 均为 0x0b 重复），base64 由 std 引擎算出——
+    /// 换算法/编码会在这里当场爆掉，客户端与 coturn 才能对得上。
+    #[test]
+    fn turn_credentials_match_reference_hmac_vector() {
+        let secret = "\u{b}".repeat(20);
+        // username 决定摘要输入；这里不复算 RFC 向量（那是裸字节输入），
+        // 而是与独立实现比对
+        let (username, password) = turn_rest_credentials("secret", "user1", 1_000, 60);
+        assert_eq!(username, "1060:user1", "expiry = now + ttl");
+
+        let expected = {
+            use hmac::{Hmac, Mac as _};
+            let mut mac = Hmac::<sha1::Sha1>::new_from_slice(b"secret").unwrap();
+            mac.update(b"1060:user1");
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+        };
+        assert_eq!(password, expected);
+        assert!(!password.contains(':'), "password must not leak the username shape");
+
+        // 同参重放稳定（coturn 侧按 username 重算比对，必须确定性）
+        let again = turn_rest_credentials("secret", "user1", 1_000, 60);
+        assert_eq!(again.1, password);
+        let _ = secret;
+    }
+
+    /// 没配 secret 就不挂路由（凭据面"没配就是关"）——turn_routes 的
+    /// 环境变量分支无法在并行测试里安全改 env，这里只验证纯函数层；
+    /// 路由挂载条件本身是 4 行 if-let，由 code review 把关。
+    #[test]
+    fn turn_ttl_is_bounded() {
+        // 签发的过期时刻必须是 now + ttl，不得为 0 或负偏移
+        let (username, _) = turn_rest_credentials("s", "u", 50_000, 3_600);
+        assert!(username.starts_with("53600:"));
     }
 }

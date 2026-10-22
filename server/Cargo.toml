@@ -32,6 +32,11 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 # 幂等键 → 稳定的 msg_id（重试要落在同一条消息上）
 sha2 = { workspace = true }
+# AR-7/#31：TURN 短期凭据签发（coturn REST：HMAC-SHA1）。两 crate 已在
+# 依赖树（wxlike-rtc 同款组合），此处只是 server 自己的声明，不新增编译单元
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
 # WP-13: request/tracing observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -45,7 +50,7 @@ nats = ["wxlike-mq/nats", "dep:async-nats"]
 
 [dev-dependencies]
 # integration tests drive the real HTTP surface (ureq matches the UI's client)
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 # P3 ADR-8: the WS-gateway test is a real browser-shaped client
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
