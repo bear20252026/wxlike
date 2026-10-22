@@ -158,10 +158,15 @@ impl Platform {
     /// Creates the user row. All SQL for one logical operation runs under a
     /// single connection guard, so existence-check + insert cannot interleave
     /// with another registrant.
+    ///
+    /// AR-3/H-3 (audit round 4): hash with argon2id from day one, matching
+    /// the documented design ("新注册一律 argon2id") — registration was the
+    /// last password-creation path still on PBKDF2, which left every fresh
+    /// account on the weaker algorithm until its first login upgraded it.
     pub fn register(&self, name: &str, password: &str) -> Result<String> {
         let name = validate::name(name)?;
         validate::password(password)?;
-        let (salt, hash) = auth::hash_password(password, self.options().pbkdf2_rounds)?;
+        let phc = crate::security::hash_argon2id(password)?;
         let user_id = auth::random_hex(8);
         let now = wxlike_core::types::now_ms();
         let c = self.db().lock();
@@ -174,9 +179,9 @@ impl Platform {
             return Err(PlatformError::Conflict("name".into()));
         }
         c.execute(
-            "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, avatar, signature, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, '', '', ?6)",
-            params![user_id, name, salt, hash, self.options().pbkdf2_rounds as i64, now as i64],
+            "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, pw_algo, avatar, signature, created_at)
+             VALUES(?1, ?2, '', ?3, 0, 'argon2id', '', '', ?4)",
+            params![user_id, name, phc, now as i64],
         )
         .map_err(|e| {
             if is_unique_violation(&e) {

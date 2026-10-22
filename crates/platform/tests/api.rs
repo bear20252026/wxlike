@@ -487,7 +487,12 @@ async fn malformed_json_is_400_not_a_panic() {
 #[test]
 fn production_defaults_match_contract() {
     let d = PlatformOptions::default();
-    assert_eq!(d.pbkdf2_rounds, 100_000, "PBKDF2 >= 100k rounds");
+    // AR-3/H-3: legacy PBKDF2 floor raised to the OWASP baseline; new
+    // registrations hash with argon2id outright (see users.rs::register).
+    assert_eq!(
+        d.pbkdf2_rounds, 600_000,
+        "PBKDF2 floor >= 600k rounds (OWASP)"
+    );
     assert_eq!(d.session_ttl_ms, 30 * 24 * 60 * 60 * 1000, "30 day session");
 }
 

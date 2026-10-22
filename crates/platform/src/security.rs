@@ -190,32 +190,46 @@ mod tests {
     use super::*;
     use crate::Platform;
 
-    /// P4 透明升级：注册（pbkdf2）→ 首次登录成功 → pw_algo 变 argon2id，
-    /// 再次登录仍成功；2FA 全流程 DB 路径。
+    /// P4 透明升级 + AR-3/H-3：注册即 argon2id（不再有 PBKDF2 窗口期）；
+    /// 人造一行**遗留** pbkdf2 用户，首次登录仍透明升级、旧密码继续可用。
     #[test]
     fn argon2_transparent_upgrade_on_login() {
         let p = Platform::in_memory().unwrap();
-        let uid = p.register("alice", "pw").unwrap();
+        let _uid = p.register("alice", "pw").unwrap();
 
-        let algo = || -> String {
+        let algo = |name: &str| -> String {
             let c = p.db().lock();
             c.query_row(
-                "SELECT pw_algo FROM users WHERE id = ?1",
-                rusqlite::params![uid],
+                "SELECT pw_algo FROM users WHERE name = ?1",
+                rusqlite::params![name],
                 |r| r.get(0),
             )
             .unwrap()
         };
-        assert_eq!(algo(), "pbkdf2", "注册仍是存量算法");
+        // AR-3/H-3（第四轮审计）：注册是最后一个还在写 PBKDF2 的口令产生点，
+        // 现在与文档声明一致——"新注册一律 argon2id"
+        assert_eq!(algo("alice"), "argon2id", "注册即 argon2id");
 
+        // 遗留路径：老库里 pbkdf2 行的透明升级仍要工作
+        let (salt, hash) =
+            crate::auth::hash_password("legacy-pw", crate::auth::DEFAULT_ROUNDS).unwrap();
+        p.db()
+            .lock()
+            .execute(
+                "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, pw_algo, created_at)
+                 VALUES('legacy01', 'bob', ?1, ?2, ?3, 'pbkdf2', 0)",
+                rusqlite::params![salt, hash, crate::auth::DEFAULT_ROUNDS as i64],
+            )
+            .unwrap();
+        assert_eq!(algo("bob"), "pbkdf2", "人造遗留行");
         assert_eq!(
-            p.verify_credentials("alice", "pw").unwrap(),
-            Some(uid.clone())
+            p.verify_credentials("bob", "legacy-pw").unwrap().unwrap(),
+            "legacy01"
         );
-        assert_eq!(algo(), "argon2id", "首次登录成功即透明升级");
+        assert_eq!(algo("bob"), "argon2id", "首次登录成功即透明升级");
         assert_eq!(
-            p.verify_credentials("alice", "pw").unwrap(),
-            Some(uid.clone()),
+            p.verify_credentials("bob", "legacy-pw").unwrap().unwrap(),
+            "legacy01",
             "升级后旧密码仍可登录"
         );
         assert_eq!(p.verify_credentials("alice", "wrong").unwrap(), None);
