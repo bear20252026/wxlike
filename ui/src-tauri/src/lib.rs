@@ -706,23 +706,23 @@ impl AppState {
         body.extend_from_slice(&bytes);
         let _ = write!(body, "\r\n--{boundary}--\r\n");
 
-        let resp = self
+        // ureq 3：`set` → `header`，`send_bytes` → `send`，响应体要显式取 body。
+        // 4xx/5xx 不再是错误（`http_status_as_error(false)`），所以自己看 status。
+        let mut resp = self
             .http()
-            .req("POST", "/api/video")
-            .set(
+            .req_write("POST", "/api/video")
+            .header(
                 "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
+                format!("multipart/form-data; boundary={boundary}"),
             )
-            .set("Content-Length", &body.len().to_string())
-            .send_bytes(&body)
-            .map_err(|e| match e {
-                ureq::Error::Status(status, r) => {
-                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
-                    msg
-                }
-                other => format!("upload video: {other}"),
-            })?;
-        resp.into_json::<serde_json::Value>()
+            .header("Content-Length", body.len().to_string())
+            .send(&body)
+            .map_err(|e| format!("upload video: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(wxlike_client::upload_status_error(resp));
+        }
+        resp.body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("upload video decode: {e}"))
     }
 
@@ -735,13 +735,26 @@ impl AppState {
         if !ok {
             return Err("video path outside /api/video".into());
         }
-        let resp = self.http().req("GET", path).call().map_err(|e| match e {
-            ureq::Error::Status(404, _) => "video not found".to_string(),
-            other => format!("download video: {other}"),
-        })?;
-        let content_type = resp.content_type().to_string();
+        let resp = self
+            .http()
+            .req("GET", path)
+            .call()
+            .map_err(|e| format!("download video: {e}"))?;
+        if resp.status() == http::StatusCode::NOT_FOUND {
+            return Err("video not found".to_string());
+        }
+        if !resp.status().is_success() {
+            return Err(wxlike_client::upload_status_error(resp));
+        }
+        let content_type = resp
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
         let mut bytes = Vec::new();
-        resp.into_reader()
+        resp.into_body()
+            .into_reader()
             .read_to_end(&mut bytes)
             .map_err(|e| format!("video read: {e}"))?;
         Ok(MediaBlob {

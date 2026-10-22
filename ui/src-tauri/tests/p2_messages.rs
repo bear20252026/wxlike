@@ -118,10 +118,10 @@ async fn p2_voice_file_sticker_roundtrip() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let token = platform.create_session(&bob_id, 60_000).unwrap();
     let rows: serde_json::Value = ureq::get(&format!("{http}/api/history/{conv}"))
-        .set("Authorization", &format!("Bearer {token}"))
+        .header("Authorization", &format!("Bearer {token}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut().read_json()
         .unwrap();
     let kinds: Vec<&str> = rows["messages"]
         .as_array()
@@ -168,10 +168,10 @@ async fn p2_avatar_wired_to_media_store() {
         .create_session(&bob.user_id().unwrap(), 60_000)
         .unwrap();
     let profile: serde_json::Value = ureq::get(&format!("{http}/api/profile/{alice_id}"))
-        .set("Authorization", &format!("Bearer {token}"))
+        .header("Authorization", &format!("Bearer {token}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut().read_json()
         .unwrap();
     assert_eq!(
         profile["avatar"], media_id,

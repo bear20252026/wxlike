@@ -30,6 +30,28 @@ pub struct Http {
 /// 单次请求超时（秒）。与旧版一致：10 秒，移动端 FFI 靠它兜底。
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
+/// 4xx/5xx → 人话。**保留 2.x 的分类语义**（issue #22 的验收项）。
+///
+/// 3.x 把"HTTP 状态码也是错误"关掉了（`http_status_as_error(false)`），于是
+/// 调用方自己看 status：4xx 带服务端的 `error` 字段（用户要知道为什么），
+/// 5xx 只说"服务端出错"（细节是服务端的事，别泄给界面）。
+///
+/// 做成模块级函数而不是 `Http` 的方法：桌面端（`ui/src-tauri`）也要用同一套
+/// 文案，那边不经过 `Http` 的封装。
+pub fn upload_status_error(mut resp: http::Response<ureq::Body>) -> String {
+    let status = resp.status();
+    let body = resp.body_mut().read_to_string().unwrap_or_default();
+    if status.is_client_error() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(message) = value.get("error").and_then(|v| v.as_str()) {
+                return format!("{message} ({status})");
+            }
+        }
+        return format!("HTTP {status}: {}", body.trim());
+    }
+    format!("server error ({status})")
+}
+
 /// ureq 3 的错误 Display **直接透出操作系统文案**（Windows 上是
 /// "由于目标计算机积极拒绝，无法连接"），而 `crates/ffi` 的分类器靠稳定的
 /// 英文特征串判断"这是传输层失败还是业务失败"。
@@ -139,18 +161,8 @@ impl Http {
     /// 3.x 把"HTTP 状态码也是错误"关掉了（`http_status_as_error(false)`），
     /// 于是这里自己看 status：4xx 带服务端的 `error` 字段（用户要知道为什么），
     /// 5xx 只说"服务端出错"（细节是服务端的事，别泄给界面）。
-    fn status_error(mut resp: http::Response<ureq::Body>) -> String {
-        let status = resp.status();
-        let body = resp.body_mut().read_to_string().unwrap_or_default();
-        if status.is_client_error() {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let Some(message) = value.get("error").and_then(|v| v.as_str()) {
-                    return format!("{message} ({status})");
-                }
-            }
-            return format!("HTTP {status}: {}", body.trim());
-        }
-        format!("server error ({status})")
+    fn status_error(resp: http::Response<ureq::Body>) -> String {
+        upload_status_error(resp)
     }
 
     /// 发出去的请求统一走这一层：非 2xx → 带原因的错误。
