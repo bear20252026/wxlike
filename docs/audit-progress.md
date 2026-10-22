@@ -4,7 +4,7 @@
 > 这份账的目的是**说清哪些真做完了、哪些没做、没做的卡在哪**——
 > 不是"看起来都修了"。
 >
-> **CI 状态：`4004ab8` 十关全绿**（lint / quality / test×3 / doc / android / web / flutter / desktop）。
+> **CI 状态：`7ca905d` 十关全绿**（lint / quality / test×3 / doc / android / web / flutter / desktop）。
 > 协议改动带出来的测试回归分两批修完：主 workspace 那批（`history_search_api`、
 > `mailbox_mirror`、`policy_integration`、`ws_gateway`）在 #3 当轮；桌面端那批
 > （`p2_messages` 三条）**一直红到本轮**——因为 Tauri 测试没进 CI，没人跑。
