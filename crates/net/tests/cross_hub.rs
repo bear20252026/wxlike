@@ -90,9 +90,29 @@ async fn broadcast_fans_out_to_all_hubs() {
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    // broadcast (empty `to`): everyone except sender, on all hubs
+    // **用户通道**的空收件人广播已经被拒（issue #13）：这条帧必须被丢掉，
+    // 不能触达不相关的人。
     alice
-        .send(&Envelope::text("room", "alice", 1, "room broadcast"))
+        .send(&Envelope::text("room", "alice", 1, "should not fan out"))
+        .await
+        .unwrap();
+    for (who, client) in [("bob", &bob), ("carol", &carol)] {
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                client.next_envelope()
+            )
+            .await
+            .is_err(),
+            "{who} 不该收到用户发起的广播"
+        );
+    }
+
+    // 服务端内部广播走**独立可信入口**（`HubHandle::publish`），语义不变：
+    // 本 hub 全体 + 其他 hub 各一份。
+    hub_a
+        .handle()
+        .publish(&Envelope::text("room", "system", 2, "server broadcast"))
         .await
         .unwrap();
 
@@ -101,7 +121,7 @@ async fn broadcast_fans_out_to_all_hubs() {
             .await
             .unwrap_or_else(|_| panic!("{who} should receive broadcast"))
             .unwrap();
-        assert_eq!(got.sender, "alice");
+        assert_eq!(got.sender, "system", "{who} 应当收到服务端广播");
     }
 }
 
