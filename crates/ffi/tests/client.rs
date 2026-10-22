@@ -336,7 +336,7 @@ fn offline_send_is_queued_then_a_second_client_flushes_it_unchanged() {
     let db = db_path("offline");
     let offline = dead_url();
     let task_id;
-    let mut backoff_until = 0i64;
+    let backoff_until: i64;
     {
         let a = client(&offline, &db);
         let outcome = a
