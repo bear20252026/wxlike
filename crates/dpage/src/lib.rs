@@ -122,6 +122,30 @@ pub fn safe_rel_path(path: &str) -> bool {
         .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
+/// Hard cap on decompressed payload size (AR-4/H-5, audit round 4). A
+/// `.dpage` is untrusted input: a small compressed blob can expand to
+/// gigabytes ("decompression bomb") unless the reader is capped *before*
+/// bincode deserialization allocates.
+pub const MAX_DECOMPRESSED: usize = 64 * 1024 * 1024;
+
+/// Decompress with an explicit ceiling: reads one byte past the cap so
+/// overflow is an error, not a silent truncation that bincode would then
+/// misreport as a deserialization failure.
+fn decode_capped(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let decoder = zstd::stream::read::Decoder::new(payload)?;
+    let mut out = Vec::new();
+    decoder
+        .take(MAX_DECOMPRESSED as u64 + 1)
+        .read_to_end(&mut out)?;
+    anyhow::ensure!(
+        out.len() <= MAX_DECOMPRESSED,
+        "decompressed payload exceeds {} bytes (decompression bomb?)",
+        MAX_DECOMPRESSED
+    );
+    Ok(out)
+}
+
 pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
     let (version, id) = peek(blob)?;
     anyhow::ensure!(version == 1, "unsupported dpage version {version}");
@@ -131,7 +155,7 @@ pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
         "length mismatch: stub says {payload_len}, blob has {}",
         blob.len() - STUB_LEN
     );
-    let files: FileMap = bincode::deserialize(&zstd::stream::decode_all(&blob[STUB_LEN..])?)?;
+    let files: FileMap = bincode::deserialize(&decode_capped(&blob[STUB_LEN..])?)?;
     let manifest_entry = files
         .0
         .iter()
@@ -259,5 +283,19 @@ mod tests {
         let payload = vec![b'a'; 10_000];
         let blob = format_blob(1, zstd::stream::encode_all(payload.as_slice(), 6).unwrap());
         assert!(blob.len() < 1_000);
+    }
+
+    /// AR-4/H-5（第四轮审计）：解压炸弹必须被挡在分配之前。200 MiB 的零
+    /// 压缩后只有几十 KiB——`unpack` 若不设上限，宿主进程直接 OOM。
+    #[test]
+    fn decompression_bomb_is_refused_before_allocating() {
+        let bomb = vec![0u8; 200 * 1024 * 1024];
+        let blob = format_blob(1, zstd::stream::encode_all(bomb.as_slice(), 6).unwrap());
+        // the stub is tiny; the refusal is about the *decompressed* size
+        let err = unpack(&blob).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds"),
+            "expected the bomb cap, got: {err}"
+        );
     }
 }

@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::Context as _;
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsResult, JsValue, NativeFunction, Source};
@@ -21,6 +20,13 @@ pub struct BoaEngine {
     ctx: Context,
 }
 
+/// AR-4/H-7 (audit round 4): page packages are untrusted code. Without a
+/// loop bound, `while (true) {}` in any page freezes the host thread
+/// forever — the desktop app, or whatever process embeds this container.
+/// The budget is per loop; pages that legitimately iterate a data grid stay
+/// far below it. Recursion/stack caps are Boa's defaults (512 / 10k frames).
+pub const LOOP_ITERATION_LIMIT: u64 = 1_000_000;
+
 impl Default for BoaEngine {
     fn default() -> Self {
         Self::new()
@@ -31,6 +37,8 @@ impl BoaEngine {
     pub fn new() -> Self {
         BRIDGE.with(|b| *b.borrow_mut() = BridgeState::default());
         let mut ctx = Context::default();
+        ctx.runtime_limits_mut()
+            .set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
         install_bridge(&mut ctx).expect("install wxhost bridge");
         Self { ctx }
     }
@@ -48,15 +56,28 @@ impl BoaEngine {
         name: &str,
         args_json: &[serde_json::Value],
     ) -> anyhow::Result<String> {
-        let mut js_args = Vec::new();
-        for a in args_json {
-            js_args.push(serde_json::to_string(a).context("serialize arg")?);
-        }
-        // Build the call via eval to keep argument marshalling trivial at scaffold stage.
-        let script = format!("{}({})", name, js_args.join(", "));
-        let value = self
+        // AR-4/M-3 (audit round 4): never build JS source from the name or
+        // the args. `format!("{name}({args})")` + eval meant a crafted name
+        // (or an arg containing `)` / quotes) executed attacker-controlled
+        // JS. The name is now only a property lookup; the args are values,
+        // never code.
+        let func = self
             .ctx
-            .eval(Source::from_bytes(script.as_bytes()))
+            .global_object()
+            .get(boa_engine::JsString::from(name), &mut self.ctx)
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+        let callable = func
+            .as_callable()
+            .ok_or_else(|| anyhow::anyhow!("global '{name}' is not a function"))?;
+        let mut js_args = Vec::with_capacity(args_json.len());
+        for a in args_json {
+            js_args.push(
+                JsValue::from_json(a, &mut self.ctx)
+                    .map_err(|e| anyhow::Error::msg(e.to_string()))?,
+            );
+        }
+        let value = callable
+            .call(&JsValue::undefined(), &js_args, &mut self.ctx)
             .map_err(|e| anyhow::Error::msg(e.to_string()))?;
         Ok(dump(&value, &mut self.ctx))
     }
