@@ -93,6 +93,9 @@ pub struct MqHubOptions {
 /// Contract floor for reclaiming in-flight cross-node entries.
 pub const DEFAULT_CLAIM_IDLE_MS: u64 = 60_000;
 
+/// 投递任务保留窗口（issue #11）：一周之后不再补投，行也删掉。
+const DELIVERY_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 impl Default for MqHubOptions {
     fn default() -> Self {
         Self {
@@ -385,9 +388,20 @@ pub async fn run_mq_hub_with(
             Some(rq) => loop {
                 match rq.consume_entry(&queue).await {
                     Ok((id, bytes)) => {
-                        deliver_bytes(&consume_state, &bytes).await;
-                        if let Err(err) = rq.ack(&queue, &id).await {
-                            eprintln!("[mq-hub] ack {id} failed: {err:#}");
+                        // **投递成功才 ack**（issue #9）。以前无论有没有人收到都 ack，
+                        // 目标 hub 上一旦没人连着，这条就只剩源端归档了。
+                        match deliver_bytes(&consume_state, &bytes).await {
+                            Ok(()) => {
+                                if let Err(err) = rq.ack(&queue, &id).await {
+                                    eprintln!("[mq-hub] ack {id} failed: {err:#}");
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "[mq-hub] deliver {id} failed, leaving it for reclaim: {err:#}"
+                                );
+                                // 不 ack：等 lease 到期由 patrol 重新领走
+                            }
                         }
                     }
                     Err(err) => {
@@ -398,7 +412,12 @@ pub async fn run_mq_hub_with(
             },
             None => loop {
                 match consume_state.router.mq.consume(&queue).await {
-                    Ok(bytes) => deliver_bytes(&consume_state, &bytes).await,
+                    Ok(bytes) => {
+                        if let Err(err) = deliver_bytes(&consume_state, &bytes).await {
+                            // 没有 ack 的队列无法重投，只能留日志（memory 后端仅测试/单机）
+                            eprintln!("[mq-hub] deliver failed (no-ack backend): {err:#}");
+                        }
+                    }
                     Err(err) => {
                         eprintln!("[mq-hub] consume error: {err:#}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -420,9 +439,10 @@ pub async fn run_mq_hub_with(
                     match rq.claim_stale(&queue, idle_ms).await {
                         Ok(entries) => {
                             for (id, bytes) in entries {
-                                deliver_bytes(&patrol_state, &bytes).await;
-                                if let Err(err) = rq.ack(&queue, &id).await {
-                                    eprintln!("[mq-hub] ack reclaimed {id} failed: {err:#}");
+                                if deliver_bytes(&patrol_state, &bytes).await.is_ok() {
+                                    if let Err(err) = rq.ack(&queue, &id).await {
+                                        eprintln!("[mq-hub] ack reclaimed {id} failed: {err:#}");
+                                    }
                                 }
                             }
                         }
@@ -435,6 +455,22 @@ pub async fn run_mq_hub_with(
     };
 
     let mut tasks = vec![accept_loop, consume_loop];
+
+    // 投递任务的清理（issue #11）：任务行只在"这条消息可能还要补投"时有意义。
+    // 留一周足够覆盖客户端重试窗口，再老的删掉——否则表只增不减。
+    if let Some(store) = state.storage.clone() {
+        let period = DELIVERY_RETENTION_MS as u64 / 4;
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(period)).await;
+                match store.prune_deliveries(DELIVERY_RETENTION_MS) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::debug!(rows = n, "pruned delivery outbox"),
+                    Err(err) => eprintln!("[mq-hub] prune delivery outbox failed: {err:#}"),
+                }
+            }
+        }));
+    }
     tasks.extend(patrol_loop);
 
     Ok(MqHub {
@@ -446,11 +482,40 @@ pub async fn run_mq_hub_with(
 }
 
 /// Decode and route one payload taken off the queue.
-async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) {
-    match WireFrame::from_bytes(bytes) {
-        Ok(WireFrame::Msg(env)) => deliver_local(state, &env).await,
-        Ok(_) => {}
-        Err(err) => eprintln!("[mq-hub] bad frame from mq: {err}"),
+/// 处理一条从 MQ 取来的帧（别的 hub 投给我们的）。
+///
+/// `Ok` = **已经交出去了**（写进实时连接，或落进收件人的离线队列），可以 ack；
+/// `Err` = 没交出去，**不要 ack**——让 lease 到期后由 patrol 重投（issue #9）。
+/// 旧实现在这里无条件返回 `()`，于是"目标 hub 上没人连着"也会被 ack，
+/// 消息就只剩源端归档了。
+async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) -> anyhow::Result<()> {
+    let env = match WireFrame::from_bytes(bytes) {
+        Ok(WireFrame::Msg(env)) => env,
+        Ok(_) => return Ok(()),
+        Err(err) => {
+            // 坏帧重投一万次也不会变好：吃掉它，别把队列堵死
+            eprintln!("[mq-hub] bad frame from mq: {err}");
+            return Ok(());
+        }
+    };
+    if env.to.is_empty() {
+        // 广播帧没有确定的收件人列表，只能尽力而为（#13 会把广播本身收紧）
+        deliver_local(state, &env).await;
+        return Ok(());
+    }
+    let frame = WireFrame::Msg(env.clone()).to_bytes()?;
+    let mut failed = Vec::new();
+    for rcpt in &env.to {
+        // 到这一步说明**源端**认为收件人在本 hub：只在本 hub 投，
+        // 不再按路由转发（否则路由抖动时会来回弹）。
+        if deliver_here(state, rcpt, &frame, true).await.is_err() {
+            failed.push(rcpt.clone());
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("not delivered to {failed:?}")
     }
 }
 
@@ -842,19 +907,23 @@ async fn handle_inbound(
     if env.msg_id != NO_MSG_ID {
         let already_persisted = state.seen.lock().await.contains(env.msg_id);
         if already_persisted {
-            // 消息已在库里 → 不重复扇出。
+            // 消息已在库里 → 不再落库，但**投递还要补**（issue #11）。
             //
-            // 这里刻意**不**重跑 fanout：hub 没有 per-recipient 的投递状态
-            // （谁收到了、谁没收到），重跑会把整批人再收一遍——`ten_replays`
-            // 那条测试就是这么红的。真正的"补齐未完成收件人"需要
-            // delivery outbox（见 `docs/audit-progress.md` 的 #11 备注）；
-            // 在那之前，扇出失败由客户端拉历史补偿（归档是权威的）。
+            // `fanout_content` 只投 `delivery_outbox` 里还是 pending 的收件人：
+            // 全部投递过 → 一个都不发（`ten_replays` 那条测试要的就是这个），
+            // 上次有收件人失败 → 正好补齐。旧实现在这里直接 return，
+            // 于是"客户端用正确的幂等 id 重试"反而补不上失败的那几个。
+            let msg_key = hex::encode(env.msg_id);
+            let recipients = content_recipients(&env, members.as_deref());
+            if let Some(store) = &state.storage {
+                store.ensure_deliveries(&msg_key, &recipients)?;
+            }
             tracing::debug!(
                 hub = %state.hub_id,
-                msg = %hex::encode(env.msg_id),
-                "duplicate msg_id: already persisted, skipping"
+                msg = %msg_key,
+                "duplicate msg_id: persisted already, retrying undelivered recipients"
             );
-            return Ok(());
+            return fanout_content(state, &env, &recipients, &msg_key).await;
         }
         if let Some(store) = &state.storage {
             // 失败会 `?` 出去，**seen 还没插入**——同一个 msg_id 可以重试。
@@ -898,7 +967,112 @@ async fn handle_inbound(
         state.seen.lock().await.insert(env.msg_id);
     }
 
-    route_or_fanout(state, &env, members, true).await
+    // 内容帧：登记每个收件人的投递任务，然后**只投还没投出去的人**。
+    //
+    // 这样同一条 msg_id 重放时：已收到的人不会再收一遍（`ten_replays` 那条
+    // 测试盯的就是这个），而上次失败的收件人会被补齐（issue #11）。
+    let recipients = content_recipients(&env, members.as_deref());
+    let msg_key = hex::encode(env.msg_id);
+    if let (Some(store), false) = (&state.storage, env.msg_id == NO_MSG_ID) {
+        store.ensure_deliveries(&msg_key, &recipients)?;
+    }
+    // 广播（`to` 为空且不是群）没有收件人列表，只能按"本 hub 全发 + 其他 hub
+    // 各投一份"的老语义走。这条路径本身是 #13 要收紧的对象，这里不扩大改动。
+    if recipients.is_empty() && env.to.is_empty() && members.is_none() {
+        return route_envelope(state, &env, true).await;
+    }
+    fanout_content(state, &env, &recipients, &msg_key).await
+}
+
+/// 内容帧的收件人：群按成员表（去掉发送者），直聊按 `to`。
+fn content_recipients(env: &Envelope, members: Option<&[String]>) -> Vec<String> {
+    match members {
+        Some(members) => members
+            .iter()
+            .filter(|m| *m != &env.sender)
+            .cloned()
+            .collect(),
+        None => env.to.clone(),
+    }
+}
+
+/// 把内容帧交给每个**还没收到**的收件人，成功的当场记进投递任务。
+///
+/// 并发写（每个 peer 有自己的写锁），但每个收件人的结果单独记账——这正是
+/// 旧实现缺的那一半：要么整批成功，要么整批不知道。
+async fn fanout_content(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    recipients: &[String],
+    msg_key: &str,
+) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<String> = recipients
+        .iter()
+        .filter(|r| seen.insert((*r).clone()))
+        .cloned()
+        .collect();
+    if unique.is_empty() {
+        return Ok(());
+    }
+    // 有归档才有任务表；没有归档（纯路由）就退回"每个人都投一遍"。
+    let pending = match &state.storage {
+        Some(store) if !msg_key.is_empty() => match store.pending_deliveries(msg_key) {
+            Ok(list) if list.is_empty() => return Ok(()), // 全部投递过：重放不再重发
+            Ok(list) => list,
+            Err(err) => {
+                eprintln!("[mq-hub] read delivery outbox failed: {err:#}");
+                unique
+            }
+        },
+        _ => unique,
+    };
+
+    let tasks = pending.iter().map(|rcpt| {
+        let state = state.clone();
+        let rcpt = rcpt.clone();
+        let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
+            Ok(frame) => frame,
+            Err(err) => return tokio::spawn(async move { (rcpt, Err(err)) }),
+        };
+        tokio::spawn(async move {
+            let outcome = deliver_via_route(&state, &rcpt, &frame, true).await;
+            (rcpt, outcome)
+        })
+    });
+
+    let mut first_error = None;
+    for task in futures_util::future::join_all(tasks).await {
+        let (rcpt, outcome) = match task {
+            Ok(pair) => pair,
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(anyhow::anyhow!("fan-out task panicked: {err}"));
+                }
+                continue;
+            }
+        };
+        match outcome {
+            Ok(()) => {
+                if let Some(store) = &state.storage {
+                    if !msg_key.is_empty() {
+                        if let Err(err) = store.mark_delivered(msg_key, &rcpt) {
+                            eprintln!("[mq-hub] mark delivered {msg_key}/{rcpt} failed: {err:#}");
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 /// Group conversations fan out by the member table; everything else keeps the
@@ -937,48 +1111,20 @@ async fn fanout(
     park_offline: bool,
 ) -> anyhow::Result<()> {
     let mut seen = std::collections::HashSet::new();
-    let unique: Vec<&String> = recipients.iter().filter(|r| seen.insert(*r)).collect();
+    let unique: Vec<String> = recipients
+        .iter()
+        .filter(|r| seen.insert((*r).clone()))
+        .cloned()
+        .collect();
 
     let tasks = unique.iter().map(|rcpt| {
         let state = state.clone();
-        let rcpt = (*rcpt).clone();
-        let owned_env = env.clone();
+        let rcpt = rcpt.clone();
         let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
             Ok(f) => f,
             Err(err) => return tokio::spawn(async move { Err(err) }),
         };
-        tokio::spawn(async move {
-            match state.router.routes.route_of(&rcpt).await? {
-                Some(h) if h == state.hub_id => {
-                    deliver_to(&state, &rcpt, &frame).await;
-                }
-                Some(h) => state.router.mq.publish(&hub_queue(&h), frame).await?,
-                None => {
-                    if !park_offline {
-                        // transient signal (typing): a user who is not online
-                        // simply misses it; there is nothing to store
-                        return Ok(());
-                    }
-                    // nowhere online: park for later, then wake their devices
-                    state.offline.enqueue(&rcpt, frame).await?;
-                    state.metrics.offline_parked(1);
-                    tracing::debug!(
-                        hub = %state.hub_id,
-                        user = %rcpt,
-                        conv = %owned_env.conv_id,
-                        "recipient offline, frame parked"
-                    );
-                    if let Some(hook) = state.push_hook.clone() {
-                        // fire-and-forget: push failure must not roll back the
-                        // park, and must not delay the rest of the fan-out
-                        tokio::spawn(async move {
-                            hook.user_offline(&rcpt, &owned_env).await;
-                        });
-                    }
-                }
-            }
-            Ok(())
-        })
+        tokio::spawn(async move { deliver_via_route(&state, &rcpt, &frame, park_offline).await })
     });
 
     let mut first_error = None;
@@ -1001,6 +1147,72 @@ async fn fanout(
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// 按路由把一帧交给一个用户（控制帧与瞬时信号走这里；内容帧走
+/// [`fanout_content`]，因为内容帧还要记投递任务）。
+///
+/// 三条去路：
+/// - 在本 hub：写实时连接；写不出去（没连或写失败）且允许离线时落他的离线队列；
+/// - 在别的 hub：投给那个 hub 的队列；
+/// - 谁都不知道他在哪：落离线队列（`park_offline` 为假时丢弃——typing 这类
+///   瞬时信号本来就不该存）。
+///
+/// 返回 `Err` 表示**没交出去**：调用方据此决定要不要 ack / 记投递失败。
+async fn deliver_via_route(
+    state: &Arc<HubState>,
+    user: &str,
+    frame: &[u8],
+    park_offline: bool,
+) -> anyhow::Result<()> {
+    match state.router.routes.route_of(user).await? {
+        Some(h) if h == state.hub_id => deliver_here(state, user, frame, park_offline).await,
+        Some(h) => {
+            state
+                .router
+                .mq
+                .publish(&hub_queue(&h), frame.to_vec())
+                .await
+        }
+        None if park_offline => park(state, user, frame).await,
+        // transient signal (typing): a user who is not online simply misses it
+        None => Ok(()),
+    }
+}
+
+/// 只在本 hub 投：实时连接优先，写不出去再落离线队列。
+async fn deliver_here(
+    state: &Arc<HubState>,
+    user: &str,
+    frame: &[u8],
+    park_offline: bool,
+) -> anyhow::Result<()> {
+    if deliver_to(state, user, frame).await > 0 {
+        return Ok(());
+    }
+    if !park_offline {
+        return Ok(());
+    }
+    park(state, user, frame).await
+}
+
+/// 落进收件人的离线队列（durable inbox，claim/ack + lease）。
+async fn park(state: &Arc<HubState>, user: &str, frame: &[u8]) -> anyhow::Result<()> {
+    state.offline.enqueue(user, frame.to_vec()).await?;
+    state.metrics.offline_parked(1);
+    tracing::debug!(hub = %state.hub_id, user, "recipient offline, frame parked");
+    if let Some(hook) = state.push_hook.clone() {
+        let env = WireFrame::from_bytes(frame).ok().and_then(|f| match f {
+            WireFrame::Msg(env) => Some(env),
+            _ => None,
+        });
+        if let Some(env) = env {
+            // fire-and-forget: push failure must not roll back the park
+            let user = user.to_string();
+            tokio::spawn(async move { hook.user_offline(&user, &env).await });
+        }
+    }
+    Ok(())
 }
 
 /// The `@mention` payload carries the plain text plus who was named. Non-named
@@ -1093,22 +1305,25 @@ async fn deliver_local(state: &Arc<HubState>, env: &Envelope) {
 
 /// Write one frame to EVERY live connection of `user` (multi-device fan-out,
 /// ADR-4). A user with two phones sees each message on both.
-async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) {
+///
+/// 返回**写成功的连接数**。以前这里是 `spawn` 之后立刻返回，调用方永远
+/// 不知道有没有人收到——#9 的"确认了但没人收到"就是这么来的。
+async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) -> usize {
     let conns: Vec<PeerConn> = {
         let map = state.peers.read().await;
         match map.get(user) {
             Some(c) => c.values().cloned().collect(),
-            None => return,
+            None => return 0,
         }
     };
+    let mut written = 0;
     for conn in conns {
-        let frame = frame.to_vec();
-        tokio::spawn(async move {
-            if let Err(err) = conn.send_frame(&frame).await {
-                eprintln!("[mq-hub] deliver failed: {err}");
-            }
-        });
+        match conn.send_frame(frame).await {
+            Ok(()) => written += 1,
+            Err(err) => eprintln!("[mq-hub] deliver to {user} failed: {err}"),
+        }
     }
+    written
 }
 
 /// Dedup cache occupancy, exposed for tests and metrics.
