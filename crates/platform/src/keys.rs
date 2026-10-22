@@ -93,7 +93,9 @@ impl Platform {
         // store junk — garbage keys would make the user unreachable, and an
         // unsigned bundle would be dead weight: senders reject it anyway.
         if bundle.validate_shape().is_err() {
-            return Err(PlatformError::BadInput("bundle keys are not valid curve points"));
+            return Err(PlatformError::BadInput(
+                "bundle keys are not valid curve points",
+            ));
         }
         bundle
             .verify_signature()

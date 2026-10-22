@@ -516,9 +516,15 @@ fn session_tokens_are_stored_as_digests() {
         c.query_row("SELECT token FROM sessions LIMIT 1", [], |r| r.get(0))
             .unwrap()
     };
-    assert_ne!(stored, token, "the raw bearer token must never reach the db");
+    assert_ne!(
+        stored, token,
+        "the raw bearer token must never reach the db"
+    );
     assert_eq!(stored, wxlike_platform::token_digest(&token));
     assert_eq!(stored.len(), 64, "sha256 hex");
     // 摘要仍是有效的查找键：登录态照常工作
-    assert_eq!(p.lookup_token(&token).unwrap().as_deref(), Some(uid.as_str()));
+    assert_eq!(
+        p.lookup_token(&token).unwrap().as_deref(),
+        Some(uid.as_str())
+    );
 }

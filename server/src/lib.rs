@@ -1183,13 +1183,10 @@ fn dev_routes(platform: PlatformState) -> Router {
         app = app.route(
             "/api/dev/fund",
             axum::routing::post(
-                move |headers: axum::http::HeaderMap,
-                      ApiJson(body): ApiJson<serde_json::Value>| {
+                move |headers: axum::http::HeaderMap, ApiJson(body): ApiJson<serde_json::Value>| {
                     let state = state.clone();
                     async move {
-                        let presented = headers
-                            .get("x-admin-token")
-                            .and_then(|v| v.to_str().ok());
+                        let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
                         if !state.admin_ok(presented) {
                             return (
                                 StatusCode::FORBIDDEN,

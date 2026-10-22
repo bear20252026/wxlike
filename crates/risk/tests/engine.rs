@@ -31,7 +31,9 @@ fn claim_keys_throttles_then_denies_without_challenge() {
     e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
     assert_eq!(
         e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
-        Verdict::Throttle { retry_after_ms: 3_600_000 }
+        Verdict::Throttle {
+            retry_after_ms: 3_600_000
+        }
     );
     // 键隔离：别的 (caller, target) 不受影响
     assert_eq!(
@@ -44,7 +46,9 @@ fn claim_keys_throttles_then_denies_without_challenge() {
     e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
     assert_eq!(
         e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
-        Verdict::Deny { reason: "claim_keys_rate".into() }
+        Verdict::Deny {
+            reason: "claim_keys_rate".into()
+        }
     );
 }
 
