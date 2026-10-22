@@ -494,10 +494,17 @@ fn ws_routes(handle: HubHandle) -> Router {
     Router::new().route(
         "/ws",
         get(move |upgrade: WebSocketUpgrade| async move {
-            upgrade.on_upgrade(move |socket| async move {
-                let conn = wxlike_net::conn::ws::peer_conn(socket);
-                let _ = handle.attach_transport(conn).await;
-            })
+            // AR-2/H-9 (audit round 4): one resource boundary for both
+            // transports. The QUIC path caps frames at MAX_FRAME before
+            // allocating; an unauthenticated WS peer used to be able to push
+            // the axum default (64 MiB) per message.
+            upgrade
+                .max_message_size(wxlike_net::framing::MAX_FRAME as usize)
+                .max_frame_size(wxlike_net::framing::MAX_FRAME as usize)
+                .on_upgrade(move |socket| async move {
+                    let conn = wxlike_net::conn::ws::peer_conn(socket);
+                    let _ = handle.attach_transport(conn).await;
+                })
         }),
     )
 }
@@ -575,9 +582,17 @@ async fn build_mq_router(mq_mode: &str) -> anyhow::Result<wxlike_mq::MqRouter> {
 
 /// Consumer identity per Redis database, so two hubs on one Redis are
 /// distinguishable in XPENDING output.
+///
+/// AR-2/H-10 (audit round 4): the URL itself is deliberately NOT part of the
+/// name — Redis connection strings carry the password (`redis://:pw@host`),
+/// and consumer names surface in XINFO CONSUMERS / XPENDING output and slow
+/// logs. A short SHA-8 of the URL keeps per-database distinctness without
+/// ever printing the credentials.
 #[cfg(feature = "redis")]
 fn url_consumer(url: &str) -> String {
-    format!("{url}-pid-{}", std::process::id())
+    use sha2::{Digest as _, Sha256};
+    let hash = hex::encode(&Sha256::digest(url.as_bytes())[..4]);
+    format!("hub-{hash}-pid-{}", std::process::id())
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,27 +1152,77 @@ async fn metrics() -> impl IntoResponse {
 
 /// Virtual-money faucet for demos and the UI integration tests (WP-09 is a
 /// closed virtual ledger; real funding is a licensed channel and stays out).
-/// Opt-in per process: `WXLIKE_DEV_FAUCET=1`.
+/// Opt-in per process: `WXLIKE_DEV_FAUCET=1` **and** `WXLIKE_ADMIN_TOKEN`
+/// configured — the faucet mints money, so it demands the admin token
+/// (`x-admin-token` header) like every other admin surface (AR-2/H-1, audit
+/// round 4). Without an admin token the faucet stays off: "没配就是关".
 fn dev_routes(platform: PlatformState) -> Router {
+    /// Per-call cap: enough for any demo, far below the ledger ceiling — an
+    /// authorized-but-compromised caller must not be able to hyperinflate
+    /// the virtual economy in one request.
+    const FAUCET_MAX_PER_CALL: i64 = 100_000_00;
     let mut app = axum::Router::new();
     if std::env::var("WXLIKE_DEV_FAUCET").as_deref() == Ok("1") {
+        if platform
+            .options()
+            .admin_token
+            .as_deref()
+            .is_none_or(|t| t.is_empty())
+        {
+            eprintln!(
+                "[wxlike-server] WXLIKE_DEV_FAUCET=1 but WXLIKE_ADMIN_TOKEN is not set; \
+                 the faucet stays OFF (it mints money — it will not run unauthenticated)"
+            );
+            return app;
+        }
+        eprintln!(
+            "[wxlike-server] DEV FAUCET ENABLED: /api/dev/fund is live, admin-token gated, \
+             max {FAUCET_MAX_PER_CALL} per call — do not expose this process to the internet"
+        );
         let state = platform;
         app = app.route(
             "/api/dev/fund",
-            axum::routing::post(move |ApiJson(body): ApiJson<serde_json::Value>| {
-                let state = state.clone();
-                async move {
-                    let user_id = body["user_id"].as_str().unwrap_or_default();
-                    let amount = body["amount"].as_i64().unwrap_or(0);
-                    match state.fund(user_id, amount, "dev faucet") {
-                        Ok(()) => (StatusCode::NO_CONTENT, "".to_string()),
-                        Err(err) => (
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            format!("{{\"error\":\"{err}\"}}"),
-                        ),
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap,
+                      ApiJson(body): ApiJson<serde_json::Value>| {
+                    let state = state.clone();
+                    async move {
+                        let presented = headers
+                            .get("x-admin-token")
+                            .and_then(|v| v.to_str().ok());
+                        if !state.admin_ok(presented) {
+                            return (
+                                StatusCode::FORBIDDEN,
+                                "{\"error\":\"admin token required\"}".to_string(),
+                            );
+                        }
+                        let user_id = body["user_id"].as_str().unwrap_or_default();
+                        let amount = body["amount"].as_i64().unwrap_or(0);
+                        if amount <= 0 || amount > FAUCET_MAX_PER_CALL {
+                            return (
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                format!(
+                                    "{{\"error\":\"amount must be 1..={FAUCET_MAX_PER_CALL}\"}}"
+                                ),
+                            );
+                        }
+                        // The fund ledger row itself is the audit trail; the
+                        // log line gives operators a real-time view.
+                        tracing::warn!(
+                            user = user_id,
+                            amount,
+                            "dev faucet fund (admin-authenticated)"
+                        );
+                        match state.fund(user_id, amount, "dev faucet") {
+                            Ok(()) => (StatusCode::NO_CONTENT, "".to_string()),
+                            Err(err) => (
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                format!("{{\"error\":\"{err}\"}}"),
+                            ),
+                        }
                     }
-                }
-            }),
+                },
+            ),
         );
     }
     app
