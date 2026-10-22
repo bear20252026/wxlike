@@ -23,11 +23,12 @@ fn infinite_loop_throws_instead_of_freezing() {
 fn bounded_loops_still_run_to_completion() {
     let mut engine = BoaEngine::new();
     let out = engine
-        .eval(
-            "let s = 0; for (let i = 0; i < 500000; i++) { s += i; } s",
-        )
+        .eval("let s = 0; for (let i = 0; i < 500000; i++) { s += i; } s")
         .expect("a legitimate half-million-iteration loop must pass");
-    assert!(out.contains("124999750000"), "sum computed correctly: {out}");
+    assert!(
+        out.contains("124999750000"),
+        "sum computed correctly: {out}"
+    );
 }
 
 #[test]
