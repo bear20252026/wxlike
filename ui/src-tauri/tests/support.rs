@@ -62,11 +62,13 @@ pub async fn connected_pair() -> (
         .as_str()
         .unwrap()
         .to_string();
+    // hub 只认注册返回的会话凭据，不认 user_id（issue #3）
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &bob_id, &bob).await;
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
     (http, quic, platform, alice, bob, conv)
 }
@@ -79,4 +81,25 @@ pub async fn next_event(state: &AppState, what: &str) -> serde_json::Value {
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
         .expect("connection alive")
         .expect("event arrives")
+}
+
+/// 成为好友（P3 陌生人闸门只放行好友/已接受的陌生人）。
+///
+/// 顺手把"成为好友"的系统通知读掉：它也走 hub，留着会抢走调用方的
+/// `next_event()`。
+pub async fn befriend(a: &AppState, b_id: &str, b: &AppState) {
+    a.friend_request(b_id, "test").unwrap();
+    let incoming = b.friend_requests_incoming().unwrap();
+    let id = incoming
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|r| r["id"].as_str())
+        .unwrap_or_else(|| panic!("好友请求没到对方手里：{incoming}"))
+        .to_string();
+    b.friend_accept(&id).unwrap();
+    for who in [a, b] {
+        while let Ok(Ok(Some(_))) =
+            tokio::time::timeout(Duration::from_millis(200), who.next_event()).await
+        {}
+    }
 }

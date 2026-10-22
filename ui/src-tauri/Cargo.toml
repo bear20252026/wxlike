@@ -25,6 +25,8 @@ wxlike-rtc = { path = "../../crates/rtc" }
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 sha2 = "0.10"
+# 秘密聊天设备密钥（静态加密的密钥材料）
+rand = "0.8"
 hex = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 

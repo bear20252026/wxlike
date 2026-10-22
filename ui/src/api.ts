@@ -535,6 +535,29 @@ export async function secretEnabled(): Promise<boolean> {
   return invoke<boolean>("secret_enabled");
 }
 
+/** 会话级秘密聊天开关 + 消失消息 TTL（服务端是唯一真相）。 */
+export interface SecretState {
+  conv_id: string;
+  enabled: boolean;
+  ttl_ms: number;
+}
+
+export async function secretConfigure(
+  convId: string,
+  enabled: boolean,
+  ttlMs = 0,
+): Promise<SecretState> {
+  return invoke<SecretState>("secret_configure", {
+    conv_id: convId,
+    enabled,
+    ttl_ms: ttlMs,
+  });
+}
+
+export async function secretState(convId: string): Promise<SecretState> {
+  return invoke<SecretState>("secret_state", { conv_id: convId });
+}
+
 export async function sendSecretText(
   convId: string,
   to: string[],

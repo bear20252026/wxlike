@@ -38,8 +38,14 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use vodozemac::megolm::{GroupSession, InboundGroupSession, MegolmMessage, SessionKey};
-use vodozemac::olm::{Account, Message, OlmMessage, PreKeyMessage, Session, SessionConfig};
+use vodozemac::megolm::{
+    GroupSession, GroupSessionPickle, InboundGroupSession, InboundGroupSessionPickle,
+    MegolmMessage, SessionKey,
+};
+use vodozemac::olm::{
+    Account, AccountPickle, Message, OlmMessage, PreKeyMessage, Session, SessionConfig,
+    SessionPickle,
+};
 use vodozemac::Curve25519PublicKey;
 
 /// One-time prekeys kept in stock.
@@ -71,9 +77,57 @@ pub enum CryptoError {
     BadKey(String),
     #[error("peer published no one-time prekey")]
     NoPreKey,
+    #[error("stored crypto state is unreadable: {0}")]
+    Snapshot(String),
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;
+
+/// 本地静态加密的魔数（版本 + 用途）。换算法/换格式就换魔数，旧文件直接
+/// 报"读不懂"，不会半加载。
+const AT_REST_MAGIC: &[u8; 5] = b"WXSC1";
+const AT_REST_NONCE: usize = 24;
+
+/// 快照落盘前的静态加密（XChaCha20-Poly1305）。
+///
+/// vodozemac 的 pickle 是**明文**结构体，磁盘上直接放等于把身份私钥写在
+/// 文件里。调用方（桌面端）用一把 32 字节设备密钥密封它，密钥单独存、
+/// 权限 0600。
+pub fn seal_at_rest(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let mut nonce = [0u8; AT_REST_NONCE];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    let body = cipher
+        .encrypt(XNonce::from_slice(&nonce), plaintext)
+        .map_err(|_| CryptoError::Snapshot("seal failed".into()))?;
+    let mut out = Vec::with_capacity(AT_REST_MAGIC.len() + AT_REST_NONCE + body.len());
+    out.extend_from_slice(AT_REST_MAGIC);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+/// [`seal_at_rest`] 的逆操作。密钥不对、文件被改、版本不认识都报错。
+pub fn open_at_rest(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>> {
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+
+    if blob.len() < AT_REST_MAGIC.len() + AT_REST_NONCE
+        || &blob[..AT_REST_MAGIC.len()] != AT_REST_MAGIC
+    {
+        return Err(CryptoError::Snapshot(
+            "not a wxlike secret-chat store (bad header)".into(),
+        ));
+    }
+    let nonce = &blob[AT_REST_MAGIC.len()..AT_REST_MAGIC.len() + AT_REST_NONCE];
+    let body = &blob[AT_REST_MAGIC.len() + AT_REST_NONCE..];
+    XChaCha20Poly1305::new(key.into())
+        .decrypt(XNonce::from_slice(nonce), body)
+        .map_err(|_| CryptoError::Snapshot("wrong device key or corrupted store".into()))
+}
 
 /// The fetchable key bundle (`POST`/`GET /api/keys`). Keys are base64, matching
 /// the Olm wire format so nothing has to be re-encoded per hop.
@@ -153,6 +207,11 @@ impl Device {
     pub fn identity_fingerprint(&self) -> String {
         self.account.identity_keys().curve25519.to_base64()
     }
+
+    /// Rebuilds a device from a stored account pickle (restart / new process).
+    pub fn from_account(account: Account) -> Self {
+        Self { account }
+    }
 }
 
 impl Default for Device {
@@ -212,6 +271,30 @@ struct GroupState {
     outbound: Option<GroupSession>,
     /// One inbound session per remote sender identity.
     inbound: HashMap<String, InboundGroupSession>,
+}
+
+/// On-disk format version. Bump when the shape changes: an old snapshot is
+/// then refused with a clear error instead of half-loading.
+const SNAPSHOT_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct Snapshot {
+    version: u32,
+    account: AccountPickle,
+    dm: BTreeMap<String, DmSnapshot>,
+    groups: BTreeMap<String, GroupSnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DmSnapshot {
+    session: SessionPickle,
+    chain_pos: HashMap<String, u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GroupSnapshot {
+    outbound: Option<GroupSessionPickle>,
+    inbound: HashMap<String, InboundGroupSessionPickle>,
 }
 
 /// A device's whole crypto state.
@@ -521,6 +604,93 @@ impl Crypto {
 
     pub fn session_id_with(&self, peer: &str) -> Option<String> {
         self.dm.get(peer).map(|s| s.session.session_id())
+    }
+
+    // -------------------------------------------------------------------------
+    // persistence
+    // -------------------------------------------------------------------------
+
+    /// Everything that must survive a restart: the account (identity + unused
+    /// one-time keys) and every 1:1 ratchet.
+    ///
+    /// Ratchet state is *not* a cache. If it is lost the peer's next message
+    /// arrives at an index our chain never saw, so a restart without this
+    /// snapshot silently turns every running conversation into "cannot
+    /// decrypt". That is why the desktop layer persists after **every** send
+    /// and every successful receive, not just at shutdown.
+    ///
+    /// Not included, on purpose: the parked-ahead buffer and the replay window.
+    /// Both are rebuilt from traffic we are about to receive again, and
+    /// persisting them would mean writing a few megabytes per message.
+    pub fn snapshot(&self) -> Result<Vec<u8>> {
+        let snap = Snapshot {
+            version: SNAPSHOT_VERSION,
+            account: self.device.account.pickle(),
+            dm: self
+                .dm
+                .iter()
+                .map(|(peer, state)| {
+                    (
+                        peer.clone(),
+                        DmSnapshot {
+                            session: state.session.pickle(),
+                            chain_pos: state.chain_pos.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            groups: self
+                .groups
+                .iter()
+                .map(|(id, state)| {
+                    (
+                        id.clone(),
+                        GroupSnapshot {
+                            outbound: state.outbound.as_ref().map(GroupSession::pickle),
+                            inbound: state
+                                .inbound
+                                .iter()
+                                .map(|(sender, s)| (sender.clone(), s.pickle()))
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        serde_json::to_vec(&snap).map_err(|e| CryptoError::Snapshot(e.to_string()))
+    }
+
+    /// Rebuilds a `Crypto` from [`Crypto::snapshot`]. Rejects a snapshot
+    /// written by a different (incompatible) version instead of guessing.
+    pub fn restore(bytes: &[u8]) -> Result<Self> {
+        let snap: Snapshot =
+            serde_json::from_slice(bytes).map_err(|e| CryptoError::Snapshot(e.to_string()))?;
+        if snap.version != SNAPSHOT_VERSION {
+            return Err(CryptoError::Snapshot(format!(
+                "unsupported snapshot version {} (expected {SNAPSHOT_VERSION})",
+                snap.version
+            )));
+        }
+        let mut crypto = Self::new(Device::from_account(Account::from_pickle(snap.account)));
+        for (peer, state) in snap.dm {
+            let mut dm = DmState::new(Session::from_pickle(state.session));
+            dm.chain_pos = state.chain_pos;
+            crypto.dm.insert(peer, dm);
+        }
+        for (id, state) in snap.groups {
+            crypto.groups.insert(
+                id,
+                GroupState {
+                    outbound: state.outbound.map(GroupSession::from_pickle),
+                    inbound: state
+                        .inbound
+                        .into_iter()
+                        .map(|(sender, s)| (sender, InboundGroupSession::from_pickle(s)))
+                        .collect(),
+                },
+            );
+        }
+        Ok(crypto)
     }
 
     // -------------------------------------------------------------------------

@@ -113,7 +113,13 @@ pub struct AppState {
     /// P1 secret chat: the local Olm account, held for the app session
     /// (key persistence lands with P4's full secret chats). Shared with the
     /// receive pump so inbound sealed payloads decrypt before emit.
-    secret: Arc<Mutex<Option<Crypto>>>,
+    secret: Arc<Mutex<Option<SecretStore>>>,
+    /// 数据目录（本地库所在目录）：秘密聊天的密钥与快照也放这里。
+    data_dir: Mutex<Option<std::path::PathBuf>>,
+    /// 秘密会话开关的本地缓存。**服务端是唯一真相**（`secret_settings`），
+    /// 这里只是发送路径的快速判断：每发一条都去 GET 一次不现实，而且网络
+    /// 抖动不该让"这条能不能发"变得不可知。
+    secret_convs: Mutex<std::collections::HashMap<String, bool>>,
     /// P2 local message library (client-side SQLite): the chat opens from
     /// disk instantly, the server history only *adds* older rows.
     local: Arc<Mutex<Option<LocalStore>>>,
@@ -137,6 +143,8 @@ impl AppState {
             hub_addr: Mutex::new(None),
             seq: AtomicU64::new(1),
             secret: Arc::new(Mutex::new(None)),
+            data_dir: Mutex::new(None),
+            secret_convs: Mutex::new(std::collections::HashMap::new()),
             local: Arc::new(Mutex::new(None)),
             outbox: Mutex::new(None),
             outbox_pump: std::sync::atomic::AtomicBool::new(false),
@@ -213,6 +221,11 @@ impl AppState {
     /// `user_id`（issue #3）。测试与前端也不该直接拿整个 `Http`。
     pub fn auth_token(&self) -> Option<String> {
         self.http().token.clone()
+    }
+
+    /// 恢复一次登录（重启后重新载入保存的凭据；命令层不做持久化）。
+    pub fn set_auth_token(&self, token: &str) {
+        self.http().token = Some(token.to_string());
     }
 
     pub fn user_id(&self) -> Result<String, String> {
@@ -393,25 +406,45 @@ impl AppState {
     }
 
     fn send_body(&self, conv_id: &str, to: Vec<String>, body: MsgBody) -> Result<Envelope, String> {
+        self.send_body_with_echo(conv_id, to, body, None)
+    }
+
+    /// `echo` 是**发送方自己已经知道的明文**（只有秘密聊天需要）：
+    /// 自己的密文不能用接收方的路径去解——对端是自己，没有会话，必然失败。
+    fn send_body_with_echo(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        body: MsgBody,
+        echo: Option<&str>,
+    ) -> Result<Envelope, String> {
+        // 秘密会话只收密文：明文（文本/图片/转发卡片）进秘密会话，等于把
+        // 内容原样交给服务器，UI 上却挂着锁——这是"承诺没兑现"（issue #15）。
+        // 控制帧（typing）放行：它本来就不落库、不带内容。
+        let allowed_in_secret = matches!(&body, MsgBody::Custom { kind, .. }
+            if kind == custom_kind::E2EE_DM || kind == custom_kind::TYPING);
+        if !allowed_in_secret && self.conv_is_secret(conv_id) {
+            return Err("这是秘密聊天会话：只能发送加密消息，明文已取消发送".into());
+        }
         let client = self.client()?;
         let me = self.user_id()?;
         let env = Envelope::with_body(conv_id, me, to, self.next_seq(), body);
         match wait(client.send(&env)) {
             Ok(()) => {
-                self.append_own_echo(&env);
+                self.append_own_echo(&env, echo);
                 Ok(env)
             }
             // 连接问题不该变成"用户手动重发"：落盘排队，后台泵连上就发
-            Err(err) => self.queue_for_retry(&env, &err),
+            Err(err) => self.queue_for_retry(&env, &err, echo),
         }
     }
 
-    /// 自己的消息落本地库（e2ee 时是解密后的形式）。
-    fn append_own_echo(&self, env: &Envelope) {
+    /// 自己的消息落本地库（秘密聊天时用发送方已知的明文，不去解密自己的密文）。
+    fn append_own_echo(&self, env: &Envelope, echo: Option<&str>) {
         if env.is_recall() || env.is_typing() {
             return;
         }
-        self.local_append(&render_event_with(env, &self.secret));
+        self.local_append(&render_event_with(env, &self.secret, echo));
     }
 
     /// 发送失败 → 写进 outbox，等后台泵重发。
@@ -419,13 +452,22 @@ impl AppState {
     /// `task_id` 用 `msg_id`：重试时把**同一条 envelope** 原样重发，服务端按
     /// `msg_id` 去重，所以重试不会变成两条消息。这也是 `enqueue_with_id`
     /// 存在的原因——同一个 id 重复入队是空操作。
-    fn queue_for_retry(&self, env: &Envelope, err: &anyhow::Error) -> Result<Envelope, String> {
+    fn queue_for_retry(
+        &self,
+        env: &Envelope,
+        err: &anyhow::Error,
+        echo: Option<&str>,
+    ) -> Result<Envelope, String> {
         let Some(outbox) = self.outbox() else {
             // 没打开本地库 = 无处落盘，只能如实报错（总比假装成功好）
             return Err(format!("send: {err:#}"));
         };
-        let payload =
-            serde_json::to_value(env).map_err(|e| format!("outbox encode: {e}"))?;
+        // 秘密消息把明文一起存：重发成功后本地回显才能显示正文，而不是
+        // "无法解密"。普通消息保持裸 envelope，老队列项照样能读。
+        let payload = match echo {
+            Some(text) => serde_json::json!({ "env": env, "echo": text }),
+            None => serde_json::to_value(env).map_err(|e| format!("outbox encode: {e}"))?,
+        };
         outbox
             .enqueue_with_id(
                 &hex(&env.msg_id),
@@ -478,15 +520,35 @@ impl AppState {
                 }
                 let now = wxlike_core::types::now_ms() as i64;
                 let report = outbox.flush_with(now, 20, |task| {
-                    let env: Envelope = match serde_json::from_value(task.payload.clone()) {
-                        Ok(env) => env,
-                        // 坏 payload 重试一万次也不会变好
-                        Err(e) => {
-                            return Err(wxlike_core::outbox::SendFailure::permanent(format!(
-                                "payload 解不开: {e}"
-                            )))
-                        }
-                    };
+                    // 两种队列项：裸 envelope（普通消息）与
+                    // `{env, echo}`（秘密消息，回显要用的明文）。
+                    let (env, echo): (Envelope, Option<String>) =
+                        match serde_json::from_value::<Envelope>(task.payload.clone()) {
+                            Ok(env) => (env, None),
+                            Err(_) => match task.payload.get("env") {
+                                Some(v) => {
+                                    let env = serde_json::from_value::<Envelope>(v.clone())
+                                        .map_err(|e| {
+                                            wxlike_core::outbox::SendFailure::permanent(format!(
+                                                "payload 解不开: {e}"
+                                            ))
+                                        })?;
+                                    let echo = task
+                                        .payload
+                                        .get("echo")
+                                        .and_then(|e| e.as_str())
+                                        .map(str::to_string);
+                                    (env, echo)
+                                }
+                                // 坏 payload 重试一万次也不会变好
+                                None => {
+                                    return Err(wxlike_core::outbox::SendFailure::permanent(
+                                        "payload 解不开: 既不是 envelope 也不是 {env, echo}"
+                                            .to_string(),
+                                    ))
+                                }
+                            },
+                        };
                     // 本地防雪崩：弱网下重发风暴会把流量打光、把连接堵死。
                     // 键用 conv_id——同一条命令不同会话互不牵连。
                     let bytes = task.payload.to_string().len();
@@ -504,7 +566,7 @@ impl AppState {
                     match wait(client.send(&env)) {
                         Ok(()) => {
                             if !env.is_recall() && !env.is_typing() {
-                                let payload = render_event_with(&env, &secret);
+                                let payload = render_event_with(&env, &secret, echo.as_deref());
                                 let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
                                 if let Some(store) = guard.as_ref() {
                                     let _ = store.append(&payload);
@@ -763,7 +825,20 @@ impl AppState {
         );
         *self.outbox.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(outbox));
         *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
+        if let Some(dir) = path.parent() {
+            *self.data_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir.to_path_buf());
+        }
         Ok(())
+    }
+
+    /// 数据目录。秘密聊天**必须**有它才能持久化密钥，所以没打开本地库时
+    /// 明确报错，而不是退回进程内状态（那等于"重启换身份"）。
+    fn data_dir(&self) -> Result<std::path::PathBuf, String> {
+        self.data_dir
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "本地库未打开：秘密聊天需要数据目录保存密钥".to_string())
     }
 
     /// 控制面地址（`http://host:port`），诊断用。
@@ -812,6 +887,15 @@ impl AppState {
         let rows = store
             .page(conv_id, before_seq, limit)
             .map_err(|e| format!("local page: {e:#}"))?;
+        // 消失消息：到期的那条不再出现在本地历史里（issue #15）。删除动作
+        // 由本地库自己的清理负责，这里先保证"看不见"——界面上的承诺是
+        // "到点消失"，不是"到点仍在但灰掉"。
+        let ttl = self.conv_ttl_ms(conv_id);
+        let now = wxlike_core::types::now_ms();
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|r| !expired(r.to_json().get("sent_at_ms"), ttl, now))
+            .collect();
         let messages: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
         let next = rows.last().map(|r| r.seq).filter(|_| rows.len() == limit);
         Ok(serde_json::json!({ "messages": messages, "next_before_seq": next }))
@@ -846,12 +930,20 @@ impl AppState {
 
     /// Forwards one message into another conversation as a structured
     /// snapshot (the original stays where it is; a recall does not follow).
+    ///
+    /// **秘密会话的内容禁止转发**：转发会造出第三份副本，而密钥只在两端，
+    /// 消失消息也不追到副本上。来源会话从条目自带的 `conv_id` 判断。
     pub fn forward_message(
         &self,
         to_conv: &str,
         to: Vec<String>,
         item: &serde_json::Value,
     ) -> Result<(), String> {
+        if let Some(from) = item.get("conv_id").and_then(|v| v.as_str()) {
+            if self.conv_is_secret(from) {
+                return Err("秘密聊天的消息不能转发".into());
+            }
+        }
         self.send_body(
             to_conv,
             to,
@@ -900,6 +992,14 @@ impl AppState {
     ) -> Result<(), String> {
         if items.is_empty() {
             return Err("没有选中要合并转发的消息".into());
+        }
+        // 与单条转发同一条规则：任何一条来自秘密会话，整批都不发。
+        if items.iter().any(|item| {
+            item.get("conv_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|from| self.conv_is_secret(from))
+        }) {
+            return Err("选中项里有秘密聊天的消息，不能转发".into());
         }
         self.send_body(
             to_conv,
@@ -984,20 +1084,29 @@ impl AppState {
     pub fn secret_enable(&self) -> Result<String, String> {
         {
             let guard = self.secret.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(crypto) = guard.as_ref() {
-                return Ok(crypto.device().identity_fingerprint());
+            if let Some(store) = guard.as_ref() {
+                return Ok(store.crypto.device().identity_fingerprint());
             }
         }
+        let dir = self.data_dir()?;
         let me = self.user_id()?;
-        let mut crypto = Crypto::new(wxlike_core::e2ee::Device::new());
-        let bundle = crypto.bundle_refilled(&me);
+        // 先看磁盘：重启后必须还是**同一个身份**，否则对方的安全码会变、
+        // 老会话全部解不开（issue #15）。
+        let mut store = match SecretStore::open(&dir)? {
+            Some(store) => store,
+            None => SecretStore::create(&dir)?,
+        };
+        // 无论新旧都重发一次 bundle：一次性密钥可能已经用掉，服务端也可能
+        // 换过库。重发是幂等的（`publish_keys` 是 upsert）。
+        let bundle = store.crypto.bundle_refilled(&me);
         self.http().expect_empty(
             "POST",
             "/api/keys",
             Some(&serde_json::to_value(&bundle).map_err(|e| e.to_string())?),
         )?;
-        let fingerprint = crypto.device().identity_fingerprint();
-        *self.secret.lock().unwrap_or_else(PoisonError::into_inner) = Some(crypto);
+        store.persist()?;
+        let fingerprint = store.crypto.device().identity_fingerprint();
+        *self.secret.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
         Ok(fingerprint)
     }
 
@@ -1008,10 +1117,79 @@ impl AppState {
             .is_some()
     }
 
-    /// Sends one secret-chat message. On any crypto-side failure (no peer
-    /// bundle, drained pre-keys) the send **falls back to cleartext** with a
-    /// warn log — the P1 contract's documented fallback behavior; a future
-    /// milestone makes refusal the default once key management is complete.
+    /// 打开/关闭某个会话的秘密聊天，并设置消失消息 TTL。
+    ///
+    /// 这是"开关接入发送链"的那一步：以前前端的 `secretConvs` 只是一个
+    /// 进程内 `Set`，服务端根本不知道这个会话是秘密的，于是发送、转发、
+    /// 历史过滤全都看不到它（issue #15）。
+    pub fn secret_configure(
+        &self,
+        conv_id: &str,
+        enabled: bool,
+        ttl_ms: u64,
+    ) -> Result<serde_json::Value, String> {
+        if enabled {
+            // 开会话之前先把本机账户准备好（身份 + bundle 发布）
+            self.secret_enable()?;
+        }
+        let state = self.http().expect_json(
+            "PUT",
+            &format!("/api/secret/{conv_id}"),
+            Some(&serde_json::json!({ "enabled": enabled, "ttl_ms": ttl_ms })),
+        )?;
+        self.cache_secret_conv(conv_id, enabled);
+        Ok(state)
+    }
+
+    /// 服务端记着的秘密会话状态（开关 + TTL）。
+    pub fn secret_state(&self, conv_id: &str) -> Result<serde_json::Value, String> {
+        let state = self
+            .http()
+            .expect_json("GET", &format!("/api/secret/{conv_id}"), None)?;
+        let enabled = state["enabled"].as_bool().unwrap_or(false);
+        self.cache_secret_conv(conv_id, enabled);
+        Ok(state)
+    }
+
+    fn cache_secret_conv(&self, conv_id: &str, enabled: bool) {
+        self.secret_convs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(conv_id.to_string(), enabled);
+    }
+
+    /// 这个会话是不是秘密聊天（发送/转发闸门用）。
+    ///
+    /// 命中缓存就返回；否则问一次服务端。**查询失败时返回 false**：这是
+    /// 客户端的显示/存储承诺，不是访问控制——服务端抖一下就"所有消息都
+    /// 发不出去"是更坏的失败模式。真正的强制在 `secret_settings` 与
+    /// 客户端把消息加密这两件事上。
+    fn conv_is_secret(&self, conv_id: &str) -> bool {
+        if let Some(v) = self
+            .secret_convs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(conv_id)
+        {
+            return *v;
+        }
+        match self.secret_state(conv_id) {
+            Ok(state) => state["enabled"].as_bool().unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
+    /// 会话的消失消息 TTL（毫秒，0 = 关）。查不到就按 0 处理。
+    fn conv_ttl_ms(&self, conv_id: &str) -> u64 {
+        self.secret_state(conv_id)
+            .ok()
+            .and_then(|v| v["ttl_ms"].as_u64())
+            .unwrap_or(0)
+    }
+
+    /// Sends one secret-chat message. **fail closed**: any crypto-side failure
+    /// (no peer bundle, drained pre-keys, no session) cancels the send — a
+    /// secret chat must never degrade to cleartext (issue #4).
     pub fn send_secret_text(
         &self,
         conv_id: &str,
@@ -1023,54 +1201,50 @@ impl AppState {
             .filter(|p| !p.is_empty())
             .ok_or_else(|| "秘密聊天需要明确的接收方".to_string())?
             .clone();
-        // **fail closed**：秘密聊天里任何一步失败都取消发送，绝不退化成明文。
-        //
-        // 以前的逻辑是"没有 bundle → `sealed = None` → `send_text`"，
-        // 而 `has_session_with(&peer)` 为真时 `bundle` 恰好是 `None`——
-        // 于是**第二次发送必发明文**（issue #4）。加密失败也只 eprintln 后发明文。
-        //
-        // 现在两条路分开：有会话就 `encrypt_dm_existing`（不需要 bundle），
+        // 两条路分开：有会话就 `encrypt_dm_existing`（不需要 bundle），
         // 没会话才取 bundle 建会话。取不到就报错，不猜。
         let sealed = {
             let mut guard = self.secret.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(crypto) = guard.as_mut() else {
+            let Some(store) = guard.as_mut() else {
                 return Err("secret chat not enabled".into());
             };
-            if crypto.has_session_with(&peer) {
-                crypto.encrypt_dm_existing(&peer, text.as_bytes())
+            let sealed = if store.crypto.has_session_with(&peer) {
+                store.crypto.encrypt_dm_existing(&peer, text.as_bytes())
             } else {
                 let bundle = self
                     .http()
                     .expect_json("GET", &format!("/api/keys/{peer}"), None)
                     .ok()
-                    .and_then(|v| {
-                        serde_json::from_value::<wxlike_core::e2ee::PreKeyBundle>(v).ok()
-                    })
+                    .and_then(|v| serde_json::from_value::<wxlike_core::e2ee::PreKeyBundle>(v).ok())
                     .filter(|p| !p.identity.is_empty() && !p.one_time_keys.is_empty())
                     .ok_or_else(|| {
-                        format!(
-                            "对方（{peer}）没有可用的预密钥：秘密聊天不能发送明文，已取消发送"
-                        )
+                        format!("对方（{peer}）没有可用的预密钥：秘密聊天不能发送明文，已取消发送")
                     })?;
-                crypto.encrypt_dm(&peer, &bundle, text.as_bytes())
-            }
+                store.crypto.encrypt_dm(&peer, &bundle, text.as_bytes())
+            };
+            let sealed = sealed
+                .map_err(|err| format!("秘密聊天加密失败，已取消发送（不会退化成明文）：{err}"))?;
+            // 棘轮已经前进：**发出去之前**先把新状态落盘，否则进程此刻被杀，
+            // 下一条消息会用同一个索引重发，对方直接解不开。
+            store.persist()?;
+            sealed
         };
-        let sealed = sealed.map_err(|err| {
-            format!("秘密聊天加密失败，已取消发送（不会退化成明文）：{err}")
-        })?;
 
         let payload = serde_json::json!({
             "peer": peer,
             "pre_key": sealed.pre_key,
             "body": sealed.body,
         });
-        self.send_body(
+        // 本地回显用**自己已知的明文**：拿自己的密文走接收路径必然失败
+        // （对端是自己，没有会话），以前的结果是卡片上写"无法解密"。
+        self.send_body_with_echo(
             conv_id,
             to,
             MsgBody::Custom {
                 kind: custom_kind::E2EE_DM.into(),
                 payload,
             },
+            Some(text),
         )?;
         Ok(())
     }
@@ -1113,7 +1287,7 @@ impl AppState {
             loop {
                 match client.next_envelope().await {
                     Ok(env) => {
-                        let payload = render_event_with(&env, &secret);
+                        let payload = render_event_with(&env, &secret, None);
                         {
                             let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
                             if let Some(store) = guard.as_ref() {
@@ -1135,7 +1309,7 @@ impl AppState {
     /// Event payload with the local secret account applied (sealed messages
     /// come out as cleartext for the UI, or as a marked failure).
     fn render_event(&self, env: &Envelope) -> serde_json::Value {
-        render_event_with(env, &self.secret)
+        render_event_with(env, &self.secret, None)
     }
 }
 
@@ -1303,6 +1477,96 @@ impl LocalStore {
     }
 }
 
+/// 桌面端的秘密聊天状态：Olm 账户 + 落盘路径 + 设备密钥。
+///
+/// 单独包一层是因为 `Crypto` 的棘轮**每发/每收一条都会变**，而磁盘上的副本
+/// 必须跟着变：只在退出时保存，等于"崩溃后所有会话都解不开"。所以每次
+/// 变动都调 [`SecretStore::persist`]。
+struct SecretStore {
+    crypto: Crypto,
+    key: [u8; 32],
+    path: std::path::PathBuf,
+}
+
+impl SecretStore {
+    const SNAPSHOT_FILE: &'static str = "secret-account.bin";
+    const KEY_FILE: &'static str = "secret-device.key";
+
+    /// 打开已有状态。`Ok(None)` = 这台设备还没有秘密聊天账户。
+    ///
+    /// **有快照但没有密钥文件时报错**：那是"数据在、解不开"，不是"新设备"。
+    /// 悄悄新建一个身份会让对方的安全码变化而毫无提示。
+    fn open(dir: &std::path::Path) -> Result<Option<Self>, String> {
+        let path = dir.join(Self::SNAPSHOT_FILE);
+        let key_path = dir.join(Self::KEY_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let key = match std::fs::read(&key_path) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                key
+            }
+            _ => {
+                return Err(format!(
+                    "秘密聊天密钥文件缺失或损坏（{}）：无法恢复身份，请删除 {} 后重新启用（会让对方的安全码变化）",
+                    key_path.display(),
+                    path.display()
+                ))
+            }
+        };
+        let blob = std::fs::read(&path).map_err(|e| format!("读秘密聊天快照失败：{e}"))?;
+        let plain = wxlike_core::e2ee::open_at_rest(&key, &blob).map_err(|e| e.to_string())?;
+        let crypto = Crypto::restore(&plain).map_err(|e| e.to_string())?;
+        Ok(Some(Self { crypto, key, path }))
+    }
+
+    /// 新建账户（或复用已有的设备密钥）。
+    fn create(dir: &std::path::Path) -> Result<Self, String> {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建数据目录失败：{e}"))?;
+        let key_path = dir.join(Self::KEY_FILE);
+        let key = match std::fs::read(&key_path) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                key
+            }
+            _ => {
+                let mut key = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
+                write_private(&key_path, &key)?;
+                key
+            }
+        };
+        Ok(Self {
+            crypto: Crypto::new(wxlike_core::e2ee::Device::new()),
+            key,
+            path: dir.join(Self::SNAPSHOT_FILE),
+        })
+    }
+
+    /// 原子写：先写 `.tmp` 再 rename，避免"写一半被杀"留下半截快照。
+    fn persist(&self) -> Result<(), String> {
+        let plain = self.crypto.snapshot().map_err(|e| e.to_string())?;
+        let blob = wxlike_core::e2ee::seal_at_rest(&self.key, &plain).map_err(|e| e.to_string())?;
+        write_private(&self.path, &blob)
+    }
+}
+
+/// 写文件并收紧权限（Unix 0600）。Windows 上靠用户目录 ACL，这里只管 Unix。
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("写 {} 失败：{e}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, path).map_err(|e| format!("替换 {} 失败：{e}", path.display()))?;
+    Ok(())
+}
+
 /// A downloaded object for the webview: base64 (data-URL ready) + type.
 #[derive(Serialize, Debug)]
 pub struct MediaBlob {
@@ -1313,7 +1577,15 @@ pub struct MediaBlob {
 /// Maps an envelope to the event payload the UI renders. Sealed secret-chat
 /// payloads are decrypted here (the fallback path marks failures instead of
 /// dropping the card).
-fn render_event_with(env: &Envelope, secret: &Mutex<Option<Crypto>>) -> serde_json::Value {
+///
+/// `own_text` 是**自己发出的秘密消息的明文**：发送方不能走接收路径去解自己
+/// 的密文（对端是自己、没有会话），旧实现因此把每条自己发的秘密消息都渲染成
+/// "无法解密"。
+fn render_event_with(
+    env: &Envelope,
+    secret: &Mutex<Option<SecretStore>>,
+    own_text: Option<&str>,
+) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "sender": env.sender,
         "conv_id": env.conv_id,
@@ -1358,6 +1630,12 @@ fn render_event_with(env: &Envelope, secret: &Mutex<Option<Crypto>>) -> serde_js
             payload["payload"] = p.clone();
             if kind == custom_kind::E2EE_DM {
                 payload["kind"] = "e2ee".into();
+                if let Some(text) = own_text {
+                    // 自己发的：明文就在手里，不需要（也不能）解密
+                    payload["text"] = text.into();
+                    payload["encrypted"] = true.into();
+                    return payload;
+                }
                 match try_decrypt_secret(secret, p, &env.sender) {
                     Some(Ok(text)) => {
                         payload["text"] = text.into();
@@ -1382,7 +1660,7 @@ fn render_event_with(env: &Envelope, secret: &Mutex<Option<Crypto>>) -> serde_js
 /// Standalone decryption used by [`render_event_with`] (kept separate so the
 /// borrow of the secret lock stays short).
 fn try_decrypt_secret(
-    secret: &Mutex<Option<Crypto>>,
+    secret: &Mutex<Option<SecretStore>>,
     payload: &serde_json::Value,
     sender: &str,
 ) -> Option<Result<String, String>> {
@@ -1390,21 +1668,38 @@ fn try_decrypt_secret(
     //
     // `peer` 是"发送者眼中的收件人"——对我们来说就是**自己**。拿它当对端去
     // 解密，必然找不到会话（或者找到一条通向自己的空会话），结果是
-    // `decryption failed (wrong session, ...)`。秘密聊天的往返测试一直红在
-    // 这里：消息确实加密发出来了，只是收方按错的 id 找密钥。
+    // `decryption failed (wrong session, ...)`。
     let peer = sender.to_string();
     let sealed = wxlike_core::e2ee::Sealed {
         pre_key: payload.get("pre_key")?.as_bool()?,
         body: payload.get("body")?.as_str()?.to_string(),
     };
     let mut guard = secret.lock().unwrap_or_else(PoisonError::into_inner);
-    let crypto = guard.as_mut()?;
-    Some(
-        crypto
-            .decrypt_dm(&peer, &sealed)
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .map_err(|err| format!("{err}")),
-    )
+    let store = guard.as_mut()?;
+    let opened = store
+        .crypto
+        .decrypt_dm(&peer, &sealed)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(|err| format!("{err}"));
+    if opened.is_ok() {
+        // 收到一条 → 棘轮前进 → 立刻落盘（崩溃后仍能继续这条会话）
+        if let Err(err) = store.persist() {
+            eprintln!("[e2ee] 保存会话状态失败：{err}");
+        }
+    }
+    Some(opened)
+}
+
+/// 消失消息判定：`ttl_ms == 0` 表示不消失。
+fn expired(sent_at_ms: Option<&serde_json::Value>, ttl_ms: u64, now: u64) -> bool {
+    if ttl_ms == 0 {
+        return false;
+    }
+    match sent_at_ms.and_then(serde_json::Value::as_u64) {
+        // 时间戳缺失时**不隐藏**：宁可多显示一条，也不要凭空吞掉历史
+        None => false,
+        Some(sent) => sent.saturating_add(ttl_ms) <= now,
+    }
 }
 
 /// Minimal percent-encoder for one query value (the search box can carry
@@ -1759,9 +2054,7 @@ pub mod commands {
 
     /// 发送队列状态：还有几条没发出去、哪几条彻底失败（UI 显示"重发/删除"）。
     #[tauri::command]
-    pub fn outbox_status(
-        state: tauri::State<'_, AppState>,
-    ) -> Result<serde_json::Value, String> {
+    pub fn outbox_status(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
         let Some(ob) = state.outbox() else {
             return Ok(serde_json::json!({ "pending": 0, "failed": [] }));
         };
@@ -1784,10 +2077,7 @@ pub mod commands {
 
     /// 用户点"重发"：清零计数，交给后台泵。
     #[tauri::command]
-    pub fn outbox_retry(
-        state: tauri::State<'_, AppState>,
-        task_id: String,
-    ) -> Result<(), String> {
+    pub fn outbox_retry(state: tauri::State<'_, AppState>, task_id: String) -> Result<(), String> {
         let ob = state.outbox().ok_or("本地库未打开")?;
         ob.requeue(&task_id, wxlike_core::types::now_ms() as i64)
             .map_err(|e| e.to_string())
@@ -1990,6 +2280,24 @@ pub mod commands {
     #[tauri::command]
     pub fn secret_enabled(state: tauri::State<'_, AppState>) -> Result<bool, String> {
         Ok(state.secret_enabled())
+    }
+
+    #[tauri::command]
+    pub fn secret_configure(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+        enabled: bool,
+        ttl_ms: Option<u64>,
+    ) -> Result<serde_json::Value, String> {
+        state.secret_configure(&conv_id, enabled, ttl_ms.unwrap_or(0))
+    }
+
+    #[tauri::command]
+    pub fn secret_state(
+        state: tauri::State<'_, AppState>,
+        conv_id: String,
+    ) -> Result<serde_json::Value, String> {
+        state.secret_state(&conv_id)
     }
 
     #[tauri::command]
@@ -2251,6 +2559,8 @@ pub fn run() {
             commands::favorite_remove,
             commands::secret_enable,
             commands::secret_enabled,
+            commands::secret_configure,
+            commands::secret_state,
             commands::send_secret_text,
             commands::send_voice,
             commands::send_file,
@@ -2277,8 +2587,9 @@ mod tests {
     fn normalize_path_blocks_traversal() {
         let base = normalize_path(std::path::Path::new("/data/app"));
         assert!(normalize_path(std::path::Path::new("/data/app/messages.db")).starts_with(&base));
-        assert!(!normalize_path(std::path::Path::new("/data/app/../../etc/passwd"))
-            .starts_with(&base));
+        assert!(
+            !normalize_path(std::path::Path::new("/data/app/../../etc/passwd")).starts_with(&base)
+        );
         assert!(!normalize_path(std::path::Path::new("/data/application/x")).starts_with(&base));
     }
 }

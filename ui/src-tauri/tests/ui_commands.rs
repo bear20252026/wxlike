@@ -42,6 +42,37 @@ fn pins() -> std::path::PathBuf {
     dir.join("pins.json")
 }
 
+/// Fresh app-data dir per client: the local message library **and** the secret
+/// chat key store live here (issue #15 — keys must survive a restart).
+fn data_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("wxlike-ui-data-{}-{tag}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("local.db")
+}
+
+/// 让两个人成为好友（P3 的陌生人闸门只放行好友/已接受的陌生人）。
+///
+/// 顺手把"成为好友"的系统通知读掉：它也是走 hub 的事件，留着会把调用方
+/// 的 `next_event()` 抢先消费掉。
+async fn befriend(a: &AppState, a_id: &str, b: &AppState, b_id: &str) {
+    a.friend_request(b_id, "test").unwrap();
+    let incoming = b.friend_requests_incoming().unwrap();
+    let id = incoming
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|r| r["id"].as_str())
+        .unwrap_or_else(|| panic!("{a_id} 的好友请求没到 {b_id} 手里：{incoming}"))
+        .to_string();
+    b.friend_accept(&id).unwrap();
+    for who in [a, b] {
+        while let Ok(Ok(Some(_))) =
+            tokio::time::timeout(Duration::from_millis(200), who.next_event()).await
+        {}
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn auth_register_login_and_profile() {
     let (http, _quic, _platform) = stack().await;
@@ -279,11 +310,20 @@ async fn send_and_receive_over_live_hub() {
     // the same name must be refused
     let shared_pins = pins();
     alice
-        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &shared_pins)
+        .connect_hub(
+            &quic.to_string(),
+            &alice.auth_token().unwrap(),
+            &shared_pins,
+        )
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &shared_pins)
         .unwrap();
     assert!(alice.is_connected() && bob.is_connected());
+
+    // P3 陌生人闸门：非好友的直聊会被投递策略丢掉。这不是回归，是策略——
+    // 这些测试以前能在"不是好友"的状态下发消息，是因为 Tauri 这套测试
+    // 从没进过 CI（#18），P3 上线后没人跑过它们。
+    befriend(&alice, &alice.user_id().unwrap(), &bob, &bob_id).await;
 
     let conv = wxlike_ui_lib::direct_conv_id(&alice.user_id().unwrap(), &bob_id);
 
@@ -384,6 +424,7 @@ async fn p1_history_pagination_and_read_receipts() {
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &alice_id, &bob, &bob_id).await;
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // six messages; bob collects them live (and thus the msg ids)
@@ -449,6 +490,7 @@ async fn p1_typing_is_transient() {
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &alice_id, &bob, &bob_id).await;
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // typing reaches bob, then a real message follows. A typing frame sent
@@ -510,6 +552,7 @@ async fn p1_forward_merge_and_favorites() {
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &alice_id, &bob, &bob_id).await;
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // original message arrives at bob's (for the id)…
@@ -597,6 +640,11 @@ async fn p1_secret_chat_roundtrip_through_real_stack() {
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &alice_id, &bob, &bob_id).await;
+
+    // 密钥要落盘：秘密聊天依赖数据目录（重启后仍是同一身份）
+    alice.local_open(&data_dir("alice")).unwrap();
+    bob.local_open(&data_dir("bob")).unwrap();
 
     // both publish pre-key bundles, then alice opens a secret conversation
     let fp_a = alice.secret_enable().unwrap();
@@ -643,8 +691,11 @@ async fn p1_secret_chat_refuses_to_send_without_peer_bundle() {
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &alice_id, &bob, &bob_id).await;
 
     // only alice enables E2EE; bob never publishes a bundle
+    alice.local_open(&data_dir("alice")).unwrap();
+    bob.local_open(&data_dir("bob")).unwrap();
     alice.secret_enable().unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
@@ -683,7 +734,10 @@ async fn p1_secret_chat_keeps_encrypting_after_the_first_message() {
         .unwrap();
     bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    befriend(&alice, &alice_id, &bob, &bob_id).await;
 
+    alice.local_open(&data_dir("alice")).unwrap();
+    bob.local_open(&data_dir("bob")).unwrap();
     alice.secret_enable().unwrap();
     bob.secret_enable().unwrap();
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);

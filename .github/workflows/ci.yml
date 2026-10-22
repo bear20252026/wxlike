@@ -256,3 +256,33 @@ jobs:
       - name: test
         run: flutter test
         working-directory: apps/mobile
+
+  # 桌面端（Tauri）：命令层对真实服务端的集成测试（issue #18 收尾）。
+  #
+  # 这套测试以前**从没进过 CI**，代价很具体：
+  # - #3 把握手改成"只收 token"之后，`p2_messages` 还在拿 user_id 当凭据，
+  #   6 条测试一直红着没人知道；
+  # - P3 陌生人闸门上线后，5 条"非好友直聊"的测试悄悄失效。
+  # 两者都是"本地跑一次就能发现"的问题——所以这一关必须存在。
+  desktop:
+    name: desktop (tauri commands)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ui/src-tauri -> target
+      # tauri 2 在 Linux 上编译期就要 webkit2gtk-4.1 / gtk3 的头文件
+      - name: 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: ui/src-tauri
+      - name: test
+        run: cargo test
+        working-directory: ui/src-tauri
