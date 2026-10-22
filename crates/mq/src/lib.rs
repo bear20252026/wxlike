@@ -50,6 +50,21 @@ pub trait RouteTable: Send + Sync + 'static {
     async fn register_hub(&self, hub_id: &str) -> anyhow::Result<()>;
     async fn unregister_hub(&self, hub_id: &str) -> anyhow::Result<()>;
     async fn list_hubs(&self) -> anyhow::Result<Vec<String>>;
+
+    /// 续租（issue #20）。只有带租约的表需要实现；默认什么都不做。
+    ///
+    /// `hub_id` 是**当前**持有者：续租只在自己还持有时才生效，
+    /// 这样一台已经掉队的 hub 不会把用户的租约偷偷续上。
+    async fn renew_user(&self, _user: &str, _hub_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// 租约时长（毫秒）。`0` = 这张表没有租约，调用方不必起续租循环。
+    ///
+    /// 没有租约的表（内存表、单进程部署）起一个空转的定时器是纯浪费。
+    fn lease_ttl_ms(&self) -> u64 {
+        0
+    }
 }
 
 /// At-least-once queue: entries carry an id and must be acknowledged.

@@ -16,6 +16,31 @@ use crate::{MessageQueue, ReliableQueue};
 pub const GROUP: &str = "wxlike";
 /// Contract floor: reclaim entries idle for at least this long.
 pub const DEFAULT_CLAIM_IDLE_MS: u64 = 60_000;
+/// Backstop retention: the stream never keeps more than this many entries
+/// (issue #20). `XADD ... MAXLEN ~` is approximate, so treat it as a ceiling,
+/// not a precise cap - the pending-aware sweep below does the precise work.
+pub const DEFAULT_MAX_LEN: u64 = 100_000;
+/// Run the pending-aware trim sweep after this many acks (issue #20).
+/// One sweep costs two extra round trips, so it is amortised.
+pub const DEFAULT_SWEEP_EVERY: u64 = 256;
+
+/// The id the stream should be trimmed **at** (exclusive: everything older goes).
+///
+/// - pending entries exist -> the oldest pending id. Everything older is
+///   already acked, so trimming it is safe. **Never** use
+///   "last delivered id" here: that would cut the in-flight entries a crashed
+///   hub still needs to reclaim.
+/// - no pending -> last delivered id: everything read has been acked.
+/// - neither (empty stream) -> `"0"`: trim nothing.
+fn trim_boundary(oldest_pending: Option<&str>, last_delivered: &str) -> String {
+    if let Some(id) = oldest_pending {
+        return id.to_string();
+    }
+    if last_delivered.is_empty() || last_delivered == "0" {
+        return "0".to_string();
+    }
+    last_delivered.to_string()
+}
 
 static CONSUMER_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -31,6 +56,9 @@ pub struct RedisStreamsMq {
     consumer: String,
     block_ms: u64,
     claim_idle_ms: u64,
+    max_len: u64,
+    sweep_every: u64,
+    acks: std::sync::atomic::AtomicU64,
 }
 
 impl RedisStreamsMq {
@@ -48,12 +76,23 @@ impl RedisStreamsMq {
             consumer: consumer.unwrap_or(&generated).to_string(),
             block_ms: 5_000,
             claim_idle_ms: DEFAULT_CLAIM_IDLE_MS,
+            max_len: DEFAULT_MAX_LEN,
+            sweep_every: DEFAULT_SWEEP_EVERY,
+            acks: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
     pub fn with_timeouts(mut self, block_ms: u64, claim_idle_ms: u64) -> Self {
         self.block_ms = block_ms;
         self.claim_idle_ms = claim_idle_ms;
+        self
+    }
+
+    /// Retention: at most `max_len` entries, and a precise trim sweep every
+    /// `sweep_every` acks.
+    pub fn with_retention(mut self, max_len: u64, sweep_every: u64) -> Self {
+        self.max_len = max_len.max(1);
+        self.sweep_every = sweep_every.max(1);
         self
     }
 
@@ -103,8 +142,14 @@ impl MessageQueue for RedisStreamsMq {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> anyhow::Result<()> {
         let key = stream_key(queue);
         let mut c = self.conn().await?;
+        // Backstop retention: even if the precise sweep never runs, the
+        // stream cannot grow without bound. `~` is approximate trimming (no
+        // full scan for an exact length), so this is a ceiling, not a value.
         let _: String = redis::cmd("XADD")
             .arg(&key)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(self.max_len)
             .arg("*")
             .arg("p")
             .arg(payload.as_slice())
@@ -158,6 +203,16 @@ impl ReliableQueue for RedisStreamsMq {
             .arg(id)
             .query_async(&mut c)
             .await?;
+        drop(c);
+        // Every `sweep_every` acks, do the precise trim (issue #20).
+        // Failing is fine: the MAXLEN ceiling still holds and the next sweep
+        // catches up.
+        let n = self.acks.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(self.sweep_every) {
+            if let Err(err) = self.sweep(queue).await {
+                eprintln!("[mq] stream trim sweep failed for {queue}: {err:#}");
+            }
+        }
         Ok(())
     }
 
@@ -212,6 +267,66 @@ impl ReliableQueue for RedisStreamsMq {
 impl RedisStreamsMq {
     pub fn claim_idle_ms(&self) -> u64 {
         self.claim_idle_ms
+    }
+
+    /// Trim the part that is acked **and** has no pending entry in front of it.
+    ///
+    /// The boundary comes from [`trim_boundary`]: it never cuts into pending,
+    /// which is exactly what lets a crashed hub's entries be reclaimed later.
+    async fn sweep(&self, queue: &str) -> anyhow::Result<()> {
+        let key = stream_key(queue);
+        let mut c = self.conn().await?;
+        // Oldest pending entry (IDLE 0 - + 1): one is enough to place the line.
+        let pending: redis::Value = redis::cmd("XPENDING")
+            .arg(&key)
+            .arg(&self.group)
+            .arg("IDLE")
+            .arg(0)
+            .arg("-")
+            .arg("+")
+            .arg(1)
+            .query_async(&mut c)
+            .await?;
+        let oldest = pending_first_id(&pending);
+        let last_delivered = if oldest.is_some() {
+            String::new()
+        } else {
+            self.last_delivered_id(&mut c, &key).await?
+        };
+        let boundary = trim_boundary(oldest.as_deref(), &last_delivered);
+        if boundary == "0" {
+            return Ok(());
+        }
+        let _: i64 = redis::cmd("XTRIM")
+            .arg(&key)
+            .arg("MINID")
+            .arg("~")
+            .arg(&boundary)
+            .query_async(&mut c)
+            .await?;
+        Ok(())
+    }
+
+    /// Stream length (issue #20: tests and ops need to see retention working).
+    pub async fn stream_len(&self, queue: &str) -> anyhow::Result<u64> {
+        let key = stream_key(queue);
+        let mut c = self.conn().await?;
+        Ok(redis::cmd("XLEN").arg(&key).query_async(&mut c).await?)
+    }
+
+    /// `last-delivered-id` of this group from `XINFO GROUPS` (empty when the
+    /// group does not exist).
+    async fn last_delivered_id(
+        &self,
+        c: &mut redis::aio::MultiplexedConnection,
+        key: &str,
+    ) -> anyhow::Result<String> {
+        let groups: redis::Value = redis::cmd("XINFO")
+            .arg("GROUPS")
+            .arg(key)
+            .query_async(c)
+            .await?;
+        Ok(xinfo_last_delivered(&groups, &self.group).unwrap_or_default())
     }
 }
 
@@ -286,4 +401,107 @@ fn one_entry(value: &redis::Value) -> Option<(String, Vec<u8>)> {
 
 fn first_entry(value: &redis::Value) -> Option<(String, Vec<u8>)> {
     entries_of(value).into_iter().next()
+}
+
+/// The id of the first row in an `XPENDING ... IDLE 0 - + 1` reply.
+///
+/// Shape: `[[id, consumer, idle_ms, deliveries], ...]`; an empty pending set
+/// comes back as `Nil` or an empty array.
+fn pending_first_id(reply: &redis::Value) -> Option<String> {
+    let redis::Value::Array(rows) = reply else {
+        return None;
+    };
+    let first = rows.first()?;
+    let redis::Value::Array(cols) = first else {
+        return None;
+    };
+    match cols.first()? {
+        redis::Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).to_string()),
+        _ => None,
+    }
+}
+
+/// `last-delivered-id` of `group` from `XINFO GROUPS`.
+///
+/// Each group is a flat array `[name, consumers, pending, last-delivered-id,
+/// ...]`, so: find the group name, then skip two fields.
+fn xinfo_last_delivered(reply: &redis::Value, group: &str) -> Option<String> {
+    let redis::Value::Array(groups) = reply else {
+        return None;
+    };
+    for entry in groups {
+        let redis::Value::Array(fields) = entry else {
+            continue;
+        };
+        let mut iter = fields.iter();
+        while let Some(field) = iter.next() {
+            let redis::Value::BulkString(name) = field else {
+                continue;
+            };
+            if String::from_utf8_lossy(name) != group {
+                continue;
+            }
+            // name, consumers, pending, last-delivered-id
+            iter.next();
+            iter.next();
+            return match iter.next()? {
+                redis::Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).to_string()),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_never_cuts_into_pending() {
+        // pending present: the boundary is the oldest pending id
+        assert_eq!(trim_boundary(Some("111-1"), "999-9"), "111-1");
+        // no pending: everything read is acked, so the last delivered id is safe
+        assert_eq!(trim_boundary(None, "999-9"), "999-9");
+        // empty stream: trim nothing
+        assert_eq!(trim_boundary(None, ""), "0");
+        assert_eq!(trim_boundary(None, "0"), "0");
+    }
+
+    #[test]
+    fn pending_reply_without_rows_means_no_pending() {
+        assert_eq!(pending_first_id(&redis::Value::Nil), None);
+        assert_eq!(pending_first_id(&redis::Value::Array(vec![])), None);
+    }
+
+    #[test]
+    fn pending_reply_reads_the_first_id() {
+        let row = redis::Value::Array(vec![
+            redis::Value::BulkString(b"111-1".to_vec()),
+            redis::Value::BulkString(b"pid-1-0".to_vec()),
+            redis::Value::Int(5_000),
+            redis::Value::Int(1),
+        ]);
+        let reply = redis::Value::Array(vec![row]);
+        assert_eq!(pending_first_id(&reply).as_deref(), Some("111-1"));
+    }
+
+    #[test]
+    fn xinfo_reads_last_delivered_of_the_right_group() {
+        let group = |name: &str, last: &str| {
+            redis::Value::Array(vec![
+                redis::Value::BulkString(name.as_bytes().to_vec()),
+                redis::Value::Int(1),
+                redis::Value::Int(0),
+                redis::Value::BulkString(last.as_bytes().to_vec()),
+                redis::Value::Int(0),
+            ])
+        };
+        let reply = redis::Value::Array(vec![group("other", "1-1"), group("wxlike", "42-7")]);
+        assert_eq!(
+            xinfo_last_delivered(&reply, "wxlike").as_deref(),
+            Some("42-7")
+        );
+        assert_eq!(xinfo_last_delivered(&reply, "missing"), None);
+    }
 }

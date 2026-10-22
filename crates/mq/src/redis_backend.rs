@@ -60,9 +60,15 @@ impl MessageQueue for RedisMq {
     }
 }
 
+/// Default route lease: 30s. A hub renews every third of it, so three missed
+/// renewals (a dead hub) are enough for the route to disappear.
+pub const DEFAULT_LEASE_MS: u64 = 30_000;
+
 pub struct RedisRoutes {
     client: redis::Client,
     const_: &'static str,
+    /// Route lease in ms; `0` = permanent entries (the old behaviour).
+    lease_ms: u64,
 }
 
 impl RedisRoutes {
@@ -70,7 +76,24 @@ impl RedisRoutes {
         Ok(Self {
             client: redis::Client::open(url)?,
             const_: "wxlike",
+            lease_ms: DEFAULT_LEASE_MS,
         })
+    }
+
+    /// Route lease length. `0` keeps the old permanent-hash behaviour.
+    ///
+    /// With a lease, routes live in per-user keys with a TTL instead of one
+    /// hash field (Redis hashes have no per-field expiry), so a hub that dies
+    /// without unbinding stops receiving traffic once the lease lapses
+    /// instead of forever.
+    pub fn with_lease(mut self, lease_ms: u64) -> Self {
+        self.lease_ms = lease_ms;
+        self
+    }
+
+    /// 单用户路由键（只有带租约时才用；永久模式仍走 hash）。
+    fn route_key(&self, user: &str) -> String {
+        format!("{}:route:{}", self.const_, user)
     }
 
     async fn conn(&self) -> anyhow::Result<redis::aio::MultiplexedConnection> {
@@ -86,26 +109,69 @@ impl RedisRoutes {
     }
 }
 
+impl RedisRoutes {
+    /// 写一条路由：带租约用 `SET ... EX`，否则写回 hash。
+    async fn write_route(
+        &self,
+        c: &mut redis::aio::MultiplexedConnection,
+        user: &str,
+        hub_id: &str,
+    ) -> anyhow::Result<()> {
+        if self.lease_ms == 0 {
+            let _: () = c.hset(self.routes_key(), user, hub_id).await?;
+            return Ok(());
+        }
+        let ttl_secs = (self.lease_ms / 1000).max(1);
+        let _: () = c.set_ex(self.route_key(user), hub_id, ttl_secs).await?;
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl RouteTable for RedisRoutes {
     async fn bind_user(&self, user: &str, hub_id: &str) -> anyhow::Result<()> {
         let mut c = self.conn().await?;
-        let _: () = c.hset(self.routes_key(), user, hub_id).await?;
-        Ok(())
+        self.write_route(&mut c, user, hub_id).await
     }
 
     async fn unbind_user(&self, user: &str, hub_id: &str) -> anyhow::Result<()> {
         let mut c = self.conn().await?;
-        let cur: Option<String> = c.hget(self.routes_key(), user).await?;
-        if cur.as_deref() == Some(hub_id) {
-            let _: () = c.hdel(self.routes_key(), user).await?;
+        if self.lease_ms == 0 {
+            let cur: Option<String> = c.hget(self.routes_key(), user).await?;
+            if cur.as_deref() == Some(hub_id) {
+                let _: () = c.hdel(self.routes_key(), user).await?;
+            }
+        } else {
+            let cur: Option<String> = c.get(self.route_key(user)).await?;
+            if cur.as_deref() == Some(hub_id) {
+                let _: () = c.del(self.route_key(user)).await?;
+            }
         }
         Ok(())
     }
 
     async fn route_of(&self, user: &str) -> anyhow::Result<Option<String>> {
         let mut c = self.conn().await?;
-        Ok(c.hget(self.routes_key(), user).await?)
+        if self.lease_ms == 0 {
+            Ok(c.hget(self.routes_key(), user).await?)
+        } else {
+            // 租约过期 = key 没了 = 没人持有。调用方据此重路由或落离线队列。
+            Ok(c.get(self.route_key(user)).await?)
+        }
+    }
+
+    async fn renew_user(&self, user: &str, hub_id: &str) -> anyhow::Result<()> {
+        if self.lease_ms == 0 {
+            return Ok(());
+        }
+        let mut c = self.conn().await?;
+        let cur: Option<String> = c.get(self.route_key(user)).await?;
+        if cur.as_deref() != Some(hub_id) {
+            // 已经不是我的了（掉线过、被别人抢走）：不续，也不报错——
+            // 调用方的下一次路由查询会看到真相。
+            return Ok(());
+        }
+        self.write_route(&mut c, user, hub_id).await
     }
 
     async fn register_hub(&self, hub_id: &str) -> anyhow::Result<()> {
@@ -123,5 +189,9 @@ impl RouteTable for RedisRoutes {
     async fn list_hubs(&self) -> anyhow::Result<Vec<String>> {
         let mut c = self.conn().await?;
         Ok(c.smembers(self.hubs_key()).await?)
+    }
+
+    fn lease_ttl_ms(&self) -> u64 {
+        self.lease_ms
     }
 }
