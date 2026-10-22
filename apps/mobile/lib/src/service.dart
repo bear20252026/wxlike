@@ -164,7 +164,17 @@ class _FfiWorker {
       final text = message is List && message.isNotEmpty ? '${message.first}' : '$message';
       if (!ready.isCompleted) {
         ready.completeError(StateError('FFI worker 崩溃：$text'));
+        return;
       }
+      // 已经打开过：worker 半路崩了，把在途的调用全部失败掉。
+      // 不然每个 `Completer` 都会挂到天荒地老，界面转圈转到用户放弃。
+      worker._closed = true;
+      for (final completer in worker._pending.values) {
+        if (!completer.isCompleted) {
+          completer.completeError(StateError('FFI worker 崩溃：$text'));
+        }
+      }
+      worker._pending.clear();
     });
 
     final commands = await ready.future;

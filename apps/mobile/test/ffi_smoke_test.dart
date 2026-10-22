@@ -265,6 +265,10 @@ test('慢 FFI 调用不阻塞 UI isolate（页面还能动）', () async {
   addTearDown(service.close);
 
   final slow = service.login('alice', 'pw'); // 连不上的地址，最长 10 秒
+  // **先挂监听再等**：Future 在没挂监听时就带着错误完成，会被 zone 当成
+  // "unhandled async error"上报——测试就红在跟 isolate 无关的地方。
+  // 连不上的端口可能几十毫秒就拒绝，比这里的 200ms 更快。
+  final caught = expectLater(slow, throwsA(isA<WxlikeErrorExceptionNetwork>()));
   final watch = Stopwatch()..start();
   await Future<void>.delayed(const Duration(milliseconds: 200));
   expect(
@@ -273,10 +277,7 @@ test('慢 FFI 调用不阻塞 UI isolate（页面还能动）', () async {
     reason: 'FFI 调用还在飞，UI isolate 必须还能跑定时器（'
         '${watch.elapsedMilliseconds}ms 才醒过来）',
   );
-  await expectLater(
-    slow,
-    throwsA(isA<WxlikeErrorExceptionNetwork>()),
-  );
+  await caught;
 }, skip: reason);
 }
 
