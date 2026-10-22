@@ -336,6 +336,7 @@ fn offline_send_is_queued_then_a_second_client_flushes_it_unchanged() {
     let db = db_path("offline");
     let offline = dead_url();
     let task_id;
+    let mut backoff_until = 0i64;
     {
         let a = client(&offline, &db);
         let outcome = a
@@ -352,17 +353,33 @@ fn offline_send_is_queued_then_a_second_client_flushes_it_unchanged() {
         let status = a.outbox_status().expect("outbox_status");
         assert_eq!(status.pending, 1);
         assert_eq!(status.entries[0].text, "地铁里发的");
+        // 失败必须把下一次重试推后（退避）。**用这个字段判定，不要用
+        // "立刻 flush 一定是 0"**：后者假设 setup 耗时小于退避窗口，
+        // 慢机器上一超过就假红（CI 上真的这么红过）。
+        backoff_until = status.entries[0].next_retry_at;
+        assert!(
+            backoff_until > wxlike_core::types::now_ms() as i64,
+            "失败后必须记录退避，否则会把 5 次尝试额度一会儿烧光"
+        );
     }
     let server = FakeServer::start(Rules::default());
     let b = client(&server.url(), &db);
     // 退避窗口没到就不该发：`record_failure` 把 next_retry_at 推后了 1 秒，
     // 提前撞墙等于白烧一次尝试次数（一共只有 5 次）。
-    assert_eq!(
-        b.flush_outbox().expect("flush too early").sent,
-        0,
-        "退避没到就发，是把队列当成了急着送"
-    );
-    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    //
+    // 只在**确实还没到**的时候断言：setup（起假服务端 + 建客户端）在慢机器上
+    // 可能已经超过 1 秒，那时候"发出去"本来就是正确行为。
+    if backoff_until > wxlike_core::types::now_ms() as i64 {
+        assert_eq!(
+            b.flush_outbox().expect("flush too early").sent,
+            0,
+            "退避没到就发，是把队列当成了急着送"
+        );
+    }
+    // 等窗口过去再发
+    while (wxlike_core::types::now_ms() as i64) < backoff_until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let report = b.flush_outbox().expect("flush");
     assert_eq!(report.sent, 1);
     assert_eq!(b.outbox_status().expect("status").pending, 0);
