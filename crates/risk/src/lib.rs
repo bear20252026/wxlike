@@ -33,6 +33,10 @@ pub enum Action {
     Login,
     Send,
     Report,
+    /// AR-2/H-4（第四轮审计）：预密钥认领。一次性密钥库存是有限资源，
+    /// 任何登录用户都能循环认领他人库存 = 廉价资源耗尽 DoS，所以认领
+    /// 也要进闸门（键形如 `caller:target`）。
+    ClaimKeys,
 }
 
 impl Action {
@@ -42,13 +46,14 @@ impl Action {
             Self::Login => "login",
             Self::Send => "send",
             Self::Report => "report",
+            Self::ClaimKeys => "claim_keys",
         }
     }
 
     /// 窗口长度：注册 1 h、登录 15 min、发送 10 s、举报 1 h。
     fn window_ms(&self) -> u64 {
         match self {
-            Self::Register | Self::Report => 60 * 60 * 1000,
+            Self::Register | Self::Report | Self::ClaimKeys => 60 * 60 * 1000,
             Self::Login => 15 * 60 * 1000,
             Self::Send => 10 * 1000,
         }
@@ -103,6 +108,10 @@ pub struct RiskConfig {
     pub report_throttle_at: usize,
     /// 达到此值 → Deny（举报轰炸）。
     pub report_deny_at: usize,
+    /// 同一 (caller, target) 1 h 内认领预密钥达到此值 → Throttle。
+    pub claim_keys_throttle_at: usize,
+    /// 达到此值 → Deny（库存耗尽攻击）。真人远够用：一次会话重建只要一把。
+    pub claim_keys_deny_at: usize,
 }
 
 /// 同来源一小时内注册多少次起要求人机校验。
@@ -128,6 +137,8 @@ impl Default for RiskConfig {
             send_deny_at: 60,
             report_throttle_at: 10,
             report_deny_at: 30,
+            claim_keys_throttle_at: 30,
+            claim_keys_deny_at: 120,
         }
     }
 }
@@ -246,6 +257,20 @@ impl RiskEngine {
                         reason: "send_rate".into(),
                     }
                 } else if n >= self.cfg.send_throttle_at {
+                    Verdict::Throttle {
+                        retry_after_ms: retry_after,
+                    }
+                } else {
+                    Verdict::Allow
+                }
+            }
+            // 认领没有 captcha 兑现面，Challenge 无处兑现——只 Throttle/Deny。
+            Action::ClaimKeys => {
+                if n >= self.cfg.claim_keys_deny_at {
+                    Verdict::Deny {
+                        reason: "claim_keys_rate".into(),
+                    }
+                } else if n >= self.cfg.claim_keys_throttle_at {
                     Verdict::Throttle {
                         retry_after_ms: retry_after,
                     }

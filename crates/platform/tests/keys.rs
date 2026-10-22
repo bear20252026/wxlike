@@ -8,7 +8,43 @@ use serde_json::json;
 use wxlike_core::e2ee::{Crypto, Device, PreKeyBundle};
 use wxlike_platform::Platform;
 
+use axum::Router;
+
 use common::{app, call, platform, req, signup};
+
+/// AR-2/H-4：认领预密钥现在要求已有关系（好友/同群/本人）。
+async fn whoami(app: &Router, token: &str) -> String {
+    let (status, body) = call(app, req("GET", "/api/me", None, Some(token))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["user_id"].as_str().unwrap().to_string()
+}
+
+/// 用真实 HTTP 流程把 a、b 变成好友。
+async fn befriend(app: &Router, a_token: &str, b_token: &str, b_id: &str) {
+    let (status, body) = call(
+        app,
+        req(
+            "POST",
+            "/api/friends/requests",
+            Some(json!({"to_user_id": b_id})),
+            Some(a_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let req_id = body["id"].as_str().unwrap_or_default().to_string();
+    let (status, body) = call(
+        app,
+        req(
+            "POST",
+            &format!("/api/friends/requests/{req_id}/accept"),
+            None,
+            Some(b_token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
 
 #[tokio::test]
 async fn publish_then_claim_round_trips_a_key() {
@@ -29,11 +65,8 @@ async fn publish_then_claim_round_trips_a_key() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (_, bob_id, bob_token) = {
-        let (id, token) = signup(&app, "bob").await;
-        (StatusCode::OK, id, token)
-    };
-    let _ = bob_id;
+    let (_, bob_token) = signup(&app, "bob").await;
+    befriend(&app, &bob_token, &alice_token, &alice_id).await;
     let (status, body) = call(
         &app,
         req(
@@ -62,6 +95,8 @@ async fn two_claims_never_share_a_key() {
     let (alice_id, alice_token) = signup(&app, "alice").await;
     let (_, bob_token) = signup(&app, "bob").await;
     let (_, carol_token) = signup(&app, "carol").await;
+    befriend(&app, &bob_token, &alice_token, &alice_id).await;
+    befriend(&app, &carol_token, &alice_token, &alice_id).await;
 
     let bundle = Crypto::new(Device::new()).bundle(&alice_id);
     call(
@@ -115,7 +150,7 @@ async fn drained_bundle_reports_empty_and_refill_works() {
     let app = app(state.clone());
     let (alice_id, alice_token) = signup(&app, "alice").await;
     let (_, bob_token) = signup(&app, "bob").await;
-
+    befriend(&app, &bob_token, &alice_token, &alice_id).await;
     // publish exactly one one-time key — a real signed bundle (the directory
     // rejects hand-crafted key strings since AR-1: shape + signature checks)
     let one = Crypto::new(Device::new()).bundle_limited(&alice_id, 1);
@@ -276,7 +311,7 @@ async fn directory_backed_session_establishment_works() {
     let app = app(state.clone());
     let (alice_id, alice_token) = signup(&app, "alice").await;
     let (_, bob_token) = signup(&app, "bob").await;
-
+    befriend(&app, &bob_token, &alice_token, &alice_id).await;
     let mut alice = Crypto::new(Device::new());
     let mut bob = Crypto::new(Device::new());
 
@@ -407,6 +442,7 @@ async fn claim_returns_a_bundle_senders_can_verify() {
     let app = app(state.clone());
     let (alice_id, alice_token) = signup(&app, "alice").await;
     let (_, bob_token) = signup(&app, "bob").await;
+    befriend(&app, &bob_token, &alice_token, &alice_id).await;
 
     let bundle = Crypto::new(Device::new()).bundle(&alice_id);
     call(
@@ -437,4 +473,85 @@ async fn claim_returns_a_bundle_senders_can_verify() {
     // the claimed subset must pass the client-side trust check on its own —
     // this is the check `Crypto::encrypt_dm` runs before opening a session
     claimed.verify_signature().unwrap();
+}
+
+/// AR-2/H-4：陌生人（无好友、无同群）不能认领——关系门生效。
+#[tokio::test]
+async fn stranger_cannot_claim_keys() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+    let (_, mallory_token) = signup(&app, "mallory").await;
+
+    let bundle = Crypto::new(Device::new()).bundle(&alice_id);
+    call(
+        &app,
+        req(
+            "POST",
+            "/api/keys",
+            Some(serde_json::to_value(&bundle).unwrap()),
+            Some(&alice_token),
+        ),
+    )
+    .await;
+
+    let (status, _) = call(
+        &app,
+        req(
+            "GET",
+            &format!("/api/keys/{alice_id}"),
+            None,
+            Some(&mallory_token),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "stranger gets the same answer as for an unknown user (no existence oracle)"
+    );
+}
+
+/// AR-2/H-4：循环领空库存的攻击撞上 (caller,target) 限流。
+#[tokio::test]
+async fn key_draining_attack_is_throttled() {
+    let state = platform();
+    let app = app(state.clone());
+    let (alice_id, alice_token) = signup(&app, "alice").await;
+    let (_, bob_token) = signup(&app, "bob").await;
+    befriend(&app, &bob_token, &alice_token, &alice_id).await;
+
+    // 默认阈值 throttle=30 / deny=120（1h 窗口）。每轮：补货 + 认领一次，
+    // 认领成功才计数，所以恰好需要 30 次成功才触发 Throttle。
+    let mut saw_throttle = false;
+    for round in 0..35 {
+        let fresh = Crypto::new(Device::new()).bundle(&alice_id);
+        call(
+            &app,
+            req(
+                "POST",
+                "/api/keys",
+                Some(serde_json::to_value(&fresh).unwrap()),
+                Some(&alice_token),
+            ),
+        )
+        .await;
+        let (status, _) = call(
+            &app,
+            req(
+                "GET",
+                &format!("/api/keys/{alice_id}"),
+                None,
+                Some(&bob_token),
+            ),
+        )
+        .await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            assert!(round >= 29, "throttled too early: round {round}");
+            saw_throttle = true;
+            break;
+        }
+        assert_eq!(status, StatusCode::OK, "round {round}");
+    }
+    assert!(saw_throttle, "the drain loop must hit the rate limit");
 }

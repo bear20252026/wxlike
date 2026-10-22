@@ -121,6 +121,31 @@ impl Platform {
         Ok(())
     }
 
+    /// 认领关系校验（AR-2/H-4）：本人、好友、或同群成员。
+    ///
+    /// 预密钥是"能给我发消息的人"才需要的东西——把认领限定在已有关系内，
+    /// 陌生账号就不能把库存领空。同群但非好友的成员也要能领：群聊的
+    /// sender key 走 1:1 Olm 通道分发。
+    pub fn may_claim_keys_of(&self, caller: &str, target: &str) -> Result<bool> {
+        if caller == target {
+            return Ok(true);
+        }
+        if self.are_friends(caller, target)? {
+            return Ok(true);
+        }
+        let c = self.db().lock();
+        let shares: Option<i64> = c
+            .query_row(
+                "SELECT 1 FROM group_members a JOIN group_members b
+                    ON a.group_id = b.group_id
+                 WHERE a.user_id = ?1 AND b.user_id = ?2 LIMIT 1",
+                params![caller, target],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(shares.is_some())
+    }
+
     /// 对方当前发布的身份公钥（秘密聊天安全码用；不消费一次性密钥）。
     pub fn public_identity(&self, user_id: &str) -> Result<Option<String>> {
         let c = self.db().lock();
@@ -231,10 +256,26 @@ async fn own(
 
 async fn claim(
     State(platform): State<PlatformState>,
-    _authed: Authed,
+    authed: Authed,
     Path(user_id): Path<String>,
 ) -> std::result::Result<Json<PreKeyBundle>, ApiError> {
-    match platform.claim_key(&user_id)? {
+    // AR-2/H-4（第四轮审计）：认领一次性密钥此前只要登录，任何人都可把
+    // 某用户的 OTK 库存循环领空（他人再也无法与其建立 Olm 会话），且每次
+    // 认领伴随一次 DB 写。两道闸：
+    // 1) 关系校验——只能领"好友或同群成员"的密钥（自己当然可以）；
+    // 2) 风控限流——按 (caller, target) 计数，Throttle/Deny 落 429。
+    if authed.user_id != user_id && !platform.may_claim_keys_of(&authed.user_id, &user_id)? {
+        // 404 而非 403：不确认"这个用户存在"，与 moments 的陌生人策略同款
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "no such user"));
+    }
+    let risk_key = format!("{}:{}", authed.user_id, user_id);
+    platform.risk_gate(wxlike_risk::Action::ClaimKeys, &risk_key, None)?;
+    let claimed = platform.claim_key(&user_id)?;
+    // 成功的认领才计数：失败重试不该吃掉正常用户的配额
+    if claimed.is_some() {
+        platform.risk_record(wxlike_risk::Action::ClaimKeys, &risk_key)?;
+    }
+    match claimed {
         Some(bundle) => Ok(Json(bundle)),
         None => Err(ApiError::new(StatusCode::NOT_FOUND, "no such user")),
     }
