@@ -56,6 +56,10 @@ pub const PREKEY_FLOOR: usize = 5;
 pub const PENDING_WINDOW: usize = 128;
 /// How many decrypted bodies we remember per peer for replay detection.
 pub const SEEN_WINDOW: usize = 4096;
+/// M-6（第四轮审计）：群水位表 (group, sender, session) 键数上限。超过即
+/// FIFO 遗忘最久未更新的键——该会话的重放窗口随之重开，这是把内存从
+/// 单调增长收敛回来的代价；被驱逐的是最不活跃的会话，最近对话不受影响。
+pub const GROUP_SEEN_CAP: usize = 4096;
 
 #[derive(Debug, Error)]
 pub enum CryptoError {
@@ -434,6 +438,9 @@ pub struct Crypto {
     /// The session id is part of the key so a key rotation (new session, index
     /// restarts at 0) is not mistaken for a replay.
     group_seen: HashMap<(String, String, String), u32>,
+    /// Insertion order for [`GROUP_SEEN_CAP`] eviction (not snapshotted, like
+    /// the watermarks themselves).
+    group_seen_order: VecDeque<(String, String, String)>,
 }
 
 impl Crypto {
@@ -443,6 +450,7 @@ impl Crypto {
             dm: HashMap::new(),
             groups: HashMap::new(),
             group_seen: HashMap::new(),
+            group_seen_order: VecDeque::new(),
         }
     }
 
@@ -661,14 +669,27 @@ impl Crypto {
         }
     }
 
+/// M-5（第四轮审计）：按**链进度距离**选驱逐对象。单个棘轮键下，字典序
+/// 恰好等于 idx 序，`pop_last` 碰巧正确；棘轮轮换后各键是不相关的 base64，
+/// 字典序与进度无关——可能把"距可投递只差 1"的消息挤掉而留下没救的。
+fn evict_furthest_ahead(
+    parked: &BTreeMap<(String, u64), Sealed>,
+    chain_pos: &HashMap<String, u64>,
+) -> Option<(String, u64)> {
+    parked
+        .keys()
+        .max_by_key(|(rk, idx)| idx.saturating_sub(chain_pos.get(rk).copied().unwrap_or(0)))
+        .cloned()
+}
+
     fn park(&mut self, peer_user_id: &str, rk: String, idx: u64, body: String) {
         let Some(state) = self.dm.get_mut(peer_user_id) else {
             return;
         };
         if state.parked.len() >= PENDING_WINDOW {
-            // Evict the furthest-ahead message: the closest ones are about to
-            // become deliverable, the furthest ones are the lost cause.
-            state.parked.pop_last();
+            if let Some(victim) = Self::evict_furthest_ahead(&state.parked, &state.chain_pos) {
+                state.parked.remove(&victim);
+            }
         }
         state.parked.insert(
             (rk, idx),
@@ -936,11 +957,22 @@ impl Crypto {
         if watermark.is_some_and(|wm| plain.message_index <= wm) {
             return Err(CryptoError::Replay);
         }
-        self.group_seen.insert(
+        self.mark_group_seen(
             (group_id.to_string(), sender.clone(), session_id),
             plain.message_index,
         );
         Ok((sender, plain.plaintext))
+    }
+
+    /// M-6：水位写入带 FIFO 上限，长驻进程内存不再随会话数单调增长。
+    fn mark_group_seen(&mut self, key: (String, String, String), idx: u32) {
+        if self.group_seen.len() >= GROUP_SEEN_CAP {
+            if let Some(oldest) = self.group_seen_order.pop_front() {
+                self.group_seen.remove(&oldest);
+            }
+        }
+        self.group_seen_order.push_back(key.clone());
+        self.group_seen.insert(key, idx);
     }
 
     pub fn group_session_id(&self, group_id: &str) -> Option<String> {
@@ -956,5 +988,59 @@ impl Crypto {
         self.groups
             .get(group_id)
             .is_some_and(|s| !s.inbound.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod audit_round4 {
+    use super::*;
+
+    /// M-5：驱逐按链进度距离选，不按键字典序。构造"rk_a 只差 1 步可投递、
+    /// rk_z 落后 90 步"的场景——字典序上 rk_z 最大，pop_last 会错杀 rk_a。
+    #[test]
+    fn eviction_picks_largest_chain_gap_not_lexicographic_order() {
+        let mut parked = BTreeMap::new();
+        let sealed = || Sealed {
+            pre_key: false,
+            body: "x".to_string(),
+        };
+        parked.insert(("rk_a".to_string(), 5), sealed());
+        parked.insert(("rk_z".to_string(), 90), sealed());
+        let mut chain_pos = HashMap::new();
+        chain_pos.insert("rk_a".to_string(), 4u64); // gap 1：马上就绪
+        chain_pos.insert("rk_z".to_string(), 0u64); // gap 90：没救的
+
+        let victim = Crypto::evict_furthest_ahead(&parked, &chain_pos);
+        assert_eq!(
+            victim,
+            Some(("rk_z".to_string(), 90)),
+            "the furthest-ahead-by-progress message is evicted, not the lexicographic max"
+        );
+        // 空表与单元素边界
+        let mut one = BTreeMap::new();
+        one.insert(("k".to_string(), 7), sealed());
+        assert_eq!(
+            Crypto::evict_furthest_ahead(&one, &HashMap::new()),
+            Some(("k".to_string(), 7))
+        );
+        assert_eq!(Crypto::evict_furthest_ahead(&BTreeMap::new(), &HashMap::new()), None);
+    }
+
+    /// M-6：群水位表有上限，长驻进程内存收敛。
+    #[test]
+    fn group_seen_watermarks_are_capped() {
+        let mut crypto = Crypto::new(Device::new());
+        for i in 0..(GROUP_SEEN_CAP + 64) {
+            crypto.mark_group_seen(
+                (format!("g{}", i % 3), format!("sender{}", i), format!("sess{}", i)),
+                1,
+            );
+        }
+        assert!(
+            crypto.group_seen.len() <= GROUP_SEEN_CAP,
+            "watermark table must be capped at {GROUP_SEEN_CAP}, got {}",
+            crypto.group_seen.len()
+        );
+        assert_eq!(crypto.group_seen.len(), crypto.group_seen_order.len());
     }
 }
