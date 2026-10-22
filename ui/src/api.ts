@@ -106,6 +106,9 @@ export async function uploadAndSendImage(convId: string, to: string[], file: Fil
     bytes: Array.from(bytes),
     content_type: file.type || "application/octet-stream",
     sha256: null,
+    // 归属会话：附件只有会话成员能下载（issue #14）
+    conv_id: convId,
+    public: false,
   });
   await invoke("send_image", { conv_id: convId, to, media_id: uploaded.media_id });
 }
@@ -288,6 +291,8 @@ export async function uploadAndSendFile(convId: string, to: string[], file: File
     bytes: Array.from(bytes),
     content_type: file.type || "application/octet-stream",
     sha256: null,
+    conv_id: convId,
+    public: false,
   });
   await invoke("send_file", {
     conv_id: convId, to, media_id: up.media_id,
@@ -399,12 +404,14 @@ export async function startVoiceRecording(): Promise<{
   return { stop: finish };
 }
 
-export async function uploadVoiceBlob(blob: Blob): Promise<string> {
+export async function uploadVoiceBlob(convId: string, blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const up = await invoke<{ media_id: string }>("upload_media", {
     bytes: Array.from(bytes),
     content_type: blob.type || "audio/webm",
     sha256: null,
+    conv_id: convId,
+    public: false,
   });
   return up.media_id;
 }

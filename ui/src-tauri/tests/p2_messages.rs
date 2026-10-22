@@ -36,7 +36,7 @@ async fn p2_voice_file_sticker_roundtrip() {
 
     // voice: upload the "audio" then send the payload with a 40-bar waveform
     let audio: Vec<u8> = (0..512u32).map(|i| (i * 7 % 251) as u8).collect();
-    let up = alice.upload_media(audio, "audio/webm", None).unwrap();
+    let up = alice.upload_media(audio, "audio/webm", None, Some(&conv), false).unwrap();
     let audio_id = up["media_id"].as_str().unwrap().to_string();
     let waveform: Vec<u8> = (0..40u32).map(|i| (i * 5 % 100) as u8 + 1).collect();
     alice
@@ -76,7 +76,7 @@ async fn p2_voice_file_sticker_roundtrip() {
     // file
     let file_bytes: Vec<u8> = (0..1024u32).map(|i| (i % 255) as u8).collect();
     let fup = alice
-        .upload_media(file_bytes, "application/pdf", None)
+        .upload_media(file_bytes, "application/pdf", None, Some(&conv), false)
         .unwrap();
     let file_id = fup["media_id"].as_str().unwrap().to_string();
     alice

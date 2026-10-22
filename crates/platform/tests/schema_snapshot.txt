@@ -149,6 +149,8 @@ media.id TEXT notnull=0 pk=1
 media.size INTEGER notnull=1 pk=0
 media.content_type TEXT notnull=1 pk=0
 media.uploader TEXT notnull=1 pk=0
+media.conv_id TEXT notnull=1 pk=0
+media.public INTEGER notnull=1 pk=0
 media.has_thumb INTEGER notnull=1 pk=0
 media.created_at INTEGER notnull=1 pk=0
 member_log.owner_type TEXT notnull=1 pk=1

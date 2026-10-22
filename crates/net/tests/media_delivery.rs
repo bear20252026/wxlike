@@ -50,7 +50,7 @@ async fn post_json(
 }
 
 /// POST /api/media as multipart with the declared digest.
-async fn upload(app: &axum::Router, token: &str, bytes: &[u8]) -> String {
+async fn upload(app: &axum::Router, token: &str, bytes: &[u8], conv: &str) -> String {
     let boundary = "wp05-integration";
     let mut body = Vec::new();
     let mut h = Sha256::new();
@@ -60,6 +60,11 @@ async fn upload(app: &axum::Router, token: &str, bytes: &[u8]) -> String {
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(b"Content-Disposition: form-data; name=\"sha256\"\r\n\r\n");
     body.extend_from_slice(sha.as_bytes());
+    body.extend_from_slice(b"\r\n");
+    // 归属会话（issue #14）：附件只有会话成员能下载
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"conv\"\r\n\r\n");
+    body.extend_from_slice(conv.as_bytes());
     body.extend_from_slice(b"\r\n");
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
@@ -92,10 +97,16 @@ async fn upload(app: &axum::Router, token: &str, bytes: &[u8]) -> String {
     json["media_id"].as_str().unwrap().to_string()
 }
 
-async fn download(app: &axum::Router, id: &str, range: Option<&str>) -> (StatusCode, Vec<u8>) {
+async fn download(
+    app: &axum::Router,
+    id: &str,
+    range: Option<&str>,
+    token: &str,
+) -> (StatusCode, Vec<u8>) {
     let mut b = Request::builder()
         .method("GET")
-        .uri(format!("/api/media/{id}"));
+        .uri(format!("/api/media/{id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
     if let Some(r) = range {
         b = b.header(header::RANGE, r);
     }
@@ -166,6 +177,7 @@ async fn image_reference_round_trips_through_the_hub() {
     )
     .await;
     let bob = b["user_id"].as_str().unwrap().to_string();
+    let bob_token = b["token"].as_str().unwrap().to_string();
 
     // both online
     let ac = Client::connect(addr, "localhost", alice.clone())
@@ -178,7 +190,8 @@ async fn image_reference_round_trips_through_the_hub() {
 
     // alice uploads an image and gets back a content-addressed id
     let original = png_of(800, 600);
-    let media_id = upload(&app, &alice_token, &original).await;
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+    let media_id = upload(&app, &alice_token, &original, &conv).await;
     assert_eq!(media_id, sha_of(&original), "the id is the digest");
 
     // the message carries only the reference, not the bytes
@@ -209,7 +222,7 @@ async fn image_reference_round_trips_through_the_hub() {
     );
 
     // bob fetches it, in one piece
-    let (status, fetched) = download(&app, &media_id, None).await;
+    let (status, fetched) = download(&app, &media_id, None, &bob_token).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched, original);
     assert_eq!(
@@ -219,9 +232,9 @@ async fn image_reference_round_trips_through_the_hub() {
     );
 
     // ...or in pieces: resume with a Range request
-    let (status, head) = download(&app, &media_id, Some("bytes=0-999")).await;
+    let (status, head) = download(&app, &media_id, Some("bytes=0-999"), &bob_token).await;
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
-    let (status2, rest) = download(&app, &media_id, Some("bytes=1000-")).await;
+    let (status2, rest) = download(&app, &media_id, Some("bytes=1000-"), &bob_token).await;
     assert_eq!(status2, StatusCode::PARTIAL_CONTENT);
     let mut rejoined = head;
     rejoined.extend_from_slice(&rest);
@@ -235,6 +248,7 @@ async fn image_reference_round_trips_through_the_hub() {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/api/media/{media_id}?thumb=1"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -297,6 +311,7 @@ async fn media_reference_survives_offline_delivery() {
     )
     .await;
     let carol = b["user_id"].as_str().unwrap().to_string();
+    let carol_token = b["token"].as_str().unwrap().to_string();
 
     let ac = Client::connect(addr, "localhost", alice.clone())
         .await
@@ -304,7 +319,8 @@ async fn media_reference_survives_offline_delivery() {
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     let payload = b"pdf-ish attachment bytes".to_vec();
-    let media_id = upload(&app, &alice_token, &payload).await;
+    let conv = wxlike_platform::direct_conv_id(&alice, &carol);
+    let media_id = upload(&app, &alice_token, &payload, &conv).await;
 
     ac.send(&Envelope::with_body(
         wxlike_platform::direct_conv_id(&alice, &carol),
@@ -330,7 +346,7 @@ async fn media_reference_survives_offline_delivery() {
     };
     assert_eq!(id, media_id);
 
-    let (status, fetched) = download(&app, &id, None).await;
+    let (status, fetched) = download(&app, &id, None, &carol_token).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched, payload);
 }

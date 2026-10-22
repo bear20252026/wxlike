@@ -105,9 +105,22 @@ async fn get_bytes(
     path: &str,
     range: Option<&str>,
 ) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
+    get_bytes_as(app, path, range, None).await
+}
+
+/// 带凭据下载（issue #14：媒体下载现在要授权）。
+async fn get_bytes_as(
+    app: &axum::Router,
+    path: &str,
+    range: Option<&str>,
+    token: Option<&str>,
+) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
     let mut b = Request::builder().method("GET").uri(path);
     if let Some(r) = range {
         b = b.header(header::RANGE, r);
+    }
+    if let Some(token) = token {
+        b = b.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
     let resp = {
         use tower::ServiceExt as _;
@@ -168,10 +181,11 @@ async fn upload_and_download_roundtrip() {
         "application/octet-stream"
     );
 
-    let (status, got, headers) = get_bytes(
+    let (status, got, headers) = get_bytes_as(
         &app,
         &format!("/api/media/{}", reply["media_id"].as_str().unwrap()),
         None,
+        Some(&token),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -229,7 +243,7 @@ async fn range_returns_a_partial_slice() {
     let url = format!("/api/media/{}", reply["media_id"].as_str().unwrap());
 
     // A1 asks specifically for bytes=0-99
-    let (status, got, headers) = get_bytes(&app, &url, Some("bytes=0-99")).await;
+    let (status, got, headers) = get_bytes_as(&app, &url, Some("bytes=0-99"), Some(&token)).await;
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(got.len(), 100);
     assert_eq!(got, &payload[..100]);
@@ -239,7 +253,7 @@ async fn range_returns_a_partial_slice() {
     );
 
     // open-ended
-    let (_, tail, headers) = get_bytes(&app, &url, Some("bytes=900-")).await;
+    let (_, tail, headers) = get_bytes_as(&app, &url, Some("bytes=900-"), Some(&token)).await;
     assert_eq!(tail, &payload[900..]);
     assert_eq!(
         headers[header::CONTENT_RANGE].to_str().unwrap(),
@@ -247,7 +261,7 @@ async fn range_returns_a_partial_slice() {
     );
 
     // suffix form: last 10 bytes
-    let (_, last10, headers) = get_bytes(&app, &url, Some("bytes=-10")).await;
+    let (_, last10, headers) = get_bytes_as(&app, &url, Some("bytes=-10"), Some(&token)).await;
     assert_eq!(last10, &payload[990..]);
     assert_eq!(
         headers[header::CONTENT_RANGE].to_str().unwrap(),
@@ -255,12 +269,12 @@ async fn range_returns_a_partial_slice() {
     );
 
     // middle slice
-    let (_, mid, _) = get_bytes(&app, &url, Some("bytes=100-199")).await;
+    let (_, mid, _) = get_bytes_as(&app, &url, Some("bytes=100-199"), Some(&token)).await;
     assert_eq!(mid.len(), 100);
     assert_eq!(mid, &payload[100..200]);
 
     // unsatisfiable range
-    let (status, _, _) = get_bytes(&app, &url, Some("bytes=5000-6000")).await;
+    let (status, _, _) = get_bytes_as(&app, &url, Some("bytes=5000-6000"), Some(&token)).await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
 }
 
@@ -268,9 +282,14 @@ async fn range_returns_a_partial_slice() {
 async fn unknown_and_malformed_ids_are_404() {
     let state = test_platform(8 * 1024 * 1024);
     let app = app(state);
-    let (_uid, _token) = signup_pair(&app).await;
+    let (_uid, token) = signup_pair(&app).await;
     let unknown = "a".repeat(64);
+    // 匿名先被 401 挡住（issue #14）：连"这个 id 存不存在"都不告诉外人
     let (status, _, _) = get_bytes(&app, &format!("/api/media/{unknown}"), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // 登录之后才轮到 404
+    let (status, _, _) =
+        get_bytes_as(&app, &format!("/api/media/{unknown}"), None, Some(&token)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // A3: traversal-shaped ids never touch the filesystem
@@ -283,7 +302,8 @@ async fn unknown_and_malformed_ids_are_404() {
         &"c".repeat(65),
         &"g".repeat(64), // right length, not hex
     ] {
-        let (status, body, _) = get_bytes(&app, &format!("/api/media/{evil}"), None).await;
+        let (status, body, _) =
+            get_bytes_as(&app, &format!("/api/media/{evil}"), None, Some(&token)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "id {evil:?} -> {status}");
         assert!(
             !String::from_utf8_lossy(&body).contains("root:"),
@@ -315,7 +335,8 @@ async fn oversized_upload_is_413() {
     let payload = b"under the cap".to_vec();
     let reply = upload(&app, &token, &payload).await;
     let id = reply["media_id"].as_str().unwrap().to_string();
-    let (status, small, _) = get_bytes(&app, &format!("/api/media/{id}"), None).await;
+    let (status, small, _) =
+        get_bytes_as(&app, &format!("/api/media/{id}"), None, Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(small, b"under the cap");
 }
@@ -332,7 +353,13 @@ async fn thumbnails_are_scaled_to_the_longest_edge() {
     assert_eq!(reply["content_type"].as_str().unwrap(), "image/png");
     assert_eq!(reply["has_thumb"].as_bool(), Some(true));
 
-    let (status, thumb, headers) = get_bytes(&app, &format!("/api/media/{id}?thumb=1"), None).await;
+    let (status, thumb, headers) = get_bytes_as(
+        &app,
+        &format!("/api/media/{id}?thumb=1"),
+        None,
+        Some(&token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE].to_str().unwrap(), "image/png");
     let img = image::load_from_memory(&thumb).expect("thumb decodes");
@@ -346,7 +373,8 @@ async fn thumbnails_are_scaled_to_the_longest_edge() {
     assert_eq!((img.width(), img.height()), (256, 192));
 
     // the original is untouched and still full size
-    let (_, original, _) = get_bytes(&app, &format!("/api/media/{id}"), None).await;
+    let (_, original, _) =
+        get_bytes_as(&app, &format!("/api/media/{id}"), None, Some(&token)).await;
     assert_eq!(original, png);
 }
 
@@ -358,7 +386,13 @@ async fn small_images_get_a_thumb_at_original_size() {
     let png = png_of(64, 48);
     let reply = upload(&app, &token, &png).await;
     let id = reply["media_id"].as_str().unwrap().to_string();
-    let (status, thumb, _) = get_bytes(&app, &format!("/api/media/{id}?thumb=1"), None).await;
+    let (status, thumb, _) = get_bytes_as(
+        &app,
+        &format!("/api/media/{id}?thumb=1"),
+        None,
+        Some(&token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let img = image::load_from_memory(&thumb).unwrap();
     assert_eq!((img.width(), img.height()), (64, 48), "no upscaling");
@@ -499,7 +533,13 @@ async fn thumb_flag_is_false_for_opaque_bytes() {
     let reply = upload(&app, &token, b"just a zip-ish blob").await;
     assert_eq!(reply["has_thumb"].as_bool(), Some(false));
     let id = reply["media_id"].as_str().unwrap().to_string();
-    let (status, _, _) = get_bytes(&app, &format!("/api/media/{id}?thumb=1"), None).await;
+    let (status, _, _) = get_bytes_as(
+        &app,
+        &format!("/api/media/{id}?thumb=1"),
+        None,
+        Some(&token),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "no thumbnail was generated");
 }
 
@@ -581,8 +621,13 @@ async fn injected_store_is_used_for_read_and_write() {
     // ...and the default local-directory store does not
     assert_eq!(scratch.size_of(&id).await.unwrap(), None);
 
-    let (status, got, headers) =
-        get_bytes(&app, &format!("/api/media/{id}"), Some("bytes=0-9")).await;
+    let (status, got, headers) = get_bytes_as(
+        &app,
+        &format!("/api/media/{id}"),
+        Some("bytes=0-9"),
+        Some(&token),
+    )
+    .await;
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(got, &payload[..10]);
     assert_eq!(

@@ -599,11 +599,9 @@ pub fn history_routes(deps: Arc<HistoryDeps>) -> Router {
 /// be one of the two id halves. Groups: platform membership. This check is
 /// what keeps history/search from becoming a cross-tenant read primitive.
 pub fn authorize_conv(platform: &Platform, user_id: &str, conv_id: &str) -> bool {
-    if let Some(rest) = conv_id.strip_prefix("d-") {
-        let parts: Vec<&str> = rest.split('~').collect();
-        return parts.len() == 2 && parts.contains(&user_id);
-    }
-    platform.is_member(conv_id, user_id).unwrap_or(false)
+    // 规则只有一份（`Platform::may_read_conv`）：媒体下载也要用它，
+    // 两处各写一遍迟早漂移。
+    platform.may_read_conv(user_id, conv_id)
 }
 
 /// Every conversation whose messages `user_id` may see: their groups plus the
