@@ -25,8 +25,6 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// ureq 3 的 status 是 http::StatusCode
-use http;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use wxlike_rtc::host::{CallHost, Effect};

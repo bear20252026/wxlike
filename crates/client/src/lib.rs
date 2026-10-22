@@ -30,6 +30,18 @@ pub struct Http {
 /// 单次请求超时（秒）。与旧版一致：10 秒，移动端 FFI 靠它兜底。
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
+/// 响应的 content-type；缺省按八位组流算。
+///
+/// 3.x 的 `Response` 是 `http::Response<Body>`，没有 2.x 的 `content_type()`
+/// 便捷方法。客户端与桌面端都要取这个值，所以收成一处。
+pub fn content_type_of(resp: &http::Response<ureq::Body>) -> String {
+    resp.headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string()
+}
+
 /// 4xx/5xx → 人话。**保留 2.x 的分类语义**（issue #22 的验收项）。
 ///
 /// 3.x 把"HTTP 状态码也是错误"关掉了（`http_status_as_error(false)`），于是
@@ -346,12 +358,7 @@ impl Http {
         if !resp.status().is_success() {
             return Err(Self::status_error(resp));
         }
-        let content_type = resp
-            .headers()
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
+        let content_type = content_type_of(&resp);
         let mut bytes = Vec::new();
         resp.into_body()
             .into_reader()

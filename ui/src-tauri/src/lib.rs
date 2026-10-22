@@ -21,8 +21,6 @@
 // rustc surfaces that as a lint which is pure noise here
 #![allow(linker_messages)]
 
-// ureq 3 的 status / 响应头都是 http crate 的类型
-use http;
 use std::io::{Read as _, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -748,12 +746,7 @@ impl AppState {
         if !resp.status().is_success() {
             return Err(wxlike_client::upload_status_error(resp));
         }
-        let content_type = resp
-            .headers()
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
+        let content_type = wxlike_client::content_type_of(&resp);
         let mut bytes = Vec::new();
         // 3.x 的 BodyReader 没有 read_to_end：先读成 Vec 再展开
         let mut reader = resp.into_body().into_reader();
