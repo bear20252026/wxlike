@@ -192,6 +192,22 @@ jobs:
           # release 用 debug 签名（模板默认），CI 只验证"能出包"，不发布
           flutter build apk --release --target-platform android-arm64
 
+      # 合并清单在 `flutter build` 之后才生成，所以只能构建完再校。
+      - name: 校验 release 合并清单带 INTERNET（构建后）
+        run: |
+          cd apps/mobile
+          MERGED=$(find build -name "AndroidManifest.xml" -path "*release*" | head -1)
+          if [ -z "$MERGED" ]; then
+            echo "::error::构建后仍找不到 release 的合并清单" >&2
+            exit 1
+          fi
+          echo "合并清单：$MERGED"
+          grep -q 'android.permission.INTERNET' "$MERGED" || {
+            echo "::error::release 合并清单里没有 INTERNET 权限" >&2
+            exit 1
+          }
+          echo "release 合并清单带 INTERNET ✓"
+
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:

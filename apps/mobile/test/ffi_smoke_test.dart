@@ -149,7 +149,7 @@ void main() {
     addTearDown(fake.stop);
     final db = tempDb('main');
 
-    final online = FfiWxlikeService.at(library!, base, db.path);
+    final online = await FfiWxlikeService.at(library!, base, db.path);
     addTearDown(online.close);
 
     final session = await online.login('alice', 'pw');
@@ -183,7 +183,7 @@ void main() {
 
     // ---- 断网：换一个"指向死地址、共用同一个本地库"的客户端 = 重启后没信号 ----
     final dead = await deadBase();
-    final offline = FfiWxlikeService.at(library, dead, db.path);
+    final offline = await FfiWxlikeService.at(library, dead, db.path);
     addTearDown(offline.close);
     expect(offline.session().signedIn, isTrue, reason: 'token 应该已经落库');
 
@@ -206,7 +206,7 @@ void main() {
     expect(status.entries.single.text, '地铁里发的');
 
     // ---- 恢复：另一个客户端（同一个库、活的地址）补发。幂等键必须还是那个 task_id ----
-    final recovered = FfiWxlikeService.at(library, base, db.path);
+    final recovered = await FfiWxlikeService.at(library, base, db.path);
     addTearDown(recovered.close);
     // 队列的退避窗口：`record_failure` 把 next_retry_at 推后了 1 秒，
     // 没到点就不该发——提前撞墙等于白烧一次尝试（一共只有 5 次）。
@@ -233,7 +233,7 @@ void main() {
     await recovered.logout();
     expect(recovered.session().signedIn, isFalse);
     expect((await recovered.outboxStatus()).pending, 0);
-    final after = FfiWxlikeService.at(library, dead, db.path);
+    final after = await FfiWxlikeService.at(library, dead, db.path);
     addTearDown(after.close);
     expect((await after.conversations()).conversations, isEmpty, reason: '会话缓存要跟着清');
     expect((await after.history('d-alice~bob', 0, 50)).messages, isEmpty,
@@ -242,11 +242,41 @@ void main() {
 
   test('离线时错误分类是网络类而不是"未知"（FFI 层看到的类型要对）', () async {
     final dead = await deadBase();
-    final service = FfiWxlikeService.at(library!, dead, tempDb('net').path);
+    final service = await FfiWxlikeService.at(library!, dead, tempDb('net').path);
     addTearDown(service.close);
     await expectLater(
       () async => service.login('alice', 'pw'),
       throwsA(isA<WxlikeErrorExceptionNetwork>()),
     );
   }, skip: reason);
+
+/// issue #17 的验收：**UI isolate 不能被 FFI 卡住**。
+///
+/// 以前这些绑定调用直接跑在 UI isolate 上，服务端慢几秒整页就卡住——
+/// 滚动、取消、进度全停。现在它们跑在后台 worker isolate 上，
+/// 所以"调用还没回来"的时候定时器必须照常触发。
+///
+/// 判据是时间，不是别的：如果 FFI 又把 isolate 堵住了，
+/// `Future.delayed(200ms)` 只能等那个调用跑完才兑现——而一个连不上的
+/// 地址要耗掉 ureq 的 10 秒超时，所以这里会直接超时失败。
+test('慢 FFI 调用不阻塞 UI isolate（页面还能动）', () async {
+  final dead = await deadBase();
+  final service = await FfiWxlikeService.at(library!, dead, tempDb('block').path);
+  addTearDown(service.close);
+
+  final slow = service.login('alice', 'pw'); // 连不上的地址，最长 10 秒
+  final watch = Stopwatch()..start();
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  expect(
+    watch.elapsedMilliseconds,
+    lessThan(2_000),
+    reason: 'FFI 调用还在飞，UI isolate 必须还能跑定时器（'
+        '${watch.elapsedMilliseconds}ms 才醒过来）',
+  );
+  await expectLater(
+    slow,
+    throwsA(isA<WxlikeErrorExceptionNetwork>()),
+  );
+}, skip: reason);
 }
+

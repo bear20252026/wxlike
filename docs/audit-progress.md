@@ -10,7 +10,7 @@
 > （`p2_messages` 三条）**一直红到本轮**——因为 Tauri 测试没进 CI，没人跑。
 > 这正好是 #18 收尾的理由，见 §二点七。
 
-## 一、已闭环（15 条 + 2 条部分）
+## 一、已闭环（16 条 + 1 条部分）
 
 | issue | 严重度 | 状态 | 提交 | 一句话 |
 |---|---|---|---|---|
@@ -32,8 +32,9 @@
 | #9 | P1 | ✅ 完整 | 本轮 | 跨节点消费"投递成功才 ack"；目标 hub 上没人就落他的离线队列 |
 | #13 | P1 | ✅ 完整 | 本轮 | 用户通道禁广播/禁伪造 Notice；直聊三元组必须自洽 |
 | #14 | P1 | ✅ 完整 | 本轮 | 媒体下载要授权：会话成员 / 上传者 / 短期签名 URL；头像走 public |
+| #17 | P1 | ✅ 完整 | 本轮 | FFI 搬进后台 isolate；CI 校验 release 合并清单带 INTERNET |
 
-合计：**15 条完整、2 条部分**。
+合计：**16 条完整、1 条部分**。
 
 ### 逐条说明
 
@@ -72,7 +73,7 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 
 **#21（完整，上一轮）**——见提交 `69c4d4d`。
 
-## 二、还没做（2 条：运维与依赖债）
+## 二、还没做（1 条部分 + 2 条运维债）
 
 | issue | 严重度 | 为什么没做 | 需要什么 |
 |---|---|---|---|
@@ -357,6 +358,48 @@ URL，那是另一条任务。
 `media.rs` 的既有用例改成带凭据/带会话（14 条），`net/tests/media_delivery.rs`
 的两条端到端用例也改成"上传声明会话 + 对方带令牌取"。
 
+## 二点十二、移动端 FFI 与 Android 权限（#17）
+
+### 权限：源码对不算，合并结果对才算
+
+`INTERNET` 现在写在 `apps/mobile/android/app/src/main/AndroidManifest.xml`（上一轮加的）。
+但"源码里写了"不等于"包里有了"：Flutter 模板只把它放在 `src/debug/`（给 hot reload），
+第三方依赖也可能贡献或意外移除权限。所以 CI 的 android job 在 `flutter build apk
+--release` **之后**去读合并出来的 `build/**/release/AndroidManifest.xml`，没有
+`android.permission.INTERNET` 就让整关红。
+
+症状描述也写进注释了：`Permission denied (os error 13)`，看起来像服务端没起，
+其实根本没联网权限。
+
+### 同步 FFI：搬进后台 isolate，不是"每次起一个"
+
+绑定层是同步的（`crates/client` 用 ureq，单次超时 10 秒）。以前这些调用直接跑在
+UI isolate 上，服务端慢几秒整页就卡住——滚动、取消、进度全停。
+
+现在 `apps/mobile/lib/src/service.dart` 里有一个**长期存活的 worker isolate**：
+
+- 界面侧 `SendPort` 发 `[id, op, args]`，等自己的 `Completer`；
+- worker 持有唯一的 `WxlikeClient`（uniffi object，背后是 Rust 的 Arc + 一条
+  SQLite 连接），命令表 `_dispatch` 就是原来的方法转发；
+- 返回值是 uniffi 的 record / enum / exception，**都是纯 Dart 类**，能跨界；
+- 初始化失败 / worker 崩溃都会让 `start()` 抛错，不会静默卡住。
+
+**为什么不是"每次调用起一个 isolate"**：`WxlikeClient` 跨 isolate 传不了，
+每次新建都要重开库、重起补发线程。所以 worker 必须长期活着，`close()` 用
+`Isolate.kill`——卡在 ureq 里的调用不会理"请退出"这种礼貌请求。
+
+`session()` 保持**同步**：改成本地缓存，登录/登出/注册时刷新。它只读本地状态，
+没有阻塞风险；界面代码（`main.dart`）因此一行没改。
+
+### 验收
+
+- `flutter test` 里新增 `慢 FFI 调用不阻塞 UI isolate`：对一个连不上的地址发
+  `login()`（最长 10 秒），同时 `Future.delayed(200ms)` 必须在 2 秒内兑现。
+  如果 FFI 又把 isolate 堵住，这个定时器只能等调用跑完才醒 → 失败。
+- CI：release 合并清单必须带 INTERNET。
+- 真机验收（`docs/mobile-acceptance.md`）：注册、登录、发消息；服务端故意延迟
+  数秒时页面仍能滚动、取消、显示进度。
+
 ## 三、为什么没有"全部完成"
 
 单条 #3 就改了 8 个 crate（`net`/`server`/`platform`/`core`/`ui`/`ui/src-tauri`
@@ -364,8 +407,8 @@ URL，那是另一条任务。
 桌面的连接参数、诊断工具、18 处测试构造点全部要同步。这类改动不能切碎，
 切碎了就是"改一半的协议"，比不改更危险。
 
-剩下的都是"改一半也算数"的增量：多设备密钥分发、FFI 后台 isolate、
-人机校验、Redis 保留策略、ureq 3 迁移。没有一条需要再动协议核心。
+剩下的都是"改一半也算数"的增量：多设备密钥分发、人机校验、Redis 保留策略、
+ureq 3 迁移。没有一条需要再动协议核心。
 
 按"能不能验证"排序，我优先做了**改完就能用测试钉住**的那些（#3 #6 #12 #19），
 以及**只改一行就能止住泄漏**的那些（#4 的 fail-closed、#14 的读放大）。
@@ -375,7 +418,6 @@ URL，那是另一条任务。
 1. **端到端投递确认**（1–2 天）——加 `Ack{msg_id}` 帧，让离线队列的 ack 等客户端
    处理完（现在只等"写进 socket"，见 §二点九）。
 2. **#15 剩余**（3–5 天）——多设备 bundle、搜索过滤、本地真删除。
-3. **#17**（1 天）——移动 FFI 把 ureq 调用搬进后台 isolate。
-4. **#19 / #20 / #22**——人机校验、Redis 保留策略、ureq 3 迁移。
+3. **#19 / #20 / #22**——人机校验、Redis 保留策略、ureq 3 迁移。
 
 > 排序依据：**能不能被外部直接利用** > **数据会不会丢** > **体验/债务**。
