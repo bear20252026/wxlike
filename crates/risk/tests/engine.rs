@@ -14,7 +14,35 @@ fn engine() -> RiskEngine {
         send_deny_at: 4,
         report_throttle_at: 2,
         report_deny_at: 3,
+        claim_keys_throttle_at: 2,
+        claim_keys_deny_at: 4,
     })
+}
+
+#[test]
+fn claim_keys_throttles_then_denies_without_challenge() {
+    // AR-2/H-4：认领无 captcha 兑现面，只应有 Throttle/Deny 两态
+    let e = engine();
+    assert_eq!(
+        e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
+        Verdict::Allow
+    );
+    assert_eq!(
+        e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
+        Verdict::Throttle { retry_after_ms: 3_600_000 }
+    );
+    // 键隔离：别的 (caller, target) 不受影响
+    assert_eq!(
+        e.check(Action::ClaimKeys, "carol:alice", T0).unwrap(),
+        Verdict::Allow
+    );
+    // 计入成功记录后撞 Deny（record 也计数）
+    e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
+    e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
+    assert_eq!(
+        e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
+        Verdict::Deny { reason: "claim_keys_rate".into() }
+    );
 }
 
 #[test]
