@@ -463,6 +463,32 @@ pub async fn run_mq_hub_with(
 
     let mut tasks = vec![accept_loop, consume_loop];
 
+    // 路由租约续租（issue #20）。只有带租约的路由表才需要：内存表
+    // `lease_ttl_ms() == 0`，起这个循环纯属空转。
+    //
+    // 没有它，一台崩溃的 hub 会让**所有**曾经连过的用户永远路由到它身上——
+    // 消息发进黑洞。有了租约，续租停止 = 路由过期 = 调用方重路由或落离线队列。
+    let lease_ms = state.router.routes.lease_ttl_ms();
+    if lease_ms > 0 {
+        let routes = state.router.routes.clone();
+        let peers = state.peers.clone();
+        let hub_id = state.hub_id.clone();
+        let period = std::time::Duration::from_millis((lease_ms / 3).max(1));
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(period).await;
+                // 本 hub 上所有绑着的用户。peers 是权威：连接断了就从这里消失，
+                // 续租循环不会给一个已经不在的用户续命。
+                let users: Vec<String> = peers.read().await.keys().cloned().collect();
+                for user in users {
+                    if let Err(err) = routes.renew_user(&user, &hub_id).await {
+                        eprintln!("[mq-hub] renew route {user} failed: {err:#}");
+                    }
+                }
+            }
+        }));
+    }
+
     // 投递任务的清理（issue #11）：任务行只在"这条消息可能还要补投"时有意义。
     // 留一周足够覆盖客户端重试窗口，再老的删掉——否则表只增不减。
     if let Some(store) = state.storage.clone() {

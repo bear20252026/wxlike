@@ -10,7 +10,7 @@
 > （`p2_messages` 三条）**一直红到本轮**——因为 Tauri 测试没进 CI，没人跑。
 > 这正好是 #18 收尾的理由，见 §二点七。
 
-## 一、已闭环（17 条）
+## 一、已闭环（18 条）
 
 | issue | 严重度 | 状态 | 提交 | 一句话 |
 |---|---|---|---|---|
@@ -34,8 +34,9 @@
 | #14 | P1 | ✅ 完整 | 本轮 | 媒体下载要授权：会话成员 / 上传者 / 短期签名 URL；头像走 public |
 | #17 | P1 | ✅ 完整 | 本轮 | FFI 搬进后台 isolate；CI 校验 release 合并清单带 INTERNET |
 | #19 | P2 | ✅ 完整 | 本轮 | 伪造转发头换不了限流桶；恢复入口失败计数 + 可过人机校验 |
+| #20 | P2 | ✅ 完整 | 本轮 | Stream 保留策略 + 路由租约续租 |
 
-合计：**17 条完整**。
+合计：**18 条完整**。
 
 ### 逐条说明
 
@@ -74,7 +75,7 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 
 **#21（完整，上一轮）**——见提交 `69c4d4d`。
 
-## 二、还没做（1 条部分 + 1 条运维债）
+## 二、还没做（1 条部分 + 1 条迁移债）
 
 | issue | 严重度 | 为什么没做 | 需要什么 |
 |---|---|---|---|
@@ -460,6 +461,45 @@ UI isolate 上，服务端慢几秒整页就卡住——滚动、取消、进度
 - `wrong_recovery_codes_accumulate_failures` —— 前 4 次错码是"码不对"，
   第 5 次开始要人机校验，过了校验仍然因为码错被拒。
 
+## 二点十五、Redis Stream 保留与路由租约（#20）
+
+### Stream 保留：两层，都不能裁到 pending 头上
+
+1. **天花板**：`XADD ... MAXLEN ~ <cap>`。近似裁剪，所以它是"最多这么多"，
+   不是精确值——但即使精确裁剪一次都没跑，stream 也不会无限涨。
+2. **精确裁剪**：每 `sweep_every` 次 ack 跑一次 `sweep()`——
+   `XPENDING ... IDLE 0 - + 1` 拿最老的一条 pending，`XTRIM MINID ~ <它>`。
+   没有 pending 才用 `XINFO GROUPS` 的 last-delivered-id。
+
+**为什么不能用 last-delivered 当边界**：那是在途项的 id，裁下去崩溃的 hub
+就再也捞不回来了。边界算法抽成纯函数 `trim_boundary()` 并钉了 4 条单测。
+
+### 路由租约
+
+`RedisRoutes` 以前把"用户 → hub"写进一个永久 hash：hub 进程崩了没法 unbind，
+于是**所有**曾经连过的用户永远路由到那台死机器上，消息发进黑洞。
+
+现在带租约（默认 30s）：路由改成 per-user 的 `SET ... EX`（Redis hash 没有
+字段级 TTL），hub 每隔 1/3 租约续一次。续租只在自己还持有时生效——掉队过的
+hub 不能偷偷把用户的租约续上。租约过期 = `route_of` 返回 `None` =
+调用方重路由或落离线队列。
+
+hub 侧的续租循环只在 `lease_ttl_ms() > 0` 时起：内存表返回 0，
+不起这个定时器（零成本，既有测试行为不变）。
+
+### 验收
+
+- `trim_boundary` 等 4 条单测（不需要 Redis）；
+- `crates/net/tests/route_lease.rs` 2 条：hub 给连着的用户续租、断开就停；
+  没有租约的表照常投递；
+- `crates/mq/tests/streams_redis.rs` 新增 2 条 `#[ignore]` 真机用例
+  （`REDIS_URL=... cargo test -p wxlike-mq --features redis -- --ignored`）：
+  裁剪不动 pending、MAXLEN 天花板生效。
+
+**没做**：用户/设备/连接集合并的路由（`route_of` 的键还是用户，不是设备），
+以及多 hub 同时在线时的分流——那要改 `RouteTable` 的键模型，影响面到 hub 的
+每一处路由查询，单独排期。
+
 ## 三、为什么没有"全部完成"
 
 单条 #3 就改了 8 个 crate（`net`/`server`/`platform`/`core`/`ui`/`ui/src-tauri`
@@ -478,8 +518,7 @@ ureq 3 迁移。没有一条需要再动协议核心。
 1. **端到端投递确认**（1–2 天）——加 `Ack{msg_id}` 帧，让离线队列的 ack 等客户端
    处理完（现在只等"写进 socket"，见 §二点九）。
 2. **#15 剩余**（3–5 天）——多设备 bundle、搜索过滤、本地真删除。
-3. **#20**（1 天）——Redis Stream 保留策略与路由租约。
-4. **#22**（2–3 人日）——ureq 3 迁移，有现成任务单
+3. **#22**（2–3 人日）——ureq 3 迁移，有现成任务单
    `docs/task-ureq3-migration.md`。
 
 > 排序依据：**能不能被外部直接利用** > **数据会不会丢** > **体验/债务**。

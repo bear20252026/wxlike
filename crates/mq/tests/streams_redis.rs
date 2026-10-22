@@ -132,3 +132,71 @@ async fn streams_default_claim_window_meets_the_contract() {
     );
     assert!(!mq.consumer().is_empty(), "generated consumer name");
 }
+
+/// issue #20：保留策略必须**只裁已确认的**，不能把 pending 一起裁掉。
+///
+/// 崩溃的 hub 靠 pending + XAUTOCLAIM 捞回消息——裁剪裁到 pending 头上，
+/// 那条消息就真的没了。
+#[tokio::test]
+#[ignore = "requires REDIS_URL"]
+async fn streams_trim_never_touches_pending() {
+    let url = require_redis!();
+    let queue = unique_queue("trim");
+    // 每 1 次 ack 就扫一次，测试不用等 256 次
+    let mq = wxlike_mq::streams::RedisStreamsMq::connect(&url, Some("trim-consumer"))
+        .unwrap()
+        .with_timeouts(2_000, 1_000)
+        .with_retention(10, 1);
+
+    for i in 0..5u8 {
+        mq.publish(&queue, vec![b't', i]).await.unwrap();
+    }
+    // 读两条但**不 ack**：它们必须留在 pending 里
+    let first = read_within(&mq, &queue).await.0;
+    let second = read_within(&mq, &queue).await.0;
+    assert_eq!(mq.pending_count(&queue).await.unwrap(), 2);
+
+    // 再发几条并 ack 掉，触发裁剪
+    for i in 0..3u8 {
+        mq.publish(&queue, vec![b'a', i]).await.unwrap();
+    }
+    for _ in 0..3 {
+        let (id, _) = read_within(&mq, &queue).await;
+        mq.ack(&queue, &id).await.unwrap();
+    }
+
+    // 关键断言：那两条 pending 一条都没少
+    assert_eq!(
+        mq.pending_count(&queue).await.unwrap(),
+        2,
+        "裁剪不能裁到 pending 头上"
+    );
+    // 而且它们还能被重新领走
+    let reclaimed = mq.claim_stale(&queue, 0).await.unwrap();
+    let ids: Vec<&str> = reclaimed.iter().map(|(id, _)| id.as_str()).collect();
+    assert!(ids.contains(&first.as_str()), "first pending still there");
+    assert!(ids.contains(&second.as_str()), "second pending still there");
+    for (id, _) in &reclaimed {
+        mq.ack(&queue, id).await.unwrap();
+    }
+}
+
+/// issue #20：MAXLEN 天花板——即使精确裁剪一次都没跑，stream 也不该无限涨。
+#[tokio::test]
+#[ignore = "requires REDIS_URL"]
+async fn streams_backstop_keeps_the_stream_bounded() {
+    let url = require_redis!();
+    let queue = unique_queue("backstop");
+    let mq = wxlike_mq::streams::RedisStreamsMq::connect(&url, Some("backstop-consumer"))
+        .unwrap()
+        .with_timeouts(2_000, 1_000)
+        .with_retention(50, 1_000_000); // 精确裁剪几乎不会跑
+
+    for i in 0..300u16 {
+        mq.publish(&queue, format!("payload-{i}").into_bytes())
+            .await
+            .unwrap();
+    }
+    let len = mq.stream_len(&queue).await.unwrap();
+    assert!(len <= 120, "MAXLEN ~ 50 是近似裁剪，留一倍余量：实际 {len}");
+}
