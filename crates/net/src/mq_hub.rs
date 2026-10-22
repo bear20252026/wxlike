@@ -96,6 +96,13 @@ pub const DEFAULT_CLAIM_IDLE_MS: u64 = 60_000;
 /// 投递任务保留窗口（issue #11）：一周之后不再补投，行也删掉。
 const DELIVERY_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
+/// 单条连接的写超时（issue #9）。
+///
+/// 写实时连接现在是 **await** 的（不 await 就不知道有没有人收到），但"等"必须
+/// 有上界：对端不读流、缓冲满了的时候，无限等会把发送者的入站循环一起拖死。
+/// 超时按"没写成功"处理 → 落收件人的离线队列，比卡住强。
+const DELIVER_WRITE_TIMEOUT_MS: u64 = 2_000;
+
 impl Default for MqHubOptions {
     fn default() -> Self {
         Self {
@@ -740,6 +747,36 @@ fn is_disconnect(err: &anyhow::Error) -> bool {
     text.contains("EOF") || text.contains("closed") || text.contains("connection lost")
 }
 
+/// 用户能合法发出的控制帧：回执（`receipt`）、撤回（`Recall` body）、typing。
+///
+/// 这三类以前也带 `Notice`/`System` 的形状（回执的 body 就是空 Notice），
+/// 所以"禁掉 Notice"必须放行它们，否则读回执和撤回会一起失灵。
+fn is_user_control_frame(env: &Envelope) -> bool {
+    env.receipt.is_some() || env.is_recall() || env.is_typing()
+}
+
+/// 只有服务端能发的帧形状：`Notice`（界面上渲染成系统文案）。
+///
+/// **不能**用 `env.kind == System` 判断：`kind_of()` 把 `Custom`（typing、@、
+/// 红包、通话信令）也归成 `System`，按 kind 拦会把用户自己的功能帧一起打死。
+/// 形状才是契约：系统文案只有 `Notice` 这一种。
+fn is_server_only_frame(env: &Envelope) -> bool {
+    matches!(env.body, wxlike_core::MsgBody::Notice(_))
+}
+
+/// 直聊 `d-<a>~<b>` 的两个成员；不是直聊 id 就返回 `None`。
+///
+/// 只认这一种形状：`d-` 前缀 + 恰好一个 `~` + 两端非空。看不懂就当普通会话，
+/// 交给成员表/收件人校验，不在这里猜。
+fn direct_members(conv_id: &str) -> Option<(&str, &str)> {
+    let rest = conv_id.strip_prefix("d-")?;
+    let (a, b) = rest.split_once('~')?;
+    if a.is_empty() || b.is_empty() || b.contains('~') || a == b {
+        return None;
+    }
+    Some((a, b))
+}
+
 /// Everything a hub does with one frame arriving from a connected client.
 async fn handle_inbound(
     state: &Arc<HubState>,
@@ -751,6 +788,22 @@ async fn handle_inbound(
         eprintln!(
             "[mq-hub] dropped frame from {bound_user} claiming sender {}",
             env.sender
+        );
+        return Ok(());
+    }
+
+    // 1.5 用户通道不接受"系统事件"（issue #13）。
+    //
+    // `Notice` 与 `kind = System` 在客户端是用来渲染"XX 已成为好友""群已解散"
+    // 这类服务端通知的。允许普通账号发它，等于让任何人往别人界面上伪造系统
+    // 文案——而且这类帧以前还**跳过** send_gate 与关系过滤。
+    //
+    // 服务端自己的通知走 `HubHandle::publish`（`route_envelope` 直投），
+    // 不经过这里，所以"真的系统通知"不受影响。
+    if !is_user_control_frame(env) && is_server_only_frame(env) {
+        eprintln!(
+            "[mq-hub] dropped server-only frame from {bound_user} (kind={:?})",
+            env.kind
         );
         return Ok(());
     }
@@ -776,6 +829,48 @@ async fn handle_inbound(
     } else {
         Some(from_mailbox)
     };
+
+    // 2.2 直聊的三元组一致性（issue #13）：sender / to / conv_id 必须自洽。
+    //
+    // `d-<a>~<b>` 里只有 a、b 两个人。以前客户端可以在这条会话里填任意 `to`，
+    // 把"私聊"当成定向投递的跳板；也可以把 `to` 填成自己，制造一条谁也收不到
+    // 的幽灵消息。控制帧（回执/撤回）的 `to` 由 hub 自己填，不做这项检查。
+    if let Some((a, b)) = direct_members(&env.conv_id) {
+        let other = if env.sender == a {
+            Some(b)
+        } else if env.sender == b {
+            Some(a)
+        } else {
+            None
+        };
+        let Some(other) = other else {
+            eprintln!(
+                "[mq-hub] dropped frame from {} who is not in direct conv {}",
+                env.sender, env.conv_id
+            );
+            return Ok(());
+        };
+        if !is_user_control_frame(env) && (env.to.len() != 1 || env.to[0] != other) {
+            eprintln!(
+                "[mq-hub] dropped direct frame with recipients {:?} (conv {} expects [{other}])",
+                env.to, env.conv_id
+            );
+            return Ok(());
+        }
+    }
+
+    // 2.3 用户通道不允许"空收件人广播"（issue #13）。
+    //
+    // 空 `to` 以前意味着"发给本 hub 所有在线用户 + 其他 hub 各一份"。群消息
+    // 靠成员表扇出（`members` 有值），所以这里只拦非群的内容帧。服务端自己的
+    // 广播走 `HubHandle::publish`，不经过这条路径。
+    if !is_user_control_frame(env) && env.to.is_empty() && members.is_none() {
+        eprintln!(
+            "[mq-hub] dropped broadcast content frame from {} (conv {})",
+            env.sender, env.conv_id
+        );
+        return Ok(());
+    }
 
     // 2.5 P3 delivery policy (blocklist / mute / stranger gate) — content and
     // typing frames only; receipts, recalls and system (Notice) frames are
@@ -972,14 +1067,16 @@ async fn handle_inbound(
     // 这样同一条 msg_id 重放时：已收到的人不会再收一遍（`ten_replays` 那条
     // 测试盯的就是这个），而上次失败的收件人会被补齐（issue #11）。
     let recipients = content_recipients(&env, members.as_deref());
-    let msg_key = hex::encode(env.msg_id);
+    // 没有 msg_id 的老帧（v1）没有投递任务可查：空串 = "不走 outbox"。
+    // 直接 `hex::encode(NO_MSG_ID)` 会得到一串 0，查出来是空列表，
+    // 于是被当成"全都投递过"而一条都不发。
+    let msg_key = if env.msg_id == NO_MSG_ID {
+        String::new()
+    } else {
+        hex::encode(env.msg_id)
+    };
     if let (Some(store), false) = (&state.storage, env.msg_id == NO_MSG_ID) {
         store.ensure_deliveries(&msg_key, &recipients)?;
-    }
-    // 广播（`to` 为空且不是群）没有收件人列表，只能按"本 hub 全发 + 其他 hub
-    // 各投一份"的老语义走。这条路径本身是 #13 要收紧的对象，这里不扩大改动。
-    if recipients.is_empty() && env.to.is_empty() && members.is_none() {
-        return route_envelope(state, &env, true).await;
     }
     fanout_content(state, &env, &recipients, &msg_key).await
 }
@@ -1318,9 +1415,17 @@ async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) -> usize {
     };
     let mut written = 0;
     for conn in conns {
-        match conn.send_frame(frame).await {
-            Ok(()) => written += 1,
-            Err(err) => eprintln!("[mq-hub] deliver to {user} failed: {err}"),
+        let write = tokio::time::timeout(
+            std::time::Duration::from_millis(DELIVER_WRITE_TIMEOUT_MS),
+            conn.send_frame(frame),
+        )
+        .await;
+        match write {
+            Ok(Ok(())) => written += 1,
+            Ok(Err(err)) => eprintln!("[mq-hub] deliver to {user} failed: {err}"),
+            Err(_) => {
+                eprintln!("[mq-hub] deliver to {user} timed out after {DELIVER_WRITE_TIMEOUT_MS}ms")
+            }
         }
     }
     written

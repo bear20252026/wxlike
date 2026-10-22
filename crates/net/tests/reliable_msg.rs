@@ -63,7 +63,7 @@ async fn recall_reaches_the_peer_and_hides_the_original() {
     let bob = connect(addr, "bob").await;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let msg = Envelope::text("conv1", "alice", 1, "the original text");
+    let msg = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "the original text");
     alice.send(&msg).await.unwrap();
     let got = tokio::time::timeout(Duration::from_secs(5), bob.next_envelope())
         .await
@@ -115,7 +115,7 @@ async fn ten_replays_of_one_msg_id_are_delivered_once() {
     let bob = connect(addr, "bob").await;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let msg = Envelope::text("conv1", "alice", 1, "send once");
+    let msg = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "send once");
     for _ in 0..10 {
         alice.send(&msg).await.unwrap();
     }
@@ -147,11 +147,11 @@ async fn duplicate_ids_from_different_senders_are_both_kept() {
     let shared_id = Envelope::new_msg_id();
     let a = Envelope {
         msg_id: shared_id,
-        ..Envelope::text("conv1", "alice", 1, "from alice")
+        ..Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "from alice")
     };
     let b = Envelope {
         msg_id: shared_id,
-        ..Envelope::text("conv1", "bob", 1, "from bob")
+        ..Envelope::direct("conv1", "bob", vec!["alice".into()], 1, "from bob")
     };
     alice.send(&a).await.unwrap();
     bob.send(&b).await.unwrap();
@@ -172,13 +172,19 @@ async fn receipt_travels_back_to_the_author_only() {
     let carol = connect(addr, "carol").await;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    // broadcast message: bob and carol both see it
-    let msg = Envelope::text("conv1", "alice", 1, "read this");
+    // 定向多收件人（#13 之后用户不能再发空收件人广播）：bob 和 carol 都收到
+    let msg = Envelope::direct(
+        "conv1",
+        "alice",
+        vec!["bob".into(), "carol".into()],
+        1,
+        "read this",
+    );
     alice.send(&msg).await.unwrap();
     for peer in [&bob, &carol] {
         let got = tokio::time::timeout(Duration::from_secs(5), peer.next_envelope())
             .await
-            .expect("peer sees the broadcast")
+            .expect("peer sees the message")
             .unwrap();
         assert_eq!(got.msg_id, msg.msg_id);
     }
@@ -221,7 +227,7 @@ async fn receipt_for_an_offline_author_is_parked() {
     let alice = connect(addr, "alice").await;
     let bob = connect(addr, "bob").await;
     tokio::time::sleep(Duration::from_millis(250)).await;
-    let msg = Envelope::text("conv1", "alice", 1, "bye for now");
+    let msg = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "bye for now");
     alice.send(&msg).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), bob.next_envelope())
         .await
@@ -252,7 +258,7 @@ async fn a_client_cannot_speak_as_someone_else() {
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     // alice writes a real message
-    let msg = Envelope::text("conv1", "alice", 1, "alice said this");
+    let msg = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "alice said this");
     alice.send(&msg).await.unwrap();
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -263,7 +269,13 @@ async fn a_client_cannot_speak_as_someone_else() {
         .unwrap();
     // ...and to pass off a message as alice's
     mallory
-        .send(&Envelope::text("conv1", "alice", 2, "forged"))
+        .send(&Envelope::direct(
+            "conv1",
+            "alice",
+            vec!["bob".into()],
+            2,
+            "forged",
+        ))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -294,7 +306,7 @@ async fn recalling_someone_elses_message_is_ignored() {
     let bob = connect(addr, "bob").await;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let msg = Envelope::text("conv1", "alice", 1, "not yours");
+    let msg = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "not yours");
     alice.send(&msg).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -333,7 +345,7 @@ async fn legacy_v1_frames_still_route() {
     let v1 = Envelope {
         version: 1,
         msg_id: wxlike_core::NO_MSG_ID,
-        ..Envelope::text("conv1", "alice", 1, "old client")
+        ..Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "old client")
     };
     alice.send(&v1).await.unwrap();
     alice.send(&v1).await.unwrap();

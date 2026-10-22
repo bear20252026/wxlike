@@ -20,7 +20,8 @@ fn router() -> MqRouter {
 fn text(from: &str, to: &str, body: &str, msg_id: u8) -> Envelope {
     Envelope {
         version: PROTOCOL_VERSION,
-        conv_id: "d-a~b".into(),
+        // 直聊 id 必须与 sender/to 自洽（issue #13）：`d-<a>~<b>` 里只能是他俩
+        conv_id: format!("d-{from}~{to}"),
         sender: from.into(),
         to: vec![to.into()],
         seq: 1,
@@ -186,7 +187,7 @@ async fn hub_crash_restart_reconnect_and_nothing_lost() {
     assert_eq!(second.body, MsgBody::Text("after crash".into()));
 
     // and the persisted conversation survived the restart
-    let history = hub2.handle().messages_of("d-a~b").unwrap();
+    let history = hub2.handle().messages_of("d-alice~bob").unwrap();
     let texts: Vec<&str> = history
         .iter()
         .map(|m| match &m.envelope.body {

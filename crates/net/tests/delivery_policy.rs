@@ -51,7 +51,13 @@ impl DeliveryPolicy for StaticPolicy {
     }
 }
 
-async fn hub_with(policy: StaticPolicy) -> (std::sync::Arc<Store>, std::net::SocketAddr) {
+async fn hub_with(
+    policy: StaticPolicy,
+) -> (
+    std::sync::Arc<Store>,
+    std::net::SocketAddr,
+    wxlike_net::HubHandle,
+) {
     let router = MqRouter::new(std::sync::Arc::new(MemoryMq::new()), MemoryRoutes::new());
     let store = std::sync::Arc::new(Store::open(None).unwrap());
     let hub = run_mq_hub_with(
@@ -70,8 +76,9 @@ async fn hub_with(policy: StaticPolicy) -> (std::sync::Arc<Store>, std::net::Soc
     .await
     .unwrap();
     let addr = hub.local_addr().unwrap();
+    let handle = hub.handle();
     std::mem::forget(hub);
-    (store, addr)
+    (store, addr, handle)
 }
 
 async fn settle() {
@@ -83,7 +90,7 @@ async fn blocked_direct_frame_is_dropped_without_trace() {
     let mut policy = StaticPolicy::default();
     policy.blocked.insert(("mallory".into(), "alice".into()));
     policy.allow_direct("bob", "alice"); // bob 过陌生人闸门；mallory 被 blocked 短路
-    let (store, addr) = hub_with(policy).await;
+    let (store, addr, _handle) = hub_with(policy).await;
 
     let _alice = Client::connect(addr, "localhost", "alice").await.unwrap();
     let bob = Client::connect(addr, "localhost", "bob").await.unwrap();
@@ -123,7 +130,7 @@ async fn blocked_direct_frame_is_dropped_without_trace() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stranger_gate_requires_acceptance() {
-    let (store, addr) = hub_with(StaticPolicy::default()).await; // 默认全拒
+    let (store, addr, _handle) = hub_with(StaticPolicy::default()).await; // 默认全拒
     let _alice = Client::connect(addr, "localhost", "alice").await.unwrap();
     let stranger = Client::connect(addr, "localhost", "stranger")
         .await
@@ -148,7 +155,7 @@ async fn stranger_gate_requires_acceptance() {
     let mut policy_with_accept = StaticPolicy::default();
     policy_with_accept.allow_direct("stranger", "alice");
     let _ = policy_with_accept; // 策略属 hub；此处以新 hub 表达"状态变化后"
-    let (store2, addr2) = hub_with(policy_with_accept).await;
+    let (store2, addr2, _handle2) = hub_with(policy_with_accept).await;
     let alice2 = Client::connect(addr2, "localhost", "alice").await.unwrap();
     let stranger2 = Client::connect(addr2, "localhost", "stranger")
         .await
@@ -176,7 +183,7 @@ async fn stranger_gate_requires_acceptance() {
 async fn muted_group_member_frames_are_dropped_managers_pass() {
     let mut policy = StaticPolicy::default();
     policy.muted.insert(("g-muted".into(), "loud".into()));
-    let (store, _addr) = hub_with(policy).await;
+    let (store, _addr, _handle) = hub_with(policy).await;
 
     // 需要 membership Some 才进群帧分支：hub 带 StaticMembership
     let router = MqRouter::new(std::sync::Arc::new(MemoryMq::new()), MemoryRoutes::new());
@@ -245,34 +252,54 @@ impl DeliveryPolicy for StaticPolicyMuted {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn system_notice_frames_bypass_the_policy() {
+async fn only_the_server_can_send_system_notices() {
     let mut policy = StaticPolicy::default();
     policy.blocked.insert(("mallory".into(), "alice".into()));
     policy.allow_direct("bob", "alice"); // bob 过陌生人闸门；mallory 被 blocked 短路
-    let (store, addr) = hub_with(policy).await;
+    let (store, addr, handle) = hub_with(policy).await;
 
     let alice = Client::connect(addr, "localhost", "alice").await.unwrap();
     let mallory = Client::connect(addr, "localhost", "mallory").await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // 系统帧（Notice body，如好友/群事件）豁免策略：拉黑后仍须可达，
-    // 否则连"撤销拉黑"的信号都收不到
-    let mut sys = Envelope::with_body(
+    // 1) **用户伪造系统帧**必须被拒（issue #13）：以前 Notice 既跳过 send_gate
+    //    也跳过关系过滤，等于谁都能往别人界面上写"系统通知"。
+    let mut forged = Envelope::with_body(
         "d-alice~mallory",
         "mallory",
         vec!["alice".into()],
         1,
-        MsgBody::Notice("friend event".into()),
+        MsgBody::Notice("你已被管理员移出群聊".into()),
     );
-    sys.kind = wxlike_core::MsgKind::System;
-    mallory.send(&sys).await.unwrap();
+    forged.kind = wxlike_core::MsgKind::System;
+    mallory.send(&forged).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), alice.next_envelope())
+            .await
+            .is_err(),
+        "用户发的系统通知不能送达"
+    );
+    assert!(
+        store.list_messages("d-alice~mallory").unwrap().is_empty(),
+        "伪造的系统帧不该落库"
+    );
 
-    let env = tokio::time::timeout(Duration::from_secs(15), alice.next_envelope())
+    // 2) **服务端内部入口**（`HubHandle::publish`）仍然能送系统通知——而且
+    //    不受"用户之间的拉黑"影响，否则"撤销拉黑"这类信号自己也送不出去。
+    let mut real = Envelope::with_body(
+        "d-alice~mallory",
+        "mallory",
+        vec!["alice".into()],
+        2,
+        MsgBody::Notice("你们已成为好友".into()),
+    );
+    real.kind = wxlike_core::MsgKind::System;
+    handle.publish(&real).await.unwrap();
+    let env = tokio::time::timeout(Duration::from_secs(5), alice.next_envelope())
         .await
-        .expect("system frame reaches despite block")
+        .expect("服务端系统通知必须送达")
         .unwrap();
     assert!(matches!(env.body, MsgBody::Notice(_)));
-    assert_eq!(store.list_messages("d-alice~mallory").unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -304,7 +331,7 @@ async fn no_policy_keeps_everything_delivering() {
 
     stranger
         .send(&Envelope::direct(
-            "d-a~s",
+            "d-alice~stranger",
             "stranger",
             vec!["alice".into()],
             1,
