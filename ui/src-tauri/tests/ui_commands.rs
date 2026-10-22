@@ -271,8 +271,16 @@ async fn media_upload_download_roundtrip() {
         *b = (seed >> 24) as u8;
     }
 
+    // 归属会话必须是自己的（#14：不能把附件挂到别人的会话上）
+    let conv = wxlike_ui_lib::direct_conv_id(&state.user_id().unwrap(), "peer-0000000000");
     let up = state
-        .upload_media(bytes.clone(), "application/octet-stream", None)
+        .upload_media(
+            bytes.clone(),
+            "application/octet-stream",
+            None,
+            Some(&conv),
+            false,
+        )
         .unwrap();
     let media_id = up["media_id"].as_str().unwrap().to_string();
     assert_eq!(up["size"].as_i64().unwrap(), 4096);
@@ -285,7 +293,13 @@ async fn media_upload_download_roundtrip() {
 
     // content addressing dedups: the same bytes, uploaded again, same id
     let again = state
-        .upload_media(bytes.clone(), "application/octet-stream", None)
+        .upload_media(
+            bytes.clone(),
+            "application/octet-stream",
+            None,
+            Some(&conv),
+            false,
+        )
         .unwrap();
     assert_eq!(again["media_id"].as_str().unwrap(), media_id);
 

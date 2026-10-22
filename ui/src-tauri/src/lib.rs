@@ -348,13 +348,18 @@ impl AppState {
 
     // ---- media --------------------------------------------------------------
 
+    /// 上传一个对象。`conv_id` 是归属会话（issue #14）：不填就只有上传者能取；
+    /// `public` 只给头像这类所有登录用户都要看的资源。
     pub fn upload_media(
         &self,
         bytes: Vec<u8>,
         content_type: &str,
         sha256: Option<&str>,
+        conv_id: Option<&str>,
+        public: bool,
     ) -> Result<serde_json::Value, String> {
-        self.http().upload(&bytes, content_type, sha256)
+        self.http()
+            .upload(&bytes, content_type, sha256, conv_id, public)
     }
 
     pub fn download_media(&self, media_id: &str, thumb: bool) -> Result<MediaBlob, String> {
@@ -768,7 +773,8 @@ impl AppState {
     /// Avatar (P2: 头像接媒体): upload the bytes as media, then point the
     /// profile at the media id. The id is what other clients fetch and render.
     pub fn upload_avatar(&self, bytes: Vec<u8>, content_type: &str) -> Result<String, String> {
-        let up = self.upload_media(bytes, content_type, None)?;
+        // 头像：所有登录用户都要能看到，所以标成 public
+        let up = self.upload_media(bytes, content_type, None, None, true)?;
         let media_id = up["media_id"]
             .as_str()
             .ok_or("upload returned no media_id")?
@@ -2004,8 +2010,16 @@ pub mod commands {
         bytes: Vec<u8>,
         content_type: String,
         sha256: Option<String>,
+        conv_id: Option<String>,
+        public: Option<bool>,
     ) -> Result<serde_json::Value, String> {
-        state.upload_media(bytes, &content_type, sha256.as_deref())
+        state.upload_media(
+            bytes,
+            &content_type,
+            sha256.as_deref(),
+            conv_id.as_deref(),
+            public.unwrap_or(false),
+        )
     }
 
     #[tauri::command]

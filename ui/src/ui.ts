@@ -1260,7 +1260,7 @@ async function voiceRecordDialog(convId: string, to: string[], micBtn: El): Prom
   try {
     const { blob, durationMs, waveform } = await recording.stop();
     window.clearInterval(watch);
-    const mediaId = await api.uploadVoiceBlob(blob);
+    const mediaId = await api.uploadVoiceBlob(convId, blob);
     await api.sendVoice(convId, to, mediaId, durationMs, waveform);
     toast("语音已发送");
   } catch (e) {

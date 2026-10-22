@@ -121,11 +121,16 @@ impl Http {
     }
 
     /// Uploads bytes as the platform's multipart form (`bytes` + `sha256`).
+    ///
+    /// `conv` 声明归属会话（issue #14）：下载时只有会话成员能取。
+    /// `public` 用于头像这类所有登录用户都要看的资源。
     pub fn upload(
         &self,
         bytes: &[u8],
         content_type: &str,
         sha256: Option<&str>,
+        conv: Option<&str>,
+        public: bool,
     ) -> Result<serde_json::Value, String> {
         use sha2::Digest as _;
         let digest = hex::encode(sha2::Sha256::digest(bytes).as_slice());
@@ -142,6 +147,12 @@ impl Http {
             &sha256.map(str::to_string).unwrap_or(digest),
             &mut body,
         );
+        if let Some(conv) = conv {
+            part("conv", conv, &mut body);
+        }
+        if public {
+            part("visibility", "public", &mut body);
+        }
         let _ = write!(
             body,
             "--{boundary}\r\nContent-Disposition: form-data; name=\"bytes\"; filename=\"blob\"\r\nContent-Type: {content_type}\r\n\r\n"

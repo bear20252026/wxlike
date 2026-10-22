@@ -133,6 +133,12 @@ pub struct PlatformOptions {
     /// 默认 `false`：限流的"来源"只取连接的对端 IP，不读 `x-forwarded-for`。
     /// 直连部署下那个头是客户端随便填的，信它等于把限流桶的钥匙交出去。
     pub trust_proxy: bool,
+    /// 媒体下载签名 URL 的 HMAC 密钥（issue #14）。
+    ///
+    /// 空 = 每个进程随机生成（单实例部署足够，重启后旧链接失效）。
+    /// 多实例/负载均衡部署必须用 `WXLIKE_MEDIA_SECRET` 配成同一个值，
+    /// 否则 A 实例签的链接在 B 实例上验不过。
+    pub media_signing_key: String,
 }
 
 impl Default for PlatformOptions {
@@ -148,6 +154,7 @@ impl Default for PlatformOptions {
             live_ingest_secret: String::new(),
             video_callback_token: None,
             trust_proxy: false,
+            media_signing_key: String::new(),
         }
     }
 }
@@ -226,9 +233,17 @@ pub struct Platform {
 /// 签出来的 ingest token 谁都能伪造——与"公开默认值"是同一类洞，只是更隐蔽。
 /// 二进制的"缺 env 就拒绝启动"是第一道闸；这里保证**任何** `Platform` 实例
 /// （含测试与嵌入式用法）都不会拿空密钥签名。
+/// 媒体签名密钥的字节数（HMAC-SHA256 的密钥长度）。
+const MEDIA_SIGNING_KEY_BYTES: usize = 32;
+
 fn normalize_options(mut options: PlatformOptions) -> PlatformOptions {
     if options.live_ingest_secret.trim().is_empty() {
         options.live_ingest_secret = auth::random_hex(32);
+    }
+    // 空密钥不能留：空 HMAC key 的签名谁都能算出来，等于没有签名。
+    // 单实例随机生成够用（重启后旧链接失效）；多实例部署必须显式配置。
+    if options.media_signing_key.trim().is_empty() {
+        options.media_signing_key = auth::random_hex(MEDIA_SIGNING_KEY_BYTES);
     }
     options
 }

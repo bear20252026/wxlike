@@ -79,6 +79,25 @@ impl Db {
                 c.execute_batch(&format!("ALTER TABLE sessions ADD COLUMN {col} {ddl};"))?;
             }
         }
+        // media 补 conv_id（issue #14）：老库里的媒体没有归属会话，
+        // 只能由上传者自己取——宁可严一点，也不要默认公开。
+        {
+            let mut have = Vec::new();
+            {
+                let mut stmt = c.prepare("PRAGMA table_info(media)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for name in rows {
+                    have.push(name?);
+                }
+            }
+            if !have.iter().any(|name| name == "conv_id") {
+                c.execute_batch("ALTER TABLE media ADD COLUMN conv_id TEXT NOT NULL DEFAULT '';")?;
+            }
+            if !have.iter().any(|name| name == "public") {
+                c.execute_batch("ALTER TABLE media ADD COLUMN public INTEGER NOT NULL DEFAULT 0;")?;
+            }
+        }
+
         // 老会话没有 sid：补一个（12 hex），保证设备页能寻址
         let missing: Vec<String> = {
             let mut stmt = c.prepare("SELECT token FROM sessions WHERE sid IS NULL OR sid = ''")?;
@@ -451,6 +470,11 @@ const SCHEMA: &str = r#"
                 size          INTEGER NOT NULL,
                 content_type  TEXT NOT NULL DEFAULT 'application/octet-stream',
                 uploader      TEXT NOT NULL DEFAULT '',
+                -- 上传时声明所属会话：只有会话成员能下载。
+                -- 空串 = 未挂到会话（只有上传者能取），不是"公开"。
+                conv_id       TEXT NOT NULL DEFAULT '',
+                -- 头像这类"所有登录用户都要能看"的资源。聊天附件一律 0。
+                public        INTEGER NOT NULL DEFAULT 0,
                 has_thumb     INTEGER NOT NULL DEFAULT 0,
                 created_at    INTEGER NOT NULL
             );

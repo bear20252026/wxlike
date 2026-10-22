@@ -34,10 +34,21 @@ pub const MAX_MEDIA_BYTES: usize = 100 * 1024 * 1024;
 /// Longest edge of an generated thumbnail.
 pub const THUMB_MAX_EDGE: u32 = 256;
 
+/// 定长比较：签名不对时不要因为"第几个字节不同"泄露时间差。
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 pub fn routes() -> Router<PlatformState> {
     Router::new()
         .route("/api/media", post(upload))
         .route("/api/media/{media_id}", get(download))
+        // 给"带不了 Authorization 的消费者"（浏览器 <img>、分享页）签一条
+        // 短期链接。签名只对这一个 id + 过期时间有效。
+        .route("/api/media/{media_id}/url", get(signed_url))
         // the cap is per-route so downloads are not limited by it
         .layer(DefaultBodyLimit::max(MAX_MEDIA_BYTES))
 }
@@ -189,6 +200,12 @@ pub struct UploadReply {
 pub struct DownloadQuery {
     #[serde(default)]
     thumb: Option<u8>,
+    /// 签名 URL 的过期时间（ms，epoch）。与 `sig` 成对出现。
+    #[serde(default)]
+    exp: Option<u64>,
+    /// `hex(HMAC-SHA256(key, "<media_id>:<exp>"))`
+    #[serde(default)]
+    sig: Option<String>,
 }
 
 /// PNG / JPEG / GIF / WEBP by magic bytes: the declared part is client input,
@@ -274,6 +291,8 @@ impl Platform {
         bytes: Vec<u8>,
         declared_sha: Option<&str>,
         uploader: &str,
+        conv_id: Option<&str>,
+        public: bool,
     ) -> Result<UploadReply> {
         if bytes.is_empty() {
             return Err(PlatformError::BadInput("empty upload"));
@@ -313,14 +332,22 @@ impl Platform {
         let size = bytes.len() as u64;
         let c = self.db().lock();
         c.execute(
-            "INSERT INTO media(id, size, content_type, uploader, has_thumb, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET size = excluded.size",
+            "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET size = excluded.size,
+                -- 一旦公开就不回收：头像被别的用户引用着
+                public = MAX(media.public, excluded.public),
+                -- 同一份字节可能被不同会话引用：保留第一次的归属，
+                -- 空归属则补上（内容寻址下，归属是引用关系而不是字节属性）
+                conv_id = CASE WHEN media.conv_id = '' THEN excluded.conv_id
+                               ELSE media.conv_id END",
             params![
                 sha_hex,
                 size as i64,
                 content_type,
                 uploader,
+                conv_id.unwrap_or_default(),
+                public as i64,
                 has_thumb as i64,
                 wxlike_core::types::now_ms() as i64
             ],
@@ -334,6 +361,85 @@ impl Platform {
             newly_stored: !existed,
             has_thumb,
         })
+    }
+
+    /// 这个用户能不能读这个会话（直聊看 id 两半，群看成员表）。
+    ///
+    /// 与 `server::authorize_conv` 同一条规则，放在这里是因为媒体下载也要用；
+    /// 两份实现迟早会漂移，所以 server 那边改成调它。
+    pub fn may_read_conv(&self, user_id: &str, conv_id: &str) -> bool {
+        if let Some(rest) = conv_id.strip_prefix("d-") {
+            let mut parts = rest.split('~');
+            let (Some(a), Some(b), None) = (parts.next(), parts.next(), parts.next()) else {
+                return false;
+            };
+            return a == user_id || b == user_id;
+        }
+        self.is_member(conv_id, user_id).unwrap_or(false)
+    }
+
+    /// 媒体归属：`(uploader, conv_id)`。`None` = 没这条记录。
+    fn media_owner(&self, media_id: &str) -> Result<Option<(String, String, bool)>> {
+        let c = self.db().lock();
+        Ok(c.query_row(
+            "SELECT uploader, conv_id, public FROM media WHERE id = ?1",
+            params![media_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
+        )
+        .optional()?)
+    }
+
+    /// 这个用户能不能下载这条媒体（issue #14）。
+    ///
+    /// **内容地址不是权限**：`media_id` 是 SHA-256，知道文件就能算出来，
+    /// 日志/转发也会泄露它。所以判据只有两条：
+    /// 1. 上传者本人；
+    /// 2. 媒体挂着的会话的成员（没挂会话 = 只有上传者）。
+    pub fn may_read_media(&self, media_id: &str, user_id: &str) -> Result<bool> {
+        let Some((uploader, conv_id, public)) = self.media_owner(media_id)? else {
+            return Ok(false);
+        };
+        // 公开资源（头像）：登录用户都能看，但**仍要登录**——匿名枚举不做
+        if public {
+            return Ok(true);
+        }
+        if uploader == user_id {
+            return Ok(true);
+        }
+        if conv_id.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.may_read_conv(user_id, &conv_id))
+    }
+
+    /// 签一条短期下载链接（给带不了 `Authorization` 的消费者）。
+    pub fn sign_media_url(&self, media_id: &str, ttl_ms: u64) -> (String, u64) {
+        let exp = wxlike_core::types::now_ms() + ttl_ms;
+        let sig = self.media_sig(media_id, exp);
+        (format!("/api/media/{media_id}?exp={exp}&sig={sig}"), exp)
+    }
+
+    /// 校验签名。过期或签名不对都返回 `false`（不区分，别给探测者信息）。
+    pub fn verify_media_sig(&self, media_id: &str, exp: u64, sig: &str) -> bool {
+        if exp < wxlike_core::types::now_ms() {
+            return false;
+        }
+        constant_time_eq(sig.as_bytes(), self.media_sig(media_id, exp).as_bytes())
+    }
+
+    fn media_sig(&self, media_id: &str, exp: u64) -> String {
+        use hmac::Mac as _;
+        let mut mac =
+            hmac::Hmac::<Sha256>::new_from_slice(self.options().media_signing_key.as_bytes())
+                .expect("hmac accepts any key length");
+        mac.update(format!("{media_id}:{exp}").as_bytes());
+        hex::encode(mac.finalize().into_bytes())
     }
 
     pub fn media_meta(&self, media_id: &str) -> Result<Option<(u64, String, bool)>> {
@@ -377,6 +483,10 @@ async fn upload(
 ) -> std::result::Result<(StatusCode, Json<UploadReply>), ApiError> {
     let mut data: Option<Vec<u8>> = None;
     let mut declared: Option<String> = None;
+    // 上传时声明归属会话（issue #14）：下载时据此判成员。不声明 = 只有自己能取。
+    let mut conv: Option<String> = None;
+    // `visibility=public`：头像这类"所有登录用户都要能看"的资源
+    let mut public = false;
 
     while let Some(field) = form.next_field().await.map_err(|err| {
         // a body over the limit surfaces here rather than at the layer
@@ -392,6 +502,8 @@ async fn upload(
         match field.name().unwrap_or_default() {
             "file" | "bytes" | "data" => data = Some(read_field(field).await?),
             "sha256" | "sha" => declared = Some(read_text(field).await?),
+            "conv" | "conv_id" => conv = Some(read_text(field).await?),
+            "visibility" => public = read_text(field).await?.trim() == "public",
             other => {
                 return Err(ApiError::new(
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -403,8 +515,21 @@ async fn upload(
 
     let bytes =
         data.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "missing 'file' field"))?;
+    let conv = conv.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    if let Some(conv) = conv.as_deref() {
+        // 不能把附件挂到别人的会话上——那等于给会话成员投递任意内容
+        if !platform.may_read_conv(&authed.user_id, conv) {
+            return Err(ApiError::forbidden("not your conversation"));
+        }
+    }
     let reply = platform
-        .store_media(bytes, declared.as_deref(), &authed.user_id)
+        .store_media(
+            bytes,
+            declared.as_deref(),
+            &authed.user_id,
+            conv.as_deref(),
+            public,
+        )
         .await
         .map_err(ApiError::from)?;
     Ok((StatusCode::OK, Json(reply)))
@@ -425,12 +550,94 @@ async fn read_text(field: Field<'_>) -> std::result::Result<String, ApiError> {
     Ok(String::from_utf8_lossy(&read_field(field).await?).into_owned())
 }
 
+/// `GET /api/media/{id}/url`：给当前用户签一条短期下载链接。
+///
+/// 权限判定与直接下载完全一样（上传者或会话成员），只是把授权换成"签名"，
+/// 这样浏览器端可以把链接塞进 `<img src>`。
+async fn signed_url(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    ApiPath(media_id): ApiPath<String>,
+    Query(q): Query<UrlQuery>,
+) -> std::result::Result<Json<SignedUrl>, ApiError> {
+    if !platform
+        .may_read_media(&media_id, &authed.user_id)
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::not_found("no such media"));
+    }
+    let ttl = q
+        .ttl_secs
+        .unwrap_or(MEDIA_URL_DEFAULT_TTL_SECS)
+        .clamp(1, MEDIA_URL_MAX_TTL_SECS);
+    let (url, expires_at) = platform.sign_media_url(&media_id, ttl.saturating_mul(1_000));
+    Ok(Json(SignedUrl { url, expires_at }))
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct UrlQuery {
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct SignedUrl {
+    pub url: String,
+    /// 过期时间（ms，epoch）。
+    pub expires_at: u64,
+}
+
+/// 签名链接默认有效期：5 分钟。够浏览器把一张图画出来，不够被转发收藏。
+pub const MEDIA_URL_DEFAULT_TTL_SECS: u64 = 5 * 60;
+/// 上限 1 小时：再长就接近"永久公开链接"了。
+pub const MEDIA_URL_MAX_TTL_SECS: u64 = 60 * 60;
+
+/// 下载授权：签名 URL 或"登录 + 归属"。返回 `Some(Response)` = 已经决定拒绝。
+///
+/// 两条凭据二选一：
+/// 1. **短期签名**——浏览器 `<img>` 带不了 `Authorization`；
+/// 2. **会话令牌 + 归属**——上传者本人，或媒体所属会话的成员。
+///
+/// 内容地址（SHA-256）不是权限：知道文件就能算出 id，日志与转发也会泄露它。
+fn authorize_download(
+    platform: &Platform,
+    media_id: &str,
+    headers: &axum::http::HeaderMap,
+    q: &DownloadQuery,
+) -> Option<Response> {
+    let signed = match (q.exp, q.sig.as_deref()) {
+        (Some(exp), Some(sig)) => platform.verify_media_sig(media_id, exp, sig),
+        _ => false,
+    };
+    if signed {
+        return None;
+    }
+    let caller =
+        Authed::bearer_from(headers).and_then(|token| platform.lookup_token(token).ok().flatten());
+    let Some(caller) = caller else {
+        return Some(
+            ApiError::new(StatusCode::UNAUTHORIZED, "需要登录或有效的签名链接").into_response(),
+        );
+    };
+    match platform.may_read_media(media_id, &caller) {
+        Ok(true) => None,
+        // 别人的附件一律 404：403 等于确认"这个 id 存在"
+        Ok(false) => Some(StatusCode::NOT_FOUND.into_response()),
+        Err(err) => Some(ApiError::from(err).into_response()),
+    }
+}
+
 async fn download(
     State(platform): State<PlatformState>,
     ApiPath(media_id): ApiPath<String>,
     headers: axum::http::HeaderMap,
     Query(q): Query<DownloadQuery>,
 ) -> Response {
+    // **先授权再碰路径**（issue #14）。
+    if let Some(rejected) = authorize_download(&platform, &media_id, &headers, &q) {
+        return rejected;
+    }
+
     // An unknown or malformed id must be a 404 before any path is touched.
     let want_thumb = q.thumb.unwrap_or(0) == 1;
     let object = match resolve(&platform, &media_id, want_thumb).await {
