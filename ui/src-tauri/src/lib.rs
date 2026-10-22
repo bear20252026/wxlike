@@ -21,7 +21,9 @@
 // rustc surfaces that as a lint which is pure noise here
 #![allow(linker_messages)]
 
-use std::io::Write as _;
+// ureq 3 的 status / 响应头都是 http crate 的类型
+use http;
+use std::io::{Read as _, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -753,10 +755,16 @@ impl AppState {
             .unwrap_or("application/octet-stream")
             .to_string();
         let mut bytes = Vec::new();
-        resp.into_body()
-            .into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("video read: {e}"))?;
+        // 3.x 的 BodyReader 没有 read_to_end：先读成 Vec 再展开
+        let mut reader = resp.into_body().into_reader();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                Err(e) => return Err(format!("video read: {e}")),
+            }
+        }
         Ok(MediaBlob {
             base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
             content_type,

@@ -25,6 +25,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// ureq 3 的 status 是 http::StatusCode
+use http;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use wxlike_rtc::host::{CallHost, Effect};
@@ -548,27 +550,33 @@ impl Connection {
     fn post(&self, conv: &str, sig: &Signal) -> Result<(), String> {
         let url = format!("{}/api/call/{conv}/signal", self.base);
         let body = serde_json::to_string(sig).map_err(|e| e.to_string())?;
-        match ureq::post(&url)
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .set("Content-Type", "application/json")
-            .send_string(&body)
-        {
-            Ok(_) => Ok(()),
-            // 409 = 对方已离开房间，信令没人收，不算错误
-            Err(ureq::Error::Status(409, _)) => Ok(()),
+        // ureq 3：`set` → `header`，`send_string` → `send`。
+        // 4xx/5xx 不再是错误，所以 409（对方已离开房间，信令没人收）要走
+        // Ok 分支自己判。
+        let resp = ureq::post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Content-Type", "application/json")
+            .send(body.as_str());
+        match resp {
+            Ok(r) if r.status() == http::StatusCode::CONFLICT => Ok(()),
+            Ok(r) if r.status().is_success() => Ok(()),
+            Ok(r) => Err(format!("signal post: HTTP {}", r.status().as_u16())),
             Err(err) => Err(err.to_string()),
         }
     }
 
     fn take(&self, conv: &str) -> Result<Vec<Signal>, String> {
         let url = format!("{}/api/call/{conv}/signal", self.base);
-        let resp = ureq::get(&url)
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .call();
-        match resp {
-            Ok(r) => r.into_json::<Vec<Signal>>().map_err(|e| e.to_string()),
-            Err(ureq::Error::Status(204, _)) => Ok(Vec::new()),
-            Err(err) => Err(err.to_string()),
+        // 204 = 没有待收信令，是正常答案不是错误
+        let mut resp = ureq::get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| e.to_string())?;
+        if resp.status() == http::StatusCode::NO_CONTENT {
+            return Ok(Vec::new());
         }
+        resp.body_mut()
+            .read_json::<Vec<Signal>>()
+            .map_err(|e| e.to_string())
     }
 }
