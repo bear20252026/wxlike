@@ -73,7 +73,8 @@ async fn blocked_users_direct_messages_never_arrive() {
     let mallory_id: serde_json::Value = ureq::post(&format!("{http}/api/register"))
         .send_json(serde_json::json!({"name": "m-id", "password": "pw"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let _ = mallory_id;
     // 用平台 seam 拿真实 id（QUIC 身份是注册名映射，测试内直接注册同名拿 id）
@@ -82,7 +83,8 @@ async fn blocked_users_direct_messages_never_arrive() {
         let reply: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": "mallory2", "password": "pw"}))
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         (
             reply["user_id"].as_str().unwrap().to_string(),
@@ -93,7 +95,8 @@ async fn blocked_users_direct_messages_never_arrive() {
         let reply: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": "alice2", "password": "pw"}))
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         (
             reply["user_id"].as_str().unwrap().to_string(),
@@ -102,8 +105,8 @@ async fn blocked_users_direct_messages_never_arrive() {
     };
 
     let res = ureq::put(&format!("{http}/api/blocks/{mallory_uid}"))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
-        .call()
+        .header("Authorization", &format!("Bearer {alice_tok}"))
+        .send_empty()
         .unwrap();
     assert_eq!(res.status(), 204);
 
@@ -129,7 +132,8 @@ async fn blocked_users_direct_messages_never_arrive() {
         let reply: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": "bob2", "password": "pw"}))
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         (
             reply["user_id"].as_str().unwrap().to_string(),
@@ -137,19 +141,20 @@ async fn blocked_users_direct_messages_never_arrive() {
         )
     };
     ureq::post(&format!("{http}/api/friends/requests"))
-        .set("Authorization", &format!("Bearer {bob_tok}"))
+        .header("Authorization", &format!("Bearer {bob_tok}"))
         .send_json(serde_json::json!({"to_user_id": alice_uid, "message": ""}))
         .unwrap();
     let incoming: serde_json::Value = ureq::get(&format!("{http}/api/friends/requests/incoming"))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
+        .header("Authorization", &format!("Bearer {alice_tok}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let req_id = incoming[0]["id"].as_str().unwrap().to_string();
     ureq::post(&format!("{http}/api/friends/requests/{req_id}/accept"))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
-        .call()
+        .header("Authorization", &format!("Bearer {alice_tok}"))
+        .send_empty()
         .unwrap();
 
     let bob2 = Client::connect(stack.quic_addr, "localhost", &bob_tok)
@@ -195,7 +200,8 @@ async fn muted_members_group_frames_are_dropped() {
         let r: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": name, "password": "pw"}))
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         (
             r["user_id"].as_str().unwrap().to_string(),
@@ -211,34 +217,36 @@ async fn muted_members_group_frames_are_dropped() {
         (&owner, &owner_tok, &fan, &fan_tok),
     ] {
         ureq::post(&format!("{http}/api/friends/requests"))
-            .set("Authorization", &format!("Bearer {ta}"))
+            .header("Authorization", &format!("Bearer {ta}"))
             .send_json(serde_json::json!({"to_user_id": b, "message": ""}))
             .unwrap();
         let incoming: serde_json::Value =
             ureq::get(&format!("{http}/api/friends/requests/incoming"))
-                .set("Authorization", &format!("Bearer {tb}"))
+                .header("Authorization", &format!("Bearer {tb}"))
                 .call()
                 .unwrap()
-                .into_json()
+                .body_mut()
+                .read_json()
                 .unwrap();
         let id = incoming[0]["id"].as_str().unwrap().to_string();
         ureq::post(&format!("{http}/api/friends/requests/{id}/accept"))
-            .set("Authorization", &format!("Bearer {tb}"))
-            .call()
+            .header("Authorization", &format!("Bearer {tb}"))
+            .send_empty()
             .unwrap();
         let _ = a;
     }
     let group: serde_json::Value = ureq::post(&format!("{http}/api/groups"))
-        .set("Authorization", &format!("Bearer {owner_tok}"))
+        .header("Authorization", &format!("Bearer {owner_tok}"))
         .send_json(serde_json::json!({"name": "禁言群", "member_ids": [loud, fan]}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let group = group["group_id"].as_str().unwrap().to_string();
 
     // owner 禁言 loud（+1s 窗口）
     ureq::put(&format!("{http}/api/groups/{group}/mute/{loud}"))
-        .set("Authorization", &format!("Bearer {owner_tok}"))
+        .header("Authorization", &format!("Bearer {owner_tok}"))
         .send_json(serde_json::json!({"until_ms": wxlike_core::types::now_ms() + 1_000}))
         .unwrap();
 
@@ -296,7 +304,8 @@ async fn stranger_gate_enforces_invariant_nine() {
         let r: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": name, "password": "pw"}))
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         (
             r["user_id"].as_str().unwrap().to_string(),
@@ -332,19 +341,20 @@ async fn stranger_gate_enforces_invariant_nine() {
 
     // 走陌生人请求箱并接受（不变式 9 流程）
     ureq::post(&format!("{http}/api/stranger/messages"))
-        .set("Authorization", &format!("Bearer {carol_tok}"))
+        .header("Authorization", &format!("Bearer {carol_tok}"))
         .send_json(serde_json::json!({"to_uid": alice, "text": "在吗"}))
         .unwrap();
     let inbox: serde_json::Value = ureq::get(&format!("{http}/api/stranger/requests"))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
+        .header("Authorization", &format!("Bearer {alice_tok}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let req_id = inbox["requests"][0]["id"].as_str().unwrap().to_string();
     ureq::post(&format!("{http}/api/stranger/requests/{req_id}/accept"))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
-        .call()
+        .header("Authorization", &format!("Bearer {alice_tok}"))
+        .send_empty()
         .unwrap();
 
     // 接受后同一对直发 → 可达（接受→正常会话）
@@ -371,7 +381,8 @@ async fn redpackets_from_muted_members_are_also_gated() {
         let r: serde_json::Value = ureq::post(&format!("{http}/api/register"))
             .send_json(serde_json::json!({"name": name, "password": "pw"}))
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         (
             r["user_id"].as_str().unwrap().to_string(),

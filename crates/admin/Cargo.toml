@@ -27,7 +27,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # 写操作转发到平台管理面。ureq 不是新增第三方代码：crates/client 用的是同一个
 # 主版本，Cargo.lock 里已存在（见 THIRD-PARTY-NOTICES.md 的依赖清单）。
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
+# ureq 3 的 Response 是 http crate 的类型
+http = "1"
 # 数据目录按平台惯例，与 wxlike-server 保持同一路径解析
 dirs = "6"
 

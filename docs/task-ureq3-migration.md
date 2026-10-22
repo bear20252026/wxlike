@@ -1,6 +1,6 @@
 # 任务单：ureq 2.x → 3.x 迁移
 
-> 状态：**待接单**　｜　优先级：**P1（不是救火，但不能拖过下个迭代）**　｜　预估：2–3 人日
+> 状态：**已完成**（2026-10-22）　｜　实际耗时：约 1.5 人日（大部分花在语义对齐上，不是机械替换）
 >
 > 接单人先读 §0 与 §6，再动手。**这份单子自包含**：仓库路径、命令、验收标准、
 > 禁止事项都写在里面，不需要额外上下文。
@@ -9,8 +9,12 @@
 
 ## 0. 一句话
 
-把三个 crate（`admin` / `client` / `video`）里对 `ureq 2.x` 的依赖升到 `3.x`，
-并**保住三件事**：错误文案不变、超时行为不变、multipart 上传不变。
+把五个位置（`admin` / `client` / `video` / `server` 测试 / `ui-src-tauri`）里对
+`ureq 2.x` 的依赖升到 `3.x`，并**保住三件事**：错误文案不变、超时行为不变、
+multipart 上传不变。
+
+> 官方迁移文档（`MIGRATE-2-to-3.md`）自己声明"并非详尽无遗"，实际改动比它写的
+> 多得多。下面 §7 是这次真正踩到的东西。
 
 ---
 
@@ -254,3 +258,55 @@ T6 deny：advisories ok
 T7 验收：cargo test 786 passed / clippy 干净 / 三平台 CI 绿
 遗留问题：
 ```
+
+
+---
+
+## 7. 实际迁移记录（2026-10-22）
+
+### 7.1 API 形状变化
+
+| 2.x | 3.x |
+|---|---|
+| `ureq::Request` / `ureq::Response` | `http::Request` / `http::Response<Body>`（`ureq::http`） |
+| `.set(k, v)` | `.header(k, v)` |
+| `.send_bytes(&v)` / `.send_string(&v)` | `.send(&v)` |
+| `.into_json::<T>()` / `.into_string()` | `resp.body_mut().read_json::<T>()` / `read_to_string()` |
+| `.into_reader()` | `resp.into_body().into_reader()` |
+| `resp.content_type()` | `resp.headers().get("content-type")` |
+| `.timeout(d)` | agent 级 `.timeout_global(Some(d))`（或请求级 `.config()`） |
+| `Err(Error::Status(code, resp))` | `Err(Error::StatusCode(code))`——**不带响应体** |
+| `Err(Error::Transport(e))` + `ErrorKind` | `Error::Io / Timeout / HostNotFound / ConnectionFailed / BadUri` |
+| POST 不跟随重定向 | **默认跟随**（还把 POST 改成 GET） |
+
+`RequestBuilder` 按"带不带 body"分成 `WithoutBody` / `WithBody` 两个 typestate，
+所以 `Http::req()`（GET/DELETE）与 `Http::req_write()`（POST/PUT）必须分开——
+一个闭包或一个 match 没法同时返回两种类型。
+
+### 7.2 语义对齐（这才是主要工作量）
+
+1. **错误分类不能再靠字符串**。3.x 的 `Display` 直接透出操作系统文案
+   （Windows 上是"由于目标计算机积极拒绝，无法连接"），而 `crates/ffi` 的
+   `classify()` 靠稳定英文特征串。所以在 `crates/client` 加了
+   `transport_text()`：按**变体**翻译回 2.x 的形状
+   （`Connection Failed: Connect error: connection refused`），
+   `NETWORK_MARKERS` 一条都不用改。
+2. **`http_status_as_error(false)`**。调用方要按 status 分流（404/409 表达业务
+   结果），还要读服务端 `error` 字段给用户看原因。admin 那边额外守住旧契约：
+   非 2xx 仍然映射成 `AdminError::upstream`。
+3. **回调关掉重定向**（`max_redirects(0)`）：issue #8 要求"不跟随重定向"，
+   3 默认会跟，显式关掉；3xx 于是落回 `classify_status` 的永久档。
+4. **`send_json` 序列化空格变了**（`{"a": 1}` 而非 `{"a":1}`）：
+   FFI 测试里按字符串匹配 body 的断言改成解析 JSON。
+
+### 7.3 顺带
+
+`Http` 现在持有一个共享 `ureq::Agent`：连接池 + 全局超时都在这，
+2.x 的 `ureq::get()` 每次新建 agent（无池化）。
+
+### 7.4 没做的
+
+- **系统根证书**（`RootCerts::PlatformVerifier`）：任务书里列为"另一可选方案"，
+  需要三平台/Android 实测，本次不动——继续用打包的 webpki-roots。
+- **桌面独立工程**（`ui/src-tauri`）：本次只改了根 workspace 的 5 个位置；
+  Tauri 工程有独立锁文件，升级需要单独一轮（它的 `ureq` 仍在 2.x）。

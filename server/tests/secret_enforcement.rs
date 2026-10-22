@@ -41,7 +41,8 @@ fn register(stack: &TestStack, name: &str) -> (String, String) {
     let reply: serde_json::Value = ureq::post(&format!("{}/api/register", stack.http))
         .send_json(serde_json::json!({"name": name, "password": "pw"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     (
         reply["user_id"].as_str().unwrap().to_string(),
@@ -49,13 +50,27 @@ fn register(stack: &TestStack, name: &str) -> (String, String) {
     )
 }
 
+/// ureq 3：状态码不当错误（管理面/风控面大量用 4xx 表达业务结果），
+/// 超时集中在这里配。
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
 fn get(stack: &TestStack, token: &str, path: &str) -> (u16, serde_json::Value) {
-    let resp = ureq::get(&format!("{}{path}", stack.http))
-        .set("Authorization", &format!("Bearer {token}"))
+    let mut resp = agent()
+        .get(&format!("{}{path}", stack.http))
+        .header("Authorization", &format!("Bearer {token}"))
         .call()
-        .unwrap();
-    let status = resp.status();
-    let body = resp.into_json().unwrap_or(serde_json::Value::Null);
+        .unwrap_or_else(|e| panic!("GET {path}: {e}"));
+    let status = resp.status().as_u16();
+    let body = resp
+        .body_mut()
+        .read_json()
+        .unwrap_or(serde_json::Value::Null);
     (status, body)
 }
 
@@ -65,17 +80,17 @@ fn put(
     path: &str,
     body: serde_json::Value,
 ) -> (u16, serde_json::Value) {
-    match ureq::put(&format!("{}{path}", stack.http))
-        .set("Authorization", &format!("Bearer {token}"))
+    match agent()
+        .put(&format!("{}{path}", stack.http))
+        .header("Authorization", &format!("Bearer {token}"))
         .send_json(body)
     {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.into_json().unwrap_or(serde_json::Value::Null);
-            (status, body)
-        }
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_json().unwrap_or(serde_json::Value::Null);
+        Ok(mut resp) => {
+            let status = resp.status().as_u16();
+            let body = resp
+                .body_mut()
+                .read_json()
+                .unwrap_or(serde_json::Value::Null);
             (status, body)
         }
         Err(err) => panic!("PUT {path}: {err}"),
@@ -88,17 +103,17 @@ fn post(
     path: &str,
     body: serde_json::Value,
 ) -> (u16, serde_json::Value) {
-    match ureq::post(&format!("{}{path}", stack.http))
-        .set("Authorization", &format!("Bearer {token}"))
+    match agent()
+        .post(&format!("{}{path}", stack.http))
+        .header("Authorization", &format!("Bearer {token}"))
         .send_json(body)
     {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.into_json().unwrap_or(serde_json::Value::Null);
-            (status, body)
-        }
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_json().unwrap_or(serde_json::Value::Null);
+        Ok(mut resp) => {
+            let status = resp.status().as_u16();
+            let body = resp
+                .body_mut()
+                .read_json()
+                .unwrap_or(serde_json::Value::Null);
             (status, body)
         }
         Err(err) => panic!("POST {path}: {err}"),
@@ -108,12 +123,15 @@ fn post(
 /// 同 `post`，但 body 原样返回：这个端点的错误是**纯文本**（`(Status, String)`），
 /// 不是统一形状的 JSON，硬解析只会得到 null。
 fn post_raw(stack: &TestStack, token: &str, path: &str, body: serde_json::Value) -> (u16, String) {
-    match ureq::post(&format!("{}{path}", stack.http))
-        .set("Authorization", &format!("Bearer {token}"))
+    match agent()
+        .post(&format!("{}{path}", stack.http))
+        .header("Authorization", &format!("Bearer {token}"))
         .send_json(body)
     {
-        Ok(resp) => (resp.status(), resp.into_string().unwrap_or_default()),
-        Err(ureq::Error::Status(status, resp)) => (status, resp.into_string().unwrap_or_default()),
+        Ok(mut resp) => (
+            resp.status().as_u16(),
+            resp.body_mut().read_to_string().unwrap_or_default(),
+        ),
         Err(err) => panic!("POST {path}: {err}"),
     }
 }
@@ -129,20 +147,21 @@ async fn connect(stack: &TestStack, token: &str) -> Client {
 /// P3 陌生人闸门：非好友之间直聊发不出去，所以要先加好友。
 async fn befriend(stack: &TestStack, a_tok: &str, b_uid: &str, b_tok: &str) {
     ureq::post(&format!("{}/api/friends/requests", stack.http))
-        .set("Authorization", &format!("Bearer {a_tok}"))
+        .header("Authorization", &format!("Bearer {a_tok}"))
         .send_json(serde_json::json!({"to_user_id": b_uid, "message": ""}))
         .unwrap();
     let incoming: serde_json::Value =
         ureq::get(&format!("{}/api/friends/requests/incoming", stack.http))
-            .set("Authorization", &format!("Bearer {b_tok}"))
+            .header("Authorization", &format!("Bearer {b_tok}"))
             .call()
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
     let id = incoming[0]["id"].as_str().unwrap().to_string();
     ureq::post(&format!("{}/api/friends/requests/{id}/accept", stack.http))
-        .set("Authorization", &format!("Bearer {b_tok}"))
-        .call()
+        .header("Authorization", &format!("Bearer {b_tok}"))
+        .send_empty()
         .unwrap();
 }
 

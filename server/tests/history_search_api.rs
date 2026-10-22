@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use ureq::http;
 use wxlike_core::custom_kind;
 use wxlike_core::{Envelope, MsgBody, MsgId};
 use wxlike_net::Client;
@@ -35,7 +36,8 @@ fn register(stack: &TestStack, name: &str) -> (String, String) {
     let reply: serde_json::Value = ureq::post(&format!("{}/api/register", stack.http))
         .send_json(serde_json::json!({"name": name, "password": "pw"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     (
         reply["user_id"]
@@ -93,10 +95,11 @@ fn search_until(token: &str, q: &str, min_results: usize, base: &str) -> Vec<ser
     // 就该给它足够的时间——否则 flake 会把真实问题淹掉。
     for _ in 0..100 {
         let hits: serde_json::Value = ureq::get(&format!("{base}/api/search/messages?q={q}"))
-            .set("Authorization", &format!("Bearer {token}"))
+            .header("Authorization", &format!("Bearer {token}"))
             .call()
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
         let results = hits["results"].as_array().cloned().unwrap_or_default();
         if results.len() >= min_results {
@@ -114,27 +117,28 @@ fn search_until(token: &str, q: &str, min_results: usize, base: &str) -> Vec<ser
 /// 好友流程（不变式 9 生效后，直发帧要求好友或已接受陌生人）。
 async fn befriend(stack: &TestStack, _a_uid: &str, a_tok: &str, b_uid: &str, b_tok: &str) {
     ureq::post(&format!("{}/api/friends/requests", stack.http))
-        .set("Authorization", &format!("Bearer {a_tok}"))
+        .header("Authorization", &format!("Bearer {a_tok}"))
         .send_json(serde_json::json!({"to_user_id": b_uid, "message": ""}))
         .unwrap();
     let incoming: serde_json::Value =
         ureq::get(&format!("{}/api/friends/requests/incoming", stack.http))
-            .set("Authorization", &format!("Bearer {b_tok}"))
+            .header("Authorization", &format!("Bearer {b_tok}"))
             .call()
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
     let id = incoming[0]["id"].as_str().unwrap().to_string();
     ureq::post(&format!("{}/api/friends/requests/{id}/accept", stack.http))
-        .set("Authorization", &format!("Bearer {b_tok}"))
-        .call()
+        .header("Authorization", &format!("Bearer {b_tok}"))
+        .send_empty()
         .unwrap();
 }
 
-fn status_of(res: Result<ureq::Response, ureq::Error>) -> u16 {
+fn status_of(res: Result<http::Response<ureq::Body>, ureq::Error>) -> u16 {
     match res {
-        Ok(r) => r.status(),
-        Err(ureq::Error::Status(code, _)) => code,
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
         Err(e) => panic!("transport error: {e}"),
     }
 }
@@ -173,10 +177,11 @@ async fn history_pages_and_marks_recalled_rows() {
             "{}/api/history/{conv_id}?before_seq={before}&limit={limit}",
             stack.http
         ))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
+        .header("Authorization", &format!("Bearer {alice_tok}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap()
     };
 
@@ -224,7 +229,7 @@ async fn history_denies_outsiders() {
 
     // mallory is in neither half of the pair: 403
     let res = ureq::get(&format!("{}/api/history/{conv_id}", stack.http))
-        .set("Authorization", &format!("Bearer {mallory_tok}"))
+        .header("Authorization", &format!("Bearer {mallory_tok}"))
         .call();
     assert_eq!(status_of(res), 403);
 
@@ -236,12 +241,12 @@ async fn history_denies_outsiders() {
     send_text(&alice_c, &group, vec![bob.clone()], "group secret").await;
     wait_store_settles().await;
     let res = ureq::get(&format!("/api/history/{group}"))
-        .set("Authorization", &format!("Bearer {mallory_tok}"))
+        .header("Authorization", &format!("Bearer {mallory_tok}"))
         .call();
     assert!(res.is_err(), "relative URLs never reach the server");
 
     let res = ureq::get(&format!("{}/api/history/{group}", stack.http))
-        .set("Authorization", &format!("Bearer {mallory_tok}"))
+        .header("Authorization", &format!("Bearer {mallory_tok}"))
         .call();
     assert_eq!(status_of(res), 403);
 
@@ -252,10 +257,10 @@ async fn history_denies_outsiders() {
     // while bob (a member) reads the group fine
     let bob_tok = stack.platform.create_session(&bob, 60_000).unwrap();
     let res = ureq::get(&format!("{}/api/history/{group}?limit=5", stack.http))
-        .set("Authorization", &format!("Bearer {bob_tok}"))
+        .header("Authorization", &format!("Bearer {bob_tok}"))
         .call()
         .unwrap();
-    let body: serde_json::Value = res.into_json().unwrap();
+    let body: serde_json::Value = res.into_body().read_json().unwrap();
     assert_eq!(body["messages"].as_array().unwrap().len(), 1);
 }
 
@@ -307,7 +312,7 @@ async fn search_only_covers_conversations_i_may_see() {
 
     // empty query is a 422, not a full dump
     let res = ureq::get(&format!("{}/api/search/messages?q=", stack.http))
-        .set("Authorization", &format!("Bearer {alice_tok}"))
+        .header("Authorization", &format!("Bearer {alice_tok}"))
         .call();
     assert_eq!(status_of(res), 422);
 }
@@ -391,10 +396,11 @@ async fn typing_and_forward_kinds_flow_through_the_hub() {
 
     let history: serde_json::Value =
         ureq::get(&format!("{}/api/history/{conv_id}?limit=50", stack.http))
-            .set("Authorization", &format!("Bearer {bob_tok}"))
+            .header("Authorization", &format!("Bearer {bob_tok}"))
             .call()
             .unwrap()
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap();
     let messages = history["messages"].as_array().unwrap();
     assert_eq!(

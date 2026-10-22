@@ -127,26 +127,34 @@ impl Upstream {
             }
         };
         req = req
-            .timeout(self.timeout)
-            .set("x-admin-token", &self.token)
-            .set("x-admin-actor", actor)
-            .set("content-type", "application/json");
+            .config()
+            .timeout_global(Some(self.timeout))
+            // 4xx/5xx 不当错误：平台的结论写在 body 的 `error` 字段里，
+            // 当成错误就只剩一个状态码，运维看不到"去查哪个变量"。
+            .http_status_as_error(false)
+            .build();
+        let req = req
+            .header("x-admin-token", &self.token)
+            .header("x-admin-actor", actor)
+            .header("content-type", "application/json");
         let sent = match body {
             Some(v) => req.send_json(v),
-            None => req.call(),
+            // 没有 body 的写请求（比如 204 的开关）：显式发空体
+            None => req.send_empty(),
         };
         match sent {
-            Ok(resp) => {
-                let (status, value) = read_json(resp);
+            Ok(mut resp) => {
+                let (status, value) = read_json(&mut resp);
+                // ureq 3 关掉了"状态码即错误"，4xx/5xx 也走 Ok——**但 admin 的
+                // 对外契约没变**：非 2xx 仍然是 `AdminError::upstream`，
+                // 否则调用方拿到的是 Reply{status:403} 而不是错误。
+                if (400..600).contains(&status) {
+                    return Err(AdminError::upstream(status, error_text(&value, status)));
+                }
                 Ok(Reply {
                     status,
                     body: value,
                 })
-            }
-            // 非 2xx：ureq 给的是 Status 错误，但平台已经把结论写在 body 里
-            Err(ureq::Error::Status(status, resp)) => {
-                let (code, value) = read_json(resp);
-                Err(AdminError::upstream(code, error_text(&value, status)))
             }
             Err(err) => Err(AdminError::upstream(0, format!("连不上平台 {url}: {err}"))),
         }
@@ -155,10 +163,11 @@ impl Upstream {
 
 /// 读响应体。**空 body（204）解出 Null，不算错误**——平台的
 /// `moderation.reject` / `moderation.mode` 就是返回 204 的。
-fn read_json(resp: ureq::Response) -> (u16, serde_json::Value) {
-    let status = resp.status();
+fn read_json(resp: &mut http::Response<ureq::Body>) -> (u16, serde_json::Value) {
+    let status = resp.status().as_u16();
     let value = resp
-        .into_json::<serde_json::Value>()
+        .body_mut()
+        .read_json::<serde_json::Value>()
         .unwrap_or(serde_json::Value::Null);
     (status, value)
 }
