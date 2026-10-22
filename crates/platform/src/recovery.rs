@@ -324,6 +324,24 @@ pub struct ResetBody {
     pub name: String,
     pub recovery_code: String,
     pub new_password: String,
+    /// P4 人机校验：风控要求挑战时必填（`POST /api/captcha` 取题）。
+    ///
+    /// 以前这个结构体没有这两个字段，于是**一旦风控触发就永远 428**——
+    /// 用户拿着正确的恢复码也过不去，只能等窗口过期。加进来才对得起
+    /// "失败计数"这条设计：它应该是摩擦，不是锁死。
+    #[serde(default)]
+    pub captcha_id: Option<String>,
+    #[serde(default)]
+    pub captcha_answer: Option<String>,
+}
+
+impl ResetBody {
+    fn captcha(&self) -> Option<(&str, &str)> {
+        match (self.captcha_id.as_deref(), self.captcha_answer.as_deref()) {
+            (Some(id), Some(answer)) => Some((id, answer)),
+            _ => None,
+        }
+    }
 }
 
 async fn reset(
@@ -331,7 +349,7 @@ async fn reset(
     ApiJson(body): ApiJson<ResetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let key = format!("recovery:{}", body.name);
-    platform.risk_gate(wxlike_risk::Action::Login, &key, None)?;
+    platform.risk_gate(wxlike_risk::Action::Login, &key, body.captcha())?;
     // **失败要计数、成功要清空**（issue #19）。原来是反的：`?` 让失败直接返回
     // 而不记录，成功却调了 `risk_record`——于是无效恢复码可以无限猜，
     // 而真的重置成功反而给这个账号攒了一次"失败"。
