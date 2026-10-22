@@ -678,16 +678,37 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   const lock = h("button", "icon-btn", isGroup ? "" : secretConvs.has(convId) ? "🔒" : "🔓");
   if (!isGroup) {
     lock.title = "秘密聊天开关（端到端加密）";
+    // 开关的真相在服务端（secret_settings）：本地 Set 只是渲染缓存。
+    // 以前只改 Set，服务端完全不知道这个会话是秘密的，于是发送/转发/历史
+    // 过滤全都绕过了它。
+    void api
+      .secretState(convId)
+      .then((s) => {
+        if (s.enabled) secretConvs.add(convId);
+        else secretConvs.delete(convId);
+        lock.textContent = s.enabled ? "🔒" : "🔓";
+      })
+      .catch(() => {
+        /* 没配置过就是关，保持默认图标 */
+      });
     on(lock, "click", () => {
-      if (secretConvs.has(convId)) {
-        secretConvs.delete(convId);
-        lock.textContent = "🔓";
-        toast("已切换为普通消息");
-      } else {
-        secretConvs.add(convId);
-        lock.textContent = "🔒";
-        toast("秘密聊天已开启：本会话消息将加密发送");
-      }
+      const next = !secretConvs.has(convId);
+      lock.textContent = next ? "🔒" : "🔓";
+      void api
+        .secretConfigure(convId, next)
+        .then((s) => {
+          if (s.enabled) secretConvs.add(convId);
+          else secretConvs.delete(convId);
+          lock.textContent = s.enabled ? "🔒" : "🔓";
+          toast(s.enabled ? "秘密聊天已开启：本会话消息将加密发送" : "已切换为普通消息");
+        })
+        .catch((e) => {
+          // 服务端拒绝就回滚图标，别让用户以为开了
+          if (next) secretConvs.delete(convId);
+          else secretConvs.add(convId);
+          lock.textContent = secretConvs.has(convId) ? "🔒" : "🔓";
+          toast(String(e).slice(0, 120));
+        });
     });
   }
   footer.append(img, red, mic, clip, film, sticker, input, send, lock, imgInput, fileInput, videoInput);

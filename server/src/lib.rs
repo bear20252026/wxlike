@@ -570,6 +570,17 @@ pub fn message_json(row: &StoredMessage) -> serde_json::Value {
     message_json_with_seq(row, row.seq)
 }
 
+/// 消失消息判定：`ttl_ms == 0` 表示不消失；时间戳缺失时**不隐藏**。
+fn secret_ttl_expired(ttl_ms: u64, v: &serde_json::Value) -> bool {
+    if ttl_ms == 0 {
+        return false;
+    }
+    match v["sent_at_ms"].as_u64() {
+        None => false,
+        Some(sent) => sent.saturating_add(ttl_ms) <= wxlike_core::types::now_ms(),
+    }
+}
+
 /// 同上，但用调用方给的序列号（history 用信箱序列号，search 用归档 seq）。
 pub fn message_json_with_seq(row: &StoredMessage, seq: i64) -> serde_json::Value {
     let env = &row.envelope;
@@ -663,6 +674,14 @@ async fn history_page(
     // P3：**信箱决定顺序**，归档只提供正文。
     // 这样翻页游标是会话内序列号（1,2,3…），与未读/同步用的是同一套编号；
     // 归档的全局 seq 不再泄露给客户端。
+    //
+    // 消失消息（P4 / issue #15）：服务端不持明文，但**必须**守住"到点不再
+    // 下发"这条线，否则换设备或重装后拉历史会让消失的消息复活。
+    let ttl_ms = deps
+        .platform
+        .secret_state(&conv_id)
+        .map(|s| s.ttl_ms)
+        .unwrap_or(0);
     let (page, next) = deps
         .mailbox
         .fetch_before((owner, &conv_id), before.max(0) as u64, limit)
@@ -674,7 +693,11 @@ async fn history_page(
             .store
             .page_messages(&conv_id, before, limit)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let messages: Vec<_> = rows.iter().map(message_json).collect();
+        let messages: Vec<_> = rows
+            .iter()
+            .map(message_json)
+            .filter(|v| !secret_ttl_expired(ttl_ms, v))
+            .collect();
         return Ok(Json(serde_json::json!({
             "conv_id": conv_id,
             "messages": messages,
@@ -697,6 +720,7 @@ async fn history_page(
             let row = bodies.get(&id)?;
             Some(message_json_with_seq(row, m.seq as i64))
         })
+        .filter(|v| !secret_ttl_expired(ttl_ms, v))
         .collect();
     Ok(Json(serde_json::json!({
         "conv_id": conv_id,

@@ -542,3 +542,60 @@ fn pending_buffer_is_bounded_under_flood() {
     );
     assert!(bob.parked_for("alice") <= PENDING_WINDOW);
 }
+
+/// 重启不丢会话：快照 → 新进程恢复 → 双向继续收发（issue #15）。
+///
+/// 这条测试盯的是"进程重启后身份和棘轮还在"。旧实现把 `Device` 只放在内存里，
+/// 重启后 `secret_enable` 会新建一个身份，对方的安全码变化、老会话全部解不开。
+#[test]
+fn snapshot_survives_restart_and_keeps_the_ratchet() {
+    let (mut alice, mut bob) = pair();
+    let bob_bundle = bob.bundle("bob");
+    let alice_fp = alice.device().identity_fingerprint();
+
+    let first = alice
+        .encrypt_dm("bob", &bob_bundle, b"before restart")
+        .unwrap();
+    assert_eq!(bob.decrypt_dm("alice", &first).unwrap(), b"before restart");
+    let back = bob
+        .encrypt_dm("alice", &alice.bundle("alice"), b"ack")
+        .unwrap();
+    assert_eq!(alice.decrypt_dm("bob", &back).unwrap(), b"ack");
+
+    // 进程退出 → 新进程从磁盘快照恢复
+    let alice_blob = alice.snapshot().unwrap();
+    let bob_blob = bob.snapshot().unwrap();
+    drop((alice, bob));
+    let mut alice = Crypto::restore(&alice_blob).unwrap();
+    let mut bob = Crypto::restore(&bob_blob).unwrap();
+
+    assert_eq!(
+        alice.device().identity_fingerprint(),
+        alice_fp,
+        "身份必须还是同一个（否则安全码会变）"
+    );
+    assert!(alice.has_session_with("bob") && bob.has_session_with("alice"));
+
+    // 棘轮继续：双方都不需要重新握手，也不再产生 pre-key 消息
+    let after = alice.encrypt_dm_existing("bob", b"after restart").unwrap();
+    assert!(!after.pre_key);
+    assert_eq!(bob.decrypt_dm("alice", &after).unwrap(), b"after restart");
+
+    let reply = bob.encrypt_dm_existing("alice", b"still here").unwrap();
+    assert_eq!(alice.decrypt_dm("bob", &reply).unwrap(), b"still here");
+}
+
+/// 快照格式不认识时必须报错，不能"猜着加载一半"。
+#[test]
+fn snapshot_with_unknown_version_is_refused() {
+    let (alice, _) = pair();
+    let blob = alice.snapshot().unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&blob).unwrap();
+    value["version"] = serde_json::json!(999);
+    let tampered = serde_json::to_vec(&value).unwrap();
+    match Crypto::restore(&tampered) {
+        Err(CryptoError::Snapshot(msg)) => assert!(msg.contains("version"), "{msg}"),
+        other => panic!("必须拒绝未知版本：{:?}", other.err()),
+    }
+    assert!(Crypto::restore(b"not a snapshot").is_err());
+}

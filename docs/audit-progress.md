@@ -4,17 +4,18 @@
 > 这份账的目的是**说清哪些真做完了、哪些没做、没做的卡在哪**——
 > 不是"看起来都修了"。
 >
-> **CI 状态：`ff2859c` 七关全绿**（lint / quality / test×3 / doc / android）。
-> 改协议带出来的三处测试回归（`history_search_api`、`mailbox_mirror`、
-> `policy_integration`、`ws_gateway`）已全部修完——它们都是"还在用
-> `user_id` 当凭据连接"，现在统一用注册返回的 token。
+> **CI 状态：九关**（lint / quality / test×3 / doc / android / web / flutter / desktop）。
+> 协议改动带出来的测试回归分两批修完：主 workspace 那批（`history_search_api`、
+> `mailbox_mirror`、`policy_integration`、`ws_gateway`）在 #3 当轮；桌面端那批
+> （`p2_messages` 三条）**一直红到本轮**——因为 Tauri 测试没进 CI，没人跑。
+> 这正好是 #18 收尾的理由，见 §二点七。
 
-## 一、本轮已闭环（6 条 + 1 条部分）
+## 一、已闭环（9 条 + 5 条部分）
 
 | issue | 严重度 | 状态 | 提交 | 一句话 |
 |---|---|---|---|---|
 | #3 | P0 | ✅ 完整 | `099a3d5` | `Hello` 只带 token，身份由服务端解析；无认证器 = 拒绝一切 |
-| #4 | P0 | ⚠️ 核心已修 | `099a3d5` | 秘密聊天 fail closed（不再回退明文）；**往返解密仍红**，归 #15 |
+| #4 | P0 | ✅ 完整 | `099a3d5` + 本轮 | fail closed + **往返解密已绿**（自己发的密文不再走接收路径去解） |
 | #6 | P1 | ✅ 完整 | `b65057d` | 全部因子通过才清空失败计数；TOTP 失败会计数并审计 |
 | #12 | P1 | ✅ 完整 | `c806402` | QUIC 证书持久化到数据目录，重启后 pin 仍匹配 |
 | #14 | P1 | ⚠️ 一半 | `12bd86c` | Range 不再读整个对象；**下载鉴权未做**（需签名 URL） |
@@ -22,11 +23,12 @@
 | #21 | P1 | ✅ 完整 | `69c4d4d` | 桌面锁文件同步 TLS 修复；纠正"必须升 ureq 3"的错误判断 |
 | #5 | P1 | ✅ 完整 | `cc0a516` | 已启用 2FA 后重新 enroll 必须先证明身份（当前码或密码） |
 | #16 | P1 | ✅ 完整 | `47812b2` | compose 的 nats 缩进错 + 缺启动凭据；实测 `up` 后 health 通过 |
-| #18 | P2 | ⚠️ 大部分 | `8573b24` | Web（tsc + bincode 自测）与 Flutter（analyze + test）进 CI；**Tauri 未接** |
+| #18 | P2 | ✅ 完整 | `8573b24` + 本轮 | Web / Flutter / **桌面（Tauri 命令层）** 三端全进 CI |
 | #10 | P1 | ✅ 完整 | `1a1ed05` | 离线队列 claim/ack/release + 30s lease；发一半断连不再丢 |
 | #11 | P1 | ⚠️ 一半 | `1a1ed05` | 落库成功后才标记 seen（失败可重试）；**per-recipient 补投未做** |
+| #15 | P1 | ⚠️ 大部分 | 本轮 | 密钥加密落盘、开关进服务端、明文/转发拦住、TTL 过滤；**多设备与搜索未做** |
 
-合计：**7 条完整、5 条部分**。
+合计：**9 条完整、5 条部分**。
 
 ### 逐条说明
 
@@ -65,7 +67,7 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 
 **#21（完整，上一轮）**——见提交 `69c4d4d`。
 
-## 二、本轮没做（13 条）
+## 二、还没做（7 条）
 
 | issue | 严重度 | 为什么没做 | 需要什么 |
 |---|---|---|---|
@@ -74,9 +76,7 @@ TOTP 失败记账号键 + 来源键，并写 `user.login / totp_failed` 审计�
 | #9 | P1 | 跨节点确认不以投递成功为条件：要 durable inbox + 两阶段确认 | 改 `mq_hub` 消费路径，影响面大 |
 | #11 剩余 | P1 | "重复 msg_id 补投未完成收件人"要 per-recipient 投递状态（delivery outbox） | 新表 + 扇出路径改造，1–2 天 |
 | #13 | P1 | 空 `to` 广播 / 伪造 Notice：要收紧 `policy` 并给服务端内部事件开独立入口 | 改 `DeliveryPolicy` + 新增内部 publish 通道 |
-| #15 | P1 | 秘密聊天闭环：设置没接入发送/转发、TTL 不落实、密钥只在进程内 | 大工程（持久化 + 多端 + 搜索一致性），也是 #4 往返失败的上游 |
 | #17 | P1 | 后半（同步 FFI 阻塞主 isolate）：要把 ureq 调用搬进后台 isolate | 改 `service.dart` + 生成的绑定调用方式 |
-| #18 剩余 | P2 | 只剩 Tauri：它在独立 workspace，Linux 上要 `libwebkit2gtk-4.1-dev` 等系统依赖 | 一个 job + apt 依赖，失败模式是"apt 版本不对"而非代码 |
 | #20 | P2 | Redis Stream 无保留策略、路由无租约 | 改 `mq` crate 的 XADD/XACK 与 `RedisRoutes` |
 | #22 | P2 | ureq 3 迁移：7 张卡、三处 API 破坏性变更 | 已有任务单 `docs/task-ureq3-migration.md`，需 2–3 人日 |
 
@@ -118,6 +118,62 @@ msg_id 重试能真正进来（以前会被去重缓存当成重复直接吞掉�
 投递状态，重跑会把整批人再收一遍。正确解是 delivery outbox（消息 + 每个收件人
 的投递任务同一事务），1–2 天；在那之前扇出失败靠客户端拉历史补偿。
 
+## 二点七、秘密聊天闭环（#15 / #4）与桌面端进 CI（#18）
+
+### #4 往返解密：真 bug，不是"密钥交换没做完"
+
+上一轮把它记成"接收方 `create_inbound_session` 失败"，实际原因更低级：
+**发送方把自己发出的密文也走了一遍接收路径**。`append_own_echo` 拿 `env.sender`
+（自己）当对端去解，自己没有跟自己的会话，于是每条自己发的秘密消息都渲染成
+"无法解密"，同时把 `create_inbound_session` 打成 `MissingOneTimeKey`
+（报的是对方的密钥 id，因为密文本来就是用对方密钥封的）。
+
+修法不是"加个 try"，而是**认清发送方不需要解密**：明文就在手里。
+`render_event_with(env, secret, own_text)` 多一个"自己已知的明文"参数，
+发送路径与 outbox 重发路径都带上它；接收路径传 `None`。
+
+顺带修掉 outbox 的一个坑：秘密消息排队重发时只存 envelope，回显拿不到明文。
+现在队列项是 `{env, echo}`，裸 envelope 的旧项仍然能读（向后兼容）。
+
+### #15 做了什么
+
+| 面 | 之前 | 现在 |
+|---|---|---|
+| 密钥 | `Device` 只在 `AppState` 内存里，重启换身份 | `Crypto::snapshot()` → XChaCha20-Poly1305 密封 → `secret-account.bin`；设备密钥 `secret-device.key`（0600）。**每发一条、每收一条都落盘**——棘轮不是缓存 |
+| 开关 | 前端一个 `Set`，服务端不知道 | `secret_configure` / `secret_state` 走 `/api/secret/{conv}`，本地只做缓存；UI 的 🔒 从服务端初始化，失败回滚图标 |
+| 明文 | 秘密会话里照样能发明文 | `send_body` 闸门：秘密会话只放行 `E2EE_DM` 与 `typing`，文本/图片/转发全部拒绝 |
+| 转发 | 不检查来源 | `forward_message` / `merge_forward` 看条目自带的 `conv_id`，来源是秘密会话就整条拒绝 |
+| TTL | 存了不执行 | 服务端 `history_page` 过滤过期（换设备拉历史不会复活）+ 桌面 `local_history` 同样过滤 |
+
+测试（`ui/src-tauri/tests/secret_chat.rs`，跑真实栈）：
+`secret_identity_and_session_survive_a_restart`（重启后同一身份 + 会话继续）、
+`secret_conversation_refuses_plaintext_and_forwarding`、
+`secret_ttl_hides_expired_history`；核心层另有
+`snapshot_survives_restart_and_keeps_the_ratchet` 与
+`snapshot_with_unknown_version_is_refused`。
+
+### 还没做的（说清楚，不含糊）
+
+- **多设备**：一个用户多台设备各有身份，`/api/keys` 仍是"一人一条 bundle"。
+  真正的多设备要按 `device_id` 发布、发消息时给每台设备各封一份（Matrix 的
+  device list 那套）。这是独立任务。
+- **搜索一致性**：`/api/search` 还没按秘密会话的 TTL 过滤。
+- **本地真删除**：现在只是"到点不再显示"，磁盘上的行还在。真删除要在本地库
+  加一条按 `expires_at` 的清理任务。
+- **重装同步**：换设备后旧会话解不开（密钥没有服务端托管的备份），这是
+  E2EE 的固有取舍，需要显式的"设备迁移"设计而不是偷偷上传私钥。
+
+### #18 收尾：桌面端进 CI，代价立刻显现
+
+加 `desktop` job 的第一件事不是配置 apt，而是**发现这批测试早就红了**：
+
+- `p2_messages` 三条还在拿 `user_id` 当 `Hello` 的凭据——#3 之后 hub 只认 token，
+  所以三条全部连不上；
+- `ui_commands` 里 5 条直聊测试在 P3 陌生人闸门上线后就发不出消息了（非好友）。
+
+两批都是"跑一次就发现"的问题，因为没进 CI 一直没人跑。现在它们都修好了
+（好友关系 + 排空"成为好友"的系统通知），`desktop` 这一关才算真的有意义。
+
 ## 三、为什么没有"全部完成"
 
 单条 #3 就改了 8 个 crate（`net`/`server`/`platform`/`core`/`ui`/`ui/src-tauri`
@@ -125,21 +181,23 @@ msg_id 重试能真正进来（以前会被去重缓存当成重复直接吞掉�
 桌面的连接参数、诊断工具、18 处测试构造点全部要同步。这类改动不能切碎，
 切碎了就是"改一半的协议"，比不改更危险。
 
-剩下 13 条里有 6 条（#7 #8 #9 #10 #11 #15）是**改数据模型或消息主链路**，
-每条都要动 schema 与失败恢复路径；#16 需要 docker 才能验证；#22 有现成任务单
-但工作量是 2–3 人日。
+剩下的 7 条里有 4 条（#7 #8 #9 #13）是**改数据模型或消息主链路**，每条都要动
+schema 与失败恢复路径；#11 剩余要新建 delivery outbox；#15 剩余要多设备密钥分发；
+#22 有现成任务单但工作量是 2–3 人日。
 
 按"能不能验证"排序，我优先做了**改完就能用测试钉住**的那些（#3 #6 #12 #19），
 以及**只改一行就能止住泄漏**的那些（#4 的 fail-closed、#14 的读放大）。
 
 ## 四、下一步建议顺序
 
-1. **#16**（半小时，需要一台有 docker 的机器）——它是"一条命令启动"的承诺，
-   现在 `compose config` 都过不了。
-2. **#5**（半天）——TOTP 重置越权是账号接管链的一环，改动可控。
-3. **#15 + #4 的往返**（2–3 天）——秘密聊天要么闭环，要么明确标成"实验特性"。
-   现在这个状态最糟：UI 上开着开关，实际发不出去也解不开。
-4. **#10 + #11**（2–3 天）——消息可靠性，两者改的是同一段代码，一起做。
-5. **#7 + #8**（2 天）——视频面的准入与 SSRF。
-6. **#18**（1 天）——把 Tauri / Web / Flutter 接进 CI，否则上面这些修完
-   还是可能被下一次改动悄悄破坏。
+1. **#7 + #8**（2 天）——视频面准入与 SSRF：`/api/video*` 现在匿名可调，
+   这是唯一一条"外部可直接打"的入口。
+2. **#9 + #11 剩余**（2–3 天）——durable inbox 与 per-recipient 投递状态，
+   两者是同一件事的两半，一起做才有意义。
+3. **#13**（半天）——空 `to` 广播 / 伪造 Notice 的收紧，改动小但影响面宽。
+4. **#15 剩余**（3–5 天）——多设备 bundle、搜索过滤、本地真删除。
+5. **#20**（1 天）——Redis Stream 保留策略与路由租约。
+6. **#22**（2–3 人日）——ureq 3 迁移，有现成任务单
+   `docs/task-ureq3-migration.md`。
+
+> 排序依据：**能不能被外部直接利用** > **数据会不会丢** > **体验/债务**。

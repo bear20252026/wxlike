@@ -24,11 +24,14 @@ async fn p2_voice_file_sticker_roundtrip() {
         .as_str()
         .unwrap()
         .to_string();
+    // hub 只认注册返回的会话凭据，不认 user_id（issue #3）
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    // P3 陌生人闸门：直聊只放行好友
+    support::befriend(&alice, &bob_id, &bob).await;
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // voice: upload the "audio" then send the payload with a 40-bar waveform
@@ -200,11 +203,14 @@ async fn p2_local_message_library_survives_restart() {
         .as_str()
         .unwrap()
         .to_string();
+    // hub 只认注册返回的会话凭据，不认 user_id（issue #3）
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    // P3 陌生人闸门：直聊只放行好友
+    support::befriend(&alice, &bob_id, &bob).await;
     bob.local_open(&db).unwrap();
     assert!(bob.local_ready());
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
@@ -258,11 +264,14 @@ async fn p2_video_upload_transcode_and_message() {
         .as_str()
         .unwrap()
         .to_string();
+    // hub 只认注册返回的会话凭据，不认 user_id（issue #3）
     alice
-        .connect_hub(&quic.to_string(), &alice_id, &pins())
+        .connect_hub(&quic.to_string(), &alice.auth_token().unwrap(), &pins())
         .unwrap();
-    bob.connect_hub(&quic.to_string(), &bob_id, &pins())
+    bob.connect_hub(&quic.to_string(), &bob.auth_token().unwrap(), &pins())
         .unwrap();
+    // P3 陌生人闸门：直聊只放行好友
+    support::befriend(&alice, &bob_id, &bob).await;
     let conv = wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id);
 
     // synthesize a 1-second clip (ffmpeg is on PATH per the ignore note)
