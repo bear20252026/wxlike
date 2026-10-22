@@ -210,6 +210,7 @@ owner_seq.seq INTEGER notnull=1 pk=0
 prekey_bundles.user_id TEXT notnull=0 pk=1
 prekey_bundles.identity TEXT notnull=1 pk=0
 prekey_bundles.identity_signing TEXT notnull=1 pk=0
+prekey_bundles.signature TEXT notnull=1 pk=0
 prekey_bundles.otks TEXT notnull=1 pk=0
 prekey_bundles.updated_at INTEGER notnull=1 pk=0
 read_cursor.owner_type TEXT notnull=1 pk=1
