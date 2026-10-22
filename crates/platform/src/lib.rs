@@ -37,6 +37,7 @@ mod notification;
 pub mod perms;
 mod read;
 mod reconcile;
+mod risk_mw;
 mod recovery;
 mod relations;
 mod report;
@@ -485,8 +486,14 @@ impl Platform {
             .with_state(state.clone())
             // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）
             .layer(axum::middleware::from_fn_with_state(
-                state,
+                state.clone(),
                 audit_mw::command_audit,
+            ))
+            // AR-5（#29）：写接口风控的声明式闸门，挂在最外层——
+            // handler 不再各自记得调 risk_gate（见 risk_mw）
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                risk_mw::gate,
             ))
     }
 

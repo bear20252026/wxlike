@@ -37,6 +37,12 @@ pub enum Action {
     /// 任何登录用户都能循环认领他人库存 = 廉价资源耗尽 DoS，所以认领
     /// 也要进闸门（键形如 `caller:target`）。
     ClaimKeys,
+    /// AR-5（第四轮审计 #29）：写接口中间件闸门的三个动作。此前风控只
+    /// 在登录/注册/举报/认领四处手工调用，好友请求/媒体上传/朋友圈刷写
+    /// 全裸——漏掉是"每个 handler 手工调用"这一模式的结构性必然。
+    FriendRequest,
+    MediaUpload,
+    MomentCreate,
 }
 
 impl Action {
@@ -47,15 +53,22 @@ impl Action {
             Self::Send => "send",
             Self::Report => "report",
             Self::ClaimKeys => "claim_keys",
+            Self::FriendRequest => "friend_request",
+            Self::MediaUpload => "media_upload",
+            Self::MomentCreate => "moment_create",
         }
     }
 
     /// 窗口长度：注册 1 h、登录 15 min、发送 10 s、举报 1 h。
     fn window_ms(&self) -> u64 {
         match self {
-            Self::Register | Self::Report | Self::ClaimKeys => 60 * 60 * 1000,
+            Self::Register | Self::Report | Self::ClaimKeys | Self::FriendRequest => {
+                60 * 60 * 1000
+            }
             Self::Login => 15 * 60 * 1000,
             Self::Send => 10 * 1000,
+            // 上传/发动态是重操作，10 秒窗口太短（一次九宫格就 9 条），给 10 分钟
+            Self::MediaUpload | Self::MomentCreate => 10 * 60 * 1000,
         }
     }
 }
@@ -112,6 +125,18 @@ pub struct RiskConfig {
     pub claim_keys_throttle_at: usize,
     /// 达到此值 → Deny（库存耗尽攻击）。真人远够用：一次会话重建只要一把。
     pub claim_keys_deny_at: usize,
+    /// 1 h 内好友请求达到此值 → Throttle（AR-5）。
+    pub friend_request_throttle_at: usize,
+    /// 达到此值 → Deny（申请轰炸）。
+    pub friend_request_deny_at: usize,
+    /// 10 min 内媒体上传达到此值 → Throttle（AR-5）。
+    pub media_upload_throttle_at: usize,
+    /// 达到此值 → Deny（上传轰炸）。
+    pub media_upload_deny_at: usize,
+    /// 10 min 内朋友圈发布/点赞/评论达到此值 → Throttle（AR-5）。
+    pub moment_create_throttle_at: usize,
+    /// 达到此值 → Deny（刷屏）。
+    pub moment_create_deny_at: usize,
 }
 
 /// 同来源一小时内注册多少次起要求人机校验。
@@ -139,6 +164,12 @@ impl Default for RiskConfig {
             report_deny_at: 30,
             claim_keys_throttle_at: 30,
             claim_keys_deny_at: 120,
+            friend_request_throttle_at: 30,
+            friend_request_deny_at: 100,
+            media_upload_throttle_at: 60,
+            media_upload_deny_at: 200,
+            moment_create_throttle_at: 30,
+            moment_create_deny_at: 100,
         }
     }
 }
@@ -211,6 +242,28 @@ impl RiskEngine {
         Ok(events.len())
     }
 
+    /// 无 captcha 兑现面动作的公共裁决：throttle → deny → allow。
+    fn throttle_or_deny(
+        &self,
+        n: usize,
+        retry_after: u64,
+        throttle_at: usize,
+        deny_at: usize,
+        reason: &'static str,
+    ) -> Verdict {
+        if n >= deny_at {
+            Verdict::Deny {
+                reason: reason.into(),
+            }
+        } else if n >= throttle_at {
+            Verdict::Throttle {
+                retry_after_ms: retry_after,
+            }
+        } else {
+            Verdict::Allow
+        }
+    }
+
     fn decide(
         &self,
         action: Action,
@@ -278,6 +331,28 @@ impl RiskEngine {
                     Verdict::Allow
                 }
             }
+            // 中间件闸门的三个动作同样没有 captcha 兑现面（写接口 429 即可）
+            Action::FriendRequest => self.throttle_or_deny(
+                n,
+                retry_after,
+                self.cfg.friend_request_throttle_at,
+                self.cfg.friend_request_deny_at,
+                "friend_request_rate",
+            ),
+            Action::MediaUpload => self.throttle_or_deny(
+                n,
+                retry_after,
+                self.cfg.media_upload_throttle_at,
+                self.cfg.media_upload_deny_at,
+                "media_upload_rate",
+            ),
+            Action::MomentCreate => self.throttle_or_deny(
+                n,
+                retry_after,
+                self.cfg.moment_create_throttle_at,
+                self.cfg.moment_create_deny_at,
+                "moment_create_rate",
+            ),
             Action::Report => {
                 if n >= self.cfg.report_deny_at {
                     Verdict::Deny {

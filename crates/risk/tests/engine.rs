@@ -16,6 +16,12 @@ fn engine() -> RiskEngine {
         report_deny_at: 3,
         claim_keys_throttle_at: 2,
         claim_keys_deny_at: 4,
+        friend_request_throttle_at: 2,
+        friend_request_deny_at: 4,
+        media_upload_throttle_at: 2,
+        media_upload_deny_at: 4,
+        moment_create_throttle_at: 2,
+        moment_create_deny_at: 4,
     })
 }
 
