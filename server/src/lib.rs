@@ -930,6 +930,30 @@ async fn forward_message(
             ));
         }
     }
+    // 秘密会话的消息不可转发（issue #15）：转发会破坏"两端各持一份密钥"的前提，
+    // 消失消息在第三方副本上也会失效。桌面端早就有这道拦截，但 HTTP 控制面
+    // 是另一条入口——**服务端必须自己守**，不能只靠客户端自觉。
+    if deps
+        .platform
+        .is_secret_conv(&body.from_conv)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "secret conversations cannot be forwarded".to_string(),
+        ));
+    }
+    // 目标会话同样：往秘密会话里塞一条普通会话的消息，接收方会以为它受保护
+    if deps
+        .platform
+        .is_secret_conv(&to_conv)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cannot forward into a secret conversation".to_string(),
+        ));
+    }
     let id = hex::decode(body.msg_id.trim())
         .map_err(|_| (StatusCode::BAD_REQUEST, "msg_id must be hex".to_string()))?;
     let mut found = deps
@@ -1061,7 +1085,17 @@ async fn search_messages(
             continue; // recalled rows never surface through search
         }
         if let Ok(Some(row)) = deps.store.message_at(&hit.conv_id, hit.seq) {
-            results.push(message_json(&row));
+            let v = message_json(&row);
+            // 消失消息到期后连搜索结果都不能出现（issue #15）：历史里已经
+            // 过滤了，搜索漏掉的话"消失"就只完成了一半。
+            let ttl_ms = deps
+                .platform
+                .secret_state(&hit.conv_id)
+                .map(|s| s.ttl_ms)
+                .unwrap_or(0);
+            if !secret_ttl_expired(ttl_ms, &v) {
+                results.push(v);
+            }
         }
         if results.len() >= limit {
             break;
