@@ -21,12 +21,14 @@ fn engine() -> RiskEngine {
 
 #[test]
 fn claim_keys_throttles_then_denies_without_challenge() {
-    // AR-2/H-4：认领无 captcha 兑现面，只应有 Throttle/Deny 两态
+    // AR-2/H-4：认领无 captcha 兑现面，只应有 Throttle/Deny 两态。
+    // check 只裁决不计数、record 才落窗口——与登录/发送路径同一语义。
     let e = engine();
     assert_eq!(
         e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
         Verdict::Allow
     );
+    e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
     assert_eq!(
         e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
         Verdict::Throttle { retry_after_ms: 3_600_000 }
@@ -36,7 +38,8 @@ fn claim_keys_throttles_then_denies_without_challenge() {
         e.check(Action::ClaimKeys, "carol:alice", T0).unwrap(),
         Verdict::Allow
     );
-    // 计入成功记录后撞 Deny（record 也计数）
+    // 累计到 deny 阈值（record 两次各 +1，已计 1 → 再 record 2 次 = 3；
+    // 第 4 次尝试 n=4 撞 Deny）
     e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
     e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
     assert_eq!(
