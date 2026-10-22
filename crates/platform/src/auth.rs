@@ -25,6 +25,15 @@ pub const TOKEN_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 
+/// AR-3/H-2 (audit round 4): what the `sessions.token` column actually
+/// stores. The token is 32 random bytes, so a plain SHA-256 digest is the
+/// right lookup key (no slow hash needed); a leaked DB file — backups,
+/// snapshots, container volumes — then no longer contains usable bearer
+/// credentials. Raw tokens exist only in the client and in memory.
+pub fn token_digest(token: &str) -> String {
+    wxlike_core::msgmeta::sha256_hex(token.as_bytes())
+}
+
 /// URL-safe-ish random hex of `n` bytes of entropy.
 pub fn random_hex(n: usize) -> String {
     let mut buf = vec![0u8; n];

@@ -57,7 +57,7 @@ use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
-pub use crate::auth::{hash_password, random_hex, verify_password, Authed};
+pub use crate::auth::{hash_password, random_hex, token_digest, verify_password, Authed};
 pub use crate::call::CallRegistry;
 pub use crate::db::Db;
 pub use crate::devices::{DeviceReg, DeviceRow};
@@ -382,7 +382,7 @@ impl Platform {
             "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, device_name, ip, last_seen)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                token,
+                auth::token_digest(&token),
                 user_id,
                 now as i64,
                 now.saturating_add(ttl_ms) as i64,
@@ -397,7 +397,10 @@ impl Platform {
     }
 
     /// Resolves a token to its user, dropping the row when it has expired.
+    /// The column holds [`auth::token_digest`] output; the raw token never
+    /// touches the database (AR-3/H-2).
     pub fn lookup_token(&self, token: &str) -> Result<Option<String>> {
+        let token = &auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db.lock();
         let row: Option<(String, i64)> = c
@@ -418,6 +421,7 @@ impl Platform {
     }
 
     pub fn revoke_session(&self, token: &str) -> Result<()> {
+        let token = auth::token_digest(token);
         let c = self.db.lock();
         c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
         Ok(())

@@ -63,7 +63,8 @@ impl Platform {
                     ip: r.get(3)?,
                     created_at: r.get(4)?,
                     last_seen: r.get(5)?,
-                    current: token == current_token,
+                    // 列里是摘要（AR-3/H-2），比对也要用摘要
+                    current: token == crate::auth::token_digest(current_token),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -86,16 +87,19 @@ impl Platform {
 
     /// 下线除当前设备外的全部会话（"一键退出其他设备"）。
     pub fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize> {
+        // keep 参数同样要以摘要比对，否则会把当前会话一并删掉（AR-3/H-2）
+        let keep = crate::auth::token_digest(keep_token);
         let c = self.db().lock();
         let n = c.execute(
             "DELETE FROM sessions WHERE user_id = ?1 AND token <> ?2",
-            params![user_id, keep_token],
+            params![user_id, keep],
         )?;
         Ok(n)
     }
 
     /// 记录活跃时间（登录、设备页访问、关键操作时调用）。
     pub fn touch_session(&self, token: &str) -> Result<()> {
+        let token = crate::auth::token_digest(token);
         let c = self.db().lock();
         c.execute(
             "UPDATE sessions SET last_seen = ?2 WHERE token = ?1",

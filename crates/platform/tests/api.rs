@@ -503,3 +503,22 @@ async fn futures_join(handles: Vec<tokio::task::JoinHandle<StatusCode>>) -> Vec<
         .map(|r| r.expect("task did not panic"))
         .collect()
 }
+
+/// AR-3/H-2（第四轮审计）：会话令牌不得明文入库。列里存的必须是摘要，
+/// 拿走 SQLite 文件（备份/快照/容器卷）拿不到任何可用凭证。
+#[test]
+fn session_tokens_are_stored_as_digests() {
+    let p = wxlike_platform::Platform::in_memory().unwrap();
+    let uid = p.register("alice", "pw").unwrap();
+    let token = p.create_session(&uid, 60_000).unwrap();
+    let stored: String = {
+        let c = p.db().lock();
+        c.query_row("SELECT token FROM sessions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_ne!(stored, token, "the raw bearer token must never reach the db");
+    assert_eq!(stored, wxlike_platform::token_digest(&token));
+    assert_eq!(stored.len(), 64, "sha256 hex");
+    // 摘要仍是有效的查找键：登录态照常工作
+    assert_eq!(p.lookup_token(&token).unwrap().as_deref(), Some(uid.as_str()));
+}
