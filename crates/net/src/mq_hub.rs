@@ -665,6 +665,21 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
 
         let mut delivered = 0usize;
         for (idx, (id, frame)) in batch.iter().enumerate() {
+            // AR-6（#30）：过期的秘密会话帧不再补发。QUIC 与 WS 两条链路
+            // 都走这条 claim→逐条 ack 的补发路径，一处判定即全覆盖；ack
+            // 即丢弃，消息从此不可再取（与 HTTP 检索面的 TTL 过滤同口径）。
+            if expired_secret_frame(state.policy.as_deref(), frame).await {
+                if let Err(err) = state.offline.ack(*id).await {
+                    eprintln!("[mq-hub] offline ack {id} (expired) failed: {err:#}");
+                }
+                tracing::info!(
+                    hub = %state.hub_id,
+                    user = %user_id,
+                    id,
+                    "dropped expired secret-chat frame from offline flush"
+                );
+                continue;
+            }
             match conn.send_frame(frame).await {
                 Ok(()) => {
                     // ack 失败不该让已经发出的条目再发一遍；下一轮 claim 会
@@ -1467,6 +1482,31 @@ pub async fn dedup_len(handle: &HubHandle) -> usize {
 /// * 群帧：查一次 `muted`（全员禁言对管理员的豁免在实现方内部裁决）；
 /// * 直发帧：逐收件人查 `blocked` + `direct_allowed`，收件集只保留通过者；
 ///   全部被拦 → Drop（不落库、不暂存——被拉黑者的消息无痕迹）。
+/// AR-6（#30）：这一帧是否已过秘密会话的 TTL（不再补发）。
+/// 只有内容帧受约束；回执/撤回/系统帧豁免（撤回要在过期后仍能到达）。
+async fn expired_secret_frame(
+    policy: Option<&dyn crate::policy::DeliveryPolicy>,
+    raw: &[u8],
+) -> bool {
+    let Some(policy) = policy else {
+        return false;
+    };
+    // 离线库存的是序列化帧；解不开的帧不归 TTL 管（原样补发，由解码侧报错）
+    let Ok(WireFrame::Msg(env)) = bincode::deserialize::<WireFrame>(raw) else {
+        return false;
+    };
+    if env.is_recall() || env.receipt.is_some() {
+        return false;
+    }
+    if matches!(env.body, wxlike_core::MsgBody::Notice(_)) {
+        return false;
+    }
+    let Some(ttl_ms) = policy.secret_ttl_ms(&env.conv_id).await else {
+        return false;
+    };
+    env.sent_at_ms.saturating_add(ttl_ms) < wxlike_core::types::now_ms()
+}
+
 async fn apply_delivery_policy(
     state: &Arc<HubState>,
     policy: &dyn DeliveryPolicy,

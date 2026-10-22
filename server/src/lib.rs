@@ -1277,6 +1277,19 @@ impl wxlike_net::DeliveryPolicy for PlatformPolicy {
         }
     }
 
+    /// AR-6（第四轮审计 #30）：秘密会话 TTL——hub 补发离线帧时丢弃已过期
+    /// 消息，实时链路的服务端兜底与 HTTP 检索/搜索面同口径。
+    async fn secret_ttl_ms(&self, conv_id: &str) -> Option<u64> {
+        match self.0.secret_state(conv_id) {
+            Ok(state) if state.enabled => Some(state.ttl_ms),
+            Ok(_) => None,
+            Err(err) => {
+                tracing::warn!(conv = conv_id, "secret ttl lookup failed (fail-open): {err}");
+                None
+            }
+        }
+    }
+
     /// P4 发送闸门：风控限流 + 内容审核（ADR-20 前两层）。
     ///
     /// 失败语义是 **fail-open**：风控/审核查询出错时放行并记日志——拦截
