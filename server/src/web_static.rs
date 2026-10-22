@@ -138,12 +138,23 @@ mod tests {
         root
     }
 
+    /// 每个 fixture 一个唯一后缀。
+    ///
+    /// 只靠纳秒时间戳是不够的：Windows 的时钟粒度约 15ms，两个并行用例
+    /// 会拿到同一个值，于是共用一个目录——其中一个用例收尾时
+    /// `remove_dir_all`，另一个就读到 404（CI 上真的这么红过）。计数器
+    /// 保证同进程内绝不相同。
     fn uuid() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        nanos
+            .wrapping_mul(1_000_003)
+            .wrapping_add(SEQ.fetch_add(1, Ordering::Relaxed))
     }
 
     /// 起真 HTTP 服务（与 `server/tests/*` 同一思路：不 mock 传输层）。
