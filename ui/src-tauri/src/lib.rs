@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use serde::Serialize;
 use tauri::Manager as _;
 use wxlike_core::custom_kind;
-use wxlike_core::e2ee::Crypto;
+use wxlike_core::e2ee::{Crypto, DEVICE_KEY_BYTES};
 use wxlike_core::{Envelope, MsgBody, MsgId};
 use wxlike_net::Client;
 
@@ -520,35 +520,7 @@ impl AppState {
                 }
                 let now = wxlike_core::types::now_ms() as i64;
                 let report = outbox.flush_with(now, 20, |task| {
-                    // 两种队列项：裸 envelope（普通消息）与
-                    // `{env, echo}`（秘密消息，回显要用的明文）。
-                    let (env, echo): (Envelope, Option<String>) =
-                        match serde_json::from_value::<Envelope>(task.payload.clone()) {
-                            Ok(env) => (env, None),
-                            Err(_) => match task.payload.get("env") {
-                                Some(v) => {
-                                    let env = serde_json::from_value::<Envelope>(v.clone())
-                                        .map_err(|e| {
-                                            wxlike_core::outbox::SendFailure::permanent(format!(
-                                                "payload 解不开: {e}"
-                                            ))
-                                        })?;
-                                    let echo = task
-                                        .payload
-                                        .get("echo")
-                                        .and_then(|e| e.as_str())
-                                        .map(str::to_string);
-                                    (env, echo)
-                                }
-                                // 坏 payload 重试一万次也不会变好
-                                None => {
-                                    return Err(wxlike_core::outbox::SendFailure::permanent(
-                                        "payload 解不开: 既不是 envelope 也不是 {env, echo}"
-                                            .to_string(),
-                                    ))
-                                }
-                            },
-                        };
+                    let (env, echo) = decode_outbox_task(&task.payload)?;
                     // 本地防雪崩：弱网下重发风暴会把流量打光、把连接堵死。
                     // 键用 conv_id——同一条命令不同会话互不牵连。
                     let bytes = task.payload.to_string().len();
@@ -1484,7 +1456,7 @@ impl LocalStore {
 /// 变动都调 [`SecretStore::persist`]。
 struct SecretStore {
     crypto: Crypto,
-    key: [u8; 32],
+    key: [u8; DEVICE_KEY_BYTES],
     path: std::path::PathBuf,
 }
 
@@ -1503,8 +1475,8 @@ impl SecretStore {
             return Ok(None);
         }
         let key = match std::fs::read(&key_path) {
-            Ok(bytes) if bytes.len() == 32 => {
-                let mut key = [0u8; 32];
+            Ok(bytes) if bytes.len() == DEVICE_KEY_BYTES => {
+                let mut key = [0u8; DEVICE_KEY_BYTES];
                 key.copy_from_slice(&bytes);
                 key
             }
@@ -1527,13 +1499,13 @@ impl SecretStore {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建数据目录失败：{e}"))?;
         let key_path = dir.join(Self::KEY_FILE);
         let key = match std::fs::read(&key_path) {
-            Ok(bytes) if bytes.len() == 32 => {
-                let mut key = [0u8; 32];
+            Ok(bytes) if bytes.len() == DEVICE_KEY_BYTES => {
+                let mut key = [0u8; DEVICE_KEY_BYTES];
                 key.copy_from_slice(&bytes);
                 key
             }
             _ => {
-                let mut key = [0u8; 32];
+                let mut key = [0u8; DEVICE_KEY_BYTES];
                 rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
                 write_private(&key_path, &key)?;
                 key
@@ -1688,6 +1660,29 @@ fn try_decrypt_secret(
         }
     }
     Some(opened)
+}
+
+/// 队列项解码：裸 envelope（普通消息）或 `{env, echo}`（秘密消息，
+/// `echo` 是回显要用的明文）。坏 payload 直接判永久失败——重试一万次
+/// 也不会变好。
+fn decode_outbox_task(
+    payload: &serde_json::Value,
+) -> Result<(Envelope, Option<String>), wxlike_core::outbox::SendFailure> {
+    if let Ok(env) = serde_json::from_value::<Envelope>(payload.clone()) {
+        return Ok((env, None));
+    }
+    let Some(inner) = payload.get("env") else {
+        return Err(wxlike_core::outbox::SendFailure::permanent(
+            "payload 解不开: 既不是 envelope 也不是 {env, echo}".to_string(),
+        ));
+    };
+    let env = serde_json::from_value::<Envelope>(inner.clone())
+        .map_err(|e| wxlike_core::outbox::SendFailure::permanent(format!("payload 解不开: {e}")))?;
+    let echo = payload
+        .get("echo")
+        .and_then(|e| e.as_str())
+        .map(str::to_string);
+    Ok((env, echo))
 }
 
 /// 消失消息判定：`ttl_ms == 0` 表示不消失。

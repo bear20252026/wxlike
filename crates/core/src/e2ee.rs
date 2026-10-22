@@ -87,13 +87,15 @@ pub type Result<T> = std::result::Result<T, CryptoError>;
 /// 报"读不懂"，不会半加载。
 const AT_REST_MAGIC: &[u8; 5] = b"WXSC1";
 const AT_REST_NONCE: usize = 24;
+/// 静态加密的设备密钥长度（XChaCha20-Poly1305 的 256 位密钥）。
+pub const DEVICE_KEY_BYTES: usize = 32;
 
 /// 快照落盘前的静态加密（XChaCha20-Poly1305）。
 ///
 /// vodozemac 的 pickle 是**明文**结构体，磁盘上直接放等于把身份私钥写在
 /// 文件里。调用方（桌面端）用一把 32 字节设备密钥密封它，密钥单独存、
 /// 权限 0600。
-pub fn seal_at_rest(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn seal_at_rest(key: &[u8; DEVICE_KEY_BYTES], plaintext: &[u8]) -> Result<Vec<u8>> {
     use chacha20poly1305::aead::{Aead as _, KeyInit as _};
     use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 
@@ -111,7 +113,7 @@ pub fn seal_at_rest(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// [`seal_at_rest`] 的逆操作。密钥不对、文件被改、版本不认识都报错。
-pub fn open_at_rest(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>> {
+pub fn open_at_rest(key: &[u8; DEVICE_KEY_BYTES], blob: &[u8]) -> Result<Vec<u8>> {
     use chacha20poly1305::aead::{Aead as _, KeyInit as _};
     use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 
