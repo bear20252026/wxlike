@@ -18,6 +18,9 @@
 //! * **转发的是编码后的载荷**，不解码不混流：收到谁的 `MediaData` 就原样写给
 //!   其他每个人的 `write_audio`，由各自的会话映射成自己协商到的 payload type。
 //!   这是 SFU 与 MCU 的本质区别，也是它能扛几百人的原因。
+//! * **入会是服务端裁决的**（#58）：`join` 只收 Bearer token，不接受客户端
+//!   自报的 peer id；账号由平台会话解析，房间成员资格走平台既有的
+//!   `conv_member_allowed`。非成员与不存在的房间返回同一个 404，避免探测。
 //!
 //! ## 容量
 //!
@@ -31,7 +34,42 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use anyhow::Context as _;
 use serde::Serialize;
+use wxlike_platform::{PlatformError, PlatformState};
 use wxlike_rtc::media::{Datagram, MediaSession};
+
+/// 默认房间容量（与通话控制面的产品上限一致）。
+pub const DEFAULT_CAPACITY: usize = 50;
+
+/// `join` 的拒绝原因。HTTP 状态随错误一起给出，接线时直接映射。
+#[derive(Debug, thiserror::Error)]
+pub enum SfuJoinError {
+    #[error("missing or invalid session token")]
+    Unauthorized,
+    /// 非成员、房间不存在、conv 格式非法一律 404：不泄露房间是否存在。
+    #[error("not found")]
+    NotFound,
+    #[error("room is full")]
+    Full,
+    /// 同一个账号已经在房里：不顶替旧会话（旧行为等于"用他人 id 踢人"）。
+    #[error("peer already joined")]
+    PeerConflict,
+    #[error("internal failure: {0}")]
+    Internal(String),
+    #[error("media negotiation failed: {0}")]
+    Media(#[from] anyhow::Error),
+}
+
+impl SfuJoinError {
+    pub fn http_status(&self) -> u16 {
+        match self {
+            Self::Unauthorized => 401,
+            Self::NotFound => 404,
+            Self::Full | Self::PeerConflict => 409,
+            Self::Media(_) => 400,
+            Self::Internal(_) => 500,
+        }
+    }
+}
 
 /// 加入成功后返回给客户端的东西。
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +92,12 @@ struct Participant {
 
 /// 一个房间（= 一个 SFU 节点上的一个转发域）。
 pub struct SfuRoom {
+    /// 会话与成员资格的唯一来源（只调用，不修改平台）。
+    platform: PlatformState,
+    /// 本房间对应的会话 id（直聊 `d-a~b` / 群 `g-…` / 频道）。
+    conv: String,
+    /// 房间人数上限（含正在协商中的参与者）。
+    capacity: usize,
     participants: HashMap<String, Participant>,
     /// 对外宣告的 IP（`WXLIKE_SFU_ADVERTISE` 或自动探测）。
     advertise: IpAddr,
@@ -70,13 +114,31 @@ pub struct SfuRoom {
 
 impl SfuRoom {
     /// `advertise = None` 时自动探测本机网卡地址。
-    pub fn new(advertise: Option<IpAddr>, base_port: u16) -> Self {
+    pub fn new(
+        platform: PlatformState,
+        conv: &str,
+        advertise: Option<IpAddr>,
+        base_port: u16,
+    ) -> Self {
+        Self::with_capacity(platform, conv, DEFAULT_CAPACITY, advertise, base_port)
+    }
+
+    pub fn with_capacity(
+        platform: PlatformState,
+        conv: &str,
+        capacity: usize,
+        advertise: Option<IpAddr>,
+        base_port: u16,
+    ) -> Self {
         let advertise = advertise.unwrap_or_else(|| {
             primary_ipv4()
                 .map(IpAddr::V4)
                 .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
         });
         Self {
+            platform,
+            conv: conv.to_string(),
+            capacity,
             participants: HashMap::new(),
             recv_packets: 0,
             sent_packets: 0,
@@ -88,7 +150,7 @@ impl SfuRoom {
     }
 
     /// 从环境变量构造：`WXLIKE_SFU_ADVERTISE` / `WXLIKE_SFU_PORT`。
-    pub fn from_env() -> Self {
+    pub fn from_env(platform: PlatformState, conv: &str) -> Self {
         let advertise = std::env::var("WXLIKE_SFU_ADVERTISE")
             .ok()
             .and_then(|s| s.parse::<IpAddr>().ok());
@@ -96,7 +158,15 @@ impl SfuRoom {
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(0);
-        Self::new(advertise, base)
+        Self::new(platform, conv, advertise, base)
+    }
+
+    pub fn conv(&self) -> &str {
+        &self.conv
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     pub fn participants(&self) -> Vec<String> {
@@ -118,21 +188,50 @@ impl SfuRoom {
             .count()
     }
 
-    /// 加入：收 offer，回 answer。
+    /// 鉴权与准入：token → user_id，并校验房间成员关系。
+    ///
+    /// 非成员与不存在的房间走同一个错误，外部无法区分"房间存在但我不在"。
+    fn authorize_join(&self, token: &str) -> Result<String, SfuJoinError> {
+        let user = self
+            .platform
+            .lookup_token(token)
+            .map_err(|e| SfuJoinError::Internal(format!("session lookup failed: {e}")))?
+            .ok_or(SfuJoinError::Unauthorized)?;
+        match self.platform.conv_member_allowed(&self.conv, &user) {
+            Ok(true) => Ok(user),
+            Ok(false) | Err(PlatformError::NotFound) | Err(PlatformError::BadInput(_)) => {
+                Err(SfuJoinError::NotFound)
+            }
+            Err(e) => Err(SfuJoinError::Internal(format!(
+                "membership lookup failed: {e}"
+            ))),
+        }
+    }
+
+    /// 加入：先鉴权与校验，再收 offer、回 answer。
+    ///
+    /// 参与者 id 一律取平台会话解析出的 user_id；客户端自报的 id 不进这个函数。
     pub fn join(
         &mut self,
-        peer: &str,
+        token: &str,
         offer: serde_json::Value,
         video: bool,
-    ) -> anyhow::Result<JoinReply> {
-        // 同一 id 重复加入：先踢掉旧的，避免一个用户占两个端口
-        self.leave(peer);
+    ) -> Result<JoinReply, SfuJoinError> {
+        let user = self.authorize_join(token)?;
+
+        // 重名 = 拒绝，不再 leave 旧会话：否则知道对方 id 就能把人踢下线。
+        if self.participants.contains_key(&user) {
+            return Err(SfuJoinError::PeerConflict);
+        }
+        if self.participants.len() >= self.capacity {
+            return Err(SfuJoinError::Full);
+        }
 
         let socket = self.bind_socket()?;
         socket
             .set_nonblocking(true)
             .context("SFU socket 设为非阻塞失败")?;
-        let local = socket.local_addr()?;
+        let local = socket.local_addr().context("SFU socket 取本地地址失败")?;
         let advertised = SocketAddr::new(self.advertise, local.port());
 
         // answerer 一侧：候选必须先注入，answer 里才有 candidate 行
@@ -143,7 +242,7 @@ impl SfuRoom {
             .context("SFU 无法接受该 offer（SDP 解析或编解码协商失败）")?;
 
         self.participants.insert(
-            peer.to_string(),
+            user,
             Participant {
                 session,
                 socket,
@@ -157,8 +256,9 @@ impl SfuRoom {
         })
     }
 
-    pub fn leave(&mut self, peer: &str) {
-        self.participants.remove(peer);
+    /// 移除参与者。`user` 是服务端绑定的账号 id（与 `join` 的解析结果同一来源）。
+    pub fn leave(&mut self, user: &str) {
+        self.participants.remove(user);
     }
 
     /// 一轮：收包 → 喂会话 → 泵 → 把媒体转发给其他所有人 → 发出去。

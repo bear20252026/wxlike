@@ -6,9 +6,12 @@ license.workspace = true
 
 [dependencies]
 wxlike-rtc = { path = "../rtc" }
+# join 的 Bearer → user 与房间成员校验走平台既有 pub API（#58）
+wxlike-platform = { path = "../platform" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 # 与 rtc 同版本同特性，避免编两份 str0m
 str0m = { version = "0.9", default-features = false, features = ["sha1"] }
 

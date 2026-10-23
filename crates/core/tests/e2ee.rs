@@ -609,6 +609,104 @@ fn snapshot_with_unknown_version_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
+// T-A2 (#48): 口令派生快照 WXSC2
+// ---------------------------------------------------------------------------
+
+const PASSPHRASE: &str = "correct horse battery staple";
+
+/// 正确口令跨进程恢复：身份不变、棘轮接着走，而不是重新握手。
+#[test]
+fn passphrase_snapshot_restores_the_whole_ratchet() {
+    let (mut alice, mut bob) = pair();
+    let bob_bundle = bob.bundle("bob");
+    let fingerprint = alice.device().identity_fingerprint();
+
+    let first = alice
+        .encrypt_dm("bob", &bob_bundle, b"before lock")
+        .unwrap();
+    assert_eq!(bob.decrypt_dm("alice", &first).unwrap(), b"before lock");
+    let ack = bob
+        .encrypt_dm("alice", &alice.bundle("alice"), b"ack")
+        .unwrap();
+    assert_eq!(alice.decrypt_dm("bob", &ack).unwrap(), b"ack");
+
+    let blob = alice.seal_with_passphrase(PASSPHRASE).unwrap();
+    assert_eq!(&blob[..5], b"WXSC2", "落盘魔数必须是新格式");
+    drop(alice);
+
+    let mut alice = Crypto::open_with_passphrase(PASSPHRASE, &blob).unwrap();
+    assert_eq!(
+        alice.device().identity_fingerprint(),
+        fingerprint,
+        "解锁后必须还是同一个身份（否则对方的安全码会变）"
+    );
+    assert!(alice.has_session_with("bob"));
+    let after = alice.encrypt_dm_existing("bob", b"after unlock").unwrap();
+    assert!(!after.pre_key, "棘轮应跨解锁继续，而不是重新握手");
+    assert_eq!(bob.decrypt_dm("alice", &after).unwrap(), b"after unlock");
+}
+
+#[test]
+fn device_passphrase_snapshot_keeps_the_identity_and_prekeys() {
+    let device = Device::new();
+    let fingerprint = device.identity_fingerprint();
+    let prekeys = device.one_time_key_count();
+    let blob = device.seal_with_passphrase(PASSPHRASE).unwrap();
+    assert_eq!(&blob[..5], b"WXSC2");
+
+    let restored = Device::open_with_passphrase(PASSPHRASE, &blob).unwrap();
+    assert_eq!(restored.identity_fingerprint(), fingerprint);
+    assert_eq!(restored.one_time_key_count(), prekeys);
+}
+
+/// 口令错必须与"文件坏了"分开报：D 线 UI 要给出不同提示。
+#[test]
+fn wrong_passphrase_is_reported_separately_from_corruption() {
+    let (alice, _) = pair();
+    let blob = alice.seal_with_passphrase(PASSPHRASE).unwrap();
+    match Crypto::open_with_passphrase("not the passphrase", &blob) {
+        Err(CryptoError::WrongPassphrase) => {}
+        other => panic!("错误口令必须报 WrongPassphrase：{:?}", other.err()),
+    }
+}
+
+#[test]
+fn tampered_ciphertext_is_reported_as_corruption() {
+    let (alice, _) = pair();
+    let mut blob = alice.seal_with_passphrase(PASSPHRASE).unwrap();
+    let last = blob.len() - 1;
+    blob[last] ^= 0x01;
+    match Crypto::open_with_passphrase(PASSPHRASE, &blob) {
+        Err(CryptoError::CorruptedSnapshot(msg)) => {
+            assert!(msg.contains("authentication"), "{msg}")
+        }
+        other => panic!("篡改密文必须报 CorruptedSnapshot：{:?}", other.err()),
+    }
+}
+
+/// 旧 WXSC1（裸设备密钥时代）明确拒绝，不做静默迁移。
+#[test]
+fn legacy_wxsc1_blob_is_explicitly_refused() {
+    let mut blob = Vec::from(*b"WXSC1");
+    blob.extend_from_slice(&[0u8; 24 + 16]);
+    match Crypto::open_with_passphrase(PASSPHRASE, &blob) {
+        Err(CryptoError::CorruptedSnapshot(msg)) => assert!(msg.contains("WXSC1"), "{msg}"),
+        other => panic!("旧 WXSC1 必须明确拒绝：{:?}", other.err()),
+    }
+}
+
+/// 没有 WXSC2 外壳的明文快照（旧 JSON）不能被当成本格式解开。
+#[test]
+fn unwrapped_json_snapshot_is_refused() {
+    let (alice, _) = pair();
+    let plain = alice.snapshot().unwrap();
+    match Crypto::open_with_passphrase(PASSPHRASE, &plain) {
+        Err(CryptoError::CorruptedSnapshot(_)) => {}
+        other => panic!("没有 WXSC2 头的快照必须拒绝：{:?}", other.err()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AR-1 (audit round 4, C-1): the key directory is zero-trust — a bundle is
 // only as good as its signature. Every tamper below must fail closed.
 // ---------------------------------------------------------------------------
