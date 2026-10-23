@@ -961,20 +961,31 @@ async fn handle_inbound(
             && !matches!(env.body, wxlike_core::MsgBody::Notice(_))
         {
             // P4 发送闸门（风控 + 内容审核）：先看"这个人此刻能不能发、
-            // 这条内容能不能投"，再做关系裁决。挂起/拒绝的帧一律丢弃——
-            // 与拉黑同一处理哲学：不落库、不暂存、不扇出。
+            // 这条内容能不能投"，再做关系裁决。Throttle/Reject 与超上限的
+            // Sleep 一律丢弃——与拉黑同一处理哲学：不落库、不暂存、不扇出。
             let text = match &env.body {
                 wxlike_core::MsgBody::Text(t) => t.as_str(),
                 _ => "",
             };
+            let limiter = policy.rate_limiter_name();
             match policy.send_gate(&env.sender, &env.conv_id, text).await {
                 crate::SendGate::Allow => {}
+                // Synapse `should_sleep` 同型：先退避再继续投递。上限存在的
+                // 理由是无上限 sleep 会把连接读循环交给策略方任意挂起。
+                crate::SendGate::Sleep { delay_ms }
+                    if delay_ms <= crate::MAX_SEND_GATE_SLEEP_MS =>
+                {
+                    state.metrics.rate_limit_sleep(limiter);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
                 other => {
+                    state.metrics.rate_limit_reject(limiter);
                     tracing::info!(
                         hub = %state.hub_id,
                         from = %env.sender,
                         conv = %env.conv_id,
                         gate = ?other,
+                        limiter,
                         "send gate dropped frame"
                     );
                     return Ok(());
