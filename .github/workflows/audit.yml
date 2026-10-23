@@ -3,9 +3,10 @@ name: audit
 # T-F1（#61 L-3）：cargo audit 单独成 workflow，**周跑 + PR 跑，失败阻断**。
 #
 # 为什么不塞进 ci.yml：周跑要在 schedule 触发，而 ci.yml 的 schedule 会把
-# 9 个 job（含 Android 出包）在每周一全部重跑一遍。这里只跑安全公告检查，
+# 全部 12 个 job（含 Android 出包）在每周一重跑一遍。这里只跑安全公告检查，
 # 与 ci.yml 的 cargo deny（licenses/advisories/bans/sources）互补：
 # deny 管许可与依赖来源，audit 只盯 RustSec 公告，输出更好读。
+# 已知豁免（只有可选 nats 后端的 5 条 rustls-webpki 公告）见 .cargo/audit.toml。
 
 on:
   pull_request:
