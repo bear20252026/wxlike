@@ -19,7 +19,7 @@
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, Method, Request};
+use axum::http::{Method, Request};
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 
@@ -83,9 +83,10 @@ pub async fn gate(
     response
 }
 
-/// 供测试与文档核对映射表：路径归属必须与 `routes()` 的注册保持一致，
+/// 供测试核对映射表：路径归属必须与 `routes()` 的注册保持一致，
 /// 漂移等于静默失去闸门。
-pub fn mapped_actions() -> &'static [(&'static str, &'static str, &'static str)] {
+#[cfg(test)]
+fn mapped_actions() -> &'static [(&'static str, &'static str, &'static str)] {
     &[
         ("POST", "/api/friends/requests", "friend_request"),
         ("POST", "/api/media", "media_upload"),
@@ -142,7 +143,7 @@ mod tests {
             let got = action_for(&m, &concrete).map(|a| a.as_str().to_string());
             assert_eq!(
                 got.as_deref(),
-                Some(action),
+                Some(*action),
                 "{method} {path} declared {action} but maps to {got:?}"
             );
         }

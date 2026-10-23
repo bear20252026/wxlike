@@ -669,18 +669,18 @@ impl Crypto {
         }
     }
 
-/// M-5（第四轮审计）：按**链进度距离**选驱逐对象。单个棘轮键下，字典序
-/// 恰好等于 idx 序，`pop_last` 碰巧正确；棘轮轮换后各键是不相关的 base64，
-/// 字典序与进度无关——可能把"距可投递只差 1"的消息挤掉而留下没救的。
-fn evict_furthest_ahead(
-    parked: &BTreeMap<(String, u64), Sealed>,
-    chain_pos: &HashMap<String, u64>,
-) -> Option<(String, u64)> {
-    parked
-        .keys()
-        .max_by_key(|(rk, idx)| idx.saturating_sub(chain_pos.get(rk).copied().unwrap_or(0)))
-        .cloned()
-}
+    /// M-5（第四轮审计）：按**链进度距离**选驱逐对象。单个棘轮键下，字典序
+    /// 恰好等于 idx 序，`pop_last` 碰巧正确；棘轮轮换后各键是不相关的 base64，
+    /// 字典序与进度无关——可能把"距可投递只差 1"的消息挤掉而留下没救的。
+    fn evict_furthest_ahead(
+        parked: &BTreeMap<(String, u64), Sealed>,
+        chain_pos: &HashMap<String, u64>,
+    ) -> Option<(String, u64)> {
+        parked
+            .keys()
+            .max_by_key(|(rk, idx)| idx.saturating_sub(chain_pos.get(rk).copied().unwrap_or(0)))
+            .cloned()
+    }
 
     fn park(&mut self, peer_user_id: &str, rk: String, idx: u64, body: String) {
         let Some(state) = self.dm.get_mut(peer_user_id) else {
@@ -1023,7 +1023,10 @@ mod audit_round4 {
             Crypto::evict_furthest_ahead(&one, &HashMap::new()),
             Some(("k".to_string(), 7))
         );
-        assert_eq!(Crypto::evict_furthest_ahead(&BTreeMap::new(), &HashMap::new()), None);
+        assert_eq!(
+            Crypto::evict_furthest_ahead(&BTreeMap::new(), &HashMap::new()),
+            None
+        );
     }
 
     /// M-6：群水位表有上限，长驻进程内存收敛。
@@ -1032,7 +1035,11 @@ mod audit_round4 {
         let mut crypto = Crypto::new(Device::new());
         for i in 0..(GROUP_SEEN_CAP + 64) {
             crypto.mark_group_seen(
-                (format!("g{}", i % 3), format!("sender{}", i), format!("sess{}", i)),
+                (
+                    format!("g{}", i % 3),
+                    format!("sender{}", i),
+                    format!("sess{}", i),
+                ),
                 1,
             );
         }

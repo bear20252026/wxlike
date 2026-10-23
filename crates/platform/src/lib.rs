@@ -37,10 +37,10 @@ mod notification;
 pub mod perms;
 mod read;
 mod reconcile;
-mod risk_mw;
 mod recovery;
 mod relations;
 mod report;
+mod risk_mw;
 mod secret;
 mod security;
 mod sessions;
@@ -491,10 +491,7 @@ impl Platform {
             ))
             // AR-5（#29）：写接口风控的声明式闸门，挂在最外层——
             // handler 不再各自记得调 risk_gate（见 risk_mw）
-            .layer(axum::middleware::from_fn_with_state(
-                state,
-                risk_mw::gate,
-            ))
+            .layer(axum::middleware::from_fn_with_state(state, risk_mw::gate))
     }
 
     /// P3 审计日志（不变式 7）：独立审计表，只写面。检索/留存策略归

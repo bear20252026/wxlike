@@ -12,13 +12,6 @@ use axum::Router;
 
 use common::{app, call, platform, req, signup};
 
-/// AR-2/H-4：认领预密钥现在要求已有关系（好友/同群/本人）。
-async fn whoami(app: &Router, token: &str) -> String {
-    let (status, body) = call(app, req("GET", "/api/me", None, Some(token))).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    body["user_id"].as_str().unwrap().to_string()
-}
-
 /// 用真实 HTTP 流程把 a、b 变成好友。
 async fn befriend(app: &Router, a_token: &str, b_token: &str, b_id: &str) {
     let (status, body) = call(

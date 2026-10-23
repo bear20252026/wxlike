@@ -624,8 +624,8 @@ fn assert_unverified(err: wxlike_core::e2ee::Result<Sealed>, what: &str) {
 /// identity key for its own must not be able to open a session.
 #[test]
 fn swapped_identity_key_is_rejected() {
-    let (mut alice, mut bob) = pair();
-    let (mut mallory, _) = pair();
+    let (mut alice, bob) = pair();
+    let (mallory, _) = pair();
     let mut bundle = bob.bundle("bob");
     // mallory's identity is a *valid* curve point — shape checks pass; only
     // the signature over (user_id, identity) exposes the swap.
@@ -640,7 +640,7 @@ fn swapped_identity_key_is_rejected() {
 /// trust-the-server.
 #[test]
 fn unsigned_bundle_is_rejected() {
-    let (mut alice, mut bob) = pair();
+    let (mut alice, bob) = pair();
     let mut bundle = bob.bundle("bob");
     bundle.signature.clear();
     assert_unverified(alice.encrypt_dm("bob", &bundle, b"hi"), "unsigned bundle");
@@ -650,8 +650,8 @@ fn unsigned_bundle_is_rejected() {
 /// else's identity breaks the per-key signature.
 #[test]
 fn spliced_one_time_key_is_rejected() {
-    let (mut alice, mut bob) = pair();
-    let (mut mallory, _) = pair();
+    let (mut alice, bob) = pair();
+    let (mallory, _) = pair();
     let mut bundle = bob.bundle("bob");
     let mallory_otk = mallory.bundle("mallory").one_time_keys.remove(0);
     bundle.one_time_keys[0] = mallory_otk;
@@ -664,7 +664,7 @@ fn spliced_one_time_key_is_rejected() {
 /// Dropping the parallel signature array (length mismatch) fails closed too.
 #[test]
 fn signature_length_mismatch_is_rejected() {
-    let (mut alice, mut bob) = pair();
+    let (mut alice, bob) = pair();
     let mut bundle = bob.bundle("bob");
     bundle.one_time_key_signatures.clear();
     assert_unverified(

@@ -45,7 +45,10 @@ async fn friend_request_bombing_hits_the_gate() {
         );
         processed += 1;
     }
-    assert!(saw_throttle, "bombing must hit the gate (processed {processed})");
+    assert!(
+        saw_throttle,
+        "bombing must hit the gate (processed {processed})"
+    );
 }
 
 #[tokio::test]

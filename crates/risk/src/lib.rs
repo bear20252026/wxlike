@@ -62,9 +62,7 @@ impl Action {
     /// 窗口长度：注册 1 h、登录 15 min、发送 10 s、举报 1 h。
     fn window_ms(&self) -> u64 {
         match self {
-            Self::Register | Self::Report | Self::ClaimKeys | Self::FriendRequest => {
-                60 * 60 * 1000
-            }
+            Self::Register | Self::Report | Self::ClaimKeys | Self::FriendRequest => 60 * 60 * 1000,
             Self::Login => 15 * 60 * 1000,
             Self::Send => 10 * 1000,
             // 上传/发动态是重操作，10 秒窗口太短（一次九宫格就 9 条），给 10 分钟
