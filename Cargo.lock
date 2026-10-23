@@ -6635,6 +6635,8 @@ dependencies = [
  "serde",
  "serde_json",
  "str0m",
+ "thiserror 2.0.21",
+ "wxlike-platform",
  "wxlike-rtc",
 ]
 
