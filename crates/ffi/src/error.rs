@@ -98,6 +98,7 @@ const NETWORK_MARKERS: &[&str] = &[
     "broken pipe",
     "network unreachable",
     "network is unreachable",
+    "connection aborted",
     // ureq 2.12 换了错误文案：顶层是 "Network Error: …"，读到一半断了会是
     // "Error encountered in the status line"。两条都是传输层，跟本地语言环境无关。
     "network error",

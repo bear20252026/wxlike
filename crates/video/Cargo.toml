@@ -24,7 +24,7 @@ hmac = "0.12"
 # E1 补 session_id 用（形状照搬 platform 的 random_hex）
 rand = { workspace = true }
 # E3 出站回调（与 crates/client 同一个 ureq 大版本，阻塞 IO 跑 spawn_blocking）
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

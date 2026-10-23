@@ -46,6 +46,9 @@ const DEFAULT_SEGMENT_SECONDS: u32 = 4;
 /// 单片推送重试次数（不含首次）。直播对延迟敏感，重试太多不如丢一片继续跑。
 const PUSH_ATTEMPTS: u32 = 3;
 /// 重试间隔基数（毫秒），线性递增。
+/// 单次推送超时（秒）。
+const PUSH_TIMEOUT_SECS: u64 = 15;
+
 const PUSH_RETRY_MS: u64 = 250;
 /// 轮询分片文件的间隔。
 const POLL_MS: u64 = 120;
@@ -292,23 +295,28 @@ impl Packager {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(PUSH_RETRY_MS * u64::from(attempt)));
             }
+            // ureq 3：`set` → `header`，`response.status()` 是 `http::StatusCode`，
+            // 比较用 `as_u16()`。超时在下面的 agent 上设。
             let mut request = match method {
                 "PUT" => ureq::put(&url),
                 "POST" => ureq::post(&url),
                 other => anyhow::bail!("internal: {other}"),
             };
             request = request
-                .timeout(Duration::from_secs(15))
-                .set(LIVE_TOKEN_HEADER, &self.token)
-                .set("content-type", "video/mp2t");
+                .config()
+                .timeout_global(Some(Duration::from_secs(PUSH_TIMEOUT_SECS)))
+                .build();
+            let mut request = request
+                .header(LIVE_TOKEN_HEADER, &self.token)
+                .header("content-type", "video/mp2t");
             if let Some(ms) = duration_ms {
-                request = request.set(LIVE_SEGMENT_MS_HEADER, &ms.to_string());
+                request = request.header(LIVE_SEGMENT_MS_HEADER, ms.to_string());
             }
             // send(&[u8])：TS 是二进制，走字符串会被按 UTF-8 改写而损坏
             match request.send(body) {
-                Ok(response) if (200..300).contains(&response.status()) => return Ok(()),
+                Ok(response) if response.status().is_success() => return Ok(()),
                 Ok(response) => {
-                    let code = response.status();
+                    let code = response.status().as_u16();
                     last_err = Some(anyhow::anyhow!("服务端回了 {code}"));
                     // 4xx 是配置/凭据问题，重试不会变好——一次就退
                     if (400..500).contains(&code) {

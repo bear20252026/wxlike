@@ -286,33 +286,64 @@ pub async fn http_platform(
     let command = command.map(|s| s.to_string());
     let admin_token = admin_token.map(|s| s.to_string());
     tokio::task::spawn_blocking(move || {
-        let mut req = match method.as_str() {
-            "GET" => ureq::get(&url),
-            "POST" => ureq::post(&url),
-            "PUT" => ureq::put(&url),
-            other => panic!("测试脚手架不支持 {other}"),
+        // ureq 3：typestate 把"带 body"与"不带 body"分成两个类型，所以按方法
+        // 分别构造；4xx/5xx 不再是错误，状态码直接从响应上取。
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(15)))
+            .http_status_as_error(false)
+            .build()
+            .into();
+        // 公共头：GET 也要带（管理面的读接口同样要鉴权）。
+        //
+        // 必须是**泛型函数**而不是闭包：闭包的参数类型会被第一个调用点定死
+        // （推断成 WithoutBody），POST 那条就过不去了。
+        fn with_headers<B>(
+            req: ureq::RequestBuilder<B>,
+            bearer_token: &Option<String>,
+            command: &Option<String>,
+            admin_token: &Option<String>,
+        ) -> ureq::RequestBuilder<B> {
+            let req = match bearer_token {
+                Some(t) => req.header("authorization", format!("Bearer {t}")),
+                None => req,
+            };
+            let req = match command {
+                Some(c) => req.header("x-wxlike-command", c),
+                None => req,
+            };
+            match admin_token {
+                Some(a) => req.header("x-admin-token", a),
+                None => req,
+            }
         }
-        .timeout(std::time::Duration::from_secs(15));
-        if let Some(t) = &bearer_token {
-            req = req.set("authorization", &format!("Bearer {t}"));
-        }
-        if let Some(c) = &command {
-            req = req.set("x-wxlike-command", c);
-        }
-        if let Some(a) = &admin_token {
-            req = req.set("x-admin-token", a);
-        }
-        let sent = match body {
-            Some(v) => req.send_json(v),
-            None => req.call(),
+        let sent = match (method.as_str(), body) {
+            ("GET", _) => {
+                with_headers(agent.get(&url), &bearer_token, &command, &admin_token).call()
+            }
+            ("DELETE", _) => {
+                with_headers(agent.delete(&url), &bearer_token, &command, &admin_token).call()
+            }
+            ("POST", Some(v)) => {
+                with_headers(agent.post(&url), &bearer_token, &command, &admin_token).send_json(v)
+            }
+            ("POST", None) => {
+                with_headers(agent.post(&url), &bearer_token, &command, &admin_token).send_empty()
+            }
+            ("PUT", Some(v)) => {
+                with_headers(agent.put(&url), &bearer_token, &command, &admin_token).send_json(v)
+            }
+            ("PUT", None) => {
+                with_headers(agent.put(&url), &bearer_token, &command, &admin_token).send_empty()
+            }
+            (other, _) => panic!("测试脚手架不支持 {other}"),
         };
         match sent {
-            Ok(resp) => {
-                let status = resp.status();
-                (status, resp.into_json::<Value>().unwrap_or(Value::Null))
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                (status, resp.into_json::<Value>().unwrap_or(Value::Null))
+            Ok(mut resp) => {
+                let status = resp.status().as_u16();
+                (
+                    status,
+                    resp.body_mut().read_json::<Value>().unwrap_or(Value::Null),
+                )
             }
             Err(err) => (0, json!({"error": err.to_string()})),
         }

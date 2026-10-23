@@ -28,7 +28,8 @@ fn register(base: &str, name: &str) -> String {
     let reply: Value = ureq::post(&format!("{base}/api/register"))
         .send_json(serde_json::json!({"name": name, "password": "pw"}))
         .expect("register")
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     // 诊断要的是**凭据**：hub 的 hello 只认 token（issue #3）
     reply["token"].as_str().expect("token").to_string()

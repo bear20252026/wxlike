@@ -13,42 +13,176 @@ pub mod execute;
 use std::io::{Read as _, Write as _};
 
 /// 平台 HTTP 客户端：base URL + bearer token。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Http {
     pub base: String,
     pub token: Option<String>,
     /// 当前请求代表哪条命令（`msg.send` 之类）。有值时随请求发出，
     /// 服务端据此落审计——**命令 id 是调用方的语义，服务端猜不出来**。
     pub command: Option<String>,
+    /// 共享 agent：连接池 + 全局超时都在这。
+    ///
+    /// ureq 3 把"超时""4xx 算不算错误"这类设置从请求上挪到了 agent/请求级
+    /// config 上；顺带白拿一个连接池（2.x 的 `ureq::get()` 每次新建）。
+    agent: ureq::Agent,
+}
+
+/// 单次请求超时（秒）。与旧版一致：10 秒，移动端 FFI 靠它兜底。
+const REQUEST_TIMEOUT_SECS: u64 = 10;
+
+/// 响应的 content-type；缺省按八位组流算。
+///
+/// 3.x 的 `Response` 是 `http::Response<Body>`，没有 2.x 的 `content_type()`
+/// 便捷方法。客户端与桌面端都要取这个值，所以收成一处。
+pub fn content_type_of(resp: &http::Response<ureq::Body>) -> String {
+    resp.headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string()
+}
+
+/// 4xx/5xx → 人话。**保留 2.x 的分类语义**（issue #22 的验收项）。
+///
+/// 3.x 把"HTTP 状态码也是错误"关掉了（`http_status_as_error(false)`），于是
+/// 调用方自己看 status：4xx 带服务端的 `error` 字段（用户要知道为什么），
+/// 5xx 只说"服务端出错"（细节是服务端的事，别泄给界面）。
+///
+/// 做成模块级函数而不是 `Http` 的方法：桌面端（`ui/src-tauri`）也要用同一套
+/// 文案，那边不经过 `Http` 的封装。
+pub fn upload_status_error(mut resp: http::Response<ureq::Body>) -> String {
+    let status = resp.status();
+    let body = resp.body_mut().read_to_string().unwrap_or_default();
+    if status.is_client_error() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(message) = value.get("error").and_then(|v| v.as_str()) {
+                return format!("{message} ({status})");
+            }
+        }
+        return format!("HTTP {status}: {}", body.trim());
+    }
+    format!("server error ({status})")
+}
+
+/// ureq 3 的错误 Display **直接透出操作系统文案**（Windows 上是
+/// "由于目标计算机积极拒绝，无法连接"），而 `crates/ffi` 的分类器靠稳定的
+/// 英文特征串判断"这是传输层失败还是业务失败"。
+///
+/// 所以这里按**变体**翻译，不让本地语言环境渗进协议层：
+/// 出来的文案沿用 2.x 的形状（`Connection Failed: Connect error: …`），
+/// `NETWORK_MARKERS` 一条都不用改。
+fn transport_text(err: &ureq::Error) -> String {
+    match err {
+        ureq::Error::Timeout(_) => "Connection Failed: Connect error: timed out".to_string(),
+        ureq::Error::HostNotFound => "Connection Failed: DNS failed".to_string(),
+        ureq::Error::ConnectionFailed => "Connection Failed: connection failed".to_string(),
+        ureq::Error::Io(io) => format!(
+            "Connection Failed: Connect error: {} (os error {})",
+            io_kind_text(io.kind()),
+            io.raw_os_error().unwrap_or_default()
+        ),
+        ureq::Error::StatusCode(code) => format!("HTTP {code}"),
+        other => format!("Connection Failed: {other}"),
+    }
+}
+
+/// `io::ErrorKind` → 稳定英文（`ErrorKind::as_str` 不稳定，自己列）。
+fn io_kind_text(kind: std::io::ErrorKind) -> &'static str {
+    use std::io::ErrorKind as K;
+    match kind {
+        K::ConnectionRefused => "connection refused",
+        K::ConnectionReset => "connection reset",
+        K::ConnectionAborted => "connection aborted",
+        K::NotConnected => "not connected",
+        K::AddrInUse | K::AddrNotAvailable => "address unavailable",
+        K::BrokenPipe => "broken pipe",
+        K::AlreadyExists | K::NotFound | K::PermissionDenied => "io error",
+        K::TimedOut => "timed out",
+        K::Interrupted => "interrupted",
+        K::UnexpectedEof => "connection closed",
+        K::NetworkUnreachable | K::HostUnreachable => "network unreachable",
+        _ => "io error",
+    }
 }
 
 impl Http {
     pub fn new(base: impl Into<String>) -> Self {
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+            // 4xx/5xx **不是**错误：调用方要按 status 分流（有些端点靠 404/409
+            // 表达业务结果），还要读服务端的 `error` 字段给用户看原因。
+            .http_status_as_error(false)
+            .build();
         Self {
             base: base.into(),
             token: None,
             command: None,
+            agent: config.into(),
         }
     }
 
-    pub fn req(&self, method: &str, path: &str) -> ureq::Request {
-        let url = format!("{}{}", self.base.trim_end_matches('/'), path);
-        let req = match method {
-            "GET" => ureq::get(&url),
-            "POST" => ureq::post(&url),
-            "PUT" => ureq::put(&url),
-            "DELETE" => ureq::delete(&url),
-            other => unreachable!("ui only uses GET/POST/PUT/DELETE, got {other}"),
-        };
-        let req = req.timeout(std::time::Duration::from_secs(10));
+    /// URL 拼接 + 公共头（命令 id、bearer token）。
+    ///
+    /// ureq 3 按"带不带 body"把 builder 分成两个类型（typestate），
+    /// `GET` 与 `POST` 不再是同一个类型——所以读请求和写请求分成两个入口，
+    /// 见 [`Self::req`] 与 [`Self::req_write`]。公共头两边都要加，
+    /// 所以抽成这个泛型函数。
+    fn prepare<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
         let req = match &self.command {
-            Some(id) => req.set("X-Wxlike-Command", id),
+            Some(id) => req.header("X-Wxlike-Command", id),
             None => req,
         };
         match &self.token {
-            Some(token) => req.set("Authorization", &format!("Bearer {token}")),
+            Some(token) => req.header("Authorization", &format!("Bearer {token}")),
             None => req,
         }
+    }
+
+    /// 读请求（GET / DELETE）：没有 body，直接 `.call()`。
+    pub fn req(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        let url = format!("{}{}", self.base.trim_end_matches('/'), path);
+        let req = match method {
+            "GET" => self.agent.get(&url),
+            "DELETE" => self.agent.delete(&url),
+            other => unreachable!("req() is for GET/DELETE, got {other}; use req_write()"),
+        };
+        self.prepare(req)
+    }
+
+    /// 写请求（POST / PUT）：带 body，用 `.send()` / `.send_json()`。
+    pub fn req_write(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+        let url = format!("{}{}", self.base.trim_end_matches('/'), path);
+        let req = match method {
+            "POST" => self.agent.post(&url),
+            "PUT" => self.agent.put(&url),
+            other => unreachable!("req_write() is for POST/PUT, got {other}"),
+        };
+        self.prepare(req)
+    }
+
+    /// 4xx/5xx → 人话。**保留 2.x 的分类语义**（issue #22 的验收项）。
+    ///
+    /// 3.x 把"HTTP 状态码也是错误"关掉了（`http_status_as_error(false)`），
+    /// 于是这里自己看 status：4xx 带服务端的 `error` 字段（用户要知道为什么），
+    /// 5xx 只说"服务端出错"（细节是服务端的事，别泄给界面）。
+    fn status_error(resp: http::Response<ureq::Body>) -> String {
+        upload_status_error(resp)
+    }
+
+    /// 发出去的请求统一走这一层：非 2xx → 带原因的错误。
+    fn ok(resp: http::Response<ureq::Body>) -> Result<(), String> {
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        Err(Self::status_error(resp))
     }
 
     /// JSON request -> (status, parsed body). Errors carry the server's
@@ -59,25 +193,30 @@ impl Http {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(u16, serde_json::Value), String> {
-        let resp = match body {
-            Some(v) => self.req(method, path).send_json(v.clone()),
-            None => self.req(method, path).call(),
-        };
-        match resp {
-            Ok(resp) => {
-                let status = resp.status();
-                let value = resp
-                    .into_json::<serde_json::Value>()
-                    .map_err(|e| format!("decode {path}: {e}"))?;
-                Ok((status, value))
+        // 写方法**即使没有 body** 也要走 req_write：`send_empty()` 才是
+        // "POST/PUT 带一个空体"的正确形状。走 req() 会踩 typestate 的
+        // unreachable（GET/DELETE 才是无体请求）。
+        let resp = match (method, body) {
+            ("GET" | "DELETE", None) => self.req(method, path).call(),
+            ("GET" | "DELETE", Some(_)) => {
+                return Err(format!("{method} {path}: 读方法不该有 body"))
             }
-            Err(ureq::Error::Status(status, resp)) => {
+            (_, Some(v)) => self.req_write(method, path).send_json(v),
+            (_, None) => self.req_write(method, path).send_empty(),
+        };
+        // 3.x 关掉了"状态码即错误"：4xx/5xx 也是 Ok。**调用方仍然要能按 status
+        // 分流**（有些端点就是靠 404/409 表达业务结果），所以这里照旧返回 status，
+        // 只是错误体不再由 ureq 替我们吞掉。
+        match resp {
+            Ok(mut resp) => {
+                let status = resp.status().as_u16();
                 let value = resp
-                    .into_json::<serde_json::Value>()
+                    .body_mut()
+                    .read_json::<serde_json::Value>()
                     .unwrap_or(serde_json::json!({"error": format!("HTTP {status}")}));
                 Ok((status, value))
             }
-            Err(err) => Err(format!("{method} {path}: {err}")),
+            Err(err) => Err(format!("{method} {path}: {}", transport_text(&err))),
         }
     }
 
@@ -105,18 +244,18 @@ impl Http {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(), String> {
-        let resp = match body {
-            Some(v) => self.req(method, path).send_json(v.clone()),
-            None => self.req(method, path).call(),
+        // 同 `json()`：写方法无 body 也要走 `send_empty()`，`req()` 只收 GET/DELETE。
+        let resp = match (method, body) {
+            ("GET" | "DELETE", None) => self.req(method, path).call(),
+            ("GET" | "DELETE", Some(_)) => {
+                return Err(format!("{method} {path}: 读方法不该有 body"))
+            }
+            (_, Some(v)) => self.req_write(method, path).send_json(v),
+            (_, None) => self.req_write(method, path).send_empty(),
         };
         match resp {
-            Ok(resp) if resp.status() < 300 => Ok(()),
-            Ok(resp) => Err(format!("request failed ({})", resp.status())),
-            Err(ureq::Error::Status(status, resp)) => {
-                let msg = resp.into_string().unwrap_or_default();
-                Err(format!("{msg} ({status})"))
-            }
-            Err(err) => Err(format!("{method} {path}: {err}")),
+            Ok(resp) => Self::ok(resp),
+            Err(err) => Err(format!("{method} {path}: {}", transport_text(&err))),
         }
     }
 
@@ -160,21 +299,20 @@ impl Http {
         body.extend_from_slice(bytes);
         let _ = write!(body, "\r\n--{boundary}--\r\n");
 
-        let resp = self
-            .req("POST", "/api/media")
-            .set(
+        let mut resp = self
+            .req_write("POST", "/api/media")
+            .header(
                 "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
+                format!("multipart/form-data; boundary={boundary}"),
             )
-            .send_bytes(&body)
-            .map_err(|e| match e {
-                ureq::Error::Status(status, r) => {
-                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
-                    msg
-                }
-                other => format!("upload: {other}"),
-            })?;
-        resp.into_json::<serde_json::Value>()
+            .send(&body)
+            .map_err(|e| format!("upload: {}", transport_text(&e)))?;
+        // 3.x 的 4xx/5xx 不是错误：自己看 status 并保留服务端的 error 字段
+        if !resp.status().is_success() {
+            return Err(Self::status_error(resp));
+        }
+        resp.body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("upload decode: {e}"))
     }
 
@@ -203,20 +341,19 @@ impl Http {
         body.extend_from_slice(bytes);
         let _ = write!(body, "\r\n--{boundary}--\r\n");
 
-        let resp = self
-            .req("POST", "/api/video/jobs")
-            .set(
+        let mut resp = self
+            .req_write("POST", "/api/video/jobs")
+            .header(
                 "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
+                format!("multipart/form-data; boundary={boundary}"),
             )
-            .send_bytes(&body)
-            .map_err(|e| match e {
-                ureq::Error::Status(status, r) => {
-                    r.into_string().unwrap_or_else(|_| format!("HTTP {status}"))
-                }
-                other => format!("video job submit: {other}"),
-            })?;
-        resp.into_json::<serde_json::Value>()
+            .send(&body)
+            .map_err(|e| format!("video job submit: {}", transport_text(&e)))?;
+        if !resp.status().is_success() {
+            return Err(Self::status_error(resp));
+        }
+        resp.body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("video job decode: {e}"))
     }
 
@@ -226,13 +363,17 @@ impl Http {
         let resp = self
             .req("GET", &format!("/api/media/{media_id}{suffix}"))
             .call()
-            .map_err(|e| match e {
-                ureq::Error::Status(404, _) => "media not found".to_string(),
-                other => format!("download: {other}"),
-            })?;
-        let content_type = resp.content_type().to_string();
+            .map_err(|e| format!("download: {}", transport_text(&e)))?;
+        if resp.status() == http::StatusCode::NOT_FOUND {
+            return Err("media not found".to_string());
+        }
+        if !resp.status().is_success() {
+            return Err(Self::status_error(resp));
+        }
+        let content_type = content_type_of(&resp);
         let mut bytes = Vec::new();
-        resp.into_reader()
+        resp.into_body()
+            .into_reader()
             .read_to_end(&mut bytes)
             .map_err(|e| format!("download read: {e}"))?;
         Ok((bytes, content_type))
@@ -307,18 +448,16 @@ impl Http {
         body: &serde_json::Value,
         key: &str,
     ) -> Result<serde_json::Value, String> {
-        let resp = self
-            .req("POST", path)
-            .set("Idempotency-Key", key)
-            .send_json(body.clone())
-            .map_err(|e| match e {
-                ureq::Error::Status(status, r) => {
-                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
-                    format!("{msg} ({status})")
-                }
-                other => format!("POST {path}: {other}"),
-            })?;
-        resp.into_json::<serde_json::Value>()
+        let mut resp = self
+            .req_write("POST", path)
+            .header("Idempotency-Key", key)
+            .send_json(body)
+            .map_err(|e| format!("POST {path}: {}", transport_text(&e)))?;
+        if !resp.status().is_success() {
+            return Err(Self::status_error(resp));
+        }
+        resp.body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("decode {path}: {e}"))
     }
 

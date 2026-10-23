@@ -45,7 +45,7 @@ nats = ["wxlike-mq/nats", "dep:async-nats"]
 
 [dev-dependencies]
 # integration tests drive the real HTTP surface (ureq matches the UI's client)
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 # P3 ADR-8: the WS-gateway test is a real browser-shaped client
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
