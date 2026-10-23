@@ -33,6 +33,16 @@ pub enum Action {
     Login,
     Send,
     Report,
+    /// AR-2/H-4（第四轮审计）：预密钥认领。一次性密钥库存是有限资源，
+    /// 任何登录用户都能循环认领他人库存 = 廉价资源耗尽 DoS，所以认领
+    /// 也要进闸门（键形如 `caller:target`）。
+    ClaimKeys,
+    /// AR-5（第四轮审计 #29）：写接口中间件闸门的三个动作。此前风控只
+    /// 在登录/注册/举报/认领四处手工调用，好友请求/媒体上传/朋友圈刷写
+    /// 全裸——漏掉是"每个 handler 手工调用"这一模式的结构性必然。
+    FriendRequest,
+    MediaUpload,
+    MomentCreate,
 }
 
 impl Action {
@@ -42,15 +52,21 @@ impl Action {
             Self::Login => "login",
             Self::Send => "send",
             Self::Report => "report",
+            Self::ClaimKeys => "claim_keys",
+            Self::FriendRequest => "friend_request",
+            Self::MediaUpload => "media_upload",
+            Self::MomentCreate => "moment_create",
         }
     }
 
     /// 窗口长度：注册 1 h、登录 15 min、发送 10 s、举报 1 h。
     fn window_ms(&self) -> u64 {
         match self {
-            Self::Register | Self::Report => 60 * 60 * 1000,
+            Self::Register | Self::Report | Self::ClaimKeys | Self::FriendRequest => 60 * 60 * 1000,
             Self::Login => 15 * 60 * 1000,
             Self::Send => 10 * 1000,
+            // 上传/发动态是重操作，10 秒窗口太短（一次九宫格就 9 条），给 10 分钟
+            Self::MediaUpload | Self::MomentCreate => 10 * 60 * 1000,
         }
     }
 }
@@ -103,6 +119,22 @@ pub struct RiskConfig {
     pub report_throttle_at: usize,
     /// 达到此值 → Deny（举报轰炸）。
     pub report_deny_at: usize,
+    /// 同一 (caller, target) 1 h 内认领预密钥达到此值 → Throttle。
+    pub claim_keys_throttle_at: usize,
+    /// 达到此值 → Deny（库存耗尽攻击）。真人远够用：一次会话重建只要一把。
+    pub claim_keys_deny_at: usize,
+    /// 1 h 内好友请求达到此值 → Throttle（AR-5）。
+    pub friend_request_throttle_at: usize,
+    /// 达到此值 → Deny（申请轰炸）。
+    pub friend_request_deny_at: usize,
+    /// 10 min 内媒体上传达到此值 → Throttle（AR-5）。
+    pub media_upload_throttle_at: usize,
+    /// 达到此值 → Deny（上传轰炸）。
+    pub media_upload_deny_at: usize,
+    /// 10 min 内朋友圈发布/点赞/评论达到此值 → Throttle（AR-5）。
+    pub moment_create_throttle_at: usize,
+    /// 达到此值 → Deny（刷屏）。
+    pub moment_create_deny_at: usize,
 }
 
 /// 同来源一小时内注册多少次起要求人机校验。
@@ -111,6 +143,15 @@ pub struct RiskConfig {
 /// 就有人被要求 captcha 是误伤，比脚本注册更常见。deny 在 200。
 const REGISTER_CHALLENGE_AT: usize = 50;
 const REGISTER_DENY_AT: usize = 200;
+
+// AR-2 / AR-5 新增动作的默认阈值。写接口（好友请求 / 朋友圈）共用一档；
+// 媒体上传是重操作，单独放宽。
+const CLAIM_KEYS_THROTTLE_AT: usize = 30;
+const CLAIM_KEYS_DENY_AT: usize = 120;
+const WRITE_THROTTLE_AT: usize = 30;
+const WRITE_DENY_AT: usize = 100;
+const MEDIA_UPLOAD_THROTTLE_AT: usize = 60;
+const MEDIA_UPLOAD_DENY_AT: usize = 200;
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -128,6 +169,77 @@ impl Default for RiskConfig {
             send_deny_at: 60,
             report_throttle_at: 10,
             report_deny_at: 30,
+            claim_keys_throttle_at: CLAIM_KEYS_THROTTLE_AT,
+            claim_keys_deny_at: CLAIM_KEYS_DENY_AT,
+            friend_request_throttle_at: WRITE_THROTTLE_AT,
+            friend_request_deny_at: WRITE_DENY_AT,
+            media_upload_throttle_at: MEDIA_UPLOAD_THROTTLE_AT,
+            media_upload_deny_at: MEDIA_UPLOAD_DENY_AT,
+            moment_create_throttle_at: WRITE_THROTTLE_AT,
+            moment_create_deny_at: WRITE_DENY_AT,
+        }
+    }
+}
+
+/// 单个动作的阈值与裁决形状：captcha 动作给 Challenge，其余给 Throttle。
+struct Limits {
+    throttle_at: usize,
+    deny_at: usize,
+    reason: &'static str,
+    captcha: bool,
+}
+
+impl RiskConfig {
+    fn limits(&self, action: Action) -> Limits {
+        match action {
+            Action::Register => Limits {
+                throttle_at: self.register_challenge_at,
+                deny_at: self.register_deny_at,
+                reason: "register_rate",
+                captcha: true,
+            },
+            Action::Login => Limits {
+                throttle_at: self.login_fail_challenge_at,
+                deny_at: self.login_fail_deny_at,
+                reason: "login_failures",
+                captcha: true,
+            },
+            Action::Send => Limits {
+                throttle_at: self.send_throttle_at,
+                deny_at: self.send_deny_at,
+                reason: "send_rate",
+                captcha: false,
+            },
+            Action::ClaimKeys => Limits {
+                throttle_at: self.claim_keys_throttle_at,
+                deny_at: self.claim_keys_deny_at,
+                reason: "claim_keys_rate",
+                captcha: false,
+            },
+            Action::FriendRequest => Limits {
+                throttle_at: self.friend_request_throttle_at,
+                deny_at: self.friend_request_deny_at,
+                reason: "friend_request_rate",
+                captcha: false,
+            },
+            Action::MediaUpload => Limits {
+                throttle_at: self.media_upload_throttle_at,
+                deny_at: self.media_upload_deny_at,
+                reason: "media_upload_rate",
+                captcha: false,
+            },
+            Action::MomentCreate => Limits {
+                throttle_at: self.moment_create_throttle_at,
+                deny_at: self.moment_create_deny_at,
+                reason: "moment_create_rate",
+                captcha: false,
+            },
+            Action::Report => Limits {
+                throttle_at: self.report_throttle_at,
+                deny_at: self.report_deny_at,
+                reason: "report_rate",
+                captcha: false,
+            },
         }
     }
 }
@@ -209,63 +321,24 @@ impl RiskEngine {
         extra: usize,
     ) -> Verdict {
         let n = events.len() + extra;
-        let retry_after = events
-            .front()
-            .map(|&oldest| window.saturating_sub(now_ms.saturating_sub(oldest)))
-            .unwrap_or(0);
-        match action {
-            Action::Register => {
-                if n >= self.cfg.register_deny_at {
-                    Verdict::Deny {
-                        reason: "register_rate".into(),
-                    }
-                } else if n >= self.cfg.register_challenge_at {
-                    Verdict::Challenge {
-                        reason: "register_rate".into(),
-                    }
-                } else {
-                    Verdict::Allow
+        let retry_after = retry_after_ms(events, now_ms, window);
+        let limits = self.cfg.limits(action);
+        if n >= limits.deny_at {
+            Verdict::Deny {
+                reason: limits.reason.into(),
+            }
+        } else if n >= limits.throttle_at {
+            if limits.captcha {
+                Verdict::Challenge {
+                    reason: limits.reason.into(),
+                }
+            } else {
+                Verdict::Throttle {
+                    retry_after_ms: retry_after,
                 }
             }
-            Action::Login => {
-                if n >= self.cfg.login_fail_deny_at {
-                    Verdict::Deny {
-                        reason: "login_failures".into(),
-                    }
-                } else if n >= self.cfg.login_fail_challenge_at {
-                    Verdict::Challenge {
-                        reason: "login_failures".into(),
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
-            Action::Send => {
-                if n >= self.cfg.send_deny_at {
-                    Verdict::Deny {
-                        reason: "send_rate".into(),
-                    }
-                } else if n >= self.cfg.send_throttle_at {
-                    Verdict::Throttle {
-                        retry_after_ms: retry_after,
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
-            Action::Report => {
-                if n >= self.cfg.report_deny_at {
-                    Verdict::Deny {
-                        reason: "report_rate".into(),
-                    }
-                } else if n >= self.cfg.report_throttle_at {
-                    Verdict::Throttle {
-                        retry_after_ms: retry_after,
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
+        } else {
+            Verdict::Allow
         }
     }
 }
@@ -274,6 +347,13 @@ impl Default for RiskEngine {
     fn default() -> Self {
         Self::with_defaults()
     }
+}
+
+fn retry_after_ms(events: &VecDeque<u64>, now_ms: u64, window_ms: u64) -> u64 {
+    events
+        .front()
+        .map(|&oldest| window_ms.saturating_sub(now_ms.saturating_sub(oldest)))
+        .unwrap_or(0)
 }
 
 fn evict(events: &mut VecDeque<u64>, now_ms: u64, window_ms: u64) {

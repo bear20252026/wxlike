@@ -304,7 +304,11 @@ fn unknown_peer_normal_message_needs_a_pre_key() {
 fn empty_prekey_bundle_is_refused_loudly() {
     let (alice, mut bob) = pair();
     let mut bundle = alice.bundle("alice");
+    // consistent-but-empty (both arrays cleared): the refusal must be the
+    // "no prekey" one; an *inconsistent* empty is UnverifiedBundle (covered
+    // by signature_length_mismatch_is_rejected).
     bundle.one_time_keys.clear();
+    bundle.one_time_key_signatures.clear();
     let err = bob.encrypt_dm("alice", &bundle, b"x");
     assert!(
         matches!(err, Err(CryptoError::NoPreKey)),
@@ -329,6 +333,8 @@ fn prekey_stock_replenishes_when_it_runs_low() {
             identity: full.identity.clone(),
             identity_signing: full.identity_signing.clone(),
             one_time_keys: vec![full.one_time_keys[claimed].clone()],
+            one_time_key_signatures: vec![full.one_time_key_signatures[claimed].clone()],
+            signature: full.signature.clone(),
         };
         let sealed = peer
             .encrypt_dm("alice", &single_key, format!("ping {claimed}").as_bytes())
@@ -359,6 +365,8 @@ fn prekey_stock_replenishes_when_it_runs_low() {
         identity: refilled.identity.clone(),
         identity_signing: refilled.identity_signing.clone(),
         one_time_keys: vec![refilled.one_time_keys[0].clone()],
+        one_time_key_signatures: vec![refilled.one_time_key_signatures[0].clone()],
+        signature: refilled.signature.clone(),
     };
     let sealed = zoe.encrypt_dm("alice", &one, b"after refill").unwrap();
     assert_eq!(alice.decrypt_dm("zoe", &sealed).unwrap(), b"after refill");
@@ -598,4 +606,102 @@ fn snapshot_with_unknown_version_is_refused() {
         other => panic!("必须拒绝未知版本：{:?}", other.err()),
     }
     assert!(Crypto::restore(b"not a snapshot").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// AR-1 (audit round 4, C-1): the key directory is zero-trust — a bundle is
+// only as good as its signature. Every tamper below must fail closed.
+// ---------------------------------------------------------------------------
+
+fn assert_unverified(err: wxlike_core::e2ee::Result<Sealed>, what: &str) {
+    match err {
+        Err(CryptoError::UnverifiedBundle) => {}
+        other => panic!("{what}: expected UnverifiedBundle, got {other:?}"),
+    }
+}
+
+/// The whole point of C-1: a server that swaps the victim's Curve25519
+/// identity key for its own must not be able to open a session.
+#[test]
+fn swapped_identity_key_is_rejected() {
+    let (mut alice, bob) = pair();
+    let (mallory, _) = pair();
+    let mut bundle = bob.bundle("bob");
+    // mallory's identity is a *valid* curve point — shape checks pass; only
+    // the signature over (user_id, identity) exposes the swap.
+    bundle.identity = mallory.bundle("mallory").identity;
+    assert_unverified(
+        alice.encrypt_dm("bob", &bundle, b"hi"),
+        "swapped identity key",
+    );
+}
+
+/// Stripping the signature (legacy/unsigned bundle) must not fall back to
+/// trust-the-server.
+#[test]
+fn unsigned_bundle_is_rejected() {
+    let (mut alice, bob) = pair();
+    let mut bundle = bob.bundle("bob");
+    bundle.signature.clear();
+    assert_unverified(alice.encrypt_dm("bob", &bundle, b"hi"), "unsigned bundle");
+}
+
+/// Splicing a fresh-looking OTK (e.g. the directory's own) onto someone
+/// else's identity breaks the per-key signature.
+#[test]
+fn spliced_one_time_key_is_rejected() {
+    let (mut alice, bob) = pair();
+    let (mallory, _) = pair();
+    let mut bundle = bob.bundle("bob");
+    let mallory_otk = mallory.bundle("mallory").one_time_keys.remove(0);
+    bundle.one_time_keys[0] = mallory_otk;
+    assert_unverified(
+        alice.encrypt_dm("bob", &bundle, b"hi"),
+        "spliced one-time key",
+    );
+}
+
+/// Dropping the parallel signature array (length mismatch) fails closed too.
+#[test]
+fn signature_length_mismatch_is_rejected() {
+    let (mut alice, bob) = pair();
+    let mut bundle = bob.bundle("bob");
+    bundle.one_time_key_signatures.clear();
+    assert_unverified(
+        alice.encrypt_dm("bob", &bundle, b"hi"),
+        "signature array length mismatch",
+    );
+}
+
+/// A claim hands the sender a one-key subset; the subset must still verify —
+/// this is why OTKs are signed individually rather than as a batch.
+#[test]
+fn claimed_subset_bundle_still_verifies() {
+    let (mut alice, mut bob) = pair();
+    let full = bob.bundle("bob");
+    let subset = PreKeyBundle {
+        user_id: full.user_id.clone(),
+        identity: full.identity.clone(),
+        identity_signing: full.identity_signing.clone(),
+        one_time_keys: vec![full.one_time_keys[0].clone()],
+        one_time_key_signatures: vec![full.one_time_key_signatures[0].clone()],
+        signature: full.signature.clone(),
+    };
+    let sealed = alice.encrypt_dm("bob", &subset, b"subset").unwrap();
+    assert_eq!(bob.decrypt_dm("alice", &sealed).unwrap(), b"subset");
+}
+
+/// Safety numbers (out-of-band fingerprint comparison) are deterministic per
+/// device and differ between devices.
+#[test]
+fn safety_number_is_stable_and_device_specific() {
+    let bob = Device::new();
+    let snap1 = bob.safety_number();
+    let snap2 = bob.safety_number();
+    assert_eq!(snap1, snap2, "stable for the same device");
+    assert_ne!(Device::new().safety_number(), snap1, "differs per device");
+    assert!(
+        snap1.split(' ').count() >= 8,
+        "grouped for human comparison: {snap1}"
+    );
 }

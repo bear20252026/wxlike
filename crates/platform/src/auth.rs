@@ -15,10 +15,24 @@ use sha2::Sha256;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::Platform;
 
-pub const DEFAULT_ROUNDS: u32 = 100_000;
+/// Legacy-verify floor for PBKDF2 accounts (AR-3/H-3, audit round 4).
+/// OWASP 2023 baseline for PBKDF2-HMAC-SHA256. New registrations hash with
+/// argon2id (`security.rs`); this constant only governs verification of
+/// pre-argon2 rows that recorded `pw_rounds <= 0` — and the transparent
+/// login upgrade rewrites those to argon2id on first success anyway.
+pub const DEFAULT_ROUNDS: u32 = 600_000;
 pub const TOKEN_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
+
+/// AR-3/H-2 (audit round 4): what the `sessions.token` column actually
+/// stores. The token is 32 random bytes, so a plain SHA-256 digest is the
+/// right lookup key (no slow hash needed); a leaked DB file — backups,
+/// snapshots, container volumes — then no longer contains usable bearer
+/// credentials. Raw tokens exist only in the client and in memory.
+pub fn token_digest(token: &str) -> String {
+    wxlike_core::msgmeta::sha256_hex(token.as_bytes())
+}
 
 /// URL-safe-ish random hex of `n` bytes of entropy.
 pub fn random_hex(n: usize) -> String {

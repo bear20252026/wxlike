@@ -49,7 +49,29 @@ impl Db {
         db.migrate_security_columns()?;
         db.migrate_p4()?;
         db.migrate_communities()?;
+        db.migrate_prekey_signature()?;
         Ok(db)
+    }
+
+    /// AR-1（第四轮审计 C-1）：prekey 目录补签名列。老库的既有 bundle 无
+    /// 签名，客户端验签 fail-closed 会拒绝它们——属主重新 publish 即恢复，
+    /// 这是把"服务端可换身份密钥"的口子关上的代价，见 docs/threat-model.md。
+    fn migrate_prekey_signature(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(prekey_bundles)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        if !have.iter().any(|name| name == "signature") {
+            c.execute_batch(
+                "ALTER TABLE prekey_bundles ADD COLUMN signature TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+        Ok(())
     }
 
     /// P4 表：人机校验、恢复码、对账、举报工单、秘密聊天设置、审核挂起队列，
@@ -543,11 +565,15 @@ const SCHEMA: &str = r#"
             CREATE INDEX IF NOT EXISTS idx_mc_moment ON moment_comments(moment_id, seq);
 
             -- WP-12: fetchable E2EE pre-key bundles. `otks` is a JSON array of
-            -- unclaimed one-time keys; claiming pops from it (see keys.rs).
+            -- unclaimed one-time keys — [key, signature] pairs since AR-1 —
+            -- claiming pops from it (see keys.rs). `signature` is the owner's
+            -- Ed25519 signature over (user_id, identity); legacy rows default
+            -- to '' and are rejected by clients (fail closed).
             CREATE TABLE IF NOT EXISTS prekey_bundles (
                 user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 identity         TEXT NOT NULL,
                 identity_signing TEXT NOT NULL DEFAULT '',
+                signature        TEXT NOT NULL DEFAULT '',
                 otks             TEXT NOT NULL DEFAULT '[]',
                 updated_at       INTEGER NOT NULL
             );

@@ -49,4 +49,16 @@ pub trait DeliveryPolicy: Send + Sync + 'static {
     async fn send_gate(&self, _from: &str, _conv: &str, _text: &str) -> SendGate {
         SendGate::Allow
     }
+
+    /// AR-6（第四轮审计 #30）：秘密会话的消息 TTL 兜底。
+    ///
+    /// 返回该会话启用的消息存活时长（毫秒）；`None` = 非秘密会话 / 未启用
+    /// / 查询失败（fail-open，与 `blocked` 同语义）。hub 在**补发离线帧**
+    /// 时咨询它：`sent_at_ms + ttl < now` 的内容帧直接 ack 丢弃——秘密
+    /// 消息"到期即不可再取"从只覆盖 HTTP 检索/搜索面，扩展到 QUIC/WS
+    /// 两条实时链路的最后一跳（issue #15 的"端到端闭环"缺口）。
+    /// 回执/撤回/系统帧豁免：撤回与回执恰恰要在过期后仍能到达。
+    async fn secret_ttl_ms(&self, _conv_id: &str) -> Option<u64> {
+        None
+    }
 }

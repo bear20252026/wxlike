@@ -23,7 +23,7 @@ pub use conn::PeerConn;
 pub use membership::Membership;
 pub use metrics::{prometheus_text, HubMetrics};
 pub use mq_hub::{
-    run_mq_hub, run_mq_hub_with, HubHandle, MqHub, MqHubOptions, OfflinePush,
+    run_mq_hub, run_mq_hub_with, HubHandle, HubLease, MqHub, MqHubOptions, OfflinePush,
     DEFAULT_CLAIM_IDLE_MS, DEFAULT_DEDUP_CAP,
 };
 pub use policy::{DeliveryPolicy, SendGate};

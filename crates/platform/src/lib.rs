@@ -40,6 +40,7 @@ mod reconcile;
 mod recovery;
 mod relations;
 mod report;
+mod risk_mw;
 mod secret;
 mod security;
 mod sessions;
@@ -57,7 +58,7 @@ use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
-pub use crate::auth::{hash_password, random_hex, verify_password, Authed};
+pub use crate::auth::{hash_password, random_hex, token_digest, verify_password, Authed};
 pub use crate::call::CallRegistry;
 pub use crate::db::Db;
 pub use crate::devices::{DeviceReg, DeviceRow};
@@ -382,7 +383,7 @@ impl Platform {
             "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, device_name, ip, last_seen)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                token,
+                auth::token_digest(&token),
                 user_id,
                 now as i64,
                 now.saturating_add(ttl_ms) as i64,
@@ -397,7 +398,10 @@ impl Platform {
     }
 
     /// Resolves a token to its user, dropping the row when it has expired.
+    /// The column holds [`auth::token_digest`] output; the raw token never
+    /// touches the database (AR-3/H-2).
     pub fn lookup_token(&self, token: &str) -> Result<Option<String>> {
+        let token = &auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db.lock();
         let row: Option<(String, i64)> = c
@@ -418,6 +422,7 @@ impl Platform {
     }
 
     pub fn revoke_session(&self, token: &str) -> Result<()> {
+        let token = auth::token_digest(token);
         let c = self.db.lock();
         c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
         Ok(())
@@ -481,9 +486,12 @@ impl Platform {
             .with_state(state.clone())
             // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）
             .layer(axum::middleware::from_fn_with_state(
-                state,
+                state.clone(),
                 audit_mw::command_audit,
             ))
+            // AR-5（#29）：写接口风控的声明式闸门，挂在最外层——
+            // handler 不再各自记得调 risk_gate（见 risk_mw）
+            .layer(axum::middleware::from_fn_with_state(state, risk_mw::gate))
     }
 
     /// P3 审计日志（不变式 7）：独立审计表，只写面。检索/留存策略归

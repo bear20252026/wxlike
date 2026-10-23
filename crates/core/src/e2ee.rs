@@ -56,6 +56,10 @@ pub const PREKEY_FLOOR: usize = 5;
 pub const PENDING_WINDOW: usize = 128;
 /// How many decrypted bodies we remember per peer for replay detection.
 pub const SEEN_WINDOW: usize = 4096;
+/// M-6（第四轮审计）：群水位表 (group, sender, session) 键数上限。超过即
+/// FIFO 遗忘最久未更新的键——该会话的重放窗口随之重开，这是把内存从
+/// 单调增长收敛回来的代价；被驱逐的是最不活跃的会话，最近对话不受影响。
+pub const GROUP_SEEN_CAP: usize = 4096;
 
 #[derive(Debug, Error)]
 pub enum CryptoError {
@@ -75,6 +79,8 @@ pub enum CryptoError {
     ReadOnlyGroup,
     #[error("bad key material: {0}")]
     BadKey(String),
+    #[error("pre-key bundle failed signature verification: server-supplied keys are not trusted")]
+    UnverifiedBundle,
     #[error("peer published no one-time prekey")]
     NoPreKey,
     #[error("stored crypto state is unreadable: {0}")]
@@ -141,7 +147,93 @@ pub struct PreKeyBundle {
     /// Ed25519 identity key: for out-of-band verification (safety numbers).
     pub identity_signing: String,
     /// Unclaimed one-time prekeys.
+    #[serde(default)]
     pub one_time_keys: Vec<String>,
+    /// Signature (base64) for each entry of `one_time_keys`, same order.
+    /// A claim pops one (key, signature) pair, so the subset a sender
+    /// receives stays verifiable on its own.
+    #[serde(default)]
+    pub one_time_key_signatures: Vec<String>,
+    /// Ed25519 signature (base64) by the owner's `identity_signing` key over
+    /// `(user_id, identity)` — the binding that stops a zero-trust directory
+    /// from swapping someone's identity key. A bundle without valid
+    /// signatures is **rejected** by [`Crypto::encrypt_dm`]: "the server
+    /// returned this key" is not evidence the key is the owner's.
+    ///
+    /// `#[serde(default)]` keeps old JSON parseable at the transport layer;
+    /// verification still fails closed on the empty value.
+    #[serde(default)]
+    pub signature: String,
+}
+
+/// Length-prefixed field framing for signing inputs: no delimiter that could
+/// appear inside a field, so no crafted (user_id, identity) pair can be
+/// rearranged into another bundle's signing input.
+fn push_field(buf: &mut Vec<u8>, s: &str) {
+    buf.extend_from_slice(&(s.len() as u64).to_be_bytes());
+    buf.extend_from_slice(s.as_bytes());
+}
+
+/// Domain-separated signing input for a single one-time key.
+fn one_time_key_input(key: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(24 + key.len());
+    buf.extend_from_slice(b"wxlike-otk-v1");
+    push_field(&mut buf, key);
+    buf
+}
+
+impl PreKeyBundle {
+    /// Canonical byte string covered by `signature`: user id + Curve25519
+    /// identity key. The OTKs are covered individually (see
+    /// [`PreKeyBundle::one_time_key_signatures`]) because a claim hands a
+    /// sender only a subset of them.
+    pub fn signing_input(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(96);
+        buf.extend_from_slice(b"wxlike-prekey-bundle-v1");
+        push_field(&mut buf, &self.user_id);
+        push_field(&mut buf, &self.identity);
+        buf
+    }
+
+    /// Fail-closed signature check: the identity binding must verify, and
+    /// every one-time key must carry a valid signature by the same Ed25519
+    /// key (this is what stops the directory from splicing a fresh-looking
+    /// OTK onto someone else's identity). Empty/garbage signature, wrong key,
+    /// length mismatch, or any tampered field ⇒ [`CryptoError::UnverifiedBundle`].
+    pub fn verify_signature(&self) -> Result<()> {
+        let signing = vodozemac::Ed25519PublicKey::from_base64(&self.identity_signing)
+            .map_err(|e| CryptoError::BadKey(format!("identity_signing malformed: {e}")))?;
+        let signature = vodozemac::Ed25519Signature::from_base64(&self.signature)
+            .map_err(|_| CryptoError::UnverifiedBundle)?;
+        signing
+            .verify(&self.signing_input(), &signature)
+            .map_err(|_| CryptoError::UnverifiedBundle)?;
+        if self.one_time_keys.len() != self.one_time_key_signatures.len() {
+            return Err(CryptoError::UnverifiedBundle);
+        }
+        for (key, sig) in self.one_time_keys.iter().zip(&self.one_time_key_signatures) {
+            let sig = vodozemac::Ed25519Signature::from_base64(sig)
+                .map_err(|_| CryptoError::UnverifiedBundle)?;
+            signing
+                .verify(&one_time_key_input(key), &sig)
+                .map_err(|_| CryptoError::UnverifiedBundle)?;
+        }
+        Ok(())
+    }
+
+    /// Structural check: every Curve25519/Ed25519 field must decode to a real
+    /// curve point. Keeps garbage out of the server-side directory so a
+    /// poisoned bundle cannot make a user unreachable ("publishes keys nobody
+    /// can start a session with").
+    pub fn validate_shape(&self) -> Result<()> {
+        parse_pub(&self.identity).map_err(|e| CryptoError::BadKey(format!("identity: {e}")))?;
+        vodozemac::Ed25519PublicKey::from_base64(&self.identity_signing)
+            .map_err(|e| CryptoError::BadKey(format!("identity_signing: {e}")))?;
+        for (i, key) in self.one_time_keys.iter().enumerate() {
+            parse_pub(key).map_err(|e| CryptoError::BadKey(format!("one_time_keys[{i}]: {e}")))?;
+        }
+        Ok(())
+    }
 }
 
 /// A sealed payload on the wire. `pre_key == true` means "this opens a session".
@@ -171,18 +263,39 @@ impl Device {
 
     /// The bundle other users fetch to start a session with us.
     pub fn bundle(&self, user_id: &str) -> PreKeyBundle {
+        self.bundle_limited(user_id, usize::MAX)
+    }
+
+    /// Same as [`Device::bundle`], publishing at most `max_otks` one-time keys.
+    /// Exists so callers (and the drained-directory tests) can publish a thin
+    /// bundle; signatures cover whichever keys are actually published.
+    pub fn bundle_limited(&self, user_id: &str, max_otks: usize) -> PreKeyBundle {
         let keys = self.account.identity_keys();
-        PreKeyBundle {
+        let otks: Vec<String> = self
+            .account
+            .one_time_keys()
+            .values()
+            .take(max_otks)
+            .map(|k| k.to_base64())
+            .collect();
+        // Each OTK is signed on its own: a claim pops one (key, signature)
+        // pair, and the subset must still verify standalone.
+        let otk_sigs = otks
+            .iter()
+            .map(|k| self.account.sign(one_time_key_input(k)).to_base64())
+            .collect();
+        let mut bundle = PreKeyBundle {
             user_id: user_id.to_string(),
             identity: keys.curve25519.to_base64(),
             identity_signing: keys.ed25519.to_base64(),
-            one_time_keys: self
-                .account
-                .one_time_keys()
-                .values()
-                .map(|k| k.to_base64())
-                .collect(),
-        }
+            one_time_keys: otks,
+            one_time_key_signatures: otk_sigs,
+            signature: String::new(),
+        };
+        // The Ed25519 half of the account signs the identity binding.
+        // `Account::sign` is Matrix's own device-key signing operation.
+        bundle.signature = self.account.sign(bundle.signing_input()).to_base64();
+        bundle
     }
 
     pub fn one_time_key_count(&self) -> usize {
@@ -208,6 +321,23 @@ impl Device {
 
     pub fn identity_fingerprint(&self) -> String {
         self.account.identity_keys().curve25519.to_base64()
+    }
+
+    /// Human-comparable safety number over the Ed25519 signing key: the value
+    /// two users compare out-of-band to confirm no MITM sits between them
+    /// (the TOFU first-connect window in `docs/threat-model.md`). Grouped
+    /// hex of SHA-256 over the public key, so a transcription error breaks the
+    /// check instead of silently matching.
+    pub fn safety_number(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let keys = self.account.identity_keys();
+        let digest = hex::encode(Sha256::digest(keys.ed25519.as_bytes()));
+        digest
+            .as_bytes()
+            .chunks(4)
+            .map(|c| std::str::from_utf8(c).unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Rebuilds a device from a stored account pickle (restart / new process).
@@ -308,6 +438,9 @@ pub struct Crypto {
     /// The session id is part of the key so a key rotation (new session, index
     /// restarts at 0) is not mistaken for a replay.
     group_seen: HashMap<(String, String, String), u32>,
+    /// Insertion order for [`GROUP_SEEN_CAP`] eviction (not snapshotted, like
+    /// the watermarks themselves).
+    group_seen_order: VecDeque<(String, String, String)>,
 }
 
 impl Crypto {
@@ -317,6 +450,7 @@ impl Crypto {
             dm: HashMap::new(),
             groups: HashMap::new(),
             group_seen: HashMap::new(),
+            group_seen_order: VecDeque::new(),
         }
     }
 
@@ -326,6 +460,11 @@ impl Crypto {
 
     pub fn bundle(&self, user_id: &str) -> PreKeyBundle {
         self.device.bundle(user_id)
+    }
+
+    /// See [`Device::bundle_limited`].
+    pub fn bundle_limited(&self, user_id: &str, max_otks: usize) -> PreKeyBundle {
+        self.device.bundle_limited(user_id, max_otks)
     }
 
     /// Publishes a fresh bundle when prekeys run low; returns the bundle.
@@ -349,6 +488,12 @@ impl Crypto {
     ) -> Result<Sealed> {
         let had_session = self.dm.contains_key(peer_user_id);
         if !had_session {
+            // Zero-trust key directory (docs/threat-model.md): the bundle came
+            // from the server, which may have swapped the identity key. Only
+            // a signature by the owner's Ed25519 key makes it usable. This
+            // fails closed — an unsigned or tampered bundle never starts a
+            // session, mirroring `encrypt_dm_existing`'s no-plaintext rule.
+            peer_bundle.verify_signature()?;
             let identity = parse_pub(&peer_bundle.identity)?;
             let otk = peer_bundle
                 .one_time_keys
@@ -524,14 +669,27 @@ impl Crypto {
         }
     }
 
+    /// M-5（第四轮审计）：按**链进度距离**选驱逐对象。单个棘轮键下，字典序
+    /// 恰好等于 idx 序，`pop_last` 碰巧正确；棘轮轮换后各键是不相关的 base64，
+    /// 字典序与进度无关——可能把"距可投递只差 1"的消息挤掉而留下没救的。
+    fn evict_furthest_ahead(
+        parked: &BTreeMap<(String, u64), Sealed>,
+        chain_pos: &HashMap<String, u64>,
+    ) -> Option<(String, u64)> {
+        parked
+            .keys()
+            .max_by_key(|(rk, idx)| idx.saturating_sub(chain_pos.get(rk).copied().unwrap_or(0)))
+            .cloned()
+    }
+
     fn park(&mut self, peer_user_id: &str, rk: String, idx: u64, body: String) {
         let Some(state) = self.dm.get_mut(peer_user_id) else {
             return;
         };
         if state.parked.len() >= PENDING_WINDOW {
-            // Evict the furthest-ahead message: the closest ones are about to
-            // become deliverable, the furthest ones are the lost cause.
-            state.parked.pop_last();
+            if let Some(victim) = Self::evict_furthest_ahead(&state.parked, &state.chain_pos) {
+                state.parked.remove(&victim);
+            }
         }
         state.parked.insert(
             (rk, idx),
@@ -799,11 +957,22 @@ impl Crypto {
         if watermark.is_some_and(|wm| plain.message_index <= wm) {
             return Err(CryptoError::Replay);
         }
-        self.group_seen.insert(
+        self.mark_group_seen(
             (group_id.to_string(), sender.clone(), session_id),
             plain.message_index,
         );
         Ok((sender, plain.plaintext))
+    }
+
+    /// M-6：水位写入带 FIFO 上限，长驻进程内存不再随会话数单调增长。
+    fn mark_group_seen(&mut self, key: (String, String, String), idx: u32) {
+        if self.group_seen.len() >= GROUP_SEEN_CAP {
+            if let Some(oldest) = self.group_seen_order.pop_front() {
+                self.group_seen.remove(&oldest);
+            }
+        }
+        self.group_seen_order.push_back(key.clone());
+        self.group_seen.insert(key, idx);
     }
 
     pub fn group_session_id(&self, group_id: &str) -> Option<String> {
@@ -819,5 +988,66 @@ impl Crypto {
         self.groups
             .get(group_id)
             .is_some_and(|s| !s.inbound.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod audit_round4 {
+    use super::*;
+
+    /// M-5：驱逐按链进度距离选，不按键字典序。构造"rk_a 只差 1 步可投递、
+    /// rk_z 落后 90 步"的场景——字典序上 rk_z 最大，pop_last 会错杀 rk_a。
+    #[test]
+    fn eviction_picks_largest_chain_gap_not_lexicographic_order() {
+        let mut parked = BTreeMap::new();
+        let sealed = || Sealed {
+            pre_key: false,
+            body: "x".to_string(),
+        };
+        parked.insert(("rk_a".to_string(), 5), sealed());
+        parked.insert(("rk_z".to_string(), 90), sealed());
+        let mut chain_pos = HashMap::new();
+        chain_pos.insert("rk_a".to_string(), 4u64); // gap 1：马上就绪
+        chain_pos.insert("rk_z".to_string(), 0u64); // gap 90：没救的
+
+        let victim = Crypto::evict_furthest_ahead(&parked, &chain_pos);
+        assert_eq!(
+            victim,
+            Some(("rk_z".to_string(), 90)),
+            "the furthest-ahead-by-progress message is evicted, not the lexicographic max"
+        );
+        // 空表与单元素边界
+        let mut one = BTreeMap::new();
+        one.insert(("k".to_string(), 7), sealed());
+        assert_eq!(
+            Crypto::evict_furthest_ahead(&one, &HashMap::new()),
+            Some(("k".to_string(), 7))
+        );
+        assert_eq!(
+            Crypto::evict_furthest_ahead(&BTreeMap::new(), &HashMap::new()),
+            None
+        );
+    }
+
+    /// M-6：群水位表有上限，长驻进程内存收敛。
+    #[test]
+    fn group_seen_watermarks_are_capped() {
+        let mut crypto = Crypto::new(Device::new());
+        for i in 0..(GROUP_SEEN_CAP + 64) {
+            crypto.mark_group_seen(
+                (
+                    format!("g{}", i % 3),
+                    format!("sender{}", i),
+                    format!("sess{}", i),
+                ),
+                1,
+            );
+        }
+        assert!(
+            crypto.group_seen.len() <= GROUP_SEEN_CAP,
+            "watermark table must be capped at {GROUP_SEEN_CAP}, got {}",
+            crypto.group_seen.len()
+        );
+        assert_eq!(crypto.group_seen.len(), crypto.group_seen_order.len());
     }
 }

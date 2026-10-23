@@ -14,7 +14,48 @@ fn engine() -> RiskEngine {
         send_deny_at: 4,
         report_throttle_at: 2,
         report_deny_at: 3,
+        claim_keys_throttle_at: 2,
+        claim_keys_deny_at: 4,
+        friend_request_throttle_at: 2,
+        friend_request_deny_at: 4,
+        media_upload_throttle_at: 2,
+        media_upload_deny_at: 4,
+        moment_create_throttle_at: 2,
+        moment_create_deny_at: 4,
     })
+}
+
+#[test]
+fn claim_keys_throttles_then_denies_without_challenge() {
+    // AR-2/H-4：认领无 captcha 兑现面，只应有 Throttle/Deny 两态。
+    // check 只裁决不计数、record 才落窗口——与登录/发送路径同一语义。
+    let e = engine();
+    assert_eq!(
+        e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
+        Verdict::Allow
+    );
+    e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
+    assert_eq!(
+        e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
+        Verdict::Throttle {
+            retry_after_ms: 3_600_000
+        }
+    );
+    // 键隔离：别的 (caller, target) 不受影响
+    assert_eq!(
+        e.check(Action::ClaimKeys, "carol:alice", T0).unwrap(),
+        Verdict::Allow
+    );
+    // 累计到 deny 阈值（record 两次各 +1，已计 1 → 再 record 2 次 = 3；
+    // 第 4 次尝试 n=4 撞 Deny）
+    e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
+    e.record(Action::ClaimKeys, "bob:alice", T0).unwrap();
+    assert_eq!(
+        e.check(Action::ClaimKeys, "bob:alice", T0).unwrap(),
+        Verdict::Deny {
+            reason: "claim_keys_rate".into()
+        }
+    );
 }
 
 #[test]

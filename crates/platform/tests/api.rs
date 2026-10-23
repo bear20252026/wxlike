@@ -487,7 +487,12 @@ async fn malformed_json_is_400_not_a_panic() {
 #[test]
 fn production_defaults_match_contract() {
     let d = PlatformOptions::default();
-    assert_eq!(d.pbkdf2_rounds, 100_000, "PBKDF2 >= 100k rounds");
+    // AR-3/H-3: legacy PBKDF2 floor raised to the OWASP baseline; new
+    // registrations hash with argon2id outright (see users.rs::register).
+    assert_eq!(
+        d.pbkdf2_rounds, 600_000,
+        "PBKDF2 floor >= 600k rounds (OWASP)"
+    );
     assert_eq!(d.session_ttl_ms, 30 * 24 * 60 * 60 * 1000, "30 day session");
 }
 
@@ -497,4 +502,29 @@ async fn futures_join(handles: Vec<tokio::task::JoinHandle<StatusCode>>) -> Vec<
         .into_iter()
         .map(|r| r.expect("task did not panic"))
         .collect()
+}
+
+/// AR-3/H-2（第四轮审计）：会话令牌不得明文入库。列里存的必须是摘要，
+/// 拿走 SQLite 文件（备份/快照/容器卷）拿不到任何可用凭证。
+#[test]
+fn session_tokens_are_stored_as_digests() {
+    let p = wxlike_platform::Platform::in_memory().unwrap();
+    let uid = p.register("alice", "pw").unwrap();
+    let token = p.create_session(&uid, 60_000).unwrap();
+    let stored: String = {
+        let c = p.db().lock();
+        c.query_row("SELECT token FROM sessions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_ne!(
+        stored, token,
+        "the raw bearer token must never reach the db"
+    );
+    assert_eq!(stored, wxlike_platform::token_digest(&token));
+    assert_eq!(stored.len(), 64, "sha256 hex");
+    // 摘要仍是有效的查找键：登录态照常工作
+    assert_eq!(
+        p.lookup_token(&token).unwrap().as_deref(),
+        Some(uid.as_str())
+    );
 }
