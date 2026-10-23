@@ -18,7 +18,7 @@
 //!
 //! 状态存储抽成 [`RiskStore`]：默认 [`MemoryStore`] 是进程内滑动窗口
 //! （每 `(action, key)` 一条 `VecDeque<u64>`）；多节点部署用 `redis`
-//! feature 的 [`gcra::GcraStore`]（共享 TAT，全局阈值不会乘上节点数）。
+//! feature 的 `gcra::GcraStore`（共享 TAT，全局阈值不会乘上节点数）。
 //! 阈值配置的形状与默认值在 `wxlike-limits`，这里只做算法与裁决。
 
 use std::sync::Arc;
