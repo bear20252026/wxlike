@@ -9,6 +9,12 @@
 //! | `wxlike_hub_messages_total` | counter | envelopes accepted for routing |
 //! | `wxlike_offline_parked` | gauge | frames parked for offline users |
 //! | `wxlike_delivery_seconds` | histogram | inbound → routing-done latency |
+//! | `wxlike_rate_limit_sleep_total` | counter | frames delayed by the send gate |
+//! | `wxlike_rate_limit_reject_total` | counter | frames dropped by the send gate |
+//!
+//! The two rate-limit counters carry `rate_limiter_name` (same label design as
+//! Synapse's `synapse_rate_limit_{sleep,reject}`): one hub may host several
+//! gates, and the label says which one acted.
 //!
 //! The latency is exported as a histogram; p99 is
 //! `histogram_quantile(0.99, rate(wxlike_delivery_seconds_bucket[1m]))` in
@@ -60,6 +66,16 @@ impl HubMetrics {
             metrics::Unit::Seconds,
             "inbound to routing-done latency"
         );
+        metrics::describe_counter!(
+            "wxlike_rate_limit_sleep_total",
+            metrics::Unit::Count,
+            "frames delayed by the send gate"
+        );
+        metrics::describe_counter!(
+            "wxlike_rate_limit_reject_total",
+            metrics::Unit::Count,
+            "frames dropped by the send gate"
+        );
         // describe_* alone does not materialize a series in the exporter
         // (describe-only render is empty), so record the info gauge now: a
         // cold hub still produces a non-empty exposition that identifies it.
@@ -93,6 +109,27 @@ impl HubMetrics {
     pub fn delivery_latency(&self, elapsed: std::time::Duration) {
         metrics::histogram!("wxlike_delivery_seconds", "hub" => self.hub_id.clone())
             .record(elapsed.as_secs_f64());
+    }
+
+    /// A frame was delayed by the send gate (`SendGate::Sleep`).
+    pub fn rate_limit_sleep(&self, rate_limiter_name: &str) {
+        metrics::counter!(
+            "wxlike_rate_limit_sleep_total",
+            "hub" => self.hub_id.clone(),
+            "rate_limiter_name" => rate_limiter_name.to_string()
+        )
+        .increment(1);
+    }
+
+    /// A frame was dropped by the send gate (Throttle, Reject, or an
+    /// over-cap Sleep).
+    pub fn rate_limit_reject(&self, rate_limiter_name: &str) {
+        metrics::counter!(
+            "wxlike_rate_limit_reject_total",
+            "hub" => self.hub_id.clone(),
+            "rate_limiter_name" => rate_limiter_name.to_string()
+        )
+        .increment(1);
     }
 }
 
@@ -159,5 +196,24 @@ mod tests {
         assert!(text.contains("wxlike_offline_parked"), "{text}");
         assert!(text.contains("wxlike_delivery_seconds_bucket"), "{text}");
         assert!(text.contains("hub=\"metrics-test-hub\""), "{text}");
+    }
+
+    #[test]
+    fn rate_limit_counters_carry_the_limiter_name() {
+        let m = HubMetrics::new("metrics-rate-limit-hub");
+        m.rate_limit_sleep("limiter-sleep-probe");
+        m.rate_limit_reject("limiter-reject-probe");
+
+        let text = prometheus_text();
+        assert!(text.contains("wxlike_rate_limit_sleep_total"), "{text}");
+        assert!(text.contains("wxlike_rate_limit_reject_total"), "{text}");
+        assert!(
+            text.contains("rate_limiter_name=\"limiter-sleep-probe\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("rate_limiter_name=\"limiter-reject-probe\""),
+            "{text}"
+        );
     }
 }
