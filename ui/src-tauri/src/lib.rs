@@ -1248,6 +1248,7 @@ impl AppState {
     /// 本地清除定时器：每 30 秒扫一次。服务端只兜底补发/检索，
     /// 已经落到本机的消息必须由客户端自己按 sent_at + ttl 删掉（#15）。
     fn start_ttl_purge(&self) {
+        const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
         if self.ttl_purge_started.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -1256,7 +1257,7 @@ impl AppState {
         let _ = std::thread::Builder::new()
             .name("wxlike-ttl-purge".into())
             .spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(30));
+                std::thread::sleep(PURGE_INTERVAL);
                 let map: Vec<(String, u64)> = {
                     let guard = ttls.lock().unwrap_or_else(PoisonError::into_inner);
                     guard
@@ -1477,7 +1478,7 @@ impl LocalStore {
                 sent_at_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (conv_id, seq, msg_id)
             );
-            -- 会话 TTL 与开关：重启后离线也能继续按期限清理（#15）
+            -- 会话 TTL 与开关：重启后离线也能继续按期限清理
             CREATE TABLE IF NOT EXISTS secret_ttls (
                 conv_id TEXT PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 0,
