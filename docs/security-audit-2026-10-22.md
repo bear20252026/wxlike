@@ -1,5 +1,22 @@
 # wxlike 深度安全审计报告（2026-10-22）
 
+> **状态更新（同日晚些时候）**：本报告的审计基线是 `62124c5`。审计进行期间，
+> 仓库在另一条工作流上按 AR-1~AR-7 系列 issue（#25–#32）**同步落地了修复**，
+> 当前 `main`（HEAD `c541b82`）已包含下列提交：
+> `e40a9ec`（预密钥包双层 Ed25519 签名 + 建会话前 fail-closed 验签）、
+> `bd2fcc1`（会话令牌哈希入库）、AR-3（PBKDF2 提到 600k + 登录透明升级 argon2id）、
+> AR-2（faucet admin 门禁 + 每笔上限、OTK claim 风控、WS `max_message_size`、Redis 消费者名改哈希）、
+> AR-4（页包 `MAX_DECOMPRESSED` 64 MiB、JS 宿主循环上限、`call_global` 不再拼 JS 源码）、
+> `c532810`（风控中间件化）、`2fe4a41`（TTL 下沉到 hub 补发）、
+> `7f70382`（棘轮驱逐按链进度 + 群水位封顶）、`c541b82`（TURN 短期凭据签发端点）。
+>
+> 因此本报告中的 **C-1、H-1~H-11、M-3、M-4、M-5、M-6 均已修复**；
+> 对应 issue #35–#46、#49–#52、#54 已关闭并注明对应提交。
+> **仍未修复**（issue 保持 OPEN）：#47（`core::crypto` 弱 API 导出）、#48（设备密钥同盘裸存）、
+> #53（517 处 `unwrap`/`expect`）、#55（许可元数据 MIT vs AGPL）、#56（dpage 包 id 碰撞）、
+> #57（MQ `register_hub` 未接线）、#58（SFU `join` 无鉴权）、#59（STUN `pad4`）、
+> #60（admin 3xx 语义）、#61（`limits` 名不副实 + CI 缺 audit）。
+
 > 第三轮独立审计。前两轮见 `docs/audit-report.md`、`docs/audit-progress.md` 与 issue #3–#22。
 > 本报告只记录**可复现的增量发现**，每条都给出文件与行号；无法在代码中复现的猜测一律不写入。
 
