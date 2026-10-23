@@ -1,0 +1,27 @@
+{
+ "roots": [
+  "crates",
+  "server/src",
+  "ui/src-tauri/src"
+ ],
+ "total": 30,
+ "by_file": {
+  "crates/container/src/engine.rs": 1,
+  "crates/core/src/crypto.rs": 2,
+  "crates/dpage/src/lib.rs": 3,
+  "crates/net/src/avalanche.rs": 1,
+  "crates/net/src/transport.rs": 2,
+  "crates/platform/src/live.rs": 1,
+  "crates/platform/src/media.rs": 1,
+  "crates/rtc/src/audio_io.rs": 3,
+  "crates/rtc/src/capture.rs": 1,
+  "crates/rtc/src/dsp.rs": 1,
+  "crates/rtc/src/media.rs": 2,
+  "crates/rtc/src/turn.rs": 1,
+  "crates/video/src/bin/wxlike-live-ingest.rs": 1,
+  "crates/video/src/live.rs": 1,
+  "server/src/lib.rs": 3,
+  "ui/src-tauri/src/callrtc.rs": 5,
+  "ui/src-tauri/src/lib.rs": 1
+ }
+}

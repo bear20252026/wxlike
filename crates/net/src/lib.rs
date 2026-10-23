@@ -26,6 +26,6 @@ pub use mq_hub::{
     run_mq_hub, run_mq_hub_with, HubHandle, HubLease, MqHub, MqHubOptions, OfflinePush,
     DEFAULT_CLAIM_IDLE_MS, DEFAULT_DEDUP_CAP,
 };
-pub use policy::{DeliveryPolicy, SendGate};
+pub use policy::{DeliveryPolicy, SendGate, MAX_SEND_GATE_SLEEP_MS};
 pub use server::run_hub;
 pub use transport::{cert_fingerprint, connect_tofu, TofuPins};

@@ -1301,9 +1301,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
 ]
@@ -3877,6 +3877,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "ryu",
+ "sha1_smol",
  "tokio",
  "tokio-util",
  "url",
@@ -4400,6 +4401,12 @@ dependencies = [
  "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -6379,6 +6386,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "zstd",
 ]
 
@@ -6553,9 +6561,11 @@ dependencies = [
 name = "wxlike-risk"
 version = "0.1.0"
 dependencies = [
+ "redis",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "wxlike-limits",
 ]
 
 [[package]]
