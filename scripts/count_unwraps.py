@@ -7,6 +7,8 @@
 
 - 只统计生产代码：`crates/*/src`、`server/src`、`ui/src-tauri/src`；
   跳过 `tests/`、`examples/`、`benches/` 与 `#[cfg(test)]` 修饰的整项。
+- cfg 谓词要**求值**，不能见到 test 就当测试：`#[cfg(not(test))]` 是生产代码，
+  `#[cfg(any(test, feature = "x"))]` 也可能在生产构建里编进来。
 - 基线在 `scripts/unwrap-baseline.json`，**只许单向下降**：`--update` 拒绝写回更大的总数。
 - CI 里跑 `--details` 并把输出贴到 PR 评论；要接硬闸门时加 `--fail-on-increase`。
 
@@ -32,7 +34,15 @@ BASELINE = ROOT / "scripts" / "unwrap-baseline.json"
 ROOTS = ["crates", "server/src", "ui/src-tauri/src"]
 SKIP_DIRS = {"target", "node_modules", ".git", "tests", "examples", "benches"}
 
-CFG_TEST_RE = re.compile(r"#\[cfg\([^\]]*\btest\b[^\]]*\)\]")
+# 没写 #[cfg(test)]、但只被测试模块使用的辅助文件。计数口径是“测试代码不算”，
+# 这类文件应随测试一起排除；crate 属主给声明补上 #[cfg(test)] 后即可删掉这行。
+TEST_ONLY_FILES = {
+    # crates/admin/src/lib.rs:74 无条件声明，实际只有 #[cfg(test)] 模块在用
+    "crates/admin/src/tmp.rs",
+}
+
+CFG_ATTR_RE = re.compile(r"#\[cfg\(")
+RAW_STRING_RE = re.compile(r'(?:b|c)?r(?P<hashes>#{0,255})"')
 UNWRAP_RE = re.compile(r"\.unwrap\s*\(\s*\)")
 EXPECT_RE = re.compile(r"\.expect\s*\(")
 
@@ -46,66 +56,200 @@ def rust_files() -> list[str]:
         for path in base.rglob("*.rs"):
             rel = path.relative_to(ROOT).as_posix()
             parts = set(rel.split("/"))
-            if parts & SKIP_DIRS:
+            if parts & SKIP_DIRS or rel in TEST_ONLY_FILES:
                 continue
             found.append(rel)
     return sorted(found)
 
 
-def strip_code(line: str) -> str:
-    """去掉行注释与字符串/字符字面量，只留结构性字符。
+def mask_source(text: str) -> list[str]:
+    """把注释与字符串字面量替换成空格，保留换行与结构字符。
 
-    口径与 `docs/bench/quality_probe.py` 一致：这样 `.unwrap()` 出现在
-    字符串或注释里时不会被误算，`'a` 生命周期也不会被当成字符字面量。
+    状态跨行保持：Rust 的普通字符串、raw string（r#"…"#）、块注释都可以跨行，
+    逐行重置状态会把字符串里的 `.unwrap()` 或花括号误算成代码。
     """
     out: list[str] = []
     i = 0
-    n = len(line)
+    n = len(text)
+    block_depth = 0
     in_str = False
     in_char = False
+    raw_hashes: int | None = None
+
+    def blank(ch: str) -> None:
+        out.append("\n" if ch == "\n" else " ")
+
     while i < n:
-        c = line[i]
+        c = text[i]
+        if block_depth:
+            if text.startswith("/*", i):
+                block_depth += 1
+                blank("/")
+                blank("*")
+                i += 2
+            elif text.startswith("*/", i):
+                block_depth -= 1
+                blank("*")
+                blank("/")
+                i += 2
+            else:
+                blank(c)
+                i += 1
+            continue
+        if raw_hashes is not None:
+            closing = '"' + "#" * raw_hashes
+            if text.startswith(closing, i):
+                for ch in closing:
+                    blank(ch)
+                i += len(closing)
+                raw_hashes = None
+            else:
+                blank(c)
+                i += 1
+            continue
         if in_str:
             if c == "\\":
-                i += 2
+                blank(c)
+                i += 1
+                if i < n:
+                    blank(text[i])
+                    i += 1
                 continue
             if c == '"':
+                blank(c)
+                i += 1
                 in_str = False
-            i += 1
+            else:
+                blank(c)
+                i += 1
             continue
         if in_char:
             if c == "\\":
-                i += 2
+                blank(c)
+                i += 1
+                if i < n:
+                    blank(text[i])
+                    i += 1
                 continue
             if c == "'":
+                blank(c)
+                i += 1
                 in_char = False
-            i += 1
+            else:
+                blank(c)
+                i += 1
+            continue
+
+        if text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                blank(" ")
+                i += 1
+            continue
+        if text.startswith("/*", i):
+            block_depth = 1
+            blank("/")
+            blank("*")
+            i += 2
+            continue
+        match = RAW_STRING_RE.match(text, i)
+        if match:
+            raw_hashes = len(match.group("hashes") or "")
+            for ch in match.group(0):
+                blank(ch)
+            i = match.end()
             continue
         if c == '"':
             in_str = True
+            blank(c)
             i += 1
             continue
         if c == "'":
-            if i + 2 < n and line[i + 2] == "'":
+            # 字符字面量 'x' / '\n' / '\u{..}' 要跳过；'a 这种生命周期保留
+            if i + 1 < n and text[i + 1] == "\\":
                 in_char = True
+                blank(c)
                 i += 1
                 continue
+            if i + 2 < n and text[i + 2] == "'":
+                in_char = True
+                blank(c)
+                i += 1
+                continue
+            out.append(c)
             i += 1
             continue
-        if c == "/" and i + 1 < n and line[i + 1] == "/":
-            break
         out.append(c)
         i += 1
-    return "".join(out)
+
+    return "".join(out).splitlines()
+
+
+def read_cfg_predicate(line: str, start: int) -> tuple[str | None, int]:
+    """读取 `#[cfg(` 之后的谓词；属性跨行时返回失败（保守地按生产代码处理）。"""
+    depth = 1
+    for i in range(start, len(line)):
+        if line[i] == "(":
+            depth += 1
+        elif line[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return line[start:i], i + 1
+    return None, start
+
+
+def split_args(predicate: str) -> list[str]:
+    args: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_string = False
+    for ch in predicate:
+        if in_string:
+            current.append(ch)
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+            current.append(ch)
+        elif ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        args.append("".join(current).strip())
+    return [arg for arg in args if arg]
+
+
+def implies_test(predicate: str) -> bool:
+    """这个 cfg 谓词为真时，是否**必然**处于 test 构建。"""
+    predicate = predicate.strip()
+    if predicate == "test":
+        return True
+    match = re.fullmatch(r"(all|any|not)\s*\((.*)\)", predicate, re.S)
+    if not match:
+        return False
+    kind, inner = match.group(1), match.group(2)
+    if kind == "not":
+        return False
+    values = [implies_test(arg) for arg in split_args(inner)]
+    if kind == "all":
+        return any(values)
+    return bool(values) and all(values)
 
 
 def skip_cfg_test_item(lines: list[str], start: int, first_code: int) -> int:
-    """返回 `#[cfg(test)]` 修饰的整项最后一行下标。"""
+    """返回 `#[cfg(...)]` 修饰的整项最后一行下标。"""
     depth = 0
     started = False
     j = start
     while j < len(lines):
-        code = strip_code(lines[j][first_code:] if j == start else lines[j])
+        code = lines[j][first_code:] if j == start else lines[j]
         for ch in code:
             if ch == "{":
                 depth += 1
@@ -121,18 +265,24 @@ def skip_cfg_test_item(lines: list[str], start: int, first_code: int) -> int:
 
 
 def production_lines(path: pathlib.Path) -> list[str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = mask_source(path.read_text(encoding="utf-8"))
     out = list(lines)
     i = 0
     while i < len(lines):
-        match = CFG_TEST_RE.search(lines[i])
-        if not match:
-            i += 1
+        skipped = False
+        for match in CFG_ATTR_RE.finditer(lines[i]):
+            predicate, first_code = read_cfg_predicate(lines[i], match.end())
+            if predicate is None or not implies_test(predicate):
+                continue
+            end = skip_cfg_test_item(lines, i, first_code)
+            for k in range(i, end + 1):
+                out[k] = ""
+            i = end
+            skipped = True
+            break
+        i += 1
+        if skipped:
             continue
-        end = skip_cfg_test_item(lines, i, match.end())
-        for k in range(i, end + 1):
-            out[k] = ""
-        i = end + 1
     return out
 
 
@@ -142,11 +292,10 @@ def scan() -> tuple[collections.Counter, dict[str, list[tuple[int, str]]]]:
     for rel in rust_files():
         lines = production_lines(ROOT / rel)
         for lineno, line in enumerate(lines, 1):
-            code = strip_code(line)
-            for match in UNWRAP_RE.finditer(code):
+            for _ in UNWRAP_RE.finditer(line):
                 counts[rel] += 1
                 sites[rel].append((lineno, "unwrap"))
-            for match in EXPECT_RE.finditer(code):
+            for _ in EXPECT_RE.finditer(line):
                 counts[rel] += 1
                 sites[rel].append((lineno, "expect"))
     return counts, sites
@@ -231,8 +380,11 @@ def print_report(
             tag = "新增文件" if before == 0 else "增加"
             print(f"  {path}  {before} → {after}  +{after - before}（{tag}）")
             if details:
-                for lineno, kind in sites.get(path, []):
-                    print(f"    {path}:{lineno}  .{kind}()")
+                if before == 0:
+                    for lineno, kind in sites.get(path, []):
+                        print(f"    {path}:{lineno}  .{kind}()")
+                else:
+                    print("    （基线已有调用点未逐行比对；新增处请对照 git diff）")
     if decreased:
         print("\n已清理（-）：")
         for path, before, after in decreased:
@@ -261,6 +413,8 @@ def main() -> int:
     now_by_file = {k: int(v) for k, v in current.items() if v}
     now_total = sum(now_by_file.values())
     had_baseline = BASELINE.exists()
+    if not had_baseline and not args.update:
+        load_baseline()  # 退出 2，避免缺基线时静默放行
     baseline = load_baseline() if had_baseline else {"total": 0, "by_file": {}}
     base_total = int(baseline.get("total", 0))
 

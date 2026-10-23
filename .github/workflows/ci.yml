@@ -361,12 +361,38 @@ jobs:
               core.info('没有 coverage-summary.md，跳过 PR 评论');
               return;
             }
-            await github.rest.issues.createComment({
+            // 同一个 PR 每次 push 更新同一条评论，避免刷屏。
+            // legacy 用来接管加 marker 之前已经发过的那条评论。
+            const marker = '<!-- coverage-report -->';
+            const legacy = '## 覆盖率（非阻断）';
+            const body = marker + '\n' + fs.readFileSync('coverage-summary.md', 'utf8');
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: fs.readFileSync('coverage-summary.md', 'utf8'),
+              per_page: 100,
             });
+            const existing = comments.find((c) => {
+              const text = c.body || '';
+              return c.user?.type === 'Bot' &&
+                (text.includes(marker) || text.startsWith(legacy));
+            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`已更新已有评论 #${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
   # #53 防回潮（T-F1 交付物）：只统计生产代码里的 unwrap()/expect()。
   #
@@ -413,11 +439,35 @@ jobs:
               core.info('没有 unwrap-report.txt，跳过 PR 评论');
               return;
             }
-            const body = '## unwrap()/expect() 计数（非阻断）\n\n```text\n' +
+            // 同一个 PR 每次 push 更新同一条评论，避免刷屏。
+            const marker = '<!-- unwrap-count -->';
+            const legacy = '## unwrap()/expect() 计数（非阻断）';
+            const body = marker + '\n' + legacy + '\n\n```text\n' +
               fs.readFileSync('unwrap-report.txt', 'utf8') + '```\n';
-            await github.rest.issues.createComment({
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body,
+              per_page: 100,
             });
+            const existing = comments.find((c) => {
+              const text = c.body || '';
+              return c.user?.type === 'Bot' &&
+                (text.includes(marker) || text.startsWith(legacy));
+            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`已更新已有评论 #${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
