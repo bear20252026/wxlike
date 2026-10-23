@@ -34,10 +34,11 @@ BASELINE = ROOT / "scripts" / "unwrap-baseline.json"
 ROOTS = ["crates", "server/src", "ui/src-tauri/src"]
 SKIP_DIRS = {"target", "node_modules", ".git", "tests", "examples", "benches"}
 
-# 没写 #[cfg(test)]、但只被测试模块使用的辅助文件。计数口径是“测试代码不算”，
-# 这类文件应随测试一起排除；crate 属主给声明补上 #[cfg(test)] 后即可删掉这行。
+# 文件内的 #[cfg(test)] 能就地屏蔽；这里补的是**跨文件**的情况：模块在父文件里
+# 被 `#[cfg(test)] mod ...;` 引入，而本脚本按文件独立扫描，看不到父文件的属性。
+# 新增条目前先确认父文件里的声明确实带 #[cfg(test)]，否则会把生产代码漏出统计。
 TEST_ONLY_FILES = {
-    # crates/admin/src/lib.rs:74 无条件声明，实际只有 #[cfg(test)] 模块在用
+    # crates/admin/src/lib.rs:73 `#[cfg(test)] pub(crate) mod tmp;`
     "crates/admin/src/tmp.rs",
 }
 
