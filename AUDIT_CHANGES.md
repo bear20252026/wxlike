@@ -136,6 +136,87 @@
 | #31 | TURN 短期凭据 | 涉及 server API + 客户端 + coturn 三方协议变更 |
 | #32 | 技术债组 M/L | 见报告 §8 排期；M-2 需产品决策（口令派生 vs OS 钥匙串） |
 
+## 续批（同分支，第四轮路线图执行；#29/#30/#31/#32 的落地）
+
+## CH-10 写接口风控中间件化（AR-5/#29 根治）
+
+- **commit**：`c532810`（+ lint 收尾 `4dabb57`）
+- **文件**：`crates/risk/src/lib.rs`、`crates/risk/tests/engine.rs`、
+  `crates/platform/src/risk_mw.rs`（新增）、`crates/platform/src/lib.rs`、
+  `crates/platform/tests/write_gates.rs`（新增）
+- **关联风险**：AR-5（High）
+- **摘要**：risk 新增 FriendRequest(1h,30/100)/MediaUpload(10min,60/200)/
+  MomentCreate(10min,30/100) 三个动作与 `throttle_or_deny` 公共裁决（写接口
+  无 captcha 兑现面，只 Throttle/Deny）；platform 新增 `risk_mw::gate` 中间件
+  挂 router 最外层，(method,path)→Action 声明式映射（含 HTTP 发送面
+  `/api/conv/*/send`），handler 零改动获得覆盖。语义：未认证不吃配额不污染键；
+  计数口径"处理过"（2xx/4xx 计、5xx 不计——409 刷库也是轰炸面），与 H-4
+  "只计成功"刻意区分（注释写明）。`mapped_actions()` 表 + 双向单测防映射漂移。
+- **验证**：risk 8/8；write_gates 4/4（轰炸 429 且不早于阈值/朋友圈刷写/
+  正常用量与读接口不受影响/未认证 401 而非 429）；friends 17、moments 17、
+  media 14、keys 13 全绿
+- **回滚**：`git revert 4dabb57 c532810`（逆序）
+- **剩余风险**：阈值未经真实负载校准（RiskConfig 可调）；groups/communities/
+  live/call 未纳入本轮映射（同模式可增量加）
+
+## CH-11 秘密聊天 TTL 下沉到 hub 补发路径（AR-6/#30 闭环）
+
+- **commit**：`2fe4a41`
+- **文件**：`crates/net/src/policy.rs`、`crates/net/src/mq_hub.rs`、
+  `crates/net/tests/secret_ttl.rs`（新增）、`server/src/lib.rs`
+- **关联风险**：AR-6（Medium；issue #15 的具体缺口）
+- **摘要**：`DeliveryPolicy::secret_ttl_ms(conv)`（默认 None，fail-open 同
+  blocked）；hub 补发循环（QUIC/WS 唯一入口）发送前判定
+  `sent_at_ms + ttl < now` 的内容帧直接 ack 丢弃；回执/撤回/系统帧豁免；
+  server PlatformPolicy 查 `secret_settings` 实现。
+- **验证**：net 102/0（含新 3 条：过期秘密帧重连不补发且新鲜帧到达、
+  普通会话旧帧不受约束、TTL 下 sink 判定单测间接覆盖）
+- **回滚**：`git revert 2fe4a41`
+- **剩余风险**：MQ 跨节点转发路径未单独加回归（同一 mq_hub 入口，理论同
+  覆盖）；客户端本地的 TTL 清除照旧
+
+## CH-12 e2ee 加固：驱逐按链进度 + 群水位表封顶（#32 M-5/M-6）
+
+- **commit**：`7f70382`（+ lint `4dabb57`）
+- **文件**：`crates/core/src/e2ee.rs`
+- **摘要**：park 驱逐从按键字典序（`pop_last`，轮换后与进度无关）改为按
+  `idx - chain_pos` 距离（`evict_furthest_ahead` 纯函数+单测）；`group_seen`
+  水位表加 `GROUP_SEEN_CAP=4096` FIFO 驱逐（新 order 队列，不入快照），
+  长驻进程内存收敛；代价（最不活跃会话重放窗口重开）已注释。
+- **验证**：core 全绿（26 单测含 2 新 + 25 e2ee + 15 + 6）
+- **回滚**：`git revert 7f70382`
+
+## CH-13 TURN 短期凭据端点——服务端半边（AR-7/#31）
+
+- **commit**：`c541b82`（+ lint `4dabb57`）
+- **文件**：`server/src/lib.rs`、`server/Cargo.toml`
+- **摘要**：`GET /api/turn/credentials`（Bearer 登录态）：coturn REST 规范
+  `username=<expiry-epoch>:<user_id>` + `base64(HMAC-SHA1(secret, username))`
+  + ttl 3600s + uris；未配 `WXLIKE_TURN_SECRET` 不挂路由（没配就是关）；
+  hmac/sha1/base64 均已在依赖树（rtc 同款），零新增编译单元；纯函数 +
+  已知向量单测。
+- **验证**：turn 单测 2/2；server 全套编译含测试目标
+- **回滚**：`git revert c541b82`
+- **剩余风险**：客户端半边（桌面端改从本端点取凭据、coturn 配置样例、
+  仓库清除明文口令示例）在 #31 继续
+
+## CH-14 hub 优雅停机接线（#32 M-11，含一次终验拦截的返工）
+
+- **commits**：`87dd471` → `40ace05`（终验拦下第一版后返工）
+- **文件**：`crates/net/src/mq_hub.rs`、`crates/net/src/lib.rs`、
+  `crates/net/tests/secret_ttl.rs`、`server/src/lib.rs`
+- **摘要**：更正 #32 表述（register_hub 启动时已由 net 接线，此前 grep 只查
+  server/src 漏记）；真正缺口是停机侧——server 裸 `mem::forget(hub)` 到进程
+  退出，unregister_hub 全仓库零调用。最终形态为三态语义：**Drop**=停任务+
+  关 endpoint 不注销（ops_recovery 崩溃模拟/短命进程依赖，原样保留）；
+  **shutdown(self)**=注销+停+关；**leak(self)->HubLease**=常驻+保留注销能力，
+  server 用它替代裸 forget，`Stack::shutdown` 经 HubLease 注销路由。
+  第一版（Stack 直接持有 MqHub）被终验拦下：TestStack 模式 drop Stack 提前
+  停 hub，history_search 5 例 handshake 超时——返工记录如实保留。
+- **验证**：net 102/0；server 全套 0 失败（在途迁移的 secret_enforcement
+  2 例已被其作者修复）；clippy 0；fmt 通过
+- **回滚**：`git revert 40ace05 87dd471`（逆序）
+
 ## 终验记录（2026-10-22 实际运行回填）
 
 | 命令 | 结果 |
@@ -143,7 +224,8 @@
 | `cargo test -p wxlike-core -p wxlike-risk -p wxlike-dpage -p wxlike-container -p wxlike-message` | **123 passed / 0 failed** |
 | `cargo test -p wxlike-net` | **99 passed / 0 failed** |
 | `cargo test -p wxlike-platform`（全套件，含组合态 AR-1+H-2+H-3+H-4 交互） | **全绿**（电池日志可见 27 个套件 ok：unit 21、api 17、keys 13、friends 17、groups 22、moments 17、wallet/p4_ops 17 等；schema_snapshot 初跑失败见下） |
-| `cargo test -p wxlike-server` | 全绿，**除 `secret_enforcement.rs` 2/3 失败——归因：他人在途 ureq3 迁移的测试助手缺口（`post()` 未像 `get()` 那样改走 `http_status_as_error(false)` 的 agent），非本轮变更所致**（本轮不触及转发/秘密聊天路径；取证与修法已评论到 issue #22） |
+| `cargo test -p wxlike-server` | **全绿**（续批复验；首轮曾报 secret_enforcement 2/3 失败，归因在途 ureq3 迁移的 `post()` 助手缺口并已评论 #22，其后由该迁移作者修复） |
+| 续批终验（CH-10..14 后） | core+risk+dpage+container+message+net **227 passed / 0 failed**；platform **280 / 0**；server **全绿**；`clippy --workspace --all-targets` **0 警告**；`cargo fmt --check` **通过**。首轮续批终验曾拦下 CH-14 第一版（TestStack 提前 Drop hub → 5 例 handshake 超时），返工为 leak+HubLease 后复验全绿——终验机制第二次按设计生效 |
 | `cargo clippy --workspace --all-targets` | **0 error / 0 warning**（含在途脏文件） |
 | `cargo fmt --check` | **通过**（本轮文件已 rustfmt；全仓亦无 diff） |
 
