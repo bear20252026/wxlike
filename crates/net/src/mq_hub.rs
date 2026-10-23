@@ -140,6 +140,27 @@ impl MqHub {
     }
 }
 
+impl MqHub {
+    /// M-11（第四轮审计 #32）：优雅停机——先从路由表注销本 hub（多节点
+    /// 下其他 hub 立刻停止向它投递），再走 [`Drop`] 的任务中止与 endpoint
+    /// 关闭。`Drop` 是同步的无法 await，所以注销必须显式调用；不调用则
+    /// 维持旧状（进程退出即消失，路由表残留靠 Redis/NATS 侧租约回收兜底，
+    /// Memory 后端随进程一起蒸发）。
+    pub async fn shutdown(self) {
+        if let Err(err) = self
+            .handle
+            .state
+            .router
+            .routes
+            .unregister_hub(&self.hub_id)
+            .await
+        {
+            eprintln!("[mq-hub] unregister_hub on shutdown failed: {err:#}");
+        }
+        // self 在此 Drop
+    }
+}
+
 impl Drop for MqHub {
     fn drop(&mut self) {
         for t in &self.tasks {

@@ -139,3 +139,29 @@ async fn expired_frame_in_plain_conv_is_still_delivered() {
         other => panic!("unexpected body: {other:?}"),
     }
 }
+
+/// M-11（#32）：优雅停机把本 hub 从路由表注销——多节点下其他 hub 不再
+/// 向它投递，残留路由不会被误当成"这台 hub 还活着"。
+#[tokio::test]
+async fn hub_shutdown_unregisters_from_route_table() {
+    let router = MqRouter::new(Arc::new(MemoryMq::new()), MemoryRoutes::new());
+    let hubs = router.routes.clone();
+    let hub = run_mq_hub_with(
+        "hub-by",
+        "127.0.0.1:0".parse().unwrap(),
+        router,
+        MqHubOptions {
+            auth: Some(Arc::new(wxlike_net::auth::StaticAuth)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(hubs.list_hubs().await.unwrap().contains(&"hub-by".to_string()));
+
+    hub.shutdown().await;
+    assert!(
+        !hubs.list_hubs().await.unwrap().contains(&"hub-by".to_string()),
+        "shutdown must unregister the hub from the route table"
+    );
+}

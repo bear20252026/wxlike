@@ -48,6 +48,10 @@ pub struct Stack {
     pub platform: PlatformState,
     pub store: Arc<Store>,
     pub hub: HubHandle,
+    /// M-11（#32）：MqHub 的唯一所有者（原先 `mem::forget` 到进程退出）。
+    /// 优雅停机时经它从路由表注销本 hub——多节点下别的 hub 不再向它投递。
+    /// `hub` 字段保持 HubHandle 不变：既有测试与嵌入方拿 clone 照常工作。
+    hub_owner: wxlike_net::MqHub,
     pub http_addr: std::net::SocketAddr,
     pub quic_addr: std::net::SocketAddr,
     /// 通知 HTTP 服务停止接新连接并排空在飞请求。
@@ -71,6 +75,9 @@ impl Stack {
                 grace
             ),
         }
+        // M-11：HTTP 排空后注销 hub 路由（MQ 侧其他节点立刻停止向本 hub
+        // 投递），再做 WAL 落盘——顺序保证停机窗口内不再产生新的投递需求
+        self.hub_owner.shutdown().await;
         self.platform.checkpoint_wal();
     }
 }
@@ -131,7 +138,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     );
     let _reconciler =
         wxlike_platform::spawn_reconciler(platform.clone(), std::time::Duration::from_secs(300));
-    std::mem::forget(hub); // run until process exit; the handle above was cloned
+    // M-11：hub 交给 Stack 持有（原先 mem::forget 到进程退出），
+    // 优雅停机时 Stack::shutdown 会先 unregister 再 Drop
 
     let deps = Arc::new(HistoryDeps {
         platform: platform.clone(),
@@ -154,6 +162,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         platform,
         store,
         hub: handle,
+        hub_owner: hub,
         http_addr,
         quic_addr,
         shutdown: shutdown_tx,
