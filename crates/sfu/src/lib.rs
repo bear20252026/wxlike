@@ -188,6 +188,26 @@ impl SfuRoom {
             .count()
     }
 
+    /// 鉴权与准入：token → user_id，并校验房间成员关系。
+    ///
+    /// 非成员与不存在的房间走同一个错误，外部无法区分"房间存在但我不在"。
+    fn authorize_join(&self, token: &str) -> Result<String, SfuJoinError> {
+        let user = self
+            .platform
+            .lookup_token(token)
+            .map_err(|e| SfuJoinError::Internal(format!("session lookup failed: {e}")))?
+            .ok_or(SfuJoinError::Unauthorized)?;
+        match self.platform.conv_member_allowed(&self.conv, &user) {
+            Ok(true) => Ok(user),
+            Ok(false) | Err(PlatformError::NotFound) | Err(PlatformError::BadInput(_)) => {
+                Err(SfuJoinError::NotFound)
+            }
+            Err(e) => Err(SfuJoinError::Internal(format!(
+                "membership lookup failed: {e}"
+            ))),
+        }
+    }
+
     /// 加入：先鉴权与校验，再收 offer、回 answer。
     ///
     /// 参与者 id 一律取平台会话解析出的 user_id；客户端自报的 id 不进这个函数。
@@ -197,24 +217,7 @@ impl SfuRoom {
         offer: serde_json::Value,
         video: bool,
     ) -> Result<JoinReply, SfuJoinError> {
-        let user = self
-            .platform
-            .lookup_token(token)
-            .map_err(|e| SfuJoinError::Internal(format!("session lookup failed: {e}")))?
-            .ok_or(SfuJoinError::Unauthorized)?;
-
-        // 非成员与不存在的房间走同一个错误，外部无法区分"房间存在但我不在"。
-        match self.platform.conv_member_allowed(&self.conv, &user) {
-            Ok(true) => {}
-            Ok(false) | Err(PlatformError::NotFound) | Err(PlatformError::BadInput(_)) => {
-                return Err(SfuJoinError::NotFound)
-            }
-            Err(e) => {
-                return Err(SfuJoinError::Internal(format!(
-                    "membership lookup failed: {e}"
-                )))
-            }
-        }
+        let user = self.authorize_join(token)?;
 
         // 重名 = 拒绝，不再 leave 旧会话：否则知道对方 id 就能把人踢下线。
         if self.participants.contains_key(&user) {
