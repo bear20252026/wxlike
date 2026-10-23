@@ -1551,9 +1551,7 @@ impl LocalStore {
     pub fn load_secret_ttls(&self) -> anyhow::Result<std::collections::HashMap<String, u64>> {
         let c = self.lock();
         let mut stmt = c.prepare("SELECT conv_id, ttl_ms FROM secret_ttls WHERE enabled != 0")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?))
-        })?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?;
         let mut out = std::collections::HashMap::new();
         for row in rows {
             let (conv, ttl) = row?;
