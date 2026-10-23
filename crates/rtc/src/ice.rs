@@ -152,7 +152,8 @@ pub fn parse_xor_mapped_address(response: &[u8]) -> Option<SocketAddr> {
                 _ => {}
             }
         }
-        offset += 4 + alen + (alen % 4); // attributes are padded to 4 bytes
+        // RFC 5389 §15：属性按 32bit 对齐，padding 不计入 length，但必须跳过。
+        offset += 4 + alen + crate::turn::pad4(alen);
     }
     None
 }
@@ -252,6 +253,71 @@ mod tests {
 
         let got = parse_xor_mapped_address(&resp).expect("decodes");
         assert_eq!(got, SocketAddr::from((ip, port)));
+    }
+
+    /// 组一条 Binding Success Response：前缀属性 + XOR-MAPPED-ADDRESS。
+    /// 属性用 `turn::put_attr` 编码，保证测试与被测解析器共享同一套 padding 语义。
+    fn success_response(prefix: &[(u16, Vec<u8>)], addr: SocketAddr) -> Vec<u8> {
+        use crate::turn::{encode_xor_addr, put_attr};
+        let mut attrs = Vec::new();
+        for (kind, value) in prefix {
+            put_attr(&mut attrs, *kind, value);
+        }
+        put_attr(&mut attrs, XOR_MAPPED_ADDRESS, &encode_xor_addr(addr));
+        assert_eq!(attrs.len() % 4, 0, "属性区必须 4 字节对齐");
+
+        let mut resp = Vec::new();
+        resp.extend_from_slice(&0x0101_u16.to_be_bytes());
+        resp.extend_from_slice(&(attrs.len() as u16).to_be_bytes());
+        resp.extend_from_slice(&MAGIC_COOKIE);
+        resp.extend_from_slice(&[0x5A; 12]);
+        resp.extend_from_slice(&attrs);
+        resp
+    }
+
+    /// #59：1/2/3 字节的属性都必须按 pad4 跳过，否则 XOR-MAPPED-ADDRESS 错位。
+    #[test]
+    fn odd_length_attributes_do_not_shift_xor_mapped_address() {
+        let addr: SocketAddr = "203.0.113.7:4444".parse().unwrap();
+        for n in 1..=3usize {
+            let resp = success_response(&[(0x8000 + n as u16, vec![0xAA; n])], addr);
+            assert_eq!(
+                parse_xor_mapped_address(&resp),
+                Some(addr),
+                "前缀属性长度 {n}"
+            );
+        }
+        // 连续多个奇数长度属性，累积错位同样不能发生
+        let prefix = vec![
+            (0x8001, vec![1u8]),
+            (0x8002, vec![2, 2]),
+            (0x8003, vec![3, 3, 3]),
+        ];
+        let resp = success_response(&prefix, addr);
+        assert_eq!(parse_xor_mapped_address(&resp), Some(addr));
+    }
+
+    /// encode→decode：属性值原样恢复，wire 长度 4 对齐。
+    #[test]
+    fn odd_length_attributes_round_trip_through_turn_codec() {
+        use crate::turn::{encode_xor_addr, Message};
+        let addr: SocketAddr = "198.51.100.9:3478".parse().unwrap();
+        let prefix = vec![
+            (0x8001u16, vec![1u8]),
+            (0x8002, vec![2, 2]),
+            (0x8003, vec![3, 3, 3]),
+        ];
+        let resp = success_response(&prefix, addr);
+        assert_eq!((resp.len() - 20) % 4, 0, "wire 上的属性区必须 4 字节对齐");
+
+        let parsed = Message::parse(&resp).expect("turn 解析器应接受同一份编码");
+        assert_eq!(parsed.attr(0x8001), Some(&[1u8][..]));
+        assert_eq!(parsed.attr(0x8002), Some(&[2u8, 2][..]));
+        assert_eq!(parsed.attr(0x8003), Some(&[3u8, 3, 3][..]));
+        assert_eq!(
+            parsed.attr(XOR_MAPPED_ADDRESS),
+            Some(&encode_xor_addr(addr)[..])
+        );
     }
 
     #[test]
