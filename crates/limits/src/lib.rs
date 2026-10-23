@@ -86,6 +86,22 @@ pub struct RiskConfig {
     pub moment_create_throttle_at: usize,
     /// 达到此值 → Deny（刷屏）。
     pub moment_create_deny_at: usize,
+    /// 10 min 内建群/拉人/踢人达到此值 → Throttle（AR-5 余量）。
+    pub group_manage_throttle_at: usize,
+    /// 达到此值 → Deny（建群/拉人轰炸）。
+    pub group_manage_deny_at: usize,
+    /// 10 min 内社区建社/建频道/发帖达到此值 → Throttle。
+    pub community_post_throttle_at: usize,
+    /// 达到此值 → Deny（刷帖/刷频道）。
+    pub community_post_deny_at: usize,
+    /// 1 h 内开播达到此值 → Throttle。
+    pub live_start_throttle_at: usize,
+    /// 达到此值 → Deny。
+    pub live_start_deny_at: usize,
+    /// 10 s 内通话信令达到此值 → Throttle（ICE trickle 是合法突发）。
+    pub call_signal_throttle_at: usize,
+    /// 达到此值 → Deny。
+    pub call_signal_deny_at: usize,
 }
 
 /// 同来源一小时内注册多少次起要求人机校验。
@@ -103,6 +119,18 @@ const WRITE_THROTTLE_AT: usize = 30;
 const WRITE_DENY_AT: usize = 100;
 const MEDIA_UPLOAD_THROTTLE_AT: usize = 60;
 const MEDIA_UPLOAD_DENY_AT: usize = 200;
+
+// T-B2 四个写面的阈值。群/社区管理是低频操作，与好友请求同档；
+// 开播一次要拉起媒体链路，正常主播不会一小时内开十次；
+// 信令要容纳 ICE trickle 的合法突发（10 s 窗口）。
+const GROUP_MANAGE_THROTTLE_AT: usize = 30;
+const GROUP_MANAGE_DENY_AT: usize = 100;
+const COMMUNITY_POST_THROTTLE_AT: usize = 30;
+const COMMUNITY_POST_DENY_AT: usize = 100;
+const LIVE_START_THROTTLE_AT: usize = 10;
+const LIVE_START_DENY_AT: usize = 30;
+const CALL_SIGNAL_THROTTLE_AT: usize = 100;
+const CALL_SIGNAL_DENY_AT: usize = 300;
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -128,6 +156,14 @@ impl Default for RiskConfig {
             media_upload_deny_at: MEDIA_UPLOAD_DENY_AT,
             moment_create_throttle_at: WRITE_THROTTLE_AT,
             moment_create_deny_at: WRITE_DENY_AT,
+            group_manage_throttle_at: GROUP_MANAGE_THROTTLE_AT,
+            group_manage_deny_at: GROUP_MANAGE_DENY_AT,
+            community_post_throttle_at: COMMUNITY_POST_THROTTLE_AT,
+            community_post_deny_at: COMMUNITY_POST_DENY_AT,
+            live_start_throttle_at: LIVE_START_THROTTLE_AT,
+            live_start_deny_at: LIVE_START_DENY_AT,
+            call_signal_throttle_at: CALL_SIGNAL_THROTTLE_AT,
+            call_signal_deny_at: CALL_SIGNAL_DENY_AT,
         }
     }
 }
@@ -150,6 +186,10 @@ mod tests {
             (c.friend_request_throttle_at, c.friend_request_deny_at),
             (c.media_upload_throttle_at, c.media_upload_deny_at),
             (c.moment_create_throttle_at, c.moment_create_deny_at),
+            (c.group_manage_throttle_at, c.group_manage_deny_at),
+            (c.community_post_throttle_at, c.community_post_deny_at),
+            (c.live_start_throttle_at, c.live_start_deny_at),
+            (c.call_signal_throttle_at, c.call_signal_deny_at),
         ];
         for (throttle, deny) in pairs {
             assert!(throttle < deny, "throttle {throttle} must be < deny {deny}");
