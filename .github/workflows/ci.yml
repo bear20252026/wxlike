@@ -2,6 +2,9 @@ name: ci
 
 # DoD from docs/WORK_BREAKDOWN.md §0.2:
 # D1 build · D2 clippy -D warnings · D3 test · D4 fmt · D6 doc
+#
+# 治理门禁（T-F1）：coverage / unwrap-count 在本文件；cargo audit 在 audit.yml
+# （单独 workflow，避免每周 schedule 把 Android 出包等 job 全部重跑）。
 
 on:
   push:
@@ -302,3 +305,169 @@ jobs:
       - name: test
         run: cargo test
         working-directory: ui/src-tauri
+
+  # 覆盖率（T-F1 / #61 L-3）：**先非阻断**。
+  #
+  # 阈值不在这里拍脑袋：先跑两周收集实测分布，由集成方在 Wave 3 依据基线定。
+  # 测量失败也不红——真正的编译/测试失败由 test-linux 拦；这个 job 只负责
+  # 让数字在 PR 评论和 artifact 里可见。
+  coverage:
+    name: coverage (llvm-cov, non-blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: measure（失败不阻断）
+        continue-on-error: true
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: summarize
+        if: always()
+        run: |
+          set -o pipefail
+          python scripts/coverage_summary.py lcov.info \
+            --output coverage-summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: |
+            lcov.info
+            coverage-summary.md
+          if-no-files-found: warn
+      # fork PR 的 token 是只读的，失败也不影响 job（continue-on-error）。
+      - name: comment on PR
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('coverage-summary.md')) {
+              core.info('没有 coverage-summary.md，跳过 PR 评论');
+              return;
+            }
+            // 同一个 PR 每次 push 更新同一条评论，避免刷屏。
+            // legacy 用来接管加 marker 之前已经发过的那条评论。
+            const marker = '<!-- coverage-report -->';
+            const legacy = '## 覆盖率（非阻断）';
+            const body = marker + '\n' + fs.readFileSync('coverage-summary.md', 'utf8');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => {
+              const text = c.body || '';
+              return c.user?.type === 'Bot' &&
+                (text.includes(marker) || text.startsWith(legacy));
+            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`已更新已有评论 #${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # #53 防回潮（T-F1 交付物）：只统计生产代码里的 unwrap()/expect()。
+  #
+  # **非阻断**：计数回潮时脚本仍退出 0，结果贴进 PR 评论与 artifact；
+  # 要升级成硬闸门，在脚本调用处加 `--fail-on-increase` 即可。
+  unwrap-count:
+    name: unwrap count (non-blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # set -o pipefail：别让 tee 的退出码掩盖脚本自己的失败
+      - name: count
+        run: |
+          set -o pipefail
+          python scripts/count_unwraps.py --details | tee unwrap-report.txt
+      - name: step summary
+        if: always()
+        run: |
+          if [ -f unwrap-report.txt ]; then
+            cat unwrap-report.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "unwrap count 未生成报告（见上一步日志）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unwrap-count
+          path: unwrap-report.txt
+          if-no-files-found: warn
+      - name: comment on PR
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('unwrap-report.txt')) {
+              core.info('没有 unwrap-report.txt，跳过 PR 评论');
+              return;
+            }
+            // 同一个 PR 每次 push 更新同一条评论，避免刷屏。
+            const marker = '<!-- unwrap-count -->';
+            const legacy = '## unwrap()/expect() 计数（非阻断）';
+            const body = marker + '\n' + legacy + '\n\n```text\n' +
+              fs.readFileSync('unwrap-report.txt', 'utf8') + '```\n';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => {
+              const text = c.body || '';
+              return c.user?.type === 'Bot' &&
+                (text.includes(marker) || text.startsWith(legacy));
+            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`已更新已有评论 #${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

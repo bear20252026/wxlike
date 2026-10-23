@@ -7,9 +7,12 @@ use std::time::Duration;
 use wxlike_core::{Envelope, Store};
 use wxlike_mq::memory::{MemoryMq, MemoryRoutes};
 use wxlike_mq::MqRouter;
-use wxlike_net::{run_mq_hub_with, Client, DeliveryPolicy, MqHubOptions, SendGate};
+use wxlike_net::{
+    run_mq_hub_with, Client, DeliveryPolicy, MqHubOptions, SendGate, MAX_SEND_GATE_SLEEP_MS,
+};
 
-/// 按内容裁决的策略：含 "blocked" 拒、含 "slow" 限速、其余放行。
+/// 按内容裁决的策略：含 "blocked" 拒、含 "slow" 限速、含 "nap" 退避、
+/// 含 "oversleep" 请求超过上限的退避，其余放行。
 struct GatePolicy {
     allow_direct: bool,
 }
@@ -34,6 +37,12 @@ impl DeliveryPolicy for GatePolicy {
             SendGate::Throttle {
                 retry_after_ms: 500,
             }
+        } else if text.contains("oversleep") {
+            SendGate::Sleep {
+                delay_ms: MAX_SEND_GATE_SLEEP_MS + 1,
+            }
+        } else if text.contains("nap") {
+            SendGate::Sleep { delay_ms: 150 }
         } else {
             SendGate::Allow
         }
@@ -145,4 +154,75 @@ async fn default_gate_allows_everything() {
 
     let rows = store.list_messages("d-alice~bob").unwrap();
     assert_eq!(rows.len(), 1, "默认实现必须放行（P3 行为不变）");
+}
+
+/// `Sleep` 是软限流：先退避，再走正常投递（不丢帧）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sleep_gate_delays_then_delivers() {
+    let (store, addr) = hub_with(Arc::new(GatePolicy { allow_direct: true })).await;
+    let _alice = Client::connect(addr, "localhost", "alice").await.unwrap();
+    let bob = Client::connect(addr, "localhost", "bob").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    bob.send(&Envelope::direct(
+        "d-alice~bob",
+        "bob",
+        vec!["alice".into()],
+        1,
+        "nap a moment",
+    ))
+    .await
+    .unwrap();
+
+    let mut rows = Vec::new();
+    for _ in 0..100 {
+        rows = store.list_messages("d-alice~bob").unwrap();
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(rows.len(), 1, "退避后必须投递，而不是丢帧: {rows:?}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(120),
+        "投递发生在退避之前（{:?}）",
+        started.elapsed()
+    );
+    match &rows[0].envelope.body {
+        wxlike_core::MsgBody::Text(t) => assert_eq!(t, "nap a moment"),
+        other => panic!("unexpected body {other:?}"),
+    }
+
+    let text = wxlike_net::prometheus_text();
+    assert!(text.contains("wxlike_rate_limit_sleep_total"), "{text}");
+    assert!(text.contains("rate_limiter_name=\"send_gate\""), "{text}");
+}
+
+/// 超过上限的 `Sleep` 按拒绝处理：不能把连接读循环无限挂起。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sleep_beyond_cap_is_dropped() {
+    let (store, addr) = hub_with(Arc::new(GatePolicy { allow_direct: true })).await;
+    let _alice = Client::connect(addr, "localhost", "alice").await.unwrap();
+    let bob = Client::connect(addr, "localhost", "bob").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    bob.send(&Envelope::direct(
+        "d-alice~bob",
+        "bob",
+        vec!["alice".into()],
+        1,
+        "oversleep now",
+    ))
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    assert!(
+        store.list_messages("d-alice~bob").unwrap().is_empty(),
+        "超上限的退避必须按拒绝丢弃"
+    );
+    let text = wxlike_net::prometheus_text();
+    assert!(text.contains("wxlike_rate_limit_reject_total"), "{text}");
+    assert!(text.contains("rate_limiter_name=\"send_gate\""), "{text}");
 }

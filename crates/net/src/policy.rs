@@ -14,6 +14,12 @@
 //! 失败语义：实现方在裁决查询出错时**放行**（fail-open）并自行记日志——
 //! 拦截增强不能变成可用性单点。
 
+/// 发送闸门允许的最长退避。超过它的 `Sleep` 不再等待，按 `Reject` 丢弃。
+///
+/// 退避发生在该连接的读循环里：无上限的 sleep 等于把连接任务交给策略方
+/// 无限挂起（慢速 DoS）。1 秒够吸收一次突发，又不会让一条连接停摆太久。
+pub const MAX_SEND_GATE_SLEEP_MS: u64 = 1_000;
+
 /// P4 发送闸门结果（风控 + 内容审核）。
 ///
 /// 与 `blocked`/`muted` 的区别：那两条是**关系裁决**（谁可以给谁发），
@@ -24,6 +30,12 @@ pub enum SendGate {
     /// 降速：帧丢弃，调用方应提示"发送过快"。
     Throttle {
         retry_after_ms: u64,
+    },
+    /// 软限流（Synapse `should_sleep` 同型）：等 `delay_ms` 后继续投递。
+    ///
+    /// 超过 [`MAX_SEND_GATE_SLEEP_MS`] 的请求由 hub 按拒绝处理。
+    Sleep {
+        delay_ms: u64,
     },
     /// 拒绝：硬违规或封禁。
     Reject {
@@ -45,9 +57,18 @@ pub trait DeliveryPolicy: Send + Sync + 'static {
     /// P4 发送闸门：风控限流 + 内容审核（ADR-20 前两层）。
     ///
     /// 默认放行——保持 P3 的既有实现与测试不动；只有注入真实平台的部署
-    /// 才覆盖它。返回非 `Allow` 时 hub 丢弃该帧（不落库、不暂存、不扇出）。
+    /// 才覆盖它。`Throttle`/`Reject` 时 hub 丢弃该帧（不落库、不暂存、
+    /// 不扇出）；`Sleep` 时先退避再走正常投递。
     async fn send_gate(&self, _from: &str, _conv: &str, _text: &str) -> SendGate {
         SendGate::Allow
+    }
+
+    /// 发送闸门在限流指标里的名字（Synapse `rate_limiter_name` 标签）。
+    ///
+    /// 多个限流器共用一个 hub 时靠它区分序列；注入真实风控的部署可以
+    /// 覆盖成 `risk_send` 之类，默认值代表"策略层统一闸门"。
+    fn rate_limiter_name(&self) -> &'static str {
+        "send_gate"
     }
 
     /// AR-6（第四轮审计 #30）：秘密会话的消息 TTL 兜底。
