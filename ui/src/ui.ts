@@ -60,6 +60,105 @@ const menuListeners = new ListenerSetter();
 /** Conversations where the secret-chat toggle is on (P1 prototype). */
 const secretConvs = new Set<string>();
 
+/** 消失消息档位（毫秒；0 = 不消失）。与服务端 `TTL_CHOICES_MS` 一一对应。 */
+const SECRET_TTL_CHOICES: Array<[string, number]> = [
+  ["关闭", 0],
+  ["30 秒", 30_000],
+  ["5 分钟", 300_000],
+  ["1 小时", 3_600_000],
+  ["24 小时", 86_400_000],
+  ["7 天", 604_800_000],
+];
+
+/** 会话级秘密聊天设置：开关 + TTL。服务端是唯一真相，保存后回写本地渲染缓存。 */
+async function secretSettingsDialog(convId: string, lock: El): Promise<void> {
+  let current: api.SecretState;
+  try {
+    current = await api.secretState(convId);
+  } catch {
+    current = { conv_id: convId, enabled: false, ttl_ms: 0 };
+  }
+  let enabled = current.enabled;
+  let ttlMs = enabled ? current.ttl_ms : 0;
+
+  const overlay = h("div", "modal-overlay");
+  const panel = h("div", "modal");
+  panel.append(h("div", "modal-title", "秘密聊天设置"));
+  panel.append(
+    h("p", "modal-hint", "开启后本会话使用端到端加密；消失消息到期后会从本机消息库删除。"),
+  );
+
+  const toggleRow = h("div", "secret-toggle");
+  toggleRow.append(h("span", "", "秘密聊天"));
+  const toggle = h("button", "btn tiny");
+  const paintToggle = () => {
+    toggle.textContent = enabled ? "已开启" : "已关闭";
+    toggle.classList.toggle("primary", enabled);
+  };
+  paintToggle();
+  on(toggle, "click", () => {
+    enabled = !enabled;
+    paintToggle();
+    paintTtls();
+  });
+  toggleRow.append(toggle);
+  panel.append(toggleRow);
+
+  const ttlRow = h("div", "secret-ttls");
+  const chips: El[] = [];
+  const paintTtls = () => {
+    for (const chip of chips) {
+      chip.classList.toggle("active", Number(chip.dataset.ttl) === ttlMs);
+      chip.toggleAttribute("disabled", !enabled);
+    }
+  };
+  for (const [label, value] of SECRET_TTL_CHOICES) {
+    const chip = h("button", "secret-ttl", label);
+    chip.dataset.ttl = String(value);
+    on(chip, "click", () => {
+      ttlMs = value;
+      paintTtls();
+    });
+    chips.push(chip);
+    ttlRow.append(chip);
+  }
+  paintTtls();
+  panel.append(h("div", "modal-label", "消失消息"), ttlRow);
+
+  const actions = h("div", "modal-actions");
+  const cancel = h("button", "btn ghost", "取消");
+  const save = h("button", "btn primary", "保存");
+  const close = () => overlay.remove();
+  on(cancel, "click", close);
+  on(overlay, "click", (e) => {
+    if (e.target === overlay) close();
+  });
+  on(save, "click", () => {
+    save.setAttribute("disabled", "true");
+    void api
+      .secretConfigure(convId, enabled, enabled ? ttlMs : 0)
+      .then((state) => {
+        if (state.enabled) secretConvs.add(convId);
+        else secretConvs.delete(convId);
+        lock.textContent = state.enabled ? "🔒" : "🔓";
+        close();
+        if (state.enabled) {
+          toast(state.ttl_ms > 0 ? "秘密聊天已开启，消失消息已设置" : "秘密聊天已开启");
+        } else {
+          toast("已切换为普通消息");
+        }
+      })
+      .catch((e) => {
+        save.removeAttribute("disabled");
+        toast(String(e).slice(0, 120));
+      });
+  });
+  actions.append(cancel, save);
+  panel.append(actions);
+  overlay.append(panel);
+  document.body.append(overlay);
+}
+
 // ---------------------------------------------------------------------------
 // auth screen
 // ---------------------------------------------------------------------------
@@ -691,25 +790,7 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
       .catch(() => {
         /* 没配置过就是关，保持默认图标 */
       });
-    on(lock, "click", () => {
-      const next = !secretConvs.has(convId);
-      lock.textContent = next ? "🔒" : "🔓";
-      void api
-        .secretConfigure(convId, next)
-        .then((s) => {
-          if (s.enabled) secretConvs.add(convId);
-          else secretConvs.delete(convId);
-          lock.textContent = s.enabled ? "🔒" : "🔓";
-          toast(s.enabled ? "秘密聊天已开启：本会话消息将加密发送" : "已切换为普通消息");
-        })
-        .catch((e) => {
-          // 服务端拒绝就回滚图标，别让用户以为开了
-          if (next) secretConvs.delete(convId);
-          else secretConvs.add(convId);
-          lock.textContent = secretConvs.has(convId) ? "🔒" : "🔓";
-          toast(String(e).slice(0, 120));
-        });
-    });
+    on(lock, "click", () => void secretSettingsDialog(convId, lock));
   }
   footer.append(img, red, mic, clip, film, sticker, input, send, lock, imgInput, fileInput, videoInput);
 

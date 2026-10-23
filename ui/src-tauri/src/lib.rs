@@ -22,7 +22,7 @@
 #![allow(linker_messages)]
 
 use std::io::{Read as _, Write as _};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
@@ -120,6 +120,10 @@ pub struct AppState {
     /// 这里只是发送路径的快速判断：每发一条都去 GET 一次不现实，而且网络
     /// 抖动不该让"这条能不能发"变得不可知。
     secret_convs: Mutex<std::collections::HashMap<String, bool>>,
+    /// 会话 TTL 缓存（0 = 不消失）。与本地库 `secret_ttls` 表同步，
+    /// 这样重启后离线也能继续按期限清理。
+    secret_ttls: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    ttl_purge_started: AtomicBool,
     /// P2 local message library (client-side SQLite): the chat opens from
     /// disk instantly, the server history only *adds* older rows.
     local: Arc<Mutex<Option<LocalStore>>>,
@@ -145,6 +149,8 @@ impl AppState {
             secret: Arc::new(Mutex::new(None)),
             data_dir: Mutex::new(None),
             secret_convs: Mutex::new(std::collections::HashMap::new()),
+            secret_ttls: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            ttl_purge_started: AtomicBool::new(false),
             local: Arc::new(Mutex::new(None)),
             outbox: Mutex::new(None),
             outbox_pump: std::sync::atomic::AtomicBool::new(false),
@@ -815,11 +821,21 @@ impl AppState {
             wxlike_net::heartbeat::NetProfile::from_env(),
             wxlike_net::heartbeat::store_in(hb_dir.as_deref()),
         );
+        // 重启后离线也要能继续清理：TTL 与开关一起落在本地库。
+        let persisted = store.load_secret_ttls().unwrap_or_default();
         *self.outbox.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(outbox));
         *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
+        {
+            let mut ttls = self
+                .secret_ttls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            ttls.extend(persisted);
+        }
         if let Some(dir) = path.parent() {
             *self.data_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir.to_path_buf());
         }
+        self.start_ttl_purge();
         Ok(())
     }
 
@@ -1129,7 +1145,12 @@ impl AppState {
             &format!("/api/secret/{conv_id}"),
             Some(&serde_json::json!({ "enabled": enabled, "ttl_ms": ttl_ms })),
         )?;
-        self.cache_secret_conv(conv_id, enabled);
+        let enabled = state["enabled"].as_bool().unwrap_or(enabled);
+        let ttl_ms = state["ttl_ms"].as_u64().unwrap_or(ttl_ms);
+        self.cache_secret_conv(conv_id, enabled, ttl_ms);
+        if enabled && ttl_ms > 0 {
+            self.purge_expired_local();
+        }
         Ok(state)
     }
 
@@ -1139,15 +1160,29 @@ impl AppState {
             .http()
             .expect_json("GET", &format!("/api/secret/{conv_id}"), None)?;
         let enabled = state["enabled"].as_bool().unwrap_or(false);
-        self.cache_secret_conv(conv_id, enabled);
+        let ttl_ms = state["ttl_ms"].as_u64().unwrap_or(0);
+        self.cache_secret_conv(conv_id, enabled, ttl_ms);
         Ok(state)
     }
 
-    fn cache_secret_conv(&self, conv_id: &str, enabled: bool) {
+    fn cache_secret_conv(&self, conv_id: &str, enabled: bool, ttl_ms: u64) {
+        let ttl_ms = if enabled { ttl_ms } else { 0 };
         self.secret_convs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(conv_id.to_string(), enabled);
+        self.secret_ttls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(conv_id.to_string(), ttl_ms);
+        if let Some(store) = self
+            .local
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            let _ = store.set_secret_ttl(conv_id, enabled, ttl_ms);
+        }
     }
 
     /// 这个会话是不是秘密聊天（发送/转发闸门用）。
@@ -1171,12 +1206,73 @@ impl AppState {
         }
     }
 
-    /// 会话的消失消息 TTL（毫秒，0 = 关）。查不到就按 0 处理。
+    /// 会话的消失消息 TTL（毫秒，0 = 关）。先看本地缓存，查不到再问服务端；
+    /// 两边都不可知时按 0 处理。
     fn conv_ttl_ms(&self, conv_id: &str) -> u64 {
+        if let Some(ttl) = self
+            .secret_ttls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(conv_id)
+        {
+            return *ttl;
+        }
         self.secret_state(conv_id)
             .ok()
             .and_then(|v| v["ttl_ms"].as_u64())
             .unwrap_or(0)
+    }
+
+    /// 按缓存里的 TTL 清掉本地库中已到期的行。返回删除条数。
+    fn purge_expired_local(&self) -> usize {
+        let ttls: Vec<(String, u64)> = self
+            .secret_ttls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(_, ttl)| **ttl > 0)
+            .map(|(conv, ttl)| (conv.clone(), *ttl))
+            .collect();
+        if ttls.is_empty() {
+            return 0;
+        }
+        let local = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(store) = local.as_ref() else {
+            return 0;
+        };
+        store
+            .purge_expired(&ttls, wxlike_core::types::now_ms())
+            .unwrap_or(0)
+    }
+
+    /// 本地清除定时器：每 30 秒扫一次。服务端只兜底补发/检索，
+    /// 已经落到本机的消息必须由客户端自己按 sent_at + ttl 删掉（#15）。
+    fn start_ttl_purge(&self) {
+        if self.ttl_purge_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let local = self.local.clone();
+        let ttls = self.secret_ttls.clone();
+        let _ = std::thread::Builder::new()
+            .name("wxlike-ttl-purge".into())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let map: Vec<(String, u64)> = {
+                    let guard = ttls.lock().unwrap_or_else(PoisonError::into_inner);
+                    guard
+                        .iter()
+                        .filter(|(_, ttl)| **ttl > 0)
+                        .map(|(conv, ttl)| (conv.clone(), *ttl))
+                        .collect()
+                };
+                if map.is_empty() {
+                    continue;
+                }
+                let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(store) = guard.as_ref() {
+                    let _ = store.purge_expired(&map, wxlike_core::types::now_ms());
+                }
+            });
     }
 
     /// Sends one secret-chat message. **fail closed**: any crypto-side failure
@@ -1366,6 +1462,8 @@ impl LocalStore {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            -- 消失消息删除后不要把正文留在空闲页里
+            PRAGMA secure_delete = ON;
             CREATE TABLE IF NOT EXISTS local_messages (
                 conv_id    TEXT NOT NULL,
                 seq        INTEGER NOT NULL,
@@ -1378,6 +1476,12 @@ impl LocalStore {
                 quote_of   TEXT,
                 sent_at_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (conv_id, seq, msg_id)
+            );
+            -- 会话 TTL 与开关：重启后离线也能继续按期限清理（#15）
+            CREATE TABLE IF NOT EXISTS secret_ttls (
+                conv_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                ttl_ms  INTEGER NOT NULL DEFAULT 0
             );
             "#,
         )?;
@@ -1428,6 +1532,49 @@ impl LocalStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// 记住会话的消失消息设置；服务端仍是唯一真相，这里只负责重启后还能清理。
+    pub fn set_secret_ttl(&self, conv_id: &str, enabled: bool, ttl_ms: u64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "INSERT INTO secret_ttls(conv_id, enabled, ttl_ms) VALUES(?1, ?2, ?3)
+             ON CONFLICT(conv_id) DO UPDATE SET
+               enabled = excluded.enabled,
+               ttl_ms  = excluded.ttl_ms",
+            rusqlite::params![conv_id, enabled as i64, ttl_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    /// 启动时把持久化的 TTL 读回内存（只返回生效的会话）。
+    pub fn load_secret_ttls(&self) -> anyhow::Result<std::collections::HashMap<String, u64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT conv_id, ttl_ms FROM secret_ttls WHERE enabled != 0")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (conv, ttl) = row?;
+            out.insert(conv, ttl);
+        }
+        Ok(out)
+    }
+
+    /// 删除所有 `sent_at + ttl <= now` 的本地行。返回删除条数。
+    pub fn purge_expired(&self, ttls: &[(String, u64)], now_ms: u64) -> anyhow::Result<usize> {
+        let mut c = self.lock();
+        let tx = c.transaction()?;
+        let mut removed = 0usize;
+        for (conv, ttl) in ttls.iter().filter(|(_, ttl)| *ttl > 0) {
+            removed += tx.execute(
+                "DELETE FROM local_messages
+                 WHERE conv_id = ?1 AND sent_at_ms > 0 AND sent_at_ms + ?2 <= ?3",
+                rusqlite::params![conv, *ttl as i64, now_ms as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(removed)
     }
 
     /// Newest-first page (`before_seq = 0` = latest), returned ascending so
@@ -2614,5 +2761,53 @@ mod tests {
             !normalize_path(std::path::Path::new("/data/app/../../etc/passwd")).starts_with(&base)
         );
         assert!(!normalize_path(std::path::Path::new("/data/application/x")).starts_with(&base));
+    }
+
+    /// 消失消息：只删到期的行，未到期和没设 TTL 的会话不动；TTL 能持久化。
+    #[test]
+    fn purge_expired_removes_only_due_messages() {
+        let path = std::env::temp_dir().join(format!(
+            "wxlike-purge-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = LocalStore::open(&path).expect("open");
+        let row = |conv: &str, seq: i64, msg: &str, at: u64| {
+            serde_json::json!({
+                "conv_id": conv, "seq": seq, "msg_id": msg, "sender": "u1",
+                "kind": "text", "text": "hi", "sent_at_ms": at
+            })
+        };
+        let now = 10_000_000u64;
+        store.append(&row("c1", 1, "old", now - 61_000)).unwrap();
+        store.append(&row("c1", 2, "fresh", now - 1_000)).unwrap();
+        store.append(&row("c2", 1, "other", now - 61_000)).unwrap();
+
+        store.set_secret_ttl("c1", true, 60_000).unwrap();
+        store.set_secret_ttl("c2", false, 0).unwrap();
+        let ttls = store.load_secret_ttls().unwrap();
+        assert_eq!(ttls.get("c1"), Some(&60_000));
+        assert!(!ttls.contains_key("c2"));
+
+        let removed = store
+            .purge_expired(&[("c1".to_string(), 60_000)], now)
+            .unwrap();
+        assert_eq!(removed, 1);
+        let left: Vec<Option<String>> = store
+            .page("c1", 0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.msg_id)
+            .collect();
+        assert_eq!(left, vec![Some("fresh".to_string())]);
+        assert_eq!(store.page("c2", 0, 10).unwrap().len(), 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }
