@@ -473,10 +473,12 @@ impl Transport {
     /// 已建立的 TURN 分配绑定在旧凭据上（rtc 的公开 API 不提供换凭据），
     /// 所以这里只预热缓存：本次通话继续用原分配，续期由 `TurnClient` 自己做。
     fn refresh_credentials_if_due(&mut self) {
+        /// 凭据到期检查的节流间隔：poll 每帧都跑，不能每帧都发一次请求。
+        const CRED_CHECK_INTERVAL: Duration = Duration::from_secs(30);
         let Some(expires_at) = self.turn_expires_at else {
             return;
         };
-        if self.last_cred_check.elapsed() < Duration::from_secs(30) {
+        if self.last_cred_check.elapsed() < CRED_CHECK_INTERVAL {
             return;
         }
         self.last_cred_check = Instant::now();
