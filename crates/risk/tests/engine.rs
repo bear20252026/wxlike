@@ -22,6 +22,14 @@ fn engine() -> RiskEngine {
         media_upload_deny_at: 4,
         moment_create_throttle_at: 2,
         moment_create_deny_at: 4,
+        group_manage_throttle_at: 2,
+        group_manage_deny_at: 4,
+        community_post_throttle_at: 2,
+        community_post_deny_at: 4,
+        live_start_throttle_at: 2,
+        live_start_deny_at: 4,
+        call_signal_throttle_at: 2,
+        call_signal_deny_at: 4,
     })
 }
 
@@ -165,6 +173,30 @@ fn report_flood_is_denied() {
         e.record(Action::Report, "u1", T0).unwrap(),
         Verdict::Deny { .. }
     ));
+}
+
+#[test]
+fn new_write_actions_have_independent_windows() {
+    // T-B2：四个新动作各自读了正确的阈值字段，且键空间互不串味。
+    let e = engine();
+    for (i, action) in [
+        Action::GroupManage,
+        Action::CommunityPost,
+        Action::LiveStart,
+        Action::CallSignal,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = format!("u{i}");
+        assert!(e.record(action, &key, T0).unwrap().is_allowed());
+        assert!(matches!(
+            e.record(action, &key, T0).unwrap(),
+            Verdict::Throttle { .. }
+        ));
+        // 同一 key 上的其他动作不受影响
+        assert!(e.record(Action::Send, &key, T0).unwrap().is_allowed());
+    }
 }
 
 #[test]
