@@ -144,6 +144,15 @@ pub struct RiskConfig {
 const REGISTER_CHALLENGE_AT: usize = 50;
 const REGISTER_DENY_AT: usize = 200;
 
+// AR-2 / AR-5 新增动作的默认阈值。写接口（好友请求 / 朋友圈）共用一档；
+// 媒体上传是重操作，单独放宽。
+const CLAIM_KEYS_THROTTLE_AT: usize = 30;
+const CLAIM_KEYS_DENY_AT: usize = 120;
+const WRITE_THROTTLE_AT: usize = 30;
+const WRITE_DENY_AT: usize = 100;
+const MEDIA_UPLOAD_THROTTLE_AT: usize = 60;
+const MEDIA_UPLOAD_DENY_AT: usize = 200;
+
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
@@ -160,14 +169,77 @@ impl Default for RiskConfig {
             send_deny_at: 60,
             report_throttle_at: 10,
             report_deny_at: 30,
-            claim_keys_throttle_at: 30,
-            claim_keys_deny_at: 120,
-            friend_request_throttle_at: 30,
-            friend_request_deny_at: 100,
-            media_upload_throttle_at: 60,
-            media_upload_deny_at: 200,
-            moment_create_throttle_at: 30,
-            moment_create_deny_at: 100,
+            claim_keys_throttle_at: CLAIM_KEYS_THROTTLE_AT,
+            claim_keys_deny_at: CLAIM_KEYS_DENY_AT,
+            friend_request_throttle_at: WRITE_THROTTLE_AT,
+            friend_request_deny_at: WRITE_DENY_AT,
+            media_upload_throttle_at: MEDIA_UPLOAD_THROTTLE_AT,
+            media_upload_deny_at: MEDIA_UPLOAD_DENY_AT,
+            moment_create_throttle_at: WRITE_THROTTLE_AT,
+            moment_create_deny_at: WRITE_DENY_AT,
+        }
+    }
+}
+
+/// 单个动作的阈值与裁决形状：captcha 动作给 Challenge，其余给 Throttle。
+struct Limits {
+    throttle_at: usize,
+    deny_at: usize,
+    reason: &'static str,
+    captcha: bool,
+}
+
+impl RiskConfig {
+    fn limits(&self, action: Action) -> Limits {
+        match action {
+            Action::Register => Limits {
+                throttle_at: self.register_challenge_at,
+                deny_at: self.register_deny_at,
+                reason: "register_rate",
+                captcha: true,
+            },
+            Action::Login => Limits {
+                throttle_at: self.login_fail_challenge_at,
+                deny_at: self.login_fail_deny_at,
+                reason: "login_failures",
+                captcha: true,
+            },
+            Action::Send => Limits {
+                throttle_at: self.send_throttle_at,
+                deny_at: self.send_deny_at,
+                reason: "send_rate",
+                captcha: false,
+            },
+            Action::ClaimKeys => Limits {
+                throttle_at: self.claim_keys_throttle_at,
+                deny_at: self.claim_keys_deny_at,
+                reason: "claim_keys_rate",
+                captcha: false,
+            },
+            Action::FriendRequest => Limits {
+                throttle_at: self.friend_request_throttle_at,
+                deny_at: self.friend_request_deny_at,
+                reason: "friend_request_rate",
+                captcha: false,
+            },
+            Action::MediaUpload => Limits {
+                throttle_at: self.media_upload_throttle_at,
+                deny_at: self.media_upload_deny_at,
+                reason: "media_upload_rate",
+                captcha: false,
+            },
+            Action::MomentCreate => Limits {
+                throttle_at: self.moment_create_throttle_at,
+                deny_at: self.moment_create_deny_at,
+                reason: "moment_create_rate",
+                captcha: false,
+            },
+            Action::Report => Limits {
+                throttle_at: self.report_throttle_at,
+                deny_at: self.report_deny_at,
+                reason: "report_rate",
+                captcha: false,
+            },
         }
     }
 }
@@ -240,28 +312,6 @@ impl RiskEngine {
         Ok(events.len())
     }
 
-    /// 无 captcha 兑现面动作的公共裁决：throttle → deny → allow。
-    fn throttle_or_deny(
-        &self,
-        n: usize,
-        retry_after: u64,
-        throttle_at: usize,
-        deny_at: usize,
-        reason: &'static str,
-    ) -> Verdict {
-        if n >= deny_at {
-            Verdict::Deny {
-                reason: reason.into(),
-            }
-        } else if n >= throttle_at {
-            Verdict::Throttle {
-                retry_after_ms: retry_after,
-            }
-        } else {
-            Verdict::Allow
-        }
-    }
-
     fn decide(
         &self,
         action: Action,
@@ -271,99 +321,24 @@ impl RiskEngine {
         extra: usize,
     ) -> Verdict {
         let n = events.len() + extra;
-        let retry_after = events
-            .front()
-            .map(|&oldest| window.saturating_sub(now_ms.saturating_sub(oldest)))
-            .unwrap_or(0);
-        match action {
-            Action::Register => {
-                if n >= self.cfg.register_deny_at {
-                    Verdict::Deny {
-                        reason: "register_rate".into(),
-                    }
-                } else if n >= self.cfg.register_challenge_at {
-                    Verdict::Challenge {
-                        reason: "register_rate".into(),
-                    }
-                } else {
-                    Verdict::Allow
+        let retry_after = retry_after_ms(events, now_ms, window);
+        let limits = self.cfg.limits(action);
+        if n >= limits.deny_at {
+            Verdict::Deny {
+                reason: limits.reason.into(),
+            }
+        } else if n >= limits.throttle_at {
+            if limits.captcha {
+                Verdict::Challenge {
+                    reason: limits.reason.into(),
+                }
+            } else {
+                Verdict::Throttle {
+                    retry_after_ms: retry_after,
                 }
             }
-            Action::Login => {
-                if n >= self.cfg.login_fail_deny_at {
-                    Verdict::Deny {
-                        reason: "login_failures".into(),
-                    }
-                } else if n >= self.cfg.login_fail_challenge_at {
-                    Verdict::Challenge {
-                        reason: "login_failures".into(),
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
-            Action::Send => {
-                if n >= self.cfg.send_deny_at {
-                    Verdict::Deny {
-                        reason: "send_rate".into(),
-                    }
-                } else if n >= self.cfg.send_throttle_at {
-                    Verdict::Throttle {
-                        retry_after_ms: retry_after,
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
-            // 认领没有 captcha 兑现面，Challenge 无处兑现——只 Throttle/Deny。
-            Action::ClaimKeys => {
-                if n >= self.cfg.claim_keys_deny_at {
-                    Verdict::Deny {
-                        reason: "claim_keys_rate".into(),
-                    }
-                } else if n >= self.cfg.claim_keys_throttle_at {
-                    Verdict::Throttle {
-                        retry_after_ms: retry_after,
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
-            // 中间件闸门的三个动作同样没有 captcha 兑现面（写接口 429 即可）
-            Action::FriendRequest => self.throttle_or_deny(
-                n,
-                retry_after,
-                self.cfg.friend_request_throttle_at,
-                self.cfg.friend_request_deny_at,
-                "friend_request_rate",
-            ),
-            Action::MediaUpload => self.throttle_or_deny(
-                n,
-                retry_after,
-                self.cfg.media_upload_throttle_at,
-                self.cfg.media_upload_deny_at,
-                "media_upload_rate",
-            ),
-            Action::MomentCreate => self.throttle_or_deny(
-                n,
-                retry_after,
-                self.cfg.moment_create_throttle_at,
-                self.cfg.moment_create_deny_at,
-                "moment_create_rate",
-            ),
-            Action::Report => {
-                if n >= self.cfg.report_deny_at {
-                    Verdict::Deny {
-                        reason: "report_rate".into(),
-                    }
-                } else if n >= self.cfg.report_throttle_at {
-                    Verdict::Throttle {
-                        retry_after_ms: retry_after,
-                    }
-                } else {
-                    Verdict::Allow
-                }
-            }
+        } else {
+            Verdict::Allow
         }
     }
 }
@@ -372,6 +347,13 @@ impl Default for RiskEngine {
     fn default() -> Self {
         Self::with_defaults()
     }
+}
+
+fn retry_after_ms(events: &VecDeque<u64>, now_ms: u64, window_ms: u64) -> u64 {
+    events
+        .front()
+        .map(|&oldest| window_ms.saturating_sub(now_ms.saturating_sub(oldest)))
+        .unwrap_or(0)
 }
 
 fn evict(events: &mut VecDeque<u64>, now_ms: u64, window_ms: u64) {

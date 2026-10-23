@@ -326,7 +326,7 @@ impl Device {
     /// Human-comparable safety number over the Ed25519 signing key: the value
     /// two users compare out-of-band to confirm no MITM sits between them
     /// (the TOFU first-connect window in `docs/threat-model.md`). Grouped
-    /// hex of SHA-256 over the public key, so a mis-transcription breaks the
+    /// hex of SHA-256 over the public key, so a transcription error breaks the
     /// check instead of silently matching.
     pub fn safety_number(&self) -> String {
         use sha2::{Digest as _, Sha256};
