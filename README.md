@@ -1,8 +1,10 @@
 # wxlike
 
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+
 Rust 跨平台 IM（微信形态）骨架 + 本地复用研究容器。自研协议与实现，**不含任何腾讯代码进入分发物**。
 
-> **许可：AGPL-3.0**（2026-10-18 起，原 GPL-3.0）。项目定位为研究实验，非商用——借鉴引用遵循
+> **许可：AGPL-3.0-only**（2026-10-18 起，原 GPL-3.0）。项目定位为研究实验，非商用——借鉴引用遵循
 > [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。AGPL 与 GPL-3.0 同族且**允许并入**：
 > GPL-3.0 代码（tweb 等）可直接用于本仓库；AGPL-3.0 代码（Element/Synapse/spreed/Signal）
 > 也可直接复制，合并后的作品整体为 AGPL-3.0。代价是本平台**对外提供网络服务时须向用户
@@ -235,7 +237,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test -p wxlike-mq --features redis -- --i
 [conv1] alice: directed just for bob           ← to=["bob"] 定向
 ```
 
-许可与移植声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（wxlike 本体 **AGPL-3.0**；MQ 设计移植自 box-im MIT 设计，未含其 Java 代码）。
+许可与移植声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（wxlike 本体 **AGPL-3.0-only**；MQ 设计移植自 box-im MIT 设计，未含其 Java 代码）。
 
 ## 快速开始
 
