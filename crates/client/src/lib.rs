@@ -193,9 +193,16 @@ impl Http {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(u16, serde_json::Value), String> {
-        let resp = match body {
-            Some(v) => self.req_write(method, path).send_json(v),
-            None => self.req(method, path).call(),
+        // 写方法**即使没有 body** 也要走 req_write：`send_empty()` 才是
+        // "POST/PUT 带一个空体"的正确形状。走 req() 会踩 typestate 的
+        // unreachable（GET/DELETE 才是无体请求）。
+        let resp = match (method, body) {
+            ("GET" | "DELETE", None) => self.req(method, path).call(),
+            ("GET" | "DELETE", Some(_)) => {
+                return Err(format!("{method} {path}: 读方法不该有 body"))
+            }
+            (_, Some(v)) => self.req_write(method, path).send_json(v),
+            (_, None) => self.req_write(method, path).send_empty(),
         };
         // 3.x 关掉了"状态码即错误"：4xx/5xx 也是 Ok。**调用方仍然要能按 status
         // 分流**（有些端点就是靠 404/409 表达业务结果），所以这里照旧返回 status，
@@ -237,9 +244,14 @@ impl Http {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(), String> {
-        let resp = match body {
-            Some(v) => self.req_write(method, path).send_json(v),
-            None => self.req(method, path).call(),
+        // 同 `json()`：写方法无 body 也要走 `send_empty()`，`req()` 只收 GET/DELETE。
+        let resp = match (method, body) {
+            ("GET" | "DELETE", None) => self.req(method, path).call(),
+            ("GET" | "DELETE", Some(_)) => {
+                return Err(format!("{method} {path}: 读方法不该有 body"))
+            }
+            (_, Some(v)) => self.req_write(method, path).send_json(v),
+            (_, None) => self.req_write(method, path).send_empty(),
         };
         match resp {
             Ok(resp) => Self::ok(resp),
