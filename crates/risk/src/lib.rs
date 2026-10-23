@@ -16,16 +16,25 @@
 //! 时间由调用方传入（`now_ms`），引擎内部不读时钟：风控规则的时间窗口
 //! 必须能在测试里被精确推进，否则只能靠 sleep 写出脆弱的用例。
 //!
-//! 存储是进程内滑动窗口（每 `(action, key)` 一条 `VecDeque<u64>`）。多节点
-//! 部署时换成 Redis ZSET 即可——本 crate 不持有连接，`RiskEngine` 的接口
-//! 就是将来 `RiskStore` trait 的形状。
+//! 状态存储抽成 [`RiskStore`]：默认 [`MemoryStore`] 是进程内滑动窗口
+//! （每 `(action, key)` 一条 `VecDeque<u64>`）；多节点部署用 `redis`
+//! feature 的 `gcra::GcraStore`（共享 TAT，全局阈值不会乘上节点数）。
+//! 阈值配置的形状与默认值在 `wxlike-limits`，这里只做算法与裁决。
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-/// 受风控约束的四类动作（合同 §3.14 三层 + 举报防刷）。
+pub use wxlike_limits::RiskConfig;
+
+pub mod store;
+
+pub use store::{MemoryStore, RiskStore, Rule, StoreVerdict};
+
+#[cfg(feature = "redis")]
+pub mod gcra;
+
+/// 受风控约束的动作（合同 §3.14 三层 + 举报防刷）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -100,87 +109,6 @@ impl Verdict {
     }
 }
 
-/// 阈值配置。默认值按"正常用户碰不到、脚本一定会撞上"取。
-#[derive(Clone, Debug)]
-pub struct RiskConfig {
-    /// 同一来源 1 h 内注册次数达到此值 → Challenge。
-    pub register_challenge_at: usize,
-    /// 达到此值 → Deny（脚本批量注册）。
-    pub register_deny_at: usize,
-    /// 15 min 内登录失败达到此值 → Challenge。
-    pub login_fail_challenge_at: usize,
-    /// 达到此值 → Deny（撞库）。
-    pub login_fail_deny_at: usize,
-    /// 10 s 内发送达到此值 → Throttle。
-    pub send_throttle_at: usize,
-    /// 达到此值 → Deny（刷屏）。
-    pub send_deny_at: usize,
-    /// 1 h 内举报达到此值 → Throttle。
-    pub report_throttle_at: usize,
-    /// 达到此值 → Deny（举报轰炸）。
-    pub report_deny_at: usize,
-    /// 同一 (caller, target) 1 h 内认领预密钥达到此值 → Throttle。
-    pub claim_keys_throttle_at: usize,
-    /// 达到此值 → Deny（库存耗尽攻击）。真人远够用：一次会话重建只要一把。
-    pub claim_keys_deny_at: usize,
-    /// 1 h 内好友请求达到此值 → Throttle（AR-5）。
-    pub friend_request_throttle_at: usize,
-    /// 达到此值 → Deny（申请轰炸）。
-    pub friend_request_deny_at: usize,
-    /// 10 min 内媒体上传达到此值 → Throttle（AR-5）。
-    pub media_upload_throttle_at: usize,
-    /// 达到此值 → Deny（上传轰炸）。
-    pub media_upload_deny_at: usize,
-    /// 10 min 内朋友圈发布/点赞/评论达到此值 → Throttle（AR-5）。
-    pub moment_create_throttle_at: usize,
-    /// 达到此值 → Deny（刷屏）。
-    pub moment_create_deny_at: usize,
-}
-
-/// 同来源一小时内注册多少次起要求人机校验。
-///
-/// 50 而不是 3：共享出口（公司网络 / 运营商 NAT / CI runner）上三个人注册
-/// 就有人被要求 captcha 是误伤，比脚本注册更常见。deny 在 200。
-const REGISTER_CHALLENGE_AT: usize = 50;
-const REGISTER_DENY_AT: usize = 200;
-
-// AR-2 / AR-5 新增动作的默认阈值。写接口（好友请求 / 朋友圈）共用一档；
-// 媒体上传是重操作，单独放宽。
-const CLAIM_KEYS_THROTTLE_AT: usize = 30;
-const CLAIM_KEYS_DENY_AT: usize = 120;
-const WRITE_THROTTLE_AT: usize = 30;
-const WRITE_DENY_AT: usize = 100;
-const MEDIA_UPLOAD_THROTTLE_AT: usize = 60;
-const MEDIA_UPLOAD_DENY_AT: usize = 200;
-
-impl Default for RiskConfig {
-    fn default() -> Self {
-        Self {
-            // 注册按**来源**计数（issue #19 之后来源是真实 peer IP）。
-            //
-            // 原来是 3：一个公司网络、一个运营商 NAT、一台 CI runner 上三个人
-            // 注册就会有人被要求 captcha——"共享出口连坐"比"脚本注册"更常见。
-            // 50 次/小时对正常出口绰绰有余，对脚本仍然是一道墙；deny 在 200。
-            register_challenge_at: REGISTER_CHALLENGE_AT,
-            register_deny_at: REGISTER_DENY_AT,
-            login_fail_challenge_at: 5,
-            login_fail_deny_at: 12,
-            send_throttle_at: 20,
-            send_deny_at: 60,
-            report_throttle_at: 10,
-            report_deny_at: 30,
-            claim_keys_throttle_at: CLAIM_KEYS_THROTTLE_AT,
-            claim_keys_deny_at: CLAIM_KEYS_DENY_AT,
-            friend_request_throttle_at: WRITE_THROTTLE_AT,
-            friend_request_deny_at: WRITE_DENY_AT,
-            media_upload_throttle_at: MEDIA_UPLOAD_THROTTLE_AT,
-            media_upload_deny_at: MEDIA_UPLOAD_DENY_AT,
-            moment_create_throttle_at: WRITE_THROTTLE_AT,
-            moment_create_deny_at: WRITE_DENY_AT,
-        }
-    }
-}
-
 /// 单个动作的阈值与裁决形状：captcha 动作给 Challenge，其余给 Throttle。
 struct Limits {
     throttle_at: usize,
@@ -189,57 +117,83 @@ struct Limits {
     captcha: bool,
 }
 
-impl RiskConfig {
-    fn limits(&self, action: Action) -> Limits {
-        match action {
-            Action::Register => Limits {
-                throttle_at: self.register_challenge_at,
-                deny_at: self.register_deny_at,
-                reason: "register_rate",
-                captcha: true,
-            },
-            Action::Login => Limits {
-                throttle_at: self.login_fail_challenge_at,
-                deny_at: self.login_fail_deny_at,
-                reason: "login_failures",
-                captcha: true,
-            },
-            Action::Send => Limits {
-                throttle_at: self.send_throttle_at,
-                deny_at: self.send_deny_at,
-                reason: "send_rate",
-                captcha: false,
-            },
-            Action::ClaimKeys => Limits {
-                throttle_at: self.claim_keys_throttle_at,
-                deny_at: self.claim_keys_deny_at,
-                reason: "claim_keys_rate",
-                captcha: false,
-            },
-            Action::FriendRequest => Limits {
-                throttle_at: self.friend_request_throttle_at,
-                deny_at: self.friend_request_deny_at,
-                reason: "friend_request_rate",
-                captcha: false,
-            },
-            Action::MediaUpload => Limits {
-                throttle_at: self.media_upload_throttle_at,
-                deny_at: self.media_upload_deny_at,
-                reason: "media_upload_rate",
-                captcha: false,
-            },
-            Action::MomentCreate => Limits {
-                throttle_at: self.moment_create_throttle_at,
-                deny_at: self.moment_create_deny_at,
-                reason: "moment_create_rate",
-                captcha: false,
-            },
-            Action::Report => Limits {
-                throttle_at: self.report_throttle_at,
-                deny_at: self.report_deny_at,
-                reason: "report_rate",
-                captcha: false,
-            },
+fn limits(cfg: &RiskConfig, action: Action) -> Limits {
+    match action {
+        Action::Register => Limits {
+            throttle_at: cfg.register_challenge_at,
+            deny_at: cfg.register_deny_at,
+            reason: "register_rate",
+            captcha: true,
+        },
+        Action::Login => Limits {
+            throttle_at: cfg.login_fail_challenge_at,
+            deny_at: cfg.login_fail_deny_at,
+            reason: "login_failures",
+            captcha: true,
+        },
+        Action::Send => Limits {
+            throttle_at: cfg.send_throttle_at,
+            deny_at: cfg.send_deny_at,
+            reason: "send_rate",
+            captcha: false,
+        },
+        Action::ClaimKeys => Limits {
+            throttle_at: cfg.claim_keys_throttle_at,
+            deny_at: cfg.claim_keys_deny_at,
+            reason: "claim_keys_rate",
+            captcha: false,
+        },
+        Action::FriendRequest => Limits {
+            throttle_at: cfg.friend_request_throttle_at,
+            deny_at: cfg.friend_request_deny_at,
+            reason: "friend_request_rate",
+            captcha: false,
+        },
+        Action::MediaUpload => Limits {
+            throttle_at: cfg.media_upload_throttle_at,
+            deny_at: cfg.media_upload_deny_at,
+            reason: "media_upload_rate",
+            captcha: false,
+        },
+        Action::MomentCreate => Limits {
+            throttle_at: cfg.moment_create_throttle_at,
+            deny_at: cfg.moment_create_deny_at,
+            reason: "moment_create_rate",
+            captcha: false,
+        },
+        Action::Report => Limits {
+            throttle_at: cfg.report_throttle_at,
+            deny_at: cfg.report_deny_at,
+            reason: "report_rate",
+            captcha: false,
+        },
+    }
+}
+
+fn rule_for(cfg: &RiskConfig, action: Action) -> Rule {
+    let limits = limits(cfg, action);
+    Rule {
+        window_ms: action.window_ms(),
+        throttle_at: limits.throttle_at,
+        deny_at: limits.deny_at,
+    }
+}
+
+fn map_verdict(cfg: &RiskConfig, action: Action, stored: StoreVerdict) -> Verdict {
+    let limits = limits(cfg, action);
+    match stored {
+        StoreVerdict::Allow => Verdict::Allow,
+        StoreVerdict::Deny { .. } => Verdict::Deny {
+            reason: limits.reason.into(),
+        },
+        StoreVerdict::Throttle { retry_after_ms } => {
+            if limits.captcha {
+                Verdict::Challenge {
+                    reason: limits.reason.into(),
+                }
+            } else {
+                Verdict::Throttle { retry_after_ms }
+            }
         }
     }
 }
@@ -248,120 +202,93 @@ impl RiskConfig {
 pub enum RiskError {
     #[error("risk engine lock poisoned")]
     Poisoned,
+    /// 存储后端不可用（Redis 连接/脚本错误等）。平台把它映射成 500，
+    /// 不伪装成客户端错误。
+    #[error("risk store error: {0}")]
+    Store(String),
 }
 
 pub type Result<T> = std::result::Result<T, RiskError>;
 
-/// 进程内滑动窗口风控引擎。
+/// 风控引擎：配置 + 存储后端。进程内滑动窗口是默认实现。
 pub struct RiskEngine {
     cfg: RiskConfig,
-    /// `(action, key) -> 窗口内事件时间戳（升序）`。
-    windows: Mutex<HashMap<(Action, String), VecDeque<u64>>>,
+    store: Arc<dyn RiskStore>,
 }
 
 impl RiskEngine {
     pub fn new(cfg: RiskConfig) -> Self {
-        Self {
-            cfg,
-            windows: Mutex::new(HashMap::new()),
-        }
+        Self::with_store(cfg, Arc::new(MemoryStore::new()))
+    }
+
+    pub fn with_store(cfg: RiskConfig, store: Arc<dyn RiskStore>) -> Self {
+        Self { cfg, store }
     }
 
     pub fn with_defaults() -> Self {
         Self::new(RiskConfig::default())
     }
 
+    /// 启动期配置：设置 `WXLIKE_RISK_REDIS_URL`（或 `REDIS_URL`）时走 Redis
+    /// GCRA，否则用进程内实现。**配了 URL 却连不上会返回错误**——多节点
+    /// 部署静默退化成本地计数，比启动失败更危险。
+    ///
+    /// 未带 `redis` feature 时，配了 URL 也会返回错误而不是悄悄退化。
+    pub fn from_env() -> Result<Self> {
+        match std::env::var("WXLIKE_RISK_REDIS_URL").or_else(|_| std::env::var("REDIS_URL")) {
+            Ok(url) if !url.trim().is_empty() => Self::from_redis_url(&url),
+            _ => Ok(Self::with_defaults()),
+        }
+    }
+
+    pub fn from_redis_url(url: &str) -> Result<Self> {
+        #[cfg(feature = "redis")]
+        {
+            let store = gcra::GcraStore::connect(url)?;
+            Ok(Self::with_store(RiskConfig::default(), Arc::new(store)))
+        }
+        #[cfg(not(feature = "redis"))]
+        {
+            let _ = url;
+            Err(RiskError::Store(
+                "wxlike-risk built without the `redis` feature".into(),
+            ))
+        }
+    }
+
     pub fn config(&self) -> &RiskConfig {
         &self.cfg
     }
 
-    /// 只读裁决：不改变窗口状态。`key` 由调用方决定（注册用来源 IP /
+    /// 只读裁决：不改变存储状态。`key` 由调用方决定（注册用来源 IP /
     /// 设备标识，登录用账号名，发送用 user_id）。
     pub fn check(&self, action: Action, key: &str, now_ms: u64) -> Result<Verdict> {
-        let mut guard = self.windows.lock().map_err(|_| RiskError::Poisoned)?;
-        let window = action.window_ms();
-        let events = guard.entry((action, key.to_string())).or_default();
-        evict(events, now_ms, window);
-        // +1：本次尝试也要计入，否则"第 N 次触发阈值"会晚一次才生效
-        Ok(self.decide(action, events, now_ms, window, 1))
+        let rule = rule_for(&self.cfg, action);
+        let stored = self.store.check(action, key, now_ms, &rule)?;
+        Ok(map_verdict(&self.cfg, action, stored))
     }
 
     /// 记一次事件（发送、举报、注册尝试、登录失败都算）。
     pub fn record(&self, action: Action, key: &str, now_ms: u64) -> Result<Verdict> {
-        let mut guard = self.windows.lock().map_err(|_| RiskError::Poisoned)?;
-        let window = action.window_ms();
-        let events = guard.entry((action, key.to_string())).or_default();
-        evict(events, now_ms, window);
-        events.push_back(now_ms);
-        Ok(self.decide(action, events, now_ms, window, 0))
+        let rule = rule_for(&self.cfg, action);
+        let stored = self.store.record(action, key, now_ms, &rule)?;
+        Ok(map_verdict(&self.cfg, action, stored))
     }
 
     /// 一次成功动作清空失败计数（登录成功即解除 Challenge）。
     pub fn clear(&self, action: Action, key: &str) -> Result<()> {
-        let mut guard = self.windows.lock().map_err(|_| RiskError::Poisoned)?;
-        guard.remove(&(action, key.to_string()));
-        Ok(())
+        self.store.clear(action, key)
     }
 
     /// 当前窗口内计数（运维面板/测试用）。
     pub fn count(&self, action: Action, key: &str, now_ms: u64) -> Result<usize> {
-        let mut guard = self.windows.lock().map_err(|_| RiskError::Poisoned)?;
-        let window = action.window_ms();
-        let events = guard.entry((action, key.to_string())).or_default();
-        evict(events, now_ms, window);
-        Ok(events.len())
-    }
-
-    fn decide(
-        &self,
-        action: Action,
-        events: &VecDeque<u64>,
-        now_ms: u64,
-        window: u64,
-        extra: usize,
-    ) -> Verdict {
-        let n = events.len() + extra;
-        let retry_after = retry_after_ms(events, now_ms, window);
-        let limits = self.cfg.limits(action);
-        if n >= limits.deny_at {
-            Verdict::Deny {
-                reason: limits.reason.into(),
-            }
-        } else if n >= limits.throttle_at {
-            if limits.captcha {
-                Verdict::Challenge {
-                    reason: limits.reason.into(),
-                }
-            } else {
-                Verdict::Throttle {
-                    retry_after_ms: retry_after,
-                }
-            }
-        } else {
-            Verdict::Allow
-        }
+        let rule = rule_for(&self.cfg, action);
+        self.store.count(action, key, now_ms, &rule)
     }
 }
 
 impl Default for RiskEngine {
     fn default() -> Self {
         Self::with_defaults()
-    }
-}
-
-fn retry_after_ms(events: &VecDeque<u64>, now_ms: u64, window_ms: u64) -> u64 {
-    events
-        .front()
-        .map(|&oldest| window_ms.saturating_sub(now_ms.saturating_sub(oldest)))
-        .unwrap_or(0)
-}
-
-fn evict(events: &mut VecDeque<u64>, now_ms: u64, window_ms: u64) {
-    while let Some(&oldest) = events.front() {
-        if now_ms.saturating_sub(oldest) >= window_ms {
-            events.pop_front();
-        } else {
-            break;
-        }
     }
 }
