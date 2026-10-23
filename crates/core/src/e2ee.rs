@@ -85,6 +85,12 @@ pub enum CryptoError {
     NoPreKey,
     #[error("stored crypto state is unreadable: {0}")]
     Snapshot(String),
+    /// 口令错：KDF 成功但校验标签对不上。与"文件损坏"分开，UI 要分别提示。
+    #[error("wrong passphrase")]
+    WrongPassphrase,
+    /// 文件损坏/被改/不是本格式。旧 WXSC1 也走这里，消息里写明原因。
+    #[error("snapshot file is corrupted or not a wxlike snapshot: {0}")]
+    CorruptedSnapshot(String),
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;
@@ -135,6 +141,181 @@ pub fn open_at_rest(key: &[u8; DEVICE_KEY_BYTES], blob: &[u8]) -> Result<Vec<u8>
     XChaCha20Poly1305::new(key.into())
         .decrypt(XNonce::from_slice(nonce), body)
         .map_err(|_| CryptoError::Snapshot("wrong device key or corrupted store".into()))
+}
+
+// ---------------------------------------------------------------------------
+// T-A2 (#48): passphrase-derived snapshots (WXSC2)
+// ---------------------------------------------------------------------------
+
+/// 口令派生快照的魔数。WXSC1 是旧的"裸设备密钥"格式，明确拒绝、不静默迁移。
+pub const SNAPSHOT_MAGIC_V2: &[u8; 5] = b"WXSC2";
+/// 外层格式版本（WXSC2 的布局版本）。
+const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+
+/// Argon2id 参数（OWASP 推荐：19 MiB / t=2 / p=1）。
+///
+/// **参数随文件头存储**，不依赖 crate 默认值：argon2 未来若改默认参数，
+/// 旧快照仍要按写入时的参数解开。
+const SNAPSHOT_ARGON2_M_COST: u32 = 19 * 1024;
+const SNAPSHOT_ARGON2_T_COST: u32 = 2;
+const SNAPSHOT_ARGON2_P_COST: u32 = 1;
+/// 打开时接受的上限：恶意文件不能让我们按它指定的参数吃掉几 GB 内存。
+const SNAPSHOT_ARGON2_MAX_M_COST: u32 = 256 * 1024;
+const SNAPSHOT_ARGON2_MAX_T_COST: u32 = 16;
+const SNAPSHOT_ARGON2_MAX_P_COST: u32 = 8;
+
+const SNAPSHOT_KEY_LEN: usize = 32;
+const SNAPSHOT_CHECK_LEN: usize = 16;
+const SNAPSHOT_NONCE_LEN: usize = 24;
+const SNAPSHOT_SALT_MAX: usize = 64;
+/// magic(5) + version(1) + m/t/p(12) + salt_len(1)
+const SNAPSHOT_FIXED_HEADER: usize = 19;
+
+/// 口令校验标签：从派生密钥再散列一步。它**不含密钥本身**，只用来把
+/// "口令错"与"密文被改"分成两个错误——AEAD 自己无法区分这两者。
+fn snapshot_check(key: &[u8; SNAPSHOT_KEY_LEN]) -> [u8; SNAPSHOT_CHECK_LEN] {
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"wxlike-snapshot-check-v1");
+    h.update(key);
+    let digest = h.finalize();
+    let mut out = [0u8; SNAPSHOT_CHECK_LEN];
+    out.copy_from_slice(&digest[..SNAPSHOT_CHECK_LEN]);
+    out
+}
+
+/// 定长比较，避免把校验标签的匹配位置泄漏给本地计时观察。
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .fold(0u8, |diff, (x, y)| diff | (x ^ y))
+            == 0
+}
+
+fn derive_snapshot_key(
+    passphrase: &str,
+    m: u32,
+    t: u32,
+    p: u32,
+    salt: &[u8],
+) -> Result<[u8; SNAPSHOT_KEY_LEN]> {
+    let params = argon2::Params::new(m, t, p, Some(SNAPSHOT_KEY_LEN))
+        .map_err(|e| CryptoError::CorruptedSnapshot(format!("bad KDF parameters: {e}")))?;
+    let kdf = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+    let mut key = [0u8; SNAPSHOT_KEY_LEN];
+    kdf.hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| CryptoError::Snapshot(format!("key derivation failed: {e}")))?;
+    Ok(key)
+}
+
+fn seal_snapshot(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
+    use argon2::password_hash::SaltString;
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+
+    let salt = SaltString::generate(&mut rand::rngs::OsRng);
+    let salt = salt.as_str().as_bytes();
+    let key = derive_snapshot_key(
+        passphrase,
+        SNAPSHOT_ARGON2_M_COST,
+        SNAPSHOT_ARGON2_T_COST,
+        SNAPSHOT_ARGON2_P_COST,
+        salt,
+    )?;
+
+    let mut header = Vec::with_capacity(SNAPSHOT_FIXED_HEADER + salt.len() + SNAPSHOT_CHECK_LEN);
+    header.extend_from_slice(SNAPSHOT_MAGIC_V2);
+    header.push(SNAPSHOT_FORMAT_VERSION);
+    header.extend_from_slice(&SNAPSHOT_ARGON2_M_COST.to_be_bytes());
+    header.extend_from_slice(&SNAPSHOT_ARGON2_T_COST.to_be_bytes());
+    header.extend_from_slice(&SNAPSHOT_ARGON2_P_COST.to_be_bytes());
+    header.push(salt.len() as u8);
+    header.extend_from_slice(salt);
+    header.extend_from_slice(&snapshot_check(&key));
+
+    let mut nonce = [0u8; SNAPSHOT_NONCE_LEN];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    let body = XChaCha20Poly1305::new((&key).into())
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad: &header,
+            },
+        )
+        .map_err(|_| CryptoError::Snapshot("seal failed".into()))?;
+
+    let mut out = header;
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+fn be_u32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn open_snapshot(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+
+    if blob.len() < SNAPSHOT_FIXED_HEADER || &blob[..5] != SNAPSHOT_MAGIC_V2 {
+        if blob.len() >= AT_REST_MAGIC.len() && &blob[..AT_REST_MAGIC.len()] == AT_REST_MAGIC {
+            return Err(CryptoError::CorruptedSnapshot(
+                "legacy WXSC1 snapshot (raw device key) is no longer accepted; \
+                 delete it and re-enable secret chat"
+                    .into(),
+            ));
+        }
+        return Err(CryptoError::CorruptedSnapshot(
+            "not a WXSC2 snapshot (bad magic or truncated header)".into(),
+        ));
+    }
+    if blob[5] != SNAPSHOT_FORMAT_VERSION {
+        return Err(CryptoError::CorruptedSnapshot(format!(
+            "unsupported WXSC2 format version {}",
+            blob[5]
+        )));
+    }
+    let m = be_u32(&blob[6..10]);
+    let t = be_u32(&blob[10..14]);
+    let p = be_u32(&blob[14..18]);
+    if !(1..=SNAPSHOT_ARGON2_MAX_M_COST).contains(&m)
+        || !(1..=SNAPSHOT_ARGON2_MAX_T_COST).contains(&t)
+        || !(1..=SNAPSHOT_ARGON2_MAX_P_COST).contains(&p)
+    {
+        return Err(CryptoError::CorruptedSnapshot(
+            "KDF parameters out of range".into(),
+        ));
+    }
+    let salt_len = blob[18] as usize;
+    if salt_len == 0 || salt_len > SNAPSHOT_SALT_MAX {
+        return Err(CryptoError::CorruptedSnapshot("bad salt length".into()));
+    }
+    let salt_end = SNAPSHOT_FIXED_HEADER + salt_len;
+    let check_end = salt_end + SNAPSHOT_CHECK_LEN;
+    let nonce_end = check_end + SNAPSHOT_NONCE_LEN;
+    if blob.len() < nonce_end {
+        return Err(CryptoError::CorruptedSnapshot("truncated header".into()));
+    }
+    let salt = &blob[SNAPSHOT_FIXED_HEADER..salt_end];
+    let stored_check = &blob[salt_end..check_end];
+    let nonce = &blob[check_end..nonce_end];
+
+    let key = derive_snapshot_key(passphrase, m, t, p, salt)?;
+    if !ct_eq(stored_check, &snapshot_check(&key)) {
+        return Err(CryptoError::WrongPassphrase);
+    }
+    XChaCha20Poly1305::new((&key).into())
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: &blob[nonce_end..],
+                aad: &blob[..check_end],
+            },
+        )
+        .map_err(|_| CryptoError::CorruptedSnapshot("ciphertext failed authentication".into()))
 }
 
 /// The fetchable key bundle (`POST`/`GET /api/keys`). Keys are base64, matching
@@ -343,6 +524,27 @@ impl Device {
     /// Rebuilds a device from a stored account pickle (restart / new process).
     pub fn from_account(account: Account) -> Self {
         Self { account }
+    }
+
+    /// 用口令派生密钥密封本设备的 Olm 账户（WXSC2）。
+    ///
+    /// 口令不落盘：盐与 Argon2id 参数随密文头存储，32 字节密钥只在内存里
+    /// 从口令现算。旧 `seal_at_rest`（裸设备密钥）留给桌面端迁移期使用。
+    pub fn seal_with_passphrase(&self, passphrase: &str) -> Result<Vec<u8>> {
+        let plain = serde_json::to_vec(&self.account.pickle())
+            .map_err(|e| CryptoError::Snapshot(e.to_string()))?;
+        seal_snapshot(passphrase, &plain)
+    }
+
+    /// [`Device::seal_with_passphrase`] 的逆操作。
+    ///
+    /// 口令错 → [`CryptoError::WrongPassphrase`]；文件被改/截断/旧 WXSC1
+    /// → [`CryptoError::CorruptedSnapshot`]（消息里注明具体原因）。
+    pub fn open_with_passphrase(passphrase: &str, blob: &[u8]) -> Result<Self> {
+        let plain = open_snapshot(passphrase, blob)?;
+        let pickle: AccountPickle = serde_json::from_slice(&plain)
+            .map_err(|e| CryptoError::CorruptedSnapshot(e.to_string()))?;
+        Ok(Self::from_account(Account::from_pickle(pickle)))
     }
 }
 
@@ -851,6 +1053,20 @@ impl Crypto {
             );
         }
         Ok(crypto)
+    }
+
+    /// 用口令派生密钥密封**整份状态**（账户 + 所有棘轮），落盘格式 WXSC2。
+    ///
+    /// 这是桌面端应该用的入口：只封 `Device` 不够——棘轮状态不在账户里，
+    /// 丢了它重启后老会话全部解不开。
+    pub fn seal_with_passphrase(&self, passphrase: &str) -> Result<Vec<u8>> {
+        seal_snapshot(passphrase, &self.snapshot()?)
+    }
+
+    /// [`Crypto::seal_with_passphrase`] 的逆操作；错误语义同
+    /// [`Device::open_with_passphrase`]。
+    pub fn open_with_passphrase(passphrase: &str, blob: &[u8]) -> Result<Self> {
+        Self::restore(&open_snapshot(passphrase, blob)?)
     }
 
     // -------------------------------------------------------------------------
