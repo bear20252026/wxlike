@@ -503,3 +503,50 @@ html, body {
   max-width: 100%;
   overflow-x: auto;
 }
+
+/* -- 秘密聊天设置弹窗（T-D3） --------------------------------------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal {
+  width: min(420px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.modal-hint { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin: 0; }
+.modal-label { font-size: 12px; color: var(--text-dim); }
+.secret-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+.secret-ttls { display: flex; flex-wrap: wrap; gap: 8px; }
+.secret-ttl {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.secret-ttl.active { border-color: var(--accent); color: var(--accent); background: rgba(7, 193, 96, 0.12); }
+.secret-ttl:disabled { opacity: 0.45; cursor: default; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
