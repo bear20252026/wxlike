@@ -44,9 +44,18 @@
 
 ## 4. 取证方式说明
 
-- 未镜像六个（Zulip/Rocket.Chat/Mattermost/Signal×2/Synapse）：`gh api` + raw.githubusercontent
-  + GitHub 页面取证，日期 2026-10-22，均指向当日 master/develop 分支；code search 对
-  Signal-Android/Rocket.Chat 未命中可用路径，相应条目只做协议层陈述并标注。
-- 本地镜像两个（element-web、spreed）：直接读源码/文档；spreed 引用为 `docs/TURN.md` 行号。
-- Mattermost/Synapse 的"明文"结论基于单文件取证（session.go、registration.py 前 1000 行），
-  hash 若存在于其他层（如代理/企业版）未排除——如需仲裁请以全量克隆复核。
+- 2026-10-22 起六个未镜像仓库已全部浅克隆至 `refs/`（synapse 57M / Signal-Desktop 153M /
+  zulip 198M / Rocket.Chat 278M / mattermost 586M / Signal-Android 250M，合计 ~1.5G），
+  本文 AR-3 相关结论已按**全源码**复核并升级为定案：
+  * **Synapse 全链路明文（定案）**：schema 72 全量 `access_tokens.token text NOT NULL`
+    （`synapse/storage/schema/main/full_schemas/72/full.sql.postgres:15-25`）+
+    `registration.py:780` `WHERE token = ?`——无任何哈希层；
+  * **Mattermost 全链路明文（定案）**：store 层 `session_store.go:63` 直插 `session.Token`
+    原文、`:92` `sq.Eq{"Token": ...}` 明文查询——model 层与存储层一致，无哈希；
+  * **Synapse 限流参数补强**：`config/ratelimiting.py:91`（rc_message 默认
+    per_second=0.2 / burst=10）与 `api/errors.py:602`（`LimitExceededError` 默认 429）；
+  * **M-2 参照补强**：Signal-Desktop `app/main.main.ts:1731` 起的 sqlcipher
+    整库加密密钥管理（`randomBytes(32)` + zetetic PRAGMA key）——设备密钥同盘问题
+    （#32 M-2）的现成工程参照。
+- 早前仅经 GitHub 页面（gh api / raw）取证的条目以当日分支为准；页面截断造成的
+  不确定性已由上述全源码复核消除。
