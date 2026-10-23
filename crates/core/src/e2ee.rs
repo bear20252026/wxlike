@@ -186,11 +186,7 @@ fn snapshot_check(key: &[u8; SNAPSHOT_KEY_LEN]) -> [u8; SNAPSHOT_CHECK_LEN] {
 
 /// 定长比较，避免把校验标签的匹配位置泄漏给本地计时观察。
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .fold(0u8, |diff, (x, y)| diff | (x ^ y))
-            == 0
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 fn derive_snapshot_key(
@@ -256,15 +252,24 @@ fn be_u32(bytes: &[u8]) -> u32 {
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-fn open_snapshot(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
-    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
-    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+/// WXSC2 头部解析产物：KDF 参数与各段边界。
+struct SnapshotHeader<'a> {
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    salt: &'a [u8],
+    stored_check: &'a [u8],
+    /// 密文体起点（同时是 AAD 的终点）。
+    body_start: usize,
+}
 
+/// 头部解析与校验（magic/版本/KDF 范围/盐长/截断）。与解密拆开，各自
+/// 保持在质量闸门的函数行数预算内。
+fn parse_snapshot_header(blob: &[u8]) -> Result<SnapshotHeader<'_>> {
     if blob.len() < SNAPSHOT_FIXED_HEADER || &blob[..5] != SNAPSHOT_MAGIC_V2 {
         if blob.len() >= AT_REST_MAGIC.len() && &blob[..AT_REST_MAGIC.len()] == AT_REST_MAGIC {
             return Err(CryptoError::CorruptedSnapshot(
-                "legacy WXSC1 snapshot (raw device key) is no longer accepted; \
-                 delete it and re-enable secret chat"
+                "legacy WXSC1 snapshot (raw device key) is no longer accepted;                  delete it and re-enable secret chat"
                     .into(),
             ));
         }
@@ -299,20 +304,36 @@ fn open_snapshot(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
     if blob.len() < nonce_end {
         return Err(CryptoError::CorruptedSnapshot("truncated header".into()));
     }
-    let salt = &blob[SNAPSHOT_FIXED_HEADER..salt_end];
-    let stored_check = &blob[salt_end..check_end];
-    let nonce = &blob[check_end..nonce_end];
+    Ok(SnapshotHeader {
+        m_cost: m,
+        t_cost: t,
+        p_cost: p,
+        salt: &blob[SNAPSHOT_FIXED_HEADER..salt_end],
+        stored_check: &blob[salt_end..check_end],
+        body_start: nonce_end,
+    })
+}
 
-    let key = derive_snapshot_key(passphrase, m, t, p, salt)?;
-    if !ct_eq(stored_check, &snapshot_check(&key)) {
+fn open_snapshot(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+
+    let h = parse_snapshot_header(blob)?;
+    let key = derive_snapshot_key(passphrase, h.m_cost, h.t_cost, h.p_cost, h.salt)?;
+    if !ct_eq(h.stored_check, &snapshot_check(&key)) {
         return Err(CryptoError::WrongPassphrase);
     }
+    // body_start 是密文体起点；nonce 恰在它之前的 NONCE_LEN 字节，
+    // AAD 是再之前的整个头部（到 stored_check 为止）。
+    let aad_end = h.body_start - SNAPSHOT_NONCE_LEN;
+    let nonce = &blob[aad_end..h.body_start];
+    let body = &blob[h.body_start..];
     XChaCha20Poly1305::new((&key).into())
         .decrypt(
             XNonce::from_slice(nonce),
             Payload {
-                msg: &blob[nonce_end..],
-                aad: &blob[..check_end],
+                msg: body,
+                aad: &blob[..aad_end],
             },
         )
         .map_err(|_| CryptoError::CorruptedSnapshot("ciphertext failed authentication".into()))
