@@ -343,7 +343,16 @@ export function renderVerifyPage(root: El, peerId: string, title: string): void 
     fp.append(code);
     const copy = h("button", "btn ghost", "复制");
     copy.addEventListener("click", () => {
-      void navigator.clipboard.writeText(info.peer_identity).then(() => toast("指纹已复制"));
+      // 非安全上下文里 `navigator.clipboard` 本身就是 undefined；
+      // 失败要给一句话，不能留一个没人接的 rejection。
+      const fail = () => toast("复制失败，请手动选中指纹");
+      try {
+        void navigator.clipboard
+          .writeText(info.peer_identity)
+          .then(() => toast("指纹已复制"), fail);
+      } catch {
+        fail();
+      }
     });
     fp.append(copy);
     body.append(fp);
