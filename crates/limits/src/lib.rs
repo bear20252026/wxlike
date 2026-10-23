@@ -1,4 +1,4 @@
-//! 跨 crate 的数值约定：**按含义命名，不按值命名**。
+//! 跨 crate 的数值约定与**风控阈值配置**：按含义命名，不按值命名。
 //!
 //! 审计里最刺眼的一条是"同一个 `64` 有三种含义"：sha256 的十六进制长度、
 //! 贴纸标签的字数上限、签名数组的长度。它们碰巧都等于 64，于是复制粘贴时
@@ -42,3 +42,117 @@ const _: () = assert!(
     DEFAULT_SEARCH_LIMIT < DEFAULT_PAGE_LIMIT,
     "搜索默认条数应当小于一页"
 );
+
+// ---------------------------------------------------------------------------
+// 风控阈值配置
+// ---------------------------------------------------------------------------
+
+/// 风控阈值配置。默认值按"正常用户碰不到、脚本一定会撞上"取。
+///
+/// 这里只放**配置的形状与默认值**；滑动窗口/GCRA 与裁决逻辑在
+/// `wxlike-risk`。`wxlike_risk::RiskConfig` 是它的 re-export，调用方
+/// 不需要改 import 路径。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RiskConfig {
+    /// 同一来源 1 h 内注册次数达到此值 → Challenge。
+    pub register_challenge_at: usize,
+    /// 达到此值 → Deny（脚本批量注册）。
+    pub register_deny_at: usize,
+    /// 15 min 内登录失败达到此值 → Challenge。
+    pub login_fail_challenge_at: usize,
+    /// 达到此值 → Deny（撞库）。
+    pub login_fail_deny_at: usize,
+    /// 10 s 内发送达到此值 → Throttle。
+    pub send_throttle_at: usize,
+    /// 达到此值 → Deny（刷屏）。
+    pub send_deny_at: usize,
+    /// 1 h 内举报达到此值 → Throttle。
+    pub report_throttle_at: usize,
+    /// 达到此值 → Deny（举报轰炸）。
+    pub report_deny_at: usize,
+    /// 同一 (caller, target) 1 h 内认领预密钥达到此值 → Throttle。
+    pub claim_keys_throttle_at: usize,
+    /// 达到此值 → Deny（库存耗尽攻击）。真人远够用：一次会话重建只要一把。
+    pub claim_keys_deny_at: usize,
+    /// 1 h 内好友请求达到此值 → Throttle（AR-5）。
+    pub friend_request_throttle_at: usize,
+    /// 达到此值 → Deny（申请轰炸）。
+    pub friend_request_deny_at: usize,
+    /// 10 min 内媒体上传达到此值 → Throttle（AR-5）。
+    pub media_upload_throttle_at: usize,
+    /// 达到此值 → Deny（上传轰炸）。
+    pub media_upload_deny_at: usize,
+    /// 10 min 内朋友圈发布/点赞/评论达到此值 → Throttle（AR-5）。
+    pub moment_create_throttle_at: usize,
+    /// 达到此值 → Deny（刷屏）。
+    pub moment_create_deny_at: usize,
+}
+
+/// 同来源一小时内注册多少次起要求人机校验。
+///
+/// 50 而不是 3：共享出口（公司网络 / 运营商 NAT / CI runner）上三个人注册
+/// 就有人被要求 captcha 是误伤，比脚本注册更常见。deny 在 200。
+const REGISTER_CHALLENGE_AT: usize = 50;
+const REGISTER_DENY_AT: usize = 200;
+
+// AR-2 / AR-5 新增动作的默认阈值。写接口（好友请求 / 朋友圈）共用一档；
+// 媒体上传是重操作，单独放宽。
+const CLAIM_KEYS_THROTTLE_AT: usize = 30;
+const CLAIM_KEYS_DENY_AT: usize = 120;
+const WRITE_THROTTLE_AT: usize = 30;
+const WRITE_DENY_AT: usize = 100;
+const MEDIA_UPLOAD_THROTTLE_AT: usize = 60;
+const MEDIA_UPLOAD_DENY_AT: usize = 200;
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            // 注册按**来源**计数（issue #19 之后来源是真实 peer IP）。
+            //
+            // 原来是 3：一个公司网络、一个运营商 NAT、一台 CI runner 上三个人
+            // 注册就会有人被要求 captcha——"共享出口连坐"比"脚本注册"更常见。
+            // 50 次/小时对正常出口绰绰有余，对脚本仍然是一道墙；deny 在 200。
+            register_challenge_at: REGISTER_CHALLENGE_AT,
+            register_deny_at: REGISTER_DENY_AT,
+            login_fail_challenge_at: 5,
+            login_fail_deny_at: 12,
+            send_throttle_at: 20,
+            send_deny_at: 60,
+            report_throttle_at: 10,
+            report_deny_at: 30,
+            claim_keys_throttle_at: CLAIM_KEYS_THROTTLE_AT,
+            claim_keys_deny_at: CLAIM_KEYS_DENY_AT,
+            friend_request_throttle_at: WRITE_THROTTLE_AT,
+            friend_request_deny_at: WRITE_DENY_AT,
+            media_upload_throttle_at: MEDIA_UPLOAD_THROTTLE_AT,
+            media_upload_deny_at: MEDIA_UPLOAD_DENY_AT,
+            moment_create_throttle_at: WRITE_THROTTLE_AT,
+            moment_create_deny_at: WRITE_DENY_AT,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RiskConfig;
+
+    /// 两档阈值必须严格递增：否则 `deny_at <= throttle_at` 时 Deny 永远
+    /// 不可达，风控从"两档"退化成"一档"。
+    #[test]
+    fn default_thresholds_are_strictly_ordered() {
+        let c = RiskConfig::default();
+        let pairs = [
+            (c.register_challenge_at, c.register_deny_at),
+            (c.login_fail_challenge_at, c.login_fail_deny_at),
+            (c.send_throttle_at, c.send_deny_at),
+            (c.report_throttle_at, c.report_deny_at),
+            (c.claim_keys_throttle_at, c.claim_keys_deny_at),
+            (c.friend_request_throttle_at, c.friend_request_deny_at),
+            (c.media_upload_throttle_at, c.media_upload_deny_at),
+            (c.moment_create_throttle_at, c.moment_create_deny_at),
+        ];
+        for (throttle, deny) in pairs {
+            assert!(throttle < deny, "throttle {throttle} must be < deny {deny}");
+        }
+    }
+}
