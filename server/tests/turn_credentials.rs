@@ -43,7 +43,9 @@ fn get_credentials(http: &str, token: Option<&str>) -> (u16, serde_json::Value) 
     if let Some(token) = token {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
-    let mut resp = req.call().unwrap_or_else(|e| panic!("GET credentials: {e}"));
+    let mut resp = req
+        .call()
+        .unwrap_or_else(|e| panic!("GET credentials: {e}"));
     let status = resp.status().as_u16();
     let body = resp
         .body_mut()

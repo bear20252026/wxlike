@@ -842,10 +842,9 @@ mod tests {
     #[test]
     fn rejects_malformed_or_failed_responses() {
         assert!(parse_turn_credentials(500, &serde_json::Value::Null).is_err());
-        assert!(parse_turn_credentials(
-            200,
-            &serde_json::json!({"username": "", "password": ""})
-        )
-        .is_err());
+        assert!(
+            parse_turn_credentials(200, &serde_json::json!({"username": "", "password": ""}))
+                .is_err()
+        );
     }
 }
