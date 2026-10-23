@@ -140,80 +140,44 @@ struct Limits {
     captcha: bool,
 }
 
-fn limits(cfg: &RiskConfig, action: Action) -> Limits {
+fn thresholds(cfg: &RiskConfig, action: Action) -> (usize, usize) {
     match action {
-        Action::Register => Limits {
-            throttle_at: cfg.register_challenge_at,
-            deny_at: cfg.register_deny_at,
-            reason: "register_rate",
-            captcha: true,
-        },
-        Action::Login => Limits {
-            throttle_at: cfg.login_fail_challenge_at,
-            deny_at: cfg.login_fail_deny_at,
-            reason: "login_failures",
-            captcha: true,
-        },
-        Action::Send => Limits {
-            throttle_at: cfg.send_throttle_at,
-            deny_at: cfg.send_deny_at,
-            reason: "send_rate",
-            captcha: false,
-        },
-        Action::ClaimKeys => Limits {
-            throttle_at: cfg.claim_keys_throttle_at,
-            deny_at: cfg.claim_keys_deny_at,
-            reason: "claim_keys_rate",
-            captcha: false,
-        },
-        Action::FriendRequest => Limits {
-            throttle_at: cfg.friend_request_throttle_at,
-            deny_at: cfg.friend_request_deny_at,
-            reason: "friend_request_rate",
-            captcha: false,
-        },
-        Action::MediaUpload => Limits {
-            throttle_at: cfg.media_upload_throttle_at,
-            deny_at: cfg.media_upload_deny_at,
-            reason: "media_upload_rate",
-            captcha: false,
-        },
-        Action::MomentCreate => Limits {
-            throttle_at: cfg.moment_create_throttle_at,
-            deny_at: cfg.moment_create_deny_at,
-            reason: "moment_create_rate",
-            captcha: false,
-        },
-        Action::GroupManage => Limits {
-            throttle_at: cfg.group_manage_throttle_at,
-            deny_at: cfg.group_manage_deny_at,
-            reason: "group_manage_rate",
-            captcha: false,
-        },
-        Action::CommunityPost => Limits {
-            throttle_at: cfg.community_post_throttle_at,
-            deny_at: cfg.community_post_deny_at,
-            reason: "community_post_rate",
-            captcha: false,
-        },
-        Action::LiveStart => Limits {
-            throttle_at: cfg.live_start_throttle_at,
-            deny_at: cfg.live_start_deny_at,
-            reason: "live_start_rate",
-            captcha: false,
-        },
-        Action::CallSignal => Limits {
-            throttle_at: cfg.call_signal_throttle_at,
-            deny_at: cfg.call_signal_deny_at,
-            reason: "call_signal_rate",
-            captcha: false,
-        },
-        Action::Report => Limits {
-            throttle_at: cfg.report_throttle_at,
-            deny_at: cfg.report_deny_at,
-            reason: "report_rate",
-            captcha: false,
-        },
+        Action::Register => (cfg.register_challenge_at, cfg.register_deny_at),
+        Action::Login => (cfg.login_fail_challenge_at, cfg.login_fail_deny_at),
+        Action::Send => (cfg.send_throttle_at, cfg.send_deny_at),
+        Action::ClaimKeys => (cfg.claim_keys_throttle_at, cfg.claim_keys_deny_at),
+        Action::FriendRequest => (cfg.friend_request_throttle_at, cfg.friend_request_deny_at),
+        Action::MediaUpload => (cfg.media_upload_throttle_at, cfg.media_upload_deny_at),
+        Action::MomentCreate => (cfg.moment_create_throttle_at, cfg.moment_create_deny_at),
+        Action::GroupManage => (cfg.group_manage_throttle_at, cfg.group_manage_deny_at),
+        Action::CommunityPost => (cfg.community_post_throttle_at, cfg.community_post_deny_at),
+        Action::LiveStart => (cfg.live_start_throttle_at, cfg.live_start_deny_at),
+        Action::CallSignal => (cfg.call_signal_throttle_at, cfg.call_signal_deny_at),
+        Action::Report => (cfg.report_throttle_at, cfg.report_deny_at),
+    }
+}
+
+fn limits(cfg: &RiskConfig, action: Action) -> Limits {
+    let (throttle_at, deny_at) = thresholds(cfg, action);
+    let (reason, captcha) = match action {
+        Action::Register => ("register_rate", true),
+        Action::Login => ("login_failures", true),
+        Action::Send => ("send_rate", false),
+        Action::ClaimKeys => ("claim_keys_rate", false),
+        Action::FriendRequest => ("friend_request_rate", false),
+        Action::MediaUpload => ("media_upload_rate", false),
+        Action::MomentCreate => ("moment_create_rate", false),
+        Action::GroupManage => ("group_manage_rate", false),
+        Action::CommunityPost => ("community_post_rate", false),
+        Action::LiveStart => ("live_start_rate", false),
+        Action::CallSignal => ("call_signal_rate", false),
+        Action::Report => ("report_rate", false),
+    };
+    Limits {
+        throttle_at,
+        deny_at,
+        reason,
+        captcha,
     }
 }
 
