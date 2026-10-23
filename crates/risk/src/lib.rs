@@ -52,6 +52,17 @@ pub enum Action {
     FriendRequest,
     MediaUpload,
     MomentCreate,
+    /// T-B2（AR-5 余量）：建群/拉人/踢人。群管理是低频高影响操作，
+    /// 刷建群会污染目录，刷拉人/踢人会制造系统事件风暴。
+    GroupManage,
+    /// 社区建社/建频道/发帖（频道聊天消息不在此列：正常聊天不能按
+    /// "发帖"配额限流）。
+    CommunityPost,
+    /// 开播。推流回调（`/api/live/ingest/authorize`）**不**走用户风控，
+    /// 那是 ingest 节点的机器凭证校验。
+    LiveStart,
+    /// 通话信令 POST。ICE trickle 天然突发，窗口按 10 s 取。
+    CallSignal,
 }
 
 impl Action {
@@ -65,17 +76,29 @@ impl Action {
             Self::FriendRequest => "friend_request",
             Self::MediaUpload => "media_upload",
             Self::MomentCreate => "moment_create",
+            Self::GroupManage => "group_manage",
+            Self::CommunityPost => "community_post",
+            Self::LiveStart => "live_start",
+            Self::CallSignal => "call_signal",
         }
     }
 
-    /// 窗口长度：注册 1 h、登录 15 min、发送 10 s、举报 1 h。
+    /// 窗口长度：注册/举报/认领/好友/开播 1 h、登录 15 min、发送/信令 10 s、
+    /// 重写入（上传/动态/群/社区）10 min。
     fn window_ms(&self) -> u64 {
         match self {
-            Self::Register | Self::Report | Self::ClaimKeys | Self::FriendRequest => 60 * 60 * 1000,
+            Self::Register
+            | Self::Report
+            | Self::ClaimKeys
+            | Self::FriendRequest
+            | Self::LiveStart => 60 * 60 * 1000,
             Self::Login => 15 * 60 * 1000,
-            Self::Send => 10 * 1000,
-            // 上传/发动态是重操作，10 秒窗口太短（一次九宫格就 9 条），给 10 分钟
-            Self::MediaUpload | Self::MomentCreate => 10 * 60 * 1000,
+            Self::Send | Self::CallSignal => 10 * 1000,
+            // 上传/发动态/群与社区管理是重操作，10 秒窗口太短
+            // （一次九宫格就 9 条），给 10 分钟。
+            Self::MediaUpload | Self::MomentCreate | Self::GroupManage | Self::CommunityPost => {
+                10 * 60 * 1000
+            }
         }
     }
 }
@@ -117,56 +140,44 @@ struct Limits {
     captcha: bool,
 }
 
-fn limits(cfg: &RiskConfig, action: Action) -> Limits {
+fn thresholds(cfg: &RiskConfig, action: Action) -> (usize, usize) {
     match action {
-        Action::Register => Limits {
-            throttle_at: cfg.register_challenge_at,
-            deny_at: cfg.register_deny_at,
-            reason: "register_rate",
-            captcha: true,
-        },
-        Action::Login => Limits {
-            throttle_at: cfg.login_fail_challenge_at,
-            deny_at: cfg.login_fail_deny_at,
-            reason: "login_failures",
-            captcha: true,
-        },
-        Action::Send => Limits {
-            throttle_at: cfg.send_throttle_at,
-            deny_at: cfg.send_deny_at,
-            reason: "send_rate",
-            captcha: false,
-        },
-        Action::ClaimKeys => Limits {
-            throttle_at: cfg.claim_keys_throttle_at,
-            deny_at: cfg.claim_keys_deny_at,
-            reason: "claim_keys_rate",
-            captcha: false,
-        },
-        Action::FriendRequest => Limits {
-            throttle_at: cfg.friend_request_throttle_at,
-            deny_at: cfg.friend_request_deny_at,
-            reason: "friend_request_rate",
-            captcha: false,
-        },
-        Action::MediaUpload => Limits {
-            throttle_at: cfg.media_upload_throttle_at,
-            deny_at: cfg.media_upload_deny_at,
-            reason: "media_upload_rate",
-            captcha: false,
-        },
-        Action::MomentCreate => Limits {
-            throttle_at: cfg.moment_create_throttle_at,
-            deny_at: cfg.moment_create_deny_at,
-            reason: "moment_create_rate",
-            captcha: false,
-        },
-        Action::Report => Limits {
-            throttle_at: cfg.report_throttle_at,
-            deny_at: cfg.report_deny_at,
-            reason: "report_rate",
-            captcha: false,
-        },
+        Action::Register => (cfg.register_challenge_at, cfg.register_deny_at),
+        Action::Login => (cfg.login_fail_challenge_at, cfg.login_fail_deny_at),
+        Action::Send => (cfg.send_throttle_at, cfg.send_deny_at),
+        Action::ClaimKeys => (cfg.claim_keys_throttle_at, cfg.claim_keys_deny_at),
+        Action::FriendRequest => (cfg.friend_request_throttle_at, cfg.friend_request_deny_at),
+        Action::MediaUpload => (cfg.media_upload_throttle_at, cfg.media_upload_deny_at),
+        Action::MomentCreate => (cfg.moment_create_throttle_at, cfg.moment_create_deny_at),
+        Action::GroupManage => (cfg.group_manage_throttle_at, cfg.group_manage_deny_at),
+        Action::CommunityPost => (cfg.community_post_throttle_at, cfg.community_post_deny_at),
+        Action::LiveStart => (cfg.live_start_throttle_at, cfg.live_start_deny_at),
+        Action::CallSignal => (cfg.call_signal_throttle_at, cfg.call_signal_deny_at),
+        Action::Report => (cfg.report_throttle_at, cfg.report_deny_at),
+    }
+}
+
+fn limits(cfg: &RiskConfig, action: Action) -> Limits {
+    let (throttle_at, deny_at) = thresholds(cfg, action);
+    let (reason, captcha) = match action {
+        Action::Register => ("register_rate", true),
+        Action::Login => ("login_failures", true),
+        Action::Send => ("send_rate", false),
+        Action::ClaimKeys => ("claim_keys_rate", false),
+        Action::FriendRequest => ("friend_request_rate", false),
+        Action::MediaUpload => ("media_upload_rate", false),
+        Action::MomentCreate => ("moment_create_rate", false),
+        Action::GroupManage => ("group_manage_rate", false),
+        Action::CommunityPost => ("community_post_rate", false),
+        Action::LiveStart => ("live_start_rate", false),
+        Action::CallSignal => ("call_signal_rate", false),
+        Action::Report => ("report_rate", false),
+    };
+    Limits {
+        throttle_at,
+        deny_at,
+        reason,
+        captcha,
     }
 }
 
