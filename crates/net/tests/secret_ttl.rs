@@ -157,11 +157,19 @@ async fn hub_shutdown_unregisters_from_route_table() {
     )
     .await
     .unwrap();
-    assert!(hubs.list_hubs().await.unwrap().contains(&"hub-by".to_string()));
+    assert!(hubs
+        .list_hubs()
+        .await
+        .unwrap()
+        .contains(&"hub-by".to_string()));
 
     hub.shutdown().await;
     assert!(
-        !hubs.list_hubs().await.unwrap().contains(&"hub-by".to_string()),
+        !hubs
+            .list_hubs()
+            .await
+            .unwrap()
+            .contains(&"hub-by".to_string()),
         "shutdown must unregister the hub from the route table"
     );
 }

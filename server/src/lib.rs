@@ -48,10 +48,11 @@ pub struct Stack {
     pub platform: PlatformState,
     pub store: Arc<Store>,
     pub hub: HubHandle,
-    /// M-11（#32）：MqHub 的唯一所有者（原先 `mem::forget` 到进程退出）。
-    /// 优雅停机时经它从路由表注销本 hub——多节点下别的 hub 不再向它投递。
-    /// `hub` 字段保持 HubHandle 不变：既有测试与嵌入方拿 clone 照常工作。
-    hub_owner: wxlike_net::MqHub,
+    /// M-11（#32）：hub 常驻钩子（`MqHub::leak` 的返回物）。hub 本体泄漏
+    /// 到进程退出（与原 `mem::forget` 语义一致，ops_recovery 这类依赖
+    /// Drop 停 hub 的测试不受影响）；优雅停机时经它从路由表注销本 hub——
+    /// 多节点下别的 hub 不再向死地址投递。
+    hub_lease: wxlike_net::HubLease,
     pub http_addr: std::net::SocketAddr,
     pub quic_addr: std::net::SocketAddr,
     /// 通知 HTTP 服务停止接新连接并排空在飞请求。
@@ -76,8 +77,11 @@ impl Stack {
             ),
         }
         // M-11：HTTP 排空后注销 hub 路由（MQ 侧其他节点立刻停止向本 hub
-        // 投递），再做 WAL 落盘——顺序保证停机窗口内不再产生新的投递需求
-        self.hub_owner.shutdown().await;
+        // 投递），再做 WAL 落盘——顺序保证停机窗口内不再产生新的投递需求。
+        // hub 本体随进程退出回收（泄漏常驻是刻意语义，见 HubLease 注释）。
+        if let Err(err) = self.hub_lease.unregister().await {
+            tracing::warn!("hub unregister on shutdown failed: {err:#}");
+        }
         self.platform.checkpoint_wal();
     }
 }
@@ -138,8 +142,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     );
     let _reconciler =
         wxlike_platform::spawn_reconciler(platform.clone(), std::time::Duration::from_secs(300));
-    // M-11：hub 交给 Stack 持有（原先 mem::forget 到进程退出），
-    // 优雅停机时 Stack::shutdown 会先 unregister 再 Drop
+    // M-11：hub 泄漏常驻 + 停机钩子（原先裸 mem::forget，注销无门）
 
     let deps = Arc::new(HistoryDeps {
         platform: platform.clone(),
@@ -158,11 +161,12 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     );
     let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app).await?;
 
+    let hub_lease = hub.leak();
     Ok(Stack {
         platform,
         store,
         hub: handle,
-        hub_owner: hub,
+        hub_lease,
         http_addr,
         quic_addr,
         shutdown: shutdown_tx,
@@ -1224,12 +1228,14 @@ fn turn_rest_credentials(
     use hmac::{Hmac, Mac as _};
     type HmacSha1 = Hmac<sha1::Sha1>;
     let username = format!("{}:{}", now_epoch_secs.saturating_add(ttl_secs), user_id);
-    let mut mac = HmacSha1::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha1::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(username.as_bytes());
     let digest = mac.finalize().into_bytes();
     // coturn REST 规范：password = base64(HMAC-SHA1(secret, username))
-    (username, base64::engine::general_purpose::STANDARD.encode(digest))
+    (
+        username,
+        base64::engine::general_purpose::STANDARD.encode(digest),
+    )
 }
 
 /// Virtual-money faucet for demos and the UI integration tests (WP-09 is a
@@ -1242,7 +1248,7 @@ fn dev_routes(platform: PlatformState) -> Router {
     /// Per-call cap: enough for any demo, far below the ledger ceiling — an
     /// authorized-but-compromised caller must not be able to hyperinflate
     /// the virtual economy in one request.
-    const FAUCET_MAX_PER_CALL: i64 = 100_000_00;
+    const FAUCET_MAX_PER_CALL: i64 = 1_000_000;
     let mut app = axum::Router::new();
     if std::env::var("WXLIKE_DEV_FAUCET").as_deref() == Ok("1") {
         if platform
@@ -1366,7 +1372,10 @@ impl wxlike_net::DeliveryPolicy for PlatformPolicy {
             Ok(state) if state.enabled => Some(state.ttl_ms),
             Ok(_) => None,
             Err(err) => {
-                tracing::warn!(conv = conv_id, "secret ttl lookup failed (fail-open): {err}");
+                tracing::warn!(
+                    conv = conv_id,
+                    "secret ttl lookup failed (fail-open): {err}"
+                );
                 None
             }
         }
@@ -1471,7 +1480,10 @@ mod turn_tests {
             base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
         };
         assert_eq!(password, expected);
-        assert!(!password.contains(':'), "password must not leak the username shape");
+        assert!(
+            !password.contains(':'),
+            "password must not leak the username shape"
+        );
 
         // 同参重放稳定（coturn 侧按 username 重算比对，必须确定性）
         let again = turn_rest_credentials("secret", "user1", 1_000, 60);

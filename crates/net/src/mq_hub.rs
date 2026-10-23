@@ -140,12 +140,23 @@ impl MqHub {
     }
 }
 
+/// 丢弃句柄 = 停止（中止任务 + 关 endpoint），但**不注销路由表**——
+/// Drop 无法 await。模拟崩溃（ops_recovery 靠它释放端口重绑）、短命测试
+/// 进程都依赖这个语义；要注销必须走 [`MqHub::shutdown`] 或 `leak` 的
+/// [`HubLease`]。
+impl Drop for MqHub {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+        self.endpoint.close(0u32.into(), b"hub shutdown");
+    }
+}
+
 impl MqHub {
-    /// M-11（第四轮审计 #32）：优雅停机——先从路由表注销本 hub（多节点
-    /// 下其他 hub 立刻停止向它投递），再走 [`Drop`] 的任务中止与 endpoint
-    /// 关闭。`Drop` 是同步的无法 await，所以注销必须显式调用；不调用则
-    /// 维持旧状（进程退出即消失，路由表残留靠 Redis/NATS 侧租约回收兜底，
-    /// Memory 后端随进程一起蒸发）。
+    /// 完整优雅停机：路由表注销（多节点下其他 hub 立刻停止向它投递）→
+    /// 中止任务 → 关 endpoint。`Drop` 只能做后两步（无法 await），
+    /// 所以注销必须走这里或 [`MqHub::leak`] 的钩子。
     pub async fn shutdown(self) {
         if let Err(err) = self
             .handle
@@ -157,16 +168,23 @@ impl MqHub {
         {
             eprintln!("[mq-hub] unregister_hub on shutdown failed: {err:#}");
         }
-        // self 在此 Drop
-    }
-}
-
-impl Drop for MqHub {
-    fn drop(&mut self) {
         for t in &self.tasks {
             t.abort();
         }
         self.endpoint.close(0u32.into(), b"hub shutdown");
+    }
+
+    /// M-11（第四轮审计 #32 补批）：常驻到进程退出（server 原先裸调
+    /// `mem::forget` 语义的显式化）。返回的 [`HubLease`] 是泄漏之后唯一
+    /// 能做的善后——路由表注销：优雅停机时让多节点拓扑立刻忘记本 hub，
+    /// 而不是把死地址留到租约过期。
+    pub fn leak(self) -> HubLease {
+        let lease = HubLease {
+            routes: self.handle.state.router.routes.clone(),
+            hub_id: self.hub_id.clone(),
+        };
+        std::mem::forget(self);
+        lease
     }
 }
 
@@ -1503,6 +1521,7 @@ pub async fn dedup_len(handle: &HubHandle) -> usize {
 /// * 群帧：查一次 `muted`（全员禁言对管理员的豁免在实现方内部裁决）；
 /// * 直发帧：逐收件人查 `blocked` + `direct_allowed`，收件集只保留通过者；
 ///   全部被拦 → Drop（不落库、不暂存——被拉黑者的消息无痕迹）。
+///
 /// AR-6（#30）：这一帧是否已过秘密会话的 TTL（不再补发）。
 /// 只有内容帧受约束；回执/撤回/系统帧豁免（撤回要在过期后仍能到达）。
 async fn expired_secret_frame(
@@ -1590,4 +1609,18 @@ async fn apply_delivery_policy(
 enum PolicyOutcome {
     Deliver(Envelope),
     Drop,
+}
+
+/// [`MqHub::leak`] 的停机钩子：泄漏后 hub 本体不可达，唯一善后是路由表
+/// 注销。进程意外崩溃时没有它，残留条目由 MQ 后端的租约回收兜底。
+pub struct HubLease {
+    routes: std::sync::Arc<dyn wxlike_mq::RouteTable>,
+    hub_id: String,
+}
+
+impl HubLease {
+    /// 从路由表注销本 hub（幂等；失败不 panic，由调用方记日志）。
+    pub async fn unregister(&self) -> anyhow::Result<()> {
+        self.routes.unregister_hub(&self.hub_id).await
+    }
 }
