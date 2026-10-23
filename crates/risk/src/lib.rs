@@ -221,6 +221,20 @@ pub enum RiskError {
 
 pub type Result<T> = std::result::Result<T, RiskError>;
 
+/// cfg 块抽到模块级：函数体内的 `#[cfg] { }` 花括号会干扰质量探针的
+/// 括号深度计数（把 new 之后整个 impl 尾部粘进一个函数的行数）。
+#[cfg(feature = "redis")]
+fn gcra_store_from_url(url: &str) -> Result<Arc<dyn RiskStore>> {
+    Ok(Arc::new(gcra::GcraStore::connect(url)?))
+}
+
+#[cfg(not(feature = "redis"))]
+fn gcra_store_from_url(_url: &str) -> Result<Arc<dyn RiskStore>> {
+    Err(RiskError::Store(
+        "wxlike-risk built without the `redis` feature".into(),
+    ))
+}
+
 /// 风控引擎：配置 + 存储后端。进程内滑动窗口是默认实现。
 pub struct RiskEngine {
     cfg: RiskConfig,
@@ -253,18 +267,8 @@ impl RiskEngine {
     }
 
     pub fn from_redis_url(url: &str) -> Result<Self> {
-        #[cfg(feature = "redis")]
-        {
-            let store = gcra::GcraStore::connect(url)?;
-            Ok(Self::with_store(RiskConfig::default(), Arc::new(store)))
-        }
-        #[cfg(not(feature = "redis"))]
-        {
-            let _ = url;
-            Err(RiskError::Store(
-                "wxlike-risk built without the `redis` feature".into(),
-            ))
-        }
+        let store = gcra_store_from_url(url)?;
+        Ok(Self::with_store(RiskConfig::default(), store))
     }
 
     pub fn config(&self) -> &RiskConfig {

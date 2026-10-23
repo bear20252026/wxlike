@@ -6,11 +6,13 @@
 //!
 //! 全程真 UDP（127.0.0.1）、真 ICE/DTLS/SRTP，不依赖任何外部服务。
 
+use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use wxlike_platform::{Platform, PlatformState};
 use wxlike_rtc::media::{Datagram, MediaSession};
-use wxlike_sfu::SfuRoom;
+use wxlike_sfu::{SfuJoinError, SfuRoom};
 
 #[derive(Default)]
 struct Stats {
@@ -26,8 +28,37 @@ struct Client {
     stats: Stats,
 }
 
+/// 平台侧夹具：三个注册用户 + 一个三人群 + 每人一条会话 token。
+struct Fixture {
+    platform: PlatformState,
+    conv: String,
+    ids: HashMap<&'static str, String>,
+    tokens: HashMap<&'static str, String>,
+}
+
+fn fixture() -> Fixture {
+    let p = Platform::in_memory().unwrap();
+    let alice = p.register("alice", "pw").unwrap();
+    let bob = p.register("bob", "pw").unwrap();
+    let carol = p.register("carol", "pw").unwrap();
+    let conv = p
+        .create_group(&alice, "sfu-three", &[bob.clone(), carol.clone()])
+        .unwrap();
+    let ids = HashMap::from([("alice", alice), ("bob", bob), ("carol", carol)]);
+    let tokens = ids
+        .iter()
+        .map(|(name, id)| (*name, p.create_session(id, 3_600_000).unwrap()))
+        .collect();
+    Fixture {
+        platform: p.shared(),
+        conv,
+        ids,
+        tokens,
+    }
+}
+
 /// 建一个客户端并完成 offer/answer（answer 里带候选，无需 trickle）。
-fn join(room: &mut SfuRoom, name: &'static str) -> Client {
+fn try_join(room: &mut SfuRoom, name: &'static str, token: &str) -> Result<Client, SfuJoinError> {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.set_nonblocking(true).unwrap();
     let local = socket.local_addr().unwrap();
@@ -36,16 +67,20 @@ fn join(room: &mut SfuRoom, name: &'static str) -> Client {
     session.add_host_candidate(local);
     let offer = session.offer(false).unwrap();
 
-    let reply = room.join(name, offer, false).expect("SFU 应接受 offer");
+    let reply = room.join(token, offer, false)?;
     session.accept_answer(reply.sdp).unwrap();
 
-    Client {
+    Ok(Client {
         name,
         session,
         socket,
         local,
         stats: Stats::default(),
-    }
+    })
+}
+
+fn join(room: &mut SfuRoom, f: &Fixture, name: &'static str) -> Client {
+    try_join(room, name, &f.tokens[name]).expect("SFU 应接受 offer")
 }
 
 /// 推进所有客户端与服务端一轮。
@@ -92,11 +127,17 @@ fn pump(room: &mut SfuRoom, clients: &mut [Client], inbox: &mut Vec<(String, Vec
 
 #[test]
 fn three_clients_through_sfu_hear_each_other() {
-    let mut room = SfuRoom::new(Some("127.0.0.1".parse().unwrap()), 0);
+    let f = fixture();
+    let mut room = SfuRoom::new(
+        f.platform.clone(),
+        &f.conv,
+        Some("127.0.0.1".parse().unwrap()),
+        0,
+    );
     let mut clients = vec![
-        join(&mut room, "alice"),
-        join(&mut room, "bob"),
-        join(&mut room, "carol"),
+        join(&mut room, &f, "alice"),
+        join(&mut room, &f, "bob"),
+        join(&mut room, &f, "carol"),
     ];
     assert_eq!(room.len(), 3);
 
@@ -154,22 +195,41 @@ fn three_clients_through_sfu_hear_each_other() {
 
 #[test]
 fn leaving_frees_the_participant() {
-    let mut room = SfuRoom::new(Some("127.0.0.1".parse().unwrap()), 0);
-    let _a = join(&mut room, "alice");
-    let _b = join(&mut room, "bob");
+    let f = fixture();
+    let mut room = SfuRoom::new(
+        f.platform.clone(),
+        &f.conv,
+        Some("127.0.0.1".parse().unwrap()),
+        0,
+    );
+    let _a = join(&mut room, &f, "alice");
+    let _b = join(&mut room, &f, "bob");
     assert_eq!(room.len(), 2);
-    room.leave("bob");
+    room.leave(&f.ids["bob"]);
     assert_eq!(room.len(), 1);
-    assert_eq!(room.participants(), vec!["alice".to_string()]);
+    assert_eq!(room.participants(), vec![f.ids["alice"].clone()]);
     // 重复 leave 不该 panic
-    room.leave("bob");
+    room.leave(&f.ids["bob"]);
 }
 
-/// 同一 id 重复加入（断线重连）不能占两个端口。
+/// 同一账号重复加入必须被拒绝：旧实现先 `leave` 再加，等于知道 id 就能踢人。
 #[test]
-fn rejoin_replaces_the_old_session() {
-    let mut room = SfuRoom::new(Some("127.0.0.1".parse().unwrap()), 0);
-    let _a = join(&mut room, "alice");
-    let _a2 = join(&mut room, "alice");
-    assert_eq!(room.len(), 1, "重复加入应替换而不是新增");
+fn rejoin_with_the_same_identity_is_rejected() {
+    let f = fixture();
+    let mut room = SfuRoom::new(
+        f.platform.clone(),
+        &f.conv,
+        Some("127.0.0.1".parse().unwrap()),
+        0,
+    );
+    let _a = join(&mut room, &f, "alice");
+
+    let err = match try_join(&mut room, "alice", &f.tokens["alice"]) {
+        Ok(_) => panic!("重复 join 应被拒绝"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, SfuJoinError::PeerConflict), "实际: {err:?}");
+    assert_eq!(err.http_status(), 409);
+    assert_eq!(room.len(), 1, "冲突的 join 不能顶替或新增参与者");
+    assert_eq!(room.participants(), vec![f.ids["alice"].clone()]);
 }

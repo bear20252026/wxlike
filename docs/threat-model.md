@@ -49,10 +49,11 @@
   一次性密钥，绝不重复发放；库存见底返回空列表，属主端 `bundle_refilled` 补货。
 - 群 sender key 分发走成员间 1:1 加密通道，不经过服务端。
 
-## 兼容与迁移（过渡期）
+## 兼容与迁移
 
-- `wxlike-core::crypto` 的 static-static（X25519+HKDF+ChaCha20Poly1305）保留。
-- 客户端封消息时的选择顺序：**有棘轮会话 → Olm/Megolm；没有 → 回退 static-static，
-  并打 `warn` 日志**（`"e2ee: no ratchet session for <peer>, falling back to static-static"`）。
-  回退不静默，日志可审计迁移进度。
-- 全量切换到棘轮后，static-static 降级为代码内兼容路径，计划在 1.0 移除。
+- `wxlike-core::crypto` 的 static-static 脚手架（X25519+HKDF+ChaCha20-Poly1305，
+  无棘轮/无前向保密、AAD 不含会话上下文、全仓零调用者）已移除（issue #47）。
+  客户端封消息的唯一路径是 `e2ee.rs` 的 Olm/Megolm。
+- 本地快照：旧 `WXSC1`（裸设备密钥同目录存放）→ 新 `WXSC2`（口令 → Argon2id →
+  XChaCha20-Poly1305，盐与 KDF 参数随密文头存储）。旧文件**明确报错拒绝**，不做
+  静默迁移；桌面端接入口令解锁见整改任务单 T-D3（issue #48）。
