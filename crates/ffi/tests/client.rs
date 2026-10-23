@@ -591,12 +591,11 @@ fn push_token_goes_to_the_device_registry() {
         .find(|h| h.path == "/api/devices")
         .expect("device hit");
     assert_eq!(hit.method, "POST");
-    assert!(
-        hit.body.contains("\"platform\":\"android\""),
-        "{}",
-        hit.body
-    );
-    assert!(hit.body.contains("fcm-token-1"), "{}", hit.body);
+    // 解析而不是字符串匹配：ureq 3 的 `send_json` 序列化时空格不一样
+    // （`{"a": 1}` 而不是 `{"a":1}`），服务端两种都收，但字符串断言会假红。
+    let body: serde_json::Value = serde_json::from_str(&hit.body).expect("body is json");
+    assert_eq!(body["platform"], "android", "{}", hit.body);
+    assert_eq!(body["device_token"], "fcm-token-1", "{}", hit.body);
     let err = c
         .register_push_token("android".into(), "  ".into())
         .unwrap_err();

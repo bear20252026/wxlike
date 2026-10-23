@@ -22,7 +22,9 @@ wxlike-net = { path = "../../crates/net" }
 wxlike-rtc = { path = "../../crates/rtc" }
 # WP-11: all backend interaction goes through these Rust commands (the
 # frontend never speaks HTTP/QUIC itself). ureq = small sync client on rustls.
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
+# ureq 3 的 Response 是 http crate 的类型
+http = "1"
 base64 = "0.22"
 sha2 = "0.10"
 # 秘密聊天设备密钥（静态加密的密钥材料）
@@ -43,7 +45,9 @@ wxlike-platform = { path = "../../crates/platform" }
 wxlike-mq = { path = "../../crates/mq" }
 wxlike-server = { path = "../../server" }
 axum = { version = "0.8", features = ["macros", "multipart"] }
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
+# ureq 3 的 Response 是 http crate 的类型
+http = "1"
 
 [lib]
 name = "wxlike_ui_lib"

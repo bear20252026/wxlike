@@ -906,29 +906,29 @@ pub async fn deliver_callback_signed(
     let url = url.to_string();
     let token = token.map(str::to_string);
     let sent = tokio::task::spawn_blocking(move || -> Result<Sent, String> {
-        let mut request = ureq::post(&url)
-            .timeout(Duration::from_millis(CALLBACK_TIMEOUT_MS))
-            // 不跟随重定向：跟随等于把"目标白名单"交给对端决定（issue #8）。
-            // POST 的 3xx 在 ureq 里本来也不跟，这里显式关掉 GET 风格的跟随。
-            .set("content-type", "application/json");
+        // ureq 3：超时是 agent 级配置（顺带白拿连接池），body 用 `send()`。
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_millis(CALLBACK_TIMEOUT_MS)))
+            // 4xx/5xx 不当错误：状态码要交给 `classify_status` 分流
+            // （429 是限流、5xx 才重试），当成错误就分不出来了。
+            .http_status_as_error(false)
+            // **不跟随重定向**（issue #8）：跟随等于把"目标白名单"交给对端决定。
+            // ureq 2 对 POST 本来就不跟；3 默认会跟（还把 POST 改成 GET），
+            // 所以这里显式关掉，顺便让 3xx 落回 `classify_status` 的永久档。
+            .max_redirects(0)
+            .build()
+            .into();
+        let mut request = agent.post(&url).header("content-type", "application/json");
         if let Some(token) = token.as_deref() {
-            request = request.set(CALLBACK_TOKEN_HEADER, token);
+            request = request.header(CALLBACK_TOKEN_HEADER, token);
         }
-        match request.send_string(&json) {
-            Ok(response) => Ok(Sent::Status(response.status())),
-            // ureq 把 >=400 当错误抛出，状态码要从错误里取回来
-            Err(ureq::Error::Status(code, _)) => Ok(Sent::Status(code)),
-            Err(ureq::Error::Transport(err)) => {
-                if matches!(
-                    err.kind(),
-                    ureq::ErrorKind::InvalidUrl | ureq::ErrorKind::UnknownScheme
-                ) {
-                    // 配置错误重试一万次也是错的
-                    Ok(Sent::Unusable(format!("callback url is unusable: {err}")))
-                } else {
-                    Ok(Sent::Transport(format!("callback transport: {err}")))
-                }
+        match request.send(json.as_str()) {
+            Ok(response) => Ok(Sent::Status(response.status().as_u16())),
+            Err(ureq::Error::BadUri(_)) => {
+                // 配置错误重试一万次也是错的
+                Ok(Sent::Unusable("callback url is unusable".to_string()))
             }
+            Err(err) => Ok(Sent::Transport(format!("callback transport: {err}"))),
         }
     })
     .await;

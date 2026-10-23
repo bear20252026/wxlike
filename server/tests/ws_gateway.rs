@@ -101,7 +101,8 @@ fn register(stack: &wxlike_server::Stack, name: &str) -> (String, String) {
     let r: serde_json::Value = ureq::post(&format!("http://{}/api/register", stack.http_addr))
         .send_json(serde_json::json!({"name": name, "password": "pw"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     (
         r["user_id"].as_str().unwrap().to_string(),
@@ -112,25 +113,26 @@ fn register(stack: &wxlike_server::Stack, name: &str) -> (String, String) {
 /// 好友流程（不变式 9：直发双方须为好友或已接受陌生人）。
 fn befriend(stack: &wxlike_server::Stack, _a: &str, a_tok: &str, b: &str, b_tok: &str) {
     ureq::post(&format!("http://{}/api/friends/requests", stack.http_addr))
-        .set("Authorization", &format!("Bearer {a_tok}"))
+        .header("Authorization", &format!("Bearer {a_tok}"))
         .send_json(serde_json::json!({"to_user_id": b, "message": ""}))
         .unwrap();
     let incoming: serde_json::Value = ureq::get(&format!(
         "http://{}/api/friends/requests/incoming",
         stack.http_addr
     ))
-    .set("Authorization", &format!("Bearer {b_tok}"))
+    .header("Authorization", &format!("Bearer {b_tok}"))
     .call()
     .unwrap()
-    .into_json()
+    .body_mut()
+    .read_json()
     .unwrap();
     let id = incoming[0]["id"].as_str().unwrap().to_string();
     ureq::post(&format!(
         "http://{}/api/friends/requests/{id}/accept",
         stack.http_addr
     ))
-    .set("Authorization", &format!("Bearer {b_tok}"))
-    .call()
+    .header("Authorization", &format!("Bearer {b_tok}"))
+    .send_empty()
     .unwrap();
 }
 

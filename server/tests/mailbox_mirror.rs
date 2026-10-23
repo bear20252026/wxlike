@@ -38,7 +38,8 @@ fn register(base: &str, name: &str) -> (String, String) {
     let reply: Value = ureq::post(&format!("{base}/api/register"))
         .send_json(serde_json::json!({"name": name, "password": "pw"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     (
         reply["user_id"].as_str().unwrap().to_string(),
@@ -50,19 +51,20 @@ fn register(base: &str, name: &str) -> (String, String) {
 /// 不先加好友就发消息，连落库都不会发生——测试会看到未读恒为 0。
 fn befriend(base: &str, a_tok: &str, b_uid: &str, b_tok: &str) {
     ureq::post(&format!("{base}/api/friends/requests"))
-        .set("Authorization", &format!("Bearer {a_tok}"))
+        .header("Authorization", &format!("Bearer {a_tok}"))
         .send_json(serde_json::json!({"to_user_id": b_uid, "message": ""}))
         .unwrap();
     let incoming: Value = ureq::get(&format!("{base}/api/friends/requests/incoming"))
-        .set("Authorization", &format!("Bearer {b_tok}"))
+        .header("Authorization", &format!("Bearer {b_tok}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let id = incoming[0]["id"].as_str().unwrap().to_string();
     ureq::post(&format!("{base}/api/friends/requests/{id}/accept"))
-        .set("Authorization", &format!("Bearer {b_tok}"))
-        .call()
+        .header("Authorization", &format!("Bearer {b_tok}"))
+        .send_empty()
         .unwrap();
 }
 
@@ -82,10 +84,11 @@ fn wait_unread(base: &str, conv: &str, token: &str, want: u64) -> Value {
 
 fn unread(base: &str, conv: &str, token: &str) -> Value {
     ureq::get(&format!("{base}/api/conv/{conv}/unread"))
-        .set("Authorization", &format!("Bearer {token}"))
+        .header("Authorization", &format!("Bearer {token}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap()
 }
 
@@ -121,10 +124,11 @@ async fn direct_message_lands_in_the_mailbox() {
 
     // 读完归零
     let after: Value = ureq::post(&format!("{base}/api/conv/{conv}/read"))
-        .set("Authorization", &format!("Bearer {tb}"))
-        .call()
+        .header("Authorization", &format!("Bearer {tb}"))
+        .send_empty()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     assert_eq!(after["unread"], 0, "{after}");
 
@@ -198,10 +202,11 @@ async fn history_pages_by_mailbox_seq() {
     assert_eq!(wait_unread(&base, &conv, &tb, 3)["unread"], 3);
 
     let page: Value = ureq::get(&format!("{base}/api/history/{conv}?limit=50"))
-        .set("Authorization", &format!("Bearer {tb}"))
+        .header("Authorization", &format!("Bearer {tb}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let msgs = page["messages"].as_array().expect("messages");
     assert_eq!(msgs.len(), 3, "{page}");
@@ -215,10 +220,11 @@ async fn history_pages_by_mailbox_seq() {
 
     // 往前翻一页：before_seq 也是信箱序列号
     let page: Value = ureq::get(&format!("{base}/api/history/{conv}?before_seq=2"))
-        .set("Authorization", &format!("Bearer {tb}"))
+        .header("Authorization", &format!("Bearer {tb}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let msgs = page["messages"].as_array().expect("messages");
     assert_eq!(msgs.len(), 1, "before_seq=2 之前只有第 1 条：{page}");
@@ -339,10 +345,11 @@ async fn http_send_reuses_the_hub_path_and_is_idempotent() {
 
     let send = |key: &str| -> Value {
         ureq::post(&format!("{base}/api/conv/{conv}/send"))
-            .set("Authorization", &format!("Bearer {ta}"))
+            .header("Authorization", &format!("Bearer {ta}"))
             .send_json(serde_json::json!({"text": "hello over http", "idempotency_key": key}))
             .expect("send")
-            .into_json()
+            .body_mut()
+            .read_json()
             .unwrap()
     };
 
@@ -357,10 +364,11 @@ async fn http_send_reuses_the_hub_path_and_is_idempotent() {
 
     // 内容确实落库，且从 history 读得到
     let page: Value = ureq::get(&format!("{base}/api/history/{conv}?limit=10"))
-        .set("Authorization", &format!("Bearer {tb}"))
+        .header("Authorization", &format!("Bearer {tb}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let msgs = page["messages"].as_array().expect("messages");
     assert_eq!(msgs.len(), 1, "{page}");
@@ -378,11 +386,11 @@ async fn http_send_denies_outsiders() {
     let conv = format!("d-{alice}~{bob}");
 
     let res = ureq::post(&format!("{base}/api/conv/{conv}/send"))
-        .set("Authorization", &format!("Bearer {tc}"))
+        .header("Authorization", &format!("Bearer {tc}"))
         .send_json(serde_json::json!({"text": "sneaky", "idempotency_key": "k"}));
     let status = match res {
-        Ok(r) => r.status(),
-        Err(ureq::Error::Status(code, _)) => code,
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
         Err(e) => panic!("transport: {e}"),
     };
     assert_eq!(status, 403, "carol={carol} 不在会话里");
@@ -400,38 +408,41 @@ async fn http_recall_checks_the_author() {
     let conv = format!("d-{alice}~{bob}");
 
     let sent: Value = ureq::post(&format!("{base}/api/conv/{conv}/send"))
-        .set("Authorization", &format!("Bearer {ta}"))
+        .header("Authorization", &format!("Bearer {ta}"))
         .send_json(serde_json::json!({"text": "oops", "idempotency_key": "r1"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let msg_id = sent["msg_id"].as_str().unwrap().to_string();
 
     // bob 撤回 alice 的消息 → 403
     let res = ureq::post(&format!("{base}/api/conv/{conv}/recall"))
-        .set("Authorization", &format!("Bearer {tb}"))
+        .header("Authorization", &format!("Bearer {tb}"))
         .send_json(serde_json::json!({"msg_id": msg_id}));
     let status = match res {
-        Ok(r) => r.status(),
-        Err(ureq::Error::Status(code, _)) => code,
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
         Err(e) => panic!("transport: {e}"),
     };
     assert_eq!(status, 403, "非作者不该能撤回");
 
     // 作者撤回 → 成功，历史里那条变成已撤回
     let ok: Value = ureq::post(&format!("{base}/api/conv/{conv}/recall"))
-        .set("Authorization", &format!("Bearer {ta}"))
+        .header("Authorization", &format!("Bearer {ta}"))
         .send_json(serde_json::json!({"msg_id": msg_id}))
         .expect("recall")
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     assert_eq!(ok["recalled"], true, "{ok}");
 
     let page: Value = ureq::get(&format!("{base}/api/history/{conv}?limit=10"))
-        .set("Authorization", &format!("Bearer {tb}"))
+        .header("Authorization", &format!("Bearer {tb}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let msgs = page["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 1, "{page}");
@@ -452,31 +463,34 @@ async fn http_forward_copies_into_the_target_conversation() {
     let ac = format!("d-{alice}~{carol}");
 
     let sent: Value = ureq::post(&format!("{base}/api/conv/{ab}/send"))
-        .set("Authorization", &format!("Bearer {ta}"))
+        .header("Authorization", &format!("Bearer {ta}"))
         .send_json(serde_json::json!({"text": "forward me", "idempotency_key": "f1"}))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     let msg_id = sent["msg_id"].as_str().unwrap().to_string();
 
     let fwd: Value = ureq::post(&format!("{base}/api/conv/{ac}/forward"))
-        .set("Authorization", &format!("Bearer {ta}"))
+        .header("Authorization", &format!("Bearer {ta}"))
         .send_json(serde_json::json!({
             "from_conv": ab, "to_conv": ac, "msg_id": msg_id, "idempotency_key": "fwd-1"
         }))
         .expect("forward")
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     assert_eq!(fwd["forwarded"], true, "{fwd}");
 
     // 幂等：同 key 重发不该多一条
     let again: Value = ureq::post(&format!("{base}/api/conv/{ac}/forward"))
-        .set("Authorization", &format!("Bearer {ta}"))
+        .header("Authorization", &format!("Bearer {ta}"))
         .send_json(serde_json::json!({
             "from_conv": ab, "to_conv": ac, "msg_id": msg_id, "idempotency_key": "fwd-1"
         }))
         .unwrap()
-        .into_json()
+        .body_mut()
+        .read_json()
         .unwrap();
     assert_eq!(again["msg_id"], fwd["msg_id"], "同 key 必须同 msg_id");
 

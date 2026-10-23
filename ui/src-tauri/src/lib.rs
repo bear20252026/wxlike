@@ -21,7 +21,7 @@
 // rustc surfaces that as a lint which is pure noise here
 #![allow(linker_messages)]
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -706,23 +706,23 @@ impl AppState {
         body.extend_from_slice(&bytes);
         let _ = write!(body, "\r\n--{boundary}--\r\n");
 
-        let resp = self
+        // ureq 3：`set` → `header`，`send_bytes` → `send`，响应体要显式取 body。
+        // 4xx/5xx 不再是错误（`http_status_as_error(false)`），所以自己看 status。
+        let mut resp = self
             .http()
-            .req("POST", "/api/video")
-            .set(
+            .req_write("POST", "/api/video")
+            .header(
                 "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
+                format!("multipart/form-data; boundary={boundary}"),
             )
-            .set("Content-Length", &body.len().to_string())
-            .send_bytes(&body)
-            .map_err(|e| match e {
-                ureq::Error::Status(status, r) => {
-                    let msg = r.into_string().unwrap_or_else(|_| format!("HTTP {status}"));
-                    msg
-                }
-                other => format!("upload video: {other}"),
-            })?;
-        resp.into_json::<serde_json::Value>()
+            .header("Content-Length", body.len().to_string())
+            .send(&body)
+            .map_err(|e| format!("upload video: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(wxlike_client::upload_status_error(resp));
+        }
+        resp.body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("upload video decode: {e}"))
     }
 
@@ -735,15 +735,29 @@ impl AppState {
         if !ok {
             return Err("video path outside /api/video".into());
         }
-        let resp = self.http().req("GET", path).call().map_err(|e| match e {
-            ureq::Error::Status(404, _) => "video not found".to_string(),
-            other => format!("download video: {other}"),
-        })?;
-        let content_type = resp.content_type().to_string();
+        let resp = self
+            .http()
+            .req("GET", path)
+            .call()
+            .map_err(|e| format!("download video: {e}"))?;
+        if resp.status() == http::StatusCode::NOT_FOUND {
+            return Err("video not found".to_string());
+        }
+        if !resp.status().is_success() {
+            return Err(wxlike_client::upload_status_error(resp));
+        }
+        let content_type = wxlike_client::content_type_of(&resp);
         let mut bytes = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("video read: {e}"))?;
+        // 3.x 的 BodyReader 没有 read_to_end：先读成 Vec 再展开
+        let mut reader = resp.into_body().into_reader();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                Err(e) => return Err(format!("video read: {e}")),
+            }
+        }
         Ok(MediaBlob {
             base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
             content_type,

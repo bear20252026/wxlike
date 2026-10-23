@@ -167,43 +167,50 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// 测试用 agent：4xx/5xx **不是**错误——这些用例断言的正是 404/405。
+    fn agent() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into()
+    }
+
     fn head(url: &str) -> (StatusCode, Option<String>, Option<String>) {
-        let resp = match ureq::head(url).call() {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, r)) => {
-                return (
-                    StatusCode::from_u16(code).unwrap(),
-                    r.header("content-type").map(str::to_string),
-                    None,
-                )
-            }
-            Err(err) => panic!("head {url}: {err}"),
+        // ureq 3：状态码不是错误（agent 上关了 http_status_as_error），
+        // 404 也走 Ok；响应头从 `http::HeaderMap` 取。
+        let resp = agent()
+            .head(url)
+            .call()
+            .unwrap_or_else(|e| panic!("head {url}: {e}"));
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
         };
         (
-            StatusCode::from_u16(resp.status()).unwrap(),
-            resp.header("content-type").map(str::to_string),
-            resp.header("cache-control").map(str::to_string),
+            resp.status(),
+            header("content-type"),
+            header("cache-control"),
         )
     }
 
     fn get(url: &str) -> (StatusCode, Option<String>, Option<String>, String) {
-        let resp = match ureq::get(url).call() {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, r)) => {
-                return (
-                    StatusCode::from_u16(code).unwrap(),
-                    r.header("content-type").map(str::to_string),
-                    None,
-                    r.into_string().unwrap_or_default(),
-                )
-            }
-            Err(err) => panic!("get {url}: {err}"),
+        let mut resp = agent()
+            .get(url)
+            .call()
+            .unwrap_or_else(|e| panic!("get {url}: {e}"));
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
         };
         (
-            StatusCode::from_u16(resp.status()).unwrap(),
-            resp.header("content-type").map(str::to_string),
-            resp.header("cache-control").map(str::to_string),
-            resp.into_string().unwrap_or_default(),
+            resp.status(),
+            header("content-type"),
+            header("cache-control"),
+            resp.body_mut().read_to_string().unwrap_or_default(),
         )
     }
 
@@ -268,13 +275,10 @@ mod tests {
             assert!(!body.contains("token=leak"), "{path} 泄露了内容");
         }
         // 非 GET/HEAD 的方法不能变成写入口
-        let status = ureq::post(&format!("{base}/app/assets/app.deadbeefcafe.js"))
-            .call()
-            .err()
-            .map(|e| match e {
-                ureq::Error::Status(code, _) => code,
-                other => panic!("unexpected: {other}"),
-            })
+        let status = agent()
+            .post(&format!("{base}/app/assets/app.deadbeefcafe.js"))
+            .send_empty()
+            .map(|r| r.status().as_u16())
             .expect("POST 不该成功");
         assert_eq!(status, 405, "静态目录只读");
         let _ = std::fs::remove_dir_all(&root);

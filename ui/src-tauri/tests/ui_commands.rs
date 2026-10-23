@@ -538,10 +538,10 @@ async fn p1_typing_is_transient() {
     // server history contains the content and nothing else
     let bob_token = platform.create_session(&bob_id, 60_000).unwrap();
     let rows: serde_json::Value = ureq::get(&format!("{http}/api/history/{conv}"))
-        .set("Authorization", &format!("Bearer {bob_token}"))
+        .header("Authorization", &format!("Bearer {bob_token}"))
         .call()
         .unwrap()
-        .into_json()
+        .body_mut().read_json()
         .unwrap();
     let msgs = rows["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 1, "typing left no stored row: {msgs:?}");

@@ -13,4 +13,6 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 # 与 UI 侧保持一致：阻塞式 HTTP，命令跑在 tauri 的阻塞线程池里
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
+# ureq 3 用 http crate 的 Request/Response；这里只用它的类型签名
+http = "1"
