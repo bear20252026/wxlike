@@ -7,6 +7,7 @@
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const MAGIC: &[u8; 4] = b"DPG1";
 pub const STUB_LEN: usize = 20; // magic(4) + version(4) + id(4) + payload_len(8)
@@ -48,6 +49,11 @@ impl Page {
 }
 
 /// Pack a directory tree (manifest.json + assets) into a `.dpage` blob.
+///
+/// The stub id is a **content digest**, not the directory name: two packages
+/// that differ in any byte get different ids even when their directory names
+/// collide (issue #56). Entries are sorted by path before hashing so the id
+/// does not depend on filesystem enumeration order.
 pub fn pack_dir(dir: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     let manifest_path = dir.join("manifest.json");
     let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)
@@ -86,9 +92,10 @@ pub fn pack_dir(dir: &std::path::Path) -> anyhow::Result<Vec<u8>> {
         path: "manifest.json".into(),
         data: std::fs::read(&manifest_path)?,
     });
+    files.0.sort_by(|a, b| a.path.cmp(&b.path));
 
     let payload = zstd::stream::encode_all(bincode::serialize(&files)?.as_slice(), 6)?;
-    Ok(format_blob(next_id(dir), payload))
+    Ok(format_blob(content_id(&files), payload))
 }
 
 /// Read manifest without decompressing the payload (stub-only inspection).
@@ -189,17 +196,21 @@ fn format_blob(id: u32, payload: Vec<u8>) -> Vec<u8> {
     out
 }
 
-fn next_id(dir: &std::path::Path) -> u32 {
-    // deterministic-ish id from the dir name so rebuilds are reproducible
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let mut h: u32 = 0x811c9dc5;
-    for b in name.as_bytes() {
-        h = h.wrapping_mul(0x01000193).wrapping_add(*b as u32);
+/// First 4 bytes of SHA-256 over a canonical encoding of the file map.
+///
+/// Length prefixes keep the encoding unambiguous (`{"ab","c"}` vs `{"a","bc"}`);
+/// 32 bits keep the stub layout. A full digest belongs in the (future) package
+/// signature — this id only has to make accidental aliasing implausible.
+fn content_id(files: &FileMap) -> u32 {
+    let mut hasher = Sha256::new();
+    for entry in &files.0 {
+        hasher.update((entry.path.len() as u64).to_be_bytes());
+        hasher.update(entry.path.as_bytes());
+        hasher.update((entry.data.len() as u64).to_be_bytes());
+        hasher.update(&entry.data);
     }
-    h
+    let digest = hasher.finalize();
+    u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
 }
 
 #[cfg(test)]
@@ -283,6 +294,64 @@ mod tests {
         let payload = vec![b'a'; 10_000];
         let blob = format_blob(1, zstd::stream::encode_all(payload.as_slice(), 6).unwrap());
         assert!(blob.len() < 1_000);
+    }
+
+    /// issue #56 回归：旧实现用目录名做 FNV-1a，下面这对名字哈希相同。
+    /// 现在 id 来自内容摘要，两个**内容不同**的包必须拿到不同 id。
+    #[test]
+    fn fnv_colliding_directory_names_no_longer_alias_packages() {
+        fn legacy_name_id(name: &str) -> u32 {
+            let mut h: u32 = 0x811c9dc5;
+            for b in name.as_bytes() {
+                h = h.wrapping_mul(0x01000193).wrapping_add(*b as u32);
+            }
+            h
+        }
+        const A: &str = "2dmh3n7d";
+        const B: &str = "a3a779sz";
+        assert_eq!(
+            legacy_name_id(A),
+            legacy_name_id(B),
+            "回归用例失效：这对目录名不再碰撞"
+        );
+
+        let tmp =
+            std::env::temp_dir().join(format!("wxlike-dpage-collision-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir_a = tmp.join(A);
+        let dir_b = tmp.join(B);
+        make_demo_page(&dir_a);
+        make_demo_page(&dir_b);
+        // 内容必须不同，否则"同 id"反而是正确的内容寻址结果
+        std::fs::write(dir_b.join("main.js"), b"wxhost.log('different page');").unwrap();
+
+        let id_a = peek(&pack_dir(&dir_a).unwrap()).unwrap().1;
+        let id_b = peek(&pack_dir(&dir_b).unwrap()).unwrap().1;
+        assert_ne!(id_a, id_b, "目录名 FNV 碰撞不得让两个不同包共用一个 id");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn content_id_is_deterministic_and_name_independent() {
+        let tmp = std::env::temp_dir().join(format!("wxlike-dpage-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let one = tmp.join("one");
+        let two = tmp.join("two");
+        make_demo_page(&one);
+        make_demo_page(&two);
+
+        let id_one_a = peek(&pack_dir(&one).unwrap()).unwrap().1;
+        let id_one_b = peek(&pack_dir(&one).unwrap()).unwrap().1;
+        let id_two = peek(&pack_dir(&two).unwrap()).unwrap().1;
+        assert_eq!(id_one_a, id_one_b, "同目录重复打包 id 必须稳定");
+        assert_eq!(id_one_a, id_two, "内容相同、目录名不同 → 同一个 id");
+
+        std::fs::write(one.join("main.js"), b"wxhost.log('changed');").unwrap();
+        let id_changed = peek(&pack_dir(&one).unwrap()).unwrap().1;
+        assert_ne!(id_one_a, id_changed, "内容变化必须换 id");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// AR-4/H-5（第四轮审计）：解压炸弹必须被挡在分配之前。200 MiB 的零
