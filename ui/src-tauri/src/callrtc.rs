@@ -22,12 +22,13 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use wxlike_rtc::host::{CallHost, Effect};
+use wxlike_rtc::ice::TurnConfig;
 use wxlike_rtc::signal::Signal;
 
 /// UI → 引擎的命令。
@@ -160,9 +161,158 @@ impl AudioLeg {
 }
 
 /// 连服务端中继所需的最小上下文。
+#[derive(Clone)]
 pub struct RelayCfg {
     pub base: String,
     pub token: String,
+}
+
+/// TURN 短期凭据（coturn REST）。只活在内存里：不写盘、不进日志。
+#[derive(Clone)]
+struct TurnCredentials {
+    username: String,
+    password: String,
+    uris: Vec<String>,
+    expires_at: Instant,
+}
+
+/// 到期前这个窗口内重新取一次凭据（合同要求 5 分钟）。
+const TURN_REFRESH_WINDOW: Duration = Duration::from_secs(300);
+const TURN_CRED_TIMEOUT: Duration = Duration::from_secs(5);
+const TURN_DEFAULT_PORT: u16 = 3478;
+
+/// 进程内凭据缓存：同一登录态复用，换账号/换服务端自然失配。
+struct TurnCache {
+    base: String,
+    token: String,
+    credentials: TurnCredentials,
+}
+
+static TURN_CACHE: Mutex<Option<TurnCache>> = Mutex::new(None);
+
+fn turn_credentials_url(base: &str) -> String {
+    format!("{}/api/turn/credentials", base.trim_end_matches('/'))
+}
+
+/// 服务端 `GET /api/turn/credentials` 的响应语义：
+/// 200 → 凭据；404 → 没配 `WXLIKE_TURN_SECRET`，调用方走直连降级。
+fn parse_turn_credentials(
+    status: u16,
+    body: &serde_json::Value,
+) -> Result<Option<TurnCredentials>, String> {
+    if status == 404 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&status) {
+        return Err(format!("TURN 凭据接口返回 HTTP {status}"));
+    }
+    let username = body["username"].as_str().unwrap_or_default();
+    let password = body["password"].as_str().unwrap_or_default();
+    if username.is_empty() || password.is_empty() {
+        return Err("TURN 凭据响应缺少 username/password".into());
+    }
+    let ttl_seconds = body["ttl_seconds"]
+        .as_u64()
+        .filter(|ttl| *ttl > 0)
+        .unwrap_or(3_600);
+    let uris = body["uris"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Some(TurnCredentials {
+        username: username.to_string(),
+        password: password.to_string(),
+        uris,
+        expires_at: Instant::now() + Duration::from_secs(ttl_seconds),
+    }))
+}
+
+fn fetch_turn_credentials(cfg: &RelayCfg) -> Result<Option<TurnCredentials>, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(TURN_CRED_TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut resp = agent
+        .get(&turn_credentials_url(&cfg.base))
+        .header("Authorization", format!("Bearer {}", cfg.token))
+        .call()
+        .map_err(|e| format!("TURN 凭据请求失败: {e}"))?;
+    let status = resp.status().as_u16();
+    let body = if (200..300).contains(&status) {
+        resp.body_mut()
+            .read_json()
+            .unwrap_or(serde_json::Value::Null)
+    } else {
+        serde_json::Value::Null
+    };
+    parse_turn_credentials(status, &body)
+}
+
+fn needs_refresh(expires_at: Instant, now: Instant) -> bool {
+    expires_at <= now + TURN_REFRESH_WINDOW
+}
+
+/// 内存缓存 + 到期前 5 分钟重取。404（未配置）不缓存，下次通话再问一次。
+fn turn_credentials(cfg: &RelayCfg) -> Result<Option<TurnCredentials>, String> {
+    let now = Instant::now();
+    {
+        let cache = TURN_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(hit) = cache.as_ref() {
+            if hit.base == cfg.base
+                && hit.token == cfg.token
+                && !needs_refresh(hit.credentials.expires_at, now)
+            {
+                return Ok(Some(hit.credentials.clone()));
+            }
+        }
+    }
+    let fetched = fetch_turn_credentials(cfg)?;
+    let mut cache = TURN_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    *cache = fetched.as_ref().map(|credentials| TurnCache {
+        base: cfg.base.clone(),
+        token: cfg.token.clone(),
+        credentials: credentials.clone(),
+    });
+    Ok(fetched)
+}
+
+/// 服务端可能给多个 URI；这里只认 UDP 的 `turn:`（TurnClient 不支持 TLS/TCP）。
+fn turn_config_from(creds: &TurnCredentials) -> Option<TurnConfig> {
+    for uri in &creds.uris {
+        let Some(rest) = uri.strip_prefix("turn:") else {
+            continue;
+        };
+        let (authority, query) = match rest.split_once('?') {
+            Some((a, q)) => (a, Some(q)),
+            None => (rest, None),
+        };
+        if query.is_some_and(|q| q.split('&').any(|kv| kv == "transport=tcp")) {
+            continue;
+        }
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => match port.parse::<u16>() {
+                Ok(port) => (host.to_string(), port),
+                Err(_) => continue,
+            },
+            None => (authority.to_string(), TURN_DEFAULT_PORT),
+        };
+        if host.is_empty() {
+            continue;
+        }
+        return Some(TurnConfig {
+            host,
+            port,
+            user: creds.username.clone(),
+            password: creds.password.clone(),
+        });
+    }
+    None
 }
 
 impl CallEngine {
@@ -185,7 +335,7 @@ impl CallEngine {
             return Err("没有可呼叫的对端".into());
         }
 
-        let transport = Transport::open()?;
+        let transport = Transport::open(&cfg)?;
         let mut host = CallHost::new(me, conv.clone(), transport.local());
         let (call_ids, effects) = host.start_many(&peers, video);
         let call_id = call_ids.first().cloned().unwrap_or_default();
@@ -253,7 +403,7 @@ impl Drop for CallEngine {
 
 /// 媒体传输：要么直连（自带 UDP socket），要么全程走 TURN 中继。
 ///
-/// 配了 `WXLIKE_TURN_URL` 就**只**用中继，并且 SDP 里只放中继地址。理由：
+/// 服务端下发了 TURN URI 就**只**用中继，并且 SDP 里只放中继地址。理由：
 /// host 候选在跨 NAT 时根本到不了对端，同时放两个会让 ICE 先试直连、失败后
 /// 再回退，白白多几秒"正在连接"；而"看起来有候选但打不通"是最难解释的故障。
 struct Transport {
@@ -261,13 +411,22 @@ struct Transport {
     local: SocketAddr,
     direct: Option<UdpSocket>,
     turn: Option<wxlike_rtc::turn::TurnClient>,
+    /// 取凭据与到期刷新用；只留在内存里。
+    relay: RelayCfg,
+    turn_expires_at: Option<Instant>,
+    last_cred_check: Instant,
 }
 
 impl Transport {
-    fn open() -> Result<Self, String> {
-        if let Some(cfg) = wxlike_rtc::ice::TurnConfig::from_env() {
-            let turn = wxlike_rtc::turn::TurnClient::allocate(&cfg)
-                .map_err(|e| format!("TURN 分配失败（检查 WXLIKE_TURN_* 与服务器可达性）: {e}"))?;
+    fn open(cfg: &RelayCfg) -> Result<Self, String> {
+        let creds = turn_credentials(cfg)?;
+        if let Some(creds) = creds {
+            let Some(turn_cfg) = turn_config_from(&creds) else {
+                // 服务端配了 secret 但没下发可用 URI：与"没配 TURN"一样走直连。
+                return Self::direct(cfg);
+            };
+            let turn = wxlike_rtc::turn::TurnClient::allocate(&turn_cfg)
+                .map_err(|e| format!("TURN 分配失败（检查服务端中继配置与可达性）: {e}"))?;
             turn.set_read_timeout(Duration::from_millis(1));
             let local = turn.relayed_addr();
             eprintln!("[call] TURN 中继就绪：本端 {local} via {}", turn.server());
@@ -275,8 +434,16 @@ impl Transport {
                 local,
                 direct: None,
                 turn: Some(turn),
+                relay: cfg.clone(),
+                turn_expires_at: Some(creds.expires_at),
+                last_cred_check: Instant::now(),
             });
         }
+        eprintln!("[call] 服务端未配置 TURN，媒体走直连");
+        Self::direct(cfg)
+    }
+
+    fn direct(cfg: &RelayCfg) -> Result<Self, String> {
         let socket = UdpSocket::bind(bind_addr()).map_err(|e| format!("绑定媒体端口失败: {e}"))?;
         socket
             .set_nonblocking(true)
@@ -295,7 +462,32 @@ impl Transport {
             local,
             direct: Some(socket),
             turn: None,
+            relay: cfg.clone(),
+            turn_expires_at: None,
+            last_cred_check: Instant::now(),
         })
+    }
+
+    /// 到期前 5 分钟把**下一次分配要用的**凭据换新。
+    ///
+    /// 已建立的 TURN 分配绑定在旧凭据上（rtc 的公开 API 不提供换凭据），
+    /// 所以这里只预热缓存：本次通话继续用原分配，续期由 `TurnClient` 自己做。
+    fn refresh_credentials_if_due(&mut self) {
+        let Some(expires_at) = self.turn_expires_at else {
+            return;
+        };
+        if self.last_cred_check.elapsed() < Duration::from_secs(30) {
+            return;
+        }
+        self.last_cred_check = Instant::now();
+        if !needs_refresh(expires_at, Instant::now()) {
+            return;
+        }
+        match turn_credentials(&self.relay) {
+            Ok(Some(creds)) => self.turn_expires_at = Some(creds.expires_at),
+            Ok(None) => self.turn_expires_at = None,
+            Err(err) => eprintln!("[call] TURN 凭据刷新失败: {err}"),
+        }
     }
 
     fn local(&self) -> SocketAddr {
@@ -324,6 +516,7 @@ impl Transport {
 
     /// 收包并喂回宿主。中继模式下顺手续期分配。
     fn poll(&mut self, host: &mut CallHost) -> Vec<Effect> {
+        self.refresh_credentials_if_due();
         let mut out = Vec::new();
         let local = self.local;
         if let Some(turn) = self.turn.as_mut() {
@@ -576,5 +769,81 @@ impl Connection {
         resp.body_mut()
             .read_json::<Vec<Signal>>()
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn creds(uris: &[&str]) -> TurnCredentials {
+        TurnCredentials {
+            username: "1700003600:u1".into(),
+            password: "c2VjcmV0".into(),
+            uris: uris.iter().map(|u| (*u).to_string()).collect(),
+            expires_at: Instant::now() + Duration::from_secs(3_600),
+        }
+    }
+
+    #[test]
+    fn refresh_window_is_five_minutes() {
+        let now = Instant::now();
+        assert!(needs_refresh(now + Duration::from_secs(299), now));
+        assert!(!needs_refresh(now + Duration::from_secs(301), now));
+    }
+
+    #[test]
+    fn missing_turn_secret_degrades_to_direct() {
+        assert!(parse_turn_credentials(404, &serde_json::Value::Null)
+            .unwrap()
+            .is_none());
+        let configured_without_uri = parse_turn_credentials(
+            200,
+            &serde_json::json!({
+                "username": "1:u", "password": "p", "ttl_seconds": 3600, "uris": []
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(turn_config_from(&configured_without_uri).is_none());
+    }
+
+    #[test]
+    fn parses_coturn_rest_credentials() {
+        let body = serde_json::json!({
+            "username": "1700003600:u1",
+            "password": "c2VjcmV0",
+            "ttl_seconds": 3600,
+            "uris": ["turn:relay.example.com:3478"]
+        });
+        let parsed = parse_turn_credentials(200, &body).unwrap().unwrap();
+        assert_eq!(parsed.username, "1700003600:u1");
+        assert_eq!(parsed.password, "c2VjcmV0");
+        let cfg = turn_config_from(&parsed).unwrap();
+        assert_eq!(cfg.host, "relay.example.com");
+        assert_eq!(cfg.port, 3478);
+        assert_eq!(cfg.user, "1700003600:u1");
+    }
+
+    #[test]
+    fn only_udp_turn_uris_are_used() {
+        let cfg = turn_config_from(&creds(&[
+            "turns:relay.example.com:5349",
+            "turn:relay.example.com:3478?transport=tcp",
+            "turn:relay.example.com:3478?transport=udp",
+        ]))
+        .unwrap();
+        assert_eq!(cfg.host, "relay.example.com");
+        assert_eq!(cfg.port, 3478);
+    }
+
+    #[test]
+    fn rejects_malformed_or_failed_responses() {
+        assert!(parse_turn_credentials(500, &serde_json::Value::Null).is_err());
+        assert!(parse_turn_credentials(
+            200,
+            &serde_json::json!({"username": "", "password": ""})
+        )
+        .is_err());
     }
 }
