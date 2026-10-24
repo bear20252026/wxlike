@@ -14,12 +14,14 @@
 //!
 //! 模块划分（G15-01 起）：
 //! * [`catalog`]：命令表 + 参数声明 + 生成的 JSON Schema / CLI 帮助 / MCP 工具定义；
-//! * [`policy`]：授权判定（会话白名单 + 能力开关）。
+//! * [`policy`]：授权判定（会话白名单 + 能力开关）；
+//! * [`auth`]：会话/audience/scope 校验与代理衰减（G15-02）。
 //!
 //! **不重复声明**：`Capability` / `CommandSpec` / `CATALOG` / `get` / `search`
 //! 都从 [`catalog`] 再导出，外部（`wxlike-client`、`wxlike-cli`、`wxlike-mcp`、
 //! `wxlike-admin`）继续按原路径使用，不需要改一行。
 
+pub mod auth;
 pub mod catalog;
 pub mod policy;
 

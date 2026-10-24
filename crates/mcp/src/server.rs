@@ -16,6 +16,7 @@
 use serde_json::{json, Value};
 
 use wxlike_client::execute::Executor;
+use wxlike_cmd::auth::{AuthGate, Provenance};
 use wxlike_cmd::catalog::{self, ArgError, CommandSpec};
 use wxlike_cmd::policy::Policy;
 
@@ -58,6 +59,8 @@ impl RpcError {
 pub struct Server {
     exec: Executor,
     policy: Policy,
+    /// 会话/scope 闸门（G15-02）。`None` = 只跑本地策略（stdio 单用户场景）。
+    gate: Option<AuthGate>,
     protocol: &'static str,
     initialized: bool,
 }
@@ -67,9 +70,17 @@ impl Server {
         Self {
             exec,
             policy,
+            gate: None,
             protocol: DEFAULT_PROTOCOL,
             initialized: false,
         }
+    }
+
+    /// 挂上会话/scope 闸门。**没挂不等于没权限**：服务端仍会再验一次，
+    /// 但本地就不会提前拦——所以远程 transport 必须挂。
+    pub fn with_gate(mut self, gate: Option<AuthGate>) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// `tools/list` 的裸 JSON（诊断/夹具用，不需要先 `initialize`）。
@@ -199,6 +210,16 @@ impl Server {
             })?;
         // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
         catalog::validate_args(spec, &args).map_err(arg_error)?;
+        // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
+        if let Err(e) = wxlike_cmd::auth::guard_provenance(spec, provenance_of(params)) {
+            return Ok(tool_err(&e.to_string()));
+        }
+        // 会话与 scope：先于执行，且拒绝是**工具错误**（调用方能读懂并改 token）
+        if let Some(gate) = &self.gate {
+            if let Err(e) = gate.check(spec, &args, provenance_of(params)) {
+                return Ok(tool_err(&e.to_string()));
+            }
+        }
         Ok(run(&self.exec, spec, &args))
     }
 
@@ -261,6 +282,22 @@ impl Server {
             },
         };
         Ok(json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
+    }
+}
+
+/// 参数来源：调用方可以在 `_meta` 里声明这批参数是从不可信内容抽出来的。
+///
+/// 默认 `Trusted` 是刻意的：这是**调用方自述**，不是安全边界；真正的边界是
+/// 服务端再鉴权 + 确认令牌（G15-04）。但主动声明"这来自聊天正文"的调用方
+/// 会立刻被拒，而不是等到出事。
+fn provenance_of(params: &Value) -> Provenance {
+    let declared = params
+        .get("_meta")
+        .and_then(|m| m.get("wxlike/provenance"))
+        .and_then(Value::as_str);
+    match declared {
+        Some(v) if v.starts_with("untrusted") => Provenance::Untrusted("untrusted content"),
+        _ => Provenance::Trusted,
     }
 }
 
@@ -334,24 +371,37 @@ fn catalog_list(query: &str) -> Value {
 
 fn meta_tool(name: &str) -> Value {
     match name {
-        "im_list_commands" => json!({
-            "name": name,
+        "im_list_commands" => list_commands_tool(),
+        "im_inspect" => inspect_tool(),
+        _ => execute_tool(),
+    }
+}
+
+fn list_commands_tool() -> Value {
+    json!({
+            "name": "im_list_commands",
             "description": "列出可用的 IM 命令（id / 工具名 / 参数 / 能力 / scope）。先用它发现能力，再按工具名调用。",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {"query": {"type": "string", "description": "按 id 或说明过滤，空=全部"}}
             },
-            "annotations": {"readOnlyHint": true, "destructiveHint": false},
-        }),
-        "im_inspect" => json!({
-            "name": name,
+            "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    })
+}
+
+fn inspect_tool() -> Value {
+    json!({
+            "name": "im_inspect",
             "description": "不用截图就能自查：我是谁、我有哪些会话、各自未读多少。",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}},
-            "annotations": {"readOnlyHint": true, "destructiveHint": false},
-        }),
-        _ => json!({
-            "name": name,
+            "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    })
+}
+
+fn execute_tool() -> Value {
+    json!({
+            "name": "im_execute",
             "description": "【兼容入口，建议改用按命令生成的工具】执行一条 IM 命令；参数同样按 catalog 校验。",
             "inputSchema": {
                 "type": "object",
@@ -362,9 +412,8 @@ fn meta_tool(name: &str) -> Value {
                     "params": {"type": "object", "description": "该命令的参数对象"}
                 }
             },
-            "annotations": {"readOnlyHint": false, "destructiveHint": true},
-        }),
-    }
+            "annotations": {"readOnlyHint": false, "destructiveHint": true}
+    })
 }
 
 fn tool_ok(value: &Value) -> Value {
