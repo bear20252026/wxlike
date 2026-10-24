@@ -118,7 +118,7 @@ ADR-11 定的是 **Flutter + UniFFI**：`crates/*` 用 UniFFI 暴露给 Dart，F
 **铁律**：任何"业务规则"（谁能看这条消息、未读怎么算、消息怎么排序）只能写在 Rust 里。
 客户端语言里出现业务规则 = 三端必然不一致。
 
-### 3.2 DoD（完成的定义）：六关全绿才算做完
+### 3.2 DoD（完成的定义）：六关全绿才算做完——**由云端 CI 判定，不在本地跑**
 
 ```bash
 cargo build --workspace
@@ -129,7 +129,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 cd ui && npx tsc --noEmit
 ```
 
-少一关 = 没做完。CI 上这六条都会跑（`ui` 的 tsc 在 `ui` 独立 workspace，需手动跑）。
+少一关 = 没做完。以上六关**全部由 GitHub Actions 判定**（`ci.yml` + `audit.yml`，
+PR 上约 5–15 分钟出结果），交付方**不要在本地跑**：多 worktree 并行时本地 target/
+缓存曾膨胀到 224G（2026-10-23 已全部清理）。本地只允许秒级轻检查：
+`scripts/quality-gate.py`、`scripts/count_unwraps.py`、`cargo fmt --check`。
+确需本地调试时设共享缓存 `CARGO_TARGET_DIR`（所有 worktree 一份），用完即删。
+PR 全绿 = DoD 满足，合并权在集成方。
 
 ### 3.3 分支与工作树（多人并行时最重要的一条）
 
