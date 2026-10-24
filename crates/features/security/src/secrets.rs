@@ -38,8 +38,16 @@ pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 24;
 /// 恢复码随机字节数（展示成 64 个 hex 字符）。
 pub const RECOVERY_BYTES: usize = 32;
-/// 头部固定长度：magic(5) + version(1) + 三个 u16 + 一个 u32。
-const HEADER_LEN: usize = 16;
+/// 魔数长度。
+const MAGIC_LEN: usize = 5;
+/// 头部各字段偏移，与 [`SecretStore::header`] 的写入顺序一一对应。
+const OFF_VERSION: usize = MAGIC_LEN;
+const OFF_PASS_LEN: usize = OFF_VERSION + 1;
+const OFF_REC_LEN: usize = OFF_PASS_LEN + 2;
+const OFF_OS_LEN: usize = OFF_REC_LEN + 2;
+const OFF_PAYLOAD_LEN: usize = OFF_OS_LEN + 2;
+/// 头部固定长度：magic + version + 三个 u16 + 一个 u32。
+const HEADER_LEN: usize = OFF_PAYLOAD_LEN + 4;
 /// XChaCha20Poly1305 认证标签长度（算密文总长要用）。
 const TAG_LEN: usize = 16;
 /// 单个包裹段的最大长度（防止畸形文件让我们按它声明的长度读满内存）。
@@ -279,16 +287,21 @@ impl SecretStore {
 
     /// 从库文件字节恢复（**未解锁**状态）。
     pub fn from_bytes(blob: &[u8]) -> Result<Self> {
-        if blob.len() < HEADER_LEN || &blob[..5] != VAULT_MAGIC {
+        if blob.len() < HEADER_LEN || &blob[..MAGIC_LEN] != VAULT_MAGIC {
             return Err(SecError::BadInput("not a WXSV1 vault"));
         }
-        if blob[5] != VAULT_VERSION {
+        if blob[OFF_VERSION] != VAULT_VERSION {
             return Err(SecError::BadInput("unsupported vault version"));
         }
-        let pass_len = u16::from_be_bytes([blob[6], blob[7]]) as usize;
-        let rec_len = u16::from_be_bytes([blob[8], blob[9]]) as usize;
-        let os_len = u16::from_be_bytes([blob[10], blob[11]]) as usize;
-        let payload_len = u32::from_be_bytes([blob[12], blob[13], blob[14], blob[15]]) as usize;
+        let pass_len = u16::from_be_bytes([blob[OFF_PASS_LEN], blob[OFF_PASS_LEN + 1]]) as usize;
+        let rec_len = u16::from_be_bytes([blob[OFF_REC_LEN], blob[OFF_REC_LEN + 1]]) as usize;
+        let os_len = u16::from_be_bytes([blob[OFF_OS_LEN], blob[OFF_OS_LEN + 1]]) as usize;
+        let payload_len = u32::from_be_bytes([
+            blob[OFF_PAYLOAD_LEN],
+            blob[OFF_PAYLOAD_LEN + 1],
+            blob[OFF_PAYLOAD_LEN + 2],
+            blob[OFF_PAYLOAD_LEN + 3],
+        ]) as usize;
         if [pass_len, rec_len, os_len]
             .iter()
             .any(|n| *n > MAX_WRAP_LEN)

@@ -27,14 +27,15 @@ pub const MAX_SAFETY_CHARS: usize = 128;
 pub enum SecError {
     #[error("bad input: {0}")]
     BadInput(&'static str),
+    /// 文件被改/截断/不是本格式。与"口令错"分开，UI 要分别提示。
+    #[error("corrupted: {0}")]
+    Corrupted(&'static str),
     #[error("forbidden: {0}")]
     Forbidden(&'static str),
     #[error("not found: {0}")]
     NotFound(&'static str),
     #[error("conflict: {0}")]
     Conflict(&'static str),
-    #[error("corrupted: {0}")]
-    Corrupted(&'static str),
     #[error("crypto: {0}")]
     Crypto(#[from] wxlike_core::e2ee::CryptoError),
     #[error("database error: {0}")]

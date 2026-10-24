@@ -11,7 +11,7 @@
 //! | 解散 | ✓ | ✗ | ✗ |
 //!
 //! 解散是**软删**：`group_meta.dissolved_at` 落时间戳，成员行保留供审计与
-//! 对账；所有写命令都先过 [`require_active`]，解散后的群不能再改。
+//! 对账；所有写命令都先过内部的 `require_active` 闸门，解散后的群不能再改。
 
 use rusqlite::{params, Connection, OptionalExtension as _};
 

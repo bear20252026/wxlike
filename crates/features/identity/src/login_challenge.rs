@@ -17,6 +17,8 @@ use rusqlite::{params, Connection, OptionalExtension as _};
 
 use crate::{random_hex, IdError, Result};
 
+/// 挑战 id 的随机字节数。
+pub const CHALLENGE_ID_BYTES: usize = 16;
 /// 验证码位数。
 pub const CODE_DIGITS: u32 = 6;
 /// 验证码取值空间（10^6）。
@@ -139,6 +141,70 @@ fn random_code() -> String {
     format!("{n:0width$}", width = CODE_DIGITS as usize)
 }
 
+/// 生成好的挑战材料（id/code/摘要/两个时间点）。
+struct Prepared {
+    id: String,
+    code: String,
+    hash: String,
+    expires_at: i64,
+    resend_after: i64,
+}
+
+fn prepare(
+    phone: &str,
+    purpose: &str,
+    device_id: &str,
+    pepper: &[u8],
+    limits: Limits,
+    now: i64,
+) -> Result<Prepared> {
+    let id = random_hex(CHALLENGE_ID_BYTES);
+    let code = random_code();
+    Ok(Prepared {
+        hash: code_hash(pepper, &id, phone, purpose, device_id, &code)?,
+        id,
+        code,
+        expires_at: now.saturating_add(limits.ttl_ms),
+        resend_after: now.saturating_add(limits.resend_ms),
+    })
+}
+
+fn insert_row(
+    conn: &Connection,
+    prepared: &Prepared,
+    phone: &str,
+    purpose: &str,
+    device_id: &str,
+    max_attempts: i64,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO identity_challenge(id, phone_e164, phone_hash, purpose, device_id,          code_hash, created_at, expires_at, resend_after, attempts, max_attempts, consumed_at)          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL)",
+        params![
+            prepared.id,
+            phone,
+            crate::digest(phone),
+            purpose,
+            device_id,
+            prepared.hash,
+            now,
+            prepared.expires_at,
+            prepared.resend_after,
+            max_attempts
+        ],
+    )?;
+    Ok(())
+}
+
+fn issued(prepared: Prepared) -> ChallengeIssued {
+    ChallengeIssued {
+        id: prepared.id,
+        code: prepared.code,
+        expires_at: prepared.expires_at,
+        resend_after: prepared.resend_after,
+    }
+}
+
 /// 下发一次挑战。同号/同 IP 超限时返回 `RateLimited`。
 #[allow(clippy::too_many_arguments)]
 pub fn issue(
@@ -161,36 +227,19 @@ pub fn issue(
     let ip_bucket = crate::throttle::key_ip(ip);
     crate::throttle::check(conn, &ip_bucket, crate::throttle::SMS_IP, now)?;
 
-    let id = random_hex(16);
-    let code = random_code();
-    let hash = code_hash(pepper, &id, &phone, purpose, device_id, &code)?;
-    let expires_at = now.saturating_add(limits.ttl_ms);
-    let resend_after = now.saturating_add(limits.resend_ms);
-    conn.execute(
-        "INSERT INTO identity_challenge(id, phone_e164, phone_hash, purpose, device_id, \
-         code_hash, created_at, expires_at, resend_after, attempts, max_attempts, consumed_at) \
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL)",
-        params![
-            id,
-            phone,
-            crate::digest(&phone),
-            purpose,
-            device_id,
-            hash,
-            now,
-            expires_at,
-            resend_after,
-            limits.max_attempts
-        ],
+    let prepared = prepare(&phone, purpose, device_id, pepper, limits, now)?;
+    insert_row(
+        conn,
+        &prepared,
+        &phone,
+        purpose,
+        device_id,
+        limits.max_attempts,
+        now,
     )?;
     crate::throttle::record_failure(conn, &phone_bucket, crate::throttle::SMS_PHONE, now)?;
     crate::throttle::record_failure(conn, &ip_bucket, crate::throttle::SMS_IP, now)?;
-    Ok(ChallengeIssued {
-        id,
-        code,
-        expires_at,
-        resend_after,
-    })
+    Ok(issued(prepared))
 }
 
 /// 校验时读出的一行：`(phone_e164, purpose, device_id, code_hash, id, expires_at,
@@ -286,8 +335,7 @@ pub fn resend(
 ) -> Result<ChallengeIssued> {
     let row: Option<(String, String, String, i64, Option<i64>)> = conn
         .query_row(
-            "SELECT phone_e164, purpose, device_id, resend_after, consumed_at \
-             FROM identity_challenge WHERE id = ?1",
+            "SELECT phone_e164, purpose, device_id, resend_after, consumed_at              FROM identity_challenge WHERE id = ?1",
             params![challenge_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
@@ -303,40 +351,23 @@ pub fn resend(
             retry_after_ms: resend_after - now,
         });
     }
-    let id = random_hex(16);
-    let code = random_code();
-    let hash = code_hash(pepper, &id, &phone, &purpose, &device_id, &code)?;
-    let expires_at = now.saturating_add(limits.ttl_ms);
-    let next_resend = now.saturating_add(limits.resend_ms);
+    let prepared = prepare(&phone, &purpose, &device_id, pepper, limits, now)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1",
         params![challenge_id, now],
     )?;
-    tx.execute(
-        "INSERT INTO identity_challenge(id, phone_e164, phone_hash, purpose, device_id, \
-         code_hash, created_at, expires_at, resend_after, attempts, max_attempts, consumed_at) \
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL)",
-        params![
-            id,
-            phone,
-            crate::digest(&phone),
-            purpose,
-            device_id,
-            hash,
-            now,
-            expires_at,
-            next_resend,
-            limits.max_attempts
-        ],
+    insert_row(
+        &tx,
+        &prepared,
+        &phone,
+        &purpose,
+        &device_id,
+        limits.max_attempts,
+        now,
     )?;
     tx.commit()?;
-    Ok(ChallengeIssued {
-        id,
-        code,
-        expires_at,
-        resend_after: next_resend,
-    })
+    Ok(issued(prepared))
 }
 
 #[cfg(test)]
