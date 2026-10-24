@@ -1,0 +1,39 @@
+# G08 integration requests executed by G00/G06/G11/G13 (contract version: mini-host.v1).
+task: G08-03
+group: G08
+branch: feat/FP-G08-03
+requests:
+  - id: guest-transport
+    file: ui/src, ui/src-tauri, apps/mobile
+    change: >-
+      Expose exactly one guest bridge, mini.host.request(action, app, origin,
+      request_id): the shell fills app/origin/session from the launched
+      WebView and forwards the typed action + params to Broker::request.
+      Never forward guest-supplied app/origin, and expose no other command.
+    owner: G11
+    reason: The broker authenticates against the session the host opened;
+      only the platform shell can read that session instead of the guest.
+  - id: mobile-transport
+    file: apps/mobile
+    change: >-
+      Implement the same mini.host.request envelope over the WKWebView/Android
+      WebView message channel, reusing the host session id per launch.
+    owner: G13
+    reason: iOS must not attach a generic JS bridge; the mobile shell owns
+      the WebView channel.
+  - id: payment-port
+    file: server
+    change: >-
+      Provide a PaymentPort implementation backed by the G06 payment API.
+      Return only {reference, status} to the broker; order tokens and
+      internal transaction ids stay server-side.
+    owner: G06
+    reason: The broker prompts and validates, but money movement belongs to
+      the G06 payment service.
+router: none
+commands: none
+migrations: none
+notes: >-
+  Contract: contracts/domains/miniapps/mini-host.v1.json. The SDK in
+  packages/mini-sdk maps one typed helper per contract action; no generic
+  invoke exists on the guest surface. No root manifest, lock or router change.

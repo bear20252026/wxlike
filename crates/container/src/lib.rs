@@ -4,6 +4,7 @@
 //! (Boa now; quickjs-ng when Windows build story settles).
 
 pub mod bridge;
+pub mod broker;
 pub mod engine;
 pub mod host;
 pub mod package;

@@ -16,7 +16,7 @@ use crate::Container;
 use budget::{BudgetLedger, BudgetLimits};
 use profile::{DeviceTarget, IsolationProfile};
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HostError {
     #[error("invalid app id")]
     BadAppId,
