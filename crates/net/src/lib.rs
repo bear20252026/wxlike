@@ -14,6 +14,7 @@ pub mod metrics;
 pub mod mq_hub;
 pub mod offline;
 pub mod policy;
+pub mod proto;
 pub mod server;
 pub mod transport;
 pub mod wire;
@@ -25,9 +26,15 @@ pub use delivery::{InflightLedger, Pending, MAX_INFLIGHT_PER_CONNECTION};
 pub use membership::Membership;
 pub use metrics::{prometheus_text, HubMetrics};
 pub use mq_hub::{
-    run_mq_hub, run_mq_hub_with, HubHandle, HubLease, MqHub, MqHubOptions, OfflinePush,
+    run_mq_hub, run_mq_hub_with, ConnId, HubHandle, HubLease, MqHub, MqHubOptions, OfflinePush,
     DEFAULT_CLAIM_IDLE_MS, DEFAULT_DEDUP_CAP,
 };
-pub use policy::{DeliveryPolicy, SendGate, MAX_SEND_GATE_SLEEP_MS};
+pub use policy::{
+    jittered_backoff, DeliveryPolicy, Limits, SendGate, TokenBucket, MAX_SEND_GATE_SLEEP_MS,
+};
+pub use proto::{
+    caps_bits, caps_of, is_v3_control, parse_vectors_blob, vectors, vectors_blob, Capability,
+    Negotiated, Vector, MIN_SUPPORTED, PROTOCOL_V3,
+};
 pub use server::run_hub;
 pub use transport::{cert_fingerprint, connect_tofu, TofuPins};
