@@ -1,0 +1,52 @@
+# G14-01 管理身份、RBAC 与审计骨架 —— 集成请求
+# 本卡只在 crates/admin/** 内改动；凡超出 G14 独占写路径的东西登记在这里，由 G00 执行。
+
+request_id: G14-01
+task_issue: 176
+group_issue: 95
+contract_version: admin-g14-v1
+wave: W3
+branch: feat/FP-G14
+artifacts:
+  - crates/admin/src/auth.rs
+  - crates/admin/src/audit.rs
+  - crates/admin/src/store.rs
+  - crates/admin/migrations/0001_g14_ops.sql
+  - crates/admin/migrations/0001_g14_ops.down.sql
+  - crates/admin/src/rbac.rs        # Role 增加 publisher / finance（能力模型未变）
+  - crates/admin/src/accounts.rs    # 新增 verify_second_factor（只验码，不改状态）
+  - crates/admin/src/g14.rs         # /api/g14/* 路由（挂在 adminx 自己的 router 上）
+  - crates/admin/tests/g14_01_auth_audit.rs
+
+# 依赖：本卡声明的硬依赖是 G00-02、G00-03。上游未合入时按冻结契约先做，
+# 以下两项在 G00 落地后需要复核。
+requests:
+  - id: REQ-G00-02-register-admin-audience
+    target: G00-02
+    action: 在全局身份契约里登记 adminx 的独立 audience（`admin_session` / `operator`），
+      并确认用户令牌（wxu_ 前缀）在网关层就被拒绝，不要只依赖 adminx 自己拦。
+    rationale: G14-01 的"普通 token 无法访问管理 API"目前由 adminx 进程内判定；
+      网关层再拦一次才能防"adminx 端口被直接暴露"。
+    evidence: crates/admin/tests/g14_01_auth_audit.rs::end_user_tokens_and_unknown_tokens_are_refused
+
+  - id: REQ-G00-03-audit-schema-numbering
+    target: G00-03
+    action: 给 adminx 的 0001 迁移登记 schema 编号（本进程 `PRAGMA user_version = 1`），
+      并在串行迁移表里注明它**只动 adminx.db、不碰平台库**。
+    rationale: 迁移编号是本项目唯一的串行资源；G14 自己占号会与平台迁移冲突。
+    evidence: crates/admin/tests/g14_01_auth_audit.rs::audit_chain_verifies_and_tampering_would_show_up
+
+  - id: REQ-G16-ci-g14-tests
+    target: G16
+    action: CI 增加 `cargo test -p wxlike-admin --lib --test g14_01_auth_audit
+      --test g14_02_identity --test g14_03_publishing --test g14_04_commerce --test g14_05_jobs`
+      一步；G14 的写路径全部走 HTTP router，不需要外部服务。
+    rationale: 五张卡的全部验收面都在这批用例里，漏跑等于没有门禁。
+
+notes:
+  - 审计表 `g14_audit` 由触发器拒 UPDATE/DELETE（append-only）；每行带 prev_hash/hash 链。
+  - 审计只存脱敏摘要：`message/content/body/ciphertext/secret/token/password/phone` 等键整值
+    替换为 `[redacted]`，`*_ref/_digest/_id/_at` 等引用类字段不脱敏。
+  - 步进验证（step-up）窗口默认 15 分钟，只对 Destructive / ExportPii / SignPackage /
+    ApproveMoney 四类动作生效。
+  - 未结项：本卡不引入任何新的根依赖（sha2/hex/async-trait 均来自 workspace 既有条目）。

@@ -1,0 +1,50 @@
+# G14-02 用户、设备、群与申诉管理 —— 集成请求
+
+request_id: G14-02
+task_issue: 178
+group_issue: 95
+contract_version: admin-g14-v1
+wave: W3
+branch: feat/FP-G14
+artifacts:
+  - crates/admin/src/identity.rs
+  - crates/admin/src/g14.rs            # /api/g14/identity/*
+  - crates/admin/tests/g14_02_identity.rs
+
+# 本卡的域侧动作归 G02。adminx 只发命令，不复制域算法、不改平台库。
+requests:
+  - id: REQ-G02-05-identity-admin-endpoints
+    target: G02-05
+    action: 提供并冻结四个管理端点（与 crates/admin/src/identity.rs::HttpPort 逐字对应）：
+      `POST /api/admin/identity/users/{id}/suspend`（body: reason/until_ms/actor/trace，
+      回执含 before/after/sessions_revoked/already）、
+      `POST /api/admin/identity/users/{id}/unsuspend`、
+      `POST /api/admin/identity/devices/{id}/revoke`、
+      `POST /api/admin/identity/groups/{id}/govern`（body 含 action=freeze|unfreeze|transfer|dissolve）。
+    rationale: G14-02 的"封禁即时撤销相关会话"必须由平台进程执行（会话表、设备密钥、
+      群成员缓存都在它内存里）。adminx 直改库会留下"后台封了、服务还通"的不一致。
+    blocking: true
+    evidence: crates/admin/tests/g14_02_identity.rs::ban_revokes_sessions_and_unban_restores_with_trail
+    until_merged: 用 tests/g14_common 的 FixturePort（任务单允许的并行开发 fixture），
+      合入后把 App::open 的端口换成 HttpPort 并把本用例改成打真平台（见 docs/g14-delivery.md §5）。
+
+  - id: REQ-G02-05-metadata-view
+    target: G02-05
+    action: 提供一个只返回元数据的用户视图端点（user_id/display_name/state/created_at/
+      last_seen_ms/device_count/group_count/report_count/suspended_until_ms/labels），
+      **不要**复用会带正文的详情接口。
+    rationale: adminx 侧的 `project()` 白名单已经会丢正文，但从源头就不给才是双保险。
+    evidence: crates/admin/tests/g14_02_identity.rs::admin_never_sees_message_plaintext
+
+  - id: REQ-G00-register-case-state-machine
+    target: G00-03
+    action: 若平台侧也有举报工单状态机（wxlike-report::Ticket），确认 adminx 的
+      open→triaged→actioned|rejected→closed 与它没有两套语义；有冲突以平台为准，G14 改。
+    rationale: 同一件事两个状态机会在跨端展示时打架。
+
+notes:
+  - 危险动作两阶段：先 `dry_run`（不带 confirm）拿一次性令牌，再带 `confirm` 执行；
+    令牌 5 分钟过期、指纹绑定（对象+动作+理由+时长），重放被拒。
+  - 管理员能看到的最细粒度是元数据投影；`project()` 会返回 `dropped_fields` 计数，
+    让人知道自己没看全。
+  - 批量处置在 `jobs::JobService::run_batch`，逐条命令、逐条审计、逐条回执，可中途取消。

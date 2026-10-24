@@ -1,0 +1,51 @@
+# G14-04 商户、卡券、资金与对账台 —— 集成请求
+
+request_id: G14-04
+task_issue: 182
+group_issue: 95
+contract_version: admin-g14-v1
+wave: W3
+branch: feat/FP-G14
+artifacts:
+  - crates/admin/src/commerce.rs
+  - crates/admin/src/g14.rs      # /api/g14/commerce/*
+  - crates/admin/tests/g14_04_commerce.rs
+
+requests:
+  - id: REQ-G09-refund-apply
+    target: G09
+    action: 提供 `POST /api/admin/commerce/refunds/{refund_id}/apply`（body: order_id, amount_cents），
+      回执含 reference；同一 refund_id 重复调用必须幂等（不重复出账）。
+    rationale: 后台只能"批准"，出账在账本域。重复审批的幂等最终由账本保证。
+    blocking: true
+    evidence: crates/admin/tests/g14_04_commerce.rs::refund_over_threshold_needs_two_different_approvers
+
+  - id: REQ-G09-order-recon-projection
+    target: G09
+    action: 给出对账作业写入的差异格式（batch / external_no / internal_no / kind /
+      amount_delta_cents），以及订单号映射的权威来源；G14 只落运营投影，不改账本。
+    rationale: "一笔交易可追溯内外订单号"要求两侧编号口径一致。
+    blocking: false
+    evidence: crates/admin/tests/g14_04_commerce.rs::recon_diff_resolution_converges_the_batch
+
+  - id: REQ-G0X-merchant-account-scope
+    target: G00-02
+    action: 定义"商户自助账号"的凭据与 scope 绑定方式（一个账号只能看自己 merchant_id 的订单）。
+      G14 侧 `MerchantScope::Only` 已实现并在服务层强制；当前 HTTP 面只允许 superadmin 用
+      `?as_merchant=` 缩小视野，商户账号接入后再接真实绑定。
+    rationale: 越权商户看不到他人订单是验收面，但"商户账号"不属于 adminx 的账号体系。
+    blocking: false
+    evidence: crates/admin/tests/g14_04_commerce.rs::merchant_scope_is_enforced_at_the_service_layer
+
+  - id: REQ-G16-ci-export-audit
+    target: G16
+    action: 确认导出接口（`GET /api/g14/commerce/orders/export.csv`）在网关层也要求
+      ExportPii scope；adminx 内部已校验，但导出物会落到浏览器下载目录。
+    rationale: 个人信息导出是最容易被顺手绕过的面。
+
+notes:
+  - 库里**没有**任何 balance 列（用例直接查 PRAGMA table_info 断言）；人工补账只能写
+    g14_journal 借贷分录，且必须平。
+  - `g14_journal` 由触发器拒 UPDATE；分录号重放被拒（只能冲销，不能改写）。
+  - 退款双人阈值 500000 分（¥5000）；同一审批人重复批准不计入双人。
+  - CSV 导出对 `= + - @` 开头的单元格加 `'` 前缀（防公式注入）。

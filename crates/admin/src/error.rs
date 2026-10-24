@@ -36,6 +36,9 @@ pub enum AdminError {
     BadInput(String),
     #[error("account already exists")]
     AccountExists,
+    /// 管理 API 限流（G14-05）。消息里带"多久后可重试"。
+    #[error("rate limited: {0}")]
+    RateLimited(String),
     /// 转发到平台失败（平台没起 / 令牌不对 / 工单状态非法）。
     /// 502：这条链路上 adminx 是客户端，平台才是上游。
     #[error("upstream platform failure")]
@@ -69,6 +72,7 @@ impl AdminError {
             AdminError::Forbidden(m) => (StatusCode::FORBIDDEN, format!("not permitted: {m}")),
             AdminError::MfaRequired(m) => (StatusCode::FORBIDDEN, format!("mfa required: {m}")),
             AdminError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
+            AdminError::RateLimited(m) => (StatusCode::TOO_MANY_REQUESTS, m.clone()),
             AdminError::BadInput(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone()),
             AdminError::AccountExists => (StatusCode::CONFLICT, "account already exists".into()),
             AdminError::Upstream { status, detail } => {

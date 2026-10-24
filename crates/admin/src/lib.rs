@@ -54,20 +54,32 @@
 //! ```
 
 pub mod accounts;
+pub mod audit;
+pub mod auth;
+pub mod commerce;
 pub mod config;
 pub mod error;
+pub mod g14;
 pub mod http;
+pub mod identity;
+pub mod jobs;
+pub mod publishing;
 pub mod rbac;
 pub mod read;
+pub mod store;
 pub mod upstream;
 pub mod web;
 
 pub use accounts::{AccountStore, OpRecord, OpStatus, Session};
+pub use audit::AuditLog;
+pub use auth::{Action, Resource, StepUp};
 pub use config::{Config, ConfigError};
 pub use error::{AdminError, Result};
+pub use g14::G14;
 pub use http::App;
 pub use rbac::{Capability, Role, OPS};
 pub use read::PlatformRead;
+pub use store::Store;
 pub use upstream::Upstream;
 
 #[cfg(test)]

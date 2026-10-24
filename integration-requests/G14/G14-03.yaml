@@ -1,0 +1,51 @@
+# G14-03 内容、小程序与服务发布审核 —— 集成请求
+
+request_id: G14-03
+task_issue: 180
+group_issue: 95
+contract_version: admin-g14-v1
+wave: W3
+branch: feat/FP-G14
+artifacts:
+  - crates/admin/src/publishing.rs
+  - crates/admin/src/g14.rs      # /api/g14/publishing/*
+  - crates/admin/src/auth.rs     # 新增 publisher 角色与 sign_package / export_pii 动作
+  - crates/admin/tests/g14_03_publishing.rs
+
+requests:
+  - id: REQ-G05-content-visibility
+    target: G05-05
+    action: 提供 `POST /api/admin/content/{id}/visibility`（body: state=approved|taken_down, note），
+      下架/恢复后客户端 Feed 与检索结果必须同步变化（含缓存失效）。
+    rationale: G14-03 验收面"下架后客户端 Feed/目录/启动授权同步变化"只能由内容域保证。
+    blocking: true
+    evidence: crates/admin/tests/g14_03_publishing.rs::takedown_and_restore_change_client_visible_state
+
+  - id: REQ-G07-mini-release-lifecycle
+    target: G07-07
+    action: 提供三个端点：`POST /api/admin/mini/{app}/versions/{v}/sign`（回 signature）、
+      `/publish`（body: signature，回 reference）、`/revoke`（body: reason）。
+      签名密钥只在 G07 侧，**不要**把私钥或签名服务凭据交给 adminx。
+    rationale: 签包与发布是 G07 的能力，后台只是编排与权限分离。
+    blocking: true
+    evidence: crates/admin/tests/g14_03_publishing.rs::publish_failure_is_retryable_without_new_version
+
+  - id: REQ-G08-service-catalog-visibility
+    target: G08-04
+    action: 服务卡片可见性端点 `POST /api/admin/services/{id}/visibility`（body: state, note），
+      并确认目录页按 region 过滤时读的是同一份配置。
+    blocking: false
+    rationale: 服务卡片下架要能反映到客户端目录；G14 只存配置与版本。
+
+  - id: REQ-G02-vault-ref-contract
+    target: G02-03
+    action: 确认 `vault://<path>#<key>` 引用格式与解密侧一致；后台只写引用、不写明文。
+    rationale: G14-03 在入口强制 vault:// 前缀，格式必须与密钥服务对齐，否则引用写进去也解不开。
+    evidence: crates/admin/tests/g14_03_publishing.rs::service_config_refuses_plaintext_secrets_and_versions_changes
+
+notes:
+  - 审核规则版本按 kind 固定（content-policy-2026.10 / mini-review-2026.09 /
+    service-catalog-2026.10），每条待审项落"按哪一版规则判的"，便于事后复核。
+  - 小程序撤回（revoke）按 Destructive 处理：仅 superadmin + 步进验证。
+    若业务要求发布岗自行撤回，需 G14 组与 G00 一起改矩阵并补用例。
+  - 幂等：提交用 idem，发布用版本状态机；发布失败后状态停在 signed，可重试且不产生新版本。
