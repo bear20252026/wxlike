@@ -50,51 +50,7 @@ impl Db {
         db.migrate_p4()?;
         db.migrate_communities()?;
         db.migrate_prekey_signature()?;
-        db.migrate_g05()?;
         Ok(db)
-    }
-
-    /// G05 内容/社交/收藏/检索：新增表 + 对既有 moments/favorites 的增量列。
-    ///
-    /// 回滚兼容：所有新表都是 `IF NOT EXISTS`，新列只增不删；旧二进制读带新列
-    /// 的库时按显式列名查询，不受影响。删除本迁移的代码**不会**回收列，也不需要。
-    fn migrate_g05(&self) -> Result<()> {
-        let c = self.lock();
-        c.execute_batch(SCHEMA_G05)?;
-        for (table, col, ddl) in [
-            ("moments", "audience_group", "TEXT NOT NULL DEFAULT ''"),
-            (
-                "favorites",
-                "source_kind",
-                "TEXT NOT NULL DEFAULT 'message'",
-            ),
-            ("favorites", "source_id", "TEXT NOT NULL DEFAULT ''"),
-            ("favorites", "snapshot_label", "TEXT NOT NULL DEFAULT ''"),
-            ("favorites", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
-            ("favorites", "revoked", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            if !Self::has_column(&c, table, col)? {
-                c.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {ddl};"))?;
-            }
-        }
-        // 必须在增量列之后建：旧库的 favorites 先补 source_kind/source_id 才能
-        // 建这个部分唯一索引。
-        c.execute_batch(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_object
-                 ON favorites(user_id, source_kind, source_id) WHERE source_id <> '';",
-        )?;
-        Ok(())
-    }
-
-    fn has_column(c: &rusqlite::Connection, table: &str, col: &str) -> Result<bool> {
-        let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        for name in rows {
-            if name? == col {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// AR-1（第四轮审计 C-1）：prekey 目录补签名列。老库的既有 bundle 无
@@ -303,6 +259,7 @@ impl Db {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
+
 /// Statements slower than this land in the log with their text (truncated).
 const SLOW_SQL_MS: u64 = 100;
 
@@ -314,10 +271,7 @@ fn slow_sql_log(sql: &str, elapsed: std::time::Duration) {
     }
 }
 
-/// 全部建表语句（幂等：`IF NOT EXISTS`）。
-///
-/// 表结构是**数据**，不是逻辑：放在函数外面，评审时能整块看 diff，
-/// 也不用在 300 行的函数里找"这次改的是哪张表"。
-// G00-02 纯移动拆分：全部建表 SQL 移至子模块 db/schema.rs（内容逐字节一致）。
+// G00-02 纯移动拆分：全部建表 SQL 移至子模块 db/schema.rs（内容与 main
+// 提交态逐字节一致）。
 mod schema;
-use schema::{SCHEMA, SCHEMA_G05, SCHEMA_P4};
+use schema::{SCHEMA, SCHEMA_P4};
