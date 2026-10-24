@@ -6,6 +6,7 @@
 //! with a version watermark, and the reviewed catalog that decides what may
 //! be installed at all.
 
+pub mod catalog;
 pub mod packages;
 
 pub use packages::error::{MiniError, Result};
