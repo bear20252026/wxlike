@@ -241,7 +241,7 @@ fn convs_in(params: &serde_json::Value) -> Vec<&str> {
 /// 只支持 `*` 的简单通配：够用，且可预测（不做正则，避免灾难性回溯）。
 ///
 /// `*` 匹配任意字符序列；其余字符按字面比较，大小写敏感（会话 id 区分大小写）。
-fn glob_match(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     if pattern == "*" {
         return true;
     }

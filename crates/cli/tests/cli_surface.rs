@@ -133,3 +133,56 @@ fn read_only_flag_wins_over_env_grants() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// scope 闸门在发请求之前生效：地址不可达 → 仍然必须是 3（权限），不是 6（网络）。
+#[test]
+fn scope_gate_denies_before_any_request() {
+    let (code, _, stderr) = run(&[
+        "--server",
+        "http://127.0.0.1:1",
+        "--token",
+        "t",
+        "--actor",
+        "u-alice",
+        "--session-id",
+        "s-1",
+        "--scope",
+        "conv:g-1",
+        "conv",
+        "unread",
+        "--param",
+        "conv=g-2",
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stderr.contains("missing scope"), "{stderr}");
+    assert!(stderr.contains("g-2"), "{stderr}");
+}
+
+/// `wxlike auth` 是自查入口：给 scope 就列出逐命令判定，不给就是用法错误。
+#[test]
+fn auth_report_lists_each_command_verdict() {
+    let (code, stdout, stderr) = run(&[
+        "auth",
+        "--actor",
+        "u-alice",
+        "--session-id",
+        "s-1",
+        "--scope",
+        "conv:g-1",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("actor=u-alice"), "{stdout}");
+    assert!(stdout.contains("conv.unread"), "{stdout}");
+    assert!(
+        stdout
+            .lines()
+            .filter(|l| l.contains("允许") || l.contains("拒绝"))
+            .count()
+            >= 26,
+        "每条命令一行：{stdout}"
+    );
+
+    let (code, _, stderr) = run(&["auth"]);
+    assert_eq!(code, 2, "没配 scope 是用法问题：{stderr}");
+    assert!(stderr.contains("--scope"), "{stderr}");
+}

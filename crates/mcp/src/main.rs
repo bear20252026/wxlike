@@ -17,6 +17,7 @@ use std::process::ExitCode;
 
 use wxlike_client::execute::Executor;
 use wxlike_client::Http;
+use wxlike_cmd::auth::{AuthGate, ScopeSet};
 use wxlike_cmd::policy::Policy;
 use wxlike_cmd::CATALOG;
 
@@ -58,7 +59,19 @@ fn run(flags: &Flags) -> ExitCode {
         policy.allow_destructive()
     );
 
-    let mut srv = Server::new(Executor::new(http, policy.clone()), policy);
+    let gate = match flags.gate() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[wxlike-mcp] 授权配置错误：{e}");
+            return ExitCode::from(2);
+        }
+    };
+    if gate.is_none() {
+        eprintln!(
+            "[wxlike-mcp] 未配置 --scope：会话/scope 判定交由服务端与本地策略；             远程 transport 必须配置（见 integration-requests/G15/G15-01.yaml）"
+        );
+    }
+    let mut srv = Server::new(Executor::new(http, policy.clone()), policy).with_gate(gate);
     if flags.print_tools {
         // 诊断用：把 tools/list 打到 stdout 后退出，便于对 fixture 比快照
         println!("{}", srv.tools_dump());
@@ -83,6 +96,10 @@ struct Flags {
     allow_write: bool,
     allow_destructive: bool,
     print_tools: bool,
+    actor: String,
+    session_id: Option<String>,
+    scope: Option<String>,
+    origin_allow: Vec<String>,
 }
 
 impl Flags {
@@ -92,6 +109,9 @@ impl Flags {
             server: std::env::var("WXLIKE_SERVER")
                 .unwrap_or_else(|_| "http://127.0.0.1:8099".into()),
             token: std::env::var("WXLIKE_TOKEN").ok(),
+            actor: std::env::var("WXLIKE_ACTOR").unwrap_or_else(|_| "local-agent".into()),
+            session_id: std::env::var("WXLIKE_SESSION_ID").ok(),
+            scope: std::env::var("WXLIKE_SCOPE").ok(),
             ..Flags::default()
         };
         let mut i = 0;
@@ -109,17 +129,13 @@ impl Flags {
                     f.allow_destructive = true;
                     i += 1;
                 }
-                flag @ ("--transport" | "--server" | "--token" | "--allow-conv") => {
+                flag @ ("--transport" | "--server" | "--token" | "--allow-conv" | "--actor"
+                | "--session-id" | "--scope" | "--origin-allow") => {
                     let value = args
                         .get(i + 1)
                         .ok_or_else(|| format!("{flag} 需要一个值"))?
                         .clone();
-                    match flag {
-                        "--transport" => f.transport = value,
-                        "--server" => f.server = value,
-                        "--token" => f.token = Some(value),
-                        _ => f.allow_conv.push(value),
-                    }
+                    f.apply_value_flag(flag, value);
                     i += 2;
                 }
                 other => return Err(format!("未知参数 {other:?}（--help 看用法）")),
@@ -129,6 +145,43 @@ impl Flags {
             return Err("--server 不能为空".into());
         }
         Ok(f)
+    }
+
+    /// 带值 flag 的落位。单独一个方法，是为了让 `parse` 本体保持一层循环。
+    fn apply_value_flag(&mut self, flag: &str, value: String) {
+        match flag {
+            "--transport" => self.transport = value,
+            "--server" => self.server = value,
+            "--token" => self.token = Some(value),
+            "--actor" => self.actor = value,
+            "--session-id" => self.session_id = Some(value),
+            "--scope" => self.scope = Some(value),
+            "--origin-allow" => self.origin_allow.push(value),
+            _ => self.allow_conv.push(value),
+        }
+    }
+
+    /// 会话/scope 闸门：没给 `--scope` 就不挂（本地单用户场景）。
+    fn gate(&self) -> Result<Option<AuthGate>, String> {
+        let Some(scope) = &self.scope else {
+            return Ok(None);
+        };
+        if !ScopeSet::parse(scope).invalid().is_empty() {
+            return Err(format!("--scope 里有无法解析的条目：{scope}"));
+        }
+        let session = self
+            .session_id
+            .clone()
+            .ok_or_else(|| "--scope 需要配合 --session-id（会话必须绑定）".to_string())?;
+        AuthGate::from_parts(
+            &self.actor,
+            &session,
+            scope,
+            self.session_id.as_deref(),
+            self.origin_allow.clone(),
+        )
+        .map(Some)
+        .map_err(|e| e.to_string())
     }
 
     /// 环境变量打底，命令行覆盖。stdout 是协议通道，提示只能走 stderr。
@@ -168,6 +221,31 @@ mod tests {
     fn unknown_flag_is_a_startup_error() {
         let err = Flags::parse(vec!["--nope".into()]).unwrap_err();
         assert!(err.contains("未知参数"), "{err}");
+    }
+
+    #[test]
+    fn gate_requires_a_session_and_parsable_scope() {
+        let f = Flags::parse(vec!["--scope".into(), "conv:*".into()]).expect("parse");
+        let err = f.gate().unwrap_err();
+        assert!(err.contains("session-id"), "{err}");
+
+        let f = Flags::parse(vec![
+            "--scope".into(),
+            "conv:* money:*".into(),
+            "--session-id".into(),
+            "s-1".into(),
+        ])
+        .expect("parse");
+        assert!(f.gate().unwrap_err().contains("无法解析"), "未知类别要拒");
+
+        let f = Flags::parse(vec![
+            "--scope".into(),
+            "conv:*".into(),
+            "--session-id".into(),
+            "s-1".into(),
+        ])
+        .expect("parse");
+        assert!(f.gate().expect("gate").is_some());
     }
 
     #[test]

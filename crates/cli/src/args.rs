@@ -35,6 +35,8 @@ pub enum Command {
     List(String),
     /// `policy`
     Policy,
+    /// `auth`：打印身份上下文与逐命令的 scope 判定
+    Auth,
     /// `inspect`
     Inspect,
     /// `run --cmd 'id={json}'`（原样保留多条顺序执行）
@@ -58,6 +60,14 @@ pub struct Options {
     pub allow_destructive: bool,
     /// 强制只读：即使环境变量开了写，也压回只读。
     pub read_only: bool,
+    /// 身份（默认读 `WXLIKE_ACTOR`，再缺省 `local-cli`）。
+    pub actor: String,
+    /// 会话 id（scope 判定必须绑定会话）。
+    pub session_id: Option<String>,
+    /// 授予的 scope，如 `conv:g-* media:*`。
+    pub scope: Option<String>,
+    /// 允许的 Origin（远程调用时用）。
+    pub origin_allow: Vec<String>,
 }
 
 /// 解析后的完整调用。
@@ -68,13 +78,17 @@ pub struct Invocation {
 }
 
 /// 带值的 flag：形态统一是 `--name value`。
-const VALUE_FLAGS: [&str; 6] = [
+const VALUE_FLAGS: [&str; 10] = [
     "--server",
     "--token",
     "--allow-conv",
     "--param",
     "--params",
     "--cmd",
+    "--actor",
+    "--session-id",
+    "--scope",
+    "--origin-allow",
 ];
 
 /// 一个位置参数被吃掉了几格，或者该收尾了。
@@ -142,6 +156,10 @@ impl Parser {
             "--allow-conv" => self.options.allow_conv.push(value.to_string()),
             "--params" => self.raw_json = Some(value.to_string()),
             "--cmd" => self.cmds.push(value.to_string()),
+            "--actor" => self.options.actor = value.to_string(),
+            "--session-id" => self.options.session_id = Some(value.to_string()),
+            "--scope" => self.options.scope = Some(value.to_string()),
+            "--origin-allow" => self.options.origin_allow.push(value.to_string()),
             _ => {
                 let (k, v) = value
                     .split_once('=')
@@ -163,7 +181,21 @@ impl Parser {
         Ok(())
     }
 
-    fn finish(self) -> Result<Invocation, UsageError> {
+    fn actor_default(&mut self) {
+        if self.options.actor.is_empty() {
+            self.options.actor =
+                std::env::var("WXLIKE_ACTOR").unwrap_or_else(|_| "local-cli".to_string());
+        }
+        if self.options.session_id.is_none() {
+            self.options.session_id = std::env::var("WXLIKE_SESSION_ID").ok();
+        }
+        if self.options.scope.is_none() {
+            self.options.scope = std::env::var("WXLIKE_SCOPE").ok();
+        }
+    }
+
+    fn finish(mut self) -> Result<Invocation, UsageError> {
+        self.actor_default();
         let command = resolve(&self.positional, self.cmds, &self.raw_params, self.raw_json)?;
         Ok(Invocation {
             options: self.options,
@@ -186,6 +218,7 @@ fn resolve(
             positional.get(1).cloned().unwrap_or_default(),
         )),
         "policy" => Ok(Command::Policy),
+        "auth" => Ok(Command::Auth),
         "inspect" => Ok(Command::Inspect),
         "run" => {
             if cmds.is_empty() {
