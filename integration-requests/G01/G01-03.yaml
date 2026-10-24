@@ -1,0 +1,59 @@
+card: G01-03
+issue: 106
+branch: feat/FP-G01-03
+contract_version: "1.0"
+summary: Rust WASM 网页可运行闭环
+
+requests:
+  - id: G01-03-R1
+    kind: workspace-member
+    status: applied-pending-ratification
+    reason: >-
+      同 G01-01-R1。本 crate 的浏览器代码只在 wasm32 上编译，
+      原生构建只编译 policy 模块（纯逻辑）。
+    change:
+      file: Cargo.toml
+      path: members
+      add: ["crates/client-web"]
+
+  - id: G01-03-R2
+    kind: ci
+    status: requested
+    reason: >-
+      没有 wasm 任务时，这个 crate 在 CI 里等于不存在——浏览器代码永远不会
+      被编译，写了等于没写。
+    change:
+      job: wasm
+      runs_on: ubuntu-latest
+      steps:
+        - rustup target add wasm32-unknown-unknown
+        - cargo check -p wxlike-client-web --target wasm32-unknown-unknown
+        - cargo clippy -p wxlike-client-web --target wasm32-unknown-unknown -- -D warnings
+      note: >-
+        浏览器行为测试需要 chromedriver（wasm-pack test --headless --chrome），
+        建议单独一个非阻断任务先跑起来，稳定后再设为阻断。
+
+  - id: G01-03-R3
+    kind: ui-handoff
+    status: requested
+    reason: >-
+      页面胶水要挂 lifecycle 监听并续租；不续租的话跨 tab 互斥会在 15s 后
+      失效（另一个 tab 就能抢走租约）。
+    change:
+      file: ui/src/web/
+      owner: G04
+      action: |
+        document.addEventListener('visibilitychange', ...)  // 前台/后台
+        document.addEventListener('freeze', ...)            // 被冻结
+        document.addEventListener('resume', ...)            // 恢复 → 重新校验游标
+        setInterval(() => platform.renew_lease(), 5000)     // 续租
+
+  - id: G01-03-R4
+    kind: security-review
+    status: requested
+    reason: >-
+      缓存密钥目前放 localStorage（同源 JS 可读）。这不是秘密泄露级别的
+      问题（同源本来就能读缓存），但值得评估更强的隔离。
+    change:
+      owner: G17
+      action: 评估改用不可导出 CryptoKey + IndexedDB 结构化克隆，替换 localStorage 方案

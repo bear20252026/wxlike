@@ -14,6 +14,11 @@ crate-type = ["lib", "cdylib", "staticlib"]
 wxlike-client = { path = "../client" }
 wxlike-cmd = { path = "../cmd" }
 wxlike-core = { path = "../core" }
+# 新核心：共享类型 + 端口 + 原生实现（CoreHandle 只是它的 FFI 外壳）
+wxlike-types = { path = "../types" }
+wxlike-client-core = { path = "../client-core" }
+wxlike-client-native = { path = "../client-native" }
+tokio = { workspace = true }
 # `scaffolding-ffi-buffer-fns` 不是可选项：uniffi-bindgen-dart 生成的绑定走的是
 # ffibuffer 调用约定（一次调用把参数打成一个 buffer 递进去），而 uniffi 0.32 默认
 # 不导出那批 `uniffi_ffibuffer_*` 符号。不开它的话绑定层每个调用都在
@@ -42,3 +47,7 @@ required-features = ["bindgen"]
 name = "uniffi-bindgen-dart"
 path = "src/bin/uniffi-bindgen-dart.rs"
 required-features = ["bindgen", "dart"]
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = { workspace = true }

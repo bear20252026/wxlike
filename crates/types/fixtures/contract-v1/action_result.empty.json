@@ -1,0 +1,11 @@
+{
+  "name": "action_result.empty",
+  "type": "ActionResult",
+  "why": "空结果与失败是两种界面，必须能分开",
+  "value": {
+    "action_id": "conv.list",
+    "status": "empty",
+    "completed_at_ms": 1700000000123
+  },
+  "canonical": "{\"action_id\":\"conv.list\",\"completed_at_ms\":1700000000123,\"status\":\"empty\"}"
+}

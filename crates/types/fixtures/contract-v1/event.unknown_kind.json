@@ -1,0 +1,14 @@
+{
+  "name": "event.unknown_kind",
+  "type": "EventEnvelope",
+  "why": "服务端先上线的新事件，旧客户端要能解出来并跳过",
+  "value": {
+    "event_id": "evt-1002",
+    "seq": "43",
+    "kind": "brand.new.thing",
+    "payload": {},
+    "emitted_at_ms": 1700000000457,
+    "contract": "1.1"
+  },
+  "canonical": "{\"contract\":\"1.1\",\"emitted_at_ms\":1700000000457,\"event_id\":\"evt-1002\",\"kind\":\"brand.new.thing\",\"payload\":{},\"seq\":\"43\"}"
+}

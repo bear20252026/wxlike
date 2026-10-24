@@ -1,0 +1,19 @@
+{
+  "name": "action_request.send",
+  "type": "ActionRequest",
+  "why": "写命令带幂等键、绝对截止时间、契约版本",
+  "value": {
+    "action_id": "msg.send",
+    "entry_id": "desk.chat.send",
+    "params": {
+      "conv": "d-alice~bob",
+      "text": "你好",
+      "idempotency_key": "k-1"
+    },
+    "idempotency_key": "k-1",
+    "deadline": "1700000000000",
+    "trace_id": "trace-abc",
+    "contract": "1.0"
+  },
+  "canonical": "{\"action_id\":\"msg.send\",\"contract\":\"1.0\",\"deadline\":\"1700000000000\",\"entry_id\":\"desk.chat.send\",\"idempotency_key\":\"k-1\",\"params\":{\"conv\":\"d-alice~bob\",\"idempotency_key\":\"k-1\",\"text\":\"你好\"},\"trace_id\":\"trace-abc\"}"
+}
