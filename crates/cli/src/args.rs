@@ -70,6 +70,8 @@ pub struct Options {
     pub scope: Option<String>,
     /// 允许的 Origin（远程调用时用）。
     pub origin_allow: Vec<String>,
+    /// 危险动作的人工确认（`--confirm`）。人就在终端前，确认就是他敲的这一下。
+    pub confirm: bool,
 }
 
 /// 解析后的完整调用。
@@ -178,6 +180,7 @@ impl Parser {
             "--allow-write" => self.options.allow_write = true,
             "--allow-destructive" => self.options.allow_destructive = true,
             "--read-only" => self.options.read_only = true,
+            "--confirm" => self.options.confirm = true,
             other => return Err(UsageError(format!("未知参数 {other:?}（--help 看用法）"))),
         }
         Ok(())
@@ -403,6 +406,21 @@ mod tests {
         .unwrap_err();
         assert!(err.0.contains("cnv"), "{err}");
         assert!(err.0.contains("conv"), "要列出可用参数：{err}");
+    }
+
+    #[test]
+    fn confirm_flag_is_parsed() {
+        let inv = parse(&args(&[
+            "--confirm",
+            "group",
+            "kick",
+            "--param",
+            "conv=g-1",
+            "--param",
+            "user_id=u2",
+        ]))
+        .expect("parse");
+        assert!(inv.options.confirm);
     }
 
     #[test]

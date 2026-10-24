@@ -212,3 +212,61 @@ fn coverage_report_lists_every_domain_and_gap_owner() {
     assert_eq!(v["summary"]["automated"], 26);
     assert_eq!(v["domains"].as_array().map(Vec::len), Some(8));
 }
+
+/// 危险动作：没有 `--confirm` 时只打印计划，退出码 7，且不发请求。
+#[test]
+fn dangerous_action_stops_for_confirmation_with_exit_7() {
+    let (code, stdout, stderr) = run(&[
+        "--server",
+        "http://127.0.0.1:1",
+        "--token",
+        "t",
+        "--allow-conv",
+        "g-1",
+        "--allow-destructive",
+        "--json",
+        "group",
+        "kick",
+        "--param",
+        "conv=g-1",
+        "--param",
+        "user_id=u2",
+    ]);
+    assert_eq!(code, 7, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["confirmation_required"], true);
+    assert_eq!(v["plan"]["action_id"], "group.kick");
+    assert_eq!(v["plan"]["params"]["user_id"], "u2");
+    assert_eq!(
+        v["plan"]["digest"].as_str().map(str::len),
+        Some(64),
+        "计划要带规范参数摘要：{v}"
+    );
+    assert!(v["hint"].as_str().expect("hint").contains("--confirm"));
+}
+
+/// 加了 `--confirm` 才真的发请求（这里地址不可达 → 网络错误 6，说明已经出网）。
+#[test]
+fn confirmed_action_reaches_the_network() {
+    let (code, _, stderr) = run(&[
+        "--server",
+        "http://127.0.0.1:1",
+        "--token",
+        "t",
+        "--allow-conv",
+        "g-1",
+        "--allow-destructive",
+        "--confirm",
+        "group",
+        "kick",
+        "--param",
+        "conv=g-1",
+        "--param",
+        "user_id=u2",
+    ]);
+    assert_ne!(code, 7, "加 --confirm 后不该再停在确认：{stderr}");
+    assert!(
+        stderr.contains("connect") || code == 6,
+        "应当已经尝试出网：{code} {stderr}"
+    );
+}
