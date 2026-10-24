@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/security/contract.json",
+  "title": "security domain contract (security-v1)",
+  "description": "G02 安全域对外契约：每设备密钥包、一次性预密钥原子认领、设备验证、本地密钥库与隐私策略。实现见 crates/features/security 与 crates/core/src/e2ee.rs。服务端只见公钥与密文；任何'看起来像授权'的中间态都不是会话。",
+  "contract_version": "security-v1",
+  "owner": "G02",
+  "commands": {
+    "keys.publish": { "$ref": "#/$defs/publish" },
+    "keys.claim": { "$ref": "#/$defs/claim" },
+    "keys.rotate": { "$ref": "#/$defs/rotate" },
+    "keys.list": { "type": "object", "properties": {} },
+    "device.verify": { "$ref": "#/$defs/verify" },
+    "privacy.evaluate": { "$ref": "#/$defs/privacy" }
+  },
+  "error_codes": ["bad_input", "forbidden", "not_found", "conflict", "corrupted", "crypto"],
+  "envelope": {
+    "required": [
+      "v",
+      "sender_user",
+      "sender_device",
+      "recipient_device",
+      "session_id",
+      "rotation_epoch",
+      "sealed"
+    ],
+    "properties": {
+      "v": { "const": 1 },
+      "sender_user": { "type": "string" },
+      "sender_device": { "type": "string" },
+      "recipient_device": { "type": "string" },
+      "session_id": { "type": "string" },
+      "rotation_epoch": { "type": "integer", "minimum": 0 },
+      "sealed": {
+        "type": "object",
+        "required": ["pre_key", "body"],
+        "properties": {
+          "pre_key": { "type": "boolean" },
+          "body": { "type": "string", "minLength": 1, "maxLength": 262144 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bundle": {
+      "type": "object",
+      "required": [
+        "user_id",
+        "identity",
+        "identity_signing",
+        "one_time_keys",
+        "one_time_key_signatures",
+        "signature"
+      ],
+      "properties": {
+        "user_id": { "type": "string" },
+        "identity": { "type": "string", "maxLength": 128 },
+        "identity_signing": { "type": "string", "maxLength": 128 },
+        "one_time_keys": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string" }
+        },
+        "one_time_key_signatures": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string" }
+        },
+        "signature": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "required": ["device_id", "bundle"],
+      "properties": {
+        "device_id": { "type": "string" },
+        "bundle": { "$ref": "#/$defs/bundle" }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "required": ["user_id"],
+      "properties": {
+        "user_id": { "type": "string" },
+        "device_id": { "type": "string" }
+      }
+    },
+    "rotate": {
+      "type": "object",
+      "required": ["device_id", "bundle", "reason"],
+      "properties": {
+        "device_id": { "type": "string" },
+        "bundle": { "$ref": "#/$defs/bundle" },
+        "reason": { "type": "string", "maxLength": 64 }
+      }
+    },
+    "verify": {
+      "type": "object",
+      "required": ["peer_user", "peer_device", "safety_number"],
+      "properties": {
+        "peer_user": { "type": "string" },
+        "peer_device": { "type": "string" },
+        "safety_number": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "required": ["viewer", "prefs"],
+      "properties": {
+        "viewer": {
+          "type": "object",
+          "required": ["is_self", "is_friend", "blocked"],
+          "properties": {
+            "is_self": { "type": "boolean" },
+            "is_friend": { "type": "boolean" },
+            "blocked": { "type": "boolean" }
+          }
+        },
+        "prefs": {
+          "type": "object",
+          "required": [
+            "discover_by_phone",
+            "discover_by_id",
+            "allow_stranger_msg",
+            "read_receipts"
+          ],
+          "properties": {
+            "discover_by_phone": { "type": "boolean" },
+            "discover_by_id": { "type": "boolean" },
+            "allow_stranger_msg": { "type": "boolean" },
+            "read_receipts": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}

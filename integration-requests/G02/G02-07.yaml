@@ -1,0 +1,56 @@
+task: G02-07
+title: 桌面扫码登录、手机授权与设备信任
+issue: https://github.com/bear20252026/wxlike/issues/115
+branch: feat/FP-G02-07
+crate: wxlike-identity
+contract: identity-v1
+wave: W2/W3
+hard_dependencies: [G02-06]
+integration_dependencies: [G07-01, G10-06, G12-06]
+paths:
+  - crates/features/identity/src/qr_login.rs
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/qr/login -> qr_login::create"
+      - "POST /api/qr/login/{id}/bind -> qr_login::bind"
+      - "POST /api/qr/login/scan -> qr_login::scan"
+      - "POST /api/qr/login/{id}/approve -> qr_login::approve"
+      - "POST /api/qr/login/{id}/reject -> qr_login::reject"
+      - "GET  /api/qr/login/{id}?verifier= -> qr_login::poll"
+      - "POST /api/qr/login/{id}/exchange -> qr_login::exchange"
+      - "POST /api/qr/login/{id}/refresh -> qr_login::refresh"
+  - action: schema
+    proposal: schema/proposals/G02/identity.sql
+    tables: [identity_qr]
+
+cross_group:
+  - group: G07
+    need: 扫码入口只解析 qr 登录前缀的 payload，禁止把 challenge 当 session token
+  - group: G10
+    need: 桌面端渲染二维码 + 轮询 + exchange；verifier 只存内存
+  - group: G12
+    need: 手机端展示 platform/label/ip_hint，必须用户明确点"确认登录"才 approve
+
+acceptance_notes:
+  - 二维码只含公开 challenge，不含 session token
+  - 待登录设备先绑 PKCE 摘要；poll/exchange 都必须出示 verifier，拍到二维码也偷不走
+  - scanned 只是"看了一眼"，approved 必须用户明确批准
+  - exchange 原子抢占：两桌面竞领只有一台成功
+  - 刷新二维码置旧码 expired，旧码重放失败
+  - 设备撤销与跨端密钥信任分开：扫码不改 security_device_verify
+  - 无演示/跳过分支：代码里不存在"点一下就算登录"的路径
+
+open_items:
+  - 真实手机扫真实桌面码的证据待 G10/G12 页面合入 => 本卡不标 ACCEPTED
+
+tests:
+  - qr_login::tests::happy_path_grants_a_session
+  - qr_login::tests::qr_copier_cannot_steal_the_session
+  - qr_login::tests::scan_alone_is_not_approval
+  - qr_login::tests::two_desktops_race_only_one_wins
+  - qr_login::tests::refresh_kills_the_old_code
+  - qr_login::tests::reject_and_expiry_are_terminal
+  - qr_login::tests::unbound_and_wrong_scanner_are_rejected

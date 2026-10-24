@@ -1,0 +1,81 @@
+{
+  "contract_version": "security-v1",
+  "case": "two devices publish, each claim pops a distinct one-time key",
+  "steps": [
+    {
+      "command": "keys.publish",
+      "payload": {
+        "device_id": "dev-a",
+        "bundle": {
+          "user_id": "u1",
+          "one_time_keys": [
+            "otk-1",
+            "otk-2"
+          ],
+          "signature": "<ed25519>"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "epoch": 0
+        }
+      }
+    },
+    {
+      "command": "keys.publish",
+      "payload": {
+        "device_id": "dev-b",
+        "bundle": {
+          "user_id": "u1",
+          "one_time_keys": [
+            "otk-3"
+          ],
+          "signature": "<ed25519>"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "epoch": 0
+        }
+      }
+    },
+    {
+      "command": "keys.claim",
+      "payload": {
+        "user_id": "u1"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "claimed": [
+            "dev-a",
+            "dev-b"
+          ],
+          "distinct_one_time_keys": true
+        }
+      }
+    },
+    {
+      "command": "keys.rotate",
+      "payload": {
+        "device_id": "dev-a",
+        "bundle": {
+          "user_id": "u1",
+          "one_time_keys": [
+            "otk-9"
+          ],
+          "signature": "<ed25519>"
+        },
+        "reason": "reinstall"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "epoch": 1
+        }
+      }
+    }
+  ]
+}

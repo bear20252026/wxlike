@@ -1,0 +1,51 @@
+task: G02-03
+title: 多设备E2EE与密钥分发
+issue: https://github.com/bear20252026/wxlike/issues/111
+branch: feat/FP-G02-03
+crate: wxlike-security
+contract: security-v1
+paths:
+  - crates/features/security/src/device_keys.rs
+  - crates/core/src/e2ee.rs
+
+root_registration:
+  - action: cargo_workspace_member
+    value: crates/features/security
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/keys -> device_keys::publish（替换 platform::keys 的每用户路径）"
+      - "GET  /api/keys/{user_id} -> device_keys::claim_user"
+      - "POST /api/keys/rotate -> device_keys::rotate"
+      - "POST /api/devices/{id}/verify -> device_keys::verify"
+    note: 旧 prekey_bundles 路径保留到存量客户端全部升级；退役不在 G02 范围
+  - action: schema
+    proposal: schema/proposals/G02/security.sql
+    tables: [security_device_key, security_device_verify, security_rotation]
+
+core_changes:
+  file: crates/core/src/e2ee.rs
+  added:
+    - EncryptedEnvelope（v / sender_device / recipient_device / session_id / rotation_epoch / sealed）
+    - Crypto::seal_envelope、Crypto::open_envelope（结构 -> 收件设备 -> 代次 -> 解密）
+    - seal_secret_blob、open_secret_blob（WXSC2 外壳的公开入口，供 G02-04）
+  compatibility: 纯新增，不改既有函数签名
+
+cross_group:
+  - group: G03
+    need: 按 claim_user 返回的每设备 bundle 逐设备加密，信封带 rotation_epoch
+  - group: G04
+    need: 附件密钥随信封走，服务端不落明文
+
+acceptance_notes:
+  - 服务端只见密文：无明文回退分支，encrypt_dm_existing 无会话即报错
+  - 一次性预密钥原子认领：claim 在事务内弹出，同一 key 不会发给两个人
+  - 服务端不能伪装新可信设备：换身份密钥必须走 rotate（epoch+1 + 审计）
+  - 验证随对方轮换自动失效：is_verified 比对验证时的身份公钥
+
+tests:
+  - device_keys::tests::claim_pops_a_distinct_key_each_time
+  - device_keys::tests::identity_change_requires_rotate
+  - device_keys::tests::verification_dies_with_the_peer_key
+  - device_keys::tests::multi_device_claim_covers_every_active_device
+  - device_keys::tests::unsigned_or_foreign_bundle_is_rejected
