@@ -460,4 +460,3 @@ pub(crate) const SCHEMA_P4: &str = r#"
             );
             CREATE INDEX IF NOT EXISTS idx_video_refs_job ON video_refs(job_id);
             "#;
-
