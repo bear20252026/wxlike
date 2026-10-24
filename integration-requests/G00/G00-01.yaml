@@ -1,0 +1,49 @@
+# G00-01 入口总账与范围冻结 —— 集成请求
+# 本文件登记超出 G00 独占写路径、需要集成方或其他组执行的条目。
+# 格式：request 列表，每条含 target 组 / 动作 / 依据。
+
+request_id: G00-01
+task_issue: 99
+group_issue: 81
+contract_version: entries-v1
+artifacts:
+  - contracts/common/entries.schema.json
+  - composition/entries.json
+  - composition/entries-summary.json
+  - composition/platform-matrix.json
+  - composition/generate_entries.py
+  - composition/validate_entries.py
+
+requests:
+  - id: REQ-G16-ci-validate-entries
+    target: G16
+    action: 在 ci.yml 增加一步 `python composition/validate_entries.py`（纯标准库，秒级），
+      作为入口总账防回潮门禁；ledger 或 matrix 任一变动必须过校验。
+    rationale: 总账是 18 组的公共契约面，手改漂移必须当场拦截。
+
+  - id: REQ-G11-confirm-ui-owners
+    target: G11
+    action: 复核 entries.json 中 ui=G11/G12/G13 的 293 条 UI owner 指派（来自交付种子），
+      异议条目在本文件追加 correction 段由 G00 改写。
+    rationale: 种子的 ui_owner 是交付方启发式，需 UI 组确认。
+
+  - id: REQ-G00-03-ratify-contract-actions
+    target: G00-03
+    action: 30 条 contract.* action 提案（entries.json action_kind=contract_candidate）
+      在契约冻结时逐条批准/改名/合并；批准后由 G00-03 写入 schema/registry。
+    rationale: 总账只登记提案；契约命名权在 G00-03。
+
+  - id: REQ-G02-03-secret-entries-review
+    target: G02-03
+    action: 复核 page=chat/chats 中涉及消息与密钥动作的 contract_candidate
+      （预计与多设备 E2EE 密钥分发相关），确认无与多设备密钥模型冲突的入口语义。
+    rationale: 秘密聊天相关入口的契约语义需与密钥分发模型对齐。
+
+notes:
+  - 种子 331 条全部展开为 ENT-SEED-0001..0331；另登记 15 条增量
+    （1 条已实现的 Enter 发送证据 + 14 条无 handler/非 click 计划位），
+    总计 346 条；"331" 是种子数不是功能总数。
+  - 30 条 contract.* 为提案（G00-03 批准前不视为契约）；302 条 proto.* 为
+    原型本地视觉态；14 条 planned 为 UI 组实现位。
+  - 平台能力矩阵覆盖 10 个能力类 × 3 平台，unsupported 均有替代路径
+    （context.menu <-> long.press 互为替代；system.back 三端语义已定义）。
