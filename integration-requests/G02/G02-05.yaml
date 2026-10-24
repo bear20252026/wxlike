@@ -1,0 +1,48 @@
+task: G02-05
+title: 设置、账户数据生命周期与通知偏好
+issue: https://github.com/bear20252026/wxlike/issues/114
+branch: feat/FP-G02-05
+crate: wxlike-identity
+contract: identity-v1
+paths:
+  - crates/features/identity/src/preferences.rs
+  - crates/features/security/src/privacy.rs
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "GET  /api/preferences -> preferences::get + head_seq"
+      - "PATCH /api/preferences -> preferences::patch"
+      - "GET  /api/preferences/changes?since= -> preferences::since"
+      - "POST /api/account/export -> step_up::consume(account.export) + preferences::request_export"
+      - "POST /api/account/delete -> step_up::consume(account.delete) + preferences::request_delete"
+      - "GET  /api/account/export/{job_id}/link -> preferences::export_link"
+    note: 导出/注销 worker 由 G00 作业框架执行，本组只提供队列语义
+  - action: schema
+    proposal: schema/proposals/G02/identity.sql
+    tables: [identity_pref, identity_job, identity_export_link]
+
+cross_group:
+  - group: G00
+    need: 注销作业按 PURGE_DOMAINS 逐域清理；法定/业务必需记录由各域分域处置
+  - group: G03
+    need: 通知投递前调用 security::privacy::notification（dnd / 免打扰 / 预览）
+  - group: G05
+    need: 搜索可见性调用 security::privacy::searchable_by 与 profile_visibility
+
+acceptance_notes:
+  - 本地/服务端偏好分字段：主题/字号/密度只进本地存储（tests::local_prefs_never_touch_the_db）
+  - 跨端生效：identity_pref 带自增 seq，另一台设备用 since 增量拉取
+  - 敏感修改需验证：password/phone/device 走 step_up::consume
+  - 导出/注销是有审计的后台作业：identity_job 有 queued/running/done/failed 与错误原因
+  - 注销先撤销所有会话与刷新链，再入队清理（PURGE_DOMAINS）
+  - 导出链接短时且单次：10 分钟、用一次即失效
+
+tests:
+  - preferences::tests::local_prefs_never_touch_the_db
+  - preferences::tests::patch_is_field_level_and_syncs_incrementally
+  - preferences::tests::export_job_lifecycle_and_single_use_link
+  - preferences::tests::delete_revokes_every_session_first
+  - privacy::tests::block_hides_everything
+  - privacy::tests::notifications_respect_hard_off_quiet_and_preview

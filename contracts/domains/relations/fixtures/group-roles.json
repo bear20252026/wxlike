@@ -1,0 +1,61 @@
+{
+  "contract_version": "relations-v1",
+  "case": "member cannot promote or kick; owner transfers ownership",
+  "steps": [
+    {
+      "command": "group.create",
+      "payload": {
+        "name": "研发群",
+        "members": [
+          "u2",
+          "u3"
+        ],
+        "visibility": "public"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "role_of_owner": "owner"
+        }
+      }
+    },
+    {
+      "command": "group.role.update",
+      "payload": {
+        "group_id": "g-1",
+        "user_id": "u3",
+        "role": "admin"
+      },
+      "expect": {
+        "ok": false,
+        "error": {
+          "code": "forbidden"
+        }
+      }
+    },
+    {
+      "command": "group.member.kick",
+      "payload": {
+        "group_id": "g-1",
+        "user_id": "u3"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "command": "group.role.update",
+      "payload": {
+        "group_id": "g-1",
+        "user_id": "u2",
+        "role": "owner"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "old_owner_role": "admin"
+        }
+      }
+    }
+  ]
+}
