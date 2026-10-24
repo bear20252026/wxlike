@@ -28,7 +28,9 @@ use wxlike_core::msgmeta::rich_kind;
 
 mod conversations;
 mod delivery;
+mod push;
 mod submit;
+mod sync;
 
 pub use conversations::{
     ConvPrefs, ConversationCursor, ConversationEvent, ConversationFilter, ConversationPage,
@@ -37,7 +39,12 @@ pub use conversations::{
 pub use delivery::{
     DeliveryTask, ResumePlan, ResumePolicy, DEFAULT_LEASE_MS, MAX_CLAIM_BATCH, TASK_RETENTION_MS,
 };
+pub use push::{
+    DispatchReport, NoopPort, Platform, PushDevice, PushError, PushPort, PushTarget, RecordingPort,
+    SyncHint, DEFAULT_AGGREGATION_WINDOW_MS, TOKEN_RETENTION_MS,
+};
 pub use submit::{SubmitOutcome, SubmitRecipient, SubmitRequest, RECALL_WINDOW_MS};
+pub use sync::{NoteOutcome, SyncSchedule, SyncScheduler, SyncStep, SyncTrigger};
 
 /// Owner kinds (ADR-16). direct owners are normalized user pairs
 /// (`d-{a}~{b}`), groups are group ids, channels are channel ids — the
@@ -449,6 +456,20 @@ impl MessageStore {
             CREATE INDEX IF NOT EXISTS idx_conversation_event_conv
                 ON conversation_event(conv_id, id);
 
+            -- 推送 token 归设备，可轮换、可撤销。epoch 是让撤销"落地"的
+            -- 那一列：撤销把 epoch 前移，任何仍带旧 epoch 的投递一律拒绝。
+            CREATE TABLE IF NOT EXISTS push_device (
+                device_id    TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                platform     TEXT NOT NULL,
+                token        TEXT NOT NULL,
+                epoch        INTEGER NOT NULL DEFAULT 1,
+                revoked      INTEGER NOT NULL DEFAULT 0,
+                created_ms   INTEGER NOT NULL,
+                last_seen_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_user
+                ON push_device(user_id, revoked);
             "#,
         )?;
         let store = Self {
