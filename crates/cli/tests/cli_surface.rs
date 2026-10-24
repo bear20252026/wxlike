@@ -186,3 +186,29 @@ fn auth_report_lists_each_command_verdict() {
     assert_eq!(code, 2, "没配 scope 是用法问题：{stderr}");
     assert!(stderr.contains("--scope"), "{stderr}");
 }
+
+/// `coverage` 是"支持全业务"的可验证形态：缺口必须写清负责组与 issue。
+#[test]
+fn coverage_report_lists_every_domain_and_gap_owner() {
+    let (code, stdout, stderr) = run(&["coverage"]);
+    assert_eq!(code, 0, "{stderr}");
+    for domain in [
+        "messaging",
+        "relations",
+        "content",
+        "media",
+        "payment",
+        "miniprogram",
+        "service",
+        "admin",
+    ] {
+        assert!(stdout.contains(domain), "覆盖表漏了域 {domain}");
+    }
+    assert!(stdout.contains("阻塞于 G14 #176"), "{stdout}");
+
+    let (code, stdout, stderr) = run(&["coverage", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["summary"]["automated"], 26);
+    assert_eq!(v["domains"].as_array().map(Vec::len), Some(8));
+}

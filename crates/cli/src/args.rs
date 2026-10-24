@@ -37,6 +37,8 @@ pub enum Command {
     Policy,
     /// `auth`：打印身份上下文与逐命令的 scope 判定
     Auth,
+    /// `coverage`：业务域覆盖报告（自动 / 宿主 / 未做）
+    Coverage,
     /// `inspect`
     Inspect,
     /// `run --cmd 'id={json}'`（原样保留多条顺序执行）
@@ -219,6 +221,7 @@ fn resolve(
         )),
         "policy" => Ok(Command::Policy),
         "auth" => Ok(Command::Auth),
+        "coverage" => Ok(Command::Coverage),
         "inspect" => Ok(Command::Inspect),
         "run" => {
             if cmds.is_empty() {
@@ -400,6 +403,15 @@ mod tests {
         .unwrap_err();
         assert!(err.0.contains("cnv"), "{err}");
         assert!(err.0.contains("conv"), "要列出可用参数：{err}");
+    }
+
+    #[test]
+    fn coverage_is_a_subcommand_and_not_a_domain() {
+        assert_eq!(
+            parse(&args(&["coverage"])).unwrap().command,
+            Command::Coverage
+        );
+        assert!(parse(&args(&["coverage", "--json"])).unwrap().options.json);
     }
 
     #[test]
