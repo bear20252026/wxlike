@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wxlike.local/contracts/miniapps/mini-catalog.v1.json",
+  "title": "wxlike mini-app catalog v1",
+  "description": "Catalog actions served by the reviewed source (G01/G02). Cards only ever come from that source; install and upgrade still verify a signed package. app_id and device_id are supplied by the host shell, not typed by a guest.",
+  "x-contract-version": "mini-catalog.v1",
+  "x-errors": [
+    "bad_query",
+    "offline",
+    "timeout",
+    "unauthorized",
+    "not_found",
+    "not_published",
+    "revoked",
+    "not_installed",
+    "capability_not_reviewed",
+    "denied",
+    "cancelled",
+    "sync",
+    "data_wipe",
+    "package"
+  ],
+  "$defs": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "capability": {
+      "enum": ["storage", "network", "camera", "location", "file", "payment"]
+    },
+    "category": {
+      "enum": ["productivity", "shopping", "games", "tools"]
+    },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app_id",
+        "name",
+        "version",
+        "published_versions",
+        "category",
+        "summary",
+        "publisher",
+        "capabilities"
+      ],
+      "properties": {
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "version": { "$ref": "#/$defs/version" },
+        "published_versions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/version" },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "category": { "$ref": "#/$defs/category" },
+        "summary": { "type": "string", "maxLength": 280 },
+        "publisher": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capability" },
+          "uniqueItems": true
+        },
+        "featured": { "type": "boolean" }
+      }
+    },
+    "recent_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_id", "last_used", "launches"],
+      "properties": {
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "last_used": { "type": "integer", "minimum": 0 },
+        "launches": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "upgrade_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app_id",
+        "from_version",
+        "to_version",
+        "added_capabilities",
+        "sensitive_added",
+        "requires_confirmation"
+      ],
+      "properties": {
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "from_version": { "$ref": "#/$defs/version" },
+        "to_version": { "$ref": "#/$defs/version" },
+        "added_capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "sensitive_added": {
+          "type": "array",
+          "description": "Subset of camera/location/file/payment that must be shown explicitly.",
+          "items": { "enum": ["camera", "location", "file", "payment"] }
+        },
+        "requires_confirmation": { "type": "boolean" }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "title": "catalog.search",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "query"],
+      "properties": {
+        "action": { "const": "catalog.search" },
+        "query": { "type": "string", "maxLength": 64 },
+        "category": { "$ref": "#/$defs/category" },
+        "limit": { "$ref": "#/$defs/limit" }
+      },
+      "x-result": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/entry" }
+      }
+    },
+    {
+      "title": "catalog.recommend",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": { "const": "catalog.recommend" },
+        "limit": { "$ref": "#/$defs/limit" }
+      },
+      "x-result": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/entry" }
+      }
+    },
+    {
+      "title": "catalog.recent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": { "const": "catalog.recent" },
+        "limit": { "$ref": "#/$defs/limit" }
+      },
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["entries", "sync"],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/recent_entry" }
+          },
+          "sync": {
+            "enum": ["local_only", "synced", "degraded"]
+          }
+        }
+      }
+    },
+    {
+      "title": "catalog.favorite",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "app_id", "favorite"],
+      "properties": {
+        "action": { "const": "catalog.favorite" },
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "favorite": { "type": "boolean" }
+      },
+      "x-result": { "type": "boolean" }
+    },
+    {
+      "title": "catalog.install",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "app_id", "version", "device_id"],
+      "properties": {
+        "action": { "const": "catalog.install" },
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "version": { "$ref": "#/$defs/version" },
+        "device_id": { "$ref": "#/$defs/device_id" }
+      },
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["app_id", "version", "already_installed"],
+        "properties": {
+          "app_id": { "$ref": "#/$defs/app_id" },
+          "version": { "$ref": "#/$defs/version" },
+          "already_installed": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "title": "catalog.upgrade",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "app_id", "version", "device_id", "decision"],
+      "properties": {
+        "action": { "const": "catalog.upgrade" },
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "version": { "$ref": "#/$defs/version" },
+        "device_id": { "$ref": "#/$defs/device_id" },
+        "decision": { "enum": ["confirm", "deny", "cancel"] }
+      },
+      "x-result": { "$ref": "#/$defs/upgrade_plan" }
+    },
+    {
+      "title": "catalog.uninstall",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "app_id", "device_id", "decision"],
+      "properties": {
+        "action": { "const": "catalog.uninstall" },
+        "app_id": { "$ref": "#/$defs/app_id" },
+        "device_id": { "$ref": "#/$defs/device_id" },
+        "decision": { "enum": ["confirm", "deny", "cancel"] }
+      },
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["app_id", "version", "wiped"],
+        "description": "Uninstall always wipes guest data; removing only the icon is not a valid result.",
+        "properties": {
+          "app_id": { "$ref": "#/$defs/app_id" },
+          "version": { "$ref": "#/$defs/version" },
+          "wiped": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["storage_keys", "bytes"],
+            "properties": {
+              "storage_keys": { "type": "integer", "minimum": 0 },
+              "bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
