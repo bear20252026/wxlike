@@ -333,7 +333,8 @@ async fn expired_secret_messages_leave_both_history_and_search() {
     .await;
 
     // 先确认索引可见，再断言到期前后行为；不假设 400ms 足够后台 commit。
-    let results = wait_for_search_hit(&stack, &alice_token, "/api/search/messages?q=会被搜到").await;
+    let results =
+        wait_for_search_hit(&stack, &alice_token, "/api/search/messages?q=会被搜到").await;
     assert_eq!(
         results["results"].as_array().map(Vec::len),
         Some(1),
