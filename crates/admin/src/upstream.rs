@@ -132,6 +132,10 @@ impl Upstream {
             // 4xx/5xx 不当错误：平台的结论写在 body 的 `error` 字段里，
             // 当成错误就只剩一个状态码，运维看不到"去查哪个变量"。
             .http_status_as_error(false)
+            // T-Z1（#60）：绝不跟随重定向。admin 请求带 x-admin-token，
+            // 3xx 跟随 = 凭据外泄到 Location 指向的任何地方。0 且
+            // will_error=false ⇒ 3xx 原样返回，由状态码检查显式拒绝。
+            .max_redirects(0)
             .build();
         let req = req
             .header("x-admin-token", &self.token)
@@ -145,20 +149,33 @@ impl Upstream {
         match sent {
             Ok(mut resp) => {
                 let (status, value) = read_json(&mut resp);
-                // ureq 3 关掉了"状态码即错误"，4xx/5xx 也走 Ok——**但 admin 的
-                // 对外契约没变**：非 2xx 仍然是 `AdminError::upstream`，
-                // 否则调用方拿到的是 Reply{status:403} 而不是错误。
-                if (400..600).contains(&status) {
-                    return Err(AdminError::upstream(status, error_text(&value, status)));
-                }
-                Ok(Reply {
-                    status,
-                    body: value,
-                })
+                finish_reply(status, value)
             }
             Err(err) => Err(AdminError::upstream(0, format!("连不上平台 {url}: {err}"))),
         }
     }
+}
+
+/// 响应状态分类（T-Z1/#60）：3xx = 重定向被拒（凭据外泄面），4xx/5xx =
+/// 平台错误（body 里带可行动的 error 字段），其余原样成 Reply。
+///
+/// ureq 3 关掉了"状态码即错误"，4xx/5xx 也走 Ok——但 admin 的对外契约
+/// 没变：非 2xx 仍然是 `AdminError::upstream`，否则调用方拿到的是
+/// Reply{status:403} 而不是错误。
+fn finish_reply(status: u16, value: serde_json::Value) -> Result<Reply> {
+    if (300..400).contains(&status) {
+        return Err(AdminError::upstream(
+            status,
+            format!("upstream redirected ({status}): admin never follows redirects; check the platform address"),
+        ));
+    }
+    if (400..600).contains(&status) {
+        return Err(AdminError::upstream(status, error_text(&value, status)));
+    }
+    Ok(Reply {
+        status,
+        body: value,
+    })
 }
 
 /// 读响应体。**空 body（204）解出 Null，不算错误**——平台的
@@ -241,5 +258,79 @@ mod tests {
         let u = Upstream::new("http://127.0.0.1:1", "tok");
         let err = u.call("DELETE", "/x", "ops", None).await.unwrap_err();
         assert!(err.to_string().contains("不支持的方法"), "{err}");
+    }
+
+    /// T-Z1（#60）：上游 3xx 不得跟随——admin 请求带 x-admin-token，
+    /// 跟随即凭据外泄到 Location 指向的第三方。必须显式拒绝，且
+    /// 重定向目标机收不到第二个请求。
+    #[tokio::test]
+    async fn redirect_is_rejected_and_never_followed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let target_hits = StdArc::new(AtomicUsize::new(0));
+        let hits_for_target = target_hits.clone();
+
+        let redirector = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let redirector_addr = redirector.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = match redirector.accept().await {
+                    Ok(x) => x,
+                    Err(_) => return,
+                };
+                // 先把请求读干净再回：不读就写+立刻关，ureq 侧是传输错误
+                let mut buf = [0u8; 2048];
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), sock.read(&mut buf))
+                        .await;
+                let location = format!("http://{target_addr}/secret");
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = target.accept().await else {
+                    return;
+                };
+                hits_for_target.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 2048];
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), sock.read(&mut buf))
+                        .await;
+                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let u = Upstream::new(format!("http://{redirector_addr}"), "admin-secret-token");
+        let err = match u.call("POST", "/api/admin/reconcile", "ops", None).await {
+            Err(e) => e,
+            Ok(reply) => panic!("302 不得当成功: {reply:?}"),
+        };
+        match &err {
+            AdminError::Upstream { status, detail } => {
+                assert!((300..400).contains(status), "302 必须显式报错: {status}");
+                assert!(detail.contains("never follows redirects"), "{detail}");
+                assert!(!detail.contains("admin-secret-token"), "错误里不得带令牌");
+            }
+            other => panic!("该是 Upstream 错误，却是 {other:?}"),
+        }
+        // 给可能被误跟随的第二个请求留一个调度窗口，再断言目标机零命中
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            target_hits.load(Ordering::SeqCst),
+            0,
+            "redirect target must never be contacted"
+        );
     }
 }
