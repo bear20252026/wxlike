@@ -5,6 +5,7 @@ pub mod auth;
 pub mod avalanche;
 pub mod client;
 pub mod conn;
+pub mod delivery;
 pub mod diag;
 pub mod framing;
 pub mod heartbeat;
@@ -20,6 +21,7 @@ pub mod wire;
 pub use auth::{HubAuthenticator, HubIdentity, StaticAuth};
 pub use client::Client;
 pub use conn::PeerConn;
+pub use delivery::{InflightLedger, Pending, MAX_INFLIGHT_PER_CONNECTION};
 pub use membership::Membership;
 pub use metrics::{prometheus_text, HubMetrics};
 pub use mq_hub::{

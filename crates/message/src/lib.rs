@@ -26,8 +26,12 @@ use thiserror::Error;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use wxlike_core::msgmeta::rich_kind;
 
+mod delivery;
 mod submit;
 
+pub use delivery::{
+    DeliveryTask, ResumePlan, ResumePolicy, DEFAULT_LEASE_MS, MAX_CLAIM_BATCH, TASK_RETENTION_MS,
+};
 pub use submit::{SubmitOutcome, SubmitRecipient, SubmitRequest, RECALL_WINDOW_MS};
 
 /// Owner kinds (ADR-16). direct owners are normalized user pairs
@@ -377,6 +381,17 @@ impl MessageStore {
                 ON delivery_task(state, next_at, lease_until);
             CREATE INDEX IF NOT EXISTS idx_delivery_device
                 ON delivery_task(target_user, target_device, state);
+
+            -- 设备游标与账号游标分离；stored/read 各自单调。
+            CREATE TABLE IF NOT EXISTS device_cursor (
+                device_id    TEXT NOT NULL,
+                conv_id      TEXT NOT NULL,
+                stored_cursor INTEGER NOT NULL DEFAULT 0,
+                read_cursor   INTEGER NOT NULL DEFAULT 0,
+                version       INTEGER NOT NULL DEFAULT 0,
+                updated_at    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (device_id, conv_id)
+            );
 
             -- 会话投影表（G03 会话卡）。keyset 分页只读这张表，不 OFFSET 扫信箱。
             CREATE TABLE IF NOT EXISTS conversation_projection (
