@@ -1,0 +1,53 @@
+# G15-04 危险动作确认、幂等与作业控制 —— 集成请求
+# 本文件登记超出 G15 独占写路径、需要 G00 或其他组执行的条目。
+
+request_id: G15-04
+task_issue: 188
+group_issue: 96
+contract_version: confirmation-v1
+artifacts:
+  - crates/cmd/src/confirmation.rs
+  - crates/cmd/src/jobs.rs
+  - crates/cmd/src/catalog.rs
+  - crates/cli/src/run.rs
+  - crates/mcp/src/server.rs
+
+requests:
+  - id: REQ-G00-confirmation-in-handlers
+    target: G00
+    action: 新增危险命令（支付、审批、删除、发布、外发）时，catalog 里标
+      `Confirmation::Required`，执行器 handler **不得**自行判断"是否需要确认"
+      （那是 catalog 的事），只做业务本身。
+    rationale: 确认等级若散落在 handler 里，就会出现"某条命令忘了确认"的漏网。
+    acceptance: 每条 `confirmation=required` 的命令在 CLI 侧未带 `--confirm`
+      时退出码 7；MCP 侧未带令牌时只回计划。
+
+  - id: REQ-G06-amount-digest
+    target: G06
+    action: 支付类命令请把 `amount` 定为 string（含币种）并把 `payee` 作为必填参数，
+      使规范参数摘要能覆盖"金额 + 收款人"；两者任一变化即视为新意图。
+    rationale: 确认令牌绑定的是参数摘要；若金额是浮点数或在服务端二次换算，
+      "换金额"就不会改变摘要，确认形同虚设。
+
+  - id: REQ-G04-remote-job-cancel
+    target: G04
+    action: 提供服务端作业取消接口（`POST /api/video/jobs/{id}/cancel` 或等价），
+      让 `im_jobs cancel` 能把 `remote_stopped` 从 false 变成 true。
+    rationale: 当前取消只改协议侧账，并在响应里如实标注"远端未停"；
+      没有远端 API 就不能声称作业已停止。
+    blocked_note: 见 `crates/cmd/src/jobs.rs::CancelOutcome::to_json` 的 note 文案。
+
+  - id: REQ-G14-audit-link
+    target: G14
+    action: 管理台按 `operation_id` / `request_id` 检索操作记录
+      （MCP 每个成功写操作都会在 `_meta` 里返回这两个 id）。
+    rationale: "AI 结果可关联审计"需要管理台侧有查询入口，G15 只能保证 id 存在且随响应返回。
+
+notes:
+  - 确认令牌：`wxc-<16 字节随机 hex>`，一次性、绑定 actor + session + action_id +
+    规范参数摘要、TTL 120 秒；换人/换会话/换动作/换参数/过期/重放全部拒绝。
+  - 规范参数摘要 = 键排序后的紧凑 JSON 的 SHA-256；`confirmation_token` 本身不参与摘要。
+  - CLI 与人机确认：人在终端前，确认就是他敲的 `--confirm`；未带该开关时打印计划并退出 7。
+  - MCP 与 agent 确认：第一次调用只返回计划与令牌（无副作用），带令牌再调才执行。
+  - 长任务账：目前只有 `video.job.create` 进账（`jobs::LONG_RUNNING_ACTION`），
+    输出与失败信息入库前脱敏（token/secret/password/authorization/cookie/private_key/id_card）。

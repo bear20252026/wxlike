@@ -6,7 +6,10 @@
 //! 覆盖的方法：
 //! * `initialize` / `ping`
 //! * `tools/list` / `tools/call`（每个命令一个工具，schema 由 catalog 生成）
-//! * `resources/list` / `resources/read`（catalog、策略、单条动作 schema）
+//! * `resources/list` / `resources/read`（catalog、覆盖表、策略、单条动作 schema）
+//!
+//! 危险动作走 `prepare → confirmation_token → execute`（G15-04）：
+//! 第一次调用只回计划与令牌，**不执行**；带令牌再调才真正执行，且令牌一次性。
 //!
 //! 刻意不做的事：
 //! * **不实现第二套 MCP 框架**——协议层是手写的 JSON-RPC 分派，官方 `rmcp`
@@ -16,8 +19,10 @@
 use serde_json::{json, Value};
 
 use wxlike_client::execute::Executor;
-use wxlike_cmd::auth::{AuthGate, Provenance};
+use wxlike_cmd::auth::{ActorContext, AuthGate, Provenance};
 use wxlike_cmd::catalog::{self, ArgError, CommandSpec};
+use wxlike_cmd::confirmation::ConfirmationStore;
+use wxlike_cmd::jobs::{JobRegistry, LONG_RUNNING_ACTION};
 use wxlike_cmd::policy::Policy;
 
 /// 我们实现的协议版本，**从新到旧**。客户端报的版本在这个表里就按它回。
@@ -26,8 +31,15 @@ pub const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-0
 /// 默认协商版本（客户端没报或报了个我们不认识的，就回这个）。
 pub const DEFAULT_PROTOCOL: &str = PROTOCOL_VERSIONS[0];
 
-/// 元工具：不执行具体业务，只做发现与自查。
-const META_TOOLS: [&str; 3] = ["im_list_commands", "im_execute", "im_inspect"];
+/// 元工具：不执行具体业务，只做发现、自查与作业账。
+const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
+
+/// 没有配 `--actor/--session-id` 时的本地身份。
+///
+/// 它不是信任边界（服务端仍会再验），只是为了让确认令牌**永远绑定到某个
+/// 主体与会话**——"没有身份"不能成为跳过绑定的理由。
+const LOCAL_ACTOR: &str = "local-agent";
+const LOCAL_SESSION: &str = "local-session";
 
 /// JSON-RPC / MCP 错误码。
 pub mod code {
@@ -61,6 +73,12 @@ pub struct Server {
     policy: Policy,
     /// 会话/scope 闸门（G15-02）。`None` = 只跑本地策略（stdio 单用户场景）。
     gate: Option<AuthGate>,
+    /// 一次性确认令牌（G15-04）。进程内即可：跨进程就是换了会话。
+    confirm: ConfirmationStore,
+    /// 长任务账（G15-04）：可查、可取消、输出脱敏。
+    jobs: JobRegistry,
+    /// 请求序号：每个 `tools/call` 一个 request_id / operation_id，便于审计追踪。
+    seq: u64,
     protocol: &'static str,
     initialized: bool,
 }
@@ -71,6 +89,9 @@ impl Server {
             exec,
             policy,
             gate: None,
+            confirm: ConfirmationStore::new(),
+            jobs: JobRegistry::new(),
+            seq: 0,
             protocol: DEFAULT_PROTOCOL,
             initialized: false,
         }
@@ -186,7 +207,7 @@ impl Server {
         json!({ "tools": tools })
     }
 
-    fn tools_call(&self, params: &Value) -> Result<Value, RpcError> {
+    fn tools_call(&mut self, params: &Value) -> Result<Value, RpcError> {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -199,15 +220,7 @@ impl Server {
         if META_TOOLS.contains(&name) {
             return Ok(self.meta_call(name, &args));
         }
-        let spec = catalog::CATALOG
-            .iter()
-            .find(|s| s.tool_name() == name)
-            .ok_or_else(|| {
-                RpcError::new(
-                    code::INVALID_PARAMS,
-                    format!("unknown tool {name:?}（先 tools/list）"),
-                )
-            })?;
+        let spec = self.resolve_tool(name)?;
         // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
         catalog::validate_args(spec, &args).map_err(arg_error)?;
         // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
@@ -220,18 +233,133 @@ impl Server {
                 return Ok(tool_err(&e.to_string()));
             }
         }
-        Ok(run(&self.exec, spec, &args))
+        Ok(self.execute_checked(spec, &args))
     }
 
-    fn meta_call(&self, name: &str, args: &Value) -> Value {
+    fn resolve_tool(&self, name: &str) -> Result<&'static CommandSpec, RpcError> {
+        catalog::CATALOG
+            .iter()
+            .find(|s| s.tool_name() == name)
+            .ok_or_else(|| {
+                RpcError::new(
+                    code::INVALID_PARAMS,
+                    format!("unknown tool {name:?}（先 tools/list）"),
+                )
+            })
+    }
+
+    /// 过完协议与授权检查之后：先过确认，再执行，最后记作业账与追踪 id。
+    fn execute_checked(&mut self, spec: &'static CommandSpec, args: &Value) -> Value {
+        if spec.confirmation.is_required() {
+            match self.confirm_step(spec, args) {
+                Ok(Some(plan_only)) => return plan_only,
+                Ok(None) => {}
+                Err(e) => return tool_err(&e.to_string()),
+            }
+        }
+        self.launch(spec, args)
+    }
+
+    /// 确认这一步：没令牌就出计划，令牌不对就拒（**都不执行**）。
+    fn confirm_step(
+        &mut self,
+        spec: &'static CommandSpec,
+        args: &Value,
+    ) -> Result<Option<Value>, wxlike_cmd::confirmation::ConfirmError> {
+        let ctx = self.actor_ctx();
+        let token = args
+            .get("confirmation_token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.trim().is_empty());
+        let Some(raw) = token else {
+            let prepared = self.confirm.prepare(&ctx, spec, args, now())?;
+            return Ok(Some(tool_ok(&prepared.to_json())));
+        };
+        self.confirm.redeem(&ctx, spec, args, raw, now())?;
+        Ok(None)
+    }
+
+    /// 真正执行 + 作业账 + request/operation id。
+    fn launch(&mut self, spec: &CommandSpec, args: &Value) -> Value {
+        self.seq += 1;
+        let operation_id = format!("op-{}-{}", self.seq, spec.id);
+        let mut result = run(&self.exec, spec, args);
+        if result["isError"] != json!(false) {
+            return result;
+        }
+        self.record_job(spec, &operation_id, &result);
+        result["_meta"] = json!({
+            "wxlike/requestId": format!("req-{}", self.seq),
+            "wxlike/operationId": operation_id,
+        });
+        result
+    }
+
+    /// 身份上下文：配了闸门用闸门的，否则用本地身份（仍然绑定，不豁免）。
+    fn actor_ctx(&self) -> ActorContext {
+        match &self.gate {
+            Some(gate) => gate.context().clone(),
+            None => wxlike_cmd::auth::context_from_parts(LOCAL_ACTOR, LOCAL_SESSION, "conv:*"),
+        }
+    }
+
+    /// 只有长任务进作业账：一次就结束的写命令记进去只会让账变噪音。
+    fn record_job(&mut self, spec: &CommandSpec, operation_id: &str, result: &Value) {
+        if spec.id != LONG_RUNNING_ACTION {
+            return;
+        }
+        let job = self.jobs.submit(spec.id, operation_id, now());
+        let output = result["structuredContent"].clone();
+        if output.is_null() {
+            return;
+        }
+        let _ = self.jobs.finish(&job.id, output, now());
+    }
+
+    fn meta_call(&mut self, name: &str, args: &Value) -> Value {
         match name {
             "im_list_commands" => {
                 let q = args.get("query").and_then(Value::as_str).unwrap_or("");
                 tool_ok(&catalog_list(q))
             }
             "im_inspect" => inspect(&self.exec),
+            "im_jobs" => self.jobs_call(args),
             // 兼容旧客户端：保留统一入口，但仍然按 catalog 校验参数
             _ => execute_one(&self.exec, args),
+        }
+    }
+
+    /// 作业账：`list` / `get` / `cancel`。取消只改本地账，远端是否停住如实回报。
+    fn jobs_call(&mut self, args: &Value) -> Value {
+        let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
+        let job_id = args.get("job_id").and_then(Value::as_str);
+        match (action, job_id) {
+            ("list", _) => self.jobs_list(),
+            ("get", Some(id)) => self.jobs_get(id),
+            ("cancel", Some(id)) => self.jobs_cancel(id),
+            ("get" | "cancel", None) => tool_err("im_jobs 的 get/cancel 需要 job_id"),
+            (other, _) => tool_err(&format!(
+                "unknown im_jobs action {other:?}（list/get/cancel）"
+            )),
+        }
+    }
+
+    fn jobs_list(&self) -> Value {
+        let items: Vec<Value> = self.jobs.list().iter().map(|j| j.to_json()).collect();
+        tool_ok(&json!({"count": items.len(), "jobs": items}))
+    }
+
+    fn jobs_get(&self, id: &str) -> Value {
+        match self.jobs.get(id) {
+            Some(job) => tool_ok(&job.to_json()),
+            None => tool_err(&format!("unknown job {id:?}")),
+        }
+    }
+
+    fn jobs_cancel(&mut self, id: &str) -> Value {
+        match self.jobs.cancel(id, now()) {
+            Ok(outcome) => tool_ok(&outcome.to_json()),
+            Err(e) => tool_err(&e.to_string()),
         }
     }
 
@@ -293,6 +421,14 @@ impl Server {
         };
         Ok(json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
     }
+}
+
+/// Unix 秒。确认令牌与作业账都用同一把时钟，测试里换成显式时间。
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// 参数来源：调用方可以在 `_meta` 里声明这批参数是从不可信内容抽出来的。
@@ -383,6 +519,7 @@ fn meta_tool(name: &str) -> Value {
     match name {
         "im_list_commands" => list_commands_tool(),
         "im_inspect" => inspect_tool(),
+        "im_jobs" => jobs_tool(),
         _ => execute_tool(),
     }
 }
@@ -406,6 +543,28 @@ fn inspect_tool() -> Value {
             "description": "不用截图就能自查：我是谁、我有哪些会话、各自未读多少。",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}},
             "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    })
+}
+
+fn jobs_tool() -> Value {
+    let action = json!({
+        "type": "string",
+        "enum": ["list", "get", "cancel"],
+        "description": "默认 list"
+    });
+    let job_id = json!({"type": "string", "description": "get/cancel 必填"});
+    let mut properties = serde_json::Map::new();
+    properties.insert("action".into(), action);
+    properties.insert("job_id".into(), job_id);
+    json!({
+        "name": "im_jobs",
+        "description": "长任务账：list 看全部、get 看单个、cancel 请求取消（远端是否停住会如实回报）。",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties
+        },
+        "annotations": {"readOnlyHint": false, "destructiveHint": false}
     })
 }
 
@@ -642,6 +801,113 @@ mod tests {
 
         let v = call(&mut srv, r#"{"jsonrpc":"2.0","id":13}"#);
         assert_eq!(v["error"]["code"], code::INVALID_REQUEST);
+    }
+
+    /// 危险动作：第一次只给计划与令牌；带令牌才执行；令牌一次性。
+    #[test]
+    fn dangerous_action_needs_confirmation_and_the_token_is_single_use() {
+        let policy = Policy::new(["g-1"], true, true);
+        let exec = Executor::new(Http::new("http://127.0.0.1:1"), policy.clone());
+        let mut srv = Server::new(exec, policy);
+        call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#,
+        );
+
+        let ask = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"group-kick","arguments":{"conv":"g-1","user_id":"u2"}}}"#,
+        );
+        assert_eq!(ask["result"]["isError"], false, "第一次不该报错：{ask}");
+        let plan = &ask["result"]["structuredContent"];
+        assert_eq!(plan["confirmation_required"], true);
+        let token = plan["token"].as_str().expect("token").to_string();
+        assert!(token.starts_with("wxc-"), "{token}");
+        assert_eq!(plan["plan"]["action_id"], "group.kick");
+
+        // 带令牌 → 真的执行（这里网络不可达，所以是 connect 错误，而不是确认错误）
+        let executed = call(
+            &mut srv,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"group-kick","arguments":{{"conv":"g-1","user_id":"u2","confirmation_token":"{token}"}}}}}}"#
+            ),
+        );
+        let text = executed["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(!text.contains("confirmation"), "不该再要求确认：{text}");
+
+        // 重放同一个令牌 → 拒
+        let replay = call(
+            &mut srv,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"group-kick","arguments":{{"conv":"g-1","user_id":"u2","confirmation_token":"{token}"}}}}}}"#
+            ),
+        );
+        let text = replay["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("already used"), "重放要拒：{text}");
+    }
+
+    /// 换了成员（等价于换收款人/换金额）就必须重新确认。
+    #[test]
+    fn confirmation_does_not_survive_a_parameter_change() {
+        let policy = Policy::new(["g-1"], true, true);
+        let exec = Executor::new(Http::new("http://127.0.0.1:1"), policy.clone());
+        let mut srv = Server::new(exec, policy);
+        call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#,
+        );
+
+        let ask = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"group-kick","arguments":{"conv":"g-1","user_id":"u-bob"}}}"#,
+        );
+        let token = ask["result"]["structuredContent"]["token"]
+            .as_str()
+            .expect("token")
+            .to_string();
+        let changed = call(
+            &mut srv,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"group-kick","arguments":{{"conv":"g-1","user_id":"u-evil","confirmation_token":"{token}"}}}}}}"#
+            ),
+        );
+        let text = changed["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("parameters changed"), "{text}");
+    }
+
+    /// 作业账：空表、未知作业、缺 job_id 都要有明确回复。
+    #[test]
+    fn jobs_meta_tool_answers_list_get_and_cancel() {
+        let mut srv = ready();
+        let list = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"list"}}}"#,
+        );
+        let text = list["result"]["content"][0]["text"].as_str().expect("text");
+        let parsed: Value = serde_json::from_str(text).expect("json");
+        assert_eq!(parsed["count"], 0);
+
+        let cancel = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"cancel","job_id":"job-nope"}}}"#,
+        );
+        assert_eq!(cancel["result"]["isError"], true);
+        let text = cancel["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("unknown job"), "{text}");
+
+        let missing = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"get"}}}"#,
+        );
+        assert_eq!(missing["result"]["isError"], true);
     }
 
     #[test]

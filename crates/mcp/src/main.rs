@@ -68,7 +68,7 @@ fn run(flags: &Flags) -> ExitCode {
     };
     if gate.is_none() {
         eprintln!(
-            "[wxlike-mcp] 未配置 --scope：会话/scope 判定交由服务端与本地策略；             远程 transport 必须配置（见 integration-requests/G15/G15-01.yaml）"
+            "[wxlike-mcp] 未配置 --scope：会话/scope 判定交由服务端与本地策略；远程 transport 必须配置"
         );
     }
     let mut srv = Server::new(Executor::new(http, policy.clone()), policy).with_gate(gate);

@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# 确认令牌的规范参数摘要（G15-04）
+sha2 = { workspace = true }
+# 一次性 nonce（G15-04）
+rand = { workspace = true }

@@ -6387,8 +6387,10 @@ dependencies = [
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
