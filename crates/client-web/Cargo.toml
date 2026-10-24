@@ -1,0 +1,66 @@
+[package]
+name = "wxlike-client-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wxlike 客户端 Web 实现：fetch / WebSocket / IndexedDB / WebCrypto / Web Locks"
+
+# 这个 crate 的浏览器代码只在 wasm32 上编译；纯逻辑（配额判定、冻结恢复、
+# 缓存敏感度）与平台无关，所以在原生上也能跑单测。
+# CI 的 wasm 任务负责 `cargo check --target wasm32-unknown-unknown`，
+# 光有"能编译"不算数——浏览器行为由 `tests/browser.rs`（wasm-bindgen-test）覆盖。
+
+[dependencies]
+wxlike-types = { path = "../types" }
+wxlike-client-core = { path = "../client-core" }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+# 敏感缓存的 AEAD：纯 Rust，wasm 上可用；密钥存储才是安全边界（见 crypto.rs）
+# 关掉默认的 getrandom：浏览器侧随机数走 WebCrypto（crypto.rs），
+# 开着它会让 wasm 目标编译失败（getrandom 需要 js feature）。
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Navigator",
+    "Location",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+    "AbortController",
+    "AbortSignal",
+    "Crypto",
+    "SubtleCrypto",
+    "CryptoKey",
+    "AesGcmParams",
+    "Storage",
+    "DomStringList",
+    "IdbFactory",
+    "IdbOpenDbRequest",
+    "IdbDatabase",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbObjectStore",
+    "IdbRequest",
+    "IdbVersionChangeEvent",
+    "DomException",
+    "Event",
+    "EventTarget",
+    "MessageEvent",
+    "WebSocket",
+    "Performance",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# 浏览器验收：wasm-pack test --headless --chrome crates/client-web
+wasm-bindgen-test = "0.3"

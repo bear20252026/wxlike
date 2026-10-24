@@ -1,0 +1,20 @@
+{
+  "title": "Money",
+  "description": "金额：最小单位整数，JSON 上是字符串（超过 2^53 也不能丢精度）",
+  "type": "object",
+  "required": [
+    "minor",
+    "currency"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "minor": {
+      "type": "string",
+      "pattern": "^-?[0-9]+$"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    }
+  }
+}

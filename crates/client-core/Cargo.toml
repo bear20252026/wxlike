@@ -1,0 +1,19 @@
+[package]
+name = "wxlike-client-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wxlike 客户端核心：端口（ports）与运行时状态机，桌面/Web/移动共用"
+
+[dependencies]
+wxlike-types = { path = "../types" }
+# 命令目录（纯数据）：核心用它判断"这条 action 是不是写、要不要幂等键"
+wxlike-cmd = { path = "../cmd" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# 测试要跑 async 端口；tokio 已在 workspace 里，不引入新依赖
+tokio = { workspace = true }

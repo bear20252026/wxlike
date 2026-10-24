@@ -1,0 +1,24 @@
+[package]
+name = "wxlike-client-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wxlike 客户端原生实现：SQLite 本地真相、HTTP 传输、单实例锁、生命周期"
+
+[dependencies]
+wxlike-types = { path = "../types" }
+wxlike-client-core = { path = "../client-core" }
+# 复用已有的协议层（鉴权头、审计标记、错误文案都在里面），不重写第二套
+wxlike-client = { path = "../client" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+# 敏感缓存的静态加密（与 crates/core 同一套算法，密钥来自设备密钥存储）
+chacha20poly1305 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
