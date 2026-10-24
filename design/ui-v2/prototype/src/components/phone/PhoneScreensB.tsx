@@ -150,7 +150,7 @@ export function PayScreen({ onNavigate, onNotify }: BaseProps) {
         <div className="mx-auto mt-5 w-[185px] rounded-xl border border-[#F0F0F0] p-2.5">
           <FakeQR className="aspect-square w-full" />
         </div>
-        <div className="mt-3 text-center"><div className="text-[11.5px] font-medium text-[#333]">{tab === "扫码" ? "苏禾的付款码" : "苏禾的收款码"}</div><div className="mt-1 text-[8.5px] text-[#AAA]">扫描二维码即可{tabe(tab)}</div></div>
+        <div className="mt-3 text-center"><div className="text-[11.5px] font-medium text-[#333]">{tab === "扫码" ? "苏禾的付款码" : "苏禾的收款码"}</div><div className="mt-1 text-[8.5px] text-[#AAA]">扫描二维码即可{paymentHint(tab)}</div></div>
         <div className="mt-4 flex items-center justify-between rounded-lg bg-[#F9F9F9] px-3 py-2.5"><div className="flex items-center gap-2"><span className="grid h-6 w-6 place-items-center rounded-full bg-[#EAF8EF] text-[#07B25A]"><Wallet size={13} /></span><span className="text-[9.5px] text-[#555]">优先使用 · 零钱</span></div><button onClick={() => onNotify("选择付款方式")} className="flex items-center gap-0.5 text-[8.5px] text-[#AAA]">更换 <ChevronRight size={10} /></button></div>
       </div>
       <div className="mx-3 mt-2.5 rounded-xl bg-white">
@@ -165,7 +165,7 @@ export function PayScreen({ onNavigate, onNotify }: BaseProps) {
   );
 }
 
-function tabe(tab: string) {
+function paymentHint(tab: string) {
   return tab === "扫码" ? "向商家付款" : "向你付款";
 }
 

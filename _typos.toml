@@ -22,6 +22,8 @@ readed = "readed"
 # 两个都是合法拼写，只是不是 typos 的首选；改了只是 churn
 clonable = "clonable"
 unparseable = "unparseable"
+# Recovery Time Objective：备份恢复指标，不是拼写错误。
+rto = "rto"
 
 [files]
 # 生成物与第三方镜像不参与检查

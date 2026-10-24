@@ -193,8 +193,28 @@ async fn send_text(
     wait_bound(stack, 1).await;
     let env = wxlike_core::Envelope::direct(conv_id, from, to, 1, text);
     client.send(&env).await.unwrap();
-    // 让 hub 把这一帧处理完（落库 + 镜像 + 索引）
+    // 传输缓冲时间不代表异步索引已提交；查询断言须另等可观察的就绪状态。
     tokio::time::sleep(Duration::from_millis(400)).await;
+}
+
+/// 搜索索引由后台线程提交；固定 sleep 在 Windows runner 上不是就绪保证。
+async fn wait_for_search_hit(stack: &TestStack, token: &str, path: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (status, results) = get(stack, token, path);
+        assert_eq!(status, 200, "搜索请求失败：{results}");
+        let hits = results["results"]
+            .as_array()
+            .expect("搜索响应必须包含 results 数组");
+        if !hits.is_empty() {
+            return results;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "等待搜索索引可见超时：{results}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -312,9 +332,8 @@ async fn expired_secret_messages_leave_both_history_and_search() {
     )
     .await;
 
-    // 搜索现在还能找到
-    let (status, results) = get(&stack, &alice_token, "/api/search/messages?q=会被搜到");
-    assert_eq!(status, 200);
+    // 先确认索引可见，再断言到期前后行为；不假设 400ms 足够后台 commit。
+    let results = wait_for_search_hit(&stack, &alice_token, "/api/search/messages?q=会被搜到").await;
     assert_eq!(
         results["results"].as_array().map(Vec::len),
         Some(1),

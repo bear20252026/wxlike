@@ -3101,7 +3101,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => setHidden((v) => !v)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0195",
@@ -3117,7 +3117,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNavigate(\"pay\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0196",
@@ -3133,7 +3133,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"充值页面已打开\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0197",
@@ -3149,7 +3149,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"提现已发起\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0198",
@@ -3165,7 +3165,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"管理支付服务\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0199",
@@ -3181,7 +3181,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={item.onClick}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0200",
@@ -3197,7 +3197,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`正在打开「${label}」`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0201",
@@ -3213,7 +3213,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"完整账单已打开\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0202",
@@ -3229,7 +3229,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`查看交易：${t.name}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0203",
@@ -3245,7 +3245,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNavigate(\"wallet\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0204",
@@ -3261,7 +3261,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"更多收付款设置\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0205",
@@ -3277,7 +3277,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => setTab(t)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0206",
@@ -3293,7 +3293,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"选择付款方式\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0207",
@@ -3309,7 +3309,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => row.label === \"保存收款码\" ? onNotify(\"收款码已保存到相册\") : onNotify(`${row.label}已打开`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0208",
@@ -3325,7 +3325,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNavigate(\"chat\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0209",
@@ -3341,7 +3341,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"更多红包设置\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0210",
@@ -3357,7 +3357,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => setOpened(true)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0211",
@@ -3373,7 +3373,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNavigate(\"wallet\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0212",
@@ -3389,7 +3389,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"已准备好回一个红包 🧧\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0213",
@@ -3405,7 +3405,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => setType(t)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0214",
@@ -3421,7 +3421,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => item.type === \"链接\" ? onNavigate(\"reading\") : onNotify(`正在查看收藏：${item.title}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0215",
@@ -3437,7 +3437,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => setTab(t)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0216",
@@ -3453,7 +3453,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"管理表情\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0217",
@@ -3469,7 +3469,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`已发送表情 ${emoji}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0218",
@@ -3485,7 +3485,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`打开表情包「${name}」`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0219",
@@ -3501,7 +3501,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"已打开表情商店\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0220",
@@ -3517,7 +3517,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`已添加「${name}」`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0221",
@@ -3533,7 +3533,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`${label}详情`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0222",
@@ -3549,7 +3549,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"正在使用优惠券\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0223",
@@ -3565,7 +3565,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`打开会员卡：${name}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0224",
@@ -3581,7 +3581,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"已打开验票二维码\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0225",
@@ -3597,7 +3597,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"账号详情\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0226",
@@ -3613,7 +3613,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`${row.label}设置`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0227",
@@ -3629,7 +3629,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`${row.label}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0228",
@@ -3645,7 +3645,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"切换账号\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0229",
@@ -3661,7 +3661,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"退出登录（演示）\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0230",
@@ -3677,7 +3677,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={onBack}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0231",
@@ -3693,7 +3693,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"更多资料设置\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0232",
@@ -3709,7 +3709,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"编辑备注和标签\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0233",
@@ -3725,7 +3725,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onOpenChat(person.id)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0234",
@@ -3741,7 +3741,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`正在呼叫 ${person.name}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0235",
@@ -3757,7 +3757,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`${row.label}详情`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0236",
@@ -3773,7 +3773,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNavigateMomentsFallback(onNotify)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0237",
@@ -3789,7 +3789,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"查看朋友圈图片\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0238",
@@ -3805,7 +3805,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`打开群聊：${name}`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0239",
@@ -3821,7 +3821,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"已发送名片\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0240",
@@ -3837,7 +3837,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"已设置星标朋友\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0241",
@@ -3853,7 +3853,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"更多操作\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0242",
@@ -3869,7 +3869,7 @@
     "ui_owner": "G12",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => { setAccepted((v) => isAccepted ? v.filter((id) => id !== person.id) : [...v, person.id]); onNotify(isAccepted ? \"已忽略好友申请\" : `已添加 ${person.name} 为朋友`); }}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0243",
@@ -3885,7 +3885,7 @@
     "ui_owner": "G12",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"添加朋友页面\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0244",
@@ -3901,7 +3901,7 @@
     "ui_owner": "G12",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNavigate(\"scan\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0245",
@@ -3917,7 +3917,7 @@
     "ui_owner": "G12",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"群聊列表\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0246",
@@ -3933,7 +3933,7 @@
     "ui_owner": "G12",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(`查看 ${person.name} 的资料`)}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0247",
@@ -3949,7 +3949,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"通话设置\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0248",
@@ -3965,7 +3965,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={item.toggle}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0249",
@@ -3981,7 +3981,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"已切换到后置摄像头\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0250",
@@ -3997,7 +3997,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => { onNotify(\"通话已结束 · 时长 \" + format); onNavigate(\"chat\"); }}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0251",
@@ -4013,7 +4013,7 @@
     "ui_owner": "G13",
     "classification": "HEURISTIC_REQUIRES_REVIEW",
     "handler": "onClick={() => onNotify(\"通话最小化\")}",
-    "source_sha256": "f4288cd35cc17097948779d89a815bd172a4574237e903a7d0a1717f6e43c8b0"
+    "source_sha256": "a6f168a37279a0761818f09daf9927510e4a914cb911eb08ad5af197b8974e5b"
   },
   {
     "entry_id": "SEED-0252",
