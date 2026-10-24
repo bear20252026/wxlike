@@ -270,3 +270,105 @@ fn confirmed_action_reaches_the_network() {
         "应当已经尝试出网：{code} {stderr}"
     );
 }
+
+/// dry-run：没有 token、地址不可达也能出计划，且退出 0（只计划，不落账）。
+#[test]
+fn dry_run_plans_without_credentials_or_network() {
+    let (code, stdout, stderr) = run(&[
+        "--dry-run",
+        "--json",
+        "msg",
+        "send",
+        "--param",
+        "conv=g-1",
+        "--param",
+        "text=hi",
+        "--param",
+        "idempotency_key=k",
+    ]);
+    assert_eq!(code, 0, "dry-run 不需要 token：{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["mode"], "dry_run");
+    assert_eq!(v["confirmation_required"], false);
+    assert_eq!(v["plan"]["action_id"], "msg.send");
+    assert_eq!(v["plan"]["params"]["text"], "hi");
+    assert!(
+        v["plan"].get("token").is_none(),
+        "dry-run 不该签发令牌：{v}"
+    );
+}
+
+/// doctor：本机诊断不联网，报告结构稳定；token 只报"是否配置"。
+#[test]
+fn doctor_reports_local_state_without_network() {
+    let (code, stdout, stderr) = run(&["doctor", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["report"], "wxlike-cli doctor");
+    assert_eq!(v["catalog"]["commands"], 26);
+    assert!(
+        v["coverage"]["blocked"].as_u64().is_some(),
+        "覆盖统计里的 blocked 必须是数字"
+    );
+    assert!(v["scope"].as_str().is_some());
+    assert!(
+        v["warnings"].as_array().is_some(),
+        "缺 token 应该是 warning 而不是 problem"
+    );
+    assert!(v["problems"].as_array().is_some_and(|p| p.is_empty()));
+
+    // 人的形态也给一份
+    let (code, stdout, _) = run(&["doctor"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("wxlike-cli doctor"), "{stdout}");
+}
+
+/// 非法 scope 是 problem：doctor 必须退出 1，让 CI/脚本能拦住坏配置。
+#[test]
+fn doctor_fails_on_unparsable_scope() {
+    let (code, stdout, _) = run(&[
+        "doctor",
+        "--json",
+        "--scope",
+        "conv:* money:*",
+        "--session-id",
+        "s-1",
+    ]);
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert!(!v["problems"].as_array().expect("problems").is_empty());
+}
+
+/// 示例脚本必须只读：出现任何写/破坏性命令就是审计事故的种子。
+#[test]
+fn example_scripts_stay_read_only() {
+    use std::path::Path;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("examples dir").flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sh") {
+            continue;
+        }
+        checked += 1;
+        let text = std::fs::read_to_string(&path).expect("read script");
+        assert!(
+            text.contains("--json"),
+            "{} 应当输出可解析 JSON",
+            path.display()
+        );
+        for spec in wxlike_cmd::CATALOG
+            .iter()
+            .filter(|s| s.capability != wxlike_cmd::Capability::Read)
+        {
+            let (domain, verb) = spec.cli_path();
+            let needle = format!("{domain} {verb}");
+            assert!(
+                !text.contains(&needle),
+                "{} 里出现了会改数据的命令 {needle}（如确需演示，必须加 --dry-run）",
+                path.display()
+            );
+        }
+    }
+    assert!(checked >= 3, "示例脚本少于 3 个：{checked}");
+}

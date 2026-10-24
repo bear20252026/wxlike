@@ -39,6 +39,8 @@ pub enum Command {
     Auth,
     /// `coverage`：业务域覆盖报告（自动 / 宿主 / 未做）
     Coverage,
+    /// `doctor`：本机诊断（目录 / 策略 / scope / 服务端配置），不联网
+    Doctor,
     /// `inspect`
     Inspect,
     /// `run --cmd 'id={json}'`（原样保留多条顺序执行）
@@ -72,6 +74,8 @@ pub struct Options {
     pub origin_allow: Vec<String>,
     /// 危险动作的人工确认（`--confirm`）。人就在终端前，确认就是他敲的这一下。
     pub confirm: bool,
+    /// 只出计划不执行：用于审计与脚本预演（**绝不落账**）。
+    pub dry_run: bool,
 }
 
 /// 解析后的完整调用。
@@ -181,6 +185,7 @@ impl Parser {
             "--allow-destructive" => self.options.allow_destructive = true,
             "--read-only" => self.options.read_only = true,
             "--confirm" => self.options.confirm = true,
+            "--dry-run" => self.options.dry_run = true,
             other => return Err(UsageError(format!("未知参数 {other:?}（--help 看用法）"))),
         }
         Ok(())
@@ -225,6 +230,7 @@ fn resolve(
         "policy" => Ok(Command::Policy),
         "auth" => Ok(Command::Auth),
         "coverage" => Ok(Command::Coverage),
+        "doctor" => Ok(Command::Doctor),
         "inspect" => Ok(Command::Inspect),
         "run" => {
             if cmds.is_empty() {
@@ -406,6 +412,27 @@ mod tests {
         .unwrap_err();
         assert!(err.0.contains("cnv"), "{err}");
         assert!(err.0.contains("conv"), "要列出可用参数：{err}");
+    }
+
+    #[test]
+    fn dry_run_and_doctor_are_available() {
+        assert!(
+            parse(&args(&[
+                "--dry-run",
+                "msg",
+                "send",
+                "--param",
+                "conv=g-1",
+                "--param",
+                "text=hi",
+                "--param",
+                "idempotency_key=k"
+            ]))
+            .expect("parse")
+            .options
+            .dry_run
+        );
+        assert_eq!(parse(&args(&["doctor"])).unwrap().command, Command::Doctor);
     }
 
     #[test]
