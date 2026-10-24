@@ -23,13 +23,14 @@ import { VideoApi } from "./features/video/api";
 import { ChannelsPage } from "./features/video/ChannelsPage";
 import { CallApi } from "./features/calls/api";
 import { CallPanel } from "./features/calls/CallPanel";
+import { WalletPage } from "./features/commerce/WalletPage";
 
 const content = new ContentApi();
 const files = new FilesApi();
 const video = new VideoApi();
 const calls = new CallApi();
 
-const TABS = ["moments", "favorites", "articles", "files", "channels", "call"] as const;
+const TABS = ["moments", "favorites", "articles", "files", "channels", "call", "wallet"] as const;
 type Tab = (typeof TABS)[number];
 
 function Harness() {
@@ -57,6 +58,7 @@ function Harness() {
         {tab === "files" ? <FilesPage ports={files} /> : null}
         {tab === "channels" ? <ChannelsPage ports={video} /> : null}
         {tab === "call" ? <CallPanel conv="demo-conv" ports={calls} /> : null}
+        {tab === "wallet" ? <WalletPage /> : null}
       </main>
       {tab === "moments" ? (
         <StickerPanel ports={content} onPick={(sticker) => console.log("pick", sticker)} />

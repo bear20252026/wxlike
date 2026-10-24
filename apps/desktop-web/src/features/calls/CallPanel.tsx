@@ -11,7 +11,9 @@ import type { CallPorts } from "./model";
 import { platform } from "../../lib/platform";
 import { Banner, GhostButton, PrimaryButton } from "../content/ui";
 
-export function CallPanel({ conv, ports = new CallApi() }: { conv: string; ports?: CallPorts }) {
+const DEFAULT_PORTS = new CallApi();
+
+export function CallPanel({ conv, ports = DEFAULT_PORTS }: { conv: string; ports?: CallPorts }) {
   const [session] = useState(
     () =>
       new CallSession({
