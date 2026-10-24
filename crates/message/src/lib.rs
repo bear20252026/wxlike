@@ -26,9 +26,14 @@ use thiserror::Error;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use wxlike_core::msgmeta::rich_kind;
 
+mod conversations;
 mod delivery;
 mod submit;
 
+pub use conversations::{
+    ConvPrefs, ConversationCursor, ConversationEvent, ConversationFilter, ConversationPage,
+    ConversationRow, ConversationScope, PrefField, MAX_SCOPE_CONVERSATIONS,
+};
 pub use delivery::{
     DeliveryTask, ResumePlan, ResumePolicy, DEFAULT_LEASE_MS, MAX_CLAIM_BATCH, TASK_RETENTION_MS,
 };
@@ -422,6 +427,27 @@ impl MessageStore {
                 updated_at INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, conv_id)
             );
+
+            -- 清空本地历史只影响本人视图；与删除全端历史是两条命令。
+            CREATE TABLE IF NOT EXISTS conversation_clear (
+                user_id   TEXT NOT NULL,
+                conv_id   TEXT NOT NULL,
+                cleared_before_seq INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, conv_id)
+            );
+
+            -- 会话删除/清空产生的域事件，供搜索与附件引用异步收口。
+            CREATE TABLE IF NOT EXISTS conversation_event (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor   TEXT NOT NULL,
+                conv_id TEXT NOT NULL,
+                kind    TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '',
+                at_ms   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_conversation_event_conv
+                ON conversation_event(conv_id, id);
 
             "#,
         )?;

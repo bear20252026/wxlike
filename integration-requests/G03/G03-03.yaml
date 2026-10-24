@@ -1,0 +1,63 @@
+# G03-03 会话投影、未读与跨设备偏好 —— 集成请求
+# 独占写路径内已完成：crates/message/{src/conversations.rs,tests/g03_03_conversations.rs}、
+# crates/message/src/lib.rs 的投影写侧。
+
+request_id: G03-03
+task_issue: 121
+group_issue: 84
+contract_version: messaging-v3-draft
+artifacts:
+  - crates/message/src/conversations.rs
+  - crates/message/tests/g03_03_conversations.rs
+
+requests:
+  - id: REQ-G00-02-move-messaging-conversations
+    target: G00-02
+    action: 纯移动 `crates/message/src/conversations.rs` →
+      `crates/features/messaging/src/conversations/`。
+    rationale: 卡面目标目录尚未由 G00-02 建立。
+
+  - id: REQ-G00-03-ratify-conversation-commands
+    target: G00-03
+    action: 批准命令面与两条易被合并的破坏性命令的区分：
+      `conversation.list/pin/mute/archive/read/clear/history.page`，
+      其中 **`conversation.clear`（只清本人视图，消息仍在信箱）与
+      `conversation.delete`（全端删除投影 + 发域事件）是不同命令、不同事件**；
+      另有 `conversation.hide`（从本人列表移除，来新消息会回来）。
+    rationale: 清空与删除如果合成一个命令，任何一端都能毁掉另一端的历史。
+
+  - id: REQ-G00-conversation-scope-source
+    target: G00-03
+    action: 确认 `ConversationScope::Only(ids)` 的 ids 由关系层提供
+      （现有 `server/src/lib.rs` 的 `allowed_convs` 是同一事实的两个实现）。
+      信箱不自建成员表：成员/权限归 G02，信箱只按传入集合过滤。
+    rationale: 没有这一步，会话列表可以枚举到别人的会话。
+
+  - id: REQ-G05-search-invalidation-events
+    target: G05
+    action: 搜索侧订阅 `conversation_events_since(id, limit)` 消费
+      `search.index.remove`；删除/清空本地历史的事件种类已在测试中钉住。
+    rationale: 卡面要求"删除后搜索/附件引用按域事件更新"，消费方在检索组。
+
+  - id: REQ-G04-attachment-release-events
+    target: G04
+    action: 附件面消费 `attachment.release`（scope=conversation）。
+    rationale: 同一事件流的不同消费者，各自负责自己的清理。
+
+  - id: REQ-G10-list-projection-caller
+    target: G10
+    action: 桌面/网页列表改读 `conversations(user, scope, filter, cursor, limit)`，
+      不再自行拼 offset；撤回占位由 `last_withdrawn` 渲染，不由 preview 文案猜。
+    rationale: 投影读面的调用方在 UI 组。
+
+notes:
+  - 未读是差值不是计数器：`last_seq - MAX(read_cursor, cleared_before_seq)`，
+    跨设备一致；偏好写入幂等（同值不推 version，避免无意义跨端风暴）。
+  - 分页是 keyset（pinned, last_at_ms, conv_id）行值比较，无 OFFSET；
+    1000 会话 / 200 每页 = 5 页无重复无跳过（测试钉住）。
+  - 数据最小化：密文与已撤回的消息在列表预览里都是空串；预览上限 120 字符。
+  - `MAX_SCOPE_CONVERSATIONS = 400`：scope 集合会变成 SQL 占位符，超限直接报错，
+    不做"偷偷截断"。
+  - 关联入口：SEED-0024 免打扰/置顶/清空记录、SEED-0032 聊天设置、SEED-0146 设置已保存、
+    SEED-0151 清空聊天记录（演示态，需接真命令）、SEED-0035/0283/0287/0288/0148/0293
+    会话行打开、SEED-0133 回到会话列表、SEED-0285/0290/0292 列表 sheet。
