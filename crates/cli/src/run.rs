@@ -54,6 +54,7 @@ fn run(inv: Invocation) -> u8 {
             EXIT_OK
         }
         Command::Auth => auth_report(&options, &policy),
+        Command::Doctor => doctor(&options, &policy),
         Command::Coverage => {
             if options.json {
                 emit(&wxlike_cmd::domains::report(), true);
@@ -89,6 +90,9 @@ fn build_policy(options: &Options) -> Policy {
 
 /// 一条业务命令的执行路径：闸门 → 执行器 → 输出。
 fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params: &Value) -> u8 {
+    if options.dry_run {
+        return emit_plan(spec, params, options.json, "dry_run");
+    }
     let gate = match build_gate(options) {
         Ok(g) => g,
         Err(e) => {
@@ -110,17 +114,93 @@ fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params
     )
 }
 
-/// 打印"将要发生什么"，并以 7 退出：脚本据此知道需要人确认。
-fn ask_for_confirmation(spec: &CommandSpec, params: &Value, json_out: bool) -> u8 {
+/// 打印"将要发生什么"。
+///
+/// `mode = "dry_run"` → 退出 0（这是用户主动要的计划）；
+/// `mode = "confirmation_required"` → 退出 7（脚本据此知道要人确认）。
+fn emit_plan(spec: &CommandSpec, params: &Value, json_out: bool, mode: &str) -> u8 {
     let plan = wxlike_cmd::confirmation::plan(spec, params);
+    let (domain, verb) = spec.cli_path();
     let payload = json!({
-        "confirmation_required": true,
+        "mode": mode,
+        "confirmation_required": spec.confirmation.is_required(),
+        "capability": spec.capability.as_str(),
         "plan": plan.to_json(),
-        "hint": format!("确认无误后加 --confirm 重新执行：wxlike {} {} --confirm ...",
-            spec.cli_path().0, spec.cli_path().1),
+        "hint": if mode == "dry_run" {
+            format!("只出计划，未执行。确认无误后去掉 --dry-run：wxlike {domain} {verb} ...")
+        } else {
+            format!("确认无误后加 --confirm 重新执行：wxlike {domain} {verb} --confirm ...")
+        },
     });
     emit(&payload, json_out);
-    EXIT_CONFIRMATION_REQUIRED
+    if mode == "dry_run" {
+        EXIT_OK
+    } else {
+        EXIT_CONFIRMATION_REQUIRED
+    }
+}
+
+/// `wxlike doctor`：本机诊断。**不联网**——诊断本身不该制造故障。
+fn doctor(options: &Options, policy: &Policy) -> u8 {
+    let report = doctor_report(options, policy);
+    emit(&report, options.json);
+    if report["problems"].as_array().is_some_and(|p| !p.is_empty()) {
+        return 1;
+    }
+    EXIT_OK
+}
+
+fn doctor_report(options: &Options, policy: &Policy) -> Value {
+    let mut problems: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    if options.token.is_none() && std::env::var("WXLIKE_TOKEN").is_err() {
+        warnings.push("没有 token：执行类命令会被服务端拒绝".into());
+    }
+    if policy.conv_patterns().is_empty() {
+        warnings.push("会话白名单为空：所有会话类命令都会被拒".into());
+    }
+    let scope = options
+        .scope
+        .clone()
+        .or_else(|| std::env::var("WXLIKE_SCOPE").ok());
+    let invalid: Vec<String> = scope
+        .as_deref()
+        .map(|s| wxlike_cmd::auth::ScopeSet::parse(s).invalid().to_vec())
+        .unwrap_or_default();
+    if !invalid.is_empty() {
+        problems.push(format!("--scope 里有无法解析的条目：{invalid:?}"));
+    }
+    let server = options
+        .server
+        .clone()
+        .or_else(|| std::env::var("WXLIKE_SERVER").ok())
+        .unwrap_or_else(|| "http://127.0.0.1:8099".to_string());
+    json!({
+        "report": "wxlike-cli doctor",
+        "version": env!("CARGO_PKG_VERSION"),
+        "server": server,
+        "token": if options.token.is_some() || std::env::var("WXLIKE_TOKEN").is_ok() {
+            "已配置"
+        } else {
+            "未配置"
+        },
+        "policy": {
+            "convs": policy.conv_patterns(),
+            "write": policy.allow_write(),
+            "destructive": policy.allow_destructive(),
+        },
+        "scope": scope.unwrap_or_else(|| "（未配置，仅按本地策略）".to_string()),
+        "catalog": {
+            "commands": wxlike_cmd::catalog::CATALOG.len(),
+            "note": "MCP 侧另有元工具（list/execute/inspect/jobs），由 wxlike-mcp 自己报",
+        },
+        "coverage": wxlike_cmd::domains::summary(),
+        "protocol": {
+            "mcp_versions": ["2025-06-18", "2025-03-26", "2024-11-05"],
+        },
+        "warnings": warnings,
+        "problems": problems,
+    })
 }
 
 /// 会话/scope 闸门。没配 `--scope` 就不挂：本地单用户场景由 `policy` 负责，
@@ -199,7 +279,7 @@ fn invoke(
 ) -> u8 {
     // 危险动作先出计划：没 `--confirm` 就停在这里，**不发任何请求**。
     if spec.confirmation.is_required() && !confirmed {
-        return ask_for_confirmation(spec, params, json_out);
+        return emit_plan(spec, params, json_out, "confirmation_required");
     }
     // scope 先行：注定被服务端拒的请求不发出去，也顺便省掉一次网络往返
     if let Some(gate) = gate {

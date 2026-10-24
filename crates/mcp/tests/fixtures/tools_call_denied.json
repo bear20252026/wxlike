@@ -1,0 +1,12 @@
+{
+  "name": "策略拒绝是工具错误而不是协议错误",
+  "description": "会话不在白名单：返回 isError=true 并说清怎么授权，agent 才能自己纠正。",
+  "setup": { "convs": [], "write": false, "destructive": false, "initialize": true },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": { "name": "conv-unread", "arguments": { "conv": "d-a~b" } }
+  },
+  "expect": { "is_error": true, "contains_text": ["not allowed", "d-a~b"] }
+}
