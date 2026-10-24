@@ -1,0 +1,37 @@
+{
+  "title": "Event",
+  "description": "事件信封：kind 未知时必须能解出来并跳过",
+  "type": "object",
+  "required": [
+    "event_id",
+    "seq",
+    "kind",
+    "payload",
+    "emitted_at_ms",
+    "contract"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "conv": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "emitted_at_ms": {
+      "type": "integer"
+    },
+    "contract": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,47 @@
+card: G01-02
+issue: 105
+branch: feat/FP-G01-02
+contract_version: "1.0"
+summary: 原生核心状态机与缓存适配
+
+requests:
+  - id: G01-02-R1
+    kind: workspace-member
+    status: applied-pending-ratification
+    reason: 同 G01-01-R1。
+    change:
+      file: Cargo.toml
+      path: members
+      add: ["crates/client-native"]
+
+  - id: G01-02-R2
+    kind: dependency-policy
+    status: requested
+    reason: >-
+      client-native 新增 tempfile（dev-only，MIT / Apache-2.0）；
+      chacha20poly1305 已在 workspace 里（crates/core 用过）。
+    change:
+      file: THIRD-PARTY-NOTICES.md
+      action: 登记 tempfile（仅测试用，不进产物）
+
+  - id: G01-02-R3
+    kind: takeover
+    status: requested
+    reason: >-
+      桌面端的 outbox 泵与事件订阅现在有两条实现（ui/src-tauri 与
+      client-native）。两条实现必然漂移，需要收敛到一处。
+    change:
+      file: ui/src-tauri/src/app_state.rs
+      owner: G04
+      action: >-
+        start_outbox_pump / start_recv_pump 改为薄壳，
+        转调 wxlike_client_native::NativeCore::start_pump 与 Session::subscribe
+
+  - id: G01-02-R4
+    kind: note
+    status: done
+    reason: 原生实时通道（WebSocket / 长连接）不在本卡范围。
+    change:
+      action: >-
+        HttpTransport::subscribe 明确返回"未接入"，由 ui/src-tauri 的 WS
+        与移动端推送 + 拉取承担；不做静默降级成轮询。

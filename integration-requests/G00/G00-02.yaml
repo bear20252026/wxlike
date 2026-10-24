@@ -1,0 +1,38 @@
+# G00-02 纯移动拆分与文件所有权 —— 集成请求
+request_id: G00-02
+task_issue: 100
+group_issue: 81
+artifacts:
+  - composition/path-map-v1.json
+  - composition/owners.json
+  - composition/CODEOWNERS.proposal
+  - ui/src-tauri/src/{lib.rs,app_state.rs,commands.rs,store.rs,render.rs,util.rs}
+  - ui/src/{ui.ts,ui-dom.ts,ui-format.ts}
+  - crates/platform/src/{db.rs,db/schema.rs}
+  - crates/client/src/{execute.rs,execute/handlers.rs}
+
+requests:
+  - id: REQ-G16-codeowners
+    target: G16
+    action: 将 composition/CODEOWNERS.proposal 复制为 .github/CODEOWNERS，
+      并把 @group-GXX 标签替换为实际 GitHub 团队/账号（真人就位后）。
+    rationale: 正式 CODEOWNERS 位置在 .github/，归 G16。
+
+  - id: REQ-G16-root-lock
+    target: G16 / 集成方
+    action: 确认根 Cargo.lock 与 workspace Cargo.toml 的后续变更由 G00 串行合入
+      （本 PR 未改根清单；ui/src-tauri/Cargo.lock 未变）。
+    rationale: 任务书"根锁及 router 只归集成负责人"。
+
+  - id: REQ-G10-confirm-split
+    target: G10
+    action: 复核 ui/src-tauri 六模块与 ui.ts 三文件的职责边界是否符合
+      G10/G11 的后续分工（app_state.rs 内方法如需再拆，由 G10 在自己的 PR 里做）。
+    rationale: 纯移动保持行为不变；功能级再拆是 UI 组的增量。
+
+verification:
+  - cargo check（wxlike-ui lib / wxlike-platform / wxlike-client）0 错误
+  - wxlike-ui lib 测试（API fixture）结果与拆分前一致
+  - ui `npx tsc --noEmit` 0 错误
+  - client transport 5 例在本地 Windows 失败为本机代理拦回环
+    （A/B 对原版 HEAD 复现一致），云端无代理不受影响
