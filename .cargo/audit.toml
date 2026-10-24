@@ -1,21 +1,10 @@
 # cargo-audit 配置（T-F1 / #61）。
 #
-# 这里的 ignore **不是许可白名单**，只登记“当前锁文件里已知、且不在默认编译图里”
+# 这里的 ignore **不是许可白名单**，只登记"当前锁文件里已知、且不在默认编译图里"
 # 的公告；新公告仍会让 audit job 变红。
 #
-# 5 条 rustls-webpki 0.102.x 公告都来自 crates/mq 的可选 nats 后端：
-#   crates/mq/Cargo.toml: async-nats = { version = "0.42", optional = true }
-#   features.nats 不在 default 里，默认构建（cargo build/test --workspace）不编译它。
-# 修复需要把 async-nats 0.42 升到 0.50（跨 0.x 大版本），归 C 线/集成方；
-# 升级合并后**必须删掉下面 5 条**，否则未来同名公告会被静默吞掉。
-#
+# 历史记录：曾为 rustls-webpki 0.102.8（async-nats 0.42 传递依赖）豁免 5 条公告；
+# 2026-10-24 async-nats 升到 0.50 后 0.102 整树从锁里消失，豁免已按约定删除。
 # 为什么不用 CLI --ignore：配置跟着仓库走，评审时能看见豁免清单与到期条件。
 [advisories]
-ignore = [
-    # rustls-webpki 0.102.8（async-nats 0.42 的传递依赖）
-    "RUSTSEC-2026-0049", # CRL matching logic
-    "RUSTSEC-2026-0098", # URI name constraints
-    "RUSTSEC-2026-0099", # wildcard name constraints
-    "RUSTSEC-2026-0104", # panic in CRL parsing
-    "RUSTSEC-2026-0382", # distrusted intermediates
-]
+ignore = []
