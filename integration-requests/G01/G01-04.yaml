@@ -1,0 +1,51 @@
+card: G01-04
+issue: 109
+branch: feat/FP-G01-04
+contract_version: "1.0"
+summary: UniFFI 异步与移动生命周期
+
+requests:
+  - id: G01-04-R1
+    kind: ffi-contract
+    status: applied-pending-ratification
+    reason: >-
+      WxlikeError 新增两个变体（Invalid / Disposed），生成的 Kotlin / Dart
+      会多两个错误分支。默认 catch-all 仍然可用，但 Dart 侧应当分别处理。
+    change:
+      file: crates/ffi/src/error.rs
+      action: 新增 Invalid、Disposed 及对应构造器
+    note: 绑定由 crates/ffi/regenerate.sh 与 tools/codegen/dart/gen_dart.py 生成，不手改
+
+  - id: G01-04-R2
+    kind: mobile-handoff
+    status: requested
+    reason: >-
+      Flutter 的 worker isolate 要从"同步等结果"改成"dispatch 投递 + poll 拉取"。
+      这是唯一能保证 UI 不被 Rust 侧阻塞的形状（见 crates/ffi/src/core_handle.rs 的文档）。
+    change:
+      file: apps/mobile/lib/
+      owner: G03
+      action: |
+        final id = core.dispatch(requestJson);      // 立刻返回
+        while (running) {
+          final batch = core.poll(500);             // 成批拿结果/事件
+          if (batch != '[]') sendPort.send(batch);
+        }
+
+  - id: G01-04-R3
+    kind: ci
+    status: requested
+    reason: >-
+      CoreHandle 改变了 FFI 表面，flutter analyze 必须在重新生成绑定之后跑。
+    change:
+      job: flutter
+      action: 保持 crates/ffi/regenerate.sh 在 analyze 之前执行（现状已满足，无需改动）
+
+  - id: G01-04-R4
+    kind: note
+    status: done
+    reason: Rust panic 不跨 FFI 展开。
+    change:
+      action: >-
+        所有导出函数经 `guard()` 包 catch_unwind，panic 转成 WxlikeError::Unexpected；
+        poll/dispose 不 panic 且幂等。

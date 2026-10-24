@@ -1,0 +1,18 @@
+{
+  "name": "event.message_new",
+  "type": "EventEnvelope",
+  "why": "事件带自己的 seq 与 event_id，去重只认 event_id",
+  "value": {
+    "event_id": "evt-1001",
+    "seq": "42",
+    "conv": "d-alice~bob",
+    "kind": "message.new",
+    "payload": {
+      "msg_id": "00112233445566778899aabbccddeeff",
+      "text": "你好"
+    },
+    "emitted_at_ms": 1700000000456,
+    "contract": "1.0"
+  },
+  "canonical": "{\"contract\":\"1.0\",\"conv\":\"d-alice~bob\",\"emitted_at_ms\":1700000000456,\"event_id\":\"evt-1001\",\"kind\":\"message.new\",\"payload\":{\"msg_id\":\"00112233445566778899aabbccddeeff\",\"text\":\"你好\"},\"seq\":\"42\"}"
+}

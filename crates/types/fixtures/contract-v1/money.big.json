@@ -1,0 +1,10 @@
+{
+  "name": "money.big",
+  "type": "Money",
+  "why": "2^53+1：JS 的 number 到这里已经不连续，只有字符串能原样传",
+  "value": {
+    "minor": "9007199254740993",
+    "currency": "CNY"
+  },
+  "canonical": "{\"currency\":\"CNY\",\"minor\":\"9007199254740993\"}"
+}

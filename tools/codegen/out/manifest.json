@@ -1,0 +1,11 @@
+{
+  "contract": "1.0",
+  "digest": "ad2d2be657637cf7",
+  "files": [
+    "actions.json",
+    "dart/contract.dart",
+    "ts/contract.ts"
+  ],
+  "generated_by": "tools/codegen/generate.py",
+  "schema_version": "contract-v1"
+}
