@@ -24,13 +24,19 @@ import { ChannelsPage } from "./features/video/ChannelsPage";
 import { CallApi } from "./features/calls/api";
 import { CallPanel } from "./features/calls/CallPanel";
 import { WalletPage } from "./features/commerce/WalletPage";
+import { MiniAppsPage } from "./features/mini/MiniAppsPage";
+import { MiniAppApi } from "./features/mini/api";
+import { ServicesPage } from "./features/discover/ServicesPage";
+import { DiscoverApi } from "./features/discover/api";
 
 const content = new ContentApi();
 const files = new FilesApi();
 const video = new VideoApi();
 const calls = new CallApi();
+const mini = new MiniAppApi();
+const discover = new DiscoverApi();
 
-const TABS = ["moments", "favorites", "articles", "files", "channels", "call", "wallet"] as const;
+const TABS = ["moments", "favorites", "articles", "files", "channels", "call", "wallet", "miniapps", "discover"] as const;
 type Tab = (typeof TABS)[number];
 
 function Harness() {
@@ -59,6 +65,8 @@ function Harness() {
         {tab === "channels" ? <ChannelsPage ports={video} /> : null}
         {tab === "call" ? <CallPanel conv="demo-conv" ports={calls} /> : null}
         {tab === "wallet" ? <WalletPage /> : null}
+        {tab === "miniapps" ? <MiniAppsPage ports={mini} /> : null}
+        {tab === "discover" ? <ServicesPage ports={discover} /> : null}
       </main>
       {tab === "moments" ? (
         <StickerPanel ports={content} onPick={(sticker) => console.log("pick", sticker)} />
