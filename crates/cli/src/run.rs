@@ -8,6 +8,7 @@
 //! | 4 | 命令不存在 | catalog 里没有这个 id |
 //! | 5 | 执行失败 | 服务端返回错误、本地文件读不到 |
 //! | 6 | 网络/超时 | 连不上服务端 |
+//! | 7 | 待确认 | 危险动作没带 `--confirm`（此时只打印计划，不执行） |
 //!
 //! 3 与 5 必须分开：脚本遇到"没权限"要人改配置，遇到"业务失败"要重试或报障。
 
@@ -29,6 +30,7 @@ pub const EXIT_DENIED: u8 = 3;
 pub const EXIT_UNKNOWN: u8 = 4;
 pub const EXIT_FAILED: u8 = 5;
 pub const EXIT_NETWORK: u8 = 6;
+pub const EXIT_CONFIRMATION_REQUIRED: u8 = 7;
 
 /// 执行一次调用，返回退出码。
 pub fn execute(inv: Invocation) -> ExitCode {
@@ -98,7 +100,27 @@ fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params
         Ok(exec) => exec,
         Err(code) => return code,
     };
-    invoke(&exec, spec, params, options.json, gate.as_ref())
+    invoke(
+        &exec,
+        spec,
+        params,
+        options.json,
+        gate.as_ref(),
+        options.confirm,
+    )
+}
+
+/// 打印"将要发生什么"，并以 7 退出：脚本据此知道需要人确认。
+fn ask_for_confirmation(spec: &CommandSpec, params: &Value, json_out: bool) -> u8 {
+    let plan = wxlike_cmd::confirmation::plan(spec, params);
+    let payload = json!({
+        "confirmation_required": true,
+        "plan": plan.to_json(),
+        "hint": format!("确认无误后加 --confirm 重新执行：wxlike {} {} --confirm ...",
+            spec.cli_path().0, spec.cli_path().1),
+    });
+    emit(&payload, json_out);
+    EXIT_CONFIRMATION_REQUIRED
 }
 
 /// 会话/scope 闸门。没配 `--scope` 就不挂：本地单用户场景由 `policy` 负责，
@@ -173,7 +195,12 @@ fn invoke(
     params: &Value,
     json_out: bool,
     gate: Option<&AuthGate>,
+    confirmed: bool,
 ) -> u8 {
+    // 危险动作先出计划：没 `--confirm` 就停在这里，**不发任何请求**。
+    if spec.confirmation.is_required() && !confirmed {
+        return ask_for_confirmation(spec, params, json_out);
+    }
     // scope 先行：注定被服务端拒的请求不发出去，也顺便省掉一次网络往返
     if let Some(gate) = gate {
         if let Err(e) = gate.check(spec, params, Provenance::Trusted) {
