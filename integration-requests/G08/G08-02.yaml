@@ -1,0 +1,37 @@
+# G08 integration requests executed by G00/G11/G13 (contract version: mini-package.v1).
+task: G08-02
+group: G08
+branch: feat/FP-G08-02
+requests:
+  - id: desktop-webview
+    file: ui/src-tauri
+    change: >-
+      Mount the mini-app WebView with profile.webview_data_dir, profile.csp and
+      profile.origin; register no Tauri command inside the guest WebView.
+    owner: G11
+    reason: >-
+      The Rust host produces the isolation profile; only the Tauri shell can
+      create an unprivileged WebView with a per-app data directory.
+  - id: web-iframe
+    file: ui/src
+    change: >-
+      Render profile.origin in an iframe with sandbox="allow-scripts" and the
+      profile.csp; no allow-same-origin and no parent postMessage token.
+    owner: G11
+    reason: Web isolation relies on origin + iframe sandbox; the host profile
+      must be consumed verbatim, not re-derived in TypeScript.
+  - id: mobile-webview
+    file: apps/mobile
+    change: >-
+      Create one WKWebView/Android WebView per launch using the profile's data
+      directory and scheme; do not attach host JS bridges other than the typed
+      broker transport.
+    owner: G13
+    reason: iOS must not depend on JIT; the mobile shell owns the platform
+      WebView lifecycle.
+router: none
+commands: none
+migrations: none
+notes: >-
+  Wasmtime remains an optional desktop/Android dependency behind an explicit
+  version allowlist; no wasmtime crate is linked by this change.

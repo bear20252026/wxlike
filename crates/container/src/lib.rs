@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod engine;
+pub mod host;
 pub mod package;
 
 use anyhow::Context as _;
