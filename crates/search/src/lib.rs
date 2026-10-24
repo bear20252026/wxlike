@@ -210,9 +210,11 @@ impl SearchIndex {
         // 查询前 reload：后台索引线程的最新提交此刻可见（无新提交时近零开销）
         self.reader.reload()?;
         let searcher = self.reader.searcher();
+        // tantivy 0.27：TopDocs 结构体本身不再实现 Collector——
+        // 构建器链上 order_by_score() 返回匿名 impl Collector（fruit 形状不变）
         let top = searcher.search(
             &BooleanQuery::new(musts),
-            &TopDocs::with_limit(limit.clamp(1, 100)),
+            &TopDocs::with_limit(limit.clamp(1, 100)).order_by_score(),
         )?;
 
         let mut hits = Vec::new();
