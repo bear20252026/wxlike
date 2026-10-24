@@ -26,30 +26,16 @@ import {
   typingAtom,
   viewAtom,
 } from "./state";
+import { clear, h, on, type El } from "./ui-dom";
+import { directPeer, formatBytes, since, timeShort } from "./ui-format";
 import * as api from "./api";
 import { renderCallPage, renderVerifyPage, stopCallPolling } from "./callpage";
 import ListenerSetter from "./vendor/tweb/listenerSetter";
 
-type El = HTMLElement;
+// El 类型已随迁 ui-dom.ts（经 import 引入）
 
-function h(tag: string, cls?: string, text?: string): El {
-  const el = document.createElement(tag);
-  if (cls) el.className = cls;
-  if (text !== undefined) el.textContent = text;
-  return el;
-}
 
-function clear(el: El): void {
-  while (el.firstChild) el.removeChild(el.firstChild);
-}
 
-function on<K extends keyof HTMLElementEventMap>(
-  el: El,
-  kind: K,
-  fn: (e: HTMLElementEventMap[K]) => void,
-): void {
-  el.addEventListener(kind, fn as EventListener);
-}
 
 /**
  * 菜单"点外面关闭"的监听器集中管理（借用 tweb `ListenerSetter`）。
@@ -627,13 +613,6 @@ async function drawDiag(host: El): Promise<void> {
 }
 
 /** 相对时间：设备页只需要"多久没活跃"，不需要绝对时间。 */
-function since(ms: number): string {
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
-}
 
 async function drawDevices(host: El): Promise<void> {
   clear(host);
@@ -706,13 +685,6 @@ async function drawDevices(host: El): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** 直聊会话 id 形如 `d-<a>~<b>`；返回"对方"的 id（群聊返回 null）。 */
-function directPeer(convId: string): string | null {
-  if (!convId.startsWith("d-")) return null;
-  const [a, b] = convId.slice(2).split("~");
-  const me = appStore.get(meAtom)?.user_id;
-  if (!a || !b || !me) return null;
-  return a === me ? b : a;
-}
 
 function renderChat(root: El, convId: string, title: string, isGroup: boolean): void {
   clear(root);
@@ -1407,12 +1379,6 @@ function stickerDialog(convId: string, to: string[]): void {
   }, 0);
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
 
 async function redpacketDialog(convId: string, to: string[]): Promise<void> {
   const amountYuan = window.prompt("红包总金额（元）:", "1.00");
@@ -1433,14 +1399,6 @@ async function redpacketDialog(convId: string, to: string[]): Promise<void> {
   }
 }
 
-function timeShort(ms: number): string {
-  const d = new Date(ms);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  return sameDay
-    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : d.toLocaleDateString([], { month: "numeric", day: "numeric" });
-}
 
 // ---------------------------------------------------------------------------
 // root renderer: swaps between screens on viewAtom changes
