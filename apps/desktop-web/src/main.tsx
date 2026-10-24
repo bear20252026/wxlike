@@ -17,10 +17,13 @@ import { ArticlesPage } from "./features/content/ArticlesPage";
 import { FavoritesPage } from "./features/content/FavoritesPage";
 import { MomentsPage } from "./features/content/MomentsPage";
 import { StickerPanel } from "./features/content/StickerPanel";
+import { FilesApi } from "./features/files/api";
+import { FilesPage } from "./features/files/FilesPage";
 
 const content = new ContentApi();
+const files = new FilesApi();
 
-const TABS = ["moments", "favorites", "articles"] as const;
+const TABS = ["moments", "favorites", "articles", "files"] as const;
 type Tab = (typeof TABS)[number];
 
 function Harness() {
@@ -45,8 +48,11 @@ function Harness() {
         {tab === "moments" ? <MomentsPage ports={content} /> : null}
         {tab === "favorites" ? <FavoritesPage ports={content} /> : null}
         {tab === "articles" ? <ArticlesPage ports={content} /> : null}
+        {tab === "files" ? <FilesPage ports={files} /> : null}
       </main>
-      <StickerPanel ports={content} onPick={(sticker) => console.log("pick", sticker)} />
+      {tab === "moments" ? (
+        <StickerPanel ports={content} onPick={(sticker) => console.log("pick", sticker)} />
+      ) : null}
     </div>
   );
 }
