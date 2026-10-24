@@ -6471,6 +6471,7 @@ version = "0.1.0"
 name = "wxlike-mcp"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "wxlike-client",
  "wxlike-cmd",

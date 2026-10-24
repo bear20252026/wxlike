@@ -34,6 +34,13 @@ pub const DEFAULT_PROTOCOL: &str = PROTOCOL_VERSIONS[0];
 /// 元工具：不执行具体业务，只做发现、自查与作业账。
 const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
 
+/// 单次调用参数上限（64 KiB）。再大就不是"参数"，是把文件塞进 JSON。
+const MAX_ARGS_BYTES: usize = 64 * 1024;
+
+/// 工具文本响应上限（256 KiB）。超出就截断并**明确说明截断了**，
+/// 免得调用方以为自己拿到了完整结果。
+const MAX_TEXT_BYTES: usize = 256 * 1024;
+
 /// 没有配 `--actor/--session-id` 时的本地身份。
 ///
 /// 它不是信任边界（服务端仍会再验），只是为了让确认令牌**永远绑定到某个
@@ -221,6 +228,12 @@ impl Server {
             return Ok(self.meta_call(name, &args));
         }
         let spec = self.resolve_tool(name)?;
+        if args.to_string().len() > MAX_ARGS_BYTES {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("arguments too large (limit {MAX_ARGS_BYTES} bytes)"),
+            ));
+        }
         // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
         catalog::validate_args(spec, &args).map_err(arg_error)?;
         // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
@@ -586,11 +599,24 @@ fn execute_tool() -> Value {
 }
 
 fn tool_ok(value: &Value) -> Value {
+    let text = serde_json::to_string_pretty(value).unwrap_or_default();
     json!({
-        "content": [{"type": "text", "text": serde_json::to_string_pretty(value).unwrap_or_default()}],
+        "content": [{"type": "text", "text": clamp_text(text)}],
         "structuredContent": value,
         "isError": false
     })
+}
+
+/// 超长文本截断到上限，并留下可机器判断的标记。
+fn clamp_text(text: String) -> String {
+    if text.len() <= MAX_TEXT_BYTES {
+        return text;
+    }
+    let mut cut = MAX_TEXT_BYTES;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}\n…[truncated at {MAX_TEXT_BYTES} bytes]", &text[..cut])
 }
 
 fn tool_err(message: &str) -> Value {
@@ -908,6 +934,33 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"get"}}}"#,
         );
         assert_eq!(missing["result"]["isError"], true);
+    }
+
+    /// 大参数与大响应都有上限：不设限等于给"用 JSON 塞文件"开门。
+    #[test]
+    fn oversized_arguments_and_responses_are_bounded() {
+        let mut srv = ready();
+        let huge = "x".repeat(MAX_ARGS_BYTES);
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "msg-send", "arguments": {
+                "conv": "g-1", "text": huge, "idempotency_key": "k"
+            }}
+        });
+        let v = srv.handle(&frame).expect("response");
+        assert_eq!(v["error"]["code"], code::INVALID_PARAMS, "{v}");
+        assert!(v["error"]["message"]
+            .as_str()
+            .expect("msg")
+            .contains("too large"));
+
+        // 截断标记可机器判断
+        let long = "y".repeat(MAX_TEXT_BYTES + 10);
+        let text = clamp_text(long);
+        assert!(text.ends_with("bytes]"), "{}", &text[text.len() - 40..]);
+        assert!(text.len() <= MAX_TEXT_BYTES + 64);
+        // 短文本原样返回
+        assert_eq!(clamp_text("ok".to_string()), "ok");
     }
 
     #[test]

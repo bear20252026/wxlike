@@ -10,9 +10,6 @@
 //! `--allow-conv` / `--allow-write` / `--allow-destructive`），命令实现不知道
 //! 自己有没有权限——那是 `Policy` 的事。
 
-mod server;
-mod transport;
-
 use std::process::ExitCode;
 
 use wxlike_client::execute::Executor;
@@ -21,8 +18,8 @@ use wxlike_cmd::auth::{AuthGate, ScopeSet};
 use wxlike_cmd::policy::Policy;
 use wxlike_cmd::CATALOG;
 
-use server::Server;
-use transport::{serve_stdio, Transport};
+use wxlike_mcp::server::{self, Server};
+use wxlike_mcp::transport::{serve_stdio, Transport};
 
 fn main() -> ExitCode {
     match Flags::parse(std::env::args().skip(1).collect()) {
