@@ -1,0 +1,1096 @@
+{
+  "version": "2.0",
+  "published_date": "2026-10-24",
+  "repository": "bear20252026/wxlike",
+  "root": {
+    "number": 80,
+    "url": "https://github.com/bear20252026/wxlike/issues/80"
+  },
+  "groups": {
+    "G07": {
+      "number": 88,
+      "url": "https://github.com/bear20252026/wxlike/issues/88",
+      "title": "[职责组 G07][UI v2] 扫码、发现、模型与服务聚合 / 9 项开发任务"
+    },
+    "G01": {
+      "number": 82,
+      "url": "https://github.com/bear20252026/wxlike/issues/82",
+      "title": "[职责组 G01][UI v2] Rust共享核心与绑定 / 5 项开发任务"
+    },
+    "G10": {
+      "number": 91,
+      "url": "https://github.com/bear20252026/wxlike/issues/91",
+      "title": "[职责组 G10][UI v2] React桌面与网页核心界面 / 6 项开发任务"
+    },
+    "G17": {
+      "number": 98,
+      "url": "https://github.com/bear20252026/wxlike/issues/98",
+      "title": "[职责组 G17][UI v2] 安全、来源许可与独立评审 / 5 项开发任务"
+    },
+    "G11": {
+      "number": 92,
+      "url": "https://github.com/bear20252026/wxlike/issues/92",
+      "title": "[职责组 G11][UI v2] React扩展界面与服务入口 / 5 项开发任务"
+    },
+    "G08": {
+      "number": 89,
+      "url": "https://github.com/bear20252026/wxlike/issues/89",
+      "title": "[职责组 G08][UI v2] 小程序容器、应用目录与SDK / 5 项开发任务"
+    },
+    "G12": {
+      "number": 93,
+      "url": "https://github.com/bear20252026/wxlike/issues/93",
+      "title": "[职责组 G12][UI v2] Flutter核心界面与原生桥 / 6 项开发任务"
+    },
+    "G03": {
+      "number": 84,
+      "url": "https://github.com/bear20252026/wxlike/issues/84",
+      "title": "[职责组 G03][UI v2] 消息、同步、离线与推送 / 5 项开发任务"
+    },
+    "G13": {
+      "number": 94,
+      "url": "https://github.com/bear20252026/wxlike/issues/94",
+      "title": "[职责组 G13][UI v2] Flutter扩展页面与全入口 / 6 项开发任务"
+    },
+    "G16": {
+      "number": 97,
+      "url": "https://github.com/bear20252026/wxlike/issues/97",
+      "title": "[职责组 G16][UI v2] 云CI、发布、部署与独立验收 / 5 项开发任务"
+    },
+    "G02": {
+      "number": 83,
+      "url": "https://github.com/bear20252026/wxlike/issues/83",
+      "title": "[职责组 G02][UI v2] 身份、关系、设备与加密安全 / 7 项开发任务"
+    },
+    "G14": {
+      "number": 95,
+      "url": "https://github.com/bear20252026/wxlike/issues/95",
+      "title": "[职责组 G14][UI v2] 管理后台与运营闭环 / 5 项开发任务"
+    },
+    "G15": {
+      "number": 96,
+      "url": "https://github.com/bear20252026/wxlike/issues/96",
+      "title": "[职责组 G15][UI v2] MCP、CLI与AI授权命令面 / 5 项开发任务"
+    },
+    "G05": {
+      "number": 86,
+      "url": "https://github.com/bear20252026/wxlike/issues/86",
+      "title": "[职责组 G05][UI v2] 内容、社交、收藏与检索 / 6 项开发任务"
+    },
+    "G04": {
+      "number": 85,
+      "url": "https://github.com/bear20252026/wxlike/issues/85",
+      "title": "[职责组 G04][UI v2] 对象、文件、转码与备份 / 5 项开发任务"
+    },
+    "G00": {
+      "number": 81,
+      "url": "https://github.com/bear20252026/wxlike/issues/81",
+      "title": "[职责组 G00][UI v2] 全局架构与串行集成 / 5 项开发任务"
+    },
+    "G09": {
+      "number": 90,
+      "url": "https://github.com/bear20252026/wxlike/issues/90",
+      "title": "[职责组 G09][UI v2] 通话、音视频与直播 / 5 项开发任务"
+    },
+    "G06": {
+      "number": 87,
+      "url": "https://github.com/bear20252026/wxlike/issues/87",
+      "title": "[职责组 G06][UI v2] 账本、支付、红包、卡券 / 5 项开发任务"
+    }
+  },
+  "tasks": {
+    "G08-01": {
+      "key": "G08-01",
+      "number": 141,
+      "url": "https://github.com/bear20252026/wxlike/issues/141",
+      "title": "[G08-01][UI v2] 包格式、签名与发布供应链",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G08",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G05-05": {
+      "key": "G05-05",
+      "number": 135,
+      "url": "https://github.com/bear20252026/wxlike/issues/135",
+      "title": "[G05-05][UI v2] 统一授权搜索、热搜与通知",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G05",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G04-01": {
+      "key": "G04-01",
+      "number": 117,
+      "url": "https://github.com/bear20252026/wxlike/issues/117",
+      "title": "[G04-01][UI v2] 上传会话、对象权限与下载",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G04",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G10-02": {
+      "key": "G10-02",
+      "number": 154,
+      "url": "https://github.com/bear20252026/wxlike/issues/154",
+      "title": "[G10-02][UI v2] 聊天闭环与消息操作",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G10",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G00-05": {
+      "key": "G00-05",
+      "number": 107,
+      "url": "https://github.com/bear20252026/wxlike/issues/107",
+      "title": "[G00-05][UI v2] 集成节奏、容量与发布标准",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G00",
+        "type:task",
+        "wave:W0"
+      ]
+    },
+    "G13-04": {
+      "key": "G13-04",
+      "number": 179,
+      "url": "https://github.com/bear20252026/wxlike/issues/179",
+      "title": "[G13-04][UI v2] 发现、扫码、识物翻译与小程序"
+    },
+    "G07-03": {
+      "key": "G07-03",
+      "number": 140,
+      "url": "https://github.com/bear20252026/wxlike/issues/140",
+      "title": "[G07-03][UI v2] 位置、附近与摇一摇匹配",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G17-03": {
+      "key": "G17-03",
+      "number": 196,
+      "url": "https://github.com/bear20252026/wxlike/issues/196",
+      "title": "[G17-03][UI v2] 威胁模型与越权/滥用回归"
+    },
+    "G10-04": {
+      "key": "G10-04",
+      "number": 158,
+      "url": "https://github.com/bear20252026/wxlike/issues/158",
+      "title": "[G10-04][UI v2] 桌面系统与网页能力适配",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G10",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G11-04": {
+      "key": "G11-04",
+      "number": 168,
+      "url": "https://github.com/bear20252026/wxlike/issues/168",
+      "title": "[G11-04][UI v2] 钱包、收付款、红包与卡包"
+    },
+    "G12-06": {
+      "key": "G12-06",
+      "number": 173,
+      "url": "https://github.com/bear20252026/wxlike/issues/173",
+      "title": "[G12-06][UI v2] 手机号登录、扫码授权与移动协议界面"
+    },
+    "G15-02": {
+      "key": "G15-02",
+      "number": 184,
+      "url": "https://github.com/bear20252026/wxlike/issues/184",
+      "title": "[G15-02][UI v2] 会话授权、资源scope与代理隔离"
+    },
+    "G13-05": {
+      "key": "G13-05",
+      "number": 181,
+      "url": "https://github.com/bear20252026/wxlike/issues/181",
+      "title": "[G13-05][UI v2] 搜索、设置、我的资料与账号安全"
+    },
+    "G17-04": {
+      "key": "G17-04",
+      "number": 197,
+      "url": "https://github.com/bear20252026/wxlike/issues/197",
+      "title": "[G17-04][UI v2] 解码、XSS、SSRF与沙箱模糊测试"
+    },
+    "G03-03": {
+      "key": "G03-03",
+      "number": 121,
+      "url": "https://github.com/bear20252026/wxlike/issues/121",
+      "title": "[G03-03][UI v2] 会话投影、未读与跨设备偏好",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G03",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G08-05": {
+      "key": "G08-05",
+      "number": 150,
+      "url": "https://github.com/bear20252026/wxlike/issues/150",
+      "title": "[G08-05][UI v2] 可运行示例与开发工具链",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G08",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G07-07": {
+      "key": "G07-07",
+      "number": 148,
+      "url": "https://github.com/bear20252026/wxlike/issues/148",
+      "title": "[G07-07][UI v2] 购物、游戏与应用服务路由",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G02-04": {
+      "key": "G02-04",
+      "number": 113,
+      "url": "https://github.com/bear20252026/wxlike/issues/113",
+      "title": "[G02-04][UI v2] 本地SecretStore与口令快照接线",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G12-02": {
+      "key": "G12-02",
+      "number": 165,
+      "url": "https://github.com/bear20252026/wxlike/issues/165",
+      "title": "[G12-02][UI v2] 实时消息页与本地投影"
+    },
+    "G11-05": {
+      "key": "G11-05",
+      "number": 170,
+      "url": "https://github.com/bear20252026/wxlike/issues/170",
+      "title": "[G11-05][UI v2] 小程序、扫码与服务目录"
+    },
+    "G05-02": {
+      "key": "G05-02",
+      "number": 128,
+      "url": "https://github.com/bear20252026/wxlike/issues/128",
+      "title": "[G05-02][UI v2] 自主公众号与文章订阅",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G05",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G16-02": {
+      "key": "G16-02",
+      "number": 189,
+      "url": "https://github.com/bear20252026/wxlike/issues/189",
+      "title": "[G16-02][UI v2] 服务端和桌面跨系统构建"
+    },
+    "G17-02": {
+      "key": "G17-02",
+      "number": 195,
+      "url": "https://github.com/bear20252026/wxlike/issues/195",
+      "title": "[G17-02][UI v2] 近期漏洞与依赖准入门禁"
+    },
+    "G03-04": {
+      "key": "G03-04",
+      "number": 123,
+      "url": "https://github.com/bear20252026/wxlike/issues/123",
+      "title": "[G03-04][UI v2] 路由租约、重连与协议兼容",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G03",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G06-03": {
+      "key": "G06-03",
+      "number": 133,
+      "url": "https://github.com/bear20252026/wxlike/issues/133",
+      "title": "[G06-03][UI v2] 充值提现退款与对账",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G06",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G00-03": {
+      "key": "G00-03",
+      "number": 101,
+      "url": "https://github.com/bear20252026/wxlike/issues/101",
+      "title": "[G00-03][UI v2] 契约版本与组合根冻结",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G00",
+        "type:task",
+        "wave:W0"
+      ]
+    },
+    "G11-03": {
+      "key": "G11-03",
+      "number": 167,
+      "url": "https://github.com/bear20252026/wxlike/issues/167",
+      "title": "[G11-03][UI v2] 视频流、通话与直播面板"
+    },
+    "G12-05": {
+      "key": "G12-05",
+      "number": 171,
+      "url": "https://github.com/bear20252026/wxlike/issues/171",
+      "title": "[G12-05][UI v2] Android/iOS原生平台能力与后台"
+    },
+    "G09-02": {
+      "key": "G09-02",
+      "number": 153,
+      "url": "https://github.com/bear20252026/wxlike/issues/153",
+      "title": "[G09-02][UI v2] 呼叫信令与成员状态机",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G09",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G14-01": {
+      "key": "G14-01",
+      "number": 176,
+      "url": "https://github.com/bear20252026/wxlike/issues/176",
+      "title": "[G14-01][UI v2] 管理身份、RBAC与审计骨架"
+    },
+    "G03-02": {
+      "key": "G03-02",
+      "number": 118,
+      "url": "https://github.com/bear20252026/wxlike/issues/118",
+      "title": "[G03-02][UI v2] 设备持久化确认与离线队列",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G03",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G00-02": {
+      "key": "G00-02",
+      "number": 100,
+      "url": "https://github.com/bear20252026/wxlike/issues/100",
+      "title": "[G00-02][UI v2] 纯移动拆分与文件所有权",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G00",
+        "type:task",
+        "wave:W0"
+      ]
+    },
+    "G04-04": {
+      "key": "G04-04",
+      "number": 122,
+      "url": "https://github.com/bear20252026/wxlike/issues/122",
+      "title": "[G04-04][UI v2] 聊天迁移、备份恢复与空间清理",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G04",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G17-05": {
+      "key": "G17-05",
+      "number": 198,
+      "url": "https://github.com/bear20252026/wxlike/issues/198",
+      "title": "[G17-05][UI v2] 独立发布评审与事实核对"
+    },
+    "G03-01": {
+      "key": "G03-01",
+      "number": 116,
+      "url": "https://github.com/bear20252026/wxlike/issues/116",
+      "title": "[G03-01][UI v2] 消息提交事务与幂等",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G03",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G16-03": {
+      "key": "G16-03",
+      "number": 191,
+      "url": "https://github.com/bear20252026/wxlike/issues/191",
+      "title": "[G16-03][UI v2] Android/iOS云构建、签名与设备证据"
+    },
+    "G12-01": {
+      "key": "G12-01",
+      "number": 163,
+      "url": "https://github.com/bear20252026/wxlike/issues/163",
+      "title": "[G12-01][UI v2] 移动产品壳、主题与账号",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G12",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G09-05": {
+      "key": "G09-05",
+      "number": 159,
+      "url": "https://github.com/bear20252026/wxlike/issues/159",
+      "title": "[G09-05][UI v2] 直播、观看与恢复",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G09",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G06-02": {
+      "key": "G06-02",
+      "number": 130,
+      "url": "https://github.com/bear20252026/wxlike/issues/130",
+      "title": "[G06-02][UI v2] 支付意图、绑卡与回调",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G06",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G06-05": {
+      "key": "G06-05",
+      "number": 137,
+      "url": "https://github.com/bear20252026/wxlike/issues/137",
+      "title": "[G06-05][UI v2] 会员卡、券、票证与订单接口",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G06",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G01-04": {
+      "key": "G01-04",
+      "number": 109,
+      "url": "https://github.com/bear20252026/wxlike/issues/109",
+      "title": "[G01-04][UI v2] UniFFI异步与移动生命周期",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G01",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G15-03": {
+      "key": "G15-03",
+      "number": 186,
+      "url": "https://github.com/bear20252026/wxlike/issues/186",
+      "title": "[G15-03][UI v2] 全业务命令与能力差异映射"
+    },
+    "G02-05": {
+      "key": "G02-05",
+      "number": 114,
+      "url": "https://github.com/bear20252026/wxlike/issues/114",
+      "title": "[G02-05][UI v2] 设置、账户数据生命周期与通知偏好",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G11-02": {
+      "key": "G11-02",
+      "number": 164,
+      "url": "https://github.com/bear20252026/wxlike/issues/164",
+      "title": "[G11-02][UI v2] 文件中心与传输管理"
+    },
+    "G13-01": {
+      "key": "G13-01",
+      "number": 172,
+      "url": "https://github.com/bear20252026/wxlike/issues/172",
+      "title": "[G13-01][UI v2] 朋友圈、公众号、收藏与卡片内容"
+    },
+    "G07-01": {
+      "key": "G07-01",
+      "number": 136,
+      "url": "https://github.com/bear20252026/wxlike/issues/136",
+      "title": "[G07-01][UI v2] 二维码解码与安全深链",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G08-02": {
+      "key": "G08-02",
+      "number": 145,
+      "url": "https://github.com/bear20252026/wxlike/issues/145",
+      "title": "[G08-02][UI v2] 跨端隔离运行与预算",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G08",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G07-08": {
+      "key": "G07-08",
+      "number": 142,
+      "url": "https://github.com/bear20252026/wxlike/issues/142",
+      "title": "[G07-08][UI v2] 位置消息、POI、导航与实时位置共享",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G11-01": {
+      "key": "G11-01",
+      "number": 162,
+      "url": "https://github.com/bear20252026/wxlike/issues/162",
+      "title": "[G11-01][UI v2] 朋友圈、收藏、文章与表情",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G11",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G04-05": {
+      "key": "G04-05",
+      "number": 125,
+      "url": "https://github.com/bear20252026/wxlike/issues/125",
+      "title": "[G04-05][UI v2] 平台媒体能力接口与资源预算",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G04",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G07-06": {
+      "key": "G07-06",
+      "number": 146,
+      "url": "https://github.com/bear20252026/wxlike/issues/146",
+      "title": "[G07-06][UI v2] 出行酒店电影票务与医疗适配",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G14-05": {
+      "key": "G14-05",
+      "number": 185,
+      "url": "https://github.com/bear20252026/wxlike/issues/185",
+      "title": "[G14-05][UI v2] 运营作业、隐私请求与可观测入口"
+    },
+    "G13-03": {
+      "key": "G13-03",
+      "number": 177,
+      "url": "https://github.com/bear20252026/wxlike/issues/177",
+      "title": "[G13-03][UI v2] 钱包、银行卡、红包、收付款与卡包"
+    },
+    "G15-04": {
+      "key": "G15-04",
+      "number": 188,
+      "url": "https://github.com/bear20252026/wxlike/issues/188",
+      "title": "[G15-04][UI v2] 危险动作确认、幂等与作业控制"
+    },
+    "G03-05": {
+      "key": "G03-05",
+      "number": 124,
+      "url": "https://github.com/bear20252026/wxlike/issues/124",
+      "title": "[G03-05][UI v2] 移动推送与同步调度",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G03",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G07-05": {
+      "key": "G07-05",
+      "number": 144,
+      "url": "https://github.com/bear20252026/wxlike/issues/144",
+      "title": "[G07-05][UI v2] 充值、生活缴费与公益服务适配",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G14-04": {
+      "key": "G14-04",
+      "number": 182,
+      "url": "https://github.com/bear20252026/wxlike/issues/182",
+      "title": "[G14-04][UI v2] 商户、卡券、资金与对账台"
+    },
+    "G05-03": {
+      "key": "G05-03",
+      "number": 131,
+      "url": "https://github.com/bear20252026/wxlike/issues/131",
+      "title": "[G05-03][UI v2] 收藏、笔记与表情包",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G05",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G05-06": {
+      "key": "G05-06",
+      "number": 129,
+      "url": "https://github.com/bear20252026/wxlike/issues/129",
+      "title": "[G05-06][UI v2] 我的状态、好友状态、背景与到期",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G05",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G07-02": {
+      "key": "G07-02",
+      "number": 139,
+      "url": "https://github.com/bear20252026/wxlike/issues/139",
+      "title": "[G07-02][UI v2] 识物、OCR、翻译与语音模型服务",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G02-01": {
+      "key": "G02-01",
+      "number": 103,
+      "url": "https://github.com/bear20252026/wxlike/issues/103",
+      "title": "[G02-01][UI v2] 账号会话与设备生命周期",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G16-04": {
+      "key": "G16-04",
+      "number": 192,
+      "url": "https://github.com/bear20252026/wxlike/issues/192",
+      "title": "[G16-04][UI v2] 端到端、故障与容量门禁"
+    },
+    "G08-04": {
+      "key": "G08-04",
+      "number": 149,
+      "url": "https://github.com/bear20252026/wxlike/issues/149",
+      "title": "[G08-04][UI v2] 目录、最近使用与升级撤销",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G08",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G09-04": {
+      "key": "G09-04",
+      "number": 156,
+      "url": "https://github.com/bear20252026/wxlike/issues/156",
+      "title": "[G09-04][UI v2] 媒体E2EE、录制与权限",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G09",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G10-05": {
+      "key": "G10-05",
+      "number": 161,
+      "url": "https://github.com/bear20252026/wxlike/issues/161",
+      "title": "[G10-05][UI v2] 搜索、设置与本地安全界面",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G10",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G14-03": {
+      "key": "G14-03",
+      "number": 180,
+      "url": "https://github.com/bear20252026/wxlike/issues/180",
+      "title": "[G14-03][UI v2] 内容、小程序与服务发布审核"
+    },
+    "G04-03": {
+      "key": "G04-03",
+      "number": 120,
+      "url": "https://github.com/bear20252026/wxlike/issues/120",
+      "title": "[G04-03][UI v2] 音视频解码与隔离转码",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G04",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G16-05": {
+      "key": "G16-05",
+      "number": 194,
+      "url": "https://github.com/bear20252026/wxlike/issues/194",
+      "title": "[G16-05][UI v2] 生产可观测、恢复与发布演练"
+    },
+    "G04-02": {
+      "key": "G04-02",
+      "number": 119,
+      "url": "https://github.com/bear20252026/wxlike/issues/119",
+      "title": "[G04-02][UI v2] 文件中心与消息附件",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G04",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G01-03": {
+      "key": "G01-03",
+      "number": 106,
+      "url": "https://github.com/bear20252026/wxlike/issues/106",
+      "title": "[G01-03][UI v2] Rust WASM网页可运行闭环",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G01",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G02-07": {
+      "key": "G02-07",
+      "number": 115,
+      "url": "https://github.com/bear20252026/wxlike/issues/115",
+      "title": "[G02-07][UI v2] 桌面扫码登录、手机授权与设备信任",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G10-03": {
+      "key": "G10-03",
+      "number": 157,
+      "url": "https://github.com/bear20252026/wxlike/issues/157",
+      "title": "[G10-03][UI v2] 联系人、新朋友与群管理",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G10",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G16-01": {
+      "key": "G16-01",
+      "number": 187,
+      "url": "https://github.com/bear20252026/wxlike/issues/187",
+      "title": "[G16-01][UI v2] 统一云CI门禁与缓存"
+    },
+    "G02-03": {
+      "key": "G02-03",
+      "number": 111,
+      "url": "https://github.com/bear20252026/wxlike/issues/111",
+      "title": "[G02-03][UI v2] 多设备E2EE与密钥分发",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G12-03": {
+      "key": "G12-03",
+      "number": 166,
+      "url": "https://github.com/bear20252026/wxlike/issues/166",
+      "title": "[G12-03][UI v2] 输入器、附件与消息菜单"
+    },
+    "G00-01": {
+      "key": "G00-01",
+      "number": 99,
+      "url": "https://github.com/bear20252026/wxlike/issues/99",
+      "title": "[G00-01][UI v2] 入口总账与范围冻结",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G00",
+        "type:task",
+        "wave:W0"
+      ]
+    },
+    "G10-06": {
+      "key": "G10-06",
+      "number": 160,
+      "url": "https://github.com/bear20252026/wxlike/issues/160",
+      "title": "[G10-06][UI v2] 桌面扫码登录与新版界面字面承诺接线",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G10",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G08-03": {
+      "key": "G08-03",
+      "number": 147,
+      "url": "https://github.com/bear20252026/wxlike/issues/147",
+      "title": "[G08-03][UI v2] 宿主权限broker与能力SDK",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G08",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G02-02": {
+      "key": "G02-02",
+      "number": 108,
+      "url": "https://github.com/bear20252026/wxlike/issues/108",
+      "title": "[G02-02][UI v2] 好友、新朋友、群与隐私规则",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G12-04": {
+      "key": "G12-04",
+      "number": 169,
+      "url": "https://github.com/bear20252026/wxlike/issues/169",
+      "title": "[G12-04][UI v2] 联系人、新朋友、群与资料"
+    },
+    "G15-01": {
+      "key": "G15-01",
+      "number": 183,
+      "url": "https://github.com/bear20252026/wxlike/issues/183",
+      "title": "[G15-01][UI v2] 动作目录与协议SDK适配"
+    },
+    "G06-01": {
+      "key": "G06-01",
+      "number": 127,
+      "url": "https://github.com/bear20252026/wxlike/issues/127",
+      "title": "[G06-01][UI v2] 不可变账本与资金账户",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G06",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G01-01": {
+      "key": "G01-01",
+      "number": 102,
+      "url": "https://github.com/bear20252026/wxlike/issues/102",
+      "title": "[G01-01][UI v2] 共享类型、领域不变量与ports",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G01",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G05-04": {
+      "key": "G05-04",
+      "number": 132,
+      "url": "https://github.com/bear20252026/wxlike/issues/132",
+      "title": "[G05-04][UI v2] 视频号与创作者内容流",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G05",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G13-06": {
+      "key": "G13-06",
+      "number": 174,
+      "url": "https://github.com/bear20252026/wxlike/issues/174",
+      "title": "[G13-06][UI v2] 新版状态、位置共享、名片码与订阅号整合"
+    },
+    "G15-05": {
+      "key": "G15-05",
+      "number": 190,
+      "url": "https://github.com/bear20252026/wxlike/issues/190",
+      "title": "[G15-05][UI v2] 协议兼容、诊断与可审查脚本"
+    },
+    "G07-09": {
+      "key": "G07-09",
+      "number": 138,
+      "url": "https://github.com/bear20252026/wxlike/issues/138",
+      "title": "[G07-09][UI v2] 个人名片二维码、样式、保存分享与撤销",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G09-01": {
+      "key": "G09-01",
+      "number": 151,
+      "url": "https://github.com/bear20252026/wxlike/issues/151",
+      "title": "[G09-01][UI v2] 唯一RTC引擎可行性门禁",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G09",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G01-02": {
+      "key": "G01-02",
+      "number": 105,
+      "url": "https://github.com/bear20252026/wxlike/issues/105",
+      "title": "[G01-02][UI v2] 原生核心状态机与缓存适配",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G01",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G00-04": {
+      "key": "G00-04",
+      "number": 104,
+      "url": "https://github.com/bear20252026/wxlike/issues/104",
+      "title": "[G00-04][UI v2] 服务端数据库生产迁移",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G00",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G02-06": {
+      "key": "G02-06",
+      "number": 112,
+      "url": "https://github.com/bear20252026/wxlike/issues/112",
+      "title": "[G02-06][UI v2] 手机号验证码、登录方式与协议同意记录",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G02",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G13-02": {
+      "key": "G13-02",
+      "number": 175,
+      "url": "https://github.com/bear20252026/wxlike/issues/175",
+      "title": "[G13-02][UI v2] 视频号、语音视频通话与直播"
+    },
+    "G09-03": {
+      "key": "G09-03",
+      "number": 155,
+      "url": "https://github.com/bear20252026/wxlike/issues/155",
+      "title": "[G09-03][UI v2] 媒体轨、设备与TURN",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G09",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G10-01": {
+      "key": "G10-01",
+      "number": 152,
+      "url": "https://github.com/bear20252026/wxlike/issues/152",
+      "title": "[G10-01][UI v2] 从展示稿拆分产品壳与登录",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G10",
+        "type:task",
+        "wave:W3"
+      ]
+    },
+    "G14-02": {
+      "key": "G14-02",
+      "number": 178,
+      "url": "https://github.com/bear20252026/wxlike/issues/178",
+      "title": "[G14-02][UI v2] 用户、设备、群与申诉管理"
+    },
+    "G17-01": {
+      "key": "G17-01",
+      "number": 193,
+      "url": "https://github.com/bear20252026/wxlike/issues/193",
+      "title": "[G17-01][UI v2] 成熟代码来源审查与SBOM"
+    },
+    "G06-04": {
+      "key": "G06-04",
+      "number": 134,
+      "url": "https://github.com/bear20252026/wxlike/issues/134",
+      "title": "[G06-04][UI v2] 转账、红包与领取并发",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G06",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G01-05": {
+      "key": "G01-05",
+      "number": 110,
+      "url": "https://github.com/bear20252026/wxlike/issues/110",
+      "title": "[G01-05][UI v2] 统一生成、兼容包与契约验证",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G01",
+        "type:task",
+        "wave:W1"
+      ]
+    },
+    "G07-04": {
+      "key": "G07-04",
+      "number": 143,
+      "url": "https://github.com/bear20252026/wxlike/issues/143",
+      "title": "[G07-04][UI v2] 服务目录、报价与统一供应商订单",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G07",
+        "type:task",
+        "wave:W2"
+      ]
+    },
+    "G05-01": {
+      "key": "G05-01",
+      "number": 126,
+      "url": "https://github.com/bear20252026/wxlike/issues/126",
+      "title": "[G05-01][UI v2] 朋友圈、相册与可见性",
+      "labels": [
+        "delivery:ui-v2",
+        "group:G05",
+        "type:task",
+        "wave:W2"
+      ]
+    }
+  },
+  "group_count": 18,
+  "task_count": 100,
+  "total_created": 119
+}

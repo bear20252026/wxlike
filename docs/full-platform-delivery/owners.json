@@ -1,0 +1,260 @@
+{
+  "G00": {
+    "name": "全局架构与串行集成",
+    "exclusive_roots": [
+      "composition",
+      "contracts/common",
+      "schema/registry",
+      "integration-requests/G00",
+      "schema/proposals/G00",
+      "schema/registry",
+      "generated-root-registration"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G01": {
+    "name": "Rust共享核心与绑定",
+    "exclusive_roots": [
+      "crates/types",
+      "crates/client-core",
+      "crates/client-native",
+      "crates/client-web",
+      "crates/ffi",
+      "tools/codegen",
+      "integration-requests/G01",
+      "schema/proposals/G01",
+      "crates/domain"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G02": {
+    "name": "身份、关系、设备与加密安全",
+    "exclusive_roots": [
+      "crates/features/identity",
+      "crates/features/relations",
+      "crates/features/security",
+      "crates/core/src/e2ee.rs",
+      "contracts/domains/identity",
+      "contracts/domains/relations",
+      "contracts/domains/security",
+      "integration-requests/G02",
+      "schema/proposals/G02"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G03": {
+    "name": "消息、同步、离线与推送",
+    "exclusive_roots": [
+      "crates/features/messaging",
+      "crates/net",
+      "crates/mq",
+      "crates/message",
+      "contracts/domains/messaging",
+      "integration-requests/G03",
+      "schema/proposals/G03"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G04": {
+    "name": "对象、文件、转码与备份",
+    "exclusive_roots": [
+      "crates/features/media",
+      "crates/video",
+      "crates/storage",
+      "contracts/domains/media",
+      "integration-requests/G04",
+      "schema/proposals/G04"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G05": {
+    "name": "内容、社交、收藏与检索",
+    "exclusive_roots": [
+      "crates/features/content",
+      "crates/favorites",
+      "crates/discovery-content",
+      "crates/search",
+      "contracts/domains/content",
+      "contracts/domains/favorites",
+      "contracts/domains/search",
+      "integration-requests/G05",
+      "schema/proposals/G05"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G06": {
+    "name": "账本、支付、红包、卡券",
+    "exclusive_roots": [
+      "crates/features/commerce",
+      "crates/ledger",
+      "contracts/domains/commerce",
+      "integration-requests/G06",
+      "schema/proposals/G06"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G07": {
+    "name": "扫码、发现、模型与服务聚合",
+    "exclusive_roots": [
+      "crates/features/discovery",
+      "crates/service-catalog",
+      "crates/vision",
+      "crates/translation",
+      "contracts/domains/discovery",
+      "contracts/domains/services",
+      "integration-requests/G07",
+      "schema/proposals/G07"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G08": {
+    "name": "小程序容器、应用目录与SDK",
+    "exclusive_roots": [
+      "crates/container",
+      "crates/dpage",
+      "crates/features/miniapps",
+      "packages/mini-sdk",
+      "contracts/domains/miniapps",
+      "integration-requests/G08",
+      "schema/proposals/G08"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G09": {
+    "name": "通话、音视频与直播",
+    "exclusive_roots": [
+      "crates/rtc",
+      "crates/sfu",
+      "crates/features/calls",
+      "contracts/domains/calls",
+      "integration-requests/G09",
+      "schema/proposals/G09"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G10": {
+    "name": "React桌面与网页核心界面",
+    "exclusive_roots": [
+      "apps/desktop-web/src/features/auth",
+      "apps/desktop-web/src/features/chat",
+      "apps/desktop-web/src/features/contacts",
+      "apps/desktop-web/src/features/settings",
+      "apps/desktop-web/src/features/search",
+      "apps/desktop-web/src/shell",
+      "integration-requests/G10",
+      "schema/proposals/G10"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G11": {
+    "name": "React扩展界面与服务入口",
+    "exclusive_roots": [
+      "apps/desktop-web/src/features/content",
+      "apps/desktop-web/src/features/files",
+      "apps/desktop-web/src/features/video",
+      "apps/desktop-web/src/features/commerce",
+      "apps/desktop-web/src/features/mini",
+      "apps/desktop-web/src/features/discover",
+      "apps/desktop-web/src/features/calls",
+      "integration-requests/G11",
+      "schema/proposals/G11"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G12": {
+    "name": "Flutter核心界面与原生桥",
+    "exclusive_roots": [
+      "apps/mobile/lib/features/auth",
+      "apps/mobile/lib/features/chat",
+      "apps/mobile/lib/features/contacts",
+      "apps/mobile/lib/shell",
+      "apps/mobile/lib/platform",
+      "integration-requests/G12",
+      "schema/proposals/G12"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G13": {
+    "name": "Flutter扩展页面与全入口",
+    "exclusive_roots": [
+      "apps/mobile/lib/features/content",
+      "apps/mobile/lib/features/video",
+      "apps/mobile/lib/features/commerce",
+      "apps/mobile/lib/features/mini",
+      "apps/mobile/lib/features/discover",
+      "apps/mobile/lib/features/settings",
+      "apps/mobile/lib/features/calls",
+      "apps/mobile/lib/features/search",
+      "integration-requests/G13",
+      "schema/proposals/G13"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G14": {
+    "name": "管理后台与运营闭环",
+    "exclusive_roots": [
+      "apps/admin",
+      "crates/admin",
+      "contracts/domains/admin",
+      "integration-requests/G14",
+      "schema/proposals/G14"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G15": {
+    "name": "MCP、CLI与AI授权命令面",
+    "exclusive_roots": [
+      "crates/cmd",
+      "crates/cli",
+      "crates/mcp",
+      "crates/agent-policy",
+      "contracts/domains/agent",
+      "integration-requests/G15",
+      "schema/proposals/G15"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G16": {
+    "name": "云CI、发布、部署与独立验收",
+    "exclusive_roots": [
+      "deploy",
+      "containers",
+      "tests/e2e",
+      "tests/fault",
+      "ci/jobs",
+      "integration-requests/G16",
+      "schema/proposals/G16"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  },
+  "G17": {
+    "name": "安全、来源许可与独立评审",
+    "exclusive_roots": [
+      "security",
+      "third_party/reviews",
+      "tests/security",
+      "tools/source-audit",
+      "integration-requests/G17",
+      "schema/proposals/G17"
+    ],
+    "public_files": "G00 only",
+    "team_concurrency": "serial until disjoint subpaths registered"
+  }
+}

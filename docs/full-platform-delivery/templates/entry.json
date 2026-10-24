@@ -1,0 +1,18 @@
+{
+  "entry_id": "REPLACE_WITH_STABLE_REVIEWED_ID",
+  "source_seed_ids": ["SEED-0001"],
+  "platform": "desktop_windows",
+  "source": "REPLACE_WITH_ACTUAL_PATH_AND_COMPONENT",
+  "rendered_variant": "REPLACE_WITH_EXACT_MENU_OR_ARRAY_LABEL",
+  "literal_behavior": "点击后真实发生什么，以及另一端/服务端如何证实",
+  "action_id": "REPLACE_WITH_CATALOG_ACTION_OR_LOCAL_PLATFORM_CAPABILITY",
+  "task_id": "G00-01",
+  "domain_owner": "REVIEW_REQUIRED",
+  "ui_owner": "REVIEW_REQUIRED",
+  "permission": ["REVIEW_REQUIRED"],
+  "states": ["loading", "empty", "ready", "permission_denied", "error", "cancelled", "success"],
+  "test_id": "REPLACE_WITH_REAL_TEST_ID",
+  "provider_dependency": [],
+  "status": "PLANNED",
+  "evidence": {"ci_url": null, "device_run": null, "provider_receipt": null}
+}

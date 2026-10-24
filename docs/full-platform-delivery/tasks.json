@@ -1,0 +1,3768 @@
+[
+  {
+    "id": "G00-01",
+    "group": "G00",
+    "title": "入口总账与范围冻结",
+    "wave": "W0",
+    "paths": [
+      "contracts/common/entries.schema.json",
+      "composition/entries.json",
+      "composition/platform-matrix.json"
+    ],
+    "contract": "entry_id/action_id/platform/variant/test_id",
+    "implementation": "逐一运行10个桌面页和27个手机页，展开数组按钮、右键菜单、长按、回车、拖拽及系统返回；演示外壳单列showcase，产品窗口按钮保留；为每个入口补读取/写入/本地能力、失败与取消状态、域owner和UIowner，反查本包331位置种子，不把种子数当总功能数；新版37页（桌面10、手机27）/331个onClick种子之外，还要展开无handler国家码、协议隐私链接、搜索地点、导航图标、状态搜索、转账更多/支付方式、订阅号搜索更多、个人码更多及showcase设备/页面选择器；新增页面不是已实现功能。",
+    "acceptance": "入口ID唯一，产品入口无未分配项；所有map枚举值有记录；各端unsupported能力明确替代路径，不能用禁用按钮完成最终验收",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "OpenAPITools/openapi-generator"
+    ],
+    "hard_dependencies": [],
+    "github_issue_number": 99,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/99",
+    "github_group_issue_number": 81,
+    "hard_dependency_issue_numbers": [],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G00-02",
+    "group": "G00",
+    "title": "纯移动拆分与文件所有权",
+    "wave": "W0",
+    "paths": [
+      "composition/path-map-v1.json",
+      "composition/owners.json",
+      "CODEOWNERS提案"
+    ],
+    "contract": "routes(state)/register_commands(registry)/PlatformPort",
+    "implementation": "先串行拆ui/src-tauri/src/lib.rs、ui/src/ui.ts、platform/db.rs与client/execute.rs；旧函数签名行为保持，设置兼容转发层；创建独立域crate、React功能目录、Flutter功能目录并把上传UI按功能拆开，目录归属发布后停止多人修改旧巨型文件",
+    "acceptance": "搬移前后关键API fixture与已存在测试相同；owners检查无二义路径；根锁及router只归集成负责人",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "OpenAPITools/openapi-generator"
+    ],
+    "hard_dependencies": [
+      "G00-01"
+    ],
+    "github_issue_number": 100,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/100",
+    "github_group_issue_number": 81,
+    "hard_dependency_issue_numbers": [
+      99
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G00-03",
+    "group": "G00",
+    "title": "契约版本与组合根冻结",
+    "wave": "W0",
+    "paths": [
+      "contracts/common/envelope.schema.json",
+      "composition/action-registry.rs",
+      "schema/registry/migrations.json"
+    ],
+    "contract": "ActionRequest/EventEnvelope/DomainError/ActorContext",
+    "implementation": "先合公共ID/Money/cursor/error与协议fixture；域schema由各域owner提交，G00只审批跨域字段并装配；HTTP/WS/QUIC兼容窗口、支持端声明、迁移编号都版本化；生成contract-v1标签，变更先RFC后客户端和服务端兼容测试",
+    "acceptance": "JS大整数、未知字段、未知枚举、旧协议fixture全部有确定行为；同一action不能注册两次；未授权命令在所有表面拒绝",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "OpenAPITools/openapi-generator"
+    ],
+    "hard_dependencies": [
+      "G00-02"
+    ],
+    "github_issue_number": 101,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/101",
+    "github_group_issue_number": 81,
+    "hard_dependency_issue_numbers": [
+      100
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G00-04",
+    "group": "G00",
+    "title": "服务端数据库生产迁移",
+    "wave": "W2",
+    "paths": [
+      "composition/storage-profile.rs",
+      "schema/registry/pg-cutover.md",
+      "composition/data-import/"
+    ],
+    "contract": "Repository/UnitOfWork/OutboxWriter；SQLite旧库→PostgreSQL",
+    "implementation": "统一PG连接池、事务、时间和锁策略；域组在自己的infra实现repository，编号由此卡登记；做ID/seq/密文/余额/附件引用一致导入、影子读对账和停写切换；保留可回退快照，禁止跨库临时双写和多个hub各自SQLite事实库",
+    "acceptance": "全量导入计数与摘要一致；中断导入可重跑；停写窗口有测量；旧二进制读expand schema通过，真实资金只在验收后的PG profile启用",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "OpenAPITools/openapi-generator"
+    ],
+    "hard_dependencies": [
+      "G00-03",
+      "G01-01"
+    ],
+    "github_issue_number": 104,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/104",
+    "github_group_issue_number": 81,
+    "hard_dependency_issue_numbers": [
+      101,
+      102
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G00-05",
+    "group": "G00",
+    "title": "集成节奏、容量与发布标准",
+    "wave": "W0–W5 continuous",
+    "paths": [
+      "composition/release-gates.md",
+      "composition/merge-train.yaml",
+      "composition/capacity-profile.json"
+    ],
+    "contract": "contract tag→域→SDK→UI→E2E→平台设备验收",
+    "implementation": "每周至少一次全链路集成，公共锁统一再生；冻结机型/数据集/消息延迟/内存/冷启动/SLO并由实测调整；全量功能发布要求入口全ACCEPTED和外部阻塞为0，分阶段版本诚实列未完成入口；保留单域回滚及协议旧端兼容窗口",
+    "acceptance": "合并队列在最新main重跑；不承诺零冲突或完美平衡；发布清单可追溯到CI运行、签名产物和设备证据",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "OpenAPITools/openapi-generator"
+    ],
+    "hard_dependencies": [
+      "G00-04"
+    ],
+    "github_issue_number": 107,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/107",
+    "github_group_issue_number": 81,
+    "hard_dependency_issue_numbers": [
+      104
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G01-01",
+    "group": "G01",
+    "title": "共享类型、领域不变量与ports",
+    "wave": "W1",
+    "paths": [
+      "crates/types/src",
+      "crates/client-core/src/ports"
+    ],
+    "contract": "dispatch(ActionRequest)→ActionResult；subscribe(cursor)→EventStream",
+    "implementation": "提取旧types而非复制；ID不透明，Money最小单位整数，JSON序号/金额字符串；Transport/LocalStore/Clock/Secrets/Platform/Notification为ports；wasm不要求Send的端点适配，native异步对象安全明确，取消和deadline贯穿接口",
+    "acceptance": "同一fixture在Rust/TS/Dart解析一致；超2^53金额和seq不丢精度；客户端crate依赖树不含axum或生产数据库",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-03",
+      "G03-02"
+    ],
+    "reference_repositories": [
+      "mozilla/uniffi-rs",
+      "matrix-org/matrix-rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 102,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/102",
+    "github_group_issue_number": 82,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      111,
+      118
+    ]
+  },
+  {
+    "id": "G01-02",
+    "group": "G01",
+    "title": "原生核心状态机与缓存适配",
+    "wave": "W1",
+    "paths": [
+      "crates/client-native/src",
+      "crates/client-core/src/runtime"
+    ],
+    "contract": "SessionHandle/EventSubscription/OutboxPump",
+    "implementation": "沿用现有Rust客户端执行器，补单实例会话、SQLite原子outbox、事件持久化与订阅；网络恢复/登录恢复触发有界重发，指数退避有jitter；设备存储成功后才由核心发ack；UI不再自行持有第二份消息真相",
+    "acceptance": "杀进程于本地提交/服务端接收/ack之间均不丢消息；同ID重试不重复；退出后后台任务停止、事件订阅可取消",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-03",
+      "G03-02"
+    ],
+    "reference_repositories": [
+      "mozilla/uniffi-rs",
+      "matrix-org/matrix-rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G01-01"
+    ],
+    "github_issue_number": 105,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/105",
+    "github_group_issue_number": 82,
+    "hard_dependency_issue_numbers": [
+      102
+    ],
+    "integration_dependency_issue_numbers": [
+      111,
+      118
+    ]
+  },
+  {
+    "id": "G01-03",
+    "group": "G01",
+    "title": "Rust WASM网页可运行闭环",
+    "wave": "W1",
+    "paths": [
+      "crates/client-web/src",
+      "crates/client-web/tests"
+    ],
+    "contract": "browser fetch/WS/IndexedDB/Crypto/clock adapters",
+    "implementation": "为wasm32分离native线程/SQLite依赖；Rust通过web-sys驱动网络与IndexedDB事务；不写一套TS业务同步引擎；浏览器存储配额、private模式失败、页面冻结恢复、跨tab会话互斥要显式处理，敏感缓存按策略加密",
+    "acceptance": "真实浏览器双账号收发、刷新重放、IndexedDB升级、断网恢复与加解密通过；wasm编译绿不能替代运行测试",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-03",
+      "G03-02"
+    ],
+    "reference_repositories": [
+      "mozilla/uniffi-rs",
+      "matrix-org/matrix-rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G01-02"
+    ],
+    "github_issue_number": 106,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/106",
+    "github_group_issue_number": 82,
+    "hard_dependency_issue_numbers": [
+      105
+    ],
+    "integration_dependency_issue_numbers": [
+      111,
+      118
+    ]
+  },
+  {
+    "id": "G01-04",
+    "group": "G01",
+    "title": "UniFFI异步与移动生命周期",
+    "wave": "W1",
+    "paths": [
+      "crates/ffi/src",
+      "tools/codegen/dart"
+    ],
+    "contract": "CoreHandle.dispatch/subscribe/cancel/dispose",
+    "implementation": "继续沿用Flutter worker isolate；绑定长期对象/错误码/事件流并生成Dart；Rust回调转队列不反向阻塞UI；恢复前台、token刷新、native桥结果都投回统一核心；销毁句柄后拒绝晚到回调",
+    "acceptance": "Android/iOS真机连续进出聊天和后台无泄漏；长任务可取消；Rust panic不跨FFI展开；禁止手改生成文件",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-03",
+      "G03-02"
+    ],
+    "reference_repositories": [
+      "mozilla/uniffi-rs",
+      "matrix-org/matrix-rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G01-03"
+    ],
+    "github_issue_number": 109,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/109",
+    "github_group_issue_number": 82,
+    "hard_dependency_issue_numbers": [
+      106
+    ],
+    "integration_dependency_issue_numbers": [
+      111,
+      118
+    ]
+  },
+  {
+    "id": "G01-05",
+    "group": "G01",
+    "title": "统一生成、兼容包与契约验证",
+    "wave": "W1",
+    "paths": [
+      "tools/codegen",
+      "crates/types/tests"
+    ],
+    "contract": "OpenAPI/JSON Schema→TS/Dart；Action Catalog→CLI/MCP描述",
+    "implementation": "建立一次生成命令和check模式；三端接口同源，FFI只包装相同action；给旧Tauri command保留薄适配器后逐步移除；生成headers/类型/fixture带schema版本与来源摘要",
+    "acceptance": "干净checkout生成无diff；字段变更触发兼容检查；所有已登记action可被目标端解码，未知action安全失败",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-03",
+      "G03-02"
+    ],
+    "reference_repositories": [
+      "mozilla/uniffi-rs",
+      "matrix-org/matrix-rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G01-04"
+    ],
+    "github_issue_number": 110,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/110",
+    "github_group_issue_number": 82,
+    "hard_dependency_issue_numbers": [
+      109
+    ],
+    "integration_dependency_issue_numbers": [
+      111,
+      118
+    ]
+  },
+  {
+    "id": "G02-01",
+    "group": "G02",
+    "title": "账号会话与设备生命周期",
+    "wave": "W1",
+    "paths": [
+      "crates/features/identity/src"
+    ],
+    "contract": "identity.login/logout/session.list/session.revoke/device.list",
+    "implementation": "复用token auth/revocation，补设备标识、刷新轮换/重放检测、登录限速；敏感操作step-up、找回流程不泄漏账号存在；登出撤销指定会话并发事件清缓存；管理操作者与普通账号token分开audience",
+    "acceptance": "过期/撤销/重复刷新全拒绝；一端移除设备后该设备WS和API失效；日志不出现token与密码",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "matrix-org/vodozemac",
+      "signalapp/Signal-Desktop",
+      "signalapp/Signal-Android"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 103,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/103",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      102
+    ]
+  },
+  {
+    "id": "G02-02",
+    "group": "G02",
+    "title": "好友、新朋友、群与隐私规则",
+    "wave": "W1",
+    "paths": [
+      "crates/features/relations/src"
+    ],
+    "contract": "friend.request/accept/reject/block；group.create/invite/kick/role.update",
+    "implementation": "双向好友申请状态机、请求去重及拉黑优先；备注/标签/星标为用户私有偏好；群角色、邀请、退出、解散和共同群可见性都服务端校验；跨域查询通过RelationsPort不让聊天模块直接改关系表",
+    "acceptance": "陌生人/被拉黑者/退群者越权读写失败；并发接受不生两条关系；共同群不泄漏私有群；跨端偏好同步",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "matrix-org/vodozemac",
+      "signalapp/Signal-Desktop",
+      "signalapp/Signal-Android"
+    ],
+    "hard_dependencies": [
+      "G02-01"
+    ],
+    "github_issue_number": 108,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/108",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      103
+    ],
+    "integration_dependency_issue_numbers": [
+      102
+    ]
+  },
+  {
+    "id": "G02-03",
+    "group": "G02",
+    "title": "多设备E2EE与密钥分发",
+    "wave": "W1",
+    "paths": [
+      "crates/features/security/src/device_keys",
+      "crates/core/src/e2ee.rs"
+    ],
+    "contract": "keys.publish/claim/rotate/device.verify；EncryptedEnvelope",
+    "implementation": "基于现有Olm/Megolm/vodozemac适配，补签名设备bundle、预密钥一次性claim原子性、群成员变化轮换、每设备会话；服务端不能伪装新可信设备，设备变更提示与验证；缺密钥排队并重取，绝不自动明文降级；设计旧历史授权恢复策略",
+    "acceptance": "双账号各两设备乱序/重放/轮换/退群测试；服务端只见密文；未验证设备的策略可测；错误不会打印密钥或正文",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "matrix-org/vodozemac",
+      "signalapp/Signal-Desktop",
+      "signalapp/Signal-Android"
+    ],
+    "hard_dependencies": [
+      "G02-02"
+    ],
+    "github_issue_number": 111,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/111",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      108
+    ],
+    "integration_dependency_issue_numbers": [
+      102
+    ]
+  },
+  {
+    "id": "G02-04",
+    "group": "G02",
+    "title": "本地SecretStore与口令快照接线",
+    "wave": "W1",
+    "paths": [
+      "crates/features/security/src/secrets",
+      "crates/features/security/tests"
+    ],
+    "contract": "SecretStorePort.unlock/lock/seal/rotate/recover",
+    "implementation": "接通已存在WXSC2口令派生能力，替换同目录secret-device.key作为唯一保护的路径；原生OS密钥库与口令恢复包分离；盐/参数/版本写头，KDF成本按端测量；迁移先验证新包能解再原子替换；锁屏/退出清内存，密码错误不能毁旧数据",
+    "acceptance": "错误口令/损坏/旧格式/中断迁移有fixture；复制旧目录不能直接取得可用密钥；遗失恢复的产品后果明确，禁止伪造无密钥找回",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "matrix-org/vodozemac",
+      "signalapp/Signal-Desktop",
+      "signalapp/Signal-Android"
+    ],
+    "hard_dependencies": [
+      "G02-03"
+    ],
+    "github_issue_number": 113,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/113",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      111
+    ],
+    "integration_dependency_issue_numbers": [
+      102
+    ]
+  },
+  {
+    "id": "G02-05",
+    "group": "G02",
+    "title": "设置、账户数据生命周期与通知偏好",
+    "wave": "W1",
+    "paths": [
+      "crates/features/identity/src/preferences",
+      "crates/features/security/src/privacy"
+    ],
+    "contract": "profile.update/preferences.patch/export.request/account.delete",
+    "implementation": "外观等本地偏好与服务端跨端偏好分字段；修改密码/手机号/设备需验证；导出与注销是有审计的后台作业，保留法定或业务必要记录须分域处置；推送隐私、发现可见性、黑名单统一由此域提供策略",
+    "acceptance": "设置重启与另一端生效；注销撤销所有session并发各域清理任务；导出只含本人可见数据、下载链接短时",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "matrix-org/vodozemac",
+      "signalapp/Signal-Desktop",
+      "signalapp/Signal-Android"
+    ],
+    "hard_dependencies": [
+      "G02-04"
+    ],
+    "github_issue_number": 114,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/114",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      113
+    ],
+    "integration_dependency_issue_numbers": [
+      102
+    ]
+  },
+  {
+    "id": "G03-01",
+    "group": "G03",
+    "title": "消息提交事务与幂等",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/messaging/src/submit"
+    ],
+    "contract": "messaging.send/edit/recall/forward；conversation_seq",
+    "implementation": "提交时同事务分配会话seq、写消息和delivery outbox；唯一键覆盖sender_device+idempotency_key；重复发送补失败收件人；撤回时限/编辑版本/转发来源权限由服务端校验；密文消息不让服务端伪造解密内容",
+    "acceptance": "响应丢失重复提交仅一消息；事务中断无半消息；并发seq不冲突；群成员退群后提交与补发按明确事件时间规则处理",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G02-02",
+      "G02-03",
+      "G01-02",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "element-hq/synapse",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 116,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/116",
+    "github_group_issue_number": 84,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      108,
+      111,
+      105,
+      104
+    ]
+  },
+  {
+    "id": "G03-02",
+    "group": "G03",
+    "title": "设备持久化确认与离线队列",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/messaging/src/delivery",
+      "crates/net/src/delivery"
+    ],
+    "contract": "resume(cursor)/claim/ack(device_stored_cursor)",
+    "implementation": "沿用claim/ack/outbox但ack语义改为客户端持久化后确认，socket write不删唯一副本；按设备而非账号维护游标；lease到期重投、乱序窗口、有界批量、保留策略和过期提示均明确",
+    "acceptance": "断网于socket写入后客户端写库前仍可补收；重复ack/乱序ack幂等；旧协议兼容可观察；离线积压不会无限占内存",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G02-02",
+      "G02-03",
+      "G01-02",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "element-hq/synapse",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G03-01"
+    ],
+    "github_issue_number": 118,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/118",
+    "github_group_issue_number": 84,
+    "hard_dependency_issue_numbers": [
+      116
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      108,
+      111,
+      105,
+      104
+    ]
+  },
+  {
+    "id": "G03-03",
+    "group": "G03",
+    "title": "会话投影、未读与跨设备偏好",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/messaging/src/conversations"
+    ],
+    "contract": "conversation.list/pin/mute/archive/read/clear/history.page",
+    "implementation": "未读由授权消息seq和read_cursor推导；置顶静音归用户跨端偏好，清空本地与删除全端历史必须不同命令；分页稳定游标，不offset扫大表；引用/被撤回占位及群变更系统消息保持一致",
+    "acceptance": "两端同时已读游标单调；筛选真改变结果集；1000会话分页无重复跳过；删除后搜索/附件引用按域事件更新",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G02-02",
+      "G02-03",
+      "G01-02",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "element-hq/synapse",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G03-02"
+    ],
+    "github_issue_number": 121,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/121",
+    "github_group_issue_number": 84,
+    "hard_dependency_issue_numbers": [
+      118
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      108,
+      111,
+      105,
+      104
+    ]
+  },
+  {
+    "id": "G03-04",
+    "group": "G03",
+    "title": "路由租约、重连与协议兼容",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/net/src",
+      "crates/mq/src"
+    ],
+    "contract": "ClientHello/Auth/Subscribe/Event/Ack/Resume v3",
+    "implementation": "多hub设备路由带租约/世代，过期连接不能清掉新路由；MQ重投和本地投递共享幂等键；设置frame/连接/订阅/用户速率上限；认证失败封闭、令牌撤销断连接；WS和QUIC共享协议fixture",
+    "acceptance": "hub重启/消息重复/MQ短断/网络切换不丢已接收消息；重连风暴有退避；跨平台二进制fixture序号一致",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G02-02",
+      "G02-03",
+      "G01-02",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "element-hq/synapse",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G03-03"
+    ],
+    "github_issue_number": 123,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/123",
+    "github_group_issue_number": 84,
+    "hard_dependency_issue_numbers": [
+      121
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      108,
+      111,
+      105,
+      104
+    ]
+  },
+  {
+    "id": "G03-05",
+    "group": "G03",
+    "title": "移动推送与同步调度",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/messaging/src/push",
+      "crates/features/messaging/src/sync"
+    ],
+    "contract": "push.register/revoke；sync.delta；SyncHint",
+    "implementation": "APNs/Android供应商通过PushPort实现，配置不写死业务；推送只作同步提示，默认无正文；token归设备可轮换撤销；恢复前台/网络变化驱动队列；现有手机retry必须同时刷新真实投影，不能只清pending",
+    "acceptance": "进程杀死后推送→打开→增量同步完整；推送乱序/重复/不可达不损坏状态；注销后旧设备不再收到私密提示",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G02-02",
+      "G02-03",
+      "G01-02",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "element-hq/synapse",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G03-04"
+    ],
+    "github_issue_number": 124,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/124",
+    "github_group_issue_number": 84,
+    "hard_dependency_issue_numbers": [
+      123
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      108,
+      111,
+      105,
+      104
+    ]
+  },
+  {
+    "id": "G04-01",
+    "group": "G04",
+    "title": "上传会话、对象权限与下载",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/media/src/upload",
+      "crates/storage/src"
+    ],
+    "contract": "media.upload.start/chunk/complete/cancel；download.authorize",
+    "implementation": "分片校验/断点续传/幂等完成；对象引用绑定owner/audience与用途，读取逐请求鉴权；内容hash不能代替授权；S3/OpenDAL端口允许本地开发与云对象存储；外部URL导入统一SSRF防护；新版桌面登录页承诺最高1GB文件：大小上限必须由服务端capability下发并通过1GB流式/分片/续传/取消校验，不能全文件进内存；配额、代理请求体、对象存储multipart和客户端实现一致。",
+    "acceptance": "伪造对象ID/跨群引用下载失败；取消清理临时片；大文件流式内存有界；签名URL过期与撤权策略经测试",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "apache/opendal",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 117,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/117",
+    "github_group_issue_number": 85,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G04-02",
+    "group": "G04",
+    "title": "文件中心与消息附件",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/media/src/files"
+    ],
+    "contract": "files.list/rename/move/delete/share；AttachmentManifest",
+    "implementation": "按真实授权投影最近/分类/大小/上传者，支持分页和排序；语音/图片/表情/文件有类型与长度限制；分享是可撤销授权引用，非永久公开链接；文件删除与消息历史引用策略一致，回收站/引用计数GC",
+    "acceptance": "上传后另一端可见；无权限搜索不漏文件名；并发删除引用不误删仍被使用对象；下载hash一致",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "apache/opendal",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G04-01"
+    ],
+    "github_issue_number": 119,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/119",
+    "github_group_issue_number": 85,
+    "hard_dependency_issue_numbers": [
+      117
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G04-03",
+    "group": "G04",
+    "title": "音视频解码与隔离转码",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/video/src/jobs",
+      "crates/features/media/src/processing"
+    ],
+    "contract": "media.job.submit/status/cancel；MediaReady/Failed",
+    "implementation": "FFmpeg在无特权受限进程执行，限制时长/像素/帧数/输入协议/CPU/内存；生成缩略图、波形、必要播放档；任务幂等及崩溃重试，输入地址不允许内网探测；未经验证的文件不进可执行路径",
+    "acceptance": "畸形图片/压缩炸弹/超长视频有预算退出；工作进程崩溃不拖主服务；任务取消后资源回收，原件与衍生物生命周期一致",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "apache/opendal",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G04-02"
+    ],
+    "github_issue_number": 120,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/120",
+    "github_group_issue_number": 85,
+    "hard_dependency_issue_numbers": [
+      119
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G04-04",
+    "group": "G04",
+    "title": "聊天迁移、备份恢复与空间清理",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/media/src/backup"
+    ],
+    "contract": "backup.export/import/verify；cache.plan/execute",
+    "implementation": "备份manifest含版本、摘要、加密元信息及对象引用；导入去重不重写历史ID；私钥恢复调用G02，不能把明文密钥塞ZIP；清理先给可恢复/不可恢复分类和容量计划，不能删除唯一未发送附件",
+    "acceptance": "中断恢复可续/重跑；篡改包拒绝；清理后历史可重新下载；跨端迁移导入后消息seq/余额真相不被本地覆盖",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "apache/opendal",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G04-03"
+    ],
+    "github_issue_number": 122,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/122",
+    "github_group_issue_number": 85,
+    "hard_dependency_issue_numbers": [
+      120
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G04-05",
+    "group": "G04",
+    "title": "平台媒体能力接口与资源预算",
+    "wave": "W1/W2",
+    "paths": [
+      "crates/features/media/src/contracts",
+      "crates/storage/src/cache"
+    ],
+    "contract": "PlatformPort.pick_file/capture_screen/record_audio/save_download",
+    "implementation": "只定义共享能力请求/结果/权限错误，实际OS桥由G10/G12；取消、权限拒绝、设备断开明确返回；缓存预算由Rust策略决定；相机原始帧与麦克风默认不上传无关内容",
+    "acceptance": "各端桥使用同fixture；网页无法静默截图或任意写路径时有明确用户授权替代；录音停止/取消后麦克风指示消失",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "apache/opendal",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G04-04"
+    ],
+    "github_issue_number": 125,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/125",
+    "github_group_issue_number": 85,
+    "hard_dependency_issue_numbers": [
+      122
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G05-01",
+    "group": "G05",
+    "title": "朋友圈、相册与可见性",
+    "wave": "W2",
+    "paths": [
+      "crates/features/content/src/posts"
+    ],
+    "contract": "content.post.publish/delete/list；reaction.toggle/comment/report",
+    "implementation": "真实发布时间线、分组可见/好友/私密规则；图片先上传再发布，失败可恢复草稿；点赞唯一、评论层级有上限；删除触发索引和附件引用更新；屏蔽/举报通过审核队列",
+    "acceptance": "双账号可见性矩阵与拉黑后失效；重复点赞幂等；删帖后搜索不回流；UI显示的赞数来自投影而非本地加一",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G04-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "rust-ammonia/ammonia",
+      "ueberdosis/tiptap"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 126,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/126",
+    "github_group_issue_number": 86,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      117,
+      104
+    ]
+  },
+  {
+    "id": "G05-02",
+    "group": "G05",
+    "title": "自主公众号与文章订阅",
+    "wave": "W2",
+    "paths": [
+      "crates/features/content/src/articles"
+    ],
+    "contract": "publisher.follow；article.publish/read/react/share",
+    "implementation": "提供发布者资料、文章版本、订阅、阅读状态；富文本只接受受限文档结构，服务端净化，外链预览走安全抓取器；在看/分享/收藏独立动作；不暗示可直接导入真实微信后台；新版OfficialScreen新增订阅号未读、添加/搜索/管理、按publisher/article ID打开独立文章、订阅消息读游标；未读不是静态头像角标。",
+    "acceptance": "持久发布→关注账号收到→打开全文→在看计数；XSS与恶意URL净化；未发布稿只有授权编辑者可见",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G04-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "rust-ammonia/ammonia",
+      "ueberdosis/tiptap"
+    ],
+    "hard_dependencies": [
+      "G05-01"
+    ],
+    "github_issue_number": 128,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/128",
+    "github_group_issue_number": 86,
+    "hard_dependency_issue_numbers": [
+      126
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      117,
+      104
+    ]
+  },
+  {
+    "id": "G05-03",
+    "group": "G05",
+    "title": "收藏、笔记与表情包",
+    "wave": "W2",
+    "paths": [
+      "crates/favorites/src",
+      "crates/features/content/src/stickers"
+    ],
+    "contract": "favorite.create/update/delete/search；note.save；sticker.install",
+    "implementation": "收藏保存原对象受限引用及可合法保存的快照，源权限撤销后策略明确；笔记有版本冲突与自动保存；表情包下载/收藏/排序/删除真实持久，版权与大小限制；收藏夹排序跨端同步",
+    "acceptance": "刷新笔记不丢；两端编辑返回版本冲突而非静默覆盖；撤权不漏原文；表情可实际发送且可重下",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G04-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "rust-ammonia/ammonia",
+      "ueberdosis/tiptap"
+    ],
+    "hard_dependencies": [
+      "G05-02"
+    ],
+    "github_issue_number": 131,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/131",
+    "github_group_issue_number": 86,
+    "hard_dependency_issue_numbers": [
+      128
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      117,
+      104
+    ]
+  },
+  {
+    "id": "G05-04",
+    "group": "G05",
+    "title": "视频号与创作者内容流",
+    "wave": "W2",
+    "paths": [
+      "crates/features/content/src/videos"
+    ],
+    "contract": "video.publish/feed/follow/like/comment/report",
+    "implementation": "媒体完成转码才可发布；关注/热门/推荐是不同可解释查询，首版规则排序即可不伪造AI推荐；游标稳定，删除/屏蔽立即过滤；直播房间引用G09，视频源与用户权限引用G04",
+    "acceptance": "发布→审核→另一端播放互动完整；滑动不会无限开解码器；推荐仅授权可见内容；被停播对象不继续显示直播中",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G04-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "rust-ammonia/ammonia",
+      "ueberdosis/tiptap"
+    ],
+    "hard_dependencies": [
+      "G05-03"
+    ],
+    "github_issue_number": 132,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/132",
+    "github_group_issue_number": 86,
+    "hard_dependency_issue_numbers": [
+      131
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      117,
+      104
+    ]
+  },
+  {
+    "id": "G05-05",
+    "group": "G05",
+    "title": "统一授权搜索、热搜与通知",
+    "wave": "W2",
+    "paths": [
+      "crates/search/src",
+      "crates/features/content/src/notifications"
+    ],
+    "contract": "search.query(scope,cursor)；search.trends；notification.read",
+    "implementation": "聊天本地私密搜索与服务端公开内容索引分开，密文不上传明文建索引；查询先授权再返回snippet；热搜从去重并防刷聚合产生，测试数据显式种子；通知由事务事件生成，已读可跨端",
+    "acceptance": "删除/拉黑/退群后搜索立即过滤；索引落后不漏数据；多类别分页稳定；热搜不展示个人私聊关键词",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G04-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "rust-ammonia/ammonia",
+      "ueberdosis/tiptap"
+    ],
+    "hard_dependencies": [
+      "G05-04"
+    ],
+    "github_issue_number": 135,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/135",
+    "github_group_issue_number": 86,
+    "hard_dependency_issue_numbers": [
+      132
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      117,
+      104
+    ]
+  },
+  {
+    "id": "G06-01",
+    "group": "G06",
+    "title": "不可变账本与资金账户",
+    "wave": "W2",
+    "paths": [
+      "crates/ledger/src",
+      "crates/features/commerce/src/accounts"
+    ],
+    "contract": "balance.get/statement.page；LedgerTransaction",
+    "implementation": "整数最小单位+币种，复式分录借贷守恒；available/locked分开，余额由可审计分录与锁额导出；虚拟演示资金与真实账户隔离；所有变更有唯一业务键与同库事务，禁止直接UPDATE余额或生产fund接口",
+    "acceptance": "并发扣款不透支；崩溃重放守恒；同幂等键不重复入账；日结余额与分录和对账一致，跨币种拒绝隐式相加",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "medusajs/medusa"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 127,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/127",
+    "github_group_issue_number": 87,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G06-02",
+    "group": "G06",
+    "title": "支付意图、绑卡与回调",
+    "wave": "W2",
+    "paths": [
+      "crates/features/commerce/src/payments",
+      "crates/features/commerce/src/cards"
+    ],
+    "contract": "payment.create/confirm/query；card.bind/unbind；PaymentProvider",
+    "implementation": "短期支付意图绑定收款人/金额/币种/过期与一次nonce；绑卡只保存供应商token/掩码；回调验原始body签名、时间和唯一事件，状态只能合法前进；超时用query解决未知状态，不能本地写已支付",
+    "acceptance": "伪造/重放/乱序回调无副作用；支付响应丢失仍一笔；二维码换收款人或金额会失效；供应商sandbox与真实凭据流程分离",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "medusajs/medusa"
+    ],
+    "hard_dependencies": [
+      "G06-01"
+    ],
+    "github_issue_number": 130,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/130",
+    "github_group_issue_number": 87,
+    "hard_dependency_issue_numbers": [
+      127
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G06-03",
+    "group": "G06",
+    "title": "充值提现退款与对账",
+    "wave": "W2",
+    "paths": [
+      "crates/features/commerce/src/settlement"
+    ],
+    "contract": "topup.create；withdraw.request/cancel/query；refund.request；reconcile.run",
+    "implementation": "充值确认依据核验回调+主动查询；提现校验→锁额→供应商提交→终态落账/解冻，异常挂待复核；退款不超过可退额；对账差异进人工队列，补账也是有审批的分录；密钥用secret引用",
+    "acceptance": "供应商超时/重复回执/部分退款/跨日账单可恢复；不因重试重复提现；对账报告能追溯外部交易号，故障回滚不删账",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "medusajs/medusa"
+    ],
+    "hard_dependencies": [
+      "G06-02"
+    ],
+    "github_issue_number": 133,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/133",
+    "github_group_issue_number": 87,
+    "hard_dependency_issue_numbers": [
+      130
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G06-04",
+    "group": "G06",
+    "title": "转账、红包与领取并发",
+    "wave": "W2",
+    "paths": [
+      "crates/features/commerce/src/transfers",
+      "crates/features/commerce/src/redpackets"
+    ],
+    "contract": "transfer.create/accept/refund；redpacket.create/claim/expire",
+    "implementation": "红包金额分配在服务端，份数/总额/过期不可变；领取同事务校验群成员、唯一领取和剩余额；过期退款仅未领余额，不能与并发领取双花；聊天消息只引用业务对象，客户端动画不决定结果；新版TransferScreen必须接受真实收款人ID、金额与最多20字符备注；键盘/预设值只是输入，Rust解析十进制金额为最小单位整数，拒绝超精度/科学计数/负数/上限溢出；确认令牌绑定收款人/金额/币种/备注/nonce；添加真实转账记录与收款确认/拒收/超期退回状态；实名与财付通保障/实时到账文案只能来自真实可验证能力，不可沿用样例断言。",
+    "acceptance": "多用户同时抢最后一份无负数；重试领取同一结果；过期边界只有一个终态；付款身份与群成员权限全校验",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "medusajs/medusa"
+    ],
+    "hard_dependencies": [
+      "G06-03"
+    ],
+    "github_issue_number": 134,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/134",
+    "github_group_issue_number": 87,
+    "hard_dependency_issue_numbers": [
+      133
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G06-05",
+    "group": "G06",
+    "title": "会员卡、券、票证与订单接口",
+    "wave": "W2",
+    "paths": [
+      "crates/features/commerce/src/entitlements",
+      "crates/features/commerce/src/orders"
+    ],
+    "contract": "card.issue/claim；coupon.redeem；ticket.validate；order.create/cancel",
+    "implementation": "后台商户发行真实卡券，规则版本化，领取/有效期/适用商品可计算；核销用短期一次令牌且服务端原子确认；订单状态机与G07服务交付协作，支付成功不自动等于交付成功；票证条码不含永久敏感凭据",
+    "acceptance": "重复核销只成功一次；离线核销若未实现明确要求联网；取消/退款/供应商失败有补偿；我的卡包显示真实状态与商户来源",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G00-04"
+    ],
+    "reference_repositories": [
+      "medusajs/medusa"
+    ],
+    "hard_dependencies": [
+      "G06-04"
+    ],
+    "github_issue_number": 137,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/137",
+    "github_group_issue_number": 87,
+    "hard_dependency_issue_numbers": [
+      134
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      104
+    ]
+  },
+  {
+    "id": "G07-01",
+    "group": "G07",
+    "title": "二维码解码与安全深链",
+    "wave": "W2",
+    "paths": [
+      "crates/features/discovery/src/qr"
+    ],
+    "contract": "scan.decode；deeplink.resolve；qr.render",
+    "implementation": "选ZXing-C++或rqrr并核文件许可，禁止随机方格二维码；限定payload长度、scheme、域和签名；好友/群/支付/小程序码分型解析，支付必须二次确认；图片识码、相机帧、闪光灯是实际PlatformPort操作",
+    "acceptance": "打印/另一屏幕实际扫出；恶意URL不自动执行；过期/篡改/重复支付码失败；弱光旋转大图有预算",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 136,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/136",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G07-02",
+    "group": "G07",
+    "title": "识物、OCR、翻译与语音模型服务",
+    "wave": "W2",
+    "paths": [
+      "crates/vision/src",
+      "crates/translation/src"
+    ],
+    "contract": "vision.recognize/ocr；translation.translate；speech.transcribe",
+    "implementation": "使用Candle/whisper等成熟运行库或可切换远端ProviderPort；模型权重单独核许可/摘要，隔离推理并限图像/音频/并发；语言与置信度返回，失败不能用随机样例结果；用户明确授权上传且有删除策略",
+    "acceptance": "上传不同图片/语言产生对应结果；模型不可用返回DEPENDENCY_UNAVAILABLE；超时取消释放资源；不把用户内容写推理日志",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G07-01"
+    ],
+    "github_issue_number": 139,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/139",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      136
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G07-03",
+    "group": "G07",
+    "title": "位置、附近与摇一摇匹配",
+    "wave": "W2",
+    "paths": [
+      "crates/features/discovery/src/geo",
+      "crates/features/discovery/src/matching"
+    ],
+    "contract": "geo.publish/revoke/nearby；match.start/cancel",
+    "implementation": "位置默认关闭、显式授权和TTL，公开网格/近似距离不回精确坐标；限查询频率与空间枚举，拉黑过滤；摇一摇用加速度/用户动作触发有时限匹配，双边确认后才能建关系",
+    "acceptance": "撤回授权立即停采集；多次定位不能三角定位他人精确坐标；超时不保留可发现状态；骚扰举报可追溯",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G07-02"
+    ],
+    "github_issue_number": 140,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/140",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      139
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G07-04",
+    "group": "G07",
+    "title": "服务目录、报价与统一供应商订单",
+    "wave": "W2",
+    "paths": [
+      "crates/service-catalog/src/catalog",
+      "crates/service-catalog/src/orders"
+    ],
+    "contract": "service.list/quote/order/fulfill/cancel/query；ServiceProvider",
+    "implementation": "各服务入口有真实目录、区域、库存/资格、价格有效期；provider订单ID唯一，支付调用G06不自建余额；报价过期重确认；供应商受理/交付/取消/退款分态并可查询恢复；管理员可配置服务可用区域",
+    "acceptance": "服务卡片不再只toast；断网在付款和交付之间恢复一致；报价变动不静默加价；所有供应商依赖登记并有sandbox证据",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G07-03"
+    ],
+    "github_issue_number": 143,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/143",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      140
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G07-05",
+    "group": "G07",
+    "title": "充值、生活缴费与公益服务适配",
+    "wave": "W2",
+    "paths": [
+      "crates/service-catalog/src/providers/utilities"
+    ],
+    "contract": "mobile_topup/bill.lookup/bill.pay/donation.create",
+    "implementation": "号码/户号归属与账单先查询确认，金额与收款方签名绑定；回执给实际业务号和处理状态；失败退款与客服入口连通；公益展示机构与项目真实信息，捐赠不以虚拟支付成功代替机构受理",
+    "acceptance": "错误户号/重复支付/供应商延迟有测试；sandbox跑到账/缴费成功回执；未获供应商授权保持BLOCKED_EXTERNAL",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G07-04"
+    ],
+    "github_issue_number": 144,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/144",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      143
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G07-06",
+    "group": "G07",
+    "title": "出行酒店电影票务与医疗适配",
+    "wave": "W2",
+    "paths": [
+      "crates/service-catalog/src/providers/reservations"
+    ],
+    "contract": "availability/search/reserve/confirm/cancel/refund",
+    "implementation": "每类库存有预占TTL与供应商最终确认，票价/退改/出行人或就诊人先显式确认；敏感乘客/健康资料最小化加密与访问审计；医疗入口只做已授权预约服务，不能伪造医院号源；一单多阶段用可恢复saga而非跨网事务",
+    "acceptance": "库存售罄不扣款或自动退款；取消边界/部分成功有明确状态；无真实机构联调不能验收通过",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G07-05"
+    ],
+    "github_issue_number": 146,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/146",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      144
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G07-07",
+    "group": "G07",
+    "title": "购物、游戏与应用服务路由",
+    "wave": "W2",
+    "paths": [
+      "crates/service-catalog/src/providers/retail",
+      "crates/service-catalog/src/providers/games"
+    ],
+    "contract": "product.search/detail/cart/checkout；game.launch/save",
+    "implementation": "购物商品/库存/订单与G06支付对接，退款售后有入口；游戏为真实可玩的自主小程序由G08签名分发，存档按用户隔离；第三方跳转展示目的域与数据授权，不能拿外部首页代替字面承诺的内置业务",
+    "acceptance": "购物完成下单付款履约或退款链；游戏打开能操作保存恢复；外链无token泄漏，地区不可用明确阻塞",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-01",
+      "G06-02",
+      "G06-03",
+      "G06-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp",
+      "huggingface/candle",
+      "ggml-org/whisper.cpp"
+    ],
+    "hard_dependencies": [
+      "G07-06"
+    ],
+    "github_issue_number": 148,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/148",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      146
+    ],
+    "integration_dependency_issue_numbers": [
+      117,
+      130,
+      133,
+      137
+    ]
+  },
+  {
+    "id": "G08-01",
+    "group": "G08",
+    "title": "包格式、签名与发布供应链",
+    "wave": "W2",
+    "paths": [
+      "crates/features/miniapps/src/packages"
+    ],
+    "contract": "mini.release.verify/install/update/rollback",
+    "implementation": "manifest绑定app_id/version/min_host/capabilities与每个资源摘要；验证发布者证书/撤销/版本水位；压缩包拒绝路径穿越/符号链接/炸弹；安装先验证到临时目录再原子切换，签名不等于无需沙箱",
+    "acceptance": "缺资源/篡改/旧版回滚攻击均拒绝；断电更新保留可运行旧版；开发包不能混入生产目录",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G04-01",
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "bytecodealliance/wasmtime"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 141,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/141",
+    "github_group_issue_number": 89,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      117,
+      102
+    ]
+  },
+  {
+    "id": "G08-02",
+    "group": "G08",
+    "title": "跨端隔离运行与预算",
+    "wave": "W2",
+    "paths": [
+      "crates/container/src/host",
+      "crates/dpage/src"
+    ],
+    "contract": "MiniHost.launch/pause/resume/terminate",
+    "implementation": "Rust宿主统一生命周期；桌面独立无权限WebView，Web独立origin sandbox iframe，移动独立WebView；CSP禁任意导航/执行和主token；Wasmtime只可选受修复版本，iOS不依赖JIT；CPU/内存/存储/网络预算分别实施",
+    "acceptance": "恶意guest不能调主Tauri IPC/读取主域cookie/跨app存储；死循环与大资源可终止；iOS实机及审核要求独立验证",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G04-01",
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "bytecodealliance/wasmtime"
+    ],
+    "hard_dependencies": [
+      "G08-01"
+    ],
+    "github_issue_number": 145,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/145",
+    "github_group_issue_number": 89,
+    "hard_dependency_issue_numbers": [
+      141
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      117,
+      102
+    ]
+  },
+  {
+    "id": "G08-03",
+    "group": "G08",
+    "title": "宿主权限broker与能力SDK",
+    "wave": "W2",
+    "paths": [
+      "crates/container/src/broker",
+      "packages/mini-sdk/src"
+    ],
+    "contract": "mini.host.request(action,app,origin,request_id)",
+    "implementation": "每次调用校验app身份、origin、已授scope和用户会话；相机/位置/文件/支付逐项授权，撤销即时生效；支付经G06确认，不把token返guest；bridge只允许类型化方法，无任意shell/URL/file",
+    "acceptance": "伪造origin/重放授权/guest切导航均失败；用户拒绝可取消；授权后访问的数据范围严格小于宿主账号全权限",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G04-01",
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "bytecodealliance/wasmtime"
+    ],
+    "hard_dependencies": [
+      "G08-02"
+    ],
+    "github_issue_number": 147,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/147",
+    "github_group_issue_number": 89,
+    "hard_dependency_issue_numbers": [
+      145
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      117,
+      102
+    ]
+  },
+  {
+    "id": "G08-04",
+    "group": "G08",
+    "title": "目录、最近使用与升级撤销",
+    "wave": "W2",
+    "paths": [
+      "crates/features/miniapps/src/catalog"
+    ],
+    "contract": "mini.catalog/search/recent/favorite/install/uninstall",
+    "implementation": "分类/搜索/推荐来自服务端审核发布目录；最近记录跨端可选同步；升级权限新增必须重新确认；风险下架可撤销运行授权和更新包；卸载按用户确认清数据，不能只删图标",
+    "acceptance": "另一端安装记录一致；被撤销包无法新启动；最近列表点击实际恢复应用；权限升级不静默获取位置或支付",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G04-01",
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "bytecodealliance/wasmtime"
+    ],
+    "hard_dependencies": [
+      "G08-03"
+    ],
+    "github_issue_number": 149,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/149",
+    "github_group_issue_number": 89,
+    "hard_dependency_issue_numbers": [
+      147
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      117,
+      102
+    ]
+  },
+  {
+    "id": "G08-05",
+    "group": "G08",
+    "title": "可运行示例与开发工具链",
+    "wave": "W2",
+    "paths": [
+      "packages/mini-sdk/examples",
+      "crates/features/miniapps/tests"
+    ],
+    "contract": "mini.pack/sign/inspect/dev-serve；版本化SDK",
+    "implementation": "交付至少笔记/待办、服务订单或购物、可玩小游戏，覆盖存储/网络/支付沙箱/授权拒绝；四端同包测试，SDK有生成类型和契约；示例只是最小生态，UI展示的每个应用都必须对应有效签名包或已授权真实应用",
+    "acceptance": "桌面WebAndroidiOS同包启动并保存数据；示例支付不冒充真钱；每张UI应用卡有app_id和可运行证据",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-01",
+      "G04-01",
+      "G01-01"
+    ],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "bytecodealliance/wasmtime"
+    ],
+    "hard_dependencies": [
+      "G08-04"
+    ],
+    "github_issue_number": 150,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/150",
+    "github_group_issue_number": 89,
+    "hard_dependency_issue_numbers": [
+      149
+    ],
+    "integration_dependency_issue_numbers": [
+      103,
+      117,
+      102
+    ]
+  },
+  {
+    "id": "G09-01",
+    "group": "G09",
+    "title": "唯一RTC引擎可行性门禁",
+    "wave": "W2",
+    "paths": [
+      "crates/features/calls/tests/compat",
+      "crates/rtc/docs"
+    ],
+    "contract": "CallEngine/MediaDevicePort/RoomToken",
+    "implementation": "先验证现有str0m/SFU和桌面浏览器/Flutter媒体桥；跨NAT/TURN/编码协商/iOS音频路由/后台来电逐项做spike；LiveKit只作候选比较，换引擎必须全局ADR，不拼两套房间事实；记录带宽与耗电预算",
+    "acceptance": "至少四类客户端两两语音/视频实测；不可行项先上报阻塞，不让UI组各接不同RTC服务",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G02-03",
+      "G03-04",
+      "G04-03"
+    ],
+    "reference_repositories": [
+      "livekit/livekit",
+      "coturn/coturn",
+      "nextcloud/spreed",
+      "signalapp/Signal-Desktop"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 151,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/151",
+    "github_group_issue_number": 90,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      111,
+      123,
+      120
+    ]
+  },
+  {
+    "id": "G09-02",
+    "group": "G09",
+    "title": "呼叫信令与成员状态机",
+    "wave": "W2",
+    "paths": [
+      "crates/features/calls/src/signaling"
+    ],
+    "contract": "call.invite/accept/reject/cancel/hangup/join；CallEvent",
+    "implementation": "RINGING/ACCEPTED/CONNECTING/ACTIVE/ENDED含明确超时与原因；忙线、多人加入和多设备接听竞争由服务端裁决；房间token短时绑定user/device/call；退群/封禁撤销加入权限；通话记录真实生成",
+    "acceptance": "同时接听仅允许策略规定设备；重复挂断幂等；乱序信令不复活已结束通话；未邀请者不能入房",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G02-03",
+      "G03-04",
+      "G04-03"
+    ],
+    "reference_repositories": [
+      "livekit/livekit",
+      "coturn/coturn",
+      "nextcloud/spreed",
+      "signalapp/Signal-Desktop"
+    ],
+    "hard_dependencies": [
+      "G09-01"
+    ],
+    "github_issue_number": 153,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/153",
+    "github_group_issue_number": 90,
+    "hard_dependency_issue_numbers": [
+      151
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      111,
+      123,
+      120
+    ]
+  },
+  {
+    "id": "G09-03",
+    "group": "G09",
+    "title": "媒体轨、设备与TURN",
+    "wave": "W2",
+    "paths": [
+      "crates/rtc/src/media",
+      "crates/sfu/src"
+    ],
+    "contract": "track.mute/switch；device.select；turn.credentials",
+    "implementation": "真实麦克风/扬声器/蓝牙/摄像头/屏幕采集，通过G10/G12原生桥；静音控制发送轨而非图标；coturn短期凭据和配额，连接恢复ICE重启；设备拔出/权限变化降级明确",
+    "acceptance": "静音后远端确实无音；切摄像头远端画面变化；TURN强制模式通过；权限拒绝不持续占麦克风",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G02-03",
+      "G03-04",
+      "G04-03"
+    ],
+    "reference_repositories": [
+      "livekit/livekit",
+      "coturn/coturn",
+      "nextcloud/spreed",
+      "signalapp/Signal-Desktop"
+    ],
+    "hard_dependencies": [
+      "G09-02"
+    ],
+    "github_issue_number": 155,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/155",
+    "github_group_issue_number": 90,
+    "hard_dependency_issue_numbers": [
+      153
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      111,
+      123,
+      120
+    ]
+  },
+  {
+    "id": "G09-04",
+    "group": "G09",
+    "title": "媒体E2EE、录制与权限",
+    "wave": "W2",
+    "paths": [
+      "crates/rtc/src/e2ee",
+      "crates/features/calls/src/recording"
+    ],
+    "contract": "media.key.rotate；recording.request/consent/stop",
+    "implementation": "区分DTLS-SRTP与SFU不可解密的端到端媒体层，设计成员认证/密钥派发/退房轮换；录制需参与者知情且与E2EE方案一致；未实现不能显示E2EE承诺，完成全UI范围则必须补齐；录制存储调用G04",
+    "acceptance": "抓包与SFU进程不能获得E2EE明文；移除参与者后旧key无效；拒绝录制时不产生文件；密钥不落日志",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G02-03",
+      "G03-04",
+      "G04-03"
+    ],
+    "reference_repositories": [
+      "livekit/livekit",
+      "coturn/coturn",
+      "nextcloud/spreed",
+      "signalapp/Signal-Desktop"
+    ],
+    "hard_dependencies": [
+      "G09-03"
+    ],
+    "github_issue_number": 156,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/156",
+    "github_group_issue_number": 90,
+    "hard_dependency_issue_numbers": [
+      155
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      111,
+      123,
+      120
+    ]
+  },
+  {
+    "id": "G09-05",
+    "group": "G09",
+    "title": "直播、观看与恢复",
+    "wave": "W2",
+    "paths": [
+      "crates/features/calls/src/live",
+      "crates/sfu/src/live"
+    ],
+    "contract": "live.start/watch/join/stop；LiveState",
+    "implementation": "直播与通话权限区分，主播/观众token各scope；对接G05 Feed与G04可选录播/HLS任务，房间停播立即撤源；连麦/举报/封禁、卡顿恢复与浏览器自动播放限制有实现；直播观众计数去重",
+    "acceptance": "主播断网重连/强制停播/观众退房资源回收；观看不产生上行麦克风；弱网下有清晰恢复状态而非假播放",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-02",
+      "G02-03",
+      "G03-04",
+      "G04-03"
+    ],
+    "reference_repositories": [
+      "livekit/livekit",
+      "coturn/coturn",
+      "nextcloud/spreed",
+      "signalapp/Signal-Desktop"
+    ],
+    "hard_dependencies": [
+      "G09-04"
+    ],
+    "github_issue_number": 159,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/159",
+    "github_group_issue_number": 90,
+    "hard_dependency_issue_numbers": [
+      156
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      111,
+      123,
+      120
+    ]
+  },
+  {
+    "id": "G10-01",
+    "group": "G10",
+    "title": "从展示稿拆分产品壳与登录",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/shell",
+      "apps/desktop-web/src/features/auth"
+    ],
+    "contract": "CoreHandle.dispatch/subscribe；route descriptors",
+    "implementation": "保留上传UI视觉结构但移除App展示外壳对产品状态的控制；桌面与Web共用React功能组件，仅PlatformPort不同；初始化登录/锁定/恢复/退出路由，按Rust返回投影；loading/empty/error/权限拒绝有可操作界面",
+    "acceptance": "刷新/锁定/退出路由正确；不再导入生产静态好友余额；键盘导航、读屏名、缩放和窗口尺寸基本可用",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-02",
+      "G01-03",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "TanStack/virtual",
+      "TanStack/query",
+      "tauri-apps/tauri"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 152,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/152",
+    "github_group_issue_number": 91,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      105,
+      106,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G10-02",
+    "group": "G10",
+    "title": "聊天闭环与消息操作",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/chat"
+    ],
+    "contract": "messaging.*；media.*；security.*",
+    "implementation": "会话真实分页、虚拟列表、未读/置顶/筛选；发送乐观状态来自本地outbox事件，不独自append永久真相；图片语音文件/表情/引用/转发/撤回/多选菜单逐项接action；retry等待核心重新投影；草稿可恢复",
+    "acceptance": "双账号跨端文本和附件互收；断网/重启显示相同状态；所有菜单项有test_id，不允许success toast代替调用",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-02",
+      "G01-03",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "TanStack/virtual",
+      "TanStack/query",
+      "tauri-apps/tauri"
+    ],
+    "hard_dependencies": [
+      "G10-01"
+    ],
+    "github_issue_number": 154,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/154",
+    "github_group_issue_number": 91,
+    "hard_dependency_issue_numbers": [
+      152
+    ],
+    "integration_dependency_issue_numbers": [
+      105,
+      106,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G10-03",
+    "group": "G10",
+    "title": "联系人、新朋友与群管理",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/contacts"
+    ],
+    "contract": "relations.*；profile.*",
+    "implementation": "左列表/标签/备注/搜索/添加/接受/拒绝/拉黑/群设置与同一关系事件绑定；弹窗验证字段错误、重复提交锁定；个人资料/共同群/发消息使用真实ID导航；群成员页按权限显示且服务端仍鉴权",
+    "acceptance": "A申请B→B接受→双方可聊天；踢人后被踢者收不到新群消息；刷新后标签/备注/星标存在",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-02",
+      "G01-03",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "TanStack/virtual",
+      "TanStack/query",
+      "tauri-apps/tauri"
+    ],
+    "hard_dependencies": [
+      "G10-02"
+    ],
+    "github_issue_number": 157,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/157",
+    "github_group_issue_number": 91,
+    "hard_dependency_issue_numbers": [
+      154
+    ],
+    "integration_dependency_issue_numbers": [
+      105,
+      106,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G10-04",
+    "group": "G10",
+    "title": "桌面系统与网页能力适配",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/shell/platform"
+    ],
+    "contract": "PlatformPort.window/clipboard/screenshot/files/notifications",
+    "implementation": "Tauri最小化最大化关闭、托盘、自启、快捷键、通知、文件选择保存逐项真调用；网页只用用户授权可用API并明确替代；小程序WebView不继承主IPC权限；剪贴板/下载结果必须处理拒绝",
+    "acceptance": "WinMacLinux各检查窗口与快捷键；Web无需Tauri也可运行；平台不支持不能伪报成功，产品能力替代符合入口定义",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-02",
+      "G01-03",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "TanStack/virtual",
+      "TanStack/query",
+      "tauri-apps/tauri"
+    ],
+    "hard_dependencies": [
+      "G10-03"
+    ],
+    "github_issue_number": 158,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/158",
+    "github_group_issue_number": 91,
+    "hard_dependency_issue_numbers": [
+      157
+    ],
+    "integration_dependency_issue_numbers": [
+      105,
+      106,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G10-05",
+    "group": "G10",
+    "title": "搜索、设置与本地安全界面",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/settings",
+      "apps/desktop-web/src/features/search"
+    ],
+    "contract": "search.*；preferences.*；secrets.*；backup.*",
+    "implementation": "搜索按类别真实查询，删除和退群后结果刷新；设置开关实际落盘及生效，秘密锁定/口令迁移/通知权限/缓存清理/备份给真实状态与确认；关于页版本/更新/许可证来自构建信息；登出等Rust撤销完成",
+    "acceptance": "所有设置重开仍一致；备份文件可校验导入；不再保存口令到localStorage；误操作可取消且错误可恢复",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-02",
+      "G01-03",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "TanStack/virtual",
+      "TanStack/query",
+      "tauri-apps/tauri"
+    ],
+    "hard_dependencies": [
+      "G10-04"
+    ],
+    "github_issue_number": 161,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/161",
+    "github_group_issue_number": 91,
+    "hard_dependency_issue_numbers": [
+      158
+    ],
+    "integration_dependency_issue_numbers": [
+      105,
+      106,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G11-01",
+    "group": "G11",
+    "title": "朋友圈、收藏、文章与表情",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/content"
+    ],
+    "contract": "content.*；favorite.*；publisher.*；sticker.*",
+    "implementation": "逐项接发布/赞/评/举报/可见性、收藏编辑/复制/分享/排序、文章阅读/关注/在看；富文本只渲染净化结构；加载与保存错误保留草稿；系统复制通过PlatformPort",
+    "acceptance": "跨账号内容可见性和撤销立刻生效；笔记刷新保留；所有三点菜单展开验收，XSS payload不执行",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-04",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05",
+      "G10-01"
+    ],
+    "reference_repositories": [
+      "TanStack/query",
+      "ueberdosis/tiptap",
+      "cure53/DOMPurify"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 162,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/162",
+    "github_group_issue_number": 92,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      122,
+      135,
+      137,
+      148,
+      150,
+      159,
+      152
+    ]
+  },
+  {
+    "id": "G11-02",
+    "group": "G11",
+    "title": "文件中心与传输管理",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/files"
+    ],
+    "contract": "files.*；media.upload.*；backup.*",
+    "implementation": "分类、搜索、排序、拖拽上传、进度、取消、续传、下载、重命名、分享、删除接真实对象；批量操作逐项返回结果；迁移和清理显示计划容量与完成证据；不能读取任意本地路径",
+    "acceptance": "上传中断可恢复；下载与源hash一致；别人的对象ID无法读取；用户取消不弹成功",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-04",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05",
+      "G10-01"
+    ],
+    "reference_repositories": [
+      "TanStack/query",
+      "ueberdosis/tiptap",
+      "cure53/DOMPurify"
+    ],
+    "hard_dependencies": [
+      "G11-01"
+    ],
+    "github_issue_number": 164,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/164",
+    "github_group_issue_number": 92,
+    "hard_dependency_issue_numbers": [
+      162
+    ],
+    "integration_dependency_issue_numbers": [
+      122,
+      135,
+      137,
+      148,
+      150,
+      159,
+      152
+    ]
+  },
+  {
+    "id": "G11-03",
+    "group": "G11",
+    "title": "视频流、通话与直播面板",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/video",
+      "apps/desktop-web/src/features/calls"
+    ],
+    "contract": "video.*；call.*；live.*；PlatformPort.media",
+    "implementation": "播放器订阅可见页面，不可见时暂停释放；关注/热门/发布/连麦/直播有真实状态；通话各按钮控制轨/设备，最小化只改变布局不断通话；接听/拒绝/结束原因和权限错误明确",
+    "acceptance": "远端能验证静音/摄像头/挂断；切页无摄像头泄漏；实际视频播放而非静态封面，后台标签资源有界",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-04",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05",
+      "G10-01"
+    ],
+    "reference_repositories": [
+      "TanStack/query",
+      "ueberdosis/tiptap",
+      "cure53/DOMPurify"
+    ],
+    "hard_dependencies": [
+      "G11-02"
+    ],
+    "github_issue_number": 167,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/167",
+    "github_group_issue_number": 92,
+    "hard_dependency_issue_numbers": [
+      164
+    ],
+    "integration_dependency_issue_numbers": [
+      122,
+      135,
+      137,
+      148,
+      150,
+      159,
+      152
+    ]
+  },
+  {
+    "id": "G11-04",
+    "group": "G11",
+    "title": "钱包、收付款、红包与卡包",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/commerce"
+    ],
+    "contract": "commerce.*；qr.render；confirmation protocol",
+    "implementation": "金额精确格式化不做浮点财务运算；收款码来自短期意图，支付前展示收款人与金额；充值提现绑卡账单红包转账卡券票证逐项真实；未知支付状态显示查询中，严格区分虚拟和真实账户",
+    "acceptance": "并发点击仅一笔业务；截图二维码过期失效；退款/提现失败恢复可操作；不能用66.66示例或随机二维码通过",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-04",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05",
+      "G10-01"
+    ],
+    "reference_repositories": [
+      "TanStack/query",
+      "ueberdosis/tiptap",
+      "cure53/DOMPurify"
+    ],
+    "hard_dependencies": [
+      "G11-03"
+    ],
+    "github_issue_number": 168,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/168",
+    "github_group_issue_number": 92,
+    "hard_dependency_issue_numbers": [
+      167
+    ],
+    "integration_dependency_issue_numbers": [
+      122,
+      135,
+      137,
+      148,
+      150,
+      159,
+      152
+    ]
+  },
+  {
+    "id": "G11-05",
+    "group": "G11",
+    "title": "小程序、扫码与服务目录",
+    "wave": "W3",
+    "paths": [
+      "apps/desktop-web/src/features/mini",
+      "apps/desktop-web/src/features/discover"
+    ],
+    "contract": "mini.*；scan.*；service.*；vision.*",
+    "implementation": "每张应用卡映射真实app_id和签名包；安装更新撤权弹窗；扫描/识物/翻译使用真实摄像头或选图；所有服务格子展开到目录/报价/订单/退款或实际应用；权限拒绝后能重试",
+    "acceptance": "所有UI数组枚举逐项登记入口；网页sandbox origin检查；服务订单可在管理后台与另一端查询，外部未开通状态不计完成",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G04-04",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05",
+      "G10-01"
+    ],
+    "reference_repositories": [
+      "TanStack/query",
+      "ueberdosis/tiptap",
+      "cure53/DOMPurify"
+    ],
+    "hard_dependencies": [
+      "G11-04"
+    ],
+    "github_issue_number": 170,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/170",
+    "github_group_issue_number": 92,
+    "hard_dependency_issue_numbers": [
+      168
+    ],
+    "integration_dependency_issue_numbers": [
+      122,
+      135,
+      137,
+      148,
+      150,
+      159,
+      152
+    ]
+  },
+  {
+    "id": "G12-01",
+    "group": "G12",
+    "title": "移动产品壳、主题与账号",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/shell",
+      "apps/mobile/lib/features/auth"
+    ],
+    "contract": "Rust CoreHandle；generated bindings",
+    "implementation": "把手机React设计逐屏转成Flutter布局，设计token由G00分配生成，不另造业务状态；接登录/设备/锁定/退出和深链；底部栏/路由栈/系统返回保持正确；不在主isolate运行同步FFI",
+    "acceptance": "Android/iOS冷启动与恢复账户正确；系统返回不误挂断或丢草稿；大字体/安全区/深色模式可用",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-04",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "mozilla/uniffi-rs"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 163,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/163",
+    "github_group_issue_number": 93,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      109,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G12-02",
+    "group": "G12",
+    "title": "实时消息页与本地投影",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/chat/timeline"
+    ],
+    "contract": "messaging.list/send/subscribe/read",
+    "implementation": "补现有手机无实时接收缺口：订阅Rust事件并持久化后投影；稳定key反向分页/未读定位/引用；网络恢复自动pump；retry后重新查询真实消息列表，不能只清_pending；滚动不复制整段历史到Dart",
+    "acceptance": "手机前台收到桌面消息立即显示；进程杀死重开不重复/丢消息；重试后pending转正确终态；长会话内存有界",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-04",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "mozilla/uniffi-rs"
+    ],
+    "hard_dependencies": [
+      "G12-01"
+    ],
+    "github_issue_number": 165,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/165",
+    "github_group_issue_number": 93,
+    "hard_dependency_issue_numbers": [
+      163
+    ],
+    "integration_dependency_issue_numbers": [
+      109,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G12-03",
+    "group": "G12",
+    "title": "输入器、附件与消息菜单",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/chat/composer"
+    ],
+    "contract": "PlatformPort.record_audio/pick/camera；messaging.*",
+    "implementation": "语音按住录制滑动取消、表情/图片/拍摄/文件/位置/红包/通话入口分别对接owner action；转发引用撤回多选长按菜单逐项实现；上传失败与发送失败分开；离线附件仍能恢复",
+    "acceptance": "权限拒绝/通话占麦/录制中断均不假成功；语音远端能播放；红包调用G06状态而非客户端随机金额",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-04",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "mozilla/uniffi-rs"
+    ],
+    "hard_dependencies": [
+      "G12-02"
+    ],
+    "github_issue_number": 166,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/166",
+    "github_group_issue_number": 93,
+    "hard_dependency_issue_numbers": [
+      165
+    ],
+    "integration_dependency_issue_numbers": [
+      109,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G12-04",
+    "group": "G12",
+    "title": "联系人、新朋友、群与资料",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/contacts"
+    ],
+    "contract": "relations.*；profile.*",
+    "implementation": "通讯录真实分页索引、搜索/标签/新朋友审批；个人资料发消息/星标/备注/拉黑、群邀请/成员/角色/退出；同用户资料页和他人页按权限区分，所有操作来自Rust事件更新",
+    "acceptance": "双手机好友申请闭环；修改备注重启保留；越权群操作显示业务拒绝；空列表和网络错误可重试",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-04",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "mozilla/uniffi-rs"
+    ],
+    "hard_dependencies": [
+      "G12-03"
+    ],
+    "github_issue_number": 169,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/169",
+    "github_group_issue_number": 93,
+    "hard_dependency_issue_numbers": [
+      166
+    ],
+    "integration_dependency_issue_numbers": [
+      109,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G12-05",
+    "group": "G12",
+    "title": "Android/iOS原生平台能力与后台",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/platform"
+    ],
+    "contract": "PlatformPort；PushPort；LifecyclePort",
+    "implementation": "统一权限请求和系统设置跳转，实施相机/相册/麦克风/定位/通知/文件/音频路由桥；前后台与网络变化送Rust核心；APNs/Android token生命周期；安全存储调用OS库；G13只通过本组桥使用硬件，不各自写插件",
+    "acceptance": "两端真机逐权限测试；后台/杀进程/深链恢复；退出撤销推送；摄像头麦克风定位在取消或离页后释放",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-04",
+      "G02-05",
+      "G03-05",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "mozilla/uniffi-rs"
+    ],
+    "hard_dependencies": [
+      "G12-04"
+    ],
+    "github_issue_number": 171,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/171",
+    "github_group_issue_number": 93,
+    "hard_dependency_issue_numbers": [
+      169
+    ],
+    "integration_dependency_issue_numbers": [
+      109,
+      114,
+      124,
+      125
+    ]
+  },
+  {
+    "id": "G13-01",
+    "group": "G13",
+    "title": "朋友圈、公众号、收藏与卡片内容",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/content"
+    ],
+    "contract": "content.*；favorite.*；publisher.*；sticker.*",
+    "implementation": "复现Moments/Reading/Favorites/Stickers所有页面与菜单，接真实发布互动、关注、笔记保存、复制分享、表情下载；文章净化结构渲染；图片预览/保存走平台桥，订阅离页取消",
+    "acceptance": "手机发布桌面可见；源内容撤权后不泄露；所有内容菜单项有入口映射；刷新与重启仍存在",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G12-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "nextcloud/spreed"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 172,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/172",
+    "github_group_issue_number": 94,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      171,
+      135,
+      137,
+      148,
+      150,
+      159
+    ]
+  },
+  {
+    "id": "G13-02",
+    "group": "G13",
+    "title": "视频号、语音视频通话与直播",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/video",
+      "apps/mobile/lib/features/calls"
+    ],
+    "contract": "video.*；call.*；live.*；PlatformPort.media",
+    "implementation": "CallScreen不再用照片假通话；来电/接听/静音/扬声器/蓝牙/翻摄像头/最小化/挂断控制真实状态；视频流只保留可见播放器；直播启动/结束与权限检查真实，iOS系统呼叫集成按平台要求",
+    "acceptance": "Android↔iOS↔桌面/Web两两通话；蓝牙切换/中断来电/锁屏恢复；挂断后硬件指示关闭",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G12-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "nextcloud/spreed"
+    ],
+    "hard_dependencies": [
+      "G13-01"
+    ],
+    "github_issue_number": 175,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/175",
+    "github_group_issue_number": 94,
+    "hard_dependency_issue_numbers": [
+      172
+    ],
+    "integration_dependency_issue_numbers": [
+      171,
+      135,
+      137,
+      148,
+      150,
+      159
+    ]
+  },
+  {
+    "id": "G13-03",
+    "group": "G13",
+    "title": "钱包、银行卡、红包、收付款与卡包",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/commerce"
+    ],
+    "contract": "commerce.*；qr.*；confirmation",
+    "implementation": "所有Wallet/Pay/RedPacket/Cards按钮绑定真实action，包括余额、账单、充值、提现、添加卡、付款码、收款、领取/发红包、会员卡券票证；支付意图显示金额币种与接收方，调用Rust精确格式化；重要操作显式确认和二次验证；新版TransferScreen专属实现归本卡：12键数字键盘、删除、小数点、金额预设、备注限制、确认弹窗/更换付款方式、真实转账记录、收款及退款状态；收到成功事件才返回原聊天插入业务卡片，不能Number(amount)校验后toast当到账。",
+    "acceptance": "真实标准二维码可互扫；红包抢领并发结果一致；虚拟和真钱不同标识；刷新不回66.66示例数据",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G12-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "nextcloud/spreed"
+    ],
+    "hard_dependencies": [
+      "G13-02"
+    ],
+    "github_issue_number": 177,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/177",
+    "github_group_issue_number": 94,
+    "hard_dependency_issue_numbers": [
+      175
+    ],
+    "integration_dependency_issue_numbers": [
+      171,
+      135,
+      137,
+      148,
+      150,
+      159
+    ]
+  },
+  {
+    "id": "G13-04",
+    "group": "G13",
+    "title": "发现、扫码、识物翻译与小程序",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/discover",
+      "apps/mobile/lib/features/mini"
+    ],
+    "contract": "scan.*；vision.*；geo.*；service.*；mini.*",
+    "implementation": "Discover中每个图标逐项真实实现；Scan相机帧/闪光灯/相册解码，识物和翻译返回真实结果；附近/摇一摇权限和TTL；小程序包启动/授权/最近记录；服务格子到报价订单交付，不以外链首页冒充内置完成",
+    "acceptance": "iOSAndroid逐map选项验收；扫码支付不自动扣款；位置撤权后停止；示例小程序存档和更新真实",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G12-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "nextcloud/spreed"
+    ],
+    "hard_dependencies": [
+      "G13-03"
+    ],
+    "github_issue_number": 179,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/179",
+    "github_group_issue_number": 94,
+    "hard_dependency_issue_numbers": [
+      177
+    ],
+    "integration_dependency_issue_numbers": [
+      171,
+      135,
+      137,
+      148,
+      150,
+      159
+    ]
+  },
+  {
+    "id": "G13-05",
+    "group": "G13",
+    "title": "搜索、设置、我的资料与账号安全",
+    "wave": "W3",
+    "paths": [
+      "apps/mobile/lib/features/search",
+      "apps/mobile/lib/features/settings"
+    ],
+    "contract": "search.*；profile.*；preferences.*；secrets.*；backup.*",
+    "implementation": "Search/Profile/Settings/Me每项去掉notify假交互；用户名头像资料更新、通知/隐私/通用/存储/帮助关于/退出接对应action；存储清理给真实大小与结果；应用版本来自构建；帮助/协议链接可访问真实内容",
+    "acceptance": "重启各开关生效；退出设备token与推送失效；搜索不是静态示例；迁移导出与恢复文件可被校验",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G12-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-05",
+      "G09-05"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android",
+      "nextcloud/spreed"
+    ],
+    "hard_dependencies": [
+      "G13-04"
+    ],
+    "github_issue_number": 181,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/181",
+    "github_group_issue_number": 94,
+    "hard_dependency_issue_numbers": [
+      179
+    ],
+    "integration_dependency_issue_numbers": [
+      171,
+      135,
+      137,
+      148,
+      150,
+      159
+    ]
+  },
+  {
+    "id": "G14-01",
+    "group": "G14",
+    "title": "管理身份、RBAC与审计骨架",
+    "wave": "W3",
+    "paths": [
+      "apps/admin/src/auth",
+      "crates/admin/src/auth",
+      "crates/admin/src/audit"
+    ],
+    "contract": "admin.login；operator.role；audit.query",
+    "implementation": "独立管理audience、MFA/敏感操作step-up、角色资源权限；可用react-admin社区MIT壳，业务API只调域用例；审计含actor/理由/对象/前后状态摘要/trace，不能记录密钥私聊正文；无万能直连数据库按钮",
+    "acceptance": "普通token无法访问管理API；只读角色不能写；批量操作逐条鉴权审计；导出含敏感信息需专门scope",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-04"
+    ],
+    "reference_repositories": [
+      "marmelab/react-admin",
+      "mattermost/mattermost"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 176,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/176",
+    "github_group_issue_number": 95,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      114,
+      135,
+      137,
+      148,
+      149
+    ]
+  },
+  {
+    "id": "G14-02",
+    "group": "G14",
+    "title": "用户、设备、群与申诉管理",
+    "wave": "W3",
+    "paths": [
+      "apps/admin/src/features/identity",
+      "crates/admin/src/identity"
+    ],
+    "contract": "admin.user.suspend；device.revoke；review.case",
+    "implementation": "封禁/解禁/撤销设备/群治理调用G02；举报申诉有状态和处理理由；只展示必要元数据，不能由后台绕过E2EE；危险操作双阶段确认，批量任务可取消和回执",
+    "acceptance": "封禁即时撤销相关会话；处理投诉可复核；管理员不能读取E2EE明文；误封可恢复并留痕",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-04"
+    ],
+    "reference_repositories": [
+      "marmelab/react-admin",
+      "mattermost/mattermost"
+    ],
+    "hard_dependencies": [
+      "G14-01"
+    ],
+    "github_issue_number": 178,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/178",
+    "github_group_issue_number": 95,
+    "hard_dependency_issue_numbers": [
+      176
+    ],
+    "integration_dependency_issue_numbers": [
+      114,
+      135,
+      137,
+      148,
+      149
+    ]
+  },
+  {
+    "id": "G14-03",
+    "group": "G14",
+    "title": "内容、小程序与服务发布审核",
+    "wave": "W3",
+    "paths": [
+      "apps/admin/src/features/content",
+      "apps/admin/src/features/mini",
+      "apps/admin/src/features/services",
+      "crates/admin/src/publishing"
+    ],
+    "contract": "admin.content.review；mini.publish/revoke；service.configure",
+    "implementation": "审核队列/规则版本/下架/恢复通过G05G08G07接口；供应商配置只引用vault key不返回密钥；目录分类、卡片文案和可用区域真实可管；小程序签名发布权限分离",
+    "acceptance": "下架后客户端Feed/目录/启动授权同步变化；审核角色不能签包；发布失败可重试不重复创建版本",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-04"
+    ],
+    "reference_repositories": [
+      "marmelab/react-admin",
+      "mattermost/mattermost"
+    ],
+    "hard_dependencies": [
+      "G14-02"
+    ],
+    "github_issue_number": 180,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/180",
+    "github_group_issue_number": 95,
+    "hard_dependency_issue_numbers": [
+      178
+    ],
+    "integration_dependency_issue_numbers": [
+      114,
+      135,
+      137,
+      148,
+      149
+    ]
+  },
+  {
+    "id": "G14-04",
+    "group": "G14",
+    "title": "商户、卡券、资金与对账台",
+    "wave": "W3",
+    "paths": [
+      "apps/admin/src/features/commerce",
+      "crates/admin/src/commerce"
+    ],
+    "contract": "admin.merchant.manage；reconcile.review；refund.approve",
+    "implementation": "商户发行卡券与核销记录、订单/退款/提现/对账差异真实查询；人工补账用审批分录，不能编辑余额字段；付款资料掩码，操作级scope与必要双人审批；一笔交易可追溯内外订单号",
+    "acceptance": "重复审批幂等；越权商户看不到他人订单；差异处理后对账收敛；导出公式注入等防护",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-04"
+    ],
+    "reference_repositories": [
+      "marmelab/react-admin",
+      "mattermost/mattermost"
+    ],
+    "hard_dependencies": [
+      "G14-03"
+    ],
+    "github_issue_number": 182,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/182",
+    "github_group_issue_number": 95,
+    "hard_dependency_issue_numbers": [
+      180
+    ],
+    "integration_dependency_issue_numbers": [
+      114,
+      135,
+      137,
+      148,
+      149
+    ]
+  },
+  {
+    "id": "G14-05",
+    "group": "G14",
+    "title": "运营作业、隐私请求与可观测入口",
+    "wave": "W3",
+    "paths": [
+      "apps/admin/src/features/operations",
+      "crates/admin/src/jobs"
+    ],
+    "contract": "admin.job.list/retry/cancel；privacy.export/delete；health.summary",
+    "implementation": "转码/推送/同步/导入/隐私导出作业列表可重试取消，重试调用原域幂等命令；展示脱敏指标与告警，不开任意shell；配置变更版本化并审计；管理API限流",
+    "acceptance": "重试一次只恢复原作业；取消有终态；健康面不泄漏配置secret；隐私导出只授权申请者获取",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G02-05",
+      "G05-05",
+      "G06-05",
+      "G07-07",
+      "G08-04"
+    ],
+    "reference_repositories": [
+      "marmelab/react-admin",
+      "mattermost/mattermost"
+    ],
+    "hard_dependencies": [
+      "G14-04"
+    ],
+    "github_issue_number": 185,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/185",
+    "github_group_issue_number": 95,
+    "hard_dependency_issue_numbers": [
+      182
+    ],
+    "integration_dependency_issue_numbers": [
+      114,
+      135,
+      137,
+      148,
+      149
+    ]
+  },
+  {
+    "id": "G15-01",
+    "group": "G15",
+    "title": "动作目录与协议SDK适配",
+    "wave": "W3",
+    "paths": [
+      "crates/cmd/src/catalog",
+      "crates/mcp/src/server",
+      "crates/cli/src"
+    ],
+    "contract": "tools/list、tools/call、resources；wxlike <domain> <verb>",
+    "implementation": "复用现有cmd Executor和官方Rust MCP SDK适配，不能并用两个MCP框架；从catalog生成描述/JSON Schema/CLI帮助，保留稳定action_id；本地stdio与需要的远程transport分配置，SDK许可证新旧代码核查",
+    "acceptance": "每个工具schema与Rust DTO一致；未知参数/动作拒绝；CLI JSON输出可脚本解析且错误退出码稳定",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-05",
+      "G02-01",
+      "G00-03"
+    ],
+    "reference_repositories": [
+      "modelcontextprotocol/rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 183,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/183",
+    "github_group_issue_number": 96,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      110,
+      103,
+      101
+    ]
+  },
+  {
+    "id": "G15-02",
+    "group": "G15",
+    "title": "会话授权、资源scope与代理隔离",
+    "wave": "W3",
+    "paths": [
+      "crates/agent-policy/src/auth",
+      "crates/mcp/src/auth"
+    ],
+    "contract": "ActorContext/delegation/session policy",
+    "implementation": "MCP不接收任意上游token再透传，验证audience、主体、scope与会话；每个聊天/文件/群/支付资源服务端复核；远程transport遵循官方安全建议、origin与会话绑定；私聊内容是数据不能变成系统指令",
+    "acceptance": "提示注入无法扩大scope/发消息/导出文件；普通agent不能调用管理动作；跨用户会话ID拒绝，日志无token",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-05",
+      "G02-01",
+      "G00-03"
+    ],
+    "reference_repositories": [
+      "modelcontextprotocol/rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G15-01"
+    ],
+    "github_issue_number": 184,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/184",
+    "github_group_issue_number": 96,
+    "hard_dependency_issue_numbers": [
+      183
+    ],
+    "integration_dependency_issue_numbers": [
+      110,
+      103,
+      101
+    ]
+  },
+  {
+    "id": "G15-03",
+    "group": "G15",
+    "title": "全业务命令与能力差异映射",
+    "wave": "W3",
+    "paths": [
+      "crates/cmd/src/domains",
+      "crates/cli/tests"
+    ],
+    "contract": "UI action→catalog→Executor→同Rust用例",
+    "implementation": "每个业务可自动化入口有对应命令：消息关系内容文件支付小程序服务管理（后者专scope）；物理相机/扫码采集等不伪造远程硬件能力，可提供上传文件或有确认host能力；枚举支持平台与限制，不能仅实现聊天几个工具就声称全覆盖",
+    "acceptance": "入口总账中每个业务action能映射命令或有明确人机物理例外；同参数UI和CLI业务结果一致；无隐藏越权API",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-05",
+      "G02-01",
+      "G00-03"
+    ],
+    "reference_repositories": [
+      "modelcontextprotocol/rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G15-02"
+    ],
+    "github_issue_number": 186,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/186",
+    "github_group_issue_number": 96,
+    "hard_dependency_issue_numbers": [
+      184
+    ],
+    "integration_dependency_issue_numbers": [
+      110,
+      103,
+      101
+    ]
+  },
+  {
+    "id": "G15-04",
+    "group": "G15",
+    "title": "危险动作确认、幂等与作业控制",
+    "wave": "W3",
+    "paths": [
+      "crates/agent-policy/src/confirmation",
+      "crates/cmd/src/jobs"
+    ],
+    "contract": "prepare→confirmation_token→execute；idempotency_key",
+    "implementation": "付款转账删库注销分享敏感数据/发布/外发等根据catalog要求确认；token绑定actor/action/规范参数摘要/过期/一次性nonce，修改参数必须重确认；长任务可查取消，输出默认脱敏；外发只在真实授权后执行",
+    "acceptance": "旧确认重放/换收款人/换金额/跨会话均拒绝；超时重试同一业务；确认过期不自动继续",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-05",
+      "G02-01",
+      "G00-03"
+    ],
+    "reference_repositories": [
+      "modelcontextprotocol/rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G15-03"
+    ],
+    "github_issue_number": 188,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/188",
+    "github_group_issue_number": 96,
+    "hard_dependency_issue_numbers": [
+      186
+    ],
+    "integration_dependency_issue_numbers": [
+      110,
+      103,
+      101
+    ]
+  },
+  {
+    "id": "G15-05",
+    "group": "G15",
+    "title": "协议兼容、诊断与可审查脚本",
+    "wave": "W3",
+    "paths": [
+      "crates/mcp/tests",
+      "crates/cli/examples"
+    ],
+    "contract": "contract fixtures；dry-run plan；diagnostic report",
+    "implementation": "提供只读审计/导出计划和完整命令示例；协议协商与取消/进度/错误测试，防大参数和工具响应泄密；dry-run仅计划不能暗中落账；AI结果给request/operation_id便于管理台追踪",
+    "acceptance": "本地与远程MCP通过同fixture；只读示例无副作用；输出可审查且每个写操作可关联审计",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G01-05",
+      "G02-01",
+      "G00-03"
+    ],
+    "reference_repositories": [
+      "modelcontextprotocol/rust-sdk"
+    ],
+    "hard_dependencies": [
+      "G15-04"
+    ],
+    "github_issue_number": 190,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/190",
+    "github_group_issue_number": 96,
+    "hard_dependency_issue_numbers": [
+      188
+    ],
+    "integration_dependency_issue_numbers": [
+      110,
+      103,
+      101
+    ]
+  },
+  {
+    "id": "G16-01",
+    "group": "G16",
+    "title": "统一云CI门禁与缓存",
+    "wave": "W0/W1",
+    "paths": [
+      "ci/jobs/build",
+      "ci/jobs/contract",
+      "ci/jobs/audit"
+    ],
+    "contract": "workflow fragments→G00汇总；C0—C11",
+    "implementation": "Rustfmt/clippy/域测试、native/WASM编译、React/Dart生成check与构建、根和桌面锁审计；新增安全路径覆盖率明确门槛，关键模块unwrap违规阻断；缓存按锁/工具链隔离、最小CI权限、依赖和action pin SHA",
+    "acceptance": "新PR每个必需check无continue-on-error逃逸；失败不可合并；未改动目标可用路径选择但契约变更触发全矩阵",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "coturn/coturn"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 187,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/187",
+    "github_group_issue_number": 97,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G16-02",
+    "group": "G16",
+    "title": "服务端和桌面跨系统构建",
+    "wave": "W4/W5",
+    "paths": [
+      "ci/jobs/desktop",
+      "ci/jobs/server",
+      "containers/server",
+      "deploy/dev"
+    ],
+    "contract": "LinuxDocker/Win/macOS native build；Tauri packages",
+    "implementation": "Linux生产非root只读根fs与独立数据卷，health/readiness优雅停止；WinMac服务用同Rust源码和PG配置；Win/macOS/Linux桌面安装包/签名/更新校验；FFmpeg等依赖封装与NOTICE可重现",
+    "acceptance": "三系统服务启动→登录→发送→重启恢复；Docker无root/secret镜像层；桌面安装卸载更新和恶意更新签名拒绝",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "coturn/coturn"
+    ],
+    "hard_dependencies": [
+      "G16-01"
+    ],
+    "github_issue_number": 189,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/189",
+    "github_group_issue_number": 97,
+    "hard_dependency_issue_numbers": [
+      187
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G16-03",
+    "group": "G16",
+    "title": "Android/iOS云构建、签名与设备证据",
+    "wave": "W4/W5",
+    "paths": [
+      "ci/jobs/mobile",
+      "deploy/signing-docs"
+    ],
+    "contract": "Android APK/AAB；iOS archive/TestFlight ready artifact",
+    "implementation": "云macOS构建iOS和UniFFI库、Android目标ABI构建与真机测试；证书/商店凭据仅secret引用且受保护环境；签名缺失可产unsigned测试品但发布Gate仍阻塞；推送、来电、WebView与权限真机覆盖",
+    "acceptance": "两端安装启动/升级保留缓存；符号文件和版本对应；无签名环境不能伪称商店可发布；测试账号资料不进产物",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "coturn/coturn"
+    ],
+    "hard_dependencies": [
+      "G16-02"
+    ],
+    "github_issue_number": 191,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/191",
+    "github_group_issue_number": 97,
+    "hard_dependency_issue_numbers": [
+      189
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G16-04",
+    "group": "G16",
+    "title": "端到端、故障与容量门禁",
+    "wave": "W4/W5",
+    "paths": [
+      "tests/e2e",
+      "tests/fault",
+      "ci/jobs/performance"
+    ],
+    "contract": "entry_id→test_id→CI evidence；故障注入seed",
+    "implementation": "至少两账号两设备交叉覆盖桌面/Web/Android/iOS；消息杀进程与重连、资金回调重放、小程序越权、RTC弱网、数据迁移失败；标准数据集测延迟/内存/耗电，云结果与真机证据分开，外部供应商专门stage",
+    "acceptance": "全部入口有可重复证据；关键测试无盲目重跑掩盖失败；性能超预算开阻断卡；基础设施故障不标业务成功",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "coturn/coturn"
+    ],
+    "hard_dependencies": [
+      "G16-03"
+    ],
+    "github_issue_number": 192,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/192",
+    "github_group_issue_number": 97,
+    "hard_dependency_issue_numbers": [
+      191
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G16-05",
+    "group": "G16",
+    "title": "生产可观测、恢复与发布演练",
+    "wave": "W4/W5",
+    "paths": [
+      "deploy/production",
+      "deploy/runbooks",
+      "ci/jobs/release"
+    ],
+    "contract": "metrics/traces/logs；backup/restore；release manifest",
+    "implementation": "结构化脱敏日志、request/trace关联；消息延迟/积压/ACK年龄、交易差异、上传失败、RTC质量、模型预算告警；PG与对象备份恢复演练，定义RPO/RTO实测；镜像digest、SBOM、签名证明和回滚手册绑定版本",
+    "acceptance": "从备份恢复完整业务并验证密文/账本；故障值班能定位同operation_id；回滚不删资金分录；发布清单含所有平台门禁结果",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "tauri-apps/tauri",
+      "coturn/coturn"
+    ],
+    "hard_dependencies": [
+      "G16-04"
+    ],
+    "github_issue_number": 194,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/194",
+    "github_group_issue_number": 97,
+    "hard_dependency_issue_numbers": [
+      192
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G17-01",
+    "group": "G17",
+    "title": "成熟代码来源审查与SBOM",
+    "wave": "W0/W1",
+    "paths": [
+      "third_party/reviews",
+      "tools/source-audit"
+    ],
+    "contract": "upstream repo/SHA/path/license/NOTICE/patchlog",
+    "implementation": "用户8仓和新增候选逐文件记录来源；MIT/Apache也保留版权与NOTICE，AGPL只作行为参考，若直接移植须先全局确定兼容开源策略；Rocket ee/Medusa enterprise/模型权重例外逐文件排除；生成Rust/npm/Dart/镜像SBOM",
+    "acceptance": "每个引入片段有永久链接/完整SHA/许可/改动；未知许可不得vendor；生成NOTICE与实际依赖一致",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "bytecodealliance/wasmtime",
+      "rust-ammonia/ammonia",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": 193,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/193",
+    "github_group_issue_number": 98,
+    "hard_dependency_issue_numbers": [
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G17-02",
+    "group": "G17",
+    "title": "近期漏洞与依赖准入门禁",
+    "wave": "W0/W1",
+    "paths": [
+      "security/advisory-policy",
+      "tools/source-audit/advisories"
+    ],
+    "contract": "cargo audit/deny；npm audit；OSV/GHSA/镜像扫描",
+    "implementation": "按master表核Wasmtime两个Critical交集、webpki/ctutils/ammonia、coturn及plugin-rsc适用性；根桌面/WASM/FFI与系统库均扫；高危可达阻断，误报例外必须带原因owner到期日；冻结前重新联网更新公告",
+    "acceptance": "刻意回退漏洞版本导致CI失败；未安装RSC不误报React SPA；安全报告区分已修复/候选新增/不适用/待核实",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "bytecodealliance/wasmtime",
+      "rust-ammonia/ammonia",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G17-01"
+    ],
+    "github_issue_number": 195,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/195",
+    "github_group_issue_number": 98,
+    "hard_dependency_issue_numbers": [
+      193
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G17-03",
+    "group": "G17",
+    "title": "威胁模型与越权/滥用回归",
+    "wave": "W4/W5",
+    "paths": [
+      "security/threat-model",
+      "tests/security/authorization"
+    ],
+    "contract": "身份→对象→操作授权矩阵；abuse limits",
+    "implementation": "建跨用户/退群/拉黑/撤设备/商户隔离与管理scope测试；聊天 spam、好友枚举、位置探测、验证码爆破限速；金融与小程序威胁单独评审；产品补丁交域owner，安全组只改专属测试防冲突",
+    "acceptance": "每个私有读写endpoint有负向用例；限速不误伤正常批量同步；审计本身无密文密钥和token泄露",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "bytecodealliance/wasmtime",
+      "rust-ammonia/ammonia",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G17-02"
+    ],
+    "github_issue_number": 196,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/196",
+    "github_group_issue_number": 98,
+    "hard_dependency_issue_numbers": [
+      195
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G17-04",
+    "group": "G17",
+    "title": "解码、XSS、SSRF与沙箱模糊测试",
+    "wave": "W4/W5",
+    "paths": [
+      "tests/security/fuzz",
+      "tests/security/web",
+      "tests/security/sandbox"
+    ],
+    "contract": "协议frame/QR/package/media/parser fuzz corpus",
+    "implementation": "覆盖bincode/JSON大小/深度、二维码、压缩包、HTML/CSS、媒体/模型解析；URL出站按解析后IP、重定向每跳、IPv6/metadata/内网拒绝策略；小程序origin/IPC/资源预算逃逸测试；最小化崩溃样本回归",
+    "acceptance": "CI短fuzz+定期云长fuzz；恶意输入不主进程崩溃或越权；路径穿越和DNS rebinding样例失败封闭",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "bytecodealliance/wasmtime",
+      "rust-ammonia/ammonia",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G17-03"
+    ],
+    "github_issue_number": 197,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/197",
+    "github_group_issue_number": 98,
+    "hard_dependency_issue_numbers": [
+      196
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G17-05",
+    "group": "G17",
+    "title": "独立发布评审与事实核对",
+    "wave": "W4/W5",
+    "paths": [
+      "security/release-reviews",
+      "third_party/reviews/release"
+    ],
+    "contract": "release evidence bundle→pass/block",
+    "implementation": "核对入口完成率、真实供应商证据、E2EE实际实现、许可证来源与高危漏洞；对设备证据抽查而非只读开发者自报；阻塞写具体owner/task/test，复核关闭；不能用安全清单替代实际测试",
+    "acceptance": "无未解释Critical/High可达项；外部阻塞不计完成；发布声明与支持平台一致；所有例外有可追溯审批及有效期",
+    "status": "PLANNED",
+    "integration_dependencies": [],
+    "reference_repositories": [
+      "bytecodealliance/wasmtime",
+      "rust-ammonia/ammonia",
+      "RocketChat/Rocket.Chat"
+    ],
+    "hard_dependencies": [
+      "G17-04"
+    ],
+    "github_issue_number": 198,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/198",
+    "github_group_issue_number": 98,
+    "hard_dependency_issue_numbers": [
+      197
+    ],
+    "integration_dependency_issue_numbers": []
+  },
+  {
+    "id": "G02-06",
+    "group": "G02",
+    "title": "手机号验证码、登录方式与协议同意记录",
+    "wave": "W2/W3",
+    "paths": [
+      "crates/features/identity/src/login_challenge",
+      "crates/features/identity/src/consent"
+    ],
+    "contract": "identity.login.challenge/verify/methods；ConsentReceipt",
+    "implementation": "手机号E.164规范化、国家码选择和枚举防护；短信挑战随机生成，哈希存储，绑定phone+purpose+device，TTL/尝试次数/每号每IP限流、重发真实倒计时、防并发复用；只有服务端验证成功才签发会话，勾选协议不是认证；协议版本/同意时间/用途落审计；邮箱/自有账号密码沿用身份规则，QQ等外部OAuth必须官方凭据与state/PKCE验证，真实微信账号登录另列外部阻塞，不能声称自有账号就是微信账号；语言切换用真实locale资源，测试验证码只允许隔离dev profile，生产禁固定万能码",
+    "acceptance": "错码/过期/重放/爆破/响应丢失/并发验证测试；重发后旧码失效；不泄漏手机号是否注册；凭据日志脱敏；供应商sandbox成功及失败证据齐全，未开通不计全范围完成",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G02-01",
+      "G00-03"
+    ],
+    "integration_dependencies": [
+      "G12-06",
+      "G10-06"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "matrix-org/vodozemac"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 112,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/112",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      103,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      173,
+      160
+    ]
+  },
+  {
+    "id": "G02-07",
+    "group": "G02",
+    "title": "桌面扫码登录、手机授权与设备信任",
+    "wave": "W2/W3",
+    "paths": [
+      "crates/features/identity/src/qr_login"
+    ],
+    "contract": "identity.qr_login.create/scan/approve/reject/poll；DeviceAuthorization",
+    "implementation": "桌面生成短期单次challenge，二维码含公开challenge而非session token；待登录设备生成临时密钥/PKCE绑定，服务端保存校验摘要；已登录手机扫码只到SCANNED，显示桌面OS/设备/位置线索后用户明确批准才到APPROVED；桌面提交绑定证明原子exchange为设备会话，手机拒绝/过期/退出后失败；二维码刷新撤销旧challenge；设备撤销与跨端密钥信任分开，扫码登录不能静默信任全部历史密钥；自动登录仅使用可撤销的设备凭据进OS安全存储，默认最近7天同步是查询范围而非删除旧消息",
+    "acceptance": "真实手机扫真实桌面码完成授权；复制二维码的第三方不能盗领会话；两桌面竞领、旧码重放、手机撤销和刷新均失败封闭；扫码点击演示按钮不得成为生产认证路径",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G02-06"
+    ],
+    "integration_dependencies": [
+      "G07-01",
+      "G10-06",
+      "G12-06"
+    ],
+    "reference_repositories": [
+      "zulip/zulip",
+      "matrix-org/vodozemac"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 115,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/115",
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      112
+    ],
+    "integration_dependency_issue_numbers": [
+      136,
+      160,
+      173
+    ]
+  },
+  {
+    "id": "G05-06",
+    "group": "G05",
+    "title": "我的状态、好友状态、背景与到期",
+    "wave": "W2/W3",
+    "paths": [
+      "crates/features/content/src/status"
+    ],
+    "contract": "content.status.set/clear/list/detail/background；StatusChanged",
+    "implementation": "状态对象含owner/type/text/media_ref/audience/version/created_at/expires_at，状态枚举和自定义字段校验；设置/取消原子化并通过事件同步，朋友列表按G02关系/屏蔽/隐私过滤；拍摄或相册背景先经G04上传验证再引用，失败保留草稿；到期作业清除可见状态但保留必要审计，客户端时间不能决定到期；状态搜索和好友详情返回真实投影，心形若可操作必须有反应命令和唯一约束",
+    "acceptance": "A设置→好友B可见→非好友C不可见→到期/清除/拉黑后立即不可见；同用户两端同步且重启保留；所有状态枚举/背景入口有测试，图片权限拒绝可恢复",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G05-01"
+    ],
+    "integration_dependencies": [
+      "G02-02",
+      "G04-01",
+      "G13-06"
+    ],
+    "reference_repositories": [
+      "zulip/zulip"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 129,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/129",
+    "github_group_issue_number": 86,
+    "hard_dependency_issue_numbers": [
+      126
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      117,
+      174
+    ]
+  },
+  {
+    "id": "G07-08",
+    "group": "G07",
+    "title": "位置消息、POI、导航与实时位置共享",
+    "wave": "W2/W3",
+    "paths": [
+      "crates/features/discovery/src/location_share"
+    ],
+    "contract": "location.search/send/share.start/join/update/leave/stop；LocationSession",
+    "implementation": "真实地图/POIProviderPort与坐标系契约，明确WGS84/GCJ02等边界不可盲混坐标；发送位置是固定快照消息引用，G03负责投递，G07负责会话与位置权限；实时共享必须显式加入、仅授权会话成员可见，带seq/TTL/更新频率/精度/退出和单会话上限；后台定位按Android/iOS权限和生命周期要求，不承诺无限后台存活；断网显示最后位置时间并停止伪更新；地图导航经受限OS深链或真实导航组件，撤回后清停止任务并逐请求拒绝旧会话；精确位置不进入公开附近索引",
+    "acceptance": "两真机真实移动后位置变化；停止/退群/撤权限后对端不再能读新位置；模拟器只能补自动测试不替真机；POI搜索不是静态附近列表，地图错误/坐标偏差有回归",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G07-03",
+      "G03-01"
+    ],
+    "integration_dependencies": [
+      "G12-05",
+      "G13-06",
+      "G04-05"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 142,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/142",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      140,
+      116
+    ],
+    "integration_dependency_issue_numbers": [
+      171,
+      174,
+      125
+    ]
+  },
+  {
+    "id": "G07-09",
+    "group": "G07",
+    "title": "个人名片二维码、样式、保存分享与撤销",
+    "wave": "W2/W3",
+    "paths": [
+      "crates/features/discovery/src/contact_qr"
+    ],
+    "contract": "contact.qr.create/resolve/rotate；ContactCardPayload",
+    "implementation": "调用成熟编码器生成标准码，payload是可撤销的opaque profile capability或受控深链，不含手机号token等敏感数据；支持春日绿/墨绿/暖阳/雾蓝四样式，但码的quiet zone/对比度/纠错和logo遮挡必须通过真实解码测试；保存是系统相册/下载实际写入，分享走受控系统分享或好友消息；扫码进入真实资料再发好友申请，不能扫码即自动加好友；身份/实名徽标只能来自已验证字段，旧码可轮换撤销",
+    "acceptance": "四种样式在手机相机/相册/桌面截图中可解码；保存图片重开可扫；撤销后旧码不可加人；二维码不授予读取全部资料权限，好友申请仍走G02权限与限流",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G07-01"
+    ],
+    "integration_dependencies": [
+      "G02-02",
+      "G04-05",
+      "G13-06"
+    ],
+    "reference_repositories": [
+      "zxing-cpp/zxing-cpp"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 138,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/138",
+    "github_group_issue_number": 88,
+    "hard_dependency_issue_numbers": [
+      136
+    ],
+    "integration_dependency_issue_numbers": [
+      108,
+      125,
+      174
+    ]
+  },
+  {
+    "id": "G10-06",
+    "group": "G10",
+    "title": "桌面扫码登录与新版界面字面承诺接线",
+    "wave": "W2/W3",
+    "paths": [
+      "apps/desktop-web/src/features/auth/qr",
+      "apps/desktop-web/src/features/auth/login_options"
+    ],
+    "contract": "identity.qr_login.*；PlatformPort.secrets；sync.range",
+    "implementation": "将DesktopLoginPage模拟状态替换为Rust会话事件：CREATED/SCANNED/WAITING_APPROVAL/APPROVED/EXPIRED/REJECTED；扫码成功不自动登录，桌面点击模拟确认绝不能生产签发会话；切换账号撤销challenge和清旧投影；自动登录持久化到OS密钥库，Web用独立安全会话策略，默认近7天增量可查看更多历史；登录页最高1GB文件承诺要求G04/G16的实际流式上传下载预算、取消续传和hash测试，不能只改文案称已支持；⌘K/Windows/Linux对应快捷键真实打开全局搜索，深色模式生效",
+    "acceptance": "真实手机批准后桌面进入账号、拒绝和过期不能进入；新旧账号无缓存串读；1GB合成文件传输/断点/取消云端测试有证据，网页/桌面各按真实能力验收",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G10-01"
+    ],
+    "integration_dependencies": [
+      "G02-07",
+      "G01-02",
+      "G01-03",
+      "G04-01",
+      "G16-04"
+    ],
+    "reference_repositories": [
+      "tauri-apps/tauri"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 160,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/160",
+    "github_group_issue_number": 91,
+    "hard_dependency_issue_numbers": [
+      152
+    ],
+    "integration_dependency_issue_numbers": [
+      115,
+      105,
+      106,
+      117,
+      192
+    ]
+  },
+  {
+    "id": "G12-06",
+    "group": "G12",
+    "title": "手机号登录、扫码授权与移动协议界面",
+    "wave": "W2/W3",
+    "paths": [
+      "apps/mobile/lib/features/auth/challenge",
+      "apps/mobile/lib/features/auth/qr_approval"
+    ],
+    "contract": "identity.login.*；identity.qr_login.approve/reject",
+    "implementation": "按新版LoginScreen实现国家码/手机号/验证码/协议可点击页面/语言切换和其他登录方式；倒计时由服务端deadline与本地单调时钟显示，重启不能绕重发限制；手机号不默认固定13800000000，校验后再提交Rust，不以勾选协议直接进聊天；扫码遇桌面登录challenge跳设备授权详情，显示将授权的设备并可拒绝；同意后由Rust处理，Dart不手存token；验证码错误、短信不可用和未授权外部OAuth有准确状态",
+    "acceptance": "Android/iOS各真实sandbox登录、错码过期、重发、返回取消；协议与隐私页面可读且版本可审计；手机确认授权只影响目标桌面，退出后不能继续批准",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G12-01"
+    ],
+    "integration_dependencies": [
+      "G02-06",
+      "G02-07",
+      "G07-01"
+    ],
+    "reference_repositories": [
+      "mozilla/uniffi-rs"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 173,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/173",
+    "github_group_issue_number": 93,
+    "hard_dependency_issue_numbers": [
+      163
+    ],
+    "integration_dependency_issue_numbers": [
+      112,
+      115,
+      136
+    ]
+  },
+  {
+    "id": "G13-06",
+    "group": "G13",
+    "title": "新版状态、位置共享、名片码与订阅号整合",
+    "wave": "W2/W3",
+    "paths": [
+      "apps/mobile/lib/features/content/status",
+      "apps/mobile/lib/features/discover/location",
+      "apps/mobile/lib/features/discover/mycode"
+    ],
+    "contract": "content.status.*；location.*；contact.qr.*；publisher.*",
+    "implementation": "StatusScreen全部状态/拍摄/相册/背景/好友状态接真实数据；LocationScreen用真实地图与POI、当前位置、发送快照/共享会话和导航，不再画SVG当真实地点；MyCodeScreen四样式用可扫描标准码并实际保存分享；OfficialScreen公众号头像/未读/添加/搜索/更多/文章卡传递真实publisher_id/article_id，不能所有卡打开同篇样例；所有只画图标但未绑定事件的搜索/更多/国家码/协议链接也要登记实现；从聊天发位置/转账后回到原conversation而非固定示例会话",
+    "acceptance": "新增六个手机页逐入口真机验证；B看到A状态/位置变化与撤销；四码保存后可扫；不同文章打开不同ID；离页停止定位和订阅，无toast假完成",
+    "status": "PLANNED",
+    "hard_dependencies": [
+      "G13-01"
+    ],
+    "integration_dependencies": [
+      "G05-06",
+      "G07-08",
+      "G07-09",
+      "G05-02",
+      "G12-05",
+      "G06-04"
+    ],
+    "reference_repositories": [
+      "signalapp/Signal-Android"
+    ],
+    "ui_revision": "v2",
+    "github_issue_number": 174,
+    "github_issue_url": "https://github.com/bear20252026/wxlike/issues/174",
+    "github_group_issue_number": 94,
+    "hard_dependency_issue_numbers": [
+      172
+    ],
+    "integration_dependency_issue_numbers": [
+      129,
+      142,
+      138,
+      128,
+      171,
+      134
+    ]
+  }
+]

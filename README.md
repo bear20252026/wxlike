@@ -1,5 +1,15 @@
 # wxlike
 
+## 全平台交付计划与最新 UI（2026-10-24）
+
+- [全局总跟踪 #80](https://github.com/bear20252026/wxlike/issues/80)：18个职责组、100张开发任务卡。
+- [开发交接总目录](docs/full-platform-delivery/README.md) · [任务可视化索引](docs/full-platform-delivery/issues/index.md) · [最新 UI 变更](docs/full-platform-delivery/03_ui_v2_changes.md)。
+- [最新UI原型源码与原始设计包](design/ui-v2/README.md)：桌面10页、手机27页；设计原型不代表生产功能已实现。
+- [全部本轮任务](https://github.com/bear20252026/wxlike/issues?q=is%3Aissue+label%3Adelivery%3Aui-v2)：用group:G00—group:G17标签筛选、认领与追踪。
+
+既有审计整改历史仍见 #23；新计划基于真实代码继续开发，不重复创建已完成的ureq 3迁移。
+
+
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
 Rust 跨平台 IM（微信形态）骨架 + 本地复用研究容器。自研协议与实现，**不含任何腾讯代码进入分发物**。

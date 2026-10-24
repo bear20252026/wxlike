@@ -1,0 +1,24 @@
+task_id: G06-02
+contract_version: contract-v1
+base_sha: REPLACE_WITH_MERGED_BASE
+owner: G06
+new_dependencies:
+  # 只提需求，G00统一解析根锁；不能照填未验证版本。
+  - package: PROVIDER_SDK_IF_NEEDED
+    approved_version: PENDING_LICENSE_AND_ADVISORY_REVIEW
+route_mounts:
+  - prefix: /api/v1/payment-intents
+    factory: commerce::http::routes
+command_registration: commerce::register_commands
+job_registration: commerce::register_jobs
+configuration:
+  - name: PAYMENT_CREDENTIAL_REF
+    value_type: secret_reference_only
+migration_proposals:
+  - schema/proposals/G06/payment-intent.sql
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: [REPLACE_WITH_REVIEWED_ENTRY_IDS]
+tests_evidence: [REPLACE_WITH_CI_URL]
+compatibility: additive_schema_and_existing_route_adapter
+rollback: disable_new_entry_leave_ledger_and_provider_query_worker_running
+external_blockers: [PAYMENT]

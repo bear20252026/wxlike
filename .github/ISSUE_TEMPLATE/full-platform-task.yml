@@ -1,0 +1,59 @@
+name: 全平台交付增量任务
+description: 在18组边界内新增或细分任务，关联总跟踪#80
+title: "[Gxx-nn][UI v2] "
+labels: ["delivery:ui-v2", "type:task"]
+body:
+  - type: markdown
+    attributes:
+      value: "请先查阅 docs/full-platform-delivery/issues/index.md，避免重复任务；新路径与公共改动先交G00协调。"
+  - type: dropdown
+    id: group
+    attributes:
+      label: 职责组
+      options:
+        - G00
+        - G01
+        - G02
+        - G03
+        - G04
+        - G05
+        - G06
+        - G07
+        - G08
+        - G09
+        - G10
+        - G11
+        - G12
+        - G13
+        - G14
+        - G15
+        - G16
+        - G17
+    validations:
+      required: true
+  - type: textarea
+    id: entry
+    attributes:
+      label: UI入口与用户结果
+      description: 具体页面/变体/entry_id/action_id，成功后另一端或服务端如何验证。
+    validations:
+      required: true
+  - type: textarea
+    id: implementation
+    attributes:
+      label: 代码实现、独占路径与契约
+      description: 写清接口、数据约束、权限、幂等、状态机、依赖Issue和禁止改动的公共文件。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收与证据
+      description: 成功/失败/越权/重试/取消，云CI、真机、供应商联调、来源许可和回滚。
+    validations:
+      required: true
+  - type: textarea
+    id: dependency
+    attributes:
+      label: 前置任务与外部阻塞
+      description: 引用实际Issue号；供应商/签名缺失保持BLOCKED_EXTERNAL，不计完成。

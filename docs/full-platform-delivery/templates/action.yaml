@@ -1,0 +1,20 @@
+# 设计模板；字段由G00-03冻结后交G01生成，不是已装配的action。
+schema_version: 1
+action_id: commerce.payment.confirm
+owner: G06
+params_schema: contracts/domains/commerce/payment-confirm.schema.json
+result_schema: contracts/domains/commerce/payment-result.schema.json
+actor_from: authenticated_session
+required_scopes: [payment.confirm]
+resource_checks: [intent_belongs_to_actor, payee_and_amount_immutable, intent_not_expired]
+confirmation: recent_auth_and_parameter_bound_one_time_token
+idempotency:
+  required: true
+  key_scope: [actor, action_id, idempotency_key]
+  parameter_digest_must_match: true
+offline: queue_prepare_only_execute_requires_online_confirmation
+surfaces: [desktop, web, android, ios, cli, mcp]
+errors: [UNAUTHENTICATED, FORBIDDEN, VALIDATION, CONFLICT, REQUIRES_CONFIRMATION, DEPENDENCY_UNAVAILABLE]
+audit: metadata_no_card_or_token_or_secret
+events: [commerce.payment.status_changed.v1]
+tests: [MONEY-01, ORDER-01, AUTH-01]

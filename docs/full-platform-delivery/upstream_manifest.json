@@ -1,0 +1,209 @@
+{
+  "retrieved_at": "2026-10-24",
+  "status": "Research HEAD pins, not approved vendoring or release recommendations",
+  "repositories": [
+    {
+      "repo": "signalapp/Signal-Android",
+      "branch": "main",
+      "license": "AGPL-3.0",
+      "url": "https://github.com/signalapp/Signal-Android",
+      "sha": "16f138410a4ab940864a2791ae281dd1b2318611"
+    },
+    {
+      "repo": "zulip/zulip",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/zulip/zulip",
+      "sha": "6bef8cb6bdc0029f98bcc14d6ca58b8285d06234"
+    },
+    {
+      "repo": "signalapp/Signal-Desktop",
+      "branch": "main",
+      "license": "AGPL-3.0",
+      "url": "https://github.com/signalapp/Signal-Desktop",
+      "sha": "17502b9d1a9e34af689f31508c4ac4ccee5b5cb7"
+    },
+    {
+      "repo": "RocketChat/Rocket.Chat",
+      "branch": "develop",
+      "license": "NOASSERTION",
+      "url": "https://github.com/RocketChat/Rocket.Chat",
+      "sha": "1826a86264c14ebb8b6130a5b89ed8fc37cb2ef9"
+    },
+    {
+      "repo": "mattermost/mattermost",
+      "branch": "master",
+      "license": "NOASSERTION",
+      "url": "https://github.com/mattermost/mattermost",
+      "sha": "c2f2eff3b2684e1be94a24bbc48848bb437389dd"
+    },
+    {
+      "repo": "nextcloud/spreed",
+      "branch": "main",
+      "license": "AGPL-3.0",
+      "url": "https://github.com/nextcloud/spreed",
+      "sha": "1fd0f2133833ecafcaf97bf4e3cda4056e44d44d"
+    },
+    {
+      "repo": "element-hq/synapse",
+      "branch": "develop",
+      "license": "AGPL-3.0",
+      "url": "https://github.com/element-hq/synapse",
+      "sha": "8d60450b336fecf629cd55aafe3ccb122dc11ada"
+    },
+    {
+      "repo": "element-hq/element-web",
+      "branch": "develop",
+      "license": "AGPL-3.0",
+      "url": "https://github.com/element-hq/element-web",
+      "sha": "15f63d5959697796e9d30d507e75513b6c97e34f"
+    },
+    {
+      "repo": "cure53/DOMPurify",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/cure53/DOMPurify",
+      "sha": "b7e0edc1293359d6ab54dc0ccc9cf9bbdd72aff7"
+    },
+    {
+      "repo": "mozilla/uniffi-rs",
+      "branch": "main",
+      "license": "MPL-2.0",
+      "url": "https://github.com/mozilla/uniffi-rs",
+      "sha": "c31f4bc025c7a31eae56b49107f50e6d38e76bc7"
+    },
+    {
+      "repo": "marmelab/react-admin",
+      "branch": "master",
+      "license": "MIT",
+      "url": "https://github.com/marmelab/react-admin",
+      "sha": "089ad1bf6d55500eab228f3833d12a5dbaf530cb"
+    },
+    {
+      "repo": "huggingface/candle",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/huggingface/candle",
+      "sha": "12bb5d1f6350f4ea9827d9086f213feec1f0af6a"
+    },
+    {
+      "repo": "OpenAPITools/openapi-generator",
+      "branch": "master",
+      "license": "Apache-2.0",
+      "url": "https://github.com/OpenAPITools/openapi-generator",
+      "sha": "f822c4feac9ee6fc8244925f893e4cdd342d7c7a"
+    },
+    {
+      "repo": "coturn/coturn",
+      "branch": "master",
+      "license": "NOASSERTION",
+      "url": "https://github.com/coturn/coturn",
+      "sha": "596c48bff27e82ecfb15f42327688348f3b49f23"
+    },
+    {
+      "repo": "ggml-org/whisper.cpp",
+      "branch": "master",
+      "license": "MIT",
+      "url": "https://github.com/ggml-org/whisper.cpp",
+      "sha": "231638a0717b7822784297e5980965ffcec05810"
+    },
+    {
+      "repo": "matrix-org/matrix-rust-sdk",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/matrix-org/matrix-rust-sdk",
+      "sha": "8de215a0aa0026afa5754ae5f05a6d168d1a1d60"
+    },
+    {
+      "repo": "rust-ammonia/ammonia",
+      "branch": "master",
+      "license": "Apache-2.0",
+      "url": "https://github.com/rust-ammonia/ammonia",
+      "sha": "72d56debf499cc88adc253c326d05a3563b8ee06"
+    },
+    {
+      "repo": "tauri-apps/tauri",
+      "branch": "dev",
+      "license": "Apache-2.0",
+      "url": "https://github.com/tauri-apps/tauri",
+      "sha": "c464ef928c35d7eedd64bcd5df16b62b3393b7fa"
+    },
+    {
+      "repo": "livekit/livekit",
+      "branch": "master",
+      "license": "Apache-2.0",
+      "url": "https://github.com/livekit/livekit",
+      "sha": "9644b99247f5bf770e83d61d186315588372e408"
+    },
+    {
+      "repo": "zxing-cpp/zxing-cpp",
+      "branch": "master",
+      "license": "Apache-2.0",
+      "url": "https://github.com/zxing-cpp/zxing-cpp",
+      "sha": "2c3dcfeffa7878950a58c1703c86774a428b0c91"
+    },
+    {
+      "repo": "matrix-org/vodozemac",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/matrix-org/vodozemac",
+      "sha": "70ad23e8cbb1c7c0ab5884553f49a4e4f05af80b"
+    },
+    {
+      "repo": "TanStack/query",
+      "branch": "main",
+      "license": "MIT",
+      "url": "https://github.com/TanStack/query",
+      "sha": "9e4253766f8015d1372bcd515f50103fd067a42d"
+    },
+    {
+      "repo": "ueberdosis/tiptap",
+      "branch": "main",
+      "license": "MIT",
+      "url": "https://github.com/ueberdosis/tiptap",
+      "sha": "b1f54b402b1b8b535763bfd38b30ae3ddde1104d"
+    },
+    {
+      "repo": "medusajs/medusa",
+      "branch": "develop",
+      "license": "NOASSERTION",
+      "url": "https://github.com/medusajs/medusa",
+      "sha": "029fb31fd077ab9c6d6fd9d68c676c17c71294c7"
+    },
+    {
+      "repo": "TanStack/virtual",
+      "branch": "main",
+      "license": "MIT",
+      "url": "https://github.com/TanStack/virtual",
+      "sha": "c462c6141ea434fdbc52b5dd866bb8db7e4fd07e"
+    },
+    {
+      "repo": "bytecodealliance/wasmtime",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/bytecodealliance/wasmtime",
+      "sha": "ffff2e2db24a291f02429f123aba1631fa8eea67"
+    },
+    {
+      "repo": "rust-mcp-stack/rust-mcp-sdk",
+      "branch": "main",
+      "license": "MIT",
+      "url": "https://github.com/rust-mcp-stack/rust-mcp-sdk",
+      "sha": "d18de2c19ccfdaa249db56137ff5268e2b193f2f"
+    },
+    {
+      "repo": "apache/opendal",
+      "branch": "main",
+      "license": "Apache-2.0",
+      "url": "https://github.com/apache/opendal",
+      "sha": "19ba33da9e46738fd4cad29c7ebfd5f3e5ed2cfc"
+    },
+    {
+      "repo": "modelcontextprotocol/rust-sdk",
+      "branch": "main",
+      "license": "NOASSERTION",
+      "url": "https://github.com/modelcontextprotocol/rust-sdk",
+      "sha": "8aec3891dd07fc537b21c2eb2596235640de9025"
+    }
+  ]
+}
