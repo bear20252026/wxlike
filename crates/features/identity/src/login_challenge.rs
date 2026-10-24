@@ -242,19 +242,32 @@ pub fn issue(
     Ok(issued(prepared))
 }
 
-/// 校验时读出的一行：`(phone_e164, purpose, device_id, code_hash, id, expires_at,
-/// attempts, max_attempts, consumed_at)`。
-type ChallengeRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    Option<i64>,
-);
+/// 校验时读出的一行（具名字段，避免 9 元组）。
+struct ChallengeRow {
+    phone: String,
+    purpose: String,
+    device_id: String,
+    code_hash: String,
+    id: String,
+    expires_at: i64,
+    attempts: i64,
+    max_attempts: i64,
+    consumed_at: Option<i64>,
+}
+
+fn challenge_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChallengeRow> {
+    Ok(ChallengeRow {
+        phone: r.get(0)?,
+        purpose: r.get(1)?,
+        device_id: r.get(2)?,
+        code_hash: r.get(3)?,
+        id: r.get(4)?,
+        expires_at: r.get(5)?,
+        attempts: r.get(6)?,
+        max_attempts: r.get(7)?,
+        consumed_at: r.get(8)?,
+    })
+}
 
 /// 校验并消费。任何失败都不透露"这个号码是否存在"。
 pub fn verify(
@@ -266,40 +279,37 @@ pub fn verify(
 ) -> Result<Verified> {
     let row: Option<ChallengeRow> = conn
         .query_row(
-            "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts, \
-             max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
+            "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts,              max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
             params![challenge_id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                ))
-            },
+            challenge_row,
         )
         .optional()?;
-    let Some((phone, purpose, device_id, stored, id, expires_at, attempts, max, consumed)) = row
-    else {
+    let Some(row) = row else {
         return Err(IdError::Unauthorized("invalid or expired code"));
     };
+    let ChallengeRow {
+        phone,
+        purpose,
+        device_id,
+        code_hash: stored_hash,
+        id,
+        expires_at,
+        attempts,
+        max_attempts,
+        consumed_at: consumed,
+    } = row;
     if consumed.is_some() {
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
     if expires_at <= now {
         return Err(IdError::Expired);
     }
-    if attempts >= max {
+    if attempts >= max_attempts {
         return Err(IdError::Unauthorized("too many attempts"));
     }
     bump_attempts(conn, &id)?;
     let candidate = code_hash(pepper, &id, &phone, &purpose, &device_id, code)?;
-    if !crate::ct_eq(candidate.as_bytes(), stored.as_bytes()) {
+    if !crate::ct_eq(candidate.as_bytes(), stored_hash.as_bytes()) {
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
     let n = conn.execute(
