@@ -89,7 +89,11 @@ WXLIKE_LOG       日志过滤，如 "wxlike_server=debug,info"
 
 # 通话相关
 WXLIKE_STUN_URL     stun:host:3478
-WXLIKE_TURN_URL     turn:host:3478 + WXLIKE_TURN_USER / WXLIKE_TURN_PASS
+WXLIKE_TURN_URL     turn:host:3478（只做宣告；凭据走下面的 REST 短期签发）
+WXLIKE_TURN_SECRET  coturn 的 static-auth-secret——**设了它才启用 /api/turn/credentials**；
+                    客户端登录后向该端点取按用户、1 小时有效的短期凭据
+                    （coturn 侧须配 `use-auth-secret` + 同一个 secret，
+                    不要再用 static user/password——那等于把中继凭据发给每个客户端）
 WXLIKE_SFU_ADVERTISE  对外宣告的媒体 IP（NAT 后面必须显式指定）
 WXLIKE_SFU_PORT       SFU 端口段起点
 
