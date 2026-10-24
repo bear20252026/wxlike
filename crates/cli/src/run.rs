@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use wxlike_client::execute::Executor;
 use wxlike_client::Http;
+use wxlike_cmd::auth::{AuthGate, Provenance, ScopeSet};
 use wxlike_cmd::catalog::{self, CommandSpec};
 use wxlike_cmd::policy::Policy;
 
@@ -50,14 +51,12 @@ fn run(inv: Invocation) -> u8 {
             print!("{}", wxlike_cmd::policy::render(&policy));
             EXIT_OK
         }
+        Command::Auth => auth_report(&options, &policy),
         Command::Inspect => with_executor(&options, &policy)
             .map_or_else(|code| code, |exec| inspect(&exec, options.json)),
         Command::Run(cmds) => with_executor(&options, &policy)
             .map_or_else(|code| code, |exec| run_commands(&exec, &cmds, options.json)),
-        Command::Invoke { spec, params } => with_executor(&options, &policy).map_or_else(
-            |code| code,
-            |exec| invoke(&exec, spec, &params, options.json),
-        ),
+        Command::Invoke { spec, params } => invoke_command(&options, &policy, spec, &params),
     }
 }
 
@@ -76,6 +75,68 @@ fn build_policy(options: &Options) -> Policy {
         p.force_read_only();
     }
     p
+}
+
+/// 一条业务命令的执行路径：闸门 → 执行器 → 输出。
+fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params: &Value) -> u8 {
+    let gate = match build_gate(options) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    let exec = match with_executor(options, policy) {
+        Ok(exec) => exec,
+        Err(code) => return code,
+    };
+    invoke(&exec, spec, params, options.json, gate.as_ref())
+}
+
+/// 会话/scope 闸门。没配 `--scope` 就不挂：本地单用户场景由 `policy` 负责，
+/// 远程调用必须配（否则等于把"谁能做什么"全交给服务端一次判定）。
+fn build_gate(options: &Options) -> Result<Option<AuthGate>, String> {
+    let Some(scope) = &options.scope else {
+        return Ok(None);
+    };
+    if !ScopeSet::parse(scope).invalid().is_empty() {
+        return Err(format!("--scope 里有无法解析的条目：{scope}"));
+    }
+    if options.actor.trim().is_empty() {
+        return Err("--scope 需要 --actor（身份不能为空）".to_string());
+    }
+    let session = options
+        .session_id
+        .clone()
+        .ok_or_else(|| "--scope 需要配合 --session-id（会话必须绑定）".to_string())?;
+    AuthGate::from_parts(
+        &options.actor,
+        &session,
+        scope,
+        Some(&session),
+        options.origin_allow.clone(),
+    )
+    .map(Some)
+    .map_err(|e| e.to_string())
+}
+
+/// `wxlike auth`：把"我是谁、我能在哪些资源上做什么"一次说清。
+fn auth_report(options: &Options, policy: &Policy) -> u8 {
+    match build_gate(options) {
+        Ok(Some(gate)) => {
+            print!("{}", gate.render(policy));
+            EXIT_OK
+        }
+        Ok(None) => {
+            eprintln!("未配置 --scope（也没有 WXLIKE_SCOPE）：只按本地策略判定");
+            eprintln!("示例：wxlike auth --scope 'conv:g-* media:*' --session-id s-1");
+            EXIT_USAGE
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            EXIT_USAGE
+        }
+    }
 }
 
 /// 执行类命令必须先有服务端地址与 token。
@@ -98,7 +159,20 @@ fn with_executor(options: &Options, policy: &Policy) -> Result<Executor, u8> {
     Ok(Executor::new(http, policy.clone()))
 }
 
-fn invoke(exec: &Executor, spec: &CommandSpec, params: &Value, json_out: bool) -> u8 {
+fn invoke(
+    exec: &Executor,
+    spec: &CommandSpec,
+    params: &Value,
+    json_out: bool,
+    gate: Option<&AuthGate>,
+) -> u8 {
+    // scope 先行：注定被服务端拒的请求不发出去，也顺便省掉一次网络往返
+    if let Some(gate) = gate {
+        if let Err(e) = gate.check(spec, params, Provenance::Trusted) {
+            eprintln!("{}: {e}", spec.id);
+            return EXIT_DENIED;
+        }
+    }
     match exec.run(spec.id, params) {
         Ok(v) => {
             emit(&v, json_out);
@@ -205,6 +279,15 @@ pub fn classify(error: &str) -> u8 {
     if error.contains("unknown command") || error.contains("尚未实现") {
         return EXIT_UNKNOWN;
     }
+    if error.contains("missing scope")
+        || error.contains("is an admin action")
+        || error.contains("untrusted content")
+        || error.contains("delegation rejected")
+        || error.contains("token audience")
+        || error.contains("token expired")
+    {
+        return EXIT_DENIED;
+    }
     if error.contains("not allowed")
         || error.contains("write access was not granted")
         || error.contains("destructive access was not granted")
@@ -257,6 +340,15 @@ mod tests {
         // 网络
         assert_eq!(classify("connection refused: connect error"), EXIT_NETWORK);
         assert_eq!(classify("request timed out"), EXIT_NETWORK);
+        // G15-02 的会话/scope 拒绝也归 3：脚本的动作一样是"找人改授权"
+        assert_eq!(
+            classify("missing scope conv:g-2 (grant it in the token, not in the prompt)"),
+            EXIT_DENIED
+        );
+        assert_eq!(
+            classify("group.kick is an admin action and this actor has no admin role"),
+            EXIT_DENIED
+        );
         // 其它一律业务失败
         assert_eq!(classify("server: 500 internal error"), EXIT_FAILED);
     }
@@ -287,6 +379,37 @@ mod tests {
         assert!(err.contains("not allowed"), "{err}");
         assert!(!err.contains("connect"), "不该走到网络：{err}");
         assert_eq!(classify(&err), EXIT_DENIED);
+    }
+
+    /// scope 没配就不挂闸门；配了就必须绑定会话。
+    #[test]
+    fn gate_needs_session_and_rejects_unknown_scope_class() {
+        let none = Options::default();
+        assert!(build_gate(&none).expect("ok").is_none());
+
+        let scoped = Options {
+            actor: "u-alice".into(),
+            scope: Some("conv:*".into()),
+            ..Options::default()
+        };
+        assert!(build_gate(&scoped).unwrap_err().contains("session-id"));
+
+        let bad = Options {
+            actor: "u-alice".into(),
+            scope: Some("conv:* money:*".into()),
+            session_id: Some("s-1".into()),
+            ..Options::default()
+        };
+        assert!(build_gate(&bad).unwrap_err().contains("无法解析"));
+
+        let good = Options {
+            actor: "u-alice".into(),
+            scope: Some("conv:g-1".into()),
+            session_id: Some("s-1".into()),
+            ..Options::default()
+        };
+        let gate = build_gate(&good).expect("ok").expect("gate");
+        assert_eq!(gate.context().session_id, "s-1");
     }
 
     /// `--read-only` 必须压过环境变量里开的写权限。

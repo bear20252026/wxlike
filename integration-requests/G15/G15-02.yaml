@@ -1,0 +1,61 @@
+# G15-02 会话授权、资源 scope 与代理隔离 —— 集成请求
+# 本文件登记超出 G15 独占写路径、需要 G00 或其他组执行的条目。
+
+request_id: G15-02
+task_issue: 184
+group_issue: 96
+contract_version: auth-scope-v1
+artifacts:
+  - crates/cmd/src/auth.rs
+  - crates/mcp/src/server.rs
+  - crates/cli/src/args.rs
+  - crates/cli/src/run.rs
+
+requests:
+  - id: REQ-G00-agent-policy-crate
+    target: G00
+    action: 把 `crates/cmd/src/auth.rs` 抽成独立 crate `crates/agent-policy`（`Cargo.toml` 见下），
+      根 `Cargo.toml` 的 `members` 追加 `"crates/agent-policy"`，并把
+      `crates/cmd` 的 auth 模块改为 `pub use wxlike_agent_policy as auth;` 保持路径不变。
+    rationale: 计划交付路径是 `crates/agent-policy/**`，但新 workspace 成员必须在根清单登记，
+      而根清单由 G00 串行合入；本卡先在 `crates/cmd/src/auth.rs` 落地并全量测试覆盖，
+      抽取只是移动文件，不改语义。
+    proposed_cargo_toml: |
+      [package]
+      name = "wxlike-agent-policy"
+      version.workspace = true
+      edition.workspace = true
+      license.workspace = true
+
+      [dependencies]
+      wxlike-cmd = { path = "../cmd" }
+      serde = { workspace = true }
+      serde_json = { workspace = true }
+    acceptance: 抽取后 `cargo test -p wxlike-cmd -p wxlike-cli -p wxlike-mcp` 全绿且默认 feature 不变。
+
+  - id: REQ-G02-claims-contract
+    target: G02
+    action: 在身份契约里确认下列声明字段与语义（本卡按此实现）：
+      `sub`(actor) / `sid`(会话 id，与设备绑定) / `aud`(必须为 `wxlike-mcp`) /
+      `scope`(空格分隔，形如 `conv:g-*` `media:*`) / `exp` / `nbf` /
+      `roles`(含 `admin` 才能调管理动作) / `deleg{actor,scope,exp}`(单层代理)。
+    rationale: scope 的类别名（account/conv/content/media/payment/admin）与
+      "代理只能衰减"的规则需要签发方与消费方一致，否则拒绝会变成误伤。
+
+  - id: REQ-G00-02-register-scope-strings
+    target: G00-02
+    action: 把六类 scope 前缀登记为契约常量，并规定新增资源类别必须同时更新
+      `ScopeClass` 与 `Scope::parse`（未登记类别一律解析失败，不静默放行）。
+    rationale: scope 前缀是外部可见字符串，改名等于让所有已签发 token 失效。
+
+  - id: REQ-G15-03-entry-scope-map
+    target: G15-03
+    action: 入口总账逐条标注 scope 类别（本卡已在 catalog 里给出每个命令的 `scope`），
+      入口 → 命令 → scope 三者必须能串起来。
+    rationale: 只按命令名授权而不知道资源类别，等于把所有动作都当会话动作。
+
+notes:
+  - 本卡不新增网络监听：远程 transport 仍未开启（见 G15-01 的 REQ-G15-02-remote-transport）。
+  - 令牌的**签名校验**不在本层：`Verifier` 只做语义校验（aud/时间/会话/scope/代理衰减），
+    签名与声明真实性由宿主与服务端负责；MCP 永远不透传上游 token。
+  - `Secret` 类型的 Debug/Display 只输出"前 6 位 + 长度"指纹，令牌不会进日志或错误消息。
