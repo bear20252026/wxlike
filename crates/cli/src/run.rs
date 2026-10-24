@@ -52,6 +52,14 @@ fn run(inv: Invocation) -> u8 {
             EXIT_OK
         }
         Command::Auth => auth_report(&options, &policy),
+        Command::Coverage => {
+            if options.json {
+                emit(&wxlike_cmd::domains::report(), true);
+            } else {
+                print!("{}", wxlike_cmd::domains::render());
+            }
+            EXIT_OK
+        }
         Command::Inspect => with_executor(&options, &policy)
             .map_or_else(|code| code, |exec| inspect(&exec, options.json)),
         Command::Run(cmds) => with_executor(&options, &policy)
