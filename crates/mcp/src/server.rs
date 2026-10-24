@@ -244,6 +244,12 @@ impl Server {
                 "mimeType": "application/json",
             },
             {
+                "uri": "wxlike://coverage",
+                "name": "业务覆盖报告",
+                "description": "业务域 → 入口 → 状态（自动 / 宿主能力 / 未做，未做带负责组与 issue）",
+                "mimeType": "application/json",
+            },
+            {
                 "uri": "wxlike://policy",
                 "name": "当前生效策略",
                 "description": "会话白名单与三个能力开关的判定结果（给人看的表格）",
@@ -263,6 +269,10 @@ impl Server {
                 "application/json",
             ),
             "wxlike://policy" => (wxlike_cmd::policy::render(&self.policy), "text/plain"),
+            "wxlike://coverage" => (
+                serde_json::to_string_pretty(&wxlike_cmd::domains::report()).unwrap_or_default(),
+                "application/json",
+            ),
             other => match other.strip_prefix(catalog::ACTION_URI_PREFIX) {
                 Some(id) => {
                     let spec = catalog::get(id).ok_or_else(|| {
@@ -590,10 +600,14 @@ mod tests {
             .iter()
             .map(|r| r["uri"].as_str().expect("uri"))
             .collect();
-        assert_eq!(uris, ["wxlike://catalog", "wxlike://policy"]);
+        assert_eq!(
+            uris,
+            ["wxlike://catalog", "wxlike://coverage", "wxlike://policy"]
+        );
 
         for uri in [
             "wxlike://catalog",
+            "wxlike://coverage",
             "wxlike://policy",
             "wxlike://actions/msg.send",
         ] {
