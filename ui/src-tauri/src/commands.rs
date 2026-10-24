@@ -4,9 +4,6 @@
 
 use super::*;
 
-
-use super::*;
-
 // -- P4/P5: 通话房间控制面 + 设备验证（前端不碰 HTTP，全部经此桥） --------
 
 /// 房间快照：`live=false` 表示当前没有通话。
@@ -308,10 +305,7 @@ pub fn download_media(
 }
 
 #[tauri::command]
-pub fn conversation_id(
-    state: tauri::State<'_, AppState>,
-    peer: String,
-) -> Result<String, String> {
+pub fn conversation_id(state: tauri::State<'_, AppState>, peer: String) -> Result<String, String> {
     let me = state.user_id()?;
     Ok(direct_conv_id(&me, &peer))
 }

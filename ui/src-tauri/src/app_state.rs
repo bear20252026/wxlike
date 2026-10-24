@@ -319,7 +319,12 @@ impl AppState {
             .ok_or_else(|| "未连接到服务器".to_string())
     }
 
-    pub(crate) fn send_body(&self, conv_id: &str, to: Vec<String>, body: MsgBody) -> Result<Envelope, String> {
+    pub(crate) fn send_body(
+        &self,
+        conv_id: &str,
+        to: Vec<String>,
+        body: MsgBody,
+    ) -> Result<Envelope, String> {
         self.send_body_with_echo(conv_id, to, body, None)
     }
 
@@ -1304,4 +1309,3 @@ impl AppState {
         render_event_with(env, &self.secret, None)
     }
 }
-

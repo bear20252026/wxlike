@@ -69,4 +69,3 @@ pub(crate) fn decode_msg_id(s: &str) -> Option<MsgId> {
     let bytes = hex::decode(s).ok()?;
     <[u8; 16]>::try_from(bytes).ok()
 }
-

@@ -74,9 +74,7 @@ impl Db {
             ("favorites", "revoked", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             if !Self::has_column(&c, table, col)? {
-                c.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN {col} {ddl};"
-                ))?;
+                c.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {ddl};"))?;
             }
         }
         // 必须在增量列之后建：旧库的 favorites 先补 source_kind/source_id 才能

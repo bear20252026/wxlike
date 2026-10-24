@@ -112,11 +112,11 @@ impl Executor {
 mod handlers;
 
 use handlers::HANDLERS;
-use handlers::urlencode;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use handlers::urlencode;
 
     #[test]
     fn urlencode_handles_query_metacharacters() {

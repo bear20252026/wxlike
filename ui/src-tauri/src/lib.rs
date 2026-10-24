@@ -41,17 +41,15 @@ pub use wxlike_client::{direct_conv_id, Http};
 // 本文件保留组合根（run）与测试；其余内容经 pub(crate) 再导出，
 // 子模块与测试的 `use super::*` 一次引入，外部路径（crate::AppState 等）不变。
 mod app_state;
+pub mod commands;
 mod render;
 mod store;
 mod util;
-pub mod commands;
 
 pub use app_state::AppState;
-pub(crate) use app_state::*;
 pub(crate) use render::*;
 pub(crate) use store::*;
 pub(crate) use util::*;
-
 
 /// Runs the app. Kept in the library so `main.rs` stays a two-liner and the
 /// command registry is testable next to the code it calls.

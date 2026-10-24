@@ -3,7 +3,7 @@
 
 use serde_json::{json, Value};
 
-use super::{Executor, Http, UNIMPLEMENTED};
+use super::{Executor, Http};
 
 type Handler = fn(&Executor, &Http, &Value) -> Result<Value, String>;
 
@@ -246,5 +246,4 @@ pub(super) fn urlencode(s: &str) -> String {
         }
     }
     out
-
 }
