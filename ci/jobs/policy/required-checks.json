@@ -18,6 +18,8 @@
     "image",
     "android",
     "ios",
+    "e2e",
+    "performance",
     "audit",
     "coverage",
     "unwrap",

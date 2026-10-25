@@ -129,6 +129,8 @@ jobs:
       - image
       - android
       - ios
+      - e2e
+      - performance
     if: always()
     runs-on: ubuntu-latest
     steps:

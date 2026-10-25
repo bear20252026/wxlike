@@ -374,6 +374,8 @@ jobs:
     - image
     - android
     - ios
+    - e2e
+    - performance
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -683,4 +685,73 @@ jobs:
 
           '
         if-no-files-found: error
+        retention-days: 14
+  e2e:
+    name: e2e
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-e2e-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - name: C11 build server
+      run: cargo build --locked -p wxlike-server
+    - name: C11 e2e, restart recovery and fault suites
+      shell: bash
+      env:
+        WXLIKE_E2E_EVIDENCE: ${{ github.workspace }}/e2e-evidence
+      run: bash tests/e2e/ci.sh
+    - name: C11 evidence summary
+      if: always()
+      shell: bash
+      run: "python3 - <<'PY'\nimport json, os\nfrom pathlib import Path\nout = Path(os.environ.get(\"GITHUB_STEP_SUMMARY\", \"/dev/null\"))\nroot = Path(\"e2e-evidence\")\nlines = [\"### e2e evidence\\n\\n| suite | result | cases | blocked |\\n|---|---|---|---|\"]\nfor path in sorted(root.glob(\"*.json\")):\n    data = json.loads(path.read_text(encoding=\"utf-8\"))\n    cases = data.get(\"cases\", [])\n    blocked = [c[\"name\"] for c in cases if c[\"status\"] == \"blocked\"]\n    lines.append(f\"| {data.get('suite')} | {'pass' if data.get('ok') else 'fail'} | {len(cases)} | {', '.join(blocked) or '—'} |\")\nwith out.open(\"a\", encoding=\"utf-8\") as fh:\n    fh.write(\"\\n\".join(lines) + \"\\n\")\nPY\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: e2e-evidence
+        path: e2e-evidence/
+        if-no-files-found: warn
+        retention-days: 14
+  performance:
+    name: performance
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-perf-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - name: C11 build server
+      run: cargo build --locked -p wxlike-server
+    - name: C11 measured load against budgets
+      run: "python3 tests/perf/run.py \\\n  --server-bin target/debug/wxlike-server \\\n  --budgets ci/jobs/performance/budgets.json \\\n  --evidence-dir performance-evidence\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: performance-evidence
+        path: performance-evidence/
+        if-no-files-found: warn
         retention-days: 14
