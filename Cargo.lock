@@ -6486,6 +6486,7 @@ dependencies = [
  "serde_json",
  "wxlike-client",
  "wxlike-cmd",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -6556,8 +6557,11 @@ dependencies = [
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -6697,9 +6701,11 @@ version = "0.1.0"
 name = "wxlike-mcp"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "wxlike-client",
  "wxlike-cmd",
+ "wxlike-types",
 ]
 
 [[package]]

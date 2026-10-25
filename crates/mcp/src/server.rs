@@ -6,7 +6,10 @@
 //! 覆盖的方法：
 //! * `initialize` / `ping`
 //! * `tools/list` / `tools/call`（每个命令一个工具，schema 由 catalog 生成）
-//! * `resources/list` / `resources/read`（catalog、策略、单条动作 schema）
+//! * `resources/list` / `resources/read`（catalog、覆盖表、策略、单条动作 schema）
+//!
+//! 危险动作走 `prepare → confirmation_token → execute`（G15-04）：
+//! 第一次调用只回计划与令牌，**不执行**；带令牌再调才真正执行，且令牌一次性。
 //!
 //! 刻意不做的事：
 //! * **不实现第二套 MCP 框架**——协议层是手写的 JSON-RPC 分派，官方 `rmcp`
@@ -15,8 +18,14 @@
 
 use serde_json::{json, Value};
 
+use wxlike_types::{ActionResult, DomainError};
+
 use wxlike_client::execute::Executor;
+use wxlike_cmd::auth::{ActorContext, AuthGate, Provenance};
 use wxlike_cmd::catalog::{self, ArgError, CommandSpec};
+use wxlike_cmd::confirmation::ConfirmationStore;
+use wxlike_cmd::contract;
+use wxlike_cmd::jobs::{JobRegistry, LONG_RUNNING_ACTION};
 use wxlike_cmd::policy::Policy;
 
 /// 我们实现的协议版本，**从新到旧**。客户端报的版本在这个表里就按它回。
@@ -25,8 +34,22 @@ pub const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-0
 /// 默认协商版本（客户端没报或报了个我们不认识的，就回这个）。
 pub const DEFAULT_PROTOCOL: &str = PROTOCOL_VERSIONS[0];
 
-/// 元工具：不执行具体业务，只做发现与自查。
-const META_TOOLS: [&str; 3] = ["im_list_commands", "im_execute", "im_inspect"];
+/// 元工具：不执行具体业务，只做发现、自查与作业账。
+const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
+
+/// 单次调用参数上限（64 KiB）。再大就不是"参数"，是把文件塞进 JSON。
+const MAX_ARGS_BYTES: usize = 64 * 1024;
+
+/// 工具文本响应上限（256 KiB）。超出就截断并**明确说明截断了**，
+/// 免得调用方以为自己拿到了完整结果。
+const MAX_TEXT_BYTES: usize = 256 * 1024;
+
+/// 没有配 `--actor/--session-id` 时的本地身份。
+///
+/// 它不是信任边界（服务端仍会再验），只是为了让确认令牌**永远绑定到某个
+/// 主体与会话**——"没有身份"不能成为跳过绑定的理由。
+const LOCAL_ACTOR: &str = "local-agent";
+const LOCAL_SESSION: &str = "local-session";
 
 /// JSON-RPC / MCP 错误码。
 pub mod code {
@@ -58,6 +81,14 @@ impl RpcError {
 pub struct Server {
     exec: Executor,
     policy: Policy,
+    /// 会话/scope 闸门（G15-02）。`None` = 只跑本地策略（stdio 单用户场景）。
+    gate: Option<AuthGate>,
+    /// 一次性确认令牌（G15-04）。进程内即可：跨进程就是换了会话。
+    confirm: ConfirmationStore,
+    /// 长任务账（G15-04）：可查、可取消、输出脱敏。
+    jobs: JobRegistry,
+    /// 请求序号：每个 `tools/call` 一个 request_id / operation_id，便于审计追踪。
+    seq: u64,
     protocol: &'static str,
     initialized: bool,
 }
@@ -67,9 +98,20 @@ impl Server {
         Self {
             exec,
             policy,
+            gate: None,
+            confirm: ConfirmationStore::new(),
+            jobs: JobRegistry::new(),
+            seq: 0,
             protocol: DEFAULT_PROTOCOL,
             initialized: false,
         }
+    }
+
+    /// 挂上会话/scope 闸门。**没挂不等于没权限**：服务端仍会再验一次，
+    /// 但本地就不会提前拦——所以远程 transport 必须挂。
+    pub fn with_gate(mut self, gate: Option<AuthGate>) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// `tools/list` 的裸 JSON（诊断/夹具用，不需要先 `initialize`）。
@@ -175,7 +217,7 @@ impl Server {
         json!({ "tools": tools })
     }
 
-    fn tools_call(&self, params: &Value) -> Result<Value, RpcError> {
+    fn tools_call(&mut self, params: &Value) -> Result<Value, RpcError> {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -188,7 +230,34 @@ impl Server {
         if META_TOOLS.contains(&name) {
             return Ok(self.meta_call(name, &args));
         }
-        let spec = catalog::CATALOG
+        let spec = self.resolve_tool(name)?;
+        if args.to_string().len() > MAX_ARGS_BYTES {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("arguments too large (limit {MAX_ARGS_BYTES} bytes)"),
+            ));
+        }
+        // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
+        catalog::validate_args(spec, &args).map_err(arg_error)?;
+        // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
+        if let Err(e) = wxlike_cmd::auth::guard_provenance(spec, provenance_of(params)) {
+            return Ok(tool_failed(spec, &contract::classify(&e.to_string())));
+        }
+        // 会话与 scope：先于执行，且拒绝是**工具错误**（调用方能读懂并改 token）
+        if let Some(gate) = &self.gate {
+            if let Err(e) = gate.check(spec, &args, provenance_of(params)) {
+                return Ok(tool_err(&e.to_string()));
+            }
+        }
+        let env = match envelope_of(params) {
+            Ok(env) => env,
+            Err(e) => return Ok(tool_failed(spec, &e)),
+        };
+        Ok(self.execute_checked(spec, &args, &env))
+    }
+
+    fn resolve_tool(&self, name: &str) -> Result<&'static CommandSpec, RpcError> {
+        catalog::CATALOG
             .iter()
             .find(|s| s.tool_name() == name)
             .ok_or_else(|| {
@@ -196,21 +265,134 @@ impl Server {
                     code::INVALID_PARAMS,
                     format!("unknown tool {name:?}（先 tools/list）"),
                 )
-            })?;
-        // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
-        catalog::validate_args(spec, &args).map_err(arg_error)?;
-        Ok(run(&self.exec, spec, &args))
+            })
     }
 
-    fn meta_call(&self, name: &str, args: &Value) -> Value {
+    /// 过完协议与授权检查之后：先过确认，再执行，最后记作业账与追踪 id。
+    fn execute_checked(
+        &mut self,
+        spec: &'static CommandSpec,
+        args: &Value,
+        env: &contract::Envelope,
+    ) -> Value {
+        if spec.confirmation.is_required() {
+            match self.confirm_step(spec, args) {
+                Ok(Some(plan_only)) => return plan_only,
+                Ok(None) => {}
+                Err(e) => return tool_failed(spec, &contract::classify(&e.to_string())),
+            }
+        }
+        self.launch(spec, args, env)
+    }
+
+    /// 确认这一步：没令牌就出计划，令牌不对就拒（**都不执行**）。
+    fn confirm_step(
+        &mut self,
+        spec: &'static CommandSpec,
+        args: &Value,
+    ) -> Result<Option<Value>, wxlike_cmd::confirmation::ConfirmError> {
+        let ctx = self.actor_ctx();
+        let token = args
+            .get("confirmation_token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.trim().is_empty());
+        let Some(raw) = token else {
+            let prepared = self.confirm.prepare(&ctx, spec, args, now())?;
+            return Ok(Some(tool_ok(&prepared.to_json())));
+        };
+        self.confirm.redeem(&ctx, spec, args, raw, now())?;
+        Ok(None)
+    }
+
+    /// 真正执行：契约校验 → 执行 → ActionResult → 作业账 → 追踪 id。
+    fn launch(&mut self, spec: &CommandSpec, args: &Value, env: &contract::Envelope) -> Value {
+        // 写命令缺幂等键 / deadline 已过：本地就拒，**不发请求**
+        if let Err(e) = contract::build_request(spec, args, env) {
+            return tool_failed(spec, &e);
+        }
+        if let Err(e) = contract::check_deadline(env, contract::now_ms_i64()) {
+            return tool_failed(spec, &e);
+        }
+        self.seq += 1;
+        let operation_id = format!("op-{}-{}", self.seq, spec.id);
+        let mut frame = match self.exec.run(spec.id, args) {
+            Ok(data) => {
+                let result = contract::ok_result(spec, data, contract::now_ms());
+                self.record_job(spec, &operation_id, &result);
+                tool_result(&result)
+            }
+            Err(message) => tool_failed(spec, &contract::classify(&message)),
+        };
+        frame["_meta"] = json!({
+            "wxlike/requestId": format!("req-{}", self.seq),
+            "wxlike/operationId": operation_id,
+            "wxlike/traceId": env.trace_id.as_str(),
+        });
+        frame
+    }
+
+    /// 身份上下文：配了闸门用闸门的，否则用本地身份（仍然绑定，不豁免）。
+    fn actor_ctx(&self) -> ActorContext {
+        match &self.gate {
+            Some(gate) => gate.context().clone(),
+            None => wxlike_cmd::auth::context_from_parts(LOCAL_ACTOR, LOCAL_SESSION, "conv:*"),
+        }
+    }
+
+    /// 只有长任务进作业账：一次就结束的写命令记进去只会让账变噪音。
+    fn record_job(&mut self, spec: &CommandSpec, operation_id: &str, result: &ActionResult) {
+        if spec.id != LONG_RUNNING_ACTION {
+            return;
+        }
+        let job = self.jobs.submit(spec.id, operation_id, now());
+        let output = contract::result_json(result);
+        let _ = self.jobs.finish(&job.id, output, now());
+    }
+
+    fn meta_call(&mut self, name: &str, args: &Value) -> Value {
         match name {
             "im_list_commands" => {
                 let q = args.get("query").and_then(Value::as_str).unwrap_or("");
                 tool_ok(&catalog_list(q))
             }
             "im_inspect" => inspect(&self.exec),
+            "im_jobs" => self.jobs_call(args),
             // 兼容旧客户端：保留统一入口，但仍然按 catalog 校验参数
             _ => execute_one(&self.exec, args),
+        }
+    }
+
+    /// 作业账：`list` / `get` / `cancel`。取消只改本地账，远端是否停住如实回报。
+    fn jobs_call(&mut self, args: &Value) -> Value {
+        let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
+        let job_id = args.get("job_id").and_then(Value::as_str);
+        match (action, job_id) {
+            ("list", _) => self.jobs_list(),
+            ("get", Some(id)) => self.jobs_get(id),
+            ("cancel", Some(id)) => self.jobs_cancel(id),
+            ("get" | "cancel", None) => tool_err("im_jobs 的 get/cancel 需要 job_id"),
+            (other, _) => tool_err(&format!(
+                "unknown im_jobs action {other:?}（list/get/cancel）"
+            )),
+        }
+    }
+
+    fn jobs_list(&self) -> Value {
+        let items: Vec<Value> = self.jobs.list().iter().map(|j| j.to_json()).collect();
+        tool_ok(&json!({"count": items.len(), "jobs": items}))
+    }
+
+    fn jobs_get(&self, id: &str) -> Value {
+        match self.jobs.get(id) {
+            Some(job) => tool_ok(&job.to_json()),
+            None => tool_err(&format!("unknown job {id:?}")),
+        }
+    }
+
+    fn jobs_cancel(&mut self, id: &str) -> Value {
+        match self.jobs.cancel(id, now()) {
+            Ok(outcome) => tool_ok(&outcome.to_json()),
+            Err(e) => tool_err(&e.to_string()),
         }
     }
 
@@ -220,6 +402,12 @@ impl Server {
                 "uri": "wxlike://catalog",
                 "name": "动作目录",
                 "description": "全部命令的 id / 能力 / 参数 / 平台 / 确认要求",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "wxlike://coverage",
+                "name": "业务覆盖报告",
+                "description": "业务域 → 入口 → 状态（自动 / 宿主能力 / 未做，未做带负责组与 issue）",
                 "mimeType": "application/json",
             },
             {
@@ -242,6 +430,10 @@ impl Server {
                 "application/json",
             ),
             "wxlike://policy" => (wxlike_cmd::policy::render(&self.policy), "text/plain"),
+            "wxlike://coverage" => (
+                serde_json::to_string_pretty(&wxlike_cmd::domains::report()).unwrap_or_default(),
+                "application/json",
+            ),
             other => match other.strip_prefix(catalog::ACTION_URI_PREFIX) {
                 Some(id) => {
                     let spec = catalog::get(id).ok_or_else(|| {
@@ -264,23 +456,54 @@ impl Server {
     }
 }
 
+/// Unix 秒。确认令牌与作业账都用同一把时钟，测试里换成显式时间。
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 从 `_meta` 取契约信封：`wxlike/traceId`、`wxlike/entryId`、`wxlike/deadlineMs`。
+///
+/// 三个都是可选的；给了非法值就报领域错误，**不静默忽略**——静默忽略会让
+/// "我明明传了 trace" 变成排查时找不到的幽灵。
+fn envelope_of(params: &Value) -> Result<contract::Envelope, DomainError> {
+    let meta = params.get("_meta");
+    let get_str = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_str);
+    let deadline = meta.and_then(|m| m.get("wxlike/deadlineMs")).and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    });
+    contract::Envelope::from_raw(
+        get_str("wxlike/traceId"),
+        get_str("wxlike/entryId"),
+        deadline,
+    )
+}
+
+/// 参数来源：调用方可以在 `_meta` 里声明这批参数是从不可信内容抽出来的。
+///
+/// 默认 `Trusted` 是刻意的：这是**调用方自述**，不是安全边界；真正的边界是
+/// 服务端再鉴权 + 确认令牌（G15-04）。但主动声明"这来自聊天正文"的调用方
+/// 会立刻被拒，而不是等到出事。
+fn provenance_of(params: &Value) -> Provenance {
+    let declared = params
+        .get("_meta")
+        .and_then(|m| m.get("wxlike/provenance"))
+        .and_then(Value::as_str);
+    match declared {
+        Some(v) if v.starts_with("untrusted") => Provenance::Untrusted("untrusted content"),
+        _ => Provenance::Trusted,
+    }
+}
+
 fn arg_error(e: ArgError) -> RpcError {
     RpcError::new(code::INVALID_PARAMS, e.to_string())
 }
 
 fn error_frame(id: Value, e: &RpcError) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": e.code, "message": e.message}})
-}
-
-/// 执行一条命令并包成 MCP 的工具结果。
-///
-/// 业务失败用 `isError: true`（agent 能读到原因并纠正），**不是**协议错误。
-/// `structuredContent` 给严格客户端，`content[0].text` 给只读文本的客户端。
-fn run(exec: &Executor, spec: &CommandSpec, args: &Value) -> Value {
-    match exec.run(spec.id, args) {
-        Ok(v) => tool_ok(&v),
-        Err(e) => tool_err(&e),
-    }
 }
 
 fn execute_one(exec: &Executor, args: &Value) -> Value {
@@ -294,7 +517,10 @@ fn execute_one(exec: &Executor, args: &Value) -> Value {
     if let Err(e) = catalog::validate_args(spec, &params) {
         return tool_err(&e.to_string());
     }
-    run(exec, spec, &params)
+    match exec.run(spec.id, &params) {
+        Ok(data) => tool_result(&contract::ok_result(spec, data, contract::now_ms())),
+        Err(message) => tool_failed(spec, &contract::classify(&message)),
+    }
 }
 
 fn inspect(exec: &Executor) -> Value {
@@ -334,24 +560,60 @@ fn catalog_list(query: &str) -> Value {
 
 fn meta_tool(name: &str) -> Value {
     match name {
-        "im_list_commands" => json!({
-            "name": name,
+        "im_list_commands" => list_commands_tool(),
+        "im_inspect" => inspect_tool(),
+        "im_jobs" => jobs_tool(),
+        _ => execute_tool(),
+    }
+}
+
+fn list_commands_tool() -> Value {
+    json!({
+            "name": "im_list_commands",
             "description": "列出可用的 IM 命令（id / 工具名 / 参数 / 能力 / scope）。先用它发现能力，再按工具名调用。",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {"query": {"type": "string", "description": "按 id 或说明过滤，空=全部"}}
             },
-            "annotations": {"readOnlyHint": true, "destructiveHint": false},
-        }),
-        "im_inspect" => json!({
-            "name": name,
+            "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    })
+}
+
+fn inspect_tool() -> Value {
+    json!({
+            "name": "im_inspect",
             "description": "不用截图就能自查：我是谁、我有哪些会话、各自未读多少。",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}},
-            "annotations": {"readOnlyHint": true, "destructiveHint": false},
-        }),
-        _ => json!({
-            "name": name,
+            "annotations": {"readOnlyHint": true, "destructiveHint": false}
+    })
+}
+
+fn jobs_tool() -> Value {
+    let action = json!({
+        "type": "string",
+        "enum": ["list", "get", "cancel"],
+        "description": "默认 list"
+    });
+    let job_id = json!({"type": "string", "description": "get/cancel 必填"});
+    let mut properties = serde_json::Map::new();
+    properties.insert("action".into(), action);
+    properties.insert("job_id".into(), job_id);
+    json!({
+        "name": "im_jobs",
+        "description": "长任务账：list 看全部、get 看单个、cancel 请求取消（远端是否停住会如实回报）。",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties
+        },
+        "annotations": {"readOnlyHint": false, "destructiveHint": false}
+    })
+}
+
+fn execute_tool() -> Value {
+    json!({
+            "name": "im_execute",
             "description": "【兼容入口，建议改用按命令生成的工具】执行一条 IM 命令；参数同样按 catalog 校验。",
             "inputSchema": {
                 "type": "object",
@@ -362,17 +624,57 @@ fn meta_tool(name: &str) -> Value {
                     "params": {"type": "object", "description": "该命令的参数对象"}
                 }
             },
-            "annotations": {"readOnlyHint": false, "destructiveHint": true},
-        }),
-    }
+            "annotations": {"readOnlyHint": false, "destructiveHint": true}
+    })
 }
 
 fn tool_ok(value: &Value) -> Value {
+    let text = serde_json::to_string_pretty(value).unwrap_or_default();
     json!({
-        "content": [{"type": "text", "text": serde_json::to_string_pretty(value).unwrap_or_default()}],
+        "content": [{"type": "text", "text": clamp_text(text)}],
         "structuredContent": value,
         "isError": false
     })
+}
+
+/// 业务结果：`structuredContent` 是 contract-v1 的 `ActionResult`
+/// （`action_id` + `status` + `data|error` + `completed_at_ms`），
+/// `isError` 与 `status` 同源——不会出现"UI 说失败、MCP 说成功"。
+fn tool_result(result: &ActionResult) -> Value {
+    let json = contract::result_json(result);
+    let text = match &result.outcome {
+        wxlike_types::ActionOutcome::Ok { data } => {
+            serde_json::to_string_pretty(data).unwrap_or_default()
+        }
+        wxlike_types::ActionOutcome::Empty => "（空结果）".to_string(),
+        wxlike_types::ActionOutcome::Failed { error } => error.message().to_string(),
+    };
+    json!({
+        "content": [{"type": "text", "text": clamp_text(text)}],
+        "structuredContent": json,
+        "isError": !result.is_ok()
+    })
+}
+
+/// 失败结果：同样带 `ActionResult`，agent 能直接读 `error.code` 决定下一步。
+fn tool_failed(spec: &CommandSpec, error: &DomainError) -> Value {
+    tool_result(&contract::failed_result(
+        spec,
+        error.clone(),
+        contract::now_ms(),
+    ))
+}
+
+/// 超长文本截断到上限，并留下可机器判断的标记。
+fn clamp_text(text: String) -> String {
+    if text.len() <= MAX_TEXT_BYTES {
+        return text;
+    }
+    let mut cut = MAX_TEXT_BYTES;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}\n…[truncated at {MAX_TEXT_BYTES} bytes]", &text[..cut])
 }
 
 fn tool_err(message: &str) -> Value {
@@ -541,10 +843,14 @@ mod tests {
             .iter()
             .map(|r| r["uri"].as_str().expect("uri"))
             .collect();
-        assert_eq!(uris, ["wxlike://catalog", "wxlike://policy"]);
+        assert_eq!(
+            uris,
+            ["wxlike://catalog", "wxlike://coverage", "wxlike://policy"]
+        );
 
         for uri in [
             "wxlike://catalog",
+            "wxlike://coverage",
             "wxlike://policy",
             "wxlike://actions/msg.send",
         ] {
@@ -579,6 +885,140 @@ mod tests {
 
         let v = call(&mut srv, r#"{"jsonrpc":"2.0","id":13}"#);
         assert_eq!(v["error"]["code"], code::INVALID_REQUEST);
+    }
+
+    /// 危险动作：第一次只给计划与令牌；带令牌才执行；令牌一次性。
+    #[test]
+    fn dangerous_action_needs_confirmation_and_the_token_is_single_use() {
+        let policy = Policy::new(["g-1"], true, true);
+        let exec = Executor::new(Http::new("http://127.0.0.1:1"), policy.clone());
+        let mut srv = Server::new(exec, policy);
+        call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#,
+        );
+
+        let ask = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"group-kick","arguments":{"conv":"g-1","user_id":"u2"}}}"#,
+        );
+        assert_eq!(ask["result"]["isError"], false, "第一次不该报错：{ask}");
+        let plan = &ask["result"]["structuredContent"];
+        assert_eq!(plan["confirmation_required"], true);
+        let token = plan["token"].as_str().expect("token").to_string();
+        assert!(token.starts_with("wxc-"), "{token}");
+        assert_eq!(plan["plan"]["action_id"], "group.kick");
+
+        // 带令牌 → 真的执行（这里网络不可达，所以是 connect 错误，而不是确认错误）
+        let executed = call(
+            &mut srv,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"group-kick","arguments":{{"conv":"g-1","user_id":"u2","confirmation_token":"{token}"}}}}}}"#
+            ),
+        );
+        let text = executed["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(!text.contains("confirmation"), "不该再要求确认：{text}");
+
+        // 重放同一个令牌 → 拒
+        let replay = call(
+            &mut srv,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"group-kick","arguments":{{"conv":"g-1","user_id":"u2","confirmation_token":"{token}"}}}}}}"#
+            ),
+        );
+        let text = replay["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("already used"), "重放要拒：{text}");
+    }
+
+    /// 换了成员（等价于换收款人/换金额）就必须重新确认。
+    #[test]
+    fn confirmation_does_not_survive_a_parameter_change() {
+        let policy = Policy::new(["g-1"], true, true);
+        let exec = Executor::new(Http::new("http://127.0.0.1:1"), policy.clone());
+        let mut srv = Server::new(exec, policy);
+        call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#,
+        );
+
+        let ask = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"group-kick","arguments":{"conv":"g-1","user_id":"u-bob"}}}"#,
+        );
+        let token = ask["result"]["structuredContent"]["token"]
+            .as_str()
+            .expect("token")
+            .to_string();
+        let changed = call(
+            &mut srv,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"group-kick","arguments":{{"conv":"g-1","user_id":"u-evil","confirmation_token":"{token}"}}}}}}"#
+            ),
+        );
+        let text = changed["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("parameters changed"), "{text}");
+    }
+
+    /// 作业账：空表、未知作业、缺 job_id 都要有明确回复。
+    #[test]
+    fn jobs_meta_tool_answers_list_get_and_cancel() {
+        let mut srv = ready();
+        let list = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"list"}}}"#,
+        );
+        let text = list["result"]["content"][0]["text"].as_str().expect("text");
+        let parsed: Value = serde_json::from_str(text).expect("json");
+        assert_eq!(parsed["count"], 0);
+
+        let cancel = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"cancel","job_id":"job-nope"}}}"#,
+        );
+        assert_eq!(cancel["result"]["isError"], true);
+        let text = cancel["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("unknown job"), "{text}");
+
+        let missing = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"im_jobs","arguments":{"action":"get"}}}"#,
+        );
+        assert_eq!(missing["result"]["isError"], true);
+    }
+
+    /// 大参数与大响应都有上限：不设限等于给"用 JSON 塞文件"开门。
+    #[test]
+    fn oversized_arguments_and_responses_are_bounded() {
+        let mut srv = ready();
+        let huge = "x".repeat(MAX_ARGS_BYTES);
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "msg-send", "arguments": {
+                "conv": "g-1", "text": huge, "idempotency_key": "k"
+            }}
+        });
+        let v = srv.handle(&frame).expect("response");
+        assert_eq!(v["error"]["code"], code::INVALID_PARAMS, "{v}");
+        assert!(v["error"]["message"]
+            .as_str()
+            .expect("msg")
+            .contains("too large"));
+
+        // 截断标记可机器判断
+        let long = "y".repeat(MAX_TEXT_BYTES + 10);
+        let text = clamp_text(long);
+        assert!(text.ends_with("bytes]"), "{}", &text[text.len() - 40..]);
+        assert!(text.len() <= MAX_TEXT_BYTES + 64);
+        // 短文本原样返回
+        assert_eq!(clamp_text("ok".to_string()), "ok");
     }
 
     #[test]
