@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/calls/contract.json",
+  "title": "calls and live domain contract (calls-v1)",
+  "description": "G09 通话/媒体/直播域对外契约。服务端裁决房间事实：谁在通话、谁赢下多设备接听、谁能推流、谁只能看。所有写命令幂等；媒体令牌短时且绑定 call/user/device/scope/generation。实现见 crates/rtc、crates/sfu；根路由挂载与迁移编号由 G00 执行。",
+  "contract_version": "calls-v1",
+  "owner": "G09",
+  "transport": {
+    "request": { "command": "string", "version": "calls-v1", "payload": "object" },
+    "response": {
+      "ok": "boolean",
+      "data": "object|null",
+      "error": { "code": "string", "message": "string" }
+    }
+  },
+  "error_codes": [
+    "bad_input",
+    "unauthorized",
+    "forbidden",
+    "not_found",
+    "not_invited",
+    "device_not_invited",
+    "answered_elsewhere",
+    "busy",
+    "ended",
+    "banned",
+    "not_watching",
+    "too_many_reports",
+    "rate_limited",
+    "timeout",
+    "unsupported"
+  ],
+  "commands": {
+    "call.invite": { "$ref": "#/$defs/callInvite" },
+    "call.accept": { "$ref": "#/$defs/callAccept" },
+    "call.reject": { "$ref": "#/$defs/callDeviceAction" },
+    "call.cancel": { "$ref": "#/$defs/callRef" },
+    "call.hangup": { "$ref": "#/$defs/callRef" },
+    "call.join": { "$ref": "#/$defs/callJoin" },
+    "track.mute": { "$ref": "#/$defs/trackMute" },
+    "track.switch": { "$ref": "#/$defs/trackSwitch" },
+    "device.select": { "$ref": "#/$defs/deviceSelect" },
+    "turn.credentials": { "$ref": "#/$defs/turnCredentials" },
+    "media.key.rotate": { "$ref": "#/$defs/keyRotate" },
+    "recording.request": { "$ref": "#/$defs/recordingRequest" },
+    "recording.consent": { "$ref": "#/$defs/recordingConsent" },
+    "recording.stop": { "$ref": "#/$defs/recordingStop" },
+    "live.start": { "$ref": "#/$defs/liveStart" },
+    "live.watch": { "$ref": "#/$defs/liveWatch" },
+    "live.leave": { "$ref": "#/$defs/liveDeviceRef" },
+    "live.stop": { "$ref": "#/$defs/liveRef" },
+    "live.cohost.request": { "$ref": "#/$defs/liveDeviceRef" },
+    "live.cohost.approve": { "$ref": "#/$defs/liveCohostApprove" },
+    "live.cohost.revoke": { "$ref": "#/$defs/liveUserRef" },
+    "live.report": { "$ref": "#/$defs/liveReport" },
+    "live.ban": { "$ref": "#/$defs/liveUserRef" },
+    "live.archive": { "$ref": "#/$defs/liveArchive" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "device": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "scope": {
+      "type": "string",
+      "enum": ["call", "live_publish", "live_watch", "live_cohost"]
+    },
+    "endReason": {
+      "type": "string",
+      "enum": ["rejected", "cancelled", "hung_up", "busy", "timeout", "failed", "authorization_revoked"]
+    },
+    "callInvite": {
+      "type": "object",
+      "required": ["call_id", "conv_id", "callee", "caller_device", "callee_devices", "video"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "conv_id": { "$ref": "#/$defs/id" },
+        "callee": { "$ref": "#/$defs/id" },
+        "caller_device": { "$ref": "#/$defs/device" },
+        "callee_devices": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/device" }
+        },
+        "video": { "type": "boolean" }
+      }
+    },
+    "callAccept": {
+      "type": "object",
+      "required": ["call_id", "device"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "device": { "$ref": "#/$defs/device" }
+      }
+    },
+    "callDeviceAction": {
+      "type": "object",
+      "required": ["call_id", "device"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "device": { "$ref": "#/$defs/device" }
+      }
+    },
+    "callRef": {
+      "type": "object",
+      "required": ["call_id"],
+      "properties": { "call_id": { "$ref": "#/$defs/id" } }
+    },
+    "callJoin": {
+      "type": "object",
+      "required": ["call_id", "device", "token"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "device": { "$ref": "#/$defs/device" },
+        "token": { "type": "string" }
+      }
+    },
+    "trackMute": {
+      "type": "object",
+      "required": ["kind", "muted"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["audio", "video"] },
+        "muted": { "type": "boolean" }
+      }
+    },
+    "trackSwitch": {
+      "type": "object",
+      "required": ["source_id"],
+      "properties": { "source_id": { "$ref": "#/$defs/device" } }
+    },
+    "deviceSelect": {
+      "type": "object",
+      "required": ["kind", "device_id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["audio_in", "audio_out", "camera", "screen"] },
+        "device_id": { "$ref": "#/$defs/device" }
+      }
+    },
+    "turnCredentials": {
+      "type": "object",
+      "required": ["call_id"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "ttl_secs": { "type": "integer", "minimum": 1, "maximum": 21600, "default": 3600 }
+      }
+    },
+    "keyRotate": {
+      "type": "object",
+      "required": ["call_id", "epoch"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "epoch": { "type": "integer", "minimum": 2 }
+      }
+    },
+    "recordingRequest": {
+      "type": "object",
+      "required": ["call_id", "participants", "e2ee"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "participants": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "e2ee": { "type": "boolean" }
+      }
+    },
+    "recordingConsent": {
+      "type": "object",
+      "required": ["recording_id", "granted"],
+      "properties": {
+        "recording_id": { "$ref": "#/$defs/id" },
+        "granted": { "type": "boolean" }
+      }
+    },
+    "recordingStop": {
+      "type": "object",
+      "required": ["recording_id"],
+      "properties": { "recording_id": { "$ref": "#/$defs/id" } }
+    },
+    "liveStart": {
+      "type": "object",
+      "required": ["stream_id", "conv_id"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "conv_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "liveWatch": {
+      "type": "object",
+      "required": ["stream_id", "device"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "device": { "$ref": "#/$defs/device" },
+        "require_gesture": { "type": "boolean", "default": false }
+      }
+    },
+    "liveDeviceRef": {
+      "type": "object",
+      "required": ["stream_id", "device"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "device": { "$ref": "#/$defs/device" }
+      }
+    },
+    "liveRef": {
+      "type": "object",
+      "required": ["stream_id"],
+      "properties": { "stream_id": { "$ref": "#/$defs/id" } }
+    },
+    "liveCohostApprove": {
+      "type": "object",
+      "required": ["stream_id", "user", "device"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "user": { "$ref": "#/$defs/id" },
+        "device": { "$ref": "#/$defs/device" }
+      }
+    },
+    "liveUserRef": {
+      "type": "object",
+      "required": ["stream_id", "user"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "user": { "$ref": "#/$defs/id" }
+      }
+    },
+    "liveReport": {
+      "type": "object",
+      "required": ["stream_id", "reason"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "liveArchive": {
+      "type": "object",
+      "required": ["stream_id", "enabled"],
+      "properties": {
+        "stream_id": { "$ref": "#/$defs/id" },
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

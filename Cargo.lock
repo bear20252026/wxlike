@@ -6561,6 +6561,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-commerce"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-ledger",
+]
+
+[[package]]
 name = "wxlike-container"
 version = "0.1.0"
 dependencies = [
@@ -6664,9 +6679,14 @@ dependencies = [
 name = "wxlike-ledger"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "wxlike-core",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -6680,6 +6700,30 @@ dependencies = [
  "serde_json",
  "wxlike-client",
  "wxlike-cmd",
+]
+
+[[package]]
+name = "wxlike-media"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "hmac 0.12.1",
+ "http-body-util",
+ "libc",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "wxlike-api",
+ "wxlike-core",
 ]
 
 [[package]]
@@ -6843,14 +6887,17 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cpal",
+ "hex",
  "hmac 0.12.1",
  "md-5",
  "nokhwa",
  "opus",
  "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
+ "sha2 0.10.9",
  "str0m",
  "thiserror 2.0.21",
  "tokio",
