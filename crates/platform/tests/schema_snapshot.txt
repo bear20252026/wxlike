@@ -523,12 +523,12 @@ sessions.token TEXT notnull=0 pk=1
 sessions.user_id TEXT notnull=1 pk=0
 sessions.created_at INTEGER notnull=1 pk=0
 sessions.expires_at INTEGER notnull=1 pk=0
-sessions.audience TEXT notnull=1 pk=0
 sessions.sid TEXT notnull=0 pk=0
 sessions.device_id TEXT notnull=1 pk=0
 sessions.device_name TEXT notnull=1 pk=0
 sessions.ip TEXT notnull=1 pk=0
 sessions.last_seen INTEGER notnull=1 pk=0
+sessions.audience TEXT notnull=1 pk=0
 status_background_drafts.owner TEXT notnull=0 pk=1
 status_background_drafts.media_id TEXT notnull=1 pk=0
 status_background_drafts.updated_at INTEGER notnull=1 pk=0
