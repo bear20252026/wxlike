@@ -372,6 +372,8 @@ jobs:
     - desktop
     - desktop-package
     - image
+    - android
+    - ios
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -454,6 +456,106 @@ jobs:
         cache-to: type=gha,mode=max,scope=ingest-image
     - name: C9 FFmpeg version, licence and NOTICE
       run: bash ci/jobs/server/check_ffmpeg_notice.sh wxlike-live-ingest:ci
+  android:
+    name: android
+    needs:
+    - select
+    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-android-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
+      run: bash crates/ffi/regenerate.sh
+    - run: flutter pub get
+      working-directory: apps/mobile
+    - name: C8 release-mode APK (debug-signed in CI; release job re-signs)
+      shell: bash
+      run: "flutter build apk --release \\\n  --target-platform android-arm,android-arm64,android-x64 \\\n  --split-debug-info=build/app/outputs/symbols \\\n  --obfuscate\n"
+      working-directory: apps/mobile
+    - name: C8 verify APK, signer and symbols
+      shell: bash
+      run: "version=$(sed -n 's/^version: *\\([^+]*\\).*/\\1/p' apps/mobile/pubspec.yaml | head -1)\npython3 ci/jobs/mobile/check_apk.py \\\n  --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \\\n  --expected-version \"$version\" \\\n  --symbols-dir apps/mobile/build/app/outputs/symbols \\\n  --output mobile-evidence/android.json\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: android-unsigned
+        path: 'apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+
+          apps/mobile/build/app/outputs/symbols/**
+
+          mobile-evidence/android.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+  ios:
+    name: ios
+    needs:
+    - select
+    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: C8 iOS project precondition
+      id: project
+      shell: bash
+      run: "if [ ! -d apps/mobile/ios ]; then\n  echo \"::warning::apps/mobile/ios is absent; the iOS compile is a tracked gap and the release job fails closed.\"\n  echo \"present=false\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"present=true\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: toolchain
+      if: steps.project.outputs.present == 'true'
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      if: steps.project.outputs.present == 'true'
+      with:
+        key: ${{ runner.os }}-ios-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      if: steps.project.outputs.present == 'true'
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 unsigned iOS compile (signing happens in release)
+      if: steps.project.outputs.present == 'true'
+      shell: bash
+      run: 'bash crates/ffi/regenerate.sh
+
+        cd apps/mobile
+
+        flutter pub get
+
+        flutter build ios --release --no-codesign
+
+        '
+    - name: C8 record gap when the project is absent
+      if: steps.project.outputs.present != 'true'
+      shell: bash
+      run: 'echo "iOS compile NOT_APPLICABLE: apps/mobile/ios is missing." >&2
+
+        echo "This is tracked as MOBILE-DEVICE-EVIDENCE; release.yml fails while it stays open." >&2
+
+        '
   desktop:
     name: desktop
     needs:

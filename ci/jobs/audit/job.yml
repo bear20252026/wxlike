@@ -127,6 +127,8 @@ jobs:
       - desktop
       - desktop-package
       - image
+      - android
+      - ios
     if: always()
     runs-on: ubuntu-latest
     steps:

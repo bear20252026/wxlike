@@ -16,6 +16,8 @@
     "desktop",
     "desktop-package",
     "image",
+    "android",
+    "ios",
     "audit",
     "coverage",
     "unwrap",
