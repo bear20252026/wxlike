@@ -50,6 +50,8 @@ pub fn routes() -> Router<PlatformState> {
             delete(remove_member),
         )
         .route("/api/groups/{group_id}/remark-mine", put(remark_mine))
+        .route("/api/groups/{group_id}/visibility", put(set_visibility))
+        .route("/api/groups/{group_id}/dissolve", post(dissolve))
 }
 
 #[derive(serde::Deserialize)]
@@ -76,6 +78,10 @@ pub struct GroupInfo {
     pub owner_uid: String,
     pub created_at: i64,
     pub my_role: String,
+    /// 可见性（G02-02）：private 的群不进任何"发现"面。
+    pub visibility: String,
+    /// 已解散：软删，历史消息仍在，但不能再加人 / 发消息。
+    pub dissolved: bool,
     pub members: Vec<MemberRow>,
 }
 
@@ -632,6 +638,143 @@ async fn remark_mine(
     Ok(StatusCode::OK)
 }
 
+impl Platform {
+    /// 群可见性：仅群主。写入 `group_meta`（关系域的群元数据表）。
+    ///
+    /// `private` 的含义是"不出现在发现 / 搜索里"，不是"成员看不到"——
+    /// 非成员读群信息本来就是 403（见 `group_info`）。
+    pub fn set_group_visibility(
+        &self,
+        actor: &str,
+        group_id: &str,
+        visibility: &str,
+    ) -> Result<()> {
+        let vis = match visibility {
+            "public" | "private" => visibility,
+            _ => return Err(PlatformError::BadInput("visibility")),
+        };
+        let c = self.db().lock();
+        let owner: Option<String> = c
+            .query_row(
+                "SELECT owner_uid FROM groups WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(owner) = owner else {
+            return Err(PlatformError::NotFound);
+        };
+        if owner != actor {
+            return Err(PlatformError::Forbidden);
+        }
+        c.execute(
+            "INSERT INTO group_meta(group_id, visibility) VALUES(?1, ?2) \
+             ON CONFLICT(group_id) DO UPDATE SET visibility = excluded.visibility",
+            params![group_id, vis],
+        )?;
+        Ok(())
+    }
+
+    /// 解散群：仅群主。软删（`group_meta.dissolved_at`），返回需要通知的成员。
+    ///
+    /// 不删 `groups` / `group_members` / 消息：解散是可追溯事件，历史消息仍要能读；
+    /// "不能再写"由 `dissolved` 判定，不靠删数据。
+    pub fn dissolve_group(&self, actor: &str, group_id: &str) -> Result<Vec<String>> {
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        let owner: Option<String> = c
+            .query_row(
+                "SELECT owner_uid FROM groups WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(owner) = owner else {
+            return Err(PlatformError::NotFound);
+        };
+        if owner != actor {
+            return Err(PlatformError::Forbidden);
+        }
+        c.execute(
+            "INSERT INTO group_meta(group_id, visibility, dissolved_at, dissolved_by) \
+             VALUES(?1, 'public', ?2, ?3) \
+             ON CONFLICT(group_id) DO UPDATE SET dissolved_at = excluded.dissolved_at, \
+               dissolved_by = excluded.dissolved_by",
+            params![group_id, now, actor],
+        )?;
+        let mut stmt = c.prepare("SELECT user_id FROM group_members WHERE group_id = ?1")?;
+        let rows = stmt
+            .query_map(params![group_id], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 群元数据（可见性 / 解散）—— 缺行时按 public、未解散处理。
+    pub fn group_meta_of(&self, group_id: &str) -> Result<(String, bool)> {
+        let c = self.db().lock();
+        let row: Option<(String, Option<i64>)> = c
+            .query_row(
+                "SELECT visibility, dissolved_at FROM group_meta WHERE group_id = ?1",
+                params![group_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((vis, dissolved)) => (vis, dissolved.is_some()),
+            None => ("public".to_string(), false),
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct VisibilityBody {
+    pub visibility: String,
+}
+
+async fn set_visibility(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(group_id): Path<String>,
+    ApiJson(body): ApiJson<VisibilityBody>,
+) -> std::result::Result<StatusCode, ApiError> {
+    let group_id = validate::id(&group_id).map_err(ApiError::from)?.to_string();
+    platform.set_group_visibility(&authed.user_id, &group_id, &body.visibility)?;
+    platform.audit(
+        &authed.user_id,
+        "group.visibility",
+        &group_id,
+        &body.visibility,
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 解散群：群主专属。给每个成员发一条 `group.dissolved` 通知帧。
+async fn dissolve(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(group_id): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let group_id = validate::id(&group_id).map_err(ApiError::from)?.to_string();
+    let members = platform.dissolve_group(&authed.user_id, &group_id)?;
+    platform.audit(&authed.user_id, "group.dissolve", &group_id, "");
+    for member in &members {
+        let mut env =
+            crate::system_envelope(&format!("sys-{member}"), "system", vec![member.clone()], "");
+        env.body = wxlike_core::MsgBody::Custom {
+            kind: "group.dissolved".into(),
+            payload: serde_json::json!({
+                "group_id": group_id,
+                "by": authed.user_id,
+                "at_ms": wxlike_core::types::now_ms(),
+            }),
+        };
+        platform.emit(env).await;
+    }
+    Ok(Json(
+        serde_json::json!({ "dissolved": true, "notified": members.len() }),
+    ))
+}
+
 async fn group_info(
     State(platform): State<PlatformState>,
     authed: Authed,
@@ -645,12 +788,15 @@ async fn group_info(
     let my_role = platform
         .role_of(&group_id, &authed.user_id)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "not a member of this group"))?;
+    let (visibility, dissolved) = platform.group_meta_of(&group_id)?;
     Ok(Json(GroupInfo {
         id,
         name,
         owner_uid,
         created_at,
         my_role,
+        visibility,
+        dissolved,
         members: platform.group_members(&group_id)?,
     }))
 }
