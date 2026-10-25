@@ -11,10 +11,14 @@
       "types": "./src/types.d.ts",
       "import": "./src/index.js"
     },
-    "./generated": "./src/generated.js"
+    "./generated": {
+      "types": "./src/generated.d.ts",
+      "import": "./src/generated.js"
+    }
   },
   "files": [
-    "src"
+    "src",
+    "scripts"
   ],
   "engines": {
     "node": ">=20"

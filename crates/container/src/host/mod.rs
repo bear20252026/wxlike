@@ -124,6 +124,19 @@ impl MiniHost {
     /// * a payload larger than the memory budget is refused before eval;
     /// * exceeding the CPU budget terminates the host after the call.
     pub fn run(&mut self, page: &Page, payload: &str) -> Result<String, HostError> {
+        let mut storage = std::collections::BTreeMap::new();
+        self.run_persisted(page, payload, &mut storage)
+    }
+
+    /// Run the page lifecycle with the app's saved storage restored before
+    /// the run and snapshotted back afterwards, so a relaunch sees data the
+    /// previous run wrote.
+    pub fn run_persisted(
+        &mut self,
+        page: &Page,
+        payload: &str,
+        storage: &mut std::collections::BTreeMap<String, String>,
+    ) -> Result<String, HostError> {
         self.expect(HostState::Running)?;
         let page_bytes: u64 = page.files.values().map(|f| f.len() as u64).sum();
         if let Err(err) = self.budgets.reserve_memory(page_bytes) {
@@ -131,9 +144,10 @@ impl MiniHost {
             return Err(err);
         }
         let started = Instant::now();
-        let mut container =
-            Container::load(page.clone()).map_err(|e| HostError::Load(e.to_string()))?;
+        let mut container = Container::load_with_storage(page.clone(), storage.clone())
+            .map_err(|e| HostError::Load(e.to_string()))?;
         let result = container.start(payload);
+        *storage = container.storage();
         let elapsed = started.elapsed().as_millis().max(1) as u64;
         if let Err(err) = self.budgets.charge_cpu(elapsed) {
             self.state = HostState::Terminated;
@@ -142,7 +156,9 @@ impl MiniHost {
         match result {
             Ok(title) => Ok(title),
             Err(err) => {
-                let message = err.to_string();
+                // The full chain, so "loop iteration limit" survives the
+                // "eval entry script" context added in Container::start.
+                let message = format!("{err:#}");
                 if message.to_lowercase().contains("iteration") {
                     self.state = HostState::Terminated;
                     Err(HostError::BudgetExceeded("cpu"))

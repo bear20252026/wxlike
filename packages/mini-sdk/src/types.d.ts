@@ -1,31 +1,17 @@
 // Type declarations for @wxlike/mini-sdk (mini-host.v1).
-// The runtime tables live in generated.js, generated from the JSON contract.
+// Method, Scope and ErrorCode are generated from the JSON contract in
+// generated.d.ts; only structural result types are written by hand here.
 
-export type Scope = "storage" | "network" | "camera" | "location" | "file" | "payment";
+import type { ErrorCode, Method, Scope } from "./generated.js";
 
-export type Method =
-  | "storage.get"
-  | "storage.set"
-  | "storage.remove"
-  | "network.request"
-  | "camera.capture"
-  | "location.get"
-  | "file.pick"
-  | "pay.request";
-
-export type ErrorCode =
-  | "unknown_app"
-  | "origin_mismatch"
-  | "session_closed"
-  | "session_mismatch"
-  | "replayed"
-  | "not_granted"
-  | "denied"
-  | "cancelled"
-  | "invalid_call"
-  | "budget"
-  | "host"
-  | "port";
+export type { ErrorCode, Method, Scope };
+export {
+  CONTRACT_VERSION,
+  CONTRACT_VERSIONS,
+  ERROR_CODES,
+  METHODS,
+  SCOPES,
+} from "./generated.js";
 
 export interface BridgeRequest {
   action: Method;
@@ -70,7 +56,7 @@ export interface FileResult {
 
 export interface PaymentResult {
   reference: string;
-  status: "settled" | "pending";
+  status: "settled" | "pending" | "sandbox";
 }
 
 export interface MiniClient {
@@ -111,7 +97,8 @@ export function createClient(
 
 export function isMiniHostError(error: unknown): error is MiniHostError;
 
-export const CONTRACT_VERSION: string;
-export const METHODS: Readonly<Record<string, Method>>;
-export const SCOPES: Readonly<Record<Method, Scope>>;
-export const ERROR_CODES: readonly ErrorCode[];
+export const CONTRACT_VERSIONS: Readonly<{
+  host: string;
+  catalog: string;
+  package: string;
+}>;

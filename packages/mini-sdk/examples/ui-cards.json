@@ -1,0 +1,55 @@
+{
+  "contract": "mini-catalog.v1",
+  "note": "UI v2 的小程序卡片审计。只有 status=signed_example 或 status=authorized 的卡片可以渲染和启动；blocked_external 是第三方品牌，未取得发布者授权前不得用示例包冒充，也不得显示为可打开。",
+  "examples": {
+    "com.wxlike.demo.notes": {
+      "name": "笔记与待办",
+      "capabilities": ["storage"],
+      "evidence": [
+        "cargo test -p wxlike-miniapps --test examples",
+        "node --test packages/mini-sdk/test/examples.test.mjs"
+      ]
+    },
+    "com.wxlike.demo.shop": {
+      "name": "示例商店",
+      "capabilities": ["storage", "network", "payment"],
+      "evidence": [
+        "cargo test -p wxlike-miniapps --test examples",
+        "node --test packages/mini-sdk/test/examples.test.mjs"
+      ]
+    },
+    "com.wxlike.demo.game": {
+      "name": "猜数字",
+      "capabilities": ["storage"],
+      "evidence": [
+        "cargo test -p wxlike-miniapps --test examples",
+        "node --test packages/mini-sdk/test/examples.test.mjs"
+      ]
+    },
+    "com.wxlike.demo.weather": {
+      "name": "天气",
+      "capabilities": ["storage", "location"],
+      "evidence": [
+        "cargo test -p wxlike-miniapps --test examples",
+        "node --test packages/mini-sdk/test/examples.test.mjs"
+      ]
+    }
+  },
+  "cards": [
+    { "card_id": "m1", "surface": "both", "name": "腾讯地图", "status": "blocked_external", "app_id": null, "required": "腾讯地图发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m2", "surface": "both", "name": "微信读书", "status": "blocked_external", "app_id": null, "required": "微信读书发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m3", "surface": "both", "name": "滴滴出行", "status": "blocked_external", "app_id": null, "required": "滴滴发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m4", "surface": "both", "name": "美团外卖", "status": "blocked_external", "app_id": null, "required": "美团发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m5", "surface": "both", "name": "京东购物", "status": "blocked_external", "app_id": null, "required": "京东发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m6", "surface": "both", "name": "猫眼电影", "status": "blocked_external", "app_id": null, "required": "猫眼发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m7", "surface": "both", "name": "Keep", "status": "blocked_external", "app_id": null, "required": "Keep 发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m8", "surface": "both", "name": "故宫博物院", "status": "blocked_external", "app_id": null, "required": "故宫博物院发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m9", "surface": "both", "name": "微信指数", "status": "blocked_external", "app_id": null, "required": "微信指数发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m10", "surface": "both", "name": "微快递", "status": "blocked_external", "app_id": null, "required": "微快递发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "m11", "surface": "both", "name": "天气", "status": "signed_example", "app_id": "com.wxlike.demo.weather" },
+    { "card_id": "m12", "surface": "both", "name": "更多", "status": "navigation", "app_id": null, "required": "跳转目录页，不是应用卡" },
+    { "card_id": "nearby-1", "surface": "mobile", "name": "%Arabica 咖啡", "status": "blocked_external", "app_id": null, "required": "门店应用发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "nearby-2", "surface": "mobile", "name": "天目里美术馆", "status": "blocked_external", "app_id": null, "required": "场馆应用发布者授权与审核后的 mini-catalog 条目" },
+    { "card_id": "nearby-3", "surface": "mobile", "name": "KEEP 运动空间", "status": "blocked_external", "app_id": null, "required": "Keep 发布者授权与审核后的 mini-catalog 条目" }
+  ]
+}

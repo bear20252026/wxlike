@@ -3,6 +3,7 @@
   "$id": "https://wxlike.local/contracts/miniapps/mini-package.v1.json",
   "title": "wxlike mini-app package v1",
   "description": "DPG1 blob containing one signed mini.json plus every declared resource. The signature is a sidecar over the exact bytes of mini.json; each resource is covered by a SHA-256 digest in the manifest. mini.json never lists itself.",
+  "x-contract-version": "mini-package.v1",
   "type": "object",
   "additionalProperties": false,
   "required": [

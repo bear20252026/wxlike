@@ -101,6 +101,8 @@ pub struct PaymentRequest {
 pub enum PaymentStatus {
     Settled,
     Pending,
+    /// Dev-channel payment: a receipt exists, but nothing was charged.
+    Sandbox,
 }
 
 impl PaymentStatus {
@@ -108,6 +110,7 @@ impl PaymentStatus {
         match self {
             PaymentStatus::Settled => "settled",
             PaymentStatus::Pending => "pending",
+            PaymentStatus::Sandbox => "sandbox",
         }
     }
 }
@@ -285,6 +288,35 @@ pub mod fixtures {
     impl PaymentLog {
         pub fn entries(&self) -> Vec<PaymentRequest> {
             self.calls.lock().unwrap().clone()
+        }
+    }
+
+    /// Dev-channel payment provider: returns a sandbox receipt so example
+    /// apps can exercise the whole flow without pretending money moved.
+    pub struct SandboxPayments {
+        calls: Arc<Mutex<Vec<PaymentRequest>>>,
+    }
+
+    impl SandboxPayments {
+        pub fn new() -> (Self, PaymentLog) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    calls: Arc::clone(&calls),
+                },
+                PaymentLog { calls },
+            )
+        }
+    }
+
+    impl PaymentPort for SandboxPayments {
+        fn pay(&mut self, request: &PaymentRequest) -> Result<PaymentReceipt, String> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(request.clone());
+            Ok(PaymentReceipt {
+                reference: format!("sandbox-{}", calls.len()),
+                status: PaymentStatus::Sandbox,
+            })
         }
     }
 
