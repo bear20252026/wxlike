@@ -56,6 +56,13 @@ requests:
       的凭据缺失行为记入部署手册。
     rationale: 供应商侧与真机无法在本机验证，登记为待验，不写已完成。
 
+  - id: REQ-G00-migration-numbering
+    target: G00
+    action: 为 `push_device` 表分配 schema 编号（token 归设备、`epoch` 轮换、
+      `revoked` 撤销；push.register/revoke 命令面见本文件其余申请）；列名以
+      `crates/message/src/lib.rs` 的 DDL 为准。
+    rationale: 迁移编号由 G00 串行分配，避免多组撞号。
+
 notes:
   - 提示不带正文：`SyncHint{conv_id, from_user, count, sent_at_ms, resync}`；
     私密会话用 `SyncHint::private(count)` 连会话 id 都不给。
