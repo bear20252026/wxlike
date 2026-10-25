@@ -396,9 +396,9 @@ fn map_report_error(e: wxlike_report::ReportError) -> PlatformError {
         }
         wxlike_report::ReportError::EmptyActor => PlatformError::BadInput("actor required"),
         wxlike_report::ReportError::NoteTooLong => PlatformError::BadInput("note too long"),
-        wxlike_report::ReportError::BadTargetKind => {
-            PlatformError::BadInput("target_kind must be user|message|group|channel")
-        }
+        wxlike_report::ReportError::BadTargetKind => PlatformError::BadInput(
+            "target_kind must be user|message|group|channel|moment|article|video|status",
+        ),
         wxlike_report::ReportError::Terminal => PlatformError::Conflict("ticket closed".into()),
     }
 }

@@ -25,8 +25,11 @@ use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
+use crate::content_index;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
+use crate::inbox;
+use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -38,15 +41,25 @@ pub const MAX_COMMENT_CHARS: usize = 1_000;
 pub const MAX_MEDIA_PER_MOMENT: usize = 9;
 pub const MAX_FEED_PAGE: i64 = 50;
 
+/// 评论层级上限：顶层评论 depth=0，直接回复=1，再往下=2；更深的回复拒绝。
+/// 微信没有无限嵌套线程，链表式的 `reply_to` 也容易被用来构造超深树。
+pub const MAX_COMMENT_DEPTH: usize = 2;
+/// 分组名是作者好友分组（`friends.friend_group`）的字符串，不是新对象。
+pub const MAX_GROUP_CHARS: usize = 32;
+
 pub fn routes() -> Router<PlatformState> {
     Router::new()
         .route("/api/moments", post(publish))
         .route("/api/moments/feed", get(feed))
+        .route("/api/moments/drafts", post(save_draft))
+        .route("/api/moments/drafts", get(list_drafts))
+        .route("/api/moments/drafts/{draft_id}", delete(remove_draft))
         .route("/api/moments/{moment_id}", get(detail))
         .route("/api/moments/{moment_id}", delete(remove))
         .route("/api/moments/{moment_id}/likes", post(like))
         .route("/api/moments/{moment_id}/likes", delete(unlike))
         .route("/api/moments/{moment_id}/comments", post(comment))
+        .route("/api/moments/{moment_id}/report", post(report))
         .route(
             "/api/moments/{moment_id}/comments/{comment_id}",
             delete(remove_comment),
@@ -58,6 +71,8 @@ pub fn routes() -> Router<PlatformState> {
 pub enum Visibility {
     Public,
     Friends,
+    /// 仅作者自己一个好友分组可见（`audience_group` 必填）。
+    Groups,
     /// 仅自己可见（微信的"私密"）。**不进任何人的 feed**，包括好友的。
     Private,
 }
@@ -67,6 +82,7 @@ impl Visibility {
         match self {
             Visibility::Public => "public",
             Visibility::Friends => "friends",
+            Visibility::Groups => "groups",
             Visibility::Private => "private",
         }
     }
@@ -80,6 +96,12 @@ pub struct PublishBody {
     pub media_ids: Vec<String>,
     #[serde(default = "default_visibility")]
     pub visibility: Visibility,
+    /// 分组可见时的作者好友分组名。
+    #[serde(default)]
+    pub audience_group: String,
+    /// 从这个草稿发布；成功后草稿删除。不属于调用者则拒绝。
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 fn default_visibility() -> Visibility {
@@ -114,6 +136,195 @@ pub struct MomentHead {
     pub comment_count: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MomentDraft {
+    pub id: String,
+    pub author: String,
+    pub text: String,
+    pub media_ids: Vec<String>,
+    pub visibility: String,
+    pub audience_group: String,
+    pub updated_at: i64,
+}
+
+#[derive(Deserialize)]
+pub struct DraftBody {
+    #[serde(default)]
+    pub draft_id: Option<String>,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub media_ids: Vec<String>,
+    #[serde(default = "default_visibility")]
+    pub visibility: Visibility,
+    #[serde(default)]
+    pub audience_group: String,
+}
+
+fn check_moment_input(
+    text: &str,
+    media_ids: &[String],
+    visibility: Visibility,
+    audience_group: &str,
+    allow_empty: bool,
+) -> Result<(String, Vec<String>)> {
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Err(PlatformError::BadInput("moment text too long"));
+    }
+    if text.contains(|c: char| c.is_control() && c != '\n') {
+        return Err(PlatformError::BadInput(
+            "moment text contains control characters",
+        ));
+    }
+    if media_ids.len() > MAX_MEDIA_PER_MOMENT {
+        return Err(PlatformError::BadInput("too many media items"));
+    }
+    if !allow_empty && text.trim().is_empty() && media_ids.is_empty() {
+        return Err(PlatformError::BadInput("moment is empty"));
+    }
+    let group = check_group(visibility, audience_group)?;
+    Ok((group, validate_media_ids(media_ids)?))
+}
+
+fn check_group(visibility: Visibility, group: &str) -> Result<String> {
+    let group = group.trim();
+    if visibility != Visibility::Groups {
+        return Ok(String::new());
+    }
+    if group.is_empty() {
+        return Err(PlatformError::BadInput("audience_group is required"));
+    }
+    if group.chars().count() > MAX_GROUP_CHARS || group.chars().any(char::is_control) {
+        return Err(PlatformError::BadInput("audience_group malformed"));
+    }
+    Ok(group.to_string())
+}
+
+fn validate_media_ids(media_ids: &[String]) -> Result<Vec<String>> {
+    media_ids
+        .iter()
+        .map(|m| validate::id(m).map(|s| s.to_string()))
+        .collect()
+}
+
+/// 自底向上数 `reply_to` 链；循环上限防止损坏数据里的环把请求卡死。
+/// 评论正文的三道闸：非空、限长、无控制字符（换行放行）。
+fn check_comment_text(text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        return Err(PlatformError::BadInput("comment must not be empty"));
+    }
+    if text.chars().count() > MAX_COMMENT_CHARS {
+        return Err(PlatformError::BadInput("comment too long"));
+    }
+    if text.contains(|c: char| c.is_control() && c != '\n') {
+        return Err(PlatformError::BadInput(
+            "comment contains control characters",
+        ));
+    }
+    Ok(())
+}
+
+/// 回复目标必须存在且属于同一条朋友圈，且嵌套不超上限。
+fn check_reply_target(conn: &rusqlite::Connection, moment_id: &str, reply_to: &str) -> Result<()> {
+    let same_moment: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM moment_comments WHERE id = ?1 AND moment_id = ?2 AND deleted = 0",
+            params![reply_to, moment_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+    if same_moment.is_none() {
+        return Err(PlatformError::BadInput(
+            "reply target is not a comment on this moment",
+        ));
+    }
+    if comment_depth(conn, moment_id, reply_to)? >= MAX_COMMENT_DEPTH {
+        return Err(PlatformError::BadInput("comment nesting too deep"));
+    }
+    Ok(())
+}
+
+fn comment_depth(conn: &rusqlite::Connection, moment_id: &str, comment_id: &str) -> Result<usize> {
+    let mut depth = 0usize;
+    let mut cur = comment_id.to_string();
+    for _ in 0..=(MAX_COMMENT_DEPTH + 1) {
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT reply_to FROM moment_comments
+                 WHERE id = ?1 AND moment_id = ?2 AND deleted = 0",
+                params![cur, moment_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match parent {
+            Some(p) if !p.is_empty() => {
+                depth += 1;
+                cur = p;
+            }
+            _ => break,
+        }
+    }
+    Ok(depth)
+}
+
+/// 评论/回复落评论者与被回复者两条事务内通知（楼中楼只补被回复者）。
+fn notify_comment_inbox(
+    conn: &rusqlite::Connection,
+    moment_id: &str,
+    by: &str,
+    reply_to: Option<&str>,
+    now: i64,
+) -> Result<()> {
+    let (author, reply_author): (String, Option<String>) = conn.query_row(
+        "SELECT m.author,
+                (SELECT author FROM moment_comments WHERE id = ?2)
+         FROM moments m WHERE m.id = ?1",
+        params![moment_id, reply_to.unwrap_or("")],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    inbox::notify(
+        conn,
+        &author,
+        "moment_comment",
+        by,
+        "moment",
+        moment_id,
+        "评论了你的朋友圈",
+        "",
+        now,
+    )?;
+    if let Some(reply_author) = reply_author {
+        inbox::notify(
+            conn,
+            &reply_author,
+            "moment_reply",
+            by,
+            "moment",
+            moment_id,
+            "回复了你的评论",
+            "",
+            now,
+        )?;
+    }
+    Ok(())
+}
+
+fn require_media(conn: &rusqlite::Connection, media_ids: &[String]) -> Result<()> {
+    for media_id in media_ids {
+        let known: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM media WHERE id = ?1",
+                params![media_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        if known.is_none() {
+            return Err(PlatformError::BadInput("unknown media id"));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct CommentRow {
     pub comment_id: String,
@@ -145,55 +356,148 @@ impl Platform {
         media_ids: &[String],
         visibility: Visibility,
     ) -> Result<String> {
-        let author = validate::id(author)?.to_string();
-        if text.chars().count() > MAX_TEXT_CHARS {
-            return Err(PlatformError::BadInput("moment text too long"));
-        }
-        if text.contains(|c: char| c.is_control() && c != '\n') {
-            return Err(PlatformError::BadInput(
-                "moment text contains control characters",
-            ));
-        }
-        if media_ids.len() > MAX_MEDIA_PER_MOMENT {
-            return Err(PlatformError::BadInput("too many media items"));
-        }
-        if text.trim().is_empty() && media_ids.is_empty() {
-            return Err(PlatformError::BadInput("moment is empty"));
-        }
-        let cleaned: Vec<String> = media_ids
-            .iter()
-            .map(|m| validate::id(m).map(|s| s.to_string()))
-            .collect::<Result<Vec<_>>>()?;
-        {
-            let c = self.db().lock();
-            for m in &cleaned {
-                let known: Option<i64> = c
-                    .query_row("SELECT 1 FROM media WHERE id = ?1", params![m], |r| {
-                        r.get::<_, i64>(0)
-                    })
-                    .optional()?;
-                if known.is_none() {
-                    return Err(PlatformError::BadInput("unknown media id"));
-                }
-            }
-        }
+        self.publish_moment_with(author, text, media_ids, visibility, "", None)
+    }
 
+    /// 发布（可带分组可见与草稿来源）。发布、索引、媒体引用、删草稿同事务。
+    pub fn publish_moment_with(
+        &self,
+        author: &str,
+        text: &str,
+        media_ids: &[String],
+        visibility: Visibility,
+        audience_group: &str,
+        draft_id: Option<&str>,
+    ) -> Result<String> {
+        let author = validate::id(author)?.to_string();
+        let (group, cleaned) =
+            check_moment_input(text, media_ids, visibility, audience_group, false)?;
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
-        c.execute(
-            "INSERT INTO moments(id, author, text, media, visibility, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
+        require_media(&tx, &cleaned)?;
+        tx.execute(
+            "INSERT INTO moments(id, author, text, media, visibility, audience_group, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 id,
                 author,
                 text,
                 serde_json::to_string(&cleaned)?,
                 visibility.as_str(),
+                group,
                 now
             ],
         )?;
+        content_index::upsert(
+            &tx,
+            &content_index::IndexDoc {
+                doc_id: &id,
+                kind: "moment",
+                owner: &author,
+                audience: visibility.as_str(),
+                group_name: &group,
+                title: "",
+                body: text,
+            },
+            now,
+        )?;
+        content_index::add_media_refs(&tx, &cleaned, "moment", &id, &author, now)?;
+        if let Some(draft_id) = draft_id {
+            let draft_id = validate::id(draft_id)?;
+            let changed = tx.execute(
+                "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
+                params![draft_id, author],
+            )?;
+            if changed == 0 {
+                return Err(PlatformError::Forbidden);
+            }
+        }
+        tx.commit()?;
         Ok(id)
+    }
+
+    /// 保存/覆盖草稿。草稿允许暂时引用不存在的媒体吗？不允许——"图片先上传
+    /// 再发布"的同一道闸在草稿阶段就生效，客户端拿到明确错误后可重试上传。
+    pub fn save_moment_draft(
+        &self,
+        author: &str,
+        draft_id: Option<&str>,
+        text: &str,
+        media_ids: &[String],
+        visibility: Visibility,
+        audience_group: &str,
+    ) -> Result<String> {
+        let author = validate::id(author)?.to_string();
+        let (group, cleaned) =
+            check_moment_input(text, media_ids, visibility, audience_group, true)?;
+        let now = wxlike_core::types::now_ms() as i64;
+        let media = serde_json::to_string(&cleaned)?;
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
+        require_media(&tx, &cleaned)?;
+        let id = match draft_id {
+            Some(id) => {
+                let id = validate::id(id)?.to_string();
+                let changed = tx.execute(
+                    "UPDATE moment_drafts SET text = ?1, media = ?2, visibility = ?3,
+                                              audience_group = ?4, updated_at = ?5
+                     WHERE id = ?6 AND author = ?7",
+                    params![text, media, visibility.as_str(), group, now, id, author],
+                )?;
+                if changed == 0 {
+                    return Err(PlatformError::NotFound);
+                }
+                id
+            }
+            None => {
+                let id = crate::auth::random_hex(8);
+                tx.execute(
+                    "INSERT INTO moment_drafts(id, author, text, media, visibility,
+                                               audience_group, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![id, author, text, media, visibility.as_str(), group, now],
+                )?;
+                id
+            }
+        };
+        tx.commit()?;
+        Ok(id)
+    }
+
+    pub fn moment_drafts(&self, author: &str) -> Result<Vec<MomentDraft>> {
+        let c = self.db().lock();
+        let mut stmt = c.prepare(
+            "SELECT id, author, text, media, visibility, audience_group, updated_at
+             FROM moment_drafts WHERE author = ?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![author], |r| {
+            let media: String = r.get(3)?;
+            Ok(MomentDraft {
+                id: r.get(0)?,
+                author: r.get(1)?,
+                text: r.get(2)?,
+                media_ids: serde_json::from_str(&media).unwrap_or_default(),
+                visibility: r.get(4)?,
+                audience_group: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn delete_moment_draft(&self, author: &str, draft_id: &str) -> Result<()> {
+        let draft_id = validate::id(draft_id)?;
+        let changed = self.db().lock().execute(
+            "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
+            params![draft_id, author],
+        )?;
+        if changed == 0 {
+            return Err(PlatformError::NotFound);
+        }
+        Ok(())
     }
 
     fn moment_row(&self, moment_id: &str) -> Result<Option<(i64, MomentHead)>> {
@@ -240,19 +544,66 @@ impl Platform {
     }
 
     /// Whether `viewer` may see this moment. Authors always see their own;
-    /// `public` is open; `friends` requires the mutual-friendship row.
+    /// `public` is open to non-blocked viewers; `friends` requires the
+    /// friendship row; `groups` additionally requires the author's friend
+    /// group label to match `audience_group`.
     pub fn can_see_moment(&self, viewer: &str, author: &str, visibility: &str) -> Result<bool> {
+        self.can_see_moment_full(viewer, author, visibility, "")
+    }
+
+    pub fn can_see_moment_full(
+        &self,
+        viewer: &str,
+        author: &str,
+        visibility: &str,
+        audience_group: &str,
+    ) -> Result<bool> {
         if viewer == author {
             return Ok(true);
         }
-        if visibility == "public" {
-            return Ok(true);
-        }
-        // 私密：连好友也看不到（viewer == author 已在上面返回）
-        if visibility == "private" {
+        // 拉黑是双向失效：任一方拉黑后，公开/好友/分组内容都不再互相可见。
+        if self.is_blocked(viewer, author)? || self.is_blocked(author, viewer)? {
             return Ok(false);
         }
-        self.are_friends(author, viewer)
+        match visibility {
+            "public" => Ok(true),
+            "friends" => self.are_friends(author, viewer),
+            "groups" => self.in_author_group(author, viewer, audience_group),
+            // 私密：连好友也看不到（viewer == author 已在上面返回）
+            _ => Ok(false),
+        }
+    }
+
+    fn in_author_group(&self, author: &str, viewer: &str, group: &str) -> Result<bool> {
+        if group.is_empty() {
+            return Ok(false);
+        }
+        let c = self.db().lock();
+        Ok(c.query_row(
+            "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2 AND friend_group = ?3",
+            params![author, viewer, group],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+    }
+
+    /// 按 id 判定可见性（检索/点赞/详情共用的授权入口）。
+    pub fn moment_visible(&self, viewer: &str, moment_id: &str) -> Result<bool> {
+        let row: Option<(String, String, String)> = {
+            let c = self.db().lock();
+            c.query_row(
+                "SELECT author, visibility, audience_group FROM moments
+                 WHERE id = ?1 AND deleted = 0",
+                params![moment_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+        };
+        let Some((author, visibility, group)) = row else {
+            return Ok(false);
+        };
+        self.can_see_moment_full(viewer, &author, &visibility, &group)
     }
 
     pub fn moment_visitors_likes(&self, moment_id: &str) -> Result<Vec<(String, String)>> {
@@ -292,13 +643,21 @@ impl Platform {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// Author-only removal. Returns false when the moment is not theirs or gone.
+    /// Author-only removal. 索引与媒体引用同事务清理：检索同步不可见，
+    /// 附件不会留下指向已删动态的孤儿引用。
     pub fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
-        let c = self.db().lock();
-        let changed = c.execute(
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
+        let changed = tx.execute(
             "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
             params![moment_id, by],
         )?;
+        if changed == 1 {
+            content_index::remove(&tx, moment_id)?;
+            content_index::remove_media_refs(&tx, "moment", moment_id)?;
+            crate::favorites::revoke_source(&tx, "moment", moment_id)?;
+        }
+        tx.commit()?;
         Ok(changed == 1)
     }
 
@@ -318,14 +677,40 @@ impl Platform {
         Ok(changed == 1)
     }
 
-    /// Idempotent like: re-liking reports success without a second row.
+    /// Idempotent like: re-liking reports success without a second row, and the
+    /// dedupe key keeps it from generating a second notification.
     pub fn like_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
-        let c = self.db().lock();
-        let changed = c.execute(
+        let now = wxlike_core::types::now_ms() as i64;
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
+        let changed = tx.execute(
             "INSERT INTO moment_likes(moment_id, user_id, created_at) VALUES(?1, ?2, ?3)
              ON CONFLICT(moment_id, user_id) DO NOTHING",
-            params![moment_id, by, wxlike_core::types::now_ms() as i64],
+            params![moment_id, by, now],
         )?;
+        if changed == 1 {
+            let author: Option<String> = tx
+                .query_row(
+                    "SELECT author FROM moments WHERE id = ?1 AND deleted = 0",
+                    params![moment_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(author) = author {
+                inbox::notify(
+                    &tx,
+                    &author,
+                    "moment_like",
+                    by,
+                    "moment",
+                    moment_id,
+                    "赞了你的朋友圈",
+                    &format!("like:moment:{moment_id}:{by}"),
+                    now,
+                )?;
+            }
+        }
+        tx.commit()?;
         Ok(changed == 1)
     }
 
@@ -349,43 +734,32 @@ impl Platform {
         reply_to: Option<&str>,
     ) -> Result<String> {
         let by = validate::id(by)?.to_string();
-        if text.trim().is_empty() {
-            return Err(PlatformError::BadInput("comment must not be empty"));
-        }
-        if text.chars().count() > MAX_COMMENT_CHARS {
-            return Err(PlatformError::BadInput("comment too long"));
-        }
-        if text.contains(|c: char| c.is_control() && c != '\n') {
-            return Err(PlatformError::BadInput(
-                "comment contains control characters",
-            ));
-        }
+        check_comment_text(text)?;
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
         let reply_to = match reply_to {
             Some(r) if !r.is_empty() => Some(validate::id(r)?.to_string()),
             _ => None,
         };
-        let c = self.db().lock();
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
         if let Some(rt) = &reply_to {
-            let same_moment: Option<i64> = c
-                .query_row(
-                    "SELECT 1 FROM moment_comments WHERE id = ?1 AND moment_id = ?2 AND deleted = 0",
-                    params![rt, moment_id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()?;
-            if same_moment.is_none() {
-                return Err(PlatformError::BadInput(
-                    "reply target is not a comment on this moment",
-                ));
-            }
+            check_reply_target(&tx, moment_id, rt)?;
         }
-        c.execute(
+        tx.execute(
             "INSERT INTO moment_comments(id, moment_id, author, text, reply_to, created_at)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, moment_id, by, text, reply_to.unwrap_or_default(), now],
+            params![
+                id,
+                moment_id,
+                by,
+                text,
+                reply_to.as_deref().unwrap_or(""),
+                now
+            ],
         )?;
+        notify_comment_inbox(&tx, moment_id, &by, reply_to.as_deref(), now)?;
+        tx.commit()?;
         Ok(id)
     }
 
@@ -396,44 +770,32 @@ impl Platform {
         since: Option<i64>,
         limit: i64,
     ) -> Result<(Vec<MomentHead>, i64, bool)> {
-        let friends: Vec<String> = self.friends(me)?.into_iter().map(|f| f.friend_id).collect();
         let limit = limit.clamp(1, MAX_FEED_PAGE);
         // since is a watermark: strictly older than it; None = from the newest
         let upper = since.unwrap_or(i64::MAX);
 
         let c = self.db().lock();
-        let authors: Vec<String> = friends
-            .into_iter()
-            .chain(std::iter::once(me.to_string()))
-            .collect();
-        let placeholders = vec!["?"; authors.len()].join(",");
-        let sql = format!(
-            "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
+        // 作者列表、可见性、拉黑全部在同一条 SQL 里判定：好友关系与分组是
+        // 读时事实，删好友/改分组/拉黑立即反映到下一次 feed。
+        let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
                     (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
                     (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
              FROM moments m JOIN users u ON u.id = m.author
-             -- 私密动态只进作者自己的 feed。没有这一条，好友会在 feed 里
-             -- 看到本该「仅自己可见」的内容——而详情接口是挡住的，两处不一致
-             -- 是最难查的一类隐私泄漏。
-             WHERE m.deleted = 0 AND m.author IN ({placeholders})
-               AND (m.visibility <> 'private' OR m.author = ?{})
-               AND m.seq < ?{}
-             ORDER BY m.seq DESC LIMIT ?{}",
-            authors.len() + 1,
-            authors.len() + 2,
-            authors.len() + 3
-        );
-        let mut stmt = c.prepare(&sql)?;
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for a in &authors {
-            params_vec.push(Box::new(a.clone()));
-        }
-        params_vec.push(Box::new(me.to_string()));
-        params_vec.push(Box::new(upper));
-        params_vec.push(Box::new(limit + 1)); // one extra row tells us if there is more
-        let refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| &**p).collect();
+             WHERE m.deleted = 0
+               AND (m.author = ?1 OR m.author IN (SELECT friend_id FROM friends WHERE user_id = ?1))
+               AND (m.visibility <> 'private' OR m.author = ?1)
+               AND (m.visibility <> 'groups' OR m.author = ?1 OR EXISTS (
+                     SELECT 1 FROM friends f WHERE f.user_id = m.author AND f.friend_id = ?1
+                       AND f.friend_group = m.audience_group))
+               AND NOT EXISTS (
+                     SELECT 1 FROM blocks b
+                     WHERE (b.user_id = ?1 AND b.blocked_id = m.author)
+                        OR (b.user_id = m.author AND b.blocked_id = ?1))
+               AND m.seq < ?2
+             ORDER BY m.seq DESC LIMIT ?3";
+        let mut stmt = c.prepare(sql)?;
         // (seq, head) internally so the cursor needs no `seq` field in the API shape
-        let rows = stmt.query_map(refs.as_slice(), |r| {
+        let rows = stmt.query_map(params![me, upper, limit + 1], |r| {
             let media: String = r.get(5)?;
             Ok((
                 r.get::<_, i64>(0)?,
@@ -465,15 +827,83 @@ async fn publish(
     authed: Authed,
     ApiJson(body): ApiJson<PublishBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let id = platform.publish_moment(
+    let id = platform.publish_moment_with(
         &authed.user_id,
         &body.text,
         &body.media_ids,
         body.visibility,
+        &body.audience_group,
+        body.draft_id.as_deref(),
     )?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "moment_id": id })),
+    ))
+}
+
+async fn save_draft(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    ApiJson(body): ApiJson<DraftBody>,
+) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let id = platform.save_moment_draft(
+        &authed.user_id,
+        body.draft_id.as_deref(),
+        &body.text,
+        &body.media_ids,
+        body.visibility,
+        &body.audience_group,
+    )?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "draft_id": id })),
+    ))
+}
+
+async fn list_drafts(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(
+        serde_json::json!({ "drafts": platform.moment_drafts(&authed.user_id)? }),
+    ))
+}
+
+async fn remove_draft(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(draft_id): Path<String>,
+) -> std::result::Result<StatusCode, ApiError> {
+    platform.delete_moment_draft(&authed.user_id, &draft_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ReportBody {
+    pub reason: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
+async fn report(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(moment_id): Path<String>,
+    ApiJson(body): ApiJson<ReportBody>,
+) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
+    require_visible(&platform, &moment_id, &authed.user_id)
+        .await
+        .map_err(ApiError::from)?;
+    let reason = wxlike_report::Reason::parse(&body.reason)
+        .ok_or_else(|| ApiError::from(PlatformError::BadInput("unknown report reason")))?;
+    let ticket =
+        platform.create_report(&authed.user_id, "moment", &moment_id, reason, &body.detail)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "report_id": ticket.id })),
     ))
 }
 
@@ -488,8 +918,8 @@ async fn detail(
     let (_, head) = platform
         .moment_row(&moment_id)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no such moment"))?;
-    if !platform.can_see_moment(&authed.user_id, &head.author, &head.visibility)? {
-        // a friends-only moment is simply not there for a stranger
+    if !platform.moment_visible(&authed.user_id, &moment_id)? {
+        // a friends-only / blocked / deleted moment is simply not there
         return Err(ApiError::new(StatusCode::NOT_FOUND, "no such moment"));
     }
     let likes = platform
@@ -529,10 +959,10 @@ async fn remove(
 
 /// Both like handlers need the moment to be visible to the caller first.
 async fn require_visible(platform: &Platform, moment_id: &str, viewer: &str) -> Result<()> {
-    let (_, head) = platform
+    platform
         .moment_row(moment_id)?
         .ok_or(PlatformError::NotFound)?;
-    if !platform.can_see_moment(viewer, &head.author, &head.visibility)? {
+    if !platform.moment_visible(viewer, moment_id)? {
         return Err(PlatformError::NotFound);
     }
     Ok(())
@@ -624,7 +1054,7 @@ async fn feed(
     let (rows, next, has_more) = platform.feed(
         &authed.user_id,
         q.since.filter(|s| *s > 0),
-        q.limit.unwrap_or(20),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
     Ok(Json(serde_json::json!({
         "moments": rows,

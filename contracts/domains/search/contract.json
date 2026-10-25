@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/search/contract.json",
+  "title": "search domain contract (search-v1)",
+  "description": "G05 检索域对外契约：公开内容检索、热搜聚合、通知收件箱。实现位于 crates/platform 的 content_index/inbox 模块。三条不变式：先授权后取正文；写同步删同步（索引与内容同事务）；私聊永不进索引。",
+  "contract_version": "search-v1",
+  "owner": "G05",
+  "invariants": [
+    "候选页只查元数据；逐条回权威表判可见性（moment_visible/content_visible/video_visible/status_visible）通过后才读正文生成 snippet——索引死行、撤权行不出现在任何响应",
+    "索引写入与内容发布同事务、删除同步删行：不存在'索引落后'的异步窗口",
+    "私聊/群聊正文永不进索引；服务端没有消息明文建索引的入口",
+    "热搜只用 audience='public' 且 7 天窗口内的内容，按去重作者计数、单作者单词条上限 3 篇（防刷榜）；窗口固定不可调",
+    "LIKE 通配符 %/_/\\ 一律按字面量转义；query≤100 字符且无控制字符",
+    "通知由业务写同事务插入；dedupe_key 部分唯一索引让重复点赞/重试不刷屏；read_at 是服务端列，跨端共享",
+    "已读推进限定本人：up_to_seq（含）或按 id 列表（≤200）"
+  ],
+  "error_codes": ["bad_input", "not_found"],
+  "commands": {
+    "search.content": "q（必填）+ kind（moment|article|video|status，可省）+ cursor('{created_at}:{doc_id}') + limit≤50",
+    "search.trends": "limit≤50；返回 term/score/doc_count/distinct_authors 与固定 window_ms",
+    "notifications.list": "before_seq 游标；附带 unread_count 与 snapshot_version",
+    "notifications.read": "up_to_seq 或 ids；返回 updated 与最新 unread_count"
+  },
+  "events": [
+    "通知产生事件与业务写同事务落库（moment_like / moment_comment / moment_reply / status_reaction / video_like / video_comment）"
+  ]
+}
