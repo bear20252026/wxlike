@@ -1,0 +1,59 @@
+{
+ "total": 346,
+ "by_action_kind": {
+  "local_ui": 302,
+  "contract_candidate": 30,
+  "planned": 14
+ },
+ "by_domain": {
+  "G00": 49,
+  "G03": 53,
+  "G02": 79,
+  "G05": 99,
+  "G04": 9,
+  "G08": 11,
+  "G06": 41,
+  "G09": 5
+ },
+ "by_scope": {
+  "showcase": 17,
+  "product": 329
+ },
+ "by_platform_design": {
+  "showcase": 15,
+  "desktop_design": 120,
+  "mobile_design": 211
+ },
+ "pages_registered": [
+  "call",
+  "cards",
+  "channels",
+  "chat",
+  "chats",
+  "contacts",
+  "discover",
+  "favorites",
+  "files",
+  "location",
+  "login",
+  "me",
+  "mini",
+  "moments",
+  "mycode",
+  "newfriends",
+  "official",
+  "pay",
+  "profile",
+  "reading",
+  "redpacket",
+  "scan",
+  "search",
+  "settings",
+  "shared",
+  "showcase",
+  "status",
+  "stickers",
+  "transfer",
+  "wallet"
+ ]
+}

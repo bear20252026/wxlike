@@ -1,0 +1,15 @@
+{
+  "name": "action_result.failed",
+  "type": "ActionResult",
+  "why": "失败结果里带完整错误码",
+  "value": {
+    "action_id": "msg.send",
+    "status": "failed",
+    "error": {
+      "code": "forbidden",
+      "message": "不是群成员"
+    },
+    "completed_at_ms": 1700000000123
+  },
+  "canonical": "{\"action_id\":\"msg.send\",\"completed_at_ms\":1700000000123,\"error\":{\"code\":\"forbidden\",\"message\":\"不是群成员\"},\"status\":\"failed\"}"
+}

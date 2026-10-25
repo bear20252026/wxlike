@@ -31,6 +31,18 @@ pub enum WxlikeError {
     /// 用户等 30 秒后退避用尽才看到失败。
     #[error("unexpected: {detail}")]
     Unexpected { detail: String },
+    /// 参数 / 配置非法（调用方拼错了 JSON、缺字段）。
+    ///
+    /// 与 `Unexpected` 分开：这类错误是**调用方的 bug**，不该被当成"服务端
+    /// 出问题"上报，也不该重试。
+    #[error("invalid: {detail}")]
+    Invalid { detail: String },
+    /// 句柄已销毁。`dispose()` 之后任何调用都会拿到它。
+    ///
+    /// 单独一类而不是塞进 `Unexpected`：Dart 侧要能明确区分"我在用一个
+    /// 已经销毁的句柄"（那是生命周期 bug）和"这次调用失败了"。
+    #[error("disposed: {detail}")]
+    Disposed { detail: String },
 }
 
 impl WxlikeError {
@@ -59,6 +71,20 @@ impl WxlikeError {
     pub fn unexpected(detail: impl Into<String>) -> Self {
         Self::Unexpected {
             detail: detail.into(),
+        }
+    }
+
+    /// 参数 / 配置非法。
+    pub fn invalid(detail: impl Into<String>) -> Self {
+        Self::Invalid {
+            detail: detail.into(),
+        }
+    }
+
+    /// 句柄已销毁。
+    pub fn disposed() -> Self {
+        Self::Disposed {
+            detail: "CoreHandle 已销毁".to_string(),
         }
     }
 

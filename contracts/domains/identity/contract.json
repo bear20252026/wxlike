@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/identity/contract.json",
+  "title": "identity domain contract (identity-v1)",
+  "description": "G02 身份域对外契约：账号会话、设备生命周期、验证码登录、扫码登录、设置与账户数据生命周期。冻结后其他组按 fixture 开发；实现见 crates/features/identity。所有命令都要求服务端再次鉴权（除 login/refresh/qr_login.create 等公开入口），写命令必须幂等。",
+  "contract_version": "identity-v1",
+  "owner": "G02",
+  "transport": {
+    "request": { "command": "string", "version": "identity-v1", "payload": "object" },
+    "response": {
+      "ok": "boolean",
+      "data": "object|null",
+      "error": { "code": "string", "message": "string" }
+    }
+  },
+  "error_codes": [
+    "bad_input",
+    "unauthorized",
+    "forbidden",
+    "not_found",
+    "conflict",
+    "expired",
+    "rate_limited"
+  ],
+  "commands": {
+    "identity.login": { "$ref": "#/$defs/login" },
+    "identity.logout": { "$ref": "#/$defs/logout" },
+    "identity.refresh": { "$ref": "#/$defs/refresh" },
+    "identity.session.list": { "$ref": "#/$defs/sessionList" },
+    "identity.session.revoke": { "$ref": "#/$defs/sessionRevoke" },
+    "identity.device.list": { "$ref": "#/$defs/deviceList" },
+    "identity.device.revoke": { "$ref": "#/$defs/deviceRevoke" },
+    "identity.login.challenge": { "$ref": "#/$defs/challenge" },
+    "identity.login.verify": { "$ref": "#/$defs/challengeVerify" },
+    "identity.qr_login.create": { "$ref": "#/$defs/qrCreate" },
+    "identity.qr_login.bind": { "$ref": "#/$defs/qrBind" },
+    "identity.qr_login.scan": { "$ref": "#/$defs/qrScan" },
+    "identity.qr_login.approve": { "$ref": "#/$defs/qrDecide" },
+    "identity.qr_login.reject": { "$ref": "#/$defs/qrDecide" },
+    "identity.qr_login.poll": { "$ref": "#/$defs/qrPoll" },
+    "identity.qr_login.exchange": { "$ref": "#/$defs/qrExchange" },
+    "identity.preferences.patch": { "$ref": "#/$defs/prefsPatch" },
+    "identity.export.request": { "$ref": "#/$defs/jobRequest" },
+    "identity.account.delete": { "$ref": "#/$defs/jobRequest" }
+  },
+  "$defs": {
+    "audience": { "type": "string", "enum": ["user", "admin"] },
+    "deviceId": { "type": "string", "minLength": 8, "maxLength": 64, "pattern": "^[A-Za-z0-9_-]+$" },
+    "grant": {
+      "type": "object",
+      "required": ["sid", "access_token", "refresh_token", "expires_at", "audience"],
+      "properties": {
+        "sid": { "type": "string" },
+        "access_token": { "type": "string" },
+        "refresh_token": { "type": "string" },
+        "expires_at": { "type": "integer" },
+        "audience": { "$ref": "#/$defs/audience" }
+      }
+    },
+    "login": {
+      "type": "object",
+      "required": ["device_id", "platform"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/deviceId" },
+        "platform": { "type": "string", "enum": ["ios", "android", "desktop", "web"] },
+        "label": { "type": "string", "maxLength": 64 },
+        "os_version": { "type": "string", "maxLength": 64 },
+        "app_version": { "type": "string", "maxLength": 64 },
+        "identity_key": { "type": "string", "maxLength": 128 },
+        "audience": { "$ref": "#/$defs/audience" }
+      }
+    },
+    "logout": {
+      "type": "object",
+      "required": ["sid"],
+      "properties": { "sid": { "type": "string" } }
+    },
+    "refresh": {
+      "type": "object",
+      "required": ["refresh_token"],
+      "properties": { "refresh_token": { "type": "string" } }
+    },
+    "sessionList": {
+      "type": "object",
+      "properties": { "include_expired": { "type": "boolean", "default": false } }
+    },
+    "sessionRevoke": {
+      "type": "object",
+      "required": ["sid", "step_up_purpose"],
+      "properties": {
+        "sid": { "type": "string" },
+        "step_up_purpose": { "const": "device.revoke" }
+      }
+    },
+    "deviceList": {
+      "type": "object",
+      "properties": { "include_revoked": { "type": "boolean", "default": false } }
+    },
+    "deviceRevoke": {
+      "type": "object",
+      "required": ["device_id", "step_up_purpose"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/deviceId" },
+        "step_up_purpose": { "const": "device.revoke" }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "required": ["phone", "purpose"],
+      "properties": {
+        "phone": { "type": "string", "maxLength": 32 },
+        "default_cc": { "type": "string", "pattern": "^\\+[0-9]{1,3}$" },
+        "purpose": { "type": "string", "enum": ["login", "bind_phone", "reset"] },
+        "device_id": { "$ref": "#/$defs/deviceId" }
+      }
+    },
+    "challengeVerify": {
+      "type": "object",
+      "required": ["challenge_id", "code"],
+      "properties": {
+        "challenge_id": { "type": "string" },
+        "code": { "type": "string", "pattern": "^[0-9]{6}$" }
+      }
+    },
+    "qrCreate": {
+      "type": "object",
+      "properties": { "audience": { "$ref": "#/$defs/audience" } }
+    },
+    "qrBind": {
+      "type": "object",
+      "required": ["challenge_id", "verifier", "device_id", "platform"],
+      "properties": {
+        "challenge_id": { "type": "string" },
+        "verifier": { "type": "string", "minLength": 43, "maxLength": 128 },
+        "device_id": { "$ref": "#/$defs/deviceId" },
+        "platform": { "type": "string", "enum": ["ios", "android", "desktop", "web"] },
+        "label": { "type": "string", "maxLength": 64 },
+        "ip_hint": { "type": "string", "maxLength": 64 }
+      }
+    },
+    "qrScan": {
+      "type": "object",
+      "required": ["secret"],
+      "properties": { "secret": { "type": "string" } }
+    },
+    "qrDecide": {
+      "type": "object",
+      "required": ["challenge_id"],
+      "properties": { "challenge_id": { "type": "string" } }
+    },
+    "qrPoll": {
+      "type": "object",
+      "required": ["challenge_id", "verifier"],
+      "properties": {
+        "challenge_id": { "type": "string" },
+        "verifier": { "type": "string" }
+      }
+    },
+    "qrExchange": {
+      "type": "object",
+      "required": ["challenge_id", "verifier"],
+      "properties": {
+        "challenge_id": { "type": "string" },
+        "verifier": { "type": "string" },
+        "audience": { "$ref": "#/$defs/audience" }
+      }
+    },
+    "prefsPatch": {
+      "type": "object",
+      "required": ["values"],
+      "properties": {
+        "values": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 128 },
+          "propertyNames": {
+            "enum": [
+              "notify.dm",
+              "notify.group",
+              "notify.preview",
+              "notify.quiet_hours",
+              "privacy.discover_by_phone",
+              "privacy.discover_by_id",
+              "privacy.allow_stranger_msg",
+              "privacy.read_receipts",
+              "general.language",
+              "general.dnd"
+            ]
+          }
+        }
+      }
+    },
+    "jobRequest": {
+      "type": "object",
+      "required": ["step_up_purpose"],
+      "properties": {
+        "step_up_purpose": { "type": "string", "enum": ["account.export", "account.delete"] }
+      }
+    }
+  }
+}

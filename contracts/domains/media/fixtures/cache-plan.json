@@ -1,0 +1,17 @@
+{
+  "request": {
+    "budget_bytes": 0,
+    "candidates": [
+      { "key": "download-1", "object_id": "aa", "bytes": 12, "kind": "downloaded" },
+      { "key": "unsent-unique", "object_id": null, "bytes": 999, "kind": "unknown" }
+    ]
+  },
+  "response": {
+    "budget_bytes": 0,
+    "total_bytes": 1011,
+    "reclaim_bytes": 12,
+    "can_meet_budget": false,
+    "entries": [{ "key": "download-1", "object_id": "aa", "bytes": 12, "kind": "downloaded", "recoverable": true, "reason": "server copy is ready and re-downloadable" }],
+    "protected": [{ "key": "unsent-unique", "object_id": null, "bytes": 999, "kind": "unknown", "recoverable": false, "reason": "no server copy; deleting would lose the only bytes" }]
+  }
+}

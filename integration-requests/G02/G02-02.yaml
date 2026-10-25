@@ -1,0 +1,53 @@
+task: G02-02
+title: 好友、新朋友、群与隐私规则
+issue: https://github.com/bear20252026/wxlike/issues/108
+branch: feat/FP-G02-02
+crate: wxlike-relations
+contract: relations-v1
+paths:
+  - crates/features/relations/src/friend.rs
+  - crates/features/relations/src/prefs.rs
+  - crates/features/relations/src/group.rs
+  - crates/features/relations/src/port.rs
+
+root_registration:
+  - action: cargo_workspace_member
+    value: crates/features/relations
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/friends/requests -> friend::send"
+      - "POST /api/friends/requests/{id}/accept -> friend::accept"
+      - "POST /api/friends/{user_id}/block -> friend::block"
+      - "PUT  /api/friends/{user_id}/prefs -> prefs::set_remark/set_star/set_tags"
+      - "POST /api/groups -> group::create"
+      - "PUT  /api/groups/{id}/members/{uid}/role -> group::set_role"
+      - "DELETE /api/groups/{id}/members/{uid} -> group::kick"
+      - "POST /api/groups/{id}/dissolve -> group::dissolve"
+  - action: schema
+    proposal: schema/proposals/G02/relations.sql
+    tables: [friend_tag, group_meta, relations_audit]
+    alters: ["friends ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"]
+
+cross_group:
+  - group: G03
+    need: 发消息前调用 RelationsPort::may_message，禁止直接查 blocks/friends 表
+    port: crates/features/relations/src/port.rs
+  - group: G05
+    need: "共同群"用 RelationsPort::shared_groups，禁止自行 JOIN group_members
+  - group: G17
+    need: relations_audit 保留期与访问控制评审
+
+acceptance_notes:
+  - 并发接受不生两条关系：条件 UPDATE 抢占 + 两行 INSERT OR IGNORE（friends 主键）
+  - 拉黑优先：send/accept 都先查双向拉黑，被拉黑方拿不到"已存在"线索
+  - 共同群不泄漏私有群：common_groups 是交集查询，非成员拿不到任何行
+  - 群角色全部服务端判定；解散为软删，解散后写入 conflict
+
+tests:
+  - friend::tests::concurrent_accept_creates_one_pair
+  - friend::tests::block_wins_over_everything
+  - friend::tests::reverse_request_auto_accepts
+  - group::tests::member_cannot_invite_or_kick
+  - group::tests::private_group_name_is_hidden_from_outsiders
+  - port::tests::gate_allows_friends_and_blocks_blocked
