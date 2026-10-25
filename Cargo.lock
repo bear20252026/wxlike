@@ -6616,6 +6616,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-media"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "hmac 0.12.1",
+ "http-body-util",
+ "libc",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "wxlike-api",
+ "wxlike-core",
+]
+
+[[package]]
 name = "wxlike-message"
 version = "0.1.0"
 dependencies = [
