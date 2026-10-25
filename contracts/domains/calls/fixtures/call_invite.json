@@ -1,0 +1,25 @@
+{
+  "name": "call.invite success",
+  "request": {
+    "command": "call.invite",
+    "version": "calls-v1",
+    "payload": {
+      "call_id": "call-1001",
+      "conv_id": "d-alice~bob",
+      "callee": "bob",
+      "caller_device": "alice-phone",
+      "callee_devices": ["bob-phone", "bob-tablet"],
+      "video": true
+    }
+  },
+  "response": {
+    "ok": true,
+    "data": {
+      "call_id": "call-1001",
+      "state": "ringing",
+      "ring_timeout_ms": 30000,
+      "callee_devices": ["bob-phone", "bob-tablet"]
+    },
+    "error": null
+  }
+}

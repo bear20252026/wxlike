@@ -1,0 +1,71 @@
+# G09-02 呼叫信令与成员状态机 —— 集成请求
+request_id: G09-02
+task_issue: 153
+group_issue: 90
+branch: feat/FP-G09-02
+contract: calls-v1
+paths:
+  - crates/rtc/src/call_session.rs
+  - crates/rtc/src/call_store.rs
+  - crates/rtc/src/token.rs
+  - crates/rtc/schema/calls.sql
+  - crates/rtc/tests/call_signaling.rs
+  - schema/proposals/G09/0001_calls.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/calls -> call_session::CallServer::invite"
+      - "POST /api/calls/{call_id}/accept -> CallServer::accept"
+      - "POST /api/calls/{call_id}/reject -> CallServer::reject"
+      - "POST /api/calls/{call_id}/cancel -> CallServer::cancel"
+      - "POST /api/calls/{call_id}/hangup -> CallServer::hangup"
+      - "POST /api/calls/{call_id}/token -> CallServer::rejoin"
+      - "GET  /api/calls/recent -> CallRecordSink::recent"
+    note: 具体 HTTP 形状由 G00 按既有 server 路由风格落地；鉴权必须使用
+      平台解析出的 user_id，不接受客户端自报身份。
+  - action: schema
+    proposal: schema/proposals/G09/0001_calls.sql
+    tables: [calls]
+    alters: []
+    rollback: 纯新增表；DROP TABLE 即回滚，旧版本不读取该表
+
+requests:
+  - id: REQ-G02-membership
+    target: G02
+    action: 提供 Membership::member_allowed(conv_id, user) 的真实实现
+      （群成员/好友/direct conv 规则），接到 CallServer::new 的泛型参数。
+    rationale: 本卡自带真实集合实现只用于测试；生产成员事实归 G02。
+
+  - id: REQ-G03-revocation
+    target: G03
+    action: 退群/封禁事件调用 CallServer::revoke_member(conv, user)；
+      之后该用户的 accept/rejoin/verify_media_token 必须失败。
+    rationale: 撤销必须立即杀死通话与已签发令牌，靠代次前滚实现。
+
+  - id: REQ-G00-token-secret
+    target: G00 / 集成方
+    action: 从部署密钥注入至少 32 字节的 HMAC secret 构造 TokenSigner；
+      不得在配置/日志中回显明文。
+    rationale: 令牌安全边界全部来自 HMAC；弱密钥在构造期即拒绝。
+
+  - id: REQ-G00-call-routing
+    target: G00
+    action: 把 QUIC rtc-signal 信令路由到 CallServer；信令不占会话
+      seq、不落消息库（ADR-7）。
+    rationale: 通话控制必须复用既有 envelope 鉴权与离线投递语义。
+
+acceptance_notes:
+  - 成功/空结果/参数错误/未授权/超时/取消：tests/call_signaling.rs 覆盖
+    first_device_wins_the_answer_race、busy_line_is_refused_before_a_second_call_exists、
+    uninvited_users_and_devices_are_rejected、ring_and_connect_timeouts_have_distinct_reasons。
+  - 写幂等：same_device_retry_is_idempotent、hangup_is_idempotent_and_writes_one_record。
+  - 乱序：late_signals_cannot_resurrect_an_ended_call。
+  - 撤销：revocation_kills_the_call_and_every_old_token。
+  - 令牌绑定：token_is_bound_to_the_winning_device。
+  - 记录：sqlite_records_are_real_and_queryable（真 SQLite）。
+
+verification:
+  - cargo test -p wxlike-rtc --test call_signaling   # 10 例
+  - cargo test -p wxlike-rtc --lib token             # 6 例
