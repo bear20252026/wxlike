@@ -84,10 +84,20 @@ fn cmd_pack(args: &[String]) -> Result<(), CliError> {
 }
 
 fn cmd_sign(args: &[String]) -> Result<(), CliError> {
-    let blob = positional(args, &["--key", "--key-file", "--key-id", "--out", "--sig", "--host"])
-        .into_iter()
-        .next()
-        .ok_or_else(|| usage("sign needs a package blob"))?;
+    let blob = positional(
+        args,
+        &[
+            "--key",
+            "--key-file",
+            "--key-id",
+            "--out",
+            "--sig",
+            "--host",
+        ],
+    )
+    .into_iter()
+    .next()
+    .ok_or_else(|| usage("sign needs a package blob"))?;
     let seed = read_seed(args)?;
     let key = toolchain::signing_key(&seed)?;
     let key_id = flag(args, "--key-id");
@@ -105,13 +115,10 @@ fn cmd_sign(args: &[String]) -> Result<(), CliError> {
 }
 
 fn cmd_inspect(args: &[String]) -> Result<(), CliError> {
-    let blob = positional(
-        args,
-        &["--sig", "--trust", "--public-key", "--host"],
-    )
-    .into_iter()
-    .next()
-    .ok_or_else(|| usage("inspect needs a package blob"))?;
+    let blob = positional(args, &["--sig", "--trust", "--public-key", "--host"])
+        .into_iter()
+        .next()
+        .ok_or_else(|| usage("inspect needs a package blob"))?;
     let sig = path_flag(args, "--sig");
     let trust = match path_flag(args, "--trust") {
         Some(path) => Some(toolchain::load_trust(&path)?),
@@ -135,12 +142,15 @@ fn cmd_dev_serve(args: &[String]) -> Result<(), CliError> {
         .ok_or_else(|| usage("dev-serve needs a source directory"))?;
     let manifest = path_flag(args, "--manifest");
     let port = match flag(args, "--port") {
-        Some(raw) => raw
-            .parse()
-            .map_err(|_| usage("--port must be 0..65535"))?,
+        Some(raw) => raw.parse().map_err(|_| usage("--port must be 0..65535"))?,
         None => 0,
     };
-    let server = DevServer::bind(Path::new(&dir), manifest.as_deref(), &host_version(args), port)?;
+    let server = DevServer::bind(
+        Path::new(&dir),
+        manifest.as_deref(),
+        &host_version(args),
+        port,
+    )?;
     let info = serde_json::json!({
         "url": server.url(),
         "entry": server.manifest().entry,
@@ -149,7 +159,10 @@ fn cmd_dev_serve(args: &[String]) -> Result<(), CliError> {
         "channel": server.manifest().channel.as_str(),
     });
     // One line: callers (CI, tests) read stdout line-by-line.
-    println!("{}", serde_json::to_string(&info).map_err(|e| CliError::Failed(e.to_string()))?);
+    println!(
+        "{}",
+        serde_json::to_string(&info).map_err(|e| CliError::Failed(e.to_string()))?
+    );
     std::io::stdout().flush()?;
     if bool_flag(args, "--once") {
         server.serve_once()?;
@@ -193,7 +206,11 @@ fn positional(args: &[String], value_flags: &[&str]) -> Vec<String> {
     while index < args.len() {
         let arg = &args[index];
         if arg.starts_with("--") {
-            index += if value_flags.contains(&arg.as_str()) { 2 } else { 1 };
+            index += if value_flags.contains(&arg.as_str()) {
+                2
+            } else {
+                1
+            };
             continue;
         }
         out.push(arg.clone());

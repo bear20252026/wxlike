@@ -95,7 +95,9 @@ pub fn load_template(dir: &Path, explicit: Option<&Path>) -> Result<Manifest> {
 
 pub fn signing_key(seed_hex: &str) -> Result<SigningKey> {
     let raw = hex::decode(seed_hex.trim()).map_err(|_| bad("signing key is not hex"))?;
-    let bytes: [u8; SEED_LEN] = raw.try_into().map_err(|_| bad("signing key is not 32 bytes"))?;
+    let bytes: [u8; SEED_LEN] = raw
+        .try_into()
+        .map_err(|_| bad("signing key is not 32 bytes"))?;
     Ok(SigningKey::from_bytes(&bytes))
 }
 
@@ -136,7 +138,9 @@ pub fn sign(
         None => key_id_for(&key.verifying_key()),
     };
     let signed = sign_blob(&blob, host_version, key, &key_id)?;
-    let out = out.map(Path::to_path_buf).unwrap_or_else(|| blob_path.to_path_buf());
+    let out = out
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| blob_path.to_path_buf());
     let sig_path = sig_out
         .map(Path::to_path_buf)
         .unwrap_or_else(|| out.with_extension("sig"));
@@ -194,7 +198,12 @@ pub fn inspect(
     };
     let sig = read_signature(sig_path)?;
     if let Some(store) = trust {
-        let cert = store.verify_manifest(&opened.manifest, &opened.manifest_bytes, &sig, now_seconds())?;
+        let cert = store.verify_manifest(
+            &opened.manifest,
+            &opened.manifest_bytes,
+            &sig,
+            now_seconds(),
+        )?;
         report.signer = Some(format!("{}/{}", cert.publisher, cert.key_id));
     } else if let Some(key) = public_key {
         verify_detached(key, &opened.manifest_bytes, &sig)?;
@@ -307,9 +316,7 @@ impl DevServer {
     fn respond(&self, stream: &mut TcpStream) -> Result<()> {
         let reader = BufReader::new(stream.try_clone()?);
         let line = &mut String::new();
-        reader
-            .take(MAX_REQUEST_LINE as u64 + 1)
-            .read_line(line)?;
+        reader.take(MAX_REQUEST_LINE as u64 + 1).read_line(line)?;
         if !line.ends_with('\n') {
             return reply(stream, 400, "text/plain", b"bad request\n", false);
         }

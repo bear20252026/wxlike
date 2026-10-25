@@ -191,11 +191,7 @@ pub fn decode_public_key(hex_key: &str) -> Result<VerifyingKey> {
 /// Verify a detached signature with a bare publisher key. Used by `mini
 /// inspect` when the caller only has the publisher's public key, not a full
 /// trust snapshot; installation always goes through [`TrustStore`].
-pub fn verify_detached(
-    public_key_hex: &str,
-    message: &[u8],
-    sig: &PackageSignature,
-) -> Result<()> {
+pub fn verify_detached(public_key_hex: &str, message: &[u8], sig: &PackageSignature) -> Result<()> {
     let key = decode_public_key(public_key_hex)?;
     verify_ed25519(&key, message, &sig.sig)
 }

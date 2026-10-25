@@ -108,7 +108,8 @@ fn walk(dir: &Path, base: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
 fn one_signed_package_runs_and_persists_on_every_target() {
     let (store, signer) = fixture();
     for app in EXAMPLES {
-        let text = std::fs::read_to_string(examples_dir().join(app).join("mini.template.json")).unwrap();
+        let text =
+            std::fs::read_to_string(examples_dir().join(app).join("mini.template.json")).unwrap();
         let manifest: Manifest = serde_json::from_str(&text).unwrap();
         let package = build_signed(&examples_dir().join(app), &manifest, HOST, &signer, KEY_ID)
             .expect("example package builds");
@@ -145,9 +146,17 @@ fn one_signed_package_runs_and_persists_on_every_target() {
             let page = page_for(&record, &name, &entry);
             let mut host = MiniHost::launch_default(target, &app_id).unwrap();
             let title = host.run_persisted(&page, "{}", &mut saved).unwrap();
-            assert!(!title.is_empty(), "{app}/{} must set a title", target.as_str());
+            assert!(
+                !title.is_empty(),
+                "{app}/{} must set a title",
+                target.as_str()
+            );
             let key = manifest_app_key(app);
-            assert!(saved.contains_key(key), "{app}/{} must save data", target.as_str());
+            assert!(
+                saved.contains_key(key),
+                "{app}/{} must save data",
+                target.as_str()
+            );
             host.terminate().unwrap();
             assert_eq!(host.state(), HostState::Terminated);
 
@@ -224,7 +233,10 @@ fn shop_checkout_is_sandboxed_and_stops_on_denial() {
             )
             .unwrap();
         assert_eq!(receipt["status"], "sandbox");
-        assert!(receipt["reference"].as_str().unwrap().starts_with("sandbox-"));
+        assert!(receipt["reference"]
+            .as_str()
+            .unwrap()
+            .starts_with("sandbox-"));
         assert!(receipt.get("token").is_none());
 
         broker.revoke_scope(Perm::Payment);
@@ -239,6 +251,10 @@ fn shop_checkout_is_sandboxed_and_stops_on_denial() {
             },
         );
         assert!(matches!(denied, Err(BrokerError::NotGranted(_))));
-        assert_eq!(log.entries().len(), 1, "revoked scope must not reach the port");
+        assert_eq!(
+            log.entries().len(),
+            1,
+            "revoked scope must not reach the port"
+        );
     }
 }

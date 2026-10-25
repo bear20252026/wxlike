@@ -108,7 +108,13 @@ fn foreign_signature_and_broken_templates_are_rejected() {
     // The notes signature over a different package must not verify.
     let game_blob = dir.join("game.dpage");
     pack(&examples_dir().join("game"), None, Some(&game_blob), HOST).unwrap();
-    let forged = toolchain::inspect(&game_blob, Some(&notes_sig), None, Some(&publisher_key), HOST);
+    let forged = toolchain::inspect(
+        &game_blob,
+        Some(&notes_sig),
+        None,
+        Some(&publisher_key),
+        HOST,
+    );
     assert!(forged.is_err());
 
     // A tampered template (unknown capability) must fail at pack time.
@@ -190,12 +196,19 @@ fn cli_binary_pack_sign_inspect_and_dev_serve() {
 
     let (ok, _stdout, stderr) = run(
         exe,
-        &["sign", &blob_arg, "--key", SEED_HEX, "--key-id", KEY_ID, "--sig", &sig_arg],
+        &[
+            "sign", &blob_arg, "--key", SEED_HEX, "--key-id", KEY_ID, "--sig", &sig_arg,
+        ],
     );
     assert!(ok, "sign failed: {stderr}");
     assert!(sig.is_file());
 
-    let (ok, stdout, stderr) = run(exe, &["inspect", &blob_arg, "--sig", &sig_arg, "--trust", &trust_arg]);
+    let (ok, stdout, stderr) = run(
+        exe,
+        &[
+            "inspect", &blob_arg, "--sig", &sig_arg, "--trust", &trust_arg,
+        ],
+    );
     assert!(ok, "inspect failed: {stderr}");
     assert!(stdout.contains("\"signature\": \"verified\""), "{stdout}");
 
