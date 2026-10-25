@@ -51,7 +51,16 @@ impl Db {
         db.migrate_communities()?;
         db.migrate_prekey_signature()?;
         db.migrate_identity()?;
+        db.migrate_relations()?;
         Ok(db)
+    }
+
+    /// G02-02：关系域补充表（群可见性 / 解散、好友标签、关系审计）。
+    /// 与身份域同理：DDL 在 features crate 里，这里只执行。
+    fn migrate_relations(&self) -> Result<()> {
+        let c = self.lock();
+        wxlike_relations::migrate(&c)?;
+        Ok(())
     }
 
     /// G02-01：身份域的刷新链 / step-up / 设备表。建表语句在 features crate 里
