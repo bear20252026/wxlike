@@ -2,8 +2,8 @@
 //!
 //! 这一层的职责只有四件，任何一件失效都会变成真实的越权：
 //!
-//! 1. **audience 必须是我们**：拒绝任何"别人发给下一个服务的令牌"——
-//!    拿到上游 token 直接透传是最常见的 MCP 事故（token passthrough）；
+//! 1. **audience 必须是 identity-v1 的枚举值**（`user` / `admin`）：
+//!    拿到"发给别的服务"的令牌直接透传，是最常见的 MCP 事故（token passthrough）；
 //! 2. **主体与会话绑定**：`sub` 是 actor，`sid` 是登录会话；进程启动时绑定的
 //!    会话必须与令牌一致，跨用户复用会话 id 一律拒；
 //! 3. **scope 只收窄、不放大**：有效 scope = 令牌 scope ∩ 策略授予；
@@ -19,8 +19,16 @@ use serde_json::Value;
 use crate::catalog::{Capability, CommandSpec, ScopeClass};
 use crate::policy::glob_match;
 
-/// 令牌受众：只有发给 MCP/CLI 这一层的令牌才认。
-pub const AUDIENCE: &str = "wxlike-mcp";
+/// 令牌受众：与 `contracts/domains/identity/contract.json`（identity-v1）的
+/// `audience` 枚举一字不差——`user` / `admin`。
+///
+/// 这里**不**自造 `wxlike-mcp` 这种受众值：受众是签发方的枚举，
+/// 消费方另立一个值，等于把"谁签的"这条线索切断。MCP 防透传靠的是
+/// "audience 合法 + 会话绑定 + scope 收窄"三件套，不是靠改名。
+pub const AUDIENCE_USER: &str = "user";
+/// 管理员受众：签发方给后台会话的值。普通 agent 拿到它也不代表能调管理动作，
+/// 还要看 `roles` 是否含 `admin`（见 [`ActorContext::is_admin`]）。
+pub const AUDIENCE_ADMIN: &str = "admin";
 
 /// 会打印但**不泄露内容**的字符串（令牌、密钥、口令）。
 ///
@@ -366,23 +374,29 @@ impl Verifier {
         self.check_session(&claims.sid)?;
         self.check_origin(origin)?;
         let scopes = self.effective_scopes(claims, now)?;
+        let mut roles = claims.roles.clone();
+        // `audience=admin` 是签发方的声明：并进角色，但仍然要过 admin 命令的
+        // 第二道判定（`Authorize`），不给"一个受众值通行所有管理动作"的后门。
+        if claims.aud == AUDIENCE_ADMIN && !roles.iter().any(|r| r == AUDIENCE_ADMIN) {
+            roles.push(AUDIENCE_ADMIN.to_string());
+        }
         Ok(ActorContext {
             actor: claims.sub.clone(),
             session_id: claims.sid.clone(),
             scopes,
-            roles: claims.roles.clone(),
+            roles,
             expires_at: claims.exp,
             on_behalf_of: claims.deleg.as_ref().map(|d| d.actor.clone()),
         })
     }
 
-    /// 受众必须是本服务；否则就是"拿别人的令牌办自己的事"。
+    /// 受众必须是 identity-v1 里的枚举值；否则就是"拿别人的令牌办自己的事"。
     fn check_audience(&self, actual: &str) -> Result<(), AuthError> {
-        if actual == AUDIENCE {
+        if actual == AUDIENCE_USER || actual == AUDIENCE_ADMIN {
             return Ok(());
         }
         Err(AuthError::AudienceMismatch {
-            expected: AUDIENCE,
+            expected: AUDIENCE_USER,
             actual: actual.to_string(),
         })
     }
@@ -571,7 +585,7 @@ impl AuthGate {
         let claims = Claims {
             sub: actor.to_string(),
             sid: session_id.to_string(),
-            aud: AUDIENCE.to_string(),
+            aud: AUDIENCE_USER.to_string(),
             scope: scope.to_string(),
             exp: i64::MAX,
             nbf: 0,
@@ -694,7 +708,7 @@ mod tests {
         Claims {
             sub: "u-alice".into(),
             sid: "s-1".into(),
-            aud: AUDIENCE.into(),
+            aud: AUDIENCE_USER.into(),
             scope: scope.into(),
             exp: NOW + 3600,
             nbf: NOW - 10,
@@ -716,13 +730,29 @@ mod tests {
     }
 
     #[test]
-    fn audience_must_be_ours_so_tokens_are_not_passed_through() {
+    fn audience_must_be_from_identity_contract() {
         let v = verifier("conv:*", None);
         let mut c = claims("conv:*");
         c.aud = "https://calendar.example/mcp".into();
         let err = v.verify(&c, NOW, None).unwrap_err();
         assert!(matches!(err, AuthError::AudienceMismatch { .. }), "{err:?}");
         assert!(err.to_string().contains("upstream tokens"), "{err}");
+    }
+
+    /// identity-v1 的 `admin` 受众会在上下文里补上 admin 角色；
+    /// `user` 受众不会——否则每个普通用户都能调管理动作。
+    #[test]
+    fn admin_audience_grants_the_admin_role_but_user_audience_does_not() {
+        let v = verifier("*", None);
+        let mut c = claims("admin:*");
+        c.aud = AUDIENCE_ADMIN.into();
+        let ctx = v.verify(&c, NOW, None).expect("verify");
+        assert!(ctx.is_admin(), "admin 受众要能调管理动作");
+
+        let mut c = claims("conv:*");
+        c.aud = AUDIENCE_USER.into();
+        let ctx = v.verify(&c, NOW, None).expect("verify");
+        assert!(!ctx.is_admin(), "普通受众不能变成管理员");
     }
 
     #[test]

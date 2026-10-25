@@ -35,10 +35,13 @@ requests:
 
   - id: REQ-G02-claims-contract
     target: G02
-    action: 在身份契约里确认下列声明字段与语义（本卡按此实现）：
-      `sub`(actor) / `sid`(会话 id，与设备绑定) / `aud`(必须为 `wxlike-mcp`) /
-      `scope`(空格分隔，形如 `conv:g-*` `media:*`) / `exp` / `nbf` /
-      `roles`(含 `admin` 才能调管理动作) / `deleg{actor,scope,exp}`(单层代理)。
+    status: partially_resolved
+    resolved_by: audience 已对齐 identity-v1（`user` / `admin`）
+    action: 已按 `contracts/domains/identity/contract.json`（identity-v1）对齐
+      `audience` 枚举：`aud == "admin"` 时上下文补 admin 角色，`"user"` 不补；
+      其它值（例如别的服务地址）一律按 token passthrough 拒绝。
+      **仍待 G02 确认**：`scope` 的签发（identity-v1 目前只有 audience，没有 scope 列表）、
+      claims 里 `sub/sid/exp/nbf/roles/deleg` 的字段名是否与签发实现一致。
     rationale: scope 的类别名（account/conv/content/media/payment/admin）与
       "代理只能衰减"的规则需要签发方与消费方一致，否则拒绝会变成误伤。
 
@@ -56,6 +59,8 @@ requests:
 
 notes:
   - 本卡不新增网络监听：远程 transport 仍未开启（见 G15-01 的 REQ-G15-02-remote-transport）。
+  - audience 已对齐 identity-v1（`user` / `admin`）；**不自造** `wxlike-mcp` 这类受众值，
+    防透传靠"受众合法 + 会话绑定 + scope 收窄"三件套。
   - 令牌的**签名校验**不在本层：`Verifier` 只做语义校验（aud/时间/会话/scope/代理衰减），
     签名与声明真实性由宿主与服务端负责；MCP 永远不透传上游 token。
   - `Secret` 类型的 Debug/Display 只输出"前 6 位 + 长度"指纹，令牌不会进日志或错误消息。
