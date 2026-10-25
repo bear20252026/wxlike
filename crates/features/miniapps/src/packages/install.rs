@@ -126,6 +126,13 @@ impl Installer {
         now: u64,
     ) -> Result<InstallOutcome> {
         let verified = verify(blob, sig, &self.trust, now, &self.host_version)?;
+        self.install_verified(verified)
+    }
+
+    /// Install a package that was already verified and reviewed (G08-04).
+    /// The channel, duplicate, watermark and staging rules still apply, so
+    /// callers cannot bypass the install transaction by pre-verifying.
+    pub fn install_verified(&mut self, verified: VerifiedPackage) -> Result<InstallOutcome> {
         if verified.manifest.channel != self.channel {
             return Err(MiniError::WrongChannel(
                 verified.manifest.channel.as_str().into(),
@@ -153,6 +160,10 @@ impl Installer {
         self.clear_pin(&verified.manifest.app_id)?;
         self.prune(&verified.manifest.app_id)?;
         Ok(installed)
+    }
+
+    pub fn host_version(&self) -> &str {
+        &self.host_version
     }
 
     fn check_watermark(&self, verified: &VerifiedPackage) -> Result<()> {

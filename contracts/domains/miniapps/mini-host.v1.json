@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wxlike.local/contracts/miniapps/mini-host.v1.json",
+  "title": "wxlike mini-app host bridge v1",
+  "description": "One typed request from guest code to the host broker. The guest supplies action, params and request_id; app and origin are attached by the host shell from the WebView session and are never trusted from guest input. Every action maps to exactly one capability scope.",
+  "x-contract-version": "mini-host.v1",
+  "x-request-id-pattern": "^[A-Za-z0-9._:-]{1,128}$",
+  "x-errors": [
+    "unknown_app",
+    "origin_mismatch",
+    "session_closed",
+    "session_mismatch",
+    "replayed",
+    "not_granted",
+    "denied",
+    "cancelled",
+    "invalid_call",
+    "budget",
+    "host",
+    "port"
+  ],
+  "x-response": {
+    "type": "object",
+    "description": "Exactly one of result or error is present.",
+    "additionalProperties": false,
+    "required": ["ok"],
+    "properties": {
+      "ok": { "type": "boolean" },
+      "result": {},
+      "error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "enum": [
+              "unknown_app",
+              "origin_mismatch",
+              "session_closed",
+              "session_mismatch",
+              "replayed",
+              "not_granted",
+              "denied",
+              "cancelled",
+              "invalid_call",
+              "budget",
+              "host",
+              "port"
+            ]
+          },
+          "message": { "type": "string", "maxLength": 512 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "origin": {
+      "type": "string",
+      "pattern": "^(https://[A-Za-z0-9._-]+\\.mini\\.wxlike\\.app|wxmini://[A-Za-z0-9._-]+)$"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "storage_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "storage_value": {
+      "type": "string",
+      "maxLength": 1048576
+    },
+    "network_url": {
+      "type": "string",
+      "description": "HTTPS only, exact allowlisted host, no userinfo and no explicit port.",
+      "pattern": "^https://[A-Za-z0-9.-]+(/[^\\s]*)?$",
+      "maxLength": 2048
+    },
+    "network_body": {
+      "type": "string",
+      "maxLength": 1048576
+    },
+    "amount": {
+      "type": "string",
+      "description": "Decimal string, at most two fraction digits, strictly positive. Never a float.",
+      "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
+      "maxLength": 12
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "order_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "reference": {
+      "type": "string",
+      "description": "Opaque host-side handle. Never a file path, URL or credential.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "request_base": {
+      "type": "object",
+      "required": ["action", "app", "origin", "request_id", "params"],
+      "additionalProperties": false,
+      "properties": {
+        "action": { "type": "string" },
+        "app": { "$ref": "#/$defs/app_id" },
+        "origin": { "$ref": "#/$defs/origin" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "params": { "type": "object" }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "title": "storage.get",
+      "x-scope": "storage",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "storage.get" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key"],
+              "properties": { "key": { "$ref": "#/$defs/storage_key" } }
+            }
+          }
+        }
+      ],
+      "x-result": {
+        "oneOf": [{ "type": "string" }, { "type": "null" }]
+      }
+    },
+    {
+      "title": "storage.set",
+      "x-scope": "storage",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "storage.set" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "value"],
+              "properties": {
+                "key": { "$ref": "#/$defs/storage_key" },
+                "value": { "$ref": "#/$defs/storage_value" }
+              }
+            }
+          }
+        }
+      ],
+      "x-result": { "type": "boolean" }
+    },
+    {
+      "title": "storage.remove",
+      "x-scope": "storage",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "storage.remove" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key"],
+              "properties": { "key": { "$ref": "#/$defs/storage_key" } }
+            }
+          }
+        }
+      ],
+      "x-result": { "type": "boolean" }
+    },
+    {
+      "title": "network.request",
+      "x-scope": "network",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "network.request" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["url", "method"],
+              "properties": {
+                "url": { "$ref": "#/$defs/network_url" },
+                "method": { "enum": ["GET", "POST"] },
+                "body": { "$ref": "#/$defs/network_body" }
+              }
+            }
+          }
+        }
+      ],
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "body"],
+        "properties": {
+          "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+          "body": {}
+        }
+      }
+    },
+    {
+      "title": "camera.capture",
+      "x-scope": "camera",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "camera.capture" },
+            "params": { "type": "object", "additionalProperties": false }
+          }
+        }
+      ],
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference"],
+        "properties": { "reference": { "$ref": "#/$defs/reference" } }
+      }
+    },
+    {
+      "title": "location.get",
+      "x-scope": "location",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "location.get" },
+            "params": { "type": "object", "additionalProperties": false }
+          }
+        }
+      ],
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["latitude", "longitude"],
+        "description": "Rounded to two decimals by the broker (neighbourhood, not doorstep).",
+        "properties": {
+          "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+          "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+        }
+      }
+    },
+    {
+      "title": "file.pick",
+      "x-scope": "file",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "file.pick" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["purpose"],
+              "properties": {
+                "purpose": { "enum": ["avatar", "attachment", "export"] }
+              }
+            }
+          }
+        }
+      ],
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "size", "reference"],
+        "description": "The picker path never crosses the bridge.",
+        "properties": {
+          "name": { "type": "string", "maxLength": 200 },
+          "size": { "type": "integer", "minimum": 0 },
+          "reference": { "$ref": "#/$defs/reference" }
+        }
+      }
+    },
+    {
+      "title": "pay.request",
+      "x-scope": "payment",
+      "allOf": [
+        { "$ref": "#/$defs/request_base" },
+        {
+          "properties": {
+            "action": { "const": "pay.request" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["amount", "currency", "order_id"],
+              "properties": {
+                "amount": { "$ref": "#/$defs/amount" },
+                "currency": { "$ref": "#/$defs/currency" },
+                "order_id": { "$ref": "#/$defs/order_id" }
+              }
+            }
+          }
+        }
+      ],
+      "x-result": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference", "status"],
+        "description": "Receipt only: no order token, credential or internal transaction id.",
+        "properties": {
+          "reference": { "$ref": "#/$defs/reference" },
+          "status": { "enum": ["settled", "pending", "sandbox"] }
+        }
+      }
+    }
+  ]
+}
