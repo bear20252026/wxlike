@@ -235,6 +235,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
 
   Widget _panel(ComposerController controller) {
     final items = <_Entry>[
+      _Entry('表情', Icons.emoji_emotions_outlined, () => controller.openEntry(ComposerEntry.sticker), key: 'attach-sticker'),
       _Entry('相册', Icons.photo_outlined, controller.pickAlbum, key: 'attach-album'),
       _Entry('拍摄', Icons.photo_camera_outlined, controller.takePhoto, key: 'attach-camera'),
       _Entry('文件', Icons.folder_outlined, controller.pickFile, key: 'attach-file'),

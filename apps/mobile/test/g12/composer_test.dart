@@ -222,6 +222,21 @@ void main() {
     controller.dispose();
   });
 
+  test('表情入口转给 G13 owner action，不在输入器里复制业务', () async {
+    final entries = FakeEntries();
+    final controller = build(
+      drafts: drafts,
+      platform: platform,
+      attachments: attachments,
+      redPackets: redPackets,
+      entries: entries,
+    );
+
+    await controller.openEntry(ComposerEntry.sticker);
+    expect(entries.opened, [ComposerEntry.sticker]);
+    controller.dispose();
+  });
+
   test('红包金额只接受上游状态，客户端不随机', () async {
     final opened = <RedPacketComposerState>[];
     final controller = build(

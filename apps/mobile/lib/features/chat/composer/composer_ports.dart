@@ -135,7 +135,7 @@ class UnavailableMessageActionsPort implements MessageActionsPort {
 }
 
 /// 位置/通话/收藏等入口由各自 owner 提供；输入器只转交，不自己画假页面。
-enum ComposerEntry { location, call, favorite, transfer, redPacket }
+enum ComposerEntry { sticker, location, call, favorite, transfer, redPacket }
 
 abstract class ComposerEntryPort {
   Future<void> open(ComposerEntry entry, String conv);
