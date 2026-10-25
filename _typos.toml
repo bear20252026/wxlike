@@ -24,6 +24,10 @@ clonable = "clonable"
 unparseable = "unparseable"
 # Recovery Time Objective：备份恢复指标，不是拼写错误。
 rto = "rto"
+# DEFLATE 压缩：crate 名 flate2（typos 分词把 flate2 拆成 flate+2）；SBOM 生成物里出现
+flate = "flate"
+# ICU4X 的 writeable crate：合法包名，非 writable 误拼；SBOM 生成物里出现
+writeable = "writeable"
 
 [files]
 # 生成物与第三方镜像不参与检查

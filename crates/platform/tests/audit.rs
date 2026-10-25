@@ -14,10 +14,13 @@ use serde_json::json;
 #[tokio::test]
 async fn command_header_is_audited_and_readable() {
     let router = app(common::platform());
-    let (_alice, ta) = signup(&router, "alice").await;
+    let (alice, ta) = signup(&router, "alice").await;
 
-    // 一条只读命令：平台层不判断命令权限（那是 policy 的事），只看请求
-    let mut r = req("GET", "/api/conv/d-a~b/unread", None, Some(&ta));
+    // 一条只读命令：平台层不判断命令权限（那是 policy 的事），只看请求。
+    // conv 必须是 alice 参与的房间——AUTHZ-012 之后非参与者一律 403，
+    // 审计测试要验的是"命令头落审计"，别把它写在别人的房间里。
+    let conv = format!("d-{alice}~b");
+    let mut r = req("GET", &format!("/api/conv/{conv}/unread"), None, Some(&ta));
     r.headers_mut()
         .insert("x-wxlike-command", "conv.unread".parse().unwrap());
     let (status, _) = common::call(&router, r).await;
@@ -31,7 +34,7 @@ async fn command_header_is_audited_and_readable() {
         .iter()
         .find(|e| e["action"] == json!("cmd.conv.unread"))
         .unwrap_or_else(|| panic!("没有 cmd.conv.unread 审计：{body}"));
-    assert_eq!(hit["target"], json!("/api/conv/d-a~b/unread"));
+    assert_eq!(hit["target"], json!(format!("/api/conv/{conv}/unread")));
     assert!(
         hit["detail"]
             .as_str()

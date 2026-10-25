@@ -1,0 +1,43 @@
+{
+  "schema": "wxlike.license-policy.v1",
+  "project_license": "AGPL-3.0-only",
+  "decided_at": "2026-10-24",
+  "note": "本项目自身为 AGPL-3.0-only。allow = 可直接复制（合并后仍为 AGPL-3.0）；review = 需逐文件评审并保留原许可声明；deny = 不得复制，只能作行为参考。改这张表就是改政策，请在 PR 里说明理由。",
+  "allow": [
+    { "id": "MIT", "note": "宽松，兼容 AGPL-3.0-only" },
+    { "id": "MIT-0", "note": "宽松，无署名义务但仍保留来源记录" },
+    { "id": "Apache-2.0", "note": "兼容 AGPL-3.0；保留 NOTICE 与专利授权条款" },
+    { "id": "Apache-2.0 WITH LLVM-exception", "note": "Wasmtime 等使用，例外条款放宽再许可" },
+    { "id": "BSD-2-Clause", "note": "宽松" },
+    { "id": "BSD-3-Clause", "note": "宽松，注意不得用作者名背书" },
+    { "id": "ISC", "note": "宽松" },
+    { "id": "0BSD", "note": "宽松" },
+    { "id": "BSL-1.0", "note": "Boost，宽松" },
+    { "id": "Zlib", "note": "宽松" },
+    { "id": "CC0-1.0", "note": "公共领域奉献" },
+    { "id": "Unicode-3.0", "note": "Unicode 数据文件" },
+    { "id": "CDLA-Permissive-2.0", "note": "webpki-roots 的 CA bundle 数据" },
+    { "id": "AGPL-3.0-only", "note": "与本项目同许可" },
+    { "id": "GPL-3.0-only", "note": "GPLv3 → AGPLv3 是兼容方向，可直接复制（tweb 的两个 vendored 文件）" }
+  ],
+  "review": [
+    { "id": "MPL-2.0", "note": "文件级 copyleft：被复制的文件必须继续以 MPL-2.0 提供，需在文件头声明" },
+    { "id": "LGPL-2.1-only", "note": "仅动态链接场景可用；复制源码进本仓库需法务意见" },
+    { "id": "LGPL-3.0-only", "note": "同上" },
+    { "id": "CC-BY-4.0", "note": "仅限文档/设计素材，代码不得使用" },
+    { "id": "CC-BY-SA-4.0", "note": "ShareAlike 与 AGPL 的兼容性需逐案判断" },
+    { "id": "GPL-2.0-only", "note": "与 AGPL-3.0 不兼容，原则上 deny；列在 review 只为让工具报出具体文件" }
+  ],
+  "deny": [
+    { "id": "BUSL-1.1", "note": "商业使用限制，非 OSI 开源" },
+    { "id": "SSPL-1.0", "note": "与 AGPL 不兼容" },
+    { "id": "Elastic-2.0", "note": "商业限制" },
+    { "id": "Commons-Clause", "note": "禁止商业转售" },
+    { "id": "PolyForm-Noncommercial-1.0.0", "note": "禁止商业使用" },
+    { "id": "PolyForm-Shield-1.0.0", "note": "限制竞争性使用" },
+    { "id": "CC-BY-NC-4.0", "note": "禁止商业使用" },
+    { "id": "CC-BY-NC-SA-4.0", "note": "禁止商业使用" },
+    { "id": "LicenseRef-Proprietary", "note": "专有代码" },
+    { "id": "NOASSERTION", "note": "上游未声明：不得 vendor，必须逐文件读 LICENSE/ENTERPRISE_LICENSE 后再定" }
+  ]
+}

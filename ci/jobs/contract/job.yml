@@ -1,0 +1,19 @@
+jobs:
+  contract:
+    name: contract
+    needs: [select]
+    if: needs.select.outputs.contract == 'true' || needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: C4 contract structure, seed and registry
+        run: python3 ci/jobs/contract/check_contracts.py
+      - name: C4 bincode variant order (Rust vs browser)
+        run: python3 ci/jobs/contract/check_wire_variants.py
+      - name: C4 report known gaps
+        run: python3 ci/jobs/build/check_gaps.py
