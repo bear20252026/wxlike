@@ -43,7 +43,8 @@ cargo test --manifest-path tests/security/Cargo.toml -- --ignored # 连已知缺
 | 用例 | 原因 | issue |
 |---|---|---|
 | `direct_conv_mailbox_requires_participation` | 会话信箱未校验参与者归属 | #230 |
-| `payload_length_mismatch_is_rejected`（部分样本） | 见 `corpus/manifest.json` 的 `blocked` 条目 | #229 |
+| `overflowing_payload_len_does_not_panic` | `STUB_LEN + payload_len` 整数溢出（debug 下 panic） | #229 |
+| `bridge_state_is_bounded` | `wxhost.log` 缓冲无上限，页包可吃穿宿主内存 | #253 |
 
 `#[ignore]` 不是"以后再说"：每条都写了 issue 号与取消条件，补丁合入后删掉
 `#[ignore]` 就自动变成门禁。
