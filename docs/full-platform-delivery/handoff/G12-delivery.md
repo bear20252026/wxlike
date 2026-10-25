@@ -61,9 +61,9 @@ flutter test
 |---|---|---|
 | feat/FP-G12-01 | 通过 | 16 passed |
 | feat/FP-G12-02 | 通过 | 23 passed |
-| feat/FP-G12-03 | 通过 | 34 passed |
-| feat/FP-G12-04 | 通过 | 43 passed |
-| feat/FP-G12-05 | 通过 | 49 passed |
+| feat/FP-G12-03 | 通过 | 33 passed |
+| feat/FP-G12-04 | 通过 | 42 passed |
+| feat/FP-G12-05 | 通过 | 48 passed |
 | feat/FP-G12-06 | 通过 | 52 passed（tip 全量 61，含既有 9 个） |
 
 覆盖：成功、空结果、参数错误、未授权/越权、超时/断网、取消、重复提交；
