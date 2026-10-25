@@ -1,0 +1,75 @@
+{
+  "title": "wxlike server",
+  "uid": "wxlike-server",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+        "query": "label_values(up{job=\"wxlike\"}, instance)",
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Connected clients",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [{"expr": "sum by (hub) (wxlike_hub_connections{job=\"wxlike\", instance=~\"$instance\"})", "legendFormat": "{{hub}}"}]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Messages routed / s",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [{"expr": "sum(rate(wxlike_hub_messages_total{job=\"wxlike\", instance=~\"$instance\"}[5m]))", "legendFormat": "messages/s"}]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Delivery p99",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.5}]}}},
+      "targets": [{"expr": "histogram_quantile(0.99, sum by (le) (rate(wxlike_delivery_seconds_bucket{job=\"wxlike\", instance=~\"$instance\"}[5m])))", "legendFormat": "p99"}]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Offline parked frames",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [{"expr": "sum by (hub) (wxlike_offline_parked{job=\"wxlike\", instance=~\"$instance\"})", "legendFormat": "{{hub}}"}]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Rate-limit decisions / s",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {"expr": "sum by (rate_limiter_name) (rate(wxlike_rate_limit_sleep_total{job=\"wxlike\", instance=~\"$instance\"}[5m]))", "legendFormat": "sleep {{rate_limiter_name}}"},
+        {"expr": "sum by (rate_limiter_name) (rate(wxlike_rate_limit_reject_total{job=\"wxlike\", instance=~\"$instance\"}[5m]))", "legendFormat": "reject {{rate_limiter_name}}"}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Scrape up",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}},
+      "targets": [{"expr": "min(up{job=\"wxlike\", instance=~\"$instance\"})", "legendFormat": "up"}]
+    }
+  ]
+}

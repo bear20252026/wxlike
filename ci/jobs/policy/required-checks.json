@@ -26,17 +26,13 @@
     "gate"
   ],
   "permissions_exceptions": {
-    "image-publish": [
-      "packages: write",
-      "id-token: write",
-      "attestations: write"
-    ],
-    "release": [
-      "contents: write",
-      "packages: write",
-      "id-token: write",
-      "attestations: write"
-    ]
+    "image-publish": ["packages: write", "id-token: write", "attestations: write"],
+    "release": ["contents: write", "packages: write", "id-token: write", "attestations: write"]
   },
-  "environments": {}
+  "environments": {
+    "android-release": {"workflow": "release.yml", "environment": "mobile-release"},
+    "ios-release": {"workflow": "release.yml", "environment": "mobile-release"},
+    "desktop-release": {"workflow": "release.yml", "environment": "production-release"},
+    "release": {"workflow": "release.yml", "environment": "production-release"}
+  }
 }

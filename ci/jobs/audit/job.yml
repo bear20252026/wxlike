@@ -37,8 +37,8 @@ jobs:
         working-directory: ui/src-tauri
       - name: C10 action pins and workflow policy
         run: |
-          python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --pins-only
-          python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml
+          python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml --pins-only
+          python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml
       - name: C10 composed workflows match the checked-in fragments
         run: python ci/jobs/compose.py --check
 
