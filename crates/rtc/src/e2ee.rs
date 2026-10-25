@@ -105,9 +105,7 @@ impl std::fmt::Debug for Secret {
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        for b in &mut self.0 {
-            *b = 0;
-        }
+        self.0.fill(0);
     }
 }
 
