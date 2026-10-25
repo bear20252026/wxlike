@@ -1,0 +1,14 @@
+{
+  "fixture": "同一条请求在三端桥复用（G10/G12 消费同一形状）",
+  "request": { "request_id": "r1", "user_gesture": true, "capability": "save_download", "suggested_name": "report.pdf", "bytes": 10 },
+  "results": {
+    "web": { "status": "saved", "destination": { "kind": "browser_download", "suggested_name": "report.pdf" } },
+    "desktop": { "status": "saved", "destination": { "kind": "dialog", "path_token": "save_1a2b3c4d" } }
+  },
+  "denied": {
+    "web_silent_capture": {
+      "request": { "request_id": "r2", "user_gesture": false, "capability": "capture_screen", "interactive": true },
+      "result": { "status": "permission_denied", "capability": "capture_screen" }
+    }
+  }
+}

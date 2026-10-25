@@ -1,36 +1,59 @@
-# apps/desktop-web
+# wxlike desktop-web（G10：React 桌面与网页核心界面）
 
-UI v2 React 客户端的功能目录（FP 交付计划）。当前状态：
+wxlike 的桌面端与网页端共用这一套 React 应用。它只通过两条边界与 Rust 核心对话：
 
-- **脚手架最小化**：产品壳（侧栏/聊天/登录/总路由）归 G10-01、G00-02。本目录当前只有
-  `src/main.tsx` 一个开发壳（仅挂载 G11 页面）+ 共享 lib（`src/lib/`），两者都会在
-  G00/G10 合入后收编或替换；登记见 `integration-requests/G11/G11-01.yaml`。
-- **功能模块**（G11 独占路径）：
+- `CoreHandle.dispatch(request) / subscribe(cursor, handler)` — 信封契约 v1（`ActionRequest` / `ActionResponse` / `EventEnvelope`），见 `src/shell/core-contract.ts`；
+- `PlatformPort` — 窗口、托盘、自启、全局快捷键、通知、剪贴板、截图、文件、本地秘密（`src/shell/platform/port.ts`）。
 
-  | 目录 | 任务 | 状态 |
-  |---|---|---|
-  | `src/features/content` | G11-01 朋友圈/收藏/文章/表情 | ✅ moments/favorites/report 已接真实端点；articles/publishers/stickers 契约界面（G05 未开通）— PR #207 |
-  | `src/features/files` | G11-02 文件中心 | ✅ 上传/下载接真实 /api/media*（digest 校验）；目录/管理面 G04 契约界面 — PR #211 |
-  | `src/features/video` `src/features/calls` | G11-03 视频流/通话/直播 | ✅ 播放/上传/直播/通话信令接真实端点；feed(G05)/TURN(G09) 契约面 — PR #217 |
-  | `src/features/commerce` | G11-04 钱包/收付款/红包/卡包 | ✅ 零钱/账单/转账/红包接真实端点；意图/退款/提现/卡券 G06 契约面 — PR #218 |
-  | `src/features/mini` `src/features/discover` | G11-05 小程序/扫码/服务目录 | ✅ 扫码真实摄像头、manifest 校验、沙箱 origin 检查；目录 G07/G08 契约面 — PR #219 |
+界面不持有任何永久真相：会话、消息、关系、偏好全部来自核心投影；所有写操作带幂等键；错误、空态、加载、权限拒绝都有可操作的界面；平台不支持时如实说明原因，不用 toast 或静态数据冒充完成。
 
-- **测试栈**：Vitest + jsdom + Testing Library。fixture 传输（`src/test/fixture.ts`）
-  用于上游卡未合入时的并行开发；同一批测试在 G04/G05/G06/G07/G08 合入后通过
-  `setTransport(fetchTransport)` 指向真实服务端跑集成验收。
-
-## 命令
+## 运行
 
 ```bash
-npm install        # 首次
+npm install        # 在 apps/desktop-web 内
+npm run dev        # http://localhost:5183
 npm run typecheck  # tsc --noEmit
-npm test           # vitest run
-npm run build      # vite 生产构建
-npm run dev        # 本地开发（需服务端，见 server/）
+npm test           # vitest run（34 个用例）
+npm run build      # typecheck + vite build
 ```
 
-## 与服务端的关系
+## 数据源选择（App 的 selection）
 
-客户端不实现业务规则：moments/favorites/report/wallet/transfer/redpacket/call/live/media/video
-等直接走 `crates/platform`、`crates/video` 的真实 HTTP 端点；错误统一 `{"error": "…"}`；
-写操作携带 `Idempotency-Key`。服务器再鉴权是唯一授权依据，UI 的显隐只是体验优化。
+- `tauri`：Tauri 桌面壳注入 `window.__WXLIKE_TAURI__` 时走真实 Rust 核心 + `platform_*` 命令（`src/shell/platform/tauri-platform.ts`）。
+- `unavailable`：生产网页构建没有 Tauri 桥时，显示"核心不可用"的说明页，不连任何后端、不伪造数据。
+- `fixture`：仅 DEV/测试（`import.meta.env.DEV`）的内存核心（`src/shell/adapters/fixture/`），顶栏常驻"非验收证据"横幅；它不是 mock 测试替身以外的任何东西，不作为集成验收依据。
+
+## 职责组 G10 卡片与实现位置
+
+| 卡片 | Issue | 实现 | 测试 |
+| --- | --- | --- | --- |
+| G10-01 产品壳与登录 | #152 | `src/shell/`（router/store/app-shell）、`src/features/auth/` | `src/features/auth/auth.test.tsx` |
+| G10-02 聊天闭环 | #154 | `src/features/chat/` | `src/features/chat/chat.test.tsx`、`upload.test.ts` |
+| G10-03 联系人与群 | #157 | `src/features/contacts/` | `src/features/contacts/contacts.test.tsx` |
+| G10-04 平台适配 | #158 | `src/shell/platform/`、设置-平台页 | `src/features/settings/settings.test.tsx`（平台证据走真机待验） |
+| G10-05 搜索与设置 | #161 | `src/features/search/`、`src/features/settings/` | `src/features/search/search.test.tsx`、`settings.test.tsx` |
+| G10-06 扫码登录 | #160 | `src/features/auth/qr-login-page.tsx` | `src/features/auth/qr.test.tsx` |
+
+跨组根清单请求（新根依赖、workspace 登记、`platform_*` 命令挂载）在 `integration-requests/G10/G10-01.yaml` … `G10-06.yaml`，由 G00 串行执行；本组不改根 manifest、总 router、迁移编号与生成绑定。
+
+## 已验证（本机，2026-10-24）
+
+- `npm run typecheck`：0 错误。
+- `npm test`：7 个文件 34 个用例全绿（登录/锁定/恢复/守卫、扫码六态、发送状态机 LOCAL_QUEUED→DEVICE_STORED、断网 FAILED_RETRYABLE→重试、草稿恢复、1GB 拦截、分块上传幂等/取消、联系人接受/备注/踢人权限、设置持久化/口令迁移/备份校验导入、搜索分类/事件重查/⌘K overlay）。
+- `npm run build`：vite 产物 398.72 kB JS（gzip 121.44 kB）。
+- 夹具演示（DEV）：`npm run dev` 打开 `#/login`，账号 `user-alpha` 口令 `demo1234`（或扫码页 DEV 模拟按钮体验六态）。
+
+## 待验清单（上游合入或真机才能验，不得标 ACCEPTED）
+
+以下依赖上游卡片（G00-02 #100、G00-03 #101、G01-02 #105、G01-03 #106、G02-05 #114、G02-07 #115、G03-05 #124、G04-01 #117、G04-05 #125、G16-04 #192）尚未合入，本分支按冻结契约先行开发：
+
+1. Tauri 真桌面：窗口控制、托盘角标、开机自启、全局快捷键（`CommandOrControl+Alt+9` 探针）、系统通知、OS 密钥库 secrets —— 需 G00/G02 挂载 `platform_*` 命令后在 Win/Mac/Linux 实测。
+2. 真实手机批准扫码登录（REJECTED/EXPIRED 不能进入账号）—— 需 G02-07 会话签发与 G04 真机。
+3. 双账号跨端文本/附件互收、断网重启状态一致 —— 需 G01/G02/G03 真核心与第二设备。
+4. 1GB 合成文件在云端的流式上传/断点续传/取消/hash 证据 —— 需 G04-05/G16-04。
+5. 真核心下的分页/游标行为与夹具差异（夹具仅覆盖契约形状）。
+
+## 已知边界
+
+- 生产网页（无 Tauri）不连后端：这是 ADR-02/04 的要求（网页没有可用的核心传输时明确显示不可用），网页版可运行指的是 UI 与平台降级路径可运行。
+- 内容/朋友圈搜索分类按契约返回"未接入"（G05-05），界面如实展示原因。

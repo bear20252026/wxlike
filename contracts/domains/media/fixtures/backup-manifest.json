@@ -1,0 +1,21 @@
+{
+  "format": "wxlike-backup",
+  "version": 1,
+  "backup_id": "bk_7c1d2e3f4a5b6f70",
+  "created_at": 1766580000000,
+  "device_id": "desktop-main",
+  "encryption": { "mode": "client_side", "key_ref": "kms-7" },
+  "entries": [
+    { "index": 0, "object_id": "aa", "size": 3, "mime": "text/plain", "name": "a.txt", "category": "file" },
+    { "index": 1, "object_id": "bb", "size": 9, "mime": "image/png", "name": "b.png", "category": "image" }
+  ],
+  "chat_messages": [
+    { "message_id": "m-1", "conv_id": "c1", "seq": 41, "sender": "u1", "sent_at_ms": 1, "body_ref": "hello" },
+    { "message_id": "m-2", "conv_id": "c1", "seq": 42, "sender": "u1", "sent_at_ms": 2, "body_ref": "world" }
+  ],
+  "invariants": [
+    "manifest 只携带 key_ref，不携带任何密钥材料",
+    "payload 顺序与 entries.index 一致",
+    "包尾 32 字节 = 前面全部内容的 SHA-256"
+  ]
+}

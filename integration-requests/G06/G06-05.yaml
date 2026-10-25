@@ -1,0 +1,73 @@
+request: G06-05
+owner: G06
+task_issue: 137
+branch: feat/FP-G06
+status: ready-for-G00
+depends_on:
+  - G06-04
+code_paths:
+  - crates/features/commerce/src/entitlements.rs
+  - crates/features/commerce/src/orders.rs
+routes:
+  mount:
+    - action: entitlement.rule.publish
+      path: /api/v1/commerce/actions/entitlement.rule.publish
+      audience: merchant
+    - action: entitlement.issue
+      path: /api/v1/commerce/actions/entitlement.issue
+      audience: merchant
+    - action: entitlement.claim
+      path: /api/v1/commerce/actions/entitlement.claim
+    - action: entitlement.get
+      path: /api/v1/commerce/actions/entitlement.get
+    - action: entitlement.token
+      path: /api/v1/commerce/actions/entitlement.token
+    - action: entitlement.redeem
+      path: /api/v1/commerce/actions/entitlement.redeem
+    - action: entitlement.barcode
+      path: /api/v1/commerce/actions/entitlement.barcode
+    - action: order.create
+      path: /api/v1/commerce/actions/order.create
+    - action: order.pay
+      path: /api/v1/commerce/actions/order.pay
+    - action: order.fulfil
+      path: /api/v1/commerce/actions/order.fulfil
+      audience: merchant
+    - action: order.cancel
+      path: /api/v1/commerce/actions/order.cancel
+    - action: order.get
+      path: /api/v1/commerce/actions/order.get
+    - action: order.payment
+      path: /api/v1/commerce/actions/order.payment
+      audience: merchant-or-buyer
+commands:
+  registry: commerce
+  actions: [entitlement.rule.publish, entitlement.issue, entitlement.claim, entitlement.get, entitlement.token, entitlement.redeem, entitlement.barcode, order.create, order.pay, order.fulfil, order.cancel, order.get, order.payment]
+cross_domain:
+  G07_service_catalog:
+    contract: contracts/domains/commerce/events.yaml#order.fulfilled
+    note: >-
+      G07 消费 order.fulfilled 做真实履约；Commerce 不替 G07 写服务订单表，
+      G07 也不得直接把 commerce_orders 改为 paid。
+    fixtured_until: G07 真实实现合入
+  G14_admin:
+    contract: contracts/domains/commerce/actions.yaml#entitlement.rule.publish
+    note: 商户发行入口走后台 audience，普通用户不可发布规则
+config:
+  settings:
+    - key: commerce.entitlement.redemption_token_ttl_ms
+      default: 300000
+  secrets:
+    - key: commerce.barcode.signing_secret
+      note: 当前复用 commerce.confirmation.secret；G00 可拆独立 secret
+migrations:
+  - proposal: schema/proposals/G06/0001_ledger_commerce.sql
+    rollback: schema/proposals/G06/ROLLBACK.md
+    number: G00-assigned
+evidence:
+  tests: cargo test -p wxlike-commerce --test g06_05_entitlements_orders
+  fixtures:
+    - contracts/domains/commerce/fixtures/order-provider-timeout.json
+acceptance_dependencies:
+  - G07 真实履约与订单状态协作
+  - G02-01 真实主体

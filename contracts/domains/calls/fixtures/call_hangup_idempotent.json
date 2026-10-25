@@ -1,0 +1,28 @@
+{
+  "name": "hangup twice writes one record",
+  "requests": [
+    {
+      "command": "call.hangup",
+      "version": "calls-v1",
+      "payload": { "call_id": "call-1001" }
+    },
+    {
+      "command": "call.hangup",
+      "version": "calls-v1",
+      "payload": { "call_id": "call-1001" }
+    }
+  ],
+  "responses": [
+    {
+      "ok": true,
+      "data": { "call_id": "call-1001", "ended": true, "already_ended": false, "reason": "hung_up" },
+      "error": null
+    },
+    {
+      "ok": true,
+      "data": { "call_id": "call-1001", "ended": true, "already_ended": true, "reason": "hung_up" },
+      "error": null
+    }
+  ],
+  "side_effects": { "call_records": 1 }
+}

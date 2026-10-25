@@ -1,0 +1,34 @@
+# G04-02 文件中心与消息附件 —— 集成请求
+request_id: G04-02
+task_issue: 119
+group_issue: 85
+contract_version: media-v1
+branch: feat/FP-G04
+
+owned_artifacts:
+  - crates/features/media/src/files.rs
+  - contracts/domains/media/fixtures/file-page-*.json
+  - contracts/domains/media/fixtures/attachment-voice.json
+
+g00_owned_changes:
+  - id: REQ-G00-ui-entry-contract
+    target: G00-03
+    action: 桌面 FilesPage 种子 SEED-0076..0084 的 action_id 目前是
+      TO_DEFINE_CONTRACT，需在契约冻结时绑定 files.list/rename/move/delete/share、
+      download.authorize、media.upload.*。
+
+requests:
+  - id: REQ-G05-message-attachment-ref
+    target: G05
+    action: 消息发送携带附件时调用 MediaService.add_reference(user, object_id,
+      RefType::Message, msg_id, Audience, Purpose::Attachment)；
+      删除/撤回时调 remove_reference。G03/G05 未就绪期间以契约 fixture 交接，
+      不代写对方用例。
+  - id: REQ-G11-files-page
+    target: G11
+    action: 桌面/网页 FilesPage 消费 GET /api/v1/files（授权投影列表）与
+      POST /api/v1/objects/{id}/access；分享走可撤销令牌，不做永久公开链接。
+
+notes:
+  - 列表响应统一 items/next_cursor/has_more/snapshot_version；游标 opaque。
+  - 回收站语义：trash 保留对象与文件行；purge 才真正删行+引用并触发 GC。

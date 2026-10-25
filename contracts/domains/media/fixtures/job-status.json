@@ -1,0 +1,10 @@
+{
+  "running": { "job_id": "job_1a2b3c4d5e6f7081", "object_id": "bb", "preset": "playback_720", "state": "running", "attempts": 1, "progress": 0, "outputs": [], "error": null, "can_cancel": true },
+  "succeeded": {
+    "job_id": "job_1a2b3c4d5e6f7081", "object_id": "bb", "preset": "playback_720", "state": "succeeded",
+    "attempts": 1, "progress": 100,
+    "outputs": [{ "kind": "playback", "object_id": "cc", "size": 1234567, "digest": "cc", "mime": "video/mp4" }],
+    "error": null, "can_cancel": false
+  },
+  "terminal_failure": { "job_id": "job_1a2b3c4d5e6f7081", "state": "failed", "attempts": 1, "error": "budget exceeded: duration", "can_cancel": false }
+}

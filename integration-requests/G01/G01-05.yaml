@@ -1,0 +1,63 @@
+card: G01-05
+issue: 110
+branch: feat/FP-G01-05
+contract_version: "1.0"
+summary: 统一生成、兼容包与契约验证
+
+requests:
+  - id: G01-05-R1
+    kind: ci
+    status: requested
+    reason: >-
+      生成物过期必须让 CI 红，否则"三端同源"只是一句口号；
+      手改生成物也会被这条挡住。
+    change:
+      job: quality
+      add_step: |
+        python tools/codegen/generate.py --check
+    note: >-
+      `--update-lock` 只在契约变更的 PR 里手动跑（更新兼容基线）；
+      带破坏性变更时生成器会拒绝执行，必须先升 contract 主版本。
+
+  - id: G01-05-R2
+    kind: schema-registry
+    status: requested
+    reason: schema 编号与契约标签归 G00 串行合入。
+    change:
+      file: schema/registry/migrations.json
+      owner: G00
+      action: 登记 contract-v1（digest 见 tools/codegen/out/manifest.json）
+
+  - id: G01-05-R3
+    kind: consumer-handoff
+    status: requested
+    reason: >-
+      生成包在 tools/codegen/out/（G01 归属路径），UI 与移动端各取所需；
+      不替对方编辑页面。
+    change:
+      - path: tools/codegen/out/ts/contract.ts
+        consumer: ui/src（G04）
+      - path: tools/codegen/out/dart/contract.dart
+        consumer: apps/mobile/lib（G03）
+      - path: tools/codegen/out/actions.json
+        consumer: crates/cli、crates/mcp（G02）
+
+  - id: G01-05-R4
+    kind: legacy-adapter
+    status: requested
+    reason: >-
+      旧 Tauri command 需要一个薄适配器过渡，之后逐步移除；
+      不一次性删除（G04 的页面还在调）。
+    change:
+      file: ui/src-tauri/src/commands.rs
+      owner: G04
+      action: 每个 command 转调 CoreHandle::dispatch，不再自己拼 URL 与重试
+
+  - id: G01-05-R5
+    kind: note
+    status: done
+    reason: 未知 action 的安全失败已落地。
+    change:
+      action: >-
+        TS 的 decodeActionResult 与 Dart 的 decodeActionResult 对未知 status 返回 null；
+        Rust 侧对未登记 action 返回 invalid_argument（router / catalog 双重校验）。
