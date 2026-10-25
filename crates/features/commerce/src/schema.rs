@@ -2,6 +2,7 @@
 //!
 //! 与账本共用一个连接：`init_schema` 先建账本表，再建业务表。业务记录与
 //! 分录因此在同一个事务里提交——钱和"为什么动钱"不会分家。
+//! 连接 pragma（WAL/忙等/外键）归 [`wxlike_ledger::open_connection`] 管。
 
 use rusqlite::{params, Connection, Result};
 
@@ -14,6 +15,23 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// SQLite 执行失败。
 pub fn init_schema(conn: &Connection) -> Result<()> {
     wxlike_ledger::init_schema(conn)?;
+    init_payment_tables(conn)?;
+    init_card_tables(conn)?;
+    init_settlement_tables(conn)?;
+    init_transfer_tables(conn)?;
+    init_redpacket_tables(conn)?;
+    init_entitlement_tables(conn)?;
+    init_order_tables(conn)?;
+    conn.execute(
+        "INSERT INTO commerce_meta(key, value) VALUES('schema_version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SCHEMA_VERSION.to_string()],
+    )?;
+    Ok(())
+}
+
+/// 支付意图与回调事件。
+fn init_payment_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS commerce_meta (
@@ -57,7 +75,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             applied       INTEGER NOT NULL,
             reason        TEXT NOT NULL DEFAULT ''
         );
+        "#,
+    )
+}
 
+/// 绑卡与充值单。
+fn init_card_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS commerce_cards (
             id            TEXT PRIMARY KEY,
             business_key  TEXT NOT NULL UNIQUE,
@@ -87,7 +112,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             created_at    INTEGER NOT NULL,
             updated_at    INTEGER NOT NULL
         );
+        "#,
+    )
+}
 
+/// 提现、退款与对账差异队列。
+fn init_settlement_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS commerce_withdrawals (
             id            TEXT PRIMARY KEY,
             business_key  TEXT NOT NULL UNIQUE,
@@ -136,7 +168,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_recon_run
             ON commerce_reconciliation_exceptions(run_id, status);
+        "#,
+    )
+}
 
+/// 转账与一次性 nonce。
+fn init_transfer_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS commerce_transfers (
             id            TEXT PRIMARY KEY,
             business_key  TEXT NOT NULL UNIQUE,
@@ -161,7 +200,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             purpose       TEXT NOT NULL,
             used_at       INTEGER NOT NULL
         );
+        "#,
+    )
+}
 
+/// 红包与其份额/领取记录。
+fn init_redpacket_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS commerce_redpackets (
             id            TEXT PRIMARY KEY,
             business_key  TEXT NOT NULL UNIQUE,
@@ -197,7 +243,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             claimed_at    INTEGER NOT NULL,
             PRIMARY KEY (packet_id, user_id)
         );
+        "#,
+    )
+}
 
+/// 权益规则、权益实例与核销。
+fn init_entitlement_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS commerce_entitlement_rules (
             issuer_id     TEXT NOT NULL,
             kind          TEXT NOT NULL,
@@ -246,7 +299,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             token_hash    TEXT NOT NULL UNIQUE,
             redeemed_at   INTEGER NOT NULL
         );
+        "#,
+    )
+}
 
+/// 订单与 outbox 事件。
+fn init_order_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS commerce_orders (
             id            TEXT PRIMARY KEY,
             business_key  TEXT NOT NULL UNIQUE,
@@ -275,13 +335,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
             ON commerce_outbox(published_at, created_at);
         "#,
-    )?;
-    conn.execute(
-        "INSERT INTO commerce_meta(key, value) VALUES('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![SCHEMA_VERSION.to_string()],
-    )?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]

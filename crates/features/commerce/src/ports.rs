@@ -145,6 +145,18 @@ pub enum StatementKind {
     Payout,
 }
 
+impl StatementKind {
+    /// 数据库里的稳定字符串。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Payment => "payment",
+            Self::Refund => "refund",
+            Self::Payout => "payout",
+        }
+    }
+}
+
 /// 供应商对账单的一行。
 #[derive(Clone, Debug)]
 pub struct ProviderStatementRow {

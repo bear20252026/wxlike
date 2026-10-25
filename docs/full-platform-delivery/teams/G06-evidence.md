@@ -69,6 +69,23 @@ cargo fmt -p wxlike-commerce --check                           # exit 0
 修复记录：过期路径曾在事务内改状态后直接 `return Err`，导致回滚；已改为先
 `commit` 再返回 `Expired`（`transfers.rs`、`redpackets.rs`）。
 
+## 3.1 质量闸门整改（PR 首轮 CI 后）
+
+首轮 CI 的 quality job 报五项指标全部变差，按 `docs/code-quality-audit.md`
+的修法整改（基线 `--update` 未动）：
+
+- **Money/Currency 去重**：`wxlike-ledger` 不再自带一份 Money，改用共享内核
+  `wxlike-types` 并再导出；`LedgerError` 保留原变体并加 `From<MoneyError>`。
+  消掉 46 个跨文件重复窗口。
+- **长函数拆分**：18 个 >60 行函数全部拆到 60 行以内（含两个 DDL 巨函数按
+  域分组、对账匹配/落库分离、幂等重放抽 `store::replay`）。
+- **魔法数字**：SQL 占位符改命名参数（`:id` 等）、列读取改列名访问、
+  算法常量与 TTL 上限进 `const`；总量 162→157（低于基线）。
+- **重复窗口** 66→53、**嵌套** 63 持平；`python scripts/quality-gate.py` 本地
+  通过（41/10/63/53/157 对基线 41/10/63/66/162）。
+- 语义保持：幂等重放仍"只回放现状、不再触碰供应商"（`insert_withdrawal` /
+  `insert_refund` 返回是否新建），由原有超时恢复测试兜底。
+
 ## 4. 隐私与日志
 
 - 卡号/CVV 只在 `bind_card` 调用栈内存在；原始行 dump 测试证明库内无 PAN/CVV。

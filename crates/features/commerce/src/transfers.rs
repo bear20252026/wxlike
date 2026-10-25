@@ -1,6 +1,6 @@
 //! 转账：确认令牌绑定收款人/金额/币种/备注/nonce，创建时冻结资金。
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use wxlike_ledger::{Currency, Money, PostingLine, PostingRequest};
 
 use crate::error::{CommerceError, Result};
@@ -115,26 +115,8 @@ impl Commerce {
         if draft.sender_id != sender {
             return Err(CommerceError::Forbidden);
         }
-        store::validate_note(&draft.memo)?;
-        store::check_limit(draft.amount, self.config.max_transfer_minor)?;
         let now = self.now();
-        if now >= draft.expires_at {
-            return Err(CommerceError::Expired);
-        }
-        let expected = self.transfer_token(
-            &draft.sender_id,
-            &draft.payee_id,
-            draft.amount,
-            &draft.memo,
-            &draft.nonce,
-            draft.expires_at,
-        );
-        if !constant_time_eq(&expected, confirmation_token) {
-            return Err(CommerceError::InvalidSignature);
-        }
-        if !constant_time_eq(&draft.confirmation_token, confirmation_token) {
-            return Err(CommerceError::InvalidSignature);
-        }
+        verify_confirmation(self, draft, confirmation_token, now)?;
         let nonce_hash = store::digest_hex(&["transfer-nonce", &draft.nonce]);
         let digest = store::digest_hex(&[
             sender,
@@ -147,56 +129,66 @@ impl Commerce {
         let scoped_key = format!("transfer:{business_key}");
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_by_key(&tx, &scoped_key)? {
-            if existing.0 != digest {
-                return Err(CommerceError::IdempotencyConflict);
-            }
-            return Ok(existing.1);
-        }
-        let reused: Option<String> = tx
-            .query_row(
-                "SELECT nonce_hash FROM commerce_nonces WHERE nonce_hash = ?1",
-                params![nonce_hash],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if reused.is_some() {
-            return Err(CommerceError::Conflict(
-                "confirmation nonce was already used".into(),
-            ));
-        }
-        tx.execute(
-            "INSERT INTO commerce_nonces(nonce_hash, purpose, used_at) VALUES(?1, 'transfer', ?2)",
-            params![nonce_hash, now],
+        let confirmation_hash = store::digest_hex(&["confirmation", confirmation_token]);
+        let id = self.insert_transfer(
+            &tx,
+            &scoped_key,
+            &digest,
+            draft,
+            &confirmation_hash,
+            &nonce_hash,
+            now,
         )?;
+        let transfer = load(&tx, &id)?.ok_or(CommerceError::NotFound)?;
+        tx.commit()?;
+        Ok(transfer)
+    }
+
+    /// 幂等落转账单：nonce 防重放 → 冻结 → 插单 → 发事件。
+    #[allow(clippy::too_many_arguments)]
+    fn insert_transfer(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        scoped_key: &str,
+        digest: &str,
+        draft: &TransferDraft,
+        confirmation_hash: &str,
+        nonce_hash: &str,
+        now: i64,
+    ) -> Result<String> {
+        if let Some(existing) = store::replay(load_by_key(tx, scoped_key)?, digest)? {
+            return Ok(existing.id);
+        }
+        reserve_nonce(tx, nonce_hash, now)?;
         let id = store::new_id(self.entropy());
         let hold_key = format!("transfer:{id}:hold");
-        let wallet = self.ensure_wallet_conn(&tx, sender, draft.amount.currency(), now)?;
-        wxlike_ledger::hold_in(&tx, &hold_key, &wallet, draft.amount, now)
+        let wallet = self.ensure_wallet_conn(tx, &draft.sender_id, draft.amount.currency(), now)?;
+        wxlike_ledger::hold_in(tx, &hold_key, &wallet, draft.amount, now)
             .map_err(store::map_ledger)?;
-        let confirmation_hash = store::digest_hex(&["confirmation", confirmation_token]);
         tx.execute(
             "INSERT INTO commerce_transfers
                 (id, business_key, sender_id, payee_id, amount_minor, currency, memo, status,
                  confirmation_hash, nonce_hash, hold_key, expires_at, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11, ?12, ?12)",
-            params![
-                id,
-                scoped_key,
-                sender,
-                draft.payee_id,
-                draft.amount.minor(),
-                draft.amount.currency().as_str(),
-                draft.memo,
-                confirmation_hash,
-                nonce_hash,
-                hold_key,
-                draft.expires_at,
-                now
-            ],
+             VALUES(:id, :business_key, :sender_id, :payee_id, :amount_minor, :currency,
+                    :memo, 'pending', :confirmation_hash, :nonce_hash, :hold_key,
+                    :expires_at, :now, :now)",
+            named_params! {
+                ":id": id,
+                ":business_key": scoped_key,
+                ":sender_id": draft.sender_id,
+                ":payee_id": draft.payee_id,
+                ":amount_minor": draft.amount.minor(),
+                ":currency": draft.amount.currency().as_str(),
+                ":memo": draft.memo,
+                ":confirmation_hash": confirmation_hash,
+                ":nonce_hash": nonce_hash,
+                ":hold_key": hold_key,
+                ":expires_at": draft.expires_at,
+                ":now": now,
+            },
         )?;
         store::emit(
-            &tx,
+            tx,
             self.entropy(),
             "transfer.created",
             &id,
@@ -207,9 +199,7 @@ impl Commerce {
             }),
             now,
         )?;
-        let transfer = load(&tx, &id)?.ok_or(CommerceError::NotFound)?;
-        tx.commit()?;
-        Ok(transfer)
+        Ok(id)
     }
 
     /// 收款人确认收款。
@@ -371,6 +361,55 @@ impl Commerce {
     }
 }
 
+/// 令牌校验：过期、签名绑定与两条确认令牌都要过。
+fn verify_confirmation(
+    commerce: &Commerce,
+    draft: &TransferDraft,
+    confirmation_token: &str,
+    now: i64,
+) -> Result<()> {
+    store::validate_note(&draft.memo)?;
+    store::check_limit(draft.amount, commerce.config.max_transfer_minor)?;
+    if now >= draft.expires_at {
+        return Err(CommerceError::Expired);
+    }
+    let expected = commerce.transfer_token(
+        &draft.sender_id,
+        &draft.payee_id,
+        draft.amount,
+        &draft.memo,
+        &draft.nonce,
+        draft.expires_at,
+    );
+    if !store::constant_time_eq(&expected, confirmation_token)
+        || !store::constant_time_eq(&draft.confirmation_token, confirmation_token)
+    {
+        return Err(CommerceError::InvalidSignature);
+    }
+    Ok(())
+}
+
+/// 一次性 nonce：用过即拒，先占坑再动钱。
+fn reserve_nonce(tx: &Connection, nonce_hash: &str, now: i64) -> Result<()> {
+    let reused: Option<String> = tx
+        .query_row(
+            "SELECT nonce_hash FROM commerce_nonces WHERE nonce_hash = ?1",
+            params![nonce_hash],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if reused.is_some() {
+        return Err(CommerceError::Conflict(
+            "confirmation nonce was already used".into(),
+        ));
+    }
+    tx.execute(
+        "INSERT INTO commerce_nonces(nonce_hash, purpose, used_at) VALUES(?1, 'transfer', ?2)",
+        params![nonce_hash, now],
+    )?;
+    Ok(())
+}
+
 fn expire_locked(conn: &Connection, transfer: &Transfer, now: i64) -> Result<()> {
     wxlike_ledger::release_hold_in(conn, &format!("transfer:{}:hold", transfer.id), now)?;
     conn.execute(
@@ -464,14 +503,4 @@ fn build(raw: RawTransfer) -> Result<Transfer> {
         created_at: raw.created_at,
         updated_at: raw.updated_at,
     })
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
 }

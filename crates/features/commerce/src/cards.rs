@@ -1,10 +1,24 @@
 //! 绑卡。只保存供应商令牌与掩码，任何路径都不落 PAN/CVV。
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::error::{CommerceError, Result};
 use crate::store;
 use crate::Commerce;
+
+/// 卡品牌文本上限。
+const BRAND_MAX_LEN: usize = 32;
+/// PAN 长度区间（12-19 位数字）。
+const PAN_LEN_MIN: usize = 12;
+const PAN_LEN_MAX: usize = 19;
+/// 有效期月份区间。
+const MONTH_MIN: u32 = 1;
+const MONTH_MAX: u32 = 12;
+/// 有效期年份区间。
+const YEAR_MIN: u32 = 2000;
+const YEAR_MAX: u32 = 2100;
+/// 供应商令牌的随机长度（hex 字符数）。
+const TOKEN_HEX_LEN: usize = 18;
 
 /// 卡状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,23 +72,8 @@ impl Commerce {
     ) -> Result<BoundCard> {
         store::validate_id("owner", owner)?;
         store::validate_key(business_key)?;
-        validate_brand(input.brand)?;
-        if !valid_pan(input.pan) {
-            return Err(CommerceError::BadInput("card number is invalid".into()));
-        }
-        if !(input.cvv.len() == 3 || input.cvv.len() == 4)
-            || !input.cvv.bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err(CommerceError::BadInput("cvv is invalid".into()));
-        }
         let now = self.now();
-        if !(1..=12).contains(&input.exp_month)
-            || !valid_expiry(input.exp_month, input.exp_year, now)
-        {
-            return Err(CommerceError::BadInput(
-                "card expiry is invalid or already past".into(),
-            ));
-        }
+        validate_card_input(input, now)?;
         let digest = store::digest_hex(&[
             owner,
             input.brand,
@@ -84,15 +83,11 @@ impl Commerce {
             &input.exp_year.to_string(),
         ]);
         let scoped_key = format!("card:{business_key}");
-        let token = format!("tok_{}", store::random_hex(self.entropy(), 18));
+        let token = format!("tok_{}", store::random_hex(self.entropy(), TOKEN_HEX_LEN));
         let last4 = input.pan[input.pan.len() - 4..].to_string();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing = load_by_key(&tx, &scoped_key)?;
-        if let Some((stored_digest, card)) = existing {
-            if stored_digest != digest {
-                return Err(CommerceError::IdempotencyConflict);
-            }
+        if let Some(card) = store::replay(load_by_key(&tx, &scoped_key)?, &digest)? {
             return Ok(card);
         }
         let id = store::new_id(self.entropy());
@@ -100,20 +95,21 @@ impl Commerce {
             "INSERT INTO commerce_cards
                 (id, business_key, owner_id, provider, provider_token, brand, last4,
                  exp_month, exp_year, status, request_digest, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?11)",
-            params![
-                id,
-                scoped_key,
-                owner,
-                self.provider_name(),
-                token,
-                input.brand,
-                last4,
-                i64::from(input.exp_month),
-                i64::from(input.exp_year),
-                digest,
-                now
-            ],
+             VALUES(:id, :business_key, :owner_id, :provider, :provider_token, :brand,
+                    :last4, :exp_month, :exp_year, 'active', :digest, :now, :now)",
+            named_params! {
+                ":id": id,
+                ":business_key": scoped_key,
+                ":owner_id": owner,
+                ":provider": self.provider_name(),
+                ":provider_token": token,
+                ":brand": input.brand,
+                ":last4": last4,
+                ":exp_month": i64::from(input.exp_month),
+                ":exp_year": i64::from(input.exp_year),
+                ":digest": digest,
+                ":now": now,
+            },
         )?;
         let card = load_by_id(&tx, &id)?.ok_or(CommerceError::NotFound)?;
         tx.commit()?;
@@ -190,15 +186,36 @@ impl Commerce {
     }
 }
 
+fn validate_card_input(input: &CardInput<'_>, now: i64) -> Result<()> {
+    validate_brand(input.brand)?;
+    if !valid_pan(input.pan) {
+        return Err(CommerceError::BadInput("card number is invalid".into()));
+    }
+    if !(input.cvv.len() == 3 || input.cvv.len() == 4)
+        || !input.cvv.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(CommerceError::BadInput("cvv is invalid".into()));
+    }
+    if !(MONTH_MIN..=MONTH_MAX).contains(&input.exp_month)
+        || !valid_expiry(input.exp_month, input.exp_year, now)
+    {
+        return Err(CommerceError::BadInput(
+            "card expiry is invalid or already past".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_brand(brand: &str) -> Result<()> {
-    if brand.is_empty() || brand.len() > 32 || brand.chars().any(char::is_control) {
+    if brand.is_empty() || brand.len() > BRAND_MAX_LEN || brand.chars().any(char::is_control) {
         return Err(CommerceError::BadInput("card brand is invalid".into()));
     }
     Ok(())
 }
 
 fn valid_pan(pan: &str) -> bool {
-    if !(12..=19).contains(&pan.len()) || !pan.bytes().all(|b| b.is_ascii_digit()) {
+    if !(PAN_LEN_MIN..=PAN_LEN_MAX).contains(&pan.len()) || !pan.bytes().all(|b| b.is_ascii_digit())
+    {
         return false;
     }
     let mut sum = 0u32;
@@ -218,7 +235,7 @@ fn valid_pan(pan: &str) -> bool {
 }
 
 fn valid_expiry(month: u32, year: u32, now_ms: i64) -> bool {
-    if !(2000..=2100).contains(&year) {
+    if !(YEAR_MIN..=YEAR_MAX).contains(&year) {
         return false;
     }
     let (now_year, now_month) = civil_from_ms(now_ms);
@@ -232,16 +249,23 @@ fn civil_from_ms(ms: i64) -> (u32, u32) {
     (year as u32, month)
 }
 
-/// Howard Hinnant 的 civil_from_days。
+/// Howard Hinnant 的 civil_from_days。常量取自算法原文。
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    const EPOCH_SHIFT: i64 = 719_468;
+    const ERA_DAYS: i64 = 146_097;
+    const FOUR_YEARS_DAYS: u64 = 1_460;
+    const CENTURY_DAYS: u64 = 36_524;
+    const ERA_YEAR_DAYS: u64 = 146_096;
+    const YEAR_DAYS: u64 = 365;
+    const FIVE_MONTH_DAYS: u64 = 153;
+    let z = days + EPOCH_SHIFT;
+    let era = if z >= 0 { z } else { z - ERA_DAYS } / ERA_DAYS;
+    let doe = (z - era * ERA_DAYS) as u64;
+    let yoe = (doe - doe / FOUR_YEARS_DAYS + doe / CENTURY_DAYS - doe / ERA_YEAR_DAYS) / YEAR_DAYS;
     let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
+    let doy = doe - (YEAR_DAYS * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / FIVE_MONTH_DAYS;
+    let d = doy - (FIVE_MONTH_DAYS * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
 }

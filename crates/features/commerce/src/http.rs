@@ -153,8 +153,12 @@ fn balance_get(commerce: &Commerce, actor: &str, payload: &Value) -> Result<Valu
 }
 
 fn statement_page(commerce: &Commerce, actor: &str, payload: &Value) -> Result<Value> {
+    const DEFAULT_PAGE_LIMIT: u32 = 50;
     let cursor = payload.get("cursor").and_then(Value::as_i64);
-    let limit = payload.get("limit").and_then(Value::as_u64).unwrap_or(50) as u32;
+    let limit = payload
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::from(DEFAULT_PAGE_LIMIT)) as u32;
     let page = commerce.wallet_statement(actor, currency(payload)?, cursor, limit)?;
     let items: Vec<Value> = page
         .items

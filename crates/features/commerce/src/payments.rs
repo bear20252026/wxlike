@@ -6,7 +6,7 @@
 //! * 业务键 + 请求摘要保证重复提交只产生一笔；
 //! * 回调按原始 body 验签、校验时间窗、事件 ID 去重，状态只向前走。
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use wxlike_ledger::{Currency, Money, PostingLine, PostingRequest};
 
@@ -207,22 +207,24 @@ impl Commerce {
                 (id, business_key, request_digest, direction, actor_id, payee_id,
                  amount_minor, currency, status, provider, provider_ref, nonce_hash,
                  qr_token_hash, expires_at, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'created', ?9, NULL, ?10, ?11, ?12, ?13, ?13)",
-            params![
-                id,
-                scoped_key,
-                digest,
-                direction.as_str(),
-                actor,
-                payee,
-                amount.minor(),
-                amount.currency().as_str(),
-                self.provider_name(),
-                nonce_hash,
-                String::new(),
-                expires_at,
-                now
-            ],
+             VALUES(:id, :business_key, :digest, :direction, :actor_id, :payee_id,
+                    :amount_minor, :currency, 'created', :provider, NULL, :nonce_hash,
+                    :qr_token_hash, :expires_at, :now, :now)",
+            named_params! {
+                ":id": id,
+                ":business_key": scoped_key,
+                ":digest": digest,
+                ":direction": direction.as_str(),
+                ":actor_id": actor,
+                ":payee_id": payee,
+                ":amount_minor": amount.minor(),
+                ":currency": amount.currency().as_str(),
+                ":provider": self.provider_name(),
+                ":nonce_hash": nonce_hash,
+                ":qr_token_hash": String::new(),
+                ":expires_at": expires_at,
+                ":now": now,
+            },
         )?;
         let row = load_intent(&tx, &id)?.ok_or(CommerceError::NotFound)?;
         tx.commit()?;
@@ -308,15 +310,8 @@ impl Commerce {
         if row.intent.payee_id == payer && row.intent.direction == IntentDirection::Order {
             return Err(CommerceError::Forbidden);
         }
-        match row.intent.status {
-            IntentStatus::Expired => return Err(CommerceError::Expired),
-            IntentStatus::Succeeded | IntentStatus::Refunded | IntentStatus::PartiallyRefunded => {
-                return Ok(row.intent)
-            }
-            IntentStatus::Failed => {
-                return Err(CommerceError::IllegalTransition("intent failed".into()))
-            }
-            IntentStatus::Created | IntentStatus::Pending => {}
+        if let Some(settled) = pay_status_gate(row.intent.status, &row.intent)? {
+            return Ok(settled);
         }
         if now >= row.intent.expires_at {
             self.expire_intent(intent_id)?;
@@ -403,7 +398,7 @@ impl Commerce {
             return Err(CommerceError::InvalidSignature);
         }
         let expected = ticket_signature(self, &row);
-        if !constant_time_eq(&expected, signature) {
+        if !store::constant_time_eq(&expected, signature) {
             return Err(CommerceError::InvalidSignature);
         }
         if now >= expires {
@@ -467,99 +462,14 @@ impl Commerce {
     /// # Errors
     /// 签名错误、时间窗外、金额/币种不符、重复事件或存储失败。
     pub fn handle_webhook(&self, raw_body: &str, signature: &str) -> Result<WebhookOutcome> {
-        if !store::hmac_verify(
-            self.config.webhook_secret.as_slice(),
-            &[raw_body],
-            signature,
-        ) {
-            return Err(CommerceError::InvalidSignature);
-        }
-        let payload: WebhookPayload = serde_json::from_str(raw_body)
-            .map_err(|_| CommerceError::BadInput("webhook body".into()))?;
-        store::validate_id("event", &payload.event_id)?;
-        store::validate_id("intent", &payload.intent_id)?;
         let now = self.now();
-        if (now - payload.timestamp_ms).abs() > self.config.callback_skew_ms {
-            return Err(CommerceError::InvalidSignature);
-        }
-        if payload.amount_minor <= 0 {
-            return Err(CommerceError::BadInput("webhook amount".into()));
-        }
-        let currency = Currency::parse(&payload.currency)?;
-        let payload_digest = store::digest_hex(&[
-            &payload.event_id,
-            &payload.intent_id,
-            &payload.kind,
-            &payload.provider_ref,
-            &payload.amount_minor.to_string(),
-            &payload.currency,
-        ]);
+        let (payload, digest) = self.verify_webhook(raw_body, signature)?;
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = load_intent(&tx, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
-        if row.intent.amount.minor() != payload.amount_minor
-            || row.intent.amount.currency() != currency
-        {
-            return Err(CommerceError::BadInput(
-                "webhook amount does not match the intent".into(),
-            ));
-        }
-        if let Some(reference) = row.intent.provider_ref.as_deref() {
-            if reference != payload.provider_ref {
-                return Err(CommerceError::BadInput(
-                    "webhook provider reference does not match".into(),
-                ));
-            }
-        }
-        let duplicate: Option<String> = tx
-            .query_row(
-                "SELECT event_id FROM commerce_payment_events WHERE event_id = ?1",
-                params![payload.event_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if duplicate.is_some() {
-            return Err(CommerceError::Replay);
-        }
-        tx.execute(
-            "INSERT INTO commerce_payment_events
-                (event_id, intent_id, kind, provider_ref, amount_minor, currency,
-                 payload_digest, received_at, applied, reason)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, '')",
-            params![
-                payload.event_id,
-                payload.intent_id,
-                payload.kind,
-                payload.provider_ref,
-                payload.amount_minor,
-                payload.currency,
-                payload_digest,
-                now
-            ],
-        )?;
-        let (applied, reason) = match payload.kind.as_str() {
-            "payment.succeeded" => match row.intent.status {
-                IntentStatus::Created | IntentStatus::Pending => {
-                    apply_success(&tx, self, &payload.intent_id, &payload.provider_ref, now)?;
-                    (1, String::new())
-                }
-                IntentStatus::Succeeded => (0, "already succeeded".to_string()),
-                _ => (0, "terminal state".to_string()),
-            },
-            "payment.failed" => match row.intent.status {
-                IntentStatus::Created | IntentStatus::Pending => {
-                    tx.execute(
-                        "UPDATE commerce_payment_intents
-                         SET status = 'failed', updated_at = ?1, version = version + 1
-                         WHERE id = ?2 AND status IN ('created', 'pending')",
-                        params![now, payload.intent_id],
-                    )?;
-                    (1, String::new())
-                }
-                _ => (0, "out-of-order".to_string()),
-            },
-            _ => return Err(CommerceError::BadInput("unknown webhook kind".into())),
-        };
+        ensure_webhook_matches(&row.intent, &payload)?;
+        record_event(&tx, &payload, &digest, now)?;
+        let (applied, reason) = apply_webhook_event(&tx, self, &payload, now)?;
         tx.execute(
             "UPDATE commerce_payment_events SET applied = ?1, reason = ?2 WHERE event_id = ?3",
             params![applied, reason, payload.event_id],
@@ -571,6 +481,139 @@ impl Commerce {
             applied: applied == 1,
             status: updated.intent.status,
         })
+    }
+}
+
+impl Commerce {
+    /// 验签、解析与时间窗校验；返回载荷与载荷摘要。
+    fn verify_webhook(&self, raw_body: &str, signature: &str) -> Result<(WebhookPayload, String)> {
+        if !store::hmac_verify(
+            self.config.webhook_secret.as_slice(),
+            &[raw_body],
+            signature,
+        ) {
+            return Err(CommerceError::InvalidSignature);
+        }
+        let payload: WebhookPayload = serde_json::from_str(raw_body)
+            .map_err(|_| CommerceError::BadInput("webhook body".into()))?;
+        store::validate_id("event", &payload.event_id)?;
+        store::validate_id("intent", &payload.intent_id)?;
+        if (self.now() - payload.timestamp_ms).abs() > self.config.callback_skew_ms {
+            return Err(CommerceError::InvalidSignature);
+        }
+        if payload.amount_minor <= 0 {
+            return Err(CommerceError::BadInput("webhook amount".into()));
+        }
+        Currency::parse(&payload.currency)?;
+        let digest = store::digest_hex(&[
+            &payload.event_id,
+            &payload.intent_id,
+            &payload.kind,
+            &payload.provider_ref,
+            &payload.amount_minor.to_string(),
+            &payload.currency,
+        ]);
+        Ok((payload, digest))
+    }
+}
+
+/// 回调声称的金额/币种/供应商引用必须与本地意图一致。
+fn ensure_webhook_matches(intent: &PaymentIntent, payload: &WebhookPayload) -> Result<()> {
+    let currency = Currency::parse(&payload.currency)?;
+    if intent.amount.minor() != payload.amount_minor || intent.amount.currency() != currency {
+        return Err(CommerceError::BadInput(
+            "webhook amount does not match the intent".into(),
+        ));
+    }
+    if let Some(reference) = intent.provider_ref.as_deref() {
+        if reference != payload.provider_ref {
+            return Err(CommerceError::BadInput(
+                "webhook provider reference does not match".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 事件去重 + 落库：同一 event_id 第二次到达直接拒绝。
+fn record_event(conn: &Connection, payload: &WebhookPayload, digest: &str, now: i64) -> Result<()> {
+    let duplicate: Option<String> = conn
+        .query_row(
+            "SELECT event_id FROM commerce_payment_events WHERE event_id = ?1",
+            params![payload.event_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if duplicate.is_some() {
+        return Err(CommerceError::Replay);
+    }
+    conn.execute(
+        "INSERT INTO commerce_payment_events
+            (event_id, intent_id, kind, provider_ref, amount_minor, currency,
+             payload_digest, received_at, applied, reason)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, '')",
+        params![
+            payload.event_id,
+            payload.intent_id,
+            payload.kind,
+            payload.provider_ref,
+            payload.amount_minor,
+            payload.currency,
+            digest,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+/// 按事件类别推进意图状态；返回 (是否生效, 原因)。
+fn apply_webhook_event(
+    conn: &Connection,
+    commerce: &Commerce,
+    payload: &WebhookPayload,
+    now: i64,
+) -> Result<(i64, String)> {
+    let row = load_intent(conn, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
+    match payload.kind.as_str() {
+        "payment.succeeded" => match row.intent.status {
+            IntentStatus::Created | IntentStatus::Pending => {
+                apply_success(
+                    conn,
+                    commerce,
+                    &payload.intent_id,
+                    &payload.provider_ref,
+                    now,
+                )?;
+                Ok((1, String::new()))
+            }
+            IntentStatus::Succeeded => Ok((0, "already succeeded".to_string())),
+            _ => Ok((0, "terminal state".to_string())),
+        },
+        "payment.failed" => match row.intent.status {
+            IntentStatus::Created | IntentStatus::Pending => {
+                conn.execute(
+                    "UPDATE commerce_payment_intents
+                     SET status = 'failed', updated_at = ?1, version = version + 1
+                     WHERE id = ?2 AND status IN ('created', 'pending')",
+                    params![now, payload.intent_id],
+                )?;
+                Ok((1, String::new()))
+            }
+            _ => Ok((0, "out-of-order".to_string())),
+        },
+        _ => Err(CommerceError::BadInput("unknown webhook kind".into())),
+    }
+}
+
+/// 付款入口的状态门：终态直接短路返回，失败拒绝，可付状态放行。
+fn pay_status_gate(status: IntentStatus, current: &PaymentIntent) -> Result<Option<PaymentIntent>> {
+    match status {
+        IntentStatus::Expired => Err(CommerceError::Expired),
+        IntentStatus::Succeeded | IntentStatus::Refunded | IntentStatus::PartiallyRefunded => {
+            Ok(Some(current.clone()))
+        }
+        IntentStatus::Failed => Err(CommerceError::IllegalTransition("intent failed".into())),
+        IntentStatus::Created | IntentStatus::Pending => Ok(None),
     }
 }
 
@@ -596,25 +639,15 @@ fn apply_success(
         )));
     }
     let currency = row.intent.amount.currency();
-    let payee = commerce.ensure_wallet_conn(conn, &row.intent.payee_id, currency, now)?;
-    let external = store::ensure_external(
+    post_capture(
         conn,
-        commerce.provider_name(),
+        commerce,
+        intent_id,
+        &row.intent.payee_id,
+        row.intent.amount.minor(),
         currency,
-        commerce.config.fund_class,
         now,
     )?;
-    let request = PostingRequest::new(
-        format!("intent:{intent_id}:success"),
-        "payment.succeeded",
-        currency,
-        vec![
-            PostingLine::debit(external, row.intent.amount.minor()),
-            PostingLine::credit(payee, row.intent.amount.minor()),
-        ],
-    )
-    .with_memo("payment captured");
-    wxlike_ledger::post_in(conn, &request, now)?;
     conn.execute(
         "UPDATE commerce_payment_intents
          SET status = 'succeeded',
@@ -636,6 +669,38 @@ fn apply_success(
         }),
         now,
     )?;
+    Ok(())
+}
+
+/// 把一笔成功的支付记成复式分录：借记外部世界、贷记收款钱包。
+fn post_capture(
+    conn: &Connection,
+    commerce: &Commerce,
+    intent_id: &str,
+    payee_id: &str,
+    amount_minor: i64,
+    currency: Currency,
+    now: i64,
+) -> Result<()> {
+    let payee = commerce.ensure_wallet_conn(conn, payee_id, currency, now)?;
+    let external = store::ensure_external(
+        conn,
+        commerce.provider_name(),
+        currency,
+        commerce.config.fund_class,
+        now,
+    )?;
+    let request = PostingRequest::new(
+        format!("intent:{intent_id}:success"),
+        "payment.succeeded",
+        currency,
+        vec![
+            PostingLine::debit(external, amount_minor),
+            PostingLine::credit(payee, amount_minor),
+        ],
+    )
+    .with_memo("payment captured");
+    wxlike_ledger::post_in(conn, &request, now)?;
     Ok(())
 }
 
@@ -687,20 +752,20 @@ struct RawIntent {
 
 fn scan_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawIntent> {
     Ok(RawIntent {
-        id: r.get(0)?,
-        direction: r.get(2)?,
-        actor_id: r.get(3)?,
-        payee_id: r.get(4)?,
-        amount_minor: r.get(5)?,
-        currency: r.get(6)?,
-        status: r.get(7)?,
-        provider_ref: r.get(8)?,
-        nonce_hash: r.get(9)?,
-        refunded_minor: r.get(10)?,
-        expires_at: r.get(11)?,
-        created_at: r.get(12)?,
-        updated_at: r.get(13)?,
-        digest: r.get(14)?,
+        id: r.get("id")?,
+        direction: r.get("direction")?,
+        actor_id: r.get("actor_id")?,
+        payee_id: r.get("payee_id")?,
+        amount_minor: r.get("amount_minor")?,
+        currency: r.get("currency")?,
+        status: r.get("status")?,
+        provider_ref: r.get("provider_ref")?,
+        nonce_hash: r.get("nonce_hash")?,
+        refunded_minor: r.get("refunded_minor")?,
+        expires_at: r.get("expires_at")?,
+        created_at: r.get("created_at")?,
+        updated_at: r.get("updated_at")?,
+        digest: r.get("request_digest")?,
     })
 }
 
@@ -745,14 +810,4 @@ fn ticket_signature(commerce: &Commerce, row: &IntentRow) -> String {
             &row.nonce_hash,
         ],
     )
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
 }

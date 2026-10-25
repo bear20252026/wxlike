@@ -7,18 +7,36 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{named_params, params, Connection, OptionalExtension as _};
 use sha2::{Digest as _, Sha256};
 
 use crate::model::{
-    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Currency, Entry, FundClass,
-    Hold, HoldStatus, Journal, LedgerTransaction, Money, PostingLine, PostingRequest,
-    StatementPage,
+    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Entry, FundClass, Hold,
+    HoldStatus, Journal, LedgerTransaction, PostingLine, PostingRequest, StatementPage,
 };
 use crate::{LedgerError, Result};
+use wxlike_types::{Currency, Money};
 
 /// 单页最大条数。
 pub const MAX_PAGE: u32 = 200;
+
+/// 日志类别字符串上限。
+const MAX_KIND_LEN: usize = 64;
+
+/// 长度前缀的 SHA-256 摘要（对外稳定：commerce 的幂等键摘要同用一套规范）。
+pub fn request_digest_hex(parts: &[&str]) -> String {
+    let owned: Vec<String> = parts.iter().map(|part| (*part).to_string()).collect();
+    digest_parts(&owned)
+}
+
+fn digest_parts(parts: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
 
 struct JournalRow {
     journal: Journal,
@@ -144,7 +162,7 @@ fn posting_digest(req: &PostingRequest) -> Result<String> {
     if req.business_key.is_empty() || req.business_key.len() > 200 {
         return Err(LedgerError::BadInput("business key"));
     }
-    if req.kind.is_empty() || req.kind.len() > 64 {
+    if req.kind.is_empty() || req.kind.len() > MAX_KIND_LEN {
         return Err(LedgerError::BadInput("journal kind"));
     }
     if req.memo.len() > 500 {
@@ -166,15 +184,6 @@ fn posting_digest(req: &PostingRequest) -> Result<String> {
         parts.push(line.amount.to_string());
     }
     Ok(digest_parts(&parts))
-}
-
-fn digest_parts(parts: &[String]) -> String {
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part.as_bytes());
-    }
-    hex::encode(hasher.finalize())
 }
 
 fn validate_lines(
@@ -719,13 +728,11 @@ fn locked_as_of(conn: &Connection, currency: Currency, end: i64) -> Result<i64> 
 }
 
 fn balances_checksum(balances: &[ClosingBalance]) -> String {
-    let mut hasher = Sha256::new();
-    for row in balances {
-        let text = format!("{}|{}", row.account, row.balance_minor);
-        hasher.update((text.len() as u64).to_be_bytes());
-        hasher.update(text.as_bytes());
-    }
-    hex::encode(hasher.finalize())
+    let parts: Vec<String> = balances
+        .iter()
+        .map(|row| format!("{}|{}", row.account, row.balance_minor))
+        .collect();
+    digest_parts(&parts)
 }
 
 fn save_closing(conn: &Connection, report: &ClosingReport) -> Result<()> {
@@ -742,20 +749,21 @@ fn save_closing(conn: &Connection, report: &ClosingReport) -> Result<()> {
         "INSERT INTO ledger_closings
             (day, currency, start_ms, end_ms, debit_minor, credit_minor,
              entry_count, locked_minor, balance_total, checksum, closed_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            report.day,
-            report.currency.as_str(),
-            report.start_ms,
-            report.end_ms,
-            report.debits,
-            report.credits,
-            report.entry_count,
-            report.locked,
-            report.balance_total,
-            report.checksum,
-            report.closed_at
-        ],
+         VALUES(:day, :currency, :start_ms, :end_ms, :debit, :credit,
+                :entry_count, :locked, :balance_total, :checksum, :closed_at)",
+        named_params! {
+            ":day": report.day,
+            ":currency": report.currency.as_str(),
+            ":start_ms": report.start_ms,
+            ":end_ms": report.end_ms,
+            ":debit": report.debits,
+            ":credit": report.credits,
+            ":entry_count": report.entry_count,
+            ":locked": report.locked,
+            ":balance_total": report.balance_total,
+            ":checksum": report.checksum,
+            ":closed_at": report.closed_at,
+        },
     )?;
     let balances = balances_as_of(conn, report.currency, report.end_ms)?;
     for row in balances {

@@ -1,6 +1,6 @@
 //! 红包：金额由服务端预分配，领取同事务校验群成员与唯一份额。
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use wxlike_ledger::{Currency, Money, PostingLine, PostingRequest};
 
 use crate::error::{CommerceError, Result};
@@ -109,16 +109,41 @@ impl Commerce {
         let now = self.now();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_by_key(&tx, &scoped_key)? {
-            if existing.0 != digest {
-                return Err(CommerceError::IdempotencyConflict);
-            }
-            return Ok(existing.1);
-        }
+        let id = match store::replay(load_by_key(&tx, &scoped_key)?, &digest)? {
+            Some(existing) => existing.id,
+            None => self.fund_escrow(
+                &tx,
+                sender,
+                conversation,
+                total,
+                count,
+                memo,
+                &scoped_key,
+                now,
+            )?,
+        };
+        let packet = load(&tx, &id)?.ok_or(CommerceError::NotFound)?;
+        tx.commit()?;
+        Ok(packet)
+    }
+
+    /// 建托管、预拆份额、落红包单并记账（钱包 → escrow）。
+    #[allow(clippy::too_many_arguments)]
+    fn fund_escrow(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        sender: &str,
+        conversation: &str,
+        total: Money,
+        count: u32,
+        memo: &str,
+        scoped_key: &str,
+        now: i64,
+    ) -> Result<String> {
         let id = store::new_id(self.entropy());
-        let wallet = self.ensure_wallet_conn(&tx, sender, total.currency(), now)?;
+        let wallet = self.ensure_wallet_conn(tx, sender, total.currency(), now)?;
         let escrow = store::ensure_escrow(
-            &tx,
+            tx,
             "redpacket",
             &id,
             total.currency(),
@@ -135,36 +160,24 @@ impl Commerce {
             ],
         )
         .with_memo("red packet funded");
-        wxlike_ledger::post_in(&tx, &funding, now).map_err(store::map_ledger)?;
+        wxlike_ledger::post_in(tx, &funding, now).map_err(store::map_ledger)?;
         let shares = split_shares(total.minor(), count, self.entropy());
         let expires_at = now + self.config.redpacket_ttl_ms;
-        tx.execute(
-            "INSERT INTO commerce_redpackets
-                (id, business_key, sender_id, conv_id, total_minor, count, currency, status,
-                 memo, created_at, expires_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?10)",
-            params![
-                id,
-                scoped_key,
-                sender,
-                conversation,
-                total.minor(),
-                i64::from(count),
-                total.currency().as_str(),
-                memo,
-                now,
-                expires_at
-            ],
+        insert_packet_and_shares(
+            tx,
+            &id,
+            scoped_key,
+            sender,
+            conversation,
+            total,
+            count,
+            memo,
+            shares,
+            expires_at,
+            now,
         )?;
-        for (slot, amount) in shares.iter().enumerate() {
-            tx.execute(
-                "INSERT INTO commerce_redpacket_shares(packet_id, slot, amount_minor)
-                 VALUES(?1, ?2, ?3)",
-                params![id, slot as i64, amount],
-            )?;
-        }
         store::emit(
-            &tx,
+            tx,
             self.entropy(),
             "redpacket.created",
             &id,
@@ -175,9 +188,7 @@ impl Commerce {
             }),
             now,
         )?;
-        let packet = load(&tx, &id)?.ok_or(CommerceError::NotFound)?;
-        tx.commit()?;
-        Ok(packet)
+        Ok(id)
     }
 
     /// 领取一个份额；同一用户重试返回第一次的结果。
@@ -211,86 +222,24 @@ impl Commerce {
             tx.commit()?;
             return Err(CommerceError::Expired);
         }
-        let slot: Option<(i64, i64)> = tx
-            .query_row(
-                "SELECT slot, amount_minor FROM commerce_redpacket_shares
-                 WHERE packet_id = ?1 AND claimed_by IS NULL
-                 ORDER BY slot ASC LIMIT 1",
-                params![packet_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let Some((slot, amount)) = slot else {
-            tx.execute(
-                "UPDATE commerce_redpackets SET status = 'depleted'
-                 WHERE id = ?1 AND status = 'active'",
-                params![packet_id],
-            )?;
+        let Some((_slot, amount)) = grab_share(&tx, packet_id, user, now)? else {
+            // 空红包的 depleted 标记也要落库，再以业务冲突告终。
             tx.commit()?;
             return Err(CommerceError::Conflict("red packet is empty".into()));
-        };
-        let changed = tx.execute(
-            "UPDATE commerce_redpacket_shares
-             SET claimed_by = ?1, claimed_at = ?2
-             WHERE packet_id = ?3 AND slot = ?4 AND claimed_by IS NULL",
-            params![user, now, packet_id, slot],
-        )?;
-        if changed != 1 {
-            return Err(CommerceError::Conflict(
-                "red packet share was taken concurrently".into(),
-            ));
-        }
-        let claim = RedPacketClaim {
-            packet_id: packet_id.to_string(),
-            user_id: user.to_string(),
-            amount: Money::from_minor(amount, packet.total.currency()),
-            claimed_at: now,
         };
         tx.execute(
             "INSERT INTO commerce_redpacket_claims(packet_id, user_id, amount_minor, claimed_at)
              VALUES(?1, ?2, ?3, ?4)",
             params![packet_id, user, amount, now],
         )?;
-        let escrow = store::escrow_account("redpacket", packet_id, packet.total.currency());
-        let wallet = self.ensure_wallet_conn(&tx, user, packet.total.currency(), now)?;
-        let posting = PostingRequest::new(
-            format!("redpacket:{packet_id}:claim:{user}"),
-            "redpacket.claimed",
-            packet.total.currency(),
-            vec![
-                PostingLine::debit(escrow, amount),
-                PostingLine::credit(wallet, amount),
-            ],
-        )
-        .with_memo("red packet claim");
-        wxlike_ledger::post_in(&tx, &posting, now)?;
-        let remaining: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM commerce_redpacket_shares
-             WHERE packet_id = ?1 AND claimed_by IS NULL",
-            params![packet_id],
-            |r| r.get(0),
-        )?;
-        if remaining == 0 {
-            tx.execute(
-                "UPDATE commerce_redpackets SET status = 'depleted'
-                 WHERE id = ?1 AND status = 'active'",
-                params![packet_id],
-            )?;
-        }
-        store::emit(
-            &tx,
-            self.entropy(),
-            "redpacket.claimed",
-            packet_id,
-            &serde_json::json!({
-                "packet_id": packet_id,
-                "user_id": user,
-                "amount_minor": amount.to_string(),
-            }),
-            now,
-        )?;
+        self.post_claim(&tx, packet_id, user, amount, packet.total.currency(), now)?;
         tx.commit()?;
-        Ok(claim)
+        Ok(RedPacketClaim {
+            packet_id: packet_id.to_string(),
+            user_id: user.to_string(),
+            amount: Money::from_minor(amount, packet.total.currency()),
+            claimed_at: now,
+        })
     }
 
     /// 过期未领份额退回发送者。
@@ -365,6 +314,139 @@ impl Commerce {
             .is_member(conversation, user)
             .map_err(|_| CommerceError::MembershipUnavailable)
     }
+
+    /// 领取入账：escrow → 钱包，随后把最后一次领取标成 depleted 并发事件。
+    fn post_claim(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        packet_id: &str,
+        user: &str,
+        amount: i64,
+        currency: Currency,
+        now: i64,
+    ) -> Result<()> {
+        let escrow = store::escrow_account("redpacket", packet_id, currency);
+        let wallet = self.ensure_wallet_conn(tx, user, currency, now)?;
+        let posting = PostingRequest::new(
+            format!("redpacket:{packet_id}:claim:{user}"),
+            "redpacket.claimed",
+            currency,
+            vec![
+                PostingLine::debit(escrow, amount),
+                PostingLine::credit(wallet, amount),
+            ],
+        )
+        .with_memo("red packet claim");
+        wxlike_ledger::post_in(tx, &posting, now)?;
+        let remaining: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM commerce_redpacket_shares
+             WHERE packet_id = ?1 AND claimed_by IS NULL",
+            params![packet_id],
+            |r| r.get(0),
+        )?;
+        if remaining == 0 {
+            tx.execute(
+                "UPDATE commerce_redpackets SET status = 'depleted'
+                 WHERE id = ?1 AND status = 'active'",
+                params![packet_id],
+            )?;
+        }
+        store::emit(
+            tx,
+            self.entropy(),
+            "redpacket.claimed",
+            packet_id,
+            &serde_json::json!({
+                "packet_id": packet_id,
+                "user_id": user,
+                "amount_minor": amount.to_string(),
+            }),
+            now,
+        )?;
+        Ok(())
+    }
+}
+
+/// 落红包单并预写全部份额（份额金额已由服务端拆好）。
+#[allow(clippy::too_many_arguments)]
+fn insert_packet_and_shares(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    scoped_key: &str,
+    sender: &str,
+    conversation: &str,
+    total: Money,
+    count: u32,
+    memo: &str,
+    shares: Vec<i64>,
+    expires_at: i64,
+    now: i64,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO commerce_redpackets
+            (id, business_key, sender_id, conv_id, total_minor, count, currency, status,
+             memo, created_at, expires_at)
+         VALUES(:id, :business_key, :sender_id, :conv_id, :total_minor, :count,
+                :currency, 'active', :memo, :now, :expires_at)",
+        named_params! {
+            ":id": id,
+            ":business_key": scoped_key,
+            ":sender_id": sender,
+            ":conv_id": conversation,
+            ":total_minor": total.minor(),
+            ":count": i64::from(count),
+            ":currency": total.currency().as_str(),
+            ":memo": memo,
+            ":now": now,
+            ":expires_at": expires_at,
+        },
+    )?;
+    for (slot, amount) in shares.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO commerce_redpacket_shares(packet_id, slot, amount_minor)
+             VALUES(?1, ?2, ?3)",
+            params![id, slot as i64, amount],
+        )?;
+    }
+    Ok(())
+}
+
+/// 原子抢占一个空份额：并发撞车时以冲突回滚，份额被抢光时标 depleted。
+fn grab_share(
+    tx: &Connection,
+    packet_id: &str,
+    user: &str,
+    now: i64,
+) -> Result<Option<(i64, i64)>> {
+    let slot: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT slot, amount_minor FROM commerce_redpacket_shares
+             WHERE packet_id = ?1 AND claimed_by IS NULL
+             ORDER BY slot ASC LIMIT 1",
+            params![packet_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((slot, amount)) = slot else {
+        tx.execute(
+            "UPDATE commerce_redpackets SET status = 'depleted'
+             WHERE id = ?1 AND status = 'active'",
+            params![packet_id],
+        )?;
+        return Ok(None);
+    };
+    let changed = tx.execute(
+        "UPDATE commerce_redpacket_shares
+         SET claimed_by = ?1, claimed_at = ?2
+         WHERE packet_id = ?3 AND slot = ?4 AND claimed_by IS NULL",
+        params![user, now, packet_id, slot],
+    )?;
+    if changed != 1 {
+        return Err(CommerceError::Conflict(
+            "red packet share was taken concurrently".into(),
+        ));
+    }
+    Ok(Some((slot, amount)))
 }
 
 fn split_shares(total: i64, count: u32, entropy: &dyn crate::Entropy) -> Vec<i64> {

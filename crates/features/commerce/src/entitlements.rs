@@ -7,6 +7,16 @@ use crate::error::{CommerceError, Result};
 use crate::store;
 use crate::Commerce;
 
+/// 规则 JSON 体积上限。
+const MAX_RULE_JSON: usize = 8_192;
+/// 权益 payload JSON 体积上限。
+const MAX_PAYLOAD_JSON: usize = 4_096;
+/// 有效期天数：规则可给 1..=3650，缺省一年。
+const MAX_VALID_DAYS: i64 = 3_650;
+const DEFAULT_VALID_DAYS: i64 = 365;
+/// 一次性核销令牌长度上限（hex）。
+const MAX_TOKEN_LEN: usize = 128;
+
 /// 权益类别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntitlementKind {
@@ -140,7 +150,7 @@ impl Commerce {
             ));
         }
         let rule_json = rule.to_string();
-        if rule_json.len() > 8192 {
+        if rule_json.len() > MAX_RULE_JSON {
             return Err(CommerceError::BadInput("rule is too large".into()));
         }
         let now = self.now();
@@ -193,7 +203,7 @@ impl Commerce {
             ));
         }
         let payload_json = payload.to_string();
-        if payload_json.len() > 4096 {
+        if payload_json.len() > MAX_PAYLOAD_JSON {
             return Err(CommerceError::BadInput("payload is too large".into()));
         }
         let owner_key = owner.unwrap_or("");
@@ -201,59 +211,23 @@ impl Commerce {
         let now = self.now();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_by_key(&tx, business_key)? {
-            if existing.0 != digest {
-                return Err(CommerceError::IdempotencyConflict);
-            }
-            return Ok(existing.1);
+        if let Some(existing) = store::replay(load_by_key(&tx, business_key)?, &digest)? {
+            return Ok(existing);
         }
-        let (rule_version, rule_json): (i64, String) = tx
-            .query_row(
-                "SELECT version, rule_json FROM commerce_entitlement_rules
-                 WHERE issuer_id = ?1 AND kind = ?2 ORDER BY version DESC LIMIT 1",
-                params![issuer, kind.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| {
-                CommerceError::BadInput("no published rule for this entitlement kind".into())
-            })?;
-        let rule: Value = serde_json::from_str(&rule_json)
-            .map_err(|_| CommerceError::BadInput("stored rule is not JSON".into()))?;
-        let days = rule
-            .get("valid_days")
-            .and_then(Value::as_i64)
-            .filter(|days| (1..=3650).contains(days))
-            .unwrap_or(365);
-        let valid_to = now + days * 24 * 60 * 60 * 1000;
+        let (rule_version, rule) = latest_rule(&tx, issuer, kind)?;
+        let valid_to = now + validity_days(&rule)? * 24 * 60 * 60 * 1000;
         let id = store::new_id(self.entropy());
-        tx.execute(
-            "INSERT INTO commerce_entitlements
-                (id, business_key, issuer_id, owner_id, kind, rule_issuer, rule_kind,
-                 rule_version, status, valid_from, valid_to, payload_json, issued_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?3, ?5, ?6, 'active', ?7, ?8, ?9, ?7)",
-            params![
-                id,
-                business_key,
-                issuer,
-                owner,
-                kind.as_str(),
-                rule_version,
-                now,
-                valid_to,
-                payload_json
-            ],
-        )?;
-        store::emit(
+        insert_entitlement(
             &tx,
-            self.entropy(),
-            "entitlement.issued",
+            self,
             &id,
-            &serde_json::json!({
-                "entitlement_id": id,
-                "kind": kind.as_str(),
-                "issuer_id": issuer,
-            }),
+            business_key,
+            issuer,
+            owner,
+            kind,
+            rule_version,
+            valid_to,
+            &payload_json,
             now,
         )?;
         let entitlement = load(&tx, &id)?.ok_or(CommerceError::NotFound)?;
@@ -356,66 +330,19 @@ impl Commerce {
     ) -> Result<Redemption> {
         store::validate_id("actor", actor)?;
         store::validate_key(business_key)?;
-        if token.is_empty() || token.len() > 128 {
+        if token.is_empty() || token.len() > MAX_TOKEN_LEN {
             return Err(CommerceError::BadInput("redemption token".into()));
         }
         let token_hash = store::digest_hex(&["redemption-token", token]);
         let now = self.now();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing: Option<(String, String, String, i64)> = tx
-            .query_row(
-                "SELECT id, entitlement_id, actor_id, redeemed_at FROM commerce_redemptions
-                 WHERE business_key = ?1",
-                params![business_key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-        if let Some((id, entitlement_id, actor_id, redeemed_at)) = existing {
-            let stored_hash: String = tx.query_row(
-                "SELECT token_hash FROM commerce_redemptions WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            if stored_hash != token_hash || actor_id != actor {
-                return Err(CommerceError::IdempotencyConflict);
-            }
-            return Ok(Redemption {
-                id,
-                entitlement_id,
-                actor_id,
-                redeemed_at,
-            });
+        if let Some(done) = replay_redemption(&tx, business_key, &token_hash, actor)? {
+            return Ok(done);
         }
-        let record: Option<(String, i64, Option<i64>)> = tx
-            .query_row(
-                "SELECT entitlement_id, expires_at, used_at FROM commerce_redemption_tokens
-                 WHERE token_hash = ?1",
-                params![token_hash],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let Some((entitlement_id, expires_at, used_at)) = record else {
-            return Err(CommerceError::NotFound);
-        };
-        if used_at.is_some() {
-            return Err(CommerceError::Conflict("token already used".into()));
-        }
-        if now >= expires_at {
-            return Err(CommerceError::Expired);
-        }
+        let entitlement_id = load_unused_token(&tx, &token_hash, now)?;
         let entitlement = load(&tx, &entitlement_id)?.ok_or(CommerceError::NotFound)?;
-        if entitlement.owner_id.as_deref() != Some(actor) {
-            return Err(CommerceError::Forbidden);
-        }
-        if entitlement.status != EntitlementStatus::Active {
-            return Err(CommerceError::Conflict(
-                "entitlement already redeemed".into(),
-            ));
-        }
-        if now < entitlement.valid_from || now > entitlement.valid_to {
-            return Err(CommerceError::Expired);
-        }
+        ensure_redeemable(&entitlement, actor, now)?;
         let id = store::new_id(self.entropy());
         tx.execute(
             "INSERT INTO commerce_redemptions
@@ -423,31 +350,8 @@ impl Commerce {
              VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, business_key, entitlement_id, actor, token_hash, now],
         )?;
-        let changed = tx.execute(
-            "UPDATE commerce_redemption_tokens SET used_at = ?1
-             WHERE token_hash = ?2 AND used_at IS NULL",
-            params![now, token_hash],
-        )?;
-        if changed != 1 {
-            return Err(CommerceError::Conflict("token already used".into()));
-        }
-        tx.execute(
-            "UPDATE commerce_entitlements
-             SET status = 'redeemed', redeemed_at = ?1
-             WHERE id = ?2 AND status = 'active'",
-            params![now, entitlement_id],
-        )?;
-        store::emit(
-            &tx,
-            self.entropy(),
-            "entitlement.redeemed",
-            &entitlement_id,
-            &serde_json::json!({
-                "entitlement_id": entitlement_id,
-                "redemption_id": id,
-            }),
-            now,
-        )?;
+        mark_token_used(&tx, &token_hash, now)?;
+        mark_redeemed(&tx, self, &entitlement_id, now, &id)?;
         tx.commit()?;
         Ok(Redemption {
             id,
@@ -487,6 +391,193 @@ impl Commerce {
             value: format!("wx1.{}.{}", entitlement.id, &signature[..16]),
         })
     }
+}
+
+/// 同业务键重试：同令牌同人返回第一次结果，否则视为冲突。
+fn replay_redemption(
+    conn: &Connection,
+    business_key: &str,
+    token_hash: &str,
+    actor: &str,
+) -> Result<Option<Redemption>> {
+    let existing: Option<(String, String, String, i64)> = conn
+        .query_row(
+            "SELECT id, entitlement_id, actor_id, redeemed_at FROM commerce_redemptions
+             WHERE business_key = ?1",
+            params![business_key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((id, entitlement_id, actor_id, redeemed_at)) = existing else {
+        return Ok(None);
+    };
+    let stored_hash: String = conn.query_row(
+        "SELECT token_hash FROM commerce_redemptions WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if stored_hash != token_hash || actor_id != actor {
+        return Err(CommerceError::IdempotencyConflict);
+    }
+    Ok(Some(Redemption {
+        id,
+        entitlement_id,
+        actor_id,
+        redeemed_at,
+    }))
+}
+
+/// 令牌必须存在、未使用且未过期；返回对应权益 ID。
+fn load_unused_token(conn: &Connection, token_hash: &str, now: i64) -> Result<String> {
+    let record: Option<(String, i64, Option<i64>)> = conn
+        .query_row(
+            "SELECT entitlement_id, expires_at, used_at FROM commerce_redemption_tokens
+             WHERE token_hash = ?1",
+            params![token_hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((entitlement_id, expires_at, used_at)) = record else {
+        return Err(CommerceError::NotFound);
+    };
+    if used_at.is_some() {
+        return Err(CommerceError::Conflict("token already used".into()));
+    }
+    if now >= expires_at {
+        return Err(CommerceError::Expired);
+    }
+    Ok(entitlement_id)
+}
+
+/// 核销资格：属主本人、状态有效、在有效期内。
+fn ensure_redeemable(entitlement: &Entitlement, actor: &str, now: i64) -> Result<()> {
+    if entitlement.owner_id.as_deref() != Some(actor) {
+        return Err(CommerceError::Forbidden);
+    }
+    if entitlement.status != EntitlementStatus::Active {
+        return Err(CommerceError::Conflict(
+            "entitlement already redeemed".into(),
+        ));
+    }
+    if now < entitlement.valid_from || now > entitlement.valid_to {
+        return Err(CommerceError::Expired);
+    }
+    Ok(())
+}
+
+/// 一次性标记令牌已用；并发下抢不到就拒绝。
+fn mark_token_used(conn: &Connection, token_hash: &str, now: i64) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE commerce_redemption_tokens SET used_at = ?1
+         WHERE token_hash = ?2 AND used_at IS NULL",
+        params![now, token_hash],
+    )?;
+    if changed != 1 {
+        return Err(CommerceError::Conflict("token already used".into()));
+    }
+    Ok(())
+}
+
+/// 权益转 redeemed 并发核销事件。
+fn mark_redeemed(
+    conn: &Connection,
+    commerce: &Commerce,
+    entitlement_id: &str,
+    now: i64,
+    redemption_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE commerce_entitlements
+         SET status = 'redeemed', redeemed_at = ?1
+         WHERE id = ?2 AND status = 'active'",
+        params![now, entitlement_id],
+    )?;
+    store::emit(
+        conn,
+        commerce.entropy(),
+        "entitlement.redeemed",
+        entitlement_id,
+        &serde_json::json!({
+            "entitlement_id": entitlement_id,
+            "redemption_id": redemption_id,
+        }),
+        now,
+    )?;
+    Ok(())
+}
+
+/// 落权益实例并发发行事件（rule_issuer/rule_kind 与发行方同源）。
+#[allow(clippy::too_many_arguments)]
+fn insert_entitlement(
+    conn: &Connection,
+    commerce: &Commerce,
+    id: &str,
+    business_key: &str,
+    issuer: &str,
+    owner: Option<&str>,
+    kind: EntitlementKind,
+    rule_version: i64,
+    valid_to: i64,
+    payload_json: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO commerce_entitlements
+            (id, business_key, issuer_id, owner_id, kind, rule_issuer, rule_kind,
+             rule_version, status, valid_from, valid_to, payload_json, issued_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?3, ?5, ?6, 'active', ?7, ?8, ?9, ?7)",
+        params![
+            id,
+            business_key,
+            issuer,
+            owner,
+            kind.as_str(),
+            rule_version,
+            now,
+            valid_to,
+            payload_json
+        ],
+    )?;
+    store::emit(
+        conn,
+        commerce.entropy(),
+        "entitlement.issued",
+        id,
+        &serde_json::json!({
+            "entitlement_id": id,
+            "kind": kind.as_str(),
+            "issuer_id": issuer,
+        }),
+        now,
+    )?;
+    Ok(())
+}
+
+/// 取该 (issuer, kind) 的最新已发布规则；没有规则就拒绝发放。
+fn latest_rule(conn: &Connection, issuer: &str, kind: EntitlementKind) -> Result<(i64, Value)> {
+    let (version, rule_json): (i64, String) = conn
+        .query_row(
+            "SELECT version, rule_json FROM commerce_entitlement_rules
+             WHERE issuer_id = ?1 AND kind = ?2 ORDER BY version DESC LIMIT 1",
+            params![issuer, kind.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            CommerceError::BadInput("no published rule for this entitlement kind".into())
+        })?;
+    let rule: Value = serde_json::from_str(&rule_json)
+        .map_err(|_| CommerceError::BadInput("stored rule is not JSON".into()))?;
+    Ok((version, rule))
+}
+
+/// 规则里的 `valid_days`（1..=3650，缺省一年）。
+fn validity_days(rule: &Value) -> Result<i64> {
+    Ok(rule
+        .get("valid_days")
+        .and_then(Value::as_i64)
+        .filter(|days| (1..=MAX_VALID_DAYS).contains(days))
+        .unwrap_or(DEFAULT_VALID_DAYS))
 }
 
 fn load(conn: &Connection, id: &str) -> Result<Option<Entitlement>> {

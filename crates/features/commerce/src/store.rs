@@ -2,7 +2,7 @@
 
 use hmac::{Hmac, Mac as _};
 use rusqlite::{params, Connection};
-use sha2::{Digest as _, Sha256};
+use sha2::Sha256;
 use wxlike_ledger::{AccountSpec, AccountType, Currency, FundClass, Money};
 
 use crate::error::{CommerceError, Result};
@@ -12,23 +12,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// 打开 commerce 的连接并建表。
 pub(crate) fn open_conn(path: Option<&str>) -> Result<Connection> {
-    let conn = match path {
-        Some(path) => {
-            if let Some(dir) = std::path::Path::new(path).parent() {
-                if !dir.as_os_str().is_empty() {
-                    std::fs::create_dir_all(dir)
-                        .map_err(|_| CommerceError::BadInput("commerce database path".into()))?;
-                }
-            }
-            Connection::open(path)?
-        }
-        None => Connection::open_in_memory()?,
-    };
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 5000;
-         PRAGMA foreign_keys = ON;",
-    )?;
+    let conn = wxlike_ledger::open_connection(path).map_err(map_ledger)?;
     crate::schema::init_schema(&conn)?;
     Ok(conn)
 }
@@ -47,14 +31,29 @@ pub(crate) fn random_hex(entropy: &dyn Entropy, len: usize) -> String {
     hex::encode(bytes)
 }
 
-/// 长度前缀的 SHA-256 摘要。
+/// 长度前缀的 SHA-256 摘要（与账本的 request_digest 同一套规范）。
 pub(crate) fn digest_hex(parts: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part.as_bytes());
+    wxlike_ledger::request_digest_hex(parts)
+}
+
+/// 常量时间比较，避免签名比对泄漏时序。
+pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
     }
-    hex::encode(hasher.finalize())
+    left.bytes()
+        .zip(right.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
+/// 幂等重放判定：同参命中返回既有结果，异参拒绝，未命中放行新建。
+pub(crate) fn replay<T>(loaded: Option<(String, T)>, digest: &str) -> Result<Option<T>> {
+    match loaded {
+        Some((stored, value)) if stored == digest => Ok(Some(value)),
+        Some(_) => Err(CommerceError::IdempotencyConflict),
+        None => Ok(None),
+    }
 }
 
 /// HMAC-SHA256，输出 hex。
@@ -104,9 +103,10 @@ pub(crate) fn validate_key(value: &str) -> Result<()> {
     }
 }
 
-/// 转账备注：最多 20 个字符，不允许控制字符。
+/// 转账/红包备注：最多 20 个字符，不允许控制字符。
 pub(crate) fn validate_note(note: &str) -> Result<()> {
-    let ok = note.chars().count() <= 20 && !note.chars().any(char::is_control);
+    const MEMO_MAX_CHARS: usize = 20;
+    let ok = note.chars().count() <= MEMO_MAX_CHARS && !note.chars().any(char::is_control);
     if ok {
         Ok(())
     } else {
@@ -240,8 +240,11 @@ pub(crate) fn map_ledger(error: wxlike_ledger::LedgerError) -> CommerceError {
 /// 拒绝：空串、正负号、科学计数法、千分位、超过 2 位小数、前导点、
 /// 溢出以及超过 `max_minor`。
 pub(crate) fn parse_decimal_minor(raw: &str, max_minor: i64) -> Result<i64> {
+    const MAX_INPUT_LEN: usize = 32;
+    const FRACTION_DIGITS_MAX: usize = 2;
+    const MINOR_PER_UNIT: i64 = 100;
     let text = raw.trim();
-    if text.is_empty() || text.len() > 32 {
+    if text.is_empty() || text.len() > MAX_INPUT_LEN {
         return Err(CommerceError::BadInput("amount is empty".into()));
     }
     if !text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
@@ -252,13 +255,17 @@ pub(crate) fn parse_decimal_minor(raw: &str, max_minor: i64) -> Result<i64> {
     let mut parts = text.split('.');
     let whole = parts.next().unwrap_or("");
     let fraction = parts.next().unwrap_or("");
-    if parts.next().is_some() || whole.is_empty() || fraction.len() > 2 || text.ends_with('.') {
+    if parts.next().is_some()
+        || whole.is_empty()
+        || fraction.len() > FRACTION_DIGITS_MAX
+        || text.ends_with('.')
+    {
         return Err(CommerceError::BadInput(
             "amount must have at most two decimal places".into(),
         ));
     }
     let whole_minor = parse_digits(whole)?
-        .checked_mul(100)
+        .checked_mul(MINOR_PER_UNIT)
         .ok_or(CommerceError::AmountTooLarge)?;
     let fraction_minor = match fraction.len() {
         0 => 0,

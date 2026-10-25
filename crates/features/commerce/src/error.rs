@@ -42,6 +42,8 @@ pub enum CommerceError {
     AmountTooLarge,
     #[error("accounting error")]
     Ledger(#[from] wxlike_ledger::LedgerError),
+    #[error("{0}")]
+    Money(#[from] wxlike_ledger::MoneyError),
     #[error("storage error")]
     Storage(#[from] rusqlite::Error),
 }

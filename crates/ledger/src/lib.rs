@@ -11,7 +11,7 @@
 //! 7. **日结不可变**：同一天重复日结必须与既有快照完全一致。
 //!
 //! commerce 域不另建账本：它把 [`schema::init_schema`] 建在自己的连接上，
-//! 并在同一个事务里调用 [`store`] 的 `*_in` 函数，业务记录与分录同库提交。
+//! 并在同一个事务里调用 `store` 模块的 `*_in` 函数，业务记录与分录同库提交。
 
 mod model;
 mod schema;
@@ -22,17 +22,17 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub use model::{
-    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Currency, Entry, FundClass,
-    Hold, HoldStatus, Journal, LedgerTransaction, Money, PostingLine, PostingRequest,
-    StatementPage,
+    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Entry, FundClass, Hold,
+    HoldStatus, Journal, LedgerTransaction, PostingLine, PostingRequest, StatementPage,
 };
 pub use schema::{init_schema, SCHEMA_VERSION};
 pub use store::{
     available_minor, balance_minor, capture_hold_in, close_range_in, closing_balances_in,
     closings_in, create_account_in, hold_in, load_account, locked_minor, post_in, release_hold_in,
-    statement_in, total_sum_is_zero, transaction_by_key, transfer_request, type_total,
-    verify_closing_in, verify_journals, MAX_PAGE,
+    request_digest_hex, statement_in, total_sum_is_zero, transaction_by_key, transfer_request,
+    type_total, verify_closing_in, verify_journals, MAX_PAGE,
 };
+pub use wxlike_types::{Currency, Money, MoneyError};
 
 /// 账本错误。所有变体都不携带密钥、密文或数据库连接串。
 #[derive(Debug, thiserror::Error)]
@@ -81,8 +81,48 @@ pub enum LedgerError {
     Storage(#[from] rusqlite::Error),
 }
 
+impl From<MoneyError> for LedgerError {
+    fn from(error: MoneyError) -> Self {
+        match error {
+            MoneyError::BadCurrency(raw) => Self::BadCurrency(raw),
+            MoneyError::Overflow => Self::Overflow,
+            MoneyError::CurrencyMismatch { left, right } => Self::CurrencyMismatch { left, right },
+        }
+    }
+}
+
 /// 账本结果。
 pub type Result<T> = std::result::Result<T, LedgerError>;
+
+/// 连接超时（毫秒）。WAL 模式下写锁短暂竞争时在这里排队。
+const BUSY_TIMEOUT_MS: i64 = 5_000;
+
+/// 打开一个带好 pragma 的连接：WAL、忙等、外键。
+///
+/// `None` 表示内存库；文件库会先创建父目录。
+///
+/// # Errors
+/// 目录创建、SQLite 打开或 pragma 失败。
+pub fn open_connection(path: Option<&str>) -> Result<Connection> {
+    let conn = match path {
+        Some(path) => {
+            if let Some(dir) = std::path::Path::new(path).parent() {
+                if !dir.as_os_str().is_empty() {
+                    std::fs::create_dir_all(dir)
+                        .map_err(|_| LedgerError::BadInput("database path"))?;
+                }
+            }
+            Connection::open(path)?
+        }
+        None => Connection::open_in_memory()?,
+    };
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;",
+    )?;
+    conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+    Ok(conn)
+}
 
 /// 一个独立的账本连接。
 pub struct Ledger {
@@ -95,23 +135,7 @@ impl Ledger {
     /// # Errors
     /// 目录创建、SQLite 打开或建表失败。
     pub fn open(path: Option<&str>) -> Result<Self> {
-        let conn = match path {
-            Some(path) => {
-                if let Some(dir) = std::path::Path::new(path).parent() {
-                    if !dir.as_os_str().is_empty() {
-                        std::fs::create_dir_all(dir)
-                            .map_err(|_| LedgerError::BadInput("ledger path"))?;
-                    }
-                }
-                Connection::open(path)?
-            }
-            None => Connection::open_in_memory()?,
-        };
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;
-             PRAGMA foreign_keys = ON;",
-        )?;
+        let conn = open_connection(path)?;
         schema::init_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),

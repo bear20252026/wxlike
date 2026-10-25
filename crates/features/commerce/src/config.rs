@@ -97,6 +97,9 @@ pub struct CommerceConfig {
 }
 
 impl CommerceConfig {
+    /// 沙箱默认：支付意图有效期（15 分钟）。
+    const SANDBOX_PAYMENT_TTL_MS: i64 = 15 * 60 * 1000;
+
     /// 沙箱默认配置；密钥只用于本地验签/签名，生产由 G00 从 secret 引用解析。
     #[must_use]
     pub fn sandbox(webhook_secret: impl Into<Vec<u8>>) -> Self {
@@ -109,7 +112,7 @@ impl CommerceConfig {
             confirmation_secret: SecretBytes::new(b"wxlike-sandbox-confirm".to_vec()),
             max_payment_minor: 1_000_000_000,
             max_transfer_minor: 10_000_000_000,
-            payment_ttl_ms: 15 * 60 * 1000,
+            payment_ttl_ms: Self::SANDBOX_PAYMENT_TTL_MS,
             transfer_ttl_ms: 24 * 60 * 60 * 1000,
             redpacket_ttl_ms: 24 * 60 * 60 * 1000,
             redemption_token_ttl_ms: 5 * 60 * 1000,

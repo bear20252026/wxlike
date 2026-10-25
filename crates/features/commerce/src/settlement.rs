@@ -12,39 +12,8 @@ use crate::ports::{map_provider, StatementKind};
 use crate::store;
 use crate::Commerce;
 
-/// 充值单状态。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TopupStatus {
-    Created,
-    Pending,
-    Succeeded,
-    Failed,
-    Expired,
-}
-
-impl TopupStatus {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::Pending => "pending",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::Expired => "expired",
-        }
-    }
-
-    fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "created" => Ok(Self::Created),
-            "pending" => Ok(Self::Pending),
-            "succeeded" => Ok(Self::Succeeded),
-            "failed" => Ok(Self::Failed),
-            "expired" => Ok(Self::Expired),
-            _ => Err(CommerceError::BadInput("stored topup status".into())),
-        }
-    }
-}
+/// 充值单状态：与支付意图同一套状态机（充值单是对本人收款的意图）。
+pub type TopupStatus = IntentStatus;
 
 /// 充值单。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -288,40 +257,12 @@ impl Commerce {
             amount.currency().as_str(),
         ]);
         let now = self.now();
-        let withdrawal = {
-            let mut guard = self.lock();
-            let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if let Some(existing) = load_withdrawal_by_key(&tx, business_key)? {
-                if existing.0 != digest {
-                    return Err(CommerceError::IdempotencyConflict);
-                }
-                return Ok(existing.1);
-            }
-            let id = store::new_id(self.entropy());
-            let hold_key = format!("withdrawal:{id}:hold");
-            let wallet = self.ensure_wallet_conn(&tx, actor, amount.currency(), now)?;
-            wxlike_ledger::hold_in(&tx, &hold_key, &wallet, amount, now)
-                .map_err(store::map_ledger)?;
-            tx.execute(
-                "INSERT INTO commerce_withdrawals
-                    (id, business_key, actor_id, amount_minor, currency, status, hold_key,
-                     provider_ref, account_ref, created_at, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, 'pending', ?6, NULL, ?7, ?8, ?8)",
-                params![
-                    id,
-                    business_key,
-                    actor,
-                    amount.minor(),
-                    amount.currency().as_str(),
-                    hold_key,
-                    account_ref,
-                    now
-                ],
-            )?;
-            let withdrawal = load_withdrawal(&tx, &id)?.ok_or(CommerceError::NotFound)?;
-            tx.commit()?;
-            withdrawal
-        };
+        let (withdrawal, created) =
+            self.insert_withdrawal(business_key, &digest, actor, amount, account_ref, now)?;
+        if !created {
+            // 同参重放只回放现状；供应商出款由 refresh_withdrawal 显式推进。
+            return Ok(withdrawal);
+        }
         let request = crate::ports::ProviderPayoutRequest {
             idempotency_key: format!("withdrawal:{}", withdrawal.id),
             amount: withdrawal.amount,
@@ -329,21 +270,69 @@ impl Commerce {
         };
         match self.ports.provider.payout(&request) {
             Ok(payout) => self.apply_payout(&withdrawal.id, payout.status, &payout.provider_ref),
-            Err(error) => {
-                if error == crate::ProviderError::Rejected {
-                    let conn = self.lock();
-                    release_hold(&conn, &withdrawal.id, "failed", self.now())?;
-                } else {
-                    let conn = self.lock();
-                    conn.execute(
-                        "UPDATE commerce_withdrawals SET status = 'processing', updated_at = ?1
-                         WHERE id = ?2 AND status = 'pending'",
-                        params![self.now(), withdrawal.id],
-                    )?;
-                }
-                Err(map_provider(error))
-            }
+            Err(error) => self.payout_rejected(&withdrawal, error),
         }
+    }
+
+    /// 幂等创建提现单并冻结资金（同事务提交业务记录与 hold）。
+    /// 返回 `(提现单, 是否本次新建)`：重放时不该再碰供应商。
+    fn insert_withdrawal(
+        &self,
+        business_key: &str,
+        digest: &str,
+        actor: &str,
+        amount: Money,
+        account_ref: &str,
+        now: i64,
+    ) -> Result<(Withdrawal, bool)> {
+        let mut guard = self.lock();
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = store::replay(load_withdrawal_by_key(&tx, business_key)?, digest)? {
+            return Ok((existing, false));
+        }
+        let id = store::new_id(self.entropy());
+        let hold_key = format!("withdrawal:{id}:hold");
+        let wallet = self.ensure_wallet_conn(&tx, actor, amount.currency(), now)?;
+        wxlike_ledger::hold_in(&tx, &hold_key, &wallet, amount, now).map_err(store::map_ledger)?;
+        tx.execute(
+            "INSERT INTO commerce_withdrawals
+                (id, business_key, actor_id, amount_minor, currency, status, hold_key,
+                 provider_ref, account_ref, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, 'pending', ?6, NULL, ?7, ?8, ?8)",
+            params![
+                id,
+                business_key,
+                actor,
+                amount.minor(),
+                amount.currency().as_str(),
+                hold_key,
+                account_ref,
+                now
+            ],
+        )?;
+        let withdrawal = load_withdrawal(&tx, &id)?.ok_or(CommerceError::NotFound)?;
+        tx.commit()?;
+        Ok((withdrawal, true))
+    }
+
+    /// 供应商拒绝立即解冻；超时等其他错误保持冻结、状态转处理中。
+    fn payout_rejected(
+        &self,
+        withdrawal: &Withdrawal,
+        error: crate::ports::ProviderError,
+    ) -> Result<Withdrawal> {
+        if error == crate::ProviderError::Rejected {
+            let conn = self.lock();
+            release_hold(&conn, &withdrawal.id, "failed", self.now())?;
+        } else {
+            let conn = self.lock();
+            conn.execute(
+                "UPDATE commerce_withdrawals SET status = 'processing', updated_at = ?1
+                 WHERE id = ?2 AND status = 'pending'",
+                params![self.now(), withdrawal.id],
+            )?;
+        }
+        Err(map_provider(error))
     }
 
     /// 查询提现单。
@@ -401,45 +390,7 @@ impl Commerce {
         }
         match status {
             crate::ports::ProviderPayoutStatus::Paid => {
-                let external = store::ensure_external(
-                    &tx,
-                    self.provider_name(),
-                    withdrawal.amount.currency(),
-                    self.config.fund_class,
-                    now,
-                )?;
-                let wallet =
-                    store::wallet_account(&withdrawal.actor_id, withdrawal.amount.currency());
-                let request = PostingRequest::new(
-                    format!("withdrawal:{withdrawal_id}:paid"),
-                    "withdrawal.paid",
-                    withdrawal.amount.currency(),
-                    vec![
-                        PostingLine::debit(wallet, withdrawal.amount.minor()),
-                        PostingLine::credit(external, withdrawal.amount.minor()),
-                    ],
-                )
-                .with_memo("withdrawal paid");
-                let hold_key = format!("withdrawal:{withdrawal_id}:hold");
-                wxlike_ledger::capture_hold_in(&tx, &hold_key, &request, now)
-                    .map_err(store::map_ledger)?;
-                tx.execute(
-                    "UPDATE commerce_withdrawals
-                     SET status = 'paid', provider_ref = ?1, updated_at = ?2
-                     WHERE id = ?3",
-                    params![provider_ref, now, withdrawal_id],
-                )?;
-                store::emit(
-                    &tx,
-                    self.entropy(),
-                    "withdrawal.paid",
-                    withdrawal_id,
-                    &serde_json::json!({
-                        "withdrawal_id": withdrawal_id,
-                        "amount_minor": withdrawal.amount.minor().to_string(),
-                    }),
-                    now,
-                )?;
+                self.capture_payout(&tx, &withdrawal, provider_ref, now)?;
             }
             crate::ports::ProviderPayoutStatus::Failed => {
                 wxlike_ledger::release_hold_in(
@@ -468,6 +419,55 @@ impl Commerce {
         Ok(updated)
     }
 
+    /// 出款到账：capture hold 成正式分录（借记钱包、贷记外部世界）。
+    fn capture_payout(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        withdrawal: &Withdrawal,
+        provider_ref: &str,
+        now: i64,
+    ) -> Result<()> {
+        let withdrawal_id = &withdrawal.id;
+        let external = store::ensure_external(
+            tx,
+            self.provider_name(),
+            withdrawal.amount.currency(),
+            self.config.fund_class,
+            now,
+        )?;
+        let wallet = store::wallet_account(&withdrawal.actor_id, withdrawal.amount.currency());
+        let request = PostingRequest::new(
+            format!("withdrawal:{withdrawal_id}:paid"),
+            "withdrawal.paid",
+            withdrawal.amount.currency(),
+            vec![
+                PostingLine::debit(wallet, withdrawal.amount.minor()),
+                PostingLine::credit(external, withdrawal.amount.minor()),
+            ],
+        )
+        .with_memo("withdrawal paid");
+        let hold_key = format!("withdrawal:{withdrawal_id}:hold");
+        wxlike_ledger::capture_hold_in(tx, &hold_key, &request, now).map_err(store::map_ledger)?;
+        tx.execute(
+            "UPDATE commerce_withdrawals
+             SET status = 'paid', provider_ref = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![provider_ref, now, withdrawal_id],
+        )?;
+        store::emit(
+            tx,
+            self.entropy(),
+            "withdrawal.paid",
+            withdrawal_id,
+            &serde_json::json!({
+                "withdrawal_id": withdrawal_id,
+                "amount_minor": withdrawal.amount.minor().to_string(),
+            }),
+            now,
+        )?;
+        Ok(())
+    }
+
     /// 发起退款：冻结收款方余额 → 供应商退款 → 成功才入账。
     ///
     /// # Errors
@@ -490,64 +490,56 @@ impl Commerce {
             amount.currency().as_str(),
         ]);
         let now = self.now();
-        let refund = {
-            let mut guard = self.lock();
-            let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if let Some(existing) = load_refund_by_key(&tx, business_key)? {
-                if existing.0 != digest {
-                    return Err(CommerceError::IdempotencyConflict);
-                }
-                return Ok(existing.1);
-            }
-            let intent = load_intent_row(&tx, intent_id)?.ok_or(CommerceError::NotFound)?;
-            let refundable = intent.amount.minor() - intent.refunded_minor;
-            if refundable <= 0 || amount.minor() > refundable {
-                return Err(CommerceError::BadInput(
-                    "refund exceeds the refundable amount".into(),
-                ));
-            }
-            if amount.currency() != intent.amount.currency() {
-                return Err(CommerceError::BadInput("refund currency mismatch".into()));
-            }
-            if !matches!(
-                intent.status,
-                IntentStatus::Succeeded | IntentStatus::PartiallyRefunded
-            ) {
-                return Err(CommerceError::IllegalTransition(
-                    "intent is not refundable".into(),
-                ));
-            }
-            let authorized = actor == intent.payee_id
-                || (intent.direction == IntentDirection::Topup && actor == intent.actor_id);
-            if !authorized {
-                return Err(CommerceError::Forbidden);
-            }
-            let id = store::new_id(self.entropy());
-            let hold_key = format!("refund:{id}:hold");
-            let wallet = self.ensure_wallet_conn(&tx, &intent.payee_id, amount.currency(), now)?;
-            wxlike_ledger::hold_in(&tx, &hold_key, &wallet, amount, now)
-                .map_err(store::map_ledger)?;
-            tx.execute(
-                "INSERT INTO commerce_refunds
-                    (id, business_key, intent_id, actor_id, amount_minor, currency, status,
-                     hold_key, provider_ref, created_at, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'processing', ?7, NULL, ?8, ?8)",
-                params![
-                    id,
-                    business_key,
-                    intent_id,
-                    actor,
-                    amount.minor(),
-                    amount.currency().as_str(),
-                    hold_key,
-                    now
-                ],
-            )?;
-            let refund = load_refund(&tx, &id)?.ok_or(CommerceError::NotFound)?;
-            tx.commit()?;
-            refund
-        };
+        let (refund, created) =
+            self.insert_refund(intent_id, business_key, &digest, actor, amount, now)?;
+        if !created {
+            // 同参重放只回放现状；供应商退款由 refresh_refund 显式重试。
+            return Ok(refund);
+        }
         self.dispatch_refund(&refund)
+    }
+
+    /// 幂等创建退款单：冻结收款方钱包，同事务提交业务记录与 hold。
+    /// 返回 `(退款单, 是否本次新建)`：重放时不该再碰供应商。
+    fn insert_refund(
+        &self,
+        intent_id: &str,
+        business_key: &str,
+        digest: &str,
+        actor: &str,
+        amount: Money,
+        now: i64,
+    ) -> Result<(Refund, bool)> {
+        let mut guard = self.lock();
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = store::replay(load_refund_by_key(&tx, business_key)?, digest)? {
+            return Ok((existing, false));
+        }
+        let intent = load_intent_row(&tx, intent_id)?.ok_or(CommerceError::NotFound)?;
+        ensure_refundable(&intent, actor, amount)?;
+        let id = store::new_id(self.entropy());
+        let hold_key = format!("refund:{id}:hold");
+        let wallet = self.ensure_wallet_conn(&tx, &intent.payee_id, amount.currency(), now)?;
+        wxlike_ledger::hold_in(&tx, &hold_key, &wallet, amount, now).map_err(store::map_ledger)?;
+        tx.execute(
+            "INSERT INTO commerce_refunds
+                (id, business_key, intent_id, actor_id, amount_minor, currency, status,
+                 hold_key, provider_ref, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'processing', ?7, NULL, ?8, ?8)",
+            params![
+                id,
+                business_key,
+                intent_id,
+                actor,
+                amount.minor(),
+                amount.currency().as_str(),
+                hold_key,
+                now
+            ],
+        )?;
+        let refund = load_refund(&tx, &id)?.ok_or(CommerceError::NotFound)?;
+        tx.commit()?;
+        Ok((refund, true))
     }
 
     /// 用同一幂等键重试供应商退款。
@@ -613,32 +605,7 @@ impl Commerce {
         let Some(provider_ref) = intent.provider_ref.clone() else {
             return Err(CommerceError::ProviderNotConfigured);
         };
-        let external = store::ensure_external(
-            &tx,
-            self.provider_name(),
-            refund.amount.currency(),
-            self.config.fund_class,
-            now,
-        )?;
-        let wallet = store::wallet_account(&intent.payee_id, refund.amount.currency());
-        let request = PostingRequest::new(
-            format!("refund:{refund_id}:settled"),
-            "payment.refunded",
-            refund.amount.currency(),
-            vec![
-                PostingLine::debit(wallet, refund.amount.minor()),
-                PostingLine::credit(external, refund.amount.minor()),
-            ],
-        )
-        .with_memo("refund settled");
-        let hold_key = format!("refund:{refund_id}:hold");
-        wxlike_ledger::capture_hold_in(&tx, &hold_key, &request, now).map_err(store::map_ledger)?;
-        tx.execute(
-            "UPDATE commerce_refunds
-             SET status = 'succeeded', provider_ref = ?1, updated_at = ?2
-             WHERE id = ?3",
-            params![provider_ref, now, refund_id],
-        )?;
+        capture_refund(&tx, self, &refund, &intent, &provider_ref, now)?;
         let refunded = intent.refunded_minor + refund.amount.minor();
         let status = if refunded >= intent.amount.minor() {
             IntentStatus::Refunded
@@ -674,94 +641,35 @@ impl Commerce {
     /// 供应商不可用或存储失败。
     pub fn run_reconciliation(&self) -> Result<ReconciliationReport> {
         let provider_rows = self.ports.provider.statement().map_err(map_provider)?;
-        #[derive(Clone)]
-        struct Row {
-            provider_ref: String,
-            kind: StatementKind,
-            currency: Currency,
-            local_id: String,
-        }
         let mut local = local_statement_rows(self)?;
         let mut checked = 0usize;
-        let mut pending: Vec<(Row, String, i64)> = Vec::new();
-        for row in &provider_rows {
-            if !row.amount.is_positive() {
-                continue;
-            }
-            checked += 1;
-            if let Some(index) = local.iter().position(|candidate| {
-                candidate.kind == row.kind
-                    && candidate.provider_ref == row.provider_ref
-                    && candidate.currency == row.amount.currency()
-            }) {
-                let candidate = local.remove(index);
-                let delta = row.amount.minor() - candidate.amount_minor;
-                if delta == 0 {
-                    continue;
-                }
-                let external_delta = match row.kind {
-                    StatementKind::Payment => delta,
-                    StatementKind::Refund | StatementKind::Payout => -delta,
-                };
-                pending.push((
-                    Row {
-                        provider_ref: row.provider_ref.clone(),
-                        kind: row.kind,
-                        currency: row.amount.currency(),
-                        local_id: candidate.local_id,
-                    },
-                    format!(
-                        "amount_mismatch: provider {} local {}",
-                        row.amount.minor(),
-                        candidate.amount_minor
-                    ),
-                    external_delta,
-                ));
-            } else {
-                let external_delta = match row.kind {
-                    StatementKind::Payment => row.amount.minor(),
-                    StatementKind::Refund | StatementKind::Payout => -row.amount.minor(),
-                };
-                pending.push((
-                    Row {
-                        provider_ref: row.provider_ref.clone(),
-                        kind: row.kind,
-                        currency: row.amount.currency(),
-                        local_id: String::new(),
-                    },
-                    "provider_only".to_string(),
-                    external_delta,
-                ));
-            }
-        }
-        for row in local {
-            let external_delta = match row.kind {
-                StatementKind::Payment => -row.amount_minor,
-                StatementKind::Refund | StatementKind::Payout => row.amount_minor,
-            };
-            pending.push((
-                Row {
-                    provider_ref: row.provider_ref.clone(),
-                    kind: row.kind,
-                    currency: row.currency,
-                    local_id: row.local_id,
-                },
-                "local_only".to_string(),
-                external_delta,
-            ));
-        }
+        let mut pending: Vec<(ProviderMatchRow, String, i64)> = Vec::new();
+        match_provider_rows(&provider_rows, &mut local, &mut pending, &mut checked);
+        push_local_only(local, &mut pending);
         let run_id = store::new_id(self.entropy());
         let now = self.now();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exceptions = self.insert_exceptions(&tx, &run_id, pending, now)?;
+        tx.commit()?;
+        Ok(ReconciliationReport {
+            run_id,
+            checked,
+            exceptions,
+        })
+    }
+
+    /// 把差异队列写成例外记录（status='open'），等审批后挂账。
+    fn insert_exceptions(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        run_id: &str,
+        pending: Vec<(ProviderMatchRow, String, i64)>,
+        now: i64,
+    ) -> Result<Vec<ReconciliationException>> {
         let mut exceptions = Vec::new();
         for (row, reason, signed) in pending {
             let id = store::new_id(self.entropy());
-            let kind = match row.kind {
-                StatementKind::Payment => "payment",
-                StatementKind::Refund => "refund",
-                StatementKind::Payout => "payout",
-            };
             tx.execute(
                 "INSERT INTO commerce_reconciliation_exceptions
                     (id, run_id, provider_ref, local_kind, local_id, amount_minor, currency,
@@ -771,7 +679,7 @@ impl Commerce {
                     id,
                     run_id,
                     row.provider_ref,
-                    kind,
+                    row.kind.as_str(),
                     row.local_id,
                     signed,
                     row.currency.as_str(),
@@ -779,14 +687,9 @@ impl Commerce {
                     now
                 ],
             )?;
-            exceptions.push(load_exception(&tx, &id)?.ok_or(CommerceError::NotFound)?);
+            exceptions.push(load_exception(tx, &id)?.ok_or(CommerceError::NotFound)?);
         }
-        tx.commit()?;
-        Ok(ReconciliationReport {
-            run_id,
-            checked,
-            exceptions,
-        })
+        Ok(exceptions)
     }
 
     /// 列出某次对账的差异。
@@ -878,12 +781,177 @@ impl Commerce {
 
 fn map_intent_status(status: IntentStatus) -> TopupStatus {
     match status {
-        IntentStatus::Created => TopupStatus::Created,
-        IntentStatus::Pending => TopupStatus::Pending,
-        IntentStatus::Succeeded => TopupStatus::Succeeded,
-        IntentStatus::Failed => TopupStatus::Failed,
-        IntentStatus::Expired => TopupStatus::Expired,
-        IntentStatus::PartiallyRefunded | IntentStatus::Refunded => TopupStatus::Succeeded,
+        IntentStatus::PartiallyRefunded | IntentStatus::Refunded => IntentStatus::Succeeded,
+        other => other,
+    }
+}
+
+/// 退款资格：金额不超可退、币种一致、意图已成功，且操作方是收款方
+/// （充值单退款则允许付款人本人）。
+fn ensure_refundable(intent: &IntentRow, actor: &str, amount: Money) -> Result<()> {
+    let refundable = intent.amount.minor() - intent.refunded_minor;
+    if refundable <= 0 || amount.minor() > refundable {
+        return Err(CommerceError::BadInput(
+            "refund exceeds the refundable amount".into(),
+        ));
+    }
+    if amount.currency() != intent.amount.currency() {
+        return Err(CommerceError::BadInput("refund currency mismatch".into()));
+    }
+    if !matches!(
+        intent.status,
+        IntentStatus::Succeeded | IntentStatus::PartiallyRefunded
+    ) {
+        return Err(CommerceError::IllegalTransition(
+            "intent is not refundable".into(),
+        ));
+    }
+    let authorized = actor == intent.payee_id
+        || (intent.direction == IntentDirection::Topup && actor == intent.actor_id);
+    if !authorized {
+        return Err(CommerceError::Forbidden);
+    }
+    Ok(())
+}
+
+fn parse_topup_status(raw: &str) -> Result<TopupStatus> {
+    IntentStatus::parse(raw).ok_or_else(|| CommerceError::BadInput("stored topup status".into()))
+}
+
+/// 退款到账：capture hold 成正式分录（借记收款钱包、贷记外部世界）。
+fn capture_refund(
+    conn: &Connection,
+    commerce: &Commerce,
+    refund: &Refund,
+    intent: &IntentRow,
+    provider_ref: &str,
+    now: i64,
+) -> Result<()> {
+    let external = store::ensure_external(
+        conn,
+        commerce.provider_name(),
+        refund.amount.currency(),
+        commerce.config.fund_class,
+        now,
+    )?;
+    let wallet = store::wallet_account(&intent.payee_id, refund.amount.currency());
+    let request = PostingRequest::new(
+        format!("refund:{}:settled", refund.id),
+        "payment.refunded",
+        refund.amount.currency(),
+        vec![
+            PostingLine::debit(wallet, refund.amount.minor()),
+            PostingLine::credit(external, refund.amount.minor()),
+        ],
+    )
+    .with_memo("refund settled");
+    let hold_key = format!("refund:{}:hold", refund.id);
+    wxlike_ledger::capture_hold_in(conn, &hold_key, &request, now).map_err(store::map_ledger)?;
+    conn.execute(
+        "UPDATE commerce_refunds
+         SET status = 'succeeded', provider_ref = ?1, updated_at = ?2
+         WHERE id = ?3",
+        params![provider_ref, now, refund.id],
+    )?;
+    Ok(())
+}
+
+/// 对账时的匹配行：差异挂账前的中间表示。
+#[derive(Clone)]
+struct ProviderMatchRow {
+    provider_ref: String,
+    kind: StatementKind,
+    currency: Currency,
+    local_id: String,
+}
+
+/// 以"外部世界账户"视角给差异带上符号：收款为正、出款为负。
+fn external_side(kind: StatementKind, minor: i64, from_provider: bool) -> i64 {
+    match kind {
+        StatementKind::Payment => {
+            if from_provider {
+                minor
+            } else {
+                -minor
+            }
+        }
+        StatementKind::Refund | StatementKind::Payout => {
+            if from_provider {
+                -minor
+            } else {
+                minor
+            }
+        }
+    }
+}
+
+/// 供应商对账单逐行与本地匹配：金额不符、供应商单边都进差异队列。
+fn match_provider_rows(
+    provider_rows: &[crate::ports::ProviderStatementRow],
+    local: &mut Vec<LocalStatementRow>,
+    pending: &mut Vec<(ProviderMatchRow, String, i64)>,
+    checked: &mut usize,
+) {
+    for row in provider_rows {
+        if !row.amount.is_positive() {
+            continue;
+        }
+        *checked += 1;
+        let Some(index) = local.iter().position(|candidate| {
+            candidate.kind == row.kind
+                && candidate.provider_ref == row.provider_ref
+                && candidate.currency == row.amount.currency()
+        }) else {
+            pending.push((
+                ProviderMatchRow {
+                    provider_ref: row.provider_ref.clone(),
+                    kind: row.kind,
+                    currency: row.amount.currency(),
+                    local_id: String::new(),
+                },
+                "provider_only".to_string(),
+                external_side(row.kind, row.amount.minor(), true),
+            ));
+            continue;
+        };
+        let candidate = local.remove(index);
+        let delta = row.amount.minor() - candidate.amount_minor;
+        if delta == 0 {
+            continue;
+        }
+        pending.push((
+            ProviderMatchRow {
+                provider_ref: row.provider_ref.clone(),
+                kind: row.kind,
+                currency: row.amount.currency(),
+                local_id: candidate.local_id,
+            },
+            format!(
+                "amount_mismatch: provider {} local {}",
+                row.amount.minor(),
+                candidate.amount_minor
+            ),
+            external_side(row.kind, delta, true),
+        ));
+    }
+}
+
+/// 本地有、供应商没有的差异（退款/出款侧方向相反）。
+fn push_local_only(
+    local: Vec<LocalStatementRow>,
+    pending: &mut Vec<(ProviderMatchRow, String, i64)>,
+) {
+    for row in local {
+        pending.push((
+            ProviderMatchRow {
+                provider_ref: row.provider_ref.clone(),
+                kind: row.kind,
+                currency: row.currency,
+                local_id: row.local_id,
+            },
+            "local_only".to_string(),
+            external_side(row.kind, row.amount_minor, false),
+        ));
     }
 }
 
@@ -916,44 +984,52 @@ struct IntentRow {
     refunded_minor: i64,
 }
 
+struct RawIntentCore {
+    direction: String,
+    actor_id: String,
+    payee_id: String,
+    amount_minor: i64,
+    currency: String,
+    status: String,
+    provider_ref: Option<String>,
+    refunded_minor: i64,
+}
+
 fn load_intent_row(conn: &Connection, id: &str) -> Result<Option<IntentRow>> {
-    let raw = conn
+    let raw: Option<RawIntentCore> = conn
         .query_row(
             "SELECT id, direction, actor_id, payee_id, amount_minor, currency, status,
                     provider_ref, refunded_minor
              FROM commerce_payment_intents WHERE id = ?1",
             params![id],
             |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, Option<String>>(7)?,
-                    r.get::<_, i64>(8)?,
-                ))
+                Ok(RawIntentCore {
+                    direction: r.get(1)?,
+                    actor_id: r.get(2)?,
+                    payee_id: r.get(3)?,
+                    amount_minor: r.get(4)?,
+                    currency: r.get(5)?,
+                    status: r.get(6)?,
+                    provider_ref: r.get(7)?,
+                    refunded_minor: r.get(8)?,
+                })
             },
         )
         .optional()?;
-    raw.map(
-        |(id, direction, actor, payee, minor, currency, status, provider_ref, refunded)| {
-            Ok(IntentRow {
-                id,
-                direction: IntentDirection::parse(&direction)
-                    .ok_or_else(|| CommerceError::BadInput("stored intent direction".into()))?,
-                actor_id: actor,
-                payee_id: payee,
-                amount: Money::from_minor(minor, Currency::parse(&currency)?),
-                status: IntentStatus::parse(&status)
-                    .ok_or_else(|| CommerceError::BadInput("stored intent status".into()))?,
-                provider_ref,
-                refunded_minor: refunded,
-            })
-        },
-    )
+    raw.map(|raw| {
+        Ok(IntentRow {
+            id: id.to_string(),
+            direction: IntentDirection::parse(&raw.direction)
+                .ok_or_else(|| CommerceError::BadInput("stored intent direction".into()))?,
+            actor_id: raw.actor_id,
+            payee_id: raw.payee_id,
+            amount: Money::from_minor(raw.amount_minor, Currency::parse(&raw.currency)?),
+            status: IntentStatus::parse(&raw.status)
+                .ok_or_else(|| CommerceError::BadInput("stored intent status".into()))?,
+            provider_ref: raw.provider_ref,
+            refunded_minor: raw.refunded_minor,
+        })
+    })
     .transpose()
 }
 
@@ -1024,7 +1100,7 @@ fn build_topup(raw: RawTopup) -> Result<Topup> {
         actor_id: raw.actor_id,
         intent_id: raw.intent_id,
         amount: Money::from_minor(raw.amount_minor, Currency::parse(&raw.currency)?),
-        status: TopupStatus::parse(&raw.status)?,
+        status: parse_topup_status(&raw.status)?,
         provider_ref: raw.provider_ref,
         created_at: raw.created_at,
         updated_at: raw.updated_at,
@@ -1221,8 +1297,8 @@ fn scan_exception(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawException> {
         status: r.get(8)?,
         resolved_by: r.get(9)?,
         approval_ref: r.get(10)?,
-        journal_key: r.get(11)?,
-        created_at: r.get(12)?,
+        journal_key: r.get("journal_key")?,
+        created_at: r.get("created_at")?,
     })
 }
 
@@ -1251,82 +1327,52 @@ struct LocalStatementRow {
     local_id: String,
 }
 
+/// 已成功支付、已成功退款与已到账提现的本地对账视图。
 fn local_statement_rows(commerce: &Commerce) -> Result<Vec<LocalStatementRow>> {
+    const PAYMENT_SQL: &str = "SELECT id, provider_ref, amount_minor, currency
+         FROM commerce_payment_intents
+         WHERE provider_ref IS NOT NULL
+           AND status IN ('succeeded', 'partially_refunded', 'refunded')";
+    const REFUND_SQL: &str = "SELECT r.id, i.provider_ref, r.amount_minor, r.currency
+         FROM commerce_refunds r
+         JOIN commerce_payment_intents i ON i.id = r.intent_id
+         WHERE r.status = 'succeeded' AND i.provider_ref IS NOT NULL";
+    const PAYOUT_SQL: &str = "SELECT id, provider_ref, amount_minor, currency
+         FROM commerce_withdrawals
+         WHERE status = 'paid' AND provider_ref IS NOT NULL";
     let conn = commerce.lock();
     let mut rows = Vec::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT id, provider_ref, amount_minor, currency FROM commerce_payment_intents
-             WHERE provider_ref IS NOT NULL AND status IN ('succeeded', 'partially_refunded', 'refunded')",
-        )?;
-        let mapped = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        for row in mapped {
-            let (id, reference, amount, currency) = row?;
-            rows.push(LocalStatementRow {
-                provider_ref: reference,
-                kind: StatementKind::Payment,
-                amount_minor: amount,
-                currency: Currency::parse(&currency)?,
-                local_id: id,
-            });
-        }
-    }
-    {
-        let mut stmt = conn.prepare(
-            "SELECT r.id, i.provider_ref, r.amount_minor, r.currency
-             FROM commerce_refunds r
-             JOIN commerce_payment_intents i ON i.id = r.intent_id
-             WHERE r.status = 'succeeded' AND i.provider_ref IS NOT NULL",
-        )?;
-        let mapped = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        for row in mapped {
-            let (id, reference, amount, currency) = row?;
-            rows.push(LocalStatementRow {
-                provider_ref: reference,
-                kind: StatementKind::Refund,
-                amount_minor: amount,
-                currency: Currency::parse(&currency)?,
-                local_id: id,
-            });
-        }
-    }
-    {
-        let mut stmt = conn.prepare(
-            "SELECT id, provider_ref, amount_minor, currency FROM commerce_withdrawals
-             WHERE status = 'paid' AND provider_ref IS NOT NULL",
-        )?;
-        let mapped = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        for row in mapped {
-            let (id, reference, amount, currency) = row?;
-            rows.push(LocalStatementRow {
-                provider_ref: reference,
-                kind: StatementKind::Payout,
-                amount_minor: amount,
-                currency: Currency::parse(&currency)?,
-                local_id: id,
-            });
-        }
-    }
+    collect_statement(&conn, PAYMENT_SQL, StatementKind::Payment, &mut rows)?;
+    collect_statement(&conn, REFUND_SQL, StatementKind::Refund, &mut rows)?;
+    collect_statement(&conn, PAYOUT_SQL, StatementKind::Payout, &mut rows)?;
     Ok(rows)
+}
+
+/// 按 `(local_id, provider_ref, amount, currency)` 四列收集一类本地流水。
+fn collect_statement(
+    conn: &Connection,
+    sql: &str,
+    kind: StatementKind,
+    rows: &mut Vec<LocalStatementRow>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(sql)?;
+    let mapped = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in mapped {
+        let (id, reference, amount, currency) = row?;
+        rows.push(LocalStatementRow {
+            provider_ref: reference,
+            kind,
+            amount_minor: amount,
+            currency: Currency::parse(&currency)?,
+            local_id: id,
+        });
+    }
+    Ok(())
 }

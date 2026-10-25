@@ -88,35 +88,19 @@ impl Commerce {
         let now = self.now();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_by_key(&tx, &scoped_key)? {
-            if existing.0 != digest {
-                return Err(CommerceError::IdempotencyConflict);
-            }
-            return Ok(existing.1);
+        if let Some(existing) = store::replay(load_by_key(&tx, &scoped_key)?, &digest)? {
+            return Ok(existing);
         }
         let id = store::new_id(self.entropy());
-        tx.execute(
-            "INSERT INTO commerce_orders
-                (id, business_key, actor_id, payee_id, quote_ref, amount_minor, currency,
-                 status, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'created', ?8, ?8)",
-            params![
-                id,
-                scoped_key,
-                actor,
-                payee,
-                quote_ref,
-                amount.minor(),
-                amount.currency().as_str(),
-                now
-            ],
-        )?;
-        store::emit(
+        insert_order(
             &tx,
-            self.entropy(),
-            "order.created",
+            self,
             &id,
-            &serde_json::json!({ "order_id": id, "quote_ref": quote_ref }),
+            &scoped_key,
+            actor,
+            payee,
+            quote_ref,
+            amount,
             now,
         )?;
         let order = load(&tx, &id)?.ok_or(CommerceError::NotFound)?;
@@ -316,6 +300,46 @@ fn load_by_key(conn: &Connection, key: &str) -> Result<Option<(String, Order)>> 
         Ok((digest, build(raw)?))
     })
     .transpose()
+}
+
+/// 落订单并发 created 事件；订单本身不动钱。
+#[allow(clippy::too_many_arguments)]
+fn insert_order(
+    conn: &Connection,
+    commerce: &Commerce,
+    id: &str,
+    scoped_key: &str,
+    actor: &str,
+    payee: &str,
+    quote_ref: &str,
+    amount: Money,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO commerce_orders
+            (id, business_key, actor_id, payee_id, quote_ref, amount_minor, currency,
+             status, created_at, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'created', ?8, ?8)",
+        params![
+            id,
+            scoped_key,
+            actor,
+            payee,
+            quote_ref,
+            amount.minor(),
+            amount.currency().as_str(),
+            now
+        ],
+    )?;
+    store::emit(
+        conn,
+        commerce.entropy(),
+        "order.created",
+        id,
+        &serde_json::json!({ "order_id": id, "quote_ref": quote_ref }),
+        now,
+    )?;
+    Ok(())
 }
 
 struct RawOrder {
