@@ -6672,6 +6672,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-miniapps"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-dpage",
+]
+
+[[package]]
 name = "wxlike-moderation"
 version = "0.1.0"
 dependencies = [
@@ -6822,14 +6837,17 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cpal",
+ "hex",
  "hmac 0.12.1",
  "md-5",
  "nokhwa",
  "opus",
  "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
+ "sha2 0.10.9",
  "str0m",
  "thiserror 2.0.21",
  "tokio",
