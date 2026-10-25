@@ -272,6 +272,14 @@ prekey_bundles.identity_signing TEXT notnull=1 pk=0
 prekey_bundles.signature TEXT notnull=1 pk=0
 prekey_bundles.otks TEXT notnull=1 pk=0
 prekey_bundles.updated_at INTEGER notnull=1 pk=0
+push_device.device_id TEXT notnull=0 pk=1
+push_device.user_id TEXT notnull=1 pk=0
+push_device.platform TEXT notnull=1 pk=0
+push_device.token TEXT notnull=1 pk=0
+push_device.epoch INTEGER notnull=1 pk=0
+push_device.revoked INTEGER notnull=1 pk=0
+push_device.created_ms INTEGER notnull=1 pk=0
+push_device.last_seen_ms INTEGER notnull=1 pk=0
 read_cursor.owner_type TEXT notnull=1 pk=1
 read_cursor.owner_id TEXT notnull=1 pk=2
 read_cursor.user_id TEXT notnull=1 pk=3
