@@ -555,6 +555,8 @@ impl CommerceService {
     // -- 退款 ---------------------------------------------------------------
 
     /// 建退款申请。`idem` 幂等：重放返回同一张单。
+    // 参数面镜像 g14.rs 的 POST body；随 #271 质量返工一并收敛为请求结构体。
+    #[allow(clippy::too_many_arguments)]
     pub fn request_refund(
         &self,
         actor: &str,
@@ -826,14 +828,12 @@ impl CommerceService {
         upstream::check_target(diff_id)?;
         let before = {
             let conn = self.store.lock();
-            let row = conn
-                .query_row(
-                    "SELECT state FROM g14_recon_diff WHERE id = ?1",
-                    [diff_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .map_err(|_| AdminError::NotFound)?;
-            row
+            conn.query_row(
+                "SELECT state FROM g14_recon_diff WHERE id = ?1",
+                [diff_id],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|_| AdminError::NotFound)?
         };
         if before != "open" {
             return Err(AdminError::bad_input(format!(

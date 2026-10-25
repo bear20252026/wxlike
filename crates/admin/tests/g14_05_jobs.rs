@@ -98,7 +98,7 @@ async fn retry_revives_the_same_job_and_duplicate_clicks_are_harmless() {
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["job"]["state"], "cancelled");
-    assert_eq!(body["job"]["finished_at"].is_null(), false, "{body}");
+    assert!(!body["job"]["finished_at"].is_null(), "{body}");
 
     // 成功作业不能重试
     let (_, ok_job) = env

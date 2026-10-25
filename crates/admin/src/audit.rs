@@ -385,7 +385,7 @@ impl AuditLog {
             rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
             |r| r.get(0),
         )?;
-        let mut sql = format!(
+        let sql = format!(
             "SELECT id, at_ms, actor, role, action, object_kind, object_id, reason, before_digest, \
              after_digest, trace, outcome, detail, prev_hash, hash FROM g14_audit{where_sql} \
              ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -393,7 +393,7 @@ impl AuditLog {
         let mut all = args;
         all.push(Box::new(limit));
         all.push(Box::new(offset));
-        let mut stmt = conn.prepare(&mut sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(
                 rusqlite::params_from_iter(all.iter().map(|b| b.as_ref())),
