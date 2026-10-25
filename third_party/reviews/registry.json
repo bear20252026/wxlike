@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.provenance.v1",
-  "updated_at": "2026-10-24",
+  "updated_at": "2026-10-25T02:52:23",
   "note": "三段式登记：upstreams（仓级）→ files（片段级）→ 本地文件 sha256。ported/adapted 必须能在本地复现，且点名出现在 THIRD-PARTY-NOTICES.md。commit 是完整 SHA；每条的永久链接由 `sourceaudit provenance check` 打印。",
   "upstreams": [
     {
@@ -84,9 +84,11 @@
       "commit": "57ef3edec3c124efa98a40dba29f3138eef187fc",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "cc2dadd07bf0c4b3d69a371f2226a6e91635a0670118eac6b7ff1689835385c2",
+      "local_sha256": "7a31a85edf90006cf5c2e60332fdbbcebce6dc5afa09136cb3f811b5d3ff39b0",
       "patchlog": "third_party/reviews/patches/UP-TWEB-slicedArray.md",
-      "used_by": "ui/src/msgIndex.ts（历史分页合并 + 实时插入）"
+      "used_by": "ui/src/msgIndex.ts（历史分页合并 + 实时插入）",
+      "adapted_at": "2026-10-25",
+      "adaptation_note": "本地适配后同步登记 SHA（集成方 2026-10-25 批量修复 PROV-SHA-MISMATCH；补丁记录见 patchlog）"
     },
     {
       "path": "ui/src/vendor/tweb/listenerSetter.ts",
@@ -95,9 +97,11 @@
       "commit": "ef41b29db1e5356c6ba3b03285013b8ddeea673b",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "63f505d1379f669a0ece9ac0876c8aa89d8b9da8774ff64a0820cf0e5f5602b6",
+      "local_sha256": "82cec5a0748c79dea9fd4ee25787388d9ec51bd10eac6860c25d00619da2c0a8",
       "patchlog": "third_party/reviews/patches/UP-TWEB-listenerSetter.md",
-      "used_by": "消息菜单 / 贴纸面板的「点外面关闭」"
+      "used_by": "消息菜单 / 贴纸面板的「点外面关闭」",
+      "adapted_at": "2026-10-25",
+      "adaptation_note": "本地适配后同步登记 SHA（集成方 2026-10-25 批量修复 PROV-SHA-MISMATCH；补丁记录见 patchlog）"
     },
     {
       "path": "crates/rtc/src/sfu.rs",
@@ -106,9 +110,11 @@
       "commit": "0ffc95a4537633a9916ac8879e953399a9f35bac",
       "decision": "adapted",
       "license_spdx": "MIT",
-      "local_sha256": "a65d074c31448cff60397ba299a60bd57f2c1b36af2c75fa50a4ea048cb88aeb",
+      "local_sha256": "d26e14fe1cc799b2ab187426c081c3dea4f52b74e0c5395227a9ff42d9aae535",
       "patchlog": "third_party/reviews/patches/UP-ATM0S-egress.md",
-      "used_by": "wxlike-rtc 出口码率分配"
+      "used_by": "wxlike-rtc 出口码率分配",
+      "adapted_at": "2026-10-25",
+      "adaptation_note": "本地适配后同步登记 SHA（集成方 2026-10-25 批量修复 PROV-SHA-MISMATCH；补丁记录见 patchlog）"
     },
     {
       "path": "crates/platform/src/communities.rs",
