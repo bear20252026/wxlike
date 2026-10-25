@@ -1,0 +1,38 @@
+{
+  "contract_version": "security-v1",
+  "case": "blocked viewer sees nothing; stranger sees limited; friend sees all",
+  "cases": [
+    {
+      "viewer": {
+        "is_self": false,
+        "is_friend": false,
+        "blocked": true
+      },
+      "expect_visibility": "hidden"
+    },
+    {
+      "viewer": {
+        "is_self": false,
+        "is_friend": false,
+        "blocked": false
+      },
+      "expect_visibility": "limited"
+    },
+    {
+      "viewer": {
+        "is_self": false,
+        "is_friend": true,
+        "blocked": false
+      },
+      "expect_visibility": "visible"
+    },
+    {
+      "viewer": {
+        "is_self": true,
+        "is_friend": false,
+        "blocked": false
+      },
+      "expect_visibility": "visible"
+    }
+  ]
+}
