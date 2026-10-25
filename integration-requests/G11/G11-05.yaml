@@ -1,0 +1,76 @@
+# G11-05 小程序、扫码与服务目录 —— 集成请求
+# 依据：任务卡 #170「只修改G11归属文件；新根依赖、路由、command挂载、schema编号写入本文件，由G00执行」。
+
+request_id: G11-05
+task_issue: 170
+group_issue: 92
+contract_version: entries-v1
+branch: feat/FP-G11-05
+owned_paths:
+  - apps/desktop-web/src/features/mini/**
+  - apps/desktop-web/src/features/discover/**
+
+artifacts:
+  - apps/desktop-web/src/features/mini/api.ts
+  - apps/desktop-web/src/features/mini/model.ts
+  - apps/desktop-web/src/features/mini/MiniAppsPage.tsx
+  - apps/desktop-web/src/features/discover/api.ts
+  - apps/desktop-web/src/features/discover/model.ts
+  - apps/desktop-web/src/features/discover/ScanPanel.tsx
+  - apps/desktop-web/src/features/discover/ServicesPage.tsx
+  - apps/desktop-web/src/features/discover/discover.test.tsx
+
+requests:
+  - id: REQ-G00-register-routes
+    target: G00
+    action: 产品壳路由挂载 /miniapps（rail 第 7 项「小程序」）与 /discover（发现页，含扫一扫与服务目录入口）。
+    rationale: 总 router 归 G00 串行合入。
+
+  - id: REQ-G08-miniappport-endpoints
+    target: G08
+    action: >-
+      小程序目录按 MiniAppPort 契约对接：GET /api/miniapps、
+      GET /api/miniapps/{id}/releases、GET /api/miniapps/{id}/releases/{version}/package（签名包字节）、
+      POST /api/mini-installs、GET|POST /api/mini-grants、DELETE /api/mini-grants/{app_id}、
+      DELETE /api/mini-installs/{app_id}。当前服务端无 mini 域（已核实），G11-05 在 404/501 时
+      呈现「G08 MiniAppPort 尚未开通」。客户端侧已实现真实的 manifest digest 校验：
+      安装前下载包字节并 sha256 对比发布记录，不一致拒绝提交。G08 合入后如路径/字段有出入，
+      请在本文件追加 correction 段。
+    rationale: 上游卡未合入时按冻结 fixture 开发；不能用 mock 通过最终集成验收。
+
+  - id: REQ-G07-servicecatalog-endpoints
+    target: G07
+    action: >-
+      服务目录按 ServiceCatalogPort 契约对接：GET /api/services、GET /api/quotes、
+      POST /api/orders、GET /api/orders[/{id}]、POST /api/orders/{id}/refund、
+      POST /api/vision/{recognition|translation}（multipart image）、GET /api/vision/jobs/{id}。
+      当前服务端无对应端点（crates/service-catalog、crates/vision 未挂路由），
+      G11-05 在 404/501 时呈现「G07 ServiceCatalogPort 尚未开通」；订单字段形状按
+      01_contracts_and_data.md §2 discovery.offer/quote/order 设计，可被管理后台与
+      其他端通过同一契约查询（验收要求的跨端可查由 G07/admin 落地后验证）。
+    rationale: 上游卡未合入时按冻结 fixture 开发；不能用 mock 通过最终集成验收。
+
+  - id: REQ-G00-entry-registration
+    target: G00
+    action: >-
+      本卡 UI 数组枚举逐项登记入口：
+      (a) 小程序目录每张应用卡：ENT-MINI-{app_id}（testid miniapp-{app_id}，app_id 为真实数据键）；
+      (b) 服务目录每个格子：ENT-SVC-{service_id}（ServicesPage.tileEntryId，data-service-id 同步）；
+      (c) 扫码面板：scan-start/scan-viewfinder/scan-result/scan-history；
+      (d) 识物/翻译：vision-mode/vision-pick/vision-input/vision-result。
+      G00-01 的入口总账需将上述命名规则并入 entries-v1（或给出全局命名后由 G11 对齐）。
+    rationale: 验收要求「所有UI数组枚举逐项登记入口」；命名权在 G00-03。
+
+  - id: REQ-G16-ci-node-tests
+    target: G16
+    action: 同 G11-01：ci.yml 增加 apps/desktop-web 的 Node job。
+    rationale: 同 SHA 云 CI 覆盖 React 测试。
+
+notes:
+  - 扫码：真实摄像头经 PlatformPort.media('camera')；解码用平台 BarcodeDetector
+    （构造器可注入）；权限拒绝（NotAllowedError）呈现明确文案与「重试授权」，
+    重试成功进入 live（用例覆盖）。rAF 缺失环境自动降级为 200ms 定时循环。
+  - 沙箱宿主：iframe sandbox 属性不含 allow-same-origin / allow-top-navigation；
+    origin 检查拒绝非 https 与未命中白名单的来源（单测覆盖四种判定）。
+  - 安装/更新/撤权均为确认弹窗 + 幂等键；撤回授权立即生效路径（DELETE /mini-grants）。
+  - 无数据库改动、无 schema 编号占用、无新 npm 依赖。

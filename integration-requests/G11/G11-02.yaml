@@ -1,0 +1,65 @@
+# G11-02 文件中心与传输管理 —— 集成请求
+# 依据：任务卡 #164「只修改G11归属文件；新根依赖、路由、command挂载、schema编号写入本文件，由G00执行」。
+
+request_id: G11-02
+task_issue: 164
+group_issue: 92
+contract_version: entries-v1
+branch: feat/FP-G11-02
+owned_paths:
+  - apps/desktop-web/src/features/files/**
+
+artifacts:
+  - apps/desktop-web/src/features/files/api.ts
+  - apps/desktop-web/src/features/files/model.ts
+  - apps/desktop-web/src/features/files/bytes.ts
+  - apps/desktop-web/src/features/files/FilesPage.tsx
+  - apps/desktop-web/src/features/files/files.test.tsx
+
+requests:
+  - id: REQ-G00-bootstrap-scaffold-amendment
+    target: G00
+    action: 脚手架同 G11-01（apps/desktop-web 根文件、src/lib、src/test）。
+      本卡在开发壳 src/main.tsx 增加第 4 个 tab（files），产品壳合入时随 REQ-G00-bootstrap-desktop-web-scaffold 一并替换。
+    rationale: 开发壳为临时挂载点，所有权同 G11-01 申报。
+
+  - id: REQ-G00-register-routes
+    target: G00
+    action: 产品壳路由需挂载 /files（桌面 rail 第 4 项「文件」）。
+    rationale: 总 router 归 G00 串行合入。
+
+  - id: REQ-G04-mediaport-files-endpoints
+    target: G04
+    action: >-
+      目录/管理面按 01_contracts_and_data.md §3 MediaPort 契约对接：
+      GET /api/files（列表）、GET /api/files/usage、PATCH /api/files/{id}（重命名）、
+      POST /api/files/{id}/share、DELETE /api/files/{id}、POST /api/files/batch-remove（逐项结果）、
+      GET /api/backups/plan、POST /api/backups/plan/execute。
+      这些端点当前服务端不存在（已核实 crates/platform 仅 content-addressed blob 无目录表），
+      G11-02 在 404/501 时渲染「G04 MediaPort 尚未开通」，同时用本端真实上传日志（localStorage
+      journal）呈现已上传对象；上传/下载已接真实 /api/media*。G04 合入后如路径/字段有出入，
+      请在本文件追加 correction 段，G11 侧只改 FilesApi 适配层。
+    rationale: 上游卡未合入时按冻结 fixture 开发；不能用 mock 通过最终集成验收。
+
+  - id: REQ-G04-chunked-uploads
+    target: G04
+    action: >-
+      「上传中断可恢复」当前实现为：上传前计算 sha256 并声明，失败重传同一
+      digest（服务端 content-addressed 去重保证不产生第二个对象）。G04 的分片
+      /uploads（offset 续传）合入后，FilesApi.upload 切换为分片协议，UI 不变。
+    rationale: 断点续传需要服务端分片端点；客户端已按该方向设计（digest 先行）。
+
+  - id: REQ-G16-ci-node-tests
+    target: G16
+    action: 同 G11-01 REQ-G16-ci-node-tests：ci.yml 增加 apps/desktop-web 的 Node job。
+    rationale: 同 SHA 云 CI 覆盖 React 测试。
+
+notes:
+  - 上传：POST /api/media multipart（file/sha256/conv/visibility），XHR 提供真实进度，
+    AbortController 支持取消；用户取消标记 cancelled，绝不进入成功分支。
+  - 下载：GET /api/media/{id}（服务端按 owner/conv 成员授权，他人对象 403），
+    客户端按记录 digest 复核 sha256，不符即报「下载校验失败」。
+  - 不能读取任意本地路径：文件来源仅 <input type=file> 与拖拽，浏览器沙箱强制，
+    无任何路径输入框。
+  - 批量删除走 POST /api/files/batch-remove 契约形状，逐项 FileActionResult；
+    上游未合入时按钮给出明确未开通提示。

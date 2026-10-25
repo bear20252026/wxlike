@@ -1,0 +1,67 @@
+# G11-04 钱包、收付款、红包与卡包 —— 集成请求
+# 依据：任务卡 #168「只修改G11归属文件；新根依赖、路由、command挂载、schema编号写入本文件，由G00执行」。
+
+request_id: G11-04
+task_issue: 168
+group_issue: 92
+contract_version: entries-v1
+branch: feat/FP-G11-04
+owned_paths:
+  - apps/desktop-web/src/features/commerce/**
+
+artifacts:
+  - apps/desktop-web/src/features/commerce/api.ts
+  - apps/desktop-web/src/features/commerce/model.ts
+  - apps/desktop-web/src/features/commerce/QrIntent.tsx
+  - apps/desktop-web/src/features/commerce/WalletPage.tsx
+  - apps/desktop-web/src/features/commerce/commerce.test.tsx
+
+requests:
+  - id: REQ-G00-register-root-deps
+    target: G00
+    action: 新增 npm 运行时依赖 qrcode 1.5.4（收款码 SVG 渲染，纯 JS 无 canvas 依赖）
+      与 devDependencies @types/qrcode 1.5.5；待 G00 建立 npm workspace 后收编进根锁。
+    rationale: 根清单/锁由 G00 串行解析。
+
+  - id: REQ-G00-register-routes
+    target: G00
+    action: 产品壳路由挂载 /wallet（桌面 rail 第 8 项「支付」）。
+    rationale: 总 router 归 G00 串行合入。
+
+  - id: REQ-G06-commerceport-endpoints
+    target: G06
+    action: >-
+      收付款/提现充值/绑卡/卡券按 CommercePort 契约对接：
+      POST /api/payment-intents（短期收款意图）、POST /api/payment-intents/pay、
+      GET /api/payments/{id}、POST /api/payments/{id}/refund、POST /api/withdrawals、
+      POST /api/topups、GET /api/cards、GET /api/entitlements。
+      这些端点当前服务端不存在（已核实 crates/platform 仅有 wallet 族），
+      G11-04 在 404/501 时呈现「G06 CommercePort 尚未开通」。
+      零钱/账单/转账/红包已接真实 /api/wallet/*。G06 合入后如路径/字段有出入，
+      请在本文件追加 correction 段，G11 侧只改 WalletApi 适配层。
+    rationale: 上游卡未合入时按冻结 fixture 开发；不能用 mock 通过最终集成验收。
+
+  - id: REQ-G06-confirmation-protocol
+    target: G06
+    action: >-
+      转账当前采用客户端确认弹窗（展示收款人+金额）→ 幂等执行。
+      契约的 prepare/confirm 令牌协议（确认令牌绑定规范化参数摘要）就绪后，
+      TransferPanel 在 execute 前插入 prepare 调用并把 confirm token 附给
+      transfer——调用点集中在 execute 一处。
+    rationale: 4.2 节「危险 action 先 prepare 得到参数绑定确认令牌」为服务端契约。
+
+  - id: REQ-G16-ci-node-tests
+    target: G16
+    action: 同 G11-01：ci.yml 增加 apps/desktop-web 的 Node job。
+    rationale: 同 SHA 云 CI 覆盖 React 测试。
+
+notes:
+  - 金额：全部整数最小单位（分），lib/money.ts 纯字符串/BigInt 运算，无浮点；
+    解析拒绝超精度小数与非法格式（用例覆盖）。
+  - 收款码：来自短期支付意图（intent_id+expires_at+qr_payload），组件每秒复核
+    有效期，过期即呈现「二维码已过期」，截图不可用；刷新生成新意图。
+  - 并发点击：转账/红包/提现全部幂等键 + in-flight ref 守卫（用例断言单请求）。
+  - 未知支付状态：state=querying/pending 显示「查询中…」，可再次查询；成功/失败
+    后可申请退款；提现失败（503）后可重试（用例覆盖）。
+  - 账户类型：虚拟账户（零钱）与真实账户（银行卡/通道）以字段 kind 区分并显式标注。
+  - 无数据库改动、无 schema 编号占用。
