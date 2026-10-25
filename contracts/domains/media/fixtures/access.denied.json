@@ -1,0 +1,6 @@
+{
+  "scenario": "另一用户持相同内容地址请求读取（digest 不是授权凭据）",
+  "request": { "action": "download.authorize", "object_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+  "caller": "u2",
+  "response": { "status": 403, "body": { "error": "not permitted" } }
+}

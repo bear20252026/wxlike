@@ -1,0 +1,21 @@
+schema: 1
+from: G16
+task: G16-02
+to: G03
+summary: Server readiness and container verification dependencies.
+requests:
+  - id: G16-02-READY
+    action: provide /ready (or equivalent) that proves DB and MQ availability
+    evidence: container healthcheck and Prometheus probe distinguish live from ready
+    gap: READINESS-ENDPOINT
+  - id: G16-02-TRACE
+    action: propagate a request id from HTTP into structured logs and hub routing
+    evidence: one request's log lines share request_id; no secrets in fields
+    gap: OBS-TRACE-ID
+  - id: G16-02-DIGEST
+    action: keep the server image pullable by digest in GHCR and retain the previous release
+    evidence: release-manifest.json contains image@sha256 and rollback runbook resolves it
+notes:
+  - The Windows server is built and tested by the 3-OS Rust matrix; native service
+    installation is documented for systemd/launchd only until a service wrapper is
+    approved.

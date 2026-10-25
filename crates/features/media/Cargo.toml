@@ -1,0 +1,30 @@
+[package]
+name = "wxlike-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "G04 object storage, uploads, files, isolated transcoding, backup and cache budgets"
+
+[dependencies]
+wxlike-core = { path = "../../core" }
+wxlike-api = { path = "../../api" }
+axum = { version = "0.8", features = ["macros"] }
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+hmac = "0.12"
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"

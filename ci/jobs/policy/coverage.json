@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "note": "Incremental gate: only changed lines in security-sensitive files are measured, so the threshold does not require a repository-wide coverage jump. File coverage is a floor, not a target.",
+  "security_paths": [
+    "crates/core/src/crypto.rs",
+    "crates/core/src/crypto/**",
+    "crates/core/src/envelope.rs",
+    "crates/core/src/e2ee.rs",
+    "crates/platform/src/auth.rs",
+    "crates/platform/src/users.rs",
+    "crates/platform/src/wallet.rs",
+    "crates/platform/src/keys.rs",
+    "crates/platform/src/sessions.rs",
+    "crates/platform/src/perms.rs",
+    "crates/platform/src/trust.rs",
+    "crates/platform/src/reconcile.rs",
+    "crates/ledger/src/**",
+    "crates/risk/src/**",
+    "crates/limits/src/**",
+    "server/src/lib.rs",
+    "server/src/main.rs"
+  ],
+  "min_changed_line_coverage": 0.9,
+  "min_file_coverage": 0.75,
+  "fail_if_uninstrumented": true
+}

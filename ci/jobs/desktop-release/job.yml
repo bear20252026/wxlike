@@ -1,0 +1,117 @@
+jobs:
+  desktop-release:
+    name: desktop-release (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            bundles: deb,appimage
+          - os: windows-latest
+            platform: windows
+            bundles: nsis,msi
+          - os: macos-latest
+            platform: macos-aarch64
+            bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    environment: production-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: require the updater signing key
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          missing=0
+          for name in KEY PASSWORD PUBKEY; do
+            if [ -z "${!name:-}" ]; then echo "::error::$name is not configured in production-release"; missing=1; fi
+          done
+          [ "$missing" = 0 ] || exit 1
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Linux webkit build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-desktop-release-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+          workspaces: ui/src-tauri
+      - run: npm ci
+        working-directory: ui
+      - run: npm run build
+        working-directory: ui
+      - name: signed bundle + updater artefacts
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npx --yes @tauri-apps/cli@2.9.0 build --ci \
+            --config "$GITHUB_WORKSPACE/ci/jobs/desktop/tauri.release.override.json" \
+            --bundles "${{ matrix.bundles }}"
+        working-directory: ui
+      - name: updater manifest (signature required)
+        shell: bash
+        run: |
+          version=$(python3 -c "import json;print(json.load(open('ui/src-tauri/tauri.conf.json'))['version'])")
+          python3 ci/jobs/desktop/make_update_manifest.py \
+            --artifacts-dir ui/src-tauri/target/release/bundle \
+            --platform "${{ matrix.platform }}" \
+            --version "$version" \
+            --base-url "https://downloads.wxlike.dev/desktop/v$version" \
+            --require-signature \
+            --output "desktop-artifacts/manifest-${{ matrix.platform }}.json"
+      - name: verify the signature on the exact artefact
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          manifest = next(Path("desktop-artifacts").glob("manifest-*.json"))
+          data = json.loads(manifest.read_text(encoding="utf-8"))
+          entry = next(iter(data["platforms"].values()))
+          name = entry["url"].rsplit("/", 1)[-1]
+          root = Path("ui/src-tauri/target/release/bundle")
+          artifact = next(p for p in root.rglob(name) if p.is_file())
+          signature = artifact.with_name(artifact.name + ".sig")
+          if not signature.is_file():
+              sys.exit(f"signature missing for {artifact}")
+          if os.name == "nt":
+              print("signature verification deferred to the release job on Linux (minisign is unavailable on Windows):", artifact)
+              sys.exit(0)
+          tool = "minisign"
+          if not subprocess.run(["bash", "-lc", f"command -v {tool}"], capture_output=True).returncode == 0:
+              sys.exit("minisign not installed")
+          env_key = os.environ.get("WXLIKE_UPDATER_PUBKEY", "")
+          if not env_key:
+              sys.exit("WXLIKE_UPDATER_PUBKEY is not set")
+          result = subprocess.run([tool, "-V", "-m", str(artifact), "-x", str(signature), "-P", env_key], capture_output=True, text=True)
+          if result.returncode != 0:
+              sys.exit(result.stderr)
+          print("signature verified", artifact)
+          PY
+        env:
+          WXLIKE_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            ui/src-tauri/target/release/bundle/**
+            desktop-artifacts/manifest-*.json
+          if-no-files-found: error
+          retention-days: 30

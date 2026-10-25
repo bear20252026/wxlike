@@ -1,0 +1,52 @@
+{
+  "contract_version": "search-v1",
+  "case": "检索授权：好友可见内容命中、陌生人 Public 命中、好友可见对陌生人不出、删帖立即消失、热搜只算 Public 且按去重作者封顶",
+  "setup": {
+    "users": ["a", "b", "stranger"],
+    "friends": [["a", "b"]],
+    "contents": [
+      { "kind": "moment", "author": "a", "text": "慢速模式上线", "visibility": "friends" },
+      { "kind": "moment", "author": "a", "text": "公开的慢速模式", "visibility": "public" }
+    ]
+  },
+  "steps": [
+    {
+      "command": "search.content",
+      "actor": "b",
+      "payload": { "q": "慢速模式" },
+      "expect": { "ok": true, "data": { "items_len": 2 } }
+    },
+    {
+      "command": "search.content",
+      "actor": "stranger",
+      "payload": { "q": "慢速模式" },
+      "expect": { "ok": true, "data": { "items_len": 1 } }
+    },
+    {
+      "command": "search.content",
+      "actor": "b",
+      "payload": { "q": "100%_x" },
+      "expect": { "ok": true, "data": { "comment": "通配符按字面量匹配，不展开" } }
+    },
+    {
+      "command": "moment.delete",
+      "actor": "a",
+      "payload": { "moment_id": "公开那条" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "search.content",
+      "actor": "stranger",
+      "payload": { "q": "慢速模式" },
+      "expect": { "ok": true, "data": { "items_len": 0 } }
+    },
+    {
+      "command": "search.trends",
+      "actor": "stranger",
+      "expect": {
+        "ok": true,
+        "data": { "comment": "只含 public 内容；好友可见那条不出现在任何聚合里" }
+      }
+    }
+  ]
+}

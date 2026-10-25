@@ -92,6 +92,99 @@ fn unread(base: &str, conv: &str, token: &str) -> Value {
         .unwrap()
 }
 
+/// Seed the mailbox first, leaving archive timing under the test's control.
+fn mailbox_only(stack: &wxlike_server::Stack, env: &Envelope) {
+    stack
+        .platform
+        .message_store()
+        .unwrap()
+        .append(
+            (wxlike_message::OwnerType::Direct, &env.conv_id),
+            &env.sender,
+            "text",
+            &hex::encode(env.msg_id),
+            "{}",
+        )
+        .unwrap();
+}
+
+fn history_response(base: &str, conv: &str, token: &str) -> axum::http::Response<ureq::Body> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    agent
+        .get(&format!("{base}/api/history/{conv}?limit=1"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .call()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_waits_for_a_delayed_archive_body() {
+    let stack = start_stack(opts("delayed-archive")).await.unwrap();
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, _) = register(&base, "bob");
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+    let env = Envelope::direct(&conv, alice, vec![bob], 0, "delayed");
+    mailbox_only(&stack, &env);
+    let store = stack.store.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        store.append(&env, false).unwrap();
+    });
+    let mut response = history_response(&base, &conv, &ta);
+    assert_eq!(response.status().as_u16(), 200);
+    let page: Value = response.body_mut().read_json().unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(page["messages"][0]["seq"], 1);
+    writer.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn missing_archive_returns_retryable_error_without_advancing_history() {
+    let stack = start_stack(opts("missing-archive")).await.unwrap();
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, _) = register(&base, "bob");
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+    let first = Envelope::direct(&conv, &alice, vec![bob.clone()], 0, "first");
+    let second = Envelope::direct(&conv, &alice, vec![bob], 0, "second");
+    mailbox_only(&stack, &first);
+    mailbox_only(&stack, &second);
+    stack.store.append(&first, false).unwrap();
+    let mut response = history_response(&base, &conv, &ta);
+    assert_eq!(response.status().as_u16(), 503);
+    let error = response.body_mut().read_to_string().unwrap();
+    assert!(error.contains("retry the same cursor"));
+    assert!(!error.contains("next_before_seq"));
+    stack.store.append(&second, false).unwrap();
+    let mut retry = history_response(&base, &conv, &ta);
+    assert_eq!(retry.status().as_u16(), 200);
+    let page: Value = retry.body_mut().read_json().unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(page["messages"][0]["seq"], 2);
+    assert_eq!(page["next_before_seq"], 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_rejects_a_body_from_another_conversation() {
+    let stack = start_stack(opts("foreign-archive")).await.unwrap();
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, _) = register(&base, "bob");
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+    let mut env = Envelope::direct(&conv, alice, vec![bob], 0, "private body");
+    mailbox_only(&stack, &env);
+    env.conv_id = "another-conversation".into();
+    stack.store.append(&env, false).unwrap();
+    let mut response = history_response(&base, &conv, &ta);
+    assert_eq!(response.status().as_u16(), 500);
+    let error = response.body_mut().read_to_string().unwrap();
+    assert!(!error.contains("private body"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn direct_message_lands_in_the_mailbox() {
     let stack = start_stack(opts("direct")).await.expect("stack");

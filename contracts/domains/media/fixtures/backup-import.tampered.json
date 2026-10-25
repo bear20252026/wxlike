@@ -1,0 +1,4 @@
+{
+  "scenario": "改包一个字节后 verify/import",
+  "expected": { "status": 400, "body": { "error": "integrity check failed: package trailer mismatch" } }
+}

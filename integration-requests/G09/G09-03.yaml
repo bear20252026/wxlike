@@ -1,0 +1,62 @@
+# G09-03 媒体轨、设备与 TURN —— 集成请求
+request_id: G09-03
+task_issue: 155
+group_issue: 90
+branch: feat/FP-G09-03
+contract: calls-v1
+paths:
+  - crates/rtc/src/media.rs
+  - crates/rtc/src/device.rs
+  - crates/rtc/src/turn_auth.rs
+  - crates/sfu/src/lib.rs
+  - crates/rtc/tests/media_controls.rs
+  - crates/sfu/tests/media_gates.rs
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/turn/credentials -> turn_auth::issue + TurnQuota::reserve"
+      - "POST /api/calls/{call_id}/tracks/mute -> 媒体层 set_*_muted"
+      - "POST /api/calls/{call_id}/tracks/switch -> MediaSession::select_video_source"
+      - "POST /api/devices/select -> DeviceRegistry::select"
+    note: 路由挂载由 G00 执行；本卡实现服务端裁决与媒体层。
+  - action: env
+    names: [WXLIKE_TURN_URL, WXLIKE_TURN_SECRET, WXLIKE_STUN_URL]
+    note: TURN secret 只从部署环境注入；不得写进仓库或日志。
+
+requests:
+  - id: REQ-G00-turn-deploy
+    target: G00 / 运维
+    action: 部署 coturn（use-auth-secret）并把 WXLIKE_TURN_URL、
+      WXLIKE_TURN_SECRET 注入 RTC 服务；开放 UDP 端口段。
+    rationale: 强制 TURN 连通必须有真实 relay；本机只完成凭据算法与配额。
+
+  - id: REQ-G10-G12-capture
+    target: G10 / G12
+    action: 提供麦克风/扬声器/摄像头/屏幕的真实采集桥；拔出/权限变化事件
+      调用 DeviceRegistry::{unplug,replug,grant_permission,deny_permission}。
+    rationale: Rust 媒体栈消费的是已编码帧，系统采集设备必须由原生桥提供。
+
+  - id: REQ-G00-sfu-ops
+    target: G00 / 运维
+    action: 为 SFU 分配 UDP 端口段（WXLIKE_SFU_PORT）与对外地址
+      （WXLIKE_SFU_ADVERTISE），并在防火墙放行。
+    rationale: SfuRoom 每个参与者占一个 socket，候选由服务端 SDP 直接给出。
+
+acceptance_notes:
+  - 静音后远端确实无音：media_controls::muted_audio_produces_no_packets_at_all。
+  - 切摄像头远端画面变化：video_source_switch_drops_frames_from_the_old_camera。
+  - 服务端静音兜底：sfu media_gates::server_side_mute_stops_forwarding_even_if_the_client_keeps_sending。
+  - TURN 强制模式：凭据/过期/篡改/配额单测已过；真实 relay 待验（见 blockers）。
+  - 权限拒绝不占麦克风：device 单测 deny_permission_stops_capture。
+
+blockers:
+  - id: BLOCK-G09-03-TURN
+    reason: 本机无公网 coturn，无法完成"强制 TURN 模式通过"的物理验收。
+    needed: REQ-G00-turn-deploy 完成后补测。
+
+verification:
+  - cargo test -p wxlike-rtc --test media_controls        # 5 例
+  - cargo test -p wxlike-sfu --test media_gates          # 5 例
+  - cargo test -p wxlike-rtc --lib device turn_auth      # 10 例

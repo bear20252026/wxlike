@@ -1,0 +1,22 @@
+schema: 1
+from: G16
+task: G16-03
+to: G05/mobile
+summary: iOS runner project, signing material and real-device evidence.
+requests:
+  - id: G16-03-IOS-PROJECT
+    action: add apps/mobile/ios (flutter create --platforms=ios) with the product bundle id
+    evidence: ci ios job compiles; release ios-release builds an IPA
+    blocking: true
+    note: ios-release fails closed right now because the directory is absent.
+  - id: G16-03-SIGNING
+    action: provide the secrets in deploy/signing-docs/secret-inventory.md
+    evidence: android-release reports a non-debug signer; check_ipa reports Apple Distribution
+  - id: G16-03-DEVICES
+    action: run the frozen matrix in deploy/signing-docs/device-matrix.json and commit evidence
+    evidence: check_device_evidence.py accepts device-evidence.json
+    gap: MOBILE-DEVICE-EVIDENCE
+    blocking: true
+  - id: G16-03-SYMBOLS
+    action: keep obfuscated builds emitting .symbols files
+    evidence: check_apk requires symbol files for every ABI

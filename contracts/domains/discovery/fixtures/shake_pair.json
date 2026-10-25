@@ -1,0 +1,66 @@
+{
+  "fixture_id": "discovery.match.shake_pair",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.match.confirm",
+  "category": "success_boundary",
+  "description": "摇一摇双人配对：真实动作样本开窗、30 秒窗口、双边确认才成配对。",
+  "sequence": [
+    {
+      "step": "host_start",
+      "action_id": "discovery.match.start",
+      "request": { "actor": "usr-A", "magnitude_g": 3.2, "sampled_at_ms": "<now-500>" },
+      "expected": { "ticket_id": "shake-<opaque>", "expires_at_ms": "<now+30000>" }
+    },
+    {
+      "step": "guest_join",
+      "action_id": "discovery.match.join",
+      "request": { "actor": "usr-B", "ticket_id": "shake-<opaque>" },
+      "expected": { "proposal_id": "mp-<opaque>", "needs_host": true, "needs_guest": true }
+    },
+    {
+      "step": "host_confirm_pending",
+      "action_id": "discovery.match.confirm",
+      "request": { "actor": "usr-A", "proposal_id": "mp-<opaque>" },
+      "expected": { "state": "pending" }
+    },
+    {
+      "step": "guest_confirm_matched",
+      "action_id": "discovery.match.confirm",
+      "request": { "actor": "usr-B", "proposal_id": "mp-<opaque>" },
+      "expected": { "state": "matched", "match_id": "mt-<opaque>", "users": ["usr-A", "usr-B"] }
+    }
+  ],
+  "failure_cases": [
+    {
+      "name": "fake_gesture",
+      "request": { "actor": "usr-A", "magnitude_g": 1.0, "sampled_at_ms": "<now-500>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: shake gesture" }
+    },
+    {
+      "name": "stale_sample",
+      "request": { "actor": "usr-A", "magnitude_g": 3.2, "sampled_at_ms": "<now-3000>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: shake gesture" }
+    },
+    {
+      "name": "cooldown",
+      "precondition": "同一 actor 上一次开窗后 60 秒内再次 start",
+      "expected_error": { "code": "RATE_LIMITED", "detail": "rate limited" }
+    },
+    {
+      "name": "third_user_join_rejected",
+      "precondition": "usr-C join 已被 usr-B 占用的窗口",
+      "expected_error": { "code": "CONFLICT", "detail": "conflict: window taken" }
+    },
+    {
+      "name": "expired_window",
+      "precondition": "窗口过期后 join",
+      "expected_error": { "code": "EXPIRED", "detail": "expired" }
+    },
+    {
+      "name": "repeated_confirm_idempotent",
+      "precondition": "guest_confirm_matched 后 usr-B 再次 confirm",
+      "expected": { "state": "matched", "match_id": "mt-<opaque>" }
+    }
+  ],
+  "invariants": ["匹配关系落库由 G02 执行；本域只产生 match_id 与双方 user_id", "单向确认不产生 matched"]
+}

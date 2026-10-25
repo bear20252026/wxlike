@@ -1,0 +1,36 @@
+name: release
+
+'on':
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.2.0)"
+        required: true
+        type: string
+      publish:
+        description: "Publish the GitHub release and push the image (false = build, sign and verify only)"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTUP_TOOLCHAIN: "1.97.1"
+  WXLIKE_CI: "1"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+x-wxlike-fragments:
+  - mobile-release
+  - desktop-release
+  - release
+
+jobs: {}

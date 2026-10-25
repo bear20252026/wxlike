@@ -1,0 +1,65 @@
+# G15-03 全业务命令与能力差异映射 —— 集成请求
+# 本文件登记超出 G15 独占写路径、需要 G00 或其他组执行的条目。
+
+request_id: G15-03
+task_issue: 186
+group_issue: 96
+contract_version: coverage-v1
+artifacts:
+  - crates/cmd/src/domains.rs
+  - crates/cmd/data/domains.json
+  - crates/cli/tests/cli_surface.rs
+
+requests:
+  - id: REQ-G00-handlers-for-new-domains
+    target: G00
+    action: 新增业务命令时，在 `crates/client/src/execute.rs` 的 `HANDLERS` 表补一行
+      （该表在 G00 的"拆分 execute.rs"范围内）。每个新增命令 id 由本组先在
+      `crates/cmd/src/catalog.rs` 定义并提供 schema，再请 G00 挂 handler。
+    rationale: `wxlike-client` 不在 G15 写路径；catalog 定义与执行器实现必须成对出现，
+      否则 `every_catalog_command_is_implemented` 会红（该测试在 client 侧）。
+    acceptance: 每次新增命令的 PR 同时给出 catalog 侧定义与 G00 侧 handler 申请。
+
+  - id: REQ-G02-relations-commands
+    target: G02
+    action: 好友/新朋友/备注/隐私四条入口目前只有服务端路由（`/api/friends*`），
+      命令面为空。请提供契约 fixture 与权限规则（谁能看到谁、拉黑后的可见性），
+      G15 据此补 `friend.*` 命令与 scope 选择器。
+    rationale: 覆盖表把它们记为 `blocked G02 #108`；没有权限规则就无法定义资源 scope。
+    blocked_entries: ["好友列表与新朋友", "好友申请处理", "备注与删除好友", "黑名单与隐私规则"]
+
+  - id: REQ-G03-group-admin-commands
+    target: G03
+    action: 群公告、全员禁言、入群审批、邀请链接已有服务端路由（`groups_admin.rs`），
+      请确认这些动作的幂等语义（重复设置公告是否覆盖）与审计字段，
+      G15 再补 `group.set_announcement` / `group.mute_all` 等命令。
+    rationale: 覆盖表记为 `blocked G03 #121`；写命令必须声明幂等性才能过 G15-04 的作业控制。
+
+  - id: REQ-G04-media-commands
+    target: G04
+    action: 文件中心、上传会话、聊天记录迁移三条入口需要命令化，
+      请给出上传分片/续传/对象权限的契约（含大小上限与超时语义）。
+    blocked_entries: ["文件中心与消息附件", "上传会话与对象权限", "聊天记录迁移与备份"]
+
+  - id: REQ-G06-payment-commands
+    target: G06
+    action: 支付域命令必须带 `confirmation=required` 与金额/收款人摘要绑定，
+      请提供 `amount` 为 string+currency、`idempotency_key`、`confirmation_token`
+      的字段契约；G15-04 的确认令牌按此实现。
+    rationale: 覆盖表把支付五条入口记为 `blocked G06`；钱的动作不能只有"写权限"。
+
+  - id: REQ-G10-G11-ui-action-parity
+    target: G10
+    action: UI 侧同一入口应复用 catalog 的 action_id（`wxlike://actions/<id>`）与参数名，
+      并在提测时给出"同参数 UI 结果 vs CLI `--json` 结果"的对照证据。
+    rationale: "同参数 UI 和 CLI 业务结果一致"只能由 UI 组提供证据；G15 只能保证
+      CLI/MCP 两侧同源（已由 fixtures 覆盖），不能替 UI 组出证据。
+
+notes:
+  - 覆盖表是**数据**（`crates/cmd/data/domains.json`）：机器读 `wxlike coverage --json`，
+    人读 `wxlike coverage`，AI 读 MCP 资源 `wxlike://coverage`。
+  - 当前 26 条命令全部有归属（64 条入口 = 自动 26 + 宿主 5 + 未做 33）；
+    33 条未做入口每条都带负责组与 issue 编号，
+    不存在"没登记所以看起来支持"的入口。
+  - 平台差异：命令级 `platforms` 由 catalog 声明并在覆盖报告里逐条输出；
+    相机/扫码/文件选择等宿主能力只登记为 `host_only`，MCP 不提供伪远程工具。

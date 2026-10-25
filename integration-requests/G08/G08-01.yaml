@@ -1,0 +1,24 @@
+# G08 integration requests executed by G00 (contract version: mini-package.v1).
+task: G08-01
+group: G08
+branch: feat/FP-G08-01
+requests:
+  - id: workspace-member
+    file: Cargo.toml
+    change: >-
+      Add "crates/features/miniapps" to [workspace] members.
+    reason: >-
+      G08 owns crates/features/miniapps but the root manifest is serialized
+      through G00. No new external crates are introduced.
+  - id: lockfile
+    file: Cargo.lock
+    change: Regenerate after the workspace member is added.
+    reason: >-
+      The crate reuses workspace-pinned ed25519-dalek/sha2/hex/serde plus the
+      existing wxlike-dpage path dependency.
+router: none
+commands: none
+migrations: none
+notes: >-
+  Package format reuses DPG1 (wxlike-dpage). Adding a workspace member is also
+  recorded in the PR so a concurrent G00 split does not silently drop it.

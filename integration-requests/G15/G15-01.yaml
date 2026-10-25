@@ -1,0 +1,65 @@
+# G15-01 动作目录与协议 SDK 适配 —— 集成请求
+# 本文件登记超出 G15 独占写路径、需要 G00 或其他组执行的条目。
+# G15 独占：crates/cmd/**、crates/cli/**、crates/mcp/**、crates/agent-policy/**。
+
+request_id: G15-01
+task_issue: 183
+group_issue: 96
+contract_version: action-catalog-v1
+artifacts:
+  - crates/cmd/src/catalog.rs
+  - crates/cmd/src/catalog/spec.rs
+  - crates/mcp/src/server.rs
+  - crates/mcp/src/transport.rs
+  - crates/cli/src/args.rs
+  - crates/cli/src/run.rs
+
+requests:
+  - id: REQ-G00-rmcp-pin
+    target: G00
+    action: 在根 `Cargo.toml` 的 [workspace.dependencies] 增加
+      `rmcp = { version = "<冻结日最新稳定>", default-features = false, features = ["server", "transport-io"] }`，
+      并在 `crates/mcp/Cargo.toml` 引用 `rmcp.workspace = true`；随后按 G00 串行流程更新 `Cargo.lock`。
+    rationale: 根依赖与锁归 G00；G15 不得私改根清单。协议语义已在本卡用
+      手写 JSON-RPC 分派实现并有 fixture 覆盖，rmcp 接入属**替换实现**而非新增能力，
+      接口边界见 `crates/mcp/src/server.rs`（一帧进、一帧出）。
+    acceptance: `cargo build -p wxlike-mcp` 通过，且 `crates/mcp/tests/stdio_surface.rs`
+      在 rmcp 版本下仍全绿（同一批 fixture 不改）。
+
+  - id: REQ-G15-02-remote-transport
+    target: G15-02
+    action: 待会话授权 / audience / Origin 绑定落地后，在 `crates/mcp/src/transport.rs`
+      增加 http/sse transport（当前 `Transport::parse` 明确拒绝并指向本卡）。
+    rationale: 未鉴权的远程监听比没有更糟；MCP 安全最佳实践要求远程端做
+      会话与 Origin 校验，本卡不越过 G15-02 的安全边界。
+
+  - id: REQ-G00-02-action-ids
+    target: G00-02
+    action: 契约冻结时把 catalog 的 26 个 id 登记为 action_id（命名空间 `wxlike://actions/<id>`），
+      与 `docs/full-platform-delivery/entry_seed.csv` 的入口 action_id 建立映射；
+      新增动作一律先在本 catalog 出现，再由 G00-02 写 registry。
+    rationale: action_id 的命名权在 G00-02；G15 只提供稳定 id 与 schema。
+
+  - id: REQ-G01-05-dto-parity
+    target: G01-05
+    status: resolved
+    resolved_by: G15 contract-v1 适配（crates/cmd/src/contract.rs）
+    action: 已由本组消费 `crates/types` 的 `ActionRequest` / `ActionResult` /
+      `DomainError` / `ActionId`：catalog id 逐个过 `ActionId::parse`（有测试遍历全部命令），
+      写命令的幂等键与 deadline 由契约强制。剩余待 G01-05 复核的是
+      "`params` 内部字段名与 DTO 字段名一致"（当前 params 由 catalog `Param` 声明，
+      与 client handler 的取值一致，但尚无自动比对）。
+    rationale: catalog 与 DTO 两份声明若漂移，"schema 与 Rust DTO 一致"的验收
+      只能靠测试偶然发现。
+
+notes:
+  - 本卡不动根 `Cargo.toml` / `Cargo.lock` / 路由 / 迁移编号。
+  - **contract-v1 已消费**（G00-03 冻结、`crates/types` 实现）：CLI 与 MCP 的
+    请求/结果/错误形状统一为 `ActionRequest` / `ActionResult` / `DomainError`；
+    `trace_id` 自动生成或由 `--trace-id` / `_meta.wxlike/traceId` 指定；
+    `deadline` 过期在本地返回 `timeout`，不发请求。
+  - `tools/list` 由 catalog 生成：26 个命令工具（`msg.send` → `msg-send`）
+    + 3 个元工具（`im_list_commands` / `im_execute` 兼容入口 / `im_inspect`）。
+  - 协议版本协商支持 2025-06-18 / 2025-03-26 / 2024-11-05，未知版本回最新。
+  - 参数校验在协议边（CLI 与 MCP 各一次），未知参数/类型不符一律拒绝；
+    不在 `Policy::authorize` 里做，避免改变 `wxlike-client` 的既有契约。

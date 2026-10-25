@@ -1,0 +1,48 @@
+{
+  "contract_version": "content-v1",
+  "case": "状态 24h 到期：到期后本人与好友都不可见；sweep 清索引/撤收藏/留审计；回应再点一次取消",
+  "setup": {
+    "users": ["me", "friend"],
+    "friends": [["me", "friend"]],
+    "media": [{ "id": "img1", "uploader": "me", "content_type": "image/png" }]
+  },
+  "steps": [
+    {
+      "command": "status.set",
+      "actor": "me",
+      "payload": { "kind": "image", "media_id": "img1", "text": "today", "audience": "friends" },
+      "expect": { "ok": true, "data": { "seconds_left": 86400 } }
+    },
+    {
+      "command": "status.react",
+      "actor": "friend",
+      "expect": { "ok": true, "data": { "my_reaction": true, "reactions": 1 } }
+    },
+    {
+      "command": "status.react",
+      "actor": "friend",
+      "expect": { "ok": true, "data": { "my_reaction": false, "reactions": 0 } }
+    },
+    {
+      "command": "favorite.object.add",
+      "actor": "friend",
+      "payload": { "kind": "status", "id": "status_id" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "sweep_expired_statuses",
+      "comment": "expires_at <= now 时调用",
+      "expect": { "ok": true, "data": { "cleared": 1 } }
+    },
+    {
+      "command": "status.list",
+      "actor": "friend",
+      "expect": { "ok": true, "data": { "items": [] } }
+    },
+    {
+      "command": "audit.self",
+      "actor": "me",
+      "expect": { "ok": true, "data": { "contains": "status_expire" } }
+    }
+  ]
+}
