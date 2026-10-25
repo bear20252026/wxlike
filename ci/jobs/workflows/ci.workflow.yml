@@ -24,5 +24,10 @@ x-wxlike-fragments:
   - build
   - contract
   - audit
+  - server
+  - mobile
+  - desktop
+  - e2e
+  - performance
 
 jobs: {}

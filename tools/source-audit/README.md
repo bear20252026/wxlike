@@ -14,7 +14,7 @@ tools/source-audit/
 │   ├── advisories.py   # 公告 → 可达性 → 门禁（G17-02）
 │   ├── authz.py        # 源码路由 ↔ 授权矩阵 ↔ 用例（G17-03）
 │   └── release.py      # 证据包 → pass/block（G17-05）
-└── tests/              # 41 个用例（unittest，无依赖）
+└── tests/              # unittest（零第三方依赖）
 ```
 
 ## 跑法

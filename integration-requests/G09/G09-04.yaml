@@ -1,0 +1,58 @@
+# G09-04 媒体 E2EE、录制与权限 —— 集成请求
+request_id: G09-04
+task_issue: 156
+group_issue: 90
+branch: feat/FP-G09-04
+contract: calls-v1
+paths:
+  - crates/rtc/src/e2ee.rs
+  - crates/rtc/src/recording.rs
+  - crates/rtc/tests/e2ee_recording.rs
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/calls/{call_id}/keys/rotate -> MediaKeyRing 分发新 epoch"
+      - "POST /api/calls/{call_id}/recording -> RecordingSession::request"
+      - "POST /api/recordings/{id}/consent -> RecordingPipeline::consent"
+      - "POST /api/recordings/{id}/stop -> RecordingPipeline::stop"
+    note: 路由由 G00 挂载；密钥只走已认证成员的分发通道，不得下发给 SFU。
+
+requests:
+  - id: REQ-G04-recording-sink
+    target: G04
+    action: 实现 wxlike_rtc::recording::RecordingSink，把明文帧落到媒体
+      存储并返回 artifact（call_id/bytes/frames/e2ee）；保留期与访问控制
+      归 G04。
+    rationale: 本卡只做 consent/密钥/状态机，不写磁盘、不定义存储策略。
+
+  - id: REQ-G00-key-distribution
+    target: G00 / 集成方
+    action: 把 MediaKeyRing 的密钥经成员认证的私密通道分发给参与者；
+      SFU 进程不持有密钥。成员移除/轮换时调用 install_rotation。
+    rationale: E2EE 的承诺是 SFU 与抓包都得不到明文；密钥绝不能进 SFU。
+
+  - id: REQ-G10-G12-ui-claim
+    target: G10 / G12 / G11
+    action: 只有密钥分发与录制链路都接好后，UI 才显示"端到端加密"；
+      未接好时不得展示该承诺。
+    rationale: 任务书禁止"未实现却显示 E2EE 承诺"。
+
+acceptance_notes:
+  - 抓包/SFU 无明文：e2ee_recording::encrypted_audio_crosses_the_media_path_and_records_only_plaintext
+    （密文经真实 SRTP 到达对端，录制无密钥时 E2eeRequired）。
+  - 移除成员旧 key 无效：rotation_locks_a_removed_member_out_of_new_media。
+  - 拒绝录制不产生文件：recording_without_every_consent_never_reaches_storage。
+  - 密钥不落日志：token/e2ee/turn_auth 的 Debug 脱敏单测。
+  - 只有发起人能停：recording::tests::only_the_initiator_may_stop。
+
+blockers:
+  - id: BLOCK-G09-04-KEYCHANNEL
+    reason: G00 的统一私密分发通道尚未合入；本机以进程内密钥环验证算法与
+      轮换，真实多端密钥分发待集成。
+    needed: REQ-G00-key-distribution。
+
+verification:
+  - cargo test -p wxlike-rtc --test e2ee_recording        # 3 例
+  - cargo test -p wxlike-rtc --lib e2ee recording        # 9 例

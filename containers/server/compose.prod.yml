@@ -1,0 +1,66 @@
+# Production-shaped Compose file for a single wxlike-server container.
+#
+#   cp deploy/production/wxlike.env.example deploy/production/wxlike.env
+#   # edit secrets, then:
+#   docker compose -f containers/server/compose.prod.yml --env-file deploy/production/wxlike.env up -d
+#
+# Redis is only started with --profile redis; a managed Redis is preferred in
+# production (set WXLIKE_REDIS_URL accordingly).
+name: wxlike
+
+services:
+  server:
+    image: ${WXLIKE_IMAGE:?set WXLIKE_IMAGE to an immutable image reference}
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    env_file:
+      - ../../deploy/production/wxlike.env
+    environment:
+      WXLIKE_DB: /data/wxlike.db
+      WXLIKE_MEDIA_DIR: /data/media
+      WXLIKE_HTTP: 0.0.0.0:8099
+      WXLIKE_QUIC: 0.0.0.0:9443
+      WXLIKE_DEV_INSECURE: "0"
+    ports:
+      - "8099:8099"
+      - "9443:9443/udp"
+    volumes:
+      - wxlike-data:/data
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8099/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    command: ["redis-server", "--appendonly", "yes"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    volumes:
+      - redis-data:/data
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  wxlike-data:
+  redis-data:

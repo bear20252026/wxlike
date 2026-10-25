@@ -51,12 +51,14 @@ export function GhostButton({
   disabled,
   title,
   tone = "neutral",
+  testId,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   title?: string;
   tone?: "neutral" | "danger";
+  testId?: string;
 }) {
   const style =
     tone === "danger"
@@ -68,6 +70,7 @@ export function GhostButton({
       title={title}
       disabled={disabled}
       onClick={onClick}
+      data-testid={testId}
       className={`inline-flex items-center gap-1.5 rounded-lg border bg-white px-3 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${style}`}
     >
       {children}

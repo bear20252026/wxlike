@@ -1,0 +1,19 @@
+{
+  "name": "危险动作先出计划与一次性令牌",
+  "description": "第一次调用 group-kick 不执行：只回 confirmation_required、计划（含参数摘要）与令牌。",
+  "setup": { "convs": ["g-1"], "write": true, "destructive": true, "initialize": true },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tools/call",
+    "params": { "name": "group-kick", "arguments": { "conv": "g-1", "user_id": "u2" } }
+  },
+  "expect": {
+    "equals": {
+      "result.isError": false,
+      "result.structuredContent.confirmation_required": true,
+      "result.structuredContent.plan.action_id": "group.kick"
+    },
+    "contains_text": ["wxc-"]
+  }
+}

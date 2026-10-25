@@ -42,13 +42,22 @@ requests:
 
   - id: REQ-G01-05-dto-parity
     target: G01-05
-    action: 复核 `crates/types` 的 DTO 与 catalog `args` 声明是否一致
-      （每个工具的 JSON Schema 由 `Param` 生成，字段名/类型需与 DTO 同源）。
+    status: resolved
+    resolved_by: G15 contract-v1 适配（crates/cmd/src/contract.rs）
+    action: 已由本组消费 `crates/types` 的 `ActionRequest` / `ActionResult` /
+      `DomainError` / `ActionId`：catalog id 逐个过 `ActionId::parse`（有测试遍历全部命令），
+      写命令的幂等键与 deadline 由契约强制。剩余待 G01-05 复核的是
+      "`params` 内部字段名与 DTO 字段名一致"（当前 params 由 catalog `Param` 声明，
+      与 client handler 的取值一致，但尚无自动比对）。
     rationale: catalog 与 DTO 两份声明若漂移，"schema 与 Rust DTO 一致"的验收
       只能靠测试偶然发现。
 
 notes:
   - 本卡不动根 `Cargo.toml` / `Cargo.lock` / 路由 / 迁移编号。
+  - **contract-v1 已消费**（G00-03 冻结、`crates/types` 实现）：CLI 与 MCP 的
+    请求/结果/错误形状统一为 `ActionRequest` / `ActionResult` / `DomainError`；
+    `trace_id` 自动生成或由 `--trace-id` / `_meta.wxlike/traceId` 指定；
+    `deadline` 过期在本地返回 `timeout`，不发请求。
   - `tools/list` 由 catalog 生成：26 个命令工具（`msg.send` → `msg-send`）
     + 3 个元工具（`im_list_commands` / `im_execute` 兼容入口 / `im_inspect`）。
   - 协议版本协商支持 2025-06-18 / 2025-03-26 / 2024-11-05，未知版本回最新。

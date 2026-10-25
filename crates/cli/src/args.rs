@@ -35,6 +35,12 @@ pub enum Command {
     List(String),
     /// `policy`
     Policy,
+    /// `auth`：打印身份上下文与逐命令的 scope 判定
+    Auth,
+    /// `coverage`：业务域覆盖报告（自动 / 宿主 / 未做）
+    Coverage,
+    /// `doctor`：本机诊断（目录 / 策略 / scope / 服务端配置），不联网
+    Doctor,
     /// `inspect`
     Inspect,
     /// `run --cmd 'id={json}'`（原样保留多条顺序执行）
@@ -58,6 +64,24 @@ pub struct Options {
     pub allow_destructive: bool,
     /// 强制只读：即使环境变量开了写，也压回只读。
     pub read_only: bool,
+    /// 身份（默认读 `WXLIKE_ACTOR`，再缺省 `local-cli`）。
+    pub actor: String,
+    /// 会话 id（scope 判定必须绑定会话）。
+    pub session_id: Option<String>,
+    /// 授予的 scope，如 `conv:g-* media:*`。
+    pub scope: Option<String>,
+    /// 允许的 Origin（远程调用时用）。
+    pub origin_allow: Vec<String>,
+    /// 危险动作的人工确认（`--confirm`）。人就在终端前，确认就是他敲的这一下。
+    pub confirm: bool,
+    /// 只出计划不执行：用于审计与脚本预演（**绝不落账**）。
+    pub dry_run: bool,
+    /// 链路追踪 id（contract-v1 的 `trace_id`；不给就自动生成）。
+    pub trace_id: Option<String>,
+    /// 触发这条命令的 UI 入口 id（入口总账的 `entry_id`）。
+    pub entry_id: Option<String>,
+    /// 绝对截止时间（unix 毫秒）。过期就地拒绝，不发请求。
+    pub deadline_ms: Option<i64>,
 }
 
 /// 解析后的完整调用。
@@ -68,13 +92,20 @@ pub struct Invocation {
 }
 
 /// 带值的 flag：形态统一是 `--name value`。
-const VALUE_FLAGS: [&str; 6] = [
+const VALUE_FLAGS: [&str; 13] = [
     "--server",
     "--token",
     "--allow-conv",
     "--param",
     "--params",
     "--cmd",
+    "--actor",
+    "--session-id",
+    "--scope",
+    "--origin-allow",
+    "--trace-id",
+    "--entry-id",
+    "--deadline-ms",
 ];
 
 /// 一个位置参数被吃掉了几格，或者该收尾了。
@@ -142,6 +173,17 @@ impl Parser {
             "--allow-conv" => self.options.allow_conv.push(value.to_string()),
             "--params" => self.raw_json = Some(value.to_string()),
             "--cmd" => self.cmds.push(value.to_string()),
+            "--actor" => self.options.actor = value.to_string(),
+            "--session-id" => self.options.session_id = Some(value.to_string()),
+            "--scope" => self.options.scope = Some(value.to_string()),
+            "--origin-allow" => self.options.origin_allow.push(value.to_string()),
+            "--trace-id" => self.options.trace_id = Some(value.to_string()),
+            "--entry-id" => self.options.entry_id = Some(value.to_string()),
+            "--deadline-ms" => {
+                self.options.deadline_ms = Some(value.parse().map_err(|_| {
+                    UsageError(format!("--deadline-ms 需要整数毫秒，收到 {value:?}"))
+                })?);
+            }
             _ => {
                 let (k, v) = value
                     .split_once('=')
@@ -158,12 +200,28 @@ impl Parser {
             "--allow-write" => self.options.allow_write = true,
             "--allow-destructive" => self.options.allow_destructive = true,
             "--read-only" => self.options.read_only = true,
+            "--confirm" => self.options.confirm = true,
+            "--dry-run" => self.options.dry_run = true,
             other => return Err(UsageError(format!("未知参数 {other:?}（--help 看用法）"))),
         }
         Ok(())
     }
 
-    fn finish(self) -> Result<Invocation, UsageError> {
+    fn actor_default(&mut self) {
+        if self.options.actor.is_empty() {
+            self.options.actor =
+                std::env::var("WXLIKE_ACTOR").unwrap_or_else(|_| "local-cli".to_string());
+        }
+        if self.options.session_id.is_none() {
+            self.options.session_id = std::env::var("WXLIKE_SESSION_ID").ok();
+        }
+        if self.options.scope.is_none() {
+            self.options.scope = std::env::var("WXLIKE_SCOPE").ok();
+        }
+    }
+
+    fn finish(mut self) -> Result<Invocation, UsageError> {
+        self.actor_default();
         let command = resolve(&self.positional, self.cmds, &self.raw_params, self.raw_json)?;
         Ok(Invocation {
             options: self.options,
@@ -186,6 +244,9 @@ fn resolve(
             positional.get(1).cloned().unwrap_or_default(),
         )),
         "policy" => Ok(Command::Policy),
+        "auth" => Ok(Command::Auth),
+        "coverage" => Ok(Command::Coverage),
+        "doctor" => Ok(Command::Doctor),
         "inspect" => Ok(Command::Inspect),
         "run" => {
             if cmds.is_empty() {
@@ -367,6 +428,71 @@ mod tests {
         .unwrap_err();
         assert!(err.0.contains("cnv"), "{err}");
         assert!(err.0.contains("conv"), "要列出可用参数：{err}");
+    }
+
+    #[test]
+    fn contract_trace_entry_and_deadline_flags_are_parsed() {
+        let inv = parse(&args(&[
+            "--trace-id",
+            "tr-abc",
+            "--entry-id",
+            "ENT-SEED-0025",
+            "--deadline-ms",
+            "1700000000000",
+            "conv",
+            "list",
+        ]))
+        .expect("parse");
+        assert_eq!(inv.options.trace_id.as_deref(), Some("tr-abc"));
+        assert_eq!(inv.options.entry_id.as_deref(), Some("ENT-SEED-0025"));
+        assert_eq!(inv.options.deadline_ms, Some(1_700_000_000_000));
+        let err = parse(&args(&["--deadline-ms", "soon", "conv", "list"])).unwrap_err();
+        assert!(err.0.contains("整数毫秒"), "{err}");
+    }
+
+    #[test]
+    fn dry_run_and_doctor_are_available() {
+        assert!(
+            parse(&args(&[
+                "--dry-run",
+                "msg",
+                "send",
+                "--param",
+                "conv=g-1",
+                "--param",
+                "text=hi",
+                "--param",
+                "idempotency_key=k"
+            ]))
+            .expect("parse")
+            .options
+            .dry_run
+        );
+        assert_eq!(parse(&args(&["doctor"])).unwrap().command, Command::Doctor);
+    }
+
+    #[test]
+    fn confirm_flag_is_parsed() {
+        let inv = parse(&args(&[
+            "--confirm",
+            "group",
+            "kick",
+            "--param",
+            "conv=g-1",
+            "--param",
+            "user_id=u2",
+        ]))
+        .expect("parse");
+        assert!(inv.options.confirm);
+    }
+
+    #[test]
+    fn coverage_is_a_subcommand_and_not_a_domain() {
+        assert_eq!(
+            parse(&args(&["coverage"])).unwrap().command,
+            Command::Coverage
+        );
+        assert!(parse(&args(&["coverage", "--json"])).unwrap().options.json);
     }
 
     #[test]

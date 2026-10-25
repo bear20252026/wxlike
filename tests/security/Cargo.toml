@@ -1,0 +1,33 @@
+[package]
+name = "wxlike-security-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+# 独立 workspace：本目录**不是**仓库根 workspace 的成员（根 Cargo.toml 由 G00
+# 独占，G17 不碰）。因此这里显式声明空 workspace，否则 cargo 会以为它属于上层。
+#
+# 为什么不做成成员却仍要能 `cargo test`：这些用例必须打真实的域实现
+# （platform 的路由、video 的 SSRF 策略、dpage/container 的解码与沙箱、
+# risk 的限额），而不是复制一份实现或写 mock。path 依赖能同时满足这两点。
+#
+# 把它登记进 workspace / CI 的申请：integration-requests/G17/G17-03.yaml。
+[workspace]
+
+[dev-dependencies]
+wxlike-platform = { path = "../../crates/platform" }
+wxlike-video = { path = "../../crates/video" }
+wxlike-dpage = { path = "../../crates/dpage" }
+wxlike-container = { path = "../../crates/container" }
+wxlike-risk = { path = "../../crates/risk" }
+wxlike-core = { path = "../../crates/core" }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+sha2 = "0.10"
+hex = "0.4"
+# 造恶意包样本要自己压 zstd（dpage 不导出压缩函数）
+zstd = "0.13"

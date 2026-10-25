@@ -37,6 +37,11 @@ pub struct MediaSession {
     video_mid: Option<Mid>,
     connected: bool,
     pending: Option<SdpPendingOffer>,
+    /// 发送轨开关（G09-03）：静音的是编码器出口，不是 UI 图标。
+    audio_muted: bool,
+    video_muted: bool,
+    /// 当前摄像头/屏幕源 id；切换后旧源写出的帧被丢弃。
+    video_source: Option<String>,
     /// Latest egress bitrate estimates in kbps (WP-08b adaptation input).
     pub bitrate_kbps_estimates: Vec<u64>,
 }
@@ -66,6 +71,9 @@ impl MediaSession {
             video_mid: None,
             connected: false,
             pending: None,
+            audio_muted: false,
+            video_muted: false,
+            video_source: Some("default".into()),
             bitrate_kbps_estimates: Vec::new(),
         }
     }
@@ -129,14 +137,74 @@ impl MediaSession {
         self.video_mid.is_some()
     }
 
-    /// Writes one opaque encoded frame to the audio stream.
+    /// Writes one opaque encoded frame to the audio stream. A muted track
+    /// produces no output at all: the far end genuinely receives nothing.
     pub fn write_audio(&mut self, sample: &[u8]) -> anyhow::Result<()> {
+        if self.audio_muted {
+            return Ok(());
+        }
         self.write_mid(self.audio_mid, Codec::Opus, sample)
     }
 
     /// Writes one opaque encoded frame to the video stream (WP-08b).
     pub fn write_video(&mut self, frame: &[u8]) -> anyhow::Result<()> {
+        if self.video_muted {
+            return Ok(());
+        }
         self.write_mid(self.video_mid, Codec::Vp8, frame)
+    }
+
+    pub fn set_audio_muted(&mut self, muted: bool) {
+        self.audio_muted = muted;
+    }
+
+    pub fn set_video_muted(&mut self, muted: bool) {
+        self.video_muted = muted;
+    }
+
+    pub fn audio_muted(&self) -> bool {
+        self.audio_muted
+    }
+
+    pub fn video_muted(&self) -> bool {
+        self.video_muted
+    }
+
+    /// 选择摄像头/屏幕源。切换后旧源的帧由 [`Self::write_video_from`] 丢弃。
+    pub fn select_video_source(&mut self, source: &str) -> anyhow::Result<()> {
+        if source.trim().is_empty() {
+            anyhow::bail!("video source id is empty");
+        }
+        self.video_source = Some(source.to_string());
+        Ok(())
+    }
+
+    pub fn video_source(&self) -> Option<&str> {
+        self.video_source.as_deref()
+    }
+
+    /// 只发送当前选中源的帧。返回 `false` 表示帧来自已被切换掉的旧设备。
+    pub fn write_video_from(&mut self, source: &str, frame: &[u8]) -> anyhow::Result<bool> {
+        match self.video_source.as_deref() {
+            Some(current) if current == source => {
+                self.write_video(frame)?;
+                Ok(true)
+            }
+            Some(_) => Ok(false),
+            None => anyhow::bail!("no video source selected"),
+        }
+    }
+
+    /// ICE 重启（G09-03 弱网恢复）：保留本地候选，返回新的 SDP offer。
+    pub fn restart_ice(&mut self) -> anyhow::Result<serde_json::Value> {
+        let mut change = self.rtc.sdp_api();
+        change.ice_restart(true);
+        let (offer, pending) = change
+            .apply()
+            .ok_or_else(|| anyhow::anyhow!("nothing to negotiate"))?;
+        self.pending = Some(pending);
+        self.connected = false;
+        Ok(serde_json::to_value(&offer)?)
     }
 
     fn write_mid(&mut self, mid: Option<Mid>, codec: Codec, payload: &[u8]) -> anyhow::Result<()> {
@@ -187,32 +255,37 @@ impl MediaSession {
                 });
             }
             Output::Event(ev) => {
-                match &ev {
-                    Event::Connected => self.connected = true,
-                    Event::EgressBitrateEstimate(bwe) => {
-                        let bps = match bwe {
-                            str0m::bwe::BweKind::Twcc(b) => b.as_u64(),
-                            str0m::bwe::BweKind::Remb(_, b) => b.as_u64(),
-                        };
-                        self.bitrate_kbps_estimates.push(bps / 1000);
-                    }
-                    // mids are discovered through events (str0m has no
-                    // all_media iterator in this version)
-                    Event::MediaAdded(added) => match added.kind {
-                        MediaKind::Audio if self.audio_mid.is_none() => {
-                            self.audio_mid = Some(added.mid);
-                        }
-                        MediaKind::Video if self.video_mid.is_none() => {
-                            self.video_mid = Some(added.mid);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
+                self.absorb_event(&ev);
                 events.push(ev);
             }
         }
         Ok((events, datagrams))
+    }
+
+    /// 从事件流里提取会话事实：连通、出口估计、协商出的 m-line id。
+    fn absorb_event(&mut self, ev: &Event) {
+        match ev {
+            Event::Connected => self.connected = true,
+            Event::EgressBitrateEstimate(bwe) => {
+                let bps = match bwe {
+                    str0m::bwe::BweKind::Twcc(b) => b.as_u64(),
+                    str0m::bwe::BweKind::Remb(_, b) => b.as_u64(),
+                };
+                self.bitrate_kbps_estimates.push(bps / 1000);
+            }
+            // mids are discovered through events (str0m has no
+            // all_media iterator in this version)
+            Event::MediaAdded(added) => match added.kind {
+                MediaKind::Audio if self.audio_mid.is_none() => {
+                    self.audio_mid = Some(added.mid);
+                }
+                MediaKind::Video if self.video_mid.is_none() => {
+                    self.video_mid = Some(added.mid);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
     }
 
     /// Feeds one peer datagram in.
@@ -344,6 +417,96 @@ impl LoopbackPair {
             }
         }
         Ok((a_to_b, b_to_a))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G09-03: ICE 健康度与重启
+// ---------------------------------------------------------------------------
+
+/// 弱网恢复的状态；`Buffering` 不是"还在播"，上层必须据此显示重连中。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IceHealth {
+    Healthy,
+    Degraded { silent_ms: u64 },
+    RestartDue { silent_ms: u64 },
+    Exhausted,
+}
+
+/// 以"最后收到包"为信号的 ICE 看门狗。纯逻辑，时间由调用方给。
+#[derive(Debug, Clone)]
+pub struct IceMonitor {
+    degrade_after_ms: u64,
+    restart_after_ms: u64,
+    cooldown_ms: u64,
+    max_restarts: u32,
+    last_rx_ms: Option<u64>,
+    last_restart_ms: Option<u64>,
+    generation: u64,
+    restarts: u32,
+}
+
+impl IceMonitor {
+    /// 默认：2 秒无包降级，5 秒触发重启，重启冷却 10 秒，最多 3 次。
+    pub fn new(degrade_after_ms: u64, restart_after_ms: u64) -> Self {
+        Self {
+            degrade_after_ms,
+            restart_after_ms,
+            cooldown_ms: 10_000,
+            max_restarts: 3,
+            last_rx_ms: None,
+            last_restart_ms: None,
+            generation: 0,
+            restarts: 0,
+        }
+    }
+
+    pub fn default_policy() -> Self {
+        Self::new(2_000, 5_000)
+    }
+
+    pub fn observe(&mut self, now_ms: u64) {
+        self.last_rx_ms = Some(now_ms);
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn restarts(&self) -> u32 {
+        self.restarts
+    }
+
+    pub fn health(&self, now_ms: u64) -> IceHealth {
+        let Some(last) = self.last_rx_ms else {
+            return IceHealth::Healthy;
+        };
+        let silent_ms = now_ms.saturating_sub(last);
+        if silent_ms < self.degrade_after_ms {
+            return IceHealth::Healthy;
+        }
+        if self.restarts >= self.max_restarts {
+            return IceHealth::Exhausted;
+        }
+        let cooling = self
+            .last_restart_ms
+            .is_some_and(|t| now_ms.saturating_sub(t) < self.cooldown_ms);
+        if silent_ms >= self.restart_after_ms && !cooling {
+            IceHealth::RestartDue { silent_ms }
+        } else {
+            IceHealth::Degraded { silent_ms }
+        }
+    }
+
+    /// 只在 `RestartDue` 时推进代次；返回新的重启代次。
+    pub fn begin_restart(&mut self, now_ms: u64) -> Option<u64> {
+        if !matches!(self.health(now_ms), IceHealth::RestartDue { .. }) {
+            return None;
+        }
+        self.generation = self.generation.saturating_add(1);
+        self.restarts += 1;
+        self.last_restart_ms = Some(now_ms);
+        Some(self.generation)
     }
 }
 

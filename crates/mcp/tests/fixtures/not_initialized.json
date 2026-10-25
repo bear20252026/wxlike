@@ -1,0 +1,7 @@
+{
+  "name": "未握手直接调业务方法",
+  "description": "MCP 生命周期要求先 initialize；这里必须返回 -32002 而不是静默执行。",
+  "setup": { "convs": ["*"], "write": true, "destructive": false, "initialize": false },
+  "request": { "jsonrpc": "2.0", "id": 2, "method": "tools/list" },
+  "expect": { "error_code": -32002 }
+}
