@@ -18,6 +18,10 @@ use super::error::{MiniError, Result};
 use super::manifest::{digest_hex, Manifest};
 
 pub const PUBLIC_KEY_HEX_LEN: usize = 64;
+/// Ed25519 种子与发布者 ID 的字节宽度。
+pub const ED25519_KEY_LEN: usize = 32;
+/// Ed25519 签名的字节宽度。
+pub const ED25519_SIGNATURE_LEN: usize = 64;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -144,7 +148,7 @@ pub fn sign_manifest(manifest_bytes: &[u8], key: &SigningKey, key_id: &str) -> P
 
 pub fn generate_key() -> SigningKey {
     use rand::RngCore as _;
-    let mut seed = [0u8; 32];
+    let mut seed = [0u8; ED25519_KEY_LEN];
     rand::thread_rng().fill_bytes(&mut seed);
     SigningKey::from_bytes(&seed)
 }
@@ -179,13 +183,13 @@ fn decode_key(hex_key: &str) -> Result<VerifyingKey> {
         return Err(MiniError::UntrustedPublisher);
     }
     let raw = hex::decode(hex_key).map_err(|_| MiniError::UntrustedPublisher)?;
-    let bytes: [u8; 32] = raw.try_into().map_err(|_| MiniError::UntrustedPublisher)?;
+    let bytes: [u8; ED25519_KEY_LEN] = raw.try_into().map_err(|_| MiniError::UntrustedPublisher)?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| MiniError::UntrustedPublisher)
 }
 
 fn verify_ed25519(key: &VerifyingKey, message: &[u8], sig_hex: &str) -> Result<()> {
     let raw = hex::decode(sig_hex).map_err(|_| MiniError::BadSignature)?;
-    let bytes: [u8; 64] = raw.try_into().map_err(|_| MiniError::BadSignature)?;
+    let bytes: [u8; ED25519_SIGNATURE_LEN] = raw.try_into().map_err(|_| MiniError::BadSignature)?;
     let signature = Signature::from_bytes(&bytes);
     key.verify_strict(message, &signature)
         .map_err(|_| MiniError::BadSigning)
