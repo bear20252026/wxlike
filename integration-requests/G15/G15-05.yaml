@@ -1,0 +1,56 @@
+# G15-05 协议兼容、诊断与可审查脚本 —— 集成请求
+# 本文件登记超出 G15 独占写路径、需要 G00 或其他组执行的条目。
+
+request_id: G15-05
+task_issue: 190
+group_issue: 96
+contract_version: mcp-fixtures-v1
+artifacts:
+  - crates/mcp/src/lib.rs
+  - crates/mcp/tests/protocol_fixtures.rs
+  - crates/mcp/tests/fixtures/*.json
+  - crates/cli/examples/README.md
+  - crates/cli/examples/audit-read-only.sh
+  - crates/cli/examples/export-plan.sh
+  - crates/cli/examples/gate-check.sh
+  - crates/cli/src/run.rs
+
+requests:
+  - id: REQ-G16-run-fixtures-in-ci
+    target: G16
+    action: CI 增加一步 `cargo test -p wxlike-mcp --test protocol_fixtures`，
+      让契约 fixture 成为协议兼容门禁（当前 `cargo test --workspace` 已包含，
+      但请在 CI 日志里单列，便于定位是谁改坏了协议）。
+    rationale: 协议兼容性靠"同一批 fixture 两条通道都过"来证明，
+      混在 workspace 大日志里失败时很难判断是协议还是别的。
+
+  - id: REQ-G00-02-fixture-naming
+    target: G00-02
+    action: 契约冻结时把 `crates/mcp/tests/fixtures/*.json` 登记为协议契约样本，
+      新增/修改协议行为必须同时改 fixture（评审检查项）。
+    rationale: fixture 是"行为说明书"，只改代码不改 fixture 等于文档撒谎。
+
+  - id: REQ-G10-G11-dry-run-ui
+    target: G10
+    action: UI 侧对危险动作复用同一套 `prepare → 计划 → 确认 → 执行` 语义：
+      展示计划时用 `plan.digest` 作为"人确认的就是这份参数"的凭据。
+    rationale: 只有 CLI/MCP 有确认、UI 直接执行，等于最松的那个入口决定安全性。
+
+  - id: REQ-G14-doctor-and-coverage
+    target: G14
+    action: 管理台可复用 `wxlike coverage --json` 与 `wxlike-cli doctor --json`
+      的结构化输出（字段稳定，可直接落表），不必重新解析人读文本。
+    rationale: 诊断与覆盖报告是运维入口的数据源，重复实现会漂移。
+
+notes:
+  - `wxlike-mcp` 已拆出 lib（`wxlike_mcp::server`），fixture 可在进程内回放；
+    同一批用例同时对真二进制（stdio）跑一遍，并比较归一化后的响应是否一致。
+  - fixture 覆盖：版本协商（已知/未知）、未握手拒绝、tools/list 形状、
+    未知参数、策略拒绝、确认流程、resources/read、未知方法、deadline 过期。
+  - 业务结果的 `structuredContent` 是 contract-v1 的 `ActionResult`；
+    易变字段（`token` / `expires_at` / `completed_at_ms` / `wxlike/traceId`）
+    在双通道比对前归一化，结构差异照样会被发现。
+  - 限额：单次调用参数 ≤ 64 KiB（超出 -32602）；工具文本响应 ≤ 256 KiB（超出截断并标记）。
+  - `--dry-run` 只出计划（含规范参数摘要），退出 0，不联网、不需要 token、不落账。
+  - `wxlike doctor` 不联网：只报本地配置与目录/覆盖统计；坏 scope 是 problem（退出 1）。
+  - `crates/cli/examples/*.sh` 只读示例，测试静态校验"不得出现写命令"。

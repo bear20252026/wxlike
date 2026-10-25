@@ -1,0 +1,12 @@
+{
+  "name": "initialize 遇到未知版本回退到最新",
+  "description": "客户端报一个我们不实现的版本时，不报错而是回最新版本，由客户端决定是否继续。",
+  "setup": { "convs": [], "write": false, "destructive": false, "initialize": false },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": { "protocolVersion": "2019-01-01" }
+  },
+  "expect": { "equals": { "result.protocolVersion": "2025-06-18" } }
+}

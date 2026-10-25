@@ -30,8 +30,10 @@ use wxlike_core::{Envelope, Store};
 use wxlike_mq::{hub_queue, MqRouter};
 
 use crate::conn::PeerConn;
+use crate::delivery::{InflightLedger, Pending};
 use crate::offline::{MemoryOffline, OfflineStore};
-use crate::policy::DeliveryPolicy;
+use crate::policy::{DeliveryPolicy, Limits, TokenBucket};
+use crate::proto::Negotiated;
 use crate::wire::WireFrame;
 
 /// One bound connection of one user (ADR-4 multi-device): the peers table is
@@ -88,6 +90,9 @@ pub struct MqHubOptions {
     /// 生产必须给：客户端按 TOFU 记住叶证书指纹，服务端一重启指纹就变，
     /// 旧客户端会遭遇与中间人攻击一模一样的拒绝。
     pub cert_dir: Option<std::path::PathBuf>,
+    /// G03-04 要求 3：frame/连接/订阅/用户四级上限。默认值与既有行为一致，
+    /// 只有显式收紧的部署才改变裁决。
+    pub limits: Limits,
 }
 
 /// Contract floor for reclaiming in-flight cross-node entries.
@@ -116,6 +121,7 @@ impl Default for MqHubOptions {
             policy: None,
             auth: None,
             cert_dir: None,
+            limits: Limits::default(),
         }
     }
 }
@@ -209,6 +215,16 @@ struct HubState {
     policy: Option<Arc<dyn DeliveryPolicy>>,
     /// 身份来源。**`None` = 拒绝所有连接**（fail closed，见 `crate::auth`）。
     auth: Option<Arc<dyn crate::auth::HubAuthenticator>>,
+    /// G03-04：四级速率上限的生效值。
+    limits: Limits,
+    /// G03-02：写了但还没被客户端确认落库的帧（按连接、有上界）。
+    inflight: Arc<InflightLedger>,
+    /// 每用户发送令牌桶（`limits.max_msgs_per_user_per_min`）。
+    user_rate: Arc<RwLock<HashMap<String, TokenBucket>>>,
+    /// 每连接订阅数（`limits.max_subscriptions_per_conn`）。
+    subscriptions: Arc<RwLock<HashMap<ConnId, usize>>>,
+    /// 续租循环需要的世代号：`user -> generation`（G03-04 要求 1）。
+    route_generations: Arc<RwLock<HashMap<String, u64>>>,
     /// WP-13: connections / throughput / parked / latency, per hub.
     metrics: crate::metrics::HubMetrics,
 }
@@ -403,6 +419,13 @@ pub async fn run_mq_hub_with(
         push_hook: options.push_hook.clone(),
         policy: options.policy.clone(),
         auth: options.auth.clone(),
+        limits: options.limits,
+        inflight: Arc::new(InflightLedger::with_cap(
+            options.limits.max_inflight_per_conn,
+        )),
+        user_rate: Arc::new(RwLock::new(HashMap::new())),
+        subscriptions: Arc::new(RwLock::new(HashMap::new())),
+        route_generations: Arc::new(RwLock::new(HashMap::new())),
         metrics: crate::metrics::HubMetrics::new(hub_id.clone()),
     });
 
@@ -511,6 +534,7 @@ pub async fn run_mq_hub_with(
     if lease_ms > 0 {
         let routes = state.router.routes.clone();
         let peers = state.peers.clone();
+        let gens = state.route_generations.clone();
         let hub_id = state.hub_id.clone();
         let period = std::time::Duration::from_millis((lease_ms / 3).max(1));
         tasks.push(tokio::spawn(async move {
@@ -520,8 +544,21 @@ pub async fn run_mq_hub_with(
                 // 续租循环不会给一个已经不在的用户续命。
                 let users: Vec<String> = peers.read().await.keys().cloned().collect();
                 for user in users {
-                    if let Err(err) = routes.renew_user(&user, &hub_id).await {
-                        eprintln!("[mq-hub] renew route {user} failed: {err:#}");
+                    // With generations the renew is a CAS: a hub that lost the
+                    // row (its connection was replaced) must not keep it alive.
+                    let gen = gens.read().await.get(&user).copied().unwrap_or(0);
+                    let renewed = if gen == 0 {
+                        routes.renew_user(&user, &hub_id).await.map(|_| true)
+                    } else {
+                        routes.renew_route(&user, &hub_id, gen).await
+                    };
+                    match renewed {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            gens.write().await.remove(&user);
+                            tracing::debug!(hub = %hub_id, user, "route lease renew refused: no longer ours");
+                        }
+                        Err(err) => eprintln!("[mq-hub] renew route {user} failed: {err:#}"),
                     }
                 }
             }
@@ -622,9 +659,40 @@ async fn reject_hello(conn: &PeerConn, reason: &str) {
 }
 
 async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result<()> {
+    let conn_id = state
+        .next_conn
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // 首帧必须是 Hello{token}——**客户端不自报身份**（issue #3 / A01）。
-    let hello = conn.read_frame().await.context("await hello")?;
-    let token = match WireFrame::from_bytes(&hello)? {
+    // v3 多一个前置 `ClientHello{device_id}`：设备认领自己，身份仍然只从凭据解析。
+    let first = conn.read_frame().await.context("await hello")?;
+    if first.len() > state.limits.max_frame_bytes {
+        state.metrics.limit_dropped("max_frame_bytes");
+        reject_hello(&conn, "handshake frame too large").await;
+        anyhow::bail!("hello frame {} bytes over the ceiling", first.len());
+    }
+    let mut negotiated = Negotiated::V2;
+    let mut device_id = String::new();
+    let token = match WireFrame::from_bytes(&first)? {
+        WireFrame::ClientHello {
+            device_id: dev,
+            protocol,
+            caps,
+        } => {
+            negotiated = match Negotiated::negotiate(protocol, caps) {
+                Ok(n) => n,
+                Err(declared) => {
+                    // 封闭失败路径：先给原因，再断，不做"降级放行"
+                    reject_hello(&conn, &format!("unsupported protocol {declared}")).await;
+                    anyhow::bail!("peer declared protocol {declared}, cannot serve");
+                }
+            };
+            device_id = dev;
+            let next = conn.read_frame().await.context("await credential")?;
+            match WireFrame::from_bytes(&next)? {
+                WireFrame::Hello { token } => token,
+                _ => anyhow::bail!("ClientHello must be followed by a Hello credential"),
+            }
+        }
         WireFrame::Hello { token } => token,
         _ => anyhow::bail!("first frame was not Hello"),
     };
@@ -646,6 +714,18 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
     };
     let user_id = identity.user_id.clone();
 
+    // 设备数上限（G03-04 要求 3）。判断依据是在册连接数，不是启发式：
+    // peers 就是权威表，满了还放会把单个用户的写放大成 DoS 面。
+    {
+        let peers = state.peers.read().await;
+        let held = peers.get(&user_id).map(|m| m.len()).unwrap_or(0);
+        if held >= state.limits.max_conns_per_user {
+            state.metrics.limit_dropped("max_conns_per_user");
+            reject_hello(&conn, "too many live connections for this account").await;
+            anyhow::bail!("connection ceiling for {user_id}: {held}");
+        }
+    }
+
     // 告诉客户端它是谁：`user_id` 由服务端给出，客户端不再自己拼。
     conn.send_frame(
         &WireFrame::HelloAck {
@@ -656,10 +736,22 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
     )
     .await
     .context("send hello ack")?;
+    if negotiated.version >= crate::proto::PROTOCOL_V3 {
+        // v3 的第二张回执：这条连接认领的是哪个设备、哪个协议世代。
+        conn.send_frame(
+            &WireFrame::Auth {
+                user_id: user_id.clone(),
+                device_id: device_id.clone(),
+                session_id: identity.session_id.clone(),
+                version: negotiated.version,
+            }
+            .to_bytes()?,
+        )
+        .await
+        .context("send v3 auth")?;
+    }
+    state.metrics.protocol_negotiated(negotiated.version);
 
-    let conn_id = state
-        .next_conn
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     state
         .peers
         .write()
@@ -668,85 +760,48 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
         .or_default()
         .insert(conn_id, conn.clone());
     state.metrics.connected();
-    tracing::debug!(hub = %state.hub_id, user = %user_id, conn = conn_id, "conn bound");
-
     state
-        .router
-        .routes
-        .bind_user(&user_id, &state.hub_id)
+        .user_rate
+        .write()
         .await
-        .context("bind user route")?;
+        .entry(user_id.clone())
+        .or_insert_with(|| {
+            TokenBucket::new(
+                state.limits.max_msgs_per_user_per_min,
+                state.limits.max_msgs_per_user_per_min,
+                wxlike_core::types::now_ms(),
+            )
+        });
 
-    // store-and-forward：**claim → 逐条 ack**，不再"一次取走全部再发"（issue #10）。
-    //
-    // 旧实现先 `drain`（事务里读全部 + 删全部），然后逐条写连接。发到一半断连
-    // 时，剩下的**已经不在表里**了——排队 100 条只发出 1 条，另外 99 条永久丢。
-    // 现在每条投递成功才 ack（删），失败就 release（立刻重新可见），
-    // 进程被杀也有 LEASE_MS 兜底。
-    const CLAIM_BATCH: usize = 64;
-    loop {
-        let batch = match state.offline.claim(&user_id, CLAIM_BATCH).await {
-            Ok(b) => b,
-            Err(err) => {
-                eprintln!("[mq-hub] offline claim failed: {err:#}");
-                break;
-            }
-        };
-        if batch.is_empty() {
-            break;
-        }
-        tracing::info!(
-            hub = %state.hub_id,
-            user = %user_id,
-            count = batch.len(),
-            "flushing parked messages"
-        );
-
-        let mut delivered = 0usize;
-        for (idx, (id, frame)) in batch.iter().enumerate() {
-            // AR-6（#30）：过期的秘密会话帧不再补发。QUIC 与 WS 两条链路
-            // 都走这条 claim→逐条 ack 的补发路径，一处判定即全覆盖；ack
-            // 即丢弃，消息从此不可再取（与 HTTP 检索面的 TTL 过滤同口径）。
-            if expired_secret_frame(state.policy.as_deref(), frame).await {
-                if let Err(err) = state.offline.ack(*id).await {
-                    eprintln!("[mq-hub] offline ack {id} (expired) failed: {err:#}");
-                }
-                tracing::info!(
-                    hub = %state.hub_id,
-                    user = %user_id,
-                    id,
-                    "dropped expired secret-chat frame from offline flush"
-                );
-                continue;
-            }
-            match conn.send_frame(frame).await {
-                Ok(()) => {
-                    // ack 失败不该让已经发出的条目再发一遍；下一轮 claim 会
-                    // 因为 lease 未过期而跳过它们，最坏是重复一次。
-                    if let Err(err) = state.offline.ack(*id).await {
-                        eprintln!("[mq-hub] offline ack {id} failed: {err:#}");
-                    }
-                    delivered += 1;
-                }
-                Err(err) => {
-                    // 这一条和它后面的全部放回去：连接已经坏了，继续发只会
-                    // 一条条失败，还把这些条目白白 lease 住 30 秒。
-                    for (id, _) in batch.iter().skip(idx) {
-                        if let Err(e) = state.offline.release(*id).await {
-                            eprintln!("[mq-hub] offline release {id} failed: {e:#}");
-                        }
-                    }
-                    eprintln!("[mq-hub] parked deliver to {user_id} failed: {err}");
-                    break;
-                }
-            }
-        }
-        state.metrics.offline_parked(-(delivered as i64));
-        if delivered < batch.len() {
-            // 连接坏了，本轮结束；剩下的等下次连接
-            break;
-        }
+    // 路由带世代绑定（G03-04 要求 1）。不支持世代的表返回 0，走原来的
+    // `unbind_user` 路径；支持的表（内存/Redis）在断连时做 compare-and-clear，
+    // 一条迟到的旧连接就删不掉新连接刚写下的路由。
+    let generation = if state.router.routes.generations() {
+        state
+            .router
+            .routes
+            .bind_route(&user_id, &state.hub_id)
+            .await
+            .context("bind user route")?
+    } else {
+        state
+            .router
+            .routes
+            .bind_user(&user_id, &state.hub_id)
+            .await
+            .context("bind user route")?;
+        0
+    };
+    if generation != 0 {
+        state
+            .route_generations
+            .write()
+            .await
+            .insert(user_id.clone(), generation);
     }
+
+    // store-and-forward 首轮补发。
+    flush_parked(&state, &conn, conn_id, &user_id, &device_id, negotiated).await;
 
     let res = loop {
         let frame = match conn.read_frame().await {
@@ -758,23 +813,123 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
                 break Err(err);
             }
         };
+        if frame.len() > state.limits.max_frame_bytes {
+            state.metrics.limit_dropped("max_frame_bytes");
+            break Err(anyhow::anyhow!("inbound frame over the configured ceiling"));
+        }
         let Ok(wire) = WireFrame::from_bytes(&frame) else {
             continue;
         };
+        // v3 控制帧只属于已经协商出 v3 的连接；v2 对端发来它们说明实现有 bug，
+        // 静默忽略会把协议错误变成长期兼容层——直接断。
+        if negotiated.version < crate::proto::PROTOCOL_V3 && crate::proto::is_v3_control(&wire) {
+            break Err(anyhow::anyhow!(
+                "v3 control frame on a v2 connection; closing"
+            ));
+        }
+        // 心跳与每条入站帧都复查凭据：HTTP 那边退出登录/远程下线之后，
+        // 这条 QUIC/WS 连接最多只能再活一帧的时间（原来是一个心跳周期）。
+        if state.auth.as_ref().is_some_and(|a| a.is_revoked(&token)) {
+            tracing::info!(hub = %state.hub_id, user = %user_id, "credential revoked; closing long connection");
+            break Err(anyhow::anyhow!("credential revoked"));
+        }
         let env = match wire {
-            WireFrame::Msg(env) => env,
-            WireFrame::Ping => {
-                // 心跳顺带复查凭据：HTTP 那边退出登录/远程下线之后，
-                // 这条 QUIC/WS 连接不该还能收消息。最坏延迟 = 一个心跳周期。
-                if state.auth.as_ref().is_some_and(|a| a.is_revoked(&token)) {
-                    tracing::info!(hub = %state.hub_id, user = %user_id, "credential revoked; closing long connection");
-                    break Err(anyhow::anyhow!("credential revoked"));
+            WireFrame::Msg(env) => {
+                // 用户级速率上限（G03-04 要求 3）：超了丢帧并计量，
+                // 不把连接挂起（挂起等于让攻击者占用任务）。
+                let allowed = {
+                    let mut rates = state.user_rate.write().await;
+                    match rates.get_mut(&user_id) {
+                        Some(bucket) => bucket.spend(wxlike_core::types::now_ms(), 1),
+                        None => true,
+                    }
+                };
+                if !allowed {
+                    state.metrics.limit_dropped("max_msgs_per_user_per_min");
+                    tracing::warn!(hub = %state.hub_id, user = %user_id, "inbound rate ceiling hit");
+                    continue;
                 }
-                continue;
+                env
             }
+            WireFrame::Ping => continue,
             WireFrame::Hello { .. }
             | WireFrame::HelloAck { .. }
-            | WireFrame::HelloReject { .. } => continue,
+            | WireFrame::HelloReject { .. }
+            | WireFrame::ClientHello { .. } => {
+                // 重复握手帧：忽略。身份只在首帧建立，再声明一次不改变任何事实
+                continue;
+            }
+            WireFrame::Subscribe { scopes } => {
+                let mut subs = state.subscriptions.write().await;
+                let held = subs.entry(conn_id).or_insert(0usize);
+                if *held + scopes.len() > state.limits.max_subscriptions_per_conn {
+                    state.metrics.limit_dropped("max_subscriptions_per_conn");
+                    break Err(anyhow::anyhow!("subscription ceiling exceeded"));
+                }
+                *held += scopes.len();
+                drop(subs);
+                // 订阅面只记账：授权判定在 handle_inbound 的成员/策略检查里，
+                // "订阅了"不等于"收得到"——不属于该会话的 scope 投不到消息。
+                tracing::debug!(hub = %state.hub_id, user = %user_id, conn = conn_id, scopes = scopes.len(), "v3 subscribe");
+                continue;
+            }
+            WireFrame::Ack {
+                conv_id,
+                stored_cursor,
+            } => {
+                let retired = state.inflight.confirm(conn_id, &conv_id, stored_cursor);
+                if !retired.is_empty() {
+                    state.metrics.inflight_unacked(-(retired.len() as i64));
+                    for p in &retired {
+                        if let Err(err) = state.offline.ack(p.store_id).await {
+                            eprintln!("[mq-hub] stored-ack retire {} failed: {err:#}", p.store_id);
+                        }
+                    }
+                    // 信箱侧的设备游标：这条设备的"已落库"进度，与账号已读无关
+                    if let Some(mailbox) = &state.mailbox {
+                        if let Err(err) =
+                            mailbox.stored_ack(&user_id, &device_id, &conv_id, stored_cursor)
+                        {
+                            eprintln!(
+                                "[mq-hub] stored_ack {conv_id}@{stored_cursor} failed: {err:#}"
+                            );
+                        }
+                    }
+                    // 窗口腾出来之后把还在队列里的补上（否则要等下一次重连）
+                    flush_parked(&state, &conn, conn_id, &user_id, &device_id, negotiated).await;
+                }
+                tracing::trace!(hub = %state.hub_id, user = %user_id, conv = %conv_id, stored_cursor, retired = retired.len(), "stored ack");
+                continue;
+            }
+            WireFrame::Resume { conv_id, cursor } => {
+                let flushed =
+                    flush_parked(&state, &conn, conn_id, &user_id, &device_id, negotiated).await;
+                let hint = state.mailbox.as_ref().and_then(|m| {
+                    m.sync_hint(&conv_id, &user_id, &device_id, cursor)
+                        .ok()
+                        .flatten()
+                });
+                if let Some((from_seq, to_seq, gap)) = hint {
+                    conn.send_frame(
+                        &WireFrame::Event {
+                            conv_id: conv_id.clone(),
+                            from_seq,
+                            to_seq,
+                            gap,
+                        }
+                        .to_bytes()?,
+                    )
+                    .await
+                    .context("send event hint")?;
+                }
+                tracing::debug!(hub = %state.hub_id, user = %user_id, conv = %conv_id, cursor, flushed, "v3 resume");
+                continue;
+            }
+            WireFrame::Event { .. } | WireFrame::Auth { .. } => {
+                // 服务端下行帧的形状：客户端不得冒充 hub 广播范围提示
+                tracing::warn!(hub = %state.hub_id, user = %user_id, "server-only control frame from client; ignored");
+                continue;
+            }
         };
         let started = std::time::Instant::now();
         let outcome = handle_inbound(&state, &user_id, &env).await;
@@ -806,18 +961,197 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
             }
         }
     }
+    state.subscriptions.write().await.remove(&conn_id);
+    if !keep_bound {
+        state.user_rate.write().await.remove(&user_id);
+        if generation != 0 {
+            state.route_generations.write().await.remove(&user_id);
+        }
+    }
+    // G03-02：这条连接写了但没被确认落库的帧，全部放回离线队列。
+    // 不释放就等于"已经交出去但没人收到"，正是本卡要避免的丢失窗口。
+    let owed = state.inflight.discard(conn_id);
+    if !owed.is_empty() {
+        state.metrics.inflight_unacked(-(owed.len() as i64));
+        for p in &owed {
+            if let Err(err) = state.offline.release(p.store_id).await {
+                eprintln!(
+                    "[mq-hub] release on disconnect {} failed: {err:#}",
+                    p.store_id
+                );
+            }
+        }
+        tracing::info!(hub = %state.hub_id, user = %user_id, conn = conn_id, count = owed.len(), "unacked writes requeued");
+    }
     state.metrics.disconnected();
     if keep_bound {
         tracing::debug!(hub = %state.hub_id, user = %user_id, conn = conn_id, "conn unbound (devices remain)");
     } else {
         tracing::debug!(hub = %state.hub_id, user = %user_id, "user unbound");
-        let _ = state
-            .router
-            .routes
-            .unbind_user(&user_id, &state.hub_id)
-            .await;
+        let cleared = if generation == 0 {
+            let _ = state
+                .router
+                .routes
+                .unbind_user(&user_id, &state.hub_id)
+                .await;
+            true
+        } else {
+            // compare-and-clear：别的连接已经接手时，这里什么都不做
+            state
+                .router
+                .routes
+                .clear_route(&user_id, &state.hub_id, generation)
+                .await
+                .unwrap_or(false)
+        };
+        if generation != 0 && !cleared {
+            tracing::info!(hub = %state.hub_id, user = %user_id, "stale route unlink refused: a newer generation holds it");
+        }
     }
     res
+}
+
+/// Parse a parked frame into the ledger key: which conversation, which seq.
+///
+/// A frame we cannot parse is still tracked (`Pending::opaque`), but it can only
+/// be retired by the store lease — a cursor ack must never silently credit it.
+fn pending_of(store_id: i64, frame: &[u8]) -> Pending {
+    match WireFrame::from_bytes(frame) {
+        Ok(WireFrame::Msg(env)) => Pending::sequenced(store_id, env.conv_id, env.seq),
+        _ => Pending::opaque(store_id),
+    }
+}
+
+/// Flush what is parked for `user` on this connection.
+///
+/// **v2**: a frame leaves the offline store when the write succeeded (the old
+/// behaviour, kept for peers that cannot ack). **v3 with `StoredAck`**: the row
+/// stays until the client sends `Ack{stored_cursor}`; a write only moves it into
+/// the connection's bounded in-flight window.
+///
+/// Frames are claimed in batches and **never drained in one transaction**
+/// (issue #10): taking everything out before sending is what lost the tail of a
+/// half-finished flush.
+async fn flush_parked(
+    state: &Arc<HubState>,
+    conn: &PeerConn,
+    conn_id: ConnId,
+    user_id: &str,
+    device_id: &str,
+    negotiated: Negotiated,
+) -> usize {
+    const CLAIM_BATCH: usize = 64;
+    let mut total = 0usize;
+    loop {
+        let batch = match state.offline.claim(user_id, CLAIM_BATCH).await {
+            Ok(b) => b,
+            Err(err) => {
+                eprintln!("[mq-hub] offline claim failed: {err:#}");
+                break;
+            }
+        };
+        if batch.is_empty() {
+            break;
+        }
+        tracing::info!(
+            hub = %state.hub_id,
+            user = %user_id,
+            device = %device_id,
+            count = batch.len(),
+            stored_ack = negotiated.stored_ack,
+            "flushing parked messages"
+        );
+        let delivered = flush_batch(state, conn, conn_id, user_id, &batch, negotiated).await;
+        state.metrics.offline_parked(-(delivered as i64));
+        total += delivered;
+        if delivered < batch.len() {
+            // the connection is gone; the rest waits for the next Hello
+            break;
+        }
+    }
+    total
+}
+
+/// Write one claimed batch, retiring or tracking each row as it goes.
+///
+/// Returns how many rows were written. Anything from the first failed write on
+/// is released immediately: it stays leased for 30 s otherwise, for nothing.
+async fn flush_batch(
+    state: &Arc<HubState>,
+    conn: &PeerConn,
+    conn_id: ConnId,
+    user_id: &str,
+    batch: &[(i64, Vec<u8>)],
+    negotiated: Negotiated,
+) -> usize {
+    let mut delivered = 0usize;
+    for (idx, (id, frame)) in batch.iter().enumerate() {
+        // AR-6（#30）：过期的秘密会话帧不再补发，ack 即丢弃（与 HTTP 检索面的
+        // TTL 过滤同口径）。QUIC 与 WS 都走这一条补发路径，一处判定即全覆盖。
+        if expired_secret_frame(state.policy.as_deref(), frame).await {
+            drop_parked(state, *id, user_id, "expired secret-chat frame").await;
+            continue;
+        }
+        if conn.send_frame(frame).await.is_err() {
+            release_from(state, batch, idx).await;
+            eprintln!("[mq-hub] parked deliver to {user_id} failed: socket write");
+            return delivered;
+        }
+        delivered += 1;
+        track_written(state, conn_id, *id, frame, negotiated).await;
+    }
+    delivered
+}
+
+/// Put an unwritten tail back on the queue.
+///
+/// The rest of the batch is unreachable once one write fails: releasing it now is
+/// what keeps a dead socket from holding 64 rows leased for 30 seconds.
+async fn release_from(state: &Arc<HubState>, batch: &[(i64, Vec<u8>)], from: usize) {
+    for (id, _) in batch.iter().skip(from) {
+        if let Err(e) = state.offline.release(*id).await {
+            eprintln!("[mq-hub] offline release {id} failed: {e:#}");
+        }
+    }
+}
+
+/// A write succeeded: either hand the row to the in-flight window (v3) or retire
+/// it on the spot (v2, the pre-stored-ack behaviour).
+async fn track_written(
+    state: &Arc<HubState>,
+    conn_id: ConnId,
+    id: i64,
+    frame: &[u8],
+    negotiated: Negotiated,
+) {
+    if !negotiated.stored_ack {
+        // ack 失败不该让已经发出的条目再发一遍；下一轮 claim 会因为 lease 未过期
+        // 而跳过它们，最坏是重复一次。
+        if let Err(err) = state.offline.ack(id).await {
+            eprintln!("[mq-hub] offline ack {id} failed: {err:#}");
+        }
+        return;
+    }
+    state.metrics.inflight_unacked(1);
+    let overflow = state.inflight.record(conn_id, pending_of(id, frame));
+    if overflow.is_empty() {
+        return;
+    }
+    // the client stopped acking: put the oldest rows back rather than dropping
+    state.metrics.inflight_unacked(-(overflow.len() as i64));
+    state.metrics.limit_dropped("max_inflight_per_conn");
+    for p in &overflow {
+        let _ = state.offline.release(p.store_id).await;
+    }
+    tracing::warn!(hub = %state.hub_id, conn = conn_id, count = overflow.len(), "inflight window overflow: oldest requeued");
+}
+
+/// Drop a parked row for a reason that is not a client acknowledgement.
+async fn drop_parked(state: &Arc<HubState>, id: i64, user_id: &str, why: &str) {
+    if let Err(err) = state.offline.ack(id).await {
+        eprintln!("[mq-hub] offline ack {id} ({why}) failed: {err:#}");
+    }
+    tracing::info!(hub = %state.hub_id, user = %user_id, id, why, "dropped parked frame");
 }
 
 /// QUIC close surfaces as UnexpectedEof on the stream; WS close as a generic

@@ -1,0 +1,59 @@
+{
+  "contract_version": "search-v1",
+  "case": "通知收件箱：事务内产生、dedupe 去重、已读跨端共享、up_to_seq 批量推进",
+  "setup": {
+    "users": ["author", "fan"],
+    "friends": [["author", "fan"]],
+    "moments": [{ "id": "mo1", "author": "author", "text": "hi" }]
+  },
+  "steps": [
+    {
+      "command": "moment.like",
+      "actor": "fan",
+      "expect": { "ok": true }
+    },
+    {
+      "command": "moment.unlike",
+      "actor": "fan",
+      "expect": { "ok": true }
+    },
+    {
+      "command": "moment.like",
+      "actor": "fan",
+      "expect": { "ok": true, "data": { "comment": "重复点赞第二次落库时被 dedupe_key 拦下" } }
+    },
+    {
+      "command": "notifications.list",
+      "actor": "author",
+      "expect": { "ok": true, "data": { "items_len": 1, "unread_count": 1 } }
+    },
+    {
+      "command": "notifications.read",
+      "actor": "author",
+      "payload": { "up_to_seq": "最新 seq" },
+      "expect": { "ok": true, "data": { "updated": 1, "unread_count": 0 } }
+    },
+    {
+      "command": "notifications.list",
+      "actor": "author",
+      "expect": { "ok": true, "data": { "unread_count": 0 } }
+    },
+    {
+      "command": "moment.comment",
+      "actor": "fan",
+      "payload": { "text": "第一条" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "moment.comment",
+      "actor": "fan",
+      "payload": { "text": "第二条" },
+      "expect": { "ok": true, "data": { "comment": "评论不参与去重：每条各一个通知" } }
+    },
+    {
+      "command": "notifications.list",
+      "actor": "author",
+      "expect": { "ok": true, "data": { "unread_count": 2 } }
+    }
+  ]
+}

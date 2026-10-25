@@ -227,39 +227,97 @@ impl ReliableQueue for MemoryReliableMq {
     }
 }
 
+/// One route row: which hub holds the connection, and the generation that
+/// installed it (G03-04). `generation` is 0 for rows written through the legacy
+/// `bind_user` path, which never CAS-clears.
+#[derive(Clone, Debug, Default)]
+struct Route {
+    hub: String,
+    generation: u64,
+}
+
 /// User→hub routes + hub registry, all in memory.
 #[derive(Default)]
 pub struct MemoryRoutes {
-    user_hub: RwLock<HashMap<String, String>>,
+    user_hub: RwLock<HashMap<String, Route>>,
     hubs: RwLock<std::collections::BTreeSet<String>>,
+    /// Monotonic across the process: two binds of the same user never share a
+    /// generation, which is the whole point of the CAS.
+    next_generation: std::sync::atomic::AtomicU64,
 }
 
 impl MemoryRoutes {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
+
+    fn generation(&self) -> u64 {
+        self.next_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
 }
 
 #[async_trait]
 impl RouteTable for MemoryRoutes {
     async fn bind_user(&self, user: &str, hub_id: &str) -> anyhow::Result<()> {
-        self.user_hub
-            .write()
-            .await
-            .insert(user.to_string(), hub_id.to_string());
+        self.user_hub.write().await.insert(
+            user.to_string(),
+            Route {
+                hub: hub_id.to_string(),
+                generation: self.generation(),
+            },
+        );
         Ok(())
     }
 
     async fn unbind_user(&self, user: &str, hub_id: &str) -> anyhow::Result<()> {
         let mut m = self.user_hub.write().await;
-        if m.get(user).map(|h| h.as_str()) == Some(hub_id) {
+        if m.get(user).map(|r| r.hub.as_str()) == Some(hub_id) {
             m.remove(user);
         }
         Ok(())
     }
 
     async fn route_of(&self, user: &str) -> anyhow::Result<Option<String>> {
-        Ok(self.user_hub.read().await.get(user).cloned())
+        Ok(self.user_hub.read().await.get(user).map(|r| r.hub.clone()))
+    }
+
+    async fn bind_route(&self, user: &str, hub_id: &str) -> anyhow::Result<u64> {
+        let generation = self.generation();
+        self.user_hub.write().await.insert(
+            user.to_string(),
+            Route {
+                hub: hub_id.to_string(),
+                generation,
+            },
+        );
+        Ok(generation)
+    }
+
+    async fn renew_route(&self, user: &str, hub_id: &str, generation: u64) -> anyhow::Result<bool> {
+        // read-only: the memory table has no lease to extend, it only reports
+        // whether this generation is still the holder
+        let m = self.user_hub.read().await;
+        match m.get(user) {
+            Some(r) if r.hub == hub_id && r.generation == generation => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    async fn clear_route(&self, user: &str, hub_id: &str, generation: u64) -> anyhow::Result<bool> {
+        let mut m = self.user_hub.write().await;
+        if m.get(user)
+            .is_some_and(|r| r.hub == hub_id && r.generation == generation)
+        {
+            m.remove(user);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn generations(&self) -> bool {
+        true
     }
 
     async fn register_hub(&self, hub_id: &str) -> anyhow::Result<()> {
@@ -348,5 +406,37 @@ mod tests {
         routes.unbind_user("alice", "hub-a").await.unwrap();
         assert_eq!(routes.route_of("alice").await.unwrap(), None);
         assert_eq!(routes.list_hubs().await.unwrap(), vec!["hub-a".to_string()]);
+    }
+
+    /// G03-04 要求 1：过期连接不能清掉新路由。
+    #[tokio::test]
+    async fn a_stale_connection_cannot_clear_a_newer_route() {
+        let routes = MemoryRoutes::new();
+        routes.register_hub("hub-a").await.unwrap();
+
+        let old = routes.bind_route("alice", "hub-a").await.unwrap();
+        // alice reconnects on the same hub before the old socket finished dying
+        let fresh = routes.bind_route("alice", "hub-a").await.unwrap();
+        assert_ne!(old, fresh, "each bind owns a distinct generation");
+
+        assert!(
+            !routes.clear_route("alice", "hub-a", old).await.unwrap(),
+            "stale unlink is refused"
+        );
+        assert_eq!(
+            routes.route_of("alice").await.unwrap(),
+            Some("hub-a".into())
+        );
+        assert!(
+            !routes.renew_route("alice", "hub-a", old).await.unwrap(),
+            "stale renew is refused"
+        );
+        assert!(routes.renew_route("alice", "hub-a", fresh).await.unwrap());
+
+        assert!(routes.clear_route("alice", "hub-a", fresh).await.unwrap());
+        assert_eq!(routes.route_of("alice").await.unwrap(), None);
+        // clearing twice is not an error, it just does nothing
+        assert!(!routes.clear_route("alice", "hub-a", fresh).await.unwrap());
+        assert!(routes.generations());
     }
 }

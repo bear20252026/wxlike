@@ -1,0 +1,44 @@
+{
+  "fixture_id": "discovery.translation.success",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.translation.translate",
+  "category": "success",
+  "description": "授权后翻译：源语言自动检测；译文与原文都不持久化。",
+  "request": {
+    "text": "你好，请问地铁站怎么走？",
+    "source_language": null,
+    "target_language": "en",
+    "consent": true
+  },
+  "expected": {
+    "text": "Hello, how do I get to the subway station?",
+    "source_language": "zh",
+    "target_language": "en",
+    "confidence": 0.93,
+    "provider": "g07-fake-translate"
+  },
+  "boundary_cases": [
+    {
+      "name": "consent_missing",
+      "request": { "text": "hi", "target_language": "zh" },
+      "expected_error": { "code": "CONSENT_REQUIRED", "detail": "upload consent required" }
+    },
+    {
+      "name": "source_equals_target",
+      "request": { "text": "hi", "source_language": "en", "target_language": "en", "consent": true },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "source and target must differ" }
+    },
+    {
+      "name": "text_too_long",
+      "request": { "text": "<10001 bytes>", "target_language": "en", "consent": true },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "text too long" }
+    },
+    {
+      "name": "no_provider",
+      "precondition": "未配置 TranslationProvider",
+      "request": { "text": "hi", "target_language": "zh", "consent": true },
+      "expected_error": { "code": "DEPENDENCY_UNAVAILABLE", "detail": "no translation provider" }
+    }
+  ],
+  "invariants": ["译文不写库不写日志", "每分钟每 actor 限 60 次（默认配置）"]
+}

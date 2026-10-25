@@ -1,0 +1,65 @@
+# G03-01 消息提交事务与幂等 —— 集成请求
+# 本文件登记超出 G03 独占写路径、需要 G00 或其他组执行的条目。
+# 独占写路径内已完成的：crates/message/{src/submit.rs,src/lib.rs,tests/g03_01_submit.rs}。
+
+request_id: G03-01
+task_issue: 116
+group_issue: 84
+contract_version: messaging-v3-draft
+artifacts:
+  - crates/message/src/submit.rs
+  - crates/message/src/lib.rs
+  - crates/message/tests/g03_01_submit.rs
+
+requests:
+  - id: REQ-G00-02-move-messaging-submit
+    target: G00-02
+    action: 纯移动 `crates/message/src/submit.rs` → `crates/features/messaging/src/submit/`
+      （卡面计划路径），与 `crates/features/messaging/Cargo.toml` 一起登记；
+      移动前 G03 只能落在独占根 `crates/message/**`。
+    rationale: G00-02 尚未执行，卡面目标目录不存在；G03 不得越界建 features/。
+
+  - id: REQ-G00-03-ratify-messaging-contracts
+    target: G00-03
+    action: 批准本卡实际实现的命令面命名与幂等键形状：
+      `messaging.send{owner, sender_device, idempotency_key, msg_id, type_id, payload,
+      body_kind, recipients[], forward_of}`、`messaging.edit{msg_id, expected_version,
+      payload}`、`messaging.recall{msg_id}`、`messaging.forward{source_msg_id, …}`；
+      唯一键 = (`sender_device`, `idempotency_key`)。
+    rationale: 幂等键作用域是提交卡的核心决策，冻结权在 G00-03。
+
+  - id: REQ-G00-migration-numbering
+    target: G00
+    action: 为 `message_submit`、`mailbox` 新列（sender_device/body_kind/edit_version/
+      recalled_at_ms/forward_of）分配 schema 编号；列名以代码为准，回滚兼容说明见
+      `crates/message/src/lib.rs` 的 `add_missing_columns`。
+    rationale: 迁移编号由 G00 串行分配，避免多组撞号。
+
+  - id: REQ-G10-send-caller-contract
+    target: G10
+    action: 桌面/网页发送改走 `submit`（不再走 `append`），并按
+      (`sender_device`, `idempotency_key`) 生成键；响应丢失后重发同一键即可，
+      服务端只落一条。`recipients` 必须包含发送者自己的其它设备（多端回显），
+      信箱不猜成员关系。
+    rationale: 提交语义换了调用面才生效；G03 不改 UI 组文件。
+
+  - id: REQ-G02-membership-event-time
+    target: G02-02
+    action: 群成员 join/leave 需按会话 seq 边界给出 `joined_seq`/`left_seq`
+      （本卡按事件时间判定可见性，不用墙钟）；退群后补发的裁决见
+      `SubmitRecipient::eligible_at`。
+    rationale: 成员可见窗口是关系层事实，信箱只消费。
+
+notes:
+  - 撤回时限 `RECALL_WINDOW_MS = 120_000` 由服务端裁决（`recall_message`），
+    管理员代撤 `withdraw_as` 刻意不受时限约束并记录 actor。
+  - 密文（`body_kind = ciphertext`）原样存储、原样转发拒绝，服务端从不合成明文；
+    列表预览对密文为空串（数据最小化证据见测试
+    `sealed_payload_is_stored_verbatim_and_never_rewritten_by_the_server`）。
+  - 关联入口（交付种子 44 条中的 G03-01 部分，`TO_EXPAND_G00-01` 展开后仍以
+    entries.json 为准）：SEED-0028 send、SEED-0140 send、SEED-0141 按住说话松开发送、
+    SEED-0022/0026/0034 消息气泡操作（撤回/复制/转发/引用，原型 `b.fn` 待展开）、
+    SEED-0136 item.onClick。
+  - 判属他组、不由 G03 认领：SEED-0025 资料页、SEED-0030/0149 聊天文件、
+    SEED-0031/0150 图片预览、SEED-0033 通话、SEED-0137 表情商店、SEED-0147 群成员、
+    SEED-0027/0138/0139/0142/0143/0144/0145/0146/0284/0286/0290/0291/0292 纯本地 UI 态。

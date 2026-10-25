@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "updated_at": "2026-10-24",
+  "gaps": [
+    {
+      "id": "G01-03-WASM",
+      "owner": "G01",
+      "task": "G01-03",
+      "check": "wasm",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "No workspace crate declares a wasm32 target yet; `cargo build --target wasm32-unknown-unknown` cannot be selected.",
+      "close_when": "A wasm32 buildable crate exists and the wasm job compiles it."
+    },
+    {
+      "id": "G00-04-PG",
+      "owner": "G00",
+      "task": "G00-04",
+      "check": "server",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "Server still opens SQLite; production PG repository and migrations are not merged.",
+      "close_when": "G00-04 lands PG profile and the restore drill runs against PostgreSQL."
+    },
+    {
+      "id": "OBS-TRACE-ID",
+      "owner": "G03",
+      "task": "G03/G16-05",
+      "check": "release",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "HTTP request path does not yet carry a request/trace id into tracing spans or structured JSON logs.",
+      "close_when": "Server emits structured logs with a request id that matches the operation id used by 值班 runbooks."
+    },
+    {
+      "id": "READINESS-ENDPOINT",
+      "owner": "G03",
+      "task": "G16-02 dependency",
+      "check": "server",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "Only /health (liveness) exists; there is no readiness probe that proves DB/queue availability.",
+      "close_when": "A /ready endpoint or equivalent container probe verifies DB and MQ."
+    },
+    {
+      "id": "MOBILE-DEVICE-EVIDENCE",
+      "owner": "G16",
+      "task": "G16-03",
+      "check": "mobile",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "No licensed device runner or signing secrets are configured in this repository; only unsigned artefacts can be produced.",
+      "close_when": "Signed APK/AAB/IPA and push/call/WebView/permission evidence exist for the frozen device matrix."
+    },
+    {
+      "id": "PAYMENT-CALLBACK-REPLAY",
+      "owner": "G06",
+      "task": "G16-04 integration",
+      "check": "e2e",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "There is no provider callback endpoint with an idempotency key; the replay scenario cannot be executed against the real domain.",
+      "close_when": "G06 exposes a callback contract with operation_id and replay is proven single-effect."
+    },
+    {
+      "id": "RTC-WEAK-NET",
+      "owner": "G09",
+      "task": "G16-04 integration",
+      "check": "e2e",
+      "status": "open",
+      "blocks_release": true,
+      "evidence": "The CI runner has no licensed TURN/SFU endpoint; weak-network RTC needs the external provider stage.",
+      "close_when": "The provider stage records reconnect/jitter/loss evidence against a real TURN/SFU."
+    }
+  ]
+}
