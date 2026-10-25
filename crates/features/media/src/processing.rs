@@ -669,6 +669,9 @@ impl FfmpegRunner {
                     rlim_max: fsize,
                 };
                 libc::setrlimit(libc::RLIMIT_FSIZE, &file_limit);
+                // prctl(PR_SET_NO_NEW_PRIVS) is Linux-only; rlimits cover the
+                // rest of the platforms.
+                #[cfg(target_os = "linux")]
                 libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
             }
             Ok(())
