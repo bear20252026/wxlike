@@ -29,6 +29,8 @@
 //! 几百人需要把房间拆到多节点并用级联（每人只在本节点内转发，跨节点各一条
 //! 上行）。所以本模块刻意把"一个房间 = 一个节点"作为边界。
 
+pub mod live;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 

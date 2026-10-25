@@ -27,6 +27,7 @@ pub mod dsp;
 pub mod e2ee;
 pub mod host;
 pub mod ice;
+pub mod live_session;
 pub mod media;
 pub mod recording;
 pub mod room;
