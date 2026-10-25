@@ -938,8 +938,10 @@ fn waveform_bars(bytes: &[u8]) -> Result<Vec<u8>> {
         return Err(MediaError::Unsupported("empty audio stream".into()));
     }
     let samples: Vec<i16> = bytes
-        .chunks_exact(SAMPLE_BYTES)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<SAMPLE_BYTES>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair))
         .collect();
     if samples.is_empty() {
         return Err(MediaError::Unsupported("empty audio stream".into()));
