@@ -55,6 +55,17 @@ flutter test
     qr_approval_test     3
 ```
 
+分支级复核（逐个 checkout，绑定由 `crates/ffi/regenerate.sh` 生成）：
+
+| 分支 | flutter analyze | `flutter test test/g12` |
+|---|---|---|
+| feat/FP-G12-01 | 通过 | 16 passed |
+| feat/FP-G12-02 | 通过 | 23 passed |
+| feat/FP-G12-03 | 通过 | 32 passed |
+| feat/FP-G12-04 | 通过 | 41 passed |
+| feat/FP-G12-05 | 通过 | 47 passed |
+| feat/FP-G12-06 | 通过 | 50 passed（tip 全量 59，含既有 9 个） |
+
 覆盖：成功、空结果、参数错误、未授权/越权、超时/断网、取消、重复提交；
 写操作幂等键复用与冲突刷新；附件上传/发送分阶段重试；进程重启恢复草稿/附件。
 
@@ -66,7 +77,6 @@ flutter test
   失败分类；这些页面不能据此标 ACCEPTED。
 - 深色 token 是原型缺失下的实现补全（5px 气泡圆角按原型 `--color-bubble` 区块修正），
   已在 G12-01-R3 请求设计确认。
-- 六卡是 stacked PR；本机只在 tip 上跑完整 analyze/test，未对中间分支单独重跑。
 
 ## 四、数据与回滚
 
