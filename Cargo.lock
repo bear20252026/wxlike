@@ -6909,6 +6909,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chacha20poly1305 0.11.0",
  "cpal",
  "hex",
  "hmac 0.12.1",
