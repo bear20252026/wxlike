@@ -1,0 +1,98 @@
+# CommercePort（G06）领域事件契约 v1
+#
+# 事实来源：store::emit 写入 commerce_outbox，业务记录与事件同一事务提交。
+# 投递语义为 at-least-once；消费者必须按 event_id 去重，并按 aggregate_version
+# 检测缺口，不得假设全局有序。
+contract: commerce
+version: 1
+owner: G06
+envelope:
+  event_id: "服务端熵源生成，全局唯一"
+  aggregate_id: "业务对象 ID（intent/transfer/packet/order/entitlement/withdrawal）"
+  event_type: "见下表；版本化由 type + schema_version 决定"
+  schema_version: 1
+  occurred_at_ms: int64
+  payload: "最小必需字段；不含 PAN、CVV、token 明文、手机号或完整备注"
+delivery:
+  transport: outbox polling
+  retry: at-least-once
+  ordering: per-aggregate best effort
+  consumers: [G07 ServiceCatalog, G14 AdminFacade, UI projections]
+visibility:
+  default: "事件只投递给有该对象读权限的消费者；admin 需独立 audience"
+  pii: "user_id 以稳定 ID 出现，不含昵称/手机号/设备指纹"
+
+events:
+  payment.succeeded:
+    aggregate: payment_intent
+    payload: { intent_id: string, amount_minor: "string", currency: "ISO4217" }
+    consumers: [G07, UI]
+    notes: 只在首次成功落账时发一次；超时/未知状态不发。
+
+  payment.refunded:
+    aggregate: payment_intent
+    payload: { intent_id: string, refund_id: string, amount_minor: "string" }
+    consumers: [G07, G14, UI]
+    notes: 部分退款与全额退款都发；累计可退额由聚合读取。
+
+  withdrawal.paid:
+    aggregate: withdrawal
+    payload: { withdrawal_id: string, amount_minor: "string" }
+    consumers: [G14, UI]
+    notes: 只在供应商确认 paid 并完成冻结捕获后发；失败/处理中不发。
+
+  transfer.created:
+    aggregate: transfer
+    payload: { transfer_id: string, amount_minor: "string", currency: "ISO4217" }
+    consumers: [Messaging（消息卡片引用）, UI]
+    notes: 创建即冻结发送方资金；聊天消息只引用 transfer_id。
+
+  transfer.accepted:
+    aggregate: transfer
+    payload: { transfer_id: string }
+    consumers: [Messaging, UI]
+    notes: 收款完成；拒收/过期当前不单独发事件，读取状态即可。
+
+  redpacket.created:
+    aggregate: red_packet
+    payload: { packet_id: string, conversation_id: string, count: int }
+    consumers: [Messaging, UI]
+    notes: 服务端已预先分配份额；客户端动画不参与结果。
+
+  redpacket.claimed:
+    aggregate: red_packet
+    payload: { packet_id: string, user_id: string, amount_minor: "string" }
+    consumers: [Messaging, UI]
+    notes: 同一用户重试不重复发事件。
+
+  order.created:
+    aggregate: order
+    payload: { order_id: string, quote_ref: string }
+    consumers: [G07, UI]
+
+  order.fulfilled:
+    aggregate: order
+    payload: { order_id: string }
+    consumers: [G07, G14, UI]
+    notes: 支付成功不自动产生该事件；只有服务方显式履约才发。
+
+  entitlement.issued:
+    aggregate: entitlement
+    payload: { entitlement_id: string, kind: "card|coupon|ticket", issuer_id: string }
+    consumers: [UI, G14]
+
+  entitlement.redeemed:
+    aggregate: entitlement
+    payload: { entitlement_id: string, redemption_id: string }
+    consumers: [UI, G14]
+    notes: 一次性状态转换；同一令牌不会产生第二条。
+
+not_yet_emitted:
+  # 已知缺口：下列状态变化目前只落状态，不发事件；消费方应轮询或由后续卡补齐。
+  - transfer.rejected
+  - transfer.expired
+  - redpacket.expired
+  - withdrawal.failed
+  - withdrawal.processing
+  - reconciliation.exception_open
+  - order.cancelled

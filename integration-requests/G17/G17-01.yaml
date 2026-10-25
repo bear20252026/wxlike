@@ -1,0 +1,67 @@
+task: G17-01
+title: 成熟代码来源审查与SBOM
+issue: https://github.com/bear20252026/wxlike/issues/193
+branch: feat/FP-G17-01
+contract: upstream repo/SHA/path/license/NOTICE/patchlog
+entry_ids: []          # 本卡不新增运行时入口：纯工具与账本，无 action/entry 变更
+action_ids: []
+
+paths:
+  - tools/source-audit/sourceaudit/**
+  - tools/source-audit/tests/**
+  - tools/source-audit/README.md
+  - third_party/reviews/registry.json
+  - third_party/reviews/license-policy.json
+  - third_party/reviews/exclusions.json
+  - third_party/reviews/notice-waivers.json
+  - third_party/reviews/NOTICE-INDEX.md
+  - third_party/reviews/patches/**
+  - third_party/reviews/sbom/wxlike.cdx.json
+
+root_registration:
+  - action: ci_job
+    workflow: .github/workflows/ci.yml
+    job: source-audit
+    steps:
+      - "python -m unittest discover -s tools/source-audit/tests -v"
+      - "python -m sourceaudit provenance check --root ."
+      - "python -m sourceaudit sbom check --root ."
+      - "python -m sourceaudit notice check --root ."
+    note: 全部零第三方依赖，Python 3.12（与现有 quality job 同版本）
+  - action: root_file_update
+    file: THIRD-PARTY-NOTICES.md
+    owner: G00
+    issue: "https://github.com/bear20252026/wxlike/issues/228"
+    detail: 补登 23 个直接依赖（清单见 third_party/reviews/NOTICE-INDEX.md），每补一项删一条 notice-waivers
+  - action: root_file_update
+    file: _typos.toml
+    owner: G00
+    detail: >-
+      本分支直接改了根 _typos.toml（超出 G17 可写范围，特此报备）：在 [default.extend-words]
+      增加 flate（DEFLATE，crate 名 flate2 被 typos 分词出 "flate"）与 writeable（ICU4X
+      writeable crate 合法包名）。两者均来自 SBOM 生成物 third_party/reviews/sbom/wxlike.cdx.json
+      的组件名，不改即 quality job 的 typos 门禁恒红。G00 复核后可挪位置或换写法（如把
+      third_party/reviews/sbom 加入 extend-exclude），语义不变即可。
+  - action: regeneration_policy
+    file: third_party/reviews/sbom/wxlike.cdx.json
+    trigger: Cargo.lock / ui/package-lock.json / apps/mobile/pubspec.lock / Dockerfile / docker-compose.yml 变更
+    command: "python -m sourceaudit sbom generate --root ."
+
+acceptance_notes:
+  - 每个引入片段有永久链接（完整 SHA）+ 许可 + 改动说明；sha256 不符即红
+  - 未知许可（NOASSERTION）不得 vendor，policy 里是 deny 而不是 review
+  - 排除项必须引用 exclusions.json 的规则 id，"没抄"不能只靠嘴说
+  - NOTICE 覆盖以**直接依赖**为判据（含 target-specific），dev-dependencies 不计
+  - SBOM 可复现：同锁文件两次生成字节相同（serialNumber 由组件 purl 派生，不写时间戳）
+  - 空结果不通过：registry 空表告警、无锁文件报数据错误
+
+tests:
+  - tools/source-audit/tests/test_provenance.py（13 例：成功/篡改/缺失/越界/未知许可/短 SHA/缺 patchlog/NOTICE 未点名/排除无规则/空表/坏 JSON/永久链接）
+  - tools/source-audit/tests/test_sbom.py（9 例：四类来源/可复现/重复写幂等/漂移/缺 SBOM/无锁文件/许可不猜/digest 保留/scratch 跳过）
+  - tools/source-audit/tests/test_notice.py（9 例：覆盖/漏登记/target 依赖/合格豁免/过期豁免/无 owner/僵尸豁免/坏 schema）
+  - tools/source-audit/tests/test_cli.py（10 例：退出码 0/2/3/4/130、JSON 可解析、strict 提升 warn、重复生成幂等）
+
+open_items:
+  - CI 接线（本文件 root_registration 第 1 条）需 G00 执行
+  - THIRD-PARTY-NOTICES.md 的 23 项补登需 G00 执行（#228）
+  - 上游仓的 `license_evidence` 目前是 LICENSE 文件链接；冻结发布前需按 G17-02 复核一次许可是否变更

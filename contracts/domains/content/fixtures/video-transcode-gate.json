@@ -1,0 +1,56 @@
+{
+  "contract_version": "content-v1",
+  "case": "转码门禁：未 succeeded 不能发布；succeeded 后可发布且重复发布幂等；删除后三种信息流都不可见",
+  "setup": {
+    "users": ["alice", "bob"],
+    "media": [{ "id": "v1", "uploader": "alice", "content_type": "application/octet-stream" }]
+  },
+  "steps": [
+    {
+      "command": "video.publish",
+      "actor": "alice",
+      "payload": { "media_id": "v1", "caption": "sunset" },
+      "expect": { "ok": false, "error": { "code": "bad_input" } }
+    },
+    {
+      "command": "video.callback",
+      "payload": { "job_id": "v1", "state": "succeeded", "result": { "play_url": "/p.mp4", "duration_ms": 1200 } },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "video.publish",
+      "actor": "alice",
+      "payload": { "media_id": "v1", "caption": "sunset" },
+      "expect": { "ok": true, "data": { "playable": true } }
+    },
+    {
+      "command": "video.publish",
+      "actor": "alice",
+      "payload": { "media_id": "v1", "caption": "sunset" },
+      "expect": { "ok": true, "data": { "id": "同上一次的 id" } }
+    },
+    {
+      "command": "video.feed",
+      "actor": "bob",
+      "payload": { "mode": "hot" },
+      "expect": { "ok": true, "data": { "items_len": 1 } }
+    },
+    {
+      "command": "video.feed",
+      "actor": "bob",
+      "payload": { "mode": "recommend" },
+      "expect": { "ok": true, "data": { "items_len": 0 } }
+    },
+    {
+      "command": "video.delete",
+      "actor": "alice",
+      "expect": { "ok": true }
+    },
+    {
+      "command": "video.feed",
+      "actor": "bob",
+      "payload": { "mode": "hot" },
+      "expect": { "ok": true, "data": { "items_len": 0 } }
+    }
+  ]
+}

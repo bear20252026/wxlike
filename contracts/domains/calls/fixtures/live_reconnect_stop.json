@@ -1,0 +1,31 @@
+{
+  "name": "host reconnects within grace; stop revokes source immediately",
+  "sequence": [
+    {
+      "event": "host_offline",
+      "stream_id": "live-42",
+      "state": { "state": "reconnecting", "deadline_ms": 60000 }
+    },
+    {
+      "command": "live.start",
+      "version": "calls-v1",
+      "payload": { "stream_id": "live-42", "conv_id": "g-fans" },
+      "response": {
+        "ok": true,
+        "data": { "generation": 2, "already_live": false },
+        "error": null
+      }
+    },
+    {
+      "command": "live.stop",
+      "version": "calls-v1",
+      "payload": { "stream_id": "live-42" },
+      "response": {
+        "ok": true,
+        "data": { "ended": true, "already_ended": false, "disconnected": ["bob", "carol"] },
+        "error": null
+      }
+    }
+  ],
+  "side_effect_order": ["source_revoked", "feed_ended", "archive_stopped"]
+}

@@ -1,0 +1,20 @@
+schema: 1
+from: G16
+task: G16-01
+to: G00
+summary: Apply the composed CI workflows and branch protection.
+requests:
+  - id: G16-01-APPLY
+    action: copy ci/jobs/generated/ci.yml and ci/jobs/generated/release.yml into .github/workflows/
+    evidence: "python ci/jobs/compose.py --check --check-live exits 0"
+    note: G00 owns .github/; G16 must not write there.
+  - id: G16-01-PROTECT
+    action: configure branch protection from ci/jobs/policy/required-checks.json
+    evidence: all required checks appear in the composed ci.yml and feed the gate job
+  - id: G16-01-ENVS
+    action: create protected environments mobile-release and production-release with required reviewers
+    evidence: release.yml jobs reference those environments; secrets are only reachable there
+    note: desktop signing uses production-release; mobile signing uses mobile-release.
+  - id: G16-01-SECRETS
+    action: register names listed in deploy/signing-docs/secret-inventory.md
+    evidence: release drill fails with ::error:: when a secret is absent, never silently skips

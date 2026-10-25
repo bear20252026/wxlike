@@ -1,0 +1,38 @@
+task: G05-02
+title: 公众号、文章版本、订阅与阅读游标
+issue: https://github.com/bear20252026/wxlike/issues/128
+branch: feat/FP-G05-02
+crate: wxlike-platform（articles 模块；G00 拆分后迁独立 crate）
+contract: content-v1
+paths:
+  - crates/platform/src/articles.rs
+  - crates/platform/src/db.rs（SCHEMA_G05 的 publishers/articles 段）
+  - crates/platform/tests/g05_content.rs
+  - schema/proposals/G05/content.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/publishers -> 创建发布者（一人一个）"
+      - "GET  /api/publishers?q= -> 搜索（LIKE 转义，长度≤64）"
+      - "POST /api/publishers/{id}/follow -> 订阅（幂等）"
+      - "POST /api/articles -> 创建/更新（doc 受限结构，服务端渲染 body_html）"
+      - "GET  /api/articles/{id} -> 详情（未发布仅作者可见；未读计数随 read_cursor）"
+      - "POST /api/articles/{id}/read -> 推进个人已读（article_reads）"
+      - "POST /api/articles/{id}/reactions -> 在看/分享/收藏（三元组唯一，幂等切换）"
+      - "DELETE /api/articles/{id} -> 作者软删；索引/媒体引用/收藏撤权同事务"
+    note: 复用既有挂载点
+  - action: schema
+    proposal: schema/proposals/G05/content.sql
+    tables: [publishers, articles, article_versions, publisher_follows, article_reads, article_reactions]
+
+acceptance_notes:
+  - 恶意输入在渲染层拒绝：span 文本纯净化（<b> 等 HTML 字面量拒绝）、link 仅 http/https（javascript: 422）
+  - version 是乐观锁：每次保存 +1 并写 article_versions；冲突返回当前版本
+  - 订阅未读 = seq > read_cursor 的已发布文章；read_cursor 服务端列，跨端共享
+  - 发布/更新同事务写 content_index（kind=article）与媒体引用；删除同事务清理并撤收藏
+
+tests:
+  - crates/platform/tests/g05_content.rs::articles_subscription_reading_reactions_and_versioning
+  - cargo test -p wxlike-platform --test g05_content

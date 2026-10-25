@@ -19,7 +19,25 @@ use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
+use wxlike_relations::port::RelationsPort as _;
+
 use crate::{Platform, PlatformState};
+
+/// 关系域错误 → 平台错误。规则在 `wxlike-relations` 里，这里只做类型搬运；
+/// HTTP 状态由既有的 `From<PlatformError> for ApiError` 统一决定。
+impl From<wxlike_relations::RelError> for PlatformError {
+    fn from(err: wxlike_relations::RelError) -> Self {
+        use wxlike_relations::RelError as E;
+        match err {
+            E::BadInput(msg) => Self::BadInput(msg),
+            E::Forbidden(_) => Self::Forbidden,
+            E::NotFound(_) => Self::NotFound,
+            E::Conflict(msg) => Self::Conflict(msg.to_string()),
+            E::Db(e) => Self::Sqlite(e),
+            E::Json(e) => Self::Codec(e),
+        }
+    }
+}
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
@@ -419,4 +437,24 @@ async fn set_stranger_setting(
 ) -> std::result::Result<StatusCode, ApiError> {
     platform.set_allow_strangers(&authed.user_id, body.allow)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// 跨域只读闸门（G02-02）：聊天/搜索不许自己查 friends / blocks / group_members
+// ---------------------------------------------------------------------------
+
+impl Platform {
+    /// 这条消息能不能发。`Blocked` 不告诉调用方是哪一侧拉黑的。
+    pub fn may_message(&self, from: &str, to: &str) -> Result<wxlike_relations::port::MessageGate> {
+        let c = self.db().lock();
+        let port = wxlike_relations::port::SqlRelations { conn: &c };
+        Ok(port.may_message(from, to)?)
+    }
+
+    /// 两人共同的群 id（交集查询，非成员拿不到任何行）。
+    pub fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>> {
+        let c = self.db().lock();
+        let port = wxlike_relations::port::SqlRelations { conn: &c };
+        Ok(port.shared_groups(a, b)?)
+    }
 }

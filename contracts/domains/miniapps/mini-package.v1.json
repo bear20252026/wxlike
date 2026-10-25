@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wxlike.local/contracts/miniapps/mini-package.v1.json",
+  "title": "wxlike mini-app package v1",
+  "description": "DPG1 blob containing one signed mini.json plus every declared resource. The signature is a sidecar over the exact bytes of mini.json; each resource is covered by a SHA-256 digest in the manifest. mini.json never lists itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "app_id",
+    "name",
+    "version",
+    "min_host",
+    "entry",
+    "channel",
+    "publisher",
+    "capabilities",
+    "resources"
+  ],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "min_host": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "entry": {
+      "type": "string",
+      "description": "Relative path of the entry script; must appear in resources."
+    },
+    "channel": { "enum": ["dev", "prod"] },
+    "publisher": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "capabilities": {
+      "type": "array",
+      "items": { "enum": ["storage", "network", "camera", "location", "file", "payment"] },
+      "uniqueItems": true
+    },
+    "resources": {
+      "type": "object",
+      "description": "Relative path to lowercase SHA-256 hex digest.",
+      "minProperties": 1,
+      "maxProperties": 2048,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    }
+  },
+  "dependentRequired": {
+    "entry": ["resources"]
+  }
+}

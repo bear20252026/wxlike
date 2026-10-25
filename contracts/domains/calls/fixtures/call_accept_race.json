@@ -1,0 +1,33 @@
+{
+  "name": "multi-device accept race: first device wins, second gets answered_elsewhere",
+  "requests": [
+    {
+      "command": "call.accept",
+      "version": "calls-v1",
+      "payload": { "call_id": "call-1001", "device": "bob-phone" }
+    },
+    {
+      "command": "call.accept",
+      "version": "calls-v1",
+      "payload": { "call_id": "call-1001", "device": "bob-tablet" }
+    }
+  ],
+  "responses": [
+    {
+      "ok": true,
+      "data": {
+        "call_id": "call-1001",
+        "state": "accepted",
+        "device": "bob-phone",
+        "token_scope": "call",
+        "generation": 1
+      },
+      "error": null
+    },
+    {
+      "ok": false,
+      "data": null,
+      "error": { "code": "answered_elsewhere", "message": "bob-phone answered first" }
+    }
+  ]
+}

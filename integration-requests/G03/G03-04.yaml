@@ -1,0 +1,74 @@
+# G03-04 路由租约、重连与协议兼容 —— 集成请求
+# 独占写路径内已完成：crates/net/{src/proto.rs,src/wire.rs v3 追加,src/policy.rs 上限,
+# src/delivery.rs 接线,src/metrics.rs 观察项}、crates/mq/{src/lib.rs 世代方法,
+# src/memory.rs,src/redis_backend.rs}、crates/net/tests/proto_v3.rs。
+
+request_id: G03-04
+task_issue: 123
+group_issue: 84
+contract_version: wire-v3
+artifacts:
+  - crates/net/src/proto.rs
+  - crates/net/src/wire.rs
+  - crates/net/src/policy.rs
+  - crates/mq/src/lib.rs
+  - crates/mq/src/memory.rs
+  - crates/mq/src/redis_backend.rs
+  - crates/net/tests/proto_v3.rs
+
+requests:
+  - id: REQ-G00-03-freeze-wire-v3
+    target: G00-03
+    action: 把 v3 的六个控制帧与 capability 位冻结成合同
+      （`ClientHello/Auth/Subscribe/Event/Ack/Resume`，`PROTOCOL_V3 = 3`，
+      `StoredAck = 1`、`Resume = 2`、`EventHints = 4`），并把 fixture 向量收进
+      `contracts/domains/messaging/`。
+    rationale: 帧序号是跨语言客户端的共同事实，必须由契约面持有，不能只活在 Rust enum 里。
+
+  - id: REQ-G01-regenerate-bindings
+    target: G01
+    action: 用 fixture 向量生成 TS/Dart 侧的帧编解码绑定；绑定文件不得手改，
+      生成后跑同一份向量对拍。
+    rationale: 卡面要求"WS 和 QUIC 共享协议 fixture"，跨语言同构才有意义。
+
+  - id: REQ-G00-mq-route-value-format
+    target: G00
+    action: 确认 Redis 路由值从 `<hub>` 扩成 `<hub>|<generation>`
+      （`route_of` 仍只返回 hub，老读者不受影响）。这是共享存储的格式变更，
+      需要与同时读该键的部署方一起放行。
+    rationale: 共享 key 的格式属于集成面，不属于单个功能组。
+
+  - id: REQ-G16-nats-device-routes-verification
+    target: G16
+    action: 在 NATS 后端上验一次路由世代（`NatsRoutes` 目前走 trait 默认实现，
+      即"无世代 CAS"）；要么用 KV revision 补实现，要么在部署文档里明确
+      NATS 拓扑仍受"旧连接清掉新路由"影响。
+    rationale: 本机无 NATS，代码与实机结论必须分开登记，不写假绿。
+
+  - id: REQ-G10-client-v3-handshake
+    target: G10
+    action: 桌面/网页接入 `ClientHello`（声明 device_id + capability 位），
+      并按 `Event{gap}` 提示决定增量拉取还是全量重取。
+    rationale: v3 的另一端在 UI/客户端组；G03 只提供协议与 hub 侧行为。
+
+  - id: REQ-G12-mobile-reconnect-backoff
+    target: G12
+    action: 移动端重连使用 `wxlike_net::jittered_backoff`（或服务端下发的
+      `retry_after`），不要自己写固定 1s 重试。
+    rationale: 没有抖动的批量重连等于第二次故障；hub 重启场景实测过。
+
+notes:
+  - 兼容策略是"只追加"：bincode 按变体序号编码，v3 变体接在 v2 之后，
+    所以 v2 帧的字节完全不变；测试用独立的 v2 镜像 enum 钉住这一点
+    （`legacy_frames_keep_their_byte_shape`）。
+  - 世代 CAS 的真实缺口：内存表已实现并测试；Redis 用 EVAL 做原子
+    compare-and-delete / compare-and-extend（本机无 Redis，属待验）；
+    NATS 走默认实现（见 REQ-G16）。
+  - 上限默认值保持既有行为（`max_frame_bytes = framing::MAX_FRAME`、
+    8 连接/用户、512 订阅/连接、600 条/用户/分钟、512 未确认窗口），
+    收紧是部署决策，不是这次变更的副作用。
+  - 认证失败路径封闭：无认证器 → 全拒；凭据无效 → `HelloReject` + 断；
+    声明不支持的协议版本 → `HelloReject` + 断；v2 连接发 v3 帧 → 断；
+    令牌撤销在**每一帧**复查（原来只在 Ping 时复查）。
+  - 关联入口：本卡的帧/连接上限没有独立 UI 入口（协议面），
+    消费它的种子是 SEED-0029 记录同步与移动端重连（G12）。

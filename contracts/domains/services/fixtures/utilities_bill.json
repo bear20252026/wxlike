@@ -1,0 +1,61 @@
+{
+  "fixture_id": "services.utilities.bill_and_topup",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.utilities.pay_bill",
+  "category": "success_replay_boundary",
+  "description": "缴费：先 HMAC 验签查账单，金额绑定后才能支付；账单金额变动拒付；重复提交只扣一次。",
+  "bill_lookup_success": {
+    "action_id": "services.utilities.bill_lookup",
+    "request": { "card": "svc-util-cn", "account_no": "10001" },
+    "expected": {
+      "bill_no": "BILL-202609-10001",
+      "account_no_masked": "*****0001",
+      "amount_minor": 12800,
+      "currency": "CNY",
+      "period": "2026-09",
+      "signature_valid": true
+    }
+  },
+  "pay_success": {
+    "request": { "card": "svc-util-cn", "account_no": "10001", "idempotency_key": "bill-1" },
+    "expected": { "order_state": "paid", "amount_minor": 12800 }
+  },
+  "duplicate_submit": {
+    "request": { "same_idempotency_key": true },
+    "expected": { "same_order_id": true, "payment_intents_total": 1, "provider_pay_calls": 1 }
+  },
+  "bill_amount_changed": {
+    "precondition": "供应商侧账单金额从 12800 改为 25600 后再次 lookup",
+    "sequence": ["bill_lookup 返回 25600", "用旧 12800 报价建单"],
+    "expected_error": { "code": "CONFLICT", "detail": "bill amount changed; re-lookup" },
+    "observable": { "payment_intents_total": 0, "provider_pay_calls": 0 }
+  },
+  "failure_cases": [
+    {
+      "name": "bad_bill_signature",
+      "precondition": "供应商返回的账单 HMAC 不匹配",
+      "expected_error": { "code": "DEPENDENCY_UNAVAILABLE", "detail": "bill signature mismatch" }
+    },
+    {
+      "name": "unknown_bill",
+      "request": { "account_no": "99999" },
+      "expected_error": { "code": "DEPENDENCY_UNAVAILABLE", "detail": "vendor timeout/offline/unknown" }
+    },
+    {
+      "name": "pay_before_lookup",
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "bill lookup required" }
+    },
+    {
+      "name": "donation_project_unauthorized",
+      "action_id": "services.utilities.donate",
+      "request": { "project_id": "proj-2", "amount_minor": 1000 },
+      "expected_error": { "code": "UNAUTHORIZED", "detail": "project not authorized" }
+    },
+    {
+      "name": "donation_payee_mismatch",
+      "precondition": "项目收款方与供应商实际收款方不一致",
+      "expected_error": { "code": "UNAUTHORIZED", "detail": "payee mismatch" }
+    }
+  ],
+  "invariants": ["金额只认查得的账单，不接受客户端自报", "取消已支付缴费单退款恰好一次"]
+}

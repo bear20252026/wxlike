@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/content/contract.json",
+  "title": "content domain contract (content-v1)",
+  "description": "G05 内容域对外契约：朋友圈（含分组可见/草稿/评论层级）、公众号与文章（订阅/未读游标/版本）、视频号（转码门禁/三种信息流）、我的状态（24h 到期/背景/回应）。实现位于 crates/platform 的 moments/articles/video_feed/status 模块；G00 纯移动拆分（#100）落地后按 integration-requests/G05 的挂载动作迁移到独立 crate。所有读路径服务端再次鉴权（作者永远可见自己的；好友/分组可见性按读时刻的关系判定，不发快照）。",
+  "contract_version": "content-v1",
+  "owner": "G05",
+  "invariants": [
+    "可见性读时判定：Groups=作者好友分组标签当前匹配；拉黑双向失效；删除后所有人（含作者）都不可再读",
+    "全部写命令幂等：重复点赞/重复发布同 media_id/重复安装返回第一次结果，不产生第二行",
+    "视频发布以 video_refs.state='succeeded' 为唯一门禁；未转码成功一律 422",
+    "删除内容与检索索引、媒体引用、对象收藏撤权同事务，无异步窗口",
+    "状态到期由服务端时钟判定（expires_at），sweep 清可见性、删索引、撤收藏、留审计",
+    "评论层级上限 2（顶层 0 / 直接回复 1 / 再往下拒绝），reply 目标必须属于同一朋友圈"
+  ],
+  "error_codes": ["bad_input", "forbidden", "not_found", "conflict"],
+  "commands": {
+    "moment.publish": {
+      "text": "string≤5000",
+      "media_ids": "string[]≤9",
+      "visibility": "public|friends|groups|private",
+      "audience_group": "visibility=groups 时必填（作者好友分组名）",
+      "draft_id": "可选；从草稿发布，成功后删草稿"
+    },
+    "moment.draft.save": "同 publish；草稿允许空内容，但 media 必须已存在",
+    "moment.feed": "since=上一页 next_cursor；仅自己+好友（陌生人 Public 不进 feed）",
+    "moment.like / moment.unlike": "幂等；点赞给作者发通知（dedupe）",
+    "moment.comment": "text≤1000；reply_to_comment_id 必须是同一条朋友圈下的评论",
+    "moment.report": "reason ∈ wxlike-report 枚举；工单 target_kind=moment",
+    "article.publisher.create": "一个用户一个发布者（UNIQUE owner）",
+    "article.publish / article.update": "doc 为受限结构（span 文本纯净化、link 仅 http/https），服务端渲染 body_html；每次保存 version+1 并存 article_versions",
+    "article.follow / article.read": "read_cursor 是订阅未读游标（服务端列，跨端共享）",
+    "article.react": "kind ∈在看|分享|收藏（三元组唯一）",
+    "video.publish": "media_id 必须是本人上传且转码 succeeded",
+    "video.feed": "mode=follow|hot|recommend；hot=7 天窗口 likes*3+comments*2+新近；recommend=仅好友看过的未关注作者作品（reason=friends_liked）",
+    "status.set": "kind=text|image|video；24h TTL；设置即清掉本人此前活跃状态",
+    "status.background": "先存草稿（媒体校验），设置状态时原子消费",
+    "status.react": "唯一回应，再点一次取消"
+  },
+  "events": [
+    "StatusChanged（状态设置/清除/到期后经 system_envelope 广播）",
+    "notification: moment_like/moment_comment/moment_reply/status_reaction/video_like/video_comment（事务内插入，dedupe_key 去重）"
+  ],
+  "cross_module_changes": [
+    "crates/report TARGET_KINDS 增加 moment/article/video/status（内容举报入同一工单流）"
+  ]
+}

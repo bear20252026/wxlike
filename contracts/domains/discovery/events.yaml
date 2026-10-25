@@ -1,0 +1,280 @@
+# G07 discovery 域事件契约草案（待 G00-03 冻结为 contract-v1）。
+# 事件字段与 crates/features/discovery、crates/vision、crates/translation 的公开类型一致。
+# 注意：本分支 crate 只产出事件所需的领域状态；outbox 写入与投递由 G00 装配层完成，
+# 见 integration-requests/G07/G07-03.yaml 的 command/job 注册请求。
+schema_version: 1
+contract_version: g07-draft-1
+owner: G07
+domain: discovery
+
+envelope:
+  required:
+    - event_id          # 幂等键；消费方 inbox 按此去重
+    - event_type
+    - event_version
+    - aggregate_id
+    - aggregate_version # 按聚合单调；缺口触发补查，不假设全局有序
+    - occurred_at_ms
+    - trace_id
+    - payload
+  payload_rules:
+    - 只放最小必需字段，不广播完整用户资料
+    - 不出现 token、确认令牌、原始图片/音频/文本、精确坐标（位置共享事件除外）
+    - 金额只以最小货币单位整数 + 币种三元码出现
+
+delivery:
+  transport: outbox_to_message_bus
+  guarantee: at_least_once
+  consumer_dedup_key: event_id
+  ordering: per_aggregate_version
+  retry: exponential_backoff_with_dead_letter
+  metrics: [discovery_outbox_lag_ms, discovery_event_dlq_total]
+
+visibility:
+  actor_only: 仅事件所属 actor 的已授权设备可读
+  session_members: 仅会话授权成员集内且已显式加入的设备可读
+  matched_pair: 仅匹配双方可读
+  domain_private: 事件只投递给指定下游域，不面向客户端广播
+
+events:
+  # ---------- G07-01 扫码与安全深链 ----------
+  - type: discovery.qr.payment_approved
+    version: 1
+    aggregate: payment_intent
+    aggregate_id_field: intent_id
+    payload:
+      intent_id: {type: id}
+      actor: {type: id}
+      amount_minor: {type: int64, gt: 0}
+      currency: {type: string, len: 3}
+      payee_id: {type: id}
+      approved_at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G06 payment-intent executor, G01 audit projection]
+    notes:
+      - 与 crates/features/discovery/src/qr/scanner.rs 的 PaymentApproval 同构
+      - 确认令牌只留在请求内，不进入事件
+
+  - type: discovery.qr.external_blocked
+    version: 1
+    aggregate: scan_session
+    aggregate_id_field: actor
+    payload:
+      actor: {type: id}
+      host: {type: string, max_bytes: 255}
+      reason: {type: enum, values: [not_https, host_not_allowlisted, userinfo, control_char]}
+      at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G14 risk signal, G01 audit projection]
+    notes:
+      - 只记录被拒绝的 host 与原因，不记录完整 URL（可能含查询串）
+
+  # ---------- G07-02 模型服务 ----------
+  - type: discovery.vision.job_completed
+    version: 1
+    aggregate: vision_job
+    aggregate_id_field: job_id
+    payload:
+      job_id: {type: id}
+      actor: {type: id}
+      kind: {type: enum, values: [identify, ocr, transcribe]}
+      provider: {type: string, max_len: 64}
+      expires_at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G07 operation query, G01 audit projection]
+    notes:
+      - 事件不带识别文本/转写文本/标签内容；结果只经授权查询按 TTL 返回
+      - 输入媒体不落对象存储，事件只用于把长操作从 pending 推进到 completed
+
+  - type: discovery.vision.job_failed
+    version: 1
+    aggregate: vision_job
+    aggregate_id_field: job_id
+    payload:
+      job_id: {type: id}
+      actor: {type: id}
+      kind: {type: enum, values: [identify, ocr, transcribe]}
+      error: {type: enum, values: [DEPENDENCY_UNAVAILABLE, TIMEOUT, CANCELLED, RATE_LIMITED]}
+      at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G07 operation query]
+    notes:
+      - 供应商原始错误与响应体不得写入事件
+
+  - type: discovery.vision.data_deleted
+    version: 1
+    aggregate: actor
+    aggregate_id_field: actor
+    payload:
+      actor: {type: id}
+      deleted_jobs: {type: uint}
+      consent_revoked: {type: bool}
+      at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G01 audit projection, G14 data-subject-request log]
+    notes:
+      - 用于证明删除已执行；不含被删除内容
+
+  # ---------- G07-03 位置、附近与摇一摇 ----------
+  - type: discovery.geo.presence_published
+    version: 1
+    aggregate: geo_presence
+    aggregate_id_field: actor
+    payload:
+      actor: {type: id}
+      cell: {lat_idx: int32, lng_idx: int32}
+      visibility: {type: enum, values: [friends, everyone]}
+      expires_at_ms: {type: int64}
+      updated_at_ms: {type: int64}
+    visibility: domain_private
+    consumers: [G07 nearby projection index, G02 friend-edge projection (friends visibility)]
+    notes:
+      - 只发粗网格索引（0.01 度），不出现精确坐标
+      - friends 可见性由 G02 好友边投影在读取时复核，事件本身不携带好友列表
+
+  - type: discovery.geo.presence_revoked
+    version: 1
+    aggregate: geo_presence
+    aggregate_id_field: actor
+    payload:
+      actor: {type: id}
+      revoked_at_ms: {type: int64}
+    visibility: domain_private
+    consumers: [G07 nearby projection index]
+    notes:
+      - 消费方必须在同一事务内删除投影后确认 inbox，撤回后不可查
+      - 也要覆盖 TTL 过期后的清理（由 job 触发，不重复发事件）
+
+  - type: discovery.match.matched
+    version: 1
+    aggregate: match
+    aggregate_id_field: match_id
+    payload:
+      match_id: {type: id}
+      users: {type: array, len: 2, item: id}
+      matched_at_ms: {type: int64}
+    visibility: matched_pair
+    consumers: [G02 relations projection, G03 conversation bootstrap]
+    notes:
+      - 只在双边确认后产生；单边 pending 不广播
+      - 事件不包含摇动样本、设备传感器数据
+
+  # ---------- G07-08 位置消息、POI 与实时共享 ----------
+  - type: discovery.share.started
+    version: 1
+    aggregate: location_share
+    aggregate_id_field: share_id
+    payload:
+      share_id: {type: id}
+      conversation_id: {type: id}
+      host: {type: id}
+      members: {type: array, item: id, max_items: 50}
+      expires_at_ms: {type: int64}
+      interval_ms: {type: int64, min: 1000}
+      precision: {type: enum, values: [exact, approx_100m]}
+      background_limited: {type: bool}
+    visibility: session_members
+    consumers: [G03 conversation system notice, G07 share push worker]
+    notes:
+      - 成员名单只来自 G03 会话授权集；事件不包含位置
+      - 客户端必须显式 join 后才接收 position 事件
+
+  - type: discovery.share.position_updated
+    version: 1
+    aggregate: location_share
+    aggregate_id_field: share_id
+    payload:
+      share_id: {type: id}
+      user_id: {type: id}
+      coord: {lat: float, lng: float, system: enum, values: [wgs84, gcj02, bd09]}
+      accuracy_m: {type: float, gt: 0, max: 10000}
+      seq: {type: uint64}
+      updated_at_ms: {type: int64}
+    visibility: session_members
+    consumers: [G07 share push worker]
+    notes:
+      - seq 按会话单调；消费方按 seq 丢弃乱序旧位置
+      - approx_100m 精度在事件产生前已取整，服务端不保留原始精确值
+      - 断网时不得产生事件（拒绝伪造位置）
+
+  - type: discovery.share.member_removed
+    version: 1
+    aggregate: location_share
+    aggregate_id_field: share_id
+    payload:
+      share_id: {type: id}
+      member: {type: id}
+      removed_at_ms: {type: int64}
+    visibility: session_members
+    consumers: [G07 share push worker, G03 conversation membership projection]
+    notes:
+      - 消费方立即停止向该成员投递，并清掉其本地快照
+
+  - type: discovery.share.stopped
+    version: 1
+    aggregate: location_share
+    aggregate_id_field: share_id
+    payload:
+      share_id: {type: id}
+      host: {type: id}
+      stopped_at_ms: {type: int64}
+    visibility: session_members
+    consumers: [G07 share push worker, G03 conversation system notice]
+    notes:
+      - 停止后旧 share_id 的更新一律拒绝；投影与定时任务同事务删除
+
+  # ---------- G07-09 名片二维码 ----------
+  - type: discovery.contact.card_created
+    version: 1
+    aggregate: contact_card
+    aggregate_id_field: card_id
+    payload:
+      card_id: {type: id}
+      owner: {type: id}
+      expires_at_ms: {type: int64}
+      created_at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G01 audit projection]
+    notes:
+      - 事件不含 capability 明文与 wire 字符串；服务端只存 capability 哈希
+
+  - type: discovery.contact.card_revoked
+    version: 1
+    aggregate: contact_card
+    aggregate_id_field: card_id
+    payload:
+      card_id: {type: id}
+      owner: {type: id}
+      revoked_at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G01 audit projection]
+    notes:
+      - rotate/revoke_all 逐张发事件；消费方以 card_id 去重
+
+  - type: discovery.contact.friend_requested
+    version: 1
+    aggregate: contact_card
+    aggregate_id_field: card_id
+    payload:
+      card_id: {type: id}
+      actor: {type: id}
+      target_user_id: {type: id}
+      request_id: {type: id}
+      at_ms: {type: int64}
+    visibility: domain_private
+    consumers: [G02 relations request inbox]
+    notes:
+      - 申请状态机完全由 G02 持有；本事件仅把扫码来源关联到申请
+      - 不携带申请附言原文，避免内容进入事件总线
+
+gaps:
+  - type: discovery.location.snapshot_sent
+    status: NOT_IMPLEMENTED_IN_G07_BRANCH
+    reason: 固定位置快照消息走 G03 消息投递；事件需在快照结构与权限契约冻结后补。
+    owner_after_freeze: G07 + G03
+    blocked_by: [G03-01]
+  - type: discovery.geo.nearby_query_audit
+    status: DEFERRED_TO_G14
+    reason: 附近查询的限速与滥用审计属 G14 风控范围；G07 只提供内存限速与查询计数。
+    owner_after_freeze: G14
+    blocked_by: [G14-01]

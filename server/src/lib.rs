@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+mod history_archive;
 /// A2：`/app` 静态托管（`WXLIKE_WEB_DIR`）。
 mod web_static;
 
@@ -790,23 +791,7 @@ async fn history_page(
         })));
     }
 
-    let ids: Vec<Vec<u8>> = page
-        .iter()
-        .filter_map(|m| hex::decode(&m.msg_id).ok())
-        .collect();
-    let bodies = deps
-        .store
-        .by_msg_ids(&ids)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let messages: Vec<_> = page
-        .iter()
-        .filter_map(|m| {
-            let id = hex::decode(&m.msg_id).ok()?;
-            let row = bodies.get(&id)?;
-            Some(message_json_with_seq(row, m.seq as i64))
-        })
-        .filter(|v| !secret_ttl_expired(ttl_ms, v))
-        .collect();
+    let messages = history_archive::read_page(&deps.store, &conv_id, &page, ttl_ms).await?;
     Ok(Json(serde_json::json!({
         "conv_id": conv_id,
         "messages": messages,

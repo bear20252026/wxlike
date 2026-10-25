@@ -1,0 +1,69 @@
+request: G06-02
+owner: G06
+task_issue: 130
+branch: feat/FP-G06
+status: ready-for-G00
+depends_on:
+  - G06-01
+code_paths:
+  - crates/features/commerce/src/payments.rs
+  - crates/features/commerce/src/cards.rs
+  - crates/features/commerce/src/infrastructure/sandbox.rs
+  - crates/features/commerce/src/ports.rs
+routes:
+  mount:
+    - action: payment.create
+      path: /api/v1/commerce/actions/payment.create
+    - action: payment.pay
+      path: /api/v1/commerce/actions/payment.pay
+    - action: payment.get
+      path: /api/v1/commerce/actions/payment.get
+    - action: payment.qr.pay
+      path: /api/v1/commerce/actions/payment.qr.pay
+    - action: card.bind
+      path: /api/v1/commerce/actions/card.bind
+    - action: card.list
+      path: /api/v1/commerce/actions/card.list
+    - action: card.unbind
+      path: /api/v1/commerce/actions/card.unbind
+    - action: webhook.payment
+      method: POST
+      path: /api/v1/commerce/webhooks/payment
+      note: >-
+        必须先按原始字节读 body 再验 HMAC，禁止先 serde_json 解析；验签失败返回 401/400，
+        不得回显供应商报文。
+commands:
+  registry: commerce
+  actions: [payment.create, payment.pay, payment.get, payment.qr.pay, card.bind, card.list, card.unbind]
+config:
+  secrets:
+    - key: commerce.webhook.secret
+      source: secret-manager
+      note: 只保存引用；日志与错误不得输出其值
+    - key: commerce.provider.live.secret_ref
+      source: secret-manager
+      note: Live 模式必填；Sandbox 模式禁止携带真实密钥
+  settings:
+    - key: commerce.provider.mode
+      values: [sandbox, live]
+    - key: commerce.payment.ttl_ms
+      default: 900000
+jobs:
+  - name: commerce.payment.expire
+    handler: Commerce::expire_payment_intents
+    interval: 60s
+    note: 只把过期未支付意图置为 expired，不退款
+migrations:
+  - proposal: schema/proposals/G06/0001_ledger_commerce.sql
+    rollback: schema/proposals/G06/ROLLBACK.md
+    number: G00-assigned
+evidence:
+  tests: cargo test -p wxlike-commerce --test g06_02_payments
+  fixtures:
+    - contracts/domains/commerce/fixtures/payment-create-success.json
+    - contracts/domains/commerce/fixtures/payment-webhook-replay.json
+  pii:
+    - 卡号/CVV 只存在于请求生命周期；库内仅 provider_token/last4
+    - 日志不含 PAN/CVV/webhook secret/完整回调报文
+acceptance_dependencies:
+  - 真实支付供应商适配器（当前 SandboxProvider 只用于沙箱与故障注入）
