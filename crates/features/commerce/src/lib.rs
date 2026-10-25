@@ -10,7 +10,9 @@ pub mod error;
 pub mod infrastructure;
 pub mod payments;
 pub mod ports;
+pub mod redpackets;
 pub mod settlement;
+pub mod transfers;
 
 mod config;
 mod schema;
