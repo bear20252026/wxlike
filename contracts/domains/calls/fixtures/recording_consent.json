@@ -1,0 +1,30 @@
+{
+  "name": "recording requires every participant; one refusal produces no file",
+  "sequence": [
+    {
+      "command": "recording.request",
+      "version": "calls-v1",
+      "payload": {
+        "call_id": "call-1001",
+        "participants": ["alice", "bob"],
+        "e2ee": true
+      },
+      "response": {
+        "ok": true,
+        "data": { "recording_id": "rec-1001", "state": "consent_pending", "pending": ["bob"] },
+        "error": null
+      }
+    },
+    {
+      "command": "recording.consent",
+      "version": "calls-v1",
+      "payload": { "recording_id": "rec-1001", "granted": false },
+      "response": {
+        "ok": true,
+        "data": { "state": "rejected", "artifact": null },
+        "error": null
+      }
+    }
+  ],
+  "side_effects": { "recording_files": 0 }
+}

@@ -1,0 +1,17 @@
+{
+  "valid": {
+    "kind": "voice",
+    "media_id": "5c1f4a3b2d8e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819a2b3c4d5e6f70",
+    "name": "voice-20261024.ogg",
+    "size": 48213,
+    "digest": "5c1f4a3b2d8e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819a2b3c4d5e6f70",
+    "mime": "audio/ogg",
+    "duration_ms": 3200,
+    "waveform": [3, 9, 21, 40, 55, 63, 70, 77, 82, 88, 92, 96, 100, 97, 90, 83, 74, 66, 58, 50, 44, 38, 33, 29, 25, 22, 19, 17, 14, 12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+  },
+  "invalid_cases": [
+    { "why": "waveform 少一根", "change": "waveform.length=39" },
+    { "why": "超过语音时长上限", "change": "duration_ms=600001" },
+    { "why": "mime 与 kind 冲突", "change": "mime=video/mp4" }
+  ]
+}
