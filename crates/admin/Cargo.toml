@@ -23,6 +23,10 @@ serde_json = { workspace = true }
 rusqlite = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+# G14 审计哈希链与域端口：都在 workspace 已有依赖里选，不引入新的第三方代码。
+sha2 = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # 写操作转发到平台管理面。ureq 不是新增第三方代码：crates/client 用的是同一个

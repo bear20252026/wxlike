@@ -33,6 +33,11 @@ pub enum Role {
     Viewer,
     /// 可处置工单与放行挂起内容，但不能改全局开关、不能处罚。
     Moderator,
+    /// 发布岗（G14-03）：内容审核队列、小程序签名/发布、服务卡片配置。
+    /// **不能**处置工单、不能处罚、不能碰资金——签发权限与审核权限分离。
+    Publisher,
+    /// 财务岗（G14-04）：商户、订单、退款审批、对账差异、补账分录。
+    Finance,
     /// 全量：处罚（含 `ban`）、审核模式切换。
     Superadmin,
 }
@@ -42,6 +47,8 @@ impl Role {
         match self {
             Role::Viewer => "viewer",
             Role::Moderator => "moderator",
+            Role::Publisher => "publisher",
+            Role::Finance => "finance",
             Role::Superadmin => "superadmin",
         }
     }
@@ -51,10 +58,16 @@ impl Role {
         match s.trim().to_ascii_lowercase().as_str() {
             "viewer" => Some(Role::Viewer),
             "moderator" => Some(Role::Moderator),
+            "publisher" => Some(Role::Publisher),
+            "finance" => Some(Role::Finance),
             "superadmin" => Some(Role::Superadmin),
             _ => None,
         }
     }
+
+    /// 建号时可用的角色名（CLI `--help` 与错误消息共用一份）。
+    pub const NAMES: &'static [&'static str] =
+        &["viewer", "moderator", "publisher", "finance", "superadmin"];
 
     /// 能做出这个级别操作的最小角色。拒绝消息要用它来指路——
     /// "需要 destructive 权限"对运维没用，"用 --role superadmin 建号"才有用。
@@ -66,9 +79,12 @@ impl Role {
         }
     }
 
+    /// 老操作目录（D1/D2/D3 的 `OPS`）的准入。**新岗位在这里只有读**：
+    /// 发布岗与财务岗的写权限走 [`crate::auth`] 的资源矩阵，不从这里漏进来。
+    /// 这条边界是有意的——否则给财务开 `Write` 就等于顺手给了它工单处置权。
     pub fn allows(self, need: Capability) -> bool {
         match self {
-            Role::Viewer => matches!(need, Capability::Read),
+            Role::Viewer | Role::Publisher | Role::Finance => matches!(need, Capability::Read),
             Role::Moderator => matches!(need, Capability::Read | Capability::Write),
             Role::Superadmin => true,
         }

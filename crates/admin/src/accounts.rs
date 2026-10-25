@@ -411,6 +411,30 @@ impl AccountStore {
         Ok(())
     }
 
+    /// 只验码、不改状态。G14-01 的步进验证（step-up）用它：
+    /// 敏感操作前要求"当场再验一次码"，验完只延长一个很短的窗口，
+    /// 不给会话本身加永久权限。
+    pub fn verify_second_factor(&self, name: &str, code: &str) -> Result<()> {
+        let row = self
+            .row_by_name(name)?
+            .ok_or_else(|| AdminError::bad_input("没有这个管理员账号"))?;
+        if !row.totp_enabled {
+            return Err(AdminError::Forbidden(
+                "这个账号没开 TOTP：敏感操作要求二次验证，先 POST /api/me/totp/enroll 再 confirm"
+                    .into(),
+            ));
+        }
+        let secret = row
+            .totp_secret
+            .ok_or_else(|| AdminError::bad_input("TOTP 已启用但密钥缺失，重新 enroll"))?;
+        if !wxlike_platform::totp_verify(&secret, code) {
+            return Err(AdminError::Forbidden(
+                "动态码不对（时钟偏差 30 秒内可接受）".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// 关闭 MFA 需要当前码。理由：关 MFA 等于降低防护，未验码的会话发起它
     /// 就是现成的降级路径（"手机丢了 → 用还没验码的会话把 MFA 关掉"）。
     pub fn totp_disable(&self, name: &str, code: &str) -> Result<()> {

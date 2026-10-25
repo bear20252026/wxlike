@@ -1,0 +1,52 @@
+# G14-05 运营作业、隐私请求与可观测入口 —— 集成请求
+
+request_id: G14-05
+task_issue: 185
+group_issue: 95
+contract_version: admin-g14-v1
+wave: W3
+branch: feat/FP-G14
+artifacts:
+  - crates/admin/src/jobs.rs
+  - crates/admin/src/g14.rs      # /api/g14/jobs/* 与 /api/g14/privacy/*、/api/g14/health/summary
+  - crates/admin/tests/g14_05_jobs.rs
+
+requests:
+  - id: REQ-G0X-job-status-push
+    target: G00-03
+    action: 约定"域侧作业结束时回报 adminx"的通道（目前是 `JobService::finish(id, ok, err)`，
+      需要域侧能按 job_id 回调，或由 G14 轮询各域作业状态）。选定其中一种并写进契约。
+    rationale: adminx 不执行转码/推送/同步，只做重试与取消编排；没有回报通道，
+      作业会永远停在 running，重试也无从判断。
+    blocking: true
+
+  - id: REQ-G05-transcode-retry-idempotency
+    target: G05-05
+    action: 确认转码/封面作业的重试语义：同一 job_id 重试必须回到同一目标对象，
+      不产生第二份产物。
+    rationale: "重试一次只恢复原作业"在 adminx 侧已保证（同一行、attempts+1），
+      域侧要保证重跑不重复建产物。
+    blocking: false
+    evidence: crates/admin/tests/g14_05_jobs.rs::retry_revives_the_same_job_and_duplicate_clicks_are_harmless
+
+  - id: REQ-G02-privacy-export-artifact
+    target: G02-05
+    action: 隐私导出产物的存放与取件方式：adminx 只发一次性下载令牌（24h，库中存哈希），
+      产物由域侧作业生成并按 request_id 关联。
+    rationale: "隐私导出只授权申请者获取"需要两边共同保证：令牌在 adminx，产物在域侧。
+    blocking: false
+    evidence: crates/admin/tests/g14_05_jobs.rs::privacy_export_token_is_the_only_way_to_fetch
+
+  - id: REQ-G16-ci-metrics
+    target: G16
+    action: 把 `GET /api/g14/health/summary` 接进监控（只读，需运营令牌）；
+      不要把它直接暴露到公网——它含内部计数。
+    rationale: 可观测入口是给运维的，不是给外部的。
+
+notes:
+  - 作业状态机：queued → running → succeeded/failed/cancelled；只有 failed/cancelled 能重试，
+    只有 queued/running 能取消；重复重试/取消都是幂等空操作。
+  - 批量处置（kind=batch_identity）在每项之前读一次库中的取消标记，因此取消能落在中间；
+    回执写在 `payload.receipt`（total/processed/succeeded/failed/skipped/cancelled + 逐条明细）。
+  - 管理 API 限流：令牌桶（默认 60 容量 / 2 QPS per actor）；超限回 429 并带"约 N 秒后可重试"。
+  - 健康面只给计数与审计链状态，明确 `withheld` 字段列明"配置值/连接串/密钥/令牌/内容"不可见。

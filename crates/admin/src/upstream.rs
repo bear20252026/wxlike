@@ -66,6 +66,15 @@ pub struct Reply {
 }
 
 impl Reply {
+    /// 域侧回执引用；缺少或非字符串时沿用空引用语义。
+    pub(crate) fn reference(&self) -> String {
+        self.body
+            .get("reference")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// 平台返回的 `error` 字段（用于留痕与给运维的提示）。
     pub fn error_message(&self) -> Option<&str> {
         self.body.get("error").and_then(|v| v.as_str())

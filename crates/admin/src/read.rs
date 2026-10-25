@@ -512,6 +512,47 @@ pub struct Paged<T> {
     pub rows: Vec<T>,
 }
 
+impl<T> Paged<T> {
+    /// Count and page use the same filter bindings, then append limit/offset in that order.
+    pub(crate) fn query<F>(
+        conn: &rusqlite::Connection,
+        count_sql: &str,
+        sql: &str,
+        mut args: Vec<Box<dyn rusqlite::ToSql>>,
+        limit: i64,
+        offset: i64,
+        row: F,
+    ) -> Result<Self>
+    where
+        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        let total = conn.query_row(
+            count_sql,
+            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+            |r| r.get(0),
+        )?;
+        args.push(Box::new(limit));
+        args.push(Box::new(offset));
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+                row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Self::new(total, limit, offset, rows))
+    }
+
+    pub(crate) fn new(total: i64, limit: i64, offset: i64, rows: Vec<T>) -> Self {
+        Self {
+            total,
+            limit,
+            offset,
+            rows,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ReconcileRow {
     pub at_ms: i64,

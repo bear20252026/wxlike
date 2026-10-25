@@ -30,12 +30,15 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::accounts::{AccountStore, OpLogQuery, OpRecord, OpStatus, Session};
+use crate::auth::constant_time_eq;
 use crate::config::Config;
 use crate::error::{AdminError, Result};
+use crate::g14::G14;
 use crate::rbac::{self, ModerationMode, Op, OPS};
 use crate::read::{
     AuditFilter, AuditQuery, ListFilter, PlatformRead, ReportFilter, ReportQuery, TicketRow,
 };
+use crate::store::Store;
 use crate::upstream::{self, Upstream};
 use crate::web;
 use wxlike_platform::extract::ApiJson;
@@ -47,6 +50,8 @@ const CAP_MARKER: &str = "…(截断)";
 pub struct App {
     read: PlatformRead,
     accounts: AccountStore,
+    store: Store,
+    g14: G14,
     upstream: Upstream,
     cfg: Config,
     started: std::time::Instant,
@@ -54,18 +59,62 @@ pub struct App {
 
 impl App {
     /// 打开两个库并装配。失败就返回错误——不带着坏配置起服务。
+    ///
+    /// 平台库（只读）与 adminx 库（读写）指向两个文件；G14 的运营域表
+    /// （`g14_*`）落在 adminx 库里，与 D1/D2/D3 的账号表同库不同表。
     pub fn open(cfg: &Config) -> Result<Arc<Self>> {
         let read = PlatformRead::open(&cfg.platform_db)?;
         let accounts = AccountStore::open(&cfg.accounts_db)?;
-        Ok(Self::assemble(read, accounts, cfg.clone()))
+        let store = Store::open(&cfg.accounts_db)?;
+        let upstream = Upstream::new(cfg.platform_url.clone(), cfg.platform_token.clone());
+        let g14 = G14::with_http(store.clone(), upstream.clone());
+        Ok(Self::build(
+            read,
+            accounts,
+            store,
+            g14,
+            upstream,
+            cfg.clone(),
+        ))
     }
 
-    /// 测试与嵌入式用法：三样东西自己给。
+    /// 老调用点：三个端口全部走 HTTP 转发。保留这个签名是为了不惊动既有集成测试。
     pub fn assemble(read: PlatformRead, accounts: AccountStore, cfg: Config) -> Arc<Self> {
+        let store = Store::open(&cfg.accounts_db).expect("G14 存储打开失败：adminx 库路径不可写");
+        let upstream = Upstream::new(cfg.platform_url.clone(), cfg.platform_token.clone());
+        let g14 = G14::with_http(store.clone(), upstream.clone());
+        Self::build(read, accounts, store, g14, upstream, cfg)
+    }
+
+    /// G14 集成测试用：域侧端口由测试注入（fixture），其余与生产一致。
+    pub fn assemble_with_ports(
+        read: PlatformRead,
+        accounts: AccountStore,
+        store: Store,
+        cfg: Config,
+        identity: std::sync::Arc<dyn crate::identity::PlatformPort>,
+        content: std::sync::Arc<dyn crate::publishing::ContentPort>,
+        money: std::sync::Arc<dyn crate::commerce::MoneyPort>,
+    ) -> Arc<Self> {
+        let upstream = Upstream::new(cfg.platform_url.clone(), cfg.platform_token.clone());
+        let g14 = G14::with_ports(store.clone(), identity, content, money);
+        Self::build(read, accounts, store, g14, upstream, cfg)
+    }
+
+    fn build(
+        read: PlatformRead,
+        accounts: AccountStore,
+        store: Store,
+        g14: G14,
+        upstream: Upstream,
+        cfg: Config,
+    ) -> Arc<Self> {
         Arc::new(Self {
             read,
             accounts,
-            upstream: Upstream::new(cfg.platform_url.clone(), cfg.platform_token.clone()),
+            store,
+            g14,
+            upstream,
             cfg,
             started: std::time::Instant::now(),
         })
@@ -77,6 +126,14 @@ impl App {
 
     pub fn accounts(&self) -> &AccountStore {
         &self.accounts
+    }
+
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    pub fn g14(&self) -> &G14 {
+        &self.g14
     }
 
     pub fn config(&self) -> &Config {
@@ -103,6 +160,7 @@ impl App {
             .route("/api/me/totp/confirm", post(totp_confirm))
             .route("/api/me/totp/disable", post(totp_disable))
             .route("/api/op/{op}", post(run_op))
+            .merge(crate::g14::router())
             .with_state(self.clone())
     }
 
@@ -141,19 +199,6 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|v| !v.is_empty())
-}
-
-/// 常量时间比较。长度不等直接 false（长度不是秘密：令牌是定长 hex）。
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
 }
 
 /// 读面门槛：静态令牌或有效会话，二选一。
