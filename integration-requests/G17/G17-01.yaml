@@ -33,6 +33,15 @@ root_registration:
     owner: G00
     issue: "https://github.com/bear20252026/wxlike/issues/228"
     detail: 补登 23 个直接依赖（清单见 third_party/reviews/NOTICE-INDEX.md），每补一项删一条 notice-waivers
+  - action: root_file_update
+    file: _typos.toml
+    owner: G00
+    detail: >-
+      本分支直接改了根 _typos.toml（超出 G17 可写范围，特此报备）：在 [default.extend-words]
+      增加 flate（DEFLATE，crate 名 flate2 被 typos 分词出 "flate"）与 writeable（ICU4X
+      writeable crate 合法包名）。两者均来自 SBOM 生成物 third_party/reviews/sbom/wxlike.cdx.json
+      的组件名，不改即 quality job 的 typos 门禁恒红。G00 复核后可挪位置或换写法（如把
+      third_party/reviews/sbom 加入 extend-exclude），语义不变即可。
   - action: regeneration_policy
     file: third_party/reviews/sbom/wxlike.cdx.json
     trigger: Cargo.lock / ui/package-lock.json / apps/mobile/pubspec.lock / Dockerfile / docker-compose.yml 变更
