@@ -5,8 +5,10 @@
 //! 永远发生在事务之外，失败只改状态，不"试试看"再扣一次钱。
 
 pub mod accounts;
+pub mod cards;
 pub mod error;
 pub mod infrastructure;
+pub mod payments;
 pub mod ports;
 
 mod config;
