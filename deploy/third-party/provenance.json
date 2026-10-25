@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "updated_at": "2026-10-24",
+  "packages": [
+    {
+      "name": "ffmpeg",
+      "used_by": "wxlike-live-ingest",
+      "source": "Debian bookworm apt package from debian:bookworm-slim",
+      "version_policy": "recorded at build in /opt/wxlike/ffmpeg-version.txt; release manifest records image digest + SBOM",
+      "expected_version": "",
+      "license": "LGPL-2.1-or-later (Debian build does not enable --enable-gpl)",
+      "notice_paths": ["THIRD-PARTY-NOTICES.md", "/opt/wxlike/NOTICE"],
+      "source_url": "https://salsa.debian.org/multimedia-team/ffmpeg",
+      "check": "ci/jobs/server/check_ffmpeg_notice.sh"
+    },
+    {
+      "name": "tini",
+      "used_by": "server, live-ingest",
+      "source": "Debian bookworm apt package",
+      "license": "MIT",
+      "notice_paths": ["THIRD-PARTY-NOTICES.md"],
+      "check": "ci/jobs/server/check_ffmpeg_notice.sh"
+    },
+    {
+      "name": "sqlite3",
+      "used_by": "server container (backup/restore drill)",
+      "source": "Debian bookworm apt package",
+      "license": "Public Domain",
+      "notice_paths": ["THIRD-PARTY-NOTICES.md"],
+      "check": "ci/jobs/server/check_ffmpeg_notice.sh"
+    }
+  ]
+}
