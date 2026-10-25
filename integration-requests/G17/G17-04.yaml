@@ -47,20 +47,20 @@ root_registration:
                 name: fuzz-crash-corpus
                 path: tests/security/corpus
     note: |
-      当前 fuzz.rs 的变异次数写死 2000（CI 短跑）。长跑版需要把次数参数化；
-      参数化本身要改测试文件，属本卡后续增量，已在本文件 open_items 里登记。
+      2026-10-25 已参数化 WXLIKE_FUZZ_ITERS，独立 security.yml 合并每日长跑；
+      失败变异输入保存到 WXLIKE_FUZZ_CRASH_DIR，由同一工作流上传。
 
 acceptance_notes:
   - 覆盖 bincode/JSON 大小与深度、二维码（QR 面尚未合入，见 open_items）、压缩包、HTML/CSS、媒体/模型解析
   - URL 出站按解析后 IP 拒绝私网/元数据/IPv6 回环与 ULA，host 伪装（userinfo/后缀/路径）全部拒绝
   - 小程序：死循环预算、能力清单缺失、call_global 不 eval、生命周期钩子可失败
   - 路径穿越整包拒绝（不是跳过该条目）；语料里"崩溃样本必须有 blocker + issue"
-  - 变异 fuzz 只允许已登记形态的 panic，其它 panic 一律红
+  - 变异 fuzz 已修复后禁止任何 panic，包括 overflow
 
 tests:
-  - tests/security/tests/fuzz.rs（10 例：截断/坏魔数/长度不符/溢出[ignored]/解压炸弹/路径穿越/safe_rel_path 矩阵/深 JSON/超大字段/语料回放/变异 fuzz）
+  - tests/security/tests/fuzz.rs（10 例：截断/坏魔数/长度不符/溢出回归/解压炸弹/路径穿越/safe_rel_path 矩阵/深 JSON/超大字段/语料回放/变异 fuzz）
   - tests/security/tests/web.rs（9 例：默认拒绝/SSRF 目标/白名单内私网仍拒/host 伪装/协议面/allow_private 收窄/媒体穿越 404/读面 JSON/视频匿名闸门）
-  - tests/security/tests/sandbox.rs（8 例：预算/循环形态/能力清单/不 eval/死循环包/生命周期/桥状态[ignored]/坏包加载失败）
+  - tests/security/tests/sandbox.rs（8 例：预算/循环形态/能力清单/不 eval/死循环包/生命周期/桥状态回归/坏包加载失败）
 
 observations:
   - dpage 的 `STUB_LEN + payload_len` 整数溢出：20 字节恶意包可 panic（#229，SEC-FUZZ-001）
@@ -68,7 +68,10 @@ observations:
   - SSRF 策略对"白名单里的私网地址"仍然拒绝，行为符合预期（WEB-003 证明拒绝来源是独立规则）
 
 open_items:
-  - 长跑 fuzz 的迭代次数参数化（当前固定 2000）
   - 二维码解码 fuzz：等 G07 的扫码实现合入后补语料（现在没有解码器可打）
   - 媒体/模型解析 fuzz：等 G09/G01 的解析路径合入
-  - 三条 blocked 用例（#229/#253）需 G08 打补丁后删除 #[ignore]
+
+integration_update_2026_10_25:
+  workflow: .github/workflows/security.yml
+  pr: https://github.com/bear20252026/wxlike/pull/276
+  completed: [移除已修复用例ignore, s03裁决改reject, 禁止所有panic豁免, 迭代次数参数化, 崩溃输入artifact]

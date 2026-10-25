@@ -65,3 +65,9 @@ open_items:
   - CI 接线（本文件 root_registration 第 1 条）需 G00 执行
   - THIRD-PARTY-NOTICES.md 的 23 项补登需 G00 执行（#228）
   - 上游仓的 `license_evidence` 目前是 LICENSE 文件链接；冻结发布前需按 G17-02 复核一次许可是否变更
+
+integration_update_2026_10_25:
+  pr: https://github.com/bear20252026/wxlike/pull/276
+  workflow: .github/workflows/security.yml
+  review: security/release-reviews/REVIEW-2026-10-25.md
+  note: 旧申请的历史发现保留；当前完成项与剩余阻塞以本轮复核和 blockers.json 为准。

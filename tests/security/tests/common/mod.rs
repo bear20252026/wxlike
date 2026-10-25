@@ -107,7 +107,12 @@ pub async fn signup(app: &Router, name: &str) -> (String, String) {
 pub async fn create_group(app: &Router, token: &str, name: &str) -> String {
     let (status, body) = call(
         app,
-        req("POST", "/api/groups", Some(json!({"name": name})), Some(token)),
+        req(
+            "POST",
+            "/api/groups",
+            Some(json!({"name": name})),
+            Some(token),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "create group: {body}");

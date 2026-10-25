@@ -162,7 +162,7 @@ def _check_blockers(report: Report, blockers: list[dict[str, Any]], exceptions: 
         status = blocker.get("status", "open")
         if status == "closed":
             if not blocker.get("closed_evidence"):
-                report.warn("REL-CLOSED-NO-EVIDENCE", bid, "标 closed 但没有 closed_evidence", Severity.MEDIUM)
+                report.fail("REL-CLOSED-NO-EVIDENCE", bid, "标 closed 但没有 closed_evidence", Severity.HIGH)
             continue
         severity = Severity.parse(blocker.get("severity"))
         for field in ("owner", "issue"):
@@ -205,7 +205,7 @@ def _check_corpus_cross_reference(report: Report, root: Path, blockers: list[dic
         report.warn("REL-CORPUS-MISSING", "corpus", "没有语料清单：解码面证据不完整", Severity.LOW)
         return
     data = load_json(manifest)
-    known = {b.get("id") for b in blockers}
+    known = {b.get("id"): b for b in blockers}
     for sample in data.get("samples", []):
         if sample.get("verdict") != "blocked":
             continue
@@ -215,6 +215,13 @@ def _check_corpus_cross_reference(report: Report, root: Path, blockers: list[dic
                 "REL-CORPUS-UNTRACKED",
                 sample.get("file", "?"),
                 f"语料里的崩溃样本引用了 {blocker_id!r}，但 blockers.json 里没有这条",
+                Severity.HIGH,
+            )
+        elif known[blocker_id].get("status") == "closed":
+            report.fail(
+                "REL-CORPUS-CLOSED",
+                sample.get("file", "?"),
+                f"语料仍为 blocked，但 {blocker_id} 已标 closed：须重放成功并更新裁决",
                 Severity.HIGH,
             )
 

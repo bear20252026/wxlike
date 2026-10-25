@@ -132,12 +132,16 @@ class ReleaseTest(unittest.TestCase):
         codes = [f.code for f in release.check(self.repo.root, evidence=path).blocking]
         self.assertIn("REL-BLOCKER-EXTERNAL", codes)
 
-    def test_closed_blocker_without_evidence_warns(self) -> None:
+    def test_closed_blocker_without_evidence_blocks(self) -> None:
         self._write_blockers([{"id": "B1", "title": "x", "severity": "high", "owner": "G08", "issue": "#1", "status": "closed"}])
         path = self._write_bundle(clean_bundle())
         report = release.check(self.repo.root, evidence=path)
-        self.assertEqual(report.blocking, [])
-        self.assertIn("REL-CLOSED-NO-EVIDENCE", [f.code for f in report.findings])
+        self.assertIn("REL-CLOSED-NO-EVIDENCE", [f.code for f in report.blocking])
+
+    def test_closed_blocker_with_evidence_does_not_block(self) -> None:
+        self._write_blockers([{"id": "B1", "owner": "G08", "issue": "#1", "status": "closed", "closed_evidence": "commit and CI job"}])
+        path = self._write_bundle(clean_bundle())
+        self.assertEqual(release.check(self.repo.root, evidence=path).blocking, [])
 
     # ---- 例外 -------------------------------------------------------------
     def test_valid_exception_releases(self) -> None:
@@ -167,7 +171,7 @@ class ReleaseTest(unittest.TestCase):
         path = self._write_bundle(clean_bundle())
         self.assertIn("REL-CORPUS-UNTRACKED", [f.code for f in release.check(self.repo.root, evidence=path).blocking])
 
-    def test_corpus_blocked_sample_registered(self) -> None:
+    def test_corpus_cannot_reference_closed_blocker(self) -> None:
         self._write_blockers([{"id": "SEC-FUZZ-001", "title": "x", "severity": "high", "owner": "G08", "issue": "#229", "status": "closed", "closed_evidence": "commit 1"}])
         self.repo.write_json(
             "tests/security/corpus/manifest.json",
@@ -178,7 +182,7 @@ class ReleaseTest(unittest.TestCase):
         )
         path = self._write_bundle(clean_bundle())
         report = release.check(self.repo.root, evidence=path)
-        self.assertEqual(report.blocking, [])
+        self.assertIn("REL-CORPUS-CLOSED", [f.code for f in report.blocking])
 
     # ---- 坏输入 -----------------------------------------------------------
     def test_empty_items_is_data_error(self) -> None:

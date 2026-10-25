@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .inventory import CARGO_LOCKS, NPM_LOCKS, SURFACE_ECOSYSTEM
 from .model import Report, Severity
 from .provenance import expires_ok
 from .util import DataError, load_json, read_text, repo_root, sha256_text, today
@@ -111,17 +112,14 @@ def _inventory(root: Path) -> dict[str, dict[str, set[str]]]:
 
     import tomllib
 
-    for rel, surface in (
-        ("Cargo.lock", "rust-root"),
-        ("ui/src-tauri/Cargo.lock", "desktop"),
-    ):
+    for rel, surface in CARGO_LOCKS:
         path = root / rel
         if not path.is_file():
             continue
         for pkg in tomllib.loads(read_text(path)).get("package", []):
             add(pkg.get("name", ""), pkg.get("version", ""), surface)
 
-    for rel, surface in (("ui/package-lock.json", "web"), ("design/ui-v2/package-lock.json", "design")):
+    for rel, surface in NPM_LOCKS:
         path = root / rel
         if not path.is_file():
             continue
@@ -152,13 +150,17 @@ def _inventory(root: Path) -> dict[str, dict[str, set[str]]]:
 
 
 # ---- 判定 ---------------------------------------------------------------
-def _judge(advisory: dict[str, Any], inventory: dict[str, set[str]], policy: dict[str, Any]) -> list[Hit]:
+def _judge(advisory: dict[str, Any], inventory: dict[str, dict[str, set[str]]], policy: dict[str, Any]) -> list[Hit]:
     component = advisory.get("component", "")
     ecosystem = advisory.get("ecosystem", "")
     raw_severity = str(advisory.get("severity", "")).lower()
     severity = Severity.parse(raw_severity)
     unknown_severity = raw_severity in {"unknown", "", "none"}
-    versions = inventory.get(component, {})
+    versions = {
+        version: {surface for surface in surfaces if SURFACE_ECOSYSTEM.get(surface) == ecosystem}
+        for version, surfaces in inventory.get(component, {}).items()
+    }
+    versions = {version: surfaces for version, surfaces in versions.items() if surfaces}
     if not versions:
         # 不在图上：报 not_applicable，但要写清"因为锁文件里没有它"，
         # 而不是含糊的"不适用"。含糊的不适用等于没有评审。
@@ -295,7 +297,8 @@ def _report_hits(report: Report, hits: Iterable[Hit], policy: dict[str, Any]) ->
             report.warn("ADV-UNMAINTAINED", hit.subject, f"{hit.advisory_id}: {hit.why}", Severity.LOW)
             continue
         if hit.verdict == UNVERIFIED:
-            report.warn(code, hit.subject, f"{hit.advisory_id}: {hit.why}", Severity.HIGH)
+            emit = report.fail if gate.get("unverified") == "block" else report.warn
+            emit(code, hit.subject, f"{hit.advisory_id}: {hit.why}", Severity.HIGH)
             continue
         exc = exceptions.get(hit.advisory_id)
         if exc:
@@ -329,110 +332,113 @@ def _classification(hits: list[Hit]) -> dict[str, int]:
 
 
 # ---- 联网：OSV ----------------------------------------------------------
-def _fetch_osv(inventory: dict[str, set[str]], timeout: float) -> dict[str, Any]:
-    """把锁文件里的 cargo/npm/pub 组件批量问 OSV。断网就是数据错误，不静默跳过。"""
-    queries = []
-    index: list[tuple[str, str]] = []
-    for name, versions in inventory.items():
-        for version in sorted(versions.keys()):
-            queries.append({"package": {"name": name, "ecosystem": "crates.io"}, "version": version})
-            index.append((name, version))
-    if not queries:
-        return {"results": []}
-    payload = json.dumps({"queries": queries}).encode("utf-8")
-    req = urllib.request.Request(OSV_BATCH, data=payload, headers={"Content-Type": "application/json"})
+def _osv_batch(queries: list[dict[str, Any]], timeout: float) -> list[dict[str, Any]]:
+    req = urllib.request.Request(
+        OSV_BATCH, data=json.dumps({"queries": queries}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise DataError(
-            f"OSV 查询失败（{exc}）：冻结前必须联网复核公告；临时断网可用 --offline 走本地数据集"
-        ) from exc
-    return {"index": index, "osv": data}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError) as exc:
+        raise DataError(f"OSV 查询失败（{exc}）：联网不可用不能当作安全通过") from exc
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list) or len(results) != len(queries):
+        raise DataError("OSV 响应缺项或数量不符：无法确认所有依赖已被查询")
+    if any(not isinstance(row, dict) or not isinstance(row.get("vulns", []), list) for row in results):
+        raise DataError("OSV 响应结构错误")
+    return results
+
+
+def _fetch_osv(inventory: dict[str, dict[str, set[str]]], timeout: float) -> dict[str, Any]:
+    """按真实生态查询并逐查询翻页；容器镜像交镜像扫描，不伪装成 crate。"""
+    index: list[tuple[str, str, str]] = []
+    for name, versions in sorted(inventory.items()):
+        for version, surfaces in sorted(versions.items()):
+            ecosystems = {SURFACE_ECOSYSTEM[surface] for surface in surfaces if surface in SURFACE_ECOSYSTEM}
+            index.extend((name, version, ecosystem) for ecosystem in sorted(ecosystems))
+    queries = [{"package": {"name": name, "ecosystem": ecosystem}, "version": version}
+               for name, version, ecosystem in index]
+    merged: list[dict[str, Any]] = [{"vulns": []} for _ in queries]
+    for start in range(0, len(queries), 500):
+        pending = [(i, queries[i]) for i in range(start, min(start + 500, len(queries)))]
+        seen_tokens: set[tuple[int, str]] = set()
+        for _ in range(100):
+            if not pending:
+                break
+            results = _osv_batch([query for _, query in pending], timeout)
+            following = []
+            for (i, query), result in zip(pending, results):
+                merged[i]["vulns"].extend(result.get("vulns", []))
+                token = result.get("next_page_token")
+                if token:
+                    if not isinstance(token, str) or (i, token) in seen_tokens:
+                        raise DataError("OSV 分页 token 非法或循环：拒绝部分扫描结果")
+                    seen_tokens.add((i, token))
+                    following.append((i, {**query, "page_token": token}))
+            pending = following
+        if pending:
+            raise DataError("OSV 分页超过预算：拒绝部分扫描结果")
+    return {"index": index, "osv": {"results": merged}}
 
 
 def _from_osv(scanned: dict[str, Any], known: list[dict[str, Any]], timeout: float = 10.0) -> list[dict[str, Any]]:
-    """把 OSV 结果转成与本地数据集同构的条目；已知 id 不重复计入。"""
-    seen = {a["id"] for a in known}
-    out = []
+    """同一公告影响多个版本时必须逐版本保留，不按 id 全局跳过。"""
+    known_keys = {(row["id"], row["component"], row["ecosystem"]) for row in known}
+    records: dict[tuple[str, str, str], dict[str, Any]] = {}
+    details: dict[str, dict[str, Any]] = {}
     index = scanned.get("index") or []
-    for i, result in enumerate((scanned.get("osv") or {}).get("results", [])):
-        if i >= len(index):
-            break
-        name, version = index[i]
+    results = (scanned.get("osv") or {}).get("results", [])
+    if len(results) != len(index):
+        raise DataError("OSV 结果与查询索引不匹配")
+    for (name, version, ecosystem), result in zip(index, results):
         for vuln in result.get("vulns", []) or []:
             vid = vuln.get("id", "")
-            if not vid or vid in seen:
+            if not re.fullmatch(r"[a-zA-Z0-9:_.-]+", vid):
+                raise DataError("OSV 返回非法公告 id")
+            key = (vid, name, ecosystem)
+            if key in known_keys:
                 continue
-            seen.add(vid)
-            info = ((vuln.get("database_specific") or {}).get("informational") or "").lower()
-            summary = (vuln.get("summary") or "").lower()
-            if not summary and not vuln.get("severity"):
-                # batch 接口只回 id/affected；要分级和 summary 得逐条查详情。
-                # 只对"待核实"的少量条目查，不把 871 个组件都放大成 871 次请求。
-                detail = _osv_detail(vid, timeout)
-                summary = (detail.get("summary") or "").lower()
-                vuln = {**vuln, **detail}
-            # RUSTSEC 的 unmaintained/unsound 在 batch 结果里只体现在 summary 文本上，
-            # 没有独立的 severity —— 这正是"不拦但要说"的那一类。
-            unmaintained = info in {"unmaintained", "unsound"} or "unmaintained" in summary or "not maintained" in summary
+            if key in records:
+                spec = f"=={version}"
+                if spec not in records[key]["affected"]:
+                    records[key]["affected"].append(spec)
+                continue
+            if vid not in details:
+                details[vid] = _osv_detail(vid, timeout)
+            detail = {**vuln, **details[vid]}
+            if detail.get("withdrawn"):
+                continue
+            info = ((detail.get("database_specific") or {}).get("informational") or "").lower()
+            # 只认明确的 informational；不凭摘要文本将真实漏洞降级。
+            unmaintained = info == "unmaintained" and _osv_severity(detail) not in {"critical", "high"}
             kind = "unmaintained" if unmaintained else "vulnerability"
-            out.append(
-                {
-                    "id": vid,
-                    "component": name,
-                    "ecosystem": "crates.io",
-                    "severity": "low" if kind == "unmaintained" else (_osv_severity(vuln) or "unknown"),
-                    "affected": [f"=={version}"],
-                    "fixed": [],
-                    "url": f"https://osv.dev/vulnerability/{vid}",
-                    "kind": kind,
-                    "note": "OSV 新发现（本地数据集未登记）：候选新增，需分级处置",
-                }
-            )
-    return out
+            records[key] = {
+                "id": vid, "component": name, "ecosystem": ecosystem,
+                "severity": "low" if unmaintained else (_osv_severity(detail) or "unknown"),
+                "affected": [f"=={version}"], "fixed": [],
+                "url": f"https://osv.dev/vulnerability/{vid}", "kind": kind,
+                "note": "OSV 新发现：候选新增；未知分级须人工核实，不能按粗略 CVSS 猜测放行",
+            }
+    return list(records.values())
 
 
 def _osv_detail(vid: str, timeout: float) -> dict[str, Any]:
-    """逐条详情。batch 接口只回 id/affected，分级与 summary 要单独取。
-
-    只对"待核实"的少量条目调用（当前是十几条），不会把 871 个组件放大成
-    871 次请求。取不到就维持 unknown，交给人工核实——不编一个分级。
-    """
+    """batch 只回 id，详情不可用就没有完整扫描结论。"""
     try:
         with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{vid}", timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return {}
+            detail = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError) as exc:
+        raise DataError(f"OSV 公告 {vid} 详情不可用：{exc}") from exc
+    if not isinstance(detail, dict) or detail.get("id") != vid:
+        raise DataError(f"OSV 公告 {vid} 详情结构或 id 不符")
+    return detail
 
 
 def _osv_severity(vuln: dict[str, Any]) -> str | None:
-    """OSV 不保证有分级；有就用它自己的，没有就返回 None（不猜）。
-
-    顺序很重要：先看 `database_specific.severity`（RUSTSEC/GHSA 的人工分级），
-    再看 CVSS 向量。只看 CVSS 的粗分档会把 Moderate 判成 High——门禁因此
-    误拦一个"只影响完整性、无保密性影响"的问题，然后所有人开始写例外。
-    """
+    """只采用上游明确等级；没有可信评分器时不从 CVSS 向量猜等级。"""
     db = ((vuln.get("database_specific") or {}).get("severity") or "").upper()
-    mapped = {"CRITICAL": "critical", "HIGH": "high", "MODERATE": "medium", "MEDIUM": "medium", "LOW": "low"}.get(db)
-    if mapped:
-        return mapped
-    for sev in vuln.get("severity", []) or []:
-        score = sev.get("score") or ""
-        if score.startswith("CVSS:"):
-            return _cvss_band(score)
-    return None
-
-
-def _cvss_band(score: str) -> str:
-    """从向量字符串粗分档：只区分"要不要拦"，不做精确评分。"""
-    network = "AV:N" in score
-    hits = sum(1 for k in ("C:H", "I:H", "A:H") if k in score)
-    if network and hits >= 2:
-        return "critical"
-    if hits >= 1:
-        return "high" if network else "medium"
-    return "medium"
+    return {"CRITICAL": "critical", "HIGH": "high", "MODERATE": "medium", "MEDIUM": "medium", "LOW": "low"}.get(db)
 
 
 def _from_scan(scanned: dict[str, Any]) -> list[dict[str, Any]]:

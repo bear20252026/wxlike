@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import notice, provenance, sbom
-from .model import Report, Severity
+from .model import Report
 from .util import EXIT_BLOCK, EXIT_OK, AuditError, repo_root
 
 
@@ -155,15 +155,8 @@ def _all(root: Path) -> list[Report]:
         lambda: authz.check(root),
         lambda: release.check(root, evidence=None),
     ]
-    reports = []
-    for gate in gates:
-        try:
-            reports.append(gate())
-        except AuditError as exc:
-            failed = Report("gate-error")
-            failed.warn("GATE-UNAVAILABLE", "gate", str(exc), severity=Severity.HIGH)
-            reports.append(failed)
-    return reports
+    # 数据缺失/联网异常必须沿 main 的 AuditError 契约返回非零，不能降成 WARN。
+    return [gate() for gate in gates]
 
 
 def _emit(args: argparse.Namespace, reports: list[Report]) -> int:

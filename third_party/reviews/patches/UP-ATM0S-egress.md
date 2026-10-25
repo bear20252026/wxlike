@@ -3,7 +3,7 @@
 - 上游：`8xFF/atm0s-media-server` @ `0ffc95a4537633a9916ac8879e953399a9f35bac`
   永久链接：<https://github.com/8xFF/atm0s-media-server/blob/0ffc95a4537633a9916ac8879e953399a9f35bac/packages/media_core/src/endpoint/internal/bitrate_allocator/egress.rs>
 - 许可：MIT
-- 本地 sha256：`d26e14fe1cc799b2ab187426c081c3dea4f52b74e0c5395227a9ff42d9aae535`
+- 本地 sha256：`a65d074c31448cff60397ba299a60bd57f2c1b36af2c75fa50a4ea048cb88aeb`
 - 形态：**跨库重写**（不是逐行翻译，也不是 copy-paste 后改 import）
 
 ## 拿了什么
@@ -31,3 +31,7 @@
 ## 复核方式
 
 `python -m sourceaudit provenance check` 核对 sha256；文件头的来源声明不得删除。
+
+## 2026-10-25 换行复核
+
+旧指纹来自 Windows CRLF 工作区。已逐字节验证：仓库 LF 内容仅将换行转换为 CRLF 后即匹配旧指纹；代码内容无变化。现登记 Git 中 LF 字节的 sha256，`.gitattributes` 固定该文件以 LF 检出，保证 Linux / Windows 复核一致。

@@ -3349,6 +3349,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-identity"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-core",
+]
+
+[[package]]
 name = "wxlike-limits"
 version = "0.1.0"
 
@@ -3395,11 +3410,26 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-identity",
  "wxlike-message",
  "wxlike-moderation",
+ "wxlike-relations",
  "wxlike-report",
  "wxlike-risk",
  "wxlike-rtc",
+]
+
+[[package]]
+name = "wxlike-relations"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wxlike-core",
 ]
 
 [[package]]
@@ -3425,12 +3455,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chacha20poly1305 0.11.0",
+ "hex",
  "hmac 0.12.1",
  "md-5",
  "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
+ "sha2 0.10.9",
  "str0m",
  "thiserror 2.0.21",
  "tokio",

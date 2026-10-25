@@ -121,8 +121,14 @@ fn non_http_schemes_are_rejected() {
 #[test]
 fn allow_private_is_narrow() {
     let p = CallbackPolicy::allow_hosts(["127.0.0.1".to_string()]).allow_private(true);
-    assert!(p.check("http://127.0.0.1:9/cb").is_ok(), "显式打开后回环应可用");
-    assert!(p.check("file:///etc/passwd").is_err(), "打开私网不等于放开协议");
+    assert!(
+        p.check("http://127.0.0.1:9/cb").is_ok(),
+        "显式打开后回环应可用"
+    );
+    assert!(
+        p.check("file:///etc/passwd").is_err(),
+        "打开私网不等于放开协议"
+    );
     assert!(
         p.check("http://10.9.9.9/cb").is_err(),
         "10.9.9.9 不在允许列表，仍应拒绝"
@@ -142,11 +148,7 @@ async fn media_path_traversal_is_404() {
         "/api/media/deadbeef", // 太短，不是 64 位 hex
     ];
     for path in probes {
-        let (status, body) = common::call(
-            &app,
-            common::req("GET", path, None, Some(&tok)),
-        )
-        .await;
+        let (status, body) = common::call(&app, common::req("GET", path, None, Some(&tok))).await;
         assert!(
             status == StatusCode::NOT_FOUND || status == StatusCode::BAD_REQUEST,
             "{path} 应当 404/400（id 形状不符），实际 {status} {body}"
@@ -227,7 +229,10 @@ fn video_caller_requires_auth() {
     assert!(NeverAuth.caller(&empty).is_none());
     let mut with_token = axum::http::HeaderMap::new();
     with_token.insert(header::AUTHORIZATION, "Bearer x".parse().unwrap());
-    assert!(NeverAuth.caller(&with_token).is_none(), "无凭据的请求不能被认成调用者");
+    assert!(
+        NeverAuth.caller(&with_token).is_none(),
+        "无凭据的请求不能被认成调用者"
+    );
 }
 
 use tower::ServiceExt as _;

@@ -72,13 +72,8 @@ fn payload_length_mismatch_is_rejected() {
     );
 }
 
-/// FUZZ-002b（已知阻断 #229）：`payload_len = u64::MAX` 触发 `STUB_LEN + len` 溢出。
-///
-/// 这条用例断言的是"应当返回 Err 且不 panic"，因此当前实现下它是红的。
-/// 按任务单"产品补丁交域 owner"的要求，补丁归 G08（#229）；本组先 `#[ignore]`
-/// 并登记为发布阻断项，修好后删掉 `#[ignore]` 即为门禁。
+/// FUZZ-002b：#229 修复后的独立回归，恶意长度必须返回 Err，不能 panic。
 #[test]
-#[ignore = "BLOCKER SEC-FUZZ-001 (#229): STUB_LEN + payload_len 整数溢出"]
 fn overflowing_payload_len_does_not_panic() {
     let mut blob = Vec::new();
     blob.extend_from_slice(MAGIC);
@@ -97,17 +92,21 @@ fn overflowing_payload_len_does_not_panic() {
 /// FUZZ-003：解压炸弹。80 MiB 的可压缩数据必须被 64 MiB 上限挡住。
 #[test]
 fn decompression_bomb_is_rejected() {
-    let dir = tmpdir("bomb");
-    write_page(&dir, "console.log('ok')");
-    // 80 MiB 的零：压缩后只有几十 KB，解压后超过 MAX_DECOMPRESSED
-    std::fs::write(dir.join("bomb.bin"), vec![0u8; 80 * 1024 * 1024]).unwrap();
-    let blob = pack_dir(&dir).expect("打包良性目录");
+    // 主干 pack_dir 已在打包阶段拒绝超限数据；直接构造外部攻击者可提交的压缩载荷，
+    // 继续验证 unpack 的解压上限，不能依赖产品打包器生成恶意样本。
+    let payload = zstd::stream::encode_all(vec![0u8; 80 * 1024 * 1024].as_slice(), 6)
+        .expect("构造压缩炸弹载荷");
+    let mut blob = Vec::new();
+    blob.extend_from_slice(MAGIC);
+    blob.extend_from_slice(&1u32.to_be_bytes());
+    blob.extend_from_slice(&1u32.to_be_bytes());
+    blob.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    blob.extend_from_slice(&payload);
     let err = unpack(&blob).expect_err("超过 64 MiB 的包必须拒绝");
     assert!(
         format!("{err}").contains("decompression bomb") || format!("{err}").contains("exceeds"),
         "错误信息应指出解压上限，实际：{err}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// FUZZ-004：包内路径穿越（`../`、绝对路径、盘符、反斜杠）整包拒绝。
@@ -115,7 +114,13 @@ fn decompression_bomb_is_rejected() {
 /// 手工构造 `FileMap` 再压成合法 blob——攻击者能造，测试也要能造。
 #[test]
 fn package_with_traversal_entry_is_rejected() {
-    for evil in ["../evil.js", "/etc/passwd", "C:/windows/x", "a\\b.js", "a/../../b"] {
+    for evil in [
+        "../evil.js",
+        "/etc/passwd",
+        "C:/windows/x",
+        "a\\b.js",
+        "a/../../b",
+    ] {
         let files = FileMap(vec![
             FileEntry {
                 path: "manifest.json".into(),
@@ -141,7 +146,12 @@ fn package_with_traversal_entry_is_rejected() {
 /// FUZZ-005：`safe_rel_path` 的判定表（与包解析共用同一套标准）。
 #[test]
 fn safe_rel_path_matrix() {
-    let ok = ["main.js", "a/b.js", "deep/nested/path/file.bin", "a-b_c.1.js"];
+    let ok = [
+        "main.js",
+        "a/b.js",
+        "deep/nested/path/file.bin",
+        "a-b_c.1.js",
+    ];
     let bad = [
         "", ".", "..", "../x", "a/../b", "/abs", "C:/x", "a\\b", "a//b", "a/./b", "./a",
     ];
@@ -244,32 +254,31 @@ fn replay_minimized_corpus() {
             other => panic!("语料 {file} 的 verdict 非法：{other}"),
         }
     }
-    assert!(replayed >= 3, "reject 样本太少（{replayed}），语料可能被删空");
+    assert!(
+        replayed >= 3,
+        "reject 样本太少（{replayed}），语料可能被删空"
+    );
 }
 
-/// FUZZ-009：变异 fuzz（确定性 PRNG，CI 里可跑）。
-///
-/// 从良性包随机翻字节，喂给 `unpack`，只允许两种结局：`Err` 或**已知的溢出 panic**。
-/// 出现任何别的 panic（越界读、切片 panic、OOM 前兆）都要红——那才是新 bug。
-///
-/// 为什么不用 cargo-fuzz：那需要 nightly + 独立目标；这条用标准库就能在每次 PR 跑，
-/// 长跑版由 CI 的 nightly 定时任务跑（见 integration-requests/G17/G17-04.yaml）。
+/// FUZZ-009：固定种子变异 fuzz，任何 panic 都必须失败，不再豁免 overflow。
+/// 默认 2000 次；夜间任务用 WXLIKE_FUZZ_ITERS 扩大样本量。
 #[test]
-fn mutation_fuzz_only_hits_the_known_overflow() {
+fn mutation_fuzz_never_panics() {
+    let iterations: usize = std::env::var("WXLIKE_FUZZ_ITERS")
+        .map(|value| value.parse().expect("WXLIKE_FUZZ_ITERS 必须是整数"))
+        .unwrap_or(2_000);
+    assert!(
+        (1_000..=200_000).contains(&iterations),
+        "fuzz 次数必须在 1000..=200000"
+    );
     let dir = tmpdir("mutbase");
     write_page(&dir, "console.log('mutation baseline')");
     let baseline = pack_dir(&dir).expect("打包良性目录");
     std::fs::remove_dir_all(&dir).ok();
 
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {})); // 变异样本会故意触发 panic，别刷屏
-
     let mut rng = XorShift64::new(0x5EED_1234_ABCD_0001);
     let mut errors = 0usize;
-    let mut known_overflow = 0usize;
-    let mut panic_shapes: Vec<String> = Vec::new();
-
-    for _ in 0..2_000 {
+    for iteration in 0..iterations {
         let mut blob = baseline.clone();
         for _ in 0..(1 + rng.next() % 3) {
             let idx = (rng.next() as usize) % blob.len();
@@ -277,39 +286,25 @@ fn mutation_fuzz_only_hits_the_known_overflow() {
         }
         match catch_unwind(AssertUnwindSafe(|| unpack(&blob))) {
             Ok(Err(_)) => errors += 1,
-            Ok(Ok(_)) => {} // 变异没破坏结构，解出来了也算正常
-            Err(payload) => {
-                let message = panic_message(&payload);
-                if message.contains("overflow") {
-                    known_overflow += 1;
-                } else {
-                    panic_shapes.push(message);
-                }
+            Ok(Ok(_)) => {} // 变异未破坏结构，解析成功也正常
+            Err(_) => {
+                let path = std::env::var_os("WXLIKE_FUZZ_CRASH_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| tmpdir("mutation-crash"));
+                std::fs::create_dir_all(&path).expect("创建崩溃样本目录");
+                let sample = path.join(format!("mutation-{iteration}.hex"));
+                std::fs::write(&sample, hex::encode(&blob)).expect("保存可复现崩溃输入");
+                panic!(
+                    "变异 fuzz 第 {iteration} 次触发 panic，样本：{}",
+                    sample.display()
+                );
             }
         }
     }
-    std::panic::set_hook(hook);
-
     assert!(
-        panic_shapes.is_empty(),
-        "变异 fuzz 命中 {} 种**已知形态之外**的 panic（第一种：{}）",
-        panic_shapes.len(),
-        panic_shapes.first().cloned().unwrap_or_default()
+        errors > iterations / 20,
+        "仅 {errors}/{iterations} 个样本被拒绝"
     );
-    assert!(errors > 100, "只有 {errors} 次被拒绝：变异可能没有真的改到结构字段");
-    if known_overflow > 0 {
-        eprintln!(
-            "注意：{known_overflow} 次命中 #229 的整数溢出 panic（SEC-FUZZ-001，待 G08 修复）"
-        );
-    }
-}
-
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-        .unwrap_or_else(|| "<非字符串 panic>".to_string())
 }
 
 /// xorshift64*：确定性、无依赖。种子固定 → 失败可复现。

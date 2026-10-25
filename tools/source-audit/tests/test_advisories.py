@@ -93,6 +93,14 @@ class AdvisoriesTest(unittest.TestCase):
         return [f.code for f in report.findings]
 
     # ---- 用例 -------------------------------------------------------------
+    def test_rsc_in_current_frontend_locations_is_not_missed(self) -> None:
+        for path in ("apps/desktop-web/package-lock.json", "design/ui-v2/prototype/package-lock.json"):
+            with self.subTest(path=path):
+                self.repo.write_json(path, {"packages": {"node_modules/@vitejs/plugin-rsc": {"version": "0.4.0"}}})
+                report = advisories.check(self.repo.root, offline=True)
+                self.assertTrue(any(f.subject.startswith("@vitejs/plugin-rsc@") for f in report.blocking))
+                self.repo.rm(path)
+
     def test_known_fixed_version_passes(self) -> None:
         self.write_lock([("webpki-roots", "1.0.10")])
         self.assertEqual([f for f in advisories.check(self.repo.root, offline=True).blocking], [])

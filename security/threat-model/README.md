@@ -68,7 +68,7 @@ python -m sourceaudit authz check     # 三方核对：源码 ↔ 矩阵 ↔ 用
 | **S**poofing | 用 B 的 token 打 A 的对象；管理面用普通 token | 每请求独立鉴权；对象归属校验；管理令牌隔离 | `authorization.rs` AUTHZ-001…008 |
 | **T**ampering | 客户端注入 `user_id` 改余额归属；重放写命令 | 身份只从 token 取；幂等键绑 actor+参数摘要 | AUTHZ-010、AUTHZ-011 |
 | **R**epudiation | 谁下的命令查不到 | 命令审计中间件（`X-Wxlike-Command` → `cmd.<id>`） | `crates/platform/src/audit_mw.rs` |
-| **I**nfo disclosure | 非成员读群信息/媒体/收藏；非参与者读会话未读数；错误信息枚举字段名 | 归属校验；统一 401/403/404；**错误语义不透露内部结构** | AUTHZ-002/008/009；#230（缺口）、#245（缺口） |
+| **I**nfo disclosure | 非成员读群信息/媒体/收藏；非参与者读会话未读数；错误信息枚举字段名 | 归属校验；统一 401/403/404；**错误语义不透露内部结构** | AUTHZ-002/008/009；#230（已修复并回归）、#245（缺口） |
 | **D**oS | 刷屏、好友枚举、验证码爆破、上传轰炸 | GCRA 限速（12 个动作、独立桶） | `abuse.rs` ABUSE-001…008、`abuse-limits.json` |
 | **E**levation | 普通成员拉人/改公告；用户进管理面 | manager scope；管理令牌 | AUTHZ-003、AUTHZ-007 |
 
@@ -123,10 +123,10 @@ G17 只做**越权与重放**，不做账务正确性（那是 G06 的守恒/幂
 
 | 编号 | 内容 | 归属 | 处置 |
 |---|---|---|---|
-| SEC-AUTHZ-012 | `/api/conv/{conv}/{unread,read,sync}` 未校验参与者归属：可探测任意会话的消息量 | G03 / #230 | 用例 `direct_conv_mailbox_requires_participation` 已写好、当前 `#[ignore]`，补丁合入即转门禁 |
+| SEC-AUTHZ-012（已修复） | 信箱参与者归属 | G03 / #230 | PR #269 修复；独立用例已启用，覆盖 unread/read/sync |
 | SEC-ADMIN-ORDER | 2 个管理端点的 body 校验先于令牌校验 → 未认证 422 且泄露字段名 | G14 / #245 | sweep 里以 `exempt` 登记（必须带 issue），修复后要求 401/403 |
 
-两条都进 `security/release-reviews/blockers.json`，发布评审按"未解释的 High 可达项"处理。
+历史问题均保存在 `security/release-reviews/blockers.json`；#230 记录关闭证据，#245 仍是 open 发布阻塞。
 
 ## 10. 怎么跑
 
@@ -137,6 +137,6 @@ cd tools/source-audit && python -m sourceaudit authz check
 # 越权 + 滥用 + 全端点 sweep（真实平台路由，不用 mock）
 cargo test --manifest-path tests/security/Cargo.toml --test authorization --test abuse --test sweep
 
-# 连已知缺口一起看（补丁合入前它会红，这是对的）
-cargo test --manifest-path tests/security/Cargo.toml -- --ignored
+# 全套独立安全测试（没有忽略用例）
+cargo test --locked --manifest-path tests/security/Cargo.toml
 ```

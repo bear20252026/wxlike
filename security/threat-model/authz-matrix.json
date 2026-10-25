@@ -205,9 +205,81 @@
       "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
     },
     {
+      "method": "POST",
+      "path": "/api/articles",
+      "handler": "create",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/articles/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/articles/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/articles/{id}",
+      "handler": "update",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/articles/{id}/react",
+      "handler": "react",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/articles/{id}/read",
+      "handler": "mark_read",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/audit/self",
-      "handler": "<inline>",
+      "handler": "audit_self",
       "module": "crates/platform/src/lib.rs",
       "auth": "user",
       "object": "endpoint",
@@ -747,6 +819,18 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/devices/{device_id}/revoke",
+      "handler": "revoke_device",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "device",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/favorites",
       "handler": "list",
@@ -762,6 +846,42 @@
       "method": "POST",
       "path": "/api/favorites",
       "handler": "create",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/favorites/objects",
+      "handler": "create_object",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/favorites/reorder",
+      "handler": "reorder",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/favorites/search",
+      "handler": "search",
       "module": "crates/platform/src/favorites.rs",
       "auth": "user",
       "object": "endpoint",
@@ -792,6 +912,18 @@
       "scope": "owner",
       "tests": [
         "favorites_are_owner_scoped"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/favorites/{id}",
+      "handler": "update",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
       ]
     },
     {
@@ -1000,6 +1132,18 @@
     },
     {
       "method": "POST",
+      "path": "/api/groups/{group_id}/dissolve",
+      "handler": "dissolve",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/groups/{group_id}/invites",
       "handler": "create_invite",
       "module": "crates/platform/src/groups_admin.rs",
@@ -1146,6 +1290,18 @@
       "method": "PUT",
       "path": "/api/groups/{group_id}/remark-mine",
       "handler": "remark_mine",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/visibility",
+      "handler": "set_visibility",
       "module": "crates/platform/src/groups.rs",
       "auth": "user",
       "object": "group",
@@ -1371,6 +1527,42 @@
     },
     {
       "method": "GET",
+      "path": "/api/moments/drafts",
+      "handler": "list_drafts",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moments/drafts",
+      "handler": "save_draft",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/moments/drafts/{draft_id}",
+      "handler": "remove_draft",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/moments/feed",
       "handler": "feed",
       "module": "crates/platform/src/moments.rs",
@@ -1454,6 +1646,90 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/moments/{moment_id}/report",
+      "handler": "report",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notes",
+      "handler": "list",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/notes",
+      "handler": "create",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/notes/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notes/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/notes/{id}",
+      "handler": "update",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/notes/{id}/autosave",
+      "handler": "autosave",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/notification-rules",
       "handler": "list_notification_rules",
@@ -1490,6 +1766,30 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/notifications",
+      "handler": "list",
+      "module": "crates/platform/src/inbox.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/read",
+      "handler": "mark_read",
+      "module": "crates/platform/src/inbox.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "PUT",
       "path": "/api/profile",
       "handler": "update_profile",
@@ -1511,6 +1811,78 @@
       "scope": "owner",
       "tests": [],
       "public_reason": "公开资料页（昵称/头像），不返回手机号、会话、好友列表等私有字段"
+    },
+    {
+      "method": "GET",
+      "path": "/api/publishers",
+      "handler": "list_publishers",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/publishers",
+      "handler": "set_publisher",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/publishers/{id}",
+      "handler": "one_publisher",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/publishers/{id}/articles",
+      "handler": "publisher_articles",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/publishers/{id}/follow",
+      "handler": "unfollow",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/publishers/{id}/follow",
+      "handler": "follow",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
     },
     {
       "method": "POST",
@@ -1563,6 +1935,30 @@
       "path": "/api/reports",
       "handler": "create",
       "module": "crates/platform/src/report.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/search/content",
+      "handler": "search",
+      "module": "crates/platform/src/content_index.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/search/trends",
+      "handler": "trends",
+      "module": "crates/platform/src/content_index.rs",
       "auth": "user",
       "object": "endpoint",
       "scope": "self",
@@ -1632,8 +2028,31 @@
     },
     {
       "method": "POST",
+      "path": "/api/sessions/refresh",
+      "handler": "refresh_session",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "鉴权由 body.refresh_token 承担：轮换凭证本身即凭据（一次性、父会话绑定），不走 bearer 中间件；无效/过期 refresh_token 由 rotate_refresh 拒绝。"
+    },
+    {
+      "method": "POST",
       "path": "/api/sessions/revoke-others",
       "handler": "revoke_others",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/step-up",
+      "handler": "step_up_grant",
       "module": "crates/platform/src/sessions.rs",
       "auth": "user",
       "object": "endpoint",
@@ -1674,6 +2093,222 @@
       "auth": "user",
       "object": "endpoint",
       "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/statuses",
+      "handler": "list_statuses",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses",
+      "handler": "set_status",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/statuses/background",
+      "handler": "remove_background",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/statuses/background",
+      "handler": "background",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses/background",
+      "handler": "save_background",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses/clear",
+      "handler": "clear_all",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/statuses/{id}",
+      "handler": "clear_one",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/statuses/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses/{id}/react",
+      "handler": "react",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stickers",
+      "handler": "installed",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stickers/packs",
+      "handler": "list_packs",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stickers/packs",
+      "handler": "create_pack",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/stickers/packs/{id}",
+      "handler": "remove_pack",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stickers/packs/{id}",
+      "handler": "one_pack",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/stickers/packs/{id}/install",
+      "handler": "uninstall",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stickers/packs/{id}/install",
+      "handler": "install",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/stickers/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/stickers/{id}",
+      "handler": "order",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
       "tests": [
         "unauth_sweep_rejects_every_private_route"
       ]
@@ -1799,6 +2434,30 @@
       ]
     },
     {
+      "method": "DELETE",
+      "path": "/api/video-creators/{id}/follow",
+      "handler": "unfollow",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/video-creators/{id}/follow",
+      "handler": "follow",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/video/callback",
       "handler": "callback",
@@ -1819,6 +2478,126 @@
       "scope": "owner",
       "tests": [],
       "public_reason": "按不透明 video_id 取播放引用；id 不可枚举（随机生成），本身即授权凭证"
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos",
+      "handler": "publish",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/videos/feed",
+      "handler": "feed",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/videos/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/videos/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/videos/{id}/comments",
+      "handler": "comments",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/comments",
+      "handler": "comment",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/videos/{id}/comments/{comment_id}",
+      "handler": "remove_comment",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "comment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/videos/{id}/like",
+      "handler": "unlike",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/like",
+      "handler": "like",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/report",
+      "handler": "report",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
     },
     {
       "method": "GET",

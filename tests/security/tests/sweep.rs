@@ -9,7 +9,7 @@
 //!
 //! 已知缺口（`security/release-reviews/blockers.json` 的 SEC-AUTHZ-012）不在本 sweep
 //! 的断言范围内：那三个信箱端点**有**鉴权（401 通过），缺的是"参与者归属"校验，
-//! 由 `authorization.rs` 的 AUTHZ-012 用 `#[ignore]` 盯着，补丁合入后取消 ignore。
+//! 由 `authorization.rs` 的 AUTHZ-012 独立验证参与者归属（#230 已修复）。
 
 mod common;
 
@@ -30,7 +30,11 @@ fn concretize(path: &str) -> String {
         let close = rest[open..].find('}').expect("路径参数必须闭合") + open;
         let param = &rest[open + 1..close];
         // `conv` 的形状决定 owner 类型（d- 前缀是直聊），给个合法直聊 id
-        out.push_str(if param == "conv" { "d-alice~bob" } else { "id0" });
+        out.push_str(if param == "conv" {
+            "d-alice~bob"
+        } else {
+            "id0"
+        });
         rest = &rest[close + 1..];
     }
     out.push_str(rest);
@@ -56,7 +60,11 @@ async fn unauth_sweep_rejects_every_private_route() {
         }
         let method = row["method"].as_str().expect("method");
         let path = concretize(row["path"].as_str().expect("path"));
-        let body = if is_bodyless(method) { None } else { Some(json!({})) };
+        let body = if is_bodyless(method) {
+            None
+        } else {
+            Some(json!({}))
+        };
         let (status, resp) = common::call(&app, common::req(method, &path, body, None)).await;
 
         // 已登记偏差（matrix 里的 `exempt`，必须有 issue）：只要求"未认证拿不到数据"，
@@ -122,7 +130,11 @@ async fn public_routes_do_not_demand_a_session() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "未知账号应当是凭据错误：{resp}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "未知账号应当是凭据错误：{resp}"
+    );
     let text = resp.to_string();
     assert!(
         text.contains("credentials") || text.contains("密码") || text.contains("账号"),

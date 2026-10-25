@@ -18,7 +18,7 @@
 |---|---:|---|---|
 | `s01_empty.hex` | 0 | reject | 空 blob |
 | `s02_bad_magic.hex` | 20 | reject | 魔数被替换 |
-| `s03_len_mismatch.hex` | 20 | **blocked** | `payload_len = u64::MAX` → 整数溢出 panic（#229） |
+| `s03_len_mismatch.hex` | 20 | reject | `payload_len = u64::MAX` 必须 Err，不得 panic（#229 已修复） |
 | `s04_garbage_payload.hex` | 28 | reject | 长度自洽但 payload 不是 zstd |
 | `s05_version2.hex` | 20 | reject | 未支持版本 |
 
@@ -34,6 +34,8 @@ PY
 # 3) cargo test --manifest-path tests/security/Cargo.toml --test fuzz
 ```
 
-变异 fuzz（`mutation_fuzz_only_hits_the_known_overflow`）会在 CI 里跑 2000 次变异，
+变异 fuzz（`mutation_fuzz_never_panics`）会在 CI 里跑 2000 次变异，
 只允许已登记形态的 panic。长跑版由 nightly 定时任务跑（见
 `integration-requests/G17/G17-04.yaml` 里的 workflow 片段）。
+
+2026-10-25：s03 原始样本字节保持不变，裁决从 blocked 改为 reject。变异测试不再豁免 overflow panic，失败输入保存为 hex artifact，必须纳入后续语料与问题跟踪。

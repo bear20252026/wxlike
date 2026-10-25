@@ -10,9 +10,8 @@
 ## 跑法
 
 ```bash
-cargo test --manifest-path tests/security/Cargo.toml              # 全部（不含 #[ignore]）
+cargo test --locked --manifest-path tests/security/Cargo.toml     # 全部 51 项，无 ignore
 cargo test --manifest-path tests/security/Cargo.toml --test sweep # 只跑全端点未认证扫描
-cargo test --manifest-path tests/security/Cargo.toml -- --ignored # 连已知缺口一起跑（会红）
 ```
 
 不需要数据库、不需要网络、不 sleep：时间通过引擎的 `now_ms` 入参注入。
@@ -38,13 +37,16 @@ cargo test --manifest-path tests/security/Cargo.toml -- --ignored # 连已知缺
 3. **不硬编码阈值。** 限速用例读 `RiskEngine::config()`，阈值调整时用例不用改，
    但边界仍然被盯住。
 
-## 已知红项（`#[ignore]`，带 issue）
+## 2026-10-25 主干集成
 
-| 用例 | 原因 | issue |
-|---|---|---|
-| `direct_conv_mailbox_requires_participation` | 会话信箱未校验参与者归属 | #230 |
-| `overflowing_payload_len_does_not_panic` | `STUB_LEN + payload_len` 整数溢出（debug 下 panic） | #229 |
-| `bridge_state_is_bounded` | `wxhost.log` 缓冲无上限，页包可吃穿宿主内存 | #253 |
+#229 / #253 / #230 的产品补丁已进入主干，三条 `#[ignore]` 已取消。
+`direct_conv_mailbox_requires_participation` 覆盖 unread / read / sync 三个面；
+`bridge_state_is_bounded` 检查最新 256 行、单行 4096 字节、Unicode 与 drain；
+`overflowing_payload_len_does_not_panic` 及 s03 语料要求 Err。
+变异 fuzz 对任何 panic 都失败，不再允许“已知 overflow”。
 
-`#[ignore]` 不是"以后再说"：每条都写了 issue 号与取消条件，补丁合入后删掉
-`#[ignore]` 就自动变成门禁。
+PR 默认 2000 次变异；每日任务 `WXLIKE_FUZZ_ITERS=200000`，失败输入写入
+`WXLIKE_FUZZ_CRASH_DIR` 并上传 artifact。迭代数必须在 1000..=200000。
+管理面 #245 的两项矩阵 exempt 仍保留为明确发布阻塞；不能把 51 项通过当作全产品安全验收。
+
+云端接线及证据见 `security/release-reviews/REVIEW-2026-10-25.md`。

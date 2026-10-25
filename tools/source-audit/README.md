@@ -72,6 +72,12 @@ PY
 
 ## 与 CI 的关系
 
-当前仓库的 `quality` job 只跑 `scripts/quality-gate.py` 与 `cargo deny`。
-把本工具接进 CI 需要改根 workflow（G00 独占），申请写在
-`integration-requests/G17/G17-0*.yaml`。工具本身可在任何机器上零依赖运行。
+独立 `.github/workflows/security.yml` 在 PR / main 上执行工具回归、provenance、
+SBOM、NOTICE、离线 advisories、authz，以及独立 Rust 安全测试。
+每日任务扩大变异 fuzz 至 200000 次并联网复核公告；手工勾选 `release_review`
+会在前置检查成功后执行发布评审，存在真实阻塞就返回失败。
+`all` 遇到数据缺失或网络异常返回 4，不会将门禁不可用降成警告。
+
+新增接线与负向验收证据见 `security/release-reviews/REVIEW-2026-10-25.md`。
+
+联网公告依照 OSV batch 契约逐生态/逐查询翻页；未知分级按实际 `policy.json` 阻断。单独与 all 两种入口的网络/数据异常均不能返回成功。

@@ -35,3 +35,5 @@ jobs:
         run: cargo audit
       - name: audit desktop lock
         run: cargo audit --file ui/src-tauri/Cargo.lock
+      - name: audit independent security-test lock
+        run: cargo audit --file tests/security/Cargo.lock

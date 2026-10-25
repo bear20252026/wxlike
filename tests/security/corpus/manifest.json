@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.fuzz-corpus.v1",
-  "updated_at": "2026-10-24",
+  "updated_at": "2026-10-25",
   "note": "语料是**历史崩溃/可疑样本的最小化形式**（hex，便于 diff 与复制）。新增样本的方式：把线上/本地 fuzz 命中的最小包存成 hex，加一条 manifest 记录来源与预期裁决。永远不要为了跑通去改样本。",
   "verdicts": {
     "reject": "必须返回 Err（unpack 不得成功）",
@@ -21,12 +21,9 @@
     },
     {
       "file": "s03_len_mismatch.hex",
-      "verdict": "blocked",
+      "verdict": "reject",
       "size": 20,
-      "why": "payload_len = u64::MAX：`STUB_LEN + payload_len` 整数溢出，debug 下 panic 而不是返回 Err",
-      "blocker": "SEC-FUZZ-001",
-      "issue": "#229",
-      "owner": "G08"
+      "why": "payload_len = u64::MAX：必须返回 Err，不得发生整数溢出或 panic（#229，PR #274）"
     },
     {
       "file": "s04_garbage_payload.hex",

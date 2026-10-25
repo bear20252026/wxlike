@@ -55,7 +55,9 @@ fn normal_burst_stays_allowed() {
     }
     let t0 = now();
     for i in 0..(cfg.send_throttle_at - 1) {
-        let v = engine.record(Action::Send, "user:normal", t0 + i as u64).unwrap();
+        let v = engine
+            .record(Action::Send, "user:normal", t0 + i as u64)
+            .unwrap();
         assert!(
             matches!(v, Verdict::Allow),
             "第 {i} 条就限速了（阈值 {}）：正常聊天被误伤",
@@ -172,7 +174,10 @@ fn clear_resets_the_window() {
     ));
     engine.clear(Action::Send, "user:unblock-me").unwrap();
     let after = engine.check(Action::Send, "user:unblock-me", t0).unwrap();
-    assert!(matches!(after, Verdict::Allow), "清除后应当立刻恢复：{after:?}");
+    assert!(
+        matches!(after, Verdict::Allow),
+        "清除后应当立刻恢复：{after:?}"
+    );
 }
 
 /// 时间窗常量在文档里写着"10 s / 1 h"，这里确认动作窗口确实不同——
@@ -187,10 +192,14 @@ fn action_windows_differ_by_action() {
         let _ = engine.record(Action::Send, "user:window", t0).unwrap();
     }
     for _ in 0..engine.config().friend_request_throttle_at {
-        let _ = engine.record(Action::FriendRequest, "user:window", t0).unwrap();
+        let _ = engine
+            .record(Action::FriendRequest, "user:window", t0)
+            .unwrap();
     }
     assert!(matches!(
-        engine.check(Action::Send, "user:window", t0 + 11_000).unwrap(),
+        engine
+            .check(Action::Send, "user:window", t0 + 11_000)
+            .unwrap(),
         Verdict::Allow
     ));
     assert!(!matches!(

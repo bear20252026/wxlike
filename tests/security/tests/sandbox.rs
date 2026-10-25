@@ -39,7 +39,9 @@ fn write_page(dir: &Path, main_js: &str) {
 fn infinite_loop_hits_the_budget() {
     let mut engine = BoaEngine::new();
     let started = std::time::Instant::now();
-    let err = engine.eval("while (true) {}").expect_err("死循环应当被预算打断");
+    let err = engine
+        .eval("while (true) {}")
+        .expect_err("死循环应当被预算打断");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),
         "打断死循环花了 {:?}：循环预算没生效或被设得过大",
@@ -72,7 +74,14 @@ fn all_loop_shapes_are_bounded() {
 #[test]
 fn host_capabilities_are_absent() {
     let mut engine = BoaEngine::new();
-    for name in ["require", "process", "fetch", "XMLHttpRequest", "Deno", "Bun"] {
+    for name in [
+        "require",
+        "process",
+        "fetch",
+        "XMLHttpRequest",
+        "Deno",
+        "Bun",
+    ] {
         let probe = format!("typeof {name}");
         let out = engine.eval(&probe).expect("typeof 探测应当可求值");
         assert!(
@@ -165,24 +174,26 @@ fn lifecycle_hooks_are_bounded_and_fallible() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// SANDBOX-007：桥的写入面是有界的。日志/存储不能无限增长撑爆宿主内存。
-///
-/// 当前红：`crates/container/src/engine.rs` 的 `BRIDGE.logs` 是无界 `Vec`，
-/// 页包一行循环就能把宿主内存吃穿（#253）。G17 不改产品代码，先把它钉在
-/// `#[ignore]` 上并登记阻断；G08 修好后删掉 `#[ignore]` 即为门禁。
+/// SANDBOX-007：#253 修复后的独立回归，验证最新日志、行长及 drain 语义。
 #[test]
-#[ignore = "BLOCKER SEC-SANDBOX-LOGS (#253): wxhost.log 缓冲无上限"]
 fn bridge_state_is_bounded() {
     let mut engine = BoaEngine::new();
-    // 写 5000 条日志：实现可以选择截断，但不能让进程把 5000 条都留着。
-    let code = "for (let i = 0; i < 5000; i++) { wxhost.log('line ' + i); }";
-    let _ = engine.eval(code);
+    engine
+        .eval("for (let i = 0; i < 10000; i++) { wxhost.log('line ' + i); }")
+        .expect("日志突发写入应成功");
     let logs = engine.logs();
-    assert!(
-        logs.len() <= 1000,
-        "日志无上限：{} 条（宿主内存会被页包撑爆）",
-        logs.len()
-    );
+    assert_eq!(logs.len(), 256);
+    assert_eq!(logs.first().unwrap(), "line 9744");
+    assert_eq!(logs.last().unwrap(), "line 9999");
+    engine
+        .eval("wxhost.log('你'.repeat(10000));")
+        .expect("超长 Unicode 日志应受限");
+    let logs = engine.drain_logs();
+    assert_eq!(logs.len(), 256);
+    assert!(logs.iter().all(|line| line.len() <= 4096));
+    assert!(logs.last().unwrap().chars().all(|ch| ch == '你'));
+    assert!(!logs.last().unwrap().is_empty());
+    assert!(engine.logs().is_empty());
 }
 
 /// SANDBOX-008：缺入口脚本 / 缺 manifest 的包在加载期就失败，不留半初始化状态。
