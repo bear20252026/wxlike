@@ -1,0 +1,218 @@
+{
+  "schema": "wxlike.release-evidence.v1",
+  "release": {
+    "name": "ui-v2 全平台交付 · 第一轮评审",
+    "reviewed_at": "2026-10-24",
+    "reviewer": "G17（安全、来源许可与独立评审组）",
+    "commit": "dd91647",
+    "scope": "安全/来源/许可/越权/发布事实核对；不含功能验收（G10…G14）与性能"
+  },
+  "claims": {
+    "platforms": [
+      "linux",
+      "windows",
+      "macos",
+      "android",
+      "web"
+    ],
+    "note": "iOS 未进入声明；一旦声明，必须在 platforms 里出现 verified=true 且带证据"
+  },
+  "platforms": [
+    {
+      "name": "linux",
+      "verified": true,
+      "evidence": ".github/workflows/ci.yml test-linux（cargo test --workspace）"
+    },
+    {
+      "name": "windows",
+      "verified": true,
+      "evidence": ".github/workflows/ci.yml test-windows"
+    },
+    {
+      "name": "macos",
+      "verified": true,
+      "evidence": ".github/workflows/ci.yml test-macos"
+    },
+    {
+      "name": "android",
+      "verified": true,
+      "evidence": ".github/workflows/ci.yml android（出包 job；不构成真机验收）"
+    },
+    {
+      "name": "web",
+      "verified": true,
+      "evidence": ".github/workflows/ci.yml web（typecheck + build）"
+    },
+    {
+      "name": "ios",
+      "verified": false,
+      "evidence": ""
+    }
+  ],
+  "items": [
+    {
+      "id": "E-ENTRY",
+      "title": "入口完成率（331 个语法位置 → 实际接线）",
+      "required": true,
+      "kind": "checklist",
+      "status": "blocked",
+      "owner": "G00",
+      "issue": "#80",
+      "evidence": "docs/full-platform-delivery/entry_seed.csv（331 条）",
+      "notes": "有 346 条入口登记（G00-01），但没有逐条『已接线 + 有测试』的核对表；语法位置 ≠ 功能完成。G17 无法替 G00 判定"
+    },
+    {
+      "id": "E-CONTRACT",
+      "title": "契约与生成物冻结",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "evidence": "contracts/domains/{identity,relations,security}/contract.json + fixtures/*.json",
+      "notes": "generated_from 与 schema 版本以 G00-03 的冻结记录为准"
+    },
+    {
+      "id": "E-SEC-AUTHZ",
+      "title": "授权矩阵与越权回归",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "155 条路由（134 用户/12 管理/9 公开）；authz check PASS；tests/security 48 例执行通过（3 条 #[ignore] 见 blockers）",
+      "notes": "矩阵从源码生成，未登记/过期/手改 auth/无用例/幽灵用例都会红"
+    },
+    {
+      "id": "E-SEC-ABUSE",
+      "title": "滥用限速与不误伤",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "tests/security/tests/abuse.rs（8 例）；security/threat-model/abuse-limits.json",
+      "notes": "阈值读 RiskEngine::config()，不硬编码"
+    },
+    {
+      "id": "E-SEC-DECODE",
+      "title": "解码面（包/JSON/解压/路径/语料/变异 fuzz）",
+      "required": true,
+      "kind": "test",
+      "status": "blocked",
+      "owner": "G08",
+      "issue": "#229",
+      "evidence": "tests/security/tests/fuzz.rs（10 例，1 条 #[ignore]）；corpus/manifest.json",
+      "notes": "payload_len 整数溢出导致解析器 panic（20 字节输入）"
+    },
+    {
+      "id": "E-SEC-SANDBOX",
+      "title": "小程序沙箱（预算/能力/桥状态）",
+      "required": true,
+      "kind": "test",
+      "status": "blocked",
+      "owner": "G08",
+      "issue": "#253",
+      "evidence": "tests/security/tests/sandbox.rs（8 例，1 条 #[ignore]）",
+      "notes": "wxhost.log 缓冲无上限：页包可吃穿宿主内存"
+    },
+    {
+      "id": "E-SEC-WEB",
+      "title": "SSRF / XSS 响应面 / 路径穿越",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "tests/security/tests/web.rs（9 例：私网/元数据/IPv6、host 伪装、协议面、读面 JSON）"
+    },
+    {
+      "id": "E-ADVISORIES",
+      "title": "依赖漏洞四分类",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "evidence": "security/advisory-policy/report-2026-10-24.md（离线：已修复 4 / 不适用 6 / 候选 1 例外；联网：另 11 条 warning）",
+      "notes": "唯一 High 可达项（桌面 ctutils）已登记例外到 2026-11-30，同时列在 blockers 的 OPS-CTUTILS"
+    },
+    {
+      "id": "E-PROVENANCE",
+      "title": "第三方来源与 SBOM",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "evidence": "third_party/reviews/registry.json（3 个 vendored 文件，全有完整 SHA + patchlog）；sbom/wxlike.cdx.json（777 组件，可复现）"
+    },
+    {
+      "id": "E-NOTICE",
+      "title": "许可义务清单（NOTICE）覆盖直接依赖",
+      "required": true,
+      "kind": "artifact",
+      "status": "blocked",
+      "owner": "G00",
+      "issue": "#228",
+      "evidence": "third_party/reviews/NOTICE-INDEX.md（23 项缺口与引入方）",
+      "notes": "豁免到 2026-12-31；到期后门禁自动变红"
+    },
+    {
+      "id": "E-E2EE",
+      "title": "E2EE 实际实现（库层）",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "crates/core e2ee 25 例（含预密钥签名/安全码/重放拒绝）；docs/threat-model.md",
+      "notes": "只覆盖库层；设备端安全码展示与身份变更告警属设备面（见 E-DEVICE）"
+    },
+    {
+      "id": "E-DEVICE",
+      "title": "设备证据抽查（真机）",
+      "required": true,
+      "kind": "device",
+      "status": "unverified",
+      "owner": "G16",
+      "issue": "#97",
+      "evidence": "",
+      "notes": "没有任何真机验收记录可供抽查；G17 不接受『开发者自报通过』"
+    },
+    {
+      "id": "E-SUPPLIER",
+      "title": "真实供应商证据（短信 / 支付 / 推送）",
+      "required": true,
+      "kind": "external",
+      "status": "unverified",
+      "owner": "G06",
+      "issue": "#87",
+      "evidence": "",
+      "notes": "当前只有 sandbox/mock 通道；按任务单『不能用 mock 通过最终集成验收』，此项未完成"
+    },
+    {
+      "id": "E-CI-GATES",
+      "title": "安全门禁接入 CI",
+      "required": true,
+      "kind": "artifact",
+      "status": "blocked",
+      "owner": "G00",
+      "issue": "#256",
+      "evidence": "integration-requests/G17/G17-01…05.yaml",
+      "notes": "本地跑通不算门禁；必须有一次『故意改坏 → CI 变红』的实测"
+    },
+    {
+      "id": "E-IMAGE",
+      "title": "镜像可复现（digest 锁定 + 镜像扫描）",
+      "required": true,
+      "kind": "artifact",
+      "status": "blocked",
+      "owner": "G16",
+      "issue": "#257",
+      "evidence": "Dockerfile / docker-compose.yml 全部浮动 tag",
+      "notes": "Dockerfile 的 FROM 与 compose 的 image 全是浮动 tag；deb 包（ca-certificates/curl）无扫描覆盖"
+    },
+    {
+      "id": "E-COVERAGE",
+      "title": "覆盖率（非阻断参考项）",
+      "required": false,
+      "kind": "artifact",
+      "status": "unverified",
+      "evidence": "scripts/coverage_summary.py 有，但不是 CI 阻断项",
+      "notes": "非阻断：本组不把覆盖率当发布门槛，它只用于发现测试盲区"
+    }
+  ],
+  "exceptions": [],
+  "signoff": {
+    "security_owner": "G17",
+    "verdict": "BLOCK",
+    "reason": "存在 9 条 open blocker（4 条 high 安全项、2 条 high 治理项、1 条 high 外部证据缺失），且 3 项必需证据状态为 blocked/unverified"
+  }
+}

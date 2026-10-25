@@ -1,0 +1,67 @@
+{
+  "schema": "wxlike.advisory-policy.v1",
+  "decided_at": "2026-10-24",
+  "source_of_truth": "docs/full-platform-delivery/00_master_guide.md 第 6 节（核查时间 2026-10-24）",
+  "note": "门禁规则本身是政策：改这里等于改'什么算能发'。任何一条例外都必须带 owner + issue + 到期日，到期自动阻断。",
+
+  "gate": {
+    "block_severities": ["critical", "high"],
+    "warn_severities": ["medium", "low"],
+    "yanked": "warn",
+    "require_online_before_freeze": true,
+    "online_note": "冻结依赖/发版前必须去掉 --offline 重新联网复核一次；--offline 只用于日常提交与断网环境"
+  },
+
+  "surfaces": {
+    "rust-root": "Cargo.lock（服务端 + 库 + WASM 目标）",
+    "desktop": "ui/src-tauri/Cargo.lock —— 独立解析，必须单独扫",
+    "web": "ui/package-lock.json",
+    "design": "design/ui-v2/package-lock.json 与 web 共用 lockfileVersion 3",
+    "mobile": "apps/mobile/pubspec.lock",
+    "infra": "docker-compose.yml 的 image 引用 + Dockerfile 的 FROM",
+    "system": "基础镜像内的 deb 包（ca-certificates、curl）。OSV 不覆盖 deb：由镜像扫描（Trivy/Grype）在部署流水线负责，本门禁只登记基础镜像引用并在变更时要求锁 digest",
+    "excluded": "tests/security（独立测试工程，不随产品分发；其依赖来自 workspace 已扫过的集合）"
+  },
+
+  "reachability": {
+    "RUSTSEC-2026-0379": {
+      "kind": "optional_feature",
+      "why": "Wasmtime 仅在可选 feature 下启用沙箱；当前锁文件中不存在该组件"
+    },
+    "RUSTSEC-2026-0380": {
+      "kind": "optional_feature",
+      "why": "同上：与 0379 取交集后要求同时覆盖两条公告的维护分支（>=49.0.4）"
+    },
+    "GHSA-59pf-q495-3c99": {
+      "kind": "in_lockfile",
+      "why": "只有真正安装 @vitejs/plugin-rsc 时受影响；React 版本本身不构成受影响条件"
+    },
+    "RUSTSEC-2026-0373": {
+      "kind": "in_lockfile",
+      "why": "ammonia 仅在引入 HTML 净化时可达；当前未引入"
+    },
+    "GHSA-f6hc-79w3-p8pq": {
+      "kind": "in_lockfile",
+      "why": "coturn 作为独立基础设施容器部署；引入时必须锁 4.17.0+ 且锁 digest"
+    },
+    "GHSA-847g-qmc6-6m4r": {
+      "kind": "in_lockfile",
+      "why": "同上"
+    }
+  },
+
+  "exceptions": [
+    {
+      "id": "RUSTSEC-2026-0385",
+      "owner": "G00",
+      "issue": "#239",
+      "expires": "2026-11-30",
+      "reason": "桌面锁 ui/src-tauri/Cargo.lock 停在 ctutils 0.4.3（根锁已是 0.4.5）。桌面锁属根依赖管理，G17 不改 ui/**；已开 #239 要求 cargo update -p ctutils --precise 0.4.5。到期前未修则门禁自动转红。"
+    }
+  ],
+
+  "not_exceptions": [
+    "『告警看起来是误报』不是例外理由。误报要走 not_applicable：给出「为什么不可达」的证据（组件不在锁里 / 可选 feature 未启用 / 代码路径不经过），并且在报告里可复查。",
+    "『上游还没修』也不是理由：没修就说明该版本不可用，换版本或换实现。"
+  ]
+}
