@@ -19,6 +19,7 @@ pub mod audio_io;
 /// running one is an ops decision, see docs).
 pub mod call;
 pub mod capture;
+pub mod compat;
 pub mod dsp;
 pub mod host;
 pub mod ice;
