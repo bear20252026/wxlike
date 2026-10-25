@@ -1,0 +1,32 @@
+# G10-01 ｜ 产品壳与登录 ｜ 交给 G00 的根清单请求
+
+card: G10-01 (#152)
+branch: feat/FP-G10
+owner: G10
+contract_version: 1（envelope: ActionRequest/ActionResponse/EventEnvelope，schema_version=1）
+
+## 新增根依赖（root manifests / lockfile）
+
+应用自带 `apps/desktop-web/package.json`，全部依赖声明在应用目录内，**不需要**在根 manifest 直接添加运行时依赖。需要 G00 做的是把该应用登记进根工作区：
+
+- 将 `apps/desktop-web` 注册进根 JS workspace（npm workspaces / pnpm-workspace，以仓库最终选型为准）。
+- 锁文件（根 lockfile）收录 `apps/desktop-web` 的依赖树：react 19.2.6、react-dom 19.2.6、clsx 2.1.1、lucide-react 0.544.0、tailwind-merge 3.4.0；devDependencies：vite 7.3.2、@vitejs/plugin-react 5.1.1、typescript 5.9.3、tailwindcss 4.1.17、@tailwindcss/vite 4.1.17、vitest 3.2.4、jsdom 26.1.0、@testing-library/react 16.3.0、@testing-library/user-event 14.6.1、@testing-library/jest-dom 6.9.1、@types/react 19.2.7、@types/react-dom 19.2.3、@types/node ^24。
+- CI 增加该应用的 `typecheck` / `test` / `build` 任务（命令见下）。
+
+## 路由
+
+- 全部为 SPA 内部 hash 路由（`#/login`、`#/login/qr`、`#/lock`、`#/restore`、`#/chats`、`#/chats/:convId`、`#/contacts`、`#/contacts/:userId`、`#/contacts/new`、`#/groups/:groupId`、`#/search`、`#/settings`、`#/about`），见 `apps/desktop-web/src/shell/router.tsx` 的 ROUTES 表。
+- 无服务端路由、无反向代理变更。
+
+## command 挂载
+
+无新增 Rust command。本卡只消费 CoreHandle.dispatch/subscribe（fixture 由 G10 自带于 `src/shell/adapters/fixture/`，仅 DEV/测试）。
+
+## schema 编号
+
+无新增 schema；沿用契约 v1 既有 action：`identity.session.projection/login/logout/restore`、`security.lock/unlock`。
+
+## 涉及的动作（entry_id / action_id）
+
+- entry: shell bootstrap / route guards / session phases
+- action_id: identity.session.projection, identity.session.login, identity.session.logout, identity.session.restore, security.lock, security.unlock

@@ -1,0 +1,34 @@
+# G10-02 ｜ 聊天闭环与消息操作 ｜ 交给 G00 的根清单请求
+
+card: G10-02 (#154)
+branch: feat/FP-G10
+owner: G10
+contract_version: 1
+
+## 新增根依赖
+
+无（依赖已在 G10-01 登记的应用清单内）。
+
+## 路由
+
+无新增；复用 `#/chats`、`#/chats/:convId`。
+
+## command 挂载
+
+无新增 Rust command；本卡全部通过 CoreHandle.dispatch 走既有 action。
+
+## schema 编号
+
+无新增 schema。媒体分块协议要点（供 G04/G16 实现核对，UI 已按此接线）：
+
+- `media.upload.begin` 返回 `upload_id` 与 `chunk_size`；UI 下限 64KB，默认 4MB。
+- `media.upload.part` 携带 `upload_id/index/offset/length/sha256`，单块 SHA-256（UI 标注 `SHA-256/chunked`；无 WebCrypto 时降级 `fnv1a-64/fallback` 并如实上报）。
+- 文件摘要 = 各块摘要串（`:`,连接）再取 SHA-256，随 `media.upload.complete` 的 `digest/chunks/chunk_digests` 提交。
+- 幂等键约定：part=`upload:<upload_id>:<index>`，complete=`upload-complete:<upload_id>`，cancel=`upload-cancel:<upload_id>`。
+- 单文件上限 1GB（UI 在发起前拦截）。
+
+## 涉及的动作（entry_id / action_id）
+
+- entry: conversation list / message timeline / composer / outbox states
+- action_id: messaging.conversations.list, messaging.messages.page, messaging.send, messaging.retry, messaging.recall, messaging.forward, messaging.read, messaging.conversation.pin, messaging.conversation.mute, messaging.conversation.read_all, messaging.conversation.ensure, messaging.draft.get, messaging.draft.save, messaging.draft.clear, media.upload.begin, media.upload.part, media.upload.complete, media.upload.cancel
+- events: message.created, message.updated, conversation.upsert, unread.updated, session.state
