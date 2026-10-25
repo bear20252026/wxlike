@@ -1,0 +1,55 @@
+card: G12-01
+issue: 163
+branch: feat/FP-G12-01
+contract_version: "1.0"
+summary: 移动产品壳、主题与账号——把 AppShell 挂到应用入口、登记深链与设计 token 补全
+
+requests:
+  - id: G12-01-R1
+    kind: app-entry
+    status: requested
+    owner: G00
+    reason: >-
+      G12 只写 `apps/mobile/lib/{shell,features/auth,features/chat,features/contacts,platform}`，
+      `lib/main.dart` 不在归属范围。产品壳已经可用，但必须由 G00 在唯一的入口里挂载，
+      否则用户看不到这套界面。
+    change:
+      file: apps/mobile/lib/main.dart
+      action: >-
+        用 WxlikeMobileApp 替换现有 MaterialApp 根，注入 FfiWxlikeService 适配的 AccountPort/
+        MessagingPort、MethodChannelPlatform、MethodChannelPushPort、WidgetsBindingLifecyclePort、
+        DraftStore（见 apps/mobile/lib/shell/mobile_app.dart 的构造参数）。
+    note: >-
+      旧的 Legacy 三屏（screens/*.dart）暂不删除，避免同一个 PR 里既换入口又删页面；
+      G13 扩展页通过 discoverBuilder/meBuilder 注入。若 G00 选择保留旧入口到下一次发布，
+      本卡验收仍以真机冷启动/恢复账户为准，不得只在测试里 pump AppShell。
+
+  - id: G12-01-R2
+    kind: deeplink
+    status: requested
+    owner: G00
+    reason: 深链 `wxlike://chat/<conv>`、`wxlike://qr/<challenge>`、`wxlike://contacts` 需要宿主声明，
+      Dart 侧只做解析（`shell/deep_link.dart`）。
+    change:
+      - file: apps/mobile/android/app/src/main/AndroidManifest.xml
+        action: MainActivity 增加 VIEW intent-filter（scheme=wxlike，browsable），并把 intent 转给 MethodChannel `wxlike/platform/links`
+      - file: apps/mobile/ios/Runner/Info.plist
+        action: 注册 CFBundleURLTypes（scheme=wxlike），SceneDelegate/AppDelegate 把 URL 转给同一通道
+    note: iOS 目标目录当前不在仓库内；若仍未建立，登记为 BLOCKED，不要把 Android 通过当成双端通过。
+
+  - id: G12-01-R3
+    kind: design-token
+    status: requested
+    owner: G00
+    reason: >-
+      UI v2 原型只有浅色调色板；`shell/theme.dart` 里的 dark* 值与 5px 气泡圆角是实现补全，
+      需要设计/架构确认后才能声称"设计 token 由 G00 分配生成"。
+    change:
+      file: design/ui-v2/prototype/src/index.css
+      action: 补一组正式深色 token（surface/grouped/text/divider/bubble），或书面确认采用当前实现值
+    note: 在确认前，PR 只声明"深色模式可用的实现补全"，不声明与原型逐像素一致。
+
+  - id: G12-01-R4
+    kind: pubspec
+    status: no-change
+    reason: 本卡未新增依赖；草稿落盘复用已有的 path_provider（apps/mobile/pubspec.yaml 已存在）。
