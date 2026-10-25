@@ -1,0 +1,13 @@
+{
+  "request": {
+    "purpose": "sticker",
+    "name": "huge-sticker.png",
+    "size": 9999999,
+    "mime": "image/png"
+  },
+  "error": {
+    "status": 413,
+    "body": { "error": "payload too large" },
+    "reason": "sticker 上限 5MiB，服务端 capability 先行拦截"
+  }
+}

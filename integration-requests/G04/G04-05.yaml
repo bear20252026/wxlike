@@ -1,0 +1,33 @@
+# G04-05 平台媒体能力接口与资源预算 —— 集成请求
+request_id: G04-05
+task_issue: 125
+group_issue: 85
+contract_version: media-v1
+branch: feat/FP-G04
+
+owned_artifacts:
+  - crates/features/media/src/platform.rs
+  - contracts/domains/media/fixtures/platform-*.json
+
+g00_owned_changes:
+  - id: REQ-G00-platform-mount
+    target: G00-02
+    action: /api/v1/platform/* 已包含在 MediaApp::router()；如 G10/G12 需要独立
+      路由前缀，由 G00 决定映射，本组不改 server/。
+
+requests:
+  - id: REQ-G10-G12-bridge-adoption
+    target: G10/G12
+    action: 桌面/移动 OS 桥实现 PlatformRequest/PlatformResult 共享 fixture 的
+      具体动作；本 crate 只提供请求/结果/权限错误契约与录音指示器状态机，
+      实际采集、路径选择、权限弹窗由两桥自行实现并复用同一 fixtures。
+  - id: REQ-G11-mic-indicator
+    target: G11
+    action: 录音指示器以 GET /api/v1/platform/audio/indicator 的 active 字段为唯一
+      真相；stop/cancel 后必须消失（POST platform/requests StopAudio）。
+
+notes:
+  - 缓存预算由 Rust 策略决定：CacheBudget::for_device(platform, available_bytes)
+    按平台分位数切分 derived/download/staging 三块；客户端不得自带数字。
+  - 相机原始帧与麦克风音频默认不上传：Recorded/Captured 均带 upload_allowed=false，
+    上传必须走显式 media.upload.* 且由用户动作触发。
