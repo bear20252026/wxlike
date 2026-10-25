@@ -17,6 +17,7 @@
 //! * [`policy`]：授权判定（会话白名单 + 能力开关）；
 //! * [`auth`]：会话/audience/scope 校验与代理衰减（G15-02）；
 //! * [`domains`]：业务域覆盖表（命令 ↔ 入口 ↔ 例外，G15-03）；
+//! * [`contract`]：contract-v1 适配（ActionRequest/ActionResult/DomainError）；
 //! * [`confirmation`]：危险动作的 prepare → token → execute（G15-04）；
 //! * [`jobs`]：长任务的进度 / 取消 / 输出脱敏（G15-04）。
 //!
@@ -27,6 +28,7 @@
 pub mod auth;
 pub mod catalog;
 pub mod confirmation;
+pub mod contract;
 pub mod domains;
 pub mod jobs;
 pub mod policy;

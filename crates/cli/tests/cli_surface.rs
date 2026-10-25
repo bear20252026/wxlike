@@ -84,8 +84,12 @@ fn json_output_is_one_line_and_parseable() {
     assert_eq!(code, 0, "{stderr}");
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "机器输出必须单行：{stdout}");
+    // contract-v1：机器输出是 ActionResult（action_id + status + data + completed_at_ms）
     let v: serde_json::Value = serde_json::from_str(lines[0]).expect("json");
-    assert_eq!(v["user_id"], "u1", "{v}");
+    assert_eq!(v["action_id"], "me.info");
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["user_id"], "u1", "{v}");
+    assert!(v["completed_at_ms"].as_u64().is_some(), "要带完成时间：{v}");
 }
 
 /// 权限拒绝发生在发请求之前：给一个连不上的地址，退出码必须是 3 而不是 6。
@@ -371,4 +375,67 @@ fn example_scripts_stay_read_only() {
         }
     }
     assert!(checked >= 3, "示例脚本少于 3 个：{checked}");
+}
+
+/// contract-v1 的 deadline：过期就地拒绝（退出码 6 = 超时），不发请求。
+#[test]
+fn expired_deadline_is_rejected_locally_with_timeout() {
+    let (code, stdout, stderr) = run(&[
+        "--server",
+        "http://127.0.0.1:1",
+        "--token",
+        "t",
+        "--deadline-ms",
+        "1",
+        "--json",
+        "me",
+        "info",
+    ]);
+    assert_eq!(code, 6, "超时归 6：{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["status"], "failed");
+    assert_eq!(v["error"]["code"], "timeout");
+    assert!(v["completed_at_ms"].as_u64().is_some());
+}
+
+/// 非法 trace id 是 usage 错误（2），且错误码来自契约的 invalid_argument。
+#[test]
+fn illegal_trace_id_is_a_usage_error() {
+    let (code, stdout, _) = run(&[
+        "--server",
+        "http://127.0.0.1:1",
+        "--token",
+        "t",
+        "--trace-id",
+        "bad id with spaces",
+        "--json",
+        "me",
+        "info",
+    ]);
+    assert_eq!(code, 2);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["error"]["code"], "invalid_argument");
+}
+
+/// 写命令缺幂等键在本地就被拒（不发请求）：参数校验先于任何网络动作。
+#[test]
+fn missing_idempotency_key_fails_before_network() {
+    let (code, _stdout, stderr) = run(&[
+        "--server",
+        "http://127.0.0.1:1",
+        "--token",
+        "t",
+        "--allow-conv",
+        "g-1",
+        "--allow-write",
+        "--json",
+        "msg",
+        "send",
+        "--param",
+        "conv=g-1",
+        "--param",
+        "text=hi",
+    ]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("idempotency_key"), "{stderr}");
 }

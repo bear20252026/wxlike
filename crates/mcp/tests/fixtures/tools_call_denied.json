@@ -8,5 +8,12 @@
     "method": "tools/call",
     "params": { "name": "conv-unread", "arguments": { "conv": "d-a~b" } }
   },
-  "expect": { "is_error": true, "contains_text": ["not allowed", "d-a~b"] }
+  "expect": {
+    "is_error": true,
+    "equals": {
+      "result.structuredContent.status": "failed",
+      "result.structuredContent.error.code": "forbidden"
+    },
+    "contains_text": ["not allowed", "d-a~b"]
+  }
 }

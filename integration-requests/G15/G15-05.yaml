@@ -46,7 +46,10 @@ notes:
   - `wxlike-mcp` 已拆出 lib（`wxlike_mcp::server`），fixture 可在进程内回放；
     同一批用例同时对真二进制（stdio）跑一遍，并比较归一化后的响应是否一致。
   - fixture 覆盖：版本协商（已知/未知）、未握手拒绝、tools/list 形状、
-    未知参数、策略拒绝、确认流程、resources/read、未知方法。
+    未知参数、策略拒绝、确认流程、resources/read、未知方法、deadline 过期。
+  - 业务结果的 `structuredContent` 是 contract-v1 的 `ActionResult`；
+    易变字段（`token` / `expires_at` / `completed_at_ms` / `wxlike/traceId`）
+    在双通道比对前归一化，结构差异照样会被发现。
   - 限额：单次调用参数 ≤ 64 KiB（超出 -32602）；工具文本响应 ≤ 256 KiB（超出截断并标记）。
   - `--dry-run` 只出计划（含规范参数摘要），退出 0，不联网、不需要 token、不落账。
   - `wxlike doctor` 不联网：只报本地配置与目录/覆盖统计；坏 scope 是 problem（退出 1）。

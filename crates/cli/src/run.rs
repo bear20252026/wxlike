@@ -10,6 +10,11 @@
 //! | 6 | 网络/超时 | 连不上服务端 |
 //! | 7 | 待确认 | 危险动作没带 `--confirm`（此时只打印计划，不执行） |
 //!
+//! 退出码由 `DomainError` 的分类派生（`contract::classify`）：
+//! `invalid_argument`→2、`unauthorized`/`forbidden`→3、`not_found`→4、
+//! `timeout`/`unavailable`→6，其余→5。这样 CLI、MCP `isError` 与 UI 的
+//! 错误码三者同源，不会出现"CLI 说没权限、UI 说参数错"。
+//!
 //! 3 与 5 必须分开：脚本遇到"没权限"要人改配置，遇到"业务失败"要重试或报障。
 
 use std::process::ExitCode;
@@ -20,7 +25,9 @@ use wxlike_client::execute::Executor;
 use wxlike_client::Http;
 use wxlike_cmd::auth::{AuthGate, Provenance, ScopeSet};
 use wxlike_cmd::catalog::{self, CommandSpec};
+use wxlike_cmd::contract;
 use wxlike_cmd::policy::Policy;
+use wxlike_types::{ActionResult, DomainError};
 
 use crate::args::{Command, Invocation, Options};
 
@@ -100,6 +107,14 @@ fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params
             return EXIT_USAGE;
         }
     };
+    let env = match contract::Envelope::from_raw(
+        options.trace_id.as_deref(),
+        options.entry_id.as_deref(),
+        options.deadline_ms,
+    ) {
+        Ok(env) => env,
+        Err(e) => return fail_contract(spec, &e, options.json),
+    };
     let exec = match with_executor(options, policy) {
         Ok(exec) => exec,
         Err(code) => return code,
@@ -111,6 +126,7 @@ fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params
         options.json,
         gate.as_ref(),
         options.confirm,
+        &env,
     )
 }
 
@@ -276,6 +292,7 @@ fn invoke(
     json_out: bool,
     gate: Option<&AuthGate>,
     confirmed: bool,
+    env: &contract::Envelope,
 ) -> u8 {
     // 危险动作先出计划：没 `--confirm` 就停在这里，**不发任何请求**。
     if spec.confirmation.is_required() && !confirmed {
@@ -288,21 +305,80 @@ fn invoke(
             return EXIT_DENIED;
         }
     }
+    // 契约层校验：写命令缺幂等键、trace/entry 不合法、deadline 已过都在这里拒
+    if let Err(e) = contract::build_request(spec, params, env) {
+        return fail_contract(spec, &e, json_out);
+    }
+    if let Err(e) = contract::check_deadline(env, contract::now_ms_i64()) {
+        return fail_contract(spec, &e, json_out);
+    }
     match exec.run(spec.id, params) {
         Ok(v) => {
-            emit(&v, json_out);
+            let result = contract::ok_result(spec, v, contract::now_ms());
+            emit_result(&result, json_out);
             EXIT_OK
         }
-        Err(e) => fail(spec.id, &e),
+        Err(e) => {
+            let err = contract::classify(&e);
+            let result = contract::failed_result(spec, err.clone(), contract::now_ms());
+            emit_result(&result, json_out);
+            eprintln!("{}: {e}", spec.id);
+            exit_code_for(&err)
+        }
+    }
+}
+
+/// 契约层失败（还没发请求）：也输出 ActionResult，脚本只需认一种形状。
+fn fail_contract(spec: &CommandSpec, err: &DomainError, json_out: bool) -> u8 {
+    let result = contract::failed_result(spec, err.clone(), contract::now_ms());
+    emit_result(&result, json_out);
+    eprintln!("{}: {}", spec.id, err.message());
+    exit_code_for(err)
+}
+
+/// 结果的机器形态（`--json`）与人的形态（默认只打 data）。
+fn emit_result(result: &ActionResult, json_out: bool) {
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string(&contract::result_json(result)).unwrap_or_default()
+        );
+        return;
+    }
+    match &result.outcome {
+        wxlike_types::ActionOutcome::Ok { data } => {
+            println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
+        }
+        wxlike_types::ActionOutcome::Empty => println!("（空结果）"),
+        wxlike_types::ActionOutcome::Failed { error } => {
+            eprintln!("{}: {}", error.code(), error.message());
+        }
+    }
+}
+
+/// `DomainError` → 退出码。**唯一一处**做这个映射。
+pub fn exit_code_for(err: &DomainError) -> u8 {
+    match err.code() {
+        "invalid_argument" => EXIT_USAGE,
+        "unauthorized" | "forbidden" => EXIT_DENIED,
+        "not_found" => EXIT_UNKNOWN,
+        "timeout" | "unavailable" => EXIT_NETWORK,
+        _ => EXIT_FAILED,
     }
 }
 
 fn inspect(exec: &Executor, json_out: bool) -> u8 {
     let mut out = serde_json::Map::new();
     for id in ["me.info", "conv.list"] {
+        let Some(spec) = wxlike_cmd::catalog::get(id) else {
+            return fail(id, &format!("unknown command {id}"));
+        };
         match exec.run(id, &json!({})) {
             Ok(v) => {
-                out.insert(id.to_string(), v);
+                out.insert(
+                    id.to_string(),
+                    contract::result_json(&contract::ok_result(spec, v, contract::now_ms())),
+                );
             }
             Err(e) => return fail(id, &e),
         }
@@ -389,36 +465,11 @@ fn fail(id: &str, error: &str) -> u8 {
     code
 }
 
-/// 错误文本 → 退出码。**唯一一处**做这个映射，测试直接钉住这张表。
+/// 错误文本 → 退出码：先过 `contract::classify` 得到契约错误码，再映射。
+///
+/// 以前这里是一串 `contains`，与 MCP / UI 各判一套；现在分类只在契约一处。
 pub fn classify(error: &str) -> u8 {
-    if error.contains("unknown command") || error.contains("尚未实现") {
-        return EXIT_UNKNOWN;
-    }
-    if error.contains("missing scope")
-        || error.contains("is an admin action")
-        || error.contains("untrusted content")
-        || error.contains("delegation rejected")
-        || error.contains("token audience")
-        || error.contains("token expired")
-    {
-        return EXIT_DENIED;
-    }
-    if error.contains("not allowed")
-        || error.contains("write access was not granted")
-        || error.contains("destructive access was not granted")
-        || error.contains("read-only")
-        || error.contains("needs a `conv` param")
-    {
-        return EXIT_DENIED;
-    }
-    if error.contains("connect")
-        || error.contains("timed out")
-        || error.contains("timeout")
-        || error.contains("dns")
-    {
-        return EXIT_NETWORK;
-    }
-    EXIT_FAILED
+    exit_code_for(&contract::classify(error))
 }
 
 #[cfg(test)]
@@ -443,9 +494,11 @@ mod tests {
             ),
             EXIT_DENIED
         );
+        // 缺参数是"命令写错了"（usage=2），不是"没权限"：
+        // 契约把它归到 invalid_argument，脚本据此改命令行而不是找管理员。
         assert_eq!(
             classify("conv.unread needs a `conv` param, but none was given"),
-            EXIT_DENIED
+            EXIT_USAGE
         );
         // 命令不存在
         assert_eq!(
@@ -464,6 +517,8 @@ mod tests {
             classify("group.kick is an admin action and this actor has no admin role"),
             EXIT_DENIED
         );
+        // 参数/确认类错误同样是 usage
+        assert_eq!(classify("token audience \"x\" is not ours"), EXIT_DENIED);
         // 其它一律业务失败
         assert_eq!(classify("server: 500 internal error"), EXIT_FAILED);
     }

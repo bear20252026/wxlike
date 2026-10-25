@@ -76,6 +76,12 @@ pub struct Options {
     pub confirm: bool,
     /// 只出计划不执行：用于审计与脚本预演（**绝不落账**）。
     pub dry_run: bool,
+    /// 链路追踪 id（contract-v1 的 `trace_id`；不给就自动生成）。
+    pub trace_id: Option<String>,
+    /// 触发这条命令的 UI 入口 id（入口总账的 `entry_id`）。
+    pub entry_id: Option<String>,
+    /// 绝对截止时间（unix 毫秒）。过期就地拒绝，不发请求。
+    pub deadline_ms: Option<i64>,
 }
 
 /// 解析后的完整调用。
@@ -86,7 +92,7 @@ pub struct Invocation {
 }
 
 /// 带值的 flag：形态统一是 `--name value`。
-const VALUE_FLAGS: [&str; 10] = [
+const VALUE_FLAGS: [&str; 13] = [
     "--server",
     "--token",
     "--allow-conv",
@@ -97,6 +103,9 @@ const VALUE_FLAGS: [&str; 10] = [
     "--session-id",
     "--scope",
     "--origin-allow",
+    "--trace-id",
+    "--entry-id",
+    "--deadline-ms",
 ];
 
 /// 一个位置参数被吃掉了几格，或者该收尾了。
@@ -168,6 +177,13 @@ impl Parser {
             "--session-id" => self.options.session_id = Some(value.to_string()),
             "--scope" => self.options.scope = Some(value.to_string()),
             "--origin-allow" => self.options.origin_allow.push(value.to_string()),
+            "--trace-id" => self.options.trace_id = Some(value.to_string()),
+            "--entry-id" => self.options.entry_id = Some(value.to_string()),
+            "--deadline-ms" => {
+                self.options.deadline_ms = Some(value.parse().map_err(|_| {
+                    UsageError(format!("--deadline-ms 需要整数毫秒，收到 {value:?}"))
+                })?);
+            }
             _ => {
                 let (k, v) = value
                     .split_once('=')
@@ -412,6 +428,26 @@ mod tests {
         .unwrap_err();
         assert!(err.0.contains("cnv"), "{err}");
         assert!(err.0.contains("conv"), "要列出可用参数：{err}");
+    }
+
+    #[test]
+    fn contract_trace_entry_and_deadline_flags_are_parsed() {
+        let inv = parse(&args(&[
+            "--trace-id",
+            "tr-abc",
+            "--entry-id",
+            "ENT-SEED-0025",
+            "--deadline-ms",
+            "1700000000000",
+            "conv",
+            "list",
+        ]))
+        .expect("parse");
+        assert_eq!(inv.options.trace_id.as_deref(), Some("tr-abc"));
+        assert_eq!(inv.options.entry_id.as_deref(), Some("ENT-SEED-0025"));
+        assert_eq!(inv.options.deadline_ms, Some(1_700_000_000_000));
+        let err = parse(&args(&["--deadline-ms", "soon", "conv", "list"])).unwrap_err();
+        assert!(err.0.contains("整数毫秒"), "{err}");
     }
 
     #[test]

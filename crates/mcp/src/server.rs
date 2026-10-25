@@ -18,10 +18,13 @@
 
 use serde_json::{json, Value};
 
+use wxlike_types::{ActionResult, DomainError};
+
 use wxlike_client::execute::Executor;
 use wxlike_cmd::auth::{ActorContext, AuthGate, Provenance};
 use wxlike_cmd::catalog::{self, ArgError, CommandSpec};
 use wxlike_cmd::confirmation::ConfirmationStore;
+use wxlike_cmd::contract;
 use wxlike_cmd::jobs::{JobRegistry, LONG_RUNNING_ACTION};
 use wxlike_cmd::policy::Policy;
 
@@ -238,7 +241,7 @@ impl Server {
         catalog::validate_args(spec, &args).map_err(arg_error)?;
         // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
         if let Err(e) = wxlike_cmd::auth::guard_provenance(spec, provenance_of(params)) {
-            return Ok(tool_err(&e.to_string()));
+            return Ok(tool_failed(spec, &contract::classify(&e.to_string())));
         }
         // 会话与 scope：先于执行，且拒绝是**工具错误**（调用方能读懂并改 token）
         if let Some(gate) = &self.gate {
@@ -246,7 +249,11 @@ impl Server {
                 return Ok(tool_err(&e.to_string()));
             }
         }
-        Ok(self.execute_checked(spec, &args))
+        let env = match envelope_of(params) {
+            Ok(env) => env,
+            Err(e) => return Ok(tool_failed(spec, &e)),
+        };
+        Ok(self.execute_checked(spec, &args, &env))
     }
 
     fn resolve_tool(&self, name: &str) -> Result<&'static CommandSpec, RpcError> {
@@ -262,15 +269,20 @@ impl Server {
     }
 
     /// 过完协议与授权检查之后：先过确认，再执行，最后记作业账与追踪 id。
-    fn execute_checked(&mut self, spec: &'static CommandSpec, args: &Value) -> Value {
+    fn execute_checked(
+        &mut self,
+        spec: &'static CommandSpec,
+        args: &Value,
+        env: &contract::Envelope,
+    ) -> Value {
         if spec.confirmation.is_required() {
             match self.confirm_step(spec, args) {
                 Ok(Some(plan_only)) => return plan_only,
                 Ok(None) => {}
-                Err(e) => return tool_err(&e.to_string()),
+                Err(e) => return tool_failed(spec, &contract::classify(&e.to_string())),
             }
         }
-        self.launch(spec, args)
+        self.launch(spec, args, env)
     }
 
     /// 确认这一步：没令牌就出计划，令牌不对就拒（**都不执行**）。
@@ -292,20 +304,31 @@ impl Server {
         Ok(None)
     }
 
-    /// 真正执行 + 作业账 + request/operation id。
-    fn launch(&mut self, spec: &CommandSpec, args: &Value) -> Value {
+    /// 真正执行：契约校验 → 执行 → ActionResult → 作业账 → 追踪 id。
+    fn launch(&mut self, spec: &CommandSpec, args: &Value, env: &contract::Envelope) -> Value {
+        // 写命令缺幂等键 / deadline 已过：本地就拒，**不发请求**
+        if let Err(e) = contract::build_request(spec, args, env) {
+            return tool_failed(spec, &e);
+        }
+        if let Err(e) = contract::check_deadline(env, contract::now_ms_i64()) {
+            return tool_failed(spec, &e);
+        }
         self.seq += 1;
         let operation_id = format!("op-{}-{}", self.seq, spec.id);
-        let mut result = run(&self.exec, spec, args);
-        if result["isError"] != json!(false) {
-            return result;
-        }
-        self.record_job(spec, &operation_id, &result);
-        result["_meta"] = json!({
+        let mut frame = match self.exec.run(spec.id, args) {
+            Ok(data) => {
+                let result = contract::ok_result(spec, data, contract::now_ms());
+                self.record_job(spec, &operation_id, &result);
+                tool_result(&result)
+            }
+            Err(message) => tool_failed(spec, &contract::classify(&message)),
+        };
+        frame["_meta"] = json!({
             "wxlike/requestId": format!("req-{}", self.seq),
             "wxlike/operationId": operation_id,
+            "wxlike/traceId": env.trace_id.as_str(),
         });
-        result
+        frame
     }
 
     /// 身份上下文：配了闸门用闸门的，否则用本地身份（仍然绑定，不豁免）。
@@ -317,15 +340,12 @@ impl Server {
     }
 
     /// 只有长任务进作业账：一次就结束的写命令记进去只会让账变噪音。
-    fn record_job(&mut self, spec: &CommandSpec, operation_id: &str, result: &Value) {
+    fn record_job(&mut self, spec: &CommandSpec, operation_id: &str, result: &ActionResult) {
         if spec.id != LONG_RUNNING_ACTION {
             return;
         }
         let job = self.jobs.submit(spec.id, operation_id, now());
-        let output = result["structuredContent"].clone();
-        if output.is_null() {
-            return;
-        }
+        let output = contract::result_json(result);
         let _ = self.jobs.finish(&job.id, output, now());
     }
 
@@ -444,6 +464,24 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// 从 `_meta` 取契约信封：`wxlike/traceId`、`wxlike/entryId`、`wxlike/deadlineMs`。
+///
+/// 三个都是可选的；给了非法值就报领域错误，**不静默忽略**——静默忽略会让
+/// "我明明传了 trace" 变成排查时找不到的幽灵。
+fn envelope_of(params: &Value) -> Result<contract::Envelope, DomainError> {
+    let meta = params.get("_meta");
+    let get_str = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_str);
+    let deadline = meta.and_then(|m| m.get("wxlike/deadlineMs")).and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    });
+    contract::Envelope::from_raw(
+        get_str("wxlike/traceId"),
+        get_str("wxlike/entryId"),
+        deadline,
+    )
+}
+
 /// 参数来源：调用方可以在 `_meta` 里声明这批参数是从不可信内容抽出来的。
 ///
 /// 默认 `Trusted` 是刻意的：这是**调用方自述**，不是安全边界；真正的边界是
@@ -468,17 +506,6 @@ fn error_frame(id: Value, e: &RpcError) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": e.code, "message": e.message}})
 }
 
-/// 执行一条命令并包成 MCP 的工具结果。
-///
-/// 业务失败用 `isError: true`（agent 能读到原因并纠正），**不是**协议错误。
-/// `structuredContent` 给严格客户端，`content[0].text` 给只读文本的客户端。
-fn run(exec: &Executor, spec: &CommandSpec, args: &Value) -> Value {
-    match exec.run(spec.id, args) {
-        Ok(v) => tool_ok(&v),
-        Err(e) => tool_err(&e),
-    }
-}
-
 fn execute_one(exec: &Executor, args: &Value) -> Value {
     let Some(cmd) = args.get("command").and_then(Value::as_str) else {
         return tool_err("im_execute 需要 command 参数");
@@ -490,7 +517,10 @@ fn execute_one(exec: &Executor, args: &Value) -> Value {
     if let Err(e) = catalog::validate_args(spec, &params) {
         return tool_err(&e.to_string());
     }
-    run(exec, spec, &params)
+    match exec.run(spec.id, &params) {
+        Ok(data) => tool_result(&contract::ok_result(spec, data, contract::now_ms())),
+        Err(message) => tool_failed(spec, &contract::classify(&message)),
+    }
 }
 
 fn inspect(exec: &Executor) -> Value {
@@ -605,6 +635,34 @@ fn tool_ok(value: &Value) -> Value {
         "structuredContent": value,
         "isError": false
     })
+}
+
+/// 业务结果：`structuredContent` 是 contract-v1 的 `ActionResult`
+/// （`action_id` + `status` + `data|error` + `completed_at_ms`），
+/// `isError` 与 `status` 同源——不会出现"UI 说失败、MCP 说成功"。
+fn tool_result(result: &ActionResult) -> Value {
+    let json = contract::result_json(result);
+    let text = match &result.outcome {
+        wxlike_types::ActionOutcome::Ok { data } => {
+            serde_json::to_string_pretty(data).unwrap_or_default()
+        }
+        wxlike_types::ActionOutcome::Empty => "（空结果）".to_string(),
+        wxlike_types::ActionOutcome::Failed { error } => error.message().to_string(),
+    };
+    json!({
+        "content": [{"type": "text", "text": clamp_text(text)}],
+        "structuredContent": json,
+        "isError": !result.is_ok()
+    })
+}
+
+/// 失败结果：同样带 `ActionResult`，agent 能直接读 `error.code` 决定下一步。
+fn tool_failed(spec: &CommandSpec, error: &DomainError) -> Value {
+    tool_result(&contract::failed_result(
+        spec,
+        error.clone(),
+        contract::now_ms(),
+    ))
 }
 
 /// 超长文本截断到上限，并留下可机器判断的标记。

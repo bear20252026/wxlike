@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+wxlike-types = { path = "../types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # 确认令牌的规范参数摘要（G15-04）

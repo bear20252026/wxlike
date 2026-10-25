@@ -221,7 +221,7 @@ fn check_expectations(label: &str, fixture: &Fixture, reply: &Value) {
 
 /// 每次都会变的字段：令牌与过期时间。比较前统一抹掉，
 /// 但**结构必须一致**——少一个字段就说明两条通道行为不同。
-const VOLATILE_KEYS: [&str; 2] = ["token", "expires_at"];
+const VOLATILE_KEYS: [&str; 4] = ["token", "expires_at", "completed_at_ms", "wxlike/traceId"];
 
 fn normalize(value: &Value) -> Value {
     match value {
