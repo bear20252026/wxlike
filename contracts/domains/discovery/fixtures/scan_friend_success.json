@@ -1,0 +1,17 @@
+{
+  "fixture_id": "discovery.scan.friend_success",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.scan.decode",
+  "category": "success",
+  "description": "扫好友码：返回待确认动作，不自动加好友。wire 由 QrCodec 以 wxlike://v1/friend?p=...&sig=... 签发。",
+  "request": {
+    "source": "raw_text",
+    "text": "wxlike://v1/friend?p=eyJ0YXJnZXQiOnsiZnJpZW5kIjp7InVzZXJfaWQiOiJ1c3ItMjAwMSJ9fSwiZXhwIjo0OTk5OTk5OTk5MDAwLCJub25jZSI6Im4tMDAxIn0&sig=<hmac-sha256-hex>"
+  },
+  "expected": {
+    "kind": "friend",
+    "action": { "user_id": "usr-2001" },
+    "requires_confirmation": true
+  },
+  "invariants": ["不执行任何加好友操作", "后续加好友必须走 discovery.contact.request_friend（G02 规则）"]
+}
