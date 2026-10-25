@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/media/contract.json",
+  "title": "media domain contract (media-v1)",
+  "description": "G04 对象、文件、转码与备份域对外契约。内容地址（SHA-256）不作为授权凭据：读取逐请求鉴权（owner -> 活跃 media_ref 受众 -> 可撤销分享令牌），短时签名 URL 绑 per-object access_epoch。实现见 crates/features/media；详细 action 参数见同目录 actions.yaml，事件见 events.yaml。",
+  "contract_version": "media-v1",
+  "owner": "G04",
+  "transport": {
+    "request": { "action": "string", "version": "media-v1", "payload": "object" },
+    "response": {
+      "ok": "boolean",
+      "data": "object|null",
+      "error": { "code": "string", "message": "string" }
+    }
+  },
+  "error_codes": [
+    "bad_input", "unauthorized", "forbidden", "not_found", "conflict",
+    "gone", "payload_too_large", "quota_exceeded", "unsupported",
+    "budget_exceeded", "canceled", "tampered", "rate_limited", "internal"
+  ],
+  "list_shape": { "items": "array", "next_cursor": "string|null", "has_more": "boolean", "snapshot_version": "integer" },
+  "commands": {
+    "media.capabilities.get": { "$ref": "#/$defs/capabilities" },
+    "media.upload.start": { "$ref": "#/$defs/uploadStart" },
+    "media.upload.chunk": { "$ref": "#/$defs/uploadChunk" },
+    "media.upload.complete": { "$ref": "#/$defs/uploadComplete" },
+    "media.upload.cancel": { "$ref": "#/$defs/uploadCancel" },
+    "download.authorize": { "$ref": "#/$defs/downloadAuthorize" },
+    "download.revoke": { "$ref": "#/$defs/downloadRevoke" },
+    "download.stream": { "$ref": "#/$defs/downloadStream" },
+    "files.list": { "$ref": "#/$defs/filesList" },
+    "files.rename": { "$ref": "#/$defs/filesRename" },
+    "files.move": { "$ref": "#/$defs/filesMove" },
+    "files.delete": { "$ref": "#/$defs/filesDelete" },
+    "files.share": { "$ref": "#/$defs/filesShare" },
+    "files.share.revoke": { "$ref": "#/$defs/filesShareRevoke" },
+    "media.job.submit": { "$ref": "#/$defs/jobSubmit" },
+    "media.job.status": { "$ref": "#/$defs/jobStatus" },
+    "media.job.cancel": { "$ref": "#/$defs/jobCancel" },
+    "backup.export": { "$ref": "#/$defs/backupExport" },
+    "backup.verify": { "$ref": "#/$defs/backupVerify" },
+    "backup.import": { "$ref": "#/$defs/backupImport" },
+    "backup.keys.restore": { "$ref": "#/$defs/backupKeysRestore" },
+    "cache.plan": { "$ref": "#/$defs/cachePlan" },
+    "cache.execute": { "$ref": "#/$defs/cacheExecute" },
+    "platform.capabilities.get": { "$ref": "#/$defs/platformCapabilities" },
+    "platform.request": { "$ref": "#/$defs/platformRequest" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "purpose": { "type": "string", "enum": ["attachment", "avatar", "sticker", "voice", "video", "file", "backup", "derived"] },
+    "preset": { "type": "string", "enum": ["thumbnail", "waveform", "playback_360", "playback_720", "playback_1080"] },
+    "audience": {
+      "type": "object",
+      "oneOf": [
+        { "properties": { "kind": { "const": "user" }, "id": { "type": "string" } }, "required": ["kind", "id"] },
+        { "properties": { "kind": { "const": "conversation" }, "id": { "type": "string" } }, "required": ["kind", "id"] },
+        { "properties": { "kind": { "const": "group" }, "id": { "type": "string" } }, "required": ["kind", "id"] },
+        { "properties": { "kind": { "const": "public" } }, "required": ["kind"] }
+      ]
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "max_object_bytes": { "type": "integer" },
+        "max_chunk_bytes": { "type": "integer" },
+        "max_user_bytes": { "type": "integer" },
+        "session_ttl_ms": { "type": "integer" },
+        "signed_url_ttl_ms": { "type": "integer" },
+        "max_share_ttl_ms": { "type": "integer" },
+        "max_page_limit": { "type": "integer" }
+      }
+    },
+    "uploadStart": {
+      "type": "object",
+      "required": ["purpose", "name", "size", "mime"],
+      "properties": {
+        "purpose": { "$ref": "#/$defs/purpose" },
+        "name": { "type": "string", "maxLength": 255 },
+        "size": { "type": "integer" },
+        "mime": { "type": "string", "maxLength": 128 },
+        "digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "uploadChunk": {
+      "type": "object",
+      "required": ["upload_id", "offset", "body"],
+      "properties": {
+        "upload_id": { "type": "string" },
+        "offset": { "type": "integer" },
+        "body": { "type": "string", "contentEncoding": "binary" },
+        "x-chunk-sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "uploadComplete": {
+      "type": "object",
+      "required": ["upload_id", "digest"],
+      "properties": { "upload_id": { "type": "string" }, "digest": { "$ref": "#/$defs/sha256" } }
+    },
+    "uploadCancel": { "type": "object", "required": ["upload_id"], "properties": { "upload_id": { "type": "string" } } },
+    "downloadAuthorize": { "type": "object", "required": ["object_id"], "properties": { "object_id": { "$ref": "#/$defs/sha256" } } },
+    "downloadRevoke": { "type": "object", "required": ["object_id"], "properties": { "object_id": { "$ref": "#/$defs/sha256" } } },
+    "downloadStream": {
+      "type": "object",
+      "description": "GET bytes；签名 ?exp&epoch&sig 或分享 ?share；支持 Range（206/416）",
+      "properties": { "object_id": { "$ref": "#/$defs/sha256" } }
+    },
+    "filesList": {
+      "type": "object",
+      "properties": {
+        "category": { "type": "string" },
+        "folder": { "type": "string" },
+        "sort": { "type": "string", "enum": ["recent", "name", "size"] },
+        "cursor": { "type": "string" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "filesRename": { "type": "object", "required": ["file_id", "name"], "properties": { "file_id": { "type": "string" }, "name": { "type": "string", "maxLength": 255 } } },
+    "filesMove": { "type": "object", "required": ["file_id", "folder"], "properties": { "file_id": { "type": "string" }, "folder": { "type": "string", "maxLength": 512 } } },
+    "filesDelete": {
+      "type": "object",
+      "description": "trash=入回收站；restore=恢复；purge=硬删（触发引用计数 GC）",
+      "properties": { "file_id": { "type": "string" }, "phase": { "type": "string", "enum": ["trash", "restore", "purge"] } }
+    },
+    "filesShare": {
+      "type": "object",
+      "required": ["file_id"],
+      "properties": { "file_id": { "type": "string" }, "ttl_ms": { "type": "integer" }, "audience": { "$ref": "#/$defs/audience" } }
+    },
+    "filesShareRevoke": { "type": "object", "required": ["share_id"], "properties": { "share_id": { "type": "string" } } },
+    "jobSubmit": {
+      "type": "object",
+      "required": ["object_id", "preset"],
+      "properties": { "object_id": { "$ref": "#/$defs/sha256" }, "preset": { "$ref": "#/$defs/preset" } },
+      "idempotency": "UNIQUE(object_id, preset)；重提交返回同一 job_id"
+    },
+    "jobStatus": { "type": "object", "required": ["job_id"], "properties": { "job_id": { "type": "string" } } },
+    "jobCancel": { "type": "object", "required": ["job_id"], "properties": { "job_id": { "type": "string" } } },
+    "backupExport": {
+      "type": "object",
+      "required": ["device_id"],
+      "properties": {
+        "device_id": { "type": "string" },
+        "encryption": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["none", "client_side"] }, "key_ref": { "type": "string" } } }
+      }
+    },
+    "backupVerify": { "type": "object", "required": ["object_id"], "properties": { "object_id": { "$ref": "#/$defs/sha256" } } },
+    "backupImport": {
+      "type": "object",
+      "required": ["device_id", "object_id"],
+      "properties": { "device_id": { "type": "string" }, "object_id": { "$ref": "#/$defs/sha256" } },
+      "idempotency": "逐条续跑（media_backup_entry.imported）；重跑只补未导入条目"
+    },
+    "backupKeysRestore": { "type": "object", "required": ["backup_id", "object_id"], "properties": { "backup_id": { "type": "string" }, "object_id": { "$ref": "#/$defs/sha256" } } },
+    "cachePlan": {
+      "type": "object",
+      "required": ["budget_bytes", "candidates"],
+      "properties": {
+        "budget_bytes": { "type": "integer" },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "bytes"],
+            "properties": {
+              "key": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+              "object_id": { "$ref": "#/$defs/sha256" },
+              "bytes": { "type": "integer" },
+              "kind": { "type": "string", "enum": ["derived", "downloaded", "upload_staging", "unknown"] }
+            }
+          }
+        }
+      }
+    },
+    "cacheExecute": { "type": "object", "required": ["plan"], "properties": { "plan": { "type": "object" } } },
+    "platformCapabilities": { "type": "object", "properties": { "platform": { "type": "string", "enum": ["web", "desktop", "mobile"] } } },
+    "platformRequest": {
+      "type": "object",
+      "required": ["platform", "request"],
+      "properties": {
+        "platform": { "type": "string", "enum": ["web", "desktop", "mobile"] },
+        "request": {
+          "type": "object",
+          "required": ["request_id", "capability"],
+          "properties": {
+            "request_id": { "type": "string" },
+            "user_gesture": { "type": "boolean" },
+            "capability": { "type": "string", "enum": ["pick_file", "capture_screen", "record_audio", "save_download", "stop_audio"] }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,17 +1,16 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  build: {
-    outDir: "dist",
-    sourcemap: false,
+  resolve: {
+    alias: { "@": path.resolve(here, "src") },
   },
-  test: {
-    environment: "jsdom",
-    globals: true,
-    setupFiles: ["./src/test/setup.ts"],
-    css: false,
-  },
-}) as never;
+  server: { port: 5183, strictPort: true },
+  build: { target: "es2022", sourcemap: true },
+});

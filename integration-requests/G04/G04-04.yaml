@@ -1,0 +1,35 @@
+# G04-04 聊天迁移、备份恢复与空间清理 —— 集成请求
+request_id: G04-04
+task_issue: 122
+group_issue: 85
+contract_version: media-v1
+branch: feat/FP-G04
+
+owned_artifacts:
+  - crates/features/media/src/backup.rs
+  - contracts/domains/media/fixtures/backup-*.json
+  - contracts/domains/media/fixtures/cache-plan.json
+
+g00_owned_changes:
+  - id: REQ-G00-backup-object-size
+    target: G00-02
+    action: 备份包经 media 上传（purpose=backup）后用 POST /api/v1/backups/import
+      导入；组合根无需额外挂载，只需保证 upload capability 允许备份体积
+      （当前 max_object_bytes=1GiB，超包需上调该配置或走直传对象存储）。
+
+requests:
+  - id: REQ-G02-key-escrow-port
+    target: G02
+    action: 实现 KeyEscrowPort（restore_from_reference(user, package, key_ref)）
+      注入 MediaService::with_key_port；备份包只携带 key_ref，密钥恢复走 G02 escrow。
+  - id: REQ-G05-chat-snapshot-port
+    target: G05
+    action: 实现 ChatSnapshotPort（snapshot/import），导入必须保留原 message_id 与
+      conv seq，冲突上报 conflicts 而不是覆盖本地真相；MediaService::with_chat_port 注入。
+
+notes:
+  - 包格式 WXBK v1：magic|version|manifest_len|manifest JSON|payload 顺序|
+    SHA-256 trailer；逐条目按内容地址校验；篡改包 verify/import 均拒绝。
+  - 导入可续跑：media_backup_entry.imported 逐条落库，中断重跑只补未导入条目。
+  - 缓存清理：plan 先分类 recoverable/protected（服务端无副本、唯一未发送附件一律
+    protected），execute 只删 recoverable 且删前复核服务端副本仍在；历史随后可重新下载。

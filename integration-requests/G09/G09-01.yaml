@@ -1,0 +1,49 @@
+# G09-01 唯一 RTC 引擎可行性门禁 —— 集成请求
+request_id: G09-01
+task_issue: 151
+group_issue: 90
+branch: feat/FP-G09-01
+contract: calls-v1
+paths:
+  - crates/rtc/src/compat.rs
+  - crates/rtc/tests/compat.rs
+  - crates/rtc/docs/engine-decision.md
+
+root_registration:
+  - action: none
+    note: 本卡未新增根依赖/路由/迁移；sha2/hex/hkdf/chacha20poly1305/rusqlite
+      已在根 workspace.dependencies 中，只有 crates/rtc/Cargo.toml 引用它们。
+
+plan_deviation:
+  planned_path: crates/features/calls/tests/compat
+  actual_path: crates/rtc/{src/compat.rs,tests/compat.rs}
+  reason: G00-02/G00-03 尚未合入，根 workspace 清单不可由 G09 编辑；
+    兼容矩阵与唯一引擎门禁是纯库逻辑，放在 crates/rtc 可直接被 UI 与
+    server 引用。若 G00 后续建立 crates/features/calls，只需 re-export，
+    不得再实现第二套矩阵。
+
+requests:
+  - id: REQ-G00-engine-config
+    target: G00 / 集成方
+    action: 在服务端配置装载处调用 wxlike_rtc::compat::approved_engine(config)
+      并在返回 Err 时拒绝启动；UI 在展示通话/直播入口前调用
+      compat::require(client, capability)，Blocked/NeedsBridge 要显示明确
+      阻塞文案而不是降级成图标。
+    rationale: 防止任何端悄悄接第二个 RTC 服务，造成两套房间事实。
+
+  - id: REQ-G10-G12-native-bridges
+    target: G10 / G12
+    action: 提供 AudioRoute、BackgroundIncoming、ScreenShare 的原生桥；
+      矩阵中这三类在移动端为 bridge，桥未合入前不得标记可用。
+    rationale: Rust 不能直接操持 AVAudioSession/AudioManager/FGS/CallKit。
+
+  - id: REQ-G16-headless-harness
+    target: G16
+    action: 为 CI 探针提供无声卡/无摄像头的 voice 探针实现（矩阵中标
+      bridge(G16)）；video/screen 在 CI 中保持 blocked。
+    rationale: 自动化只能验协议与媒体栈，不能伪造真实采集。
+
+verification:
+  - cargo test -p wxlike-rtc --test compat
+  - cargo test -p wxlike-rtc --lib compat
+  - 结果: 4 个集成用例（6 组客户端配对真实音频/视频）+ 6 个矩阵单元用例通过

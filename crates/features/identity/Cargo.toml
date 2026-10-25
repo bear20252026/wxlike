@@ -1,0 +1,16 @@
+[package]
+name = "wxlike-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wxlike-core = { path = "../../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+hmac = "0.12"

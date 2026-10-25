@@ -1,0 +1,40 @@
+task: G02-04
+title: 本地SecretStore与口令快照接线
+issue: https://github.com/bear20252026/wxlike/issues/113
+branch: feat/FP-G02-04
+crate: wxlike-security
+contract: security-v1
+paths:
+  - crates/features/security/src/secrets.rs
+
+root_registration:
+  - action: none
+    note: 纯本地能力，无路由、无迁移；调用方是 G10/G12 的本地存储层
+
+core_changes:
+  file: crates/core/src/e2ee.rs
+  added: [seal_secret_blob, open_secret_blob]
+
+client_wiring:
+  - group: G10
+    need: 用 SecretStore::migrate_legacy 替换 secret-device.key；解锁失败不得回退裸密钥
+  - group: G12
+    need: 通过 ffi 暴露 unlock/lock/seal/open；锁屏与退后台必须调 lock()
+  - group: G01
+    need: ffi 绑定新增 SecretStorePort 方法（unlock/lock/seal/open/rotate/recover）
+
+acceptance_notes:
+  - 接通既有 WXSC2 口令派生：主密钥用 core::e2ee::seal_secret_blob 包裹（同一 Argon2id 头）
+  - 三条包裹路径分离：口令 / 恢复码（HKDF+XChaCha）/ OS 密钥库（seal_at_rest）
+  - 换口令只重包主密钥，载荷不重加密；新包先验证能解再替换
+  - 迁移顺序：建库 -> 写载荷 -> 重开校验 -> 原子落盘 -> 最后删旧裸密钥
+  - 锁屏/退出清内存：lock() 对主密钥 zeroize 并置 None
+  - 密码错误不毁旧数据：WrongPassphrase 与 Corrupted 分开，失败不改文件
+
+tests:
+  - secrets::tests::wrong_passphrase_is_distinct_from_corruption
+  - secrets::tests::old_and_foreign_files_are_rejected
+  - secrets::tests::rotate_only_rewraps_and_keeps_data
+  - secrets::tests::recovery_code_resets_passphrase_without_losing_data
+  - secrets::tests::legacy_key_alone_cannot_open_the_vault
+  - secrets::tests::interrupted_migration_leaves_legacy_intact

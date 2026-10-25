@@ -1,28 +1,34 @@
 import "@testing-library/jest-dom/vitest";
+import { cleanup } from "@testing-library/react";
+import { afterEach, vi } from "vitest";
 
-// jsdom has no clipboard; the PlatformPort web implementation falls back to a
-// textarea copy, but tests that assert on clipboard content install this.
-if (typeof navigator !== "undefined" && !navigator.clipboard) {
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: {
-      writeText: async (text: string) => {
-        (globalThis as Record<string, unknown>).__lastClipboardWrite = text;
-      },
-      readText: async () =>
-        String((globalThis as Record<string, unknown>).__lastClipboardWrite ?? ""),
-    },
+afterEach(() => {
+  cleanup();
+  window.location.hash = "";
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-compact");
+});
+
+if (!window.matchMedia) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }),
   });
 }
 
-if (typeof navigator !== "undefined" && !("mediaDevices" in navigator)) {
-  Object.defineProperty(navigator, "mediaDevices", {
-    configurable: true,
-    value: {
-      enumerateDevices: async () => [],
-      getUserMedia: async () => {
-        throw new DOMException("Not allowed", "NotAllowedError");
-      },
-    },
-  });
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
 }
