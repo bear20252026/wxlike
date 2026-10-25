@@ -1,0 +1,33 @@
+# G10-05 ｜ 搜索、设置与本地安全界面 ｜ 交给 G00 的根清单请求
+
+card: G10-05 (#161)
+branch: feat/FP-G10
+owner: G10
+contract_version: 1
+
+## 新增根依赖
+
+无。
+
+## 路由
+
+无新增；复用 `#/search`、`#/settings`、`#/about`。
+
+## command 挂载
+
+无新增 Rust command。
+
+## schema 编号
+
+无新增 schema。
+
+## 涉及的动作（entry_id / action_id）
+
+- entry: search page + ⌘K overlay / preferences / local security / storage / backup
+- action_id: search.query, preferences.get, preferences.set, secrets.status, secrets.lock, secrets.migrate, storage.status, storage.cache.clear, backup.create, backup.verify, backup.import, app.info
+- events: search.invalidated（触发搜索重查）， preferences.updated
+- 行为约定：
+  - 空关键词不发起查询；分类 all/chats/contacts/groups/content，content 未接入时如实展示原因（G05-05）。
+  - 口令迁移只在提交时进核心；表单不写 localStorage，成功后清空输入框。
+  - 备份导入必须先 backup.verify 通过，再以 `confirmation: "IMPORT"` 二次确认调用 backup.import。
+  - 备份文件保存失败时如实报告“已生成但未保存”，不伪报成功。
