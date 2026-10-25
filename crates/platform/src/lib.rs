@@ -17,10 +17,12 @@
 //! # let _ = app; Ok(()) }
 //! ```
 
+mod articles;
 mod audit_mw;
 mod auth;
 mod call;
 mod communities;
+mod content_index;
 mod db;
 mod devices;
 mod error;
@@ -29,10 +31,12 @@ mod favorites;
 mod friends;
 mod groups;
 mod groups_admin;
+mod inbox;
 mod keys;
 mod live;
 mod media;
 mod moments;
+mod notes;
 mod notification;
 pub mod perms;
 mod read;
@@ -44,9 +48,12 @@ mod risk_mw;
 mod secret;
 mod security;
 mod sessions;
+mod status;
+mod stickers;
 mod trust;
 mod users;
 mod validate;
+mod video_feed;
 mod video_refs;
 mod wallet;
 
@@ -70,6 +77,7 @@ pub use crate::perms::Perm;
 pub use crate::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::relations::{StrangerRequest, StrangerState};
 pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
+pub use crate::status::spawn_status_sweeper;
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 
@@ -465,6 +473,13 @@ impl Platform {
             .merge(call::routes())
             .merge(perms::routes())
             .merge(video_refs::routes())
+            .merge(articles::routes())
+            .merge(notes::routes())
+            .merge(stickers::routes())
+            .merge(video_feed::routes())
+            .merge(content_index::routes())
+            .merge(inbox::routes())
+            .merge(status::routes())
             .route(
                 "/api/audit/self",
                 get(

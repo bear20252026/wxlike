@@ -1,0 +1,38 @@
+task: G05-04
+title: 视频号内容流与转码门禁
+issue: https://github.com/bear20252026/wxlike/issues/132
+branch: feat/FP-G05-04
+crate: wxlike-platform（video_feed 模块；G00 拆分后迁独立 crate）
+contract: content-v1
+paths:
+  - crates/platform/src/video_feed.rs
+  - crates/platform/src/db.rs（SCHEMA_G05 的 video_posts 段）
+  - crates/platform/tests/g05_content.rs
+  - schema/proposals/G05/content.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/videos -> 发布（本人上传 + video_refs.state='succeeded' 才放行）"
+      - "GET  /api/videos/feed?mode=follow|hot|recommend"
+      - "GET+DELETE /api/videos/{id}"
+      - "POST+DELETE /api/videos/{id}/like；GET+POST /api/videos/{id}/comments；DELETE .../comments/{comment_id}"
+      - "POST /api/videos/{id}/report -> 工单（target_kind=video）"
+      - "POST+DELETE /api/video-creators/{id}/follow"
+    note: 复用既有挂载点；转码回调 /api/video/callback 归 WP-06（video_refs），本卡只消费其结果
+  - action: schema
+    proposal: schema/proposals/G05/content.sql
+    tables: [video_posts, video_likes, video_comments, video_follows]
+
+acceptance_notes:
+  - 门禁：media 必须是作者本人上传（防引用他人对象）且转码 succeeded；未转码 422
+  - 发布幂等：同 (author, media_id, state<>'deleted') 返回同一 id；发布同事务写索引与媒体引用
+  - follow=自+关注作者的 seq 倒序；hot=7 天窗口 likes*3+comments*2+新近加权；recommend=仅"好友看过的未关注作者作品"（reason=friends_liked），陌生人内容不进推荐
+  - 三种信息流全部双向过滤拉黑；删除后所有信息流立即不可见（state='deleted'）
+  - 点赞/评论事务内通知（dedupe）；评论删除为软删、seq 游标分页
+  - 行内附带 live 标志（作者有进行中直播时前端可挂"直播中"角标）
+
+tests:
+  - crates/platform/tests/g05_content.rs::videos_require_transcode_and_filter_deleted_from_feeds
+  - cargo test -p wxlike-platform --test g05_content
