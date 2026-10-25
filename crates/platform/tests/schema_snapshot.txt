@@ -41,6 +41,16 @@ contact_log.kind TEXT notnull=1 pk=0
 contact_log.changed_at INTEGER notnull=1 pk=0
 conv_owner.conv_id TEXT notnull=0 pk=1
 conv_owner.owner_type TEXT notnull=1 pk=0
+conversation_clear.user_id TEXT notnull=1 pk=1
+conversation_clear.conv_id TEXT notnull=1 pk=2
+conversation_clear.cleared_before_seq INTEGER notnull=1 pk=0
+conversation_clear.updated_at INTEGER notnull=1 pk=0
+conversation_event.id INTEGER notnull=0 pk=1
+conversation_event.actor TEXT notnull=1 pk=0
+conversation_event.conv_id TEXT notnull=1 pk=0
+conversation_event.kind TEXT notnull=1 pk=0
+conversation_event.payload TEXT notnull=1 pk=0
+conversation_event.at_ms INTEGER notnull=1 pk=0
 conversation_pref.user_id TEXT notnull=1 pk=1
 conversation_pref.conv_id TEXT notnull=1 pk=2
 conversation_pref.pinned INTEGER notnull=1 pk=0
