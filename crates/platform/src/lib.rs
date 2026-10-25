@@ -188,6 +188,22 @@ pub fn direct_conv_id(a: &str, b: &str) -> String {
     format!("d-{x}~{y}")
 }
 
+/// GET /api/audit/self：本人最近 100 条审计；无记录返回空 entries（不 4xx）。
+async fn audit_self(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let rows = platform.audit_of(&authed.user_id, 100).unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "entries": rows.into_iter().map(|(at, action, target, detail)| {
+            serde_json::json!({
+                "at_ms": at, "action": action,
+                "target": target, "detail": detail
+            })
+        }).collect::<Vec<_>>()
+    })))
+}
+
 pub(crate) fn system_envelope(
     conv_id: &str,
     sender: &str,
@@ -481,24 +497,7 @@ impl Platform {
             .merge(content_index::routes())
             .merge(inbox::routes())
             .merge(status::routes())
-            .route(
-                "/api/audit/self",
-                get(
-                    |State(platform): State<PlatformState>, authed: Authed| async move {
-                        match platform.audit_of(&authed.user_id, 100) {
-                            Ok(rows) => Json(serde_json::json!({
-                                "entries": rows.into_iter().map(|(at, action, target, detail)| {
-                                    serde_json::json!({
-                                        "at_ms": at, "action": action,
-                                        "target": target, "detail": detail
-                                    })
-                                }).collect::<Vec<_>>()
-                            })),
-                            Err(_) => Json(serde_json::json!({ "entries": [] })),
-                        }
-                    },
-                ),
-            )
+            .route("/api/audit/self", get(audit_self))
             .with_state(state.clone())
             // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）
             .layer(axum::middleware::from_fn_with_state(

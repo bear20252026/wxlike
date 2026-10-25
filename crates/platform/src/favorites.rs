@@ -119,68 +119,13 @@ pub struct ReorderBody {
 impl Platform {
     pub fn add_favorite(&self, user_id: &str, input: &FavoriteInput) -> Result<Favorite> {
         let source_conv = validate::conv(&input.source_conv)?;
-        if input.source_msg_id.len() > MAX_SOURCE_MSG_ID {
-            return Err(PlatformError::BadInput("source_msg_id too long"));
-        }
-        if input.text.len() > MAX_SNAPSHOT_TEXT {
-            return Err(PlatformError::BadInput("snapshot text too long"));
-        }
-        for field in [&input.kind, &input.media_id, &input.sender] {
-            if field.len() > MAX_SNAPSHOT_FIELD {
-                return Err(PlatformError::BadInput("snapshot field too long"));
-            }
-        }
+        validate_snapshot_input(input)?;
         let c = self.db().lock();
-        // 幂等语义是"同一载荷重复提交"：同会话同消息、同快照内容返回已有行；
-        // 同消息不同快照（如重发后转发语不同）仍各成一行（P1 契约如此）。
-        if let Some(existing) = c
-            .query_row(
-                "SELECT id FROM favorites
-                 WHERE user_id = ?1 AND source_kind = 'message' AND source_msg_id = ?2
-                   AND source_conv = ?3 AND kind = ?4 AND text = ?5 AND media_id = ?6
-                 ORDER BY created_at LIMIT 1",
-                params![
-                    user_id,
-                    input.source_msg_id,
-                    source_conv,
-                    if input.kind.is_empty() {
-                        "text"
-                    } else {
-                        &input.kind
-                    },
-                    input.text,
-                    input.media_id
-                ],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
+        if let Some(existing) = find_message_snapshot(&c, user_id, source_conv, input)? {
             return favorite_row(&c, user_id, &existing)?.ok_or(PlatformError::NotFound);
         }
         let id = crate::auth::random_hex(8);
-        let now = wxlike_core::types::now_ms() as i64;
-        c.execute(
-            "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
-                                   media_id, sender, sent_at_ms, created_at,
-                                   source_kind, source_id, snapshot_label, sort_order, revoked)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'message', '', ?5, 0, 0)",
-            params![
-                id,
-                user_id,
-                source_conv,
-                input.source_msg_id,
-                if input.kind.is_empty() {
-                    "text"
-                } else {
-                    &input.kind
-                },
-                input.text,
-                input.media_id,
-                input.sender,
-                input.sent_at_ms,
-                now
-            ],
-        )?;
+        insert_message_favorite(&c, user_id, source_conv, input, &id)?;
         favorite_row(&c, user_id, &id)?.ok_or(PlatformError::NotFound)
     }
 
@@ -481,6 +426,86 @@ pub(crate) fn revoke_source(conn: &Connection, source_kind: &str, source_id: &st
     Ok(())
 }
 
+/// 快照字段共用上限校验（消息收藏）。超限一律 BadInput。
+fn validate_snapshot_input(input: &FavoriteInput) -> Result<()> {
+    if input.source_msg_id.len() > MAX_SOURCE_MSG_ID {
+        return Err(PlatformError::BadInput("source_msg_id too long"));
+    }
+    if input.text.len() > MAX_SNAPSHOT_TEXT {
+        return Err(PlatformError::BadInput("snapshot text too long"));
+    }
+    for field in [&input.kind, &input.media_id, &input.sender] {
+        if field.len() > MAX_SNAPSHOT_FIELD {
+            return Err(PlatformError::BadInput("snapshot field too long"));
+        }
+    }
+    Ok(())
+}
+
+/// 空 kind 归一为 "text"（P1 契约：纯文本快照的存储值）。
+fn kind_or_text(kind: &str) -> &str {
+    if kind.is_empty() {
+        "text"
+    } else {
+        kind
+    }
+}
+
+/// 幂等语义是"同一载荷重复提交"：同会话同消息、同快照内容返回已有行；
+/// 同消息不同快照（如重发后转发语不同）仍各成一行（P1 契约如此）。
+fn find_message_snapshot(
+    c: &Connection,
+    user_id: &str,
+    source_conv: &str,
+    input: &FavoriteInput,
+) -> Result<Option<String>> {
+    Ok(c.query_row(
+        "SELECT id FROM favorites
+         WHERE user_id = ?1 AND source_kind = 'message' AND source_msg_id = ?2
+           AND source_conv = ?3 AND kind = ?4 AND text = ?5 AND media_id = ?6
+         ORDER BY created_at LIMIT 1",
+        params![
+            user_id,
+            input.source_msg_id,
+            source_conv,
+            kind_or_text(&input.kind),
+            input.text,
+            input.media_id
+        ],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()?)
+}
+
+fn insert_message_favorite(
+    c: &Connection,
+    user_id: &str,
+    source_conv: &str,
+    input: &FavoriteInput,
+    id: &str,
+) -> Result<()> {
+    let now = wxlike_core::types::now_ms() as i64;
+    c.execute(
+        "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
+                               media_id, sender, sent_at_ms, created_at,
+                               source_kind, source_id, snapshot_label, sort_order, revoked)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'message', '', ?5, 0, 0)",
+        params![
+            id,
+            user_id,
+            source_conv,
+            input.source_msg_id,
+            kind_or_text(&input.kind),
+            input.text,
+            input.media_id,
+            input.sender,
+            input.sent_at_ms,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
 fn favorite_row(c: &Connection, user: &str, id: &str) -> Result<Option<Favorite>> {
     Ok(c.query_row(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
@@ -604,7 +629,7 @@ async fn list(
 }
 
 #[derive(Deserialize)]
-struct SearchQuery {
+struct FavoriteSearchQuery {
     q: String,
     limit: Option<i64>,
 }
@@ -612,7 +637,7 @@ struct SearchQuery {
 async fn search(
     State(platform): State<PlatformState>,
     authed: Authed,
-    Query(q): Query<SearchQuery>,
+    Query(q): Query<FavoriteSearchQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let items =
         platform.search_favorites(&authed.user_id, &q.q, q.limit.unwrap_or(page::DEFAULT_PAGE))?;

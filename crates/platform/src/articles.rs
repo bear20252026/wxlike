@@ -937,6 +937,60 @@ fn doc_media_ids(doc: &ArticleDoc) -> Vec<String> {
 }
 
 /// 校验 + 渲染。返回 `(plain_text, html)`；HTML 只由白名单标签拼出。
+/// 渲染单个内容块并追加到 plain/html 累积串（图片块只进 html 不进 plain）。
+fn render_block(
+    c: &Connection,
+    block: &ArticleBlock,
+    plain: &mut String,
+    html: &mut String,
+) -> Result<()> {
+    match block {
+        ArticleBlock::Paragraph { spans } => {
+            let (text, inner) = render_spans(spans)?;
+            push_plain(plain, &text);
+            html.push_str("<p>");
+            html.push_str(&inner);
+            html.push_str("</p>");
+        }
+        ArticleBlock::Heading { level, spans } => {
+            if !(1..=3).contains(level) {
+                return Err(PlatformError::BadInput("heading level must be 1-3"));
+            }
+            let (text, inner) = render_spans(spans)?;
+            push_plain(plain, &text);
+            html.push_str(&format!("<h{level}>{inner}</h{level}>"));
+        }
+        ArticleBlock::Quote { spans } => {
+            let (text, inner) = render_spans(spans)?;
+            push_plain(plain, &text);
+            html.push_str("<blockquote>");
+            html.push_str(&inner);
+            html.push_str("</blockquote>");
+        }
+        ArticleBlock::Image { media_id, alt } => {
+            let media_id = validate::id(media_id)?;
+            require_image_media(c, media_id)?;
+            let alt = check_text("alt", alt, MAX_ALT_CHARS, false)?;
+            html.push_str(&format!(
+                "<img src=\"/api/media/{}\" alt=\"{}\" />",
+                media_id,
+                escape(&alt)
+            ));
+        }
+        ArticleBlock::Link { text, href } => {
+            let text = check_text("link text", text, 500, false)?;
+            let href = check_href(href)?;
+            push_plain(plain, &text);
+            html.push_str(&format!(
+                "<a href=\"{}\" rel=\"noopener noreferrer\" target=\"_blank\">{}</a>",
+                escape(&href),
+                escape(&text)
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn render_doc(c: &Connection, doc: &ArticleDoc) -> Result<(String, String)> {
     if doc.blocks.is_empty() {
         return Err(PlatformError::BadInput("article is empty"));
@@ -947,50 +1001,7 @@ fn render_doc(c: &Connection, doc: &ArticleDoc) -> Result<(String, String)> {
     let mut plain = String::new();
     let mut html = String::new();
     for block in &doc.blocks {
-        match block {
-            ArticleBlock::Paragraph { spans } => {
-                let (text, inner) = render_spans(spans)?;
-                push_plain(&mut plain, &text);
-                html.push_str("<p>");
-                html.push_str(&inner);
-                html.push_str("</p>");
-            }
-            ArticleBlock::Heading { level, spans } => {
-                if !(1..=3).contains(level) {
-                    return Err(PlatformError::BadInput("heading level must be 1-3"));
-                }
-                let (text, inner) = render_spans(spans)?;
-                push_plain(&mut plain, &text);
-                html.push_str(&format!("<h{level}>{inner}</h{level}>"));
-            }
-            ArticleBlock::Quote { spans } => {
-                let (text, inner) = render_spans(spans)?;
-                push_plain(&mut plain, &text);
-                html.push_str("<blockquote>");
-                html.push_str(&inner);
-                html.push_str("</blockquote>");
-            }
-            ArticleBlock::Image { media_id, alt } => {
-                let media_id = validate::id(media_id)?;
-                require_image_media(c, media_id)?;
-                let alt = check_text("alt", alt, MAX_ALT_CHARS, false)?;
-                html.push_str(&format!(
-                    "<img src=\"/api/media/{}\" alt=\"{}\" />",
-                    media_id,
-                    escape(&alt)
-                ));
-            }
-            ArticleBlock::Link { text, href } => {
-                let text = check_text("link text", text, 500, false)?;
-                let href = check_href(href)?;
-                push_plain(&mut plain, &text);
-                html.push_str(&format!(
-                    "<a href=\"{}\" rel=\"noopener noreferrer\" target=\"_blank\">{}</a>",
-                    escape(&href),
-                    escape(&text)
-                ));
-            }
-        }
+        render_block(c, block, &mut plain, &mut html)?;
     }
     if plain.chars().count() > MAX_BODY_TEXT_CHARS {
         return Err(PlatformError::BadInput("article body too long"));

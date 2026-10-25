@@ -117,18 +117,7 @@ impl Platform {
             return Err(PlatformError::BadInput("unknown status audience"));
         }
         check_status_text(&body.text, kind)?;
-        let media_id = match kind {
-            "text" => String::new(),
-            _ => {
-                let media_id = validate::id(&body.media_id)?.to_string();
-                {
-                    let c = self.db().lock();
-                    check_media(&c, &owner, &media_id, kind)?;
-                }
-                media_id
-            }
-        };
-        let background = consume_background(self, &owner, &body.background_media_id)?;
+        let (media_id, background) = resolve_status_media(self, &owner, kind, body)?;
         let now = wxlike_core::types::now_ms() as i64;
         let expires_at = now + STATUS_TTL_MS;
         let id = crate::auth::random_hex(8);
@@ -142,33 +131,20 @@ impl Platform {
                 params![owner, background],
             )?;
         }
-        tx.execute(
-            "INSERT INTO statuses(id, owner, kind, text, media_id, background_media_id, audience,
-                                  version, created_at, updated_at, expires_at, cleared_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, ?9, NULL)",
-            params![id, owner, kind, body.text, media_id, background, audience, now, expires_at],
-        )?;
-        content_index::upsert(
+        insert_status_indexed(
             &tx,
-            &content_index::IndexDoc {
-                doc_id: &id,
-                kind: "status",
+            StatusInsert {
+                id: &id,
                 owner: &owner,
+                kind,
+                text: &body.text,
+                media_id: &media_id,
+                background: &background,
                 audience: &audience,
-                group_name: "",
-                title: "",
-                body: &body.text,
+                now,
+                expires_at,
             },
-            now,
         )?;
-        let mut refs = Vec::new();
-        if !media_id.is_empty() {
-            refs.push(media_id);
-        }
-        if !background.is_empty() {
-            refs.push(background);
-        }
-        content_index::add_media_refs(&tx, &refs, "status", &id, &owner, now)?;
         let view = status_row(&tx, &owner, &id)?.ok_or(PlatformError::NotFound)?;
         tx.commit()?;
         Ok(view)
@@ -437,6 +413,84 @@ fn consume_background(
     Ok(id)
 }
 
+/// 状态媒体前置校验：非文本状态验证媒体归属，背景走"草稿消费"。
+/// 返回 (media_id, background_media_id)，文本状态媒体为空串。
+fn resolve_status_media(
+    platform: &Platform,
+    owner: &str,
+    kind: &str,
+    body: &StatusBody,
+) -> Result<(String, String)> {
+    let media_id = match kind {
+        "text" => String::new(),
+        _ => {
+            let media_id = validate::id(&body.media_id)?.to_string();
+            {
+                let c = platform.db().lock();
+                check_media(&c, owner, &media_id, kind)?;
+            }
+            media_id
+        }
+    };
+    let background = consume_background(platform, owner, &body.background_media_id)?;
+    Ok((media_id, background))
+}
+
+/// 新状态行的写入载荷（状态正文 + 索引/引用同步所需字段）。
+struct StatusInsert<'a> {
+    id: &'a str,
+    owner: &'a str,
+    kind: &'a str,
+    text: &'a str,
+    media_id: &'a str,
+    background: &'a str,
+    audience: &'a str,
+    now: i64,
+    expires_at: i64,
+}
+
+/// 事务内写状态行 + 内容索引 + 媒体引用（删状态/到期清扫用同一索引约定）。
+fn insert_status_indexed(tx: &Connection, s: StatusInsert<'_>) -> Result<()> {
+    tx.execute(
+        "INSERT INTO statuses(id, owner, kind, text, media_id, background_media_id, audience,
+                              version, created_at, updated_at, expires_at, cleared_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, ?9, NULL)",
+        params![
+            s.id,
+            s.owner,
+            s.kind,
+            s.text,
+            s.media_id,
+            s.background,
+            s.audience,
+            s.now,
+            s.expires_at
+        ],
+    )?;
+    content_index::upsert(
+        tx,
+        &content_index::IndexDoc {
+            doc_id: s.id,
+            kind: "status",
+            owner: s.owner,
+            audience: s.audience,
+            group_name: "",
+            title: "",
+            body: s.text,
+        },
+        s.now,
+    )?;
+    let mut refs = Vec::new();
+    if !s.media_id.is_empty() {
+        refs.push(s.media_id.to_string());
+    }
+    if !s.background.is_empty() {
+        refs.push(s.background.to_string());
+    }
+    content_index::add_media_refs(tx, &refs, "status", s.id, s.owner, s.now)?;
+    Ok(())
+}
+
 fn clear_owner(conn: &Connection, owner: &str, now: i64) -> Result<usize> {
     let ids: Vec<String> = {
         let mut stmt =
@@ -570,6 +624,14 @@ fn status_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<StatusVie
 }
 
 /// 定时清理（启动时由装配层调用，与红包退款 sweeper 同一形状）。
+fn sweep_and_log(state: &PlatformState) {
+    match state.sweep_expired_statuses() {
+        Ok(0) => {}
+        Ok(n) => println!("[platform] cleared {n} expired status(es)"),
+        Err(err) => eprintln!("[platform] status sweep failed: {err}"),
+    }
+}
+
 pub fn spawn_status_sweeper(
     state: PlatformState,
     every: std::time::Duration,
@@ -577,11 +639,7 @@ pub fn spawn_status_sweeper(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
-            match state.sweep_expired_statuses() {
-                Ok(0) => {}
-                Ok(n) => println!("[platform] cleared {n} expired status(es)"),
-                Err(err) => eprintln!("[platform] status sweep failed: {err}"),
-            }
+            sweep_and_log(&state);
         }
     })
 }

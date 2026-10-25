@@ -267,6 +267,48 @@ fn comment_depth(conn: &rusqlite::Connection, moment_id: &str, comment_id: &str)
     Ok(depth)
 }
 
+/// 评论/回复落评论者与被回复者两条事务内通知（楼中楼只补被回复者）。
+fn notify_comment_inbox(
+    conn: &rusqlite::Connection,
+    moment_id: &str,
+    by: &str,
+    reply_to: Option<&str>,
+    now: i64,
+) -> Result<()> {
+    let (author, reply_author): (String, Option<String>) = conn.query_row(
+        "SELECT m.author,
+                (SELECT author FROM moment_comments WHERE id = ?2)
+         FROM moments m WHERE m.id = ?1",
+        params![moment_id, reply_to.unwrap_or("")],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    inbox::notify(
+        conn,
+        &author,
+        "moment_comment",
+        by,
+        "moment",
+        moment_id,
+        "评论了你的朋友圈",
+        "",
+        now,
+    )?;
+    if let Some(reply_author) = reply_author {
+        inbox::notify(
+            conn,
+            &reply_author,
+            "moment_reply",
+            by,
+            "moment",
+            moment_id,
+            "回复了你的评论",
+            "",
+            now,
+        )?;
+    }
+    Ok(())
+}
+
 fn require_media(conn: &rusqlite::Connection, media_ids: &[String]) -> Result<()> {
     for media_id in media_ids {
         let known: Option<i64> = conn
@@ -716,37 +758,7 @@ impl Platform {
                 now
             ],
         )?;
-        let (author, reply_author): (String, Option<String>) = tx.query_row(
-            "SELECT m.author,
-                    (SELECT author FROM moment_comments WHERE id = ?2)
-             FROM moments m WHERE m.id = ?1",
-            params![moment_id, reply_to.as_deref().unwrap_or("")],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        inbox::notify(
-            &tx,
-            &author,
-            "moment_comment",
-            &by,
-            "moment",
-            moment_id,
-            "评论了你的朋友圈",
-            "",
-            now,
-        )?;
-        if let Some(reply_author) = reply_author {
-            inbox::notify(
-                &tx,
-                &reply_author,
-                "moment_reply",
-                &by,
-                "moment",
-                moment_id,
-                "回复了你的评论",
-                "",
-                now,
-            )?;
-        }
+        notify_comment_inbox(&tx, moment_id, &by, reply_to.as_deref(), now)?;
         tx.commit()?;
         Ok(id)
     }

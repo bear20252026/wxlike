@@ -350,25 +350,20 @@ fn like_pattern(q: &str) -> String {
     format!("%{}%", page::escape_like(q))
 }
 
+/// 在 page::parse_cursor 的通用校验之上，额外收紧游标 id 的形态：
+/// 内容索引的 doc_id 全部由服务端生成（ASCII 字母数字、定长上限），
+/// 不接受其他形态，防止把外部拼出的游标当检索入口。
 fn parse_cursor(cursor: Option<&str>) -> Result<(i64, String)> {
-    match cursor {
-        None | Some("") => Ok((i64::MAX, "\u{10ffff}".to_string())),
-        Some(c) => {
-            let (at, id) = c
-                .split_once(':')
-                .ok_or(PlatformError::BadInput("malformed cursor"))?;
-            let at: i64 = at
-                .parse()
-                .map_err(|_| PlatformError::BadInput("malformed cursor"))?;
-            if id.is_empty()
-                || id.len() > MAX_CURSOR_ID_LEN
-                || !id.chars().all(|c| c.is_ascii_alphanumeric())
-            {
-                return Err(PlatformError::BadInput("malformed cursor"));
-            }
-            Ok((at, id.to_string()))
+    if let Some(c) = cursor.filter(|c| !c.is_empty()) {
+        let id = c.split_once(':').map(|(_, id)| id).unwrap_or("");
+        if id.is_empty()
+            || id.len() > MAX_CURSOR_ID_LEN
+            || !id.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(PlatformError::BadInput("malformed cursor"));
         }
     }
+    page::parse_cursor(cursor)
 }
 
 /// 摘要只截取正文窗口，不复制整篇；找不到命中词时返回开头。

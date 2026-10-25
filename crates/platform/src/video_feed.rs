@@ -659,6 +659,28 @@ struct VideoRow {
     duration_ms: i64,
     thumb_url: String,
 }
+/// 裸行 → 对外视图：纯字段搬运（reason 由调用方按门禁补写）。
+fn video_view_from(row: VideoRow) -> VideoView {
+    VideoView {
+        id: row.id,
+        author: row.author,
+        author_name: row.author_name,
+        caption: row.caption,
+        state: row.state,
+        created_at: row.created_at,
+        like_count: row.like_count,
+        comment_count: row.comment_count,
+        liked: row.liked,
+        live: row.live,
+        playable: row.playable,
+        playlist_url: row.playlist_url,
+        play_url: row.play_url,
+        thumb_url: row.thumb_url,
+        duration_ms: row.duration_ms,
+        reason: String::new(),
+    }
+}
+
 fn video_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<VideoView>> {
     let row: Option<VideoRow> = c
         .query_row(
@@ -703,24 +725,7 @@ fn video_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<VideoView>
     let Some(row) = row else {
         return Ok(None);
     };
-    Ok(Some(VideoView {
-        id: row.id,
-        author: row.author,
-        author_name: row.author_name,
-        caption: row.caption,
-        state: row.state,
-        created_at: row.created_at,
-        like_count: row.like_count,
-        comment_count: row.comment_count,
-        liked: row.liked,
-        live: row.live,
-        playable: row.playable,
-        playlist_url: row.playlist_url,
-        play_url: row.play_url,
-        thumb_url: row.thumb_url,
-        duration_ms: row.duration_ms,
-        reason: String::new(),
-    }))
+    Ok(Some(video_view_from(row)))
 }
 
 // ---- HTTP handlers ----
