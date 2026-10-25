@@ -1,0 +1,163 @@
+jobs:
+  android-release:
+    name: android-release
+    runs-on: ubuntu-latest
+    environment: mobile-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-android-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.0
+          channel: stable
+          cache: true
+      - name: C8 require signing material
+        shell: bash
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          for name in KEYSTORE STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then echo "::error::secret $name is not configured in the mobile-release environment"; missing=1; fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          cat > apps/mobile/android/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          chmod 600 "$RUNNER_TEMP/release.keystore" apps/mobile/android/key.properties
+      - name: C8 regenerate bindings and fetch packages
+        shell: bash
+        run: |
+          bash crates/ffi/regenerate.sh
+          cd apps/mobile
+          flutter pub get
+      - name: C8 signed release APK + AAB
+        shell: bash
+        run: |
+          flutter build apk --release \
+            --target-platform android-arm,android-arm64,android-x64 \
+            --split-debug-info=build/app/outputs/symbols \
+            --obfuscate
+          flutter build appbundle --release \
+            --split-debug-info=build/app/outputs/symbols \
+            --obfuscate
+        working-directory: apps/mobile
+      - name: C8 verify release signature (debug key is rejected)
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version: *\([^+]*\).*/\1/p' apps/mobile/pubspec.yaml | head -1)
+          python3 ci/jobs/mobile/check_apk.py \
+            --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \
+            --expected-version "$version" \
+            --symbols-dir apps/mobile/build/app/outputs/symbols \
+            --require-release-key \
+            --output mobile-evidence/android-release.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        with:
+          name: android-release
+          path: |
+            apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+            apps/mobile/build/app/outputs/bundle/release/app-release.aab
+            apps/mobile/build/app/outputs/symbols/**
+            mobile-evidence/android-release.json
+          if-no-files-found: error
+          retention-days: 30
+
+  ios-release:
+    name: ios-release
+    runs-on: macos-latest
+    environment: mobile-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: iOS project must exist
+        shell: bash
+        run: |
+          if [ ! -d apps/mobile/ios ]; then
+            echo "::error::apps/mobile/ios is absent; no IPA can be produced. G16-03 needs the mobile group to add the iOS runner project, then this gate signs and verifies it."
+            exit 1
+          fi
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-ios-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.0
+          channel: stable
+          cache: true
+      - name: C8 require signing material
+        shell: bash
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for name in CERT_P12 CERT_PASSWORD PROFILE TEAM_ID; do
+            if [ -z "${!name:-}" ]; then echo "::error::secret $name is not configured in the mobile-release environment"; missing=1; fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          keychain="$RUNNER_TEMP/wxlike-signing.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$PROFILE" | base64 -d > "$HOME/Library/MobileDevice/Provisioning Profiles/wxlike.mobileprovision"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          sed "s/__TEAM_ID__/$TEAM_ID/g" deploy/signing-docs/ExportOptions.plist > apps/mobile/ios/ExportOptions.plist
+      - name: C8 regenerate bindings and fetch packages
+        shell: bash
+        run: |
+          bash crates/ffi/regenerate.sh
+          cd apps/mobile
+          flutter pub get
+      - name: C8 signed IPA
+        shell: bash
+        run: |
+          flutter build ipa --release \
+            --split-debug-info=build/app/outputs/symbols \
+            --obfuscate \
+            --export-options-plist=ios/ExportOptions.plist
+        working-directory: apps/mobile
+      - name: C8 verify distribution signature and version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version: *\([^+]*\).*/\1/p' apps/mobile/pubspec.yaml | head -1)
+          ipa=$(find apps/mobile/build/ios/ipa -name '*.ipa' | head -1)
+          python3 ci/jobs/mobile/check_ipa.py --ipa "$ipa" --expected-version "$version" --output mobile-evidence/ios-release.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        with:
+          name: ios-release
+          path: |
+            apps/mobile/build/ios/ipa/*.ipa
+            apps/mobile/build/app/outputs/symbols/**
+            mobile-evidence/ios-release.json
+          if-no-files-found: error
+          retention-days: 30

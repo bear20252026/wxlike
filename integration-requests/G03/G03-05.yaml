@@ -1,0 +1,82 @@
+# G03-05 移动推送与同步调度 —— 集成请求
+# 独占写路径内已完成：crates/message/{src/push.rs,src/sync.rs,
+# tests/g03_05_push_sync.rs}。
+
+request_id: G03-05
+task_issue: 124
+group_issue: 84
+contract_version: push-hint-v1
+artifacts:
+  - crates/message/src/push.rs
+  - crates/message/src/sync.rs
+  - crates/message/tests/g03_05_push_sync.rs
+
+requests:
+  - id: REQ-G00-02-move-messaging-push-sync
+    target: G00-02
+    action: 纯移动 `crates/message/src/{push.rs,sync.rs}` →
+      `crates/features/messaging/src/{push,sync}/`（卡面计划路径）。
+    rationale: 目标目录要等 G00-02。
+
+  - id: REQ-PUSH-owner-adopt-port
+    target: G00
+    action: `crates/push` 不在任何组的独占根里（owners.json 未登记），
+      但 G03-05 的 APNs/FCM 供应商实现必须落在那里。请先登记 owner，
+      再由该 owner 把现有 `FcmProvider` 包成 `PushPort` 实现、并补 APNs。
+      G03 不越界改 `crates/push`。
+    rationale: 卡面要求"供应商通过 PushPort 实现，配置不写死业务"；
+      端口与设备 token 表已在 G03 侧交付，缺的是供应商适配那一半。
+
+  - id: REQ-G02-device-identity-source
+    target: G02-03
+    action: `push_device.device_id` 与设备注册表（`platform/src/devices.rs`
+      的 `register_device`）必须是同一个设备身份，注销设备要同时撤销推送 token
+      （调用 `revoke_push` / `revoke_other_devices`）。
+    rationale: 两处各存一套设备 id 就会漏撤销，"注销后旧设备不再收到私密提示"
+      这条验收才有意义。
+
+  - id: REQ-G00-push-registration-endpoints
+    target: G00
+    action: 挂 `push.register` / `push.revoke` / `sync.delta` 三个命令到根 router
+      （由 G00 串行集成，G03 不碰总 router）。
+    rationale: 路由挂载属集成面。
+
+  - id: REQ-G12-mobile-sync-driver
+    target: G12
+    action: 移动端在前台恢复、网络变化、收到 hint 三种时刻调
+      `drive_queue(user, device, trigger, now, policy)`；
+      后台定时器只能传 `SyncTrigger::Timer`（它不会复活已判死的行）。
+      通知点击 → `resume(cursor)` → 落库 → `ack(stored_cursor)` 是同一条链。
+    rationale: 卡面要求"恢复前台/网络变化驱动队列"，触发点在客户端。
+
+  - id: REQ-G16-vendor-sandbox-verification
+    target: G16
+    action: 用 Firebase sandbox 与 APNs sandbox 各跑一次真机链路
+      （杀进程 → 推送 → 打开 → 增量同步完整），并把 `provider_from_env()`
+      的凭据缺失行为记入部署手册。
+    rationale: 供应商侧与真机无法在本机验证，登记为待验，不写已完成。
+
+  - id: REQ-G00-migration-numbering
+    target: G00
+    action: 为 `push_device` 表分配 schema 编号（token 归设备、`epoch` 轮换、
+      `revoked` 撤销；push.register/revoke 命令面见本文件其余申请）；列名以
+      `crates/message/src/lib.rs` 的 DDL 为准。
+    rationale: 迁移编号由 G00 串行分配，避免多组撞号。
+
+notes:
+  - 提示不带正文：`SyncHint{conv_id, from_user, count, sent_at_ms, resync}`；
+    私密会话用 `SyncHint::private(count)` 连会话 id 都不给。
+    `is_body_free()` 是发送前的闸门（长度上限 + 禁止换行 = 禁止夹带内容）。
+  - token 归设备且可撤销：`epoch` 让撤销落地（revoke/rotate 都前移 epoch），
+    `push_token()` 只返回未撤销的行；`prune_push_devices` 清 90 天没刷新的安装。
+  - 供应商失败不改状态：`dispatch_hint` 的 per-device 失败既不推进游标，
+    也不 retire 投递任务（测试 `vendor_failures_are_per_device_and_leave_message_state_untouched`）。
+  - 调度器有界且对乱序/重复免疫：`SyncScheduler::note` 返回
+    Scheduled/Coalesced/Stale/Overflowed，溢出丢最旧条目，绝不无界增长。
+  - **卡面第 5 条（手机 retry 必须同时刷新真实投影）的落地位置**：
+    `drive_queue` 在重投死信与过期租约之后，逐会话调
+    `refresh_projection`，列表 preview/last_seq/last_withdrawn 由信箱重算，
+    不是只把 pending 标记清掉（两条测试分别覆盖前台恢复与撤回后重进）。
+  - 关联入口：推送点击与通知栏属于系统入口，不在 331 条 onClick 种子里
+    （G00-01 的 entries.json 需要为非 click 入口开一类，见 REQ-G00-push-registration-endpoints）；
+    种子侧最接近的是 SEED-0029 记录已同步、SEED-0151 清空聊天记录（演示态）。

@@ -1,0 +1,20 @@
+{
+  "name": "second incoming call while callee is already in a call",
+  "request": {
+    "command": "call.invite",
+    "version": "calls-v1",
+    "payload": {
+      "call_id": "call-1002",
+      "conv_id": "d-carol~bob",
+      "callee": "bob",
+      "caller_device": "carol-phone",
+      "callee_devices": ["bob-phone"],
+      "video": false
+    }
+  },
+  "response": {
+    "ok": false,
+    "data": null,
+    "error": { "code": "busy", "message": "callee is already in call-1001" }
+  }
+}

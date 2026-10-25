@@ -1,0 +1,284 @@
+# G04 media domain contract — actions
+# contract_version: media-v1 (proposal for G00-03 to freeze)
+# 每个条目对应一个 action_id；HTTP 路径只在与 MediaPort（G04）握手时由 G00 装配。
+# scope 规则：session 为必须登录；owner 为资源属主；audience 为活跃 media_ref 受众；
+# signed 为带签名的短时链接；share 为可撤销分享令牌。
+
+actions:
+  - action_id: media.capabilities.get
+    http: GET /api/v1/media/capabilities
+    params: {}
+    result:
+      max_object_bytes: u64
+      max_chunk_bytes: u64
+      max_user_bytes: u64
+      session_ttl_ms: i64
+      signed_url_ttl_ms: i64
+      max_share_ttl_ms: i64
+      max_page_limit: u32
+    scope: session
+    confirmation: none
+    idempotency: read
+    offline: cacheable
+    platform: [web, desktop, mobile]
+    errors: [unauthorized]
+
+  - action_id: media.upload.start
+    http: POST /api/v1/uploads
+    params:
+      purpose: voice|sticker|image|video|file|avatar|attachment
+      name: string(<=255)
+      size: u64
+      mime: string(<=128)
+      digest: sha256-hex?
+    result: { upload_id, chunk_size, offset: 0, expires_at }
+    scope: session
+    confirmation: none
+    idempotency: none (每个会话独立)
+    offline: queueable
+    platform: [web, desktop, mobile]
+    errors: [bad_request, payload_too_large, quota_exceeded, rate_limited]
+
+  - action_id: media.upload.chunk
+    http: PUT /api/v1/uploads/{id}/chunks?offset=
+    headers: { x-chunk-sha256?: sha256 }
+    params: { body: bytes(<= max_chunk_bytes) }
+    result: { upload_id, offset, declared_size, complete: false }
+    scope: owner(session)
+    confirmation: none
+    idempotency: replay-safe（已接受分片原样返回进度；不同字节 409）
+    offline: retryable
+    platform: [web, desktop, mobile]
+    errors: [gone, conflict, payload_too_large, tampered, not_found]
+
+  - action_id: media.upload.complete
+    http: POST /api/v1/uploads/{id}/complete
+    params: { digest: sha256 }
+    result: { object_id, file_id, size, digest, mime, newly_stored }
+    scope: owner(session)
+    confirmation: none
+    idempotency: 完成重放返回同一 object，不再写盘
+    offline: retryable
+    platform: [web, desktop, mobile]
+    errors: [gone, conflict, tampered, not_found]
+
+  - action_id: media.upload.cancel
+    http: POST /api/v1/uploads/{id}/cancel
+    params: {}
+    result: { upload_id, status: canceled, ... }
+    scope: owner(session)
+    confirmation: none
+    idempotency: 已关闭会话原样返回
+    offline: retryable
+    platform: [web, desktop, mobile]
+    errors: [not_found]
+
+  - action_id: download.authorize
+    http: POST /api/v1/objects/{id}/access
+    params: {}
+    result: { object_id, url, expires_at, epoch }
+    scope: owner|audience（逐请求鉴权；digest 本身不授权）
+    confirmation: none
+    idempotency: read（每次签发独立短时链接）
+    offline: none
+    platform: [web, desktop, mobile]
+    errors: [not_found, forbidden, unauthorized]
+
+  - action_id: download.revoke
+    http: POST /api/v1/objects/{id}/revoke
+    params: {}
+    result: { epoch }
+    scope: owner
+    confirmation: none
+    idempotency: read（epoch 单调递增）
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [not_found, forbidden]
+
+  - action_id: download.stream
+    http: GET /api/v1/objects/{id}?exp&epoch&sig|?share
+    params: { range?: header }
+    result: bytes（206 支持 Range；416 起range不合法）
+    scope: signed|share
+    confirmation: none
+    idempotency: read
+    offline: none
+    platform: [web, desktop, mobile]
+    errors: [gone, forbidden, not_found, unauthorized]
+
+  - action_id: files.list
+    http: GET /api/v1/files?category&folder&sort&cursor&limit
+    params: { category?: string, folder?: string, sort: recent|name|size, cursor?: opaque, limit: 1..100 }
+    result: { items, next_cursor, has_more, snapshot_version }
+    scope: session（授权投影：owner 或活跃 ref 受众；不按文件名搜索）
+    confirmation: none
+    idempotency: read
+    offline: cacheable
+    platform: [web, desktop, mobile]
+    errors: [bad_request, unauthorized]
+
+  - action_id: files.rename
+    http: PATCH /api/v1/files/{id} { name }
+    result: file
+    scope: owner
+    confirmation: none
+    idempotency: retry-safe（同一 name 重放同值）
+    offline: queueable
+    platform: [desktop, mobile, web]
+    errors: [not_found, bad_request]
+
+  - action_id: files.move
+    http: PATCH /api/v1/files/{id} { folder }
+    result: file
+    scope: owner
+    confirmation: none
+    idempotency: retry-safe
+    offline: queueable
+    platform: [desktop, mobile, web]
+    errors: [not_found, bad_request]
+
+  - action_id: files.delete
+    http: DELETE /api/v1/files/{id}（入回收站）+ POST /files/{id}/restore + DELETE /files/{id}/purge
+    result: 204
+    scope: owner
+    confirmation: purge 需要二次确认（UI 层）
+    idempotency: trash/restore 重放同状态；purge 幂等失败为 404
+    offline: queueable
+    platform: [desktop, mobile, web]
+    errors: [not_found]
+    notes: 回收站保留对象（引用计数不为零）；消息引用不因文件删除消失
+
+  - action_id: files.share
+    http: POST /api/v1/files/{id}/shares { ttl_ms, audience? }
+    result: { share_id, token, url, expires_at }
+    scope: owner
+    confirmation: none
+    idempotency: none（每次签发新令牌；令牌只存哈希）
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [not_found, forbidden]
+
+  - action_id: files.share.revoke
+    http: DELETE /api/v1/shares/{id}
+    result: 204
+    scope: owner
+    confirmation: none
+    idempotency: retry-safe
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [not_found]
+
+  - action_id: media.job.submit
+    http: POST /api/v1/jobs { object_id, preset: thumbnail|waveform|playback_360|playback_720|playback_1080 }
+    result: { job_id, state, ... }
+    scope: owner|audience
+    confirmation: none
+    idempotency: (object_id, preset) 唯一；重提交返回同一任务
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [forbidden, not_found, unsupported]
+
+  - action_id: media.job.status
+    http: GET /api/v1/jobs/{id}
+    result: { job_id, object_id, preset, state, attempts, progress, outputs, error, can_cancel }
+    scope: owner
+    confirmation: none
+    idempotency: read
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [not_found]
+
+  - action_id: media.job.cancel
+    http: POST /api/v1/jobs/{id}/cancel
+    result: { job_id, state: canceled, ... }
+    scope: owner
+    confirmation: none
+    idempotency: 终态重放返回同视图
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [not_found]
+
+  - action_id: backup.export
+    http: POST /api/v1/backups { device_id, encryption?{mode,key_ref} }
+    result: { backup_id, state, entries, total_bytes, package_digest, package_bytes, encryption }
+    scope: session
+    confirmation: confirm（打包可能大；UI 层提示）
+    idempotency: none（每次独立包；重试创建新 backup_id）
+    offline: none
+    platform: [desktop, mobile]
+    errors: [payload_too_large, budget_exceeded, unsupported]
+
+  - action_id: backup.verify
+    http: POST /api/v1/backups/verify { object_id }
+    result: { backup_id, state: verified, entries, total_bytes, package_digest, ... }
+    scope: owner
+    confirmation: none
+    idempotency: read
+    offline: none
+    platform: [desktop, mobile]
+    errors: [tampered, not_found, unsupported]
+
+  - action_id: backup.import
+    http: POST /api/v1/backups/import { device_id, object_id }
+    result: { backup_id, imported, deduped, skipped, chat_imported, chat_conflicts, state }
+    scope: session（包必须是本人上传对象）
+    confirmation: confirm
+    idempotency: 可续跑（entry.imported 逐条落库；重跑只补未导入条目）
+    offline: none
+    platform: [desktop, mobile]
+    errors: [tampered, payload_too_large, unsupported]
+    notes: 消息 id/seq 原样移交 ChatSnapshotPort，冲突上报不覆盖本地真相；密钥不进包
+
+  - action_id: backup.keys.restore
+    http: POST /api/v1/backups/{id}/keys { object_id }
+    result: { key_ref }
+    scope: session
+    confirmation: confirm
+    idempotency: retry-safe（端口方保证）
+    offline: none
+    platform: [desktop, mobile]
+    errors: [tampered, unsupported]
+
+  - action_id: cache.plan
+    http: POST /api/v1/cache/plan { budget_bytes, candidates[] }
+    result: { budget_bytes, total_bytes, reclaim_bytes, can_meet_budget, entries, protected }
+    scope: session
+    confirmation: none
+    idempotency: read
+    offline: cacheable
+    platform: [web, desktop, mobile]
+    errors: [bad_request]
+
+  - action_id: cache.execute
+    http: POST /api/v1/cache/execute { plan }
+    result: { freed_bytes }
+    scope: session
+    confirmation: confirm（只删 plan 标记 recoverable 的条目；唯一/未发送附件保护）
+    idempotency: retry-safe
+    offline: none
+    platform: [desktop, mobile, web]
+    errors: [bad_request]
+
+  - action_id: platform.capabilities.get
+    http: GET /api/v1/platform/capabilities?platform=web|desktop|mobile
+    result: { pick_file, capture_screen, record_audio, save_download, requires_user_gesture, allows_arbitrary_save_path }
+    scope: session
+    confirmation: none
+    idempotency: read
+    offline: cacheable
+    platform: [web, desktop, mobile]
+    errors: [bad_request, unauthorized]
+
+  - action_id: platform.request
+    http: POST /api/v1/platform/requests { platform, request }
+    result: Picked|Captured|Recorded|Stopped|Saved|Canceled|PermissionDenied|DeviceDisconnected|Unsupported
+    scope: session
+    confirmation: web 截屏/拾取需 user_gesture=true；录音登记 indicator 会话
+    idempotency: none
+    offline: none
+    platform: [web, desktop, mobile]
+    errors: [bad_request, unauthorized]
+    notes: 实际 OS 桥由 G10/G12 实现，本 action 只约束共享请求/结果/权限错误
+
+# platform.pick_file / capture_screen / record_audio / save_download 的请求与
+# 结果走 platform.request 的共享 fixture（contracts/domains/media/fixtures/platform-*.json）。

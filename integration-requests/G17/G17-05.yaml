@@ -1,0 +1,57 @@
+task: G17-05
+title: 独立发布评审与事实核对
+issue: https://github.com/bear20252026/wxlike/issues/198
+branch: feat/FP-G17-05
+contract: release evidence bundle → pass/block
+entry_ids: []
+action_ids: []
+
+paths:
+  - security/release-reviews/README.md
+  - security/release-reviews/blockers.json
+  - security/release-reviews/evidence/latest.json
+  - security/release-reviews/evidence.schema.json
+  - security/release-reviews/REVIEW-2026-10-24.md
+  - third_party/reviews/release/2026-10-24.md
+  - tools/source-audit/sourceaudit/release.py
+  - tools/source-audit/tests/test_release.py
+
+root_registration:
+  - action: ci_job
+    workflow: .github/workflows/ci.yml（或发布前 workflow）
+    step: "python -m sourceaudit release check --root ."
+    owner: G00
+    issue: "https://github.com/bear20252026/wxlike/issues/256"
+    note: |
+      发布前必跑。当前判定为 BLOCK（9 条 open blocker）；
+      接进 CI 后可由"发布 release 前必须绿"来强制（或放 schedule 每日跑一次）。
+  - action: evidence_update_policy
+    detail: |
+      每轮评审更新 evidence/latest.json 的 release.reviewed_at 与 release.commit；
+      历史记录不覆盖（git 历史即评审记录）。
+  - action: device_evidence
+    owner: G16
+    issue: "https://github.com/bear20252026/wxlike/issues/97"
+    detail: 提供可抽查的真机证据（机型/系统版本/日志/录屏）；没有它 E-DEVICE 永远 unverified
+
+acceptance_notes:
+  - 核对入口完成率、供应商证据、E2EE、许可证来源、高危漏洞：结论逐条落在 evidence/*.json，不写形容词
+  - 自报清单（checklist）不能作为必需项证据 → REL-SELF-REPORT
+  - 设备证据必须可抽查，不接受开发者自报（当前为空 → BLOCK）
+  - 阻塞项必须写具体 owner/task/test，并附"翻案条件"（见 REVIEW-2026-10-24.md §4）
+  - 外部阻塞不计完成，但仍然阻断发布（REL-BLOCKER-EXTERNAL）
+  - 崩溃样本必须与 blockers.json 对上（REL-CORPUS-UNTRACKED）
+  - 所有例外带 owner + issue + expires，到期自动阻断
+
+tests:
+  - tools/source-audit/tests/test_release.py（19 例：干净包可过/自报不合格/缺证据/必需项失败/可选项警告/NA 需理由/声明未验证/平台缺证据/阻塞未追责/外部阻塞/关闭无证据/合格例外/过期例外/语料未登记/坏 schema/空 items/缺文件）
+
+observations:
+  - 第一轮判定 **BLOCK**：必需证据 8 项未通过，open blocker 9 条（6 条 critical/high）
+  - 安全类：dpage 溢出（#229）、沙箱日志无上限（#253）、信箱越权（#230）、管理面鉴权顺序（#245）
+  - 治理类：NOTICE 缺口（#228）、桌面锁 ctutils（#239）、门禁未接 CI（#256）、镜像未锁 digest（#257）、无真机证据（#97）
+
+open_items:
+  - CI 接线（#256）与镜像 digest（#257）分别归 G00 / G16
+  - 真机证据（#97）与供应商证据（#87）到位后，把对应 item 的 status/evidence 改掉即可翻案
+  - 第二、三轮评审记录按同样格式追加，不覆盖历史

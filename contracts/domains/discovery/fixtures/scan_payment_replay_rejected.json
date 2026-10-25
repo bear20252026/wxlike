@@ -1,0 +1,36 @@
+{
+  "fixture_id": "discovery.scan.payment_replay_rejected",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.scan.decode",
+  "category": "replay",
+  "description": "同一张收款码第二次扫描被拒绝：payment nonce 一次性，由 NonceStore.consume 拦截。",
+  "sequence": [
+    {
+      "step": 1,
+      "request": {
+        "source": "raw_text",
+        "text": "wxlike://v1/payment?p=<signed-envelope-nonce-n-777>&sig=<hmac-sha256-hex>"
+      },
+      "expected": {
+        "kind": "payment",
+        "action": {
+          "intent_id": "pi-9001",
+          "amount_minor": 12800,
+          "currency": "CNY",
+          "payee_id": "usr-merchant-1",
+          "confirm_expires_at_ms": "<scan_time+300000>"
+        },
+        "requires_confirmation": true
+      }
+    },
+    {
+      "step": 2,
+      "request": { "same_as": 1 },
+      "expected_error": {
+        "code": "CONFLICT",
+        "detail": "conflict: payment code replayed"
+      }
+    }
+  ],
+  "invariants": ["nonce 只能消费一次", "重放不产生新的确认令牌"]
+}

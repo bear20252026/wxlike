@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "workflow": "ci.yml",
+  "note": "Configure branch protection from this list. Every entry must exist in the composed ci workflow, must not use continue-on-error, and must be reachable from the gate job. Jobs skipped by C0 path selection are accepted by gate.py.",
+  "required": [
+    "select",
+    "fmt",
+    "clippy",
+    "test",
+    "native",
+    "doc",
+    "contract",
+    "wasm",
+    "ui",
+    "flutter",
+    "desktop",
+    "desktop-package",
+    "image",
+    "android",
+    "ios",
+    "e2e",
+    "performance",
+    "audit",
+    "coverage",
+    "unwrap",
+    "gate"
+  ],
+  "permissions_exceptions": {
+    "image-publish": ["packages: write", "id-token: write", "attestations: write"],
+    "release": ["contents: write", "packages: write", "id-token: write", "attestations: write"]
+  },
+  "environments": {
+    "android-release": {"workflow": "release.yml", "environment": "mobile-release"},
+    "ios-release": {"workflow": "release.yml", "environment": "mobile-release"},
+    "desktop-release": {"workflow": "release.yml", "environment": "production-release"},
+    "release": {"workflow": "release.yml", "environment": "production-release"}
+  }
+}

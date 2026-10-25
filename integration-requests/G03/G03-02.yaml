@@ -1,0 +1,67 @@
+# G03-02 设备持久化确认与离线队列 —— 集成请求
+# 独占写路径内已完成：crates/message/{src/delivery.rs,tests/g03_02_delivery.rs}、
+# crates/net/{src/delivery.rs,src/offline.rs 语义不变}、crates/net/src/mq_hub.rs 接线。
+
+request_id: G03-02
+task_issue: 118
+group_issue: 84
+contract_version: messaging-v3-draft
+artifacts:
+  - crates/message/src/delivery.rs
+  - crates/message/tests/g03_02_delivery.rs
+  - crates/net/src/delivery.rs
+  - crates/net/src/mq_hub.rs
+
+requests:
+  - id: REQ-G00-02-move-messaging-delivery
+    target: G00-02
+    action: 纯移动 `crates/message/src/delivery.rs` → `crates/features/messaging/src/delivery/`；
+      `crates/net/src/delivery.rs` 留在 net（卡面另列 `crates/net/src/delivery`）。
+    rationale: 卡面目标目录要等 G00-02 的纯拆分。
+
+  - id: REQ-G00-03-ratify-ack-semantics
+    target: G00-03
+    action: 批准三条命令的语义边界：`resume(cursor)`、`claim(worker, batch, lease)`、
+      `ack(device_stored_cursor)`；特别是 **只有 `ack`  retire 队列行**，
+      socket 写入只进有界 in-flight 窗口。
+    rationale: 这是"投递承诺"的合同改约，必须由契约面确认，不能由一个组默认。
+
+  - id: REQ-G10-client-stored-ack
+    target: G10
+    action: 客户端落库成功后才发 `Ack{conv_id, stored_cursor}`；写入本地库之前不得 ack。
+      页面销毁/切后台时未 ack 的行由服务端 lease 到期重投，客户端必须容忍重复。
+    rationale: 新 ack 语义的另一半在客户端；G03 不改 UI 组文件。
+
+  - id: REQ-G12-flutter-stored-ack
+    target: G12
+    action: 同 REQ-G10-client-stored-ack，移动端在 SQLite 事务提交后 ack；
+      前后台切换调 `sync.delta`（见 G03-05）。
+    rationale: 移动端是最常见的"写完就断"场景。
+
+  - id: REQ-G16-redis-offline-verification
+    target: G16
+    action: 在有 Redis/NATS 的 CI job 上跑 `crates/net/tests/proto_v3.rs` 的
+      `stored_ack_is_what_retires_a_parked_frame_not_the_write` 变体
+      （backend = RedisStreams / NATS JetStream）。本机只能验内存与 SQLite 后端。
+    rationale: 跨节点重投路径需要真实 broker；本机不可验证，登记为待验。
+
+  - id: REQ-G00-migration-numbering
+    target: G00
+    action: 为 `device_cursor` 表分配 schema 编号（按 (`device_id`, `conv_id`)
+      维护的持久化确认游标，与账号级 `read_cursor` 并存）；列名以
+      `crates/message/src/lib.rs` 的 DDL 为准，回滚兼容说明见该文件
+      `add_missing_columns` 附近注释。
+    rationale: 迁移编号由 G00 串行分配，避免多组撞号；G03-01 已为
+      message_submit 与 mailbox 新列登记过同一申请。
+
+notes:
+  - 游标按 (`device_id`, `conv_id`) 存，账号级 `read_cursor` 只由 read ack 推进；
+    两端同时已读时游标单调（测试 `cursors_are_per_device_and_the_account_read_cursor_stays_shared`）。
+  - 有界：单次 claim ≤ `MAX_CLAIM_BATCH = 100`；每连接未确认窗口
+    ≤ `MAX_INFLIGHT_PER_CONNECTION = 512`，溢出部分回队列而不是丢弃。
+  - 保留策略：已 stored 的任务行保留 `TASK_RETENTION_MS = 7d` 后由 `prune_delivery`
+    清理；未确认的行永不清理（否则等于丢消息）。
+  - 旧协议兼容可观察：v2 连接仍是"写成功即 ack"，指标
+    `wxlike_hub_protocol_total{version="2"}` 不为零就是还能看到的老客户端数量。
+  - 关联入口：SEED-0029 `${item.label}记录已同步`（跨端补收）、
+    SEED-0289 折叠群聊（离线积压视图）。其余 44 条种子见 G03-01.yaml 的归属说明。

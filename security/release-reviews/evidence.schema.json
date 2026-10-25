@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bear20252026/wxlike/security/release-reviews/evidence.schema.json",
+  "title": "wxlike.release-evidence.v1",
+  "description": "发布评审证据包。判定逻辑在 tools/source-audit/sourceaudit/release.py；本文件只描述结构，不重复规则。",
+  "type": "object",
+  "required": ["schema", "release", "platforms", "items"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "wxlike.release-evidence.v1" },
+    "release": {
+      "type": "object",
+      "required": ["name", "reviewed_at", "reviewer", "commit"],
+      "properties": {
+        "name": { "type": "string" },
+        "reviewed_at": { "type": "string", "format": "date" },
+        "reviewer": { "type": "string" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+        "scope": { "type": "string", "description": "本轮评审范围；写清不覆盖什么" }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "description": "对外声明。声明里的每个平台都必须被 platforms[].verified 覆盖。",
+      "properties": {
+        "platforms": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "verified"],
+        "properties": {
+          "name": { "type": "string" },
+          "verified": { "type": "boolean" },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "required", "kind", "status"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^E-[A-Z0-9-]+$" },
+          "title": { "type": "string" },
+          "required": { "type": "boolean", "description": "true = 非 pass 即阻断" },
+          "kind": { "enum": ["checklist", "test", "artifact", "device", "external"] },
+          "status": { "enum": ["pass", "fail", "blocked", "not_applicable", "unverified"] },
+          "evidence": { "type": "string", "description": "证据在哪（路径/链接/命令），不是形容词" },
+          "owner": { "type": "string" },
+          "issue": { "type": "string" },
+          "reason": { "type": "string", "description": "status=not_applicable 时必填" },
+          "notes": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "status": { "const": "not_applicable" } } },
+            "then": { "required": ["reason"] }
+          }
+        ]
+      }
+    },
+    "exceptions": {
+      "type": "array",
+      "description": "放行例外。必须 owner + issue + expires（YYYY-MM-DD）；到期后自动阻断。",
+      "items": {
+        "type": "object",
+        "required": ["id", "owner", "issue", "expires", "reason"],
+        "properties": {
+          "id": { "type": "string", "description": "对应 item id 或 blocker id" },
+          "owner": { "type": "string" },
+          "issue": { "type": "string" },
+          "expires": { "type": "string", "format": "date" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "signoff": {
+      "type": "object",
+      "properties": {
+        "security_owner": { "type": "string" },
+        "verdict": { "enum": ["PASS", "BLOCK", "PENDING"] },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

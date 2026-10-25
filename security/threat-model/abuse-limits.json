@@ -1,0 +1,138 @@
+{
+  "schema": "wxlike.abuse-limits.v1",
+  "updated_at": "2026-10-24",
+  "source": "crates/limits/src/lib.rs（RiskConfig::default 与常量）+ crates/risk/src/lib.rs（window_ms / thresholds）",
+  "note": "阈值的唯一事实来源是代码；本文件是给它配一份**可评审的说明**：每个动作拦什么、误伤边界在哪、由哪个用例盯着。改阈值请同时改这里，否则 diff 里看不出意图。",
+  "engine": {
+    "algorithm": "GCRA（滑动窗口的等价形式）",
+    "store": "进程内默认；配置 WXLIKE_RISK_REDIS_URL 时走 Redis（多节点一致）。配了 URL 却连不上会启动失败，不会静默退化成单机计数",
+    "wiring": "AR-5：crates/platform/src/risk_mw.rs 声明式闸门，挂在 router 最外层；handler 不再各自记得调 risk_gate"
+  },
+  "actions": [
+    {
+      "action": "Register",
+      "key": "来源 IP",
+      "window": "1h",
+      "throttle_at": 50,
+      "deny_at": 200,
+      "verdict": "challenge(captcha) → deny",
+      "why_this_number": "原值 3 会让公司出口/NAT/CI runner 上第三个人就要过验证码——共享出口连坐比脚本注册更常见。50 对正常出口绰绰有余",
+      "tests": ["login_bruteforce_escalates_to_captcha_then_deny"]
+    },
+    {
+      "action": "Login",
+      "key": "账号",
+      "window": "15min",
+      "throttle_at": 5,
+      "deny_at": 12,
+      "verdict": "challenge(captcha) → deny",
+      "why_this_number": "撞库的特征是同一账号高频失败；5 次够拦脚本，也够真人打错两次密码",
+      "tests": ["login_bruteforce_escalates_to_captcha_then_deny"]
+    },
+    {
+      "action": "Send",
+      "key": "user",
+      "window": "10s",
+      "throttle_at": 20,
+      "deny_at": 60,
+      "verdict": "throttle → deny",
+      "why_this_number": "10 秒 20 条已超过真人打字上限；60 条/10 秒是明确的刷屏",
+      "tests": ["chat_spam_is_denied_then_recovers", "normal_burst_stays_allowed"]
+    },
+    {
+      "action": "Report",
+      "key": "user",
+      "window": "1h",
+      "throttle_at": 10,
+      "deny_at": 30,
+      "verdict": "throttle → deny",
+      "why_this_number": "举报是低频动作；1 小时 10 次已属异常，30 次是轰炸",
+      "tests": ["actions_do_not_share_buckets"]
+    },
+    {
+      "action": "ClaimKeys",
+      "key": "(caller, target)",
+      "window": "1h",
+      "throttle_at": 30,
+      "deny_at": 120,
+      "verdict": "throttle → deny",
+      "why_this_number": "一次会话重建只要一把一次性预密钥；30 把/小时远高于真人需要，120 把就是库存耗尽攻击",
+      "tests": ["actions_do_not_share_buckets"]
+    },
+    {
+      "action": "FriendRequest",
+      "key": "user",
+      "window": "1h",
+      "throttle_at": 30,
+      "deny_at": 100,
+      "verdict": "throttle → deny",
+      "why_this_number": "好友枚举的特征是短时间大量申请；30 条/小时不误伤正常社交",
+      "tests": ["friend_enumeration_is_throttled"]
+    },
+    {
+      "action": "MediaUpload",
+      "key": "user",
+      "window": "10min",
+      "throttle_at": 60,
+      "deny_at": 200,
+      "verdict": "throttle → deny",
+      "why_this_number": "一次九宫格就是 9 个文件，10 秒窗口必然误伤——所以窗口给 10 分钟",
+      "tests": ["normal_burst_stays_allowed"]
+    },
+    {
+      "action": "MomentCreate",
+      "key": "user",
+      "window": "10min",
+      "throttle_at": 30,
+      "deny_at": 100,
+      "verdict": "throttle → deny",
+      "why_this_number": "发布/点赞/评论合并计数；正常用户 10 分钟到不了 30",
+      "tests": []
+    },
+    {
+      "action": "GroupManage",
+      "key": "user",
+      "window": "10min",
+      "throttle_at": 30,
+      "deny_at": 100,
+      "verdict": "throttle → deny",
+      "why_this_number": "建群/拉人/踢人是重操作，也给 10 分钟窗口",
+      "tests": []
+    },
+    {
+      "action": "CommunityPost",
+      "key": "user",
+      "window": "10min",
+      "throttle_at": 30,
+      "deny_at": 100,
+      "verdict": "throttle → deny",
+      "why_this_number": "社区/频道/帖子合并计数",
+      "tests": []
+    },
+    {
+      "action": "LiveStart",
+      "key": "user",
+      "window": "1h",
+      "throttle_at": 10,
+      "deny_at": 30,
+      "verdict": "throttle → deny",
+      "why_this_number": "开播是低频高成本动作",
+      "tests": []
+    },
+    {
+      "action": "CallSignal",
+      "key": "user",
+      "window": "10s",
+      "throttle_at": 100,
+      "deny_at": 300,
+      "verdict": "throttle → deny",
+      "why_this_number": "ICE trickle 是**合法突发**：10 秒几十条候选是正常现象，所以阈值比聊天高一个量级",
+      "tests": ["call_signal_trickle_is_not_throttled"]
+    }
+  ],
+  "not_covered_here": [
+    "位置探测（G07 未合入前没有位置面）：合入时必须补一条『按好友关系与精度降级』的用例",
+    "金融面（转账/红包）的滥用限额：属 G06，速率之外的守恒与幂等由域内测试负责；G17 只做越权与重放（见 AUTHZ-010/011）",
+    "小程序面的资源预算（CPU/内存/IPC 频次）：见 tests/security/sandbox.rs（G17-04）"
+  ]
+}

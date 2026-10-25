@@ -1,0 +1,77 @@
+# tools/source-audit — 来源、许可、漏洞、越权与发布门禁（G17）
+
+一个只用标准库的 Python 工具。CI 的 quality job 不装第三方包，门禁工具自己也不该
+引入依赖树——"检查供应链"的工具自己带着 20 个传递依赖，说服力是负的。
+
+```
+tools/source-audit/
+├── sourceaudit/
+│   ├── cli.py          # 子命令与退出码
+│   ├── licenses.py     # SPDX 表达式 → allow/review/deny/unknown
+│   ├── provenance.py   # registry ↔ 本地文件 ↔ NOTICE 三方核对
+│   ├── sbom.py         # CycloneDX 1.6（cargo/npm/pub/docker）
+│   ├── notice.py       # 直接依赖 ↔ THIRD-PARTY-NOTICES 覆盖
+│   ├── advisories.py   # 公告 → 可达性 → 门禁（G17-02）
+│   ├── authz.py        # 源码路由 ↔ 授权矩阵 ↔ 用例（G17-03）
+│   └── release.py      # 证据包 → pass/block（G17-05）
+└── tests/              # unittest（零第三方依赖）
+```
+
+## 跑法
+
+```bash
+cd tools/source-audit
+python -m unittest discover -s tests -v        # 工具自身的测试
+python -m sourceaudit provenance check         # 来源登记
+python -m sourceaudit sbom check               # SBOM 漂移
+python -m sourceaudit notice check             # NOTICE 覆盖
+python -m sourceaudit advisories check         # 漏洞准入（--offline 可断网）
+python -m sourceaudit authz check              # 授权矩阵三方核对
+python -m sourceaudit release check            # 发布评审
+python -m sourceaudit all --strict             # CI 一次跑完（warn 也阻断）
+```
+
+## 退出码（CI 只认这个）
+
+| 码 | 含义 | 典型原因 |
+|---:|---|---|
+| 0 | 通过 | 检查真的跑了且没有阻断项 |
+| 2 | 用法/参数错误 | `--root` 指错、子命令拼错 |
+| 3 | 策略不通过 | 有 FAIL；`--strict` 下 WARN 也算 |
+| 4 | 数据缺失/网络不可达 | registry 不存在、JSON 坏了、联网超时 |
+| 130 | 被取消 | Ctrl-C：**不写半截产物、不当作通过** |
+
+把 3 和 4 分开是刻意的：混在一起时，"工具坏了"会被当成"检查没过"，反过来也一样。
+
+## 三条设计约束
+
+1. **政策在 JSON，判定在代码。** `third_party/reviews/license-policy.json`、
+   `exclusions.json`、`security/advisory-policy/policy.json` 是可评审的数据；
+   改政策不需要改代码，也就不需要重新 review 代码。
+2. **例外必须能追责。** 任何豁免都要 `owner` + `issue` + `expires`，过期自动变红
+   （`EXC-EXPIRED`）。不允许"先把日期改远一点"。
+3. **空结果不是通过。** registry 为空 → `PROV-EMPTY` 警告；没解析到依赖 →
+   `NOTICE-EMPTY`；SBOM 为空 → 数据错误。空表无法区分"没引入"和"忘了登记"。
+
+## 加一个第三方片段（正确姿势）
+
+```bash
+# 1) 在 third_party/reviews/registry.json 的 files 里登记：upstream / upstream_path /
+#    commit（完整 SHA）/ decision / license_spdx / local_sha256 / patchlog
+python - <<'PY'
+import hashlib; print(hashlib.sha256(open('ui/src/vendor/x.ts','rb').read()).hexdigest())
+PY
+# 2) 写 third_party/reviews/patches/<UP>-<file>.md（拿了什么 / 改了什么 / 没拿什么）
+# 3) 在 THIRD-PARTY-NOTICES.md 点名该文件（G00 执行，根文件）
+# 4) python -m sourceaudit provenance check
+```
+
+`decision` 的四种取值：`ported`（原样复制）、`adapted`（改过，必须有 patchlog）、
+`behavior_reference`（只借设计，无代码）、`excluded`（明确不引入，必须命中
+`exclusions.json` 的规则 id）。
+
+## 与 CI 的关系
+
+当前仓库的 `quality` job 只跑 `scripts/quality-gate.py` 与 `cargo deny`。
+把本工具接进 CI 需要改根 workflow（G00 独占），申请写在
+`integration-requests/G17/G17-0*.yaml`。工具本身可在任何机器上零依赖运行。

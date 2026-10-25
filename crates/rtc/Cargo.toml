@@ -16,6 +16,10 @@ tracing = "0.1"
 # TURN 长凭据：key = MD5(user:realm:pass)，MESSAGE-INTEGRITY = HMAC-SHA1
 md-5 = "0.10"
 hmac = "0.12"
+sha2 = { workspace = true }
+hex = { workspace = true }
+rusqlite = { workspace = true }
+chacha20poly1305 = "0.11"
 sha1 = "0.10"
 rand = { workspace = true }
 # 纯 Rust WebRTC（任务书明令禁 libwebrtc C++ 绑定）。

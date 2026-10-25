@@ -1,0 +1,202 @@
+jobs:
+  select:
+    name: select
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      contract: ${{ steps.select.outputs.contract }}
+      ui: ${{ steps.select.outputs.ui }}
+      mobile: ${{ steps.select.outputs.mobile }}
+      desktop: ${{ steps.select.outputs.desktop }}
+      ci: ${{ steps.select.outputs.ci }}
+      full: ${{ steps.select.outputs.full }}
+      reason: ${{ steps.select.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: C0 classify changed paths
+        id: select
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ] || [ "${BASE_SHA:-}" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable base sha; forcing the full matrix"
+            python3 ci/jobs/build/select_targets.py --changed-file "unclassified/first-run" --github-output "$GITHUB_OUTPUT"
+          else
+            python3 ci/jobs/build/select_targets.py --base "$BASE_SHA" --head "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+          fi
+
+  fmt:
+    name: fmt
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - run: cargo fmt --check
+
+  clippy:
+    name: clippy
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-clippy-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-test-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - run: cargo test --workspace --locked
+
+  native:
+    name: native (${{ matrix.os }})
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-native-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - run: cargo build --workspace --all-targets --locked
+
+  doc:
+    name: doc
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-doc-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - run: cargo doc --no-deps --workspace --locked
+
+  wasm:
+    name: wasm
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - name: C6 wasm compile (gap-aware)
+        run: python3 ci/jobs/build/check_wasm.py
+      - name: record known gaps
+        run: python3 ci/jobs/build/check_gaps.py
+
+  ui:
+    name: ui
+    needs: [select]
+    if: needs.select.outputs.ui == 'true' || needs.select.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+      - name: C7 typecheck
+        run: npm run typecheck
+        working-directory: ui
+      - name: C7 bundle
+        run: npm run build
+        working-directory: ui
+      - name: C7 wire bincode selftest
+        run: npm run test:wire
+        working-directory: ui
+      - name: C7 message index contract
+        run: npm run check:msgindex
+        working-directory: ui
+
+  flutter:
+    name: flutter
+    needs: [select]
+    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-flutter-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.0
+          channel: stable
+          cache: true
+      - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
+        run: bash crates/ffi/regenerate.sh
+      - name: C8 pub get
+        run: flutter pub get
+        working-directory: apps/mobile
+      - name: C8 analyze
+        run: flutter analyze
+        working-directory: apps/mobile
+      - name: C8 test
+        run: flutter test
+        working-directory: apps/mobile

@@ -1,0 +1,63 @@
+{
+  "fixture_id": "services.quote.success_and_price_change",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.quote.create",
+  "category": "success_boundary",
+  "description": "报价走供应商实价；卡 revision 变化后旧报价建单被拒，必须重新报价。",
+  "success": {
+    "request": {
+      "session": "<bearer, actor=usr-1001>",
+      "service_id": "svc-topup-cn",
+      "quantity": 1,
+      "params": { "account_no": "138****0001", "amount_minor": 5000 }
+    },
+    "expected": {
+      "quote_id": "q-<opaque>",
+      "actor": "usr-1001",
+      "service_id": "svc-topup-cn",
+      "kind": "mobile_topup",
+      "provider": "utilities-cn-sandbox",
+      "amount_minor": 5000,
+      "currency": "CNY",
+      "terms_version": "<vendor terms>",
+      "card_revision": 0,
+      "expires_at_ms": "<now+300000>"
+    }
+  },
+  "boundary": [
+    {
+      "name": "quantity_zero",
+      "request": { "quantity": 0 },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "quantity" }
+    },
+    {
+      "name": "quantity_over_max",
+      "request": { "quantity": 21 },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "quantity" }
+    },
+    {
+      "name": "card_region_disabled",
+      "precondition": "Catalog.set_region_enabled(kind, region, false)",
+      "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "region unavailable" }
+    },
+    {
+      "name": "vendor_timeout",
+      "precondition": "供应商 availability 超时",
+      "expected_error": { "code": "TIMEOUT", "detail": "<provider>: provider timeout" }
+    },
+    {
+      "name": "card_revision_changed_on_create",
+      "action_id": "services.order.create",
+      "precondition": "报价后管理员 upsert 同 service_id 且 revision+1",
+      "request": { "quote_id": "q-<opaque>", "idempotency_key": "k-1", "confirmed_amount_minor": 5000, "params": { "same_as_quote": true } },
+      "expected_error": { "code": "CONFLICT", "detail": "price changed; re-quote" }
+    },
+    {
+      "name": "confirmed_amount_mismatch",
+      "action_id": "services.order.create",
+      "request": { "quote_id": "q-<opaque>", "idempotency_key": "k-2", "confirmed_amount_minor": 990000, "params": { "same_as_quote": true } },
+      "expected_error": { "code": "CONFLICT", "detail": "amount changed; re-confirm" }
+    }
+  ],
+  "invariants": ["报价 TTL 过期后 get/create 返回 EXPIRED", "他人 quote 一律 NOT_FOUND（AUTH-01）"]
+}

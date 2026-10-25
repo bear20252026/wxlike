@@ -1,0 +1,81 @@
+# Prometheus rules for a wxlike deployment. Scrape job label: wxlike.
+# `absent(...)` alerts are deliberate: a dead exporter must not silence the
+# alerting rule that depends on its series.
+groups:
+  - name: wxlike-availability
+    rules:
+      - alert: WxlikeInstanceDown
+        expr: up{job="wxlike"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "wxlike instance {{ $labels.instance }} is down"
+          runbook: "deploy/runbooks/incident.md#instance-down"
+
+      - alert: WxlikeScrapeMissing
+        expr: absent(up{job="wxlike"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "no successful wxlike scrape for 5m"
+          runbook: "deploy/runbooks/incident.md#scrape-missing"
+
+      - alert: WxlikeMetricsAbsent
+        expr: absent(wxlike_hub_info{job="wxlike"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "wxlike responds but exports no hub metrics"
+          runbook: "deploy/runbooks/incident.md#metrics-missing"
+
+      # Only /health (liveness) exists today. A container can be healthy while
+      # its database is unavailable; READINESS-ENDPOINT stays an open gap.
+      - alert: WxlikeHealthCheckFailed
+        expr: probe_success{job="wxlike-blackbox"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "wxlike /health probe failed"
+          runbook: "deploy/runbooks/incident.md#health-failed"
+
+  - name: wxlike-traffic
+    rules:
+      - alert: WxlikeDeliveryP99High
+        expr: histogram_quantile(0.99, sum by (le) (rate(wxlike_delivery_seconds_bucket{job="wxlike"}[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "message routing p99 above 500ms for 10m"
+          runbook: "deploy/runbooks/incident.md#latency"
+
+      - alert: WxlikeOfflineBacklog
+        expr: max(wxlike_offline_parked{job="wxlike"}) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "offline parked frames above 10k"
+          runbook: "deploy/runbooks/incident.md#backlog"
+
+      - alert: WxlikeRateLimitRejects
+        expr: sum(rate(wxlike_rate_limit_reject_total{job="wxlike"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "send gate is rejecting frames"
+          runbook: "deploy/runbooks/incident.md#rate-limit"
+
+      - alert: WxlikeNoTraffic
+        expr: sum(rate(wxlike_hub_messages_total{job="wxlike"}[15m])) == 0 and sum(wxlike_hub_connections{job="wxlike"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "clients connected but no messages routed for 15m"
+          runbook: "deploy/runbooks/incident.md#no-traffic"

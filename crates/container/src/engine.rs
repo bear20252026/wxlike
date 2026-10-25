@@ -27,6 +27,11 @@ pub struct BoaEngine {
 /// far below it. Recursion/stack caps are Boa's defaults (512 / 10k frames).
 pub const LOOP_ITERATION_LIMIT: u64 = 1_000_000;
 
+/// Maximum retained log lines per bridge.
+pub const MAX_LOG_LINES: usize = 256;
+/// Maximum UTF-8 bytes retained for a log line, including separators.
+pub const MAX_LOG_LINE_BYTES: usize = 4 * 1024;
+
 impl Default for BoaEngine {
     fn default() -> Self {
         Self::new()
@@ -96,7 +101,12 @@ impl BoaEngine {
     }
 
     pub fn logs(&self) -> Vec<String> {
-        BRIDGE.with(|b| b.borrow().logs.clone())
+        BRIDGE.with(|b| b.borrow().logs.iter().cloned().collect())
+    }
+
+    /// Consume pending log lines without cloning their contents.
+    pub fn drain_logs(&self) -> Vec<String> {
+        BRIDGE.with(|b| b.borrow_mut().logs.drain(..).collect())
     }
 
     pub fn storage(&self) -> BTreeMap<String, String> {
@@ -104,14 +114,36 @@ impl BoaEngine {
     }
 }
 
+fn log_line(args: &[JsValue], ctx: &mut Context) -> String {
+    let mut line = String::with_capacity(MAX_LOG_LINE_BYTES);
+    for arg in args {
+        if !line.is_empty() && line.len() < MAX_LOG_LINE_BYTES {
+            line.push(' ');
+        }
+        let remaining = MAX_LOG_LINE_BYTES - line.len();
+        if remaining == 0 {
+            break;
+        }
+        let text = dump(arg, ctx);
+        let mut end = remaining.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.push_str(&text[..end]);
+    }
+    line
+}
+
 fn install_bridge(ctx: &mut Context) -> JsResult<()> {
     fn wx_log(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-        let line = args
-            .iter()
-            .map(|v| dump(v, ctx))
-            .collect::<Vec<_>>()
-            .join(" ");
-        BRIDGE.with(|b| b.borrow_mut().logs.push(line));
+        let line = log_line(args, ctx);
+        BRIDGE.with(|b| {
+            let mut state = b.borrow_mut();
+            if state.logs.len() >= MAX_LOG_LINES {
+                state.logs.pop_front();
+            }
+            state.logs.push_back(line);
+        });
         Ok(JsValue::undefined())
     }
 
@@ -205,6 +237,31 @@ fn dump(value: &JsValue, ctx: &mut Context) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_bursts_keep_only_the_latest_bounded_lines() {
+        let mut eng = BoaEngine::new();
+        eng.eval("for (let i = 0; i < 10000; i++) { wxhost.log(i); }")
+            .unwrap();
+        let logs = eng.logs();
+        assert_eq!(logs.len(), MAX_LOG_LINES);
+        assert_eq!(logs.first().unwrap(), "9744");
+        assert_eq!(logs.last().unwrap(), "9999");
+        assert_eq!(eng.drain_logs(), logs);
+        assert!(eng.logs().is_empty());
+    }
+
+    #[test]
+    fn long_unicode_log_lines_are_truncated_on_character_boundaries() {
+        let mut eng = BoaEngine::new();
+        eng.eval("wxhost.log('汉'.repeat(10000), 'must not grow');")
+            .unwrap();
+        let logs = eng.logs();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].len() <= MAX_LOG_LINE_BYTES);
+        assert!(logs[0].starts_with('汉'));
+        assert!(!logs[0].contains("must not grow"));
+    }
 
     #[test]
     fn bridge_log_and_title() {

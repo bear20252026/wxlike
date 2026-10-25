@@ -1,0 +1,79 @@
+{
+  "fixture_id": "discovery.share.lifecycle",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.share.update",
+  "category": "success_boundary",
+  "description": "实时位置共享全周期：显式加入才可读写、断网拒绝上报、seq 单调、停止后旧会话拒绝。",
+  "setup": {
+    "action_id": "discovery.share.start",
+    "request": {
+      "actor": "usr-A",
+      "conversation_id": "conv-1",
+      "allowed_members": ["usr-A", "usr-B"],
+      "ttl_ms": 3600000,
+      "interval_ms": 5000,
+      "precision": "approx_100m"
+    },
+    "expected": {
+      "share_id": "share-<opaque>",
+      "members": ["usr-A", "usr-B"],
+      "background_limited": false,
+      "state": "active"
+    }
+  },
+  "sequence": [
+    {
+      "step": "B_join",
+      "action_id": "discovery.share.join",
+      "request": { "actor": "usr-B", "share_id": "share-<opaque>" },
+      "expected": { "share_id": "share-<opaque>", "members": ["usr-A", "usr-B"] }
+    },
+    {
+      "step": "A_update",
+      "action_id": "discovery.share.update",
+      "request": { "actor": "usr-A", "share_id": "share-<opaque>", "coord": { "lat": 31.23041, "lng": 121.47371, "system": "gcj02" }, "accuracy_m": 20, "online": true },
+      "expected": { "user_id": "usr-A", "seq": 1, "coord": { "lat": 31.230, "lng": 121.474, "system": "gcj02" }, "stale": false },
+      "note": "approx_100m 精度：坐标取整到 0.001 度"
+    },
+    {
+      "step": "B_read_latest",
+      "action_id": "discovery.share.latest",
+      "request": { "actor": "usr-B", "share_id": "share-<opaque>" },
+      "expected": { "items": [{ "user_id": "usr-A", "seq": 1 }] }
+    }
+  ],
+  "failure_cases": [
+    {
+      "name": "offline_update_rejected",
+      "request": { "actor": "usr-A", "share_id": "share-<opaque>", "coord": {}, "accuracy_m": 20, "online": false },
+      "expected_error": { "code": "DEPENDENCY_UNAVAILABLE", "detail": "dependency unavailable" }
+    },
+    {
+      "name": "outsider_forbidden",
+      "precondition": "usr-C 不在 members 内 join/update/latest",
+      "expected_error": { "code": "FORBIDDEN", "detail": "forbidden" }
+    },
+    {
+      "name": "update_before_join",
+      "request": { "actor": "usr-B", "share_id": "share-<opaque>", "coord": {}, "accuracy_m": 20, "online": true },
+      "precondition": "B 未调用 join",
+      "expected_error": { "code": "FORBIDDEN", "detail": "forbidden" }
+    },
+    {
+      "name": "interval_rate_limit",
+      "precondition": "同一用户在 interval_ms 内连续两次 update",
+      "expected_error": { "code": "RATE_LIMITED", "detail": "rate limited" }
+    },
+    {
+      "name": "after_stop_all_rejected",
+      "sequence": ["usr-A discovery.share.stop", "usr-B discovery.share.update"],
+      "expected_error": { "code": "EXPIRED", "detail": "expired" }
+    },
+    {
+      "name": "leave_clears_position",
+      "sequence": ["usr-B discovery.share.leave", "usr-A discovery.share.latest"],
+      "expected": { "items": [{ "user_id": "usr-A" }] }
+    }
+  ],
+  "invariants": ["断网不伪造位置：online=false 一律拒绝", "removed_member/stop 立即清除该成员位置"]
+}

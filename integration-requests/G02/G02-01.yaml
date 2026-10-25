@@ -1,0 +1,73 @@
+task: G02-01
+title: 账号会话与设备生命周期
+issue: https://github.com/bear20252026/wxlike/issues/103
+branch: feat/FP-G02-01-http
+crate: wxlike-identity
+contract: identity-v1
+status: HTTP 面已接线（本组自有 platform 文件），只剩平台/真机证据
+
+paths:
+  - crates/features/identity/src/device.rs
+  - crates/features/identity/src/session.rs
+  - crates/features/identity/src/refresh.rs
+  - crates/features/identity/src/step_up.rs
+  - crates/features/identity/src/throttle.rs
+  - crates/features/identity/src/recovery.rs
+  - crates/platform/src/sessions.rs
+  - crates/platform/src/users.rs
+  - crates/platform/src/db.rs
+  - crates/platform/tests/g02_sessions.rs
+
+# G02 拥有 crates/platform/src/{accounts,users,devices,sessions,secret,security}.rs，
+# 因此 handler 与路由由本组直接落地，不需要 G00 代挂。
+root_registration:
+  - action: cargo_workspace_member
+    value: crates/features/identity
+  - action: router_mount
+    prefix: /api
+    status: done
+    note: >
+      sessions::routes() 已在 Platform::router 里 merge；新增的
+      /api/sessions/refresh、/api/sessions/step-up、/api/devices/{id}/revoke
+      都挂在这个 merge 之下，无需再改根 router。
+    handlers:
+      - "POST /api/sessions/refresh -> sessions::refresh_session（轮换 + 重放作废整条链）"
+      - "POST /api/sessions/step-up -> sessions::step_up_grant（密码或 TOTP，单次有效）"
+      - "POST /api/devices/{device_id}/revoke -> sessions::revoke_device（要求 step-up）"
+      - "POST /api/sessions/{sid}/revoke -> 既有端点，现同步作废该 sid 的刷新链"
+      - "POST /api/login, /api/register -> 响应新增 refresh_token 字段（老客户端忽略）"
+  - action: cargo_dependency
+    file: crates/platform/Cargo.toml
+    added: "wxlike-identity = { path = \"../features/identity\" }"
+    note: 平台层调用 features crate 的规则，不复制一份实现
+  - action: schema
+    proposal: schema/proposals/G02/identity.sql
+    tables: [identity_device, identity_refresh, identity_step_up, identity_throttle, identity_reset_token]
+    note: >
+      由 crates/platform/src/db.rs::migrate_identity() 在平台库上执行（幂等），
+      不新增迁移编号，因此不需要 G00 分配序号。
+
+acceptance_notes:
+  - 过期/撤销/重复刷新全拒绝：tests/g02_sessions.rs 覆盖重放后整链失效
+  - 一端移除设备后该设备 API/WS 失效：device revoke 后该 token 立刻 401
+  - 撤销会话同时断刷新链：否则刷新能把会话续回来（revoke → revoke_refresh_of_sid）
+  - 敏感操作 step-up：/api/devices/{id}/revoke 必须持有未消费的 device.revoke 授权
+  - 日志不含 token/密码：SessionGrant::audit_label 只输出 sid 与 audience
+  - 缓存清理：撤销设备后发 session.revoked 自定义帧（不进消息类型注册表）
+
+tests:
+  - g02_sessions::refresh_rotates_and_retires_the_old_access_token
+  - g02_sessions::replayed_refresh_token_kills_the_whole_chain
+  - g02_sessions::unknown_and_empty_refresh_tokens_are_rejected
+  - g02_sessions::revoking_a_session_also_kills_its_refresh_chain
+  - g02_sessions::device_revoke_requires_step_up
+  - g02_sessions::step_up_grant_is_single_use
+  - g02_sessions::device_revoke_emits_a_cache_clear_event
+  - g02_sessions::revoke_others_keeps_the_caller_alive
+  - g02_sessions::register_also_mints_a_refresh_token
+  - g02_sessions::empty_state_has_no_sessions
+
+remaining_before_accept:
+  - 桌面/手机真机走一遍"刷新后继续用、踢设备后对方掉线"（需 G10-06/G12-06 登录页）
+  - audience 分离：管理面目前用独立静态令牌（admin_ok），未落 sessions.audience 列；
+    要按卡面要求"token 分开 audience"，需先加列再切 Authed，属下一步

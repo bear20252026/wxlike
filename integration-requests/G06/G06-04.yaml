@@ -1,0 +1,74 @@
+request: G06-04
+owner: G06
+task_issue: 134
+branch: feat/FP-G06
+status: ready-for-G00
+depends_on:
+  - G06-03
+code_paths:
+  - crates/features/commerce/src/transfers.rs
+  - crates/features/commerce/src/redpackets.rs
+routes:
+  mount:
+    - action: transfer.prepare
+      path: /api/v1/commerce/actions/transfer.prepare
+    - action: transfer.create
+      path: /api/v1/commerce/actions/transfer.create
+    - action: transfer.accept
+      path: /api/v1/commerce/actions/transfer.accept
+    - action: transfer.reject
+      path: /api/v1/commerce/actions/transfer.reject
+    - action: transfer.expire
+      path: /api/v1/commerce/actions/transfer.expire
+    - action: transfer.get
+      path: /api/v1/commerce/actions/transfer.get
+    - action: redpacket.create
+      path: /api/v1/commerce/actions/redpacket.create
+    - action: redpacket.claim
+      path: /api/v1/commerce/actions/redpacket.claim
+    - action: redpacket.expire
+      path: /api/v1/commerce/actions/redpacket.expire
+    - action: redpacket.get
+      path: /api/v1/commerce/actions/redpacket.get
+commands:
+  registry: commerce
+  actions: [transfer.prepare, transfer.create, transfer.accept, transfer.reject, transfer.expire, transfer.get, redpacket.create, redpacket.claim, redpacket.expire, redpacket.get]
+ports:
+  group_membership:
+    provider: G02 RelationsPort
+    note: >-
+      生产必须注入真实群成员校验；StaticMembership 只用于测试/演示，不能作为验收实现。
+config:
+  settings:
+    - key: commerce.transfer.ttl_ms
+      default: 86400000
+    - key: commerce.redpacket.ttl_ms
+      default: 86400000
+jobs:
+  - name: commerce.transfer.expire
+    handler: Commerce::expire_transfer
+    interval: 60s
+  - name: commerce.redpacket.expire
+    handler: Commerce::expire_red_packet
+    interval: 60s
+migrations:
+  - proposal: schema/proposals/G06/0001_ledger_commerce.sql
+    rollback: schema/proposals/G06/ROLLBACK.md
+    number: G00-assigned
+ui_contract:
+  transfer_screen:
+    fields: [payee_id, amount, memo]
+    memo_max_chars: 20
+    amount_parsing: 服务端十进制解析，拒绝超精度/科学计数/负数/上限溢出
+    confirmation_token_binds: [sender, payee, amount, currency, memo, nonce, expires_at]
+    states: [pending, accepted, rejected, expired]
+  redpacket:
+    states: [active, depleted, expired]
+    note: 聊天消息只引用 packet_id；客户端动画不决定金额或结果
+evidence:
+  tests: cargo test -p wxlike-commerce --test g06_04_transfers_redpackets
+  fixtures:
+    - contracts/domains/commerce/fixtures/transfer-forbidden.json
+    - contracts/domains/commerce/fixtures/redpacket-last-share.json
+acceptance_dependencies:
+  - G02 真实 GroupMembership

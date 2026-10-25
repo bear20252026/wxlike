@@ -1,0 +1,124 @@
+card: G13-06
+issue: 174
+branch: feat/FP-G13-06
+contract_version: "g13/1"
+status: requested
+summary: >-
+  新版状态、位置消息/实时共享、我的二维码四样式与公众号整合入口已完成。
+  地图/导航、拍照与相册、二维码渲染由平台桥提供；共享会话与码轮换以服务端
+  状态为准，离页不伪造"已停止"。
+
+changed_paths:
+  - apps/mobile/lib/features/content/status/status_page.dart
+  - apps/mobile/lib/features/discover/location/location_page.dart
+  - apps/mobile/lib/features/discover/mycode/my_code_page.dart
+  - apps/mobile/lib/features/content/official/official_page.dart
+  - apps/mobile/lib/features/discover/discover_page.dart
+  - apps/mobile/lib/features/settings/profile_page.dart
+  - apps/mobile/lib/features/content/g13/
+  - apps/mobile/test/g13/
+
+requests:
+  - id: G13-06-R1
+    kind: ffi-bindings
+    target: G01
+    status: requested
+    reason: 状态到期、位置共享会话、二维码轮换与公众号文章版本都必须由服务端裁决。
+    change:
+      commands:
+        - content.status.mine
+        - content.status.friends
+        - content.status.publish
+        - content.status.clear
+        - location.current
+        - location.places
+        - location.send
+        - location.share.start
+        - location.share.stop
+        - location.share.list
+        - contact.qr.get
+        - contact.qr.rotate
+        - contact.qr.save
+        - publisher.list（新增 query 参数：服务端搜索）
+        - publisher.articles
+        - publisher.article
+    note: >-
+      publisher.list 的 query 过滤在服务端完成；界面不在本地过滤冒充搜索。
+      contact.qr.get 必须返回 scannable，false 时页面不宣称可扫。
+
+  - id: G13-06-R2
+    kind: platform-bridge
+    target: G12-05
+    status: requested
+    reason: 真实地图、系统导航、拍照/相册与二维码渲染属于平台能力。
+    change:
+      - map_renderer: 真实地图与 POI 图层（不接受 SVG/截图充当地图）
+      - navigation: 调起系统地图导航（纬度/经度/地点名）
+      - camera_gallery: 状态背景拍摄/相册选择，返回 media_id 或背景值
+      - qr_renderer: 由 payload 生成标准可扫码图，四样式共用同一编码
+      - qr_share: 系统分享码图
+      - location_permissions: 前台定位；实时共享期间的持续定位与后台策略由平台声明
+    note: >-
+      地图/二维码渲染未接入时分别显示 G12-05 阻塞占位；不允许以静态图冒充。
+
+  - id: G13-06-R3
+    kind: composition-root
+    target: G00 / G10
+    status: requested
+    reason: 状态/二维码入口与"回到原会话"依赖根导航和聊天页配合。
+    change:
+      - mount_entry: me.status -> StatusPage
+      - mount_entry: me.my_code -> MyCodePage
+      - mount_entry: chat.location -> LocationPage(convId=<当前会话>)
+      - return_to: 发送位置快照成功后返回调用方会话并插入位置卡片（不得固定示例会话）
+      - sharing_lifecycle: 实时共享会话在服务端维持；用户显式停止或到期后 UI 才更新
+      - entry_registry: 订阅号消息 -> OfficialPage；关于页协议/帮助 entry_id 打开
+
+  - id: G13-06-R4
+    kind: schema-and-migration
+    target: G00
+    status: requested
+    reason: 状态与位置共享若新增持久化字段/表，需要统一编号与回滚计划。
+    change:
+      expect: 本卡仅消费 G05-06 / G07-08 / G07-09 的既有契约，不新增 schema 编号
+      if_needed: 由 G00 分配编号，G13 只提交 DDL 草稿与回滚说明（expand/contract）
+    note: 未新增表；若上游契约变更，以对方发布为准并更新 g13/1。
+
+upstream:
+  - G05-06 (我的状态/好友状态/背景/到期)
+  - G07-08 (位置消息、POI、实时共享)
+  - G07-09 (名片二维码、样式、保存分享、撤销)
+  - G05-02 (订阅号文章 id/version)
+  - G12-05 (地图/导航/相机/相册/二维码渲染)
+  - G06-04 (从状态/位置回到会话的消息卡片渲染)
+
+verification:
+  - flutter analyze（G13 归属文件 0 error）
+  - flutter test test/g13/status_page_test.dart test/g13/my_code_page_test.dart test/g13/location_page_test.dart test/g13/official_page_test.dart
+  - 真机：新增页面逐入口验证；B 看到 A 状态/位置变化与撤销；四码保存后可扫；
+    不同文章打开各自 publisher_id/article_id；离页停止定位查询
+  - 上游未合入前不得标 ACCEPTED
+
+notes:
+  - 状态发布在文字/背景/可见范围/有效期变化时轮换幂等键；取消状态用
+    status-clear-<statusId>。
+  - 位置快照发送使用发送面板内生成的幂等键，重复点击只发一次；成功后返回原会话。
+  - 二维码轮换前二次确认，旧码立即失效；保存用 qr-save-<version>-<style> 幂等键。
+  - 公众号头像目前用名称首字母占位：Publisher 契约未带可访问头像地址，
+    待 G05-02/G04 提供后再接真实图片，不用外链占位图冒充。
+
+entries:
+  implemented:
+    - {entry_id: SEED-0259, action_id: content.status.background.pick, page: StatusPage/_ComposeStatusSheet}
+    - {entry_id: SEED-0262, action_id: content.status.clear, page: StatusPage/取消状态}
+    - {entry_id: SEED-0272, action_id: location.current, page: LocationPage}
+    - {entry_id: SEED-0275, action_id: location.send, page: LocationPage/发送后回原会话}
+    - {entry_id: SEED-0281, action_id: contact.qr.save, page: MyCodePage}
+  not_covered:
+    - SEED-0263 查看好友状态详情：本卡只做列表展示，详情页待 G05-06 契约确认后补
+    - UI v2 状态预设网格（emoji/标签目录）：StatusPort 无目录端点，未摆静态预设，
+      待 G05-06 提供服务端状态目录后接入
+    - LocationScreen 的"定位到我"蓝点：需要平台定位流；当前只展示服务端下发的
+      当前共享位置，不伪造本地坐标
+    - 国家码选择属于登录/账号页（G02/G10），本卡未绘制该入口
+

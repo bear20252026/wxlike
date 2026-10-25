@@ -1,0 +1,33 @@
+task_id: G07-07
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/148"
+summary: 零售与游戏供应商适配器：购物车 owner/区域/库存/20-SKU 上限、实价复核、游戏验签上架、区域一致性、授权随退款撤销、云存档隔离、外链净化。
+new_dependencies:
+  - package: 沿用 G07-01/G07-06 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  - prefix: /api/v1/retail
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::providers::retail)
+  - prefix: /api/v1/games
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::providers::games)
+command_registration: wxlike_service_catalog::register_commands
+job_registration:
+  - name: games.tickets.expire
+    note: 过期 launch ticket 清理
+configuration:
+  - name: WXLIKE_RETAIL_VENDOR_CREDENTIAL
+    value_type: secret_reference_only
+  - name: WXLIKE_GAME_PUBKEY_DIR
+    value_type: secret_reference_only
+    note: G08 验签公钥；无验签实现时不得发布任何包
+migration_proposals:
+  - schema/proposals/G07/services.sql   # retail cart / game package/entitlement/save/ticket 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: []   # 无直接 entry；G00-01 扩量后补
+tests_evidence:
+  - crates/service-catalog/tests/retail.rs（6 用例）
+  - crates/service-catalog/tests/games.rs（6 用例）
+compatibility: additive_new_domain
+rollback: remove_route_mounts
+external_blockers: [VENDOR_SANDBOX_CREDENTIALS, G08_SIGNATURE_VERIFIER_INTEGRATION]

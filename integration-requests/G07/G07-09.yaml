@@ -1,0 +1,33 @@
+task_id: G07-09
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/138"
+summary: 可撤销名片二维码：opaque capability、HMAC 签名 wire、轮换/全撤销、四样式渲染与对比度、扫码→G02 好友申请、相册保存与分享经 MediaPort。
+new_dependencies:
+  - package: 沿用 G07-01 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  - prefix: /api/v1/contact-cards
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::contact_qr::ContactQrService)
+command_registration: wxlike_discovery::register_commands
+job_registration:
+  - name: contact.cards.expire
+    note: 过期名片记录清理（撤销状态保留供审计）
+configuration:
+  - name: WXLIKE_CARD_SIGNING_KEY
+    value_type: secret_reference_only
+migration_proposals:
+  - schema/proposals/G07/discovery.sql   # discovery_contact_card 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids:
+  - SEED-0280
+  - SEED-0281
+  - SEED-0282
+tests_evidence:
+  - crates/features/discovery/tests/contact_qr.rs 用例
+compatibility: additive_new_domain
+rollback: remove_route_mount
+external_blockers: [G02_FRIEND_REQUEST_PORT_INTEGRATION, G04_MEDIA_PORT_INTEGRATION, PRINTED_QR_PHYSICAL_DEVICE_SCAN]
+notes:
+  - capability 明文只出现在二维码里，服务端只存 SHA-256 哈希
+  - 好友申请的状态机/限流/权限全部由 G02 执行（FriendRequestPort）

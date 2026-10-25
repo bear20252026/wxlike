@@ -1,0 +1,178 @@
+# G07 services 域事件契约草案（待 G00-03 冻结为 contract-v1）。
+# 事件字段与 crates/service-catalog 的 Order/Quote/Booking/Entitlement 状态一致。
+# 注意：本分支 OrderService 只在内存中推进状态与事件列表（Order.events）；
+# outbox 写入与投递由 G00 装配层接手，见 integration-requests/G07/G07-05.yaml。
+schema_version: 1
+contract_version: g07-draft-1
+owner: G07
+domain: services
+
+envelope:
+  required:
+    - event_id
+    - event_type
+    - event_version
+    - aggregate_id
+    - aggregate_version
+    - occurred_at_ms
+    - trace_id
+    - payload
+  payload_rules:
+    - 最小必需字段；不广播完整用户资料
+    - 金额一律 amount_minor(int64) + currency(ISO-4217 三元码)
+    - 供应商原始报文不进入事件，只进内部对账日志
+
+delivery:
+  transport: outbox_to_message_bus
+  guarantee: at_least_once
+  consumer_dedup_key: event_id
+  ordering: per_aggregate_version
+  retry: exponential_backoff_with_dead_letter
+  metrics: [services_outbox_lag_ms, services_order_dlq_total]
+
+events:
+  - type: services.quote.issued
+    version: 1
+    aggregate: quote
+    aggregate_id_field: quote_id
+    payload:
+      quote_id: {type: id}
+      actor: {type: id}
+      service_id: {type: id}
+      provider: {type: string, max_len: 64}
+      kind: {type: enum, values: [mobile_topup, utility_bill, donation, travel, hotel, movie, medical, retail, game]}
+      amount_minor: {type: int64, gt: 0}
+      currency: {type: string, len: 3}
+      quantity: {type: uint}
+      expires_at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G07 order projection, G01 audit projection]
+    notes: [报价过期由 purge job 清理，不发事件]
+
+  - type: services.order.created
+    version: 1
+    aggregate: order
+    aggregate_id_field: order_id
+    payload:
+      order_id: {type: id}
+      actor: {type: id}
+      quote_id: {type: id}
+      service_id: {type: id}
+      provider: {type: string}
+      provider_order_id: {type: string, max_len: 128}
+      amount_minor: {type: int64}
+      currency: {type: string, len: 3}
+      state: {type: enum, values: [created, paid, fulfilling, fulfilled, cancelling, cancelled, refunding, refunded, failed, pending_reconciliation]}
+    visibility: actor_only
+    consumers: [G06 payment projection, G01 audit projection]
+    notes: [与 crates/service-catalog/src/order.rs OrderState as_str 一致]
+
+  - type: services.order.status_changed
+    version: 1
+    aggregate: order
+    aggregate_id_field: order_id
+    payload:
+      order_id: {type: id}
+      actor: {type: id}
+      from_state: {type: enum, same_values_as: services.order.created.state}
+      to_state: {type: enum, same_values_as: services.order.created.state}
+      at_ms: {type: int64}
+      receipt: {type: object, optional: true, fields: {business_no: string, status: string, issued_at_ms: int64}}
+    visibility: actor_only
+    consumers: [G06, G01 audit projection, G14 admin operation query]
+    notes: [一次状态迁移一条事件；aggregate_version 按 Order.events 顺序递增]
+
+  - type: services.order.payment_declined
+    version: 1
+    aggregate: order
+    aggregate_id_field: order_id
+    payload:
+      order_id: {type: id}
+      actor: {type: id}
+      decline_reason: {type: string, max_len: 64}
+      support_ticket: {type: id, optional: true}
+      at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G06, G01 audit projection]
+    notes: [decline_reason 只用供应商给定的短码，不透传原始报文]
+
+  - type: services.order.refunded
+    version: 1
+    aggregate: order
+    aggregate_id_field: order_id
+    payload:
+      order_id: {type: id}
+      actor: {type: id}
+      refund_id: {type: id}
+      amount_minor: {type: int64}
+      currency: {type: string, len: 3}
+      status: {type: string, max_len: 32}
+      at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G06 ledger, G01 audit projection]
+    notes: [退款幂等键 order_id:refund；重复事件由消费方按 refund_id 去重]
+
+  - type: services.order.reconciliation_required
+    version: 1
+    aggregate: order
+    aggregate_id_field: order_id
+    payload:
+      order_id: {type: id}
+      actor: {type: id}
+      provider: {type: string}
+      reason: {type: enum, values: [fulfill_failed, cancel_failed, cancel_rejected, payment_error, provider_pending, provider_failed]}
+      support_ticket: {type: id, optional: true}
+      at_ms: {type: int64}
+    visibility: domain_private
+    consumers: [G14 admin reconciliation queue, G07 reconcile job, G01 audit projection]
+    notes: [外部状态未知保持 PENDING_RECONCILIATION，禁止自动二次扣款或“试试看”重付]
+
+  - type: services.booking.confirmed
+    version: 1
+    aggregate: booking
+    aggregate_id_field: booking_id
+    payload:
+      booking_id: {type: id}
+      actor: {type: id}
+      offer_id: {type: id}
+      kind: {type: enum, values: [travel, hotel, movie, medical]}
+      status: {type: enum, values: [held, confirmed, cancelled, refunded, failed, pending_reconciliation]}
+    visibility: actor_only
+    consumers: [G07 order projection, G01 audit projection]
+    notes: [敏感出行人资料永不进入事件]
+
+  - type: services.entitlement.granted
+    version: 1
+    aggregate: entitlement
+    aggregate_id_field: key
+    payload:
+      key: {type: string, note: actor:package_id}
+      actor: {type: id}
+      package_id: {type: id}
+      price_minor: {type: int64}
+      currency: {type: string, len: 3}
+      granted_at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G07 games launch gate, G01 audit projection]
+
+  - type: services.entitlement.revoked
+    version: 1
+    aggregate: entitlement
+    aggregate_id_field: key
+    payload:
+      key: {type: string, note: actor:package_id}
+      actor: {type: id}
+      package_id: {type: id}
+      reason: {type: enum, values: [refund]}
+      at_ms: {type: int64}
+    visibility: actor_only
+    consumers: [G07 games launch gate, G01 audit projection]
+    notes: [退款即撤销授权；launch 需重新购买]
+
+gaps:
+  - type: services.bill.paid
+    status: FOLDED_INTO_order_status_changed
+    reason: 缴费/捐赠没有独立状态机，结果由订单状态承载；不单独发事件。
+  - type: services.vendor.raw_event
+    status: NOT_PERMITTED
+    reason: 供应商回调原文只进对账日志，永远不进事件总线。

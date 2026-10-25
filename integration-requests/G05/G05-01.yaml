@@ -1,0 +1,43 @@
+task: G05-01
+title: 朋友圈分组可见、草稿、评论层级、删帖联动、举报/屏蔽
+issue: https://github.com/bear20252026/wxlike/issues/126
+branch: feat/FP-G05-01
+crate: wxlike-platform（复用既有 moments 模块；G00 纯移动拆分 #100 落地后迁独立 crate）
+contract: content-v1
+paths:
+  - crates/platform/src/moments.rs
+  - crates/platform/src/db.rs（migrate_g05 + SCHEMA_G05 的 moment_drafts 段）
+  - crates/platform/tests/g05_content.rs
+  - schema/proposals/G05/content.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/moments -> publish（visibility=groups 时 audience_group 必填）"
+      - "GET  /api/moments/feed -> feed（自+好友；since 水位线分页）"
+      - "POST /api/moments/drafts + GET /api/moments/drafts + DELETE /api/moments/drafts/{id}"
+      - "GET  /api/moments/{id} / DELETE /api/moments/{id}"
+      - "POST+DELETE /api/moments/{id}/likes；POST /api/moments/{id}/comments；DELETE .../comments/{comment_id}"
+      - "POST /api/moments/{id}/report -> wxlike-report 工单（target_kind=moment）"
+    note: 复用既有挂载点，无新前缀
+  - action: schema
+    proposal: schema/proposals/G05/content.sql
+    tables: [moment_drafts, content_media_refs]
+    alters: ["moments ADD COLUMN audience_group TEXT NOT NULL DEFAULT ''"]
+
+acceptance_notes:
+  - 可见性读时判定：Groups=作者好友分组当前匹配（friends.friend_group）；拉黑双向失效；Private 不进任何 feed
+  - 评论层级上限 2：顶层 0 / 直接回复 1 / 更深 422；reply 目标必须是同一条朋友圈下的评论
+  - 草稿 media 引用必须已存在（WP-05 上传闸在草稿阶段生效）；发布成功后删草稿
+  - 删帖同事务清检索索引行、content_media_refs、对象收藏撤权（favorites.revoked=1 且正文清空）
+  - 举报走既有 /api/report 工单流；crates/report TARGET_KINDS 增加 moment（见 cross_module_changes）
+
+cross_module_changes:
+  - crates/report/src/lib.rs TARGET_KINDS 增加 moment/article/video/status（内容举报入同一工单流）
+
+tests:
+  - crates/platform/tests/g05_content.rs::moments_group_visibility_block_like_and_delete_index
+  - crates/platform/tests/g05_content.rs::moment_report_lands_in_moderation_queue
+  - cargo test -p wxlike-platform --test g05_content
+  - cargo test -p wxlike-platform --test moments

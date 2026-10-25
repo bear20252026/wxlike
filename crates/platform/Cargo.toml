@@ -14,6 +14,8 @@ wxlike-moderation = { path = "../moderation" }
 wxlike-report = { path = "../report" }
 # P4/P5 通话房间状态机（rtc::room）与出口码率分配（rtc::sfu）
 wxlike-rtc = { path = "../rtc" }
+wxlike-identity = { path = "../features/identity" }
+wxlike-relations = { path = "../features/relations" }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

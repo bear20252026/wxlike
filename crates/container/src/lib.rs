@@ -60,6 +60,11 @@ impl Container {
     pub fn logs(&self) -> Vec<String> {
         self.engine.logs()
     }
+
+    /// Consume the bounded log buffer without cloning its strings.
+    pub fn drain_logs(&self) -> Vec<String> {
+        self.engine.drain_logs()
+    }
 }
 
 /// Helper on serde_json::Value: parse with a friendly error (used by demo pages).

@@ -1,0 +1,84 @@
+{
+  "contract_version": "platform-matrix-v1",
+  "description": "G00-01 平台能力矩阵：能力类 × 平台的支持位与替代路径。entries.json 中每个 entry 的 capabilities.capability_class 必须出现在本表 classes 中；unsupported 的能力必须给替代路径，不允许以禁用按钮作为最终验收形态。",
+  "platforms": {
+    "desktop_tauri": "Tauri 2 桌面（Windows/macOS/Linux）",
+    "web_browser": "浏览器（HTTP+WS，手写 bincode wire）",
+    "android_flutter": "Android（Flutter + UniFFI）"
+  },
+  "classes": {
+    "click": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true },
+      "android_flutter": { "supported": true }
+    },
+    "ui.state": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true },
+      "android_flutter": { "supported": true }
+    },
+    "ui.scroll": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true },
+      "android_flutter": { "supported": true }
+    },
+    "ui.select": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true },
+      "android_flutter": { "supported": true }
+    },
+    "nav.goto": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true },
+      "android_flutter": { "supported": true }
+    },
+    "keyboard.enter": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true, "note": "软键盘 action=send 时同语义" },
+      "android_flutter": { "supported": true, "note": "imeAction=send / TextInputAction.send" }
+    },
+    "context.menu": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true, "note": "自定义右键菜单，禁用浏览器默认菜单" },
+      "android_flutter": {
+        "supported": false,
+        "alternative_path": "long.press 弹出同一动作菜单（G13 实现，动作集与桌面一致）"
+      }
+    },
+    "long.press": {
+      "desktop_tauri": {
+        "supported": false,
+        "alternative_path": "context.menu 承载同一动作集（G10 实现）"
+      },
+      "web_browser": {
+        "supported": false,
+        "alternative_path": "context.menu 承载同一动作集（G11 实现）"
+      },
+      "android_flutter": { "supported": true }
+    },
+    "system.back": {
+      "desktop_tauri": {
+        "supported": true,
+        "note": "Esc/Alt+Left 映射页面栈返回"
+      },
+      "web_browser": {
+        "supported": true,
+        "note": "history API + popstate 同步页面栈"
+      },
+      "android_flutter": {
+        "supported": true,
+        "note": "PredictiveBack/onBackPressed 入页面栈"
+      }
+    },
+    "drag": {
+      "desktop_tauri": { "supported": true },
+      "web_browser": { "supported": true, "note": "Pointer Events 统一实现" },
+      "android_flutter": { "supported": true, "note": "GestureDetector 等价手势" }
+    }
+  },
+  "rules": [
+    "entries.json 中出现的每个 capability_class 必须在本表 classes 有定义（validate_entries.py 强制）",
+    "unsupported 平台必须提供 alternative_path，且替代路径指向的能力类自身必须在该平台 supported",
+    "新增能力类时：先改本表（G00 审批），再允许 entries 引用"
+  ]
+}
