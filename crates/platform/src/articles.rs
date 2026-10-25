@@ -21,6 +21,7 @@ use crate::content_index;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::inbox;
+use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -30,8 +31,6 @@ pub const MAX_BODY_TEXT_CHARS: usize = 50_000;
 pub const MAX_ALT_CHARS: usize = 200;
 pub const MAX_HREF_CHARS: usize = 2_048;
 pub const MAX_PAGE: i64 = 50;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 const MAX_PUBLISHER_NAME_CHARS: usize = 64;
 const MAX_PUBLISHER_QUERY: usize = 64;
 /// `article_row` 里 published_at 的下标（与 SELECT 列序一致）。
@@ -336,7 +335,7 @@ impl Platform {
                 Some(q) if q.chars().count() > MAX_PUBLISHER_QUERY => {
                     return Err(PlatformError::BadInput("query too long"))
                 }
-                Some(q) => Some(format!("%{}%", escape_like(q))),
+                Some(q) => Some(format!("%{}%", page::escape_like(q))),
                 None => None,
             };
             let mut stmt = c.prepare(
@@ -922,17 +921,6 @@ fn excerpt(text: &str) -> String {
     text.chars().take(PREVIEW_MAX_CHARS).collect()
 }
 
-fn escape_like(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 /// 文章引用到的图片媒体 id（去重）。删除/更新时据此维护附件引用表。
 fn doc_media_ids(doc: &ArticleDoc) -> Vec<String> {
     let mut ids: Vec<String> = doc
@@ -1158,13 +1146,8 @@ async fn publisher_articles(
     Query(q): Query<ArticleListQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let (items, next, has_more) =
-        platform.articles_by_publisher(&id, q.cursor, q.limit.unwrap_or(DEFAULT_PAGE))?;
-    Ok(Json(serde_json::json!({
-        "items": items,
-        "next_cursor": next,
-        "has_more": has_more,
-        "snapshot_version": wxlike_core::types::now_ms(),
-    })))
+        platform.articles_by_publisher(&id, q.cursor, q.limit.unwrap_or(page::DEFAULT_PAGE))?;
+    Ok(page::listing_response(items, next, has_more))
 }
 
 async fn create(

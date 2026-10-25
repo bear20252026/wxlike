@@ -493,23 +493,22 @@ fn check_media(c: &Connection, owner: &str, media_id: &str, kind: &str) -> Resul
     Ok(())
 }
 
-/// 一行状态的裸列（与 SELECT 顺序一致，命名靠解构）。
-type StatusRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-);
-
+/// `status_row` 查出的裸行；字段名与 SELECT 列序一一对应。
+struct StatusRow {
+    id: String,
+    owner: String,
+    owner_name: String,
+    kind: String,
+    text: String,
+    media_id: String,
+    background_media_id: String,
+    audience: String,
+    version: i64,
+    created_at: i64,
+    updated_at: i64,
+    expires_at: i64,
+    reactions: i64,
+}
 /// `status_row` 里尾部两列的下标（与 SELECT 列序一致）。
 const COL_STATUS_EXPIRES_AT: usize = 11;
 const COL_STATUS_REACTIONS: usize = 12;
@@ -525,62 +524,47 @@ fn status_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<StatusVie
              WHERE s.id = ?1",
             params![id],
             |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                    r.get(9)?,
-                    r.get(10)?,
-                    r.get(COL_STATUS_EXPIRES_AT)?,
-                    r.get(COL_STATUS_REACTIONS)?,
-                ))
+                Ok(StatusRow {
+                    id: r.get(0)?,
+                    owner: r.get(1)?,
+                    owner_name: r.get(2)?,
+                    kind: r.get(3)?,
+                    text: r.get(4)?,
+                    media_id: r.get(5)?,
+                    background_media_id: r.get(6)?,
+                    audience: r.get(7)?,
+                    version: r.get(8)?,
+                    created_at: r.get(9)?,
+                    updated_at: r.get(10)?,
+                    expires_at: r.get(COL_STATUS_EXPIRES_AT)?,
+                    reactions: r.get(COL_STATUS_REACTIONS)?,
+                })
             },
         )
         .optional()?;
-    let Some((
-        id,
-        owner,
-        owner_name,
-        kind,
-        text,
-        media_id,
-        background_media_id,
-        audience,
-        version,
-        created_at,
-        updated_at,
-        expires_at,
-        reactions,
-    )) = row
-    else {
+    let Some(row) = row else {
         return Ok(None);
     };
     let my_reaction: i64 = c.query_row(
         "SELECT COUNT(*) FROM status_reactions WHERE status_id = ?1 AND user_id = ?2",
-        params![id, viewer],
+        params![row.id, viewer],
         |r| r.get(0),
     )?;
     Ok(Some(StatusView {
-        id,
-        owner,
-        owner_name,
-        kind,
-        text,
-        media_id,
-        background_media_id,
-        audience,
-        version,
-        created_at,
-        updated_at,
-        expires_at,
-        seconds_left: ((expires_at - now).max(0)) / 1000,
-        reactions,
+        id: row.id,
+        owner: row.owner,
+        owner_name: row.owner_name,
+        kind: row.kind,
+        text: row.text,
+        media_id: row.media_id,
+        background_media_id: row.background_media_id,
+        audience: row.audience,
+        version: row.version,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        expires_at: row.expires_at,
+        seconds_left: ((row.expires_at - now).max(0)) / 1000,
+        reactions: row.reactions,
         my_reaction: my_reaction > 0,
     }))
 }

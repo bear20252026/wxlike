@@ -17,11 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
+use crate::page;
 use crate::{Platform, PlatformState};
 
 pub const MAX_PAGE: i64 = 50;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 
 const MAX_READ_IDS: usize = 200;
 
@@ -175,7 +174,7 @@ async fn list(
     let (items, next, has_more) = platform.notifications(
         &authed.user_id,
         q.before_seq,
-        q.limit.unwrap_or(DEFAULT_PAGE),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
     let unread = platform.unread_notifications(&authed.user_id)?;
     Ok(Json(serde_json::json!({

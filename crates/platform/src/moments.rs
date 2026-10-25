@@ -29,6 +29,7 @@ use crate::content_index;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::inbox;
+use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
@@ -39,8 +40,6 @@ pub const MAX_COMMENT_CHARS: usize = 1_000;
 /// WeChat-style nine-grid.
 pub const MAX_MEDIA_PER_MOMENT: usize = 9;
 pub const MAX_FEED_PAGE: i64 = 50;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 
 /// 评论层级上限：顶层评论 depth=0，直接回复=1，再往下=2；更深的回复拒绝。
 /// 微信没有无限嵌套线程，链表式的 `reply_to` 也容易被用来构造超深树。
@@ -1043,7 +1042,7 @@ async fn feed(
     let (rows, next, has_more) = platform.feed(
         &authed.user_id,
         q.since.filter(|s| *s > 0),
-        q.limit.unwrap_or(DEFAULT_PAGE),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
     Ok(Json(serde_json::json!({
         "moments": rows,

@@ -38,6 +38,7 @@ mod media;
 mod moments;
 mod notes;
 mod notification;
+mod page;
 pub mod perms;
 mod read;
 mod reconcile;

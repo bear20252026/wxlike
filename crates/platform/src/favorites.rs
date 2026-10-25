@@ -22,13 +22,12 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
+use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
 /// Page cap; callers asking for more get this many.
 pub const MAX_FAVORITE_PAGE: usize = 100;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 
 /// A snapshot text longer than this is refused (same order as moments).
 const MAX_SNAPSHOT_TEXT: usize = 5_000;
@@ -369,7 +368,7 @@ impl Platform {
             return Err(PlatformError::BadInput("query malformed"));
         }
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE as i64);
-        let pattern = format!("%{}%", escape_like(q));
+        let pattern = format!("%{}%", page::escape_like(q));
         let c = self.db().lock();
         let mut stmt = c.prepare(
             "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
@@ -464,10 +463,7 @@ impl Platform {
             "DELETE FROM favorites WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
-        Ok(())
+        page::ensure_updated(changed)
     }
 }
 
@@ -531,17 +527,6 @@ fn capture(text: &str) -> String {
     text.chars().take(MAX_OBJECT_CAPTURE_CHARS).collect()
 }
 
-fn escape_like(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 fn parse_cursor(cursor: Option<&str>) -> Result<(i64, i64, String)> {
     match cursor {
         None | Some("") => Ok((0, i64::MAX, "\u{10ffff}".to_string())),
@@ -599,7 +584,7 @@ async fn list(
         let rows = platform.list_favorites(
             &authed.user_id,
             q.before_created,
-            q.limit.unwrap_or(DEFAULT_PAGE) as usize,
+            q.limit.unwrap_or(page::DEFAULT_PAGE) as usize,
         )?;
         let next = rows.last().map(|f| f.created_at);
         return Ok(Json(
@@ -609,7 +594,7 @@ async fn list(
     let (rows, next, has_more) = platform.favorites_sorted(
         &authed.user_id,
         q.cursor.as_deref(),
-        q.limit.unwrap_or(DEFAULT_PAGE),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
     Ok(Json(serde_json::json!({
         "favorites": rows,
@@ -630,7 +615,7 @@ async fn search(
     Query(q): Query<SearchQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let items =
-        platform.search_favorites(&authed.user_id, &q.q, q.limit.unwrap_or(DEFAULT_PAGE))?;
+        platform.search_favorites(&authed.user_id, &q.q, q.limit.unwrap_or(page::DEFAULT_PAGE))?;
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
@@ -699,7 +684,7 @@ mod tests {
             capture(&"x".repeat(10_000)).chars().count(),
             MAX_OBJECT_CAPTURE_CHARS
         );
-        assert_eq!(escape_like("a%b_c"), "a\\%b\\_c");
+        assert_eq!(page::escape_like("a%b_c"), "a\\%b\\_c");
     }
 
     #[test]

@@ -18,14 +18,13 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
+use crate::page::{self, listing_response, parse_cursor};
 use crate::validate;
 use crate::{Platform, PlatformState};
 
 pub const MAX_NOTE_TITLE_CHARS: usize = 120;
 pub const MAX_NOTE_BODY_CHARS: usize = 100_000;
 pub const MAX_NOTE_PAGE: i64 = 50;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
@@ -206,10 +205,7 @@ impl Platform {
             "DELETE FROM notes WHERE id = ?1 AND user_id = ?2",
             params![id, user],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
-        Ok(())
+        page::ensure_updated(changed)
     }
 }
 
@@ -253,22 +249,6 @@ fn check_note<'a>(title: &'a str, body: &'a str) -> Result<(&'a str, &'a str)> {
     Ok((title, body))
 }
 
-fn parse_cursor(cursor: Option<&str>) -> Result<(i64, String)> {
-    match cursor {
-        None | Some("") => Ok((i64::MAX, "\u{10ffff}".to_string())),
-        Some(c) => {
-            let (at, id) = c
-                .split_once(':')
-                .ok_or(PlatformError::BadInput("malformed cursor"))?;
-            let at: i64 = at
-                .parse()
-                .map_err(|_| PlatformError::BadInput("malformed cursor"))?;
-            let id = validate::id(id)?;
-            Ok((at, id.to_string()))
-        }
-    }
-}
-
 async fn create(
     State(platform): State<PlatformState>,
     authed: Authed,
@@ -291,14 +271,9 @@ async fn list(
     let (items, next, has_more) = platform.notes(
         &authed.user_id,
         q.cursor.as_deref(),
-        q.limit.unwrap_or(DEFAULT_PAGE),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
-    Ok(Json(serde_json::json!({
-        "items": items,
-        "next_cursor": next,
-        "has_more": has_more,
-        "snapshot_version": wxlike_core::types::now_ms(),
-    })))
+    Ok(listing_response(items, next, has_more))
 }
 
 async fn one(

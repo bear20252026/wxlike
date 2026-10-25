@@ -23,12 +23,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::page;
 use crate::{Platform, PlatformState};
 
 /// 单页上限：公开检索是扇出查询，别让它变成全表扫描的放大器。
 pub const MAX_SEARCH_PAGE: i64 = 50;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 
 pub const MAX_QUERY_CHARS: usize = 100;
 const MAX_CURSOR_ID_LEN: usize = 64;
@@ -348,16 +347,7 @@ fn validate_query(q: &str) -> Result<String> {
 
 /// 转义 LIKE 的通配符，用户输入里的 `%`/`_` 只能当字面量。
 fn like_pattern(q: &str) -> String {
-    let mut out = String::with_capacity(q.len() + 2);
-    out.push('%');
-    for ch in q.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out.push('%');
-    out
+    format!("%{}%", page::escape_like(q))
 }
 
 fn parse_cursor(cursor: Option<&str>) -> Result<(i64, String)> {
@@ -455,7 +445,7 @@ async fn search(
         &q.q,
         q.kind.as_deref(),
         q.cursor.as_deref(),
-        q.limit.unwrap_or(DEFAULT_PAGE),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
     Ok(Json(serde_json::json!({
         "items": items,

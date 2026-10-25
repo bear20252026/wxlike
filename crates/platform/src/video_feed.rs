@@ -28,12 +28,11 @@ use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::favorites;
 use crate::inbox;
+use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
 
 pub const MAX_VIDEO_PAGE: i64 = 50;
-/// 未显式给 limit 时的默认页大小。
-pub const DEFAULT_PAGE: i64 = 20;
 
 pub const MAX_CAPTION_CHARS: usize = 500;
 pub const MAX_VIDEO_COMMENT_CHARS: usize = 1_000;
@@ -211,8 +210,8 @@ impl Platform {
         let c = self.db().lock();
         match mode {
             "follow" => feed_by_seq(&c, viewer, cursor, limit),
-            "hot" => feed_by_score(&c, viewer, cursor, limit, ScoreScope::Hot),
-            "recommend" => feed_by_score(&c, viewer, cursor, limit, ScoreScope::Recommend),
+            "hot" => feed_hot(&c, viewer, cursor, limit),
+            "recommend" => feed_recommend(&c, viewer, cursor, limit),
             _ => Err(PlatformError::BadInput("unknown feed mode")),
         }
     }
@@ -420,12 +419,6 @@ impl Platform {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ScoreScope {
-    Hot,
-    Recommend,
-}
-
 fn feed_by_seq(
     c: &Connection,
     viewer: &str,
@@ -456,137 +449,138 @@ fn feed_by_seq(
     finish(c, viewer, ids, limit, |seq| seq.to_string())
 }
 
-fn feed_by_score(
+/// 热门：7 天窗口内按点赞/评论加权；新近发的一条保底 1 分。
+fn feed_hot(
     c: &Connection,
     viewer: &str,
     cursor: Option<&str>,
     limit: i64,
-    scope: ScoreScope,
 ) -> Result<(Vec<VideoView>, String, bool)> {
-    let (before_score, before_seq) = match cursor {
+    let (before_score, before_seq) = parse_score_cursor(cursor)?;
+    let cutoff = wxlike_core::types::now_ms() as i64 - HOT_WINDOW_MS;
+    let mut stmt = c.prepare(
+        "SELECT seq, id, score FROM (
+           SELECT v.seq AS seq, v.id AS id,
+                  (SELECT COUNT(*) FROM video_likes l WHERE l.video_id = v.id) * 3
+                + (SELECT COUNT(*) FROM video_comments cm
+                   WHERE cm.video_id = v.id AND cm.deleted = 0) * 2
+                + CASE WHEN v.created_at >= ?2 THEN 1 ELSE 0 END AS score
+           FROM video_posts v
+           WHERE v.state = 'published'
+             AND NOT EXISTS (SELECT 1 FROM blocks b
+                  WHERE (b.user_id = ?1 AND b.blocked_id = v.author)
+                     OR (b.user_id = v.author AND b.blocked_id = ?1))
+             AND (v.created_at >= ?2
+                  OR EXISTS (SELECT 1 FROM video_likes l WHERE l.video_id = v.id))
+         )
+         WHERE score < ?3 OR (score = ?3 AND seq < ?4)
+         ORDER BY score DESC, seq DESC LIMIT ?5",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![viewer, cutoff, before_score, before_seq, limit + 1],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    page_of_scored(c, viewer, rows, limit, "trending")
+}
+
+/// 推荐：只推"好友看过的未关注作者作品"。没有社交痕迹就什么都不推——
+/// 陌生人的热门视频只属于热门页，不冒充"为你推荐"。
+fn feed_recommend(
+    c: &Connection,
+    viewer: &str,
+    cursor: Option<&str>,
+    limit: i64,
+) -> Result<(Vec<VideoView>, String, bool)> {
+    let (before_score, before_seq) = parse_score_cursor(cursor)?;
+    let mut stmt = c.prepare(
+        "SELECT seq, id, score FROM (
+           SELECT v.seq AS seq, v.id AS id,
+                  (SELECT COUNT(*) FROM video_likes l
+                   JOIN friends f ON f.user_id = ?1 AND f.friend_id = l.user_id
+                   WHERE l.video_id = v.id) * 100
+                + (SELECT COUNT(*) FROM video_likes l WHERE l.video_id = v.id) * 3
+                + (SELECT COUNT(*) FROM video_comments cm
+                   WHERE cm.video_id = v.id AND cm.deleted = 0) AS score
+           FROM video_posts v
+           WHERE v.state = 'published'
+             AND v.author <> ?1
+             AND v.author NOT IN (SELECT creator FROM video_follows WHERE user_id = ?1)
+             AND EXISTS (SELECT 1 FROM video_likes l
+                         JOIN friends f ON f.user_id = ?1
+                                       AND f.friend_id = l.user_id
+                         WHERE l.video_id = v.id)
+             AND NOT EXISTS (SELECT 1 FROM blocks b
+                  WHERE (b.user_id = ?1 AND b.blocked_id = v.author)
+                     OR (b.user_id = v.author AND b.blocked_id = ?1))
+         )
+         WHERE score < ?2 OR (score = ?2 AND seq < ?3)
+         ORDER BY score DESC, seq DESC LIMIT ?4",
+    )?;
+    let rows = stmt
+        .query_map(params![viewer, before_score, before_seq, limit + 1], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    page_of_scored(c, viewer, rows, limit, "friends_liked")
+}
+
+/// `"{score}:{seq}"` 游标；空 = 从头。
+fn parse_score_cursor(cursor: Option<&str>) -> Result<(i64, i64)> {
+    match cursor {
         Some(cur) if !cur.is_empty() => {
             let (s, q) = cur
                 .split_once(':')
                 .ok_or(PlatformError::BadInput("malformed cursor"))?;
-            (
+            Ok((
                 s.parse::<i64>()
                     .map_err(|_| PlatformError::BadInput("malformed cursor"))?,
                 q.parse::<i64>()
                     .map_err(|_| PlatformError::BadInput("malformed cursor"))?,
-            )
+            ))
         }
-        _ => (i64::MAX, i64::MAX),
+        _ => Ok((i64::MAX, i64::MAX)),
+    }
+}
+
+/// 打分流的公共尾部：多取一条判 has_more，游标取自页尾，逐条补视图。
+fn page_of_scored(
+    c: &Connection,
+    viewer: &str,
+    rows: Vec<(i64, String, i64)>,
+    limit: i64,
+    reason: &str,
+) -> Result<(Vec<VideoView>, String, bool)> {
+    let has_more = rows.len() as i64 > limit;
+    let take = if has_more {
+        &rows[..rows.len() - 1]
+    } else {
+        &rows[..]
     };
-    let cutoff = wxlike_core::types::now_ms() as i64 - HOT_WINDOW_MS;
+    let next = take
+        .last()
+        .map(|(s, _, score)| format!("{score}:{s}"))
+        .unwrap_or_default();
     let mut views = Vec::new();
-    let has_more;
-    let next;
-    match scope {
-        ScoreScope::Hot => {
-            let mut stmt = c.prepare(
-                "SELECT seq, id, score FROM (
-                   SELECT v.seq AS seq, v.id AS id,
-                          (SELECT COUNT(*) FROM video_likes l WHERE l.video_id = v.id) * 3
-                        + (SELECT COUNT(*) FROM video_comments cm
-                           WHERE cm.video_id = v.id AND cm.deleted = 0) * 2
-                        + CASE WHEN v.created_at >= ?2 THEN 1 ELSE 0 END AS score
-                   FROM video_posts v
-                   WHERE v.state = 'published'
-                     AND NOT EXISTS (SELECT 1 FROM blocks b
-                          WHERE (b.user_id = ?1 AND b.blocked_id = v.author)
-                             OR (b.user_id = v.author AND b.blocked_id = ?1))
-                     AND (v.created_at >= ?2
-                          OR EXISTS (SELECT 1 FROM video_likes l WHERE l.video_id = v.id))
-                 )
-                 WHERE score < ?3 OR (score = ?3 AND seq < ?4)
-                 ORDER BY score DESC, seq DESC LIMIT ?5",
-            )?;
-            let rows = stmt
-                .query_map(
-                    params![viewer, cutoff, before_score, before_seq, limit + 1],
-                    |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, i64>(2)?,
-                        ))
-                    },
-                )?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let more = rows.len() as i64 > limit;
-            let take = if more {
-                &rows[..rows.len() - 1]
-            } else {
-                &rows[..]
-            };
-            next = take
-                .last()
-                .map(|(s, _, score)| format!("{score}:{s}"))
-                .unwrap_or_default();
-            has_more = more;
-            for (_, id, _) in take {
-                if let Some(view) = video_row(c, viewer, id)? {
-                    views.push(view);
-                }
-            }
-        }
-        ScoreScope::Recommend => {
-            let mut stmt = c.prepare(
-                "SELECT seq, id, score FROM (
-                   SELECT v.seq AS seq, v.id AS id,
-                          (SELECT COUNT(*) FROM video_likes l
-                           JOIN friends f ON f.user_id = ?1 AND f.friend_id = l.user_id
-                           WHERE l.video_id = v.id) * 100
-                        + (SELECT COUNT(*) FROM video_likes l WHERE l.video_id = v.id) * 3
-                        + (SELECT COUNT(*) FROM video_comments cm
-                           WHERE cm.video_id = v.id AND cm.deleted = 0) AS score
-                   FROM video_posts v
-                   WHERE v.state = 'published'
-                     AND v.author <> ?1
-                     AND v.author NOT IN (SELECT creator FROM video_follows WHERE user_id = ?1)
-                     AND EXISTS (SELECT 1 FROM video_likes l
-                                 JOIN friends f ON f.user_id = ?1
-                                               AND f.friend_id = l.user_id
-                                 WHERE l.video_id = v.id)
-                     AND NOT EXISTS (SELECT 1 FROM blocks b
-                          WHERE (b.user_id = ?1 AND b.blocked_id = v.author)
-                             OR (b.user_id = v.author AND b.blocked_id = ?1))
-                 )
-                 WHERE score < ?2 OR (score = ?2 AND seq < ?3)
-                 ORDER BY score DESC, seq DESC LIMIT ?4",
-            )?;
-            let rows = stmt
-                .query_map(params![viewer, before_score, before_seq, limit + 1], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let more = rows.len() as i64 > limit;
-            let take = if more {
-                &rows[..rows.len() - 1]
-            } else {
-                &rows[..]
-            };
-            next = take
-                .last()
-                .map(|(s, _, score)| format!("{score}:{s}"))
-                .unwrap_or_default();
-            has_more = more;
-            for (_, id, _) in take {
-                if let Some(mut view) = video_row(c, viewer, id)? {
-                    // 能进推荐页的前提就是有好友看过（上面的 EXISTS），reason 固定。
-                    view.reason = "friends_liked".into();
-                    views.push(view);
-                }
-            }
+    for (_, id, _) in take {
+        if let Some(mut view) = video_row(c, viewer, id)? {
+            view.reason = reason.to_string();
+            views.push(view);
         }
     }
     Ok((views, next, has_more))
 }
-
 fn finish(
     c: &Connection,
     viewer: &str,
@@ -612,12 +606,6 @@ fn finish(
     }
     Ok((views, next, has_more))
 }
-
-/// `video_row` 里播放地址段的下标（与 SELECT 列序一致）。
-const COL_PLAYLIST_URL: usize = 11;
-const COL_PLAY_URL: usize = 12;
-const COL_DURATION_MS: usize = 13;
-const COL_THUMB_URL: usize = 14;
 
 /// 发布门禁：媒体必须是本人上传，且转码已 succeeded（唯一播放依据）。
 fn check_video_gate(c: &Connection, author: &str, media_id: &str) -> Result<()> {
@@ -647,25 +635,30 @@ fn check_video_gate(c: &Connection, author: &str, media_id: &str) -> Result<()> 
     }
 }
 
-/// 一行视频视图的裸列（与 SELECT 顺序一致，命名靠解构）。
-type VideoRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    String,
-    String,
-    i64,
-    String,
-);
+/// `video_row` 里播放地址段的下标（与 SELECT 列序一致）。
+const COL_PLAYLIST_URL: usize = 11;
+const COL_PLAY_URL: usize = 12;
+const COL_DURATION_MS: usize = 13;
+const COL_THUMB_URL: usize = 14;
 
+/// `video_row` 查出的裸行；字段名与 SELECT 列序一一对应。
+struct VideoRow {
+    id: String,
+    author: String,
+    author_name: String,
+    caption: String,
+    state: String,
+    created_at: i64,
+    like_count: i64,
+    comment_count: i64,
+    liked: bool,
+    live: bool,
+    playable: bool,
+    playlist_url: String,
+    play_url: String,
+    duration_ms: i64,
+    thumb_url: String,
+}
 fn video_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<VideoView>> {
     let row: Option<VideoRow> = c
         .query_row(
@@ -687,62 +680,45 @@ fn video_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<VideoView>
              WHERE v.id = ?1 AND v.state = 'published'",
             params![id, viewer],
             |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                    r.get(9)?,
-                    r.get(10)?,
-                    r.get(COL_PLAYLIST_URL)?,
-                    r.get(COL_PLAY_URL)?,
-                    r.get(COL_DURATION_MS)?,
-                    r.get(COL_THUMB_URL)?,
-                ))
+                Ok(VideoRow {
+                    id: r.get(0)?,
+                    author: r.get(1)?,
+                    author_name: r.get(2)?,
+                    caption: r.get(3)?,
+                    state: r.get(4)?,
+                    created_at: r.get(5)?,
+                    like_count: r.get(6)?,
+                    comment_count: r.get(7)?,
+                    liked: r.get::<_, i64>(8)? != 0,
+                    live: r.get::<_, i64>(9)? != 0,
+                    playable: r.get::<_, i64>(10)? != 0,
+                    playlist_url: r.get(COL_PLAYLIST_URL)?,
+                    play_url: r.get(COL_PLAY_URL)?,
+                    duration_ms: r.get(COL_DURATION_MS)?,
+                    thumb_url: r.get(COL_THUMB_URL)?,
+                })
             },
         )
         .optional()?;
-    let Some((
-        id,
-        author,
-        author_name,
-        caption,
-        state,
-        created_at,
-        like_count,
-        comment_count,
-        liked,
-        live,
-        playable,
-        playlist_url,
-        play_url,
-        duration_ms,
-        thumb_url,
-    )) = row
-    else {
+    let Some(row) = row else {
         return Ok(None);
     };
     Ok(Some(VideoView {
-        id,
-        author,
-        author_name,
-        caption,
-        state,
-        created_at,
-        like_count,
-        comment_count,
-        liked: liked != 0,
-        live: live != 0,
-        playable: playable != 0,
-        playlist_url,
-        play_url,
-        thumb_url,
-        duration_ms,
+        id: row.id,
+        author: row.author,
+        author_name: row.author_name,
+        caption: row.caption,
+        state: row.state,
+        created_at: row.created_at,
+        like_count: row.like_count,
+        comment_count: row.comment_count,
+        liked: row.liked,
+        live: row.live,
+        playable: row.playable,
+        playlist_url: row.playlist_url,
+        play_url: row.play_url,
+        thumb_url: row.thumb_url,
+        duration_ms: row.duration_ms,
         reason: String::new(),
     }))
 }
@@ -781,14 +757,9 @@ async fn feed(
         &authed.user_id,
         &q.mode,
         q.cursor.as_deref(),
-        q.limit.unwrap_or(DEFAULT_PAGE),
+        q.limit.unwrap_or(page::DEFAULT_PAGE),
     )?;
-    Ok(Json(serde_json::json!({
-        "items": items,
-        "next_cursor": next,
-        "has_more": has_more,
-        "snapshot_version": wxlike_core::types::now_ms(),
-    })))
+    Ok(page::listing_response(items, next, has_more))
 }
 
 async fn one(
@@ -845,7 +816,7 @@ async fn comments(
     if !platform.video_visible(&authed.user_id, &id)? {
         return Err(ApiError::from(PlatformError::NotFound));
     }
-    let items = platform.video_comments(&id, q.cursor, q.limit.unwrap_or(DEFAULT_PAGE))?;
+    let items = platform.video_comments(&id, q.cursor, q.limit.unwrap_or(page::DEFAULT_PAGE))?;
     let next = items.last().map(|c| c.seq).unwrap_or(0);
     Ok(Json(
         serde_json::json!({ "items": items, "next_cursor": next }),
