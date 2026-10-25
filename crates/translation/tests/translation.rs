@@ -127,9 +127,13 @@ async fn invalid_requests_are_rejected_before_provider_call() {
         assert_eq!(err.code(), Code::InvalidArgument);
     }
 
-    let mut config = TranslationConfig::default();
-    config.max_text_bytes = 4;
-    let small = TranslationService::new(config, Some(Stub::ok()));
+    let small = TranslationService::new(
+        TranslationConfig {
+            max_text_bytes: 4,
+            ..Default::default()
+        },
+        Some(Stub::ok()),
+    );
     small.grant_consent("u1", 0, None).unwrap();
     let err = small
         .run("u1", request("hello", None, "zh"), &CancelToken::new(), 10)
@@ -253,10 +257,11 @@ async fn invalid_provider_output_is_internal_not_sample_text() {
 
 #[tokio::test]
 async fn timeout_and_cancel_release_the_provider_permit() {
-    let mut config = TranslationConfig::default();
-    config.timeout_ms = 20;
     let slow = TranslationService::new(
-        config,
+        TranslationConfig {
+            timeout_ms: 20,
+            ..Default::default()
+        },
         Some(Stub {
             delay_ms: 500,
             ..Stub::ok()
@@ -271,11 +276,12 @@ async fn timeout_and_cancel_release_the_provider_permit() {
         Code::Timeout
     );
 
-    let mut config = TranslationConfig::default();
-    config.max_concurrency = 1;
-    config.requests_per_minute = 100;
     let svc = TranslationService::new(
-        config,
+        TranslationConfig {
+            max_concurrency: 1,
+            requests_per_minute: 100,
+            ..Default::default()
+        },
         Some(Stub {
             delay_ms: 5_000,
             ..Stub::ok()
@@ -300,11 +306,12 @@ async fn timeout_and_cancel_release_the_provider_permit() {
 
 #[tokio::test]
 async fn rate_limit_per_actor_and_concurrency_limit() {
-    let mut config = TranslationConfig::default();
-    config.requests_per_minute = 2;
-    config.max_concurrency = 1;
     let svc = TranslationService::new(
-        config,
+        TranslationConfig {
+            requests_per_minute: 2,
+            max_concurrency: 1,
+            ..Default::default()
+        },
         Some(Stub {
             delay_ms: 30,
             ..Stub::ok()

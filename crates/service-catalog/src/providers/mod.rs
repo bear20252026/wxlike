@@ -1,7 +1,7 @@
 /// 四个供应商适配器共享的内部导入面：导入头收成一行，类型与工具只在
 /// 这里列一次，适配器各自专注业务逻辑。
 pub(crate) mod prelude {
-    pub use crate::catalog::{ServiceCard, ServiceType};
+    pub use crate::catalog::ServiceType;
     pub use crate::clock::Clock;
     pub use crate::error::{Result, ServiceError, ServiceErrorCode as Code};
     pub use crate::ids::new_id;

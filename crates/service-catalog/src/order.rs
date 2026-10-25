@@ -651,7 +651,7 @@ impl OrderService {
         order.transition(OrderState::PendingReconciliation, self.clock.now_ms());
         order.support_ticket = self.ticket(actor, &order.order_id, reason).await;
         self.store(order)?;
-        Err(map_provider_error(&provider, err))
+        Err(map_provider_error(provider, err))
     }
 
     async fn apply_provider_status(

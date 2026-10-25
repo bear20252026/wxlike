@@ -6,7 +6,7 @@ pub const MAX_PAYLOAD_BYTES: usize = 2048;
 pub const MAX_ID_LEN: usize = 128;
 pub const MAX_PATH_LEN: usize = 256;
 pub const MAX_TEXT_BYTES: usize = 4096;
-pub const MAX_AMOUNT_MINOR: i64 = 100_000_000_00;
+pub const MAX_AMOUNT_MINOR: i64 = 10_000_000_000;
 
 /// 业务二维码分型。好友/群/支付/小程序码必须分型解析，不能共用一个
 /// "打开任意链接"入口。

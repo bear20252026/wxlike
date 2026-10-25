@@ -220,8 +220,10 @@ async fn empty_or_oversized_payload_and_bad_language_are_invalid() {
         .unwrap_err();
     assert_eq!(empty.code(), Code::InvalidArgument);
 
-    let mut config = VisionConfig::default();
-    config.max_image_bytes = 4;
+    let config = VisionConfig {
+        max_image_bytes: 4,
+        ..Default::default()
+    };
     let small = VisionService::new(config, Some(Stub::ok()));
     small.grant_consent("u1", 0, None).unwrap();
     let too_big = small
@@ -300,8 +302,10 @@ async fn invalid_provider_confidence_is_internal_error_not_a_sample_result() {
 
 #[tokio::test]
 async fn provider_timeout_releases_and_reports_timeout() {
-    let mut config = VisionConfig::default();
-    config.timeout_ms = 20;
+    let config = VisionConfig {
+        timeout_ms: 20,
+        ..Default::default()
+    };
     let svc = VisionService::new(
         config,
         Some(Stub {
@@ -319,9 +323,11 @@ async fn provider_timeout_releases_and_reports_timeout() {
 
 #[tokio::test]
 async fn cancelled_run_returns_cancelled_and_releases_permit() {
-    let mut config = VisionConfig::default();
-    config.max_concurrency = 1;
-    config.requests_per_minute = 100;
+    let config = VisionConfig {
+        max_concurrency: 1,
+        requests_per_minute: 100,
+        ..Default::default()
+    };
     let svc = VisionService::new(
         config,
         Some(Stub {
@@ -345,9 +351,11 @@ async fn cancelled_run_returns_cancelled_and_releases_permit() {
 
 #[tokio::test]
 async fn concurrency_limit_is_enforced_and_recovers() {
-    let mut config = VisionConfig::default();
-    config.max_concurrency = 1;
-    config.timeout_ms = 5_000;
+    let config = VisionConfig {
+        max_concurrency: 1,
+        timeout_ms: 5_000,
+        ..Default::default()
+    };
     let svc = std::sync::Arc::new(VisionService::new(
         config,
         Some(Stub {
@@ -380,8 +388,10 @@ async fn concurrency_limit_is_enforced_and_recovers() {
 
 #[tokio::test]
 async fn rate_limit_counts_requests_per_actor() {
-    let mut config = VisionConfig::default();
-    config.requests_per_minute = 2;
+    let config = VisionConfig {
+        requests_per_minute: 2,
+        ..Default::default()
+    };
     let svc = VisionService::new(config, Some(Stub::ok()));
     svc.grant_consent("u1", 0, None).unwrap();
     svc.grant_consent("u2", 0, None).unwrap();
@@ -412,8 +422,10 @@ async fn rate_limit_counts_requests_per_actor() {
 
 #[tokio::test]
 async fn jobs_are_owner_scoped_expire_and_can_be_deleted() {
-    let mut config = VisionConfig::default();
-    config.result_ttl_ms = 1_000;
+    let config = VisionConfig {
+        result_ttl_ms: 1_000,
+        ..Default::default()
+    };
     let svc = VisionService::new(config, Some(Stub::ok()));
     svc.grant_consent("u1", 0, None).unwrap();
     let result = svc
@@ -441,8 +453,10 @@ async fn jobs_are_owner_scoped_expire_and_can_be_deleted() {
 
 #[tokio::test]
 async fn purge_expired_removes_only_stale_jobs() {
-    let mut config = VisionConfig::default();
-    config.requests_per_minute = 10;
+    let config = VisionConfig {
+        requests_per_minute: 10,
+        ..Default::default()
+    };
     let svc = VisionService::new(config, Some(Stub::ok()));
     svc.grant_consent("u1", 0, None).unwrap();
     let stale = svc

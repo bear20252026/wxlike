@@ -6,7 +6,6 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::prelude::*;
 
