@@ -1,0 +1,16 @@
+{
+  "request": {
+    "purpose": "file",
+    "name": "quarterly-report.pdf",
+    "size": 536870912,
+    "mime": "application/pdf",
+    "digest": "9f2c1a4b3d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819a2b3c4d5e6f70"
+  },
+  "response": {
+    "upload_id": "up_3f9c1d2e4b5a6f70",
+    "chunk_size": 8388608,
+    "offset": 0,
+    "status": "open",
+    "expires_at": 1766630400000
+  }
+}

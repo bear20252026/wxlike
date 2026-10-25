@@ -1,0 +1,26 @@
+{
+  "scenario": "boundary-race",
+  "contract": "commerce/v1",
+  "action": "redpacket.claim",
+  "setup": {
+    "total": { "minor": "1", "currency": "CNY" },
+    "count": 1,
+    "members": ["alice", "bob", "carol"]
+  },
+  "requests": [
+    { "actor": "bob", "packet_id": "rp_1" },
+    { "actor": "carol", "packet_id": "rp_1" }
+  ],
+  "expected": {
+    "exactly_one_success": true,
+    "loser_error": ["CONFLICT", "EXPIRED"],
+    "packet_status": "depleted",
+    "claims": 1
+  },
+  "invariants": [
+    "份额金额始终为正",
+    "同一用户重复领取返回首次结果",
+    "分配合计严格等于总额",
+    "过期退回只退未领取部分"
+  ]
+}
