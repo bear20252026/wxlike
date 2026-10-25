@@ -18,13 +18,22 @@ pub mod audio_io;
 /// is the interface point for relayed setups (no bundled TURN server —
 /// running one is an ops decision, see docs).
 pub mod call;
+pub mod call_session;
+pub mod call_store;
 pub mod capture;
+pub mod compat;
+pub mod device;
 pub mod dsp;
+pub mod e2ee;
 pub mod host;
 pub mod ice;
+pub mod live_session;
 pub mod media;
+pub mod recording;
 pub mod room;
 pub mod sfu;
 pub mod signal;
 pub mod state;
+pub mod token;
 pub mod turn;
+pub mod turn_auth;

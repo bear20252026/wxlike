@@ -1,0 +1,69 @@
+# G04 media domain contract — events
+# contract_version: media-v1 (proposal)
+# 事件走 server outbox（G00），消费者按 event_id 去重；本文件先冻结 schema 与可见性。
+
+events:
+  - event_id: media.object.ready
+    version: 1
+    aggregate: media_object
+    visibility: owner+audience
+    payload:
+      object_id: string
+      owner: string
+      size: u64
+      mime: string
+      digest: sha256-hex
+    consumers: [messaging(g03), content(g05), discovery(g07), clients]
+
+  - event_id: media.object.deleted
+    version: 1
+    aggregate: media_object
+    visibility: owner+audience
+    payload: { object_id: string, reason: gc|owner|restore }
+    consumers: [clients, search-index(g11), content(g05)]
+    notes: 引用计数为零后物理删除；消费方必须容忍 404 后重取
+
+  - event_id: media.ref.added
+    version: 1
+    aggregate: media_ref
+    visibility: audience
+    payload:
+      object_id: string
+      ref_type: message|file|post|avatar|backup|derived
+      ref_id: string
+      audience: {kind: user|conversation|group|public, id?: string}
+      purpose: string
+    consumers: [clients, files-center(g04)]
+
+  - event_id: media.ref.removed
+    version: 1
+    aggregate: media_ref
+    visibility: audience
+    payload: { object_id: string, ref_type: string, ref_id: string }
+    consumers: [clients, files-center(g04)]
+
+  - event_id: media.job.completed
+    version: 1
+    aggregate: media_job
+    visibility: owner+audience
+    payload:
+      job_id: string
+      object_id: string
+      preset: thumbnail|waveform|playback_360|playback_720|playback_1080
+      outputs: [{kind, object_id, size, digest, mime}]
+    consumers: [clients, messaging(g03)]
+    notes: 长操作事件；失败不发 success，另发 media.job.failed
+
+  - event_id: media.job.failed
+    version: 1
+    aggregate: media_job
+    visibility: owner
+    payload: { job_id: string, object_id: string, preset: string, attempts: u32, terminal: bool }
+    consumers: [clients]
+
+  - event_id: media.backup.completed
+    version: 1
+    aggregate: media_backup
+    visibility: owner
+    payload: { backup_id: string, entries: u32, package_digest: sha256-hex, encryption: {mode, key_ref} }
+    consumers: [clients, admin(g14)]

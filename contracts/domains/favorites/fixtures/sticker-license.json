@@ -1,0 +1,57 @@
+{
+  "contract_version": "favorites-v1",
+  "case": "表情包许可与安装序：非白名单 license 拒绝；他人媒体拒绝；安装幂等并保持用户序；删包后安装消失",
+  "setup": {
+    "users": ["creator", "fan"],
+    "media": [
+      { "id": "img_ok", "uploader": "creator", "content_type": "image/png" },
+      { "id": "img_foreign", "uploader": "somebody-else", "content_type": "image/png" }
+    ]
+  },
+  "steps": [
+    {
+      "command": "sticker.pack.create",
+      "actor": "creator",
+      "payload": { "name": "p", "license": "proprietary", "stickers": [{ "media_id": "img_ok" }] },
+      "expect": { "ok": false, "error": { "code": "bad_input" } }
+    },
+    {
+      "command": "sticker.pack.create",
+      "actor": "creator",
+      "payload": { "name": "p", "license": "cc0-1.0", "stickers": [{ "media_id": "img_foreign" }] },
+      "expect": { "ok": false, "error": { "code": "forbidden" } }
+    },
+    {
+      "command": "sticker.pack.create",
+      "actor": "creator",
+      "payload": { "name": "p", "license": "cc0-1.0", "stickers": [{ "media_id": "img_ok", "name": "cat" }] },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "sticker.install",
+      "actor": "fan",
+      "expect": { "ok": true, "data": { "added": 1 } }
+    },
+    {
+      "command": "sticker.install",
+      "actor": "fan",
+      "expect": { "ok": true, "data": { "added": 1, "comment": "幂等：仍是同一行" } }
+    },
+    {
+      "command": "sticker.send",
+      "actor": "fan",
+      "payload": { "sticker_id": "已安装的id" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "sticker.pack.delete",
+      "actor": "creator",
+      "expect": { "ok": true }
+    },
+    {
+      "command": "sticker.list",
+      "actor": "fan",
+      "expect": { "ok": true, "data": { "stickers": [] } }
+    }
+  ]
+}

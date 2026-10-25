@@ -34,6 +34,58 @@ pub enum WireFrame {
     Msg(Envelope),
     /// Keepalive; also materializes the QUIC stream (lazy-open semantics).
     Ping,
+    // ---------------------------------------------------------------------
+    // G03-04 / protocol v3. These are **appended**: bincode encodes an enum by
+    // variant index, so every v2 frame keeps its exact bytes and an old client
+    // keeps working. The hub only sends a v3 frame to a peer that declared v3
+    // in [`WireFrame::ClientHello`] (see `crate::proto::Negotiated`).
+    // ---------------------------------------------------------------------
+    /// First frame of a v3 handshake. **The device identifies itself, the user
+    /// never does** — `user_id` still comes only from the credential in
+    /// [`WireFrame::Hello`]/[`WireFrame::Auth`].
+    ClientHello {
+        device_id: String,
+        /// Highest protocol the peer implements (2..=3).
+        protocol: u8,
+        /// `proto::caps_bits` of the peer's capabilities.
+        caps: u32,
+    },
+    /// Server-side authentication result for a v3 connection: this is where the
+    /// client learns who it is and which route generation it now holds.
+    ///
+    /// `generation` is the lease token for the route row: an old connection can
+    /// only clear the route if it still owns the generation (G03-04 要求 1).
+    Auth {
+        user_id: String,
+        device_id: String,
+        session_id: String,
+        version: u8,
+    },
+    /// Narrow the streams this connection wants. Scopes are opaque to the hub
+    /// (`conv:<id>`), and the server authorises each one — an unauthorised
+    /// scope is a close, not a silent drop.
+    Subscribe {
+        scopes: Vec<String>,
+    },
+    /// Server → client range hint: messages `from_seq..=to_seq` are available
+    /// for `conv_id`, and `gap` says "you are further behind than a page".
+    Event {
+        conv_id: String,
+        from_seq: u64,
+        to_seq: u64,
+        gap: bool,
+    },
+    /// Client → server: "I have persisted through `stored_cursor`". This is the
+    /// only acknowledgement that retires a parked frame (G03-02).
+    Ack {
+        conv_id: String,
+        stored_cursor: u64,
+    },
+    /// Client → server after a reconnect: send what is missing after `cursor`.
+    Resume {
+        conv_id: String,
+        cursor: u64,
+    },
 }
 
 impl WireFrame {

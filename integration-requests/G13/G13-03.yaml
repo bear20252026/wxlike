@@ -1,0 +1,99 @@
+card: G13-03
+issue: 177
+branch: feat/FP-G13-03
+contract_version: "g13/1"
+status: requested
+summary: >-
+  钱包、账单、银行卡、转账、收/付款码、红包与卡包页面已完成；金额全程整数
+  最小单位并只经 FormatPort 展示。支付 SDK 卡令牌、码图渲染与相册写入由
+  平台桥提供，业务状态以服务端支付意图为准。
+
+changed_paths:
+  - apps/mobile/lib/features/commerce/wallet_page.dart
+  - apps/mobile/lib/features/commerce/pay_page.dart
+  - apps/mobile/lib/features/commerce/transfer_page.dart
+  - apps/mobile/lib/features/commerce/redpacket_page.dart
+  - apps/mobile/lib/features/commerce/cards_page.dart
+  - apps/mobile/lib/features/content/g13/
+  - apps/mobile/test/g13/
+
+requests:
+  - id: G13-03-R1
+    kind: ffi-bindings
+    target: G01
+    status: requested
+    reason: 金额、余额与支付状态是资金事实，Dart 侧不得计算或推断。
+    change:
+      commands:
+        - commerce.wallet
+        - commerce.bills
+        - commerce.cards
+        - commerce.addCard
+        - commerce.removeCard
+        - commerce.prepareTransfer
+        - commerce.executePayment
+        - commerce.intent
+        - commerce.redPacket
+        - commerce.createRedPacket
+        - commerce.claimRedPacket
+        - commerce.entitlements
+        - commerce.redeem
+        - commerce.paymentCode
+        - commerce.saveQr
+        - format.money
+    note: >-
+      executePayment 只有返回 SUCCEEDED 才算到账；PENDING_RECONCILIATION 必须
+      原样透出，界面不重试扣款（重试同一幂等键只查询同一意图）。
+
+  - id: G13-03-R2
+    kind: platform-bridge
+    target: G12-05
+    status: requested
+    reason: 卡号令牌化、码图渲染和相册写入只能在平台侧完成。
+    change:
+      - card_tokenizer: 银行卡录入 -> 一次性 token（Dart 不接触完整卡号）
+      - qr_renderer: 由 payload 生成标准可扫码图（收/付款码、红包码）
+      - album_writer: 保存码图/二维码到系统相册，需相册权限
+      - wallet_lock: 进入钱包前的本地验证（服务端 walletLock 开关已持久化）
+    note: 未接入时页面显示 PAY_SDK_NOT_WIRED / 二维码渲染未接入，不生成假码。
+
+  - id: G13-03-R3
+    kind: composition-root
+    target: G00
+    status: requested
+    reason: 钱包入口、转账入口与会话返回需要根导航配合。
+    change:
+      - mount_entry: me.wallet -> WalletPage
+      - mount_entry: me.bank_cards -> BankCardsPage
+      - mount_entry: me.card_pack -> EntitlementsPage
+      - mount_entry: chat.transfer -> TransferPage(convId, payee)
+      - mount_entry: chat.red_packet -> RedPacketCreatePage(convId)
+      - return_to: 转账/红包成功事件到达后回到原会话并插入业务卡片（不得固定示例会话）
+      - scan.payment -> PayPage（只展示，不自动扣款）
+
+upstream:
+  - G06-05 / G06-04 (钱包、支付意图、红包、卡包域服务)
+  - G12-05 (卡令牌/二维码渲染/相册)
+  - G05-05 (账单中的内容域引用)
+
+verification:
+  - flutter analyze（G13 归属文件 0 error）
+  - flutter test test/g13/core_test.dart test/g13/transfer_page_test.dart test/g13/wallet_page_test.dart
+  - 真机：付款码可被标准扫码器识别；红包并发抢领结果一致；虚拟币与真钱分栏
+  - 上游未合入前不得标 ACCEPTED
+
+notes:
+  - 转账键盘输入用 parseMinorAmount 做整数解析，超过两位小数直接禁用提交。
+  - 金额/备注/付款方式任一变化都会轮换幂等键；同一次确认的重试复用同一键。
+  - 账单分页使用服务端 next_cursor，不用页码猜测。
+
+entries:
+  implemented:
+    - {entry_id: SEED-0224, action_id: commerce.entitlement.redeem, page: EntitlementsPage/验票}
+    - {entry_id: SEED-0265, action_id: commerce.transfer.prepare, page: TransferPage/校验并出确认票据}
+    - {entry_id: SEED-0270, action_id: commerce.transfer.confirm, page: TransferPage/仅 SUCCEEDED 后回会话}
+  not_covered:
+    - SEED-0204 更多收付款设置：契约无该端点，入口未摆放
+    - SEED-0209 更多红包设置：契约无该端点，入口未摆放
+    - SEED-0212 回一个红包：本卡未实现回复红包流程，保留为后续卡
+

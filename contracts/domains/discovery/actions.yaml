@@ -1,0 +1,526 @@
+# G07 discovery 域 action 契约草案（待 G00-03 冻结为 contract-v1）。
+# 字段与 crates/features/discovery、crates/vision、crates/translation 的公开类型一一对应；
+# 不在此文件声明的字段，服务端不得擅自返回。
+schema_version: 1
+contract_version: g07-draft-1
+owner: G07
+domain: discovery
+
+common:
+  actor_from: authenticated_session
+  idempotency_key_scope: [actor, action_id, idempotency_key]
+  audit: metadata_only_no_user_content_no_token
+  pagination: {items: array, next_cursor: opaque, has_more: bool, snapshot_version: string}
+  errors:
+    - UNAUTHENTICATED
+    - FORBIDDEN
+    - INVALID_ARGUMENT
+    - NOT_FOUND
+    - CONFLICT
+    - EXPIRED
+    - RATE_LIMITED
+    - BLOCKED_EXTERNAL
+    - DEPENDENCY_UNAVAILABLE
+    - CANCELLED
+    - TIMEOUT
+    - CONSENT_REQUIRED
+
+actions:
+  # ---------- G07-01 二维码与安全深链 ----------
+  - action_id: discovery.scan.decode
+    description: 相机帧或相册图片解码；只返回待确认动作，不执行链接。
+    params:
+      source: {type: enum, values: [camera_frame, album_image, raw_text]}
+      image: {type: bytes_ref, required_if: "source in {camera_frame, album_image}", note: 请求体上传，落对象存储由 G04 处理}
+      text: {type: string, required_if: "source == raw_text", max_bytes: 4096}
+    result:
+      kind: {type: enum, values: [friend, group, payment, miniapp, external, text]}
+      action: {type: object, note: 与 wire.rs ScanAction 同构}
+      requires_confirmation: {type: bool}
+      elapsed_ms: {type: uint}
+    scopes: [discovery.scan]
+    confirmation: required_before_any_navigation_or_payment
+    idempotency: read_only_except_payment_nonce_consumed_once
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND, EXPIRED, CONFLICT, BLOCKED_EXTERNAL]
+    tests: [discovery/tests/qr_scan.rs, fixtures/scan_replay_rejected.json]
+
+  - action_id: discovery.scan.confirm_external
+    description: 用户确认后校验 https 与域名白名单；不在白名单返回 BLOCKED_EXTERNAL。
+    params: {url: {type: string, max_bytes: 2048}}
+    result: {url: {type: string}}
+    scopes: [discovery.scan]
+    confirmation: explicit_user_tap
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, BLOCKED_EXTERNAL]
+    tests: [discovery/tests/qr_scan.rs, fixtures/deeplink_blocked.json]
+
+  - action_id: discovery.scan.approve_payment
+    description: 校验短时确认令牌，令牌绑定 actor/intent/amount/currency/payee。
+    params:
+      intent_id: {type: id, max_len: 128}
+      amount_minor: {type: int64, gt: 0}
+      currency: {type: string, len: 3, uppercase: true}
+      payee_id: {type: id, max_len: 128}
+      confirm_token: {type: string}
+    result: {intent_id: id, amount_minor: int64, currency: string, payee_id: id, approved_at_ms: int64}
+    scopes: [discovery.scan, payment.approve]
+    confirmation: one_time_token_bound_to_parameter_digest
+    idempotency: token_single_use; same token second call EXPIRED
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, EXPIRED, INVALID_ARGUMENT]
+    audit: no_token_no_payee_private_data
+
+  - action_id: discovery.qr.render
+    description: 渲染服务端签发的 wire payload 为 PNG；支持前景/背景色与 logo。
+    params:
+      wire: {type: string, max_bytes: 2048}
+      size: {type: uint, default: 640, max: 4096}
+      logo_ref: {type: object_ref, optional: true, note: logo 遮挡不超过 1/5}
+    result: {png_ref: object_ref, digest_sha256: hex64, width: uint, height: uint}
+    scopes: [discovery.qr.render]
+    confirmation: none
+    idempotency: deterministic_per_params
+    offline: local_render_allowed
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, BLOCKED_EXTERNAL]
+
+  # ---------- G07-02 模型服务 ----------
+  - action_id: discovery.vision.identify
+    description: 识物；无 provider 返回 DEPENDENCY_UNAVAILABLE，绝不返回样例结果。
+    params:
+      image: {type: bytes_ref, max_bytes: 20971520, mime: [image/jpeg, image/png, image/webp]}
+      consent: {type: bool, must_be: true}
+    result:
+      job_id: {type: id}
+      kind: {type: const, value: identify}
+      labels: {type: array, item: {name: string, confidence: float_0_1}}
+      provider: {type: string, max_len: 64}
+      expires_at_ms: {type: int64}
+    scopes: [discovery.vision]
+    confirmation: upload_consent_required
+    idempotency: read_only_no_persisted_input
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [CONSENT_REQUIRED, INVALID_ARGUMENT, RATE_LIMITED, TIMEOUT, CANCELLED, DEPENDENCY_UNAVAILABLE]
+    audit: actor_kind_bytes_only
+
+  - action_id: discovery.vision.ocr
+    description: OCR；语言标签最多 5 个，失败显式报错。
+    params:
+      image: {type: bytes_ref, max_bytes: 20971520}
+      languages: {type: array, item: string, max_items: 5, pattern: "^[a-z]{2}(-[A-Z]{2})?$"}
+      consent: {type: bool, must_be: true}
+    result:
+      job_id: id
+      kind: {type: const, value: ocr}
+      text: {type: string, max_bytes: 200000}
+      language: string
+      confidence: float_0_1
+      blocks: {type: array, item: {text: string, confidence: float_0_1}}
+      provider: string
+      expires_at_ms: int64
+    scopes: [discovery.vision]
+    confirmation: upload_consent_required
+    idempotency: read_only_no_persisted_input
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [CONSENT_REQUIRED, INVALID_ARGUMENT, RATE_LIMITED, TIMEOUT, CANCELLED, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.speech.transcribe
+    description: 语音转写；音频不落日志，结果按 TTL 删除。
+    params:
+      audio: {type: bytes_ref, max_bytes: 20971520, mime: [audio/wav, audio/mpeg, audio/ogg]}
+      consent: {type: bool, must_be: true}
+    result:
+      job_id: id
+      kind: {type: const, value: transcribe}
+      text: {type: string, max_bytes: 200000}
+      language: {type: string, optional: true}
+      confidence: float_0_1
+      provider: string
+      expires_at_ms: int64
+    scopes: [discovery.vision]
+    confirmation: upload_consent_required
+    idempotency: read_only_no_persisted_input
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [CONSENT_REQUIRED, INVALID_ARGUMENT, RATE_LIMITED, TIMEOUT, CANCELLED, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.translation.translate
+    description: 文本翻译；源语言可自动检测，译文不持久化。
+    params:
+      text: {type: string, max_bytes: 10000}
+      source_language: {type: string, optional: true}
+      target_language: {type: string, pattern: "^[a-z]{2}(-[A-Z]{2})?$"}
+      consent: {type: bool, must_be: true}
+    result: {text: string, source_language: string, target_language: string, confidence: float_0_1, provider: string}
+    scopes: [discovery.translation]
+    confirmation: upload_consent_required
+    idempotency: read_only_no_persisted_text
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [CONSENT_REQUIRED, INVALID_ARGUMENT, RATE_LIMITED, TIMEOUT, CANCELLED, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.vision.consent.grant
+    description: 显式授权上传；到期自动失效。
+    params: {ttl_ms: {type: int64, optional: true, default: 600000, min: 1}}
+    result: {expires_at_ms: int64}
+    scopes: [discovery.vision]
+    confirmation: explicit_consent_sheet
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT]
+
+  - action_id: discovery.vision.consent.revoke
+    description: 撤回上传授权并清理授权状态。
+    params: {}
+    result: {revoked: bool}
+    scopes: [discovery.vision]
+    confirmation: explicit_user_action
+    idempotency: idempotent
+    offline: local_revoke_queued_then_synced
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED]
+
+  - action_id: discovery.vision.data.delete
+    description: 删除该用户全部识别/转写结果、授权与限流痕迹。
+    params: {}
+    result: {deleted_jobs: uint, consent_revoked: bool}
+    scopes: [discovery.vision]
+    confirmation: explicit_destructive_confirmation
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED]
+
+  # ---------- G07-03 位置、附近与摇一摇 ----------
+  - action_id: discovery.geo.opt_in
+    description: 位置披露总开关；默认关闭。
+    params: {enabled: bool}
+    result: {enabled: bool}
+    scopes: [discovery.geo]
+    confirmation: explicit_os_and_product_consent
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT]
+
+  - action_id: discovery.geo.publish
+    description: 发布粗网格位置；只保存格子索引，不保存精确坐标。
+    params:
+      lat: {type: float, range: [-90, 90]}
+      lng: {type: float, range: [-180, 180]}
+      visibility: {type: enum, values: [friends, everyone]}
+      ttl_ms: {type: int64, optional: true, max: 3600000}
+    result: {cell: {lat_idx: int32, lng_idx: int32}, visibility: string, expires_at_ms: int64, updated_at_ms: int64}
+    scopes: [discovery.geo]
+    confirmation: opt_in_required
+    idempotency: last_write_wins_per_actor
+    offline: rejected
+    platforms: [android, ios]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.geo.revoke
+    description: 撤回授权并立即删除可发现状态。
+    params: {}
+    result: {revoked: bool}
+    scopes: [discovery.geo]
+    confirmation: explicit_user_action
+    idempotency: idempotent
+    offline: local_first_then_synced
+    platforms: [android, ios]
+    errors: [DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.geo.nearby
+    description: 返回粗网格与距离档；限速，过滤拉黑与过期。
+    params:
+      lat: {type: float, range: [-90, 90]}
+      lng: {type: float, range: [-180, 180]}
+      radius_m: {type: float, gt: 0, max: 10000}
+    result:
+      items: {type: array, item: {user_id: id, cell: {lat_idx: int32, lng_idx: int32}, distance_band: enum_under500_1k_3k_10k}}
+    scopes: [discovery.geo]
+    confirmation: none
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios]
+    errors: [INVALID_ARGUMENT, RATE_LIMITED, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.geo.block
+    description: 拉黑/取消拉黑；双向过滤附近结果。
+    params: {target_user_id: id, blocked: bool}
+    result: {target_user_id: id, blocked: bool}
+    scopes: [discovery.geo]
+    confirmation: none
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios]
+    errors: [INVALID_ARGUMENT, UNAUTHORIZED]
+
+  - action_id: discovery.geo.report
+    description: 骚扰举报；记录原因与时间供追溯。
+    params: {target_user_id: id, reason: {type: string, max_bytes: 200}}
+    result: {report_id: id, target_user_id: id, reported_at_ms: int64}
+    scopes: [discovery.geo]
+    confirmation: explicit_user_action
+    idempotency: one_report_per_actor_target_window
+    offline: queued_then_synced
+    platforms: [android, ios]
+    errors: [INVALID_ARGUMENT, UNAUTHORIZED]
+
+  - action_id: discovery.match.start
+    description: 摇一摇开始；校验真实动作幅度与采样时间，进入 30 秒窗口。
+    params: {magnitude_g: {type: float, min: 2.5}, sampled_at_ms: {type: int64}}
+    result: {ticket_id: id, expires_at_ms: int64}
+    scopes: [discovery.match]
+    confirmation: user_initiated_gesture
+    idempotency: one_active_ticket_per_actor; 60s cooldown
+    offline: rejected
+    platforms: [android, ios]
+    errors: [INVALID_ARGUMENT, CONFLICT, RATE_LIMITED]
+
+  - action_id: discovery.match.join
+    description: 加入摇动窗口；只允许窗口内双人配对。
+    params: {ticket_id: id}
+    result: {proposal_id: id, needs_host: bool, needs_guest: bool}
+    scopes: [discovery.match]
+    confirmation: user_initiated_gesture
+    idempotency: one_proposal_per_ticket_pair
+    offline: rejected
+    platforms: [android, ios]
+    errors: [NOT_FOUND, CONFLICT, EXPIRED]
+
+  - action_id: discovery.match.confirm
+    description: 双边确认后才创建匹配；匹配关系由 G02 落库。
+    params: {proposal_id: id}
+    result: {state: enum, values: [pending, matched], match_id: id, users: [id, id]}
+    scopes: [discovery.match]
+    confirmation: explicit_bilateral_confirm
+    idempotency: repeated_confirm_returns_same_match
+    offline: rejected
+    platforms: [android, ios]
+    errors: [NOT_FOUND, CONFLICT, EXPIRED]
+
+  - action_id: discovery.match.cancel
+    description: 取消摇一摇窗口，立即不可再被匹配。
+    params: {ticket_id: id}
+    result: {cancelled: bool}
+    scopes: [discovery.match]
+    confirmation: none
+    idempotency: idempotent
+    offline: local_first_then_synced
+    platforms: [android, ios]
+    errors: [NOT_FOUND]
+
+  # ---------- G07-08 位置消息、POI、导航与实时共享 ----------
+  - action_id: discovery.location.poi_search
+    description: 真实 POI 端口搜索；坐标必须带坐标系，不混用。
+    params:
+      query: {type: string, max_bytes: 128}
+      near: {lat: float, lng: float, system: enum_wgs84_gcj02_bd09}
+      limit: {type: uint, max: 30}
+    result:
+      items: {type: array, item: {poi_id: id, name: string, address: string, coord: {lat: float, lng: float, system: string}, category: string}}
+    scopes: [discovery.location]
+    confirmation: none
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios, desktop]
+    errors: [INVALID_ARGUMENT, DEPENDENCY_UNAVAILABLE, BLOCKED_EXTERNAL]
+
+  - action_id: discovery.location.navigate
+    description: 经受限 OS 深链或真实导航组件打开；地图 provider 必须匹配坐标系。
+    params:
+      provider: {type: enum, values: [amap, baidu, apple]}
+      coord: {lat: float, lng: float, system: enum_wgs84_gcj02_bd09}
+      name: {type: string, max_bytes: 128}
+    result: {opened: bool, provider: string}
+    scopes: [discovery.location]
+    confirmation: explicit_user_tap
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios]
+    errors: [INVALID_ARGUMENT, DEPENDENCY_UNAVAILABLE, BLOCKED_EXTERNAL]
+
+  - action_id: discovery.share.start
+    description: 发起实时共享；成员来自 G03 会话授权集，单人单活跃会话。
+    params:
+      conversation_id: id
+      allowed_members: {type: array, item: id, max_items: 20}
+      ttl_ms: {type: int64, optional: true, max: 3600000}
+      interval_ms: {type: int64, optional: true, min: 3000}
+      precision: {type: enum, values: [exact, approx_100m]}
+    result: {share_id: id, expires_at_ms: int64, interval_ms: int64, precision: string, background_limited: bool, state: string}
+    scopes: [discovery.share]
+    confirmation: explicit_join_and_os_location_permission
+    idempotency: one_active_session_per_host
+    offline: rejected
+    platforms: [android, ios]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT, CONFLICT, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.share.join
+    description: 显式加入才可读写该会话位置。
+    params: {share_id: id}
+    result: {share_id: id, members: array, expires_at_ms: int64, state: string}
+    scopes: [discovery.share]
+    confirmation: explicit_user_accept
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios]
+    errors: [FORBIDDEN, NOT_FOUND, EXPIRED]
+
+  - action_id: discovery.share.update
+    description: 更新自身位置；断网不得伪造新位置。
+    params:
+      share_id: id
+      coord: {lat: float, lng: float, system: enum_wgs84_gcj02_bd09}
+      accuracy_m: {type: float, gt: 0, max: 1000}
+      online: {type: bool}
+    result: {user_id: id, seq: uint64, updated_at_ms: int64, stale: bool, precision_applied: string}
+    scopes: [discovery.share]
+    confirmation: os_location_permission
+    idempotency: seq_monotonic_per_session_user
+    offline: rejected_with_DEPENDENCY_UNAVAILABLE
+    platforms: [android, ios]
+    errors: [FORBIDDEN, INVALID_ARGUMENT, DEPENDENCY_UNAVAILABLE, EXPIRED]
+
+  - action_id: discovery.share.latest
+    description: 会话成员读取最新位置；过期成员/停止会话拒绝。
+    params: {share_id: id}
+    result:
+      items: {type: array, item: {user_id: id, coord: object, accuracy_m: float, seq: uint64, updated_at_ms: int64, stale: bool}}
+    scopes: [discovery.share]
+    confirmation: none
+    idempotency: read_only
+    offline: returns_last_known_with_timestamp
+    platforms: [android, ios]
+    errors: [FORBIDDEN, NOT_FOUND, EXPIRED]
+
+  - action_id: discovery.share.leave
+    description: 成员退出；退出后不再接收新位置。
+    params: {share_id: id}
+    result: {left: bool}
+    scopes: [discovery.share]
+    confirmation: explicit_user_action
+    idempotency: idempotent
+    offline: local_first_then_synced
+    platforms: [android, ios]
+    errors: [NOT_FOUND, UNAUTHORIZED]
+
+  - action_id: discovery.share.stop
+    description: 主持人停止会话；清停止任务并拒绝旧会话的后续更新。
+    params: {share_id: id}
+    result: {stopped: bool}
+    scopes: [discovery.share]
+    confirmation: explicit_user_action
+    idempotency: idempotent
+    offline: local_first_then_synced
+    platforms: [android, ios]
+    errors: [FORBIDDEN, NOT_FOUND]
+
+  # ---------- G07-09 名片二维码 ----------
+  - action_id: discovery.contact.create
+    description: 生成可撤销的 opaque capability 名片码，不含手机号等敏感字段。
+    params: {ttl_ms: {type: int64, min: 60000, max: 2592000000}}
+    result: {card_id: id, wire: string, expires_at_ms: int64}
+    scopes: [discovery.contact]
+    confirmation: none
+    idempotency: each_call_new_card; old_cards_remain_valid_until_revoked
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT]
+
+  - action_id: discovery.contact.render
+    description: 四样式渲染；对比度不足拒绝。
+    params: {card_id: id, style: {type: enum, values: [spring_green, ink_green, warm_sun, mist_blue]}, logo_ref: {type: object_ref, optional: true}}
+    result: {png_ref: object_ref, digest_sha256: hex64}
+    scopes: [discovery.contact]
+    confirmation: none
+    idempotency: deterministic_per_params
+    offline: local_render_allowed
+    platforms: [android, ios, desktop]
+    errors: [INVALID_ARGUMENT, EXPIRED, NOT_FOUND]
+
+  - action_id: discovery.contact.resolve
+    description: 扫码解析到用户资料引用；不授予读取全部资料权限。
+    params: {raw: {type: string, max_bytes: 2048}}
+    result: {user_id: id, card_id: id}
+    scopes: [discovery.contact]
+    confirmation: none_for_resolve; friend_request_is_separate
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND, EXPIRED]
+
+  - action_id: discovery.contact.rotate
+    description: 轮换旧码；旧码立即失效。
+    params: {ttl_ms: {type: int64, min: 60000, max: 2592000000}}
+    result: {card_id: id, wire: string, expires_at_ms: int64}
+    scopes: [discovery.contact]
+    confirmation: explicit_user_action
+    idempotency: rotate_invalidates_all_previous_cards
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT]
+
+  - action_id: discovery.contact.revoke_all
+    description: 撤销该用户全部名片码。
+    params: {}
+    result: {revoked: uint}
+    scopes: [discovery.contact]
+    confirmation: explicit_destructive_confirmation
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED]
+
+  - action_id: discovery.contact.request_friend
+    description: 扫码后显式发起好友申请，权限/限流/G02 规则全部由 G02 执行。
+    params: {card_id: id, target_user_id: id, message: {type: string, optional: true, max_bytes: 200}}
+    result: {request_id: id, state: string}
+    scopes: [discovery.contact, relations.friend_request]
+    confirmation: explicit_user_tap
+    idempotency: required; actor+target+card key
+    offline: queued_then_synced
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, EXPIRED, CONFLICT, RATE_LIMITED]
+    depends_on: [G02-02]
+
+  - action_id: discovery.contact.save
+    description: 实际写入系统相册；结果返回真实媒体 id。
+    params: {png_ref: object_ref}
+    result: {media_id: string}
+    scopes: [discovery.contact]
+    confirmation: os_photo_permission
+    idempotency: idempotent_per_media_digest
+    offline: local_write_then_sync
+    platforms: [android, ios, desktop]
+    errors: [UNAUTHORIZED, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: discovery.contact.share
+    description: 走受控系统分享或好友消息。
+    params: {png_ref: object_ref, target: {type: enum, values: [system_sheet, friend_message]}}
+    result: {shared: bool}
+    scopes: [discovery.contact]
+    confirmation: explicit_user_tap
+    idempotency: idempotent
+    offline: queued_then_synced
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, DEPENDENCY_UNAVAILABLE]
+
+gaps:
+  - action_id: discovery.location.send
+    status: NOT_IMPLEMENTED_IN_G07_BRANCH
+    reason: 固定位置快照消息由 G03 投递；G07 需要先把快照结构与权限校验契约化。
+    owner_after_freeze: G07 + G03
+    blocked_by: [G03-01]
+  - action_id: discovery.scan.camera_torch
+    status: PLATFORM_PORT_ONLY
+    reason: 相机/闪光灯由 PlatformPort 实现，本仓 G07 crate 只定义解码与限流。
+    blocked_by: [G13-06]

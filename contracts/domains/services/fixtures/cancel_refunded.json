@@ -1,0 +1,51 @@
+{
+  "fixture_id": "services.order.cancel_refund_reconciliation",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.order.cancel",
+  "category": "success_replay_failure",
+  "description": "取消与退款：供应商接受→按 refund_due 退款；退款失败→PENDING_RECONCILIATION+工单，不重复扣退。",
+  "cancel_refund_success": {
+    "request": { "order_id": "ord-<opaque>", "reason": "user changed mind" },
+    "expected": {
+      "order_state": "refunded",
+      "refund": { "refund_id": "rf-<opaque>", "amount_minor": 5000, "status": "succeeded" }
+    }
+  },
+  "cancel_before_any_payment": {
+    "request": { "order_id": "ord-<opaque>", "reason": "user changed mind" },
+    "expected": { "order_state": "cancelled", "refund": null }
+  },
+  "refund_failure": {
+    "action_id": "services.order.refund",
+    "precondition": "LedgerPayment.refund_fail=true",
+    "request": { "order_id": "ord-<opaque>", "reason": "vendor refund rejected" },
+    "expected_error": { "code": "DEPENDENCY_UNAVAILABLE", "detail": "<provider>: provider unavailable" },
+    "observable": {
+      "order_state": "pending_reconciliation",
+      "support_ticket": "tk-<opaque>",
+      "invariants": ["不自动重试退款", "query 恢复或人工对账后才能离开该状态"]
+    }
+  },
+  "replay_and_permission": [
+    {
+      "name": "cancel_already_refunded",
+      "request": { "order_id": "ord-<opaque>", "reason": "again" },
+      "expected": { "order_state": "refunded", "note": "幂等返回，不再退款" }
+    },
+    {
+      "name": "cancel_fulfilled_needs_refund",
+      "request": { "order_id": "ord-<fulfilled>", "reason": "no longer needed" },
+      "expected_error": { "code": "CONFLICT", "detail": "delivered order needs refund" }
+    },
+    {
+      "name": "cancel_pending_reconciliation",
+      "request": { "order_id": "ord-<reconciling>", "reason": "again" },
+      "expected_error": { "code": "CONFLICT", "detail": "order awaits reconciliation" }
+    },
+    {
+      "name": "foreign_order_not_found",
+      "request": { "actor": "usr-attacker", "order_id": "ord-<others>" },
+      "expected_error": { "code": "NOT_FOUND", "detail": "order not found" }
+    }
+  ]
+}

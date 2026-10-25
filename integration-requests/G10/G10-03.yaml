@@ -1,0 +1,29 @@
+# G10-03 ｜ 联系人、新朋友与群管理 ｜ 交给 G00 的根清单请求
+
+card: G10-03 (#157)
+branch: feat/FP-G10
+owner: G10
+contract_version: 1
+
+## 新增根依赖
+
+无。
+
+## 路由
+
+无新增；复用 `#/contacts`、`#/contacts/:userId`、`#/contacts/new`、`#/groups/:groupId`。
+
+## command 挂载
+
+无新增 Rust command。
+
+## schema 编号
+
+无新增 schema。
+
+## 涉及的动作（entry_id / action_id）
+
+- entry: contact list / friend requests / contact profile / group settings
+- action_id: relations.list, relations.requests.incoming, relations.request.send, relations.request.accept, relations.request.decline, relations.block, relations.note.set, relations.tag.set, relations.star.set, relations.profile, relations.common_groups, relations.group.members, relations.group.kick, relations.group.settings.set, messaging.conversation.ensure
+- events: contact.updated, friend_request.updated, group.members.updated, group.updated
+- 写操作幂等键约定：`relations.request.accept:<request_id>`、`relations.group.kick:<group_id>:<user_id>` 等（全部在 UI 侧生成，重复提交只发一次）。

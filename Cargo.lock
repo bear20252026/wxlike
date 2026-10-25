@@ -1860,6 +1860,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "g2gen"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7e0eb46f83a20260b850117d204366674e85d3a908d90865c78df9a6b1dfc"
+dependencies = [
+ "g2poly",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "g2p"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "539e2644c030d3bf4cd208cb842d2ce2f80e82e6e8472390bcef83ceba0d80ad"
+dependencies = [
+ "g2gen",
+ "g2poly",
+]
+
+[[package]]
+name = "g2poly"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3682,6 +3710,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+dependencies = [
+ "image",
+]
+
+[[package]]
 name = "quanta"
 version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4022,6 +4059,17 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rqrr"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d084c50c5cfa397a081850da329566c8667b0b6c4e81da16abff1fef27de93b"
+dependencies = [
+ "g2p",
+ "image",
+ "lru",
 ]
 
 [[package]]
@@ -6438,6 +6486,7 @@ dependencies = [
  "serde_json",
  "wxlike-client",
  "wxlike-cmd",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -6508,8 +6557,26 @@ dependencies = [
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "wxlike-types",
+]
+
+[[package]]
+name = "wxlike-commerce"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-ledger",
 ]
 
 [[package]]
@@ -6544,6 +6611,25 @@ dependencies = [
  "thiserror 2.0.21",
  "vodozemac",
  "wxlike-limits",
+]
+
+[[package]]
+name = "wxlike-discovery"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "hex",
+ "hmac 0.12.1",
+ "image",
+ "qrcode",
+ "rand 0.8.8",
+ "rqrr",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -6597,9 +6683,14 @@ dependencies = [
 name = "wxlike-ledger"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "wxlike-core",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -6610,9 +6701,35 @@ version = "0.1.0"
 name = "wxlike-mcp"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "wxlike-client",
  "wxlike-cmd",
+ "wxlike-types",
+]
+
+[[package]]
+name = "wxlike-media"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "hmac 0.12.1",
+ "http-body-util",
+ "libc",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "wxlike-api",
+ "wxlike-core",
 ]
 
 [[package]]
@@ -6625,6 +6742,21 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "wxlike-core",
+]
+
+[[package]]
+name = "wxlike-miniapps"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-dpage",
 ]
 
 [[package]]
@@ -6710,8 +6842,10 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-identity",
  "wxlike-message",
  "wxlike-moderation",
+ "wxlike-relations",
  "wxlike-report",
  "wxlike-risk",
  "wxlike-rtc",
@@ -6775,15 +6909,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chacha20poly1305 0.11.0",
  "cpal",
+ "hex",
  "hmac 0.12.1",
  "md-5",
  "nokhwa",
  "opus",
  "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
+ "sha2 0.10.9",
  "str0m",
  "thiserror 2.0.21",
  "tokio",
@@ -6856,6 +6994,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-service-catalog"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chacha20poly1305 0.10.1",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "wxlike-sfu"
 version = "0.1.0"
 dependencies = [
@@ -6866,6 +7020,19 @@ dependencies = [
  "thiserror 2.0.21",
  "wxlike-platform",
  "wxlike-rtc",
+]
+
+[[package]]
+name = "wxlike-translation"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "wxlike-vision",
 ]
 
 [[package]]
@@ -6899,6 +7066,18 @@ dependencies = [
  "ureq",
  "wxlike-api",
  "wxlike-core",
+]
+
+[[package]]
+name = "wxlike-vision"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

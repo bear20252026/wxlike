@@ -1,0 +1,30 @@
+{
+  "fixture_id": "discovery.scan.wire_v0_rejected",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.scan.decode",
+  "category": "old_version_compat",
+  "description": "旧版本 wire（v0）与未知查询键一律显式拒绝，不做静默兼容。",
+  "cases": [
+    {
+      "name": "old_wire_version",
+      "request": { "source": "raw_text", "text": "wxlike://v0/friend?p=<payload>&sig=<sig>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: wire version" }
+    },
+    {
+      "name": "unknown_query_key",
+      "request": { "source": "raw_text", "text": "wxlike://v1/friend?p=<payload>&sig=<sig>&utm=x" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: unknown query key" }
+    },
+    {
+      "name": "missing_signature",
+      "request": { "source": "raw_text", "text": "wxlike://v1/friend?p=<payload>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: query" }
+    },
+    {
+      "name": "tampered_payload",
+      "request": { "source": "raw_text", "text": "wxlike://v1/payment?p=<payload-flip-amount>&sig=<orig-sig>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: signature" }
+    }
+  ],
+  "invariants": ["验签先于业务解析", "kind 与 envelope 不一致也拒绝（qr kind mismatch）"]
+}

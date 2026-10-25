@@ -1,0 +1,37 @@
+task_id: G07-02
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/139"
+summary: 识物/OCR/语音转写/文本翻译域服务：consent 闸门、限流、超时取消、结果 TTL、一键删除；无 provider 显式 DEPENDENCY_UNAVAILABLE。
+new_dependencies:
+  - package: 沿用 G07-01 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  # 本分支未实现 HTTP 层；由 G00-04 装配。
+  - prefix: /api/v1/recognition
+    factory: PENDING_G00_ASSEMBLY (wxlike_vision::VisionService)
+  - prefix: /api/v1/translation
+    factory: PENDING_G00_ASSEMBLY (wxlike_translation::TranslationService)
+command_registration: wxlike_vision::register_commands      # 待 G00 装配时补该符号
+job_registration:
+  - name: vision.jobs.purge
+    note: VisionService::purge_expired 每分钟清理过期结果
+configuration:
+  - name: WXLIKE_VISION_PROVIDER_CREDENTIAL
+    value_type: secret_reference_only
+    note: 真实模型供应商凭据；缺省时服务保持 DEPENDENCY_UNAVAILABLE，绝不返回样例结果
+  - name: WXLIKE_TRANSLATION_PROVIDER_CREDENTIAL
+    value_type: secret_reference_only
+migration_proposals:
+  - schema/proposals/G07/discovery.sql   # discovery_vision_job / discovery_vision_consent 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: []   # entry_seed 中无 G07-02 直接条目；需 G00-01 扩量后才有关联 entry
+tests_evidence:
+  - crates/vision/tests/vision.rs（15 用例）
+  - crates/translation/tests/translation.rs（9 用例）
+compatibility: additive_new_domain
+rollback: remove_new_route_mount_disable_job
+external_blockers: [MODEL_PROVIDER_CREDENTIALS, MODEL_WEIGHTS]
+notes:
+  - 上传内容不落盘不落日志；审计只有 actor/kind/bytes
+  - 翻译与识别都要求显式 consent，到期自动失效
