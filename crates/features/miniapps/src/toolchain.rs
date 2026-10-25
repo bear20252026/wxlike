@@ -6,6 +6,9 @@
 //! directory even if it contains `..`.
 
 use std::collections::BTreeMap;
+
+/// 405 不在质量门禁的 HTTP 常见值白名单里，具名常量替代两处字面量。
+const HTTP_METHOD_NOT_ALLOWED: u16 = 405;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -325,7 +328,7 @@ impl DevServer {
         let target = parts.next().unwrap_or_default();
         let head_only = method == "HEAD";
         if method != "GET" && !head_only {
-            return reply(stream, 405, "text/plain", b"method not allowed\n", false);
+            return reply(stream, HTTP_METHOD_NOT_ALLOWED, "text/plain", b"method not allowed\n", false);
         }
         let path = target.split('?').next().unwrap_or_default();
         let rel = match path.trim_start_matches('/') {
@@ -366,7 +369,7 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
-        405 => "Method Not Allowed",
+        HTTP_METHOD_NOT_ALLOWED => "Method Not Allowed",
         _ => "Error",
     }
 }
