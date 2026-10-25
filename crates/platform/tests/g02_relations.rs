@@ -41,7 +41,7 @@ async fn visibility_is_owner_only_and_round_trips() {
     let app = app(state);
     let (alice, alice_tok) = signup(&app, "alice").await;
     let (bob, bob_tok) = signup(&app, "bob").await;
-    let gid = create_group(&app, &alice_tok, "私密群", &[bob.clone()]).await;
+    let gid = create_group(&app, &alice_tok, "私密群", std::slice::from_ref(&bob)).await;
 
     // 默认 public
     let (status, body) = group_info(&app, &alice_tok, &gid).await;
@@ -102,7 +102,7 @@ async fn dissolve_is_owner_only_and_marks_the_group() {
     let app = app(state);
     let (_alice, alice_tok) = signup(&app, "alice").await;
     let (bob, bob_tok) = signup(&app, "bob").await;
-    let gid = create_group(&app, &alice_tok, "要解散的群", &[bob.clone()]).await;
+    let gid = create_group(&app, &alice_tok, "要解散的群", std::slice::from_ref(&bob)).await;
 
     // 非群主不能解散
     let (status, _) = call(
@@ -274,7 +274,7 @@ async fn shared_groups_exclude_outsiders() {
     let (bob, _bob_tok) = signup(&app, "bob").await;
     let (carol, _carol_tok) = signup(&app, "carol").await;
 
-    let gid = create_group(&app, &alice_tok, "共同群", &[bob.clone()]).await;
+    let gid = create_group(&app, &alice_tok, "共同群", std::slice::from_ref(&bob)).await;
     let shared = state.shared_group_ids(&alice, &bob).unwrap();
     assert_eq!(shared, vec![gid.clone()]);
     // 非成员与谁都没有共同群
