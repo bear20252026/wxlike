@@ -79,3 +79,5 @@ SBOM、NOTICE、离线 advisories、authz，以及独立 Rust 安全测试。
 `all` 遇到数据缺失或网络异常返回 4，不会将门禁不可用降成警告。
 
 新增接线与负向验收证据见 `security/release-reviews/REVIEW-2026-10-25.md`。
+
+联网公告依照 OSV batch 契约逐生态/逐查询翻页；未知分级按实际 `policy.json` 阻断。单独与 all 两种入口的网络/数据异常均不能返回成功。

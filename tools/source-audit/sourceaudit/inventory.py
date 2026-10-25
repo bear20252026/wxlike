@@ -10,3 +10,9 @@ NPM_LOCKS = (
     ("design/ui-v2/prototype/package-lock.json", "design"),
     ("design/ui-v2/package-lock.json", "design-legacy"),
 )
+
+SURFACE_ECOSYSTEM = {
+    **{surface: "crates.io" for _, surface in CARGO_LOCKS},
+    **{surface: "npm" for _, surface in NPM_LOCKS},
+    "mobile": "Pub",
+}

@@ -14,7 +14,8 @@
     ],
     "yanked": "warn",
     "require_online_before_freeze": true,
-    "online_note": "冻结依赖/发版前必须去掉 --offline 重新联网复核一次；--offline 只用于日常提交与断网环境"
+    "online_note": "冻结依赖/发版前必须去掉 --offline 重新联网复核一次；--offline 只用于日常提交与断网环境",
+    "unverified": "block"
   },
   "surfaces": {
     "rust-root": "Cargo.lock（服务端 + 库 + WASM 目标）",
