@@ -1,0 +1,101 @@
+card: G13-02
+issue: 175
+branch: feat/FP-G13-02
+contract_version: "g13/1"
+status: requested
+summary: >-
+  视频号、直播与语音/视频通话页面已完成；播放器、摄像头/麦克风、HLS 拉流
+  由平台桥提供，业务状态（直播中、通话阶段、结束原因）来自 Rust 事件。
+  上游未接线时页面显示明确阻塞，不用本地计时器伪造状态。
+
+changed_paths:
+  - apps/mobile/lib/features/video/channels_page.dart
+  - apps/mobile/lib/features/video/live_page.dart
+  - apps/mobile/lib/features/calls/call_page.dart
+  - apps/mobile/lib/features/content/g13/
+  - apps/mobile/test/g13/
+
+requests:
+  - id: G13-02-R1
+    kind: ffi-bindings
+    target: G01
+    status: requested
+    reason: 视频/直播/通话都要求服务端状态与幂等操作，Dart 无独立鉴权通道。
+    change:
+      commands:
+        - video.feed
+        - video.get
+        - video.play
+        - video.stop
+        - live.state
+        - live.start
+        - live.stop
+        - live.join
+        - live.leave
+        - live.danmaku
+        - live.updates
+        - call.current
+        - call.updates
+        - call.start
+        - call.answer
+        - call.hangup
+        - call.mute
+        - call.speaker
+        - call.camera
+        - call.bluetooth
+        - call.flip
+        - call.minimize
+        - call.releaseMedia
+    note: >-
+      live.updates/call.updates 必须是服务端推动的长流；断线重连后的状态
+      必须重放当前快照，界面不自行推断 endedReason。
+
+  - id: G13-02-R2
+    kind: platform-bridge
+    target: G12-05
+    status: requested
+    reason: 解码器、摄像头、麦克风、音频路由只能由平台侧持有生命周期。
+    change:
+      - video_player: 单一解码器；start/stop 必须幂等，stop 返回后不得再送帧
+      - call_media: 摄像头/麦克风开关、前后摄切换、蓝牙路由、扬声器
+      - live_player: HLS 播放器 + 弹幕浮层
+      - permissions: RECORD_AUDIO/CAMERA 运行时授权与拒绝回调
+    note: 页面已注入 MediaSurfaceBuilder / releaseMedia 调用；桥接后需真机验证
+      硬件指示在挂断/离页后关闭。
+
+  - id: G13-02-R3
+    kind: composition-root
+    target: G00
+    status: requested
+    reason: 入口与来电恢复需要根导航配合。
+    change:
+      - mount_entry: discover.channels -> ChannelsPage
+      - mount_entry: discover.live -> LivePage(channel=discover)
+      - mount_entry: chat.call.audio / chat.call.video -> startCall()
+      - incoming_call: CallPort.updates 推来时打开 IncomingCallPage（含锁屏/后台）
+      - minimize: 最小化通话由常驻入口恢复，不复制 CallPage 状态
+
+upstream:
+  - G05-05 (内容域；直播/视频元数据)
+  - G09-05 (通话信令与媒体协调)
+  - G12-05 (播放器/摄像头/麦克风平台桥)
+
+verification:
+  - flutter analyze（G13 归属文件 0 error）
+  - flutter test test/g13/core_test.dart test/g13/call_page_test.dart test/g13/channels_page_test.dart
+  - 真机：来电接听/挂断/最小化恢复/对端挂断；直播加入/退出/弹幕；视频号离页释放解码器
+  - 上游未合入前不得标 ACCEPTED
+
+notes:
+  - 离页、挂断、通话结束都会调用 stopPlayback/releaseMedia；PopScope 只最小化不挂断。
+  - 直播 leave 使用 final _leaveKey 复用幂等键，dispose 失败不会阻塞退出。
+
+entries:
+  implemented:
+    - {entry_id: SEED-0247, action_id: messaging.call.settings, page: CallPage/静音·扬声器·摄像头·蓝牙}
+    - {entry_id: SEED-0250, action_id: messaging.call.hangup, page: CallPage}
+    - {entry_id: SEED-0251, action_id: messaging.call.minimize, page: CallPage/PopScope}
+    - {entry_id: SEED-0304, action_id: live.join, page: DiscoverPage/直播}
+  not_covered:
+    - SEED-0095/0100/0104 属于桌面 ChannelsPage（G11），本卡不修改
+
