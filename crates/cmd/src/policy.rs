@@ -110,6 +110,38 @@ impl Policy {
         )
     }
 
+    /// 追加会话模式（命令行 `--allow-conv` 用）。空串照旧被忽略。
+    pub fn extend_convs<I, S>(&mut self, extra: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for c in extra {
+            let c = c.into();
+            if !c.trim().is_empty() {
+                self.allow_conv.push(c);
+            }
+        }
+    }
+
+    /// 开写权限。幂等：重复调用不会变成别的状态。
+    pub fn grant_write(&mut self) {
+        self.allow_write = true;
+    }
+
+    /// 开破坏性权限。**必然同时开写**——"能踢人不能发言"是配置错误，
+    /// 让这条不变式在类型方法里成立，而不是指望每个调用方都记得。
+    pub fn grant_destructive(&mut self) {
+        self.allow_write = true;
+        self.allow_destructive = true;
+    }
+
+    /// 压回只读（`--read-only`）：命令行比环境变量更严时以命令行为准。
+    pub fn force_read_only(&mut self) {
+        self.allow_write = false;
+        self.allow_destructive = false;
+    }
+
     pub fn allow_write(&self) -> bool {
         self.allow_write
     }
@@ -547,6 +579,27 @@ mod tests {
 
         std::env::remove_var("WXLIKE_AGENT_ALLOW_CONV");
         std::env::remove_var("WXLIKE_AGENT_ALLOW_DESTRUCTIVE");
+    }
+
+    /// 命令行开关必须能叠加到环境变量策略上，且破坏性必然带写。
+    #[test]
+    fn grants_are_additive_and_destructive_implies_write() {
+        let mut p = Policy::none();
+        p.extend_convs(["g-1", "", "d-*~a"]);
+        assert_eq!(
+            p.conv_patterns(),
+            ["g-1".to_string(), "d-*~a".to_string()],
+            "空串要被忽略"
+        );
+        assert!(!p.allow_write());
+        p.grant_destructive();
+        assert!(p.allow_write(), "开破坏性必须同时开写");
+        assert!(p.allow_destructive());
+
+        let mut p = Policy::new(["g-1"], true, false);
+        p.extend_convs(["g-2"]);
+        assert!(p.conv_allowed("g-2"), "追加的模式要生效");
+        assert!(p.allow_write(), "grant 不该把已有权限关掉");
     }
 
     #[test]
