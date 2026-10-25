@@ -124,6 +124,9 @@ jobs:
       - audit
       - coverage
       - unwrap
+      - desktop
+      - desktop-package
+      - image
     if: always()
     runs-on: ubuntu-latest
     steps:

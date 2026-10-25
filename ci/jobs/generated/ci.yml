@@ -369,6 +369,9 @@ jobs:
     - audit
     - coverage
     - unwrap
+    - desktop
+    - desktop-package
+    - image
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -382,3 +385,200 @@ jobs:
       run: python ci/jobs/build/gate.py
     - name: report known gaps (non-blocking daily; release blocks)
       run: python ci/jobs/build/check_gaps.py
+  image:
+    name: image
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+    - name: C9 build server image
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      with:
+        context: .
+        file: containers/server/Dockerfile
+        load: true
+        tags: wxlike-server:ci
+        build-args: 'GIT_REVISION=${{ github.sha }}
+
+          WXLIKE_VERSION=0.1.0
+
+          '
+        cache-from: type=gha,scope=server-image
+        cache-to: type=gha,mode=max,scope=server-image
+    - name: C9 non-root/read-only/secret checks
+      run: bash containers/server/verify-image.sh wxlike-server:ci
+    - name: C9 start -> login -> send -> restart recovery
+      env:
+        WXLIKE_SMOKE_EVIDENCE: ${{ github.workspace }}/.smoke-evidence
+      run: bash containers/server/smoke.sh wxlike-server:ci
+    - name: C9 image SBOM
+      uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+      with:
+        image: wxlike-server:ci
+        format: spdx-json
+        output-file: wxlike-server.spdx.json
+        upload-artifact: false
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: server-image-evidence
+        path: 'wxlike-server.spdx.json
+
+          .smoke-evidence/
+
+          '
+        if-no-files-found: error
+  ingest-image:
+    name: ingest-image
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+    - name: C9 build live-ingest image
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      with:
+        context: .
+        file: containers/live-ingest/Dockerfile
+        load: true
+        tags: wxlike-live-ingest:ci
+        build-args: GIT_REVISION=${{ github.sha }}
+        cache-from: type=gha,scope=ingest-image
+        cache-to: type=gha,mode=max,scope=ingest-image
+    - name: C9 FFmpeg version, licence and NOTICE
+      run: bash ci/jobs/server/check_ffmpeg_notice.sh wxlike-live-ingest:ci
+  desktop:
+    name: desktop
+    needs:
+    - select
+    if: needs.select.outputs.desktop == 'true' || needs.select.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: webkit build dependencies
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-desktop-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        workspaces: ui/src-tauri
+    - run: npm ci
+      working-directory: ui
+    - name: C9 frontend bundle consumed by Tauri
+      run: npm run build
+      working-directory: ui
+    - name: C9 Tauri command tests
+      run: cargo test --locked --manifest-path ui/src-tauri/Cargo.toml
+    - name: C9 updater signature negative test
+      shell: bash
+      run: 'sudo apt-get install -y --no-install-recommends minisign
+
+        python3 ci/jobs/desktop/check_updater.py --self-test
+
+        '
+  desktop-package:
+    name: desktop-package (${{ matrix.platform }})
+    needs:
+    - select
+    - desktop
+    if: needs.select.outputs.desktop == 'true' || needs.select.outputs.ui == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          platform: linux
+          bundles: deb,appimage
+        - os: windows-latest
+          platform: windows
+          bundles: nsis,msi
+        - os: macos-latest
+          platform: macos-aarch64
+          bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: Linux webkit build dependencies
+      if: runner.os == 'Linux'
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-desktop-package-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        workspaces: ui/src-tauri
+    - run: npm ci
+      working-directory: ui
+    - name: C9 frontend bundle consumed by Tauri
+      run: npm run build
+      working-directory: ui
+    - name: C9 bundle installers (unsigned in CI, signed by the release job)
+      shell: bash
+      run: "npx --yes @tauri-apps/cli@2.9.0 build --ci \\\n  --config \"$GITHUB_WORKSPACE/ci/jobs/desktop/tauri.bundle.override.json\" \\\n  --bundles \"${{ matrix.bundles }}\"\n"
+      working-directory: ui
+    - name: read packaged version
+      id: version
+      shell: bash
+      run: 'version=$(python3 -c "import json;print(json.load(open(''ui/src-tauri/tauri.conf.json''))[''version''])")
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+        echo "packaged wxlike $version"
+
+        '
+    - name: updater manifest (unsigned, never publishable until the release job signs it)
+      shell: bash
+      run: "python3 ci/jobs/desktop/make_update_manifest.py \\\n  --artifacts-dir ui/src-tauri/target/release/bundle \\\n  --platform \"${{ matrix.platform }}\" \\\n  --version \"${{ steps.version.outputs.version }}\" \\\n  --base-url \"https://downloads.wxlike.dev/desktop/v${{ steps.version.outputs.version }}\" \\\n  --output \"desktop-artifacts/manifest-${{ matrix.platform }}.json\"\n"
+    - name: C9 packaging evidence
+      shell: bash
+      run: "python3 - \"$GITHUB_STEP_SUMMARY\" <<'PY'\nimport json, sys\nfrom pathlib import Path\nmanifest = next(Path(\"desktop-artifacts\").glob(\"manifest-*.json\"))\ndata = json.loads(manifest.read_text(encoding=\"utf-8\"))\nwith open(sys.argv[1], \"a\", encoding=\"utf-8\") as fh:\n    fh.write(\"### desktop package\\n\\n\")\n    for platform, entry in data[\"platforms\"].items():\n        fh.write(f\"- `{platform}`: {entry['size']} bytes, sha256 `{entry['sha256']}`\\n\")\n    if not any(\"signature\" in entry for entry in data[\"platforms\"].values()):\n        fh.write(\"\\nUnsigned CI artefact. The release job must sign and re-index it before publication.\\n\")\nPY\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: desktop-${{ matrix.platform }}
+        path: 'ui/src-tauri/target/release/bundle/**
+
+          desktop-artifacts/manifest-*.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14

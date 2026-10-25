@@ -24,5 +24,7 @@ x-wxlike-fragments:
   - build
   - contract
   - audit
+  - server
+  - desktop
 
 jobs: {}
