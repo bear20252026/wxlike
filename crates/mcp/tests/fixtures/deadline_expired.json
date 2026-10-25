@@ -1,0 +1,23 @@
+{
+  "name": "deadline 已过：本地拒绝，不发请求",
+  "description": "contract-v1 的 deadline 是绝对时间；过期就地返回 timeout，避免把注定失败的请求发出去。",
+  "setup": { "convs": ["*"], "write": false, "destructive": false, "initialize": true },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "tools/call",
+    "params": {
+      "name": "conv-unread",
+      "arguments": { "conv": "g-1" },
+      "_meta": { "wxlike/deadlineMs": 1, "wxlike/traceId": "tr-deadline" }
+    }
+  },
+  "expect": {
+    "is_error": true,
+    "equals": {
+      "result.structuredContent.status": "failed",
+      "result.structuredContent.error.code": "timeout"
+    },
+    "contains_text": ["deadline"]
+  }
+}

@@ -92,17 +92,21 @@ fn overflowing_payload_len_does_not_panic() {
 /// FUZZ-003：解压炸弹。80 MiB 的可压缩数据必须被 64 MiB 上限挡住。
 #[test]
 fn decompression_bomb_is_rejected() {
-    let dir = tmpdir("bomb");
-    write_page(&dir, "console.log('ok')");
-    // 80 MiB 的零：压缩后只有几十 KB，解压后超过 MAX_DECOMPRESSED
-    std::fs::write(dir.join("bomb.bin"), vec![0u8; 80 * 1024 * 1024]).unwrap();
-    let blob = pack_dir(&dir).expect("打包良性目录");
+    // 主干 pack_dir 已在打包阶段拒绝超限数据；直接构造外部攻击者可提交的压缩载荷，
+    // 继续验证 unpack 的解压上限，不能依赖产品打包器生成恶意样本。
+    let payload = zstd::stream::encode_all(vec![0u8; 80 * 1024 * 1024].as_slice(), 6)
+        .expect("构造压缩炸弹载荷");
+    let mut blob = Vec::new();
+    blob.extend_from_slice(MAGIC);
+    blob.extend_from_slice(&1u32.to_be_bytes());
+    blob.extend_from_slice(&1u32.to_be_bytes());
+    blob.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    blob.extend_from_slice(&payload);
     let err = unpack(&blob).expect_err("超过 64 MiB 的包必须拒绝");
     assert!(
         format!("{err}").contains("decompression bomb") || format!("{err}").contains("exceeds"),
         "错误信息应指出解压上限，实际：{err}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// FUZZ-004：包内路径穿越（`../`、绝对路径、盘符、反斜杠）整包拒绝。

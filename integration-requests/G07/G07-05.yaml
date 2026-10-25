@@ -1,0 +1,30 @@
+task_id: G07-05
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/144"
+summary: 订单与支付衔接：报价 TTL+金额复核、幂等键+参数哈希、ORDER-01 查询恢复、PendingReconciliation+工单、退款经 G06。
+new_dependencies:
+  - package: 沿用 G07-01 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  - prefix: /api/v1/orders
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::OrderService)
+command_registration: wxlike_service_catalog::register_commands
+job_registration:
+  - name: services.orders.reconcile
+    note: 扫描 pending_reconciliation 订单向供应商 query 恢复；不自动二次扣款
+configuration:
+  - name: WXLIKE_PAYMENT_PORT_ENDPOINT
+    value_type: secret_reference_only
+    note: G06 支付域端口；未接入前订单创建会停在 PAYMENT_DECLINED/DEPENDENCY_UNAVAILABLE
+migration_proposals:
+  - schema/proposals/G07/services.sql   # order / order_event / idempotency / reconciliation / vendor_audit 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: []   # 无直接 entry；G00-01 扩量后补
+tests_evidence:
+  - crates/service-catalog/tests/orders.rs（15 用例：金额/参数变动、幂等重放、拒付补偿、对账、AUTH-01）
+compatibility: additive_new_domain
+rollback: >
+  禁止删行撤销；回滚只移除路由与 job，
+  已支付/已退款订单事实保留并转人工对账
+external_blockers: [G06_PAYMENT_PORT_INTEGRATION, VENDOR_SANDBOX_CREDENTIALS]

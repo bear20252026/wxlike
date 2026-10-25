@@ -179,12 +179,25 @@ fn check_window(cert: &PublisherCert, now: u64) -> Result<()> {
 }
 
 fn decode_key(hex_key: &str) -> Result<VerifyingKey> {
+    decode_public_key(hex_key)
+}
+
+/// Decode a hex-encoded ed25519 public key (CLI/trust-snapshot input).
+pub fn decode_public_key(hex_key: &str) -> Result<VerifyingKey> {
     if hex_key.len() != PUBLIC_KEY_HEX_LEN {
         return Err(MiniError::UntrustedPublisher);
     }
     let raw = hex::decode(hex_key).map_err(|_| MiniError::UntrustedPublisher)?;
     let bytes: [u8; ED25519_KEY_LEN] = raw.try_into().map_err(|_| MiniError::UntrustedPublisher)?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| MiniError::UntrustedPublisher)
+}
+
+/// Verify a detached signature with a bare publisher key. Used by `mini
+/// inspect` when the caller only has the publisher's public key, not a full
+/// trust snapshot; installation always goes through [`TrustStore`].
+pub fn verify_detached(public_key_hex: &str, message: &[u8], sig: &PackageSignature) -> Result<()> {
+    let key = decode_public_key(public_key_hex)?;
+    verify_ed25519(&key, message, &sig.sig)
 }
 
 fn verify_ed25519(key: &VerifyingKey, message: &[u8], sig_hex: &str) -> Result<()> {

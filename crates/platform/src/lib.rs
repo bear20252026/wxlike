@@ -17,10 +17,12 @@
 //! # let _ = app; Ok(()) }
 //! ```
 
+mod articles;
 mod audit_mw;
 mod auth;
 mod call;
 mod communities;
+mod content_index;
 mod db;
 mod devices;
 mod error;
@@ -29,11 +31,14 @@ mod favorites;
 mod friends;
 mod groups;
 mod groups_admin;
+mod inbox;
 mod keys;
 mod live;
 mod media;
 mod moments;
+mod notes;
 mod notification;
+mod page;
 pub mod perms;
 mod read;
 mod reconcile;
@@ -44,9 +49,12 @@ mod risk_mw;
 mod secret;
 mod security;
 mod sessions;
+mod status;
+mod stickers;
 mod trust;
 mod users;
 mod validate;
+mod video_feed;
 mod video_refs;
 mod wallet;
 
@@ -70,6 +78,7 @@ pub use crate::perms::Perm;
 pub use crate::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::relations::{StrangerRequest, StrangerState};
 pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
+pub use crate::status::spawn_status_sweeper;
 pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 
@@ -177,6 +186,22 @@ pub fn direct_conv_id(a: &str, b: &str) -> String {
         std::mem::swap(&mut x, &mut y);
     }
     format!("d-{x}~{y}")
+}
+
+/// GET /api/audit/self：本人最近 100 条审计；无记录返回空 entries（不 4xx）。
+async fn audit_self(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let rows = platform.audit_of(&authed.user_id, 100).unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "entries": rows.into_iter().map(|(at, action, target, detail)| {
+            serde_json::json!({
+                "at_ms": at, "action": action,
+                "target": target, "detail": detail
+            })
+        }).collect::<Vec<_>>()
+    })))
 }
 
 pub(crate) fn system_envelope(
@@ -465,24 +490,14 @@ impl Platform {
             .merge(call::routes())
             .merge(perms::routes())
             .merge(video_refs::routes())
-            .route(
-                "/api/audit/self",
-                get(
-                    |State(platform): State<PlatformState>, authed: Authed| async move {
-                        match platform.audit_of(&authed.user_id, 100) {
-                            Ok(rows) => Json(serde_json::json!({
-                                "entries": rows.into_iter().map(|(at, action, target, detail)| {
-                                    serde_json::json!({
-                                        "at_ms": at, "action": action,
-                                        "target": target, "detail": detail
-                                    })
-                                }).collect::<Vec<_>>()
-                            })),
-                            Err(_) => Json(serde_json::json!({ "entries": [] })),
-                        }
-                    },
-                ),
-            )
+            .merge(articles::routes())
+            .merge(notes::routes())
+            .merge(stickers::routes())
+            .merge(video_feed::routes())
+            .merge(content_index::routes())
+            .merge(inbox::routes())
+            .merge(status::routes())
+            .route("/api/audit/self", get(audit_self))
             .with_state(state.clone())
             // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）
             .layer(axum::middleware::from_fn_with_state(

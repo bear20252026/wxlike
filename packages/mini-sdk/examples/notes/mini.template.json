@@ -1,0 +1,11 @@
+{
+  "app_id": "com.wxlike.demo.notes",
+  "name": "笔记与待办",
+  "version": "1.0.0",
+  "min_host": "0.1.0",
+  "entry": "index.js",
+  "channel": "dev",
+  "publisher": "wxlike-labs",
+  "capabilities": ["storage"],
+  "resources": {}
+}

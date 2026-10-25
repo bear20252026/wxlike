@@ -1,0 +1,114 @@
+card: G13-05
+issue: 181
+branch: feat/FP-G13-05
+contract_version: "g13/1"
+status: requested
+summary: >-
+  搜索、设置、我的资料、账号安全、存储与帮助关于页面已完成。搜索结果与历史
+  来自 SearchPort，设置项逐项写入 PreferencesPort；退出登录由组合根注入
+  登录服务动作以同时失效 token 与推送。
+
+changed_paths:
+  - apps/mobile/lib/features/search/search_page.dart
+  - apps/mobile/lib/features/settings/settings_page.dart
+  - apps/mobile/lib/features/settings/profile_page.dart
+  - apps/mobile/lib/features/settings/account_security_page.dart
+  - apps/mobile/lib/features/settings/storage_page.dart
+  - apps/mobile/lib/features/settings/about_page.dart
+  - apps/mobile/lib/features/content/g13/
+  - apps/mobile/test/g13/
+
+requests:
+  - id: G13-05-R1
+    kind: ffi-bindings
+    target: G01
+    status: requested
+    reason: 搜索、资料与设置都是服务端事实；Dart 只做展示与输入校验。
+    change:
+      commands:
+        - search.query
+        - search.history
+        - search.clearHistory
+        - profile.get
+        - profile.update
+        - profile.security
+        - profile.storage
+        - profile.clearCache
+        - backup.export
+        - backup.result
+        - backup.restore
+        - preferences.load
+        - preferences.update
+    note: >-
+      profile.update 需要 expected_version；preferences.update 需要基于当前
+      version 的 patch，冲突映射为 conflict，界面提示刷新后重试。
+
+  - id: G13-05-R2
+    kind: logout-action
+    target: G00 / G02
+    status: requested
+    reason: >-
+      验收要求"退出后设备 token 与推送失效"。G13 只提供按钮与确认弹窗，
+      真正的注销与推送解绑必须由登录服务在一次事务中完成。
+    change:
+      - inject: "SettingsPage(logout: () => authController.logout())"
+      - effect: 服务端吊销会话 token；解绑 FCM/APNs/厂商推送；清理本地会话缓存
+      - after: 回到登录页（不使用固定示例账号）
+
+  - id: G13-05-R3
+    kind: platform-bridge
+    target: G12-05
+    status: requested
+    reason: 链接打开、推送权限与主题应用不属于页面层。
+    change:
+      - link_opener: >-
+          打开登记过的 entry_id（用户协议 settings.agreement.terms、
+          隐私政策 settings.agreement.privacy、帮助中心 settings.help）
+      - notification_permission: 新消息通知开关变化后同步系统通知权限
+      - theme_apply: Preferences.darkMode 保存后由根 MaterialApp 应用主题
+      - version: 构建时注入 --dart-define=APP_VERSION=<版本号>（CI 脚本由 G00 维护）
+    note: 未注入 link_opener 时关于页明确显示阻塞，不弹"敬请期待"。
+
+  - id: G13-05-R4
+    kind: composition-root
+    target: G00
+    status: requested
+    reason: 搜索/我/设置是根导航入口。
+    change:
+      - mount_entry: tab.me -> 我
+      - mount_entry: me.profile -> ProfilePage
+      - mount_entry: me.settings -> SettingsPage
+      - mount_entry: me.settings.account_security -> AccountSecurityPage
+      - mount_entry: me.settings.storage -> StoragePage
+      - mount_entry: me.settings.about -> AboutPage
+      - mount_entry: discover.search -> SearchPage
+
+upstream:
+  - G05-05 (搜索索引与内容域)
+  - G02 (账号、设备、推送吊销)
+  - G12-05 (链接打开/通知权限/主题)
+
+verification:
+  - flutter analyze（G13 归属文件 0 error）
+  - flutter test test/g13/search_page_test.dart test/g13/settings_page_test.dart test/g13/profile_page_test.dart test/g13/core_test.dart  - 真机：逐项开关重启后生效；退出后旧 token 与推送不可用；搜索非静态示例
+  - 备份导出文件可通过摘要校验，恢复流程需真实文件选择与校验（本卡未实现恢复 UI）
+  - 上游未合入前不得标 ACCEPTED
+
+notes:
+  - 空查询不发请求；未授权不给重试；超时重试复用同一查询与幂等键。
+  - 资料更新冲突时提示"刷新资料"，不自动覆盖服务端新版本。
+
+entries:
+  implemented:
+    - {entry_id: SEED-0177, action_id: search.result.open, page: SearchPage}
+    - {entry_id: SEED-0180, action_id: search.history.clear, page: SearchPage}
+    - {entry_id: SEED-0226, action_id: settings.preferences.update, page: SettingsPage/逐项开关}
+    - {entry_id: SEED-0231, action_id: identity.profile.update, page: ProfilePage}
+  not_covered:
+    - SEED-0178 搜索发现流：契约无发现 feed 端点，未摆入口
+    - SEED-0237 朋友圈相册 / SEED-0240 星标朋友：无对应端口，未摆图标入口
+    - SEED-0122 属于桌面 SettingsPage（G10），本卡不修改
+    - 头像更换：profile.update 契约只含昵称/签名，头像上传需媒体服务（G04）；
+      当前只展示 avatarMediaId，不画假头像
+    - 备份恢复 UI：需要真实文件选择与摘要校验，本卡只做导出与校验结果展示
+

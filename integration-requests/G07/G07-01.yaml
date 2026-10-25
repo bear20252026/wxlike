@@ -1,0 +1,71 @@
+task_id: G07-01
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/136"
+summary: 二维码编解码、安全深链、扫码限流与支付确认令牌；PNG 渲染与解码（含 logo 遮挡、对比度）。
+new_dependencies:
+  # 只提需求，G00 统一解析根锁；以下版本均已在 worktree g07 实测通过。
+  - package: hmac
+    approved_version: "0.12"
+  - package: sha2
+    approved_version: "0.10"
+  - package: base64
+    approved_version: "0.22"
+  - package: image
+    approved_version: "0.25"
+    features: [png, jpeg]
+  - package: rqrr
+    approved_version: "0.11"
+  - package: qrcode
+    approved_version: "0.14"
+  - package: hex
+    approved_version: "0.4"
+route_mounts:
+  # 本分支未实现 HTTP 层；前缀为契约占位，由 G00-04 按模板装配（G07 crate 只暴露域服务）。
+  - prefix: /api/v1/scan
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::qr::QrScanner + QrCodec)
+  - prefix: /api/v1/qr
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::qr::render)
+command_registration: wxlike_discovery::register_commands   # 待 G00 装配时补该符号
+job_registration:
+  - name: discovery.nonce.prune
+    note: MemoryNonceStore::prune 每分钟清理过期 nonce；PG 化后改为 DELETE 过期行
+configuration:
+  - name: WXLIKE_QR_SIGNING_KEY
+    value_type: secret_reference_only
+  - name: WXLIKE_PAYMENT_CONFIRM_KEY
+    value_type: secret_reference_only
+  - name: WXLIKE_SCAN_ALLOWED_HOSTS
+    value_type: plain_list
+migration_proposals:
+  - schema/proposals/G07/discovery.sql   # discovery_qr_scan / discovery_payment_nonce 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids:
+  - SEED-0183
+  - SEED-0184
+  - SEED-0185
+  - SEED-0186
+  - SEED-0187
+  - SEED-0300
+  - SEED-0301
+  - SEED-0302
+  - SEED-0303
+  - SEED-0304
+  - SEED-0305
+  - SEED-0306
+  - SEED-0307
+  - SEED-0308
+  - SEED-0309
+  - SEED-0310
+  - SEED-0311
+  - SEED-0312
+tests_evidence:
+  - crates/features/discovery/tests/qr_scan.rs（30 用例含重放/篡改/旧版本/白名单）
+  - 本地 cargo test -p wxlike-discovery 全绿；CI URL 待 PR
+compatibility: additive_new_domain_no_existing_route_touched
+rollback: remove_new_route_mount_disable_job_no_ledger_fact_created
+external_blockers: [PRINTED_QR_PHYSICAL_DEVICE_SCAN]
+notes:
+  - 相机取景与闪光灯是 PlatformPort（G13-06）；本域只定义解码与限流
+  - 支付码 nonce 一次性由 NonceStore 拦截，PG 化后靠主键唯一约束兜底

@@ -1,0 +1,24 @@
+{
+  "fixture_id": "discovery.vision.ocr_success",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.vision.ocr",
+  "category": "success",
+  "description": "授权后的 OCR：返回文本、分块与 provider；结果按 result_ttl_ms 过期删除。",
+  "request": {
+    "image": "<image/png bytes, 1.2MB>",
+    "languages": ["zh-Hans", "en"],
+    "consent": true,
+    "precondition": "actor 已 grant consent 且未过期"
+  },
+  "expected": {
+    "job_id": "vj-<opaque>",
+    "kind": "ocr",
+    "text": "水费账单 2026-09 期 128.00 元",
+    "language": "zh-Hans",
+    "confidence": 0.97,
+    "blocks": [{ "text": "水费账单", "confidence": 0.99 }, { "text": "128.00 元", "confidence": 0.95 }],
+    "provider": "g07-fake-vision",
+    "expires_at_ms": "<now+3600000>"
+  },
+  "invariants": ["图片字节不落盘不落日志，审计只记 actor/kind/bytes", "无真实 provider 时返回 DEPENDENCY_UNAVAILABLE，绝不返回样例结果"]
+}

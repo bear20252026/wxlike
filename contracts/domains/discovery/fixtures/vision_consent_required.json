@@ -1,0 +1,27 @@
+{
+  "fixture_id": "discovery.vision.consent_required",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.vision.ocr",
+  "category": "permission_failure",
+  "description": "未授权或授权过期时拒绝把图片送出。",
+  "cases": [
+    {
+      "name": "never_granted",
+      "request": { "image": "<bytes>", "languages": ["en"], "consent": true },
+      "expected_error": { "code": "CONSENT_REQUIRED", "detail": "upload consent required" }
+    },
+    {
+      "name": "granted_then_expired",
+      "precondition": "grant_consent(ttl=1000ms) 后时钟前进 2s",
+      "request": { "image": "<bytes>", "languages": ["en"], "consent": true },
+      "expected_error": { "code": "CONSENT_REQUIRED", "detail": "upload consent required" }
+    },
+    {
+      "name": "revoked",
+      "precondition": "grant 后 revoke_consent",
+      "request": { "image": "<bytes>", "languages": ["en"], "consent": true },
+      "expected_error": { "code": "CONSENT_REQUIRED", "detail": "upload consent required" }
+    }
+  ],
+  "invariants": [" consent 检查先于 provider 调用与限流扣减", "语音转写同样适用（discovery.speech.transcribe）"]
+}

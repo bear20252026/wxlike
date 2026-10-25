@@ -8,6 +8,12 @@
 //! | 4 | 命令不存在 | catalog 里没有这个 id |
 //! | 5 | 执行失败 | 服务端返回错误、本地文件读不到 |
 //! | 6 | 网络/超时 | 连不上服务端 |
+//! | 7 | 待确认 | 危险动作没带 `--confirm`（此时只打印计划，不执行） |
+//!
+//! 退出码由 `DomainError` 的分类派生（`contract::classify`）：
+//! `invalid_argument`→2、`unauthorized`/`forbidden`→3、`not_found`→4、
+//! `timeout`/`unavailable`→6，其余→5。这样 CLI、MCP `isError` 与 UI 的
+//! 错误码三者同源，不会出现"CLI 说没权限、UI 说参数错"。
 //!
 //! 3 与 5 必须分开：脚本遇到"没权限"要人改配置，遇到"业务失败"要重试或报障。
 
@@ -17,8 +23,11 @@ use serde_json::{json, Value};
 
 use wxlike_client::execute::Executor;
 use wxlike_client::Http;
+use wxlike_cmd::auth::{AuthGate, Provenance, ScopeSet};
 use wxlike_cmd::catalog::{self, CommandSpec};
+use wxlike_cmd::contract;
 use wxlike_cmd::policy::Policy;
+use wxlike_types::{ActionResult, DomainError};
 
 use crate::args::{Command, Invocation, Options};
 
@@ -28,6 +37,7 @@ pub const EXIT_DENIED: u8 = 3;
 pub const EXIT_UNKNOWN: u8 = 4;
 pub const EXIT_FAILED: u8 = 5;
 pub const EXIT_NETWORK: u8 = 6;
+pub const EXIT_CONFIRMATION_REQUIRED: u8 = 7;
 
 /// 执行一次调用，返回退出码。
 pub fn execute(inv: Invocation) -> ExitCode {
@@ -50,14 +60,21 @@ fn run(inv: Invocation) -> u8 {
             print!("{}", wxlike_cmd::policy::render(&policy));
             EXIT_OK
         }
+        Command::Auth => auth_report(&options, &policy),
+        Command::Doctor => doctor(&options, &policy),
+        Command::Coverage => {
+            if options.json {
+                emit(&wxlike_cmd::domains::report(), true);
+            } else {
+                print!("{}", wxlike_cmd::domains::render());
+            }
+            EXIT_OK
+        }
         Command::Inspect => with_executor(&options, &policy)
             .map_or_else(|code| code, |exec| inspect(&exec, options.json)),
         Command::Run(cmds) => with_executor(&options, &policy)
             .map_or_else(|code| code, |exec| run_commands(&exec, &cmds, options.json)),
-        Command::Invoke { spec, params } => with_executor(&options, &policy).map_or_else(
-            |code| code,
-            |exec| invoke(&exec, spec, &params, options.json),
-        ),
+        Command::Invoke { spec, params } => invoke_command(&options, &policy, spec, &params),
     }
 }
 
@@ -76,6 +93,176 @@ fn build_policy(options: &Options) -> Policy {
         p.force_read_only();
     }
     p
+}
+
+/// 一条业务命令的执行路径：闸门 → 执行器 → 输出。
+fn invoke_command(options: &Options, policy: &Policy, spec: &CommandSpec, params: &Value) -> u8 {
+    if options.dry_run {
+        return emit_plan(spec, params, options.json, "dry_run");
+    }
+    let gate = match build_gate(options) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    let env = match contract::Envelope::from_raw(
+        options.trace_id.as_deref(),
+        options.entry_id.as_deref(),
+        options.deadline_ms,
+    ) {
+        Ok(env) => env,
+        Err(e) => return fail_contract(spec, &e, options.json),
+    };
+    let exec = match with_executor(options, policy) {
+        Ok(exec) => exec,
+        Err(code) => return code,
+    };
+    invoke(
+        &exec,
+        spec,
+        params,
+        options.json,
+        gate.as_ref(),
+        options.confirm,
+        &env,
+    )
+}
+
+/// 打印"将要发生什么"。
+///
+/// `mode = "dry_run"` → 退出 0（这是用户主动要的计划）；
+/// `mode = "confirmation_required"` → 退出 7（脚本据此知道要人确认）。
+fn emit_plan(spec: &CommandSpec, params: &Value, json_out: bool, mode: &str) -> u8 {
+    let plan = wxlike_cmd::confirmation::plan(spec, params);
+    let (domain, verb) = spec.cli_path();
+    let payload = json!({
+        "mode": mode,
+        "confirmation_required": spec.confirmation.is_required(),
+        "capability": spec.capability.as_str(),
+        "plan": plan.to_json(),
+        "hint": if mode == "dry_run" {
+            format!("只出计划，未执行。确认无误后去掉 --dry-run：wxlike {domain} {verb} ...")
+        } else {
+            format!("确认无误后加 --confirm 重新执行：wxlike {domain} {verb} --confirm ...")
+        },
+    });
+    emit(&payload, json_out);
+    if mode == "dry_run" {
+        EXIT_OK
+    } else {
+        EXIT_CONFIRMATION_REQUIRED
+    }
+}
+
+/// `wxlike doctor`：本机诊断。**不联网**——诊断本身不该制造故障。
+fn doctor(options: &Options, policy: &Policy) -> u8 {
+    let report = doctor_report(options, policy);
+    emit(&report, options.json);
+    if report["problems"].as_array().is_some_and(|p| !p.is_empty()) {
+        return 1;
+    }
+    EXIT_OK
+}
+
+fn doctor_report(options: &Options, policy: &Policy) -> Value {
+    let mut problems: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    if options.token.is_none() && std::env::var("WXLIKE_TOKEN").is_err() {
+        warnings.push("没有 token：执行类命令会被服务端拒绝".into());
+    }
+    if policy.conv_patterns().is_empty() {
+        warnings.push("会话白名单为空：所有会话类命令都会被拒".into());
+    }
+    let scope = options
+        .scope
+        .clone()
+        .or_else(|| std::env::var("WXLIKE_SCOPE").ok());
+    let invalid: Vec<String> = scope
+        .as_deref()
+        .map(|s| wxlike_cmd::auth::ScopeSet::parse(s).invalid().to_vec())
+        .unwrap_or_default();
+    if !invalid.is_empty() {
+        problems.push(format!("--scope 里有无法解析的条目：{invalid:?}"));
+    }
+    let server = options
+        .server
+        .clone()
+        .or_else(|| std::env::var("WXLIKE_SERVER").ok())
+        .unwrap_or_else(|| "http://127.0.0.1:8099".to_string());
+    json!({
+        "report": "wxlike-cli doctor",
+        "version": env!("CARGO_PKG_VERSION"),
+        "server": server,
+        "token": if options.token.is_some() || std::env::var("WXLIKE_TOKEN").is_ok() {
+            "已配置"
+        } else {
+            "未配置"
+        },
+        "policy": {
+            "convs": policy.conv_patterns(),
+            "write": policy.allow_write(),
+            "destructive": policy.allow_destructive(),
+        },
+        "scope": scope.unwrap_or_else(|| "（未配置，仅按本地策略）".to_string()),
+        "catalog": {
+            "commands": wxlike_cmd::catalog::CATALOG.len(),
+            "note": "MCP 侧另有元工具（list/execute/inspect/jobs），由 wxlike-mcp 自己报",
+        },
+        "coverage": wxlike_cmd::domains::summary(),
+        "protocol": {
+            "mcp_versions": ["2025-06-18", "2025-03-26", "2024-11-05"],
+        },
+        "warnings": warnings,
+        "problems": problems,
+    })
+}
+
+/// 会话/scope 闸门。没配 `--scope` 就不挂：本地单用户场景由 `policy` 负责，
+/// 远程调用必须配（否则等于把"谁能做什么"全交给服务端一次判定）。
+fn build_gate(options: &Options) -> Result<Option<AuthGate>, String> {
+    let Some(scope) = &options.scope else {
+        return Ok(None);
+    };
+    if !ScopeSet::parse(scope).invalid().is_empty() {
+        return Err(format!("--scope 里有无法解析的条目：{scope}"));
+    }
+    if options.actor.trim().is_empty() {
+        return Err("--scope 需要 --actor（身份不能为空）".to_string());
+    }
+    let session = options
+        .session_id
+        .clone()
+        .ok_or_else(|| "--scope 需要配合 --session-id（会话必须绑定）".to_string())?;
+    AuthGate::from_parts(
+        &options.actor,
+        &session,
+        scope,
+        Some(&session),
+        options.origin_allow.clone(),
+    )
+    .map(Some)
+    .map_err(|e| e.to_string())
+}
+
+/// `wxlike auth`：把"我是谁、我能在哪些资源上做什么"一次说清。
+fn auth_report(options: &Options, policy: &Policy) -> u8 {
+    match build_gate(options) {
+        Ok(Some(gate)) => {
+            print!("{}", gate.render(policy));
+            EXIT_OK
+        }
+        Ok(None) => {
+            eprintln!("未配置 --scope（也没有 WXLIKE_SCOPE）：只按本地策略判定");
+            eprintln!("示例：wxlike auth --scope 'conv:g-* media:*' --session-id s-1");
+            EXIT_USAGE
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            EXIT_USAGE
+        }
+    }
 }
 
 /// 执行类命令必须先有服务端地址与 token。
@@ -98,22 +285,100 @@ fn with_executor(options: &Options, policy: &Policy) -> Result<Executor, u8> {
     Ok(Executor::new(http, policy.clone()))
 }
 
-fn invoke(exec: &Executor, spec: &CommandSpec, params: &Value, json_out: bool) -> u8 {
+fn invoke(
+    exec: &Executor,
+    spec: &CommandSpec,
+    params: &Value,
+    json_out: bool,
+    gate: Option<&AuthGate>,
+    confirmed: bool,
+    env: &contract::Envelope,
+) -> u8 {
+    // 危险动作先出计划：没 `--confirm` 就停在这里，**不发任何请求**。
+    if spec.confirmation.is_required() && !confirmed {
+        return emit_plan(spec, params, json_out, "confirmation_required");
+    }
+    // scope 先行：注定被服务端拒的请求不发出去，也顺便省掉一次网络往返
+    if let Some(gate) = gate {
+        if let Err(e) = gate.check(spec, params, Provenance::Trusted) {
+            eprintln!("{}: {e}", spec.id);
+            return EXIT_DENIED;
+        }
+    }
+    // 契约层校验：写命令缺幂等键、trace/entry 不合法、deadline 已过都在这里拒
+    if let Err(e) = contract::build_request(spec, params, env) {
+        return fail_contract(spec, &e, json_out);
+    }
+    if let Err(e) = contract::check_deadline(env, contract::now_ms_i64()) {
+        return fail_contract(spec, &e, json_out);
+    }
     match exec.run(spec.id, params) {
         Ok(v) => {
-            emit(&v, json_out);
+            let result = contract::ok_result(spec, v, contract::now_ms());
+            emit_result(&result, json_out);
             EXIT_OK
         }
-        Err(e) => fail(spec.id, &e),
+        Err(e) => {
+            let err = contract::classify(&e);
+            let result = contract::failed_result(spec, err.clone(), contract::now_ms());
+            emit_result(&result, json_out);
+            eprintln!("{}: {e}", spec.id);
+            exit_code_for(&err)
+        }
+    }
+}
+
+/// 契约层失败（还没发请求）：也输出 ActionResult，脚本只需认一种形状。
+fn fail_contract(spec: &CommandSpec, err: &DomainError, json_out: bool) -> u8 {
+    let result = contract::failed_result(spec, err.clone(), contract::now_ms());
+    emit_result(&result, json_out);
+    eprintln!("{}: {}", spec.id, err.message());
+    exit_code_for(err)
+}
+
+/// 结果的机器形态（`--json`）与人的形态（默认只打 data）。
+fn emit_result(result: &ActionResult, json_out: bool) {
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string(&contract::result_json(result)).unwrap_or_default()
+        );
+        return;
+    }
+    match &result.outcome {
+        wxlike_types::ActionOutcome::Ok { data } => {
+            println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
+        }
+        wxlike_types::ActionOutcome::Empty => println!("（空结果）"),
+        wxlike_types::ActionOutcome::Failed { error } => {
+            eprintln!("{}: {}", error.code(), error.message());
+        }
+    }
+}
+
+/// `DomainError` → 退出码。**唯一一处**做这个映射。
+pub fn exit_code_for(err: &DomainError) -> u8 {
+    match err.code() {
+        "invalid_argument" => EXIT_USAGE,
+        "unauthorized" | "forbidden" => EXIT_DENIED,
+        "not_found" => EXIT_UNKNOWN,
+        "timeout" | "unavailable" => EXIT_NETWORK,
+        _ => EXIT_FAILED,
     }
 }
 
 fn inspect(exec: &Executor, json_out: bool) -> u8 {
     let mut out = serde_json::Map::new();
     for id in ["me.info", "conv.list"] {
+        let Some(spec) = wxlike_cmd::catalog::get(id) else {
+            return fail(id, &format!("unknown command {id}"));
+        };
         match exec.run(id, &json!({})) {
             Ok(v) => {
-                out.insert(id.to_string(), v);
+                out.insert(
+                    id.to_string(),
+                    contract::result_json(&contract::ok_result(spec, v, contract::now_ms())),
+                );
             }
             Err(e) => return fail(id, &e),
         }
@@ -200,27 +465,11 @@ fn fail(id: &str, error: &str) -> u8 {
     code
 }
 
-/// 错误文本 → 退出码。**唯一一处**做这个映射，测试直接钉住这张表。
+/// 错误文本 → 退出码：先过 `contract::classify` 得到契约错误码，再映射。
+///
+/// 以前这里是一串 `contains`，与 MCP / UI 各判一套；现在分类只在契约一处。
 pub fn classify(error: &str) -> u8 {
-    if error.contains("unknown command") || error.contains("尚未实现") {
-        return EXIT_UNKNOWN;
-    }
-    if error.contains("not allowed")
-        || error.contains("write access was not granted")
-        || error.contains("destructive access was not granted")
-        || error.contains("read-only")
-        || error.contains("needs a `conv` param")
-    {
-        return EXIT_DENIED;
-    }
-    if error.contains("connect")
-        || error.contains("timed out")
-        || error.contains("timeout")
-        || error.contains("dns")
-    {
-        return EXIT_NETWORK;
-    }
-    EXIT_FAILED
+    exit_code_for(&contract::classify(error))
 }
 
 #[cfg(test)]
@@ -245,9 +494,11 @@ mod tests {
             ),
             EXIT_DENIED
         );
+        // 缺参数是"命令写错了"（usage=2），不是"没权限"：
+        // 契约把它归到 invalid_argument，脚本据此改命令行而不是找管理员。
         assert_eq!(
             classify("conv.unread needs a `conv` param, but none was given"),
-            EXIT_DENIED
+            EXIT_USAGE
         );
         // 命令不存在
         assert_eq!(
@@ -257,6 +508,17 @@ mod tests {
         // 网络
         assert_eq!(classify("connection refused: connect error"), EXIT_NETWORK);
         assert_eq!(classify("request timed out"), EXIT_NETWORK);
+        // G15-02 的会话/scope 拒绝也归 3：脚本的动作一样是"找人改授权"
+        assert_eq!(
+            classify("missing scope conv:g-2 (grant it in the token, not in the prompt)"),
+            EXIT_DENIED
+        );
+        assert_eq!(
+            classify("group.kick is an admin action and this actor has no admin role"),
+            EXIT_DENIED
+        );
+        // 参数/确认类错误同样是 usage
+        assert_eq!(classify("token audience \"x\" is not ours"), EXIT_DENIED);
         // 其它一律业务失败
         assert_eq!(classify("server: 500 internal error"), EXIT_FAILED);
     }
@@ -287,6 +549,37 @@ mod tests {
         assert!(err.contains("not allowed"), "{err}");
         assert!(!err.contains("connect"), "不该走到网络：{err}");
         assert_eq!(classify(&err), EXIT_DENIED);
+    }
+
+    /// scope 没配就不挂闸门；配了就必须绑定会话。
+    #[test]
+    fn gate_needs_session_and_rejects_unknown_scope_class() {
+        let none = Options::default();
+        assert!(build_gate(&none).expect("ok").is_none());
+
+        let scoped = Options {
+            actor: "u-alice".into(),
+            scope: Some("conv:*".into()),
+            ..Options::default()
+        };
+        assert!(build_gate(&scoped).unwrap_err().contains("session-id"));
+
+        let bad = Options {
+            actor: "u-alice".into(),
+            scope: Some("conv:* money:*".into()),
+            session_id: Some("s-1".into()),
+            ..Options::default()
+        };
+        assert!(build_gate(&bad).unwrap_err().contains("无法解析"));
+
+        let good = Options {
+            actor: "u-alice".into(),
+            scope: Some("conv:g-1".into()),
+            session_id: Some("s-1".into()),
+            ..Options::default()
+        };
+        let gate = build_gate(&good).expect("ok").expect("gate");
+        assert_eq!(gate.context().session_id, "s-1");
     }
 
     /// `--read-only` 必须压过环境变量里开的写权限。
