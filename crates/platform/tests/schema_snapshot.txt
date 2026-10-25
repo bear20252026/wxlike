@@ -72,6 +72,12 @@ delivery_task.joined_seq INTEGER notnull=1 pk=0
 delivery_task.left_seq INTEGER notnull=0 pk=0
 delivery_task.created_at INTEGER notnull=1 pk=0
 delivery_task.updated_at INTEGER notnull=1 pk=0
+device_cursor.device_id TEXT notnull=1 pk=1
+device_cursor.conv_id TEXT notnull=1 pk=2
+device_cursor.stored_cursor INTEGER notnull=1 pk=0
+device_cursor.read_cursor INTEGER notnull=1 pk=0
+device_cursor.version INTEGER notnull=1 pk=0
+device_cursor.updated_at INTEGER notnull=1 pk=0
 devices.user_id TEXT notnull=1 pk=1
 devices.platform TEXT notnull=1 pk=2
 devices.device_token TEXT notnull=1 pk=0
