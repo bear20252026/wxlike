@@ -1,0 +1,71 @@
+request: G06-03
+owner: G06
+task_issue: 133
+branch: feat/FP-G06
+status: ready-for-G00
+depends_on:
+  - G06-02
+code_paths:
+  - crates/features/commerce/src/settlement.rs
+routes:
+  mount:
+    - action: topup.create
+      path: /api/v1/commerce/actions/topup.create
+    - action: topup.get
+      path: /api/v1/commerce/actions/topup.get
+    - action: topup.confirm
+      path: /api/v1/commerce/actions/topup.confirm
+    - action: withdrawal.create
+      path: /api/v1/commerce/actions/withdrawal.create
+    - action: withdrawal.get
+      path: /api/v1/commerce/actions/withdrawal.get
+    - action: withdrawal.refresh
+      path: /api/v1/commerce/actions/withdrawal.refresh
+    - action: refund.create
+      path: /api/v1/commerce/actions/refund.create
+    - action: refund.refresh
+      path: /api/v1/commerce/actions/refund.refresh
+    - action: reconcile.run
+      path: /api/v1/commerce/actions/reconcile.run
+      audience: admin
+    - action: reconcile.list
+      path: /api/v1/commerce/actions/reconcile.list
+      audience: admin
+    - action: reconcile.resolve
+      path: /api/v1/commerce/actions/reconcile.resolve
+      audience: admin
+commands:
+  registry: commerce
+  actions: [topup.create, topup.get, topup.confirm, withdrawal.create, withdrawal.get, withdrawal.refresh, refund.create, refund.refresh, reconcile.run, reconcile.list, reconcile.resolve]
+config:
+  secrets:
+    - key: commerce.provider.live.secret_ref
+      source: secret-manager
+  settings:
+    - key: commerce.withdrawal.retry_backoff_ms
+      suggestion: [1000, 5000, 30000]
+    - key: commerce.reconcile.cron
+      suggestion: "0 3 * * *"
+jobs:
+  - name: commerce.withdrawal.refresh
+    handler: Commerce::refresh_withdrawal
+    interval: 60s
+    note: 只重试 processing 状态；同 payout idempotency key，不重复出款
+  - name: commerce.reconcile.daily
+    handler: Commerce::run_reconciliation
+    schedule: daily
+    note: 生成新 run + open exceptions，不自动改账
+admin:
+  approval:
+    - action: reconcile.resolve
+      required_fields: [approval_ref]
+      note: 审批引用写入 exception，补账只追加分录
+migrations:
+  - proposal: schema/proposals/G06/0001_ledger_commerce.sql
+    rollback: schema/proposals/G06/ROLLBACK.md
+    number: G00-assigned
+evidence:
+  tests: cargo test -p wxlike-commerce --test g06_03_settlement
+acceptance_dependencies:
+  - 真实供应商 payout/refund 接口与真实对账单
+  - G14 admin audience 与审批链路

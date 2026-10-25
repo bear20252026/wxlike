@@ -12,6 +12,9 @@
 //! 当前覆盖：channel（`communities::send_channel_message` 已写入信箱）。
 //! direct/group 仍走 `core::Store` 扇出，**未镜像进信箱**，因此它们的
 //! `unread` 会是 0——这是接线未完成，不是算错。
+//!
+//! 参与者闸门（AUTHZ-012 / #230）：三个入口都先过
+//! [`Platform::assert_conv_participant`]——登录不等于有资格读这个会话。
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -27,6 +30,19 @@ use crate::{Platform, PlatformState};
 /// 信箱错误 → 平台错误（`Mail` 变体已有，别再 leak 字符串）。
 fn mail<T>(r: wxlike_message::Result<T>) -> Result<T> {
     r.map_err(|e| PlatformError::Mail(e.to_string()))
+}
+
+/// 直聊 id 的两半；不是恰好 `d-a~b` 形状就返回 `None`。
+///
+/// 畸形 id（`d-a~b~c`、空段）不猜参与者——宁可拒绝也不放行。
+fn direct_participants(conv: &str) -> Option<(&str, &str)> {
+    let mut parts = conv.strip_prefix("d-")?.split('~');
+    let a = parts.next()?;
+    let b = parts.next()?;
+    if parts.next().is_some() || a.is_empty() || b.is_empty() {
+        return None;
+    }
+    Some((a, b))
 }
 
 pub fn routes() -> Router<PlatformState> {
@@ -105,7 +121,41 @@ impl Platform {
         Ok(())
     }
 
+    /// 调用者是不是这个会话的参与者（AUTHZ-012 / #230）。
+    ///
+    /// 直聊 id `d-a~b` 可预测（uid 能从好友列表/群成员拿到），所以
+    /// "登录即可读"会变成通信量侧信道：`head_seq` 泄露两人之间有多少条消息，
+    /// `read` 还能给别人会话写自己的已读游标。三个入口（unread/read/sync）
+    /// 都必须先过这道闸。
+    ///
+    /// 判定复用权威关系数据，不靠 id 形状猜成员：
+    /// - direct：参与者就是 id 两半（与 `media::may_read_conv` 同规则）；
+    /// - group：`group_members` 有行；
+    /// - channel：`channel_role` 专属行或社区角色继承（`effective_channel_role`）。
+    ///
+    /// 查不到/查错一律按非成员处理——鉴权闸门 fail closed。
+    pub fn assert_conv_participant(&self, user_id: &str, conv: &str) -> Result<()> {
+        use wxlike_message::OwnerType;
+        let allowed = match self.owner_kind_of(conv)? {
+            OwnerType::Direct => {
+                direct_participants(conv).is_some_and(|(a, b)| a == user_id || b == user_id)
+            }
+            OwnerType::Group => self.is_member(conv, user_id)?,
+            OwnerType::Channel => self
+                .effective_channel_role(conv, user_id)
+                .ok()
+                .flatten()
+                .is_some(),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(PlatformError::Forbidden)
+        }
+    }
+
     pub fn conv_unread(&self, user_id: &str, conv: &str) -> Result<UnreadView> {
+        self.assert_conv_participant(user_id, conv)?;
         let owner = self.owner_kind_of(conv)?;
         let store = self
             .message_store()
@@ -132,6 +182,7 @@ impl Platform {
         conv: &str,
         upto: Option<u64>,
     ) -> Result<UnreadView> {
+        self.assert_conv_participant(user_id, conv)?;
         let owner = self.owner_kind_of(conv)?;
         let store = self
             .message_store()
@@ -144,7 +195,8 @@ impl Platform {
         self.conv_unread(user_id, conv)
     }
 
-    pub fn conv_sync(&self, conv: &str, client_version: u64) -> Result<SyncView> {
+    pub fn conv_sync(&self, user_id: &str, conv: &str, client_version: u64) -> Result<SyncView> {
+        self.assert_conv_participant(user_id, conv)?;
         let owner = self.owner_kind_of(conv)?;
         let store = self
             .message_store()
@@ -197,9 +249,13 @@ struct SyncQuery {
 
 async fn sync(
     State(platform): State<PlatformState>,
-    _authed: Authed,
+    authed: Authed,
     Path(conv): Path<String>,
     Query(q): Query<SyncQuery>,
 ) -> std::result::Result<Json<SyncView>, ApiError> {
-    Ok(Json(platform.conv_sync(&conv, q.version)?))
+    Ok(Json(platform.conv_sync(
+        &authed.user_id,
+        &conv,
+        q.version,
+    )?))
 }

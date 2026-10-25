@@ -1,0 +1,77 @@
+{
+  "fixtures-v1": [
+    {
+      "fixture_id": "FX-unknown-field",
+      "description": "未知字段：旧端必须忽略（serde 默认不 deny），不得报错",
+      "input": {
+        "version": 1,
+        "conv_id": "d-a~b",
+        "sender": "a",
+        "to": ["b"],
+        "seq": 1,
+        "kind": "Text",
+        "sent_at_ms": 1700000000000,
+        "msg_id": "07070707070707070707070707070707",
+        "v9_shiny_field": { "nested": true }
+      },
+      "expected": "解析成功；v9_shiny_field 被忽略；其余字段正常",
+      "enforced_by": "wxlike_core::types::Envelope（serde default，无 deny_unknown_fields）"
+    },
+    {
+      "fixture_id": "FX-unknown-enum",
+      "description": "未知枚举：kind 未知值收敛为 Unknown，旧端不 panic",
+      "input": {
+        "version": 1,
+        "conv_id": "d-a~b",
+        "sender": "a",
+        "to": ["b"],
+        "seq": 2,
+        "kind": "Hologram",
+        "sent_at_ms": 1700000000000
+      },
+      "expected": "旧端解析为 kind=Unknown（不可渲染、不崩溃）；新端按新语义处理",
+      "enforced_by": "composition/action-registry.rs classify_enum + 前端渲染分支"
+    },
+    {
+      "fixture_id": "FX-bigint-seq",
+      "description": "大整数 seq：>2^53 在 HTTP JSON 表面必须字符串承载",
+      "input": {
+        "version": 1,
+        "conv_id": "d-a~b",
+        "sender": "a",
+        "to": ["b"],
+        "seq": "9007199254740993",
+        "kind": "Text",
+        "sent_at_ms": 1700000000000
+      },
+      "expected": "HTTP JSON 消费方把 seq 视为十进制字符串（不得经 JS Number 往返）；QUIC/bincode 表面 seq 恒为原生 u64，无此约束",
+      "enforced_by": "envelope.schema.json seq 的 oneOf + web wire 手写 bincode"
+    },
+    {
+      "fixture_id": "FX-legacy-v1-no-msgid",
+      "description": "旧协议：v1 无 msg_id 的信封仍可解析（msg_id=0 = legacy）",
+      "input": {
+        "version": 1,
+        "conv_id": "d-a~b",
+        "sender": "a",
+        "to": ["b"],
+        "seq": 3,
+        "kind": "Text",
+        "sent_at_ms": 1700000000000
+      },
+      "expected": "msg_id 缺省为 0；去重/回执对该消息退化为按 (conv,seq) 判定",
+      "enforced_by": "Envelope.msg_id #[serde(default)]"
+    },
+    {
+      "fixture_id": "FX-write-idempotency",
+      "description": "写操作重复提交：同一 idempotency key 二次提交必须幂等",
+      "input": {
+        "action": "message.send",
+        "idempotency_key": "idem-1",
+        "params": { "conv": "d-a~b", "text": "hi" }
+      },
+      "expected": "两次提交至多产生一条消息与一条流水；第二次返回首次结果或幂等成功",
+      "enforced_by": "composition/action-registry.rs admit（缺 key = MissingIdempotencyKey）+ 各写命令服务端去重"
+    }
+  ]
+}

@@ -98,6 +98,10 @@ async fn serve_conn(
             | WireFrame::Hello { .. }
             | WireFrame::HelloAck { .. }
             | WireFrame::HelloReject { .. } => continue,
+            // v3 control frames belong to `mq_hub`; this forwarder has no
+            // identity, no routes and no offline store, so there is nothing a
+            // ClientHello/Subscribe/Ack/Resume could mean here.
+            _ => continue,
         };
         let _ = env;
         let map = peers.lock().await;

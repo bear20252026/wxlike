@@ -1,0 +1,86 @@
+{
+  "contract_version": "identity-v1",
+  "case": "desktop qr login: pending -> scanned -> approved -> consumed",
+  "steps": [
+    {
+      "command": "identity.qr_login.create",
+      "payload": {
+        "audience": "user"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "challenge_id": "c-1",
+          "poll_interval_ms": 2000
+        }
+      }
+    },
+    {
+      "command": "identity.qr_login.bind",
+      "payload": {
+        "challenge_id": "c-1",
+        "verifier": "<43+ chars>",
+        "device_id": "dev-desk0001",
+        "platform": "desktop"
+      }
+    },
+    {
+      "command": "identity.qr_login.scan",
+      "payload": {
+        "secret": "s-1"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "platform": "desktop",
+          "label": "MacBook Pro"
+        }
+      }
+    },
+    {
+      "command": "identity.qr_login.poll",
+      "payload": {
+        "challenge_id": "c-1",
+        "verifier": "<same>"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "state": "scanned"
+        }
+      }
+    },
+    {
+      "command": "identity.qr_login.approve",
+      "payload": {
+        "challenge_id": "c-1"
+      }
+    },
+    {
+      "command": "identity.qr_login.exchange",
+      "payload": {
+        "challenge_id": "c-1",
+        "verifier": "<same>"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "sid": "s-0002"
+        }
+      }
+    },
+    {
+      "command": "identity.qr_login.exchange",
+      "payload": {
+        "challenge_id": "c-1",
+        "verifier": "<same>"
+      },
+      "expect": {
+        "ok": false,
+        "error": {
+          "code": "conflict"
+        }
+      }
+    }
+  ]
+}

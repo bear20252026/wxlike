@@ -156,11 +156,11 @@ fn decode_capped(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
 pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
     let (version, id) = peek(blob)?;
     anyhow::ensure!(version == 1, "unsupported dpage version {version}");
-    let payload_len = u64::from_be_bytes(blob[12..20].try_into().unwrap()) as usize;
+    let payload_len = u64::from_be_bytes(blob[12..20].try_into().unwrap());
+    let actual_len = u64::try_from(blob.len() - STUB_LEN).context("payload size exceeds u64")?;
     anyhow::ensure!(
-        blob.len() == STUB_LEN + payload_len,
-        "length mismatch: stub says {payload_len}, blob has {}",
-        blob.len() - STUB_LEN
+        actual_len == payload_len,
+        "length mismatch: stub says {payload_len}, blob has {actual_len}"
     );
     let files: FileMap = bincode::deserialize(&decode_capped(&blob[STUB_LEN..])?)?;
     let manifest_entry = files
@@ -216,6 +216,19 @@ fn content_id(files: &FileMap) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_payload_lengths_are_errors_not_panics() {
+        for declared in [u64::MAX, u64::MAX - STUB_LEN as u64, 1u64 << 32, 1] {
+            let mut blob = format_blob(1, Vec::new());
+            blob[12..20].copy_from_slice(&declared.to_be_bytes());
+            let result = std::panic::catch_unwind(|| unpack(&blob));
+            assert!(result.expect("unpack must not panic").is_err());
+        }
+        for len in 0..STUB_LEN {
+            assert!(unpack(&vec![0; len]).is_err());
+        }
+    }
 
     fn make_demo_page(dir: &std::path::Path) {
         std::fs::create_dir_all(dir).unwrap();

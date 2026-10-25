@@ -1,0 +1,5 @@
+{
+  "scenario": "断点续传重放：同一 offset 同一内容重发",
+  "request": { "upload_id": "up_3f9c1d2e4b5a6f70", "offset": 4, "body_digest": "sha256", "x-chunk-sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420a6c1a5a1a2f17" },
+  "response": { "upload_id": "up_3f9c1d2e4b5a6f70", "offset": 8, "declared_size": 10, "complete": false }
+}

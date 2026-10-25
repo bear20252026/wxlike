@@ -1,0 +1,50 @@
+{
+  "contract": "1.0",
+  "schema_version": "contract-v1",
+  "types": {
+    "ActionId": {},
+    "ActionRequest": {
+      "action_id": "string",
+      "contract": "string",
+      "deadline": "string",
+      "entry_id": "string",
+      "idempotency_key": "string",
+      "params": "Record<string, unknown>",
+      "trace_id": "string"
+    },
+    "ActionResult": {
+      "action_id": "string",
+      "completed_at_ms": "number",
+      "cursor": "string",
+      "data": "Record<string, unknown>",
+      "error": "Record<string, unknown>",
+      "status": "\"ok\" | \"empty\" | \"failed\""
+    },
+    "ConvId": {},
+    "DomainError": {
+      "code": "\"invalid_argument\" | \"unauthorized\" | \"forbidden\" | \"not_found\" | \"conflict\" | \"precondition\" | \"rate_limited\" | \"timeout\" | \"cancelled\" | \"unavailable\" | \"internal\"",
+      "field": "string",
+      "message": "string",
+      "retry_after_ms": "number"
+    },
+    "EntryId": {},
+    "Event": {
+      "contract": "string",
+      "conv": "string",
+      "emitted_at_ms": "number",
+      "event_id": "string",
+      "kind": "string",
+      "payload": "Record<string, unknown>",
+      "seq": "string"
+    },
+    "EventId": {},
+    "IdempotencyKey": {},
+    "MessageId": {},
+    "Money": {
+      "currency": "string",
+      "minor": "string"
+    },
+    "TraceId": {},
+    "UserId": {}
+  }
+}

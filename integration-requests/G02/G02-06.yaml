@@ -1,0 +1,55 @@
+task: G02-06
+title: 手机号验证码、登录方式与协议同意记录
+issue: https://github.com/bear20252026/wxlike/issues/112
+branch: feat/FP-G02-06
+crate: wxlike-identity
+contract: identity-v1
+wave: W2/W3
+hard_dependencies: [G02-01, G00-03]
+integration_dependencies: [G12-06, G10-06]
+paths:
+  - crates/features/identity/src/login_challenge.rs
+  - crates/features/identity/src/consent.rs
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/login/challenge -> login_challenge::issue（先过限速再调 SMS）"
+      - "POST /api/login/verify -> login_challenge::verify + session::open + consent::record"
+      - "POST /api/login/resend -> login_challenge::resend"
+      - "GET  /api/login/methods -> 已绑定登录方式"
+  - action: schema
+    proposal: schema/proposals/G02/identity.sql
+    tables: [identity_challenge, identity_consent]
+
+cross_group:
+  - group: G12
+    need: 登录页接 challenge/verify/resend，重发倒计时用服务端 resend_after
+  - group: G10
+    need: 桌面登录页同上；协议勾选必须在验证成功之后落回执
+  - group: G17
+    need: SMS 凭据与日志脱敏评审（pepper 不入库、日志不落验证码与完整号码）
+
+acceptance_notes:
+  - E.164 规范化：+ 号、00 前缀、分隔符、国家码，非法输入 bad_input
+  - 验证码哈希存储：HMAC-SHA256(pepper) 绑定 phone+purpose+device_id
+  - TTL / 尝试次数 / 每号每 IP 限流 / 重发真实倒计时（resend_after）
+  - 并发复用防护：consumed_at 条件 UPDATE，只有一个请求能消费
+  - 只有服务端验证成功才签发会话；勾选协议不是认证（consent 独立于 session）
+  - 不泄漏手机号是否注册：所有验证失败同一错误
+  - 生产禁固定万能码：验证码每次随机生成，无固定分支
+
+open_items:
+  - 短信供应商 sandbox 成功/失败证据缺失（需真实凭据）=> 本卡不标 ACCEPTED
+  - 微信账号登录属外部阻塞，另列；自有账号不得声称是微信账号
+
+tests:
+  - login_challenge::tests::normalizes_e164
+  - login_challenge::tests::happy_path_consumes_once
+  - login_challenge::tests::wrong_code_expiry_and_attempt_cap
+  - login_challenge::tests::resend_invalidates_old_code
+  - login_challenge::tests::per_phone_rate_limit_blocks_sixth_sms
+  - login_challenge::tests::code_is_bound_to_device_and_purpose
+  - consent::tests::record_is_idempotent
+  - consent::tests::version_upgrade_keeps_history_and_gates

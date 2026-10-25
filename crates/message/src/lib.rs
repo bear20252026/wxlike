@@ -26,6 +26,26 @@ use thiserror::Error;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use wxlike_core::msgmeta::rich_kind;
 
+mod conversations;
+mod delivery;
+mod push;
+mod submit;
+mod sync;
+
+pub use conversations::{
+    ConvPrefs, ConversationCursor, ConversationEvent, ConversationFilter, ConversationPage,
+    ConversationRow, ConversationScope, PrefField, MAX_SCOPE_CONVERSATIONS,
+};
+pub use delivery::{
+    DeliveryTask, ResumePlan, ResumePolicy, DEFAULT_LEASE_MS, MAX_CLAIM_BATCH, TASK_RETENTION_MS,
+};
+pub use push::{
+    DispatchReport, NoopPort, Platform, PushDevice, PushError, PushPort, PushTarget, RecordingPort,
+    SyncHint, DEFAULT_AGGREGATION_WINDOW_MS, TOKEN_RETENTION_MS,
+};
+pub use submit::{SubmitOutcome, SubmitRecipient, SubmitRequest, RECALL_WINDOW_MS};
+pub use sync::{NoteOutcome, SyncSchedule, SyncScheduler, SyncStep, SyncTrigger};
+
 /// Owner kinds (ADR-16). direct owners are normalized user pairs
 /// (`d-{a}~{b}`), groups are group ids, channels are channel ids — the
 /// string forms live with the social layer; this crate only needs the kind.
@@ -128,6 +148,18 @@ pub enum MailError {
     Storage(#[from] rusqlite::Error),
     #[error("withdraw refused: unknown message or not the author's own")]
     WithdrawRefused,
+    #[error("invalid submit input: {0}")]
+    InvalidInput(&'static str),
+    #[error("idempotency key reuse with different content for device {0:?}")]
+    IdempotencyConflict(String),
+    #[error("edit refused: {0}")]
+    EditRefused(&'static str),
+    #[error("recall window elapsed ({0} ms)")]
+    RecallWindowElapsed(u64),
+    #[error("forward refused: {0}")]
+    ForwardRefused(&'static str),
+    #[error("no delivery recipients remain for this conversation")]
+    NoRecipients,
 }
 
 pub type Result<T> = std::result::Result<T, MailError>;
@@ -139,11 +171,50 @@ pub struct MailMessage {
     pub seq: u64,
     pub msg_id: String,
     pub sender: String,
+    /// Device that submitted the message (`` for rows written before G03).
+    pub sender_device: String,
     pub type_id: String,
-    /// JSON payload text (bincode-free: the mailbox serves HTTP clients directly).
+    /// Opaque payload text. Plain messages carry JSON; ciphertext messages
+    /// carry the sealed envelope and the server never derives a plaintext
+    /// replacement from it.
     pub payload: String,
+    /// `plain` or `ciphertext` — read paths must not treat sealed bytes as
+    /// renderable content.
+    pub body_kind: BodyKind,
     pub sent_at_ms: u64,
+    /// Monotonic edit version (`0` = never edited).
+    pub edit_version: u32,
     pub withdrawn: bool,
+    pub recalled_at_ms: Option<u64>,
+    /// Source message id for forwards; `None` for ordinary messages.
+    pub forward_of: Option<String>,
+}
+
+/// Whether a message body is plain JSON or an opaque sealed envelope.
+///
+/// G03 never decrypts and never invents content: a `Ciphertext` row keeps the
+/// bytes exactly as submitted, and projections expose an empty preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyKind {
+    Plain,
+    Ciphertext,
+}
+
+impl BodyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BodyKind::Plain => "plain",
+            BodyKind::Ciphertext => "ciphertext",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "plain" => Some(BodyKind::Plain),
+            "ciphertext" => Some(BodyKind::Ciphertext),
+            _ => None,
+        }
+    }
 }
 
 /// A mailbox change event (recall / batch recall / edit-state), versioned for
@@ -211,6 +282,13 @@ impl MessageStore {
                 payload    TEXT NOT NULL DEFAULT '',
                 sent_at_ms INTEGER NOT NULL,
                 withdrawn  INTEGER NOT NULL DEFAULT 0,
+                -- G03-01: submit metadata travels with the timeline row so a
+                -- retry, edit or recall never needs a second source of truth.
+                sender_device TEXT NOT NULL DEFAULT '',
+                body_kind     TEXT NOT NULL DEFAULT 'plain',
+                edit_version  INTEGER NOT NULL DEFAULT 0,
+                recalled_at_ms INTEGER,
+                forward_of    TEXT,
                 PRIMARY KEY (owner_type, owner_id, seq)
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_msgid ON mailbox(msg_id);
@@ -280,11 +358,151 @@ impl MessageStore {
                 user_id    TEXT NOT NULL,
                 PRIMARY KEY (owner_type, owner_id, user_id)
             );
+
+            -- 提交幂等账（G03 提交卡）。唯一键是 (sender_device, idempotency_key)，
+            -- 与消息、seq、投递任务在同一个 SQLite 事务里写入。
+            CREATE TABLE IF NOT EXISTS message_submit (
+                sender_device   TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                conv_id         TEXT NOT NULL,
+                msg_id          TEXT NOT NULL UNIQUE,
+                seq             INTEGER NOT NULL,
+                payload_hash    TEXT NOT NULL DEFAULT '',
+                created_at      INTEGER NOT NULL,
+                PRIMARY KEY (sender_device, idempotency_key)
+            );
+
+            -- 每消息×每设备的投递任务（G03 投递卡）。socket 写成功不删唯一副本，
+            -- 只有客户端持久化后的 stored ack 才把 state 推到 stored。
+            CREATE TABLE IF NOT EXISTS delivery_task (
+                msg_id         TEXT NOT NULL,
+                target_user    TEXT NOT NULL,
+                target_device  TEXT NOT NULL DEFAULT '*',
+                state          TEXT NOT NULL DEFAULT 'pending',
+                lease_owner    TEXT,
+                lease_until    INTEGER NOT NULL DEFAULT 0,
+                attempts       INTEGER NOT NULL DEFAULT 0,
+                next_at        INTEGER NOT NULL DEFAULT 0,
+                joined_seq     INTEGER NOT NULL DEFAULT 0,
+                left_seq       INTEGER,
+                created_at     INTEGER NOT NULL,
+                updated_at     INTEGER NOT NULL,
+                PRIMARY KEY (msg_id, target_user, target_device)
+            );
+            CREATE INDEX IF NOT EXISTS idx_delivery_ready
+                ON delivery_task(state, next_at, lease_until);
+            CREATE INDEX IF NOT EXISTS idx_delivery_device
+                ON delivery_task(target_user, target_device, state);
+
+            -- 设备游标与账号游标分离；stored/read 各自单调。
+            CREATE TABLE IF NOT EXISTS device_cursor (
+                device_id    TEXT NOT NULL,
+                conv_id      TEXT NOT NULL,
+                stored_cursor INTEGER NOT NULL DEFAULT 0,
+                read_cursor   INTEGER NOT NULL DEFAULT 0,
+                version       INTEGER NOT NULL DEFAULT 0,
+                updated_at    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (device_id, conv_id)
+            );
+
+            -- 会话投影表（G03 会话卡）。keyset 分页只读这张表，不 OFFSET 扫信箱。
+            CREATE TABLE IF NOT EXISTS conversation_projection (
+                conv_id      TEXT PRIMARY KEY,
+                owner_type   TEXT NOT NULL,
+                last_seq     INTEGER NOT NULL DEFAULT 0,
+                last_at_ms   INTEGER NOT NULL DEFAULT 0,
+                last_sender  TEXT NOT NULL DEFAULT '',
+                last_type    TEXT NOT NULL DEFAULT '',
+                preview      TEXT NOT NULL DEFAULT '',
+                member_count INTEGER NOT NULL DEFAULT 0,
+                deleted      INTEGER NOT NULL DEFAULT 0,
+                last_withdrawn INTEGER NOT NULL DEFAULT 0,
+                updated_at   INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_conv_projection_page
+                ON conversation_projection(last_at_ms DESC, conv_id DESC);
+
+            -- 置顶/静音/归档是用户跨端偏好，不是设备本地状态。
+            CREATE TABLE IF NOT EXISTS conversation_pref (
+                user_id    TEXT NOT NULL,
+                conv_id    TEXT NOT NULL,
+                pinned     INTEGER NOT NULL DEFAULT 0,
+                muted      INTEGER NOT NULL DEFAULT 0,
+                archived   INTEGER NOT NULL DEFAULT 0,
+                hidden     INTEGER NOT NULL DEFAULT 0,
+                version    INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, conv_id)
+            );
+
+            -- 清空本地历史只影响本人视图；与删除全端历史是两条命令。
+            CREATE TABLE IF NOT EXISTS conversation_clear (
+                user_id   TEXT NOT NULL,
+                conv_id   TEXT NOT NULL,
+                cleared_before_seq INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, conv_id)
+            );
+
+            -- 会话删除/清空产生的域事件，供搜索与附件引用异步收口。
+            CREATE TABLE IF NOT EXISTS conversation_event (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor   TEXT NOT NULL,
+                conv_id TEXT NOT NULL,
+                kind    TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '',
+                at_ms   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_conversation_event_conv
+                ON conversation_event(conv_id, id);
+
+            -- 推送 token 归设备，可轮换、可撤销。epoch 是让撤销"落地"的
+            -- 那一列：撤销把 epoch 前移，任何仍带旧 epoch 的投递一律拒绝。
+            CREATE TABLE IF NOT EXISTS push_device (
+                device_id    TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                platform     TEXT NOT NULL,
+                token        TEXT NOT NULL,
+                epoch        INTEGER NOT NULL DEFAULT 1,
+                revoked      INTEGER NOT NULL DEFAULT 0,
+                created_ms   INTEGER NOT NULL,
+                last_seen_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_user
+                ON push_device(user_id, revoked);
             "#,
         )?;
-        Ok(Self {
+        let store = Self {
             conn: Mutex::new(conn),
-        })
+        };
+        store.add_missing_columns()?;
+        Ok(store)
+    }
+
+    /// Older files predate the G03 columns; `CREATE TABLE IF NOT EXISTS` does
+    /// not add columns to an existing table, so upgrade in place.
+    fn add_missing_columns(&self) -> Result<()> {
+        let c = self.c();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(mailbox)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("sender_device", "TEXT NOT NULL DEFAULT ''"),
+            ("body_kind", "TEXT NOT NULL DEFAULT 'plain'"),
+            ("edit_version", "INTEGER NOT NULL DEFAULT 0"),
+            ("recalled_at_ms", "INTEGER"),
+            ("forward_of", "TEXT"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE mailbox ADD COLUMN {col} {ddl};"))?;
+            }
+        }
+        Ok(())
     }
 
     fn c(&self) -> MutexGuard<'_, Connection> {
@@ -307,6 +525,33 @@ impl MessageStore {
         msg_id: &str,
         payload: &str,
     ) -> Result<Option<u64>> {
+        self.append_with_meta(
+            owner,
+            sender,
+            "",
+            type_id,
+            msg_id,
+            payload,
+            BodyKind::Plain,
+            0,
+            None,
+        )
+    }
+
+    /// Full normal-channel append used by the G03 submit transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_with_meta(
+        &self,
+        owner: (OwnerType, &str),
+        sender: &str,
+        sender_device: &str,
+        type_id: &str,
+        msg_id: &str,
+        payload: &str,
+        body_kind: BodyKind,
+        edit_version: u32,
+        forward_of: Option<&str>,
+    ) -> Result<Option<u64>> {
         let (ot, oid) = self.owner_pair(owner)?;
         match channel_class_of(type_id) {
             Some(ChannelClass::Normal) => {}
@@ -321,43 +566,34 @@ impl MessageStore {
             }
             None => return Err(MailError::UnregisteredType(type_id.to_string())),
         }
+        let now = wxlike_core::types::now_ms();
         let mut c = self.c();
         let tx = c.transaction()?;
-        // 原子序列号：单语句完成取号（不变式 2）
-        tx.execute(
-            "INSERT INTO owner_seq(owner_type, owner_id, seq) VALUES(?1, ?2, 1)
-             ON CONFLICT(owner_type, owner_id) DO UPDATE SET seq = seq + 1",
-            params![ot, oid],
-        )?;
-        let seq: u64 = tx.query_row(
-            "SELECT seq FROM owner_seq WHERE owner_type = ?1 AND owner_id = ?2",
-            params![ot, oid],
-            |r| r.get::<_, i64>(0).map(|v| v as u64),
-        )?;
-        let inserted = tx.execute(
-            "INSERT INTO mailbox(owner_type, owner_id, seq, msg_id, sender, type_id, payload, sent_at_ms, withdrawn)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
-            params![
-                ot,
-                oid,
-                seq as i64,
-                msg_id,
-                sender,
-                type_id,
-                payload,
-                wxlike_core::types::now_ms() as i64
-            ],
-        );
-        match inserted {
-            Ok(_) => {
+        let seq = next_seq_tx(&tx, ot, oid)?;
+        let row = MailInsert {
+            owner_type: ot,
+            owner_id: oid,
+            seq,
+            msg_id,
+            sender,
+            sender_device,
+            type_id,
+            payload,
+            now_ms: now,
+            body_kind,
+            edit_version,
+            forward_of,
+        };
+        match insert_mailbox_tx(&tx, &row)? {
+            true => {
+                touch_projection_tx(&tx, ot, oid, seq, sender, type_id, payload, body_kind, now)?;
                 tx.commit()?;
                 Ok(Some(seq))
             }
-            Err(e) if is_unique(&e) => {
+            false => {
                 tx.rollback()?;
                 Ok(None) // 重复投递：静默，不是错误
             }
-            Err(e) => Err(e.into()),
         }
     }
 
@@ -456,24 +692,17 @@ impl MessageStore {
         let (ot, oid) = self.owner_pair(owner)?;
         let limit = limit.clamp(1, 200);
         let c = self.c();
-        let mut stmt = c.prepare(
-            "SELECT seq, msg_id, sender, type_id, payload, sent_at_ms, withdrawn
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MAIL_COLS}
                FROM mailbox
               WHERE owner_type = ?1 AND owner_id = ?2 AND (?3 = 0 OR seq < ?3)
-              ORDER BY seq DESC LIMIT ?4",
-        )?;
+              ORDER BY seq DESC LIMIT ?4"
+        ))?;
         let mut rows = stmt
-            .query_map(params![ot, oid, before_seq as i64, limit as i64], |r| {
-                Ok(MailMessage {
-                    seq: r.get::<_, i64>(0)? as u64,
-                    msg_id: r.get(1)?,
-                    sender: r.get(2)?,
-                    type_id: r.get(3)?,
-                    payload: r.get(4)?,
-                    sent_at_ms: r.get::<_, i64>(5)? as u64,
-                    withdrawn: r.get::<_, i64>(6)? != 0,
-                })
-            })?
+            .query_map(
+                params![ot, oid, before_seq as i64, limit as i64],
+                row_to_mail,
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         if rows.is_empty() {
             return Ok((Vec::new(), None));
@@ -495,11 +724,11 @@ impl MessageStore {
         let (ot, oid) = self.owner_pair(owner)?;
         let limit = limit.clamp(1, 1000) as i64;
         let c = self.c();
-        let mut stmt = c.prepare(
-            "SELECT seq, msg_id, sender, type_id, payload, sent_at_ms, withdrawn
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MAIL_COLS}
              FROM mailbox WHERE owner_type = ?1 AND owner_id = ?2 AND seq > ?3
-             ORDER BY seq LIMIT ?4",
-        )?;
+             ORDER BY seq LIMIT ?4"
+        ))?;
         let rows = stmt
             .query_map(params![ot, oid, after_seq as i64, limit], row_to_mail)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -591,18 +820,50 @@ impl MessageStore {
     /// 撤回（逻辑删除 + 变更事件）：只有作者本人在信箱内可行；目标不存在或
     /// 非本人消息时整体拒绝（与过渡 hub 语义一致， forged recall 无痕迹）。
     pub fn withdraw(&self, owner: (OwnerType, &str), msg_id: &str, actor: &str) -> Result<()> {
+        self.withdraw_within(owner, msg_id, actor, None)
+    }
+
+    /// Author recall with an optional server-enforced window. `None` keeps the
+    /// legacy (unlimited) behaviour for callers that already gate the command.
+    pub fn withdraw_within(
+        &self,
+        owner: (OwnerType, &str),
+        msg_id: &str,
+        actor: &str,
+        window_ms: Option<u64>,
+    ) -> Result<()> {
         let (ot, oid) = self.owner_pair(owner)?;
+        let now = wxlike_core::types::now_ms();
         let mut c = self.c();
         let tx = c.transaction()?;
+        let sent: Option<i64> = tx
+            .query_row(
+                "SELECT sent_at_ms FROM mailbox
+                 WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4
+                   AND withdrawn = 0",
+                params![ot, oid, msg_id, actor],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(sent) = sent else {
+            return Err(MailError::WithdrawRefused);
+        };
+        if let Some(window) = window_ms {
+            let age = now.saturating_sub(sent as u64);
+            if age > window {
+                return Err(MailError::RecallWindowElapsed(age));
+            }
+        }
         let touched = tx.execute(
-            "UPDATE mailbox SET withdrawn = 1
+            "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?5
              WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4 AND withdrawn = 0",
-            params![ot, oid, msg_id, actor],
+            params![ot, oid, msg_id, actor, now as i64],
         )?;
         if touched != 1 {
             return Err(MailError::WithdrawRefused);
         }
         bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
+        refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
         tx.commit()?;
         Ok(())
     }
@@ -613,17 +874,19 @@ impl MessageStore {
     /// 谁撤的必须可查（不变式 7）。
     pub fn withdraw_as(&self, owner: (OwnerType, &str), msg_id: &str, actor: &str) -> Result<()> {
         let (ot, oid) = self.owner_pair(owner)?;
+        let now = wxlike_core::types::now_ms();
         let mut c = self.c();
         let tx = c.transaction()?;
         let touched = tx.execute(
-            "UPDATE mailbox SET withdrawn = 1
+            "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?4
              WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND withdrawn = 0",
-            params![ot, oid, msg_id],
+            params![ot, oid, msg_id, now as i64],
         )?;
         if touched != 1 {
             return Err(MailError::WithdrawRefused);
         }
         bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
+        refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
         tx.commit()?;
         Ok(())
     }
@@ -637,18 +900,20 @@ impl MessageStore {
         actor: &str,
     ) -> Result<usize> {
         let (ot, oid) = self.owner_pair(owner)?;
+        let now = wxlike_core::types::now_ms();
         let mut c = self.c();
         let tx = c.transaction()?;
         let mut done = 0usize;
         for msg_id in msg_ids {
             let touched = tx.execute(
-                "UPDATE mailbox SET withdrawn = 1
+                "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?5
                  WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4 AND withdrawn = 0",
-                params![ot, oid, msg_id, actor],
+                params![ot, oid, msg_id, actor, now as i64],
             )?;
             if touched == 1 {
                 done += 1;
                 bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
+                refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
             }
         }
         if done != msg_ids.len() {
@@ -759,6 +1024,209 @@ impl MessageStore {
     }
 }
 
+/// Column order shared by every mailbox SELECT: `row_to_mail` decodes it.
+pub(crate) const MAIL_COLS: &str = "seq, msg_id, sender, type_id, payload, sent_at_ms, \
+                                    withdrawn, sender_device, body_kind, edit_version, \
+                                    recalled_at_ms, forward_of";
+
+/// One normal-channel insert, shared by `append` and the submit transaction.
+pub(crate) struct MailInsert<'a> {
+    pub owner_type: &'a str,
+    pub owner_id: &'a str,
+    pub seq: u64,
+    pub msg_id: &'a str,
+    pub sender: &'a str,
+    pub sender_device: &'a str,
+    pub type_id: &'a str,
+    pub payload: &'a str,
+    pub now_ms: u64,
+    pub body_kind: BodyKind,
+    pub edit_version: u32,
+    pub forward_of: Option<&'a str>,
+}
+
+/// Single-point sequence allocation (invariant 2): `UPDATE … RETURNING` shape,
+/// expressed with the SQLite version available in the workspace.
+pub(crate) fn next_seq_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ot: &str,
+    oid: &str,
+) -> rusqlite::Result<u64> {
+    tx.execute(
+        "INSERT INTO owner_seq(owner_type, owner_id, seq) VALUES(?1, ?2, 1)
+         ON CONFLICT(owner_type, owner_id) DO UPDATE SET seq = seq + 1",
+        params![ot, oid],
+    )?;
+    tx.query_row(
+        "SELECT seq FROM owner_seq WHERE owner_type = ?1 AND owner_id = ?2",
+        params![ot, oid],
+        |r| r.get::<_, i64>(0).map(|v| v as u64),
+    )
+}
+
+/// Returns `false` when the msg_id already exists (at-least-once duplicate).
+pub(crate) fn insert_mailbox_tx(
+    tx: &rusqlite::Transaction<'_>,
+    row: &MailInsert<'_>,
+) -> rusqlite::Result<bool> {
+    let res = tx.execute(
+        "INSERT INTO mailbox(owner_type, owner_id, seq, msg_id, sender, type_id, payload,
+                             sent_at_ms, withdrawn, sender_device, body_kind, edit_version,
+                             recalled_at_ms, forward_of)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?)",
+        params![
+            row.owner_type,
+            row.owner_id,
+            row.seq as i64,
+            row.msg_id,
+            row.sender,
+            row.type_id,
+            row.payload,
+            row.now_ms as i64,
+            row.sender_device,
+            row.body_kind.as_str(),
+            row.edit_version as i64,
+            row.forward_of
+        ],
+    );
+    match res {
+        Ok(_) => Ok(true),
+        Err(e) if is_unique(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Preview text for the conversation list. Sealed bodies never leak plaintext
+/// or even ciphertext into the list: `Ciphertext` rows project an empty preview.
+/// Preview length cap for the list row: enough to render a line, never the body.
+pub(crate) const PREVIEW_MAX_CHARS: usize = 120;
+
+pub(crate) fn preview_of(payload: &str, body_kind: BodyKind) -> String {
+    match body_kind {
+        BodyKind::Ciphertext => String::new(),
+        BodyKind::Plain => payload.chars().take(PREVIEW_MAX_CHARS).collect(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn touch_projection_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ot: &str,
+    oid: &str,
+    seq: u64,
+    sender: &str,
+    type_id: &str,
+    payload: &str,
+    body_kind: BodyKind,
+    now: u64,
+) -> rusqlite::Result<()> {
+    apply_projection_row_tx(
+        tx, ot, oid, seq, sender, type_id, payload, body_kind, false, now,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_projection_row_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ot: &str,
+    oid: &str,
+    seq: u64,
+    sender: &str,
+    type_id: &str,
+    payload: &str,
+    body_kind: BodyKind,
+    withdrawn: bool,
+    now: u64,
+) -> rusqlite::Result<()> {
+    // A recalled head projects no body: the client renders the "message
+    // recalled" placeholder from `last_withdrawn`, and the old text stops being
+    // served from the list.
+    let preview = if withdrawn {
+        String::new()
+    } else {
+        preview_of(payload, body_kind)
+    };
+    // `WHERE excluded.last_seq >= last_seq` keeps an out-of-order backfill from
+    // rewinding the list; equal seq is the recall-refresh path.
+    tx.execute(
+        "INSERT INTO conversation_projection(
+             conv_id, owner_type, last_seq, last_at_ms, last_sender, last_type, preview,
+             deleted, last_withdrawn, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?4)
+         ON CONFLICT(conv_id) DO UPDATE SET
+             owner_type = excluded.owner_type,
+             last_seq = excluded.last_seq,
+             last_at_ms = excluded.last_at_ms,
+             last_sender = excluded.last_sender,
+             last_type = excluded.last_type,
+             preview = excluded.preview,
+             last_withdrawn = excluded.last_withdrawn,
+             deleted = 0,
+             updated_at = excluded.updated_at
+         WHERE excluded.last_seq >= conversation_projection.last_seq",
+        params![
+            oid,
+            ot,
+            seq as i64,
+            now as i64,
+            sender,
+            type_id,
+            preview,
+            withdrawn as i64
+        ],
+    )?;
+    Ok(())
+}
+
+/// A recall only changes the list when the recalled row is the newest one;
+/// older recalls are already represented by the newer preview.
+fn refresh_projection_after_recall_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ot: &str,
+    oid: &str,
+    msg_id: &str,
+    now: u64,
+) -> rusqlite::Result<()> {
+    let latest = tx
+        .query_row(
+            "SELECT seq, msg_id, sender, type_id, payload, body_kind, withdrawn
+               FROM mailbox
+              WHERE owner_type = ?1 AND owner_id = ?2
+              ORDER BY seq DESC LIMIT 1",
+            params![ot, oid],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)? != 0,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((seq, latest_id, sender, type_id, payload, kind, withdrawn)) = latest else {
+        return Ok(());
+    };
+    if latest_id != msg_id {
+        return Ok(());
+    }
+    apply_projection_row_tx(
+        tx,
+        ot,
+        oid,
+        seq,
+        &sender,
+        &type_id,
+        &payload,
+        BodyKind::parse(&kind).unwrap_or(BodyKind::Plain),
+        withdrawn,
+        now,
+    )
+}
+
 /// 变更事件的 version 也走单点原子分配（与消息 seq 同机制、独立空间）。
 fn bump_change(
     tx: &rusqlite::Transaction<'_>,
@@ -795,6 +1263,10 @@ fn bump_change(
     Ok(version)
 }
 
+/// Tail columns of [`MAIL_COLS`] (the rest are below ten and read in place).
+const C_MAIL_RECALLED: usize = 10;
+const C_MAIL_FORWARD_OF: usize = 11;
+
 fn row_to_mail(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessage> {
     Ok(MailMessage {
         seq: r.get::<_, i64>(0)? as u64,
@@ -804,6 +1276,11 @@ fn row_to_mail(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessage> {
         payload: r.get(4)?,
         sent_at_ms: r.get::<_, i64>(5)? as u64,
         withdrawn: r.get::<_, i64>(6)? != 0,
+        sender_device: r.get(7)?,
+        body_kind: BodyKind::parse(&r.get::<_, String>(8)?).unwrap_or(BodyKind::Plain),
+        edit_version: r.get::<_, i64>(9)? as u32,
+        recalled_at_ms: r.get::<_, Option<i64>>(C_MAIL_RECALLED)?.map(|v| v as u64),
+        forward_of: r.get(C_MAIL_FORWARD_OF)?,
     })
 }
 

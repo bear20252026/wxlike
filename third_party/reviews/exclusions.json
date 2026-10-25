@@ -1,0 +1,43 @@
+{
+  "schema": "wxlike.vendor-exclusions.v1",
+  "updated_at": "2026-10-24",
+  "note": "排除规则是「不引入」的书面理由。registry 里每条 excluded 片段必须命中这里的 id，否则门禁判不合格——因为「我们没抄它」这句话无法验证，而「按哪条规则不抄」可以。",
+  "rules": [
+    {
+      "id": "EXCL-ENTERPRISE",
+      "note": "上游 ee/ / enterprise/ / proprietary/ 等专有子树：不读、不复制、不 vendor",
+      "match": ["**/ee/**", "**/enterprise/**", "**/proprietary/**", "**/*.enterprise.*"],
+      "applies_to": ["UP-ROCKETCHAT", "UP-MEDUSA", "UP-MATTERMOST"]
+    },
+    {
+      "id": "EXCL-MODEL-WEIGHTS",
+      "note": "模型权重/数据集不适用代码许可，且来源与体积不可控：本项目一律不 vendor",
+      "match": ["**/*.safetensors", "**/*.gguf", "**/*.onnx", "**/*.ckpt", "**/*.pt", "**/models/**"],
+      "applies_to": ["UP-CANDLE", "UP-WHISPER"]
+    },
+    {
+      "id": "EXCL-NOASSERTION",
+      "note": "上游根许可为 NOASSERTION/复合声明：未逐文件读 LICENSE 之前不得复制",
+      "match": ["**/LICENSE", "**/ENTERPRISE_LICENSE*"],
+      "applies_to": ["UP-ROCKETCHAT", "UP-MATTERMOST", "UP-MEDUSA", "UP-COTURN", "UP-MCP-SDK"]
+    },
+    {
+      "id": "EXCL-RESEARCH-HEAD",
+      "note": "upstream_manifest 的 29 个锚点是研究用 HEAD 固定，不是引入批准；正式依赖必须换成已修复的发行版",
+      "match": ["docs/full-platform-delivery/upstream_manifest.json"],
+      "applies_to": ["*"]
+    },
+    {
+      "id": "EXCL-SECOND-AUTHORITY",
+      "note": "每类引擎只保留一个 authority（E2EE=vodozemac、搜索=tantivy、队列=NATS、媒体=str0m）：同类第二实现即使许可允许也不引入",
+      "match": ["**"],
+      "applies_to": ["*"]
+    },
+    {
+      "id": "EXCL-WASMTIME-DEFAULT-OFF",
+      "note": "Wasmtime 仅在可选 feature 下作为沙箱候选；默认构建不启用，因此其两个 Critical 公告在当前依赖图中不可达（见 security/advisory-policy）",
+      "match": ["**/wasmtime*"],
+      "applies_to": ["UP-WASMTIME"]
+    }
+  ]
+}

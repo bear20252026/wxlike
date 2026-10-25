@@ -1,0 +1,41 @@
+{
+  "contract_version": "owners-v1",
+  "task": "G00-02（#100）",
+  "description": "文件所有权登记（v1）：每条路径唯一 owner 职责组；跨组改动须经 integration-requests/**。不含二义路径——同一路径永远只有一个 owner。",
+  "ownership": [
+    { "path": "composition/**", "owner": "G00", "note": "组合根、总账、平台矩阵（G00 独占）" },
+    { "path": "contracts/common/**", "owner": "G00", "note": "跨域契约 schema（G00 独占；域 schema 由各域组提案、G00 装配）" },
+    { "path": "schema/registry/**", "owner": "G00", "note": "迁移编号与契约版本登记" },
+    { "path": "integration-requests/**", "owner": "G00", "note": "跨组请求登记（各组只能写自己的子目录）" },
+    { "path": "crates/core/**", "owner": "G01" },
+    { "path": "crates/ffi/**", "owner": "G01" },
+    { "path": "crates/client/**", "owner": "G15", "note": "含 execute/ 拆分（G00-02 本卡代为落位后归 G15 维护）" },
+    { "path": "crates/cmd/**", "owner": "G15" },
+    { "path": "crates/mcp/**", "owner": "G15" },
+    { "path": "crates/platform/src/{accounts,users,devices,sessions,secret,security}.rs", "owner": "G02" },
+    { "path": "crates/platform/src/{friends,groups,relations,perms,groups_admin}.rs", "owner": "G02" },
+    { "path": "crates/platform/src/db.rs + db/**", "owner": "G02", "note": "schema 迁移编号变更仍须 integration-requests 登记" },
+    { "path": "crates/platform/src/{message,mailbox,sync}*.rs", "owner": "G03" },
+    { "path": "crates/platform/src/{media,video*,live}.rs", "owner": "G04" },
+    { "path": "crates/platform/src/{moments,favorites,report}.rs + crates/search/**", "owner": "G05" },
+    { "path": "crates/platform/src/{wallet,ledger*}.rs", "owner": "G06" },
+    { "path": "crates/platform/src/scan*.rs", "owner": "G07" },
+    { "path": "crates/container/** + crates/dpage/**", "owner": "G08" },
+    { "path": "crates/{rtc,sfu,video}/**", "owner": "G09" },
+    { "path": "ui/src-tauri/**", "owner": "G10", "note": "含 G00-02 拆出的 app_state/commands/store/render/util 模块" },
+    { "path": "ui/src/{ui.ts,ui-dom.ts,ui-format.ts,api.ts,state.ts,callpage.ts,msgIndex.ts,vendor/**}", "owner": "G10" },
+    { "path": "ui/src/web/**", "owner": "G11" },
+    { "path": "design/ui-v2/prototype/**", "owner": "G11", "note": "只读参照：原型不进产品构建" },
+    { "path": "apps/mobile/lib/**", "owner": "G12" },
+    { "path": "apps/mobile/android/**", "owner": "G12" },
+    { "path": "crates/admin/**", "owner": "G14" },
+    { "path": ".github/workflows/** + scripts/** + deny.toml", "owner": "G16" },
+    { "path": "deploy/**", "owner": "G16" },
+    { "path": "THIRD-PARTY-NOTICES.md + licenses/**", "owner": "G17" }
+  ],
+  "rules": [
+    "每条路径恰一个 owner：发现二义即在本文件裁决（G00 仲裁）",
+    "跨组需求走 integration-requests/< requester 组>/<task>.yaml，不直接改他人路径",
+    "公共清单（Cargo.lock/workspace Cargo.toml/根 router）由 G00 串行合入"
+  ]
+}
