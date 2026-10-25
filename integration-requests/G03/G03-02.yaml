@@ -45,6 +45,15 @@ requests:
       （backend = RedisStreams / NATS JetStream）。本机只能验内存与 SQLite 后端。
     rationale: 跨节点重投路径需要真实 broker；本机不可验证，登记为待验。
 
+  - id: REQ-G00-migration-numbering
+    target: G00
+    action: 为 `device_cursor` 表分配 schema 编号（按 (`device_id`, `conv_id`)
+      维护的持久化确认游标，与账号级 `read_cursor` 并存）；列名以
+      `crates/message/src/lib.rs` 的 DDL 为准，回滚兼容说明见该文件
+      `add_missing_columns` 附近注释。
+    rationale: 迁移编号由 G00 串行分配，避免多组撞号；G03-01 已为
+      message_submit 与 mailbox 新列登记过同一申请。
+
 notes:
   - 游标按 (`device_id`, `conv_id`) 存，账号级 `read_cursor` 只由 read ack 推进；
     两端同时已读时游标单调（测试 `cursors_are_per_device_and_the_account_read_cursor_stays_shared`）。
