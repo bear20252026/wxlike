@@ -69,6 +69,10 @@ friend_requests.to_uid TEXT notnull=1 pk=0
 friend_requests.message TEXT notnull=1 pk=0
 friend_requests.status TEXT notnull=1 pk=0
 friend_requests.created_at INTEGER notnull=1 pk=0
+friend_tag.user_id TEXT notnull=1 pk=1
+friend_tag.friend_id TEXT notnull=1 pk=2
+friend_tag.tag TEXT notnull=1 pk=3
+friend_tag.created_at INTEGER notnull=1 pk=0
 friends.user_id TEXT notnull=1 pk=1
 friends.friend_id TEXT notnull=1 pk=2
 friends.remark TEXT notnull=1 pk=0
@@ -95,6 +99,10 @@ group_members.user_id TEXT notnull=1 pk=2
 group_members.role TEXT notnull=1 pk=0
 group_members.my_remark TEXT notnull=1 pk=0
 group_members.joined_at INTEGER notnull=1 pk=0
+group_meta.group_id TEXT notnull=0 pk=1
+group_meta.visibility TEXT notnull=1 pk=0
+group_meta.dissolved_at INTEGER notnull=0 pk=0
+group_meta.dissolved_by TEXT notnull=1 pk=0
 group_mutes.group_id TEXT notnull=1 pk=1
 group_mutes.user_id TEXT notnull=1 pk=2
 group_mutes.until_ms INTEGER notnull=1 pk=0
@@ -335,6 +343,11 @@ redpackets.memo TEXT notnull=1 pk=0
 redpackets.status TEXT notnull=1 pk=0
 redpackets.created_at INTEGER notnull=1 pk=0
 redpackets.expire_at INTEGER notnull=1 pk=0
+relations_audit.seq INTEGER notnull=0 pk=1
+relations_audit.actor TEXT notnull=1 pk=0
+relations_audit.subject TEXT notnull=1 pk=0
+relations_audit.kind TEXT notnull=1 pk=0
+relations_audit.at INTEGER notnull=1 pk=0
 reports.id TEXT notnull=0 pk=1
 reports.reporter TEXT notnull=1 pk=0
 reports.target_kind TEXT notnull=1 pk=0
