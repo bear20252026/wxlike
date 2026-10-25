@@ -2,7 +2,7 @@
 
 #[derive(Default, Clone, Debug)]
 pub struct BridgeState {
-    pub logs: Vec<String>,
+    pub logs: std::collections::VecDeque<String>,
     pub title: String,
     pub storage: std::collections::BTreeMap<String, String>,
 }

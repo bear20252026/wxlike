@@ -1,9 +1,9 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
-  "serialNumber": "urn:uuid:6deeae01-3368-5c0d-b445-cc23cac4230e",
+  "serialNumber": "urn:uuid:6ed045f0-c7ab-5fc1-843a-42e6b9cbb670",
   "version": 1,
-  "metadata": {"component": {"bom-ref": "pkg:generic/wxlike", "name": "wxlike", "type": "application"}, "properties": [{"name": "wxlike:sbom:component-count", "value": "777"}, {"name": "wxlike:sbom:sources", "value": "cargo-lock,docker-compose,dockerfile,npm-lock,pubspec-lock"}, {"name": "wxlike:sbom:reproducible", "value": "serialNumber derived from component purls"}], "tools": [{"name": "wxlike-source-audit", "version": "1.0"}]},
+  "metadata": {"component": {"bom-ref": "pkg:generic/wxlike", "name": "wxlike", "type": "application"}, "properties": [{"name": "wxlike:sbom:component-count", "value": "778"}, {"name": "wxlike:sbom:sources", "value": "cargo-lock,docker-compose,dockerfile,npm-lock,pubspec-lock"}, {"name": "wxlike:sbom:reproducible", "value": "serialNumber derived from component purls"}], "tools": [{"name": "wxlike-source-audit", "version": "1.0"}]},
   "components": [
     {"bom-ref": "pkg:cargo/adler2@2.0.1", "hashes": [{"alg": "SHA-256", "content": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"}], "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "adler2", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/adler2@2.0.1", "type": "library", "version": "2.0.1"},
     {"bom-ref": "pkg:cargo/aead@0.5.2", "hashes": [{"alg": "SHA-256", "content": "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"}], "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "aead", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/aead@0.5.2", "type": "library", "version": "0.5.2"},
@@ -655,6 +655,7 @@
     {"bom-ref": "pkg:cargo/wxlike-ledger@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-ledger", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-ledger@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-limits@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-limits", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-limits@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-mcp@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-mcp", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-mcp@0.1.0", "type": "library", "version": "0.1.0"},
+    {"bom-ref": "pkg:cargo/wxlike-media@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-media", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-media@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-message@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-message", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-message@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-moderation@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-moderation", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-moderation@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-mq@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-mq", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-mq@0.1.0", "type": "library", "version": "0.1.0"},

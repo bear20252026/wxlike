@@ -33,3 +33,5 @@ jobs:
           tool: cargo-audit
       - name: audit
         run: cargo audit
+      - name: audit desktop lock
+        run: cargo audit --file ui/src-tauri/Cargo.lock
