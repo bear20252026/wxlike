@@ -747,6 +747,18 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/devices/{device_id}/revoke",
+      "handler": "revoke_device",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "device",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/favorites",
       "handler": "list",
@@ -1000,6 +1012,18 @@
     },
     {
       "method": "POST",
+      "path": "/api/groups/{group_id}/dissolve",
+      "handler": "dissolve",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/groups/{group_id}/invites",
       "handler": "create_invite",
       "module": "crates/platform/src/groups_admin.rs",
@@ -1146,6 +1170,18 @@
       "method": "PUT",
       "path": "/api/groups/{group_id}/remark-mine",
       "handler": "remark_mine",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/visibility",
+      "handler": "set_visibility",
       "module": "crates/platform/src/groups.rs",
       "auth": "user",
       "object": "group",
@@ -1632,8 +1668,31 @@
     },
     {
       "method": "POST",
+      "path": "/api/sessions/refresh",
+      "handler": "refresh_session",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "鉴权由 body.refresh_token 承担：轮换凭证本身即凭据（一次性、父会话绑定），不走 bearer 中间件；无效/过期 refresh_token 由 rotate_refresh 拒绝。"
+    },
+    {
+      "method": "POST",
       "path": "/api/sessions/revoke-others",
       "handler": "revoke_others",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/step-up",
+      "handler": "step_up_grant",
       "module": "crates/platform/src/sessions.rs",
       "auth": "user",
       "object": "endpoint",
