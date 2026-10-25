@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/common/envelope.schema.json",
+  "title": "wxlike event envelope (contract-v1)",
+  "description": "服务端→客户端事件信封的线格式契约。与 composition/action-registry.rs 的 EventEnvelope、wxlike_core::types::Envelope 对齐。兼容窗口规则：新增字段必须 #[serde(default)]（旧端忽略）；字段语义变更必须换新字段名；seq/msg_id 永不复用。",
+  "type": "object",
+  "required": ["version", "conv_id", "sender", "to", "seq", "kind", "sent_at_ms"],
+  "properties": {
+    "version": { "type": "integer", "const": 1, "description": "信封格式版本；当前仅 1" },
+    "conv_id": { "type": "string", "minLength": 1, "description": "会话 id：d-<a>~<b>（直聊）或群 id" },
+    "sender": { "type": "string", "minLength": 1 },
+    "to": { "type": "array", "items": { "type": "string" }, "description": "收件人 user_id 列表；群消息由 hub 按成员表扇出" },
+    "seq": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "pattern": "^[0-9]+$", "description": ">2^53 时 HTTP JSON 表面必须以十进制字符串承载（JS Number 失真线）；bincode/QUIC 表面恒为 u64" }
+      ],
+      "description": "会话内单调递增序号；永不复用"
+    },
+    "kind": { "enum": ["Text", "Blob", "System", "Unknown"],
+      "description": "Unknown = 未知枚举的确定性收敛位：旧端不 panic，按不可渲染处理" },
+    "sent_at_ms": { "type": "integer", "minimum": 0, "description": "发送方时钟毫秒；秘密会话 TTL 判定依据" },
+    "msg_id": { "type": "string", "description": "16 字节消息 id 的 hex（去重/撤回/回执键）；0 值 = legacy v1 无 id" },
+    "quote_of": { "type": ["string", "null"], "description": "引用的消息 id hex" },
+    "receipt": { "type": ["object", "null"], "description": "回执负载（Delivered/Read），形状由消息域契约细化" }
+  },
+  "compatibility": {
+    "unknown_fields": "忽略（serde 默认，不 deny_unknown_fields）——新字段对旧端不可见",
+    "unknown_enum": "kind 未知值在旧端映射为 Unknown（不 panic）",
+    "bigint": "seq > 2^53 在 HTTP JSON 表面用字符串承载；QUIC/bincode 恒为原生 u64",
+    "compat_window": "HTTP/WS/QUIC 三表面共同遵守本 schema；变更先 RFC 后双端兼容测试（G00-03 流程）",
+    "migration_registry": "schema/registry/migrations.json"
+  }
+}

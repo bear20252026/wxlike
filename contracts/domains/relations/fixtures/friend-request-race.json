@@ -1,0 +1,64 @@
+{
+  "contract_version": "relations-v1",
+  "case": "A->B pending, B->A auto-accepts, second accept conflicts",
+  "steps": [
+    {
+      "command": "friend.request",
+      "payload": {
+        "user_id": "u2",
+        "message": "hi"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "outcome": "created"
+        }
+      }
+    },
+    {
+      "command": "friend.request",
+      "payload": {
+        "user_id": "u1"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "outcome": "auto_accepted"
+        }
+      }
+    },
+    {
+      "command": "friend.request",
+      "payload": {
+        "user_id": "u1"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "outcome": "already_friends"
+        }
+      }
+    },
+    {
+      "command": "friend.block",
+      "payload": {
+        "user_id": "u1"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "command": "friend.request",
+      "payload": {
+        "user_id": "u1"
+      },
+      "expect": {
+        "ok": false,
+        "error": {
+          "code": "forbidden"
+        }
+      }
+    }
+  ]
+}

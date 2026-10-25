@@ -1,0 +1,6 @@
+{
+  "record": { "status": "recorded", "session_id": "mic_1a2b3c4d5e6f7081", "max_ms": 600000, "upload_allowed": false },
+  "stop": { "status": "stopped", "session_id": "mic_1a2b3c4d5e6f7081" },
+  "cancel": { "status": "canceled", "reason": "user" },
+  "indicator_after_stop_or_cancel": false
+}

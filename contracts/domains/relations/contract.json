@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/relations/contract.json",
+  "title": "relations domain contract (relations-v1)",
+  "description": "G02 关系域对外契约：好友申请状态机、拉黑、私有偏好、群角色与共同群。实现见 crates/features/relations；跨域查询走 RelationsPort（are_friends/is_blocked/may_message/shared_groups/member_ids/role_of），禁止直接读写关系表。",
+  "contract_version": "relations-v1",
+  "owner": "G02",
+  "invariants": [
+    "拉黑优先：任一方向被拉黑时，申请/接受/陌生人消息全部失败且不透露原因细节",
+    "好友关系双向两行；接受一次只产生一对（并发接受第二次为 conflict）",
+    "备注/标签/星标为单方面私有数据，对方不可见，且不参与权限判定",
+    "群角色 owner/admin/member 全部服务端判定；解散为软删，解散后写入一律 conflict"
+  ],
+  "commands": {
+    "friend.request": { "$ref": "#/$defs/friendRequest" },
+    "friend.accept": { "$ref": "#/$defs/requestId" },
+    "friend.reject": { "$ref": "#/$defs/requestId" },
+    "friend.cancel": { "$ref": "#/$defs/requestId" },
+    "friend.block": { "$ref": "#/$defs/target" },
+    "friend.unblock": { "$ref": "#/$defs/target" },
+    "friend.remove": { "$ref": "#/$defs/target" },
+    "friend.prefs.patch": { "$ref": "#/$defs/friendPrefs" },
+    "group.create": { "$ref": "#/$defs/groupCreate" },
+    "group.members.add": { "$ref": "#/$defs/groupMembers" },
+    "group.role.update": { "$ref": "#/$defs/groupRole" },
+    "group.member.kick": { "$ref": "#/$defs/groupMember" },
+    "group.leave": { "$ref": "#/$defs/groupId" },
+    "group.dissolve": { "$ref": "#/$defs/groupId" },
+    "group.common": { "$ref": "#/$defs/target" }
+  },
+  "error_codes": ["bad_input", "forbidden", "not_found", "conflict"],
+  "$defs": {
+    "userId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "groupId": {
+      "type": "object",
+      "required": ["group_id"],
+      "properties": { "group_id": { "type": "string" } }
+    },
+    "target": {
+      "type": "object",
+      "required": ["user_id"],
+      "properties": { "user_id": { "$ref": "#/$defs/userId" } }
+    },
+    "requestId": {
+      "type": "object",
+      "required": ["request_id"],
+      "properties": { "request_id": { "type": "string" } }
+    },
+    "friendRequest": {
+      "type": "object",
+      "required": ["user_id"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/userId" },
+        "message": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "friendPrefs": {
+      "type": "object",
+      "required": ["user_id"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/userId" },
+        "remark": { "type": "string", "maxLength": 64 },
+        "starred": { "type": "boolean" },
+        "tags": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+        }
+      }
+    },
+    "groupCreate": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "members": {
+          "type": "array",
+          "maxItems": 9999,
+          "items": { "$ref": "#/$defs/userId" }
+        },
+        "visibility": { "type": "string", "enum": ["public", "private"], "default": "public" }
+      }
+    },
+    "groupMembers": {
+      "type": "object",
+      "required": ["group_id", "members"],
+      "properties": {
+        "group_id": { "type": "string" },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/userId" }
+        }
+      }
+    },
+    "groupRole": {
+      "type": "object",
+      "required": ["group_id", "user_id", "role"],
+      "properties": {
+        "group_id": { "type": "string" },
+        "user_id": { "$ref": "#/$defs/userId" },
+        "role": { "type": "string", "enum": ["owner", "admin", "member"] }
+      }
+    },
+    "groupMember": {
+      "type": "object",
+      "required": ["group_id", "user_id"],
+      "properties": {
+        "group_id": { "type": "string" },
+        "user_id": { "$ref": "#/$defs/userId" }
+      }
+    }
+  }
+}

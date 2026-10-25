@@ -1,0 +1,28 @@
+{
+  "scenario": "success",
+  "contract": "commerce/v1",
+  "action": "payment.create",
+  "actor": "buyer",
+  "request": {
+    "direction": "order",
+    "payee_id": "seller",
+    "amount": "99.00",
+    "currency": "CNY",
+    "idempotency_key": "order-1-pay"
+  },
+  "expected": {
+    "intent": {
+      "direction": "order",
+      "actor_id": "buyer",
+      "payee_id": "seller",
+      "amount": { "minor": "9900", "currency": "CNY" },
+      "status": "pending"
+    },
+    "ticket": "v1.{intent_id}.9900.CNY.{payee_tag}.{expires_at}.{signature}"
+  },
+  "invariants": [
+    "二维码金额/币种/收款人与意图一致",
+    "改金额或收款人后签名校验失败",
+    "预付资金进入 external 账户，不落到可变的余额列"
+  ]
+}

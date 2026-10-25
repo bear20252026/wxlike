@@ -29,11 +29,13 @@
 
 mod cache;
 mod client;
+mod core_handle;
 mod error;
 mod types;
 
 pub use cache::Cache;
 pub use client::{direct_conv_id, WxlikeClient};
+pub use core_handle::CoreHandle;
 pub use error::{classify, WxlikeError};
 pub use types::{
     ChatMessage, ConversationList, ConversationRow, FlushReport, LiveInfo, LiveState, MessagePage,

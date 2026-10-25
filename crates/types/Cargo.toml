@@ -1,0 +1,18 @@
+[package]
+name = "wxlike-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wxlike 共享契约类型：不透明 ID、金额、序列号、游标、错误码、命令与事件信封"
+
+# 这一层的依赖必须保持"叶子"：不碰网络、不碰数据库、不碰服务端框架。
+# `tests/dependency_tree.rs` 会静态检查这条规则，加依赖时它会红。
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+# 只用于"提取而非复制"的等价性证明：与旧实现逐字比对
+wxlike-client = { path = "../client" }
+sha2 = { workspace = true }

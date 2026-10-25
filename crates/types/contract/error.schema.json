@@ -1,0 +1,36 @@
+{
+  "title": "DomainError",
+  "description": "错误码是契约：改名等于破坏兼容",
+  "type": "object",
+  "required": [
+    "code",
+    "message"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "invalid_argument",
+        "unauthorized",
+        "forbidden",
+        "not_found",
+        "conflict",
+        "precondition",
+        "rate_limited",
+        "timeout",
+        "cancelled",
+        "unavailable",
+        "internal"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "field": {
+      "type": "string"
+    },
+    "retry_after_ms": {
+      "type": "integer"
+    }
+  }
+}

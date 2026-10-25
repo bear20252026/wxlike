@@ -1,0 +1,96 @@
+# CODEOWNERS 提案（G00-02 / #100）
+#
+# 提案文件：正式生效位置是 `.github/CODEOWNERS`（根/.github 归集成方 G16 落位，
+# 见 integration-requests/G00/G00-02.yaml）。条目与 composition/owners.json
+# 的 ownership 一一对应；用职责组标签代替 GitHub 账号（真人未指定），账号
+# 就位后由 G16 把标签替换成 @团队。
+#
+# 规则：每条路径恰一个 owner；跨组改动走 integration-requests；公共清单
+# （Cargo.lock / workspace Cargo.toml / 根 router / 迁移编号）由 G00 串行合入。
+
+# G00 —— 全局架构与串行集成
+/composition/            @group-G00
+/contracts/              @group-G00
+/schema/                 @group-G00
+/integration-requests/   @group-G00
+
+# G01 —— Rust 共享核心与绑定
+/crates/core/            @group-G01
+/crates/ffi/             @group-G01
+
+# G02 —— 身份、关系、设备与加密安全
+/crates/platform/src/users.rs          @group-G02
+/crates/platform/src/friends.rs        @group-G02
+/crates/platform/src/groups*.rs        @group-G02
+/crates/platform/src/relations.rs      @group-G02
+/crates/platform/src/sessions.rs       @group-G02
+/crates/platform/src/devices.rs        @group-G02
+/crates/platform/src/secret.rs         @group-G02
+/crates/platform/src/security.rs       @group-G02
+/crates/platform/src/perms.rs          @group-G02
+/crates/platform/src/db.rs             @group-G02
+/crates/platform/src/db/               @group-G02
+
+# G03 —— 消息、同步、离线与推送
+/crates/message/         @group-G03
+/crates/net/             @group-G03
+/crates/mq/              @group-G03
+/crates/push/            @group-G03
+
+# G04 —— 对象、文件、转码与备份
+/crates/platform/src/media.rs      @group-G04
+/crates/platform/src/video_refs.rs @group-G04
+
+# G05 —— 内容、社交、收藏与检索
+/crates/platform/src/moments.rs    @group-G05
+/crates/platform/src/favorites.rs  @group-G05
+/crates/search/          @group-G05
+
+# G06 —— 账本、支付、红包、卡券
+/crates/platform/src/wallet.rs     @group-G06
+/crates/ledger/          @group-G06
+
+# G07 —— 扫码、发现、模型与服务聚合
+/crates/api/             @group-G07
+
+# G08 —— 小程序容器、应用目录与 SDK
+/crates/container/       @group-G08
+/crates/dpage/           @group-G08
+
+# G09 —— 通话、音视频与直播
+/crates/rtc/             @group-G09
+/crates/sfu/             @group-G09
+/crates/video/           @group-G09
+
+# G10 —— React 桌面核心界面
+/ui/src-tauri/           @group-G10
+/ui/src/ui.ts            @group-G10
+/ui/src/ui-dom.ts        @group-G10
+/ui/src/ui-format.ts     @group-G10
+/ui/src/api.ts           @group-G10
+/ui/src/state.ts         @group-G10
+
+# G11 —— React 扩展界面与服务入口（网页）
+/ui/src/web/             @group-G11
+/ui/src/callpage.ts      @group-G11
+/ui/src/msgIndex.ts      @group-G11
+
+# G12 —— Flutter 核心界面与原生桥
+/apps/mobile/            @group-G12
+
+# G14 —— 管理后台
+/crates/admin/           @group-G14
+
+# G15 —— MCP、CLI 与 AI 授权命令面
+/crates/client/          @group-G15
+/crates/cmd/             @group-G15
+/crates/mcp/             @group-G15
+
+# G16 —— 云 CI、发布、部署
+/.github/                @group-G16
+/scripts/                @group-G16
+/deploy/                 @group-G16
+
+# G17 —— 安全、来源许可
+/THIRD-PARTY-NOTICES.md  @group-G17
+/LICENSE                 @group-G17

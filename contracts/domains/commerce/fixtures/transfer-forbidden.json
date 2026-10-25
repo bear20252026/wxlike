@@ -1,0 +1,13 @@
+{
+  "scenario": "permission-failure",
+  "contract": "commerce/v1",
+  "action": "transfer.accept",
+  "actor": "carol",
+  "request": { "transfer_id": "tr_1" },
+  "expected_error": "FORBIDDEN",
+  "invariants": [
+    "只有 payee 能确认收款",
+    "发送方冻结额不变",
+    "错误不泄漏转账是否存在之外的敏感字段"
+  ]
+}

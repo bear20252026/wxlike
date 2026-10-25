@@ -1,0 +1,35 @@
+# G00-04 服务端数据库生产迁移（SQLite → PostgreSQL）—— 状态：BLOCKED
+request_id: G00-04
+task_issue: 104
+group_issue: 81
+# 2026-10-24 更新：阻塞已解除——G01-01（#102）已随 PR #208 合并 main，
+# ports/runtime 骨架进入编译图。本卡可开工，按 plan_after_unblock 五步执行。
+# 依据：#80 解锁通告 / Discussions #232 的全量依赖对账。
+status: UNBLOCKED_READY
+unblocked_at: 2026-10-24
+unblock_evidence:
+  - issue: 102
+    title: G01-01 共享类型、领域不变量与 ports
+    resolution: 已合并（PR #208，crates/client-core ports/runtime 在 main 编译图）
+  - issue: 101
+    title: G00-03 契约版本与组合根冻结
+    resolution: 已合并（PR #210，contract-v1 契约与迁移编号登记表就绪）
+
+can_proceed_now:
+  - composition/storage-profile.rs 的接口形状草案（见本文件附录）
+  - pg-cutover.md 的运行手册骨架（停写窗口测量、影子读对账步骤、回退快照清单）
+  - data-import/ 的对账脚本设计（计数/摘要/余额守恒断言）
+
+plan_after_unblock:
+  - "1. 统一 PG 连接池（sqlx 或 tokio-postgres，事务/超时/锁策略与 SQLite 版对齐）"
+  - "2. 域组在自己的 infra 实现 repository（编号走 schema/registry/migrations.json）"
+  - "3. ID/seq/密文/余额/附件引用一致导入 + 影子读对账 + 停写切换"
+  - "4. 可回退快照；禁止跨库双写与多 hub 各自事实库"
+  - "5. 真实资金仅在验收后的 PG profile 启用"
+
+acceptance_carryover:
+  - 全量导入计数与摘要一致
+  - 中断导入可重跑
+  - 停写窗口有测量数据
+  - 旧二进制读 expand schema 通过
+  - 成功/空/参数错/未授权/超时/取消 + 写幂等用例
