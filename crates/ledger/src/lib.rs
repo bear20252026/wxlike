@@ -1,23 +1,40 @@
-//! `wxlike-ledger` — P4 复式记账内核（ADR-12/18，方案 b：SQLite 上按
-//! cala-ledger 的 schema 不变量实现，P6 迁 PG 时换 cala-ledger，接口不变）。
+//! 不可变复式账本（G06-01）。
 //!
-//! 铁律（ADR-18 四类账户命名空间 + 蓝图"余额=重放分录"）：
-//! 1. **复式记账**：每笔交易在同一 journal 内写两条分录（借/贷），金额
-//!    相反相抵——全表 `SUM(amount)` 恒等于 0（守恒不变量）；
-//! 2. **余额只读**：余额=该账户分录之和，禁止原地 UPDATE 余额；
-//! 3. **四类命名空间**：`wallet`（用户钱包）/ `advertiser` / `marketing`
-//!    / `revenue`——跨类划转即分录，无特例；
-//! 4. **并发安全**：转账在单事务内完成取号+两条分录，SQLite 互斥锁保证
-//!    100 并发转账分毫不差。
+//! 设计底线（全部有测试兜底）：
 //!
-//! 与 ADR-12 的对应：本 crate = 账本核心层；obix 的 outbox 形状由
-//! `pending_outbox` 表预留（P4 后段接）；dtmrs Saga 与 ChannelConnector
-//! 是上层，不在此 crate。
+//! 1. **金额只有整数最小单位 + 币种**，跨币种运算直接报错；
+//! 2. **复式记账**：每笔交易在同一事务里写至少两条分录，借贷相抵；
+//! 3. **余额只读**：余额 = 该账户分录之和，没有可被原地 UPDATE 的余额列；
+//! 4. **可用与冻结分开**：`available = 已入账 - 冻结合计`，提现先锁额；
+//! 5. **演示资金与真实资金隔离**：同一笔交易不能混用两种资金性质；
+//! 6. **幂等**：业务键唯一，重复提交同参数只入账一次，换参数即冲突；
+//! 7. **日结不可变**：同一天重复日结必须与既有快照完全一致。
+//!
+//! commerce 域不另建账本：它把 [`schema::init_schema`] 建在自己的连接上，
+//! 并在同一个事务里调用 [`store`] 的 `*_in` 函数，业务记录与分录同库提交。
+
+mod model;
+mod schema;
+mod store;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
+pub use model::{
+    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Currency, Entry, FundClass,
+    Hold, HoldStatus, Journal, LedgerTransaction, Money, PostingLine, PostingRequest,
+    StatementPage,
+};
+pub use schema::{init_schema, SCHEMA_VERSION};
+pub use store::{
+    available_minor, balance_minor, capture_hold_in, close_range_in, closing_balances_in,
+    closings_in, create_account_in, hold_in, load_account, locked_minor, post_in, release_hold_in,
+    statement_in, total_sum_is_zero, transaction_by_key, transfer_request, type_total,
+    verify_closing_in, verify_journals, MAX_PAGE,
+};
+
+/// 账本错误。所有变体都不携带密钥、密文或数据库连接串。
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
     #[error("unknown account {0:?}")]
@@ -26,99 +43,76 @@ pub enum LedgerError {
     InsufficientFunds(String, i64),
     #[error("amount must be positive")]
     NonPositiveAmount,
-    #[error("account {0:?} already exists")]
+    #[error("account {0:?} already exists with different parameters")]
     DuplicateAccount(String),
-    #[error("account_type must be wallet|advertiser|marketing|revenue")]
+    #[error("unknown account type")]
     BadAccountType,
+    #[error("bad currency {0:?}")]
+    BadCurrency(String),
+    #[error("currency mismatch: {left} vs {right}")]
+    CurrencyMismatch { left: Currency, right: Currency },
+    #[error("posting is not balanced")]
+    Unbalanced,
+    #[error("posting must have at least two lines")]
+    TooFewLines,
+    #[error("posting mixes virtual and real funds")]
+    MixedFundClass,
+    #[error("implicit cross-currency sum is forbidden: {0}")]
+    MixedCurrency(String),
+    #[error("amount overflow")]
+    Overflow,
+    #[error("idempotency key reused with different parameters")]
+    IdempotencyConflict,
+    #[error("invalid {0}")]
+    BadInput(&'static str),
+    #[error("unknown hold {0:?}")]
+    UnknownHold(String),
+    #[error("hold {0:?} already captured")]
+    HoldAlreadyCaptured(String),
+    #[error("hold {0:?} was released")]
+    HoldReleased(String),
+    #[error("conservation violated for {0}")]
+    ConservationViolated(String),
+    #[error("closing {0} {1} conflicts with the immutable snapshot")]
+    ClosingConflict(String, String),
+    #[error("closing snapshot no longer matches entries: {0}")]
+    ClosingMismatch(String),
     #[error("storage failure: {0}")]
     Storage(#[from] rusqlite::Error),
 }
 
+/// 账本结果。
 pub type Result<T> = std::result::Result<T, LedgerError>;
 
-/// ADR-18 四类账户命名空间。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccountType {
-    Wallet,
-    Advertiser,
-    Marketing,
-    Revenue,
-}
-
-impl AccountType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Wallet => "wallet",
-            Self::Advertiser => "advertiser",
-            Self::Marketing => "marketing",
-            Self::Revenue => "revenue",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "wallet" => Some(Self::Wallet),
-            "advertiser" => Some(Self::Advertiser),
-            "marketing" => Some(Self::Marketing),
-            "revenue" => Some(Self::Revenue),
-            _ => None,
-        }
-    }
-}
-
-/// 一条分录（journal 内不可变）。
-#[derive(Clone, Debug, PartialEq)]
-pub struct Entry {
-    pub journal: String,
-    pub account: String,
-    pub amount: i64,
-    pub memo: String,
-}
-
+/// 一个独立的账本连接。
 pub struct Ledger {
     conn: Mutex<Connection>,
 }
 
 impl Ledger {
+    /// 打开账本；`None` 表示内存库。
+    ///
+    /// # Errors
+    /// 目录创建、SQLite 打开或建表失败。
     pub fn open(path: Option<&str>) -> Result<Self> {
         let conn = match path {
-            Some(p) => {
-                if let Some(dir) = std::path::Path::new(p).parent() {
+            Some(path) => {
+                if let Some(dir) = std::path::Path::new(path).parent() {
                     if !dir.as_os_str().is_empty() {
                         std::fs::create_dir_all(dir)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                            .map_err(|_| LedgerError::BadInput("ledger path"))?;
                     }
                 }
-                Connection::open(p)?
+                Connection::open(path)?
             }
             None => Connection::open_in_memory()?,
         };
         conn.execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA busy_timeout = 5000;
-
-            -- 账户：余额 = 分录之和（禁止余额列）
-            CREATE TABLE IF NOT EXISTS accounts (
-                name        TEXT PRIMARY KEY,
-                kind        TEXT NOT NULL,
-                tenant_id   TEXT NOT NULL DEFAULT 'default',
-                created_at  INTEGER NOT NULL
-            );
-
-            -- 分录流水：journal 内借贷相抵；只 INSERT 不 UPDATE（事件溯源）
-            CREATE TABLE IF NOT EXISTS entries (
-                journal  TEXT NOT NULL,
-                seq      INTEGER NOT NULL,
-                account  TEXT NOT NULL REFERENCES accounts(name),
-                amount   INTEGER NOT NULL,
-                memo     TEXT NOT NULL DEFAULT '',
-                created_at INTEGER NOT NULL,
-                PRIMARY KEY (journal, seq)
-            );
-            CREATE INDEX IF NOT EXISTS idx_entries_account ON entries(account, seq);
-            "#,
+            "PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA foreign_keys = ON;",
         )?;
+        schema::init_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -128,151 +122,226 @@ impl Ledger {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 开户（幂等：同名同类型直接成功）。
-    pub fn create_account(&self, name: &str, kind: AccountType) -> Result<()> {
-        let r = self.c().execute(
-            "INSERT OR IGNORE INTO accounts(name, kind, tenant_id, created_at)
-             VALUES(?1, ?2, 'default', ?3)",
-            params![name, kind.as_str(), wxlike_core_now()],
-        )?;
-        if r == 0 {
-            // 已存在：类型必须一致
-            let existing: String = self.c().query_row(
-                "SELECT kind FROM accounts WHERE name = ?1",
-                params![name],
-                |r| r.get(0),
-            )?;
-            if existing != kind.as_str() {
-                return Err(LedgerError::DuplicateAccount(name.to_string()));
-            }
-        }
-        Ok(())
+    fn write<T>(&self, op: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let mut guard = self.c();
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let out = op(&tx)?;
+        tx.commit()?;
+        Ok(out)
     }
 
-    pub fn account_exists(&self, name: &str) -> Result<bool> {
-        Ok(self
-            .c()
-            .query_row(
-                "SELECT 1 FROM accounts WHERE name = ?1",
-                params![name],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
-    }
-
-    /// 余额 = 分录之和（重放）。未知账户报错。
-    pub fn balance(&self, account: &str) -> Result<i64> {
-        if !self.account_exists(account)? {
-            return Err(LedgerError::UnknownAccount(account.to_string()));
-        }
-        let c = self.c();
-        Ok(c.query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM entries WHERE account = ?1",
-            params![account],
-            |r| r.get(0),
-        )?)
-    }
-
-    /// 全账本守恒不变量：所有分录之和必须为 0（借贷相抵）。
-    pub fn total_sum_is_zero(&self) -> Result<bool> {
-        let c = self.c();
-        Ok(c.query_row(
-            "SELECT COALESCE(SUM(amount), 0) = 0 FROM entries",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? != 0)
-    }
-
-    /// 某命名空间类的余额总和（对账断言面：wallet 总额=发行量等）。
-    pub fn type_total(&self, kind: AccountType) -> Result<i64> {
-        let c = self.c();
-        Ok(c.query_row(
-            "SELECT COALESCE(SUM(e.amount), 0) FROM entries e
-             JOIN accounts a ON a.name = e.account WHERE a.kind = ?1",
-            params![kind.as_str()],
-            |r| r.get(0),
-        )?)
-    }
-
-    /// 双条转账：同一 journal（`journal_id` 幂等键）内两条相反分录，单事务。
+    /// 开户（兼容旧 API：人民币、虚拟资金）。
     ///
-    /// 余额不足在事务内拒绝并回滚（余额=重放值，与并发写互斥）。
-    pub fn transfer(
+    /// # Errors
+    /// 同名账户参数不一致或存储失败。
+    pub fn create_account(&self, name: &str, kind: AccountType) -> Result<()> {
+        self.create_account_with(&AccountSpec::new(name, kind, Currency::CNY))
+    }
+
+    /// 按完整参数开户；同参数幂等。
+    ///
+    /// # Errors
+    /// 同名账户参数不一致或存储失败。
+    pub fn create_account_with(&self, spec: &AccountSpec) -> Result<()> {
+        self.write(|tx| store::create_account_in(tx, spec, now_ms()))
+    }
+
+    /// 读取账户元数据。
+    ///
+    /// # Errors
+    /// 存储失败。
+    pub fn account(&self, name: &str) -> Result<Option<Account>> {
+        store::load_account(&self.c(), name)
+    }
+
+    /// 已入账余额（最小单位）。
+    ///
+    /// # Errors
+    /// 账户不存在或存储失败。
+    pub fn balance(&self, account: &str) -> Result<i64> {
+        store::balance_minor(&self.c(), account)
+    }
+
+    /// 已入账余额（带币种）。
+    ///
+    /// # Errors
+    /// 账户不存在或存储失败。
+    pub fn money_balance(&self, account: &str) -> Result<Money> {
+        let conn = self.c();
+        let meta = store::load_account(&conn, account)?
+            .ok_or_else(|| LedgerError::UnknownAccount(account.to_string()))?;
+        Ok(Money::from_minor(
+            store::balance_minor(&conn, account)?,
+            meta.currency,
+        ))
+    }
+
+    /// 可用余额（已入账 - 冻结）。
+    ///
+    /// # Errors
+    /// 账户不存在或存储失败。
+    pub fn available(&self, account: &str) -> Result<Money> {
+        let conn = self.c();
+        let meta = store::load_account(&conn, account)?
+            .ok_or_else(|| LedgerError::UnknownAccount(account.to_string()))?;
+        Ok(Money::from_minor(
+            store::available_minor(&conn, account)?,
+            meta.currency,
+        ))
+    }
+
+    /// 冻结金额。
+    ///
+    /// # Errors
+    /// 账户不存在或存储失败。
+    pub fn locked(&self, account: &str) -> Result<Money> {
+        let conn = self.c();
+        let meta = store::load_account(&conn, account)?
+            .ok_or_else(|| LedgerError::UnknownAccount(account.to_string()))?;
+        Ok(Money::from_minor(
+            store::locked_minor(&conn, account)?,
+            meta.currency,
+        ))
+    }
+
+    /// 记一笔账。
+    ///
+    /// # Errors
+    /// 参数非法、余额不足、币种/资金性质混用或存储失败。
+    pub fn post(&self, req: &PostingRequest) -> Result<LedgerTransaction> {
+        self.post_at(req, now_ms())
+    }
+
+    /// 指定入账时间（日结/重放测试用）。
+    ///
+    /// # Errors
+    /// 同 [`Ledger::post`]。
+    pub fn post_at(&self, req: &PostingRequest, at_ms: i64) -> Result<LedgerTransaction> {
+        self.write(|tx| store::post_in(tx, req, at_ms))
+    }
+
+    /// 兼容旧 API 的转账。
+    ///
+    /// # Errors
+    /// 同 [`Ledger::post`]。
+    pub fn transfer(&self, key: &str, from: &str, to: &str, amount: i64, memo: &str) -> Result<()> {
+        let amount = Money::cny_minor(amount);
+        let req = store::transfer_request(key, from, to, amount).with_memo(memo);
+        self.post(&req).map(|_| ())
+    }
+
+    /// 带币种的转账。
+    ///
+    /// # Errors
+    /// 同 [`Ledger::post`]。
+    pub fn transfer_money(
         &self,
-        journal_id: &str,
+        key: &str,
         from: &str,
         to: &str,
-        amount: i64,
+        amount: Money,
         memo: &str,
-    ) -> Result<()> {
-        if amount <= 0 {
-            return Err(LedgerError::NonPositiveAmount);
-        }
-        if from == to {
-            return Err(LedgerError::BadAccountType); // 复用：自转即配置错
-        }
-        let mut c = self.c();
-        let tx = c.transaction()?;
-        for acct in [from, to] {
-            let exists: Option<String> = tx
-                .query_row(
-                    "SELECT name FROM accounts WHERE name = ?1",
-                    params![acct],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if exists.is_none() {
-                return Err(LedgerError::UnknownAccount(acct.to_string()));
-            }
-        }
-        // 幂等：同 journal 已存在则跳过（at-least-once 投递安全）
-        let dup: Option<i64> = tx
-            .query_row(
-                "SELECT 1 FROM entries WHERE journal = ?1 LIMIT 1",
-                params![journal_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if dup.is_some() {
-            return Ok(());
-        }
-        let from_balance: i64 = tx.query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM entries WHERE account = ?1",
-            params![from],
-            |r| r.get(0),
-        )?;
-        // 非负约束只对资产类（wallet）成立：营销/权益/收入是内部账户，
-        // 贷方余额（负数）是复式记账的正常形态（如权益注资为负）
-        let from_kind: String = tx.query_row(
-            "SELECT kind FROM accounts WHERE name = ?1",
-            params![from],
-            |r| r.get(0),
-        )?;
-        if from_kind == "wallet" && from_balance < amount {
-            return Err(LedgerError::InsufficientFunds(
-                from.to_string(),
-                from_balance,
-            ));
-        }
-        let now = wxlike_core_now();
-        // 两条分录：from 负（借），to 正（贷），journal 内相抵
-        tx.execute(
-            "INSERT INTO entries(journal, seq, account, amount, memo, created_at)
-             VALUES(?1, 1, ?2, ?3, ?4, ?5)",
-            params![journal_id, from, -amount, memo, now],
-        )?;
-        tx.execute(
-            "INSERT INTO entries(journal, seq, account, amount, memo, created_at)
-             VALUES(?1, 2, ?2, ?3, ?4, ?5)",
-            params![journal_id, to, amount, memo, now],
-        )?;
-        tx.commit()?;
-        Ok(())
+    ) -> Result<LedgerTransaction> {
+        self.post(&store::transfer_request(key, from, to, amount).with_memo(memo))
+    }
+
+    /// 冻结一笔可用余额。
+    ///
+    /// # Errors
+    /// 余额不足、账户不存在或参数非法。
+    pub fn hold(&self, key: &str, account: &str, amount: Money) -> Result<Hold> {
+        self.write(|tx| store::hold_in(tx, key, account, amount, now_ms()))
+    }
+
+    /// 解冻。
+    ///
+    /// # Errors
+    /// 锁额不存在或已转正式分录。
+    pub fn release_hold(&self, key: &str) -> Result<()> {
+        self.write(|tx| store::release_hold_in(tx, key, now_ms()))
+    }
+
+    /// 把锁额转正式分录。
+    ///
+    /// # Errors
+    /// 锁额状态不对、记账参数非法或存储失败。
+    pub fn capture_hold(&self, hold_key: &str, req: &PostingRequest) -> Result<LedgerTransaction> {
+        self.write(|tx| store::capture_hold_in(tx, hold_key, req, now_ms()))
+    }
+
+    /// 账户流水页。
+    ///
+    /// # Errors
+    /// 账户不存在或存储失败。
+    pub fn statement(
+        &self,
+        account: &str,
+        cursor: Option<i64>,
+        limit: u32,
+    ) -> Result<StatementPage> {
+        store::statement_in(&self.c(), account, cursor, limit)
+    }
+
+    /// 全账本按币种守恒。
+    ///
+    /// # Errors
+    /// 存储失败。
+    pub fn total_sum_is_zero(&self) -> Result<bool> {
+        store::total_sum_is_zero(&self.c())
+    }
+
+    /// 按账户类别汇总（多币种时拒绝隐式相加）。
+    ///
+    /// # Errors
+    /// 多币种或存储失败。
+    pub fn type_total(&self, kind: AccountType) -> Result<i64> {
+        store::type_total(&self.c(), kind)
+    }
+
+    /// 校验每笔交易借贷相抵。
+    ///
+    /// # Errors
+    /// 发现不平衡交易。
+    pub fn verify_journals(&self) -> Result<()> {
+        store::verify_journals(&self.c())
+    }
+
+    /// 日结。
+    ///
+    /// # Errors
+    /// 区间非法、账本不守恒或快照冲突。
+    pub fn close_range(&self, day: &str, start_ms: i64, end_ms: i64) -> Result<Vec<ClosingReport>> {
+        self.write(|tx| store::close_range_in(tx, day, start_ms, end_ms, now_ms()))
+    }
+
+    /// 读取某天的日结报告。
+    ///
+    /// # Errors
+    /// 存储失败。
+    pub fn closings(&self, day: &str) -> Result<Vec<ClosingReport>> {
+        store::closings_in(&self.c(), day)
+    }
+
+    /// 核对某天的日结快照。
+    ///
+    /// # Errors
+    /// 快照与分录不一致。
+    pub fn verify_closing(&self, day: &str) -> Result<()> {
+        store::verify_closing_in(&self.c(), day)
+    }
+
+    /// 某天的账户余额快照。
+    ///
+    /// # Errors
+    /// 存储失败。
+    pub fn closing_balances(&self, day: &str, currency: Currency) -> Result<Vec<ClosingBalance>> {
+        store::closing_balances_in(&self.c(), day, currency)
     }
 }
 
-fn wxlike_core_now() -> i64 {
+/// 当前时间（UTC 毫秒）。
+#[must_use]
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
