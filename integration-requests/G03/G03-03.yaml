@@ -50,6 +50,14 @@ requests:
       不再自行拼 offset；撤回占位由 `last_withdrawn` 渲染，不由 preview 文案猜。
     rationale: 投影读面的调用方在 UI 组。
 
+  - id: REQ-G00-migration-numbering
+    target: G00
+    action: 为 `conversation_clear`、`conversation_event` 两张表分配 schema
+      编号（前者是"只清本人视图"的按用户游标，后者是 clear/delete 的域事件，
+      两者必须是不同命令不同事件）；列名以 `crates/message/src/lib.rs` 的
+      DDL 为准。
+    rationale: 迁移编号由 G00 串行分配，避免多组撞号。
+
 notes:
   - 未读是差值不是计数器：`last_seq - MAX(read_cursor, cleared_before_seq)`，
     跨设备一致；偏好写入幂等（同值不推 version，避免无意义跨端风暴）。
