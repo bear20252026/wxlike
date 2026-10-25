@@ -1228,6 +1228,139 @@ impl Crypto {
     }
 }
 
+// ---------------------------------------------------------------------------
+// G02-03: 多设备信封（EncryptedEnvelope）
+// ---------------------------------------------------------------------------
+
+/// 信封格式版本。换字段语义就升版本，旧版本明确拒绝而不是猜。
+pub const ENVELOPE_VERSION: u8 = 1;
+/// 单条信封正文上限：256 KiB。超限直接拒绝，不让一条畸形消息吃满内存。
+pub const ENVELOPE_MAX_BODY: usize = 256 * 1024;
+
+/// 带**设备路由**的密封消息。
+///
+/// `Sealed` 只说"这是给某个 Olm 会话的密文"；多设备下服务端还要知道这条密文
+/// 属于谁的哪台设备、基于哪一代设备密钥加密。信封把这些路由信息显式写出来，
+/// 并且全部参与校验——服务端改任何一项都会让接收方解不开，而不是悄悄投递给
+/// 另一台设备。
+///
+/// 不变量：
+/// * 收件设备不匹配 → 拒绝（`Malformed`），不做"尽力投递"；
+/// * `rotation_epoch` 与本地记录的代次不一致 → 拒绝，避免成员变更后拿旧代次
+///   的会话继续发（那会让已退群的人仍能解）；
+/// * 正文为空或超限 → 拒绝。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EncryptedEnvelope {
+    pub v: u8,
+    pub sender_user: String,
+    pub sender_device: String,
+    pub recipient_device: String,
+    pub session_id: String,
+    /// 群成员/设备集合的代次；单聊固定为 0。
+    pub rotation_epoch: u64,
+    pub sealed: Sealed,
+}
+
+impl EncryptedEnvelope {
+    /// 结构校验（不含解密）。fail closed：任何异常都是 `Malformed`。
+    pub fn validate(&self) -> Result<()> {
+        if self.v != ENVELOPE_VERSION {
+            return Err(CryptoError::Malformed);
+        }
+        if self.sender_user.is_empty()
+            || self.sender_device.is_empty()
+            || self.recipient_device.is_empty()
+        {
+            return Err(CryptoError::Malformed);
+        }
+        if self.sealed.body.is_empty() || self.sealed.body.len() > ENVELOPE_MAX_BODY {
+            return Err(CryptoError::Malformed);
+        }
+        Ok(())
+    }
+
+    /// 收件人校验：信封必须指名本设备，否则不投递。
+    pub fn addressed_to(&self, device: &str) -> Result<()> {
+        if self.recipient_device == device {
+            Ok(())
+        } else {
+            Err(CryptoError::Malformed)
+        }
+    }
+
+    /// 代次校验：成员/设备集合变更后必须换新会话，旧代次不再接受。
+    pub fn check_epoch(&self, expected: u64) -> Result<()> {
+        if self.rotation_epoch == expected {
+            Ok(())
+        } else {
+            Err(CryptoError::Malformed)
+        }
+    }
+}
+
+impl Crypto {
+    /// 给某台设备密封一条消息并打包成信封。
+    ///
+    /// `bundle` 只在**首次**建立会话时使用；之后传 `None` 走已有会话，
+    /// 没有会话就是错误——绝不退化成明文。
+    pub fn seal_envelope(
+        &mut self,
+        me: &str,
+        my_device: &str,
+        peer_user: &str,
+        peer_device: &str,
+        epoch: u64,
+        bundle: Option<&PreKeyBundle>,
+        plaintext: &[u8],
+    ) -> Result<EncryptedEnvelope> {
+        let sealed = match bundle {
+            Some(b) if !self.has_session_with(peer_user) => {
+                self.encrypt_dm(peer_user, b, plaintext)?
+            }
+            _ => self.encrypt_dm_existing(peer_user, plaintext)?,
+        };
+        let envelope = EncryptedEnvelope {
+            v: ENVELOPE_VERSION,
+            sender_user: me.to_string(),
+            sender_device: my_device.to_string(),
+            recipient_device: peer_device.to_string(),
+            session_id: self.session_id_with(peer_user).unwrap_or_default(),
+            rotation_epoch: epoch,
+            sealed,
+        };
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    /// 打开一条信封。校验顺序：结构 → 收件设备 → 代次 → 解密。
+    pub fn open_envelope(
+        &mut self,
+        my_device: &str,
+        peer_user: &str,
+        expected_epoch: u64,
+        envelope: &EncryptedEnvelope,
+    ) -> Result<Vec<u8>> {
+        envelope.validate()?;
+        envelope.addressed_to(my_device)?;
+        envelope.check_epoch(expected_epoch)?;
+        self.decrypt_dm(peer_user, &envelope.sealed)
+    }
+}
+
+/// 用口令派生密钥密封**任意**字节（WXSC2 外壳）。
+///
+/// 与 [`Device::seal_with_passphrase`] 同格式、同参数：盐与 Argon2id 参数写在
+/// 头部，口令不落盘。G02-04 的本地 SecretStore 用它包主密钥，这样"设备账户
+/// 快照"和"密钥库"共用一套经过审计的 KDF 与文件头。
+pub fn seal_secret_blob(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
+    seal_snapshot(passphrase, plaintext)
+}
+
+/// [`seal_secret_blob`] 的逆操作。口令错 → [`CryptoError::WrongPassphrase`]。
+pub fn open_secret_blob(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
+    open_snapshot(passphrase, blob)
+}
+
 #[cfg(test)]
 mod audit_round4 {
     use super::*;

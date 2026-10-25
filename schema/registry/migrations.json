@@ -1,0 +1,23 @@
+{
+  "contract_version": "migrations-registry-v1",
+  "description": "G00-03 迁移编号登记表：服务端 SQLite 迁移的唯一编号来源。新迁移必须追加编号并在此登记（编号永不复用、永不重排）；PostgreSQL 切换（G00-04）沿用同一编号线。",
+  "policy": {
+    "numbering": "M001 起递增；一组同批 DDL = 一个编号",
+    "append_only": "已发布编号的内容不可修改（需要改 ⇒ 新编号 + 前向修正迁移）",
+    "idempotency": "每个迁移必须可重入（IF NOT EXISTS / PRAGMA 探测），中断重跑安全",
+    "rollback": "破坏性变更必须附回滚说明（保留旧列或可重建）",
+    "registration": "编号由 G00 串行分配；域组在自己的迁移实现里引用编号"
+  },
+  "migrations": [
+    { "id": "M001", "name": "base-schema", "module": "crates/platform/src/db.rs SCHEMA", "description": "初始全量建表（账户/好友/群/钱包/媒体/朋友圈/预密钥等，幂等 IF NOT EXISTS）", "introduced": "WP-01" },
+    { "id": "M002", "name": "friends-meta", "module": "db.rs migrate_friends_meta", "description": "好友元数据补列", "introduced": "WP-02" },
+    { "id": "M003", "name": "groups-admin", "module": "db.rs migrate_groups_admin", "description": "群管理列补齐", "introduced": "WP-04" },
+    { "id": "M004", "name": "security-columns", "module": "db.rs migrate_security_columns", "description": "pw_algo/totp 安全列（P4）", "introduced": "P4" },
+    { "id": "M005", "name": "p4-ops", "module": "db.rs migrate_p4 + SCHEMA_P4", "description": "人机校验/恢复码/对账/举报工单/秘密设置/会话设备列", "introduced": "P4" },
+    { "id": "M006", "name": "communities", "module": "db.rs migrate_communities", "description": "社群层表", "introduced": "P3-C" },
+    { "id": "M007", "name": "prekey-signature", "module": "db.rs migrate_prekey_signature", "description": "prekey_bundles.signature 列（AR-1：预密钥包签名）", "introduced": "第四轮审计" },
+    { "id": "M008", "name": "g05-tables", "module": "db.rs migrate_g05 + SCHEMA_G05", "description": "G05 内容扩展表（status_reactions 等）", "introduced": "UI v2 前序" }
+  ],
+  "next_id": "M009",
+  "postgres_cutover": "见 G00-04（#104）；PG 迁移沿用本编号线，SQLite→PG 一致性对账由该卡交付"
+}

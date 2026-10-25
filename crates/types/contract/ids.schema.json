@@ -1,0 +1,40 @@
+{
+  "title": "Ids",
+  "description": "不透明 ID 的线上形态：一律字符串，字符集与长度由 Rust 侧校验",
+  "definitions": {
+    "UserId": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:@-]+$"
+    },
+    "ConvId": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._~:@-]+$"
+    },
+    "MessageId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "EventId": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "ActionId": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "EntryId": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "TraceId": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "IdempotencyKey": {
+      "type": "string",
+      "maxLength": 96
+    }
+  }
+}

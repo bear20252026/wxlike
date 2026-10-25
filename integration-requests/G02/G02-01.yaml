@@ -1,0 +1,44 @@
+task: G02-01
+title: 账号会话与设备生命周期
+issue: https://github.com/bear20252026/wxlike/issues/103
+branch: feat/FP-G02-01
+crate: wxlike-identity
+contract: identity-v1
+paths:
+  - crates/features/identity/src/device.rs
+  - crates/features/identity/src/session.rs
+  - crates/features/identity/src/refresh.rs
+  - crates/features/identity/src/step_up.rs
+  - crates/features/identity/src/throttle.rs
+  - crates/features/identity/src/recovery.rs
+
+root_registration:
+  - action: cargo_workspace_member
+    value: crates/features/identity
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/sessions/login -> session::open + device::register"
+      - "POST /api/sessions/refresh -> refresh::rotate"
+      - "GET  /api/sessions -> session::list"
+      - "POST /api/sessions/{sid}/revoke -> step_up::consume(device.revoke) + session::logout"
+      - "GET  /api/devices -> device::list"
+      - "POST /api/devices/{device_id}/revoke -> step_up::consume(device.revoke) + device::revoke"
+    note: 平台既有 auth.rs/sessions.rs 保留为兼容路径，切换节奏由 G00 决定
+  - action: schema
+    proposal: schema/proposals/G02/identity.sql
+    tables: [identity_device, identity_refresh, identity_step_up, identity_throttle, identity_reset_token]
+    alters: ["sessions ADD COLUMN audience TEXT NOT NULL DEFAULT 'user'"]
+
+acceptance_notes:
+  - 过期/撤销/重复刷新全拒绝；重放会作废整条链（refresh::rotate）
+  - 设备移除后该设备 API/WS 立即失效：同一事务删 sessions 行 + 作废刷新链
+  - 日志不含 token/密码：SessionGrant::audit_label 只输出 sid 与 audience
+  - 管理面与用户面令牌不通用：authenticate 显式要求 audience 匹配
+
+tests:
+  - session::tests::audience_is_not_interchangeable
+  - session::tests::revoked_device_loses_api_access
+  - refresh::tests::replay_kills_the_whole_chain
+  - device::tests::revoked_device_cannot_come_back
+  - step_up::tests::expired_and_wrong_scope_are_rejected
