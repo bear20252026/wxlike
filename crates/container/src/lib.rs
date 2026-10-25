@@ -26,6 +26,20 @@ impl Container {
         Ok(Self { engine, page })
     }
 
+    /// Load a page with the guest's saved storage restored.
+    pub fn load_with_storage(
+        page: Page,
+        storage: std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<Self> {
+        let engine = BoaEngine::with_seed_storage(storage);
+        Ok(Self { engine, page })
+    }
+
+    /// Snapshot of the guest storage after a run.
+    pub fn storage(&self) -> std::collections::BTreeMap<String, String> {
+        self.engine.storage()
+    }
+
     /// Run the page lifecycle: eval entry script, then `onLoad(payload)`, `onShow()`.
     /// Returns the title the page set via `wxhost.setTitle` (if any).
     pub fn start(&mut self, payload_json: &str) -> anyhow::Result<String> {

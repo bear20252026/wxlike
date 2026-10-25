@@ -8,5 +8,6 @@
 
 pub mod catalog;
 pub mod packages;
+pub mod toolchain;
 
 pub use packages::error::{MiniError, Result};

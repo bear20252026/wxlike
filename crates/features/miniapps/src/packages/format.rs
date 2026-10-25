@@ -27,15 +27,22 @@ pub struct VerifiedPackage {
     pub digest: String,
 }
 
-/// Pack a source directory, compute resource digests, embed `mini.json`
-/// and sign the exact manifest bytes.
-pub fn build_signed(
+/// A packed but unsigned package. `mini pack` stops here; the signature is
+/// a detached sidecar produced by `mini sign`, so packing and signing can
+/// happen in different processes (CI builder vs. offline publisher key).
+#[derive(Clone, Debug)]
+pub struct PackedPackage {
+    pub blob: Vec<u8>,
+    pub manifest: Manifest,
+    pub manifest_bytes: Vec<u8>,
+}
+
+/// Pack a source directory, compute resource digests and embed `mini.json`.
+pub fn pack_unsigned(
     dir: &std::path::Path,
     template: &Manifest,
     host_version: &str,
-    key: &ed25519_dalek::SigningKey,
-    key_id: &str,
-) -> Result<SignedPackage> {
+) -> Result<PackedPackage> {
     let (manifest, mut files) = seal_dir(dir, template, host_version)?;
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     files.0.push(wxlike_dpage::FileEntry {
@@ -43,11 +50,27 @@ pub fn build_signed(
         data: manifest_bytes.clone(),
     });
     let blob = wxlike_dpage::pack_files(files)?;
-    let signature = sign_manifest(&manifest_bytes, key, key_id);
-    Ok(SignedPackage {
+    Ok(PackedPackage {
         blob,
         manifest,
         manifest_bytes,
+    })
+}
+
+/// Pack a source directory and sign the exact manifest bytes.
+pub fn build_signed(
+    dir: &std::path::Path,
+    template: &Manifest,
+    host_version: &str,
+    key: &ed25519_dalek::SigningKey,
+    key_id: &str,
+) -> Result<SignedPackage> {
+    let packed = pack_unsigned(dir, template, host_version)?;
+    let signature = sign_manifest(&packed.manifest_bytes, key, key_id);
+    Ok(SignedPackage {
+        blob: packed.blob,
+        manifest: packed.manifest,
+        manifest_bytes: packed.manifest_bytes,
         signature,
     })
 }
@@ -84,6 +107,21 @@ pub fn verify(
     let parts = read_parts(blob)?;
     parts.manifest.validate(host_version)?;
     trust.verify_manifest(&parts.manifest, &parts.manifest_bytes, sig, now)?;
+    verify_resources(&parts.manifest, &parts.files)?;
+    Ok(VerifiedPackage {
+        digest: digest_hex(&parts.manifest_bytes),
+        manifest: parts.manifest,
+        manifest_bytes: parts.manifest_bytes,
+        files: parts.files,
+    })
+}
+
+/// Parse a blob without any signature trust decision: shape, host
+/// compatibility and every resource digest. `mini inspect` uses this to show
+/// what a package claims before checking who signed it.
+pub fn open(blob: &[u8], host_version: &str) -> Result<VerifiedPackage> {
+    let parts = read_parts(blob)?;
+    parts.manifest.validate(host_version)?;
     verify_resources(&parts.manifest, &parts.files)?;
     Ok(VerifiedPackage {
         digest: digest_hex(&parts.manifest_bytes),

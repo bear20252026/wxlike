@@ -319,7 +319,7 @@
         "description": "Receipt only: no order token, credential or internal transaction id.",
         "properties": {
           "reference": { "$ref": "#/$defs/reference" },
-          "status": { "enum": ["settled", "pending"] }
+          "status": { "enum": ["settled", "pending", "sandbox"] }
         }
       }
     }
