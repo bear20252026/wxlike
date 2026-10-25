@@ -84,6 +84,7 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   final _drafts = DraftStore();
 
   late AppLockController _lock;
+  StreamSubscription<Uri>? _linkSub;
   SessionInfo? _session;
   ConversationsController? _conversations;
   late final ContactsController _contacts = ContactsController(port: widget.relations);
@@ -94,6 +95,14 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   void initState() {
     super.initState();
     _drafts.load();
+    _linkSub = widget.deepLinks?.listen((uri) {
+      final shell = _shellKey.currentState;
+      if (shell != null) {
+        shell.handleDeepLink(uri);
+      } else {
+        _onDeepLinkBeforeLogin(uri);
+      }
+    });
     _session = widget.session.signedIn ? widget.session : null;
     _lock = AppLockController(secrets: widget.secrets)..restore();
     if (_session != null) {
@@ -104,6 +113,7 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
 
   @override
   void dispose() {
+    _linkSub?.cancel();
     _conversations?.dispose();
     _drafts.dispose();
     _lock.dispose();
@@ -161,13 +171,11 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   }
 
   void _onDeepLinkBeforeLogin(Uri uri) {
-    final link = uri.toString();
-    if (link.startsWith('wxlike://qr/')) {
-      _pendingLink = uri;
-      _messengerKey.currentState?.showSnackBar(
-        const SnackBar(content: Text('请先登录，再确认这台桌面设备')),
-      );
-    }
+    if (!uri.toString().startsWith('wxlike://')) return;
+    _pendingLink = uri;
+    _messengerKey.currentState?.showSnackBar(
+      const SnackBar(content: Text('请先登录后再打开链接')),
+    );
   }
 
   @override
@@ -204,7 +212,7 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
       lock: _lock,
       lifecycle: widget.lifecycle,
       onSignOut: _onSignOut,
-      deepLinks: widget.deepLinks,
+      deepLinks: null,
       onResumed: () => conversations.setForeground(true),
       onPaused: () {
         conversations.setForeground(false);
