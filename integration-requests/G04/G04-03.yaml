@@ -1,0 +1,37 @@
+# G04-03 音视频解码与隔离转码 —— 集成请求
+request_id: G04-03
+task_issue: 120
+group_issue: 85
+contract_version: media-v1
+branch: feat/FP-G04
+
+owned_artifacts:
+  - crates/features/media/src/processing.rs
+  - contracts/domains/media/fixtures/job-status.json
+
+g00_owned_changes:
+  - id: REQ-G00-job-sweeper
+    target: G00-02
+    action: 在组合根起周期任务调用 MediaService::run_due_jobs(limit)（建议 30s，
+      也可复用现有 cron/worker 基础设施）；服务崩溃后由 stale-running 回收逻辑自动重试。
+  - id: REQ-G16-ffmpeg-image
+    target: G16
+    action: 部署镜像需带 ffmpeg/ffprobe（或设 WXLIKE_FFMPEG_DIR 指向其二进制目录）。
+
+requests:
+  - id: REQ-G03-media-ready-event
+    target: G03
+    action: 转码成功后客户端可见性依赖 media.job.completed 事件（outbox）；
+      G03 同步通道消费该事件推给会话成员。
+  - id: REQ-G00-real-ffmpeg-acceptance
+    target: G00
+    action: 真实 FFmpeg 端到端用例已在 processing.rs 提供
+      `cargo test -p wxlike-media -- --ignored ffmpeg_thumbnail_end_to_end`，
+      需在带 ffmpeg 的 CI 机器跑通后方可关闭本卡"未验证"清单。
+
+notes:
+  - 预算：时长/像素/帧数/输入体积/输出体积/墙钟/CPU(rlimit RLIMIT_CPU)/内存(RLIMIT_AS)/
+    文件大小(RLIMIT_FSIZE)；子进程 -nostdin、空环境、cwd=私有工作目录、
+    -protocol_whitelist file（禁止 URL/内网输入）；输入先做魔数嗅探，可执行文件直接拒绝。
+  - 幂等：(object_id, preset) 唯一；重试有 backoff；取消经 cancel flag 杀子进程并清理工作目录。
+  - 生命周期：源对象 GC 时同步清理其衍生对象（purge_derived_for_source）。
