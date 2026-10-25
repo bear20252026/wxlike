@@ -1,0 +1,25 @@
+# G09-02 呼叫信令与成员状态机 —— TRTC 公开参照（开工前输入）
+# 来源：2026-10-24 联网核实。G09 工作树刚起步（G09-01 门禁中），此输入应在 G09-02 开工前到位。
+
+request_id: G09-trtc-signaling-reference
+task_issue: 153
+group_issue: 90
+kind: design-reference
+timing: G09-02 开工之前必须读到
+
+reference: >-
+  腾讯云 TRTC_Web SDK（github.com/Tencent-RTC/TRTC_Web，开源）作为房间状态机、
+  通话超时、重连语义的合法第三方参照。微信内部 VoipEngine（TRTE）未开源，
+  其商业化对外开放版本即 TRTC——行为语义同源，引用合法。
+
+usage_rules:
+  - 房间状态机 / 成员进出 / 静音管控 / 超时重连语义：对照 TRTC 公开 SDK 文档与代码
+  - 本地 Ghidra 符号化 VoipEngine 仅用于 clean-room 行为问题清单
+    （回答"微信版比 TRTC 多了什么"），不落任何代码字面
+  - 与既有 rtc 栈（str0m + atm0s-media-server 分层参照）互补，不引入第二套引擎
+
+requests:
+  - id: REQ-G09-state-machine-alignment
+    target: G09
+    action: G09-02 设计文档引用 TRTC_Web 的房间/信令状态机语义，并注明出处
+    rationale: 一次成型，避免实现后返工；公开信源合法可引

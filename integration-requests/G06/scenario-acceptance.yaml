@@ -1,0 +1,27 @@
+# G06-04 转账、红包与领取并发 —— 验收标准输入（不停工）
+# 在途 PR #225 正常评审；本输入提供官方规则作为验收基准。
+
+request_id: G06-scenario-acceptance
+task_issue: 134
+group_issue: 87
+kind: acceptance-input
+
+official_rules:   # 来源：腾讯官方帮助中心（open.work.weixin.qq.com/help2/pc/14928 等）
+  - 红包一经发出不可撤回（与普通消息 2 分钟撤回不同）
+  - 红包 24 小时未领取自动退回，资金路径三档：零钱实时退 / 零钱通 24h 内 / 银行卡 0–3 个工作日
+  - 转账 24 小时未确认收款自动退回原路
+  - 转账在对方未收款且未超 24h 时，可长按撤回并验支付密码，立即退回
+  - 转账支持 2 小时 / 24 小时延迟到账选项
+
+requests:
+  - id: REQ-G06-review-against-rules
+    target: G06
+    action: PR #225 评审时逐条核对上述规则，特别是 24h 退回的资金路径分档
+    rationale: 补上"预期行为"的客观基准，避免评审各说各话
+  - id: REQ-G17-scenario-library
+    target: G17
+    action: >-
+      把 docs/wechat-scene-gap.md 扩成结构化场景库 CSV
+      （列：场景/前置/动作/预期状态/资金路径/来源标记=官方帮助|实测|逆向推断），
+      挂 G17-05 事实核对。逆向独有价值在公开帮助不写的内部状态机
+      （群主转移中途退出、红包过期瞬间双端同步等）。
