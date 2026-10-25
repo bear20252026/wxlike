@@ -1,0 +1,11 @@
+{
+  "response": {
+    "items": [
+      { "file_id": "file_up_1", "object_id": "aa", "owner": "u1", "name": "a.txt", "folder": "docs", "category": "file", "size": 3, "digest": "aa", "mime": "text/plain", "created_at": 1766580000000, "updated_at": 1766580000000 },
+      { "file_id": "file_up_2", "object_id": "bb", "owner": "u1", "name": "b.png", "folder": "docs", "category": "image", "size": 9, "digest": "bb", "mime": "image/png", "created_at": 1766570000000, "updated_at": 1766570000000 }
+    ],
+    "next_cursor": "1766570000000:file_up_2",
+    "has_more": true,
+    "snapshot_version": 1766570000000
+  }
+}

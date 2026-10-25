@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/api", "crates/types", "crates/client-core", "crates/client-native", "crates/client-web", "crates/core", "crates/limits", "crates/net", "crates/dpage", "crates/container", "crates/mq", "crates/platform", "crates/push", "crates/rtc", "crates/sfu", "crates/client", "crates/ffi", "crates/cmd", "crates/cli", "crates/mcp", "crates/video", "crates/message", "crates/search", "crates/ledger", "crates/risk", "crates/moderation", "crates/report", "crates/admin", "crates/features/commerce", "crates/features/identity", "crates/features/relations", "crates/features/security", "server"]
+members = ["crates/api", "crates/types", "crates/client-core", "crates/client-native", "crates/client-web", "crates/core", "crates/limits", "crates/net", "crates/dpage", "crates/container", "crates/mq", "crates/platform", "crates/push", "crates/rtc", "crates/sfu", "crates/client", "crates/ffi", "crates/cmd", "crates/cli", "crates/mcp", "crates/video", "crates/message", "crates/search", "crates/ledger", "crates/risk", "crates/moderation", "crates/report", "crates/admin", "crates/features/commerce", "crates/features/identity", "crates/features/media", "crates/features/relations", "crates/features/security", "server"]
 exclude = ["ui"]
 
 [workspace.package]
