@@ -51,7 +51,7 @@ python scripts/quality-gate.py     # 本组新增代码：0 长函数、0 魔法
 
 | 卡 | 代码 | 单元测试 | 集成验收 | 阻塞项 |
 |---|---|---|---|---|
-| G02-01 | 完成 | 通过 | 待接线 | 平台路由未挂载（归 G00） |
+| G02-01 | 完成 | 通过 | 待真机 | HTTP 面已接线（refresh/step-up/device revoke），10 条 HTTP 用例过 |
 | G02-02 | 完成 | 通过 | 待接线 | 平台路由未挂载；G03 需改用 `RelationsPort` |
 | G02-03 | 完成 | 通过 | 待接线 | 平台路由未挂载；G03 需按设备加密 |
 | G02-04 | 完成 | 通过 | 待接线 | 客户端（G10/G12）未接 `SecretStore`；ffi 绑定待 G01 |
@@ -62,6 +62,34 @@ python scripts/quality-gate.py     # 本组新增代码：0 长函数、0 魔法
 **没有一张卡标 ACCEPTED。** 任务单明确"不得以 mock/toast 标完成"，而集成验收依赖
 （G01-01、G10-06、G12-06、G07-01）尚未合入；G02-06/07 还缺真实供应商与真机证据。
 代码与测试就绪，验收动作留给集成阶段。
+
+## 三点五、G02-01 HTTP 接线（补充交付）
+
+`crates/platform/src/{sessions,users,db}.rs` 属 G02，因此刷新/step-up/设备下线
+由本组直接落地，不需要 G00 代挂路由：
+
+| 端点 | 行为 |
+|---|---|
+| `POST /api/sessions/refresh` | 轮换刷新令牌；旧令牌重放 → 整条链作废 |
+| `POST /api/sessions/step-up` | 密码或 TOTP 换一次短时授权（单次有效） |
+| `POST /api/devices/{id}/revoke` | 按设备下线，要求 `device.revoke` 授权；同时断刷新链 |
+| `POST /api/sessions/{sid}/revoke` | 既有端点，现同步作废该 sid 的刷新链 |
+| `POST /api/login`、`/api/register` | 响应新增 `refresh_token`（老客户端忽略该字段） |
+
+实现要点：
+
+* 规则在 `wxlike-identity`，平台层只做类型搬运（`impl From<IdError> for PlatformError`），
+  不复制一份状态机；
+* 建表由 `db.rs::migrate_identity()` 执行，幂等、不占迁移编号；快照已同步
+  （`tests/schema_snapshot.txt` +92 行）；
+* 撤销设备后发 `session.revoked` 自定义帧，让在线设备立刻清缓存——该 kind 不在
+  消息类型注册表里，因此不会落进任何会话时间线。
+
+证据：`crates/platform/tests/g02_sessions.rs` 10 条 HTTP 用例（成功/空/参数错/
+未授权/重放/重复提交），`cargo test -p wxlike-platform` 全套通过。
+
+仍未做：`sessions.audience` 列（管理面目前用独立静态令牌 `admin_ok`），以及
+桌面/手机真机联调（等 G10-06/G12-06 登录页）。
 
 ## 四、给其他组的交接
 
