@@ -1,0 +1,38 @@
+# G08-05 可运行示例与开发工具链 —— glass-easel 采用决策（开工前输入）
+# 来源：2026-10-24 逆向成果借用评估 + 联网核实。给 G08 在认领 G08-05 前定渲染/组件层路径。
+
+request_id: G08-borrow-glass-easel
+task_issue: 150
+group_issue: 89
+kind: design-decision
+timing: 认领 G08-05 之前必须读到
+
+decision_requested: >-
+  组件/渲染层直接 vendor 官方开源 glass-easel（MIT），不手搓简化版组件框架，
+  也不复刻微信内嵌的 v1.2.1 旧版；用上游最新 release。
+
+evidence:
+  - upstream: https://github.com/wechat-miniprogram/glass-easel
+    license: MIT
+    subpackages: [core(npm 0.21.0), template-compiler, miniprogram-adapter, shadow-sync, analyzer]
+    note: glass-easel-stylesheet-compiler 是 Rust crate（MIT），与 Boa 宿主同栈，可零成本依赖
+  - official-doc: >-
+      微信官方迁移文档：Skyline 渲染引擎只跑 glass-easel，WebView 下按灰度在
+      exparser/glass-easel 间切换。引入 glass-easel 即与微信小程序组件模型同源，
+      不存在"兼容微信"的第二次猜测。
+  - local-alignment: >-
+      逆向对齐报告（source_recovered/_ALIGN_REPORT_v2.md）已确认微信 4.1.15 内置版
+      ≈ v1.0.0–v1.2.1（5 子包 75 个 TS，60/75 归属，天花板 92.3%）。
+      对齐矩阵仅当验证工具：用归属模块（mod_987 / mod_9998 等）反向验证我们
+      adapter 的行为；上游源码是唯一原料，反编译 JS 一行不进分发物。
+
+constraints:
+  - vendoring PR 按 docs/full-platform-delivery/references.md 七要素附来源，交 G17-01 审查
+  - 已知社区反馈 TDesign SwipeCell 在 glass-easel 下有兼容差异，adapter 层验收需覆盖
+  - 配套可复用生态：glass-easel-analyzer（LSP，可做开发工具）、chaining-api-polyfill
+
+requests:
+  - id: REQ-G08-vendor-glass-easel
+    target: G08
+    action: G08-05 开工时以 vendor 上游 glass-easel 为基线实现示例与工具链
+    rationale: 消灭最大不确定性（组件模型兼容性），MIT + Rust crate 现成可用

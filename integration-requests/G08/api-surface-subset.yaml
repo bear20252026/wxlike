@@ -1,0 +1,34 @@
+# G08-03 宿主权限 broker —— API 面子集扫描（whitelist v2 输入）
+# 不重开在途 PR #204；产出作为评审意见与后续 issue 的数据输入。
+
+request_id: G08-api-surface-subset
+task_issue: 147
+group_issue: 89
+consumers:
+  - group: G08
+    issue: 147   # broker 白名单 v2
+  - group: G15
+    issue: 186   # catalog 的 host_only 名册补充
+
+action: >-
+  对恢复出的 8,162 个 WMPF webpack 模块做"开源库 vs 微信自有"二分
+  （方法已验证：稀有标识符锚点扫描，见 _ALIGN_REPORT_v2），
+  自有部分映射回 wx API 名称，得到微信实际高频 API 子集。
+
+expected_output: >-
+  高频 wx API 子集清单（估计几十个，远小于全量 300+），
+  作为 broker 权限白名单初稿与 G15-03 host_only 登记来源。
+
+context:
+  - wx API 官方口径约 300+ 接口、三类形态（on* 监听 / *Sync 同步 / 异步回调）
+  - 微信官方 WMPF（硬件框架）中登录/分享/支付也走手机扫码代填——
+    与本项目 G15 把这类能力登记为 host_only 的分类一致
+  - 商业同类容器（FinClip/mPaaS）证明"实现 wx 兼容子集"是成熟路线
+
+requests:
+  - id: REQ-G08-whitelist-v2
+    target: G08
+    action: PR #204 评审通过后，以扫描结果开 whitelist v2 后续 issue，不返工当前 PR
+  - id: REQ-G15-host-only-roster
+    target: G15
+    action: 扫描结果并入 G15-03 覆盖表的 host_only 名册（当前 5 条可核对扩充）

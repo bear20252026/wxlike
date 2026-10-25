@@ -1,0 +1,25 @@
+# G17 威胁模型/发布评审 —— 公开研究引用与工具链复用登记
+
+request_id: G17-borrow-public-research
+task_issues: [196, 198, 197]
+group_issue: 98
+kind: reference-registration
+
+threat_model_citations:   # G17-03（#196）
+  - Citizen Lab 2024《Should We Chat Too? — WeChat MMTLS 加密协议安全分析》
+    （首个公开深度分析：握手细节、ClientHello 未加密等弱点、非标 TLS 特征）
+  - WeMobileDev（微信团队官方）：《基于 TLS1.3 的微信安全通信协议 mmtls 介绍》
+  - 用途：威胁模型的对照文献与"为什么我们坚持标准 TLS 1.3/quinn"的论据
+
+provenance_reviews:   # G17-01（#193）
+  - glass-easel（MIT）vendor 与 TRTC_Web 参照的七要素来源审查
+    （登记于 integration-requests/G08/borrow-glass-easel.yaml、G09/trtc-signaling-reference.yaml）
+
+toolchain_reuse:   # G17-04（#197）可选排期
+  - reverse-skill 流水线用于 dpage 包格式"对样验证"（自己打包→自己解包→差分断言）
+  - release 构建可选 obfstr/litcrypt 字符串加密；AGPL 源码提供义务不受加固影响，
+    加固目标是提高仿冒服务端的分析成本，不是藏代码
+
+fact_check_scope:   # G17-05（#198）
+  - 场景验收库（见 integration-requests/G06/scenario-acceptance.yaml）中
+    来源标记为"逆向推断"的条目属于事实核对范围
