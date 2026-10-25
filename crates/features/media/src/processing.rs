@@ -712,7 +712,7 @@ fn check_stop(child: &mut Child, deadline: Instant, cancel: &AtomicBool) -> Resu
     Ok(())
 }
 
-fn finish_process(mut child: Child, status: ExitStatus) -> Result<std::process::Output> {
+fn finish_process(child: Child, status: ExitStatus) -> Result<std::process::Output> {
     let output = child.wait_with_output()?;
     if status.success() {
         Ok(output)
