@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "note": "Budgets for a shared GitHub ubuntu runner with a debug build and SQLite. Tighten only with a recorded measured baseline; the evidence file keeps the observed numbers.",
+  "health_p95_ms": 300,
+  "send_p95_ms": 1500,
+  "history_p95_ms": 800,
+  "max_error_rate": 0.0,
+  "min_throughput_rps": 20
+}

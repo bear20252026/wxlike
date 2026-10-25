@@ -1,0 +1,70 @@
+{
+  "fixture_id": "services.reservations.hold_confirm_medical",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.reservations.confirm",
+  "category": "success_boundary_permission",
+  "description": "预订：搜索→占位→确认；占位 TTL 上限 15 分钟；医疗只收授权机构号源且需要转诊。",
+  "search_success": {
+    "action_id": "services.reservations.search",
+    "request": { "card": "svc-travel-cn", "kind": "travel", "city": "Shanghai", "party_size": 2 },
+    "expected": {
+      "items": [
+        { "offer_id": "off-<opaque>", "kind": "travel", "region": "CN", "authorized": true, "terms_version": "<v>" }
+      ]
+    }
+  },
+  "confirm_success": {
+    "request": { "card": "svc-travel-cn", "hold_id": "hold-<opaque>", "profile": { "passenger_name": "张三", "id_number": "3101…", "health_note": null } },
+    "expected": {
+      "booking": { "status": "confirmed" },
+      "stages": [{ "name": "confirm", "done": true }, { "name": "seal_profile", "done": true }]
+    }
+  },
+  "boundary_and_failure": [
+    {
+      "name": "hold_ttl_over_15m",
+      "action_id": "services.reservations.hold",
+      "request": { "offer_id": "off-<opaque>", "ttl_ms": 900001 },
+      "expected_error": { "code": "DEPENDENCY_UNAVAILABLE", "detail": "hold ttl over limit" }
+    },
+    {
+      "name": "hold_expired",
+      "precondition": "占位 15 分钟后 confirm",
+      "expected_error": { "code": "EXPIRED", "detail": "hold expired" },
+      "observable": { "vendor_hold_released": true }
+    },
+    {
+      "name": "vendor_confirm_failure_releases_hold",
+      "precondition": "供应商 confirm 返回 Rejected",
+      "expected": { "hold_released": true, "booking_absent": true }
+    },
+    {
+      "name": "medical_unauthorized_source",
+      "action_id": "services.reservations.search",
+      "request": { "card": "svc-med-cn", "kind": "medical", "city": "Beijing", "party_size": 1 },
+      "expected": "只有 authorized=true 的机构号源出现在结果里"
+    },
+    {
+      "name": "medical_referral_required",
+      "action_id": "services.reservations.confirm",
+      "request": { "card": "svc-med-cn", "hold_id": "hold-<opaque>", "referral": null, "profile": {} },
+      "expected_error": { "code": "UNAUTHORIZED", "detail": "referral required" }
+    },
+    {
+      "name": "medical_referral_unknown_source",
+      "request": { "referral": "REF-from-unauthorized" },
+      "expected_error": { "code": "UNAUTHORIZED", "detail": "referral source not authorized" }
+    },
+    {
+      "name": "party_size_out_of_range",
+      "request": { "party_size": 10 },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "party size" }
+    }
+  ],
+  "sensitive_profile": {
+    "seal": "ChaCha20Poly1305 加密，密钥来自注入；密文+nonce 落库",
+    "open": "仅本人；每次访问写审计（actor/booking_id/action/at_ms）",
+    "delete": "本人删除；他人开/删一律拒绝",
+    "export": "stored() 只返回密文与 nonce，供迁移核对，不解密"
+  }
+}

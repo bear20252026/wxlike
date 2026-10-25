@@ -1,0 +1,49 @@
+{
+  "fixture_id": "services.retail.search_cart_checkout",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.retail.checkout",
+  "category": "success_boundary",
+  "description": "零售：搜索隐藏无库存/他区商品；购物车 owner/区域/库存校验；结算前供应商实价复核。",
+  "search_success": {
+    "action_id": "services.retail.search",
+    "request": { "card": "svc-retail-cn", "keyword": null },
+    "expected": "只含 region=CN 且库存>0 且 enabled 的商品"
+  },
+  "checkout_success": {
+    "request": { "cart_id": "cart-<opaque>", "idempotency_key": "co-1" },
+    "expected": { "order_state": "fulfilled", "receipt": { "business_no": "<vendor receipt>", "status": "completed" } }
+  },
+  "boundary_and_failure": [
+    {
+      "name": "stolen_cart",
+      "precondition": "usr-B 操作 usr-A 的购物车",
+      "expected_error": { "code": "NOT_FOUND", "detail": "cart not found" }
+    },
+    {
+      "name": "region_mismatch_item",
+      "precondition": "往 CN 购物车加 US 商品",
+      "expected_error": { "code": "CONFLICT", "detail": "cart region mismatch" }
+    },
+    {
+      "name": "insufficient_stock",
+      "request": { "sku": "sku-low-stock", "quantity": 99 },
+      "expected_error": { "code": "CONFLICT", "detail": "insufficient stock" }
+    },
+    {
+      "name": "sku_cap_20",
+      "precondition": "购物车已有 20 个 SKU 再加第 21 个",
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "cart sku cap" }
+    },
+    {
+      "name": "price_changed_before_checkout",
+      "precondition": "报价后供应商改价",
+      "expected_error": { "code": "CONFLICT", "detail": "price changed; re-quote" },
+      "observable": { "payment_intents_total": 0, "vendor_checkout_calls": 0 }
+    },
+    {
+      "name": "cancel_before_delivery_refunds",
+      "sequence": ["checkout 成功", "cancel"],
+      "expected": { "order_state": "refunded", "refund_calls": 1 }
+    }
+  ]
+}

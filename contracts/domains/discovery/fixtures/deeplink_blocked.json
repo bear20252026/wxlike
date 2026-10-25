@@ -1,0 +1,32 @@
+{
+  "fixture_id": "discovery.scan.deeplink_blocked",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.scan.confirm_external",
+  "category": "permission_failure",
+  "description": "用户确认打开外部链接：非白名单 https 域返回 BLOCKED_EXTERNAL；http 与自定义 scheme 在 decode 阶段即被拒。",
+  "cases": [
+    {
+      "name": "host_not_allowlisted",
+      "request": { "url": "https://evil.example.com/promo" },
+      "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "blocked external: host not allowed" }
+    },
+    {
+      "name": "https_required",
+      "request": { "url": "http://allowed.example.com/page" },
+      "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "blocked external: https required" }
+    },
+    {
+      "name": "scheme_not_allowed_at_decode",
+      "action_id": "discovery.scan.decode",
+      "request": { "source": "raw_text", "text": "intent://host/path#Intent;scheme=x;end" },
+      "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "blocked external: scheme not allowed" }
+    },
+    {
+      "name": "subdomain_of_allowlisted_ok",
+      "request": { "url": "https://api.example-official.cn/pay" },
+      "expected": { "url": "https://api.example-official.cn/pay" },
+      "precondition": "白名单包含 example-official.cn"
+    }
+  ],
+  "invariants": ["子域匹配只允许 allowlisted host 的直接下级后缀", "任何情况下不得自动跳转"]
+}

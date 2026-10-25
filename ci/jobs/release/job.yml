@@ -1,0 +1,236 @@
+jobs:
+  release:
+    name: release
+    needs: [android-release, ios-release, desktop-release]
+    runs-on: ubuntu-latest
+    environment: production-release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: resolve version and publication mode
+        id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          PUSH_EVENT: ${{ github.event_name == 'push' }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then version="$INPUT_VERSION"; else version="${GITHUB_REF_NAME#v}"; fi
+          if [ "${PUSH_EVENT}" = "true" ] || [ "${INPUT_PUBLISH}" = "true" ]; then publish=true; else publish=false; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/wxlike-server" >> "$GITHUB_OUTPUT"
+          echo "version=$version publish=$publish"
+      - name: download mobile artefacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
+        with:
+          name: android-release
+          path: artifacts/android
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
+        with:
+          name: ios-release
+          path: artifacts/ios
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
+        with:
+          pattern: desktop-*
+          path: artifacts/desktop
+      - name: verify desktop signatures and merge manifests
+        shell: bash
+        env:
+          UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          echo "pubkey is configured: $([ -n "$UPDATER_PUBKEY" ] && echo yes || echo no)"
+          [ -n "$UPDATER_PUBKEY" ] || { echo "::error::TAURI_UPDATER_PUBKEY is not configured"; exit 1; }
+          python3 - "$UPDATER_PUBKEY" <<'PY'
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          pubkey = sys.argv[1]
+          root = Path("artifacts/desktop")
+          manifests = sorted(root.rglob("manifest-*.json"))
+          if len(manifests) < 3:
+              sys.exit(f"expected 3 desktop manifests, found {manifests}")
+          for manifest in manifests:
+              data = json.loads(manifest.read_text(encoding="utf-8"))
+              for platform, entry in data["platforms"].items():
+                  name = entry["url"].rsplit("/", 1)[-1]
+                  matches = [p for p in root.rglob(name) if p.is_file()]
+                  if not matches:
+                      sys.exit(f"artefact {name} for {platform} not downloaded")
+                  artifact = matches[0]
+                  digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                  if digest != entry["sha256"]:
+                      sys.exit(f"sha256 mismatch for {artifact}: {digest} != {entry['sha256']}")
+                  signature = artifact.with_name(artifact.name + ".sig")
+                  if not signature.is_file():
+                      sys.exit(f"signature missing for {artifact}")
+                  result = subprocess.run(
+                      ["minisign", "-V", "-m", str(artifact), "-x", str(signature), "-P", pubkey],
+                      capture_output=True, text=True,
+                  )
+                  if result.returncode != 0:
+                      sys.exit(f"signature rejected for {artifact}: {result.stderr}")
+                  print(f"verified {platform}: {name}")
+          PY
+          python3 ci/jobs/desktop/make_update_manifest.py \
+            --merge $(find artifacts/desktop -name 'manifest-*.json' | sort) \
+            --require-signature \
+            --output release-evidence/latest.json
+          python3 - "${{ steps.meta.outputs.version }}" <<'PY'
+          import json, sys
+          from pathlib import Path
+          data = json.loads(Path("release-evidence/latest.json").read_text(encoding="utf-8"))
+          if data.get("version") != sys.argv[1]:
+              sys.exit(f"desktop version {data.get('version')} != release {sys.argv[1]}")
+          PY
+      - name: validate mobile and device evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          android=$(find artifacts/android -name 'android-release.json' | head -1)
+          ios=$(find artifacts/ios -name 'ios-release.json' | head -1)
+          python3 - "$android" "$ios" <<'PY'
+          import json, sys
+          from pathlib import Path
+          for path, label in ((sys.argv[1], "android"), (sys.argv[2], "ios")):
+              data = json.loads(Path(path).read_text(encoding="utf-8"))
+              if not data.get("sha256"):
+                  sys.exit(f"{label} evidence has no artifact hash")
+              print(f"{label}: {data.get('artifact')} sha256={data['sha256']} signer={data.get('signer') or data.get('authority')}")
+          PY
+          verified=0
+          if [ -f deploy/signing-docs/device-evidence.json ]; then
+            python3 ci/jobs/mobile/check_device_evidence.py \
+              --evidence deploy/signing-docs/device-evidence.json \
+              --matrix deploy/signing-docs/device-matrix.json \
+              --release-evidence "$android"
+            verified=1
+          else
+            echo "::warning::no real-device evidence; publication will be blocked"
+          fi
+          echo "DEVICE_VERIFIED=$verified" >> "$GITHUB_ENV"
+          cp "$android" release-evidence/android-release.json
+          cp "$ios" release-evidence/ios-release.json
+      - name: record known gaps
+        shell: bash
+        run: python3 ci/jobs/build/check_gaps.py --json release-evidence/gaps.json
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # docker/setup-buildx-action@v3
+      - name: login to GHCR
+        if: steps.meta.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build server image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/server/Dockerfile
+          push: ${{ steps.meta.outputs.publish == 'true' }}
+          load: ${{ steps.meta.outputs.publish != 'true' }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+      - name: publish digest reference
+        id: digest
+        shell: bash
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          PUBLISH: ${{ steps.meta.outputs.publish }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          if [ "$PUBLISH" = "true" ]; then
+            echo "digest=$BUILT_DIGEST" >> "$GITHUB_OUTPUT"
+            echo "ref=$IMAGE@$BUILT_DIGEST" >> "$GITHUB_OUTPUT"
+          else
+            local_id=$(docker image inspect -f '{{.Id}}' "$IMAGE:${{ steps.meta.outputs.version }}")
+            echo "digest=$local_id" >> "$GITHUB_OUTPUT"
+            echo "ref=$local_id" >> "$GITHUB_OUTPUT"
+            echo "dry run: local image $local_id (not published)"
+          fi
+      - name: SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # anchore/sbom-action@v0
+        with:
+          image: ${{ steps.meta.outputs.publish == 'true' && format('{0}@{1}', steps.meta.outputs.image, steps.build.outputs.digest) || format('{0}:{1}', steps.meta.outputs.image, steps.meta.outputs.version) }}
+          format: spdx-json
+          output-file: release-evidence/server-sbom.spdx.json
+          upload-artifact: false
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # sigstore/cosign-installer@v3
+        if: steps.meta.outputs.publish == 'true'
+      - name: sign image and verify the signature
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes "$ref"
+          cosign verify "$ref" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: attest build provenance
+        if: steps.meta.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: assemble release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --version "${{ steps.meta.outputs.version }}"
+            --commit "${{ github.sha }}"
+            --image "${{ steps.meta.outputs.image }}"
+            --image-digest "${{ steps.digest.outputs.digest }}"
+            --gaps-json release-evidence/gaps.json
+            --desktop-manifest release-evidence/latest.json
+            --output release-evidence/release-manifest.json
+          )
+          [ -f release-evidence/server-sbom.spdx.json ] && args+=(--sbom release-evidence/server-sbom.spdx.json)
+          [ -f release-evidence/android-release.json ] && args+=(--android-evidence release-evidence/android-release.json)
+          [ -f release-evidence/ios-release.json ] && args+=(--ios-evidence release-evidence/ios-release.json)
+          [ -f deploy/signing-docs/device-evidence.json ] && args+=(--device-evidence deploy/signing-docs/device-evidence.json)
+          [ "${DEVICE_VERIFIED:-0}" = "1" ] && args+=(--device-evidence-verified)
+          [ "${{ steps.meta.outputs.publish }}" = "true" ] && args+=(--published --require-clean)
+          python3 ci/jobs/release/make_release_manifest.py "${args[@]}"
+      - name: publish GitHub release
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.meta.outputs.version }}"
+          mapfile -t assets < <(find artifacts release-evidence -type f \( \
+            -name '*.apk' -o -name '*.aab' -o -name '*.ipa' -o -name '*.deb' -o -name '*.AppImage' \
+            -o -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.app.tar.gz' \
+            -o -name 'release-manifest.json' -o -name 'server-sbom.spdx.json' -o -name 'latest.json' \) | sort)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" --title "wxlike ${{ steps.meta.outputs.version }}" --generate-notes
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        if: always()
+        with:
+          name: release-evidence
+          path: release-evidence/
+          if-no-files-found: warn
+          retention-days: 90

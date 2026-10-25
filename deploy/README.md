@@ -8,6 +8,10 @@
 | **macOS 原生（launchd）** | Mac mini 自建、个人/小团队 | `deploy/macos/install.sh` |
 | **Linux 原生（systemd）** | 云主机、NAS、树莓派 | `deploy/linux/install.sh` |
 | **Docker Compose** | 想连 Redis 一起起、要可复制环境 | `docker-compose.yml` |
+| **生产 Compose（镜像 digest）** | 正式环境、只读根文件系统、受保护环境 | `containers/server/compose.prod.yml` |
+
+生产还包括可观测性、备份恢复演练和发布/回滚手册，见
+`deploy/production/` 与 `deploy/runbooks/`。
 
 ## Mac mini 上原生部署
 
@@ -98,12 +102,12 @@ WXLIKE_SFU_ADVERTISE  对外宣告的媒体 IP（NAT 后面必须显式指定）
 WXLIKE_SFU_PORT       SFU 端口段起点
 
 # 安全相关（公网部署必看）
-WXLIKE_LIVE_INGEST_SECRET  直播推流密钥；**不设置时用公开的开发默认值**
+WXLIKE_LIVE_INGEST_SECRET  直播推流密钥；**缺失时进程拒绝启动**
 ```
 
 > **⚠️ 公网部署必须设置 `WXLIKE_LIVE_INGEST_SECRET`**。
-> 默认值 `dev-insecure-live-secret` 写在源码里，任何人都能拿它推流。
-> `wxlike-server --check` 会明确提示当前是否已设置。
+> 没有公开默认值：缺失就拒绝启动；本地开发用 `WXLIKE_DEV_INSECURE=1`
+> 显式放行（每次启动生成随机密钥）。`wxlike-server --check` 会说明当前状态。
 
 ## 备份
 
@@ -113,10 +117,13 @@ WXLIKE_LIVE_INGEST_SECRET  直播推流密钥；**不设置时用公开的开发
 2. `media/`（用户上传的附件）
 
 ```bash
-# 每日 3 点备份，保留 14 天
-0 3 * * * sqlite3 "$HOME/Library/Application Support/wxlike/wxlike.db" \
-  ".backup $HOME/backups/wxlike-$(date +\%F).db"
+# 每小时一致性备份 + manifest + 媒体归档
+17 * * * * /opt/wxlike/deploy/production/backup.sh \
+  --db /srv/wxlike/wxlike.db --media /srv/wxlike/media \
+  --out /var/backups/wxlike --label hourly
 ```
+
+恢复流程与实测 RPO/RTO 见 `deploy/runbooks/backup-restore.md`。
 
 ## 多节点
 

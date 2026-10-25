@@ -123,10 +123,15 @@ pub const CATALOG: &[CommandSpec] = &[
     CommandSpec {
         id: "msg.get",
         summary: "取单条消息（含撤回状态）",
-        params: "{conv: string, msg_id: string}",
+        params: "{conv: string, msg_id: string, confirmation_token?: string}",
         args: &[
             Param::req("conv", ParamType::Str, "会话 id"),
             Param::req("msg_id", ParamType::Str, "消息 id"),
+            Param::opt(
+                "confirmation_token",
+                ParamType::Str,
+                "确认令牌：先 prepare，再把令牌带回来",
+            ),
         ],
         capability: Capability::Read,
         needs_conv: true,
@@ -407,10 +412,15 @@ pub const CATALOG: &[CommandSpec] = &[
     CommandSpec {
         id: "group.kick",
         summary: "把成员移出群（不可撤销）",
-        params: "{conv: string, user_id: string}",
+        params: "{conv: string, user_id: string, confirmation_token?: string}",
         args: &[
             Param::req("conv", ParamType::Str, "群 id"),
             Param::req("user_id", ParamType::Str, "被移出的 user_id"),
+            Param::opt(
+                "confirmation_token",
+                ParamType::Str,
+                "确认令牌：先 prepare，再把令牌带回来",
+            ),
         ],
         capability: Capability::Destructive,
         needs_conv: true,
@@ -423,10 +433,15 @@ pub const CATALOG: &[CommandSpec] = &[
     CommandSpec {
         id: "msg.recall",
         summary: "撤回一条消息（他人消息需管理员）",
-        params: "{conv: string, msg_id: string}",
+        params: "{conv: string, msg_id: string, confirmation_token?: string}",
         args: &[
             Param::req("conv", ParamType::Str, "会话 id"),
             Param::req("msg_id", ParamType::Str, "消息 id"),
+            Param::opt(
+                "confirmation_token",
+                ParamType::Str,
+                "确认令牌：先 prepare，再把令牌带回来",
+            ),
         ],
         capability: Capability::Destructive,
         needs_conv: true,

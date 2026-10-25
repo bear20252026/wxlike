@@ -1,0 +1,33 @@
+jobs:
+  performance:
+    name: performance
+    needs: [select]
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-perf-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - name: C11 build server
+        run: cargo build --locked -p wxlike-server
+      - name: C11 measured load against budgets
+        run: |
+          python3 tests/perf/run.py \
+            --server-bin target/debug/wxlike-server \
+            --budgets ci/jobs/performance/budgets.json \
+            --evidence-dir performance-evidence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        if: always()
+        with:
+          name: performance-evidence
+          path: performance-evidence/
+          if-no-files-found: warn
+          retention-days: 14

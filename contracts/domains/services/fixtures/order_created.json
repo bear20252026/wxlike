@@ -1,0 +1,38 @@
+{
+  "fixture_id": "services.order.created_and_declined",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.order.create",
+  "category": "success_failure",
+  "description": "下单创建支付意图：成功走 created→paid(/fulfilled)；拒付走 failed 并开支持工单，供应商订单自动取消。",
+  "success": {
+    "request": {
+      "quote_id": "q-<opaque>",
+      "idempotency_key": "ord-key-1",
+      "confirmed_amount_minor": 5000,
+      "params": { "account_no": "138****0001", "amount_minor": 5000 }
+    },
+    "expected": {
+      "order_id": "ord-<opaque>",
+      "state": "paid",
+      "payment_id": "pay-<opaque>",
+      "events": [{ "state": "created" }, { "state": "paid" }]
+    }
+  },
+  "payment_declined": {
+    "precondition": "LedgerPayment.decline=true",
+    "request": { "quote_id": "q-<opaque-2>", "idempotency_key": "ord-key-2", "confirmed_amount_minor": 5000, "params": { "same_as_quote": true } },
+    "expected_error": { "code": "PAYMENT_DECLINED", "detail": "payment declined" },
+    "observable": {
+      "order_state": "failed",
+      "support_ticket": "tk-<opaque>",
+      "provider_cancel_called": true,
+      "note": "供应商订单被补偿性取消，不留下已下单未支付的悬挂单"
+    }
+  },
+  "no_sandbox_evidence": {
+    "precondition": "provider.sandbox_evidence()=None 或 reference 为空",
+    "request": { "any_valid_quote": true },
+    "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "<provider-id>: sandbox evidence missing" }
+  },
+  "invariants": ["支付只经 G06 PaymentPort；本域不直接扣余额", "拒付后同一 idempotency_key 重放不复扣款"]
+}
