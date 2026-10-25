@@ -81,12 +81,7 @@ impl MoneyPort for HttpMoneyPort {
                 Some(serde_json::json!({"order_id": order_id, "amount_cents": amount_cents})),
             )
             .await?;
-        Ok(reply
-            .body
-            .get("reference")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string())
+        Ok(reply.reference())
     }
 }
 
@@ -353,31 +348,19 @@ impl CommerceService {
             args.push(Box::new(s.clone()));
         }
         let conn = self.store.lock();
-        let total: i64 = conn.query_row(
-            &format!("SELECT count(*) FROM g14_order{where_sql}"),
-            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
-        let mut all = args;
-        all.push(Box::new(limit));
-        all.push(Box::new(offset));
         let sql = format!(
             "SELECT id, merchant_id, internal_no, external_no, amount_cents, currency, state, \
              created_at FROM g14_order{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(all.iter().map(|b| b.as_ref())),
-                row_to_order,
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(Paged {
-            total,
+        Paged::query(
+            &conn,
+            &format!("SELECT count(*) FROM g14_order{where_sql}"),
+            &sql,
+            args,
             limit,
             offset,
-            rows,
-        })
+            row_to_order,
+        )
     }
 
     /// 单笔订单。越权 = NotFound（不给 403，避免探测他人订单是否存在）。
@@ -461,36 +444,7 @@ impl CommerceService {
         let card_id = upstream::check_target(card_id)?;
         let order_id = upstream::check_target(order_id)?;
         let conn = self.store.lock();
-        let (face, state, merchant_id) = conn
-            .query_row(
-                "SELECT face_value_cents, state, merchant_id FROM g14_card WHERE id = ?1",
-                [&card_id],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .map_err(|_| AdminError::NotFound)?;
-        if state != "active" {
-            return Err(AdminError::bad_input(format!(
-                "卡券状态是 {state}，不能核销"
-            )));
-        }
-        let order_merchant: String = conn
-            .query_row(
-                "SELECT merchant_id FROM g14_order WHERE id = ?1",
-                [&order_id],
-                |r| r.get(0),
-            )
-            .map_err(|_| AdminError::NotFound)?;
-        if order_merchant != merchant_id {
-            return Err(AdminError::bad_input(
-                "卡券与订单不属于同一个商户：跨商户核销是资金事故，直接拒",
-            ));
-        }
+        let face = redeem_value(&conn, &card_id, &order_id)?;
         conn.execute(
             "INSERT INTO g14_card_redeem (id, card_id, order_id, amount_cents, at_ms) \
              VALUES (?1,?2,?3,?4,?5)",
@@ -570,18 +524,7 @@ impl CommerceService {
     ) -> Result<Refund> {
         auth::require(role, Resource::Order, Action::Write)?;
         let order = self.order(scope, order_id)?.ok_or(AdminError::NotFound)?;
-        if amount_cents <= 0 || amount_cents > order.amount_cents {
-            return Err(AdminError::bad_input(format!(
-                "退款金额必须在 1..={} 分之间",
-                order.amount_cents
-            )));
-        }
-        if reason.trim().is_empty() {
-            return Err(AdminError::bad_input("退款申请必须写理由"));
-        }
-        if idem.trim().is_empty() {
-            return Err(AdminError::bad_input("退款申请必须有幂等键 idem"));
-        }
+        validate_refund_request(order.amount_cents, amount_cents, reason, idem)?;
         let conn = self.store.lock();
         if let Ok(existing) = conn.query_row(
             "SELECT id, order_id, amount_cents, state, reason, requested_by, approved_by, \
@@ -604,21 +547,7 @@ impl CommerceService {
             created_at: now,
             updated_at: now,
         };
-        conn.execute(
-            "INSERT INTO g14_refund (id, order_id, amount_cents, state, reason, requested_by, \
-             approved_by, second_approver, idem, created_at, updated_at) \
-             VALUES (?1,?2,?3,?4,?5,?6,NULL,NULL,?7,?8,?8)",
-            params![
-                refund.id,
-                refund.order_id,
-                refund.amount_cents,
-                refund.state,
-                refund.reason,
-                refund.requested_by,
-                idem,
-                now
-            ],
-        )?;
+        insert_refund(&conn, &refund, idem, now)?;
         drop(conn);
         self.audit.append(
             Draft::new(
@@ -657,25 +586,8 @@ impl CommerceService {
         if refund.state == "approved" {
             return Ok(refund);
         }
-        if refund.state != "pending" && refund.state != "partially_approved" {
-            return Err(AdminError::bad_input(format!(
-                "退款状态是 {}，不能再审批",
-                refund.state
-            )));
-        }
+        let (first, second) = refund_approvers(&refund, actor)?;
         let needs_two = refund.amount_cents >= DUAL_APPROVAL_THRESHOLD_CENTS;
-        let mut first = refund.approved_by.clone();
-        let mut second = refund.second_approver.clone();
-        if first.as_deref() == Some(actor) || second.as_deref() == Some(actor) {
-            return Err(AdminError::bad_input(
-                "同一审批人不能重复计数：超过阈值的退款需要两个不同的人批准",
-            ));
-        }
-        if first.is_none() {
-            first = Some(actor.to_string());
-        } else {
-            second = Some(actor.to_string());
-        }
         let both = first.is_some() && second.is_some();
         let (state, reference) = if !needs_two || both {
             let reference = self
@@ -882,86 +794,12 @@ impl CommerceService {
     ) -> Result<Vec<JournalEntry>> {
         auth::require(role, Resource::Journal, Action::ApproveMoney)?;
         self.stepup.require(actor, Action::ApproveMoney)?;
-        if entry_no.trim().is_empty() || memo.trim().is_empty() || source.trim().is_empty() {
-            return Err(AdminError::bad_input(
-                "补账必须给 entry_no / memo / source（来源不明的分录等于没有来源）",
-            ));
-        }
-        if lines.len() < 2 {
-            return Err(AdminError::bad_input("分录至少两条：一条借一条贷"));
-        }
-        let mut debit = 0i64;
-        let mut credit = 0i64;
-        for line in lines {
-            if line.amount_cents <= 0 {
-                return Err(AdminError::bad_input(
-                    "分录金额必须为正（方向由 direction 表示）",
-                ));
-            }
-            match line.direction.as_str() {
-                "debit" => debit += line.amount_cents,
-                "credit" => credit += line.amount_cents,
-                other => {
-                    return Err(AdminError::bad_input(format!(
-                        "direction 只能是 debit/credit，收到 {other:?}"
-                    )))
-                }
-            }
-            if line.account.trim().is_empty() {
-                return Err(AdminError::bad_input("分录必须指定科目"));
-            }
-        }
-        if debit != credit {
-            return Err(AdminError::bad_input(format!(
-                "借贷不平：借 {debit} 分 / 贷 {credit} 分。补账不能凭空造钱"
-            )));
-        }
+        let debit = validate_journal(entry_no, memo, source, lines)?;
         let now = now_ms();
-        let mut out = Vec::new();
-        {
+        let out = {
             let conn = self.store.lock();
-            let existing: i64 = conn.query_row(
-                "SELECT count(*) FROM g14_journal WHERE entry_no = ?1",
-                [entry_no],
-                |r| r.get(0),
-            )?;
-            if existing > 0 {
-                return Err(AdminError::bad_input(format!(
-                    "分录号 {entry_no} 已存在（分录不可改只能冲销）"
-                )));
-            }
-            for (line_no, line) in lines.iter().enumerate() {
-                let entry = JournalEntry {
-                    id: format!("jn_{}", wxlike_platform::random_hex(6)),
-                    entry_no: entry_no.trim().to_string(),
-                    account: line.account.trim().to_string(),
-                    direction: line.direction.clone(),
-                    amount_cents: line.amount_cents,
-                    memo: memo.trim().to_string(),
-                    source: source.trim().to_string(),
-                    created_by: actor.to_string(),
-                    created_at: now,
-                };
-                conn.execute(
-                    "INSERT INTO g14_journal (id, entry_no, line_no, account, direction, amount_cents, \
-                     memo, source, created_by, created_at) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                    params![
-                        entry.id,
-                        entry.entry_no,
-                        line_no as i64,
-                        entry.account,
-                        entry.direction,
-                        entry.amount_cents,
-                        entry.memo,
-                        entry.source,
-                        entry.created_by,
-                        entry.created_at
-                    ],
-                )?;
-                out.push(entry);
-            }
-        }
+            insert_journal_lines(&conn, actor, entry_no, memo, source, lines, now)?
+        };
         self.audit.append(
             Draft::new(
                 actor,
@@ -1040,6 +878,199 @@ impl CommerceService {
         )?;
         Ok(csv)
     }
+}
+
+fn redeem_value(conn: &rusqlite::Connection, card_id: &str, order_id: &str) -> Result<i64> {
+    let (face, state, merchant_id) = conn
+        .query_row(
+            "SELECT face_value_cents, state, merchant_id FROM g14_card WHERE id = ?1",
+            [&card_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|_| AdminError::NotFound)?;
+    if state != "active" {
+        return Err(AdminError::bad_input(format!(
+            "卡券状态是 {state}，不能核销"
+        )));
+    }
+    let order_merchant: String = conn
+        .query_row(
+            "SELECT merchant_id FROM g14_order WHERE id = ?1",
+            [&order_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| AdminError::NotFound)?;
+    if order_merchant != merchant_id {
+        return Err(AdminError::bad_input(
+            "卡券与订单不属于同一个商户：跨商户核销是资金事故，直接拒",
+        ));
+    }
+    Ok(face)
+}
+
+fn validate_refund_request(
+    order_amount: i64,
+    amount_cents: i64,
+    reason: &str,
+    idem: &str,
+) -> Result<()> {
+    if amount_cents <= 0 || amount_cents > order_amount {
+        return Err(AdminError::bad_input(format!(
+            "退款金额必须在 1..={} 分之间",
+            order_amount
+        )));
+    }
+    if reason.trim().is_empty() {
+        return Err(AdminError::bad_input("退款申请必须写理由"));
+    }
+    if idem.trim().is_empty() {
+        return Err(AdminError::bad_input("退款申请必须有幂等键 idem"));
+    }
+    Ok(())
+}
+
+fn insert_refund(conn: &rusqlite::Connection, refund: &Refund, idem: &str, now: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO g14_refund (id, order_id, amount_cents, state, reason, requested_by, \
+             approved_by, second_approver, idem, created_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,NULL,NULL,?7,?8,?8)",
+        params![
+            refund.id,
+            refund.order_id,
+            refund.amount_cents,
+            refund.state,
+            refund.reason,
+            refund.requested_by,
+            idem,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+fn refund_approvers(refund: &Refund, actor: &str) -> Result<(Option<String>, Option<String>)> {
+    if refund.state != "pending" && refund.state != "partially_approved" {
+        return Err(AdminError::bad_input(format!(
+            "退款状态是 {}，不能再审批",
+            refund.state
+        )));
+    }
+    let mut first = refund.approved_by.clone();
+    let mut second = refund.second_approver.clone();
+    if first.as_deref() == Some(actor) || second.as_deref() == Some(actor) {
+        return Err(AdminError::bad_input(
+            "同一审批人不能重复计数：超过阈值的退款需要两个不同的人批准",
+        ));
+    }
+    if first.is_none() {
+        first = Some(actor.to_string());
+    } else {
+        second = Some(actor.to_string());
+    }
+    Ok((first, second))
+}
+
+fn validate_journal(
+    entry_no: &str,
+    memo: &str,
+    source: &str,
+    lines: &[JournalLine],
+) -> Result<i64> {
+    if entry_no.trim().is_empty() || memo.trim().is_empty() || source.trim().is_empty() {
+        return Err(AdminError::bad_input(
+            "补账必须给 entry_no / memo / source（来源不明的分录等于没有来源）",
+        ));
+    }
+    if lines.len() < 2 {
+        return Err(AdminError::bad_input("分录至少两条：一条借一条贷"));
+    }
+    let mut debit = 0i64;
+    let mut credit = 0i64;
+    for line in lines {
+        if line.amount_cents <= 0 {
+            return Err(AdminError::bad_input(
+                "分录金额必须为正（方向由 direction 表示）",
+            ));
+        }
+        match line.direction.as_str() {
+            "debit" => debit += line.amount_cents,
+            "credit" => credit += line.amount_cents,
+            other => {
+                return Err(AdminError::bad_input(format!(
+                    "direction 只能是 debit/credit，收到 {other:?}"
+                )))
+            }
+        }
+        if line.account.trim().is_empty() {
+            return Err(AdminError::bad_input("分录必须指定科目"));
+        }
+    }
+    if debit != credit {
+        return Err(AdminError::bad_input(format!(
+            "借贷不平：借 {debit} 分 / 贷 {credit} 分。补账不能凭空造钱"
+        )));
+    }
+    Ok(debit)
+}
+
+fn insert_journal_lines(
+    conn: &rusqlite::Connection,
+    actor: &str,
+    entry_no: &str,
+    memo: &str,
+    source: &str,
+    lines: &[JournalLine],
+    now: i64,
+) -> Result<Vec<JournalEntry>> {
+    let mut out = Vec::new();
+    let existing: i64 = conn.query_row(
+        "SELECT count(*) FROM g14_journal WHERE entry_no = ?1",
+        [entry_no],
+        |r| r.get(0),
+    )?;
+    if existing > 0 {
+        return Err(AdminError::bad_input(format!(
+            "分录号 {entry_no} 已存在（分录不可改只能冲销）"
+        )));
+    }
+    for (line_no, line) in lines.iter().enumerate() {
+        let entry = JournalEntry {
+            id: format!("jn_{}", wxlike_platform::random_hex(6)),
+            entry_no: entry_no.trim().to_string(),
+            account: line.account.trim().to_string(),
+            direction: line.direction.clone(),
+            amount_cents: line.amount_cents,
+            memo: memo.trim().to_string(),
+            source: source.trim().to_string(),
+            created_by: actor.to_string(),
+            created_at: now,
+        };
+        conn.execute(
+            "INSERT INTO g14_journal (id, entry_no, line_no, account, direction, amount_cents, \
+                     memo, source, created_by, created_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                entry.id,
+                entry.entry_no,
+                line_no as i64,
+                entry.account,
+                entry.direction,
+                entry.amount_cents,
+                entry.memo,
+                entry.source,
+                entry.created_by,
+                entry.created_at
+            ],
+        )?;
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 /// CSV 单元格转义。`= + - @` 开头会被 Excel 当公式执行（CSV 注入），
@@ -1140,6 +1171,46 @@ mod tests {
         assert!(!serde_json::to_string(&m)
             .unwrap()
             .contains("6222000012345678"));
+    }
+
+    #[test]
+    fn filtered_paging_keeps_merchant_scope_and_total_before_offset() {
+        let (svc, _port, store) = service();
+        seed(&svc, "m1", "old", 1_000);
+        seed(&svc, "m1", "new", 2_000);
+        seed(&svc, "m1", "cancelled", 3_000);
+        seed(&svc, "m2", "private", 9_000);
+        store
+            .lock()
+            .execute("UPDATE g14_order SET created_at = amount_cents", [])
+            .unwrap();
+        store
+            .lock()
+            .execute(
+                "UPDATE g14_order SET state = 'cancelled' WHERE id = 'cancelled'",
+                [],
+            )
+            .unwrap();
+        let scope = MerchantScope::Only("m1".into());
+        let mut filter = OrderFilter {
+            merchant_id: Some("m1".into()),
+            state: Some("paid".into()),
+            limit: Some(1),
+            offset: Some(1),
+        };
+        let page = svc.orders(&scope, &filter).unwrap();
+        assert_eq!((page.total, page.limit, page.offset), (2, 1, 1));
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].id, "old");
+        filter.offset = Some(2);
+        let empty = svc.orders(&scope, &filter).unwrap();
+        assert_eq!(empty.total, 2);
+        assert!(empty.rows.is_empty());
+        filter.merchant_id = Some("m2".into());
+        filter.offset = Some(0);
+        let forbidden = svc.orders(&scope, &filter).unwrap();
+        assert_eq!(forbidden.total, 0);
+        assert!(forbidden.rows.is_empty());
     }
 
     #[test]

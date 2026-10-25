@@ -1,0 +1,58 @@
+card: G12-03
+issue: 166
+branch: feat/FP-G12-03
+contract_version: "1.0"
+summary: 输入器、附件与消息菜单——媒体/语音/转发撤回/红包动作尚未进入命令面
+
+requests:
+  - id: G12-03-R1
+    kind: contract-gap
+    status: requested
+    owner: G03
+    reason: >-
+      输入器对媒体与结构化动作按端口实现了失败分类，但下游 action_id 尚不存在。
+      目前 `UnavailableAttachmentPort` / `UnavailableMessageActionsPort` 会如实抛
+      upstreamNotWired，不会把"没上传"伪装成"已发送"。
+    change:
+      - action_id: msg.send_media
+        action: 发送已上传媒体（params: conv/media_id/kind/idempotency_key）
+      - action_id: msg.send_voice
+        action: 发送语音（params: conv/media_id/duration_ms/idempotency_key）
+      - action_id: msg.forward
+        action: 转发（当前 cmd 目录有 msg.forward，但 FFI 未暴露）
+      - action_id: msg.recall
+        action: 撤回（当前 cmd 目录有 msg.recall，但 FFI 未暴露）
+      - action_id: msg.send_quote
+        action: 结构化引用（输入器在未实现前明确拒绝，不静默丢引用）
+    note: 契约字段与错误码请按 contracts/domains/messaging 目标态补齐，并附成功/权限失败/fixture。
+
+  - id: G12-03-R2
+    kind: contract-gap
+    status: requested
+    owner: G04
+    reason: 上传、播放与短时访问 URL 属于媒体域；Dart 只持有平台侧 ref，不合成 media_id。
+    change:
+      - action_id: media.upload
+        action: 分片/完整上传（params: purpose/digest/size/platform_ref）
+      - action_id: media.play
+        action: 取得可播放的短时地址（语音远端播放）
+    note: 上传失败与发送失败在 UI 上是两个阶段、两个幂等键，契约不得合并成一个错误。
+
+  - id: G12-03-R3
+    kind: contract-gap
+    status: requested
+    owner: G06
+    reason: 红包入口只展示 G06 返回的状态；客户端不随机金额。
+    change:
+      action_id: commerce.red_packet.current
+      action: 查询当前会话可发送红包（金额/币种/状态由服务端决定）
+    note: 现有 `UnavailableRedPacketComposerPort` 保证未接线时不出现"假红包"。
+
+  - id: G12-03-R4
+    kind: platform
+    status: requested
+    owner: G00
+    reason: 录音/播放/相机/相册/文件的宿主实现由 G12-05 的平台通道提供，本卡不新增插件。
+    change:
+      file: apps/mobile/android/app/src/main/kotlin/**
+      action: 按 G12-05.yaml 的通道协议实现 voice.start/stop、audio.play/stop

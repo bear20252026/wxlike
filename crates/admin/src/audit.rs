@@ -23,6 +23,12 @@ use crate::error::{AdminError, Result};
 use crate::read::{now_ms, page_limit, Paged};
 use crate::store::Store;
 
+const INSERT_AUDIT: &str = concat!(
+    "INSERT INTO g14_audit (at_ms, actor, role, action, object_kind, object_id, reason, ",
+    "before_digest, after_digest, trace, outcome, detail, prev_hash, hash) ",
+    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+);
+
 /// 审计 `reason` 的上限。比留痕 detail 短：理由是一句话，不是报告。
 pub const REASON_MAX_CHARS: usize = 512;
 
@@ -188,6 +194,104 @@ pub struct Filter {
     pub offset: Option<i64>,
 }
 
+impl Draft {
+    fn into_entry(
+        self,
+        id: i64,
+        at_ms: i64,
+        before: String,
+        after: String,
+        detail: serde_json::Value,
+        chain: (String, String),
+    ) -> Entry {
+        let (prev, hash) = chain;
+        Entry {
+            id,
+            at_ms,
+            actor: self.actor,
+            role: self.role,
+            action: self.action,
+            object_kind: self.object_kind,
+            object_id: self.object_id,
+            reason: self.reason,
+            before_digest: before,
+            after_digest: after,
+            trace: self.trace,
+            outcome: self.outcome.as_str().to_string(),
+            detail,
+            prev_hash: prev,
+            hash,
+        }
+    }
+}
+
+impl Entry {
+    fn expected_hash(&self) -> Result<String> {
+        let draft = Draft {
+            actor: self.actor.clone(),
+            role: self.role.clone(),
+            action: self.action.clone(),
+            object_kind: self.object_kind.clone(),
+            object_id: self.object_id.clone(),
+            reason: self.reason.clone(),
+            before: None,
+            after: None,
+            trace: self.trace.clone(),
+            outcome: Outcome::parse(&self.outcome).unwrap_or(Outcome::Failed),
+            detail: None,
+        };
+        let detail_text = serde_json::to_string(&self.detail)?;
+        Ok(entry_hash(
+            &self.prev_hash,
+            self.at_ms,
+            &draft,
+            &self.before_digest,
+            &self.after_digest,
+            &detail_text,
+        ))
+    }
+}
+
+type SqlArgs = Vec<Box<dyn rusqlite::ToSql>>;
+
+impl Filter {
+    fn sql_args(&self) -> (String, SqlArgs) {
+        let mut where_sql = String::from(" WHERE 1=1");
+        let mut args: SqlArgs = Vec::new();
+
+        if let Some(v) = &self.actor {
+            where_sql.push_str(" AND actor = ?");
+            args.push(Box::new(v.clone()));
+        }
+        if let Some(v) = &self.action {
+            where_sql.push_str(" AND action = ?");
+            args.push(Box::new(v.clone()));
+        }
+        if let Some(v) = &self.object_kind {
+            where_sql.push_str(" AND object_kind = ?");
+            args.push(Box::new(v.clone()));
+        }
+        if let Some(v) = &self.object_id {
+            where_sql.push_str(" AND object_id = ?");
+            args.push(Box::new(v.clone()));
+        }
+        if let Some(v) = self.outcome {
+            where_sql.push_str(" AND outcome = ?");
+            args.push(Box::new(v.as_str().to_string()));
+        }
+        if let Some(v) = self.from {
+            where_sql.push_str(" AND at_ms >= ?");
+            args.push(Box::new(v));
+        }
+        if let Some(v) = self.to {
+            where_sql.push_str(" AND at_ms <= ?");
+            args.push(Box::new(v));
+        }
+
+        (where_sql, args)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ChainReport {
     pub entries: i64,
@@ -305,9 +409,7 @@ impl AuditLog {
             .unwrap_or_else(|_| String::new());
         let hash = entry_hash(&prev, at_ms, &draft, &before, &after, &detail_text);
         conn.execute(
-            "INSERT INTO g14_audit (at_ms, actor, role, action, object_kind, object_id, reason, \
-             before_digest, after_digest, trace, outcome, detail, prev_hash, hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            INSERT_AUDIT,
             params![
                 at_ms,
                 draft.actor,
@@ -325,87 +427,36 @@ impl AuditLog {
                 hash
             ],
         )?;
-        Ok(Entry {
-            id: conn.last_insert_rowid(),
+        Ok(draft.into_entry(
+            conn.last_insert_rowid(),
             at_ms,
-            actor: draft.actor,
-            role: draft.role,
-            action: draft.action,
-            object_kind: draft.object_kind,
-            object_id: draft.object_id,
-            reason: draft.reason,
-            before_digest: before,
-            after_digest: after,
-            trace: draft.trace,
-            outcome: draft.outcome.as_str().to_string(),
+            before,
+            after,
             detail,
-            prev_hash: prev,
-            hash,
-        })
+            (prev, hash),
+        ))
     }
 
     pub fn query(&self, f: &Filter) -> Result<Paged<Entry>> {
         let limit = page_limit(f.limit);
         let offset = f.offset.unwrap_or(0).max(0);
-        let mut where_sql = String::from(" WHERE 1=1");
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-        if let Some(v) = &f.actor {
-            where_sql.push_str(" AND actor = ?");
-            args.push(Box::new(v.clone()));
-        }
-        if let Some(v) = &f.action {
-            where_sql.push_str(" AND action = ?");
-            args.push(Box::new(v.clone()));
-        }
-        if let Some(v) = &f.object_kind {
-            where_sql.push_str(" AND object_kind = ?");
-            args.push(Box::new(v.clone()));
-        }
-        if let Some(v) = &f.object_id {
-            where_sql.push_str(" AND object_id = ?");
-            args.push(Box::new(v.clone()));
-        }
-        if let Some(v) = f.outcome {
-            where_sql.push_str(" AND outcome = ?");
-            args.push(Box::new(v.as_str().to_string()));
-        }
-        if let Some(v) = f.from {
-            where_sql.push_str(" AND at_ms >= ?");
-            args.push(Box::new(v));
-        }
-        if let Some(v) = f.to {
-            where_sql.push_str(" AND at_ms <= ?");
-            args.push(Box::new(v));
-        }
+        let (where_sql, args) = f.sql_args();
 
         let conn = self.store.lock();
-        let total: i64 = conn.query_row(
-            &format!("SELECT count(*) FROM g14_audit{where_sql}"),
-            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
         let sql = format!(
             "SELECT id, at_ms, actor, role, action, object_kind, object_id, reason, before_digest, \
              after_digest, trace, outcome, detail, prev_hash, hash FROM g14_audit{where_sql} \
              ORDER BY id DESC LIMIT ? OFFSET ?"
         );
-        let mut all = args;
-        all.push(Box::new(limit));
-        all.push(Box::new(offset));
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(all.iter().map(|b| b.as_ref())),
-                row_to_entry,
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(Paged {
-            total,
+        Paged::query(
+            &conn,
+            &format!("SELECT count(*) FROM g14_audit{where_sql}"),
+            &sql,
+            args,
             limit,
             offset,
-            rows,
-        })
+            row_to_entry,
+        )
     }
 
     /// 从头重算整条链。任何一行被改、被删、被插，都会在这里暴露。
@@ -433,28 +484,7 @@ impl AuditLog {
                     head_hash: prev,
                 });
             }
-            let draft = Draft {
-                actor: row.actor.clone(),
-                role: row.role.clone(),
-                action: row.action.clone(),
-                object_kind: row.object_kind.clone(),
-                object_id: row.object_id.clone(),
-                reason: row.reason.clone(),
-                before: None,
-                after: None,
-                trace: row.trace.clone(),
-                outcome: Outcome::parse(&row.outcome).unwrap_or(Outcome::Failed),
-                detail: None,
-            };
-            let detail_text = serde_json::to_string(&row.detail)?;
-            let want = entry_hash(
-                &row.prev_hash,
-                row.at_ms,
-                &draft,
-                &row.before_digest,
-                &row.after_digest,
-                &detail_text,
-            );
+            let want = row.expected_hash()?;
             if want != row.hash {
                 return Ok(ChainReport {
                     entries: count,
@@ -508,7 +538,7 @@ fn validate(draft: &Draft) -> Result<()> {
 }
 
 fn row_to_entry(row: &Row<'_>) -> rusqlite::Result<Entry> {
-    let detail_text: String = row.get(12)?;
+    let detail_text: String = row.get("detail")?;
     Ok(Entry {
         id: row.get(0)?,
         at_ms: row.get(1)?,
@@ -521,10 +551,10 @@ fn row_to_entry(row: &Row<'_>) -> rusqlite::Result<Entry> {
         before_digest: row.get(8)?,
         after_digest: row.get(9)?,
         trace: row.get(10)?,
-        outcome: row.get(11)?,
+        outcome: row.get("outcome")?,
         detail: serde_json::from_str(&detail_text).unwrap_or(serde_json::Value::Null),
-        prev_hash: row.get(13)?,
-        hash: row.get(14)?,
+        prev_hash: row.get("prev_hash")?,
+        hash: row.get("hash")?,
     })
 }
 

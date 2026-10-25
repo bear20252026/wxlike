@@ -1,0 +1,445 @@
+# G07 services 域 action 契约草案（待 G00-03 冻结为 contract-v1）。
+# 字段与 crates/service-catalog 的公开类型一一对应（Catalog/Quote/Order/各 provider）；
+# 不在此文件声明的字段，服务端不得擅自返回。
+schema_version: 1
+contract_version: g07-draft-1
+owner: G07
+domain: services
+
+common:
+  actor_from: authenticated_session
+  idempotency_key_scope: [actor, action_id, idempotency_key]
+  audit: metadata_only_no_vendor_raw_error
+  list_envelope: {items: array, next_cursor: opaque, has_more: bool, snapshot_version: string}
+  errors:
+    - UNAUTHORIZED
+    - FORBIDDEN
+    - INVALID_ARGUMENT
+    - NOT_FOUND
+    - CONFLICT
+    - EXPIRED
+    - RATE_LIMITED
+    - CANCELLED
+    - TIMEOUT
+    - DEPENDENCY_UNAVAILABLE
+    - BLOCKED_EXTERNAL
+    - PAYMENT_DECLINED
+    - INTERNAL
+
+actions:
+  # ---------- G07-04 服务目录与报价 ----------
+  - action_id: services.catalog.list
+    description: 按区域与类型列服务卡；未启用的区域/卡片不返回。
+    params:
+      region: {type: string, required: true, max_len: 32}
+      kind: {type: enum, values: [mobile_topup, utility_bill, donation, travel, hotel, movie, medical, retail, game], optional: true}
+    result: {items: {type: array, item: ServiceCard}, snapshot_version: string}
+    scopes: [services.catalog.read]
+    confirmation: none
+    idempotency: read_only
+    offline: cached_then_refresh
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT]
+
+  - action_id: services.catalog.get
+    description: 单张服务卡详情；含当前 terms_version 与 revision。
+    params: {service_id: {type: id, max_len: 128}}
+    result: ServiceCard
+    scopes: [services.catalog.read]
+    confirmation: none
+    idempotency: read_only
+    offline: cached_then_refresh
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND]
+
+  - action_id: services.quote.create
+    description: 供应商实价报价；落 QuoteBook 并带 TTL。供应商不可达时显式报错。
+    params:
+      session: {type: bearer, note: 服务端由 BearerAuthenticator 推导 actor}
+      service_id: {type: id}
+      quantity: {type: uint, min: 1, max: 20}
+      params: {type: object, note: 语义由各 provider 定义，如 cart_id/offer_id/bill_no}
+    result: Quote
+    scopes: [services.quote]
+    confirmation: none
+    idempotency: each_call_new_quote
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND, CONFLICT, BLOCKED_EXTERNAL, DEPENDENCY_UNAVAILABLE, TIMEOUT]
+    tests: [service-catalog/tests/orders.rs, fixtures/quote_success.json]
+
+  - action_id: services.quote.get
+    description: 读取本人报价；他人报价一律 NOT_FOUND（不泄漏存在性）。
+    params: {quote_id: {type: id}}
+    result: Quote
+    scopes: [services.quote]
+    confirmation: none
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [EXPIRED, NOT_FOUND]
+
+  # ---------- G07-05 订单与支付衔接 ----------
+  - action_id: services.order.create
+    description: 用 quote 建单并创建支付意图；金额/参数变动拒绝；幂等键同参重放返回原单。
+    params:
+      quote_id: {type: id}
+      idempotency_key: {type: string, min_len: 1, max_len: 128}
+      confirmed_amount_minor: {type: int64, gt: 0}
+      params: {type: object, must_equal: quote.params}
+    result: Order
+    scopes: [services.order]
+    confirmation: amount_reconfirm_required_when_changed
+    idempotency: >
+      (actor, idempotency_key) 维度：同参数重放返回原 order_id；
+      同键不同参数 CONFLICT；重复提交只向支付域扣款一次
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, EXPIRED, CONFLICT, PAYMENT_DECLINED, BLOCKED_EXTERNAL, DEPENDENCY_UNAVAILABLE]
+    tests: [service-catalog/tests/orders.rs, service-catalog/tests/utilities.rs, fixtures/order_created.json, fixtures/duplicate_topup_idempotent.json]
+
+  - action_id: services.order.fulfill
+    description: 已支付订单请求供应商履约；凭据缺失时订单停在 BLOCKED_EXTERNAL。
+    params: {order_id: {type: id}}
+    result: Order
+    scopes: [services.order]
+    confirmation: none
+    idempotency: already_fulfilled_returns_same_order
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, CONFLICT, INTERNAL, DEPENDENCY_UNAVAILABLE, TIMEOUT]
+
+  - action_id: services.order.cancel
+    description: 未履约订单取消；供应商接受后按 refund_due 退款；拒绝/超时进对账。
+    params:
+      order_id: {type: id}
+      reason: {type: string, max_len: 200}
+    result: Order
+    scopes: [services.order]
+    confirmation: explicit_user_tap
+    idempotency: cancelled_or_refunded_returns_same_order
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, CONFLICT, DEPENDENCY_UNAVAILABLE, TIMEOUT]
+    tests: [service-catalog/tests/utilities.rs, fixtures/cancel_refunded.json]
+
+  - action_id: services.order.refund
+    description: 已支付/已履约订单退款；经 G06 PaymentPort，只按原路退。
+    params:
+      order_id: {type: id}
+      reason: {type: string, max_len: 200}
+    result: Order
+    scopes: [services.order]
+    confirmation: explicit_user_tap
+    idempotency: already_refunded_returns_same_order; refund key order_id:refund
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, CONFLICT, PAYMENT_DECLINED, DEPENDENCY_UNAVAILABLE]
+
+  - action_id: services.order.query
+    description: 向供应商查询可恢复状态并推进本地状态机（ORDER-01 场景）。
+    params: {order_id: {type: id}}
+    result: Order
+    scopes: [services.order]
+    confirmation: none
+    idempotency: read_plus_state_advance
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, DEPENDENCY_UNAVAILABLE, TIMEOUT]
+
+  - action_id: services.order.get
+    description: 本人订单读取；他人订单 NOT_FOUND。
+    params: {order_id: {type: id}}
+    result: Order
+    scopes: [services.order]
+    confirmation: none
+    idempotency: read_only
+    offline: cached_then_refresh
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND]
+
+  # ---------- G07-06 生活缴费与捐赠（utilities provider）----------
+  - action_id: services.utilities.bill_lookup
+    description: 户号实查并缓存 HMAC 验签账单；金额以查得为准，不接受客户端自报。
+    params:
+      session: {type: bearer}
+      card: {type: object_ref: ServiceCard}
+      account_no: {type: string, min_len: 4, max_len: 64}
+    result: {bill_no: string, account_no_masked: string, amount_minor: int64, currency: string, period: string, expires_at_ms: int64}
+    scopes: [services.utilities]
+    confirmation: none
+    idempotency: read_only_with_cache_until_expires_at
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, BLOCKED_EXTERNAL, DEPENDENCY_UNAVAILABLE, TIMEOUT]
+    tests: [service-catalog/tests/utilities.rs, fixtures/bill_lookup.json]
+
+  - action_id: services.utilities.pay_bill
+    description: 必须先 lookup 且金额一致才可支付；账单金额变动后旧报价作废。
+    params: {card: object_ref, account_no: string, bill_sig: string, quote_params_note: amount 来自 lookup}
+    result: Order
+    scopes: [services.utilities, services.order]
+    confirmation: show_bill_amount_before_confirm
+    idempotency: order idempotency key (actor, key)
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, CONFLICT, PAYMENT_DECLINED, BLOCKED_EXTERNAL, DEPENDENCY_UNAVAILABLE]
+    tests: [service-catalog/tests/utilities.rs, fixtures/bill_amount_changed.json]
+
+  - action_id: services.utilities.donate
+    description: 项目必须存在且授权、收款方一致才可捐赠。
+    params: {card: object_ref, project_id: id, amount_minor: {type: int64, gt: 0}}
+    result: Order
+    scopes: [services.utilities, services.order]
+    confirmation: show_project_and_payee_before_confirm
+    idempotency: order idempotency key
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, UNAUTHORIZED, BLOCKED_EXTERNAL]
+
+  # ---------- G07-06 机票酒店演出医疗（reservations provider）----------
+  - action_id: services.reservations.search
+    description: 按 kind/region/city/party_size 搜索号源/库存；医疗只回授权机构。
+    params:
+      session: {type: bearer}
+      card: {type: object_ref: ServiceCard}
+      kind: {type: enum, values: [travel, hotel, movie, medical]}
+      city: {type: string, max_len: 64}
+      party_size: {type: uint, min: 1, max: 9}
+    result: {items: {type: array, item: Offer}}
+    scopes: [services.reservations]
+    confirmation: none
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, UNAUTHORIZED, BLOCKED_EXTERNAL, DEPENDENCY_UNAVAILABLE]
+    tests: [service-catalog/tests/reservations.rs, fixtures/reservation_search.json]
+
+  - action_id: services.reservations.hold
+    description: 占位；TTL 上限 15 分钟，过期占位自动释放。
+    params: {card: object_ref, offer_id: id, ttl_ms: {type: int64, max: 900000}}
+    result: Hold
+    scopes: [services.reservations]
+    confirmation: none
+    idempotency: repeated_hold_returns_same_or_expired
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND, EXPIRED, DEPENDENCY_UNAVAILABLE]
+    tests: [service-catalog/tests/reservations.rs, fixtures/hold_expired.json]
+
+  - action_id: services.reservations.confirm
+    description: 用占位+敏感资料确认预订；供应商失败自动释放占位并补偿。
+    params:
+      card: object_ref
+      hold_id: id
+      referral: {type: string, optional: true, note: 医疗转诊单号，必须来自授权机构}
+      profile: SensitiveProfile
+    result: BookingView
+    scopes: [services.reservations]
+    confirmation: show_offer_terms_before_confirm
+    idempotency: confirm key hold 维度唯一
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, UNAUTHORIZED, CONFLICT, EXPIRED, DEPENDENCY_UNAVAILABLE]
+    tests: [service-catalog/tests/reservations.rs, fixtures/medical_referral.json]
+
+  - action_id: services.reservations.profile.seal
+    description: 敏感出行人资料加密存储（ChaCha20Poly1305）；仅本人可开。
+    params: {booking_id: id, profile: SensitiveProfile}
+    result: {encrypted: bool}
+    scopes: [services.reservations]
+    confirmation: explicit_consent_for_sensitive_data
+    idempotency: upsert_per_booking
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND]
+
+  - action_id: services.reservations.profile.open
+    description: 本人打开密文；每次访问写审计。
+    params: {actor: {type: bearer-derived}, booking_id: id}
+    result: SensitiveProfile
+    scopes: [services.reservations]
+    confirmation: explicit_user_action
+    idempotency: read_with_audit
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, FORBIDDEN]
+    audit: actor_booking_action_at
+
+  - action_id: services.reservations.profile.delete
+    description: 本人删除密文；不可恢复。
+    params: {booking_id: id}
+    result: {deleted: bool}
+    scopes: [services.reservations]
+    confirmation: explicit_destructive_confirmation
+    idempotency: idempotent
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, FORBIDDEN]
+
+  - action_id: services.reservations.cancel
+    description: 取消预订并退款；owner 校验，非本人 NOT_FOUND。
+    params: {actor: bearer-derived, booking_id: id}
+    result: BookingView
+    scopes: [services.reservations]
+    confirmation: explicit_user_tap
+    idempotency: cancelled_returns_same
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, CONFLICT, DEPENDENCY_UNAVAILABLE]
+
+  # ---------- G07-07 零售（retail provider）----------
+  - action_id: services.retail.search
+    description: 按区域搜商品；下架/他区/无库存不返回。
+    params: {session: bearer, card: object_ref, keyword: {type: string, optional: true, max_len: 64}}
+    result: {items: {type: array, item: Product}}
+    scopes: [services.retail]
+    confirmation: none
+    idempotency: read_only
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, BLOCKED_EXTERNAL]
+    tests: [service-catalog/tests/retail.rs, fixtures/retail_search.json]
+
+  - action_id: services.retail.cart.add
+    description: 加购；校验 owner/区域/库存；最多 20 个 SKU。
+    params: {session: bearer, card: object_ref, sku: id, quantity: {type: uint, min: 1}}
+    result: Cart
+    scopes: [services.retail]
+    confirmation: none
+    idempotency: repeated_add_accumulates_quantity
+    offline: local_cart_then_sync
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND, CONFLICT]
+
+  - action_id: services.retail.cart.remove
+    description: 移除 SKU；他人购物车不可操作。
+    params: {session: bearer, cart_id: id, sku: id}
+    result: Cart
+    scopes: [services.retail]
+    confirmation: none
+    idempotency: idempotent
+    offline: local_cart_then_sync
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, FORBIDDEN]
+
+  - action_id: services.retail.checkout
+    description: 结算；供应商实价与购物车价不一致时拒绝（防价格漂移）。
+    params: {session: bearer, cart_id: id, idempotency_key: string}
+    result: Order
+    scopes: [services.retail, services.order]
+    confirmation: show_final_price_before_confirm
+    idempotency: order idempotency key; same key+same cart → same order
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, NOT_FOUND, CONFLICT, PAYMENT_DECLINED, DEPENDENCY_UNAVAILABLE]
+    tests: [service-catalog/tests/retail.rs, fixtures/cart_price_changed.json]
+
+  # ---------- G07-07 游戏（games provider）----------
+  - action_id: services.games.list
+    description: 按区域列已验签游戏包。
+    params: {region: string}
+    result: {items: {type: array, item: GamePackage}}
+    scopes: [services.games]
+    confirmation: none
+    idempotency: read_only
+    offline: cached_then_refresh
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT]
+
+  - action_id: services.games.purchase
+    description: 购买授权：走 order 流程；区域不一致/无沙箱凭据拒绝。
+    params: {session: bearer, card: object_ref, package_id: id, region: string, idempotency_key: string}
+    result: Order
+    scopes: [services.games, services.order]
+    confirmation: show_price_before_confirm
+    idempotency: order idempotency key
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [INVALID_ARGUMENT, BLOCKED_EXTERNAL, CONFLICT, PAYMENT_DECLINED]
+    tests: [service-catalog/tests/games.rs, fixtures/entitlement_revoked.json]
+
+  - action_id: services.games.launch
+    description: 已购授权签发短时 launch ticket（10 分钟）。
+    params: {session: bearer, package_id: id, region: string}
+    result: LaunchTicket
+    scopes: [services.games]
+    confirmation: none
+    idempotency: each_call_new_ticket
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [UNAUTHORIZED, NOT_FOUND, BLOCKED_EXTERNAL]
+
+  - action_id: services.games.save.write
+    description: 云存档按 actor+package+slot 隔离；单档 ≤1MB，每人每包 8 槽。
+    params: {session: bearer, package_id: id, slot: {type: uint, max: 7}, data: {type: bytes, max_bytes: 1000000}}
+    result: {saved: bool, bytes: uint}
+    scopes: [services.games]
+    confirmation: none
+    idempotency: last_write_wins_per_slot
+    offline: local_save_then_sync
+    platforms: [android, ios, desktop]
+    errors: [INVALID_ARGUMENT, UNAUTHORIZED, NOT_FOUND, RATE_LIMITED]
+
+  - action_id: services.games.save.read
+    description: 读本人存档；他人/他包不可见。
+    params: {session: bearer, package_id: id, slot: uint}
+    result: {data: bytes_ref}
+    scopes: [services.games]
+    confirmation: none
+    idempotency: read_only
+    offline: local_cache
+    platforms: [android, ios, desktop]
+    errors: [NOT_FOUND, UNAUTHORIZED]
+
+  - action_id: services.games.save.delete
+    description: 删除本人存档槽位。
+    params: {session: bearer, package_id: id, slot: uint}
+    result: {deleted: bool}
+    scopes: [services.games]
+    confirmation: explicit_destructive_confirmation
+    idempotency: idempotent
+    offline: local_then_sync
+    platforms: [android, ios, desktop]
+    errors: [NOT_FOUND, UNAUTHORIZED]
+
+  - action_id: services.games.external_link
+    description: 返回净化后的外部链接：仅 https、去 token/query 附加物、拒绝控制字符与 userinfo。
+    params: {session: bearer, package_id: id}
+    result: ExternalLink
+    scopes: [services.games]
+    confirmation: explicit_user_tap
+    idempotency: deterministic_per_package
+    offline: rejected
+    platforms: [android, ios, desktop, web]
+    errors: [NOT_FOUND, BLOCKED_EXTERNAL]
+    tests: [service-catalog/tests/games.rs, fixtures/external_link_sanitized.json]
+
+  - action_id: services.games.publish
+    description: 发布游戏包：G08 验签端口拒绝则拒发；未验签不得上架。
+    params: {package: GamePackage, publisher: {type: admin_actor}}
+    result: {published: bool}
+    scopes: [admin.services.games.publish]
+    confirmation: admin_reason_required
+    idempotency: upsert_per_package_id
+    offline: rejected
+    platforms: [desktop, web]
+    errors: [UNAUTHORIZED, INVALID_ARGUMENT]
+    depends_on: [G08-01]
+
+gaps:
+  - action_id: services.order.webhook
+    status: G06_BOUNDARY
+    reason: 支付回调验签/去重由 G06 持有；G07 只消费 PaymentIntent 结果推进订单状态。
+    owner_after_freeze: G06 + G07
+    blocked_by: [G06-02]
+  - action_id: services.catalog.admin_upsert
+    status: G14_BOUNDARY
+    reason: 服务卡上下架与区域开关属管理面；本域只暴露 Catalog 内部接口，HTTP 归 G14 admin。
+    owner_after_freeze: G14
+    blocked_by: [G14-01]
+  - action_id: services.reservations.vendor_real
+    status: VENDOR_PENDING
+    reason: 机票/酒店/医疗真实供应商未接入；当前联调需沙箱凭据，否则 BLOCKED_EXTERNAL。
+    owner_after_freeze: G07
+    external_blockers: [VENDOR_SANDBOX_CREDENTIALS]

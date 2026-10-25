@@ -1,0 +1,19 @@
+[package]
+name = "wxlike-miniapps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wxlike-dpage = { path = "../../dpage" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+[dev-dependencies]
+wxlike-container = { path = "../../container" }

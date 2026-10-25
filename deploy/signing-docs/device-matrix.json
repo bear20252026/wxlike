@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-24",
+  "note": "Required real-device coverage. Results live in device evidence, never in this file.",
+  "devices": [
+    {
+      "id": "pixel-7-a14",
+      "platform": "android",
+      "model": "Google Pixel 7",
+      "os_version": "14"
+    },
+    {
+      "id": "galaxy-a54-a13",
+      "platform": "android",
+      "model": "Samsung Galaxy A54",
+      "os_version": "13"
+    },
+    {
+      "id": "iphone-13-ios17",
+      "platform": "ios",
+      "model": "iPhone 13",
+      "os_version": "17"
+    },
+    {
+      "id": "iphone-se2-ios16",
+      "platform": "ios",
+      "model": "iPhone SE (2nd generation)",
+      "os_version": "16"
+    }
+  ],
+  "features": ["push", "call", "webview", "permissions", "reconnect"]
+}

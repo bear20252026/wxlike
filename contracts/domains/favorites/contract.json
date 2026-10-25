@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/domains/favorites/contract.json",
+  "title": "favorites domain contract (favorites-v1)",
+  "description": "G05 收藏域对外契约：消息收藏（快照，源删除不撤）、对象收藏（引用，源删除即撤权并清空正文）、笔记（乐观锁版本）、表情包（开源许可白名单 + 每用户安装序）。实现位于 crates/platform 的 favorites/notes/stickers 模块。全部按 token 用户隔离：他人的资源一律 404（防探测）。",
+  "contract_version": "favorites-v1",
+  "owner": "G05",
+  "invariants": [
+    "消息收藏是快照：recall/删除原消息后收藏副本必须还在（source_id='' 的旧行不受撤权影响）",
+    "对象收藏是引用：同一 (user, kind, source_id) 唯一（部分唯一索引）；源被删除时 revoke_source 同事务清空 text/media/label 并标记 revoked",
+    "撤权后的收藏仍占位但正文为空串——列表序不因源删除而跳号",
+    "笔记写入必须带 expected_version；不匹配返回 conflict（当前版本随错误体返回），历史进 note_versions",
+    "表情包包级 license 必须在白名单（cc0-1.0/cc-by-4.0/cc-by-sa-4.0/agpl-3.0-only）；sticker.media 必须是创建者本人上传的图片",
+    "安装幂等且保持用户自己的 sort_order；卸载删除该用户安装行，不影响他人"
+  ],
+  "error_codes": ["bad_input", "forbidden", "not_found", "conflict"],
+  "commands": {
+    "favorite.message.add": "FavoriteInput（source_conv/source_msg_id/kind/text/media_id/sender/sent_at_ms）",
+    "favorite.object.add": "{kind, id}；服务端回权威表鉴权并落快照标签",
+    "favorite.reorder": "{ids}；事务内校验全部属于本人后按给定顺序重排",
+    "favorite.search": "q≤100；只在本人收藏的未撤权行内 LIKE",
+    "note.create": "{note_id?, title, body}；note_id 即客户端幂等键",
+    "note.update": "{title, body, expected_version}；不匹配 conflict",
+    "note.autosave": "同 update 但不进 note_versions（草稿性质）",
+    "sticker.pack.create": "{name, license, stickers[{media_id,name}≤100]}；单图 ≤5MB",
+    "sticker.install / sticker.uninstall": "幂等",
+    "sticker.send": "发送表情即校验已安装（防未安装引用）"
+  }
+}

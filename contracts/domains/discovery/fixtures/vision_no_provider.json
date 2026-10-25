@@ -1,0 +1,17 @@
+{
+  "fixture_id": "discovery.vision.no_provider",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.vision.identify",
+  "category": "boundary",
+  "description": "未接入识别供应商时显式报错，禁止样例数据兜底。",
+  "request": {
+    "image": "<image/jpeg bytes>",
+    "consent": true,
+    "precondition": "服务端未配置任何 VisionProvider"
+  },
+  "expected_error": {
+    "code": "DEPENDENCY_UNAVAILABLE",
+    "detail": "no vision provider"
+  },
+  "invariants": ["无论 consent 与图片是否合法，无 provider 一律 DEPENDENCY_UNAVAILABLE", "不得回退到本地样例标签"]
+}

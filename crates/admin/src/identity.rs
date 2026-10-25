@@ -514,7 +514,7 @@ fn row_to_case(row: &Row<'_>) -> rusqlite::Result<Case> {
         decision_reason: row.get(8)?,
         appeal_of: row.get(9)?,
         created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        updated_at: row.get("updated_at")?,
     })
 }
 
@@ -658,30 +658,18 @@ impl IdentityService {
             args.push(Box::new(subject.clone()));
         }
         let conn = self.store.lock();
-        let total: i64 = conn.query_row(
-            &format!("SELECT count(*) FROM g14_case{where_sql}"),
-            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
-        let mut all = args;
-        all.push(Box::new(limit));
-        all.push(Box::new(offset));
         let sql = format!(
             "SELECT {CASE_COLS} FROM g14_case{where_sql} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(all.iter().map(|b| b.as_ref())),
-                row_to_case,
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(Paged {
-            total,
+        Paged::query(
+            &conn,
+            &format!("SELECT count(*) FROM g14_case{where_sql}"),
+            &sql,
+            args,
             limit,
             offset,
-            rows,
-        })
+            row_to_case,
+        )
     }
 
     pub fn case(&self, id: &str) -> Result<Option<Case>> {
@@ -815,13 +803,7 @@ impl IdentityService {
         let gate = auth::require(req.role, resource_for(object_kind), Action::Destructive)
             .and_then(|()| self.stepup.require(&req.actor, Action::Destructive));
         if let Err(err) = gate {
-            self.audit.append(
-                Draft::new(&req.actor, req.role.as_str(), op, object_kind, &target)
-                    .reason(&reason)
-                    .trace(&req.trace)
-                    .outcome(Outcome::Denied)
-                    .detail(serde_json::json!({"denied": err.to_string()})),
-            )?;
+            self.audit_denied(&req, op, object_kind, &target, &reason, &err)?;
             return Err(err);
         }
 
@@ -840,13 +822,7 @@ impl IdentityService {
             }));
         };
         if let Err(err) = self.confirmer.consume(token, &want) {
-            self.audit.append(
-                Draft::new(&req.actor, req.role.as_str(), op, object_kind, &target)
-                    .reason(&reason)
-                    .trace(&req.trace)
-                    .outcome(Outcome::Denied)
-                    .detail(serde_json::json!({"denied": err.to_string()})),
-            )?;
+            self.audit_denied(&req, op, object_kind, &target, &reason, &err)?;
             return Err(err);
         }
 
@@ -859,11 +835,42 @@ impl IdentityService {
             trace: req.trace.clone(),
             verb: None,
         };
-        match run(cmd).await {
+        self.record_effect(&req, op, object_kind, &target, &reason, run(cmd).await)
+    }
+
+    fn audit_denied(
+        &self,
+        req: &DangerRequest,
+        op: &str,
+        object_kind: &str,
+        target: &str,
+        reason: &str,
+        err: &AdminError,
+    ) -> Result<()> {
+        self.audit.append(
+            Draft::new(&req.actor, req.role.as_str(), op, object_kind, target)
+                .reason(reason)
+                .trace(&req.trace)
+                .outcome(Outcome::Denied)
+                .detail(serde_json::json!({"denied": err.to_string()})),
+        )?;
+        Ok(())
+    }
+
+    fn record_effect(
+        &self,
+        req: &DangerRequest,
+        op: &str,
+        object_kind: &str,
+        target: &str,
+        reason: &str,
+        outcome: Result<Effect>,
+    ) -> Result<Dangerous> {
+        match outcome {
             Ok(effect) => {
                 self.audit.append(
-                    Draft::new(&req.actor, req.role.as_str(), op, object_kind, &target)
-                        .reason(&reason)
+                    Draft::new(&req.actor, req.role.as_str(), op, object_kind, target)
+                        .reason(reason)
                         .trace(&req.trace)
                         .before(effect.before.clone())
                         .after(effect.after.clone())
@@ -877,8 +884,8 @@ impl IdentityService {
             }
             Err(err) => {
                 self.audit.append(
-                    Draft::new(&req.actor, req.role.as_str(), op, object_kind, &target)
-                        .reason(&reason)
+                    Draft::new(&req.actor, req.role.as_str(), op, object_kind, target)
+                        .reason(reason)
                         .trace(&req.trace)
                         .outcome(Outcome::Failed)
                         .detail(serde_json::json!({"error": err.to_string()})),

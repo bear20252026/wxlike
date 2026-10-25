@@ -1,0 +1,107 @@
+{
+  "schema": "wxlike.advisories.v1",
+  "checked_at": "2026-10-24",
+  "source": "docs/full-platform-delivery/00_master_guide.md#6（当日已联网核对）",
+  "note": "机器可读的公告表。affected 是**受影响区间**（数组元素之间是 OR，单个元素内逗号是 AND），fixed 只是当日最低修复版本，冻结时会重查。severity 未在上游明确分级时按保守值登记并在 severity_source 里注明。",
+  "advisories": [
+    {
+      "id": "RUSTSEC-2026-0381",
+      "component": "webpki-roots",
+      "ecosystem": "crates.io",
+      "severity": "high",
+      "severity_source": "master-guide",
+      "affected": [">=1.0.0, <1.0.10"],
+      "fixed": ["1.0.10"],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0381",
+      "note": "0.26.11 兼容包本身不含独立根证书库、转导出 webpki-root-certs 1.x，公告把 =0.26.11 列为 unaffected；根图与桌面图分别核对。"
+    },
+    {
+      "id": "RUSTSEC-2026-0382",
+      "component": "rustls-webpki",
+      "ecosystem": "crates.io",
+      "severity": "high",
+      "severity_source": "master-guide",
+      "affected": ["<0.103.16"],
+      "fixed": ["0.103.16"],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0382",
+      "note": "稳定修复分支 >=0.103.16 且 <0.104.0-alpha.1；不能只看顶层 rustls，新增库可能把旧分支拉回来。"
+    },
+    {
+      "id": "RUSTSEC-2026-0385",
+      "component": "ctutils",
+      "ecosystem": "crates.io",
+      "severity": "high",
+      "severity_source": "保守取值（列表未分级，涉及常量时间比较）",
+      "affected": ["<0.4.4"],
+      "fixed": ["0.4.4"],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0385",
+      "note": "密钥操作常量时间。桌面锁与根锁版本不一致，见 #239。"
+    },
+    {
+      "id": "RUSTSEC-2026-0379",
+      "component": "wasmtime",
+      "ecosystem": "crates.io",
+      "severity": "critical",
+      "severity_source": "master-guide（CVSS 9.9）",
+      "affected": ["<36.0.19", ">=37, <48.0.7", ">=49, <49.0.4"],
+      "fixed": ["36.0.19", "48.0.7", "49.0.4"],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0379",
+      "note": "修复 36.0.19..<37、48.0.7..<49、>=49.0.4。aarch64 影响更重（手机/ARM 服务器）。"
+    },
+    {
+      "id": "RUSTSEC-2026-0380",
+      "component": "wasmtime",
+      "ecosystem": "crates.io",
+      "severity": "critical",
+      "severity_source": "master-guide（CVSS 9.9）",
+      "affected": ["<36.0.19", ">=37, <43.0.0"],
+      "fixed": ["36.0.19", "43.0.0"],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0380",
+      "note": "与 0379 取交集：同时满足两者只有 >=49.0.4（当日候选），不单独保证全部公告安全。"
+    },
+    {
+      "id": "GHSA-59pf-q495-3c99",
+      "component": "@vitejs/plugin-rsc",
+      "ecosystem": "npm",
+      "severity": "critical",
+      "severity_source": "master-guide",
+      "affected": ["<0.5.38"],
+      "fixed": ["0.5.38"],
+      "url": "https://github.com/vitejs/vite-plugin-react/security/advisories/GHSA-59pf-q495-3c99",
+      "note": "涉及被 vendor 的 RSC。UI 是普通 React/Vite SPA：**未检出 plugin-rsc 即不适用**，不能因为 React 版本就误报；新增 RSC 前需专项评审。"
+    },
+    {
+      "id": "RUSTSEC-2026-0373",
+      "component": "ammonia",
+      "ecosystem": "crates.io",
+      "severity": "high",
+      "severity_source": "master-guide",
+      "affected": ["<4.1.8", ">=4.2, <4.2.4"],
+      "fixed": ["4.1.8", "4.2.4"],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0373",
+      "note": "HTML/CSS 净化器候选必须选修复版本；默认禁 style 与外链资源，净化与 CSP 并用。"
+    },
+    {
+      "id": "GHSA-f6hc-79w3-p8pq",
+      "component": "coturn",
+      "ecosystem": "container",
+      "severity": "medium",
+      "severity_source": "master-guide（Moderate，不是 Critical）",
+      "affected": ["<4.17.0"],
+      "fixed": ["4.17.0"],
+      "url": "https://github.com/coturn/coturn/security/advisories/GHSA-f6hc-79w3-p8pq",
+      "note": "mobility 配额问题。镜像必须锁 digest、禁无需求功能、短期凭据、配额与监控。"
+    },
+    {
+      "id": "GHSA-847g-qmc6-6m4r",
+      "component": "coturn",
+      "ecosystem": "container",
+      "severity": "medium",
+      "severity_source": "master-guide（Moderate）",
+      "affected": ["<4.17.0"],
+      "fixed": ["4.17.0"],
+      "url": "https://github.com/coturn/coturn/security/advisories/GHSA-847g-qmc6-6m4r",
+      "note": "even-port 耗尽。与上条同一处置。"
+    }
+  ]
+}

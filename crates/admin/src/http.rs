@@ -30,6 +30,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::accounts::{AccountStore, OpLogQuery, OpRecord, OpStatus, Session};
+use crate::auth::constant_time_eq;
 use crate::config::Config;
 use crate::error::{AdminError, Result};
 use crate::g14::G14;
@@ -198,19 +199,6 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|v| !v.is_empty())
-}
-
-/// 常量时间比较。长度不等直接 false（长度不是秘密：令牌是定长 hex）。
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
 }
 
 /// 读面门槛：静态令牌或有效会话，二选一。

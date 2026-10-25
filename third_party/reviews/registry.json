@@ -1,0 +1,172 @@
+{
+  "schema": "wxlike.provenance.v1",
+  "updated_at": "2026-10-24",
+  "note": "三段式登记：upstreams（仓级）→ files（片段级）→ 本地文件 sha256。ported/adapted 必须能在本地复现，且点名出现在 THIRD-PARTY-NOTICES.md。commit 是完整 SHA；每条的永久链接由 `sourceaudit provenance check` 打印。",
+  "upstreams": [
+    {
+      "id": "UP-TWEB",
+      "repo": "morethanwords/tweb",
+      "url": "https://github.com/morethanwords/tweb",
+      "commit": "57ef3edec3c124efa98a40dba29f3138eef187fc",
+      "commit_kind": "file_last_commit",
+      "license": "GPL-3.0",
+      "license_spdx": "GPL-3.0-only",
+      "license_evidence": "https://github.com/morethanwords/tweb/blob/57ef3edec3c124efa98a40dba29f3138eef187fc/LICENSE",
+      "retrieved_at": "2026-10-24",
+      "notes": "两个 helper 直接用在同一套消息列表虚拟化场景；GPLv3 → AGPLv3 是兼容方向。"
+    },
+    {
+      "id": "UP-ATM0S",
+      "repo": "8xFF/atm0s-media-server",
+      "url": "https://github.com/8xFF/atm0s-media-server",
+      "commit": "0ffc95a4537633a9916ac8879e953399a9f35bac",
+      "commit_kind": "file_last_commit",
+      "license": "MIT",
+      "license_spdx": "MIT",
+      "license_evidence": "https://github.com/8xFF/atm0s-media-server/blob/0ffc95a4537633a9916ac8879e953399a9f35bac/LICENSE",
+      "retrieved_at": "2026-10-24",
+      "notes": "出口码率分配算法；跨库重写成我们的 TrackId 类型。"
+    },
+    {
+      "id": "UP-ROCKETCHAT",
+      "repo": "RocketChat/Rocket.Chat",
+      "url": "https://github.com/RocketChat/Rocket.Chat",
+      "commit": "1826a86264c14ebb8b6130a5b89ed8fc37cb2ef9",
+      "commit_kind": "repo_head",
+      "license": "NOASSERTION",
+      "license_spdx": "NOASSERTION",
+      "license_evidence": "https://github.com/RocketChat/Rocket.Chat/blob/1826a86264c14ebb8b6130a5b89ed8fc37cb2ef9/LICENSE",
+      "retrieved_at": "2026-10-24",
+      "notes": "根 MIT + ee/ 专有。根许可在上游是复合声明，故按 NOASSERTION 登记：只能作行为参考，ee/ 一律排除。"
+    },
+    {
+      "id": "UP-ZULIP",
+      "repo": "zulip/zulip",
+      "url": "https://github.com/zulip/zulip",
+      "commit": "6bef8cb6bdc0029f98bcc14d6ca58b8285d06234",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/zulip/zulip/blob/6bef8cb6bdc0029f98bcc14d6ca58b8285d06234/LICENSE",
+      "retrieved_at": "2026-10-24",
+      "notes": "主题即消息一等属性；只借概念。"
+    },
+    {
+      "id": "UP-MEDUSA",
+      "repo": "medusajs/medusa",
+      "url": "https://github.com/medusajs/medusa",
+      "commit": "029fb31fd077ab9c6d6fd9d68c676c17c71294c7",
+      "commit_kind": "repo_head",
+      "license": "NOASSERTION",
+      "license_spdx": "NOASSERTION",
+      "license_evidence": "https://github.com/medusajs/medusa/blob/029fb31fd077ab9c6d6fd9d68c676c17c71294c7/LICENSE",
+      "retrieved_at": "2026-10-24",
+      "notes": "根 MIT 但 enterprise 文件另有 ENTERPRISE_LICENSE；未逐文件核过之前不得复制。"
+    },
+    {
+      "id": "UP-BOXIM",
+      "repo": "bluexsx/box-im",
+      "url": "https://github.com/bluexsx/box-im",
+      "commit": "58be3e1fc48fee2f6655576f9aefc80a491dc1e5",
+      "commit_kind": "repo_head",
+      "license": "MIT",
+      "license_spdx": "MIT",
+      "license_evidence": "https://github.com/bluexsx/box-im/blob/58be3e1fc48fee2f6655576f9aefc80a491dc1e5/LICENSE",
+      "retrieved_at": "2026-10-24",
+      "notes": "跨节点路由设计（队列名/hub 表/业务与推送分离）；Rust 独立实现，无源码复制。"
+    }
+  ],
+  "files": [
+    {
+      "path": "ui/src/vendor/tweb/slicedArray.ts",
+      "upstream": "UP-TWEB",
+      "upstream_path": "src/helpers/slicedArray.ts",
+      "commit": "57ef3edec3c124efa98a40dba29f3138eef187fc",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "cc2dadd07bf0c4b3d69a371f2226a6e91635a0670118eac6b7ff1689835385c2",
+      "patchlog": "third_party/reviews/patches/UP-TWEB-slicedArray.md",
+      "used_by": "ui/src/msgIndex.ts（历史分页合并 + 实时插入）"
+    },
+    {
+      "path": "ui/src/vendor/tweb/listenerSetter.ts",
+      "upstream": "UP-TWEB",
+      "upstream_path": "src/helpers/listenerSetter.ts",
+      "commit": "ef41b29db1e5356c6ba3b03285013b8ddeea673b",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "63f505d1379f669a0ece9ac0876c8aa89d8b9da8774ff64a0820cf0e5f5602b6",
+      "patchlog": "third_party/reviews/patches/UP-TWEB-listenerSetter.md",
+      "used_by": "消息菜单 / 贴纸面板的「点外面关闭」"
+    },
+    {
+      "path": "crates/rtc/src/sfu.rs",
+      "upstream": "UP-ATM0S",
+      "upstream_path": "packages/media_core/src/endpoint/internal/bitrate_allocator/egress.rs",
+      "commit": "0ffc95a4537633a9916ac8879e953399a9f35bac",
+      "decision": "adapted",
+      "license_spdx": "MIT",
+      "local_sha256": "a65d074c31448cff60397ba299a60bd57f2c1b36af2c75fa50a4ea048cb88aeb",
+      "patchlog": "third_party/reviews/patches/UP-ATM0S-egress.md",
+      "used_by": "wxlike-rtc 出口码率分配"
+    },
+    {
+      "path": "crates/platform/src/communities.rs",
+      "upstream": "UP-ROCKETCHAT",
+      "upstream_path": "apps/meteor/app/authorization/server/functions/upsertPermissions.js",
+      "decision": "behavior_reference",
+      "notes": "channel-role 形状：角色持有权限字符串，端点问 can(user,'post-message') 而不看角色名。命名保持可比，但判定逻辑是本仓库自有纯函数 channel_role_perms/perm_for_type。无源码复制。"
+    },
+    {
+      "path": "crates/mq/src",
+      "upstream": "UP-BOXIM",
+      "upstream_path": "im-server/src/main/resources",
+      "decision": "behavior_reference",
+      "notes": "队列命名（im:message:private:{serverId}）、用户→hub 路由表、业务/推送分离。Java 源码未引入，Rust 重新实现。"
+    },
+    {
+      "path": "crates/platform/src/moments.rs",
+      "upstream": "UP-ROCKETCHAT",
+      "upstream_path": "ee/packages/",
+      "decision": "excluded",
+      "rule": "EXCL-ENTERPRISE",
+      "reason": "Rocket.Chat 的 ee/ 为专有目录，未阅读、未复制；朋友圈可见性判定完全自研。",
+      "owner": "G17",
+      "issue": "#193",
+      "expires": "2099-12-31"
+    },
+    {
+      "path": "packages/modules/{payment,promotion,order,cart,auth}/**",
+      "upstream": "UP-MEDUSA",
+      "upstream_path": "packages/modules/",
+      "decision": "excluded",
+      "rule": "EXCL-ENTERPRISE",
+      "reason": "上游订单/支付模块含 enterprise 覆盖文件（ENTERPRISE_LICENSE），未逐文件核清前整块不复制；只借 Provider 接口形状。",
+      "owner": "G17",
+      "issue": "#193",
+      "expires": "2099-12-31"
+    },
+    {
+      "path": "**/*.{safetensors,gguf,onnx,ckpt,pt,bin}",
+      "upstream": "UP-MEDUSA",
+      "upstream_path": "models/",
+      "decision": "excluded",
+      "rule": "EXCL-MODEL-WEIGHTS",
+      "reason": "模型权重不适用代码许可（且体积/来源不可控）；本项目不 vendor 权重，推理走外部进程。",
+      "owner": "G17",
+      "issue": "#193",
+      "expires": "2099-12-31"
+    },
+    {
+      "path": "docs/full-platform-delivery/upstream_manifest.json",
+      "upstream": "UP-BOXIM",
+      "upstream_path": "（29 个研究锚点仓的 HEAD 固定表）",
+      "decision": "excluded",
+      "rule": "EXCL-RESEARCH-HEAD",
+      "reason": "manifest 自己写明 status = Research HEAD pins, not approved vendoring：锚点用于阅读定位，不构成引入批准。",
+      "owner": "G17",
+      "issue": "#193",
+      "expires": "2099-12-31"
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+card: G13-01
+issue: 172
+branch: feat/FP-G13-01
+contract_version: "g13/1"
+status: requested
+summary: >-
+  朋友圈、公众号、收藏、表情与卡片内容页面已完成；需要 G01 生成
+  ContentPort/PublisherPort/FormatPort 绑定，并由 G00 把页面挂到发现/我。
+  真实域实现未合入前，页面以 Unavailable*Port 显示阻塞，不返回静态数据。
+
+changed_paths:
+  - apps/mobile/lib/features/content/g13/
+  - apps/mobile/lib/features/content/moments_page.dart
+  - apps/mobile/lib/features/content/reading_page.dart
+  - apps/mobile/lib/features/content/favorites_page.dart
+  - apps/mobile/lib/features/content/stickers_page.dart
+  - apps/mobile/test/g13/
+
+requests:
+  - id: G13-01-R1
+    kind: ffi-bindings
+    target: G01
+    status: requested
+    reason: >-
+      页面只通过 Dart 端口访问 Rust；SessionInfo 不含 token，Dart 无法自行
+      认证 HTTP 域服务，必须由生成绑定在 Rust 侧完成鉴权与重试分类。
+    change:
+      commands:
+        - content.moments
+        - content.publish
+        - content.like
+        - content.comment
+        - content.delete
+        - favorite.list
+        - favorite.add
+        - favorite.remove
+        - sticker.list
+        - sticker.download
+        - publisher.list
+        - publisher.subscribe
+        - publisher.articles
+        - publisher.article
+        - format.money
+    note: >-
+      失败必须映射为 DomainError（offline/timeout/unauthorized/forbidden/
+      invalid_argument/conflict/unavailable），界面只认 G13FailureKind。
+
+  - id: G13-01-R2
+    kind: composition-root
+    target: G00
+    status: requested
+    reason: G13 不修改根 router/组合根；页面需要真实端口注入后才能验收。
+    change:
+      - inject: G13Ports(format, content, publisher, ...) 于应用组合根
+      - mount_entry: discover.moments -> MomentsPage
+      - mount_entry: discover.favorites -> FavoritesPage
+      - mount_entry: discover.stickers -> StickerPacksPage
+      - mount_entry: chat.subscriptions -> PublisherListPage（订阅号消息入口）
+    note: 未注入时页面显示 "上游生成绑定未接入"，不得回退为示例内容。
+
+  - id: G13-01-R3
+    kind: contract-ratification
+    target: G00
+    status: requested
+    reason: 页面契约版本 g13/1 需要登记到公共契约清单，后续升级两侧同步。
+    change:
+      doc: docs/full-platform-delivery/01_contracts_and_data.md
+      add: 契约版本 g13/1（PageResult/Money/ActionConfirmation/OperationHandle 形状）
+
+upstream:
+  - G05-05 (content/favorites/sticker 域服务)
+  - G05-02 (publisher 列表/文章/订阅)
+  - G12-05 (平台桥；本卡暂无硬桥需求，卡片图片解码由列表提供短时地址)
+
+verification:
+  - dart format --output=none --set-exit-if-changed apps/mobile/lib/features/content
+  - flutter analyze（G13 归属文件 0 error）
+  - flutter test test/g13/core_test.dart test/g13/moments_page_test.dart
+  - 真实绑定合入后：朋友圈发布/点赞/删除、收藏增删、文章 docVersion 校验
+    需在真机对真实服务复验；在此之前不得标 ACCEPTED
+
+notes:
+  - 写操作幂等键按用户意图生成；点赞键为 like-<momentId>-<目标状态>，
+    发布/评论在成功后轮换，失败重试复用。
+  - 删除入口只对服务端 isMine=true 的条目出现，不用昵称推断归属。
+
+entries:
+  implemented:
+    - {entry_id: SEED-0153, action_id: content.post.publish, page: MomentsPage/_ComposeMomentDialog}
+    - {entry_id: SEED-0154, action_id: content.post.publish, page: MomentsPage/可见范围选择}
+    - {entry_id: SEED-0158, action_id: content.post.like, page: MomentsPage}
+    - {entry_id: SEED-0189, action_id: content.favorite.add, page: ArticlePage}
+    - {entry_id: SEED-0190, action_id: content.subscription.toggle, page: PublisherListPage}
+    - {entry_id: SEED-0193, action_id: content.favorite.add, page: ArticlePage}
+    - {entry_id: SEED-0214, action_id: content.favorite.open, page: FavoritesPage}
+  not_covered:
+    - SEED-0156 我的朋友圈相册：契约无相册端点，不摆未绑定入口
+

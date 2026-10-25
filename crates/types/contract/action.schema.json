@@ -1,0 +1,73 @@
+{
+  "title": "Action",
+  "description": "命令请求与结果",
+  "definitions": {
+    "ActionRequest": {
+      "type": "object",
+      "required": [
+        "action_id",
+        "params",
+        "trace_id",
+        "contract"
+      ],
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "entry_id": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "deadline": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "contract": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "ActionResult": {
+      "type": "object",
+      "required": [
+        "action_id",
+        "status",
+        "completed_at_ms"
+      ],
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "empty",
+            "failed"
+          ]
+        },
+        "data": {
+          "type": "object"
+        },
+        "error": {
+          "type": "object"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "completed_at_ms": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

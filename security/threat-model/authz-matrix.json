@@ -1,0 +1,2665 @@
+{
+  "schema": "wxlike.authz-matrix.v1",
+  "generated_from": "crates/platform/src",
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/api/2fa/confirm",
+      "handler": "totp_confirm",
+      "module": "crates/platform/src/users.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/2fa/disable",
+      "handler": "totp_disable",
+      "module": "crates/platform/src/users.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/2fa/enable",
+      "handler": "totp_enable",
+      "module": "crates/platform/src/users.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/moderation/mode",
+      "handler": "set_mode",
+      "module": "crates/platform/src/trust.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败",
+      "exempt": {
+        "reason": "body 校验提取器先于管理令牌校验：未认证返回 422 而不是 403（#245）",
+        "issue": "#245"
+      },
+      "notes": "已知偏差（#245）：鉴权在 handler 体内、body 提取器之前无法拦住 422；改 AdminAuth 提取器后删除本 exempt"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/moderation/queue",
+      "handler": "queue",
+      "module": "crates/platform/src/trust.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/moderation/{id}/reject",
+      "handler": "reject",
+      "module": "crates/platform/src/trust.rs",
+      "auth": "admin",
+      "object": "object",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/moderation/{id}/release",
+      "handler": "release",
+      "module": "crates/platform/src/trust.rs",
+      "auth": "admin",
+      "object": "object",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/reconcile",
+      "handler": "latest",
+      "module": "crates/platform/src/reconcile.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/reconcile",
+      "handler": "run",
+      "module": "crates/platform/src/reconcile.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/reconcile/history",
+      "handler": "history",
+      "module": "crates/platform/src/reconcile.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/reports",
+      "handler": "queue",
+      "module": "crates/platform/src/report.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/reports/{id}/act",
+      "handler": "act",
+      "module": "crates/platform/src/report.rs",
+      "auth": "admin",
+      "object": "object",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败",
+      "exempt": {
+        "reason": "body 校验提取器先于管理令牌校验：未认证返回 422 而不是 403（#245）",
+        "issue": "#245"
+      },
+      "notes": "已知偏差（#245）：鉴权在 handler 体内、body 提取器之前无法拦住 422；改 AdminAuth 提取器后删除本 exempt"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/reports/{id}/close",
+      "handler": "close",
+      "module": "crates/platform/src/report.rs",
+      "auth": "admin",
+      "object": "object",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/reports/{id}/reject",
+      "handler": "reject",
+      "module": "crates/platform/src/report.rs",
+      "auth": "admin",
+      "object": "object",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/reports/{id}/triage",
+      "handler": "triage",
+      "module": "crates/platform/src/report.rs",
+      "auth": "admin",
+      "object": "object",
+      "scope": "admin",
+      "tests": [
+        "admin_surface_requires_admin_token"
+      ],
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
+    },
+    {
+      "method": "POST",
+      "path": "/api/articles",
+      "handler": "create",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/articles/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/articles/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/articles/{id}",
+      "handler": "update",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/articles/{id}/react",
+      "handler": "react",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/articles/{id}/read",
+      "handler": "mark_read",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/audit/self",
+      "handler": "audit_self",
+      "module": "crates/platform/src/lib.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "audit_surfaces_do_not_leak_secrets"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/blocks",
+      "handler": "list_blocks",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/blocks/{uid}",
+      "handler": "unblock",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "blocking_hides_stranger_messages"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/blocks/{uid}",
+      "handler": "block",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "blocking_hides_stranger_messages"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/call/{conv}",
+      "handler": "state",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/call/{conv}/egress",
+      "handler": "egress",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/hand",
+      "handler": "hand",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/join",
+      "handler": "join",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/kick",
+      "handler": "kick",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/leave",
+      "handler": "leave",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/lock",
+      "handler": "lock",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/mute",
+      "handler": "mute",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/mute-all",
+      "handler": "mute_all",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/record",
+      "handler": "record",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/call/{conv}/signal",
+      "handler": "take_signals",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/signal",
+      "handler": "post_signal",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/start",
+      "handler": "start",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/call/{conv}/transfer",
+      "handler": "transfer",
+      "module": "crates/platform/src/call.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/captcha",
+      "handler": "issue_captcha",
+      "module": "crates/platform/src/recovery.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "登录/注册前置挑战：此时还没有会话；验证码本身即凭证，且按 IP+账号限速"
+    },
+    {
+      "method": "GET",
+      "path": "/api/channel/{id}/roles",
+      "handler": "list_channel_roles",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/channel/{id}/roles",
+      "handler": "set_channel_role",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/channel/{id}/roles/{user}",
+      "handler": "reset_channel_role",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/channels/{id}",
+      "handler": "delete_channel",
+      "module": "crates/platform/src/perms.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/channels/{id}",
+      "handler": "update_channel",
+      "module": "crates/platform/src/perms.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/channels/{id}/messages",
+      "handler": "fetch_channel_messages",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/messages",
+      "handler": "send_channel_message",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/messages/recall",
+      "handler": "recall_channel_message",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/channels/{id}/threads",
+      "handler": "list_threads",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/threads",
+      "handler": "create_thread",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/communities",
+      "handler": "create_community",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/communities/mine",
+      "handler": "my_communities",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/communities/{id}/channels",
+      "handler": "list_channels",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/communities/{id}/channels",
+      "handler": "create_channel",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/communities/{id}/join",
+      "handler": "join_community",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/communities/{id}/members",
+      "handler": "community_members",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/communities/{id}/members/{user}",
+      "handler": "kick",
+      "module": "crates/platform/src/perms.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/communities/{id}/members/{user}/role",
+      "handler": "set_role",
+      "module": "crates/platform/src/perms.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/communities/{id}/permissions",
+      "handler": "my_perms",
+      "module": "crates/platform/src/perms.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/community/{id}/threads",
+      "handler": "community_threads",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/community/{id}/threads",
+      "handler": "create_thread_in_community",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/conv/{conv}/read",
+      "handler": "mark_read",
+      "module": "crates/platform/src/read.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "direct_conv_mailbox_requires_participation"
+      ],
+      "notes": "同上（#230）"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conv/{conv}/sync",
+      "handler": "sync",
+      "module": "crates/platform/src/read.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "direct_conv_mailbox_requires_participation"
+      ],
+      "notes": "同上（#230）"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conv/{conv}/unread",
+      "handler": "unread",
+      "module": "crates/platform/src/read.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "direct_conv_mailbox_requires_participation"
+      ],
+      "notes": "已知缺口（#230）：未校验参与者归属，用例 AUTHZ-012 当前 ignored；补丁合入后取消 ignore"
+    },
+    {
+      "method": "GET",
+      "path": "/api/devices",
+      "handler": "list",
+      "module": "crates/platform/src/devices.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/devices",
+      "handler": "register",
+      "module": "crates/platform/src/devices.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/devices/{device_id}/revoke",
+      "handler": "revoke_device",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "device",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/favorites",
+      "handler": "list",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "favorites_are_owner_scoped"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/favorites",
+      "handler": "create",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/favorites/objects",
+      "handler": "create_object",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/favorites/reorder",
+      "handler": "reorder",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/favorites/search",
+      "handler": "search",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/favorites/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/favorites/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "favorites_are_owner_scoped"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/favorites/{id}",
+      "handler": "update",
+      "module": "crates/platform/src/favorites.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/friends",
+      "handler": "list_friends",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/friends/changes",
+      "handler": "changes",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/friends/requests",
+      "handler": "create_request",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/friends/requests/incoming",
+      "handler": "incoming",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/friends/requests/outgoing",
+      "handler": "outgoing",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/friends/requests/{req_id}/accept",
+      "handler": "accept",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "friend_request",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/friends/requests/{req_id}/decline",
+      "handler": "decline",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "friend_request",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/friends/{user_id}",
+      "handler": "remove_friend",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/friends/{user_id}",
+      "handler": "patch_friend_meta",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/friends/{user_id}/remark",
+      "handler": "set_remark",
+      "module": "crates/platform/src/friends.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups",
+      "handler": "create_group",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "duplicate_group_create_is_idempotent"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/join/{token}",
+      "handler": "join_by_token",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "invite_token",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/groups/mine",
+      "handler": "my_groups",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/groups/{group_id}",
+      "handler": "group_info",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "member",
+      "tests": [
+        "other_users_group_info_is_denied"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/groups/{group_id}/announcement",
+      "handler": "get_announcement",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "other_users_group_info_is_denied"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/announcement",
+      "handler": "set_announcement",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "manager",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/approval",
+      "handler": "set_approval",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/dissolve",
+      "handler": "dissolve",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/invites",
+      "handler": "create_invite",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/groups/{group_id}/join-requests",
+      "handler": "list_join_requests",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/join-requests/{uid}/approve",
+      "handler": "approve_join",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/join-requests/{uid}/reject",
+      "handler": "reject_join",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/leave",
+      "handler": "leave",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "member",
+      "tests": [
+        "left_member_loses_access"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/groups/{group_id}/members",
+      "handler": "list_members",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "member",
+      "tests": [
+        "other_users_group_info_is_denied"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/members",
+      "handler": "add_members",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "manager",
+      "tests": [
+        "plain_member_cannot_add_members"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/groups/{group_id}/members/{user_id}",
+      "handler": "remove_member",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "manager",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/groups/{group_id}/mention-all",
+      "handler": "mention_all",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "manager",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/mute-all",
+      "handler": "set_all_mute",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/groups/{group_id}/mute/{uid}",
+      "handler": "clear_mute",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/mute/{uid}",
+      "handler": "set_mute",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/remark-mine",
+      "handler": "remark_mine",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/groups/{group_id}/visibility",
+      "handler": "set_visibility",
+      "module": "crates/platform/src/groups.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/keys",
+      "handler": "own",
+      "module": "crates/platform/src/keys.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/keys",
+      "handler": "publish",
+      "module": "crates/platform/src/keys.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/keys/{user_id}",
+      "handler": "claim",
+      "module": "crates/platform/src/keys.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/live/ingest/authorize",
+      "handler": "authorize_ingest",
+      "module": "crates/platform/src/live.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "推流端鉴权用短期 HMAC token（<exp>.<hmac(stream_key|exp)>），不依赖登录态"
+    },
+    {
+      "method": "GET",
+      "path": "/api/live/{channel}",
+      "handler": "state",
+      "module": "crates/platform/src/live.rs",
+      "auth": "user",
+      "object": "channel",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/live/{channel}/danmaku",
+      "handler": "danmaku",
+      "module": "crates/platform/src/live.rs",
+      "auth": "user",
+      "object": "channel",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/live/{channel}/join",
+      "handler": "join",
+      "module": "crates/platform/src/live.rs",
+      "auth": "user",
+      "object": "channel",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/live/{channel}/leave",
+      "handler": "leave",
+      "module": "crates/platform/src/live.rs",
+      "auth": "user",
+      "object": "channel",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/live/{channel}/start",
+      "handler": "start",
+      "module": "crates/platform/src/live.rs",
+      "auth": "user",
+      "object": "channel",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/live/{channel}/stop",
+      "handler": "stop",
+      "module": "crates/platform/src/live.rs",
+      "auth": "user",
+      "object": "channel",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/login",
+      "handler": "login",
+      "module": "crates/platform/src/users.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "会话建立入口：无凭证可提交，成功后签发 token"
+    },
+    {
+      "method": "POST",
+      "path": "/api/logout",
+      "handler": "logout",
+      "module": "crates/platform/src/users.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "logged_out_token_is_unauthorized"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/me",
+      "handler": "me",
+      "module": "crates/platform/src/users.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "logged_out_token_is_unauthorized"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/media",
+      "handler": "upload",
+      "module": "crates/platform/src/media.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/media/{media_id}",
+      "handler": "download",
+      "module": "crates/platform/src/media.rs",
+      "auth": "public",
+      "object": "media",
+      "scope": "owner",
+      "tests": [
+        "private_media_is_owner_scoped"
+      ],
+      "public_reason": "公开对象免登录；私有对象在 handler 内按属主/引用校验（先授权再碰路径，见 AUTHZ-008）"
+    },
+    {
+      "method": "GET",
+      "path": "/api/media/{media_id}/url",
+      "handler": "signed_url",
+      "module": "crates/platform/src/media.rs",
+      "auth": "user",
+      "object": "media",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moderation/check",
+      "handler": "check",
+      "module": "crates/platform/src/trust.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moments",
+      "handler": "publish",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/moments/drafts",
+      "handler": "list_drafts",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moments/drafts",
+      "handler": "save_draft",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/moments/drafts/{draft_id}",
+      "handler": "remove_draft",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/moments/feed",
+      "handler": "feed",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/moments/{moment_id}",
+      "handler": "remove",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/moments/{moment_id}",
+      "handler": "detail",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moments/{moment_id}/comments",
+      "handler": "comment",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/moments/{moment_id}/comments/{comment_id}",
+      "handler": "remove_comment",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "comment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/moments/{moment_id}/likes",
+      "handler": "unlike",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moments/{moment_id}/likes",
+      "handler": "like",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/moments/{moment_id}/report",
+      "handler": "report",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "moment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notes",
+      "handler": "list",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/notes",
+      "handler": "create",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/notes/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notes/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/notes/{id}",
+      "handler": "update",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/notes/{id}/autosave",
+      "handler": "autosave",
+      "module": "crates/platform/src/notes.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notification-rules",
+      "handler": "list_notification_rules",
+      "module": "crates/platform/src/notification.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notification-rules/{conv_id}",
+      "handler": "get_notification_rule",
+      "module": "crates/platform/src/notification.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/notification-rules/{conv_id}",
+      "handler": "set_notification_rule",
+      "module": "crates/platform/src/notification.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications",
+      "handler": "list",
+      "module": "crates/platform/src/inbox.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/read",
+      "handler": "mark_read",
+      "module": "crates/platform/src/inbox.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/profile",
+      "handler": "update_profile",
+      "module": "crates/platform/src/users.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/profile/{user_id}",
+      "handler": "public_profile",
+      "module": "crates/platform/src/users.rs",
+      "auth": "public",
+      "object": "user",
+      "scope": "owner",
+      "tests": [],
+      "public_reason": "公开资料页（昵称/头像），不返回手机号、会话、好友列表等私有字段"
+    },
+    {
+      "method": "GET",
+      "path": "/api/publishers",
+      "handler": "list_publishers",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/publishers",
+      "handler": "set_publisher",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/publishers/{id}",
+      "handler": "one_publisher",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/publishers/{id}/articles",
+      "handler": "publisher_articles",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/publishers/{id}/follow",
+      "handler": "unfollow",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/publishers/{id}/follow",
+      "handler": "follow",
+      "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/recovery/code",
+      "handler": "issue_recovery",
+      "module": "crates/platform/src/recovery.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/recovery/reset",
+      "handler": "reset",
+      "module": "crates/platform/src/recovery.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "凭恢复码重置：恢复码本身就是持有证明，失败会计次并锁定"
+    },
+    {
+      "method": "POST",
+      "path": "/api/register",
+      "handler": "register",
+      "module": "crates/platform/src/users.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "注册入口：无会话可用，验证码/风控在 handler 内校验"
+    },
+    {
+      "method": "GET",
+      "path": "/api/reports",
+      "handler": "mine",
+      "module": "crates/platform/src/report.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/reports",
+      "handler": "create",
+      "module": "crates/platform/src/report.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/search/content",
+      "handler": "search",
+      "module": "crates/platform/src/content_index.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/search/trends",
+      "handler": "trends",
+      "module": "crates/platform/src/content_index.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/secret/{conv}",
+      "handler": "state",
+      "module": "crates/platform/src/secret.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/secret/{conv}",
+      "handler": "configure",
+      "module": "crates/platform/src/secret.rs",
+      "auth": "user",
+      "object": "conversation",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/secret/{peer}/safety-number",
+      "handler": "safety_number",
+      "module": "crates/platform/src/secret.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/secret/{peer}/verify",
+      "handler": "verify",
+      "module": "crates/platform/src/secret.rs",
+      "auth": "user",
+      "object": "user",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions",
+      "handler": "list",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "cross_user_session_revoke_has_no_effect"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/refresh",
+      "handler": "refresh_session",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "鉴权由 body.refresh_token 承担：轮换凭证本身即凭据（一次性、父会话绑定），不走 bearer 中间件；无效/过期 refresh_token 由 rotate_refresh 拒绝。"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/revoke-others",
+      "handler": "revoke_others",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/step-up",
+      "handler": "step_up_grant",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sid}/revoke",
+      "handler": "revoke",
+      "module": "crates/platform/src/sessions.rs",
+      "auth": "user",
+      "object": "session",
+      "scope": "owner",
+      "tests": [
+        "cross_user_session_revoke_has_no_effect"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/strangers",
+      "handler": "get_stranger_setting",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/settings/strangers",
+      "handler": "set_stranger_setting",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/statuses",
+      "handler": "list_statuses",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses",
+      "handler": "set_status",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/statuses/background",
+      "handler": "remove_background",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/statuses/background",
+      "handler": "background",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses/background",
+      "handler": "save_background",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses/clear",
+      "handler": "clear_all",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/statuses/{id}",
+      "handler": "clear_one",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/statuses/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/statuses/{id}/react",
+      "handler": "react",
+      "module": "crates/platform/src/status.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stickers",
+      "handler": "installed",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stickers/packs",
+      "handler": "list_packs",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stickers/packs",
+      "handler": "create_pack",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/stickers/packs/{id}",
+      "handler": "remove_pack",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stickers/packs/{id}",
+      "handler": "one_pack",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/stickers/packs/{id}/install",
+      "handler": "uninstall",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stickers/packs/{id}/install",
+      "handler": "install",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/stickers/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/stickers/{id}",
+      "handler": "order",
+      "module": "crates/platform/src/stickers.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stranger/messages",
+      "handler": "send_stranger_message",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "blocking_hides_stranger_messages"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/stranger/requests",
+      "handler": "list_stranger_requests",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stranger/requests/{id}/accept",
+      "handler": "accept_stranger_request",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/stranger/requests/{id}/decline",
+      "handler": "decline_stranger_request",
+      "module": "crates/platform/src/relations.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/threads/{id}/messages",
+      "handler": "fetch_thread_messages",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/threads/{id}/messages",
+      "handler": "send_thread_reply",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/threads/{id}/subscribe",
+      "handler": "unsubscribe_thread",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/threads/{id}/subscribe",
+      "handler": "subscribe_thread",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/threads/{id}/subscribe",
+      "handler": "set_thread_subscription",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/threads/{id}/subscribers",
+      "handler": "thread_subscribers",
+      "module": "crates/platform/src/communities.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/video-creators/{id}/follow",
+      "handler": "unfollow",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/video-creators/{id}/follow",
+      "handler": "follow",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/video/callback",
+      "handler": "callback",
+      "module": "crates/platform/src/video_refs.rs",
+      "auth": "public",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [],
+      "public_reason": "供应商回调：用共享密钥对原始 body 验签（store_callback），伪造请求直接拒绝"
+    },
+    {
+      "method": "GET",
+      "path": "/api/video/ref/{video_id}",
+      "handler": "get_ref",
+      "module": "crates/platform/src/video_refs.rs",
+      "auth": "public",
+      "object": "video",
+      "scope": "owner",
+      "tests": [],
+      "public_reason": "按不透明 video_id 取播放引用；id 不可枚举（随机生成），本身即授权凭证"
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos",
+      "handler": "publish",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/videos/feed",
+      "handler": "feed",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/videos/{id}",
+      "handler": "remove",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/videos/{id}",
+      "handler": "one",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/videos/{id}/comments",
+      "handler": "comments",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/comments",
+      "handler": "comment",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/videos/{id}/comments/{comment_id}",
+      "handler": "remove_comment",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "comment",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/videos/{id}/like",
+      "handler": "unlike",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/like",
+      "handler": "like",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/report",
+      "handler": "report",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/wallet/balance",
+      "handler": "balance",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "wallet_balance_ignores_injected_user_id"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/wallet/ledger",
+      "handler": "ledger",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/wallet/redpacket",
+      "handler": "create_redpacket",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/wallet/redpacket/{id}/claim",
+      "handler": "claim",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/wallet/transfer",
+      "handler": "transfer",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    }
+  ],
+  "updated_at": "2026-10-24",
+  "policy": "auth 由源码扫描得出（Authed 提取器=user、require_admin/admin_ok=admin、否则 public）；check 会与源码逐条核对，手改 auth 会触发 AUTHZ-AUTH-DRIFT。tests 必须指向 tests/security 里真实存在的用例函数名；缺证据的私有端点会被 AUTHZ-NO-TEST 拦住。"
+}

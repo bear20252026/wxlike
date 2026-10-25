@@ -127,6 +127,31 @@ pub struct Receipt {
     pub items: Vec<ItemResult>,
 }
 
+impl Receipt {
+    fn record(&mut self, target: &str, outcome: &Result<crate::identity::Effect>) {
+        match outcome {
+            Ok(effect) => {
+                self.processed += 1;
+                self.succeeded += 1;
+                self.items.push(ItemResult {
+                    target: target.to_string(),
+                    ok: true,
+                    detail: effect.reference.clone(),
+                });
+            }
+            Err(err) => {
+                self.processed += 1;
+                self.failed += 1;
+                self.items.push(ItemResult {
+                    target: target.to_string(),
+                    ok: false,
+                    detail: err.to_string(),
+                });
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ItemResult {
     pub target: String,
@@ -201,30 +226,9 @@ impl JobService {
             args.push(Box::new(state.as_str().to_string()));
         }
         let conn = self.store.lock();
-        let total: i64 = conn.query_row(
-            &format!("SELECT count(*) FROM g14_job{where_sql}"),
-            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
-        let mut all = args;
-        all.push(Box::new(limit));
-        all.push(Box::new(offset));
-        let sql = format!(
-            "SELECT {JOB_COLS} FROM g14_job{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(all.iter().map(|b| b.as_ref())),
-                row_to_job,
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(Paged {
-            total,
-            limit,
-            offset,
-            rows,
-        })
+        Paged::query(&conn, &format!("SELECT count(*) FROM g14_job{where_sql}"),
+            &format!("SELECT {JOB_COLS} FROM g14_job{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"),
+            args, limit, offset, row_to_job)
     }
 
     pub fn job(&self, id: &str) -> Result<Option<Job>> {
@@ -336,9 +340,24 @@ impl JobService {
             params![id, serde_json::json!({"receipt": receipt}).to_string(), now],
         )?;
 
+        self.run_batch_items(actor, role, trace, reason, targets, &id, &mut receipt)
+            .await?;
+        self.finish_batch(actor, role, trace, reason, &id, &receipt)
+    }
+
+    async fn run_batch_items(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        reason: &str,
+        targets: &[String],
+        id: &str,
+        receipt: &mut Receipt,
+    ) -> Result<()> {
         for target in targets {
             let cancelled = self
-                .job(&id)?
+                .job(id)?
                 .map(|j| j.state == "cancelled")
                 .unwrap_or(true);
             if cancelled {
@@ -355,26 +374,7 @@ impl JobService {
                 verb: None,
             };
             let outcome = self.port.suspend_user(&cmd).await;
-            match &outcome {
-                Ok(effect) => {
-                    receipt.processed += 1;
-                    receipt.succeeded += 1;
-                    receipt.items.push(ItemResult {
-                        target: target.clone(),
-                        ok: true,
-                        detail: effect.reference.clone(),
-                    });
-                }
-                Err(err) => {
-                    receipt.processed += 1;
-                    receipt.failed += 1;
-                    receipt.items.push(ItemResult {
-                        target: target.clone(),
-                        ok: false,
-                        detail: err.to_string(),
-                    });
-                }
-            }
+            receipt.record(target, &outcome);
             // **逐条**审计：批量不等于一条"批量"记录。每个目标都要能单独追责。
             self.audit.append(
                 Draft::new(actor, role.as_str(), "identity.suspend", "user", target)
@@ -386,9 +386,21 @@ impl JobService {
                     })
                     .detail(serde_json::json!({"batch_job": id})),
             )?;
-            self.write_receipt(&id, &receipt)?;
+            self.write_receipt(id, receipt)?;
         }
 
+        Ok(())
+    }
+
+    fn finish_batch(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        reason: &str,
+        id: &str,
+        receipt: &Receipt,
+    ) -> Result<Job> {
         let final_state = if receipt.cancelled {
             JobState::Cancelled.as_str()
         } else if receipt.failed > 0 {
@@ -397,14 +409,14 @@ impl JobService {
         } else {
             JobState::Succeeded.as_str()
         };
-        self.write_receipt(&id, &receipt)?;
+        self.write_receipt(id, receipt)?;
         let now = now_ms();
         self.store.lock().execute(
             "UPDATE g14_job SET state = ?2, updated_at = ?3, finished_at = ?3 WHERE id = ?1",
             params![id, final_state, now],
         )?;
         self.audit.append(
-            Draft::new(actor, role.as_str(), "job.batch_identity", "job", &id)
+            Draft::new(actor, role.as_str(), "job.batch_identity", "job", id)
                 .reason(reason)
                 .trace(trace)
                 .outcome(if receipt.failed > 0 {
@@ -420,7 +432,7 @@ impl JobService {
                     "cancelled": receipt.cancelled,
                 })),
         )?;
-        self.job(&id)?.ok_or(AdminError::NotFound)
+        self.job(id)?.ok_or(AdminError::NotFound)
     }
 
     fn write_receipt(&self, id: &str, receipt: &Receipt) -> Result<()> {
@@ -547,22 +559,7 @@ impl PrivacyService {
             expires_at: now + PRIVACY_TOKEN_TTL_MS,
             note: reason.trim().to_string(),
         };
-        self.store.lock().execute(
-            "INSERT INTO g14_privacy_request (id, user_id, kind, state, token_hash, requested_by, \
-             requested_at, fulfilled_at, expires_at, note) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9)",
-            params![
-                request.id,
-                request.user_id,
-                request.kind,
-                request.state,
-                token_hash(&token),
-                request.requested_by,
-                request.requested_at,
-                request.expires_at,
-                request.note
-            ],
-        )?;
+        self.insert_request(&request, &token)?;
         self.audit.append(
             Draft::new(
                 actor,
@@ -576,6 +573,26 @@ impl PrivacyService {
             .after(serde_json::json!({"user_id": request.user_id, "kind": request.kind})),
         )?;
         Ok((request, token))
+    }
+
+    fn insert_request(&self, request: &PrivacyRequest, token: &str) -> Result<()> {
+        self.store.lock().execute(
+            "INSERT INTO g14_privacy_request (id, user_id, kind, state, token_hash, requested_by, \
+             requested_at, fulfilled_at, expires_at, note) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9)",
+            params![
+                request.id,
+                request.user_id,
+                request.kind,
+                request.state,
+                token_hash(token),
+                request.requested_by,
+                request.requested_at,
+                request.expires_at,
+                request.note
+            ],
+        )?;
+        Ok(())
     }
 
     /// 凭令牌领取。令牌错、过期、已领取都会拒——不给"猜对了"和"过期了"以外的区分。

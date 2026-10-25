@@ -1,0 +1,76 @@
+task: G17-03
+title: 威胁模型与越权/滥用回归
+issue: https://github.com/bear20252026/wxlike/issues/196
+branch: feat/FP-G17-03
+contract: 身份→对象→操作授权矩阵；abuse limits
+entry_ids: []
+action_ids: []
+
+paths:
+  - security/threat-model/README.md
+  - security/threat-model/authz-matrix.json
+  - security/threat-model/abuse-limits.json
+  - tools/source-audit/sourceaudit/authz.py
+  - tests/security/Cargo.toml
+  - tests/security/Cargo.lock
+  - tests/security/README.md
+  - tests/security/tests/common/mod.rs
+  - tests/security/tests/authorization.rs
+  - tests/security/tests/abuse.rs
+  - tests/security/tests/sweep.rs
+
+root_registration:
+  - action: ci_job
+    workflow: .github/workflows/ci.yml
+    job: security
+    steps:
+      - "python -m sourceaudit authz check --root ."
+      - "cargo test --manifest-path tests/security/Cargo.toml --test authorization --test abuse --test sweep"
+    note: |
+      tests/security 是独立 workspace（不进根 members，避免与 G00 抢根文件）；
+      G00 若要纳入根 workspace，请把 `<root>/tests/security` 加进 members 并把
+      `[workspace]` 空表删掉——否则 cargo 会报两个 workspace。
+  - action: regenerate_matrix
+    trigger: crates/platform/src 下新增/删除 `.route(...)`
+    command: "python -m sourceaudit authz sync --write"
+    note: 新端点会先被 AUTHZ-UNREGISTERED 拦住，sync 后必须补 tests 或 public_reason
+  - action: product_patch
+    file: crates/platform/src/read.rs
+    owner: G03
+    issue: "https://github.com/bear20252026/wxlike/issues/230"
+    detail: 三个信箱端点补参与者归属校验；G17 不改产品代码，只维护 #[ignore] 用例
+  - action: product_patch
+    file: crates/platform/src/{trust,report,reconcile}.rs
+    owner: G14
+    issue: "https://github.com/bear20252026/wxlike/issues/245"
+    detail: 管理面改 AdminAuth 提取器，使令牌校验先于 body 解析（当前未认证返回 422）
+
+acceptance_notes:
+  - 每个私有端点有负向用例：由 sweep 对矩阵全量断言（145 条，未认证必须 401/403）
+  - 矩阵与源码双向核对：新增端点未登记、残留端点、auth 手改、用例不存在都会红
+  - 限速不误伤正常批量同步：normal_burst / call_signal_trickle / bucket 隔离三例
+  - 审计与设备面不回吐凭证：audit_surfaces_do_not_leak_secrets（键名 + token 明文双查）
+  - 金融面只做越权与重放；守恒与账务正确性归 G06（已在文档写明边界）
+  - 小程序面只做宿主抗崩溃/越权；页包签名与资源完整性归 G08
+
+tests:
+  - tests/security/tests/authorization.rs（14 例：跨用户/退群/撤会话/管理面/私有对象/幂等/拉黑/凭证泄露/信箱归属[ignored]）
+  - tests/security/tests/abuse.rs（8 例：spam、好友枚举、验证码爆破、ICE 突发、桶隔离、窗口恢复）
+  - tests/security/tests/sweep.rs（2 例：全私有端点未认证扫描、公开面不要求会话）
+  - tools/source-audit 的 `authz check`（矩阵三方核对）
+
+observations:
+  - 全量 sweep 发现 2 个管理端点在未认证时返回 422 并泄露字段名（#245）
+  - 信箱三端点确认缺参与者归属校验（#230）；用例已就位但 ignored
+  - 平台有 155 条路由：134 用户态 / 12 管理态 / 9 公开（公开理由逐条写进矩阵）
+
+open_items:
+  - CI 接线需 G00 执行（本文件 root_registration 第 1 条）
+  - #230 / #245 两个产品补丁分别归 G03 / G14；合入后 G17 删 #[ignore] 与 exempt
+  - 位置探测与金融守恒的滥用用例依赖 G07/G06 合入，届时补
+
+integration_update_2026_10_25:
+  pr: https://github.com/bear20252026/wxlike/pull/276
+  workflow: .github/workflows/security.yml
+  review: security/release-reviews/REVIEW-2026-10-25.md
+  note: 旧申请的历史发现保留；当前完成项与剩余阻塞以本轮复核和 blockers.json 为准。

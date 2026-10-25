@@ -1,0 +1,246 @@
+{
+  "schema": "wxlike.release-evidence.v1",
+  "release": {
+    "name": "UI v2 全平台交付 · G17 主干集成复核",
+    "reviewed_at": "2026-10-25",
+    "reviewer": "G00 集成复核（G17 交付与云端测试证据）",
+    "commit": "16edadeaf77f277e6d658f185a4c739ed6482375",
+    "scope": "主干基线 + PR #276 安全测试/门禁集成；只评自动化证据，不代表全 UI、供应商与真机功能验收"
+  },
+  "claims": {
+    "platforms": [
+      "linux",
+      "windows",
+      "macos",
+      "android",
+      "web"
+    ],
+    "note": "五个平台仅有 CI 构建/测试证据；iOS 未核验。E-DEVICE 与 E-ENTRY 未通过，因此禁止据此宣称生产或全功能可用。"
+  },
+  "platforms": [
+    {
+      "name": "linux",
+      "verified": true,
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703",
+      "scope": "仅 CI 构建/测试证据；不是打包安装、真机或全部 UI 功能验收"
+    },
+    {
+      "name": "windows",
+      "verified": true,
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703",
+      "scope": "仅 CI 构建/测试证据；不是打包安装、真机或全部 UI 功能验收"
+    },
+    {
+      "name": "macos",
+      "verified": true,
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703",
+      "scope": "仅 CI 构建/测试证据；不是打包安装、真机或全部 UI 功能验收"
+    },
+    {
+      "name": "android",
+      "verified": true,
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703",
+      "scope": "仅 CI 构建/测试证据；不是打包安装、真机或全部 UI 功能验收"
+    },
+    {
+      "name": "web",
+      "verified": true,
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703",
+      "scope": "仅 CI 构建/测试证据；不是打包安装、真机或全部 UI 功能验收"
+    },
+    {
+      "name": "ios",
+      "verified": false,
+      "evidence": ""
+    }
+  ],
+  "items": [
+    {
+      "id": "E-ENTRY",
+      "title": "入口完成率（331 个语法位置 → 实际接线）",
+      "required": true,
+      "kind": "checklist",
+      "status": "blocked",
+      "owner": "G00",
+      "issue": "#80",
+      "evidence": "docs/full-platform-delivery/entry_seed.csv（331 条）",
+      "notes": "本次没有逐入口核验全 UI 接线，不能以任务关闭数量计算功能完成率"
+    },
+    {
+      "id": "E-CONTRACT",
+      "title": "契约与生成物冻结",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "evidence": "contracts/domains/{identity,relations,security}/contract.json + fixtures/*.json",
+      "notes": "generated_from 与 schema 版本以 G00-03 的冻结记录为准"
+    },
+    {
+      "id": "E-SEC-AUTHZ",
+      "title": "授权矩阵与越权回归",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254；14 授权 + 8 滥用 + 2 sweep；155 条路由矩阵校验",
+      "notes": "三条旧 ignore 均取消；管理面 #245 两项 exempt 仍单列 open 阻塞，不构成完整安全认证"
+    },
+    {
+      "id": "E-SEC-ABUSE",
+      "title": "滥用限速与不误伤",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254；abuse 8/8",
+      "notes": "阈值读 RiskEngine::config()，不硬编码"
+    },
+    {
+      "id": "E-SEC-DECODE",
+      "title": "解码面（包/JSON/解压/路径/语料/变异 fuzz）",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "owner": "G08",
+      "issue": "#229",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254；fuzz 10/10，s03 为 reject，2000 次变异无 panic",
+      "notes": "#229 产品修复 PR #274；独立测试已实际通过，夜间 200000 次只登记为已配置，尚非长跑通过证据"
+    },
+    {
+      "id": "E-SEC-SANDBOX",
+      "title": "小程序沙箱（预算/能力/桥状态）",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "owner": "G08",
+      "issue": "#253",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254；sandbox 8/8（256 行、4096 字节、Unicode、drain）",
+      "notes": "#253 产品修复 PR #274，独立回归零忽略"
+    },
+    {
+      "id": "E-SEC-WEB",
+      "title": "SSRF / XSS 响应面 / 路径穿越",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254；web 9/9"
+    },
+    {
+      "id": "E-ADVISORIES",
+      "title": "依赖漏洞四分类",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "evidence": "security/advisory-policy/report-2026-10-25.md；离线 fixed=4 / not_applicable=6 / candidate=0 / unverified=0 / exempt=0",
+      "notes": "根/桌面 ctutils 均 0.4.5；移除 #239 临时例外。当前联网冻结复核另列 E-ADVISORIES-ONLINE，不以旧报告代替"
+    },
+    {
+      "id": "E-ADVISORIES-ONLINE",
+      "title": "冻结前当前快照联网漏洞复核",
+      "required": true,
+      "kind": "test",
+      "status": "unverified",
+      "owner": "G17",
+      "issue": "#98",
+      "evidence": "",
+      "notes": "已配置每日/手工联网任务；本轮离线表检查不替代当前快照 OSV 及镜像扫描结果，冻结前必须补成功运行链接"
+    },
+    {
+      "id": "E-PROVENANCE",
+      "title": "第三方来源与 SBOM",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "evidence": "third_party/reviews/registry.json（3 文件 LF 指纹） + sbom/wxlike.cdx.json（1261 个去重包版本）；负向校验 https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886340",
+      "notes": "SBOM 包括根与桌面 Cargo、生产前端与设计原型 npm、Dart 和镜像引用；无镜像系统包扫描证据"
+    },
+    {
+      "id": "E-NOTICE",
+      "title": "许可义务清单（NOTICE）覆盖直接依赖",
+      "required": true,
+      "kind": "artifact",
+      "status": "blocked",
+      "owner": "G00",
+      "issue": "#228",
+      "evidence": "third_party/reviews/NOTICE-INDEX.md（23 项缺口与引入方）",
+      "notes": "豁免到 2026-12-31；到期后门禁自动变红"
+    },
+    {
+      "id": "E-E2EE",
+      "title": "E2EE 实际实现（库层）",
+      "required": true,
+      "kind": "test",
+      "status": "pass",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703；workspace 测试；具体边界见 docs/threat-model.md",
+      "notes": "只覆盖库层；设备端安全码展示与身份变更告警属设备面（见 E-DEVICE）"
+    },
+    {
+      "id": "E-DEVICE",
+      "title": "设备证据抽查（真机）",
+      "required": true,
+      "kind": "device",
+      "status": "unverified",
+      "owner": "G16",
+      "issue": "#97",
+      "evidence": "",
+      "notes": "没有任何真机验收记录可供抽查；G17 不接受『开发者自报通过』"
+    },
+    {
+      "id": "E-SUPPLIER",
+      "title": "真实供应商证据（短信 / 支付 / 推送）",
+      "required": true,
+      "kind": "external",
+      "status": "unverified",
+      "owner": "G06",
+      "issue": "#87",
+      "evidence": "",
+      "notes": "当前只有 sandbox/mock 通道；按任务单『不能用 mock 通过最终集成验收』，此项未完成"
+    },
+    {
+      "id": "E-CI-GATES",
+      "title": "安全门禁接入 CI",
+      "required": true,
+      "kind": "artifact",
+      "status": "pass",
+      "owner": "G00",
+      "issue": "#256",
+      "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886340（PROV-SHA-MISMATCH，exit 3）；https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254（51 passed，0 ignored）；最终恢复后检查 https://github.com/bear20252026/wxlike/pull/276/checks",
+      "notes": "独立 security.yml PR/main 阻断检查；每日联网与长 fuzz；手工 release_review 必须通过所有前置检查。最终 PR 仅在恢复正确数据且检查全绿后合入"
+    },
+    {
+      "id": "E-IMAGE",
+      "title": "镜像可复现（digest 锁定 + 镜像扫描）",
+      "required": true,
+      "kind": "artifact",
+      "status": "blocked",
+      "owner": "G16",
+      "issue": "#257",
+      "evidence": "Dockerfile / docker-compose.yml 全部浮动 tag",
+      "notes": "Dockerfile 的 FROM 与 compose 的 image 全是浮动 tag；deb 包（ca-certificates/curl）无扫描覆盖"
+    },
+    {
+      "id": "E-COVERAGE",
+      "title": "覆盖率（非阻断参考项）",
+      "required": false,
+      "kind": "artifact",
+      "status": "unverified",
+      "evidence": "scripts/coverage_summary.py 有，但不是 CI 阻断项",
+      "notes": "非阻断：本组不把覆盖率当发布门槛，它只用于发现测试盲区"
+    },
+    {
+      "id": "E-CI-PROTECTION",
+      "title": "服务器端保护规则要求安全门禁通过",
+      "required": true,
+      "kind": "external",
+      "status": "unverified",
+      "owner": "G00/G16",
+      "issue": "#277",
+      "evidence": "",
+      "notes": "工作流失败不等于 GitHub 禁止合并；实际 required contexts 尚未追加安全两项，连接无管理规则写入工具，必须由管理员实配并回读验证"
+    }
+  ],
+  "exceptions": [],
+  "signoff": {
+    "security_owner": "G17 / G00 集成复核",
+    "verdict": "BLOCK",
+    "reason": "保留 #245、#228、#257、#97、#277 五项 open blocker；入口、真机、真实供应商、当前快照联网冻结复核与实际保护规则仍未全部验证"
+  }
+}

@@ -4,7 +4,9 @@
 //! (Boa now; quickjs-ng when Windows build story settles).
 
 pub mod bridge;
+pub mod broker;
 pub mod engine;
+pub mod host;
 pub mod package;
 
 use anyhow::Context as _;
@@ -22,6 +24,20 @@ impl Container {
     pub fn load(page: Page) -> anyhow::Result<Self> {
         let engine = BoaEngine::new();
         Ok(Self { engine, page })
+    }
+
+    /// Load a page with the guest's saved storage restored.
+    pub fn load_with_storage(
+        page: Page,
+        storage: std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<Self> {
+        let engine = BoaEngine::with_seed_storage(storage);
+        Ok(Self { engine, page })
+    }
+
+    /// Snapshot of the guest storage after a run.
+    pub fn storage(&self) -> std::collections::BTreeMap<String, String> {
+        self.engine.storage()
     }
 
     /// Run the page lifecycle: eval entry script, then `onLoad(payload)`, `onShow()`.
@@ -43,6 +59,11 @@ impl Container {
 
     pub fn logs(&self) -> Vec<String> {
         self.engine.logs()
+    }
+
+    /// Consume the bounded log buffer without cloning its strings.
+    pub fn drain_logs(&self) -> Vec<String> {
+        self.engine.drain_logs()
     }
 }
 

@@ -1,0 +1,53 @@
+{
+  "contract_version": "content-v1",
+  "case": "分组可见的朋友圈：组内好友可见、组外好友 404、拉黑双向失效、删帖后索引/收藏/引用同事务消失",
+  "setup": {
+    "users": ["author", "in_group", "out_group"],
+    "friends": [["author", "in_group", { "friend_group": "同事" }], ["author", "out_group"]],
+    "media": [{ "id": "m1", "uploader": "author" }]
+  },
+  "steps": [
+    {
+      "command": "moment.publish",
+      "payload": { "text": "组内可见", "media_ids": ["m1"], "visibility": "groups", "audience_group": "同事" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "moment.detail",
+      "actor": "in_group",
+      "expect": { "ok": true, "data": { "like_count": 0 } }
+    },
+    {
+      "command": "moment.detail",
+      "actor": "out_group",
+      "expect": { "ok": false, "error": { "code": "not_found" } }
+    },
+    {
+      "command": "moment.comment.depth3",
+      "payload": { "reply_to_comment_id": "第二层评论id" },
+      "expect": { "ok": false, "error": { "code": "bad_input" } }
+    },
+    {
+      "command": "favorite.object.add",
+      "actor": "in_group",
+      "payload": { "kind": "moment", "id": "moment_id" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "moment.delete",
+      "actor": "author",
+      "expect": { "ok": true }
+    },
+    {
+      "command": "search.content",
+      "actor": "in_group",
+      "payload": { "q": "组内可见" },
+      "expect": { "ok": true, "data": { "items": [] } }
+    },
+    {
+      "command": "favorite.get",
+      "actor": "in_group",
+      "expect": { "ok": true, "data": { "revoked": true, "text": "" } }
+    }
+  ]
+}

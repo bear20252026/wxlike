@@ -65,12 +65,7 @@ impl HttpContentPort {
             .upstream
             .call("POST", path, "admin", Some(body))
             .await?;
-        Ok(reply
-            .body
-            .get("reference")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string())
+        Ok(reply.reference())
     }
 }
 
@@ -575,30 +570,9 @@ impl PublishingService {
             args.push(Box::new(state.as_str().to_string()));
         }
         let conn = self.store.lock();
-        let total: i64 = conn.query_row(
-            &format!("SELECT count(*) FROM g14_review_item{where_sql}"),
-            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
-        let mut all = args;
-        all.push(Box::new(limit));
-        all.push(Box::new(offset));
-        let sql = format!(
-            "SELECT {ITEM_COLS} FROM g14_review_item{where_sql} ORDER BY created_at ASC LIMIT ? OFFSET ?"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(all.iter().map(|b| b.as_ref())),
-                row_to_item,
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(Paged {
-            total,
-            limit,
-            offset,
-            rows,
-        })
+        Paged::query(&conn, &format!("SELECT count(*) FROM g14_review_item{where_sql}"),
+            &format!("SELECT {ITEM_COLS} FROM g14_review_item{where_sql} ORDER BY created_at ASC LIMIT ? OFFSET ?"),
+            args, limit, offset, row_to_item)
     }
 
     pub fn item(&self, id: &str) -> Result<Option<Item>> {
@@ -654,34 +628,8 @@ impl PublishingService {
             Decision::TakeDown => ItemState::TakenDown,
             Decision::Restore => ItemState::Approved,
         };
-        // 线上效果先做：域侧失败就**不改库**，否则"库里下架了、线上还在"。
-        if decision.needs_step_up() {
-            let state_word = if decision == Decision::TakeDown {
-                "taken_down"
-            } else {
-                "approved"
-            };
-            match self
-                .port
-                .set_visibility(&item.kind, &item.subject_id, state_word, &reason)
-                .await
-            {
-                Ok(_reference) => {}
-                Err(err) => {
-                    self.audit.append(
-                        Draft::new(actor, role.as_str(), "publish.decide", "review_item", id)
-                            .reason(&reason)
-                            .trace(trace)
-                            .outcome(Outcome::Failed)
-                            .detail(serde_json::json!({
-                                "decision": decision.as_str(),
-                                "error": err.to_string(),
-                            })),
-                    )?;
-                    return Err(err);
-                }
-            }
-        }
+        self.apply_visibility(actor, role, trace, &item, decision, &reason)
+            .await?;
 
         let now = now_ms();
         self.store.lock().execute(
@@ -698,6 +646,53 @@ impl PublishingService {
                 .after(serde_json::json!({"state": next.as_str(), "decision": decision.as_str()})),
         )?;
         Ok(updated)
+    }
+
+    async fn apply_visibility(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        item: &Item,
+        decision: Decision,
+        reason: &str,
+    ) -> Result<()> {
+        // 线上效果先做：域侧失败就**不改库**，否则"库里下架了、线上还在"。
+        if decision.needs_step_up() {
+            let state_word = if decision == Decision::TakeDown {
+                "taken_down"
+            } else {
+                "approved"
+            };
+            match self
+                .port
+                .set_visibility(&item.kind, &item.subject_id, state_word, reason)
+                .await
+            {
+                Ok(_reference) => {}
+                Err(err) => {
+                    self.audit.append(
+                        Draft::new(
+                            actor,
+                            role.as_str(),
+                            "publish.decide",
+                            "review_item",
+                            &item.id,
+                        )
+                        .reason(reason)
+                        .trace(trace)
+                        .outcome(Outcome::Failed)
+                        .detail(serde_json::json!({
+                            "decision": decision.as_str(),
+                            "error": err.to_string(),
+                        })),
+                    )?;
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     // -- 小程序 -------------------------------------------------------------

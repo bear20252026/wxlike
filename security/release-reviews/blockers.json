@@ -1,0 +1,109 @@
+{
+  "schema": "wxlike.release-blockers.v1",
+  "updated_at": "2026-10-25",
+  "note": "发布阻塞的唯一清单。每条必须有 owner + issue：没人认领的阻塞不是阻塞，只是一句感慨。status=closed 必须带 closed_evidence（补丁 commit / 测试链接 / CI 运行），否则评审不认。",
+  "blockers": [
+    {
+      "id": "SEC-FUZZ-001",
+      "title": "dpage：STUB_LEN + payload_len 整数溢出，20 字节恶意包可 panic",
+      "severity": "high",
+      "owner": "G08",
+      "issue": "#229",
+      "status": "closed",
+      "evidence": "tests/security/tests/fuzz.rs::overflowing_payload_len_does_not_panic（已启用独立回归）；corpus/manifest.json 的 s03_len_mismatch",
+      "closed_evidence": "PR #274 产品补丁；https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254 overflowing_payload_len_does_not_panic / mutation_fuzz_never_panics 成功；s03 reject，原样本不变",
+      "closed_at": "2026-10-25"
+    },
+    {
+      "id": "SEC-SANDBOX-LOGS",
+      "title": "wxhost.log 缓冲无上限，页包一行循环可吃穿宿主内存",
+      "severity": "high",
+      "owner": "G08",
+      "issue": "#253",
+      "status": "closed",
+      "evidence": "tests/security/tests/sandbox.rs::bridge_state_is_bounded（已启用独立回归）",
+      "closed_evidence": "PR #274 产品补丁；https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254 bridge_state_is_bounded 成功，零 ignore",
+      "closed_at": "2026-10-25"
+    },
+    {
+      "id": "SEC-AUTHZ-012",
+      "title": "/api/conv/{conv}/{unread,read,sync} 未校验参与者归属（消息量侧信道）",
+      "severity": "high",
+      "owner": "G03",
+      "issue": "#230",
+      "status": "closed",
+      "evidence": "tests/security/tests/authorization.rs::direct_conv_mailbox_requires_participation（已启用独立回归）",
+      "closed_evidence": "PR #269 产品补丁；https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254 direct_conv_mailbox_requires_participation（unread/read/sync）成功，零 ignore",
+      "closed_at": "2026-10-25"
+    },
+    {
+      "id": "SEC-ADMIN-ORDER",
+      "title": "管理面 body 校验先于管理令牌校验：未认证返回 422 并枚举字段名",
+      "severity": "medium",
+      "owner": "G14",
+      "issue": "#245",
+      "status": "open",
+      "evidence": "tests/security/tests/sweep.rs（矩阵两行 exempt）；authz-matrix.json 的 notes"
+    },
+    {
+      "id": "GOV-NOTICE",
+      "title": "THIRD-PARTY-NOTICES 未覆盖 23 个直接依赖（豁免到 2026-12-31）",
+      "severity": "medium",
+      "owner": "G00",
+      "issue": "#228",
+      "status": "open",
+      "evidence": "third_party/reviews/NOTICE-INDEX.md；notice-waivers.json"
+    },
+    {
+      "id": "OPS-CTUTILS",
+      "title": "桌面锁 ctutils 0.4.3 < RUSTSEC-2026-0385 修复版 0.4.4",
+      "severity": "high",
+      "owner": "G00",
+      "issue": "#239",
+      "status": "closed",
+      "evidence": "security/advisory-policy/report-2026-10-24.md §3.1；policy.json 的 exceptions",
+      "closed_evidence": "PR #274 产品补丁；root/desktop ctutils=0.4.5；policy.exceptions=[]；report-2026-10-25.md；根/桌面审计 https://github.com/bear20252026/wxlike/actions/runs/40177575743",
+      "closed_at": "2026-10-25"
+    },
+    {
+      "id": "OPS-IMAGE-DIGEST",
+      "title": "基础镜像与 compose 镜像未锁 digest，deb 包无扫描覆盖",
+      "severity": "medium",
+      "owner": "G16",
+      "issue": "#257",
+      "status": "open",
+      "evidence": "Dockerfile / docker-compose.yml；sbom 里容器组件无 digest"
+    },
+    {
+      "id": "CI-WIRING",
+      "title": "六道安全门禁未接进 CI（仅有本地通过，等于没有门禁）",
+      "severity": "high",
+      "owner": "G00",
+      "issue": "#256",
+      "status": "closed",
+      "evidence": "integration-requests/G17/G17-01…05.yaml",
+      "closed_evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886340（实际故意改坏 → exit 3）+ https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254（51 passed）；PR #276 恢复后最终门禁 https://github.com/bear20252026/wxlike/pull/276/checks",
+      "closed_at": "2026-10-25"
+    },
+    {
+      "id": "EVIDENCE-DEVICE",
+      "title": "没有任何真机验收证据：设备相关声明只有开发者自报",
+      "severity": "high",
+      "owner": "G16",
+      "issue": "#97",
+      "status": "open",
+      "external": true,
+      "evidence": "无（G17 只做抽查，抽查对象为空）"
+    },
+    {
+      "id": "CI-REQUIRED-CHECKS",
+      "title": "main 保护规则尚未将 security 两项检查设为 required，失败可被普通合并路径绕过",
+      "severity": "high",
+      "owner": "G00/G16",
+      "issue": "#277",
+      "status": "open",
+      "external": true,
+      "evidence": "2026-10-25 GET branches/main：仅四项旧 required contexts；需管理员追加 security (source + policy) 与 security (authz + abuse + decode) 并复读验证"
+    }
+  ]
+}

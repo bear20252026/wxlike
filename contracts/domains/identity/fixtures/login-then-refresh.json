@@ -1,0 +1,60 @@
+{
+  "contract_version": "identity-v1",
+  "case": "login -> refresh rotation -> replay rejected",
+  "steps": [
+    {
+      "command": "identity.login",
+      "payload": {
+        "device_id": "dev-aaaa1111",
+        "platform": "android",
+        "label": "Pixel 8",
+        "audience": "user"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "sid": "s-0001",
+          "audience": "user"
+        }
+      }
+    },
+    {
+      "command": "identity.refresh",
+      "payload": {
+        "refresh_token": "r-1"
+      },
+      "expect": {
+        "ok": true,
+        "data": {
+          "refresh_token": "r-2",
+          "generation": 2
+        }
+      }
+    },
+    {
+      "command": "identity.refresh",
+      "payload": {
+        "refresh_token": "r-1"
+      },
+      "expect": {
+        "ok": false,
+        "error": {
+          "code": "unauthorized",
+          "message": "refresh token replay detected"
+        }
+      }
+    },
+    {
+      "command": "identity.refresh",
+      "payload": {
+        "refresh_token": "r-2"
+      },
+      "expect": {
+        "ok": false,
+        "error": {
+          "code": "unauthorized"
+        }
+      }
+    }
+  ]
+}

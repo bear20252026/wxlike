@@ -1,0 +1,54 @@
+card: G12-06
+issue: 173
+branch: feat/FP-G12-06
+contract_version: "1.0"
+summary: 手机号登录、扫码授权与移动协议界面——身份域命令与协议版本仍是集成依赖
+
+requests:
+  - id: G12-06-R1
+    kind: contract-gap
+    status: requested
+    owner: G01
+    reason: >-
+      `IdentityPort` 的命令名来自 contracts/domains/identity/contract.json（identity.login.*、
+      identity.qr_login.*），但 FFI 只导出旧账号密码接口。没有绑定，手机号登录与扫码批准都只能
+      显示"未接线"，不能用本地假验证码通过验收。
+    change:
+      file: crates/ffi/src/core_handle.rs
+      action: >-
+        暴露 identity.login.challenge、identity.login.verify、identity.qr_login.scan、
+        identity.qr_login.approve、identity.qr_login.reject、identity.qr_login.poll、
+        identity.consent_documents（或契约中等价的协议文档查询）。
+    note: 批准/拒绝必须由 Rust 完成 token 交接，Dart 不接收、不保存 token。
+
+  - id: G12-06-R2
+    kind: contract-gap
+    status: requested
+    owner: G02
+    reason: >-
+      登录页要求"协议可读且版本可审计"。协议正文与版本必须由服务端下发，客户端不能内置一份
+      会过期的文案；当前契约里没有 consent_documents 查询，登录页在文档为空时禁止提交。
+    change:
+      - contract: contracts/domains/identity/contract.json
+        action: 增加协议文档查询（id/title/version/body|url/required_to_login），版本不可原地覆盖
+      - action: identity.login.verify 记录每条同意文档的 id+version+accepted_at
+      - action: 验证码错误/过期、短信不可用、外部 OAuth 未授权返回稳定错误码
+    note: fixture 至少覆盖错码、过期、重发限流、协议版本升级后需重新同意。
+
+  - id: G12-06-R3
+    kind: deeplink
+    status: requested
+    owner: G00
+    reason: 桌面扫码登录的入口是 `wxlike://qr/<challenge>`；未登录时移动端先暂存，登录后必须继续确认，
+      不能只提示一次就丢掉。
+    change:
+      - file: apps/mobile/android/app/src/main/AndroidManifest.xml
+        action: 与 G12-01-R2 共用 scheme 声明，确保冷启动 intent 也转入通道
+      - file: apps/mobile/ios/Runner/Info.plist
+        action: 同上；冷启动 URL 要在 Flutter 引擎就绪后补发
+    note: 批准页离页后控制器 closed=true，不能再批准（已有测试钉住）。
+
+  - id: G12-06-R4
+    kind: schema
+    status: no-change
+    reason: 客户端只保存挑战 id（平台安全存储一 key），不保存手机号、验证码或 token，无数据库迁移。

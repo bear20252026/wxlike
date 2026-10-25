@@ -1,1 +1,6 @@
 crates/platform/tests/schema_snapshot.txt text eol=lf
+
+# 来源账本按 Git LF 字节核对，跨平台检出必须保持相同换行。
+ui/src/vendor/tweb/slicedArray.ts text eol=lf
+ui/src/vendor/tweb/listenerSetter.ts text eol=lf
+crates/rtc/src/sfu.rs text eol=lf

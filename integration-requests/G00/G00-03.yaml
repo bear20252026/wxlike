@@ -1,0 +1,35 @@
+# G00-03 契约版本与组合根冻结 —— 集成请求
+request_id: G00-03
+task_issue: 101
+group_issue: 81
+contract_version: contract-v1
+artifacts:
+  - composition/action-registry.rs
+  - contracts/common/envelope.schema.json
+  - contracts/common/fixtures/protocol-v1.json
+  - schema/registry/migrations.json
+
+requests:
+  - id: REQ-G01-01-mount-registry
+    target: G01-01（#102）
+    action: 将 composition/action-registry.rs 挂载进 crates/types（或在 G01-01 的
+      共享类型 crate 中 include!/移植），使 ActionRequest/EventEnvelope/
+      DomainError/ActorContext 成为全部表面的公共契约类型。挂载时保留文件内
+      6 项测试（rustc --edition 2021 --test 可独立运行，已验证 6/6 绿）。
+    rationale: registry 需要进入 workspace 才能被各域编译引用；G00 只写
+      composition/**，挂载动作归 G01。
+
+  - id: REQ-G16-tag-contract-v1
+    target: G16 / 集成方
+    action: 本 PR 合并后在 main 打 tag `contract-v1`（git tag contract-v1 && git push origin contract-v1）。
+      之后任何契约变更走 RFC：改 envelope.schema.json / action-registry.rs 必须
+      同时更新 fixtures 并跑双端兼容测试。
+    rationale: 卡面要求"生成 contract-v1 标签"；tag 推送归集成方。
+
+notes:
+  - 域 schema 由各域 owner 在自己的卡里提交提案，G00 只审批跨域字段并装配
+    （teams/G00.md G00-03 原文）；本卡交付的是公共骨架与登记机制。
+  - fixtures 5 条（未知字段/未知枚举/大整数/legacy v1/写幂等）每条都注明
+    enforced_by 的实际机制位置；未知字段=忽略、未知枚举=Unknown 变体、
+    大整数 web 走 bincode 是**当前实现的真实行为**，非期望描述。
+  - 迁移登记表收录既有 M001-M008，next_id=M009；PG 切换沿用同一编号线（G00-04）。

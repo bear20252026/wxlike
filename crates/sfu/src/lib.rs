@@ -29,6 +29,8 @@
 //! 几百人需要把房间拆到多节点并用级联（每人只在本节点内转发，跨节点各一条
 //! 上行）。所以本模块刻意把"一个房间 = 一个节点"作为边界。
 
+pub mod live;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
@@ -80,14 +82,25 @@ pub struct JoinReply {
     pub media_addr: SocketAddr,
 }
 
+/// 被转发的媒体轨类型。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaTrack {
+    Audio,
+    Video,
+}
+
 struct Participant {
     session: MediaSession,
     socket: UdpSocket,
     /// 写进 SDP 的地址（绑 0.0.0.0 时换成对外地址）。
     advertised: SocketAddr,
-    /// 是否请求了视频 m-line（当前只转发音频，视频留接口）。
-    #[allow(dead_code)]
+    /// 是否请求了视频 m-line。
     video: bool,
+    /// G09-03：只有 publisher 的媒体会被转发；观众/纯订阅端的上行一律忽略。
+    publisher: bool,
+    /// G09-03：服务端侧的发布静音（主播/主持人远端静音，不依赖客户端自称）。
+    audio_muted: bool,
+    video_muted: bool,
 }
 
 /// 一个房间（= 一个 SFU 节点上的一个转发域）。
@@ -208,6 +221,12 @@ impl SfuRoom {
         }
     }
 
+    /// 解析会话 token 对应的账号（不加入房间）。直播/连麦的角色校验要先
+    /// 确认"进来的确实是这个人"，而不是客户端自报的 id。
+    pub fn resolve_user(&self, token: &str) -> Result<String, SfuJoinError> {
+        self.authorize_join(token)
+    }
+
     /// 加入：先鉴权与校验，再收 offer、回 answer。
     ///
     /// 参与者 id 一律取平台会话解析出的 user_id；客户端自报的 id 不进这个函数。
@@ -216,6 +235,28 @@ impl SfuRoom {
         token: &str,
         offer: serde_json::Value,
         video: bool,
+    ) -> Result<JoinReply, SfuJoinError> {
+        self.join_mode(token, offer, video, true)
+    }
+
+    /// 以观众身份加入（G09-05 直播）：可以订阅，永不转发其上行。
+    pub fn join_viewer(
+        &mut self,
+        token: &str,
+        offer: serde_json::Value,
+        video: bool,
+    ) -> Result<JoinReply, SfuJoinError> {
+        self.join_mode(token, offer, video, false)
+    }
+
+    /// `publisher = false` 的参与者只能收，不能发；这是直播观众"观看不产生
+    /// 上行麦克风"的服务端保证，而不仅是客户端不写。
+    pub fn join_mode(
+        &mut self,
+        token: &str,
+        offer: serde_json::Value,
+        video: bool,
+        publisher: bool,
     ) -> Result<JoinReply, SfuJoinError> {
         let user = self.authorize_join(token)?;
 
@@ -248,6 +289,9 @@ impl SfuRoom {
                 socket,
                 advertised,
                 video,
+                publisher,
+                audio_muted: false,
+                video_muted: false,
             },
         );
         Ok(JoinReply {
@@ -256,16 +300,58 @@ impl SfuRoom {
         })
     }
 
+    /// 切换发布权限（连麦批准/取消、观众转主播）。
+    pub fn set_publisher(&mut self, user: &str, publisher: bool) -> bool {
+        match self.participants.get_mut(user) {
+            Some(p) => {
+                p.publisher = publisher;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn is_publisher(&self, user: &str) -> bool {
+        self.participants.get(user).is_some_and(|p| p.publisher)
+    }
+
+    /// 服务端侧静音：即使客户端继续发送，SFU 也不再转发该轨。
+    pub fn set_published_muted(&mut self, user: &str, track: MediaTrack, muted: bool) -> bool {
+        match self.participants.get_mut(user) {
+            Some(p) => {
+                match track {
+                    MediaTrack::Audio => p.audio_muted = muted,
+                    MediaTrack::Video => p.video_muted = muted,
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn track_muted(&self, user: &str, track: MediaTrack) -> Option<bool> {
+        self.participants.get(user).map(|p| match track {
+            MediaTrack::Audio => p.audio_muted,
+            MediaTrack::Video => p.video_muted,
+        })
+    }
+
     /// 移除参与者。`user` 是服务端绑定的账号 id（与 `join` 的解析结果同一来源）。
     pub fn leave(&mut self, user: &str) {
         self.participants.remove(user);
     }
 
-    /// 一轮：收包 → 喂会话 → 泵 → 把媒体转发给其他所有人 → 发出去。
+    /// 一轮：收包 → 喂会话 → 泵 → 把发布者的媒体转发给其他所有人 → 发出去。
     ///
     /// 调用方（服务端循环）应当 10ms 调一次。整轮是**非阻塞**的。
     pub fn poll(&mut self) {
-        // 1) 收：从每个参与者的 socket 收干净
+        self.receive_all();
+        let pending = self.collect_forwardable();
+        self.forward(pending);
+    }
+
+    /// 1) 收：从每个参与者的 socket 收干净。
+    fn receive_all(&mut self) {
         let mut buf = [0u8; 2048];
         for p in self.participants.values_mut() {
             let local = p.advertised;
@@ -279,11 +365,15 @@ impl SfuRoom {
                 let _ = p.session.handle_receive(&d);
             }
         }
+    }
 
-        // 2) 泵 + 收集待转发的音频（先收齐再转发，避免同时可变借用两个参与者）
-        let mut pending: Vec<(String, Vec<u8>)> = Vec::new();
+    /// 2) 泵 + 收集待转发载荷。只收发布者、只收未静音的轨。
+    fn collect_forwardable(&mut self) -> Vec<(String, MediaTrack, Vec<u8>)> {
+        let mut pending = Vec::new();
         for (id, p) in self.participants.iter_mut() {
+            // 观众也要泵会话：转给他们的包只有在 step() 里才会真正发出。
             let audio_mid = p.session.audio_mid();
+            let video_mid = p.session.video_mid();
             let Ok((events, datagrams)) = p.session.step() else {
                 self.step_errors += 1;
                 continue;
@@ -293,28 +383,63 @@ impl SfuRoom {
                     self.sent_packets += 1;
                 }
             }
+            if !p.publisher {
+                continue;
+            }
             if std::env::var("SFU_DEBUG").is_ok() {
                 for ev in &events {
                     eprintln!("[sfu {}] {:?}", id, ev);
                 }
             }
-            for ev in events {
-                if let str0m::Event::MediaData(md) = ev {
-                    if Some(md.mid) == audio_mid {
-                        pending.push((id.clone(), md.data));
-                    }
-                }
-            }
+            Self::collect_publisher_media(id, p, audio_mid, video_mid, events, &mut pending);
         }
+        pending
+    }
 
-        // 3) 转发：同一份编码载荷写给其他每个人，各自映射到自己的 PT
-        for (from, payload) in pending {
+    /// 3) 转发：同一份编码载荷写给其他每个人，各自映射到自己的 PT。
+    fn forward(&mut self, pending: Vec<(String, MediaTrack, Vec<u8>)>) {
+        for (from, track, payload) in pending {
             for (id, p) in self.participants.iter_mut() {
                 if *id == from {
                     continue;
                 }
                 // 还没协商完/已断开的会话会报错，丢掉即可
-                let _ = p.session.write_audio(&payload);
+                Self::write_track(p, track, &payload);
+            }
+        }
+    }
+
+    /// 一路媒体写给某个参与者的会话；纯音频端不写视频。
+    fn write_track(p: &mut Participant, track: MediaTrack, payload: &[u8]) {
+        match track {
+            MediaTrack::Audio => {
+                let _ = p.session.write_audio(payload);
+            }
+            MediaTrack::Video => {
+                if p.video {
+                    let _ = p.session.write_video(payload);
+                }
+            }
+        }
+    }
+
+    /// 从一位发布者的事件里收媒体：音/视频各自只认协商到的 mid，静音的轨丢弃。
+    fn collect_publisher_media(
+        id: &str,
+        p: &Participant,
+        audio_mid: Option<str0m::media::Mid>,
+        video_mid: Option<str0m::media::Mid>,
+        events: Vec<str0m::Event>,
+        pending: &mut Vec<(String, MediaTrack, Vec<u8>)>,
+    ) {
+        for ev in events {
+            let str0m::Event::MediaData(md) = ev else {
+                continue;
+            };
+            if Some(md.mid) == audio_mid && !p.audio_muted {
+                pending.push((id.to_string(), MediaTrack::Audio, md.data));
+            } else if Some(md.mid) == video_mid && !p.video_muted {
+                pending.push((id.to_string(), MediaTrack::Video, md.data));
             }
         }
     }

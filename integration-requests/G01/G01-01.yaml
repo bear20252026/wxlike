@@ -1,0 +1,45 @@
+card: G01-01
+issue: 102
+branch: feat/FP-G01-01
+contract_version: "1.0"
+summary: 共享类型、领域不变量与 ports
+
+requests:
+  - id: G01-01-R1
+    kind: workspace-member
+    status: applied-pending-ratification
+    reason: >-
+      新 crate 必须进 workspace 才会被 CI 的 clippy / test / doc 覆盖；
+      否则它们是"没人编译的代码"，比不写更糟。
+    change:
+      file: Cargo.toml
+      path: members
+      add: ["crates/types", "crates/client-core"]
+    note: >-
+      同一行里的 `crates/features/identity` 是 G11 的改动，不属于本卡；
+      合并时请注意不要互相覆盖。
+
+  - id: G01-01-R2
+    kind: legacy-dedup
+    status: requested
+    reason: 提取而非复制的收尾——旧定义还留在原位，两边同时存在就会漂移。
+    change:
+      - file: crates/client/src/lib.rs
+        owner: G02
+        action: direct_conv_id 改为 re-export wxlike_types::direct_conv_id（逐字一致，已有 parity 测试）
+      - file: crates/core/src/types.rs
+        owner: G00
+        action: MsgId / PROTOCOL_VERSION 迁到 wxlike_types::ids（bincode 线格式不变）
+
+  - id: G01-01-R3
+    kind: ci
+    status: requested
+    reason: 三端 fixture 一致性（Rust / TS / Dart）目前只有 Rust 在 CI 里跑。
+    change:
+      job: quality
+      add_step: |
+        node crates/types/fixtures/run_conformance.mjs
+        dart run crates/types/fixtures/run_conformance.dart
+    note: >-
+      dart 需要 setup-dart；环境里没有时必须显式 SKIP 并打印原因，
+      不要静默通过（静默通过等于把这条验收删掉）。

@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wxlike:contracts/common/entries.schema.json",
+  "title": "wxlike entry ledger (entries-v1)",
+  "description": "G00-01 入口总账：UI v2 全部入口的唯一登记表。entry_id 唯一；产品入口必须有 owner 与 test_id；业务动作（contract_candidate）必须携带完整状态 checklist；占位符（TO_EXPAND/TO_DEFINE_CONTRACT）只允许出现在 inputs 之外的生成说明里，出现在 entries 中即为校验失败。",
+  "type": "object",
+  "required": ["contract_version", "generated_by", "inputs", "counts", "entries"],
+  "properties": {
+    "contract_version": { "const": "entries-v1" },
+    "generated_by": { "type": "string" },
+    "inputs": {
+      "type": "object",
+      "required": ["entry_seed_csv", "entry_seed_sha256", "prototype_src"],
+      "properties": {
+        "entry_seed_csv": { "type": "string" },
+        "entry_seed_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "prototype_src": { "type": "string" }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["seeds", "non_seed_expansions", "total", "by_action_kind", "by_domain"]
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 331,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "entry_id", "scope", "platform_design", "page_id", "component",
+        "interaction_kind", "source", "handler_class", "action_id",
+        "action_kind", "capabilities", "states", "test_id", "owners",
+        "provenance", "review_status"
+      ],
+      "properties": {
+        "entry_id": { "type": "string", "pattern": "^ENT-(SEED-[0-9]{4}|NH-[A-Z0-9-]+)$" },
+        "seed_id": { "type": ["string", "null"], "pattern": "^SEED-[0-9]{4}$" },
+        "scope": { "enum": ["product", "showcase"] },
+        "platform_design": { "enum": ["desktop_design", "mobile_design", "showcase"] },
+        "page_id": { "type": "string", "minLength": 1 },
+        "component": { "type": "string", "minLength": 1 },
+        "interaction_kind": {
+          "enum": ["click", "ui.state", "ui.scroll", "ui.select", "nav.goto",
+                   "keyboard.enter", "context.menu", "long.press", "system.back",
+                   "drag"]
+        },
+        "source": {
+          "type": "object",
+          "required": ["file"],
+          "properties": {
+            "file": { "type": "string" },
+            "line": { "type": ["integer", "null"], "minimum": 0 },
+            "column": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        "handler_class": {
+          "enum": ["ui.state", "ui.scroll", "ui.select", "nav.goto",
+                   "implemented", "no_handler"]
+        },
+        "action_id": {
+          "type": ["string", "null"],
+          "description": "proto.* = 原型本地视觉态；contract.<domain>.<verb> = 待 G00-03 批准的业务契约提案；null = 计划位待定义"
+        },
+        "action_kind": {
+          "enum": ["local_ui", "contract_candidate", "planned"]
+        },
+        "capabilities": {
+          "type": "object",
+          "required": ["access", "capability_class"],
+          "properties": {
+            "access": { "enum": ["local", "read", "write"] },
+            "capability_class": { "type": "string", "minLength": 1 }
+          }
+        },
+        "states": {
+          "type": "object",
+          "required": ["success", "cancel"],
+          "properties": {
+            "success": { "type": "boolean" },
+            "empty_result": { "type": "boolean" },
+            "param_error": { "type": "boolean" },
+            "unauthorized": { "type": "boolean" },
+            "timeout_or_offline": { "type": "boolean" },
+            "cancel": { "type": "boolean" },
+            "write_idempotency_required": { "type": "boolean" },
+            "note": { "type": "string" }
+          }
+        },
+        "test_id": { "type": "string", "pattern": "^T-(ENT-)?(SEED-[0-9]{4}|NH-[A-Z0-9-]+)$" },
+        "owners": {
+          "type": "object",
+          "required": ["domain", "ui", "domain_area"],
+          "properties": {
+            "domain": { "type": "string", "pattern": "^G[0-9]{2}$" },
+            "ui": { "type": "string", "pattern": "^G1[0-3]$|^G[0-9]{2}$" },
+            "domain_area": { "type": "string", "minLength": 1 }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "seed_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "review_status": {
+          "enum": ["owner_confirmed", "requires_domain_review", "requires_ui_review"]
+        },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

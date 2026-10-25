@@ -1,0 +1,24 @@
+schema: 1
+from: G16
+task: G16-04
+to: G06,G09
+summary: Non-HTTP fault scenarios need real endpoints/backends.
+requests:
+  - id: G16-04-PAYMENT-REPLAY
+    action: expose a provider callback endpoint with operation_id and single-effect semantics
+    evidence: tests/fault replays the callback and observes exactly one ledger row
+    gap: PAYMENT-CALLBACK-REPLAY
+    blocking: true
+  - id: G16-04-RTC
+    action: provide a licensed TURN/SFU stage reachable from CI
+    evidence: call/reconnect/jitter/loss evidence from the provider stage
+    gap: RTC-WEAK-NET
+    blocking: true
+  - id: G16-04-MINIAPP
+    action: expose a miniapp authorization contract
+    evidence: non-owner cannot open privileged miniapp surfaces; replay of grants is single-effect
+    note: only channel/community privilege is executable today; no miniapp API exists.
+done_today:
+  - restart during send + idempotent retry
+  - community/channel send/read/role privilege negatives
+  - corrupt-database startup refusal

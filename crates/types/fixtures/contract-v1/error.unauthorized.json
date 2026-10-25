@@ -1,0 +1,10 @@
+{
+  "name": "error.unauthorized",
+  "type": "DomainError",
+  "why": "错误码是契约：三端都用 code 做判别",
+  "value": {
+    "code": "unauthorized",
+    "message": "登录已过期"
+  },
+  "canonical": "{\"code\":\"unauthorized\",\"message\":\"登录已过期\"}"
+}

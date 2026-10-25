@@ -29,6 +29,12 @@ pub const DOWN_SQL: &str = include_str!("../migrations/0001_g14_ops.down.sql");
 /// 这份库，旧进程不该继续猜结构。
 pub const SCHEMA_VERSION: i64 = 1;
 
+const CONNECTION_PRAGMAS: &str = concat!(
+    "PRAGMA journal_mode = WAL;\n",
+    "PRAGMA foreign_keys = ON;\n",
+    "PRAGMA busy_timeout = 5000;",
+);
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -53,11 +59,7 @@ impl Store {
     }
 
     fn prepare(conn: Connection) -> Result<Self> {
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;",
-        )?;
+        conn.execute_batch(CONNECTION_PRAGMAS)?;
         // 先读**既有**版本再决定是否迁移：反过来的话，迁移脚本里的
         // `PRAGMA user_version = 1` 会把"这是个更新的库"这个事实直接抹掉。
         let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;

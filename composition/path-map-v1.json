@@ -1,0 +1,53 @@
+{
+  "contract_version": "path-map-v1",
+  "task": "G00-02（#100）",
+  "description": "纯移动拆分路径映射：旧巨型文件 → 新模块。所有搬移保持签名与行为零改动（旧 API 经再导出/桶文件保持原路径可见）；既存测试即 API fixture。",
+  "moves": [
+    {
+      "from": "ui/src-tauri/src/lib.rs",
+      "was_lines": 2812,
+      "to": {
+        "ui/src-tauri/src/lib.rs": "组合根：run()、模块声明、再导出、测试（API fixture 原地）",
+        "ui/src-tauri/src/app_state.rs": "AppState 结构与全部业务方法",
+        "ui/src-tauri/src/commands.rs": "Tauri 命令面（原内联模块转文件模块，crate::commands 路径不变）",
+        "ui/src-tauri/src/store.rs": "LocalStore 消息镜像 + SecretStore 快照",
+        "ui/src-tauri/src/render.rs": "事件渲染、密文解密、outbox 解码、MediaBlob",
+        "ui/src-tauri/src/util.rs": "split_host_port/normalize_path/wait/hex_str/decode_msg_id"
+      },
+      "owner": "G10",
+      "compat": "lib.rs pub use AppState + 模块级 glob 再导出；外部路径 crate::AppState / crate::commands 不变"
+    },
+    {
+      "from": "ui/src/ui.ts",
+      "was_lines": 1478,
+      "to": {
+        "ui/src/ui.ts": "渲染主体（会话/聊天/列表/菜单）+ renderRoot 导出",
+        "ui/src/ui-dom.ts": "h/clear/on DOM 工具 + El 类型",
+        "ui/src/ui-format.ts": "since/directPeer/formatBytes/timeShort"
+      },
+      "owner": "G10",
+      "compat": "ui.ts 路径不变（main.ts 的 import { renderRoot } 零改动）；内部经 import 引入搬运函数"
+    },
+    {
+      "from": "crates/platform/src/db.rs",
+      "was_lines": 1018,
+      "to": {
+        "crates/platform/src/db.rs": "Db 结构、open/lock/migrate 编排、慢 SQL 日志",
+        "crates/platform/src/db/schema.rs": "SCHEMA / SCHEMA_P4 / SCHEMA_G05 三个 SQL 常量（逐字节一致）"
+      },
+      "owner": "G02",
+      "compat": "db.rs 内 `use schema::{...}`；常量仅 crate 内使用，无外部 API 变化"
+    },
+    {
+      "from": "crates/client/src/execute.rs",
+      "was_lines": 443,
+      "to": {
+        "crates/client/src/execute.rs": "Executor 结构、run() 分派、测试（API fixture 原地）",
+        "crates/client/src/execute/handlers.rs": "type Handler + HANDLERS 分派表 + str_param/urlencode"
+      },
+      "owner": "G15",
+      "compat": "crate::execute::Executor 路径不变；HANDLERS 经 `use handlers::HANDLERS` 可见"
+    }
+  ],
+  "verification": "四文件拆分后：cargo check 全绿（wxlike-ui lib 0 错、platform 0 错、client 0 错）；wxlike-ui lib 测试与 wxlike-client 测试为 API fixture（本地 Windows 的 client/transport 5 例失败为本机代理拦 127.0.0.1 回环，A/B 对原版 HEAD 复现一致，云端无代理不受影响）；ui tsc --noEmit 0 错。"
+}

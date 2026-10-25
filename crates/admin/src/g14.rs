@@ -128,7 +128,7 @@ impl G14 {
                 AuditLog::new(store.clone()),
                 StepUp::new(store),
             ),
-            limiter: Arc::new(RateLimiter::new(600, 600.0)),
+            limiter: Arc::new(RateLimiter::new(ADMIN_RATE_CAPACITY, ADMIN_RATE_PER_SECOND)),
         }
     }
 
@@ -136,6 +136,9 @@ impl G14 {
         &self.audit
     }
 }
+
+const ADMIN_RATE_CAPACITY: u32 = 600;
+const ADMIN_RATE_PER_SECOND: f64 = 600.0;
 
 type Shared = Arc<App>;
 
@@ -1286,8 +1289,10 @@ pub struct Traced<T: Serialize> {
 }
 
 /// 供测试与文档引用的一句话说明：这套路由的准入模型是什么。
-pub const ACCESS_MODEL: &str = "读：运营静态令牌或后台会话；写：后台会话 + 资源矩阵 + 限流；\
-     敏感动作：额外步进验证（TOTP，窗口 15 分钟）";
+pub const ACCESS_MODEL: &str = concat!(
+    "读：运营静态令牌或后台会话；写：后台会话 + 资源矩阵 + 限流；",
+    "敏感动作：额外步进验证（TOTP，窗口 15 分钟）",
+);
 
 /// 仅用于编译期检查 `Audience` 与准入说明一致（防止有人删掉 audience 判定却留着文档）。
 pub fn audiences() -> [Audience; 4] {

@@ -1,0 +1,38 @@
+task_id: G07-08
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/142"
+summary: 位置消息、POI 搜索（坐标系绑定）、受限导航深链、实时位置共享（显式加入、seq 单调、断网拒绝伪造、停止/移除即清）。
+new_dependencies:
+  - package: 沿用 G07-01 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  - prefix: /api/v1/location
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::location_share::{Poi,NavigationTarget,LocationShareService})
+  - prefix: /api/v1/location-shares
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::location_share::LocationShareService)
+command_registration: wxlike_discovery::register_commands
+job_registration:
+  - name: share.sessions.expire
+    note: 过期共享会话停止并清位置
+configuration:
+  - name: WXLIKE_POI_PROVIDER_CREDENTIAL
+    value_type: secret_reference_only
+    note: 真实 POI 供应商；缺省时 POI 搜索 DEPENDENCY_UNAVAILABLE，不返回样例 POI
+migration_proposals:
+  - schema/proposals/G07/discovery.sql   # share_session / share_member / share_position 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids:
+  - SEED-0271
+  - SEED-0272
+  - SEED-0273
+  - SEED-0274
+  - SEED-0275
+tests_evidence:
+  - crates/features/discovery/tests/location_share.rs 用例
+compatibility: additive_new_domain
+rollback: remove_route_mounts_disable_expire_job
+external_blockers: [POI_PROVIDER_CREDENTIALS, TWO_REAL_DEVICES_LOCATION_SHARING, MAP_APP_NAVIGATION]
+gaps:
+  - 位置快照消息（发送位置到聊天）依赖 G03 消息投递；见 contracts/domains/discovery/actions.yaml gaps
+  - 系统地图导航在真机深链调起需两台真机待验

@@ -1,0 +1,68 @@
+task: G17-02
+title: 近期漏洞与依赖准入门禁
+issue: https://github.com/bear20252026/wxlike/issues/195
+branch: feat/FP-G17-02
+contract: cargo audit/deny；npm audit；OSV/GHSA/镜像扫描
+entry_ids: []
+action_ids: []
+
+paths:
+  - security/advisory-policy/policy.json
+  - security/advisory-policy/advisories.json
+  - security/advisory-policy/README.md
+  - security/advisory-policy/report-2026-10-24.md
+  - tools/source-audit/sourceaudit/advisories.py
+  - tools/source-audit/tests/test_advisories.py
+
+root_registration:
+  - action: ci_job_step
+    workflow: .github/workflows/ci.yml
+    job: quality
+    step: "python -m sourceaudit advisories check --root . --offline"
+    note: |
+      离线模式只按 security/advisory-policy/advisories.json 判定，结果稳定；
+      联网模式依赖 OSV 可用性，放进发布前检查而不是每次 PR。
+  - action: release_checklist
+    file: docs/full-platform-delivery（或 G16 发布清单）
+    step: "冻结依赖前执行 python -m sourceaudit advisories check --timeout 20（联网）"
+    owner: G16
+    note: policy.json 的 gate.require_online_before_freeze 已把这条写成政策
+  - action: dependency_update
+    file: ui/src-tauri/Cargo.lock
+    owner: G00
+    issue: "https://github.com/bear20252026/wxlike/issues/239"
+    command: "cd ui/src-tauri && cargo update -p ctutils --precise 0.4.5"
+    detail: 桌面锁 ctutils 0.4.3 < 修复版 0.4.4；已登记例外到 2026-11-30
+  - action: image_digest_pin
+    file: Dockerfile / docker-compose.yml
+    owner: G16
+    issue: pending
+    detail: |
+      当前 FROM debian:bookworm-slim、compose 的 redis:7-alpine / nats:2 / seaweedfs:3.80 均为浮动 tag。
+      coturn 若引入必须 >= 4.17.0 且锁 digest（GHSA-f6hc-79w3-p8pq、GHSA-847g-qmc6-6m4r）。
+
+acceptance_notes:
+  - 刻意回退受影响版本 → 门禁 FAIL（test_rolled_back_version_blocks 用 webpki-roots 1.0.9 复现）
+  - 未安装 @vitejs/plugin-rsc 的 React SPA → not_applicable，不因 React 版本误报
+  - 报告区分 已修复/候选新增/不适用/待核实 四类，且每类可枚举
+  - 高危可达阻断；例外必须 owner + issue + 到期日，过期自动红（EXC-EXPIRED）
+  - 断网/超时 → 退出码 4，不当作通过
+  - 系统 deb 包不在本门禁范围，由镜像扫描在部署流水线负责（policy.surfaces.system 已写明）
+
+tests:
+  - tools/source-audit/tests/test_advisories.py（19 例：回退阻断/RSC 不误报/安装即拦/wasmtime 交集/过期例外/合格例外/无 owner/来源面/audit JSON 兼容/空表/坏 schema/离线不联网/断网 exit4/版本区间矩阵/预发布排序/坏 spec）
+
+observations:
+  - 根锁 ctutils 0.4.5 已修复，桌面锁 0.4.3 未修（#239）
+  - 联网另发现 11 条（7 无人维护、3 待核实、1 Medium 候选），全部不阻断但写进报告
+  - 两个 Wasmtime Critical 的交集是 >=49.0.4；启用该 feature 时必须按此选版
+
+open_items:
+  - CI 接线与发布清单条目需 G00/G16 执行（本文件 root_registration）
+  - 镜像 digest 锁定未做（根文件、部署面），已列 G17-05 发布评审阻塞观察项
+
+integration_update_2026_10_25:
+  pr: https://github.com/bear20252026/wxlike/pull/276
+  workflow: .github/workflows/security.yml
+  review: security/release-reviews/REVIEW-2026-10-25.md
+  note: 旧申请的历史发现保留；当前完成项与剩余阻塞以本轮复核和 blockers.json 为准。

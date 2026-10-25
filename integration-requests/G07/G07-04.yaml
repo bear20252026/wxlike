@@ -1,0 +1,30 @@
+task_id: G07-04
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/143"
+summary: 服务目录与报价：区域开关、revision 防价格漂移、供应商实价 QuoteBook 与 TTL 清理。
+new_dependencies:
+  - package: 沿用 G07-01 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  - prefix: /api/v1/services
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::Catalog)
+  - prefix: /api/v1/quotes
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::quote::QuoteBook + OrderService::quote/get_quote)
+command_registration: wxlike_service_catalog::register_commands
+job_registration:
+  - name: services.quotes.purge
+    note: OrderService::purge_expired_quotes 每分钟清理过期报价
+configuration:
+  - name: WXLIKE_SERVICE_CATALOG_BOOTSTRAP
+    value_type: plain_json
+    note: 初始服务卡清单（含 provider/region/currency）；上下架与区域开关归 G14 admin
+migration_proposals:
+  - schema/proposals/G07/services.sql   # catalog_card / region_enabled / quote 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: []   # 无直接 entry；G00-01 扩量后补
+tests_evidence:
+  - crates/service-catalog/tests/orders.rs（quote 相关 15 用例内）
+compatibility: additive_new_domain
+rollback: remove_route_mounts_disable_purge_job
+external_blockers: [VENDOR_SANDBOX_CREDENTIALS]

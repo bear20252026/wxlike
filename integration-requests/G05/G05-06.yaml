@@ -1,0 +1,40 @@
+task: G05-06
+title: 我的状态、背景与到期
+issue: https://github.com/bear20252026/wxlike/issues/129
+branch: feat/FP-G05-06
+crate: wxlike-platform（status 模块；G00 拆分后迁独立 crate）
+contract: content-v1
+paths:
+  - crates/platform/src/status.rs
+  - crates/platform/src/db.rs（SCHEMA_G05 的 statuses 段）
+  - crates/platform/src/lib.rs（spawn_status_sweeper 导出，装配层启动时调用）
+  - crates/platform/tests/g05_content.rs
+  - schema/proposals/G05/content.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/statuses -> 设置状态（kind=text|image|video；24h TTL；设置即清本人此前活跃状态）"
+      - "GET  /api/statuses -> 自己+好友的最新活跃状态（双向拉黑过滤；到期不可见）"
+      - "POST /api/statuses/clear -> 手动清除（cleared_at 留痕）"
+      - "POST+GET /api/statuses/background；DELETE /api/statuses/background"
+      - "GET+DELETE /api/statuses/{id}"
+      - "POST /api/statuses/{id}/react -> 唯一回应，再点取消（事务内通知）"
+    note: 复用既有挂载点
+  - action: background_job
+    job: spawn_status_sweeper（每分钟 sweep_expired_statuses；清可见性、删索引、撤收藏、审计 status_expire）
+  - action: schema
+    proposal: schema/proposals/G05/content.sql
+    tables: [statuses, status_background_drafts, status_reactions]
+
+acceptance_notes:
+  - 到期由服务端时钟判定（expires_at=created_at+24h）；列表同时返回 seconds_left
+  - 背景是草稿：保存时校验媒体归属与图片类型，设置状态时原子消费（background_media_id 落到状态上）
+  - image/video 状态的媒体必须本人上传；video 还要求转码 succeeded（与 G05-04 同一门禁）
+  - 受众 friends|public|private：private 连好友也看不到；public 需未被拉黑
+  - 过期/清除都发 StatusChanged 事件（system_envelope），索引与收藏撤权同事务
+
+tests:
+  - crates/platform/tests/g05_content.rs::statuses_audience_background_expiry_and_reactions
+  - cargo test -p wxlike-platform --test g05_content

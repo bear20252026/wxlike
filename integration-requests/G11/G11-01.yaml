@@ -1,0 +1,88 @@
+# G11-01 朋友圈、收藏、文章与表情 —— 集成请求
+# 本文件登记超出 G11 独占写路径、需要 G00（或其他组）执行的条目。
+# 依据：任务卡 #162「只修改G11归属文件；新根依赖、路由、command挂载、schema编号写入本文件，由G00执行」。
+
+request_id: G11-01
+task_issue: 162
+group_issue: 92
+contract_version: entries-v1
+branch: feat/FP-G11-01
+owned_paths:
+  - apps/desktop-web/src/features/content/**
+
+artifacts:
+  - apps/desktop-web/src/features/content/api.ts
+  - apps/desktop-web/src/features/content/model.ts
+  - apps/desktop-web/src/features/content/MomentsPage.tsx
+  - apps/desktop-web/src/features/content/FavoritesPage.tsx
+  - apps/desktop-web/src/features/content/ArticlesPage.tsx
+  - apps/desktop-web/src/features/content/StickerPanel.tsx
+  - apps/desktop-web/src/features/content/ui.tsx
+  - apps/desktop-web/src/features/content/content.test.tsx
+
+requests:
+  - id: REQ-G00-bootstrap-desktop-web-scaffold
+    target: G00
+    action: >-
+      G00-02 尚未合并，而 G11 各卡的目标路径 apps/desktop-web/src/features/** 均在该卡之后创建。
+      为使 feature 可编译、可测试，G11-01 先行创建了最小开发脚手架：
+      apps/desktop-web/package.json、tsconfig.json、vite.config.ts、index.html、
+      src/main.tsx（仅挂载 G11 页面的开发壳，无业务逻辑）、src/index.css、
+      src/lib/{http,money,sanitize,platform,draft}.ts、src/test/{setup.ts,fixture.ts}。
+      请 G00-02 在纯拆分时确认接管：main.tsx 由 G10-01 产品壳替换；
+      src/lib/** 收编进公共层（或按 G00 的分层归属重排）；
+      本脚手架不代表 G00-02 验收。
+    rationale: 目标路径经 G00 拆分后创建；上游未合并时按冻结 fixture 并行开发是任务卡明示允许的模式。
+
+  - id: REQ-G00-register-root-deps
+    target: G00
+    action: >-
+      新增 npm 依赖（apps/desktop-web/package.json，根工作区尚未建立 npm workspace；
+      待 G00 建立工作区后收编进根锁）：
+      dompurify 3.2.6（运行时，富文本净化）；
+      devDependencies：vitest 3.2.4、jsdom 27.0.1、@testing-library/react 16.3.1、
+      @testing-library/dom 10.4.1、@testing-library/jest-dom 6.9.1（测试栈）；
+      react/react-dom 19.2.6、vite 7.3.2、tailwindcss 4.1.17 等与 design/ui-v2/prototype
+      同版本的基线依赖。未新增 Rust/Cargo 依赖。
+    rationale: 根清单/锁由 G00 串行解析，各组不提交各自冲突锁。
+
+  - id: REQ-G00-register-routes
+    target: G00
+    action: >-
+      产品壳路由（G10-01 实现、G00 总 router 登记）需挂载：
+      /moments、/favorites、/articles 三个页面入口（桌面 rail 第 3/4/5 项，
+      entry_seed 见 ENT-SEED-* 中 page=favorites/files/moments 相关条目）。
+      开发壳 main.tsx 中的 tab 切换仅为临时挂载点，产品壳合入后删除。
+    rationale: 总 router 归 G00 串行合入。
+
+  - id: REQ-G05-contentport-articles-endpoints
+    target: G05
+    action: >-
+      文章/订阅号/表情包按 01_contracts_and_data.md §3 ContentPort 契约对接：
+      GET /api/articles、GET /api/articles/{id}、GET /api/publishers、
+      POST|DELETE /api/publishers/{id}/subscription、POST /api/articles/{id}/watching、
+      GET /api/stickers/packs。这些端点当前服务端不存在（已核实 crates/platform 无对应路由），
+      G11-01 的 ArticlesPage/StickerPanel 在端点 404 时渲染"上游未开通"明确状态，
+      不提供假数据。G05 合入真实端点后如路径或字段有出入，请按契约在本文件追加 correction 段，
+      G11 侧只改 ContentApi 适配层。
+    rationale: 上游卡未合入时按冻结 fixture 开发；不能用 mock 通过最终集成验收。
+
+  - id: REQ-G05-favorite-inline-patch
+    target: G05
+    action: >-
+      收藏编辑目前用「读快照→DELETE→POST 重建」往返实现（服务端仅这四个端点）。
+      G05 若提供 PATCH /api/favorites/{id}，G11 将 ContentApi.updateFavoriteNote
+      切换为单请求，避免重建产生的临时唯一约束空窗。
+    rationale: 收藏源撤权政策与快照属 G05 域，UI 不自创同义 API。
+
+  - id: REQ-G16-ci-node-tests
+    target: G16
+    action: 在 ci.yml 增加 Node job：cd apps/desktop-web && npm ci && npm run typecheck && npm test && npm run build。
+    rationale: 同 SHA 云 CI 需覆盖 React 功能目录测试（当前 ci.yml 仅 Rust）。
+
+notes:
+  - moments/favorites/report 已接真实服务端端点（crates/platform/src/{moments,favorites,report}.rs），
+    写操作全部携带 Idempotency-Key。
+  - 富文本渲染一律经过 src/lib/sanitize.ts（DOMPurify，禁 style/form/iframe/svg/math，
+    URL 仅 http(s)/mailto），XSS 用例在 content.test.tsx。
+  - 复制/外链/下载走 src/lib/platform.ts 的 PlatformPort，web 实现为默认，Tauri 桥由 G00-02 接管后替换。

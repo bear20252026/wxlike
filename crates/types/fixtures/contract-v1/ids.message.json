@@ -1,0 +1,7 @@
+{
+  "name": "ids.message",
+  "type": "MessageId",
+  "why": "16 字节 → 32 位小写十六进制，跨语言一致",
+  "value": "00112233445566778899aabbccddeeff",
+  "canonical": "\"00112233445566778899aabbccddeeff\""
+}

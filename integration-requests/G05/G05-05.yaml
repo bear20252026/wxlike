@@ -1,0 +1,38 @@
+task: G05-05
+title: 授权搜索、热搜与通知收件箱
+issue: https://github.com/bear20252026/wxlike/issues/135
+branch: feat/FP-G05-05
+crate: wxlike-platform（content_index / inbox 模块；G00 拆分后迁独立 crate）
+contract: search-v1
+paths:
+  - crates/platform/src/content_index.rs
+  - crates/platform/src/inbox.rs
+  - crates/platform/src/db.rs（SCHEMA_G05 的 content_index/notifications 段）
+  - crates/platform/tests/g05_content.rs
+  - schema/proposals/G05/content.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "GET /api/search/content?q=&kind=&cursor=&limit="
+      - "GET /api/search/trends?limit="
+      - "GET  /api/notifications?before_seq=&limit="
+      - "POST /api/notifications/read（up_to_seq 或 ids）"
+    note: 复用既有挂载点
+  - action: schema
+    proposal: schema/proposals/G05/content.sql
+    tables: [content_index, notifications]
+
+acceptance_notes:
+  - 先授权后取正文：候选页只查元数据，逐条回权威表（moment/article/video/status 的可见性）通过才生成 snippet
+  - 写同步删同步：索引与发布同事务、删除同事务；没有异步落后窗口
+  - 私聊永不进索引；索引只收 moment/article/video/status
+  - LIKE 通配符 %/_/\ 按字面量转义；query≤100 无控制字符；页 ≤50
+  - 热搜：audience='public' 且 7 天窗口；去重作者计数、单作者单词条 ≤3 篇；窗口固定不可调
+  - 通知：业务写同事务插入；dedupe_key 部分唯一索引；read_at 服务端列跨端共享；点赞去重、评论不去重
+  - 已读推进限定本人；up_to_seq（含）或按 id 列表（≤200）
+
+tests:
+  - crates/platform/tests/g05_content.rs::search_authorization_trends_and_cross_device_read
+  - cargo test -p wxlike-platform --test g05_content
