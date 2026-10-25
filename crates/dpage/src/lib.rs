@@ -12,6 +12,14 @@ use sha2::{Digest, Sha256};
 pub const MAGIC: &[u8; 4] = b"DPG1";
 pub const STUB_LEN: usize = 20; // magic(4) + version(4) + id(4) + payload_len(8)
 
+/// 单包文件数上限。清单可以声明上千个资源，但一个"页面"不该有无限条目：
+/// 每条都会在内存里建索引并可能落盘，文件数本身也是解压炸弹的放大面。
+pub const MAX_FILES: usize = 2048;
+
+/// 包内相对路径长度上限（按字节）。超过这个长度的路径在 Windows 上
+/// 本身就不可落地，按恶意/损坏包拒绝。
+pub const MAX_PATH_LEN: usize = 200;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Manifest {
     pub name: String,
@@ -60,40 +68,99 @@ pub fn pack_dir(dir: &std::path::Path) -> anyhow::Result<Vec<u8>> {
         .with_context(|| format!("parse {}", manifest_path.display()))?;
     let _ = &manifest; // validated here; embedded into the file map below
 
-    let mut files = FileMap::default();
-    fn walk(
-        dir: &std::path::Path,
-        base: &std::path::Path,
-        out: &mut FileMap,
-    ) -> anyhow::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, base, out)?;
-            } else {
-                let rel = path
-                    .strip_prefix(base)?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if rel == "manifest.json" {
-                    continue;
-                }
-                out.0.push(FileEntry {
-                    path: rel,
-                    data: std::fs::read(&path)?,
-                });
-            }
-        }
-        Ok(())
-    }
-    walk(dir, dir, &mut files)?;
+    let mut files = collect_dir(dir)?;
     files.0.push(FileEntry {
         path: "manifest.json".into(),
         data: std::fs::read(&manifest_path)?,
     });
-    files.0.sort_by(|a, b| a.path.cmp(&b.path));
+    pack_files(files)
+}
 
+/// Collect a directory tree into a [`FileMap`], rejecting symlinks and
+/// unsupported file types. Does not add a `manifest.json`; callers decide
+/// what the package's root manifest file is called.
+pub fn collect_dir(dir: &std::path::Path) -> anyhow::Result<FileMap> {
+    let mut files = FileMap::default();
+    walk_files(dir, dir, &mut files)?;
+    Ok(files)
+}
+
+fn walk_files(
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    out: &mut FileMap,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        // 不跟随符号链接：DPG1 只能表达普通文件，打包时若跟随链接，
+        // 包里就会出现"看起来是页面资源、实际指向宿主文件"的内容。
+        let meta = std::fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            !meta.file_type().is_symlink(),
+            "symlink is not allowed in a package: {}",
+            path.display()
+        );
+        if meta.is_dir() {
+            walk_files(&path, base, out)?;
+            continue;
+        }
+        anyhow::ensure!(
+            meta.is_file(),
+            "unsupported file type in package: {}",
+            path.display()
+        );
+        let rel = path
+            .strip_prefix(base)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel == "manifest.json" {
+            continue;
+        }
+        anyhow::ensure!(
+            rel.len() <= MAX_PATH_LEN,
+            "path too long in package: {} bytes",
+            rel.len()
+        );
+        anyhow::ensure!(out.0.len() < MAX_FILES, "too many files in package");
+        out.0.push(FileEntry {
+            path: rel,
+            data: std::fs::read(&path)?,
+        });
+    }
+    Ok(())
+}
+
+/// Serialize a file map into a `.dpage` blob.
+///
+/// Exposed for callers that build packages without a `manifest.json`
+/// (mini-app packages carry a signed `mini.json` instead). Paths and sizes
+/// are validated here so every producer gets the same guarantees.
+pub fn pack_files(mut files: FileMap) -> anyhow::Result<Vec<u8>> {
+    files.0.sort_by(|a, b| a.path.cmp(&b.path));
+    anyhow::ensure!(!files.0.is_empty(), "package has no files");
+    anyhow::ensure!(files.0.len() <= MAX_FILES, "too many files in package");
+    let mut total = 0usize;
+    let mut previous: Option<&str> = None;
+    for entry in &files.0 {
+        anyhow::ensure!(
+            safe_rel_path(&entry.path),
+            "unsafe path in package: {:?}",
+            entry.path
+        );
+        anyhow::ensure!(
+            entry.path.len() <= MAX_PATH_LEN,
+            "path too long in package: {} bytes",
+            entry.path.len()
+        );
+        anyhow::ensure!(previous != Some(entry.path.as_str()), "duplicate path");
+        previous = Some(&entry.path);
+        total = total.saturating_add(entry.data.len());
+    }
+    anyhow::ensure!(
+        total <= MAX_DECOMPRESSED,
+        "uncompressed package exceeds {} bytes",
+        MAX_DECOMPRESSED
+    );
     let payload = zstd::stream::encode_all(bincode::serialize(&files)?.as_slice(), 6)?;
     Ok(format_blob(content_id(&files), payload))
 }
@@ -153,22 +220,26 @@ fn decode_capped(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
-pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
+/// A decoded package without interpreting any file as a manifest.
+#[derive(Clone, Debug)]
+pub struct RawPackage {
+    pub id: u32,
+    pub files: std::collections::BTreeMap<String, Vec<u8>>,
+}
+
+/// Decode the blob and validate every path/entry, without requiring
+/// `manifest.json`. Mini-app packages carry a signed `mini.json` instead.
+pub fn unpack_raw(blob: &[u8]) -> anyhow::Result<RawPackage> {
     let (version, id) = peek(blob)?;
     anyhow::ensure!(version == 1, "unsupported dpage version {version}");
-    let payload_len = u64::from_be_bytes(blob[12..20].try_into().unwrap()) as usize;
+    let payload_len = u64::from_be_bytes(blob[12..20].try_into().unwrap());
+    let actual_len = u64::try_from(blob.len() - STUB_LEN).context("payload size exceeds u64")?;
     anyhow::ensure!(
-        blob.len() == STUB_LEN + payload_len,
-        "length mismatch: stub says {payload_len}, blob has {}",
-        blob.len() - STUB_LEN
+        actual_len == payload_len,
+        "length mismatch: stub says {payload_len}, blob has {actual_len}"
     );
     let files: FileMap = bincode::deserialize(&decode_capped(&blob[STUB_LEN..])?)?;
-    let manifest_entry = files
-        .0
-        .iter()
-        .find(|f| f.path == "manifest.json")
-        .context("package lacks manifest.json")?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_entry.data)?;
+    anyhow::ensure!(files.0.len() <= MAX_FILES, "too many files in package");
     let mut map = std::collections::BTreeMap::new();
     for f in files.0 {
         // 一个条目越界就整包拒绝：带 `../` 的包不是"部分合法"，是恶意
@@ -177,12 +248,31 @@ pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
             "unsafe path in package: {:?}",
             f.path
         );
-        map.insert(f.path, f.data);
+        anyhow::ensure!(
+            f.path.len() <= MAX_PATH_LEN,
+            "path too long in package: {} bytes",
+            f.path.len()
+        );
+        anyhow::ensure!(
+            map.insert(f.path.clone(), f.data).is_none(),
+            "duplicate path in package: {:?}",
+            f.path
+        );
     }
+    Ok(RawPackage { id, files: map })
+}
+
+pub fn unpack(blob: &[u8]) -> anyhow::Result<Page> {
+    let raw = unpack_raw(blob)?;
+    let manifest_entry = raw
+        .files
+        .get("manifest.json")
+        .context("package lacks manifest.json")?;
+    let manifest: Manifest = serde_json::from_slice(manifest_entry)?;
     Ok(Page {
-        id,
+        id: raw.id,
         manifest,
-        files: map,
+        files: raw.files,
     })
 }
 
@@ -216,6 +306,19 @@ fn content_id(files: &FileMap) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_payload_lengths_are_errors_not_panics() {
+        for declared in [u64::MAX, u64::MAX - STUB_LEN as u64, 1u64 << 32, 1] {
+            let mut blob = format_blob(1, Vec::new());
+            blob[12..20].copy_from_slice(&declared.to_be_bytes());
+            let result = std::panic::catch_unwind(|| unpack(&blob));
+            assert!(result.expect("unpack must not panic").is_err());
+        }
+        for len in 0..STUB_LEN {
+            assert!(unpack(&vec![0; len]).is_err());
+        }
+    }
 
     fn make_demo_page(dir: &std::path::Path) {
         std::fs::create_dir_all(dir).unwrap();

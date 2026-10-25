@@ -65,6 +65,34 @@ pub trait RouteTable: Send + Sync + 'static {
     fn lease_ttl_ms(&self) -> u64 {
         0
     }
+
+    // ---- G03-04: generation-checked routes (see `Self::generations`) ------
+    /// Bind `user` to `hub_id` and return the generation the caller must present
+    /// to renew or clear it. `0` means "this table has no generations".
+    async fn bind_route(&self, user: &str, hub_id: &str) -> anyhow::Result<u64> {
+        self.bind_user(user, hub_id).await?;
+        Ok(0)
+    }
+
+    /// Extend the lease **only if `generation` is still the current one**.
+    async fn renew_route(&self, user: &str, hub_id: &str, generation: u64) -> anyhow::Result<bool> {
+        let _ = generation;
+        self.renew_user(user, hub_id).await?;
+        Ok(true)
+    }
+
+    /// Remove the route only when this connection still owns it. Returns whether
+    /// the row was actually cleared.
+    async fn clear_route(&self, user: &str, hub_id: &str, generation: u64) -> anyhow::Result<bool> {
+        let _ = generation;
+        self.unbind_user(user, hub_id).await?;
+        Ok(true)
+    }
+
+    /// Whether this table really implements generations.
+    fn generations(&self) -> bool {
+        false
+    }
 }
 
 /// At-least-once queue: entries carry an id and must be acknowledged.

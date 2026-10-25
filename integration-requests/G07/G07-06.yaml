@@ -1,0 +1,37 @@
+task_id: G07-06
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/146"
+summary: 生活缴费/捐赠与机酒演出医疗预订供应商适配器（真实 OrderService 集成）：账单 HMAC 验签与金额绑定、收款方校验、占位 TTL、医疗授权与转诊、敏感资料加密+审计、Saga 补偿。
+new_dependencies:
+  - package: chacha20poly1305
+    approved_version: "0.10"
+  - package: rand
+    approved_version: "0.8"
+route_mounts:
+  - prefix: /api/v1/services   # utilities/reservations 动作并入 services 前缀，按 action_id 路由
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::providers::{utilities,reservations})
+command_registration: wxlike_service_catalog::register_commands
+job_registration:
+  - name: reservations.holds.expire
+    note: 15 分钟占位过期释放（expire_holds）
+configuration:
+  - name: WXLIKE_BILL_HMAC_KEY
+    value_type: secret_reference_only
+  - name: WXLIKE_PROFILE_ENC_KEY
+    value_type: secret_reference_only
+  - name: WXLIKE_UTILITIES_VENDOR_CREDENTIAL
+    value_type: secret_reference_only
+  - name: WXLIKE_RESERVATION_VENDOR_CREDENTIAL
+    value_type: secret_reference_only
+migration_proposals:
+  - schema/proposals/G07/services.sql   # reservation offer/hold/booking/profile/audit/saga 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: []   # 无直接 entry；G00-01 扩量后补
+tests_evidence:
+  - crates/service-catalog/tests/utilities.rs（10 用例）
+  - crates/service-catalog/tests/reservations.rs（7 用例）
+compatibility: additive_new_domain
+rollback: remove_route_mounts_disable_hold_expiry_job
+external_blockers: [VENDOR_SANDBOX_CREDENTIALS, MEDICAL_INSTITUTION_AUTHORIZATION]

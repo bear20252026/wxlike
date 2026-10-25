@@ -1,0 +1,20 @@
+{
+  "scenario": "replay",
+  "contract": "commerce/v1",
+  "action": "webhook.payment",
+  "request": {
+    "raw_body": "{\"event_id\":\"evt-1\",\"intent_id\":\"{intent_id}\",\"kind\":\"succeeded\",\"provider_ref\":\"sbx_pi_1\",\"amount_minor\":9900,\"currency\":\"CNY\",\"timestamp_ms\":1700000000000}",
+    "signature": "{hmac_sha256_hex}"
+  },
+  "first_delivery": { "applied": true, "status": "succeeded" },
+  "second_delivery": { "status": "replay", "applied": false },
+  "expected": {
+    "wallet_credit": "9900",
+    "ledger_entries_for_payment": 2
+  },
+  "invariants": [
+    "伪造或过期签名返回 INVALID_SIGNATURE 且无副作用",
+    "重复 event_id 返回 REPLAY，不追加分录",
+    "金额/币种/provider_ref 与本地意图不一致时拒绝"
+  ]
+}

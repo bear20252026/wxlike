@@ -1,0 +1,10 @@
+{
+  "request": { "action": "download.authorize", "object_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+  "caller": "owner",
+  "response": {
+    "object_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "url": "/api/v1/objects/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef?exp=1766580000000&epoch=0&sig=9ab3c5d7e9f1a2b3",
+    "expires_at": 1766580000000,
+    "epoch": 0
+  }
+}

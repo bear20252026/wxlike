@@ -1,0 +1,63 @@
+{
+  "fixture_id": "services.games.entitlement_and_link",
+  "contract_version": "g07-draft-1",
+  "action_id": "services.games.purchase",
+  "category": "success_replay_boundary",
+  "description": "游戏：验签后才可上架；购买→授权→launch；退款撤销授权；外链强制净化。",
+  "publish_success": {
+    "action_id": "services.games.publish",
+    "request": { "package": { "package_id": "pkg-1", "version": "1.0.0", "signature": "valid-signature", "publisher_key_id": "pub-1", "regions": ["CN"], "program_sha256": "<64hex>" } },
+    "expected": { "published": true }
+  },
+  "publish_rejected": {
+    "request": { "signature": "bad-signature" },
+    "expected_error": { "code": "UNAUTHORIZED", "detail": "game signature rejected" }
+  },
+  "purchase_grants_entitlement": {
+    "request": { "card": "svc-game-cn", "package_id": "pkg-1", "region": "CN", "idempotency_key": "buy-1" },
+    "expected": { "order_state": "fulfilled", "entitlement_active": true, "launch_allowed": true }
+  },
+  "refund_revokes": {
+    "sequence": ["purchase 成功", "services.order.refund"],
+    "expected": { "entitlement_active": false, "launch": { "code": "UNAUTHORIZED", "detail": "entitlement missing" } }
+  },
+  "boundary_and_failure": [
+    {
+      "name": "region_mismatch",
+      "request": { "package_id": "pkg-1", "region": "US" },
+      "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "region unavailable" }
+    },
+    {
+      "name": "no_evidence_purchase",
+      "precondition": "GameService 无 SandboxEvidence",
+      "expected_error": { "code": "BLOCKED_EXTERNAL", "detail": "sandbox evidence missing" }
+    },
+    {
+      "name": "save_isolated",
+      "precondition": "usr-A 写 slot 0 后 usr-B 读同包同槽",
+      "expected_error": { "code": "NOT_FOUND", "detail": "save not found" }
+    },
+    {
+      "name": "save_slot_cap",
+      "precondition": "slot=8（有效槽 0..7）",
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "save slot" }
+    },
+    {
+      "name": "save_too_large",
+      "request": { "data": "<1000001 bytes>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "save size" }
+    }
+  ],
+  "external_link": {
+    "action_id": "services.games.external_link",
+    "sanitized": {
+      "input": "https://promo.example-game.com/landing?token=SECRET&utm=x",
+      "expected": { "url": "https://promo.example-game.com/landing", "domain": "promo.example-game.com", "data_scopes": [] }
+    },
+    "rejected": [
+      { "input": "http://promo.example-game.com/", "expected_error": { "code": "BLOCKED_EXTERNAL" } },
+      { "input": "https://user:pass@promo.example-game.com/", "expected_error": { "code": "BLOCKED_EXTERNAL" } },
+      { "input": "https://promo.example-game.com/\u0007x", "expected_error": { "code": "BLOCKED_EXTERNAL" } }
+    ]
+  }
+}

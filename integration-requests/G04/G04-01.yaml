@@ -1,0 +1,52 @@
+# G04-01 上传会话、对象权限与下载 —— 集成请求
+request_id: G04-01
+task_issue: 117
+group_issue: 85
+contract_version: media-v1
+branch: feat/FP-G04
+
+owned_artifacts:
+  - crates/features/media/**        # 新 crate wxlike-media（上传/授权/下载/HTTP）
+  - schema/proposals/G04/0001_media.sql
+  - contracts/domains/media/*
+  - integration-requests/G04/*
+
+g00_owned_changes:
+  - id: REQ-G00-root-manifest
+    target: G00-02
+    action: 根 Cargo.toml members 增加 "crates/features/media"；Cargo.lock 仅新增
+      wxlike-media 包条目（无第三方新依赖：tokio-util/hmac/libc 等均已在锁里）。
+      两处均已在本分支手改，请按 G00 串行合入，不改 [workspace.dependencies]。
+  - id: REQ-G00-server-mount
+    target: G00-02
+    action: server 组合根挂载 wxlike_media::MediaApp::router()：
+      MediaService::open(MediaConfig::new(object_root).with_signing_key(secret), db_path, audience_port)
+      + MediaApp::new(Arc::clone(service), 真实 SessionVerifier).router()。
+      上游 G02-01/G03 会话端口未就绪期间可用 http::StaticBearer（仅开发配置）。
+  - id: REQ-G00-migration-number
+    target: G00-03
+    action: 将 schema/proposals/G04/0001_media.sql 登记为正式迁移编号并纳入 registry；
+      回滚说明见文件头。
+  - id: REQ-G00-secret
+    target: G16
+    action: CI/部署环境提供 WXLIKE_MEDIA_SECRET（HMAC 签名密钥，多实例一致），
+      其余为可选：WXLIKE_FFMPEG_DIR、对象存储根目录路径。
+
+requests:
+  - id: REQ-G02-session-verifier
+    target: G02
+    action: 提供 SessionVerifier 实现（Authorization bearer -> user_id）注入
+      http::SessionVerifier trait；trait 已在本 crate 冻结，fixture 仅用于并行开发。
+  - id: REQ-G02-G03-audience-port
+    target: G02/G03
+    action: 实现 AudiencePort（may_read_conversation/may_read_group/visible_*）
+      注入 MediaService；当前 fixture 仅用于并行开发，最终集成验收必须换真实端口。
+  - id: REQ-G00-object-store
+    target: G00
+    action: 生产对象存储接 S3/OpenDAL 时实现 ObjectStore trait 替换 LocalObjectStore；
+      trait 已在本 crate 冻结（put_file/put_bytes/open/read_range/size/delete/upload_path/work_path/cache_path）。
+
+notes:
+  - 1GB 承诺：capability.max_object_bytes=1073741824，分片默认 8MiB，完成走
+    流式 SHA-256（64KiB 缓冲），全程不整文件进内存；真机 1GB 实测列入待验清单。
+  - 本卡未改 server/、根 router、迁移编号；如需临时起服务，按 REQ-G00-server-mount 手工装配。
