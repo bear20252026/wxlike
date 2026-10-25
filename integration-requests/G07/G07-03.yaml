@@ -1,0 +1,34 @@
+task_id: G07-03
+contract_version: g07-draft-1
+base_sha: f3c1a2cbf8276c019fd7a57f18d4b077bf8afc42
+owner: G07
+issue: "https://github.com/bear20252026/wxlike/issues/140"
+summary: 粗网格位置披露、附近的人、拉黑举报、摇一摇双人匹配；默认关闭、撤回即删、精确坐标不出库。
+new_dependencies:
+  - package: 沿用 G07-01 已申请集合（本卡不新增 crate 依赖）
+route_mounts:
+  - prefix: /api/v1/nearby
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::geo::GeoService)
+  - prefix: /api/v1/shake
+    factory: PENDING_G00_ASSEMBLY (wxlike_discovery::matching::ShakeMatcher)
+command_registration: wxlike_discovery::register_commands
+job_registration:
+  - name: geo.presence.ttl_cleanup
+    note: 过期 presence 行删除；撤回授权立即 DELETE 并确认 inbox
+configuration:
+  - name: WXLIKE_GEO_DEFAULT_TTL_MS
+    value_type: plain
+  - name: WXLIKE_GEO_MAX_TTL_MS
+    value_type: plain
+migration_proposals:
+  - schema/proposals/G07/discovery.sql   # geo_presence / geo_block / geo_report / shake / match 段
+generated_artifacts_request: [typescript_types, dart_types, cli_help, mcp_schema]
+entry_ids: []   # 无直接 entry；G00-01 扩量后补
+tests_evidence:
+  - crates/features/discovery/tests/geo_matching.rs 用例
+compatibility: additive_new_domain
+rollback: remove_new_route_mounts_disable_cleanup_job
+external_blockers: [REAL_DEVICE_GPS_TWO_DEVICES]
+notes:
+  - friends 可见性读取时必须经 G02 好友边复核
+  - 摇一摇需真机传感器实测（magnitude_g 与采样时间校验只防伪造样本，不替代真机验收）
