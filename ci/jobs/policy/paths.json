@@ -1,0 +1,63 @@
+{
+  "full_matrix_triggers": [
+    "ci/**",
+    ".github/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+    ".cargo/**",
+    "deny.toml",
+    "clippy.toml",
+    ".typos.toml",
+    "contracts/**",
+    "crates/types/**"
+  ],
+  "targets": {
+    "rust": [
+      "crates/**",
+      "server/**",
+      "scripts/**",
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain",
+      "rust-toolchain.toml",
+      ".cargo/**",
+      "deny.toml",
+      "clippy.toml"
+    ],
+    "contract": [
+      "contracts/**",
+      "crates/types/**",
+      "crates/core/src/envelope.rs",
+      "crates/core/src/proto.rs",
+      "ui/src/web/wire.ts",
+      "apps/mobile/lib/src/rust/**"
+    ],
+    "ui": [
+      "ui/**",
+      "scripts/build-web.sh"
+    ],
+    "desktop": [
+      "ui/**",
+      "ui/src-tauri/**"
+    ],
+    "mobile": [
+      "apps/mobile/**",
+      "crates/ffi/**"
+    ],
+    "ci": [
+      "ci/**",
+      ".github/**"
+    ]
+  },
+  "ignore": [
+    "docs/**",
+    "design/**",
+    "**/*.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    ".gitignore",
+    ".gitattributes"
+  ]
+}
