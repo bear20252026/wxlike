@@ -1,0 +1,27 @@
+schema: 1
+from: G16
+task: G16-05
+to: G00,G03,G16
+summary: Publish gate inputs that are still missing.
+requests:
+  - id: G16-05-PG
+    action: land the PostgreSQL profile and migrations
+    evidence: restore drill runs against PostgreSQL and reconcile returns ok
+    gap: G00-04-PG
+    blocking: true
+  - id: G16-05-TRACE
+    action: implement request/trace id as in G16-02-TRACE
+    evidence: runbooks can filter one operation id across HTTP, hub and wallet logs
+    gap: OBS-TRACE-ID
+    blocking: true
+  - id: G16-05-DEVICE
+    action: attach validated device evidence and signed mobile artifacts
+    evidence: release job validates evidence and uploads APK/AAB/IPA
+    gap: MOBILE-DEVICE-EVIDENCE
+    blocking: true
+  - id: G16-05-BACKUP
+    action: run restore-drill against a production snapshot and attach drill.json
+    evidence: RPO/RTO measured, not asserted; release manifest records the evidence
+notes:
+  - release.yml builds and signs without publishing when workflow_dispatch publish=false;
+    publication is blocked by any open release gap.

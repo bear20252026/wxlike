@@ -6,10 +6,6 @@ workflow *fragments*: `compose.py` merges them into the workflow files under
 `integration-requests/G16/G16-01.yaml`). G16 never edits `.github/workflows/`
 directly.
 
-本文件描述 G16 完成后的完整矩阵；片段按卡片逐 PR 落地（G16-01 只装配
-`build`/`contract`/`audit`，后续卡片加入 server/desktop、mobile、e2e/perf 与
-release）。
-
 ## Gate matrix (C0–C11)
 
 | Gate | Job | Blocking | Executes when | What it proves |

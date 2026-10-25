@@ -1,0 +1,62 @@
+# G09-05 直播、观看与恢复 —— 集成请求
+request_id: G09-05
+task_issue: 159
+group_issue: 90
+branch: feat/FP-G09-05
+contract: calls-v1
+paths:
+  - crates/rtc/src/live_session.rs
+  - crates/sfu/src/live.rs
+  - crates/rtc/tests/live.rs
+  - crates/sfu/tests/live_room.rs
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST /api/live/{stream_id}/start -> LiveServer::start"
+      - "POST /api/live/{stream_id}/watch -> LiveServer::watch"
+      - "POST /api/live/{stream_id}/leave -> LiveServer::leave"
+      - "POST /api/live/{stream_id}/stop -> LiveServer::stop"
+      - "POST /api/live/{stream_id}/cohost/request|approve|revoke"
+      - "POST /api/live/{stream_id}/report|ban"
+      - "POST /api/live/{stream_id}/archive -> LiveServer::set_archive"
+      - "POST /api/live/{stream_id}/playback -> LiveServer::set_playback"
+    note: 鉴权使用平台 user_id；主播/观众/连麦者三种 token scope 不得互换。
+
+requests:
+  - id: REQ-G05-feed
+    target: G05
+    action: 实现 LiveSideEffects 的 feed_live/feed_ended/source_revoked，
+      把直播状态同步到 Feed 卡片；停播必须先撤源。
+    rationale: 直播元数据归 G05，G09 不新建第二份 Feed 事实。
+
+  - id: REQ-G04-archive
+    target: G04
+    action: 实现 LiveSideEffects::archive_started/archive_stopped（可选录播/
+      HLS 任务），失败不得阻塞停播。
+    rationale: 归档是 G04 的存储任务，本卡只发命令。
+
+  - id: REQ-G07-force-stop
+    target: G07 / 治理
+    action: 违规直播调用 LiveServer::force_stop，并保留举报记录用于审计。
+    rationale: 治理需要不依赖主播本人的停播路径。
+
+  - id: REQ-G02-membership
+    target: G02
+    action: 开播/观看前用真实成员关系决定可看范围（群/好友/公开）；本卡
+      只管房间内角色，不复制关系算法。
+    rationale: 直播可见性属于社群域。
+
+acceptance_notes:
+  - 主播断网重连：live::host_reconnect_rolls_the_generation_and_old_tokens_die。
+  - 强制停播：live::non_host_cannot_stop_but_moderation_can_force_stop。
+  - 观众退房资源回收：live::viewer_count_dedupes_users_but_not_devices +
+    live_room::stop_reclaims_every_connection_and_refuses_late_joins。
+  - 观看不产生上行麦克风：live_room::only_host_and_cohost_publish（真 UDP）。
+  - 弱网恢复状态：live::playback_never_pretends_to_play_under_weak_network_or_autoplay_block。
+  - 停播立即撤源：live::stop_revokes_the_source_immediately_and_is_idempotent。
+
+verification:
+  - cargo test -p wxlike-rtc --test live                 # 13 例
+  - cargo test -p wxlike-sfu --test live_room            # 3 例

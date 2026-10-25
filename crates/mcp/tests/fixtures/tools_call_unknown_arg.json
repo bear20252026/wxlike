@@ -1,0 +1,12 @@
+{
+  "name": "未知参数按协议错误拒绝",
+  "description": "参数拼错不是业务失败：返回 -32602，调用方应当先修调用而不是重试。",
+  "setup": { "convs": ["*"], "write": true, "destructive": false, "initialize": true },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": { "name": "conv-unread", "arguments": { "conv": "g-1", "cnv": "typo" } }
+  },
+  "expect": { "error_code": -32602 }
+}

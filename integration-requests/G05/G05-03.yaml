@@ -1,0 +1,50 @@
+task: G05-03
+title: 收藏对象化、笔记版本冲突、表情包持久化
+issue: https://github.com/bear20252026/wxlike/issues/131
+branch: feat/FP-G05-03
+crate: wxlike-platform（favorites / notes / stickers 模块；G00 拆分后迁独立 crate）
+contract: favorites-v1
+paths:
+  - crates/platform/src/favorites.rs
+  - crates/platform/src/notes.rs
+  - crates/platform/src/stickers.rs
+  - crates/platform/src/db.rs（SCHEMA_G05 的 notes/stickers 段 + favorites 补列）
+  - crates/platform/tests/g05_content.rs
+  - schema/proposals/G05/content.sql
+
+root_registration:
+  - action: router_mount
+    prefix: /api
+    handlers:
+      - "POST+GET /api/favorites（消息收藏快照，P1 语义不变）"
+      - "GET+PUT+DELETE /api/favorites/{id}"
+      - "POST /api/favorites/objects -> 对象收藏（服务端鉴权+快照标签；同对象唯一）"
+      - "GET  /api/favorites/search?q= -> 只搜未撤权行"
+      - "POST /api/favorites/reorder -> 事务内校验后按给定顺序重排"
+      - "POST+GET /api/notes；GET+PUT+DELETE /api/notes/{id}；POST /api/notes/{id}/autosave"
+      - "POST+GET /api/stickers/packs；GET+DELETE /api/stickers/packs/{id}"
+      - "POST+DELETE /api/stickers/packs/{id}/install；GET /api/stickers；PUT+DELETE /api/stickers/{id}"
+    note: 复用既有挂载点
+  - action: schema
+    proposal: schema/proposals/G05/content.sql
+    tables: [notes, note_versions, sticker_packs, stickers, user_stickers]
+    alters:
+      - "favorites ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'message'"
+      - "favorites ADD COLUMN source_id TEXT NOT NULL DEFAULT ''"
+      - "favorites ADD COLUMN snapshot_label TEXT NOT NULL DEFAULT ''"
+      - "favorites ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+      - "favorites ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0"
+      - "CREATE UNIQUE INDEX idx_favorites_object ON favorites(user_id, source_kind, source_id) WHERE source_id <> ''（补列之后）"
+
+acceptance_notes:
+  - 消息收藏是快照（源删不撤）；对象收藏是引用（源删同事务撤权清正文）；两者共存于一张表靠 source_kind 区分
+  - 对象收藏先 content_visible 后落库——收藏别人的私密内容一律 404（防探测）
+  - 笔记 expected_version 不匹配返回 conflict（附当前版本）；autosave 不进 note_versions
+  - 表情包 license 白名单 cc0-1.0 / cc-by-4.0 / cc-by-sa-4.0 / agpl-3.0-only（仓库 AGPL-3.0-only，只收兼容许可）
+  - sticker 媒体必须本人上传的图片、≤5MB、包内 ≤100 张；安装幂等且保留用户自己的 sort_order
+
+tests:
+  - crates/platform/tests/g05_content.rs::notes_conflict_autosave_and_favorites_order
+  - crates/platform/tests/g05_content.rs::stickers_install_send_reinstall_and_license
+  - cargo test -p wxlike-platform --test g05_content
+  - cargo test -p wxlike-platform --test favorites（P1 消息收藏回归）

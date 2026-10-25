@@ -1,0 +1,41 @@
+card: G12-02
+issue: 165
+branch: feat/FP-G12-02
+contract_version: "1.0"
+summary: 实时消息页与本地投影——需要 Rust 侧事件订阅与投影刷新口径
+
+requests:
+  - id: G12-02-R1
+    kind: contract-gap
+    status: requested
+    owner: G01
+    reason: >-
+      卡面写的是 `messaging.list/send/subscribe/read`，但冻结在 origin/main 的口径是
+      `conv.list` / `conv.history` / `conv.ack` / `msg.send`。移动端当前只能通过
+      WxlikeService 轮询 `watch()` 模拟"实时"，真正的 `subscribe(EventCursor)` 还没有
+      Dart 绑定。没有它，前台立即收到桌面消息只能靠 2 秒轮询，不能满足卡面"立即显示"。
+    change:
+      file: crates/ffi/src/core_handle.rs
+      action: >-
+        在生成绑定中暴露事件游标订阅（与 desktop/web 的 subscribe(EventCursor) 同语义），
+        事件至少包含 kind/conv/msg_id/seq/unread；Dart 侧只消费，不在 UI 重新排序业务事实。
+    note: 轮询实现作为降级路径保留；订阅合入后不得删除失败分类与取消路径。
+
+  - id: G12-02-R2
+    kind: contract-gap
+    status: requested
+    owner: G03
+    reason: >-
+      `MessagePage.next_before_seq` 已可用于反向分页；但"未读定位"需要服务端返回首个未读 seq
+      或稳定 read cursor。当前移动端用 `head_seq - unread + 1` 推导，遇到删除/撤回会产生漂移。
+    change:
+      file: contracts/domains/messaging/contract.json
+      action: 增加 `first_unread_seq`（或等价字段）到未读快照，并写 fixture（含删除/撤回窗口）
+    note: 在字段落地前，UI 的未读分割线是近似值，PR 中已注明。
+
+  - id: G12-02-R3
+    kind: persistence
+    status: no-change
+    reason: >-
+      消息事实、去重与 outbox 全在 Rust；Dart 只保留当前可见分页（上限 400 条）。
+      本卡没有新增数据库迁移，回滚只需回退 Dart 文件。

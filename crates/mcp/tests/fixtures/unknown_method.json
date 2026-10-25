@@ -1,0 +1,7 @@
+{
+  "name": "未知方法返回 -32601",
+  "description": "协议层不认识的方法必须显式拒绝，不能当成通知吞掉。",
+  "setup": { "convs": [], "write": false, "destructive": false, "initialize": true },
+  "request": { "jsonrpc": "2.0", "id": 8, "method": "tools/delete" },
+  "expect": { "error_code": -32601 }
+}

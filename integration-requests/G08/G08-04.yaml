@@ -1,0 +1,70 @@
+# G08 integration requests executed by G00/G01/G02/G04/G11 (contract version: mini-catalog.v1).
+task: G08-04
+group: G08
+branch: feat/FP-G08-04
+requests:
+  - id: published-catalog
+    file: server
+    change: >-
+      Serve the reviewed catalog (search/recommend/fetch) from the publication
+      service: only reviewed, published versions, with capabilities and
+      publication status. This is the production CatalogSource behind
+      mini-catalog.v1.
+    owner: G01
+    reason: Category, search and recommendations must come from server-side
+      review, never from a local list bundled with the client.
+  - id: install-ledger
+    file: server
+    change: >-
+      Persist per-account install records keyed by (account, device, app,
+      version) and expose record/remove/devices. Add a forward migration and a
+      rollback that keeps the table readable by the previous release.
+    owner: G02
+    reason: "另一端安装记录一致" requires one server-side truth; local
+      installers alone cannot prove it.
+  - id: recent-sync
+    file: server
+    change: >-
+      Persist recents per account as {app_id, last_used, launches}; merge by
+      max(last_used) and max(launches). Sync is optional and must degrade to
+      local-only on timeout/offline.
+    owner: G02
+    reason: Recents are optional personal data; the client already tolerates
+      a degraded sync state.
+  - id: takedown-feed
+    file: server
+    change: >-
+      Emit takedown events (app_id, optional version, reason) from the risk
+      pipeline. The client revokes runtime sessions and blocks installs of the
+      affected versions; local user data is untouched until uninstall.
+    owner: G04
+    reason: Runtime revocation must originate from the risk/compliance process,
+      not from the client itself.
+  - id: catalog-commands
+    file: ui/src-tauri
+    change: >-
+      Mount mini.catalog.search/recommend/recent/favorite/install/upgrade/
+      uninstall as host commands with the same contract. apply_takedown is
+      host-internal only; never expose it to a guest WebView.
+    owner: G11
+    reason: The catalog orchestrator is Rust-side; the shell owns command
+      registration and must not expose takedown to guest code.
+router: none
+commands:
+  - mini.catalog.search
+  - mini.catalog.recommend
+  - mini.catalog.recent
+  - mini.catalog.favorite
+  - mini.catalog.install
+  - mini.catalog.upgrade
+  - mini.catalog.uninstall
+migrations: >-
+  None in wxlike-miniapps (no local database; install state is the existing
+  filesystem layout). The install-ledger and recent-sync tables are owned by
+  G02 and their forward/rollback migrations must ship there; this change only
+  defines the ports.
+notes: >-
+  Contract: contracts/domains/miniapps/mini-catalog.v1.json. In-memory source,
+  ledger, recents and wiper implement the same traits for tests/demo and are
+  replaced by G01/G02 adapters at integration. No root manifest, lock or
+  router change.

@@ -39,6 +39,15 @@ impl Default for BoaEngine {
 }
 
 impl BoaEngine {
+    /// New engine whose guest storage starts from a snapshot. Relaunches use
+    /// this to restore the app's saved data; the engine still owns the only
+    /// writable copy while guest code runs.
+    pub fn with_seed_storage(storage: BTreeMap<String, String>) -> Self {
+        let engine = Self::new();
+        BRIDGE.with(|bridge| bridge.borrow_mut().storage = storage);
+        engine
+    }
+
     pub fn new() -> Self {
         BRIDGE.with(|b| *b.borrow_mut() = BridgeState::default());
         let mut ctx = Context::default();

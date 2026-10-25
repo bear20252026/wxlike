@@ -1,0 +1,46 @@
+card: G12-04
+issue: 169
+branch: feat/FP-G12-04
+contract_version: "1.0"
+summary: 联系人与群资料——关系域命令未进入 FFI，需要绑定与契约字段对齐
+
+requests:
+  - id: G12-04-R1
+    kind: contract-gap
+    status: requested
+    owner: G01
+    reason: >-
+      G12 的 `RelationsPort` 按关系域语义实现，但 origin/main 的 FFI 只导出旧版 26 条命令，
+      `contracts/domains/relations/contract.json` 的命令（friend.*/group.*）也没有 Dart 绑定。
+      没有绑定就没有"所有操作来自 Rust 事件更新"的证据。
+    change:
+      file: crates/ffi/src/core_handle.rs
+      action: >-
+        经生成的 dispatch 面暴露关系域与资料域命令；至少覆盖：
+        friend.list、friend.search、friend.requests、friend.accept、friend.reject、
+        friend.cancel、friend.prefs.patch、friend.block、friend.unblock、friend.remove、
+        group.list、group.info、group.members.add、group.role.update、group.member.kick、
+        group.leave、identity.profile.get。
+    note: 命令名以 contracts/domains/relations/contract.json 为正典；本卡的端口名不是 action_id。
+
+  - id: G12-04-R2
+    kind: contract-gap
+    status: requested
+    owner: G02
+    reason: >-
+      `friend.list/search/requests` 与 `group.list/info` 在冻结契约里没有列出；
+      移动端需要分页形状（items/next_cursor/has_more/snapshot_version）与好友私有偏好版本号，
+      否则无法做稳定索引与 expected_version 并发控制。
+    change:
+      - contract: contracts/domains/relations/contract.json
+        action: 补查询类命令与分页/版本字段，附成功、空结果、越权、冲突 fixture
+      - action_id: identity.profile.get
+        action: 他人资料页（只返回公开字段+共同群，不含对方私有偏好）
+    note: 备注/标签/星标是本人私有数据，列表返回时必须区分 owner 视角。
+
+  - id: G12-04-R3
+    kind: schema
+    status: no-change
+    reason: >-
+      本卡没有客户端缓存 schema 变化；好友/群数据不落 Dart 数据库，不产生迁移编号。
+      回滚仅回退 Dart 文件，不影响服务端表。

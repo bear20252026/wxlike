@@ -1,0 +1,23 @@
+[package]
+name = "wxlike-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+sha2 = { workspace = true }
+hmac = "0.12"
+hex = { workspace = true }
+rand = { workspace = true }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rqrr = { version = "0.11", default-features = false, features = ["img"] }
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
