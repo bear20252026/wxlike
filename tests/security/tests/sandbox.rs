@@ -39,7 +39,9 @@ fn write_page(dir: &Path, main_js: &str) {
 fn infinite_loop_hits_the_budget() {
     let mut engine = BoaEngine::new();
     let started = std::time::Instant::now();
-    let err = engine.eval("while (true) {}").expect_err("死循环应当被预算打断");
+    let err = engine
+        .eval("while (true) {}")
+        .expect_err("死循环应当被预算打断");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),
         "打断死循环花了 {:?}：循环预算没生效或被设得过大",
@@ -72,7 +74,14 @@ fn all_loop_shapes_are_bounded() {
 #[test]
 fn host_capabilities_are_absent() {
     let mut engine = BoaEngine::new();
-    for name in ["require", "process", "fetch", "XMLHttpRequest", "Deno", "Bun"] {
+    for name in [
+        "require",
+        "process",
+        "fetch",
+        "XMLHttpRequest",
+        "Deno",
+        "Bun",
+    ] {
         let probe = format!("typeof {name}");
         let out = engine.eval(&probe).expect("typeof 探测应当可求值");
         assert!(

@@ -28,7 +28,11 @@ async fn unauth_private_surfaces_are_401() {
         "/api/notification-rules",
     ] {
         let (status, body) = call(&app, req("GET", path, None, None)).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path} 未登录应当 401，实际 {status} {body}");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{path} 未登录应当 401，实际 {status} {body}"
+        );
     }
 }
 
@@ -50,7 +54,12 @@ async fn other_users_group_info_is_denied() {
     // 成员列表同样不可读（这是"谁在这个群里"的枚举面）
     let (status, body) = call(
         &app,
-        req("GET", &format!("/api/groups/{gid}/members"), None, Some(&b_tok)),
+        req(
+            "GET",
+            &format!("/api/groups/{gid}/members"),
+            None,
+            Some(&b_tok),
+        ),
     )
     .await;
     assert_denied(status, &body, "非成员读成员列表");
@@ -112,21 +121,36 @@ async fn left_member_loses_access() {
     // 在群里时能读
     let (status, body) = call(
         &app,
-        req("GET", &format!("/api/groups/{gid}/members"), None, Some(&c_tok)),
+        req(
+            "GET",
+            &format!("/api/groups/{gid}/members"),
+            None,
+            Some(&c_tok),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "成员应当能读成员列表：{body}");
 
     let (status, body) = call(
         &app,
-        req("POST", &format!("/api/groups/{gid}/leave"), None, Some(&c_tok)),
+        req(
+            "POST",
+            &format!("/api/groups/{gid}/leave"),
+            None,
+            Some(&c_tok),
+        ),
     )
     .await;
     assert!(status.is_success(), "退群应当成功：{status} {body}");
 
     let (status, body) = call(
         &app,
-        req("GET", &format!("/api/groups/{gid}/members"), None, Some(&c_tok)),
+        req(
+            "GET",
+            &format!("/api/groups/{gid}/members"),
+            None,
+            Some(&c_tok),
+        ),
     )
     .await;
     assert_denied(status, &body, "退群后读成员列表");
@@ -148,7 +172,11 @@ async fn logged_out_token_is_unauthorized() {
     );
 
     let (status, body) = call(&app, req("GET", "/api/me", None, Some(&a_tok))).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "登出后旧 token 应当 401：{status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "登出后旧 token 应当 401：{status} {body}"
+    );
 }
 
 /// AUTHZ-006：B 撤销不了 A 的会话，且 A 的会话必须仍然可用。
@@ -184,7 +212,11 @@ async fn cross_user_session_revoke_has_no_effect() {
     assert_denied(status, &body, "跨用户撤销他人会话");
 
     let (status, body) = call(&app, req("GET", "/api/me", None, Some(&a_tok))).await;
-    assert_eq!(status, StatusCode::OK, "A 的会话被 B 打了一下就失效了：{body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "A 的会话被 B 打了一下就失效了：{body}"
+    );
 }
 
 /// AUTHZ-007：管理面必须真的要管理令牌（普通登录态和错令牌都不行）。
@@ -200,10 +232,8 @@ async fn admin_surface_requires_admin_token() {
     ] {
         let mut req = req("GET", "/api/admin/reports", None, token);
         if let Some(admin) = admin {
-            req.headers_mut().insert(
-                "x-admin-token",
-                admin.parse().expect("header value"),
-            );
+            req.headers_mut()
+                .insert("x-admin-token", admin.parse().expect("header value"));
         }
         let (status, body) = call(&app, req).await;
         assert_denied(status, &body, &format!("管理面（{label}）"));
@@ -216,7 +246,11 @@ async fn admin_surface_requires_admin_token() {
         common::ADMIN_TOKEN.parse().expect("header value"),
     );
     let (status, body) = call(&app, req).await;
-    assert_eq!(status, StatusCode::OK, "带正确管理令牌应当 200：{status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "带正确管理令牌应当 200：{status} {body}"
+    );
 }
 
 /// AUTHZ-008：媒体对象按属主隔离（未被引用的私有对象，别人拿不到）。
@@ -323,7 +357,10 @@ async fn wallet_balance_ignores_injected_user_id() {
 
     // 反向确认 B 的余额与 A 不同（否则上面的相等可能是"都是 0"的巧合）
     let (_status, b_own) = call(&app, req("GET", "/api/wallet/balance", None, Some(&b_tok))).await;
-    assert_eq!(b_own, own, "两个新账号初始余额都应为 0；若不等，本用例的对比失去意义");
+    assert_eq!(
+        b_own, own,
+        "两个新账号初始余额都应为 0；若不等，本用例的对比失去意义"
+    );
 }
 
 /// AUTHZ-011：写命令重复提交必须幂等（同 Idempotency-Key 不产生第二个群）。
@@ -459,7 +496,12 @@ async fn audit_surfaces_do_not_leak_secrets() {
     let (status, me) = call(&app, req("GET", "/api/me", None, Some(&tok))).await;
     assert_eq!(status, StatusCode::OK);
 
-    for path in ["/api/audit/self", "/api/sessions", "/api/me", "/api/devices"] {
+    for path in [
+        "/api/audit/self",
+        "/api/sessions",
+        "/api/me",
+        "/api/devices",
+    ] {
         let (status, body) = call(&app, req("GET", path, None, Some(&tok))).await;
         assert_eq!(status, StatusCode::OK, "{path}: {body}");
         let keys = json_keys(&body);

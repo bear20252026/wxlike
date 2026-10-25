@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .inventory import CARGO_LOCKS, NPM_LOCKS
 from .model import Report, Severity
 from .provenance import expires_ok
 from .util import DataError, load_json, read_text, repo_root, sha256_text, today
@@ -111,17 +112,14 @@ def _inventory(root: Path) -> dict[str, dict[str, set[str]]]:
 
     import tomllib
 
-    for rel, surface in (
-        ("Cargo.lock", "rust-root"),
-        ("ui/src-tauri/Cargo.lock", "desktop"),
-    ):
+    for rel, surface in CARGO_LOCKS:
         path = root / rel
         if not path.is_file():
             continue
         for pkg in tomllib.loads(read_text(path)).get("package", []):
             add(pkg.get("name", ""), pkg.get("version", ""), surface)
 
-    for rel, surface in (("ui/package-lock.json", "web"), ("design/ui-v2/package-lock.json", "design")):
+    for rel, surface in NPM_LOCKS:
         path = root / rel
         if not path.is_file():
             continue

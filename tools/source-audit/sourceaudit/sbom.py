@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .inventory import CARGO_LOCKS, NPM_LOCKS
 from .model import Report, Severity
 from .util import DataError, atomic_write, load_json, read_text, repo_root
 
@@ -71,25 +72,26 @@ def collect(root: Path) -> list[Component]:
 
 
 def _cargo(root: Path) -> Iterable[Component]:
-    lock = root / "Cargo.lock"
-    if not lock.is_file():
-        return []
-    data = tomllib.loads(read_text(lock))
     out = []
-    for pkg in data.get("package", []):
-        name, version = pkg.get("name"), pkg.get("version")
-        if not name or not version:
+    for rel, _surface in CARGO_LOCKS:
+        lock = root / rel
+        if not lock.is_file():
             continue
-        out.append(
-            Component(
-                type="library",
-                name=name,
-                version=version,
-                purl=f"pkg:cargo/{name}@{version}",
-                source="cargo-lock",
-                checksum=_checksum(pkg.get("checksum")),
+        data = tomllib.loads(read_text(lock))
+        for pkg in data.get("package", []):
+            name, version = pkg.get("name"), pkg.get("version")
+            if not name or not version:
+                continue
+            out.append(
+                Component(
+                    type="library",
+                    name=name,
+                    version=version,
+                    purl=f"pkg:cargo/{name}@{version}",
+                    source="cargo-lock" if rel == "Cargo.lock" else f"cargo-lock:{rel}",
+                    checksum=_checksum(pkg.get("checksum")),
+                )
             )
-        )
     return out
 
 
@@ -102,7 +104,7 @@ def _checksum(value: Any) -> str | None:
 
 def _npm(root: Path) -> Iterable[Component]:
     out = []
-    for rel in ("ui/package-lock.json", "design/ui-v2/package-lock.json"):
+    for rel, _surface in NPM_LOCKS:
         path = root / rel
         if not path.is_file():
             continue

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import notice, provenance, sbom
-from .model import Report, Severity
+from .model import Report
 from .util import EXIT_BLOCK, EXIT_OK, AuditError, repo_root
 
 

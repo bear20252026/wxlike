@@ -19,12 +19,12 @@
   "surfaces": {
     "rust-root": "Cargo.lock（服务端 + 库 + WASM 目标）",
     "desktop": "ui/src-tauri/Cargo.lock —— 独立解析，必须单独扫",
-    "web": "ui/package-lock.json",
-    "design": "design/ui-v2/package-lock.json 与 web 共用 lockfileVersion 3",
+    "web": "ui/package-lock.json + apps/desktop-web/package-lock.json",
+    "design": "design/ui-v2/prototype/package-lock.json（兼容旧 design/ui-v2/package-lock.json）",
     "mobile": "apps/mobile/pubspec.lock",
     "infra": "docker-compose.yml 的 image 引用 + Dockerfile 的 FROM",
     "system": "基础镜像内的 deb 包（ca-certificates、curl）。OSV 不覆盖 deb：由镜像扫描（Trivy/Grype）在部署流水线负责，本门禁只登记基础镜像引用并在变更时要求锁 digest",
-    "excluded": "tests/security（独立测试工程，不随产品分发；其依赖来自 workspace 已扫过的集合）"
+    "excluded": "tests/security 不随产品分发，产品 SBOM/跨生态准入不收录；其独立 Cargo.lock 另由 audit.yml 扫描，security.yml 用 --locked 执行"
   },
   "reachability": {
     "RUSTSEC-2026-0379": {

@@ -68,3 +68,9 @@ open_items:
   - CI 接线需 G00 执行（本文件 root_registration 第 1 条）
   - #230 / #245 两个产品补丁分别归 G03 / G14；合入后 G17 删 #[ignore] 与 exempt
   - 位置探测与金融守恒的滥用用例依赖 G07/G06 合入，届时补
+
+integration_update_2026_10_25:
+  pr: https://github.com/bear20252026/wxlike/pull/276
+  workflow: .github/workflows/security.yml
+  review: security/release-reviews/REVIEW-2026-10-25.md
+  note: 旧申请的历史发现保留；当前完成项与剩余阻塞以本轮复核和 blockers.json 为准。

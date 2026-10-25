@@ -63,22 +63,10 @@ jobs:
         with:
           workspaces: tests/security -> target
           key: security-${{ env.RUSTUP_TOOLCHAIN }}
-      # Temporary bootstrap for the first integration run. The resulting diff
-      # is reviewed and committed before replacing these steps with --locked.
-      - name: refresh independent test workspace
-        run: |
-          cargo fmt --manifest-path tests/security/Cargo.toml
-          cargo metadata --manifest-path tests/security/Cargo.toml --format-version 1 > /dev/null
-      - name: capture reviewed lock and format changes
-        if: always()
-        run: |
-          python - <<'PY'
-          import base64, subprocess, zlib
-          patch = subprocess.check_output(["git", "diff", "--binary", "--", "tests/security"])
-          print("WXLIKE_SECURITY_BOOTSTRAP_PATCH=" + base64.b64encode(zlib.compress(patch)).decode())
-          PY
+      - name: independent workspace format
+        run: cargo fmt --manifest-path tests/security/Cargo.toml --check
       - name: security regression
-        run: cargo test --manifest-path tests/security/Cargo.toml
+        run: cargo test --locked --manifest-path tests/security/Cargo.toml
       - name: upload crash inputs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

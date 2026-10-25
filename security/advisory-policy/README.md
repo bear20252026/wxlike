@@ -72,3 +72,5 @@ python -m sourceaudit advisories check --input audit.json   # 复用 cargo audit
 | **本门禁** | 跨生态（cargo / npm / pub / 容器镜像）、按锁文件分面、可达性判定、例外到期 |
 
 两者不重复：`cargo deny` 不知道桌面锁与根锁的区别，也不知道 `@vitejs/plugin-rsc` 装没装。
+
+2026-10-25：#239 的 ctutils 例外已移除，根/桌面锁均为 0.4.5。上面的例外 JSON 仅为字段示例，实际生效项以 `policy.json` 为准。最新离线复核见 `report-2026-10-25.md`，历史联网记录保留。

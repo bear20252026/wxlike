@@ -110,7 +110,13 @@ fn decompression_bomb_is_rejected() {
 /// 手工构造 `FileMap` 再压成合法 blob——攻击者能造，测试也要能造。
 #[test]
 fn package_with_traversal_entry_is_rejected() {
-    for evil in ["../evil.js", "/etc/passwd", "C:/windows/x", "a\\b.js", "a/../../b"] {
+    for evil in [
+        "../evil.js",
+        "/etc/passwd",
+        "C:/windows/x",
+        "a\\b.js",
+        "a/../../b",
+    ] {
         let files = FileMap(vec![
             FileEntry {
                 path: "manifest.json".into(),
@@ -136,7 +142,12 @@ fn package_with_traversal_entry_is_rejected() {
 /// FUZZ-005：`safe_rel_path` 的判定表（与包解析共用同一套标准）。
 #[test]
 fn safe_rel_path_matrix() {
-    let ok = ["main.js", "a/b.js", "deep/nested/path/file.bin", "a-b_c.1.js"];
+    let ok = [
+        "main.js",
+        "a/b.js",
+        "deep/nested/path/file.bin",
+        "a-b_c.1.js",
+    ];
     let bad = [
         "", ".", "..", "../x", "a/../b", "/abs", "C:/x", "a\\b", "a//b", "a/./b", "./a",
     ];
@@ -239,7 +250,10 @@ fn replay_minimized_corpus() {
             other => panic!("语料 {file} 的 verdict 非法：{other}"),
         }
     }
-    assert!(replayed >= 3, "reject 样本太少（{replayed}），语料可能被删空");
+    assert!(
+        replayed >= 3,
+        "reject 样本太少（{replayed}），语料可能被删空"
+    );
 }
 
 /// FUZZ-009：固定种子变异 fuzz，任何 panic 都必须失败，不再豁免 overflow。
@@ -249,7 +263,10 @@ fn mutation_fuzz_never_panics() {
     let iterations: usize = std::env::var("WXLIKE_FUZZ_ITERS")
         .map(|value| value.parse().expect("WXLIKE_FUZZ_ITERS 必须是整数"))
         .unwrap_or(2_000);
-    assert!((1_000..=200_000).contains(&iterations), "fuzz 次数必须在 1000..=200000");
+    assert!(
+        (1_000..=200_000).contains(&iterations),
+        "fuzz 次数必须在 1000..=200000"
+    );
     let dir = tmpdir("mutbase");
     write_page(&dir, "console.log('mutation baseline')");
     let baseline = pack_dir(&dir).expect("打包良性目录");
@@ -273,11 +290,17 @@ fn mutation_fuzz_never_panics() {
                 std::fs::create_dir_all(&path).expect("创建崩溃样本目录");
                 let sample = path.join(format!("mutation-{iteration}.hex"));
                 std::fs::write(&sample, hex::encode(&blob)).expect("保存可复现崩溃输入");
-                panic!("变异 fuzz 第 {iteration} 次触发 panic，样本：{}", sample.display());
+                panic!(
+                    "变异 fuzz 第 {iteration} 次触发 panic，样本：{}",
+                    sample.display()
+                );
             }
         }
     }
-    assert!(errors > iterations / 20, "仅 {errors}/{iterations} 个样本被拒绝");
+    assert!(
+        errors > iterations / 20,
+        "仅 {errors}/{iterations} 个样本被拒绝"
+    );
 }
 
 /// xorshift64*：确定性、无依赖。种子固定 → 失败可复现。

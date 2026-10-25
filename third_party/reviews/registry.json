@@ -84,7 +84,7 @@
       "commit": "57ef3edec3c124efa98a40dba29f3138eef187fc",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "local_sha256": "cc2dadd07bf0c4b3d69a371f2226a6e91635a0670118eac6b7ff1689835385c2",
       "patchlog": "third_party/reviews/patches/UP-TWEB-slicedArray.md",
       "used_by": "ui/src/msgIndex.ts（历史分页合并 + 实时插入）"
     },

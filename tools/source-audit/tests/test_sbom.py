@@ -29,6 +29,23 @@ class SbomTest(unittest.TestCase):
         sources = {c.source.split(":")[0] for c in sbom.collect(self.repo.root)}
         self.assertEqual(sources, {"cargo-lock", "npm-lock", "pubspec-lock", "dockerfile", "docker-compose"})
 
+    def test_desktop_lock_versions_are_not_hidden_by_root(self) -> None:
+        lock = self.repo.root / "ui/src-tauri/Cargo.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text('[[package]]\nname = "desktop-only"\nversion = "2.0.0"\n', encoding="utf-8")
+        comps = sbom.collect(self.repo.root)
+        self.assertTrue(any(c.name == "desktop-only" and c.source.endswith("ui/src-tauri/Cargo.lock") for c in comps))
+        sbom.write(self.repo.root, self.repo.root / "third_party/reviews/sbom/wxlike.cdx.json")
+        lock.write_text(lock.read_text().replace("2.0.0", "2.0.1"), encoding="utf-8")
+        self.assertTrue(sbom.check(self.repo.root).blocking, "桌面独立锁变化必须造成 SBOM 漂移")
+
+    def test_current_frontend_lock_locations_are_scanned(self) -> None:
+        paths = ("apps/desktop-web/package-lock.json", "design/ui-v2/prototype/package-lock.json")
+        for index, path in enumerate(paths):
+            self.repo.write_json(path, {"packages": {"node_modules/frontend-only": {"version": f"{index}.0.0"}}})
+        found = {c.source for c in sbom.collect(self.repo.root) if c.name == "frontend-only"}
+        self.assertEqual(found, {f"npm-lock:{path}" for path in paths})
+
     def test_generation_is_reproducible(self) -> None:
         first = sbom.build(self.repo.root)
         second = sbom.build(self.repo.root)
