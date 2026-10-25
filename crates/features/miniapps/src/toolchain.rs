@@ -328,7 +328,13 @@ impl DevServer {
         let target = parts.next().unwrap_or_default();
         let head_only = method == "HEAD";
         if method != "GET" && !head_only {
-            return reply(stream, HTTP_METHOD_NOT_ALLOWED, "text/plain", b"method not allowed\n", false);
+            return reply(
+                stream,
+                HTTP_METHOD_NOT_ALLOWED,
+                "text/plain",
+                b"method not allowed\n",
+                false,
+            );
         }
         let path = target.split('?').next().unwrap_or_default();
         let rel = match path.trim_start_matches('/') {
