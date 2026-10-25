@@ -44,7 +44,11 @@ async fn login(app: &Router, name: &str, device_id: &str) -> (String, String, St
         .as_str()
         .unwrap_or_else(|| panic!("login 必须下发 refresh_token: {body}"))
         .to_string();
-    (body["user_id"].as_str().unwrap().to_string(), token, refresh)
+    (
+        body["user_id"].as_str().unwrap().to_string(),
+        token,
+        refresh,
+    )
 }
 
 async fn refresh(app: &Router, raw: &str) -> (StatusCode, serde_json::Value) {
@@ -101,7 +105,11 @@ async fn replayed_refresh_token_kills_the_whole_chain() {
 
     // 链已废，连"合法的下一枚"也不能再用
     let (status, body) = refresh(&app, &second).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "重放后链应整体失效: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "重放后链应整体失效: {body}"
+    );
 }
 
 #[tokio::test]
