@@ -1,0 +1,40 @@
+# G10-04 ｜ 桌面系统与网页能力适配 ｜ 交给 G00 的根清单请求
+
+card: G10-04 (#158)
+branch: feat/FP-G10
+owner: G10
+contract_version: 1
+
+## 新增根依赖
+
+无（React 侧不引 @tauri-apps/*；桥接通过注入的 `window.__WXLIKE_TAURI__.invoke`，避免锁死 Tauri 版本到前端清单）。桌面壳的 Tauri Rust 依赖（tauri、tauri-plugin-*）由 G00/G02 的桌面壳清单登记。
+
+## 路由
+
+无新增。
+
+## command 挂载（需要 G00/G02 在 Tauri 桌面壳实现并挂载）
+
+UI 侧适配器 `src/shell/platform/tauri-platform.ts` 逐项真调用以下 command；平台返回的拒绝/不支持以 `DomainError`（UNSUPPORTED/DENIED/CANCELLED/FAILED）如实透出：
+
+- `platform_window`（action: minimize / toggle_maximize / close）
+- `platform_notification_state` / `platform_notification_request` / `platform_notify`
+- `platform_clipboard_write`
+- `platform_pick_file` / `platform_save_file`
+- `platform_screenshot`
+- `platform_autostart_get` / `platform_autostart_set`
+- `platform_shortcut_register` / `platform_shortcut_unregister`
+- `platform_tray_badge`
+- `platform_secret_get` / `platform_secret_set` / `platform_secret_delete`
+- `platform_read_file_chunk`（大文件分块读取，供 PickedFile.read(offset,length)）
+
+配套 Tauri 能力清单：窗口装饰、系统托盘、global-shortcut、autostart、notification、clipboard、dialog、fs（限 wxlike 目录）、OS keychain。小程序 WebView 不得继承主进程 IPC 权限（在 Tauri capability 中单独隔离）。
+
+## schema 编号
+
+无新增 schema。
+
+## 涉及的动作（entry_id / action_id）
+
+- entry: PlatformPort.window / clipboard / screenshot / files / notifications / autostart / shortcuts / tray / secrets
+- Web 降级策略：只用浏览器真实可用的 API（Notification、Clipboard、File System Access、`<input type=file>`、sessionStorage secrets），不支持即显示原因，不伪报成功。

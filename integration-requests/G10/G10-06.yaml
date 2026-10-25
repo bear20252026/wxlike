@@ -1,0 +1,34 @@
+# G10-06 ｜ 桌面扫码登录与新版界面字面承诺接线 ｜ 交给 G00 的根清单请求
+
+card: G10-06 (#160)
+branch: feat/FP-G10
+owner: G10
+contract_version: 1
+
+## 新增根依赖
+
+无。
+
+## 路由
+
+无新增；`#/login/qr`（公共路由，已登录会被守卫送回 `#/chats`）。
+
+## command 挂载
+
+无新增 Rust command。二维码渲染使用核心返回的 `qr_svg`（内联 SVG，data URI 展示）。
+
+## schema 编号
+
+无新增 schema。
+
+## 涉及的动作（entry_id / action_id）
+
+- entry: qr login state machine / account switch / sync range
+- action_id: identity.qr_login.create, identity.qr_login.cancel, identity.qr_login.switch_account, identity.session.projection, sync.range.get, sync.range.set
+- events: qr.state（CREATED/SCANNED/WAITING_APPROVAL/APPROVED/EXPIRED/REJECTED 六态全部来自核心）， session.state
+- 安全约定：
+  - 扫码成功不自动登录；桌面端没有任何能生产签发会话的确认入口（DEV 夹具模拟按钮仅 DEV 构建出现并明确标注）。
+  - 切换账号 = qr_login.switch_account 撤销旧 challenge + 清旧投影。
+  - 自动登录凭据存 OS 密钥库（PlatformPort.secrets）；Web 用会话级 secrets，不落 localStorage。
+  - 登录页“最高 1GB”承诺依赖 G04/G16 的流式上传/下载、取消、续传与 hash 实测，UI 只按真实能力承诺。
+  - ⌘K / Ctrl+K 打开全局搜索（应用内快捷键已接；全局快捷键经 PlatformPort.shortcuts，桌面真实注册）。
