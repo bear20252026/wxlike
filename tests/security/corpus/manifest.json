@@ -1,0 +1,41 @@
+{
+  "schema": "wxlike.fuzz-corpus.v1",
+  "updated_at": "2026-10-25",
+  "note": "语料是**历史崩溃/可疑样本的最小化形式**（hex，便于 diff 与复制）。新增样本的方式：把线上/本地 fuzz 命中的最小包存成 hex，加一条 manifest 记录来源与预期裁决。永远不要为了跑通去改样本。",
+  "verdicts": {
+    "reject": "必须返回 Err（unpack 不得成功）",
+    "blocked": "当前不是 Err 而是 panic：必须带 blocker + issue，并登记在 security/release-reviews/blockers.json"
+  },
+  "samples": [
+    {
+      "file": "s01_empty.hex",
+      "verdict": "reject",
+      "size": 0,
+      "why": "空 blob：连 stub 都不完整"
+    },
+    {
+      "file": "s02_bad_magic.hex",
+      "verdict": "reject",
+      "size": 20,
+      "why": "魔数换成 XXXX：靠 magic 挡掉非 dpage 数据"
+    },
+    {
+      "file": "s03_len_mismatch.hex",
+      "verdict": "reject",
+      "size": 20,
+      "why": "payload_len = u64::MAX：必须返回 Err，不得发生整数溢出或 panic（#229，PR #274）"
+    },
+    {
+      "file": "s04_garbage_payload.hex",
+      "verdict": "reject",
+      "size": 28,
+      "why": "长度自洽但 payload 不是 zstd：解压阶段必须拒绝"
+    },
+    {
+      "file": "s05_version2.hex",
+      "verdict": "reject",
+      "size": 20,
+      "why": "version=2：未支持的版本要明确拒绝，不能按 v1 硬解"
+    }
+  ]
+}

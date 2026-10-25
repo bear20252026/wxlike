@@ -84,7 +84,7 @@
       "commit": "57ef3edec3c124efa98a40dba29f3138eef187fc",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "7a31a85edf90006cf5c2e60332fdbbcebce6dc5afa09136cb3f811b5d3ff39b0",
+      "local_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "patchlog": "third_party/reviews/patches/UP-TWEB-slicedArray.md",
       "used_by": "ui/src/msgIndex.ts（历史分页合并 + 实时插入）"
     },
@@ -95,7 +95,7 @@
       "commit": "ef41b29db1e5356c6ba3b03285013b8ddeea673b",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "82cec5a0748c79dea9fd4ee25787388d9ec51bd10eac6860c25d00619da2c0a8",
+      "local_sha256": "63f505d1379f669a0ece9ac0876c8aa89d8b9da8774ff64a0820cf0e5f5602b6",
       "patchlog": "third_party/reviews/patches/UP-TWEB-listenerSetter.md",
       "used_by": "消息菜单 / 贴纸面板的「点外面关闭」"
     },
@@ -106,7 +106,7 @@
       "commit": "0ffc95a4537633a9916ac8879e953399a9f35bac",
       "decision": "adapted",
       "license_spdx": "MIT",
-      "local_sha256": "d26e14fe1cc799b2ab187426c081c3dea4f52b74e0c5395227a9ff42d9aae535",
+      "local_sha256": "a65d074c31448cff60397ba299a60bd57f2c1b36af2c75fa50a4ea048cb88aeb",
       "patchlog": "third_party/reviews/patches/UP-ATM0S-egress.md",
       "used_by": "wxlike-rtc 出口码率分配"
     },

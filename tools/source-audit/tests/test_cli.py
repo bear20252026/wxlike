@@ -9,6 +9,7 @@ import io
 import json
 import sys
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fixture import FakeRepo  # noqa: E402
 from sourceaudit import cli  # noqa: E402
-from sourceaudit.util import EXIT_BLOCK, EXIT_DATA, EXIT_OK  # noqa: E402
+from sourceaudit.util import EXIT_BLOCK, EXIT_DATA, EXIT_OK, DataError  # noqa: E402
 
 
 class CliTest(unittest.TestCase):
@@ -76,6 +77,11 @@ class CliTest(unittest.TestCase):
         with redirect_stdout(buf):
             code = cli.main(["notice", "check", "--root", "C:/Windows"])
         self.assertEqual(code, 2)
+
+    def test_all_does_not_downgrade_unavailable_gate_to_warning(self) -> None:
+        with patch("sourceaudit.cli.provenance.check", side_effect=DataError("missing evidence")):
+            code, _ = self.run_cli("all")
+        self.assertEqual(code, EXIT_DATA, "门禁无法执行时，all 不能返回成功")
 
     def test_cancel_maps_to_130(self) -> None:
         original = cli._dispatch

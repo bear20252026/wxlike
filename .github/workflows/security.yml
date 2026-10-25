@@ -1,0 +1,123 @@
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      release_review:
+        description: "Run the blocking release evidence review (requires online advisories)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUSTUP_TOOLCHAIN: "1.97.1"
+  CARGO_TERM_COLOR: always
+  PYTHONPATH: tools/source-audit
+
+jobs:
+  static:
+    name: security (source + policy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: tool regression tests
+        run: python -m unittest discover -s tools/source-audit/tests
+      - name: provenance
+        run: python -m sourceaudit provenance check --root .
+      - name: SBOM drift
+        run: python -m sourceaudit sbom check --root .
+      - name: NOTICE coverage
+        run: python -m sourceaudit notice check --root .
+      - name: offline advisory policy
+        run: python -m sourceaudit advisories check --root . --offline
+      - name: authorization matrix
+        run: python -m sourceaudit authz check --root .
+
+  regression:
+    name: security (authz + abuse + decode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      WXLIKE_FUZZ_ITERS: ${{ github.event_name == 'schedule' && '200000' || '2000' }}
+      WXLIKE_FUZZ_CRASH_DIR: ${{ github.workspace }}/security-crashes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: tests/security -> target
+          key: security-${{ env.RUSTUP_TOOLCHAIN }}
+      # Temporary bootstrap for the first integration run. The resulting diff
+      # is reviewed and committed before replacing these steps with --locked.
+      - name: refresh independent test workspace
+        run: |
+          cargo fmt --manifest-path tests/security/Cargo.toml
+          cargo metadata --manifest-path tests/security/Cargo.toml --format-version 1 > /dev/null
+      - name: capture reviewed lock and format changes
+        if: always()
+        run: |
+          python - <<'PY'
+          import base64, subprocess, zlib
+          patch = subprocess.check_output(["git", "diff", "--binary", "--", "tests/security"])
+          print("WXLIKE_SECURITY_BOOTSTRAP_PATCH=" + base64.b64encode(zlib.compress(patch)).decode())
+          PY
+      - name: security regression
+        run: cargo test --manifest-path tests/security/Cargo.toml
+      - name: upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: security-crashes-${{ github.run_id }}
+          path: security-crashes
+          if-no-files-found: ignore
+          retention-days: 14
+
+  online:
+    name: security (online advisories)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: online advisory review
+        run: python -m sourceaudit advisories check --root . --timeout 20
+
+  release-review:
+    name: security (release evidence)
+    if: github.event_name == 'workflow_dispatch' && inputs.release_review
+    needs: [static, regression, online]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: evaluate release evidence
+        run: python -m sourceaudit release check --root . --json > release-review.json
+      - name: preserve release verdict
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-review-${{ github.run_id }}
+          path: release-review.json
+          if-no-files-found: error

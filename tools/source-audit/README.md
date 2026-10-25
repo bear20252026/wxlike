@@ -14,7 +14,7 @@ tools/source-audit/
 │   ├── advisories.py   # 公告 → 可达性 → 门禁（G17-02）
 │   ├── authz.py        # 源码路由 ↔ 授权矩阵 ↔ 用例（G17-03）
 │   └── release.py      # 证据包 → pass/block（G17-05）
-└── tests/              # 41 个用例（unittest，无依赖）
+└── tests/              # unittest（零第三方依赖）
 ```
 
 ## 跑法
@@ -72,6 +72,10 @@ PY
 
 ## 与 CI 的关系
 
-当前仓库的 `quality` job 只跑 `scripts/quality-gate.py` 与 `cargo deny`。
-把本工具接进 CI 需要改根 workflow（G00 独占），申请写在
-`integration-requests/G17/G17-0*.yaml`。工具本身可在任何机器上零依赖运行。
+独立 `.github/workflows/security.yml` 在 PR / main 上执行工具回归、provenance、
+SBOM、NOTICE、离线 advisories、authz，以及独立 Rust 安全测试。
+每日任务扩大变异 fuzz 至 200000 次并联网复核公告；手工勾选 `release_review`
+会在前置检查成功后执行发布评审，存在真实阻塞就返回失败。
+`all` 遇到数据缺失或网络异常返回 4，不会将门禁不可用降成警告。
+
+新增接线与负向验收证据见 `security/release-reviews/REVIEW-2026-10-25.md`。

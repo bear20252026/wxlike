@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -116,8 +117,9 @@ class RepoRootTest(unittest.TestCase):
         self.assertTrue((root / "crates").is_dir())
 
     def test_repo_root_refuses_random_dir(self) -> None:
-        with self.assertRaises(DataError):
-            repo_root(Path("C:/Windows"))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(DataError):
+                repo_root(Path(directory))
 
 
 if __name__ == "__main__":
