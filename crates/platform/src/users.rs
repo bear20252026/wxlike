@@ -118,6 +118,9 @@ fn client_key(
 pub struct AuthReply {
     pub user_id: String,
     pub token: String,
+    /// 刷新令牌（G02-01）。注册/登录都会发；老客户端忽略该字段即可。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -331,7 +334,10 @@ async fn register(
         &req.device_name,
         client.as_deref().unwrap_or(""),
     )?;
-    Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
+    Ok((
+        StatusCode::OK,
+        Json(auth_reply(&platform, user_id, token, "")),
+    ))
 }
 
 /// 重新 enroll 时要求带上**当前第二因子或密码**（issue #5）。
@@ -446,7 +452,49 @@ async fn login(
         client.as_deref().unwrap_or(""),
     )?;
     platform.audit(&user_id, "user.login", &user_id, "ok");
-    Ok((StatusCode::OK, Json(AuthReply { user_id, token })))
+    Ok((
+        StatusCode::OK,
+        Json(auth_reply(&platform, user_id, token, &req.device_id)),
+    ))
+}
+
+/// 登录/注册的统一回包：顺手挂一条刷新链（G02-01）。
+///
+/// 刷新链签发失败只记日志——登录本身已经成功，客户端可以退回到
+/// "过期重新登录"，不该因为刷新链的问题让登录失败。
+fn auth_reply(
+    platform: &PlatformState,
+    user_id: String,
+    token: String,
+    device_id: &str,
+) -> AuthReply {
+    let refresh_token = mint_refresh(platform, &user_id, &token, device_id);
+    AuthReply {
+        user_id,
+        token,
+        refresh_token,
+    }
+}
+
+/// 为刚建立的访问会话挂一条刷新链（G02-01）。失败只记日志：登录本身已经
+/// 成功，客户端可以退回到"过期重新登录"。
+fn mint_refresh(
+    platform: &PlatformState,
+    user_id: &str,
+    token: &str,
+    device_id: &str,
+) -> Option<String> {
+    let sid = match platform.session_sid(token) {
+        Ok(Some(sid)) => sid,
+        _ => return None,
+    };
+    match platform.issue_refresh(user_id, &sid, device_id) {
+        Ok(raw) => Some(raw),
+        Err(err) => {
+            eprintln!("[platform] refresh chain not issued: {err:#}");
+            None
+        }
+    }
 }
 
 async fn me(

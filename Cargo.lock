@@ -6739,6 +6739,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-miniapps"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-dpage",
+]
+
+[[package]]
 name = "wxlike-moderation"
 version = "0.1.0"
 dependencies = [
@@ -6821,8 +6836,10 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-identity",
  "wxlike-message",
  "wxlike-moderation",
+ "wxlike-relations",
  "wxlike-report",
  "wxlike-risk",
  "wxlike-rtc",
