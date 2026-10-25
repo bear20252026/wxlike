@@ -1,0 +1,52 @@
+request: G06-01
+owner: G06
+task_issue: 127
+branch: feat/FP-G06
+status: ready-for-G00
+depends_on:
+  - G00-02 (#100) 新建 crates/features 与 contracts 目录
+  - G00-03 (#101) contract-v1 冻结
+code_paths:
+  - crates/ledger/src/lib.rs
+  - crates/ledger/src/model.rs
+  - crates/ledger/src/schema.rs
+  - crates/ledger/src/store.rs
+  - crates/ledger/tests/conservation.rs
+  - crates/features/commerce/src/accounts.rs
+  - crates/features/commerce/src/store.rs
+  - crates/features/commerce/src/schema.rs
+workspace:
+  add_members:
+    - crates/features/commerce
+  note: >-
+    本地已在根 Cargo.toml members 中登记；该行由 G00 串行合入并解决与其它组的冲突。
+routes:
+  mount:
+    - action: balance.get
+      method: POST
+      path: /api/v1/commerce/actions/balance.get
+    - action: statement.page
+      method: POST
+      path: /api/v1/commerce/actions/statement.page
+commands:
+  registry: commerce
+  actions: [balance.get, statement.page]
+config:
+  secrets: []
+  settings:
+    - key: commerce.db.path
+      note: 与业务表共用同一 SQLite/PG 连接，禁止拆到独立连接池之外
+migrations:
+  - proposal: schema/proposals/G06/0001_ledger_commerce.sql
+    rollback: schema/proposals/G06/ROLLBACK.md
+    number: G00-assigned
+jobs: []
+evidence:
+  tests: cargo test -p wxlike-ledger -p wxlike-commerce --test g06_01_accounts
+  invariants:
+    - 余额由分录导出，无可变余额列
+    - 业务键唯一，同键换金额返回 LEDGER/IDEMPOTENCY_CONFLICT
+    - 跨币种拒绝隐式相加
+acceptance_dependencies:
+  - G02-01 (#103) 真实身份主体，用于把 actor 从 session 推导
+  - G00-04 (#104) 组合根装配

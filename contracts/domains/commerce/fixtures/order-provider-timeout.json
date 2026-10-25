@@ -1,0 +1,19 @@
+{
+  "scenario": "timeout-recovery",
+  "contract": "commerce/v1",
+  "action": "order.pay",
+  "actor": "buyer",
+  "setup": { "amount": "12.00", "currency": "CNY", "provider_fault": "timeout" },
+  "first_attempt": { "expected_error": "PROVIDER_TIMEOUT" },
+  "after_first": { "order_status": "created", "payment_intent_id": null },
+  "retry": { "idempotency_key": "same-as-first", "expected_order_status": "paid" },
+  "expected": {
+    "seller_wallet_credit": "1200",
+    "order_status_after_fulfil": "fulfilled"
+  },
+  "invariants": [
+    "超时不本地写已支付",
+    "重试沿用同一幂等键，只入账一笔",
+    "支付成功不自动履约"
+  ]
+}
