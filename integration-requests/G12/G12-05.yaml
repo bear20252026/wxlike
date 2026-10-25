@@ -1,0 +1,73 @@
+card: G12-05
+issue: 171
+branch: feat/FP-G12-05
+contract_version: "1.0"
+summary: Android/iOS 原生平台能力——Dart 通道已定义，宿主实现与清单权限需 G00/G16 落地
+
+requests:
+  - id: G12-05-R1
+    kind: native-bridge
+    status: requested
+    owner: G00
+    reason: >-
+      `apps/mobile/lib/platform/method_channel_platform.dart` 只定义通道与失败映射；
+      Kotlin/Swift 实现属于 `apps/mobile/android/**`、`apps/mobile/ios/**`，不在 G12 写权限内。
+      没有宿主实现时，Dart 侧会明确报 PLATFORM_UNWIRED，不会假装权限已授予。
+    change:
+      - file: apps/mobile/android/app/src/main/kotlin/com/wxlike/wxlike_mobile/MainActivity.kt
+        action: 注册 MethodChannel `wxlike/platform` 与 EventChannel `wxlike/platform/network`、`wxlike/platform/links`
+      - file: apps/mobile/ios/Runner/AppDelegate.swift
+        action: 注册同名通道，处理 UNUserNotificationCenter 与 URL open
+    method_contract:
+      permission.status: "args {permission}; return granted|limited|denied|permanentlyDenied|restricted"
+      permission.request: "同上；拒绝时用 PERMISSION_DENIED/PERMISSION_PERMANENT"
+      settings.open: "args {page: app|notifications|location}"
+      photo.pick: "返回 {ref,kind,name,mime_type,bytes,duration_ms} 或 null；取消用 USER_CANCELED"
+      photo.capture: "同上"
+      file.pick: "同上"
+      voice.start: "开始录音（先检查麦克风权限）；被通话占用时抛 UNAVAILABLE"
+      voice.stop: "args {cancel}; cancel=true 必须释放录音器并返回 null"
+      audio.play: "args {ref}；远端语音播放"
+      audio.stop: "停止播放并释放音频焦点"
+      audio.route: "args {on}; 听筒/扬声器切换"
+      location.current: "{latitude,longitude,accuracy_m,captured_at_ms}；离页后停止定位"
+      gallery.save: "args {ref}; 保存到系统相册"
+      secret.read/write/delete: "args {key[,value]}；走 Keychain/EncryptedSharedPreferences，不落明文文件"
+      push.token: "{platform,token} 或 null（未配置 FCM/APNs）"
+      push.revoke: "退出登录时撤销本机 token；服务端无删除端点时由调用方显示失败"
+    note: >-
+      关闭麦克风/摄像头/定位必须发生在 cancel 或页面 dispose 后；真机验收要逐权限记录，
+      模拟器通过不算双端通过。
+
+  - id: G12-05-R2
+    kind: manifest
+    status: requested
+    owner: G00
+    reason: 权限声明必须与用户可见用途一致，多申请一项就是多一条审核风险。
+    change:
+      - file: apps/mobile/android/app/src/main/AndroidManifest.xml
+        action: >-
+          按需声明 CAMERA、RECORD_AUDIO、READ_MEDIA_IMAGES、ACCESS_FINE_LOCATION、
+          POST_NOTIFICATIONS、READ_MEDIA_VISUAL_USER_SELECTED；不要声明未使用权限。
+      - file: apps/mobile/ios/Runner/Info.plist
+        action: >-
+          NSCameraUsageDescription、NSMicrophoneUsageDescription、NSPhotoLibraryUsageDescription、
+          NSPhotoLibraryAddUsageDescription、NSLocationWhenInUseUsageDescription；
+          后台音频仅在通话需要时声明。
+    note: 权限文案需产品确认；缺文案会导致 iOS 审核直接拒绝。
+
+  - id: G12-05-R3
+    kind: push
+    status: requested
+    owner: G16
+    reason: APNs/FCM 凭据与 token 生命周期不在 G12 的仓库路径内，本地也没有签名环境。
+    change:
+      - action: Android 集成 FCM，token 刷新时更新通道 `push.token` 的缓存
+      - action: iOS 集成 APNs，注册 UNUserNotificationCenter，前台/后台回调转给 Rust
+      - action: 退出登录调用 push.revoke，再清本机会话
+    note: 没有凭据时登记的验收状态是 BLOCKED，不能写 PASS。
+
+  - id: G12-05-R4
+    kind: pubspec
+    status: no-change
+    reason: 当前实现零插件；若宿主选择 permission_handler/record 等插件替代手写通道，需 G00 统一加依赖并锁版本。
