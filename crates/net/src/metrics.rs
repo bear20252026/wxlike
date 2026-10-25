@@ -46,36 +46,8 @@ impl HubMetrics {
         let id = hub_id.into().clone();
         // Describe the series up front so a cold hub (zero connections, zero
         // messages) still exposes them on the first scrape.
-        metrics::describe_gauge!(
-            "wxlike_hub_connections",
-            metrics::Unit::Count,
-            "users currently bound to this hub"
-        );
-        metrics::describe_counter!(
-            "wxlike_hub_messages_total",
-            metrics::Unit::Count,
-            "envelopes accepted for routing"
-        );
-        metrics::describe_gauge!(
-            "wxlike_offline_parked",
-            metrics::Unit::Count,
-            "frames parked for offline users"
-        );
-        metrics::describe_histogram!(
-            "wxlike_delivery_seconds",
-            metrics::Unit::Seconds,
-            "inbound to routing-done latency"
-        );
-        metrics::describe_counter!(
-            "wxlike_rate_limit_sleep_total",
-            metrics::Unit::Count,
-            "frames delayed by the send gate"
-        );
-        metrics::describe_counter!(
-            "wxlike_rate_limit_reject_total",
-            metrics::Unit::Count,
-            "frames dropped by the send gate"
-        );
+        describe_series();
+
         // describe_* alone does not materialize a series in the exporter
         // (describe-only render is empty), so record the info gauge now: a
         // cold hub still produces a non-empty exposition that identifies it.
@@ -131,6 +103,86 @@ impl HubMetrics {
         )
         .increment(1);
     }
+
+    /// Which protocol a connection negotiated (G03-04: "旧协议兼容可观察").
+    ///
+    /// A v2 series that never reaches zero is the migration report: it says how
+    /// many clients still cannot send a stored ack, which is exactly what an
+    /// operator needs before turning the legacy path off.
+    pub fn protocol_negotiated(&self, version: u8) {
+        metrics::counter!(
+            "wxlike_hub_protocol_total",
+            "hub" => self.hub_id.clone(),
+            "version" => version.to_string()
+        )
+        .increment(1);
+    }
+
+    /// A frame or connection was refused by a [`crate::policy::Limits`] ceiling.
+    pub fn limit_dropped(&self, limit: &'static str) {
+        metrics::counter!(
+            "wxlike_hub_limit_dropped_total",
+            "hub" => self.hub_id.clone(),
+            "limit" => limit.to_string()
+        )
+        .increment(1);
+    }
+
+    /// Rows written to a socket but not yet acknowledged as stored.
+    pub fn inflight_unacked(&self, delta: i64) {
+        metrics::gauge!("wxlike_hub_inflight_unacked", "hub" => self.hub_id.clone())
+            .increment(delta as f64);
+    }
+}
+
+/// Declare every series up front so a cold hub (zero connections, zero messages)
+/// still exposes a non-empty exposition that identifies it.
+fn describe_series() {
+    metrics::describe_gauge!(
+        "wxlike_hub_connections",
+        metrics::Unit::Count,
+        "users currently bound to this hub"
+    );
+    metrics::describe_counter!(
+        "wxlike_hub_messages_total",
+        metrics::Unit::Count,
+        "envelopes accepted for routing"
+    );
+    metrics::describe_gauge!(
+        "wxlike_offline_parked",
+        metrics::Unit::Count,
+        "frames parked for offline users"
+    );
+    metrics::describe_histogram!(
+        "wxlike_delivery_seconds",
+        metrics::Unit::Seconds,
+        "inbound to routing-done latency"
+    );
+    metrics::describe_counter!(
+        "wxlike_rate_limit_sleep_total",
+        metrics::Unit::Count,
+        "frames delayed by the send gate"
+    );
+    metrics::describe_counter!(
+        "wxlike_rate_limit_reject_total",
+        metrics::Unit::Count,
+        "frames dropped by the send gate"
+    );
+    metrics::describe_counter!(
+        "wxlike_hub_protocol_total",
+        metrics::Unit::Count,
+        "connections by negotiated protocol version (2 = legacy ack-on-write)"
+    );
+    metrics::describe_counter!(
+        "wxlike_hub_limit_dropped_total",
+        metrics::Unit::Count,
+        "frames or connections refused by a configured ceiling"
+    );
+    metrics::describe_gauge!(
+        "wxlike_hub_inflight_unacked",
+        metrics::Unit::Count,
+        "frames written to a socket but not yet acked as stored"
+    );
 }
 
 static HANDLE: OnceLock<Option<PrometheusHandle>> = OnceLock::new();

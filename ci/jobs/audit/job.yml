@@ -1,0 +1,139 @@
+jobs:
+  audit:
+    name: audit
+    needs: [select]
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - name: install CI tooling
+        run: python -m pip install --disable-pip-version-check pyyaml==6.0.3
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # taiki-e/install-action@v2
+        with:
+          tool: typos-cli,cargo-deny,cargo-audit
+      - name: C10 quality metrics (only worse is red)
+        run: python scripts/quality-gate.py
+      - name: C10 typos
+        run: typos
+      - name: C10 license / advisory / source policy
+        run: cargo deny check
+      - name: C10 root lock is closed
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: C10 desktop lock is closed
+        run: cargo metadata --locked --format-version 1 > /dev/null
+        working-directory: ui/src-tauri
+      - name: C10 root advisory audit
+        run: cargo audit
+      - name: C10 desktop advisory audit
+        run: cargo audit
+        working-directory: ui/src-tauri
+      - name: C10 action pins and workflow policy
+        run: |
+          python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --pins-only
+          python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml
+      - name: C10 composed workflows match the checked-in fragments
+        run: python ci/jobs/compose.py --check
+
+  coverage:
+    name: coverage
+    needs: [select]
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component llvm-tools-preview
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: C11 measure (blocking)
+        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - name: C11 incremental security-path gate
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CI_BASE_SHA:-}" ] || [ "${CI_BASE_SHA:-}" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base sha: security-path diff cannot be measured" >&2
+            exit 1
+          fi
+          python ci/jobs/build/check_coverage.py --lcov lcov.info
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: warn
+
+  unwrap:
+    name: unwrap
+    needs: [select]
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: C11 repository baseline may only go down
+        run: python scripts/count_unwraps.py --fail-on-increase --details
+      - name: C11 no new unwrap/expect in critical paths
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CI_BASE_SHA:-}" ] || [ "${CI_BASE_SHA:-}" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base sha: added-line scan cannot be measured" >&2
+            exit 1
+          fi
+          python ci/jobs/build/check_added_unwraps.py
+
+  gate:
+    name: gate
+    needs:
+      - select
+      - fmt
+      - clippy
+      - test
+      - native
+      - doc
+      - wasm
+      - contract
+      - ui
+      - flutter
+      - audit
+      - coverage
+      - unwrap
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: C0-C11 gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python ci/jobs/build/gate.py
+      - name: report known gaps (non-blocking daily; release blocks)
+        run: python ci/jobs/build/check_gaps.py
