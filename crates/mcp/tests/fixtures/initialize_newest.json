@@ -1,0 +1,18 @@
+{
+  "name": "initialize 协商到最新已知版本",
+  "description": "客户端报 2025-06-18：服务端原样回，并声明 tools/resources 能力。",
+  "setup": { "convs": [], "write": false, "destructive": false, "initialize": false },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": "fixture", "version": "0" } }
+  },
+  "expect": {
+    "equals": {
+      "result.protocolVersion": "2025-06-18",
+      "result.serverInfo.name": "wxlike"
+    },
+    "present": ["result.capabilities.tools", "result.capabilities.resources"]
+  }
+}

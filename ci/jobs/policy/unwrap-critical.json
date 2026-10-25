@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "note": "Any added unwrap()/expect() on these paths fails C11. Keep this list aligned with the security and money path.",
+  "paths": [
+    "crates/core/src/crypto.rs",
+    "crates/core/src/crypto/**",
+    "crates/core/src/envelope.rs",
+    "crates/core/src/e2ee.rs",
+    "crates/platform/src/auth.rs",
+    "crates/platform/src/users.rs",
+    "crates/platform/src/wallet.rs",
+    "crates/platform/src/keys.rs",
+    "crates/platform/src/sessions.rs",
+    "crates/platform/src/perms.rs",
+    "crates/platform/src/trust.rs",
+    "crates/platform/src/reconcile.rs",
+    "crates/ledger/src/**",
+    "crates/risk/src/**",
+    "crates/limits/src/**",
+    "server/src/lib.rs",
+    "server/src/main.rs"
+  ]
+}

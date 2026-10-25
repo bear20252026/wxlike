@@ -1,0 +1,30 @@
+{
+  "contract_version": "favorites-v1",
+  "case": "笔记乐观锁：expected_version 不匹配返回 conflict 且当前版本随错误体返回；autosave 不产生版本历史",
+  "steps": [
+    {
+      "command": "note.create",
+      "payload": { "note_id": "n1", "title": "t", "body": "v1" },
+      "expect": { "ok": true, "data": { "version": 1 } }
+    },
+    {
+      "command": "note.autosave",
+      "payload": { "note_id": "n1", "title": "t", "body": "autosaved", "expected_version": 1 },
+      "expect": { "ok": true, "data": { "version": 2 } }
+    },
+    {
+      "command": "note.update",
+      "payload": { "note_id": "n1", "title": "t", "body": "stale", "expected_version": 1 },
+      "expect": { "ok": false, "error": { "code": "conflict", "current_version": 2 } }
+    },
+    {
+      "command": "note.update",
+      "payload": { "note_id": "n1", "title": "t", "body": "fresh", "expected_version": 2 },
+      "expect": { "ok": true, "data": { "version": 3 } }
+    },
+    {
+      "command": "note.versions",
+      "expect": { "ok": true, "data": { "versions": [2, 3] } }
+    }
+  ]
+}

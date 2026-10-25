@@ -151,7 +151,9 @@ pub enum ReportError {
 pub type Result<T> = std::result::Result<T, ReportError>;
 
 const NOTE_MAX: usize = 512;
-const TARGET_KINDS: [&str; 4] = ["user", "message", "group", "channel"];
+const TARGET_KINDS: [&str; 8] = [
+    "user", "message", "group", "channel", "moment", "article", "video", "status",
+];
 
 impl Ticket {
     /// 新建工单（状态 Open，未分诊）。

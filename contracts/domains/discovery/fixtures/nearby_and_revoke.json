@@ -1,0 +1,52 @@
+{
+  "fixture_id": "discovery.geo.nearby_and_revoke",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.geo.nearby",
+  "category": "success_boundary",
+  "description": "附近的人只回粗网格与距离档；撤回后立即不可见；拉黑双向过滤。",
+  "setup": [
+    { "action_id": "discovery.geo.opt_in", "request": { "actor": "usr-A", "enabled": true } },
+    { "action_id": "discovery.geo.opt_in", "request": { "actor": "usr-B", "enabled": true } },
+    { "action_id": "discovery.geo.publish", "request": { "actor": "usr-B", "lat": 31.2304, "lng": 121.4737, "visibility": "everyone" } }
+  ],
+  "success": {
+    "request": { "actor": "usr-A", "lat": 31.2305, "lng": 121.4738, "radius_m": 1000 },
+    "expected": {
+      "items": [{ "user_id": "usr-B", "cell": { "lat_idx": 3123, "lng_idx": 12147 }, "distance_band": "under_500m" }]
+    }
+  },
+  "boundary_and_failure": [
+    {
+      "name": "radius_over_10km",
+      "request": { "actor": "usr-A", "lat": 31.2305, "lng": 121.4738, "radius_m": 20000 },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: radius" }
+    },
+    {
+      "name": "not_opted_in_publisher_hidden",
+      "precondition": "usr-C 未 opt_in 或未 publish",
+      "expected": { "items": [] }
+    },
+    {
+      "name": "publish_without_opt_in",
+      "action_id": "discovery.geo.publish",
+      "request": { "actor": "usr-D", "lat": 31.0, "lng": 121.0, "visibility": "everyone" },
+      "expected_error": { "code": "UNAUTHORIZED", "detail": "unauthorized" }
+    },
+    {
+      "name": "after_revoke",
+      "sequence": ["usr-B discovery.geo.revoke", "usr-A discovery.geo.nearby"],
+      "expected": { "items": [] }
+    },
+    {
+      "name": "blocked_pair_filtered",
+      "precondition": "usr-A discovery.geo.block usr-B",
+      "expected": { "items": [] }
+    },
+    {
+      "name": "rate_limited",
+      "precondition": "同一 actor 60 秒内第 31 次 nearby（默认 queries_per_minute=30）",
+      "expected_error": { "code": "RATE_LIMITED", "detail": "rate limited" }
+    }
+  ],
+  "invariants": ["任何响应不出现精确坐标或精确距离", "自身不出现在结果里"]
+}

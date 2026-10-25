@@ -1,0 +1,61 @@
+{
+  "fixture_id": "discovery.contact.card_lifecycle",
+  "contract_version": "g07-draft-1",
+  "action_id": "discovery.contact.resolve",
+  "category": "success_replay_revoke",
+  "description": "名片码生成、解析、轮换与撤销；capability 只存哈希，密文不含手机号。",
+  "sequence": [
+    {
+      "step": "create",
+      "action_id": "discovery.contact.create",
+      "request": { "actor": "usr-A", "ttl_ms": 3600000 },
+      "expected": {
+        "card_id": "card-<opaque>",
+        "wire": "wxlike-card://1?p=<url-safe-b64-envelope>&sig=<hmac-sha256-hex>",
+        "expires_at_ms": "<now+3600000>"
+      }
+    },
+    {
+      "step": "resolve_by_scanner",
+      "action_id": "discovery.contact.resolve",
+      "request": { "actor": "usr-B", "raw": "<wire from step 1>" },
+      "expected": { "user_id": "usr-A", "card_id": "card-<opaque>" }
+    },
+    {
+      "step": "rotate_invalidates_old",
+      "action_id": "discovery.contact.rotate",
+      "request": { "actor": "usr-A", "ttl_ms": 3600000 },
+      "post_condition": "用 step1 的旧 wire 再 resolve → EXPIRED"
+    },
+    {
+      "step": "revoke_all",
+      "action_id": "discovery.contact.revoke_all",
+      "request": { "actor": "usr-A" },
+      "post_condition": "当前 wire resolve → EXPIRED；再次 revoke_all → NOT_FOUND"
+    }
+  ],
+  "failure_cases": [
+    {
+      "name": "tampered_signature",
+      "request": { "actor": "usr-B", "raw": "wxlike-card://1?p=<payload>&sig=<wrong-sig>" },
+      "expected_error": { "code": "INVALID_ARGUMENT", "detail": "invalid argument: card signature" }
+    },
+    {
+      "name": "expired_card",
+      "precondition": "时钟推进超过 expires_at_ms 后 resolve",
+      "expected_error": { "code": "EXPIRED", "detail": "expired" }
+    },
+    {
+      "name": "ttl_out_of_bounds",
+      "action_id": "discovery.contact.create",
+      "request": { "actor": "usr-A", "ttl_ms": 1000 },
+      "expected": "ttl 被 clamp 到最小 60000ms（契约层面等同成功，值域受 [60000, 2592000000] 约束）"
+    },
+    {
+      "name": "anonymous_create",
+      "request": { "actor": "", "ttl_ms": 3600000 },
+      "expected_error": { "code": "UNAUTHORIZED", "detail": "unauthorized" }
+    }
+  ],
+  "invariants": ["resolve 只返回 user_id+card_id，不授予读取全部资料", "好友申请是独立动作且权限/限流归 G02", "渲染四样式对比度不足拒绝（INVALID_ARGUMENT qr contrast）"]
+}

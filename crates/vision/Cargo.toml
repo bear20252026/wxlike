@@ -1,0 +1,13 @@
+[package]
+name = "wxlike-vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }

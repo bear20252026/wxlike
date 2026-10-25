@@ -1,0 +1,46 @@
+{
+  "contract_version": "favorites-v1",
+  "case": "对象收藏幂等与撤权：重复收藏同一对象只一行；源删除后撤权清空正文；消息收藏不受影响",
+  "setup": {
+    "users": ["a", "b"],
+    "friends": [["a", "b"]],
+    "moments": [{ "id": "mo1", "author": "b", "text": "hello" }]
+  },
+  "steps": [
+    {
+      "command": "favorite.object.add",
+      "actor": "a",
+      "payload": { "kind": "moment", "id": "mo1" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "favorite.object.add",
+      "actor": "a",
+      "payload": { "kind": "moment", "id": "mo1" },
+      "expect": { "ok": true, "data": { "id": "同一行 id" } }
+    },
+    {
+      "command": "favorite.object.add",
+      "actor": "a",
+      "payload": { "kind": "moment", "id": "陌生人的私密动态" },
+      "expect": { "ok": false, "error": { "code": "not_found" } }
+    },
+    {
+      "command": "moment.delete",
+      "actor": "b",
+      "payload": { "moment_id": "mo1" },
+      "expect": { "ok": true }
+    },
+    {
+      "command": "favorite.get",
+      "actor": "a",
+      "expect": { "ok": true, "data": { "revoked": true, "text": "", "media_id": "" } }
+    },
+    {
+      "command": "favorite.search",
+      "actor": "a",
+      "payload": { "q": "hello" },
+      "expect": { "ok": true, "data": { "items": [] } }
+    }
+  ]
+}
