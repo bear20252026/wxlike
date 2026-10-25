@@ -1,9 +1,9 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
-  "serialNumber": "urn:uuid:2b578b02-7533-5d17-b8c2-800676ea806e",
+  "serialNumber": "urn:uuid:2babd490-c8be-5ed9-a477-f30171dd951e",
   "version": 1,
-  "metadata": {"component": {"bom-ref": "pkg:generic/wxlike", "name": "wxlike", "type": "application"}, "properties": [{"name": "wxlike:sbom:component-count", "value": "1260"}, {"name": "wxlike:sbom:sources", "value": "cargo-lock,docker-compose,dockerfile,npm-lock,pubspec-lock"}, {"name": "wxlike:sbom:reproducible", "value": "serialNumber derived from component purls"}], "tools": [{"name": "wxlike-source-audit", "version": "1.0"}]},
+  "metadata": {"component": {"bom-ref": "pkg:generic/wxlike", "name": "wxlike", "type": "application"}, "properties": [{"name": "wxlike:sbom:component-count", "value": "1261"}, {"name": "wxlike:sbom:sources", "value": "cargo-lock,docker-compose,dockerfile,npm-lock,pubspec-lock"}, {"name": "wxlike:sbom:reproducible", "value": "serialNumber derived from component purls"}], "tools": [{"name": "wxlike-source-audit", "version": "1.0"}]},
   "components": [
     {"bom-ref": "pkg:cargo/adler2@2.0.1", "hashes": [{"alg": "SHA-256", "content": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"}], "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "adler2", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/adler2@2.0.1", "type": "library", "version": "2.0.1"},
     {"bom-ref": "pkg:cargo/aead@0.5.2", "hashes": [{"alg": "SHA-256", "content": "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"}], "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "aead", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/aead@0.5.2", "type": "library", "version": "0.5.2"},
@@ -647,6 +647,7 @@
     {"bom-ref": "pkg:cargo/wxlike-client-native@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-client-native", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-client-native@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-client-web@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-client-web", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-client-web@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-cmd@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-cmd", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-cmd@0.1.0", "type": "library", "version": "0.1.0"},
+    {"bom-ref": "pkg:cargo/wxlike-commerce@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-commerce", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-commerce@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-container@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-container", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-container@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-core@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-core", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-core@0.1.0", "type": "library", "version": "0.1.0"},
     {"bom-ref": "pkg:cargo/wxlike-dpage@0.1.0", "licenses": [{"license": {"name": "NOASSERTION"}}], "name": "wxlike-dpage", "properties": [{"name": "wxlike:sbom:source", "value": "cargo-lock"}], "purl": "pkg:cargo/wxlike-dpage@0.1.0", "type": "library", "version": "0.1.0"},

@@ -65,4 +65,4 @@ open ──(补丁合入 + 测试转绿)──> closed（必须带 closed_eviden
 | `blockers.json` | 唯一阻塞清单（每条带 owner + issue） |
 | `REVIEW-2026-10-24.md` | 第一轮评审记录（人读版，含逐项结论与翻案条件） |
 
-当前复核见 `REVIEW-2026-10-25.md`，四项 open 阻塞仍使发布为 BLOCK。历史证据不覆盖。`closed` 缺证据、blocked 语料引用 closed 阻塞均为硬错误。
+当前复核见 `REVIEW-2026-10-25.md`，五项 open 阻塞仍使发布为 BLOCK。历史证据不覆盖。`closed` 缺证据、blocked 语料引用 closed 阻塞均为硬错误。

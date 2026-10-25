@@ -4,7 +4,7 @@
     "name": "UI v2 全平台交付 · G17 主干集成复核",
     "reviewed_at": "2026-10-25",
     "reviewer": "G00 集成复核（G17 交付与云端测试证据）",
-    "commit": "0f9e583f6de84b0e5e16497e66e7c85503b72bb7",
+    "commit": "16edadeaf77f277e6d658f185a4c739ed6482375",
     "scope": "主干基线 + PR #276 安全测试/门禁集成；只评自动化证据，不代表全 UI、供应商与真机功能验收"
   },
   "claims": {
@@ -149,7 +149,7 @@
       "required": true,
       "kind": "artifact",
       "status": "pass",
-      "evidence": "third_party/reviews/registry.json（3 文件 LF 指纹） + sbom/wxlike.cdx.json（1260 个去重包版本）；负向校验 https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886340",
+      "evidence": "third_party/reviews/registry.json（3 文件 LF 指纹） + sbom/wxlike.cdx.json（1261 个去重包版本）；负向校验 https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886340",
       "notes": "SBOM 包括根与桌面 Cargo、生产前端与设计原型 npm、Dart 和镜像引用；无镜像系统包扫描证据"
     },
     {
@@ -224,12 +224,23 @@
       "status": "unverified",
       "evidence": "scripts/coverage_summary.py 有，但不是 CI 阻断项",
       "notes": "非阻断：本组不把覆盖率当发布门槛，它只用于发现测试盲区"
+    },
+    {
+      "id": "E-CI-PROTECTION",
+      "title": "服务器端保护规则要求安全门禁通过",
+      "required": true,
+      "kind": "external",
+      "status": "unverified",
+      "owner": "G00/G16",
+      "issue": "#277",
+      "evidence": "",
+      "notes": "工作流失败不等于 GitHub 禁止合并；实际 required contexts 尚未追加安全两项，连接无管理规则写入工具，必须由管理员实配并回读验证"
     }
   ],
   "exceptions": [],
   "signoff": {
     "security_owner": "G17 / G00 集成复核",
     "verdict": "BLOCK",
-    "reason": "保留 #245、#228、#257、#97 四项 open blocker；入口接线、真机、真实供应商及当前快照联网冻结复核仍未全部验证"
+    "reason": "保留 #245、#228、#257、#97、#277 五项 open blocker；入口、真机、真实供应商、当前快照联网冻结复核与实际保护规则仍未全部验证"
   }
 }

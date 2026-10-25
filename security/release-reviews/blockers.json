@@ -94,6 +94,16 @@
       "status": "open",
       "external": true,
       "evidence": "无（G17 只做抽查，抽查对象为空）"
+    },
+    {
+      "id": "CI-REQUIRED-CHECKS",
+      "title": "main 保护规则尚未将 security 两项检查设为 required，失败可被普通合并路径绕过",
+      "severity": "high",
+      "owner": "G00/G16",
+      "issue": "#277",
+      "status": "open",
+      "external": true,
+      "evidence": "2026-10-25 GET branches/main：仅四项旧 required contexts；需管理员追加 security (source + policy) 与 security (authz + abuse + decode) 并复读验证"
     }
   ]
 }
