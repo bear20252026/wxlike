@@ -1,0 +1,73 @@
+# G11-03 视频流、通话与直播面板 —— 集成请求
+# 依据：任务卡 #167「只修改G11归属文件；新根依赖、路由、command挂载、schema编号写入本文件，由G00执行」。
+
+request_id: G11-03
+task_issue: 167
+group_issue: 92
+contract_version: entries-v1
+branch: feat/FP-G11-03
+owned_paths:
+  - apps/desktop-web/src/features/video/**
+  - apps/desktop-web/src/features/calls/**
+
+artifacts:
+  - apps/desktop-web/src/features/video/api.ts
+  - apps/desktop-web/src/features/video/model.ts
+  - apps/desktop-web/src/features/video/gate.ts
+  - apps/desktop-web/src/features/video/VideoPlayer.tsx
+  - apps/desktop-web/src/features/video/ChannelsPage.tsx
+  - apps/desktop-web/src/features/video/video.test.tsx
+  - apps/desktop-web/src/features/calls/api.ts
+  - apps/desktop-web/src/features/calls/model.ts
+  - apps/desktop-web/src/features/calls/session.ts
+  - apps/desktop-web/src/features/calls/CallPanel.tsx
+  - apps/desktop-web/src/features/calls/calls.test.tsx
+
+requests:
+  - id: REQ-G00-register-routes
+    target: G00
+    action: 产品壳路由挂载 /channels（rail 第 6 项「视频号」）；通话面板由聊天会话内拉起（G10 聊天闭环的入口），开发壳中以独立 tab 临时挂载。
+    rationale: 总 router 归 G00 串行合入。
+
+  - id: REQ-G05-videos-feed
+    target: G05
+    action: >-
+      视频号 feed（关注/热门）按 ContentPort 契约 GET /api/videos 对接。
+      该端点当前不存在（已核实 crates/video 只有单视频端点），G11-03 在 404/501 时
+      呈现「feed 尚未开通」，发布/播放/直播均为真实功能。G05 合入后如路径有出入
+      请在本文件追加 correction 段。
+    rationale: 上游卡未合入时按冻结 fixture 开发；不能用 mock 通过最终集成验收。
+
+  - id: REQ-G10-rtc-turn
+    target: G10/G09
+    action: >-
+      浏览器端 WebRTC 走标准 RTCPeerConnection + /api/call/{conv}/signal 信令
+      （信令信封为 wxlike_rtc::signal::Signal 的透传）。TURN/STUN 配置由
+      PlatformPort 或服务端 /api/call/{conv}/egress 提供（CALL-01 TURN 强制场景），
+      当前 createPeer 使用默认 iceServers；TURN 凭据端点就绪后由 CallSession
+      的 createPeer 工厂注入，接口已预留。
+    rationale: 媒体栈策略归 RTC/G09 域；客户端只消费。
+
+  - id: REQ-G09-danmaku-push
+    target: G09/G03
+    action: >-
+      弹幕发送走真实 POST /api/live/{channel}/danmaku；他人弹幕的实时接收依赖
+      hub WS 事件（/ws）推送。当前面板仅回显本端弹幕；G03/G09 的 live 事件
+      通道就绪后，ChannelsPage 订阅同一事件流（订阅点已集中在 sendDanmaku
+      相邻的 state 区，替换面小）。
+    rationale: 实时下行归消息/RTC 域，UI 不自建轮询假象。
+
+  - id: REQ-G16-ci-node-tests
+    target: G16
+    action: 同 G11-01：ci.yml 增加 apps/desktop-web 的 Node job。
+    rationale: 同 SHA 云 CI 覆盖 React 测试。
+
+notes:
+  - 播放器订阅可见性：document.visibilityState + IntersectionObserver 双门控，
+    不可见即 pause + 去 src + load()（网络/解码器释放），后台标签资源有界。
+  - 通话：本地媒体经 PlatformPort.media（getUserMedia）获取；静音/摄像头按钮同时
+    改真实轨 enabled 与服务端 /mute 状态（远端可验证）；挂断幂等（二次调用无副作用）；
+    最小化仅翻转布局标志，媒体/信令/房间不动；权限错误映射
+    NotAllowedError/NotFoundError/NotReadableError 为明确文案。
+  - 直播：开播返回真实 ingest_url/token（platform.live.rs），停播/观众数/弹幕均为真实状态。
+  - 无数据库改动、无 schema 编号占用、无新 npm 依赖。
