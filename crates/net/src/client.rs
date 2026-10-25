@@ -228,9 +228,12 @@ impl Client {
                 WireFrame::Ping => continue,
                 WireFrame::Hello { .. }
                 | WireFrame::HelloAck { .. }
-                | WireFrame::HelloReject { .. } => {
-                    continue;
-                }
+                | WireFrame::HelloReject { .. } => continue,
+                // A v2 client must never be fed a v3 downlink frame: the hub only
+                // sends one after a v3 ClientHello. If it happens anyway the
+                // server broke the negotiation — skip the frame rather than
+                // pretend it is an envelope.
+                _ => continue,
             }
         }
     }

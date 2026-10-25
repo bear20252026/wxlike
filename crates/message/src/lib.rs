@@ -26,9 +26,25 @@ use thiserror::Error;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use wxlike_core::msgmeta::rich_kind;
 
+mod conversations;
+mod delivery;
+mod push;
 mod submit;
+mod sync;
 
+pub use conversations::{
+    ConvPrefs, ConversationCursor, ConversationEvent, ConversationFilter, ConversationPage,
+    ConversationRow, ConversationScope, PrefField, MAX_SCOPE_CONVERSATIONS,
+};
+pub use delivery::{
+    DeliveryTask, ResumePlan, ResumePolicy, DEFAULT_LEASE_MS, MAX_CLAIM_BATCH, TASK_RETENTION_MS,
+};
+pub use push::{
+    DispatchReport, NoopPort, Platform, PushDevice, PushError, PushPort, PushTarget, RecordingPort,
+    SyncHint, DEFAULT_AGGREGATION_WINDOW_MS, TOKEN_RETENTION_MS,
+};
 pub use submit::{SubmitOutcome, SubmitRecipient, SubmitRequest, RECALL_WINDOW_MS};
+pub use sync::{NoteOutcome, SyncSchedule, SyncScheduler, SyncStep, SyncTrigger};
 
 /// Owner kinds (ADR-16). direct owners are normalized user pairs
 /// (`d-{a}~{b}`), groups are group ids, channels are channel ids — the
@@ -378,6 +394,17 @@ impl MessageStore {
             CREATE INDEX IF NOT EXISTS idx_delivery_device
                 ON delivery_task(target_user, target_device, state);
 
+            -- 设备游标与账号游标分离；stored/read 各自单调。
+            CREATE TABLE IF NOT EXISTS device_cursor (
+                device_id    TEXT NOT NULL,
+                conv_id      TEXT NOT NULL,
+                stored_cursor INTEGER NOT NULL DEFAULT 0,
+                read_cursor   INTEGER NOT NULL DEFAULT 0,
+                version       INTEGER NOT NULL DEFAULT 0,
+                updated_at    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (device_id, conv_id)
+            );
+
             -- 会话投影表（G03 会话卡）。keyset 分页只读这张表，不 OFFSET 扫信箱。
             CREATE TABLE IF NOT EXISTS conversation_projection (
                 conv_id      TEXT PRIMARY KEY,
@@ -408,6 +435,41 @@ impl MessageStore {
                 PRIMARY KEY (user_id, conv_id)
             );
 
+            -- 清空本地历史只影响本人视图；与删除全端历史是两条命令。
+            CREATE TABLE IF NOT EXISTS conversation_clear (
+                user_id   TEXT NOT NULL,
+                conv_id   TEXT NOT NULL,
+                cleared_before_seq INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, conv_id)
+            );
+
+            -- 会话删除/清空产生的域事件，供搜索与附件引用异步收口。
+            CREATE TABLE IF NOT EXISTS conversation_event (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor   TEXT NOT NULL,
+                conv_id TEXT NOT NULL,
+                kind    TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '',
+                at_ms   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_conversation_event_conv
+                ON conversation_event(conv_id, id);
+
+            -- 推送 token 归设备，可轮换、可撤销。epoch 是让撤销"落地"的
+            -- 那一列：撤销把 epoch 前移，任何仍带旧 epoch 的投递一律拒绝。
+            CREATE TABLE IF NOT EXISTS push_device (
+                device_id    TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                platform     TEXT NOT NULL,
+                token        TEXT NOT NULL,
+                epoch        INTEGER NOT NULL DEFAULT 1,
+                revoked      INTEGER NOT NULL DEFAULT 0,
+                created_ms   INTEGER NOT NULL,
+                last_seen_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_user
+                ON push_device(user_id, revoked);
             "#,
         )?;
         let store = Self {
