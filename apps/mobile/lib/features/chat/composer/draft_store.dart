@@ -181,6 +181,8 @@ class DraftStore extends ChangeNotifier {
   bool _loaded = false;
   Future<void>? _loading;
   Future<void>? _saving;
+  int _revision = 0;
+  int _savedRevision = 0;
 
   bool get loaded => _loaded;
 
@@ -230,6 +232,7 @@ class DraftStore extends ChangeNotifier {
   void write(String conv, String text) {
     if (text.isEmpty) {
       if (_drafts.remove(conv) != null) {
+        _revision++;
         _schedule();
         notifyListeners();
       }
@@ -237,6 +240,7 @@ class DraftStore extends ChangeNotifier {
     }
     if (_drafts[conv] == text) return;
     _drafts[conv] = text;
+    _revision++;
     _schedule();
     notifyListeners();
   }
@@ -245,6 +249,7 @@ class DraftStore extends ChangeNotifier {
     final removed = _drafts.remove(conv) != null;
     final removedAttachment = _attachments.remove(conv) != null;
     if (removed || removedAttachment) {
+      _revision++;
       _schedule();
       notifyListeners();
     }
@@ -254,12 +259,14 @@ class DraftStore extends ChangeNotifier {
 
   void putAttachment(String conv, AttachmentDraft draft) {
     _attachments[conv] = draft;
+    _revision++;
     _schedule();
     notifyListeners();
   }
 
   void clearAttachment(String conv) {
     if (_attachments.remove(conv) != null) {
+      _revision++;
       _schedule();
       notifyListeners();
     }
@@ -278,25 +285,27 @@ class DraftStore extends ChangeNotifier {
       await (_loading ??= _load());
     }
     final pending = _saving;
-    if (pending != null) {
-      await pending;
-      return;
+    if (pending != null) await pending;
+    // flush 期间可能又有新输入：把最新 revision 写完再返回，避免丢掉最后一次修改。
+    while (_savedRevision != _revision) {
+      final revision = _revision;
+      final snapshot = <String, Object?>{
+        'version': 1,
+        'drafts': Map<String, String>.from(_drafts),
+        'attachments': {
+          for (final entry in _attachments.entries)
+            entry.key: entry.value.toJson(),
+        },
+      };
+      _saving = _persistence
+          .save(snapshot)
+          .catchError((Object _) {
+            // 落盘失败不回滚内存草稿：用户还能继续输入，下次再试。
+          })
+          .whenComplete(() => _saving = null);
+      await _saving;
+      _savedRevision = revision;
     }
-    final snapshot = <String, Object?>{
-      'version': 1,
-      'drafts': Map<String, String>.from(_drafts),
-      'attachments': {
-        for (final entry in _attachments.entries)
-          entry.key: entry.value.toJson(),
-      },
-    };
-    _saving = _persistence
-        .save(snapshot)
-        .catchError((Object _) {
-          // 落盘失败不回滚内存草稿：用户还能继续输入，下次再试。
-        })
-        .whenComplete(() => _saving = null);
-    await _saving;
   }
 
   @override

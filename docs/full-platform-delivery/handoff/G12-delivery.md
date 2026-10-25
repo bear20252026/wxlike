@@ -44,12 +44,12 @@ flutter analyze
   No issues found!
 
 flutter test
-  60 tests, All tests passed
-  其中 G12 新增 51 个：
+  61 tests, All tests passed
+  其中 G12 新增 52 个：
     auth_test            9
     shell_test           7
     timeline_test        7
-    composer_test       10
+    composer_test       11
     contacts_test        9
     platform_test        6
     qr_approval_test     3
@@ -61,10 +61,10 @@ flutter test
 |---|---|---|
 | feat/FP-G12-01 | 通过 | 16 passed |
 | feat/FP-G12-02 | 通过 | 23 passed |
-| feat/FP-G12-03 | 通过 | 33 passed |
-| feat/FP-G12-04 | 通过 | 42 passed |
-| feat/FP-G12-05 | 通过 | 48 passed |
-| feat/FP-G12-06 | 通过 | 51 passed（tip 全量 60，含既有 9 个） |
+| feat/FP-G12-03 | 通过 | 34 passed |
+| feat/FP-G12-04 | 通过 | 43 passed |
+| feat/FP-G12-05 | 通过 | 49 passed |
+| feat/FP-G12-06 | 通过 | 52 passed（tip 全量 61，含既有 9 个） |
 
 覆盖：成功、空结果、参数错误、未授权/越权、超时/断网、取消、重复提交；
 写操作幂等键复用与冲突刷新；附件上传/发送分阶段重试；进程重启恢复草稿/附件。

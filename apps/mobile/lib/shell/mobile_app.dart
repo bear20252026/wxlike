@@ -136,11 +136,14 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
     }
     await widget.account.logout();
     if (!mounted) return;
+    final oldConversations = _conversations;
     setState(() {
       _session = null;
       _conversations = null;
       _pushSynced = false;
     });
+    // 页面已不再持有控制器；等壳从树上移除后再释放订阅。
+    WidgetsBinding.instance.addPostFrameCallback((_) => oldConversations?.dispose());
   }
 
   Future<void> _syncPush() async {

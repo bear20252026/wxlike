@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wxlike_mobile/features/chat/composer/composer_controller.dart';
@@ -46,6 +48,24 @@ CapturedMedia image() => const CapturedMedia(
   kind: MediaKind.image,
   bytes: 10,
 );
+
+class GatePersistence implements DraftPersistence {
+  Map<String, Object?> data = const {};
+  Completer<void>? gate;
+
+  @override
+  Future<Map<String, Object?>> load() async => const {};
+
+  @override
+  Future<void> save(Map<String, Object?> next) async {
+    data = next;
+    final pending = gate;
+    if (pending != null) {
+      gate = null;
+      await pending.future;
+    }
+  }
+}
 
 void main() {
   late FakePlatform platform;
@@ -301,6 +321,24 @@ void main() {
     expect(controller.failureStage, ComposerFailureStage.unavailable);
     expect(controller.text, '你好');
     controller.dispose();
+  });
+
+  test('flush 期间的新输入不会被旧快照覆盖', () async {
+    final gate = GatePersistence();
+    final store = DraftStore(persistence: gate, flushDelay: const Duration(days: 1));
+    await store.load();
+    store.write('c1', '第一版');
+
+    final blocker = Completer<void>();
+    gate.gate = blocker;
+    final first = store.flush();
+    await Future<void>.delayed(Duration.zero);
+    store.write('c1', '第二版');
+    blocker.complete();
+    await first;
+
+    expect((gate.data['drafts'] as Map)['c1'], '第二版');
+    store.dispose();
   });
 
   test('文字草稿跨进程恢复，发送成功后清空', () async {
