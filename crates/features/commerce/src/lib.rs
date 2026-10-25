@@ -6,8 +6,11 @@
 
 pub mod accounts;
 pub mod cards;
+pub mod entitlements;
 pub mod error;
+pub mod http;
 pub mod infrastructure;
+pub mod orders;
 pub mod payments;
 pub mod ports;
 pub mod redpackets;
