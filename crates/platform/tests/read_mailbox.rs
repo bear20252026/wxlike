@@ -94,3 +94,117 @@ async fn owner_kind_is_recorded_or_derived() {
         "直聊不需要落表，id 自带语义"
     );
 }
+
+/// AUTHZ-012 / #230：直聊 id 可预测（uid 能从好友/成员列表拿到），
+/// 所以"登录即可读"会把 `head_seq` 变成通信量侧信道。三个入口
+/// （unread/read/sync）都必须先校验参与者，两种 id 顺序都试。
+#[tokio::test]
+async fn direct_conv_mailbox_requires_participation() {
+    let router = app(common::platform());
+    let (alice, ta) = signup(&router, "alice").await;
+    let (bob, tb) = signup(&router, "bob").await;
+    let (_eve, te) = signup(&router, "eve").await;
+
+    for conv in [format!("d-{alice}~{bob}"), format!("d-{bob}~{alice}")] {
+        let (status, body) = common::call(
+            &router,
+            req("GET", &format!("/api/conv/{conv}/unread"), None, Some(&te)),
+        )
+        .await;
+        assert_eq!(status, 403, "eve 读不到 {conv} 的未读：{body}");
+
+        let (status, body) = common::call(
+            &router,
+            req("POST", &format!("/api/conv/{conv}/read"), None, Some(&te)),
+        )
+        .await;
+        assert_eq!(status, 403, "eve 不能给 {conv} 写已读游标：{body}");
+
+        let (status, body) = common::call(
+            &router,
+            req(
+                "GET",
+                &format!("/api/conv/{conv}/sync?version=0"),
+                None,
+                Some(&te),
+            ),
+        )
+        .await;
+        assert_eq!(status, 403, "eve 拿不到 {conv} 的同步指令：{body}");
+    }
+
+    // 参与者本人不受影响：direct 尚未镜像进信箱，未读是 0，但必须是 200
+    let (status, body) = common::call(
+        &router,
+        req(
+            "GET",
+            &format!("/api/conv/d-{alice}~{bob}/unread"),
+            None,
+            Some(&ta),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = common::call(
+        &router,
+        req(
+            "GET",
+            &format!("/api/conv/d-{bob}~{alice}/unread"),
+            None,
+            Some(&tb),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// 群会话：成员表是权威，非成员 403，成员 200。
+#[tokio::test]
+async fn group_conv_mailbox_requires_membership() {
+    let state = common::platform();
+    let router = app(state.clone());
+    let (alice, _ta) = signup(&router, "alice").await;
+    let (bob, tb) = signup(&router, "bob").await;
+    let (_eve, te) = signup(&router, "eve").await;
+
+    let g = state.create_group(&alice, "g", &[bob]).expect("group");
+
+    let (status, body) = common::call(
+        &router,
+        req("GET", &format!("/api/conv/{g}/unread"), None, Some(&te)),
+    )
+    .await;
+    assert_eq!(status, 403, "eve 不是群成员：{body}");
+
+    let (status, body) = common::call(
+        &router,
+        req("GET", &format!("/api/conv/{g}/unread"), None, Some(&tb)),
+    )
+    .await;
+    assert_eq!(status, 200, "bob 是群成员：{body}");
+}
+
+/// 频道会话：社区角色继承即成员；没加入社区的 eve 403。
+#[tokio::test]
+async fn channel_conv_mailbox_requires_membership() {
+    let state = common::platform();
+    let router = app(state.clone());
+    let (alice, _ta) = signup(&router, "alice").await;
+    let (bob, _tb) = signup(&router, "bob").await;
+    let (_eve, te) = signup(&router, "eve").await;
+
+    let cid = state
+        .create_community(&alice, "team", 100)
+        .expect("community");
+    state.join_community(&cid, &bob).expect("join");
+    let ch = state
+        .create_channel(&cid, &alice, "general", "text")
+        .expect("channel");
+
+    let (status, body) = common::call(
+        &router,
+        req("GET", &format!("/api/conv/{ch}/unread"), None, Some(&te)),
+    )
+    .await;
+    assert_eq!(status, 403, "eve 没加入社区：{body}");
+}
