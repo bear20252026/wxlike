@@ -1,0 +1,98 @@
+card: G13-04
+issue: 179
+branch: feat/FP-G13-04
+contract_version: "g13/1"
+status: requested
+summary: >-
+  发现页、扫一扫、附近/摇一摇、识物翻译、服务目录下单与小程序页已完成。
+  相机帧/相册解码、粗粒度定位、小程序容器由平台桥与上游域服务提供；未接线
+  时逐项显示阻塞原因，每个格子都指向真实页面。
+
+changed_paths:
+  - apps/mobile/lib/features/discover/discover_page.dart
+  - apps/mobile/lib/features/discover/scan_page.dart
+  - apps/mobile/lib/features/discover/nearby_page.dart
+  - apps/mobile/lib/features/discover/recognition_page.dart
+  - apps/mobile/lib/features/discover/service_catalog_page.dart
+  - apps/mobile/lib/features/mini/mini_programs_page.dart
+  - apps/mobile/lib/features/content/g13/
+  - apps/mobile/test/g13/
+
+requests:
+  - id: G13-04-R1
+    kind: ffi-bindings
+    target: G01
+    status: requested
+    reason: 扫码安全判定、识物/翻译、位置网格查询、服务报价与订单都要求服务端裁决。
+    change:
+      commands:
+        - scan.decode
+        - vision.recognize
+        - vision.translate
+        - geo.nearby
+        - service.catalog
+        - service.quote
+        - service.createOrder
+        - service.order
+        - mini.recent
+        - mini.catalog
+        - mini.install
+        - mini.grant
+        - mini.launch
+        - mini.operation
+    note: >-
+      scan.decode 必须返回 safe/reason；safe=false 只展示原文，界面不得自行
+      执行 URL。safe=true 的 payment 只进入收付款页，不自动扣款。
+
+  - id: G13-04-R2
+    kind: platform-bridge
+    target: G12-05
+    status: requested
+    reason: 相机、定位与小程序宿主只能在平台侧实现。
+    change:
+      - camera: 相机帧/闪光灯/相册选择，返回图片引用（不把整图送进 Dart 业务层）
+      - qr_decode: 本地解码优先，解码结果交 scan.decode 做安全检查
+      - location_cell: 仅返回粗粒度网格（cell），撤权后立即返回 null；不向界面下发精确坐标
+      - mini_host: 小程序运行容器、包验签、授权弹窗与会话生命周期（G08）
+      - permissions: >-
+          CAMERA / READ_MEDIA_IMAGES / ACCESS_FINE_LOCATION（Android）与
+          NSCameraUsageDescription / NSPhotoLibraryUsageDescription /
+          NSLocationWhenInUseUsageDescription（iOS）
+    note: 位置仅在前台使用；摇一摇触发由平台桥提供，页面只负责重复查询。
+
+  - id: G13-04-R3
+    kind: composition-root
+    target: G00
+    status: requested
+    reason: 发现页是根导航的一个 tab，入口注册由组合根完成。
+    change:
+      - mount_entry: tab.discover -> DiscoverPage
+      - entries: 朋友圈/视频号/直播/扫一扫/摇一摇/附近/搜一搜/识物与翻译/购物/游戏/小程序/公众号/收藏
+      - mini_launch: OperationHandle -> mini_host（宿主就绪后才算可交互）
+
+upstream:
+  - G05-05 (识物/翻译所依赖的内容域)
+  - G06-05 (服务目录/报价/订单)
+  - G07-07 (扫码安全深链)
+  - G08-05 (小程序包/授权/容器)
+  - G09-05 (附近与服务端长操作)
+  - G12-05 (相机/定位/小程序宿主)
+
+verification:
+  - flutter analyze（G13 归属文件 0 error）
+  - flutter test test/g13/discovery_pages_test.dart
+  - iOS/Android 逐项验证 map 类入口（附近/摇一摇/扫一扫/识物翻译）
+  - 真机：撤权后附近停止查询；扫码支付不自动扣款；小程序示例包可安装/更新
+  - 上游未合入前不得标 ACCEPTED
+
+notes:
+  - 相机缺失时识别页显示 CAMERA_NOT_WIRED；定位缺失显示 LOCATION_DENIED 并停止查询。
+  - 服务下单使用 order-<quoteId> 幂等键，创建后按钮禁用，履约状态靠刷新查询。
+
+entries:
+  implemented:
+    - {entry_id: SEED-0184, action_id: scan.decode, page: ScanPage/相册解码}
+    - {entry_id: SEED-0304, action_id: live.join, page: DiscoverPage/直播（与 G13-02 共用）}
+  not_covered:
+    - SEED-0106/0109/0111 属于桌面 MiniProgramsPage（G11），本卡只做移动端
+
