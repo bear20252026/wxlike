@@ -10,6 +10,17 @@ paths:
   - crates/features/relations/src/group.rs
   - crates/features/relations/src/port.rs
 
+status: 部分接线（群可见性 / 解散 / 跨域闸门已完成；发现面过滤待 G05）
+
+# 平台原本已有：好友申请状态机（并发安全）、拉黑优先、备注/星标/标签 PATCH、
+# 群角色/邀请/踢人。本组 features crate 与其中一部分重复，已按"平台列为准"收敛。
+completed:
+  - "PUT /api/groups/{id}/visibility（群主专属，写 group_meta）"
+  - "POST /api/groups/{id}/dissolve（群主专属，软删 + 成员通知帧）"
+  - "GET /api/groups/{id} 增加 visibility / dissolved（additive）"
+  - "Platform::may_message / shared_group_ids（RelationsPort 对外暴露）"
+  - "crates/platform/tests/g02_relations.rs 6 条 HTTP 用例"
+
 root_registration:
   - action: cargo_workspace_member
     value: crates/features/relations

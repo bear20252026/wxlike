@@ -1,0 +1,486 @@
+# CommercePort（G06）命令契约 v1
+#
+# 来源：crates/features/commerce/src/http.rs::dispatch。
+# G00 负责把 action 挂到路由/命令注册表；本文件只声明语义，不是路由清单。
+# 金额一律为十进制字符串（最多两位小数）+ ISO 4217 币种；服务端解析为最小
+# 单位整数，拒绝负数、科学计数法、千分位、超过两位小数与上限溢出。
+# 时间戳均为 Unix 毫秒（int64）。
+contract: commerce
+version: 1
+owner: G06
+transport:
+  web: POST /api/v1/commerce/actions/{action}
+  command: commerce.{action}
+auth:
+  actor: 由 session 推导，禁止从 payload 读取 actor
+  recheck: 每个写命令在服务端重新鉴权
+money:
+  wire: { amount: "decimal-string", currency: "ISO4217" }
+  internal: "integer minor units"
+  max_payment_minor: 1000000000
+  max_transfer_minor: 10000000000
+idempotency:
+  header: idempotency_key
+  rule: 同一 key + 同一规范化参数返回首次结果；同 key 换参数返回 IDEMPOTENCY_CONFLICT
+  digest_fields: [actor, 业务对象, amount_minor, currency, 备注/负载]
+errors:
+  - BAD_INPUT
+  - FORBIDDEN
+  - UNAUTHORIZED
+  - NOT_FOUND
+  - CONFLICT
+  - EXPIRED
+  - IDEMPOTENCY_CONFLICT
+  - INVALID_SIGNATURE
+  - REPLAY
+  - ILLEGAL_TRANSITION
+  - PROVIDER_UNAVAILABLE
+  - PROVIDER_TIMEOUT
+  - PROVIDER_REJECTED
+  - PROVIDER_NOT_CONFIGURED
+  - MEMBERSHIP_UNAVAILABLE
+  - INSUFFICIENT_FUNDS
+  - AMOUNT_TOO_LARGE
+  - LEDGER
+  - STORAGE
+
+actions:
+  balance.get:
+    params: { currency: optional }
+    result: { currency, total, available, locked }
+    scope: self
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+    notes: 未知钱包返回 0，不隐式开户；available = total - locked。
+
+  statement.page:
+    params: { currency: optional, cursor: optional, limit: "1..200，默认50" }
+    result: { items, next_cursor, has_more }
+    scope: self
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+    notes: 游标绑定账户与币种；金额为最小单位字符串。
+
+  payment.create:
+    params: { direction: "order|topup，默认order", payee_id: optional, amount, currency: optional, idempotency_key }
+    result: { intent, ticket }
+    scope: "self（payee 不得等于 actor，topup 除外）"
+    confirmation: "二维码票据绑定 intent/金额/币种/收款人/过期/nonce"
+    idempotency: required
+    offline: not-allowed
+    platform: [server]
+    errors_extra: [BAD_INPUT, IDEMPOTENCY_CONFLICT]
+    notes: 默认 15 分钟过期；票据可被扫描方代付。
+
+  payment.pay:
+    params: { intent_id }
+    result: { intent }
+    scope: "actor 任意；Order 方向禁止自付"
+    confirmation: none
+    idempotency: "intent 状态机 + provider idempotency key"
+    offline: not-allowed
+    platform: [server]
+    errors_extra: [FORBIDDEN, EXPIRED, ILLEGAL_TRANSITION, PROVIDER_TIMEOUT]
+    notes: 超时保持 pending，客户端应 query/refresh，不得本地写已支付。
+
+  payment.get:
+    params: { intent_id }
+    result: { intent }
+    scope: "actor 或 payee"
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+
+  payment.qr.pay:
+    params: { ticket }
+    result: { intent }
+    scope: "扫描方为付款人"
+    confirmation: "票据内签名与 intent 现状态逐字段比对"
+    idempotency: "intent 状态机"
+    offline: not-allowed
+    platform: [server, android, desktop]
+    errors_extra: [INVALID_SIGNATURE, EXPIRED, FORBIDDEN]
+
+  card.bind:
+    params: { pan, cvv, brand, exp_month, exp_year, idempotency_key }
+    result: { card_id, brand, last4, exp_month, exp_year, status }
+    scope: self
+    confirmation: "绑卡前展示机构与尾号"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+    errors_extra: [BAD_INPUT, IDEMPOTENCY_CONFLICT]
+    notes: PAN/CVV 只在本函数生命周期内存在；库内仅 provider_token/last4/品牌/有效期。
+
+  card.list:
+    params: {}
+    result: { cards }
+    scope: self
+    confirmation: none
+    idempotency: read
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+
+  card.unbind:
+    params: { card_id }
+    result: { ok: true }
+    scope: self
+    confirmation: none
+    idempotency: "重复解绑幂等"
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+
+  topup.create:
+    params: { amount, currency: optional, idempotency_key }
+    result: { topup_id, intent_id, amount, status, ticket }
+    scope: self
+    confirmation: none
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+
+  topup.get:
+    params: { topup_id }
+    result: { topup_id, intent_id, amount, status }
+    scope: self
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+
+  topup.confirm:
+    params: { topup_id }
+    result: { topup_id, status }
+    scope: self
+    confirmation: none
+    idempotency: "重复确认幂等"
+    offline: not-allowed
+    platform: [server]
+    notes: 依据支付意图成功状态 + 主动查询；跳转成功页不算到账。
+
+  withdrawal.create:
+    params: { amount, currency: optional, account_ref, idempotency_key }
+    result: { withdrawal_id, amount, status, provider_ref }
+    scope: self
+    confirmation: "收款账户与金额"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, android]
+    errors_extra: [INSUFFICIENT_FUNDS, PROVIDER_TIMEOUT, PROVIDER_REJECTED]
+    notes: 先冻结再调用供应商；超时保持 processing，重试不得重复出款。
+
+  withdrawal.get:
+    params: { withdrawal_id }
+    result: { withdrawal_id, amount, status }
+    scope: self
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+
+  withdrawal.refresh:
+    params: { withdrawal_id }
+    result: { withdrawal_id, status }
+    scope: self
+    confirmation: none
+    idempotency: "provider payout idempotency key = withdrawal:{id}"
+    offline: not-allowed
+    platform: [server]
+    errors_extra: [PROVIDER_TIMEOUT, PROVIDER_UNAVAILABLE]
+
+  refund.create:
+    params: { intent_id, amount, currency: optional, idempotency_key }
+    result: { refund_id, status }
+    scope: "payee，或 topup 的付款人"
+    confirmation: "展示可退余额"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, admin]
+    errors_extra: [FORBIDDEN, INSUFFICIENT_FUNDS, BAD_INPUT]
+    notes: 累计退款不得超过支付金额；支持部分退款。
+
+  refund.refresh:
+    params: { refund_id }
+    result: { refund_id, status }
+    scope: "发起人或付款人"
+    confirmation: none
+    idempotency: "provider refund key = refund:{id}"
+    offline: not-allowed
+    platform: [server]
+
+  reconcile.run:
+    params: {}
+    result: { run_id, checked, exceptions }
+    scope: "admin（G00 路由层强制 admin audience）"
+    confirmation: admin-approval
+    idempotency: "每次生成新 run；不改历史"
+    offline: not-allowed
+    platform: [server, admin]
+
+  reconcile.list:
+    params: { run_id }
+    result: { exceptions }
+    scope: "admin"
+    confirmation: none
+    idempotency: read
+    offline: not-allowed
+    platform: [server, admin]
+
+  reconcile.resolve:
+    params: { exception_id, approval_ref, idempotency_key }
+    result: { exception }
+    scope: "admin"
+    confirmation: "必须提供审批引用"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, admin]
+    errors_extra: [NOT_FOUND, CONFLICT, IDEMPOTENCY_CONFLICT]
+    notes: 补账只追加外部↔挂账账户的分录，不修改或删除既有分录。
+
+  transfer.prepare:
+    params: { payee_id, amount, currency: optional, memo }
+    result: { draft: { sender_id, payee_id, amount, memo, nonce, expires_at, confirmation_token } }
+    scope: self
+    confirmation: "令牌绑定收款人/金额/币种/备注/nonce/过期"
+    idempotency: "prepare 无副作用；nonce 由服务端生成"
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+    errors_extra: [BAD_INPUT]
+    notes: memo 最多 20 字符；禁止给自己转账。
+
+  transfer.create:
+    params: { draft, confirmation_token, idempotency_key }
+    result: { transfer }
+    scope: self
+    confirmation: required
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, android]
+    errors_extra: [INVALID_SIGNATURE, EXPIRED, CONFLICT, INSUFFICIENT_FUNDS]
+    notes: 创建即冻结发送方资金；nonce 全局一次性。
+
+  transfer.accept:
+    params: { transfer_id }
+    result: { transfer }
+    scope: payee
+    confirmation: none
+    idempotency: "accepted 重复调用返回原状态"
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+    errors_extra: [FORBIDDEN, EXPIRED, ILLEGAL_TRANSITION]
+
+  transfer.reject:
+    params: { transfer_id }
+    result: { transfer }
+    scope: payee
+    confirmation: none
+    idempotency: "rejected 重复调用返回原状态"
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+
+  transfer.expire:
+    params: { transfer_id }
+    result: { transfer }
+    scope: "sender 或 payee"
+    confirmation: none
+    idempotency: "expired 重复调用返回原状态"
+    offline: not-allowed
+    platform: [server]
+    errors_extra: [CONFLICT, ILLEGAL_TRANSITION]
+
+  transfer.get:
+    params: { transfer_id }
+    result: { transfer }
+    scope: "sender 或 payee"
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+
+  redpacket.create:
+    params: { conversation_id, amount, currency: optional, count, memo: optional, idempotency_key }
+    result: { packet_id, total, count, status, expires_at }
+    scope: "群成员（由 GroupMembership port 校验）"
+    confirmation: "总额/份数/群"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, android]
+    errors_extra: [FORBIDDEN, BAD_INPUT, MEMBERSHIP_UNAVAILABLE, INSUFFICIENT_FUNDS]
+    notes: 份数 1..100；每份至少 1 分；金额服务端预分配且不可变。
+
+  redpacket.claim:
+    params: { packet_id }
+    result: { packet_id, amount, claimed_at }
+    scope: "群成员"
+    confirmation: none
+    idempotency: "同一用户返回首次领取结果"
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+    errors_extra: [FORBIDDEN, EXPIRED, CONFLICT, MEMBERSHIP_UNAVAILABLE]
+
+  redpacket.expire:
+    params: { packet_id }
+    result: { packet_id, status }
+    scope: sender
+    confirmation: none
+    idempotency: "expired 重复调用返回原状态"
+    offline: not-allowed
+    platform: [server]
+    errors_extra: [FORBIDDEN, CONFLICT, ILLEGAL_TRANSITION]
+    notes: 仅未领取份额退回发送者；已领取份额不回滚。
+
+  redpacket.get:
+    params: { packet_id }
+    result: { packet_id, total, count, status, claims }
+    scope: "sender 或已领取者"
+    confirmation: none
+    idempotency: read
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+
+  entitlement.rule.publish:
+    params: { kind: "card|coupon|ticket", rule: object }
+    result: { issuer_id, kind, version, digest }
+    scope: issuer
+    confirmation: "后台二次确认"
+    idempotency: "每次发布生成新版本"
+    offline: not-allowed
+    platform: [server, admin]
+    errors_extra: [BAD_INPUT]
+
+  entitlement.issue:
+    params: { kind, owner_id: optional, payload: object, idempotency_key }
+    result: { entitlement_id, kind, status, owner_id, rule_version, valid_from, valid_to }
+    scope: issuer
+    confirmation: "后台发放确认"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, admin]
+    errors_extra: [BAD_INPUT, IDEMPOTENCY_CONFLICT]
+    notes: 使用该 issuer/kind 的最新规则版本；valid_days 默认 365，范围 1..3650。
+
+  entitlement.claim:
+    params: { entitlement_id }
+    result: { entitlement }
+    scope: "未分配属主的权益"
+    confirmation: none
+    idempotency: "同一属主重复认领返回原结果"
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+    errors_extra: [FORBIDDEN, EXPIRED]
+
+  entitlement.get:
+    params: { entitlement_id }
+    result: { entitlement }
+    scope: "owner 或 issuer"
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+
+  entitlement.token:
+    params: { entitlement_id }
+    result: { token, expires_at }
+    scope: owner
+    confirmation: none
+    idempotency: "每次申请生成新令牌，库存只存哈希"
+    offline: not-allowed
+    platform: [server, android, desktop]
+    errors_extra: [FORBIDDEN, CONFLICT, EXPIRED]
+    notes: 默认 5 分钟有效。
+
+  entitlement.redeem:
+    params: { token, idempotency_key }
+    result: { redemption_id, entitlement_id, actor_id, redeemed_at }
+    scope: "owner 且令牌属于该权益"
+    confirmation: "商户扫码后服务端原子确认"
+    idempotency: required
+    offline: "explicitly-unsupported（返回 BAD_INPUT，要求联网）"
+    platform: [server, android, desktop]
+    errors_extra: [NOT_FOUND, FORBIDDEN, CONFLICT, EXPIRED, IDEMPOTENCY_CONFLICT]
+    notes: 同一令牌只能成功一次；同业务键重试返回同一核销记录。
+
+  entitlement.barcode:
+    params: { entitlement_id }
+    result: { format, value }
+    scope: "owner 或 issuer；仅 ticket 类别"
+    confirmation: none
+    idempotency: "派生值可重复生成"
+    offline: cached-read-allowed
+    platform: [server, desktop, android]
+    errors_extra: [BAD_INPUT, FORBIDDEN]
+    notes: 条码只含权益 ID 与短签名，不含用户 ID、手机号或永久凭据。
+
+  order.create:
+    params: { payee_id, quote_ref, amount, currency: optional, idempotency_key }
+    result: { order_id, actor_id, payee_id, quote_ref, amount, status }
+    scope: self
+    confirmation: "展示真实收款方/金额/退改条件"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, desktop, android, web]
+    errors_extra: [BAD_INPUT, IDEMPOTENCY_CONFLICT, AMOUNT_TOO_LARGE]
+
+  order.pay:
+    params: { order_id, idempotency_key }
+    result: { order }
+    scope: buyer
+    confirmation: "支付前展示订单摘要"
+    idempotency: required
+    offline: not-allowed
+    platform: [server, web, android, desktop]
+    errors_extra: [FORBIDDEN, ILLEGAL_TRANSITION, PROVIDER_TIMEOUT]
+    notes: 支付成功只推进到 paid，不代替履约。
+
+  order.fulfil:
+    params: { order_id, provider_order_ref }
+    result: { order }
+    scope: payee
+    confirmation: none
+    idempotency: "同一 provider_order_ref 重复履约幂等"
+    offline: not-allowed
+    platform: [server, admin]
+    errors_extra: [FORBIDDEN, ILLEGAL_TRANSITION, CONFLICT]
+
+  order.cancel:
+    params: { order_id }
+    result: { order }
+    scope: buyer
+    confirmation: "取消前展示订单摘要"
+    idempotency: "cancelled 重复调用返回原状态"
+    offline: not-allowed
+    platform: [server, web, android, desktop]
+    errors_extra: [FORBIDDEN, ILLEGAL_TRANSITION]
+    notes: 已支付/已交付订单必须走退款，不允许直接取消。
+
+  order.get:
+    params: { order_id }
+    result: { order }
+    scope: "buyer 或 payee"
+    confirmation: none
+    idempotency: read
+    offline: cached-read-allowed
+    platform: [server, desktop, android, web]
+
+  order.payment:
+    params: { order_id }
+    result: { intent: optional }
+    scope: "buyer 或 payee"
+    confirmation: none
+    idempotency: read
+    offline: not-allowed
+    platform: [server, admin]
+
+webhooks:
+  payment:
+    endpoint: POST /api/v1/commerce/webhooks/payment
+    auth: "HMAC-SHA256(raw_body, webhook_secret) 十六进制，常数时间比较"
+    replay: "event_id 唯一；重复事件返回 REPLAY 且无副作用"
+    skew: "时间戳偏离超过配置窗口拒绝"
+    transitions: "created|pending -> succeeded|failed；终态不可逆"
+    notes: 金额/币种/收款人/provider_ref 必须与本地意图一致；未知状态保持 pending。

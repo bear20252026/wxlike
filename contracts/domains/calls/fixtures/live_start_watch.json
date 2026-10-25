@@ -1,0 +1,45 @@
+{
+  "name": "live start and deduped viewer count",
+  "sequence": [
+    {
+      "command": "live.start",
+      "version": "calls-v1",
+      "payload": { "stream_id": "live-42", "conv_id": "g-fans" },
+      "response": {
+        "ok": true,
+        "data": {
+          "stream_id": "live-42",
+          "state": "live",
+          "publish_scope": "live_publish",
+          "generation": 1
+        },
+        "error": null
+      }
+    },
+    {
+      "command": "live.watch",
+      "version": "calls-v1",
+      "payload": { "stream_id": "live-42", "device": "bob-phone", "require_gesture": false },
+      "response": {
+        "ok": true,
+        "data": { "scope": "live_watch", "viewer_count": 1, "connections": 1 },
+        "error": null
+      }
+    },
+    {
+      "command": "live.watch",
+      "version": "calls-v1",
+      "payload": { "stream_id": "live-42", "device": "bob-tablet", "require_gesture": true },
+      "response": {
+        "ok": true,
+        "data": {
+          "scope": "live_watch",
+          "viewer_count": 1,
+          "connections": 2,
+          "playback": "awaiting_gesture"
+        },
+        "error": null
+      }
+    }
+  ]
+}
