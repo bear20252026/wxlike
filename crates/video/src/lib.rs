@@ -767,7 +767,10 @@ pub fn routes(state: VideoState) -> Router {
         // ——没有 `/seg/` 这一段。以前只有带 `/seg/` 的路由，标准播放器解析
         // 出的地址全是 404；这一条让相对名直接命中（`playlist.m3u8` 的静态
         // 路由优先级更高，不会被它吞掉）。
-        .route("/api/video/{video_id}/{rendition}/{name}", get(segment_named))
+        .route(
+            "/api/video/{video_id}/{rendition}/{name}",
+            get(segment_named),
+        )
         .route("/api/video/{video_id}/play.mp4", get(play_mp4))
         .route("/api/video/{video_id}/thumb.png", get(thumb))
         .route("/api/video/{video_id}/select", get(select))

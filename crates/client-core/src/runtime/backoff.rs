@@ -88,6 +88,12 @@ static JITTER_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 const GOLDEN: u64 = 0x2545_F491_4F6C_DD1D;
 /// 非零兜底种子。
 const SEED_FLOOR: u64 = 0x9E37_79B9_7F4A_7C15;
+/// xorshift64\* 的三个移位常数（Marsaglia 的 64 位三移位组合：12/25/27）。
+const XORSHIFT_SHIFT_A: u32 = 12;
+/// 见 [`XORSHIFT_SHIFT_A`]。
+const XORSHIFT_SHIFT_B: u32 = 25;
+/// 见 [`XORSHIFT_SHIFT_A`]。
+const XORSHIFT_SHIFT_C: u32 = 27;
 
 /// 取一个抖动样本，取值 `0..JITTER_RANGE`。
 ///
@@ -108,9 +114,9 @@ pub fn jitter_sample() -> u32 {
         state = SEED_FLOOR;
     }
     // xorshift64*：缺任一步都会退化成短周期
-    state ^= state >> 12;
-    state ^= state << 25;
-    state ^= state >> 27;
+    state ^= state >> XORSHIFT_SHIFT_A;
+    state ^= state << XORSHIFT_SHIFT_B;
+    state ^= state >> XORSHIFT_SHIFT_C;
     JITTER_STATE.store(state, Ordering::Relaxed);
     let mixed = state.wrapping_mul(GOLDEN);
     (mixed % u64::from(JITTER_RANGE)) as u32

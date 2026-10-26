@@ -444,19 +444,7 @@ fn build_app(
             "/metrics",
             get(move |headers: axum::http::HeaderMap| {
                 let platform = admin_platform.clone();
-                async move {
-                    let presented = headers
-                        .get("x-admin-token")
-                        .and_then(|v| v.to_str().ok());
-                    if !platform.admin_ok(presented) {
-                        return (
-                            StatusCode::NOT_FOUND,
-                            Json(serde_json::json!({"error": "not found"})),
-                        )
-                            .into_response();
-                    }
-                    metrics().await.into_response()
-                }
+                async move { metrics_handler(&platform, &headers).await }
             }),
         )
         // /endpoints 报出 QUIC 地址：匿名可达等于把内网拓扑广播出去，
@@ -466,23 +454,7 @@ fn build_app(
             get(move |headers: axum::http::HeaderMap| {
                 let platform = endpoints_platform.clone();
                 let hub_id = hub_id.clone();
-                async move {
-                    let caller = wxlike_platform::Authed::bearer_from(&headers)
-                        .and_then(|t| platform.lookup_token(t).ok().flatten());
-                    if caller.is_none() {
-                        return (
-                            StatusCode::UNAUTHORIZED,
-                            Json(serde_json::json!({"error": "login required"})),
-                        )
-                            .into_response();
-                    }
-                    Json(serde_json::json!({
-                        "hub": hub_id,
-                        "quic": quic_addr.to_string(),
-                        "alpn": "wxlike/1",
-                    }))
-                    .into_response()
-                }
+                async move { endpoints_handler(&platform, &headers, &hub_id, quic_addr).await }
             }),
         )
         .merge(wxlike_platform::Platform::router(platform.clone()))
@@ -493,6 +465,44 @@ fn build_app(
         .merge(web_static::routes())
         .merge(dev_routes(platform.clone()))
         .merge(turn_routes(platform))
+}
+
+async fn metrics_handler(
+    platform: &PlatformState,
+    headers: &axum::http::HeaderMap,
+) -> axum::response::Response {
+    let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
+    if !platform.admin_ok(presented) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response();
+    }
+    metrics().await.into_response()
+}
+
+async fn endpoints_handler(
+    platform: &PlatformState,
+    headers: &axum::http::HeaderMap,
+    hub_id: &str,
+    quic_addr: std::net::SocketAddr,
+) -> axum::response::Response {
+    let caller = wxlike_platform::Authed::bearer_from(headers)
+        .and_then(|t| platform.lookup_token(t).ok().flatten());
+    if caller.is_none() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "login required"})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "hub": hub_id,
+        "quic": quic_addr.to_string(),
+        "alpn": "wxlike/1",
+    }))
+    .into_response()
 }
 
 /// 起 HTTP 服务并返回（地址、停机信号、任务句柄）。
@@ -952,10 +962,7 @@ async fn recall_message(
     let mut target: MsgId = [0u8; 16];
     target.copy_from_slice(&id);
 
-    let author = deps
-        .store
-        .author_of(&id)
-        .map_err(internal)?;
+    let author = deps.store.author_of(&id).map_err(internal)?;
     match author {
         None => return Err((StatusCode::NOT_FOUND, "no such message".into())),
         Some(author) if author != authed.user_id => {
@@ -1019,11 +1026,7 @@ async fn forward_message(
         ));
     }
     // 目标会话同样：往秘密会话里塞一条普通会话的消息，接收方会以为它受保护
-    if deps
-        .platform
-        .is_secret_conv(&to_conv)
-        .map_err(internal)?
-    {
+    if deps.platform.is_secret_conv(&to_conv).map_err(internal)? {
         return Err((
             StatusCode::FORBIDDEN,
             "cannot forward into a secret conversation".to_string(),

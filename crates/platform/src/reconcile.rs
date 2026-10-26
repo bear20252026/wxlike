@@ -304,6 +304,9 @@ pub fn spawn_reconciler(
     })
 }
 
+/// 运维界面展示的对账历史条数上限。
+const RECONCILE_HISTORY_LIMIT: usize = 50;
+
 fn require_admin(platform: &Platform, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
     let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
     if platform.admin_ok(presented) {
@@ -339,6 +342,6 @@ async fn history(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     require_admin(&platform, &headers)?;
     Ok(Json(serde_json::json!({
-        "runs": platform.reconcile_history(50)?,
+        "runs": platform.reconcile_history(RECONCILE_HISTORY_LIMIT)?,
     })))
 }

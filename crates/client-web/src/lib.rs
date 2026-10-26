@@ -120,7 +120,9 @@ mod bindgen_entry {
     use wxlike_client_core::cancel::Cancellation;
     use wxlike_client_core::ports::Ports;
     use wxlike_client_core::runtime::{action_ids, EventSubscription, Session};
-    use wxlike_types::{ActionId, ActionOutcome, ActionRequest, DomainError, IdempotencyKey, TraceId};
+    use wxlike_types::{
+        ActionId, ActionOutcome, ActionRequest, DomainError, IdempotencyKey, TraceId,
+    };
 
     use crate::{clock, crypto, fetch, idb, platform, NoNotifications};
 
@@ -133,6 +135,66 @@ mod bindgen_entry {
     fn next_trace() -> TraceId {
         let seq = REQUEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         TraceId::derive(&format!("web-{seq}"))
+    }
+
+    /// 请求参数 / action id 不合法时的 TS 形状校验错误（与 [`ts_error`] 同壳）。
+    fn validation_error(message: String) -> String {
+        serde_json::json!({
+            "ok": false,
+            "error": {
+                "code": "VALIDATION",
+                "message": message,
+                "retryable": false,
+            }
+        })
+        .to_string()
+    }
+
+    /// 把一段 JSON 文本喂给 JS 回调；回调抛错不终止流（下一次事件还会送）。
+    fn deliver_text(on_event: &js_sys::Function, text: &str) {
+        let payload = JsValue::from_str(text);
+        let _ = on_event.call1(&JsValue::UNDEFINED, &payload);
+    }
+
+    /// 传输错误 → 控制消息（事件形状之外，宿主据此提示 / 重订）。
+    fn stream_error_text(error: &DomainError) -> String {
+        serde_json::json!({
+            "__wxlike": "error",
+            "code": error.to_wire_code(),
+            "message": error.message(),
+        })
+        .to_string()
+    }
+
+    /// 事件泵：把订阅产出的事件逐条喂给 JS 回调，直到流结束或被退订。
+    ///
+    /// 独立成函数是为了把嵌套压回闸门线内，逻辑与拆分前逐行一致。
+    /// `Closure` 由任务持有：任务结束（取消 / 流结束）即释放，无 forget 泄漏。
+    async fn pump_events(
+        mut subscription: EventSubscription,
+        on_event: js_sys::Function,
+        task_cancel: Cancellation,
+    ) {
+        loop {
+            match subscription.next().await {
+                Ok(Some(event)) => {
+                    let text = serde_json::to_string(&event).unwrap_or_default();
+                    deliver_text(&on_event, &text);
+                }
+                // 服务端要求换连接：宿主应重新订阅
+                Ok(None) => {
+                    deliver_text(&on_event, r#"{"__wxlike":"stream-end"}"#);
+                    break;
+                }
+                Err(error) => {
+                    deliver_text(&on_event, &stream_error_text(&error));
+                    break;
+                }
+            }
+            if task_cancel.is_cancelled() {
+                break;
+            }
+        }
     }
 
     /// wasm 核心。
@@ -179,8 +241,8 @@ mod bindgen_entry {
                 .await
                 .map_err(|err| JsValue::from_str(&err.to_string()))?;
             let transport = fetch::FetchTransport::new(&base_url);
-            let secrets = crypto::WebSecrets::new()
-                .map_err(|err| JsValue::from_str(&err.to_string()))?;
+            let secrets =
+                crypto::WebSecrets::new().map_err(|err| JsValue::from_str(&err.to_string()))?;
             let ports = Ports::new(
                 Arc::new(transport.clone()),
                 Arc::new(store),
@@ -206,31 +268,11 @@ mod bindgen_entry {
         pub async fn dispatch(&self, action: String, params_json: String) -> String {
             let params: serde_json::Value = match serde_json::from_str(&params_json) {
                 Ok(value) => value,
-                Err(err) => {
-                    return serde_json::json!({
-                        "ok": false,
-                        "error": {
-                            "code": "VALIDATION",
-                            "message": format!("params 不是合法 JSON：{err}"),
-                            "retryable": false,
-                        }
-                    })
-                    .to_string();
-                }
+                Err(err) => return validation_error(format!("params 不是合法 JSON：{err}")),
             };
             let action_id = match ActionId::parse(&action) {
                 Ok(id) => id,
-                Err(err) => {
-                    return serde_json::json!({
-                        "ok": false,
-                        "error": {
-                            "code": "VALIDATION",
-                            "message": format!("action id 不合法：{err}"),
-                            "retryable": false,
-                        }
-                    })
-                    .to_string();
-                }
+                Err(err) => return validation_error(format!("action id 不合法：{err}")),
             };
             let mut request = ActionRequest::new(action_id, params.clone(), next_trace());
             if let Some(key) = params
@@ -247,9 +289,7 @@ mod bindgen_entry {
                 ActionOutcome::Ok { data } => {
                     serde_json::json!({"ok": true, "data": data}).to_string()
                 }
-                ActionOutcome::Empty => {
-                    serde_json::json!({"ok": true, "data": null}).to_string()
-                }
+                ActionOutcome::Empty => serde_json::json!({"ok": true, "data": null}).to_string(),
                 ActionOutcome::Failed { error } => ts_error(error).to_string(),
             }
         }
@@ -315,39 +355,8 @@ mod bindgen_entry {
                 wxlike_types::SubscribeRequest::all(),
                 cancel.clone(),
             );
-            // Closure 由任务持有：任务结束（取消 / 流结束）即释放，无 forget 泄漏
             let task_cancel = cancel.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let mut subscription = subscription;
-                loop {
-                    match subscription.next().await {
-                        Ok(Some(event)) => {
-                            let text = serde_json::to_string(&event).unwrap_or_default();
-                            let payload = JsValue::from_str(&text);
-                            // 回调抛错不终止流（下一次事件还会送）
-                            let _ = on_event.call1(&JsValue::UNDEFINED, &payload);
-                        }
-                        Ok(None) => {
-                            let payload = JsValue::from_str(r#"{"__wxlike":"stream-end"}"#);
-                            let _ = on_event.call1(&JsValue::UNDEFINED, &payload);
-                            break;
-                        }
-                        Err(error) => {
-                            let text = serde_json::json!({
-                                "__wxlike": "error",
-                                "code": error.to_wire_code(),
-                                "message": error.message(),
-                            })
-                            .to_string();
-                            let _ = on_event.call1(&JsValue::UNDEFINED, &JsValue::from_str(&text));
-                            break;
-                        }
-                    }
-                    if task_cancel.is_cancelled() {
-                        break;
-                    }
-                }
-            });
+            wasm_bindgen_futures::spawn_local(pump_events(subscription, on_event, task_cancel));
             Ok(WxlikeSubscription { cancel })
         }
 

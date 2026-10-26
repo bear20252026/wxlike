@@ -29,8 +29,8 @@ async fn get(app: &axum::Router, uri: &str) -> (StatusCode, String) {
         .await
         .unwrap();
     let status = res.status();
-    let body = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes())
-        .into_owned();
+    let body =
+        String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
     (status, body)
 }
 

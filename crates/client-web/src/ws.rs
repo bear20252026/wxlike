@@ -49,6 +49,18 @@ pub struct WebSocketEvents {
     on_error: Closure<dyn FnMut(web_sys::Event)>,
 }
 
+/// 单条 WS 文本入队：脏数据丢掉，不打断流；队列被占着（重入）时同样丢
+/// 这一条而不是 panic——丢一条可重放的事件好过崩掉整条流。
+/// （服务端灰度新字段时就会出现脏数据，见模块注释。）
+fn enqueue_text(queue: &RefCell<VecDeque<EventEnvelope>>, text: &str) {
+    let Ok(envelope) = serde_json::from_str::<EventEnvelope>(text) else {
+        return;
+    };
+    if let Ok(mut queue) = queue.try_borrow_mut() {
+        queue.push_back(envelope);
+    }
+}
+
 impl WebSocketEvents {
     /// 建连。`url` 必须是 `ws://` 或 `wss://` 全量地址。
     ///
@@ -67,13 +79,7 @@ impl WebSocketEvents {
                 let Some(text) = event.data().as_string() else {
                     return;
                 };
-                // 脏数据丢掉，不打断流；队列被占着（重入）时同样丢这一条，
-                // 而不是 panic——丢一条可重放的事件好过崩掉整条流
-                if let Ok(envelope) = serde_json::from_str::<EventEnvelope>(&text) {
-                    if let Ok(mut queue) = queue.try_borrow_mut() {
-                        queue.push_back(envelope);
-                    }
-                }
+                enqueue_text(&queue, &text);
             })
         };
         socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));

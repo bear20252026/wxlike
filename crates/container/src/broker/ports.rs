@@ -14,6 +14,9 @@ use super::grants::Perm;
 
 pub const MAX_PHOTO_REFERENCE: usize = 256;
 pub const MAX_FILE_NAME: usize = 200;
+/// 桩文件大小：足以让读写路径都走到真实分支。
+const LEASE_FILE_BYTES: u64 = 2048;
+
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,7 +358,7 @@ pub mod fixtures {
             self.prompts.lock().unwrap().push(purpose);
             Ok(FileHandle {
                 name: "lease.pdf".into(),
-                size: 2048,
+                size: LEASE_FILE_BYTES,
                 reference: "file-1".into(),
             })
         }

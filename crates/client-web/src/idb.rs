@@ -86,7 +86,9 @@ impl IdbStore {
         // 敏感缓存的密钥：load-or-create（localStorage 里的 WebSecrets）。
         // 失败不炸库：普通缓存照用，敏感缓存明确报不可用。
         let cipher = match crate::crypto::WebSecrets::new() {
-            Ok(secrets) => crate::crypto::WebCacheCipher::load_or_create(&secrets).await.ok(),
+            Ok(secrets) => crate::crypto::WebCacheCipher::load_or_create(&secrets)
+                .await
+                .ok(),
             Err(_) => None,
         };
         Ok(Self {
@@ -390,10 +392,9 @@ impl LocalStore for IdbStore {
         // 敏感内容**先加密再落盘**（AEAD 与原生侧同一套，密钥在 WebSecrets）。
         // 密钥存储不可用时明确报错：明文落盘不是可接受的降级。
         let body = if sensitive {
-            let cipher = self
-                .cipher
-                .as_ref()
-                .ok_or_else(|| StoreError::Unavailable("敏感缓存不可用：没有密钥存储".to_string()))?;
+            let cipher = self.cipher.as_ref().ok_or_else(|| {
+                StoreError::Unavailable("敏感缓存不可用：没有密钥存储".to_string())
+            })?;
             cipher
                 .seal(value)
                 .map_err(|err| StoreError::Unavailable(err.to_string()))?

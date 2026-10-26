@@ -353,24 +353,8 @@ impl Platform {
         memo: &str,
         conv_id: Option<&str>,
     ) -> Result<String> {
-        let from = validate::id(from)?.to_string();
-        let memo = validate::note(memo)?.to_string();
-        check_amount(amount)?;
-        if !(1..=1_000).contains(&count) {
-            return Err(PlatformError::BadInput("count must be between 1 and 1000"));
-        }
-        if amount < count {
-            // every share must be at least one minor unit
-            return Err(PlatformError::BadInput("amount is too small to split"));
-        }
-        let id = crate::auth::random_hex(8);
-        let conv_id = match conv_id {
-            // 直聊会话 id 含 `~`，必须走 conv 校验（id 校验会拒真会话——存量 bug）
-            Some(c) if !c.is_empty() => validate::conv(c)?.to_string(),
-            _ => id.clone(),
-        };
-        let now = wxlike_core::types::now_ms() as i64;
-        let expire_at = now + REDPACKET_TTL_MS as i64;
+        let (from, memo, id, conv_id, now, expire_at) =
+            validate_redpacket_input(from, amount, count, memo, conv_id)?;
 
         let mut c = self.db().lock();
         let tx = c.transaction()?;
@@ -503,34 +487,43 @@ impl Platform {
         drop(c);
 
         // P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片
-        // （不占时间线、不占序列号——不变式 3）。发红包时未带 conv 的包
-        // 没有卡片可回写，跳过。
+        // （不占时间线、不占序列号——不变式 3）。未带 conv 的包没有卡片，跳过。
         if let Some(conv) = self.redpacket_conv(&id)? {
-            if let Some(store) = self.message_store.as_ref() {
-                // 属主类型按会话 id 推导（与 server 的 one_message 同一条规则）：
-                // 群红包回写到群信箱，直聊红包回写到直聊信箱——原来硬编码
-                // Direct，群红包的卡片更新落进了永不存在的信箱。
-                let owner = if conv.starts_with("d-") {
-                    wxlike_message::OwnerType::Direct
-                } else {
-                    wxlike_message::OwnerType::Group
-                };
-                let _ = store.append_ephemeral(
-                    (owner, &conv),
-                    &by,
-                    "wallet.redpacket.claim",
-                    &format!("claim-{id}-{}", crate::auth::random_hex(4)),
-                    &id,
-                    &serde_json::json!({
-                        "claimer": by, "amount": share,
-                        // 与同事务 SQL 的 claimed + 1 >= count 同口径（笔数 vs 份数）
-                        "finished": status_now_finished(claimed, count),
-                    })
-                    .to_string(),
-                );
-            }
+            self.notify_redpacket_claim(
+                &id,
+                &conv,
+                &by,
+                share,
+                status_now_finished(claimed, count),
+            );
         }
         Ok(share)
+    }
+
+    /// P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片（不占
+    /// 时间线、不占序列号——不变式 3）。发红包时未带 conv 的包没有卡片可
+    /// 回写，跳过。属主类型按会话 id 前缀推导（与 server 的 one_message
+    /// 同一条规则）——原来硬编码 Direct，群红包的卡片更新落进了永不存在的信箱。
+    fn notify_redpacket_claim(&self, id: &str, conv: &str, by: &str, share: i64, finished: bool) {
+        let Some(store) = self.message_store.as_ref() else {
+            return;
+        };
+        let owner = if conv.starts_with("d-") {
+            wxlike_message::OwnerType::Direct
+        } else {
+            wxlike_message::OwnerType::Group
+        };
+        let _ = store.append_ephemeral(
+            (owner, conv),
+            by,
+            "wallet.redpacket.claim",
+            &format!("claim-{id}-{}", crate::auth::random_hex(4)),
+            id,
+            &serde_json::json!({
+                "claimer": by, "amount": share, "finished": finished,
+            })
+            .to_string(),
+        );
     }
 
     /// 红包卡片所在会话（发红包时可带 conv_id；未带则无卡片）。
@@ -672,22 +665,26 @@ fn replay_or_proceed(
     let Some(key) = key else {
         return Ok(None);
     };
-    match platform.wallet_idem_lookup(user_id, key)? {
-        None => Ok(None),
-        Some((stored_hash, response)) if stored_hash == hash => {
-            tracing::info!(user = user_id, "wallet idempotency replay");
-            match serde_json::from_str(&response) {
-                Ok(value) => Ok(Some(value)),
-                Err(err) => {
-                    // 行坏了当没记录：宁可重放失败也不把坏 JSON 发给客户端
-                    tracing::error!(error = %err, "wallet idem row is corrupt");
-                    Ok(None)
-                }
-            }
-        }
-        Some(_) => Err(PlatformError::Conflict(
+    let Some((stored_hash, response)) = platform.wallet_idem_lookup(user_id, key)? else {
+        return Ok(None);
+    };
+    if stored_hash != hash {
+        return Err(PlatformError::Conflict(
             "idempotency key reused with different parameters".into(),
-        )),
+        ));
+    }
+    replay_stored_response(user_id, &response)
+}
+
+/// 命中记录的回放；行坏了当没记录——宁可重放失败也不把坏 JSON 发给客户端。
+fn replay_stored_response(user_id: &str, response: &str) -> Result<Option<serde_json::Value>> {
+    tracing::info!(user = user_id, "wallet idempotency replay");
+    match serde_json::from_str(response) {
+        Ok(value) => Ok(Some(value)),
+        Err(err) => {
+            tracing::error!(error = %err, "wallet idem row is corrupt");
+            Ok(None)
+        }
     }
 }
 
@@ -699,7 +696,12 @@ async fn transfer(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let memo = body.memo.clone().unwrap_or_default();
     let key = idem_key(&headers);
-    let hash = request_hash(&[&authed.user_id, &body.to_uid, &body.amount.to_string(), &memo]);
+    let hash = request_hash(&[
+        &authed.user_id,
+        &body.to_uid,
+        &body.amount.to_string(),
+        &memo,
+    ]);
     if let Some(hit) = replay_or_proceed(&platform, &authed.user_id, key.as_deref(), &hash)? {
         return Ok(Json(hit));
     }
@@ -726,6 +728,90 @@ async fn transfer(
     Ok(Json(response))
 }
 
+/// 红包入参校验 + 标识生成：`(from, memo, id, conv_id, now, expire_at)`。
+/// 直聊会话 id 含 `~`，必须走 conv 校验（id 校验会拒真会话——存量 bug）。
+fn validate_redpacket_input(
+    from: &str,
+    amount: i64,
+    count: i64,
+    memo: &str,
+    conv_id: Option<&str>,
+) -> Result<(String, String, String, String, i64, i64)> {
+    let from = validate::id(from)?.to_string();
+    let memo = validate::note(memo)?.to_string();
+    check_amount(amount)?;
+    if !(1..=1_000).contains(&count) {
+        return Err(PlatformError::BadInput("count must be between 1 and 1000"));
+    }
+    if amount < count {
+        // every share must be at least one minor unit
+        return Err(PlatformError::BadInput("amount is too small to split"));
+    }
+    let id = crate::auth::random_hex(8);
+    let conv_id = match conv_id {
+        Some(c) if !c.is_empty() => validate::conv(c)?.to_string(),
+        _ => id.clone(),
+    };
+    let now = wxlike_core::types::now_ms() as i64;
+    let expire_at = now + REDPACKET_TTL_MS as i64;
+    Ok((from, memo, id, conv_id, now, expire_at))
+}
+
+/// 资金写进哪个会话，就要求发红包的人能读那个会话（与媒体/历史的
+/// `may_read_conv` 同一条规则）：否则任何人都能往任意群的卡片流里
+/// 塞自己的红包公告。
+fn ensure_conv_postable(
+    platform: &Platform,
+    user_id: &str,
+    conv_id: Option<&str>,
+) -> std::result::Result<(), ApiError> {
+    let Some(conv) = conv_id.map(str::trim).filter(|c| !c.is_empty()) else {
+        return Ok(());
+    };
+    if !platform.may_read_conv(user_id, conv) {
+        return Err(ApiError::forbidden(
+            "you cannot post into that conversation",
+        ));
+    }
+    Ok(())
+}
+
+/// 红包公告扇出：发给能看见该会话的所有人（除发红包者自己）。
+async fn announce_redpacket(
+    platform: &PlatformState,
+    user_id: &str,
+    id: &str,
+    amount: i64,
+    count: i64,
+    memo: &str,
+) -> std::result::Result<(), ApiError> {
+    let packet = platform
+        .redpacket(id)?
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "packet vanished"))?;
+    let recipients = match platform.cached_members(&packet.conv_id) {
+        Ok(Some(members)) => members,
+        _ => vec![packet.from_uid.clone()],
+    }
+    .into_iter()
+    .filter(|u| *u != user_id)
+    .collect();
+    platform
+        .emit(wallet_message(
+            &packet.conv_id,
+            user_id,
+            recipients,
+            wxlike_core::custom_kind::WALLET_REDPACKET,
+            serde_json::json!({
+                "redpacket_id": id,
+                "amount": amount,
+                "count": count,
+                "memo": memo,
+            }),
+        ))
+        .await;
+    Ok(())
+}
+
 async fn create_redpacket(
     State(platform): State<PlatformState>,
     authed: Authed,
@@ -744,21 +830,7 @@ async fn create_redpacket(
     if let Some(hit) = replay_or_proceed(&platform, &authed.user_id, key.as_deref(), &hash)? {
         return Ok(Json(hit));
     }
-    // 资金写进哪个会话，就要求发红包的人能读那个会话（与媒体/历史的
-    // `may_read_conv` 同一条规则）：否则任何人都能往任意群的卡片流里
-    // 塞自己的红包公告。
-    if let Some(conv) = body
-        .conv_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-    {
-        if !platform.may_read_conv(&authed.user_id, conv) {
-            return Err(ApiError::forbidden(
-                "you cannot post into that conversation",
-            ));
-        }
-    }
+    ensure_conv_postable(&platform, &authed.user_id, body.conv_id.as_deref())?;
     let id = platform.create_redpacket(
         &authed.user_id,
         body.amount,
@@ -766,31 +838,15 @@ async fn create_redpacket(
         &memo,
         body.conv_id.as_deref(),
     )?;
-    let packet = platform
-        .redpacket(&id)?
-        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "packet vanished"))?;
-    // announced to everyone who can see the conversation it was posted in
-    let recipients = match platform.cached_members(&packet.conv_id) {
-        Ok(Some(members)) => members,
-        _ => vec![packet.from_uid.clone()],
-    }
-    .into_iter()
-    .filter(|u| *u != authed.user_id)
-    .collect();
-    platform
-        .emit(wallet_message(
-            &packet.conv_id,
-            &authed.user_id,
-            recipients,
-            wxlike_core::custom_kind::WALLET_REDPACKET,
-            serde_json::json!({
-                "redpacket_id": id,
-                "amount": body.amount,
-                "count": body.count,
-                "memo": memo,
-            }),
-        ))
-        .await;
+    announce_redpacket(
+        &platform,
+        &authed.user_id,
+        &id,
+        body.amount,
+        body.count,
+        &memo,
+    )
+    .await?;
     let response = serde_json::json!({ "redpacket_id": id });
     if let Some(key) = key.as_deref() {
         platform.wallet_idem_store(&authed.user_id, key, &hash, &response)?;
@@ -864,13 +920,15 @@ async fn balance(
     })))
 }
 
+/// 账本查询的默认条数上限。
+const LEDGER_DEFAULT_LIMIT: i64 = 50;
 async fn ledger(
     State(platform): State<PlatformState>,
     authed: Authed,
     Query(q): Query<LedgerQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let since = q.since.unwrap_or(0).max(0);
-    let limit = q.limit.unwrap_or(50);
+    let limit = q.limit.unwrap_or(LEDGER_DEFAULT_LIMIT);
     let rows = platform.ledger_of(&authed.user_id, since, limit)?;
     let head = platform.ledger_head(&authed.user_id)?;
     Ok(Json(serde_json::json!({

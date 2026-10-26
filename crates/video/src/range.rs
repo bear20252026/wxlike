@@ -149,50 +149,66 @@ pub fn respond_with_range(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     match serve_range(range_header.as_deref(), total) {
-        Served::Unsatisfiable { total } => (
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            [(header::CONTENT_RANGE, format!("bytes */{total}"))],
-        )
-            .into_response(),
-        Served::Whole { .. } => match read_whole_exact(path, total) {
-            Ok(body) => {
-                if total > WHOLE_SERVE_WARN_BYTES {
-                    tracing::warn!(
-                        path = %path.display(),
-                        bytes = total,
-                        "serving a whole video file from memory (no Range); \
-                         see the known-debt note on respond_with_range"
-                    );
-                }
-                (
-                    StatusCode::OK,
-                    [
-                        (header::CONTENT_TYPE, content_type.to_string()),
-                        (header::ACCEPT_RANGES, "bytes".to_string()),
-                    ],
-                    body,
-                )
-                    .into_response()
-            }
-            Err(_) => missing(),
-        },
+        Served::Unsatisfiable { total } => unsatisfiable_response(total),
+        Served::Whole { .. } => whole_response(path, content_type, total),
         Served::Partial { range, total } => match read_range(path, range) {
-            Ok(body) => (
-                StatusCode::PARTIAL_CONTENT,
-                [
-                    (header::CONTENT_TYPE, content_type.to_string()),
-                    (header::ACCEPT_RANGES, "bytes".to_string()),
-                    (
-                        header::CONTENT_RANGE,
-                        format!("bytes {}-{}/{total}", range.start, range.end),
-                    ),
-                ],
-                body,
-            )
-                .into_response(),
+            Ok(body) => partial_response(content_type, range, total, body),
             Err(_) => missing(),
         },
     }
+}
+
+fn unsatisfiable_response(total: u64) -> Response {
+    (
+        StatusCode::RANGE_NOT_SATISFIABLE,
+        [(header::CONTENT_RANGE, format!("bytes */{total}"))],
+    )
+        .into_response()
+}
+
+/// 无 Range：整读（精确分配）。超阈值告警，让内存压力可见。
+fn whole_response(path: &Path, content_type: &'static str, total: u64) -> Response {
+    let body = match read_whole_exact(path, total) {
+        Ok(body) => body,
+        Err(_) => return missing(),
+    };
+    if total > WHOLE_SERVE_WARN_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            bytes = total,
+            "serving a whole video file from memory (no Range);              see the known-debt note on respond_with_range"
+        );
+    }
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (header::ACCEPT_RANGES, "bytes".to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+fn partial_response(
+    content_type: &'static str,
+    range: ByteRange,
+    total: u64,
+    body: Vec<u8>,
+) -> Response {
+    (
+        StatusCode::PARTIAL_CONTENT,
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (header::ACCEPT_RANGES, "bytes".to_string()),
+            (
+                header::CONTENT_RANGE,
+                format!("bytes {}-{}/{total}", range.start, range.end),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// 无 Range 响应的告警阈值：超过它的整读值得让运维看见（4K 长片的
@@ -203,8 +219,7 @@ const WHOLE_SERVE_WARN_BYTES: u64 = 64 * 1024 * 1024;
 /// metadata/容量试探第二遍，也不让 `read_to_end` 走扩容链。
 fn read_whole_exact(path: &Path, total: u64) -> anyhow::Result<Vec<u8>> {
     use std::io::Read as _;
-    let mut file =
-        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let want = usize::try_from(total)
         .map_err(|_| anyhow::anyhow!("file larger than addressable memory"))?;
     let mut buf = Vec::with_capacity(want);

@@ -214,6 +214,31 @@ opaque_id!(
     "trace"
 );
 
+impl ActionId {
+    /// 由任意文本派生一个合法的 action id（兜底用）。
+    ///
+    /// 语义与 [`TraceId::derive`] 相同：非法字符换 `-`、超长截断、空串补
+    /// `action`。catalog id 万一漂移时，结果里仍要有一个可序列化的
+    /// action_id——兜底成占位而不是 panic，调用方按"与 catalog 原文对不上"
+    /// 处理。
+    #[must_use]
+    pub fn derive(seed: &str) -> Self {
+        let mut out = String::with_capacity(MAX_ID_LEN);
+        for ch in seed.chars() {
+            if out.len() >= MAX_ID_LEN {
+                break;
+            }
+            let allowed =
+                ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~' | ':' | '@');
+            out.push(if allowed { ch } else { '-' });
+        }
+        if out.is_empty() {
+            out.push_str("action");
+        }
+        Self(out)
+    }
+}
+
 impl TraceId {
     /// 由任意文本派生一个合法的追踪 id。
     ///

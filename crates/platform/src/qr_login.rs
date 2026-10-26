@@ -28,6 +28,9 @@
 //!    secret 为凭——这是契约接受的边界，别把它当漏洞修掉，改契约要先改桥。
 
 use axum::body::Bytes;
+
+/// QR 票据 secret 的十六进制长度（与 identity::qr_login 生成侧一致）。
+const QR_SECRET_HEX_LEN: usize = 32;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -47,7 +50,10 @@ pub fn routes() -> Router<PlatformState> {
         .route("/api/qr/tickets/{ticket_id}/scan", post(scan_ticket))
         .route("/api/qr/tickets/{ticket_id}/approve", post(approve_ticket))
         .route("/api/qr/tickets/{ticket_id}/reject", post(reject_ticket))
-        .route("/api/qr/tickets/{ticket_id}/exchange", post(exchange_ticket))
+        .route(
+            "/api/qr/tickets/{ticket_id}/exchange",
+            post(exchange_ticket),
+        )
 }
 
 /// 建票时可带的设备线索（都可省，省了用默认值）。
@@ -99,7 +105,7 @@ async fn create_ticket(
     let now = wxlike_core::types::now_ms() as i64;
     // verifier 是服务端持有的 PKCE 秘密（见模块头第 2 点），64 hex 满足
     // qr_login 的长度/字符集校验。
-    let verifier = crate::auth::random_hex(32);
+    let verifier = crate::auth::random_hex(QR_SECRET_HEX_LEN);
 
     let ticket = {
         let conn = platform.db().lock();
@@ -218,7 +224,11 @@ async fn decide(
     }
     platform.audit(
         &authed.user_id,
-        if approve { "qr.ticket.approve" } else { "qr.ticket.reject" },
+        if approve {
+            "qr.ticket.approve"
+        } else {
+            "qr.ticket.reject"
+        },
         &ticket_id,
         "",
     );
@@ -242,72 +252,9 @@ async fn exchange_ticket(
     }
     let now = wxlike_core::types::now_ms() as i64;
 
-    // 第一段（持锁）：定位、验期、抢占式消费。
-    let (creator, device_id, label) = {
-        let conn = platform.db().lock();
-        let by_secret: Option<String> = conn
-            .query_row(
-                "SELECT id FROM identity_qr WHERE secret_hash = ?1",
-                params![wxlike_identity::digest(secret)],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_err)?;
-        let Some(id) = by_secret else {
-            return Err(ApiError::not_found("no such ticket"));
-        };
-        secret_must_match(&ticket_id, &id)?;
-        let adapter: Option<String> = conn
-            .query_row(
-                "SELECT creator FROM qr_ticket_creator WHERE ticket_id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_err)?;
-        let Some(creator) = adapter else {
-            // 不是这个 HTTP 面建出来的票：对它一无所知，按不存在处理
-            return Err(ApiError::not_found("no such ticket"));
-        };
-
-        let (state, expires_at, device_id, label): (String, i64, String, String) = conn
-            .query_row(
-                "SELECT state, expires_at, device_id, label FROM identity_qr WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(db_err)?
-            .ok_or_else(|| ApiError::not_found("no such ticket"))?;
-        if expires_at <= now && matches!(state.as_str(), "pending" | "scanned" | "approved") {
-            // 与 qr_login::load 同一口径：到点的活跃票顺手落 expired
-            conn.execute(
-                "UPDATE identity_qr SET state = 'expired' \
-                 WHERE id = ?1 AND state IN ('pending','scanned','approved')",
-                params![id],
-            )
-            .map_err(db_err)?;
-            return Err(ApiError::new(StatusCode::GONE, "ticket expired"));
-        }
-        match state.as_str() {
-            "approved" => {}
-            "consumed" => return Err(ApiError::conflict("ticket already used")),
-            "rejected" => return Err(ApiError::conflict("ticket was rejected")),
-            "expired" => return Err(ApiError::new(StatusCode::GONE, "ticket expired")),
-            _ => return Err(ApiError::conflict("ticket not approved yet")),
-        }
-        let consumed = conn
-            .execute(
-                "UPDATE identity_qr SET state = 'consumed', consumed_at = ?2 \
-                 WHERE id = ?1 AND state = 'approved'",
-                params![id, now],
-            )
-            .map_err(db_err)?;
-        if consumed != 1 {
-            return Err(ApiError::conflict("ticket already used"));
-        }
-        (creator, device_id, label)
-    }; // 锁在这里必须放下：create_session_for_device 会再拿一次库锁
+    // 第一段（持锁）：定位、验期、抢占式消费。锁在函数里放下：
+    // create_session_for_device 会再拿一次库锁。
+    let (creator, device_id, label) = consume_qr_ticket(&platform, &ticket_id, secret, now)?;
 
     // 第二段（无锁）：签发创建者的真实会话——与 /api/login 同一条路径。
     let token = platform
@@ -319,15 +266,102 @@ async fn exchange_ticket(
             "",
         )
         .map_err(ApiError::from)?;
-    let name = platform
-        .display_name_of(&creator)
-        .map_err(ApiError::from)?;
+    let name = platform.display_name_of(&creator).map_err(ApiError::from)?;
     platform.audit(&creator, "qr.ticket.exchange", &ticket_id, "session issued");
     Ok(Json(serde_json::json!({
         "token": token,
         "user_id": creator,
         "name": name,
     })))
+}
+
+/// 第一段（持锁）：定位、验期、抢占式消费 → `(creator, device_id, label)`。
+/// 锁在这里必须放下：create_session_for_device 会再拿一次库锁。
+/// 按 secret 哈希定位票据 id；不存在按 404 报。
+fn locate_ticket_by_secret(conn: &rusqlite::Connection, secret: &str) -> Result<String, ApiError> {
+    conn.query_row(
+        "SELECT id FROM identity_qr WHERE secret_hash = ?1",
+        params![wxlike_identity::digest(secret)],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(db_err)?
+    .ok_or_else(|| ApiError::not_found("no such ticket"))
+}
+
+/// 票据的创建者（只有本 HTTP 面建出来的票才有登记）；
+/// 不是这个面建出来的票对它一无所知，按不存在处理。
+fn ticket_creator(conn: &rusqlite::Connection, id: &str) -> Result<String, ApiError> {
+    conn.query_row(
+        "SELECT creator FROM qr_ticket_creator WHERE ticket_id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(db_err)?
+    .ok_or_else(|| ApiError::not_found("no such ticket"))
+}
+
+fn consume_qr_ticket(
+    platform: &Platform,
+    ticket_id: &str,
+    secret: &str,
+    now: i64,
+) -> std::result::Result<(String, String, String), ApiError> {
+    let conn = platform.db().lock();
+    let id = locate_ticket_by_secret(&conn, secret)?;
+    secret_must_match(ticket_id, &id)?;
+    let creator = ticket_creator(&conn, &id)?;
+
+    let (state, expires_at, device_id, label): (String, i64, String, String) = conn
+        .query_row(
+            "SELECT state, expires_at, device_id, label FROM identity_qr WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| ApiError::not_found("no such ticket"))?;
+    check_qr_state(&conn, &id, &state, expires_at, now)?;
+
+    let consumed = conn
+        .execute(
+            "UPDATE identity_qr SET state = 'consumed', consumed_at = ?2 \
+             WHERE id = ?1 AND state = 'approved'",
+            params![id, now],
+        )
+        .map_err(db_err)?;
+    if consumed != 1 {
+        return Err(ApiError::conflict("ticket already used"));
+    }
+    Ok((creator, device_id, label))
+}
+
+/// 到期落 expired + 状态闸门：只有 `approved` 能被消费。
+/// 与 qr_login::load 同一口径：到点的活跃票顺手落 expired。
+fn check_qr_state(
+    conn: &rusqlite::Connection,
+    id: &str,
+    state: &str,
+    expires_at: i64,
+    now: i64,
+) -> std::result::Result<(), ApiError> {
+    if expires_at <= now && matches!(state, "pending" | "scanned" | "approved") {
+        conn.execute(
+            "UPDATE identity_qr SET state = 'expired' \
+             WHERE id = ?1 AND state IN ('pending','scanned','approved')",
+            params![id],
+        )
+        .map_err(db_err)?;
+        return Err(ApiError::new(StatusCode::GONE, "ticket expired"));
+    }
+    match state {
+        "approved" => Ok(()),
+        "consumed" => Err(ApiError::conflict("ticket already used")),
+        "rejected" => Err(ApiError::conflict("ticket was rejected")),
+        "expired" => Err(ApiError::new(StatusCode::GONE, "ticket expired")),
+        _ => Err(ApiError::conflict("ticket not approved yet")),
+    }
 }
 
 // ---------------------------------------------------------------------------

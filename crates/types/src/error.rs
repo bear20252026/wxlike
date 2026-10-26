@@ -447,9 +447,17 @@ mod tests {
             let wire = sample.to_wire_code();
             assert!(
                 [
-                    "UNAUTHENTICATED", "FORBIDDEN", "VALIDATION", "CONFLICT", "RATE_LIMITED",
-                    "REQUIRES_CONFIRMATION", "DEPENDENCY_UNAVAILABLE", "NOT_IMPLEMENTED",
-                    "OFFLINE", "CANCELLED", "INTERNAL"
+                    "UNAUTHENTICATED",
+                    "FORBIDDEN",
+                    "VALIDATION",
+                    "CONFLICT",
+                    "RATE_LIMITED",
+                    "REQUIRES_CONFIRMATION",
+                    "DEPENDENCY_UNAVAILABLE",
+                    "NOT_IMPLEMENTED",
+                    "OFFLINE",
+                    "CANCELLED",
+                    "INTERNAL"
                 ]
                 .contains(&wire),
                 "{wire} 不在 TS 端 ErrorCode 全集里"
