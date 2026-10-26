@@ -72,10 +72,15 @@ The classification is fail-safe: if `git diff` cannot be computed, `full=true`.
 
 ## Required checks
 
-`policy/required-checks.json` is the single source for branch protection.
-After G00 applies the composed workflow, configure branch protection from this
-list (see the JSON; it includes `doc`, `desktop-package`, `image`, `android`,
-`ios`, `e2e`, `performance` in addition to the compile/contract/audit jobs).
+Branch protection on `main` requires exactly one context: `gate`. That is the
+only shape this workflow can satisfy: `gate` runs with `if: always()` and
+`build/gate.py` re-checks every job listed in `policy/required-checks.json`,
+including the ones C0 path selection skipped. Registering those job names as
+required checks instead would leave a path-scoped PR waiting forever on checks
+that never start, and a matrix context renames itself on every matrix edit.
+
+`policy/required-checks.json` stays the source of truth for *what `gate`
+demands* - not for what GitHub's branch protection is configured with.
 
 The same file names the protected environments: `mobile-release` for
 `android-release`/`ios-release` and `production-release` for `desktop-release`

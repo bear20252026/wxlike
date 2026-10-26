@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "workflow": "ci.yml",
-  "note": "Configure branch protection from this list. Every entry must exist in the composed ci workflow, must not use continue-on-error, and must be reachable from the gate job. Jobs skipped by C0 path selection are accepted by gate.py.",
+  "note": "Branch protection on main requires the single `gate` context; gate.py reads this list and demands every entry. Every entry must exist in the composed ci workflow, must not use continue-on-error, and must be reachable from the gate job. Jobs skipped by C0 path selection are accepted by gate.py.",
   "required": [
     "select",
     "fmt",
