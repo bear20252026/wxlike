@@ -50,6 +50,22 @@ export class MessageIndex {
     return this.toArray();
   }
 
+  /**
+   * 用调用方手里的"当前数组"修正索引内容（P1 修复）。
+   *
+   * 背景：`chatsAtom` 里的局部变异（已读回执 `read:true`、撤回 →
+   * `kind:"system"`）会**替换数组里的对象**而不经过本索引；若不修正，
+   * 下一次 `merge()` 的 `toArray()` 会把变异前的旧对象拼回去——已读勾
+   * 和撤回占位符被"复活"。变异都是不可变风格（新对象），所以按**对象
+   * 身份**逐条比对即可精准发现漂移：数组元素 !== 索引里存的那个对象，
+   * 就以数组里的为准。长度变化（增删）仍由调用方走重建路径。
+   */
+  refresh(existing: ChatMsg[]): void {
+    for (const m of existing) {
+      if (this.bySeq.get(m.seq) !== m) this.bySeq.set(m.seq, m);
+    }
+  }
+
   /** 升序（旧 → 新），与 `ChatMsg[]` 的既有约定一致。 */
   toArray(): ChatMsg[] {
     const out: ChatMsg[] = [];

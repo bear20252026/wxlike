@@ -57,7 +57,13 @@ class ContactsController extends ChangeNotifier {
   }
 
   Future<void> load({bool refresh = false}) async {
-    if (loading) return;
+    // 显式刷新要能打断在途的旧查询并从第一页重来；
+    // 普通加载仍然被 loading 挡住，避免并发重复拉。
+    if (loading && !refresh) return;
+    if (refresh) {
+      _cursor = '';
+      hasMore = false;
+    }
     loading = true;
     error = null;
     _notify();

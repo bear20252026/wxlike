@@ -35,7 +35,12 @@ wxlike/
 │  ├─ push/        # ★ 系统推送（WP-06）：离线设备通知，payload 结构上不含消息正文
 │  └─ rtc/         # ★ 音视频通话（WP-08）：str0m 纯 Rust WebRTC + 通话状态机 + 信令
 ├─ server/         # 开发服务器：platform API + MQ 路由 hub + /metrics + presence + 推送分发
-└─ ui/             # Tauri2 桌面端（独立构建，见下）
+├─ ui/             # Tauri2 桌面端（独立构建，见下）
+├─ apps/
+│  ├─ desktop-web/ # ★ 新版桌面/Web 核心 UI（G10）：React 19 + Vite，与 Rust 只经 CoreHandle/PlatformPort 交互；CI 走 web-v2 任务
+│  └─ mobile/      # Flutter 移动端（apps/mobile，UniFFI 绑定 crates/ffi）
+└─ packages/
+   └─ mini-sdk/    # 小程序 guest 侧 SDK（mini-host.v1 类型化桥；契约一致性测试同在 web-v2 任务里跑）
 ```
 
 ## 平台 API（WP-01：账户 / 会话 / 资料）
@@ -572,6 +577,27 @@ npx tauri dev            # 首次编译 src-tauri 后弹出窗口（干凈环境
 cd ui/src-tauri && cargo test --test ui_commands   # 16 项
 cargo clippy --all-targets                          # 0 warning（任务书 A4）
 ```
+
+## 新版 UI 运行（apps/desktop-web，G10）
+
+`apps/desktop-web/` 是新写的桌面/Web 核心 UI（React 19 + Vite + Tailwind 4），
+与 Rust 的边界和 `ui/` 一致：只通过 CoreHandle/PlatformPort，前端不开自己的
+HTTP/QUIC 连接。CI 对应 `web-v2` 任务（typecheck → lint → test → build，
+顺带跑 `packages/mini-sdk` 的契约一致性测试，见 `ci/jobs/build/web_v2.job.yml`）。
+
+```bash
+cd apps/desktop-web
+npm ci
+npm run dev         # Vite dev server（端口 5183，strictPort）
+
+# 打包（tsc --noEmit + vite build，产物 dist/，体积打印）
+npm run build       # 或在仓库根：bash scripts/build-web-v2.sh
+```
+
+桌面宿主通过 `ui/src-tauri/tauri.conf.new-ui.json` 把 frontendDist 指到这套
+产物（该配置由桌面端任务维护，加载方式以其说明为准）；Web 侧的 Rust 落地是
+`crates/client-web`（wasm32，见 `ci/jobs/policy/known-gaps.json` 的
+G01-03-WASM：JS 侧打包/接线仍在进行）。
 
 ## Rust 版本注意（已踩坑记录）
 

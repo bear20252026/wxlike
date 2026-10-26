@@ -38,6 +38,28 @@ export function sanitizeRichText(raw: string): string {
   return typeof clean === "string" ? clean : String(clean);
 }
 
+/**
+ * SVG profile: allows the svg vocabulary (shapes, paths, rect/circle…) for
+ * locally generated artwork (QR codes), still strips scripts, foreignObject,
+ * event handlers and style. URIs stay on the http(s)/mailto allow-list.
+ */
+const SVG_CONFIG = {
+  USE_PROFILES: { svg: true, svgFilters: true },
+  FORBID_TAGS: ["script", "foreignObject", "iframe", "object", "embed"],
+  FORBID_ATTR: ["style", "srcset"],
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
+  KEEP_CONTENT: false,
+  RETURN_DOM_FRAGMENT: false,
+  ADD_TAGS: ["svg"],
+  ADD_ATTR: ["viewBox", "xmlns", "xmlns:xlink"],
+} satisfies Parameters<typeof purifier.sanitize>[1];
+
+/** Returns SVG markup safe for `dangerouslySetInnerHTML` (scripts stripped). */
+export function sanitizeSvg(raw: string): string {
+  const clean = purifier.sanitize(raw ?? "", SVG_CONFIG);
+  return typeof clean === "string" ? clean : String(clean);
+}
+
 /** Text-only projection: tags dropped, entities decoded, no markup survives. */
 export function sanitizePlainText(raw: string): string {
   const div = document.createElement("div");

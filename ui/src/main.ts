@@ -25,15 +25,23 @@ function main(): void {
   // 发送队列的补发/失败事件
   void listen("im-outbox", (payload) => onOutbox(payload));
 
-  // transient toasts from anywhere in the UI
-  let hideTimer = 0;
+  // transient toasts from anywhere in the UI.
+  // 生命周期只有一个所有者：state.ts 的 toast()（2600 ms 后把 atom 清回
+  // null）。这里只跟随 atom：有消息→显示，atom 清空→摘掉 show 类让 CSS
+  // 淡出（0.2 s）后移除节点。以前这里另有一个 2400 ms 定时器，两个时钟
+  // 各走各的，快速连发 toast 时会出现"字还在、样式已撤"的错拍。
+  let removeTimer = 0;
   appStore.sub(toastAtom, () => {
     const msg = appStore.get(toastAtom);
     let el = document.getElementById("toast");
     if (!msg) {
-      el?.remove();
+      window.clearTimeout(removeTimer);
+      el?.classList.remove("show");
+      const node = el;
+      removeTimer = window.setTimeout(() => node?.remove(), 250);
       return;
     }
+    window.clearTimeout(removeTimer);
     if (!el) {
       el = document.createElement("div");
       el.id = "toast";
@@ -41,8 +49,6 @@ function main(): void {
     }
     el.textContent = msg;
     el.classList.add("show");
-    window.clearTimeout(hideTimer);
-    hideTimer = window.setTimeout(() => el?.classList.remove("show"), 2400);
   });
 }
 

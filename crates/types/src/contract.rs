@@ -50,6 +50,14 @@ impl fmt::Display for ContractVersion {
     }
 }
 
+impl Default for ContractVersion {
+    /// 缺省 = 本端实现的契约版本。TS 形状的请求不带 `contract` 字段，
+    /// 反序列化时落到这里（`#[serde(default)]`）。
+    fn default() -> Self {
+        CONTRACT_VERSION
+    }
+}
+
 impl Serialize for ContractVersion {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())

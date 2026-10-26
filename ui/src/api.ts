@@ -156,13 +156,17 @@ export function go(view: View): void {
 // P1: message operations (typing / forward / merge / favorites / search)
 // ---------------------------------------------------------------------------
 
-let lastTypingSentAt = 0;
+const lastTypingSentAt: Record<string, number> = {};
 
-/** Fires at most one typing ping every 2.5 s while the user keeps typing. */
+/**
+ * Fires at most one typing ping every 2.5 s while the user keeps typing —
+ * **per conversation**: a shared timestamp would let two open chats starve
+ * each other's indicator (every ping from chat A resets the clock for B).
+ */
 export function typingThrottled(convId: string, to: string[]): void {
   const now = Date.now();
-  if (now - lastTypingSentAt < 2500) return;
-  lastTypingSentAt = now;
+  if (now - (lastTypingSentAt[convId] ?? 0) < 2500) return;
+  lastTypingSentAt[convId] = now;
   void invoke("send_typing", { conv_id: convId, to }).catch(() => {
     /* transient signal: failures are ignorable by design */
   });
@@ -492,8 +496,9 @@ function rowToMsg(row: HistoryRow, meId: string): ChatMsg {
  * 按会话缓存的 `MessageIndex`（tweb `SlicedArray` 支撑）。
  *
  * 手写版是 `Map + sort`（每页 O(n log n)）；现在分页合并交给 tweb 的切片
- * 插入，同 seq 覆盖、跨页去重都由它完成。索引长度与原子数组对不上时重建，
- * 防止外部直接改数组导致索引腐坏。
+ * 插入，同 seq 覆盖、跨页去重都由它完成。索引长度与原子数组对不上时重建；
+ * 长度一致但**内容漂移**（已读/撤回等局部变异替换了数组里的对象）时用
+ * `refresh` 按对象身份修正，防止下一次 merge 复活变异前的旧对象。
  */
 const msgIndexes = new Map<string, MessageIndex>();
 
@@ -502,6 +507,8 @@ function mergeMessages(convId: string, existing: ChatMsg[], incoming: ChatMsg[])
   if (!index || index.size !== existing.length) {
     index = MessageIndex.from(existing);
     msgIndexes.set(convId, index);
+  } else {
+    index.refresh(existing);
   }
   return index.merge(incoming);
 }
@@ -616,17 +623,34 @@ function upsertSession(
     sessions.unshift({ convId, title, isGroup, lastText, lastAtMs: at, unread: unreadDelta });
   }
   appStore.set(sessionsAtom, sessions);
-  // 本地增量只负责"立刻有反馈"；真正的未读数以服务端信箱为准，
-  // 收到消息后异步校正一次（离线期间收到的、别的设备读过的都能对上）。
-  void fetchConvUnread(convId)
-    .then((u) => {
-      const cur = appStore.get(sessionsAtom);
-      appStore.set(
-        sessionsAtom,
-        cur.map((s) => (s.convId === convId ? { ...s, unread: u.unread } : s)),
-      );
-    })
-    .catch(() => undefined);
+  // 本地增量只负责"立刻有反馈"；真正的未读数以服务端信箱为准。
+  // 校正改为**每会话 2 s 尾随去抖**：离线期间补一批消息时，不再一条消息
+  // 一个 HTTP 请求，而是等流停了拉一次最终值（离线收到的、别的设备读过
+  // 的都能对上）。
+  scheduleUnreadCorrection(convId);
+}
+
+/** 每会话一个尾随定时器：窗口内的新消息只触发最后一次校正。 */
+const unreadCorrectionTimers = new Map<string, number>();
+
+function scheduleUnreadCorrection(convId: string): void {
+  const prev = unreadCorrectionTimers.get(convId);
+  if (prev !== undefined) window.clearTimeout(prev);
+  unreadCorrectionTimers.set(
+    convId,
+    window.setTimeout(() => {
+      unreadCorrectionTimers.delete(convId);
+      fetchConvUnread(convId)
+        .then((u) => {
+          const cur = appStore.get(sessionsAtom);
+          appStore.set(
+            sessionsAtom,
+            cur.map((s) => (s.convId === convId ? { ...s, unread: u.unread } : s)),
+          );
+        })
+        .catch(() => undefined);
+    }, 2000),
+  );
 }
 
 /** 服务端未读（信箱是唯一真相；本地增量只用于即时反馈）。 */
@@ -664,27 +688,55 @@ function noteTyping(convId: string, who: string): void {
   }, 5000);
 }
 
-/** Marks my outgoing message read when a read receipt names it (P1). */
+/**
+ * Marks my outgoing message read when a read receipt names it (P1).
+ * **Up-to 语义**：回执指到哪条，那条**及之前**的自己的消息都算已读
+ * （服务端 `send_read_receipt` 发的就是 `up_to` 游标）；只勾命中的那一条
+ * 会让前面的气泡永远停在单个 ✓。
+ */
 function markRead(convId: string, targetMsgId: string): void {
   if (!targetMsgId) return;
   const chats = { ...appStore.get(chatsAtom) };
   const list = chats[convId];
   if (!list) return;
+  const target = list.find((m) => m.msgId === targetMsgId);
+  if (!target) return; // 目标不在本端（没加载/别的设备发的）：无从排序，不动
   let changed = false;
   chats[convId] = list.map((m) => {
-    if (m.msgId === targetMsgId && !m.read) {
+    if (m.mine && !m.read && m.seq <= target.seq) {
       changed = true;
       return { ...m, read: true };
     }
-    // a read receipt covers everything up to that message in practice; mark
-    // earlier own messages read too (WeChat shows one marker per message)
     return m;
   });
   if (changed) appStore.set(chatsAtom, chats);
 }
 
+/**
+ * 收到 hub 事件的入口。整段包在 try/catch + 最小形状校验里：泵是
+ * 一条长循环，一个畸形事件（缺 conv_id / seq 不是数字）抛出去会**静默
+ * 杀掉整条泵**，后面的正常消息也收不到了——宁可丢这一条并 console.error。
+ */
 export function onInbound(payload: unknown): void {
-  const ev = payload as InboundEvent;
+  try {
+    const ev = payload as InboundEvent;
+    if (
+      ev === null ||
+      typeof ev !== "object" ||
+      typeof ev.conv_id !== "string" ||
+      typeof ev.sender !== "string" ||
+      typeof ev.seq !== "number"
+    ) {
+      console.error("onInbound: malformed event dropped", payload);
+      return;
+    }
+    handleInbound(ev);
+  } catch (e) {
+    console.error("onInbound: handler failed (event dropped)", e);
+  }
+}
+
+function handleInbound(ev: InboundEvent): void {
   const me = appStore.get(meAtom);
   if (!me) return;
   const mine = ev.sender === me.user_id;
@@ -877,6 +929,17 @@ export function openSession(session: Session): void {
   void ackConv(session.convId).catch(() => undefined);
   const me = appStore.get(meAtom);
   if (me) {
+    // P2 本地消息库即时开页：磁盘历史先画（零网络 RTT，会话"秒开"），
+    // 服务端页随后对账盖上来——同 seq 合并取后到者，服务端是唯一真相。
+    // local_autopen 幂等（boot 时已开过一次），失败不阻塞服务端路径。
+    void (async () => {
+      try {
+        await invoke("local_autopen");
+        if (await localReady()) await loadLocalHistory(session.convId, me.user_id);
+      } catch {
+        /* 本地库关闭/缺库都不影响服务端历史 */
+      }
+    })();
     void loadHistory(session.convId, me.user_id)
       .then(() => {
         // reading the open conversation also acks it (P1 receipts)
@@ -887,6 +950,39 @@ export function openSession(session: Session): void {
       .catch(() => undefined);
   }
   go({ screen: "chat", convId: session.convId, title: session.title, isGroup: session.isGroup });
+}
+
+/**
+ * 退出登录（P3 修复：以前 UI 里没有任何入口能走到，缓存跨账号残留）。
+ * 服务端会话先失效（host `logout`），然后**本地**清空：消息索引、原子、
+ * 去抖/typing 定时器。秘密会话渲染缓存在 ui.ts 侧随按钮一起清。
+ */
+export async function logout(): Promise<void> {
+  try {
+    await invoke("logout");
+  } catch (e) {
+    // host 侧失败也要清本地——不能让上一个账号的聊天记录留在内存里
+    console.error("logout: host command failed, clearing local state anyway", e);
+  }
+  resetMessageIndexes();
+  for (const t of unreadCorrectionTimers.values()) window.clearTimeout(t);
+  unreadCorrectionTimers.clear();
+  for (const t of Object.values(typingTimers)) window.clearTimeout(t);
+  for (const k of Object.keys(typingTimers)) delete typingTimers[k];
+  appStore.set(meAtom, null);
+  appStore.set(sessionsAtom, []);
+  appStore.set(chatsAtom, {});
+  appStore.set(friendsAtom, []);
+  appStore.set(requestsAtom, []);
+  appStore.set(groupCacheAtom, {});
+  appStore.set(favoritesAtom, []);
+  appStore.set(searchHitsAtom, null);
+  appStore.set(selectModeAtom, null);
+  appStore.set(historyCursorAtom, {});
+  appStore.set(typingAtom, {});
+  appStore.set(balanceAtom, 0);
+  appStore.set(connectedAtom, false);
+  appStore.set(viewAtom, { screen: "auth" });
 }
 
 // ---------------------------------------------------------------------------

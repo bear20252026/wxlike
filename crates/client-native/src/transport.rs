@@ -17,6 +17,11 @@ use wxlike_client_core::ports::{
 use wxlike_types::{Deadline, SubscribeRequest};
 
 /// 基于 `wxlike-client` 的原生传输。
+///
+/// token 走 [`Http`] 的**共享槽**（`enable_live_token`）：传输实例被
+/// `Arc` 包着塞进 [`Ports`](wxlike_client_core::ports::Ports)，登录/刷新
+/// 之后宿主拿不到 `&mut`，但 `set_token(&self)` 仍然立即生效——
+/// 曾经这里是 `Arc::get_mut` 的静默失败（token 换了、请求还带旧的）。
 #[derive(Clone)]
 pub struct HttpTransport {
     http: Http,
@@ -26,21 +31,28 @@ impl HttpTransport {
     /// 用服务端 base URL 构造。
     #[must_use]
     pub fn new(base: impl Into<String>) -> Self {
-        Self {
-            http: Http::new(base),
-        }
+        let mut http = Http::new(base);
+        http.enable_live_token();
+        Self { http }
     }
 
     /// 带上已有的 bearer token。
     #[must_use]
-    pub fn with_token(mut self, token: impl Into<String>) -> Self {
-        self.http.token = Some(token.into());
+    pub fn with_token(self, token: impl Into<String>) -> Self {
+        self.http.set_live_token(Some(token.into()));
         self
     }
 
-    /// 换 token（登录/刷新之后）。
-    pub fn set_token(&mut self, token: Option<String>) {
-        self.http.token = token;
+    /// 换 token（登录/刷新之后）。`&self`：换的是共享槽，立即对
+    /// 后续所有请求生效（包括塞进 `Ports` 的那份）。
+    pub fn set_token(&self, token: Option<String>) {
+        self.http.set_live_token(token);
+    }
+
+    /// 当前生效的 token（诊断与测试用）。
+    #[must_use]
+    pub fn token(&self) -> Option<String> {
+        self.http.effective_token()
     }
 
     /// 底层 `Http`（上传/下载这类非 JSON 通道还要用它）。

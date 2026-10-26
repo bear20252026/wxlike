@@ -79,6 +79,7 @@ export interface CoreHandle {
 export const ACTIONS = {
   sessionProjection: "identity.session.projection",
   login: "identity.session.login",
+  register: "identity.session.register",
   logout: "identity.session.logout",
   lock: "security.lock",
   unlock: "security.unlock",

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- photo.capture 的输出目录（MainActivity 写入 filesDir/captures）。 -->
+    <files-path name="captures" path="captures/"/>
+</paths>

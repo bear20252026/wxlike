@@ -1,476 +1,791 @@
 name: ci
-
-# DoD from docs/WORK_BREAKDOWN.md §0.2:
-# D1 build · D2 clippy -D warnings · D3 test · D4 fmt · D6 doc
-#
-# 治理门禁（T-F1）：coverage / unwrap-count 在本文件；cargo audit 在 audit.yml
-# （单独 workflow，避免每周 schedule 把 Android 出包等 job 全部重跑）。
-
-on:
+'on':
   push:
-    branches: [main]
-  pull_request:
-
+    branches:
+    - main
+  pull_request: null
+  workflow_dispatch: null
+permissions:
+  contents: read
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
   RUSTDOCFLAGS: -D warnings
-
+  RUSTUP_TOOLCHAIN: 1.97.1
+  WXLIKE_CI: '1'
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  lint:
-    name: lint (fmt + clippy)
+  select:
+    name: select
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      contract: ${{ steps.select.outputs.contract }}
+      ui: ${{ steps.select.outputs.ui }}
+      mobile: ${{ steps.select.outputs.mobile }}
+      desktop: ${{ steps.select.outputs.desktop }}
+      ci: ${{ steps.select.outputs.ci }}
+      full: ${{ steps.select.outputs.full }}
+      reason: ${{ steps.select.outputs.reason }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+    - name: C0 classify changed paths
+      id: select
+      shell: bash
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: "set -euo pipefail\nif [ -z \"${BASE_SHA:-}\" ] || [ \"${BASE_SHA:-}\" = \"0000000000000000000000000000000000000000\" ]; then\n  echo \"no usable base sha; forcing the full matrix\"\n  python3 ci/jobs/build/select_targets.py --changed-file \"unclassified/first-run\" --github-output \"$GITHUB_OUTPUT\"\nelse\n  python3 ci/jobs/build/select_targets.py --base \"$BASE_SHA\" --head \"$HEAD_SHA\" --github-output \"$GITHUB_OUTPUT\"\nfi\n"
+  fmt:
+    name: fmt
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: fmt
-        run: cargo fmt --check
-      - name: clippy
-        # 结构阈值在 clippy.toml（60 行）。这里**不能**加 `-W clippy::too_many_lines`：
-        # 实测 `-D warnings` 会覆盖它，存量 46 个长函数立刻变成硬错（试过，红了）。
-        # 想看清单就在本地跑：
-        #   cargo clippy --workspace --all-targets -- -W clippy::too_many_lines
-        # 拦"变差"是 quality job 的事（比阈值更准：只比基线）。
-        run: cargo clippy --workspace --all-targets -- -D warnings
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
 
-  # 质量闸门：审计基线只许变好（docs/code-quality-audit.md）。
-  # 不跑 cargo，纯静态统计，十几秒；失败信息直接说清哪项退化了。
-  quality:
-    name: quality (metrics gate)
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - run: cargo fmt --check
+  clippy:
+    name: clippy
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: metrics gate
-        run: python scripts/quality-gate.py
-      # 预编译二进制，不编译（typos/deny 各自 cargo install 要几分钟）
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: typos-cli,cargo-deny
-      - name: typos（拼写）
-        run: typos
-      # 许可证 / 安全公告 / 依赖来源：配置见 deny.toml，豁免必须写原因
-      - name: supply chain（licenses / advisories / bans / sources）
-        run: cargo deny check
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
 
-  test-linux:
-    name: test (linux)
-    runs-on: ubuntu-latest
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-clippy-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+  test:
+    name: test (${{ matrix.os }})
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+        - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: build
-        run: cargo build --workspace
-      - name: test
-        run: cargo test --workspace
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-  test-windows:
-    name: test (windows)
-    runs-on: windows-latest
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-test-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - run: cargo test --workspace --locked
+  native:
+    name: native (${{ matrix.os }})
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+        - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: test
-        run: cargo test --workspace
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-  # macOS 是"Mac mini 自建服务器"的目标平台，必须进矩阵——
-  # 不进矩阵就等于没人验证过，等到客户机上才发现编不过是最贵的失败。
-  test-macos:
-    name: test (macos)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: test
-        run: cargo test --workspace
+        rustup default "$RUSTUP_TOOLCHAIN"
 
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-native-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - run: cargo build --workspace --all-targets --locked
   doc:
-    name: doc (rustdoc links)
+    name: doc
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo doc
-        run: cargo doc --no-deps --workspace
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-  # Android 出包：**这一关要回答的是"新检出能不能出 APK"**。
-  #
-  # 之前没有任何 CI 覆盖移动端，所以"apps/mobile 能编出包"只在我本机成立过；
-  # 生成物（Dart 绑定、.so）都不入库，任何一次 Rust 改动都可能让移动端静默坏掉，
-  # 而 CI 全绿。这个 job 就是把那条路径钉住。
-  #
-  # 成本：约 10–14 分钟（首次 gradle 下载更久）。缓存了 cargo target、gradle、
-  # Flutter SDK。嫌慢可以加 `paths:` 过滤，但那就等于放弃"每次都能出包"的保证。
-  android:
-    name: android (apk)
-    runs-on: ubuntu-latest
-    # **必须显式设**：runner 上 `$ANDROID_HOME` 是空的（实测），
-    # 于是 `"$ANDROID_HOME/cmdline-tools/..."` 变成一条空命令，
-    # 报 `line 5: : command not found` + exit 127 —— 看起来像 sdkmanager 坏了，
-    # 其实只是环境变量没设。这是第一次跑 CI 就踩到的。
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-    steps:
-      - uses: actions/checkout@v7
+        rustup default "$RUSTUP_TOOLCHAIN"
 
-      # 交叉编译到 arm64（真机；x86_64 只有模拟器要，CI 不编）
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: android-arm64
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-ndk
-
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.0
-          channel: stable
-          cache: true
-
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('apps/mobile/android/**/*.gradle*', 'apps/mobile/android/gradle/wrapper/gradle-wrapper.properties') }}
-
-      - name: Android SDK 组件
-        # `flutter.ndkVersion` 是 28.2.13676358（Flutter 3.47 的默认值）。
-        # runner 预装的 NDK 比它旧，AGP 会直接报 "NDK not configured"，
-        # 所以显式装一次——版本写死在这里，别指望"runner 上应该会有"。
-        run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          # 先确认它真的在：路径变了要立刻说清楚，而不是等到后面报一堆
-          # "NDK not configured" 让人去猜。
-          if [ ! -x "$SDKMANAGER" ]; then
-            echo "sdkmanager 不在 $SDKMANAGER；runner 镜像可能变了，检查 ANDROID_HOME" >&2
-            ls "$ANDROID_HOME" >&2 || true
-            exit 1
-          fi
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          # compileSdk=36 / build-tools 36 / NDK 28.2 —— 三个都显式要，
-          # 不依赖 runner 预装了什么版本
-          "$SDKMANAGER" --install             "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0" > /dev/null
-
-      - name: 生成 UniFFI 绑定
-        # Dart 绑定不入库（`apps/mobile/lib/src/rust/`），少了它 flutter analyze
-        # 会报上百个"类型不存在"。这个脚本先 build cdylib 再从产物读接口形状。
-        run: bash crates/ffi/regenerate.sh
-
-      - name: 交叉编译 libwxlike_ffi.so
-        run: |
-          cargo ndk -t arm64-v8a -o apps/mobile/android/app/src/main/jniLibs \
-            build -p wxlike-ffi --release
-          # release 产物带符号表，strip 掉能少一半；apk 体积直接受影响。
-          # 两个坑都在这里踩过：
-          #  1. **不要加 `-type f`**：NDK 里的 llvm-strip 是指向 llvm-strip-18 的
-          #     符号链接，`-type f` 会把它们全过滤掉，STRIP 变成空串，
-          #     下一行就成了"空命令"→ exit 127（本地是 llvm-strip.exe 普通文件，
-          #     所以本地永远不暴露）；
-          #  2. 取不到就跳过，别让"少 strip 一次"把整个 job 弄红。
-          STRIP=$(find "$ANDROID_HOME/ndk" -name 'llvm-strip' 2>/dev/null | sort | tail -1)
-          if [ -n "$STRIP" ] && [ -x "$STRIP" ]; then
-            "$STRIP" --strip-unneeded apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libwxlike_ffi.so
-            ls -lh apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libwxlike_ffi.so
-          else
-            echo "警告：找不到可执行的 llvm-strip，跳过 strip（apk 会大一些）" >&2
-          fi
-
-      - name: 构建 APK
-        run: |
-          cd apps/mobile
-          flutter pub get
-          # release 用 debug 签名（模板默认），CI 只验证"能出包"，不发布
-          flutter build apk --release --target-platform android-arm64
-
-      # 合并清单在 `flutter build` 之后才生成，所以只能构建完再校。
-      - name: 校验 release 合并清单带 INTERNET（构建后）
-        run: |
-          cd apps/mobile
-          MERGED=$(find build -name "AndroidManifest.xml" -path "*release*" | head -1)
-          if [ -z "$MERGED" ]; then
-            echo "::error::构建后仍找不到 release 的合并清单" >&2
-            exit 1
-          fi
-          echo "合并清单：$MERGED"
-          grep -q 'android.permission.INTERNET' "$MERGED" || {
-            echo "::error::release 合并清单里没有 INTERNET 权限" >&2
-            exit 1
-          }
-          echo "release 合并清单带 INTERNET ✓"
-
-      - name: 上传 APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: wxlike-android-apk
-          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-
-  # Web 前端：typecheck + 手写 bincode 的自测（issue #18）。
-  #
-  # `ui/src/web/wire.ts` 是**手写的 bincode 编解码**（浏览器没有 bincode），
-  # 它的变体序号必须与 Rust 的 `WireFrame` 声明顺序一致。改协议时那边编译
-  # 不会报错、这边也不报——只有运行时帧解析错位。`wire.selftest.mjs` 里
-  # 的 fixtures 就是钉这个的，但在此之前它从没在 CI 跑过。
-  web:
-    name: web (tsc + wire selftest)
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-doc-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - run: cargo doc --no-deps --workspace --locked
+  wasm:
+    name: wasm
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - run: npm ci
-        working-directory: ui
-      - name: typecheck
-        run: npm run typecheck
-        working-directory: ui
-      - name: wire bincode selftest
-        run: npm run test:wire
-        working-directory: ui
-      - name: message index contract
-        run: npm run check:msgindex
-        working-directory: ui
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-  # Flutter：analyze + test（issue #18）。
-  #
-  # 绑定是生成物（`apps/mobile/lib/src/rust/` 不入库），所以要先跑
-  # `regenerate.sh` —— 少了它 `flutter analyze` 会报上百个"类型不存在"。
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - name: C6 wasm compile (gap-aware)
+      run: python3 ci/jobs/build/check_wasm.py
+    - name: record known gaps
+      run: python3 ci/jobs/build/check_gaps.py
+  ui:
+    name: ui
+    needs:
+    - select
+    if: needs.select.outputs.ui == 'true' || needs.select.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - run: npm ci
+      working-directory: ui
+    - name: C7 typecheck
+      run: npm run typecheck
+      working-directory: ui
+    - name: C7 bundle
+      run: npm run build
+      working-directory: ui
+    - name: C7 wire bincode selftest
+      run: npm run test:wire
+      working-directory: ui
+    - name: C7 message index contract
+      run: npm run check:msgindex
+      working-directory: ui
   flutter:
-    name: flutter (analyze + test)
+    name: flutter
+    needs:
+    - select
+    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: flutter-bindgen
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.0
-          channel: stable
-          cache: true
-      - name: 生成 UniFFI Dart 绑定
-        run: bash crates/ffi/regenerate.sh
-      - name: pub get
-        run: flutter pub get
-        working-directory: apps/mobile
-      - name: analyze
-        run: flutter analyze
-        working-directory: apps/mobile
-      - name: test
-        run: flutter test
-        working-directory: apps/mobile
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-  # 桌面端（Tauri）：命令层对真实服务端的集成测试（issue #18 收尾）。
-  #
-  # 这套测试以前**从没进过 CI**，代价很具体：
-  # - #3 把握手改成"只收 token"之后，`p2_messages` 还在拿 user_id 当凭据，
-  #   6 条测试一直红着没人知道；
-  # - P3 陌生人闸门上线后，5 条"非好友直聊"的测试悄悄失效。
-  # 两者都是"本地跑一次就能发现"的问题——所以这一关必须存在。
-  desktop:
-    name: desktop (tauri commands)
-    runs-on: ubuntu-22.04
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-flutter-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
+      run: bash crates/ffi/regenerate.sh
+    - name: C8 pub get
+      run: flutter pub get
+      working-directory: apps/mobile
+    - name: C8 analyze
+      run: flutter analyze
+      working-directory: apps/mobile
+    - name: C8 test
+      run: flutter test
+      working-directory: apps/mobile
+  web-v2:
+    name: web-v2
+    needs:
+    - select
+    if: needs.select.outputs.ui == 'true'
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ui/src-tauri -> target
-      # tauri 2 在 Linux 上编译期就要 webkit2gtk-4.1 / gtk3 的头文件
-      - name: 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
-      - name: validate desktop lock
-        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
-        working-directory: ui/src-tauri
-      - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
-        working-directory: ui/src-tauri
-      - name: test
-        run: cargo test
-        working-directory: ui/src-tauri
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: apps/desktop-web/package-lock.json
+    - name: C7b install (apps/desktop-web)
+      run: npm ci
+      working-directory: apps/desktop-web
+    - name: C7b typecheck
+      run: npm run typecheck
+      working-directory: apps/desktop-web
+    - name: C7b lint
+      run: npm run --if-present lint
+      working-directory: apps/desktop-web
+    - name: C7b unit tests
+      run: npm test
+      working-directory: apps/desktop-web
+    - name: C7b production build
+      run: npm run build
+      working-directory: apps/desktop-web
+    - name: C7b mini-sdk contract parity (packages/mini-sdk, no deps to install)
+      run: npm test
+      working-directory: packages/mini-sdk
+  contract:
+    name: contract
+    needs:
+    - select
+    if: needs.select.outputs.contract == 'true' || needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - name: C4 contract structure, seed and registry
+      run: python3 ci/jobs/contract/check_contracts.py
+    - name: C4 bincode variant order (Rust vs browser)
+      run: python3 ci/jobs/contract/check_wire_variants.py
+    - name: C4 report known gaps
+      run: python3 ci/jobs/build/check_gaps.py
+  audit:
+    name: audit
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-  # 覆盖率（T-F1 / #61 L-3）：**先非阻断**。
-  #
-  # 阈值不在这里拍脑袋：先跑两周收集实测分布，由集成方在 Wave 3 依据基线定。
-  # 测量失败也不红——真正的编译/测试失败由 test-linux 拦；这个 job 只负责
-  # 让数字在 PR 评论和 artifact 里可见。
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - name: install CI tooling
+      run: python -m pip install --disable-pip-version-check pyyaml==6.0.3
+    - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
+      with:
+        tool: typos-cli,cargo-deny,cargo-audit
+    - name: C10 quality metrics (only worse is red)
+      run: python scripts/quality-gate.py
+    - name: C10 typos
+      run: typos
+    - name: C10 license / advisory / source policy
+      run: cargo deny check
+    - name: C10 root lock is closed
+      run: cargo metadata --locked --format-version 1 > /dev/null
+    - name: C10 desktop lock is closed
+      run: cargo metadata --locked --format-version 1 > /dev/null
+      working-directory: ui/src-tauri
+    - name: C10 root advisory audit
+      run: cargo audit
+    - name: C10 desktop advisory audit
+      run: cargo audit
+      working-directory: ui/src-tauri
+    - name: C10 action pins and workflow policy
+      run: 'python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml --pins-only
+
+        python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml
+
+        '
+    - name: C10 composed workflows match the checked-in fragments and the live .github/
+      run: python ci/jobs/compose.py --check --check-live
+    - name: C10 CI-of-CI unit tests
+      run: python -m unittest discover -s ci/jobs/tests
   coverage:
-    name: coverage (llvm-cov, non-blocking)
+    name: coverage
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.contract == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: coverage
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: measure（失败不阻断）
-        continue-on-error: true
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
-      - name: summarize
-        if: always()
-        run: |
-          set -o pipefail
-          python scripts/coverage_summary.py lcov.info \
-            --output coverage-summary.md | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: upload report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-lcov
-          path: |
-            lcov.info
-            coverage-summary.md
-          if-no-files-found: warn
-      # fork PR 的 token 是只读的，失败也不影响 job（continue-on-error）。
-      - name: comment on PR
-        if: always() && github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const fs = require('fs');
-            if (!fs.existsSync('coverage-summary.md')) {
-              core.info('没有 coverage-summary.md，跳过 PR 评论');
-              return;
-            }
-            // 同一个 PR 每次 push 更新同一条评论，避免刷屏。
-            // legacy 用来接管加 marker 之前已经发过的那条评论。
-            const marker = '<!-- coverage-report -->';
-            const legacy = '## 覆盖率（非阻断）';
-            const body = marker + '\n' + fs.readFileSync('coverage-summary.md', 'utf8');
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
-            const existing = comments.find((c) => {
-              const text = c.body || '';
-              return c.user?.type === 'Bot' &&
-                (text.includes(marker) || text.startsWith(legacy));
-            });
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-              core.info(`已更新已有评论 #${existing.id}`);
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component llvm-tools-preview
 
-  # #53 防回潮（T-F1 交付物）：只统计生产代码里的 unwrap()/expect()。
-  #
-  # **非阻断**：计数回潮时脚本仍退出 0，结果贴进 PR 评论与 artifact；
-  # 要升级成硬闸门，在脚本调用处加 `--fail-on-increase` 即可。
-  unwrap-count:
-    name: unwrap count (non-blocking)
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
+      with:
+        tool: cargo-llvm-cov
+    - name: C11 measure (blocking)
+      run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+    - name: C11 incremental security-path gate
+      env:
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: "set -euo pipefail\nif [ -z \"${CI_BASE_SHA:-}\" ] || [ \"${CI_BASE_SHA:-}\" = \"0000000000000000000000000000000000000000\" ]; then\n  echo \"no base sha: security-path diff cannot be measured\" >&2\n  exit 1\nfi\npython ci/jobs/build/check_coverage.py --lcov lcov.info\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: coverage-lcov
+        path: lcov.info
+        if-no-files-found: warn
+  unwrap:
+    name: unwrap
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - name: C11 repository baseline may only go down
+      run: python scripts/count_unwraps.py --fail-on-increase --details
+    - name: C11 no new unwrap/expect in critical paths
+      env:
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: "set -euo pipefail\nif [ -z \"${CI_BASE_SHA:-}\" ] || [ \"${CI_BASE_SHA:-}\" = \"0000000000000000000000000000000000000000\" ]; then\n  echo \"no base sha: added-line scan cannot be measured\" >&2\n  exit 1\nfi\npython ci/jobs/build/check_added_unwraps.py\n"
+  gate:
+    name: gate
+    needs:
+    - select
+    - fmt
+    - clippy
+    - test
+    - native
+    - doc
+    - wasm
+    - contract
+    - ui
+    - web-v2
+    - flutter
+    - audit
+    - coverage
+    - unwrap
+    - desktop
+    - desktop-package
+    - image
+    - android
+    - ios
+    - e2e
+    - performance
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - name: C0-C11 gate
+      env:
+        NEEDS_JSON: ${{ toJSON(needs) }}
+      run: python ci/jobs/build/gate.py
+    - name: report known gaps (non-blocking daily; release blocks)
+      run: python ci/jobs/build/check_gaps.py
+  image:
+    name: image
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+    - name: C9 build server image
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      with:
+        context: .
+        file: containers/server/Dockerfile
+        load: true
+        tags: wxlike-server:ci
+        build-args: 'GIT_REVISION=${{ github.sha }}
+
+          WXLIKE_VERSION=0.1.0
+
+          '
+        cache-from: type=gha,scope=server-image
+        cache-to: type=gha,mode=max,scope=server-image
+    - name: C9 non-root/read-only/secret checks
+      run: bash containers/server/verify-image.sh wxlike-server:ci
+    - name: C9 start -> login -> send -> restart recovery
+      env:
+        WXLIKE_SMOKE_EVIDENCE: ${{ github.workspace }}/.smoke-evidence
+      run: bash containers/server/smoke.sh wxlike-server:ci
+    - name: C9 image SBOM
+      uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+      with:
+        image: wxlike-server:ci
+        format: spdx-json
+        output-file: wxlike-server.spdx.json
+        upload-artifact: false
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: server-image-evidence
+        path: 'wxlike-server.spdx.json
+
+          .smoke-evidence/
+
+          '
+        if-no-files-found: error
+  ingest-image:
+    name: ingest-image
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+    - name: C9 build live-ingest image
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      with:
+        context: .
+        file: containers/live-ingest/Dockerfile
+        load: true
+        tags: wxlike-live-ingest:ci
+        build-args: GIT_REVISION=${{ github.sha }}
+        cache-from: type=gha,scope=ingest-image
+        cache-to: type=gha,mode=max,scope=ingest-image
+    - name: C9 FFmpeg version, licence and NOTICE
+      run: bash ci/jobs/server/check_ffmpeg_notice.sh wxlike-live-ingest:ci
+  android:
+    name: android
+    needs:
+    - select
+    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      # set -o pipefail：别让 tee 的退出码掩盖脚本自己的失败
-      - name: count
-        run: |
-          set -o pipefail
-          python scripts/count_unwraps.py --details | tee unwrap-report.txt
-      - name: step summary
-        if: always()
-        run: |
-          if [ -f unwrap-report.txt ]; then
-            cat unwrap-report.txt >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "unwrap count 未生成报告（见上一步日志）" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: unwrap-count
-          path: unwrap-report.txt
-          if-no-files-found: warn
-      - name: comment on PR
-        if: always() && github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const fs = require('fs');
-            if (!fs.existsSync('unwrap-report.txt')) {
-              core.info('没有 unwrap-report.txt，跳过 PR 评论');
-              return;
-            }
-            // 同一个 PR 每次 push 更新同一条评论，避免刷屏。
-            const marker = '<!-- unwrap-count -->';
-            const legacy = '## unwrap()/expect() 计数（非阻断）';
-            const body = marker + '\n' + legacy + '\n\n```text\n' +
-              fs.readFileSync('unwrap-report.txt', 'utf8') + '```\n';
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
-            const existing = comments.find((c) => {
-              const text = c.body || '';
-              return c.user?.type === 'Bot' &&
-                (text.includes(marker) || text.startsWith(legacy));
-            });
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-              core.info(`已更新已有评论 #${existing.id}`);
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-android-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
+      run: bash crates/ffi/regenerate.sh
+    - run: flutter pub get
+      working-directory: apps/mobile
+    - name: C8 release-mode APK (debug-signed in CI; release job re-signs)
+      shell: bash
+      run: "flutter build apk --release \\\n  --target-platform android-arm,android-arm64,android-x64 \\\n  --split-debug-info=build/app/outputs/symbols \\\n  --obfuscate\n"
+      working-directory: apps/mobile
+    - name: C8 verify APK, signer and symbols
+      shell: bash
+      run: "version=$(sed -n 's/^version: *\\([^+]*\\).*/\\1/p' apps/mobile/pubspec.yaml | head -1)\npython3 ci/jobs/mobile/check_apk.py \\\n  --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \\\n  --expected-version \"$version\" \\\n  --symbols-dir apps/mobile/build/app/outputs/symbols \\\n  --output mobile-evidence/android.json\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: android-unsigned
+        path: 'apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+
+          apps/mobile/build/app/outputs/symbols/**
+
+          mobile-evidence/android.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+  ios:
+    name: ios
+    needs:
+    - select
+    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: C8 iOS project precondition
+      id: project
+      shell: bash
+      run: "if [ ! -d apps/mobile/ios ]; then\n  echo \"::warning::apps/mobile/ios is absent; the iOS compile is a tracked gap and the release job fails closed.\"\n  echo \"present=false\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"present=true\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: toolchain
+      if: steps.project.outputs.present == 'true'
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      if: steps.project.outputs.present == 'true'
+      with:
+        key: ${{ runner.os }}-ios-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      if: steps.project.outputs.present == 'true'
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 unsigned iOS compile (signing happens in release)
+      if: steps.project.outputs.present == 'true'
+      shell: bash
+      run: 'bash crates/ffi/regenerate.sh
+
+        cd apps/mobile
+
+        flutter pub get
+
+        flutter build ios --release --no-codesign
+
+        '
+    - name: C8 record gap when the project is absent
+      if: steps.project.outputs.present != 'true'
+      shell: bash
+      run: 'echo "iOS compile NOT_APPLICABLE: apps/mobile/ios is missing." >&2
+
+        echo "This is tracked as MOBILE-DEVICE-EVIDENCE; release.yml fails while it stays open." >&2
+
+        '
+  desktop:
+    name: desktop
+    needs:
+    - select
+    if: needs.select.outputs.desktop == 'true' || needs.select.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: webkit build dependencies
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-desktop-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        workspaces: ui/src-tauri
+    - run: npm ci
+      working-directory: ui
+    - name: C9 frontend bundle consumed by Tauri
+      run: npm run build
+      working-directory: ui
+    - name: C9 Tauri command tests
+      run: cargo test --locked --manifest-path ui/src-tauri/Cargo.toml
+    - name: C9 updater signature negative test
+      shell: bash
+      run: 'sudo apt-get install -y --no-install-recommends minisign
+
+        python3 ci/jobs/desktop/check_updater.py --self-test
+
+        '
+  desktop-package:
+    name: desktop-package (${{ matrix.platform }})
+    needs:
+    - select
+    - desktop
+    if: needs.select.outputs.desktop == 'true' || needs.select.outputs.ui == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          platform: linux
+          bundles: deb,appimage
+        - os: windows-latest
+          platform: windows
+          bundles: nsis,msi
+        - os: macos-latest
+          platform: macos-aarch64
+          bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: Linux webkit build dependencies
+      if: runner.os == 'Linux'
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-desktop-package-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        workspaces: ui/src-tauri
+    - run: npm ci
+      working-directory: ui
+    - name: C9 frontend bundle consumed by Tauri
+      run: npm run build
+      working-directory: ui
+    - name: C9 bundle installers (unsigned in CI, signed by the release job)
+      shell: bash
+      run: "npx --yes @tauri-apps/cli@2.9.0 build --ci \\\n  --config \"$GITHUB_WORKSPACE/ci/jobs/desktop/tauri.bundle.override.json\" \\\n  --bundles \"${{ matrix.bundles }}\"\n"
+      working-directory: ui
+    - name: read packaged version
+      id: version
+      shell: bash
+      run: 'version=$(python3 -c "import json;print(json.load(open(''ui/src-tauri/tauri.conf.json''))[''version''])")
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+        echo "packaged wxlike $version"
+
+        '
+    - name: updater manifest (unsigned, never publishable until the release job signs it)
+      shell: bash
+      run: "python3 ci/jobs/desktop/make_update_manifest.py \\\n  --artifacts-dir ui/src-tauri/target/release/bundle \\\n  --platform \"${{ matrix.platform }}\" \\\n  --version \"${{ steps.version.outputs.version }}\" \\\n  --base-url \"https://downloads.wxlike.dev/desktop/v${{ steps.version.outputs.version }}\" \\\n  --output \"desktop-artifacts/manifest-${{ matrix.platform }}.json\"\n"
+    - name: C9 packaging evidence
+      shell: bash
+      run: "python3 - \"$GITHUB_STEP_SUMMARY\" <<'PY'\nimport json, sys\nfrom pathlib import Path\nmanifest = next(Path(\"desktop-artifacts\").glob(\"manifest-*.json\"))\ndata = json.loads(manifest.read_text(encoding=\"utf-8\"))\nwith open(sys.argv[1], \"a\", encoding=\"utf-8\") as fh:\n    fh.write(\"### desktop package\\n\\n\")\n    for platform, entry in data[\"platforms\"].items():\n        fh.write(f\"- `{platform}`: {entry['size']} bytes, sha256 `{entry['sha256']}`\\n\")\n    if not any(\"signature\" in entry for entry in data[\"platforms\"].values()):\n        fh.write(\"\\nUnsigned CI artefact. The release job must sign and re-index it before publication.\\n\")\nPY\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: desktop-${{ matrix.platform }}
+        path: 'ui/src-tauri/target/release/bundle/**
+
+          desktop-artifacts/manifest-*.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+  e2e:
+    name: e2e
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-e2e-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - name: C11 build server
+      run: cargo build --locked -p wxlike-server
+    - name: C11 e2e, restart recovery and fault suites
+      shell: bash
+      env:
+        WXLIKE_E2E_EVIDENCE: ${{ github.workspace }}/e2e-evidence
+      run: bash tests/e2e/ci.sh
+    - name: C11 evidence summary
+      if: always()
+      shell: bash
+      run: "python3 - <<'PY'\nimport json, os\nfrom pathlib import Path\nout = Path(os.environ.get(\"GITHUB_STEP_SUMMARY\", \"/dev/null\"))\nroot = Path(\"e2e-evidence\")\nlines = [\"### e2e evidence\\n\\n| suite | result | cases | blocked |\\n|---|---|---|---|\"]\nfor path in sorted(root.glob(\"*.json\")):\n    data = json.loads(path.read_text(encoding=\"utf-8\"))\n    cases = data.get(\"cases\", [])\n    blocked = [c[\"name\"] for c in cases if c[\"status\"] == \"blocked\"]\n    lines.append(f\"| {data.get('suite')} | {'pass' if data.get('ok') else 'fail'} | {len(cases)} | {', '.join(blocked) or '—'} |\")\nwith out.open(\"a\", encoding=\"utf-8\") as fh:\n    fh.write(\"\\n\".join(lines) + \"\\n\")\nPY\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: e2e-evidence
+        path: e2e-evidence/
+        if-no-files-found: warn
+        retention-days: 14
+  performance:
+    name: performance
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true' || needs.select.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-perf-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - name: C11 build server
+      run: cargo build --locked -p wxlike-server
+    - name: C11 measured load against budgets
+      run: "python3 tests/perf/run.py \\\n  --server-bin target/debug/wxlike-server \\\n  --budgets ci/jobs/performance/budgets.json \\\n  --evidence-dir performance-evidence\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: performance-evidence
+        path: performance-evidence/
+        if-no-files-found: warn
+        retention-days: 14

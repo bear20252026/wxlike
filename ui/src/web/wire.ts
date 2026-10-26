@@ -24,6 +24,14 @@ export const MSG_ID_LEN = 16;
 
 const MAX_STR_BYTES = 16 * 1024 * 1024;
 
+/**
+ * A whole frame is never bigger than this. Not a protocol limit the server
+ * enforces, but a sanity cap: a misparsed length prefix would otherwise let
+ * `decodeFrame` allocate/scan attacker-controlled sizes before any single
+ * field check fires. Real frames are kilobytes (media ids + JSON payloads).
+ */
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Envelope mirror of `crates/core/src/types.rs`
 // ---------------------------------------------------------------------------
@@ -62,17 +70,30 @@ export interface Envelope {
  * `WireFrame` (`crates/net/src/wire.rs`) — the server has no `Pong` variant.
  *
  * **变体序号必须与 Rust 的声明顺序一致**（bincode 写的是 index）：
- * 0 Hello / 1 HelloAck / 2 HelloReject / 3 Msg / 4 Ping。
+ * 0 Hello / 1 HelloAck / 2 HelloReject / 3 Msg / 4 Ping /
+ * 5 ClientHello / 6 Auth / 7 Subscribe / 8 Event / 9 Ack / 10 Resume。
  *
  * `Hello` 只带 `token`，不带 `user_id`：身份由服务端解析（issue #3）。
  * 客户端从 `HelloAck` 得知自己是谁。
+ *
+ * 5..=10 是 G03-04 的 protocol v3 控制帧，在 Rust 侧**只追加**（老帧字节
+ * 不变）；hub 只对在 `ClientHello` 里声明过 v3 的对端发送 v3 帧。浏览器
+ * 端当前只会发 v2（`Hello`），但必须能解码全部 11 个变体——对端升级后
+ * 帧不会变成"unknown variant"硬错误。`ci/jobs/contract/check_wire_variants.py`
+ * 会比对两侧的变体顺序，改 Rust 那边这里也要跟着改。
  */
 export type WireFrame =
   | { readonly t: "Hello"; readonly token: string }
   | { readonly t: "HelloAck"; readonly user_id: string; readonly session_id: string }
   | { readonly t: "HelloReject"; readonly reason: string }
   | { readonly t: "Msg"; readonly env: Envelope }
-  | { readonly t: "Ping" };
+  | { readonly t: "Ping" }
+  | { readonly t: "ClientHello"; readonly device_id: string; readonly protocol: number; readonly caps: number }
+  | { readonly t: "Auth"; readonly user_id: string; readonly device_id: string; readonly session_id: string; readonly version: number }
+  | { readonly t: "Subscribe"; readonly scopes: string[] }
+  | { readonly t: "Event"; readonly conv_id: string; readonly from_seq: number; readonly to_seq: number; readonly gap: boolean }
+  | { readonly t: "Ack"; readonly conv_id: string; readonly stored_cursor: number }
+  | { readonly t: "Resume"; readonly conv_id: string; readonly cursor: number };
 
 const MSG_KIND: Record<MsgKind, number> = { Text: 0, Blob: 1, System: 2 };
 const BODY_INDEX: Record<MsgBody["t"], number> = {
@@ -155,6 +176,16 @@ class BinWriter {
     if (frame.t === "HelloAck") return n + strBytes(frame.user_id) + strBytes(frame.session_id);
     if (frame.t === "HelloReject") return n + strBytes(frame.reason);
     if (frame.t === "Ping") return n;
+    if (frame.t === "ClientHello") return n + strBytes(frame.device_id) + 1 + 4;
+    if (frame.t === "Auth") {
+      return n + strBytes(frame.user_id) + strBytes(frame.device_id) + strBytes(frame.session_id) + 1;
+    }
+    if (frame.t === "Subscribe") {
+      return n + 8 + frame.scopes.reduce((acc, s) => acc + strBytes(s), 0);
+    }
+    if (frame.t === "Event") return n + strBytes(frame.conv_id) + 8 + 8 + 1; // gap: bool = 1 byte
+    if (frame.t === "Ack") return n + strBytes(frame.conv_id) + 8;
+    if (frame.t === "Resume") return n + strBytes(frame.conv_id) + 8;
     const e = frame.env;
     n += 1; // version
     n += strBytes(e.conv_id);
@@ -196,8 +227,19 @@ class BinWriter {
     this.off += 4;
   }
 
+  /**
+   * `u64`. Rejects anything that would silently corrupt a frame: negative
+   * values (BigInt() would wrap into a huge unsigned int), non-integers
+   * (silent truncation) and anything above 2^53-1 (Number can't represent
+   * it, so the reader on the other side would see a different value than
+   * the caller passed). The reader enforces the same ceiling.
+   */
   u64(v: number | bigint): void {
-    this.view.setBigUint64(this.off, BigInt(v), true);
+    const big = BigInt(v);
+    if (big < 0n || big > 9007199254740991n) {
+      throw new Error(`bincode: u64 ${v} out of safe unsigned integer range`);
+    }
+    this.view.setBigUint64(this.off, big, true);
     this.off += 8;
   }
 
@@ -224,6 +266,11 @@ class BinWriter {
   optional(b: Uint8Array | null): void {
     this.u8(b ? 1 : 0);
     if (b) this.fixed(b, "optional msg id");
+  }
+
+  /** bincode `bool` — one byte, 0 or 1. */
+  bool(v: boolean): void {
+    this.u8(v ? 1 : 0);
   }
 
   done(): Uint8Array {
@@ -257,6 +304,13 @@ class BinReader {
     return this.view.getUint8(this.take(1));
   }
 
+  /** bincode `bool` — exactly one byte, 0 or 1. Anything else is corruption. */
+  bool(): boolean {
+    const v = this.u8();
+    if (v > 1) throw new Error(`bincode: bool byte ${v} invalid`);
+    return v === 1;
+  }
+
   u32(): number {
     return this.view.getUint32(this.take(4), true);
   }
@@ -286,7 +340,10 @@ class BinReader {
   str(): string {
     const n = this.len();
     if (n > MAX_STR_BYTES) throw new Error(`bincode: string length ${n} implausible`);
-    return new TextDecoder("utf-8", { fatal: false }).decode(this.raw(n));
+    // fatal: a lone surrogate byte pair is frame corruption, not a "best
+    // effort" string — replacing it with U+FFFD would smuggle a wrong conv_id
+    // or media id into the app instead of surfacing the drift.
+    return new TextDecoder("utf-8", { fatal: true }).decode(this.raw(n));
   }
 
   bytesVec(): Uint8Array {
@@ -356,6 +413,43 @@ function writeFrame(w: BinWriter, frame: WireFrame): void {
     case "Ping":
       w.u32(4);
       return;
+    // G03-04 protocol v3 control frames — field order mirrors
+    // `crates/net/src/wire.rs` exactly (bincode is positional).
+    case "ClientHello":
+      w.u32(5);
+      w.str(frame.device_id);
+      w.u8(frame.protocol);
+      w.u32(frame.caps);
+      return;
+    case "Auth":
+      w.u32(6);
+      w.str(frame.user_id);
+      w.str(frame.device_id);
+      w.str(frame.session_id);
+      w.u8(frame.version);
+      return;
+    case "Subscribe":
+      w.u32(7);
+      w.len(frame.scopes.length);
+      for (const s of frame.scopes) w.str(s);
+      return;
+    case "Event":
+      w.u32(8);
+      w.str(frame.conv_id);
+      w.u64(frame.from_seq);
+      w.u64(frame.to_seq);
+      w.bool(frame.gap);
+      return;
+    case "Ack":
+      w.u32(9);
+      w.str(frame.conv_id);
+      w.u64(frame.stored_cursor);
+      return;
+    case "Resume":
+      w.u32(10);
+      w.str(frame.conv_id);
+      w.u64(frame.cursor);
+      return;
   }
 }
 
@@ -406,6 +500,9 @@ function writeEnvelope(w: BinWriter, e: Envelope): void {
 // ---------------------------------------------------------------------------
 
 export function decodeFrame(bytes: Uint8Array): WireFrame {
+  if (bytes.length > MAX_FRAME_BYTES) {
+    throw new Error(`bincode: frame of ${bytes.length} bytes exceeds the ${MAX_FRAME_BYTES} cap`);
+  }
   const r = new BinReader(bytes);
   const frame = readFrame(r);
   // `bincode::serialize` on the hub side writes exactly one frame per message,
@@ -426,6 +523,29 @@ function readFrame(r: BinReader): WireFrame {
       return { t: "Msg", env: readEnvelope(r) };
     case 4:
       return { t: "Ping" };
+    case 5:
+      return { t: "ClientHello", device_id: r.str(), protocol: r.u8(), caps: r.u32() };
+    case 6:
+      return {
+        t: "Auth",
+        user_id: r.str(),
+        device_id: r.str(),
+        session_id: r.str(),
+        version: r.u8(),
+      };
+    case 7: {
+      const n = r.len();
+      if (n > 100_000) throw new Error(`bincode: scope count ${n} implausible`);
+      const scopes: string[] = [];
+      for (let i = 0; i < n; i++) scopes.push(r.str());
+      return { t: "Subscribe", scopes };
+    }
+    case 8:
+      return { t: "Event", conv_id: r.str(), from_seq: r.u64(), to_seq: r.u64(), gap: r.bool() };
+    case 9:
+      return { t: "Ack", conv_id: r.str(), stored_cursor: r.u64() };
+    case 10:
+      return { t: "Resume", conv_id: r.str(), cursor: r.u64() };
     default:
       throw new Error("bincode: unknown WireFrame variant");
   }

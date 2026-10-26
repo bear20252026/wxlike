@@ -115,6 +115,7 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   void dispose() {
     _linkSub?.cancel();
     _conversations?.dispose();
+    _contacts.dispose();
     _drafts.dispose();
     _lock.dispose();
     super.dispose();
@@ -164,18 +165,29 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
       await widget.account.registerPushToken(token.platform, token.token);
       _pushSynced = true;
     } catch (error) {
-      _messengerKey.currentState?.showSnackBar(
-        SnackBar(content: Text('推送登记失败：${asG12Failure(error, operation: '登记推送').displayText}')),
-      );
+      if (!mounted) return;
+      _notifyUser('推送登记失败：${asG12Failure(error, operation: '登记推送').displayText}');
     }
   }
 
   void _onDeepLinkBeforeLogin(Uri uri) {
     if (!uri.toString().startsWith('wxlike://')) return;
     _pendingLink = uri;
-    _messengerKey.currentState?.showSnackBar(
-      const SnackBar(content: Text('请先登录后再打开链接')),
-    );
+    _notifyUser('请先登录后再打开链接');
+  }
+
+  /// 弹全局 snackbar。MaterialApp 首帧之前（冷启动带着会话直奔 [_syncPush]）
+  /// messenger 还不存在：等一帧再弹，别把提示静默吞掉。
+  void _notifyUser(String message) {
+    final messenger = _messengerKey.currentState;
+    if (messenger != null) {
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
+    });
   }
 
   @override
@@ -287,18 +299,25 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   }
 
   Widget _timeline(String conv, {String title = '会话', bool isGroup = false}) {
-    return TimelinePage(
-      controller: TimelineController(port: widget.messaging, conv: conv),
-      drafts: _drafts,
-      platform: widget.platform,
-      attachments: widget.attachments,
-      redPackets: widget.redPackets,
-      entries: widget.entries,
-      actions: widget.actions,
-      lifecycle: widget.lifecycle,
-      networkStatus: widget.platform.networkStatus(),
-      title: title,
-      isGroup: isGroup,
+    // TimelineController 必须每个路由只建一次：路由 builder 每次重建都会
+    // 重新执行，直接在 builder 里 new 一个控制器会丢消息状态、漏掉订阅，
+    // 还把旧控制器变成没人 dispose 的死对象。
+    return _TimelineScreen(
+      port: widget.messaging,
+      conv: conv,
+      pageBuilder: (controller) => TimelinePage(
+        controller: controller,
+        drafts: _drafts,
+        platform: widget.platform,
+        attachments: widget.attachments,
+        redPackets: widget.redPackets,
+        entries: widget.entries,
+        actions: widget.actions,
+        lifecycle: widget.lifecycle,
+        networkStatus: widget.platform.networkStatus(),
+        title: title,
+        isGroup: isGroup,
+      ),
     );
   }
 
@@ -308,4 +327,31 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
       reason: '朋友圈、视频与小程序页由 G13 提供，本壳只负责路由槽位。',
     );
   }
+}
+
+/// 让 [TimelineController] 的生命周期对齐路由（而不是对齐某一次 build）：
+/// 控制器在 initState 里创建一次，由 [TimelinePage] 负责释放。
+class _TimelineScreen extends StatefulWidget {
+  const _TimelineScreen({
+    required this.port,
+    required this.conv,
+    required this.pageBuilder,
+  });
+
+  final MessagingPort port;
+  final String conv;
+  final TimelinePage Function(TimelineController controller) pageBuilder;
+
+  @override
+  State<_TimelineScreen> createState() => _TimelineScreenState();
+}
+
+class _TimelineScreenState extends State<_TimelineScreen> {
+  late final TimelineController _controller = TimelineController(
+    port: widget.port,
+    conv: widget.conv,
+  );
+
+  @override
+  Widget build(BuildContext context) => widget.pageBuilder(_controller);
 }

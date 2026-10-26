@@ -32,8 +32,8 @@ use crate::auth::Authed;
 use crate::error::ApiError;
 use crate::{PlatformState, Result as PlatformResult};
 
-/// (method, path) → 受控行为。`None` = 不归这层闸管（读接口、钱包、
-/// 预密钥认领等已有各自闸门的路径，以及直播推流回调）。
+/// (method, path) → 受控行为。`None` = 不归这层闸管（读接口、预密钥认领
+/// 等已有各自闸门的路径，以及直播推流回调）。
 fn action_for(method: &Method, path: &str) -> Option<wxlike_risk::Action> {
     use wxlike_risk::Action;
     match (method, path) {
@@ -51,6 +51,11 @@ fn action_for(method: &Method, path: &str) -> Option<wxlike_risk::Action> {
         (&Method::POST, p) if p.starts_with("/api/conv/") && p.ends_with("/send") => {
             Some(Action::Send)
         }
+        // 审计第 5 轮：钱包资金写（转账 / 发红包）也是写面——轰炸者拿
+        // 重试刷转账与红包公告和刷消息是同一类消耗。领取是定向稀缺资源
+        // （每人一份、包空即止），不进反轰炸闸门。
+        (&Method::POST, "/api/wallet/transfer") => Some(Action::Send),
+        (&Method::POST, "/api/wallet/redpacket") => Some(Action::Send),
         // T-B2：群管理（建群 / 拉人 / 踢人）。群公告、静音、邀请链接等
         // 后台操作不在用户风控面内（低频且已有管理员权限闸门）。
         (&Method::POST, "/api/groups") => Some(Action::GroupManage),
@@ -129,6 +134,8 @@ fn mapped_actions() -> &'static [(&'static str, &'static str, &'static str)] {
         ("POST", "/api/moments/{id}/comments", "moment_create"),
         ("POST", "/api/moments/{id}/likes", "moment_create"),
         ("POST", "/api/conv/{conv}/send", "send"),
+        ("POST", "/api/wallet/transfer", "send"),
+        ("POST", "/api/wallet/redpacket", "send"),
         ("POST", "/api/groups", "group_manage"),
         ("POST", "/api/groups/{group_id}/members", "group_manage"),
         (

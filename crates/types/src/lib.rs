@@ -35,7 +35,7 @@ pub mod ids;
 pub mod money;
 pub mod seq;
 
-pub use action::{ActionOutcome, ActionRequest, ActionResult};
+pub use action::{is_empty_payload, ActionOutcome, ActionRequest, ActionResult};
 pub use contract::{ContractVersion, SchemaStamp, CONTRACT_VERSION};
 pub use conv::{direct_conv, direct_conv_id, parse_conv, ConvKind, ParsedConv};
 pub use cursor::{Cursor, CursorKind, CursorValue};

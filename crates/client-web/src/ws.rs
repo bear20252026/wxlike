@@ -28,11 +28,25 @@ use crate::clock::WebClock;
 const POLL_MS: u64 = 20;
 
 /// WebSocket 事件源。
+///
+/// 三个 JS 回调的 `Closure` 存在**结构体里**而不是 `.forget()`：
+/// forget 出去的闭包永远不释放（每开一条连接漏三个），而这里在
+/// [`Drop`] 里摘掉回调并关掉 socket——`cancel()` 丢弃订阅时整条链
+/// 随之回收。订阅层的赛跑（`client-core::cancel::race`）保证
+/// `next()` 挂着等的时候也能被取消唤醒，这条轮询循环随即被丢弃。
 pub struct WebSocketEvents {
     socket: WebSocket,
     queue: Rc<RefCell<VecDeque<EventEnvelope>>>,
     closed: Rc<Cell<bool>>,
     error: Rc<RefCell<Option<String>>>,
+    /// 三个回调闭包**只为了持有**（读到它们的只有 JS 侧），编译器看来
+    /// "never read"——持有即生命周期：结构体 Drop 时它们被释放。
+    #[allow(dead_code)]
+    on_message: Closure<dyn FnMut(MessageEvent)>,
+    #[allow(dead_code)]
+    on_close: Closure<dyn FnMut(web_sys::Event)>,
+    #[allow(dead_code)]
+    on_error: Closure<dyn FnMut(web_sys::Event)>,
 }
 
 impl WebSocketEvents {
@@ -53,14 +67,16 @@ impl WebSocketEvents {
                 let Some(text) = event.data().as_string() else {
                     return;
                 };
-                // 脏数据丢掉，不打断流
+                // 脏数据丢掉，不打断流；队列被占着（重入）时同样丢这一条，
+                // 而不是 panic——丢一条可重放的事件好过崩掉整条流
                 if let Ok(envelope) = serde_json::from_str::<EventEnvelope>(&text) {
-                    queue.borrow_mut().push_back(envelope);
+                    if let Ok(mut queue) = queue.try_borrow_mut() {
+                        queue.push_back(envelope);
+                    }
                 }
             })
         };
         socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        on_message.forget();
 
         let on_close = {
             let closed = closed.clone();
@@ -69,24 +85,28 @@ impl WebSocketEvents {
             })
         };
         socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-        on_close.forget();
 
         let on_error = {
             let closed = closed.clone();
             let error = error.clone();
             Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
                 closed.set(true);
-                *error.borrow_mut() = Some("WebSocket 错误".to_string());
+                // 同上： borrow 冲突时宁可丢原因也不 panic
+                if let Ok(mut slot) = error.try_borrow_mut() {
+                    *slot = Some("WebSocket 错误".to_string());
+                }
             })
         };
         socket.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-        on_error.forget();
 
         Ok(Self {
             socket,
             queue,
             closed,
             error,
+            on_message,
+            on_close,
+            on_error,
         })
     }
 
@@ -101,6 +121,18 @@ impl WebSocketEvents {
             base.to_string()
         };
         format!("{}{}", scheme_swapped.trim_end_matches('/'), path)
+    }
+}
+
+impl Drop for WebSocketEvents {
+    fn drop(&mut self) {
+        // 先标记关闭：正在轮询的 next() 在下一次循环看到 closed 就返回
+        self.closed.set(true);
+        // 摘掉回调：JS 侧不再引用这些闭包，随后 Rust 侧 Drop 释放它们
+        self.socket.set_onmessage(None);
+        self.socket.set_onclose(None);
+        self.socket.set_onerror(None);
+        let _ = self.socket.close();
     }
 }
 

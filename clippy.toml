@@ -1,9 +1,11 @@
 # clippy 的结构阈值（见 docs/code-quality-audit.md）。
 #
 # 这些阈值本身不会让 clippy 报错——对应的 lint 属于 pedantic / nursery 组，
-# 需要显式开启。CI 的 lint 步骤用 `-W clippy::too_many_lines` 打开"只看不拦"
-# 的模式：存量 47 个长函数不该让构建立刻红，但新写的长函数会在日志里露出来。
-# 真正的"只许变好"由 scripts/quality-gate.py 守（比对基线）。
+# 需要显式开启。CI 的 clippy 任务跑的是
+# `cargo clippy --workspace --all-targets --locked -- -D warnings`（默认 lint 组），
+# 并**没有**开 `-W clippy::too_many_lines`：这些阈值在 CI 里不生效，
+# 显式启用相应 pedantic lint 的本地/脚本调用才会读到它们。
+# 真正的"只许变好"由 scripts/quality-gate.py 守（比对 docs/bench/quality-baseline.json）。
 
 # 函数体量：审计报告的目标是 ≤30 行，闸门先卡在 60（存量 47 个的上一档）。
 too-many-lines-threshold = 60

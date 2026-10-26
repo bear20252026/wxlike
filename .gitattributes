@@ -1,6 +1,14 @@
 crates/platform/tests/schema_snapshot.txt text eol=lf
 
+# 所有 shell 脚本统一 LF：CI（ubuntu runner）与本地 Git Bash/MSYS 直接执行，
+# CRLF 会让 `set -euo pipefail` 这类行首 shebang/命令直接报错。
+*.sh text eol=lf
+
 # 来源账本按 Git LF 字节核对，跨平台检出必须保持相同换行。
 ui/src/vendor/tweb/slicedArray.ts text eol=lf
 ui/src/vendor/tweb/listenerSetter.ts text eol=lf
 crates/rtc/src/sfu.rs text eol=lf
+
+# 部署脚本/清单（docker compose、verify/smoke 脚本等）同样按 LF 检出，
+# 容器内 bash 与 Linux 值班环境不认 CRLF。
+deploy/** text eol=lf

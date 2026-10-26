@@ -154,7 +154,8 @@ assert.equal(toHex(encodeFrame({ t: "Msg", env: reRead })), toHex(encodeFrame({ 
 ok("makeEnvelope → bytes → same envelope");
 
 // 变体序号必须与 Rust 的声明顺序一致：0 Hello / 1 HelloAck / 2 HelloReject /
-// 3 Msg / 4 Ping。**改了 Rust 那边的顺序，这里也要改**——bincode 只写 index。
+// 3 Msg / 4 Ping / 5 ClientHello / 6 Auth / 7 Subscribe / 8 Event / 9 Ack /
+// 10 Resume。**改了 Rust 那边的顺序，这里也要改**——bincode 只写 index。
 assert.deepEqual(decodeFrame(encodeFrame({ t: "Hello", token: A })), { t: "Hello", token: A });
 assert.equal(toHex(encodeFrame({ t: "Hello", token: "a" })), "00000000" + "0100000000000000" + "61");
 assert.deepEqual(
@@ -171,6 +172,51 @@ assert.deepEqual(
 );
 assert.equal(toHex(encodeFrame({ t: "Ping" })), "04000000");
 ok("Hello / HelloAck / HelloReject / Ping variant indices");
+
+console.log("\nG03-04 protocol v3 control frames (indices 5..=10, byte layout mirrors wire.rs)");
+// ClientHello{device_id, protocol: u8, caps: u32}
+const clientHello = { t: "ClientHello", device_id: "d1", protocol: 3, caps: 0x0f };
+assert.equal(
+  toHex(encodeFrame(clientHello)),
+  "05000000" + "0200000000000000" + "6431" + "03" + "0f000000",
+);
+assert.deepEqual(decodeFrame(encodeFrame(clientHello)), clientHello);
+ok("ClientHello{device_id, protocol u8, caps u32}");
+// Auth{user_id, device_id, session_id, version: u8}
+const auth = { t: "Auth", user_id: "u", device_id: "d", session_id: "s", version: 3 };
+assert.equal(
+  toHex(encodeFrame(auth)),
+  "06000000" + "0100000000000000" + "75" + "0100000000000000" + "64" + "0100000000000000" + "73" + "03",
+);
+assert.deepEqual(decodeFrame(encodeFrame(auth)), auth);
+ok("Auth{user_id, device_id, session_id, version u8}");
+// Subscribe{scopes: Vec<String>}
+const subscribe = { t: "Subscribe", scopes: ["a", "b"] };
+assert.equal(
+  toHex(encodeFrame(subscribe)),
+  "07000000" + "0200000000000000" + "0100000000000000" + "61" + "0100000000000000" + "62",
+);
+assert.deepEqual(decodeFrame(encodeFrame(subscribe)), subscribe);
+ok("Subscribe{scopes Vec<String>}");
+// Event{conv_id, from_seq: u64, to_seq: u64, gap: bool(1 byte)}
+const event = { t: "Event", conv_id: "c", from_seq: 1, to_seq: 9, gap: true };
+assert.equal(
+  toHex(encodeFrame(event)),
+  "08000000" + "0100000000000000" + "63" + "0100000000000000" + "0900000000000000" + "01",
+);
+assert.deepEqual(decodeFrame(encodeFrame(event)), event);
+assert.equal(decodeFrame(encodeFrame({ ...event, gap: false })).gap, false, "gap=false rides as 0x00");
+ok("Event{conv_id, from_seq u64, to_seq u64, gap bool}");
+// Ack{conv_id, stored_cursor: u64}
+const ack = { t: "Ack", conv_id: "c", stored_cursor: 5 };
+assert.equal(toHex(encodeFrame(ack)), "09000000" + "0100000000000000" + "63" + "0500000000000000");
+assert.deepEqual(decodeFrame(encodeFrame(ack)), ack);
+ok("Ack{conv_id, stored_cursor u64}");
+// Resume{conv_id, cursor: u64}
+const resume = { t: "Resume", conv_id: "c", cursor: 7 };
+assert.equal(toHex(encodeFrame(resume)), "0a000000" + "0100000000000000" + "63" + "0700000000000000");
+assert.deepEqual(decodeFrame(encodeFrame(resume)), resume);
+ok("Resume{conv_id, cursor u64}");
 
 console.log("\nevent mapping (ui/src/state.ts InboundEvent)");
 const ev = envelopeToEvent(text);
@@ -191,7 +237,7 @@ assert.equal(receiptEvent.receipt.target, "f61ebad669958ff34aa29b40aaa370ca");
 ok("text/image/system/receipt events carry the keys api.ts reads");
 
 console.log("\nmalformed input is refused, never guessed");
-assert.throws(() => decodeFrame(fromHex("050000000000")), /unknown WireFrame/i);
+assert.throws(() => decodeFrame(fromHex("0b000000")), /unknown WireFrame/i); // 11 = past the last variant
 assert.throws(() => decodeFrame(fromHex("000000000500000000000000")), /truncated/i);
 assert.throws(() => decodeFrame(fromHex(FIXTURES.text.hex).slice(0, 40)), /truncated/i);
 assert.throws(() => decodeFrame(fromHex("03000000ff")), /version/i); // 03 = Msg，紧跟坏 version
@@ -199,6 +245,26 @@ const padded = new Uint8Array([...fromHex(FIXTURES.text.hex), 1]);
 assert.throws(() => decodeFrame(padded), /trailing/i);
 assert.throws(() => unhex("deadbeef"), /16 bytes/);
 ok("bad variant / short frame / bad version / trailing byte / bad hex");
+
+// encoder hardening: u64 must refuse what would silently corrupt a frame
+assert.throws(() => encodeFrame({ t: "Ack", conv_id: "c", stored_cursor: -1 }), /out of safe/);
+assert.throws(() => encodeFrame({ t: "Resume", conv_id: "c", cursor: 2 ** 53 }), /out of safe/);
+ok("u64 writer rejects negative / beyond-safe-integer values");
+// decoder hardening: strings decode with fatal UTF-8 (Hello.token = lone 0xff)
+assert.throws(() => decodeFrame(fromHex("00000000" + "0100000000000000" + "ff")));
+ok("string fields refuse invalid UTF-8 instead of U+FFFD");
+// decoder hardening: bool is 0/1 only (Event.gap = 0x02)
+assert.throws(
+  () => decodeFrame(fromHex("08000000" + "0100000000000000" + "63" + "0".repeat(16) + "0".repeat(16) + "02")),
+  /bool byte 2 invalid/i,
+);
+ok("bool byte must be 0 or 1");
+// decoder hardening: whole-frame size cap (16 MiB)
+assert.throws(
+  () => decodeFrame(new Uint8Array(16 * 1024 * 1024 + 1)),
+  /exceeds the .* cap/,
+);
+ok("frame size cap");
 
 console.log("\noutbox JSON round trip (IndexedDB records resend the same envelope)");
 const bodies = [
@@ -226,4 +292,4 @@ assert.equal(backReceipt.receipt.t, "Read");
 assert.equal(hex(backReceipt.receipt.up_to_msg_id), "e".repeat(32));
 ok("outbox JSON keeps quote_of + receipt.Read");
 
-console.log(`\nPASS — ${checks} fixture groups, 6 wire variants`);
+console.log(`\nPASS — ${checks} fixture groups, 11 wire variants`);

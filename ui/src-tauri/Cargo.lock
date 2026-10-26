@@ -7310,8 +7310,12 @@ dependencies = [
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
+ "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -7331,6 +7335,21 @@ dependencies = [
  "thiserror 2.0.21",
  "vodozemac",
  "wxlike-limits",
+]
+
+[[package]]
+name = "wxlike-identity"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "wxlike-core",
 ]
 
 [[package]]
@@ -7419,8 +7438,10 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-identity",
  "wxlike-message",
  "wxlike-moderation",
+ "wxlike-relations",
  "wxlike-report",
  "wxlike-risk",
  "wxlike-rtc",
@@ -7441,6 +7462,19 @@ dependencies = [
  "tokio",
  "wxlike-core",
  "wxlike-net",
+]
+
+[[package]]
+name = "wxlike-relations"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wxlike-core",
 ]
 
 [[package]]
@@ -7466,14 +7500,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chacha20poly1305 0.11.0",
  "cpal",
+ "hex",
  "hmac 0.12.1",
  "md-5",
  "opus",
  "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
+ "sha2 0.10.9",
  "str0m",
  "thiserror 2.0.21",
  "tokio",
@@ -7519,6 +7557,15 @@ dependencies = [
  "wxlike-risk",
  "wxlike-search",
  "wxlike-video",
+]
+
+[[package]]
+name = "wxlike-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

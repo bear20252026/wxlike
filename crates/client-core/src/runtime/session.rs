@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use serde_json::{json, Value};
+use serde_json::json;
 use wxlike_types::{
     ActionId, ActionOutcome, ActionRequest, ActionResult, DomainError, EventEnvelope,
     IdempotencyKey, SubscribeRequest,
@@ -18,7 +18,7 @@ use wxlike_types::{
 
 use crate::cancel::Cancellation;
 use crate::ports::{InstanceLock, LocalStore, PlatformError, Ports, StoreError};
-use crate::runtime::backoff::{Backoff, JITTER_RANGE};
+use crate::runtime::backoff::{self, Backoff};
 use crate::runtime::router;
 use crate::runtime::subscription::EventSubscription;
 
@@ -205,17 +205,31 @@ impl Session {
     }
 
     /// 发一次请求（读写共用）。
+    ///
+    /// 单端点命令走 [`router::route`]；复合命令（`conv.list` / `conv.ack`）
+    /// 在核心内拼多个请求（见 [`router::composite`]），不再永远返回
+    /// "不能直接路由"。
     async fn send_now(&self, request: &ActionRequest) -> Result<ActionOutcome, DomainError> {
-        let mut transport_request = router::route(&request.action_id, &request.params)?;
-        transport_request.deadline = request.deadline;
-        let response = self
-            .ports
-            .transport
-            .send(transport_request)
-            .await
-            .map_err(|err| err.into_domain())?;
-        let value = response.json()?;
-        Ok(if is_empty(&value) {
+        let value = if router::is_composite(&request.action_id) {
+            router::composite(
+                self.ports.transport.as_ref(),
+                &request.action_id,
+                &request.params,
+                request.deadline,
+            )
+            .await?
+        } else {
+            let mut transport_request = router::route(&request.action_id, &request.params)?;
+            transport_request.deadline = request.deadline;
+            let response = self
+                .ports
+                .transport
+                .send(transport_request)
+                .await
+                .map_err(|err| err.into_domain())?;
+            response.json()?
+        };
+        Ok(if wxlike_types::is_empty_payload(&value) {
             ActionOutcome::Empty
         } else {
             ActionOutcome::Ok { data: value }
@@ -279,7 +293,9 @@ impl Session {
                 Step::Sent
             }
             Err(error) if error.is_retryable() => {
-                let delay = self.backoff.delay_ms(record.attempts, jitter_sample());
+                let delay = self
+                    .backoff
+                    .delay_ms(record.attempts, backoff::jitter_sample());
                 let next_at = now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX));
                 let _ = self
                     .ports
@@ -321,6 +337,41 @@ impl Session {
             request,
             self.cancel.clone(),
         ))
+    }
+
+    /// 手动重试一条已被搁置（重试上限用尽）的待发记录。
+    ///
+    /// 重试预算**重新从 0 起算**：用户点"重试"是一次新决定，不该第一次
+    /// 手动重试就被"已达上限"再顶回去。返回 `false` 表示队列里没有这条
+    /// （可能已发出，或键写错了）。
+    ///
+    /// # Errors
+    /// 本地库读写失败。
+    pub async fn retry_outbox(&self, key: &str) -> Result<bool, DomainError> {
+        let now = self.ports.clock.now_ms();
+        // i64::MAX 当"现在"：把包括被搁置（next_attempt_at 被推到极远）在内
+        // 的全部记录取出来找这条键。
+        let all = self
+            .ports
+            .store
+            .due_outbox(i64::MAX, u32::MAX)
+            .await
+            .map_err(store_error)?;
+        let Some(mut record) = all
+            .into_iter()
+            .find(|record| record.idempotency_key.as_str() == key)
+        else {
+            return Ok(false);
+        };
+        record.attempts = 0;
+        record.next_attempt_at_ms = now;
+        record.last_error = None;
+        self.ports
+            .store
+            .put_outbox(&record)
+            .await
+            .map_err(store_error)?;
+        Ok(true)
     }
 
     /// 本地重放（冷启动 / 刷新页面）：从游标之后把已落盘的事件交出来。
@@ -376,15 +427,8 @@ fn catalog_spec(action: &ActionId) -> Result<&'static wxlike_cmd::CommandSpec, D
         .ok_or_else(|| DomainError::invalid(format!("未登记的命令：{}", action.as_str())))
 }
 
-/// 空结果判定：`null`、空数组、空对象都算"成功但没数据"。
-fn is_empty(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::Array(items) => items.is_empty(),
-        Value::Object(map) => map.is_empty(),
-        _ => false,
-    }
-}
+// 空结果判定收口到契约层：`wxlike_types::is_empty_payload` 是
+// `crates/cmd` 与这里共用的唯一口径（两处各写一份时口径必然漂移）。
 
 /// 本地存储错误 → 领域错误。**只在这一处**映射。
 fn store_error(error: StoreError) -> DomainError {
@@ -396,12 +440,6 @@ fn store_error(error: StoreError) -> DomainError {
         StoreError::Unavailable(why) => DomainError::unavailable(format!("本地存储不可用：{why}")),
         StoreError::Corrupt(why) => DomainError::internal(format!("本地数据损坏：{why}")),
     }
-}
-
-/// 抖动样本。原生端用系统随机数覆盖（见 `client-native`），
-/// 默认给一个稳定值，保证测试可复现。
-fn jitter_sample() -> u32 {
-    JITTER_RANGE / 2
 }
 
 /// 补发请求的追踪 id：由幂等键派生，重试之间保持一致（日志能串起来）。

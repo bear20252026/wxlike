@@ -67,19 +67,40 @@ impl Envelope {
 /// 生成一个可读的 trace id（`tr-` + 16 位十六进制）。
 ///
 /// 不用 UUID：日志里要能一眼看出"这是我们自己发的"，且不引入新依赖。
+/// **不 panic**：解析失败（理论上不可达）时退回 [`TraceId::derive`]——
+/// 它按规则净化文本，必然产出合法 id。库代码不许在"几乎不可达"上崩溃。
 pub fn new_trace_id() -> TraceId {
     let raw: [u8; 8] = rand::random();
     let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
     // 字符集与长度都在契约允许范围内（字母数字 + `-`）
-    TraceId::parse(format!("tr-{hex}")).unwrap_or_else(|_| {
-        // 理论上不可达；真的不可达时也不能 panic——退回一个常量级合法值
-        TraceId::parse("tr-0000000000000000").unwrap_or_else(|_| unreachable!("常量 trace id"))
-    })
+    TraceId::parse(format!("tr-{hex}")).unwrap_or_else(|_| TraceId::derive(&format!("tr-{hex}"))
+    )
 }
 
-/// catalog id → `ActionId`。id 是编译期常量，解析失败说明有人写错了 catalog。
-pub fn action_id(spec: &CommandSpec) -> ActionId {
-    ActionId::parse(spec.id).unwrap_or_else(|e| panic!("catalog id {:?} 不合契约：{e}", spec.id))
+/// catalog id → `ActionId`（严格版）。id 是编译期常量，解析失败说明
+/// catalog 数据漂移——这是**错误**，交给调用方决定怎么报。
+///
+/// # Errors
+/// id 不合契约（字符集 / 长度）时返回 [`DomainError::Internal`]。
+pub fn action_id(spec: &CommandSpec) -> Result<ActionId, DomainError> {
+    ActionId::parse(spec.id)
+        .map_err(|err| DomainError::internal(format!("catalog id {:?} 不合契约：{err}", spec.id)))
+}
+
+/// catalog id → `ActionId`（不失败版）：结果成形路径用。
+///
+/// 数据漂移时退回**净化后的 id**（非法字符换 `-`、截断到上限），而不是
+/// panic——一条 `CommandSpec` 坏了不该带走整个进程；净化的结果是合法的，
+/// 最坏情况是这条命令的 id 与 catalog 原文不完全一致（日志里能对出来）。
+fn action_id_or_derived(spec: &CommandSpec) -> ActionId {
+    if let Ok(id) = ActionId::parse(spec.id) {
+        return id;
+    }
+    // 借 TraceId::derive 的净化规则（字符集与 ActionId 相同）。derive 只会
+    // 产出合法字符且不超过上限，所以 parse 必然成功——这不是数据漂移路径，
+    // 而是构造保证；真破了由 `derive_output_is_always_parseable` 钉住。
+    let derived = TraceId::derive(spec.id);
+    ActionId::parse(derived.as_str()).expect("TraceId::derive 的输出必然可解析")
 }
 
 /// 成形一条请求。**写命令缺幂等键在这里就被拒**，不发请求。
@@ -88,7 +109,7 @@ pub fn build_request(
     params: &serde_json::Value,
     env: &Envelope,
 ) -> Result<ActionRequest, DomainError> {
-    let mut req = ActionRequest::new(action_id(spec), params.clone(), env.trace_id.clone());
+    let mut req = ActionRequest::new(action_id(spec)?, params.clone(), env.trace_id.clone());
     req.entry_id = env.entry_id.clone();
     req.deadline = env.deadline;
     if spec.idempotency.is_required() {
@@ -119,29 +140,20 @@ pub fn check_deadline(env: &Envelope, now_ms: i64) -> Result<(), DomainError> {
 
 /// 成功结果。空数组 / 空对象 / `null` 一律判为 `empty`：
 /// 把"没有更多了"塞进 `Ok(null)`，前端只能靠猜。
+///
+/// 空判定调 [`wxlike_types::is_empty_payload`]——`wxlike-client-core` 的
+/// 响应分流用的也是它，两端口径永远一致（各写一份时必然漂移）。
 pub fn ok_result(spec: &CommandSpec, data: serde_json::Value, now_ms: u64) -> ActionResult {
-    let id = action_id(spec);
-    if is_empty_payload(&data) {
+    let id = action_id_or_derived(spec);
+    if wxlike_types::is_empty_payload(&data) {
         return ActionResult::empty(id, now_ms);
     }
     ActionResult::ok(id, data, now_ms)
 }
 
-fn is_empty_payload(data: &serde_json::Value) -> bool {
-    match data {
-        serde_json::Value::Null => true,
-        serde_json::Value::Array(items) => items.iter().all(is_empty_payload),
-        // `{"count":0,"messages":[]}` 这类"包了一层"的空结果也算空：
-        // 只要每个值都是 0 / 空 / null，就没有真实数据可展示。
-        serde_json::Value::Object(map) => map.values().all(is_empty_payload),
-        serde_json::Value::Number(n) => n.as_f64() == Some(0.0),
-        _ => false,
-    }
-}
-
 /// 失败结果。错误是**契约里的分类**，不是一句话。
 pub fn failed_result(spec: &CommandSpec, error: DomainError, now_ms: u64) -> ActionResult {
-    ActionResult::failed(action_id(spec), error, now_ms)
+    ActionResult::failed(action_id_or_derived(spec), error, now_ms)
 }
 
 /// 执行器的字符串错误 → 领域错误。
@@ -229,8 +241,51 @@ mod tests {
     #[test]
     fn every_catalog_id_is_a_valid_contract_action_id() {
         for s in catalog::CATALOG {
-            let id = action_id(s);
+            let id = action_id(s).unwrap_or_else(|err| panic!("{err}"));
             assert_eq!(id.as_str(), s.id);
+        }
+    }
+
+    /// 数据漂移不许变成 panic：`action_id` 报错、`action_id_or_derived` 净化。
+    #[test]
+    fn malformed_catalog_ids_degrade_instead_of_panicking() {
+        let broken = CommandSpec {
+            id: "bad id with 空格和中文",
+            summary: "",
+            params: "",
+            args: &[],
+            capability: crate::catalog::Capability::Read,
+            needs_conv: false,
+            scope: crate::catalog::ScopeClass::Conversation,
+            confirmation: crate::catalog::Confirmation::None,
+            idempotency: crate::catalog::Idempotency::None,
+            platforms: crate::catalog::Platforms::ALL,
+            host: crate::catalog::HostCapability::None,
+        };
+        assert!(action_id(&broken).is_err(), "漂移的 id 必须被查出");
+        let derived = action_id_or_derived(&broken);
+        assert!(
+            TraceId::parse(derived.as_str()).is_ok(),
+            "净化后的 id 必须是合法契约 id：{}",
+            derived.as_str()
+        );
+        // 失败结果也不许 panic（这是 CLI/MCP 的兜底路径）
+        let result = failed_result(&broken, DomainError::not_found("x"), 1);
+        assert_eq!(result.action_id.as_str(), derived.as_str());
+    }
+
+    /// `TraceId::derive` 的输出永远能解析回合法 id（漂移兜底依赖这一条）。
+    #[test]
+    fn derive_output_is_always_parseable() {
+        for seed in [
+            "",
+            "bad id with 空格和中文!!!",
+            &"x".repeat(300),
+            "tr-\u{1F600}emoji",
+        ] {
+            let derived = TraceId::derive(seed);
+            assert!(TraceId::parse(derived.as_str()).is_ok(), "{seed:?}");
+            assert!(ActionId::parse(derived.as_str()).is_ok(), "{seed:?}");
         }
     }
 

@@ -15,7 +15,15 @@ export interface FixtureAccount {
   signature: string;
   contacts: Contact[];
   requests: FriendRequest[];
-  groups: { group_id: string; name: string; avatar: string; my_role: "owner" | "admin" | "member"; members: GroupMember[] }[];
+  groups: {
+    group_id: string;
+    name: string;
+    avatar: string;
+    my_role: "owner" | "admin" | "member";
+    members: GroupMember[];
+    /** Conversation this group renders as, when one exists in the fixture. */
+    conv_id?: string;
+  }[];
   conversations: Conversation[];
   messages: Record<string, ChatMessage[]>;
   preferences: Preferences;
@@ -129,6 +137,7 @@ export function createAlphaAccount(): FixtureAccount {
         avatar: "",
         my_role: "owner",
         members: springMembers,
+        conv_id: "conv-spring",
       },
       {
         group_id: "group-weekend",

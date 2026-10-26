@@ -124,6 +124,17 @@ pub fn read_range(path: &Path, range: ByteRange) -> anyhow::Result<Vec<u8>> {
 ///
 /// 同步阻塞读——handler 用 `spawn_blocking` 包一层；seek 一次只读一段，
 /// 比原先"整文件进内存"轻得多。
+///
+/// # 已知欠账：无 Range 的整文件响应仍要一次性进内存
+///
+/// `Served::Whole`（浏览器 `<video>` 首次加载常发 `Range: bytes=0-`，它也会
+/// 折算成 Whole）目前把整个文件读进 `Vec`。真正的分块流式响应需要一个
+/// Stream→Body 适配器（`tokio_util::io::ReaderStream` 或 `futures` channel），
+/// 而 `wxlike-video` 的依赖里两者都没有，axum 0.8 也没有把
+/// `futures_core::Stream` / `http_body::Frame` re-export 出来，自己实现
+/// `HttpBody` 都点不出 `Frame` 这个类型。加依赖是被本轮明确禁止的
+/// （Cargo.toml 冻结），所以先做两件不越界的事：超阈值告警（内存压力可见）
+/// 与单次精确分配（不反复扩容）。依赖解冻后把 Whole 分支换成 ReaderStream。
 pub fn respond_with_range(
     path: &Path,
     content_type: &'static str,
@@ -143,16 +154,26 @@ pub fn respond_with_range(
             [(header::CONTENT_RANGE, format!("bytes */{total}"))],
         )
             .into_response(),
-        Served::Whole { .. } => match std::fs::read(path) {
-            Ok(body) => (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, content_type.to_string()),
-                    (header::ACCEPT_RANGES, "bytes".to_string()),
-                ],
-                body,
-            )
-                .into_response(),
+        Served::Whole { .. } => match read_whole_exact(path, total) {
+            Ok(body) => {
+                if total > WHOLE_SERVE_WARN_BYTES {
+                    tracing::warn!(
+                        path = %path.display(),
+                        bytes = total,
+                        "serving a whole video file from memory (no Range); \
+                         see the known-debt note on respond_with_range"
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, content_type.to_string()),
+                        (header::ACCEPT_RANGES, "bytes".to_string()),
+                    ],
+                    body,
+                )
+                    .into_response()
+            }
             Err(_) => missing(),
         },
         Served::Partial { range, total } => match read_range(path, range) {
@@ -172,6 +193,30 @@ pub fn respond_with_range(
             Err(_) => missing(),
         },
     }
+}
+
+/// 无 Range 响应的告警阈值：超过它的整读值得让运维看见（4K 长片的
+/// `play.mp4` 轻松过 200 MiB）。
+const WHOLE_SERVE_WARN_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 一次打开、按已知大小精确分配、一次读完——不做 `fs::read` 的
+/// metadata/容量试探第二遍，也不让 `read_to_end` 走扩容链。
+fn read_whole_exact(path: &Path, total: u64) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let want = usize::try_from(total)
+        .map_err(|_| anyhow::anyhow!("file larger than addressable memory"))?;
+    let mut buf = Vec::with_capacity(want);
+    file.read_to_end(&mut buf)
+        .with_context(|| format!("read {}", path.display()))?;
+    anyhow::ensure!(
+        buf.len() == want,
+        "file changed size while reading {}: expected {want}, got {}",
+        path.display(),
+        buf.len()
+    );
+    Ok(buf)
 }
 
 /// 缺失对象一律 404（与媒体下载同一个形状）。

@@ -22,6 +22,7 @@ concurrency:
 
 x-wxlike-fragments:
   - build
+  - build/web_v2.job.yml
   - contract
   - audit
   - server

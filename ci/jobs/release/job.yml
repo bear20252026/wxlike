@@ -30,6 +30,8 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/wxlike-server" >> "$GITHUB_OUTPUT"
           echo "version=$version publish=$publish"
+      - name: release gate - contract registry must be complete
+        run: python3 ci/jobs/contract/check_contracts.py --require-registry
       - name: download mobile artefacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
         with:
@@ -122,9 +124,9 @@ jobs:
           echo "DEVICE_VERIFIED=$verified" >> "$GITHUB_ENV"
           cp "$android" release-evidence/android-release.json
           cp "$ios" release-evidence/ios-release.json
-      - name: record known gaps
+      - name: record known gaps (release fails while any blocks_release gap is open)
         shell: bash
-        run: python3 ci/jobs/build/check_gaps.py --json release-evidence/gaps.json
+        run: python3 ci/jobs/build/check_gaps.py --release --json release-evidence/gaps.json
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # docker/setup-buildx-action@v3
       - name: login to GHCR
         if: steps.meta.outputs.publish == 'true'

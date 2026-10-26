@@ -79,13 +79,19 @@ class _TimelinePageState extends State<TimelinePage> {
       widget.controller.setForeground(foreground);
       if (foreground) unawaited(widget.controller.onSignal(ChatSignal.resumed));
     });
-    _networkSub = widget.networkStatus.listen((status) {
-      if (!mounted) return;
-      if (status == NetworkStatus.online) {
-        unawaited(widget.controller.onSignal(ChatSignal.networkRegained));
-        unawaited(_composer.handleNetwork(true));
-      }
-    });
+    _networkSub = widget.networkStatus.listen(
+      (status) {
+        if (!mounted) return;
+        if (status == NetworkStatus.online) {
+          unawaited(widget.controller.onSignal(ChatSignal.networkRegained));
+          unawaited(_composer.handleNetwork(true));
+        }
+      },
+      onError: (Object error) {
+        // 网络事件流异常（平台桥缺失/中断）不应拖垮页面：端口层对
+        // PLATFORM_UNWIRED 已按一次"离线"兜底，这里无需再动作。
+      },
+    );
   }
 
   void _onTimeline() {

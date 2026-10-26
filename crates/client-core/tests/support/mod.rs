@@ -306,6 +306,22 @@ impl EventSource for MemEventSource {
     }
 }
 
+/// 永不产出的事件源：`next()` 永远挂起，模拟"空闲的 WebSocket / 长轮询"。
+///
+/// 取消唤醒的验收靠它：修复前 `cancel()` 无法让挂着的 `next()` 返回，
+/// 订阅会一直睡到源自己吐出下一条。
+pub struct HangingEventSource;
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl EventSource for HangingEventSource {
+    async fn next(&mut self) -> Result<Option<EventEnvelope>, TransportError> {
+        std::future::pending().await
+    }
+
+    async fn close(&mut self) {}
+}
+
 /// 内存版传输：按脚本返回响应，记录发出去的请求。
 #[derive(Default)]
 pub struct MemTransport {

@@ -26,10 +26,11 @@ import {
   typingAtom,
   viewAtom,
 } from "./state";
+import type { Atom } from "jotai/vanilla";
 import { clear, h, on, type El } from "./ui-dom";
 import { directPeer, formatBytes, since, timeShort } from "./ui-format";
 import * as api from "./api";
-import { renderCallPage, renderVerifyPage, stopCallPolling } from "./callpage";
+import { renderCallPage, renderVerifyPage, leaveCallPage, stopCallPolling } from "./callpage";
 import ListenerSetter from "./vendor/tweb/listenerSetter";
 
 // El 类型已随迁 ui-dom.ts（经 import 引入）
@@ -42,6 +43,30 @@ import ListenerSetter from "./vendor/tweb/listenerSetter";
  * 之前的写法只在"下一次点击"时自清；菜单被切视图/重渲染关掉时监听器会挂着。
  */
 const menuListeners = new ListenerSetter();
+
+/**
+ * 每一代视图的 jotai 退订函数（P1 修复：事件监听泄漏）。
+ * 以前 renderMain/renderChat 每次渲染都 `appStore.sub(...)` 且把返回的
+ * 退订函数直接丢掉——切一次视图叠一代监听器，旧回调还攥着已卸载的 DOM。
+ * 现在：视图把自己的订阅登记进来，renderRoot 在画**下一代**之前整代释放，
+ * 同一时刻只有一代存活。
+ */
+let viewSubs: Array<() => void> = [];
+
+function subView(atom: Atom<unknown>, fn: () => void): void {
+  viewSubs.push(appStore.sub(atom, fn));
+}
+
+function releaseViewSubs(): void {
+  for (const un of viewSubs) {
+    try {
+      un();
+    } catch {
+      /* store 侧已失效：忽略，继续释放其余的 */
+    }
+  }
+  viewSubs = [];
+}
 
 /** Conversations where the secret-chat toggle is on (P1 prototype). */
 const secretConvs = new Set<string>();
@@ -169,7 +194,13 @@ function renderAuth(root: El): void {
   const regBtn = h("button", "btn", "注册");
   const err = h("p", "auth-error");
 
+  let pending = false;
   async function go(create: boolean): Promise<void> {
+    // P3 防双击/回车连击：请求在飞时按钮禁用 + 直接忽略
+    if (pending) return;
+    pending = true;
+    loginBtn.setAttribute("disabled", "true");
+    regBtn.setAttribute("disabled", "true");
     err.textContent = "";
     try {
       localStorage.setItem("wxlike-server", server.value.trim());
@@ -184,6 +215,10 @@ function renderAuth(root: El): void {
       appStore.set(viewAtom, { screen: "main", tab: "chats" });
     } catch (e) {
       err.textContent = String(e).replace(/^.*error"?[: ]*/i, "").slice(0, 160);
+    } finally {
+      pending = false;
+      loginBtn.removeAttribute("disabled");
+      regBtn.removeAttribute("disabled");
     }
   }
 
@@ -284,7 +319,8 @@ function renderMain(root: El): void {
     connectedAtom,
     favoritesAtom,
   ]) {
-    appStore.sub(atom, () => {
+    // subView：登记到本视图的退订列表，切视图时由 renderRoot 释放
+    subView(atom, () => {
       drawList();
       syncTabHighlight();
     });
@@ -553,6 +589,21 @@ function drawMe(list: El): void {
     if (!diagPanel.hidden) void drawDiag(diagPanel);
   });
 
+  // 退出登录（P3 修复：以前这个动作在 UI 里不可达，账号缓存跨登录残留）。
+  // 原子/消息索引/定时器在 api.logout 里清；秘密会话的渲染缓存在这里清。
+  const logoutBtn = h("button", "btn danger", "退出登录");
+  on(logoutBtn, "click", () => {
+    logoutBtn.setAttribute("disabled", "true");
+    void api
+      .logout()
+      .then(() => {
+        secretConvs.clear();
+        toast("已退出登录");
+      })
+      .catch((e) => toast(String(e).slice(0, 120)))
+      .finally(() => logoutBtn.removeAttribute("disabled"));
+  });
+
   list.append(
     card,
     avatarBtn,
@@ -565,6 +616,7 @@ function drawMe(list: El): void {
     devicesPanel,
     diagBtn,
     diagPanel,
+    logoutBtn,
   );
 }
 
@@ -729,7 +781,7 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
   imgInput.hidden = true;
   const red = h("button", "icon-btn", "🧧");
   const mic = h("button", "icon-btn", "🎤");
-  mic.title = "按住回车停止：录一段语音条";
+  mic.title = "点击开始录音，再点结束（最长 60 秒）";
   const clip = h("button", "icon-btn", "📎");
   clip.title = "发送文件";
   const fileInput = h("input") as HTMLInputElement;
@@ -785,7 +837,7 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
     const who = appStore.get(typingAtom)[convId];
     typingLine.textContent = who ? "对方正在输入…" : "";
   };
-  appStore.sub(typingAtom, syncTyping);
+  subView(typingAtom, syncTyping);
   syncTyping();
 
   // -- selection mode (merge forward)
@@ -809,7 +861,7 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
     on(cancel, "click", () => api.stopSelect());
     selectBar.append(count, merge, cancel);
   };
-  appStore.sub(selectModeAtom, syncSelectBar);
+  subView(selectModeAtom, syncSelectBar);
   syncSelectBar();
 
   // -- message list (windowed render: at most RENDER_WINDOW bubbles in the
@@ -861,19 +913,25 @@ function renderChat(root: El, convId: string, title: string, isGroup: boolean): 
     }
     packets.scrollTop = packets.scrollHeight;
   };
-  appStore.sub(chatsAtom, draw);
-  appStore.sub(historyCursorAtom, draw);
+  subView(chatsAtom, draw);
+  subView(historyCursorAtom, draw);
   draw();
 
+  let sendPending = false;
   const doSend = (): void => {
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || sendPending) return; // P3：在飞时忽略连击（回车+点击）
+    sendPending = true;
+    send.setAttribute("disabled", "true");
     input.value = "";
     const secret = !isGroup && secretConvs.has(convId);
     const p = secret
       ? api.sendSecretText(convId, to, text)
       : api.sendText(convId, to, text);
-    p.catch((e) => toast(String(e).slice(0, 120)));
+    p.catch((e) => toast(String(e).slice(0, 120))).finally(() => {
+      sendPending = false;
+      send.removeAttribute("disabled");
+    });
   };
   on(send, "click", doSend);
   on(input, "keydown", (e) => {
@@ -1264,6 +1322,20 @@ async function chatSearchDialog(_convId: string): Promise<void> {
   }
 }
 
+/**
+ * 应用内大图预览（P3 修复）。webview 会拦截 `data:` 导航，以前的
+ * `window.open(dataURL, "_blank")` 点了毫无反应；改为覆盖层 <img>，
+ * 点击任意处关闭。样式复用 .modal-overlay（见 styles.css 的 .img-preview）。
+ */
+function imagePreviewOverlay(url: string): void {
+  const overlay = h("div", "modal-overlay img-preview");
+  const img = document.createElement("img");
+  img.src = url;
+  overlay.append(img);
+  on(overlay, "click", () => overlay.remove());
+  document.body.append(overlay);
+}
+
 function imageCell(m: ChatMsg): El {
   const cell = h("button", "img-cell");
   cell.textContent = "…";
@@ -1273,7 +1345,12 @@ function imageCell(m: ChatMsg): El {
       const img = document.createElement("img");
       img.src = url;
       img.loading = "lazy";
-      on(img, "click", () => void api.fetchMediaDataUrl(m.mediaId ?? "", false).then((full) => window.open(full, "_blank")));
+      on(img, "click", () =>
+        void api
+          .fetchMediaDataUrl(m.mediaId ?? "", false)
+          .then((full) => imagePreviewOverlay(full))
+          .catch((e) => toast(String(e).slice(0, 100))),
+      );
       cell.replaceChildren(img);
     })
     .catch(() => {
@@ -1282,44 +1359,63 @@ function imageCell(m: ChatMsg): El {
   return cell;
 }
 
+/**
+ * 停止信号（P1 修复）：第二次点击 ⏹ 和 60 s 上限都只是 resolve 这个
+ * promise，`recording.stop()` 只在信号之后调用一次。以前的写法在 start
+ * 之后立刻 `await recording.stop()`——每段录音都被砍到 200 ms 下限。
+ * 同一时刻只允许一段录音在飞。
+ */
+let activeVoiceStop: (() => void) | null = null;
+
 /** P2 voice note: the 🎤 button starts, clicking again stops; the waveform
  * is derived from the decoded PCM and travels inside the message payload. */
 async function voiceRecordDialog(convId: string, to: string[], micBtn: El): Promise<void> {
-  if (micBtn.dataset.recording === "1") {
-    micBtn.dataset.stopRequested = "1";
+  if (activeVoiceStop || micBtn.dataset.recording === "1") {
+    // 第二次点击（或 getUserMedia 还没回来时的重复点击）：请求结束即可
+    activeVoiceStop?.();
     return;
   }
+  // 先占位再 await：许可弹窗期间再点一次不会开出第二段录音
+  micBtn.dataset.recording = "1";
   let recording: Awaited<ReturnType<typeof api.startVoiceRecording>>;
   try {
     recording = await api.startVoiceRecording();
   } catch (e) {
+    micBtn.dataset.recording = "";
     toast(String(e).slice(0, 120));
     return;
   }
-  micBtn.dataset.recording = "1";
   micBtn.textContent = "⏹";
   micBtn.title = "再次点击结束录音（最长 60 秒）";
   toast("录音中…再次点击 ⏹ 结束");
-  const watch = window.setInterval(() => {
-    if (micBtn.dataset.stopRequested === "1") {
-      window.clearInterval(watch);
-      micBtn.dataset.stopRequested = "";
-    }
-  }, 100);
-  // the 60 s hard cap inside startVoiceRecording resolves stop() on its own
-  window.setTimeout(() => {
-    micBtn.dataset.stopRequested = "1";
-  }, 60_500);
+
+  let signalStop!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    signalStop = resolve;
+  });
+  activeVoiceStop = signalStop;
+  // 60 s 硬上限走同一个信号（api.startVoiceRecording 内部还有一道兜底）
+  const cap = window.setTimeout(signalStop, 60_000);
+  // 录音中的即时反馈：按钮上滚动已录秒数（波形在停止后从 PCM 导出）
+  const started = Date.now();
+  const tick = window.setInterval(() => {
+    micBtn.textContent = `⏹ ${Math.floor((Date.now() - started) / 1000)}″`;
+  }, 250);
+
   try {
+    await stopped; // 只有点停/到点之后才真正结束录音
+    window.clearTimeout(cap);
+    window.clearInterval(tick);
     const { blob, durationMs, waveform } = await recording.stop();
-    window.clearInterval(watch);
     const mediaId = await api.uploadVoiceBlob(convId, blob);
     await api.sendVoice(convId, to, mediaId, durationMs, waveform);
-    toast("语音已发送");
+    toast(`语音已发送 (${(durationMs / 1000).toFixed(1)}″)`);
   } catch (e) {
     toast(String(e).slice(0, 120));
   } finally {
-    window.clearInterval(watch);
+    window.clearTimeout(cap);
+    window.clearInterval(tick);
+    activeVoiceStop = null;
     micBtn.dataset.recording = "";
     micBtn.textContent = "🎤";
     micBtn.title = "录一段语音条";
@@ -1339,9 +1435,12 @@ function stickerDialog(convId: string, to: string[]): void {
     const b = h("button", "sticker-item", face);
     on(b, "click", () => {
       hideMsgMenu();
-      void api
-        .sendSticker(convId, to, "", "builtin", encodeURIComponent(face))
-        .catch((e) => toast(String(e).slice(0, 100)));
+      // P2 修复：内置贴纸是字符画，不是媒体对象——`StickerPayload::validate`
+      // （crates/core/src/msgmeta.rs）要求 media_id 必须是 64 位 sha256-hex，
+      // 空 media_id 会被服务端拒绝。最小闭环：内置款按 `MsgBody::Text` 发送
+      // （face 本身就是标记，对端原样渲染、能回显）；用户从聊天里存下来的
+      // 图片贴纸仍走真正的 send_sticker 通道（media_id 合法）。
+      void api.sendText(convId, to, face).catch((e) => toast(String(e).slice(0, 100)));
     });
     grid.append(b);
   }
@@ -1406,13 +1505,21 @@ async function redpacketDialog(convId: string, to: string[]): Promise<void> {
 
 export function renderRoot(root: El): void {
   api.applyTheme();
+  let prevScreen: string | null = null;
   const draw = (): void => {
     api.applyTheme();
     const v = appStore.get(viewAtom);
+    // 上一代视图的 jotai 订阅先整代释放（P1 泄漏修复）：只有新一代在听
+    releaseViewSubs();
     clear(root);
     hideMsgMenu();
-    // 通话页的轮询必须在视图切换时停掉（否则会对已卸载的 DOM 继续刷新）
-    stopCallPolling();
+    // 通话页的轮询/事件订阅必须在视图切换时停掉（否则会打到已卸载的 DOM）。
+    // 媒体引擎（麦克风/UDP 端口）只在"从通话页导航走"时挂断：通话页自身
+    // 重进（同屏重渲染/换会话）只停定时器——以前进页就无脑 callRtcHangup，
+    // 正在响铃的通话会被自己人掐掉。
+    if (prevScreen === "call" && v.screen !== "call") leaveCallPage();
+    else stopCallPolling();
+    prevScreen = v.screen;
     switch (v.screen) {
       case "auth":
         renderAuth(root);

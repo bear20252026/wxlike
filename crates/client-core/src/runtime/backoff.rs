@@ -67,6 +67,55 @@ impl Backoff {
 /// 移位的上限：`1 << 20` 已经远超任何 `max_ms`。
 const SHIFT_CAP: u32 = 20;
 
+// ---------------------------------------------------------------------------
+// 抖动样本：真随机，且 wasm 上可用
+//
+// 曾经这里返回常量 `JITTER_RANGE / 2`：多端同时掉线 → 同时到点 → 同时重发，
+// 退避的"摊开"作用完全失效（雷群）。改用 xorshift64*：
+//
+// * **不引依赖**：`rand` 会把 `getrandom` 拖进 wasm32（正是本轮修的构建坑），
+//   client-core 有意零运行时依赖；
+// * **种子 = 时钟 + 单调计数 + 上一状态**：同一毫秒内的多次调用也不同，
+//   重启后也不同（时钟参与种子）；
+// * 状态是原子量：原生多线程安全，wasm 单线程零开销。
+// ---------------------------------------------------------------------------
+
+/// 抖动状态。0 是 xorshift 的不动点，初始化/存储时保证非零。
+static JITTER_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 种子里的单调计数。
+static JITTER_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// xorshift64* 的乘数（SplitMix 同源常数）。
+const GOLDEN: u64 = 0x2545_F491_4F6C_DD1D;
+/// 非零兜底种子。
+const SEED_FLOOR: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// 取一个抖动样本，取值 `0..JITTER_RANGE`。
+///
+/// 不承诺密码学随机（退避抖动不需要），承诺的是：**相邻调用不同值**
+/// （雷群不收敛）、值域有界（不会推出 0 或负延迟之外的东西）。
+#[must_use]
+pub fn jitter_sample() -> u32 {
+    use std::sync::atomic::Ordering;
+    let counter = JITTER_COUNT.fetch_add(1, Ordering::Relaxed);
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
+    let previous = JITTER_STATE.load(Ordering::Relaxed);
+    // 三路混合：计数保证同毫秒不同、时钟保证重启不同、上一状态保证序列相关
+    let mut state = clock ^ counter.wrapping_mul(GOLDEN) ^ previous.rotate_left(1);
+    if state == 0 {
+        state = SEED_FLOOR;
+    }
+    // xorshift64*：缺任一步都会退化成短周期
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    JITTER_STATE.store(state, Ordering::Relaxed);
+    let mixed = state.wrapping_mul(GOLDEN);
+    (mixed % u64::from(JITTER_RANGE)) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +162,33 @@ mod tests {
         assert!(backoff.may_retry(0));
         assert!(backoff.may_retry(4));
         assert!(!backoff.may_retry(5), "第 5 次失败后不再重试");
+    }
+
+    /// 抖动必须真的"抖"：连续样本不能是常量（雷群），且落在声明区间内。
+    #[test]
+    fn jitter_samples_are_not_a_constant_and_stay_in_range() {
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let sample = jitter_sample();
+            assert!(sample < JITTER_RANGE, "样本越界：{sample}");
+            distinct.insert(sample);
+        }
+        assert!(
+            distinct.len() > 8,
+            "64 个样本只有 {} 个不同值——抖动退化成常量，雷群重发会回来",
+            distinct.len()
+        );
+    }
+
+    /// 同一毫秒内的连续调用也必须不同（时钟同值时靠计数器拉开）。
+    #[test]
+    fn jitter_differs_within_the_same_instant() {
+        let first = jitter_sample();
+        let second = jitter_sample();
+        let third = jitter_sample();
+        assert!(
+            first != second || second != third,
+            "同一毫秒内的样本全等：({first},{second},{third})"
+        );
     }
 }

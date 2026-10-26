@@ -147,7 +147,6 @@ export function FilesPage({ ports }: { ports: FilesPorts }) {
         }
       })();
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [ports, tasks],
   );
 

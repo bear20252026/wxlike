@@ -31,8 +31,15 @@ let poll: number | null = null;
 /** 本地媒体引擎的最近一次快照（`call://rtc` 推送）。 */
 let rtc: api.CallRtcStatus | null = null;
 let rtcUnsub: (() => void) | null = null;
+/** 订阅代数：`listen()` 是异步的，凭代数识别"退订句柄到岸时页面已拆"的竞态。 */
+let rtcGen = 0;
 
+/**
+ * 只停定时器与事件订阅（P2 修复：与挂断媒体引擎分离）。
+ * 通话页自身重进/重渲染调用本函数——不能挂断，否则把正在响铃的通话掐掉。
+ */
 export function stopCallPolling(): void {
+  rtcGen++; // 在飞的 listen().then 到岸即自毁，不得再写回 rtcUnsub
   if (poll !== null) {
     window.clearInterval(poll);
     poll = null;
@@ -42,7 +49,14 @@ export function stopCallPolling(): void {
     rtcUnsub = null;
   }
   rtc = null;
-  // 离开通话页就挂断媒体：线程不挂会一直占着 UDP 端口和麦克风
+}
+
+/**
+ * 离开通话页（导航到别处）才挂断媒体引擎：线程不挂会一直占着 UDP 端口和
+ * 麦克风。由 `renderRoot` 在"从 call 屏切走"时调用；用户主动挂断走按钮。
+ */
+export function leaveCallPage(): void {
+  stopCallPolling();
   void api.callRtcHangup().catch(() => {});
 }
 
@@ -58,13 +72,28 @@ function shortId(id: string): string {
 }
 
 /** 参与者操作菜单（参照 spreed 的 ParticipantItem 菜单）。 */
+let menuClose: ((ev: MouseEvent) => void) | null = null;
+
 function participantMenu(anchor: El, convId: string, user: string, isHost: boolean): void {
+  // 先摘上一个菜单的 document 级监听（P3 修复：点菜单项后它以前会一直挂
+  // 到"下一次点到菜单外"才自清），再移除旧菜单本体
+  if (menuClose) {
+    document.removeEventListener("click", menuClose, true);
+    menuClose = null;
+  }
   document.querySelectorAll(".call-menu").forEach((n) => n.remove());
   const menu = h("div", "call-menu");
+  const detach = (): void => {
+    if (menuClose) {
+      document.removeEventListener("click", menuClose, true);
+      menuClose = null;
+    }
+    menu.remove();
+  };
   const item = (label: string, run: () => void): void => {
     const b = h("button", "call-menu-item", label);
     b.addEventListener("click", () => {
-      menu.remove();
+      detach();
       run();
     });
     menu.append(b);
@@ -80,12 +109,12 @@ function participantMenu(anchor: El, convId: string, user: string, isHost: boole
   menu.style.top = `${Math.round(r.bottom + 6)}px`;
   document.body.append(menu);
   const close = (ev: MouseEvent): void => {
-    if (!menu.contains(ev.target as Node)) {
-      menu.remove();
-      document.removeEventListener("click", close, true);
-    }
+    if (!menu.contains(ev.target as Node)) detach();
   };
-  window.setTimeout(() => document.addEventListener("click", close, true), 0);
+  menuClose = close;
+  window.setTimeout(() => {
+    if (menuClose === close) document.addEventListener("click", close, true);
+  }, 0);
 }
 
 async function act(
@@ -273,13 +302,20 @@ export function renderCallPage(root: El, convId: string, title: string, isGroup:
     await refresh();
   };
 
+  // P2 竞态修复：listen() 异步返回退订句柄；凭代数识别"句柄到岸时本页
+  // 已被 stopCallPolling 拆掉"——那种情况立刻退订，而不是写回全局造成泄漏
+  // （回调继续打到已卸载的 DOM）。
+  const gen = rtcGen;
   void listen("call://rtc", (payload) => {
+    if (gen !== rtcGen) return; // 本页已拆：事件直接丢弃
     rtc = payload as api.CallRtcStatus;
     draw();
   }).then((un) => {
-    rtcUnsub = un;
+    if (gen !== rtcGen) un();
+    else rtcUnsub = un;
   });
   void api.callRtcStatus().then((st) => {
+    if (gen !== rtcGen) return;
     rtc = st;
     draw();
   });

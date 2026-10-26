@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CallApi } from "./api";
-import { CallSession, describeError, type CallSnapshot } from "./session";
+import { CallSession, describeCallError, type CallSnapshot } from "./session";
 import type { CallPorts, CallTrack } from "./model";
 
 afterEach(() => {
@@ -280,10 +280,10 @@ describe("CallSession — controls", () => {
 });
 
 describe("unit", () => {
-  it("describeError 映射常见设备错误", () => {
-    expect(describeError(new DOMException("x", "NotAllowedError"))).toContain("权限被拒绝");
-    expect(describeError(new DOMException("x", "NotReadableError"))).toContain("被其他应用占用");
-    expect(describeError(new Error("boom"))).toBe("boom");
+  it("describeCallError 映射常见设备错误", () => {
+    expect(describeCallError(new DOMException("x", "NotAllowedError"))).toContain("权限被拒绝");
+    expect(describeCallError(new DOMException("x", "NotReadableError"))).toContain("被其他应用占用");
+    expect(describeCallError(new Error("boom"))).toBe("boom");
   });
 
   it("CallApi 走真实端点与幂等键", async () => {

@@ -292,13 +292,13 @@ pub fn spawn_reconciler(
             tokio::time::sleep(every).await;
             match state.reconcile() {
                 Ok(r) if r.ok => {}
-                Ok(r) => eprintln!(
-                    "[platform] reconcile FAILED: {} mismatch(es), supply={} funded={}",
-                    r.mismatches.len(),
-                    r.supply,
-                    r.funded_total
+                Ok(r) => tracing::error!(
+                    mismatches = r.mismatches.len(),
+                    supply = r.supply,
+                    funded_total = r.funded_total,
+                    "reconcile FAILED"
                 ),
-                Err(err) => eprintln!("[platform] reconcile error: {err}"),
+                Err(err) => tracing::error!(error = %err, "reconcile error"),
             }
         }
     })

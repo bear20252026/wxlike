@@ -12,3 +12,10 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 # 一次性 nonce（G15-04）
 rand = { workspace = true }
+
+# wasm32：rand → getrandom 默认不给 wasm32-unknown-unknown 提供后端，
+# 编译期直接 compile_error!("...enable the js feature")。客户端核心
+# （client-core → cmd → rand）的浏览器构建靠这一条把 js 后端并进来
+# （feature 合并是全构建统一的，原生构建不受影响）。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

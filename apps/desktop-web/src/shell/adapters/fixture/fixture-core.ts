@@ -35,6 +35,7 @@ import type {
 } from "../../models";
 import {
   FIXTURE_DIRECTORY,
+  FIXTURE_PREFERENCES,
   createAlphaAccount,
   createBetaAccount,
   type FixtureAccount,
@@ -76,10 +77,22 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 function fromBase64(value: string): string {
+  return new TextDecoder().decode(base64ToBytes(value));
+}
+
+function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  return bytes;
+}
+
+function toBinary(chunks: Uint8Array[]): string {
+  let out = "";
+  for (const chunk of chunks) {
+    for (const byte of chunk) out += String.fromCharCode(byte);
+  }
+  return out;
 }
 
 function previewOf(body: MessageBody): string {
@@ -105,6 +118,71 @@ function emptyError(code: DomainError["code"], message: string, requestId: strin
   return fail(domainError(code, message, requestId));
 }
 
+/**
+ * Actions the fixture switch below actually implements. `capabilities()`
+ * advertises exactly this list — never `Object.values(ACTIONS)`, which would
+ * promise actions the fixture answers with NOT_IMPLEMENTED. The DEV block
+ * right after the switch asserts this list and the switch stay in sync.
+ */
+const IMPLEMENTED_ACTIONS: string[] = [
+  ACTIONS.sessionProjection,
+  ACTIONS.login,
+  ACTIONS.register,
+  ACTIONS.logout,
+  ACTIONS.lock,
+  ACTIONS.unlock,
+  ACTIONS.restore,
+  ACTIONS.qrCreate,
+  ACTIONS.qrCancel,
+  ACTIONS.qrSwitchAccount,
+  ACTIONS.syncRangeGet,
+  ACTIONS.syncRangeSet,
+  ACTIONS.conversationsList,
+  ACTIONS.messagesPage,
+  ACTIONS.messageSend,
+  ACTIONS.messageRetry,
+  ACTIONS.messageRecall,
+  ACTIONS.messageForward,
+  ACTIONS.messageRead,
+  ACTIONS.conversationPin,
+  ACTIONS.conversationMute,
+  ACTIONS.conversationReadAll,
+  ACTIONS.conversationEnsure,
+  ACTIONS.draftGet,
+  ACTIONS.draftSave,
+  ACTIONS.draftClear,
+  ACTIONS.mediaUploadBegin,
+  ACTIONS.mediaUploadPart,
+  ACTIONS.mediaUploadComplete,
+  ACTIONS.mediaUploadCancel,
+  ACTIONS.relationsList,
+  ACTIONS.requestsIncoming,
+  ACTIONS.requestSend,
+  ACTIONS.requestAccept,
+  ACTIONS.requestDecline,
+  ACTIONS.relationBlock,
+  ACTIONS.relationNote,
+  ACTIONS.relationTag,
+  ACTIONS.relationStar,
+  ACTIONS.relationProfile,
+  ACTIONS.commonGroups,
+  ACTIONS.groupMembers,
+  ACTIONS.groupKick,
+  ACTIONS.groupSettings,
+  ACTIONS.searchQuery,
+  ACTIONS.preferencesGet,
+  ACTIONS.preferencesSet,
+  ACTIONS.secretsStatus,
+  ACTIONS.secretsLock,
+  ACTIONS.secretsMigrate,
+  ACTIONS.storageStatus,
+  ACTIONS.cacheClear,
+  ACTIONS.backupCreate,
+  ACTIONS.backupVerify,
+  ACTIONS.backupImport,
+  ACTIONS.appInfo,
+];
+
 export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
   const autoAdvance = options.autoAdvance ?? true;
   const latency = options.latencyMs ?? 0;
@@ -120,7 +198,14 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
   let requestSeq = 100;
   const listeners = new Set<(event: EventEnvelope) => void>();
   const idempotency = new Map<string, { action_id: string; digest: string; response: ActionResponse<unknown> }>();
-  const uploads = new Map<string, { name: string; size: number; mime: string; received: number }>();
+  const uploads = new Map<string, {
+    name: string;
+    size: number;
+    mime: string;
+    received: number;
+    /** Decoded data_base64 chunks (protocol extension; absent in length-only mode). */
+    chunks: Uint8Array[];
+  }>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let secretsLocked = false;
 
@@ -209,10 +294,9 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
     emit("message.updated", msg.conv_id, msg);
   }
 
-  function advanceSend(user: FixtureAccount, msgId: string): void {
+  function advanceSend(user: FixtureAccount, convId: string, msgId: string): void {
     if (!autoAdvance) return;
-    const [convKey, realId] = msgId.split(":");
-    const find = () => (user.messages[convKey] ?? []).find((m) => m.msg_id === realId);
+    const find = () => (user.messages[convId] ?? []).find((m) => m.msg_id === msgId);
     later(() => {
       const found = find();
       if (!found || found.state !== "LOCAL_QUEUED") return;
@@ -343,7 +427,7 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
             title: group.name,
             subtitle: `${group.members.length} 位成员`,
             group_id: group.group_id,
-            conv_id: group.group_id === "group-spring" ? "conv-spring" : undefined,
+            conv_id: group.conv_id,
           });
         }
       }
@@ -394,6 +478,40 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
           return emptyError("UNAUTHENTICATED", "账号或口令不正确", requestId);
         }
         return ok(authenticate(found.user_id));
+      }
+
+      case ACTIONS.register: {
+        const username = String(params.username ?? "").trim();
+        const password = String(params.password ?? "");
+        const name = String(params.name ?? "").trim() || username;
+        const field_errors: Record<string, string> = {};
+        if (!username) field_errors.username = "请输入账号";
+        else if (accounts.has(username) || [...accounts.values()].some((item) => item.name === username)) {
+          field_errors.username = "该账号已被注册";
+        }
+        if (password.length < 6) field_errors.password = "口令至少 6 位";
+        if (Object.keys(field_errors).length) {
+          return fail(domainError("VALIDATION", "注册参数不合法", requestId, { field_errors }));
+        }
+        // Register creates the account (like the server: register ->
+        // update_profile(name) -> full session) and opens the session in one
+        // step, so the caller lands in chats directly.
+        const created: FixtureAccount = {
+          user_id: username,
+          name,
+          avatar: "",
+          password,
+          signature: "",
+          contacts: [],
+          requests: [],
+          groups: [],
+          conversations: [],
+          messages: {},
+          preferences: { ...FIXTURE_PREFERENCES },
+          drafts: {},
+        };
+        accounts.set(username, created);
+        return ok(authenticate(username));
       }
 
       case ACTIONS.logout: {
@@ -449,6 +567,20 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
           account_hint: typeof params.account_hint === "string" ? params.account_hint : undefined,
         };
         emit("qr.state", challengeId, challenge);
+        // The challenge expires on its own: schedule the EXPIRED transition
+        // instead of relying on someone polling past expires_at_ms.
+        const ttlMs = Math.max(0, new Date(challenge.expires_at_ms).getTime() - Date.now());
+        later(() => {
+          if (
+            challenge &&
+            challenge.challenge_id === challengeId &&
+            challenge.state !== "EXPIRED" &&
+            challenge.state !== "REJECTED"
+          ) {
+            challenge = { ...challenge, state: "EXPIRED" };
+            emit("qr.state", challenge.challenge_id, challenge);
+          }
+        }, ttlMs);
         return ok(challenge);
       }
 
@@ -563,7 +695,7 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
           client_msg_id: clientMsgId,
         };
         addMessage(user, msg);
-        advanceSend(user, `${convId}:${msgId}`);
+        advanceSend(user, convId, msgId);
         return ok({ msg_id: msgId, client_msg_id: clientMsgId, state: "LOCAL_QUEUED" as const });
       }
 
@@ -580,7 +712,7 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
         }
         const next: ChatMessage = { ...msg, state: "LOCAL_QUEUED", error: undefined };
         updateMessage(user, next);
-        advanceSend(user, `${convId}:${msgId}`);
+        advanceSend(user, convId, msgId);
         return ok({ msg_id: msgId, state: "LOCAL_QUEUED" as const });
       }
 
@@ -626,7 +758,7 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
               created_at_ms: new Date().toISOString(),
             };
             addMessage(user, msg);
-            advanceSend(user, `${target}:${msg.msg_id}`);
+            advanceSend(user, target, msg.msg_id);
             created += 1;
           }
         }
@@ -730,6 +862,7 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
           size,
           mime: String(params.mime ?? "application/octet-stream"),
           received: 0,
+          chunks: [],
         });
         return ok({ upload_id: uploadId, chunk_size: 4 * 1024 * 1024 });
       }
@@ -738,10 +871,22 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
         const upload = uploads.get(String(params.upload_id ?? ""));
         if (!upload) return emptyError("VALIDATION", "上传会话不存在", requestId);
         const bytes = Number(params.length ?? 0);
+        // Protocol extension: parts carry the chunk payload as data_base64.
+        // Decode and validate FIRST — a rejected part must not advance the
+        // received counter. Absent -> length-only mode (kept for tests that
+        // stub the transport).
+        let chunk: Uint8Array | null = null;
+        if (typeof params.data_base64 === "string" && params.data_base64) {
+          chunk = base64ToBytes(params.data_base64);
+          if (chunk.length !== bytes) {
+            return emptyError("VALIDATION", "分块字节数与声明长度不一致", requestId);
+          }
+        }
         upload.received += bytes;
         if (upload.received > upload.size) {
           return emptyError("VALIDATION", "上传超出声明大小", requestId);
         }
+        if (chunk) upload.chunks.push(chunk);
         return ok({ received: upload.received, size: upload.size });
       }
 
@@ -752,8 +897,17 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
         if (upload.received !== upload.size) {
           return emptyError("CONFLICT", "上传未完成", requestId);
         }
+        if (upload.chunks.length > 0) {
+          const total = upload.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+          if (total !== upload.size) {
+            return emptyError("VALIDATION", "上传字节总数与声明大小不一致", requestId);
+          }
+        }
         uploads.delete(uploadId);
-        return ok({ media_id: `media-${uploadId}`, name: upload.name, size: upload.size, mime: upload.mime });
+        // With real bytes the media id is content-derived (like the server's
+        // content-addressed media store); length-only mode keeps the old id.
+        const mediaId = upload.chunks.length > 0 ? `media-${digest(toBinary(upload.chunks))}` : `media-${uploadId}`;
+        return ok({ media_id: mediaId, name: upload.name, size: upload.size, mime: upload.mime });
       }
 
       case ACTIONS.mediaUploadCancel: {
@@ -1096,6 +1250,26 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
     }
   }
 
+  if (import.meta.env.DEV) {
+    // Dev-time guard: IMPLEMENTED_ACTIONS must mirror exactly what the switch
+    // handles. Introspecting the (unminified in dev) switch source keeps the
+    // list honest without a second source of truth.
+    const handled = new Set<string>();
+    for (const match of handle.toString().matchAll(/case ACTIONS\.(\w+)/g)) {
+      const id = (ACTIONS as unknown as Record<string, string>)[match[1]!];
+      if (id) handled.add(id);
+    }
+    if (handled.size > 0) {
+      const declared = new Set(IMPLEMENTED_ACTIONS);
+      for (const id of handled) {
+        if (!declared.has(id)) console.error(`fixture: switch handles ${id} but IMPLEMENTED_ACTIONS does not list it`);
+      }
+      for (const id of declared) {
+        if (!handled.has(id)) console.error(`fixture: IMPLEMENTED_ACTIONS lists ${id} but the switch does not handle it`);
+      }
+    }
+  }
+
   return {
     transport: "fixture",
     async dispatch<T>(request: ActionRequest): Promise<ActionResponse<T>> {
@@ -1131,7 +1305,10 @@ export function createFixtureCore(options: FixtureOptions = {}): FixtureCore {
       return {
         contract_version: "fixture",
         transport: "fixture",
-        actions: Object.values(ACTIONS),
+        // Derived from the switch's explicit IMPLEMENTED_ACTIONS list (with a
+        // DEV assertion that the two stay in sync) — advertising every action
+        // id in the contract would promise unimplemented ones.
+        actions: [...IMPLEMENTED_ACTIONS],
         qr_login: true,
         secrets_os_backed: false,
         sync_range: true,

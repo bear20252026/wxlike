@@ -16,7 +16,16 @@ use std::io::{Read as _, Write as _};
 #[derive(Clone)]
 pub struct Http {
     pub base: String,
+    /// 一次性设置的 token（CLI/MCP/FFI 启动时从配置注入）。
+    ///
+    /// 登录/刷新之后要**原地换 token** 的调用方（`client-native` 的
+    /// `HttpTransport`，它被 `Arc` 共享、拿不到 `&mut`）改走
+    /// [`Http::enable_live_token`] 的共享槽；两处读都合并进
+    /// [`Http::effective_token`]。
     pub token: Option<String>,
+    /// 共享 token 槽：`enable_live_token` 之后 [`Http::set_live_token`]
+    /// 用 `&self` 就能换值（登录成功 → 后续请求立即带上新 token）。
+    live_token: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
     /// 当前请求代表哪条命令（`msg.send` 之类）。有值时随请求发出，
     /// 服务端据此落审计——**命令 id 是调用方的语义，服务端猜不出来**。
     pub command: Option<String>,
@@ -112,13 +121,57 @@ impl Http {
             // 4xx/5xx **不是**错误：调用方要按 status 分流（有些端点靠 404/409
             // 表达业务结果），还要读服务端的 `error` 字段给用户看原因。
             .http_status_as_error(false)
+            // IM 的控制面直连用户配置的服务器（多数是局域网/本机）。
+            // ureq 3 默认读 HTTP(S)_PROXY 环境变量——系统代理会把回环/内网
+            // 连接劫走，表现为莫名超时（本机调试与 CI 都踩过）；QUIC 传输
+            // 本来就不走代理，HTTP 面保持一致直连。
+            .proxy(None)
             .build();
         Self {
             base: base.into(),
             token: None,
+            live_token: None,
             command: None,
             agent: config.into(),
         }
+    }
+
+    /// 开启共享 token 槽：之后 [`Http::set_live_token`] 用 `&self` 换值，
+    /// 所有克隆（含被 `Arc` 包住的传输层）共享同一个槽。
+    ///
+    /// 这是"登录成功后换 token"的活更新路径；CLI/MCP 这类启动时定死
+    /// token 的调用方不需要它（直接给 `token` 字段赋值即可）。
+    pub fn enable_live_token(&mut self) {
+        if self.live_token.is_none() {
+            self.live_token = Some(std::sync::Arc::new(std::sync::Mutex::new(
+                self.token.clone(),
+            )));
+        }
+    }
+
+    /// 换 token（需先 [`Http::enable_live_token`]）。`&self`：调用方往往
+    /// 只有共享句柄（`Arc<HttpTransport>`），拿不到 `&mut`。
+    pub fn set_live_token(&self, token: Option<String>) {
+        if let Some(slot) = &self.live_token {
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = token;
+        }
+    }
+
+    /// 当前生效的 token：共享槽优先，其次一次性字段。
+    #[must_use]
+    pub fn effective_token(&self) -> Option<String> {
+        if let Some(slot) = &self.live_token {
+            return slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        }
+        self.token.clone()
+    }
+
+    /// 登录/注册成功后存 token：两个位置都写，读侧永远一致。
+    fn store_token(&mut self, token: Option<String>) {
+        if let Some(slot) = &self.live_token {
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = token.clone();
+        }
+        self.token = token;
     }
 
     /// URL 拼接 + 公共头（命令 id、bearer token）。
@@ -132,7 +185,7 @@ impl Http {
             Some(id) => req.header("X-Wxlike-Command", id),
             None => req,
         };
-        match &self.token {
+        match self.effective_token() {
             Some(token) => req.header("Authorization", &format!("Bearer {token}")),
             None => req,
         }
@@ -399,7 +452,8 @@ impl Http {
             "/api/register",
             Some(&serde_json::json!({ "name": name, "password": password })),
         )?;
-        self.token = reply["token"].as_str().map(str::to_string);
+        let token = reply["token"].as_str().map(str::to_string);
+        self.store_token(token);
         Ok(reply)
     }
 
@@ -409,7 +463,8 @@ impl Http {
             "/api/login",
             Some(&serde_json::json!({ "name": name, "password": password })),
         )?;
-        self.token = reply["token"].as_str().map(str::to_string);
+        let token = reply["token"].as_str().map(str::to_string);
+        self.store_token(token);
         Ok(reply)
     }
 

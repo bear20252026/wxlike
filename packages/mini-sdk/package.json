@@ -25,6 +25,10 @@
   },
   "scripts": {
     "generate": "node scripts/generate.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   }
 }

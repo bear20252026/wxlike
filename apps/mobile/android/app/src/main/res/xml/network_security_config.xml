@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 发布/生产配置：明文 HTTP 默认禁止，只放行本机回环。
+     局域网开发服务器（10.0.0.0/8、192.168.0.0/16）的放行在
+     src/debug/res/xml 与 src/profile/res/xml 的同名资源里按构建类型覆盖——
+     network security config 的 <domain> 只接受精确主机名/IP，不支持 CIDR 网段，
+     网段写在 <domain> 里会被当普通字符串，永远匹配不上。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"/>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain>127.0.0.1</domain>
+        <domain>localhost</domain>
+        <!-- Android 模拟器访问宿主机回环的别名。 -->
+        <domain>10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

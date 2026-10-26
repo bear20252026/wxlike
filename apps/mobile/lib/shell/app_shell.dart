@@ -143,7 +143,9 @@ class AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _index == 0,
+      // 根路由永远不能被系统返回键弹出——弹掉就只剩一张白屏。
+      // 返回语义集中在这里：非首页回首页，首页才退出应用。
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         if (_index != 0) {

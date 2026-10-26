@@ -51,6 +51,23 @@ eq(seqs(out), [-2, 0, 1, 2, 3, 4, 10], "重复页幂等");
 // 5) 窗口取尾：最近 n 条，最新在前
 eq(idx.tailSeqs(3), [10, 4, 3], "tailSeqs 最近 3 条");
 
+// 6) P1 回归：局部变异（已读回执 read:true / 撤回 → system）替换了数组里的
+//    对象但不经过索引；不 refresh 的话，下一次 merge 的 toArray() 会把变异
+//    前的旧对象拼回去（已读勾被"复活"成未读）。
+idx = MessageIndex.from([mk(1), mk(2), mk(3)]);
+const mutated = idx.toArray().map((m) => (m.seq === 2 ? { ...m, read: true } : m));
+idx.refresh(mutated);
+out = idx.merge([mk(4)]);
+eq(seqs(out), [1, 2, 3, 4], "变异后合并顺序不变");
+eq(out.find((m) => m.seq === 2).read, true, "refresh 后变异对象存活");
+// 对照：不给 refresh 喂变异数组，索引里就还是旧对象（这正是修复点）
+idx = MessageIndex.from([mk(1), mk(2), mk(3)]);
+const drifted = idx.toArray().map((m) => (m.seq === 2 ? { ...m, read: true } : m));
+idx.merge([mk(4)]); // 索引视角里没人通知它 drift
+eq(idx.toArray().find((m) => m.seq === 2).read, undefined, "不 refresh 时旧对象仍在（漂移语义）");
+idx.refresh(drifted);
+eq(idx.toArray().find((m) => m.seq === 2).read, true, "事后 refresh 也能修正");
+
 console.log("ALL PASS");
 EOF
 

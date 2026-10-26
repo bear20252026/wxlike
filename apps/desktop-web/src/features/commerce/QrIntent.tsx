@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { formatMoney } from "../../lib/money";
+import { sanitizeSvg } from "../../lib/sanitize";
 import type { PaymentIntent } from "./model";
 
 export function QrIntentPanel({
@@ -33,7 +34,7 @@ export function QrIntentPanel({
     if (!intent) return;
     void QRCode.toString(intent.qr_payload, { type: "svg", margin: 1, width: 220 })
       .then((markup) => {
-        if (alive) setSvg(markup);
+        if (alive) setSvg(sanitizeSvg(markup));
       })
       .catch(() => {
         if (alive) setSvg("");

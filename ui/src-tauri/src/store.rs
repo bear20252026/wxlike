@@ -14,6 +14,8 @@ use super::*;
 /// frontend merges hub-live, local, and server pages with one function.
 pub struct LocalStore {
     conn: Mutex<rusqlite::Connection>,
+    /// 库文件路径（备份/导入要整文件换）。
+    path: std::path::PathBuf,
 }
 
 pub struct LocalRow {
@@ -66,6 +68,9 @@ impl LocalStore {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            -- 本地消息库与发送队列各持一条连接指向同一文件：
+            -- 没有 busy_timeout，并发写会直接吃 SQLITE_BUSY。
+            PRAGMA busy_timeout = 5000;
             -- 消失消息删除后不要把正文留在空闲页里
             PRAGMA secure_delete = ON;
             CREATE TABLE IF NOT EXISTS local_messages (
@@ -87,11 +92,24 @@ impl LocalStore {
                 enabled INTEGER NOT NULL DEFAULT 0,
                 ttl_ms  INTEGER NOT NULL DEFAULT 0
             );
+            -- 新 UI（core 桥）的本地键值：会话凭据、偏好、草稿、
+            -- 会话置顶/免打扰、联系人标签星标、群/好友名缓存。
+            -- 都是"丢了可重建、坏了不该挡登录"的轻量状态。
+            CREATE TABLE IF NOT EXISTS core_kv (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.to_path_buf(),
         })
+    }
+
+    /// 库文件路径（备份/导入用）。
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
@@ -215,6 +233,46 @@ impl LocalStore {
         };
         rows.reverse();
         Ok(rows)
+    }
+
+    // ---- core 桥（G01-02）的本地键值与会话索引 ---------------------------------
+
+    pub(crate) fn kv_get(&self, key: &str) -> Option<String> {
+        self.lock()
+            .query_row(
+                "SELECT value FROM core_kv WHERE key = ?1",
+                rusqlite::params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+    }
+
+    pub(crate) fn kv_put(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "INSERT INTO core_kv(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn kv_delete(&self, key: &str) -> anyhow::Result<()> {
+        self.lock().execute("DELETE FROM core_kv WHERE key = ?1", rusqlite::params![key])?;
+        Ok(())
+    }
+
+    /// 有本地消息的会话清单（含各自最新一条的 seq 与时间），供新 UI 的
+    /// 会话列表组装。会话排序由调用方做（置顶优先）。
+    pub(crate) fn conversations(&self) -> anyhow::Result<Vec<(String, i64, i64)>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT conv_id, MAX(seq), MAX(sent_at_ms)
+             FROM local_messages GROUP BY conv_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 }
 

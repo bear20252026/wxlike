@@ -96,6 +96,21 @@ pub const CODES: [&str; 11] = [
     "internal",
 ];
 
+/// TS 端（`core-contract.ts` 的 `ErrorCode`）的错误码全集，SCREAMING_SNAKE。
+pub const WIRE_CODES: [&str; 11] = [
+    "VALIDATION",
+    "UNAUTHENTICATED",
+    "FORBIDDEN",
+    "VALIDATION",
+    "CONFLICT",
+    "REQUIRES_CONFIRMATION",
+    "RATE_LIMITED",
+    "DEPENDENCY_UNAVAILABLE",
+    "CANCELLED",
+    "OFFLINE",
+    "INTERNAL",
+];
+
 impl DomainError {
     /// 稳定的错误码（就是 JSON 里的 `code`）。
     #[must_use]
@@ -272,6 +287,59 @@ impl DomainError {
             },
         }
     }
+
+    /// 映射到 TS 端（`core-contract.ts` 的 `ErrorCode`）的 SCREAMING_SNAKE 码。
+    ///
+    /// TS 的码表与本枚举不是一一对应：`NOT_FOUND` 在 TS 端没有对应位
+    /// （目标不存在按"输入所指无效"折到 `VALIDATION`）；`DEPENDENCY_UNAVAILABLE`
+    /// 与 `OFFLINE` 拆开了超时/不可用两态。**只在这一处**做这个映射，
+    /// `client-web` 的 wasm 出口直接调它。
+    #[must_use]
+    pub fn to_wire_code(&self) -> &'static str {
+        match self {
+            DomainError::InvalidArgument { .. } => "VALIDATION",
+            DomainError::Unauthorized { .. } => "UNAUTHENTICATED",
+            DomainError::Forbidden { .. } => "FORBIDDEN",
+            DomainError::NotFound { .. } => "VALIDATION",
+            DomainError::Conflict { .. } => "CONFLICT",
+            DomainError::Precondition { .. } => "REQUIRES_CONFIRMATION",
+            DomainError::RateLimited { .. } => "RATE_LIMITED",
+            DomainError::Timeout { .. } => "DEPENDENCY_UNAVAILABLE",
+            DomainError::Cancelled { .. } => "CANCELLED",
+            DomainError::Unavailable { .. } => "OFFLINE",
+            DomainError::Internal { .. } => "INTERNAL",
+        }
+    }
+
+    /// [`DomainError::to_wire_code`] 的逆映射：TS 端的错误码 → 领域错误。
+    ///
+    /// `NOT_IMPLEMENTED` 在本枚举没有对应位，折成 `InvalidArgument`
+    /// （"再来一次也是这个结果"，不进重试）。**未知码折成 `Internal`**：
+    /// 宁可保守地不重试、不透出原文，也不猜。
+    #[must_use]
+    pub fn from_wire_code(code: &str) -> Self {
+        match code {
+            "UNAUTHENTICATED" => DomainError::unauthorized("登录已失效，请重新登录"),
+            "FORBIDDEN" => DomainError::forbidden("没有权限执行该操作"),
+            "CONFLICT" => DomainError::conflict("数据已变化，请刷新后重试"),
+            "REQUIRES_CONFIRMATION" => DomainError::Precondition {
+                message: "需要再次确认".to_string(),
+            },
+            "RATE_LIMITED" => DomainError::RateLimited {
+                message: "操作过于频繁，请稍后重试".to_string(),
+                retry_after_ms: 1_000,
+            },
+            "DEPENDENCY_UNAVAILABLE" => DomainError::timeout("依赖服务暂不可用"),
+            "OFFLINE" => DomainError::unavailable("网络已断开"),
+            "CANCELLED" => DomainError::cancelled(),
+            "INTERNAL" => DomainError::internal("内部错误，请稍后重试"),
+            // TS 端有、本枚举没有：不重试的"能力未接入"
+            "NOT_IMPLEMENTED" => DomainError::invalid("该能力尚未接入"),
+            "VALIDATION" => DomainError::invalid("输入有误，请检查后重试"),
+            // 未知码保守折 INTERNAL 语义：不重试、不透出原文
+            _ => DomainError::internal("内部错误，请稍后重试"),
+        }
+    }
 }
 
 impl fmt::Display for DomainError {
@@ -348,5 +416,82 @@ mod tests {
         );
         assert_eq!(DomainError::from_http_status(503, "").code(), "internal");
         assert_eq!(DomainError::from_http_status(200, "").code(), "unavailable");
+    }
+
+    /// 每个变体：`to_wire_code` 落在 TS 端 `ErrorCode` 全集里，且逆映射
+    /// 回**同一个变体**。唯一的例外是 `NotFound`——TS 端没有 `NOT_FOUND` 位，
+    /// 按 `core-contract.ts` 的口径折到 `VALIDATION`（→ `InvalidArgument`），
+    /// 这里单独断言。
+    #[test]
+    fn wire_code_round_trips_every_variant() {
+        let samples = [
+            DomainError::invalid("x"),
+            DomainError::unauthorized("x"),
+            DomainError::forbidden("x"),
+            DomainError::not_found("x"),
+            DomainError::conflict("x"),
+            DomainError::Precondition {
+                message: "x".to_string(),
+            },
+            DomainError::RateLimited {
+                message: "x".to_string(),
+                retry_after_ms: 1,
+            },
+            DomainError::timeout("x"),
+            DomainError::cancelled(),
+            DomainError::unavailable("x"),
+            DomainError::internal("x"),
+        ];
+        assert_eq!(samples.len(), CODES.len());
+        for sample in &samples {
+            let wire = sample.to_wire_code();
+            assert!(
+                [
+                    "UNAUTHENTICATED", "FORBIDDEN", "VALIDATION", "CONFLICT", "RATE_LIMITED",
+                    "REQUIRES_CONFIRMATION", "DEPENDENCY_UNAVAILABLE", "NOT_IMPLEMENTED",
+                    "OFFLINE", "CANCELLED", "INTERNAL"
+                ]
+                .contains(&wire),
+                "{wire} 不在 TS 端 ErrorCode 全集里"
+            );
+            if matches!(sample, DomainError::NotFound { .. }) {
+                // 例外：TS 无 NOT_FOUND 位，折到 VALIDATION（→ InvalidArgument）
+                assert_eq!(wire, "VALIDATION");
+                assert!(matches!(
+                    DomainError::from_wire_code(wire),
+                    DomainError::InvalidArgument { .. }
+                ));
+                continue;
+            }
+            let back = DomainError::from_wire_code(wire);
+            assert!(
+                std::mem::discriminant(&back) == std::mem::discriminant(sample),
+                "{wire} 往返后变体漂移：{:?} → {:?}",
+                sample.code(),
+                back.code()
+            );
+            // 可重试性不能在往返中翻转（UI 的重试按钮据此显示）
+            assert_eq!(back.is_retryable(), sample.is_retryable());
+        }
+    }
+
+    /// wire-only 的码与未知输入：`NOT_IMPLEMENTED` 不重试，未知码保守折 INTERNAL
+    /// 语义（不透出原文、不重试）。
+    #[test]
+    fn wire_only_codes_map_to_safe_defaults() {
+        let not_implemented = DomainError::from_wire_code("NOT_IMPLEMENTED");
+        assert_eq!(not_implemented.code(), "invalid_argument");
+        assert!(!not_implemented.is_retryable());
+        let unknown = DomainError::from_wire_code("SOMETHING_ELSE");
+        assert_eq!(unknown.code(), "internal");
+        assert!(!unknown.is_retryable());
+        assert!(!unknown.is_user_facing());
+        // TS 全集里其余码都落到语义对应的变体（抽查两处关键分流）
+        assert_eq!(
+            DomainError::from_wire_code("DEPENDENCY_UNAVAILABLE").code(),
+            "timeout"
+        );
+        assert_eq!(DomainError::from_wire_code("OFFLINE").code(), "unavailable");
+        assert_eq!(DomainError::from_wire_code("CANCELLED").code(), "cancelled");
     }
 }

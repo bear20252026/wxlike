@@ -1,6 +1,7 @@
 import { useEffect, useMemo, type ReactNode } from "react";
 import {
   ChevronRight,
+  Compass,
   Lock,
   MessageCircle,
   Minus,
@@ -20,21 +21,72 @@ import { ACTIONS } from "./core-contract";
 import { Avatar, Badge, IconButton, cn } from "./ui";
 import { navigate } from "./router";
 
-const railItems = [
-  { id: "chats", label: "聊天", icon: MessageCircle, key: "Alt+1" },
-  { id: "contacts", label: "通讯录", icon: Users, key: "Alt+2" },
-  { id: "new_friends", label: "新的朋友", icon: UserPlus, key: "Alt+3" },
-  { id: "search", label: "搜索", icon: Search, key: "Alt+4" },
-  { id: "settings", label: "设置", icon: Settings, key: "Alt+5" },
-] as const;
+export interface RailItem {
+  id: string;
+  label: string;
+  icon: typeof MessageCircle;
+  /** Advertised in the tooltip and wired to the global Alt+N listener. */
+  shortcut: string;
+  route: Route;
+}
+
+/**
+ * Primary rail (6 items) + the discover page that links the remaining feature
+ * domains (video/wallet/files/mini/moments/calls). Kept short on purpose: the
+ * rail stays scannable; Alt+1..N follows this array's order.
+ */
+export const RAIL_ITEMS: RailItem[] = [
+  { id: "chats", label: "聊天", icon: MessageCircle, shortcut: "Alt+1", route: { id: "chats" } },
+  { id: "contacts", label: "通讯录", icon: Users, shortcut: "Alt+2", route: { id: "contacts" } },
+  { id: "new_friends", label: "新的朋友", icon: UserPlus, shortcut: "Alt+3", route: { id: "new_friends" } },
+  { id: "search", label: "搜索", icon: Search, shortcut: "Alt+4", route: { id: "search", query: "" } },
+  { id: "discover", label: "发现", icon: Compass, shortcut: "Alt+5", route: { id: "discover" } },
+  { id: "settings", label: "设置", icon: Settings, shortcut: "Alt+6", route: { id: "settings" } },
+];
 
 function isRailRoute(id: string): boolean {
-  return ["chats", "chat", "contacts", "contact", "new_friends", "group", "search", "settings", "about"].includes(id);
+  return [
+    "chats",
+    "chat",
+    "contacts",
+    "contact",
+    "new_friends",
+    "group",
+    "search",
+    "settings",
+    "about",
+    "video",
+    "wallet",
+    "files",
+    "mini",
+    "discover",
+    "moments",
+    "articles",
+    "favorites",
+    "stickers",
+    "calls",
+    "call",
+  ].includes(id);
 }
 
 function railActive(itemId: string, route: Route): boolean {
   if (itemId === "chats") return route.id === "chats" || route.id === "chat" || route.id === "group";
   if (itemId === "contacts") return route.id === "contacts" || route.id === "contact";
+  if (itemId === "discover") {
+    return [
+      "discover",
+      "video",
+      "wallet",
+      "files",
+      "mini",
+      "moments",
+      "articles",
+      "favorites",
+      "stickers",
+      "calls",
+      "call",
+    ].includes(route.id);
+  }
   return route.id === itemId;
 }
 
@@ -158,16 +210,16 @@ export function Rail({ route }: { route: Route }) {
         <Avatar src={state.session.account?.avatar} name={state.session.account?.name ?? "我"} size={36} rounded="rounded-[9px]" />
       </button>
       <div className="flex w-full flex-col items-center gap-1">
-        {railItems.map((item) => {
+        {RAIL_ITEMS.map((item) => {
           const active = railActive(item.id, route);
           const count = item.id === "chats" ? state.unreadTotal : item.id === "new_friends" ? pendingRequests : 0;
           return (
             <button
               key={item.id}
               type="button"
-              title={`${item.label}（${item.key}）`}
+              title={`${item.label}（${item.shortcut}）`}
               aria-current={active ? "page" : undefined}
-              onClick={() => navigate({ id: item.id } as Route)}
+              onClick={() => navigate(item.route)}
               className={cn(
                 "group relative grid h-10 w-10 place-items-center rounded-[11px] transition",
                 active

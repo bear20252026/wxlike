@@ -21,10 +21,22 @@ use crate::error::DomainError;
 use crate::ids::{ActionId, EntryId, IdempotencyKey, TraceId};
 
 /// 一条命令请求。
+///
+/// 两个线形状都解得开：
+///
+/// * **Rust 形状**（本 crate 生成）：全字段，`contract` 是 `"1.0"` 字符串；
+/// * **TS 形状**（`apps/desktop-web/src/shell/core-contract.ts`）：
+///   `{action_id, request_id, schema_version: 1, params, idempotency_key?}`——
+///   没有 `trace_id` / `contract`，多出的 `request_id` / `schema_version`
+///   也收下。缺省落到 [`TraceId::default`] 与 [`ContractVersion::default`]，
+///   序列化仍按 Rust 形状输出，不破坏既有调用方。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActionRequest {
     /// 命令 id，与 `crates/cmd` 的 catalog 一一对应。
     pub action_id: ActionId,
+    /// TS 端的请求序号（`ui-<时间戳>-<序号>`）。Rust 侧不生成、只回显。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     /// 触发它的 UI 入口 id（G00-01 的入口总账）。后台任务 / CLI 为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_id: Option<EntryId>,
@@ -36,10 +48,16 @@ pub struct ActionRequest {
     /// 绝对截止时间。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<Deadline>,
-    /// 链路追踪 id。
+    /// 链路追踪 id。TS 形状不带，落到 [`TraceId::default`]。
+    #[serde(default)]
     pub trace_id: TraceId,
-    /// 调用方实现的契约版本。
+    /// 调用方实现的契约版本。TS 形状不带，落到 [`CONTRACT_VERSION`]。
+    #[serde(default)]
     pub contract: ContractVersion,
+    /// TS 形状携带的 schema 版本（目前恒为 `1`）。只收不发：Rust 侧的
+    /// 版本字段是 [`ActionRequest::contract`]，序列化时保持原形状。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u64>,
 }
 
 impl ActionRequest {
@@ -48,13 +66,22 @@ impl ActionRequest {
     pub fn new(action_id: ActionId, params: serde_json::Value, trace_id: TraceId) -> Self {
         Self {
             action_id,
+            request_id: None,
             entry_id: None,
             params,
             idempotency_key: None,
             deadline: None,
             trace_id,
             contract: CONTRACT_VERSION,
+            schema_version: None,
         }
+    }
+
+    /// 挂上 TS 端的请求序号（Builder 风格，链式）。
+    #[must_use]
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
+        self
     }
 
     /// 挂上入口 id（Builder 风格，链式）。
@@ -193,6 +220,31 @@ impl ActionResult {
     }
 }
 
+/// 判定一份响应负载算不算"成功但没数据"（[`ActionOutcome::Empty`]）。
+///
+/// 这是**全仓库唯一一份**判定，`crates/cmd` 的结果成形与
+/// `wxlike-client-core` 的响应分流都调它——两处各写一份时，"空数组算空"
+/// 与"`{\"count\":0}` 算空"的口径迟早漂移，UI 上就是"转圈"与"没有更多"的
+/// 界面跳变。
+///
+/// 规则（自上而下）：
+///
+/// * `null` → 空；
+/// * 数组：每个元素都空才算空（`[[],{}]` 空，`[{"seq":1}]` 不空）；
+/// * 对象：每个值都空才算空（`{"messages":[]}` 空；`{"count":0,"messages":[]}` 空）；
+/// * 数字：`0` 算空；
+/// * 其余（非空字符串、非零数字）不空。
+#[must_use]
+pub fn is_empty_payload(data: &serde_json::Value) -> bool {
+    match data {
+        serde_json::Value::Null => true,
+        serde_json::Value::Array(items) => items.iter().all(is_empty_payload),
+        serde_json::Value::Object(map) => map.values().all(is_empty_payload),
+        serde_json::Value::Number(n) => n.as_f64() == Some(0.0),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +305,61 @@ mod tests {
         assert_eq!(json["deadline"], "1700000000000");
         let back: ActionRequest = serde_json::from_value(json).expect("de");
         assert_eq!(back, req);
+    }
+
+    /// TS 形状（`core-contract.ts` 的 `ActionRequest`）：没有 trace_id / contract，
+    /// 多出 request_id / schema_version。必须解得开，且幂等校验照常工作。
+    #[test]
+    fn ts_shaped_request_parses_without_trace_or_contract() {
+        let json = serde_json::json!({
+            "action_id": "msg.send",
+            "request_id": "ui-lx2-7",
+            "schema_version": 1,
+            "params": {"conv": "d-a~b", "text": "hi"},
+            "idempotency_key": "k-ts-1",
+        });
+        let req: ActionRequest = serde_json::from_value(json).expect("TS 形状必须可解");
+        assert_eq!(req.action_id.as_str(), "msg.send");
+        assert_eq!(req.request_id.as_deref(), Some("ui-lx2-7"));
+        assert_eq!(req.schema_version, Some(1));
+        assert_eq!(req.trace_id.as_str(), "trace", "缺省 trace id");
+        assert_eq!(req.contract, CONTRACT_VERSION, "缺省契约版本");
+        assert!(req.check_idempotency(true).is_ok());
+    }
+
+    /// TS 形状既已可解，回应也要能被 TS 端原样收下：Rust 序列化不塞
+    /// TS 不认识的必填字段（request_id / schema_version 缺省时不输出）。
+    #[test]
+    fn rust_shaped_request_stays_wire_compatible() {
+        let req = ActionRequest::new(action("conv.list"), serde_json::json!({}), trace());
+        let json = serde_json::to_value(&req).expect("ser");
+        assert!(json.get("request_id").is_none());
+        assert!(json.get("schema_version").is_none());
+        assert_eq!(json["trace_id"], "t-1");
+        assert_eq!(json["contract"], "1.0");
+        let back: ActionRequest = serde_json::from_value(json).expect("de");
+        assert_eq!(back, req);
+    }
+
+    #[test]
+    fn empty_payload_rules_are_shared() {
+        for empty in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"count": 0, "messages": []}),
+            serde_json::json!([[], {}]),
+            serde_json::json!(0),
+        ] {
+            assert!(is_empty_payload(&empty), "{empty} 应当算空");
+        }
+        for not_empty in [
+            serde_json::json!([{"seq": 1}]),
+            serde_json::json!({"messages": [{"seq": 1}]}),
+            serde_json::json!("x"),
+            serde_json::json!(1),
+        ] {
+            assert!(!is_empty_payload(&not_empty), "{not_empty} 不该算空");
+        }
     }
 }

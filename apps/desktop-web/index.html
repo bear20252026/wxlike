@@ -4,10 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <!-- CSP meta is injected at build/serve time by the wxlike-csp-meta plugin
+         in vite.config.ts (strict on build, dev-server-tolerant on serve). -->
     <title>wxlike</title>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="padding: 24px; font-family: system-ui, sans-serif; color: #333">
+        wxlike 需要 JavaScript 才能运行。请启用 JavaScript 后重新打开本页。
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -42,11 +42,19 @@ pub use wxlike_client::{direct_conv_id, Http};
 // 子模块与测试的 `use super::*` 一次引入，外部路径（crate::AppState 等）不变。
 mod app_state;
 pub mod commands;
+pub mod core_bridge;
 mod render;
 mod store;
 mod util;
 
 pub use app_state::AppState;
+pub use core_bridge::CoreState;
+
+/// 读本地库 kv（e2e/运维用：直接证明某键已持久化，不经 AppState）。
+pub fn local_kv(path: &std::path::Path, key: &str) -> Option<String> {
+    let store = store::LocalStore::open(path).ok()?;
+    store.kv_get(key)
+}
 pub(crate) use render::*;
 pub(crate) use store::*;
 pub(crate) use util::*;
@@ -57,8 +65,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new("http://127.0.0.1:8099"))
+        .manage(core_bridge::CoreState::new())
         .manage(callrtc::CallEngine::default())
         .invoke_handler(tauri::generate_handler![
+            commands::core_dispatch,
+            commands::core_subscribe,
+            commands::core_capabilities,
             commands::set_server,
             commands::conv_unread,
             commands::conv_mark_read,

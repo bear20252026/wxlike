@@ -153,14 +153,19 @@ async fn watch_events_are_recorded_aggregated_and_gated() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "unknown video");
 
-    // id 形状不对：404，且在碰文件系统之前
+    // id 形状不对：404，且在碰文件系统之前。
+    // （审计第 5 轮起 `/api/video/{id}/{a}/{b}` 是真实的 GET 路由——相对分片
+    // 名要靠它解析；POST 到这类形状于是 405，同样发生在任何 IO 之前。）
     let (status, _) = post_json(
         &app,
         "/api/video/../etc/view",
         serde_json::json!({"viewer": "u1", "watched_ms": 1000}),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+        "traversal-shaped path must be refused before touching disk: {status}"
+    );
 
     // 0 时长心跳不是观看
     let (status, body) = post_json(

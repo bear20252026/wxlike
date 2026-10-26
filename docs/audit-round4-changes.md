@@ -56,7 +56,7 @@
 
 - **变更编号**：CH-04（commit `a14bdb6`；注：该 commit 原落在 `feat/ureq3-migration` 为
   `d4806d7`，因并行进程分支切换，已 cherry-pick 回本分支并还原对方分支指针——过程见
-  AUDIT_REPORT §2）
+  audit-round4-report §2）
 - **文件**：`crates/platform/src/auth.rs`、`crates/platform/src/users.rs`、
   `crates/platform/src/security.rs`、`crates/platform/tests/api.rs`
 - **类型**：安全修复 + 契约测试更新

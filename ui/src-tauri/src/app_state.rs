@@ -37,6 +37,10 @@ pub struct AppState {
     /// 重连三次就有三个线程同时抢同一条任务（靠数据库状态不会重发两次，
     /// 但白烧 CPU）。
     outbox_pump: std::sync::atomic::AtomicBool,
+    /// 收包泵代次：每次 start_recv_pump 抬一代，旧泵在下一条事件/错误后
+    /// 退场——重连不再叠出双泵（旧实现重连后两个泵同时跑，重复 `im-in`、
+    /// 旧泵断开时还会误报 `im-down`）。
+    pump_generation: Arc<AtomicU64>,
     /// 本地防雪崩：给**自动重发**用的频率/流量漏斗。
     /// 用户手点发送不走它（`set_active` 的语义见 `crates/net/src/avalanche.rs`）。
     avalanche: Arc<wxlike_net::avalanche::Avalanche>,
@@ -57,6 +61,7 @@ impl AppState {
             local: Arc::new(Mutex::new(None)),
             outbox: Mutex::new(None),
             outbox_pump: std::sync::atomic::AtomicBool::new(false),
+            pump_generation: Arc::new(AtomicU64::new(0)),
             avalanche: Arc::new(wxlike_net::avalanche::Avalanche::new(
                 wxlike_net::avalanche::AvalancheConfig::messages(),
             )),
@@ -107,6 +112,17 @@ impl AppState {
 
     pub fn me(&self) -> Result<serde_json::Value, String> {
         self.http().expect_json("GET", "/api/me", None)
+    }
+
+    /// 直接调一条平台 API（e2e/诊断逃生口：业务方法都该有自己的包装，
+    /// 新端点没包好之前测试与工具走这里，别绕过 AppState 私开 HTTP）。
+    pub fn raw_json(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        self.http().expect_json(method, path, body)
     }
 
     pub fn update_profile(
@@ -404,7 +420,7 @@ impl AppState {
     /// 用**独立 OS 线程**而不是 async 任务：`wait()` 在 async 上下文里要走
     /// `block_in_place`，而这里本来就是阻塞式的发送调用，放线程里更直白，
     /// 也不会和收包泵抢同一个 runtime 的工作线程。
-    pub fn start_outbox_pump(&self, app: tauri::AppHandle) {
+    pub fn start_outbox_pump<R: tauri::Runtime>(&self, app: tauri::AppHandle<R>) {
         let Some(outbox) = self.outbox() else {
             return;
         };
@@ -796,22 +812,27 @@ impl AppState {
         before_seq: i64,
         limit: usize,
     ) -> Result<serde_json::Value, String> {
-        let guard = self.local.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(store) = guard.as_ref() else {
-            return Ok(serde_json::json!({"messages": [], "next_before_seq": null}));
+        // local 守卫只在读页的块内持有：后面的 conv_ttl_ms 缓存未命中时会
+        // 走 secret_state → cache_secret_conv → 再锁 local——守卫不先放，
+        // 同线程二次加锁就是死锁（重启后首次打开会话必现，审计 R5 实锤）。
+        let rows = {
+            let guard = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(store) = guard.as_ref() else {
+                return Ok(serde_json::json!({"messages": [], "next_before_seq": null}));
+            };
+            store
+                .page(conv_id, before_seq, limit)
+                .map_err(|e| format!("local page: {e:#}"))?
         };
-        let rows = store
-            .page(conv_id, before_seq, limit)
-            .map_err(|e| format!("local page: {e:#}"))?;
-        // 消失消息：到期的那条不再出现在本地历史里（issue #15）。删除动作
-        // 由本地库自己的清理负责，这里先保证"看不见"——界面上的承诺是
-        // "到点消失"，不是"到点仍在但灰掉"。
         let ttl = self.conv_ttl_ms(conv_id);
         let now = wxlike_core::types::now_ms();
         let rows: Vec<_> = rows
             .into_iter()
             .filter(|r| !expired(r.to_json().get("sent_at_ms"), ttl, now))
             .collect();
+        // 消失消息：到期的那条不再出现在本地历史里（issue #15）。删除动作
+        // 由本地库自己的清理负责，这里先保证"看不见"——界面上的承诺是
+        // "到点消失"，不是"到点仍在但灰掉"。
         let messages: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
         let next = rows.last().map(|r| r.seq).filter(|_| rows.len() == limit);
         Ok(serde_json::json!({ "messages": messages, "next_before_seq": next }))
@@ -1268,7 +1289,7 @@ impl AppState {
     }
 
     /// The receiver pump: forwards hub envelopes to the webview as `im-in`.
-    pub fn start_recv_pump(&self, app: tauri::AppHandle) -> Result<(), String> {
+    pub fn start_recv_pump<R: tauri::Runtime>(&self, app: tauri::AppHandle<R>) -> Result<(), String> {
         let Some(client) = self
             .client
             .lock()
@@ -1277,13 +1298,27 @@ impl AppState {
         else {
             return Err("未连接到服务器".into());
         };
+        // 代次守卫：新泵起跑即宣告旧泵退场。旧泵在当前 await 返回后自检
+        // 退出；它的 Client 已被替换，流本来也会断——不再重复发 `im-in`，
+        // 断开误报（`im-down`）也只由当前代发。
+        let pump_generation = self.pump_generation.clone();
+        let generation = pump_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let secret = self.secret.clone();
         let local = self.local.clone();
+        // 方向判定需要"我是谁"：连接时问一次控制面；失败不阻断泵
+        //（消息方向退化为全部"入站"，多端同步自己的消息时才受影响）。
+        let me = self.user_id().ok();
         tauri::async_runtime::spawn(async move {
             use tauri::Emitter as _;
             loop {
+                if pump_generation.load(Ordering::SeqCst) != generation {
+                    break; // 已有新泵接管
+                }
                 match client.next_envelope().await {
                     Ok(env) => {
+                        if pump_generation.load(Ordering::SeqCst) != generation {
+                            break;
+                        }
                         let payload = render_event_with(&env, &secret, None);
                         {
                             let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1291,15 +1326,34 @@ impl AppState {
                                 let _ = store.append(&payload);
                             }
                         }
-                        let _ = app.emit("im-in", payload);
+                        let _ = app.emit("im-in", &payload);
+                        // 新 UI（契约 v1）的事件面：同一payload再发一份信封。
+                        crate::core_bridge::forward_inbound(&app, &payload, me.as_deref());
                     }
                     Err(_) => {
-                        let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
+                        if pump_generation.load(Ordering::SeqCst) == generation {
+                            let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
+                        }
                         break;
                     }
                 }
             }
         });
+        Ok(())
+    }
+
+    /// 本地库槽位（core 桥与备份导入共用同一把锁）。
+    pub(crate) fn local_arc(&self) -> Arc<Mutex<Option<LocalStore>>> {
+        self.local.clone()
+    }
+
+    /// 备份导入后重开本地库与发送队列（同一文件，两条连接一起换）。
+    pub fn reopen_local(&self, path: &std::path::Path) -> Result<(), String> {
+        let store = LocalStore::open(path).map_err(|e| format!("local db: {e:#}"))?;
+        let outbox = wxlike_core::outbox::Outbox::open(Some(&path.to_string_lossy()))
+            .map_err(|e| format!("outbox: {e:#}"))?;
+        *self.outbox.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(outbox));
+        *self.local.lock().unwrap_or_else(PoisonError::into_inner) = Some(store);
         Ok(())
     }
 

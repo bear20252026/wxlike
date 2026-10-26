@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
     <!-- 联网权限。**必须写在 main 里**：Flutter 模板只在
          `src/debug/AndroidManifest.xml` 加了它（给 hot reload 用），所以 debug 包
          能联网、release 包装上就废——症状是
@@ -6,11 +7,29 @@
          看起来像服务端没起，其实是根本没有联网权限。2026-10-21 真机抓到的。 -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- 端口层（lib/platform/method_channel_platform.dart）需要的运行时权限。
+         请求时机由 Dart 侧 permission.request 决定，这里只声明。 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Android 13+ 的媒体读取；32 及以下回退到 READ_EXTERNAL_STORAGE。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+    <!-- 定位按可选能力处理：没有 GPS 的设备也允许安装。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.microphone" android:required="false"/>
+    <uses-feature android:name="android.hardware.location" android:required="false"/>
+
     <application
         android:label="wxlike_mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -32,18 +51,37 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- wxlike:// 深链（chat/qr/contacts，解析在 lib/shell/deep_link.dart）。
+                 浏览器与其他应用都能拉起；宿主 Activity 把 VIEW intent 转发到
+                 wxlike/platform/links 事件通道。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="wxlike"/>
+            </intent-filter>
         </activity>
+        <!-- photo.capture 的输出目标（应用私有目录 captures/）。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- `usesCleartextTraffic="true"` 是**内部测试的临时放行**：Android 9+
-             默认禁止明文 HTTP，而开发服务端就是 http://<局域网 IP>:8099。
-             上生产前必须换成 `networkSecurityConfig` 只放行自家域名（或者干脆
-             全站 HTTPS 后删掉这个属性）——记在 docs/mobile-acceptance.md 的
-             已知偏差里，不是忘了。 -->
+        <!-- 明文 HTTP 的放行策略已移到 res/xml/network_security_config.xml：
+             发布包只允许回环地址；局域网开发服务器的放行放在 src/debug 与
+             src/profile 的同名资源里按构建类型覆盖。
+             注意 network security config 不支持 CIDR 网段（10.0.0.0/8 会被当成
+             字面主机名，永远匹配不上），所以不能在一个文件里写网段。 -->
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

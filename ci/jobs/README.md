@@ -16,16 +16,20 @@ directly.
 | C3 | `test` | yes | rust | Workspace tests on Linux, Windows and macOS |
 | C4 | `contract` | yes | contract or rust | JSON contracts parse, entry/action IDs are unique, seed ↔ registry mapping is complete, API fixtures are stable |
 | C5 | `native` | yes | rust | `cargo build --workspace --all-targets --locked` on all three OSes |
-| C6 | `wasm` | yes\* | rust | WASM target compiles. \*No WASM crate exists yet (G01-03); the job records an open gap that blocks **release**, not day-to-day CI |
+| C6 | `wasm` | yes\* | rust | WASM target compiles (`wxlike-client-web` on wasm32-unknown-unknown). \*The wasm-bindgen entry / JS packaging in `apps/desktop-web` is still open (G01-03); it blocks **release**, not day-to-day CI |
 | C7 | `ui` | yes | ui or desktop | React typecheck, production bundle, wire self-test, message-index contract |
+| C7b | `web-v2` | yes | ui | `apps/desktop-web` (React + Vite, G10): `npm ci` → typecheck → lint → test → build, plus `packages/mini-sdk` contract-parity tests |
 | C8 | `flutter`, `android`, `ios` | yes\* | mobile, contract or rust | UniFFI bindings regenerate, `flutter analyze`, `flutter test`, release-mode APK with symbol/signature evidence. \*`ios` records `apps/mobile/ios` absence as a tracked gap; the release job fails closed |
 | C9 | `desktop`, `desktop-package` | yes | desktop or ui | Tauri command tests; Windows/macOS/Linux installers; updater signature negative test; per-platform manifest with hashes |
 | C10 | `audit` | yes | rust or ci | typos, `cargo deny`, `cargo audit` (root and Tauri), both lockfiles `--locked`, action pins, workflow policy, composed-workflow freshness |
 | C11 | `coverage`, `unwrap`, `image`, `e2e`, `performance` | yes | rust, contract or ci | Incremental security-path coverage; no new `unwrap()/expect()`; container image constraints and smoke; HTTP e2e (success/empty/param/unauthorized/timeout/cancel/restart) and measured latency/throughput budgets |
 | — | `gate` | yes | always | Aggregates all of the above. Failed/cancelled dependencies fail; skipped dependencies pass only when C0 selected them out |
 
-`C6` is deliberately split: the check is green only when a WASM target exists or
-when the gap tracker records the absence. The **release** workflow calls
+`C6` is deliberately split: the wasm job compiles every workspace crate that
+declares a wasm32 target (today `wxlike-client-web`), and the remaining gap —
+wiring the wasm module into the `apps/desktop-web` build through a
+wasm-bindgen entry — is tracked in `policy/known-gaps.json`. The **release**
+workflow calls `check_contracts.py --require-registry` and
 `check_gaps.py --release`, which fails while any `blocks_release` gap is open.
 
 ## Path selection
@@ -50,7 +54,9 @@ The classification is fail-safe: if `git diff` cannot be computed, `full=true`.
   (`RUSTUP_TOOLCHAIN`), and separated per purpose (`clippy`, `test`, `native`,
   `doc`, `wasm`, `coverage`, `desktop`, `android`, `ios`, `e2e`, `performance`).
   No cross-purpose `restore-keys` exist.
-- Node caches use `ui/package-lock.json`; Flutter uses the SDK version plus
+- Node caches use `ui/package-lock.json` (and `apps/desktop-web/package-lock.json`
+  for the `web-v2` job; `packages/mini-sdk` has no dependencies, so no npm
+  cache or lockfile is claimed for it); Flutter uses the SDK version plus
   `apps/mobile/pubspec.lock`. No Gradle cache is configured yet, so no claim is
   made about Gradle reproducibility.
 - Every `uses:` is pinned to a 40-hex commit in `policy/action-pins.json`;
@@ -87,9 +93,10 @@ python ci/jobs/compose.py --output-dir ci/jobs/generated
 
 The base triggers, permissions and environment live in
 `ci/jobs/workflows/*.workflow.yml`. Job bodies live in
-`ci/jobs/<fragment>/job.yml`. `x-wxlike-fragments` in the base file declares
-the merge order; the key is removed from the output. Duplicate job ids,
-unresolved `needs:` references and unpinned actions fail composition.
+`ci/jobs/<fragment>/job.yml`; an entry in `x-wxlike-fragments` may also name a
+fragment file directly (`ci/jobs/build/web_v2.job.yml`). `x-wxlike-fragments`
+declares the merge order; the key is removed from the output. Duplicate job
+ids, unresolved `needs:` references and unpinned actions fail composition.
 
 ## Local verification
 

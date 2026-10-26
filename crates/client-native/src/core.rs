@@ -136,10 +136,12 @@ impl NativeCore {
     }
 
     /// 登录后换 token。
-    pub fn set_token(&mut self, token: Option<String>) {
-        if let Some(transport) = Arc::get_mut(&mut self.transport) {
-            transport.set_token(token);
-        }
+    ///
+    /// 曾经这里是静默 no-op：`Arc::get_mut` 拿不到唯一引用（`Ports` 还持着
+    /// 另一个 `Arc`），token 根本没换、请求继续带旧的。现在 token 在
+    /// `HttpTransport` 的共享槽里，`&self` 即换、立即生效。
+    pub fn set_token(&self, token: Option<String>) {
+        self.transport.set_token(token);
     }
 
     /// 执行一条命令。

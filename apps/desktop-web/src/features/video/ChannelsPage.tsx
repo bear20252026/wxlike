@@ -7,12 +7,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, errorText } from "../../lib/http";
-import type { DanmakuMessage, FeedTab, VideoFeedItem, VideoMeta, VideoPorts } from "./model";
+import type { DanmakuMessage, FeedTab, IngestedVideo, VideoFeedItem, VideoPorts } from "./model";
 import { playbackUrls as urlsOf } from "./api";
 import { VideoPlayer } from "./VideoPlayer";
 import { Banner, EmptyState, GhostButton, PrimaryButton, formatTime } from "../content/ui";
 
-const UPSTREAM_FEED = "视频号 feed（G05 ContentPort /videos）尚未开通";
+const UPSTREAM_FEED = "视频号 feed（/api/videos/feed）尚未开通";
+/** Nominal watch heartbeat for the view report; the server requires watched_ms ≥ 1. */
+const VIEW_WATCHED_MS = 1_000;
 
 export function ChannelsPage({ ports }: { ports: VideoPorts }) {
   const [tab, setTab] = useState<FeedTab>("trending");
@@ -25,7 +27,7 @@ export function ChannelsPage({ ports }: { ports: VideoPorts }) {
   const [danmaku, setDanmaku] = useState<DanmakuMessage[]>([]);
   const [danmakuText, setDanmakuText] = useState("");
   const [publishing, setPublishing] = useState(false);
-  const [published, setPublished] = useState<VideoMeta | null>(null);
+  const [published, setPublished] = useState<IngestedVideo | null>(null);
   const publishAbort = useRef<AbortController | null>(null);
   const publishInFlight = useRef(false);
   const liveInFlight = useRef(false);
@@ -167,7 +169,7 @@ export function ChannelsPage({ ports }: { ports: VideoPorts }) {
             <VideoPlayer
               videoId={item.video_id}
               urls={urlsOf(item.video_id)}
-              onViewed={() => void ports.recordView(item.video_id)}
+              onViewed={() => void ports.recordView(item.video_id, VIEW_WATCHED_MS)}
             />
           </div>
         </article>
@@ -177,7 +179,10 @@ export function ChannelsPage({ ports }: { ports: VideoPorts }) {
         <section aria-label="刚发布的视频" className="rounded-xl border border-zinc-200 bg-white p-3.5" data-testid="published-video">
           <p className="text-xs text-zinc-400">刚发布 · {published.video_id}</p>
           <div className="mt-2">
-            <VideoPlayer videoId={published.video_id} urls={urlsOf(published.video_id)} meta={published} />
+            <VideoPlayer
+              videoId={published.video_id}
+              urls={{ mp4: published.play_url, hls: published.playlist_url, thumb: published.thumb_url }}
+            />
           </div>
         </section>
       ) : null}

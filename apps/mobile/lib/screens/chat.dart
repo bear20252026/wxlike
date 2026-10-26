@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../features/chat/timeline/messaging_ports.dart';
 import '../src/service.dart';
 import '../src/widgets.dart';
 
@@ -28,18 +31,65 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _busy = true;
   bool _sending = false;
   String? _error;
+  StreamSubscription<ChatEvent>? _watchSub;
 
   @override
   void initState() {
     super.initState();
     _open();
+    // 接到 FfiMessagingPort 的 watch 上：新屏（G12 时间线）靠它补齐了
+    // "聊天屏没有实时接收"，旧屏同样要能收到新消息，否则退回旧壳就是退步。
+    _watchSub = FfiMessagingPort(widget.service)
+        .watch(widget.row.conv)
+        .listen(_onWatchEvent);
   }
 
   @override
   void dispose() {
+    _watchSub?.cancel();
     _input.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _onWatchEvent(ChatEvent event) {
+    if (!mounted) return;
+    switch (event) {
+      case MessagesUpdated(:final messages):
+        setState(() => _messages = _mergeById(_messages, messages));
+        if (_nearBottom()) _jumpToBottom();
+      case OutboxUpdated(:final summary):
+        setState(() {
+          _pending = summary.entries.where((e) => e.conv == widget.row.conv).toList();
+        });
+      case UnreadUpdated():
+      case ConversationsUpdated():
+      case ChatWatchFailed():
+        // 轮询失败由 _load 的错误条负责呈现，这里不重复打断用户。
+        break;
+    }
+  }
+
+  bool _nearBottom() {
+    if (!_scroll.hasClients) return true;
+    return _scroll.position.maxScrollExtent - _scroll.position.pixels < 140;
+  }
+
+  /// 按 msgId 合并并按 seq 排序：反向翻页与轮询推来的最新一页都可能
+  /// 与已有列表重叠，直接拼接会出现重复气泡。
+  List<ChatMessage> _mergeById(List<ChatMessage> base, List<ChatMessage> incoming) {
+    final byId = <String, ChatMessage>{
+      for (final message in base) message.msgId: message,
+    };
+    for (final message in incoming) {
+      byId[message.msgId] = message;
+    }
+    final merged = byId.values.toList()
+      ..sort((a, b) {
+        final bySeq = a.seq.compareTo(b.seq);
+        return bySeq != 0 ? bySeq : a.msgId.compareTo(b.msgId);
+      });
+    return List<ChatMessage>.unmodifiable(merged);
   }
 
   Future<void> _open() async {
@@ -66,7 +116,8 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _cursor = page.nextBeforeSeq;
         _fromCache = page.fromCache;
-        _messages = older ? [...page.messages, ..._messages] : page.messages;
+        // 更早的一页可能与已加载的历史重叠：按 msgId 去重后再合并。
+        _messages = older ? _mergeById(page.messages, _messages) : page.messages;
         _pending = summary.entries.where((e) => e.conv == widget.row.conv).toList();
         _busy = false;
       });

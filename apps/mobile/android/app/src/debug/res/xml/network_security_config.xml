@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 调试/性能构建：开发服务器在局域网（10.0.0.0/8、192.168.0.0/16），而
+     network security config 不支持 CIDR 网段，只能按构建类型整体放行明文。
+     本文件按构建类型覆盖 main 里的同名资源；release 用 main 的严格配置。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true"/>
+</network-security-config>

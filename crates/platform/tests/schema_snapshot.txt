@@ -463,6 +463,10 @@ push_device.epoch INTEGER notnull=1 pk=0
 push_device.revoked INTEGER notnull=1 pk=0
 push_device.created_ms INTEGER notnull=1 pk=0
 push_device.last_seen_ms INTEGER notnull=1 pk=0
+qr_ticket_creator.ticket_id TEXT notnull=0 pk=1
+qr_ticket_creator.creator TEXT notnull=1 pk=0
+qr_ticket_creator.verifier TEXT notnull=1 pk=0
+qr_ticket_creator.created_at INTEGER notnull=1 pk=0
 read_cursor.owner_type TEXT notnull=1 pk=1
 read_cursor.owner_id TEXT notnull=1 pk=2
 read_cursor.user_id TEXT notnull=1 pk=3
@@ -622,5 +626,10 @@ video_refs.height INTEGER notnull=1 pk=0
 video_refs.renditions TEXT notnull=1 pk=0
 video_refs.attempts INTEGER notnull=1 pk=0
 video_refs.updated_at_ms INTEGER notnull=1 pk=0
+wallet_idem.user_id TEXT notnull=1 pk=1
+wallet_idem.key TEXT notnull=1 pk=2
+wallet_idem.request_hash TEXT notnull=1 pk=0
+wallet_idem.response TEXT notnull=1 pk=0
+wallet_idem.created_at INTEGER notnull=1 pk=0
 wallets.user_id TEXT notnull=0 pk=1
 wallets.balance INTEGER notnull=1 pk=0

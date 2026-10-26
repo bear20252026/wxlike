@@ -121,12 +121,13 @@ async fn unknown_video_is_a_json_404() {
     )
     .await;
     let msg = reply.expect_error(StatusCode::NOT_FOUND);
-    // 断言"点出了缺的是哪个对象"，而不是断言某句英文文案：
-    // 文案在两个平台上不一样（Unix `No such file` / Windows `os error 3`），
-    // 而这正是这条测试要防的那类 bug。
-    assert!(
-        msg.contains(&missing_id()),
-        "404 要说出缺的是哪个对象：{msg}"
+    // 审计第 5 轮起 404 也是固定文案（不再回显 anyhow 链——context 里可能
+    // 带磁盘布局）。这条测试要防的从来不是"少了哪个字段"，而是**平台相关
+    // 的错误文本**（Unix `No such file` / Windows `os error 3`）混进响应体：
+    // 固定文案天然免疫；缺哪个对象由调用方自己知道（它刚发的就是这个 id）。
+    assert_eq!(
+        msg, "no such video artifact",
+        "404 文案固定且不含平台细节：{msg}"
     );
 }
 

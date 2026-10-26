@@ -3,7 +3,7 @@
 > 版本 1.2 · 2026-10-23 · 发包方：项目所有者 · 集成方：见 §6
 > 配套：`task-assignment.md`（通用规范，**硬性要求**）、`parallel-tracks.md`（并行契约）、
 > `reference-mirror.md`（Tier 0 镜像位置）、`audit-tier0-benchmark.md`（对拍基准）、
-> `AUDIT_REPORT.md`（架构风险来源 AR-1…AR-7）
+> `audit-round4-report.md`（架构风险来源 AR-1…AR-7）
 > **来源**：main 已合入第四轮审计修复（PR #62），本单分发的是其后剩余的 open issue
 > （截至 2026-10-23 共 14 个；#57 已修复并关闭、不在本单；#25 已关闭，其 UI 遗留并入 T-D2）。
 >

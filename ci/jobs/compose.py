@@ -44,7 +44,10 @@ def compose_one(base_path: Path, pins: dict, required: dict, name: str) -> tuple
         raise ValueError(f"{base_path}: base must not declare jobs; fragments own them")
 
     for fragment_name in fragments:
-        fragment_path = HERE / fragment_name / "job.yml"
+        candidate = HERE / fragment_name
+        # A fragment entry is either a directory holding job.yml or a direct
+        # path to a *.job.yml file (ci/jobs/build/web_v2.job.yml style).
+        fragment_path = candidate if candidate.suffix == ".yml" else candidate / "job.yml"
         fragment = load_yaml(fragment_path)
         fragment_jobs = fragment.get("jobs", fragment)
         for job_id, body in fragment_jobs.items():

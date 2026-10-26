@@ -59,7 +59,7 @@ describe("WalletPage — 零钱/账单", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
       }),
     );
     render(<WalletPage />);
@@ -73,11 +73,13 @@ describe("WalletPage — 零钱/账单", () => {
       fixtureTransport({
         ...balanceRoute,
         "GET /api/wallet/ledger": () => ({
-          items: [
+          entries: [
             { id: 1, kind: "transfer", amount: 500, counterparty: "user-b", ref_id: "t1", memo: "午饭", created_at: 1_700_000_000_000 },
             { id: 2, kind: "receive", amount: -200, counterparty: "shop", ref_id: "t2", memo: "奶茶", created_at: 1_700_000_001_000 },
           ],
-          next_cursor: null,
+          // 真实服务端形状（crates/platform wallet.rs）：entries + cursor + has_more
+          cursor: 2,
+          has_more: false,
         }),
       }),
     );
@@ -117,7 +119,7 @@ describe("WalletPage — 转账（并发仅一笔）", () => {
       loggingTransport(
         {
           ...balanceRoute,
-          "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+          "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
           "POST /api/wallet/transfer": (_m, _p, body) => {
             expect((body as Record<string, unknown>).amount).toBe(1999);
             return { transfer_id: "tr1" };
@@ -147,7 +149,7 @@ describe("WalletPage — 转账（并发仅一笔）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
         "POST /api/wallet/transfer": () => err(409, "insufficient balance"),
       }),
     );
@@ -164,7 +166,7 @@ describe("WalletPage — 转账（并发仅一笔）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
       }),
     );
     render(<WalletPage />);
@@ -208,7 +210,7 @@ describe("WalletPage — 收付款（G06 契约）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
         "POST /api/payment-intents": () => err(404, "not found"),
       }),
     );
@@ -258,7 +260,7 @@ describe("WalletPage — 收付款（G06 契约）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
       }),
     );
     render(<WalletPage ports={ports as WalletPorts} />);
@@ -280,7 +282,7 @@ describe("WalletPage — 红包（真实端点）", () => {
       loggingTransport(
         {
           ...balanceRoute,
-          "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+          "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
           "POST /api/wallet/redpacket": (_m, _p, body) => {
             expect((body as Record<string, unknown>).amount).toBe(1000);
             expect((body as Record<string, unknown>).count).toBe(2);
@@ -304,7 +306,7 @@ describe("WalletPage — 红包（真实端点）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
         "POST /api/wallet/redpacket/:id/claim": () => {
           claims += 1;
           if (claims > 1) throw err(409, "already claimed");
@@ -327,7 +329,7 @@ describe("WalletPage — 提现/绑卡/卡包（G06 契约）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
         "GET /api/cards": () => err(404, "not found"),
         "GET /api/entitlements": () => err(404, "not found"),
         "POST /api/withdrawals": () => err(404, "not found"),
@@ -364,7 +366,7 @@ describe("WalletPage — 提现/绑卡/卡包（G06 契约）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
       }),
     );
     render(<WalletPage ports={ports as WalletPorts} />);
@@ -391,7 +393,7 @@ describe("WalletPage — 提现/绑卡/卡包（G06 契约）", () => {
     setTransport(
       fixtureTransport({
         ...balanceRoute,
-        "GET /api/wallet/ledger": () => ({ items: [], next_cursor: null }),
+        "GET /api/wallet/ledger": () => ({ entries: [], cursor: 0, has_more: false }),
       }),
     );
     render(<WalletPage ports={ports as WalletPorts} />);

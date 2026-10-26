@@ -384,14 +384,24 @@ impl VideoStore {
     /// transcode happens in a sibling temp dir and is renamed into place
     /// only when every artifact exists.
     pub async fn ingest(&self, bytes: &[u8]) -> anyhow::Result<Ingested> {
-        let video_id = self.content_id(bytes);
+        // 内容哈希与整份源字节的克隆一起进 blocking 池：500 MiB 的上传，
+        // SHA-256 + `to_vec` 在异步线程上跑会卡住同一条 worker 上的所有
+        // 连接（转码本身早就在 blocking 池里了，这两步是漏网的）。
+        // 字节跟着任务搬进去再搬回来，只有 move、没有第二次拷贝。
+        let store = self.clone();
+        let bytes = bytes.to_vec();
+        let (video_id, bytes) = tokio::task::spawn_blocking(move || {
+            let video_id = store.content_id(&bytes);
+            (video_id, bytes)
+        })
+        .await
+        .context("hash task panicked")?;
         if self.contains(&video_id) {
             return self.ingested_from_meta(&video_id);
         }
 
         let store = self.clone();
         let task_id = video_id.clone();
-        let bytes = bytes.to_vec();
         let meta = tokio::task::spawn_blocking(move || store.transcode(&task_id, &bytes))
             .await
             .context("transcode task panicked")??;
@@ -752,6 +762,12 @@ pub fn routes(state: VideoState) -> Router {
             "/api/video/{video_id}/{rendition}/seg/{name}",
             get(segment_in_rendition),
         )
+        // 档位播放列表里的分片 URI 是**相对名**（`seg_000.ts`）。播放器拿它
+        // 相对清单地址解析，落点就是 `/api/video/{id}/{rendition}/seg_000.ts`
+        // ——没有 `/seg/` 这一段。以前只有带 `/seg/` 的路由，标准播放器解析
+        // 出的地址全是 404；这一条让相对名直接命中（`playlist.m3u8` 的静态
+        // 路由优先级更高，不会被它吞掉）。
+        .route("/api/video/{video_id}/{rendition}/{name}", get(segment_named))
         .route("/api/video/{video_id}/play.mp4", get(play_mp4))
         .route("/api/video/{video_id}/thumb.png", get(thumb))
         .route("/api/video/{video_id}/select", get(select))
@@ -811,16 +827,48 @@ async fn upload(
     Ok(Json(ingested))
 }
 
+/// 读盘（含元数据 JSON 解析）一律进 blocking 池：异步线程上做同步 IO，
+/// 一个慢盘就能拖住整条 worker（审计第 5 轮）。下面的 helper 收拢这一模式。
+async fn read_meta_blocking(store: VideoStore, video_id: String) -> ApiResult<VideoMeta> {
+    tokio::task::spawn_blocking(move || store.meta(&video_id))
+        .await
+        .map_err(panic_as_internal)?
+        .map_err(not_found_if_missing)
+}
+
+async fn read_artifact_blocking(
+    store: VideoStore,
+    video_id: String,
+    read: fn(&VideoStore, &str) -> anyhow::Result<Vec<u8>>,
+) -> ApiResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || read(&store, &video_id))
+        .await
+        .map_err(panic_as_internal)?
+        .map_err(not_found_if_missing)
+}
+
+async fn read_segment_blocking(
+    store: VideoStore,
+    video_id: String,
+    name: String,
+) -> ApiResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || store.segment(&video_id, &name))
+        .await
+        .map_err(panic_as_internal)?
+        .map_err(not_found_if_missing)
+}
+
+fn panic_as_internal(err: tokio::task::JoinError) -> ApiError {
+    tracing::error!(error = %err, "video read task panicked");
+    ApiError::internal("video storage failure")
+}
+
 async fn meta(
     State(state): State<VideoState>,
     AxumPath(video_id): AxumPath<String>,
 ) -> ApiResult<Json<VideoMeta>> {
     check_id(&video_id)?;
-    state
-        .store
-        .meta(&video_id)
-        .map(Json)
-        .map_err(not_found_if_missing)
+    Ok(Json(read_meta_blocking(state.store, video_id).await?))
 }
 
 async fn playlist(
@@ -828,10 +876,7 @@ async fn playlist(
     AxumPath(video_id): AxumPath<String>,
 ) -> ApiResult<impl IntoResponse> {
     check_id(&video_id)?;
-    let body = state
-        .store
-        .playlist(&video_id)
-        .map_err(not_found_if_missing)?;
+    let body = read_artifact_blocking(state.store, video_id, VideoStore::playlist).await?;
     Ok((
         [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
         body,
@@ -844,10 +889,7 @@ async fn segment(
 ) -> ApiResult<impl IntoResponse> {
     check_id(&video_id)?;
     check_segment_name(&name)?;
-    let body = state
-        .store
-        .segment(&video_id, &name)
-        .map_err(not_found_if_missing)?;
+    let body = read_segment_blocking(state.store, video_id, name).await?;
     Ok(([(header::CONTENT_TYPE, "video/mp2t")], body))
 }
 
@@ -861,9 +903,10 @@ async fn rendition_playlist(
     let height: u32 = rendition
         .parse()
         .map_err(|_| ApiError::not_found("malformed rendition"))?;
-    let body = state
-        .store
-        .rendition_playlist(&video_id, height)
+    let store = state.store;
+    let body = tokio::task::spawn_blocking(move || store.rendition_playlist(&video_id, height))
+        .await
+        .map_err(panic_as_internal)?
         .map_err(not_found_if_missing)?;
     Ok((
         [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
@@ -880,10 +923,23 @@ async fn segment_in_rendition(
     check_id(&video_id)?;
     check_rendition(&rendition)?;
     check_segment_name(&name)?;
-    let body = state
-        .store
-        .segment(&video_id, &format!("{rendition}/{name}"))
-        .map_err(not_found_if_missing)?;
+    let body = read_segment_blocking(state.store, video_id, format!("{rendition}/{name}")).await?;
+    Ok(([(header::CONTENT_TYPE, "video/mp2t")], body))
+}
+
+/// 档位内的**相对**分片名：`/api/video/{id}/720/seg_000.ts`。
+///
+/// 档位清单（ffmpeg 产物）里写的就是相对名，播放器相对清单 URL 解析出的
+/// 就是这条路由（见 `routes()` 里挂载处的说明）。校验与 `segment_in_rendition`
+/// 同一套：档位目录 2–4 位数字、分片名走 `check_segment_name`。
+async fn segment_named(
+    State(state): State<VideoState>,
+    AxumPath((video_id, rendition, name)): AxumPath<(String, String, String)>,
+) -> ApiResult<impl IntoResponse> {
+    check_id(&video_id)?;
+    check_rendition(&rendition)?;
+    check_segment_name(&name)?;
+    let body = read_segment_blocking(state.store, video_id, format!("{rendition}/{name}")).await?;
     Ok(([(header::CONTENT_TYPE, "video/mp2t")], body))
 }
 
@@ -942,7 +998,7 @@ async fn select(
     if kbps == 0 {
         return Err(ApiError::unprocessable("kbps must be positive"));
     }
-    let meta = state.store.meta(&video_id).map_err(not_found_if_missing)?;
+    let meta = read_meta_blocking(state.store, video_id.clone()).await?;
     let available_bps = kbps.saturating_mul(1_000);
     let chosen = select_rendition(&meta.renditions, available_bps)
         .ok_or_else(|| ApiError::not_found("video has no renditions"))?;
@@ -1053,25 +1109,27 @@ fn not_found_if_missing(err: anyhow::Error) -> ApiError {
         .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
         .any(|io| io.kind() == std::io::ErrorKind::NotFound);
 
+    // 完整链只进日志：context 文案可能带磁盘布局信息，404/500 的 body
+    // 都给固定一句（审计第 5 轮——此前 404 回显 `{err:#}`）。
     if missing {
-        // 404 的文案对调用方有意义（哪个对象缺失），保留。
-        return ApiError::not_found(format!("{err:#}"));
+        tracing::debug!(error = %format!("{err:#}"), "video artifact missing");
+        return ApiError::not_found("no such video artifact");
     }
 
-    // 500 不回显 anyhow 链：它可能带绝对路径（"read meta for /srv/...")。
-    // 细节进日志，客户端只看到一句概括——`ApiError` 的 message 是回显给
-    // 调用方的，这条约束写在 `wxlike-api` 的 crate 文档里。
     tracing::error!(error = %format!("{err:#}"), "video artifact read failed");
     ApiError::internal("video storage failure")
 }
 
+/// 读上传的视频本体。字段名收 `bytes`（新客户端）与 `file`（老客户端/与
+/// `/api/media` 的 `file` 同名）——与 media 面的收宽不同（那边还收 `data`），
+/// 视频面只此两个别名，多收一个就多一个能绕过字段校验的口子。
 async fn read_field(form: &mut Multipart) -> Result<Vec<u8>, String> {
     while let Some(field) = form
         .next_field()
         .await
         .map_err(|e| format!("multipart: {e}"))?
     {
-        if field.name() == Some("bytes") {
+        if matches!(field.name(), Some("bytes") | Some("file")) {
             return field
                 .bytes()
                 .await

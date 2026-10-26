@@ -1,5 +1,5 @@
 name: wxlike_mobile
-description: "A new Flutter project."
+description: "wxlike mobile client: the Flutter shell over the Rust FFI core (messaging, auth, contacts, platform ports)."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -30,10 +30,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
 
   # 生成的绑定（lib/src/rust/）直接 import package:ffi 的扩展方法，缺了它编不过
   ffi: ^2.1.3

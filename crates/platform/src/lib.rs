@@ -39,6 +39,7 @@ mod moments;
 mod notes;
 mod notification;
 mod page;
+mod qr_login;
 pub mod perms;
 mod read;
 mod reconcile;
@@ -94,8 +95,8 @@ pub fn spawn_redpacket_sweeper(
             tokio::time::sleep(every).await;
             match state.sweep_expired_redpackets() {
                 Ok(0) => {}
-                Ok(n) => println!("[platform] refunded {n} expired red packet(s)"),
-                Err(err) => eprintln!("[platform] redpacket sweep failed: {err}"),
+                Ok(n) => tracing::info!(refunded = n, "expired red packet(s) refunded"),
+                Err(err) => tracing::error!(error = %err, "redpacket sweep failed"),
             }
         }
     })
@@ -497,6 +498,7 @@ impl Platform {
             .merge(content_index::routes())
             .merge(inbox::routes())
             .merge(status::routes())
+            .merge(qr_login::routes())
             .route("/api/audit/self", get(audit_self))
             .with_state(state.clone())
             // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）

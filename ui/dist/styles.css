@@ -305,3 +305,260 @@ html, body {
   z-index: 99;
 }
 #toast.show { opacity: 1; transform: translateX(-50%); }
+
+/* ---- P1 additions: history / typing / receipts / menus / favorites ---- */
+
+.chat-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.typing-line { font-size: 12px; color: var(--accent); min-height: 15px; }
+.history-more {
+  align-self: center; margin: 6px 0; padding: 3px 14px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+  color: var(--text-dim); cursor: pointer;
+}
+.read-mark { align-self: flex-end; margin: 0 6px 2px; font-size: 11px; color: var(--text-dim); }
+.read-mark.read { color: var(--accent); }
+.msg-menu {
+  position: fixed; z-index: 60; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px; display: flex; flex-direction: column; min-width: 110px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.25);
+}
+.msg-menu-item {
+  background: none; border: 0; text-align: left; padding: 7px 10px; border-radius: 6px;
+  color: var(--text); font-size: 13px; cursor: pointer;
+}
+.msg-menu-item:hover { background: var(--bg); }
+.select-bar {
+  display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+  border-top: 1px solid var(--border); background: var(--panel);
+}
+.sel-count { font-size: 13px; color: var(--text-dim); flex: 1; }
+.msg-row.select { gap: 8px; align-items: center; }
+.msg-row.select input { width: 16px; height: 16px; }
+.fwd-card { min-width: 200px; }
+.fwd-head { font-size: 12px; color: var(--accent); margin-bottom: 4px; }
+.fwd-text { font-size: 14px; }
+.fwd-item { font-size: 12px; opacity: .85; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
+.e2ee-ok::before { content: "🔒"; font-size: 11px; margin-right: 3px; }
+.e2ee-bad { color: var(--text-dim); font-style: italic; }
+.fav-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; }
+.fav-row:hover { background: var(--panel); }
+.fav-main { flex: 1; min-width: 0; }
+.fav-text { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fav-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+/* P4 设备管理页 */
+.devices { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.devices-title { font-size: 12px; color: var(--text-dim); margin: 8px 0 2px; }
+.devices-empty { font-size: 12px; color: var(--text-dim); padding: 8px 0; }
+.device-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.device-info { flex: 1; min-width: 0; }
+.device-name { font-size: 13px; }
+.device-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.btn.small { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+.btn.danger { color: #e24b4a; border-color: #e24b4a55; }
+
+/* -- P4/P5 通话页（参照 Nextcloud Talk CallView 的网格 + 底部控制条） -------- */
+.call-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.call-head-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.call-title { font-weight: 600; font-size: 15px; color: var(--text); }
+.call-meta { font-size: 12px; color: var(--text-dim); }
+.call-body { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.call-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+}
+.call-tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+.call-tile:hover { transform: translateY(-2px); border-color: var(--accent); }
+.call-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px transparent;
+}
+.call-avatar.hand { box-shadow: 0 0 0 3px var(--badge); }
+.call-name { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 4px; }
+.call-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+.call-flags { display: flex; gap: 4px; font-size: 12px; min-height: 16px; }
+.call-empty { color: var(--text-dim); text-align: center; margin: 40px 0 12px; }
+.call-bar {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 12px 14px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.call-btn {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.call-btn.on { border-color: var(--accent); color: var(--accent); }
+.call-btn.hangup { background: var(--danger); border-color: var(--danger); color: #fff; }
+.call-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 150px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+}
+.call-menu-item {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.call-menu-item:hover { background: var(--panel-2); }
+
+/* -- 设备验证页（参照 Element Web 的 12 组安全码呈现） ---------------------- */
+.verify-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.verify-status {
+  align-self: flex-start;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+.verify-status.ok { background: rgba(7, 193, 96, 0.15); color: var(--accent); }
+.verify-hint { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin: 0; }
+.verify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+.verify-cell {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.verify-idx { font-size: 10px; color: var(--text-dim); }
+.verify-digits {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+.verify-fp { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.verify-fp-label { font-size: 12px; color: var(--text-dim); }
+.verify-fp-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  padding: 6px 8px;
+  border-radius: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* -- 秘密聊天设置弹窗（T-D3） --------------------------------------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal {
+  width: min(420px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.modal-hint { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin: 0; }
+.modal-label { font-size: 12px; color: var(--text-dim); }
+.secret-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+.secret-ttls { display: flex; flex-wrap: wrap; gap: 8px; }
+.secret-ttl {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.secret-ttl.active { border-color: var(--accent); color: var(--accent); background: rgba(7, 193, 96, 0.12); }
+.secret-ttl:disabled { opacity: 0.45; cursor: default; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+
+/* -- 应用内大图预览（P3：webview 拦 data: 导航，window.open(dataURL) 无响应） -- */
+.modal-overlay.img-preview {
+  z-index: 95; /* 盖过 msg-menu / 弹窗 */
+  cursor: zoom-out;
+}
+.img-preview img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}

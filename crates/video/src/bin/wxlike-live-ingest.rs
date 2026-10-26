@@ -138,7 +138,12 @@ fn run() -> anyhow::Result<()> {
         let seg = path_at(&cfg.work_dir, next_index);
         if let Err(err) = packager.push(&seg) {
             eprintln!("收尾分片 {} 失败: {err:#}", seg.display());
-            lost.push(seg.file_name().unwrap().to_string_lossy().into_owned());
+            // 拿不到文件名就退回完整路径：收尾路径上不能 panic（审计第 5 轮）
+            lost.push(
+                seg.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| seg.display().to_string()),
+            );
         }
         std::fs::remove_file(&seg).ok();
         next_index += 1;

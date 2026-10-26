@@ -13,6 +13,7 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
   const debounced = useDebounced(query, 180);
   const [results, setResults] = useState<SearchResults | null>(null);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const ticket = useRef(0);
@@ -21,6 +22,7 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
     if (open) {
       setQuery("");
       setResults(null);
+      setFailed(null);
       setActive(0);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
@@ -40,17 +42,32 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
     const text = debounced.trim();
     if (!text) {
       setResults(null);
+      setFailed(null);
       setLoading(false);
       return;
     }
     const current = ++ticket.current;
     setLoading(true);
-    void dispatch<SearchResults>(ACTIONS.searchQuery, { query: text, category: "all" }, { silent: true }).then((response) => {
-      if (current !== ticket.current) return;
-      setResults(response.ok ? response.data : { category: "all", hits: [] });
-      setActive(0);
-      setLoading(false);
-    });
+    void dispatch<SearchResults>(ACTIONS.searchQuery, { query: text, category: "all" }, { silent: true })
+      .then((response) => {
+        if (current !== ticket.current) return;
+        setLoading(false);
+        if (response.ok) {
+          setResults(response.data);
+          setFailed(null);
+        } else {
+          // A failed search is an error, not "no results" — say so.
+          setResults(null);
+          setFailed(response.error.message || "搜索失败");
+        }
+        setActive(0);
+      })
+      .catch((err: unknown) => {
+        if (current !== ticket.current) return;
+        setLoading(false);
+        setResults(null);
+        setFailed(err instanceof Error ? err.message : "搜索失败");
+      });
   }, [debounced, open, dispatch, state.searchEpoch]);
 
   if (!open) return null;
@@ -98,6 +115,10 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
           {!debounced.trim() ? (
             <div className="px-3 py-6 text-center text-[10px] text-[var(--muted)]">
               输入关键词开始搜索；结果按分类由核心查询，过期会话与已退群不会出现在结果里。
+            </div>
+          ) : failed ? (
+            <div className="px-3 py-6 text-center text-[10px] text-[var(--danger)]" data-testid="search-failed">
+              搜索失败：{failed}
             </div>
           ) : hits.length === 0 ? (
             <div className="px-3 py-6 text-center text-[10px] text-[var(--muted)]">

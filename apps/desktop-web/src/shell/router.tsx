@@ -14,7 +14,18 @@ export type Route =
   | { id: "group"; groupId: string }
   | { id: "search"; query: string }
   | { id: "settings" }
-  | { id: "about" };
+  | { id: "about" }
+  | { id: "video" }
+  | { id: "wallet" }
+  | { id: "files" }
+  | { id: "mini" }
+  | { id: "discover" }
+  | { id: "moments" }
+  | { id: "articles" }
+  | { id: "favorites" }
+  | { id: "stickers" }
+  | { id: "calls" }
+  | { id: "call"; convId: string };
 
 export interface RouteDescriptor {
   id: Route["id"];
@@ -38,37 +49,87 @@ export const ROUTES: RouteDescriptor[] = [
   { id: "search", pattern: "#/search", title: "搜索", access: "authenticated" },
   { id: "settings", pattern: "#/settings", title: "设置", access: "authenticated" },
   { id: "about", pattern: "#/about", title: "关于", access: "authenticated" },
+  { id: "video", pattern: "#/video", title: "视频号", access: "authenticated" },
+  { id: "wallet", pattern: "#/wallet", title: "钱包", access: "authenticated" },
+  { id: "files", pattern: "#/files", title: "文件", access: "authenticated" },
+  { id: "mini", pattern: "#/mini", title: "小程序", access: "authenticated" },
+  { id: "discover", pattern: "#/discover", title: "发现", access: "authenticated" },
+  { id: "moments", pattern: "#/moments", title: "朋友圈", access: "authenticated" },
+  { id: "articles", pattern: "#/moments/articles", title: "公众号", access: "authenticated" },
+  { id: "favorites", pattern: "#/moments/favorites", title: "收藏", access: "authenticated" },
+  { id: "stickers", pattern: "#/moments/stickers", title: "表情", access: "authenticated" },
+  { id: "calls", pattern: "#/calls", title: "通话", access: "authenticated" },
+  { id: "call", pattern: "#/calls/:convId", title: "通话", access: "authenticated" },
 ];
 
-export function parseHash(hash: string): Route {
+export interface ParsedHash {
+  route: Route;
+  /** False when the hash matched no route and fell back to #/chats. */
+  known: boolean;
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled route: ${JSON.stringify(value)}`);
+}
+
+export function parseHashDetail(hash: string): ParsedHash {
   const raw = hash.replace(/^#/, "") || "/chats";
   const [pathPart, queryPart] = raw.split("?");
   const parts = pathPart.split("/").filter(Boolean);
   const query = new URLSearchParams(queryPart ?? "");
 
-  if (parts.length === 0) return { id: "chats" };
-  if (parts[0] === "login") {
-    if (parts[1] === "qr") return { id: "qr_login" };
-    return { id: "login" };
+  if (parts.length === 0) return { route: { id: "chats" }, known: true };
+  switch (parts[0]) {
+    case "login":
+      if (parts[1] === "qr") return { route: { id: "qr_login" }, known: true };
+      return { route: { id: "login" }, known: parts.length === 1 };
+    case "lock":
+      return { route: { id: "lock" }, known: parts.length === 1 };
+    case "restore":
+      return { route: { id: "restore" }, known: parts.length === 1 };
+    case "chats":
+      if (parts[1]) return { route: { id: "chat", convId: decodeURIComponent(parts[1]) }, known: true };
+      return { route: { id: "chats" }, known: true };
+    case "contacts":
+      if (parts[1] === "new") return { route: { id: "new_friends" }, known: true };
+      if (parts[1]) return { route: { id: "contact", userId: decodeURIComponent(parts[1]) }, known: true };
+      return { route: { id: "contacts" }, known: true };
+    case "groups":
+      if (parts[1]) return { route: { id: "group", groupId: decodeURIComponent(parts[1]) }, known: true };
+      return { route: { id: "chats" }, known: false };
+    case "search":
+      return { route: { id: "search", query: query.get("q") ?? "" }, known: parts.length === 1 };
+    case "settings":
+      return { route: { id: "settings" }, known: parts.length === 1 };
+    case "about":
+      return { route: { id: "about" }, known: parts.length === 1 };
+    case "video":
+      return { route: { id: "video" }, known: parts.length === 1 };
+    case "wallet":
+      return { route: { id: "wallet" }, known: parts.length === 1 };
+    case "files":
+      return { route: { id: "files" }, known: parts.length === 1 };
+    case "mini":
+      return { route: { id: "mini" }, known: parts.length === 1 };
+    case "discover":
+      return { route: { id: "discover" }, known: parts.length === 1 };
+    case "moments":
+      if (parts[1] === "articles") return { route: { id: "articles" }, known: true };
+      if (parts[1] === "favorites") return { route: { id: "favorites" }, known: true };
+      if (parts[1] === "stickers") return { route: { id: "stickers" }, known: true };
+      return { route: { id: "moments" }, known: parts.length === 1 };
+    case "calls":
+      if (parts[1]) return { route: { id: "call", convId: decodeURIComponent(parts[1]) }, known: true };
+      return { route: { id: "calls" }, known: true };
+    default:
+      // Unknown hash: resolve to the default route; the caller replaces the
+      // stale URL with the canonical hash instead of silently rendering chats.
+      return { route: { id: "chats" }, known: false };
   }
-  if (parts[0] === "lock") return { id: "lock" };
-  if (parts[0] === "restore") return { id: "restore" };
-  if (parts[0] === "chats") {
-    if (parts[1]) return { id: "chat", convId: decodeURIComponent(parts[1]) };
-    return { id: "chats" };
-  }
-  if (parts[0] === "contacts") {
-    if (parts[1] === "new") return { id: "new_friends" };
-    if (parts[1]) return { id: "contact", userId: decodeURIComponent(parts[1]) };
-    return { id: "contacts" };
-  }
-  if (parts[0] === "groups" && parts[1]) {
-    return { id: "group", groupId: decodeURIComponent(parts[1]) };
-  }
-  if (parts[0] === "search") return { id: "search", query: query.get("q") ?? "" };
-  if (parts[0] === "settings") return { id: "settings" };
-  if (parts[0] === "about") return { id: "about" };
-  return { id: "chats" };
+}
+
+export function parseHash(hash: string): Route {
+  return parseHashDetail(hash).route;
 }
 
 export function routeToHash(route: Route): string {
@@ -99,6 +160,30 @@ export function routeToHash(route: Route): string {
       return "#/settings";
     case "about":
       return "#/about";
+    case "video":
+      return "#/video";
+    case "wallet":
+      return "#/wallet";
+    case "files":
+      return "#/files";
+    case "mini":
+      return "#/mini";
+    case "discover":
+      return "#/discover";
+    case "moments":
+      return "#/moments";
+    case "articles":
+      return "#/moments/articles";
+    case "favorites":
+      return "#/moments/favorites";
+    case "stickers":
+      return "#/moments/stickers";
+    case "calls":
+      return "#/calls";
+    case "call":
+      return `#/calls/${encodeURIComponent(route.convId)}`;
+    default:
+      return assertNever(route);
   }
 }
 
@@ -116,7 +201,15 @@ export function navigate(route: Route, options: { replace?: boolean } = {}): voi
 export function useRoute(): { route: Route; go: (route: Route, options?: { replace?: boolean }) => void } {
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   useEffect(() => {
-    const onChange = () => setRoute(parseHash(window.location.hash));
+    const onChange = () => {
+      const parsed = parseHashDetail(window.location.hash);
+      setRoute(parsed.route);
+      if (!parsed.known) {
+        // Correct the URL (replace, no history entry) so reloads and shares
+        // land on the canonical route rather than an opaque path.
+        navigate(parsed.route, { replace: true });
+      }
+    };
     window.addEventListener("hashchange", onChange);
     return () => window.removeEventListener("hashchange", onChange);
   }, []);

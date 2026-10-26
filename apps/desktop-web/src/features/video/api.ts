@@ -1,17 +1,19 @@
 /**
  * Video/live client (G11-03): video.* / live.*.
  *
- * Real today: upload (POST /api/video), meta/playback (mp4 · HLS playlist ·
- * thumb), view/stats, live start/stop/state/join/leave/danmaku
- * (`crates/video`, `crates/platform/src/live.rs`).
- * Contract-gated: the channels feed listing (G05 ContentPort `/videos`)
- * — absent upstream renders the explicit state.
+ * Real today: upload (POST /api/video, multipart field "bytes"), meta/playback
+ * (mp4 · HLS playlist · thumb), view/stats (`crates/video`), feed
+ * (GET /api/videos/feed?mode=hot|follow, `crates/platform/src/video_feed.rs`),
+ * live start/stop/state/join/leave/danmaku (`crates/platform/src/live.rs`).
  */
 
-import { ApiError, baseUrl, idemKey, request, token } from "../../lib/http";
+import { ApiError, baseUrl, idemKey, request, token, userIdSafe } from "../../lib/http";
 import type {
   DanmakuMessage,
+  FeedEnvelope,
+  FeedOpts,
   FeedTab,
+  IngestedVideo,
   LiveStartReply,
   LiveState,
   PlaybackUrls,
@@ -20,6 +22,8 @@ import type {
   VideoFeedItem,
   VideoMeta,
   VideoPorts,
+  VideoViewRow,
+  ViewOpts,
 } from "./model";
 
 export function playbackUrls(videoId: string): PlaybackUrls {
@@ -31,12 +35,31 @@ export function playbackUrls(videoId: string): PlaybackUrls {
   };
 }
 
-/** XHR upload — the video ingest endpoint takes one multipart "file" field. */
+/** Map the UI feed tab onto the server's feed mode. */
+export function feedMode(tab: FeedTab): "hot" | "follow" {
+  return tab === "trending" ? "hot" : "follow";
+}
+
+/** Server VideoView → UI VideoFeedItem (field names differ on purpose). */
+export function mapFeedRow(row: VideoViewRow): VideoFeedItem {
+  return {
+    video_id: row.id,
+    author: row.author,
+    author_name: row.author_name,
+    title: row.caption,
+    thumb: row.thumb_url,
+    likes: row.like_count,
+    followed: row.liked,
+    published_at: row.created_at,
+  };
+}
+
+/** XHR upload — the video ingest endpoint takes one multipart "bytes" field. */
 export const xhrVideoUpload = async (
   form: FormData,
   opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
-): Promise<VideoMeta> =>
-  new Promise<VideoMeta>((resolve, reject) => {
+): Promise<IngestedVideo> =>
+  new Promise<IngestedVideo>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${baseUrl()}/api/video`);
     const tok = token();
@@ -46,8 +69,8 @@ export const xhrVideoUpload = async (
       if (event.lengthComputable) opts.onProgress?.(event.loaded / event.total);
     };
     xhr.onload = () => {
-      const body = xhr.response as VideoMeta | { error?: string } | null;
-      if (xhr.status >= 200 && xhr.status < 300) resolve(body as VideoMeta);
+      const body = xhr.response as IngestedVideo | { error?: string } | null;
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body as IngestedVideo);
       else {
         const message =
           body && typeof body === "object" && "error" in body && body.error
@@ -76,17 +99,23 @@ export class VideoApi implements VideoPorts {
     return playbackUrls(videoId);
   }
 
-  async uploadVideo(file: File | Blob, opts: UploadVideoOpts = {}): Promise<VideoMeta> {
+  async uploadVideo(file: File | Blob, opts: UploadVideoOpts = {}): Promise<IngestedVideo> {
     const form = new FormData();
-    form.append("file", file, file instanceof File ? file.name : "clip.mp4");
+    // crates/video read_field expects the multipart part to be named "bytes"
+    // (`curl -F bytes=@demo.mp4 POST /api/video`).
+    form.append("bytes", file, file instanceof File ? file.name : "clip.mp4");
     const send = (opts as { send?: typeof xhrVideoUpload }).send ?? this.sendVideo;
     return send(form, { signal: opts.signal, onProgress: opts.onProgress });
   }
 
-  async recordView(videoId: string, opts?: RequestOpts): Promise<void> {
+  async recordView(videoId: string, watchedMs: number, opts: ViewOpts = {}): Promise<void> {
+    const viewer = (opts.viewer ?? (userIdSafe() || "ui")).trim();
     await request<unknown>("POST", `/api/video/${encodeURIComponent(videoId)}/view`, {
-      idempotencyKey: opts?.idempotencyKey ?? idemKey("video-view"),
-      signal: opts?.signal,
+      // The stats endpoint requires a JSON body {viewer, watched_ms} — it
+      // rejects an empty body before the payload is ever validated.
+      body: { viewer, watched_ms: Math.max(1, Math.round(watchedMs)) },
+      idempotencyKey: opts.idempotencyKey ?? idemKey("video-view"),
+      signal: opts.signal,
     });
   }
 
@@ -98,8 +127,16 @@ export class VideoApi implements VideoPorts {
     );
   }
 
-  async feed(_tab: FeedTab, _opts?: RequestOpts): Promise<VideoFeedItem[]> {
-    return request<VideoFeedItem[]>("GET", "/api/videos");
+  async feed(tab: FeedTab, opts: FeedOpts = {}): Promise<VideoFeedItem[]> {
+    const usp = new URLSearchParams({ mode: feedMode(tab) });
+    if (opts.cursor !== undefined && opts.cursor !== null) usp.set("cursor", String(opts.cursor));
+    if (opts.limit !== undefined) usp.set("limit", String(opts.limit));
+    const envelope = await request<FeedEnvelope<VideoViewRow>>(
+      "GET",
+      `/api/videos/feed?${usp.toString()}`,
+      { signal: opts.signal },
+    );
+    return (envelope.items ?? []).map(mapFeedRow);
   }
 
   async liveState(channel: string, opts?: RequestOpts): Promise<LiveState> {

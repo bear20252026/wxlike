@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { DatabaseBackup, HardDrive, KeyRound, ShieldCheck, Upload } from "lucide-react";
-import { ACTIONS } from "../../shell/core-contract";
+import { ACTIONS, newIdempotencyKey } from "../../shell/core-contract";
 import type { BackupInfo, StorageStatus } from "../../shell/models";
 import { useApp, useAppState, useCoreAction, useToast } from "../../shell/store";
 import { useAsync, usePending } from "../../shell/hooks";
@@ -67,7 +67,9 @@ export function SecuritySection() {
     if (Object.keys(errors).length) return;
     await run(async () => {
       const response = await dispatch(ACTIONS.secretsMigrate, { current_password: current, new_password: next }, {
-        idempotencyKey: `secrets-migrate:${current.length}:${next.length}`,
+        // A fresh key per attempt: a length-derived key would replay the first
+        // migration's response on a legitimate second password change.
+        idempotencyKey: newIdempotencyKey("secrets-migrate"),
       });
       if (response.ok) {
         toast("口令已更新；旧凭据由核心迁移");

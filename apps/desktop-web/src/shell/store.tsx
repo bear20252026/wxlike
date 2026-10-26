@@ -13,6 +13,7 @@ import {
   ACTIONS,
   domainError,
   newRequest,
+  type ActionResponse,
   type CoreCapabilities,
   type CoreHandle,
   type DomainError,
@@ -181,10 +182,30 @@ export class AppStore {
   }
 
   async bootstrap(core: CoreHandle): Promise<void> {
-    const [capabilities, projection] = await Promise.all([
-      core.capabilities(),
-      core.dispatch<SessionProjection>(newRequest(ACTIONS.sessionProjection, {})),
-    ]);
+    let capabilities: CoreCapabilities;
+    let projection: ActionResponse<SessionProjection>;
+    try {
+      [capabilities, projection] = await Promise.all([
+        core.capabilities(),
+        core.dispatch<SessionProjection>(newRequest(ACTIONS.sessionProjection, {})),
+      ]);
+    } catch (err) {
+      // An unexpected transport/host failure must land on the error screen —
+      // an eternal splash (phase "loading") tells the user nothing.
+      this.set({
+        bootstrapped: true,
+        capabilities: null,
+        session: {
+          phase: "error",
+          error: domainError(
+            "DEPENDENCY_UNAVAILABLE",
+            `会话投影初始化失败：${err instanceof Error ? err.message : String(err)}`,
+            "bootstrap",
+          ),
+        },
+      });
+      return;
+    }
     if (!projection.ok) {
       this.set({
         bootstrapped: true,
@@ -207,6 +228,8 @@ export class AppStore {
   /** Account whose workspace projection is currently loaded; login/logout invalidates it. */
   workspaceFor: string | null = null;
 
+  private workspaceFailureNoted = false;
+
   async loadWorkspace(core: CoreHandle, accountId?: string): Promise<void> {
     const target =
       accountId ??
@@ -217,6 +240,15 @@ export class AppStore {
       core.dispatch<{ items: Contact[] }>(newRequest(ACTIONS.relationsList, {})),
       core.dispatch<FriendRequest[]>(newRequest(ACTIONS.requestsIncoming, {})),
     ]);
+    const failed = [preferences, conversations, contacts, requests].filter((item) => !item.ok);
+    // Silent data staleness is not acceptable: surface the FIRST failure once
+    // per workspace load instead of pretending the projection is complete.
+    if (failed.length > 0 && !this.workspaceFailureNoted) {
+      this.workspaceFailureNoted = true;
+      const first = failed[0]!;
+      this.toast(`工作区数据加载不完整：${first.error.message}`, "error");
+    }
+    if (failed.length === 0) this.workspaceFailureNoted = false;
     const unreadTotal = conversations.ok
       ? conversations.data.items.reduce((sum, conv) => sum + conv.unread, 0)
       : 0;
