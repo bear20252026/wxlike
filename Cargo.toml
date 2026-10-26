@@ -20,7 +20,9 @@ quinn = "0.11"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pki-types = "1"
 rcgen = "0.13"
-zstd = "0.13"
+# 0.14.3 起修掉 zstd-safe 的三条公告（RUSTSEC-2026-0391/0398/0403）；
+# tantivy 那条链本来就在用 0.14.3，升上来是合并重复版本而不是引入新代码。
+zstd = "0.14"
 boa_engine = "0.20"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 chacha20poly1305 = "0.10"
