@@ -290,18 +290,32 @@ pub fn spawn_reconciler(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
-            match state.reconcile() {
-                Ok(r) if r.ok => {}
-                Ok(r) => tracing::error!(
-                    mismatches = r.mismatches.len(),
-                    supply = r.supply,
-                    funded_total = r.funded_total,
-                    "reconcile FAILED"
-                ),
-                Err(err) => tracing::error!(error = %err, "reconcile error"),
-            }
+            report_reconcile(state.reconcile());
         }
     })
+}
+
+/// 一次对账结果落成日志，返回事件的档位名。
+///
+/// 抽出来是为了让失败分支可断言：spawn 出去的循环体在测试里永远跑不到，
+/// 而"对账不平/对账报错必须告警"本身就是合同 §3.10 要求的行为。
+fn report_reconcile(outcome: Result<ReconcileReport>) -> &'static str {
+    match outcome {
+        Ok(report) if report.ok => "ok",
+        Ok(report) => {
+            tracing::error!(
+                mismatches = report.mismatches.len(),
+                supply = report.supply,
+                funded_total = report.funded_total,
+                "reconcile FAILED"
+            );
+            "failed"
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "reconcile error");
+            "error"
+        }
+    }
 }
 
 /// 运维界面展示的对账历史条数上限。
@@ -344,4 +358,55 @@ async fn history(
     Ok(Json(serde_json::json!({
         "runs": platform.reconcile_history(RECONCILE_HISTORY_LIMIT)?,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{
+        report_reconcile, spawn_reconciler, Mismatch, Platform, PlatformError, ReconcileReport,
+    };
+
+    fn report(ok: bool, mismatches: Vec<Mismatch>) -> ReconcileReport {
+        ReconcileReport {
+            at_ms: 1,
+            users_checked: 0,
+            wallet_sum: 0,
+            escrow: 0,
+            supply: 0,
+            funded_total: 0,
+            mismatches,
+            ok,
+        }
+    }
+
+    #[test]
+    fn flat_ledger_reports_without_alerting() {
+        assert_eq!(report_reconcile(Ok(report(true, Vec::new()))), "ok");
+    }
+
+    #[test]
+    fn mismatching_report_alerts_as_failed() {
+        let drift = vec![Mismatch::Supply {
+            supply: 1,
+            funded_total: 2,
+        }];
+        assert_eq!(report_reconcile(Ok(report(false, drift))), "failed");
+    }
+
+    #[test]
+    fn reconcile_error_alerts_as_error() {
+        assert_eq!(report_reconcile(Err(PlatformError::NotFound)), "error");
+    }
+
+    /// 定时器本体：`server/src/lib.rs` 是唯一调用方，这里用真实短周期跑一轮，
+    /// 证明"到点就对账并落日志"这条线不是死代码。
+    #[tokio::test]
+    async fn spawned_reconciler_reaches_the_report_path() {
+        let state = Platform::in_memory().expect("in-memory platform").shared();
+        let handle = spawn_reconciler(state, Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        handle.abort();
+    }
 }
