@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:wxlike_mobile/features/auth/auth_ports.dart';
 import 'package:wxlike_mobile/features/auth/challenge/login_page.dart';
 import 'package:wxlike_mobile/features/chat/timeline/messaging_ports.dart';
+import 'package:wxlike_mobile/shell/account_page.dart';
 import 'package:wxlike_mobile/shell/mobile_app.dart';
 import 'package:wxlike_mobile/src/service.dart';
 
@@ -173,7 +174,12 @@ void main() {
     // 「我」→ 退出登录 → 确认对话框
     await tester.tap(find.text('我'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('退出登录'));
+    // 退出按钮在产品壳长列表的底部，800×600 的测试视口里落在折叠线以下：
+    // 先滚动到可见再点，否则 tap 命中测试打不中（hitTestWarningShouldBeFatal 会让它直接红）。
+    final signOut = find.widgetWithText(OutlinedButton, '退出登录');
+    await tester.scrollUntilVisible(signOut, 200, scrollable: find.descendant(of: find.byType(AccountPage), matching: find.byType(Scrollable)).first);
+    await tester.pumpAndSettle();
+    await tester.tap(signOut);
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '退出'));
     await tester.pumpAndSettle();
