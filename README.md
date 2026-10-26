@@ -605,7 +605,7 @@ G01-03-WASM：JS 侧打包/接线仍在进行）。
 - quinn 0.11：rustls 配置需经 `quinn::crypto::rustls::QuicClientConfig::try_from(..)` 包装
 - QUIC 流是懒打开：客户端 `open_bi()` 后必须先写一帧（空帧即可），否则服务端 `accept_bi()` 永远挂起
 - Boa 0.20：`NativeFunction` 仅接受 `Copy` 闭包/函数指针 → 桥状态放 thread_local，`BoaEngine::new()` 重置
-- zstd 0.13 `encode_all` 收 `R: Read`，传 `slice` 而非 `&Vec`
+- zstd 0.14 `encode_all` 收 `R: Read`，传 `slice` 而非 `&Vec`
 
 ## 下一步
 
