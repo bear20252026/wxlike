@@ -34,11 +34,15 @@ def find_sdk_tool(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return found
+    # build-tools ships `apksigner` and `apksigner.bat` side by side; the newest
+    # version sort hands a Linux runner the Windows batch file, so pick the
+    # extension this OS can actually exec.
+    native_exts = (".bat", ".cmd", ".exe") if os.name == "nt" else ("",)
     for root in (os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT")):
         if not root:
             continue
         for candidate in sorted(Path(root, "build-tools").glob(f"*/{name}*"), reverse=True):
-            if candidate.is_file():
+            if candidate.is_file() and candidate.suffix.lower() in native_exts:
                 return str(candidate)
     return None
 
@@ -78,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     signer_out = run(apksigner, "verify", "--verbose", "--print-certs", str(args.apk))
     dn_match = DN_RE.search(signer_out)
     if not dn_match:
-        raise SystemExit("apksigner found no signer certificate")
+        raise SystemExit(f"apksigner found no signer certificate:\n{signer_out}")
     signer = dn_match.group(1).strip()
     if args.require_release_key and "Android Debug" in signer:
         raise SystemExit(f"release build is signed with the debug key: {signer}")
