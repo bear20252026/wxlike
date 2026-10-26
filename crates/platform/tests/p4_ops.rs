@@ -536,6 +536,32 @@ async fn admin_endpoints_reject_without_token() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "带令牌可触发对账");
+
+    // 看板的历史路由与主路由同级保护，不能因为"只是读"就漏挂令牌校验
+    let (st, _) = call(
+        &router2,
+        req_with(
+            "GET",
+            "/api/admin/reconcile/history",
+            None,
+            &[("x-admin-token", "nope")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "历史路由同样要验令牌");
+
+    let (st, body) = call(
+        &router2,
+        req_with(
+            "GET",
+            "/api/admin/reconcile/history",
+            None,
+            &[("x-admin-token", "s3cret")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(body.get("runs").is_some(), "看板读的是 runs 数组");
 }
 
 /// issue #5：**已启用 2FA 之后重新 enroll 必须先证明身份**。
