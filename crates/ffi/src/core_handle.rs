@@ -318,7 +318,7 @@ const PUMP_INTERVAL_MS: u64 = 5_000;
 /// 一轮补发最多处理几条（与 `NativeCore` 一致）。
 const PUMP_BATCH: u32 = 20;
 /// dispose 最多等多久让工作线程退出；超时就放手（句柄 drop = 分离线程）。
-const DISPOSE_TIMEOUT_MS: u64 = 2_000;
+pub const DISPOSE_TIMEOUT_MS: u64 = 2_000;
 
 #[uniffi::export]
 impl CoreHandle {
@@ -415,7 +415,7 @@ impl CoreHandle {
 
     /// 销毁：停工作线程、取消在飞请求、释放单实例锁。幂等。
     ///
-    /// 等工作线程退出**有上限**（[`DISPOSE_TIMEOUT_MS`]）：曾经是无限
+    /// 等工作线程退出**有上限**（`DISPOSE_TIMEOUT_MS` = 2s）：曾经是无限
     /// `join()`——一条 10 秒的 HTTP 请求能把 Dart 的销毁路径卡 10 秒。
     /// 超时后放弃等待（JoinHandle drop = 线程分离），锁由工作线程退出时
     /// 的 `core.shutdown()` 释放。

@@ -83,7 +83,12 @@ def suite_smoke(args) -> Suite:
         return f"version {body.get('version')}"
 
     def metrics():
-        result = client.request("GET", "/metrics")
+        # /metrics 是运维面：无 admin token 必须按"不存在"处理（404）；
+        # 带 token 才能读到暴露面。
+        anonymous = client.request("GET", "/metrics")
+        if anonymous.status != 404:
+            raise CaseFailure(f"/metrics without token -> {anonymous.status}, want 404")
+        result = client.request("GET", "/metrics", admin_token=suite.admin_token)
         if result.status != 200:
             raise CaseFailure(f"/metrics -> {result.status}: {redacted_tail(result, suite)}")
         content_type = result.headers.get("content-type", "")
