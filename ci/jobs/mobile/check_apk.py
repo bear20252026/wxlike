@@ -16,10 +16,14 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 VERSION_RE = re.compile(r"versionName='([^']+)'")
-DN_RE = re.compile(r"Signer #1 certificate DN: (.+)")
+# apksigner 的证书标签随版本变过：老版按序号打 `Signer #1 certificate DN:`
+# （`#1` 后没有冒号），新版按签名方案打 `V2 Signer: certificate DN:`。只认一种
+# 就会把**已签名**的 APK 判成"没有证书"（CI 上红的就是这个）。
+DN_RE = re.compile(r"(?:Signer #\d+|V\d+ Signer):? certificate DN: (.+)")
 
 
 def sha256(path: Path) -> str:
@@ -60,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--symbols-dir", type=Path)
     parser.add_argument("--require-release-key", action="store_true")
+    parser.add_argument(
+        "--require-native-lib",
+        action="append",
+        default=[],
+        help="lib/<abi>/<name> must be packaged for every ABI present in the APK",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -78,6 +88,21 @@ def main(argv: list[str] | None = None) -> int:
     version = match.group(1)
     if version != args.expected_version:
         raise SystemExit(f"APK version {version} does not match expected {args.expected_version}")
+
+    with zipfile.ZipFile(args.apk) as apk:
+        entries = set(apk.namelist())
+    # "能跑的 ABI" = 带 Dart 快照 libapp.so 的那些。插件 AAR 常把自家 .so 铺到全部
+    # ABI 目录，但那些目录没有 libflutter/libapp，本来就跑不起来，不该拿它们来
+    # 要求我们的 ffi 库。
+    lib_abis = {name.split("/")[1] for name in entries if name.startswith("lib/") and len(name.split("/")) > 2}
+    abis = sorted({a for a in lib_abis if f"lib/{a}/libapp.so" in entries} or lib_abis)
+    for lib in args.require_native_lib:
+        missing = [abi for abi in abis if f"lib/{abi}/{lib}" not in entries]
+        if missing or not abis:
+            raise SystemExit(
+                f"{lib} is missing for {missing or 'every ABI'} (apk runs on {abis or ['nothing']}): "
+                "the native cross-compile step did not run"
+            )
 
     signer_out = run(apksigner, "verify", "--verbose", "--print-certs", str(args.apk))
     dn_match = DN_RE.search(signer_out)
