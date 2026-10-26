@@ -54,7 +54,10 @@ async fn metrics_endpoints_and_presence_are_gated() {
     let (status, body) = get(&http, "/metrics", &[]);
     assert_eq!(status, 404, "unauthenticated metrics: {body}");
     let (status, _) = get(&http, "/metrics", &[("x-admin-token", "anything")]);
-    assert_eq!(status, 404, "no configured admin token = endpoint stays off");
+    assert_eq!(
+        status, 404,
+        "no configured admin token = endpoint stays off"
+    );
 
     // ---- /endpoints：登录可见 ----
     let (status, body) = get(&http, "/endpoints", &[]);

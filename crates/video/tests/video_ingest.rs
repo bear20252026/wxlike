@@ -37,7 +37,8 @@ fn state() -> VideoState {
         wxlike_core::types::now_ms()
     ));
     VideoState {
-        store: VideoStore::new(dir).with_policy(VideoPolicy::default().with_auth(Arc::new(HeaderUser))),
+        store: VideoStore::new(dir)
+            .with_policy(VideoPolicy::default().with_auth(Arc::new(HeaderUser))),
     }
 }
 

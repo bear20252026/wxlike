@@ -155,11 +155,7 @@ impl Future for Notified<'_> {
             return Poll::Ready(());
         }
         // 注册 waker（去重：同一 future 重复 poll 时替换而非堆积）
-        let mut wakers = self
-            .source
-            .wakers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut wakers = self.source.wakers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(slot) = wakers.iter_mut().find(|waker| waker.will_wake(cx.waker())) {
             *slot = cx.waker().clone();
         } else {

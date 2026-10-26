@@ -429,14 +429,23 @@ async fn composite_conv_list_dispatches_through_the_transport() {
         .push_json(200, serde_json::json!({"unread": 0}));
     let session = fixture.session().await;
     let result = session
-        .dispatch(ActionRequest::new(action("conv.list"), serde_json::json!({}), trace()))
+        .dispatch(ActionRequest::new(
+            action("conv.list"),
+            serde_json::json!({}),
+            trace(),
+        ))
         .await;
     let ActionOutcome::Ok { data } = result.outcome else {
         panic!("conv.list 应当成功：{result:?}");
     };
     let list = data.as_array().expect("会话数组");
     assert_eq!(list.len(), 2, "{data}");
-    let paths: Vec<String> = fixture.transport.sent().iter().map(|r| r.path.clone()).collect();
+    let paths: Vec<String> = fixture
+        .transport
+        .sent()
+        .iter()
+        .map(|r| r.path.clone())
+        .collect();
     assert_eq!(
         paths,
         vec![
@@ -476,7 +485,11 @@ async fn host_only_composite_write_fails_fast_without_queueing() {
         .into_payload()
         .expect_err("核心未实现，必须报错");
     assert_eq!(error.code(), "invalid_argument");
-    assert!(error.message().contains("wxlike-client"), "{}", error.message());
+    assert!(
+        error.message().contains("wxlike-client"),
+        "{}",
+        error.message()
+    );
     assert_eq!(
         fixture.store.outbox_len(),
         0,

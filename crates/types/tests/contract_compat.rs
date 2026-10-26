@@ -45,7 +45,10 @@ fn ts_shaped_request_round_trips_into_a_ts_shaped_response() {
     );
     let response = ts_response(&result);
     assert_eq!(response["ok"], true);
-    assert_eq!(response["data"]["msg_id"], "00112233445566778899aabbccddeeff");
+    assert_eq!(
+        response["data"]["msg_id"],
+        "00112233445566778899aabbccddeeff"
+    );
 
     let empty = ActionResult::empty(request.action_id.clone(), 1);
     let response = ts_response(&empty);
@@ -166,12 +169,10 @@ fn repo_root() -> PathBuf {
 #[test]
 fn contracts_common_envelope_fixtures_parse_leniently() {
     let path = repo_root().join("contracts/common/fixtures/protocol-v1.json");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("读 {}: {err}", path.display()));
+    let text =
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("读 {}: {err}", path.display()));
     let doc: Value = serde_json::from_str(&text).expect("fixture 文件是合法 JSON");
-    let fixtures = doc["fixtures-v1"]
-        .as_array()
-        .expect("fixtures-v1 是数组");
+    let fixtures = doc["fixtures-v1"].as_array().expect("fixtures-v1 是数组");
 
     let mut checked = 0;
     for fixture in fixtures {
@@ -196,7 +197,10 @@ fn contracts_common_envelope_fixtures_parse_leniently() {
         }
         checked += 1;
     }
-    assert!(checked >= 3, "信封类 fixture 太少（{checked}），fixture 文件变了？");
+    assert!(
+        checked >= 3,
+        "信封类 fixture 太少（{checked}），fixture 文件变了？"
+    );
 }
 
 /// 幂等 fixture（FX-write-idempotency）：同一 key 的请求重放必须命中

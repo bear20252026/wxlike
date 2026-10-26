@@ -19,6 +19,9 @@ use crate::model::{category_for, Audience, Purpose, RefType, UploadStatus};
 use crate::store::stream_digest_file;
 use crate::MediaService;
 
+/// uploads 表行映射里 expires_at 的列序号。
+const COL_EXPIRES_AT: usize = 11;
+
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct MediaCapabilities {
     pub max_object_bytes: u64,
@@ -110,7 +113,7 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<UploadRow> {
         chunk_size: row.get::<_, i64>(8)?.max(0) as u64,
         status: UploadStatus::parse(&row.get::<_, String>(9)?).map_err(to_sql)?,
         object_id: row.get(10)?,
-        expires_at: row.get(11)?,
+        expires_at: row.get(COL_EXPIRES_AT)?,
     })
 }
 

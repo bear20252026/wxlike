@@ -166,6 +166,74 @@ impl CoreHandle {
     }
 }
 
+/// 工作线程的 tokio 运行时（current_thread：整个 FFI 通道是单消费者）。
+fn worker_runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("tokio 运行时创建失败：{err}"))
+}
+
+/// 单条任务的 panic 边界：坏了这一条，不坏整个通道——panic 转成 failed
+/// 结果，下一条照常服务。
+fn dispatch_guarded(
+    runtime: &tokio::runtime::Runtime,
+    core: &NativeCore,
+    request: ActionRequest,
+) -> wxlike_types::ActionResult {
+    let action_id = request.action_id.clone();
+    catch_unwind(AssertUnwindSafe(move || {
+        runtime.block_on(core.dispatch(request))
+    }))
+    .unwrap_or_else(|panic| {
+        let detail = panic
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "未知 panic".to_string());
+        wxlike_types::ActionResult::failed(
+            action_id,
+            DomainError::internal(format!("Rust panic：{detail}")),
+            0,
+        )
+    })
+}
+
+/// 空闲节拍：驱动一轮补发（有界频率，空闲时每 [`PUMP_INTERVAL_MS`] 一次）。
+///
+/// 原生侧的 `NativeCore::start_pump` 依赖常驻 tokio 运行时，而这里的
+/// runtime 只在 `block_on` 期间有进展——所以泵改由工作循环按节拍驱动，
+/// 语义等价：worker 活着，待发消息就有人管。
+fn idle_pump(
+    runtime: &tokio::runtime::Runtime,
+    core: &NativeCore,
+    last_pump: &mut std::time::Instant,
+) {
+    if last_pump.elapsed() < Duration::from_millis(PUMP_INTERVAL_MS) {
+        return;
+    }
+    *last_pump = std::time::Instant::now();
+    let _ = runtime.block_on(core.pump_now(PUMP_BATCH));
+}
+
+/// 已取消的任务：把"已取消"回给调用方（否则 UI 会一直等），再清掉记录。
+fn reject_cancelled(shared: &Shared, request_id: &str) {
+    shared
+        .results
+        .push(error_json(request_id, &DomainError::cancelled()));
+    forget_cancelled(shared, request_id);
+}
+
+/// 结果落队列：失败转 error JSON，其余按 result JSON（Dart 侧按 `kind` 分流）。
+fn push_outcome(shared: &Shared, request_id: &str, outcome: &wxlike_types::ActionResult) {
+    match &outcome.outcome {
+        wxlike_types::ActionOutcome::Failed { error } => {
+            shared.results.push(error_json(request_id, error));
+        }
+        _ => shared.results.push(result_json(request_id, outcome)),
+    }
+}
+
 /// 工作线程主循环：取一条、跑一条、写结果。
 ///
 /// 三条本轮修的硬规则：
@@ -173,23 +241,16 @@ impl CoreHandle {
 /// * **每条任务 catch_unwind**：一条命令把 Rust 侧 panic 了（例如底层
 ///   库的断言），转成 error 结果继续服务下一条——工作线程死了整条
 ///   FFI 通道就没了；
-/// * **后台补发**：空闲节拍上顺带跑一轮 outbox 补发（原生侧的
-///   `NativeCore::start_pump` 依赖常驻 tokio 运行时，而这里的 runtime
-///   只在 `block_on` 期间有进展——所以泵改由本循环按节拍驱动，语义等价：
-///   worker 活着，待发消息就有人管）；
+/// * **后台补发**：空闲节拍上顺带跑一轮 outbox 补发（见 [`idle_pump`]）；
 /// * **取消记录用完即清**：完成的 request_id 从 `cancelled` 里移除，
 ///   否则 HashSet 随会话寿命无限增长。
 fn run_worker(shared: Arc<Shared>, core: NativeCore) {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match worker_runtime() {
         Ok(runtime) => runtime,
-        Err(err) => {
-            shared.results.push(
-                json!({"kind": "fatal", "message": format!("tokio 运行时创建失败：{err}")})
-                    .to_string(),
-            );
+        Err(message) => {
+            shared
+                .results
+                .push(json!({"kind": "fatal", "message": message}).to_string());
             note_worker_exit(&shared);
             return;
         }
@@ -211,50 +272,20 @@ fn run_worker(shared: Arc<Shared>, core: NativeCore) {
             jobs.pop_front()
         };
         let Some(job) = job else {
-            // 空闲节拍：驱动一轮补发（有界频率，空闲时每 PUMP_INTERVAL_MS 一次）
-            if last_pump.elapsed() >= Duration::from_millis(PUMP_INTERVAL_MS) {
-                last_pump = std::time::Instant::now();
-                let _ = runtime.block_on(core.pump_now(PUMP_BATCH));
-            }
+            idle_pump(&runtime, &core, &mut last_pump);
             continue;
         };
         if shared.is_cancelled(&job.request_id) {
-            shared
-                .results
-                .push(error_json(&job.request_id, &DomainError::cancelled()));
-            forget_cancelled(&shared, &job.request_id);
+            reject_cancelled(&shared, &job.request_id);
             continue;
         }
-        // 单条任务的 panic 边界：坏了这一条，不坏整个通道
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            runtime.block_on(core.dispatch(job.request.clone()))
-        }))
-        .unwrap_or_else(|panic| {
-            let detail = panic
-                .downcast_ref::<&str>()
-                .map(|text| (*text).to_string())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "未知 panic".to_string());
-            wxlike_types::ActionResult::failed(
-                job.request.action_id.clone(),
-                DomainError::internal(format!("Rust panic：{detail}")),
-                0,
-            )
-        });
+        let outcome = dispatch_guarded(&runtime, &core, job.request);
         if shared.is_cancelled(&job.request_id) {
-            // 已经取消：结果丢弃，但把"已取消"回给调用方（否则 UI 会一直等）
-            shared
-                .results
-                .push(error_json(&job.request_id, &DomainError::cancelled()));
-            forget_cancelled(&shared, &job.request_id);
+            // 已经取消：结果丢弃，但把"已取消"回给调用方
+            reject_cancelled(&shared, &job.request_id);
             continue;
         }
-        match &outcome.outcome {
-            wxlike_types::ActionOutcome::Failed { error } => {
-                shared.results.push(error_json(&job.request_id, error));
-            }
-            _ => shared.results.push(result_json(&job.request_id, &outcome)),
-        }
+        push_outcome(&shared, &job.request_id, &outcome);
         forget_cancelled(&shared, &job.request_id);
     }
     core.shutdown();
@@ -272,7 +303,10 @@ fn forget_cancelled(shared: &Shared, request_id: &str) {
 
 /// 工作线程退出后叫醒 dispose 的等待者。
 fn note_worker_exit(shared: &Shared) {
-    let mut exited = shared.worker_exited.lock().unwrap_or_else(|e| e.into_inner());
+    let mut exited = shared
+        .worker_exited
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     *exited = true;
     shared.worker_exit_signal.notify_all();
 }
@@ -399,11 +433,9 @@ impl CoreHandle {
                 let (flag, _timeout) = self
                     .shared
                     .worker_exit_signal
-                    .wait_timeout_while(
-                        flag,
-                        Duration::from_millis(DISPOSE_TIMEOUT_MS),
-                        |exited| !*exited,
-                    )
+                    .wait_timeout_while(flag, Duration::from_millis(DISPOSE_TIMEOUT_MS), |exited| {
+                        !*exited
+                    })
                     .unwrap_or_else(|e| e.into_inner());
                 *flag
             };

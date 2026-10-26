@@ -41,3 +41,5 @@ data
 docs
 *.log
 *.md
+# live-ingest 镜像要把许可清单打进 /opt/wxlike（issue #16 例外）
+!THIRD-PARTY-NOTICES.md

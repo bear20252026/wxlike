@@ -73,8 +73,7 @@ pub fn new_trace_id() -> TraceId {
     let raw: [u8; 8] = rand::random();
     let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
     // 字符集与长度都在契约允许范围内（字母数字 + `-`）
-    TraceId::parse(format!("tr-{hex}")).unwrap_or_else(|_| TraceId::derive(&format!("tr-{hex}"))
-    )
+    TraceId::parse(format!("tr-{hex}")).unwrap_or_else(|_| TraceId::derive(&format!("tr-{hex}")))
 }
 
 /// catalog id → `ActionId`（严格版）。id 是编译期常量，解析失败说明
@@ -99,8 +98,11 @@ fn action_id_or_derived(spec: &CommandSpec) -> ActionId {
     // 借 TraceId::derive 的净化规则（字符集与 ActionId 相同）。derive 只会
     // 产出合法字符且不超过上限，所以 parse 必然成功——这不是数据漂移路径，
     // 而是构造保证；真破了由 `derive_output_is_always_parseable` 钉住。
-    let derived = TraceId::derive(spec.id);
-    ActionId::parse(derived.as_str()).expect("TraceId::derive 的输出必然可解析")
+    // 兜底落到占位 id 而不是 panic：与 `EventId::default` 同一语义——
+    // 占位意味着这条结果与 catalog 原文对不上，调用方按不可靠处理。
+    // derive 的净化规则与 catalog id 的合法字符集一致，且由
+    // `derive_output_is_always_parseable` 钉住：这里没有失败分支。
+    ActionId::derive(spec.id)
 }
 
 /// 成形一条请求。**写命令缺幂等键在这里就被拒**，不发请求。

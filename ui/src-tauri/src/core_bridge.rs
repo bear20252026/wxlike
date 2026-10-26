@@ -199,6 +199,18 @@ impl Default for CoreState {
     }
 }
 
+/// 同步范围的"全部"档位（act_sync_range_set 的合法值之一）。
+const SYNC_RANGE_MONTH_DAYS: i64 = 30;
+const SYNC_RANGE_ALL_DAYS: i64 = 90;
+/// QR 票据状态轮询间隔（毫秒）。
+const QR_POLL_INTERVAL_MS: u64 = 1500;
+/// 搜索命中标题/摘要的截断宽度（字符）。
+const SEARCH_TITLE_CHARS: usize = 30;
+const SEARCH_SNIPPET_CHARS: usize = 50;
+/// 列表类 action 的默认页大小与页上限。
+const DEFAULT_PAGE_SIZE: u64 = 30;
+const MAX_PAGE_SIZE: u64 = 100;
+
 /// 这些 action_id 有真实实现（capabilities 如实上报）。
 pub const IMPLEMENTED_ACTIONS: &[&str] = &[
     "identity.session.projection",
@@ -336,35 +348,7 @@ fn row_to_message(row: &Value, me: &str) -> Value {
         "text" | "e2ee" => json!({ "kind": "text", "text": row.get("text").and_then(Value::as_str).unwrap_or("") }),
         "image" => json!({ "kind": "image", "media_id": row.get("media_id").and_then(Value::as_str).unwrap_or("") }),
         "system" | "notice" | "recall" => json!({ "kind": "system", "text": row.get("text").and_then(Value::as_str).unwrap_or("") }),
-        custom => {
-            // msg.voice / msg.file / msg.sticker / msg.video / 转发卡片：
-            // payload 里是结构化字段，按 UI 的 MessageBody 尽力映射。
-            let p = row.get("payload").cloned().unwrap_or(json!({}));
-            match custom {
-                "msg.voice" => json!({
-                    "kind": "voice",
-                    "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
-                    "duration_ms": p.get("duration_ms").cloned().unwrap_or(json!(0)),
-                }),
-                "msg.file" => json!({
-                    "kind": "file",
-                    "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
-                    "name": p.get("name").and_then(Value::as_str).unwrap_or(""),
-                    "size": p.get("size").cloned().unwrap_or(json!(0)),
-                }),
-                "msg.sticker" => json!({
-                    "kind": "sticker",
-                    "sticker": p.get("id").and_then(Value::as_str).unwrap_or(""),
-                    "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
-                }),
-                "msg.video" => json!({
-                    "kind": "link",
-                    "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
-                    "text": p.get("caption").and_then(Value::as_str).unwrap_or(""),
-                }),
-                _ => json!({ "kind": "system", "text": preview_of(row) }),
-            }
-        }
+        custom => custom_body(custom, &row.get("payload").cloned().unwrap_or(json!({}))),
     };
     json!({
         "msg_id": row.get("msg_id").and_then(Value::as_str).unwrap_or(""),
@@ -379,6 +363,43 @@ fn row_to_message(row: &Value, me: &str) -> Value {
 }
 
 /// 毫秒时间戳 → ISO-8601（UI 里 created_at_ms / last_at_ms 是字符串）。
+/// 自定义消息体（msg.voice/file/sticker/video 等）→ UI 的 MessageBody。
+fn custom_body(custom: &str, p: &Value) -> Value {
+    match custom {
+        "msg.voice" => json!({
+            "kind": "voice",
+            "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
+            "duration_ms": p.get("duration_ms").cloned().unwrap_or(json!(0)),
+        }),
+        "msg.file" => json!({
+            "kind": "file",
+            "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
+            "name": p.get("name").and_then(Value::as_str).unwrap_or(""),
+            "size": p.get("size").cloned().unwrap_or(json!(0)),
+        }),
+        "msg.sticker" => json!({
+            "kind": "sticker",
+            "sticker": p.get("id").and_then(Value::as_str).unwrap_or(""),
+            "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
+        }),
+        "msg.video" => json!({
+            "kind": "link",
+            "media_id": p.get("media_id").and_then(Value::as_str).unwrap_or(""),
+            "text": p.get("caption").and_then(Value::as_str).unwrap_or(""),
+        }),
+        _ => json!({ "kind": "system", "text": "[ unsupported message ]" }),
+    }
+}
+
+/// iso_ms 的 civil-date 算法常量（Howard Hinnant `date_algorithms`）。
+const DAYS_TO_CIVIL_EPOCH: i64 = 719_468;
+const ERA_DAYS: i64 = 146_097;
+const ERA_YEAR_DAYS: i64 = 1_460;
+const CENTURY_DAYS: i64 = 36_524;
+const ERA_CENTURY_SHIFT: i64 = 146_096;
+const YEARS_PER_ERA: i64 = 400;
+const MONTHS_PER_ERA_DENOM: i64 = 153;
+
 fn iso_ms(ms: i64) -> String {
     // 没有 chrono：手工换算（UTC）。够用——只用于展示与排序。
     let secs = ms.div_euclid(1000);
@@ -387,14 +408,14 @@ fn iso_ms(ms: i64) -> String {
     let tod = secs.rem_euclid(86_400);
     let (h, m, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
     // 1970-01-01 起的 civil date（Howard Hinnant 的算法，无依赖版）
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
+    let z = days + DAYS_TO_CIVIL_EPOCH;
+    let era = z.div_euclid(ERA_DAYS);
+    let doe = z.rem_euclid(ERA_DAYS);
+    let yoe = (doe - doe / ERA_YEAR_DAYS + doe / CENTURY_DAYS - doe / ERA_CENTURY_SHIFT) / 365;
+    let y = yoe + era * YEARS_PER_ERA;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mp = (5 * doy + 2) / MONTHS_PER_ERA_DENOM;
+    let d = doy - (MONTHS_PER_ERA_DENOM * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { y + 1 } else { y };
     format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
@@ -452,27 +473,7 @@ fn open_session<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState, 
             )
         });
     }
-    // hub 地址：控制面 /endpoints 给出 QUIC 端口（TOFU 首连固定证书）。
-    // 先落局部再 if let：`state.http()` 的临时 MutexGuard 若活在
-    // if-let 条件里，会一直持有到块尾——后面 auth_token() 再锁同一把
-    // 锁就是自己跟自己死锁（本审计实锤的登录挂起）。
-    let endpoints_quic = state
-        .http()
-        .expect_json("GET", "/endpoints", None)
-        .ok()
-        .and_then(|v| v["quic"].as_str().map(str::to_string));
-    if let Some(quic) = endpoints_quic {
-        let pins = data_dir.join("tofu-pins.json");
-        if state
-            .connect_hub(&quic, &state.auth_token().unwrap_or_default(), &pins)
-            .is_ok()
-        {
-            state.start_outbox_pump(app.clone());
-            // 收包泵自带代次守卫：重复登录/重连不会叠出双泵。
-            let _ = state.start_recv_pump(app.clone());
-        }
-        // 连不上 hub 不阻断登录：消息进 outbox，重连后由泵补发。
-    }
+    connect_hub_best_effort(app, state, &data_dir);
     let account = json!({
         "user_id": user_id,
         "name": name,
@@ -484,6 +485,36 @@ fn open_session<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState, 
     let projection = json!({ "phase": "authenticated", "account": account });
     emit_core(app, "session.state", &user_id, projection.clone());
     Ok(projection)
+}
+
+
+/// hub 连接（尽力而为）：`/endpoints` 给出 QUIC 端口，TOFU 固定证书后
+/// 连接并起双泵；连不上不阻断登录——消息进 outbox，重连后由泵补发。
+///
+/// 死锁备忘：`state.http()` 的临时 MutexGuard 不能活在 if-let 条件里，
+/// 否则后面 `auth_token()` 再锁同一把锁就是自己跟自己死锁（审计 R5 实锤）。
+fn connect_hub_best_effort<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    data_dir: &std::path::Path,
+) {
+    let endpoints_quic = state
+        .http()
+        .expect_json("GET", "/endpoints", None)
+        .ok()
+        .and_then(|v| v["quic"].as_str().map(str::to_string));
+    let Some(quic) = endpoints_quic else {
+        return;
+    };
+    let pins = data_dir.join("tofu-pins.json");
+    if state
+        .connect_hub(&quic, &state.auth_token().unwrap_or_default(), &pins)
+        .is_ok()
+    {
+        state.start_outbox_pump(app.clone());
+        // 收包泵自带代次守卫：重复登录/重连不会叠出双泵。
+        let _ = state.start_recv_pump(app.clone());
+    }
 }
 
 fn short_hash(input: &str) -> String {
@@ -536,16 +567,205 @@ pub fn dispatch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState, 
     CoreReply::from_result(dispatch_inner(app, state, core, &req), &req.request_id)
 }
 
-fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState, core: &CoreState, req: &CoreRequest) -> Result<Value, BridgeError> {
+
+/// 55 个 action 的总路由：按域分派；域内每行一个 action。
+fn dispatch_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "identity.session.projection" | "identity.session.login" | "identity.session.register" | "identity.session.logout" | "identity.session.restore" | "security.lock" | "security.unlock" | "sync.range.get" | "sync.range.set" => session_router(app, state, core, req),
+        "identity.qr_login.create" | "identity.qr_login.cancel" | "identity.qr_login.switch_account" => qr_router(app, state, core, req),
+        "messaging.conversations.list" | "messaging.messages.page" | "messaging.send" | "messaging.retry" | "messaging.recall" | "messaging.forward" | "messaging.read" | "messaging.conversation.pin" | "messaging.conversation.mute" | "messaging.conversation.read_all" | "messaging.conversation.ensure" | "messaging.draft.get" | "messaging.draft.save" | "messaging.draft.clear" => messaging_router(app, state, core, req),
+        "media.upload.begin" | "media.upload.part" | "media.upload.complete" | "media.upload.cancel" => media_router(app, state, core, req),
+        "relations.list" | "relations.requests.incoming" | "relations.request.send" | "relations.request.accept" | "relations.request.decline" | "relations.block" | "relations.note.set" | "relations.tag.set" | "relations.star.set" | "relations.profile" | "relations.common_groups" | "relations.group.members" | "relations.group.kick" | "relations.group.settings.set" => relations_router(app, state, core, req),
+        "search.query" => search_router(app, state, core, req),
+        "preferences.get" | "preferences.set" | "secrets.status" | "secrets.lock" | "secrets.migrate" | "storage.status" | "storage.cache.clear" | "backup.create" | "backup.verify" | "backup.import" => settings_router(app, state, core, req),
+        "app.info" => info_router(app, state, core, req),
+        other => Err(BridgeError::NotImpl(format!(
+            "core 桥未实现 {other}（action 需先在 cmd catalog 登记）"
+        ))),
+    }
+}
+
+
+
+
+
+
+
+
+
+
+fn session_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "identity.session.projection" => act_identity_session_projection(app, state, core, req),
+        "identity.session.login" => act_identity_session_login(app, state, core, req),
+        "identity.session.register" => act_identity_session_register(app, state, core, req),
+        "identity.session.logout" => act_identity_session_logout(app, state, core, req),
+        "identity.session.restore" => act_identity_session_restore(app, state, core, req),
+        "security.lock" => act_security_lock(app, state, core, req),
+        "security.unlock" => act_security_unlock(app, state, core, req),
+        "sync.range.get" => act_sync_range_get(app, state, core, req),
+        "sync.range.set" => act_sync_range_set(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn qr_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "identity.qr_login.create" => act_identity_qr_login_create(app, state, core, req),
+        "identity.qr_login.cancel" => act_identity_qr_login_cancel(app, state, core, req),
+        "identity.qr_login.switch_account" => act_identity_qr_login_switch_account(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn messaging_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "messaging.conversations.list" => act_messaging_conversations_list(app, state, core, req),
+        "messaging.messages.page" => act_messaging_messages_page(app, state, core, req),
+        "messaging.send" => act_messaging_send(app, state, core, req),
+        "messaging.retry" => act_messaging_retry(app, state, core, req),
+        "messaging.recall" => act_messaging_recall(app, state, core, req),
+        "messaging.forward" => act_messaging_forward(app, state, core, req),
+        "messaging.read" => act_messaging_read(app, state, core, req),
+        "messaging.conversation.pin" => act_messaging_conversation_pin(app, state, core, req),
+        "messaging.conversation.mute" => act_messaging_conversation_pin(app, state, core, req),
+        "messaging.conversation.read_all" => act_messaging_conversation_read_all(app, state, core, req),
+        "messaging.conversation.ensure" => act_messaging_conversation_ensure(app, state, core, req),
+        "messaging.draft.get" => act_messaging_draft_get(app, state, core, req),
+        "messaging.draft.save" => act_messaging_draft_save(app, state, core, req),
+        "messaging.draft.clear" => act_messaging_draft_clear(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn media_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "media.upload.begin" => act_media_upload_begin(app, state, core, req),
+        "media.upload.part" => act_media_upload_part(app, state, core, req),
+        "media.upload.complete" => act_media_upload_complete(app, state, core, req),
+        "media.upload.cancel" => act_media_upload_cancel(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn relations_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "relations.list" => act_relations_list(app, state, core, req),
+        "relations.requests.incoming" => act_relations_requests_incoming(app, state, core, req),
+        "relations.request.send" => act_relations_request_send(app, state, core, req),
+        "relations.request.accept" => act_relations_request_accept(app, state, core, req),
+        "relations.request.decline" => act_relations_request_accept(app, state, core, req),
+        "relations.block" => act_relations_block(app, state, core, req),
+        "relations.note.set" => act_relations_note_set(app, state, core, req),
+        "relations.tag.set" => act_relations_tag_set(app, state, core, req),
+        "relations.star.set" => act_relations_tag_set(app, state, core, req),
+        "relations.profile" => act_relations_profile(app, state, core, req),
+        "relations.common_groups" => act_relations_common_groups(app, state, core, req),
+        "relations.group.members" => act_relations_group_members(app, state, core, req),
+        "relations.group.kick" => act_relations_group_kick(app, state, core, req),
+        "relations.group.settings.set" => act_relations_group_settings_set(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn search_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "search.query" => act_search_query(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn settings_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "preferences.get" => act_preferences_get(app, state, core, req),
+        "preferences.set" => act_preferences_set(app, state, core, req),
+        "secrets.status" => act_secrets_status(app, state, core, req),
+        "secrets.lock" => act_secrets_lock(app, state, core, req),
+        "secrets.migrate" => act_secrets_migrate(app, state, core, req),
+        "storage.status" => act_storage_status(app, state, core, req),
+        "storage.cache.clear" => act_storage_cache_clear(app, state, core, req),
+        "backup.create" => act_backup_create(app, state, core, req),
+        "backup.verify" => act_backup_verify(app, state, core, req),
+        "backup.import" => act_backup_import(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+fn info_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "app.info" => act_app_info(app, state, core, req),
+        _ => Err(BridgeError::NotImpl("未登记的 action".into())),
+    }
+}
+
+
+
+fn act_identity_session_projection<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+session_projection(state, core)
+}
+
+fn act_identity_session_login<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
     let params = &req.params;
-    let rid = req.request_id.as_str();
     let str_param = |key: &str| -> String {
         params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
     };
-    let result: Result<Value, BridgeError> = match req.action_id.as_str() {
-        // ---- 会话 ----
-        "identity.session.projection" => session_projection(state, core),
-        "identity.session.login" => {
             let username = str_param("username");
             let password = str_param("password");
             if username.trim().is_empty() || password.is_empty() {
@@ -553,8 +773,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             }
             state.login(&username, &password)?;
             open_session(app, state, core)
-        }
-        "identity.session.register" => {
+}
+
+fn act_identity_session_register<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let username = str_param("username");
             let password = str_param("password");
             let display_name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
@@ -566,8 +797,15 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 let _ = state.update_profile(Some(&display_name), None, None);
             }
             open_session(app, state, core)
-        }
-        "identity.session.logout" => {
+}
+
+fn act_identity_session_logout<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let _ = state.logout(); // 服务端撤销失败也照常清本地（不把人锁在旧会话里）
             state.http().token = None;
             core.account.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -578,8 +816,15 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             let projection = json!({ "phase": "signed_out" });
             emit_core(app, "session.state", "session", projection.clone());
             Ok(json!({ "revoked": true }))
-        }
-        "identity.session.restore" => {
+}
+
+fn act_identity_session_restore<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             ensure_local(app, state)?;
             let token = with_local(state, |s| Ok(s.kv_get("auth_token"))).ok().flatten();
             match token {
@@ -589,8 +834,15 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 }
                 _ => Err(BridgeError::Unauth("没有可恢复的会话".into())),
             }
-        }
-        "security.lock" => {
+}
+
+fn act_security_lock<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let account = core.account();
             if account.is_none() {
                 return Err(BridgeError::Unauth("尚未登录".into()));
@@ -599,8 +851,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             let projection = json!({ "phase": "locked", "account": account, "lock_reason": "manual" });
             emit_core(app, "session.state", "session", projection.clone());
             Ok(projection)
-        }
-        "security.unlock" => {
+}
+
+fn act_security_unlock<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let account = core.account();
             if account.is_none() {
                 return Err(BridgeError::Unauth("会话已过期".into()));
@@ -616,23 +879,51 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             let projection = json!({ "phase": "authenticated", "account": account });
             emit_core(app, "session.state", "session", projection.clone());
             Ok(projection)
-        }
-        // ---- QR 登录（服务端 /api/qr/tickets，由 G14/G01 集成挂载） ----
-        "identity.qr_login.create" => qr_create(app, state, core),
-        "identity.qr_login.cancel" => {
+}
+
+fn act_identity_qr_login_create<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+qr_create(app, state, core)
+}
+
+fn act_identity_qr_login_cancel<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             stop_qr_poll(core);
             Ok(json!({ "cancelled": true }))
-        }
-        "identity.qr_login.switch_account" => {
+}
+
+fn act_identity_qr_login_switch_account<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             stop_qr_poll(core);
             state.http().token = None;
             core.account.lock().unwrap_or_else(PoisonError::into_inner).take();
             let _ = with_local(state, |s| s.kv_delete("auth_token"));
             emit_core(app, "session.state", "session", json!({ "phase": "signed_out" }));
             Ok(json!({ "revoked": true }))
-        }
-        // ---- 同步范围 ----
-        "sync.range.get" => {
+}
+
+fn act_sync_range_get<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             if core.account().is_none() {
                 return Err(BridgeError::Unauth("尚未登录".into()));
             }
@@ -643,24 +934,72 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 "incremental_default_days": 7,
                 "can_view_further": days != 7,
             }))
-        }
-        "sync.range.set" => {
+}
+
+fn act_sync_range_set<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
             if core.account().is_none() {
                 return Err(BridgeError::Unauth("尚未登录".into()));
             }
             let days = params.get("days").and_then(Value::as_i64).unwrap_or(-1);
-            if ![0, 7, 30, 90].contains(&days) {
+            if ![0, 7, SYNC_RANGE_MONTH_DAYS, SYNC_RANGE_ALL_DAYS].contains(&days) {
                 return Err(BridgeError::Validation("同步范围不合法".into()));
             }
             let mut prefs = preferences_read(state);
             prefs["sync_range_days"] = json!(days);
             preferences_write(app, state, prefs)
-        }
-        // ---- 会话列表 / 消息 ----
-        "messaging.conversations.list" => conversations_list(state, params),
-        "messaging.messages.page" => messages_page(state, params),
-        "messaging.send" => message_send(app, state, params),
-        "messaging.retry" => {
+}
+
+fn act_messaging_conversations_list<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+conversations_list(state, params)
+}
+
+fn act_messaging_messages_page<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+messages_page(state, params)
+}
+
+fn act_messaging_send<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+message_send(app, state, params)
+}
+
+fn act_messaging_retry<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let msg_id = str_param("msg_id");
             if msg_id.is_empty() {
                 return Err(BridgeError::Validation("消息不存在".into()));
@@ -669,8 +1008,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             ob.requeue(&msg_id, wxlike_core::types::now_ms() as i64)
                 .map_err(|e| BridgeError::Other(e.to_string()))?;
             Ok(json!({ "msg_id": msg_id, "state": "LOCAL_QUEUED" }))
-        }
-        "messaging.recall" => {
+}
+
+fn act_messaging_recall<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let conv_id = str_param("conv_id");
             let msg_id = str_param("msg_id");
             state.recall_msg(&conv_id, &msg_id)?;
@@ -685,8 +1035,16 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 }),
             );
             Ok(json!({ "recalled": true }))
-        }
-        "messaging.forward" => {
+}
+
+fn act_messaging_forward<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
             let msg_ids: Vec<String> = params
                 .get("msg_ids")
                 .and_then(Value::as_array)
@@ -711,15 +1069,37 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 }
             }
             Ok(json!({ "created": created }))
-        }
-        "messaging.read" => {
+}
+
+fn act_messaging_read<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let conv_id = str_param("conv_id");
             state.http().mark_conv_read(&conv_id)?;
             emit_core(app, "conversation.upsert", &conv_id, json!({ "conv_id": conv_id, "unread": 0 }));
             emit_core(app, "unread.updated", "me", json!({ "total": 0 }));
             Ok(json!({ "unread": 0 }))
-        }
-        "messaging.conversation.pin" | "messaging.conversation.mute" => {
+}
+
+fn act_messaging_conversation_pin<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let conv_id = str_param("conv_id");
             let value = params.get("value").and_then(Value::as_bool).unwrap_or(false);
             let key = format!("conv_flags:{conv_id}");
@@ -736,8 +1116,15 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             conv["muted"] = flags["muted"].clone();
             emit_core(app, "conversation.upsert", &conv_id, conv.clone());
             Ok(conv)
-        }
-        "messaging.conversation.read_all" => {
+}
+
+fn act_messaging_conversation_read_all<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let convs = with_local(state, |s| s.conversations())?;
             for (conv, _, _) in convs {
                 let unread = state.http().conv_unread(&conv).ok().and_then(|v| v["unread"].as_i64()).unwrap_or(0);
@@ -748,8 +1135,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             }
             emit_core(app, "unread.updated", "me", json!({ "total": 0 }));
             Ok(json!({ "total": 0 }))
-        }
-        "messaging.conversation.ensure" => {
+}
+
+fn act_messaging_conversation_ensure<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let peer = str_param("user_id");
             let me = state.user_id()?;
             let conv_id = wxlike_client::direct_conv_id(&me, &peer);
@@ -757,13 +1155,35 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             conv["peer_user_id"] = json!(peer);
             emit_core(app, "conversation.upsert", &conv_id, conv.clone());
             Ok(conv)
-        }
-        "messaging.draft.get" => {
+}
+
+fn act_messaging_draft_get<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let conv_id = str_param("conv_id");
             let text = with_local(state, |s| Ok(s.kv_get(&format!("draft:{conv_id}")).unwrap_or_default()))?;
             Ok(json!({ "text": text }))
-        }
-        "messaging.draft.save" => {
+}
+
+fn act_messaging_draft_save<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let conv_id = str_param("conv_id");
             let text = str_param("text");
             with_local(state, |s| {
@@ -774,14 +1194,35 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 }
             })?;
             Ok(json!({ "saved": true }))
-        }
-        "messaging.draft.clear" => {
+}
+
+fn act_messaging_draft_clear<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let conv_id = str_param("conv_id");
             with_local(state, |s| s.kv_delete(&format!("draft:{conv_id}")))?;
             Ok(json!({ "cleared": true }))
-        }
-        // ---- 媒体上传（分片累积 → 一次性上传到 /api/media） ----
-        "media.upload.begin" => {
+}
+
+fn act_media_upload_begin<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             if core.account().is_none() {
                 return Err(BridgeError::Unauth("尚未登录".into()));
             }
@@ -802,8 +1243,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 },
             );
             Ok(json!({ "upload_id": upload_id, "chunk_size": 4 * 1024 * 1024 }))
-        }
-        "media.upload.part" => {
+}
+
+fn act_media_upload_part<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             use base64::Engine as _;
             let upload_id = str_param("upload_id");
             let mut uploads = core.uploads.lock().unwrap_or_else(PoisonError::into_inner);
@@ -832,8 +1284,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 return Err(BridgeError::Validation("上传超出声明大小".into()));
             }
             Ok(json!({ "received": upload.buf.len(), "size": upload.size }))
-        }
-        "media.upload.complete" => {
+}
+
+fn act_media_upload_complete<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let upload_id = str_param("upload_id");
             let upload = core
                 .uploads
@@ -855,17 +1318,44 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 "digest": sha256,
                 "digest_algorithm": "SHA-256",
             }))
-        }
-        "media.upload.cancel" => {
+}
+
+fn act_media_upload_cancel<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             core.uploads
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&str_param("upload_id"));
             Ok(json!({ "cancelled": true }))
-        }
-        // ---- 关系 ----
-        "relations.list" => relations_list(state, params),
-        "relations.requests.incoming" => {
+}
+
+fn act_relations_list<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+relations_list(state, params)
+}
+
+fn act_relations_requests_incoming<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let reply = state.friend_requests_incoming()?;
             let mut rows = Vec::new();
             for item in reply.as_array().cloned().unwrap_or_default() {
@@ -880,17 +1370,39 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 }));
             }
             Ok(Value::Array(rows))
-        }
-        "relations.request.send" => {
+}
+
+fn act_relations_request_send<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let target = str_param("user_id");
             let message = str_param("message");
             if target.is_empty() {
                 return Err(BridgeError::Validation("请选择联系人".into()));
             }
             state.friend_request(&target, &message)?;
-            Ok(json!({ "request_id": format!("out-{rid}"), "status": "PENDING" }))
-        }
-        "relations.request.accept" | "relations.request.decline" => {
+            Ok(json!({ "request_id": format!("out-{}", req.request_id), "status": "PENDING" }))
+}
+
+fn act_relations_request_accept<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let request_id = str_param("request_id");
             let accept = req.action_id.ends_with("accept");
             if accept {
@@ -899,8 +1411,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 state.friend_decline(&request_id)?;
             }
             Ok(json!({ "status": if accept { "ACCEPTED" } else { "DECLINED" } }))
-        }
-        "relations.block" => {
+}
+
+fn act_relations_block<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let user_id = str_param("user_id");
             let blocked = params.get("blocked").and_then(Value::as_bool).unwrap_or(false);
             if blocked {
@@ -913,8 +1436,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                     .expect_empty("DELETE", &format!("/api/blocks/{user_id}"), None)?;
             }
             Ok(json!({ "user_id": user_id, "blocked": blocked }))
-        }
-        "relations.note.set" => {
+}
+
+fn act_relations_note_set<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let user_id = str_param("user_id");
             let note = str_param("note");
             state.http().expect_json(
@@ -923,8 +1457,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 Some(&json!({ "remark": note })),
             )?;
             Ok(json!({ "user_id": user_id, "note": note }))
-        }
-        "relations.tag.set" | "relations.star.set" => {
+}
+
+fn act_relations_tag_set<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let user_id = str_param("user_id");
             let key = format!("contact_meta:{user_id}");
             let mut meta = with_local(state, |s| {
@@ -943,8 +1488,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             contact["star"] = json!(meta["star"].as_bool().unwrap_or(false));
             emit_core(app, "contact.updated", &user_id, contact.clone());
             Ok(contact)
-        }
-        "relations.profile" => {
+}
+
+fn act_relations_profile<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let user_id = str_param("user_id");
             let profile = state.http().expect_json("GET", &format!("/api/profile/{user_id}"), None)?;
             let mut value = json!({
@@ -960,28 +1516,51 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 value["note"] = json!(remark);
             }
             Ok(value)
-        }
-        "relations.common_groups" => {
+}
+
+fn act_relations_common_groups<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let user_id = str_param("user_id");
             let groups = state.groups_mine()?;
             let mut out = Vec::new();
             for g in groups.as_array().cloned().unwrap_or_default() {
                 let gid = g["group_id"].as_str().unwrap_or_default().to_string();
-                if gid.is_empty() {
-                    continue;
-                }
-                if let Ok(info) = state.group_info(&gid) {
-                    let has = info["members"].as_array().map(|m| {
-                        m.iter().any(|x| x["user_id"] == json!(user_id) || x["member_id"] == json!(user_id))
+                let in_group = state
+                    .group_info(&gid)
+                    .ok()
+                    .and_then(|info| info["members"].as_array().cloned())
+                    .map(|members| {
+                        members.iter().any(|x| {
+                            x["user_id"] == json!(user_id) || x["member_id"] == json!(user_id)
+                        })
                     });
-                    if has == Some(true) {
-                        out.push(json!({ "group_id": gid, "name": g["name"].clone() }));
-                    }
+                if in_group == Some(true) {
+                    out.push(json!({ "group_id": gid, "name": g["name"].clone() }));
                 }
             }
             Ok(Value::Array(out))
-        }
-        "relations.group.members" => {
+}
+
+fn act_relations_group_members<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let group_id = str_param("group_id");
             let info = state.group_info(&group_id)?;
             let me = state.user_id()?;
@@ -1008,11 +1587,31 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 "my_role": my_role,
                 "members": members,
             }))
-        }
-        "relations.group.kick" => Err(BridgeError::NotImpl(
+}
+
+fn act_relations_group_kick<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+Err(BridgeError::NotImpl(
             "服务端暂无群成员移除路由（G02 域），拒绝伪造结果".into(),
-        )),
-        "relations.group.settings.set" => {
+        ))
+}
+
+fn act_relations_group_settings_set<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let group_id = str_param("group_id");
             let name = str_param("name");
             if name.is_empty() {
@@ -1024,12 +1623,37 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 .expect_json("PUT", &format!("/api/groups/{group_id}"), Some(&json!({ "name": name })))?;
             emit_core(app, "group.updated", &group_id, json!({ "group_id": group_id, "name": name }));
             Ok(json!({ "group_id": group_id, "name": name }))
-        }
-        // ---- 搜索 ----
-        "search.query" => search_query(state, params),
-        // ---- 偏好 / 密钥 / 存储 / 备份 ----
-        "preferences.get" => Ok(preferences_read(state)),
-        "preferences.set" => {
+}
+
+fn act_search_query<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+search_query(state, params)
+}
+
+fn act_preferences_get<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+Ok(preferences_read(state))
+}
+
+fn act_preferences_set<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
             let patch = params.get("patch").cloned().unwrap_or(Value::Null);
             if !patch.is_object() {
                 return Err(BridgeError::Validation("缺少设置内容".into()));
@@ -1041,8 +1665,15 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 }
             }
             preferences_write(app, state, prefs)
-        }
-        "secrets.status" => {
+}
+
+fn act_secrets_status<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let lock = core.lock_state();
             Ok(json!({
                 "locked": lock.locked,
@@ -1050,12 +1681,30 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 "passphrase_migration": if lock.passcode_sha.is_some() { "migrated" } else { "available" },
                 "note": "桌面锁口令存本地库（sha256）；OS 密钥库由 G02 提供",
             }))
-        }
-        "secrets.lock" => {
+}
+
+fn act_secrets_lock<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             core.lock_state().locked = true;
             Ok(json!({ "locked": true }))
-        }
-        "secrets.migrate" => {
+}
+
+fn act_secrets_migrate<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             let current = str_param("current_password");
             let next = str_param("new_password");
             let expected = core.lock_state().passcode_sha.clone();
@@ -1069,16 +1718,39 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             }
             core.lock_state().passcode_sha = Some(short_hash_full(&next));
             Ok(json!({ "migrated": true, "os_backed": false }))
-        }
-        "storage.status" => {
+}
+
+fn act_storage_status<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let bytes = with_local(state, |s| {
                 Ok(std::fs::metadata(s.path()).map(|m| m.len()).unwrap_or(0))
             })
             .unwrap_or(0);
             Ok(json!({ "cache_bytes": 0, "message_bytes": bytes, "media_bytes": 0 }))
-        }
-        "storage.cache.clear" => Ok(json!({ "freed_bytes": 0, "kept": ["未发送 outbox", "草稿", "密钥"] })),
-        "backup.create" => {
+}
+
+fn act_storage_cache_clear<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+Ok(json!({ "freed_bytes": 0, "kept": ["未发送 outbox", "草稿", "密钥"] }))
+}
+
+fn act_backup_create<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
             let pending = outbox_pending(state);
             if pending > 0 {
                 return Err(BridgeError::Conflict("还有未发送消息，先发完或清空再备份".into()));
@@ -1105,8 +1777,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             use base64::Engine as _;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
             Ok(json!({ "info": info, "base64": b64 }))
-        }
-        "backup.verify" => {
+}
+
+fn act_backup_verify<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             use base64::Engine as _;
             let raw = str_param("base64");
             let bytes = base64::engine::general_purpose::STANDARD
@@ -1117,8 +1800,19 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 return Ok(json!({ "valid": false, "reason": "备份格式不匹配", "digest": digest }));
             }
             Ok(json!({ "valid": true, "digest": digest }))
-        }
-        "backup.import" => {
+}
+
+fn act_backup_import<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    let params = &req.params;
+    let str_param = |key: &str| -> String {
+        params.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    };
             if str_param("confirmation") != "IMPORT" {
                 return Err(BridgeError::Confirmation("导入会覆盖本地数据，需要再次确认".into()));
             }
@@ -1141,8 +1835,16 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
             state.reopen_local(&path)?;
             emit_core(app, "search.invalidated", "me", json!({}));
             Ok(json!({ "imported": true }))
-        }
-        "app.info" => Ok(json!({
+}
+
+fn act_app_info<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+Ok(json!({
             "name": "wxlike",
             "version": env!("CARGO_PKG_VERSION"),
             "commit": option_env!("WXLIKE_GIT_SHA").unwrap_or("unknown"),
@@ -1152,19 +1854,67 @@ fn dispatch_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState
                 { "name": "tauri", "license": "MIT/Apache-2.0" },
                 { "name": "quinn (QUIC)", "license": "MIT/Apache-2.0" },
             ],
-        })),
-        other => {
-            return Err(BridgeError::NotImpl(format!(
-                "core 桥未实现 {other}（action 需先在 cmd catalog 登记）"
-            )))
-        }
-    };
-    result
+        }))
 }
 
-#[allow(dead_code)]
-fn __unused_result_shim(result: Result<Value, BridgeError>, rid: &str) -> CoreReply {
-    CoreReply::from_result(result, rid)
+
+
+fn message_hits(state: &AppState, query: &str) -> Result<Vec<Value>, BridgeError> {
+    let reply = state.search_messages(query, 20)?;
+    let rows = reply["results"].as_array().cloned().unwrap_or_default();
+    let mut hits = Vec::new();
+    for row in rows {
+        let text = row.get("text").and_then(Value::as_str).unwrap_or_default();
+        hits.push(json!({
+            "id": row.get("msg_id").cloned().unwrap_or_else(|| json!("")),
+            "kind": "content",
+            "title": text.chars().take(SEARCH_TITLE_CHARS).collect::<String>(),
+            "subtitle": row.get("conv_id").and_then(Value::as_str).unwrap_or_default(),
+            "conv_id": row.get("conv_id").cloned().unwrap_or(Value::Null),
+            "snippet": text.chars().skip(SEARCH_TITLE_CHARS).take(SEARCH_SNIPPET_CHARS).collect::<String>(),
+        }));
+    }
+    Ok(hits)
+}
+
+fn contact_hits(state: &AppState, query: &str) -> Result<Vec<Value>, BridgeError> {
+    let items = relations_list(state, &json!({ "query": query }))?["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let hits = items
+        .iter()
+        .map(|contact| {
+            json!({
+                "id": contact["user_id"].clone(),
+                "kind": "contact",
+                "title": contact["name"].clone(),
+                "subtitle": contact["user_id"].clone(),
+                "user_id": contact["user_id"].clone(),
+            })
+        })
+        .collect();
+    Ok(hits)
+}
+
+fn group_hits(state: &AppState, query: &str) -> Result<Vec<Value>, BridgeError> {
+    let groups = state.groups_mine()?;
+    let needle = query.to_lowercase();
+    let mut hits = Vec::new();
+    for g in groups.as_array().cloned().unwrap_or_default() {
+        let name = g["name"].as_str().unwrap_or_default();
+        if !name.to_lowercase().contains(&needle) {
+            continue;
+        }
+        hits.push(json!({
+            "id": g["group_id"].clone(),
+            "kind": "group",
+            "title": name,
+            "subtitle": format!("{} 人", g["member_count"].as_i64().unwrap_or(0)),
+            "group_id": g["group_id"].clone(),
+        }));
+    }
+    Ok(hits)
 }
 
 fn outbox_pending(state: &AppState) -> i64 {
@@ -1179,28 +1929,33 @@ fn session_projection(state: &AppState, core: &CoreState) -> Result<Value, Bridg
     // 有凭据 → 服务端确证；凭据缺失 → signed_out；锁优先于一切。
     // （本地库没开时读不到 kv：投影如实说 signed_out，restore 负责开库。）
     if let Some(account) = core.account() {
-        if core.lock_state().locked {
-            return Ok(json!({ "phase": "locked", "account": account, "lock_reason": "manual" }));
+        let phase = if core.lock_state().locked { "locked" } else { "authenticated" };
+        let mut v = json!({ "phase": phase, "account": account });
+        if phase == "locked" {
+            v["lock_reason"] = json!("manual");
         }
-        return Ok(json!({ "phase": "authenticated", "account": account }));
+        return Ok(v);
     }
-    if let Some(token) = with_local(state, |s| Ok(s.kv_get("auth_token"))).ok().flatten() {
-        if !token.is_empty() {
-            state.set_auth_token(&token);
-            if let Ok(me) = state.me() {
-                let account = json!({
-                    "user_id": me["user_id"].clone(),
-                    "name": me["name"].clone(),
-                    "avatar": me["avatar"].clone(),
-                    "device_id": "desktop-tauri",
-                    "session_id": short_hash(&token),
-                });
-                *core.account.lock().unwrap_or_else(PoisonError::into_inner) = Some(account.clone());
-                return Ok(json!({ "phase": "authenticated", "account": account }));
-            }
-        }
+    let token = with_local(state, |s| Ok(s.kv_get("auth_token")))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Ok(json!({ "phase": "signed_out" }));
     }
-    Ok(json!({ "phase": "signed_out" }))
+    state.set_auth_token(&token);
+    let Ok(me) = state.me() else {
+        return Ok(json!({ "phase": "signed_out" }));
+    };
+    let account = json!({
+        "user_id": me["user_id"].clone(),
+        "name": me["name"].clone(),
+        "avatar": me["avatar"].clone(),
+        "device_id": "desktop-tauri",
+        "session_id": short_hash(&token),
+    });
+    *core.account.lock().unwrap_or_else(PoisonError::into_inner) = Some(account.clone());
+    Ok(json!({ "phase": "authenticated", "account": account }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,7 +1970,7 @@ fn conversations_list(state: &AppState, params: &Value) -> Result<Value, BridgeE
         .unwrap_or_default()
         .trim()
         .to_lowercase();
-    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(30).clamp(1, 100) as usize;
+    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE) as usize;
     let offset = cursor_usize(params);
 
     let me = state.user_id()?;
@@ -1264,6 +2019,45 @@ fn conversation_summary(state: &AppState, conv_id: &str) -> Result<Value, Bridge
     }
 }
 
+/// 会话标题：直聊用 kv 缓存的对端名（缺失时拉一次 profile 并缓存）；
+/// 群聊用 group_info 的名字（同样缓存）。
+fn conv_title(state: &AppState, conv_id: &str, me: &str, kind: &str) -> String {
+    match kind {
+        "direct" => {
+            let peer = peer_of(conv_id, me).unwrap_or_else(|| conv_id.to_string());
+            cached_or_fetch(state, &format!("peer_name:{peer}"), || {
+                state
+                    .http()
+                    .expect_json("GET", &format!("/api/profile/{peer}"), None)
+                    .ok()
+                    .and_then(|p| p["name"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| peer.clone())
+            })
+        }
+        _ => cached_or_fetch(state, &format!("group_name:{conv_id}"), || {
+            state
+                .group_info(conv_id)
+                .ok()
+                .and_then(|g| g["name"].as_str().map(str::to_string))
+                .unwrap_or_else(|| conv_id.to_string())
+        }),
+    }
+}
+
+/// kv 缓存读取 + 未命中时取值并回写。
+fn cached_or_fetch(state: &AppState, cache_key: &str, fetch: impl FnOnce() -> String) -> String {
+    let cached = with_local(state, |s| Ok(s.kv_get(cache_key)))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if !cached.is_empty() {
+        return cached;
+    }
+    let name = fetch();
+    let _ = with_local(state, |s| s.kv_put(cache_key, &name));
+    name
+}
+
 fn conversation_summary_parts(
     state: &AppState,
     conv_id: &str,
@@ -1274,46 +2068,7 @@ fn conversation_summary_parts(
     let kind = conv_kind(conv_id);
     // 标题：直聊用 kv 缓存的对端名（缺失时拉一次 profile 并缓存）；
     // 群聊用 group_info 的名字（同样缓存）。
-    let title = match kind {
-        "direct" => {
-            let peer = peer_of(conv_id, me).unwrap_or_else(|| conv_id.to_string());
-            let cache_key = format!("peer_name:{peer}");
-            let cached = with_local(state, |s| Ok(s.kv_get(&cache_key)))
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            if !cached.is_empty() {
-                cached
-            } else {
-                let name = state
-                    .http()
-                    .expect_json("GET", &format!("/api/profile/{peer}"), None)
-                    .ok()
-                    .and_then(|p| p["name"].as_str().map(str::to_string))
-                    .unwrap_or_else(|| peer.clone());
-                let _ = with_local(state, |s| s.kv_put(&cache_key, &name));
-                name
-            }
-        }
-        _ => {
-            let cache_key = format!("group_name:{conv_id}");
-            let cached = with_local(state, |s| Ok(s.kv_get(&cache_key)))
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            if !cached.is_empty() {
-                cached
-            } else {
-                let name = state
-                    .group_info(conv_id)
-                    .ok()
-                    .and_then(|g| g["name"].as_str().map(str::to_string))
-                    .unwrap_or_else(|| conv_id.to_string());
-                let _ = with_local(state, |s| s.kv_put(&cache_key, &name));
-                name
-            }
-        }
-    };
+    let title = conv_title(state, conv_id, me, kind);
     let unread = state
         .http()
         .conv_unread(conv_id)
@@ -1342,29 +2097,30 @@ fn conversation_summary_parts(
     })
 }
 
-fn messages_page(state: &AppState, params: &Value) -> Result<Value, BridgeError> {
-    let conv_id = params.get("conv_id").and_then(Value::as_str).unwrap_or_default();
-    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(30).clamp(1, 100) as i64;
-    let before = cursor_i64(params);
-    // 先拉服务端这一页并入本地库（INSERT OR IGNORE），再从本地出——
-    // 本地是唯一渲染源，重启后同一会话同一形状。
-    eprintln!("[pg2] http history");
-    let server = state
+/// 服务端这一页并入本地库（INSERT OR IGNORE）：本地是唯一渲染源。
+fn merge_server_history(state: &AppState, conv_id: &str, before: i64, limit: i64) {
+    let Ok(reply) = state
         .http()
         .expect_json("GET", &format!("/api/history/{conv_id}?before_seq={before}&limit={limit}"), None)
-        .ok();
-    eprintln!("[pg2] http done server={}", server.is_some());
-    if let Some(reply) = server {
-        if let Some(rows) = reply["messages"].as_array() {
-            with_local(state, |s| {
-                for row in rows {
-                    let _ = s.append(row);
-                }
-                Ok(())
-            })?;
+    else {
+        return;
+    };
+    let Some(rows) = reply["messages"].as_array() else {
+        return;
+    };
+    let _ = with_local(state, |s| {
+        for row in rows {
+            let _ = s.append(row);
         }
-    }
-    eprintln!("[pg2] append+me ok");
+        Ok(())
+    });
+}
+
+fn messages_page(state: &AppState, params: &Value) -> Result<Value, BridgeError> {
+    let conv_id = params.get("conv_id").and_then(Value::as_str).unwrap_or_default();
+    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE) as i64;
+    let before = cursor_i64(params);
+    merge_server_history(state, conv_id, before, limit);
     let me = state.user_id()?;
     let page = state.local_history(conv_id, before, limit as usize)?;
     let rows = page["messages"].as_array().cloned().unwrap_or_default();
@@ -1381,6 +2137,7 @@ fn messages_page(state: &AppState, params: &Value) -> Result<Value, BridgeError>
     Ok(json!({ "items": items, "next_cursor": next, "has_more": has_more }))
 }
 
+
 fn recipients_of(conv_id: &str, me: &str) -> Vec<String> {
     if conv_id.starts_with("d-") {
         peer_of(conv_id, me).into_iter().collect()
@@ -1396,7 +2153,6 @@ fn message_send<R: tauri::Runtime>(
 ) -> Result<Value, BridgeError> {
     let conv_id = params.get("conv_id").and_then(Value::as_str).unwrap_or_default();
     let body = params.get("body").cloned().unwrap_or(Value::Null);
-    let kind = body["kind"].as_str().unwrap_or_default();
     let client_msg_id = params
         .get("client_msg_id")
         .and_then(Value::as_str)
@@ -1406,7 +2162,19 @@ fn message_send<R: tauri::Runtime>(
         return Err(BridgeError::Validation("消息参数不合法".into()));
     }
     let me = state.user_id()?;
-    let to = recipients_of(conv_id, &me);
+    send_body_by_kind(state, conv_id, &me, &body)?;
+    notify_sent_message(app, state, conv_id, &me, &client_msg_id)
+}
+
+/// 按 body.kind 分派到对应的 AppState 发送方法。
+fn send_body_by_kind(
+    state: &AppState,
+    conv_id: &str,
+    me: &str,
+    body: &Value,
+) -> Result<(), BridgeError> {
+    let to = recipients_of(conv_id, me);
+    let kind = body["kind"].as_str().unwrap_or_default();
     match kind {
         "text" => {
             let text = body["text"].as_str().unwrap_or_default();
@@ -1454,24 +2222,34 @@ fn message_send<R: tauri::Runtime>(
             return Err(BridgeError::NotImpl(format!("暂不支持发送 {other} 消息")));
         }
     }
-    // 本地回显已由 append_own_echo 落库；补一条事件让 UI 立即上屏。
+    Ok(())
+}
+
+/// 发送落库后的本地回显：最新一条推给 UI 立即上屏。
+fn notify_sent_message<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    conv_id: &str,
+    me: &str,
+    client_msg_id: &str,
+) -> Result<Value, BridgeError> {
     let last = with_local(state, |s| {
         Ok(s.page(conv_id, 0, 1).map(|mut rows| rows.pop()).unwrap_or(None))
     })?;
-    if let Some(row) = last {
-        let payload = row.to_json();
-        let message = row_to_message(&payload, &me);
-        let msg_id = message["msg_id"].clone();
-        emit_core(app, "message.created", conv_id, message.clone());
-        emit_core(
-            app,
-            "conversation.upsert",
-            conv_id,
-            json!({ "conv_id": conv_id, "last_preview": preview_of(&payload), "last_at_ms": message["created_at_ms"] }),
-        );
-        return Ok(json!({ "msg_id": msg_id, "client_msg_id": client_msg_id, "state": "SERVER_ACCEPTED" }));
-    }
-    Ok(json!({ "client_msg_id": client_msg_id, "state": "SERVER_ACCEPTED" }))
+    let Some(row) = last else {
+        return Ok(json!({ "client_msg_id": client_msg_id, "state": "SERVER_ACCEPTED" }));
+    };
+    let payload = row.to_json();
+    let message = row_to_message(&payload, me);
+    let msg_id = message["msg_id"].clone();
+    emit_core(app, "message.created", conv_id, message.clone());
+    emit_core(
+        app,
+        "conversation.upsert",
+        conv_id,
+        json!({ "conv_id": conv_id, "last_preview": preview_of(&payload), "last_at_ms": message["created_at_ms"] }),
+    );
+    Ok(json!({ "msg_id": msg_id, "client_msg_id": client_msg_id, "state": "SERVER_ACCEPTED" }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,48 +2351,14 @@ fn search_query(state: &AppState, params: &Value) -> Result<Value, BridgeError> 
     let mut hits = Vec::new();
     // 消息全文（服务端 /api/search/messages）——全部/内容/会话分类。
     if matches!(category, "all" | "content" | "chats") {
-        let reply = state.search_messages(query, 20)?;
-        for row in reply["results"].as_array().cloned().unwrap_or_default() {
-            let text = row.get("text").and_then(Value::as_str).unwrap_or_default();
-            hits.push(json!({
-                "id": row.get("msg_id").cloned().unwrap_or_else(|| json!("")),
-                "kind": "content",
-                "title": text.chars().take(30).collect::<String>(),
-                "subtitle": row.get("conv_id").and_then(Value::as_str).unwrap_or_default(),
-                "conv_id": row.get("conv_id").cloned().unwrap_or(Value::Null),
-                "snippet": text.chars().skip(30).take(50).collect::<String>(),
-            }));
-        }
+        hits.extend(message_hits(state, query)?);
     }
     // 联系人与群（本地已有的关系面）。
     if matches!(category, "all" | "contacts") {
-        for contact in relations_list(state, &json!({ "query": query }))?["items"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-        {
-            hits.push(json!({
-                "id": contact["user_id"].clone(),
-                "kind": "contact",
-                "title": contact["name"].clone(),
-                "subtitle": contact["user_id"].clone(),
-                "user_id": contact["user_id"].clone(),
-            }));
-        }
+        hits.extend(contact_hits(state, query)?);
     }
     if matches!(category, "all" | "groups") {
-        for g in state.groups_mine()?.as_array().cloned().unwrap_or_default() {
-            let name = g["name"].as_str().unwrap_or_default();
-            if name.to_lowercase().contains(&query.to_lowercase()) {
-                hits.push(json!({
-                    "id": g["group_id"].clone(),
-                    "kind": "group",
-                    "title": name,
-                    "subtitle": format!("{} 人", g["member_count"].as_i64().unwrap_or(0)),
-                    "group_id": g["group_id"].clone(),
-                }));
-            }
-        }
+        hits.extend(group_hits(state, query)?);
     }
     Ok(json!({ "category": category, "hits": hits }))
 }
@@ -1697,9 +2441,18 @@ fn qr_create<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState, cor
     stop_qr_poll(core);
     let generation = core.qr_poll_generation.load(Ordering::SeqCst);
     *core.qr_active.lock().unwrap_or_else(PoisonError::into_inner) = Some(ticket.clone());
-    let app = app.clone();
-    let ticket_for_poll = ticket;
-    let challenge_for_emit = challenge.clone();
+    spawn_qr_poll(app.clone(), state, &ticket, generation, challenge.clone());
+    Ok(challenge)
+}
+/// 轮询线程：票据状态变化 → `qr.state` 事件（代次守卫：新 create/取消让旧线程退场）。
+fn spawn_qr_poll<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: &AppState,
+    ticket: &str,
+    generation: u64,
+    challenge: Value,
+) {
+    let ticket_for_poll = ticket.to_string();
     std::thread::spawn(move || {
         use tauri::Emitter as _;
         let _ = app.emit("core://event", json!({
@@ -1708,41 +2461,50 @@ fn qr_create<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &AppState, cor
             "aggregate_version": "1",
             "event_type": "qr.state",
             "server_time_ms": iso_ms(wxlike_core::types::now_ms() as i64),
-            "payload": challenge_for_emit,
+            "payload": challenge,
         }));
-        let mut last = String::new();
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            if app.state::<CoreState>().qr_poll_generation.load(Ordering::SeqCst) != generation {
-                break;
-            }
-            let state = app.state::<AppState>();
-            let Ok(reply) = state
-                .http()
-                .expect_json("GET", &format!("/api/qr/tickets/{ticket_for_poll}"), None)
-            else {
-                continue;
-            };
-            let now = reply["state"].as_str().unwrap_or_default().to_string();
-            if !now.is_empty() && now != last {
-                last = now.clone();
-                let payload = qr_challenge(&ticket_for_poll, &now, &reply);
-                let _ = app.emit("core://event", json!({
-                    "event_id": format!("qr-{ticket_for_poll}-{now}"),
-                    "aggregate_id": ticket_for_poll,
-                    "aggregate_version": "1",
-                    "event_type": "qr.state",
-                    "server_time_ms": iso_ms(wxlike_core::types::now_ms() as i64),
-                    "payload": payload,
-                }));
-                if matches!(now.as_str(), "APPROVED" | "EXPIRED" | "REJECTED") {
-                    break;
-                }
-            }
-        }
+        poll_qr_ticket(&app, &ticket_for_poll, generation);
     });
-    Ok(challenge)
+    // state 参数为对称签名保留（轮询线程内经 app.state() 取用）。
+    let _ = state;
 }
+
+fn poll_qr_ticket<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ticket: &str, generation: u64) {
+    let mut last = String::new();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(QR_POLL_INTERVAL_MS));
+        if app.state::<CoreState>().qr_poll_generation.load(Ordering::SeqCst) != generation {
+            break;
+        }
+        let state = app.state::<AppState>();
+        let Ok(reply) = state
+            .http()
+            .expect_json("GET", &format!("/api/qr/tickets/{ticket}"), None)
+        else {
+            continue;
+        };
+        let now = reply["state"].as_str().unwrap_or_default().to_string();
+        if now.is_empty() || now == last {
+            continue;
+        }
+        last = now.clone();
+        let payload = qr_challenge(ticket, &now, &reply);
+        use tauri::Emitter as _;
+        let _ = app.emit("core://event", json!({
+            "event_id": format!("qr-{ticket}-{now}"),
+            "aggregate_id": ticket,
+            "aggregate_version": "1",
+            "event_type": "qr.state",
+            "server_time_ms": iso_ms(wxlike_core::types::now_ms() as i64),
+            "payload": payload,
+        }));
+        if matches!(now.as_str(), "APPROVED" | "EXPIRED" | "REJECTED") {
+            break;
+        }
+    }
+}
+
+
 
 fn qr_challenge(ticket: &str, state: &str, reply: &Value) -> Value {
     json!({

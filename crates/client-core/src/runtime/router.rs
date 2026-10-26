@@ -397,13 +397,7 @@ async fn conv_list(
     let me_id = me["user_id"].as_str().unwrap_or_default().to_string();
 
     let mut out: Vec<Value> = Vec::new();
-    if let Ok(groups) = get_json(
-        transport,
-        command,
-        "/api/groups/mine".to_string(),
-        deadline,
-    )
-    .await
+    if let Ok(groups) = get_json(transport, command, "/api/groups/mine".to_string(), deadline).await
     {
         for group in groups.as_array().cloned().unwrap_or_default() {
             let id = group["id"].as_str().unwrap_or_default().to_string();
@@ -415,8 +409,7 @@ async fn conv_list(
             }));
         }
     }
-    if let Ok(friends) = get_json(transport, command, "/api/friends".to_string(), deadline).await
-    {
+    if let Ok(friends) = get_json(transport, command, "/api/friends".to_string(), deadline).await {
         for friend in friends.as_array().cloned().unwrap_or_default() {
             let uid = friend["friend_id"].as_str().unwrap_or_default().to_string();
             if uid.is_empty() {
@@ -625,20 +618,15 @@ mod tests {
     #[tokio::test]
     async fn conv_list_composite_fans_out_to_groups_friends_and_unread() {
         let transport = ScriptTransport::with(vec![
-            (200, json!({"user_id": "alice"})),                       // /api/me
+            (200, json!({"user_id": "alice"})), // /api/me
             (200, json!([{"id": "g-1", "name": "群", "member_count": 3}])), // /api/groups/mine
-            (200, json!([{"friend_id": "bob"}])),                     // /api/friends
-            (200, json!({"unread": 2})),                              // 群未读
-            (200, json!({"unread": 5})),                              // 直聊未读
+            (200, json!([{"friend_id": "bob"}])), // /api/friends
+            (200, json!({"unread": 2})),        // 群未读
+            (200, json!({"unread": 5})),        // 直聊未读
         ]);
-        let value = composite(
-            &transport,
-            &action("conv.list"),
-            &json!({}),
-            None,
-        )
-        .await
-        .expect("复合 conv.list");
+        let value = composite(&transport, &action("conv.list"), &json!({}), None)
+            .await
+            .expect("复合 conv.list");
         let list = value.as_array().expect("数组");
         assert_eq!(list.len(), 2, "{value}");
         assert_eq!(list[0]["conv"], "g-1");
@@ -694,14 +682,9 @@ mod tests {
         assert_eq!(with_seq.paths(), vec!["/api/conv/g-1/read"]);
 
         let no_seq = ScriptTransport::with(vec![(200, json!({"ok": true}))]);
-        composite(
-            &no_seq,
-            &action("conv.ack"),
-            &json!({"conv": "g-1"}),
-            None,
-        )
-        .await
-        .expect("不带 seq");
+        composite(&no_seq, &action("conv.ack"), &json!({"conv": "g-1"}), None)
+            .await
+            .expect("不带 seq");
         assert_eq!(no_seq.paths(), vec!["/api/conv/g-1/read"]);
     }
 

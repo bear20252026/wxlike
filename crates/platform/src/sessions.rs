@@ -12,6 +12,9 @@
 //! 过期时间——这是 ADR-10 选 DB session 而非无状态 JWT 的核心理由。
 
 use axum::extract::{Path, State};
+
+/// device_id 的长度上限（客户端生成串，超长按畸形拒绝）。
+const DEVICE_ID_MAX_LEN: usize = 64;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -237,7 +240,7 @@ impl Platform {
 
     /// 下线一台设备：删会话 + 作废该设备全部刷新令牌。
     pub fn revoke_device_sessions(&self, user_id: &str, device_id: &str) -> Result<usize> {
-        if device_id.is_empty() || device_id.len() > 64 {
+        if device_id.is_empty() || device_id.len() > DEVICE_ID_MAX_LEN {
             return Err(PlatformError::BadInput("device_id malformed"));
         }
         let now = wxlike_core::types::now_ms() as i64;

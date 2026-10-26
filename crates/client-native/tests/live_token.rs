@@ -19,7 +19,12 @@ type HeaderLog = Arc<Mutex<Vec<Option<String>>>>;
 /// 127.0.0.1 的请求发给代理，连接直接断掉（os error 0）。
 fn drop_proxy_env() {
     for key in [
-        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
     ] {
         std::env::remove_var(key);
     }
@@ -122,10 +127,7 @@ async fn expired_deadline_fails_before_touching_the_network() {
         matches!(error, TransportError::Timeout),
         "应当是 Timeout， got {error:?}"
     );
-    assert!(
-        log.lock().unwrap().is_empty(),
-        "过期的请求不该发到网络"
-    );
+    assert!(log.lock().unwrap().is_empty(), "过期的请求不该发到网络");
 }
 
 /// 端到端（不依赖网络服务端，只依赖本地回环）：`NativeCore::open` 之后

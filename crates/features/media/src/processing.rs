@@ -28,6 +28,10 @@ use crate::model::{Artifact, Audience, JobState, ObjectRecord, Preset, Purpose, 
 use crate::store::stream_digest_file;
 use crate::{MediaService, GIB, MIB};
 
+/// 魔数嗅探框长（RIFF/WEBP/FTYP 的头部跨度）。
+pub const SNIFF_BOX_LEN: usize = 12;
+/// 探针 fallback 波形的字节数（与真实波形条数无关，仅占位）。
+pub const FALLBACK_WAVEFORM_BARS: usize = 64;
 pub const MAX_DURATION_MS: u64 = 2 * 3600 * 1000;
 pub const MAX_PIXELS: u64 = 3840 * 2160;
 pub const MAX_FRAMES: u64 = 30 * 60 * 30;
@@ -195,10 +199,10 @@ pub fn sniff_container(head: &[u8]) -> Result<&'static str> {
     if head.starts_with(GIF) {
         return Ok("image/gif");
     }
-    if head.starts_with(RIFF) && head.len() > 12 && &head[8..12] == WEBP {
+    if head.starts_with(RIFF) && head.len() > SNIFF_BOX_LEN && &head[8..SNIFF_BOX_LEN] == WEBP {
         return Ok("image/webp");
     }
-    if head.len() > 12 && &head[4..8] == FTYP {
+    if head.len() > SNIFF_BOX_LEN && &head[4..SNIFF_BOX_LEN] == FTYP {
         return Ok("video/mp4");
     }
     if head.starts_with(b"ELF") || head.starts_with(b"MZ") || head.starts_with(b"#!") {
@@ -1000,7 +1004,7 @@ impl TransformRunner for FixtureRunner {
                 "bars": vec![0u8; WAVEFORM_BARS],
                 "duration_ms": self.probe.duration_ms,
             }))?,
-            _ => vec![BYTE_MAX; 64],
+            _ => vec![BYTE_MAX; FALLBACK_WAVEFORM_BARS],
         };
         std::fs::write(&path, payload)?;
         Ok(vec![output_of(kind, path, mime)])

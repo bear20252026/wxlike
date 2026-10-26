@@ -121,10 +121,7 @@ async fn one_hundred_concurrent_transfers_conserve_the_total() {
         .collect();
 
     let results = futures_util::future::join_all(tasks).await;
-    let oks = results
-        .iter()
-        .filter(|r| matches!(r, Ok(Ok(_))))
-        .count();
+    let oks = results.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
     let panics = results.iter().filter(|r| r.is_err()).count();
     assert_eq!(panics, 0, "no task may panic");
     assert_eq!(oks, 100, "every transfer succeeded: {oks}");
@@ -1194,7 +1191,12 @@ async fn redpacket_row_is_readable_by_sender_and_members_only() {
     for (token, who) in [(&at, "sender"), (&bt, "member")] {
         let (status, body) = call(
             &app,
-            req("GET", &format!("/api/wallet/redpacket/{id}"), None, Some(token)),
+            req(
+                "GET",
+                &format!("/api/wallet/redpacket/{id}"),
+                None,
+                Some(token),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{who}: {body}");
@@ -1205,10 +1207,19 @@ async fn redpacket_row_is_readable_by_sender_and_members_only() {
     // 局外人：404（不确认存在性）
     let (status, _) = call(
         &app,
-        req("GET", &format!("/api/wallet/redpacket/{id}"), None, Some(&mt)),
+        req(
+            "GET",
+            &format!("/api/wallet/redpacket/{id}"),
+            None,
+            Some(&mt),
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "mallory must not see it: {status}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "mallory must not see it: {status}"
+    );
     let _ = mallory;
 }
 
@@ -1243,7 +1254,10 @@ async fn ledger_response_shape_is_entries_cursor_has_more() {
         &app,
         req(
             "GET",
-            &format!("/api/wallet/ledger?since={}", body["cursor"].as_i64().unwrap()),
+            &format!(
+                "/api/wallet/ledger?since={}",
+                body["cursor"].as_i64().unwrap()
+            ),
             None,
             Some(&at),
         ),
@@ -1252,4 +1266,3 @@ async fn ledger_response_shape_is_entries_cursor_has_more() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["has_more"].as_bool(), Some(false), "{body}");
 }
-

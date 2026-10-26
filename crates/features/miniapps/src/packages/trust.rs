@@ -210,7 +210,7 @@ fn verify_ed25519(key: &VerifyingKey, message: &[u8], sig_hex: &str) -> Result<(
 
 /// Deterministic keypair for fixtures (never use in production).
 pub fn fixture_key(seed: u8) -> SigningKey {
-    SigningKey::from_bytes(&[seed; 32])
+    SigningKey::from_bytes(&[seed; ED25519_KEY_LEN])
 }
 
 /// Fingerprint used by tests and the CLI to display a key.
