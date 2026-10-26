@@ -91,6 +91,9 @@ struct Shared {
     closed: AtomicBool,
     /// 用于生成 request_id（单调，避免随机数依赖）。
     sequence: AtomicU64,
+    /// 工作线程退出信号：dispose 带超时等它，而不是无限 join。
+    worker_exited: Mutex<bool>,
+    worker_exit_signal: Condvar,
 }
 
 impl Shared {
@@ -164,6 +167,18 @@ impl CoreHandle {
 }
 
 /// 工作线程主循环：取一条、跑一条、写结果。
+///
+/// 三条本轮修的硬规则：
+///
+/// * **每条任务 catch_unwind**：一条命令把 Rust 侧 panic 了（例如底层
+///   库的断言），转成 error 结果继续服务下一条——工作线程死了整条
+///   FFI 通道就没了；
+/// * **后台补发**：空闲节拍上顺带跑一轮 outbox 补发（原生侧的
+///   `NativeCore::start_pump` 依赖常驻 tokio 运行时，而这里的 runtime
+///   只在 `block_on` 期间有进展——所以泵改由本循环按节拍驱动，语义等价：
+///   worker 活着，待发消息就有人管）；
+/// * **取消记录用完即清**：完成的 request_id 从 `cancelled` 里移除，
+///   否则 HashSet 随会话寿命无限增长。
 fn run_worker(shared: Arc<Shared>, core: NativeCore) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -175,9 +190,11 @@ fn run_worker(shared: Arc<Shared>, core: NativeCore) {
                 json!({"kind": "fatal", "message": format!("tokio 运行时创建失败：{err}")})
                     .to_string(),
             );
+            note_worker_exit(&shared);
             return;
         }
     };
+    let mut last_pump = std::time::Instant::now();
     loop {
         if shared.closed.load(Ordering::SeqCst) {
             break;
@@ -194,20 +211,42 @@ fn run_worker(shared: Arc<Shared>, core: NativeCore) {
             jobs.pop_front()
         };
         let Some(job) = job else {
+            // 空闲节拍：驱动一轮补发（有界频率，空闲时每 PUMP_INTERVAL_MS 一次）
+            if last_pump.elapsed() >= Duration::from_millis(PUMP_INTERVAL_MS) {
+                last_pump = std::time::Instant::now();
+                let _ = runtime.block_on(core.pump_now(PUMP_BATCH));
+            }
             continue;
         };
         if shared.is_cancelled(&job.request_id) {
             shared
                 .results
                 .push(error_json(&job.request_id, &DomainError::cancelled()));
+            forget_cancelled(&shared, &job.request_id);
             continue;
         }
-        let outcome = runtime.block_on(core.dispatch(job.request.clone()));
+        // 单条任务的 panic 边界：坏了这一条，不坏整个通道
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            runtime.block_on(core.dispatch(job.request.clone()))
+        }))
+        .unwrap_or_else(|panic| {
+            let detail = panic
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "未知 panic".to_string());
+            wxlike_types::ActionResult::failed(
+                job.request.action_id.clone(),
+                DomainError::internal(format!("Rust panic：{detail}")),
+                0,
+            )
+        });
         if shared.is_cancelled(&job.request_id) {
             // 已经取消：结果丢弃，但把"已取消"回给调用方（否则 UI 会一直等）
             shared
                 .results
                 .push(error_json(&job.request_id, &DomainError::cancelled()));
+            forget_cancelled(&shared, &job.request_id);
             continue;
         }
         match &outcome.outcome {
@@ -216,12 +255,36 @@ fn run_worker(shared: Arc<Shared>, core: NativeCore) {
             }
             _ => shared.results.push(result_json(&job.request_id, &outcome)),
         }
+        forget_cancelled(&shared, &job.request_id);
     }
     core.shutdown();
+    note_worker_exit(&shared);
 }
 
-/// 工作线程空闲等待的节拍（毫秒）。只影响"销毁后多久退出"。
+/// 取消记录用完即清：HashSet 不随会话寿命增长。
+fn forget_cancelled(shared: &Shared, request_id: &str) {
+    shared
+        .cancelled
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(request_id);
+}
+
+/// 工作线程退出后叫醒 dispose 的等待者。
+fn note_worker_exit(shared: &Shared) {
+    let mut exited = shared.worker_exited.lock().unwrap_or_else(|e| e.into_inner());
+    *exited = true;
+    shared.worker_exit_signal.notify_all();
+}
+
+/// 工作线程空闲等待的节拍（毫秒）。只影响"销毁后多久退出"与补发频率。
 const WORKER_TICK_MS: u64 = 100;
+/// 空闲时驱动补发的间隔（毫秒）。与桌面端 pump 的建议节拍一致。
+const PUMP_INTERVAL_MS: u64 = 5_000;
+/// 一轮补发最多处理几条（与 `NativeCore` 一致）。
+const PUMP_BATCH: u32 = 20;
+/// dispose 最多等多久让工作线程退出；超时就放手（句柄 drop = 分离线程）。
+const DISPOSE_TIMEOUT_MS: u64 = 2_000;
 
 #[uniffi::export]
 impl CoreHandle {
@@ -254,6 +317,8 @@ impl CoreHandle {
                 cancelled: Mutex::new(HashSet::new()),
                 closed: AtomicBool::new(false),
                 sequence: AtomicU64::new(1),
+                worker_exited: Mutex::new(false),
+                worker_exit_signal: Condvar::new(),
             });
             Ok(Arc::new(Self::new(shared, core)))
         })
@@ -315,13 +380,40 @@ impl CoreHandle {
     }
 
     /// 销毁：停工作线程、取消在飞请求、释放单实例锁。幂等。
+    ///
+    /// 等工作线程退出**有上限**（[`DISPOSE_TIMEOUT_MS`]）：曾经是无限
+    /// `join()`——一条 10 秒的 HTTP 请求能把 Dart 的销毁路径卡 10 秒。
+    /// 超时后放弃等待（JoinHandle drop = 线程分离），锁由工作线程退出时
+    /// 的 `core.shutdown()` 释放。
     pub fn dispose(&self) {
         self.shared.closed.store(true, Ordering::SeqCst);
         self.shared.job_signal.notify_all();
         let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = worker.take() {
-            // 等它退出：最多一秒，超时就不等了（进程要退的时候不能卡住）
-            let _ = handle.join();
+            let exited = {
+                let flag = self
+                    .shared
+                    .worker_exited
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let (flag, _timeout) = self
+                    .shared
+                    .worker_exit_signal
+                    .wait_timeout_while(
+                        flag,
+                        Duration::from_millis(DISPOSE_TIMEOUT_MS),
+                        |exited| !*exited,
+                    )
+                    .unwrap_or_else(|e| e.into_inner());
+                *flag
+            };
+            if exited {
+                // 已退出：join 只回收句柄，立刻返回
+                let _ = handle.join();
+            } else {
+                // 超时：分离线程（drop JoinHandle），不再阻塞 Dart
+                drop(handle);
+            }
         }
     }
 }

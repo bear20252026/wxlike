@@ -433,26 +433,62 @@ fn build_app(
     handle: HubHandle,
     deps: Arc<HistoryDeps>,
 ) -> Router {
+    let admin_platform = platform.clone();
+    let endpoints_platform = platform.clone();
     Router::new()
         .route("/health", get(health))
-        .route("/metrics", get(metrics))
+        // /metrics 是运维面：没配 admin token 就当"这个路径不存在"（404），
+        // 配了也要 `x-admin-token` 对上——暴露实例的连接数/积压/延迟分布
+        // 等于把容量与攻击面清单送给匿名来访者。
+        .route(
+            "/metrics",
+            get(move |headers: axum::http::HeaderMap| {
+                let platform = admin_platform.clone();
+                async move {
+                    let presented = headers
+                        .get("x-admin-token")
+                        .and_then(|v| v.to_str().ok());
+                    if !platform.admin_ok(presented) {
+                        return (
+                            StatusCode::NOT_FOUND,
+                            Json(serde_json::json!({"error": "not found"})),
+                        )
+                            .into_response();
+                    }
+                    metrics().await.into_response()
+                }
+            }),
+        )
+        // /endpoints 报出 QUIC 地址：匿名可达等于把内网拓扑广播出去，
+        // 与 presence 同口径收紧为登录可见（审计第 5 轮）。
         .route(
             "/endpoints",
-            get(move || {
+            get(move |headers: axum::http::HeaderMap| {
+                let platform = endpoints_platform.clone();
                 let hub_id = hub_id.clone();
                 async move {
+                    let caller = wxlike_platform::Authed::bearer_from(&headers)
+                        .and_then(|t| platform.lookup_token(t).ok().flatten());
+                    if caller.is_none() {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({"error": "login required"})),
+                        )
+                            .into_response();
+                    }
                     Json(serde_json::json!({
                         "hub": hub_id,
                         "quic": quic_addr.to_string(),
                         "alpn": "wxlike/1",
                     }))
+                    .into_response()
                 }
             }),
         )
         .merge(wxlike_platform::Platform::router(platform.clone()))
         .merge(wxlike_video::routes(video_state))
         .merge(ws_routes(handle.clone()))
-        .merge(presence_routes(handle.clone()))
+        .merge(presence_routes(handle.clone(), platform.clone()))
         .merge(history_routes(deps))
         .merge(web_static::routes())
         .merge(dev_routes(platform.clone()))
@@ -524,19 +560,26 @@ fn ws_routes(handle: HubHandle) -> Router {
     )
 }
 
-fn presence_routes(handle: HubHandle) -> Router {
-    Router::new().route(
-        "/api/presence/{user_id}",
-        get(
-            move |axum::extract::Path(user_id): axum::extract::Path<String>| {
-                let handle = handle.clone();
-                async move {
-                    let online = handle.is_online(&user_id).await;
-                    axum::Json(serde_json::json!({ "user_id": user_id, "online": online }))
-                }
-            },
-        ),
-    )
+/// 在线状态是隐私预言机（"这个用户现在有没有开着 App"），不是公开信息：
+/// 匿名枚举 `/api/presence/{user_id}` 等于把全站的活跃画像送给任何人。
+/// 与平台 `Authed` 同一套会话校验（审计第 5 轮收紧）。
+fn presence_routes(handle: HubHandle, platform: PlatformState) -> Router {
+    Router::new()
+        .route(
+            "/api/presence/{user_id}",
+            get(
+                move |_state: State<PlatformState>,
+                      _authed: Authed,
+                      axum::extract::Path(user_id): axum::extract::Path<String>| {
+                    let handle = handle.clone();
+                    async move {
+                        let online = handle.is_online(&user_id).await;
+                        axum::Json(serde_json::json!({ "user_id": user_id, "online": online }))
+                    }
+                },
+            ),
+        )
+        .with_state(platform)
 }
 
 /// The NatsRoutes table shares the backend's JetStream context.
@@ -636,10 +679,20 @@ pub fn authorize_conv(platform: &Platform, user_id: &str, conv_id: &str) -> bool
 
 /// Every conversation whose messages `user_id` may see: their groups plus the
 /// direct pairs they belong to that actually have rows.
+///
+/// # 已知性能债（审计第 5 轮挂账）
+///
+/// `list_conversations()` 是全表扫描，直聊会话只有 id 两半可查（store 的
+/// `conversations` 表没有可下推的成员索引）。加 `conversations_of_user`
+/// 或 members 索引要动 `crates/core`——不在本轮可改范围。当下先封顶单次
+/// 请求的授权循环工作量：只看最近活跃的 [`MAX_DIRECT_CONV_SCAN`] 个
+/// 会话，更旧的直聊不进搜索范围（history 与实时投递不受影响）。
+pub const MAX_DIRECT_CONV_SCAN: usize = 500;
+
 pub fn allowed_convs(platform: &Platform, store: &Store, user_id: &str) -> Vec<String> {
     let mut convs = platform.groups_of_user(user_id).unwrap_or_default();
     if let Ok(all) = store.list_conversations() {
-        for conv in all {
+        for conv in all.into_iter().take(MAX_DIRECT_CONV_SCAN) {
             if conv.id.starts_with("d-") && authorize_conv(platform, user_id, &conv.id) {
                 convs.push(conv.id);
             }
@@ -709,6 +762,14 @@ fn hex(id: MsgId) -> String {
     hex::encode(id)
 }
 
+/// 5xx 的统一出口：底层错误（SQLite/邮箱/hub）的原文可能带文件路径、
+/// SQL 文本或锁细节，**不进响应体**——全量落日志，客户端拿固定一句。
+/// 审计第 5 轮：此前各 handler 直接 `e.to_string()`。
+fn internal(err: impl std::fmt::Display) -> (StatusCode, String) {
+    tracing::error!(error = %err, "history/search handler failed");
+    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+}
+
 /// Bearer auth for the history/search routes. Same token semantics as the
 /// platform's [`Authed`]; it exists only because those routes carry
 /// `Arc<HistoryDeps>` as state and `Authed` is implemented over
@@ -771,14 +832,14 @@ async fn history_page(
     let (page, next) = deps
         .mailbox
         .fetch_before((owner, &conv_id), before.max(0) as u64, limit)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
 
     if page.is_empty() {
         // 老数据（镜像之前写入的）没有信箱行：退回归档分页，保证历史不丢
         let (rows, next) = deps
             .store
             .page_messages(&conv_id, before, limit)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal)?;
         let messages: Vec<_> = rows
             .iter()
             .map(message_json)
@@ -856,7 +917,7 @@ async fn send_message(
     deps.hub
         .submit(&authed.user_id, &env)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
 
     Ok(Json(serde_json::json!({
         "msg_id": hex(env.msg_id),
@@ -894,7 +955,7 @@ async fn recall_message(
     let author = deps
         .store
         .author_of(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
     match author {
         None => return Err((StatusCode::NOT_FOUND, "no such message".into())),
         Some(author) if author != authed.user_id => {
@@ -907,7 +968,7 @@ async fn recall_message(
     deps.hub
         .submit(&authed.user_id, &env)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
     Ok(Json(serde_json::json!({
         "recalled": true,
         "msg_id": body.msg_id,
@@ -950,7 +1011,7 @@ async fn forward_message(
     if deps
         .platform
         .is_secret_conv(&body.from_conv)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal)?
     {
         return Err((
             StatusCode::FORBIDDEN,
@@ -961,7 +1022,7 @@ async fn forward_message(
     if deps
         .platform
         .is_secret_conv(&to_conv)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal)?
     {
         return Err((
             StatusCode::FORBIDDEN,
@@ -973,7 +1034,7 @@ async fn forward_message(
     let mut found = deps
         .store
         .by_msg_ids(std::slice::from_ref(&id))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
     let Some(row) = found.remove(&id) else {
         return Err((StatusCode::NOT_FOUND, "no such message".into()));
     };
@@ -1010,7 +1071,7 @@ async fn forward_message(
     deps.hub
         .submit(&authed.user_id, &env)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
     Ok(Json(serde_json::json!({
         "forwarded": true,
         "conv_id": to_conv,
@@ -1035,7 +1096,7 @@ async fn one_message(
     let mut found = deps
         .store
         .by_msg_ids(std::slice::from_ref(&id))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
     let Some(row) = found.remove(&id) else {
         return Err((StatusCode::NOT_FOUND, "no such message".into()));
     };
@@ -1084,7 +1145,7 @@ async fn search_messages(
     let candidates = deps
         .search
         .search(needle, &convs, limit)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal)?;
 
     let mut results = Vec::new();
     for hit in candidates {

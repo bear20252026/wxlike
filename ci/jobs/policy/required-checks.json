@@ -12,6 +12,7 @@
     "contract",
     "wasm",
     "ui",
+    "web-v2",
     "flutter",
     "desktop",
     "desktop-package",

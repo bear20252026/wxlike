@@ -9,7 +9,7 @@
     ".cargo/**",
     "deny.toml",
     "clippy.toml",
-    ".typos.toml",
+    "_typos.toml",
     "contracts/**",
     "crates/types/**"
   ],
@@ -36,7 +36,10 @@
     ],
     "ui": [
       "ui/**",
-      "scripts/build-web.sh"
+      "apps/desktop-web/**",
+      "packages/**",
+      "scripts/build-web.sh",
+      "scripts/build-web-v2.sh"
     ],
     "desktop": [
       "ui/**",

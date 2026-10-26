@@ -63,8 +63,18 @@ services:
   # `docker compose config` 直接报
   # `volumes.nats additional properties 'command','healthcheck','image','ports' not allowed`，
   # 也就是"一条命令启动"的承诺从来没成立过（issue #16）。
+  #
+  # 镜像/健康检查口径：
+  #   * `nats:2-alpine`（不是 `nats:2`）—— alpine 自带 busybox `wget`，
+  #     下面的 healthcheck 才真的能跑；debian 版 nats 镜像里没有 wget，
+  #     healthcheck 会永远失败。
+  #   * 本地 dev 栈按 tag 固定（redis:7-alpine / nats:2-alpine /
+  #     chrislusf/seaweedfs:3.80），**偏离** CI 对 `docker://` 镜像的
+  #     `@sha256:` digest 政策（见 ci/jobs/policy/action-pins.json）——
+  #     这是刻意的：本地栈要能拿安全补丁，生产镜像走 release 工作流
+  #     （构建后按 digest 引用，不改这里）。
   nats:
-    image: nats:2
+    image: nats:2-alpine
     command: ["-js", "-m", "8222"]
     profiles: ["nats"]
     ports:

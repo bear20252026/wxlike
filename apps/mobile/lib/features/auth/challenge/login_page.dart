@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../platform/platform_ports.dart';
 import '../../../shell/theme.dart';
@@ -198,28 +198,22 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _topBar(Color subtle) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        IconButton(
-          key: const Key('login-cancel'),
-          onPressed: () => Navigator.of(context).maybePop(),
-          icon: const Icon(Icons.close, size: 18),
+    // 登录页是根路由，没有"关闭"可言；这里只留语言切换。
+    return Align(
+      alignment: Alignment.centerRight,
+      child: PopupMenuButton<String>(
+        key: const Key('login-language'),
+        tooltip: '语言 / Language',
+        onSelected: _auth.setLocale,
+        itemBuilder: (_) => const [
+          PopupMenuItem(value: 'zh', child: Text('简体中文')),
+          PopupMenuItem(value: 'en', child: Text('English')),
+        ],
+        child: Text(
+          _t('language'),
+          style: const TextStyle(color: WxColors.link, fontSize: 11),
         ),
-        PopupMenuButton<String>(
-          key: const Key('login-language'),
-          tooltip: '语言 / Language',
-          onSelected: _auth.setLocale,
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'zh', child: Text('简体中文')),
-            PopupMenuItem(value: 'en', child: Text('English')),
-          ],
-          child: Text(
-            _t('language'),
-            style: const TextStyle(color: WxColors.link, fontSize: 11),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
@@ -256,7 +250,7 @@ class _LoginPageState extends State<LoginPage> {
               controller: _phone,
               enabled: !_auth.sending && !_auth.verifying,
               keyboardType: TextInputType.phone,
-              inputFormatters: const [],
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: _auth.setPhone,
               style: TextStyle(fontSize: 16, color: textColor, letterSpacing: 0.4),
               decoration: InputDecoration(
@@ -429,13 +423,9 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
+  /// 账号密码通道在发布版也必须可达：identity（短信/扫码）未接线时，
+  /// 这是唯一能登录的路径，不能只在 debug 里放行。
   Future<void> _openAccountLogin() async {
-    if (kReleaseMode) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('其他登录方式需 identity.oauth；发布版不提供开发通道')),
-      );
-      return;
-    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => AccountLoginPage(
@@ -508,7 +498,7 @@ class _AccountLoginPageState extends State<AccountLoginPage> {
   Widget build(BuildContext context) {
     final ready = _name.text.trim().isNotEmpty && _password.text.isNotEmpty && !_busy;
     return Scaffold(
-      appBar: AppBar(title: const Text('账号密码（开发通道）')),
+      appBar: AppBar(title: const Text('账号密码登录')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -518,7 +508,7 @@ class _AccountLoginPageState extends State<AccountLoginPage> {
             keyboardType: TextInputType.url,
             decoration: const InputDecoration(
               labelText: '服务器地址',
-              helperText: '发布版不显示本通道；真机填开发机局域网地址',
+              helperText: '默认服务器由 WXLIKE_SERVER 覆盖；真机联调填开发机局域网地址',
               border: OutlineInputBorder(),
             ),
           ),

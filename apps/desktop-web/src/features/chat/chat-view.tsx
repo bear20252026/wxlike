@@ -59,7 +59,7 @@ export function ChatView({ conv }: { conv: Conversation }) {
   const state = useAppState();
   const dispatch = useCoreAction();
   const toast = useToast();
-  const { platform } = useApp();
+  const { platform, store, core } = useApp();
   const [pageRows, setPageRows] = useState<ChatMessage[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -76,7 +76,7 @@ export function ChatView({ conv }: { conv: Conversation }) {
   const loadTicket = useRef(0);
   const lastReadAt = useRef(0);
 
-  const storeRows = state.messages[conv.conv_id] ?? [];
+  const storeRows = useMemo(() => state.messages[conv.conv_id] ?? [], [state.messages, conv.conv_id]);
   const messages = useMemo(() => mergeMessages([...pageRows, ...storeRows]), [pageRows, storeRows]);
   const groupLike = conv.kind === "group";
   const peer = conv.peer_user_id ? state.contacts.find((contact) => contact.user_id === conv.peer_user_id) : undefined;
@@ -145,6 +145,10 @@ export function ChatView({ conv }: { conv: Conversation }) {
         const node = scrollerRef.current;
         if (node) node.scrollTop += node.scrollHeight - previousHeight;
       });
+    } else if (ticket === loadTicket.current && !response.ok) {
+      // Loading older history failed: surface it via the central error policy
+      // instead of silently leaving the user with a truncated history.
+      await store.handleError(core, response.error);
     }
     setLoadingOlder(false);
   };
@@ -180,11 +184,13 @@ export function ChatView({ conv }: { conv: Conversation }) {
   };
 
   const playMedia = (message: ChatMessage) => {
+    // Informational, not an error: the media exists, this host just cannot
+    // play it yet (G04 blob read is not mounted).
     toast(
       message.body.media_id
         ? `媒体 ${message.body.media_id} 由 G04 媒体服务提供；当前宿主未挂载 blob 读取接口，无法在此播放`
         : "该消息没有可读取的媒体内容",
-      "error",
+      "info",
     );
   };
 

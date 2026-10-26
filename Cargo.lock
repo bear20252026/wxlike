@@ -6560,6 +6560,7 @@ dependencies = [
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
  "rand 0.8.8",
  "serde",
  "serde_json",

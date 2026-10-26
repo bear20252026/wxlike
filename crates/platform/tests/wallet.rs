@@ -5,7 +5,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{app, call, req, signup, Recorder};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use wxlike_core::MsgBody;
 use wxlike_platform::{Platform, PlatformOptions, PlatformState};
@@ -107,35 +107,23 @@ async fn one_hundred_concurrent_transfers_conserve_the_total() {
     let (bob, _bt) = signup(&app, "bob").await;
     st.fund(&alice, 500, "test funding").unwrap();
 
+    // 100 笔并发走**库层**直调（`Platform::transfer`）：HTTP 面自审计第 5 轮
+    // 起把 `POST /api/wallet/transfer` 挂进了 Send 写闸门（默认窗口 20 笔就
+    // 限流），再从这里打 HTTP 只能测到 429。守恒不变式属于账本，不属于
+    // 传输层——HTTP 形状与幂等另有用例（transfers_over_http / idempotency_*）。
     let tasks: Vec<_> = (0..100)
         .map(|_| {
-            let app = app.clone();
-            let at = at.clone();
+            let st = st.clone();
+            let alice = alice.clone();
             let bob = bob.clone();
-            tokio::spawn(async move {
-                let (status, body) = call(
-                    &app,
-                    req(
-                        "POST",
-                        "/api/wallet/transfer",
-                        Some(json!({"to_uid": bob, "amount": 1})),
-                        Some(&at),
-                    ),
-                )
-                .await;
-                (status, body)
-            })
+            tokio::task::spawn_blocking(move || st.transfer(&alice, &bob, 1, ""))
         })
         .collect();
 
     let results = futures_util::future::join_all(tasks).await;
     let oks = results
         .iter()
-        .filter(|r| {
-            r.as_ref()
-                .map(|(s, _)| *s == StatusCode::OK)
-                .unwrap_or(false)
-        })
+        .filter(|r| matches!(r, Ok(Ok(_))))
         .count();
     let panics = results.iter().filter(|r| r.is_err()).count();
     assert_eq!(panics, 0, "no task may panic");
@@ -899,6 +887,19 @@ async fn every_wallet_action_emits_a_custom_message_in_the_right_conversation() 
     let (alice, at) = signup(&app, "alice").await;
     let (bob, bt) = signup(&app, "bob").await;
     st.fund(&alice, 1_000, "test funding").unwrap();
+    // 红包要发进发送者可读的真实会话（authz，审计第 5 轮）：建两人的群
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/groups",
+            Some(json!({"name": "wallet-scene", "member_ids": [bob.clone()]})),
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create group: {body}");
+    let conv = body["group_id"].as_str().unwrap().to_string();
     rec.take();
 
     topup(&app, &at, &bob, 100).await;
@@ -910,20 +911,21 @@ async fn every_wallet_action_emits_a_custom_message_in_the_right_conversation() 
     );
     assert_eq!(transfer_event.to, vec![bob.clone()]);
 
-    let (_, body) = call(
+    let (status, body) = call(
         &app,
         req(
             "POST",
             "/api/wallet/redpacket",
-            Some(json!({"amount": 20, "count": 2, "conv_id": "g1"})),
+            Some(json!({"amount": 20, "count": 2, "conv_id": conv})),
             Some(&at),
         ),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let id = body["redpacket_id"].as_str().unwrap().to_string();
     let packet_event = rec.take().pop().expect("packet announcement");
     assert_eq!(
-        packet_event.conv_id, "g1",
+        packet_event.conv_id, conv,
         "posted into the conversation it names"
     );
 
@@ -939,7 +941,7 @@ async fn every_wallet_action_emits_a_custom_message_in_the_right_conversation() 
     .await;
     let claim_event = rec.take().pop().expect("claim announcement");
     assert_eq!(
-        claim_event.conv_id, "g1",
+        claim_event.conv_id, conv,
         "the claim rides the same conversation"
     );
     assert_eq!(claim_event.sender, bob);
@@ -962,3 +964,292 @@ async fn every_wallet_action_emits_a_custom_message_in_the_right_conversation() 
     // funding is a domain-only seam: no HTTP endpoint, no announcement
     assert_eq!(st.money_supply().unwrap(), 1_000);
 }
+
+// ---------------------------------------------------------------------------
+// 审计第 5 轮：幂等键、红包 authz、GET 红包、ledger 回包形状
+// ---------------------------------------------------------------------------
+
+/// 带自定义头的 POST（`common::req` 不支持额外头）。
+async fn post_with_header(
+    app: &axum::Router,
+    path: &str,
+    body: Value,
+    token: &str,
+    header: (&str, &str),
+) -> (StatusCode, Value) {
+    use axum::body::Body;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header.0, header.1)
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(request).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, value)
+}
+
+#[tokio::test]
+async fn idempotency_key_replays_one_transfer_and_rejects_param_drift() {
+    let (st, rec) = scene().await;
+    let app = app(st.clone());
+    let (alice, at) = signup(&app, "alice_idem").await;
+    let (bob, _) = signup(&app, "bob_idem").await;
+    st.fund(&alice, 10_000, "test").unwrap();
+
+    let body = json!({"to_uid": bob, "amount": 100, "memo": "rent"});
+    let (s1, b1) = post_with_header(
+        &app,
+        "/api/wallet/transfer",
+        body.clone(),
+        &at,
+        ("Idempotency-Key", "key-1"),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "{b1}");
+    let transfer_id = b1["transfer_id"].as_str().unwrap().to_string();
+
+    // 同键同参：重放同一结果，不再扣第二笔
+    let (s2, b2) = post_with_header(
+        &app,
+        "/api/wallet/transfer",
+        body,
+        &at,
+        ("Idempotency-Key", "key-1"),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "{b2}");
+    assert_eq!(b2["transfer_id"].as_str(), Some(transfer_id.as_str()));
+    assert_eq!(
+        st.wallet_balance(&alice).unwrap(),
+        10_000 - 100,
+        "replay must not move money twice"
+    );
+
+    // 同键异参：409
+    let (s3, b3) = post_with_header(
+        &app,
+        "/api/wallet/transfer",
+        json!({"to_uid": bob, "amount": 999, "memo": "rent"}),
+        &at,
+        ("Idempotency-Key", "key-1"),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::CONFLICT, "{b3}");
+    assert_eq!(st.wallet_balance(&alice).unwrap(), 10_000 - 100);
+
+    // 不带键：各转各的
+    let (s4, _) = call(
+        &app,
+        req(
+            "POST",
+            "/api/wallet/transfer",
+            Some(json!({"to_uid": bob, "amount": 100, "memo": "rent"})),
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(s4, StatusCode::OK);
+    assert_eq!(st.wallet_balance(&alice).unwrap(), 10_000 - 200);
+    let _ = rec.take();
+}
+
+#[tokio::test]
+async fn idempotency_key_applies_to_redpackets_too() {
+    let (st, _rec) = scene().await;
+    let app = app(st.clone());
+    let (alice, at) = signup(&app, "alice_rp_idem").await;
+    let (bob, _) = signup(&app, "bob_rp_idem").await;
+    st.fund(&alice, 10_000, "test").unwrap();
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+
+    let body = json!({"amount": 300, "count": 2, "conv_id": conv});
+    let (s1, b1) = post_with_header(
+        &app,
+        "/api/wallet/redpacket",
+        body.clone(),
+        &at,
+        ("Idempotency-Key", "rp-1"),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "{b1}");
+    let id = b1["redpacket_id"].as_str().unwrap().to_string();
+
+    let (s2, b2) = post_with_header(
+        &app,
+        "/api/wallet/redpacket",
+        body,
+        &at,
+        ("Idempotency-Key", "rp-1"),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "{b2}");
+    assert_eq!(b2["redpacket_id"].as_str(), Some(id.as_str()));
+    assert_eq!(
+        st.wallet_balance(&alice).unwrap(),
+        10_000 - 300,
+        "replay must not freeze money twice"
+    );
+}
+
+#[tokio::test]
+async fn redpacket_into_a_conversation_you_cannot_read_is_forbidden() {
+    let (st, _rec) = scene().await;
+    let app = app(st.clone());
+    let (alice, at) = signup(&app, "alice_authz").await;
+    let (bob, bt) = signup(&app, "bob_authz").await;
+    let (carol, _) = signup(&app, "carol_authz").await;
+    st.fund(&alice, 10_000, "test").unwrap();
+
+    // bob 与 carol 的直聊，alice 读不了
+    let others_dm = wxlike_platform::direct_conv_id(&bob, &carol);
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/wallet/redpacket",
+            Some(json!({"amount": 100, "count": 1, "conv_id": others_dm})),
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(st.money_supply().unwrap(), 10_000, "钱没被动过");
+    assert!(st.total_money().unwrap() >= 0);
+
+    // 群也一样：不是成员就发不进去
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/groups",
+            Some(json!({"name": "no-alice", "member_ids": [carol.clone()]})),
+            Some(&bt),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let group = body["group_id"].as_str().unwrap().to_string();
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/wallet/redpacket",
+            Some(json!({"amount": 100, "count": 1, "conv_id": group})),
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // 自己的直聊照常可发（对照，防止 authz 一刀切）
+    let mine = wxlike_platform::direct_conv_id(&alice, &bob);
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/wallet/redpacket",
+            Some(json!({"amount": 100, "count": 1, "conv_id": mine})),
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn redpacket_row_is_readable_by_sender_and_members_only() {
+    let (st, _rec) = scene().await;
+    let app = app(st.clone());
+    let (alice, at) = signup(&app, "alice_row").await;
+    let (bob, bt) = signup(&app, "bob_row").await;
+    let (mallory, mt) = signup(&app, "mallory_row").await;
+    st.fund(&alice, 1_000, "test").unwrap();
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+
+    let (_, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/wallet/redpacket",
+            Some(json!({"amount": 200, "count": 2, "conv_id": conv})),
+            Some(&at),
+        ),
+    )
+    .await;
+    let id = body["redpacket_id"].as_str().unwrap().to_string();
+
+    for (token, who) in [(&at, "sender"), (&bt, "member")] {
+        let (status, body) = call(
+            &app,
+            req("GET", &format!("/api/wallet/redpacket/{id}"), None, Some(token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{who}: {body}");
+        assert_eq!(body["id"].as_str(), Some(id.as_str()));
+        assert_eq!(body["total"].as_i64(), Some(200));
+        assert_eq!(body["status"].as_str(), Some("open"));
+    }
+    // 局外人：404（不确认存在性）
+    let (status, _) = call(
+        &app,
+        req("GET", &format!("/api/wallet/redpacket/{id}"), None, Some(&mt)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "mallory must not see it: {status}");
+    let _ = mallory;
+}
+
+/// 钉死 UI 正在映射的回包形状：`{entries, cursor, has_more}`（审计第 5 轮：
+/// 服务端不改形状，用测试把它锁住，防止后续改动静默破坏客户端）。
+#[tokio::test]
+async fn ledger_response_shape_is_entries_cursor_has_more() {
+    let (st, _rec) = scene().await;
+    let app = app(st.clone());
+    let (alice, at) = signup(&app, "alice_shape").await;
+    let (bob, _) = signup(&app, "bob_shape").await;
+    st.fund(&alice, 5_000, "test").unwrap();
+    topup(&app, &at, &bob, 100).await;
+    topup(&app, &at, &bob, 200).await;
+
+    let (status, body) = call(
+        &app,
+        req("GET", "/api/wallet/ledger?since=0&limit=1", None, Some(&at)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for key in ["entries", "cursor", "has_more"] {
+        assert!(body.get(key).is_some(), "missing `{key}`: {body}");
+    }
+    let entries = body["entries"].as_array().expect("entries is a list");
+    assert_eq!(entries.len(), 1, "limit=1 → one entry: {body}");
+    assert_eq!(body["has_more"].as_bool(), Some(true), "{body}");
+    assert!(body["cursor"].as_i64().unwrap_or(0) > 0, "{body}");
+
+    // 尾页：不足一页 → has_more=false
+    let (status, body) = call(
+        &app,
+        req(
+            "GET",
+            &format!("/api/wallet/ledger?since={}", body["cursor"].as_i64().unwrap()),
+            None,
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["has_more"].as_bool(), Some(false), "{body}");
+}
+

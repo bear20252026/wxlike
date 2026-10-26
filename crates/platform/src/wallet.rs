@@ -17,7 +17,7 @@
 //! channel would plug into later.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rand::Rng as _;
@@ -43,10 +43,16 @@ pub mod kind {
 /// Red packets expire after 24 h (contract).
 pub const REDPACKET_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// `Idempotency-Key` 的有效期：同键同参在这段时间内重放同一结果。
+pub const IDEMPOTENCY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// 幂等键长度上限（`Idempotency-Key` 头）。
+const IDEM_KEY_MAX: usize = 128;
+
 pub fn routes() -> Router<PlatformState> {
     Router::new()
         .route("/api/wallet/transfer", post(transfer))
         .route("/api/wallet/redpacket", post(create_redpacket))
+        .route("/api/wallet/redpacket/{id}", get(redpacket_get))
         .route("/api/wallet/redpacket/{id}/claim", post(claim))
         .route("/api/wallet/balance", get(balance))
         .route("/api/wallet/ledger", get(ledger))
@@ -290,6 +296,49 @@ impl Platform {
         )?)
     }
 
+    // ---- 写接口幂等（Idempotency-Key，审计第 5 轮）-----------------------
+    //
+    // `wallet_idem(user_id, key) -> (request_hash, response)`。同键同参 →
+    // 重放存储的结果（不再动账、不再发卡片）；同键异参 → 409。记录在操作
+    // 成功之后落库（best-effort）：写账与记幂等不在一个事务里，进程恰好
+    // 在两者之间死掉时，重试会真的再转一次——这是当前形状下可接受的最小
+    // 实现，把幂等行并进转账事务需要给 `transfer` 加可选参数，改动面大。
+
+    /// 查一条幂等记录：`(request_hash, response_json)`。
+    pub fn wallet_idem_lookup(&self, user_id: &str, key: &str) -> Result<Option<(String, String)>> {
+        let c = self.db().lock();
+        Ok(c.query_row(
+            "SELECT request_hash, response FROM wallet_idem WHERE user_id = ?1 AND key = ?2",
+            params![user_id, key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+    }
+
+    /// 记一条幂等记录；顺手清掉过期行（24h）。
+    pub fn wallet_idem_store(
+        &self,
+        user_id: &str,
+        key: &str,
+        request_hash: &str,
+        response: &serde_json::Value,
+    ) -> Result<()> {
+        let now = wxlike_core::types::now_ms() as i64;
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM wallet_idem WHERE created_at < ?1",
+            params![now - IDEMPOTENCY_TTL_MS],
+        )?;
+        tx.execute(
+            "INSERT INTO wallet_idem(user_id, key, request_hash, response, created_at) \
+             VALUES(?1, ?2, ?3, ?4, ?5) ON CONFLICT(user_id, key) DO NOTHING",
+            params![user_id, key, request_hash, response.to_string(), now],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Creates a red packet: the full total leaves the sender's balance here,
     /// so the money is frozen before anybody can claim it.
     ///
@@ -458,8 +507,16 @@ impl Platform {
         // 没有卡片可回写，跳过。
         if let Some(conv) = self.redpacket_conv(&id)? {
             if let Some(store) = self.message_store.as_ref() {
+                // 属主类型按会话 id 推导（与 server 的 one_message 同一条规则）：
+                // 群红包回写到群信箱，直聊红包回写到直聊信箱——原来硬编码
+                // Direct，群红包的卡片更新落进了永不存在的信箱。
+                let owner = if conv.starts_with("d-") {
+                    wxlike_message::OwnerType::Direct
+                } else {
+                    wxlike_message::OwnerType::Group
+                };
                 let _ = store.append_ephemeral(
-                    (wxlike_message::OwnerType::Direct, &conv),
+                    (owner, &conv),
                     &by,
                     "wallet.redpacket.claim",
                     &format!("claim-{id}-{}", crate::auth::random_hex(4)),
@@ -581,12 +638,71 @@ fn draw_share(remaining_money: i64, remaining_slots: i64) -> i64 {
     drawn.min(max).max(1)
 }
 
+/// `Idempotency-Key` 头：非空、去空白、有长度上限才算带了键。
+fn idem_key(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("idempotency-key")?.to_str().ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > IDEM_KEY_MAX {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// 请求指纹：把会影响结果的参数串起来做一次 SHA-256（风格与
+/// `server` 的幂等 msg_id 派生一致）。
+fn request_hash(parts: &[&str]) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        // NUL 分隔：字段值里出现分隔符也不能拼出同一指纹
+        hasher.update([0]);
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// 幂等前置检查：`Ok(None)` = 没带键或没记录，继续执行；
+/// `Ok(Some(json))` = 命中，直接重放；`Err(409)` = 同键异参。
+fn replay_or_proceed(
+    platform: &Platform,
+    user_id: &str,
+    key: Option<&str>,
+    hash: &str,
+) -> Result<Option<serde_json::Value>> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    match platform.wallet_idem_lookup(user_id, key)? {
+        None => Ok(None),
+        Some((stored_hash, response)) if stored_hash == hash => {
+            tracing::info!(user = user_id, "wallet idempotency replay");
+            match serde_json::from_str(&response) {
+                Ok(value) => Ok(Some(value)),
+                Err(err) => {
+                    // 行坏了当没记录：宁可重放失败也不把坏 JSON 发给客户端
+                    tracing::error!(error = %err, "wallet idem row is corrupt");
+                    Ok(None)
+                }
+            }
+        }
+        Some(_) => Err(PlatformError::Conflict(
+            "idempotency key reused with different parameters".into(),
+        )),
+    }
+}
+
 async fn transfer(
     State(platform): State<PlatformState>,
     authed: Authed,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<TransferBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let memo = body.memo.clone().unwrap_or_default();
+    let key = idem_key(&headers);
+    let hash = request_hash(&[&authed.user_id, &body.to_uid, &body.amount.to_string(), &memo]);
+    if let Some(hit) = replay_or_proceed(&platform, &authed.user_id, key.as_deref(), &hash)? {
+        return Ok(Json(hit));
+    }
     let ref_id = platform.transfer(&authed.user_id, &body.to_uid, body.amount, &memo)?;
     platform
         .emit(wallet_message(
@@ -603,15 +719,46 @@ async fn transfer(
             }),
         ))
         .await;
-    Ok(Json(serde_json::json!({ "transfer_id": ref_id })))
+    let response = serde_json::json!({ "transfer_id": ref_id });
+    if let Some(key) = key.as_deref() {
+        platform.wallet_idem_store(&authed.user_id, key, &hash, &response)?;
+    }
+    Ok(Json(response))
 }
 
 async fn create_redpacket(
     State(platform): State<PlatformState>,
     authed: Authed,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<RedpacketBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let memo = body.memo.clone().unwrap_or_default();
+    let key = idem_key(&headers);
+    let hash = request_hash(&[
+        &authed.user_id,
+        &body.amount.to_string(),
+        &body.count.to_string(),
+        &memo,
+        body.conv_id.as_deref().unwrap_or_default(),
+    ]);
+    if let Some(hit) = replay_or_proceed(&platform, &authed.user_id, key.as_deref(), &hash)? {
+        return Ok(Json(hit));
+    }
+    // 资金写进哪个会话，就要求发红包的人能读那个会话（与媒体/历史的
+    // `may_read_conv` 同一条规则）：否则任何人都能往任意群的卡片流里
+    // 塞自己的红包公告。
+    if let Some(conv) = body
+        .conv_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        if !platform.may_read_conv(&authed.user_id, conv) {
+            return Err(ApiError::forbidden(
+                "you cannot post into that conversation",
+            ));
+        }
+    }
     let id = platform.create_redpacket(
         &authed.user_id,
         body.amount,
@@ -644,7 +791,41 @@ async fn create_redpacket(
             }),
         ))
         .await;
-    Ok(Json(serde_json::json!({ "redpacket_id": id })))
+    let response = serde_json::json!({ "redpacket_id": id });
+    if let Some(key) = key.as_deref() {
+        platform.wallet_idem_store(&authed.user_id, key, &hash, &response)?;
+    }
+    Ok(Json(response))
+}
+
+/// `GET /api/wallet/redpacket/{id}`：红包本体行。发红包的人或该会话成员
+/// 可读；对别人一律 404（不确认存在性）。
+async fn redpacket_get(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(id): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let packet = platform
+        .redpacket(&id)?
+        .ok_or_else(|| ApiError::not_found("no such redpacket"))?;
+    if packet.from_uid != authed.user_id
+        && !platform.may_read_conv(&authed.user_id, &packet.conv_id)
+    {
+        return Err(ApiError::not_found("no such redpacket"));
+    }
+    Ok(Json(serde_json::json!({
+        "id": packet.id,
+        "from_uid": packet.from_uid,
+        "conv_id": packet.conv_id,
+        "total": packet.total,
+        "count": packet.count,
+        "claimed": packet.claimed,
+        "claimed_total": packet.claimed_total,
+        "memo": packet.memo,
+        "status": packet.status,
+        "created_at": packet.created_at,
+        "expire_at": packet.expire_at,
+    })))
 }
 
 async fn claim(

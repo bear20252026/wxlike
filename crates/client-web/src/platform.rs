@@ -69,12 +69,15 @@ impl WebPlatform {
     /// 宿主（页面胶水）投递生命周期事件。
     ///
     /// 页面侧要挂三个监听：`visibilitychange`、`freeze`、`resume`。
+    /// `try_borrow_mut`：队列被同栈占用时丢这一条事件而不是 panic——
+    /// 生命周期事件是状态提示，丢一条好过崩掉平台层。
     pub fn notify_lifecycle(&self, event: Lifecycle) {
-        let mut queue = self.lifecycle.borrow_mut();
-        if queue.len() >= LIFECYCLE_QUEUE {
-            queue.pop_front();
+        if let Ok(mut queue) = self.lifecycle.try_borrow_mut() {
+            if queue.len() >= LIFECYCLE_QUEUE {
+                queue.pop_front();
+            }
+            queue.push_back(event);
         }
-        queue.push_back(event);
     }
 
     /// 续约。页面胶水每 [`LEASE_RENEW_MS`] 调一次。
@@ -82,13 +85,17 @@ impl WebPlatform {
     /// 返回 `false` 表示租约已经不属于自己（另一个 tab 接手了）：这时应当
     /// 主动降级成只读，而不是继续跑两个核心。
     pub fn renew_lease(&self) -> bool {
-        let Some(tab_id) = self.tab_id.borrow().clone() else {
+        // try_borrow：冲突视同"没有 tab id"，本轮续约失败（下一轮再试）
+        let Ok(tab_id) = self.tab_id.try_borrow() else {
+            return false;
+        };
+        let Some(tab_id) = tab_id.as_ref() else {
             return false;
         };
         let Ok(storage) = local_storage() else {
             return false;
         };
-        write_lease(&storage, &tab_id).is_ok()
+        write_lease(&storage, tab_id).is_ok()
     }
 
     fn storage() -> Result<web_sys::Storage, PlatformError> {
@@ -171,7 +178,10 @@ impl Platform for WebPlatform {
         // 读回确认：同时写时后写者胜
         match read_lease(&storage) {
             Some((owner, _)) if owner == tab_id => {
-                *self.tab_id.borrow_mut() = Some(tab_id.clone());
+                // try_borrow_mut：冲突时视为抢锁失败（保守），不 panic
+                if let Ok(mut slot) = self.tab_id.try_borrow_mut() {
+                    *slot = Some(tab_id.clone());
+                }
                 Ok(InstanceLock::new(Box::new(LeaseRelease {
                     storage,
                     tab_id,
@@ -183,8 +193,11 @@ impl Platform for WebPlatform {
 
     async fn next_lifecycle(&self) -> Option<Lifecycle> {
         loop {
-            if let Some(event) = self.lifecycle.borrow_mut().pop_front() {
-                return Some(event);
+            // try_borrow：冲突时先睡一轮再试，不 panic
+            if let Ok(mut queue) = self.lifecycle.try_borrow_mut() {
+                if let Some(event) = queue.pop_front() {
+                    return Some(event);
+                }
             }
             WebClock::new().sleep(LIFECYCLE_POLL_MS).await;
         }

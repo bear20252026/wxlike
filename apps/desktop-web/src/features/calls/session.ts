@@ -72,12 +72,13 @@ export class CallSession {
   /** Caller side: create the room and acquire media. */
   async start(conv: string): Promise<void> {
     if (this.snap.phase !== "idle" && this.snap.phase !== "ended") return; // 重复提交
+    this.disposed = false; // a hung-up session may be restarted
     this.emit({ phase: "connecting" }); // synchronous: blocks a concurrent second start
     this.conv = conv;
     try {
       await this.deps.ports.start(conv);
     } catch (err) {
-      this.emit({ phase: "ended", endReason: "error", error: describeError(err) });
+      this.emit({ phase: "ended", endReason: "error", error: describeCallError(err) });
       return;
     }
     await this.acquireMediaAndConnect();
@@ -86,12 +87,13 @@ export class CallSession {
   /** Callee side: accept a ringing invite. */
   async accept(conv: string): Promise<void> {
     if (this.snap.phase !== "idle" && this.snap.phase !== "ended") return;
+    this.disposed = false; // a hung-up session may be restarted
     this.emit({ phase: "connecting" });
     this.conv = conv;
     try {
       await this.deps.ports.join(conv);
     } catch (err) {
-      this.emit({ phase: "ended", endReason: "error", error: describeError(err) });
+      this.emit({ phase: "ended", endReason: "error", error: describeCallError(err) });
       return;
     }
     await this.acquireMediaAndConnect();
@@ -121,7 +123,7 @@ export class CallSession {
       this.emit({
         phase: "ended",
         endReason: "error",
-        error: describeError(err),
+        error: describeCallError(err),
         localStream: null,
       });
       await this.leaveQuietly();
@@ -201,7 +203,7 @@ export class CallSession {
     try {
       await this.deps.ports.mute(this.conv, track, muted);
     } catch (err) {
-      this.emit({ error: describeError(err) });
+      this.emit({ error: describeCallError(err) });
     }
   }
 
@@ -210,7 +212,7 @@ export class CallSession {
     try {
       await this.deps.ports.raiseHand(this.conv, value);
     } catch (err) {
-      this.emit({ error: describeError(err) });
+      this.emit({ error: describeCallError(err) });
     }
   }
 
@@ -260,7 +262,8 @@ function defaultPeerFactory(): RTCPeerConnection {
   return new RTCPeerConnection();
 }
 
-export function describeError(err: unknown): string {
+/** Renamed from describeError: the generic name collided with the shell's error helper. */
+export function describeCallError(err: unknown): string {
   if (err instanceof DOMException) {
     if (err.name === "NotAllowedError") return "摄像头/麦克风权限被拒绝，请在系统设置中允许后重试";
     if (err.name === "NotFoundError") return "未找到可用的摄像头或麦克风设备";

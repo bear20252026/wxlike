@@ -252,7 +252,13 @@ class _AccountPageState extends State<AccountPage> {
           ListTile(
             leading: const Icon(Icons.lock_outline),
             title: const Text('应用锁'),
-            subtitle: Text(widget.lock.enabled ? '已开启 · 后台超过 1 分钟重新锁定' : '未开启'),
+            subtitle: Text(
+              widget.lock.enabled
+                  ? '已开启 · 后台超过 1 分钟重新锁定'
+                  // 安全存储不可用时锁被停用（见 AppLockController.restore）：
+                  // 警告必须可见，不能只留一个"未开启"。
+                  : (widget.lock.error != null ? '未开启 · ${widget.lock.error}' : '未开启'),
+            ),
             trailing: Switch(
               value: widget.lock.enabled,
               onChanged: widget.lock.busy
@@ -265,7 +271,7 @@ class _AccountPageState extends State<AccountPage> {
                       }
                     },
             ),
-            onTap: widget.lock.busy ? null : (widget.lock.enabled ? _configureLock : _configureLock),
+            onTap: widget.lock.busy ? null : _configureLock,
           ),
           ListTile(
             leading: const Icon(Icons.lock_clock),

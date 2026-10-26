@@ -17,6 +17,12 @@ pub mod session;
 pub mod subscription;
 
 pub use backoff::Backoff;
-pub use router::{route, Route, ROUTES};
+pub use router::{composite, is_composite, route, Route, ROUTES};
 pub use session::{is_write_action, PumpReport, Session, SessionError};
 pub use subscription::EventSubscription;
+
+/// catalog 里的全部命令 id（能力上报用，见 `client-web` 的 wasm 出口）。
+#[must_use]
+pub fn action_ids() -> Vec<&'static str> {
+    wxlike_cmd::CATALOG.iter().map(|spec| spec.id).collect()
+}

@@ -12,7 +12,7 @@
 
 use wxlike_types::{Cursor, CursorKind, DomainError, EventEnvelope, Seq, SubscribeRequest};
 
-use crate::cancel::Cancellation;
+use crate::cancel::{Cancellation, RaceOutcome};
 use crate::ports::{EventSource, Ports, StoreError};
 
 /// 一条事件订阅。
@@ -61,9 +61,14 @@ impl EventSubscription {
     }
 
     async fn pull(&mut self) -> Result<Option<EventEnvelope>, DomainError> {
-        match self.source.next().await {
-            Ok(event) => Ok(event),
-            Err(err) => Err(err.into_domain()),
+        // 与取消通道赛跑：`cancel()` 一调，`source.next()` 的 Future 被
+        // 丢弃——WebSocket 的轮询循环 / 长轮询的 sleep 都随它一起结束，
+        // `next()` 立刻以 `cancelled` 返回，而不是等源自己吐下一条。
+        // （`self.source` 可变借用与 `self.cancel` 共享借用不相交。）
+        let cancelled = self.cancel.wake().notified();
+        match crate::cancel::race(self.source.next(), cancelled).await {
+            RaceOutcome::Left(result) => result.map_err(|err| err.into_domain()),
+            RaceOutcome::Right(()) => Err(DomainError::cancelled()),
         }
     }
 

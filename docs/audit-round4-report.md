@@ -2,7 +2,7 @@
 
 > 审计人：首席软件架构审计 + 资深代码审查（自动化代理）
 > 基线：main `62124c5`（2026-10-22）｜分支：`fix/audit-round4`（8 个 commit，17 文件，+994/−98）
-> 交付：本报告 + [AUDIT_CHANGES.md](AUDIT_CHANGES.md) + GitHub issues [#25–#32](https://github.com/bear20252026/wxlike/issues)
+> 交付：本报告 + [audit-round4-changes.md](audit-round4-changes.md) + GitHub issues [#25–#32](https://github.com/bear20252026/wxlike/issues)
 
 ---
 
@@ -156,7 +156,7 @@ Matrix 的设备密钥签名操作）：
 - **H-2**：token 列改存 `sha256(token)`（复用 core::msgmeta::sha256_hex，遵守仓库"不写第二份
   hash"的既有规则——server/lib.rs:408 注释）；六个读写点全部摘要比对，其中
   `revoke_other_sessions` 的保留判断若漏改会**误删当前会话**（本轮实现中真实发生并被
-  `session_tokens_are_stored_as_digests` 测试拦下的缺陷，见 AUDIT_CHANGES CH-06 备注）。
+  `session_tokens_are_stored_as_digests` 测试拦下的缺陷，见 audit-round4-changes CH-06 备注）。
 
 ### AR-4 执行边界（→ cf8bd82）
 - **H-5**：`decode_capped` 64MiB 封顶流式解压，`take(MAX+1)` 探测溢出——溢出是**错误**而非
@@ -203,7 +203,7 @@ M-2 设备密钥（桌面端密钥派生方案需产品决策：口令派生 vs 
 > AR-6 TTL 补发兜底（`2fe4a41`，#30 已关）、AR-7 服务端半边（`c541b82`，#31 保持开放等
 > 客户端半边）；技术债组完成 M-5/M-6（`7f70382`）与 M-11（`87dd471`+`40ace05`，其中
 > register_hub"零调用"的原表述已更正：启动接线在 net，缺的是停机注销）。明细见
-> [AUDIT_CHANGES.md](AUDIT_CHANGES.md) CH-10…CH-14。#15 的"服务端兜底"实时链路缺口
+> [audit-round4-changes.md](audit-round4-changes.md) CH-10…CH-14。#15 的"服务端兜底"实时链路缺口
 > 自此闭合，#15 余下部分为客户端侧。
 
 | 优先级 | 事项 | issue | 状态 |

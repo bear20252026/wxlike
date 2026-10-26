@@ -156,6 +156,11 @@ export const searchHitsAtom = atom<SearchHit[] | null>(null);
 /** P1: message-selection mode in a chat (merge forward needs many). */
 export const selectModeAtom = atom<{ convId: string; seqs: number[] } | null>(null);
 
+/**
+ * 弹一条临时提示。**生命周期唯一所有者在这里**：2600 ms 后把 atom 清回
+ * null；main.ts 的 class 切换只是跟随 atom（不再有自己的时钟），这样快速
+ * 连发 toast 不会出现两个定时器错拍。
+ */
 export function toast(msg: string): void {
   appStore.set(toastAtom, msg);
   window.setTimeout(() => {

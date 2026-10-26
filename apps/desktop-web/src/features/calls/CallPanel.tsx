@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CallApi } from "./api";
-import { CallSession, describeError, type CallSnapshot } from "./session";
+import { CallSession, describeCallError, type CallSnapshot } from "./session";
 import type { CallPorts } from "./model";
 import { platform } from "../../lib/platform";
 import { Banner, GhostButton, PrimaryButton } from "../content/ui";
@@ -33,6 +33,10 @@ export function CallPanel({ conv, ports = DEFAULT_PORTS }: { conv: string; ports
   useEffect(() => {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = snap.remoteStream;
   }, [snap.remoteStream]);
+
+  // Leaving the page must not leak the camera/mic or keep the room occupied:
+  // hang up on unmount (idempotent — a finished session is a no-op).
+  useEffect(() => () => void session.hangup("local-hangup"), [session]);
 
   const dial = async () => {
     if (busy) return;
@@ -158,4 +162,4 @@ function endReasonLabel(reason: string): string {
   }
 }
 
-export { describeError };
+export { describeCallError };

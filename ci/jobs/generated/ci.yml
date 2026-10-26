@@ -231,6 +231,37 @@ jobs:
     - name: C8 test
       run: flutter test
       working-directory: apps/mobile
+  web-v2:
+    name: web-v2
+    needs:
+    - select
+    if: needs.select.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: apps/desktop-web/package-lock.json
+    - name: C7b install (apps/desktop-web)
+      run: npm ci
+      working-directory: apps/desktop-web
+    - name: C7b typecheck
+      run: npm run typecheck
+      working-directory: apps/desktop-web
+    - name: C7b lint
+      run: npm run --if-present lint
+      working-directory: apps/desktop-web
+    - name: C7b unit tests
+      run: npm test
+      working-directory: apps/desktop-web
+    - name: C7b production build
+      run: npm run build
+      working-directory: apps/desktop-web
+    - name: C7b mini-sdk contract parity (packages/mini-sdk, no deps to install)
+      run: npm test
+      working-directory: packages/mini-sdk
   contract:
     name: contract
     needs:
@@ -295,8 +326,10 @@ jobs:
         python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml
 
         '
-    - name: C10 composed workflows match the checked-in fragments
-      run: python ci/jobs/compose.py --check
+    - name: C10 composed workflows match the checked-in fragments and the live .github/
+      run: python ci/jobs/compose.py --check --check-live
+    - name: C10 CI-of-CI unit tests
+      run: python -m unittest discover -s ci/jobs/tests
   coverage:
     name: coverage
     needs:
@@ -365,6 +398,7 @@ jobs:
     - wasm
     - contract
     - ui
+    - web-v2
     - flutter
     - audit
     - coverage

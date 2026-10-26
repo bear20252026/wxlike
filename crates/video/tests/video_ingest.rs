@@ -9,10 +9,26 @@
 //! ```
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use sha2::Digest as _;
+use std::sync::Arc;
 use tower::ServiceExt as _;
-use wxlike_video::{routes, VideoState, VideoStore};
+use wxlike_video::{routes, VideoAuth, VideoPolicy, VideoState, VideoStore};
+
+/// 控制面（上传）自 issue #7 起要认证：给集成测试配一个"头即身份"的
+/// 认证器（与 `video_access.rs` 同一模式），别把 401 当成流水线失败。
+struct HeaderUser;
+
+impl VideoAuth for HeaderUser {
+    fn caller(&self, headers: &HeaderMap) -> Option<String> {
+        headers
+            .get("x-test-user")?
+            .to_str()
+            .ok()
+            .map(str::to_string)
+            .filter(|u| !u.is_empty())
+    }
+}
 
 fn state() -> VideoState {
     let dir = std::env::temp_dir().join(format!(
@@ -21,7 +37,7 @@ fn state() -> VideoState {
         wxlike_core::types::now_ms()
     ));
     VideoState {
-        store: VideoStore::new(dir),
+        store: VideoStore::new(dir).with_policy(VideoPolicy::default().with_auth(Arc::new(HeaderUser))),
     }
 }
 
@@ -227,6 +243,7 @@ async fn http_surface_serves_the_full_playback_loop() {
             Request::builder()
                 .method("POST")
                 .uri("/api/video")
+                .header("x-test-user", "uploader")
                 .header(
                     "content-type",
                     format!("multipart/form-data; boundary={boundary}"),
@@ -310,6 +327,26 @@ async fn http_surface_serves_the_full_playback_loop() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK, "rendition segment");
+
+    // 审计第 5 轮：相对分片名按播放器的方式解析——档位清单里写的是
+    // `seg_000.ts`（相对名），相对清单 URL 拼出的就是
+    // `/api/video/{id}/{height}/seg_000.ts`（没有 `/seg/` 段）。
+    let relative_uri = format!("/api/video/{video_id}/{height}/{seg}");
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&relative_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "relative segment URI (as a player resolves it): {relative_uri}"
+    );
 
     // thumbnail endpoint
     let res = app

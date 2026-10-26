@@ -1,8 +1,9 @@
 /// Android/iOS 平台桥的 Dart 端。
 ///
-/// 只使用 Flutter 自带的 MethodChannel/EventChannel：目前不引任何插件，
-/// 原生实现（Kotlin/Swift）通过 `integration-requests/G12/G12-05.yaml` 交给
-/// 宿主组；通道缺失时每个入口都返回明确的 unavailable，而不是静默成功。
+/// 只使用 Flutter 自带的 MethodChannel/EventChannel：目前不引任何插件。
+/// Android 原生实现见 `android/.../MainActivity.kt`（权限/选择器/拍照/定位/
+/// 安全存储/网络与深链事件通道）；iOS 宿主仍未接线，通道缺失时每个入口都
+/// 返回明确的 unavailable，而不是静默成功。
 ///
 /// 契约（method -> 返回）：
 /// * `permission.status` / `permission.request` -> `granted|limited|denied|permanentlyDenied|restricted`
@@ -106,12 +107,33 @@ class MethodChannelPlatform implements PlatformPort {
 
   @override
   Stream<NetworkStatus> networkStatus() {
-    return _network
-        .receiveBroadcastStream()
-        .map((event) => event == 'online' ? NetworkStatus.online : NetworkStatus.offline)
-        .handleError((Object error) {
-      throw _mapError(error, '订阅网络状态');
-    });
+    // 平台事件通道未接线（PLATFORM_UNWIRED / UNAVAILABLE）时按一次"离线"
+    // 兜底并结束流，而不是把异常甩给每个调用方；订阅方仍能正常工作。
+    late StreamController<NetworkStatus> controller;
+    late StreamSubscription<Object?> subscription;
+    controller = StreamController<NetworkStatus>(
+      onListen: () {
+        subscription = _network.receiveBroadcastStream().listen(
+              (event) => controller.add(
+                event == 'online' ? NetworkStatus.online : NetworkStatus.offline,
+              ),
+              onError: (Object error) {
+                final failure = _mapError(error, '订阅网络状态');
+                if (failure.kind == G12FailureKind.unavailable) {
+                  controller.add(NetworkStatus.offline);
+                  controller.close();
+                  // 关闭后别再收平台事件：往已关闭的 controller add 会抛异常。
+                  subscription.cancel();
+                } else {
+                  controller.addError(failure);
+                }
+              },
+              onDone: controller.close,
+            );
+      },
+      onCancel: () => subscription.cancel(),
+    );
+    return controller.stream;
   }
 
   /// 深链由平台层投递；宿主必须在 Activity/SceneDelegate 里转发。
@@ -134,16 +156,23 @@ class MethodChannelPlatform implements PlatformPort {
   Future<void> delete(String key) => _invoke<void>('secret.delete', {'key': key});
 
   Future<CapturedMedia?> _media(String method, [Map<String, Object?> args = const {}]) async {
-    final map = await _invoke<Map<Object?, Object?>>(method, args);
-    if (map == null) return null;
-    return CapturedMedia(
-      ref: map['ref'] as String,
-      kind: _kindFromWire(map['kind'] as String?),
-      name: map['name'] as String? ?? '',
-      mimeType: map['mime_type'] as String? ?? '',
-      bytes: (map['bytes'] as num?)?.toInt() ?? 0,
-      durationMs: (map['duration_ms'] as num?)?.toInt() ?? 0,
-    );
+    try {
+      final map = await _invoke<Map<Object?, Object?>>(method, args);
+      if (map == null) return null;
+      return CapturedMedia(
+        ref: map['ref'] as String,
+        kind: _kindFromWire(map['kind'] as String?),
+        name: map['name'] as String? ?? '',
+        mimeType: map['mime_type'] as String? ?? '',
+        bytes: (map['bytes'] as num?)?.toInt() ?? 0,
+        durationMs: (map['duration_ms'] as num?)?.toInt() ?? 0,
+      );
+    } on G12Failure catch (error) {
+      // "用户取消"只对采集类方法成立；其他方法收到 USER_CANCELED 是协议错误，
+      // 按异常继续抛出。
+      if (error.code == 'USER_CANCELED') return null;
+      rethrow;
+    }
   }
 
   Future<T?> _invoke<T>(String method, [Map<String, Object?> args = const {}]) async {
@@ -156,41 +185,36 @@ class MethodChannelPlatform implements PlatformPort {
         '平台桥 $method 尚未安装（见 G12-05 宿主接入请求）',
       );
     } on PlatformException catch (error) {
-      if (error.code == 'USER_CANCELED') return null;
       throw _mapError(error, method);
     }
   }
 
-  G12Failure _mapError(Object error, String operation) {
-    if (error is G12Failure) return error;
-    if (error is MissingPluginException) {
-      return G12Failure(
+  G12Failure _mapError(Object error, String operation) =>
+      mapPlatformError(error, operation);
+
+  static PermissionStatus _statusFromWire(String? value) {
+    if (value == null) {
+      throw const G12Failure(
         G12FailureKind.unavailable,
         'PLATFORM_UNWIRED',
-        '平台桥 $operation 尚未安装（见 G12-05 宿主接入请求）',
+        '平台桥没有返回权限状态',
       );
     }
-    if (error is PlatformException) {
-      final message = error.message ?? operation;
-      return switch (error.code) {
-        'PERMISSION_DENIED' => G12Failure(G12FailureKind.forbidden, error.code, message),
-        'PERMISSION_PERMANENT' => G12Failure(G12FailureKind.forbidden, 'PERMISSION_DENIED', message),
-        'UNAVAILABLE' || 'NO_HANDLER' => G12Failure(G12FailureKind.unavailable, error.code, message),
-        'TIMEOUT' => G12Failure(G12FailureKind.timeout, error.code, message, retryable: true),
-        _ => G12Failure(G12FailureKind.unexpected, error.code, message, retryable: true),
-      };
-    }
-    return asG12Failure(error, operation: operation);
+    return switch (value) {
+      'granted' => PermissionStatus.granted,
+      'limited' => PermissionStatus.limited,
+      'denied' => PermissionStatus.denied,
+      'permanentlyDenied' || 'permanently_denied' => PermissionStatus.permanentlyDenied,
+      'restricted' => PermissionStatus.restricted,
+      // 未知字符串是宿主实现与协议脱节，静默降级成 denied 会让页面
+      // 以为用户拒绝了权限；必须按未接线暴露出来。
+      _ => throw G12Failure(
+          G12FailureKind.unavailable,
+          'PERMISSION_UNKNOWN',
+          '平台桥返回了未知权限状态：$value',
+        ),
+    };
   }
-
-  static PermissionStatus _statusFromWire(String? value) => switch (value) {
-        'granted' => PermissionStatus.granted,
-        'limited' => PermissionStatus.limited,
-        'denied' => PermissionStatus.denied,
-        'permanentlyDenied' || 'permanently_denied' => PermissionStatus.permanentlyDenied,
-        'restricted' => PermissionStatus.restricted,
-        _ => PermissionStatus.denied,
-      };
 
   static MediaKind _kindFromWire(String? value) => switch (value) {
         'image' => MediaKind.image,
@@ -198,6 +222,30 @@ class MethodChannelPlatform implements PlatformPort {
         'audio' => MediaKind.audio,
         _ => MediaKind.file,
       };
+}
+
+/// 平台异常 → [G12Failure] 的共享映射；MethodChannel 与 EventChannel 两条
+/// 通道的调用方都走它，避免推送/平台各自维护一份口径。
+G12Failure mapPlatformError(Object error, String operation) {
+  if (error is G12Failure) return error;
+  if (error is MissingPluginException) {
+    return G12Failure(
+      G12FailureKind.unavailable,
+      'PLATFORM_UNWIRED',
+      '平台桥 $operation 尚未安装（见 G12-05 宿主接入请求）',
+    );
+  }
+  if (error is PlatformException) {
+    final message = error.message ?? operation;
+    return switch (error.code) {
+      'PERMISSION_DENIED' => G12Failure(G12FailureKind.forbidden, error.code, message),
+      'PERMISSION_PERMANENT' => G12Failure(G12FailureKind.forbidden, 'PERMISSION_DENIED', message),
+      'UNAVAILABLE' || 'NO_HANDLER' => G12Failure(G12FailureKind.unavailable, error.code, message),
+      'TIMEOUT' => G12Failure(G12FailureKind.timeout, error.code, message, retryable: true),
+      _ => G12Failure(G12FailureKind.unexpected, error.code, message, retryable: true),
+    };
+  }
+  return asG12Failure(error, operation: operation);
 }
 
 /// 前后台信号：直接来自 WidgetsBinding，不额外引插件。
@@ -253,34 +301,32 @@ class MethodChannelPushPort implements PushPort {
 
   @override
   Future<PushToken?> token() async {
-    try {
-      final map = await _channel.invokeMethod<Map<Object?, Object?>>('push.token');
-      if (map == null) return null;
-      final platform = map['platform'] as String? ?? '';
-      final token = map['token'] as String? ?? '';
-      if (platform.isEmpty || token.isEmpty) return null;
-      return PushToken(platform: platform, token: token);
-    } on MissingPluginException {
-      throw const G12Failure(
-        G12FailureKind.unavailable,
-        'PUSH_UNWIRED',
-        '推送桥尚未安装（APNs/FCM 需要宿主配置）',
-      );
-    } on PlatformException catch (error) {
-      throw G12Failure(G12FailureKind.unavailable, error.code, error.message ?? '读取推送 token 失败');
-    }
+    final map = await _invokePush<Map<Object?, Object?>>('push.token');
+    if (map == null) return null;
+    final platform = map['platform'] as String? ?? '';
+    final token = map['token'] as String? ?? '';
+    if (platform.isEmpty || token.isEmpty) return null;
+    return PushToken(platform: platform, token: token);
   }
 
   @override
   Future<void> revoke() async {
+    await _invokePush<void>('push.revoke');
+  }
+
+  /// 与 [MethodChannelPlatform] 共享同一份错误映射；只有"通道整体缺失"
+  /// 报 PUSH_UNWIRED，其余 PlatformException 按共享口径分类。
+  Future<T?> _invokePush<T>(String method) async {
     try {
-      await _channel.invokeMethod<void>('push.revoke');
+      return await _channel.invokeMethod<T>(method);
     } on MissingPluginException {
-      throw const G12Failure(
+      throw G12Failure(
         G12FailureKind.unavailable,
         'PUSH_UNWIRED',
-        '推送桥尚未安装（无法撤销本机推送）',
+        '推送桥尚未安装（$method 需要 APNs/FCM 宿主配置）',
       );
+    } catch (error) {
+      throw mapPlatformError(error, method);
     }
   }
 }

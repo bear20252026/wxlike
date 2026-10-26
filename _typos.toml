@@ -32,9 +32,10 @@ writeable = "writeable"
 [files]
 # 生成物与第三方镜像不参与检查
 extend-exclude = [
-    "ui/node_modules",
+    "**/node_modules",
     "ui/dist",
     "ui/dist-web",
+    "apps/desktop-web/dist",
     "crates/ffi/generated",
     "apps/mobile/lib/src/rust",
     "target",

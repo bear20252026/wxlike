@@ -234,10 +234,16 @@ export function ConversationList({
   }, [filterParam, debouncedQuery]);
 
   // Server events and the store are the truth for unread/pin/preview updates.
+  // When the local page is empty (fresh account, or the list has not loaded
+  // yet), the store rows ARE the list — otherwise new events would never
+  // surface in an empty list. Filtered/searching views keep their own rows.
   useEffect(() => {
     if (!state.conversations.length) return;
-    setRows((prev) => (prev.length ? mergeRows(prev, state.conversations) : prev));
-  }, [state.conversations]);
+    const unfiltered = filterParam === "all" && !debouncedQuery.trim();
+    setRows((prev) =>
+      prev.length || !unfiltered ? mergeRows(prev, state.conversations) : state.conversations,
+    );
+  }, [state.conversations, filterParam, debouncedQuery]);
 
   useEffect(() => {
     const element = scrollerRef.current;

@@ -39,6 +39,8 @@ default = []
 audio = ["wxlike-rtc/audio"]
 
 [dev-dependencies]
+# tauri 的 mock runtime（core 桥 e2e 用：不起真窗口也要有 AppHandle 发事件）
+tauri = { version = "2", features = ["test"] }
 # command-layer tests drive a REAL in-process server (platform + QUIC hub),
 # never a mock — the task book forbids mock stand-ins at this boundary.
 wxlike-platform = { path = "../../crates/platform" }

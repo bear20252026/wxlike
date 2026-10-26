@@ -71,26 +71,85 @@ describe("ChannelsPage", () => {
   it("feed 上游未开通：明确呈现，不影响发布/直播", async () => {
     setTransport(
       fixtureTransport({
-        "GET /api/videos": () => err(404, "not found"),
+        "GET /api/videos/feed": () => err(404, "not found"),
         "GET /api/live/:channel": () => ({ channel: "main", live: false, viewers: 0 }),
       }),
     );
     render(<ChannelsPage ports={new VideoApi()} />);
-    await waitFor(() => expect(screen.getByText(/G05 ContentPort \/videos）尚未开通/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/\/api\/videos\/feed）尚未开通/)).toBeInTheDocument());
     expect(screen.getByTestId("live-panel")).toBeInTheDocument();
   });
 
-  it("发布：真实上传后可播放", async () => {
+  it("feed 命中真实端点：VideoView 行映射为界面条目，view 上报带 viewer/watched_ms", async () => {
+    localStorage.setItem("wxlike-web-user", "user-a");
+    const viewBodies: Record<string, unknown>[] = [];
     setTransport(
       fixtureTransport({
-        "GET /api/videos": () => err(404, "not found"),
+        "GET /api/videos/feed": (_m, path) => {
+          expect(path).toContain("mode=hot");
+          return {
+            items: [
+              {
+                id: "v-9",
+                author: "user-b",
+                author_name: "阿白",
+                caption: "夏日海边",
+                state: "succeeded",
+                created_at: 1_700_000_000_000,
+                like_count: 12,
+                comment_count: 3,
+                liked: true,
+                live: false,
+                playable: true,
+                playlist_url: "/api/video/v-9/playlist.m3u8",
+                play_url: "/api/video/v-9/play.mp4",
+                thumb_url: "/api/video/v-9/thumb.png",
+                duration_ms: 8_000,
+              },
+            ],
+            next_cursor: null,
+            has_more: false,
+          };
+        },
+        "GET /api/live/:channel": () => ({ channel: "main", live: false, viewers: 0 }),
+        "POST /api/video/:id/view": (_m, _p, body) => {
+          viewBodies.push(body as Record<string, unknown>);
+          return {};
+        },
+      }),
+    );
+    render(<ChannelsPage ports={new VideoApi()} />);
+    await waitFor(() => expect(screen.getByTestId("feed-item-v-9")).toBeInTheDocument());
+    expect(screen.getByTestId("feed-item-v-9")).toHaveTextContent("夏日海边");
+    expect(screen.getByTestId("feed-item-v-9")).toHaveTextContent("已关注");
+    const video = screen.getByTestId("video-v-9");
+    video.dispatchEvent(new Event("play"));
+    await waitFor(() =>
+      expect(viewBodies).toEqual([{ viewer: "user-a", watched_ms: 1_000 }]),
+    );
+  });
+
+  it("发布：真实上传后可播放（multipart 字段名为 bytes）", async () => {
+    setTransport(
+      fixtureTransport({
+        "GET /api/videos/feed": () => err(404, "not found"),
         "GET /api/live/:channel": () => ({ channel: "main", live: false, viewers: 0 }),
       }),
     );
     const api = new VideoApi(async (form) => {
       expect(form).toBeInstanceOf(FormData);
-      expect((form as FormData).get("file")).not.toBeNull();
-      return { video_id: "dd".repeat(32), source_size: 10, duration_ms: 1000 };
+      expect(form.get("bytes")).not.toBeNull();
+      expect(form.get("file")).toBeNull();
+      return {
+        video_id: "dd".repeat(32),
+        playlist_url: "/api/video/x/playlist.m3u8",
+        play_url: "/api/video/x/play.mp4",
+        thumb_url: "/api/video/x/thumb.png",
+        duration_ms: 1000,
+        width: 640,
+        height: 360,
+        renditions: [],
+      };
     });
     render(<ChannelsPage ports={api} />);
     const input = (await screen.findByTestId("publish-input")) as HTMLInputElement;
@@ -99,16 +158,20 @@ describe("ChannelsPage", () => {
     expect(screen.getByTestId("published-video")).toHaveTextContent("dd".repeat(32));
   });
 
-  it("开播/停播/观众数走真实状态", async () => {
+  it("开播/停播/观众数走真实状态（stream_key 嵌在 session 里）", async () => {
     let live = false;
     let viewers = 0;
     setTransport(
       fixtureTransport({
-        "GET /api/videos": () => err(404, "not found"),
+        "GET /api/videos/feed": () => err(404, "not found"),
         "GET /api/live/:channel": () => ({ channel: "main", live, viewers }),
         "POST /api/live/:channel/start": () => {
           live = true;
-          return { stream_key: "sk", ingest_url: "rtmp://x/sk", ingest_token: "t" };
+          return {
+            session: { id: "s1", channel_id: "main", host: "rtmp://x", stream_key: "sk", state: "live", recording: false, started_at: 1, viewers: 0 },
+            ingest_url: "rtmp://x/sk",
+            ingest_token: "t",
+          };
         },
         "POST /api/live/:channel/stop": () => {
           live = false;
@@ -133,7 +196,7 @@ describe("ChannelsPage", () => {
   it("弹幕：发送成功后本地回显并清空输入", async () => {
     setTransport(
       fixtureTransport({
-        "GET /api/videos": () => err(404, "not found"),
+        "GET /api/videos/feed": () => err(404, "not found"),
         "GET /api/live/:channel": () => ({ channel: "main", live: true, viewers: 3 }),
         "POST /api/live/:channel/danmaku": (_m, _p, body) => {
           expect((body as Record<string, unknown>).text).toBe("主播好");
@@ -152,11 +215,15 @@ describe("ChannelsPage", () => {
     const starts: string[] = [];
     setTransport(
       fixtureTransport({
-        "GET /api/videos": () => err(404, "not found"),
+        "GET /api/videos/feed": () => err(404, "not found"),
         "GET /api/live/:channel": () => ({ channel: "main", live: false, viewers: 0 }),
         "POST /api/live/:channel/start": () => {
           starts.push("start");
-          return { stream_key: "sk", ingest_url: "rtmp://x/sk", ingest_token: "t" };
+          return {
+            session: { id: "s1", channel_id: "main", host: "rtmp://x", stream_key: "sk", state: "live", recording: false, started_at: 1, viewers: 0 },
+            ingest_url: "rtmp://x/sk",
+            ingest_token: "t",
+          };
         },
       }),
     );
@@ -171,7 +238,7 @@ describe("ChannelsPage", () => {
   it("断网：错误横幅", async () => {
     setTransport(
       fixtureTransport({
-        "GET /api/videos": () => err(0, "fetch failed", "network"),
+        "GET /api/videos/feed": () => err(0, "fetch failed", "network"),
         "GET /api/live/:channel": () => ({ channel: "main", live: false, viewers: 0 }),
       }),
     );

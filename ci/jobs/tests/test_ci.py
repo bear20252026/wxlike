@@ -178,8 +178,12 @@ class WireVariantTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("WireFrame: 5 variants", result.stdout)
-        self.assertIn("MsgBody: 5 variants", result.stdout)
+        # check_wire_variants prints "<Enum>: N variants in order" only for
+        # matching pairs; the exact N is contract data (it grows as variants
+        # are added), so assert the match, not the count.
+        for name in ("WireFrame", "MsgBody", "Receipt"):
+            self.assertIn(f"{name}: ", result.stdout)
+            self.assertIn("variants in order", result.stdout)
 
 
 class ContractStructureTest(unittest.TestCase):

@@ -53,7 +53,35 @@ impl Db {
         db.migrate_identity()?;
         db.migrate_relations()?;
         db.migrate_g05()?;
+        db.migrate_round5()?;
         Ok(db)
+    }
+
+    /// 审计第 5 轮：两个小表——
+    /// * `qr_ticket_creator`：扫码登录 HTTP 适配层的归属表（哪张票是谁建的，
+    ///   以及服务端持有的 PKCE verifier——见 `qr_login` 模块头）。规则本体在
+    ///   `identity_qr`（features crate 建），这里只补 HTTP 面需要的映射；
+    /// * `wallet_idem`：钱包写接口的幂等键（`Idempotency-Key` → 24h 内重放
+    ///   同一结果），见 `wallet` 模块。
+    fn migrate_round5(&self) -> Result<()> {
+        let c = self.lock();
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS qr_ticket_creator (
+                ticket_id   TEXT PRIMARY KEY,
+                creator     TEXT NOT NULL,
+                verifier    TEXT NOT NULL,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS wallet_idem (
+                user_id      TEXT NOT NULL,
+                key          TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                response     TEXT NOT NULL,
+                created_at   INTEGER NOT NULL,
+                PRIMARY KEY (user_id, key)
+            );",
+        )?;
+        Ok(())
     }
 
     /// G02-02：关系域补充表（群可见性 / 解散、好友标签、关系审计）。

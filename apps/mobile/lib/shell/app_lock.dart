@@ -7,6 +7,7 @@ library;
 import 'package:flutter/foundation.dart';
 
 import '../platform/platform_ports.dart';
+import 'contracts.dart';
 
 class AppLockController extends ChangeNotifier {
   AppLockController({
@@ -43,11 +44,21 @@ class AppLockController extends ChangeNotifier {
       _enabled = pin != null && pin.isNotEmpty;
       // 冷启动默认上锁：恢复账号不能绕过设备锁。
       _locked = _enabled;
-    } catch (_) {
-      // 安全存储不可用时不假装"没设锁"：保留锁定并提示重试。
-      _error = '无法读取设备安全存储，暂时无法校验应用锁';
-      _enabled = true;
-      _locked = true;
+    } catch (error) {
+      final failure = asG12Failure(error, operation: '读取应用锁');
+      if (failure.kind == G12FailureKind.unavailable) {
+        // 平台安全存储尚未接线（PLATFORM_UNWIRED / UNAVAILABLE）：此时
+        // unlock() 也读不了同一个存储，"启用并上锁"等于把用户锁死在一个
+        // 永远解不开的壳里。宁可停用应用锁并给出可见警告。
+        _enabled = false;
+        _locked = false;
+        _error = '设备安全存储不可用（${failure.code}），应用锁已停用';
+      } else {
+        // 其他失败（IO 抖动等）不能假装"没设锁"：保留锁定并提示重试。
+        _error = '无法读取设备安全存储，暂时无法校验应用锁';
+        _enabled = true;
+        _locked = true;
+      }
     } finally {
       _busy = false;
       notifyListeners();

@@ -4,6 +4,35 @@
 
 use super::*;
 
+// -- G01-02：新 UI（apps/desktop-web，契约 v1）的三个宿主入口 ----------------
+//
+// 与上面的同步命令不同，这三个走 async：Tauri 把 async 命令丢到自己的
+// runtime 工作线程执行，阻塞式 HTTP/QUIC 调用不再冻结窗口主线程。
+// （存量命令的全面 async 化是独立工作项，见审计 R5-B1。）
+
+/// 新 UI 的唯一业务入口：ActionRequest 进，ActionResponse 出。
+#[tauri::command]
+pub async fn core_dispatch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    core: tauri::State<'_, crate::core_bridge::CoreState>,
+    request: crate::core_bridge::CoreRequest,
+) -> Result<crate::core_bridge::CoreReply, String> {
+    Ok(crate::core_bridge::dispatch(&app, &state, &core, request))
+}
+
+/// 订阅事件（游标恢复留给服务端补发面；当前实现事件全量推 `core://event`）。
+#[tauri::command]
+pub async fn core_subscribe(cursor: Option<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "subscribed": true, "cursor": cursor })
+}
+
+/// 能力上报：如实列出已实现的 action，未列出的返回 NOT_IMPLEMENTED。
+#[tauri::command]
+pub async fn core_capabilities() -> serde_json::Value {
+    crate::core_bridge::capabilities()
+}
+
 // -- P4/P5: 通话房间控制面 + 设备验证（前端不碰 HTTP，全部经此桥） --------
 
 /// 房间快照：`live=false` 表示当前没有通话。

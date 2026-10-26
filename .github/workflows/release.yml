@@ -1,0 +1,372 @@
+name: release
+'on':
+  push:
+    tags:
+    - v*
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (e.g. 0.2.0)
+        required: true
+        type: string
+      publish:
+        description: Publish the GitHub release and push the image (false = build, sign and verify only)
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  RUSTUP_TOOLCHAIN: 1.97.1
+  WXLIKE_CI: '1'
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  android-release:
+    name: android-release
+    runs-on: ubuntu-latest
+    environment: mobile-release
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-android-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 require signing material
+      shell: bash
+      env:
+        KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      run: "missing=0\nfor name in KEYSTORE STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do\n  if [ -z \"${!name:-}\" ]; then echo \"::error::secret $name is not configured in the mobile-release environment\"; missing=1; fi\ndone\n[ \"$missing\" = 0 ] || exit 1\necho \"$KEYSTORE\" | base64 -d > \"$RUNNER_TEMP/release.keystore\"\ncat > apps/mobile/android/key.properties <<EOF\nstoreFile=$RUNNER_TEMP/release.keystore\nstorePassword=$STORE_PASSWORD\nkeyAlias=$KEY_ALIAS\nkeyPassword=$KEY_PASSWORD\nEOF\nchmod 600 \"$RUNNER_TEMP/release.keystore\" apps/mobile/android/key.properties\n"
+    - name: C8 regenerate bindings and fetch packages
+      shell: bash
+      run: 'bash crates/ffi/regenerate.sh
+
+        cd apps/mobile
+
+        flutter pub get
+
+        '
+    - name: C8 signed release APK + AAB
+      shell: bash
+      run: "flutter build apk --release \\\n  --target-platform android-arm,android-arm64,android-x64 \\\n  --split-debug-info=build/app/outputs/symbols \\\n  --obfuscate\nflutter build appbundle --release \\\n  --split-debug-info=build/app/outputs/symbols \\\n  --obfuscate\n"
+      working-directory: apps/mobile
+    - name: C8 verify release signature (debug key is rejected)
+      shell: bash
+      run: "version=$(sed -n 's/^version: *\\([^+]*\\).*/\\1/p' apps/mobile/pubspec.yaml | head -1)\npython3 ci/jobs/mobile/check_apk.py \\\n  --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \\\n  --expected-version \"$version\" \\\n  --symbols-dir apps/mobile/build/app/outputs/symbols \\\n  --require-release-key \\\n  --output mobile-evidence/android-release.json\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: android-release
+        path: 'apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+
+          apps/mobile/build/app/outputs/bundle/release/app-release.aab
+
+          apps/mobile/build/app/outputs/symbols/**
+
+          mobile-evidence/android-release.json
+
+          '
+        if-no-files-found: error
+        retention-days: 30
+  ios-release:
+    name: ios-release
+    runs-on: macos-latest
+    environment: mobile-release
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: iOS project must exist
+      shell: bash
+      run: "if [ ! -d apps/mobile/ios ]; then\n  echo \"::error::apps/mobile/ios is absent; no IPA can be produced. G16-03 needs the mobile group to add the iOS runner project, then this gate signs and verifies it.\"\n  exit 1\nfi\n"
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-ios-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        flutter-version: 3.47.0
+        channel: stable
+        cache: true
+    - name: C8 require signing material
+      shell: bash
+      env:
+        CERT_P12: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      run: "missing=0\nfor name in CERT_P12 CERT_PASSWORD PROFILE TEAM_ID; do\n  if [ -z \"${!name:-}\" ]; then echo \"::error::secret $name is not configured in the mobile-release environment\"; missing=1; fi\ndone\n[ \"$missing\" = 0 ] || exit 1\nkeychain=\"$RUNNER_TEMP/wxlike-signing.keychain-db\"\nsecurity create-keychain -p \"\" \"$keychain\"\nsecurity set-keychain-settings -lut 21600 \"$keychain\"\nsecurity unlock-keychain -p \"\" \"$keychain\"\necho \"$CERT_P12\" | base64 -d > \"$RUNNER_TEMP/cert.p12\"\nsecurity import \"$RUNNER_TEMP/cert.p12\" -k \"$keychain\" -P \"$CERT_PASSWORD\" -T /usr/bin/codesign\nsecurity set-key-partition-list -S apple-tool:,apple: -s -k \"\" \"$keychain\"\nsecurity list-keychains -d user -s \"$keychain\" $(security list-keychains -d user | tr -d '\"')\nmkdir -p \"$HOME/Library/MobileDevice/Provisioning Profiles\"\necho \"$PROFILE\" | base64 -d > \"$HOME/Library/MobileDevice/Provisioning Profiles/wxlike.mobileprovision\"\nrm -f \"$RUNNER_TEMP/cert.p12\"\nsed \"s/__TEAM_ID__/$TEAM_ID/g\" deploy/signing-docs/ExportOptions.plist > apps/mobile/ios/ExportOptions.plist\n"
+    - name: C8 regenerate bindings and fetch packages
+      shell: bash
+      run: 'bash crates/ffi/regenerate.sh
+
+        cd apps/mobile
+
+        flutter pub get
+
+        '
+    - name: C8 signed IPA
+      shell: bash
+      run: "flutter build ipa --release \\\n  --split-debug-info=build/app/outputs/symbols \\\n  --obfuscate \\\n  --export-options-plist=ios/ExportOptions.plist\n"
+      working-directory: apps/mobile
+    - name: C8 verify distribution signature and version
+      shell: bash
+      run: 'version=$(sed -n ''s/^version: *\([^+]*\).*/\1/p'' apps/mobile/pubspec.yaml | head -1)
+
+        ipa=$(find apps/mobile/build/ios/ipa -name ''*.ipa'' | head -1)
+
+        python3 ci/jobs/mobile/check_ipa.py --ipa "$ipa" --expected-version "$version" --output mobile-evidence/ios-release.json
+
+        '
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: ios-release
+        path: 'apps/mobile/build/ios/ipa/*.ipa
+
+          apps/mobile/build/app/outputs/symbols/**
+
+          mobile-evidence/ios-release.json
+
+          '
+        if-no-files-found: error
+        retention-days: 30
+  desktop-release:
+    name: desktop-release (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          platform: linux
+          bundles: deb,appimage
+        - os: windows-latest
+          platform: windows
+          bundles: nsis,msi
+        - os: macos-latest
+          platform: macos-aarch64
+          bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    environment: production-release
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: require the updater signing key
+      shell: bash
+      env:
+        KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      run: "missing=0\nfor name in KEY PASSWORD PUBKEY; do\n  if [ -z \"${!name:-}\" ]; then echo \"::error::$name is not configured in production-release\"; missing=1; fi\ndone\n[ \"$missing\" = 0 ] || exit 1\n"
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        '
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: Linux webkit build dependencies
+      if: runner.os == 'Linux'
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+        '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        key: ${{ runner.os }}-desktop-release-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        workspaces: ui/src-tauri
+    - run: npm ci
+      working-directory: ui
+    - run: npm run build
+      working-directory: ui
+    - name: signed bundle + updater artefacts
+      shell: bash
+      env:
+        TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      run: "npx --yes @tauri-apps/cli@2.9.0 build --ci \\\n  --config \"$GITHUB_WORKSPACE/ci/jobs/desktop/tauri.release.override.json\" \\\n  --bundles \"${{ matrix.bundles }}\"\n"
+      working-directory: ui
+    - name: updater manifest (signature required)
+      shell: bash
+      run: "version=$(python3 -c \"import json;print(json.load(open('ui/src-tauri/tauri.conf.json'))['version'])\")\npython3 ci/jobs/desktop/make_update_manifest.py \\\n  --artifacts-dir ui/src-tauri/target/release/bundle \\\n  --platform \"${{ matrix.platform }}\" \\\n  --version \"$version\" \\\n  --base-url \"https://downloads.wxlike.dev/desktop/v$version\" \\\n  --require-signature \\\n  --output \"desktop-artifacts/manifest-${{ matrix.platform }}.json\"\n"
+    - name: verify the signature on the exact artefact
+      shell: bash
+      run: "python3 - <<'PY'\nimport json, os, subprocess, sys\nfrom pathlib import Path\nmanifest = next(Path(\"desktop-artifacts\").glob(\"manifest-*.json\"))\ndata = json.loads(manifest.read_text(encoding=\"utf-8\"))\nentry = next(iter(data[\"platforms\"].values()))\nname = entry[\"url\"].rsplit(\"/\", 1)[-1]\nroot = Path(\"ui/src-tauri/target/release/bundle\")\nartifact = next(p for p in root.rglob(name) if p.is_file())\nsignature = artifact.with_name(artifact.name + \".sig\")\nif not signature.is_file():\n    sys.exit(f\"signature missing for {artifact}\")\nif os.name == \"nt\":\n    print(\"signature verification deferred to the release job on Linux (minisign is unavailable on Windows):\", artifact)\n    sys.exit(0)\ntool = \"minisign\"\nif not subprocess.run([\"bash\", \"-lc\", f\"command -v {tool}\"], capture_output=True).returncode == 0:\n    sys.exit(\"minisign not installed\")\nenv_key = os.environ.get(\"WXLIKE_UPDATER_PUBKEY\", \"\")\nif not env_key:\n    sys.exit(\"WXLIKE_UPDATER_PUBKEY is not set\")\nresult = subprocess.run([tool, \"-V\", \"-m\", str(artifact), \"-x\", str(signature), \"-P\", env_key], capture_output=True, text=True)\nif result.returncode != 0:\n    sys.exit(result.stderr)\nprint(\"signature verified\", artifact)\nPY\n"
+      env:
+        WXLIKE_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: desktop-${{ matrix.platform }}
+        path: 'ui/src-tauri/target/release/bundle/**
+
+          desktop-artifacts/manifest-*.json
+
+          '
+        if-no-files-found: error
+        retention-days: 30
+  release:
+    name: release
+    needs:
+    - android-release
+    - ios-release
+    - desktop-release
+    runs-on: ubuntu-latest
+    environment: production-release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.12'
+    - name: resolve version and publication mode
+      id: meta
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        PUSH_EVENT: ${{ github.event_name == 'push' }}
+        INPUT_PUBLISH: ${{ inputs.publish }}
+      run: 'if [ -n "${INPUT_VERSION}" ]; then version="$INPUT_VERSION"; else version="${GITHUB_REF_NAME#v}"; fi
+
+        if [ "${PUSH_EVENT}" = "true" ] || [ "${INPUT_PUBLISH}" = "true" ]; then publish=true; else publish=false; fi
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+        echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+        echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/wxlike-server" >> "$GITHUB_OUTPUT"
+
+        echo "version=$version publish=$publish"
+
+        '
+    - name: release gate - contract registry must be complete
+      run: python3 ci/jobs/contract/check_contracts.py --require-registry
+    - name: download mobile artefacts
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      with:
+        name: android-release
+        path: artifacts/android
+    - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      with:
+        name: ios-release
+        path: artifacts/ios
+    - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      with:
+        pattern: desktop-*
+        path: artifacts/desktop
+    - name: verify desktop signatures and merge manifests
+      shell: bash
+      env:
+        UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      run: "set -euo pipefail\nsudo apt-get update\nsudo apt-get install -y --no-install-recommends minisign\necho \"pubkey is configured: $([ -n \"$UPDATER_PUBKEY\" ] && echo yes || echo no)\"\n[ -n \"$UPDATER_PUBKEY\" ] || { echo \"::error::TAURI_UPDATER_PUBKEY is not configured\"; exit 1; }\npython3 - \"$UPDATER_PUBKEY\" <<'PY'\nimport hashlib, json, os, subprocess, sys\nfrom pathlib import Path\npubkey = sys.argv[1]\nroot = Path(\"artifacts/desktop\")\nmanifests = sorted(root.rglob(\"manifest-*.json\"))\nif len(manifests) < 3:\n    sys.exit(f\"expected 3 desktop manifests, found {manifests}\")\nfor manifest in manifests:\n    data = json.loads(manifest.read_text(encoding=\"utf-8\"))\n    for platform, entry in data[\"platforms\"].items():\n        name = entry[\"url\"].rsplit(\"/\", 1)[-1]\n        matches = [p for p in root.rglob(name) if p.is_file()]\n        if not matches:\n            sys.exit(f\"artefact {name} for {platform} not downloaded\")\n        artifact = matches[0]\n        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()\n        if digest != entry[\"sha256\"]:\n            sys.exit(f\"sha256 mismatch for {artifact}: {digest} != {entry['sha256']}\")\n        signature = artifact.with_name(artifact.name + \".sig\")\n        if not signature.is_file():\n            sys.exit(f\"signature missing for {artifact}\")\n        result = subprocess.run(\n            [\"minisign\", \"-V\", \"-m\", str(artifact), \"-x\", str(signature), \"-P\", pubkey],\n            capture_output=True, text=True,\n        )\n        if result.returncode != 0:\n            sys.exit(f\"signature rejected for {artifact}: {result.stderr}\")\n        print(f\"verified {platform}: {name}\")\nPY\npython3 ci/jobs/desktop/make_update_manifest.py \\\n  --merge $(find artifacts/desktop -name 'manifest-*.json' | sort) \\\n  --require-signature \\\n  --output release-evidence/latest.json\npython3 - \"${{ steps.meta.outputs.version }}\" <<'PY'\nimport json, sys\nfrom pathlib import Path\ndata = json.loads(Path(\"release-evidence/latest.json\").read_text(encoding=\"utf-8\"))\nif data.get(\"version\") != sys.argv[1]:\n    sys.exit(f\"desktop version {data.get('version')} != release {sys.argv[1]}\")\nPY\n"
+    - name: validate mobile and device evidence
+      shell: bash
+      run: "set -euo pipefail\nandroid=$(find artifacts/android -name 'android-release.json' | head -1)\nios=$(find artifacts/ios -name 'ios-release.json' | head -1)\npython3 - \"$android\" \"$ios\" <<'PY'\nimport json, sys\nfrom pathlib import Path\nfor path, label in ((sys.argv[1], \"android\"), (sys.argv[2], \"ios\")):\n    data = json.loads(Path(path).read_text(encoding=\"utf-8\"))\n    if not data.get(\"sha256\"):\n        sys.exit(f\"{label} evidence has no artifact hash\")\n    print(f\"{label}: {data.get('artifact')} sha256={data['sha256']} signer={data.get('signer') or data.get('authority')}\")\nPY\nverified=0\nif [ -f deploy/signing-docs/device-evidence.json ]; then\n  python3 ci/jobs/mobile/check_device_evidence.py \\\n    --evidence deploy/signing-docs/device-evidence.json \\\n    --matrix deploy/signing-docs/device-matrix.json \\\n    --release-evidence \"$android\"\n  verified=1\nelse\n  echo \"::warning::no real-device evidence; publication will be blocked\"\nfi\necho \"DEVICE_VERIFIED=$verified\" >> \"$GITHUB_ENV\"\ncp \"$android\" release-evidence/android-release.json\ncp \"$ios\" release-evidence/ios-release.json\n"
+    - name: record known gaps (release fails while any blocks_release gap is open)
+      shell: bash
+      run: python3 ci/jobs/build/check_gaps.py --release --json release-evidence/gaps.json
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+    - name: login to GHCR
+      if: steps.meta.outputs.publish == 'true'
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: build server image
+      id: build
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      with:
+        context: .
+        file: containers/server/Dockerfile
+        push: ${{ steps.meta.outputs.publish == 'true' }}
+        load: ${{ steps.meta.outputs.publish != 'true' }}
+        tags: '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+
+          ${{ steps.meta.outputs.image }}:sha-${{ github.sha }}
+
+          '
+        labels: 'org.opencontainers.image.revision=${{ github.sha }}
+
+          org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+
+          '
+    - name: publish digest reference
+      id: digest
+      shell: bash
+      env:
+        BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        PUBLISH: ${{ steps.meta.outputs.publish }}
+        IMAGE: ${{ steps.meta.outputs.image }}
+      run: "if [ \"$PUBLISH\" = \"true\" ]; then\n  echo \"digest=$BUILT_DIGEST\" >> \"$GITHUB_OUTPUT\"\n  echo \"ref=$IMAGE@$BUILT_DIGEST\" >> \"$GITHUB_OUTPUT\"\nelse\n  local_id=$(docker image inspect -f '{{.Id}}' \"$IMAGE:${{ steps.meta.outputs.version }}\")\n  echo \"digest=$local_id\" >> \"$GITHUB_OUTPUT\"\n  echo \"ref=$local_id\" >> \"$GITHUB_OUTPUT\"\n  echo \"dry run: local image $local_id (not published)\"\nfi\n"
+    - name: SBOM
+      uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+      with:
+        image: ${{ steps.meta.outputs.publish == 'true' && format('{0}@{1}', steps.meta.outputs.image, steps.build.outputs.digest) || format('{0}:{1}', steps.meta.outputs.image, steps.meta.outputs.version) }}
+        format: spdx-json
+        output-file: release-evidence/server-sbom.spdx.json
+        upload-artifact: false
+    - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9
+      if: steps.meta.outputs.publish == 'true'
+    - name: sign image and verify the signature
+      if: steps.meta.outputs.publish == 'true'
+      shell: bash
+      run: "set -euo pipefail\nref=\"${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}\"\ncosign sign --yes \"$ref\"\ncosign verify \"$ref\" \\\n  --certificate-identity-regexp \"^https://github.com/${GITHUB_REPOSITORY}/\" \\\n  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n"
+    - name: attest build provenance
+      if: steps.meta.outputs.publish == 'true'
+      uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
+      with:
+        subject-name: ${{ steps.meta.outputs.image }}
+        subject-digest: ${{ steps.build.outputs.digest }}
+        push-to-registry: true
+    - name: assemble release manifest
+      shell: bash
+      run: "set -euo pipefail\nargs=(\n  --version \"${{ steps.meta.outputs.version }}\"\n  --commit \"${{ github.sha }}\"\n  --image \"${{ steps.meta.outputs.image }}\"\n  --image-digest \"${{ steps.digest.outputs.digest }}\"\n  --gaps-json release-evidence/gaps.json\n  --desktop-manifest release-evidence/latest.json\n  --output release-evidence/release-manifest.json\n)\n[ -f release-evidence/server-sbom.spdx.json ] && args+=(--sbom release-evidence/server-sbom.spdx.json)\n[ -f release-evidence/android-release.json ] && args+=(--android-evidence release-evidence/android-release.json)\n[ -f release-evidence/ios-release.json ] && args+=(--ios-evidence release-evidence/ios-release.json)\n[ -f deploy/signing-docs/device-evidence.json ] && args+=(--device-evidence deploy/signing-docs/device-evidence.json)\n[ \"${DEVICE_VERIFIED:-0}\" = \"1\" ] && args+=(--device-evidence-verified)\n[ \"${{ steps.meta.outputs.publish }}\" = \"true\" ] && args+=(--published --require-clean)\npython3 ci/jobs/release/make_release_manifest.py \"${args[@]}\"\n"
+    - name: publish GitHub release
+      if: steps.meta.outputs.publish == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: "set -euo pipefail\ntag=\"v${{ steps.meta.outputs.version }}\"\nmapfile -t assets < <(find artifacts release-evidence -type f \\( \\\n  -name '*.apk' -o -name '*.aab' -o -name '*.ipa' -o -name '*.deb' -o -name '*.AppImage' \\\n  -o -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.app.tar.gz' \\\n  -o -name 'release-manifest.json' -o -name 'server-sbom.spdx.json' -o -name 'latest.json' \\) | sort)\nif gh release view \"$tag\" >/dev/null 2>&1; then\n  gh release upload \"$tag\" \"${assets[@]}\" --clobber\nelse\n  gh release create \"$tag\" \"${assets[@]}\" --target \"$GITHUB_SHA\" --title \"wxlike ${{ steps.meta.outputs.version }}\" --generate-notes\nfi\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: release-evidence
+        path: release-evidence/
+        if-no-files-found: warn
+        retention-days: 90

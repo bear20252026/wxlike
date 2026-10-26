@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-24",
+  "updated_at": "2026-10-25",
   "gaps": [
     {
       "id": "G01-03-WASM",
@@ -9,8 +9,8 @@
       "check": "wasm",
       "status": "open",
       "blocks_release": true,
-      "evidence": "No workspace crate declares a wasm32 target yet; `cargo build --target wasm32-unknown-unknown` cannot be selected.",
-      "close_when": "A wasm32 buildable crate exists and the wasm job compiles it."
+      "evidence": "wxlike-client-web exists and the CI wasm job compiles it for wasm32-unknown-unknown; the remaining gap is the JS side: no wasm-bindgen entry point / packaging integration in apps/desktop-web yet, so the web adapter wiring is still pending.",
+      "close_when": "apps/desktop-web loads the wasm module through a wasm-bindgen entry (JS packaging wired into its build) and the wasm job stays green."
     },
     {
       "id": "G00-04-PG",

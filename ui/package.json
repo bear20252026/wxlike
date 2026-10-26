@@ -5,17 +5,21 @@
   "description": "wxlike desktop frontend (WP-11): TypeScript + jotai, bundled by esbuild into dist/ for Tauri",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && esbuild src/main.ts --bundle --format=iife --outfile=dist/app.js --minify",
-    "dev": "esbuild src/main.ts --bundle --format=iife --outfile=dist/app.js --watch",
+    "build": "npm run typecheck && esbuild src/main.ts --bundle --format=iife --target=es2022 --outfile=dist/app.js --minify && node scripts/copy-dist-assets.mjs",
+    "dev": "esbuild src/main.ts --bundle --format=iife --target=es2022 --sourcemap --outfile=dist/app.js --watch",
     "build:web": "bash ../scripts/build-web.sh",
     "test:wire": "node src/web/wire.selftest.mjs",
-    "check:msgindex": "bash scripts/check-msgindex.sh"
+    "check:msgindex": "bash scripts/check-msgindex.sh",
+    "test": "npm run test:wire && npm run check:msgindex",
+    "lint": "eslint src"
   },
   "dependencies": {
     "jotai": "^2.10.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^5.6.0"
+    "eslint": "^9.39.4",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.72.0"
   }
 }

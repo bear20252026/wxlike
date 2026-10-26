@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "wxlike 桌面窗口的最小权限：事件收发（im-in/core://event 都走 core:event）+ 打开外部链接。不授 fs/shell/http——前端一切业务都走 invoke 命令，由 Rust 侧执行。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "opener:default"
+  ]
+}

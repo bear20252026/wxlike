@@ -1,6 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ACTIONS } from "../../shell/core-contract";
+import { ACTIONS, newRequest } from "../../shell/core-contract";
+import { createFixtureCore } from "../../shell/adapters/fixture/fixture-core";
 import { loginAs, renderApp } from "../../test/helpers";
 
 describe("G10-01 登录、锁定与恢复路由", () => {
@@ -24,6 +25,34 @@ describe("G10-01 登录、锁定与恢复路由", () => {
     expect(await screen.findByText("账号或口令不正确")).toBeInTheDocument();
     expect(screen.queryByTestId("rail-chats")).not.toBeInTheDocument();
     expect(screen.getByTestId("login-password")).toHaveValue("");
+  });
+
+  it("注册：新账号创建后直接进入聊天，重复注册同名账号被拒绝", async () => {
+    const user = userEvent.setup();
+    const fixture = createFixtureCore({ latencyMs: 0 });
+    renderApp({ fixture });
+    await screen.findByTestId("login-username");
+
+    await user.click(screen.getByTestId("login-toggle-mode"));
+    expect(screen.getByTestId("login-name")).toBeInTheDocument();
+
+    // 短口令在客户端就被拦截
+    await user.type(screen.getByTestId("login-username"), "user-new");
+    await user.type(screen.getByTestId("login-password"), "123");
+    await user.click(screen.getByTestId("login-submit"));
+    expect(await screen.findByText("口令至少 6 位")).toBeInTheDocument();
+
+    await user.clear(screen.getByTestId("login-password"));
+    await user.type(screen.getByTestId("login-password"), "secret7");
+    await user.type(screen.getByTestId("login-name"), "新同学");
+    await user.click(screen.getByTestId("login-submit"));
+    await screen.findByTestId("rail-chats");
+
+    // 注册即登录：会话投影携带新账号；同名账号再注册给出字段错误
+    expect(fixture.currentSession()).toMatchObject({ phase: "authenticated", account: { user_id: "user-new", name: "新同学" } });
+    const duplicate = await fixture.dispatch(newRequest(ACTIONS.register, { username: "user-new", password: "another9" }));
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.error.field_errors?.username).toBe("该账号已被注册");
   });
 
   it("登录成功后进入聊天，且口令不写入 localStorage", async () => {

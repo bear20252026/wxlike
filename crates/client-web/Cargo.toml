@@ -10,6 +10,11 @@ description = "wxlike 客户端 Web 实现：fetch / WebSocket / IndexedDB / Web
 # CI 的 wasm 任务负责 `cargo check --target wasm32-unknown-unknown`，
 # 光有"能编译"不算数——浏览器行为由 `tests/browser.rs`（wasm-bindgen-test）覆盖。
 
+# rlib：原生单测与 Rust 侧引用；cdylib：wasm-bindgen 产出（wasm-pack 用）。
+# Cargo 不能按 target 分别声明 crate-type，两边合在一起声明（原生 check 不受影响）。
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 wxlike-types = { path = "../types" }
 wxlike-client-core = { path = "../client-core" }
@@ -48,6 +53,7 @@ web-sys = { version = "0.3", features = [
     "IdbTransaction",
     "IdbTransactionMode",
     "IdbObjectStore",
+    "IdbIndex",
     "IdbRequest",
     "IdbVersionChangeEvent",
     "DomException",
@@ -58,7 +64,10 @@ web-sys = { version = "0.3", features = [
     "Performance",
 ] }
 
-[dev-dependencies]
+# tokio 只给原生单测用（`policy` 的纯逻辑测试）；wasm 的测试走
+# wasm-bindgen-test（见下），而 tokio 的 net 栈在 wasm32 上编不过——
+# 无条件声明会让 `--target wasm32 --all-targets` 直接红。
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

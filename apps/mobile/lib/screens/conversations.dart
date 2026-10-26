@@ -64,7 +64,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   }
 
   Future<void> _logout() async {
-    await widget.service.logout();
+    try {
+      await widget.service.logout();
+    } catch (error) {
+      // 登出也要走网络：失败时留在本页并说明原因，不能吞掉异常卡白屏。
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('退出登录失败：${describeError(error)}')),
+      );
+      return;
+    }
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => LoginScreen(service: widget.service)),
@@ -155,7 +164,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             builder: (_) => ChatScreen(service: widget.service, row: row),
           ),
         );
-        // 从聊天回来时未读可能已经变了
+        // 从聊天回来时未读可能已经变了；await 之后页面可能已经不在树上
+        if (!mounted) return;
         _load();
       },
     );

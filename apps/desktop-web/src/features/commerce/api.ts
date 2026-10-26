@@ -50,13 +50,16 @@ export class WalletApi implements WalletPorts {
     if (since !== undefined) usp.set("since", String(since));
     if (limit !== undefined) usp.set("limit", String(limit));
     const text = usp.toString();
-    const body = await request<{ items?: LedgerRow[]; next_cursor?: number | null } | LedgerRow[]>(
+    // Server shape (crates/platform wallet.rs ledger): {entries, cursor, has_more}.
+    // `cursor` is the ledger head after this page; a bare array is tolerated for
+    // older transports but is NOT the contract the server ships.
+    const body = await request<{ entries?: LedgerRow[]; cursor?: number | null; has_more?: boolean } | LedgerRow[]>(
       "GET",
       `/api/wallet/ledger${text ? `?${text}` : ""}`,
       { signal: opts?.signal },
     );
-    const items = Array.isArray(body) ? body : (body.items ?? []);
-    const next = Array.isArray(body) ? null : (body.next_cursor ?? null);
+    const items = Array.isArray(body) ? body : (body.entries ?? []);
+    const next = Array.isArray(body) ? null : (body.cursor ?? null);
     return { items, next_cursor: next };
   }
 

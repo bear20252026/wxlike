@@ -1055,10 +1055,19 @@ async fn create_job(
     if bytes.is_empty() {
         return Err(ApiError::unprocessable("empty upload"));
     }
-    let submit = state
-        .store
-        .submit_job(&bytes, &caller, callback_url.as_deref())
-        .map_err(reject_or_internal)?;
+    // `submit_job` 里有真实的落盘（源字节写进 pending 目录）+ SQLite 写，
+    // 都不能在异步线程上做（审计第 5 轮）；它自己不做哈希——哈希在
+    // blocking 任务里算完再把 `job_id` 带回来。
+    let store = state.store.clone();
+    let submit = tokio::task::spawn_blocking(move || {
+        store.submit_job(&bytes, &caller, callback_url.as_deref())
+    })
+    .await
+    .map_err(|err| {
+        tracing::error!(error = %err, "submit task panicked");
+        ApiError::internal("submit failed")
+    })?
+    .map_err(reject_or_internal)?;
     // 后台执行器随第一次提交起来（见 `VideoStore::start_worker`）
     state.store.start_worker();
     let status = if submit.newly_queued {
@@ -1079,13 +1088,13 @@ async fn get_job(
     let job = state
         .store
         .job(&job_id)
-        .map_err(|e| ApiError::internal(format!("{e:#}")))?
+        .map_err(|e| internal_logged("video job lookup failed", e))?
         .ok_or_else(|| ApiError::not_found("no such job"))?;
     // 别人的作业一律 404：不确认它存在，也不泄露它的状态
     let also_uploaded = state
         .store
         .owns_video(&job_id, &caller)
-        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
+        .map_err(|e| internal_logged("video ownership lookup failed", e))?;
     if job.owner != caller && !also_uploaded {
         return Err(ApiError::not_found("no such job"));
     }
@@ -1093,6 +1102,9 @@ async fn get_job(
 }
 
 /// `submit_job` 的拒绝映射：配额 → 429，回调地址 → 400，其余是服务端故障。
+///
+/// 服务端故障**不回显 anyhow 链**（可能带绝对路径）：细节进日志，客户端
+/// 只看到固定一句（审计第 5 轮，与 `crate::not_found_if_missing` 同口径）。
 fn reject_or_internal(err: anyhow::Error) -> ApiError {
     if let Some(rejected) = err.downcast_ref::<Rejected>() {
         return match rejected.kind {
@@ -1102,7 +1114,14 @@ fn reject_or_internal(err: anyhow::Error) -> ApiError {
             RejectKind::BadCallback => ApiError::bad_request(rejected.message.clone()),
         };
     }
-    ApiError::internal(format!("submit: {err:#}"))
+    tracing::error!(error = %format!("{err:#}"), "video job submit failed");
+    ApiError::internal("submit failed")
+}
+
+/// 作业面的其它 500 映射：同上，日志留全量、客户端拿固定文案。
+fn internal_logged(what: &'static str, err: anyhow::Error) -> ApiError {
+    tracing::error!(error = %format!("{err:#}"), what);
+    ApiError::internal("video job store failure")
 }
 
 /// 人工重试一个终态作业。
@@ -1119,7 +1138,7 @@ async fn retry_job(
     let current = state
         .store
         .job(&job_id)
-        .map_err(|e| ApiError::internal(format!("{e:#}")))?
+        .map_err(|e| internal_logged("video job lookup failed", e))?
         .ok_or_else(|| ApiError::not_found("no such job"))?;
     // 重试会改共享状态：只有提交者本人能按，别人连"它存在"都不该知道
     if current.owner != caller {
@@ -1134,7 +1153,7 @@ async fn retry_job(
     state
         .store
         .requeue_job(&job_id)
-        .map_err(|e| ApiError::internal(format!("{e:#}")))?
+        .map_err(|e| internal_logged("video job requeue failed", e))?
         .map(Json)
         .ok_or_else(|| ApiError::conflict("job left the failed state mid-retry"))
 }
@@ -1153,7 +1172,8 @@ async fn read_job_fields(form: &mut Multipart) -> Result<(Vec<u8>, Option<String
     {
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
-            "bytes" => {
+            // `file` 是 `bytes` 的别名（与 `/api/video` 同一收宽口径）
+            "bytes" | "file" => {
                 if bytes.is_some() {
                     return Err("duplicate `bytes` field".into());
                 }

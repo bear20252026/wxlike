@@ -39,8 +39,10 @@ jobs:
         run: |
           python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml --pins-only
           python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml
-      - name: C10 composed workflows match the checked-in fragments
-        run: python ci/jobs/compose.py --check
+      - name: C10 composed workflows match the checked-in fragments and the live .github/
+        run: python ci/jobs/compose.py --check --check-live
+      - name: C10 CI-of-CI unit tests
+        run: python -m unittest discover -s ci/jobs/tests
 
   coverage:
     name: coverage
@@ -120,6 +122,7 @@ jobs:
       - wasm
       - contract
       - ui
+      - web-v2
       - flutter
       - audit
       - coverage

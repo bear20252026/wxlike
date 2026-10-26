@@ -5,7 +5,7 @@ import type { PlatformPort } from "./shell/platform/port";
 import type { ChatMessage } from "./shell/models";
 import { AppProvider, useApp, useAppState, useToast } from "./shell/store";
 import { guardedRoute, useRoute, type Route } from "./shell/router";
-import { ShellFrame, routeTitle, useThemeSync } from "./shell/app-shell";
+import { RAIL_ITEMS, ShellFrame, routeTitle, useThemeSync } from "./shell/app-shell";
 import { ErrorState, LoadingState, Toasts } from "./shell/ui";
 import { LoginPage } from "./features/auth/login-page";
 import { QrLoginPage } from "./features/auth/qr-login-page";
@@ -19,6 +19,30 @@ import { SearchPage } from "./features/search/search-page";
 import { SearchOverlay } from "./features/search/search-overlay";
 import { SettingsPage } from "./features/settings/settings-page";
 import { AboutPage } from "./features/settings/about-page";
+import { ChannelsPage } from "./features/video/ChannelsPage";
+import { VideoApi } from "./features/video/api";
+import { WalletPage } from "./features/commerce/WalletPage";
+import { FilesPage } from "./features/files/FilesPage";
+import { FilesApi } from "./features/files/api";
+import { MiniAppsPage } from "./features/mini/MiniAppsPage";
+import { ServicesPage } from "./features/discover/ServicesPage";
+import { MomentsPage } from "./features/content/MomentsPage";
+import { ArticlesPage } from "./features/content/ArticlesPage";
+import { FavoritesPage } from "./features/content/FavoritesPage";
+import { StickerPanel } from "./features/content/StickerPanel";
+import { ContentApi } from "./features/content/api";
+import { CallPanel } from "./features/calls/CallPanel";
+import { navigate } from "./shell/router";
+
+/** Module-level ports so their identity is stable across renders (effects that
+ *  depend on `ports` would otherwise re-run every render). */
+const VIDEO_PORTS = new VideoApi();
+const FILES_PORTS = new FilesApi();
+const CONTENT_PORTS = new ContentApi();
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled route: ${JSON.stringify(value)}`);
+}
 
 function notificationBody(message: ChatMessage, preview: boolean): string {
   if (!preview) return "你收到一条新消息";
@@ -47,6 +71,71 @@ function SessionSplash() {
   );
 }
 
+/** 发现页顶部的功能入口：其余域（视频/钱包/文件/小程序/内容/通话）从这里进入。 */
+const DISCOVER_LINKS: Array<{ route: Route; label: string; icon: string }> = [
+  { route: { id: "moments" }, label: "朋友圈", icon: "🌿" },
+  { route: { id: "video" }, label: "视频号", icon: "📺" },
+  { route: { id: "wallet" }, label: "钱包", icon: "💰" },
+  { route: { id: "files" }, label: "文件", icon: "📁" },
+  { route: { id: "mini" }, label: "小程序", icon: "🧩" },
+  { route: { id: "calls" }, label: "通话", icon: "📞" },
+  { route: { id: "articles" }, label: "公众号", icon: "📰" },
+  { route: { id: "favorites" }, label: "收藏", icon: "⭐" },
+  { route: { id: "stickers" }, label: "表情", icon: "😀" },
+];
+
+function DiscoverPage() {
+  return (
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-3 overflow-y-auto p-4">
+      <section aria-label="功能入口" className="grid grid-cols-3 gap-2" data-testid="discover-links">
+        {DISCOVER_LINKS.map((item) => (
+          <button
+            key={item.route.id}
+            type="button"
+            onClick={() => navigate(item.route)}
+            data-testid={`discover-link-${item.route.id}`}
+            className="rounded-xl border border-zinc-200 bg-white p-3 text-center transition hover:border-emerald-300 hover:bg-emerald-50"
+          >
+            <p className="text-2xl">{item.icon}</p>
+            <p className="mt-1 truncate text-xs text-zinc-700">{item.label}</p>
+          </button>
+        ))}
+      </section>
+      <ServicesPage />
+    </div>
+  );
+}
+
+/** 通话页：输入会话/房间 ID 后进入真实通话面板（CallPanel 按该 ID 建房）。 */
+function CallsPage({ convId }: { convId?: string }) {
+  const [roomId, setRoomId] = useState(convId ?? "main");
+  return (
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-3 overflow-y-auto p-4" data-testid="calls-page">
+      <label className="text-xs text-zinc-500">
+        会话 / 房间 ID
+        <input
+          value={roomId}
+          onChange={(event) => setRoomId(event.target.value.trim() || "main")}
+          aria-label="通话房间 ID"
+          data-testid="calls-room-input"
+          className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 font-mono text-sm outline-none focus:border-emerald-500"
+        />
+      </label>
+      {roomId ? <CallPanel conv={roomId} /> : null}
+    </div>
+  );
+}
+
+/** 表情页：独立展示表情面板；选中动作以提示反馈（聊天内的选取走 composer）。 */
+function StickersPage() {
+  const toast = useToast();
+  return (
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-3 overflow-y-auto p-4" data-testid="stickers-page">
+      <StickerPanel ports={CONTENT_PORTS} onPick={(sticker) => toast(`已选择表情 ${sticker}`)} />
+    </div>
+  );
+}
+
 function PageContent({ route }: { route: Route }) {
   switch (route.id) {
     case "chats":
@@ -67,8 +156,36 @@ function PageContent({ route }: { route: Route }) {
       return <SettingsPage />;
     case "about":
       return <AboutPage />;
+    case "video":
+      return <ChannelsPage ports={VIDEO_PORTS} />;
+    case "wallet":
+      return <WalletPage />;
+    case "files":
+      return <FilesPage ports={FILES_PORTS} />;
+    case "mini":
+      return <MiniAppsPage />;
+    case "discover":
+      return <DiscoverPage />;
+    case "moments":
+      return <MomentsPage ports={CONTENT_PORTS} />;
+    case "articles":
+      return <ArticlesPage ports={CONTENT_PORTS} />;
+    case "favorites":
+      return <FavoritesPage ports={CONTENT_PORTS} />;
+    case "stickers":
+      return <StickersPage />;
+    case "calls":
+      return <CallsPage />;
+    case "call":
+      return <CallsPage convId={route.convId} />;
+    case "login":
+    case "qr_login":
+    case "lock":
+    case "restore":
+      // Public screens are rendered by AppView directly, never via PageContent.
+      return null;
     default:
-      return <ChatsPage />;
+      return assertNever(route);
   }
 }
 
@@ -118,6 +235,25 @@ function AppView() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [authenticated]);
+
+  /** Alt+1..N navigates to the rail items, matching the advertised tooltips. */
+  useEffect(() => {
+    if (!authenticated) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const code = event.code;
+      const match = /^(?:Digit|Numpad)([1-9])$/.exec(code);
+      if (!match) return;
+      const index = Number(match[1]) - 1;
+      const item = RAIL_ITEMS[index];
+      if (!item) return;
+      event.preventDefault();
+      navigate(item.route);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // RAIL_ITEMS is a module constant; navigate is imported and stable.
   }, [authenticated]);
 
   useEffect(() => {

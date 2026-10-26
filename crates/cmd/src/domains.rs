@@ -78,8 +78,22 @@ pub struct Table {
 static TABLE: OnceLock<Table> = OnceLock::new();
 
 /// 覆盖表（首次使用时解析一次，之后只读）。
+///
+/// 数据坏了（`domains.json` 被改坏）不 panic：退回**空表**并打一行
+/// stderr——库代码在坏数据上崩溃会带走宿主进程，而"没有覆盖表"
+/// 只是把 `coverage` 报告变空，故障还能被发现与修复。测试里
+/// `every_command_is_mapped_exactly_once` 会对着空表立刻红掉，
+/// 坏数据不会静默通过 CI。
 pub fn table() -> &'static Table {
-    TABLE.get_or_init(|| parse(RAW).unwrap_or_else(|e| panic!("覆盖表数据损坏：{e}")))
+    TABLE.get_or_init(|| {
+        parse(RAW).unwrap_or_else(|err| {
+            eprintln!("wxlike-cmd: 业务域覆盖表数据损坏，退回空表：{err}");
+            Table {
+                domains: Vec::new(),
+                entries: Vec::new(),
+            }
+        })
+    })
 }
 
 /// 所有业务域。

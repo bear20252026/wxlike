@@ -13,8 +13,10 @@ export function LoginPage() {
   const dispatch = useCoreAction();
   const { go } = useRoute();
   const { pending, run } = usePending();
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [remember, setRemember] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<DomainError | null>(null);
@@ -25,24 +27,40 @@ export function LoginPage() {
     if (state.session.phase === "authenticated") go({ id: "chats" }, { replace: true });
   }, [state.session.phase, go]);
 
+  const switchMode = (next: "login" | "register") => {
+    setMode(next);
+    setFieldErrors({});
+    setError(null);
+  };
+
   const submit = async () => {
     const errors: Record<string, string> = {};
     if (!username.trim()) errors.username = "请输入账号";
     if (!password) errors.password = "请输入口令";
+    else if (mode === "register" && password.length < 6) errors.password = "口令至少 6 位";
     setFieldErrors(errors);
     setError(null);
     if (Object.keys(errors).length) return;
     await run(async () => {
-      const response = await dispatch<SessionProjection>(
-        ACTIONS.login,
-        {
-          username: username.trim(),
-          password,
-          remember: remember && osBackedSecrets,
-          device_label: navigator.userAgent.slice(0, 120),
-        },
-        { idempotencyKey: `login:${username.trim()}` },
-      );
+      const response =
+        mode === "register"
+          ? await dispatch<SessionProjection>(
+              ACTIONS.register,
+              // Register opens the session in one step (server: register ->
+              // update_profile(name) -> full session open).
+              { username: username.trim(), password, name: displayName.trim() || undefined },
+              { idempotencyKey: `register:${username.trim()}` },
+            )
+          : await dispatch<SessionProjection>(
+              ACTIONS.login,
+              {
+                username: username.trim(),
+                password,
+                remember: remember && osBackedSecrets,
+                device_label: navigator.userAgent.slice(0, 120),
+              },
+              { idempotencyKey: `login:${username.trim()}` },
+            );
       if (response.ok) {
         setPassword("");
         go({ id: "chats" }, { replace: true });
@@ -85,8 +103,12 @@ export function LoginPage() {
 
       <section className="flex items-center justify-center px-8 py-10">
         <div className="w-full max-w-[340px]">
-          <h2 className="text-[20px] font-semibold text-[var(--ink)]">登录 wxlike</h2>
-          <p className="mt-1 text-[11px] text-[var(--muted)]">使用账号口令，或在手机上扫码批准。</p>
+          <h2 className="text-[20px] font-semibold text-[var(--ink)]">
+            {mode === "login" ? "登录 wxlike" : "注册 wxlike 账号"}
+          </h2>
+          <p className="mt-1 text-[11px] text-[var(--muted)]">
+            {mode === "login" ? "使用账号口令，或在手机上扫码批准。" : "注册由核心完成并直接进入会话；昵称可选。"}
+          </p>
 
           <form
             className="mt-6 space-y-3"
@@ -96,6 +118,18 @@ export function LoginPage() {
             }}
             noValidate
           >
+            {mode === "register" ? (
+              <TextField
+                label="昵称（可选）"
+                name="name"
+                autoComplete="nickname"
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="展示名称"
+                error={fieldErrors.name}
+                data-testid="login-name"
+              />
+            ) : null}
             <TextField
               label="账号"
               name="username"
@@ -112,31 +146,33 @@ export function LoginPage() {
               id="login-password"
               name="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="输入口令"
+              placeholder={mode === "login" ? "输入口令" : "至少 6 位"}
               error={fieldErrors.password}
               data-testid="login-password"
             />
-            <label className="flex items-start gap-2 pt-1 text-[10.5px] leading-4 text-[var(--ink-2)]">
-              <input
-                type="checkbox"
-                className="mt-0.5 accent-[var(--accent)]"
-                checked={remember}
-                disabled={!osBackedSecrets}
-                onChange={(event) => setRemember(event.target.checked)}
-                data-testid="login-remember"
-              />
-              <span>
-                在此设备自动登录
-                <span className="block text-[9.5px] text-[var(--muted)]">
-                  {osBackedSecrets
-                    ? "凭据由系统密钥库保存；注销时撤销"
-                    : "浏览器无法访问系统密钥库：本次会话有效，不跨重启保存"}
+            {mode === "login" ? (
+              <label className="flex items-start gap-2 pt-1 text-[10.5px] leading-4 text-[var(--ink-2)]">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-[var(--accent)]"
+                  checked={remember}
+                  disabled={!osBackedSecrets}
+                  onChange={(event) => setRemember(event.target.checked)}
+                  data-testid="login-remember"
+                />
+                <span>
+                  在此设备自动登录
+                  <span className="block text-[9.5px] text-[var(--muted)]">
+                    {osBackedSecrets
+                      ? "凭据由系统密钥库保存；注销时撤销"
+                      : "浏览器无法访问系统密钥库：本次会话有效，不跨重启保存"}
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            ) : null}
             <InlineError error={error} />
             <Button
               type="submit"
@@ -146,7 +182,7 @@ export function LoginPage() {
               pending={pending}
               data-testid="login-submit"
             >
-              登录
+              {mode === "login" ? "登录" : "注册并进入"}
             </Button>
           </form>
 
@@ -154,18 +190,30 @@ export function LoginPage() {
             <button
               type="button"
               className="text-[var(--accent-ink)] hover:underline"
-              onClick={() => go({ id: "qr_login" })}
-              data-testid="login-to-qr"
+              onClick={() => switchMode(mode === "login" ? "register" : "login")}
+              data-testid="login-toggle-mode"
             >
-              手机扫码登录
+              {mode === "login" ? "没有账号？注册" : "已有账号？登录"}
             </button>
-            <button
-              type="button"
-              className="text-[var(--muted)] hover:text-[var(--ink)]"
-              onClick={() => go({ id: "restore" })}
-            >
-              恢复上次会话
-            </button>
+            {mode === "login" ? (
+              <>
+                <button
+                  type="button"
+                  className="text-[var(--accent-ink)] hover:underline"
+                  onClick={() => go({ id: "qr_login" })}
+                  data-testid="login-to-qr"
+                >
+                  手机扫码登录
+                </button>
+                <button
+                  type="button"
+                  className="text-[var(--muted)] hover:text-[var(--ink)]"
+                  onClick={() => go({ id: "restore" })}
+                >
+                  恢复上次会话
+                </button>
+              </>
+            ) : null}
           </div>
 
           <p className="mt-8 border-t border-[var(--line)] pt-3 text-[9.5px] leading-4 text-[var(--muted)]">

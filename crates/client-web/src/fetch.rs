@@ -42,8 +42,14 @@ impl FetchTransport {
     }
 
     /// 换 token（登录/刷新后）。
+    ///
+    /// `try_borrow_mut`：token 槽被同栈占用（理论上只在 set 与请求构造
+    /// 重入时出现）时这次写入被丢弃——比 panic 好得多，且下一次 set/请求
+    /// 拿到的是一致的旧值。
     pub fn set_token(&self, token: Option<String>) {
-        *self.token.borrow_mut() = token;
+        if let Ok(mut slot) = self.token.try_borrow_mut() {
+            *slot = token;
+        }
     }
 }
 
@@ -116,7 +122,13 @@ fn apply_headers(
             .set("content-type", content_type)
             .map_err(|err| js_error("设置 content-type", &err))?;
     }
-    if let Some(token) = transport.token.borrow().as_deref() {
+    // token 槽用 try_borrow 拿快照：冲突（重入）时报协议错误而不是 panic
+    let token = transport
+        .token
+        .try_borrow()
+        .map_err(|_| TransportError::Protocol("token 槽正被占用".to_string()))?
+        .clone();
+    if let Some(token) = token.as_deref() {
         headers
             .set("authorization", &format!("Bearer {token}"))
             .map_err(|err| js_error("设置 authorization", &err))?;

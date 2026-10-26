@@ -195,6 +195,19 @@ opaque_id!(
     EventId,
     "event"
 );
+
+impl Default for EventId {
+    /// 占位事件 id（`evt-unknown`）。
+    ///
+    /// 线上信封（`contracts/common/envelope.schema.json` 那一形状）不带
+    /// `event_id`；为了"缺字段不整体解析失败"，缺省落到这里。**占位 id
+    /// 意味着不可去重**：两条都缺 id 的信封会被当成同一条，调用方应把
+    /// 这类事件视为不可靠（通常伴随 [`crate::event::EventKind::Unknown`]）。
+    fn default() -> Self {
+        // 常量字面量必然合法；不依赖 parse 结果构造。
+        Self("evt-unknown".to_string())
+    }
+}
 opaque_id!(
     /// 链路追踪 id。客户端生成，服务端原样带回。
     TraceId,
@@ -222,6 +235,14 @@ impl TraceId {
             out.push_str("trace");
         }
         Self(out)
+    }
+}
+
+impl Default for TraceId {
+    /// 占位追踪 id（`trace`）。TS 形状的请求可以不带 `trace_id`
+    /// （见 `apps/desktop-web/src/shell/core-contract.ts`），反序列化时落到这里。
+    fn default() -> Self {
+        Self::derive("")
     }
 }
 

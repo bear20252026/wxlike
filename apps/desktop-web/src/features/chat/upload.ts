@@ -53,6 +53,27 @@ function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * Base64 of raw bytes without btoa: no `String.fromCharCode(...spread)` (which
+ * blows the call stack on multi-MB chunks) and no latin-1 string detour. The
+ * mediaUploadPart params carry the chunk payload as `data_base64`.
+ */
+function toBase64(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]!;
+    const b1 = bytes[i + 1];
+    const b2 = bytes[i + 2];
+    out += BASE64_ALPHABET[b0 >> 2];
+    out += BASE64_ALPHABET[((b0 & 0x03) << 4) | ((b1 ?? 0) >> 4)];
+    out += b1 === undefined ? "=" : BASE64_ALPHABET[((b1 & 0x0f) << 2) | ((b2 ?? 0) >> 6)];
+    out += b2 === undefined ? "=" : BASE64_ALPHABET[b2 & 0x3f];
+  }
+  return out;
+}
+
 /**
  * Chunk digest. WebCrypto has no streaming API, so each 4MB chunk is hashed and
  * the file digest is the SHA-256 of the chunk digests — never the whole file in
@@ -140,6 +161,9 @@ export async function uploadFile(input: {
           offset,
           length,
           sha256: hex,
+          // The chunk payload itself: without the bytes no real core can
+          // complete an upload, so every part carries data_base64.
+          data_base64: toBase64(bytes),
         }, { idempotencyKey: `upload:${begin.upload_id}:${index}` }),
       );
       sent += length;
