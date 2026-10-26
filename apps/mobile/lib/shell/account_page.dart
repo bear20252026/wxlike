@@ -332,7 +332,9 @@ class _AccountPageState extends State<AccountPage> {
   }
 
   Widget _group(List<Widget> children) {
-    return Container(
+    // ListTile 的墨水与背景画在最近的 Material 祖先上——用 Container(color:)
+    // 包一层会遮住它们（flutter_test 视为异常）。这里必须是 Material。
+    return Material(
       color: Theme.of(context).brightness == Brightness.dark ? WxColors.darkSurface : WxColors.surface,
       child: Column(children: children),
     );
