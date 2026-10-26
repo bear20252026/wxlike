@@ -521,7 +521,10 @@ jobs:
       run: bash crates/ffi/regenerate.sh
     - run: flutter pub get
       working-directory: apps/mobile
-    - name: C8 release-mode APK (debug-signed in CI; release job re-signs)
+    - name: C8 generate CI signing keystore
+      shell: bash
+      run: "# CI 专用签名：release 构建必须真正被签名（apksigner 证据面要求\n# 有 signer 证书）。keystore 每次运行现生成，只用于 CI，不是发布密钥；\n# release job 会重签。本地构建无 key.properties 时回退 debug 签名。\nkeytool -genkeypair -v \\\n  -keystore \"$RUNNER_TEMP/ci-release.jks\" \\\n  -storepass wxlike-ci -keypass wxlike-ci -alias wxlike-ci \\\n  -keyalg RSA -keysize 2048 -validity 10000 \\\n  -dname \"CN=wxlike CI, O=wxlike, C=US\"\n{\n  echo \"storeFile=$RUNNER_TEMP/ci-release.jks\"\n  echo \"storePassword=wxlike-ci\"\n  echo \"keyAlias=wxlike-ci\"\n  echo \"keyPassword=wxlike-ci\"\n} > apps/mobile/android/key.properties\n"
+    - name: C8 release-mode APK (CI-signed; release job re-signs)
       shell: bash
       run: "flutter build apk --release \\\n  --target-platform android-arm,android-arm64,android-x64 \\\n  --split-debug-info=build/app/outputs/symbols \\\n  --obfuscate\n"
       working-directory: apps/mobile
