@@ -30,4 +30,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 sha2 = "0.10"
 hex = "0.4"
 # 造恶意包样本要自己压 zstd（dpage 不导出压缩函数）
-zstd = "0.13"
+# 与根 workspace 同步在 0.14：这里留在 0.13 会让本目录的独立 lock 继续钉
+# zstd-safe 7.3.0，`cargo audit --file tests/security/Cargo.lock` 就一直红。
+zstd = "0.14"
