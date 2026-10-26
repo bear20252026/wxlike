@@ -165,10 +165,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(account.logins, 1);
-    // 产品壳：底部四个 tab 就位
-    expect(find.text('微信'), findsOneWidget);
-    expect(find.text('通讯录'), findsOneWidget);
-    expect(find.text('我'), findsOneWidget);
+    // 产品壳：底部四个 tab 就位（「微信」同时是会话页标题，故按 tab 控件找）
+    expect(find.widgetWithText(NavigationDestination, '微信'), findsOneWidget);
+    expect(find.widgetWithText(NavigationDestination, '通讯录'), findsOneWidget);
+    expect(find.widgetWithText(NavigationDestination, '我'), findsOneWidget);
 
     // 「我」→ 退出登录 → 确认对话框
     await tester.tap(find.text('我'));
