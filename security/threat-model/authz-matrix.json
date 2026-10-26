@@ -2658,8 +2658,93 @@
       "tests": [
         "unauth_sweep_rejects_every_private_route"
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets",
+      "handler": "create_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/qr/tickets/{ticket_id}",
+      "handler": "ticket_state",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/scan",
+      "handler": "scan_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/approve",
+      "handler": "approve_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/reject",
+      "handler": "reject_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/exchange",
+      "handler": "exchange_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "public",
+      "object": "object",
+      "scope": "secret",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ],
+      "public_reason": "exchange 是「要登录的那台设备」的唯一一步：调用方此刻还没有账号会话，鉴权凭据是只有真正的扫码批准链路才能拿到的 ticket secret（哈希比对）+ approved→consumed 的 CAS 一次性消费；匿名是契约本身，泄漏 secret 即泄漏登录权。"
+    },
+    {
+      "method": "GET",
+      "path": "/api/wallet/redpacket/{id}",
+      "handler": "redpacket_get",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
     }
   ],
-  "updated_at": "2026-10-24",
+  "updated_at": "2026-10-26",
   "policy": "auth 由源码扫描得出（Authed 提取器=user、require_admin/admin_ok=admin、否则 public）；check 会与源码逐条核对，手改 auth 会触发 AUTHZ-AUTH-DRIFT。tests 必须指向 tests/security 里真实存在的用例函数名；缺证据的私有端点会被 AUTHZ-NO-TEST 拦住。"
 }
