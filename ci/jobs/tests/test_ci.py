@@ -77,7 +77,14 @@ class GateTest(unittest.TestCase):
     def test_failure_blocks(self):
         result = self.run_gate(self.needs({"test": "failure"}))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("failed or cancelled", result.stderr)
+        self.assertIn("not green", result.stderr)
+
+    def test_abandoned_matrix_leg_blocks(self):
+        # 矩阵里有一条被取消时 needs 给的是 `abandoned`，不是 failure/cancelled。
+        # 2026-10-26 native (macos-latest) 就是这样让 gate 判绿的。
+        result = self.run_gate(self.needs({"native": "abandoned"}))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("abandoned", result.stderr)
 
     def test_missing_required_job_blocks(self):
         needs = self.needs({})
