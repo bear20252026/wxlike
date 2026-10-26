@@ -30,6 +30,8 @@
 | **async-nats** | 0.42.0 | Apache-2.0 | P3 realtime channel backend (JetStream durable queues + KV routes) — the official Rust NATS client; no broker hand-written |
 | tracing / tracing-subscriber | 0.1/0.3 | MIT | observability |
 | serde / serde_json / bincode | 1.x | MIT | serialization |
+| getrandom | 0.2 / 0.3 | MIT / Apache-2.0 | CSPRNG backend for rand & wasm32 (js feature) — direct dep of wxlike-cmd on wasm targets |
+| wasm-bindgen / web-sys | 0.2 | MIT/Apache-2.0 | wasm entry (wxlike-client-web, G01-03) — browser core for apps/desktop-web |
 
 (Exhaustive transitive list: `Cargo.lock`; only load-bearing crates are
 itemized here.)
