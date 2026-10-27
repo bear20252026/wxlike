@@ -5,6 +5,11 @@ jobs:
     environment: mobile-release
     permissions:
       contents: read
+    env:
+      # 与 ci/jobs/mobile 同一口径：runner 上 $ANDROID_HOME 实测是空的，不设的话
+      # sdkmanager 那一行会退化成一条空命令（exit 127），cargo ndk 也找不到 NDK。
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
       - name: toolchain
@@ -12,6 +17,26 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup default "$RUSTUP_TOOLCHAIN"
+          # release APK/AAB 打三个 ABI，交叉编译就得有三个 android target
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - name: C8 Android SDK components
+        shell: bash
+        run: |
+          # `flutter.ndkVersion` 是 28.2.13676358（Flutter 3.47 默认）。runner 预装的
+          # NDK 比它旧，AGP 会直接报 "NDK not configured"，所以显式装一次——
+          # 版本写死在这里，别指望"runner 上应该会有"。
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager 不在 $SDKMANAGER；runner 镜像可能变了，检查 ANDROID_HOME" >&2
+            ls "$ANDROID_HOME" >&2 || true
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install \
+            "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0" > /dev/null
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-android-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
@@ -47,6 +72,30 @@ jobs:
           bash crates/ffi/regenerate.sh
           cd apps/mobile
           flutter pub get
+      - name: C8 cross-compile libwxlike_ffi.so
+        shell: bash
+        run: |
+          # jniLibs 下的 .so 是 gitignore 的产物（.gitignore:26）。这一步没了，release
+          # 包照样打得出来、照样签得好，但装上就是启动即崩：Dart FFI 找不到
+          # libwxlike_ffi.so。CI job 里已经补过同一步，release 必须同口径。
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o apps/mobile/android/app/src/main/jniLibs \
+            build -p wxlike-ffi --release
+          # release 产物带符号表，strip 掉能少一半，apk 体积直接受影响。
+          # 坑：**不要加 `-type f`**——NDK 里的 llvm-strip 是指向 llvm-strip-18 的
+          # 符号链接，`-type f` 会把它们全过滤掉，STRIP 变成空串 → exit 127。
+          STRIP=$(find "$ANDROID_HOME/ndk" -name 'llvm-strip' 2>/dev/null | sort | tail -1)
+          if [ -n "$STRIP" ] && [ -x "$STRIP" ]; then
+            for abi in arm64-v8a armeabi-v7a x86_64; do
+              so="apps/mobile/android/app/src/main/jniLibs/$abi/libwxlike_ffi.so"
+              if [ -f "$so" ]; then
+                "$STRIP" --strip-unneeded "$so"
+                ls -lh "$so"
+              fi
+            done
+          else
+            echo "警告：找不到可执行的 llvm-strip，跳过 strip（apk 会大一些）" >&2
+          fi
       - name: C8 signed release APK + AAB
         shell: bash
         run: |
@@ -54,19 +103,24 @@ jobs:
             --target-platform android-arm,android-arm64,android-x64 \
             --split-debug-info=build/app/outputs/symbols \
             --obfuscate
+          # ABI 清单写死，别用 flutter 的默认值：默认一变，AAB 里就会出现
+          # 没有 libwxlike_ffi.so 的 ABI（下一步按同样的规则判红）。
           flutter build appbundle --release \
+            --target-platform android-arm,android-arm64,android-x64 \
             --split-debug-info=build/app/outputs/symbols \
             --obfuscate
         working-directory: apps/mobile
-      - name: C8 verify release signature (debug key is rejected)
+      - name: C8 verify release signature, native lib and symbols
         shell: bash
         run: |
           version=$(sed -n 's/^version: *\([^+]*\).*/\1/p' apps/mobile/pubspec.yaml | head -1)
           python3 ci/jobs/mobile/check_apk.py \
             --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \
+            --aab apps/mobile/build/app/outputs/bundle/release/app-release.aab \
             --expected-version "$version" \
             --symbols-dir apps/mobile/build/app/outputs/symbols \
             --require-release-key \
+            --require-native-lib libwxlike_ffi.so \
             --output mobile-evidence/android-release.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7
         with:

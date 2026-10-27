@@ -37,6 +37,7 @@
 | 验收点 | 证据 | 状态 |
 |---|---|---|
 | Android release 构建 + 符号 | `ci/jobs/mobile/job.yml`、`check_apk.py` | 未执行（本机无 Flutter/Android 构建条件） |
+| release APK **与 AAB** 必须打进 `libwxlike_ffi.so` | `mobile-release/job.yml` 的 `cargo ndk` + `check_apk.py --require-native-lib`/`--aab` | 门禁双向已验证（`test_ci.py::NativeLibGateTest`：缺库红、补齐放行）；真包待 CI |
 | 发布签名必须非 debug key | `mobile-release/job.yml --require-release-key` | 未执行（无 signing secret） |
 | IPA 必须分发签名 | `check_ipa.py` | 未执行：`apps/mobile/ios` 不存在，job 显式失败 |
 | 真机证据 schema + 校验 | `deploy/signing-docs/device-evidence.schema.json`、`check_device_evidence.py` | 校验器逻辑已验证（单测接受完整证据、拒绝 fail/占位） |
