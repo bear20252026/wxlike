@@ -24,8 +24,12 @@
 
 ## 尚未完成（不得据此标 ACCEPTED）
 
-* 平台层 HTTP 路由与 handler 未接线：G02 只改 features 层，避免与并行组抢
-  `crates/platform` 的文件；
+* ~~平台层 HTTP 路由与 handler 未接线~~：**G02-05（#114）已接线**
+  （`crates/platform/src/account.rs` 的 preferences/profile/export/delete 四面 +
+  `users.rs` 的 profile.update 收紧），其余各卡仍按各自 yaml 的 status 看。
+  注意本卡的作业推进需要 G00 在 `server/src/lib.rs` 起
+  `spawn_account_job_worker`（见 `G02-05.yaml` 的 `worker_mount`），
+  没起之前真实进程里导出/注销永远停在 queued，**不得标验收通过**；
 * G02-06 短信供应商 sandbox 证据（需真实凭据）；
 * G02-07 真实手机扫真实桌面码证据（需 G10/G12 页面合入）。
 
