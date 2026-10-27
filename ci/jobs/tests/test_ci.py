@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,6 +32,7 @@ def load_optional(name: str, path: Path):
 select_targets = load("select_targets", JOBS / "build" / "select_targets.py")
 gate = load("gate", JOBS / "build" / "gate.py")
 device = load_optional("check_device_evidence", JOBS / "mobile" / "check_device_evidence.py")
+apk_gate = load_optional("check_apk", JOBS / "mobile" / "check_apk.py")
 
 
 class PathSelectionTest(unittest.TestCase):
@@ -225,6 +227,107 @@ class RedactionTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+@unittest.skipUnless(apk_gate is not None, "check_apk.py not in this branch")
+class NativeLibGateTest(unittest.TestCase):
+    """#292：release 产物里少一个 libwxlike_ffi.so 就必须判红（**能红**才算门禁）。
+
+    这些用例不依赖 Android SDK：打包面在 aapt/apksigner 之前跑，所以门禁在
+    任何机器上都是同一条判据。
+    """
+
+    ABI_DIRS = ["lib/arm64-v8a", "lib/armeabi-v7a", "lib/x86_64"]
+
+    def zip_artifact(self, path: Path, prefixes: list[str], *, ffi: list[str] | None = None, bundle: bool = False) -> Path:
+        """Write a >1MB archive shaped like a Flutter APK/AAB.
+
+        `prefixes` 是能跑的 ABI 目录；`ffi` 决定其中哪几个真的打进了
+        `libwxlike_ffi.so`（默认全打）。AAB 把它们嵌在 `base/` 下。
+        """
+        with_ffi = set(prefixes if ffi is None else ffi)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            for prefix in prefixes:
+                head = f"base/{prefix}" if bundle else prefix
+                archive.writestr(f"{head}/libapp.so", b"\x7fELF")
+                archive.writestr(f"{head}/libflutter.so", b"\x7fELF")
+                if prefix in with_ffi:
+                    archive.writestr(f"{head}/libwxlike_ffi.so", b"\x7fELF")
+            # check_apk 用体积挡"根本没打出来"的产物，fixture 得过这条线。
+            archive.writestr("assets/pad.bin", bytes(1_200_000))
+        return path
+
+    def run_gate(self, apk: Path, output: Path, aab: Path | None = None) -> subprocess.CompletedProcess:
+        argv = [
+            sys.executable,
+            str(JOBS / "mobile" / "check_apk.py"),
+            "--apk", str(apk),
+            "--expected-version", "1.0.0+1",
+            "--require-native-lib", "libwxlike_ffi.so",
+            "--output", str(output),
+        ]
+        if aab is not None:
+            argv += ["--aab", str(aab)]
+        return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+
+    def test_apk_without_the_native_lib_is_red(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apk = self.zip_artifact(root / "app-release.apk", self.ABI_DIRS, ffi=[])
+            result = self.run_gate(apk, root / "evidence.json")
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("libwxlike_ffi.so is missing", result.stderr)
+            self.assertIn("the native cross-compile step did not run", result.stderr)
+            self.assertFalse((root / "evidence.json").exists(), "a red gate must not emit evidence")
+
+    def test_one_missing_abi_is_enough_to_be_red(self):
+        # 只补一个 ABI 也不行：每一个能跑的 ABI 都得带上这颗 .so。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apk = self.zip_artifact(root / "app-release.apk", self.ABI_DIRS, ffi=["lib/arm64-v8a"])
+            result = self.run_gate(apk, root / "evidence.json")
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            # 精确到"缺的就是这两个"，而不是消息里恰好出现过这两个目录名。
+            self.assertIn("is missing for ['lib/armeabi-v7a', 'lib/x86_64']", result.stderr)
+
+    def test_aab_without_the_native_lib_is_red(self):
+        # APK 绿不代表 AAB 绿：上架走的是 AAB，它把库放在 base/lib/<abi>/。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apk = self.zip_artifact(root / "app-release.apk", self.ABI_DIRS)
+            aab = self.zip_artifact(root / "app-release.aab", self.ABI_DIRS, ffi=[], bundle=True)
+            result = self.run_gate(apk, root / "evidence.json", aab=aab)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("app-release.aab", result.stderr)
+            self.assertIn("libwxlike_ffi.so is missing", result.stderr)
+
+    def test_complete_artifacts_clear_the_packaging_gate(self):
+        # 正向对照：库齐了就得放行，否则上面三条红的是脚本自己坏了。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apk = self.zip_artifact(root / "app-release.apk", self.ABI_DIRS)
+            aab = self.zip_artifact(root / "app-release.aab", self.ABI_DIRS, bundle=True)
+            with zipfile.ZipFile(apk) as archive:
+                entries = set(archive.namelist())
+            self.assertEqual(apk_gate.require_native_libs(apk, entries, ["libwxlike_ffi.so"]), sorted(self.ABI_DIRS))
+            with zipfile.ZipFile(aab) as archive:
+                bundle_entries = set(archive.namelist())
+            self.assertEqual(
+                apk_gate.require_native_libs(aab, bundle_entries, ["libwxlike_ffi.so"]),
+                sorted(f"base/{d}" for d in self.ABI_DIRS),
+            )
+
+    def test_abis_without_a_dart_snapshot_are_not_required(self):
+        # 插件 AAR 会把自家 .so 铺满所有 ABI 目录，但没 libapp.so 的目录跑不起来，
+        # 不该拿它们来要求 ffi 库——与 #292 之前 CI 修复的口径保持一致。
+        entries = {
+            "lib/arm64-v8a/libapp.so",
+            "lib/arm64-v8a/libwxlike_ffi.so",
+            "lib/armeabi-v7a/libplugin.so",
+            "lib/x86_64/libplugin.so",
+        }
+        self.assertEqual(apk_gate.runtime_lib_dirs(entries), ["lib/arm64-v8a"])
+        apk_gate.require_native_libs(Path("fixture.apk"), entries, ["libwxlike_ffi.so"])
 
 
 if __name__ == "__main__":
