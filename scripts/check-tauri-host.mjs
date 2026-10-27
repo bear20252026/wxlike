@@ -40,6 +40,15 @@ const OLD_UI_DIST_REL = "../dist";
 /** 桥：Windows 走 http://ipc.localhost，macOS/Linux 走 ipc://localhost，两种都要留。 */
 const BRIDGE_SOURCES = ["ipc:", "http://ipc.localhost"];
 
+// 未知参数必须报错退出：曾经 `--config <路径>` 被静默忽略，守卫照样返回 0，
+// 于是"打错一个 flag"就等于把这道门关掉。
+const KNOWN_FLAGS = ["--require-built"];
+const unknownFlags = process.argv.slice(2).filter((a) => a.startsWith("-") && !KNOWN_FLAGS.includes(a));
+if (unknownFlags.length > 0) {
+  console.error(`FAIL: 未知参数 ${unknownFlags.join(" ")}；本脚本只认 ${KNOWN_FLAGS.join(" ")}`);
+  process.exit(2);
+}
+
 const requireBuilt = process.argv.includes("--require-built");
 
 const problems = [];
