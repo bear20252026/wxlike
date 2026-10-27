@@ -15,6 +15,9 @@
 use std::sync::Arc;
 
 mod history_archive;
+/// #295/G00：media 域的组合根装配（会话校验/成员事实/签名密钥都落在这里）。
+/// `pub` 是给集成测试的：挂载的鉴权与迁移可重入性要能在不起 hub 的情况下复验。
+pub mod media_mount;
 /// A2：`/app` 静态托管（`WXLIKE_WEB_DIR`）。
 mod web_static;
 
@@ -56,6 +59,10 @@ pub struct Stack {
     hub_lease: wxlike_net::HubLease,
     pub http_addr: std::net::SocketAddr,
     pub quic_addr: std::net::SocketAddr,
+    /// 监听端口上跑的**同一个** Router（`Router: Clone`，克隆的是同一套餐）。
+    /// 集成测试可以直接 `tower::oneshot` 它，这样"打进真实组合根"不需要
+    /// 再起一次进程，也不会出现"测试自己拼了一个近似 app"的假绿。
+    pub app: Router,
     /// 通知 HTTP 服务停止接新连接并排空在飞请求。
     shutdown: tokio::sync::watch::Sender<bool>,
     http_task: tokio::task::JoinHandle<()>,
@@ -123,12 +130,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let mailbox = Arc::new(wxlike_message::MessageStore::open(opts.db_path.as_deref())?);
     let offline = wxlike_net::offline::SqliteOffline::open(opts.db_path.as_deref(), 5_000)?;
     let search = build_search(opts.db_path.as_deref(), &store)?;
-    let video_state = wxlike_video::VideoState {
-        // 控制面（上传/建作业/查作业/重试）要认证、配额与回调白名单（issue #7 #8）。
-        // 忘了装认证器的后果是"视频控制面不可用"，不是"谁都能用"。
-        store: wxlike_video::VideoStore::new(sidecar_dir(opts.db_path.as_deref(), "video"))
-            .with_policy(video_policy_from_env(platform.clone())),
-    };
+    let video_state = build_video_state(opts.db_path.as_deref(), &platform);
 
     let hub = build_hub(&opts, router, &store, &mailbox, offline, &platform).await?;
     let quic_addr = hub.local_addr()?;
@@ -152,6 +154,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         hub: handle.clone(),
         search,
     });
+    // #295：media 域装一次 = 顺带把 M009 打到平台那个库里（MediaDb::open 幂等建表）。
+    let media_app = media_mount::assemble(&platform, opts.db_path.as_deref())?;
     let app = build_app(
         opts.hub_id.clone(),
         quic_addr,
@@ -159,8 +163,9 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         video_state,
         handle.clone(),
         deps,
+        media_app,
     );
-    let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app).await?;
+    let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app.clone()).await?;
 
     let hub_lease = hub.leak();
     Ok(Stack {
@@ -168,6 +173,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         store,
         hub: handle,
         hub_lease,
+        app,
         http_addr,
         quic_addr,
         shutdown: shutdown_tx,
@@ -175,10 +181,26 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     })
 }
 
+/// 视频域的存储与策略（控制面认证/配额/回调白名单归 issue #7 #8）。
+///
+/// 忘了装认证器的后果是"视频控制面不可用"，不是"谁都能用"——
+/// 所以这一句留在组合根里，而不是塞进 `wxlike_video` 的默认值。
+fn build_video_state(db_path: Option<&str>, platform: &PlatformState) -> wxlike_video::VideoState {
+    wxlike_video::VideoState {
+        store: wxlike_video::VideoStore::new(sidecar_dir(db_path, "video"))
+            .with_policy(video_policy_from_env(platform.clone())),
+    }
+}
+
 /// 平台选项：三条凭据都**没有公开默认值**。
 ///
 /// 推流密钥没配就随机生成（重启后旧 token 失效，可接受——它本来就是短期的）；
 /// 管理面与视频回调没配就是**关闭**，不是"放行"。默认值等于把这三件事一起敞开。
+///
+/// `WXLIKE_MEDIA_SECRET` 此前只是 `PlatformOptions::media_signing_key` 的
+/// **文档承诺**（`crates/platform/src/lib.rs:150` 写着"多实例部署必须用它配成
+/// 同一个值"），全仓 grep 零命中 = 从来没人读过它。现在它同时喂两个面：
+/// platform 的 `/api/media/{id}/url` 短期链接与 #295 挂上来的 media 域。
 fn platform_options_from_env() -> wxlike_platform::PlatformOptions {
     let mut options = wxlike_platform::PlatformOptions::default();
     match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
@@ -190,6 +212,9 @@ fn platform_options_from_env() -> wxlike_platform::PlatformOptions {
             );
         }
     }
+    // 空 = 交给平台 `normalize_options` 随机化；短密钥由
+    // `media_mount::assemble` 拒绝装配（见 media_mount.rs）。
+    options.media_signing_key = non_empty_env(media_mount::SECRET_ENV).unwrap_or_default();
     options.admin_token = non_empty_env("WXLIKE_ADMIN_TOKEN");
     options.video_callback_token = non_empty_env("WXLIKE_VIDEO_CALLBACK_TOKEN");
     options
@@ -424,7 +449,7 @@ fn session_fingerprint(token: &str) -> String {
     wxlike_core::msgmeta::sha256_hex(token.as_bytes())[..16].to_string()
 }
 
-/// 拼路由：健康检查、平台、视频、WS、在线状态、历史、静态页、开发辅助。
+/// 拼路由：健康检查、平台、media 域、视频、WS、在线状态、历史、静态页、开发辅助。
 fn build_app(
     hub_id: String,
     quic_addr: std::net::SocketAddr,
@@ -432,6 +457,7 @@ fn build_app(
     video_state: wxlike_video::VideoState,
     handle: HubHandle,
     deps: Arc<HistoryDeps>,
+    media_app: Router,
 ) -> Router {
     let admin_platform = platform.clone();
     let endpoints_platform = platform.clone();
@@ -458,6 +484,9 @@ fn build_app(
             }),
         )
         .merge(wxlike_platform::Platform::router(platform.clone()))
+        // #295/G00：G04 media 域（`/api/v1/*`，29 条路由）。路径前缀与上面的
+        // `/api/media`（platform 的 WP-05 面）不重叠，两套并存的退役关系另议。
+        .merge(media_app)
         .merge(wxlike_video::routes(video_state))
         .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone(), platform.clone()))

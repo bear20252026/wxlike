@@ -14,6 +14,9 @@
 //!   WXLIKE_REDIS_URL     默认 redis://127.0.0.1:6379
 //!   WXLIKE_DB            SQLite 路径；默认 <平台数据目录>/wxlike/wxlike.db（":memory:" 允许）
 //!   WXLIKE_MEDIA_DIR     媒体目录；默认 <平台数据目录>/wxlike/media
+//!   WXLIKE_MEDIA_SECRET  对象下载短期链接的 HMAC 密钥（#295 media 域）。
+//!                        **必填**：没配 = 拒绝启动，除非显式 WXLIKE_DEV_INSECURE=1。
+//!                        多实例部署必须是同一个值，否则 A 实例签的链接在 B 实例验不过。
 //!   WXLIKE_HTTP          HTTP 绑定，默认 0.0.0.0:8099
 //!   WXLIKE_QUIC          QUIC 绑定，默认 0.0.0.0:9443
 //!   WXLIKE_SHUTDOWN_GRACE 排空在飞请求的上限秒数，默认 10
@@ -77,6 +80,48 @@ fn resolve() -> Config {
     }
 }
 
+/// 该 env 是否"没配"（未设置，或只给了空白）。空白不等于密钥——
+/// `"   "` 会被平台归一化成随机值，靠它跑生产就是拿随机值当密钥。
+fn secret_missing(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+}
+
+/// 开发放行的唯一开关：`WXLIKE_DEV_INSECURE=1`。
+fn dev_insecure() -> bool {
+    matches!(std::env::var("WXLIKE_DEV_INSECURE").as_deref(), Ok("1"))
+}
+
+/// 需要显式密钥的两处，口径一致：**没配就拒绝启动**。
+///
+/// * `WXLIKE_LIVE_INGEST_SECRET` —— 直播 ingest token 的 HMAC 密钥；
+/// * `WXLIKE_MEDIA_SECRET`（#295 media 域挂载）—— 对象下载短期链接的 HMAC
+///   密钥。没有它，签好的链接**重启即失效、多实例互不认**（A 实例签的链接在
+///   B 实例上验不过），而单进程开发里一切"看起来正常"——正是最容易被漏掉的
+///   那种坏。media 域装配处还另有一道长度闸（`media_mount::MIN_SECRET_BYTES`）。
+fn check_secrets() -> anyhow::Result<()> {
+    for (key, why) in [
+        (
+            "WXLIKE_LIVE_INGEST_SECRET",
+            "否则任何人都能用已知密钥签直播 ingest token",
+        ),
+        (
+            "WXLIKE_MEDIA_SECRET",
+            "否则下载签名链接重启即失效、多实例互不认（media 域装配另有长度闸）",
+        ),
+    ] {
+        if secret_missing(key) && !dev_insecure() {
+            anyhow::bail!(
+                "{key} 未设置：拒绝启动。
+             公网部署必须配置它（{why}）；
+             本地开发可设 WXLIKE_DEV_INSECURE=1 放行（会生成本次启动的随机密钥）。"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn print_check(cfg: &Config) {
     println!("wxlike-server 配置自检（不绑定端口、不写库）");
     println!("  hub            {}", cfg.hub_id);
@@ -100,11 +145,17 @@ fn print_check(cfg: &Config) {
     );
     println!(
         "  直播推流密钥   {}",
-        match std::env::var("WXLIKE_LIVE_INGEST_SECRET") {
-            Ok(v) if !v.is_empty() => format!("已设置（{} 字符）", v.len()),
-            _ => "⚠️ 未设置——启动会被拒绝（开发用 WXLIKE_DEV_INSECURE=1）".to_string(),
-        }
+        secret_status("WXLIKE_LIVE_INGEST_SECRET")
     );
+    println!("  媒体签名密钥   {}", secret_status("WXLIKE_MEDIA_SECRET"));
+}
+
+/// `--check` 的密钥行：只报"配了没有 + 长度"，绝不回显密钥本身。
+fn secret_status(key: &str) -> String {
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => format!("已设置（{} 字符）", v.len()),
+        _ => "⚠️ 未设置——启动会被拒绝（开发用 WXLIKE_DEV_INSECURE=1）".to_string(),
+    }
 }
 
 /// 信号监听器：**尽早安装**，之后才去启动服务。
@@ -178,20 +229,11 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     // 先装信号，再启动：注册前收到的 SIGTERM 会直接杀进程
     let mut signals = Signals::install();
 
-    // 生产必须显式给推流密钥：缺了就拒绝启动，而不是"警告后继续"。
-    // 警告会被忽略，而"知道默认 key 就能签 ingest token"是真实可利用的洞。
-    // 开发/CI 用 WXLIKE_DEV_INSECURE=1 显式放行（会退化成随机密钥）。
-    let secret_missing = std::env::var("WXLIKE_LIVE_INGEST_SECRET")
-        .map(|v| v.trim().is_empty())
-        .unwrap_or(true);
-    let dev_insecure = matches!(std::env::var("WXLIKE_DEV_INSECURE").as_deref(), Ok("1"));
-    if secret_missing && !dev_insecure {
-        anyhow::bail!(
-            "WXLIKE_LIVE_INGEST_SECRET 未设置：拒绝启动。
-             公网部署必须配置它（否则任何人都能用已知密钥签直播 ingest token）；
-             本地开发可设 WXLIKE_DEV_INSECURE=1 放行（会生成本次启动的随机密钥）。"
-        );
-    }
+    // 密钥类 env 的硬闸：缺了就拒绝启动，而不是"警告后继续"。
+    // 警告会被忽略，而"知道默认 key 就能签 ingest token / 就能算出下载链接签名"
+    // 是真实可利用的洞。开发/CI 用 WXLIKE_DEV_INSECURE=1 显式放行
+    // （届时退化成"本次启动的随机密钥"）。
+    check_secrets()?;
     std::fs::create_dir_all(&cfg.media_dir)?;
     if let Some(path) = cfg.db_path.as_deref() {
         if let Some(dir) = std::path::Path::new(path).parent() {
