@@ -1494,13 +1494,83 @@ fn act_identity_qr_login_create<R: tauri::Runtime>(
 
 fn act_identity_qr_login_cancel<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    _state: &AppState,
+    state: &AppState,
     core: &CoreState,
-    _req: &CoreRequest,
+    req: &CoreRequest,
 ) -> Result<Value, BridgeError> {
-    let _ = (app, core);
+    // 台账第 1 条：只停本地轮询 ≠ 取消。手机侧在那张票的有效期内点"同意"照样能
+    // 把这次已"取消"的登录做成。所以取消必须以"服务端状态确证是 REJECTED"为准。
+    let ticket = qr_cancel_target(core, req)?;
+    revoke_qr_ticket(state, &ticket)?;
     stop_qr_poll(core);
-    Ok(json!({ "cancelled": true }))
+    let challenge = qr_challenge(&ticket, "REJECTED", &Value::Null);
+    emit_core(app, "qr.state", &ticket, challenge.clone());
+    Ok(json!({
+        "cancelled": true,
+        "server_revoked": true,
+        "challenge_id": ticket,
+        "state": "REJECTED",
+    }))
+}
+
+/// 要撤销哪张票据：参数点名优先，其次桥内记着的那张，两处都没有就报错。
+///
+/// 不许对着"空票据"发撤销请求（那正是 `unwrap_or_default()` 造出来的形状）。
+fn qr_cancel_target(core: &CoreState, req: &CoreRequest) -> Result<String, BridgeError> {
+    for key in ["challenge_id", "ticket_id"] {
+        if let Some(id) = required_str(&req.params, key).ok() {
+            return Ok(id);
+        }
+    }
+    core.qr_active
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| {
+            BridgeError::Validation(
+                "没有可取消的扫码票据：参数 challenge_id 缺失，桥内也没有进行中的票据".into(),
+            )
+        })
+}
+
+/// 服务端撤销一张票据并回查确证。
+///
+/// 服务端只有 `POST /api/qr/tickets/{id}/reject` 这一条撤销面，而它要求调用者
+/// 就是**扫码那一侧**的账号（`crates/features/identity/src/qr_login.rs::decide`：
+/// 票据必须处在 `scanned` 且 `scanned_by == 调用者`）。桌面自建的票在"还没人扫"
+/// 这个阶段没有任何可撤销端点——那种情况一律报错并保留本地轮询，绝不回
+/// `cancelled: true`，因为停轮询拦不住手机点"同意"。
+///
+/// 真正的服务端撤销需要补一个"创建者撤票"端点（已列待验/待办，见本卡汇报）。
+fn revoke_qr_ticket(state: &AppState, ticket: &str) -> Result<(), BridgeError> {
+    let reject = state
+        .http()
+        .expect_json("POST", &format!("/api/qr/tickets/{ticket}/reject"), None);
+    let now = qr_ticket_state(state, ticket);
+    if now == "REJECTED" {
+        return Ok(());
+    }
+    let why = match reject {
+        Ok(_) => "服务端收了撤销请求，但票据状态不是 REJECTED".to_string(),
+        Err(err) if err.contains("404") => {
+            "服务端未挂载 QR 撤销路由（POST /api/qr/tickets/{id}/reject）".to_string()
+        }
+        Err(err) => format!("服务端拒绝撤销：{err}"),
+    };
+    Err(BridgeError::NotImpl(format!(
+        "{why}；票据 {ticket} 当前状态 {now}，手机侧仍可批准这次登录，取消未生效（本地轮询未停）"
+    )))
+}
+
+/// 服务端记着的票据状态（查不到或缺字段都算"不可知"，不许兜成某个状态名）。
+fn qr_ticket_state(state: &AppState, ticket: &str) -> String {
+    state
+        .http()
+        .expect_json("GET", &format!("/api/qr/tickets/{ticket}"), None)
+        .ok()
+        .and_then(|v| v["state"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "UNKNOWN".into())
 }
 
 fn act_identity_qr_login_switch_account<R: tauri::Runtime>(
