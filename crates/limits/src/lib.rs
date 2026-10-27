@@ -102,6 +102,16 @@ pub struct RiskConfig {
     pub call_signal_throttle_at: usize,
     /// 达到此值 → Deny。
     pub call_signal_deny_at: usize,
+    /// 1 h 内账户生命周期写达到此值 → Throttle（G02-05 / #114 的两个重副作用
+    /// 写面：申请导出、注销）。
+    ///
+    /// 10 而不是 30：真人走这两个面的次数极低——一次"导出我的数据"是 1 次作业，
+    /// 注销一辈子一次；留到 10 是给重试与客服代操作。step-up / 取件链接 /
+    /// 取消作业**不**算在这档里，各有各的更合适的闸（见
+    /// `crates/platform/src/risk_mw.rs::action_for` 里的说明）。
+    pub account_lifecycle_throttle_at: usize,
+    /// 达到此值 → Deny（拿导出面刷作业与存储、拿注销面刷会话吊销）。
+    pub account_lifecycle_deny_at: usize,
 }
 
 /// 同来源一小时内注册多少次起要求人机校验。
@@ -131,6 +141,14 @@ const LIVE_START_THROTTLE_AT: usize = 10;
 const LIVE_START_DENY_AT: usize = 30;
 const CALL_SIGNAL_THROTTLE_AT: usize = 100;
 const CALL_SIGNAL_DENY_AT: usize = 300;
+
+// G00 执行 integration-requests/G02/G02-05.yaml 的 `risk_gate` 项：
+// 账户生命周期写面（#114 的申请导出 / 注销）。
+// 档位与开播同级（10/30）：这两个都是"一次做成、重试无收益"的重副作用操作——
+// 每个导出作业都会在媒体仓落一份产物，注销每次都会吊销会话。
+// 真人一小时用不到 10 次；脚本一秒就能用完，所以 deny 档也在人类节奏之外。
+const ACCOUNT_LIFECYCLE_THROTTLE_AT: usize = 10;
+const ACCOUNT_LIFECYCLE_DENY_AT: usize = 30;
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -164,6 +182,8 @@ impl Default for RiskConfig {
             live_start_deny_at: LIVE_START_DENY_AT,
             call_signal_throttle_at: CALL_SIGNAL_THROTTLE_AT,
             call_signal_deny_at: CALL_SIGNAL_DENY_AT,
+            account_lifecycle_throttle_at: ACCOUNT_LIFECYCLE_THROTTLE_AT,
+            account_lifecycle_deny_at: ACCOUNT_LIFECYCLE_DENY_AT,
         }
     }
 }
@@ -190,6 +210,7 @@ mod tests {
             (c.community_post_throttle_at, c.community_post_deny_at),
             (c.live_start_throttle_at, c.live_start_deny_at),
             (c.call_signal_throttle_at, c.call_signal_deny_at),
+            (c.account_lifecycle_throttle_at, c.account_lifecycle_deny_at),
         ];
         for (throttle, deny) in pairs {
             assert!(throttle < deny, "throttle {throttle} must be < deny {deny}");

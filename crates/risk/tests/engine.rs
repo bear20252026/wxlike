@@ -30,6 +30,8 @@ fn engine() -> RiskEngine {
         live_start_deny_at: 4,
         call_signal_throttle_at: 2,
         call_signal_deny_at: 4,
+        account_lifecycle_throttle_at: 2,
+        account_lifecycle_deny_at: 4,
     })
 }
 
@@ -197,6 +199,50 @@ fn new_write_actions_have_independent_windows() {
         // 同一 key 上的其他动作不受影响
         assert!(e.record(Action::Send, &key, T0).unwrap().is_allowed());
     }
+}
+
+#[test]
+fn account_lifecycle_uses_the_hour_window_and_its_own_keyspace() {
+    // G02-05 / #114：step-up、申请导出、取件链接、取消作业、注销这五个写面
+    // 此前**不在任何闸门表里**（`account.rs` 是后加的 HTTP 面，AR-5 那张表
+    // 只在既有 handler 上建过）。申请导出每个作业都会在媒体仓落一份产物，
+    // 所以"谁能调多少次"是资源问题，不是风格问题。
+    // 这里钉三件事：读自己的阈值字段、窗口按 1 h、不与其他动作串味。
+    let e = engine();
+    assert_eq!(
+        e.check(Action::AccountLifecycle, "alice", T0).unwrap(),
+        Verdict::Allow
+    );
+    e.record(Action::AccountLifecycle, "alice", T0).unwrap();
+    assert_eq!(
+        e.check(Action::AccountLifecycle, "alice", T0).unwrap(),
+        Verdict::Throttle {
+            retry_after_ms: 3_600_000
+        }
+    );
+    // 同一个 key 上的别的动作不受影响：登录被闸住不该顺手闸住导出，反之也一样。
+    assert_eq!(e.check(Action::Login, "alice", T0).unwrap(), Verdict::Allow);
+    // 窗口滑出 1 h 后计数清零（阈值 2/4：只过 10 分钟不算滑出）
+    assert_eq!(
+        e.check(Action::AccountLifecycle, "alice", T0 + 600_000)
+            .unwrap(),
+        Verdict::Throttle {
+            retry_after_ms: 3_000_000
+        }
+    );
+    assert_eq!(
+        e.check(Action::AccountLifecycle, "alice", T0 + 3_600_001)
+            .unwrap(),
+        Verdict::Allow
+    );
+    // 刷到 deny 档。
+    for i in 0..4 {
+        e.record(Action::AccountLifecycle, "bob", T0 + i).unwrap();
+    }
+    assert!(matches!(
+        e.check(Action::AccountLifecycle, "bob", T0 + 5).unwrap(),
+        Verdict::Deny { .. }
+    ));
 }
 
 #[test]
