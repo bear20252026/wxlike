@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,5 +64,14 @@ describe("桌面宿主默认配置（issue #158）", () => {
 
   it("守卫脚本判定宿主/前端双 CSP 交集仍允许 Rust 桥", () => {
     expect(runCheck()).toContain("OK:");
+  });
+
+  it("未知参数不再被静默忽略（打错 flag 不能等于把门关掉）", () => {
+    const res = spawnSync(process.execPath, [CHECK, "--config", "whatever.json"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    expect(res.status).toBe(2);
+    expect(`${res.stderr}${res.stdout}`).toContain("未知参数");
   });
 });
