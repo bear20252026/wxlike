@@ -10,8 +10,11 @@ import { describe, expect, it } from "vitest";
  *
  * 断言逻辑只有一份实现：仓库根的 `scripts/check-tauri-host.mjs`。这里用 vitest
  * 把它跑起来，好让现有的 web-v2 CI 作业（已经会 `npm test`）自动把关——
- * 不需要谁再记着加 CI 步骤。构建产物是否存在的检查由 build 脚本用
- * `--require-built` 触发（`npm test` 早于 `npm run build`，那时 dist 还没生成）。
+ * 不需要谁再记着加 CI 步骤。
+ *
+ * 不带 `--require-built`：本文件跑在 `npm run build` 之前也必须是绿的
+ * （产物在不在由 `npm run check:host` 在构建之后把关）。这两句顺序曾经反了，
+ * 于是 web-v2 作业红过一次。
  */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..", "..");
@@ -64,6 +67,21 @@ describe("桌面宿主默认配置（issue #158）", () => {
 
   it("守卫脚本判定宿主/前端双 CSP 交集仍允许 Rust 桥", () => {
     expect(runCheck()).toContain("OK:");
+  });
+
+  /**
+   * 守卫必须把「打包时真正生效的每份宿主配置」都算进去。两个桌面作业都是
+   * `tauri build --config <override.json>`，Tauri 对 override 做深合并，
+   * 所以只看 tauri.conf.json 时，往 override 里塞一句 `app.security.csp`
+   * 就能换掉线上策略而让守卫照旧报绿。这条用例钉住"核对份数"这个输出，
+   * 少了任何一份 override 都会红。
+   */
+  it("守卫逐个核对打包时会生效的宿主配置（含两个作业的 --config override）", () => {
+    const out = runCheck();
+    expect(out).toContain("本次核对：3 份宿主配置");
+    for (const rel of ["tauri.bundle.override.json", "tauri.release.override.json"]) {
+      expect(out).toContain(rel);
+    }
   });
 
   it("未知参数不再被静默忽略（打错 flag 不能等于把门关掉）", () => {
