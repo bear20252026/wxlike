@@ -63,7 +63,7 @@ void main() {
       final representations = <String>[
         payload.toString(),
         payload.redacted,
-        '${payload.ticketId}',
+        payload.ticketId,
         // 票号里含在 payload 内，逐字符比对才有意义。
         '$payload',
       ];

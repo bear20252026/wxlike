@@ -7,7 +7,6 @@ import 'package:wxlike_mobile/features/auth/qr_approval/qr_wiring.dart';
 import 'package:wxlike_mobile/features/auth/challenge/login_page.dart';
 import 'package:wxlike_mobile/shell/contracts.dart';
 import 'package:wxlike_mobile/shell/mobile_app.dart';
-import 'package:wxlike_mobile/shell/theme.dart';
 import 'package:wxlike_mobile/src/service.dart';
 
 import 'composer_support.dart';
