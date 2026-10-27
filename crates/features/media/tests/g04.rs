@@ -810,3 +810,51 @@ fn session_ttl_expiry_closes_the_upload() {
         .upload_chunk("u1", &start.upload_id, 0, b"data", None)
         .is_err());
 }
+
+/// 挂载路由（#295）之后，"提交转码"必须真的有人在执行——这条测的就是执行者。
+///
+/// 为什么单独一条：`run_due_jobs` 此前的调用方**只有测试**，所以"作业会做完"
+/// 一直是靠测试自己调用它来成立的，运行中的进程里没人调。这条改成
+/// "提交 → 交给 worker → 不主动调 run_due_jobs"，把它和上面那些用例区分开。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submitted_jobs_finish_without_the_test_calling_run_due_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let service =
+        Arc::new(service_at(dir.path()).with_runner(Arc::new(FixtureRunner::new(fixture_probe()))));
+    let done = upload(
+        &service,
+        "u1",
+        "clip.png",
+        "image/png",
+        Purpose::Video,
+        &png_bytes(),
+    );
+    let job = service
+        .submit_job("u1", &done.object_id, Preset::Thumbnail)
+        .unwrap();
+    assert_eq!(
+        service.job_status("u1", &job.job_id).unwrap().state,
+        JobState::Pending,
+        "提交后只入队，不该有东西替测试执行它"
+    );
+
+    let worker = Arc::clone(&service).spawn_job_worker(Duration::from_millis(5), 4);
+    // 有界轮询而不是"睡一个够长的时间"：轮询次数用完仍不是 Succeeded 就红，
+    // 不会因为 CI 慢就假失败，也不会因为本机快就假通过。
+    let mut final_state = service.job_status("u1", &job.job_id).unwrap().state;
+    for _ in 0..400 {
+        let state = service.job_status("u1", &job.job_id).unwrap().state;
+        if state == JobState::Succeeded {
+            final_state = state;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    worker.abort();
+    assert_eq!(
+        final_state,
+        JobState::Succeeded,
+        "worker 起了就必须把作业做完；没做完说明循环没跑或跑在错的地方"
+    );
+    assert_eq!(service.job_status("u1", &job.job_id).unwrap().progress, 100);
+}

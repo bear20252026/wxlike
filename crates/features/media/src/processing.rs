@@ -373,6 +373,36 @@ impl MediaService {
         Ok(done)
     }
 
+    /// 起一条作业循环，让**运行中的进程**真的去执行 `media_job`。
+    ///
+    /// 为什么需要它：`POST /api/v1/jobs` 只把作业写进表，此前全仓
+    /// `run_due_jobs` 的调用方**只有测试**（`processing.rs` 的单测与
+    /// `tests/g04.rs`）——也就是说线上"提交转码"之后没有任何东西会去执行它，
+    /// 客户端只能轮询到一个永远不动的状态。挂载路由（#295）没有暴露这一点，
+    /// 因为测试是直接调用 `run_due_jobs` 才绿的。
+    ///
+    /// 为什么每轮都要 `spawn_blocking`：`run_due_jobs` 是同步的，而
+    /// `execute_job` 里会等 ffmpeg 子进程退出。直接跑在 async 任务里会占住
+    /// 一个 tokio worker 线程——转一个视频，别的请求就得排队。
+    pub fn spawn_job_worker(
+        self: Arc<Self>,
+        every: Duration,
+        batch: u32,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let svc = Arc::clone(&self);
+                match tokio::task::spawn_blocking(move || svc.run_due_jobs(batch)).await {
+                    Ok(Ok(0)) => {}
+                    Ok(Ok(n)) => tracing::info!(jobs = n, "media 作业循环：一轮做完"),
+                    Ok(Err(err)) => tracing::warn!(error = %err, "media 作业循环：一轮失败"),
+                    Err(err) => tracing::warn!(error = %err, "media 作业循环：扫描线程崩了"),
+                }
+            }
+        })
+    }
+
     fn claim_job(&self, job_id: &str, now: i64) -> Result<bool> {
         let c = self.db.lock();
         let changed = c.execute(

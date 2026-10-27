@@ -97,7 +97,16 @@ impl AudiencePort for PlatformAudience {
 ///
 /// 密钥不足长度是**装配失败**（`Err`），不是"降级继续跑"：一把弱密钥签出来的
 /// 下载链接看上去一切正常，只有想伪造的人才会发现它其实谁都能算。
-pub fn assemble(platform: &PlatformState, db_path: Option<&str>) -> anyhow::Result<Router> {
+/// 装配 media 域。返回 `(路由, 服务句柄)`：路由进 `build_app`，
+/// 服务句柄交给组合根去起作业循环
+/// （`MediaService::spawn_job_worker`）——**间隔与批量属于部署决策，
+/// 留在组合根**，与 `spawn_redpacket_sweeper` / `spawn_reconciler` 同一个口径
+/// （见 `server/src/lib.rs`）。不把句柄交出去是为了避免这里偷偷常驻一条任务：
+/// 本仓对"裸 `mem::forget` 起的常驻"是有记录的（M-11 补的就是停机钩子）。
+pub fn assemble(
+    platform: &PlatformState,
+    db_path: Option<&str>,
+) -> anyhow::Result<(Router, Arc<MediaService>)> {
     let secret = platform.options().media_signing_key.clone();
     if secret.trim().is_empty() || secret.len() < MIN_SECRET_BYTES {
         anyhow::bail!(
@@ -122,11 +131,14 @@ pub fn assemble(platform: &PlatformState, db_path: Option<&str>) -> anyhow::Resu
         db_path,
         Arc::new(PlatformAudience::new(platform.clone())),
     )?);
-    Ok(MediaApp::new(
-        Arc::clone(&service),
-        Arc::new(PlatformSessions::new(platform.clone())),
-    )
-    .router())
+    Ok((
+        MediaApp::new(
+            Arc::clone(&service),
+            Arc::new(PlatformSessions::new(platform.clone())),
+        )
+        .router(),
+        service,
+    ))
 }
 
 /// 对象根目录：优先 `WXLIKE_MEDIA_DIR`（与已挂载的 `/api/media` 同一份配置，
@@ -202,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn mounted_router_gates_anonymous_and_serves_the_session_owner() {
         let platform = platform();
-        let app = assemble(&platform, None).unwrap();
+        let (app, _service) = assemble(&platform, None).unwrap();
         let user_id = platform.register("mounted", "pw").unwrap();
         let token = platform.create_session(&user_id, TEST_TTL_MS).unwrap();
 
@@ -248,7 +260,9 @@ mod tests {
         .unwrap()
         .shared();
         assert_eq!(weak.options().media_signing_key, "abc", "非空即原样保留");
-        let err = assemble(&weak, None).expect_err("3 字节密钥不该装出 media 域");
+        let err = assemble(&weak, None)
+            .map(|(router, _service)| router)
+            .expect_err("3 字节密钥不该装出 media 域");
         assert!(
             err.to_string()
                 .contains(&format!("{SECRET_ENV} 未配置到至少")),
