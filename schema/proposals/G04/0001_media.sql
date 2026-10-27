@@ -1,4 +1,7 @@
--- G04 media domain proposal (unnumbered; G00 assigns the real migration id).
+-- G04 media domain proposal. 编号由 G00 赋予：**M009**（`schema/registry/migrations.json:20`，
+-- next_id 已推进到 M010）。DDL 只有一份，就在这里；执行点是 `MediaDb::open`
+-- （`CREATE TABLE IF NOT EXISTS`，幂等可重入），由 server 组合根在平台同一个 SQLite
+-- 文件上调用（`server/src/media_mount.rs::assemble`，issue #295）。
 -- Rollback compatibility: every table is created with IF NOT EXISTS and no
 -- data backfill is required, so dropping this migration is equivalent to
 -- dropping the media_* tables; existing messaging/content tables are not
