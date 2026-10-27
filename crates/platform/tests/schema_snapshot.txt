@@ -594,6 +594,7 @@ users.totp_enabled INTEGER notnull=1 pk=0
 users.avatar TEXT notnull=1 pk=0
 users.signature TEXT notnull=1 pk=0
 users.created_at INTEGER notnull=1 pk=0
+users.deleted_at INTEGER notnull=0 pk=0
 video_comments.seq INTEGER notnull=0 pk=1
 video_comments.id TEXT notnull=1 pk=0
 video_comments.video_id TEXT notnull=1 pk=0

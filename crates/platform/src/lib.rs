@@ -17,6 +17,7 @@
 //! # let _ = app; Ok(()) }
 //! ```
 
+mod account;
 mod articles;
 mod audit_mw;
 mod auth;
@@ -67,6 +68,7 @@ use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
+pub use crate::account::{spawn_account_job_worker, JobReply};
 pub use crate::auth::{hash_password, random_hex, token_digest, verify_password, Authed};
 pub use crate::call::CallRegistry;
 pub use crate::db::Db;
@@ -397,7 +399,10 @@ impl Platform {
         let c = self.db.lock();
         let exists: Option<String> = c
             .query_row(
-                "SELECT id FROM users WHERE id = ?1",
+                // 注销后的账号不得再拿到任何会话（#114）。刷新链也在 `logout_all`
+                // 里一并作废，这里是第二道：即便有人手工插了一行会话、或哪条路径
+                // 漏判，签发环节也拒绝。
+                "SELECT id FROM users WHERE id = ?1 AND deleted_at IS NULL",
                 params![user_id],
                 |r| r.get::<_, String>(0),
             )
@@ -426,13 +431,19 @@ impl Platform {
     /// Resolves a token to its user, dropping the row when it has expired.
     /// The column holds [`auth::token_digest`] output; the raw token never
     /// touches the database (AR-3/H-2).
+    ///
+    /// 注销（#114）：连 `users` 表并要求 `deleted_at IS NULL`。删会话行是
+    /// `request_delete` 干的，这里是**第二道**——别的实例或别的写入方留下的会话行、
+    /// 以及"清账与建行之间"的任何窗口，都不该让一个已注销账号再认证成功。
     pub fn lookup_token(&self, token: &str) -> Result<Option<String>> {
         let token = &auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db.lock();
         let row: Option<(String, i64)> = c
             .query_row(
-                "SELECT user_id, expires_at FROM sessions WHERE token = ?1",
+                "SELECT s.user_id, s.expires_at FROM sessions s
+                 JOIN users u ON u.id = s.user_id
+                 WHERE s.token = ?1 AND u.deleted_at IS NULL",
                 params![token],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
             )
@@ -499,6 +510,8 @@ impl Platform {
             .merge(inbox::routes())
             .merge(status::routes())
             .merge(qr_login::routes())
+            // G02-05（#114）：偏好 / 导出 / 注销
+            .merge(account::routes())
             .route("/api/audit/self", get(audit_self))
             .with_state(state.clone())
             // 命令审计：带 `X-Wxlike-Command` 的请求各落一条（见 audit_mw）

@@ -54,7 +54,24 @@ impl Db {
         db.migrate_relations()?;
         db.migrate_g05()?;
         db.migrate_round5()?;
+        db.migrate_account()?;
         Ok(db)
+    }
+
+    /// G02-05（#114）注销：**排队标记**。
+    ///
+    /// `deleted_at` 只回答一件事——"这个账号已经不再属于活人"。所有发凭证的
+    /// 入口（登录口令校验、会话签发）都按它 fail-closed，因此**不等 worker 跑完
+    /// 清理，账号的数据就已经取不到了**；行本身保留到清理完成，`groups.owner_uid`
+    /// 这类没有 CASCADE 的外键才不会因为一次 DELETE 把整条链顶回来。
+    ///
+    /// 原地补列（与 `migrate_security_columns` 同一手法）：老行 `NULL` = 未注销。
+    fn migrate_account(&self) -> Result<()> {
+        let c = self.lock();
+        if !Self::has_column(&c, "users", "deleted_at")? {
+            c.execute_batch("ALTER TABLE users ADD COLUMN deleted_at INTEGER;")?;
+        }
+        Ok(())
     }
 
     /// 审计第 5 轮：两个小表——

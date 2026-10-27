@@ -50,6 +50,14 @@ pub enum PlatformError {
     /// 内部依赖不可用（如风控引擎锁中毒）→ 500，不伪装成客户端错误。
     #[error("internal dependency unavailable: {0}")]
     Internal(String),
+    /// 状态机拒绝：请求本身没毛病，但**当前状态下不允许**（409）。
+    ///
+    /// 与 `Conflict` 的区别：`Conflict` 的文案是"already exists: X"（创建撞了
+    /// 唯一键），注销/清理这类"现在不行"要的是原样说清楚为什么（#114）。
+    /// 例如 `Blocked("wallet not empty")` 会原样进作业失败原因，用户看到的是
+    /// 真正拦下清理的那句话。
+    #[error("{0}")]
+    Blocked(&'static str),
 }
 
 impl From<wxlike_risk::RiskError> for PlatformError {
@@ -94,6 +102,9 @@ impl From<PlatformError> for ApiError {
                 Self::new(StatusCode::FORBIDDEN, "admin endpoint unavailable")
             }
             PlatformError::Internal(msg) => Self::new(StatusCode::INTERNAL_SERVER_ERROR, msg),
+            // 状态不允许：409，消息就是拦下这次操作的那句话（不加工、不脱敏，
+            // 因为它来自上面的封闭字符串常量，不含用户数据）。
+            PlatformError::Blocked(what) => Self::new(StatusCode::CONFLICT, what),
         }
     }
 }

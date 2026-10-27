@@ -53,6 +53,9 @@ impl From<IdError> for PlatformError {
             IdError::RateLimited { retry_after_ms } => Self::RateLimited {
                 retry_after_ms: retry_after_ms.max(0) as u64,
             },
+            // 库里的一行读不出合法状态：这是服务端的数据完整性问题，
+            // 绝不能折成任何一种"看起来还行"的作业状态糊过去（#114）。
+            IdError::Corrupt(what) => Self::Internal(format!("corrupt stored row: {what}")),
             IdError::Db(e) => Self::Sqlite(e),
             IdError::Json(e) => Self::Codec(e),
         }

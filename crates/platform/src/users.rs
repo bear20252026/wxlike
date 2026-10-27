@@ -207,7 +207,11 @@ impl Platform {
         let row: Option<(String, String, String, i64, String)> = {
             let c = self.db().lock();
             c.query_row(
-                "SELECT id, pw_salt, pw_hash, pw_rounds, pw_algo FROM users WHERE name = ?1",
+                // 已注销的账号在这里直接"不存在"：口令校验返回 None，登录回
+                // 401 invalid credentials——既不泄露"这个号注销过"，也不给
+                // 任何凭据换回会话的机会（#114）。
+                "SELECT id, pw_salt, pw_hash, pw_rounds, pw_algo
+                 FROM users WHERE name = ?1 AND deleted_at IS NULL",
                 params![name],
                 |r| {
                     Ok((

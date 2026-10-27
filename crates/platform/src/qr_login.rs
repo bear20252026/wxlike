@@ -417,6 +417,11 @@ fn id_err(err: wxlike_identity::IdError) -> ApiError {
             format!("rate limited, retry after {retry_after_ms} ms"),
         ),
         IdError::Db(err) => db_err(err),
+        // 新增于 #114：库里读不出合法状态。500，细节只进日志。
+        IdError::Corrupt(what) => {
+            tracing::error!(row = %what, "qr login: corrupt stored row");
+            ApiError::internal("storage failure")
+        }
         IdError::Json(err) => {
             tracing::error!(error = %err, "qr login: encoding failure");
             ApiError::internal("encoding failure")
