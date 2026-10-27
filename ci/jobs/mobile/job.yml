@@ -103,14 +103,31 @@ jobs:
         shell: bash
         run: |
           # 合并清单要 `flutter build` 之后才生成，所以只能在构建后校。
-          MERGED=$(find apps/mobile/build -name "AndroidManifest.xml" -path "*release*" | head -1)
+          # **只看 app 模块自己的清单**：每个 library 模块（jni、jni_flutter 等）在
+          # `build/<plugin>/intermediates/**/release/` 下也各生成一份合并清单，而
+          # 它们的清单里本来就没有 INTERNET。原来写的是
+          # `find apps/mobile/build -name AndroidManifest.xml -path "*release*" | head -1`
+          # —— 按目录顺序撞上谁算谁，#303 就是这么假红的：APK 65.8MB 正常构建、
+          # 权限也没丢，检查却读到插件模块的清单。本机一次真实构建里这样的候选有
+          # 8 个、其中 4 个没有 INTERNET ⇒ 这条门禁等于一半概率掷硬币。
+          MERGED=""
+          for cand in \
+            apps/mobile/build/app/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml \
+            apps/mobile/build/app/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml \
+            apps/mobile/build/app/intermediates/packaged_manifests/release/processReleaseManifestForPackage/AndroidManifest.xml; do
+            if [ -f "$cand" ]; then MERGED="$cand"; break; fi
+          done
           if [ -z "$MERGED" ]; then
-            echo "::error::构建后仍找不到 release 的合并清单" >&2
+            # AGP 改目录名时的兜底：搜索范围锁死在 app 模块内，绝不碰 library 模块。
+            MERGED=$(find apps/mobile/build/app/intermediates -path "*release*" -name "AndroidManifest.xml" 2>/dev/null | sort | head -1)
+          fi
+          if [ -z "$MERGED" ]; then
+            echo "::error::构建后仍找不到 app 模块 release 的合并清单" >&2
             exit 1
           fi
           echo "合并清单：$MERGED"
           grep -q 'android.permission.INTERNET' "$MERGED" || {
-            echo "::error::release 合并清单里没有 INTERNET 权限" >&2
+            echo "::error::app 模块 release 合并清单里没有 INTERNET 权限" >&2
             exit 1
           }
       - name: C8 verify APK, signer and symbols

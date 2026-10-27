@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -328,6 +329,45 @@ class NativeLibGateTest(unittest.TestCase):
         }
         self.assertEqual(apk_gate.runtime_lib_dirs(entries), ["lib/arm64-v8a"])
         apk_gate.require_native_libs(Path("fixture.apk"), entries, ["libwxlike_ffi.so"])
+
+
+class MergedManifestScopeTest(unittest.TestCase):
+    """android 作业里"合并清单必须带 INTERNET"这条，搜索范围必须锁在 app 模块内。
+
+    真事：#303 上这条红过，而 APK 是 65.8MB 正常构建、权限也没丢。原因是步骤写成
+    `find apps/mobile/build -name AndroidManifest.xml -path "*release*" | head -1`——
+    每个 library 模块（jni、jni_flutter…）在 `build/<plugin>/intermediates/**/release/`
+    下也各生成一份合并清单，而它们的清单里本来就没有 INTERNET。本机一次真实构建里
+    这样的候选有 8 个、其中 4 个没有 INTERNET ⇒ `head -1` 撞上谁全凭目录顺序，
+    相当于这条门禁有一半概率**假红**（也有同样概率只是运气好）。
+    """
+
+    FINDS_MANIFEST = re.compile(
+        r"find\s+(?P<dir>\S+)[^|\n]*-name\s+[\"']?AndroidManifest\.xml"
+    )
+
+    def test_manifest_lookups_are_scoped_to_the_app_module(self):
+        offenders = []
+        for fragment in sorted(JOBS.glob("*/job.yml")):
+            for number, line in enumerate(
+                fragment.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if line.lstrip().startswith("#"):
+                    # 注释行里可能写着反面教材（本仓就有一条写着旧命令长什么样），
+                    # 这条测试管的是会执行的那一行。
+                    continue
+                match = self.FINDS_MANIFEST.search(line)
+                if not match:
+                    continue
+                normalized = match.group("dir").replace("\\", "/")
+                if "build/app" not in normalized:
+                    offenders.append(f"{fragment.relative_to(JOBS)}:{number}: {normalized}")
+        self.assertEqual(
+            offenders,
+            [],
+            "上面这些 find 在搜 AndroidManifest.xml 但没有限定 app 模块；"
+            "library 模块的合并清单里没有 INTERNET，会把门禁变成掷硬币。",
+        )
 
 
 if __name__ == "__main__":
