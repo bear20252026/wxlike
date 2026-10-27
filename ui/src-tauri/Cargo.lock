@@ -7366,6 +7366,27 @@ name = "wxlike-limits"
 version = "0.1.0"
 
 [[package]]
+name = "wxlike-media"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "hmac 0.12.1",
+ "libc",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "wxlike-api",
+ "wxlike-core",
+]
+
+[[package]]
 name = "wxlike-message"
 version = "0.1.0"
 dependencies = [
@@ -7574,6 +7595,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wxlike-core",
+ "wxlike-media",
  "wxlike-message",
  "wxlike-moderation",
  "wxlike-mq",
