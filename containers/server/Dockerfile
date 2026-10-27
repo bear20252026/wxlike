@@ -24,6 +24,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY server ./server
 COPY scripts ./scripts
+# 见根 Dockerfile 里同一条的注释：media 的 DDL 由 include_str! 从 schema/ 嵌进
+# 二进制，context 里没有它就会在编译 wxlike-media 时报 couldn't read …0001_media.sql。
+COPY schema ./schema
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

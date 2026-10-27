@@ -5,7 +5,10 @@
 # 因为磁盘/超时失败，而且每次都重传。
 #
 # Dockerfile 只 COPY 了 `Cargo.toml`、`Cargo.lock`、`crates/`、`server/`、
-# `scripts/`，所以其它一切都可以排除。
+# `scripts/` 与 `schema/`，所以其它一切都可以排除。
+# `schema/` 不能省：media 域的 DDL 只有一份，住在
+# `schema/proposals/G04/0001_media.sql`，由 `crates/features/media/src/db.rs`
+# 用 include_str! 嵌进二进制——把它排除掉，镜像构建会在编译 wxlike-media 时红。
 
 # Rust 构建产物（本地 target 与本仓库用过的独立 target 目录）
 target

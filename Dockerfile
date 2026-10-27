@@ -15,6 +15,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY server server
 COPY scripts scripts
+# media 域的 DDL 只有一份，住在 schema/proposals/ 里（迁移编号由 G00 在
+# schema/registry/migrations.json 赋予），crate 侧用 include_str! 嵌进去：
+# crates/features/media/src/db.rs:15。少了这一行，镜像构建会在编译 wxlike-media
+# 时报 couldn't read .../schema/proposals/G04/0001_media.sql（#303 的 image 作业
+# 就是这么红的——本地 cargo build 看不见，因为工作树里 schema/ 一直在）。
+COPY schema schema
 RUN cargo build --locked --release -p wxlike-server --features redis
 
 FROM debian:bookworm-slim
