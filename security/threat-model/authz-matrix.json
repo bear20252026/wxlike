@@ -39,6 +39,101 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/account/delete",
+      "handler": "delete_account",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/account/export",
+      "handler": "request_export",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/account/export/download/{token}",
+      "handler": "download",
+      "module": "crates/platform/src/account.rs",
+      "auth": "public",
+      "object": "invite_token",
+      "scope": "owner",
+      "tests": [],
+      "public_reason": "能力 URL：路由不读会话，授权完全由路径里的单次令牌承担。已核实（crates/features/identity/src/preferences.rs::redeem_link 与 EXPORT_LINK_TTL_MS）：库里只存 token_hash，明文不落库也不进日志；兑换是一条带条件的 UPDATE（WHERE token_hash = ?1 AND used_at IS NULL AND expires_at > ?2），所以并发重放最多成功一次；有效期 10 分钟；行上绑 user_id 与 job_id；验不过统一 Unauthorized(\"link expired or already used\")，不区分过期与已用以免做 oracle。不套 Authed 提取器是故意的——这一步发生在浏览器把链接当下载地址直接打开的路径上，要求会话头会让短令牌没有意义。风险边界：令牌泄露则 10 分钟内可被取件一次，因此签发端点必须鉴权（同组 POST /api/account/export/{job_id}/link，auth=user/scope=owner），且导出物只含申请人可见的数据。tests 留空是诚实而非遗漏：矩阵的 tests 只能填 tests/security 里的函数名（AUTHZ-GHOST-TEST），而重放/过期这两条目前断在 crates/platform/tests/account_surfaces.rs，尚未在 tests/security 建对应用例——这是本卡的待办。"
+    },
+    {
+      "method": "GET",
+      "path": "/api/account/export/{job_id}",
+      "handler": "export_status",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/account/export/{job_id}/link",
+      "handler": "create_link",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/account/jobs",
+      "handler": "list_jobs",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/account/jobs/{job_id}/cancel",
+      "handler": "cancel_job",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/account/step-up",
+      "handler": "step_up_grant",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "PUT",
       "path": "/api/admin/moderation/mode",
       "handler": "set_mode",
@@ -1790,6 +1885,42 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/preferences",
+      "handler": "get_preferences",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/preferences",
+      "handler": "put_preferences",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/preferences/sync",
+      "handler": "sync_preferences",
+      "module": "crates/platform/src/account.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "PUT",
       "path": "/api/profile",
       "handler": "update_profile",
@@ -1877,6 +2008,79 @@
       "path": "/api/publishers/{id}/follow",
       "handler": "follow",
       "module": "crates/platform/src/articles.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets",
+      "handler": "create_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/qr/tickets/{ticket_id}",
+      "handler": "ticket_state",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/approve",
+      "handler": "approve_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/exchange",
+      "handler": "exchange_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "public",
+      "object": "object",
+      "scope": "secret",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ],
+      "public_reason": "exchange 是「要登录的那台设备」的唯一一步：调用方此刻还没有账号会话，鉴权凭据是只有真正的扫码批准链路才能拿到的 ticket secret（哈希比对）+ approved→consumed 的 CAS 一次性消费；匿名是契约本身，泄漏 secret 即泄漏登录权。"
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/reject",
+      "handler": "reject_ticket",
+      "module": "crates/platform/src/qr_login.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/qr/tickets/{ticket_id}/scan",
+      "handler": "scan_ticket",
+      "module": "crates/platform/src/qr_login.rs",
       "auth": "user",
       "object": "object",
       "scope": "owner",
@@ -2636,6 +2840,18 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/wallet/redpacket/{id}",
+      "handler": "redpacket_get",
+      "module": "crates/platform/src/wallet.rs",
+      "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/wallet/redpacket/{id}/claim",
       "handler": "claim",
@@ -2655,91 +2871,6 @@
       "auth": "user",
       "object": "endpoint",
       "scope": "self",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ]
-    },
-    {
-      "method": "POST",
-      "path": "/api/qr/tickets",
-      "handler": "create_ticket",
-      "module": "crates/platform/src/qr_login.rs",
-      "auth": "user",
-      "object": "endpoint",
-      "scope": "self",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ]
-    },
-    {
-      "method": "GET",
-      "path": "/api/qr/tickets/{ticket_id}",
-      "handler": "ticket_state",
-      "module": "crates/platform/src/qr_login.rs",
-      "auth": "user",
-      "object": "object",
-      "scope": "owner",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ]
-    },
-    {
-      "method": "POST",
-      "path": "/api/qr/tickets/{ticket_id}/scan",
-      "handler": "scan_ticket",
-      "module": "crates/platform/src/qr_login.rs",
-      "auth": "user",
-      "object": "object",
-      "scope": "owner",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ]
-    },
-    {
-      "method": "POST",
-      "path": "/api/qr/tickets/{ticket_id}/approve",
-      "handler": "approve_ticket",
-      "module": "crates/platform/src/qr_login.rs",
-      "auth": "user",
-      "object": "object",
-      "scope": "owner",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ]
-    },
-    {
-      "method": "POST",
-      "path": "/api/qr/tickets/{ticket_id}/reject",
-      "handler": "reject_ticket",
-      "module": "crates/platform/src/qr_login.rs",
-      "auth": "user",
-      "object": "object",
-      "scope": "owner",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ]
-    },
-    {
-      "method": "POST",
-      "path": "/api/qr/tickets/{ticket_id}/exchange",
-      "handler": "exchange_ticket",
-      "module": "crates/platform/src/qr_login.rs",
-      "auth": "public",
-      "object": "object",
-      "scope": "secret",
-      "tests": [
-        "unauth_sweep_rejects_every_private_route"
-      ],
-      "public_reason": "exchange 是「要登录的那台设备」的唯一一步：调用方此刻还没有账号会话，鉴权凭据是只有真正的扫码批准链路才能拿到的 ticket secret（哈希比对）+ approved→consumed 的 CAS 一次性消费；匿名是契约本身，泄漏 secret 即泄漏登录权。"
-    },
-    {
-      "method": "GET",
-      "path": "/api/wallet/redpacket/{id}",
-      "handler": "redpacket_get",
-      "module": "crates/platform/src/wallet.rs",
-      "auth": "user",
-      "object": "object",
-      "scope": "owner",
       "tests": [
         "unauth_sweep_rejects_every_private_route"
       ]
