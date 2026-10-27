@@ -41,7 +41,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            apps/desktop-web/package-lock.json
       - name: Linux webkit build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -55,6 +57,14 @@ jobs:
         working-directory: ui
       - run: npm run build
         working-directory: ui
+      - name: C9 new UI bundle consumed by the default host
+        shell: bash
+        run: |
+          # 发布包装载的是默认宿主的 frontendDist；dist 不入库，不构建就是空壳。
+          npm ci
+          npm run build
+          npm run check:host
+        working-directory: apps/desktop-web
       - name: signed bundle + updater artefacts
         shell: bash
         env:
