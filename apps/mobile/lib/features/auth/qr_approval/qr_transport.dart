@@ -83,6 +83,37 @@ abstract class QrApiTransport {
   void dispose();
 }
 
+/// 「没有本机 bearer 就不许把这个请求发出去」——这条策略只写在这一个函数里。
+///
+/// 为什么它不属于 HTTP 细节：[HttpQrApiTransport] 之外还有记录型传输（测试、
+/// 以后的桥实现），策略若长在传输实现里，换一层就没了。[HttpQrIdentityPort]
+/// 与 [HttpQrApiTransport] 都调它，两处因此不可能给出两种不同的说法。
+///
+/// 拿不到凭据**不是**"偷偷发一个匿名请求"，也不是"假装批准成功"：抛
+/// `QR_SESSION_TOKEN_UNAVAILABLE`，界面原样显示这条真实阻塞原因。
+/// 当前绑定的 `crates/ffi` 没有把 token 交给 Dart（`client.rs` 的原话是
+/// "Dart 全程碰不到 token"），所以生产路径今天就是走这条分支。
+Future<String> requireQrBearer(QrTokenProvider token, {required bool authRequired}) async {
+  if (!authRequired) return '';
+  final bearer = (await token())?.trim() ?? '';
+  if (bearer.isEmpty) {
+    throw const G12Failure(
+      G12FailureKind.unavailable,
+      'QR_SESSION_TOKEN_UNAVAILABLE',
+      '本机登录凭据仍在 Rust 侧，移动端绑定尚未导出可用 token，无法代发这个请求',
+    );
+  }
+  // 头注入防线：bearer 带 CR/LF 就是往请求头里塞内容（与 Rust 侧 usable_token 同口径）。
+  if (bearer.contains('\r') || bearer.contains('\n')) {
+    throw const G12Failure(
+      G12FailureKind.unauthorized,
+      'QR_SESSION_INVALID',
+      '本机登录态已失效，请重新登录后再扫码',
+    );
+  }
+  return bearer;
+}
+
 /// 把 HTTP 状态码翻成界面认识的 [G12Failure]。
 ///
 /// 消息只取服务端的 `error` 文案（`qr_login.rs` 的注释确认它不含凭据），
@@ -116,8 +147,13 @@ G12Failure qrFailureFrom(QrApiResponse response) {
         detail.isEmpty ? '登录码状态已变化，请让桌面端重新生成' : detail,
         retryable: true,
       ),
+    // 410 不能归到 conflict：`G12Failure.displayText` 对 conflict 只给一句通用
+    // 的"数据已变化，请刷新后再试"，把"这张登录码已过期"这个真实原因吃掉——
+    // 用户看到那句会以为重试就好，而正确答案是回桌面端重新出码。
+    // 同族的 400/404 本来就是 invalidArgument（displayText 原样给 message），
+    // 过期跟它们是同一个结论：这张票不能再用了。
     410 => const G12Failure(
-        G12FailureKind.conflict,
+        G12FailureKind.invalidArgument,
         'QR_TICKET_EXPIRED',
         '登录码已过期，请让桌面端刷新二维码',
       ),
@@ -169,22 +205,8 @@ class HttpQrApiTransport implements QrApiTransport {
     }
     String? bearer;
     if (request.authRequired) {
-      bearer = await token();
-      if (bearer == null || bearer.trim().isEmpty) {
-        throw const G12Failure(
-          G12FailureKind.unavailable,
-          'QR_SESSION_TOKEN_UNAVAILABLE',
-          '本机登录凭据仍在 Rust 侧，移动端绑定尚未导出可用 token，无法代发这个请求',
-        );
-      }
-      // 头注入防线：bearer 带 CR/LF 就是往请求头里塞内容（与 Rust 侧 usable_token 同口径）。
-      if (bearer.contains('\r') || bearer.contains('\n')) {
-        throw const G12Failure(
-          G12FailureKind.unauthorized,
-          'QR_SESSION_INVALID',
-          '本机登录态已失效，请重新登录后再扫码',
-        );
-      }
+      // 策略在 [requireQrBearer]：拿不到凭据就抛，一次请求都不发。
+      bearer = await requireQrBearer(token, authRequired: true);
     }
 
     // path 由端口构造，总是以 `/` 开头（`/api/qr/tickets/…`）；base 去掉尾斜杠，

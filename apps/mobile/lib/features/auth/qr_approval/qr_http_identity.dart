@@ -14,6 +14,8 @@
 ///    而是把 `deadlineKnown` 置 false 交给界面显示。
 library;
 
+import 'package:flutter/foundation.dart';
+
 import '../../../shell/contracts.dart';
 import '../../../src/service.dart';
 import '../auth_models.dart';
@@ -28,12 +30,17 @@ class HttpQrIdentityPort implements IdentityPort {
     required this.transport,
     IdentityPort? fallback,
     this.sessionProvider,
+    this.token,
   })  : // 短信/协议那半边本卡不接：继续沿用组合根给的端口（默认
         // [UnavailableIdentityPort]，每个入口都明确报错，绝不伪造验证码流程）。
         _fallback = fallback ?? const UnavailableIdentityPort();
 
   final QrApiTransport transport;
   final SessionInfo? Function()? sessionProvider;
+
+  /// 本机 bearer 的提供者。**给了就在端口这一层拦住没凭据的请求**
+  /// （见 [_send]），不给就当作传输层自己负责鉴权。组合根始终给。
+  final QrTokenProvider? token;
   final IdentityPort _fallback;
 
   // ------------------------------------------------------------------
@@ -145,6 +152,20 @@ class HttpQrIdentityPort implements IdentityPort {
         '本机尚未登录，无法替桌面确认登录',
       );
     }
+    // 组合根给了 bearer 提供者，就在**这一层**把关：换任何传输实现都拦得住。
+    // 传输层自己也会查一次（它可能被单独构造），两处用的是同一个
+    // [requireQrBearer]，所以"没有凭据就不发请求"这条策略只有一份定义。
+    final provider = token;
+    if (provider != null) {
+      await requireQrBearer(provider, authRequired: request.authRequired);
+    }
+    // 这条日志是 `/scan` 那条 secret 离屏最近的一次机会，所以形状只有方法与路径，
+    // 并且只在 checked 模式打（release 不给凭据多一个出口）。
+    // 测试用 debugPrint 收集器盯着它：把 body 拼进来，那条用例立刻红。
+    assert(() {
+      debugPrint('wxlike-qr ${request.method} ${request.path}');
+      return true;
+    }());
     final reply = await transport.send(request);
     if (!reply.ok) throw _scrub(qrFailureFrom(reply), request);
     return reply;
@@ -201,7 +222,12 @@ class HttpQrIdentityPort implements IdentityPort {
     return QrLoginChallenge(
       id: id,
       // 建票时带的 label 就是桌面设备名；轮询面只给 account_hint（扫码者是谁）。
-      deviceName: label.isNotEmpty ? label : id,
+      //
+      // **回包没给 label 就留空，绝不拿票号顶替**：`approve`/`reject` 的回包只有
+      // `{ticket_id, state}`，这里一顶替，[QrApprovalController] 的合并就再也
+      // 认不出"这是缺字段"，批准完把"哪台桌面"从 MacBook Pro 显示成一串 hex。
+      // 票号本来就在下面的卡里（`_card` 的"挑战"那一行），不需要冒充设备名。
+      deviceName: label,
       deviceKind: platform.isNotEmpty ? platform : '',
       location: ipHint,
       issuedAtUtc: now,

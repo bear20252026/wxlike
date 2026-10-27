@@ -67,7 +67,7 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
       builder: (context) => AlertDialog(
         title: const Text('确认在这台设备登录？'),
         content: Text(
-          '设备：${challenge.deviceName}\n类型：${challenge.deviceKind}\n位置：${challenge.location}\n\n'
+          '设备：${_deviceLabel(challenge)}\n类型：${challenge.deviceKind}\n位置：${challenge.location}\n\n'
           '仅批准这一台桌面；其他设备不会获得登录态。',
         ),
         actions: [
@@ -121,7 +121,7 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
               Icon(Icons.laptop_mac, size: 56, color: WxColors.brand),
               const SizedBox(height: 12),
               Text(
-                challenge.deviceName,
+                _deviceLabel(challenge),
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
@@ -179,6 +179,15 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
       ),
     );
   }
+
+  /// 设备名：回包没给就说"没给"，不拿票号冒充。
+  ///
+  /// 票号本来就在下面那张卡里（"挑战"那一行）；把它当设备名显示，用户会以为
+  /// 那串 hex 就是自己的电脑，而真正该说的是"桌面端没把名字带上来"。
+  /// `approve`/`reject` 的回包只有 `{ticket_id, state}`，靠控制器的合并留住
+  /// `/scan` 那次看到的名字；只有创建者轮询那条路（GET 回包没有 label）才会落到这里。
+  static String _deviceLabel(QrLoginChallenge challenge) =>
+      challenge.deviceName.isEmpty ? '未提供名称的桌面设备' : challenge.deviceName;
 
   Widget _card(QrLoginChallenge challenge) {
     return Container(
