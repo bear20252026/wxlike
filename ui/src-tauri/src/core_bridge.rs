@@ -1518,7 +1518,7 @@ fn act_identity_qr_login_cancel<R: tauri::Runtime>(
 /// 不许对着"空票据"发撤销请求（那正是 `unwrap_or_default()` 造出来的形状）。
 fn qr_cancel_target(core: &CoreState, req: &CoreRequest) -> Result<String, BridgeError> {
     for key in ["challenge_id", "ticket_id"] {
-        if let Some(id) = required_str(&req.params, key).ok() {
+        if let Ok(id) = required_str(&req.params, key) {
             return Ok(id);
         }
     }
@@ -1536,31 +1536,62 @@ fn qr_cancel_target(core: &CoreState, req: &CoreRequest) -> Result<String, Bridg
 
 /// 服务端撤销一张票据并回查确证。
 ///
-/// 服务端只有 `POST /api/qr/tickets/{id}/reject` 这一条撤销面，而它要求调用者
-/// 就是**扫码那一侧**的账号（`crates/features/identity/src/qr_login.rs::decide`：
-/// 票据必须处在 `scanned` 且 `scanned_by == 调用者`）。桌面自建的票在"还没人扫"
-/// 这个阶段没有任何可撤销端点——那种情况一律报错并保留本地轮询，绝不回
-/// `cancelled: true`，因为停轮询拦不住手机点"同意"。
+/// 服务端只有 `POST /api/qr/tickets/{id}/reject` 这一条撤销面（HTTP 臂在
+/// `crates/platform/src/qr_login.rs` 的 `reject_ticket` → `decide`），而它要求
+/// 调用者就是**扫码那一侧**的账号（域语义在
+/// `crates/features/identity/src/qr_login.rs::decide`：票据必须处在 `scanned`
+/// 且 `scanned_by == 调用者`）。回查用的 `GET /api/qr/tickets/{id}` 反过来又要
+/// 求调用者是**创建者**——所以桌面这条会话只有"自己扫了自己建的票"这一种形状
+/// 才有权撤销。桌面自建的票在"还没人扫"这个阶段没有任何可撤销端点，那种情况
+/// 一律报错并保留本地轮询，绝不回 `cancelled: true`，因为停轮询拦不住手机点
+/// "同意"。
 ///
-/// 真正的服务端撤销需要补一个"创建者撤票"端点（已列待验/待办，见本卡汇报）。
+/// 真正的服务端撤销需要补一个"创建者撤票"端点（已列待办，见本卡汇报）。
 fn revoke_qr_ticket(state: &AppState, ticket: &str) -> Result<(), BridgeError> {
-    let reject = state
-        .http()
-        .expect_json("POST", &format!("/api/qr/tickets/{ticket}/reject"), None);
+    let reject =
+        state
+            .http()
+            .expect_json("POST", &format!("/api/qr/tickets/{ticket}/reject"), None);
     let now = qr_ticket_state(state, ticket);
     if now == "REJECTED" {
         return Ok(());
     }
-    let why = match reject {
-        Ok(_) => "服务端收了撤销请求，但票据状态不是 REJECTED".to_string(),
-        Err(err) if err.contains("404") => {
-            "服务端未挂载 QR 撤销路由（POST /api/qr/tickets/{id}/reject）".to_string()
-        }
-        Err(err) => format!("服务端拒绝撤销：{err}"),
+    Err(revoke_failure(ticket, &now, reject))
+}
+
+/// 撤销没生效时按"服务端到底怎么答的"分档说实话（台账第 1 条）。
+///
+/// * 拿不到 HTTP 状态 ⇒ 请求压根没送到（链路问题）→ `OFFLINE`，可重试。
+/// * 非 2xx ⇒ 服务端没挂这条路由（404）或不给这条会话撤（403/409）→
+///   `NOT_IMPLEMENTED`：重新登录也变不出撤销面，手机侧仍然能批准。
+/// * 2xx 但回查不是 `REJECTED` ⇒ 收了请求没做 → `DEPENDENCY_UNAVAILABLE`
+///   （与登出"装了个成功其实没做"同一档）。
+fn revoke_failure(ticket: &str, now: &str, reject: Result<Value, String>) -> BridgeError {
+    let context = format!(
+        "票据 {ticket} 当前状态 {now}：手机侧仍可批准这次登录，取消未生效（本地轮询也没停）"
+    );
+    let Err(err) = reject else {
+        return BridgeError::Dependency(format!(
+            "服务端收了撤销请求，但回查的票据状态不是 REJECTED；{context}"
+        ));
     };
-    Err(BridgeError::NotImpl(format!(
-        "{why}；票据 {ticket} 当前状态 {now}，手机侧仍可批准这次登录，取消未生效（本地轮询未停）"
-    )))
+    match http_status(&err) {
+        Some(status) => BridgeError::NotImpl(format!(
+            "服务端撤销面不可用（HTTP {status}：{err}）——这条会话不是扫码那一侧的账号，\
+             服务端也没有创建者撤票端点，需要手机侧操作；{context}"
+        )),
+        None => BridgeError::Offline(format!("撤销请求没送到服务端（{err}）；{context}")),
+    }
+}
+
+/// `expect_json` 的非 2xx 错误尾巴是 `"… (NNN)"`。取不到 4xx/5xx 就说明响应
+/// 根本没收到（那是链路问题，不是服务端拒绝）——两者对用户的意义完全不同：
+/// 一个能重试，一个重试一万次也一样。
+fn http_status(err: &str) -> Option<u16> {
+    let open = err.rfind('(')? + 1;
+    let close = open + err[open..].find(')')?;
+    let raw: u16 = err[open..close].trim().parse().ok()?;
+    (400..600).contains(&raw).then_some(raw)
 }
 
 /// 服务端记着的票据状态（查不到或缺字段都算"不可知"，不许兜成某个状态名）。
@@ -2084,17 +2115,15 @@ fn act_media_upload_cancel<R: tauri::Runtime>(
 ) -> Result<Value, BridgeError> {
     let _ = (app, core);
     let params = &req.params;
-    let str_param = |key: &str| -> String {
-        params
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
+    let upload_id = params
+        .get("upload_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     core.uploads
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .remove(&str_param("upload_id"));
+        .remove(&upload_id);
     Ok(json!({ "cancelled": true }))
 }
 
