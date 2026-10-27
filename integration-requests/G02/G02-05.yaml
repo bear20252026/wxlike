@@ -106,7 +106,12 @@ root_registration:
 
   - action: cargo_dependency
     owner: G00
-    status: requested-review
+    status: done
+    g00_result: |
+      已批。`crates/platform` 依赖 `wxlike-security` 随 #114 并入 main；
+      一条依赖边会同时改动三处锁（根 Cargo.lock、ui/src-tauri/Cargo.lock、
+      tests/security/Cargo.lock），G00 已核对三处闭合 + 提交版 SBOM PASS（1415 components）。
+      判据是 CI 里那三句 `cargo metadata --locked`，不是人眼看 diff。
     file: crates/platform/Cargo.toml
     added: "wxlike-security = { path = \"../features/security\" }"
     detail: >
@@ -117,7 +122,14 @@ root_registration:
 
   - action: schema
     owner: G00
-    status: requested
+    status: done
+    g00_result: |
+      已执行：`schema/proposals/G02/identity.sql` 的补列段里加上
+      `ALTER TABLE users ADD COLUMN deleted_at INTEGER;`（仅在缺列时执行），
+      并写明它**不占迁移编号**——执行点是 `crates/platform/src/db.rs::migrate_account()`
+      的 `has_column` 守卫 + 幂等 ALTER，与 `sessions.audience` 同一手法。
+      不新增编号的理由：G00-02 正在串行分配编号，占号会冲突（有过重引入表丢失的前科）。
+      registry `schema/registry/migrations.json` 因此不变，本卡也不引入新表。
     proposal: schema/proposals/G02/identity.sql
     draft: integration-requests/G02/G02-05-migration.md
     tables: [identity_pref, identity_job, identity_export_link]
@@ -133,7 +145,20 @@ root_registration:
 
   - action: risk_gate
     owner: G00
-    status: requested
+    status: done
+    g00_result: |
+      已执行，但**覆盖面按成本重画过**：`Action::AccountLifecycle` 只闸
+      `POST /api/account/export` 与 `POST /api/account/delete` 两个落副作用的写面
+      （阈值 10/30 每小时，与开播同档）。
+      step-up **不进这层**：它已有 `identity::throttle` 按账号数口令失败
+      （5 次/5 分钟封 15 分钟）。这层数的是成功次数，加上去会双重惩罚正常用户
+      ——导出→取件→注销每步都要重新验凭。这条不是我推测：第一版把五个写面
+      全闸进去时，#114 自己的三条用例就被 429 打红了
+      （`step_up_ticket_is_single_use…` 期望 401 实得 429）。
+      取件链接与取消作业也不进：两者都要求已存在的本人 job_id，刷它们的前提是先刷 export。
+      公开的取件 GET 更不进（能力 URL，闸它等于把别人的下载记到申请者的额度上）。
+      以上取舍都有测试钉住：`mapping_covers_the_documented_write_surfaces` 与
+      `read_and_callback_surfaces_stay_ungated`。
     file: crates/risk/src/lib.rs（Action 枚举） + crates/platform/src/risk_mw.rs（映射表）
     reason: >
       本卡新增的写面（/api/account/step-up、/api/account/export、

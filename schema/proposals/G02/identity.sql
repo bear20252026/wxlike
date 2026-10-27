@@ -174,3 +174,14 @@ CREATE TABLE IF NOT EXISTS identity_export_link (
 -- ---------------------------------------------------------------------------
 -- 老库执行前先看 PRAGMA table_info(sessions)，缺列才 ALTER。
 -- ALTER TABLE sessions ADD COLUMN audience TEXT NOT NULL DEFAULT 'user';
+--
+-- G02-05（#114）注销标记列：G00 执行 integration-requests/G02/G02-05.yaml 的
+-- `schema` 项时补上这一句。**不占迁移编号**（`schema/registry/migrations.json`
+-- 里没有它），因为它是"有列就跳过"的幂等补列，与 `sessions.audience` 同一手法：
+-- 执行点是 `crates/platform/src/db.rs::migrate_account()`，用
+-- `has_column("users", "deleted_at")` 守卫后再 ALTER。
+-- 之所以不新增编号：G00-02 正在串行分配编号，占号会与之冲突
+-- （冲突史：G00-02 的未提交稿曾重引入 G02 的表丢失）。
+-- 回滚口径见 integration-requests/G02/G02-05-migration.md：列只增不删，
+-- 旧二进制按显式列名查询不受影响；可回滚窗口只到注销作业执行之前。
+-- ALTER TABLE users ADD COLUMN deleted_at INTEGER;
