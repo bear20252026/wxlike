@@ -119,6 +119,47 @@ impl Default for StackOptions {
 
 /// Boots the whole stack on the given binds (OS-assigned ports with `:0`).
 ///
+/// 进程级的后台作业循环：**谁在推进那些只入队的表**。
+///
+/// 集中成一个函数有两个理由，都不是审美：
+/// ① `start_stack` 已经贴着质量闸门的函数长度上限（`>60 行` 是硬基线，
+///    只许变好、不许 `--update` 放宽），把四条循环摊进它中间会把它推过线；
+/// ② 这四条同构决定的**相互关系**才是要读的东西——它们不是各拍一个数：
+///    对账（300s）故意比红包清扫（60s）疏，是为了不与大表扫描抢锁；
+///    导出/注销（30s）比清扫密、比对账疏，因为两个面都是"一次做成、重试无收益"。
+///
+/// 句柄交给调用方攥着（`let _workers = …`）：这些循环都活到进程结束，
+/// 但句柄在手里，将来加停机钩子时有处可接——M-11 补的就是这种东西
+/// （原先 hub 是裸 `mem::forget`，注销无门）。
+fn spawn_background_workers(
+    platform: &PlatformState,
+    media: &Arc<wxlike_media::MediaService>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    use std::time::Duration;
+    // 写成"一条数组、每条上面挂它自己的理由"，而不是 `Vec::new()` + 四次 `push`：
+    // clippy 的 `vec_init_then_push` 会拦后者，而这里四条本来就是要一起读完的。
+    [
+        // 红包清扫 60s 一轮。对账不通过时由 reconcile 内部写审计并打日志，
+        // 运营看板读 reconcile_runs。
+        wxlike_platform::spawn_redpacket_sweeper(platform.clone(), Duration::from_secs(60)),
+        // 对账 300s 一轮：**故意比清扫疏**，避免与大表扫描抢锁。
+        wxlike_platform::spawn_reconciler(platform.clone(), Duration::from_secs(300)),
+        // G02-05（#114）`worker_mount` 的执行。**不起这条循环，`identity_job`
+        // 在真实进程里永远停在 queued**——集成测试之所以绿，是因为它们直接调
+        // `run_account_jobs()`，那不等于运行中的进程里有执行者。
+        wxlike_platform::spawn_account_job_worker(platform.clone(), Duration::from_secs(30)),
+        // G04（#295 挂载之后才暴露的同形问题）：`POST /api/v1/jobs` 只把转码作业
+        // 写进 `media_job`，而此前全仓 `run_due_jobs` 的调用方**只有测试**。
+        // 单轮最多 4 个；循环内部每轮走 `spawn_blocking`，因为 `execute_job`
+        // 要等 ffmpeg 子进程，压在 async 上会占住 worker 线程。
+        Arc::clone(media).spawn_job_worker(Duration::from_secs(10), 4),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// 起栈。
+///
 /// 这个函数只做**编排**：读配置 → 开存储 → 起 hub → 拼路由 → 起 HTTP。
 /// 每一步的细节都在下面几个 `build_*` 里，改一步不用在 200 行里找位置。
 pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
@@ -137,14 +178,6 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let handle = hub.handle();
 
     platform.set_event_sink(Arc::new(HubSink(handle.clone())));
-    // 红包清扫 60s 一轮；对账 300s 一轮（比清扫慢，避免与大表扫描抢锁）。
-    // 对账不通过时由 reconcile 内部写审计并打日志，运营看板读 reconcile_runs。
-    let _sweeper = wxlike_platform::spawn_redpacket_sweeper(
-        platform.clone(),
-        std::time::Duration::from_secs(60),
-    );
-    let _reconciler =
-        wxlike_platform::spawn_reconciler(platform.clone(), std::time::Duration::from_secs(300));
     // M-11：hub 泄漏常驻 + 停机钩子（原先裸 mem::forget，注销无门）
 
     let deps = Arc::new(HistoryDeps {
@@ -155,7 +188,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         search,
     });
     // #295：media 域装一次 = 顺带把 M009 打到平台那个库里（MediaDb::open 幂等建表）。
-    let media_app = media_mount::assemble(&platform, opts.db_path.as_deref())?;
+    let (media_app, media_service) = media_mount::assemble(&platform, opts.db_path.as_deref())?;
+    let _workers = spawn_background_workers(&platform, &media_service);
     let app = build_app(
         opts.hub_id.clone(),
         quic_addr,

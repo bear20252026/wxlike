@@ -277,7 +277,8 @@ async fn fresh_server_db_gets_the_media_migration() {
     // 这里**不**调 `start_stack` 第二次——tantivy 搜索索引的写锁按 db 路径独占，
     // 起第二个栈会撞它自己的锁（`Failed to acquire Lockfile`），与 media 迁移无关。
     let _mounted_again = wxlike_server::media_mount::assemble(&platform, Some(&db_str))
-        .expect("M009 不可重入 = 重启即挂：media 域第二次装配失败");
+        .expect("M009 不可重入 = 重启即挂：media 域第二次装配失败")
+        .0;
 
     let conn = platform.db().lock();
     let count: i64 = conn
