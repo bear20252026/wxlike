@@ -21,10 +21,24 @@ pub async fn core_dispatch(
     Ok(crate::core_bridge::dispatch(&app, &state, &core, request))
 }
 
-/// 订阅事件（游标恢复留给服务端补发面；当前实现事件全量推 `core://event`）。
+/// 订阅事件并按游标补发（resume）。
+///
+/// 旧实现只是 `json!({"subscribed": true, "cursor": cursor})` 把游标原样回显，
+/// 断线重连的客户端拿不到任何漏掉的事件（#296）。现在委托
+/// [`crate::core_bridge::subscribe`]：同进程内按环形日志真补发（带去重），
+/// 跨重启补不出的部分如实返回 `gap`/`reason`/`refetch`，让调用方重拉全量投影。
+///
+/// 状态从 `app` 里取而不是走 `tauri::State<'_, _>` 入参：tauri 的 async 命令
+/// 只要签名里带引用入参就必须返回 `Result`，这里保持原有的裸 `Value` 返回，
+/// 前端 `invoke("core_subscribe", { cursor })` 一个字节都不用改。
 #[tauri::command]
-pub async fn core_subscribe(cursor: Option<serde_json::Value>) -> serde_json::Value {
-    serde_json::json!({ "subscribed": true, "cursor": cursor })
+pub async fn core_subscribe(
+    app: tauri::AppHandle,
+    cursor: Option<serde_json::Value>,
+) -> serde_json::Value {
+    use tauri::Manager as _;
+    let core = app.state::<crate::core_bridge::CoreState>();
+    crate::core_bridge::subscribe(&app, &core, cursor)
 }
 
 /// 能力上报：如实列出已实现的 action，未列出的返回 NOT_IMPLEMENTED。

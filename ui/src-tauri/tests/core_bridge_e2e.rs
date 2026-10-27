@@ -83,6 +83,9 @@ fn call(app: &MockHandle, action: &str, params: serde_json::Value) -> serde_json
     .unwrap_or_else(|e| std::panic::resume_unwind(e))
 }
 
+// `WXLIKE_DATA_DIR` 是进程级环境变量：整测试体串行化，跨 await 持锁是刻意的
+// （见文件头），clippy 只看类型看不出这一点。
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(async_fn_in_trait)]
 async fn full_chain_login_send_receive_restart() {
@@ -113,11 +116,11 @@ async fn full_chain_login_send_receive_restart() {
         .state::<AppState>()
         .register("alice_e2e", "pw")
         .unwrap();
-    let login = call(&handle, "identity.session.login", serde_json::json!({"username": "alice_e2e", "password": "wrong"}));
+    let login = call(handle, "identity.session.login", serde_json::json!({"username": "alice_e2e", "password": "wrong"}));
     // 口令错（先注册再用错口令登录）：必须失败——桥不伪造成功
     assert_eq!(error_code(&serde_json::to_value(&login).unwrap()), "UNAUTHENTICATED", "错口令不能登录");
 
-    let login = call(&handle, "identity.session.login", serde_json::json!({"username": "alice_e2e", "password": "pw"}));
+    let login = call(handle, "identity.session.login", serde_json::json!({"username": "alice_e2e", "password": "pw"}));
     let login_v = serde_json::to_value(&login).unwrap();
     assert_eq!(data_ok(&login_v)["phase"], "authenticated", "登录投影");
     let alice_id = data_ok(&login_v)["account"]["user_id"].as_str().unwrap().to_string();
@@ -134,12 +137,12 @@ async fn full_chain_login_send_receive_restart() {
     }
 
     // ---- 2. 会话 + 发送（经 core_dispatch，真 QUIC）----
-    let ensure = call(&handle, "messaging.conversation.ensure", serde_json::json!({"user_id": bob_id}));
+    let ensure = call(handle, "messaging.conversation.ensure", serde_json::json!({"user_id": bob_id}));
     let ensure_v = serde_json::to_value(&ensure).unwrap();
     let conv_id = data_ok(&ensure_v)["conv_id"].as_str().unwrap().to_string();
     assert_eq!(conv_id, wxlike_ui_lib::direct_conv_id(&alice_id, &bob_id));
 
-    let send = call(&handle, "messaging.send", serde_json::json!({
+    let send = call(handle, "messaging.send", serde_json::json!({
         "conv_id": conv_id,
         "body": { "kind": "text", "text": "链路验收：新 UI → Rust 核心 → 真服务端" },
         "client_msg_id": "c-e2e-1",
@@ -153,13 +156,13 @@ async fn full_chain_login_send_receive_restart() {
     assert_eq!(got["conv_id"].as_str().unwrap(), conv_id);
 
     // ---- 4. 新 UI 读回：会话列表 + 消息页（本地库为唯一渲染源）----
-    let convs = call(&handle, "messaging.conversations.list", serde_json::json!({ "filter": "all", "limit": 50 }));
+    let convs = call(handle, "messaging.conversations.list", serde_json::json!({ "filter": "all", "limit": 50 }));
     let convs_v = serde_json::to_value(&convs).unwrap();
     let items = data_ok(&convs_v)["items"].as_array().unwrap().clone();
     let conv = items.iter().find(|c| c["conv_id"] == serde_json::json!(conv_id)).expect("会话列表要有这条会话");
     assert_eq!(conv["kind"], "direct");
 
-    let page = call(&handle, "messaging.messages.page", serde_json::json!({ "conv_id": conv_id, "limit": 20 }));
+    let page = call(handle, "messaging.messages.page", serde_json::json!({ "conv_id": conv_id, "limit": 20 }));
     let page_v = serde_json::to_value(page).unwrap();
     let messages = data_ok(&page_v)["items"].as_array().unwrap().clone();
     let mine = messages.iter().find(|m| m["body"]["text"].as_str().is_some_and(|t| t.starts_with("链路验收"))).expect("消息页要有刚发的那条");
@@ -167,7 +170,9 @@ async fn full_chain_login_send_receive_restart() {
     assert_eq!(mine["sender"]["user_id"], serde_json::json!(alice_id));
 
     // ---- 5. 重启：新实例 + 同一数据目录；restore 不再走登录 ----
-    drop(handle);
+    // `handle` 是 `&AppHandle`（`app.handle()` 返回引用）：没有所有权可释放，
+    // 借用早在最后一次使用后就结束了，原来的 `drop(handle)` 是个空操作。
+    let _ = handle;
     app.cleanup_before_exit();
     let alice_token_before = {
         let s = AppState::new(&http);
@@ -186,13 +191,13 @@ async fn full_chain_login_send_receive_restart() {
     app2.manage(CoreState::new());
     let handle = app2.handle();
     // restore：从 kv 凭据恢复（不经登录表单）+ 重连 hub
-    let restore = call(&handle, "identity.session.restore", serde_json::json!({}));
+    let restore = call(handle, "identity.session.restore", serde_json::json!({}));
     let restore_v = serde_json::to_value(restore).unwrap();
     assert_eq!(data_ok(&restore_v)["phase"], "authenticated", "重启后恢复会话: {restore_v}");
     assert_eq!(data_ok(&restore_v)["account"]["user_id"], serde_json::json!(alice_id));
 
     // 重启后数据仍正确：同一条消息、同方向、同内容。
-    let page2 = call(&handle, "messaging.messages.page", serde_json::json!({ "conv_id": conv_id, "limit": 20 }));
+    let page2 = call(handle, "messaging.messages.page", serde_json::json!({ "conv_id": conv_id, "limit": 20 }));
     let page2_v = serde_json::to_value(page2).unwrap();
     let messages2 = data_ok(&page2_v)["items"].as_array().unwrap().clone();
     let mine2 = messages2.iter().find(|m| m["body"]["text"].as_str().is_some_and(|t| t.starts_with("链路验收"))).expect("重启后消息还在");
@@ -200,7 +205,7 @@ async fn full_chain_login_send_receive_restart() {
     assert_eq!(mine2["direction"], "out");
 
     // 会话列表重启后同样可见。
-    let convs2 = call(&handle, "messaging.conversations.list", serde_json::json!({}));
+    let convs2 = call(handle, "messaging.conversations.list", serde_json::json!({}));
     let convs2_v = serde_json::to_value(convs2).unwrap();
     assert!(
         data_ok(&convs2_v)["items"].as_array().unwrap().iter().any(|c| c["conv_id"] == serde_json::json!(conv_id)),
@@ -208,7 +213,7 @@ async fn full_chain_login_send_receive_restart() {
     );
 
     // ---- 6. 重启后继续可用：再发一条，对端继续收 ----
-    let send2 = call(&handle, "messaging.send", serde_json::json!({
+    let send2 = call(handle, "messaging.send", serde_json::json!({
         "conv_id": conv_id,
         "body": { "kind": "text", "text": "重启后继续发" },
     }));
@@ -219,6 +224,9 @@ async fn full_chain_login_send_receive_restart() {
     std::env::remove_var("WXLIKE_DATA_DIR");
 }
 
+// 锁要护住整个测试体（`WXLIKE_DATA_DIR` 是进程级的）：跨 await 持有是刻意的，
+// 见文件头。clippy 只看类型，看不出这是测试串行化而不是共享状态。
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn capabilities_and_unimplemented_are_honest() {
     use tauri::Manager as _;
@@ -231,14 +239,14 @@ async fn capabilities_and_unimplemented_are_honest() {
 
     // 能力面：必须含核心动作，且 transport 是 tauri。
     let caps = serde_json::to_value(
-        call(&handle, "app.info", serde_json::json!({})),
+        call(handle, "app.info", serde_json::json!({})),
     )
     .unwrap();
     assert!(caps["data"]["name"].as_str().is_some(), "app.info: {caps}");
 
     // 未实现的 action：明确 NOT_IMPLEMENTED，不伪造成功。
     let unknown = serde_json::to_value(
-        call(&handle, "messaging.nonsense", serde_json::json!({})),
+        call(handle, "messaging.nonsense", serde_json::json!({})),
     )
     .unwrap();
     assert_eq!(unknown["ok"], serde_json::json!(false));
@@ -247,7 +255,7 @@ async fn capabilities_and_unimplemented_are_honest() {
 
     // 未登录就拉会话列表：UNAUTHENTICATED（本地库没开，不猜身份）。
     let noauth = serde_json::to_value(
-        call(&handle, "sync.range.get", serde_json::json!({})),
+        call(handle, "sync.range.get", serde_json::json!({})),
     )
     .unwrap();
     // 本地库未打开时投影是 signed_out：sync.range.get 报的是本地库错误，
@@ -255,6 +263,8 @@ async fn capabilities_and_unimplemented_are_honest() {
     assert_ne!(noauth["ok"], serde_json::json!(true), "未登录不能出数据: {noauth}");
 }
 
+// 同上：整测试体串行化，跨 await 持锁是刻意的（见文件头）。
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn qr_login_flow_against_real_server() {
     use tauri::Manager as _;
@@ -270,9 +280,10 @@ async fn qr_login_flow_against_real_server() {
     // 桌面侧：注册 + 登录，然后发 QR 票据。
     let state = handle.state::<AppState>();
     state.register("qr_desk", "pw").unwrap();
-    drop(state);
+    // `State` 只是借用，不实现 Drop：用完即止，这里没有东西要"释放"。
+    let _ = state;
     let create = serde_json::to_value(
-        call(&handle, "identity.qr_login.create", serde_json::json!({})),
+        call(handle, "identity.qr_login.create", serde_json::json!({})),
     )
     .unwrap();
     if error_code(&create) == "NOT_IMPLEMENTED" {
