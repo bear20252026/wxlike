@@ -34,6 +34,26 @@ use crate::{PlatformState, Result as PlatformResult};
 
 /// (method, path) → 受控行为。`None` = 不归这层闸管（读接口、预密钥认领
 /// 等已有各自闸门的路径，以及直播推流回调）。
+///
+/// ## G02-05（#114）账户生命周期：为什么只闸两个、为什么不闸三个
+///
+/// 进闸的两个都是"一次调用落一份副作用"：
+/// · `POST /api/account/export` —— 每个作业都会在媒体仓落一份产物，
+///   无上限的作业创建就是资源耗尽面；
+/// · `POST /api/account/delete` —— 每次调用都吊销全部会话并排清理作业，
+///   轰炸它即使"幂等"也是破坏。
+///
+/// 刻意**不**闸这三个，不是漏掉：
+/// · `POST /api/account/step-up` 已经有更合适的闸——`identity::throttle` 按账号
+///   数口令**失败**（5 次失败 / 5 分钟封 15 分钟）。这层数的是"一次成功"，
+///   拿它当配额会惩罚正常用户（导出→取件→注销每一步都要重新验凭），
+///   还与那道闸叠加成双重惩罚。
+/// · `POST …/export/{job_id}/link` 与 `POST …/jobs/{job_id}/cancel` 都要求一个
+///   **已存在的本人 job_id**，刷它们的前提是先刷到 export——那个已经在闸里。
+///
+/// 也只闸 POST：`GET /api/account/export/download/{token}` 是能力 URL
+/// （公开、单次消费），把它闸进去等于把"别人来下载"记到"申请者的额度"上。
+/// 这条由 `read_and_callback_surfaces_stay_ungated` 钉住。
 fn action_for(method: &Method, path: &str) -> Option<wxlike_risk::Action> {
     use wxlike_risk::Action;
     match (method, path) {
@@ -86,6 +106,11 @@ fn action_for(method: &Method, path: &str) -> Option<wxlike_risk::Action> {
         (&Method::POST, p) if p.starts_with("/api/call/") && p.ends_with("/signal") => {
             Some(Action::CallSignal)
         }
+        // G02-05（#114）账户生命周期：只闸 export 与 delete 这两个会落副作用的
+        // 写面。为什么不含 step-up / 取件链接 / 取消作业、为什么不含那个公开的
+        // 取件 GET，理由写在上面 `action_for` 的文档注释里（这张表已经够长）。
+        (&Method::POST, "/api/account/export") => Some(Action::AccountLifecycle),
+        (&Method::POST, "/api/account/delete") => Some(Action::AccountLifecycle),
         _ => None,
     }
 }
@@ -149,6 +174,9 @@ fn mapped_actions() -> &'static [(&'static str, &'static str, &'static str)] {
         ("POST", "/api/channels/{id}/threads", "community_post"),
         ("POST", "/api/live/{channel}/start", "live_start"),
         ("POST", "/api/call/{conv}/signal", "call_signal"),
+        // G02-05：只登记真正落副作用的两个写面（理由见 action_for 里那段）。
+        ("POST", "/api/account/export", "account_lifecycle"),
+        ("POST", "/api/account/delete", "account_lifecycle"),
     ]
 }
 
@@ -248,6 +276,19 @@ mod tests {
             "/api/call/d-a~b/signal",
             wxlike_risk::Action::CallSignal,
         );
+
+        // G02-05（#114）：两个重副作用的账户写面。执行的是
+        // integration-requests/G02/G02-05.yaml 的 `risk_gate` 项。
+        assert_maps(
+            Method::POST,
+            "/api/account/export",
+            wxlike_risk::Action::AccountLifecycle,
+        );
+        assert_maps(
+            Method::POST,
+            "/api/account/delete",
+            wxlike_risk::Action::AccountLifecycle,
+        );
     }
 
     #[test]
@@ -282,6 +323,20 @@ mod tests {
         assert_ungated(Method::POST, "/api/call/d-a~b/start");
         assert_ungated(Method::POST, "/api/call/d-a~b/join");
         assert_ungated(Method::POST, "/api/call/d-a~b/mute");
+
+        // 账户面（G02-05 / #114）：只有真正落副作用的两个 POST 进闸。
+        // 取件是**能力 URL**（公开、单次消费），闸它就是把"别人的下载"记到
+        // "申请者的额度"上；查状态是读，同样不进闸。
+        // step-up 由 `identity::throttle` 按口令**失败**次数闸（5 次/5 分钟封
+        // 15 分钟），这里再用"成功次数"闸一遍会双重惩罚正常用户；取件链接与
+        // 取消作业都要求一个已存在的本人 job_id，刷它们的前提是先刷 export。
+        assert_ungated(Method::POST, "/api/account/step-up");
+        assert_ungated(Method::POST, "/api/account/export/j1/link");
+        assert_ungated(Method::POST, "/api/account/jobs/j1/cancel");
+        assert_ungated(Method::GET, "/api/account/export/download/tok1");
+        assert_ungated(Method::GET, "/api/account/export/j1");
+        assert_ungated(Method::GET, "/api/account/jobs");
+        assert_ungated(Method::GET, "/api/preferences");
     }
 
     fn concrete(path: &str) -> String {
@@ -289,6 +344,7 @@ mod tests {
             .replace("{group_id}", "g1")
             .replace("{user_id}", "u1")
             .replace("{channel}", "ch1")
+            .replace("{job_id}", "j1")
             .replace("{id}", "x1")
     }
 

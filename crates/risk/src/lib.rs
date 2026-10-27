@@ -63,6 +63,17 @@ pub enum Action {
     LiveStart,
     /// 通话信令 POST。ICE trickle 天然突发，窗口按 10 s 取。
     CallSignal,
+    /// G02-05（#114）的账户生命周期**重副作用**写面：申请导出、注销。
+    /// 此前这两个写面不在任何声明式闸门表里——`account.rs` 是后加的 HTTP 面，
+    /// 而 AR-5 那张表只在既有 handler 上建过。每个导出作业都会在媒体仓落一份
+    /// 产物，无闸的作业创建就是资源耗尽面；注销每次吊销会话，刷它即使"幂等"
+    /// 也是破坏。
+    ///
+    /// step-up / 取件链接 / 取消作业**故意不在这里**：前者的闸是
+    /// `identity::throttle`（按账号数口令**失败**，5 次/5 分钟封 15 分钟），
+    /// 再用"成功次数"闸一遍会误伤正常用户并叠加成双重惩罚；后两者都要求一个
+    /// 已存在的本人 `job_id`，刷它们的前提是先刷 export（那个已经在闸里）。
+    AccountLifecycle,
 }
 
 impl Action {
@@ -80,18 +91,20 @@ impl Action {
             Self::CommunityPost => "community_post",
             Self::LiveStart => "live_start",
             Self::CallSignal => "call_signal",
+            Self::AccountLifecycle => "account_lifecycle",
         }
     }
 
-    /// 窗口长度：注册/举报/认领/好友/开播 1 h、登录 15 min、发送/信令 10 s、
-    /// 重写入（上传/动态/群/社区）10 min。
+    /// 窗口长度：注册/举报/认领/好友/开播/账户生命周期 1 h、登录 15 min、
+    /// 发送/信令 10 s、重写入（上传/动态/群/社区）10 min。
     fn window_ms(&self) -> u64 {
         match self {
             Self::Register
             | Self::Report
             | Self::ClaimKeys
             | Self::FriendRequest
-            | Self::LiveStart => 60 * 60 * 1000,
+            | Self::LiveStart
+            | Self::AccountLifecycle => 60 * 60 * 1000,
             Self::Login => 15 * 60 * 1000,
             Self::Send | Self::CallSignal => 10 * 1000,
             // 上传/发动态/群与社区管理是重操作，10 秒窗口太短
@@ -153,6 +166,10 @@ fn thresholds(cfg: &RiskConfig, action: Action) -> (usize, usize) {
         Action::CommunityPost => (cfg.community_post_throttle_at, cfg.community_post_deny_at),
         Action::LiveStart => (cfg.live_start_throttle_at, cfg.live_start_deny_at),
         Action::CallSignal => (cfg.call_signal_throttle_at, cfg.call_signal_deny_at),
+        Action::AccountLifecycle => (
+            cfg.account_lifecycle_throttle_at,
+            cfg.account_lifecycle_deny_at,
+        ),
         Action::Report => (cfg.report_throttle_at, cfg.report_deny_at),
     }
 }
@@ -171,6 +188,7 @@ fn limits(cfg: &RiskConfig, action: Action) -> Limits {
         Action::CommunityPost => ("community_post_rate", false),
         Action::LiveStart => ("live_start_rate", false),
         Action::CallSignal => ("call_signal_rate", false),
+        Action::AccountLifecycle => ("account_lifecycle_rate", false),
         Action::Report => ("report_rate", false),
     };
     Limits {
