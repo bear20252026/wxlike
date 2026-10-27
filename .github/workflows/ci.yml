@@ -635,7 +635,11 @@ jobs:
       with:
         node-version: '22'
         cache: npm
-        cache-dependency-path: ui/package-lock.json
+        cache-dependency-path: 'ui/package-lock.json
+
+          apps/desktop-web/package-lock.json
+
+          '
     - name: webkit build dependencies
       run: 'sudo apt-get update
 
@@ -651,6 +655,20 @@ jobs:
     - name: C9 frontend bundle consumed by Tauri
       run: npm run build
       working-directory: ui
+    - name: C9 new UI bundle consumed by the default host
+      shell: bash
+      run: '# 默认宿主的 frontendDist 指向 apps/desktop-web/dist，而 dist 不入库：
+
+        # 少了这一段，安装包会打出一个指向空目录的壳。
+
+        npm ci
+
+        npm run build
+
+        npm run check:host
+
+        '
+      working-directory: apps/desktop-web
     - name: C9 Tauri command tests
       run: cargo test --locked --manifest-path ui/src-tauri/Cargo.toml
     - name: C9 updater signature negative test
@@ -695,7 +713,11 @@ jobs:
       with:
         node-version: '22'
         cache: npm
-        cache-dependency-path: ui/package-lock.json
+        cache-dependency-path: 'ui/package-lock.json
+
+          apps/desktop-web/package-lock.json
+
+          '
     - name: Linux webkit build dependencies
       if: runner.os == 'Linux'
       run: 'sudo apt-get update
@@ -712,6 +734,18 @@ jobs:
     - name: C9 frontend bundle consumed by Tauri
       run: npm run build
       working-directory: ui
+    - name: C9 new UI bundle consumed by the default host
+      shell: bash
+      run: '# 同上：安装包必须带上默认宿主真正装载的那份产物。
+
+        npm ci
+
+        npm run build
+
+        npm run check:host
+
+        '
+      working-directory: apps/desktop-web
     - name: C9 bundle installers (unsigned in CI, signed by the release job)
       shell: bash
       run: "npx --yes @tauri-apps/cli@2.9.0 build --ci \\\n  --config \"$GITHUB_WORKSPACE/ci/jobs/desktop/tauri.bundle.override.json\" \\\n  --bundles \"${{ matrix.bundles }}\"\n"
