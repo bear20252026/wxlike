@@ -80,7 +80,16 @@ root_registration:
 
   - action: worker_mount
     owner: G00
-    status: requested
+    status: done
+    g00_result: |
+      已执行（PR #312）。`server/src/lib.rs::spawn_background_workers` 起
+      `spawn_account_job_worker(platform, 30s)`，与红包清扫/对账同一处、同一口径。
+      顺带在并 #303 之前 grep 出**同形的第二个洞**：media 的 `run_due_jobs` 此前
+      调用方只有测试，`POST /api/v1/jobs` 入队后没人推进，同一个函数里也一起起了
+      （10s 一轮、单轮 4 个，每轮走 spawn_blocking，因为 execute_job 要等 ffmpeg 子进程）。
+      另请 G02 复核一处形状：media 用例证明了"入队→被执行"这条现在可测，
+      账户作业侧还没有等价的"server 起了循环"用例——那条需要 G00 后续补，
+      不是我这次能顺带伪造的。
     file: server/src/lib.rs
     reason: >
       导出与注销是后台作业，`crates/platform/src/account.rs::spawn_account_job_worker`
