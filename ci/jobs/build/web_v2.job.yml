@@ -23,11 +23,13 @@ jobs:
       - name: C7b lint
         run: npm run --if-present lint
         working-directory: apps/desktop-web
-      - name: C7b unit tests
-        run: npm test
-        working-directory: apps/desktop-web
       - name: C7b production build
         run: npm run build
+        working-directory: apps/desktop-web
+      - name: C7b unit tests
+        # 必须晚于 build：宿主守卫读的是构建产物 dist/index.html 里被 vite 实际
+        # 注入的那份 meta CSP，只有交集算得过真产物才有意义（#158）。
+        run: npm test
         working-directory: apps/desktop-web
       - name: C7b mini-sdk contract parity (packages/mini-sdk, no deps to install)
         run: npm test
