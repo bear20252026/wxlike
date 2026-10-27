@@ -6,8 +6,14 @@
 //!
 //! 四条口径与判据：
 //! 1. `identity.qr_login.cancel`：只停本地轮询不算取消。判据 = 撤销后再查一次票据
-//!    状态，必须 `REJECTED`；做不到（服务端只有扫码侧能 reject，桌面自建的票还没人扫）
-//!    就返回 `NOT_IMPLEMENTED`，绝不返回 `cancelled: true`。
+//!    状态，必须 `REJECTED`；做不到就报错并保留本地轮询，绝不回 `cancelled: true`。
+//!    "做不到"这件事本身已经在服务端核实过：唯一的撤销面 `POST /api/qr/tickets
+//!    /{id}/reject` 要求调用者 = **扫码那一侧**的账号（
+//!    `crates/features/identity/src/qr_login.rs::decide`：必须处在 `scanned` 且
+//!    `scanned_by == 调用者`），而回查用的 `GET /api/qr/tickets/{id}` 又要求调用者
+//!    = **创建者**（`crates/platform/src/qr_login.rs::ticket_state`）。所以桌面这条
+//!    会话只有在"自己扫了自己建的票"这一种形状下才有权撤销；没扫过的票没有任何
+//!    可撤销端点 ⇒ `NOT_IMPLEMENTED`（服务端没挂撤销面）/链路不通 ⇒ `OFFLINE`。
 //! 2. `identity.session.logout` / `identity.qr_login.switch_account`：必须真的调
 //!    `POST /api/logout`，并且**回查**旧凭据再打 `/api/me` 拿到 401 才算撤销；
 //!    撤销没生效时本地会话原样保留（抹掉一张还生效的凭据只会让人失去重试机会）。
@@ -421,4 +427,324 @@ fn lying_logout_server() -> String {
                 }),
             ),
     )
+}
+
+// ---------------------------------------------------------------------------
+// 台账第 1 条：identity.qr_login.cancel 必须真的撤销服务端票据
+// ---------------------------------------------------------------------------
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+
+/// 记路的 QR mock：只用来造"撤销面拒绝 / 路由没挂 / 回查不是 REJECTED"这几类
+/// 真服务端不会给的响应形状，并把桥按顺序打出来的每个请求记下来——
+/// "缺 id 时到底有没有发过撤销请求"这种判据只能这么证。
+#[derive(Clone)]
+struct MockQr {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    reject_status: u16,
+    reject_msg: &'static str,
+    ticket_state: &'static str,
+}
+
+impl MockQr {
+    fn new(reject_status: u16, reject_msg: &'static str, ticket_state: &'static str) -> Self {
+        Self {
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            reject_status,
+            reject_msg,
+            ticket_state,
+        }
+    }
+
+    fn note(&self, method: &str, path: String) {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("{method} {path}"));
+    }
+
+    /// 桥打过的请求（顺序敏感）。
+    fn calls(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+async fn mock_reject(
+    State(mock): State<MockQr>,
+    Path(ticket): Path<String>,
+) -> (StatusCode, Json<Value>) {
+    mock.note("POST", format!("/api/qr/tickets/{ticket}/reject"));
+    let status =
+        StatusCode::from_u16(mock.reject_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(json!({ "error": mock.reject_msg })))
+}
+
+async fn mock_ticket_state(State(mock): State<MockQr>, Path(ticket): Path<String>) -> Json<Value> {
+    mock.note("GET", format!("/api/qr/tickets/{ticket}"));
+    Json(json!({ "state": mock.ticket_state }))
+}
+
+async fn mock_anything(State(mock): State<MockQr>, req: axum::extract::Request) -> Response {
+    mock.note(req.method().as_str(), req.uri().path().to_string());
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "no such route on this mock" })),
+    )
+        .into_response()
+}
+
+/// 起 QR mock 并返回 `(base_url, 句柄)`；句柄用 `calls()` 读请求流水。
+fn qr_mock(mock: MockQr) -> (String, MockQr) {
+    let base = spawn_server(
+        axum::Router::new()
+            // 就绪探针（`wait_until_serving`）打的是 `GET /`：给它一条**不记账**
+            // 的路由，否则流水第一条永远是探针，"缺 id 时一条请求都不许发出去"
+            // 这种判据就没法写了。
+            .route("/", axum::routing::get(|| async { "mock qr is up" }))
+            .route(
+                "/api/qr/tickets/{ticket_id}/reject",
+                axum::routing::post(mock_reject),
+            )
+            .route(
+                "/api/qr/tickets/{ticket_id}",
+                axum::routing::get(mock_ticket_state),
+            )
+            .fallback(mock_anything)
+            .with_state(mock.clone()),
+    );
+    (base, mock)
+}
+
+/// 服务端那张票的当前状态（独立凭据视角，绕开桥，免得自己查自己）。
+fn server_ticket_state(probe: &AppState, ticket: &str) -> String {
+    probe
+        .raw_json("GET", &format!("/api/qr/tickets/{ticket}"), None)
+        .unwrap_or_else(|e| panic!("回查票据 {ticket} 的状态失败：{e}"))["state"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 直接对服务端建一张票（不经过桥，所以不会起轮询线程）。
+fn raw_create_ticket(probe: &AppState) -> (String, String) {
+    let created = probe
+        .raw_json("POST", "/api/qr/tickets", Some(&json!({})))
+        .expect("真服务端建票必须成功（/api/qr/tickets 未挂载 = 夹具坏了）");
+    let ticket = created["ticket_id"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| panic!("建票响应没有 ticket_id：{created}"))
+        .to_string();
+    let secret = created["secret"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| panic!("建票响应没有 secret：{created}"))
+        .to_string();
+    (ticket, secret)
+}
+
+/// ①取消后回查票据状态必须是已撤销（不是 PENDING/CREATED/SCANNED）。
+///
+/// 撤销面只认扫码那一侧的账号（见 `revoke_qr_ticket` 的注释），所以要造出
+/// "这条会话真有权撤销"的形状，唯一办法是让同一账号既建票又扫自己的票——
+/// 这正是本条测试顺便证明的另一半：**权限形状不对时桥就该报错**。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_qr_login_leaves_the_ticket_rejected_on_the_server() {
+    let (http, _quic, _platform) = stack().await;
+    let (_app, handle, token) = signed_in(&http, "q_cancel_ok");
+    let desk = AppState::new(&http);
+    desk.set_auth_token(&token);
+    let (ticket, secret) = raw_create_ticket(&desk);
+    desk.raw_json(
+        "POST",
+        &format!("/api/qr/tickets/{ticket}/scan"),
+        Some(&json!({ "secret": secret })),
+    )
+    .expect("同一账号扫自己的票：把票据推到唯一可撤销的那一档");
+    assert_eq!(
+        server_ticket_state(&desk, &ticket),
+        "SCANNED",
+        "夹具先把票推到 SCANNED，否则这条测试证不了撤销"
+    );
+
+    let reply = call(
+        &handle,
+        "identity.qr_login.cancel",
+        json!({ "challenge_id": ticket.clone() }),
+    );
+    let data = ok_data(&reply, "取消扫码登录（这条会话有权撤销）");
+    assert_eq!(data["cancelled"], json!(true), "{reply}");
+    assert_eq!(data["server_revoked"], json!(true), "{reply}");
+    assert_eq!(data["state"], json!("REJECTED"), "{reply}");
+
+    // 判据本体：桥说已撤销，服务端那张票就必须真的已是撤销。
+    let now = server_ticket_state(&desk, &ticket);
+    assert_eq!(now, "REJECTED", "取消后服务端状态必须已是撤销，实际 {now}");
+    // 撤销真挡住登录：手机侧再也批不了这张票。
+    let approve = desk.raw_json("POST", &format!("/api/qr/tickets/{ticket}/approve"), None);
+    assert!(
+        approve.is_err(),
+        "已撤销的票据不能再被批准，实际：{approve:?}"
+    );
+}
+
+/// ②-无权：桌面自建的票还没人扫 ⇒ 服务端没有任何可撤销面 ⇒ 报错并说"未撤销、
+/// 需手机侧操作"，绝不回 `cancelled: true`（停本地轮询拦不住手机点"同意"）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn qr_cancel_without_a_scanner_reports_not_revoked_instead_of_cancelled() {
+    let (http, _quic, _platform) = stack().await;
+    let (_app, handle, token) = signed_in(&http, "q_cancel_noauth");
+    let desk = AppState::new(&http);
+    desk.set_auth_token(&token);
+    let (ticket, _secret) = raw_create_ticket(&desk);
+
+    let reply = call(
+        &handle,
+        "identity.qr_login.cancel",
+        json!({ "challenge_id": ticket.clone() }),
+    );
+    let err = error(&reply, "无权撤销的扫码取消", "NOT_IMPLEMENTED");
+    let msg = err["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("未生效"), "要说清取消没生效：{reply}");
+    assert!(msg.contains("手机侧"), "要指出只能靠手机侧：{reply}");
+    assert!(msg.contains(&ticket), "要点名是哪张票据：{reply}");
+    assert!(
+        !reply.to_string().contains("cancelled"),
+        "不许把没撤销报成已取消：{reply}"
+    );
+    // 实话要与现实一致：服务端那张票确实还在原处。
+    assert_eq!(
+        server_ticket_state(&desk, &ticket),
+        "CREATED",
+        "撤销没生效时服务端状态不许被说成变了"
+    );
+}
+
+/// ②-非 2xx：撤销面回 403（"你不是扫码那一侧的账号"）⇒ action 报错。
+///
+/// 形状只能自建：真服务端在这条会话下给的是 409（没人扫过），而 403 对应的
+/// "别人扫了但不是你"需要两条凭据同时出现在桥里。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn qr_cancel_surfaces_a_refusing_server_as_error_not_cancelled() {
+    let (mock, seen) = qr_mock(MockQr::new(403, "not the scanning account", "SCANNED"));
+    let (app, handle) = boot();
+    let state = AppState::new(mock.as_str());
+    state.set_auth_token("tk-creator");
+    app.manage(state);
+
+    let reply = call(
+        &handle,
+        "identity.qr_login.cancel",
+        json!({ "ticket_id": "tk-42" }),
+    );
+    let err = error(&reply, "服务端拒绝撤销的取消", "NOT_IMPLEMENTED");
+    let msg = err["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("403"), "要把服务端的拒绝原样带回来：{reply}");
+    assert!(msg.contains("SCANNED"), "要给出回查到的状态：{reply}");
+    assert!(
+        !reply.to_string().contains("cancelled"),
+        "不许把没撤销报成已取消：{reply}"
+    );
+    // 报错之前确实发了撤销请求并回查过（不是"没做就说没做"）。
+    assert_eq!(
+        seen.calls(),
+        vec![
+            "POST /api/qr/tickets/tk-42/reject".to_string(),
+            "GET /api/qr/tickets/tk-42".to_string()
+        ],
+        "撤销 + 回查两次都要真的打出去"
+    );
+}
+
+/// ②-连不上：撤销请求没送到 ⇒ 报错，且必须是可重试的 OFFLINE，
+/// 而不是 `NOT_IMPLEMENTED`（后者读起来像"这条功能永远做不了"）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn qr_cancel_against_an_unreachable_server_is_retryable_and_not_cancelled() {
+    let (app, handle) = boot();
+    let state = AppState::new("http://127.0.0.1:1");
+    state.set_auth_token("tk-dead-port");
+    app.manage(state);
+
+    let reply = call(
+        &handle,
+        "identity.qr_login.cancel",
+        json!({ "challenge_id": "tk-9" }),
+    );
+    let err = error(&reply, "服务端连不上的取消", "OFFLINE");
+    assert!(err["retryable"].as_bool().unwrap_or(false), "{reply}");
+    let msg = err["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("没送到"), "要说清是请求没送到：{reply}");
+    assert!(
+        !reply.to_string().contains("cancelled"),
+        "链路断了更不许报成已取消：{reply}"
+    );
+}
+
+/// ③-缺关键参数：没有票据 id（参数没给/空串/全空白）且桥内也没有进行中的票据
+/// ⇒ VALIDATION，而且**一条 HTTP 都不许发**——旧形状是 `unwrap_or_default()`
+/// 拿空串当 id 去 `/api/qr/tickets//reject` 走一圈再回成功。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn qr_cancel_without_a_ticket_id_never_touches_the_revoke_endpoint() {
+    let (mock, seen) = qr_mock(MockQr::new(403, "not the scanning account", "SCANNED"));
+    let (app, handle) = boot();
+    let state = AppState::new(mock.as_str());
+    state.set_auth_token("tk-creator");
+    app.manage(state);
+
+    let cases = [
+        ("参数整个没给", json!({})),
+        ("ticket_id 是空串", json!({ "ticket_id": "" })),
+        ("challenge_id 是空白", json!({ "challenge_id": "   " })),
+        ("两个都空", json!({ "challenge_id": "", "ticket_id": "" })),
+    ];
+    for (what, params) in cases {
+        let reply = call(&handle, "identity.qr_login.cancel", params);
+        error(&reply, &format!("缺票据 id 的取消（{what}）"), "VALIDATION");
+        assert!(
+            !reply.to_string().contains("cancelled"),
+            "{what}：不许回 cancelled:true：{reply}"
+        );
+    }
+    assert!(
+        seen.calls().is_empty(),
+        "缺 id 时一条请求都不许发出去，实际发了：{:?}",
+        seen.calls()
+    );
+}
+
+/// ③-空串不许顶替有效 id：点名参数优先取到的那张票才是撤销目标。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blank_ticket_id_never_becomes_the_revoke_target() {
+    let (mock, seen) = qr_mock(MockQr::new(403, "not the scanning account", "SCANNED"));
+    let (app, handle) = boot();
+    let state = AppState::new(mock.as_str());
+    state.set_auth_token("tk-creator");
+    app.manage(state);
+
+    let reply = call(
+        &handle,
+        "identity.qr_login.cancel",
+        json!({ "challenge_id": "tk-A", "ticket_id": "" }),
+    );
+    error(&reply, "空 ticket_id 不许顶替有效 id", "NOT_IMPLEMENTED");
+    assert_eq!(
+        seen.calls(),
+        vec![
+            "POST /api/qr/tickets/tk-A/reject".to_string(),
+            "GET /api/qr/tickets/tk-A".to_string()
+        ],
+        "{reply}"
+    );
+    for call_log in seen.calls() {
+        assert!(
+            !call_log.contains("tickets//") && !call_log.contains("tickets/%20"),
+            "撤销请求打到了空票据 id：{call_log}"
+        );
+    }
 }
