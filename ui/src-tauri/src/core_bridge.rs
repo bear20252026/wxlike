@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tauri::Manager as _;
 
-use super::{AppState, LocalStore};
+use super::{AppState, Http, LocalStore};
 
 /// 新 UI 的请求信封（core-contract.ts: ActionRequest）。
 #[derive(Debug, Deserialize)]
@@ -64,9 +64,15 @@ pub struct CoreError {
 #[derive(Debug)]
 enum BridgeError {
     Unauth(String),
+    /// 服务端认得这个人，但这件事他不许做（403）。与 401 分开是契约要求的：
+    /// 401 要重新登录，403 重新登录也没用（`core-contract.ts` 的 `ErrorCode`
+    /// 本来就有 `FORBIDDEN` 这一档，桥一直没用过它）。
+    Forbidden(String),
     Validation(String),
     Conflict(String),
     Confirmation(String),
+    /// 429：限流。与 `OFFLINE` 同为可重试，但原因不同（服务端在挡，不是链路断）。
+    RateLimited(String),
     NotImpl(String),
     Dependency(String),
     Offline(String),
@@ -77,9 +83,11 @@ impl BridgeError {
     fn code(&self) -> &'static str {
         match self {
             BridgeError::Unauth(_) => "UNAUTHENTICATED",
+            BridgeError::Forbidden(_) => "FORBIDDEN",
             BridgeError::Validation(_) => "VALIDATION",
             BridgeError::Conflict(_) => "CONFLICT",
             BridgeError::Confirmation(_) => "REQUIRES_CONFIRMATION",
+            BridgeError::RateLimited(_) => "RATE_LIMITED",
             BridgeError::NotImpl(_) => "NOT_IMPLEMENTED",
             BridgeError::Dependency(_) => "DEPENDENCY_UNAVAILABLE",
             BridgeError::Offline(_) => "OFFLINE",
@@ -89,9 +97,11 @@ impl BridgeError {
     fn message(&self) -> &str {
         match self {
             BridgeError::Unauth(m)
+            | BridgeError::Forbidden(m)
             | BridgeError::Validation(m)
             | BridgeError::Conflict(m)
             | BridgeError::Confirmation(m)
+            | BridgeError::RateLimited(m)
             | BridgeError::NotImpl(m)
             | BridgeError::Dependency(m)
             | BridgeError::Offline(m)
@@ -99,7 +109,7 @@ impl BridgeError {
         }
     }
     fn retryable(&self) -> bool {
-        matches!(self, BridgeError::Offline(_))
+        matches!(self, BridgeError::Offline(_) | BridgeError::RateLimited(_))
     }
 }
 
@@ -113,7 +123,9 @@ impl From<String> for BridgeError {
             return BridgeError::Unauth(message);
         }
         if lower.contains("403") || lower.contains("forbidden") || lower.contains("权限") {
-            return BridgeError::Validation(message);
+            // #293：403 是"这事不许做"，不是"参数填错了"。旧表把它折进 VALIDATION，
+            // UI 于是会把权限问题当校验错误显示（重新登录/改参数都不管用）。
+            return BridgeError::Forbidden(message);
         }
         if lower.contains("409") || lower.contains("conflict") {
             return BridgeError::Conflict(message);
@@ -347,6 +359,12 @@ pub const IMPLEMENTED_ACTIONS: &[&str] = &[
     "relations.group.members",
     "relations.group.kick",
     "relations.group.settings.set",
+    "wallet.balance.get",
+    "wallet.ledger.page",
+    "wallet.transfer",
+    "wallet.redpacket.create",
+    "wallet.redpacket.get",
+    "wallet.redpacket.claim",
     "search.query",
     "preferences.get",
     "preferences.set",
@@ -369,7 +387,16 @@ pub const IMPLEMENTED_ACTIONS: &[&str] = &[
 /// 移除路由"，实际 `crates/platform/src/groups.rs` 挂了
 /// `DELETE /api/groups/{group_id}/members/{user_id}`（CLI 的 `group.kick` 用的
 /// 就是它），所以已改为真实实现并移入 [`IMPLEMENTED_ACTIONS`]。
-pub const STUBBED_ACTIONS: &[&str] = &[];
+///
+/// #293 的钱包切片里只有这一条是真的做不到：`crates/platform/src/wallet.rs`
+/// 只挂了 `POST /api/wallet/redpacket`、`GET /api/wallet/redpacket/{id}`、
+/// `POST /api/wallet/redpacket/{id}/claim`、`GET /api/wallet/balance`、
+/// `GET /api/wallet/ledger`、`POST /api/wallet/transfer`——**没有**红包列表路由。
+/// 没有可读来源就不许拿"我发出去的红包 ∩ 本地消息镜像"糊一份列表出来：
+/// 那会漏掉别人在群里发的包，还会把 UI 的"领取"按钮点进死路。等服务端补
+/// `GET /api/wallet/redpacket`（见 #293 交付说明）时，这条搬到
+/// [`IMPLEMENTED_ACTIONS`] 并接上 [`authed_json`]。
+pub const STUBBED_ACTIONS: &[&str] = &["wallet.redpacket.list"];
 
 // ---------------------------------------------------------------------------
 // 事件
@@ -1026,6 +1053,7 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("messaging", _) => messaging_router::<R>,
         ("media", _) => media_router::<R>,
         ("relations", _) => relations_router::<R>,
+        ("wallet", _) => wallet_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -1144,6 +1172,30 @@ fn relations_router<R: tauri::Runtime>(
         "relations.group.members" => act_relations_group_members(app, state, core, req),
         "relations.group.kick" => act_relations_group_kick(app, state, core, req),
         "relations.group.settings.set" => act_relations_group_settings_set(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
+
+/// 钱包域（#293）：钱的所有读写都从这里过，UI 侧不再自己发 HTTP。
+///
+/// 每条臂都走 [`authed_json`]——它是桥里唯一允许直连平台的出口，Bearer 由
+/// `wxlike-client` 的 `Http` 统一挂（凭据只在 Rust 侧，没有任何 action 会把
+/// token 回给 webview，见 `tests/bridge_wallet_auth.rs`）。
+fn wallet_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    match req.action_id.as_str() {
+        "wallet.balance.get" => act_wallet_balance(app, state, core, req),
+        "wallet.ledger.page" => act_wallet_ledger_page(app, state, core, req),
+        "wallet.transfer" => act_wallet_transfer(app, state, core, req),
+        "wallet.redpacket.create" => act_wallet_redpacket_create(app, state, core, req),
+        "wallet.redpacket.get" => act_wallet_redpacket_get(app, state, core, req),
+        "wallet.redpacket.claim" => act_wallet_redpacket_claim(app, state, core, req),
+        "wallet.redpacket.list" => act_wallet_redpacket_list(app, state, core, req),
         _ => Err(unrouted(req)),
     }
 }
@@ -2552,6 +2604,442 @@ fn act_app_info<R: tauri::Runtime>(
             { "name": "quinn (QUIC)", "license": "MIT/Apache-2.0" },
         ],
     }))
+}
+
+// ---------------------------------------------------------------------------
+// 钱包（#293）：认证传输 + 域处理器
+//
+// 这七条 action 是"核心是唯一会话归属地"的第一块竖切：React 侧的钱包/商务页
+// 过去直接 `fetch(baseUrl() + "/api/wallet/…")`，而 `setBaseUrl`/`saveSession`
+// 没有任何调用点，所以那些请求**根本没带凭据**（#293 的缺陷本体）。改由桥代持
+// 会话之后，webview 不再发 HTTP，token 也不出 Rust。
+// ---------------------------------------------------------------------------
+
+/// 账本一页的默认条数与上限（与服务端 `LEDGER_DEFAULT_LIMIT` / `clamp(1, 200)`
+/// 同口径；这里重复一次是为了把超限的请求先削平，别让服务端报 400）。
+const LEDGER_DEFAULT_LIMIT: i64 = 50;
+const LEDGER_MAX_LIMIT: i64 = 200;
+/// 进 URL 路径的 id 允许的最长长度（服务端生成的 id 远小于此，超限即畸形请求）。
+const PATH_ID_MAX: usize = 128;
+/// 钱包币种：服务端只有虚拟零钱账户，账本金额一律**整数分**。
+const WALLET_CURRENCY: &str = "CNY";
+
+/// 会话闸门：**没登录就一个字节都不发**（#293 的核心要求）。
+///
+/// 拦在发请求之前，是为了让"未登录"稳定报 `UNAUTHENTICATED`，而不是拿一个不带
+/// 凭据的请求去换服务端的 401——断网时那条路还会退化成 `OFFLINE`，UI 更加猜不到
+/// 是会话没了。也绝不许"没登录就返回空账本"：那是把没有会话伪装成没有数据。
+fn require_session(state: &AppState) -> Result<(), BridgeError> {
+    if state.auth_token().is_some() {
+        return Ok(());
+    }
+    Err(BridgeError::Unauth(
+        "尚未登录：钱包数据只经认证的 Rust 核心会话读取".into(),
+    ))
+}
+
+/// 桥内**唯一**允许直连平台的出口（`wallet` 域用它；其余域逐步收拢到这里）。
+///
+/// * 凭据：base URL 与 Bearer 都在 [`AppState`] 的那一份 `Http` 里，由
+///   `wxlike-client` 统一挂头。token 的值不经过这个函数，也不会出现在任何
+///   action 的返回值里（`tests/bridge_wallet_auth.rs` 逐条验）；
+/// * 幂等：`idem` 有值就转成 `Idempotency-Key`（重试只落一笔），没值就**不发**
+///   这个头——绝不替调用方编一个键，那会让服务端把两笔不同的操作认成同一笔；
+/// * 失败：非 2xx 一律按状态码如实报错（见 [`status_error`]），不折成
+///   `{"data": null}` 那种"看着像成功"的空载荷。
+fn authed_json(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    idem: Option<&str>,
+) -> Result<Value, BridgeError> {
+    require_session(state)?;
+    let read = matches!(method, "GET" | "DELETE");
+    if !read && !matches!(method, "POST" | "PUT") {
+        return Err(BridgeError::Other(format!("core 桥不支持的方法：{method}")));
+    }
+    if read && body.is_some() {
+        return Err(BridgeError::Validation("读方法不该带 body".into()));
+    }
+    let (status, value) = call_platform(state, method, path, body, idem)?;
+    if status.is_success() {
+        return Ok(value);
+    }
+    Err(status_error(status, value, path))
+}
+
+/// 把请求发出去并把响应体读成 JSON。传输层失败（连不上/超时/DNS）折成
+/// `OFFLINE`；HTTP 状态码原样带回去，由 [`status_error`] 分流——那里不再
+/// 靠"错误文案里有没有 401 这几个字"猜状态。
+fn call_platform(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    idem: Option<&str>,
+) -> Result<(http::StatusCode, Value), BridgeError> {
+    let guard = state.http();
+    let got = if matches!(method, "GET" | "DELETE") {
+        guard.req(method, path).call()
+    } else {
+        platform_write(&guard, method, path, body, idem)
+    };
+    let mut resp =
+        got.map_err(|err| BridgeError::Offline(format!("{method} {path}: 传输失败：{err}")))?;
+    let status = resp.status();
+    Ok((status, reply_json(&mut resp)))
+}
+
+/// 写请求（POST/PUT）：带幂等键（有的话），body 缺省时发空体——
+/// 服务端的 `…/claim` 就不看 body，但 POST 无体才是合法形状（GET 才有 typestate 区分）。
+fn platform_write(
+    client: &Http,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    idem: Option<&str>,
+) -> Result<http::Response<ureq::Body>, ureq::Error> {
+    let req = client.req_write(method, path);
+    let req = match idem {
+        Some(key) => req.header("Idempotency-Key", key),
+        None => req,
+    };
+    match body {
+        Some(v) => req.send_json(v),
+        None => req.send_empty(),
+    }
+}
+
+/// 响应体 → JSON：空体给 `{}`（2xx 无体的端点），非 JSON 的体包成
+/// `{"error": 原文}`。两者都**不**等于"服务端什么都没说"——字段提取那一步
+/// 照样会因为缺字段而报错，不会静默变成一份空数据。
+fn reply_json(resp: &mut http::Response<ureq::Body>) -> Value {
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    if text.trim().is_empty() {
+        return json!({});
+    }
+    serde_json::from_str(&text).unwrap_or_else(|_| json!({ "error": text }))
+}
+
+/// 状态码 → 契约错误码：**这份表是桥里的唯一出处**。
+///
+/// 401 与 403 必须是错误信封而不是 `{"data":null}`：前者要重新登录，后者重新登录
+/// 也没用（`core-contract.ts` 的 `ErrorCode` 本来就有 `FORBIDDEN`，桥此前没用过）。
+/// 404 归 `VALIDATION`——契约里没有 `NOT_FOUND` 这一档，服务端对无权读的红包也
+/// 一律回 404（不确认存在性），把它说成"内部错误"才是真误导。
+fn status_error(status: http::StatusCode, value: Value, path: &str) -> BridgeError {
+    let reason = value
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("服务端拒绝了该请求");
+    let message = format!("{reason}（{path} → {status}）");
+    match status.as_u16() {
+        401 => BridgeError::Unauth(message),
+        403 => BridgeError::Forbidden(message),
+        404 => BridgeError::Validation(message),
+        409 => BridgeError::Conflict(message),
+        429 => BridgeError::RateLimited(message),
+        _ if status.is_server_error() => BridgeError::Dependency(message),
+        _ => BridgeError::Other(message),
+    }
+}
+
+/// 服务端响应缺字段 = 契约破了，如实报错。
+///
+/// 这里刻意不用 `value["x"].as_i64().unwrap_or_default()`：那会把"没给余额"
+/// 上报成 `balance_minor: 0`，UI 显示的就是一份**看起来真实**的 0 元余额。
+fn malformed(field: &str) -> BridgeError {
+    BridgeError::Other(format!(
+        "服务端响应缺少字段 {field}（拒绝把它兜成 0/空串再上报）"
+    ))
+}
+
+/// 调用方少给了必填参数 = 校验错（不是 INTERNAL：服务端没做错任何事）。
+fn missing_param(field: &str) -> BridgeError {
+    BridgeError::Validation(format!("缺少参数 {field}"))
+}
+
+fn field_i64(value: &Value, field: &str) -> Option<i64> {
+    value.get(field).and_then(Value::as_i64)
+}
+
+fn field_str(value: &Value, field: &str) -> Option<String> {
+    value.get(field).and_then(Value::as_str).map(str::to_string)
+}
+
+// —— 以下 `need_*` 读的是**服务端响应**：缺字段一律 [`malformed`]。——
+fn need_i64(value: &Value, field: &str) -> Result<i64, BridgeError> {
+    field_i64(value, field).ok_or_else(|| malformed(field))
+}
+
+fn need_str(value: &Value, field: &str) -> Result<String, BridgeError> {
+    field_str(value, field).ok_or_else(|| malformed(field))
+}
+
+fn need_bool(value: &Value, field: &str) -> Result<bool, BridgeError> {
+    value
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| malformed(field))
+}
+
+fn need_array(value: &Value, field: &str) -> Result<Vec<Value>, BridgeError> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| malformed(field))
+}
+
+/// `cursor` 允许是 `null`（服务端还没有账本头），但字段必须存在。
+fn need_opt_i64(value: &Value, field: &str) -> Result<Option<i64>, BridgeError> {
+    let raw = value.get(field).ok_or_else(|| malformed(field))?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    raw.as_i64().map(Some).ok_or_else(|| malformed(field))
+}
+
+// —— 以下 `param_*` 读的是**调用方请求**：缺/错一律 VALIDATION，且都在发请求之前。——
+fn param_i64(value: &Value, field: &str) -> Result<i64, BridgeError> {
+    field_i64(value, field).ok_or_else(|| missing_param(field))
+}
+
+fn param_str(value: &Value, field: &str) -> Result<String, BridgeError> {
+    let raw = field_str(value, field).ok_or_else(|| missing_param(field))?;
+    if raw.trim().is_empty() {
+        return Err(missing_param(field));
+    }
+    Ok(raw)
+}
+
+/// 必填的正整数金额/个数（单位：分、条）。缺、非整数、≤0 一律先拦掉再发请求。
+fn param_amount(value: &Value, field: &str) -> Result<i64, BridgeError> {
+    let amount = param_i64(value, field)?;
+    if amount > 0 {
+        return Ok(amount);
+    }
+    Err(BridgeError::Validation(format!(
+        "{field} 必须是正整数（单位：分/条）"
+    )))
+}
+
+/// 可选字符串参数：没给或 `null` → 空串；给了但不是字符串 → 校验错
+/// （不许 `"memo": 123` 悄悄变成一条空备注的转账）。
+fn opt_str(value: &Value, field: &str) -> Result<String, BridgeError> {
+    match value.get(field).filter(|v| !v.is_null()) {
+        Some(v) => v
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| BridgeError::Validation(format!("{field} 必须是字符串"))),
+        None => Ok(String::new()),
+    }
+}
+
+/// 进 URL 路径的 id：只允许安全字符。空串、`/`、`?`、`#`、空格、`..` 都会拼出
+/// 畸形路径（`/api/wallet/redpacket//claim`）甚至改写请求目标，一律先拒。
+/// 与 `relations.group.kick` 的空 id 拦截同口径，这里挡得更全（钱包 id 直接进路径）。
+fn param_path_id(value: &Value, field: &str) -> Result<String, BridgeError> {
+    let id = param_str(value, field)?;
+    let safe = id.len() <= PATH_ID_MAX
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~'));
+    if safe {
+        return Ok(id);
+    }
+    Err(BridgeError::Validation(format!(
+        "{field} 不是合法的 id（长度 ≤{PATH_ID_MAX}，只允许字母数字与 -_.~）"
+    )))
+}
+
+fn act_wallet_balance<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    state: &AppState,
+    _core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let reply = authed_json(state, "GET", "/api/wallet/balance", None, None)?;
+    Ok(json!({
+        // 单位：分。服务端字段叫 `balance`，UI 模型叫 `balance_minor`（整数分）。
+        "balance_minor": need_i64(&reply, "balance")?,
+        "currency": WALLET_CURRENCY,
+    }))
+}
+
+/// 账本一行。字段逐个必需。
+///
+/// `amount_minor` 是服务端给的**金额大小（整数分，恒为正）**，方向在 `kind` 里
+/// （`transfer_out`/`transfer_in`/`redpacket_out`/`redpacket_in`/
+/// `redpacket_refund`/`fund_in`，见 `crates/platform/src/wallet.rs` 的 `mod kind`）。
+/// 桥**不**按 kind 给它补负号：那是在客户端另立一份服务端账本口径（`refund` 算进
+/// 还是算出只有服务端知道），两边各猜一套迟早分叉。`created_at_ms` 按桥的惯例
+/// 转成 ISO-8601（见 `shell/models.ts`）。
+fn ledger_entry(row: &Value) -> Result<Value, BridgeError> {
+    Ok(json!({
+        "entry_id": need_i64(row, "id")?,
+        "kind": need_str(row, "kind")?,
+        "amount_minor": need_i64(row, "amount")?,
+        "counterparty": need_str(row, "counterparty")?,
+        "ref_id": need_str(row, "ref_id")?,
+        "memo": need_str(row, "memo")?,
+        "created_at_ms": iso_ms(need_i64(row, "created_at")?),
+    }))
+}
+
+fn act_wallet_ledger_page<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    state: &AppState,
+    _core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    // `since`/`limit` 是**请求**侧的默认值（分页游标缺省从头、页大小缺省 50），
+    // 与"把缺字段兜成默认值上报"是两回事：这里没有任何数据被编出来。
+    let since = cursor_i64(&req.params).max(0);
+    let limit = req
+        .params
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(LEDGER_DEFAULT_LIMIT)
+        .clamp(1, LEDGER_MAX_LIMIT);
+    let path = format!("/api/wallet/ledger?since={since}&limit={limit}");
+    let reply = authed_json(state, "GET", &path, None, None)?;
+    let rows = need_array(&reply, "entries")?;
+    let items = rows
+        .iter()
+        .map(ledger_entry)
+        .collect::<Result<Vec<Value>, BridgeError>>()?;
+    Ok(json!({
+        "items": items,
+        "next_cursor": need_opt_i64(&reply, "cursor")?,
+        "has_more": need_bool(&reply, "has_more")?,
+    }))
+}
+
+fn act_wallet_transfer<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    state: &AppState,
+    _core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let params = &req.params;
+    let to_uid = param_path_id(params, "to_uid")?;
+    let amount = param_amount(params, "amount_minor")?;
+    let memo = opt_str(params, "memo")?;
+    let body = json!({ "to_uid": to_uid, "amount": amount, "memo": memo });
+    let reply = authed_json(
+        state,
+        "POST",
+        "/api/wallet/transfer",
+        Some(&body),
+        req.idempotency_key.as_deref(),
+    )?;
+    Ok(json!({ "transfer_id": need_str(&reply, "transfer_id")? }))
+}
+
+fn act_wallet_redpacket_create<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    state: &AppState,
+    _core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let params = &req.params;
+    let amount = param_amount(params, "amount_minor")?;
+    let count = param_amount(params, "count")?;
+    let memo = opt_str(params, "memo")?;
+    // 会话可选：没给（或给了空串）就发 null，服务端按红包自身入账。
+    let conv = params
+        .get("conv_id")
+        .and_then(Value::as_str)
+        .filter(|c| !c.trim().is_empty());
+    let body = json!({
+        "amount": amount,
+        "count": count,
+        "memo": memo,
+        "conv_id": conv,
+    });
+    let reply = authed_json(
+        state,
+        "POST",
+        "/api/wallet/redpacket",
+        Some(&body),
+        req.idempotency_key.as_deref(),
+    )?;
+    Ok(json!({ "redpacket_id": need_str(&reply, "redpacket_id")? }))
+}
+
+/// 红包本体 → UI 形状。`remaining` 是**算出来的**（count − claimed），
+/// 两个加数都来自服务端且都必需，缺任何一个就报错，不许猜 0。
+fn redpacket_record(reply: &Value) -> Result<Value, BridgeError> {
+    let count = need_i64(reply, "count")?;
+    let claimed = need_i64(reply, "claimed")?;
+    Ok(json!({
+        "redpacket_id": need_str(reply, "id")?,
+        "sender_id": need_str(reply, "from_uid")?,
+        "conv_id": need_str(reply, "conv_id")?,
+        "total_minor": need_i64(reply, "total")?,
+        "count": count,
+        "claimed": claimed,
+        "remaining": count - claimed,
+        "claimed_total_minor": need_i64(reply, "claimed_total")?,
+        "memo": need_str(reply, "memo")?,
+        "status": need_str(reply, "status")?,
+        "created_at_ms": iso_ms(need_i64(reply, "created_at")?),
+        "expire_at_ms": iso_ms(need_i64(reply, "expire_at")?),
+    }))
+}
+
+fn act_wallet_redpacket_get<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    state: &AppState,
+    _core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let id = param_path_id(&req.params, "redpacket_id")?;
+    let reply = authed_json(
+        state,
+        "GET",
+        &format!("/api/wallet/redpacket/{id}"),
+        None,
+        None,
+    )?;
+    redpacket_record(&reply)
+}
+
+fn act_wallet_redpacket_claim<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    state: &AppState,
+    _core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let id = param_path_id(&req.params, "redpacket_id")?;
+    let path = format!("/api/wallet/redpacket/{id}/claim");
+    let reply = authed_json(state, "POST", &path, None, req.idempotency_key.as_deref())?;
+    Ok(json!({
+        "redpacket_id": id,
+        "amount_minor": need_i64(&reply, "amount")?,
+    }))
+}
+
+/// 红包列表：**服务端没有这条路由**，所以这里只有如实拒绝。
+///
+/// `crates/platform/src/wallet.rs` 挂的是 `POST /api/wallet/redpacket`、
+/// `GET /api/wallet/redpacket/{id}`、`POST /api/wallet/redpacket/{id}/claim`、
+/// `GET /api/wallet/balance`、`GET /api/wallet/ledger`、`POST /api/wallet/transfer`。
+/// 没有列表就没有可靠来源：拿本地消息镜像拼一份"我发过的包"会漏掉别人在群里发的、
+/// 还会让"领取"按钮点进一条不存在的路。登记在 [`STUBBED_ACTIONS`]（capabilities
+/// 不吹它），等服务端补 `GET /api/wallet/redpacket` 后接 [`authed_json`] 落实。
+fn act_wallet_redpacket_list<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _state: &AppState,
+    _core: &CoreState,
+    _req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    Err(BridgeError::NotImpl(
+        "服务端没有红包列表路由（GET /api/wallet/redpacket 未挂载）：见 core_bridge 的 STUBBED_ACTIONS".into(),
+    ))
 }
 
 fn message_hits(state: &AppState, query: &str) -> Result<Vec<Value>, BridgeError> {
