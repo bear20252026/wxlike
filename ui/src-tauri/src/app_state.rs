@@ -46,6 +46,26 @@ pub struct AppState {
     avalanche: Arc<wxlike_net::avalanche::Avalanche>,
 }
 
+/// 从登录/注册响应里取会话凭据：**缺字段就是失败，不许兜成空串**。
+///
+/// 旧写法 `reply["token"].as_str().unwrap_or_default()` 在服务端没给 token 时
+/// 存下 `Some("")`，于是这次"成功登录"之后每个请求都带一个空 bearer：
+/// 现象是远程 401 或超时，栈里查不到"登录其实没拿到凭据"这个真因（#293 台账第 4 条）。
+/// 登录成不成功只看服务端响应本身，不能只看 `expect_json` 有没有回 `Ok`。
+fn session_token(reply: &serde_json::Value, what: &str) -> Result<String, String> {
+    let token = reply["token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "{what}失败：服务端响应里没有 token（响应 2xx 但没有签发凭据，不是网络问题；\
+                 已拒绝保存空凭据）"
+            )
+        })?;
+    Ok(token.to_string())
+}
+
 impl AppState {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -90,7 +110,8 @@ impl AppState {
             "/api/register",
             Some(&serde_json::json!({"name": name, "password": password})),
         )?;
-        self.http().token = Some(reply["token"].as_str().unwrap_or_default().to_string());
+        let token = session_token(&reply, "注册")?;
+        self.http().token = Some(token);
         Ok(reply)
     }
 
@@ -100,7 +121,8 @@ impl AppState {
             "/api/login",
             Some(&serde_json::json!({"name": name, "password": password})),
         )?;
-        self.http().token = Some(reply["token"].as_str().unwrap_or_default().to_string());
+        let token = session_token(&reply, "登录")?;
+        self.http().token = Some(token);
         Ok(reply)
     }
 
