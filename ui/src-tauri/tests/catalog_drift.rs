@@ -653,3 +653,95 @@ fn capabilities_advertise_exactly_the_catalog() {
         "capabilities 与 IMPLEMENTED_ACTIONS 不是同一份表"
     );
 }
+
+/// #293 的钱包切片：这七条就是"UI 不再自己发 HTTP、钱只经核心"的全部依赖。
+///
+/// 通用的目录/路由对账（上面几条）已经能抓到"挂臂没登记"和"登记了没挂臂"；
+/// 这里再按**名单**逐条钉一次，因为切片被削弱的方式恰好是通用对账抓不到的那类：
+/// * 把 `wallet.redpacket.list` 从 `STUBBED_ACTIONS` 搬进 `IMPLEMENTED_ACTIONS`
+///   （服务端根本没有那条路由 → capabilities 说谎，UI 的红包列表点进去是死的）；
+/// * 把 `("wallet", _)` 那行前缀删掉（臂还在、目录还报，但永远走不到 → 空壳）；
+/// * 把某条臂改名/挪进别的子路由（对账只看"路由==目录"，看不出它走错了域）。
+#[test]
+fn the_wallet_vertical_slice_stays_registered() {
+    // 真实现的六条：读余额/账本，写转账/发红包/读红包/领红包。
+    const REAL: [&str; 6] = [
+        "wallet.balance.get",
+        "wallet.ledger.page",
+        "wallet.transfer",
+        "wallet.redpacket.create",
+        "wallet.redpacket.get",
+        "wallet.redpacket.claim",
+    ];
+    // 如实拒绝的一条：`crates/platform/src/wallet.rs` 没有 GET /api/wallet/redpacket。
+    const REFUSED: &str = "wallet.redpacket.list";
+
+    let tables = routing_tables(SRC);
+    let arms = router_arms(&tables);
+    let prefixes = entry_table(
+        &tables
+            .iter()
+            .find(|(name, _)| name == "route_for")
+            .expect("route_for 必须存在")
+            .1,
+    );
+    let wallet_body = &tables
+        .iter()
+        .find(|(name, _)| name == "wallet_router")
+        .expect("wallet_router 必须存在（钱包域的子路由）")
+        .1;
+
+    let implemented = catalog();
+    let stubs = stubbed();
+    for action in REAL {
+        assert!(
+            implemented.contains(action),
+            "{action} 是真实现了的，不在 IMPLEMENTED_ACTIONS 里 UI 就发现不了它：\
+             修法是把臂与目录一起补上，不是把臂删掉。"
+        );
+        assert!(
+            !stubs.contains(action),
+            "{action} 既算已实现又算 stub：{action}"
+        );
+        assert!(
+            arms.contains(&(action.to_string(), "wallet_router".to_string())),
+            "{action} 要挂在 wallet_router 的臂上（名单的唯一来源）"
+        );
+        assert_eq!(
+            resolve(&prefixes, action),
+            Some("wallet_router"),
+            "{action} 的域前缀走到的不是 wallet_router，等于挂在了别的域上"
+        );
+    }
+
+    assert!(
+        stubs.contains(REFUSED),
+        "{REFUSED} 要登记在 STUBBED_ACTIONS：路由有臂、服务端没路由，如实拒绝"
+    );
+    assert!(
+        !implemented.contains(REFUSED),
+        "{REFUSED} 做不到就不许出现在 IMPLEMENTED_ACTIONS 里（capabilities 会说谎）"
+    );
+    let refused_handlers: Vec<String> = routes(wallet_body)
+        .into_iter()
+        .filter(|(action, _)| action == REFUSED)
+        .map(|(_, handler)| handler)
+        .collect();
+    assert_eq!(
+        refused_handlers,
+        vec!["act_wallet_redpacket_list".to_string()],
+        "{REFUSED} 必须走到那条如实返回 NOT_IMPLEMENTED 的处理器"
+    );
+
+    // 反向兜底：钱包域里不许出现没在 #293 名单上的臂（要加就得连名单一起改并说明理由）。
+    let stray: Vec<String> = arms
+        .iter()
+        .map(|(action, _)| action.clone())
+        .filter(|action| action.starts_with("wallet."))
+        .filter(|action| !REAL.contains(&action.as_str()) && action.as_str() != REFUSED)
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "wallet 域冒出了没在 #293 名单里的臂：{stray:?}（要改就改这份名单并说明理由）"
+    );
+}
