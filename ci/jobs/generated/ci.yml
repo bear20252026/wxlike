@@ -253,11 +253,11 @@ jobs:
     - name: C7b lint
       run: npm run --if-present lint
       working-directory: apps/desktop-web
-    - name: C7b unit tests
-      run: npm test
-      working-directory: apps/desktop-web
     - name: C7b production build
       run: npm run build
+      working-directory: apps/desktop-web
+    - name: C7b unit tests
+      run: npm test
       working-directory: apps/desktop-web
     - name: C7b mini-sdk contract parity (packages/mini-sdk, no deps to install)
       run: npm test
