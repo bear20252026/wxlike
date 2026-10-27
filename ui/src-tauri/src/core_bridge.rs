@@ -2113,18 +2113,42 @@ fn act_media_upload_cancel<R: tauri::Runtime>(
     core: &CoreState,
     req: &CoreRequest,
 ) -> Result<Value, BridgeError> {
-    let _ = (app, core);
-    let params = &req.params;
-    let upload_id = params
-        .get("upload_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    core.uploads
+    let _ = app;
+    // 台账第 3 条的旧形状：`unwrap_or_default()` 在没给 `upload_id` 时拿到空串，
+    // `remove("")` 必然落空，返回值却照样是 `cancelled: true`。现在缺参数先报错；
+    // "什么都没删掉"也要报错——删掉一张会话和没找到会话是两件不同的事。
+    let upload_id = required_str(&req.params, "upload_id")?;
+    let dropped = core
+        .uploads
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .remove(&upload_id);
-    Ok(json!({ "cancelled": true }))
+        .remove(&upload_id)
+        .is_some();
+    if !dropped {
+        return Err(BridgeError::Validation(format!(
+            "上传会话 {upload_id} 不存在（已完成、已取消，或 id 不对），没什么可取消"
+        )));
+    }
+    Ok(media_cancel_receipt(&upload_id))
+}
+
+/// 取消上传的**诚实回执**：丢掉的只是本地分片记账，服务端那条上传还没开始。
+///
+/// 分片只在这张表里攒字节（`media.upload.part` 一条 HTTP 都不发），全部到齐才由
+/// `media.upload.complete` 一次性 POST 上去。所以这里既没有可通知的服务端会话、
+/// 也没有在途请求可中止——把这件事写成 `local_only` / `server_notified` 两个
+/// 字段，而不是一个含糊的 `cancelled: true`（后者读起来像"上传被停了"，而上传
+/// 根本还没发生过）。想真中止"已经发出去的上传"，前提是先有服务端可寻址的
+/// 上传会话（待办，见本卡汇报）。
+fn media_cancel_receipt(upload_id: &str) -> Value {
+    json!({
+        "upload_id": upload_id,
+        "local_only": true,
+        "server_notified": false,
+        "local_bookkeeping_dropped": true,
+        "reason": "只停了本地记账：分片全在内存，服务端没有这条上传的会话可通知，\
+                   也没有在途请求可中止",
+    })
 }
 
 fn act_relations_list<R: tauri::Runtime>(

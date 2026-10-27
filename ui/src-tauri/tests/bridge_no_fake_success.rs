@@ -20,7 +20,8 @@
 //! 3. `media.upload.cancel`：`upload_id` 缺失/空白/不在表里一律 `VALIDATION`（旧写法
 //!    `unwrap_or_default()` 拿到空串、`remove("")` 必然落空却照样回成功）；真的取消
 //!    只丢本地记账，服务端没有可通知的分片会话，所以如实回
-//!    `local_only: true / server_notified: false`，不再冒充 `cancelled: true`。
+//!    `local_only: true / server_notified: false`，不再冒充 `cancelled: true`——
+//!    并用"取消后 complete 必须失败"证明本地记账真的丢了。
 //! 4. `AppState::login/register`：响应 2xx 但没有 `token` 时报错，不存 `Some("")`
 //!    ——空 bearer 之后的现象是远程 401/超时，栈里查不到"登录其实没拿到凭据"。
 //!
@@ -747,4 +748,145 @@ async fn blank_ticket_id_never_becomes_the_revoke_target() {
             "撤销请求打到了空票据 id：{call_log}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 台账第 3 条：media.upload.cancel 不许把"没删掉"报成"已取消"
+// ---------------------------------------------------------------------------
+
+/// 缺 `upload_id`：VALIDATION。这一步必须发生在任何本地写入/删除之前，
+/// 所以拿死端口当服务端也能验——真发了 HTTP 才是问题。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_upload_cancel_requires_an_upload_id() {
+    let (app, handle) = boot();
+    app.manage(AppState::new("http://127.0.0.1:1"));
+
+    let cases = [
+        ("参数整个没给", json!({})),
+        ("空串", json!({ "upload_id": "" })),
+        ("全空白", json!({ "upload_id": "   " })),
+        ("不是字符串", json!({ "upload_id": 42 })),
+    ];
+    for (what, params) in cases {
+        let reply = call(&handle, "media.upload.cancel", params);
+        error(
+            &reply,
+            &format!("缺 upload_id 的取消（{what}）"),
+            "VALIDATION",
+        );
+        assert!(
+            !reply.to_string().contains("cancelled"),
+            "{what}：旧写法就是在这里回 cancelled:true：{reply}"
+        );
+    }
+}
+
+/// 表里根本没有这张会话：报错，不许"remove 落空照样回成功"。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_an_unknown_upload_is_an_error_not_a_cancelled_receipt() {
+    let (app, handle) = boot();
+    app.manage(AppState::new("http://127.0.0.1:1"));
+
+    let reply = call(
+        &handle,
+        "media.upload.cancel",
+        json!({ "upload_id": "up-does-not-exist" }),
+    );
+    let err = error(&reply, "取消一张不存在的上传", "VALIDATION");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("up-does-not-exist"),
+        "要点名是哪张会话：{reply}"
+    );
+    assert!(!reply.to_string().contains("cancelled"), "{reply}");
+}
+
+/// 真的取消：只丢本地分片记账。判据有两半——回执必须写清 `local_only` /
+/// `server_notified: false`（不许冒充"已取消上传"），并且**取消之后 complete
+/// 必须失败**，证明表里那条会话真的没了，不是只回了个好看的信封。
+// 环境变量是进程级的：这条用例整测试体持锁串行化，跨 await 持锁是刻意的
+// （与 `core_bridge_e2e.rs` 同一口径）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_upload_cancel_drops_the_local_session_and_says_local_only() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (http, _quic, _platform) = stack().await;
+    std::env::set_var("WXLIKE_DATA_DIR", fresh_data_dir("upload_cancel"));
+    let (app, handle) = boot();
+    app.manage(AppState::new(&http));
+
+    // 分片记账只在登录之后才开得了：begin 认的是桥内的会话投影。
+    let login = call(
+        &handle,
+        "identity.session.register",
+        json!({ "username": "q_upload", "password": "pw-pass", "name": "q_upload" }),
+    );
+    ok_data(&login, "注册并打开会话（media 记账的前置）");
+
+    let begun = call(
+        &handle,
+        "media.upload.begin",
+        json!({ "name": "a.bin", "mime": "application/octet-stream", "size": 4 }),
+    );
+    let begin = ok_data(&begun, "开始上传");
+    let upload_id = begin["upload_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| panic!("begin 没给 upload_id：{begin}"))
+        .to_string();
+
+    let reply = call(
+        &handle,
+        "media.upload.cancel",
+        json!({ "upload_id": upload_id.clone() }),
+    );
+    let data = ok_data(&reply, "取消上传");
+    assert_eq!(data["local_only"], json!(true), "{reply}");
+    assert_eq!(data["server_notified"], json!(false), "{reply}");
+    assert_eq!(data["local_bookkeeping_dropped"], json!(true), "{reply}");
+    assert_eq!(data["upload_id"], json!(upload_id), "{reply}");
+    assert!(
+        !reply.to_string().contains("cancelled"),
+        "不许再回一个含糊的 cancelled:true：{reply}"
+    );
+
+    // 取消到底生效没有，看这张表：complete 必须再也找不到这条会话。
+    error(
+        &call(
+            &handle,
+            "media.upload.complete",
+            json!({ "upload_id": upload_id.clone() }),
+        ),
+        "取消之后再提交",
+        "VALIDATION",
+    );
+    // 同一张会话也不许被取消第二次（"已经没了"不是"又取消了一次"）。
+    error(
+        &call(
+            &handle,
+            "media.upload.cancel",
+            json!({ "upload_id": upload_id }),
+        ),
+        "重复取消同一条上传",
+        "VALIDATION",
+    );
+    std::env::remove_var("WXLIKE_DATA_DIR");
+}
+
+/// 与上一条例子同一形状的 `WXLIKE_DATA_DIR` 目录（见文件头 SERIAL 的说明）。
+fn fresh_data_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "wxlike-293-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }
