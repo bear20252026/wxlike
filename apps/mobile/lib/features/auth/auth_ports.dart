@@ -51,6 +51,14 @@ abstract class IdentityPort {
 
   Future<QrLoginChallenge> qrChallenge(String challengeId);
 
+  /// 手机扫下桌面二维码：`POST /api/qr/tickets/{id}/scan`，body 只有 `{secret}`。
+  ///
+  /// `secret` 从 `wxlike-qr://{ticket_id}/{secret}` 载荷里解析出来（见
+  /// `qr_approval/qr_payload.dart`），**只能用作请求体**：不写日志、不落盘。
+  /// identity 状态机要求先扫后批（`pending → scanned → approved`），所以
+  /// [approveQr] 之前必须有一次成功的 [scanQr]。
+  Future<QrLoginChallenge> scanQr(String challengeId, {required String secret});
+
   Future<QrLoginChallenge> approveQr(
     String challengeId, {
     required String idempotencyKey,
@@ -144,6 +152,10 @@ class UnavailableIdentityPort implements IdentityPort {
 
   @override
   Future<QrLoginChallenge> qrChallenge(String challengeId) => _notWired('qr_login.challenge');
+
+  @override
+  Future<QrLoginChallenge> scanQr(String challengeId, {required String secret}) =>
+      _notWired('qr_login.scan');
 
   @override
   Future<QrLoginChallenge> approveQr(String challengeId, {required String idempotencyKey}) =>

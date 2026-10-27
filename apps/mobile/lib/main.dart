@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'features/auth/auth_ports.dart';
+import 'features/auth/qr_approval/qr_wiring.dart';
 import 'features/chat/timeline/messaging_ports.dart';
 import 'platform/method_channel_platform.dart';
 import 'screens/conversations.dart';
@@ -57,6 +58,18 @@ class _ProductionRootState extends State<ProductionRoot> {
   late final _SwitchingService _switching = _SwitchingService(this);
   late final ServiceAccountPort _account = ServiceAccountPort(_switching);
   late final FfiMessagingPort _messaging = FfiMessagingPort(_switching);
+
+  /// #115 移动端那一半：扫码登录的身份端口。
+  ///
+  /// 走的是同一个组合根工厂 [buildQrIdentityPort]——入口页、控制器、HTTP 端口
+  /// 都在这一条线上；测试也调这一个函数，所以"没接线"会立刻让测试变红。
+  /// base/session 都用闭包读当前值，换服务器后不需要重建端口。
+  late final IdentityPort _identity = buildQrIdentityPort(
+    serverBase: () => _currentBase ?? _defaultServer,
+    sessionProvider: () => _session,
+    // 短信/协议半边继续交给明确的"未接线"实现（不伪造验证码）。
+    fallback: const UnavailableIdentityPort(),
+  );
 
   @override
   void initState() {
@@ -132,6 +145,7 @@ class _ProductionRootState extends State<ProductionRoot> {
       account: _account,
       session: session,
       messaging: _messaging,
+      identity: _identity,
       platform: _platform,
       push: _push,
       lifecycle: _lifecycle,

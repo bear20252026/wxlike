@@ -290,10 +290,22 @@ class AuthController extends ChangeNotifier {
   }
 }
 
+/// 手机侧"扫了桌面的码之后该干什么"的状态机。
+///
+/// 三个不变量：
+/// 1. **secret 只在内存里存在这一次**：它从 `wxlike-qr://{ticket_id}/{secret}`
+///    解析出来（`qr_approval/qr_payload.dart`），只允许进 `/scan` 的请求体；
+///    不写日志、不落 [AuthSecretStore]、不出现在任何 `toString` 与错误文案里。
+/// 2. **先扫后批**：identity 的 `decide()` 只接受 `state = 'scanned'`，
+///    所以 [load] 在有 secret 时先打 `/scan`，[approve] 才可能成功。
+/// 3. **界面显示的是服务端回包里的状态**（CREATED / SCANNED / APPROVED /
+///    EXPIRED / REJECTED），不是一句"成功"提示；到期时间扫码侧看不到，
+///    就老老实实显示"由服务端裁定"，不猜倒计时。
 class QrApprovalController extends ChangeNotifier {
   QrApprovalController({
     required this.identity,
     required this.challengeId,
+    this.secret = '',
     MonotonicClock? clock,
     DateTime Function()? nowUtc,
   })  : _clock = clock ?? StopwatchClock(),
@@ -301,6 +313,11 @@ class QrApprovalController extends ChangeNotifier {
 
   final IdentityPort identity;
   final String challengeId;
+
+  /// 二维码里的一次性凭据；空表示这条链路只有票 id（深链/桌面侧），
+  /// 那种情况下只能轮询、不能替桌面批准。
+  final String secret;
+
   final MonotonicClock _clock;
   final DateTime Function() _nowUtc;
 
@@ -314,21 +331,44 @@ class QrApprovalController extends ChangeNotifier {
   Duration _remainingAtReceipt = Duration.zero;
   Duration _receivedAt = Duration.zero;
 
+  bool get hasSecret => secret.trim().isNotEmpty;
+
   Duration get remaining {
     if (challenge == null) return Duration.zero;
     final left = _remainingAtReceipt - (_clock.elapsed() - _receivedAt);
     return left.isNegative ? Duration.zero : left;
   }
 
-  bool get canDecide =>
-      !closed && !deciding && challenge != null && challenge!.isPending && remaining > Duration.zero;
+  /// 服务端回包里的状态名；还没有任何状态时是空串。
+  String get stateName => challenge?.contractState ?? '';
 
+  bool get canDecide {
+    final current = challenge;
+    if (closed || deciding || current == null) return false;
+    if (!current.canBeDecided) return false;
+    // 到期未知 = 不本地否决；服务端才是答案（过期会 409/410，落到 failure）。
+    return !current.deadlineKnown || remaining > Duration.zero;
+  }
+
+  /// 读取这张票。有 secret 走 `/scan`（扫码者能看到的全部信息都在那一条回包里），
+  /// 没有 secret 只能走创建者的轮询面。
   Future<void> load() async {
+    if (loading) return;
     loading = true;
     failure = null;
     notifyListeners();
     try {
-      _adopt(await identity.qrChallenge(challengeId));
+      if (hasSecret) {
+        // 已经扫过就别再打一次：`scan()` 要求 `pending`，重复扫必 409。
+        if (challenge?.status == QrChallengeStatus.scanned ||
+            challenge?.canBeDecided == false) {
+          _adopt(challenge!);
+        } else {
+          _adopt(await identity.scanQr(challengeId, secret: secret));
+        }
+      } else {
+        _adopt(await identity.qrChallenge(challengeId));
+      }
     } catch (error) {
       failure = asG12Failure(error, operation: '读取扫码登录');
     } finally {
@@ -377,14 +417,29 @@ class QrApprovalController extends ChangeNotifier {
     }
   }
 
+  /// 状态推进，展示字段沿用上一次看到的：`approve`/`reject` 的回包只有
+  /// `{ticket_id, state}`，设备名与线索是 `/scan` 给的，不能因为批准完就把
+  /// "哪台桌面"显示成票号。
   void _adopt(QrLoginChallenge next) {
-    challenge = next;
+    final previous = challenge;
+    final merged = QrLoginChallenge(
+      id: next.id.isNotEmpty ? next.id : (previous?.id ?? next.id),
+      deviceName: next.deviceName.isNotEmpty ? next.deviceName : (previous?.deviceName ?? next.deviceName),
+      deviceKind: next.deviceKind.isNotEmpty ? next.deviceKind : (previous?.deviceKind ?? next.deviceKind),
+      location: next.location.isNotEmpty ? next.location : (previous?.location ?? next.location),
+      issuedAtUtc: next.issuedAtUtc,
+      expiresAtUtc: next.expiresAtUtc,
+      status: next.status,
+      scannedBy: next.scannedBy.isNotEmpty ? next.scannedBy : (previous?.scannedBy ?? ''),
+      deadlineKnown: next.deadlineKnown,
+    );
+    challenge = merged;
     final now = _nowUtc();
-    _remainingAtReceipt = next.expiresAtUtc.difference(now);
+    _remainingAtReceipt = merged.expiresAtUtc.difference(now);
     if (_remainingAtReceipt.isNegative) _remainingAtReceipt = Duration.zero;
     _receivedAt = _clock.elapsed();
     _ticker?.cancel();
-    if (remaining > Duration.zero) {
+    if (merged.deadlineKnown && remaining > Duration.zero) {
       _ticker = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (closed || remaining == Duration.zero) timer.cancel();
         notifyListeners();

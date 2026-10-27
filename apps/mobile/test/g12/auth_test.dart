@@ -25,6 +25,8 @@ class FakeIdentity implements IdentityPort {
   int requests = 0;
   int resends = 0;
   int verifies = 0;
+  int scans = 0;
+  String? lastScanSecret;
   final List<String> verifyKeys = [];
   Object? requestError;
   Object? verifyError;
@@ -121,6 +123,23 @@ class FakeIdentity implements IdentityPort {
       );
     }
     return current;
+  }
+
+  @override
+  Future<QrLoginChallenge> scanQr(String challengeId, {required String secret}) async {
+    scans++;
+    lastScanSecret = secret;
+    final current = qr!;
+    return qr = QrLoginChallenge(
+      id: current.id,
+      deviceName: current.deviceName,
+      deviceKind: current.deviceKind,
+      location: current.location,
+      issuedAtUtc: current.issuedAtUtc,
+      expiresAtUtc: current.expiresAtUtc,
+      status: QrChallengeStatus.scanned,
+      scannedBy: 'me',
+    );
   }
 
   @override

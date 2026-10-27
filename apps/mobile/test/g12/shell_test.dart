@@ -124,8 +124,8 @@ void main() {
           lifecycle: lifecycle,
           onSignOut: () async {},
           chatPageBuilder: (context, conv) => Scaffold(body: Text('聊天 $conv')),
-          qrApprovalPageBuilder: (context, id) =>
-              Scaffold(body: Text('扫码 $id')),
+          qrApprovalPageBuilder: (context, qrTarget) =>
+              Scaffold(body: Text('扫码 ${qrTarget.challengeId}')),
           tabs: [
             ShellTabSpec(
               label: '微信',

@@ -13,12 +13,31 @@ class QrIdentity implements IdentityPort {
   QrLoginChallenge? current;
   int approves = 0;
   int rejects = 0;
+  int scans = 0;
+  String? lastScanSecret;
   Object? error;
 
   @override
   Future<QrLoginChallenge> qrChallenge(String challengeId) async {
     if (error != null) throw error!;
     return current!;
+  }
+
+  @override
+  Future<QrLoginChallenge> scanQr(String challengeId, {required String secret}) async {
+    scans++;
+    lastScanSecret = secret;
+    if (error != null) throw error!;
+    return current = QrLoginChallenge(
+      id: current!.id,
+      deviceName: current!.deviceName,
+      deviceKind: current!.deviceKind,
+      location: current!.location,
+      issuedAtUtc: current!.issuedAtUtc,
+      expiresAtUtc: current!.expiresAtUtc,
+      status: QrChallengeStatus.scanned,
+      scannedBy: 'me',
+    );
   }
 
   @override
@@ -115,7 +134,10 @@ void main() {
     await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('批准登录')));
     await tester.pumpAndSettle();
     expect(identity.approves, 1);
-    expect(find.text('已批准，桌面端将自动登录'), findsOneWidget);
+    // 成功显示为契约状态，而不是只闪过一条 toast。
+    expect(find.text('APPROVED'), findsOneWidget);
+    expect(find.textContaining('已批准，桌面端将自动登录'), findsOneWidget);
+    expect(find.byKey(const Key('qr-state')), findsOneWidget);
 
     final button = tester.widget<FilledButton>(find.byKey(const Key('qr-approve')));
     expect(button.onPressed, isNull, reason: '终态后不能再次批准');
