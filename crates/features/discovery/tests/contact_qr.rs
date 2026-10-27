@@ -81,23 +81,36 @@ fn rotation_and_revocation_invalidate_old_codes() {
     );
 }
 
+/// 名片 wire 里 `p=` 段的明文 JSON。不透明性的断言都对着它说话。
+fn payload_text(wire: &str) -> String {
+    use base64::Engine as _;
+    let payload = wire.split("p=").nth(1).unwrap().split('&').next().unwrap();
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .unwrap();
+    String::from_utf8(json).unwrap()
+}
+
+/// 载荷里除了有效期，每个字段都应当是**不透明十六进制令牌**（允许 `card_`/`n_` 前缀，
+/// 但前缀后面必须还是十六进制——不然 `n_` 就成了夹带明文的许可证）。
+/// 这条比"扫一遍有没有某几个数字"有意义得多：它能挡住"字段里开始带明文身份"。
+fn assert_opaque_token(field: &str, value: &str) {
+    let body = value
+        .strip_prefix("card_")
+        .or_else(|| value.strip_prefix("n_"))
+        .unwrap_or(value);
+    assert!(
+        !body.is_empty() && body.chars().all(|c| c.is_ascii_hexdigit()),
+        "{field} 不是不透明十六进制令牌：{value}"
+    );
+}
+
 #[test]
 fn card_payload_is_opaque_and_tamper_evident() {
     let (_clock, service) = service();
     let card = service.create("alice", 60_000).unwrap();
-    use base64::Engine as _;
-    let payload = card
-        .wire
-        .split("p=")
-        .nth(1)
-        .unwrap()
-        .split('&')
-        .next()
-        .unwrap();
-    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    let text = payload_text(&card.wire);
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut keys: Vec<&str> = value
         .as_object()
         .unwrap()
@@ -106,10 +119,32 @@ fn card_payload_is_opaque_and_tamper_evident() {
         .collect();
     keys.sort();
     assert_eq!(keys, vec!["c", "e", "k", "n"]);
-    let text = String::from_utf8(json).unwrap();
-    for forbidden in ["alice", "phone", "138"] {
-        assert!(!text.contains(forbidden), "{forbidden} leaked into {text}");
+    for (field, v) in value.as_object().unwrap() {
+        if field != "e" {
+            let s = v
+                .as_str()
+                .unwrap_or_else(|| panic!("{field} 应为不透明字符串，实际 {v}"));
+            assert_opaque_token(field, s);
+        }
     }
+    // 探针只能放"只有真泄漏才会出现"的串。这里原来遍历的是
+    // `["alice", "phone", "138"]`：`138` 会在随机出来的十六进制 id 里自己凑出来
+    // （c/k/n 三段约 90 个三位窗口，每个命中率 1/4096 ⇒ 整条约 2% 无端变红），
+    // 而这三个数字本身什么也证明不了。一条会随机红的**安全断言**是双向的坏：
+    // 大家很快就开始把它当噪声重跑，下次真泄漏也没人看。
+    // 真该防的是"主体可识别信息被带进载荷"，那就用一条长得像手机号的主体 id 来验
+    // ——随机十六进制不会恰好等于它，这才是可判定的。
+    assert!(!text.contains("alice"), "名片载荷里出现了主体 id：{text}");
+    let phone_card = service.create("13800001111", 60_000).unwrap();
+    let phone_text = payload_text(&phone_card.wire);
+    assert!(
+        !phone_text.contains("13800001111"),
+        "载荷里带出了手机号样的主体 id：{phone_text}"
+    );
+    assert!(
+        !phone_text.contains("phone"),
+        "载荷里出现了字段名 phone：{phone_text}"
+    );
     let tampered = format!("{}x", card.wire);
     assert_eq!(
         service.resolve(&tampered).unwrap_err(),
