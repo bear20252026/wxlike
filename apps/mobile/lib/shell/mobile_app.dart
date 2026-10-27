@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../features/auth/auth_ports.dart';
 import '../features/auth/challenge/login_page.dart';
 import '../features/auth/qr_approval/qr_approval_page.dart';
+import '../features/auth/qr_approval/qr_scan_login_page.dart';
 import '../features/chat/composer/composer_ports.dart';
 import '../features/chat/composer/draft_store.dart';
 import '../features/chat/timeline/conversations_controller.dart';
@@ -28,6 +29,7 @@ import '../src/service.dart';
 import 'account_page.dart';
 import 'app_lock.dart';
 import 'contracts.dart';
+import 'deep_link.dart';
 import 'app_shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -171,9 +173,11 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   }
 
   void _onDeepLinkBeforeLogin(Uri uri) {
-    if (!uri.toString().startsWith('wxlike://')) return;
+    // 认得的两类都暂存：`wxlike://…` 与桌面二维码原文 `wxlike-qr://…`。
+    // 提示文案不带链接内容——后者里面就是 secret。
+    if (!DeepLink.parse(uri).isKnown) return;
     _pendingLink = uri;
-    _notifyUser('请先登录后再打开链接');
+    _notifyUser('请先登录后再打开这个登录码');
   }
 
   /// 弹全局 snackbar。MaterialApp 首帧之前（冷启动带着会话直奔 [_syncPush]）
@@ -231,9 +235,10 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
         _drafts.flush();
       },
       chatPageBuilder: (context, conv) => _timeline(conv),
-      qrApprovalPageBuilder: (context, challengeId) => QrApprovalPage(
+      qrApprovalPageBuilder: (context, qrTarget) => QrApprovalPage(
         identity: widget.identity,
-        challengeId: challengeId,
+        challengeId: qrTarget.challengeId,
+        secret: qrTarget.secret,
         session: session,
       ),
       tabs: [
@@ -247,8 +252,12 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
             onOpenChat: (row) => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => _timeline(row.conv, title: row.title, isGroup: row.kind == 'group')),
             ),
-            onOpenScan: () => _messengerKey.currentState?.showSnackBar(
-              const SnackBar(content: Text('扫码入口由 G11 提供；手机端只处理扫码登录挑战')),
+            onOpenScan: () => Navigator.of(context).push(
+              // 手机端的扫码入口就是"扫码登录"：载荷解析通过后才会进确认页，
+              // 而确认页用的正是组合根注入进来的 [IdentityPort]（见 ProductionRoot）。
+              MaterialPageRoute<void>(
+                builder: (_) => QrScanLoginPage(identity: widget.identity, session: session),
+              ),
             ),
           ),
         ),

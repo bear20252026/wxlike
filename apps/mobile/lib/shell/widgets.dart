@@ -96,6 +96,55 @@ class G12BlockedState extends StatelessWidget {
   }
 }
 
+/// 服务端状态条：把路线契约里的状态名（CREATED / SCANNED / APPROVED /
+/// REJECTED / EXPIRED）原样显示出来，配一句人话。
+///
+/// 存在的理由就是反对"成功提示"：状态推进必须体现在这块常驻的条上，
+/// 而不是闪过一条 toast——toast 会消失，用户无法核对"到底批准成功了没有"。
+class G12StateChip extends StatelessWidget {
+  const G12StateChip({
+    super.key,
+    required this.state,
+    required this.label,
+    this.fatal = false,
+  });
+
+  final String state;
+  final String label;
+
+  /// 终态（已拒绝/已过期/不能再做决定）用警示色，进行中用品牌色。
+  final bool fatal;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = fatal ? WxColors.danger : WxColors.brand;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(WxRadius.tile),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          Icon(fatal ? Icons.error_outline : Icons.check_circle_outline, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600),
+            ),
+          ),
+          if (state.isNotEmpty)
+            // 契约状态名跟着条子出现，测试与用户看到的都是同一个词。
+            Text(state, style: TextStyle(fontSize: 11, color: color)),
+        ],
+      ),
+    );
+  }
+}
+
 String twoDigits(int value) => value.toString().padLeft(2, '0');
 
 String formatCountdown(Duration duration) {

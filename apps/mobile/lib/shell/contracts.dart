@@ -55,8 +55,23 @@ class G12Failure implements Exception {
   String toString() => 'G12Failure($code): $message';
 }
 
-class PageResult<T> {
-  const PageResult({
+/// 扫码确认页的目标：票号 + 可选的一次性 secret。
+///
+/// [secret] 只允许转交给 `/scan` 的请求体；[toString] 刻意不带它，
+/// 这样任何日志/调试输出打印这个对象都不会泄露凭据。
+class QrApprovalTarget {
+  const QrApprovalTarget({required this.challengeId, this.secret = ''});
+
+  final String challengeId;
+  final String secret;
+
+  bool get canScan => secret.trim().isNotEmpty;
+
+  @override
+  String toString() => 'QrApprovalTarget(challengeId: $challengeId, secret: <redacted>)';
+}
+
+class PageResult<T> {  const PageResult({
     required this.items,
     required this.hasMore,
     this.nextCursor = '',

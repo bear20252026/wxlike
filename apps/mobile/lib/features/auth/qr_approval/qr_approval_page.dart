@@ -9,18 +9,25 @@ import '../auth_ports.dart';
 
 /// 手机确认桌面扫码登录。
 ///
-/// 页面只展示挑战与设备信息；批准/拒绝后由 Rust 完成密钥与 token 交接，
-/// Dart 不保存 token。离页后控制器关闭，不能再批准（对应"退出后不能继续批准"）。
+/// 页面只展示挑战与设备信息，并把**服务端回包里的状态**显示出来
+/// （CREATED / SCANNED / APPROVED / REJECTED / EXPIRED）——批准成功不是一句
+/// toast，而是状态条本身变了。离页后控制器关闭，不能再批准（对应"退出后不能
+/// 继续批准"）。
+///
+/// `secret` 从二维码载荷解析出来，只交给控制器拼 `/scan` 的请求体；页面任何
+/// 文案都不显示它，连票号形式的安全摘要也只用于日志。
 class QrApprovalPage extends StatefulWidget {
   const QrApprovalPage({
     super.key,
     required this.identity,
     required this.challengeId,
+    this.secret = '',
     this.session,
   });
 
   final IdentityPort identity;
   final String challengeId;
+  final String secret;
   final SessionInfo? session;
 
   @override
@@ -31,6 +38,7 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
   late final QrApprovalController _controller = QrApprovalController(
     identity: widget.identity,
     challengeId: widget.challengeId,
+    secret: widget.secret,
   );
 
   @override
@@ -69,19 +77,13 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    final ok = await _controller.approve();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? '已批准，桌面端将自动登录' : (_controller.failure?.displayText ?? '批准失败'))),
-    );
+    // 批准之后不再弹"成功"：成功的答案就是状态条变成 APPROVED（服务端回包）。
+    // 失败才需要额外出声——状态条会显示 REJECTED/EXPIRED，但错误原因只在 banner 里。
+    await _controller.approve();
   }
 
   Future<void> _reject() async {
-    final ok = await _controller.reject();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? '已拒绝本次登录' : (_controller.failure?.displayText ?? '拒绝失败'))),
-    );
+    await _controller.reject();
   }
 
   @override
@@ -102,6 +104,20 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
                 onRetry: _controller.load,
               )
             else if (challenge != null) ...[
+              // 状态条：直接把服务端回包里的状态名显示出来。批准成功 = 这一行
+              // 从 SCANNED 变成 APPROVED，而不是多出一条 toast。
+              KeyedSubtree(
+                key: const Key('qr-state'),
+                child: G12StateChip(
+                  state: challenge.contractState,
+                  label: _statusText(challenge, _controller.remaining),
+                  fatal: challenge.status == QrChallengeStatus.rejected ||
+                      challenge.status == QrChallengeStatus.expired ||
+                      (_controller.canDecide == false &&
+                          challenge.status == QrChallengeStatus.pending),
+                ),
+              ),
+              const SizedBox(height: 12),
               Icon(Icons.laptop_mac, size: 56, color: WxColors.brand),
               const SizedBox(height: 12),
               Text(
@@ -118,17 +134,21 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
               const SizedBox(height: 24),
               _card(challenge),
               const SizedBox(height: 16),
-              if (_controller.remaining > Duration.zero && challenge.isPending)
+              // 倒计时只在服务端真的给了到期时间时显示。扫码侧看到的回包
+              // 没有 expires_at（那是建票响应才有的字段），所以这里显示
+              // "由服务端裁定"而不是编一个假的剩余时间。
+              if (challenge.deadlineKnown && _controller.remaining > Duration.zero)
                 Text(
                   '有效期剩余 ${formatCountdown(_controller.remaining)}',
                   textAlign: TextAlign.center,
+                  key: const Key('qr-countdown'),
                   style: const TextStyle(fontSize: 11, color: WxColors.textSecondary),
                 )
-              else
-                Text(
-                  _statusText(challenge.status, _controller.remaining),
+              else if (!challenge.deadlineKnown)
+                const Text(
+                  '有效期由服务端裁定：过期时这里会显示真实原因',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 11, color: WxColors.danger),
+                  style: TextStyle(fontSize: 11, color: WxColors.textSecondary),
                 ),
               const SizedBox(height: 24),
               if (_controller.failure != null)
@@ -170,8 +190,8 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
       child: Column(
         children: [
           _row('挑战', challenge.id),
-          _row('发起时间', formatClockTime(challenge.issuedAtUtc)),
-          _row('到期时间', formatClockTime(challenge.expiresAtUtc)),
+          _row('发起时间', challenge.deadlineKnown ? formatClockTime(challenge.issuedAtUtc) : '未知'),
+          _row('到期时间', challenge.deadlineKnown ? formatClockTime(challenge.expiresAtUtc) : '未知'),
           if (challenge.scannedBy.isNotEmpty) _row('扫码账号', challenge.scannedBy),
           _row('授权范围', '仅目标桌面设备'),
         ],
@@ -201,14 +221,21 @@ class _QrApprovalPageState extends State<QrApprovalPage> {
     );
   }
 
-  String _statusText(QrChallengeStatus status, Duration remaining) {
-    if (status == QrChallengeStatus.pending && remaining == Duration.zero) return '挑战已过期，请让桌面刷新二维码';
-    return switch (status) {
-      QrChallengeStatus.pending => '等待确认',
-      QrChallengeStatus.approved => '已批准',
-      QrChallengeStatus.rejected => '已拒绝',
-      QrChallengeStatus.expired => '已过期',
-      QrChallengeStatus.consumed => '已完成登录',
+  /// 状态条上的人话。状态名本身由 [QrLoginChallenge.contractState] 提供，
+  /// 这里只负责"给用户看的那一句怎么说"。
+  String _statusText(QrLoginChallenge challenge, Duration remaining) {
+    if (challenge.status == QrChallengeStatus.pending &&
+        challenge.deadlineKnown &&
+        remaining == Duration.zero) {
+      return '挑战已过期，请让桌面刷新二维码';
+    }
+    return switch (challenge.status) {
+      QrChallengeStatus.pending => '桌面已出码，等待本机扫码',
+      QrChallengeStatus.scanned => '本机已扫码，等待你批准',
+      QrChallengeStatus.approved => '已批准，桌面端将自动登录',
+      QrChallengeStatus.rejected => '已拒绝本次登录',
+      QrChallengeStatus.expired => '登录码已过期，请让桌面端刷新二维码',
+      QrChallengeStatus.consumed => '桌面端已完成登录',
     };
   }
 }

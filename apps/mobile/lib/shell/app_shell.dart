@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 
 import '../platform/platform_ports.dart';
 import 'app_lock.dart';
+import 'contracts.dart';
 import 'deep_link.dart';
 import 'theme.dart';
 
@@ -50,7 +51,10 @@ class AppShell extends StatefulWidget {
 
   /// 深链打开会话时由上层构造页面；为空表示该入口尚未接线。
   final Widget Function(BuildContext context, String conv)? chatPageBuilder;
-  final Widget Function(BuildContext context, String challengeId)? qrApprovalPageBuilder;
+
+  /// 扫码确认页。[QrApprovalTarget.secret] 为空表示只有票号（桌面侧通知带来的
+  /// `wxlike://qr/<id>`），那种票扫不了也批不了，页面会如实显示。
+  final Widget Function(BuildContext context, QrApprovalTarget target)? qrApprovalPageBuilder;
   final VoidCallback? onResumed;
   final VoidCallback? onPaused;
 
@@ -118,7 +122,27 @@ class AppShellState extends State<AppShell> {
           return;
         }
         unawaited(Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (context) => builder(context, link.challengeId)),
+          MaterialPageRoute<void>(
+            builder: (context) => builder(
+              context,
+              QrApprovalTarget(challengeId: link.challengeId),
+            ),
+          ),
+        ));
+      case DeepLinkKind.qrScanApproval:
+        // 摄像头/系统深链把桌面二维码原文送进来：这一条带 secret，能扫能批。
+        final builder = widget.qrApprovalPageBuilder;
+        if (builder == null) {
+          _toast('扫码确认暂不可用：身份域绑定尚未接线');
+          return;
+        }
+        unawaited(Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (context) => builder(
+              context,
+              QrApprovalTarget(challengeId: link.challengeId, secret: link.secret),
+            ),
+          ),
         ));
       case DeepLinkKind.contacts:
         selectTab(1);
