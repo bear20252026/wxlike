@@ -123,11 +123,10 @@ fn patch_and_read_survive_a_head_seq_failure() {
     patch.insert("notify.dm".to_string(), "off".to_string());
     preferences::patch(&conn, "u1", &patch, "dev-a", 1_000).unwrap();
     assert_eq!(preferences::head_seq(&conn, "u1").unwrap(), 1);
-    assert_eq!(
-        preferences::get(&conn, "u1")
+    assert!(
+        !preferences::get(&conn, "u1")
             .unwrap()
             .get_bool("notify.dm", true),
-        false,
         "关掉的开关不能被读成开"
     );
 }

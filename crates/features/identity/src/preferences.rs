@@ -14,6 +14,9 @@
 //! （[`EXPORT_SCOPES`]），下载链接短时且单次（[`redeem_link`]）。注销先撤销
 //! 全部会话与刷新链，再交给各域清理（[`PURGE_DOMAINS`]）；法定/业务必需记录
 //! 由对应域自行分域处置，不在这里一刀切删。
+//!
+//! 排队中的导出可以被申请人撤回（[`cancel`]）；注销**不行**——凭证撤销没有
+//! 回滚路径，把作业标成取消只会得到一个"已恢复"却没恢复任何登录能力的账号。
 
 use std::collections::BTreeMap;
 
@@ -241,6 +244,11 @@ pub enum JobStatus {
     Running,
     Done,
     Failed,
+    /// 申请人自己在排队阶段撤回的。
+    ///
+    /// 它**不等于** `failed`：失败是"我们没做成"，取消是"用户不要了"。折成一个
+    /// 状态会让作业列表把一次主动撤回报成一次故障（#114 的取消用例）。
+    Cancelled,
 }
 
 impl JobStatus {
@@ -250,6 +258,7 @@ impl JobStatus {
             Self::Running => "running",
             Self::Done => "done",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -264,6 +273,7 @@ impl JobStatus {
             "running" => Some(Self::Running),
             "done" => Some(Self::Done),
             "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
             _ => None,
         }
     }
@@ -332,11 +342,10 @@ fn find_open(conn: &Connection, user_id: &str, kind: JobKind) -> Result<Option<J
          WHERE user_id = ?1 AND kind = ?2 AND status IN ('queued','running') \
          ORDER BY requested_at DESC LIMIT 1"
     );
-    Ok(conn
-        .query_row(&sql, params![user_id, kind.as_str()], raw_job)
+    conn.query_row(&sql, params![user_id, kind.as_str()], raw_job)
         .optional()?
         .map(decode_job)
-        .transpose()?)
+        .transpose()
 }
 
 /// 申请导出。已有排队/执行中的导出时返回同一条（幂等，不重复打包）。
@@ -370,11 +379,10 @@ fn enqueue(conn: &Connection, user_id: &str, kind: JobKind, now: i64) -> Result<
 /// 单条作业。
 pub fn job(conn: &Connection, id: &str) -> Result<Option<Job>> {
     let sql = format!("SELECT {JOB_COLS} FROM identity_job WHERE id = ?1");
-    Ok(conn
-        .query_row(&sql, params![id], raw_job)
+    conn.query_row(&sql, params![id], raw_job)
         .optional()?
         .map(decode_job)
-        .transpose()?)
+        .transpose()
 }
 
 /// 后台 worker 取一条排队作业（条件 UPDATE 保证只有一个 worker 拿到）。
@@ -426,6 +434,41 @@ pub fn fail(conn: &Connection, id: &str, reason: &str, now: i64) -> Result<()> {
         params![id, crate::check_label(reason, "error")?, now],
     )?;
     Ok(())
+}
+
+/// 取消一条**还在排队**的作业。
+///
+/// 只有 `queued` 能取消：一条已经 `running` 的作业正在读库/写媒体仓，把它标成
+/// 取消只会得到"状态说没做、产物却真的存在"的两份真相。已经 `done` 的导出更不
+/// 可能"取消"——东西已经打包好了，能做的是让下载链接过期。
+///
+/// 注销作业按种类直接拒绝：`request_delete` 撤销会话与刷新链是**不可逆**的，
+/// 现在把作业标成取消，用户面对的是一个"已恢复"却没恢复任何凭证的账号。
+/// 错误串是 `'static` 常量，平台层照原样映射成 409，不掺用户数据。
+pub fn cancel(conn: &Connection, job_id: &str, user_id: &str, now: i64) -> Result<Job> {
+    let Some(existing) = job(conn, job_id)? else {
+        return Err(IdError::NotFound("job"));
+    };
+    // 别人的作业与不存在同形：作业 id 不是存在性探测面。
+    if existing.user_id != user_id {
+        return Err(IdError::NotFound("job"));
+    }
+    if existing.kind == JobKind::Delete {
+        return Err(IdError::Conflict("deletion cannot be cancelled"));
+    }
+    if existing.status != JobStatus::Queued {
+        return Err(IdError::Conflict("job already left the queue"));
+    }
+    let n = conn.execute(
+        "UPDATE identity_job SET status = 'cancelled', finished_at = ?2 \
+         WHERE id = ?1 AND status = 'queued'",
+        params![job_id, now],
+    )?;
+    if n != 1 {
+        // 并发：worker 正好在这一刻把它领走了。状态是一致的，但这次取消没做成。
+        return Err(IdError::Conflict("job already claimed"));
+    }
+    job(conn, job_id)?.ok_or(IdError::NotFound("job"))
 }
 
 /// 账号的全部作业，最近在前。
@@ -653,6 +696,55 @@ mod tests {
         let after = job_by_id(&conn, &job.id);
         assert_eq!(after.status, JobStatus::Failed);
         assert!(after.error.contains("storage"));
+    }
+
+    #[test]
+    fn cancel_only_stops_a_queued_export() {
+        let conn = db();
+        let job = request_export(&conn, "u1", 1_000).unwrap();
+
+        // 别人的作业与不存在同形
+        assert!(matches!(
+            cancel(&conn, &job.id, "u2", 1_050),
+            Err(IdError::NotFound("job"))
+        ));
+
+        let after = cancel(&conn, &job.id, "u1", 1_100).unwrap();
+        assert_eq!(after.status, JobStatus::Cancelled);
+        // 取消之后 worker 再也领不到它
+        assert!(claim(&conn, 1_200).unwrap().is_none());
+        // 重复取消：已经离开队列，如实拒绝，不"再成功一次"
+        assert!(matches!(
+            cancel(&conn, &job.id, "u1", 1_300),
+            Err(IdError::Conflict("job already left the queue"))
+        ));
+        // 排队状态没被"复活"
+        assert_eq!(job_by_id(&conn, &job.id).status, JobStatus::Cancelled);
+        // 取消之后再申请是一条新作业（那条不算在排）
+        let fresh = request_export(&conn, "u1", 1_400).unwrap();
+        assert_ne!(fresh.id, job.id);
+    }
+
+    #[test]
+    fn cancel_refuses_a_delete_because_revocation_is_irreversible() {
+        let conn = db();
+        let job = request_delete(&conn, "u1", 1_000).unwrap();
+        assert!(matches!(
+            cancel(&conn, &job.id, "u1", 1_100),
+            Err(IdError::Conflict("deletion cannot be cancelled"))
+        ));
+        // 拒绝不改状态：它仍然在排，等 worker 清理
+        assert_eq!(job_by_id(&conn, &job.id).status, JobStatus::Queued);
+        // 已经 running 的导出同样不能取消（正在写产物）
+        let exp = request_export(&conn, "u2", 1_500).unwrap();
+        // 队首是上面那条 delete 作业（requested_at 更早），先领走它再领导出
+        claim(&conn, 1_600).unwrap().expect("领走 delete");
+        let claimed = claim(&conn, 1_700).unwrap().expect("领走 export");
+        assert_eq!(claimed.id, exp.id);
+        assert!(matches!(
+            cancel(&conn, &exp.id, "u2", 1_800),
+            Err(IdError::Conflict("job already left the queue"))
+        ));
     }
 
     fn job_by_id(conn: &Connection, id: &str) -> Job {
