@@ -16,7 +16,7 @@ import 'qr_transport.dart';
 /// **现状（写在这里而不是藏在实现里）**：移动端的会话 token 由 Rust 客户端持有，
 /// UniFFI 绑定没有把它交给 Dart（`crates/ffi/src/client.rs` 的原话是
 /// "Dart 全程碰不到 token"；`SessionInfo` 只有 `user_id / server / signed_in`）。
-/// 因此默认实现拿不到 token，[HttpQrApiTransport] 会抛
+/// 因此默认实现拿不到 token，[requireQrBearer] 会抛
 /// `QR_SESSION_TOKEN_UNAVAILABLE` 并且**不发请求**，界面显示这条真实阻塞原因，
 /// 而不是假装批准成功。
 ///
@@ -37,6 +37,11 @@ QrTokenProvider defaultQrTokenProvider({String override = ''}) {
 ///
 /// [transport] 为空时用 [HttpQrApiTransport]（真发 HTTP）；测试传一个记录型
 /// 传输，其余路径完全一样。
+///
+/// [token] 同时交给**端口与传输**：端口那一份是"没凭据就不发请求"的策略
+/// （[requireQrBearer]），传给它的是哪一个传输都拦得住；传输那一份才是真去
+/// 拼 `Authorization` 头。少给端口那一份，注入记录型传输的测试就再也问不到
+/// 这条策略——那正是"纸面完成"的形状。
 IdentityPort buildQrIdentityPort({
   required String Function() serverBase,
   QrTokenProvider? token,
@@ -44,12 +49,10 @@ IdentityPort buildQrIdentityPort({
   IdentityPort? fallback,
   QrApiTransport? transport,
 }) {
+  final bearer = token ?? defaultQrTokenProvider();
   return HttpQrIdentityPort(
-    transport: transport ??
-        HttpQrApiTransport(
-          baseUrl: serverBase,
-          token: token ?? defaultQrTokenProvider(),
-        ),
+    transport: transport ?? HttpQrApiTransport(baseUrl: serverBase, token: bearer),
+    token: bearer,
     fallback: fallback,
     sessionProvider: sessionProvider,
   );
