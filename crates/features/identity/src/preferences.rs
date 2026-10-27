@@ -196,14 +196,16 @@ pub fn since(conn: &Connection, user_id: &str, since_seq: i64, limit: i64) -> Re
 }
 
 /// 当前游标上界（客户端下次从这里接着拉）。
+///
+/// 空账号返回 0 是因为 SQL 里 `COALESCE(MAX(seq), 0)` 真的没有行；
+/// **查询本身失败绝不折成 0**——那会把"库读不动"伪装成"这个账号还没写过偏好"，
+/// 客户端于是把游标重置到 0，同步从下一次开始静默漏掉全部增量。
 pub fn head_seq(conn: &Connection, user_id: &str) -> Result<i64> {
-    Ok(conn
-        .query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM identity_pref WHERE user_id = ?1",
-            params![user_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0))
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM identity_pref WHERE user_id = ?1",
+        params![user_id],
+        |r| r.get(0),
+    )?)
 }
 
 /// 作业种类。
@@ -221,6 +223,9 @@ impl JobKind {
         }
     }
 
+    /// 认不出来的种类同样算损坏。旧的 `unwrap_or(JobKind::Export)` 会把一条
+    /// `kind='deleet'` 的注销作业读成"导出"：调用方于是拿着它去签发下载链接，
+    /// 注销作业伪装成一份能下载的东西。
     fn parse(raw: &str) -> Option<Self> {
         match raw {
             "export" => Some(Self::Export),
@@ -248,12 +253,18 @@ impl JobStatus {
         }
     }
 
-    fn parse(raw: &str) -> Self {
+    /// 认不出来的状态是**损坏的行**，不是"还没开始跑"。
+    ///
+    /// 旧实现把未知值折成 `Queued`：一条被写成 `don`（少个 e）的作业会一直
+    /// 显示"排队中"，worker 也永远不会再取它（取的是 `status = 'queued'`
+    /// 的字面量）——用户看到的是一个永不推进的假进度条。
+    fn parse(raw: &str) -> Option<Self> {
         match raw {
-            "running" => Self::Running,
-            "done" => Self::Done,
-            "failed" => Self::Failed,
-            _ => Self::Queued,
+            "queued" => Some(Self::Queued),
+            "running" => Some(Self::Running),
+            "done" => Some(Self::Done),
+            "failed" => Some(Self::Failed),
+            _ => None,
         }
     }
 }
@@ -270,16 +281,46 @@ pub struct Job {
     pub error: String,
 }
 
-fn job_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
-    Ok(Job {
+/// 一行的**原文**读法：文本列先按字符串取，状态判定留到 [`decode_job`]。
+///
+/// 分两步是为了让"读不出来"必须经过一个可失败的地方。行闭包里只能返回
+/// `rusqlite::Result`，折默认值太顺手（旧代码就在这里折出 Export/Queued），
+/// 坏数据因此在类型层面假装成功。
+struct RawJob {
+    id: String,
+    user_id: String,
+    kind: String,
+    status: String,
+    requested_at: i64,
+    artifact: String,
+    bytes: i64,
+    error: String,
+}
+
+fn raw_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawJob> {
+    Ok(RawJob {
         id: r.get(0)?,
         user_id: r.get(1)?,
-        kind: JobKind::parse(&r.get::<_, String>(2)?).unwrap_or(JobKind::Export),
-        status: JobStatus::parse(&r.get::<_, String>(3)?),
+        kind: r.get(2)?,
+        status: r.get(3)?,
         requested_at: r.get(4)?,
         artifact: r.get(5)?,
         bytes: r.get(6)?,
         error: r.get(7)?,
+    })
+}
+
+/// 原文 → 领域对象。任何一种"看不懂"都是一条 [`IdError::Corrupt`]。
+fn decode_job(raw: RawJob) -> Result<Job> {
+    Ok(Job {
+        id: raw.id,
+        user_id: raw.user_id,
+        kind: JobKind::parse(&raw.kind).ok_or(IdError::Corrupt("identity_job.kind"))?,
+        status: JobStatus::parse(&raw.status).ok_or(IdError::Corrupt("identity_job.status"))?,
+        requested_at: raw.requested_at,
+        artifact: raw.artifact,
+        bytes: raw.bytes,
+        error: raw.error,
     })
 }
 
@@ -292,8 +333,10 @@ fn find_open(conn: &Connection, user_id: &str, kind: JobKind) -> Result<Option<J
          ORDER BY requested_at DESC LIMIT 1"
     );
     Ok(conn
-        .query_row(&sql, params![user_id, kind.as_str()], job_row)
-        .optional()?)
+        .query_row(&sql, params![user_id, kind.as_str()], raw_job)
+        .optional()?
+        .map(decode_job)
+        .transpose()?)
 }
 
 /// 申请导出。已有排队/执行中的导出时返回同一条（幂等，不重复打包）。
@@ -327,26 +370,35 @@ fn enqueue(conn: &Connection, user_id: &str, kind: JobKind, now: i64) -> Result<
 /// 单条作业。
 pub fn job(conn: &Connection, id: &str) -> Result<Option<Job>> {
     let sql = format!("SELECT {JOB_COLS} FROM identity_job WHERE id = ?1");
-    Ok(conn.query_row(&sql, params![id], job_row).optional()?)
+    Ok(conn
+        .query_row(&sql, params![id], raw_job)
+        .optional()?
+        .map(decode_job)
+        .transpose()?)
 }
 
 /// 后台 worker 取一条排队作业（条件 UPDATE 保证只有一个 worker 拿到）。
+///
+/// 取之前先验原文：一行已经坏掉的作业**不该被标记成 running**，否则它从此
+/// 既读不出状态、也不会再被任何 worker 取走（取的是 `status='queued'`）。
 pub fn claim(conn: &Connection, now: i64) -> Result<Option<Job>> {
-    let next: Option<String> = conn
+    let next: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT id FROM identity_job WHERE status = 'queued' \
+            "SELECT id, kind, status FROM identity_job WHERE status = 'queued' \
              ORDER BY requested_at ASC LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some(id) = next else {
+    let Some((id, kind, status)) = next else {
         return Ok(None);
     };
+    JobKind::parse(&kind).ok_or(IdError::Corrupt("identity_job.kind"))?;
+    JobStatus::parse(&status).ok_or(IdError::Corrupt("identity_job.status"))?;
     let n = conn.execute(
         "UPDATE identity_job SET status = 'running', started_at = ?2 \
          WHERE id = ?1 AND status = 'queued'",
-        params![id, now],
+        params![&id, now],
     )?;
     if n != 1 {
         return Ok(None);
@@ -382,10 +434,10 @@ pub fn list(conn: &Connection, user_id: &str) -> Result<Vec<Job>> {
         "SELECT {JOB_COLS} FROM identity_job WHERE user_id = ?1 ORDER BY requested_at DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![user_id], job_row)?;
+    let rows = stmt.query_map(params![user_id], raw_job)?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(row?);
+        out.push(decode_job(row?)?);
     }
     Ok(out)
 }

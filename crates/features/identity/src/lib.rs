@@ -53,6 +53,13 @@ pub enum IdError {
     Expired,
     #[error("rate limited, retry after {retry_after_ms} ms")]
     RateLimited { retry_after_ms: i64 },
+    /// 库里的一行读不出合法状态：这是**数据损坏**，不是客户端错误。
+    ///
+    /// 只有这一条会走到 500。以前的做法是把无法识别的值折成一个"看着还行"
+    /// 的默认值（作业种类折成 export、游标折成 0），坏数据就此伪装成功能正常。
+    /// 宁可让请求失败，也不给用户/评审一个假象。
+    #[error("corrupt stored row: {0}")]
+    Corrupt(&'static str),
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
     #[error("serialization error: {0}")]

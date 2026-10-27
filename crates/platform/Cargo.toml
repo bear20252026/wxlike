@@ -15,6 +15,9 @@ wxlike-report = { path = "../report" }
 # P4/P5 通话房间状态机（rtc::room）与出口码率分配（rtc::sfu）
 wxlike-rtc = { path = "../rtc" }
 wxlike-identity = { path = "../features/identity" }
+# G02-05（#114）：/api/preferences 的"别人能不能搜到我 / 通知要不要投"
+# 由隐私策略层判定，不在平台侧重新读一遍键（那会产生第二套口径）
+wxlike-security = { path = "../features/security" }
 wxlike-relations = { path = "../features/relations" }
 tokio = { workspace = true }
 axum = { version = "0.8", features = ["macros", "multipart"] }

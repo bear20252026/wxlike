@@ -6854,6 +6854,7 @@ dependencies = [
  "wxlike-report",
  "wxlike-risk",
  "wxlike-rtc",
+ "wxlike-security",
 ]
 
 [[package]]
