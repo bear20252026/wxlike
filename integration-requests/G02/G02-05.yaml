@@ -1,48 +1,202 @@
 task: G02-05
 title: 设置、账户数据生命周期与通知偏好
 issue: https://github.com/bear20252026/wxlike/issues/114
-branch: feat/FP-G02-05
-crate: wxlike-identity
+branch: feat/G02-114-account-surfaces   # worktree 实际分支名（卡面写 feat/FP-G02-05）
+base: 3f24d7ee
+crate: wxlike-identity（规则/作业） + wxlike-platform（HTTP 面）
 contract: identity-v1
+status: >
+  四面 HTTP 面已接线并绿（16 个用例 + identity 侧 2 个新增用例）；
+  下面 root_registration 里 status=requested 的三项由 G00 执行后本卡才可验收。
+
 paths:
-  - crates/features/identity/src/preferences.rs
-  - crates/features/security/src/privacy.rs
+  # 规则层
+  - crates/features/identity/src/lib.rs            # IdError::Corrupt（坏行不折默认值）
+  - crates/features/identity/src/preferences.rs    # 偏好/作业/链接 + cancel
+  - crates/features/identity/tests/preferences_jobs.rs
+  # HTTP 面
+  - crates/platform/src/account.rs                 # 新增：preferences/profile/export/delete 的 handler 与作业推进
+  - crates/platform/src/users.rs                   # profile.update：原子写 + 审计 + 已注销拒写
+  - crates/platform/src/db.rs                      # users.deleted_at 原地补列（不占迁移编号）
+  - crates/platform/src/error.rs                   # PlatformError::Blocked → 409
+  - crates/platform/src/lib.rs                     # merge account::routes()；签发/校验都过 deleted_at
+  - crates/platform/src/sessions.rs                # IdError::Corrupt → 500
+  - crates/platform/src/qr_login.rs                # 同上（该模块自己的错误映射）
+  - crates/platform/Cargo.toml                     # + wxlike-security
+  - crates/platform/tests/account_surfaces.rs      # 16 例
+  - crates/platform/tests/schema_snapshot.txt      # + users.deleted_at
+  - integration-requests/G02/G02-05.yaml
+  - integration-requests/G02/G02-05-migration.md   # 迁移草稿 + 回滚兼容说明
+
+entry_ids: >
+  本卡覆盖 G02-05 名下 23 条种子入口（SEED-0122…SEED-0127 桌面设置面板、
+  SEED-0225…SEED-0241 手机设置/账号页）。它们的 rendered_variant 仍是
+  TO_EXPAND_G00-01、action_id 仍是 TO_DEFINE_CONTRACT —— 展开与登记归 G00/G04/G13，
+  本卡只提供可调用的服务端面与 action_id 名单。
+
+action_ids:
+  - "profile.update        -> PUT  /api/profile（users.rs，G02 自有路由）"
+  - "preferences.patch     -> PUT  /api/preferences"
+  - "preferences.read      -> GET  /api/preferences、GET /api/preferences/sync"
+  - "account.step_up       -> POST /api/account/step-up（account.export / account.delete）"
+  - "export.request        -> POST /api/account/export"
+  - "export.status         -> GET  /api/account/export/{job_id}、GET /api/account/jobs"
+  - "export.link           -> POST /api/account/export/{job_id}/link"
+  - "export.download       -> GET  /api/account/export/download/{token}（故意不要求 Bearer）"
+  - "account.job.cancel    -> POST /api/account/jobs/{job_id}/cancel"
+  - "account.delete        -> POST /api/account/delete"
+
+# 落进 audit_log 的 action 名（actor 只记 user_id，detail 只记键名/字段名/作业 id）
+audit_action_names:
+  - profile.update
+  - preferences.patch
+  - account.step_up
+  - account.export.requested
+  - account.export.link
+  - account.job.cancel
+  - account.delete
 
 root_registration:
   - action: router_mount
     prefix: /api
+    status: done
+    note: >
+      `account::routes()` 已在 `Platform::router` 里 merge，而 `server/src/lib.rs`
+      早已 `.merge(wxlike_platform::Platform::router(...))`；因此不需要改根 router。
+      与 G02-01 同一口径（G02 拥有 platform 的账号类文件，handler 自己落地）。
     handlers:
-      - "GET  /api/preferences -> preferences::get + head_seq"
-      - "PATCH /api/preferences -> preferences::patch"
-      - "GET  /api/preferences/changes?since= -> preferences::since"
-      - "POST /api/account/export -> step_up::consume(account.export) + preferences::request_export"
-      - "POST /api/account/delete -> step_up::consume(account.delete) + preferences::request_delete"
-      - "GET  /api/account/export/{job_id}/link -> preferences::export_link"
-    note: 导出/注销 worker 由 G00 作业框架执行，本组只提供队列语义
-  - action: schema
-    proposal: schema/proposals/G02/identity.sql
-    tables: [identity_pref, identity_job, identity_export_link]
+      - "GET   /api/preferences -> account::get_preferences（偏好文档 + privacy 生效判定）"
+      - "PUT   /api/preferences -> account::put_preferences（字段级补丁，SERVER_KEYS 白名单）"
+      - "GET   /api/preferences/sync?since_seq=&limit= -> account::sync_preferences（seq 增量）"
+      - "PUT   /api/profile -> users::update_profile（profile.update，本卡补审计/原子/拒写）"
+      - "POST  /api/account/step-up -> account::step_up_grant（confirm_identity + throttle 闸门）"
+      - "POST  /api/account/export -> step_up::consume(account.export) + preferences::request_export"
+      - "GET   /api/account/export/{job_id} -> account::export_status"
+      - "POST  /api/account/export/{job_id}/link -> preferences::export_link（短时单次）"
+      - "GET   /api/account/export/download/{token} -> preferences::redeem_link + 媒体仓取件"
+      - "GET   /api/account/jobs -> account::list_jobs（含 PURGE_DOMAINS）"
+      - "POST  /api/account/jobs/{job_id}/cancel -> preferences::cancel"
+      - "POST  /api/account/delete -> step_up::consume(account.delete) + preferences::request_delete"
 
-cross_group:
-  - group: G00
-    need: 注销作业按 PURGE_DOMAINS 逐域清理；法定/业务必需记录由各域分域处置
-  - group: G03
-    need: 通知投递前调用 security::privacy::notification（dnd / 免打扰 / 预览）
-  - group: G05
-    need: 搜索可见性调用 security::privacy::searchable_by 与 profile_visibility
+  - action: worker_mount
+    owner: G00
+    status: requested
+    file: server/src/lib.rs
+    reason: >
+      导出与注销是后台作业，`crates/platform/src/account.rs::spawn_account_job_worker`
+      已经实现（与 `spawn_redpacket_sweeper` 同模式，第 140 行就在旁边起），
+      但 `server/` 不是 G02 归属文件，本组不碰。没起这个循环，
+      `identity_job` 会永远停在 queued —— 卡面"注销撤销所有 session 并发各域清理任务"
+      "导出只含本人可见数据、下载链接短时"在真实进程里一条都不成立（集成测试是直接
+      调 `run_account_jobs()` 才确定的）。
+    change: |
+      let _account_jobs = wxlike_platform::spawn_account_job_worker(
+          platform.clone(),
+          std::time::Duration::from_secs(30),
+      );
+
+  - action: cargo_dependency
+    owner: G00
+    status: requested-review
+    file: crates/platform/Cargo.toml
+    added: "wxlike-security = { path = \"../features/security\" }"
+    detail: >
+      /api/preferences 的"别人能不能搜到我、通知投不投"一律问
+      `wxlike_security::privacy`，不在平台侧重读一遍键（那会造出第二套口径）。
+      根 `Cargo.lock` 只有 1 行新增（同路径依赖），无新外部 crate。
+      日志脱敏测试里的手写 tracing 订阅器**没有**引入 tracing-subscriber。
+
+  - action: schema
+    owner: G00
+    status: requested
+    proposal: schema/proposals/G02/identity.sql
+    draft: integration-requests/G02/G02-05-migration.md
+    tables: [identity_pref, identity_job, identity_export_link]
+    altered: ["users.deleted_at INTEGER NULL（原地补列）"]
+    migration_number: 不新增
+    note: >
+      补列走 `db.rs::migrate_account()`，与 `migrate_security_columns` 同一手法：
+      `has_column("users","deleted_at")` 守卫 + 幂等 ALTER，**不占迁移编号**，
+      因此不与 G00-02 正在分配的编号冲突（冲突史见 G00-02 未提交稿重引入 G02
+      表丢失那次）。`schema/proposals/G02/identity.sql` 里请 G00 补上这一句：
+      `-- ALTER TABLE users ADD COLUMN deleted_at INTEGER;  （仅在缺列时执行）`
+      回滚兼容说明见 draft。
+
+  - action: risk_gate
+    owner: G00
+    status: requested
+    file: crates/risk/src/lib.rs（Action 枚举） + crates/platform/src/risk_mw.rs（映射表）
+    reason: >
+      本卡新增的写面（/api/account/step-up、/api/account/export、
+      /api/account/delete、/api/account/jobs/*/cancel）不在 AR-5 声明式闸门表里，
+      而 `Action` 枚举在 `crates/risk`，不是 G02 归属文件，本组不动。
+      临时缓解：`/api/account/step-up` 自带按账号的口令闸门
+      （`identity::throttle`，5 次失败/5 分钟封 15 分钟，`step_up_ticket_…` 用例断言
+      被闸住时一张证都不发）。请 G00 决定是否补 `Action::AccountLifecycle`。
+
+  - action: command_mount
+    owner: G00
+    status: requested
+    reason: 命令面挂载与生成绑定归 G00（G02 不改 apps/ 与 ui/src-tauri/）。
+    commands:
+      - identity.preferences.patch   # 契约 fixture prefsPatch
+      - identity.export.request      # 契约 fixture jobRequest
+      - identity.account.delete      # 契约 fixture jobRequest
+    contract_question: >
+      `contracts/domains/identity/contract.json` 的 `prefsPatch` 要求字段名是
+      `values`，卡面前一版实现走的是 `patch`。HTTP 面**两个名字都收**
+      （同时给 → 422，都不给 → 422），因此不需要改契约就能对接生成物；
+      请 G01/G00 确认生成绑定用哪一个，最好只保留一个。
+    out_of_contract: >
+      profile.update 在 identity-v1 里**没有**对应 command（本卡按 #114 落地 HTTP
+      面，没有替契约新增条目）；作业取消（account.job.cancel）与 step-up 领证同样
+      没有 command。要不要进 identity-v1，请 G00/G01 判定；本卡不自扩契约。
 
 acceptance_notes:
-  - 本地/服务端偏好分字段：主题/字号/密度只进本地存储（tests::local_prefs_never_touch_the_db）
-  - 跨端生效：identity_pref 带自增 seq，另一台设备用 since 增量拉取
-  - 敏感修改需验证：password/phone/device 走 step_up::consume
-  - 导出/注销是有审计的后台作业：identity_job 有 queued/running/done/failed 与错误原因
-  - 注销先撤销所有会话与刷新链，再入队清理（PURGE_DOMAINS）
-  - 导出链接短时且单次：10 分钟、用一次即失效
+  - 本地/服务端偏好分字段：theme/font_scale/density 只进 `LocalPrefs`（本地存储），
+    走服务端通道一律 422（preferences::tests::local_prefs_never_touch_the_db、
+    preferences_refuse_unknown_keys_…）
+  - 跨端生效：`identity_pref.seq` 单调游标 + `/api/preferences/sync?since_seq=` 增量，
+    响应带 `head_seq`（preferences_sync_…）
+  - 敏感修改需验证：export/delete 只认 step-up 通行证（用途封闭、单次消费、
+    验证不过不发证、连续猜口令 429）
+  - 导出/注销是有审计的后台作业：queued/running/done/failed/**cancelled** 五态，
+    failed 带用户可读原因；每个动作落 `audit_log`
+  - 注销先撤全部会话 + 刷新链 + step-up，再落 `users.deleted_at`，最后按
+    PURGE_DOMAINS 逐域清理；清理+脱敏+匿名化在**一个事务**里，失败整体回滚
+  - 余额非零拒绝清理（wallet not empty），不留半截状态；清零后走重试通道排**新**作业
+  - 法定/业务必需记录分域处置：`ledger`/`redpackets` 脱敏保留（资金守恒与对方账目），
+    其余按域删除
+  - 导出链接 10 分钟 + 单次兑换；产物按内容摘要存媒体仓，`artifact` 是摘要不是路径
+  - 坏数据不假装：`kind`/`status` 解析不出来 = `IdError::Corrupt` → 500，
+    worker 拒绝领取且**不先改状态**
 
 tests:
-  - preferences::tests::local_prefs_never_touch_the_db
-  - preferences::tests::patch_is_field_level_and_syncs_incrementally
-  - preferences::tests::export_job_lifecycle_and_single_use_link
-  - preferences::tests::delete_revokes_every_session_first
-  - privacy::tests::block_hides_everything
-  - privacy::tests::notifications_respect_hard_off_quiet_and_preview
+  command:
+    - cargo test -p wxlike-platform --test account_surfaces
+    - cargo test -p wxlike-identity
+    - cargo test -p wxlike-platform --test api
+    - cargo test -p wxlike-platform --test g02_sessions
+  case_map:
+    成功: preferences_round_trip_…, export_payload_actually_contains_…,
+      delete_revokes_sessions_…, profile_update_…
+    空结果: empty_results_are_reported_as_empty_not_fabricated
+    参数错误: preferences_refuse_unknown_keys_…,
+      delete_refuses_without_confirm_or_step_up_…, profile_update_…（原子性半段）
+    未授权: 各面 401/404 断言 + step_up_ticket_is_single_use_…,
+      jobs_are_listed_for_the_owner_only（别人的作业 404）
+    超时或断网: export_fails_closed_when_the_media_store_is_unreachable
+      （媒体仓 `put` 故障注入：作业必须 failed、artifact 为空、签链接 403，
+      恢复后是一条**新**作业）
+    取消: cancel_stops_a_queued_export_and_never_undoes_a_deletion
+    写操作重复提交: export_payload_…（同一条作业）、preferences_sync_…（UPSERT 不落第二行）、
+      delete_revokes_…（409 且不排第二条作业）、profile_update_…、step_up_ticket_…（单次）
+    坏数据: a_corrupt_job_row_is_an_error_not_a_fabricated_export +
+      preferences_jobs.rs 全部
+    日志脱敏/最小权限: logs_and_audit_never_carry_personal_values_or_credentials
+
+remaining_before_accept:
+  - G00 起 worker（见 root_registration 的 worker_mount）—— 没起则导出/注销在真实进程里永不推进
+  - 「设置重启与另一端生效」的真机证据，需 G10/G12/G13 的设置页接上本卡 HTTP 面
+  - 桌面/手机 command 挂载后的 entry_id 展开（23 条 SEED 仍是 TO_EXPAND_G00-01）
+  - G02-06（#112 短信商）与 G02-05 无耦合，本卡的「验证」用口令/TOTP，不依赖短信
