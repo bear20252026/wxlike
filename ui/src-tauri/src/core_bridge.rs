@@ -1004,6 +1004,94 @@ fn with_local<T>(
 }
 
 // ---------------------------------------------------------------------------
+// 可判定的撤销（#293 台账 1/2/3 条共用）
+// ---------------------------------------------------------------------------
+
+/// 必填字符串参数：缺失或空白**一律报错**。
+///
+/// 台账第 3 条的成因就是 `params.get(key).and_then(Value::as_str)
+/// .unwrap_or_default()`：参数没给时拿到空串，`remove("")` 必然落空，
+/// 返回值却照样是 `cancelled: true`。缺参数是调用方的错，要如实拒绝，
+/// 不许造一个"看着像参数"的值往下传。
+fn required_str(params: &Value, key: &str) -> Result<String, BridgeError> {
+    let raw = params
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::Validation(format!("缺少参数 {key}")))?;
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(BridgeError::Validation(format!("参数 {key} 不能为空")));
+    }
+    Ok(value.to_string())
+}
+
+/// 拿一张凭据真打一次需要鉴权的端点：`true` = 服务端仍然认它。
+///
+/// 这是"撤销到底生效没有"的唯一判据：`/api/logout` 回 2xx 只说明服务端收到了
+/// 请求，不说明那行会话真的删了。用独立的 `Http` 探，避免动当前会话的凭据槽。
+fn session_is_live(state: &AppState, token: &str) -> bool {
+    let mut probe = Http::new(state.http_base());
+    probe.token = Some(token.to_string());
+    probe.expect_json("GET", "/api/me", None).is_ok()
+}
+
+/// 服务端登出 + 回查确证：只有"服务端确实不再认这张凭据"才算成功。
+///
+/// 撤销没生效时**不清本地**：把一张仍然生效的凭据从本地抹掉，等于让人
+/// 连重试撤销的机会都没有（只剩"以为退出了"的假象）。
+///
+/// 这里走 `raw_json` 而不是 `AppState::logout()`：后者在 2xx 时顺手把本地
+/// token 清了，而"2xx"恰恰是本项目要怀疑的那一步（收了请求 ≠ 撤了会话）。
+/// 清本地由 [`sign_out_confirmed`] 在确证之后统一做。
+fn revoke_session_on_server(state: &AppState, token: &str) -> Result<(), BridgeError> {
+    if let Err(err) = state.raw_json("POST", "/api/logout", None) {
+        // 401 = 服务端早就不认这张票了，等同已撤销（否则人会被锁在退不出的会话里）。
+        if !err.contains("(401)") {
+            return Err(BridgeError::from(format!("服务端登出失败：{err}")));
+        }
+    }
+    if session_is_live(state, token) {
+        return Err(BridgeError::Dependency(
+            "服务端登出没有生效：旧凭据仍能调 /api/me，本地会话保持不变".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 当前会话凭据 + 服务端登出确证；没有凭据时如实报错（没什么可撤销）。
+fn sign_out_confirmed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+) -> Result<(), BridgeError> {
+    match state.auth_token() {
+        Some(token) => revoke_session_on_server(state, &token)?,
+        None => {
+            return Err(BridgeError::Unauth(
+                "当前没有已登录的会话，没有凭据可撤销".into(),
+            ))
+        }
+    }
+    state.http().token = None;
+    core.account
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    // kv 里那份凭据也要抹掉，否则 restore 会把这张已撤销的票再捡回来。
+    let _ = with_local(state, |s| {
+        s.kv_delete("auth_token")?;
+        s.kv_delete("account")
+    });
+    emit_core(
+        app,
+        "session.state",
+        "session",
+        json!({ "phase": "signed_out" }),
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // dispatch：全部已登记 action 的总入口
 // ---------------------------------------------------------------------------
 
@@ -1319,20 +1407,10 @@ fn act_identity_session_logout<R: tauri::Runtime>(
     core: &CoreState,
     _req: &CoreRequest,
 ) -> Result<Value, BridgeError> {
-    let _ = (app, core);
-    let _ = state.logout(); // 服务端撤销失败也照常清本地（不把人锁在旧会话里）
-    state.http().token = None;
-    core.account
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
-    let _ = with_local(state, |s| {
-        s.kv_delete("auth_token")?;
-        s.kv_delete("account")
-    });
-    let projection = json!({ "phase": "signed_out" });
-    emit_core(app, "session.state", "session", projection.clone());
-    Ok(json!({ "revoked": true }))
+    // 台账第 2 条：以前这里 `let _ = state.logout();` 把服务端撤销的成败丢在地上，
+    // 然后直接回 `{"revoked": true}`——token 在服务端照样能用。现在必须回查确证。
+    sign_out_confirmed(app, state, core)?;
+    Ok(json!({ "revoked": true, "server_revoked": true }))
 }
 
 fn act_identity_session_restore<R: tauri::Runtime>(
@@ -1431,21 +1509,10 @@ fn act_identity_qr_login_switch_account<R: tauri::Runtime>(
     core: &CoreState,
     _req: &CoreRequest,
 ) -> Result<Value, BridgeError> {
-    let _ = (app, core);
+    let _ = app;
+    sign_out_confirmed(app, state, core)?;
     stop_qr_poll(core);
-    state.http().token = None;
-    core.account
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
-    let _ = with_local(state, |s| s.kv_delete("auth_token"));
-    emit_core(
-        app,
-        "session.state",
-        "session",
-        json!({ "phase": "signed_out" }),
-    );
-    Ok(json!({ "revoked": true }))
+    Ok(json!({ "revoked": true, "server_revoked": true }))
 }
 
 fn act_sync_range_get<R: tauri::Runtime>(
