@@ -4,15 +4,15 @@
   "version": "0.1.0",
   "identifier": "dev.wxlike.ui",
   "build": {
-    "frontendDist": "../dist"
+    "frontendDist": "../../apps/desktop-web/dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "title": "wxlike",
-        "width": 960,
-        "height": 640
+        "width": 1180,
+        "height": 760
       }
     ],
     "security": {
