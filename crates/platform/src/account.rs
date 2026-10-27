@@ -1,4 +1,4 @@
-//! G02-05 账户三面（#114）：偏好、数据导出、注销。
+//! G02-05 账户四面（#114）：资料、偏好、数据导出、注销。
 //!
 //! 规则**不在这个文件里**——它们在 `wxlike-identity::preferences`（偏好与作业）和
 //! `wxlike-security::privacy`（可见性与通知判定）。审计卡 #114 的原文是"规则有、
@@ -7,7 +7,9 @@
 //! * 偏好只认 `SERVER_KEYS` 白名单，不认识的键 422，不静默存；
 //! * "别人能不能搜到我、通知投不投"一律问 `privacy::*`，不在这里重读一遍键；
 //! * 作业状态一律从库里读原文判定；读不出来是 500，**不折成 `export`/`queued`**
-//!   （旧代码的 `unwrap_or(JobKind::Export)` 能把一条注销作业读成可下载的导出）。
+//!   （旧代码的 `unwrap_or(JobKind::Export)` 能把一条注销作业读成可下载的导出）；
+//! * 导出与注销只认 step-up 通行证（契约 fixture `jobRequest` 的
+//!   `step_up_purpose`），不另开"顺手带个口令"的第二条验证通道。
 //!
 //! # 导出为什么不在请求路径里产出
 //!
@@ -16,6 +18,8 @@
 //! 同一个模式：服务端起周期任务，测试直接调函数，状态推进因此是确定的。
 //! 取件走 `export_link`/`redeem_link`（**短时 + 单次**）；产物按自身内容摘要
 //! 存在媒体仓里，`artifact` 就是那个摘要，不是路径，所以没有穿越面。
+//! 媒体仓写不进去（断网/供应商故障）时作业是 `failed` + 原因，
+//! **不会**留下 `done` 或产物地址。
 //!
 //! # 注销的顺序
 //!
@@ -25,6 +29,12 @@
 //! 也已经取不到**。用户行本身留到清理作业完成：`groups.owner_uid`、
 //! `communities.owner_uid`、`threads.created_by` 这几条外键没有 CASCADE，硬删
 //! 用户行会把无关的域顶坏。重复申请 → 409，不做第二次动作。
+//!
+//! # 取消的边界
+//!
+//! 排队中的导出可以撤回（`POST /api/account/jobs/{id}/cancel`）。注销作业按种类
+//! 拒绝撤回，理由与上面一致：撤销凭证没有回滚路径，"取消注销"会造出一个既没
+//! 登录能力又显示为正常的账号。
 
 use std::collections::BTreeMap;
 
@@ -38,6 +48,7 @@ use serde_json::{json, Value};
 use wxlike_identity::preferences::{
     self, Job, JobKind, JobStatus, ServerPrefs, EXPORT_SCOPES, PURGE_DOMAINS, SERVER_KEYS,
 };
+use wxlike_identity::throttle;
 use wxlike_security::privacy::{
     self as privacy_rule, MapPrefs, NotifyKind, PrefSource, PrivacyPrefs, SearchKey, Viewer,
     Visibility,
@@ -45,6 +56,7 @@ use wxlike_security::privacy::{
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::extract::ApiJson;
 use crate::Platform;
 
 /// 一次偏好同步最多返回多少条增量（游标翻页）。
@@ -55,6 +67,12 @@ const MAX_JOBS_PER_RUN: usize = 32;
 const MAX_FAIL_REASON_CHARS: usize = 60;
 /// 设备 id 的长度上限（与 `sessions` 模块同口径）。
 const MAX_DEVICE_ID_CHARS: usize = 64;
+/// step-up 口令闸门：同账号窗口内允许的失败次数。
+const STEP_UP_MAX_ATTEMPTS: i64 = 5;
+/// step-up 口令闸门的固定窗口长度。
+const STEP_UP_WINDOW_MS: i64 = 5 * 60 * 1000;
+/// 达到上限后的封禁时长。
+const STEP_UP_BLOCK_MS: i64 = 15 * 60 * 1000;
 /// 注销后 display name 的替换前缀（真名是个人数据，不能留）。
 const DELETED_NAME_PREFIX: &str = "deleted-";
 
@@ -65,13 +83,26 @@ pub fn routes() -> Router<crate::PlatformState> {
             get(get_preferences).put(put_preferences),
         )
         .route("/api/preferences/sync", get(sync_preferences))
+        // profile.update 的**路由**在 users.rs（G02 自有文件，WP-01 账号端点），
+        // 这里不再注册第二遍——两个 /api/profile 就是两套口径。
+        // 本卡补的是它的 G02-05 语义：审计、已注销账号拒写、空补丁报错。
+        .route("/api/account/step-up", post(step_up_grant))
         .route("/api/account/export", post(request_export))
         .route("/api/account/export/{job_id}", get(export_status))
         .route("/api/account/export/{job_id}/link", post(create_link))
         .route("/api/account/export/download/{token}", get(download))
         .route("/api/account/jobs", get(list_jobs))
+        .route("/api/account/jobs/{job_id}/cancel", post(cancel_job))
         .route("/api/account/delete", post(delete_account))
 }
+
+/// 本卡两个敏感动作的 step-up 用途。字符串与 `identity::step_up::PURPOSES`
+/// 以及契约 fixture `jobRequest.step_up_purpose` 的 enum 完全一致——
+/// 用途名一旦分叉，"要验证"就变成两张互不相认的通行证。
+pub const PURPOSE_EXPORT: &str = "account.export";
+pub const PURPOSE_DELETE: &str = "account.delete";
+/// 本卡可授予的 step-up 用途（封闭集合；`device.revoke` 归 #103）。
+const GRANTABLE_PURPOSES: [&str; 2] = [PURPOSE_EXPORT, PURPOSE_DELETE];
 
 /// 作业对外的形状。`kind`/`status` 只有在库里写得出来时才存在——
 /// 一条坏行进不到这里（`preferences::job` 就已经报错了）。
@@ -105,6 +136,10 @@ impl JobReply {
 struct PreferencesQuery {
     /// 客户端本地时区此刻是否在免打扰时段（服务端不知道用户的本地时间，
     /// 所以窗口判定归客户端，**投递/响铃/预览的判定仍归策略层**）。
+    ///
+    /// 这里保留 `Option`：缺参数与 `=false` **不是**同一个答案。旧写法
+    /// `unwrap_or(false)` 会把"客户端没告诉服务端"折成"现在不在免打扰时段"，
+    /// 于是响应里响铃判定看起来是确定的，实际是猜的。
     #[serde(default)]
     quiet_hours: Option<bool>,
 }
@@ -112,11 +147,29 @@ struct PreferencesQuery {
 #[derive(Deserialize, Default)]
 struct PreferencesPatch {
     /// 字段级补丁：只改列出的键，其余不动（两台设备各改各的不互相覆盖）。
+    /// 契约 fixture 里的名字是 `values`，两个都收，但**必须且只能给一个**。
     #[serde(default)]
-    patch: BTreeMap<String, String>,
+    patch: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    values: Option<BTreeMap<String, String>>,
     /// 这次变更归属哪台设备；留空则用当前会话记录的设备。
     #[serde(default)]
     device_id: String,
+}
+
+impl PreferencesPatch {
+    /// 取补丁本体。少了键、两个键都给、给成空补丁，一律算客户端漏了字段——
+    /// 当"什么都不改"处理会把一个 bug 变成一次静默的成功。
+    fn patch(&self) -> Result<&BTreeMap<String, String>> {
+        match (&self.patch, &self.values) {
+            (Some(_), Some(_)) => Err(PlatformError::BadInput("patch or values, not both")),
+            (None, None) => Err(PlatformError::BadInput("patch or values required")),
+            (Some(p), None) | (None, Some(p)) if p.is_empty() => {
+                Err(PlatformError::BadInput("empty patch"))
+            }
+            (Some(p), None) | (None, Some(p)) => Ok(p),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -127,15 +180,31 @@ struct SyncQuery {
     limit: Option<i64>,
 }
 
+/// 契约 fixture `jobRequest`：敏感动作只认 step-up 通行证，不给"顺手带个口令"
+/// 留第二条通道——两条验证路径迟早分叉成两套口径。
 #[derive(Deserialize, Default)]
-struct DeleteBody {
+struct JobRequest {
+    #[serde(default)]
+    step_up_purpose: String,
+}
+
+#[derive(Deserialize, Default)]
+struct DeleteRequest {
+    #[serde(default)]
+    step_up_purpose: String,
+    /// 显式确认位：缺省 false。少这一位，一个带 Bearer 的脚本就能把账号抹掉。
+    #[serde(default)]
+    confirm: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct StepUpGrantBody {
+    #[serde(default)]
+    purpose: String,
     #[serde(default)]
     password: String,
     #[serde(default)]
     totp_code: String,
-    /// 显式确认位：缺省 false。少这一位，一个带 Bearer 的脚本就能把账号抹掉。
-    #[serde(default)]
-    confirm: bool,
 }
 
 async fn get_preferences(
@@ -143,8 +212,9 @@ async fn get_preferences(
     authed: Authed,
     Query(q): Query<PreferencesQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let quiet = q.quiet_hours.unwrap_or(false);
-    Ok(Json(platform.preferences_document(&authed.user_id, quiet)?))
+    Ok(Json(
+        platform.preferences_document(&authed.user_id, q.quiet_hours)?,
+    ))
 }
 
 async fn put_preferences(
@@ -152,24 +222,18 @@ async fn put_preferences(
     authed: Authed,
     Json(body): Json<PreferencesPatch>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    if body.patch.is_empty() {
-        // 空补丁更可能是客户端漏了字段，而不是"故意什么都不改"。
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "empty patch",
-        ));
-    }
+    let patch = body.patch()?;
     let device = platform.patch_device(&authed, &body.device_id)?;
-    let keys = body.patch.keys().cloned().collect::<Vec<_>>();
-    platform.patch_preferences(&authed.user_id, &body.patch, &device)?;
-    // 审计只记改了哪些键——白名单内的键名不是个人数据，值不是。
+    let keys = patch.keys().cloned().collect::<Vec<_>>();
+    platform.patch_preferences(&authed.user_id, patch, &device)?;
+    // 审计只记改了哪些键——白名单内的键名不是个人数据，**值**才是。
     platform.audit(
         &authed.user_id,
         "preferences.patch",
         "preferences",
         &keys.join(","),
     );
-    Ok(Json(platform.preferences_document(&authed.user_id, false)?))
+    Ok(Json(platform.preferences_document(&authed.user_id, None)?))
 }
 
 async fn sync_preferences(
@@ -195,10 +259,61 @@ async fn sync_preferences(
     Ok(Json(json!({ "changes": changes, "head_seq": head })))
 }
 
+/// `POST /api/account/step-up`：为导出 / 注销换一张短时、单次的通行证。
+///
+/// 验证本体在 `identity::step_up`，口令/TOTP 的判定在 `security::confirm_identity`。
+/// 两个凭证都没给 → 422，不把"忘了带凭据"当成验证通过；sid 取不到 → 401，
+/// 不 `unwrap_or_default()` 造一个空 sid 的授权（那张证谁都能领）。
+async fn step_up_grant(
+    State(platform): State<crate::PlatformState>,
+    authed: Authed,
+    ApiJson(body): ApiJson<StepUpGrantBody>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    if !GRANTABLE_PURPOSES.contains(&body.purpose.as_str()) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unknown step-up purpose",
+        ));
+    }
+    if body.password.is_empty() && body.totp_code.is_empty() {
+        platform.audit(
+            &authed.user_id,
+            "account.step_up",
+            &body.purpose,
+            "missing_credentials",
+        );
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "password or totp_code required",
+        ));
+    }
+    // 先闸后验：这个端点是一张**口令预言机**（持有会话的人可以离线重试到
+    // 猜中），不闸就等于免费送第二条撞库通道。
+    platform.step_up_gate(&authed.user_id)?;
+    if !platform.confirm_identity(&authed.user_id, &body.totp_code, &body.password)? {
+        platform.step_up_denied(&authed.user_id);
+        platform.audit(&authed.user_id, "account.step_up", &body.purpose, "denied");
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid credentials",
+        ));
+    }
+    platform.step_up_passed(&authed.user_id);
+    let sid = platform.account_sid(&authed.token)?;
+    let expires_at = platform.grant_step_up(&authed.user_id, &sid, &body.purpose)?;
+    // 审计只记"给哪张用途发了证"。口令一个字节都不进审计，也不进日志。
+    platform.audit(&authed.user_id, "account.step_up", &body.purpose, "granted");
+    Ok(Json(
+        json!({ "purpose": body.purpose, "expires_at": expires_at }),
+    ))
+}
+
 async fn request_export(
     State(platform): State<crate::PlatformState>,
     authed: Authed,
+    ApiJson(body): ApiJson<JobRequest>,
 ) -> std::result::Result<(StatusCode, Json<JobReply>), ApiError> {
+    platform.take_step_up(&authed, PURPOSE_EXPORT, &body.step_up_purpose)?;
     let job = platform.request_export_job(&authed.user_id)?;
     platform.audit(&authed.user_id, "account.export.requested", &job.id, "");
     Ok((StatusCode::ACCEPTED, Json(JobReply::of(&job))))
@@ -252,12 +367,31 @@ async fn list_jobs(
     ))
 }
 
-/// `POST /api/account/delete`：口令/第二因子 + `confirm` 双确认，然后落标记、
+/// `POST /api/account/jobs/{id}/cancel`：撤回一条**还在排队**的作业。
+///
+/// 判定全在 `preferences::cancel`（只有 queued 可撤、注销作业按种类拒绝、
+/// 别人的作业与不存在同形）。这里只搬运，不重新决定。
+async fn cancel_job(
+    State(platform): State<crate::PlatformState>,
+    authed: Authed,
+    Path(job_id): Path<String>,
+) -> std::result::Result<Json<JobReply>, ApiError> {
+    let job = platform.cancel_account_job(&authed.user_id, &job_id)?;
+    platform.audit(
+        &authed.user_id,
+        "account.job.cancel",
+        &job.id,
+        job.kind.as_str(),
+    );
+    Ok(Json(JobReply::of(&job)))
+}
+
+/// `POST /api/account/delete`：step-up 通行证 + `confirm` 双确认，然后落标记、
 /// 撤销全部凭证。**这个响应就是这个令牌最后一次能认证成功。**
 async fn delete_account(
     State(platform): State<crate::PlatformState>,
     authed: Authed,
-    Json(body): Json<DeleteBody>,
+    ApiJson(body): ApiJson<DeleteRequest>,
 ) -> std::result::Result<(StatusCode, Json<Value>), ApiError> {
     if !body.confirm {
         return Err(ApiError::new(
@@ -265,20 +399,7 @@ async fn delete_account(
             "confirm must be true",
         ));
     }
-    if body.password.is_empty() && body.totp_code.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "password or totp_code required",
-        ));
-    }
-    // 必须赶在落标记之前验：`verify_credentials` 把已注销账号当作"用户不存在"。
-    if !platform.confirm_identity(&authed.user_id, &body.totp_code, &body.password)? {
-        platform.audit(&authed.user_id, "account.delete", &authed.user_id, "denied");
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid credentials",
-        ));
-    }
+    platform.take_step_up(&authed, PURPOSE_DELETE, &body.step_up_purpose)?;
     let (job, revoked) = platform.schedule_deletion(&authed.user_id)?;
     platform.audit(
         &authed.user_id,
@@ -299,17 +420,23 @@ async fn delete_account(
 
 impl Platform {
     /// 偏好文档：原始值 + 同步游标 + 由策略层算出来的生效判定。
-    pub fn preferences_document(&self, user_id: &str, quiet_hours: bool) -> Result<Value> {
+    ///
+    /// `quiet_hours` 是 `Option`：`None` = 客户端没说，此时响铃判定是**在"不在
+    /// 免打扰时段"这个假设下**算出来的，文档里用 `quiet_hours_known: false`
+    /// 明说，不把它伪装成确定答案。
+    pub fn preferences_document(&self, user_id: &str, quiet_hours: Option<bool>) -> Result<Value> {
         let c = self.db().lock();
         let prefs = preferences::get(&c, user_id)?;
         let head = preferences::head_seq(&c, user_id)?;
+        let quiet = quiet_hours.unwrap_or(false);
         Ok(json!({
             "values": prefs.values,
             "head_seq": head,
             "server_keys": SERVER_KEYS,
             "export_scopes": EXPORT_SCOPES,
+            "quiet_hours_known": quiet_hours.is_some(),
             "privacy": privacy_view(&prefs),
-            "notify": notify_view(&prefs, quiet_hours),
+            "notify": notify_view(&prefs, quiet),
         }))
     }
 
@@ -339,6 +466,10 @@ impl Platform {
     }
 
     /// 补丁归属的设备：body 给了就用 body 的，否则用当前会话里记的那台。
+    ///
+    /// **会话行找不到就报错**（401），不 `unwrap_or_default()` 造一台"空设备"：
+    /// 那条路径意味着令牌刚被撤销或库里的归属信息没了，把变更记到一台不存在的
+    /// 设备上，跨端同步就永远查不出是谁改的。
     fn patch_device(&self, authed: &Authed, provided: &str) -> Result<String> {
         if !provided.is_empty() {
             check_device_id(provided)?;
@@ -352,8 +483,74 @@ impl Platform {
                 |r| r.get(0),
             )
             .optional()?;
-        // 会话行没有设备信息 = 空串（历史会话确实没有这个字段），不是错误。
-        Ok(stored.flatten().unwrap_or_default())
+        match stored {
+            // 行在、`device_id` 是 NULL/空 = 历史会话确实没有这个字段，如实记空。
+            Some(value) => Ok(value.unwrap_or_default()),
+            None => Err(PlatformError::Unauthorized),
+        }
+    }
+
+    /// 当前令牌对应的会话 sid。**取不到就 401**。
+    ///
+    /// `sessions.rs` 里用 `unwrap_or_default()` 兜出一个空 sid；step-up 的主键是
+    /// `(user_id, sid, purpose)`，空 sid 的授权一旦签发，任何"同样取不到 sid"的
+    /// 请求都能消费它——通行证就此与设备脱钩。本卡不复用那个兜底。
+    fn account_sid(&self, token: &str) -> Result<String> {
+        self.session_sid(token)?.ok_or(PlatformError::Unauthorized)
+    }
+
+    /// step-up 的口令闸门（固定窗口 + 封禁，规则本体在 `identity::throttle`）。
+    ///
+    /// 桶键按账号，不按 IP：共用出口地址（公司/校园 NAT）下按 IP 封会把一整层
+    /// 用户一起关在门外，而撞库的目标始终是**这个账号**。
+    fn step_up_gate(&self, user_id: &str) -> Result<()> {
+        let limit = throttle::Limit {
+            max_attempts: STEP_UP_MAX_ATTEMPTS,
+            window_ms: STEP_UP_WINDOW_MS,
+            block_ms: STEP_UP_BLOCK_MS,
+        };
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        throttle::check(&c, &step_up_bucket(user_id), limit, now)?;
+        Ok(())
+    }
+
+    /// 记一次验证失败（达到阈值即封禁；封禁这件事要留在日志里）。
+    fn step_up_denied(&self, user_id: &str) {
+        let limit = throttle::Limit {
+            max_attempts: STEP_UP_MAX_ATTEMPTS,
+            window_ms: STEP_UP_WINDOW_MS,
+            block_ms: STEP_UP_BLOCK_MS,
+        };
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        match throttle::record_failure(&c, &step_up_bucket(user_id), limit, now) {
+            Ok(status) if status.blocked_until > now => {
+                tracing::warn!(user = %user_id, until = status.blocked_until, "step-up 口令闸门封禁");
+            }
+            Err(err) => tracing::error!(error = %err, "step-up 闸门记不上账"),
+            _ => {}
+        }
+    }
+
+    /// 验证通过即清零，不惩罚正常用户。
+    fn step_up_passed(&self, user_id: &str) {
+        let c = self.db().lock();
+        if let Err(err) = throttle::reset(&c, &step_up_bucket(user_id)) {
+            tracing::error!(error = %err, "step-up 闸门清不掉");
+        }
+    }
+
+    /// 校验用途串并消费一次通行证（单次）。
+    ///
+    /// 先比用途、后消费：一个写错的 `step_up_purpose` 不该把另一张**有效**的
+    /// 通行证吃掉（那会让用户以为"我验过了，怎么还要验"）。
+    fn take_step_up(&self, authed: &Authed, want: &'static str, provided: &str) -> Result<()> {
+        if provided != want {
+            return Err(PlatformError::BadInput("step_up_purpose"));
+        }
+        let sid = self.account_sid(&authed.token)?;
+        self.consume_step_up(&authed.user_id, &sid, want)
     }
 
     /// 申请导出。已有排队/执行中的导出时返回同一条作业（不重复打包）。
@@ -364,6 +561,18 @@ impl Platform {
             return Err(PlatformError::Blocked("account scheduled for deletion"));
         }
         Ok(preferences::request_export(&c, user_id, now)?)
+    }
+
+    /// 撤回一条排队中的作业。判定全在 `preferences::cancel`，这里只做
+    /// 错误形状的翻译（409 而不是 409 "already exists: …"）。
+    pub fn cancel_account_job(&self, user_id: &str, job_id: &str) -> Result<Job> {
+        validate_id(job_id)?;
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        preferences::cancel(&c, job_id, user_id, now).map_err(|err| match err {
+            wxlike_identity::IdError::Conflict(what) => PlatformError::Blocked(what),
+            other => other.into(),
+        })
     }
 
     /// 本人的一条作业。**别人的作业一律 404**：作业 id 不是存在性探测面
@@ -504,7 +713,13 @@ impl Platform {
     async fn run_export_job(&self, job: &Job) -> Result<()> {
         let bytes = self.export_document(&job.user_id)?;
         let sha = wxlike_core::msgmeta::sha256_hex(&bytes);
-        self.media_store().put(&sha, &bytes).await?;
+        if let Err(err) = self.media_store().put(&sha, &bytes).await {
+            // 底层 io/sqlite 文本只进服务端日志（它可能带路径），跨请求边界的那句
+            // 用固定措辞——用户在作业列表里看得到"为什么没导出来"，
+            // 但拿不到服务端文件系统形状。
+            tracing::error!(job = %job.id, error = %err, "export: 媒体仓写入失败");
+            return Err(PlatformError::Internal("export storage unreachable".into()));
+        }
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         preferences::finish(&c, &job.id, &sha, bytes.len() as i64, now)?;
@@ -550,7 +765,10 @@ impl Platform {
     ///
     /// 不设行数上限——"你的数据"少一行就是一份假的成功导出；体积失控由
     /// 媒体仓与下载链接的 10 分钟窗口承担，不是由裁剪内容承担。
-    fn export_document(&self, user_id: &str) -> Result<Vec<u8>> {
+    ///
+    /// `pub`：worker 用它，验收测试也要直接读一遍产物（"导出只含本人可见数据、
+    /// 不含凭据列"这条只能在内容上断言，看状态字段是不够的）。
+    pub fn export_document(&self, user_id: &str) -> Result<Vec<u8>> {
         let c = self.db().lock();
         let profile = rows_json(&c, SQL_PROFILE, user_id, PROFILE_COLS)?;
         let Some(owner) = profile.first().cloned() else {
@@ -606,6 +824,11 @@ fn wallet_balance(conn: &Connection, user_id: &str) -> Result<i64> {
         params![user_id],
         |r| r.get(0),
     )?)
+}
+
+/// step-up 口令桶：账号维度，前缀与登录桶隔开（`identity::throttle` 的键约定）。
+fn step_up_bucket(user_id: &str) -> String {
+    format!("step-up:{}", throttle::key_user(user_id))
 }
 
 fn check_device_id(s: &str) -> Result<()> {
@@ -731,13 +954,21 @@ pub fn spawn_account_job_worker(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
-            match state.run_account_jobs().await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(jobs = n, "account jobs finished"),
-                Err(err) => tracing::error!(error = %err, "account job worker: 一条作业失败"),
-            }
+            drain_account_jobs(&state).await;
         }
     })
+}
+
+/// 一轮作业的结果只写日志。
+///
+/// 不退出循环：一条卡住的作业（比如钱包还有余额）不该把整个账户作业队列
+/// 停掉——但那一条必须是 `failed` 状态、带原因，用户看得见（#114）。
+async fn drain_account_jobs(state: &crate::PlatformState) {
+    match state.run_account_jobs().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(jobs = n, "account jobs finished"),
+        Err(err) => tracing::error!(error = %err, "account job worker: 一条作业失败"),
+    }
 }
 
 /// 导出六个域的取数 SQL。每条只有一个 `?1`（本人 user id）参数，

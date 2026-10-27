@@ -133,6 +133,23 @@ pub struct ProfilePatch {
     pub signature: Option<String>,
 }
 
+impl ProfilePatch {
+    /// 补丁里出现了哪些字段名（审计用：字段名不是个人数据，值才是）。
+    pub fn changed_fields(&self) -> Vec<&'static str> {
+        let mut fields = Vec::new();
+        if self.name.is_some() {
+            fields.push("name");
+        }
+        if self.avatar.is_some() {
+            fields.push("avatar");
+        }
+        if self.signature.is_some() {
+            fields.push("signature");
+        }
+        fields
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct Profile {
     pub user_id: String,
@@ -270,11 +287,19 @@ impl Platform {
     }
 
     /// Applies only the fields present in the patch.
+    ///
+    /// G02-05（#114）的三条收紧：
+    ///
+    /// * **已注销账号一律拒写**（`deleted_at IS NULL`）：匿名化之后那行只是外键
+    ///   锚点，把它改回去等于让一个"已经不存在的账号"重新有名字；
+    /// * **先验全部字段、再在一个事务里写**：旧写法逐字段边验边写，`signature`
+    ///   畸形时 `name` 已经落库——一次"参数错误"的失败请求留下半套资料；
+    /// * 重名检查跳过已注销行，与 `verify_credentials` 的口径一致。
     pub fn update_profile(&self, user_id: &str, patch: &ProfilePatch) -> Result<Profile> {
         let c = self.db().lock();
         let exists: Option<String> = c
             .query_row(
-                "SELECT id FROM users WHERE id = ?1",
+                "SELECT id FROM users WHERE id = ?1 AND deleted_at IS NULL",
                 params![user_id],
                 |r| r.get::<_, String>(0),
             )
@@ -282,11 +307,21 @@ impl Platform {
         if exists.is_none() {
             return Err(PlatformError::NotFound);
         }
-        if let Some(name) = &patch.name {
-            let name = validate::name(name)?;
+        let name = patch.name.as_ref().map(|v| validate::name(v)).transpose()?;
+        let avatar = patch
+            .avatar
+            .as_ref()
+            .map(|v| validate::avatar(v))
+            .transpose()?;
+        let signature = patch
+            .signature
+            .as_ref()
+            .map(|v| validate::signature(v))
+            .transpose()?;
+        if let Some(name) = &name {
             let taken: Option<String> = c
                 .query_row(
-                    "SELECT id FROM users WHERE name = ?1 AND id <> ?2",
+                    "SELECT id FROM users WHERE name = ?1 AND id <> ?2 AND deleted_at IS NULL",
                     params![name, user_id],
                     |r| r.get::<_, String>(0),
                 )
@@ -294,23 +329,27 @@ impl Platform {
             if taken.is_some() {
                 return Err(PlatformError::Conflict("name".into()));
             }
-            c.execute(
+        }
+        let tx = c.unchecked_transaction()?;
+        if let Some(name) = &name {
+            tx.execute(
                 "UPDATE users SET name = ?1 WHERE id = ?2",
                 params![name, user_id],
             )?;
         }
-        if let Some(avatar) = &patch.avatar {
-            c.execute(
+        if let Some(avatar) = &avatar {
+            tx.execute(
                 "UPDATE users SET avatar = ?1 WHERE id = ?2",
-                params![validate::avatar(avatar)?, user_id],
+                params![avatar, user_id],
             )?;
         }
-        if let Some(signature) = &patch.signature {
-            c.execute(
+        if let Some(signature) = &signature {
+            tx.execute(
                 "UPDATE users SET signature = ?1 WHERE id = ?2",
-                params![validate::signature(signature)?, user_id],
+                params![signature, user_id],
             )?;
         }
+        tx.commit()?;
         drop(c);
         self.profile_of(user_id)
     }
@@ -513,7 +552,24 @@ async fn update_profile(
     authed: Authed,
     ApiJson(patch): ApiJson<ProfilePatch>,
 ) -> std::result::Result<Json<Profile>, ApiError> {
-    Ok(Json(platform.update_profile(&authed.user_id, &patch)?))
+    let changed = patch.changed_fields();
+    if changed.is_empty() {
+        // 三个字段都没给：更可能是客户端漏了字段，而不是"故意什么都不改"。
+        // 回一个 200 + 原样资料会把这次调用记成一次成功的 profile.update。
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "empty profile patch",
+        ));
+    }
+    let profile = platform.update_profile(&authed.user_id, &patch)?;
+    // 审计记**改了哪些字段**，不记改成什么：昵称/签名/头像路径都是个人数据。
+    platform.audit(
+        &authed.user_id,
+        "profile.update",
+        "profile",
+        &changed.join(","),
+    );
+    Ok(Json(profile))
 }
 
 async fn public_profile(
