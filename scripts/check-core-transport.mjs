@@ -33,6 +33,12 @@
  * 一个文件的内容来证明规则**真的可达**（注入证明），而不去改仓库里的文件——改文件会
  * 被并行用例读到半态，那种"绿"不作数。
  *
+ * `--json` 会把 `rules`（规则名清单）一起吐出来，用例据此逐条喂人造违例并断言它报红，
+ * 同时断言"规则清单里的每一条都有对应的注入用例"——以后往 `RULES` 里加一条却忘了配
+ * 用例，测试就红，而不是多一条永远没人打得到的死规则。第一版就是这么漏的：真实写法
+ * `const tok = token();`（files/video 里就有）不在任何 pattern 里，于是"钱包改回读
+ * 独立 bearer"那条注入证明根本打不红，补成了 `legacy_bearer_call`。
+ *
  * 用法：
  *   node scripts/check-core-transport.mjs                 # 人读输出
  *   node scripts/check-core-transport.mjs --json          # 机读（违例逐条带位置）
@@ -60,6 +66,13 @@ export const RULES = {
     pattern: /\.token\(\)|localStorage\.getItem\(\s*"[^"]*(?:token|bearer)[^"]*"|authorization:\s*[`"']Bearer|\bsaveSession\(|\bsetBaseUrl\(/,
     why: "从独立 localStorage 会话里取 bearer（#294 要删的就是这条依赖）",
   },
+  // 这一条是被注入证明逼出来的：仓库里真实的取 bearer 写法就是 `const tok = token();`
+  // （`features/files/api.ts:47/94/122`、`features/video/api.ts:65`），上一版只认
+  // `.token()`（动态导入那一种），所以"钱包改回读独立 bearer"这条注入根本打不红。
+  legacy_bearer_call: {
+    pattern: /\btoken\s*\(\s*\)/,
+    why: "直接调用 lib/http 的 token() 取独立 localStorage 里的 bearer",
+  },
   legacy_base: {
     pattern: /\bbaseUrl\(\)|localStorage\.getItem\(\s*"wxlike-server/,
     why: "服务器地址取自独立 localStorage，而不是核心会话里的那一份",
@@ -76,16 +89,18 @@ export const SHELL_CORE_DIRS = new Set(["auth", "chat", "contacts", "search", "s
 export const LEGACY_EGRESS = "lib/http.ts";
 
 /**
- * 债台账：六个未迁移域的现存违例，实测于 71cc90c5（`--emit-baseline`）。
+ * 债台账：六个未迁移域的现存违例，实测于 `--emit-baseline`。
  * 每个域的 provider 落地后，删掉对应条目并把域改成 core；条数变少要同时把这里降下来。
+ * （`legacy_bearer_call` 是补出来的规则：台账因此比 71cc90c5 多 5 条裸 `token()`。
+ * 数字变长只可能是"看得更清"，闸门本身仍然只许降不许升。）
  */
 export const DEBT_BASELINE = {
   content: { files: ["features/content/MomentsPage.tsx", "features/content/api.ts"], counts: { legacy_transport: 21, legacy_user: 1 } },
-  video: { files: ["features/video/api.ts"], counts: { legacy_base: 1, legacy_transport: 9, legacy_user: 1 } },
+  video: { files: ["features/video/api.ts"], counts: { legacy_base: 1, legacy_bearer_call: 1, legacy_transport: 9, legacy_user: 1 } },
   calls: { files: ["features/calls/api.ts"], counts: { legacy_transport: 12 } },
-  files: { files: ["features/files/api.ts"], counts: { legacy_base: 3, direct_fetch: 2, legacy_token: 2, legacy_transport: 8 } },
+  files: { files: ["features/files/api.ts"], counts: { legacy_base: 3, direct_fetch: 2, legacy_token: 2, legacy_bearer_call: 3, legacy_transport: 8 } },
   mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
-  discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1 } },
+  discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1, legacy_bearer_call: 1 } },
 };
 
 const CONFIG_SOURCES = [
@@ -261,10 +276,11 @@ function scan(sources) {
     const dynamicHttpImport = /import\(\s*"[^"]*lib\/http"\s*\)/.test(text);
     const imports = (symbol) => httpImports.some((clause) => new RegExp(`\\b${symbol}\\b`).test(clause));
     const gate = {
-      // `request(` / `userId(` 这种词在界面里太常见（Notification 权限也叫 request）。
+      // `request(` / `userId(` / `token()` 这种词在界面里太常见（Notification 权限也叫 request）。
       // 只有**确实从 lib/http 引了这些符号**的文件才算碰了遗留 transport/遗留身份。
       legacy_transport: imports("request") || dynamicHttpImport,
       legacy_user: imports("userIdSafe") || imports("userId"),
+      legacy_bearer_call: imports("token") || dynamicHttpImport,
     };
     text.split("\n").forEach((line, index) => {
       const trimmed = line.trim();
@@ -519,6 +535,7 @@ function main() {
   }
   const result = runChecks(readOverridesFromEnv());
   const payload = {
+    rules: Object.keys(RULES),
     domains: result.domains.map((d) => ({ ...d, violations: result.ledger[d.featureDir]?.counts ?? {} })),
     routes: result.routes,
     bridgeArms: result.bridgeArms,
