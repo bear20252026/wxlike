@@ -125,6 +125,18 @@ export const ACTIONS = {
   groupKick: "relations.group.kick",
   groupSettings: "relations.group.settings.set",
 
+  // 钱包域（#293 提供者 / #294 消费）。名单与 `core_bridge.rs` 的 `wallet_router`
+  // 逐条对齐；`scripts/check-core-transport.mjs` 会把这里与 `lib/domain-registry.ts`
+  // 对一遍，两边写歪任一处都红。`redpacketList` 服务端没有路由，桥如实回
+  // NOT_IMPLEMENTED —— 登记它不是为了假装能用，而是为了让这个路径不许回落到旧 HTTP。
+  walletBalanceGet: "wallet.balance.get",
+  walletLedgerPage: "wallet.ledger.page",
+  walletTransfer: "wallet.transfer",
+  walletRedpacketCreate: "wallet.redpacket.create",
+  walletRedpacketGet: "wallet.redpacket.get",
+  walletRedpacketClaim: "wallet.redpacket.claim",
+  walletRedpacketList: "wallet.redpacket.list",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",

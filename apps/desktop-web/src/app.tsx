@@ -33,6 +33,7 @@ import { StickerPanel } from "./features/content/StickerPanel";
 import { ContentApi } from "./features/content/api";
 import { CallPanel } from "./features/calls/CallPanel";
 import { navigate } from "./shell/router";
+import { DOMAIN_BY_ROUTE, type DomainStatus } from "./lib/domain-registry";
 
 /** Module-level ports so their identity is stable across renders (effects that
  *  depend on `ports` would otherwise re-run every render). */
@@ -189,24 +190,86 @@ function PageContent({ route }: { route: Route }) {
   }
 }
 
+/**
+ * 域会话状态门（#294）。
+ *
+ * 卡面写得很硬：**"页面能点"不等于"完成"**。所以七域里每一域的活动页顶部都必须
+ * 自己说清"我现在的会话来源是什么"：
+ *
+ * - 已迁移（钱包）：说明它经认证 Rust 核心，并按当前宿主来源（真核心 / 开发夹具 /
+ *   没有核心）如实区分——夹具绝不能伪装成"已接通"；
+ * - 未迁移（内容/视频/通话/文件/小程序/发现）：**显式阻塞**，写清缺 provider、
+ *   数据不是服务端真值、打包宿主里遗留出口还会被 CSP 拦掉。
+ *
+ * 文案与 `lib/domain-registry.ts` 同源；用例读的是 `data-testid`，不是截图。
+ */
+function DomainSessionGate({
+  route,
+  source,
+}: {
+  route: Route;
+  source: "tauri" | "fixture" | "unavailable";
+}) {
+  const domain: DomainStatus | undefined = DOMAIN_BY_ROUTE[route.id];
+  if (!domain) return null;
+
+  if (domain.state === "core") {
+    const text =
+      source === "tauri"
+        ? `钱包：读写经认证 Rust 核心会话（provider #293 @ ${domain.providerSha}）；Bearer 与服务器地址不进界面`
+        : source === "fixture"
+          ? `钱包：当前是开发夹具核心（${domain.providerSha ?? "?"} 的桥未挂载），页面数据不连服务端，不作为验收证据`
+          : "钱包：本宿主没有 Rust 核心，所有钱包请求都会显式阻塞，不会回落到旧 localStorage 会话";
+    return (
+      <p
+        role="status"
+        data-testid={`domain-state-${domain.id}`}
+        className={`mx-auto w-full max-w-2xl rounded-lg border px-3 py-2 text-xs ${
+          source === "tauri"
+            ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+            : "border-amber-200 bg-amber-50 text-amber-800"
+        }`}
+      >
+        {text}
+      </p>
+    );
+  }
+
+  return (
+    <p
+      role="alert"
+      data-testid={`domain-blocked-${domain.id}`}
+      className="mx-auto w-full max-w-2xl rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
+    >
+      {domain.label}：未接入认证 Rust 核心（阻塞，非成功）。{domain.reason}；打包宿主里这条遗留 HTTP
+      出口还会被宿主 CSP（connect-src 只有 ipc:）拦掉。本页显示的不是服务端真值，不能当验收依据。
+    </p>
+  );
+}
+
 function AuthenticatedShell({
   route,
   onOpenSearch,
   note,
+  source,
 }: {
   route: Route;
   onOpenSearch: () => void;
   note?: string;
+  source: "tauri" | "fixture" | "unavailable";
 }) {
   return (
     <ShellFrame route={route} title={routeTitle(route)} onOpenSearch={onOpenSearch} note={note}>
-      <PageContent route={route} />
+      <>
+        <DomainSessionGate route={route} source={source} />
+        <PageContent route={route} />
+      </>
     </ShellFrame>
   );
 }
 
 function AppView() {
-  const { core, platform, store, note } = useApp();
+  const { core, platform, store, note, source } = useApp();
   const state = useAppState();
   const toast = useToast();
   const { route, go } = useRoute();
@@ -337,7 +400,7 @@ function AppView() {
 
   return (
     <>
-      <AuthenticatedShell route={target} note={note} onOpenSearch={() => setSearchOpen(true)} />
+      <AuthenticatedShell route={target} note={note} source={source} onOpenSearch={() => setSearchOpen(true)} />
       <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
     </>
   );
