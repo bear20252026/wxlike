@@ -374,9 +374,10 @@ async fn malformed_quote_of_is_400_and_stores_nothing() {
     // 4 次坏请求一条也没落库：库里只有锚点 + 那条"无引用"
     let rows = wait_rows(&app, &ta, &conv, 2).await;
     assert_eq!(rows.len(), 2, "非法引用不该产生行：{rows:?}");
-    for row in rows.iter().filter(|r| r["text"] == "坏引用") {
-        panic!("坏引用居然落库了：{row}");
-    }
+    assert!(
+        rows.iter().all(|r| r["text"] != "坏引用"),
+        "坏引用居然落库了：{rows:?}"
+    );
 
     stack.shutdown(std::time::Duration::from_secs(2)).await;
 }
