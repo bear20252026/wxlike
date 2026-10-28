@@ -153,6 +153,7 @@ impl MediaService {
         let upload_id = ids::opaque_id("up");
         let chunk_size = self.config.max_chunk_bytes.max(1);
         let expires_at = now + self.config.session_ttl_ms;
+        let declared = req.digest.to_ascii_lowercase();
         {
             let c = self.db.lock();
             c.execute(
@@ -174,18 +175,33 @@ impl MediaService {
                 ],
             )?;
         }
-        Ok(UploadSession {
-            upload_id,
-            purpose: req.purpose,
-            name,
-            mime,
-            declared_size: req.size,
-            offset: 0,
-            chunk_size,
-            status: UploadStatus::Open,
-            expires_at,
-            object_id: None,
-        })
+        self.attach_if_instant(owner_id, &upload_id, &declared, req.size)?;
+        self.upload_status(owner_id, &upload_id)
+    }
+
+    /// 秒传：摘要对应的对象已经就绪、字节确实还在媒体仓里，就把这次会话直接落成
+    /// `completed`——客户端因此一个分片都不用送，后续 `upload_complete` 走已完成分支
+    /// 返回 `file_id`（`newly_stored: false`）。
+    ///
+    /// 三个条件必须同时成立：`status = 'ready'`、声明大小与对象一致、store 里真取得出
+    /// 这个对象。任何一条不满足就退回正常上传路径——宁可多传一次，也不能把引用挂到
+    /// 取不出字节的行上。第二个上传者不会新增 `media_object` 行（`ON CONFLICT DO NOTHING`
+    /// 保留首次的 owner 与 mime），只多一条 `media_ref` 与一行 `media_file`。
+    fn attach_if_instant(
+        &self,
+        owner_id: &str,
+        upload_id: &str,
+        digest: &str,
+        size: u64,
+    ) -> Result<()> {
+        let Some(record) = object_by_id_conn(&self.db.lock(), digest)? else {
+            return Ok(());
+        };
+        if record.status != "ready" || record.size != size || self.store.size(digest)?.is_none() {
+            return Ok(());
+        }
+        let row = self.upload_row(owner_id, upload_id)?;
+        self.finish_upload(&row, digest, size).map(|_| ())
     }
 
     fn check_upload_quota(&self, owner_id: &str, incoming: u64) -> Result<()> {
