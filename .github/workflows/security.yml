@@ -41,8 +41,6 @@ jobs:
         run: python -m sourceaudit provenance check --root .
       - name: SBOM drift
         run: python -m sourceaudit sbom check --root .
-      - name: NOTICE coverage
-        run: python -m sourceaudit notice check --root .
       - name: offline advisory policy
         run: python -m sourceaudit advisories check --root . --offline
       - name: authorization matrix

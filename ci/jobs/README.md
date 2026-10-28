@@ -21,7 +21,7 @@ directly.
 | C7b | `web-v2` | yes | ui | `apps/desktop-web` (React + Vite, G10): `npm ci` → typecheck → lint → test → build, plus `packages/mini-sdk` contract-parity tests |
 | C8 | `flutter`, `android`, `ios` | yes\* | mobile, contract or rust | UniFFI bindings regenerate, `flutter analyze`, `flutter test`, release-mode APK with symbol/signature evidence. \*`ios` records `apps/mobile/ios` absence as a tracked gap; the release job fails closed |
 | C9 | `desktop`, `desktop-package` | yes | desktop or ui | Tauri command tests; Windows/macOS/Linux installers; updater signature negative test; per-platform manifest with hashes |
-| C10 | `audit` | yes | rust or ci | typos, `cargo deny`, `cargo audit` (root and Tauri), both lockfiles `--locked`, action pins, workflow policy, composed-workflow freshness |
+| C10 | `audit` | yes | rust or ci | typos, `cargo deny check advisories bans sources`（许可证不在闸内）, `cargo audit` (root and Tauri), both lockfiles `--locked`, action pins, workflow policy, composed-workflow freshness |
 | C11 | `coverage`, `unwrap`, `image`, `e2e`, `performance` | yes | rust, contract or ci | Incremental security-path coverage; no new `unwrap()/expect()`; container image constraints and smoke; HTTP e2e (success/empty/param/unauthorized/timeout/cancel/restart) and measured latency/throughput budgets |
 | — | `gate` | yes | always | Aggregates all of the above. Failed/cancelled dependencies fail; skipped dependencies pass only when C0 selected them out |
 

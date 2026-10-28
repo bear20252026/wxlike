@@ -31,13 +31,6 @@ class FakeRepo:
             'checksum = "' + "a" * 64 + '"\n',
             encoding="utf-8",
         )
-        (self.root / "THIRD-PARTY-NOTICES.md").write_text(
-            "# Third-party notices\n\n| crate | version | license | used for |\n|---|---|---|---|\n"
-            "| serde | 1.0 | MIT | serialization |\n\n"
-            "## Vendored code\n\n| file | upstream | license | what |\n|---|---|---|---|\n"
-            "| `ui/src/vendor/x.ts` | demo | MIT | demo |\n",
-            encoding="utf-8",
-        )
         (self.root / "ui/src/vendor").mkdir(parents=True)
         self.vendored = self.root / "ui/src/vendor/x.ts"
         # 必须按字节写：文本模式在 Windows 会把换行翻成 CRLF，sha256 立刻对不上
@@ -45,15 +38,6 @@ class FakeRepo:
         (self.root / "third_party/reviews/patches").mkdir(parents=True)
         (self.root / "third_party/reviews/patches/UP-DEMO-x.md").write_text(
             "# UP-DEMO x.ts\n\n- 改了什么：无（原样）\n- 复核：sha256\n", encoding="utf-8"
-        )
-        self.write_json(
-            "third_party/reviews/license-policy.json",
-            {
-                "project_license": "AGPL-3.0-only",
-                "allow": [{"id": "MIT"}, {"id": "AGPL-3.0-only"}],
-                "review": [{"id": "MPL-2.0", "note": "文件级"}],
-                "deny": [{"id": "BUSL-1.1"}, {"id": "NOASSERTION", "note": "未声明"}],
-            },
         )
         self.write_json("third_party/reviews/exclusions.json", {"rules": [{"id": "EXCL-ENTERPRISE", "note": "专有子树"}]})
         self.registry = {

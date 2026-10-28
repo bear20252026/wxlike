@@ -370,5 +370,47 @@ class MergedManifestScopeTest(unittest.TestCase):
         )
 
 
+class SupplyChainLintScopeTest(unittest.TestCase):
+    """`cargo deny` 只准跑三项：advisories / bans / sources。
+
+    许可证这道闸已按 G00 决定删除（本项目只做内部研究、不对外分发）。
+    这里把它钉住：谁把裸命令 `cargo deny check` 写回任何作业或生效 workflow，
+    licenses 就跟着回来了——而 `deny.toml` 现在**故意**是空名单，裸命令会一次
+    报 500+ 条 `rejected`。那不是回归，是这道闸已删的证据，所以裸命令不能出现在
+    会被执行的地方。
+    """
+
+    # `cargo deny check` 与 `cargo-deny check` 两种写法都要抓到；`cargo check` 是
+    # 构建命令，绝不能顺手匹配上——那会让这条测试天天红。
+    DENY = re.compile(r"cargo[\s-]+deny[\s-]+check(?P<rest>.*)$")
+
+    def _scan(self, path: Path) -> list[str]:
+        bad = []
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            match = self.DENY.search(line)
+            if not match:
+                continue
+            lints = match.group("rest").strip().strip('"').split()
+            if lints != ["advisories", "bans", "sources"]:
+                bad.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
+        return bad
+
+    def test_cargo_deny_never_runs_the_license_lint(self):
+        targets = sorted(JOBS.glob("*/job.yml"))
+        targets += sorted((ROOT / "ci" / "jobs" / "generated").glob("*.yml"))
+        targets += sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        offenders: list[str] = []
+        for path in targets:
+            offenders.extend(self._scan(path))
+        self.assertEqual(
+            offenders,
+            [],
+            "上面这些行调用 cargo deny 时没有显式列出 advisories bans sources；"
+            "裸跑或带 licenses 会把已删除的许可证闸带回合并阻塞。",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

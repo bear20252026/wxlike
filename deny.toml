@@ -1,38 +1,23 @@
-# cargo-deny 配置：许可证 / 安全公告 / 依赖来源三道闸。
+# cargo-deny 配置：安全公告 / 依赖重复 / 依赖来源三道闸。
 #
-# 为什么这个项目需要它：`THIRD-PARTY-NOTICES.md` 里逐条登记了每个依赖的许可，
-# 但那是**人写的**——新加一个依赖时没人会主动去登记。这里让工具来盯：
-# 出现清单外的许可证、或 RustSec 报了已知漏洞，`cargo deny check` 直接红。
+# 许可证这道闸已删除（G00 决定）：本项目只做内部研究、不对外分发，
+# 加依赖不需要登记许可、不需要补白名单、不需要清单证据。
+# CI 只跑 `cargo deny check advisories bans sources`——licenses 这项不被调用，
+# 所以任何许可状态都拦不住合并。
 #
-# 用法：
-#   cargo deny check            # 全查
-#   cargo deny check licenses   # 只查许可证
-#   cargo deny check advisories # 只查 CVE
+# 为什么保留一个空的 [licenses] 段而不是整段删掉：cargo-deny 0.20 没有
+# "关掉某个 lint"的配置写法（`config.file = "disable"` 与顶层 `version = 2`
+# 都被它当作未知键拒绝），而段缺失时裸跑 `cargo deny check` 会退回内置默认
+# （allow 为空、未登记即拒绝），一次报 500+ 条红——那才是给自己找的麻烦。
+# 空名单 + 不被调用，才是"这道闸不拦任何东西"。
+#
+# 本地想看全量结果（等价于 CI 的判断）：
+#   cargo deny check -A rejected            # licenses 仍跑，但 rejected 一律放行
+#   cargo deny check advisories bans sources
 
 [licenses]
-# 与本项目 AGPL-3.0 兼容、且已在 THIRD-PARTY-NOTICES 里登记过的许可证。
-# 加白名单前先确认两件事：**能兼容 AGPL**、**已在清单里登记**。
-allow = [
-    "MIT",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "ISC",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "0BSD",
-    "BSL-1.0",
-    "Zlib",
-    "CC0-1.0",
-    "Unicode-3.0",
-    # UniFFI 的绑定生成器（crates/ffi）
-    "MPL-2.0",
-    # webpki-roots 的根证书**数据**（Mozilla CA bundle），宽松许可，兼容 AGPL
-    "CDLA-Permissive-2.0",
-    # 本项目自身
-    "AGPL-3.0-only",
-]
-# 许可证文本识别需要一点模糊匹配：有些 crate 的 LICENSE 文件是拼接的。
-confidence-threshold = 0.9
+# 名单为空是刻意的：这里不再维护"哪些许可可以用"。
+allow = []
 
 [bans]
 # 同一个 crate 出现多个版本不一定是错（serde 生态很常见），但要能看见。

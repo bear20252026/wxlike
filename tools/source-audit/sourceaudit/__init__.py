@@ -4,5 +4,5 @@
 一个需要维护依赖树的东西。
 """
 
-__all__ = ["advisories", "authz", "cli", "licenses", "model", "notice", "provenance", "release", "sbom", "util"]
+__all__ = ["advisories", "authz", "cli", "model", "provenance", "release", "sbom", "util"]
 __version__ = "1.0"

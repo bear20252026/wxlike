@@ -29,7 +29,7 @@ cargo clippy -p wxlike-media --all-targets -- -D warnings   # 通过
 cargo fmt --check -p wxlike-media                            # 通过
 python scripts/quality-gate.py                               # 通过（魔法数 159→154，其余持平）
 typos                                                        # 通过
-cargo deny check                                             # 通过
+cargo deny check advisories bans sources                     # 通过（许可证不在闸内）
 ```
 
 ## 待验清单（本机物理上跑不了，不做假绿）

@@ -1,5 +1,9 @@
 # NOTICE 缺口索引（2026-10-24 快照）
 
+> **本清单已作废（2026-10-28）**：许可证这道闸已按 G00 决定删除——`sourceaudit notice`
+> 门禁与 `notice-waivers.json` 一并移除，NOTICE 覆盖不再阻断任何检查。下面的表是当时的
+> 快照，留着只为了回答"当初缺哪些"，不是待办。
+
 `THIRD-PARTY-NOTICES.md` 由 G00 维护（根文件，G17 无写权限）。本文件是**给 G00 的
 待办清单**，数据来自 `python -m sourceaudit notice check`，不是手抄。
 

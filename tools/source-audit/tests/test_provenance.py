@@ -52,13 +52,6 @@ class ProvenanceTest(unittest.TestCase):
         with self.assertRaises(UsageError):
             resolve_inside(self.repo.root, "../../etc/passwd")
 
-    def test_unknown_license_blocks_vendoring(self) -> None:
-        reg = self.repo.load_json("third_party/reviews/registry.json")
-        reg["files"][0]["license_spdx"] = "NOASSERTION"
-        self.repo.write_json("third_party/reviews/registry.json", reg)
-        report = provenance.check(self.repo.root)
-        self.assertIn("PROV-LICENSE", [f.code for f in report.blocking])
-
     def test_short_commit_is_rejected(self) -> None:
         reg = self.repo.load_json("third_party/reviews/registry.json")
         reg["upstreams"][0]["commit"] = "abc1234"
@@ -69,9 +62,15 @@ class ProvenanceTest(unittest.TestCase):
         self.repo.rm("third_party/reviews/patches/UP-DEMO-x.md")
         self.assertIn("PROV-PATCHLOG", self.codes())
 
-    def test_notice_must_name_the_file(self) -> None:
-        (self.repo.root / "THIRD-PARTY-NOTICES.md").write_text("# empty\n", encoding="utf-8")
-        self.assertIn("PROV-NOTICE", self.codes())
+    def test_license_and_notice_are_not_criteria(self) -> None:
+        """许可与 NOTICE 都不作判据（G00 决定）：缺登记不红，来源核不上才红。"""
+        reg = self.repo.load_json("third_party/reviews/registry.json")
+        reg["files"][0]["license_spdx"] = "NOASSERTION"
+        del reg["upstreams"][0]["license_evidence"]
+        self.repo.write_json("third_party/reviews/registry.json", reg)
+        self.repo.rm("THIRD-PARTY-NOTICES.md")
+        report = provenance.check(self.repo.root)
+        self.assertEqual(report.blocking, [], report.render_text())
 
     def test_excluded_entry_needs_known_rule(self) -> None:
         reg = self.repo.load_json("third_party/reviews/registry.json")

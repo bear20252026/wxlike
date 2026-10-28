@@ -149,7 +149,8 @@ V2 Signer: certificate DN: CN=wxlike CI, O=wxlike, C=US
    （`python -m sourceaudit sbom generate --root .`），否则 `sbom check` 报
    SBOM-DRIFT-REMOVE ×2 → BLOCK。
 
-判据三连：改依赖后要同时跑 `cargo deny check`、`sourceaudit sbom check`、
+判据三连：改依赖后要同时跑 `cargo deny check advisories bans sources`（许可证闸已删除，
+裸跑 `cargo deny check` 会退回内置默认、一片红，别再用它）、`sourceaudit sbom check`、
 以及**每个独立 lock** 的 audit。本机 provenance 那 3 条 `PROV-SHA-MISMATCH` 是 CRLF
 假告警（工作树 CRLF、登记的是 LF blob 的 sha），CI 上不复现——别去改登记文件。
 

@@ -4,8 +4,9 @@ name: audit
 #
 # 为什么不塞进 ci.yml：周跑要在 schedule 触发，而 ci.yml 的 schedule 会把
 # 全部 12 个 job（含 Android 出包）在每周一重跑一遍。这里只跑安全公告检查，
-# 与 ci.yml 的 cargo deny（licenses/advisories/bans/sources）互补：
-# deny 管许可与依赖来源，audit 只盯 RustSec 公告，输出更好读。
+# 与 ci.yml 的 cargo deny（advisories/bans/sources）互补：
+# deny 管依赖来源与公告，audit 只盯 RustSec 公告，输出更好读。
+# 许可证这道闸已按 G00 决定删除，两个 workflow 都不判许可。
 # 已知豁免（只有可选 nats 后端的 5 条 rustls-webpki 公告）见 .cargo/audit.toml。
 
 on:
