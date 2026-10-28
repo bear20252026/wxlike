@@ -1,0 +1,1167 @@
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "列出可用的 IM 命令（id / 工具名 / 参数 / 能力 / scope）。先用它发现能力，再按工具名调用。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "description": "按 id 或说明过滤，空=全部",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "im_list_commands"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
+      },
+      "description": "【兼容入口，建议改用按命令生成的工具】执行一条 IM 命令；参数同样按 catalog 校验。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "description": "im_list_commands 给出的 id",
+            "type": "string"
+          },
+          "params": {
+            "description": "该命令的参数对象",
+            "type": "object"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "im_execute"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "不用截图就能自查：我是谁、我有哪些会话、各自未读多少。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "im_inspect"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      },
+      "description": "长任务账：list 看全部、get 看单个、cancel 请求取消（远端是否停住会如实回报）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "默认 list",
+            "enum": [
+              "list",
+              "get",
+              "cancel"
+            ],
+            "type": "string"
+          },
+          "job_id": {
+            "description": "get/cancel 必填",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "im_jobs"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "conv.list",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "列出我参与的会话（含未读数）｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "conv-list",
+      "title": "列出我参与的会话（含未读数）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "conv.unread",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "某个会话的未读快照：head_seq / read_seq / unread｜参数：{conv: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "conv-unread",
+      "title": "某个会话的未读快照：head_seq / read_seq / unread"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "conv.history",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "翻历史消息，按会话内序列号倒序分页｜参数：{conv: string, before_seq?: number, limit?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "before_seq": {
+            "description": "只取 seq 小于它的",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "limit": {
+            "description": "条数上限",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "conv-history",
+      "title": "翻历史消息，按会话内序列号倒序分页"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "conv.sync",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "五层差分指令：客户端该全量拉还是增量拉｜参数：{conv: string, version: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "version": {
+            "description": "客户端持有的版本号",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conv",
+          "version"
+        ],
+        "type": "object"
+      },
+      "name": "conv-sync",
+      "title": "五层差分指令：客户端该全量拉还是增量拉"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "msg.list",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "按 seq 区间取消息（不翻页，给脚本用）｜参数：{conv: string, from_seq: number, to_seq?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "from_seq": {
+            "description": "起始 seq（含）",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "to_seq": {
+            "description": "结束 seq（含）",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conv",
+          "from_seq"
+        ],
+        "type": "object"
+      },
+      "name": "msg-list",
+      "title": "按 seq 区间取消息（不翻页，给脚本用）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "msg.search",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "content"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "在可见会话内全文搜索｜参数：{q: string, limit?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "条数上限",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "q": {
+            "description": "搜索词",
+            "type": "string"
+          }
+        },
+        "required": [
+          "q"
+        ],
+        "type": "object"
+      },
+      "name": "msg-search",
+      "title": "在可见会话内全文搜索"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "msg.get",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "取单条消息（含撤回状态）｜参数：{conv: string, msg_id: string, confirmation_token?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_token": {
+            "description": "确认令牌：先 prepare，再把令牌带回来",
+            "type": "string"
+          },
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "msg_id": {
+            "description": "消息 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv",
+          "msg_id"
+        ],
+        "type": "object"
+      },
+      "name": "msg-get",
+      "title": "取单条消息（含撤回状态）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.members",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "群成员列表（分页，万人群不全量拉）｜参数：{conv: string, after_user?: string, limit?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after_user": {
+            "description": "游标：从该用户之后继续",
+            "type": "string"
+          },
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          },
+          "limit": {
+            "description": "条数上限",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "group-members",
+      "title": "群成员列表（分页，万人群不全量拉）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.info",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "群基本信息与我的角色｜参数：{conv: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "group-info",
+      "title": "群基本信息与我的角色"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "community.threads",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "content"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）｜参数：{community: string, limit?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "community": {
+            "description": "社区 id",
+            "type": "string"
+          },
+          "limit": {
+            "description": "条数上限",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "community"
+        ],
+        "type": "object"
+      },
+      "name": "community-threads",
+      "title": "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "channel.roles",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "频道角色名单：谁在这个频道里是 owner/moderator/member/guest，含继承标记｜参数：{conv: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "频道 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "channel-roles",
+      "title": "频道角色名单：谁在这个频道里是 owner/moderator/member/guest，含继承标记"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "me.info",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "我是谁：user_id、昵称、在线设备｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "me-info",
+      "title": "我是谁：user_id、昵称、在线设备"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "me.sessions",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "我的登录会话（设备/时间），用于排查异地登录｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "me-sessions",
+      "title": "我的登录会话（设备/时间），用于排查异地登录"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "msg.send",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "发一条文本消息（必须带 idempotency_key，重试不会重复发）｜参数：{conv: string, text: string, idempotency_key: string, reply_to?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "幂等键",
+            "type": "string"
+          },
+          "reply_to": {
+            "description": "引用回复的消息 id",
+            "type": "string"
+          },
+          "text": {
+            "description": "消息正文",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv",
+          "text",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "msg-send",
+      "title": "发一条文本消息（必须带 idempotency_key，重试不会重复发）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "conv.ack",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "把已读游标推到指定 seq（缺省=最新）｜参数：{conv: string, seq?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "seq": {
+            "description": "推到哪个 seq",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "conv-ack",
+      "title": "把已读游标推到指定 seq（缺省=最新）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "msg.forward",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "转发一条消息到另一个会话｜参数：{from_conv: string, to_conv: string, msg_id: string, idempotency_key: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "from_conv": {
+            "description": "来源会话",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "幂等键",
+            "type": "string"
+          },
+          "msg_id": {
+            "description": "消息 id",
+            "type": "string"
+          },
+          "to_conv": {
+            "description": "目标会话",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_conv",
+          "to_conv",
+          "msg_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "msg-forward",
+      "title": "转发一条消息到另一个会话"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.create",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "建群并拉入初始成员｜参数：{name: string, member_ids: [string], idempotency_key: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "description": "幂等键",
+            "type": "string"
+          },
+          "member_ids": {
+            "description": "初始成员 user_id 列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "群名",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "group-create",
+      "title": "建群并拉入初始成员"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.add_member",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "拉人进群｜参数：{conv: string, user_ids: [string], idempotency_key: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "幂等键",
+            "type": "string"
+          },
+          "user_ids": {
+            "description": "要拉进来的 user_id 列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "conv",
+          "user_ids"
+        ],
+        "type": "object"
+      },
+      "name": "group-add_member",
+      "title": "拉人进群"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "video.select",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "按实测带宽选一档码率（服务端留余量，三端选到同一档）｜参数：{video_id: string, kbps: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kbps": {
+            "description": "实测可用带宽（千比特/秒）",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "video_id": {
+            "description": "视频 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video_id",
+          "kbps"
+        ],
+        "type": "object"
+      },
+      "name": "video-select",
+      "title": "按实测带宽选一档码率（服务端留余量，三端选到同一档）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "video.stats",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "点播观看统计：条数 / 独立观众 / 总时长 / 人均时长｜参数：{video_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "video_id": {
+            "description": "视频 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video_id"
+        ],
+        "type": "object"
+      },
+      "name": "video-stats",
+      "title": "点播观看统计：条数 / 独立观众 / 总时长 / 人均时长"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "video.job.get",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "查一个转码作业的状态与失败原因｜参数：{job_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "description": "作业 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "video-job-get",
+      "title": "查一个转码作业的状态与失败原因"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "video.job.create",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "file_picker",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "提交一个本地视频文件转码（读本地路径，上传后入队）｜参数：{path: string, callback_url?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "callback_url": {
+            "description": "完成后回调地址",
+            "type": "string"
+          },
+          "path": {
+            "description": "本地文件路径",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "video-job-create",
+      "title": "提交一个本地视频文件转码（读本地路径，上传后入队）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "video.job.retry",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "重试一个失败的转码作业（同一条作业，不新建）｜参数：{job_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "description": "作业 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "video-job-retry",
+      "title": "重试一个失败的转码作业（同一条作业，不新建）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "video.view.report",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "上报一次观看心跳（本次新增时长必须为正）｜参数：{video_id: string, viewer: string, watched_ms: number, position_ms?: number, completed?: boolean, session_id?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "description": "是否看完",
+            "type": "boolean"
+          },
+          "position_ms": {
+            "description": "当前播放位置",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "description": "播放会话 id",
+            "type": "string"
+          },
+          "video_id": {
+            "description": "视频 id",
+            "type": "string"
+          },
+          "viewer": {
+            "description": "观众 user_id",
+            "type": "string"
+          },
+          "watched_ms": {
+            "description": "本次新增观看时长",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "video_id",
+          "viewer",
+          "watched_ms"
+        ],
+        "type": "object"
+      },
+      "name": "video-view-report",
+      "title": "上报一次观看心跳（本次新增时长必须为正）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.kick",
+        "wxlike/confirmation": "required",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "把成员移出群（不可撤销）｜参数：{conv: string, user_id: string, confirmation_token?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_token": {
+            "description": "确认令牌：先 prepare，再把令牌带回来",
+            "type": "string"
+          },
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "被移出的 user_id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "name": "group-kick",
+      "title": "把成员移出群（不可撤销）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "msg.recall",
+        "wxlike/confirmation": "required",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "撤回一条消息（他人消息需管理员）｜参数：{conv: string, msg_id: string, confirmation_token?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_token": {
+            "description": "确认令牌：先 prepare，再把令牌带回来",
+            "type": "string"
+          },
+          "conv": {
+            "description": "会话 id",
+            "type": "string"
+          },
+          "msg_id": {
+            "description": "消息 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv",
+          "msg_id"
+        ],
+        "type": "object"
+      },
+      "name": "msg-recall",
+      "title": "撤回一条消息（他人消息需管理员）"
+    }
+  ]
+}

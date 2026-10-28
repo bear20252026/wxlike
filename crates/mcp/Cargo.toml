@@ -18,3 +18,9 @@ wxlike-types = { path = "../types" }
 wxlike-client = { path = "../client" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rmcp.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# tools/list 基线快照的 SHA-256（与 crates/cmd 的 contract_v1 基线同一口径）
+sha2 = { workspace = true }

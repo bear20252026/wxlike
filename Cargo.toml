@@ -31,5 +31,10 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 async-trait = "0.1"
+# #320 / REQ-G00-rmcp-pin：MCP 协议层用官方 rmcp，不再手写 JSON-RPC 分派。
+# 刻意不开 `client` / `transport-streamable-http-server` / `server-side-http`：
+# 远程 transport 要等 G15-02 的会话授权、audience 与 Origin 绑定落地（见
+# integration-requests/G15/G15-01.yaml），少开一个 feature 就少一条能监听的路。
+rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-io"] }
 # A2 静态托管：/app 直接发网页（ServeDir/ServeFile）
 tower-http = { version = "0.7", features = ["fs", "set-header"] }
