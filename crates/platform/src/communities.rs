@@ -549,7 +549,7 @@ impl Platform {
     /// ADR-28 样板 ①「消息写」：这个方法**刻意不是 `async fn`**——它里面
     /// `store.append(..)` 是一条同步事务（seq 分配 + mailbox 行 + 投影一次提交），
     /// 挂在 await 上下文里就把 tokio worker 占满。签名改回同步之后，handler 用
-    /// [`crate::db::offload`] 整段搬到阻塞线程池，事务边界一动不动。
+    /// `crate::db::offload` 整段搬到阻塞线程池，事务边界一动不动。
     pub fn send_channel_message(
         &self,
         channel: &str,

@@ -103,7 +103,7 @@ fn parse_create_body(body: &Bytes) -> std::result::Result<TicketPrefs, ApiError>
     })
 }
 
-/// [`parse_create_body`] 的产物：三个都已规范化的字符串。
+/// `parse_create_body` 的产物：三个都已规范化的字符串。
 struct TicketPrefs {
     device_id: String,
     platform: String,
