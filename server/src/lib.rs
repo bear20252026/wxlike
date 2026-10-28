@@ -1022,18 +1022,21 @@ fn resolve_quote(
 /// 同键异参 → `Conflict`）：先按派生 msg_id 查已存行，会话/正文/引用三项一致
 /// 才当作合法重放放行（随后由既有去重吞掉，回同样的 200），不一致回 409。
 ///
-/// **刻意只管带 `quote_of` 的请求**：不带引用时本函数直接返回 `Ok(())`，
-/// 重放行为与本卡之前逐字节一致。把"同键改正文也 409"推广到无引用的老请求
-/// 会动到没有引用的既有客户端，那是另一张卡的事，不在 #331 第 1 件的范围。
+/// **刻意只管"至少一侧带引用"的重放**：两侧都没有 `quote_of` 时本函数直接
+/// 返回 `Ok(())`，重放行为与本卡之前逐字节一致（同键改正文照旧被去重吞掉、
+/// 回 200）。把"同键改正文也 409"推广到无引用的老请求会动到没有引用的既有
+/// 客户端——那是另一张卡的范围。之所以能这样切：本卡之前 HTTP 面写不出带
+/// 引用行，所以"任一侧有引用"的行只可能由今天这条新路径产生。
 fn check_replay_matches(store: &Store, env: &Envelope) -> Result<(), (StatusCode, String)> {
-    if env.quote_of.is_none() {
-        return Ok(());
-    }
     let key = env.msg_id.to_vec();
     let mut found = store.by_msg_ids(&[key.clone()]).map_err(internal)?;
     let Some(prev) = found.remove(&key) else {
         return Ok(());
     };
+    if env.quote_of.is_none() && prev.envelope.quote_of.is_none() {
+        // 老形状：不看正文，交给既有的去重（与今天一致）
+        return Ok(());
+    }
     if prev.envelope.conv_id != env.conv_id
         || prev.envelope.body != env.body
         || prev.envelope.quote_of != env.quote_of
