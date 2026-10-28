@@ -26,12 +26,17 @@ const BASELINE_SHA256: &str = "770ac88eb57ac7558842b8de43814ccead725cfe2c00689fa
 
 fn server() -> Server {
     let policy = Policy::none();
-    Server::new(Executor::new(Http::new("http://127.0.0.1:1"), policy.clone()), policy)
+    Server::new(
+        Executor::new(Http::new("http://127.0.0.1:1"), policy.clone()),
+        policy,
+    )
 }
 
 fn frame(srv: &mut Server, id: i64, method: &str) -> Value {
     let line = srv
-        .handle_line(&format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}"}}"#))
+        .handle_line(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}"}}"#
+        ))
         .expect("response");
     serde_json::from_str(&line).expect("json")
 }
@@ -43,7 +48,11 @@ fn baseline_is_30_tools_and_matches_its_own_hash() {
     let mut hasher = Sha256::new();
     hasher.update(BASELINE.as_bytes());
     assert_eq!(
-        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
         BASELINE_SHA256,
         "快照文件被动过"
     );
@@ -92,8 +101,9 @@ fn tool_count_is_commands_plus_four_meta_tools() {
     assert_eq!(tools.len(), CATALOG.len() + 4, "元工具口径是 4 个");
     for spec in CATALOG {
         assert!(
-            tools.iter().any(|t| t["name"] == spec.tool_name()
-                && t["_meta"]["wxlike/actionId"] == spec.id),
+            tools
+                .iter()
+                .any(|t| t["name"] == spec.tool_name() && t["_meta"]["wxlike/actionId"] == spec.id),
             "缺工具 {}",
             spec.tool_name()
         );

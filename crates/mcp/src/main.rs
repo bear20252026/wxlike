@@ -2,9 +2,11 @@
 //!
 //! 这一层**不含业务逻辑**：解析一帧、交给 [`server::Server`]、写回一帧；
 //! 执行全部交给 [`wxlike_client::execute::Executor`]——与 `wxlike-cli` 是同一份。
+//! JSON-RPC 的分派由官方 rmcp 承担（#320 / REQ-G00-rmcp-pin），本 crate 只做适配。
 //!
 //! 工具面由 catalog 生成：**一条命令一个工具**（`msg.send` → `msg-send`），
-//! 外加三个元工具（发现 / 兼容执行 / 自查）。不再手写 `tools/list`。
+//! 外加四个元工具（发现 / 兼容执行 / 自查 / 作业账）= 26 + 4 = 30 个。
+//! 不再手写 `tools/list`。
 //!
 //! 权限由启动时的环境变量或命令行开关注入（`WXLIKE_AGENT_ALLOW_*` /
 //! `--allow-conv` / `--allow-write` / `--allow-destructive`），命令实现不知道
