@@ -180,7 +180,7 @@ actor=agent:<token_id>  command=msg.send  conv=g-abc  result=ok  idem=...
 |---|---|---|
 | **P0** | `wxlike-cmd` catalog（18 条，纯数据）+ 快照测试（id 不许悄悄改名） | `cargo test -p wxlike-cmd` 全绿；catalog 快照可 diff |
 | **P1** | `wxlike-cli inspect`（只读，直连 HTTP） | 命令能打印未读/历史，无需 UI |
-| **P2** | `wxlike-mcp`（stdio，3 元工具 + Read 白名单） | 一个 agent 通过 MCP 读出未读与历史；越界会话被拒且错误可读 |
+| **P2** | `wxlike-mcp`（stdio，落地时 3 元工具，现为 4 个，见第十一节口径） | 一个 agent 通过 MCP 读出未读与历史；越界会话被拒且错误可读 |
 | **P3** | Write + 幂等键 + 审计；`--allow-destructive` | 重试同 `idempotency_key` 只发一条；踢人被默认拒绝 |
 
 P0/P1 是纯增量，不碰现有 67 个 Tauri 命令；P2 之后桌面端再逐域迁到同一 executor。
@@ -267,6 +267,14 @@ $ wxlike-cli ... run --cmd 'conv.sync={"conv":"540a2aaaf0153369","version":0}'
 非成员拿 403 而不是空数组，空数组会泄露"群存在但你没在里面"。
 
 ## 十一、P2 落地：`wxlike-mcp`（stdio，三个元工具）
+
+> **元工具口径（#314 更正）**：标题里的"三个"是 P2 落地时的事实，**现在代码里是 4 个**——
+> G15-04（958e2b26，#188）加了 `im_jobs`。以代码为准：
+> `crates/mcp/src/server.rs:38` `const META_TOOLS: [&str; 4] = ["im_list_commands",
+> "im_execute", "im_inspect", "im_jobs"]`，`crates/mcp/tests/stdio_surface.rs:54`
+> 断言 `tools/list` 共 30 = 26 条命令 + 4 个元工具。
+> `crates/mcp/src/main.rs:7` 与 `crates/mcp/src/server.rs:213` 的注释仍写"三个"，
+> 属 `crates/mcp/**` 写路径（#320），本卡只读未改。
 
 ```jsonc
 // claude_desktop_config.json / .mcp.json
