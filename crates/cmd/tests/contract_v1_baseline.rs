@@ -260,6 +260,17 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 }
 
 /// `contract_v1_generated_surface_digest_is_frozen` 的基线摘要。
-/// 来历：#314 拆分前用同一算法实测得到，拆后逐字节不变。
+/// 来历：#314 拆分前用同一算法实测得到，拆后逐字节不变（`8a871793…`）。
+/// **本次翻新（#315，逐条理由）**——表面相对 `8a871793…` 动了 4 处，全是
+/// "声明与代码不一致"的撤销/接线，没有新增命令：
+/// 1. `group.members`：`after_user`/`limit` 从装饰变成**真接线的游标翻页**
+///    （执行器 `members_page` 切页），summary 与参数说明随之改口径；
+/// 2. `msg.get`：撤销 `confirmation_token` 参数——读命令的令牌根本签发不出来，
+///    留着等于骗调用方"要先确认"（见 catalog.rs 该条目注释）；
+/// 3. `group.add_member`：撤销 `idempotency_key` 参数——执行器没发、服务端
+///    `add_members` 不读头，天然幂等靠 `PRIMARY KEY (group_id, user_id)`
+///    去重（见 catalog.rs 该条目注释）；
+/// 4. `msg.send`：撤销 `reply_to` 参数——HTTP 面（`SendBody`）没有这个字段，
+///    透传是 #315 提的 server 诉求，补上后再把声明加回来。
 const GENERATED_SURFACE_SHA256: &str =
-    "8a8717934a60141d4a8e88827a92905985acf21120df0a8992286352d97f27e9";
+    "af0334426457d1753606aa0114ca1216802c2c30427542a807e97c775aa9bd7c";
