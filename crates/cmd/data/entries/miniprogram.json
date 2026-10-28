@@ -1,0 +1,6 @@
+[
+  { "domain": "miniprogram", "label": "包格式与签名", "state": "blocked", "owner": "G08", "issue": 141 },
+  { "domain": "miniprogram", "label": "跨端隔离运行", "state": "blocked", "owner": "G08", "issue": 145 },
+  { "domain": "miniprogram", "label": "宿主权限 broker", "state": "blocked", "owner": "G08", "issue": 147 },
+  { "domain": "miniprogram", "label": "目录与最近使用", "state": "blocked", "owner": "G08", "issue": 149 }
+]

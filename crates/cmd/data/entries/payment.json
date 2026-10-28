@@ -1,0 +1,7 @@
+[
+  { "domain": "payment", "label": "资金账户与账本", "state": "blocked", "owner": "G06", "issue": 127 },
+  { "domain": "payment", "label": "支付意图与绑卡", "state": "blocked", "owner": "G06", "issue": 130 },
+  { "domain": "payment", "label": "转账与红包", "state": "blocked", "owner": "G06", "issue": 134 },
+  { "domain": "payment", "label": "卡券票证", "state": "blocked", "owner": "G06", "issue": 137 },
+  { "domain": "payment", "label": "生物识别支付确认", "state": "host_only", "host": "camera" }
+]

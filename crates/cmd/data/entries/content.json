@@ -1,0 +1,9 @@
+[
+  { "domain": "content", "label": "社区话题", "state": "automated", "command": "community.threads" },
+  { "domain": "content", "label": "朋友圈与相册", "state": "blocked", "owner": "G05", "issue": 126 },
+  { "domain": "content", "label": "公众号与文章订阅", "state": "blocked", "owner": "G05", "issue": 128 },
+  { "domain": "content", "label": "收藏与笔记", "state": "blocked", "owner": "G05", "issue": 131 },
+  { "domain": "content", "label": "视频号与创作者内容", "state": "blocked", "owner": "G05", "issue": 132 },
+  { "domain": "content", "label": "统一搜索与热搜", "state": "blocked", "owner": "G05", "issue": 135 },
+  { "domain": "content", "label": "拍照发朋友圈", "state": "host_only", "host": "camera" }
+]

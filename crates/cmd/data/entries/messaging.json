@@ -1,0 +1,35 @@
+[
+  { "domain": "messaging", "label": "会话列表", "state": "automated", "command": "conv.list" },
+  { "domain": "messaging", "label": "未读快照", "state": "automated", "command": "conv.unread" },
+  { "domain": "messaging", "label": "历史消息", "state": "automated", "command": "conv.history" },
+  { "domain": "messaging", "label": "差分同步", "state": "automated", "command": "conv.sync" },
+  { "domain": "messaging", "label": "按区间取消息", "state": "automated", "command": "msg.list" },
+  { "domain": "messaging", "label": "消息搜索", "state": "automated", "command": "msg.search" },
+  { "domain": "messaging", "label": "单条消息", "state": "automated", "command": "msg.get" },
+  { "domain": "messaging", "label": "发送消息", "state": "automated", "command": "msg.send" },
+  { "domain": "messaging", "label": "已读回执", "state": "automated", "command": "conv.ack" },
+  { "domain": "messaging", "label": "转发消息", "state": "automated", "command": "msg.forward" },
+  { "domain": "messaging", "label": "撤回消息", "state": "automated", "command": "msg.recall" },
+  { "domain": "messaging", "label": "群成员列表", "state": "automated", "command": "group.members" },
+  { "domain": "messaging", "label": "群信息", "state": "automated", "command": "group.info" },
+  { "domain": "messaging", "label": "建群", "state": "automated", "command": "group.create" },
+  { "domain": "messaging", "label": "拉人进群", "state": "automated", "command": "group.add_member" },
+  { "domain": "messaging", "label": "移出群成员", "state": "automated", "command": "group.kick" },
+  { "domain": "messaging", "label": "频道角色", "state": "automated", "command": "channel.roles" },
+  {
+    "domain": "messaging",
+    "label": "语音/视频通话",
+    "state": "blocked",
+    "owner": "G09",
+    "issue": 153,
+    "note": "呼叫信令与成员状态机尚未暴露命令"
+  },
+  {
+    "domain": "messaging",
+    "label": "群公告与全员禁言",
+    "state": "blocked",
+    "owner": "G03",
+    "issue": 121,
+    "note": "服务端已有 groups_admin 路由，命令面待补"
+  }
+]

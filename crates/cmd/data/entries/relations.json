@@ -1,0 +1,12 @@
+[
+  { "domain": "relations", "label": "我的资料", "state": "automated", "command": "me.info" },
+  { "domain": "relations", "label": "我的登录会话", "state": "automated", "command": "me.sessions" },
+  { "domain": "relations", "label": "好友列表与新朋友", "state": "blocked", "owner": "G02", "issue": 108 },
+  { "domain": "relations", "label": "好友申请处理", "state": "blocked", "owner": "G02", "issue": 108 },
+  { "domain": "relations", "label": "备注与删除好友", "state": "blocked", "owner": "G02", "issue": 108 },
+  { "domain": "relations", "label": "黑名单与隐私规则", "state": "blocked", "owner": "G02", "issue": 108 },
+  { "domain": "relations", "label": "资料与偏好设置", "state": "blocked", "owner": "G02", "issue": 114 },
+  { "domain": "relations", "label": "登录会话与设备", "state": "blocked", "owner": "G02", "issue": 103 },
+  { "domain": "relations", "label": "扫码加好友", "state": "host_only", "host": "scanner" },
+  { "domain": "relations", "label": "通讯录导入", "state": "host_only", "host": "file_picker" }
+]

@@ -1,0 +1,6 @@
+[
+  { "domain": "service", "label": "服务目录与报价", "state": "blocked", "owner": "G07", "issue": 143 },
+  { "domain": "service", "label": "生活缴费与公益", "state": "blocked", "owner": "G07", "issue": 144 },
+  { "domain": "service", "label": "出行酒店电影票务", "state": "blocked", "owner": "G07", "issue": 146 },
+  { "domain": "service", "label": "购物与游戏服务路由", "state": "blocked", "owner": "G07", "issue": 148 }
+]
