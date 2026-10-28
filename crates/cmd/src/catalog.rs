@@ -25,6 +25,22 @@ pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己），再写，最后危险操作。
+///
+/// ## contract-v1 已冻结（#314）
+/// 这 26 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
+/// 的 64 条入口（automated 26 / blocked 33 / host_only 5）就是 v1 基线，
+/// 机器可读的形式在 `crates/cmd/tests/contract_v1_baseline.rs`：
+/// id 全集与顺序、派生名（工具名 / action_id / 资源 URI）、逐域数字、
+/// 以及**生成面的 SHA-256**（MCP 工具定义 + JSON Schema + CLI 帮助 + 覆盖表报告）。
+/// 规则：id 不改名不删除；字段只增；新增 id 走 v1.x 且必须同步登记覆盖表。
+/// 参数名与执行器取用字段的自动比对在 `crates/cmd/tests/param_dto_parity.rs`。
+///
+/// ## 为什么这张表还在一个文件里
+/// 按域拆成 `catalog/conv.rs`、`catalog/video.rs`……试过，也**能拆干净**
+/// （生成面摘要逐字节不变、全测试绿），但本仓 `scripts/quality-gate.py` 的
+/// "跨文件重复窗口"会从 58 涨到 80（基线 66，`--update` 禁用）：命令表是
+/// 26 条近似记录，每条尾巴七行逐字相同，一分文件就被判成重复。
+/// 所以 #316-#319 会共用这一个文件——改动请小步提交，别攒大批。
 pub const CATALOG: &[CommandSpec] = &[
     // ---- 读：会话 ----
     CommandSpec {
