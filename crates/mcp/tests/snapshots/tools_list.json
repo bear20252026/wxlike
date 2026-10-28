@@ -343,14 +343,10 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "取单条消息（含撤回状态）｜参数：{conv: string, msg_id: string, confirmation_token?: string}",
+      "description": "取单条消息（含撤回状态）｜参数：{conv: string, msg_id: string}",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "confirmation_token": {
-            "description": "确认令牌：先 prepare，再把令牌带回来",
-            "type": "string"
-          },
           "conv": {
             "description": "会话 id",
             "type": "string"
@@ -388,12 +384,12 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "群成员列表（分页，万人群不全量拉）｜参数：{conv: string, after_user?: string, limit?: number}",
+      "description": "群成员列表（按游标翻页；翻页目前切在客户端）｜参数：{conv: string, after_user?: string, limit?: number}",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "after_user": {
-            "description": "游标：从该用户之后继续",
+            "description": "游标：上一页最后一个 user_id，从它之后继续；它已不在名单里就给空页",
             "type": "string"
           },
           "conv": {
@@ -401,7 +397,7 @@
             "type": "string"
           },
           "limit": {
-            "description": "条数上限",
+            "description": "这一页最多几条（缺省=剩下的全给）",
             "minimum": 0,
             "type": "integer"
           }
@@ -412,7 +408,7 @@
         "type": "object"
       },
       "name": "group-members",
-      "title": "群成员列表（分页，万人群不全量拉）"
+      "title": "群成员列表（按游标翻页；翻页目前切在客户端）"
     },
     {
       "_meta": {
@@ -604,7 +600,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "发一条文本消息（必须带 idempotency_key，重试不会重复发）｜参数：{conv: string, text: string, idempotency_key: string, reply_to?: string}",
+      "description": "发一条文本消息（必须带 idempotency_key，重试不会重复发）｜参数：{conv: string, text: string, idempotency_key: string}",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -614,10 +610,6 @@
           },
           "idempotency_key": {
             "description": "幂等键",
-            "type": "string"
-          },
-          "reply_to": {
-            "description": "引用回复的消息 id",
             "type": "string"
           },
           "text": {
@@ -794,16 +786,12 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "拉人进群｜参数：{conv: string, user_ids: [string], idempotency_key: string}",
+      "description": "拉人进群｜参数：{conv: string, user_ids: [string]}",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "conv": {
             "description": "群 id",
-            "type": "string"
-          },
-          "idempotency_key": {
-            "description": "幂等键",
             "type": "string"
           },
           "user_ids": {

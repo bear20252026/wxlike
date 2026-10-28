@@ -10,6 +10,12 @@
 //! 提交在 `snapshots/tools_list.json`。替换后两条通道都要过：诊断通道
 //! `Server::tools_dump()`，与协议通道真帧 `tools/list` 的 `result.tools`。
 //!
+//! 基线换过一次，来历记在这：`cb446c9f` 那份抓于 #315 之前，#315 撤掉三处装饰参数
+//! 声明之后它就该红（守卫照做了）。翻新**不能**用 rmcp 自己的输出重抓——那是自证循环。
+//! 新基线来自 `origin/main`（`b49496db`，仍是手写分派）编出的二进制，与 rmcp 版的
+//! `--print-tools` 逐字节比对：两份各 31,693 字节、`cmp` 无差异，这才是"实现换了而
+//! 表面没换"的证据。以后 catalog 再动，照同一条路子翻新。
+//!
 //! 元工具口径 4 个（list / execute / inspect / jobs）+ catalog 26 条 = **30 个**。
 
 use serde_json::Value;
@@ -22,7 +28,7 @@ use wxlike_cmd::CATALOG;
 
 const BASELINE: &str = include_str!("snapshots/tools_list.json");
 /// `snapshots/tools_list.json` 的 SHA-256：动基线必须留下说明。
-const BASELINE_SHA256: &str = "770ac88eb57ac7558842b8de43814ccead725cfe2c00689fa883d7919f68ee31";
+const BASELINE_SHA256: &str = "c802be568d4e843a7d303e4b191ae419efbf61d830dd380339a80a87ad9cbe7a";
 
 fn server() -> Server {
     let policy = Policy::none();
