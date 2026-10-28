@@ -27,7 +27,7 @@
 
 use std::borrow::Cow;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ClientJsonRpcMessage,
@@ -145,7 +145,7 @@ pub struct Server {
     from_rmcp: mpsc::UnboundedReceiver<ServerJsonRpcMessage>,
     /// rmcp 是异步的，而这一层的边界是同步的"一帧进一帧出"：
     /// 用一个当前线程运行时把两者接起来，不改变调用方的形态。
-    rt: tokio::runtime::Runtime,
+    rt: Option<tokio::runtime::Runtime>,
 }
 
 impl Server {
@@ -209,8 +209,14 @@ impl Server {
     /// 处理一帧已解析的 JSON。通知（无 `id`）一律返回 `None`。
     pub fn handle(&mut self, msg: &Value) -> Option<Value> {
         let line = serde_json::to_string(msg).ok()?;
-        self.handle_line(&line)
-            .map(|reply| serde_json::from_str(&reply).expect("会话循环的帧必须是 JSON"))
+        let reply = self.handle_line(&line)?;
+        let id = msg.get("id").cloned();
+        // 帧是我们自己序列化的，解不出来＝实现坏了。回一帧协议错误，
+        // 不 panic：panic 会把整条 stdio 连接砸断，连累后面好好的请求。
+        Some(
+            serde_json::from_str::<Value>(&reply)
+                .unwrap_or_else(|_| json!({"jsonrpc":"2.0","id":id,"error":{"code":code::INTERNAL_ERROR,"message":"会话循环产出了无法解析的帧"}})),
+        )
     }
 
     fn start(exec: Executor, policy: Policy, gate: Option<AuthGate>) -> Self {
@@ -221,17 +227,28 @@ impl Server {
         let handler = Handler {
             core: Arc::clone(&core),
         };
-        rt.spawn(async move {
-            let session = serve_directly(
-                handler,
-                FrameTransport {
-                    incoming: in_rx,
-                    outgoing: out_tx,
-                },
-                None,
-            );
-            let _ = session.waiting().await;
-        });
+        match rt {
+            Some(ref rt) => {
+                rt.spawn(async move {
+                    let session = serve_directly(
+                        handler,
+                        FrameTransport {
+                            incoming: in_rx,
+                            outgoing: out_tx,
+                        },
+                        None,
+                    );
+                    let _ = session.waiting().await;
+                });
+            }
+            // 连当前线程运行时都建不出来（拿不到线程/epoll）也不再 expect panic：
+            // 直接把入站接收端丢掉，之后每一帧都在 pump 里拿到明确的 INTERNAL_ERROR
+            // 回包——"一帧进一帧出"的契约不因启动失败而破。
+            None => {
+                drop(in_rx);
+                drop(out_tx);
+            }
+        }
         Server {
             core,
             to_rmcp: in_tx,
@@ -253,23 +270,31 @@ impl Server {
         if !is_request {
             return None;
         }
-        let rt = &self.rt;
+        let Some(rt) = self.rt.as_ref() else {
+            let e = RpcError::new(
+                code::INTERNAL_ERROR,
+                "协议核心未启动（建不出 tokio 运行时）",
+            );
+            return Some(error_frame(None, &e));
+        };
         let rx = &mut self.from_rmcp;
         rt.block_on(terminal_reply(rx))
             .map(|frame| serde_json::to_string(&frame).unwrap_or_default())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Core> {
-        self.core.lock().expect("协议核心状态锁被污染")
+        // 与 platform/db.rs 同一处理：毒锁只在 SQL/处理里 panic 过时出现，
+        // 连接与状态都还在，恢复 guard 比把进程砸了更好。
+        self.core.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 /// 单线程运行时：帧是同步推进的，同一时刻只有一帧在会话里。
-fn single_thread_runtime() -> tokio::runtime::Runtime {
+fn single_thread_runtime() -> Option<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("构建协议核心的 tokio 运行时")
+        .ok()
 }
 
 /// 会话循环可能先产出非终帧（通知）；只把 response/error 当作这一帧的回包。
@@ -600,7 +625,7 @@ struct Handler {
 
 impl Handler {
     fn with<T>(&self, f: impl FnOnce(&mut Core) -> T) -> T {
-        let mut core = self.core.lock().expect("协议核心状态锁被污染");
+        let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
         f(&mut core)
     }
 
