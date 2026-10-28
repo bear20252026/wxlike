@@ -367,12 +367,24 @@ pub const CATALOG: &[CommandSpec] = &[
     },
     CommandSpec {
         id: "group.add_member",
+        // #315 撤销声明：这里原本挂着可选的 `idempotency_key`，但它是**装饰**——
+        // 执行器走 `expect_json("POST", …)`（`crates/client/src/execute/handlers.rs`
+        // 的 `group.add_member` 条目），从头到尾没把键发出去；服务端
+        // `add_members`（`crates/platform/src/groups.rs:552-581`）也**不读**
+        // `Idempotency-Key` 头——读头的只有建群那条（`:519-528`）。
+        // 要真接上得同时改执行器和服务端 handler，platform 侧本轮不可动（#328 独占），
+        // 所以按本文件顶部的规则**撤掉声明**，不留"schema 里说支持、代码读不到"。
+        // 标注 `Idempotency::None` 的依据是**天然幂等**：重试会不会重复加人？不会——
+        // 服务端去重靠 `PRIMARY KEY (group_id, user_id)`
+        // （`crates/platform/src/db/schema.rs:212-219`），写入用
+        // `ON CONFLICT(group_id, user_id) DO NOTHING`（`groups.rs:368-373`）；
+        // "X 加入了群聊"的系统通知只在 `added > 0` 时才发（`groups.rs:559-579`），
+        // 整批重试第二次 `added=0`，没有任何可观察副作用。
         summary: "拉人进群",
-        params: "{conv: string, user_ids: [string], idempotency_key: string}",
+        params: "{conv: string, user_ids: [string]}",
         args: &[
             Param::req("conv", ParamType::Str, "群 id"),
             Param::req("user_ids", ParamType::StrList, "要拉进来的 user_id 列表"),
-            Param::opt("idempotency_key", ParamType::Str, "幂等键"),
         ],
         capability: Capability::Write,
         needs_conv: true,
