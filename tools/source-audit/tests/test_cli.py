@@ -75,7 +75,7 @@ class CliTest(unittest.TestCase):
         """错的 --root 必须立刻报错：在空目录上跑出"全绿"是最坏的失败形态。"""
         buf = io.StringIO()
         with redirect_stdout(buf):
-            code = cli.main(["notice", "check", "--root", "C:/Windows"])
+            code = cli.main(["sbom", "check", "--root", "C:/Windows"])
         self.assertEqual(code, 2)
 
     def test_all_does_not_downgrade_unavailable_gate_to_warning(self) -> None:

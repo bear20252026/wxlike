@@ -184,7 +184,7 @@ grep -rn "ureq::" --include="*.rs" crates/ server/ | wc -l   # 实测 91
 | **T3** | `crates/video`：`jobs.rs` 回调 + `bin/wxlike-live-ingest.rs` 推片 | `cargo test -p wxlike-video` 全绿；`CALLBACK_TIMEOUT_MS` 行为不变 |
 | **T4** | 测试夹具：`server/src/web_static.rs`、`crates/platform/tests/call_tcp.rs`、`crates/admin/tests/common/mod.rs` | 三个 crate 的测试全绿 |
 | **T5** | **R1**：`crates/ffi/src/error.rs` 的文案映射重写 + 新测试 | 见 §5 R1 的"怎么防" |
-| **T6** | 配置收口：`deny.toml` 删掉 `RUSTSEC-2026-0381` 的豁免；确认 `cargo deny check` 四项全 ok | `cargo deny check` 输出 `advisories ok, bans ok, licenses ok, sources ok` |
+| **T6** | 配置收口：`deny.toml` 删掉 `RUSTSEC-2026-0381` 的豁免；确认三项全 ok | `cargo deny check advisories bans sources` 输出 `advisories ok, bans ok, sources ok`（许可证闸已删除，裸跑 `cargo deny check` 会退回内置默认，别再用它） |
 | **T7** | 全量验收（见 §7） | 见 §7 |
 
 ---
@@ -201,7 +201,7 @@ cargo test --workspace
 python scripts/quality-gate.py
 
 # 3) 供应链：豁免必须被删掉，而不是换个 ID 继续挂
-cargo deny check          # 期望：advisories ok, bans ok, licenses ok, sources ok
+cargo deny check advisories bans sources   # 期望：advisories ok, bans ok, sources ok
 grep -n "RUSTSEC-2026-0381" deny.toml   # 期望：无输出
 
 # 4) 拼写

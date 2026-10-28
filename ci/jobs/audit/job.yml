@@ -23,8 +23,8 @@ jobs:
         run: python scripts/quality-gate.py
       - name: C10 typos
         run: typos
-      - name: C10 license / advisory / source policy
-        run: cargo deny check
+      - name: C10 advisory / ban / source policy
+        run: cargo deny check advisories bans sources
       - name: C10 root lock is closed
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: C10 desktop lock is closed

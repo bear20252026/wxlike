@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from . import notice, provenance, sbom
+from . import provenance, sbom
 from .model import Report
 from .util import EXIT_BLOCK, EXIT_OK, AuditError, repo_root
 
@@ -33,7 +33,7 @@ def _common(parser: argparse.ArgumentParser, suppress: bool = False) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sourceaudit",
-        description="wxlike 来源/许可/漏洞/越权/发布门禁（G17）",
+        description="wxlike 来源/漏洞/越权/发布门禁（G17）",
     )
     _common(parser)
     sub = parser.add_subparsers(dest="gate", required=True)
@@ -53,13 +53,6 @@ def build_parser() -> argparse.ArgumentParser:
     sb_gen.add_argument("-o", "--out", type=Path, default=None)
     sb_check = sb_sub.add_parser("check", help="与已提交 SBOM 比对")
     _common(sb_check, suppress=True)
-
-    nt = sub.add_parser("notice", help="NOTICE 覆盖检查（G17-01）")
-    _common(nt, suppress=True)
-    nt_sub = nt.add_subparsers(dest="action", required=True)
-    nt_check = nt_sub.add_parser("check")
-    _common(nt_check, suppress=True)
-    nt_check.add_argument("--notice", type=Path, default=None)
 
     adm = sub.add_parser("advisories", help="漏洞与依赖准入（G17-02）")
     _common(adm, suppress=True)
@@ -123,8 +116,6 @@ def _dispatch(args: argparse.Namespace, root: Path) -> list[Report]:
         return [report]
     if gate == "sbom":
         return [sbom.check(root)]
-    if gate == "notice":
-        return [notice.check(root, args.notice)]
     if gate == "advisories":
         from . import advisories
 
@@ -150,7 +141,6 @@ def _all(root: Path) -> list[Report]:
     gates: list[Callable[[], Report]] = [
         lambda: provenance.check(root),
         lambda: sbom.check(root),
-        lambda: notice.check(root),
         lambda: advisories.check(root, offline=False, source=None, timeout=10.0),
         lambda: authz.check(root),
         lambda: release.check(root, evidence=None),

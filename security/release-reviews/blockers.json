@@ -51,8 +51,10 @@
       "severity": "medium",
       "owner": "G00",
       "issue": "#228",
-      "status": "open",
-      "evidence": "third_party/reviews/NOTICE-INDEX.md；notice-waivers.json"
+      "status": "closed",
+      "evidence": "third_party/reviews/NOTICE-INDEX.md；notice-waivers.json",
+      "closed_evidence": "许可与 NOTICE 不再作发布判据（G00 决定，本项目只做内部研究、不对外分发）：sourceaudit notice 门禁与 license-policy 已随 ci/g00-drop-license-gate 删除，NOTICE 覆盖不再是阻塞项",
+      "closed_at": "2026-10-28"
     },
     {
       "id": "OPS-CTUTILS",
