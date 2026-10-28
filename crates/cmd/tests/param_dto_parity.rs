@@ -44,8 +44,10 @@ const EXECUTOR_SOURCES: [&str; 2] = [
 /// 声明了、但**由确认层而非 handler 消费**的参数。
 /// 令牌在 `wxlike_cmd::confirmation` 里就被摘掉（`strip_token`），MCP 侧走
 /// `confirm_step`，CLI 侧走 `--confirm`：执行器永远看不到这个键。
-const CONSUMED_ELSEWHERE: [(&str, &str); 3] = [
-    ("msg.get", "confirmation_token"),
+/// （#315：`msg.get` 曾挂过一条 `confirmation_token`，但它是 `Confirmation::None`
+/// 的读命令，令牌根本签发不出来，声明已撤销、条目随之从名单删除——
+/// 正是本文件"双向断言"要抓的残留。）
+const CONSUMED_ELSEWHERE: [(&str, &str); 2] = [
     ("group.kick", "confirmation_token"),
     ("msg.recall", "confirmation_token"),
 ];
@@ -53,15 +55,14 @@ const CONSUMED_ELSEWHERE: [(&str, &str); 3] = [
 /// 声明了、但 handler **还没接线**的参数：已知缺口，不是豁免的常态。
 /// #314 登记的 4 条里，`group.members` 的 `after_user` / `limit` 已在 #315 接上
 /// （`crates/client/src/execute/handlers.rs` 的 `members_page`）；
-/// 剩下这两条各自的处置见 #315 的书面结论：`group.add_member` 的幂等键要撤
-/// （服务端 `add_members` 不读 `Idempotency-Key` 头，键留着只是装饰）、
-/// `msg.send` 的 `reply_to` 要撤（`POST /api/conv/{conv}/send` 的 body 里没有这个字段，
-/// 线格式有 `quote_of` 但 HTTP 面还没透传）。
+/// `group.add_member` 的幂等键已在 #315 **撤掉声明**（服务端 `add_members` 不读
+/// `Idempotency-Key` 头、执行器也没发，留着只是装饰；天然幂等靠主键去重，
+/// 结论写在 catalog 该条目的注释里）；
+/// 剩下 `msg.send` 的 `reply_to`——处置见 #315 的书面结论
+/// （`POST /api/conv/{conv}/send` 的 body 没有这个字段，线格式有 `quote_of`
+/// 但 HTTP 面还没透传，透传要动 server/platform，本轮不可动）。
 /// 名单是**双向断言**：接上线、或把声明撤掉，条目都会失效 → 本测试红 → 删条目。
-const NOT_WIRED_YET: [(&str, &str); 2] = [
-    ("group.add_member", "idempotency_key"),
-    ("msg.send", "reply_to"),
-];
+const NOT_WIRED_YET: [(&str, &str); 1] = [("msg.send", "reply_to")];
 
 /// 一条 handler 的比对素材。
 #[derive(Debug)]
