@@ -41,19 +41,37 @@ fn param_change_requires_a_fresh_confirmation_round() {
 
     // 拿旧令牌执行新参数：必须被拒，且错误要说清"参数变了"
     let err = store
-        .redeem(&actor, spec("group.kick"), &kick("u-mallory"), old.token.as_str(), NOW + 1)
+        .redeem(
+            &actor,
+            spec("group.kick"),
+            &kick("u-mallory"),
+            old.token.as_str(),
+            NOW + 1,
+        )
         .unwrap_err();
     assert_eq!(err, ConfirmError::ParamsChanged, "{err}");
 
     // 被拒不消耗令牌：旧参数原样兑换仍然成功（CLI 重试同一动作不该把人再问一遍）
     assert!(store
-        .redeem(&actor, spec("group.kick"), &kick("u-bob"), old.token.as_str(), NOW + 2)
+        .redeem(
+            &actor,
+            spec("group.kick"),
+            &kick("u-bob"),
+            old.token.as_str(),
+            NOW + 2
+        )
         .is_ok());
 
     // 新参数走新链路：不 prepare 就没有合法令牌
     assert_eq!(
         store
-            .redeem(&actor, spec("group.kick"), &kick("u-mallory"), old.token.as_str(), NOW + 3)
+            .redeem(
+                &actor,
+                spec("group.kick"),
+                &kick("u-mallory"),
+                old.token.as_str(),
+                NOW + 3
+            )
             .unwrap_err(),
         ConfirmError::UnknownToken,
         "用过的令牌再拿来做任何事都必须不认识"
@@ -63,7 +81,13 @@ fn param_change_requires_a_fresh_confirmation_round() {
         .expect("re-prepare");
     assert_ne!(fresh.token.as_str(), old.token.as_str());
     assert!(store
-        .redeem(&actor, spec("group.kick"), &kick("u-mallory"), fresh.token.as_str(), NOW + 5)
+        .redeem(
+            &actor,
+            spec("group.kick"),
+            &kick("u-mallory"),
+            fresh.token.as_str(),
+            NOW + 5
+        )
         .is_ok());
     assert_eq!(store.outstanding(NOW + 5), 0, "链路走完不该留悬挂令牌");
 }
@@ -94,13 +118,25 @@ fn every_required_confirmation_is_single_use() {
         assert_eq!(prepared.expires_at, NOW + TTL_SECONDS);
         assert!(
             store
-                .redeem(&actor, spec(id), &params(id), prepared.token.as_str(), NOW + 1)
+                .redeem(
+                    &actor,
+                    spec(id),
+                    &params(id),
+                    prepared.token.as_str(),
+                    NOW + 1
+                )
                 .is_ok(),
             "{id} 首次兑换"
         );
         assert_eq!(
             store
-                .redeem(&actor, spec(id), &params(id), prepared.token.as_str(), NOW + 2)
+                .redeem(
+                    &actor,
+                    spec(id),
+                    &params(id),
+                    prepared.token.as_str(),
+                    NOW + 2
+                )
                 .unwrap_err(),
             ConfirmError::UnknownToken,
             "{id}：用过即作废，重放必须被拒"
@@ -114,15 +150,25 @@ fn every_required_confirmation_is_single_use() {
 fn failed_redemptions_never_consume_the_token() {
     let (mut store, actor) = (ConfirmationStore::new(), ctx());
     let prepared = store
-        .prepare(&actor, spec("msg.recall"), &json!({"conv": "g-1", "msg_id": "m-1"}), NOW)
+        .prepare(
+            &actor,
+            spec("msg.recall"),
+            &json!({"conv": "g-1", "msg_id": "m-1"}),
+            NOW,
+        )
         .expect("prepare");
     let t = prepared.token.as_str();
 
     // 错的主体
     assert_eq!(
         store
-            .redeem(&context_from_parts("u-mallory", "s-1", "conv:*"), spec("msg.recall"),
-                &json!({"conv": "g-1", "msg_id": "m-1"}), t, NOW + 1)
+            .redeem(
+                &context_from_parts("u-mallory", "s-1", "conv:*"),
+                spec("msg.recall"),
+                &json!({"conv": "g-1", "msg_id": "m-1"}),
+                t,
+                NOW + 1
+            )
             .unwrap_err(),
         ConfirmError::ActorMismatch
     );
@@ -136,13 +182,25 @@ fn failed_redemptions_never_consume_the_token() {
     // 错的参数
     assert_eq!(
         store
-            .redeem(&actor, spec("msg.recall"), &json!({"conv": "g-1", "msg_id": "m-2"}), t, NOW + 3)
+            .redeem(
+                &actor,
+                spec("msg.recall"),
+                &json!({"conv": "g-1", "msg_id": "m-2"}),
+                t,
+                NOW + 3
+            )
             .unwrap_err(),
         ConfirmError::ParamsChanged
     );
     // 原样重发：仍然可用
     assert!(store
-        .redeem(&actor, spec("msg.recall"), &json!({"conv": "g-1", "msg_id": "m-1"}), t, NOW + 4)
+        .redeem(
+            &actor,
+            spec("msg.recall"),
+            &json!({"conv": "g-1", "msg_id": "m-1"}),
+            t,
+            NOW + 4
+        )
         .is_ok());
 }
 
@@ -155,9 +213,7 @@ fn non_required_commands_cannot_hold_a_token_at_all() {
         if s.confirmation.is_required() {
             continue;
         }
-        let err = store
-            .prepare(&actor, s, &json!({}), NOW)
-            .unwrap_err();
+        let err = store.prepare(&actor, s, &json!({}), NOW).unwrap_err();
         assert_eq!(err, ConfirmError::NotRequired(s.id), "{}", s.id);
     }
     assert_eq!(store.outstanding(NOW), 0, "一轮尝试不该留下任何令牌");
