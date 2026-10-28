@@ -1,4 +1,8 @@
 crates/platform/tests/schema_snapshot.txt text eol=lf
+# #320 的 tools/list 逐字节基线：测试用 `include_str!` 读**工作树**再算 SHA-256，
+# 而 Windows 默认把文本 checkout 成 CRLF ⇒ 同一个文件算出两个摘要，rebase/重新
+# checkout 之后必红（本条就是这么发现的）。钉成 LF，与上面那份 schema 快照同源同法。
+crates/mcp/tests/snapshots/tools_list.json text eol=lf
 
 # 所有 shell 脚本统一 LF：CI（ubuntu runner）与本地 Git Bash/MSYS 直接执行，
 # CRLF 会让 `set -euo pipefail` 这类行首 shebang/命令直接报错。
