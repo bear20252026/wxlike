@@ -116,7 +116,110 @@ use handlers::HANDLERS;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use handlers::urlencode;
+    use handlers::{members_page, urlencode};
+
+    /// 起一个只会回 `body` 的一次性 HTTP 服务，返回 base url。
+    ///
+    /// 为什么要真的起一个服务：`group.members` 这类"参数只在前端切片"的命令，
+    /// 光看 handler 的源码说明不了它真的动了——只有跑一次 `run()`，
+    /// 看**返回的那一页**是不是期望的那几行，才算"参数接上了线"。
+    fn serve_json(body: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let crlf = String::from_utf8(vec![13, 10]).expect("crlf");
+            let len = body.len();
+            let resp = format!(
+                "HTTP/1.1 200 OK{crlf}Content-Type: application/json{crlf}Content-Length: {len}{crlf}Connection: close{crlf}{crlf}{body}"
+            );
+            for sock in listener.incoming().flatten() {
+                let mut sock = sock;
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// 三个人的群名单（`u1` 是群主），服务端原样返回。
+    fn roster() -> Value {
+        json!([
+            { "user_id": "u1", "role": "owner" },
+            { "user_id": "u2", "role": "member" },
+            { "user_id": "u3", "role": "member" },
+        ])
+    }
+
+    /// **`group.members` 的翻页参数是真接上线的**（#315：曾经是装饰性的）。
+    #[test]
+    fn group_members_honours_the_cursor_and_the_limit() {
+        let exec = Executor::new(
+            Http::new(serve_json(roster().to_string())),
+            Policy::new(["*"], true, true),
+        );
+        // 游标之后取一条
+        let page = exec
+            .run(
+                "group.members",
+                &json!({"conv": "g-1", "after_user": "u1", "limit": 1}),
+            )
+            .expect("翻页");
+        assert_eq!(
+            page,
+            json!([{ "user_id": "u2", "role": "member" }]),
+            "{page}"
+        );
+        // 两个参数都不给 = 原样整份名单（contract-v1 的响应形状没变）
+        let all = exec
+            .run("group.members", &json!({"conv": "g-1"}))
+            .expect("全量");
+        assert_eq!(
+            all,
+            roster(),
+            "不带游标与条数时必须和服务端给的一模一样：{all}"
+        );
+        // 只要 limit 就给这一页
+        let head = exec
+            .run("group.members", &json!({"conv": "g-1", "limit": 2}))
+            .expect("首页");
+        assert_eq!(head.as_array().expect("array").len(), 2, "{head}");
+        // 游标落在已被移出的人身上 = 空页，**不许从头再给一遍**
+        let gone = exec
+            .run(
+                "group.members",
+                &json!({"conv": "g-1", "after_user": "u-zombie"}),
+            )
+            .expect("死游标");
+        assert_eq!(gone, json!([]), "从头再给一遍会让翻页永远打转：{gone}");
+    }
+
+    /// 切片本身的边界（不联网，纯函数）。
+    #[test]
+    fn members_page_boundaries() {
+        let rows: Vec<Value> = roster().as_array().expect("array").clone();
+        assert_eq!(members_page(&rows, "", 0).len(), 0, "limit=0 就是空页");
+        assert_eq!(members_page(&rows, "", 1).len(), 1);
+        assert_eq!(
+            members_page(&rows, "u3", 10).len(),
+            0,
+            "最后一个人之后没有下一页"
+        );
+        assert!(members_page(&rows, "u-nope", 10).is_empty());
+        assert_eq!(members_page(&[], "", 10).len(), 0, "空名单翻页还是空");
+        // 游标翻页要走完整个名单：每页一条，最后拿到 u3
+        let mut cursor = String::new();
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..3 {
+            let page = members_page(&rows, &cursor, 1);
+            let Some(first) = page.first() else { break };
+            let uid = first["user_id"].as_str().expect("user_id").to_string();
+            seen.push(uid.clone());
+            cursor = uid;
+        }
+        assert_eq!(seen, ["u1", "u2", "u3"], "{seen:?}");
+    }
 
     #[test]
     fn urlencode_handles_query_metacharacters() {
