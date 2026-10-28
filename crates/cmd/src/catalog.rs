@@ -21,8 +21,8 @@ pub use spec::{
 /// 资源 URI 前缀。MCP `resources/read` 与审计日志引用同一个 URI。
 pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 
-/// 现有 32 条（首批 18 + Zone C 的社区/频道 2 条 + Zone E 的视频/点播 6 条
-/// + #316 relations 第一批的好友/申请 6 条）。
+/// 现有 32 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
+/// 再加 #316 relations 第一批的好友/申请 6 条。
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己/好友），再写，最后危险操作。

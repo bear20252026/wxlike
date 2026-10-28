@@ -351,7 +351,11 @@ mod tests {
                 }
                 let text = String::from_utf8_lossy(&buf).to_string();
                 let head = text.lines().next().unwrap_or_default().to_string();
-                let body = text.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+                let body = text
+                    .split("\r\n\r\n")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
                 let _ = tx.send(if body.is_empty() {
                     head
                 } else {
@@ -468,9 +472,7 @@ mod tests {
         assert!(err.contains("to_user_id"), "{err}");
         assert_no_request(&rx);
 
-        let err = exec
-            .run("friend.request.accept", &json!({}))
-            .unwrap_err();
+        let err = exec.run("friend.request.accept", &json!({})).unwrap_err();
         assert!(err.contains("req_id"), "{err}");
         assert_no_request(&rx);
     }
@@ -513,7 +515,10 @@ mod tests {
         let err = exec
             .run("friend.request.create", &json!({"to_user_id": "u-2"}))
             .unwrap_err();
-        assert!(err.contains("write access") || err.contains("read-only"), "{err}");
+        assert!(
+            err.contains("write access") || err.contains("read-only"),
+            "{err}"
+        );
         for id in ["friend.request.accept", "friend.request.decline"] {
             let err = exec.run(id, &json!({"req_id": "a1b2"})).unwrap_err();
             assert!(err.contains("write access"), "{id}: {err}");
@@ -527,10 +532,7 @@ mod tests {
         ] {
             exec.run(id, &json!({}))
                 .unwrap_or_else(|e| panic!("{id}: {e}"));
-            assert!(
-                next_request(&rx).starts_with("GET /api/friends"),
-                "{id}"
-            );
+            assert!(next_request(&rx).starts_with("GET /api/friends"), "{id}");
         }
     }
 
@@ -564,8 +566,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("该收到请求");
         assert!(
-            raw.to_lowercase()
-                .contains("x-wxlike-command: friend.list"),
+            raw.to_lowercase().contains("x-wxlike-command: friend.list"),
             "审计头没带上命令 id：{raw}"
         );
     }

@@ -310,6 +310,7 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 ///    参数 `{req_id: string}`；
 /// 6. 新增 `friend.request.decline` → `POST /api/friends/requests/{req_id}/decline`，
 ///    参数 `{req_id: string}`。
+///
 /// 三条派生影响都是上面六条的必然结果，不是额外改动：
 /// CLI 总表多出 6 行、域名列表多出 `friend`、
 /// 覆盖表报告与渲染表格多出 6 条 automated 入口（`data/entries/relations.json`

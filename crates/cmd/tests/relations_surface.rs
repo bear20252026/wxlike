@@ -65,14 +65,21 @@ fn platform_friend_routes() -> Vec<(String, String)> {
             continue;
         };
         let path = rest.split('"').next().expect("路径字面量").to_string();
-        assert!(path.starts_with("/api/friends"), "抽出来的不是 friends 路由：{line}");
+        assert!(
+            path.starts_with("/api/friends"),
+            "抽出来的不是 friends 路由：{line}"
+        );
         let verb = ["post", "get", "put", "delete"]
             .iter()
             .find(|m| rest.contains(&format!("{m}(")))
             .unwrap_or_else(|| panic!("这一行没有认得的动词：{line}"));
         out.push((verb.to_uppercase(), path));
     }
-    assert!(out.len() >= 9, "只抽到 {} 条 friends 路由，抽取器该更新了", out.len());
+    assert!(
+        out.len() >= 9,
+        "只抽到 {} 条 friends 路由，抽取器该更新了",
+        out.len()
+    );
     out
 }
 
@@ -206,7 +213,11 @@ fn each_friend_command_points_at_its_own_endpoint() {
     for (id, method, path) in want {
         let (got_method, got_path) = handler_target(&handlers, id);
         let got_path = normalize_concrete(&got_path);
-        assert_eq!((got_method.as_str(), got_path.as_str()), (method, path), "{id}");
+        assert_eq!(
+            (got_method.as_str(), got_path.as_str()),
+            (method, path),
+            "{id}"
+        );
     }
 }
 
@@ -218,7 +229,10 @@ fn the_route_matcher_rejects_paths_that_do_not_exist() {
     // 服务端没有 approve / 没有 GET 单条好友 / 没有第二层路径
     assert!(matching_routes(&routes, "POST", "/api/friends/requests/x/approve").is_empty());
     assert!(matching_routes(&routes, "GET", "/api/friends/requests/incoming/extra").is_empty());
-    assert!(matching_routes(&routes, "GET", "/api/friends/x").is_empty(), "只有 DELETE /api/friends/{{user_id}}");
+    assert!(
+        matching_routes(&routes, "GET", "/api/friends/x").is_empty(),
+        "只有 DELETE /api/friends/{{user_id}}"
+    );
     // 方法也要比对：同一条路径换个动词就不该算命中
     assert!(matching_routes(&routes, "GET", "/api/friends/requests").is_empty());
     assert_eq!(
@@ -265,7 +279,10 @@ fn create_request_sends_only_fields_the_server_accepts() {
     let handlers = workspace_file("crates/client/src/execute/handlers.rs");
     let seg = handler_segment(&handlers, "friend.request.create");
     let fields = request_body_fields();
-    for p in catalog::get("friend.request.create").expect("在 catalog 里").args {
+    for p in catalog::get("friend.request.create")
+        .expect("在 catalog 里")
+        .args
+    {
         assert!(
             seg.contains(&format!("\"{}\"", p.name)),
             "handler 没有把 {:?} 拼进请求体——命令面发了对方收不到",
@@ -286,8 +303,7 @@ fn create_request_sends_only_fields_the_server_accepts() {
 fn friend_command_arguments_are_validated_before_anything_is_sent() {
     let accept = catalog::get("friend.request.accept").expect("在 catalog 里");
     assert_eq!(
-        catalog::validate_args(accept, &serde_json::json!({}))
-            .expect_err("缺 req_id 必须报错"),
+        catalog::validate_args(accept, &serde_json::json!({})).expect_err("缺 req_id 必须报错"),
         catalog::ArgError::Missing("req_id")
     );
     assert_eq!(
@@ -328,15 +344,27 @@ fn friend_command_arguments_are_validated_before_anything_is_sent() {
 /// 所以命令面没有"看别人通讯录"的入口，也就没有越权可读的口子。
 #[test]
 fn friend_reads_carry_no_identity_argument() {
-    for id in ["friend.list", "friend.requests.incoming", "friend.requests.outgoing"] {
+    for id in [
+        "friend.list",
+        "friend.requests.incoming",
+        "friend.requests.outgoing",
+    ] {
         let spec = catalog::get(id).expect("在 catalog 里");
         assert!(spec.args.is_empty(), "{id} 声明了参数：{:?}", spec.args);
         let err = catalog::validate_args(spec, &serde_json::json!({"user_id": "someone"}))
             .expect_err("读命令不许接受别人的 id");
-        assert_eq!(err, catalog::ArgError::Unknown("user_id".to_string()), "{id}");
+        assert_eq!(
+            err,
+            catalog::ArgError::Unknown("user_id".to_string()),
+            "{id}"
+        );
     }
     // 写命令里也只有"要加谁"与"哪条申请"，没有"我是谁"
-    for id in ["friend.request.create", "friend.request.accept", "friend.request.decline"] {
+    for id in [
+        "friend.request.create",
+        "friend.request.accept",
+        "friend.request.decline",
+    ] {
         let spec = catalog::get(id).expect("在 catalog 里");
         for p in spec.args {
             assert!(
@@ -356,7 +384,11 @@ fn friend_reads_carry_no_identity_argument() {
 /// 套确认只会让人无脑点确认）。
 #[test]
 fn friend_annotations_follow_the_number315_rules() {
-    let reads = ["friend.list", "friend.requests.incoming", "friend.requests.outgoing"];
+    let reads = [
+        "friend.list",
+        "friend.requests.incoming",
+        "friend.requests.outgoing",
+    ];
     for id in reads {
         let spec = catalog::get(id).expect("在 catalog 里");
         assert_eq!(spec.capability, Capability::Read, "{id}");
@@ -369,7 +401,11 @@ fn friend_annotations_follow_the_number315_rules() {
         );
         assert!(!spec.needs_conv, "{id} 与会话白名单无关");
     }
-    let writes = ["friend.request.create", "friend.request.accept", "friend.request.decline"];
+    let writes = [
+        "friend.request.create",
+        "friend.request.accept",
+        "friend.request.decline",
+    ];
     for id in writes {
         let spec = catalog::get(id).expect("在 catalog 里");
         assert_eq!(spec.capability, Capability::Write, "{id}");
@@ -404,12 +440,8 @@ fn friend_annotations_follow_the_number315_rules() {
 fn params_string_and_args_agree_both_ways() {
     for id in FRIEND_IDS {
         let spec = catalog::get(id).expect("在 catalog 里");
-        let declared: Vec<(&str, bool)> = spec
-            .args
-            .iter()
-            .map(|p| (p.name, p.required))
-            .collect();
-        let written = parse_params(&spec.params);
+        let declared: Vec<(&str, bool)> = spec.args.iter().map(|p| (p.name, p.required)).collect();
+        let written = parse_params(spec.params);
         assert_eq!(written, declared, "{id}：params 与 args 不是同一份声明");
     }
 }
@@ -428,10 +460,7 @@ fn parse_params(raw: &str) -> Vec<(&str, bool)> {
         .map(|item| {
             let name = item.split(':').next().expect("参数名").trim();
             let optional = name.ends_with('?');
-            (
-                name.trim_end_matches('?'),
-                !optional,
-            )
+            (name.trim_end_matches('?'), !optional)
         })
         .collect()
 }
@@ -458,7 +487,12 @@ fn coverage_table_flips_only_the_number316_entries() {
     want.sort_unstable();
     assert_eq!(mapped, want, "relations 里登记的好友命令与 catalog 不一致");
 
-    for label in ["备注与删除好友", "黑名单与隐私规则", "资料与偏好设置", "登录会话与设备"] {
+    for label in [
+        "备注与删除好友",
+        "黑名单与隐私规则",
+        "资料与偏好设置",
+        "登录会话与设备",
+    ] {
         let entry = entries()
             .iter()
             .find(|e| e.domain == "relations" && e.label == label)
@@ -544,10 +578,18 @@ fn mcp_tool_definitions_carry_the_right_annotations() {
 #[test]
 fn friend_params_are_the_declared_types() {
     let spec = catalog::get("friend.request.create").expect("在 catalog 里");
-    let to = spec.args.iter().find(|p| p.name == "to_user_id").expect("声明了");
+    let to = spec
+        .args
+        .iter()
+        .find(|p| p.name == "to_user_id")
+        .expect("声明了");
     assert_eq!(to.ty, ParamType::Str);
     assert!(to.required);
-    let msg = spec.args.iter().find(|p| p.name == "message").expect("声明了");
+    let msg = spec
+        .args
+        .iter()
+        .find(|p| p.name == "message")
+        .expect("声明了");
     assert_eq!(msg.ty, ParamType::Str);
     assert!(!msg.required);
     assert_eq!(msg.ty.json_type(), "string");
