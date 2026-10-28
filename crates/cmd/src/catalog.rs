@@ -298,13 +298,23 @@ pub const CATALOG: &[CommandSpec] = &[
     // ---- 写 ----
     CommandSpec {
         id: "msg.send",
+        // #315 撤销声明：这里原本挂着可选的 `reply_to`（引用回复）。
+        // 执行器确实**不发送**它（`crates/client/src/execute/handlers.rs` 的
+        // `msg.send` 条目只拼 `{text, idempotency_key}`）；接收侧
+        // `POST /api/conv/{conv}/send` 的 `SendBody`（`server/src/lib.rs:935-942`）
+        // 也没有这个字段——线格式 `Envelope.quote_of` 是存在的
+        // （`crates/core/src/store.rs:60,170`、`crates/platform/src/lib.rs:227`），
+        // 缺的是 HTTP 面透传：`SendBody` 加字段 + send 里把 hex msg_id 解回
+        // `quote_of`。那要动 `server/**`（本轮不可动），已写成 #315 的 platform
+        // 诉求单开卡；补上后只需 handler 拼字段 + 把声明加回来。
+        // 幂等键是真接线的：执行器 `Http::post_idempotent`（头 + body 都带），
+        // 服务端把键派生成 msg_id（`server/src/lib.rs:972-988`），重试落同一条消息。
         summary: "发一条文本消息（必须带 idempotency_key，重试不会重复发）",
-        params: "{conv: string, text: string, idempotency_key: string, reply_to?: string}",
+        params: "{conv: string, text: string, idempotency_key: string}",
         args: &[
             Param::req("conv", ParamType::Str, "会话 id"),
             Param::req("text", ParamType::Str, "消息正文"),
             Param::req("idempotency_key", ParamType::Str, "幂等键"),
-            Param::opt("reply_to", ParamType::Str, "引用回复的消息 id"),
         ],
         capability: Capability::Write,
         needs_conv: true,

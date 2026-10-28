@@ -53,16 +53,18 @@ const CONSUMED_ELSEWHERE: [(&str, &str); 2] = [
 ];
 
 /// 声明了、但 handler **还没接线**的参数：已知缺口，不是豁免的常态。
-/// #314 登记的 4 条里，`group.members` 的 `after_user` / `limit` 已在 #315 接上
-/// （`crates/client/src/execute/handlers.rs` 的 `members_page`）；
-/// `group.add_member` 的幂等键已在 #315 **撤掉声明**（服务端 `add_members` 不读
-/// `Idempotency-Key` 头、执行器也没发，留着只是装饰；天然幂等靠主键去重，
-/// 结论写在 catalog 该条目的注释里）；
-/// 剩下 `msg.send` 的 `reply_to`——处置见 #315 的书面结论
-/// （`POST /api/conv/{conv}/send` 的 body 没有这个字段，线格式有 `quote_of`
-/// 但 HTTP 面还没透传，透传要动 server/platform，本轮不可动）。
-/// 名单是**双向断言**：接上线、或把声明撤掉，条目都会失效 → 本测试红 → 删条目。
-const NOT_WIRED_YET: [(&str, &str); 1] = [("msg.send", "reply_to")];
+/// #314 登记的 4 条已全部处置完毕，名单清空：
+/// * `group.members` 的 `after_user` / `limit`——已在 #315 **接上线**
+///   （`crates/client/src/execute/handlers.rs` 的 `members_page`）；
+/// * `group.add_member` 的 `idempotency_key`——已**撤掉声明**（服务端
+///   `add_members` 不读 `Idempotency-Key` 头、执行器也没发，留着只是装饰；
+///   天然幂等靠主键去重，结论写在 catalog 该条目的注释里）；
+/// * `msg.send` 的 `reply_to`——已**撤掉声明**（`SendBody` 没这个字段，
+///   透传要动 `server/**`，写成 #315 的 platform 诉求单开卡；
+///   结论写在 catalog 该条目的注释里）。
+/// 名单是**双向断言**：接上线、或把声明撤掉，条目都会失效 → 本测试红 → 删条目；
+/// 日后出现"声明了但确实还没接"的新缺口，才允许再往这里写。
+const NOT_WIRED_YET: [(&str, &str); 0] = [];
 
 /// 一条 handler 的比对素材。
 #[derive(Debug)]
