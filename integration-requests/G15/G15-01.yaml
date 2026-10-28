@@ -43,14 +43,22 @@ requests:
   - id: REQ-G01-05-dto-parity
     target: G01-05
     status: resolved
-    resolved_by: G15 contract-v1 适配（crates/cmd/src/contract.rs）
+    resolved_by: G15 contract-v1 适配（crates/cmd/src/contract.rs）+ #314 参数自动比对
     action: 已由本组消费 `crates/types` 的 `ActionRequest` / `ActionResult` /
       `DomainError` / `ActionId`：catalog id 逐个过 `ActionId::parse`（有测试遍历全部命令），
-      写命令的幂等键与 deadline 由契约强制。剩余待 G01-05 复核的是
-      "`params` 内部字段名与 DTO 字段名一致"（当前 params 由 catalog `Param` 声明，
-      与 client handler 的取值一致，但尚无自动比对）。
+      写命令的幂等键与 deadline 由契约强制。"`params` 内部字段名与 handler 取值一致"
+      这一段**已有自动比对**（#314，`crates/cmd/tests/param_dto_parity.rs`）：
+      catalog 的 `Param` 名与 `crates/client` handler 的 `str_param(p, "…")` /
+      `p["…"]` / `p.get("…")` 双向核对，任一侧改名即红；执行器没有 per-command DTO
+      （直接在 `serde_json::Value` 上取字段），所以比对的真相来源是 handler 源码文本，
+      两个文件都扫（`execute.rs` 与 `execute/handlers.rs`）。
+      首跑登记出 4 条"声明了但 handler 没接线"的缺口，写在测试的 `NOT_WIRED_YET`：
+      `group.members` 的 `after_user` 与 `limit`、`group.add_member` 的
+      `idempotency_key`、`msg.send` 的 `reply_to`；`confirmation_token` 三条
+      由确认层消费（`wxlike_cmd::confirmation::strip_token`），单列在
+      `CONSUMED_ELSEWHERE`。接线归执行器/服务端侧的后续卡，不在 #314 范围。
     rationale: catalog 与 DTO 两份声明若漂移，"schema 与 Rust DTO 一致"的验收
-      只能靠测试偶然发现。
+      只能靠测试偶然发现——现在不用靠偶然了。
 
 notes:
   - 本卡不动根 `Cargo.toml` / `Cargo.lock` / 路由 / 迁移编号。
@@ -59,7 +67,14 @@ notes:
     `trace_id` 自动生成或由 `--trace-id` / `_meta.wxlike/traceId` 指定；
     `deadline` 过期在本地返回 `timeout`，不发请求。
   - `tools/list` 由 catalog 生成：26 个命令工具（`msg.send` → `msg-send`）
-    + 3 个元工具（`im_list_commands` / `im_execute` 兼容入口 / `im_inspect`）。
+    + **4 个元工具**（`im_list_commands` / `im_execute` 兼容入口 / `im_inspect` /
+    `im_jobs`）。#314 核清口径：以代码为准是 4 个，本备注原先写 3 个是 G15-04
+    （958e2b26，#188）加 `im_jobs` 时漏改。证据：
+    `crates/mcp/src/server.rs:38` `const META_TOOLS: [&str; 4] = ["im_list_commands",
+    "im_execute", "im_inspect", "im_jobs"]`、`crates/mcp/tests/stdio_surface.rs:54`
+    断言 `tools/list` 共 30 = 26 + 4。`crates/mcp/src/main.rs:7` 与
+    `crates/mcp/src/server.rs:213` 的注释仍写"三个"，那两处属 `crates/mcp/**`
+    写路径（#320 rmcp 那张卡），本卡只读未改。
   - 协议版本协商支持 2025-06-18 / 2025-03-26 / 2024-11-05，未知版本回最新。
   - 参数校验在协议边（CLI 与 MCP 各一次），未知参数/类型不符一律拒绝；
     不在 `Policy::authorize` 里做，避免改变 `wxlike-client` 的既有契约。
