@@ -49,8 +49,9 @@ pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 ///    * 键被**派生成业务 id**——`server/src/lib.rs:972-988` 的 send：
 ///      `SHA-256(key ‖ actor ‖ conv)` 当前 16 字节就是 `msg_id`，
 ///      重复提交撞的是既有的去重与唯一索引，重试落在同一条消息上。
-///    执行器侧必须把键**发出去**（`Http::post_idempotent` 的 `Idempotency-Key` 头 +
-///    body 字段），否则声明就是装饰——`param_dto_parity` 的方向 2 专抓这个。
+///
+/// 执行器侧必须把键**发出去**（`Http::post_idempotent` 的 `Idempotency-Key` 头 +
+/// body 字段），否则声明就是装饰——`param_dto_parity` 的方向 2 专抓这个。
 ///
 /// 只成立 1、不成立 2 ⇒ **别加键**。加了就是"schema 里说支持、代码读不到"，
 /// 正是 #314 的比对器当场抓出的那 4 条（`group.add_member` / `msg.send` /

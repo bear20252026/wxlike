@@ -62,6 +62,7 @@ const CONSUMED_ELSEWHERE: [(&str, &str); 2] = [
 /// * `msg.send` 的 `reply_to`——已**撤掉声明**（`SendBody` 没这个字段，
 ///   透传要动 `server/**`，写成 #315 的 platform 诉求单开卡；
 ///   结论写在 catalog 该条目的注释里）。
+///
 /// 名单是**双向断言**：接上线、或把声明撤掉，条目都会失效 → 本测试红 → 删条目；
 /// 日后出现"声明了但确实还没接"的新缺口，才允许再往这里写。
 const NOT_WIRED_YET: [(&str, &str); 0] = [];
