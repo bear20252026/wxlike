@@ -214,3 +214,52 @@ fn contract_v1_tool_surface_is_commands_plus_meta() {
         "命令面变了就得同步 crates/mcp/tests/stdio_surface.rs 的 30"
     );
 }
+
+/// **逐字节冻结生成面**：把 26 条命令的 MCP 工具定义（含 JSON Schema）、
+/// CLI 帮助、覆盖表报告串成一段文本，钉一个 SHA-256。
+///
+/// 为什么钉摘要而不是钉文件：这四个产物都是**运行时从 catalog 生成**的，
+/// 没有落盘的快照可比。`serde_json::Map` 不带 `preserve_order`，键序按
+/// 字典序排，所以同一份声明永远生成同一串字节。
+///
+/// 这张摘要就是 #314 第 4 条（catalog / domains 按域拆文件）的验收门：
+/// **拆完必须还是这一串字节**，变了就说明拆分动了行为。
+/// 真的要动基线（加命令 / 改参数 / 改说明）时，这里是唯一的改点，
+/// 改它等于对外宣告 contract-v1 的表面变了——评审躲不过去。
+#[test]
+fn contract_v1_generated_surface_digest_is_frozen() {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    for spec in catalog::CATALOG {
+        hasher.update(spec.id.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(catalog::tool_definition(spec).to_string().as_bytes());
+        hasher.update(b"\n");
+        hasher.update(catalog::schema_of(spec).to_string().as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher.update(catalog::cli_help(None).as_bytes());
+    hasher.update(b"\n");
+    for domain in catalog::domains() {
+        hasher.update(catalog::cli_help(Some(domain)).as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher.update(wxlike_cmd::domains::report().to_string().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(wxlike_cmd::domains::render().as_bytes());
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        digest, GENERATED_SURFACE_SHA256,
+        "生成面（MCP 工具定义 / JSON Schema / CLI 帮助 / 覆盖表报告）变了。\
+         拆分文件不该动它；动了就是 contract-v1 的表面变了"
+    );
+}
+
+/// `contract_v1_generated_surface_digest_is_frozen` 的基线摘要。
+/// 来历：#314 拆分前用同一算法实测得到，拆后逐字节不变。
+const GENERATED_SURFACE_SHA256: &str =
+    "8a8717934a60141d4a8e88827a92905985acf21120df0a8992286352d97f27e9";
