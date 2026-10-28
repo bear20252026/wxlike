@@ -939,6 +939,125 @@ struct SendBody {
     /// 幂等键：同一个键重试会落在**同一条消息**上（msg_id 由它派生）。
     #[serde(default)]
     idempotency_key: Option<String>,
+    /// #331：引用回复——被引用消息的 `msg_id`（hex，32 个字符 = 16 字节）。
+    ///
+    /// 只是 HTTP 面的透传入口：解出来之后塞进 `Envelope.quote_of`，线格式、
+    /// 落库（`crates/core/src/store.rs` 的 `quote_of` 列）与读回
+    /// （`message_json` 的 `quote_of`）早就有了，不需要再加一层。
+    /// 空串按"不带引用"处理，口径与 `idempotency_key` 一致。
+    #[serde(default)]
+    quote_of: Option<String>,
+}
+
+/// msg_id 的 hex 解码 + 形状校验。
+///
+/// 字符集与奇偶长度由 `hex` crate 判，长度由 16 字节定长数组的 `try_into`
+/// 判——不在这里手写 `len() == 32`，参照 `crates/features/media/src/ids.rs`
+/// 的 `is_sha256_hex`（那里也是"长度 + 字符集"两件事各自交给唯一的真相源）。
+fn parse_msg_id_hex(field: &str, value: &str) -> Result<MsgId, (StatusCode, String)> {
+    let bad = |why: &str| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{field} {why} (32 hex characters)"),
+        )
+    };
+    let bytes = hex::decode(value.trim()).map_err(|_| bad("must be hex"))?;
+    bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| bad("must be 16 bytes"))
+}
+
+/// 解析并校验 `quote_of`，返回 `None` 表示这次请求不带引用。
+///
+/// # 非法引用：**明确拒绝，绝不静默收下**
+///
+/// * 形状不对（非 hex / 长度不是 16 字节）→ 400；
+/// * 被引用的消息不存在 → 404；
+/// * 被引用的消息在**别的会话**里 → 404。这是 `one_message` 已有的口径：
+///   不按"存在但你看不到"回 403，否则 msg_id 变成跨会话的存在性探针；
+/// * 已被撤回 → 409。这是 `forward_message` 对源消息已有的口径。
+///
+/// 为什么选拒绝而不是忽略：引用是发送方明确要求写进线字段的语义，悄悄丢掉
+/// 会让客户端以为"这条回复挂在原消息上"而库里根本没有那条关系；而且本文件
+/// 的 `recall` / `forward` / `one_message` 对未知 msg_id 一律回 4xx，再开一
+/// 处"收下但不做事"的入口会让 HTTP 面自己两套说法。拒绝的另一半好处是
+/// **不落库**：校验全在 `hub.submit` 之前，失败时一条消息也没写。
+fn resolve_quote(
+    store: &Store,
+    conv_id: &str,
+    raw: Option<&str>,
+) -> Result<Option<MsgId>, (StatusCode, String)> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let id = parse_msg_id_hex("quote_of", raw)?;
+    let key = id.to_vec();
+    let mut found = store.by_msg_ids(&[key.clone()]).map_err(internal)?;
+    let Some(row) = found.remove(&key) else {
+        return Err((StatusCode::NOT_FOUND, "quoted message not found".into()));
+    };
+    if row.envelope.conv_id != conv_id {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "quoted message is not in this conversation".into(),
+        ));
+    }
+    if row.withdrawn {
+        return Err((StatusCode::CONFLICT, "quoted message is withdrawn".into()));
+    }
+    Ok(Some(id))
+}
+
+/// 同一幂等键**换了参数**重放 → 409，一条也不写。
+///
+/// # 结论（#331 第 1 件要的书面答复）
+///
+/// `msg_id` 由 `key + user + conv` 派生，所以"同键异参"必然撞到同一条消息；
+/// 而 hub 的去重是**先到先赢、后到静默丢弃**（`messages.msg_id` 上有 partial
+/// UNIQUE 索引）。如果第二次带着不同的 `quote_of` 仍回 200，客户端会以为自己
+/// 的引用写进去了，实际库里还是第一次那条——这是假成功。
+///
+/// 因此对齐钱包侧的口径（`crates/platform/src/wallet.rs` 的 `replay_or_proceed`：
+/// 同键异参 → `Conflict`）：先按派生 msg_id 查已存行，会话/正文/引用三项一致
+/// 才当作合法重放放行（随后由既有去重吞掉，回同样的 200），不一致回 409。
+///
+/// **刻意只管带 `quote_of` 的请求**：不带引用时本函数直接返回 `Ok(())`，
+/// 重放行为与本卡之前逐字节一致。把"同键改正文也 409"推广到无引用的老请求
+/// 会动到没有引用的既有客户端，那是另一张卡的事，不在 #331 第 1 件的范围。
+fn check_replay_matches(store: &Store, env: &Envelope) -> Result<(), (StatusCode, String)> {
+    if env.quote_of.is_none() {
+        return Ok(());
+    }
+    let key = env.msg_id.to_vec();
+    let mut found = store.by_msg_ids(&[key.clone()]).map_err(internal)?;
+    let Some(prev) = found.remove(&key) else {
+        return Ok(());
+    };
+    if prev.envelope.conv_id != env.conv_id
+        || prev.envelope.body != env.body
+        || prev.envelope.quote_of != env.quote_of
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "idempotency key reused with different parameters".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 幂等键 → 稳定的 msg_id（`key + user + conv` 的 SHA-256 前 16 字节）。
+/// 同一个键重试要落在同一条消息上，所以派生方式必须是**唯一的一份**。
+fn idempotent_msg_id(key: &str, user: &str, conv: &str) -> MsgId {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    for part in [key, user, conv] {
+        hasher.update(part.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut id: MsgId = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    id
 }
 
 /// `POST /api/conv/{conv}/send`：HTTP 控制面的发消息入口。
@@ -958,6 +1077,8 @@ async fn send_message(
     if text.is_empty() || text.chars().count() > 5_000 {
         return Err((StatusCode::UNPROCESSABLE_ENTITY, "text required".into()));
     }
+    // 引用先校验再发送：非法引用在这里就 4xx，绝不落到 hub
+    let quote = resolve_quote(&deps.store, &conv_id, body.quote_of.as_deref())?;
 
     // 直聊必须显式给收件人：hub 对非群会话按 `env.to` 投递
     let to = match conv_id.strip_prefix("d-") {
@@ -969,6 +1090,9 @@ async fn send_message(
         None => Vec::new(),
     };
     let mut env = Envelope::direct(&conv_id, authed.user_id.clone(), to, 0, text);
+    if let Some(quote) = quote {
+        env = env.quoted(quote);
+    }
     if let Some(key) = body
         .idempotency_key
         .as_deref()
@@ -976,15 +1100,10 @@ async fn send_message(
         .filter(|k| !k.is_empty())
     {
         // 幂等：同 key → 同 msg_id → 被既有的去重与唯一索引挡住
-        use sha2::Digest as _;
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(key.as_bytes());
-        hasher.update(authed.user_id.as_bytes());
-        hasher.update(conv_id.as_bytes());
-        let digest = hasher.finalize();
-        let mut id: MsgId = [0u8; 16];
-        id.copy_from_slice(&digest[..16]);
-        env.msg_id = id;
+        env.msg_id = idempotent_msg_id(key, &authed.user_id, &conv_id);
+        // 只有派生出稳定 msg_id 的请求才谈得上"重放"；没带键的是随机 id，
+        // 没有可比的行，也不必去查。
+        check_replay_matches(&deps.store, &env)?;
     }
 
     deps.hub
@@ -1123,16 +1242,8 @@ async fn forward_message(
         0,
         row.envelope.body.clone(),
     );
-    // 幂等：同 key + 同目标会话 → 同 msg_id
-    use sha2::Digest as _;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(body.idempotency_key.as_bytes());
-    hasher.update(authed.user_id.as_bytes());
-    hasher.update(to_conv.as_bytes());
-    let digest = hasher.finalize();
-    let mut new_id: MsgId = [0u8; 16];
-    new_id.copy_from_slice(&digest[..16]);
-    env.msg_id = new_id;
+    // 幂等：同 key + 同目标会话 → 同 msg_id（派生方式与 send 共用一份）
+    env.msg_id = idempotent_msg_id(&body.idempotency_key, &authed.user_id, &to_conv);
 
     deps.hub
         .submit(&authed.user_id, &env)
