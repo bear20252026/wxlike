@@ -22,7 +22,11 @@ fn rejects(ex: &Executor, id: &str, params: Value, status: &str) {
 }
 
 fn accept_lifecycle(a: &Executor, b: &Executor, c: &Executor, alice: &str, bob: &str) {
-    let created = run(a, "friend.request.create", json!({"to_user_id": bob, "message": "hello"}));
+    let created = run(
+        a,
+        "friend.request.create",
+        json!({"to_user_id": bob, "message": "hello"}),
+    );
     assert_eq!(created["from_uid"], alice);
     assert_eq!(created["to_uid"], bob);
     assert_eq!(created["status"], "pending");
@@ -34,18 +38,30 @@ fn accept_lifecycle(a: &Executor, b: &Executor, c: &Executor, alice: &str, bob: 
     assert_eq!(run(a, "friend.requests.outgoing", json!({})), incoming);
     assert_eq!(run(a, "friend.requests.incoming", json!({})), json!([]));
     assert_eq!(run(b, "friend.requests.outgoing", json!({})), json!([]));
-    for id in ["friend.list", "friend.requests.incoming", "friend.requests.outgoing"] {
+    for id in [
+        "friend.list",
+        "friend.requests.incoming",
+        "friend.requests.outgoing",
+    ] {
         assert_eq!(run(c, id, json!({})), json!([]));
     }
     for id in ["friend.request.accept", "friend.request.decline"] {
         rejects(c, id, args.clone(), "403");
         rejects(a, id, args.clone(), "403");
     }
-    rejects(a, "friend.request.create", json!({"to_user_id": bob}), "409");
+    rejects(
+        a,
+        "friend.request.create",
+        json!({"to_user_id": bob}),
+        "409",
+    );
     run(b, "friend.request.accept", args.clone());
     rejects(b, "friend.request.accept", args, "409");
     assert_eq!(run(b, "friend.requests.incoming", json!({})), json!([]));
-    assert_eq!(run(a, "friend.requests.outgoing", json!({}))[0]["status"], "accepted");
+    assert_eq!(
+        run(a, "friend.requests.outgoing", json!({}))[0]["status"],
+        "accepted"
+    );
     for (ex, peer) in [(a, bob), (b, alice)] {
         let friends = run(ex, "friend.list", json!({}));
         assert_eq!(friends.as_array().unwrap().len(), 1);
@@ -63,8 +79,12 @@ fn decline_lifecycle(a: &Executor, c: &Executor, carol: &str) {
     assert_eq!(run(c, "friend.requests.incoming", json!({})), json!([]));
     assert_eq!(run(c, "friend.list", json!({})), json!([]));
     let outgoing = run(a, "friend.requests.outgoing", json!({}));
-    let declined = outgoing.as_array().unwrap().iter()
-        .find(|row| row["id"] == created["id"]).expect("declined request retained");
+    let declined = outgoing
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == created["id"])
+        .expect("declined request retained");
     assert_eq!(declined["status"], "declined");
 }
 
@@ -77,8 +97,14 @@ fn invalid_requests(base: &str, token: String, bob: &str) {
         ("friend.requests.incoming", json!({})),
         ("friend.requests.outgoing", json!({})),
         ("friend.request.create", json!({"to_user_id": bob})),
-        ("friend.request.accept", json!({"req_id": "ffffffffffffffff"})),
-        ("friend.request.decline", json!({"req_id": "ffffffffffffffff"})),
+        (
+            "friend.request.accept",
+            json!({"req_id": "ffffffffffffffff"}),
+        ),
+        (
+            "friend.request.decline",
+            json!({"req_id": "ffffffffffffffff"}),
+        ),
     ];
     for (id, params) in calls {
         rejects(&anonymous, id, params.clone(), "401");
@@ -92,7 +118,12 @@ fn invalid_requests(base: &str, token: String, bob: &str) {
         assert!(authed.run(id, &json!({"req_id": "../incoming"})).is_err());
     }
     assert!(authed.run("friend.request.create", &json!({})).is_err());
-    rejects(&authed, "friend.request.create", json!({"to_user_id": "ffffffffffffffff"}), "404");
+    rejects(
+        &authed,
+        "friend.request.create",
+        json!({"to_user_id": "ffffffffffffffff"}),
+        "404",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -109,8 +140,11 @@ async fn executor_drives_authenticated_friend_routes() {
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(async move {
         axum::serve(listener, router)
-            .with_graceful_shutdown(async { let _ = stopped.await; })
-            .await.unwrap();
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
     });
     let result = tokio::task::spawn_blocking(move || {
         let a = executor(&base, Some(at.clone()), true);
@@ -122,7 +156,8 @@ async fn executor_drives_authenticated_friend_routes() {
         assert_eq!(recorder.take().len(), 2, "request and decline only");
         invalid_requests(&base, at, &bob);
         assert_eq!(recorder.count(), 0, "rejected commands emit nothing");
-    }).await;
+    })
+    .await;
     stop.send(()).unwrap();
     serving.await.unwrap();
     result.unwrap();
