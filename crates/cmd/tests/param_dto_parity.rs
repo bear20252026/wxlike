@@ -21,6 +21,7 @@
 //! ## 两个方向都必须成立
 //! 1. handler 取用的字段，catalog 必须声明（否则调用方按 schema 传不进来）；
 //! 2. catalog 声明的参数，必须真的到达 handler——除非落在下面两张**写明理由**的名单里。
+//!
 //! 名单是**双向断言**：条目失效（参数改名走了 / 已经接上线）同样红，
 //! 免得豁免变成永久藏身处。
 //!
@@ -281,7 +282,9 @@ fn collect_entries(rel: &str) -> Vec<HandlerEntry> {
     let toks = tokenize(&src);
     let mut out = Vec::new();
     for i in 0..toks.len() {
-        if !is_punct(&toks, i, '(') || tok_str(&toks, i + 1).is_none() || !is_punct(&toks, i + 2, ',')
+        if !is_punct(&toks, i, '(')
+            || tok_str(&toks, i + 1).is_none()
+            || !is_punct(&toks, i + 2, ',')
         {
             continue;
         }
@@ -322,9 +325,7 @@ fn read_p(set: &BTreeSet<String>, name: &str) -> bool {
 }
 
 fn waiver_pairs() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    CONSUMED_ELSEWHERE
-        .iter()
-        .chain(NOT_WIRED_YET.iter())
+    CONSUMED_ELSEWHERE.iter().chain(NOT_WIRED_YET.iter())
 }
 
 // ---------------------------------------------------------------- 断言
@@ -439,7 +440,12 @@ fn param_names_are_unique_within_a_command() {
     for spec in CATALOG {
         let mut seen = BTreeSet::new();
         for p in spec.args {
-            assert!(seen.insert(p.name), "{} 的参数 {} 声明了两次", spec.id, p.name);
+            assert!(
+                seen.insert(p.name),
+                "{} 的参数 {} 声明了两次",
+                spec.id,
+                p.name
+            );
         }
     }
 }
