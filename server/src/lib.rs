@@ -993,7 +993,9 @@ fn resolve_quote(
     };
     let id = parse_msg_id_hex("quote_of", raw)?;
     let key = id.to_vec();
-    let mut found = store.by_msg_ids(&[key.clone()]).map_err(internal)?;
+    let mut found = store
+        .by_msg_ids(std::slice::from_ref(&key))
+        .map_err(internal)?;
     let Some(row) = found.remove(&key) else {
         return Err((StatusCode::NOT_FOUND, "quoted message not found".into()));
     };
@@ -1025,11 +1027,14 @@ fn resolve_quote(
 /// **刻意只管"至少一侧带引用"的重放**：两侧都没有 `quote_of` 时本函数直接
 /// 返回 `Ok(())`，重放行为与本卡之前逐字节一致（同键改正文照旧被去重吞掉、
 /// 回 200）。把"同键改正文也 409"推广到无引用的老请求会动到没有引用的既有
-/// 客户端——那是另一张卡的范围。之所以能这样切：本卡之前 HTTP 面写不出带
-/// 引用行，所以"任一侧有引用"的行只可能由今天这条新路径产生。
+/// 客户端——那是另一张卡的范围。这样切是安全的：这条路径比的 msg_id 一律由
+/// `key + user + conv` 派生，QUIC 客户端自己填的随机 id 撞不上（撞它等于
+/// 猜中 128 位摘要），所以"已存行带引用"只可能是这条新 HTTP 路径先前写的。
 fn check_replay_matches(store: &Store, env: &Envelope) -> Result<(), (StatusCode, String)> {
     let key = env.msg_id.to_vec();
-    let mut found = store.by_msg_ids(&[key.clone()]).map_err(internal)?;
+    let mut found = store
+        .by_msg_ids(std::slice::from_ref(&key))
+        .map_err(internal)?;
     let Some(prev) = found.remove(&key) else {
         return Ok(());
     };
