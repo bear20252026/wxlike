@@ -330,6 +330,9 @@ impl Platform {
         };
 
         let size = bytes.len() as u64;
+        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——媒体行这条 INSERT 跑在
+        // await 上下文里上锁。改法：`self.db().blocking(move |c| ..)` 把这一句搬走
+        // （前面几次 `store.*().await` 是真的异步 IO，不能整段包住）。
         let c = self.db().lock();
         c.execute(
             "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)

@@ -13,6 +13,7 @@ use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
@@ -364,6 +365,10 @@ impl Platform {
     /// @所有人：manager 专属。构造 mention Custom 帧并经 EventSink 扇给全体
     /// 成员（未指定 user_ids 语义 = all），帧内带 all 标记。
     pub async fn mention_all(&self, group: &str, actor: &str, text: &str) -> Result<String> {
+        // TODO(ADR-28): `can_mention_all` / `cached_members` 是同步查库，现在跑在
+        // 这个 `async fn` 的 await 上下文里。它是 `&self` 方法（不是 handler），
+        // 拿不到 `Arc<Platform>`，所以改造要把签名换成接收 `PlatformState` 的
+        // handler 侧 offload——属于本卡之后的同类点位，不留静默。
         let group = validate::id(group)?;
         if !self.can_mention_all(group, actor)? {
             return Err(PlatformError::Forbidden);
@@ -400,7 +405,13 @@ async fn set_announcement(
     Path(group): Path<String>,
     ApiJson(body): ApiJson<AnnouncementBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_announcement(&group, &authed.user_id, &body.text, &body.media_id)?;
+    // ADR-28 样板 ③「群管理写」（groups_admin）：鉴权读 + 公告 upsert。
+    let actor = authed.user_id.clone();
+    let (text, media_id) = (body.text.clone(), body.media_id.clone());
+    offload(&platform, move |p| {
+        p.set_announcement(&group, &actor, &text, &media_id)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -409,6 +420,8 @@ async fn get_announcement(
     authed: Authed,
     Path(group): Path<String>,
 ) -> std::result::Result<Json<GroupAnnouncement>, ApiError> {
+    // TODO(ADR-28): 公告读取（`is_member` + `announcement` 两次上锁）仍在 await
+    // 上下文里同步跑；与本卡三条样板同类的只读点位，改法照 `set_announcement`。
     if !platform.is_member(&group, &authed.user_id)? {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "members only"));
     }
@@ -430,7 +443,13 @@ async fn set_mute(
     Path((group, uid)): Path<(String, String)>,
     ApiJson(body): ApiJson<MuteBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_member_mute(&group, &authed.user_id, &uid, body.until_ms)?;
+    // ADR-28 样板 ③「群管理写」：单人禁言写（鉴权读 + UPDATE 同一次阻塞）。
+    let actor = authed.user_id.clone();
+    let until_ms = body.until_ms;
+    offload(&platform, move |p| {
+        p.set_member_mute(&group, &actor, &uid, until_ms)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -439,7 +458,12 @@ async fn clear_mute(
     authed: Authed,
     Path((group, uid)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.clear_member_mute(&group, &authed.user_id, &uid)?;
+    // ADR-28 样板 ③「群管理写」：解除禁言写。
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| {
+        p.clear_member_mute(&group, &actor, &uid)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -454,7 +478,10 @@ async fn set_all_mute(
     Path(group): Path<String>,
     ApiJson(body): ApiJson<AllMuteBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_all_mute(&group, &authed.user_id, body.on)?;
+    // ADR-28 样板 ③「群管理写」：全员禁言开关写。
+    let actor = authed.user_id.clone();
+    let on = body.on;
+    offload(&platform, move |p| p.set_all_mute(&group, &actor, on)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -474,7 +501,10 @@ async fn set_approval(
     Path(group): Path<String>,
     ApiJson(body): ApiJson<ApprovalBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_join_approval(&group, &authed.user_id, body.on)?;
+    // ADR-28 样板 ③「群管理写」：入群审批开关写。
+    let actor = authed.user_id.clone();
+    let on = body.on;
+    offload(&platform, move |p| p.set_join_approval(&group, &actor, on)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -484,11 +514,11 @@ async fn create_invite(
     Path(group): Path<String>,
     ApiJson(body): ApiJson<InviteBody>,
 ) -> std::result::Result<Json<GroupInvite>, ApiError> {
-    Ok(Json(platform.create_invite(
-        &group,
-        &authed.user_id,
-        body.ttl_ms,
-    )?))
+    // ADR-28 样板 ③「群管理写」：邀请 token 写（先鉴权读，再插带过期的行）。
+    let actor = authed.user_id.clone();
+    let ttl_ms = body.ttl_ms;
+    let invite = offload(&platform, move |p| p.create_invite(&group, &actor, ttl_ms)).await?;
+    Ok(Json(invite))
 }
 
 async fn join_by_token(
@@ -496,7 +526,10 @@ async fn join_by_token(
     authed: Authed,
     Path(token): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let state = platform.join_by_token(&token, &authed.user_id)?;
+    // ADR-28 样板 ③「群管理写」：token 查群 → 免审批直接入群 / 否则排申请，
+    // 两条分支的读写都收进同一次阻塞（原来的两次上锁顺序不变）。
+    let actor = authed.user_id.clone();
+    let state = offload(&platform, move |p| p.join_by_token(&token, &actor)).await?;
     Ok(Json(serde_json::json!({ "state": state })))
 }
 
@@ -505,6 +538,8 @@ async fn list_join_requests(
     authed: Authed,
     Path(group): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    // TODO(ADR-28): 申请列表读取（鉴权 + 一次上锁查行）仍在 await 上下文里同步跑；
+    // 与 `get_announcement` 同一类只读点位。
     let rows = platform.join_requests(&group, &authed.user_id)?;
     Ok(Json(serde_json::json!({
         "requests": rows.into_iter().map(|(user, at)| serde_json::json!({
@@ -518,7 +553,12 @@ async fn approve_join(
     authed: Authed,
     Path((group, uid)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.decide_join_request(&group, &authed.user_id, &uid, true)?;
+    // ADR-28 样板 ③「群管理写」：审批通过 = 更新申请行 + 插入成员行 + 缓存失效。
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| {
+        p.decide_join_request(&group, &actor, &uid, true)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -527,7 +567,12 @@ async fn reject_join(
     authed: Authed,
     Path((group, uid)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.decide_join_request(&group, &authed.user_id, &uid, false)?;
+    // ADR-28 样板 ③「群管理写」：驳回只动申请行，同样是整段阻塞执行。
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| {
+        p.decide_join_request(&group, &actor, &uid, false)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

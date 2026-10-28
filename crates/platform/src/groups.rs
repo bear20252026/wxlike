@@ -24,6 +24,7 @@ use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
@@ -521,30 +522,41 @@ async fn create_group(
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    if let Some(key) = &idem {
-        if let Some(prev) = platform.replay_idempotent(key)? {
-            return Ok((StatusCode::OK, Json(prev)));
-        }
+    // ADR-28 样板 ③「群管理写」：每一次同步 SQL（幂等重放 / 建群 + 成员行 /
+    // 审计与幂等回执）都整段进阻塞池，handler 只在两次之间 `await` 扇出。
+    let replay_key = idem.clone();
+    if let Some(prev) = offload(&platform, move |p| match &replay_key {
+        Some(key) => p.replay_idempotent(key),
+        None => Ok(None),
+    })
+    .await?
+    {
+        return Ok((StatusCode::OK, Json(prev)));
     }
 
-    let id = platform.create_group(&authed.user_id, &body.name, &body.member_ids)?;
-    let others: Vec<String> = body.member_ids.to_vec();
+    let owner = authed.user_id.clone();
+    let name = body.name.clone();
+    let member_ids = body.member_ids.clone();
+    let group_name = name.clone();
+    let (id, creator_name) = offload(&platform, move |p| {
+        let id = p.create_group(&owner, &group_name, &member_ids)?;
+        Ok((id, p.profile_of(&owner).map(|x| x.name).unwrap_or_default()))
+    })
+    .await?;
+    let others: Vec<String> = body.member_ids;
     if !others.is_empty() {
-        let name = platform
-            .profile_of(&authed.user_id)
-            .map(|p| p.name)
-            .unwrap_or_default();
         let env = group_notice(
             &id,
             &authed.user_id,
             &others,
-            &format!("{name} 创建了群聊「{}」", body.name),
+            &format!("{creator_name} 创建了群聊「{}」", name),
         );
         platform.emit(env).await;
     }
     let reply = serde_json::json!({ "group_id": id, "members": others.len() + 1 });
-    if let Some(key) = &idem {
-        platform.remember_idempotent(key, &reply)?;
+    if let Some(key) = idem {
+        let stored = reply.clone();
+        offload(&platform, move |p| p.remember_idempotent(&key, &stored)).await?;
     }
     Ok((StatusCode::OK, Json(reply)))
 }
@@ -555,13 +567,19 @@ async fn add_members(
     Path(group_id): Path<String>,
     ApiJson(body): ApiJson<MemberIds>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let added = platform.add_members(&group_id, &authed.user_id, &body.user_ids)?;
+    // ADR-28 样板 ③「群管理写」：权限 → 人数上限 → 逐行 INSERT → 缓存失效 +
+    // 信箱成员快照，全链在一个阻塞任务里跑完（顺序与改前一致）。
+    let actor = authed.user_id.clone();
+    let user_ids = body.user_ids.clone();
+    let conv = group_id.clone();
+    let (added, members, name) = offload(&platform, move |p| {
+        let added = p.add_members(&conv, &actor, &user_ids)?;
+        let members = p.group_members(&conv)?;
+        let name = p.profile_of(&actor).map(|m| m.name).unwrap_or_default();
+        Ok((added, members, name))
+    })
+    .await?;
     if added > 0 {
-        let members = platform.group_members(&group_id)?;
-        let name = platform
-            .profile_of(&authed.user_id)
-            .map(|p| p.name)
-            .unwrap_or_default();
         let recipients: Vec<String> = members
             .iter()
             .map(|m| m.user_id.clone())
@@ -585,13 +603,20 @@ async fn remove_member(
     authed: Authed,
     Path((group_id, user_id)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.remove_member(&group_id, &authed.user_id, &user_id)?;
-    let members = platform.group_members(&group_id)?;
+    // ADR-28 样板 ③「群管理写」：删成员行 + 名单读取 + 显示名一次阻塞完成。
+    let actor = authed.user_id.clone();
+    let conv = group_id.clone();
+    let target = user_id.clone();
+    let (members, name) = offload(&platform, move |p| {
+        p.remove_member(&conv, &actor, &target)?;
+        let members = p.group_members(&conv)?;
+        Ok((
+            members,
+            p.profile_of(&actor).map(|x| x.name).unwrap_or_default(),
+        ))
+    })
+    .await?;
     let recipients: Vec<String> = members.iter().map(|m| m.user_id.clone()).collect();
-    let name = platform
-        .profile_of(&authed.user_id)
-        .map(|p| p.name)
-        .unwrap_or_default();
     if !recipients.is_empty() {
         let env = group_notice(
             &group_id,
@@ -609,13 +634,19 @@ async fn leave(
     authed: Authed,
     Path(group_id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.leave_group(&group_id, &authed.user_id)?;
-    let members = platform.group_members(&group_id)?;
+    // ADR-28 样板 ③「群管理写」：退群 = 校验角色 + 删行 + 缓存失效 + 快照同步。
+    let actor = authed.user_id.clone();
+    let conv = group_id.clone();
+    let (members, name) = offload(&platform, move |p| {
+        p.leave_group(&conv, &actor)?;
+        let members = p.group_members(&conv)?;
+        Ok((
+            members,
+            p.profile_of(&actor).map(|x| x.name).unwrap_or_default(),
+        ))
+    })
+    .await?;
     let recipients: Vec<String> = members.iter().map(|m| m.user_id.clone()).collect();
-    let name = platform
-        .profile_of(&authed.user_id)
-        .map(|p| p.name)
-        .unwrap_or_default();
     if !recipients.is_empty() {
         let env = group_notice(
             &group_id,
@@ -634,7 +665,13 @@ async fn remark_mine(
     Path(group_id): Path<String>,
     ApiJson(body): ApiJson<RemarkMine>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_my_remark(&group_id, &authed.user_id, &body.remark)?;
+    // ADR-28 样板 ③「群管理写」：改自己在那一行的备注（单条 UPDATE）。
+    let actor = authed.user_id.clone();
+    let remark = body.remark.clone();
+    offload(&platform, move |p| {
+        p.set_my_remark(&group_id, &actor, &remark)
+    })
+    .await?;
     Ok(StatusCode::OK)
 }
 
@@ -738,13 +775,16 @@ async fn set_visibility(
     ApiJson(body): ApiJson<VisibilityBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let group_id = validate::id(&group_id).map_err(ApiError::from)?.to_string();
-    platform.set_group_visibility(&authed.user_id, &group_id, &body.visibility)?;
-    platform.audit(
-        &authed.user_id,
-        "group.visibility",
-        &group_id,
-        &body.visibility,
-    );
+    // ADR-28 样板 ③「群管理写」：归属校验 + 元数据 upsert + 审计写，一次阻塞。
+    let actor = authed.user_id.clone();
+    let visibility = body.visibility.clone();
+    let target = group_id.clone();
+    offload(&platform, move |p| {
+        p.set_group_visibility(&actor, &target, &visibility)?;
+        p.audit(&actor, "group.visibility", &target, &visibility);
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -755,8 +795,16 @@ async fn dissolve(
     Path(group_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let group_id = validate::id(&group_id).map_err(ApiError::from)?.to_string();
-    let members = platform.dissolve_group(&authed.user_id, &group_id)?;
-    platform.audit(&authed.user_id, "group.dissolve", &group_id, "");
+    // ADR-28 样板 ③「群管理写」：解散写 + 审计写在同一段阻塞里；逐成员扇出仍
+    // 留在 await 侧（那是网络投递，不是 SQL）。
+    let actor = authed.user_id.clone();
+    let target = group_id.clone();
+    let members = offload(&platform, move |p| {
+        let members = p.dissolve_group(&actor, &target)?;
+        p.audit(&actor, "group.dissolve", &target, "");
+        Ok(members)
+    })
+    .await?;
     for member in &members {
         let mut env =
             crate::system_envelope(&format!("sys-{member}"), "system", vec![member.clone()], "");
@@ -775,11 +823,15 @@ async fn dissolve(
     ))
 }
 
+// 群管理的三个读接口（group_info / list_members / my_groups）没在本卡三条样板热点
+// 里，逐个点位下面的 `TODO(ADR-28)` 各自记一笔，改造方式与 `dissolve` 相同。
 async fn group_info(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group_id): Path<String>,
 ) -> std::result::Result<Json<GroupInfo>, ApiError> {
+    // TODO(ADR-28): 一次请求里 4 次上锁（header/role/meta/members）全在 await
+    // 上下文里同步跑；改法：整段读包进一次 `offload`。
     let group_id = validate::id(&group_id).map_err(ApiError::from)?.to_string();
     // existence first: "no such group" is a 404, "not yours to read" is a 403
     let (id, name, owner_uid, created_at) = platform
@@ -808,6 +860,8 @@ async fn list_members(
     authed: Authed,
     Path(group_id): Path<String>,
 ) -> std::result::Result<Json<Vec<MemberRow>>, ApiError> {
+    // TODO(ADR-28): 成员名单这条读（含 `is_member` 的存在性校验）在 await 上下文
+    // 里上锁同步跑；与 `group_info` 同一类点位。
     if !platform.is_member(&group_id, &authed.user_id)? {
         return Err(PlatformError::Forbidden.into());
     }
@@ -818,5 +872,7 @@ async fn my_groups(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Vec<GroupSummary>>, ApiError> {
+    // TODO(ADR-28): "我的群"这条带子查询的读在 await 上下文里同步上锁；
+    // 与 `group_info` / `list_members` 同一类点位。
     Ok(Json(platform.group_summary(&authed.user_id)?))
 }

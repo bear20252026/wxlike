@@ -334,6 +334,9 @@ impl Platform {
     /// 弹幕：只发给当前在房观众，走 `high_priority`（不落库、不占序列号）。
     /// 返回实际收件人数（不含发送者自己）。
     pub async fn send_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<usize> {
+        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——收件人名单那条 SELECT
+        // 在 await 上下文里上锁。改法：把这段包进 `self.db().blocking(move |c| ..)`
+        // （见 db.rs 的 `blocking`），扇出留给 await 侧。样板见 friends.rs。
         let channel = validate::id(channel)?.to_string();
         let community = self
             .channel_community(&channel)?
