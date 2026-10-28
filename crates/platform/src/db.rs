@@ -4,12 +4,28 @@
 //! lock, run fully-synchronous SQL, and drop the guard before any `await`, so
 //! the guard is never held across a suspension point. Every statement is
 //! parameterized — string-built SQL is banned by the architecture rules.
+//!
+//! ADR-28 (#326) adds the second half of that rule: an `async fn` must not run
+//! the synchronous SQL at all — not even without holding the guard across an
+//! `await`, because `self.db().lock()` inside an axum handler occupies a tokio
+//! worker for the whole transaction. Two entry points exist for that:
+//!
+//! * [`Db::blocking`] — for code that already has a `Db`: the closure gets
+//!   `&mut Connection` **on a blocking thread**, and the whole transaction has
+//!   to fit inside it;
+//! * [`offload`] — for handlers that call an existing synchronous `Platform`
+//!   method: the *call* moves to the blocking pool, the transaction boundary
+//!   does not move at all.
+//!
+//! Both deliberately hand the caller a *connection*, never a guard, so nothing
+//! can escape the blocking task and no transaction can be split across two of
+//! them.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::error::{PlatformError, Result};
 
 #[derive(Clone)]
 pub struct Db {
@@ -365,6 +381,56 @@ impl Db {
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// ADR-28: run one synchronous SQLite critical section on the blocking pool.
+    ///
+    /// The `Mutex<Connection>` guard is acquired *inside* the closure and
+    /// dropped there, so a caller cannot carry a guard — or an open transaction
+    /// — back across an `await`. The whole transaction has to fit in `f`, which
+    /// is exactly the point: moving the thread must not move the atomic boundary.
+    pub async fn blocking<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        let ran = tokio::task::spawn_blocking(move || {
+            let mut conn = inner.lock().unwrap_or_else(PoisonError::into_inner);
+            f(&mut conn)
+        })
+        .await;
+        join_blocking(ran)
+    }
+}
+
+/// A blocking task that panicked or was cancelled is an internal failure, not a
+/// client error: the SQL either completed or did not, and the caller cannot
+/// retry it by fixing its input.
+fn join_blocking<T: Send>(
+    ran: std::result::Result<Result<T>, tokio::task::JoinError>,
+) -> Result<T> {
+    ran.map_err(|err| PlatformError::Internal(format!("blocking db task failed: {err}")))?
+}
+
+/// ADR-28 offload for handlers: move an existing synchronous `Platform` call
+/// onto the blocking pool.
+///
+/// Deliberately coarse — the *call* crosses the thread boundary, the
+/// transaction inside it does not. `f` may use every synchronous method of the
+/// platform unchanged (`db().lock()`, `c.transaction()`, the same ordering), so
+/// converting a handler cannot split a transaction in half or reorder its
+/// statements; it only stops the await context from owning the wait.
+///
+/// The `platform` argument is the shared handle the handler already holds: a
+/// `&Platform` cannot be moved into a `'static` task, an `Arc<Platform>` can.
+pub(crate) async fn offload<T, F>(platform: &crate::PlatformState, f: F) -> Result<T>
+where
+    F: FnOnce(&crate::Platform) -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let state = Arc::clone(platform);
+    let ran = tokio::task::spawn_blocking(move || f(&state)).await;
+    join_blocking(ran)
 }
 
 /// Statements slower than this land in the log with their text (truncated).
@@ -625,3 +691,148 @@ const SCHEMA_G05: &str = r#"
                 PRIMARY KEY (status_id, user_id)
             );
             "#;
+
+#[cfg(test)]
+mod adr28_evidence {
+    //! #326 验收第 3、4 条：并发证据与改前/改后数字。
+    //!
+    //! 两种写法跑在**同一个 runtime、同一份内存库**里，所以"改前/改后"的 tick 数
+    //! 来自同一次运行，不是两次环境对比。runtime 只给 1 个 worker：一条 250 ms 的
+    //! 同步事务占住 worker 时，旁边的计时任务**拿不到调度**——这正是 ADR-26 里
+    //! 那句"换 PostgreSQL 不会自动治好它"要治的东西（连接池同样会串行）。
+
+    use super::Db;
+    use crate::error::PlatformError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const HOLD: Duration = Duration::from_millis(250);
+    const TICK: Duration = Duration::from_millis(10);
+
+    fn one_worker_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("single-worker tokio runtime")
+    }
+
+    fn fresh_db() -> Db {
+        Db::open(None).expect("in-memory platform db")
+    }
+
+    /// 每 10ms 记一次 tick，**只在 `HOLD` 这段窗口里数**。
+    ///
+    /// 窗口必须收紧到与 handler 等长：早先给的是 `HOLD + 100ms`，多出来的尾巴
+    /// 让"改前"也能补到 7 跳——那 100ms 里 worker 已经空了，测的就不是
+    /// "SQL 占住 worker 的那段"了。窗口对齐之后：改前 0～1，改后 ≈16。
+    fn tick_driver(ticks: Arc<AtomicUsize>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let deadline = Instant::now() + HOLD;
+            while Instant::now() < deadline {
+                tokio::time::sleep(TICK).await;
+                ticks.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    }
+
+    /// 把 handler 作为**任务**放上唯一的 worker——这才是 axum handler 的形状。
+    /// （早先我把它写在 `block_on` 的 future 里，结果测的是调用线程，数字全是假的。）
+    async fn old_case(db: Db, ticks: Arc<AtomicUsize>) -> i64 {
+        let driver = tick_driver(Arc::clone(&ticks));
+        let handler = tokio::spawn(async move {
+            let c = db.lock();
+            std::thread::sleep(HOLD);
+            c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).unwrap()
+        });
+        let value = handler.await.unwrap();
+        driver.await.unwrap();
+        value
+    }
+
+    async fn new_case(db: Db, ticks: Arc<AtomicUsize>) -> i64 {
+        let driver = tick_driver(Arc::clone(&ticks));
+        let handler = tokio::spawn(async move {
+            db.blocking(move |c| -> std::result::Result<i64, PlatformError> {
+                std::thread::sleep(HOLD);
+                c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+                    .map_err(PlatformError::from)
+            })
+            .await
+            .unwrap()
+        });
+        let value = handler.await.unwrap();
+        driver.await.unwrap();
+        value
+    }
+
+    #[test]
+    fn the_blocking_entrypoint_frees_the_worker_that_sync_sql_occupied() {
+        // 同一个 runtime、同一次运行里量两种写法 ⇒ "改前/改后"不跨环境比较。
+        let rt = one_worker_runtime();
+        let (old_value, old_ticks, new_value, new_ticks) = rt.block_on(async {
+            let t_old = Arc::new(AtomicUsize::new(0));
+            let v_old = old_case(fresh_db(), Arc::clone(&t_old)).await;
+            let t_new = Arc::new(AtomicUsize::new(0));
+            let v_new = new_case(fresh_db(), Arc::clone(&t_new)).await;
+            (
+                v_old,
+                t_old.load(Ordering::SeqCst),
+                v_new,
+                t_new.load(Ordering::SeqCst),
+            )
+        });
+        println!(
+            "ADR-28 并发证据：持有 {}ms / 计时步长 {}ms ⇒ 改前 tick={old_ticks}，改后 tick={new_ticks}",
+            HOLD.as_millis(),
+            TICK.as_millis()
+        );
+        assert_eq!((old_value, new_value), (1, 1), "两条路径必须读出同一个结果");
+        assert!(
+            old_ticks <= 3,
+            "旧写法本该把唯一的 worker 占住、饿死计时任务，实测 tick={old_ticks} ⇒              这个用例没有测量它声称的东西（runtime 形状变了，必须重写而不是放宽阈值）"
+        );
+        assert!(
+            new_ticks >= old_ticks + 10,
+            "改后 worker 应当空出来：old={old_ticks} new={new_ticks}"
+        );
+    }
+
+    #[test]
+    fn the_transaction_boundary_stays_inside_one_closure() {
+        let rt = one_worker_runtime();
+        let rows = rt
+            .block_on(async {
+                let db = fresh_db();
+                db.blocking(|c| -> std::result::Result<i64, PlatformError> {
+                    let tx = c.transaction()?;
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS adr28_probe(x INTEGER PRIMARY KEY);
+                         INSERT INTO adr28_probe VALUES (1), (2);",
+                    )?;
+                    let n: i64 =
+                        tx.query_row("SELECT COUNT(*) FROM adr28_probe", [], |r| r.get(0))?;
+                    tx.commit()?;
+                    Ok(n)
+                })
+                .await
+            })
+            .expect("transaction on the blocking pool");
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn a_panicking_critical_section_is_internal_not_a_leaked_panic() {
+        let rt = one_worker_runtime();
+        let outcome = rt.block_on(async {
+            let db = fresh_db();
+            db.blocking::<_, i64>(|_| panic!("boom: sql 里不该发生的崩溃"))
+                .await
+        });
+        assert!(
+            matches!(outcome, Err(PlatformError::Internal(_))),
+            "阻塞池里的崩溃必须归成 Internal（可重试与否由调用方判），实际 {outcome:?}"
+        );
+    }
+}

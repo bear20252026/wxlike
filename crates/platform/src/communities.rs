@@ -31,6 +31,7 @@ use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
@@ -544,7 +545,12 @@ impl Platform {
 
     /// 频道发消息：走读扩散信箱（不变式 1/3），按消息类型与频道形态双重闸门。
     /// 返回 `(信箱 seq, msg_id)`——撤回要 msg_id，只回 seq 等于让调用方猜。
-    pub async fn send_channel_message(
+    ///
+    /// ADR-28 样板 ①「消息写」：这个方法**刻意不是 `async fn`**——它里面
+    /// `store.append(..)` 是一条同步事务（seq 分配 + mailbox 行 + 投影一次提交），
+    /// 挂在 await 上下文里就把 tokio worker 占满。签名改回同步之后，handler 用
+    /// [`crate::db::offload`] 整段搬到阻塞线程池，事务边界一动不动。
+    pub fn send_channel_message(
         &self,
         channel: &str,
         actor: &str,
@@ -867,9 +873,20 @@ impl Platform {
         .ok_or(PlatformError::NotFound)
     }
 
-    /// 话题内回复：落话题自持序列（绝不写频道信箱，不变式 3），再把通知扇给
-    /// 订阅且未静音的人（C3）。
-    pub async fn send_thread_reply(&self, thread: &str, actor: &str, text: &str) -> Result<i64> {
+    /// 话题内回复的**写入部分**：落话题自持序列（绝不写频道信箱，不变式 3），
+    /// 并算出订阅且未静音的扇出名单（C3）。
+    ///
+    /// ADR-28 样板 ①「消息写」：改前这是一个 `async fn`，里面直接
+    /// `self.db().lock()` + `INSERT` + 再一次上锁读名单，最后还 `emit().await`——
+    /// 同步 SQL 全程占住 await 上下文。现在签名回到同步，写与读仍在**同一次
+    /// 阻塞执行**里按原顺序跑完（`offload`），扇出留给 handler 在 async 侧做。
+    /// 返回 `(seq, channel, 扇出名单)`。
+    pub fn post_thread_reply(
+        &self,
+        thread: &str,
+        actor: &str,
+        text: &str,
+    ) -> Result<(i64, String, Vec<String>)> {
         let thread = validate::id(thread)?;
         let actor = validate::id(actor)?;
         let channel = self.thread_channel(thread)?;
@@ -890,22 +907,7 @@ impl Platform {
             let roster = self.thread_fanout(thread)?;
             roster.into_iter().filter(|u| u.as_str() != actor).collect()
         };
-        if !to.is_empty() {
-            // `thread.reply` 故意不进消息类型注册表：`mirror_of` 认不出它，
-            // 于是这条通知只在会话里飘过，不会落进频道时间线（不变式 3）。
-            let mut env = crate::system_envelope(&channel, actor, to, "");
-            env.body = wxlike_core::MsgBody::Custom {
-                kind: "thread.reply".into(),
-                payload: serde_json::json!({
-                    "thread_id": thread,
-                    "seq": seq,
-                    "text": text,
-                    "sent_at_ms": wxlike_core::types::now_ms(),
-                }),
-            };
-            self.emit(env).await;
-        }
-        Ok(seq)
+        Ok((seq, channel.to_string(), to))
     }
 
     /// 话题的推送扇出名单（C3 验收项）：订阅 ∩ 仍在社区 ∩ 未静音。
@@ -1155,14 +1157,19 @@ async fn send_channel_message(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ChannelMessageBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (seq, msg_id) = platform
-        .send_channel_message(
-            &id,
-            &authed.user_id,
-            body.kind.as_deref().unwrap_or("text"),
-            &body.text,
-        )
-        .await?;
+    // ADR-28 样板 ①「消息写」：鉴权读 + 信箱事务整段进阻塞池，handler 只 `await`
+    // 它的结果——tokio worker 不再替 SQLite 等待。
+    let actor = authed.user_id.clone();
+    let kind = body
+        .kind
+        .clone()
+        .unwrap_or_else(|| "text".to_string())
+        .to_string();
+    let text = body.text.clone();
+    let (seq, msg_id) = offload(&platform, move |p| {
+        p.send_channel_message(&id, &actor, &kind, &text)
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "seq": seq, "msg_id": msg_id })))
 }
 
@@ -1335,9 +1342,30 @@ async fn send_thread_reply(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ThreadReplyBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let seq = platform
-        .send_thread_reply(&id, &authed.user_id, &body.text)
-        .await?;
+    // ADR-28 样板 ①「消息写」：`thread_messages` 的行写入（含两次鉴权读）整段
+    // 进阻塞池；`thread.reply` 通知帧仍在 await 侧扇出——投递是异步的，不该
+    // 跟着 SQL 一起占线程。
+    let actor = authed.user_id.clone();
+    let text = body.text.clone();
+    let channel_arg = id.clone();
+    let text_arg = text.clone();
+    let (seq, channel, to) = offload(&platform, move |p| {
+        p.post_thread_reply(&channel_arg, &actor, &text_arg)
+    })
+    .await?;
+    if !to.is_empty() {
+        let mut env = crate::system_envelope(&channel, &authed.user_id, to, "");
+        env.body = wxlike_core::MsgBody::Custom {
+            kind: "thread.reply".into(),
+            payload: serde_json::json!({
+                "thread_id": id,
+                "seq": seq,
+                "text": text,
+                "sent_at_ms": wxlike_core::types::now_ms(),
+            }),
+        };
+        platform.emit(env).await;
+    }
     Ok(Json(serde_json::json!({ "seq": seq })))
 }
 

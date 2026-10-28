@@ -683,7 +683,6 @@ async fn c1_channel_role_table_and_muted_column_migrate_idempotently() {
     // 否则升级之后所有既有订阅都会被当成静音，等于静默改了行为。
     let thread = {
         p.send_channel_message(&channel, &owner, "text", "根消息")
-            .await
             .expect("send");
         p.create_thread(&channel, &owner, 1, "话题").unwrap()
     };

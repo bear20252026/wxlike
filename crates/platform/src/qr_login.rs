@@ -71,47 +71,71 @@ struct SecretBody {
     secret: String,
 }
 
+/// 建票 body 的三个可选字段。
+///
+/// 契约没规定建票的 body：空 body 与 `{}` 等价；每个字段里**只有空白**也算没填，
+/// 各自回落到默认值（`device_id` 回落到随机 `qr-<hex>`，platform 回落 `web`，
+/// label 回落 `QR login`）。这段规范化单独成函数，是为了让 handler 留在
+/// 质量闸门的 60 行线以内——不是新增行为，行为与内联时逐字等价。
+fn parse_create_body(body: &Bytes) -> std::result::Result<TicketPrefs, ApiError> {
+    let parsed: CreateBody = if body.is_empty() {
+        CreateBody::default()
+    } else {
+        serde_json::from_slice(body)
+            .map_err(|err| ApiError::bad_request(format!("invalid ticket body: {err}")))?
+    };
+    let fallback = |raw: Option<String>, default: &str| {
+        let raw = raw.unwrap_or_default();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            default.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+    Ok(TicketPrefs {
+        device_id: match parsed.device_id {
+            Some(ref raw) if !raw.trim().is_empty() => raw.trim().to_string(),
+            _ => format!("qr-{}", crate::auth::random_hex(8)),
+        },
+        platform: fallback(parsed.platform, "web"),
+        label: fallback(parsed.label, "QR login"),
+    })
+}
+
+/// [`parse_create_body`] 的产物：三个都已规范化的字符串。
+struct TicketPrefs {
+    device_id: String,
+    platform: String,
+    label: String,
+}
+
 async fn create_ticket(
     State(platform): State<PlatformState>,
     authed: Authed,
     body: Bytes,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    // 契约没规定建票 body；空 body 与 `{}` 等价（带线索则透传给 bind）。
-    let body: CreateBody = if body.is_empty() {
-        CreateBody::default()
-    } else {
-        serde_json::from_slice(&body)
-            .map_err(|err| ApiError::bad_request(format!("invalid ticket body: {err}")))?
-    };
-    let device_id = body
-        .device_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("qr-{}", crate::auth::random_hex(8)));
-    let plat = body
-        .platform
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("web");
-    let label = body
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("QR login");
+    let prefs = parse_create_body(&body)?;
     let now = wxlike_core::types::now_ms() as i64;
     // verifier 是服务端持有的 PKCE 秘密（见模块头第 2 点），64 hex 满足
     // qr_login 的长度/字符集校验。
     let verifier = crate::auth::random_hex(QR_SECRET_HEX_LEN);
 
     let ticket = {
+        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——建票 + 绑 verifier 的
+        // 两条写语句在 await 上下文里上锁。handler 手里有 `PlatformState`，改法
+        // 与 friends.rs 一样：`offload(&platform, move |p| { .. })` 整段搬走。
         let conn = platform.db().lock();
         let ticket = qr_login::create(&conn, now).map_err(id_err)?;
         qr_login::bind(
-            &conn, &ticket.id, &verifier, &device_id, plat, label, "", now,
+            &conn,
+            &ticket.id,
+            &verifier,
+            &prefs.device_id,
+            &prefs.platform,
+            &prefs.label,
+            "",
+            now,
         )
         .map_err(id_err)?;
         conn.execute(
@@ -138,6 +162,7 @@ async fn ticket_state(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let now = wxlike_core::types::now_ms() as i64;
     let (state, account_hint) = {
+        // TODO(ADR-28): 同类点位——票状态这条读在 await 上下文里上锁（改法同 `create_ticket`）。
         let conn = platform.db().lock();
         let row: Option<(String, String)> = conn
             .query_row(
@@ -182,6 +207,7 @@ async fn scan_ticket(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let now = wxlike_core::types::now_ms() as i64;
     let view = {
+        // TODO(ADR-28): 同类点位——扫码那次上锁跑在 await 上下文里（改法同 `create_ticket`）。
         let conn = platform.db().lock();
         // qr_login::scan 按 secret 定位（secret 是二维码里唯一能对上的东西）
         qr_login::scan(&conn, body.secret.trim(), &authed.user_id, now).map_err(id_err)?
@@ -214,6 +240,8 @@ async fn decide(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let now = wxlike_core::types::now_ms() as i64;
     {
+        // TODO(ADR-28): 同类点位——approve/reject 这两条写在 await 上下文里上锁
+        // （`decide` 收的是 `PlatformState`，改造直接套 friends.rs 的 `offload` 样板）。
         let conn = platform.db().lock();
         let outcome = if approve {
             qr_login::approve(&conn, &ticket_id, &authed.user_id, now)

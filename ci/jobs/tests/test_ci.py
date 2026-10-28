@@ -412,5 +412,110 @@ class SupplyChainLintScopeTest(unittest.TestCase):
         )
 
 
+class Adr28AsyncDbGuardTest(unittest.TestCase):
+    """ADR-28（issue #326）：`async fn` 里不许持同步连接锁。
+
+    `Db` 是 `Arc<Mutex<Connection>>` + 同步 rusqlite，handler 是 `async fn`：
+    `self.db().lock()` + `transaction()` 会把整条 SQL 跑在 tokio worker 上。这条
+    守卫是"CI-of-CI"的静态扫描（与 `SupplyChainLintScopeTest` 同款写法），并且
+    **自带注入自测**——不证自明不算证据，注入一条违规必须非零、改回必须零。
+    """
+
+    GUARD = load("adr28_async_db_guard", ROOT / "scripts" / "adr28_async_db_guard.py")
+    GUARD_PATH = ROOT / "scripts" / "adr28_async_db_guard.py"
+
+    CLEAN = """
+impl Platform {
+    pub fn load(&self, id: &str) -> Result<String> {
+        let c = self.db().lock();
+        Ok(c.query_row("SELECT name FROM users WHERE id = ?1", [], |r| r.get(0))?)
+    }
+}
+
+async fn ok_handler(State(platform): State<PlatformState>) -> Result<()> {
+    let id = "u1".to_string();
+    offload(&platform, move |p| p.load(&id)).await
+}
+"""
+
+    VIOLATION = """
+async fn bad_handler(platform: &PlatformState) -> Result<()> {
+    let c = platform.db().lock();
+    Ok(())
+}
+"""
+
+    VIOLATION_TX = """
+async fn bad_tx(&self) -> Result<()> {
+    let mut c = self.conn.lock().unwrap();
+    let tx = c.transaction()?;
+    tx.commit()?;
+    Ok(())
+}
+"""
+
+    def _fixture(self, body: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="adr28-"))
+        target = root / "crates" / "platform" / "src"
+        target.mkdir(parents=True)
+        (target / "demo.rs").write_text(body, encoding="utf-8")
+        return root
+
+    def _run(self, root: Path) -> subprocess.CompletedProcess:
+        # 用 sys.executable + 参数表，退出码直接来自进程，不经管道（Windows 上
+        # `cmd | tail; echo $?` 拿到的是管道的码，这里刻意避开）。
+        return subprocess.run(
+            [sys.executable, str(self.GUARD_PATH), "--root", str(root)],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_production_code_is_clean_now(self):
+        offenders = self.GUARD.scan(ROOT)
+        self.assertEqual(offenders, [], "async 上下文里持同步连接锁的点位（ADR-28）")
+
+    def test_injected_db_lock_must_go_red_then_green(self):
+        root = self._fixture(self.VIOLATION)
+        red = self._run(root)
+        self.assertNotEqual(red.returncode, 0, "注入的 db().lock() 竟然没报错")
+        self.assertIn("db().lock()", red.stderr)
+        # 改回原样（整段搬进 offload）→ 必须回零
+        (root / "crates" / "platform" / "src" / "demo.rs").write_text(
+            self.CLEAN, encoding="utf-8"
+        )
+        green = self._run(root)
+        self.assertEqual(green.returncode, 0, green.stderr)
+
+    def test_lock_followed_by_transaction_must_go_red(self):
+        root = self._fixture(self.VIOLATION_TX)
+        red = self._run(root)
+        self.assertNotEqual(red.returncode, 0)
+        self.assertIn("transaction()", red.stderr)
+
+    def test_todo_marker_waives_but_stale_marker_fails(self):
+        waived = "async fn h(&self) -> Result<()> {\n    // TODO(ADR-28): 待办\n    let c = self.db().lock();\n    Ok(())\n}\n"
+        self.assertEqual(self._run(self._fixture(waived)).returncode, 0)
+        stale = "async fn h(&self) -> Result<()> {\n    // TODO(ADR-28): 已经改造完了\n    Ok(())\n}\n"
+        red = self._run(self._fixture(stale))
+        self.assertNotEqual(red.returncode, 0)
+        self.assertIn("已无违规", red.stderr)
+
+    def test_sync_call_in_async_handler_needs_offload(self):
+        # 本卡样板文件里，handler 直接调同步查库方法 = 违规；包进 offload = 通过。
+        bare = (
+            "impl Platform {\n    pub fn load(&self, id: &str) -> Result<String> {\n"
+            "        let c = self.db().lock();\n        Ok(String::new())\n    }\n}\n"
+            "async fn h(platform: &PlatformState) -> Result<()> {\n"
+            "    platform.load(\"u1\")?;\n    Ok(())\n}\n"
+        )
+        root = self._fixture(bare)
+        # 规则 3 只对 ENFORCED_FILES 生效，fixture 的名字必须落在名单里
+        moved = root / "crates" / "platform" / "src" / "friends.rs"
+        (root / "crates" / "platform" / "src" / "demo.rs").rename(moved)
+        red = self._run(root)
+        self.assertNotEqual(red.returncode, 0, "同步查库调用没被规则 3 抓到")
+        self.assertIn("offload", red.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

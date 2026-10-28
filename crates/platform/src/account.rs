@@ -606,6 +606,10 @@ impl Platform {
 
     /// 兑换下载令牌并读出产物。第二次兑换 401（单次）。
     pub async fn take_export_download(&self, raw: &str) -> Result<Vec<u8>> {
+        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——`self.db().lock()` 在
+        // await 上下文里同步查询。改法与 friends.rs 的样板一致：整段读包进
+        // `Db::blocking`（这里拿不到 `Arc<Platform>`，用 `self.db().blocking(..)`
+        // 把 redeem 那一行搬走即可），别静默跳过。
         validate_id(raw)?;
         let now = wxlike_core::types::now_ms() as i64;
         let artifact = {
@@ -683,6 +687,9 @@ impl Platform {
     /// 直接调用本函数，于是"排队 → 执行中 → 完成/失败"的推进在测试里是确定的。
     /// 第一条失败即停止，并把那条作业标成 `failed`（用户能看到为什么）。
     pub async fn run_account_jobs(&self) -> Result<usize> {
+        // TODO(ADR-28): 同类点位——领作业的那条语句在 await 上下文里上锁（循环里
+        // 还有 await，所以不能整段搬走，只该把 `claim` 那一次上锁包进
+        // `Db::blocking`）。样板见 friends.rs。
         let mut done = 0;
         while done < MAX_JOBS_PER_RUN {
             let claimed = {
@@ -711,6 +718,9 @@ impl Platform {
     /// 顺序很讲究：先算文档（要拿数据库锁），再 await 写媒体仓，最后重新取锁
     /// 收尾——锁不能跨 `.await`（见 db.rs 模块头）。
     async fn run_export_job(&self, job: &Job) -> Result<()> {
+        // TODO(ADR-28): 同类点位——`export_document` 里两次上锁跑在 await 上下文
+        // 中（注释也写了"先算文档（要拿数据库锁），再 await 写媒体仓"）。改法是
+        // 把算文档整段包进 `Db::blocking`，别让 tokio worker 替 SQLite 等待。
         let bytes = self.export_document(&job.user_id)?;
         let sha = wxlike_core::msgmeta::sha256_hex(&bytes);
         if let Err(err) = self.media_store().put(&sha, &bytes).await {

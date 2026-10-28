@@ -31,7 +31,6 @@ async fn channel_unread_ack_and_sync_over_http() {
     for i in 0..3 {
         state
             .send_channel_message(&ch, &alice, "text", &format!("m{i}"))
-            .await
             .expect("send");
     }
 
