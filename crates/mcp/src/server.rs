@@ -162,6 +162,11 @@ impl Server {
         self
     }
 
+    /// 当前会话协商到的协议版本（未握手时是默认口径）。
+    pub fn protocol(&self) -> &'static str {
+        self.lock().protocol
+    }
+
     /// `tools/list` 的裸 JSON（诊断/夹具用，不需要先 `initialize`）。
     pub fn tools_dump(&self) -> String {
         let tools = tool_definitions();
@@ -340,6 +345,9 @@ struct Core {
     /// 握手状态：MCP 生命周期要求先 `initialize`，rmcp 不管这一条（它假设
     /// 会话由握手建立），所以口径留在这一层。
     initialized: bool,
+    /// 协商到的协议版本，**只用于记账与诊断**：出帧的能力表不随版本变，
+    /// 三个版本走的是同一套方法。
+    protocol: &'static str,
 }
 
 impl Core {
@@ -352,6 +360,7 @@ impl Core {
             jobs: JobRegistry::new(),
             seq: 0,
             initialized: false,
+            protocol: DEFAULT_PROTOCOL,
         }
     }
 
@@ -607,16 +616,18 @@ impl Handler {
         .to_mcp())
     }
 
-    /// 记下协商结果：后面的帧按这个生命周期走。
+    /// 记下协商结果：握手状态 + 实际谈成的版本。
     fn mark_ready(&self, negotiated: &ProtocolVersion) {
+        // rmcp 只会谈成 `supported_protocol_versions` 里的那个表，落不进去
+        // 就按默认口径记（不猜第三个值）。
+        let recorded = PROTOCOL_VERSIONS
+            .iter()
+            .find(|v| **v == negotiated.as_str())
+            .copied()
+            .unwrap_or(DEFAULT_PROTOCOL);
         self.with(|core| {
             core.initialized = true;
-            // 协商只可能落在 PROTOCOL_VERSIONS 里，取不到就按默认口径。
-            let _ = PROTOCOL_VERSIONS
-                .iter()
-                .find(|v| **v == negotiated.as_str())
-                .copied()
-                .unwrap_or(DEFAULT_PROTOCOL);
+            core.protocol = recorded;
         });
     }
 }
@@ -783,7 +794,8 @@ impl ServerHandler for Handler {
     }
 }
 
-/// 协议版本字符串 → rmcp 的类型（未知字符串也要能表示，所以走 serde）。
+/// 协议版本字符串 → rmcp 的类型。未知字符串也要能表示，所以走 serde；
+/// 万一进不去就按默认口径，不让一帧握手把整个会话带崩。
 fn version_of(text: &str) -> ProtocolVersion {
     serde_json::from_value(Value::String(text.to_string())).unwrap_or(ProtocolVersion::V_2025_06_18)
 }
@@ -1097,6 +1109,38 @@ mod tests {
             v["result"]["protocolVersion"], DEFAULT_PROTOCOL,
             "不认识的版本回最新"
         );
+
+        // 谈成的版本要落到会话状态里，不是只写进那一帧
+        let mut srv = server(Policy::none());
+        call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+        );
+        assert_eq!(srv.protocol(), "2024-11-05");
+    }
+
+    /// 完整的一帧 initialize（带 capabilities 与 clientInfo）走 rmcp 的**类型化**
+    /// 路径，不是补默认值的兼容分支。两条都要有覆盖，否则真客户端的路等于没测。
+    #[test]
+    fn fully_specified_initialize_goes_through_the_typed_path() {
+        let mut srv = server(Policy::none());
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"real-client","version":"1.0"}}}"#,
+        );
+        assert_eq!(v["result"]["protocolVersion"], "2025-03-26", "{v}");
+        assert_eq!(srv.protocol(), "2025-03-26", "类型化路径也要记版本");
+        assert_eq!(v["result"]["serverInfo"]["title"], "wxlike 命令面");
+        assert!(v["result"]["instructions"]
+            .as_str()
+            .expect("instructions")
+            .contains("26 条命令"));
+        // 握手之后业务方法立即可用
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        );
+        assert_eq!(v["result"]["tools"].as_array().expect("tools").len(), 30);
     }
 
     #[test]
