@@ -113,6 +113,19 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
     ("me.sessions", |_ex, http, _p| {
         http.expect_json("GET", "/api/sessions", None)
     }),
+    // ---- 读：好友与申请（#316）----
+    // 三条读命令都不带任何参数：服务端按 `authed.user_id` 取数
+    // （`crates/platform/src/friends.rs:299-318` 的 SQL 是 `WHERE user_id = ?1`），
+    // 命令面没有"看谁的名单"这个入口，所以调用方拿不到别人的通讯录。
+    ("friend.list", |_ex, http, _p| {
+        http.expect_json("GET", "/api/friends", None)
+    }),
+    ("friend.requests.incoming", |_ex, http, _p| {
+        http.expect_json("GET", "/api/friends/requests/incoming", None)
+    }),
+    ("friend.requests.outgoing", |_ex, http, _p| {
+        http.expect_json("GET", "/api/friends/requests/outgoing", None)
+    }),
     // ---- 读：视频 / 点播 ----
     ("video.select", |_ex, http, p| {
         let id = str_param(p, "video_id")?;
@@ -186,6 +199,31 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
             Some(&json!({ "user_ids": ids })),
         )
     }),
+    // ---- 写：好友申请（#316）----
+    ("friend.request.create", |_ex, http, p| {
+        let to = str_param(p, "to_user_id")?;
+        let mut body = json!({ "to_user_id": to });
+        // 附言不给就**不发这个键**：服务端 `RequestBody.message` 是
+        // `Option<String>` + `#[serde(default)]`（`crates/platform/src/friends.rs:38-43`），
+        // 缺席与空串在落库与系统消息文案上不是一个意思（`:429-433`）。
+        if let Some(msg) = p.get("message").and_then(Value::as_str) {
+            body["message"] = json!(msg);
+        }
+        // 走 `expect_json` 而不是 `post_idempotent`：服务端 `create_request`
+        // 不读 `Idempotency-Key` 头，键发了也没人消费。重试由唯一键去重，
+        // 依据写在 catalog 的 `friend.request.create` 注释里。
+        http.expect_json("POST", "/api/friends/requests", Some(&body))
+    }),
+    ("friend.request.accept", |_ex, http, p| {
+        // 只有申请 id：我是谁由 token 决定，服务端 `req.to_uid != me` → Forbidden
+        // （`crates/platform/src/friends.rs:200-202`），命令面递不出别人的身份。
+        let id = path_id(str_param(p, "req_id")?, "req_id")?;
+        http.expect_json("POST", &format!("/api/friends/requests/{id}/accept"), None)
+    }),
+    ("friend.request.decline", |_ex, http, p| {
+        let id = path_id(str_param(p, "req_id")?, "req_id")?;
+        http.expect_json("POST", &format!("/api/friends/requests/{id}/decline"), None)
+    }),
     ("video.job.create", |_ex, http, p| {
         // 读本地文件是 agent 侧唯一碰磁盘的地方：路径由调用方给，
         // 但能力等级是 Write——没开写权限时根本走不到这里。
@@ -240,6 +278,30 @@ pub(super) fn str_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, Str
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("缺少参数 {key}"))
+}
+
+/// 路径段允许的最大字符数——与服务端 `validate::id`（`crates/platform/src/validate.rs:21`
+/// 的 `MAX_ID_CHARS = 64`）同一口径，写成常量免得两边各数一遍。
+const MAX_PATH_ID_CHARS: usize = 64;
+
+/// 要拼进 **URL 路径段** 的 id：只接受非空字母数字，否则给可见错误。
+///
+/// 为什么在执行器侧就判（服务端 `validate::id` 也会判）：`req_id` 这类值直接进
+/// `format!("/api/friends/requests/{id}/accept")`，带 `/`、`?`、`#` 的值会把这次
+/// 调用**改写成另一条路由**——那时"这条命令打到哪个端点"就不再是 catalog 说了算，
+/// 审计里的 `X-Wxlike-Command` 与实际请求的端点也会各说一套。
+/// 与服务端同口径还让合法 id 少一次无谓往返（400 变成本地错误）。
+/// 返回的是 `&str` 而不是 panic：错误必须是调用方能看见的文本。
+pub(super) fn path_id<'a>(raw: &'a str, key: &str) -> Result<&'a str, String> {
+    if raw.is_empty()
+        || raw.chars().count() > MAX_PATH_ID_CHARS
+        || !raw.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(format!(
+            "参数 {key} 不是合法 id：只许字母数字，长度 1~{MAX_PATH_ID_CHARS}"
+        ));
+    }
+    Ok(raw)
 }
 
 /// `group.members` 的游标切片：取 `after_user` **之后**的至多 `limit` 条。

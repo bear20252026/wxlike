@@ -283,6 +283,7 @@ mod tests {
             "community": "c0ffee01",
             "name": "t", "text": "x", "msg_id": "00000000000000000000000000000000",
             "idempotency_key": "k", "user_ids": ["u"], "user_id": "u",
+            "to_user_id": "u2", "req_id": "a1b2c3d4e5f6",
             "q": "x", "from_seq": 1, "version": 0,
         });
         for spec in wxlike_cmd::CATALOG {

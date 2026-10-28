@@ -11,9 +11,14 @@
 //! * 最后一条评论（副作用更正）把验收口径改成
 //!   "v1 基线 = 原 26 条 + 本卡纳入的 N 条，automated / blocked / host_only 按新基线重算"。
 //!   **本卡的边界禁止加新命令**（钱包 / 账户 / 媒体的候选 id 由 G00-02 定名、
-//!   并要先过 #315 的幂等与确认复核），所以 N = 0：
-//!   这里冻的就是"原 26 条 + 64 条入口"。扩大基线时把下面三个常量一起改，
-//!   并按该评论第 4 条同步 `#322` 总览与 Wiki《开发顺序清单》。
+//!   并要先过 #315 的幂等与确认复核），所以 #314 当时 N = 0。
+//!   **`#316` 是第一次把 N 抬高**：relations 第一批 6 条好友命令
+//!   （`friend.list` / `friend.requests.incoming` / `friend.requests.outgoing` /
+//!   `friend.request.create` / `friend.request.accept` / `friend.request.decline`），
+//!   逐域数字与生成面 SHA 一起按新基线重算，理由写在
+//!   `GENERATED_SURFACE_SHA256` 的注释与那次提交的信息里。
+//!   扩大基线时把下面几个常量一起改，并按该评论第 4 条同步 `#322` 总览与
+//!   Wiki《开发顺序清单》。
 //!
 //! ## 冻结后规则（写在代码里，免得只活在评论里）
 //! 1. `id` 不改名、不删除（`CommandSpec` 的注释同一条：改名 = 破坏兼容）；
@@ -27,12 +32,18 @@ use wxlike_cmd::catalog;
 use wxlike_cmd::domains::{entries, EntryState};
 
 /// contract-v1 冻结的命令数（评论核实的第 1 条）。
-const BASELINE_COMMANDS: usize = 26;
+/// `#316` 扩基线：26（#314 冻结）+ 6 条 relations 好友命令 = **32**。
+const BASELINE_COMMANDS: usize = 32;
 /// contract-v1 冻结的入口条数（评论核实的第 2 条）。
-const BASELINE_ENTRIES: usize = 64;
+/// `#316`：64 + 新增 4 条 relations 入口（2 条 blocked 翻成 automated，
+/// 另外 4 条命令各需一条自己的入口）= **68**。
+const BASELINE_ENTRIES: usize = 68;
 /// 覆盖表的三态基线：automated / blocked / host_only（评论核实的第 2 条）。
-const BASELINE_AUTOMATED: usize = 26;
-const BASELINE_BLOCKED: usize = 33;
+/// `#316`：automated 26→32（六条新命令各登记一次）、blocked 33→31
+/// （翻掉的是 `好友列表与新朋友`、`好友申请处理` 两条，G02 #108），
+/// host_only 5 不变——32+31+5 = 68 = 入口总数。
+const BASELINE_AUTOMATED: usize = 32;
+const BASELINE_BLOCKED: usize = 31;
 const BASELINE_HOST_ONLY: usize = 5;
 /// 业务域个数（`domains.json` 的 domains 数组）。
 const BASELINE_DOMAINS: usize = 8;
@@ -53,11 +64,17 @@ const BASELINE_IDS: [&str; BASELINE_COMMANDS] = [
     "channel.roles",
     "me.info",
     "me.sessions",
+    "friend.list",
+    "friend.requests.incoming",
+    "friend.requests.outgoing",
     "msg.send",
     "conv.ack",
     "msg.forward",
     "group.create",
     "group.add_member",
+    "friend.request.create",
+    "friend.request.accept",
+    "friend.request.decline",
     "video.select",
     "video.stats",
     "video.job.get",
@@ -170,7 +187,9 @@ fn contract_v1_entries_per_domain_are_frozen() {
         ("messaging", 19),
         ("miniprogram", 4),
         ("payment", 5),
-        ("relations", 10),
+        // #316：relations 由 10 条入口涨到 14（6 条新命令各一条入口，
+        // 其中 2 条是把原 blocked 翻成 automated）
+        ("relations", 14),
         ("service", 4),
     ];
     let mut got: BTreeMap<&str, usize> = BTreeMap::new();
@@ -182,12 +201,14 @@ fn contract_v1_entries_per_domain_are_frozen() {
 }
 
 /// 逐域的 catalog 命令数（后续四张卡各占一域时，这是各自的落点与基数）。
+/// `#316` 多出一个 `friend` 域（G00-02 若定名成别的，改这里与 catalog 一起改）。
 #[test]
 fn contract_v1_commands_per_domain_are_frozen() {
     let want: &[(&str, usize)] = &[
         ("channel", 1),
         ("community", 1),
         ("conv", 5),
+        ("friend", 6),
         ("group", 5),
         ("me", 2),
         ("msg", 6),
@@ -198,20 +219,23 @@ fn contract_v1_commands_per_domain_are_frozen() {
 }
 
 /// 元工具口径（#314 第 3 条）：以代码为准是 **4 个**，不是 3 个。
-/// 证据：`crates/mcp/src/server.rs:38` 的
+/// 证据：`crates/mcp/src/server.rs` 的
 /// `const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"]`，
-/// 另有 `crates/mcp/tests/stdio_surface.rs:54` 断言 `tools/list` 共 30 = 26 + 4。
-/// 这里守的是**命令面那 26 条**：`tools/list` = 元工具 + catalog 全量，
-/// 所以 catalog 一变，MCP 侧的快照测试会一起要改。
+/// 另有 `crates/mcp/tests/stdio_surface.rs` 断言 `tools/list` 的面 = 命令 + 元工具。
+/// 这里守的是**命令面那 32 条**（#314 冻的 26 条 + #316 的 6 条）：
+/// `tools/list` = 元工具 + catalog 全量，所以 catalog 一变，
+/// MCP 侧的三处数字（`stdio_surface.rs` 的面、`server.rs` 的单测、
+/// `tools_list_snapshot.rs` 的逐字节基线）与 CLI 侧的四处
+/// （`crates/cli/tests/cli_surface.rs`）都要跟着改。
 #[test]
 fn contract_v1_tool_surface_is_commands_plus_meta() {
     const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
     let surface = META_TOOLS.len() + catalog::CATALOG.len();
-    assert_eq!(surface, 30, "tools/list 的面：26 条命令 + 4 个元工具");
+    assert_eq!(surface, 36, "tools/list 的面：32 条命令 + 4 个元工具");
     assert_eq!(
         catalog::CATALOG.len(),
         BASELINE_COMMANDS,
-        "命令面变了就得同步 crates/mcp/tests/stdio_surface.rs 的 30"
+        "命令面变了就得同步 crates/mcp/tests/stdio_surface.rs 与 tools_list_snapshot.rs"
     );
 }
 
@@ -261,8 +285,8 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 
 /// `contract_v1_generated_surface_digest_is_frozen` 的基线摘要。
 /// 来历：#314 拆分前用同一算法实测得到，拆后逐字节不变（`8a871793…`）。
-/// **本次翻新（#315，逐条理由）**——表面相对 `8a871793…` 动了 4 处，全是
-/// "声明与代码不一致"的撤销/接线，没有新增命令：
+/// #315 那次翻新（`af033442…`）动了 4 处，全是"声明与代码不一致"的撤销/接线，
+/// 没有新增命令：
 /// 1. `group.members`：`after_user`/`limit` 从装饰变成**真接线的游标翻页**
 ///    （执行器 `members_page` 切页），summary 与参数说明随之改口径；
 /// 2. `msg.get`：撤销 `confirmation_token` 参数——读命令的令牌根本签发不出来，
@@ -272,5 +296,23 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 ///    去重（见 catalog.rs 该条目注释）；
 /// 4. `msg.send`：撤销 `reply_to` 参数——HTTP 面（`SendBody`）没有这个字段，
 ///    透传是 #315 提的 server 诉求，补上后再把声明加回来。
+///
+/// **本次翻新（#316，逐条理由）**——`af033442…` → `7916c7d5…`。
+/// 表面变了 6 条**新增命令的声明**（#314 规则第 3 条：新增 id 走 v1.x，
+/// 且必须同步登记覆盖表），原 26 条的声明**一个字节都没改**
+/// （对照：`git show` 里 catalog.rs 的改动只有插入与新注释，没有改旧条目）：
+/// 1. 新增 `friend.list` → `GET /api/friends`，无参数；
+/// 2. 新增 `friend.requests.incoming` → `GET /api/friends/requests/incoming`，无参数；
+/// 3. 新增 `friend.requests.outgoing` → `GET /api/friends/requests/outgoing`，无参数；
+/// 4. 新增 `friend.request.create` → `POST /api/friends/requests`，
+///    参数 `{to_user_id: string, message?: string}`；
+/// 5. 新增 `friend.request.accept` → `POST /api/friends/requests/{req_id}/accept`，
+///    参数 `{req_id: string}`；
+/// 6. 新增 `friend.request.decline` → `POST /api/friends/requests/{req_id}/decline`，
+///    参数 `{req_id: string}`。
+/// 三条派生影响都是上面六条的必然结果，不是额外改动：
+/// CLI 总表多出 6 行、域名列表多出 `friend`、
+/// 覆盖表报告与渲染表格多出 6 条 automated 入口（`data/entries/relations.json`
+/// 由 10 条涨到 14 条：2 条 blocked 翻 automated + 4 条新入口）。
 const GENERATED_SURFACE_SHA256: &str =
-    "af0334426457d1753606aa0114ca1216802c2c30427542a807e97c775aa9bd7c";
+    "7916c7d5ca4a572562804e80216cd5bb223682015847945a9750ce5a77a0ea3d";
