@@ -35,6 +35,44 @@ pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 /// 规则：id 不改名不删除；字段只增；新增 id 走 v1.x 且必须同步登记覆盖表。
 /// 参数名与执行器取用字段的自动比对在 `crates/cmd/tests/param_dto_parity.rs`。
 ///
+/// ## 写命令的标注规则（#315 定；#316-#319 加新写命令时直接套这一段）
+///
+/// **`Idempotency::Required` 要两条同时成立**，缺一条就不许标，也**不许声明
+/// `idempotency_key` 参数**：
+/// 1. 重试会产生**新的业务对象**或**累加**副作用——发消息多一条、建群多一个群、
+///    观看心跳多一段时长、转账多一笔；
+/// 2. 服务端有**真的消费这个键**的地方，两种形态之一：
+///    * handler 读 `Idempotency-Key` 头做重放——`crates/platform/src/groups.rs:519-528`
+///      （建群，配 `replay_idempotent`/`remember_idempotent`，`:110-139`）、
+///      `crates/platform/src/wallet.rs:635-681`（转账，除重放外还比对**参数指纹**，
+///      同键异参回 409，比建群那套更严）；
+///    * 键被**派生成业务 id**——`server/src/lib.rs:972-988` 的 send：
+///      `SHA-256(key ‖ actor ‖ conv)` 当前 16 字节就是 `msg_id`，
+///      重复提交撞的是既有的去重与唯一索引，重试落在同一条消息上。
+///    执行器侧必须把键**发出去**（`Http::post_idempotent` 的 `Idempotency-Key` 头 +
+///    body 字段），否则声明就是装饰——`param_dto_parity` 的方向 2 专抓这个。
+///
+/// 只成立 1、不成立 2 ⇒ **别加键**。加了就是"schema 里说支持、代码读不到"，
+/// 正是 #314 的比对器当场抓出的那 4 条（`group.add_member` / `msg.send` /
+/// `group.members`）。此时的正确做法：把"重试会重复什么"写进这条命令的注释、
+/// 在服务端补出去重点（platform 诉求），补上之后再标 Required。
+///
+/// **天然幂等**标 `None` 且**不声明** `idempotency_key`，但必须写明靠哪一处代码
+/// 保证。只有这三种来源算数：
+/// * 唯一键 + `ON CONFLICT DO NOTHING`：群成员是 `PRIMARY KEY (group_id, user_id)`
+///   （`crates/platform/src/db/schema.rs:212-219`），写入见 `groups.rs:368-373`；
+/// * 游标只推不退：`conv.ack` 推 `read_seq`，同一个值推两次没有可观察差别
+///   （ISM 的"重放按水位丢弃"同一形状）；
+/// * 状态机门：`video.job.retry` 只接受 `Failed`（`crates/video/src/jobs.rs:1147-1152`），
+///   第二次重试拿到 409，而不是再排一次队。
+///
+/// **`Confirmation::Required` 满足任一即标**：副作用不可撤销（`msg.recall`）、
+/// 把别人从系统里拿走或让别人的东西消失（`group.kick`）、动钱或动凭证。
+/// 只增不减、服务端又天然去重的关系写入（拉人进群、标已读）**不要**加确认——
+/// 把日常操作也套上确认，人就会开始无脑点确认，那是另一类事故。
+/// 确认链路的令牌一次性与"改参重确认"在 `crate::confirmation`，
+/// 用例在 `crates/cmd/tests/confirmation_token.rs`。
+///
 /// ## 为什么这张表还在一个文件里
 /// 按域拆成 `catalog/conv.rs`、`catalog/video.rs`……试过，也**能拆干净**
 /// （生成面摘要逐字节不变、全测试绿），但本仓 `scripts/quality-gate.py` 的
@@ -139,15 +177,18 @@ pub const CATALOG: &[CommandSpec] = &[
     CommandSpec {
         id: "msg.get",
         summary: "取单条消息（含撤回状态）",
-        params: "{conv: string, msg_id: string, confirmation_token?: string}",
+        params: "{conv: string, msg_id: string}",
         args: &[
             Param::req("conv", ParamType::Str, "会话 id"),
             Param::req("msg_id", ParamType::Str, "消息 id"),
-            Param::opt(
-                "confirmation_token",
-                ParamType::Str,
-                "确认令牌：先 prepare，再把令牌带回来",
-            ),
+            // #315 撤销声明：这里原本挂着 `confirmation_token?`，但本条是
+            // `Confirmation::None` 的读命令——`ConfirmationStore::prepare` 对
+            // 非 Required 的命令直接回 `NotRequired`（`crate::confirmation::prepare`），
+            // 令牌**根本签发不出来**，MCP 的 `confirm_step` 也只在
+            // `spec.confirmation.is_required()` 时才走（`crates/mcp/src/server.rs:275-283`）。
+            // 留着它等于让 AI 以为"读一条消息要先确认"。
+            // 同一条不变式由 `crates/cmd/tests/idempotency_annotations.rs` 守着：
+            // 声明 `confirmation_token` ⇔ `Confirmation::Required`。
         ],
         capability: Capability::Read,
         needs_conv: true,
@@ -160,12 +201,23 @@ pub const CATALOG: &[CommandSpec] = &[
     // ---- 读：成员与自查 ----
     CommandSpec {
         id: "group.members",
-        summary: "群成员列表（分页，万人群不全量拉）",
+        // #315：`after_user` / `limit` 原来是装饰性的（handler 一次也没取用）。
+        // 现在接上线了——切页发生在执行器（`crates/client/src/execute/handlers.rs`
+        // 的 `members_page`，用例 `group_members_honours_the_cursor_and_the_limit`），
+        // 所以说明里不再写"万人群不全量拉"：服务端 `list_members`
+        // （`crates/platform/src/groups.rs:806-815`）只有一个 `Path(group_id)`，
+        // 没有 `Query`，**整份名单仍然一次拉回来**，命令面只承诺"给你的这一页"。
+        // 游标下推是 #315 提的 platform 诉求；补上之后只改 handler，声明不动。
+        summary: "群成员列表（按游标翻页；翻页目前切在客户端）",
         params: "{conv: string, after_user?: string, limit?: number}",
         args: &[
             Param::req("conv", ParamType::Str, "群 id"),
-            Param::opt("after_user", ParamType::Str, "游标：从该用户之后继续"),
-            Param::opt("limit", ParamType::NonNegativeInt, "条数上限"),
+            Param::opt(
+                "after_user",
+                ParamType::Str,
+                "游标：上一页最后一个 user_id，从它之后继续；它已不在名单里就给空页",
+            ),
+            Param::opt("limit", ParamType::NonNegativeInt, "这一页最多几条（缺省=剩下的全给）"),
         ],
         capability: Capability::Read,
         needs_conv: true,
