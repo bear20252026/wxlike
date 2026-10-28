@@ -4,8 +4,16 @@
 //! 没有这张表，"支持全业务"就只能靠嘴说；有了它，缺口必须写成
 //! `Blocked { owner, issue }`，或者明确标成 `Host`（人机物理例外）。
 //!
-//! 数据在 `crates/cmd/data/domains.json`（`include_str!` 编译进二进制）：
-//! 覆盖表是**数据**不是逻辑，放 Rust 源码里改一次就要重编译，
+//! 数据分两层（都在 `include_str!` 编译进二进制）：
+//! * `crates/cmd/data/domains.json`：**索引**，8 个域与标题，顺序即报告顺序；
+//! * `crates/cmd/data/entries/<域>.json`：该域的全部入口，一行一条。
+//!
+//! 为什么拆（#314 第 4 条）：后续卡片各占一个域的入口，拆成 per-domain 文件后
+//! 两张卡不会抢同一份 JSON。拆的**硬约束是行为不变**——按索引顺序拼回来的
+//! 条目序列与拆前一致，`report()` / `render()` / 生成的 schema 逐字节不变，
+//! 由 `crates/cmd/tests/contract_v1_baseline.rs` 的 SHA-256 断言守着。
+//!
+//! 覆盖表是**数据**不是逻辑：放 Rust 源码里改一次就要重编译，
 //! 而且 issue 编号会被静态检查当成"魔法数字"。
 //!
 //! 三条硬规则（由测试钉住）：
@@ -19,8 +27,25 @@ use serde_json::{json, Value};
 
 use crate::catalog::{self, HostCapability, Platforms};
 
-/// 编译进二进制的覆盖表原文。改数据不需要改代码结构。
+/// 编译进二进制的索引原文（只有域与标题）。
 const RAW: &str = include_str!("../data/domains.json");
+
+/// 每个域的入口清单，一个文件一份（顺序无关——按索引取）。
+/// 加一个域：`domains.json` 加一行 + 这里加一行 `include_str!`。
+/// 两边对不上由 [`load`] 直接报错，不会静默少一整域。
+const ENTRY_FILES: [(&str, &str); 8] = [
+    ("messaging", include_str!("../data/entries/messaging.json")),
+    ("relations", include_str!("../data/entries/relations.json")),
+    ("content", include_str!("../data/entries/content.json")),
+    ("media", include_str!("../data/entries/media.json")),
+    ("payment", include_str!("../data/entries/payment.json")),
+    (
+        "miniprogram",
+        include_str!("../data/entries/miniprogram.json"),
+    ),
+    ("service", include_str!("../data/entries/service.json")),
+    ("admin", include_str!("../data/entries/admin.json")),
+];
 
 /// 一个业务域。
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -65,6 +90,9 @@ struct RawEntry {
 #[derive(serde::Deserialize)]
 struct RawTable {
     domains: Vec<Domain>,
+    /// 拆文件之后索引里不该再有入口；这里的默认空值让"还剩着 entries"能被
+    /// [`load`] 明确拒绝，而不是解析失败看不出原因。
+    #[serde(default)]
     entries: Vec<RawEntry>,
 }
 
@@ -79,14 +107,14 @@ static TABLE: OnceLock<Table> = OnceLock::new();
 
 /// 覆盖表（首次使用时解析一次，之后只读）。
 ///
-/// 数据坏了（`domains.json` 被改坏）不 panic：退回**空表**并打一行
+/// 数据坏了（索引或某个入口文件被改坏）不 panic：退回**空表**并打一行
 /// stderr——库代码在坏数据上崩溃会带走宿主进程，而"没有覆盖表"
 /// 只是把 `coverage` 报告变空，故障还能被发现与修复。测试里
 /// `every_command_is_mapped_exactly_once` 会对着空表立刻红掉，
 /// 坏数据不会静默通过 CI。
 pub fn table() -> &'static Table {
     TABLE.get_or_init(|| {
-        parse(RAW).unwrap_or_else(|err| {
+        load().unwrap_or_else(|err| {
             eprintln!("wxlike-cmd: 业务域覆盖表数据损坏，退回空表：{err}");
             Table {
                 domains: Vec::new(),
@@ -94,6 +122,64 @@ pub fn table() -> &'static Table {
             }
         })
     })
+}
+
+/// 索引 + 每域一个入口文件 → 整张表。条目顺序 = 索引顺序 × 文件内顺序，
+/// 与拆成单文件之前完全一致。
+fn load() -> Result<Table, String> {
+    let index: RawTable = serde_json::from_str(RAW).map_err(|e| e.to_string())?;
+    if !index.entries.is_empty() {
+        return Err(
+            "domains.json 里还有 entries：入口已拆到 data/entries/<域>.json，索引只留域与标题"
+                .to_string(),
+        );
+    }
+    reject_stray_files(&index)?;
+    let mut entries = Vec::new();
+    for domain in &index.domains {
+        entries.extend(load_domain(&domain.key)?);
+    }
+    Ok(Table {
+        domains: index.domains,
+        entries,
+    })
+}
+
+/// 一个域的入口文件。条目自带的 `domain` 必须与文件名一致——
+/// 复制粘贴到隔壁文件这种错，靠这里拦。
+fn load_domain(key: &str) -> Result<Vec<Entry>, String> {
+    let (_, raw) = ENTRY_FILES
+        .iter()
+        .find(|(name, _)| *name == key)
+        .ok_or_else(|| format!("域 {key} 没有对应的 data/entries/{key}.json"))?;
+    let rows: Vec<RawEntry> =
+        serde_json::from_str(raw).map_err(|e| format!("data/entries/{key}.json：{e}"))?;
+    if rows.is_empty() {
+        return Err(format!(
+            "data/entries/{key}.json 是空的：每个域至少一条入口"
+        ));
+    }
+    rows.iter()
+        .map(|row| {
+            if row.domain != key {
+                return Err(format!(
+                    "{} 写在 data/entries/{key}.json 里，但 domain 是 {}",
+                    row.label, row.domain
+                ));
+            }
+            convert(row)
+        })
+        .collect()
+}
+
+/// 入口文件与索引必须一一对应：多出来的文件、缺掉的域，都是半拆状态。
+fn reject_stray_files(index: &RawTable) -> Result<(), String> {
+    for (key, _) in ENTRY_FILES {
+        if !index.domains.iter().any(|d| d.key == *key) {
+            return Err(format!("data/entries/{key}.json 在索引里没有对应的域"));
+        }
+    }
+    Ok(())
 }
 
 /// 所有业务域。
@@ -318,6 +404,41 @@ mod tests {
                 "域 {key} 没有任何入口"
             );
         }
+    }
+
+    /// 拆成 per-domain 文件之后（#314），索引与入口文件必须一一对应：
+    /// 加一个域只改一边，就会有一半的表看不见。
+    #[test]
+    fn entry_files_cover_exactly_the_indexed_domains() {
+        let keys: Vec<&str> = ENTRY_FILES.iter().map(|(k, _)| *k).collect();
+        for domain in domains() {
+            assert!(
+                keys.contains(&domain.key.as_str()),
+                "域 {} 没有对应的 data/entries/{}.json",
+                domain.key,
+                domain.key
+            );
+        }
+        for key in &keys {
+            assert!(
+                domains().iter().any(|d| d.key == *key),
+                "入口文件 {key} 在 domains.json 索引里没有对应的域"
+            );
+        }
+        assert_eq!(
+            keys.len(),
+            domains().len(),
+            "入口文件数与索引域数必须相等（改一处就要改另一处）"
+        );
+    }
+
+    /// 找不到文件 / 文件里域对不上，都是**错误**不是"少几条"。
+    #[test]
+    fn a_missing_or_mismatched_entry_file_is_an_error_not_a_missing_domain() {
+        let err = load_domain("nope").unwrap_err();
+        assert!(err.contains("没有对应的"), "{err}");
+        // 空表退化路径：load 失败 → entries 为空 → 上面的映射测试立刻红
+        assert!(!entries().is_empty(), "覆盖表退化成空表了：数据坏了");
     }
 
     /// 未做必须写清负责组与 issue：这不是"待办清单"，是承诺。

@@ -1,0 +1,7 @@
+[
+  { "domain": "admin", "label": "管理身份与 RBAC", "state": "blocked", "owner": "G14", "issue": 176 },
+  { "domain": "admin", "label": "用户/设备/群管理", "state": "blocked", "owner": "G14", "issue": 178 },
+  { "domain": "admin", "label": "内容与小程序审核", "state": "blocked", "owner": "G14", "issue": 180 },
+  { "domain": "admin", "label": "商户/卡券/对账", "state": "blocked", "owner": "G14", "issue": 182 },
+  { "domain": "admin", "label": "运营作业与隐私请求", "state": "blocked", "owner": "G14", "issue": 185 }
+]

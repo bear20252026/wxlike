@@ -1,0 +1,12 @@
+[
+  { "domain": "media", "label": "按带宽选码率", "state": "automated", "command": "video.select" },
+  { "domain": "media", "label": "观看统计", "state": "automated", "command": "video.stats" },
+  { "domain": "media", "label": "转码作业查询", "state": "automated", "command": "video.job.get" },
+  { "domain": "media", "label": "提交转码作业", "state": "automated", "command": "video.job.create" },
+  { "domain": "media", "label": "重试转码作业", "state": "automated", "command": "video.job.retry" },
+  { "domain": "media", "label": "观看心跳上报", "state": "automated", "command": "video.view.report" },
+  { "domain": "media", "label": "文件中心与消息附件", "state": "blocked", "owner": "G04", "issue": 119 },
+  { "domain": "media", "label": "上传会话与对象权限", "state": "blocked", "owner": "G04", "issue": 117 },
+  { "domain": "media", "label": "聊天记录迁移与备份", "state": "blocked", "owner": "G04", "issue": 122 },
+  { "domain": "media", "label": "拍照/录像采集", "state": "host_only", "host": "camera" }
+]
