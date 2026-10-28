@@ -11,12 +11,40 @@
 //! 危险动作走 `prepare → confirmation_token → execute`（G15-04）：
 //! 第一次调用只回计划与令牌，**不执行**；带令牌再调才真正执行，且令牌一次性。
 //!
-//! 刻意不做的事：
-//! * **不实现第二套 MCP 框架**——协议层是手写的 JSON-RPC 分派，官方 `rmcp`
-//!   的接入申请写在 `integration-requests/G15/G15-01.yaml`（根依赖与锁归 G00）；
-//! * **不把执行搬进来**——真正干活的是 `wxlike_client::execute::Executor`。
+//! #320 之后，JSON-RPC 的分派与 MCP 的数据模型都由官方 **rmcp** 承担
+//! （根 `Cargo.toml` 钉 3.8.0，只开 `server` / `transport-io`）：本文件不再自己
+//! 数 `method` 字符串、不再自己拼 `{"jsonrpc":"2.0",...}` 错误帧、也不再自己
+//! 解释 `initialize` 的版本协商。剩下的职责只有一层适配：
+//! * 把 catalog 生成的工具表交给 rmcp 的 `Tool` 模型；
+//! * 把 rmcp 解析出来的请求转给 `wxlike_client::execute::Executor`；
+//! * 守住 wxlike 特有而 rmcp 不管的口径：未握手拒 `-32002`、一次性确认令牌、
+//!   作业账、参数/响应上限、`_meta` 里的 contract-v1 信封。
+//!
+//! 帧的边界仍然由 [`crate::transport`] 一帧一帧地喂（`Server::handle_line`），
+//! 所以**没有**引入第二个 MCP 框架，也**没有**因为"rmcp 自带 transport"就
+//! 开出远程监听：rmcp 的 streamable-http / SSE feature 一个都没开，
+//! `Transport::parse` 继续拒绝 http/sse（见 G15-02）。
 
+use std::borrow::Cow;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ClientJsonRpcMessage,
+    CompleteRequestMethod, CompleteRequestParams, CompleteResult, CustomRequest, CustomResult,
+    ErrorCode, ErrorData as McpError, GetPromptRequestMethod, GetPromptRequestParams,
+    GetPromptResponse, Implementation, InitializeRequestParams, InitializeResult,
+    ListPromptsRequestMethod, ListPromptsResult, ListResourceTemplatesRequestMethod,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    RequestId, RequestMetaObject, ResourcesCapability, ServerCapabilities, ServerConfig,
+    ServerJsonRpcMessage, Tool, ToolsCapability,
+};
+use rmcp::service::{serve_directly, RequestContext};
+use rmcp::transport::Transport as RmcpTransport;
+use rmcp::{RoleServer, ServerHandler};
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 use wxlike_types::{ActionResult, DomainError};
 
@@ -44,6 +72,17 @@ const MAX_ARGS_BYTES: usize = 64 * 1024;
 /// 免得调用方以为自己拿到了完整结果。
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 
+/// 本服务实现的方法。rmcp 认得的方法名远不止这些（`tasks/*`、`prompts/*`…），
+/// 已知方法落到 `on_custom_request` 就说明参数不符合 MCP 模型（`-32602`），
+/// 未知方法才是 `-32601`——这张表就是两者的分界。
+const SERVED_METHODS: [&str; 5] = [
+    "ping",
+    "tools/list",
+    "tools/call",
+    "resources/list",
+    "resources/read",
+];
+
 /// 没有配 `--actor/--session-id` 时的本地身份。
 ///
 /// 它不是信任边界（服务端仍会再验），只是为了让确认令牌**永远绑定到某个
@@ -57,11 +96,14 @@ pub mod code {
     pub const INVALID_REQUEST: i64 = -32600;
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
+    /// rmcp 的循环已经收不到下一帧（会话结束）。
+    pub const INTERNAL_ERROR: i64 = -32603;
     /// 还没 `initialize` 就调业务方法。
     pub const NOT_INITIALIZED: i64 = -32002;
 }
 
-/// 一个协议层错误。
+/// 一个协议层错误。帧级错误（解析失败、会话结束）与业务侧拒绝都用它表达，
+/// 出边界时统一换成 rmcp 的 `ErrorData`。
 #[derive(Debug, PartialEq, Eq)]
 pub struct RpcError {
     pub code: i64,
@@ -75,10 +117,216 @@ impl RpcError {
             message: message.into(),
         }
     }
+
+    fn to_mcp(&self) -> McpError {
+        McpError::new(
+            ErrorCode(self.code as i32),
+            self.message.as_str().to_owned(),
+            None,
+        )
+    }
 }
 
-/// 服务器状态：执行器 + 策略 + 协商结果。
+/// 出边界时，协议层错误就是 rmcp 的 `ErrorData`：错误码与文案原样带过去，
+/// 帧本身由 rmcp 序列化（这一层不再手拼 `{"jsonrpc":...}`）。
+impl From<RpcError> for McpError {
+    fn from(e: RpcError) -> Self {
+        e.to_mcp()
+    }
+}
+
+/// 服务器状态：一条 rmcp 会话 + 与它共享的执行状态。
 pub struct Server {
+    /// 与 rmcp 服务面共享的可变状态（锁在同步处理里取，跨 `.await` 不持有）。
+    core: Arc<Mutex<Core>>,
+    /// 塞进 rmcp 会话循环的帧。
+    to_rmcp: mpsc::UnboundedSender<ClientJsonRpcMessage>,
+    /// rmcp 会话循环产出的帧。
+    from_rmcp: mpsc::UnboundedReceiver<ServerJsonRpcMessage>,
+    /// rmcp 是异步的，而这一层的边界是同步的"一帧进一帧出"：
+    /// 用一个当前线程运行时把两者接起来，不改变调用方的形态。
+    rt: tokio::runtime::Runtime,
+}
+
+impl Server {
+    pub fn new(exec: Executor, policy: Policy) -> Self {
+        Self::start(exec, policy, None)
+    }
+
+    /// 挂上会话/scope 闸门。**没挂不等于没权限**：服务端仍会再验一次，
+    /// 但本地就不会提前拦——所以远程 transport 必须挂。
+    ///
+    /// 改的是与 rmcp 服务面共享的状态；此刻会话循环还没收到任何帧。
+    pub fn with_gate(self, gate: Option<AuthGate>) -> Self {
+        self.lock().gate = gate;
+        self
+    }
+
+    /// `tools/list` 的裸 JSON（诊断/夹具用，不需要先 `initialize`）。
+    pub fn tools_dump(&self) -> String {
+        let tools = tool_definitions();
+        serde_json::to_string_pretty(&json!({ "tools": tools })).unwrap_or_default()
+    }
+
+    /// 处理一帧（可能是一行 JSON）。返回 `None` = 通知，不该回包。
+    pub fn handle_line(&mut self, line: &str) -> Option<String> {
+        let raw: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(err) => {
+                let e = RpcError::new(code::PARSE_ERROR, format!("parse error: {err}"));
+                return Some(error_frame(None, &e));
+            }
+        };
+        // rmcp 的消息模型负责判定这是请求、通知还是别的；读不进 MCP 的帧
+        // 一律 INVALID_REQUEST（-32600），不静默当成通知吞掉。
+        let msg = match serde_json::from_value::<ClientJsonRpcMessage>(raw.clone()) {
+            Ok(m) => m,
+            Err(err) => {
+                let e = RpcError::new(code::INVALID_REQUEST, format!("invalid request: {err}"));
+                return Some(error_frame(frame_id(&raw), &e));
+            }
+        };
+        match msg {
+            ClientJsonRpcMessage::Request(_) | ClientJsonRpcMessage::Notification(_) => {
+                self.pump(msg)
+            }
+            // 本服务不向客户端发起请求，所以客户端的 response/error 无处投递。
+            _ => {
+                let e = RpcError::new(
+                    code::INVALID_REQUEST,
+                    "invalid request: 这里是服务端，不收 response/error 帧",
+                );
+                Some(error_frame(frame_id(&raw), &e))
+            }
+        }
+    }
+
+    /// 处理一帧已解析的 JSON。通知（无 `id`）一律返回 `None`。
+    pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+        let line = serde_json::to_string(msg).ok()?;
+        self.handle_line(&line)
+            .map(|reply| serde_json::from_str(&reply).expect("会话循环的帧必须是 JSON"))
+    }
+
+    fn start(exec: Executor, policy: Policy, gate: Option<AuthGate>) -> Self {
+        let core = Arc::new(Mutex::new(Core::new(exec, policy, gate)));
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let rt = single_thread_runtime();
+        let handler = Handler {
+            core: Arc::clone(&core),
+        };
+        rt.spawn(async move {
+            let session = serve_directly(
+                handler,
+                FrameTransport {
+                    incoming: in_rx,
+                    outgoing: out_tx,
+                },
+                None,
+            );
+            let _ = session.waiting().await;
+        });
+        Server {
+            core,
+            to_rmcp: in_tx,
+            from_rmcp: out_rx,
+            rt,
+        }
+    }
+
+    /// 一帧进、一帧出：请求等它的回包，通知不回包。
+    ///
+    /// 通知不"等它被处理完"：rmcp 的循环读帧是**串行**的，同一会话里后面的
+    /// 帧一定排在它之后，所以既不会挤掉它，也不会让请求拿到错位的回包。
+    fn pump(&mut self, msg: ClientJsonRpcMessage) -> Option<String> {
+        let is_request = matches!(msg, ClientJsonRpcMessage::Request(_));
+        if self.to_rmcp.send(msg).is_err() {
+            let e = RpcError::new(code::INTERNAL_ERROR, "协议会话已结束");
+            return Some(error_frame(None, &e));
+        }
+        if !is_request {
+            return None;
+        }
+        let rt = &self.rt;
+        let rx = &mut self.from_rmcp;
+        rt.block_on(terminal_reply(rx))
+            .map(|frame| serde_json::to_string(&frame).unwrap_or_default())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Core> {
+        self.core.lock().expect("协议核心状态锁被污染")
+    }
+}
+
+/// 单线程运行时：帧是同步推进的，同一时刻只有一帧在会话里。
+fn single_thread_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("构建协议核心的 tokio 运行时")
+}
+
+/// 会话循环可能先产出非终帧（通知）；只把 response/error 当作这一帧的回包。
+async fn terminal_reply(
+    rx: &mut mpsc::UnboundedReceiver<ServerJsonRpcMessage>,
+) -> Option<ServerJsonRpcMessage> {
+    loop {
+        let frame = rx.recv().await?;
+        if matches!(
+            frame,
+            ServerJsonRpcMessage::Response(_) | ServerJsonRpcMessage::Error(_)
+        ) {
+            return Some(frame);
+        }
+    }
+}
+
+/// 帧里原来的 `id`，取不到就按 `null` 回。
+fn frame_id(raw: &Value) -> Option<RequestId> {
+    raw.get("id")
+        .and_then(|id| serde_json::from_value::<RequestId>(id.clone()).ok())
+}
+
+/// 帧级错误：由 rmcp 的 `JsonRpcMessage` 负责序列化，这里不再手拼 JSON。
+fn error_frame(id: Option<RequestId>, e: &RpcError) -> String {
+    let frame = ServerJsonRpcMessage::error(e.to_mcp(), id);
+    serde_json::to_string(&frame).unwrap_or_default()
+}
+
+/// 一帧进、一帧出的 transport：`Server` 把帧塞进来，rmcp 的会话循环把回包递出去。
+///
+/// 刻意**不用** rmcp 自带的 transport：stdio 的读写留在 `transport.rs`（那样
+/// "有人把日志 println 到 stdout"仍然只有真进程能发现），而远程 transport
+/// 需要 G15-02 的会话授权，feature 层面也一个都没开。
+struct FrameTransport {
+    incoming: mpsc::UnboundedReceiver<ClientJsonRpcMessage>,
+    outgoing: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+}
+
+impl RmcpTransport<RoleServer> for FrameTransport {
+    type Error = mpsc::error::SendError<ServerJsonRpcMessage>;
+
+    fn send(
+        &mut self,
+        item: ServerJsonRpcMessage,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let tx = self.outgoing.clone();
+        async move { tx.send(item) }
+    }
+
+    async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
+        self.incoming.recv().await
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.incoming.close();
+        Ok(())
+    }
+}
+
+/// 执行面需要的状态。业务动作一律转 `Executor`，这里只做协议侧的记账。
+struct Core {
     exec: Executor,
     policy: Policy,
     /// 会话/scope 闸门（G15-02）。`None` = 只跑本地策略（stdio 单用户场景）。
@@ -89,146 +337,32 @@ pub struct Server {
     jobs: JobRegistry,
     /// 请求序号：每个 `tools/call` 一个 request_id / operation_id，便于审计追踪。
     seq: u64,
-    protocol: &'static str,
+    /// 握手状态：MCP 生命周期要求先 `initialize`，rmcp 不管这一条（它假设
+    /// 会话由握手建立），所以口径留在这一层。
     initialized: bool,
 }
 
-impl Server {
-    pub fn new(exec: Executor, policy: Policy) -> Self {
+impl Core {
+    fn new(exec: Executor, policy: Policy, gate: Option<AuthGate>) -> Self {
         Self {
             exec,
             policy,
-            gate: None,
+            gate,
             confirm: ConfirmationStore::new(),
             jobs: JobRegistry::new(),
             seq: 0,
-            protocol: DEFAULT_PROTOCOL,
             initialized: false,
         }
     }
 
-    /// 挂上会话/scope 闸门。**没挂不等于没权限**：服务端仍会再验一次，
-    /// 但本地就不会提前拦——所以远程 transport 必须挂。
-    pub fn with_gate(mut self, gate: Option<AuthGate>) -> Self {
-        self.gate = gate;
-        self
-    }
-
-    /// `tools/list` 的裸 JSON（诊断/夹具用，不需要先 `initialize`）。
-    pub fn tools_dump(&self) -> String {
-        serde_json::to_string_pretty(&self.tools_list()).unwrap_or_default()
-    }
-
-    /// 处理一帧（可能是一行 JSON）。返回 `None` = 通知，不该回包。
-    pub fn handle_line(&mut self, line: &str) -> Option<String> {
-        let msg: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                return Some(
-                    error_frame(
-                        Value::Null,
-                        &RpcError::new(code::PARSE_ERROR, format!("parse error: {e}")),
-                    )
-                    .to_string(),
-                )
-            }
-        };
-        let reply = self.handle(&msg);
-        reply.map(|v| v.to_string())
-    }
-
-    /// 处理一帧已解析的 JSON。通知（无 `id`）一律返回 `None`。
-    pub fn handle(&mut self, msg: &Value) -> Option<Value> {
-        let id = msg.get("id").cloned()?;
-        let method = msg
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
-        if method.is_empty() {
-            return Some(error_frame(
-                id,
-                &RpcError::new(code::INVALID_REQUEST, "invalid request: missing method"),
-            ));
-        }
-        Some(match self.dispatch(method, &params) {
-            Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-            Err(e) => error_frame(id, &e),
-        })
-    }
-
-    fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
-        // 除 initialize / ping 之外，业务方法必须先握手。
-        if !self.initialized && !matches!(method, "initialize" | "ping") {
-            return Err(RpcError::new(
-                code::NOT_INITIALIZED,
-                "server not initialized: send initialize first",
-            ));
-        }
-        match method {
-            "initialize" => Ok(self.initialize(params)),
-            "ping" => Ok(json!({})),
-            "tools/list" => Ok(self.tools_list()),
-            "tools/call" => self.tools_call(params),
-            "resources/list" => Ok(self.resources_list()),
-            "resources/read" => self.resources_read(params),
-            other => Err(RpcError::new(
-                code::METHOD_NOT_FOUND,
-                format!("method not found: {other}"),
-            )),
-        }
-    }
-
-    /// 版本协商：客户端报的我们能做就照它，否则回我们最新的。
-    fn initialize(&mut self, params: &Value) -> Value {
-        let requested = params
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        self.protocol = PROTOCOL_VERSIONS
-            .iter()
-            .find(|v| **v == requested)
-            .copied()
-            .unwrap_or(DEFAULT_PROTOCOL);
-        self.initialized = true;
-        json!({
-            "protocolVersion": self.protocol,
-            "capabilities": {
-                "tools": {"listChanged": false},
-                "resources": {"subscribe": false, "listChanged": false},
-            },
-            "serverInfo": {
-                "name": "wxlike",
-                "title": "wxlike 命令面",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "instructions": format!(
-                "先 im_list_commands 发现能力，再按工具名调用。共 {} 条命令；\
-                 写操作需要启动时授予 --allow-write，破坏性操作另需 --allow-destructive。",
-                catalog::CATALOG.len()
-            ),
-        })
-    }
-
-    /// 每个命令一个工具 + 三个元工具。顺序稳定（catalog 顺序），便于快照。
-    fn tools_list(&self) -> Value {
-        let mut tools: Vec<Value> = META_TOOLS.iter().map(|name| meta_tool(name)).collect();
-        tools.extend(catalog::CATALOG.iter().map(catalog::tool_definition));
-        json!({ "tools": tools })
-    }
-
-    fn tools_call(&mut self, params: &Value) -> Result<Value, RpcError> {
-        let name = params
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "tools/call 缺 name"))?;
-        let args = params
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-
+    fn tools_call(
+        &mut self,
+        name: &str,
+        args: &Value,
+        meta: &RequestMetaObject,
+    ) -> Result<Value, RpcError> {
         if META_TOOLS.contains(&name) {
-            return Ok(self.meta_call(name, &args));
+            return Ok(self.meta_call(name, args));
         }
         let spec = self.resolve_tool(name)?;
         if args.to_string().len() > MAX_ARGS_BYTES {
@@ -238,22 +372,22 @@ impl Server {
             ));
         }
         // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
-        catalog::validate_args(spec, &args).map_err(arg_error)?;
+        catalog::validate_args(spec, args).map_err(arg_error)?;
         // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
-        if let Err(e) = wxlike_cmd::auth::guard_provenance(spec, provenance_of(params)) {
+        if let Err(e) = wxlike_cmd::auth::guard_provenance(spec, provenance_of(meta)) {
             return Ok(tool_failed(spec, &contract::classify(&e.to_string())));
         }
         // 会话与 scope：先于执行，且拒绝是**工具错误**（调用方能读懂并改 token）
         if let Some(gate) = &self.gate {
-            if let Err(e) = gate.check(spec, &args, provenance_of(params)) {
+            if let Err(e) = gate.check(spec, args, provenance_of(meta)) {
                 return Ok(tool_err(&e.to_string()));
             }
         }
-        let env = match envelope_of(params) {
+        let env = match envelope_of(meta) {
             Ok(env) => env,
             Err(e) => return Ok(tool_failed(spec, &e)),
         };
-        Ok(self.execute_checked(spec, &args, &env))
+        Ok(self.execute_checked(spec, args, &env))
     }
 
     fn resolve_tool(&self, name: &str) -> Result<&'static CommandSpec, RpcError> {
@@ -419,11 +553,7 @@ impl Server {
         ]})
     }
 
-    fn resources_read(&self, params: &Value) -> Result<Value, RpcError> {
-        let uri = params
-            .get("uri")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "resources/read 缺 uri"))?;
+    fn resources_read(&self, uri: &str) -> Result<Value, RpcError> {
         let (text, mime) = match uri {
             "wxlike://catalog" => (
                 serde_json::to_string_pretty(&catalog_list("")).unwrap_or_default(),
@@ -434,26 +564,263 @@ impl Server {
                 serde_json::to_string_pretty(&wxlike_cmd::domains::report()).unwrap_or_default(),
                 "application/json",
             ),
-            other => match other.strip_prefix(catalog::ACTION_URI_PREFIX) {
-                Some(id) => {
-                    let spec = catalog::get(id).ok_or_else(|| {
-                        RpcError::new(code::INVALID_PARAMS, format!("unknown action {id:?}"))
-                    })?;
-                    (
-                        serde_json::to_string_pretty(&catalog::schema_of(spec)).unwrap_or_default(),
-                        "application/json",
-                    )
-                }
-                None => {
+            other => {
+                let Some(id) = other.strip_prefix(catalog::ACTION_URI_PREFIX) else {
                     return Err(RpcError::new(
                         code::INVALID_PARAMS,
                         format!("unknown resource {other:?}"),
-                    ))
-                }
-            },
+                    ));
+                };
+                let spec = catalog::get(id).ok_or_else(|| {
+                    RpcError::new(code::INVALID_PARAMS, format!("unknown action {id:?}"))
+                })?;
+                (
+                    serde_json::to_string_pretty(&catalog::schema_of(spec)).unwrap_or_default(),
+                    "application/json",
+                )
+            }
         };
         Ok(json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
     }
+}
+
+/// rmcp 的服务面：把 [`Core`] 接进 MCP 的分派。
+struct Handler {
+    core: Arc<Mutex<Core>>,
+}
+
+impl Handler {
+    fn with<T>(&self, f: impl FnOnce(&mut Core) -> T) -> T {
+        let mut core = self.core.lock().expect("协议核心状态锁被污染");
+        f(&mut core)
+    }
+
+    /// 未握手的业务调用一律拒：MCP 生命周期不是可选项。
+    fn ready(&self) -> Result<(), McpError> {
+        if self.with(|core| core.initialized) {
+            return Ok(());
+        }
+        Err(RpcError::new(
+            code::NOT_INITIALIZED,
+            "server not initialized: send initialize first",
+        )
+        .to_mcp())
+    }
+
+    /// 记下协商结果：后面的帧按这个生命周期走。
+    fn mark_ready(&self, negotiated: &ProtocolVersion) {
+        self.with(|core| {
+            core.initialized = true;
+            // 协商只可能落在 PROTOCOL_VERSIONS 里，取不到就按默认口径。
+            let _ = PROTOCOL_VERSIONS
+                .iter()
+                .find(|v| **v == negotiated.as_str())
+                .copied()
+                .unwrap_or(DEFAULT_PROTOCOL);
+        });
+    }
+}
+
+impl ServerHandler for Handler {
+    fn get_info(&self) -> ServerConfig {
+        let mut tools = ToolsCapability::default();
+        tools.list_changed = Some(false);
+        let mut resources = ResourcesCapability::default();
+        resources.subscribe = Some(false);
+        resources.list_changed = Some(false);
+        let mut capabilities = ServerCapabilities::default();
+        capabilities.tools = Some(tools);
+        capabilities.resources = Some(resources);
+        let mut server_info = Implementation::new("wxlike", env!("CARGO_PKG_VERSION"));
+        server_info.title = Some("wxlike 命令面".to_string());
+        let mut info = ServerConfig::new(capabilities)
+            .with_server_info(server_info)
+            .with_instructions(format!(
+                "先 im_list_commands 发现能力，再按工具名调用。共 {} 条命令；\
+                 写操作需要启动时授予 --allow-write，破坏性操作另需 --allow-destructive。",
+                catalog::CATALOG.len()
+            ));
+        // 协商的默认口径 = 我们支持的最新版本；客户端报了不认识的版本就回它。
+        info.protocol_version = ProtocolVersion::V_2025_06_18;
+        info
+    }
+
+    /// 只声明这三个版本；报了别的（含更新的）一律回退到最新的那个，不报错。
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Owned(
+            PROTOCOL_VERSIONS
+                .iter()
+                .map(|v| version_of(v))
+                .collect::<Vec<ProtocolVersion>>(),
+        )
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        let info = self.negotiate_initialize(&request)?;
+        self.mark_ready(&info.protocol_version);
+        Ok(info)
+    }
+
+    /// 每个命令一个工具 + 四个元工具。顺序稳定（元工具在前、catalog 顺序），便于快照。
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        self.ready()?;
+        let tools = tool_definitions()
+            .into_iter()
+            .map(|t| {
+                serde_json::from_value::<Tool>(t).map_err(|e| {
+                    McpError::internal_error(format!("工具定义进不了 MCP 模型: {e}"), None)
+                })
+            })
+            .collect::<Result<Vec<Tool>, _>>()?;
+        Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        self.ready()?;
+        let args = Value::Object(request.arguments.clone().unwrap_or_default());
+        // `_meta` 由 rmcp 收在请求上下文里（不在 params 上），这里原样交给契约层。
+        let frame = self.with(|core| core.tools_call(&request.name, &args, &context.meta))?;
+        tool_frame(frame)
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        self.ready()?;
+        let frame = self.with(|core| core.resources_list());
+        from_model(frame)
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        self.ready()?;
+        let frame = self.with(|core| core.resources_read(&request.uri))?;
+        // 内容与顺序都由这层的帧决定，rmcp 只负责把它装进它自己的结果类型。
+        Ok(from_model::<ReadResourceResult>(frame)?.into())
+    }
+
+    /// 未实现的能力显式回 `-32601`，不用 rmcp 的默认空结果冒充"实现了但刚好为空"。
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Err(McpError::method_not_found::<ListPromptsRequestMethod>())
+    }
+
+    async fn get_prompt(
+        &self,
+        _request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, McpError> {
+        Err(McpError::method_not_found::<GetPromptRequestMethod>())
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Err(McpError::method_not_found::<
+            ListResourceTemplatesRequestMethod,
+        >())
+    }
+
+    async fn complete(
+        &self,
+        _request: CompleteRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CompleteResult, McpError> {
+        Err(McpError::method_not_found::<CompleteRequestMethod>())
+    }
+
+    /// rmcp 把它认得的方法分完之后，剩下的都到这里：
+    /// `initialize` 允许是不完整的一帧（旧客户端不带 clientInfo / capabilities），
+    /// 其余已知方法是参数不合法，未知方法是 `-32601`。
+    async fn on_custom_request(
+        &self,
+        request: CustomRequest,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CustomResult, McpError> {
+        let method = request.method.as_str();
+        if method == "initialize" {
+            let params = lenient_initialize(request.params.as_ref());
+            let info = self.negotiate_initialize(&params)?;
+            self.mark_ready(&info.protocol_version);
+            return serde_json::to_value(info)
+                .map(CustomResult)
+                .map_err(|e| McpError::internal_error(format!("握手结果异常: {e}"), None));
+        }
+        if SERVED_METHODS.contains(&method) {
+            return Err(McpError::invalid_params(
+                format!("{method} 的参数不符合 MCP 模型"),
+                None,
+            ));
+        }
+        self.ready()?;
+        Err(McpError::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            format!("method not found: {method}"),
+            None,
+        ))
+    }
+}
+
+/// 协议版本字符串 → rmcp 的类型（未知字符串也要能表示，所以走 serde）。
+fn version_of(text: &str) -> ProtocolVersion {
+    serde_json::from_value(Value::String(text.to_string())).unwrap_or(ProtocolVersion::V_2025_06_18)
+}
+
+/// 不完整但仍合法的 `initialize`：缺失的字段按我们的默认口径补，
+/// 报了不认识的 `protocolVersion` 也照样回退到最新版本。
+fn lenient_initialize(raw: Option<&Value>) -> InitializeRequestParams {
+    let mut params = InitializeRequestParams::default();
+    if let Some(text) = raw
+        .and_then(|v| v.get("protocolVersion"))
+        .and_then(Value::as_str)
+    {
+        params.protocol_version = version_of(text);
+    }
+    params
+}
+
+/// 工具帧（`content` / `structuredContent` / `isError` / `_meta`）进 MCP 类型。
+fn tool_frame(frame: Value) -> Result<CallToolResponse, McpError> {
+    let result: CallToolResult = from_mcp(frame)?;
+    Ok(CallToolResponse::Complete(result))
+}
+
+/// 序列化形态的帧 → rmcp 的模型类型；进不去就是本层拼错了，不是客户端的错。
+fn from_model<T>(frame: Value) -> Result<T, McpError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    from_mcp(frame)
+}
+
+fn from_mcp<T>(frame: Value) -> Result<T, McpError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(frame)
+        .map_err(|e| McpError::internal_error(format!("响应帧不符合 MCP 模型: {e}"), None))
 }
 
 /// Unix 秒。确认令牌与作业账都用同一把时钟，测试里换成显式时间。
@@ -468,10 +835,9 @@ fn now() -> i64 {
 ///
 /// 三个都是可选的；给了非法值就报领域错误，**不静默忽略**——静默忽略会让
 /// "我明明传了 trace" 变成排查时找不到的幽灵。
-fn envelope_of(params: &Value) -> Result<contract::Envelope, DomainError> {
-    let meta = params.get("_meta");
-    let get_str = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_str);
-    let deadline = meta.and_then(|m| m.get("wxlike/deadlineMs")).and_then(|v| {
+fn envelope_of(meta: &RequestMetaObject) -> Result<contract::Envelope, DomainError> {
+    let get_str = |key: &str| meta.0 .0.get(key).and_then(Value::as_str);
+    let deadline = meta.0 .0.get("wxlike/deadlineMs").and_then(|v| {
         v.as_i64()
             .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
     });
@@ -487,11 +853,8 @@ fn envelope_of(params: &Value) -> Result<contract::Envelope, DomainError> {
 /// 默认 `Trusted` 是刻意的：这是**调用方自述**，不是安全边界；真正的边界是
 /// 服务端再鉴权 + 确认令牌（G15-04）。但主动声明"这来自聊天正文"的调用方
 /// 会立刻被拒，而不是等到出事。
-fn provenance_of(params: &Value) -> Provenance {
-    let declared = params
-        .get("_meta")
-        .and_then(|m| m.get("wxlike/provenance"))
-        .and_then(Value::as_str);
+fn provenance_of(meta: &RequestMetaObject) -> Provenance {
+    let declared = meta.0 .0.get("wxlike/provenance").and_then(Value::as_str);
     match declared {
         Some(v) if v.starts_with("untrusted") => Provenance::Untrusted("untrusted content"),
         _ => Provenance::Trusted,
@@ -500,10 +863,6 @@ fn provenance_of(params: &Value) -> Provenance {
 
 fn arg_error(e: ArgError) -> RpcError {
     RpcError::new(code::INVALID_PARAMS, e.to_string())
-}
-
-fn error_frame(id: Value, e: &RpcError) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": e.code, "message": e.message}})
 }
 
 fn execute_one(exec: &Executor, args: &Value) -> Value {
@@ -556,6 +915,14 @@ fn catalog_list(query: &str) -> Value {
         })
         .collect();
     json!({ "count": items.len(), "commands": items })
+}
+
+/// 工具面的**唯一出处**：四个元工具在前，然后按 catalog 顺序一条命令一个工具。
+/// `tools_dump`（诊断）与 rmcp 的 `tools/list` 都从这里取，两条通道不会分叉。
+fn tool_definitions() -> Vec<Value> {
+    let mut tools: Vec<Value> = META_TOOLS.iter().map(|name| meta_tool(name)).collect();
+    tools.extend(catalog::CATALOG.iter().map(catalog::tool_definition));
+    tools
 }
 
 fn meta_tool(name: &str) -> Value {
@@ -1027,5 +1394,33 @@ mod tests {
         assert!(srv
             .handle_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
             .is_none());
+    }
+
+    /// 能力没 advertise 的方法不能用"空结果"冒充实现。
+    #[test]
+    fn unadvertised_capabilities_stay_method_not_found() {
+        let mut srv = ready();
+        for (id, method) in [
+            (20, "prompts/list"),
+            (21, "prompts/get"),
+            (22, "resources/templates/list"),
+            (23, "completion/complete"),
+        ] {
+            let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": {}});
+            let v = srv.handle(&frame).expect("response");
+            assert_eq!(v["error"]["code"], code::METHOD_NOT_FOUND, "{method}: {v}");
+        }
+    }
+
+    /// 本服务不向客户端发请求，所以客户端的 response 帧无处投递——
+    /// 显式拒绝，不能当通知吞掉。
+    #[test]
+    fn client_response_frames_are_rejected_not_swallowed() {
+        let mut srv = ready();
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":24,"result":{"anything":true}}"#,
+        );
+        assert_eq!(v["error"]["code"], code::INVALID_REQUEST, "{v}");
     }
 }

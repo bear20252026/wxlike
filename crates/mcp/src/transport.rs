@@ -5,6 +5,11 @@
 //! G15-02 的交付物；先放一个没有授权的 HTTP 监听，比没有更糟。
 //! 需要远程时，把 `--transport http` 的申请交给 G00（见
 //! `integration-requests/G15/G15-01.yaml`），在 G15-02 的鉴权合入后再开。
+//!
+//! #320 换成 rmcp 之后这条边界**没有松动**：根清单只开 `server` 与
+//! `transport-io` 两个 feature，rmcp 的 streamable-http / SSE / HTTP 会话
+//! 相关 feature 一个都没开——它们连编译产物都不存在，"自带远程 transport"
+//! 不等于"这里能监听"。
 
 use std::io::{BufRead as _, Write as _};
 
