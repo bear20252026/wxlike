@@ -1192,6 +1192,35 @@ fn direct_members(conv_id: &str) -> Option<(&str, &str)> {
 }
 
 /// Everything a hub does with one frame arriving from a connected client.
+#[derive(Debug)]
+pub struct QuoteReplayConflict;
+
+impl std::fmt::Display for QuoteReplayConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("idempotency key reused with different parameters")
+    }
+}
+
+impl std::error::Error for QuoteReplayConflict {}
+
+fn check_quoted_replay(store: &Store, env: &Envelope) -> anyhow::Result<()> {
+    let key = env.msg_id.to_vec();
+    let stored = store
+        .by_msg_ids(std::slice::from_ref(&key))?
+        .remove(&key)
+        .context("persisted message missing during replay check")?;
+    let prev = stored.envelope;
+    if (prev.quote_of.is_some() || env.quote_of.is_some())
+        && (prev.sender != env.sender
+            || prev.conv_id != env.conv_id
+            || prev.body != env.body
+            || prev.quote_of != env.quote_of)
+    {
+        return Err(QuoteReplayConflict.into());
+    }
+    Ok(())
+}
+
 async fn handle_inbound(
     state: &Arc<HubState>,
     bound_user: &str,
@@ -1436,6 +1465,7 @@ async fn handle_inbound(
             let msg_key = hex::encode(env.msg_id);
             let recipients = content_recipients(&env, members.as_deref());
             if let Some(store) = &state.storage {
+                check_quoted_replay(store, &env)?;
                 store.ensure_deliveries(&msg_key, &recipients)?;
             }
             tracing::debug!(
@@ -1446,8 +1476,10 @@ async fn handle_inbound(
             return fanout_content(state, &env, &recipients, &msg_key).await;
         }
         if let Some(store) = &state.storage {
-            // 失败会 `?` 出去，**seen 还没插入**——同一个 msg_id 可以重试。
-            store.append(&env, false)?;
+            // 唯一索引决定并发胜者，冲突帧必须在镜像与投递前退出。
+            if store.append(&env, false)?.is_none() {
+                check_quoted_replay(store, &env)?;
+            }
         }
         // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
         // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。

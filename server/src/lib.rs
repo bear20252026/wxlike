@@ -1011,47 +1011,12 @@ fn resolve_quote(
     Ok(Some(id))
 }
 
-/// 同一幂等键**换了参数**重放 → 409，一条也不写。
-///
-/// # 结论（#331 第 1 件要的书面答复）
-///
-/// `msg_id` 由 `key + user + conv` 派生，所以"同键异参"必然撞到同一条消息；
-/// 而 hub 的去重是**先到先赢、后到静默丢弃**（`messages.msg_id` 上有 partial
-/// UNIQUE 索引）。如果第二次带着不同的 `quote_of` 仍回 200，客户端会以为自己
-/// 的引用写进去了，实际库里还是第一次那条——这是假成功。
-///
-/// 因此对齐钱包侧的口径（`crates/platform/src/wallet.rs` 的 `replay_or_proceed`：
-/// 同键异参 → `Conflict`）：先按派生 msg_id 查已存行，会话/正文/引用三项一致
-/// 才当作合法重放放行（随后由既有去重吞掉，回同样的 200），不一致回 409。
-///
-/// **刻意只管"至少一侧带引用"的重放**：两侧都没有 `quote_of` 时本函数直接
-/// 返回 `Ok(())`，重放行为与本卡之前逐字节一致（同键改正文照旧被去重吞掉、
-/// 回 200）。把"同键改正文也 409"推广到无引用的老请求会动到没有引用的既有
-/// 客户端——那是另一张卡的范围。这样切是安全的：这条路径比的 msg_id 一律由
-/// `key + user + conv` 派生，QUIC 客户端自己填的随机 id 撞不上（撞它等于
-/// 猜中 128 位摘要），所以"已存行带引用"只可能是这条新 HTTP 路径先前写的。
-fn check_replay_matches(store: &Store, env: &Envelope) -> Result<(), (StatusCode, String)> {
-    let key = env.msg_id.to_vec();
-    let mut found = store
-        .by_msg_ids(std::slice::from_ref(&key))
-        .map_err(internal)?;
-    let Some(prev) = found.remove(&key) else {
-        return Ok(());
-    };
-    if env.quote_of.is_none() && prev.envelope.quote_of.is_none() {
-        // 老形状：不看正文，交给既有的去重（与今天一致）
-        return Ok(());
+fn send_error(error: anyhow::Error) -> (StatusCode, String) {
+    if error.is::<wxlike_net::mq_hub::QuoteReplayConflict>() {
+        (StatusCode::CONFLICT, error.to_string())
+    } else {
+        internal(error)
     }
-    if prev.envelope.conv_id != env.conv_id
-        || prev.envelope.body != env.body
-        || prev.envelope.quote_of != env.quote_of
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            "idempotency key reused with different parameters".into(),
-        ));
-    }
-    Ok(())
 }
 
 /// 幂等键 → 稳定的 msg_id（`key + user + conv` 的 SHA-256 前 16 字节）。
@@ -1107,17 +1072,13 @@ async fn send_message(
         .map(str::trim)
         .filter(|k| !k.is_empty())
     {
-        // 幂等：同 key → 同 msg_id → 被既有的去重与唯一索引挡住
         env.msg_id = idempotent_msg_id(key, &authed.user_id, &conv_id);
-        // 只有派生出稳定 msg_id 的请求才谈得上"重放"；没带键的是随机 id，
-        // 没有可比的行，也不必去查。
-        check_replay_matches(&deps.store, &env)?;
     }
 
     deps.hub
         .submit(&authed.user_id, &env)
         .await
-        .map_err(internal)?;
+        .map_err(send_error)?;
 
     Ok(Json(serde_json::json!({
         "msg_id": hex(env.msg_id),
