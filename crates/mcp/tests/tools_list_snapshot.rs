@@ -1,22 +1,11 @@
-//! `tools/list` 的**逐字节基线**（#320 的替换门）。
+//! `tools/list` 的逐字节基线（#320 的替换门）。
 //!
-//! 为什么单独一个文件、而不是只看 fixture：`tests/fixtures/tools_list_shape.json`
-//! 只钉住"第 0 个是 im_list_commands""schema 关 additionalProperties"这类**局部
-//! 形状**，它绿不代表 30 个工具的字段值没被动过。#320 用 rmcp 替掉手写 JSON-RPC
-//! 分派，而 rmcp 的 `tools/list` 走它自己的 `Tool` 模型序列化——字段被改名、被
-//! `skip_serializing_if` 吃掉、或多出一个 `title: null`，shape fixture 都可能照绿。
+//! 口径：元工具 4 个（list / execute / inspect / jobs）+ catalog 32 条 = **36 个**。
 //!
-//! 真相来源是**替换前抓下来的输出**（`wxlike-mcp --print-tools`，当时还是手写分派），
-//! 提交在 `snapshots/tools_list.json`。替换后两条通道都要过：诊断通道
-//! `Server::tools_dump()`，与协议通道真帧 `tools/list` 的 `result.tools`。
-//!
-//! 基线换过一次，来历记在这：`cb446c9f` 那份抓于 #315 之前，#315 撤掉三处装饰参数
-//! 声明之后它就该红（守卫照做了）。翻新**不能**用 rmcp 自己的输出重抓——那是自证循环。
-//! 新基线来自 `origin/main`（`b49496db`，仍是手写分派）编出的二进制，与 rmcp 版的
-//! `--print-tools` 逐字节比对：两份各 31,693 字节、`cmp` 无差异，这才是"实现换了而
-//! 表面没换"的证据。以后 catalog 再动，照同一条路子翻新。
-//!
-//! 元工具口径 4 个（list / execute / inspect / jobs）+ catalog 26 条 = **30 个**。
+//! 翻新流程（别走自证循环）：基线里的旧项一律保留，新增项按契约手工插入，
+//! **不得**用被测 rmcp 的输出整体覆盖预期；改完更新下面的 SHA-256 并在提交里写理由。
+//! #320 那次是拿 `origin/main` 上手写分派编出的二进制 `--print-tools` 与 rmcp 版逐字节比对；
+//! #316 这次是保留原 30 项字段与相对顺序、按六条好友契约插入 6 项，再用诊断与协议两条通道比对。
 
 use serde_json::Value;
 use wxlike_mcp::server::Server;
@@ -28,7 +17,7 @@ use wxlike_cmd::CATALOG;
 
 const BASELINE: &str = include_str!("snapshots/tools_list.json");
 /// `snapshots/tools_list.json` 的 SHA-256：动基线必须留下说明。
-const BASELINE_SHA256: &str = "c802be568d4e843a7d303e4b191ae419efbf61d830dd380339a80a87ad9cbe7a";
+const BASELINE_SHA256: &str = "01bac1fffec7fa3def6e3fce12fd5734c31e7804a1623aeef0c1466dca1c6337";
 
 fn server() -> Server {
     let policy = Policy::none();
@@ -49,7 +38,7 @@ fn frame(srv: &mut Server, id: i64, method: &str) -> Value {
 
 /// 基线文件自己要先可信：它必须还是当初那份，不是后来被顺手改过的。
 #[test]
-fn baseline_is_30_tools_and_matches_its_own_hash() {
+fn baseline_is_36_tools_and_matches_its_own_hash() {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(BASELINE.as_bytes());
@@ -63,7 +52,7 @@ fn baseline_is_30_tools_and_matches_its_own_hash() {
         "快照文件被动过"
     );
     let base: Value = serde_json::from_str(BASELINE).expect("baseline json");
-    assert_eq!(base["tools"].as_array().expect("tools").len(), 30);
+    assert_eq!(base["tools"].as_array().expect("tools").len(), 36);
 }
 
 /// 诊断通道：逐字节。
@@ -99,7 +88,7 @@ fn tools_list_frame_matches_the_baseline() {
     );
 }
 
-/// 数量口径写死：26 条命令 + 4 个元工具，多的少的都算回归。
+/// 数量口径写死：32 条命令 + 4 个元工具，多的少的都算回归。
 #[test]
 fn tool_count_is_commands_plus_four_meta_tools() {
     let dump: Value = serde_json::from_str(&server().tools_dump()).expect("dump json");

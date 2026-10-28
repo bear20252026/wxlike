@@ -43,6 +43,8 @@ hmac = "0.12"
 async-trait = { workspace = true }
 
 [dev-dependencies]
+wxlike-client = { path = "../client" }
+wxlike-cmd = { path = "../cmd" }
 # 集成测试要自己算当前验证码（`totp_now`），与生产依赖同一个版本
 totp-rs = { version = "5", default-features = false, features = ["gen_secret"] }
 # 端到端媒体协商测试要匹配 `wxlike_rtc::media::pump` 返回的 `str0m::Event`

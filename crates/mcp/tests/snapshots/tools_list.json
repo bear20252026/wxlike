@@ -583,6 +583,93 @@
     },
     {
       "_meta": {
+        "wxlike/actionId": "friend.list",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "好友列表（我的通讯录，按加入时间排）｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "friend-list",
+      "title": "好友列表（我的通讯录，按加入时间排）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.requests.incoming",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "待我处理的好友申请（收件向，只含 pending）｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "friend-requests-incoming",
+      "title": "待我处理的好友申请（收件向，只含 pending）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.requests.outgoing",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "我发出去的好友申请（发起向，含已接受/已拒绝）｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "friend-requests-outgoing",
+      "title": "我发出去的好友申请（发起向，含已接受/已拒绝）"
+    },
+    {
+      "_meta": {
         "wxlike/actionId": "msg.send",
         "wxlike/confirmation": "none",
         "wxlike/host": "none",
@@ -810,6 +897,118 @@
       },
       "name": "group-add_member",
       "title": "拉人进群"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.request.create",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "发起好友申请（同一对象重复提交回 409，不会排第二队）｜参数：{to_user_id: string, message?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "description": "申请附言；不给=只发空附言，服务端限长",
+            "type": "string"
+          },
+          "to_user_id": {
+            "description": "要添加的那个人 user_id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_user_id"
+        ],
+        "type": "object"
+      },
+      "name": "friend-request-create",
+      "title": "发起好友申请（同一对象重复提交回 409，不会排第二队）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.request.accept",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "同意一条好友申请（只有 pending 能被改，重复同意回 409）｜参数：{req_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "req_id": {
+            "description": "申请 id（incoming 列表里的 id 字段）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "req_id"
+        ],
+        "type": "object"
+      },
+      "name": "friend-request-accept",
+      "title": "同意一条好友申请（只有 pending 能被改，重复同意回 409）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.request.decline",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "拒绝一条好友申请（只有 pending 能被改，重复拒绝回 409）｜参数：{req_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "req_id": {
+            "description": "申请 id（incoming 列表里的 id 字段）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "req_id"
+        ],
+        "type": "object"
+      },
+      "name": "friend-request-decline",
+      "title": "拒绝一条好友申请（只有 pending 能被改，重复拒绝回 409）"
     },
     {
       "_meta": {
