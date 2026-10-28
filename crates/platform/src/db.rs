@@ -13,7 +13,7 @@
 //! * [`Db::blocking`] — for code that already has a `Db`: the closure gets
 //!   `&mut Connection` **on a blocking thread**, and the whole transaction has
 //!   to fit inside it;
-//! * [`offload`] — for handlers that call an existing synchronous `Platform`
+//! * `offload`（本模块内）— for handlers that call an existing synchronous `Platform`
 //!   method: the *call* moves to the blocking pool, the transaction boundary
 //!   does not move at all.
 //!
