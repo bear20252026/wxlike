@@ -51,15 +51,14 @@ const CONSUMED_ELSEWHERE: [(&str, &str); 3] = [
 ];
 
 /// 声明了、但 handler **还没接线**的参数：已知缺口，不是豁免的常态。
-/// 服务端 `/api/groups/{conv}/members` 不接游标与条数；`group.add_member`
-/// 的幂等键没进请求；`msg.send` 的 `reply_to` 也没进请求体——
-/// 也就是说"引用回复"今天在命令面上是个空承诺。
-/// 这三处都**归执行器/服务端**（#314 的边界不许改 Executor 分派），所以先登记；
-/// 哪天接上了，名单条目失效 → 测试红 → 删条目即可；参数改名同样红，
-/// 缺口不会静默扩大。
-const NOT_WIRED_YET: [(&str, &str); 4] = [
-    ("group.members", "after_user"),
-    ("group.members", "limit"),
+/// #314 登记的 4 条里，`group.members` 的 `after_user` / `limit` 已在 #315 接上
+/// （`crates/client/src/execute/handlers.rs` 的 `members_page`）；
+/// 剩下这两条各自的处置见 #315 的书面结论：`group.add_member` 的幂等键要撤
+/// （服务端 `add_members` 不读 `Idempotency-Key` 头，键留着只是装饰）、
+/// `msg.send` 的 `reply_to` 要撤（`POST /api/conv/{conv}/send` 的 body 里没有这个字段，
+/// 线格式有 `quote_of` 但 HTTP 面还没透传）。
+/// 名单是**双向断言**：接上线、或把声明撤掉，条目都会失效 → 本测试红 → 删条目。
+const NOT_WIRED_YET: [(&str, &str); 2] = [
     ("group.add_member", "idempotency_key"),
     ("msg.send", "reply_to"),
 ];
