@@ -304,4 +304,269 @@ mod tests {
         let err = exec.run("msg.send_for_ai", &json!({})).unwrap_err();
         assert!(err.contains("unknown command"), "{err}");
     }
+
+    // ─────────── #316 relations 第一批：执行器侧的真面用例 ───────────
+    //
+    // `crates/cmd/tests/relations_surface.rs` 对的是"命令面 ↔ 服务端路由表"这份
+    // 源码事实；这里补上**真的走到网络**的那一段：起一个把请求行与请求体交回来的
+    // 一次性服务器（手法同 `crates/client/tests/zone_c_surface.rs`），
+    // 于是"路径少一段""body 多一个键""权限没拦住就发出去了"都会在这里红。
+
+    /// 应答 200 `{}`，并把每个请求的 `请求行 + \n + body` 送进 channel。
+    fn recorder() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let tx = tx.clone();
+                let mut stream = stream;
+                let sep = [13u8, 10, 13, 10];
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            // 头收齐**并且** body 收齐才回包：只对头就关连接会让
+                            // 还在发 body 的客户端拿到 RST（POST 带 body 的命令必踩）。
+                            if let Some(pos) = buf.windows(4).position(|w| w == sep) {
+                                let head_end = pos + 4;
+                                let text = String::from_utf8_lossy(&buf).to_string();
+                                let need = text
+                                    .lines()
+                                    .filter_map(|l| l.split_once(':'))
+                                    .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                                    .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+                                    .unwrap_or(0);
+                                if buf.len() >= head_end + need {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let head = text.lines().next().unwrap_or_default().to_string();
+                let body = text.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+                let _ = tx.send(if body.is_empty() {
+                    head
+                } else {
+                    format!("{head}\n{body}")
+                });
+                let crlf = String::from_utf8(vec![13, 10]).expect("crlf");
+                let resp = format!(
+                    "HTTP/1.1 200 OK{crlf}Content-Type: application/json{crlf}Content-Length: 2{crlf}Connection: close{crlf}{crlf}{{}}"
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    fn next_request(rx: &std::sync::mpsc::Receiver<String>) -> String {
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("服务器该收到一条请求")
+    }
+
+    fn assert_no_request(rx: &std::sync::mpsc::Receiver<String>) {
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "被拒的命令不该产生任何请求"
+        );
+    }
+
+    fn authed(base: String) -> Http {
+        let mut http = Http::new(base);
+        http.token = Some("t".to_string());
+        http
+    }
+
+    /// 三条读命令打到**各自**的端点，不带查询串。
+    #[test]
+    fn friend_reads_reach_their_own_routes() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], false, false));
+        for (id, want) in [
+            ("friend.list", "GET /api/friends HTTP/1.1"),
+            (
+                "friend.requests.incoming",
+                "GET /api/friends/requests/incoming HTTP/1.1",
+            ),
+            (
+                "friend.requests.outgoing",
+                "GET /api/friends/requests/outgoing HTTP/1.1",
+            ),
+        ] {
+            exec.run(id, &json!({}))
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(next_request(&rx), want, "{id}");
+        }
+    }
+
+    /// 发起申请：`POST /api/friends/requests`，body 只带声明过的两个键，
+    /// 而且不许带 `Idempotency-Key` 头（标注是 `None`，服务端也不消费）。
+    #[test]
+    fn friend_request_create_posts_the_declared_body_only() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, false));
+        exec.run(
+            "friend.request.create",
+            &json!({"to_user_id": "u-2", "message": "你好，我是小王"}),
+        )
+        .expect("发起申请");
+        let got = next_request(&rx);
+        let (head, body) = got.split_once('\n').expect("create 该带 body");
+        assert_eq!(head, "POST /api/friends/requests HTTP/1.1", "{got}");
+        let sent: Value = serde_json::from_str(body).expect("body 是 json");
+        assert_eq!(
+            sent,
+            json!({"to_user_id": "u-2", "message": "你好，我是小王"}),
+            "{sent}"
+        );
+        assert!(
+            !got.to_lowercase().contains("idempotency-key"),
+            "没标 Idempotency::Required 却发了幂等头：{got}"
+        );
+
+        // 不给附言 = body 里**没有** message 键（缺席与空串在文案上不是一个意思）
+        exec.run("friend.request.create", &json!({"to_user_id": "u-3"}))
+            .expect("只给对象");
+        let got = next_request(&rx);
+        let (_, body) = got.split_once('\n').expect("create 该带 body");
+        let sent: Value = serde_json::from_str(body).expect("body 是 json");
+        assert_eq!(sent, json!({"to_user_id": "u-3"}), "{sent}");
+    }
+
+    /// 接受与拒绝：申请 id 在**路径**里，方法 POST，无 body。
+    #[test]
+    fn friend_request_decision_posts_to_the_request_scoped_route() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, false));
+        for (verb, id) in [("accept", "a1b2c3"), ("decline", "d4e5f6")] {
+            exec.run(&format!("friend.request.{verb}"), &json!({"req_id": id}))
+                .unwrap_or_else(|e| panic!("{verb}: {e}"));
+            assert_eq!(
+                next_request(&rx),
+                format!("POST /api/friends/requests/{id}/{verb} HTTP/1.1")
+            );
+        }
+    }
+
+    /// **参数不传就报错，而且报错的命令不许碰网络**。
+    #[test]
+    fn friend_commands_fail_locally_when_a_required_argument_is_missing() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, false));
+        let err = exec
+            .run("friend.request.create", &json!({"message": "hi"}))
+            .unwrap_err();
+        assert!(err.contains("to_user_id"), "{err}");
+        assert_no_request(&rx);
+
+        let err = exec
+            .run("friend.request.accept", &json!({}))
+            .unwrap_err();
+        assert!(err.contains("req_id"), "{err}");
+        assert_no_request(&rx);
+    }
+
+    /// `req_id` 要拼进 URL 路径：带 `/ ? # %` 与空白的值会把这次调用**改写成
+    /// 另一条路由**，那时审计里的命令 id 与实际端点就对不上了。执行器侧先拒
+    /// （可见错误，不是 panic）；合法 id 照旧走得通，不许把命令本身堵死。
+    #[test]
+    fn a_path_shaped_request_id_is_refused_before_the_wire() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, false));
+        for bad in [
+            "a/b",
+            "../../groups/g-1/members/u",
+            "x?to=everyone",
+            "x#frag",
+            "with space",
+            "",
+        ] {
+            let err = exec
+                .run("friend.request.accept", &json!({"req_id": bad}))
+                .unwrap_err();
+            assert!(err.contains("req_id"), "{bad} → {err}");
+        }
+        assert_no_request(&rx);
+        exec.run("friend.request.accept", &json!({"req_id": "a1b2c3d4e5f6"}))
+            .expect("合法 id");
+        assert_eq!(
+            next_request(&rx),
+            "POST /api/friends/requests/a1b2c3d4e5f6/accept HTTP/1.1"
+        );
+    }
+
+    /// **权限先于网络**：只读策略下三条写命令一条请求都不该发出去；
+    /// 三条读命令不受写权限影响（它们是 `Account` 域，与会话白名单无关）。
+    #[test]
+    fn read_only_policy_denies_friend_writes_but_not_friend_reads() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], false, false));
+        let err = exec
+            .run("friend.request.create", &json!({"to_user_id": "u-2"}))
+            .unwrap_err();
+        assert!(err.contains("write access") || err.contains("read-only"), "{err}");
+        for id in ["friend.request.accept", "friend.request.decline"] {
+            let err = exec.run(id, &json!({"req_id": "a1b2"})).unwrap_err();
+            assert!(err.contains("write access"), "{id}: {err}");
+        }
+        assert_no_request(&rx);
+
+        for id in [
+            "friend.list",
+            "friend.requests.incoming",
+            "friend.requests.outgoing",
+        ] {
+            exec.run(id, &json!({}))
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert!(
+                next_request(&rx).starts_with("GET /api/friends"),
+                "{id}"
+            );
+        }
+    }
+
+    /// 请求头里必须带上命令 id：服务端审计靠它把请求归到命令上。
+    #[test]
+    fn friend_commands_carry_the_audit_header() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let tx = tx.clone();
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                let crlf = String::from_utf8(vec![13, 10]).expect("crlf");
+                let resp = format!(
+                    "HTTP/1.1 200 OK{crlf}Content-Type: application/json{crlf}Content-Length: 2{crlf}Connection: close{crlf}{crlf}{{}}"
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let exec = Executor::new(
+            authed(format!("http://{addr}")),
+            Policy::new(["*"], true, false),
+        );
+        exec.run("friend.list", &json!({})).expect("读好友列表");
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("该收到请求");
+        assert!(
+            raw.to_lowercase()
+                .contains("x-wxlike-command: friend.list"),
+            "审计头没带上命令 id：{raw}"
+        );
+    }
 }
