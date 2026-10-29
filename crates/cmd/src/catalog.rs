@@ -21,14 +21,15 @@ pub use spec::{
 /// 资源 URI 前缀。MCP `resources/read` 与审计日志引用同一个 URI。
 pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 
-/// 现有 26 条（首批 18 + Zone C 的社区/频道 2 条 + Zone E 的视频/点播 6 条）。
+/// 现有 32 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
+/// 再加 #316 relations 第一批的好友/申请 6 条。
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
-/// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己），再写，最后危险操作。
+/// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己/好友），再写，最后危险操作。
 ///
-/// ## contract-v1 已冻结（#314）
-/// 这 26 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
-/// 的 64 条入口（automated 26 / blocked 33 / host_only 5）就是 v1 基线，
+/// ## contract-v1 已冻结（#314；#316 第一次扩基线）
+/// 这 32 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
+/// 的 68 条入口（automated 32 / blocked 31 / host_only 5）是当前基线，
 /// 机器可读的形式在 `crates/cmd/tests/contract_v1_baseline.rs`：
 /// id 全集与顺序、派生名（工具名 / action_id / 资源 URI）、逐域数字、
 /// 以及**生成面的 SHA-256**（MCP 工具定义 + JSON Schema + CLI 帮助 + 覆盖表报告）。
@@ -78,7 +79,7 @@ pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 /// 按域拆成 `catalog/conv.rs`、`catalog/video.rs`……试过，也**能拆干净**
 /// （生成面摘要逐字节不变、全测试绿），但本仓 `scripts/quality-gate.py` 的
 /// "跨文件重复窗口"会从 58 涨到 80（基线 66，`--update` 禁用）：命令表是
-/// 26 条近似记录，每条尾巴七行逐字相同，一分文件就被判成重复。
+/// 32 条近似记录，每条尾巴七行逐字相同，一分文件就被判成重复。
 /// 所以 #316-#319 会共用这一个文件——改动请小步提交，别攒大批。
 pub const CATALOG: &[CommandSpec] = &[
     // ---- 读：会话 ----
@@ -296,6 +297,64 @@ pub const CATALOG: &[CommandSpec] = &[
         platforms: Platforms::ALL,
         host: HostCapability::None,
     },
+    // ---- 读：好友与申请（#316 第一批，服务端路由早已存在）----
+    CommandSpec {
+        id: "friend.list",
+        // 路由 `GET /api/friends`（`crates/platform/src/friends.rs:32`），
+        // handler `list_friends`（`:511-517`）只把 **`authed.user_id`** 交给
+        // `Platform::friends()`（`:299-318`，SQL `WHERE user_id = ?1`）。
+        // 命令面因此**不声明**任何"看谁的名单"参数：调用方没法指名别人，
+        // 也就没有"传个 user_id 就把别人的通讯录拿走"的口子。
+        // scope 取 `Account`（授权对象=调用者自己），不是 `Conversation`——
+        // 通讯录不是会话，拿会话白名单去放行它属于顶部注释警告的"混成一个 resource"。
+        summary: "好友列表（我的通讯录，按加入时间排）",
+        params: "无",
+        args: &[],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.requests.incoming",
+        // 路由 `GET /api/friends/requests/incoming`（`friends.rs:30`）。
+        // "收件向"就是**待办队列**：SQL 带 `AND status = 'pending'`（`:257`），
+        // 接受/拒绝之后自动离开，所以客户端不必再自己过滤一遍。
+        // 服务端不接 `limit`/游标（handler 只有 `State` + `Authed`，`:495-501`），
+        // 所以这里**不声明**分页参数——声明了没人消费，正是 #314 比对器抓的装饰。
+        // 想要增量同步（`GET /api/friends/changes`）是 #317 的一批，本卡不纳入。
+        summary: "待我处理的好友申请（收件向，只含 pending）",
+        params: "无",
+        args: &[],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.requests.outgoing",
+        // 路由 `GET /api/friends/requests/outgoing`（`friends.rs:31`）。
+        // 与收件向**不同口径**：`outgoing_requests()`（`:273-276`）走
+        // `list_requests("from_uid", me)`，SQL 不带状态条件（`:281-282`）——
+        // 发起方要看得见"谁拒了我"，所以这一条返回的是全部状态。
+        // `col` 是调用方写死的闭集（`:278-283` 注释），不是用户输入。
+        summary: "我发出去的好友申请（发起向，含已接受/已拒绝）",
+        params: "无",
+        args: &[],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
     // ---- 写 ----
     CommandSpec {
         id: "msg.send",
@@ -400,6 +459,98 @@ pub const CATALOG: &[CommandSpec] = &[
         capability: Capability::Write,
         needs_conv: true,
         scope: ScopeClass::Conversation,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    // ---- 写：好友申请（#316 第一批）----
+    CommandSpec {
+        id: "friend.request.create",
+        // 顶部规则第 1 条问"重试会不会长出第二个业务对象"。这里**不会**，
+        // 而且靠的不是幂等键：`send_friend_request`
+        // （`crates/platform/src/friends.rs:143-163`）先按 `(from_uid, to_uid)`
+        // 查已有行，`pending`/`accepted` 直接 `Conflict`→409（`:150-155`），
+        // 只有 `declined` 把**同一行**改回 pending 并复用原 id（`:156-163`）；
+        // 底下还有表约束 `UNIQUE(from_uid, to_uid)`
+        // （`crates/platform/src/db/schema.rs:43-51`；规范形状同
+        // `crates/features/relations/src/lib.rs:84-96`）。
+        // 409 那条早退发生在任何 INSERT 与 `contact_log`（`:171-172`）之前，
+        // 所以重复提交既不多一条申请、也不多一条推给对方的系统消息。
+        // 规则第 2 条同样不成立：`create_request`（`:409-443`）**不读**
+        // `Idempotency-Key` 头（读头的只有建群 `groups.rs:519-528` 与转账
+        // `wallet.rs:635-681`），执行器无键可发。
+        // ⇒ `Idempotency::None`（天然幂等，来源=唯一键）且**不声明**
+        // `idempotency_key`——按顶部规则，加了就是"schema 里说支持、代码读不到"。
+        // 确认：`Confirmation::None`。这是"只增不减、服务端天然去重的关系写入"，
+        // 顶部规则明令**不要**加确认（把日常操作也套上确认，人会开始无脑点确认）。
+        summary: "发起好友申请（同一对象重复提交回 409，不会排第二队）",
+        params: "{to_user_id: string, message?: string}",
+        args: &[
+            Param::req("to_user_id", ParamType::Str, "要添加的那个人 user_id"),
+            Param::opt("message", ParamType::Str, "申请附言；不给=只发空附言，服务端限长"),
+        ],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.request.accept",
+        // 天然幂等的来源是顶部规则列的第三种：**状态机门**。
+        // `accept_request`（`crates/platform/src/friends.rs:198-231`）
+        // 先 `status != "pending"` → 409（`:203-205`），改写用带条件的
+        // `UPDATE … WHERE id = ?1 AND status = 'pending'`（`:209-212`），
+        // 并发撞车的第二次拿到 `changed = 0` 同样 409（`:213-216`）；
+        // 好友双向行是 `ON CONFLICT(user_id, friend_id) DO NOTHING`
+        // （`:221-226`，主键见 `db/schema.rs:55-62`）。
+        // ⇒ 重试不会长出第二对好友、不会重复写 `contact_log`，
+        // `Idempotency::None` 且不声明 `idempotency_key`
+        // （`accept` handler `:445-469` 只有 `Path(req_id)`，不读头）。
+        // 鉴权：`req.to_uid != me` → Forbidden（`:200-202`），
+        // 所以命令面**只给申请 id**，给不了"我是谁"，也碰不到别人的申请。
+        // 确认：`Confirmation::None`——接受是"只增"的关系写入；
+        // 真正不可撤销的那一步（删除好友）在 #317。
+        summary: "同意一条好友申请（只有 pending 能被改，重复同意回 409）",
+        params: "{req_id: string}",
+        args: &[Param::req(
+            "req_id",
+            ParamType::Str,
+            "申请 id（incoming 列表里的 id 字段）",
+        )],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.request.decline",
+        // 与 accept 同一条路子（状态机门 → `Idempotency::None`），但**门略松一档**，
+        // 依据要写准：`decline_request`（`crates/platform/src/friends.rs:233-252`）
+        // 的 `status != "pending"` → 409 是**前置检查**（`:238-240`），
+        // 下面那条 UPDATE 没有带 `AND status = 'pending'` 条件（`:244-247`）——
+        // 串行重试照样 409（第二次进来已是 declined），但并发两次都改写得动，
+        // 每趟各追加两条 `contact_log`（`:248-249`）。这是 accept 有
+        // `changed == 0` 兜底、decline 没有的一处差别，属 platform 侧观察，
+        // 本卡不动 `crates/platform/**`，已记进 #316 报告。
+        // 确认：`Confirmation::None`——拒绝不删对方的东西，而且对方可以重新申请
+        // （`:156-163` 正是把 declined 那行改回 pending），副作用可复原。
+        summary: "拒绝一条好友申请（只有 pending 能被改，重复拒绝回 409）",
+        params: "{req_id: string}",
+        args: &[Param::req(
+            "req_id",
+            ParamType::Str,
+            "申请 id（incoming 列表里的 id 字段）",
+        )],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Account,
         confirmation: Confirmation::None,
         idempotency: Idempotency::None,
         platforms: Platforms::ALL,
@@ -809,7 +960,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 26, "命令数变了：快照测试要一起加 id");
+        assert_eq!(CATALOG.len(), 32, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         let mut tools = HashSet::new();
         for spec in CATALOG {
@@ -857,11 +1008,17 @@ mod tests {
                 "channel.roles",
                 "me.info",
                 "me.sessions",
+                "friend.list",
+                "friend.requests.incoming",
+                "friend.requests.outgoing",
                 "msg.send",
                 "conv.ack",
                 "msg.forward",
                 "group.create",
                 "group.add_member",
+                "friend.request.create",
+                "friend.request.accept",
+                "friend.request.decline",
                 "video.select",
                 "video.stats",
                 "video.job.get",

@@ -1,6 +1,6 @@
 {
   "name": "tools/list 由 catalog 生成",
-  "description": "26 条命令 + 4 个元工具；每条命令都带 additionalProperties:false 的 schema 与稳定 action id。",
+  "description": "32 条命令 + 4 个元工具；每条命令都带 additionalProperties:false 的 schema 与稳定 action id。",
   "setup": { "convs": [], "write": false, "destructive": false, "initialize": true },
   "request": { "jsonrpc": "2.0", "id": 3, "method": "tools/list" },
   "expect": {

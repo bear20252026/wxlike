@@ -105,6 +105,47 @@ pub const ROUTES: &[Route] = &[
         path: "/api/sessions",
         body: &[],
     },
+    // #316 好友与申请。三条读命令不带参数：服务端按 `authed.user_id` 取数，
+    // 命令面没有"看谁的名单"这个入口。写命令只有 `to_user_id`（+ 可选附言），
+    // 我是谁由 token 决定。
+    Route {
+        id: "friend.list",
+        method: HttpMethod::Get,
+        path: "/api/friends",
+        body: &[],
+    },
+    Route {
+        id: "friend.requests.incoming",
+        method: HttpMethod::Get,
+        path: "/api/friends/requests/incoming",
+        body: &[],
+    },
+    Route {
+        id: "friend.requests.outgoing",
+        method: HttpMethod::Get,
+        path: "/api/friends/requests/outgoing",
+        body: &[],
+    },
+    Route {
+        id: "friend.request.create",
+        method: HttpMethod::Post,
+        path: "/api/friends/requests",
+        // `message` 缺席与空串在服务端落库/系统消息文案上不是一回事，
+        // 所以只在参数里真有这个键时才进 body（`body_of` 按存在性挑字段）。
+        body: &["to_user_id", "message"],
+    },
+    Route {
+        id: "friend.request.accept",
+        method: HttpMethod::Post,
+        path: "/api/friends/requests/{req_id}/accept",
+        body: &[],
+    },
+    Route {
+        id: "friend.request.decline",
+        method: HttpMethod::Post,
+        path: "/api/friends/requests/{req_id}/decline",
+        body: &[],
+    },
     Route {
         id: "video.select",
         method: HttpMethod::Get,
