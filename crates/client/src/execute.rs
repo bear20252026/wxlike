@@ -153,6 +153,39 @@ mod tests {
         );
     }
 
+    /// **`msg.send` 把 `reply_to` 拼成服务端的 `quote_of`**（#331 第 1 条回接）。
+    /// 命令面叫 `reply_to`、HTTP 面叫 `quote_of`，这条用例钉住翻译不丢、
+    /// 不带引用时 body 里根本不出现这个键（与回接前逐字一致）。
+    #[test]
+    fn msg_send_forwards_reply_to_as_quote_of() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(Http::new(base), Policy::new(["*"], true, true));
+        exec.run(
+            "msg.send",
+            &json!({"conv": "g-1", "text": "hi", "reply_to": "0123abcd", "idempotency_key": "k-1"}),
+        )
+        .expect("带引用发送");
+        let sent = next_request(&rx);
+        let (head, body) = sent.split_once('\n').expect("请求带 body");
+        assert!(head.starts_with("POST /api/conv/g-1/send "), "{head}");
+        let body: Value = serde_json::from_str(body).expect("body 是 JSON");
+        assert_eq!(body["quote_of"], json!("0123abcd"), "{body}");
+        assert_eq!(body["text"], json!("hi"), "{body}");
+
+        exec.run(
+            "msg.send",
+            &json!({"conv": "g-1", "text": "plain", "idempotency_key": "k-2"}),
+        )
+        .expect("普通发送");
+        let sent = next_request(&rx);
+        let body: Value = serde_json::from_str(sent.split_once('\n').expect("请求带 body").1)
+            .expect("body 是 JSON");
+        assert!(
+            body.get("quote_of").is_none(),
+            "不带引用时不许凭空造 quote_of：{body}"
+        );
+    }
+
     #[test]
     fn urlencode_handles_query_metacharacters() {
         assert_eq!(urlencode("a b&c#d+e?f%g"), "a%20b%26c%23d%2Be%3Ff%25g");

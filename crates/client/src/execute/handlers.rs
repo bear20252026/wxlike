@@ -153,12 +153,20 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
         let conv = str_param(p, "conv")?;
         let text = str_param(p, "text")?;
         let key = str_param(p, "idempotency_key")?;
+        // #331 回接：命令面的 `reply_to`（被引消息的 hex msg_id）就是
+        // 服务端 `SendBody` 的 `quote_of`；不带引用时 body 里不出现这个键，
+        // 与 #334 之前逐字一致。服务端在落库前校验被引消息（不存在 404 /
+        // 跨会话 404 / 已撤回 409），执行器不预判。
+        let reply_to = p
+            .get("reply_to")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut body = json!({ "text": text, "idempotency_key": key });
+        if !reply_to.is_empty() {
+            body["quote_of"] = json!(reply_to);
+        }
         // 服务端把 key 派生成 msg_id：重试落在同一条消息上
-        http.post_idempotent(
-            &format!("/api/conv/{conv}/send"),
-            &json!({ "text": text, "idempotency_key": key }),
-            key,
-        )
+        http.post_idempotent(&format!("/api/conv/{conv}/send"), &body, key)
     }),
     ("conv.ack", |_ex, http, p| {
         let conv = str_param(p, "conv")?;
