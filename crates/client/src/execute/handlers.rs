@@ -238,6 +238,59 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
         let id = path_id(str_param(p, "req_id")?, "req_id")?;
         http.expect_json("POST", &format!("/api/friends/requests/{id}/decline"), None)
     }),
+    // ---- 写：好友备注与删除（#317）----
+    ("friend.remark.set", |_ex, http, p| {
+        // 只能给自己的好友改：服务端 `UPDATE … WHERE user_id = authed`，
+        // 不是好友就 404。`user_id` 走 `path_id`——拼进路径前先验形状。
+        let uid = path_id(str_param(p, "user_id")?, "user_id")?;
+        let remark = str_param(p, "remark")?;
+        http.expect_empty(
+            "PUT",
+            &format!("/api/friends/{uid}/remark"),
+            Some(&json!({ "remark": remark })),
+        )
+        .map(|()| json!({ "remark_set": uid }))
+    }),
+    ("friend.remove", |_ex, http, p| {
+        // 确认在策略层已过（catalog `Confirmation::Required`）：到这里的
+        // `p` 里令牌已被剥掉，只剩真参数。删除是双向的、不可撤销，
+        // 服务端删完还给对方推系统消息——重复删第二次是 404（不是好友）。
+        let uid = path_id(str_param(p, "user_id")?, "user_id")?;
+        http.expect_empty("DELETE", &format!("/api/friends/{uid}"), None)
+            .map(|()| json!({ "removed": uid }))
+    }),
+    // ---- 黑名单与隐私（#317）----
+    ("friend.block.list", |_ex, http, _p| {
+        http.expect_json("GET", "/api/blocks", None)
+    }),
+    ("friend.block.add", |_ex, http, p| {
+        // 确认在策略层已过（同 friend.remove）。服务端 `INSERT OR IGNORE`：
+        // 重复拉黑仍是同一状态；拉黑自己/不存在的用户由服务端回错。
+        let uid = path_id(str_param(p, "user_id")?, "user_id")?;
+        http.expect_empty("PUT", &format!("/api/blocks/{uid}"), None)
+            .map(|()| json!({ "blocked": uid }))
+    }),
+    ("friend.block.remove", |_ex, http, p| {
+        let uid = path_id(str_param(p, "user_id")?, "user_id")?;
+        http.expect_empty("DELETE", &format!("/api/blocks/{uid}"), None)
+            .map(|()| json!({ "unblocked": uid }))
+    }),
+    ("friend.privacy.get", |_ex, http, _p| {
+        http.expect_json("GET", "/api/settings/strangers", None)
+    }),
+    ("friend.privacy.set", |_ex, http, p| {
+        // 键名与服务端 `StrangerSetting` 对齐（`allow`），不做改名翻译；
+        // 回执里把 `get` 的口径（`allow_strangers`）带回来方便对照。
+        let allow = p["allow"]
+            .as_bool()
+            .ok_or_else(|| "缺少参数 allow（是否允许陌生人发消息请求）".to_string())?;
+        http.expect_empty(
+            "PUT",
+            "/api/settings/strangers",
+            Some(&json!({ "allow": allow })),
+        )
+        .map(|()| json!({ "allow_strangers": allow }))
+    }),
     ("video.job.create", |_ex, http, p| {
         // 读本地文件是 agent 侧唯一碰磁盘的地方：路径由调用方给，
         // 但能力等级是 Write——没开写权限时根本走不到这里。
