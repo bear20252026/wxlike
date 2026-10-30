@@ -448,6 +448,42 @@
     },
     {
       "_meta": {
+        "wxlike/actionId": "group.announcement.get",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "查看群公告（仅群成员，无公告时报错）｜参数：{conv: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "group-announcement-get",
+      "title": "查看群公告（仅群成员，无公告时报错）"
+    },
+    {
+      "_meta": {
         "wxlike/actionId": "community.threads",
         "wxlike/confirmation": "none",
         "wxlike/host": "none",
@@ -901,6 +937,92 @@
       },
       "name": "group-add_member",
       "title": "拉人进群"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.announcement.set",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "设置/修改群公告（仅群主或管理员）｜参数：{conv: string, text: string, media_id?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          },
+          "media_id": {
+            "description": "附带媒体 id（可选，服务端默认空）",
+            "type": "string"
+          },
+          "text": {
+            "description": "公告全文（上限 2000 字，服务端校验）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "group-announcement-set",
+      "title": "设置/修改群公告（仅群主或管理员）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "group.mute_all.set",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "开启/关闭全员禁言（仅群主或管理员，对管理者无效）｜参数：{conv: string, on: boolean}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          },
+          "on": {
+            "description": "true = 开启全员禁言；false = 关闭",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "conv",
+          "on"
+        ],
+        "type": "object"
+      },
+      "name": "group-mute_all-set",
+      "title": "开启/关闭全员禁言（仅群主或管理员，对管理者无效）"
     },
     {
       "_meta": {

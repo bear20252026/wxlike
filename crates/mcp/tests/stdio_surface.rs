@@ -51,7 +51,7 @@ fn handshake_then_list_then_call_on_stdio() {
     assert_eq!(frames[0]["result"]["protocolVersion"], "2025-06-18");
 
     let tools = frames[1]["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 43, "39 条命令 + 4 个元工具");
+    assert_eq!(tools.len(), 46, "42 条命令 + 4 个元工具");
     assert!(tools.iter().any(|t| t["name"] == "msg-send"), "缺 msg-send");
 
     // 没授权：业务被拒是工具错误，不是协议错误
