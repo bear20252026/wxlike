@@ -33,21 +33,26 @@ use wxlike_cmd::domains::{entries, EntryState};
 
 /// contract-v1 冻结的命令数（评论核实的第 1 条）。
 /// `#316` 扩基线：26（#314 冻结）+ 6 条 relations 好友命令 = 32；
-/// `#317` 再扩：+ 7 条 relations 第二批命令 = **39**。
-const BASELINE_COMMANDS: usize = 39;
+/// `#317` 再扩：+ 7 条 relations 第二批命令 = 39；
+/// `#318` 再扩：+ 3 条群管理命令 = **42**。
+const BASELINE_COMMANDS: usize = 42;
 /// contract-v1 冻结的入口条数（评论核实的第 2 条）。
 /// `#316`：64 + 新增 4 条 relations 入口（2 条 blocked 翻成 automated，
 /// 另外 4 条命令各需一条自己的入口）= 68；
 /// `#317`：68 + 5（`备注与删除好友`、`黑名单与隐私规则` 两条 blocked
-/// 各拆成多条 automated：2 条翻转就地占 2 条，另 5 条命令各加一条）= **73**。
-const BASELINE_ENTRIES: usize = 73;
+/// 各拆成多条 automated：2 条翻转就地占 2 条，另 5 条命令各加一条）= 73；
+/// `#318`：73 + 3（`群公告与全员禁言` 一条 blocked 拆成 3 条 automated
+/// + 1 条 blocked——全员禁言状态查询无服务端读取端点，缺口保留）= **76**。
+const BASELINE_ENTRIES: usize = 76;
 /// 覆盖表的三态基线：automated / blocked / host_only（评论核实的第 2 条）。
 /// `#316`：automated 26→32（六条新命令各登记一次）、blocked 33→31
 /// （翻掉的是 `好友列表与新朋友`、`好友申请处理` 两条，G02 #108），
 /// host_only 5 不变——32+31+5 = 68 = 入口总数。
 /// `#317`：automated 32→39（七条新命令各登记一次）、blocked 31→29
 /// （翻掉 `备注与删除好友`、`黑名单与隐私规则` 两条，同为 G02 #108）。
-const BASELINE_AUTOMATED: usize = 39;
+/// `#318`：automated 39→42（三条新命令各登记一次）、blocked 29 不变
+/// （翻掉 `群公告与全员禁言` 一条、新增 `全员禁言状态查询` 缺口一条）。
+const BASELINE_AUTOMATED: usize = 42;
 const BASELINE_BLOCKED: usize = 29;
 const BASELINE_HOST_ONLY: usize = 5;
 /// 业务域个数（`domains.json` 的 domains 数组）。
@@ -65,6 +70,7 @@ const BASELINE_IDS: [&str; BASELINE_COMMANDS] = [
     "msg.get",
     "group.members",
     "group.info",
+    "group.announcement.get",
     "community.threads",
     "channel.roles",
     "me.info",
@@ -77,6 +83,8 @@ const BASELINE_IDS: [&str; BASELINE_COMMANDS] = [
     "msg.forward",
     "group.create",
     "group.add_member",
+    "group.announcement.set",
+    "group.mute_all.set",
     "friend.request.create",
     "friend.request.accept",
     "friend.request.decline",
@@ -196,7 +204,8 @@ fn contract_v1_entries_per_domain_are_frozen() {
         ("admin", 5),
         ("content", 7),
         ("media", 10),
-        ("messaging", 19),
+        // #318：messaging 由 19 涨到 22（`群公告与全员禁言` 拆成 4 条）
+        ("messaging", 22),
         ("miniprogram", 4),
         ("payment", 5),
         // #316：relations 由 10 条入口涨到 14（6 条新命令各一条入口，
@@ -222,7 +231,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
         ("community", 1),
         ("conv", 5),
         ("friend", 13),
-        ("group", 5),
+        ("group", 8),
         ("me", 2),
         ("msg", 6),
         ("video", 6),
@@ -235,7 +244,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
 /// 证据：`crates/mcp/src/server.rs` 的
 /// `const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"]`，
 /// 另有 `crates/mcp/tests/stdio_surface.rs` 断言 `tools/list` 的面 = 命令 + 元工具。
-/// 这里守的是**命令面那 39 条**（#314 冻的 26 条 + #316 的 6 条 + #317 的 7 条）：
+/// 这里守的是**命令面那 42 条**（#314 冻的 26 条 + #316 的 6 条 + #317 的 7 条 + #318 的 3 条）：
 /// `tools/list` = 元工具 + catalog 全量，所以 catalog 一变，
 /// MCP 侧的三处数字（`stdio_surface.rs` 的面、`server.rs` 的单测、
 /// `tools_list_snapshot.rs` 的逐字节基线）与 CLI 侧的四处
@@ -244,7 +253,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
 fn contract_v1_tool_surface_is_commands_plus_meta() {
     const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
     let surface = META_TOOLS.len() + catalog::CATALOG.len();
-    assert_eq!(surface, 43, "tools/list 的面：39 条命令 + 4 个元工具");
+    assert_eq!(surface, 46, "tools/list 的面：42 条命令 + 4 个元工具");
     assert_eq!(
         catalog::CATALOG.len(),
         BASELINE_COMMANDS,
@@ -360,5 +369,21 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 /// 派生影响：CLI 总表多出 7 行；覆盖表 relations 由 14 条涨到 19 条
 /// （`备注与删除好友`、`黑名单与隐私规则` 两条 blocked 拆成 7 条
 /// automated），全局 automated 32→39、blocked 31→29、entries 68→73。
+///
+/// **本次翻新（#318，逐条理由）**——`e856d03d…` → `a0a871f5…`。
+/// 表面变了 3 条**新增命令的声明**（群管理，#314 规则第 3 条），
+/// 原 39 条的声明一个字节都没改：
+/// 1. 新增 `group.announcement.get` → `GET /api/groups/{conv}/announcement`，
+///    参数 `{conv}`，Read（服务端成员校验）；
+/// 2. 新增 `group.announcement.set` → `PUT` 同路径，参数
+///    `{conv, text, media_id?}`，Write/None/None（upsert 状态赋值）；
+/// 3. 新增 `group.mute_all.set` → `PUT /api/groups/{conv}/mute-all`，
+///    参数 `{conv, on: boolean}`，Write/None/None（UPDATE 绝对值）。
+///    注意：**没有** `group.mute_all.get`——服务端无读 `all_muted` 的
+///    端点，缺口记在 #318 评论与覆盖表 `全员禁言状态查询`（blocked，G03 #121）。
+///
+/// 派生影响：CLI 总表多出 3 行；覆盖表 messaging 由 19 条涨到 22 条
+/// （`群公告与全员禁言` 拆成 3 条 automated + 1 条 blocked），
+/// 全局 automated 39→42、blocked 29 不变、entries 73→76。
 const GENERATED_SURFACE_SHA256: &str =
-    "e856d03d9ca37d626d9ecea0d4202c9ff3bbf75ad8f9d4f92c64f4b18f35d956";
+    "a0a871f52b5133619ee2bd5c5968b7d2cbc61abe8cb7fcf5092edf1944277f06";
