@@ -17,7 +17,9 @@ use wxlike_cmd::CATALOG;
 
 const BASELINE: &str = include_str!("snapshots/tools_list.json");
 /// `snapshots/tools_list.json` 的 SHA-256：动基线必须留下说明。
-const BASELINE_SHA256: &str = "01bac1fffec7fa3def6e3fce12fd5734c31e7804a1623aeef0c1466dca1c6337";
+/// #331 翻新：`msg-send` 工具按契约加回可选参数 `reply_to`（#315 撤销、
+/// 服务端透传由 #334 补齐后回接），其余 35 项逐字保留。
+const BASELINE_SHA256: &str = "9eaabf2bef077d16545f22c4419d62226ddca1ce20d1ade4215585db1b9a4be6";
 
 fn server() -> Server {
     let policy = Policy::none();

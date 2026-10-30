@@ -59,9 +59,9 @@ const CONSUMED_ELSEWHERE: [(&str, &str); 2] = [
 /// * `group.add_member` 的 `idempotency_key`——已**撤掉声明**（服务端
 ///   `add_members` 不读 `Idempotency-Key` 头、执行器也没发，留着只是装饰；
 ///   天然幂等靠主键去重，结论写在 catalog 该条目的注释里）；
-/// * `msg.send` 的 `reply_to`——已**撤掉声明**（`SendBody` 没这个字段，
-///   透传要动 `server/**`，写成 #315 的 platform 诉求单开卡；
-///   结论写在 catalog 该条目的注释里）。
+/// * `msg.send` 的 `reply_to`——曾**撤掉声明**（`SendBody` 没这个字段）；
+///   #331 第 1 条补齐服务端透传（#334）后已**加回声明并接线**
+///   （执行器拼 `quote_of`），不再是缺口。
 ///
 /// 名单是**双向断言**：接上线、或把声明撤掉，条目都会失效 → 本测试红 → 删条目；
 /// 日后出现"声明了但确实还没接"的新缺口，才允许再往这里写。
