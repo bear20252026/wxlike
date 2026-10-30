@@ -1,6 +1,6 @@
 //! `tools/list` 的逐字节基线（#320 的替换门）。
 //!
-//! 口径：元工具 4 个（list / execute / inspect / jobs）+ catalog 39 条 = **43 个**。
+//! 口径：元工具 4 个（list / execute / inspect / jobs）+ catalog 42 条 = **46 个**。
 //!
 //! 翻新流程（别走自证循环）：基线里的旧项一律保留，新增项按契约手工插入，
 //! **不得**用被测 rmcp 的输出整体覆盖预期；改完更新下面的 SHA-256 并在提交里写理由。
@@ -24,7 +24,10 @@ const BASELINE: &str = include_str!("snapshots/tools_list.json");
 /// friend-block-remove / friend-privacy-get / friend-privacy-set，
 /// 位置在 friend-request-decline 之后、与 catalog 顺序一致），
 /// 原 36 项逐字保留。
-const BASELINE_SHA256: &str = "b69fd8894ff988e120dc8d220fbaab55de450a943f8730cdb34b9dc1f95e0cb2";
+/// #318 翻新：按契约插入群管理 3 个工具（group-announcement-get 在
+/// group-info 之后；group-announcement-set / group-mute_all-set 在
+/// group-add_member 之后），原 43 项逐字保留。
+const BASELINE_SHA256: &str = "6b7da97d702965d3c86702191e12f7d8a1453826bce803115586261a691fc497";
 
 fn server() -> Server {
     let policy = Policy::none();
@@ -45,7 +48,7 @@ fn frame(srv: &mut Server, id: i64, method: &str) -> Value {
 
 /// 基线文件自己要先可信：它必须还是当初那份，不是后来被顺手改过的。
 #[test]
-fn baseline_is_43_tools_and_matches_its_own_hash() {
+fn baseline_is_46_tools_and_matches_its_own_hash() {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(BASELINE.as_bytes());
@@ -59,7 +62,7 @@ fn baseline_is_43_tools_and_matches_its_own_hash() {
         "快照文件被动过"
     );
     let base: Value = serde_json::from_str(BASELINE).expect("baseline json");
-    assert_eq!(base["tools"].as_array().expect("tools").len(), 43);
+    assert_eq!(base["tools"].as_array().expect("tools").len(), 46);
 }
 
 /// 诊断通道：逐字节。
@@ -95,7 +98,7 @@ fn tools_list_frame_matches_the_baseline() {
     );
 }
 
-/// 数量口径写死：39 条命令 + 4 个元工具，多的少的都算回归。
+/// 数量口径写死：42 条命令 + 4 个元工具，多的少的都算回归。
 #[test]
 fn tool_count_is_commands_plus_four_meta_tools() {
     let dump: Value = serde_json::from_str(&server().tools_dump()).expect("dump json");
