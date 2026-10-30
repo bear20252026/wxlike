@@ -52,6 +52,36 @@ async fn roster(app: &axum::Router, token: &str, group: &str) -> Vec<(String, St
         .collect()
 }
 
+async fn add_with_key(
+    app: &axum::Router,
+    token: &str,
+    gid: &str,
+    user_ids: Vec<String>,
+    key: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut r = req(
+        "POST",
+        &format!("/api/groups/{gid}/members"),
+        Some(json!({ "user_ids": user_ids })),
+        Some(token),
+    );
+    if let Some(k) = key {
+        r.headers_mut()
+            .insert("idempotency-key", k.parse().unwrap());
+    }
+    call(app, r).await
+}
+
+async fn members_page(app: &axum::Router, token: &str, path: String) -> Vec<String> {
+    let (s, b) = call(app, req("GET", &path, None, Some(token))).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    b.as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["user_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
 /// Grants a role directly: WP-04's contract has no promotion endpoint, but the
 /// permission checks for `admin` are still under test.
 async fn promote(state: &PlatformState, group: &str, user: &str, role: &str) {
@@ -732,4 +762,119 @@ async fn idempotency_key_makes_group_create_replayable() {
         .insert("idempotency-key", "key-2".parse().unwrap());
     let (_, b3) = common::call(&router, r).await;
     assert_ne!(b3["group_id"], b1["group_id"]);
+}
+
+/// #331 第 2 条：`add_members` 读 `Idempotency-Key` 做重放。
+/// 裸重试靠天然幂等只会拿到 `added=0`，分不清「上次加过了」和
+/// 「本来就在」；带同一个键重试必须返回**第一次**的 `added`，
+/// 而且不能再发一遍「加入了群聊」的系统通知。
+#[tokio::test]
+async fn add_members_with_idempotency_key_replays_first_result() {
+    let (_state, router, rec) = mk_app().await;
+    let (_alice, ta) = signup(&router, "alice").await;
+    let (bob, _tb) = signup(&router, "bob").await;
+    let (carol, _tc) = signup(&router, "carol").await;
+    let gid = create(&router, &ta, "team", &[]).await;
+    rec.take();
+
+    // 第一次带键加人：真加，added=1，通知发一遍
+    let (s, b) = add_with_key(&router, &ta, &gid, vec![bob.clone()], Some("add-1")).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["added"], json!(1));
+    assert_eq!(rec.count(), 1, "首次加人要发通知");
+    rec.take();
+
+    // 同键重试：返回第一次的结果（不是天然幂等的 0），且不重复发通知
+    let (s, b) = add_with_key(&router, &ta, &gid, vec![bob.clone()], Some("add-1")).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["added"], json!(1), "同键重放必须返回首次结果");
+    assert_eq!(rec.count(), 0, "重放不许再发通知");
+
+    // 不带键的裸重试才是天然幂等的那张脸：added=0
+    let (s, b) = add_with_key(&router, &ta, &gid, vec![bob.clone()], None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["added"], json!(0));
+
+    // 换一个键 = 一次新操作
+    let (s, b) = add_with_key(&router, &ta, &gid, vec![carol.clone()], Some("add-2")).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["added"], json!(1));
+    rec.take();
+
+    // 同一个键换一个群不能串话：存储键带了群维度
+    let gid2 = create(&router, &ta, "other", &[]).await;
+    let mut r = req(
+        "POST",
+        &format!("/api/groups/{gid2}/members"),
+        Some(json!({ "user_ids": [bob] })),
+        Some(&ta),
+    );
+    r.headers_mut()
+        .insert("idempotency-key", "add-1".parse().unwrap());
+    let (s, b) = common::call(&router, r).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["added"], json!(1), "换群同键必须是新操作，不是串话重放");
+
+    // 名单最终只有 alice + bob + carol，没有重复行
+    let rows = roster(&router, &ta, &gid).await;
+    assert_eq!(rows.len(), 3);
+}
+
+/// #331 第 3 条：群成员游标下推到 SQL。
+/// 以全量名单的顺序为基准，一页页翻下去必须严丝合缝；
+/// 死游标（已不在群里）给空页，`limit=0` 给空页。
+#[tokio::test]
+async fn members_cursor_is_pushed_down_to_sql() {
+    let router = app(platform());
+    let (_alice, ta) = signup(&router, "alice").await;
+    let mut member_ids = Vec::new();
+    for name in ["m1", "m2", "m3", "m4", "m5"] {
+        let (id, _t) = signup(&router, name).await;
+        member_ids.push(id);
+    }
+    let (outsider, _to) = signup(&router, "outsider").await;
+    let gid = create(&router, &ta, "big", &member_ids).await;
+
+    // 全量顺序是基准（alice + 5 人）
+    let all = members_page(&router, &ta, format!("/api/groups/{gid}/members")).await;
+    assert_eq!(all.len(), 6, "{all:?}");
+
+    // 第一页：只要 limit
+    let p1 = members_page(&router, &ta, format!("/api/groups/{gid}/members?limit=2")).await;
+    assert_eq!(p1, all[..2].to_vec());
+    // 第二页：游标之后
+    let p2 = members_page(
+        &router,
+        &ta,
+        format!("/api/groups/{gid}/members?after_user={}&limit=2", p1[1]),
+    )
+    .await;
+    assert_eq!(p2, all[2..4].to_vec());
+    // 第三页：游标之后全给
+    let p3 = members_page(
+        &router,
+        &ta,
+        format!("/api/groups/{gid}/members?after_user={}", p2[1]),
+    )
+    .await;
+    assert_eq!(p3, all[4..].to_vec());
+    // 最后一个人之后没有下一页
+    let p4 = members_page(
+        &router,
+        &ta,
+        format!("/api/groups/{gid}/members?after_user={}", all[5]),
+    )
+    .await;
+    assert!(p4.is_empty(), "{p4:?}");
+    // 死游标：那个人不在群里 = 空页，不许从头再给
+    let pz = members_page(
+        &router,
+        &ta,
+        format!("/api/groups/{gid}/members?after_user={outsider}"),
+    )
+    .await;
+    assert!(pz.is_empty(), "{pz:?}");
+    // limit=0 = 空页
+    let p0 = members_page(&router, &ta, format!("/api/groups/{gid}/members?limit=0")).await;
+    assert!(p0.is_empty(), "{p0:?}");
 }

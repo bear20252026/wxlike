@@ -204,12 +204,13 @@ pub const CATALOG: &[CommandSpec] = &[
     CommandSpec {
         id: "group.members",
         // #315：`after_user` / `limit` 原来是装饰性的（handler 一次也没取用）。
-        // 现在接上线了——切页发生在执行器（`crates/client/src/execute/handlers.rs`
-        // 的 `members_page`，用例 `group_members_honours_the_cursor_and_the_limit`），
-        // 所以说明里不再写"万人群不全量拉"：服务端 `list_members`
-        // （`crates/platform/src/groups.rs:806-815`）只有一个 `Path(group_id)`，
-        // 没有 `Query`，**整份名单仍然一次拉回来**，命令面只承诺"给你的这一页"。
-        // 游标下推是 #315 提的 platform 诉求；补上之后只改 handler，声明不动。
+        // 当时先接在执行器本地切片（整份名单仍然一次拉回来，命令面只承诺
+        // "给你的这一页"）。#331 第 3 条已把游标**下推到服务端 SQL**：
+        // `list_members` 接 `Query`（`crates/platform/src/groups.rs`），
+        // `group_members_page` 用键集条件取页；执行器只透传两个参数，
+        // 不再本地切（用例 `group_members_forwards_the_cursor_to_the_server`
+        // 与 platform 真面的 `members_cursor_is_pushed_down_to_sql`）。
+        // 按 #315 的约定：补上之后只改 handler，**声明不动**。
         summary: "群成员列表（按游标翻页；翻页目前切在客户端）",
         params: "{conv: string, after_user?: string, limit?: number}",
         args: &[
@@ -439,16 +440,19 @@ pub const CATALOG: &[CommandSpec] = &[
         id: "group.add_member",
         // #315 撤销声明：这里原本挂着可选的 `idempotency_key`，但它是**装饰**——
         // 执行器走 `expect_json("POST", …)`（`crates/client/src/execute/handlers.rs`
-        // 的 `group.add_member` 条目），从头到尾没把键发出去；服务端
-        // `add_members`（`crates/platform/src/groups.rs:552-581`）也**不读**
-        // `Idempotency-Key` 头——读头的只有建群那条（`:519-528`）。
-        // 要真接上得同时改执行器和服务端 handler，platform 侧本轮不可动（#328 独占），
-        // 所以按本文件顶部的规则**撤掉声明**，不留"schema 里说支持、代码读不到"。
+        // 的 `group.add_member` 条目），从头到尾没把键发出去；服务端当时也
+        // **不读** `Idempotency-Key` 头——读头的只有建群那条。
+        // #331 第 2 条已补上服务端那一半：`add_members` 现在读头做重放，
+        // 同键重试返回第一次的 `{"added": N}`（存储键带操作/群/操作者前缀，
+        // 用例 `add_members_with_idempotency_key_replays_first_result`)。
+        // 但**声明仍不动**：执行器还没把键发出去（没有走 `post_idempotent`)，
+        // 现在加回声明就又是"schema 里说支持、命令面读不到"，正是顶部规则
+        // 禁止的形状；要不要给命令面标 Required，留给后续卡连执行器一起改。
         // 标注 `Idempotency::None` 的依据是**天然幂等**：重试会不会重复加人？不会——
         // 服务端去重靠 `PRIMARY KEY (group_id, user_id)`
         // （`crates/platform/src/db/schema.rs:212-219`），写入用
-        // `ON CONFLICT(group_id, user_id) DO NOTHING`（`groups.rs:368-373`）；
-        // "X 加入了群聊"的系统通知只在 `added > 0` 时才发（`groups.rs:559-579`），
+        // `ON CONFLICT(group_id, user_id) DO NOTHING`；
+        // "X 加入了群聊"的系统通知只在 `added > 0` 时才发，
         // 整批重试第二次 `added=0`，没有任何可观察副作用。
         summary: "拉人进群",
         params: "{conv: string, user_ids: [string]}",

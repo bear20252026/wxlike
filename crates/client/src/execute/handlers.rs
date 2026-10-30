@@ -73,19 +73,25 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
     // ---- 读：成员与自查 ----
     ("group.members", |_ex, http, p| {
         let conv = str_param(p, "conv")?;
-        // 服务端这一条只认群 id，不接游标与条数（`crates/platform/src/groups.rs:806-815`
-        // 的 `list_members` 没有 `Query`），所以翻页在**客户端切**：
-        // 整份名单仍然拉回来，切出来的这一页才是命令面的承诺。
-        // 服务端把游标下推之后（#315 提的 platform 诉求），这段本地切片可以整段删掉，
-        // catalog 的参数声明一个字都不用改。
-        let all = http.expect_json("GET", &format!("/api/groups/{conv}/members"), None)?;
-        let rows = all.as_array().cloned().unwrap_or_default();
+        // #331 第 3 条：游标已下推到服务端 SQL
+        // （`crates/platform/src/groups.rs` 的 `group_members_page`），
+        // 执行器只透传 `after_user` / `limit`，不再整份拉回来本地切。
+        // 服务端语义与旧切片逐条一致（死游标 = 空页、`limit=0` = 空页、
+        // 缺省 = 从游标之后全给），所以 catalog 的参数声明一个字不用改。
         let after_user = p
             .get("after_user")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let limit = p["limit"].as_u64().unwrap_or(u64::MAX);
-        Ok(Value::Array(members_page(&rows, after_user, limit)))
+        let mut url = format!("/api/groups/{conv}/members");
+        let mut sep = '?';
+        if !after_user.is_empty() {
+            url.push_str(&format!("{sep}after_user={}", urlencode(after_user)));
+            sep = '&';
+        }
+        if let Some(limit) = p.get("limit").and_then(Value::as_u64) {
+            url.push_str(&format!("{sep}limit={limit}"));
+        }
+        http.expect_json("GET", &url, None)
     }),
     ("group.info", |_ex, http, p| {
         let conv = str_param(p, "conv")?;
@@ -302,32 +308,6 @@ pub(super) fn path_id<'a>(raw: &'a str, key: &str) -> Result<&'a str, String> {
         ));
     }
     Ok(raw)
-}
-
-/// `group.members` 的游标切片：取 `after_user` **之后**的至多 `limit` 条。
-///
-/// 两条边界都要有明确说法，不能让调用方猜：
-/// * `after_user` 为空 = 从第一页开始；
-/// * `after_user` 在这份名单里找不到（那个人已被移出群）= **空页**，
-///   而不是从头再给一遍——从头给一遍会让调用方以为自己看到了新的一批人，
-///   翻页游标就此打转。想重来请直接不带 `after_user`。
-///
-/// `limit` 上限由服务端名单长度天然兜住；`0` 就是空页（与 `conv.history`
-/// 的 `limit=0` 同一口径：不给就不是默认给）。
-pub(super) fn members_page(rows: &[Value], after_user: &str, limit: u64) -> Vec<Value> {
-    let start = if after_user.is_empty() {
-        0
-    } else {
-        match rows
-            .iter()
-            .position(|m| m["user_id"].as_str() == Some(after_user))
-        {
-            Some(idx) => idx + 1,
-            None => return Vec::new(),
-        }
-    };
-    let take = usize::try_from(limit).unwrap_or(usize::MAX);
-    rows.iter().skip(start).take(take).cloned().collect()
 }
 
 /// 最小 URL 编码：只要把空格、`&`、`#`、`+`、`?`、`%` 处理掉。
