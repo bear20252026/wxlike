@@ -687,7 +687,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "发一条文本消息（必须带 idempotency_key，重试不会重复发）｜参数：{conv: string, text: string, idempotency_key: string}",
+      "description": "发一条文本消息（必须带 idempotency_key，重试不会重复发）｜参数：{conv: string, text: string, reply_to?: string, idempotency_key: string}",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -697,6 +697,10 @@
           },
           "idempotency_key": {
             "description": "幂等键",
+            "type": "string"
+          },
+          "reply_to": {
+            "description": "引用回复：被引消息的 msg_id（hex）；服务端会校验它属于本会话且未撤回",
             "type": "string"
           },
           "text": {
