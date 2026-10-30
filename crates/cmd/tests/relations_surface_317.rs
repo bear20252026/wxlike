@@ -379,7 +379,8 @@ fn batch_annotations_follow_the_rules() {
             "{id} 不许声明幂等键：服务端没有消费它的地方"
         );
     }
-    assert_eq!(CATALOG.len(), 39);
+    // 只钉"本批七条还在"：总数随后续批次增长（#318 后 42）
+    assert!(CATALOG.len() >= 39);
 }
 
 /// `params` 字符串与 `args` 双向一致（与 #316 文件同口径）。

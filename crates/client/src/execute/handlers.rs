@@ -97,6 +97,40 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
         let conv = str_param(p, "conv")?;
         http.expect_json("GET", &format!("/api/groups/{conv}"), None)
     }),
+    // ---- 群管理（#318）----
+    ("group.announcement.get", |_ex, http, p| {
+        // 服务端成员校验（非成员 403、无公告 404）如实透传。
+        let conv = str_param(p, "conv")?;
+        http.expect_json("GET", &format!("/api/groups/{conv}/announcement"), None)
+    }),
+    ("group.announcement.set", |_ex, http, p| {
+        // 写权限在服务端二次授权（assert_manager），这里只管分派；
+        // media_id 不给就不发这个键（服务端默认空串，与显式给空等价
+        // 与否由服务端 DTO 决定，命令面不替它猜）。
+        let conv = str_param(p, "conv")?;
+        let mut body = json!({ "text": str_param(p, "text")? });
+        if let Some(m) = p.get("media_id").and_then(Value::as_str) {
+            body["media_id"] = json!(m);
+        }
+        http.expect_empty(
+            "PUT",
+            &format!("/api/groups/{conv}/announcement"),
+            Some(&body),
+        )
+        .map(|()| json!({ "announcement_set": conv }))
+    }),
+    ("group.mute_all.set", |_ex, http, p| {
+        let conv = str_param(p, "conv")?;
+        let on = p["on"]
+            .as_bool()
+            .ok_or_else(|| "缺少参数 on（是否开启全员禁言）".to_string())?;
+        http.expect_empty(
+            "PUT",
+            &format!("/api/groups/{conv}/mute-all"),
+            Some(&json!({ "on": on })),
+        )
+        .map(|()| json!({ "all_muted": on }))
+    }),
     ("community.threads", |_ex, http, p| {
         let community = str_param(p, "community")?;
         let limit = p["limit"]

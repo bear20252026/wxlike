@@ -81,6 +81,27 @@ pub const ROUTES: &[Route] = &[
         path: "/api/groups/{conv}",
         body: &[],
     },
+    // #318 群管理：公告读 + 公告写 + 全员禁言开关。写权限由服务端
+    // 二次授权（assert_manager）；全员禁言没有状态查询路由——
+    // 服务端无读取端点，缺口记在 #318 评论与覆盖表。
+    Route {
+        id: "group.announcement.get",
+        method: HttpMethod::Get,
+        path: "/api/groups/{conv}/announcement",
+        body: &[],
+    },
+    Route {
+        id: "group.announcement.set",
+        method: HttpMethod::Put,
+        path: "/api/groups/{conv}/announcement",
+        body: &["text", "media_id"],
+    },
+    Route {
+        id: "group.mute_all.set",
+        method: HttpMethod::Put,
+        path: "/api/groups/{conv}/mute-all",
+        body: &["on"],
+    },
     Route {
         id: "community.threads",
         method: HttpMethod::Get,

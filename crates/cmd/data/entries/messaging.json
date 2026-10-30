@@ -24,12 +24,15 @@
     "issue": 153,
     "note": "呼叫信令与成员状态机尚未暴露命令"
   },
+  { "domain": "messaging", "label": "群公告查询", "state": "automated", "command": "group.announcement.get" },
+  { "domain": "messaging", "label": "群公告设置", "state": "automated", "command": "group.announcement.set" },
+  { "domain": "messaging", "label": "全员禁言设置", "state": "automated", "command": "group.mute_all.set" },
   {
     "domain": "messaging",
-    "label": "群公告与全员禁言",
+    "label": "全员禁言状态查询",
     "state": "blocked",
     "owner": "G03",
     "issue": 121,
-    "note": "服务端已有 groups_admin 路由，命令面待补"
+    "note": "服务端无读取端点：GroupInfo 未暴露 all_muted，缺口已在 #318 评论写明"
   }
 ]

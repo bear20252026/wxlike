@@ -203,6 +203,48 @@ mod tests {
         assert!(!err.contains("connect"), "不该走到网络：{err}");
     }
 
+    /// #318 群管理：公告读 GET、公告写 PUT 带 `{text}`（不给 media_id
+    /// 就没有这个键）、全员禁言 PUT 带 `{on}`。
+    #[test]
+    fn group_admin_commands_reach_their_routes() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, false));
+        exec.run("group.announcement.get", &json!({"conv": "g1"}))
+            .expect("读公告");
+        assert_eq!(
+            next_request(&rx),
+            "GET /api/groups/g1/announcement HTTP/1.1"
+        );
+
+        let out = exec
+            .run(
+                "group.announcement.set",
+                &json!({"conv": "g1", "text": "周会改到周三"}),
+            )
+            .expect("设公告");
+        assert_eq!(out, json!({"announcement_set": "g1"}));
+        let got = next_request(&rx);
+        let (head, body) = got.split_once('\n').expect("公告写该带 body");
+        assert_eq!(head, "PUT /api/groups/g1/announcement HTTP/1.1", "{got}");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("json"),
+            json!({"text": "周会改到周三"}),
+            "没给 media_id 就不该有这个键"
+        );
+
+        let out = exec
+            .run("group.mute_all.set", &json!({"conv": "g1", "on": true}))
+            .expect("开全员禁言");
+        assert_eq!(out, json!({"all_muted": true}));
+        let got = next_request(&rx);
+        let (head, body) = got.split_once('\n').expect("禁言写该带 body");
+        assert_eq!(head, "PUT /api/groups/g1/mute-all HTTP/1.1", "{got}");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("json"),
+            json!({"on": true})
+        );
+    }
+
     /// 建群没有幂等键 = 直接拒绝：重试一次就是两个群。
     #[test]
     fn group_create_requires_an_idempotency_key() {
