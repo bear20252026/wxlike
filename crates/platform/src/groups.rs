@@ -16,7 +16,7 @@
 //! therefore writes the caller's row, and the roster returned by
 //! `GET /api/groups/{id}` shows each member's own chosen nickname.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -65,6 +65,14 @@ pub struct CreateGroup {
 #[derive(serde::Deserialize)]
 pub struct MemberIds {
     pub user_ids: Vec<String>,
+}
+
+/// `GET /api/groups/{id}/members` 的翻页参数（#331 第 3 条，游标下推）。
+/// 两个都不给 = 老行为：整份名单。
+#[derive(serde::Deserialize)]
+pub struct ListMembersQuery {
+    pub after_user: Option<String>,
+    pub limit: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -297,6 +305,70 @@ impl Platform {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// 游标页：`group_members` 的下推版（#331 第 3 条）。
+    ///
+    /// 排序与全量版一致（`joined_at, user_id`），游标是上一页最后一行的
+    /// `user_id`：先把游标行的 `joined_at` 查出来，再用键集条件
+    /// `(joined_at, user_id) > 游标行` 一次取回这一页——大群不再整表取回再切。
+    /// 语义与执行器旧的内存切片（#315）逐条一致：
+    /// * `after_user` 缺省/为空 = 从第一页开始；
+    /// * 游标已不在群里（被移出）= **空页**，不是从头再给一遍
+    ///   （从头给会让翻页游标永远打转）；
+    /// * `limit = None` = 游标之后全给，`Some(0)` = 空页，负数按 0 算。
+    pub fn group_members_page(
+        &self,
+        group_id: &str,
+        after_user: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<Vec<MemberRow>> {
+        let sql_limit: i64 = match limit {
+            None => -1,
+            Some(n) => n.max(0),
+        };
+        let map_row = |r: &rusqlite::Row<'_>| {
+            Ok(MemberRow {
+                user_id: r.get(0)?,
+                role: r.get(1)?,
+                my_remark: r.get(2)?,
+                joined_at: r.get(3)?,
+            })
+        };
+        let c = self.db().lock();
+        let rows = match after_user.filter(|u| !u.is_empty()) {
+            Some(after) => {
+                let joined: Option<i64> = c
+                    .query_row(
+                        "SELECT joined_at FROM group_members
+                         WHERE group_id = ?1 AND user_id = ?2",
+                        params![group_id, after],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let Some(joined) = joined else {
+                    return Ok(Vec::new());
+                };
+                let mut stmt = c.prepare(
+                    "SELECT user_id, role, my_remark, joined_at FROM group_members
+                     WHERE group_id = ?1
+                       AND (joined_at > ?2 OR (joined_at = ?2 AND user_id > ?3))
+                     ORDER BY joined_at, user_id LIMIT ?4",
+                )?;
+                let mapped =
+                    stmt.query_map(params![group_id, joined, after, sql_limit], map_row)?;
+                mapped.collect::<std::result::Result<Vec<_>, _>>()?
+            }
+            None => {
+                let mut stmt = c.prepare(
+                    "SELECT user_id, role, my_remark, joined_at FROM group_members
+                     WHERE group_id = ?1 ORDER BY joined_at, user_id LIMIT ?2",
+                )?;
+                let mapped = stmt.query_map(params![group_id, sql_limit], map_row)?;
+                mapped.collect::<std::result::Result<Vec<_>, _>>()?
+            }
+        };
+        Ok(rows)
+    }
+
     pub fn group_summary(&self, me: &str) -> Result<Vec<GroupSummary>> {
         let c = self.db().lock();
         let mut stmt = c.prepare(
@@ -500,6 +572,15 @@ impl Platform {
     }
 }
 
+/// 读 `Idempotency-Key` 头（建群与加人共用）：缺失/空/非法都当没带。
+fn idempotency_key(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
 /// Group ops are announced inside the group as a `MsgKind::System` envelope.
 pub(crate) fn group_notice(
     group_id: &str,
@@ -517,11 +598,7 @@ async fn create_group(
     ApiJson(body): ApiJson<CreateGroup>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     // agent 会重试：带同一个 Idempotency-Key 时返回第一次的结果，不新建群
-    let idem = headers
-        .get("idempotency-key")
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty())
-        .map(str::to_string);
+    let idem = idempotency_key(&headers);
     // ADR-28 样板 ③「群管理写」：每一次同步 SQL（幂等重放 / 建群 + 成员行 /
     // 审计与幂等回执）都整段进阻塞池，handler 只在两次之间 `await` 扇出。
     let replay_key = idem.clone();
@@ -564,9 +641,28 @@ async fn create_group(
 async fn add_members(
     State(platform): State<PlatformState>,
     authed: Authed,
+    headers: axum::http::HeaderMap,
     Path(group_id): Path<String>,
     ApiJson(body): ApiJson<MemberIds>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    // #331 第 2 条：读 `Idempotency-Key` 做重放。加人本身靠主键 +
+    // ON CONFLICT 天然幂等，但裸重试第二次拿到的是 `added=0`，调用方
+    // 分不清「我上次加过了」和「这人本来就在」——同键重试返回**第一次**
+    // 的结果。存储键带操作/群/操作者前缀：`idempotency` 是全域一张表，
+    // 裸键会和建群、转账的键撞车。重放在权限校验之前（与建群同形状），
+    // 只是把当时的回执再给一遍，不再发通知。
+    let idem = idempotency_key(&headers)
+        .map(|k| format!("group.add_members:{group_id}:{}:{k}", authed.user_id));
+    let replay_key = idem.clone();
+    if let Some(prev) = offload(&platform, move |p| match &replay_key {
+        Some(key) => p.replay_idempotent(key),
+        None => Ok(None),
+    })
+    .await?
+    {
+        return Ok(Json(prev));
+    }
+
     // ADR-28 样板 ③「群管理写」：权限 → 人数上限 → 逐行 INSERT → 缓存失效 +
     // 信箱成员快照，全链在一个阻塞任务里跑完（顺序与改前一致）。
     let actor = authed.user_id.clone();
@@ -595,7 +691,12 @@ async fn add_members(
             platform.emit(env).await;
         }
     }
-    Ok(Json(serde_json::json!({ "added": added })))
+    let reply = serde_json::json!({ "added": added });
+    if let Some(key) = idem {
+        let stored = reply.clone();
+        offload(&platform, move |p| p.remember_idempotent(&key, &stored)).await?;
+    }
+    Ok(Json(reply))
 }
 
 async fn remove_member(
@@ -855,17 +956,28 @@ async fn group_info(
 
 /// 群成员列表。只对群成员开放——非成员拿到 403 而不是空列表，
 /// 否则"这个群有多少人"就成了公开信息。
+///
+/// 带 `after_user` / `limit` 时走 `group_members_page` 的 SQL 下推
+/// （#331 第 3 条）；两个参数都不给时与旧行为逐字一致：整份名单。
 async fn list_members(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group_id): Path<String>,
+    Query(q): Query<ListMembersQuery>,
 ) -> std::result::Result<Json<Vec<MemberRow>>, ApiError> {
     // TODO(ADR-28): 成员名单这条读（含 `is_member` 的存在性校验）在 await 上下文
     // 里上锁同步跑；与 `group_info` 同一类点位。
     if !platform.is_member(&group_id, &authed.user_id)? {
         return Err(PlatformError::Forbidden.into());
     }
-    Ok(Json(platform.group_members(&group_id)?))
+    if q.after_user.is_none() && q.limit.is_none() {
+        return Ok(Json(platform.group_members(&group_id)?));
+    }
+    Ok(Json(platform.group_members_page(
+        &group_id,
+        q.after_user.as_deref(),
+        q.limit,
+    )?))
 }
 
 async fn my_groups(
