@@ -311,9 +311,19 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 /// 6. 新增 `friend.request.decline` → `POST /api/friends/requests/{req_id}/decline`，
 ///    参数 `{req_id: string}`。
 ///
+/// **本次翻新（#331，逐条理由）**——`7916c7d5…` → `515ea9bb…`。
+/// 只动一条命令的一个参数，是 #315 第 4 条撤销的**回接**：
+/// `msg.send` 加回可选参数 `reply_to?: string`（引用回复，被引消息的
+/// hex `msg_id`）。撤销时的前提「HTTP 面 `SendBody` 没有这个字段」已被
+/// #331 第 1 条消除（#334 合入：`SendBody.quote_of` + 落库前校验），
+/// 执行器同步接线（`reply_to` → body 的 `quote_of`）；服务端真面用例在
+/// `crates/server/tests/send_quote_of.rs`，执行器透传用例
+/// `msg_send_forwards_reply_to_as_quote_of`。命令数、其余命令声明、
+/// 覆盖表条数都不变。
+///
 /// 三条派生影响都是上面六条的必然结果，不是额外改动：
 /// CLI 总表多出 6 行、域名列表多出 `friend`、
 /// 覆盖表报告与渲染表格多出 6 条 automated 入口（`data/entries/relations.json`
 /// 由 10 条涨到 14 条：2 条 blocked 翻 automated + 4 条新入口）。
 const GENERATED_SURFACE_SHA256: &str =
-    "7916c7d5ca4a572562804e80216cd5bb223682015847945a9750ce5a77a0ea3d";
+    "515ea9bbf4ed68fb130e294a6eab0bcf107571742542804d099607003499baa9";
