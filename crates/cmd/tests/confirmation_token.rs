@@ -101,13 +101,21 @@ fn every_required_confirmation_is_single_use() {
         .filter(|s| s.confirmation.is_required())
         .map(|s| s.id)
         .collect();
+    // #317 起集合长到四条：删好友与拉黑按验收口径与踢人/撤回同级
+    // （结论与依据写在 catalog 两条的注释里）。
     assert_eq!(
         required,
-        vec!["group.kick", "msg.recall"],
+        vec![
+            "friend.remove",
+            "friend.block.add",
+            "group.kick",
+            "msg.recall"
+        ],
         "需要确认的集合变了：这里是全量遍历的口径，catalog 注释与 #315 结论要一起改"
     );
     let params = |id: &str| match id {
         "group.kick" => kick("u-bob"),
+        "friend.remove" | "friend.block.add" => json!({"user_id": "u-bob"}),
         _ => json!({"conv": "g-1", "msg_id": "m-1"}),
     };
     for id in required {

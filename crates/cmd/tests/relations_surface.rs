@@ -427,7 +427,8 @@ fn friend_annotations_follow_the_number315_rules() {
         );
     }
     // 面不能空转：这批必须真的在 catalog 里，且只多不少
-    assert_eq!(CATALOG.len(), 32);
+    // （#317 后命令总数 39；本断言只钉"第一批六条还在"）
+    assert!(CATALOG.len() >= 32);
     for id in FRIEND_IDS {
         assert!(catalog::get(id).is_some(), "{id} 不在 catalog 里");
     }
@@ -467,8 +468,10 @@ fn parse_params(raw: &str) -> Vec<(&str, bool)> {
 
 // ---------------------------------------------------------------- 覆盖表
 
-/// 覆盖表：六条命令各登记一次；`#317` 的两条（备注与删除好友 / 黑名单与隐私规则）
-/// **必须还是 blocked**——本卡不许顺手把它们改成 automated。
+/// 覆盖表：六条命令各登记一次。`#317` 的两条（备注与删除好友 / 黑名单与隐私规则）
+/// 在本卡当时**还是 blocked**；#317 落地后那两条已拆成 automated（细目见
+/// `relations_surface_317.rs`），本测试只继续守本卡的六条登记与剩下两条
+/// blocked 不被顺手动掉。
 #[test]
 fn coverage_table_flips_only_the_number316_entries() {
     let mut mapped: Vec<&str> = Vec::new();
@@ -482,17 +485,13 @@ fn coverage_table_flips_only_the_number316_entries() {
             }
         }
     }
-    mapped.sort_unstable();
-    let mut want = FRIEND_IDS.to_vec();
-    want.sort_unstable();
-    assert_eq!(mapped, want, "relations 里登记的好友命令与 catalog 不一致");
+    // #316 的六条必须都在（#317 的七条也以 friend. 前缀登记，
+    // 它们的逐条核对在 relations_surface_317.rs）
+    for id in FRIEND_IDS {
+        assert!(mapped.contains(&id), "覆盖表丢了 #316 的 {id}");
+    }
 
-    for label in [
-        "备注与删除好友",
-        "黑名单与隐私规则",
-        "资料与偏好设置",
-        "登录会话与设备",
-    ] {
+    for label in ["资料与偏好设置", "登录会话与设备"] {
         let entry = entries()
             .iter()
             .find(|e| e.domain == "relations" && e.label == label)
@@ -502,7 +501,7 @@ fn coverage_table_flips_only_the_number316_entries() {
                 assert_eq!(owner, "G02", "{label} 的负责组");
                 assert!(*issue > 0, "{label} 没有 issue 编号");
             }
-            other => panic!("{label} 本该是 blocked（属 #317），现在是 {other:?}"),
+            other => panic!("{label} 本该是 blocked（不属 #316/#317 范围），现在是 {other:?}"),
         }
     }
 }

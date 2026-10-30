@@ -47,9 +47,13 @@ const EXECUTOR_SOURCES: [&str; 2] = [
 /// （#315：`msg.get` 曾挂过一条 `confirmation_token`，但它是 `Confirmation::None`
 /// 的读命令，令牌根本签发不出来，声明已撤销、条目随之从名单删除——
 /// 正是本文件"双向断言"要抓的残留。）
-const CONSUMED_ELSEWHERE: [(&str, &str); 2] = [
+const CONSUMED_ELSEWHERE: [(&str, &str); 4] = [
     ("group.kick", "confirmation_token"),
     ("msg.recall", "confirmation_token"),
+    // #317：删除好友与拉黑同为 `Confirmation::Required`，令牌同样在
+    // 确认层被摘掉，执行器看不到（标注结论见 catalog 两条的注释）。
+    ("friend.remove", "confirmation_token"),
+    ("friend.block.add", "confirmation_token"),
 ];
 
 /// 声明了、但 handler **还没接线**的参数：已知缺口，不是豁免的常态。
