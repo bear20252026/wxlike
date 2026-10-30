@@ -21,15 +21,15 @@ pub use spec::{
 /// 资源 URI 前缀。MCP `resources/read` 与审计日志引用同一个 URI。
 pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 
-/// 现有 39 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
-/// 再加 #316 relations 第一批的好友/申请 6 条与 #317 第二批 7 条。
+/// 现有 42 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
+/// 再加 #316 relations 第一批 6 条、#317 第二批 7 条与 #318 群管理 3 条。
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己/好友），再写，最后危险操作。
 ///
-/// ## contract-v1 已冻结（#314；#316 第一次扩基线，#317 第二次）
-/// 这 39 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
-/// 的 73 条入口（automated 39 / blocked 29 / host_only 5）是当前基线，
+/// ## contract-v1 已冻结（#314；#316 第一次扩基线，#317 第二次，#318 第三次）
+/// 这 42 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
+/// 的 76 条入口（automated 42 / blocked 29 / host_only 5）是当前基线，
 /// 机器可读的形式在 `crates/cmd/tests/contract_v1_baseline.rs`：
 /// id 全集与顺序、派生名（工具名 / action_id / 资源 URI）、逐域数字、
 /// 以及**生成面的 SHA-256**（MCP 工具定义 + JSON Schema + CLI 帮助 + 覆盖表报告）。
@@ -233,6 +233,21 @@ pub const CATALOG: &[CommandSpec] = &[
     CommandSpec {
         id: "group.info",
         summary: "群基本信息与我的角色",
+        params: "{conv: string}",
+        args: &[Param::req("conv", ParamType::Str, "群 id")],
+        capability: Capability::Read,
+        needs_conv: true,
+        scope: ScopeClass::Conversation,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "group.announcement.get",
+        // #318：服务端 `GET /api/groups/{id}/announcement` 只给成员
+        // （非成员 403），没有公告时 404——命令面如实透传，不伪造空公告。
+        summary: "查看群公告（仅群成员，无公告时报错）",
         params: "{conv: string}",
         args: &[Param::req("conv", ParamType::Str, "群 id")],
         capability: Capability::Read,
@@ -463,6 +478,57 @@ pub const CATALOG: &[CommandSpec] = &[
         args: &[
             Param::req("conv", ParamType::Str, "群 id"),
             Param::req("user_ids", ParamType::StrList, "要拉进来的 user_id 列表"),
+        ],
+        capability: Capability::Write,
+        needs_conv: true,
+        scope: ScopeClass::Conversation,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    // ---- 写：群管理（#318）----
+    CommandSpec {
+        id: "group.announcement.set",
+        // 服务端 `set_announcement` 先 `assert_manager`（非群主/管理员
+        // Forbidden），再按 `group_id` 主键 upsert——给的是公告全文
+        // （**状态赋值**），同一内容重试一万次库里还是那一份 ⇒
+        // 天然幂等，服务端不读幂等键头 ⇒ `Idempotency::None` 不声明键。
+        // 确认 `None`：公告随时可改回，写权限本身已由服务端二次授权
+        // 把门（#318 验收的"非管理员写请求被拒绝"靠的是它，不是确认框）。
+        summary: "设置/修改群公告（仅群主或管理员）",
+        params: "{conv: string, text: string, media_id?: string}",
+        args: &[
+            Param::req("conv", ParamType::Str, "群 id"),
+            Param::req("text", ParamType::Str, "公告全文（上限 2000 字，服务端校验）"),
+            Param::opt(
+                "media_id",
+                ParamType::Str,
+                "附带媒体 id（可选，服务端默认空）",
+            ),
+        ],
+        capability: Capability::Write,
+        needs_conv: true,
+        scope: ScopeClass::Conversation,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "group.mute_all.set",
+        // 服务端 `set_all_mute` 同样先 `assert_manager`，然后
+        // `UPDATE groups SET all_muted = ?` 写绝对值（状态赋值）⇒
+        // 天然幂等、无键。确认 `None`：禁言是可即时撤销的群状态开关，
+        // 不删除任何人或内容，不按"破坏性"处理；真正的门是管理权限。
+        // **没有对应的状态查询命令**：服务端没有读 `all_muted` 的端点
+        // （`GroupInfo` 未暴露该字段），命令面不许编造回执——缺口已在
+        // #318 评论里写明，覆盖表对应条目保持 blocked。
+        summary: "开启/关闭全员禁言（仅群主或管理员，对管理者无效）",
+        params: "{conv: string, on: boolean}",
+        args: &[
+            Param::req("conv", ParamType::Str, "群 id"),
+            Param::req("on", ParamType::Bool, "true = 开启全员禁言；false = 关闭"),
         ],
         capability: Capability::Write,
         needs_conv: true,
@@ -1126,7 +1192,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 39, "命令数变了：快照测试要一起加 id");
+        assert_eq!(CATALOG.len(), 42, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         let mut tools = HashSet::new();
         for spec in CATALOG {
@@ -1170,6 +1236,7 @@ mod tests {
                 "msg.get",
                 "group.members",
                 "group.info",
+                "group.announcement.get",
                 "community.threads",
                 "channel.roles",
                 "me.info",
@@ -1182,6 +1249,8 @@ mod tests {
                 "msg.forward",
                 "group.create",
                 "group.add_member",
+                "group.announcement.set",
+                "group.mute_all.set",
                 "friend.request.create",
                 "friend.request.accept",
                 "friend.request.decline",
