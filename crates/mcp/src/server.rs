@@ -1159,13 +1159,13 @@ mod tests {
         assert!(v["result"]["instructions"]
             .as_str()
             .expect("instructions")
-            .contains("39 条命令"));
+            .contains("42 条命令"));
         // 握手之后业务方法立即可用
         let v = call(
             &mut srv,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
         );
-        assert_eq!(v["result"]["tools"].as_array().expect("tools").len(), 43);
+        assert_eq!(v["result"]["tools"].as_array().expect("tools").len(), 46);
     }
 
     #[test]
