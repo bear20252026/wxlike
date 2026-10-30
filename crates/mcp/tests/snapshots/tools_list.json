@@ -1016,6 +1016,257 @@
     },
     {
       "_meta": {
+        "wxlike/actionId": "friend.remark.set",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "给好友设置/修改备注（只有自己可见，随时可改）｜参数：{user_id: string, remark: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "remark": {
+            "description": "备注名（服务端校验长度）",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "好友的 user_id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "remark"
+        ],
+        "type": "object"
+      },
+      "name": "friend-remark-set",
+      "title": "给好友设置/修改备注（只有自己可见，随时可改）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.remove",
+        "wxlike/confirmation": "required",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "删除好友（双向移除、不可撤销，需确认令牌）｜参数：{user_id: string, confirmation_token?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_token": {
+            "description": "确认令牌：先 prepare，再把令牌带回来",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "要删除的好友 user_id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "name": "friend-remove",
+      "title": "删除好友（双向移除、不可撤销，需确认令牌）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.block.list",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "列出我的黑名单（只有自己看得到）｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "friend-block-list",
+      "title": "列出我的黑名单（只有自己看得到）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.block.add",
+        "wxlike/confirmation": "required",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "拉黑一个用户（其申请与陌生人消息将被拒绝，需确认令牌）｜参数：{user_id: string, confirmation_token?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_token": {
+            "description": "确认令牌：先 prepare，再把令牌带回来",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "要拉黑的 user_id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "name": "friend-block-add",
+      "title": "拉黑一个用户（其申请与陌生人消息将被拒绝，需确认令牌）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.block.remove",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "解除拉黑（恢复对方发申请与陌生人消息的通道）｜参数：{user_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "user_id": {
+            "description": "要解除拉黑的 user_id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "name": "friend-block-remove",
+      "title": "解除拉黑（恢复对方发申请与陌生人消息的通道）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.privacy.get",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "查看我的隐私规则（当前：是否允许陌生人发消息请求）｜参数：无",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "friend-privacy-get",
+      "title": "查看我的隐私规则（当前：是否允许陌生人发消息请求）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "friend.privacy.set",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "account"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "设置我的隐私规则（是否允许陌生人发消息请求）｜参数：{allow: boolean}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "description": "true = 允许陌生人发消息请求（默认）；false = 直接拒绝",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allow"
+        ],
+        "type": "object"
+      },
+      "name": "friend-privacy-set",
+      "title": "设置我的隐私规则（是否允许陌生人发消息请求）"
+    },
+    {
+      "_meta": {
         "wxlike/actionId": "video.select",
         "wxlike/confirmation": "none",
         "wxlike/host": "none",
