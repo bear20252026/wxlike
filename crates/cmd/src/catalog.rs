@@ -21,15 +21,15 @@ pub use spec::{
 /// 资源 URI 前缀。MCP `resources/read` 与审计日志引用同一个 URI。
 pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 
-/// 现有 32 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
-/// 再加 #316 relations 第一批的好友/申请 6 条。
+/// 现有 39 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
+/// 再加 #316 relations 第一批的好友/申请 6 条与 #317 第二批 7 条。
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己/好友），再写，最后危险操作。
 ///
-/// ## contract-v1 已冻结（#314；#316 第一次扩基线）
-/// 这 32 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
-/// 的 68 条入口（automated 32 / blocked 31 / host_only 5）是当前基线，
+/// ## contract-v1 已冻结（#314；#316 第一次扩基线，#317 第二次）
+/// 这 39 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
+/// 的 73 条入口（automated 39 / blocked 29 / host_only 5）是当前基线，
 /// 机器可读的形式在 `crates/cmd/tests/contract_v1_baseline.rs`：
 /// id 全集与顺序、派生名（工具名 / action_id / 资源 URI）、逐域数字、
 /// 以及**生成面的 SHA-256**（MCP 工具定义 + JSON Schema + CLI 帮助 + 覆盖表报告）。
@@ -79,7 +79,7 @@ pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 /// 按域拆成 `catalog/conv.rs`、`catalog/video.rs`……试过，也**能拆干净**
 /// （生成面摘要逐字节不变、全测试绿），但本仓 `scripts/quality-gate.py` 的
 /// "跨文件重复窗口"会从 58 涨到 80（基线 66，`--update` 禁用）：命令表是
-/// 32 条近似记录，每条尾巴七行逐字相同，一分文件就被判成重复。
+/// 三四十条近似记录，每条尾巴七行逐字相同，一分文件就被判成重复。
 /// 所以 #316-#319 会共用这一个文件——改动请小步提交，别攒大批。
 pub const CATALOG: &[CommandSpec] = &[
     // ---- 读：会话 ----
@@ -564,6 +564,164 @@ pub const CATALOG: &[CommandSpec] = &[
         platforms: Platforms::ALL,
         host: HostCapability::None,
     },
+    // ---- 写：好友备注与删除（#317，relations 第二批）----
+    CommandSpec {
+        id: "friend.remark.set",
+        // 天然幂等走**状态赋值**那一种：`set_remark`
+        // （`crates/platform/src/friends.rs`）是单条
+        // `UPDATE friends SET remark = ? WHERE user_id AND friend_id`，
+        // 给的是绝对值不是增量——同一备注重试一万次，库里还是那个备注。
+        // 服务端 handler 不读 `Idempotency-Key` 头 ⇒ `Idempotency::None`
+        // 且不声明 `idempotency_key`。
+        // 确认 `None`：备注只有自己看得见、随时可改，套确认纯属添堵。
+        // 鉴权：`WHERE user_id = authed` ——只能给**自己的**好友改备注，
+        // 备注不存在这行关系时 changed=0 → NotFound。
+        summary: "给好友设置/修改备注（只有自己可见，随时可改）",
+        params: "{user_id: string, remark: string}",
+        args: &[
+            Param::req("user_id", ParamType::Str, "好友的 user_id"),
+            Param::req("remark", ParamType::Str, "备注名（服务端校验长度）"),
+        ],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.remove",
+        // #316 里写下的那句"真正不可撤销的那一步（删除好友）在 #317"
+        // 就是这条：`remove_friend` 在一个事务里删**双向**两行并各写一条
+        // `removed` 日志，handler 还会给对方推一条"已将你从通讯录移除"的
+        // 系统消息——删了就是删了，恢复只能重新申请。所以按顶部规则：
+        // `Capability::Destructive` + `Confirmation::Required`，走
+        // prepare → `confirmation_token` → execute，参数一改重新确认。
+        // 幂等 `None`：不是"有键"，是**状态机门**——`are_friends` 前置检查，
+        // 不是好友（或已删过）直接 NotFound，第二次删不产生任何新副作用；
+        // 服务端不读幂等键头，不声明。
+        summary: "删除好友（双向移除、不可撤销，需确认令牌）",
+        params: "{user_id: string, confirmation_token?: string}",
+        args: &[
+            Param::req("user_id", ParamType::Str, "要删除的好友 user_id"),
+            Param::opt(
+                "confirmation_token",
+                ParamType::Str,
+                "确认令牌：先 prepare，再把令牌带回来",
+            ),
+        ],
+        capability: Capability::Destructive,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::Required,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    // ---- 黑名单与隐私（#317）----
+    CommandSpec {
+        id: "friend.block.list",
+        // 只读自己的黑名单：服务端 `blocked_list` 按 `authed.user_id` 取数，
+        // 命令面没有"看谁的黑名单"入口。
+        summary: "列出我的黑名单（只有自己看得到）",
+        params: "无",
+        args: &[],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.block.add",
+        // 拉黑是**前置闸门**：被拉黑者的好友申请与陌生人请求都会被服务端
+        // 直接拒绝（`crates/platform/src/relations.rs` 的 `is_blocked` 被
+        // 申请/陌生人/hub 收件三处复用）——等于让对方的东西到不了我这儿，
+        // 按 #317 验收"删除/拉黑等危险操作走确认规则"标
+        // `Capability::Destructive` + `Confirmation::Required`。
+        // （可经 `friend.block.remove` 解除，属"可复原"，但闸门效应对
+        // 对方是即时且无声的，确认不能省。）
+        // 幂等 `None`：`block_user` 是 `INSERT OR IGNORE`（状态赋值），
+        // 重复拉黑是同一状态、无新增副作用；服务端不读幂等键头。
+        summary: "拉黑一个用户（其申请与陌生人消息将被拒绝，需确认令牌）",
+        params: "{user_id: string, confirmation_token?: string}",
+        args: &[
+            Param::req("user_id", ParamType::Str, "要拉黑的 user_id"),
+            Param::opt(
+                "confirmation_token",
+                ParamType::Str,
+                "确认令牌：先 prepare，再把令牌带回来",
+            ),
+        ],
+        capability: Capability::Destructive,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::Required,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.block.remove",
+        // 解除拉黑是"恢复通道"，按顶部规则确认只管"拿走/消失"方向：
+        // `Confirmation::None`。幂等 `None`：`unblock_user` 删除一行，
+        // 不在黑名单里时回 NotFound——状态稳定、无新增副作用（状态机门），
+        // 服务端不读幂等键头。
+        summary: "解除拉黑（恢复对方发申请与陌生人消息的通道）",
+        params: "{user_id: string}",
+        args: &[Param::req("user_id", ParamType::Str, "要解除拉黑的 user_id")],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.privacy.get",
+        // 隐私规则目前只有"是否允许陌生人发起消息请求"一项
+        // （`user_settings.allow_strangers`，默认允许）；读自己的设置，
+        // 命令面没有别人的入口。
+        summary: "查看我的隐私规则（当前：是否允许陌生人发消息请求）",
+        params: "无",
+        args: &[],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "friend.privacy.set",
+        // 状态赋值：`set_allow_strangers` 写的是绝对值，重复设置同一值
+        // 库里不变 ⇒ 天然幂等、服务端不读幂等键头 ⇒ `Idempotency::None`
+        // 不声明键。确认 `None`：改的是自己的收件偏好，随时可改回。
+        // 参数名直接用服务端的 `allow`：`StrangerSetting` 收的就是这个键，
+        // 而 `friend.privacy.get` 回的却是 `allow_strangers`——服务端自己的
+        // 不对称，命令面跟"写"这边对齐，保证执行器与 client-core 路由表
+        // 都不用做改名翻译（`msg.send` 的 reply_to→quote_of 是唯一的例外，
+        // 那里两边名字各自有存量语义，见 #337）。
+        summary: "设置我的隐私规则（是否允许陌生人发消息请求）",
+        params: "{allow: boolean}",
+        args: &[Param::req(
+            "allow",
+            ParamType::Bool,
+            "true = 允许陌生人发消息请求（默认）；false = 直接拒绝",
+        )],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Account,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
     // ---- 读：视频 / 点播 ----
     CommandSpec {
         id: "video.select",
@@ -968,7 +1126,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 32, "命令数变了：快照测试要一起加 id");
+        assert_eq!(CATALOG.len(), 39, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         let mut tools = HashSet::new();
         for spec in CATALOG {
@@ -1027,6 +1185,13 @@ mod tests {
                 "friend.request.create",
                 "friend.request.accept",
                 "friend.request.decline",
+                "friend.remark.set",
+                "friend.remove",
+                "friend.block.list",
+                "friend.block.add",
+                "friend.block.remove",
+                "friend.privacy.get",
+                "friend.privacy.set",
                 "video.select",
                 "video.stats",
                 "video.job.get",

@@ -146,6 +146,51 @@ pub const ROUTES: &[Route] = &[
         path: "/api/friends/requests/{req_id}/decline",
         body: &[],
     },
+    // #317 relations 第二批：备注/删除/黑名单/隐私。删除与拉黑的确认在
+    // 策略层（catalog `Confirmation::Required`），路由表只管分派；
+    // `privacy.set` 的参数名与服务端请求体同名（`allow`），不需改名。
+    Route {
+        id: "friend.remark.set",
+        method: HttpMethod::Put,
+        path: "/api/friends/{user_id}/remark",
+        body: &["remark"],
+    },
+    Route {
+        id: "friend.remove",
+        method: HttpMethod::Delete,
+        path: "/api/friends/{user_id}",
+        body: &[],
+    },
+    Route {
+        id: "friend.block.list",
+        method: HttpMethod::Get,
+        path: "/api/blocks",
+        body: &[],
+    },
+    Route {
+        id: "friend.block.add",
+        method: HttpMethod::Put,
+        path: "/api/blocks/{user_id}",
+        body: &[],
+    },
+    Route {
+        id: "friend.block.remove",
+        method: HttpMethod::Delete,
+        path: "/api/blocks/{user_id}",
+        body: &[],
+    },
+    Route {
+        id: "friend.privacy.get",
+        method: HttpMethod::Get,
+        path: "/api/settings/strangers",
+        body: &[],
+    },
+    Route {
+        id: "friend.privacy.set",
+        method: HttpMethod::Put,
+        path: "/api/settings/strangers",
+        body: &["allow"],
+    },
     Route {
         id: "video.select",
         method: HttpMethod::Get,

@@ -411,6 +411,93 @@ mod tests {
         assert_eq!(sent, json!({"to_user_id": "u-3"}), "{sent}");
     }
 
+    /// #317 备注与删除：备注是 `PUT …/remark` 带 `{remark}`；
+    /// 删除与解除拉黑是 DELETE 无 body。删除要走破坏性许可
+    /// （Policy 第三个参数），否则在策略层就被拦下、碰不到网络。
+    #[test]
+    fn friend_remark_and_remove_reach_their_routes() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, true));
+        exec.run(
+            "friend.remark.set",
+            &json!({"user_id": "u2", "remark": "同事小王"}),
+        )
+        .expect("设备注");
+        let got = next_request(&rx);
+        let (head, body) = got.split_once('\n').expect("remark 该带 body");
+        assert_eq!(head, "PUT /api/friends/u2/remark HTTP/1.1", "{got}");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("json"),
+            json!({"remark": "同事小王"})
+        );
+
+        // 删除好友要确认：策略层没有确认流程时 Executor 直接执行的是
+        // 已确认的调用（令牌在确认层消费），这里验的是分派形状。
+        let out = exec
+            .run("friend.remove", &json!({"user_id": "u2"}))
+            .expect("删好友");
+        assert_eq!(out, json!({"removed": "u2"}));
+        assert_eq!(next_request(&rx), "DELETE /api/friends/u2 HTTP/1.1");
+    }
+
+    /// #317 黑名单与隐私：拉黑 PUT、解除 DELETE、列表 GET，
+    /// 隐私读写打 `/api/settings/strangers`，写的键是服务端的 `allow`。
+    #[test]
+    fn friend_block_and_privacy_reach_their_routes() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, true));
+        let out = exec
+            .run("friend.block.add", &json!({"user_id": "u9"}))
+            .expect("拉黑");
+        assert_eq!(out, json!({"blocked": "u9"}));
+        assert_eq!(next_request(&rx), "PUT /api/blocks/u9 HTTP/1.1");
+
+        let out = exec
+            .run("friend.block.remove", &json!({"user_id": "u9"}))
+            .expect("解除拉黑");
+        assert_eq!(out, json!({"unblocked": "u9"}));
+        assert_eq!(next_request(&rx), "DELETE /api/blocks/u9 HTTP/1.1");
+
+        exec.run("friend.block.list", &json!({}))
+            .expect("黑名单列表");
+        assert_eq!(next_request(&rx), "GET /api/blocks HTTP/1.1");
+
+        exec.run("friend.privacy.get", &json!({}))
+            .expect("隐私查询");
+        assert_eq!(next_request(&rx), "GET /api/settings/strangers HTTP/1.1");
+
+        let out = exec
+            .run("friend.privacy.set", &json!({"allow": false}))
+            .expect("隐私设置");
+        assert_eq!(out, json!({"allow_strangers": false}));
+        let got = next_request(&rx);
+        let (head, body) = got.split_once('\n').expect("privacy.set 该带 body");
+        assert_eq!(head, "PUT /api/settings/strangers HTTP/1.1", "{got}");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("json"),
+            json!({"allow": false}),
+            "发给服务端的键必须是 allow，不是 allow_strangers"
+        );
+    }
+
+    /// #317 的路径参数同样过 `path_id`：带斜杠的 id 不许拼进路径。
+    #[test]
+    fn friend_batch2_rejects_path_shaped_ids_before_the_network() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, true));
+        for (id, params) in [
+            ("friend.remove", json!({"user_id": "a/b"})),
+            ("friend.block.add", json!({"user_id": "..%2f"})),
+            (
+                "friend.remark.set",
+                json!({"user_id": "a b", "remark": "x"}),
+            ),
+        ] {
+            assert!(exec.run(id, &params).is_err(), "{id} 该拒绝路径形 id");
+        }
+        assert!(rx.try_recv().is_err(), "拒绝发生在本地，不许有请求发出去");
+    }
+
     /// 接受与拒绝：申请 id 在**路径**里，方法 POST，无 body。
     #[test]
     fn friend_request_decision_posts_to_the_request_scoped_route() {
