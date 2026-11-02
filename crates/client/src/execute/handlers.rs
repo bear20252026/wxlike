@@ -182,6 +182,37 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
         let id = str_param(p, "job_id")?;
         http.expect_json("GET", &format!("/api/video/jobs/{id}"), None)
     }),
+    // ---- 媒体对象读（#319）：服务端在 features/media（/api/v1），
+    // 鉴权与 platform 共用会话令牌（media_mount 明文约束）。
+    ("media.files.list", |_ex, http, p| {
+        // 可见范围由服务端投影，命令面只透传四个查询维度，不传 conv。
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(v) = p.get("category").and_then(Value::as_str) {
+            query.push(("category", v.to_string()));
+        }
+        if let Some(v) = p.get("folder").and_then(Value::as_str) {
+            query.push(("folder", v.to_string()));
+        }
+        if let Some(v) = p.get("sort").and_then(Value::as_str) {
+            query.push(("sort", v.to_string()));
+        }
+        if let Some(v) = p.get("cursor").and_then(Value::as_str) {
+            query.push(("cursor", v.to_string()));
+        }
+        if let Some(limit) = p.get("limit").and_then(Value::as_u64) {
+            query.push(("limit", limit.to_string()));
+        }
+        let mut path = "/api/v1/files".to_string();
+        for (i, (k, v)) in query.iter().enumerate() {
+            path.push_str(if i == 0 { "?" } else { "&" });
+            path.push_str(&format!("{k}={}", urlencode(v)));
+        }
+        http.expect_json("GET", &path, None)
+    }),
+    ("media.upload.get", |_ex, http, p| {
+        let id = path_segment(str_param(p, "upload_id")?, "upload_id")?;
+        http.expect_json("GET", &format!("/api/v1/uploads/{id}"), None)
+    }),
     // ---- 写 ----
     ("msg.send", |_ex, http, p| {
         let conv = str_param(p, "conv")?;
@@ -355,6 +386,58 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
             })),
         )
     }),
+    // ---- 媒体对象写（#319）----
+    ("media.upload.start", |_ex, http, p| {
+        let size = p["size"]
+            .as_u64()
+            .ok_or_else(|| "缺少参数 size（声明大小，字节）".to_string())?;
+        let mut body = json!({
+            "purpose": str_param(p, "purpose")?,
+            "name": str_param(p, "name")?,
+            "size": size,
+            "mime": str_param(p, "mime")?,
+        });
+        if let Some(d) = p.get("digest").and_then(Value::as_str) {
+            body["digest"] = json!(d);
+        }
+        http.expect_json("POST", "/api/v1/uploads", Some(&body))
+    }),
+    ("media.upload.complete", |_ex, http, p| {
+        let id = path_segment(str_param(p, "upload_id")?, "upload_id")?;
+        let mut body = json!({});
+        if let Some(d) = p.get("digest").and_then(Value::as_str) {
+            body["digest"] = json!(d);
+        }
+        http.expect_json(
+            "POST",
+            &format!("/api/v1/uploads/{id}/complete"),
+            Some(&body),
+        )
+    }),
+    ("media.upload.cancel", |_ex, http, p| {
+        let id = path_segment(str_param(p, "upload_id")?, "upload_id")?;
+        http.expect_json(
+            "POST",
+            &format!("/api/v1/uploads/{id}/cancel"),
+            Some(&json!({})),
+        )
+    }),
+    ("media.object.access", |_ex, http, p| {
+        let id = path_segment(str_param(p, "object_id")?, "object_id")?;
+        http.expect_json(
+            "POST",
+            &format!("/api/v1/objects/{id}/access"),
+            Some(&json!({})),
+        )
+    }),
+    ("media.object.revoke", |_ex, http, p| {
+        let id = path_segment(str_param(p, "object_id")?, "object_id")?;
+        http.expect_json(
+            "POST",
+            &format!("/api/v1/objects/{id}/revoke"),
+            Some(&json!({})),
+        )
+    }),
     // ---- 破坏性 ----
     ("group.kick", |_ex, http, p| {
         let conv = str_param(p, "conv")?;
@@ -400,6 +483,25 @@ pub(super) fn path_id<'a>(raw: &'a str, key: &str) -> Result<&'a str, String> {
     {
         return Err(format!(
             "参数 {key} 不是合法 id：只许字母数字，长度 1~{MAX_PATH_ID_CHARS}"
+        ));
+    }
+    Ok(raw)
+}
+
+/// 路径段校验（媒体域专用）：media 的 id 形状与 relations 不同——
+/// 上传会话是 `up_<hex>`（带下划线，`ids::opaque_id`），对象 id 是
+/// 64 位 hex digest。用 `path_id` 会把每个真实 upload_id 都拒掉；
+/// 放宽到 `[A-Za-z0-9_-]` 的同时仍挡住 `/ ? # %` 与空白——路径穿越
+/// 和查询串注入才是这个校验真正要防的东西，两边一样严。
+pub(super) fn path_segment<'a>(raw: &'a str, key: &str) -> Result<&'a str, String> {
+    if raw.is_empty()
+        || raw.chars().count() > 128
+        || !raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "参数 {key} 不是合法 id：只许字母、数字、下划线与连字符，长度 1~128"
         ));
     }
     Ok(raw)

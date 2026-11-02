@@ -1503,6 +1503,93 @@
     },
     {
       "_meta": {
+        "wxlike/actionId": "media.files.list",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "文件中心：按分类/文件夹翻页列出我能看到的文件与附件｜参数：{category?: string, folder?: string, sort?: string, cursor?: string, limit?: number}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "description": "分类（如 file/image/video/voice，服务端定义）",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "上一页给的续页游标",
+            "type": "string"
+          },
+          "folder": {
+            "description": "文件夹（服务端定义）",
+            "type": "string"
+          },
+          "limit": {
+            "description": "本页条数（服务端有上限）",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sort": {
+            "description": "排序：recent（默认）/ name / size",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "media-files-list",
+      "title": "文件中心：按分类/文件夹翻页列出我能看到的文件与附件"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "media.upload.get",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "查一个上传会话的状态（进度、是否秒传完成、过期时间）｜参数：{upload_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "upload_id": {
+            "description": "上传会话 id（up_ 前缀）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "type": "object"
+      },
+      "name": "media-upload-get",
+      "title": "查一个上传会话的状态（进度、是否秒传完成、过期时间）"
+    },
+    {
+      "_meta": {
         "wxlike/actionId": "video.job.create",
         "wxlike/confirmation": "none",
         "wxlike/host": "file_picker",
@@ -1636,6 +1723,210 @@
       },
       "name": "video-view-report",
       "title": "上报一次观看心跳（本次新增时长必须为正）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "media.upload.start",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "开一个上传会话（声明 digest 命中已有对象时秒传完成）｜参数：{purpose: string, name: string, size: number, mime: string, digest?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "description": "内容 SHA-256（hex）：填了才有秒传快路径，服务端会核对",
+            "type": "string"
+          },
+          "mime": {
+            "description": "MIME 类型",
+            "type": "string"
+          },
+          "name": {
+            "description": "文件名",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "用途：attachment / avatar / sticker / voice / video / file / backup / derived（服务端校验）",
+            "type": "string"
+          },
+          "size": {
+            "description": "声明大小（字节）",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "purpose",
+          "name",
+          "size",
+          "mime"
+        ],
+        "type": "object"
+      },
+      "name": "media-upload-start",
+      "title": "开一个上传会话（声明 digest 命中已有对象时秒传完成）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "media.upload.complete",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "确认上传完成（分片传齐后落对象；未完成前对象不可引用）｜参数：{upload_id: string, digest?: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "description": "期望的内容 SHA-256（hex，可选，服务端核对）",
+            "type": "string"
+          },
+          "upload_id": {
+            "description": "上传会话 id（up_ 前缀）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "type": "object"
+      },
+      "name": "media-upload-complete",
+      "title": "确认上传完成（分片传齐后落对象；未完成前对象不可引用）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "media.upload.cancel",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "取消一个未完成的上传会话（释放其分片与配额）｜参数：{upload_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "upload_id": {
+            "description": "上传会话 id（up_ 前缀）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "type": "object"
+      },
+      "name": "media-upload-cancel",
+      "title": "取消一个未完成的上传会话（释放其分片与配额）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "media.object.access",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "为有权读的对象签发短期下载授权（带过期时间）｜参数：{object_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "object_id": {
+            "description": "对象 id（内容 digest）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "type": "object"
+      },
+      "name": "media-object-access",
+      "title": "为有权读的对象签发短期下载授权（带过期时间）"
+    },
+    {
+      "_meta": {
+        "wxlike/actionId": "media.object.revoke",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "media"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "撤销一个对象已签发的全部下载授权（旧链接立即失效）｜参数：{object_id: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "object_id": {
+            "description": "对象 id（内容 digest）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "type": "object"
+      },
+      "name": "media-object-revoke",
+      "title": "撤销一个对象已签发的全部下载授权（旧链接立即失效）"
     },
     {
       "_meta": {

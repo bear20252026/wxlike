@@ -34,16 +34,18 @@ use wxlike_cmd::domains::{entries, EntryState};
 /// contract-v1 冻结的命令数（评论核实的第 1 条）。
 /// `#316` 扩基线：26（#314 冻结）+ 6 条 relations 好友命令 = 32；
 /// `#317` 再扩：+ 7 条 relations 第二批命令 = 39；
-/// `#318` 再扩：+ 3 条群管理命令 = **42**。
-const BASELINE_COMMANDS: usize = 42;
+/// `#318` 再扩：+ 3 条群管理命令 = 42；`#319` 再扩：+ 7 条媒体命令 = **49**。
+const BASELINE_COMMANDS: usize = 49;
 /// contract-v1 冻结的入口条数（评论核实的第 2 条）。
 /// `#316`：64 + 新增 4 条 relations 入口（2 条 blocked 翻成 automated，
 /// 另外 4 条命令各需一条自己的入口）= 68；
 /// `#317`：68 + 5（`备注与删除好友`、`黑名单与隐私规则` 两条 blocked
 /// 各拆成多条 automated：2 条翻转就地占 2 条，另 5 条命令各加一条）= 73；
 /// `#318`：73 + 3（`群公告与全员禁言` 一条 blocked 拆成 3 条 automated
-/// + 1 条 blocked——全员禁言状态查询无服务端读取端点，缺口保留）= **76**。
-const BASELINE_ENTRIES: usize = 76;
+/// + 1 条 blocked——全员禁言状态查询无服务端读取端点，缺口保留）= 76；
+///
+/// 最后一笔是 `#319`：加 5 条（media 两条 blocked 拆成七条 automated，其中两条翻转就地、其余新加）= **81**。
+const BASELINE_ENTRIES: usize = 81;
 /// 覆盖表的三态基线：automated / blocked / host_only（评论核实的第 2 条）。
 /// `#316`：automated 26→32（六条新命令各登记一次）、blocked 33→31
 /// （翻掉的是 `好友列表与新朋友`、`好友申请处理` 两条，G02 #108），
@@ -52,8 +54,10 @@ const BASELINE_ENTRIES: usize = 76;
 /// （翻掉 `备注与删除好友`、`黑名单与隐私规则` 两条，同为 G02 #108）。
 /// `#318`：automated 39→42（三条新命令各登记一次）、blocked 29 不变
 /// （翻掉 `群公告与全员禁言` 一条、新增 `全员禁言状态查询` 缺口一条）。
-const BASELINE_AUTOMATED: usize = 42;
-const BASELINE_BLOCKED: usize = 29;
+/// `#319`：automated 42→49（七条新命令各登记一次）、blocked 29→27
+/// （翻掉 `文件中心与消息附件`、`上传会话与对象权限` 两条，G04）。
+const BASELINE_AUTOMATED: usize = 49;
+const BASELINE_BLOCKED: usize = 27;
 const BASELINE_HOST_ONLY: usize = 5;
 /// 业务域个数（`domains.json` 的 domains 数组）。
 const BASELINE_DOMAINS: usize = 8;
@@ -98,9 +102,16 @@ const BASELINE_IDS: [&str; BASELINE_COMMANDS] = [
     "video.select",
     "video.stats",
     "video.job.get",
+    "media.files.list",
+    "media.upload.get",
     "video.job.create",
     "video.job.retry",
     "video.view.report",
+    "media.upload.start",
+    "media.upload.complete",
+    "media.upload.cancel",
+    "media.object.access",
+    "media.object.revoke",
     "group.kick",
     "msg.recall",
 ];
@@ -203,7 +214,8 @@ fn contract_v1_entries_per_domain_are_frozen() {
     let want: &[(&str, usize)] = &[
         ("admin", 5),
         ("content", 7),
-        ("media", 10),
+        // #319：media 由 10 涨到 15（两条 blocked 拆成 7 条 automated）
+        ("media", 15),
         // #318：messaging 由 19 涨到 22（`群公告与全员禁言` 拆成 4 条）
         ("messaging", 22),
         ("miniprogram", 4),
@@ -233,6 +245,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
         ("friend", 13),
         ("group", 8),
         ("me", 2),
+        ("media", 7),
         ("msg", 6),
         ("video", 6),
     ];
@@ -244,7 +257,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
 /// 证据：`crates/mcp/src/server.rs` 的
 /// `const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"]`，
 /// 另有 `crates/mcp/tests/stdio_surface.rs` 断言 `tools/list` 的面 = 命令 + 元工具。
-/// 这里守的是**命令面那 42 条**（#314 冻的 26 条 + #316 的 6 条 + #317 的 7 条 + #318 的 3 条）：
+/// 这里守的是**命令面那 49 条**（#314 冻的 26 条 + #316 的 6 条 + #317 的 7 条 + #318 的 3 条 + #319 的 7 条）：
 /// `tools/list` = 元工具 + catalog 全量，所以 catalog 一变，
 /// MCP 侧的三处数字（`stdio_surface.rs` 的面、`server.rs` 的单测、
 /// `tools_list_snapshot.rs` 的逐字节基线）与 CLI 侧的四处
@@ -253,7 +266,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
 fn contract_v1_tool_surface_is_commands_plus_meta() {
     const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
     let surface = META_TOOLS.len() + catalog::CATALOG.len();
-    assert_eq!(surface, 46, "tools/list 的面：42 条命令 + 4 个元工具");
+    assert_eq!(surface, 53, "tools/list 的面：49 条命令 + 4 个元工具");
     assert_eq!(
         catalog::CATALOG.len(),
         BASELINE_COMMANDS,
@@ -385,5 +398,27 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 /// 派生影响：CLI 总表多出 3 行；覆盖表 messaging 由 19 条涨到 22 条
 /// （`群公告与全员禁言` 拆成 3 条 automated + 1 条 blocked），
 /// 全局 automated 39→42、blocked 29 不变、entries 73→76。
+/// **本次翻新（#319，逐条理由）**——`a0a871f5…` → `a625eacb…`。
+/// 表面变了 7 条**新增命令的声明**（媒体对象，#314 规则第 3 条），
+/// 原 42 条的声明一个字节都没改，且按清单要求与 `video.*` 分域计数：
+/// 1. 新增 `media.files.list` → `GET /api/v1/files`，Read/Media；
+/// 2. 新增 `media.upload.get` → `GET /api/v1/uploads/{upload_id}`，Read；
+/// 3. 新增 `media.upload.start` → `POST /api/v1/uploads`，Write
+///    （参数 `{purpose, name, size, mime, digest?}` 与服务端
+///    `UploadStart` DTO 逐字对齐，media_surface 用例钉死）；
+/// 4. 新增 `media.upload.complete` / `media.upload.cancel` →
+///    `POST .../complete|cancel`，Write；
+/// 5. 新增 `media.object.access` / `media.object.revoke` →
+///    `POST /api/v1/objects/{object_id}/access|revoke`，Write
+///    （签发带过期的授权凭据 / 以 epoch 递增撤销）。
+///    注意：服务端面在 `crates/features/media`（/api/v1），不是
+///    platform 的直传面（`/api/media`）——两套并存，前者才是本卡
+///    对象（勘察纠正已记在 #319 评论）。分片 PUT 与下载字节流是
+///    宿主数据面，不进命令面。
+///
+/// 派生影响：CLI 总表多出 7 行；覆盖表 media 由 10 条涨到 15 条
+/// （`文件中心与消息附件`、`上传会话与对象权限` 两条 blocked 拆成
+/// 7 条 automated），全局 automated 42→49、blocked 29→27、
+/// entries 76→81。
 const GENERATED_SURFACE_SHA256: &str =
-    "a0a871f52b5133619ee2bd5c5968b7d2cbc61abe8cb7fcf5092edf1944277f06";
+    "a625eacb97963f6fedea0a772c9a4883df7a9d062b50c7aa0e1b064421fae529";
