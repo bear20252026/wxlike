@@ -277,7 +277,8 @@ fn batch_annotations_follow_the_rules() {
         .find(|p| p.name == "on")
         .expect("声明了 on");
     assert_eq!(on.ty, ParamType::Bool);
-    assert_eq!(CATALOG.len(), 42);
+    // 只钉"本批三条还在"：总数随后续批次增长（#319 后 49）
+    assert!(CATALOG.len() >= 42);
 }
 
 /// `params` 字符串与 `args` 双向一致。
