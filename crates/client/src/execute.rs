@@ -453,6 +453,59 @@ mod tests {
         assert_eq!(sent, json!({"to_user_id": "u-3"}), "{sent}");
     }
 
+    /// #319 媒体：文件中心 GET 带查询维度、上传会话 start/get/complete/
+    /// cancel、对象 access/revoke。upload_id 是 `up_<hex>` 形状——带
+    /// 下划线，`path_id` 会误拒，走的是 `path_segment`；穿越形状仍拒。
+    #[test]
+    fn media_commands_reach_their_v1_routes() {
+        let (base, rx) = recorder();
+        let exec = Executor::new(authed(base), Policy::new(["*"], true, false));
+        exec.run("media.files.list", &json!({"category": "file", "limit": 5}))
+            .expect("文件中心");
+        assert_eq!(
+            next_request(&rx),
+            "GET /api/v1/files?category=file&limit=5 HTTP/1.1"
+        );
+
+        exec.run(
+            "media.upload.start",
+            &json!({"purpose": "file", "name": "a.pdf", "size": 12, "mime": "application/pdf"}),
+        )
+        .expect("开会话");
+        let got = next_request(&rx);
+        let (head, body) = got.split_once('\n').expect("start 该带 body");
+        assert_eq!(head, "POST /api/v1/uploads HTTP/1.1", "{got}");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("json"),
+            json!({"purpose": "file", "name": "a.pdf", "size": 12, "mime": "application/pdf"}),
+            "没给 digest 就不该有这个键"
+        );
+
+        exec.run("media.upload.get", &json!({"upload_id": "up_ab12cd"}))
+            .expect("查会话");
+        assert_eq!(next_request(&rx), "GET /api/v1/uploads/up_ab12cd HTTP/1.1");
+
+        exec.run("media.upload.complete", &json!({"upload_id": "up_ab12cd"}))
+            .expect("完成");
+        assert_eq!(
+            next_request(&rx).lines().next().unwrap_or_default(),
+            "POST /api/v1/uploads/up_ab12cd/complete HTTP/1.1"
+        );
+
+        exec.run("media.object.revoke", &json!({"object_id": "ff00aa"}))
+            .expect("撤销");
+        assert_eq!(
+            next_request(&rx).lines().next().unwrap_or_default(),
+            "POST /api/v1/objects/ff00aa/revoke HTTP/1.1"
+        );
+
+        // 路径穿越形状在上网之前就被挡下
+        let err = exec
+            .run("media.upload.get", &json!({"upload_id": "up_../secret"}))
+            .unwrap_err();
+        assert!(err.contains("不是合法 id"), "{err}");
+    }
+
     /// #317 备注与删除：备注是 `PUT …/remark` 带 `{remark}`；
     /// 删除与解除拉黑是 DELETE 无 body。删除要走破坏性许可
     /// （Policy 第三个参数），否则在策略层就被拦下、碰不到网络。
