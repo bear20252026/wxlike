@@ -230,6 +230,20 @@ pub const ROUTES: &[Route] = &[
         path: "/api/video/jobs/{job_id}",
         body: &[],
     },
+    // #319 媒体对象（features/media 的 /api/v1 面）：查询维度走 query
+    // 串（category/folder/sort/cursor/limit），不在路径模板里展开。
+    Route {
+        id: "media.files.list",
+        method: HttpMethod::Get,
+        path: "/api/v1/files",
+        body: &[],
+    },
+    Route {
+        id: "media.upload.get",
+        method: HttpMethod::Get,
+        path: "/api/v1/uploads/{upload_id}",
+        body: &[],
+    },
     Route {
         id: "msg.send",
         method: HttpMethod::Post,
@@ -271,6 +285,38 @@ pub const ROUTES: &[Route] = &[
             "completed",
             "session_id",
         ],
+    },
+    // #319 媒体对象写：上传会话与对象授权。complete 的 digest 是可选
+    // 核对字段；access/revoke 无请求体（路径即目标）。
+    Route {
+        id: "media.upload.start",
+        method: HttpMethod::Post,
+        path: "/api/v1/uploads",
+        body: &["purpose", "name", "size", "mime", "digest"],
+    },
+    Route {
+        id: "media.upload.complete",
+        method: HttpMethod::Post,
+        path: "/api/v1/uploads/{upload_id}/complete",
+        body: &["digest"],
+    },
+    Route {
+        id: "media.upload.cancel",
+        method: HttpMethod::Post,
+        path: "/api/v1/uploads/{upload_id}/cancel",
+        body: &[],
+    },
+    Route {
+        id: "media.object.access",
+        method: HttpMethod::Post,
+        path: "/api/v1/objects/{object_id}/access",
+        body: &[],
+    },
+    Route {
+        id: "media.object.revoke",
+        method: HttpMethod::Post,
+        path: "/api/v1/objects/{object_id}/revoke",
+        body: &[],
     },
     Route {
         id: "msg.recall",
