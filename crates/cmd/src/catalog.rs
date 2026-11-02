@@ -21,15 +21,16 @@ pub use spec::{
 /// 资源 URI 前缀。MCP `resources/read` 与审计日志引用同一个 URI。
 pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 
-/// 现有 42 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
-/// 再加 #316 relations 第一批 6 条、#317 第二批 7 条与 #318 群管理 3 条。
+/// 现有 49 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
+/// 再加 #316 relations 第一批 6 条、#317 第二批 7 条、#318 群管理 3 条
+/// 与 #319 媒体对象 7 条。
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己/好友），再写，最后危险操作。
 ///
-/// ## contract-v1 已冻结（#314；#316 第一次扩基线，#317 第二次，#318 第三次）
-/// 这 42 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
-/// 的 76 条入口（automated 42 / blocked 29 / host_only 5）是当前基线，
+/// ## contract-v1 已冻结（#314；#316 第一次扩基线，#317 第二次，#318 第三次，#319 第四次）
+/// 这 49 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
+/// 的 81 条入口（automated 49 / blocked 27 / host_only 5）是当前基线，
 /// 机器可读的形式在 `crates/cmd/tests/contract_v1_baseline.rs`：
 /// id 全集与顺序、派生名（工具名 / action_id / 资源 URI）、逐域数字、
 /// 以及**生成面的 SHA-256**（MCP 工具定义 + JSON Schema + CLI 帮助 + 覆盖表报告）。
@@ -831,6 +832,43 @@ pub const CATALOG: &[CommandSpec] = &[
         platforms: Platforms::ALL,
         host: HostCapability::None,
     },
+    // ---- 读：媒体对象（#319）----
+    CommandSpec {
+        id: "media.files.list",
+        // 服务端 `GET /api/v1/files`：可见范围由服务端按调用者能读的
+        // 会话/群投影（AudiencePort），命令面**不**传 conv 放行——
+        // #319 卡面的红线：对象权限走 Media 域二次授权，不得用会话
+        // 白名单代替。这里只透传分类/文件夹/排序/游标四个查询维度。
+        summary: "文件中心：按分类/文件夹翻页列出我能看到的文件与附件",
+        params: "{category?: string, folder?: string, sort?: string, cursor?: string, limit?: number}",
+        args: &[
+            Param::opt("category", ParamType::Str, "分类（如 file/image/video/voice，服务端定义）"),
+            Param::opt("folder", ParamType::Str, "文件夹（服务端定义）"),
+            Param::opt("sort", ParamType::Str, "排序：recent（默认）/ name / size"),
+            Param::opt("cursor", ParamType::Str, "上一页给的续页游标"),
+            Param::opt("limit", ParamType::NonNegativeInt, "本页条数（服务端有上限）"),
+        ],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "media.upload.get",
+        summary: "查一个上传会话的状态（进度、是否秒传完成、过期时间）",
+        params: "{upload_id: string}",
+        args: &[Param::req("upload_id", ParamType::Str, "上传会话 id（up_ 前缀）")],
+        capability: Capability::Read,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
     // ---- 写：视频 / 点播 ----
     CommandSpec {
         id: "video.job.create",
@@ -874,6 +912,106 @@ pub const CATALOG: &[CommandSpec] = &[
             Param::opt("completed", ParamType::Bool, "是否看完"),
             Param::opt("session_id", ParamType::Str, "播放会话 id"),
         ],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    // ---- 写：媒体对象（#319）----
+    CommandSpec {
+        id: "media.upload.start",
+        // 开一个上传会话。重试会不会长出第二个业务对象？会话本身是
+        // **惰性的**：不开 complete 就没有对象、没有文件行，只有会
+        // 过期的会话行；真到 complete，对象按内容 digest 主键落库
+        // （`ON CONFLICT DO NOTHING` + `newly_stored` 标记），同一份
+        // 内容永远只有一个对象。服务端不读幂等键头 ⇒ 不声明键，
+        // 与 `friend.request.create` 同例。声明 digest 命中已有对象时
+        // start 当场秒传完成（#314 更正口径），更没有重复落库的问题。
+        // 分片字节（PUT chunks）是宿主数据面，不走 JSON 命令面。
+        summary: "开一个上传会话（声明 digest 命中已有对象时秒传完成）",
+        params: "{purpose: string, name: string, size: number, mime: string, digest?: string}",
+        args: &[
+            Param::req(
+                "purpose",
+                ParamType::Str,
+                "用途：attachment / avatar / sticker / voice / video / file / backup / derived（服务端校验）",
+            ),
+            Param::req("name", ParamType::Str, "文件名"),
+            Param::req("size", ParamType::NonNegativeInt, "声明大小（字节）"),
+            Param::req("mime", ParamType::Str, "MIME 类型"),
+            Param::opt("digest", ParamType::Str, "内容 SHA-256（hex）：填了才有秒传快路径，服务端会核对"),
+        ],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "media.upload.complete",
+        // 完成确认：对象在 complete 之前不可被引用为附件（服务端
+        // `upload_complete` 才落对象与文件行）。带 digest 时服务端
+        // 核对实算值，不符拒绝。完成后对象按 digest 唯一，重复
+        // complete 由会话状态机挡下（已完成会话不再 open）。
+        summary: "确认上传完成（分片传齐后落对象；未完成前对象不可引用）",
+        params: "{upload_id: string, digest?: string}",
+        args: &[
+            Param::req("upload_id", ParamType::Str, "上传会话 id（up_ 前缀）"),
+            Param::opt("digest", ParamType::Str, "期望的内容 SHA-256（hex，可选，服务端核对）"),
+        ],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "media.upload.cancel",
+        summary: "取消一个未完成的上传会话（释放其分片与配额）",
+        params: "{upload_id: string}",
+        args: &[Param::req("upload_id", ParamType::Str, "上传会话 id（up_ 前缀）")],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "media.object.access",
+        // 给**自己有权读**的对象签一条短期下载授权（SignedAccess：
+        // url + expires_at + epoch）。权限判定在服务端 access 规则里
+        // （owner / public ref / 直接引用 / 会话或群引用四条，digest
+        // 本身不构成权限），无权 → 拒绝，命令面如实透传。标 Write 而
+        // 不是 Read：它**铸造一条带时效的访问凭据**，不是纯查询；
+        // 凭据不落业务状态，撤销走下面的 revoke（epoch 递增）。
+        summary: "为有权读的对象签发短期下载授权（带过期时间）",
+        params: "{object_id: string}",
+        args: &[Param::req("object_id", ParamType::Str, "对象 id（内容 digest）")],
+        capability: Capability::Write,
+        needs_conv: false,
+        scope: ScopeClass::Media,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
+        id: "media.object.revoke",
+        // 撤销 = 服务端把对象的 access_epoch 递增，此前签发的链接
+        // 全部失效。可重新 access 签新链接 ⇒ 不是破坏性操作，
+        // 确认 None；只有对象 owner 能调（服务端裁决）。
+        summary: "撤销一个对象已签发的全部下载授权（旧链接立即失效）",
+        params: "{object_id: string}",
+        args: &[Param::req("object_id", ParamType::Str, "对象 id（内容 digest）")],
         capability: Capability::Write,
         needs_conv: false,
         scope: ScopeClass::Media,
@@ -1192,7 +1330,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 42, "命令数变了：快照测试要一起加 id");
+        assert_eq!(CATALOG.len(), 49, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         let mut tools = HashSet::new();
         for spec in CATALOG {
@@ -1264,9 +1402,16 @@ mod tests {
                 "video.select",
                 "video.stats",
                 "video.job.get",
+                "media.files.list",
+                "media.upload.get",
                 "video.job.create",
                 "video.job.retry",
                 "video.view.report",
+                "media.upload.start",
+                "media.upload.complete",
+                "media.upload.cancel",
+                "media.object.access",
+                "media.object.revoke",
                 "group.kick",
                 "msg.recall",
             ]
