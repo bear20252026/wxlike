@@ -326,7 +326,9 @@ jobs:
         python ci/jobs/audit/check_pins.py --workflow ci/jobs/generated/ci.yml --workflow ci/jobs/generated/release.yml
 
         '
-    - name: C10 composed workflows match the checked-in fragments and the live .github/
+        - name: C10 integration-requests are machine-readable
+              run: python ci/jobs/audit/check_integration_requests.py
+              - name: C10 composed workflows match the checked-in fragments and the live .github/
       run: python ci/jobs/compose.py --check --check-live
     - name: C10 CI-of-CI unit tests
       run: python -m unittest discover -s ci/jobs/tests
