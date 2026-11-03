@@ -23,7 +23,8 @@ requests:
     rationale: 根依赖与锁归 G00；G15 不得私改根清单。协议语义已在本卡用
       手写 JSON-RPC 分派实现并有 fixture 覆盖，rmcp 接入属**替换实现**而非新增能力，
       接口边界见 `crates/mcp/src/server.rs`（一帧进、一帧出）。
-    acceptance: `cargo build -p wxlike-mcp` 通过，且 `crates/mcp/tests/stdio_surface.rs`
+    acceptance: >-
+      `cargo build -p wxlike-mcp` 通过，且 `crates/mcp/tests/stdio_surface.rs`
       在 rmcp 版本下仍全绿（同一批 fixture 不改）。
 
   - id: REQ-G15-02-remote-transport
@@ -62,11 +63,13 @@ requests:
 
 notes:
   - 本卡不动根 `Cargo.toml` / `Cargo.lock` / 路由 / 迁移编号。
-  - **contract-v1 已消费**（G00-03 冻结、`crates/types` 实现）：CLI 与 MCP 的
+  - >-
+    **contract-v1 已消费**（G00-03 冻结、`crates/types` 实现）：CLI 与 MCP 的
     请求/结果/错误形状统一为 `ActionRequest` / `ActionResult` / `DomainError`；
     `trace_id` 自动生成或由 `--trace-id` / `_meta.wxlike/traceId` 指定；
     `deadline` 过期在本地返回 `timeout`，不发请求。
-  - `tools/list` 由 catalog 生成：26 个命令工具（`msg.send` → `msg-send`）
+  - >-
+    `tools/list` 由 catalog 生成：26 个命令工具（`msg.send` → `msg-send`）
     + **4 个元工具**（`im_list_commands` / `im_execute` 兼容入口 / `im_inspect` /
     `im_jobs`）。#314 核清口径：以代码为准是 4 个，本备注原先写 3 个是 G15-04
     （958e2b26，#188）加 `im_jobs` 时漏改。证据：

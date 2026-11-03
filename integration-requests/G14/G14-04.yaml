@@ -14,7 +14,8 @@ artifacts:
 requests:
   - id: REQ-G09-refund-apply
     target: G09
-    action: 提供 `POST /api/admin/commerce/refunds/{refund_id}/apply`（body: order_id, amount_cents），
+    action: >-
+      提供 `POST /api/admin/commerce/refunds/{refund_id}/apply`（body: order_id, amount_cents），
       回执含 reference；同一 refund_id 重复调用必须幂等（不重复出账）。
     rationale: 后台只能"批准"，出账在账本域。重复审批的幂等最终由账本保证。
     blocking: true
@@ -24,7 +25,8 @@ requests:
     target: G09
     action: 给出对账作业写入的差异格式（batch / external_no / internal_no / kind /
       amount_delta_cents），以及订单号映射的权威来源；G14 只落运营投影，不改账本。
-    rationale: "一笔交易可追溯内外订单号"要求两侧编号口径一致。
+    rationale: >-
+      "一笔交易可追溯内外订单号"要求两侧编号口径一致。
     blocking: false
     evidence: crates/admin/tests/g14_04_commerce.rs::recon_diff_resolution_converges_the_batch
 
@@ -46,6 +48,7 @@ requests:
 notes:
   - 库里**没有**任何 balance 列（用例直接查 PRAGMA table_info 断言）；人工补账只能写
     g14_journal 借贷分录，且必须平。
-  - `g14_journal` 由触发器拒 UPDATE；分录号重放被拒（只能冲销，不能改写）。
+  - >-
+    `g14_journal` 由触发器拒 UPDATE；分录号重放被拒（只能冲销，不能改写）。
   - 退款双人阈值 500000 分（¥5000）；同一审批人重复批准不计入双人。
   - CSV 导出对 `= + - @` 开头的单元格加 `'` 前缀（防公式注入）。

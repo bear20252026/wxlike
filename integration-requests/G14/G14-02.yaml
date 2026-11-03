@@ -15,7 +15,13 @@ artifacts:
 requests:
   - id: REQ-G02-05-identity-admin-endpoints
     target: G02-05
-    action: 提供并冻结四个管理端点（与 crates/admin/src/identity.rs::HttpPort 逐字对应）：
+    action: >-
+      提供并冻结四个管理端点（与 crates/admin/src/identity.rs::HttpPort 逐字对应）：
+      `POST /api/admin/identity/users/{id}/suspend`（body: reason/until_ms/actor/trace，
+      回执含 before/after/sessions_revoked/already）、
+      `POST /api/admin/identity/users/{id}/unsuspend`、
+      `POST /api/admin/identity/devices/{id}/revoke`、
+      `POST /api/admin/identity/groups/{id}/govern`（body 含 action=freeze|unfreeze|transfer|dissolve）。
       `POST /api/admin/identity/users/{id}/suspend`（body: reason/until_ms/actor/trace，
       回执含 before/after/sessions_revoked/already）、
       `POST /api/admin/identity/users/{id}/unsuspend`、

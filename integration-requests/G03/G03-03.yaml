@@ -64,7 +64,8 @@ notes:
   - 分页是 keyset（pinned, last_at_ms, conv_id）行值比较，无 OFFSET；
     1000 会话 / 200 每页 = 5 页无重复无跳过（测试钉住）。
   - 数据最小化：密文与已撤回的消息在列表预览里都是空串；预览上限 120 字符。
-  - `MAX_SCOPE_CONVERSATIONS = 400`：scope 集合会变成 SQL 占位符，超限直接报错，
+  - >-
+    `MAX_SCOPE_CONVERSATIONS = 400`：scope 集合会变成 SQL 占位符，超限直接报错，
     不做"偷偷截断"。
   - 关联入口：SEED-0024 免打扰/置顶/清空记录、SEED-0032 聊天设置、SEED-0146 设置已保存、
     SEED-0151 清空聊天记录（演示态，需接真命令）、SEED-0035/0283/0287/0288/0148/0293

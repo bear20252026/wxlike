@@ -64,7 +64,8 @@ tests:
 
 observations:
   - dpage 的 `STUB_LEN + payload_len` 整数溢出：20 字节恶意包可 panic（#229，SEC-FUZZ-001）
-  - `wxhost.log` 缓冲无上限：页包一行循环可吃穿宿主内存（#253，SEC-SANDBOX-LOGS）
+  - >-
+    `wxhost.log` 缓冲无上限：页包一行循环可吃穿宿主内存（#253，SEC-SANDBOX-LOGS）
   - SSRF 策略对"白名单里的私网地址"仍然拒绝，行为符合预期（WEB-003 证明拒绝来源是独立规则）
 
 open_items:

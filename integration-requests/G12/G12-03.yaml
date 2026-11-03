@@ -15,9 +15,11 @@ requests:
       upstreamNotWired，不会把"没上传"伪装成"已发送"。
     change:
       - action_id: msg.send_media
-        action: 发送已上传媒体（params: conv/media_id/kind/idempotency_key）
+        action: >-
+          发送已上传媒体（params: conv/media_id/kind/idempotency_key）
       - action_id: msg.send_voice
-        action: 发送语音（params: conv/media_id/duration_ms/idempotency_key）
+        action: >-
+          发送语音（params: conv/media_id/duration_ms/idempotency_key）
       - action_id: msg.forward
         action: 转发（当前 cmd 目录有 msg.forward，但 FFI 未暴露）
       - action_id: msg.recall
@@ -33,7 +35,8 @@ requests:
     reason: 上传、播放与短时访问 URL 属于媒体域；Dart 只持有平台侧 ref，不合成 media_id。
     change:
       - action_id: media.upload
-        action: 分片/完整上传（params: purpose/digest/size/platform_ref）
+        action: >-
+          分片/完整上传（params: purpose/digest/size/platform_ref）
       - action_id: media.play
         action: 取得可播放的短时地址（语音远端播放）
     note: 上传失败与发送失败在 UI 上是两个阶段、两个幂等键，契约不得合并成一个错误。

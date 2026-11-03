@@ -45,7 +45,8 @@ cross_group:
     need: 发消息前调用 RelationsPort::may_message，禁止直接查 blocks/friends 表
     port: crates/features/relations/src/port.rs
   - group: G05
-    need: "共同群"用 RelationsPort::shared_groups，禁止自行 JOIN group_members
+    need: >-
+      "共同群"用 RelationsPort::shared_groups，禁止自行 JOIN group_members
   - group: G17
     need: relations_audit 保留期与访问控制评审
 
