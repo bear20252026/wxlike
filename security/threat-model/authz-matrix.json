@@ -1354,7 +1354,6 @@
       "object": "group",
       "scope": "owner",
       "tests": [
-        "all_mute_state_is_member_readable",
         "unauth_sweep_rejects_every_private_route"
       ]
     },
