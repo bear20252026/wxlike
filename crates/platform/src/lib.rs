@@ -69,7 +69,9 @@ use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
 pub use crate::account::{spawn_account_job_worker, JobReply};
-pub use crate::auth::{hash_password, random_hex, token_digest, verify_password, Authed};
+pub use crate::auth::{
+    hash_password, random_hex, token_digest, verify_password, AdminAuth, Authed,
+};
 pub use crate::call::CallRegistry;
 pub use crate::db::Db;
 pub use crate::devices::{DeviceReg, DeviceRow};

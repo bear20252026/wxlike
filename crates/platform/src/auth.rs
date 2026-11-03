@@ -125,3 +125,38 @@ impl FromRequestParts<std::sync::Arc<Platform>> for Authed {
         }
     }
 }
+
+/// #245: admin-surface authentication as an extractor, not a line in
+/// the handler body. Axum runs extractors in parameter order, so
+/// putting `AdminAuth` before any `ApiJson` body extractor makes the
+/// token check happen first: an unauthenticated caller gets 403 and
+/// learns nothing about the body contract (field names, action enums),
+/// instead of a 422 that enumerates it. The actor rides along because
+/// every admin handler needs it for the audit trail anyway.
+pub struct AdminAuth {
+    pub actor: String,
+}
+
+impl FromRequestParts<std::sync::Arc<Platform>> for AdminAuth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &std::sync::Arc<Platform>,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let presented = parts
+            .headers
+            .get("x-admin-token")
+            .and_then(|v| v.to_str().ok());
+        if !state.admin_ok(presented) {
+            return Err(PlatformError::AdminRequired.into());
+        }
+        let actor = parts
+            .headers
+            .get("x-admin-actor")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("admin")
+            .to_string();
+        Ok(AdminAuth { actor })
+    }
+}

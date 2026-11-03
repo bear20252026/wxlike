@@ -23,13 +23,14 @@
 //! 同时写审计日志——**对账异常属于安全事件，不只是运维指标**。
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ApiError, PlatformError, Result};
+use crate::auth::AdminAuth;
+use crate::error::{ApiError, Result};
 use crate::{Platform, PlatformState};
 
 /// `reconcile_runs` 一行的读取形状（列多，别名避免 clippy::type_complexity）。
@@ -321,29 +322,18 @@ fn report_reconcile(outcome: Result<ReconcileReport>) -> &'static str {
 /// 运维界面展示的对账历史条数上限。
 const RECONCILE_HISTORY_LIMIT: usize = 50;
 
-fn require_admin(platform: &Platform, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
-    let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
-    if platform.admin_ok(presented) {
-        Ok(())
-    } else {
-        Err(PlatformError::AdminRequired.into())
-    }
-}
-
 async fn run(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    _admin: AdminAuth,
 ) -> std::result::Result<(StatusCode, Json<ReconcileReport>), ApiError> {
-    require_admin(&platform, &headers)?;
     let report = platform.reconcile()?;
     Ok((StatusCode::OK, Json(report)))
 }
 
 async fn latest(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    _admin: AdminAuth,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&platform, &headers)?;
     Ok(Json(serde_json::json!({
         "last": platform.last_reconcile()?,
         "history": platform.reconcile_history(20)?,
@@ -352,9 +342,8 @@ async fn latest(
 
 async fn history(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    _admin: AdminAuth,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&platform, &headers)?;
     Ok(Json(serde_json::json!({
         "runs": platform.reconcile_history(RECONCILE_HISTORY_LIMIT)?,
     })))
@@ -364,9 +353,8 @@ async fn history(
 mod tests {
     use std::time::Duration;
 
-    use super::{
-        report_reconcile, spawn_reconciler, Mismatch, Platform, PlatformError, ReconcileReport,
-    };
+    use super::{report_reconcile, spawn_reconciler, Mismatch, Platform, ReconcileReport};
+    use crate::PlatformError;
 
     fn report(ok: bool, mismatches: Vec<Mismatch>) -> ReconcileReport {
         ReconcileReport {

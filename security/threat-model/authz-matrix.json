@@ -144,12 +144,7 @@
       "tests": [
         "admin_surface_requires_admin_token"
       ],
-      "public_reason": "TODO：未填理由的公开端点在 check 时会失败",
-      "exempt": {
-        "reason": "body 校验提取器先于管理令牌校验：未认证返回 422 而不是 403（#245）",
-        "issue": "#245"
-      },
-      "notes": "已知偏差（#245）：鉴权在 handler 体内、body 提取器之前无法拦住 422；改 AdminAuth 提取器后删除本 exempt"
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
     },
     {
       "method": "GET",
@@ -253,12 +248,7 @@
       "tests": [
         "admin_surface_requires_admin_token"
       ],
-      "public_reason": "TODO：未填理由的公开端点在 check 时会失败",
-      "exempt": {
-        "reason": "body 校验提取器先于管理令牌校验：未认证返回 422 而不是 403（#245）",
-        "issue": "#245"
-      },
-      "notes": "已知偏差（#245）：鉴权在 handler 体内、body 提取器之前无法拦住 422；改 AdminAuth 提取器后删除本 exempt"
+      "public_reason": "TODO：未填理由的公开端点在 check 时会失败"
     },
     {
       "method": "POST",

@@ -15,15 +15,15 @@
 //! `media_unscanned` 标签），绝不假装干净。
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rusqlite::params;
 use serde::Serialize;
 use wxlike_moderation::{Decision, Mode};
 
-use crate::auth::Authed;
-use crate::error::{ApiError, PlatformError, Result};
+use crate::auth::{AdminAuth, Authed};
+use crate::error::{ApiError, Result};
 use crate::extract::ApiJson;
 use crate::{Platform, PlatformState};
 
@@ -170,23 +170,6 @@ impl Platform {
     }
 }
 
-fn require_admin(platform: &Platform, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
-    let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
-    if platform.admin_ok(presented) {
-        Ok(())
-    } else {
-        Err(PlatformError::AdminRequired.into())
-    }
-}
-
-fn actor_of(headers: &HeaderMap) -> String {
-    headers
-        .get("x-admin-actor")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("admin")
-        .to_string()
-}
-
 #[derive(serde::Deserialize)]
 struct CheckBody {
     text: String,
@@ -202,9 +185,8 @@ async fn check(
 
 async fn queue(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    _admin: AdminAuth,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&platform, &headers)?;
     Ok(Json(serde_json::json!({
         "mode": platform.moderation_mode(),
         "queue": platform.moderation_queue(100)?,
@@ -213,11 +195,10 @@ async fn queue(
 
 async fn release(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<QueuedItem>, ApiError> {
-    require_admin(&platform, &headers)?;
-    match platform.release_moderated(&id, &actor_of(&headers))? {
+    match platform.release_moderated(&id, &admin.actor)? {
         Some(item) => Ok(Json(item)),
         None => Err(ApiError::new(StatusCode::NOT_FOUND, "no such queued item")),
     }
@@ -225,11 +206,10 @@ async fn release(
 
 async fn reject(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    require_admin(&platform, &headers)?;
-    if platform.reject_moderated(&id, &actor_of(&headers))? {
+    if platform.reject_moderated(&id, &admin.actor)? {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::new(StatusCode::NOT_FOUND, "no such queued item"))
@@ -243,13 +223,12 @@ struct ModeBody {
 
 async fn set_mode(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     ApiJson(body): ApiJson<ModeBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    require_admin(&platform, &headers)?;
     platform.set_moderation_mode(body.mode);
     platform.audit(
-        &actor_of(&headers),
+        &admin.actor,
         "moderation.mode",
         "",
         match body.mode {

@@ -31,7 +31,7 @@ _NAME_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)")
 _PATH_PARAM_RE = re.compile(r"\{([^}]+)\}")
 _ROUTE_RE = re.compile(r"\.route\s*\(")
 _LITERAL_RE = re.compile(r'"([^"]+)"')
-_HANDLER_MARKERS = ("State(", "Authed", "ApiPath(", "ApiJson(", "Query(", "HeaderMap")
+_HANDLER_MARKERS = ("State(", "Authed", "AdminAuth", "ApiPath(", "ApiJson(", "Query(", "HeaderMap")
 
 # 路径参数 → 对象类型（授权矩阵里的 `object` 列）
 OBJECT_OF = {
@@ -127,7 +127,8 @@ def _methods_of(args: str, file_text: str) -> list[tuple[str, str, str]]:
 
 
 def _handler_auth(file_text: str, handler: str) -> str:
-    """从处理函数签名判定鉴权：`Authed` 提取器 = 用户态；`admin_ok(` = 管理面。
+    """从处理函数签名判定鉴权：`Authed` 提取器 = 用户态；`AdminAuth` 提取器
+    或 `admin_ok(` = 管理面（#245 起管理面鉴权走提取器，签名即证据）。
 
     同名陷阱：`Platform` 上常有同名的业务方法（`send_channel_message`、
     `mention_all` …），它们也写成 `pub async fn xxx(`。只按第一个同名签名匹配会把
@@ -142,6 +143,8 @@ def _handler_auth(file_text: str, handler: str) -> str:
     handler_shaped = [item for item in signatures if any(marker in item[0] for marker in _HANDLER_MARKERS)]
     signature, end = (handler_shaped or signatures)[0]
     body = file_text[end : _next_fn(file_text, end)]
+    if "AdminAuth" in signature:
+        return "admin"
     if "require_admin(" in body or "admin_ok(" in body or "x-admin-token" in body:
         return "admin"
     if "Authed" in signature:
