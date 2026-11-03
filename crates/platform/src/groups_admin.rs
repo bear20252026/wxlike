@@ -501,12 +501,22 @@ async fn get_all_mute(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     // 与公告读取同一道门：只给成员（非成员 403），不给"群不存在"
     // 与"不是成员"留可区分的信号差异之外的信息。
-    if !platform.is_member(&group, &authed.user_id)? {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "members only"));
+    // ADR-28 样板「群管理读」：成员校验 + 状态读取同一次阻塞执行，
+    // 不在 await 上下文里直接调同步查库函数（区别于公告读取的历史
+    // TODO 豁免点位，新点位直接 offload）。非成员以 None 带出，仍由
+    // handler 回原来的 403 文案，响应与豁免写法逐字一致。
+    let actor = authed.user_id.clone();
+    let muted = offload(&platform, move |p| {
+        if !p.is_member(&group, &actor)? {
+            return Ok(None);
+        }
+        p.all_muted(&group).map(Some)
+    })
+    .await?;
+    match muted {
+        Some(all_muted) => Ok(Json(serde_json::json!({ "all_muted": all_muted }))),
+        None => Err(ApiError::new(StatusCode::FORBIDDEN, "members only")),
     }
-    Ok(Json(
-        serde_json::json!({ "all_muted": platform.all_muted(&group)? }),
-    ))
 }
 
 #[derive(Deserialize)]
