@@ -241,10 +241,17 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let tx = c.transaction()?;
-        tx.execute(
-            "UPDATE friend_requests SET status = 'declined' WHERE id = ?1",
+        // #340: the verdict rides on the write itself, like accept above —
+        // the pre-check reads outside the lock, so two concurrent declines
+        // can both pass it; only the conditional UPDATE picks one winner.
+        let changed = tx.execute(
+            "UPDATE friend_requests SET status = 'declined' WHERE id = ?1 AND status = 'pending'",
             params![req_id],
         )?;
+        if changed == 0 {
+            // lost a race with a concurrent accept/decline
+            return Err(PlatformError::Conflict("request".into()));
+        }
         log_tx(&tx, &req.from_uid, &req.to_uid, "declined", now)?;
         log_tx(&tx, &req.to_uid, &req.from_uid, "declined", now)?;
         tx.commit()?;

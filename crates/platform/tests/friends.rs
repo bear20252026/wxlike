@@ -198,6 +198,63 @@ async fn accept_makes_the_friendship_mutual() {
     assert!(events[0].sender == bob);
 }
 
+/// #340: concurrent declines of the same request must produce exactly
+/// one winner and exactly one pair of `declined` contact_log entries —
+/// the losers get Conflict, not a second set of log rows. The race
+/// window (load pending -> take the DB lock -> UPDATE) is narrow, so
+/// the scenario repeats: on the fixed code the conditional UPDATE
+/// makes the invariant hold every round; on the old unconditional
+/// UPDATE a double log shows up within a few rounds.
+#[test]
+fn concurrent_declines_write_one_log_pair() {
+    for round in 0..30 {
+        let state = Platform::in_memory().unwrap().shared();
+        let alice = state.register("a", "pw").unwrap();
+        let bob = state.register("b", "pw").unwrap();
+        let (rid, _) = state.send_friend_request(&alice, &bob, "").unwrap();
+
+        const RACERS: usize = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(RACERS));
+        let handles: Vec<_> = (0..RACERS)
+            .map(|_| {
+                let st = state.clone();
+                let b = barrier.clone();
+                let (me, id) = (bob.clone(), rid.clone());
+                std::thread::spawn(move || {
+                    b.wait();
+                    st.decline_request(&me, &id)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let wins = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(wins, 1, "round {round}: exactly one winner, got {wins}");
+        for r in results.iter().filter(|r| r.is_err()) {
+            assert!(
+                matches!(r, Err(wxlike_platform::PlatformError::Conflict(_))),
+                "round {round}: losers must be Conflict"
+            );
+        }
+        for user in [&alice, &bob] {
+            let declined = state
+                .changes(user, 0, 100)
+                .unwrap()
+                .iter()
+                .filter(|c| c.kind == "declined")
+                .count();
+            assert_eq!(
+                declined, 1,
+                "round {round}: {user} must see exactly one declined entry"
+            );
+        }
+        // the request left the inbox and kept its final state
+        assert!(state.incoming_requests(&bob).unwrap().is_empty());
+        let outgoing = state.outgoing_requests(&alice).unwrap();
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].status, "declined");
+    }
+}
+
 #[tokio::test]
 async fn decline_keeps_them_strangers() {
     let (state, _rec) = scene().await;
