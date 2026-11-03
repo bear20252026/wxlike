@@ -34,8 +34,10 @@ use wxlike_cmd::domains::{entries, EntryState};
 /// contract-v1 冻结的命令数（评论核实的第 1 条）。
 /// `#316` 扩基线：26（#314 冻结）+ 6 条 relations 好友命令 = 32；
 /// `#317` 再扩：+ 7 条 relations 第二批命令 = 39；
-/// `#318` 再扩：+ 3 条群管理命令 = 42；`#319` 再扩：+ 7 条媒体命令 = **49**。
-const BASELINE_COMMANDS: usize = 49;
+/// `#318` 再扩：+ 3 条群管理命令 = 42；`#319` 再扩：+ 7 条媒体命令 = 49；
+/// `#318` 缺口收口再扩：+ 1 条全员禁言状态查询命令 = **50**（platform 同步
+/// 补 `GET /api/groups/{id}/mute-all` 读取端点，缺口不再是缺口）。
+const BASELINE_COMMANDS: usize = 50;
 /// contract-v1 冻结的入口条数（评论核实的第 2 条）。
 /// `#316`：64 + 新增 4 条 relations 入口（2 条 blocked 翻成 automated，
 /// 另外 4 条命令各需一条自己的入口）= 68；
@@ -56,8 +58,10 @@ const BASELINE_ENTRIES: usize = 81;
 /// （翻掉 `群公告与全员禁言` 一条、新增 `全员禁言状态查询` 缺口一条）。
 /// `#319`：automated 42→49（七条新命令各登记一次）、blocked 29→27
 /// （翻掉 `文件中心与消息附件`、`上传会话与对象权限` 两条，G04）。
-const BASELINE_AUTOMATED: usize = 49;
-const BASELINE_BLOCKED: usize = 27;
+/// `#318` 缺口收口：automated 49→50、blocked 27→26（翻掉
+/// `全员禁言状态查询` 一条，入口总数不变——它本就在表里占着一条）。
+const BASELINE_AUTOMATED: usize = 50;
+const BASELINE_BLOCKED: usize = 26;
 const BASELINE_HOST_ONLY: usize = 5;
 /// 业务域个数（`domains.json` 的 domains 数组）。
 const BASELINE_DOMAINS: usize = 8;
@@ -75,6 +79,7 @@ const BASELINE_IDS: [&str; BASELINE_COMMANDS] = [
     "group.members",
     "group.info",
     "group.announcement.get",
+    "group.mute_all.get",
     "community.threads",
     "channel.roles",
     "me.info",
@@ -243,7 +248,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
         ("community", 1),
         ("conv", 5),
         ("friend", 13),
-        ("group", 8),
+        ("group", 9),
         ("me", 2),
         ("media", 7),
         ("msg", 6),
@@ -257,7 +262,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
 /// 证据：`crates/mcp/src/server.rs` 的
 /// `const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"]`，
 /// 另有 `crates/mcp/tests/stdio_surface.rs` 断言 `tools/list` 的面 = 命令 + 元工具。
-/// 这里守的是**命令面那 49 条**（#314 冻的 26 条 + #316 的 6 条 + #317 的 7 条 + #318 的 3 条 + #319 的 7 条）：
+/// 这里守的是**命令面那 50 条**（#314 冻的 26 条 + #316 的 6 条 + #317 的 7 条 + #318 的 3 条 + #319 的 7 条 + #318 缺口收口的 1 条）：
 /// `tools/list` = 元工具 + catalog 全量，所以 catalog 一变，
 /// MCP 侧的三处数字（`stdio_surface.rs` 的面、`server.rs` 的单测、
 /// `tools_list_snapshot.rs` 的逐字节基线）与 CLI 侧的四处
@@ -266,7 +271,7 @@ fn contract_v1_commands_per_domain_are_frozen() {
 fn contract_v1_tool_surface_is_commands_plus_meta() {
     const META_TOOLS: [&str; 4] = ["im_list_commands", "im_execute", "im_inspect", "im_jobs"];
     let surface = META_TOOLS.len() + catalog::CATALOG.len();
-    assert_eq!(surface, 53, "tools/list 的面：49 条命令 + 4 个元工具");
+    assert_eq!(surface, 54, "tools/list 的面：50 条命令 + 4 个元工具");
     assert_eq!(
         catalog::CATALOG.len(),
         BASELINE_COMMANDS,
@@ -420,5 +425,16 @@ fn contract_v1_generated_surface_digest_is_frozen() {
 /// （`文件中心与消息附件`、`上传会话与对象权限` 两条 blocked 拆成
 /// 7 条 automated），全局 automated 42→49、blocked 29→27、
 /// entries 76→81。
+/// **本次翻新（#318 缺口收口，逐条理由）**——`a625eacb…` → `593367fc…`。
+/// 表面只变了 1 条**新增命令的声明**（#314 规则第 3 条），原 49 条的
+/// 声明一个字节都没改：
+/// 1. 新增 `group.mute_all.get` → `GET /api/groups/{id}/mute-all`，
+///    Read/Conversation。服务端端点是本批与命令同批补的（platform
+///    `all_muted()` 域方法 + 仅成员的 GET 处理器，与公告读取同一道
+///    门）；#318 节里"没有 `group.mute_all.get`"的表述自此失效，
+///    那是当时的事实、不是永久约束（原文保留作历史）。
+///
+/// 派生影响：CLI 总表多出 1 行；覆盖表条目总数不变（`全员禁言状态
+/// 查询` 本就在表里），全局 automated 49→50、blocked 27→26。
 const GENERATED_SURFACE_SHA256: &str =
-    "a625eacb97963f6fedea0a772c9a4883df7a9d062b50c7aa0e1b064421fae529";
+    "593367fc0fa0963e26bb4b31075d01660ca615d9610c839451d6ec600d0e3ae3";

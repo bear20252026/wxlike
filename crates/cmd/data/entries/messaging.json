@@ -30,9 +30,7 @@
   {
     "domain": "messaging",
     "label": "全员禁言状态查询",
-    "state": "blocked",
-    "owner": "G03",
-    "issue": 121,
-    "note": "服务端无读取端点：GroupInfo 未暴露 all_muted，缺口已在 #318 评论写明"
+    "state": "automated",
+    "command": "group.mute_all.get"
   }
 ]

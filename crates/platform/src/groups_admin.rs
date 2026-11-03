@@ -26,6 +26,7 @@ pub fn routes() -> Router<PlatformState> {
         .route("/api/groups/{group_id}/mute/{uid}", put(set_mute))
         .route("/api/groups/{group_id}/mute/{uid}", delete(clear_mute))
         .route("/api/groups/{group_id}/mute-all", put(set_all_mute))
+        .route("/api/groups/{group_id}/mute-all", get(get_all_mute))
         .route("/api/groups/{group_id}/approval", put(set_approval))
         .route("/api/groups/{group_id}/invites", post(create_invite))
         .route("/api/groups/join/{token}", post(join_by_token))
@@ -160,6 +161,19 @@ impl Platform {
         Ok(())
     }
 
+    /// 全员禁言的当前状态（#318 遗留缺口的服务端一半）：写入侧只有
+    /// `set_all_mute`，读取侧此前只有发送裁决内部查得到，命令面与
+    /// 客户端都无从读——这里给一个与公告读取对称的域方法。
+    pub fn all_muted(&self, group: &str) -> Result<bool> {
+        let group = validate::id(group)?;
+        let all: i64 = self.db().lock().query_row(
+            "SELECT all_muted FROM groups WHERE id = ?1",
+            params![group],
+            |r| r.get(0),
+        )?;
+        Ok(all != 0)
+    }
+
     /// 发送侧裁决（hub 接线复用）：全员禁言对 owner/admin 无效；单人禁言
     /// 按 until_ms 定时解除（到点自然放行，无需 sweeper）。
     pub fn is_muted(&self, group: &str, user: &str) -> Result<bool> {
@@ -168,12 +182,7 @@ impl Platform {
         if role == "owner" || role == "admin" {
             return Ok(false);
         }
-        let all: i64 = self.db().lock().query_row(
-            "SELECT all_muted FROM groups WHERE id = ?1",
-            params![group],
-            |r| r.get(0),
-        )?;
-        if all != 0 {
+        if self.all_muted(group)? {
             return Ok(true);
         }
         let until: Option<i64> = self
@@ -483,6 +492,21 @@ async fn set_all_mute(
     let on = body.on;
     offload(&platform, move |p| p.set_all_mute(&group, &actor, on)).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_all_mute(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Path(group): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    // 与公告读取同一道门：只给成员（非成员 403），不给"群不存在"
+    // 与"不是成员"留可区分的信号差异之外的信息。
+    if !platform.is_member(&group, &authed.user_id)? {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "members only"));
+    }
+    Ok(Json(
+        serde_json::json!({ "all_muted": platform.all_muted(&group)? }),
+    ))
 }
 
 #[derive(Deserialize)]

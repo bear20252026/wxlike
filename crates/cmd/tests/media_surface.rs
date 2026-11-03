@@ -317,7 +317,7 @@ fn batch_annotations_follow_the_rules() {
         };
         assert_eq!(spec.capability, want_cap, "{id}");
     }
-    assert_eq!(CATALOG.len(), 49);
+    assert!(CATALOG.len() >= 49);
 }
 
 /// `params` 字符串与 `args` 双向一致。

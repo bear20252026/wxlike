@@ -44,8 +44,8 @@ fn list_lists_every_command_without_a_server() {
     let (code, stdout, _) = run(&["list"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("msg.send"), "{stdout}");
-    // #316：relations 第一批 +6 条好友命令（26 → 32）；#317：第二批 +7 → 39；#318：群管理 +3 → 42；#319：媒体 +7 → 49
-    assert_eq!(stdout.lines().count(), 49, "每条命令一行：{stdout}");
+    // #316：relations 第一批 +6 条好友命令（26 → 32）；#317：第二批 +7 → 39；#318：群管理 +3 → 42；#319：媒体 +7 → 49；#318 缺口收口 +1 → 50
+    assert_eq!(stdout.lines().count(), 50, "每条命令一行：{stdout}");
     assert!(
         stdout.contains("friend.list")
             && stdout.contains("friend.request.accept")
@@ -220,8 +220,8 @@ fn coverage_report_lists_every_domain_and_gap_owner() {
     let (code, stdout, stderr) = run(&["coverage", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
-    // #316：automated 26 → 32；#317：→ 39；#318：→ 42；#319：七条媒体命令各登记一条 media 入口 → 49
-    assert_eq!(v["summary"]["automated"], 49);
+    // #316：automated 26 → 32；#317：→ 39；#318：→ 42；#319：七条媒体命令各登记一条 media 入口 → 49；缺口收口翻一条 messaging 入口 → 50
+    assert_eq!(v["summary"]["automated"], 50);
     assert_eq!(v["domains"].as_array().map(Vec::len), Some(8));
 }
 
@@ -317,8 +317,8 @@ fn doctor_reports_local_state_without_network() {
     assert_eq!(code, 0, "{stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
     assert_eq!(v["report"], "wxlike-cli doctor");
-    // #316：catalog 命令数 26 → 32；#317：→ 39；#318：→ 42；#319：→ 49
-    assert_eq!(v["catalog"]["commands"], 49);
+    // #316：catalog 命令数 26 → 32；#317：→ 39；#318：→ 42；#319：→ 49；缺口收口 → 50
+    assert_eq!(v["catalog"]["commands"], 50);
     assert!(
         v["coverage"]["blocked"].as_u64().is_some(),
         "覆盖统计里的 blocked 必须是数字"
