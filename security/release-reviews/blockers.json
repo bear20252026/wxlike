@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.release-blockers.v1",
-  "updated_at": "2026-10-25",
+  "updated_at": "2026-11-04",
   "note": "发布阻塞的唯一清单。每条必须有 owner + issue：没人认领的阻塞不是阻塞，只是一句感慨。status=closed 必须带 closed_evidence（补丁 commit / 测试链接 / CI 运行），否则评审不认。",
   "blockers": [
     {
@@ -42,8 +42,10 @@
       "severity": "medium",
       "owner": "G14",
       "issue": "#245",
-      "status": "open",
-      "evidence": "tests/security/tests/sweep.rs（矩阵两行 exempt）；authz-matrix.json 的 notes"
+      "status": "closed",
+      "evidence": "tests/security/tests/sweep.rs（矩阵两行 exempt）；authz-matrix.json 的 notes",
+      "closed_evidence": "PR #343 产品补丁（AdminAuth 提取器先于 body 校验，12 个管理端点；矩阵两行 exempt 已摘除，sweep 严格口径通过）；merge commit 6137951327d08d9c27e84e766493da8d10ee22ac；PR CI 全绿：https://github.com/bear20252026/wxlike/actions/runs/41771146993（ci 29 job，含 C11 覆盖闸）/ runs/41771147192（security）/ runs/41771147065（audit）成功",
+      "closed_at": "2026-11-04"
     },
     {
       "id": "GOV-NOTICE",
