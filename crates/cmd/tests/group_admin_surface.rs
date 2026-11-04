@@ -5,11 +5,11 @@
 //! 分派逐段核对；标注、参数、覆盖表逐条钉死。本文件只读源码文本，
 //! 不加依赖。
 //!
-//! 本卡有一处**刻意的缺口**：全员禁言没有状态查询命令——服务端没有
-//! 读 `all_muted` 的端点（`GroupInfo` 未暴露该字段），按 #318 卡面
-//! "如路由缺参数，先在 Issue 评论中写明"的规矩，缺口写在 issue 评论
-//! 与覆盖表 note 里，命令面不编造。本文件最后一组用例守的就是这件事：
-//! 谁把 `group.mute_all.get` 之类指向空气的命令加上，这里就红。
+//! 本卡原有一处**刻意的缺口**：全员禁言没有状态查询命令——服务端
+//! 没有读 `all_muted` 的端点，缺口当时写在了 issue 评论与覆盖表
+//! note 里，命令面不编造。**该缺口已在后续批次收口**：platform 补了
+//! `GET /api/groups/{id}/mute-all`（仅成员），`group.mute_all.get`
+//! 随之转正，本文件的用例按四条命令钉死。
 
 use wxlike_cmd::catalog::{
     self, Capability, Confirmation, Idempotency, ParamType, ScopeClass, CATALOG,
@@ -25,9 +25,10 @@ fn workspace_file(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()))
 }
 
-/// #318 这批命令的 id，按 catalog 顺序。
-const BATCH_IDS: [&str; 3] = [
+/// #318 这批命令的 id，按 catalog 顺序（mute_all.get 为缺口收口批次追加）。
+const BATCH_IDS: [&str; 4] = [
     "group.announcement.get",
+    "group.mute_all.get",
     "group.announcement.set",
     "group.mute_all.set",
 ];
@@ -143,12 +144,13 @@ fn handler_target(handlers: &str, id: &str) -> (String, String) {
 fn batch_commands_point_at_their_own_endpoints() {
     let handlers = workspace_file("crates/client/src/execute/handlers.rs");
     let routes = admin_routes();
-    let want: [(&str, &str, &str); 3] = [
+    let want: [(&str, &str, &str); 4] = [
         (
             "group.announcement.get",
             "GET",
             "/api/groups/*/announcement",
         ),
+        ("group.mute_all.get", "GET", "/api/groups/*/mute-all"),
         (
             "group.announcement.set",
             "PUT",
@@ -170,18 +172,23 @@ fn batch_commands_point_at_their_own_endpoints() {
 }
 
 /// 匹配器要有牙 + 范围要有界：单人禁言在本卡范围外，命令面不许
-/// 顺手长出 `group.mute.set` 一类条目；`mute-all` 也没有 GET。
+/// 顺手长出 `group.mute.set` 一类条目。（`mute-all` 的 GET 是缺口
+/// 收口批次补的真实端点，正例在下面钉死。）
 #[test]
 fn matcher_has_teeth_and_scope_stays_put() {
     let routes = admin_routes();
-    assert!(matching_routes(&routes, "GET", "/api/groups/x/mute-all").is_empty());
+    assert_eq!(
+        matching_routes(&routes, "GET", "/api/groups/x/mute-all").len(),
+        1,
+        "正例：全员禁言状态查询端点确实存在（缺口收口批次）"
+    );
     assert!(matching_routes(&routes, "POST", "/api/groups/x/announcement").is_empty());
     assert_eq!(
         matching_routes(&routes, "PUT", "/api/groups/x/mute-all").len(),
         1,
         "正例：全员禁言端点确实存在"
     );
-    for id in ["group.mute.set", "group.mute.clear", "group.mute_all.get"] {
+    for id in ["group.mute.set", "group.mute.clear"] {
         assert!(
             catalog::get(id).is_none(),
             "{id} 不在本卡范围/无服务端端点，不许出现在 catalog 里"
@@ -266,7 +273,7 @@ fn batch_annotations_follow_the_rules() {
             !spec.args.iter().any(|p| p.name == "idempotency_key"),
             "{id} 不许声明幂等键"
         );
-        if id != "group.announcement.get" {
+        if id != "group.announcement.get" && id != "group.mute_all.get" {
             assert_eq!(spec.capability, Capability::Write, "{id}");
         }
     }
@@ -311,15 +318,16 @@ fn parse_params(raw: &str) -> Vec<(&str, bool)> {
 
 // ---------------------------------------------------------------- 覆盖表与缺口
 
-/// 覆盖表：原 blocked 条目拆成 3 条 automated + 1 条 blocked（状态
-/// 查询的缺口）；缺口条目的 note 必须点名"无读取端点"，不许悄悄翻绿，
-/// 也不许把缺口删掉装作不存在。
+/// 覆盖表：#318 时拆成 3 条 automated + 1 条 blocked（状态查询的
+/// 缺口）；缺口收口批次给 platform 补上真实读取端点后，第四条也随之
+/// 转正——翻转必须有端点撑着，这正是本文件路由用例钉死的事。
 #[test]
 fn coverage_table_flips_only_what_has_endpoints() {
-    let want: [(&str, &str); 3] = [
+    let want: [(&str, &str); 4] = [
         ("群公告查询", "group.announcement.get"),
         ("群公告设置", "group.announcement.set"),
         ("全员禁言设置", "group.mute_all.set"),
+        ("全员禁言状态查询", "group.mute_all.get"),
     ];
     for (label, cmd) in want {
         let entry = entries()
@@ -328,7 +336,7 @@ fn coverage_table_flips_only_what_has_endpoints() {
             .unwrap_or_else(|| panic!("覆盖表里没有 {label} 这条入口"));
         match &entry.state {
             EntryState::Command(id) => assert_eq!(id, cmd, "{label} 登记的命令不对"),
-            other => panic!("{label} 本该是 automated（#318），现在是 {other:?}"),
+            other => panic!("{label} 本该是 automated，现在是 {other:?}"),
         }
     }
     assert!(
@@ -337,32 +345,18 @@ fn coverage_table_flips_only_what_has_endpoints() {
             .any(|e| e.domain == "messaging" && e.label == "群公告与全员禁言"),
         "旧的合并条目已被拆分，不应还留在覆盖表里"
     );
-    let gap = entries()
-        .iter()
-        .find(|e| e.domain == "messaging" && e.label == "全员禁言状态查询")
-        .expect("缺口条目必须还在，不许删掉装作不存在");
-    match &gap.state {
-        EntryState::Blocked { owner, issue } => {
-            assert_eq!(owner, "G03");
-            assert_eq!(*issue, 121);
-        }
-        other => panic!("状态查询无服务端端点，必须还是 blocked，现在是 {other:?}"),
-    }
-    assert!(
-        gap.note
-            .as_deref()
-            .unwrap_or_default()
-            .contains("无读取端点"),
-        "缺口 note 必须点名原因：{:?}",
-        gap.note
-    );
 }
 
 /// CLI / MCP 两面：friend 域之外，group 域帮助与工具定义同步出现。
 #[test]
 fn cli_and_mcp_surfaces_carry_the_batch() {
     let text = catalog::cli_help(Some("group"));
-    for verb in ["announcement.get", "announcement.set", "mute_all.set"] {
+    for verb in [
+        "announcement.get",
+        "announcement.set",
+        "mute_all.set",
+        "mute_all.get",
+    ] {
         assert!(
             text.contains(&format!("wxlike group {verb}")),
             "{verb} 不在帮助里：\n{text}"

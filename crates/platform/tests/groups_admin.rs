@@ -206,6 +206,39 @@ async fn all_mute_hides_managers_from_muting() {
     let _ = member_tok;
 }
 
+/// #318 遗留缺口的服务端一半：全员禁言状态可读（成员），且与写入
+/// 严格一致——默认 false、开启后 true、关闭后 false；非成员 403。
+#[tokio::test]
+async fn all_mute_state_is_member_readable() {
+    let (group, owner_tok, member_tok, _member, _p, app) = group_with_member().await;
+    let url = format!("/api/groups/{group}/mute-all");
+
+    // 默认未开启
+    let (st, body) = call(&app, req("GET", &url, None, Some(&member_tok))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["all_muted"], json!(false));
+
+    // owner 开启后成员读到 true
+    let (st, _) = call(
+        &app,
+        req("PUT", &url, Some(json!({"on": true})), Some(&owner_tok)),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, body) = call(&app, req("GET", &url, None, Some(&member_tok))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["all_muted"], json!(true));
+
+    // 非成员读 → 403（与公告读取同一道门）
+    let (_, outsider_tok) = {
+        let (uid, tok) = signup(&app, "outsider").await;
+        let _ = uid;
+        (uid, tok)
+    };
+    let (st, _) = call(&app, req("GET", &url, None, Some(&outsider_tok))).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
 async fn owner_id_of(app: &axum::Router, group: &str, owner_tok: &str) -> String {
     let (st, body) = call(
         app,

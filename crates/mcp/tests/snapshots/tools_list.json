@@ -484,6 +484,42 @@
     },
     {
       "_meta": {
+        "wxlike/actionId": "group.mute_all.get",
+        "wxlike/confirmation": "none",
+        "wxlike/host": "none",
+        "wxlike/platforms": [
+          "desktop",
+          "web",
+          "android",
+          "ios"
+        ],
+        "wxlike/scope": "conversation"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "查看全员禁言状态（仅群成员）｜参数：{conv: string}",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conv": {
+            "description": "群 id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conv"
+        ],
+        "type": "object"
+      },
+      "name": "group-mute_all-get",
+      "title": "查看全员禁言状态（仅群成员）"
+    },
+    {
+      "_meta": {
         "wxlike/actionId": "community.threads",
         "wxlike/confirmation": "none",
         "wxlike/host": "none",

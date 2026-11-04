@@ -1336,6 +1336,18 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/groups/{group_id}/mute-all",
+      "handler": "get_all_mute",
+      "module": "crates/platform/src/groups_admin.rs",
+      "auth": "user",
+      "object": "group",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "PUT",
       "path": "/api/groups/{group_id}/mute-all",
       "handler": "set_all_mute",

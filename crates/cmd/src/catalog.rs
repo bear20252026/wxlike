@@ -260,6 +260,23 @@ pub const CATALOG: &[CommandSpec] = &[
         host: HostCapability::None,
     },
     CommandSpec {
+        id: "group.mute_all.get",
+        // #318 遗留缺口的收口：写入侧早有 `set_all_mute`，读取侧此前
+        // 只有发送裁决内部查得到；本批在 platform 补了与公告读取对称
+        // 的 `GET /api/groups/{id}/mute-all`（仅成员，非成员 403），
+        // 返回 `{all_muted}`。覆盖表「全员禁言状态查询」随之转正。
+        summary: "查看全员禁言状态（仅群成员）",
+        params: "{conv: string}",
+        args: &[Param::req("conv", ParamType::Str, "群 id")],
+        capability: Capability::Read,
+        needs_conv: true,
+        scope: ScopeClass::Conversation,
+        confirmation: Confirmation::None,
+        idempotency: Idempotency::None,
+        platforms: Platforms::ALL,
+        host: HostCapability::None,
+    },
+    CommandSpec {
         id: "community.threads",
         summary: "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）",
         params: "{community: string, limit?: number}",
@@ -1330,7 +1347,7 @@ mod tests {
 
     #[test]
     fn catalog_is_well_formed() {
-        assert_eq!(CATALOG.len(), 49, "命令数变了：快照测试要一起加 id");
+        assert_eq!(CATALOG.len(), 50, "命令数变了：快照测试要一起加 id");
         let mut ids = HashSet::new();
         let mut tools = HashSet::new();
         for spec in CATALOG {
@@ -1375,6 +1392,7 @@ mod tests {
                 "group.members",
                 "group.info",
                 "group.announcement.get",
+                "group.mute_all.get",
                 "community.threads",
                 "channel.roles",
                 "me.info",

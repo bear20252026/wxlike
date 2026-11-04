@@ -103,6 +103,12 @@ pub(super) const HANDLERS: &[(&str, Handler)] = &[
         let conv = str_param(p, "conv")?;
         http.expect_json("GET", &format!("/api/groups/{conv}/announcement"), None)
     }),
+    ("group.mute_all.get", |_ex, http, p| {
+        // #318 遗留缺口收口：服务端成员校验（非成员 403）如实透传，
+        // 返回 {all_muted}。
+        let conv = str_param(p, "conv")?;
+        http.expect_json("GET", &format!("/api/groups/{conv}/mute-all"), None)
+    }),
     ("group.announcement.set", |_ex, http, p| {
         // 写权限在服务端二次授权（assert_manager），这里只管分派；
         // media_id 不给就不发这个键（服务端默认空串，与显式给空等价
