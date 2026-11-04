@@ -12,7 +12,7 @@
 #   docker build -f containers/server/Dockerfile \
 #     --build-arg GIT_REVISION=$(git rev-parse HEAD) -t wxlike-server:dev .
 
-ARG RUST_IMAGE=rust:1.97.1-bookworm
+ARG RUST_IMAGE=rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
 FROM ${RUST_IMAGE} AS build
 
 ARG GIT_REVISION=unknown
@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --locked --release -p wxlike-server --features redis && \
     cp target/release/wxlike-server /usr/local/bin/wxlike-server
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
 ARG GIT_REVISION=unknown
 ARG WXLIKE_VERSION=0.1.0
