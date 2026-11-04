@@ -20,7 +20,8 @@ requests:
       version) and expose record/remove/devices. Add a forward migration and a
       rollback that keeps the table readable by the previous release.
     owner: G02
-    reason: "另一端安装记录一致" requires one server-side truth; local
+    reason: >-
+      "另一端安装记录一致" requires one server-side truth; local
       installers alone cannot prove it.
   - id: recent-sync
     file: server

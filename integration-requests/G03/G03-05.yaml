@@ -20,7 +20,8 @@ requests:
 
   - id: REQ-PUSH-owner-adopt-port
     target: G00
-    action: `crates/push` 不在任何组的独占根里（owners.json 未登记），
+    action: >-
+      `crates/push` 不在任何组的独占根里（owners.json 未登记），
       但 G03-05 的 APNs/FCM 供应商实现必须落在那里。请先登记 owner，
       再由该 owner 把现有 `FcmProvider` 包成 `PushPort` 实现、并补 APNs。
       G03 不越界改 `crates/push`。
@@ -29,7 +30,8 @@ requests:
 
   - id: REQ-G02-device-identity-source
     target: G02-03
-    action: `push_device.device_id` 与设备注册表（`platform/src/devices.rs`
+    action: >-
+      `push_device.device_id` 与设备注册表（`platform/src/devices.rs`
       的 `register_device`）必须是同一个设备身份，注销设备要同时撤销推送 token
       （调用 `revoke_push` / `revoke_other_devices`）。
     rationale: 两处各存一套设备 id 就会漏撤销，"注销后旧设备不再收到私密提示"
@@ -73,7 +75,8 @@ notes:
     也不 retire 投递任务（测试 `vendor_failures_are_per_device_and_leave_message_state_untouched`）。
   - 调度器有界且对乱序/重复免疫：`SyncScheduler::note` 返回
     Scheduled/Coalesced/Stale/Overflowed，溢出丢最旧条目，绝不无界增长。
-  - **卡面第 5 条（手机 retry 必须同时刷新真实投影）的落地位置**：
+  - >-
+    **卡面第 5 条（手机 retry 必须同时刷新真实投影）的落地位置**：
     `drive_queue` 在重投死信与过期租约之后，逐会话调
     `refresh_projection`，列表 preview/last_seq/last_withdrawn 由信箱重算，
     不是只把 pending 标记清掉（两条测试分别覆盖前台恢复与撤回后重进）。

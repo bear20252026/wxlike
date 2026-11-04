@@ -24,7 +24,8 @@ requests:
     target: G05-05
     action: 确认转码/封面作业的重试语义：同一 job_id 重试必须回到同一目标对象，
       不产生第二份产物。
-    rationale: "重试一次只恢复原作业"在 adminx 侧已保证（同一行、attempts+1），
+    rationale: >-
+      "重试一次只恢复原作业"在 adminx 侧已保证（同一行、attempts+1），
       域侧要保证重跑不重复建产物。
     blocking: false
     evidence: crates/admin/tests/g14_05_jobs.rs::retry_revives_the_same_job_and_duplicate_clicks_are_harmless
@@ -33,7 +34,8 @@ requests:
     target: G02-05
     action: 隐私导出产物的存放与取件方式：adminx 只发一次性下载令牌（24h，库中存哈希），
       产物由域侧作业生成并按 request_id 关联。
-    rationale: "隐私导出只授权申请者获取"需要两边共同保证：令牌在 adminx，产物在域侧。
+    rationale: >-
+      "隐私导出只授权申请者获取"需要两边共同保证：令牌在 adminx，产物在域侧。
     blocking: false
     evidence: crates/admin/tests/g14_05_jobs.rs::privacy_export_token_is_the_only_way_to_fetch
 

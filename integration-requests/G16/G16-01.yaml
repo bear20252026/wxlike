@@ -17,4 +17,5 @@ requests:
     note: desktop signing uses production-release; mobile signing uses mobile-release.
   - id: G16-01-SECRETS
     action: register names listed in deploy/signing-docs/secret-inventory.md
-    evidence: release drill fails with ::error:: when a secret is absent, never silently skips
+    evidence: >-
+      release drill fails with ::error:: when a secret is absent, never silently skips
