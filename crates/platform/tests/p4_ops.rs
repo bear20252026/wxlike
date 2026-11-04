@@ -564,6 +564,65 @@ async fn admin_endpoints_reject_without_token() {
     assert!(body.get("runs").is_some(), "看板读的是 runs 数组");
 }
 
+/// 审核拒绝端点（POST /api/admin/moderation/{id}/reject）的真面验收：
+/// 此前根 workspace 里没有任何用例打这条路由（放行有、拒绝无），#245 把
+/// 它的鉴权改成 AdminAuth 提取器后，C11 安全路径覆盖闸量到这条 handler
+/// 的改动行 0 命中。这里补齐：挂起一条 → 无/错令牌 403 → 对令牌 204
+/// 且队列清空 → 同一 id 再拒绝 404。
+#[tokio::test]
+async fn admin_moderation_reject_endpoint() {
+    let opts = wxlike_platform::PlatformOptions {
+        session_ttl_ms: 60_000,
+        pbkdf2_rounds: 1_000,
+        admin_token: Some("s3cret".into()),
+        ..Default::default()
+    };
+    let p = Platform::in_memory_with(opts).unwrap();
+    let v = p
+        .moderate_for_send("alice", "d-a~b", "加我微信 带你刷单")
+        .unwrap();
+    assert_eq!(v.decision.outcome, wxlike_moderation::Outcome::Hold);
+    let queued = v.queued_id.expect("挂起必须入队");
+    let state = p.shared();
+    let router = app(state.clone());
+    let path = format!("/api/admin/moderation/{queued}/reject");
+
+    // 无令牌 / 错令牌：提取器先于 handler 拦截
+    let (st, _) = call(&router, req("POST", &path, None, None)).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "无令牌必须 403");
+    let (st, _) = call(
+        &router,
+        req_with("POST", &path, None, &[("x-admin-token", "nope")]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "错令牌必须 403");
+    assert_eq!(
+        state.moderation_queue(10).unwrap().len(),
+        1,
+        "被拦下不能动队列"
+    );
+
+    // 对令牌：204，队列清空
+    let (st, _) = call(
+        &router,
+        req_with("POST", &path, None, &[("x-admin-token", "s3cret")]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "拒绝成功应为 204");
+    assert!(
+        state.moderation_queue(10).unwrap().is_empty(),
+        "拒绝后队列应为空"
+    );
+
+    // 同一 id 再拒绝：404
+    let (st, _) = call(
+        &router,
+        req_with("POST", &path, None, &[("x-admin-token", "s3cret")]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "已拒绝的 id 再拒绝应为 404");
+}
+
 /// issue #5：**已启用 2FA 之后重新 enroll 必须先证明身份**。
 ///
 /// 漏洞是：`/api/2fa/enable` 只要求 Authed，底层直接
