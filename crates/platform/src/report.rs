@@ -9,14 +9,14 @@
 //! `x-admin-token`，见 [`crate::PlatformOptions::admin_token`]）。
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use wxlike_report::{Action, Reason, State as TicketState, Ticket};
 
-use crate::auth::Authed;
+use crate::auth::{AdminAuth, Authed};
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
@@ -403,23 +403,6 @@ fn map_report_error(e: wxlike_report::ReportError) -> PlatformError {
     }
 }
 
-fn require_admin(platform: &Platform, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
-    let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
-    if platform.admin_ok(presented) {
-        Ok(())
-    } else {
-        Err(PlatformError::AdminRequired.into())
-    }
-}
-
-fn admin_actor(headers: &HeaderMap) -> String {
-    headers
-        .get("x-admin-actor")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("admin")
-        .to_string()
-}
-
 async fn create(
     State(platform): State<PlatformState>,
     authed: Authed,
@@ -454,10 +437,9 @@ async fn mine(
 
 async fn queue(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    _admin: AdminAuth,
     Query(q): Query<QueueQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&platform, &headers)?;
     let sla = platform.options().report_sla_ms;
     let now = wxlike_core::types::now_ms();
     let tickets = platform.report_queue(q.state.as_deref(), q.limit.unwrap_or(50))?;
@@ -473,38 +455,36 @@ async fn queue(
 
 async fn triage(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    require_admin(&platform, &headers)?;
     Ok(Json(platform.triage_report(
         &id,
-        &admin_actor(&headers),
+        &admin.actor,
         &body.note,
     )?))
 }
 
 async fn act(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ActBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    require_admin(&platform, &headers)?;
     // 兼容分支的**观测点**：只有知道还有谁在用旧形状，才能决定何时删掉它。
     // 日志放在 handler 而不是 `Deserialize` 里：反序列化是纯函数，
     // 而这里能带上工单 id、操作人，也能进 tracing span。
     if body.legacy_shape {
         tracing::warn!(
             report_id = %id,
-            actor = %admin_actor(&headers),
+            actor = %admin.actor,
             "report.act 收到旧的嵌套 action 形状（{{\"action\":{{\"action\":\"…\"}}}}）；建议客户端改用平铺"
         );
     }
     Ok(Json(platform.act_on_report(
         &id,
-        &admin_actor(&headers),
+        &admin.actor,
         body.action,
         &body.note,
     )?))
@@ -512,28 +492,26 @@ async fn act(
 
 async fn close(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    require_admin(&platform, &headers)?;
     Ok(Json(platform.close_report(
         &id,
-        &admin_actor(&headers),
+        &admin.actor,
         &body.note,
     )?))
 }
 
 async fn reject(
     State(platform): State<PlatformState>,
-    headers: HeaderMap,
+    admin: AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    require_admin(&platform, &headers)?;
     Ok(Json(platform.reject_report(
         &id,
-        &admin_actor(&headers),
+        &admin.actor,
         &body.note,
     )?))
 }
