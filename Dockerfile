@@ -9,7 +9,7 @@
 #   * HEALTHCHECK against the existing /health endpoint (the server also
 #     serves /metrics; there is no /healthz — probe one of the real ones).
 # Build includes the `redis` feature so compose can run the Streams backend.
-FROM rust:1.97.1-bookworm AS build
+FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS build
 WORKDIR /wxlike
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
@@ -23,7 +23,7 @@ COPY scripts scripts
 COPY schema schema
 RUN cargo build --locked --release -p wxlike-server --features redis
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
