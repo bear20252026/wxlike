@@ -2,10 +2,10 @@
   "schema": "wxlike.release-evidence.v1",
   "release": {
     "name": "UI v2 全平台交付 · G17 主干集成复核",
-    "reviewed_at": "2026-10-25",
+    "reviewed_at": "2026-11-05",
     "reviewer": "G00 集成复核（G17 交付与云端测试证据）",
-    "commit": "16edadeaf77f277e6d658f185a4c739ed6482375",
-    "scope": "主干基线 + PR #276 安全测试/门禁集成；只评自动化证据，不代表全 UI、供应商与真机功能验收"
+    "commit": "19af8937052b04e5c59e0f525a83e72b50faa7cc",
+    "scope": "主干基线 + PR #276 安全测试/门禁集成；只评自动化证据，不代表全 UI、供应商与真机功能验收 2026-11-05 刷新：纳入 #349 镜像 digest 锁定（merge 9bf6f41）与 #350 公告分诊（merge 19af893）；联网复核运行 42035784008 的 online advisories job 成功。本包仍为评审记录快照，未通过项如实保留。"
   },
   "claims": {
     "platforms": [
@@ -137,11 +137,11 @@
       "title": "冻结前当前快照联网漏洞复核",
       "required": true,
       "kind": "test",
-      "status": "unverified",
+      "status": "pass",
       "owner": "G17",
       "issue": "#98",
-      "evidence": "",
-      "notes": "已配置每日/手工联网任务；本轮离线表检查不替代当前快照 OSV 及镜像扫描结果，冻结前必须补成功运行链接"
+      "evidence": "security 工作流 workflow_dispatch 运行 42035784008（main @19af893）四 job 中 online advisories 成功：OSV 联网查询 1228 个组件 fail=0；首次运行 42023610080 的 10 条 ADV-UNVERIFIED 已由 PR #350 人工分诊登记（9 条 unmaintained 按 low、glib unsound 按 medium）",
+      "notes": "联网复核已在当前主干完成；后续每次冻结/发版前按 policy gate.online_note 重新触发。"
     },
     {
       "id": "E-PROVENANCE",
@@ -157,11 +157,12 @@
       "title": "许可义务清单（NOTICE）覆盖直接依赖",
       "required": true,
       "kind": "artifact",
-      "status": "blocked",
+      "status": "not_applicable",
       "owner": "G00",
       "issue": "#228",
       "evidence": "third_party/reviews/NOTICE-INDEX.md（23 项缺口与引入方）",
-      "notes": "豁免到 2026-12-31；到期后门禁自动变红"
+      "notes": "2026-10-25 旧快照把本项记为 fail，系快照早于政策决定；本次刷新更正。",
+      "reason": "G00 决定（commit 2d5973b，2026-10-27）：本项目内部研究、不对外分发，许可证门禁（cargo deny licenses、notice.py、NOTICE 登记）已整体删除，third_party/reviews/NOTICE-INDEX.md 已标作废，issue #228 已据此关闭。本项不再适用。"
     },
     {
       "id": "E-E2EE",
@@ -210,11 +211,11 @@
       "title": "镜像可复现（digest 锁定 + 镜像扫描）",
       "required": true,
       "kind": "artifact",
-      "status": "blocked",
+      "status": "pass",
       "owner": "G16",
       "issue": "#257",
-      "evidence": "Dockerfile / docker-compose.yml 全部浮动 tag",
-      "notes": "Dockerfile 的 FROM 与 compose 的 image 全是浮动 tag；deb 包（ca-certificates/curl）无扫描覆盖"
+      "evidence": "PR #349（merge 9bf6f41）：3 个 Dockerfile 与 2 个 compose 文件的全部镜像引用带 @sha256 digest（2026-11-04 从 Docker Hub registry 实测）；SBOM 五个 docker 组件 purl 均带 ?digest=sha256:，sourceaudit sbom check PASS；blockers.json 的 OPS-IMAGE-DIGEST 已删除",
+      "notes": "浮动标签已全部消除；digest 随镜像更新时同步刷新 SBOM。"
     },
     {
       "id": "E-COVERAGE",
@@ -234,7 +235,7 @@
       "owner": "G00/G16",
       "issue": "#277",
       "evidence": "",
-      "notes": "工作流失败不等于 GitHub 禁止合并；实际 required contexts 尚未追加安全两项，连接无管理规则写入工具，必须由管理员实配并回读验证"
+      "notes": "工作流失败不等于 GitHub 禁止合并；实际 required contexts 尚未追加安全两项，连接无管理规则写入工具，必须由管理员实配并回读验证 2026-11-04 仓库所有者明确决定不添加这两项 required checks，本项按未通过如实记录（所有者决定，非技术阻塞）。"
     }
   ],
   "exceptions": [],
