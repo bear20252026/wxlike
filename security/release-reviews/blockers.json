@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.release-blockers.v1",
-  "updated_at": "2026-11-04",
+  "updated_at": "2026-11-05",
   "note": "发布阻塞的唯一清单。每条必须有 owner + issue：没人认领的阻塞不是阻塞，只是一句感慨。status=closed 必须带 closed_evidence（补丁 commit / 测试链接 / CI 运行），否则评审不认。",
   "blockers": [
     {
@@ -68,15 +68,6 @@
       "evidence": "security/advisory-policy/report-2026-10-24.md §3.1；policy.json 的 exceptions",
       "closed_evidence": "PR #274 产品补丁；root/desktop ctutils=0.4.5；policy.exceptions=[]；report-2026-10-25.md；根/桌面审计 https://github.com/bear20252026/wxlike/actions/runs/40177575743",
       "closed_at": "2026-10-25"
-    },
-    {
-      "id": "OPS-IMAGE-DIGEST",
-      "title": "基础镜像与 compose 镜像未锁 digest，deb 包无扫描覆盖",
-      "severity": "medium",
-      "owner": "G16",
-      "issue": "#257",
-      "status": "open",
-      "evidence": "Dockerfile / docker-compose.yml；sbom 里容器组件无 digest"
     },
     {
       "id": "CI-WIRING",
