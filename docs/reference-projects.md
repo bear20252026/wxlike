@@ -2,6 +2,7 @@
 
 > 调研日期 2026-10-16。目的：为 wxlike 提取可借鉴的架构、功能清单与交互设计。
 > 注意：部分链接与 star 数经核实与传闻有出入，见各节勘误。
+> **许可证政策修订（2026-11-05，所有者决定）**：本文各处关于参考项目的许可证限制（只学思想 / 不搬代码 / 保留原许可声明 / 单独评审）已经所有者决定整体放宽——参考项目代码经改编并入本项目后，不再受原许可证约束。下文相关表述保留作历史记录，执行以本修订为准；与本修订冲突的旧口径（含 docs/WORK_BREAKDOWN.md 第 0.1 节第 4 条前文、docs/reference-mirror.md「引入纪律」）同步失效。禁止引入闭源 IM SDK / 云厂商绑定 SDK 的架构限制不变。
 
 ## 一览
 
@@ -12,7 +13,7 @@
 | [CoderMikeHe/WeChat](https://github.com/CoderMikeHe/WeChat) | iOS | OC+MVVM+RAC | ~1.2k ✓ | ★★ ViewModel-Based Navigation、文档化风格 |
 | [SwiftUI-WeChat](https://github.com/wxxsw/SwiftUI-WeChat) | iOS | SwiftUI 2 | ~1.2k ✓ | ★★ 朋友圈九宫格、导航栏滚动联动、深色模式 |
 | [box-im](https://github.com/bluexsx/box-im) | 全栈 | SpringBoot+Netty / Vue3+uniapp | **696**（非"暂缺"） | ★★★★★ 唯一生产级全栈：业务/推送分离、Redis 路由、已读/多端同步 |
-| [fake-world](https://github.com/LiangNiang/fake-world) | Web | React+Jotai+Slate+Bun（monorepo，后端可选） | **153**（65 commits，小而精；shanyu-e 链接是其 0-star fork） | ★★★ 设计决策 > 代码量：本地优先、编辑/运行态同构、AI 可选后端。GPL-3.0：只学决策不碰代码 |
+| [fake-world](https://github.com/LiangNiang/fake-world) | Web | React+Jotai+Slate+Bun（monorepo，后端可选） | **153**（65 commits，小而精；shanyu-e 链接是其 0-star fork） | ★★★ 设计决策 > 代码量：本地优先、编辑/运行态同构、AI 可选后端。GPL-3.0：只学决策不碰代码（此限制已于 2026-11-05 经所有者决定解除，见文首修订） |
 | [Wechat_ArktsDevelop](https://github.com/xiaowuDev/Wechat_ArktsDevelop) | 鸿蒙 | ArkTS/API12 | **13**（非高热度项目） | ★ 多端参考、明暗主题 |
 
 \* 为 2026-10-16 实测。
@@ -106,7 +107,7 @@ box-im 用原生 WebRTC 摆脱收费 SDK。wxlike 对应：`str0m`/`webrtc-rs` �
 | [teamgram-server](https://github.com/teamgram/teamgram-server) | 2.3k★，Go，MTProto API 228 | — | Apache-2.0 | ✅ 真实，但社区版仅私聊+基础群；频道/通话是**付费企业版** |
 | [grammers](https://github.com/Lonami/grammers) | 815★，Rust MTProto | — | MIT/Apache 双许可 | ⚠️ GitHub 已归档（2026-02），迁往 Codeberg；未做安全审计 |
 | [sandcat-backend](https://github.com/Xu-Mj/sandcat-backend) | 97★，513 commits | — | MIT | ✅ 小而真：Kafka+MongoDB+PG+Redis+MinIO 微服务 |
-| [PaperPhone-Plus](https://github.com/619dev/Paperphone-plus) | 126★ | — | **AGPL-3.0** | ⚠️ 真，但网络服务也要开源修改——**严格只学思想** |
+| [PaperPhone-Plus](https://github.com/619dev/Paperphone-plus) | 126★ | — | **AGPL-3.0** | ⚠️ 真，但网络服务也要开源修改——**严格只学思想**（此限制已于 2026-11-05 经所有者决定解除，见文首修订） |
 | [Mimir](https://github.com/Mimir-IM/mimir) | 39★，19 commits | — | MPL-2.0 | ⚠️ 早期项目，但 UniFFI 绑定（Android JNI/iOS Swift）模式可学 |
 | [hungry-rs](https://github.com/dimentyy/hungry-rs) | **3★**，WIP | — | MIT | ❌ 作者计划完工后重建仓库——无参考价值 |
 
@@ -116,7 +117,7 @@ TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许
 
 1. **WP-11 UI：HuLa 是最大加速器（Apache-2.0，可合法借用代码）**
    - Vue3+Tauri 覆盖五端，已实现：撤回/@/已读/回复/表情包/链接预览/消息点赞/群管理/在线状态/音视频通话/多窗口/截图/自动更新/i18n——正是我们 WP-11 的 15 人日清单，且远超
-   - ⚠️ 架构不学：HuLa 的业务逻辑在 TS/Vue 层，违反我们"逻辑必须 Rust"的铁律。**借 UI/交互与代码（保留 Apache 声明），架构坚持 wxlike 分层**
+   - ⚠️ 架构不学：HuLa 的业务逻辑在 TS/Vue 层，违反我们"逻辑必须 Rust"的铁律。**借 UI/交互与代码（保留 Apache 声明），架构坚持 wxlike 分层**（此限制已于 2026-11-05 经所有者决定解除，见文首修订）
    - 附带 HuLa-Server（独立服务端仓库）可作对照
 
 2. **WP-08 音视频：iroh 直改技术选型（12.7k★，生产级）**
@@ -133,8 +134,8 @@ TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许
    - teamgram-server：MTProto 服务端语义参考——但注意其核心功能与付费版的分界恰好说明"群聊/通话"是 IM 后端的主要工作量所在（与我们任务书 WP-04/08 的预估互相印证）
 
 5. **明确排除**
-   - ~~Telegram GPL-3.0 客户端代码：不进仓库~~ **已解锁（2026-10-16 项目转 GPL-3.0）**：交互范式与性能优化代码可合法借鉴，按文件保留 GPL 声明
-   - PaperPhone-Plus（AGPL-3.0）：X25519+ML-KEM-768 抗量子混合加密升格为 WP-12 远期可引入项（AGPL→GPL 组合依 GPLv3 §13 可行），引入时保留 AGPL 模块头单独评审
+   - ~~Telegram GPL-3.0 客户端代码：不进仓库~~ **已解锁（2026-10-16 项目转 GPL-3.0）**：交互范式与性能优化代码可合法借鉴，按文件保留 GPL 声明（此限制已于 2026-11-05 经所有者决定解除，见文首修订）
+   - PaperPhone-Plus（AGPL-3.0）：X25519+ML-KEM-768 抗量子混合加密升格为 WP-12 远期可引入项（AGPL→GPL 组合依 GPLv3 §13 可行），引入时保留 AGPL 模块头单独评审（此限制已于 2026-11-05 经所有者决定解除，见文首修订）
    - hungry-rs：3★ WIP，跳过
    - sandcat-backend：仅作"SQLite 不够用之后"的 MongoDB 分片策略阅读材料（其 30-50% 提升是 README 自述，未经独立验证）
 
@@ -163,7 +164,7 @@ TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许
 
 ### 关键修正（相对常见认知）
 
-1. **Synapse 与 Element Web 已不再是 Apache-2.0**：Element 于 2024-11 起改为 AGPL-3.0/商业双许可。引用 Matrix 生态时必须区分：**Matrix 协议规范是 Apache-2.0 可自由实现**；Element 的具体代码是 AGPL——学规范与 Megolm 设计，不搬代码。
+1. **Synapse 与 Element Web 已不再是 Apache-2.0**：Element 于 2024-11 起改为 AGPL-3.0/商业双许可。引用 Matrix 生态时必须区分：**Matrix 协议规范是 Apache-2.0 可自由实现**；Element 的具体代码是 AGPL——学规范与 Megolm 设计，不搬代码（此限制已于 2026-11-05 经所有者决定解除，见文首修订）。
 2. **Startalk（360 星语）已停维**，"适合学习参考"的说法不成立——核心 ejabberd 定制停更于 2021。
 3. **XyTalk 是 Java Swing 桌面 + Tigase/XMPP**，作者自述练手作品，非生产参考。
 
