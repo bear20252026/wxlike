@@ -75,8 +75,8 @@ WP-13 运维基线（独立，尽早）
 | WP-05 | 媒体消息与对象存储 | 8 | 8 |
 | WP-06 | 系统推送 | 6 | 5 |
 | WP-07 | 朋友圈 | 10 | 10 |
-| WP-08a | 音视频：语音通话（iroh 打洞 + str0m，见参考文档修订） | 20 | 8 |
-| WP-08b | 音视频：视频通话 | 15 | 5 |
+| WP-08a | 音视频：语音通话（LiveKit sidecar，ADR-25） | 10 | 8 |
+| WP-08b | 音视频：视频通话（LiveKit，ADR-25） | 8 | 5 |
 | WP-09 | 钱包/红包/转账（虚拟闭环） | 10 | 15 |
 | WP-10 | 离线持久化 + Redis Streams 至少一次 | 5 | 8 |
 | WP-11 | 桌面 UI（Tauri2，HuLa 交互参考） | 12 | 5 |
@@ -268,8 +268,10 @@ GET  /api/moments/{id}                -> 详情（含点赞列表、评论树）
 
 ### WP-08 音视频通话（25 + 15 人日，独立大件，允许分包）
 
+> **ADR-25 修订（2026-10-28 决策，2026-11-05 所有者确认执行，取代本节原 str0m 自研选型）**：媒体转发与房间状态交给 **LiveKit（sidecar 独立进程，定位同 Redis/NATS 等基础设施）**；wxlike 只做信令中继（QUIC `rtc-signal` 不变）、通话状态机、token 签发（LiveKit `apiKey:secret` JWT 形态）、TURN 凭据与房间审计。**服务端 Egress 自动录制关闭**，录制只允许客户端侧（保住"服务端是瞎子"底线）。`crates/rtc` 的 str0m SFU 与 `crates/sfu` 转冷备不删，`rtc/src/compat.rs` 改双引擎白名单 + 单一在线闸。E2EE 分端：Web/桌面 Insertable Streams、移动端原生 SDK E2EE，密钥统一经 Megolm 通道分发。工时重估：WP-08a 25 → **10 人日**、WP-08b 15 → **8 人日**（SFU 本体移除，剩余为接入、状态机与四端真机验证）。下文 A1–A3 验收项（状态机、连通质量、对抗项）继续有效，其中"媒体走 str0m"表述以本修订为准。
+
 **WP-08a 语音（25 人日）**
-- 新 crate `crates/rtc`：信令走现有 QUIC 通道（`MsgBody::Custom{kind:"rtc-signal"}`），媒体走 **`str0m`**（纯 Rust WebRTC，禁用 libwebrtc C++ 绑定）。
+- 新 crate `crates/rtc`：信令走现有 QUIC 通道（`MsgBody::Custom{kind:"rtc-signal"}`），媒体走 **LiveKit sidecar（ADR-25）**；str0m 转冷备（禁用 libwebrtc C++ 绑定的原则不变）。
 - 通话状态机：Invite → Ringing → Accepted/Rejected/Cancelled/Hungup/Failed（超时 30s 未接听自动 Cancel），全程消息可追溯。
 - NAT 穿透：内置 STUN（公共 Google STUN 可配置）+ 落地 TURN 配置接口（`WXLIKE_TURN_URL`，无 TURN 时同网段可通即为验收环境）。
 - 音频：Opus 编解码（`opus` crate 或 audiopus）、采集回放跨平台抽象（桌面 cpal）。
@@ -277,7 +279,7 @@ GET  /api/moments/{id}                -> 详情（含点赞列表、评论树）
 - A2：**可听验收**：两台机器（或两个进程+虚拟声卡）互通语音 ≥ 60 秒不断流，MOS 主观记录；同机回环比特率/丢包指标由脚本输出。
 - A3：对抗项：对离线用户发起呼叫 → 立即 Failed 而非挂起；通话中对方进程被杀 → 本端 10s 内进入 Failed。
 
-**WP-08b 视频（15 人日）**：在 08a 上加视频轨道（VP8/VP9 via str0m），采集用桌面摄像头抽象（`nokhwa` 或同等），分辨率/码率自适应（REMB/TWCC 基础档）。A1：5 测试（媒体协商含视频 m-line、带宽降级触发）；A2：可看验收：双机视频 ≥ 5 分钟，分辨率不低于 640x480@15fps（本机回环）。
+**WP-08b 视频（15 人日）**：在 08a 上加视频轨道（VP8/VP9 via LiveKit），采集用桌面摄像头抽象（`nokhwa` 或同等），分辨率/码率自适应（REMB/TWCC 基础档）。A1：5 测试（媒体协商含视频 m-line、带宽降级触发）；A2：可看验收：双机视频 ≥ 5 分钟，分辨率不低于 640x480@15fps（本机回环）。
 
 ---
 

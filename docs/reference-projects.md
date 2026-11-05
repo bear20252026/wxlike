@@ -86,7 +86,7 @@ fake-world 的核心卖点——AI 生成聊天记录+所见即所得编辑—�
 
 ### 7. 远期：音视频通话（学 box-im）
 
-box-im 用原生 WebRTC 摆脱收费 SDK。wxlike 对应：`str0m`/`webrtc-rs` 纯 Rust WebRTC 栈，或网关侧 liberlive/mediasoup。排期最后。
+box-im 用原生 WebRTC 摆脱收费 SDK。wxlike 对应：`str0m`/`webrtc-rs` 纯 Rust WebRTC 栈，或网关侧 liberlive/mediasoup。排期最后。（选型更新：通话引擎已由 ADR-25（2026-10-28）定为 LiveKit sidecar，2026-11-05 所有者确认执行；str0m 转冷备，本节表述以 ADR-25 为准。）
 
 ## 风险与边界备忘
 
@@ -124,6 +124,7 @@ TDLib 相关（未重新核实，公知事实）：TDLib 为 Boost 1.0 宽松许
    - 原计划：str0m + 自建 STUN/TURN。现在：**iroh 打洞 + 公共中继回退**，砍掉 TURN 基础设施建设，且 Apache/MIT 双许可
    - 附带能力：`iroh-blobs`（BLAKE3 内容寻址大文件传输）可作 WP-05 媒体传输的 P2P 通道；`iroh-gossip` 可作群消息广播备选
    - 信令仍走我们的 QUIC 长连接（`MsgBody::Custom{kind:"rtc-signal"}`）不变
+   - （再更新：ADR-25 已将通话媒体面改定 LiveKit sidecar，本条 iroh 打洞/中继方案不再用于通话媒体面；iroh-blobs 作 WP-05 媒体 P2P 文件通道的评估不受影响。）
 
 3. **移动端 FFI：UniFFI 路线确立（Mimir/TDLib 双重先例）**
    - Mimir 验证了 UniFFI → Kotlin/Swift 绑定的可行性；TDLib 本身就是"核心库+原生壳"模式的祖师爷（C++ 版）
