@@ -66,7 +66,7 @@
 | **ADR-22 推荐/搜索/发现三层分离（第七轮终版）** | **发现页**（展示层不持索引，community-service 聚合活跃度排序）· **search-service**（主动查询：Meilisearch/Tantivy，索引消息/群组/频道/社区/用户/话题，事件订阅更新）· **recommendation-service**（被动分发：消费行为事件流，双塔召回+Faiss、Wide&Deep 排序，产出推荐频道/视频/广告/好友） | 内容分发树（P3 搜索 / P6+ 推荐） |
 | **ADR-23 多租户预留（第七轮终版）** | 所有核心表带 `tenant_id`（默认 default），username 唯一索引为 (tenant_id, username)，ledger 分录 tenant_id 入分区键，鉴权中间件预留 tenant_id 提取——**当前不实现租户隔离逻辑**，是字段预留不是功能 | 全树（P3 建表时带上） |
 | **ADR-24 陌生人消息请求（第七轮终版）** | 非好友首条单聊进入 **message_requests 请求箱**：接受→正常会话，拒绝→屏蔽；"是否允许陌生人单聊"为产品配置。**流程必须在架构中存在，不可绕过关系层直入会话**（实证：现 mq_hub 入站无任何关系层拦截，是真新增） | relation-service（P3，与拉黑同批） |
-| **ADR-25 通话引擎换 LiveKit（2026-10-28，取代 ADR-21 的实现选择）** | 决策：媒体转发与房间状态交给 **LiveKit（sidecar 独立进程）**，wxlike 只做信令中继、token 签发、TURN 凭据与房间审计。**关闭服务端 Egress 自动录制**——录制只允许客户端侧进行，保住"服务端是瞎子"这条底线。`crates/rtc` 的 str0m SFU **转冷备不删**：同一时刻只允许一个引擎在线，冷备不产生第二份房间事实。E2EE 分端实现：Web/桌面用 Insertable Streams，iOS/Android/Flutter 用原生 SDK 自己的 E2EE 路径（原生不需要也拿不到 Insertable Streams），**密钥统一由 IM 的 Megolm 通道分发**。 | `rtc/src/compat.rs:19,61` 的 `ENGINE` 常量与 `NeedsGlobalAdr` 判定要改成"双引擎白名单 + 单一在线闸"；`platform/src/call.rs` 那 14 条路由保留为信令面；`rtc/src/turn.rs`、`turn_auth.rs` 改出 LiveKit 的 `apiKey:secret` JWT 形态；`crates/sfu`（1,602 行）降为冷备；四端 SDK 接入与跨端解密属**待验清单**，不在本机判绿 |
+| **ADR-25 通话引擎换 LiveKit（2026-10-28，取代 ADR-21 的实现选择）** | 决策：媒体转发与房间状态交给 **LiveKit（sidecar 独立进程）**，wxlike 只做信令中继、token 签发、TURN 凭据与房间审计。**关闭服务端 Egress 自动录制**——录制只允许客户端侧进行，保住"服务端是瞎子"这条底线。`crates/rtc` 的 str0m SFU **转冷备不删**：同一时刻只允许一个引擎在线，冷备不产生第二份房间事实。E2EE 分端实现：Web/桌面用 Insertable Streams，iOS/Android/Flutter 用原生 SDK 自己的 E2EE 路径（原生不需要也拿不到 Insertable Streams），**密钥统一由 IM 的 Megolm 通道分发**。（**2026-11-05 所有者确认执行**：通话引擎正式按本条切换，此前 wiki《开发顺序清单》与 #314 更正评论的「str0m 唯一获批引擎」口径自此失效；本条即该口径要求的全局 ADR。） | `rtc/src/compat.rs:19,61` 的 `ENGINE` 常量与 `NeedsGlobalAdr` 判定要改成"双引擎白名单 + 单一在线闸"；`platform/src/call.rs` 那 14 条路由保留为信令面；`rtc/src/turn.rs`、`turn_auth.rs` 改出 LiveKit 的 `apiKey:secret` JWT 形态；`crates/sfu`（1,602 行）降为冷备；四端 SDK 接入与跨端解密属**待验清单**，不在本机判绿 |
 | **ADR-26 PostgreSQL 只替换服务端存储，表意不变** | 决策：PG **只接管服务端那份 SQLite**（platform 与 features/* 的服务侧）；客户端（`client-native`、`ffi`、`ui/src-tauri`）继续用 rusqlite 做本地缓存——因此外部建议里"把 Cargo.toml 里的 rusqlite 删掉"这句**不按字面执行**。**不照 OpenIM 重设计表**：M000–M009 的表意、ADR-23 的 `tenant_id` 预留、幂等键与审计列已经编码了业务语义，PG 侧只做方言适配 + 补索引。迁移线沿用 `schema/registry/migrations.json`（next M010）。 | 现状 17 个 Cargo.toml 挂 rusqlite、65 个测试文件用内存 SQLite；sqlx 的编译期校验要 `sqlx prepare` 离线元数据 + CI 起 `postgres:16` service；顺序上排在 ADR-28 之后——先解锁，再换库 |
 | **ADR-27 E2EE 保持 vodozemac，只借 libsignal 的密钥分发流程** | 决策：端到端加密继续用 **vodozemac**（Olm 1:1 + Megolm 群，`crates/core/src/e2ee.rs:1` 已实装重放闸与 PreKey 容错），**不引入 libsignal / MLS 这第二套棘轮**。从 libsignal 只借"多设备流程"：每设备 `ProtocolAddress(user, device)`、每设备 PreKeyBundle 的上传与拉取、设备清单与吊销、群会话密钥经点对点通道分发。外部建议第一部分"引入 libsignal-client"与它自己卡片 3（"用 vodozemac 是正确决策"）矛盾，项目负责人已裁定取 vodozemac。 | 真缺的是**设备登记与多端分发**，不是加解密本体；prekey/设备表从 M010 起号；接口走现有 axum HTTP + QUIC envelope，**不引入 gRPC**（全仓无 tonic，`crates/mq/Cargo.toml:15,17` 的 redis/nats 都是 optional feature） |
 | **ADR-28 async 路径禁止持有同步连接锁** | 决策：`Arc<Mutex<Connection>>` 被 `async fn` handler 直接持有时会阻塞 tokio 工作线程——这是我们并发瓶颈的**真因**，换 PG 不会自动治好它（连接池同样会串行）。规则：DB 调用收进 `spawn_blocking`，或按域分片连接 + WAL；**新代码一律不得在 async 上下文里持同步锁**，由 clippy/评审兜住。 | 证据：`crates/platform/src/db.rs:16` 的 `inner: Arc<Mutex<Connection>>` 配 `crates/platform/src/friends.rs:408` 的 `async fn create_request` 里 `self.db().lock()`；排在 #314 之后、ADR-26（PG / #104）之前 |
@@ -90,7 +90,7 @@
 | 对象存储 | S3 兼容 | ⚠️ trait + LocalDirStore | compose 里 SeaweedFS 即用（P2） |
 | 认证 | JWT RS256（网关无状态） | ⚠️ DB session token（可即时吊销） | ADR-10：并存评估（P4） |
 | 支付账本 | cala-ledger（嵌入式复式记账+事件溯源）+ dtmrs Saga + obix outbox | ❌ wallet.rs 为演示级单式账本（有守恒断言） | ADR-12：真实渠道阶段迁移（P4） |
-| 音视频 | str0m（已选）/ rvoip | ✅ str0m + 状态机 + 回环验证 | UI 接入 + 真机（P2），房间制（P4） |
+| 音视频 | **LiveKit sidecar（ADR-25，2026-11-05 确认执行）** / str0m 冷备 | ✅ str0m + 状态机 + 回环验证（转冷备）；LiveKit 接入未开始 | 按 ADR-25 实施：sidecar 部署 + token/信令面 + 四端 SDK 接入与跨端解密验证（P2/P4） |
 | 直播媒体面（SFU） | Xiu（RTMP/RTSP/WebRTC/HTTP-FLV/HLS）或 mediasoup Rust crate（Simulcast/SVC） | ❌ 无 | ADR-13：P5 直播频道 |
 | 小程序运行时 | Rong（多引擎逻辑层）+ Wry/LingXia（视图）+ Wasmtime（沙箱）+ 自研 Bridge | ⚠️ container（Boa 宿主/wxhost 桥）+ dpage（DPG1 包格式）研究级雏形 | ADR-14：P5+ 独立轨道，见 miniprogram-blueprint.md |
 | 全文搜索 | Meilisearch（独立服务）或 Tantivy（嵌入式库，Rust 原生） | ❌ | 第六轮：读扩散下的服务端搜索必选（P3） |
@@ -186,7 +186,7 @@ CREATE TABLE group_member_log (
 ✅ 发布/好友圈读时判定/赞/评论树/软删/分页 · ❌ 视频号/24h 动态/可见范围细分（P5+）
 
 ### 5.6 音视频
-⚠️ 1:1 语音/视频（str0m 库+回环验证，缺 UI 接入与双机真机）· ❌ 群通话房间（ADR-7，P4）· ❌ 多人/屏幕共享/通话记录 · ⚠️ STUN 内置+TURN 接口
+⚠️ 1:1 语音/视频（str0m 库+回环验证，缺 UI 接入与双机真机；引擎已由 ADR-25 改定 LiveKit，str0m 转冷备）· ❌ 群通话房间（ADR-7，P4）· ❌ 多人/屏幕共享/通话记录 · ⚠️ STUN 内置+TURN 接口
 · ❌ **直播频道（ADR-13，P5：SFU + 弹幕复用读扩散 + 信令独立通道）** · ❌ RTMP ingest / OBS 推流（Xiu 覆盖）· ❌ 屏幕共享直播（Discord Go Live 形态）· ❌ 会议管控（静音/踢人/锁定/录制，P4 房间制）· ❌ 连麦 · ❌ 屏幕共享（桌面原生采集 + 移动端录屏权限经 Flutter 平台通道桥接）
 
 ### 5.7 支付 / 小程序
