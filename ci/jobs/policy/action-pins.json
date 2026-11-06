@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "resolved_at": "2026-10-24",
+  "resolved_at": "2026-11-06",
   "note": "Tags resolved through repos/<owner>/<repo>/git/ref/tags/<tag>. Update only together with the SHA and a reviewed reason.",
   "actions": {
     "actions/attest-build-provenance@v2": "96b4a1ef7235a096b17240c259729fdd70c83d45",
@@ -18,7 +18,8 @@
     "sigstore/cosign-installer@v3": "f713795cb21599bc4e5c4b58cbad1da852d7eeb9",
     "subosito/flutter-action@v2": "1a449444c387b1966244ae4d4f8c696479add0b2",
     "Swatinem/rust-cache@v2": "e9d7b9f1e587218970671bac74e5511ed9506e6a",
-    "taiki-e/install-action@v2": "1e29709c0ec63babbe8f266397a465f29a825f91"
+    "taiki-e/install-action@v2": "1e29709c0ec63babbe8f266397a465f29a825f91",
+    "aquasecurity/trivy-action@v0.36.0": "ed142fd0673e97e23eac54620cfb913e5ce36c25"
   },
   "npm_tools": {
     "@tauri-apps/cli": "2.9.0",

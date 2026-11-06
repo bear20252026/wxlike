@@ -26,10 +26,11 @@ jobs:
     name: cargo audit (RustSec)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      # 不再安装工具链：dtolnay/rust-toolchain 没有 tag，无法钉到不可变版本，而
+      # cargo audit 只需要 runner 自带的 stable。要用 RUSTUP_TOOLCHAIN 的话是另一个决定。
       # 预编译二进制；`cargo install cargo-audit` 要编译几分钟
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # taiki-e/install-action@v2
         with:
           tool: cargo-audit
       - name: audit
