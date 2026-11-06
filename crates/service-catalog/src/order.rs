@@ -598,7 +598,7 @@ impl OrderService {
             order.support_ticket = self
                 .ticket(actor, &order.order_id, "payment_declined")
                 .await;
-            self.persist(&order).await?;
+            self.persist(order).await?;
             return Err(ServiceError::new(Code::PaymentDeclined, "payment declined"));
         }
         if provider_state == ProviderOrderState::Fulfilled {
@@ -615,7 +615,7 @@ impl OrderService {
                 .ticket(actor, &order.order_id, "provider_pending")
                 .await;
         }
-        self.persist(&order).await?;
+        self.persist(order).await?;
         Ok(order.clone())
     }
 
