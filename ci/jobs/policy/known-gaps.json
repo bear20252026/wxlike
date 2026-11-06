@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-05",
+  "updated_at": "2026-11-06",
   "gaps": [
     {
       "id": "G01-03-WASM",
@@ -71,6 +71,16 @@
       "blocks_release": false,
       "evidence": "The CI runner has no licensed TURN/SFU endpoint; weak-network RTC needs the external provider stage.",
       "close_when": "The provider stage records reconnect/jitter/loss evidence against a real TURN/SFU."
+    },
+    {
+      "id": "OPS-IMAGE-SCAN-GATE",
+      "owner": "G16",
+      "task": "#257 condition 4",
+      "status": "open",
+      "blocks_release": false,
+      "check": "image",
+      "evidence": "Trivy runs in the image job and publishes trivy-server-image.json + a job summary, but summarize_image_scan.py is called with --fail-on none: the base-image CVE baseline has never been read, and the image job is one of the 22 required contexts, so switching the gate on blind would red-line every PR touching Rust or CI.",
+      "close_when": "Read the first published report, fix or accept every CRITICAL/HIGH finding, then change --fail-on none to --fail-on critical-high in ci/jobs/server/job.yml and keep the image job green."
     }
   ],
   "note": "blocks_release is a policy switch, not a work tracker: every gap below stays status=open with owner+task. Per the owner decision on 2026-11-05 only PAYMENT-CALLBACK-REPLAY still blocks publication."
