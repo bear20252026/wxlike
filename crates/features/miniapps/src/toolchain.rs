@@ -11,8 +11,9 @@ use std::collections::BTreeMap;
 const HTTP_METHOD_NOT_ALLOWED: u16 = 405;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,9 @@ pub const DEFAULT_HOST_VERSION: &str = "0.1.0";
 pub const DEFAULT_TEMPLATE: &str = "mini.template.json";
 pub const DEV_BIND: &str = "127.0.0.1";
 const MAX_REQUEST_LINE: usize = 8 * 1024;
+const MAX_REQUEST_HEADERS: usize = 64;
+/// Bound on waiting for the rest of a request head split across packets.
+const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_millis(250);
 const SEED_LEN: usize = 32;
 
 /// Root-pinned trust input for `mini inspect --trust`. It contains only
@@ -317,12 +321,15 @@ impl DevServer {
     }
 
     fn respond(&self, stream: &mut TcpStream) -> Result<()> {
-        let reader = BufReader::new(stream.try_clone()?);
+        let mut reader = BufReader::new(stream.try_clone()?);
         let line = &mut String::new();
-        reader.take(MAX_REQUEST_LINE as u64 + 1).read_line(line)?;
+        (&mut reader)
+            .take(MAX_REQUEST_LINE as u64 + 1)
+            .read_line(line)?;
         if !line.ends_with('\n') {
             return reply(stream, 400, "text/plain", b"bad request\n", false);
         }
+        drain_request_headers(&mut reader, stream)?;
         let mut parts = line.trim_end().split(' ');
         let method = parts.next().unwrap_or_default();
         let target = parts.next().unwrap_or_default();
@@ -348,6 +355,36 @@ impl DevServer {
     }
 }
 
+/// Consume the rest of the request head so nothing stays in the receive queue.
+///
+/// A client `write` can be delivered as several segments, so the first
+/// `read_line` may stop at the request line and leave the remaining header
+/// bytes queued in the kernel. Closing a socket that still holds unread
+/// receive data makes Windows abort the connection with RST, which discards the
+/// response about to be written - hence reading the head to its blank line
+/// before replying. The timeout keeps a client that never finishes the head
+/// from stalling the accept loop: on expiry the request is answered anyway.
+fn drain_request_headers(reader: &mut BufReader<TcpStream>, socket: &TcpStream) -> Result<()> {
+    socket.set_read_timeout(Some(REQUEST_HEAD_TIMEOUT))?;
+    for _ in 0..MAX_REQUEST_HEADERS {
+        let mut line = String::new();
+        match (&mut *reader)
+            .take(MAX_REQUEST_LINE as u64 + 1)
+            .read_line(&mut line)
+        {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.trim_end().is_empty() => break,
+            Ok(_) => {}
+        }
+    }
+    socket.set_read_timeout(None)?;
+    Ok(())
+}
+fn finish_reply(stream: &mut TcpStream) -> Result<()> {
+    stream.shutdown(Shutdown::Write)?;
+    Ok(())
+}
+
 fn reply(
     stream: &mut TcpStream,
     status: u16,
@@ -367,7 +404,7 @@ fn reply(
         stream.write_all(body)?;
     }
     stream.flush()?;
-    Ok(())
+    finish_reply(stream)
 }
 
 fn reason(status: u16) -> &'static str {
