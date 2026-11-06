@@ -159,6 +159,42 @@ fn dev_serve_only_serves_sealed_files() {
     assert!(bad.starts_with("HTTP/1.1 404 Not Found"));
 }
 
+#[test]
+fn dev_serve_drains_an_oversized_request_head_before_closing() {
+    // Regression for the Windows-only ConnectionReset (10054): respond() used to
+    // reply right after the request line, so bytes of a bigger head stayed in
+    // the kernel receive queue while the socket was closed - Windows then sends
+    // RST instead of FIN and the response is lost. The padding here is larger
+    // than BufReader's 8 KiB window, so the leftover is guaranteed: under the
+    // old code every round fails, not just some of them.
+    let server = DevServer::bind(&examples_dir().join(EXAMPLE), None, HOST, 0).unwrap();
+    let entry = server.manifest().entry.clone();
+    let url = server.url().to_string();
+    let padding = "x".repeat(64 * 1024);
+    for round in 0..8usize {
+        let mut client = std::net::TcpStream::connect(url.trim_start_matches("http://")).unwrap();
+        client
+            .write_all(
+                format!(
+                    "GET /{entry} HTTP/1.1
+X-Pad-{round}: {padding}
+
+"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        server.serve_once().unwrap();
+        let mut body = String::new();
+        client.read_to_string(&mut body).unwrap();
+        assert!(
+            body.starts_with("HTTP/1.1 200 OK"),
+            "round {round}: {}",
+            &body[..60.min(body.len())]
+        );
+    }
+}
+
 fn fetch(server: &DevServer, path: String) -> String {
     let url = server.url().to_string();
     let body = std::thread::scope(|scope| {
