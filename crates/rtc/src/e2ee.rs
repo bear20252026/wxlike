@@ -320,6 +320,18 @@ impl MediaKeyRing {
     }
 
     fn sender_cipher(&self, sender: &str) -> Result<ChaCha20Poly1305, E2eeError> {
+        let mut key = self.sender_key(sender)?;
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| E2eeError::BadFrame)?;
+        // 派生出的子密钥用完即清零。
+        key.fill(0);
+        Ok(cipher)
+    }
+
+    /// 每 `(epoch, sender)` 一把子密钥（HKDF-SHA256，info 带 call/epoch/sender）。
+    fn sender_key(&self, sender: &str) -> Result<[u8; KEY_LEN], E2eeError> {
+        if !self.members.contains(sender) {
+            return Err(E2eeError::NotMember(sender.to_string()));
+        }
         let salt = self.call.as_bytes();
         let info = format!("wxlike-media-e2ee-v1|{}|{}", self.epoch, sender);
         let mut key = [0u8; KEY_LEN];
@@ -328,9 +340,54 @@ impl MediaKeyRing {
             info.as_bytes(),
             &mut key,
         );
-        let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| E2eeError::BadFrame)?;
+        Ok(key)
+    }
+
+    // ---------------- ADR-25：sidecar 只拿指纹，不拿密钥 ----------------
+
+    /// 当前代次群密钥的指纹（SHA-256，域分隔）。这就是要塞进 LiveKit JWT
+    /// `sha256` claim 的值：sidecar 能校验"客户端手里的密钥是不是这一代"，
+    /// 但**拿不到**密钥本身——密钥只走 IM 的 Megolm 通道（G03）。
+    pub fn fingerprint(&self) -> String {
+        let mut hasher = <Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, b"wxlike-e2ee-keyfinger-v1|");
+        sha2::Digest::update(&mut hasher, self.call.as_bytes());
+        sha2::Digest::update(&mut hasher, b"|");
+        sha2::Digest::update(&mut hasher, self.epoch.to_be_bytes());
+        sha2::Digest::update(&mut hasher, b"|");
+        sha2::Digest::update(&mut hasher, self.secret.0);
+        hex::encode(<Sha256 as sha2::Digest>::finalize(hasher).as_slice())
+    }
+
+    /// 某个发送者子密钥的指纹。非成员没有指纹（也不该有）。
+    pub fn sender_fingerprint(&self, sender: &str) -> Result<String, E2eeError> {
+        let mut key = self.sender_key(sender)?;
+        let mut hasher = <Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, b"wxlike-e2ee-senderfinger-v1|");
+        sha2::Digest::update(&mut hasher, self.call.as_bytes());
+        sha2::Digest::update(&mut hasher, b"|");
+        sha2::Digest::update(&mut hasher, self.epoch.to_be_bytes());
+        sha2::Digest::update(&mut hasher, b"|");
+        sha2::Digest::update(&mut hasher, sender.as_bytes());
+        sha2::Digest::update(&mut hasher, key);
         key.fill(0);
-        Ok(cipher)
+        Ok(hex::encode(
+            <Sha256 as sha2::Digest>::finalize(hasher).as_slice(),
+        ))
+    }
+
+    /// 可以安全交给 sidecar / 日志 / 诊断的部分：零密钥字节。
+    pub fn sidecar_view(&self) -> SidecarKeyView {
+        SidecarKeyView {
+            call: self.call.clone(),
+            epoch: self.epoch,
+            members: self.members.iter().cloned().collect(),
+            fingerprints: self
+                .members
+                .iter()
+                .filter_map(|m| self.sender_fingerprint(m).ok())
+                .collect(),
+        }
     }
 
     fn nonce(epoch: u64, seq: u64) -> [u8; NONCE_LEN] {
@@ -339,6 +396,16 @@ impl MediaKeyRing {
         nonce[4..].copy_from_slice(&seq.to_be_bytes());
         nonce
     }
+}
+
+/// [`MediaKeyRing::sidecar_view`] 的载荷。**不含**任何密钥材料，可以进日志、
+/// 可以发给 sidecar、可以被审计。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SidecarKeyView {
+    pub call: String,
+    pub epoch: u64,
+    pub members: Vec<String>,
+    pub fingerprints: Vec<String>,
 }
 
 #[cfg(test)]
@@ -481,6 +548,50 @@ mod tests {
         assert_eq!(
             r.install_rotation(2, secret(1), Vec::<String>::new()),
             Err(E2eeError::EmptyRoom)
+        );
+    }
+
+    /// ADR-25：sidecar 只拿指纹。指纹可校验代次，但反推不出密钥。
+    #[test]
+    fn sidecar_gets_fingerprints_never_keys() {
+        let r = ring();
+        let fp = r.fingerprint();
+        assert_eq!(fp.len(), 64, "SHA-256 十六进制");
+        assert_eq!(r.fingerprint(), fp, "同一密钥同一代次：指纹稳定");
+        let other = MediaKeyRing::new(
+            "call-1",
+            1,
+            secret(8),
+            ["alice".to_string(), "bob".to_string()],
+        )
+        .unwrap();
+        assert_ne!(other.fingerprint(), fp, "换密钥必须换指纹");
+
+        let alice_fp = r.sender_fingerprint("alice").unwrap();
+        assert_ne!(alice_fp, r.sender_fingerprint("bob").unwrap());
+        assert_ne!(alice_fp, fp);
+        assert_eq!(
+            r.sender_fingerprint("mallory"),
+            Err(E2eeError::NotMember("mallory".into()))
+        );
+
+        // 交给 sidecar 的视图里没有任何密钥字节。
+        let view = r.sidecar_view();
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("0707"), "{json} 泄漏了群密钥");
+        assert!(!json.contains(&fp), "视图里不该再出现群密钥指纹");
+        assert_eq!(view.members, vec!["alice".to_string(), "bob".to_string()]);
+        assert_eq!(view.fingerprints.len(), 2);
+        assert_eq!(view.epoch, 1);
+        // 轮换后指纹整代改变（sidecar 因此能拒绝旧代次的连接声明）。
+        let mut rotated = ring();
+        rotated
+            .install_rotation(2, secret(9), ["alice".to_string(), "bob".to_string()])
+            .unwrap();
+        assert_ne!(rotated.fingerprint(), fp);
+        assert_ne!(
+            rotated.sender_fingerprint("alice").unwrap(),
+            r.sender_fingerprint("alice").unwrap()
         );
     }
 }
