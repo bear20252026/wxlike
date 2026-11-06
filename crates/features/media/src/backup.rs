@@ -23,6 +23,10 @@
 //! [`MediaService::rollback_backup_import`] then undoes the landing (restore
 //! refs/files dropped, objects freed only when nothing else references them,
 //! per-entry cursors reset) so the same package can be re-imported cleanly.
+//! Bytes that a crash published *before* the cursor of their own entry flipped
+//! are freed by the same rollback — that is what makes "back to the pre-restore
+//! state" literal, and they are only freed when no `media_object` row, ref,
+//! file or share claims the content address.
 //! A completed restore is never rolled back: undoing history that the user
 //! already accepted would be data loss, not error recovery.
 //!
@@ -206,8 +210,11 @@ pub struct BackupPlan {
 pub struct RollbackOutcome {
     pub backup_id: String,
     pub state: String,
+    /// Landed entries whose `imported` cursor was reset back to 0.
     pub reset_entries: u32,
-    /// Blobs freed because the restore was their last reference.
+    /// Blobs freed because the restore was their last reference — both the
+    /// cursor-advanced ones (ref-counted GC) and the crash-window leftovers of
+    /// entries whose cursor never advanced (see [`STATE_FAILED`] landing).
     pub removed_objects: u32,
     /// Content kept because something outside this restore still needs it
     /// (deduplicated against a pre-existing copy).
@@ -858,6 +865,14 @@ impl MediaService {
     /// synthetic file rows and refs this import created, frees objects only
     /// when nothing else references them (deduplicated content survives), and
     /// resets the per-entry cursors so a re-import starts from scratch.
+    ///
+    /// "Back to the pre-restore state" also covers the crash window between
+    /// *publishing a blob* and *flipping its cursor*: those bytes exist on the
+    /// store while no `media_object` row and no cursor claim them, so leaving
+    /// them behind would be an unreferenced leak the next import cannot see.
+    /// They are swept here — but only when nothing outside this restore
+    /// references the content, so a local original with the same address
+    /// survives.
     pub fn rollback_backup_import(
         &self,
         user_id: &str,
@@ -866,7 +881,7 @@ impl MediaService {
         if backup_id.is_empty() || backup_id.len() > ids::MAX_NAME_CHARS {
             return Err(MediaError::bad("backup id is out of range"));
         }
-        let (affected, removed_files, reset_entries) =
+        let (affected, orphaned, removed_files, reset_entries) =
             self.rollback_restore_landing(user_id, backup_id)?;
         let mut outcome = RollbackOutcome {
             backup_id: backup_id.to_string(),
@@ -882,7 +897,21 @@ impl MediaService {
                 outcome.kept_objects += 1;
             }
         }
+        outcome.removed_objects += self.sweep_unclaimed_landing(&orphaned)?;
         Ok(outcome)
+    }
+
+    /// Physical half of the crash-window sweep, outside the transaction (like
+    /// [`Self::gc_object`]): free bytes that were published but never cursored
+    /// and that the metadata plane proved unclaimed.
+    fn sweep_unclaimed_landing(&self, object_ids: &[String]) -> Result<u32> {
+        let mut freed = 0u32;
+        for object_id in object_ids {
+            if self.store.delete(object_id)? {
+                freed += 1;
+            }
+        }
+        Ok(freed)
     }
 
     /// Transactional half of [`Self::rollback_backup_import`]: claim the row
@@ -894,7 +923,7 @@ impl MediaService {
         &self,
         user_id: &str,
         backup_id: &str,
-    ) -> Result<(Vec<String>, u32, u32)> {
+    ) -> Result<(Vec<String>, Vec<String>, u32, u32)> {
         let mut c = self.db.lock();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row: Option<(String, String)> = tx
@@ -924,7 +953,7 @@ impl MediaService {
                 "backup {state} is not rollback-able (resume it instead)"
             )));
         }
-        let (landed, removed_files) = undo_landed_entries(&tx, user_id, backup_id)?;
+        let (landed, orphaned, removed_files) = undo_landed_entries(&tx, user_id, backup_id)?;
         tx.execute(
             "UPDATE media_backup SET state = ?1, updated_at = ?2
              WHERE backup_id = ?3 AND state = ?4",
@@ -932,7 +961,7 @@ impl MediaService {
         )?;
         tx.commit()?;
         let reset_entries = landed.len() as u32;
-        Ok((landed, removed_files, reset_entries))
+        Ok((landed, orphaned, removed_files, reset_entries))
     }
 
     /// Restore keys through the G02 escrow port. The package never contains key
@@ -1212,12 +1241,14 @@ fn restored_object_conn(
 /// Undo the per-entry metadata half of a rollback: for every landed entry,
 /// drop the synthetic restore ref + file row and reset the `imported` cursor.
 /// Runs inside the caller's transaction. Returns the object ids touched (for
-/// the caller's ref-counted GC) and how many file rows were removed.
+/// the caller's ref-counted GC), the ids of entries whose cursor never
+/// advanced but whose bytes may have survived a crash (checked unclaimed here,
+/// freed after commit) and how many file rows were removed.
 fn undo_landed_entries(
     tx: &rusqlite::Connection,
     user_id: &str,
     backup_id: &str,
-) -> Result<(Vec<String>, u32)> {
+) -> Result<(Vec<String>, Vec<String>, u32)> {
     let landed: Vec<(i64, String)> = {
         let mut stmt = tx.prepare(
             "SELECT entry_idx, object_id FROM media_backup_entry
@@ -1241,10 +1272,66 @@ fn undo_landed_entries(
             params![backup_id, index],
         )?;
     }
+    let orphaned = unclaimed_uncursored_entries(tx, backup_id, now)?;
     Ok((
         landed.into_iter().map(|(_, id)| id).collect(),
+        orphaned,
         removed_files,
     ))
+}
+
+/// Entries of this backup whose import cursor never moved. A crash between the
+/// store publish and the cursor transaction leaves their bytes on the platter
+/// with nothing in the metadata plane pointing at them — but only ids that are
+/// genuinely unclaimed may be freed, so content the local library already owns
+/// (a dedup hit, another user's object, a still-live ref or share) is left
+/// alone. Decided inside the write transaction, next to the cursor reset.
+fn unclaimed_uncursored_entries(
+    tx: &rusqlite::Connection,
+    backup_id: &str,
+    now: i64,
+) -> Result<Vec<String>> {
+    let pending: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT object_id FROM media_backup_entry
+             WHERE backup_id = ?1 AND imported = 0 ORDER BY entry_idx",
+        )?;
+        let rows = stmt.query_map(params![backup_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let mut orphaned = Vec::new();
+    for object_id in pending {
+        if object_is_unclaimed(tx, &object_id, now)? {
+            orphaned.push(object_id);
+        }
+    }
+    Ok(orphaned)
+}
+
+/// Nothing — not this restore, not the rest of the library — owns this content
+/// address: no `media_object` row (live or soft-deleted), no retention ref, no
+/// file row, no unexpired share.
+fn object_is_unclaimed(c: &rusqlite::Connection, object_id: &str, now: i64) -> Result<bool> {
+    if object_by_id_conn(c, object_id)?.is_some() {
+        return Ok(false);
+    }
+    let live_refs: i64 = c.query_row(
+        "SELECT COUNT(*) FROM media_ref WHERE object_id = ?1 AND deleted_at IS NULL",
+        params![object_id],
+        |row| row.get(0),
+    )?;
+    let live_files: i64 = c.query_row(
+        "SELECT COUNT(*) FROM media_file WHERE object_id = ?1",
+        params![object_id],
+        |row| row.get(0),
+    )?;
+    let live_shares: i64 = c.query_row(
+        "SELECT COUNT(*) FROM media_share
+         WHERE object_id = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+        params![object_id, now],
+        |row| row.get(0),
+    )?;
+    Ok(live_refs + live_files + live_shares == 0)
 }
 
 fn read_header(file: &mut std::fs::File, hasher: &mut Sha256) -> Result<BackupManifest> {

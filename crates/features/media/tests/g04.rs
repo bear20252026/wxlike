@@ -571,6 +571,8 @@ struct ChatFixture {
     /// can only be exercised against an import that really fails halfway —
     /// this is the vendor-fault fixture the card explicitly allows.
     fail: std::sync::atomic::AtomicBool,
+    /// 聊天记录游标被交接的次数；落盘失败时必须仍是 0。
+    import_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl ChatFixture {
@@ -580,7 +582,12 @@ impl ChatFixture {
             imported: Mutex::new(Vec::new()),
             report,
             fail: std::sync::atomic::AtomicBool::new(false),
+            import_calls: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    fn calls(&self) -> usize {
+        self.import_calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -595,6 +602,8 @@ impl ChatSnapshotPort for ChatFixture {
         _device_id: &str,
         messages: &[ChatSnapshotMessage],
     ) -> Result<ChatImportReport> {
+        self.import_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(MediaError::Unsupported("snapshot port is down".into()));
         }
@@ -1197,4 +1206,472 @@ fn concurrent_imports_of_one_package_converge() {
     for item in &page.items {
         assert!(target.authorize_read("u1", &item.object_id).is_ok());
     }
+}
+
+/// 磁盘故障注入（#122「先落盘再切游标」的证伪面）：
+/// `fail_put_at = N` 让第 N 次 `put_file` 失败；`land_then_error` 表示失败
+/// 发生在字节已经写完并 rename 到位之后，即「落盘中途断电」那一格。
+/// 其余方法一律原样委托，保证除注入点外行为不变。
+#[derive(Default)]
+struct Faults {
+    puts: std::sync::atomic::AtomicUsize,
+    fail_put_at: std::sync::atomic::AtomicUsize,
+    land_then_error: std::sync::atomic::AtomicBool,
+}
+
+impl Faults {
+    /// 让「下一次」`put_file` 失败（计数器已含此前的上传落盘）。
+    fn fail_next_put(&self, land_then_error: bool) {
+        let done = self.puts.load(std::sync::atomic::Ordering::SeqCst);
+        self.fail_at(done + 1, land_then_error);
+    }
+
+    /// 让第 nth 次 `put_file` 失败（1 起）。
+    fn fail_at(&self, nth: usize, land_then_error: bool) {
+        self.fail_put_at
+            .store(nth, std::sync::atomic::Ordering::SeqCst);
+        self.land_then_error
+            .store(land_then_error, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn heal(&self) {
+        self.fail_put_at
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct FaultStore {
+    inner: LocalObjectStore,
+    faults: Arc<Faults>,
+}
+
+impl ObjectStore for FaultStore {
+    fn put_file(&self, object_id: &str, source: &Path) -> Result<u64> {
+        let nth = self
+            .faults
+            .puts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if self
+            .faults
+            .fail_put_at
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == nth
+        {
+            if self
+                .faults
+                .land_then_error
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                // 字节真的落盘了，只是"落盘成功"这个回执没跑回来。
+                self.inner.put_file(object_id, source)?;
+            }
+            return Err(MediaError::Io(std::io::Error::other(
+                "injected disk failure",
+            )));
+        }
+        self.inner.put_file(object_id, source)
+    }
+
+    fn put_bytes(&self, object_id: &str, bytes: &[u8]) -> Result<u64> {
+        self.inner.put_bytes(object_id, bytes)
+    }
+
+    fn open(&self, object_id: &str) -> Result<Option<std::fs::File>> {
+        self.inner.open(object_id)
+    }
+
+    fn read_range(&self, object_id: &str, start: u64, len: usize) -> Result<Option<Vec<u8>>> {
+        self.inner.read_range(object_id, start, len)
+    }
+
+    fn size(&self, object_id: &str) -> Result<Option<u64>> {
+        self.inner.size(object_id)
+    }
+
+    fn delete(&self, object_id: &str) -> Result<bool> {
+        self.inner.delete(object_id)
+    }
+
+    fn upload_path(&self, upload_id: &str) -> std::path::PathBuf {
+        self.inner.upload_path(upload_id)
+    }
+
+    fn work_path(&self, job_id: &str) -> std::path::PathBuf {
+        self.inner.work_path(job_id)
+    }
+
+    fn cache_path(&self, key: &str) -> std::path::PathBuf {
+        self.inner.cache_path(key)
+    }
+}
+
+/// 盘上库 + 故障存储：游标是否前进必须由测试另开一条连接去查，
+/// 不能只听被测代码自己报告。
+fn faulty_service_at(root: &Path, faults: Arc<Faults>) -> MediaService {
+    let objects = root.join("objects");
+    let store = Arc::new(FaultStore {
+        inner: LocalObjectStore::new(&objects).unwrap(),
+        faults,
+    });
+    let db = root.join("media.db");
+    MediaService::open(
+        MediaConfig::new(&objects),
+        db.to_str(),
+        Arc::new(Port::default()),
+    )
+    .unwrap()
+    .with_store(store)
+}
+
+/// 恢复现场快照：对象目录里到底有哪些字节，加上四张账表的行数与逐条游标。
+/// 「回到恢复前状态」只有能被这份快照判定才算数。
+#[derive(Debug)]
+struct Scene {
+    blobs: Vec<(String, u64)>,
+    objects: i64,
+    live_refs: i64,
+    files: i64,
+    cursors: Vec<(i64, i64, String)>,
+    state: String,
+}
+
+fn scene(root: &Path) -> Scene {
+    let db = root.join("media.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.busy_timeout(Duration::from_secs(10)).unwrap();
+    let base = root.join("objects");
+    let mut blobs = Vec::new();
+    if let Ok(shards) = std::fs::read_dir(&base) {
+        for shard in shards.flatten() {
+            let Ok(files) = std::fs::read_dir(shard.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let name = file.file_name().to_string_lossy().to_string();
+                if name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+                    let bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+                    blobs.push((
+                        format!("{}/{}", shard.file_name().to_string_lossy(), name),
+                        bytes,
+                    ));
+                }
+            }
+        }
+    }
+    blobs.sort();
+    let objects: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media_object", [], |row| row.get(0))
+        .unwrap();
+    let live_refs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM media_ref WHERE deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let files: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media_file", [], |row| row.get(0))
+        .unwrap();
+    let cursors = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT entry_idx, imported, object_id FROM media_backup_entry ORDER BY entry_idx",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        rows.collect::<std::result::Result<_, _>>().unwrap()
+    };
+    let state = conn
+        .query_row(
+            "SELECT state FROM media_backup ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    Scene {
+        blobs,
+        objects,
+        live_refs,
+        files,
+        cursors,
+        state,
+    }
+}
+
+fn two_entry_package(source_dir: &Path) -> (String, std::path::PathBuf, Vec<String>) {
+    let source_chat = Arc::new(ChatFixture::new(
+        chat_messages(),
+        ChatImportReport::default(),
+    ));
+    let source = service_at(source_dir).with_chat_port(source_chat);
+    let first = upload(
+        &source,
+        "u1",
+        "a.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"the first payload lands",
+    );
+    let second = upload(
+        &source,
+        "u1",
+        "b.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"the second payload dies",
+    );
+    let summary = source
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    let package = source.backup_package("u1", &summary.backup_id).unwrap();
+    (
+        summary.backup_id,
+        package,
+        vec![first.object_id, second.object_id],
+    )
+}
+
+/// (a) 落盘阶段真的失败（磁盘报错，一条字节都没写进去）时：
+/// 游标绝不能跑到字节前面，聊天记录游标一次都不许被交接，
+/// 状态必须是可回滚的 `failed`；盘修好后重跑 = 续跑而不是重导。
+#[test]
+fn disk_failure_while_landing_keeps_every_cursor_behind_the_bytes() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let (backup_id, package, ids) = two_entry_package(source_dir.path());
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let faults = Arc::new(Faults::default());
+    // 第二条落盘时报错：第一条正常落盘，落盘半途断掉。
+    faults.fail_at(2, false);
+    let target =
+        faulty_service_at(target_dir.path(), Arc::clone(&faults)).with_chat_port(chat.clone());
+
+    let err = target
+        .import_backup("u1", "device-b", &package)
+        .unwrap_err();
+    assert!(
+        matches!(err, MediaError::Io(_)),
+        "磁盘故障必须如实报存储错误: {err:?}"
+    );
+
+    let after = scene(target_dir.path());
+    assert_eq!(after.state, "failed", "落盘失败 = 可回滚的 failed");
+    assert_eq!(after.blobs.len(), 1, "只落了 1 个 blob: {after:?}");
+    // 核心不变式：imported=1 的条目，字节必须已经在盘上；反之亦然。
+    let landed = after
+        .cursors
+        .iter()
+        .filter(|(_, imported, _)| *imported == 1)
+        .collect::<Vec<_>>();
+    assert_eq!(landed.len(), 1, "恰好一条游标前进: {after:?}");
+    for (_, imported, object_id) in &after.cursors {
+        let present = after
+            .blobs
+            .iter()
+            .any(|(path, _)| path.ends_with(object_id.as_str()));
+        assert_eq!(
+            *imported == 1,
+            present,
+            "游标(imported={imported}) 必须与盘上字节一致: {object_id}"
+        );
+        if *imported == 1 {
+            assert!(target.authorize_read("u1", object_id).is_ok());
+        } else {
+            assert!(matches!(
+                target.authorize_read("u1", object_id),
+                Err(MediaError::NotFound)
+            ));
+        }
+    }
+    // 游标没走完 = 聊天真相一次都没交接（不许半途切游标）。
+    assert_eq!(chat.calls(), 0, "落盘失败时聊天记录游标不得前进");
+    assert_eq!(after.files, 1, "落了盘的条目才有文件行: {after:?}");
+
+    // 磁盘修好 → 续跑：已游标条目 skip，未落盘条目补导，聊天只交接一次。
+    faults.heal();
+    let rerun = target.import_backup("u1", "device-b", &package).unwrap();
+    assert_eq!(rerun.backup_id, backup_id);
+    assert_eq!((rerun.skipped, rerun.imported), (1, 1));
+    assert_eq!(rerun.state, "completed");
+    assert_eq!(chat.calls(), 1);
+    assert_eq!(chat.imported.lock().unwrap().len(), 2);
+    let after = scene(target_dir.path());
+    assert_eq!(after.blobs.len(), 2);
+    assert!(after.cursors.iter().all(|(_, imported, _)| *imported == 1));
+    assert!(ids.iter().all(|id| target.authorize_read("u1", id).is_ok()));
+}
+
+/// (b) 「落盘后、切游标前」断电那一格：字节已 rename 到位但回执丢了。
+/// 游标必须仍是 0（账实不一致时以实为准，宁可重落），聊天真相不许交接；
+/// 回滚必须把这份孤儿字节清掉，让现场逐项回到恢复前 —— 这才是「能回到恢复前」。
+#[test]
+fn crash_after_publish_before_cursor_is_rerolled_back_to_the_pre_restore_scene() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let (backup_id, package, ids) = two_entry_package(source_dir.path());
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let faults = Arc::new(Faults::default());
+    let target =
+        faulty_service_at(target_dir.path(), Arc::clone(&faults)).with_chat_port(chat.clone());
+    let before = scene(target_dir.path());
+    assert!(before.blobs.is_empty() && before.objects == 0 && before.files == 0);
+
+    // 第一条落盘：字节写完、rename 到位，然后断电（回执失败）。
+    faults.fail_next_put(true);
+    let err = target
+        .import_backup("u1", "device-b", &package)
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Io(_)), "{err:?}");
+
+    let crashed = scene(target_dir.path());
+    assert_eq!(crashed.state, "failed");
+    assert_eq!(crashed.blobs.len(), 1, "孤儿字节确实在盘上");
+    assert!(
+        crashed
+            .cursors
+            .iter()
+            .all(|(_, imported, _)| *imported == 0),
+        "落盘中途断电不得让任何游标前进: {crashed:?}"
+    );
+    assert_eq!(crashed.objects, 0, "元数据事务没跑: {crashed:?}");
+    assert_eq!(crashed.files, 0);
+    assert_eq!(chat.calls(), 0, "游标没落齐 = 聊天真相不许交接");
+
+    let outcome = target.rollback_backup_import("u1", &backup_id).unwrap();
+    assert_eq!(outcome.state, "rolled_back");
+    assert_eq!(outcome.reset_entries, 0, "没有游标可复位");
+    assert_eq!(outcome.removed_objects, 1, "孤儿字节必须被回收");
+    assert_eq!(outcome.kept_objects, 0);
+    assert_eq!(outcome.removed_files, 0);
+
+    // 逐项回到恢复前：字节、对象账、引用、文件行、游标全部复原。
+    let after = scene(target_dir.path());
+    assert_eq!(after.blobs, before.blobs, "回滚后盘上一字节不剩");
+    assert_eq!(after.objects, before.objects);
+    assert_eq!(after.live_refs, before.live_refs);
+    assert_eq!(after.files, before.files);
+    assert!(after.cursors.iter().all(|(_, imported, _)| *imported == 0));
+    assert_eq!(after.state, "rolled_back");
+    for id in &ids {
+        assert!(matches!(
+            target.authorize_read("u1", id),
+            Err(MediaError::NotFound)
+        ));
+    }
+
+    // 回滚不是终点：修好磁盘后必须能从零导入成功。
+    faults.heal();
+    let rerun = target.import_backup("u1", "device-b", &package).unwrap();
+    assert_eq!(rerun.imported, 2, "回滚后重跑必须从零导入");
+    assert_eq!(rerun.skipped, 0);
+    assert_eq!(rerun.state, "completed");
+    assert_eq!(chat.calls(), 1);
+    let final_scene = scene(target_dir.path());
+    assert_eq!(final_scene.blobs.len(), 2);
+    assert_eq!(final_scene.files, 2);
+    assert!(final_scene
+        .cursors
+        .iter()
+        .all(|(_, imported, _)| *imported == 1));
+    for id in &ids {
+        assert!(target.authorize_read("u1", id).is_ok());
+    }
+}
+
+/// 回滚不许误伤本地已有的同内容原件：崩溃残留的清扫只针对「账上无人引用」的
+/// 地址，用户自己上传过的原件（有 `media_object` 行 + 引用 + 文件行）必须
+/// 原样保留，即使它和孤儿字节同在一次失败的导入里。
+#[test]
+fn rollback_of_a_crashed_landing_keeps_a_local_original_of_the_same_content() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let source = service_at(source_dir.path()).with_chat_port(source_chat);
+    let shared = upload(
+        &source,
+        "u1",
+        "shared.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"content the target already owns",
+    );
+    let unique = upload(
+        &source,
+        "u1",
+        "unique.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"content only this package carries",
+    );
+    let summary = source
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    let package = source.backup_package("u1", &summary.backup_id).unwrap();
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let faults = Arc::new(Faults::default());
+    let target =
+        faulty_service_at(target_dir.path(), Arc::clone(&faults)).with_chat_port(chat.clone());
+    let local = upload(
+        &target,
+        "u1",
+        "local.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"content the target already owns",
+    );
+    assert_eq!(local.object_id, shared.object_id);
+    let objects = target_dir.path().join("objects");
+
+    // dedup 命中不发 put_file，所以注入落在唯一内容那条上：字节到位、回执丢失。
+    faults.fail_next_put(true);
+    let err = target
+        .import_backup("u1", "device-b", &package)
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Io(_)), "{err:?}");
+    assert_eq!(chat.calls(), 0, "落盘没跑完就不许切聊天游标");
+
+    let outcome = target
+        .rollback_backup_import("u1", &summary.backup_id)
+        .unwrap();
+    assert_eq!(outcome.state, "rolled_back");
+    assert_eq!(outcome.removed_objects, 1, "只该回收那份无人引用的孤儿字节");
+
+    // 本地原件：字节、对象账、文件行、可读性全部完好。
+    assert!(objects
+        .join(&local.object_id[..2])
+        .join(&local.object_id)
+        .is_file());
+    assert!(!objects
+        .join(&unique.object_id[..2])
+        .join(&unique.object_id)
+        .is_file());
+    assert!(target.authorize_read("u1", &local.object_id).is_ok());
+    assert!(target
+        .verify_object_digest(&local.object_id)
+        .unwrap()
+        .unwrap());
+    let page = target.list_files("u1", FileListQuery::default()).unwrap();
+    assert_eq!(page.items.len(), 1, "本地文件行不能少，restore 行不能留");
+    assert_eq!(page.items[0].file_id, local.file_id);
+    let after = scene(target_dir.path());
+    assert!(after.cursors.iter().all(|(_, imported, _)| *imported == 0));
+
+    // 修好磁盘后重跑：唯一内容真落盘，同内容仍走 dedup。
+    faults.heal();
+    let rerun = target.import_backup("u1", "device-b", &package).unwrap();
+    assert_eq!(rerun.backup_id, summary.backup_id);
+    assert_eq!(rerun.state, "completed");
+    assert_eq!(rerun.imported + rerun.deduped, 2);
+    assert_eq!(rerun.skipped, 0);
+    assert!(objects
+        .join(&unique.object_id[..2])
+        .join(&unique.object_id)
+        .is_file());
+    assert_eq!(chat.calls(), 1);
 }

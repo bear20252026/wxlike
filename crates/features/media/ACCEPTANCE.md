@@ -52,6 +52,47 @@ backup.plan / backup.rollback 追加，全部写入
 `integration-requests/G04/122-chat-migration-backup-flip.yaml`，交 G00 执行；
 无 DB schema 变更（复用 `media_backup.state` 文本列）。
 
+## #122 补强：磁盘级失败注入 + 回滚现场复原（本机 2026-11-06，同分支接手轮）
+
+上一轮的失败注入只打在 G05 快照端口（「切游标」那一侧），「先落盘」这一侧没有
+磁盘级证据；回滚也没有「现场逐项回到恢复前」的断言。本轮补齐。
+
+```text
+rustfmt --edition 2021 --check src/*.rs tests/*.rs                   # 通过
+cargo check -p wxlike-media --locked                                 # 通过
+cargo clippy -p wxlike-media --all-targets --locked -- -D warnings    # 通过
+cargo test -p wxlike-media --locked   # lib 23(+1 ignored) / g04 25 /
+#   http_api 4 / instant_upload 5 / migration_registry 4 —— 全绿
+#   （instant_upload「未完成上传不得被引用为附件」、http_api、migration_registry
+#     三条基线用例一条未放宽、未删除）
+python ci/jobs/audit/check_integration_requests.py                    # 107/107 machine-readable
+```
+
+新增用例（`tests/g04.rs`；磁盘故障由测试侧 `ObjectStore` 包装注入，
+产品代码里没有故障开关）：
+
+- `disk_failure_while_landing_keeps_every_cursor_behind_the_bytes`（先落盘）
+  第 2 次 `put_file` 直接报错、一字节未写：`imported = 1` 与「字节已在盘上」
+  逐条对账必须等价、快照端口 `import()` 0 次调用、state 停在 `failed`；
+  磁盘修好后的重跑是续跑（skipped 1 / imported 1），不是重导。
+- `crash_after_publish_before_cursor_is_rerolled_back_to_the_pre_restore_scene`
+  （落盘后、切游标前断电那一格）字节已 rename 到位而回执丢失：所有 `imported`
+  仍为 0、`media_object` 0 行、端口 0 次交接；rollback 报 `removed_objects = 1`
+  回收孤儿字节，之后盘上字节清单与 `media_object`/`media_ref`/`media_file` 行数、
+  逐条游标逐项等于恢复前快照（断言用独立只读连接查库，不信被测代码自述）。
+- `rollback_of_a_crashed_landing_keeps_a_local_original_of_the_same_content`
+  清扫只针对「账上无人引用」的内容地址：本地同内容原件（对象行 + 引用 + 文件行）
+  与 dedup 命中一律保留，重跑仍走 dedup。
+
+产品侧唯一改动：`rollback_backup_import` 增加孤儿字节清扫
+（`unclaimed_uncursored_entries` / `object_is_unclaimed`：判定在写事务内、
+物理删除在提交后，引用计数口径与 `gc_object` 一致），
+`RollbackOutcome` 字段未增删、状态机与两阶段顺序未改。
+
+仍未验证（不做假绿）：`chat_committed` 状态下拒绝回滚只有代码守卫，
+没有用例能把状态停在那一格（公共 API 无法在 `import_chat` 与 `finish_import`
+之间制造失败），靠 `completed` 拒绝回滚的用例覆盖相邻分支。
+
 ## 待验清单（本机物理上跑不了，不做假绿）
 
 - [ ] 真机/CI 跑 1GiB 单文件流式上传-完成-下载（含断点续传中断恢复），确认内存峰值有界。
