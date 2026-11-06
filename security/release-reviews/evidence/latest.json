@@ -175,14 +175,14 @@
     },
     {
       "id": "E-IMAGE",
-      "title": "镜像可复现（digest 锁定 + 镜像扫描）",
+      "title": "镜像可复现（digest 锁定 + SBOM 带 digest）",
       "required": true,
       "kind": "artifact",
       "status": "pass",
       "owner": "G16",
       "issue": "#257",
       "evidence": "PR #349（merge 9bf6f41）：3 个 Dockerfile 与 2 个 compose 文件的全部镜像引用带 @sha256 digest（2026-11-04 从 Docker Hub registry 实测）；SBOM 五个 docker 组件 purl 均带 ?digest=sha256:，sourceaudit sbom check PASS；blockers.json 的 OPS-IMAGE-DIGEST 已删除",
-      "notes": "浮动标签已全部消除；digest 随镜像更新时同步刷新 SBOM。"
+      "notes": "浮动标签已全部消除；digest 随镜像更新时同步刷新 SBOM。本项只裁决可复现性：镜像漏洞扫描 job 尚未接入 ci.yml 的 image job（该 job 现在只有 build + SBOM + verify-image.sh），属 #257 条件 4，不由本项宣称完成。"
     },
     {
       "id": "E-COVERAGE",
