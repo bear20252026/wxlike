@@ -12,7 +12,7 @@ per-object `access_epoch`，撤权立即失效。
 | G04-01 | `access.rs` `uploads.rs` `http.rs` | 分片校验/断点续传/幂等完成；对象引用绑定 owner/audience/purpose；逐请求读取鉴权；1GiB capability；流式下载（Range/206/416）；撤权即失效 |
 | G04-02 | `files.rs` | 授权投影列表（分页/排序/分类/文件夹）；类型与长度限制；可撤销分享（令牌只存哈希）；回收站 + 引用计数 GC |
 | G04-03 | `processing.rs` | 任务 `(object_id,preset)` 幂等；崩溃重试/停滞回收/取消；FFmpeg 子进程无 shell、空环境、`-protocol_whitelist file`、rlimit（CPU/内存/输出体积）、墙钟超时；魔数嗅探拒绝可执行输入；衍生对象随源对象 GC |
-| G04-04 | `backup.rs` | WXBK v1 容器（manifest + 逐对象校验 + SHA-256 尾）；导入去重不改历史 ID、逐条续跑；密钥只带 `key_ref` 走 G02 escrow；缓存 plan 先分类 recoverable/protected，唯一/未发送附件一律保护 |
+| G04-04 | `backup.rs` `store.rs` `http.rs` | WXBK v1 容器（manifest + 逐对象校验 + SHA-256 尾）；导入去重不改历史 ID、逐条续跑；密钥只带 `key_ref` 走 G02 escrow；缓存 plan 先分类 recoverable/protected，唯一/未发送附件一律保护；**导出计划** `plan_backup_export`（dry-run + 盘上完整性预检）；**两阶段恢复**（条目 blob 先 fsync 落盘并与 object/ref/file/imported 游标同事务，再切 G05 聊天游标 importing→chat_committed→completed）；**失败可回滚** `rollback_backup_import`（撤销 restore 引用与合成文件行、按引用计数回收对象、去重命中内容保留、游标复位可重跑；completed 之后拒绝回滚=409） |
 | G04-05 | `platform.rs` | 共享请求/结果/权限错误契约；web 静默截屏与任意写路径拒绝；录音指示器状态机；缓存预算由 Rust 策略切分 |
 
 ## 测试命令与结果（本机 2026-10-24）
@@ -31,6 +31,26 @@ python scripts/quality-gate.py                               # 通过（魔法�
 typos                                                        # 通过
 cargo deny check advisories bans sources                     # 通过（许可证不在闸内）
 ```
+
+## #122 交付追加（本机 2026-11-29, 分支 feat/G04-media-backup）
+
+```text
+rustfmt --edition 2021 --check src/*.rs tests/*.rs           # 通过
+cargo check -p wxlike-media --locked                         # 通过
+cargo test -p wxlike-media                                   # lib 23(+1 ignored) /
+#   g04 22 / http_api 4 / instant_upload 5 / migration_registry 4 —— 全绿
+#   新增：export_plan_matches_the_package_and_flags_missing_blobs
+#         failed_chat_import_lands_then_rolls_back_and_reimports
+#         rollback_keeps_content_the_local_library_still_needs
+#         concurrent_imports_of_one_package_converge（并发 8 轮复跑稳定）
+#         http_backup_plan_and_rollback_contract（401/404/409/参数错）
+python ci/jobs/audit/check_integration_requests.py           # 107/107 machine-readable
+```
+
+覆盖表翻转、`media.backup.*` 命令登记、`contracts/domains/media/actions.yaml` 的
+backup.plan / backup.rollback 追加，全部写入
+`integration-requests/G04/122-chat-migration-backup-flip.yaml`，交 G00 执行；
+无 DB schema 变更（复用 `media_backup.state` 文本列）。
 
 ## 待验清单（本机物理上跑不了，不做假绿）
 

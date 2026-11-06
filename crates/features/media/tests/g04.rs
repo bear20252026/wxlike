@@ -567,6 +567,21 @@ struct ChatFixture {
     snapshot: Vec<ChatSnapshotMessage>,
     imported: Mutex<Vec<ChatSnapshotMessage>>,
     report: ChatImportReport,
+    /// Fault injection for the G05 snapshot port: #122's rollback semantics
+    /// can only be exercised against an import that really fails halfway —
+    /// this is the vendor-fault fixture the card explicitly allows.
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl ChatFixture {
+    fn new(snapshot: Vec<ChatSnapshotMessage>, report: ChatImportReport) -> Self {
+        Self {
+            snapshot,
+            imported: Mutex::new(Vec::new()),
+            report,
+            fail: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
 }
 
 impl ChatSnapshotPort for ChatFixture {
@@ -580,6 +595,9 @@ impl ChatSnapshotPort for ChatFixture {
         _device_id: &str,
         messages: &[ChatSnapshotMessage],
     ) -> Result<ChatImportReport> {
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(MediaError::Unsupported("snapshot port is down".into()));
+        }
         *self.imported.lock().unwrap() = messages.to_vec();
         Ok(self.report.clone())
     }
@@ -620,15 +638,14 @@ fn chat_messages() -> Vec<ChatSnapshotMessage> {
 #[test]
 fn backup_roundtrip_preserves_ids_and_rejects_tampering() {
     let source_dir = tempfile::tempdir().unwrap();
-    let chat = Arc::new(ChatFixture {
-        snapshot: chat_messages(),
-        imported: Mutex::new(Vec::new()),
-        report: ChatImportReport {
+    let chat = Arc::new(ChatFixture::new(
+        chat_messages(),
+        ChatImportReport {
             imported: 2,
             conflicts: 1,
             preserved_local_seq: 1,
         },
-    });
+    ));
     let keys = Arc::new(KeyFixture {
         seen: Mutex::new(Vec::new()),
     });
@@ -857,4 +874,327 @@ async fn submitted_jobs_finish_without_the_test_calling_run_due_jobs() {
         "worker 起了就必须把作业做完；没做完说明循环没跑或跑在错的地方"
     );
     assert_eq!(service.job_status("u1", &job.job_id).unwrap().progress, 100);
+}
+
+/// 导出计划必须与真实产品一致：同一查询序列、同一预算判定，外加
+/// “ready 行背后字节还在”的完整性预检（#122 导出计划 + 完整性校验）。
+#[test]
+fn export_plan_matches_the_package_and_flags_missing_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let chat = Arc::new(ChatFixture::new(
+        chat_messages(),
+        ChatImportReport {
+            imported: 2,
+            conflicts: 0,
+            preserved_local_seq: 0,
+        },
+    ));
+    let service = service_at(dir.path()).with_chat_port(chat);
+    let a = upload(
+        &service,
+        "u1",
+        "a.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"one",
+    );
+    let b = upload(
+        &service,
+        "u1",
+        "b.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"two!",
+    );
+    let plan = service
+        .plan_backup_export("u1", "device-a", EncryptionMeta::client_side("kms-1"))
+        .unwrap();
+    assert_eq!(plan.entries.len(), 2);
+    assert!(plan.within_budget && plan.publishable);
+    assert_eq!(plan.chat_messages, 2);
+    assert_eq!(plan.payload_bytes, a.size + b.size);
+    assert!(plan.entries.iter().all(|entry| entry.present));
+    let summary = service
+        .export_backup("u1", "device-a", EncryptionMeta::client_side("kms-1"))
+        .unwrap();
+    assert_eq!(summary.total_bytes, plan.payload_bytes);
+    assert_eq!(summary.entries as usize, plan.entries.len());
+    let delta = (summary.package_bytes as i64 - plan.estimated_package_bytes as i64).abs();
+    assert!(delta < 64, "计划估算与真实包尺寸必须接近: {delta}");
+
+    // 完整性预检：盘上少字节，计划立刻判不可发布。
+    std::fs::remove_file(dir.path().join(&a.object_id[..2]).join(&a.object_id)).unwrap();
+    let plan = service
+        .plan_backup_export("u1", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    assert!(!plan.publishable);
+    assert_eq!(plan.missing_objects, vec![a.object_id.clone()]);
+
+    // 空库用户的计划是平凡可发布的空包。
+    let empty = service
+        .plan_backup_export("u9", "device-z", EncryptionMeta::plaintext())
+        .unwrap();
+    assert!(empty.entries.is_empty() && empty.publishable);
+}
+
+/// #122 恢复语义：先落盘（blob 内容校验 + fsync + 元数据同事务）再切游标
+/// （G05 快照端口）。快照端口挂掉 = 游标未动 = 可回滚；回滚后重跑必须从零
+/// 导入成功；completed 之后拒绝回滚（那是数据丢失，不是错误恢复）。
+#[test]
+fn failed_chat_import_lands_then_rolls_back_and_reimports() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_chat = Arc::new(ChatFixture::new(
+        chat_messages(),
+        ChatImportReport::default(),
+    ));
+    let source = service_at(source_dir.path()).with_chat_port(source_chat);
+    let a = upload(
+        &source,
+        "u1",
+        "a.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"alpha bytes",
+    );
+    let b = upload(
+        &source,
+        "u1",
+        "b.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"beta bytes!",
+    );
+    let summary = source
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    let package = source.backup_package("u1", &summary.backup_id).unwrap();
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let flaky = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    flaky.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let target = service_at(target_dir.path()).with_chat_port(flaky.clone());
+    let err = target
+        .import_backup("u1", "device-b", &package)
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Unsupported(_)));
+
+    // 失败发生在“切游标”阶段：落盘半区已完整可读可下载。
+    for id in [&a.object_id, &b.object_id] {
+        let path = target_dir.path().join(&id[..2]).join(id);
+        assert!(path.is_file(), "blob {id} 必须已落盘");
+        assert!(target.authorize_read("u1", id).is_ok());
+    }
+    assert_eq!(
+        target
+            .list_files("u1", FileListQuery::default())
+            .unwrap()
+            .items
+            .len(),
+        2
+    );
+
+    let verified = target.verify_backup(&package).unwrap();
+    let outcome = target
+        .rollback_backup_import("u1", &verified.backup_id)
+        .unwrap();
+    assert_eq!(outcome.state, "rolled_back");
+    assert_eq!(outcome.reset_entries, 2);
+    assert_eq!(outcome.removed_objects, 2);
+    assert_eq!(outcome.kept_objects, 0);
+    for id in [&a.object_id, &b.object_id] {
+        assert!(
+            !target_dir.path().join(&id[..2]).join(id).exists(),
+            "回滚后 blob {id} 必须被回收"
+        );
+        assert!(target.authorize_read("u1", id).is_err());
+    }
+    assert!(target
+        .list_files("u1", FileListQuery::default())
+        .unwrap()
+        .items
+        .is_empty());
+
+    // 端口恢复 → 重跑 = 从零导入（游标已复位），不是残缺续跑；
+    // 交给 G05 端口的消息必须保持包内原始 seq/message_id（不许本地重编号）。
+    flaky.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    let rerun = target.import_backup("u1", "device-b", &package).unwrap();
+    assert_eq!(rerun.imported, 2);
+    assert_eq!(rerun.skipped, 0);
+    {
+        let handed_over = flaky.imported.lock().unwrap();
+        assert_eq!(handed_over.len(), 2);
+        assert_eq!(handed_over[0].seq, 41);
+        assert_eq!(handed_over[1].message_id, "m-2");
+    }
+    assert_eq!(rerun.state, "completed");
+
+    // completed 拒绝回滚；他人/未知 id 一律 404 形状，不泄存在性。
+    let err = target
+        .rollback_backup_import("u1", &rerun.backup_id)
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Conflict(_)));
+    for id in [&a.object_id, &b.object_id] {
+        assert!(target_dir.path().join(&id[..2]).join(id).is_file());
+    }
+    assert!(matches!(
+        target
+            .rollback_backup_import("u9", &rerun.backup_id)
+            .unwrap_err(),
+        MediaError::NotFound
+    ));
+    assert!(matches!(
+        target.rollback_backup_import("u1", "bk_nope").unwrap_err(),
+        MediaError::NotFound
+    ));
+    assert!(matches!(
+        target.rollback_backup_import("u1", "").unwrap_err(),
+        MediaError::BadInput(_)
+    ));
+}
+
+/// 去重内容在回滚时必须保留：目标机上本地原件先引用着同一内容地址，
+/// 导入只该加 restore 引用；回滚撤掉 restore 的文件行/引用后，
+/// 对象因仍有本地引用而保留（kept_objects），原件照常可下载。
+#[test]
+fn rollback_keeps_content_the_local_library_still_needs() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let source = service_at(source_dir.path()).with_chat_port(source_chat);
+    let payload = b"shared between both devices";
+    let original = upload(
+        &source,
+        "u1",
+        "shared.bin",
+        "application/octet-stream",
+        Purpose::File,
+        payload,
+    );
+    let summary = source
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    let package = source.backup_package("u1", &summary.backup_id).unwrap();
+
+    let target_dir = tempfile::tempdir().unwrap();
+    // 目标机先有同一内容的本地原件（dedup 命中），再导入同一备份包。
+    let flaky = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let target = service_at(target_dir.path()).with_chat_port(flaky.clone());
+    let local = upload(
+        &target,
+        "u1",
+        "local-copy.bin",
+        "application/octet-stream",
+        Purpose::File,
+        payload,
+    );
+    assert_eq!(local.object_id, original.object_id);
+    flaky.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(target.import_backup("u1", "device-b", &package).is_err());
+
+    let outcome = target
+        .rollback_backup_import("u1", &summary.backup_id)
+        .unwrap();
+    assert_eq!(outcome.reset_entries, 1);
+    assert_eq!(outcome.removed_objects, 0);
+    assert_eq!(outcome.kept_objects, 1);
+    assert_eq!(outcome.removed_files, 1);
+    // 本地原件完好，restore 的文件行已消失（列表回到 1 条）。
+    let page = target.list_files("u1", FileListQuery::default()).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].file_id, local.file_id);
+    assert!(target.authorize_read("u1", &original.object_id).is_ok());
+    assert!(target
+        .verify_object_digest(&original.object_id)
+        .unwrap()
+        .unwrap());
+}
+
+/// 并发：同一备份包同时被两个导入者落地、又赶上第三个线程申请回滚时，
+/// 状态机守卫必须保证账实一致——要么 completed（引用双份齐全），要么被
+/// 回滚守卫挡住报错，绝不允许半套 restore 引用存活、也绝不双删对象。
+#[test]
+fn concurrent_imports_of_one_package_converge() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let source = service_at(source_dir.path()).with_chat_port(source_chat);
+    upload(
+        &source,
+        "u1",
+        "p.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"parallel one",
+    );
+    upload(
+        &source,
+        "u1",
+        "q.bin",
+        "application/octet-stream",
+        Purpose::File,
+        b"parallel two",
+    );
+    let summary = source
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    let package = source.backup_package("u1", &summary.backup_id).unwrap();
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let chat = Arc::new(ChatFixture::new(Vec::new(), ChatImportReport::default()));
+    let target = Arc::new(service_at(target_dir.path()).with_chat_port(chat));
+    let package = Arc::new(package);
+    let (imports, rollback) = std::thread::scope(|scope| {
+        // 第三个线程赌一把回滚：抢到 importing/failed 就真回滚；抢不到必须
+        // 干脆地拒绝（Conflict），早于任何 register 落地时是 NotFound。
+        let rollback = scope.spawn(|| {
+            target
+                .rollback_backup_import("u1", &summary.backup_id)
+                .map(|outcome| outcome.state)
+        });
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let target = Arc::clone(&target);
+            let package = Arc::clone(&package);
+            handles.push(scope.spawn(move || target.import_backup("u1", "device-b", &package)));
+        }
+        let imports = handles.into_iter().map(|h| h.join()).collect::<Vec<_>>();
+        (imports, rollback.join())
+    });
+    for outcome in imports.iter().filter_map(|res| res.as_ref().ok()) {
+        match outcome {
+            Ok(ok) => assert_eq!(ok.state, "completed"),
+            Err(err) => assert!(
+                matches!(err, MediaError::Conflict(_)),
+                "并发只允许状态冲突类失败: {err:?}"
+            ),
+        }
+    }
+    if let Some(state) = rollback.as_ref().ok().and_then(|res| res.as_ref().ok()) {
+        assert_eq!(state, "rolled_back");
+    } else if let Some(err) = rollback.as_ref().ok().and_then(|res| res.as_ref().err()) {
+        assert!(
+            matches!(err, MediaError::Conflict(_) | MediaError::NotFound),
+            "抢不到窗口的回滚必须干脆拒绝: {err:?}"
+        );
+    }
+    // 不论交错顺序如何，收尾必须是完整一致的状态：把回滚后的局面重导一遍，
+    // 第三次顺序导入总能得到 2 个可下载对象、2 条文件行。
+    let final_outcome = target.import_backup("u1", "device-b", &package).unwrap();
+    assert_eq!(final_outcome.state, "completed");
+    let page = target.list_files("u1", FileListQuery::default()).unwrap();
+    assert_eq!(page.items.len(), 2, "restore 文件行不许双份也不许残缺");
+    let ids: Vec<&str> = page
+        .items
+        .iter()
+        .map(|item| item.object_id.as_str())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        page.items
+            .iter()
+            .map(|i| &i.object_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    );
+    for item in &page.items {
+        assert!(target.authorize_read("u1", &item.object_id).is_ok());
+    }
 }
