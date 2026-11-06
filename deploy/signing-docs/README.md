@@ -9,8 +9,9 @@
 | Android | `ci/jobs/mobile/job.yml`（debug key 的 release 构建） | `android-release` 在 `mobile-release` 环境签 | **缺**，见 `device-matrix.md` |
 | iOS | **不可构建**：`apps/mobile/ios` 不存在 | `ios-release` 会显式失败 | 缺 |
 
-因此 `ci/jobs/policy/known-gaps.json` 保持 `MOBILE-DEVICE-EVIDENCE` 打开，
-发布门禁失败。补上真机证据和 iOS 工程前，不要把这个缺口改成 `closed`。
+因此 `ci/jobs/policy/known-gaps.json` 保持 `MOBILE-DEVICE-EVIDENCE` 打开。
+2026-11-05 起该缺口不再让发布门禁失败（要恢复请传 `--require-device-evidence`），
+但补上真机证据和 iOS 工程前，不要把这个缺口改成 `closed`——它记的是事实，不是开关。
 
 ## 签名密钥
 

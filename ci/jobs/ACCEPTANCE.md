@@ -15,7 +15,7 @@
 | 分支保护清单与 gate 一致 | `policy/required-checks.json`；`gate.py` 缺失/失败即红 | 已验证（GateTest 4/4） |
 | 缓存按 lock/toolchain/OS/用途隔离 | 各 job 的 cache key 均含 OS+lock+toolchain+purpose | 静态检查 |
 | 无 `continue-on-error` 逃逸 | `check_pins.py` 递归扫描 required jobs | 已验证（策略检查通过） |
-| 每日绿、发布红 | `check_gaps.py --release`；e2e 中 blocked 不算 pass | 已验证（7 个 release-blocking gap） |
+| 每日绿、发布红 | `check_gaps.py --release`；e2e 中 blocked 不算 pass | 已验证（2026-11-05 起仅 1 个 release-blocking gap：`PAYMENT-CALLBACK-REPLAY`；其余 6 条保持 open 但不再拦发布） |
 
 未执行：G00 尚未把 `generated/` 应用到 `.github/workflows/`（`--check-live` 会红），
 这是跨组请求 `integration-requests/G16/G16-01.yaml`。

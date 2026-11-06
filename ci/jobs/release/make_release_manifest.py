@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Assemble and validate the release evidence manifest.
 
-``--require-clean`` is the publish gate: every blocking gap must be closed,
-every desktop platform must be signed, the SBOM must exist, the image must be
-referenced by digest, and mobile evidence must be present. A dry run may omit
-some of these but records exactly what was missing.
+``--require-clean`` is the publish gate: every gap still marked release-blocking
+in ``ci/jobs/policy/known-gaps.json`` must be closed, every desktop platform must
+be signed, the SBOM must exist, the image must be referenced by digest, and mobile
+artefact evidence must be present. Real-device evidence is no longer part of it -
+pass ``--require-device-evidence`` to demand that too. A dry run may omit some of
+these but records exactly what was missing.
 """
 
 from __future__ import annotations
@@ -53,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gaps-json", type=Path, required=True)
     parser.add_argument("--published", action="store_true")
     parser.add_argument("--require-clean", action="store_true")
+    parser.add_argument(
+        "--require-device-evidence",
+        action="store_true",
+        help="also demand validated real-device evidence; off by default since "
+        "2026-11-05 (owner decision), so MOBILE-DEVICE-EVIDENCE no longer blocks publication",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -104,9 +112,9 @@ def main(argv: list[str] | None = None) -> int:
             "sha256": sha256(args.device_evidence),
             "verified": args.device_evidence_verified,
         }
-        if args.require_clean and not args.device_evidence_verified:
+        if args.require_device_evidence and not args.device_evidence_verified:
             problems.append("device evidence exists but was not validated")
-    elif args.require_clean:
+    elif args.require_device_evidence:
         problems.append("real-device evidence is missing")
     if args.device_evidence_verified and not device:
         problems.append("device evidence flag set but no evidence file was supplied")

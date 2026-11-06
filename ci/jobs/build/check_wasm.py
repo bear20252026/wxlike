@@ -3,9 +3,10 @@
 
 There is no WASM crate yet (G01-03). Pretending to compile nothing would be a
 green check with no evidence, so the job records the absence in
-``policy/known-gaps.json`` and passes daily CI; the release gate fails while the
-gap is open. As soon as one workspace crate declares a wasm32 build, this
-script compiles exactly those packages and failure is fatal.
+``policy/known-gaps.json`` and passes daily CI; the gap is tracked but, since the
+owner decision on 2026-11-05, it no longer blocks publication. As soon as one
+workspace crate declares a wasm32 build, this script compiles exactly those
+packages and failure is fatal.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     packages = wasm_packages(args.root)
     if not packages:
         print("NOT_APPLICABLE: no workspace crate declares a wasm32 target (G01-03).")
-        print("Recorded in ci/jobs/policy/known-gaps.json; release is blocked until it exists.")
+        print("Recorded in ci/jobs/policy/known-gaps.json (open; not release-blocking since 2026-11-05).")
         return 0
 
     if run(["rustup", "target", "add", "wasm32-unknown-unknown"], args.root) != 0:

@@ -198,4 +198,4 @@ jobs:
         shell: bash
         run: |
           echo "iOS compile NOT_APPLICABLE: apps/mobile/ios is missing." >&2
-          echo "This is tracked as MOBILE-DEVICE-EVIDENCE; release.yml fails while it stays open." >&2
+          echo "This is tracked as MOBILE-DEVICE-EVIDENCE; open, but no longer release-blocking since 2026-11-05." >&2

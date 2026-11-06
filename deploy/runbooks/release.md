@@ -19,9 +19,11 @@ G00 负责应用）。触发：`v*` tag 或手动 `workflow_dispatch`（`publish
 1. 版本一致：`ui/src-tauri/tauri.conf.json`、`apps/mobile/pubspec.yaml`、
    tag `v<version>` 三者相同；脚本会拒绝不一致。
 2. `ci/jobs/policy/known-gaps.json` 中所有 `blocks_release` 为 `closed`；
-   否则 `make_release_manifest.py --require-clean` 失败。
-3. `deploy/signing-docs/device-evidence.json` 存在且通过
-   `check_device_evidence.py`（真机 push/call/WebView/权限/重连）。
+   否则 `make_release_manifest.py --require-clean` 失败。2026-11-05 起只有
+   `PAYMENT-CALLBACK-REPLAY` 仍标 `blocks_release: true`，其余缺口保持 open 但不拦发布。
+3. （默认不再强制）`deploy/signing-docs/device-evidence.json` 存在且通过
+   `check_device_evidence.py`（真机 push/call/WebView/权限/重连）。要恢复这一条硬门槛，
+   给 `make_release_manifest.py` 传 `--require-device-evidence`。
 4. 最近一次 `restore-drill.sh` 在 7 天内。
 
 ## 演练（不发布）

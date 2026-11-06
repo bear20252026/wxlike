@@ -242,6 +242,88 @@ class ManifestMergeTest(unittest.TestCase):
             self.assertIn("linux-x86_64", json.loads(out.read_text(encoding="utf-8"))["platforms"])
 
 
+class ReleaseGateScopeTest(unittest.TestCase):
+    """Pins the 2026-11-05 owner decision: only the payment replay gap blocks release."""
+
+    def test_exactly_one_release_blocking_gap(self):
+        data = json.loads((JOBS / "policy" / "known-gaps.json").read_text(encoding="utf-8"))
+        blocking = [g["id"] for g in data["gaps"] if g.get("blocks_release")]
+        self.assertEqual(blocking, ["PAYMENT-CALLBACK-REPLAY"])
+
+    def test_downgraded_gaps_are_still_tracked(self):
+        """Flipping blocks_release must not erase the gap registry."""
+        data = json.loads((JOBS / "policy" / "known-gaps.json").read_text(encoding="utf-8"))
+        for gap in data["gaps"]:
+            self.assertEqual(gap["status"], "open", gap["id"])
+            self.assertTrue(gap.get("owner"), gap["id"])
+            self.assertTrue(gap.get("task"), gap["id"])
+            self.assertTrue(gap.get("evidence"), gap["id"])
+
+    def _fixtures(self, root: Path) -> list[str]:
+        (root / "sbom.spdx.json").write_text('{"spdxVersion": "SPDX-2.3"}', encoding="utf-8")
+        (root / "desktop.json").write_text(
+            json.dumps(
+                {
+                    "version": "1.0.0",
+                    "platforms": {
+                        name: {"url": f"https://x/{name}", "signature": "sig"}
+                        for name in ("linux-x86_64", "windows-x86_64", "darwin-aarch64")
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        for name in ("android-release.json", "ios-release.json"):
+            (root / name).write_text(json.dumps({"sha256": "a" * 64, "artifact": name}), encoding="utf-8")
+        (root / "gaps.json").write_text(
+            json.dumps({"total": 7, "open_blocking": [], "gaps": []}), encoding="utf-8"
+        )
+        return [
+            "--version", "1.0.0",
+            "--commit", "0" * 40,
+            "--image", "ghcr.io/x/server",
+            "--image-digest", "sha256:" + "b" * 64,
+            "--sbom", str(root / "sbom.spdx.json"),
+            "--desktop-manifest", str(root / "desktop.json"),
+            "--android-evidence", str(root / "android-release.json"),
+            "--ios-evidence", str(root / "ios-release.json"),
+            "--gaps-json", str(root / "gaps.json"),
+            "--published",
+        ]
+
+    def _run(self, args: list[str]) -> subprocess.CompletedProcess:
+        script = JOBS / "release" / "make_release_manifest.py"
+        return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
+
+    def test_clean_gate_no_longer_demands_device_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run([*self._fixtures(Path(tmp)), "--require-clean", "--output", str(Path(tmp) / "out.json")])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            payload = json.loads((Path(tmp) / "out.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["problems"], [])
+            self.assertTrue(payload["published"])
+
+    def test_open_payment_gap_still_blocks_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self._fixtures(root)
+            gaps = json.loads((root / "gaps.json").read_text(encoding="utf-8"))
+            gaps["open_blocking"] = [{"id": "PAYMENT-CALLBACK-REPLAY"}]
+            (root / "gaps.json").write_text(json.dumps(gaps), encoding="utf-8")
+            result = self._run([*args, "--require-clean", "--output", str(root / "out.json")])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PAYMENT-CALLBACK-REPLAY", result.stdout)
+
+    def test_device_evidence_can_still_be_demanded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(
+                [*self._fixtures(Path(tmp)), "--require-clean", "--require-device-evidence",
+                 "--output", str(Path(tmp) / "out.json")]
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("real-device evidence is missing", result.stdout)
+
+
 class WireVariantTest(unittest.TestCase):
     def test_rust_and_browser_orders_match(self):
         result = subprocess.run(
