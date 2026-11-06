@@ -1,0 +1,66 @@
+# G08 handoff for issue #141 (card G08-01). Contract version: mini-package.v1.
+# Nothing in this file asks G00 to touch the root manifest, router or schema:
+# the card stays inside the two crates it owns. The entries below are the API
+# surface changes a consumer has to know about before merging.
+task: G08-01
+issue: 141
+card: "[G08-01][UI v2] 包格式、签名与发布供应链"
+group_issue: 89
+branch: feat/G08-package-signing
+contract: mini-package.v1
+requests:
+  - id: no-new-root-dependency
+    file: Cargo.toml
+    change: none
+    reason: >-
+      Re-uses the already pinned ed25519-dalek/sha2/hex/serde/thiserror plus the
+      in-repo wxlike-dpage path dependency. Cargo.lock is untouched, so no
+      lockfile regeneration is needed.
+  - id: miniapps-open-return-type
+    file: crates/features/miniapps/src/packages/format.rs
+    change: >-
+      packages::open() now returns InspectedPackage instead of VerifiedPackage;
+      VerifiedPackage gained a private proof field plus VerifiedPackage::signer().
+    reason: >-
+      open() performs no signature check, so its result must not be accepted by
+      Installer::install_verified. The seal makes an unsigned or foreignly
+      verified package unrepresentable instead of merely discouraged. Only
+      toolchain::report_for and catalog::{install,upgrade} consume these types;
+      both were checked and neither constructs a VerifiedPackage literal.
+  - id: miniapps-error-variants
+    file: crates/features/miniapps/src/packages/error.rs
+    change: >-
+      MiniError gains ReservedResource(String), ResourceTooLarge(String, usize,
+      usize) and PackageTooLarge(usize, usize).
+    reason: >-
+      Budget rejections must stay distinguishable from tampering for the admin
+      surface. No existing variant changed its meaning, so a `matches!` on the
+      old arms keeps compiling.
+  - id: container-untrusted-key
+    file: crates/container/src/package.rs
+    change: >-
+      PackageError gains UntrustedKey(String); verify_package returns it instead
+      of BadSigning when sig.key_id is absent from the trust table. Manifest
+      semver now requires exactly major.minor.patch and permissions are bounded
+      by MAX_PERMISSIONS / MAX_PERMISSION_LEN.
+    reason: >-
+      "Foreign key" and "signature does not match" need different operator
+      actions, and a truncated/padded version used to let one package masquerade
+      as the same version for the anti-downgrade watermark. No consumer outside
+      crates/container/tests/package.rs matches on PackageError today.
+router: none
+commands: none
+migrations: none
+schema: none
+coverage_notes: >-
+  Entry-id/action-id table: this card has no UI entry of its own (supply chain
+  only). Acceptance evidence lives in crates/features/miniapps/tests/packages.rs
+  (22 tests) and crates/container/tests/package.rs (9 tests): tampered manifest,
+  missing/extra/reserved resource, foreign or unenrolled key, expired/not-yet
+  valid/revoked certificate, cross-store proof replay, downgrade and version
+  conflict, dev/prod root isolation, crash-before-activate recovery, and the
+  manifest / per-resource / whole-package / permission-count budgets at the
+  boundary.
+notes: >-
+  Dev-serve request-head drain (aa90d5f) is untouched; toolchain.rs changed only
+  its import list and report_for signature.
