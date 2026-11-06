@@ -1,0 +1,90 @@
+request_id: G07-143-service-order-store
+task: G07-04
+issue: "https://github.com/bear20252026/wxlike/issues/143"
+card: "[G07-04][UI v2] 服务目录、报价与统一供应商订单"
+group_issue: "https://github.com/bear20252026/wxlike/issues/88"
+owner: G07
+base_branch: feat/G07-service-catalog
+summary: >
+  #143 将订单/报价/幂等键从 crate 内 Mutex<HashMap> 抽出为 OrderStore 端口，
+  落盘实现 FileStore（原子改名 + fsync + spawn_blocking，ADR-28）成为可验收的真实仓储。
+  需要 G00 处理的事项只有两类：路由/命令挂载确认，以及目标库 schema 登记（本卡 DDL 草案如下）。
+
+new_dependencies: []   # 本卡零新增依赖：只用 workspace 已有 serde/serde_json/tokio/sha2/rand/hex，Cargo.lock 不变
+
+route_mounts:
+  - prefix: /api/v1/services
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::Catalog)
+    note: 沿用 G07-04.yaml 的申请；本卡未改公共 API 形状。
+  - prefix: /api/v1/orders
+    factory: PENDING_G00_ASSEMBLY (wxlike_service_catalog::OrderService with FileStore)
+    note: >
+      装配时 OrderService::with_store 必须注入 FileStore（或多进程部署下等价数据库仓储），
+      禁止在集成验收环境注入 MemoryStore；MemoryStore 仅限故障注入/并行开发。
+
+command_registration: wxlike_service_catalog 无新命令；service.list/quote/order/fulfill/cancel/query 仍按 G07-04.yaml 挂载
+
+configuration:
+  - name: WXLIKE_SERVICE_STORE_DIR
+    value_type: path
+    note: FileStore 根目录（内含 orders/ quotes/ idem/ 三个子目录）；缺失时装配启动失败，不静默回退内存。
+
+schema_ddl_proposal: |
+  -- G07-04 订单事实目标结构（SQLite 草稿；PG 正式版沿用 schema/proposals/G07/services.sql）。
+  -- 回滚兼容：全部为新增表，不触碰既有表；下线时 DROP 这四张表即可，无列变更。
+  CREATE TABLE IF NOT EXISTS services_catalog_card (
+      service_id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
+      provider TEXT NOT NULL, region TEXT NOT NULL, currency TEXT NOT NULL,
+      display_price_minor INTEGER NOT NULL CHECK (display_price_minor >= 0),
+      terms_version TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+      revision INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS services_region_enabled (
+      kind TEXT NOT NULL, region TEXT NOT NULL, enabled INTEGER NOT NULL,
+      PRIMARY KEY (kind, region)
+  );
+  CREATE TABLE IF NOT EXISTS services_quote (
+      quote_id TEXT PRIMARY KEY, actor TEXT NOT NULL, service_id TEXT NOT NULL,
+      kind TEXT NOT NULL, provider TEXT NOT NULL, region TEXT NOT NULL,
+      params TEXT NOT NULL, quantity INTEGER NOT NULL CHECK (quantity > 0),
+      amount_minor INTEGER NOT NULL CHECK (amount_minor > 0), currency TEXT NOT NULL,
+      terms_version TEXT NOT NULL, card_revision INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS services_quote_expiry_idx ON services_quote (expires_at_ms);
+  CREATE TABLE IF NOT EXISTS services_order (
+      order_id TEXT PRIMARY KEY, actor TEXT NOT NULL, quote_id TEXT NOT NULL,
+      service_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL,
+      provider_order_id TEXT NOT NULL,
+      amount_minor INTEGER NOT NULL, currency TEXT NOT NULL, state TEXT NOT NULL,
+      payment_id TEXT, receipt TEXT, refund TEXT, support_ticket TEXT,
+      events TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+      UNIQUE (provider, provider_order_id)
+  );
+  CREATE INDEX IF NOT EXISTS services_order_actor_idx ON services_order (actor, updated_at_ms DESC);
+  CREATE TABLE IF NOT EXISTS services_idempotency (
+      idem_key_hash TEXT PRIMARY KEY, idem_key TEXT NOT NULL, request_hash TEXT NOT NULL,
+      done_order_id TEXT
+  );
+  -- 说明：当前 FileStore 以「一实体一 JSON 文档 + O_EXCL 幂等占位 + 原子改名」实现同等不变量；
+  -- 上表为多进程/PG 部署时的规范化结构，UNIQUE(provider, provider_order_id) 与
+  -- PRIMARY KEY(idem_key_hash) 分别对应本卡的供应商单号唯一与幂等键抢占语义。
+
+migration_notes: >
+  订单/幂等记录只增不删（abort 仅清除本请求的在途占位）；报价过期由 purge 物理删除，
+  属可再生数据不属账本事实。个人数据最小化：订单文档不携带业务 params（手机号仅存在于
+  有过期时间且会被物理清除的报价文档中）；session token 全链路不落盘。回滚 = 删除新表/新目录，
+  旧版本代码不读取这些表，无兼容负担。
+
+entry_ids: []   # 无新 entry_id；沿用 G07-04/G07-05 登记的 services.* action 面
+coverage_flip_requests:
+  - file: docs/full-platform-delivery/coverage 相关表中 G07-04 行
+    note: 本卡后 G07-04 由「纯内存域实现」升级为「真实仓储验收」，请 G00 在覆盖表翻转状态。
+
+tests_evidence:
+  - crates/service-catalog/tests/store_recovery.rs（真实仓储：重启恢复/断网收敛/幂等重放/并发抢占/越权/参数错误/过期清理/最小化脱敏，9 个用例）
+  - crates/service-catalog/tests/orders.rs（15 个领域用例改走 OrderStore 抽象，行为不变）
+
+compatibility: additive_internal_trait；OrderService 公共 API 仅 get_quote/order/purge_expired_quotes 从同步变异步（无外部调用方，G00 装配按新签名）
+rollback: 未合入即无影响；已合入回滚 = revert 本 PR（无 schema/依赖变更需 G00 执行）
+external_blockers: [VENDOR_SANDBOX_CREDENTIALS]
