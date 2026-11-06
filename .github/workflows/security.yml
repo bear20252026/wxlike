@@ -87,6 +87,39 @@ jobs:
       - name: online advisory review
         run: python -m sourceaudit advisories check --root . --timeout 20
 
+  # One context that can be made required: #277 exists because "the workflow goes
+  # red" and "the merge is blocked" are two different settings, and the two jobs
+  # that run on every PR were not named by any required context. Aggregate them
+  # into a single check so the admin only has to require one string.
+  #
+  # Only jobs that run on every event may be needed here. `online` and
+  # `release-review` are schedule/dispatch-only: needing them would leave this
+  # job pending forever on a normal PR.
+  gate:
+    name: security (gate)
+    needs: [static, regression]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both always-run security jobs to succeed
+        env:
+          STATIC: ${{ needs.static.result }}
+          REGRESSION: ${{ needs.regression.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "static=$STATIC" "regression=$REGRESSION"; do
+            name="${pair%%=*}"
+            result="${pair#*=}"
+            echo "security $name -> $result"
+            if [ "$result" != "success" ]; then
+              echo "::error::security job $name did not succeed (result=$result); security (gate) fails so it can block the merge"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
   release-review:
     name: security (release evidence)
     if: github.event_name == 'workflow_dispatch' && inputs.release_review
