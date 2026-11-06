@@ -16,6 +16,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 pub fn init_schema(conn: &Connection) -> Result<()> {
     wxlike_ledger::init_schema(conn)?;
     init_payment_tables(conn)?;
+    init_provider_callback_tables(conn)?;
     init_card_tables(conn)?;
     init_settlement_tables(conn)?;
     init_transfer_tables(conn)?;
@@ -75,7 +76,14 @@ fn init_payment_tables(conn: &Connection) -> Result<()> {
             applied       INTEGER NOT NULL,
             reason        TEXT NOT NULL DEFAULT ''
         );
+        "#,
+    )
+}
 
+/// 带 `operation_id` 的供应商回调台账。
+fn init_provider_callback_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         -- 供应商回调的操作台账。operation_id 是幂等把手：同键同摘要一律
         -- 返回首次结果（result_json），不同摘要直接拒绝；本表与分录、
         -- 事件行在同一 IMMEDIATE 事务里提交，所以崩溃后重投只会有一次效果。

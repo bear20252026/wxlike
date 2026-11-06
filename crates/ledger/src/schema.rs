@@ -23,6 +23,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// SQLite 执行失败。
 pub fn init_schema(conn: &Connection) -> Result<()> {
     init_posting_tables(conn)?;
+    install_append_only_triggers(conn)?;
     init_hold_tables(conn)?;
     init_closing_tables(conn)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -68,10 +69,18 @@ fn init_posting_tables(conn: &Connection) -> Result<()> {
             ON ledger_entries(account, id);
         CREATE INDEX IF NOT EXISTS idx_ledger_entries_created
             ON ledger_entries(created_at, currency);
+        "#,
+    )
+}
 
-        -- 不可变性由数据库兜底，而不是一句注释：任何绕过 `post_in` 的
-        -- UPDATE/DELETE（人工改余额、脚本回填、误用生产 fund 接口）都会在
-        -- 写入的那一刻被拒绝，事务整体回滚。
+/// 分录与分录头的 append-only 触发器。
+///
+/// 不可变性由数据库兜底，而不是一句注释：任何绕过 `post_in` 的
+/// UPDATE/DELETE（人工改余额、脚本回填、误用生产 fund 接口）都会在写入的
+/// 那一刻被拒绝，事务整体回滚。
+fn install_append_only_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
         CREATE TRIGGER IF NOT EXISTS trg_ledger_entries_no_update
             BEFORE UPDATE ON ledger_entries
         BEGIN

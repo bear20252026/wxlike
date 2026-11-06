@@ -215,7 +215,7 @@ pub struct CallbackOutcome {
 impl CallbackOutcome {
     /// 供重放路径回填：库里存的是首次结果，本次是重复投递。
     #[must_use]
-    fn as_replay(self) -> Self {
+    fn mark_replayed(self) -> Self {
         Self {
             replayed: true,
             ..self
@@ -238,6 +238,22 @@ struct IntentRow {
 
 /// 回调摘要的规范版本：一旦字段构成变化就 bump，旧记录自然视为异参。
 const CALLBACK_DIGEST_VERSION: &str = "callback-v1";
+
+/// 意图是否已经进入"不再由供应商证据推进"的终态。
+///
+/// 未知态自愈（查询与回调）只允许从 created/pending 前进；终态一律直接回读，
+/// 否则一次迟到的回执就能把 refunded 改回 succeeded。
+#[must_use]
+fn is_terminal_status(status: IntentStatus) -> bool {
+    matches!(
+        status,
+        IntentStatus::Succeeded
+            | IntentStatus::Refunded
+            | IntentStatus::PartiallyRefunded
+            | IntentStatus::Failed
+            | IntentStatus::Expired
+    )
+}
 
 #[derive(Deserialize)]
 struct WebhookPayload {
@@ -582,14 +598,7 @@ impl Commerce {
         if row.intent.actor_id != viewer && row.intent.payee_id != viewer {
             return Err(CommerceError::Forbidden);
         }
-        if matches!(
-            row.intent.status,
-            IntentStatus::Succeeded
-                | IntentStatus::Refunded
-                | IntentStatus::PartiallyRefunded
-                | IntentStatus::Failed
-                | IntentStatus::Expired
-        ) {
+        if is_terminal_status(row.intent.status) {
             return Ok(row.intent);
         }
         let Some(provider_ref) = row.intent.provider_ref.clone() else {
@@ -620,20 +629,25 @@ impl Commerce {
                 Ok(updated.intent)
             }
             ProviderPaymentStatus::Failed => {
-                let now = self.now();
-                // 连接守卫必须在这个块里释放：`payment_intent` 会再次取锁。
-                {
-                    let conn = self.lock();
-                    conn.execute(
-                        "UPDATE commerce_payment_intents
-                         SET status = 'failed', updated_at = ?1, version = version + 1
-                         WHERE id = ?2 AND status IN ('created', 'pending')",
-                        params![now, intent_id],
-                    )?;
-                }
+                self.mark_intent_failed(intent_id)?;
                 self.payment_intent(viewer, intent_id)
             }
         }
+    }
+
+    /// 供应商证据确认失败时前进为失败态：可支付态之外的状态一律不动。
+    ///
+    /// 连接守卫在本函数内释放，调用方随后还要再次取锁回读意图。
+    fn mark_intent_failed(&self, intent_id: &str) -> Result<()> {
+        let now = self.now();
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE commerce_payment_intents
+             SET status = 'failed', updated_at = ?1, version = version + 1
+             WHERE id = ?2 AND status IN ('created', 'pending')",
+            params![now, intent_id],
+        )?;
+        Ok(())
     }
 
     /// 回调签名（供应商与接入方共用同一规范）。
@@ -662,7 +676,7 @@ impl Commerce {
 
     /// 处理带 `operation_id` 的供应商回调端点入口。
     ///
-    /// 幂等与防重放走 [`store::replay`] 这一唯一入口：
+    /// 幂等与防重放走 crate 内 `store::replay()` 这一唯一入口：
     /// * 同 `operation_id` + 同业务摘要 → 返回首次结果，`replayed = true`，
     ///   不写事件、不推状态、不记账、不出 outbox；
     /// * 同 `operation_id` + 异业务摘要 → [`CommerceError::IdempotencyConflict`]；
@@ -690,7 +704,7 @@ impl Commerce {
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(previous) = store::replay(load_callback(&tx, &scoped_key)?, &digest)? {
             tx.commit()?;
-            return Ok(previous.as_replay());
+            return Ok(previous.mark_replayed());
         }
         // 时间窗只约束"新效果"那一次：重试可能发生在很久以后，此时命中重放
         // 应当原样返回首次结果，而不是把合法重试误判成伪造。
@@ -847,28 +861,34 @@ fn insert_callback(
 ) -> Result<()> {
     let result_json = serde_json::to_string(outcome)
         .map_err(|error| CommerceError::BadInput(format!("callback result: {error}")))?;
+    let id = store::new_id(entropy);
+    let business_key = envelope.business_key();
+    let amount_minor = envelope.amount_minor;
+    let applied = i64::from(outcome.applied);
     conn.execute(
         "INSERT INTO commerce_provider_callbacks
             (id, business_key, operation_id, event_id, intent_id, kind, provider_ref,
              amount_minor, currency, request_digest, result_json, applied, reason,
              received_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
-            store::new_id(entropy),
-            envelope.business_key(),
-            envelope.operation_id,
-            envelope.event_id,
-            envelope.intent_id,
-            envelope.kind,
-            envelope.provider_ref,
-            envelope.amount_minor,
-            envelope.currency,
-            digest,
-            result_json,
-            i64::from(outcome.applied),
-            outcome.reason,
-            now
-        ],
+         VALUES(:id, :business_key, :operation_id, :event_id, :intent_id, :kind,
+                :provider_ref, :amount_minor, :currency, :request_digest,
+                :result_json, :applied, :reason, :received_at)",
+        named_params! {
+            ":id": id,
+            ":business_key": business_key,
+            ":operation_id": envelope.operation_id,
+            ":event_id": envelope.event_id,
+            ":intent_id": envelope.intent_id,
+            ":kind": envelope.kind,
+            ":provider_ref": envelope.provider_ref,
+            ":amount_minor": amount_minor,
+            ":currency": envelope.currency,
+            ":request_digest": digest,
+            ":result_json": result_json,
+            ":applied": applied,
+            ":reason": outcome.reason,
+            ":received_at": now,
+        },
     )?;
     Ok(())
 }
