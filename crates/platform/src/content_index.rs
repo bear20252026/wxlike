@@ -524,7 +524,7 @@ fn requested_scopes(kind: Option<&str>, scope: Option<&str>) -> Vec<String> {
         .flat_map(|s| s.split(','))
     {
         let trimmed = piece.trim().to_lowercase();
-        if !trimmed.is_empty() && !out.iter().any(|held| *held == trimmed) {
+        if !trimmed.is_empty() && !out.contains(&trimmed) {
             out.push(trimmed);
         }
     }
