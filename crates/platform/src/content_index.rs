@@ -95,7 +95,10 @@ pub(crate) fn upsert(conn: &Connection, doc: &IndexDoc<'_>, now: i64) -> Result<
 
 /// 删除内容时同步调用：索引行消失后，检索不可能再命中已删内容。
 pub(crate) fn remove(conn: &Connection, doc_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM content_index WHERE doc_id = ?1", params![doc_id])?;
+    conn.execute(
+        "DELETE FROM content_index WHERE doc_id = ?1",
+        params![doc_id],
+    )?;
     Ok(())
 }
 
@@ -361,7 +364,9 @@ fn head_winner(lanes: &[Lane]) -> Option<usize> {
         };
         let better = match best.and_then(|b| lanes[b].buf.front()) {
             None => true,
-            Some(cur) => (head.created_at, head.doc_id.as_str()) > (cur.created_at, cur.doc_id.as_str()),
+            Some(cur) => {
+                (head.created_at, head.doc_id.as_str()) > (cur.created_at, cur.doc_id.as_str())
+            }
         };
         if better {
             best = Some(idx);
@@ -570,9 +575,7 @@ async fn trends(
 
 /// 自省：这个统一入口现在能搜哪些域、上限是多少。客户端据此渲染 tab，不用猜，
 /// 也不用把"支持哪些 scope"硬编码到三端。纯常量读取，不碰数据库。
-async fn scopes(
-    _authed: Authed,
-) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+async fn scopes(_authed: Authed) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     Ok(Json(serde_json::json!({
         "scopes": KINDS,
         "max_page": MAX_SEARCH_PAGE,
@@ -626,7 +629,10 @@ mod tests {
             ["article", "video", "moment"]
         );
         // 空 scope 列表 = 全部域；未知域在 select_scopes 里报错，不静默忽略
-        assert_eq!(select_scopes(&[]).unwrap(), ["moment", "article", "video", "status"]);
+        assert_eq!(
+            select_scopes(&[]).unwrap(),
+            ["moment", "article", "video", "status"]
+        );
         assert!(select_scopes(&["wallet".to_string()]).is_err());
         assert_eq!(
             select_scopes(&["Video".to_string(), "video".to_string()]).unwrap(),

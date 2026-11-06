@@ -220,9 +220,7 @@ pub const MAX_CURSOR_ID_LEN: usize = 64;
 
 /// 校验游标里的 id 形态（ASCII 字母数字、非空、≤64）。
 pub fn cursor_id_is_valid(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_CURSOR_ID_LEN
-        && id.chars().all(|c| c.is_ascii_alphanumeric())
+    !id.is_empty() && id.len() <= MAX_CURSOR_ID_LEN && id.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 /// 解析 `"{at}:{id}"`。返回 `(before_at, before_id)`。
@@ -311,12 +309,23 @@ mod tests {
 
     #[test]
     fn cursor_shape_is_strict() {
-        assert_eq!(parse_cursor(None, true).unwrap(), (i64::MAX, "\u{10ffff}".into()));
+        assert_eq!(
+            parse_cursor(None, true).unwrap(),
+            (i64::MAX, "\u{10ffff}".into())
+        );
         assert_eq!(
             parse_cursor(Some("9:abc123"), true).unwrap(),
             (9, "abc123".into())
         );
-        for bad in ["9", "x:abc", "9:a b", "9:", "9:abc:9", "-1:abc", "9:../../x"] {
+        for bad in [
+            "9",
+            "x:abc",
+            "9:a b",
+            "9:",
+            "9:abc:9",
+            "-1:abc",
+            "9:../../x",
+        ] {
             assert_eq!(
                 parse_cursor(Some(bad), true),
                 Err(QueryError::MalformedCursor),
@@ -324,6 +333,9 @@ mod tests {
             );
         }
         // 非毫秒域（如 seq 游标）允许负数，但 id 形态照样收紧
-        assert_eq!(parse_cursor(Some("-5:ab"), false).unwrap(), (-5, "ab".into()));
+        assert_eq!(
+            parse_cursor(Some("-5:ab"), false).unwrap(),
+            (-5, "ab".into())
+        );
     }
 }

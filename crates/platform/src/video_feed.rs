@@ -1,8 +1,18 @@
 //! G05-04 视频号（`/api/videos`、`/api/video-creators`）。
 //!
-//! **转码完成才可发布**：`video_refs.state == "succeeded"` 是唯一门禁。
-//! 没有回调的源文件、失败/排队的作业都不能变成 feed 里的一条视频——否则
-//! 客户端只能拿到一个打不开的引用。
+//! **两道门禁，缺一不可**：
+//!
+//! 1. **转码完成才可发布**：`video_refs.state == "succeeded"`。
+//!    没有回调的源文件、失败/排队的作业都不能变成 feed 里的一条视频——否则
+//!    客户端只能拿到一个打不开的引用。
+//! 2. **审核过才可分发**（issue #132 验收第 1 条"发布→审核→播放"）：正文走
+//!    `wxlike_moderation` 判定。`Reject` 不落行；`Hold`（先审后发 + 软违规）
+//!    落成 `state = 'pending'`——**不写索引、不写附件引用、不进任何 feed**，
+//!    只有作者能看到自己的待审记录。运营通过 `/api/videos/{id}/review`
+//!    放行或拒绝，放行才补索引与引用，拒绝才撤收藏。
+//!
+//! 判定与写行在同一次同步临界区里完成，因此不存在"先 published 再改 pending"
+//! 的窗口。
 //!
 //! 三种 feed 是三个**可解释**的查询，不是"假装有推荐算法"：
 //!
@@ -22,8 +32,9 @@ use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::Authed;
+use crate::auth::{AdminAuth, Authed};
 use crate::content_index;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::favorites;
@@ -36,6 +47,15 @@ pub const MAX_VIDEO_PAGE: i64 = 50;
 
 pub const MAX_CAPTION_CHARS: usize = 500;
 pub const MAX_VIDEO_COMMENT_CHARS: usize = 1_000;
+
+/// `video_posts.state` 的四个取值。`pending` / `rejected` 都不进检索索引，
+/// 因此审核中的内容不可能出现在 `/api/search/content` 里。
+pub const STATE_PUBLISHED: &str = "published";
+pub const STATE_PENDING: &str = "pending";
+pub const STATE_REJECTED: &str = "rejected";
+pub const STATE_DELETED: &str = "deleted";
+/// 运营复核动作白名单。
+const REVIEW_ACTIONS: [&str; 2] = ["publish", "reject"];
 /// 热榜窗口。
 const HOT_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
@@ -54,6 +74,7 @@ pub fn routes() -> Router<PlatformState> {
             delete(remove_comment),
         )
         .route("/api/videos/{id}/report", post(report))
+        .route("/api/videos/{id}/review", post(review))
         .route("/api/video-creators/{id}/follow", post(follow))
         .route("/api/video-creators/{id}/follow", delete(unfollow))
 }
@@ -120,6 +141,18 @@ impl Platform {
             let c = self.db().lock();
             check_video_gate(&c, author, &media_id)?;
         }
+        // 审核判定不碰库（只过词表），所以放在取连接之前：先定状态，再写行。
+        let decision = self.moderate(caption);
+        let state = match decision.outcome {
+            // 硬违规：连行都不落，不制造一个"待审"的假象
+            wxlike_moderation::Outcome::Reject => {
+                return Err(PlatformError::Forbidden);
+            }
+            // 先审后发 + 软违规：落 pending，不给索引、不给引用、不进 feed
+            wxlike_moderation::Outcome::Hold => STATE_PENDING,
+            _ => STATE_PUBLISHED,
+        };
+        let labels = decision.labels.clone();
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let tx = c.transaction()?;
@@ -127,7 +160,7 @@ impl Platform {
         let existing: Option<String> = tx
             .query_row(
                 "SELECT id FROM video_posts
-                 WHERE author = ?1 AND media_id = ?2 AND state <> 'deleted'
+                 WHERE author = ?1 AND media_id = ?2 AND state IN ('published', 'pending')
                  ORDER BY seq LIMIT 1",
                 params![author, media_id],
                 |r| r.get(0),
@@ -141,26 +174,97 @@ impl Platform {
         let id = crate::auth::random_hex(8);
         tx.execute(
             "INSERT INTO video_posts(seq, id, author, media_id, caption, state, created_at)
-             VALUES(NULL, ?1, ?2, ?3, ?4, 'published', ?5)",
-            params![id, author, media_id, caption, now],
+             VALUES(NULL, ?1, ?2, ?3, ?4, ?6, ?5)",
+            params![id, author, media_id, caption, now, state],
         )?;
-        content_index::upsert(
-            &tx,
-            &content_index::IndexDoc {
-                doc_id: &id,
-                kind: "video",
-                owner: author,
-                audience: "public",
-                group_name: "",
-                title: caption,
-                body: caption,
-            },
-            now,
-        )?;
-        content_index::add_media_refs(&tx, &[media_id], "video", &id, author, now)?;
+        if state == STATE_PUBLISHED {
+            index_video(&tx, &id, author, caption, &media_id, now)?;
+        }
         let view = video_row(&tx, author, &id)?.ok_or(PlatformError::NotFound)?;
         tx.commit()?;
+        drop(c);
+        // 审计不能拿连接锁调用（`audit` 自己会 lock），所以放在事务提交之后。
+        if state != STATE_PUBLISHED || !labels.is_empty() {
+            self.audit(
+                author,
+                if state == STATE_PENDING {
+                    "video.review_pending"
+                } else {
+                    "video.publish_flagged"
+                },
+                &id,
+                &labels.join(","),
+            );
+        }
         Ok(view)
+    }
+
+    /// 运营复核待审视频。放行才补索引 + 附件引用 + 通知作者；拒绝撤收藏引用。
+    /// 非 `pending` 的行一律 404（与"不存在"同形），复核端点因此不是探测面。
+    ///
+    /// 返回 [`ReviewResult`] 而不是 [`VideoView`]：驳回后这条内容**对外不存在**，
+    /// 用视图当返回值会逼读一条本来就该读不到的行（`video_row` 只认
+    /// published/pending），事务会被自己的善后语句带崩。
+    pub fn review_video(&self, id: &str, actor: &str, action: &str) -> Result<ReviewResult> {
+        if !REVIEW_ACTIONS.contains(&action) {
+            return Err(PlatformError::BadInput("unknown review action"));
+        }
+        let id = validate::id(id)?.to_string();
+        let now = wxlike_core::types::now_ms() as i64;
+        let mut c = self.db().lock();
+        let tx = c.transaction()?;
+        let row: Option<(String, String, String, String)> = tx
+            .query_row(
+                "SELECT author, state, caption, media_id FROM video_posts WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let (author, state, caption, media_id) = row.ok_or(PlatformError::NotFound)?;
+        if state != STATE_PENDING {
+            return Err(PlatformError::NotFound);
+        }
+        let next = if action == "publish" {
+            STATE_PUBLISHED
+        } else {
+            STATE_REJECTED
+        };
+        tx.execute(
+            "UPDATE video_posts SET state = ?2 WHERE id = ?1",
+            params![id, next],
+        )?;
+        if action == "publish" {
+            index_video(&tx, &id, &author, &caption, &media_id, now)?;
+        } else {
+            // pending 本来就没进索引，这里删 0 行：走的是与"直接发布"完全
+            // 对称的撤权路径，不给驳回留一个"引用还在"的分支。
+            content_index::remove(&tx, &id)?;
+            content_index::remove_media_refs(&tx, "video", &id)?;
+            favorites::revoke_source(&tx, "video", &id)?;
+        }
+        inbox::notify(
+            &tx,
+            &author,
+            "video_review",
+            &format!("admin:{actor}"),
+            "video",
+            &id,
+            if action == "publish" {
+                "视频审核通过，已发布"
+            } else {
+                "视频未通过审核"
+            },
+            &format!("video_review:{id}"),
+            now,
+        )?;
+        tx.commit()?;
+        drop(c);
+        self.audit(actor, &format!("video.review_{action}"), &id, "");
+        Ok(ReviewResult {
+            id,
+            state: next.to_string(),
+            author,
+        })
     }
 
     pub fn video_visible(&self, viewer: &str, id: &str) -> Result<bool> {
@@ -176,11 +280,13 @@ impl Platform {
         let Some((author, state)) = row else {
             return Ok(false);
         };
-        if state != "published" {
-            return Ok(false);
-        }
         if author == viewer {
-            return Ok(true);
+            // 待审记录对作者自己可见（否则客户端无法展示"审核中"）；
+            // 已删/已驳回的一律按不存在处理。
+            return Ok(state == STATE_PUBLISHED || state == STATE_PENDING);
+        }
+        if state != STATE_PUBLISHED {
+            return Ok(false);
         }
         // is_blocked 自己会拿锁：这里必须先放下上面的 guard（连接不可重入）。
         if self.is_blocked(viewer, &author)? || self.is_blocked(&author, viewer)? {
@@ -221,9 +327,9 @@ impl Platform {
         let mut c = self.db().lock();
         let tx = c.transaction()?;
         let changed = tx.execute(
-            "UPDATE video_posts SET state = 'deleted'
-             WHERE id = ?1 AND author = ?2 AND state <> 'deleted'",
-            params![id, author],
+            "UPDATE video_posts SET state = ?3
+             WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
+            params![id, author, STATE_DELETED],
         )?;
         if changed == 0 {
             return Err(PlatformError::NotFound);
@@ -607,6 +713,33 @@ fn finish(
     Ok((views, next, has_more))
 }
 
+/// 索引 + 附件引用：只在内容真正可分发时写。审核通过走同一个函数，
+/// 所以"放行"与"直接发布"的投影完全一致，不会有两套写法。
+fn index_video(
+    tx: &rusqlite::Connection,
+    id: &str,
+    author: &str,
+    caption: &str,
+    media_id: &str,
+    now: i64,
+) -> Result<()> {
+    content_index::upsert(
+        tx,
+        &content_index::IndexDoc {
+            doc_id: id,
+            kind: "video",
+            owner: author,
+            audience: "public",
+            group_name: "",
+            title: caption,
+            body: caption,
+        },
+        now,
+    )?;
+    content_index::add_media_refs(tx, &[media_id.to_string()], "video", id, author, now)?;
+    Ok(())
+}
+
 /// 发布门禁：媒体必须是本人上传，且转码已 succeeded（唯一播放依据）。
 fn check_video_gate(c: &Connection, author: &str, media_id: &str) -> Result<()> {
     let media: Option<String> = c
@@ -699,7 +832,7 @@ fn video_row(c: &Connection, viewer: &str, id: &str) -> Result<Option<VideoView>
                     COALESCE(vr.thumb_url, '')
              FROM video_posts v JOIN users u ON u.id = v.author
              LEFT JOIN video_refs vr ON vr.video_id = v.media_id
-             WHERE v.id = ?1 AND v.state = 'published'",
+             WHERE v.id = ?1 AND v.state IN ('published', 'pending')",
             params![id, viewer],
             |r| {
                 Ok(VideoRow {
@@ -735,9 +868,17 @@ async fn publish(
     authed: Authed,
     ApiJson(body): ApiJson<PublishVideoBody>,
 ) -> std::result::Result<(StatusCode, Json<VideoView>), ApiError> {
+    let author = authed.user_id.clone();
+    let media_id = body.media_id.clone();
+    let caption = body.caption.clone();
     Ok((
         StatusCode::CREATED,
-        Json(platform.publish_video(&authed.user_id, &body.media_id, &body.caption)?),
+        Json(
+            offload(&platform, move |p| {
+                p.publish_video(&author, &media_id, &caption)
+            })
+            .await?,
+        ),
     ))
 }
 
@@ -772,7 +913,10 @@ async fn one(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<VideoView>, ApiError> {
-    Ok(Json(platform.video(&authed.user_id, &id)?))
+    let user = authed.user_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| p.video(&user, &id)).await?,
+    ))
 }
 
 async fn remove(
@@ -780,7 +924,8 @@ async fn remove(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_video(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| p.delete_video(&user, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -789,7 +934,8 @@ async fn like(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (added, count) = platform.like_video(&id, &authed.user_id)?;
+    let user = authed.user_id.clone();
+    let (added, count) = offload(&platform, move |p| p.like_video(&id, &user)).await?;
     Ok(Json(
         serde_json::json!({ "liked": true, "added": added, "count": count }),
     ))
@@ -800,7 +946,8 @@ async fn unlike(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (removed, count) = platform.unlike_video(&id, &authed.user_id)?;
+    let user = authed.user_id.clone();
+    let (removed, count) = offload(&platform, move |p| p.unlike_video(&id, &user)).await?;
     Ok(Json(
         serde_json::json!({ "liked": false, "removed": removed, "count": count }),
     ))
@@ -818,10 +965,18 @@ async fn comments(
     Path(id): Path<String>,
     Query(q): Query<CommentQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    if !platform.video_visible(&authed.user_id, &id)? {
-        return Err(ApiError::from(PlatformError::NotFound));
-    }
-    let items = platform.video_comments(&id, q.cursor, q.limit.unwrap_or(page::DEFAULT_PAGE))?;
+    let user = authed.user_id.clone();
+    let cursor = q.cursor;
+    let limit = q.limit.unwrap_or(page::DEFAULT_PAGE);
+    // 授权与取页在同一次 offload 里：分成两次会把"可见性判定"和"读评论"
+    // 之间留出 await 间隙，删帖/拉黑正好能挤进来。
+    let items = offload(&platform, move |p| {
+        if !p.video_visible(&user, &id)? {
+            return Err(PlatformError::NotFound);
+        }
+        p.video_comments(&id, cursor, limit)
+    })
+    .await?;
     let next = items.last().map(|c| c.seq).unwrap_or(0);
     Ok(Json(
         serde_json::json!({ "items": items, "next_cursor": next }),
@@ -834,7 +989,9 @@ async fn comment(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<CommentBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let id = platform.comment_video(&id, &authed.user_id, &body.text)?;
+    let user = authed.user_id.clone();
+    let text = body.text.clone();
+    let id = offload(&platform, move |p| p.comment_video(&id, &user, &text)).await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "comment_id": id })),
@@ -846,7 +1003,11 @@ async fn remove_comment(
     authed: Authed,
     Path((video_id, comment_id)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_video_comment(&video_id, &comment_id, &authed.user_id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| {
+        p.delete_video_comment(&video_id, &comment_id, &user)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -863,16 +1024,50 @@ async fn report(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ReportBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    if !platform.video_visible(&authed.user_id, &id)? {
-        return Err(ApiError::from(PlatformError::NotFound));
-    }
+    let id = validate::id(&id).map_err(ApiError::from)?.to_string();
     let reason = wxlike_report::Reason::parse(&body.reason)
         .ok_or_else(|| ApiError::from(PlatformError::BadInput("unknown report reason")))?;
-    let ticket = platform.create_report(&authed.user_id, "video", &id, reason, &body.detail)?;
+    let user = authed.user_id.clone();
+    let detail = body.detail.clone();
+    let ticket = offload(&platform, move |p| {
+        if !p.video_visible(&user, &id)? {
+            return Err(PlatformError::NotFound);
+        }
+        p.create_report(&user, "video", &id, reason, &detail)
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "report_id": ticket.id })),
     ))
+}
+
+#[derive(Deserialize)]
+struct ReviewBody {
+    /// `publish` = 放行，`reject` = 驳回。
+    pub action: String,
+}
+
+/// 复核结果：只回状态机事实，不回内容视图（驳回后内容对外不存在）。
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ReviewResult {
+    pub id: String,
+    pub state: String,
+    pub author: String,
+}
+
+/// 运营复核待审视频。`AdminAuth` 排在 body 之前：没令牌就是 403，
+/// 不会先解析 body 而把动作枚举暴露出去。
+async fn review(
+    State(platform): State<PlatformState>,
+    admin: AdminAuth,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ReviewBody>,
+) -> std::result::Result<Json<ReviewResult>, ApiError> {
+    let actor = admin.actor.clone();
+    let action = body.action.clone();
+    let result = offload(&platform, move |p| p.review_video(&id, &actor, &action)).await?;
+    Ok(Json(result))
 }
 
 async fn follow(
@@ -880,7 +1075,8 @@ async fn follow(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.follow_creator(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| p.follow_creator(&user, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -889,6 +1085,7 @@ async fn unfollow(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.unfollow_creator(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| p.unfollow_creator(&user, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

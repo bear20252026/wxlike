@@ -138,7 +138,8 @@ mod tests {
     #[test]
     fn single_author_cannot_flood_the_board() {
         // 同一个作者刷 50 篇，另一个作者只写了 1 篇别的词
-        let mut docs: Vec<TrendDoc<'_>> = (0..50).map(|i| doc("spammer", "hotword", T0 + i)).collect();
+        let mut docs: Vec<TrendDoc<'_>> =
+            (0..50).map(|i| doc("spammer", "hotword", T0 + i)).collect();
         docs.push(doc("real", "quietterm", T0));
         let opts = TrendOptions {
             window_ms: 60_000,
@@ -199,7 +200,14 @@ mod tests {
     #[test]
     fn limit_and_min_authors_are_honoured() {
         let docs = [doc("a", "alpha", T0), doc("b", "beta", T0)];
-        let ranked = rank_trends(&docs, T0, &TrendOptions { limit: 1, ..Default::default() });
+        let ranked = rank_trends(
+            &docs,
+            T0,
+            &TrendOptions {
+                limit: 1,
+                ..Default::default()
+            },
+        );
         assert_eq!(ranked.len(), 1);
         // 两篇同作者的文档，每个词只有 1 个作者；min_authors=2 时全被过滤
         let docs = [doc("a", "alpha", T0), doc("a", "beta", T0 + 1)];

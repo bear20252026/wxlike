@@ -136,7 +136,10 @@ impl SearchService {
 
     /// 已注册的 scope 名（给自省/文档用）。
     pub fn scopes(&self) -> Vec<String> {
-        self.providers.iter().map(|p| p.kind().to_string()).collect()
+        self.providers
+            .iter()
+            .map(|p| p.kind().to_string())
+            .collect()
     }
 
     /// `scopes` 为空 = 全部已注册域；不认识的 scope 直接报错，
@@ -432,7 +435,9 @@ mod tests {
         let first = svc.search("u", "00", &[], None, 2).unwrap();
         assert_eq!(ids(&first), ["a0045", "m0030"]);
         assert!(first.has_more);
-        let second = svc.search("u", "00", &[], Some(&first.next_cursor), 2).unwrap();
+        let second = svc
+            .search("u", "00", &[], Some(&first.next_cursor), 2)
+            .unwrap();
         assert_eq!(ids(&second), ["m0010"]);
         assert!(!second.has_more);
     }

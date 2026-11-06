@@ -969,19 +969,16 @@ async fn publish(
         draft_id,
     } = body;
     let author = authed.user_id.clone();
-    let id = offload(
-        &platform,
-        move |p| {
-            p.publish_moment_with(
-                &author,
-                &text,
-                &media_ids,
-                visibility,
-                &audience_group,
-                draft_id.as_deref(),
-            )
-        },
-    )
+    let id = offload(&platform, move |p| {
+        p.publish_moment_with(
+            &author,
+            &text,
+            &media_ids,
+            visibility,
+            &audience_group,
+            draft_id.as_deref(),
+        )
+    })
     .await?;
     Ok((
         StatusCode::CREATED,
@@ -1002,19 +999,16 @@ async fn save_draft(
         audience_group,
     } = body;
     let author = authed.user_id.clone();
-    let id = offload(
-        &platform,
-        move |p| {
-            p.save_moment_draft(
-                &author,
-                draft_id.as_deref(),
-                &text,
-                &media_ids,
-                visibility,
-                &audience_group,
-            )
-        },
-    )
+    let id = offload(&platform, move |p| {
+        p.save_moment_draft(
+            &author,
+            draft_id.as_deref(),
+            &text,
+            &media_ids,
+            visibility,
+            &audience_group,
+        )
+    })
     .await?;
     Ok((
         StatusCode::CREATED,
@@ -1038,7 +1032,10 @@ async fn remove_draft(
 ) -> std::result::Result<StatusCode, ApiError> {
     let draft_id = validate::id(&draft_id).map_err(ApiError::from)?.to_string();
     let author = authed.user_id.clone();
-    offload(&platform, move |p| p.delete_moment_draft(&author, &draft_id)).await?;
+    offload(&platform, move |p| {
+        p.delete_moment_draft(&author, &draft_id)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1055,7 +1052,9 @@ async fn report(
     Path(moment_id): Path<String>,
     ApiJson(body): ApiJson<ReportBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let reason = wxlike_report::Reason::parse(&body.reason)
         .ok_or_else(|| ApiError::from(PlatformError::BadInput("unknown report reason")))?;
     let viewer = authed.user_id.clone();
@@ -1078,7 +1077,9 @@ async fn detail(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<Json<MomentDetail>, ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let viewer = authed.user_id.clone();
     let detail = offload(&platform, move |p| {
         let (_, head) = p.moment_row(&moment_id)?.ok_or(PlatformError::NotFound)?;
@@ -1106,7 +1107,9 @@ async fn remove(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let viewer = authed.user_id.clone();
     // 只有作者能删：`delete_moment` 的 WHERE 里就带 author，所以"不是你的"
     // 与"不存在/已删"一起落到同一个 404 —— 不再用 403 泄露"这个 id 存在"。
@@ -1132,7 +1135,9 @@ async fn like(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let viewer = authed.user_id.clone();
     let created = offload(&platform, move |p| {
         require_visible(p, &moment_id, &viewer)?;
@@ -1148,14 +1153,18 @@ async fn unlike(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let viewer = authed.user_id.clone();
     let removed = offload(&platform, move |p| {
         require_visible(p, &moment_id, &viewer)?;
         p.unlike_moment(&moment_id, &viewer)
     })
     .await?;
-    Ok(Json(serde_json::json!({ "liked": false, "removed": removed })))
+    Ok(Json(
+        serde_json::json!({ "liked": false, "removed": removed }),
+    ))
 }
 
 async fn remove_comment(
@@ -1163,8 +1172,12 @@ async fn remove_comment(
     authed: Authed,
     Path((moment_id, comment_id)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
-    let comment_id = validate::id(&comment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
+    let comment_id = validate::id(&comment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let viewer = authed.user_id.clone();
     let deleted = offload(&platform, move |p| {
         require_visible(p, &moment_id, &viewer)?;
@@ -1184,7 +1197,9 @@ async fn comment(
     Path(moment_id): Path<String>,
     ApiJson(body): ApiJson<CommentBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let moment_id = validate::id(&moment_id)
+        .map_err(ApiError::from)?
+        .to_string();
     let viewer = authed.user_id.clone();
     let text = body.text.clone();
     let reply_to = body.reply_to_comment_id.clone();
