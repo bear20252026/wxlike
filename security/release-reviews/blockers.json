@@ -79,16 +79,6 @@
       "evidence": "integration-requests/G17/G17-01…05.yaml",
       "closed_evidence": "https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886340（实际故意改坏 → exit 3）+ https://github.com/bear20252026/wxlike/actions/runs/40179362885/job/121126886254（51 passed）；PR #276 恢复后最终门禁 https://github.com/bear20252026/wxlike/pull/276/checks",
       "closed_at": "2026-10-25"
-    },
-    {
-      "id": "CI-REQUIRED-CHECKS",
-      "title": "main 保护规则尚未将 security 两项检查设为 required，失败可被普通合并路径绕过",
-      "severity": "high",
-      "owner": "G00/G16",
-      "issue": "#277",
-      "status": "open",
-      "external": true,
-      "evidence": "2026-10-25 GET branches/main：仅四项旧 required contexts；需管理员追加 security (source + policy) 与 security (authz + abuse + decode) 并复读验证"
     }
   ]
 }

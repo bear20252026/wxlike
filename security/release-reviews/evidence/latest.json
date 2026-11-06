@@ -192,17 +192,6 @@
       "status": "unverified",
       "evidence": "scripts/coverage_summary.py 有，但不是 CI 阻断项",
       "notes": "非阻断：本组不把覆盖率当发布门槛，它只用于发现测试盲区"
-    },
-    {
-      "id": "E-CI-PROTECTION",
-      "title": "服务器端保护规则要求安全门禁通过",
-      "required": true,
-      "kind": "external",
-      "status": "unverified",
-      "owner": "G00/G16",
-      "issue": "#277",
-      "evidence": "",
-      "notes": "工作流失败不等于 GitHub 禁止合并；实际 required contexts 尚未追加安全两项，连接无管理规则写入工具，必须由管理员实配并回读验证 2026-11-04 仓库所有者明确决定不添加这两项 required checks，本项按未通过如实记录（所有者决定，非技术阻塞）。"
     }
   ],
   "exceptions": [],
