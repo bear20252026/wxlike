@@ -13,6 +13,7 @@
 //! 由触发器拒绝 UPDATE/DELETE。追责链和补账分录都不允许"事后编辑"。
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::Connection;
@@ -38,6 +39,10 @@ const CONNECTION_PRAGMAS: &str = concat!(
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    /// 审计留痕写入失败次数。放在库里而不是 [`crate::audit::AuditLog`] 上：
+    /// 六个子域各持一个 `AuditLog` 实例，写的是同一张 `g14_audit`，
+    /// 所以"掉了多少条留痕"必须是一个进程级总数，而不是六份各自计数。
+    audit_write_failures: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -74,12 +79,23 @@ impl Store {
         }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            audit_write_failures: Arc::new(AtomicU64::new(0)),
         })
     }
 
     /// 锁中毒只可能发生在一次 panic 中途，连接本身还活着：恢复守卫比整进程崩掉好。
     pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// 记一次留痕写入失败，返回累计值（1-based，日志里直接可读）。
+    pub(crate) fn note_audit_write_failure(&self) -> u64 {
+        self.audit_write_failures.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// 累计留痕写入失败次数。`/api/g14/audit/verify` 与健康面都读它。
+    pub fn audit_write_failures(&self) -> u64 {
+        self.audit_write_failures.load(Ordering::Relaxed)
     }
 
     pub fn user_version(&self) -> Result<i64> {

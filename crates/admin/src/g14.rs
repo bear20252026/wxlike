@@ -9,6 +9,9 @@
 //! * **读**允许静态运营令牌或后台会话；**写**必须后台会话（可追责），且过
 //!   [`crate::auth`] 的资源矩阵 + 限流；敏感动作还要步进验证。
 //! * 每个响应带 `trace`，与审计里那一行对得上号。
+//! * **凭据先于请求体**（#245）：路由层的 `auth::gate` 包在整个 adminx router 外面，
+//!   所以未认证的请求不会先被 `ApiJson` 解析、也就拿不到 422 里的字段名。
+//!   本卡的 5 条路由另外用 `auth::AdminAuth` 提取器直接拿到身份结论。
 
 use std::sync::Arc;
 
@@ -237,30 +240,135 @@ struct Caller {
     session: Session,
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-}
-
 fn new_trace() -> String {
     format!("g14_{}", wxlike_platform::random_hex(8))
 }
 
-/// 读：静态运营令牌或后台会话。返回 `None` 表示用的是静态令牌（没有"人"）。
-fn read_caller(app: &Shared, headers: &HeaderMap, trace: &str) -> Result<Option<Caller>> {
-    let presented = bearer(headers).ok_or(AdminError::Unauthorized)?;
-    let session = app.accounts().session(presented)?;
-    let audience = auth::audience_of(presented, &app.config().token, session.is_some());
-    auth::require_admin_audience(audience)?;
-    let _ = trace;
-    Ok(session.map(|s| Caller { session: s }))
+// ---------------------------------------------------------------------------
+// 认证（一处实现，两种接法）
+// ---------------------------------------------------------------------------
+//
+// [`auth::from_parts`] 是唯一的凭据→身份判定。它被两条路共用：
+//
+// * 路由层的 `auth::gate`：跑在**任何 body 解析之前**（#245 的顺序契约由它保证）。
+// * handler 参数上的 `auth::AdminAuth`：本卡的 5 条路由用这种，
+//   这样"是谁、什么角色"不需要每个 handler 自己再从 header 里刨一遍。
+//
+// 兄弟卡（G14-02/03/04/05）的 handler 仍然收 `HeaderMap` 并调下面的
+// `admit`。它们的**顺序**已经是安全的（门在路由外面），只是多一次会话查询；
+// 换成提取器属于逐 handler 的机械改写，留给各自那张卡，本卡不跨卡改签名。
+
+/// 老接法：从 header 认证。新代码请直接用 `incoming: auth::AdminAuth` 参数。
+fn admit(app: &Shared, headers: &HeaderMap) -> Result<auth::AdminAuth> {
+    auth::authenticate(app.as_ref(), auth::bearer(headers))
 }
 
-/// 写：必须是后台会话 + 角色矩阵 + 限流。
+/// 读面的角色：静态令牌按 `viewer` 的读面处理——能看运营面板，
+/// 但看不到隐私请求这类逐人数据。
+fn read_via(incoming: &auth::AdminAuth, resource: Resource) -> Result<Role> {
+    match &incoming.session {
+        None => Ok(Role::Viewer),
+        Some(session) => {
+            auth::require(session.role, resource, Action::Read)?;
+            Ok(session.role)
+        }
+    }
+}
+
+/// 留痕用的 `(actor, role)`。静态令牌给 [`auth::OPERATOR_ACTOR`]，不留空串。
+fn actor_role(incoming: &auth::AdminAuth) -> (String, Role) {
+    (incoming.actor().to_string(), incoming.role())
+}
+
+/// 写：必须是后台会话 + 角色矩阵 + 限流。`incoming` 已经认证过。
+fn write_via(
+    app: &Shared,
+    incoming: &auth::AdminAuth,
+    resource: Resource,
+    action: Action,
+    trace: &str,
+) -> Result<Caller> {
+    let session = match incoming.writer() {
+        Ok(session) => session.clone(),
+        Err(err) => {
+            // 静态令牌试着写也是越权尝试：同样要留痕，否则"运维令牌被人捡到
+            // 后试过哪些动作"这条线索根本不存在。
+            record_denial(
+                app,
+                incoming.actor(),
+                incoming.audience.as_str(),
+                resource,
+                action,
+                trace,
+                &err,
+            );
+            return Err(err);
+        }
+    };
+    let caller = Caller { session };
+    app.g14().limiter.check(&caller.session.actor)?;
+    match auth::require(caller.session.role, resource, action) {
+        Ok(()) => Ok(caller),
+        Err(err) => {
+            record_denial(
+                app,
+                &caller.session.actor,
+                caller.session.role.as_str(),
+                resource,
+                action,
+                trace,
+                &err,
+            );
+            Err(err)
+        }
+    }
+}
+
+/// 越权尝试落一条 `Denied` 审计。
+///
+/// 写失败**不改变准入结论**（该 403 还是 403），但绝不静默：
+/// [`crate::audit::AuditLog::append_denied`] 会计数，
+/// `/api/g14/audit/verify` 的 `append_failures` 能看到掉了几条。
+fn record_denial(
+    app: &Shared,
+    actor: &str,
+    role: &str,
+    resource: Resource,
+    action: Action,
+    trace: &str,
+    err: &AdminError,
+) {
+    app.g14().audit.append_denied(
+        crate::audit::Draft::new(actor, role, "g14.denied", resource.as_str(), "")
+            .reason("权限不足")
+            .trace(trace)
+            .outcome(crate::audit::Outcome::Denied)
+            .detail(serde_json::json!({
+                "action": action.as_str(),
+                "error": err.to_string(),
+            })),
+    );
+}
+
+/// 只校验"是后台会话"：步进验证管的是会话本身，不针对某个资源。
+/// 用资源矩阵去卡它会让"publisher 想签包先要 audit 读权限"这种荒唐事发生。
+fn session_via(app: &Shared, incoming: &auth::AdminAuth) -> Result<Caller> {
+    if incoming.audience == Audience::Operator {
+        return Err(AdminError::Forbidden(
+            "静态令牌不能开步进验证窗口：用登录后的会话".into(),
+        ));
+    }
+    let session = incoming.session.clone().ok_or(AdminError::SessionExpired)?;
+    app.g14().limiter.check(&session.actor)?;
+    Ok(Caller { session })
+}
+
+// --- 老接法的薄壳：认证 + 上面那套判定，签名保持不变（兄弟卡的路由不受影响）---
+//
+// `trace` 参数留着不是为了用，是为了让 G14-02/03/04/05 的 handler 一行都不用改
+// （调用点已经写着 `read_role(&app, &headers, R, &trace)?`）。
+// 每张卡把自己的路由换成 `incoming: auth::AdminAuth` 时，这个参数就该删了。
+
 fn write_caller(
     app: &Shared,
     headers: &HeaderMap,
@@ -268,85 +376,33 @@ fn write_caller(
     action: Action,
     trace: &str,
 ) -> Result<Caller> {
-    let presented = bearer(headers).ok_or(AdminError::Unauthorized)?;
-    let session = app.accounts().session(presented)?;
-    let audience = auth::audience_of(presented, &app.config().token, session.is_some());
-    auth::require_admin_audience(audience)?;
-    // 静态运营令牌没有"人"，写不出可追责的留痕：给一句能照做的拒绝，而不是 401。
-    if audience == Audience::Operator {
-        return Err(AdminError::Forbidden(
-            "静态令牌只能读：写操作必须用登录后的会话（POST /api/login）".into(),
-        ));
-    }
-    let session = session.ok_or(AdminError::SessionExpired)?;
-    let caller = Caller { session };
-    app.g14().limiter.check(&caller.session.actor)?;
-    match auth::require(caller.session.role, resource, action) {
-        Ok(()) => Ok(caller),
-        Err(err) => {
-            // 越权尝试也要留痕：谁在试什么，运维得看得见
-            let _ = app.g14().audit.append(
-                crate::audit::Draft::new(
-                    &caller.session.actor,
-                    caller.session.role.as_str(),
-                    "g14.denied",
-                    resource.as_str(),
-                    "",
-                )
-                .reason("权限不足")
-                .trace(trace)
-                .outcome(crate::audit::Outcome::Denied)
-                .detail(serde_json::json!({"action": action.as_str(), "error": err.to_string()})),
-            );
-            Err(err)
-        }
-    }
-}
-
-/// 只校验"是后台会话"：步进验证管的是会话本身，不针对某个资源。
-/// 用资源矩阵去卡它会让"publisher 想签包先要 audit 读权限"这种荒唐事发生。
-fn session_caller(app: &Shared, headers: &HeaderMap) -> Result<Caller> {
-    let presented = bearer(headers).ok_or(AdminError::Unauthorized)?;
-    let session = app.accounts().session(presented)?;
-    let audience = auth::audience_of(presented, &app.config().token, session.is_some());
-    auth::require_admin_audience(audience)?;
-    if audience == Audience::Operator {
-        return Err(AdminError::Forbidden(
-            "静态令牌不能开步进验证窗口：用登录后的会话".into(),
-        ));
-    }
-    let session = session.ok_or(AdminError::SessionExpired)?;
-    app.g14().limiter.check(&session.actor)?;
-    Ok(Caller { session })
+    let incoming = admit(app, headers)?;
+    write_via(app, &incoming, resource, action, trace)
 }
 
 /// 读也要角色够（`viewer` 能看的面里没有 `privacy`）。
 fn read_role(app: &Shared, headers: &HeaderMap, resource: Resource, trace: &str) -> Result<Role> {
-    let caller = read_caller(app, headers, trace)?;
-    match caller {
-        // 静态令牌按 viewer 的读面处理：能看运营面，但看不到隐私请求这类逐人数据
-        None => Ok(Role::Viewer),
-        Some(c) => {
-            auth::require(c.session.role, resource, Action::Read)?;
-            Ok(c.session.role)
-        }
-    }
+    let incoming = admit(app, headers)?;
+    let _ = trace;
+    read_via(&incoming, resource)
 }
 
 fn actor_of(app: &Shared, headers: &HeaderMap, trace: &str) -> Result<(String, Role)> {
-    match read_caller(app, headers, trace)? {
-        None => Ok(("operator-token".to_string(), Role::Viewer)),
-        Some(c) => Ok((c.session.actor, c.session.role)),
-    }
+    let incoming = admit(app, headers)?;
+    let _ = trace;
+    Ok(actor_role(&incoming))
 }
 
 // ---------------------------------------------------------------------------
-// 身份与审计
+// 身份与审计（本卡的路由：凭据由提取器给，handler 不再自己刨 header）
 // ---------------------------------------------------------------------------
 
-async fn matrix(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
+async fn matrix(
+    State(app): State<Shared>,
+    incoming: auth::AdminAuth,
+) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Audit, &trace)?;
+    read_via(&incoming, Resource::Audit)?;
     Ok(Json(serde_json::json!({
         "trace": trace,
         "grants": auth::grants(),
@@ -360,13 +416,16 @@ struct StepUpBody {
     code: String,
 }
 
+/// 步进验证。这条路由的 body 里有**动态码**，所以顺序尤其重要：
+/// 提取器先跑，未认证的请求只会拿到 401/403，不会拿到
+/// `missing field \`code\``（那等于告诉外人"这里的字段叫 code"）。
 async fn stepup_verify(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     ApiJson(body): ApiJson<StepUpBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = session_caller(&app, &headers)?;
+    let caller = session_via(&app, &incoming)?;
     let state = app
         .g14()
         .stepup
@@ -376,21 +435,21 @@ async fn stepup_verify(
 
 async fn stepup_state(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = session_caller(&app, &headers)?;
+    let caller = session_via(&app, &incoming)?;
     let state = app.g14().stepup.state(&caller.session.actor)?;
     Ok(Json(serde_json::json!({"trace": trace, "stepup": state})))
 }
 
 async fn audit_query(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Audit, &trace)?;
+    read_via(&incoming, Resource::Audit)?;
     let filter = AuditFilter {
         actor: qstr(&q, "actor"),
         action: qstr(&q, "action"),
@@ -413,10 +472,10 @@ async fn audit_query(
 
 async fn audit_verify(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Audit, &trace)?;
+    read_via(&incoming, Resource::Audit)?;
     let report = app.g14().audit.verify()?;
     Ok(Json(serde_json::json!({"trace": trace, "chain": report})))
 }
