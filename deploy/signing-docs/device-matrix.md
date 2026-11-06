@@ -40,5 +40,6 @@ python ci/jobs/mobile/check_device_evidence.py \
 
 ## 当前状态
 
-**没有**任何真机记录。`MOBILE-DEVICE-EVIDENCE` 缺口保持打开；`release` job
-不得在没有通过上述校验的情况下发布移动端。
+**没有**任何真机记录。`MOBILE-DEVICE-EVIDENCE` 缺口保持打开；自 2026-11-05 所有者决定后，
+`release` job 默认不再因为它拒绝发布（`--require-clean` 不再检查真机证据），所以移动端
+产物可能在未校验的情况下被发出——这条判断要靠自己读缺口状态，别指望门禁兜底。

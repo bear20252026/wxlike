@@ -30,7 +30,9 @@ declares a wasm32 target (today `wxlike-client-web`), and the remaining gap —
 wiring the wasm module into the `apps/desktop-web` build through a
 wasm-bindgen entry — is tracked in `policy/known-gaps.json`. The **release**
 workflow calls `check_contracts.py --require-registry` and
-`check_gaps.py --release`, which fails while any `blocks_release` gap is open.
+`check_gaps.py --release`, which fails while any `blocks_release` gap is open —
+since 2026-11-05 that is only `PAYMENT-CALLBACK-REPLAY`; the other gaps stay
+`status: open` as work items without blocking publication.
 
 ## Path selection
 
