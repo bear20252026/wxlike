@@ -76,7 +76,7 @@ const COLS: &str = "id, from_uid, to_uid, message, status, created_at";
 
 /// `SQLITE_CONSTRAINT_UNIQUE`（2067）。只有这一种约束冲突意味着"已经有一行了"，
 /// 其它约束问题（非空、检查、外键）仍然要照原样报错，不许一起吞掉。
-const CONSTRAINT_UNIQUE: i32 = rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE as i32;
+const CONSTRAINT_UNIQUE: i32 = rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE;
 
 /// 一行的**原文**读法：`status` 先按字符串取，判定留到 [`decode`]。
 ///
@@ -116,20 +116,18 @@ fn decode(raw: RawRequest) -> Result<Request> {
 
 fn load(conn: &Connection, id: &str) -> Result<Option<Request>> {
     let sql = format!("SELECT {COLS} FROM friend_requests WHERE id = ?1");
-    Ok(conn
-        .query_row(&sql, params![id], row_of)
+    conn.query_row(&sql, params![id], row_of)
         .optional()?
         .map(decode)
-        .transpose()?)
+        .transpose()
 }
 
 fn find_between(conn: &Connection, from: &str, to: &str) -> Result<Option<Request>> {
     let sql = format!("SELECT {COLS} FROM friend_requests WHERE from_uid = ?1 AND to_uid = ?2");
-    Ok(conn
-        .query_row(&sql, params![from, to], row_of)
+    conn.query_row(&sql, params![from, to], row_of)
         .optional()?
         .map(decode)
-        .transpose()?)
+        .transpose()
 }
 
 /// 是否有一方拉黑了另一方（任一方向都算）。

@@ -33,6 +33,9 @@ impl From<wxlike_relations::RelError> for PlatformError {
             E::Forbidden(_) => Self::Forbidden,
             E::NotFound(_) => Self::NotFound,
             E::Conflict(msg) => Self::Conflict(msg.to_string()),
+            // 坏数据是服务端故障（500），不伪装成客户端错误：宁可失败，
+            // 也不能让读不出的行折成"这条关系正常"。见 `RelError::Corrupt` 文档。
+            E::Corrupt(msg) => Self::Internal(format!("corrupt relation row: {msg}")),
             E::Db(e) => Self::Sqlite(e),
             E::Json(e) => Self::Codec(e),
         }

@@ -132,11 +132,10 @@ pub fn issue_default(
 /// 单行查询（含已用/已撤销）。
 pub fn find(conn: &Connection, raw: &str) -> Result<Option<ChainRow>> {
     let sql = format!("{SELECT_ROW} WHERE token_hash = ?1");
-    Ok(conn
-        .query_row(&sql, params![digest(raw)], raw_of)
+    conn.query_row(&sql, params![digest(raw)], raw_of)
         .optional()?
         .map(decode)
-        .transpose()?)
+        .transpose()
 }
 
 /// 轮换。失败即封闭：任何异常状态都会顺手作废整条链。

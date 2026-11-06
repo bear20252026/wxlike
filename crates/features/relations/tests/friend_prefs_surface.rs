@@ -360,7 +360,7 @@ fn message_gate_covers_every_relation_shape() {
         port::MessageGate::Blocked
     );
     // 被拉黑的一方问"我们是不是共同群"——闸门不给任何额外线索。
-    assert_eq!(port.is_blocked("u2", "u1").unwrap(), true);
-    assert_eq!(port.is_blocked("u1", "u2").unwrap(), false);
+    assert!(port.is_blocked("u2", "u1").unwrap());
+    assert!(!port.is_blocked("u1", "u2").unwrap());
     assert!(!port.are_friends("u1", "u2").unwrap());
 }
