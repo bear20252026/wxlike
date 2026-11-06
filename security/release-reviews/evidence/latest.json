@@ -15,7 +15,7 @@
       "android",
       "web"
     ],
-    "note": "五个平台仅有 CI 构建/测试证据；iOS 未核验。E-DEVICE 与 E-ENTRY 未通过，因此禁止据此宣称生产或全功能可用。"
+    "note": "五个平台仅有 CI 构建/测试证据；iOS 未核验。真机、供应商与逐入口接线三项已按 2026-11-05 所有者决定从本证据包移除，本包不再对其作任何断言；因此即使 release check 通过，也不得据此宣称生产可用或全功能可用。"
   },
   "platforms": [
     {
@@ -55,17 +55,6 @@
     }
   ],
   "items": [
-    {
-      "id": "E-ENTRY",
-      "title": "入口完成率（331 个语法位置 → 实际接线）",
-      "required": true,
-      "kind": "checklist",
-      "status": "blocked",
-      "owner": "G00",
-      "issue": "#80",
-      "evidence": "docs/full-platform-delivery/entry_seed.csv（331 条）",
-      "notes": "本次没有逐入口核验全 UI 接线，不能以任务关闭数量计算功能完成率"
-    },
     {
       "id": "E-CONTRACT",
       "title": "契约与生成物冻结",
@@ -171,29 +160,7 @@
       "kind": "test",
       "status": "pass",
       "evidence": "https://github.com/bear20252026/wxlike/actions/runs/40177575703；workspace 测试；具体边界见 docs/threat-model.md",
-      "notes": "只覆盖库层；设备端安全码展示与身份变更告警属设备面（见 E-DEVICE）"
-    },
-    {
-      "id": "E-DEVICE",
-      "title": "设备证据抽查（真机）",
-      "required": true,
-      "kind": "device",
-      "status": "unverified",
-      "owner": "G16",
-      "issue": "#97",
-      "evidence": "",
-      "notes": "没有任何真机验收记录可供抽查；G17 不接受『开发者自报通过』"
-    },
-    {
-      "id": "E-SUPPLIER",
-      "title": "真实供应商证据（短信 / 支付 / 推送）",
-      "required": true,
-      "kind": "external",
-      "status": "unverified",
-      "owner": "G06",
-      "issue": "#87",
-      "evidence": "",
-      "notes": "当前只有 sandbox/mock 通道；按任务单『不能用 mock 通过最终集成验收』，此项未完成"
+      "notes": "只覆盖库层；设备端安全码展示与身份变更告警属设备面，本包不覆盖"
     },
     {
       "id": "E-CI-GATES",
@@ -225,17 +192,6 @@
       "status": "unverified",
       "evidence": "scripts/coverage_summary.py 有，但不是 CI 阻断项",
       "notes": "非阻断：本组不把覆盖率当发布门槛，它只用于发现测试盲区"
-    },
-    {
-      "id": "E-CI-PROTECTION",
-      "title": "服务器端保护规则要求安全门禁通过",
-      "required": true,
-      "kind": "external",
-      "status": "unverified",
-      "owner": "G00/G16",
-      "issue": "#277",
-      "evidence": "",
-      "notes": "工作流失败不等于 GitHub 禁止合并；实际 required contexts 尚未追加安全两项，连接无管理规则写入工具，必须由管理员实配并回读验证 2026-11-04 仓库所有者明确决定不添加这两项 required checks，本项按未通过如实记录（所有者决定，非技术阻塞）。"
     }
   ],
   "exceptions": [],
