@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import yaml
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -59,6 +60,68 @@ class PathSelectionTest(unittest.TestCase):
         self.assertFalse(result["full"])
         self.assertTrue(result["targets"]["rust"])
         self.assertFalse(result["targets"]["ui"])
+
+    def test_release_ledger_paths_select_no_ci_jobs(self):
+        """Ledger/audit-tool paths must not cost the full matrix.
+
+        They stay covered by the un-filtered security workflow (see
+        SecurityWorkflowCoverageTest) - that is what makes ignoring them safe.
+        """
+        for path in (
+            "security/release-reviews/evidence/latest.json",
+            "security/release-reviews/blockers.json",
+            "security/advisory-policy/advisories.json",
+            "tools/source-audit/sourceaudit/release.py",
+            "tests/security/tests/authorization.rs",
+            "third_party/reviews/registry.json",
+        ):
+            result = select_targets.classify([path], self.policy)
+            self.assertFalse(result["full"], path)
+            self.assertFalse(any(result["targets"].values()), path)
+
+    def test_integration_requests_select_ci_only(self):
+        result = select_targets.classify(["integration-requests/G17/G17-05.yaml"], self.policy)
+        self.assertFalse(result["full"])
+        self.assertEqual([name for name, on in result["targets"].items() if on], ["ci"])
+
+    def test_composition_seed_selects_contract_only(self):
+        result = select_targets.classify(["composition/entries.json"], self.policy)
+        self.assertFalse(result["full"])
+        self.assertEqual([name for name, on in result["targets"].items() if on], ["contract"])
+
+    def test_codegen_still_forces_full_matrix(self):
+        """tools/codegen emits contract baselines - deliberately left unclassified."""
+        self.assertTrue(select_targets.classify(["tools/codegen/main.rs"], self.policy)["full"])
+
+
+class SecurityWorkflowCoverageTest(unittest.TestCase):
+    """Why the ignored ledger/audit paths are safe: security.yml runs on every PR.
+
+    If someone adds a `paths:` filter to security.yml, ignoring those globs in
+    paths.json stops being a cost saving and becomes a coverage hole. This test
+    is the tripwire.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "security.yml").read_text(encoding="utf-8")
+        )
+
+    def test_security_workflow_is_not_path_filtered(self):
+        on = self.workflow.get("on", self.workflow.get(True))
+        for event in ("pull_request", "push"):
+            self.assertIn(event, on, f"security.yml no longer triggers on {event}")
+            node = on[event]
+            if isinstance(node, dict):
+                self.assertNotIn("paths", node, f"security.yml {event} gained a paths filter")
+
+    def test_ignored_globs_are_still_executed(self):
+        steps = self.workflow["jobs"]["static"]["steps"] + self.workflow["jobs"]["regression"]["steps"]
+        script = "\n".join(step.get("run", "") for step in steps)
+        for needle in ("tools/source-audit/tests", "sourceaudit authz check", "sourceaudit advisories check"):
+            self.assertIn(needle, script)
+        self.assertIn("tests/security/Cargo.toml", script)
 
 
 class GateTest(unittest.TestCase):

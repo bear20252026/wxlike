@@ -32,7 +32,8 @@
       "crates/core/src/envelope.rs",
       "crates/core/src/proto.rs",
       "ui/src/web/wire.ts",
-      "apps/mobile/lib/src/rust/**"
+      "apps/mobile/lib/src/rust/**",
+      "composition/**"
     ],
     "ui": [
       "ui/**",
@@ -51,7 +52,8 @@
     ],
     "ci": [
       "ci/**",
-      ".github/**"
+      ".github/**",
+      "integration-requests/**"
     ]
   },
   "ignore": [
@@ -61,6 +63,10 @@
     "LICENSE",
     "THIRD-PARTY-NOTICES.md",
     ".gitignore",
-    ".gitattributes"
+    ".gitattributes",
+    "security/**",
+    "tools/source-audit/**",
+    "tests/security/**",
+    "third_party/**"
   ]
 }
