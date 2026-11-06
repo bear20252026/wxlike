@@ -33,12 +33,21 @@ impl Status {
         }
     }
 
-    fn parse(raw: &str) -> Self {
+    /// 原文 → 状态。**没有 `_ => Pending` 这种兜底**。
+    ///
+    /// 待处理列表本身是安全的（`incoming`/`outgoing` 的 SQL 写死了
+    /// `status = 'pending'`，坏值选不出来）。会撒谎的是**按 id 取整行**的
+    /// `load`/`find_between`：折成 `pending` 之后，`send()` 直接把一条读不懂的
+    /// 行当作"你已经申请过了"返回 `Duplicate`，而这行既不是 pending、也不会
+    /// 再被任何流程推进——用户卡死在一个永远发不出去的申请上。
+    /// 坏行必须让调用方看见"这行坏了"，而不是看见一条假的好消息。
+    fn parse(raw: &str) -> Result<Self> {
         match raw {
-            "accepted" => Self::Accepted,
-            "rejected" => Self::Rejected,
-            "cancelled" => Self::Cancelled,
-            _ => Self::Pending,
+            "pending" => Ok(Self::Pending),
+            "accepted" => Ok(Self::Accepted),
+            "rejected" => Ok(Self::Rejected),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(RelError::Corrupt("friend_requests.status")),
         }
     }
 }
@@ -65,25 +74,62 @@ pub enum SendOutcome {
 
 const COLS: &str = "id, from_uid, to_uid, message, status, created_at";
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<Request> {
-    Ok(Request {
+/// `SQLITE_CONSTRAINT_UNIQUE`（2067）。只有这一种约束冲突意味着"已经有一行了"，
+/// 其它约束问题（非空、检查、外键）仍然要照原样报错，不许一起吞掉。
+const CONSTRAINT_UNIQUE: i32 = rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE as i32;
+
+/// 一行的**原文**读法：`status` 先按字符串取，判定留到 [`decode`]。
+///
+/// 分两步是因为行闭包里只能返回 `rusqlite::Result`——在那里折默认值太顺手了，
+/// 坏数据就此在类型层面假装成功（与 identity 的 `RawJob`/`decode_job` 同一套）。
+struct RawRequest {
+    id: String,
+    from_uid: String,
+    to_uid: String,
+    message: String,
+    status: String,
+    created_at: i64,
+}
+
+fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRequest> {
+    Ok(RawRequest {
         id: r.get(0)?,
         from_uid: r.get(1)?,
         to_uid: r.get(2)?,
         message: r.get(3)?,
-        status: Status::parse(&r.get::<_, String>(4)?),
+        status: r.get(4)?,
         created_at: r.get(5)?,
+    })
+}
+
+/// 原文 → 领域对象。任何一种"看不懂"都是一条 [`RelError::Corrupt`]。
+fn decode(raw: RawRequest) -> Result<Request> {
+    Ok(Request {
+        id: raw.id,
+        from_uid: raw.from_uid,
+        to_uid: raw.to_uid,
+        message: raw.message,
+        status: Status::parse(&raw.status)?,
+        created_at: raw.created_at,
     })
 }
 
 fn load(conn: &Connection, id: &str) -> Result<Option<Request>> {
     let sql = format!("SELECT {COLS} FROM friend_requests WHERE id = ?1");
-    Ok(conn.query_row(&sql, params![id], row_of).optional()?)
+    Ok(conn
+        .query_row(&sql, params![id], row_of)
+        .optional()?
+        .map(decode)
+        .transpose()?)
 }
 
 fn find_between(conn: &Connection, from: &str, to: &str) -> Result<Option<Request>> {
     let sql = format!("SELECT {COLS} FROM friend_requests WHERE from_uid = ?1 AND to_uid = ?2");
-    Ok(conn.query_row(&sql, params![from, to], row_of).optional()?)
+    Ok(conn
+        .query_row(&sql, params![from, to], row_of)
+        .optional()?
+        .map(decode)
+        .transpose()?)
 }
 
 /// 是否有一方拉黑了另一方（任一方向都算）。
@@ -152,25 +198,51 @@ pub fn send(
     }
 }
 
+/// 落一条新申请。
+///
+/// `UNIQUE(from_uid, to_uid)` 撞车**不是失败**：那是同一对账号的两个请求同时
+/// 走到这里（前端重试、双端同点、弱网重发），库里已经有一行了。先查再插在两个
+/// 连接之间必然有窗口，所以这里把约束冲突解释成"已存在"，重读那一行按状态交出
+/// `Duplicate`。原样抛 `Db(ConstraintViolation)` 会把一次无害的重复提交变成 500。
 fn create(conn: &Connection, from: &str, to: &str, msg: &str, now: i64) -> Result<SendOutcome> {
     let id = random_hex(REQUEST_ID_BYTES);
-    conn.execute(
+    match conn.execute(
         "INSERT INTO friend_requests(id, from_uid, to_uid, message, status, created_at) \
          VALUES(?1, ?2, ?3, ?4, 'pending', ?5)",
         params![id, from, to, msg, now],
-    )?;
-    audit(conn, from, to, "friend.request", now)?;
-    let req = load(conn, &id)?.ok_or(RelError::NotFound("request"))?;
-    Ok(SendOutcome::Created(req))
+    ) {
+        Ok(_) => {
+            audit(conn, from, to, "friend.request", now)?;
+            let req = load(conn, &id)?.ok_or(RelError::NotFound("request"))?;
+            Ok(SendOutcome::Created(req))
+        }
+        Err(rusqlite::Error::SqliteFailure(code, _)) if code.extended_code == CONSTRAINT_UNIQUE => {
+            let existing = find_between(conn, from, to)?.ok_or(RelError::NotFound("request"))?;
+            if existing.status == Status::Pending {
+                return Ok(SendOutcome::Duplicate(existing));
+            }
+            // 输掉插入的一方紧接着对方已经把它接受/拒掉了：按真实终态回答。
+            Err(RelError::Conflict("request decided concurrently"))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// 被拒/取消之后重新申请：复用同一行（`UNIQUE(from,to)` 不允许第二行）。
+///
+/// 条件 UPDATE 命中 0 行**必须报错**。旧写法忽略受影响行数，于是一条
+/// `status='accepted'` 但好友两行残缺的行会走成"重新申请成功"——函数返回
+/// `Created`，行里却仍是 `accepted`，收件人的待处理列表里永远不会出现这条申请，
+/// 用户看到"已发送"而服务端什么都没写。这是最该拒绝的那类假装成功。
 fn reopen(conn: &Connection, existing: &Request, msg: &str, now: i64) -> Result<SendOutcome> {
-    conn.execute(
+    let n = conn.execute(
         "UPDATE friend_requests SET status = 'pending', message = ?2, created_at = ?3 \
          WHERE id = ?1 AND status IN ('rejected','cancelled')",
         params![existing.id, msg, now],
     )?;
+    if n != 1 {
+        return Err(RelError::Conflict("request is not re-openable"));
+    }
     audit(
         conn,
         &existing.from_uid,
@@ -179,6 +251,9 @@ fn reopen(conn: &Connection, existing: &Request, msg: &str, now: i64) -> Result<
         now,
     )?;
     let req = load(conn, &existing.id)?.ok_or(RelError::NotFound("request"))?;
+    if req.status != Status::Pending {
+        return Err(RelError::Corrupt("friend_requests.status"));
+    }
     Ok(SendOutcome::Created(req))
 }
 
@@ -226,6 +301,11 @@ pub fn reject(conn: &Connection, me: &str, req_id: &str, now: i64) -> Result<Req
 }
 
 /// 撤回自己发出的申请。
+///
+/// 与 `accept`/`decide` 一样必须核对条件 UPDATE 的命中行数：撤回和接受是**真的
+/// 会并发**的两个动作（发申请的人点"撤回"的同时，对方正在点"接受"）。忽略行数的
+/// 话，`cancel` 会在对方已经接受之后返回"撤回成功"，前端就此显示"已撤回"，
+/// 而库里两人其实已是好友。
 pub fn cancel(conn: &Connection, me: &str, req_id: &str, now: i64) -> Result<Request> {
     let tx = conn.unchecked_transaction()?;
     let req = load(&tx, req_id)?.ok_or(RelError::NotFound("request"))?;
@@ -235,10 +315,13 @@ pub fn cancel(conn: &Connection, me: &str, req_id: &str, now: i64) -> Result<Req
     if req.status != Status::Pending {
         return Err(RelError::Conflict("request already decided"));
     }
-    tx.execute(
+    let n = tx.execute(
         "UPDATE friend_requests SET status = 'cancelled' WHERE id = ?1 AND status = 'pending'",
         params![req.id],
     )?;
+    if n != 1 {
+        return Err(RelError::Conflict("request already decided"));
+    }
     audit(&tx, me, &req.to_uid, "friend.cancel", now)?;
     tx.commit()?;
     load(conn, req_id)?.ok_or(RelError::NotFound("request"))
@@ -330,7 +413,8 @@ fn list(conn: &Connection, column: &str, me: &str, limit: i64) -> Result<Vec<Req
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![me, limit], row_of)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let raw = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    raw.into_iter().map(decode).collect()
 }
 
 /// 待我处理的新朋友，最近在前。

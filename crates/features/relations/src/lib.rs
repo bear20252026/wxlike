@@ -43,6 +43,14 @@ pub enum RelError {
     NotFound(&'static str),
     #[error("conflict: {0}")]
     Conflict(&'static str),
+    /// 库里的一行读不出合法状态：这是**数据损坏**，不是客户端错误。
+    ///
+    /// 以前的做法是把无法识别的值折成"看着还行"的默认值——申请状态折成
+    /// `pending`、群可见性折成 `public`。两者都是**向外敞开**的折返：坏掉的
+    /// 私有群因此对非成员可见，坏掉的已决申请因此重新出现在新朋友列表里。
+    /// 宁可让请求失败，也不能让坏数据伪装成"这条关系是正常的"。
+    #[error("corrupt stored row: {0}")]
+    Corrupt(&'static str),
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
     #[error("serialization error: {0}")]

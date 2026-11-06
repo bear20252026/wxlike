@@ -60,14 +60,22 @@ impl QrState {
         }
     }
 
-    fn parse(raw: &str) -> Self {
+    /// 原文 → 状态。**绝不能把读不懂的值折成 `Pending`**。
+    ///
+    /// `refresh()` 用"是否属于 Consumed/Rejected/Expired"判定这条挑战是否已终结。
+    /// 一旦损坏的状态被当成 `Pending`，一条**已经被用户拒绝**、或者**已经兑换过**
+    /// 的挑战就能被"换码"刷成一条全新的 pending challenge，继承同一份设备绑定与
+    /// PKCE，从而获得第二次批准、第二次登录的机会。用户说"不"的那一次必须算数，
+    /// 所以这里宁可报损坏。
+    fn parse(raw: &str) -> Result<Self> {
         match raw {
-            "scanned" => Self::Scanned,
-            "approved" => Self::Approved,
-            "rejected" => Self::Rejected,
-            "consumed" => Self::Consumed,
-            "expired" => Self::Expired,
-            _ => Self::Pending,
+            "pending" => Ok(Self::Pending),
+            "scanned" => Ok(Self::Scanned),
+            "approved" => Ok(Self::Approved),
+            "rejected" => Ok(Self::Rejected),
+            "consumed" => Ok(Self::Consumed),
+            "expired" => Ok(Self::Expired),
+            _ => Err(IdError::Corrupt("identity_qr.state")),
         }
     }
 }
@@ -128,10 +136,24 @@ struct QrRow {
 const QR_COLS: &str = "id, state, pkce_hash, device_id, platform, label, ip_hint, expires_at, \
      scanned_by";
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<QrRow> {
-    Ok(QrRow {
+/// 一行的**原文**读法：`state` 先按字符串取，判定留到 [`decode`]（行闭包里只能
+/// 返回 `rusqlite::Result`，在那里折默认值太顺手，坏数据就此假装成功）。
+struct RawQr {
+    id: String,
+    state: String,
+    pkce_hash: String,
+    device_id: String,
+    platform: String,
+    label: String,
+    ip_hint: String,
+    expires_at: i64,
+    scanned_by: String,
+}
+
+fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawQr> {
+    Ok(RawQr {
         id: r.get(0)?,
-        state: QrState::parse(&r.get::<_, String>(1)?),
+        state: r.get(1)?,
         pkce_hash: r.get(2)?,
         device_id: r.get(3)?,
         platform: r.get(4)?,
@@ -142,11 +164,27 @@ fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<QrRow> {
     })
 }
 
+fn decode(raw: RawQr) -> Result<QrRow> {
+    Ok(QrRow {
+        state: QrState::parse(&raw.state)?,
+        id: raw.id,
+        pkce_hash: raw.pkce_hash,
+        device_id: raw.device_id,
+        platform: raw.platform,
+        label: raw.label,
+        ip_hint: raw.ip_hint,
+        expires_at: raw.expires_at,
+        scanned_by: raw.scanned_by,
+    })
+}
+
 fn load(conn: &Connection, id: &str, now: i64) -> Result<QrRow> {
     let sql = format!("SELECT {QR_COLS} FROM identity_qr WHERE id = ?1");
     let row = conn
-        .query_row(&sql, params![id], row_of)
+        .query_row(&sql, params![id], raw_of)
         .optional()?
+        .map(decode)
+        .transpose()?
         .ok_or(IdError::NotFound("challenge"))?;
     if row.expires_at <= now
         && matches!(
@@ -229,12 +267,15 @@ pub fn bind(
 
 /// 手机扫码：只前进到 `scanned`，并把桌面线索回给手机。
 pub fn scan(conn: &Connection, secret: &str, scanner_user: &str, now: i64) -> Result<ScanView> {
-    let sql = format!("SELECT {QR_COLS} FROM identity_qr WHERE secret_hash = ?1");
-    let row = conn
-        .query_row(&sql, params![digest(secret)], row_of)
+    let id: String = conn
+        .query_row(
+            "SELECT id FROM identity_qr WHERE secret_hash = ?1",
+            params![digest(secret)],
+            |r| r.get(0),
+        )
         .optional()?
         .ok_or(IdError::NotFound("challenge"))?;
-    let row = load(conn, &row.id, now)?;
+    let row = load(conn, &id, now)?;
     if row.pkce_hash.is_empty() {
         return Err(IdError::Conflict("challenge not bound to a device"));
     }
@@ -309,6 +350,45 @@ pub fn poll(conn: &Connection, id: &str, verifier: &str, now: i64) -> Result<Pol
     Ok(PollState::of(row.state))
 }
 
+/// 兑换前把设备归属对齐到**批准这次登录的账号**。
+///
+/// 桌面在扫码之前没有账号，`bind` 只是把 device_id 写进 challenge，设备行还不存在。
+/// 批准之后会话是开给扫码方的（`scanned_by`），而 `session::open` 要求设备行属于
+/// 这个用户——不对齐就出现两种坏情况：
+///
+/// * 什么都不做：正常路径直接 403 `device revoked`，整张卡走不通；
+/// * 无条件覆盖归属：攻击者先用同一个 device_id 注册自己的设备，等受害者扫码，
+///   就把受害者的会话挂到攻击者的设备行上（或者反过来抢走那台设备的信任）。
+///
+/// 所以规则是：**没有设备行就以批准者名义登记；已被别人登记就拒绝**。宁可让
+/// 这次登录失败，也不改变一台已存在设备的归属。
+fn adopt_device(
+    conn: &Connection,
+    scanner: &str,
+    device_id: &str,
+    platform: &str,
+    label: &str,
+    now: i64,
+) -> Result<()> {
+    if device_id.is_empty() {
+        return Ok(());
+    }
+    match crate::device::get(conn, device_id)? {
+        None => {
+            let reg = crate::device::Registration {
+                platform: platform.to_string(),
+                label: label.to_string(),
+                ..Default::default()
+            };
+            crate::device::register(conn, scanner, device_id, &reg, now)?;
+            Ok(())
+        }
+        Some(row) if row.user_id == scanner => Ok(()),
+        // 与 `device::revoke` 对陌生人给的答案一致：不说"存在但不属于你"。
+        Some(_) => Err(IdError::NotFound("device")),
+    }
+}
+
 /// 兑换：`approved` → `consumed` 的抢占是原子的，两台桌面只有一台能成。
 pub fn exchange(
     conn: &Connection,
@@ -337,6 +417,14 @@ pub fn exchange(
     if n != 1 {
         return Err(IdError::Conflict("challenge already consumed"));
     }
+    adopt_device(
+        conn,
+        &row.scanned_by,
+        &row.device_id,
+        &row.platform,
+        &row.label,
+        now,
+    )?;
     crate::session::open_default(conn, &row.scanned_by, &row.device_id, audience, ip, now)
 }
 

@@ -38,18 +38,51 @@ pub struct Rotated {
     pub expires_at: i64,
 }
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRow> {
-    Ok(ChainRow {
+/// 链上一行的**原文**读法（文本列先按字符串取，状态判定留到 [`decode`]）。
+struct RawChain {
+    token_hash: String,
+    sid: String,
+    user_id: String,
+    device_id: String,
+    audience: String,
+    generation: i64,
+    created_at: i64,
+    expires_at: i64,
+    used_at: Option<i64>,
+    revoked_at: Option<i64>,
+}
+
+fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawChain> {
+    Ok(RawChain {
         token_hash: r.get(0)?,
         sid: r.get(1)?,
         user_id: r.get(2)?,
         device_id: r.get(3)?,
-        audience: Audience::parse(&r.get::<_, String>(4)?).unwrap_or(Audience::User),
+        audience: r.get(4)?,
         generation: r.get(5)?,
         created_at: r.get(6)?,
         expires_at: r.get(7)?,
         used_at: r.get(8)?,
         revoked_at: r.get(9)?,
+    })
+}
+
+/// 原文 → 链上行。`audience` 读不懂**必须报错**：`rotate()` 用这里的 audience
+/// 决定轮换后签发哪一面令牌，折成 `User` 会让一条本来属于管理面的刷新链在库里
+/// 悄悄降级成用户面——用户面与管理面令牌分开（#103 要求 4）这件事就此失效，
+/// 而且失效是静默的。与 `session::authenticate` 同口径，宁可失败。
+fn decode(raw: RawChain) -> Result<ChainRow> {
+    Ok(ChainRow {
+        audience: Audience::parse(&raw.audience).ok_or(IdError::Corrupt("audience"))?,
+        token_hash: raw.token_hash,
+        sid: raw.sid,
+        user_id: raw.user_id,
+        device_id: raw.device_id,
+        generation: raw.generation,
+        created_at: raw.created_at,
+        expires_at: raw.expires_at,
+        used_at: raw.used_at,
+        revoked_at: raw.revoked_at,
     })
 }
 
@@ -100,8 +133,10 @@ pub fn issue_default(
 pub fn find(conn: &Connection, raw: &str) -> Result<Option<ChainRow>> {
     let sql = format!("{SELECT_ROW} WHERE token_hash = ?1");
     Ok(conn
-        .query_row(&sql, params![digest(raw)], row_of)
-        .optional()?)
+        .query_row(&sql, params![digest(raw)], raw_of)
+        .optional()?
+        .map(decode)
+        .transpose()?)
 }
 
 /// 轮换。失败即封闭：任何异常状态都会顺手作废整条链。
@@ -215,12 +250,11 @@ pub fn revoke_user(conn: &Connection, user_id: &str, now: i64) -> Result<usize> 
 pub fn chain_of(conn: &Connection, sid: &str) -> Result<Vec<ChainRow>> {
     let sql = format!("{SELECT_ROW} WHERE sid = ?1 ORDER BY generation ASC");
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![sid], row_of)?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
-    Ok(out)
+    let rows = stmt.query_map(params![sid], raw_of)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(decode)
+        .collect()
 }
 
 #[cfg(test)]

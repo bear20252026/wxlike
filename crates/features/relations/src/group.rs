@@ -83,19 +83,52 @@ pub struct Group {
 }
 
 const SELECT_GROUP: &str = "SELECT g.id, g.name, g.owner_uid, g.created_at, \
-     COALESCE(m.visibility, 'public'), m.dissolved_at FROM groups g \
+     m.visibility, m.dissolved_at FROM groups g \
      LEFT JOIN group_meta m ON m.group_id = g.id";
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<Group> {
-    let visibility = Visibility::parse(&r.get::<_, String>(4)?).unwrap_or(Visibility::Public);
-    let dissolved: Option<i64> = r.get(5)?;
-    Ok(Group {
+/// 原文读法：`visibility` 取 `Option<String>`，判定留到 [`decode_group`]。
+struct RawGroup {
+    id: String,
+    name: String,
+    owner_uid: String,
+    created_at: i64,
+    visibility: Option<String>,
+    dissolved_at: Option<i64>,
+}
+
+fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawGroup> {
+    Ok(RawGroup {
         id: r.get(0)?,
         name: r.get(1)?,
         owner_uid: r.get(2)?,
         created_at: r.get(3)?,
+        visibility: r.get(4)?,
+        dissolved_at: r.get(5)?,
+    })
+}
+
+/// 原文 → 领域对象。
+///
+/// **`visibility` 读不懂时绝不能折成 `Public`**：`may_see` 对非成员的判定就是
+/// "公开且未解散"，一个坏掉的私有群一旦折成公开，非成员立刻能看见它——这是
+/// 向外敞开的 fail-open，比报错严重得多。
+///
+/// 只有一种情况容忍缺失：**整行 `group_meta` 不存在**（`NULL`）。那是本平台
+/// 引入 `group_meta` 之前建出来的存量群，形状单一且可枚举，按公开处理是
+/// 有意的向后兼容；而 `'privat'` 这种**存在但解析不出**的值是新写入的损坏，
+/// 必须报错。这两者的区别正是本函数存在的理由。
+fn decode_group(raw: RawGroup) -> Result<Group> {
+    let visibility = match raw.visibility.as_deref() {
+        None => Visibility::Public,
+        Some(v) => Visibility::parse(v).ok_or(RelError::Corrupt("group_meta.visibility"))?,
+    };
+    Ok(Group {
+        id: raw.id,
+        name: raw.name,
+        owner_uid: raw.owner_uid,
+        created_at: raw.created_at,
         visibility,
-        dissolved: dissolved.is_some(),
+        dissolved: raw.dissolved_at.is_some(),
     })
 }
 
@@ -103,6 +136,8 @@ fn load(conn: &Connection, group_id: &str) -> Result<Group> {
     let sql = format!("{SELECT_GROUP} WHERE g.id = ?1");
     conn.query_row(&sql, params![group_id], row_of)
         .optional()?
+        .map(decode_group)
+        .transpose()?
         .ok_or(RelError::NotFound("group"))
 }
 
@@ -166,6 +201,9 @@ fn join(conn: &Connection, group_id: &str, user: &str, role: Role, now: i64) -> 
 }
 
 /// 群内角色（非成员返回 `None`）。
+///
+/// "这一行存在但 `role` 读不懂"和"这一行不存在"必须分开：把损坏折成 `None`
+/// 会让成员被告知"你不是成员"，而排查方向就此指向了错误的地方。
 pub fn role_of(conn: &Connection, group_id: &str, user: &str) -> Result<Option<Role>> {
     let raw: Option<String> = conn
         .query_row(
@@ -174,7 +212,12 @@ pub fn role_of(conn: &Connection, group_id: &str, user: &str) -> Result<Option<R
             |r| r.get(0),
         )
         .optional()?;
-    Ok(raw.as_deref().and_then(Role::parse))
+    match raw {
+        None => Ok(None),
+        Some(v) => Role::parse(&v)
+            .map(Some)
+            .ok_or(RelError::Corrupt("group_members.role")),
+    }
 }
 
 /// 成员 id 列表（owner 在前，其次按入群时间）。
@@ -322,7 +365,10 @@ pub fn groups_of(conn: &Connection, user: &str) -> Result<Vec<Group>> {
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![user], row_of)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    rows.collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(decode_group)
+        .collect()
 }
 
 /// 共同群：**交集**查询，两边都必须是成员。
@@ -338,7 +384,35 @@ pub fn common_groups(conn: &Connection, a: &str, b: &str) -> Result<Vec<Group>> 
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![a, b], row_of)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    rows.collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(decode_group)
+        .collect()
+}
+
+/// 设置群可见性（只有 owner 能改；`require_active` 之外的唯一入口）。
+///
+/// 规则放在本 crate 而不是各调用方各写一条 `UPDATE group_meta`，是因为
+/// `may_see` 判定的就是这一列：任何"顺手改一下可见性"的写入都必须走同一条
+/// 权限判定，否则就会出现成员名单没变、群却对陌生人敞开的路径。
+pub fn set_visibility(
+    conn: &Connection,
+    actor: &str,
+    group_id: &str,
+    visibility: Visibility,
+    now: i64,
+) -> Result<Visibility> {
+    let group = require_active(conn, group_id)?;
+    if group.owner_uid != actor {
+        return Err(RelError::Forbidden("owner only"));
+    }
+    conn.execute(
+        "INSERT INTO group_meta(group_id, visibility) VALUES(?1, ?2) \
+         ON CONFLICT(group_id) DO UPDATE SET visibility = excluded.visibility",
+        params![group_id, visibility.as_str()],
+    )?;
+    audit(conn, actor, group_id, "group.visibility", now)?;
+    Ok(visibility)
 }
 
 /// 某人能否看到这个群（成员恒可见；非成员只见公开且未解散的群）。

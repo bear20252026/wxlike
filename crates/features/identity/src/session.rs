@@ -71,16 +71,47 @@ pub struct LogoutOutcome {
     pub cache_events: Vec<CacheEvent>,
 }
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
-    Ok(SessionRow {
-        sid: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+/// 一行的**原文**读法，`audience` 的判定留给 [`decode`]。
+struct RawSession {
+    sid: Option<String>,
+    device_id: String,
+    device_name: String,
+    ip: String,
+    created_at: i64,
+    expires_at: i64,
+    last_seen: i64,
+    audience: String,
+}
+
+fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
+    Ok(RawSession {
+        sid: r.get(0)?,
         device_id: r.get(1)?,
         device_name: r.get(2)?,
         ip: r.get(3)?,
         created_at: r.get(4)?,
         expires_at: r.get(5)?,
         last_seen: r.get(6)?,
-        audience: Audience::parse(&r.get::<_, String>(7)?).unwrap_or(Audience::User),
+        audience: r.get(7)?,
+    })
+}
+
+/// `audience` 读不懂必须报错，不能折成 `User`。
+///
+/// `authenticate()` 早就按 `ok_or(Unauthorized)` 处理同一个字段了——列表这条路
+/// 却折默认值，结果是**"会话列表显示的受众"和"真正生效的受众"可以不是同一回事**：
+/// 一条管理面会话能在"我的登录设备"里被显示成普通登录。#103 要求管理令牌与用户
+/// 令牌分开受众，展示面撒谎同样是失效。
+fn decode(raw: RawSession) -> Result<SessionRow> {
+    Ok(SessionRow {
+        sid: raw.sid.unwrap_or_default(),
+        device_id: raw.device_id,
+        device_name: raw.device_name,
+        ip: raw.ip,
+        created_at: raw.created_at,
+        expires_at: raw.expires_at,
+        last_seen: raw.last_seen,
+        audience: Audience::parse(&raw.audience).ok_or(IdError::Corrupt("audience"))?,
     })
 }
 
@@ -201,12 +232,11 @@ pub fn list(conn: &Connection, user_id: &str, now: i64) -> Result<Vec<SessionRow
         "SELECT sid, device_id, device_name, ip, created_at, expires_at, last_seen, audience \
          FROM sessions WHERE user_id = ?1 ORDER BY last_seen DESC, created_at DESC",
     )?;
-    let rows = stmt.query_map(params![user_id], row_of)?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
-    Ok(out)
+    let rows = stmt.query_map(params![user_id], raw_of)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(decode)
+        .collect()
 }
 
 /// 登出指定会话：删会话 + 作废整条刷新链 + 给出缓存清理事件。

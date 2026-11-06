@@ -300,6 +300,18 @@ pub fn revoke(
          WHERE device_id = ?1 AND user_id = ?2",
         params![device_id, user_id, now],
     )?;
+    // step-up 授权是按 (user_id, sid) 存的。`session::logout` 会连带清掉，
+    // 这里过去只删会话不删授权，于是"移除设备"与"退出登录"两条路给出的撤销
+    // 强度不一样：前者会留下一条本来绑在这台设备上的敏感操作授权。敏感操作
+    // 授权的意义是"刚刚在这台设备上验证过"，设备都没了就没意义。
+    //
+    // 顺序必须是**先清授权、再删会话**：子查询靠 sessions 找回这台设备的 sid，
+    // 会话先删掉的话子查询返回空集，这条清理就变成静默的无用功。
+    tx.execute(
+        "DELETE FROM identity_step_up WHERE user_id = ?1 AND sid IN \
+         (SELECT sid FROM sessions WHERE user_id = ?2 AND device_id = ?3 AND sid IS NOT NULL)",
+        params![user_id, user_id, device_id],
+    )?;
     let sessions = tx.execute(
         "DELETE FROM sessions WHERE user_id = ?1 AND device_id = ?2",
         params![user_id, device_id],

@@ -1,0 +1,79 @@
+# G00 交接：relations-v1 契约补 corrupt 错误码 + 群可见性写入交回本域
+task: G02-02
+card: G02-02
+issue: https://github.com/bear20252026/wxlike/issues/108
+task_issue: https://github.com/bear20252026/wxlike/issues/108
+group_issue: https://github.com/bear20252026/wxlike/issues/83
+request_id: G02-02-fail-closed-and-visibility-delegation
+crate: wxlike-relations
+contract: relations-v1
+branch: feat/G02-relations-identity
+status: 待本 PR 合并后执行（合并权在所有者）
+
+why: >
+  本组在 crates/features/relations 里把三类"坏数据折成好状态"改成显式失败，
+  并新增一个群可见性写命令。契约文件与平台路由不归本组改，故在此登记。
+
+contract_change:
+  file: contracts/domains/relations/contract.json
+  action: add_error_code
+  current_error_codes:
+    - bad_input
+    - forbidden
+    - not_found
+    - conflict
+  requested_addition: corrupt
+  reason: >
+    新增的 RelError::Corrupt 表示"库里这一行读不出合法状态"，属于服务端
+    数据损坏，既不是 bad_input（客户端可改）也不是 conflict（重试可能成功）。
+    继续把它塞进 conflict 会让客户端对 500 级问题做自动重试。
+    HTTP 侧建议映射为 500，且响应体不回显列名（列名只进服务端日志）。
+  affected_commands:
+    - command: friend.request
+      trigger: friend_requests.status 不是 pending/accepted/rejected/cancelled
+    - command: group.create
+      trigger: group_meta.visibility 存在但不是 public/private
+    - command: group.members.add
+      trigger: group_members.role 存在但不是 owner/admin/member
+    - command: group.common
+      trigger: 同 group_meta.visibility
+  compatibility: >
+    additive。老客户端遇到未登记的 code 一律按未知错误处理，不会误判成成功。
+
+delegation_request:
+  file: crates/platform/src/groups.rs
+  handler: PUT /api/groups/{group_id}/visibility
+  now: 平台自己写一条 UPDATE group_meta ... 的 SQL
+  wanted: 调 wxlike_relations::group::set_visibility(conn, actor, group_id, visibility, now)
+  reason: >
+    可见性这一列正是 may_see 判定非成员能否看到群的依据。规则应当只在关系域
+    实现一次；平台留一份重复的 UPDATE 就等于留一条绕过 owner 判定的后门。
+    新函数已在 crate 内实现并测试（owner 专属 + 已解散群拒绝 + 审计落表），
+    行为与平台现有实现一致，替换是无功能变化的收敛。
+  tests_covering_it:
+    - crates/features/relations/tests/group_rbac.rs::owner_only_actions
+    - crates/features/relations/tests/group_rbac.rs::visibility_controls_strangers_only
+    - crates/features/relations/tests/group_rbac.rs::dissolved_group_refuses_every_write
+  note: 未替换前平台现网行为不变，本 PR 不动平台文件。
+
+schema_change: none
+  # 说明：本组新增的判定全部落在既有列上（friend_requests.status、
+  # group_meta.visibility、group_members.role）。唯一新读的约束
+  # UNIQUE(from_uid, to_uid) 平台真实库已有（crates/platform/src/db/schema.rs
+  # 的 CREATE TABLE friend_requests 里就有），所以不需要迁移。
+
+paths_touched:
+  - crates/features/relations/src/lib.rs
+  - crates/features/relations/src/friend.rs
+  - crates/features/relations/src/group.rs
+  - crates/features/relations/tests/common/mod.rs
+  - crates/features/relations/tests/corrupt_rows.rs
+  - crates/features/relations/tests/concurrency.rs
+  - crates/features/relations/tests/group_rbac.rs
+  - crates/features/relations/tests/friend_prefs_surface.rs
+
+verification:
+  local: 已跑 cargo check -p wxlike-relations --locked 与 cargo test -p wxlike-relations --locked
+  result: 25 个单元测试 + 37 个集成测试全绿；rustfmt --edition 2021 --check 无差异
+  workspace_build: 未跑（按验证边界禁止）
+  acceptance: 以 GitHub Actions 的 job 级结果为准
