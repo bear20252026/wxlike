@@ -30,4 +30,4 @@
   不受支持。
 - `/health` 只是存活探针；没有就绪探针（`READINESS-ENDPOINT`）。
 - 日志没有统一 request id（`OBS-TRACE-ID`）。
-- 移动端没有真机证据（`MOBILE-DEVICE-EVIDENCE`），发布门禁会失败。
+- 移动端没有真机证据（`MOBILE-DEVICE-EVIDENCE`）：缺口仍 open，但 2026-11-05 起不再拦发布，需要时给 `make_release_manifest.py` 传 `--require-device-evidence` 恢复硬门槛。
