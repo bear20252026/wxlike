@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::content_index;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::inbox;
@@ -46,11 +47,75 @@ pub const MAX_FEED_PAGE: i64 = 50;
 pub const MAX_COMMENT_DEPTH: usize = 2;
 /// 分组名是作者好友分组（`friends.friend_group`）的字符串，不是新对象。
 pub const MAX_GROUP_CHARS: usize = 32;
+/// 一次发布最多扇出多少条提醒。大 V 式的好友规模不应该让一次 POST 变成
+/// 万行插入；超出的部分靠 feed 的读时查询兜住（提醒不是真相）。
+pub const MAX_FANOUT_RECIPIENTS: i64 = 500;
+
+/// 发布扇出：给**此刻有权看到这条动态的人**各插一条收件箱提醒。
+///
+/// 三条边界，都是 issue #126 明写的：
+///
+/// * 扇出是"提醒"，**不是聊天消息**：不产生 message 行、不进任何会话，
+///   朋友圈不会冒充 IM。
+/// * `private` 不扇出；`groups` 只扇给作者标在该分组的好友；
+///   `public` / `friends` 扇给好友（feed 的受众集合本来就是"自 + 好友"）。
+/// * 双向拉黑过滤与 feed 用同一条 SQL 规则，不另写一套判定。
+///
+/// 提醒正文是固定文案 + 作者 id，**不含动态内容**：原帖被删/被撤权后，
+/// 收件箱里不会留着原文（最小权限与日志脱敏）。`dedupe_key` 让同一
+/// 收件人对同一条动态只有一条提醒，重试发布不会刷屏。
+fn fanout_new_moment(
+    conn: &rusqlite::Connection,
+    author: &str,
+    visibility: Visibility,
+    audience_group: &str,
+    moment_id: &str,
+    now: i64,
+) -> Result<i64> {
+    if visibility == Visibility::Private {
+        return Ok(0);
+    }
+    // groups 之外的可见性不带分组条件（空串 = 不过滤分组）
+    let group = match visibility {
+        Visibility::Groups => audience_group,
+        _ => "",
+    };
+    let mut stmt = conn.prepare(
+        "SELECT f.friend_id FROM friends f
+         WHERE f.user_id = ?1
+           AND (?2 = '' OR f.friend_group = ?2)
+           AND NOT EXISTS (SELECT 1 FROM blocks b
+                WHERE (b.user_id = ?1 AND b.blocked_id = f.friend_id)
+                   OR (b.user_id = f.friend_id AND b.blocked_id = ?1))
+         ORDER BY f.created_at DESC LIMIT ?3",
+    )?;
+    let recipients = stmt
+        .query_map(params![author, group, MAX_FANOUT_RECIPIENTS], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(stmt);
+    for recipient in &recipients {
+        inbox::notify(
+            conn,
+            recipient,
+            "moment_published",
+            author,
+            "moment",
+            moment_id,
+            "好友发布了新动态",
+            &format!("moment_published:{moment_id}:{recipient}"),
+            now,
+        )?;
+    }
+    Ok(recipients.len() as i64)
+}
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
         .route("/api/moments", post(publish))
         .route("/api/moments/feed", get(feed))
+        .route("/api/moments/album", get(album))
         .route("/api/moments/drafts", post(save_draft))
         .route("/api/moments/drafts", get(list_drafts))
         .route("/api/moments/drafts/{draft_id}", delete(remove_draft))
@@ -405,6 +470,9 @@ impl Platform {
             now,
         )?;
         content_index::add_media_refs(&tx, &cleaned, "moment", &id, &author, now)?;
+        // 发布时扇出（issue #126 要求 4）：与插入同事务，所以"帖在提醒不在"
+        // 或"提醒先于帖可见"的窗口都不存在。
+        fanout_new_moment(&tx, &author, visibility, &group, &id, now)?;
         if let Some(draft_id) = draft_id {
             let draft_id = validate::id(draft_id)?;
             let changed = tx.execute(
@@ -763,6 +831,70 @@ impl Platform {
         Ok(id)
     }
 
+    /// 相册（个人主页九宫格）：某个作者对 `viewer` 可见的动态，时间倒序。
+    ///
+    /// 与 [`Self::feed`] 共用同一套**读时**可见性 SQL（好友关系、分组标签、
+    /// 双向拉黑、private 只给自己看），差别只在受众条件从"自+好友"换成
+    /// "指定作者"。
+    ///
+    /// **不存在的用户 / 不是好友 / 被拉黑 → 同一个形状**（200 + 空页）。
+    /// 相册是"看某人发过什么"的入口，最容易变成用户 enumeration 探针，
+    /// 所以这里刻意不返回 403/404 之类的区分信号。
+    pub fn moment_album(
+        &self,
+        viewer: &str,
+        author: &str,
+        since: Option<i64>,
+        limit: i64,
+    ) -> Result<(Vec<MomentHead>, i64, bool)> {
+        let author = validate::id(author)?.to_string();
+        let limit = limit.clamp(1, MAX_FEED_PAGE);
+        let upper = since.unwrap_or(i64::MAX);
+        let c = self.db().lock();
+        let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
+                    (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
+                    (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
+             FROM moments m JOIN users u ON u.id = m.author
+             WHERE m.deleted = 0 AND m.author = ?2
+               AND (m.author = ?1 OR EXISTS (
+                     SELECT 1 FROM friends f WHERE f.user_id = ?1 AND f.friend_id = m.author))
+               AND (m.visibility <> 'private' OR m.author = ?1)
+               AND (m.visibility <> 'groups' OR m.author = ?1 OR EXISTS (
+                     SELECT 1 FROM friends f WHERE f.user_id = m.author AND f.friend_id = ?1
+                       AND f.friend_group = m.audience_group))
+               AND NOT EXISTS (
+                     SELECT 1 FROM blocks b
+                     WHERE (b.user_id = ?1 AND b.blocked_id = m.author)
+                        OR (b.user_id = m.author AND b.blocked_id = ?1))
+               AND m.seq < ?3
+             ORDER BY m.seq DESC LIMIT ?4";
+        let mut stmt = c.prepare(sql)?;
+        let rows = stmt.query_map(params![viewer, author, upper, limit + 1], |r| {
+            let media: String = r.get(5)?;
+            Ok((
+                r.get::<_, i64>(0)?,
+                MomentHead {
+                    moment_id: r.get(1)?,
+                    author: r.get(2)?,
+                    author_name: r.get(3)?,
+                    text: r.get(4)?,
+                    media_ids: serde_json::from_str(&media).unwrap_or_default(),
+                    visibility: r.get(6)?,
+                    created_at: r.get(7)?,
+                    like_count: r.get(8)?,
+                    comment_count: r.get(9)?,
+                },
+            ))
+        })?;
+        let mut all = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        let has_more = all.len() as i64 > limit;
+        if has_more {
+            all.pop();
+        }
+        let next = all.last().map(|(seq, _)| *seq).unwrap_or(upper);
+        Ok((all.into_iter().map(|(_, h)| h).collect(), next, has_more))
+    }
+
     /// Read fan-out: self + friends, newest first, at most `MAX_FEED_PAGE`.
     pub fn feed(
         &self,
@@ -827,14 +959,30 @@ async fn publish(
     authed: Authed,
     ApiJson(body): ApiJson<PublishBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let id = platform.publish_moment_with(
-        &authed.user_id,
-        &body.text,
-        &body.media_ids,
-        body.visibility,
-        &body.audience_group,
-        body.draft_id.as_deref(),
-    )?;
+    // ADR-28：发布 = 插行 + 写索引 + 附件引用 + 扇出提醒，一个事务，
+    // 整段搬到阻塞线程池；handler 只 await，不拿连接。
+    let PublishBody {
+        text,
+        media_ids,
+        visibility,
+        audience_group,
+        draft_id,
+    } = body;
+    let author = authed.user_id.clone();
+    let id = offload(
+        &platform,
+        move |p| {
+            p.publish_moment_with(
+                &author,
+                &text,
+                &media_ids,
+                visibility,
+                &audience_group,
+                draft_id.as_deref(),
+            )
+        },
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "moment_id": id })),
@@ -846,14 +994,28 @@ async fn save_draft(
     authed: Authed,
     ApiJson(body): ApiJson<DraftBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let id = platform.save_moment_draft(
-        &authed.user_id,
-        body.draft_id.as_deref(),
-        &body.text,
-        &body.media_ids,
-        body.visibility,
-        &body.audience_group,
-    )?;
+    let DraftBody {
+        draft_id,
+        text,
+        media_ids,
+        visibility,
+        audience_group,
+    } = body;
+    let author = authed.user_id.clone();
+    let id = offload(
+        &platform,
+        move |p| {
+            p.save_moment_draft(
+                &author,
+                draft_id.as_deref(),
+                &text,
+                &media_ids,
+                visibility,
+                &audience_group,
+            )
+        },
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "draft_id": id })),
@@ -864,9 +1026,9 @@ async fn list_drafts(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(
-        serde_json::json!({ "drafts": platform.moment_drafts(&authed.user_id)? }),
-    ))
+    let author = authed.user_id.clone();
+    let drafts = offload(&platform, move |p| p.moment_drafts(&author)).await?;
+    Ok(Json(serde_json::json!({ "drafts": drafts })))
 }
 
 async fn remove_draft(
@@ -874,7 +1036,9 @@ async fn remove_draft(
     authed: Authed,
     Path(draft_id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_moment_draft(&authed.user_id, &draft_id)?;
+    let draft_id = validate::id(&draft_id).map_err(ApiError::from)?.to_string();
+    let author = authed.user_id.clone();
+    offload(&platform, move |p| p.delete_moment_draft(&author, &draft_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -891,16 +1055,18 @@ async fn report(
     Path(moment_id): Path<String>,
     ApiJson(body): ApiJson<ReportBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    require_visible(&platform, &moment_id, &authed.user_id)
-        .await
-        .map_err(ApiError::from)?;
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
     let reason = wxlike_report::Reason::parse(&body.reason)
         .ok_or_else(|| ApiError::from(PlatformError::BadInput("unknown report reason")))?;
-    let ticket =
-        platform.create_report(&authed.user_id, "moment", &moment_id, reason, &body.detail)?;
+    let viewer = authed.user_id.clone();
+    let detail = body.detail.clone();
+    // 举报也先过可见性闸：看不到的动态不能举报，否则举报接口会变成
+    // "这条 id 存在吗"的探针；闸门与建单同在一次 offload 里。
+    let ticket = offload(&platform, move |p| {
+        require_visible(p, &moment_id, &viewer)?;
+        p.create_report(&viewer, "moment", &moment_id, reason, &detail)
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "report_id": ticket.id })),
@@ -912,26 +1078,27 @@ async fn detail(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<Json<MomentDetail>, ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    let (_, head) = platform
-        .moment_row(&moment_id)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no such moment"))?;
-    if !platform.moment_visible(&authed.user_id, &moment_id)? {
-        // a friends-only / blocked / deleted moment is simply not there
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "no such moment"));
-    }
-    let likes = platform
-        .moment_visitors_likes(&moment_id)?
-        .into_iter()
-        .map(|(id, _name)| id)
-        .collect();
-    Ok(Json(MomentDetail {
-        head,
-        likes,
-        comments: platform.moment_comments(&moment_id)?,
-    }))
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let viewer = authed.user_id.clone();
+    let detail = offload(&platform, move |p| {
+        let (_, head) = p.moment_row(&moment_id)?.ok_or(PlatformError::NotFound)?;
+        // 好友可见 / 已被拉黑 / 已删除的动态就是"不存在"，同形返回
+        if !p.moment_visible(&viewer, &moment_id)? {
+            return Err(PlatformError::NotFound);
+        }
+        let likes = p
+            .moment_visitors_likes(&moment_id)?
+            .into_iter()
+            .map(|(id, _name)| id)
+            .collect();
+        Ok::<_, PlatformError>(MomentDetail {
+            head,
+            likes,
+            comments: p.moment_comments(&moment_id)?,
+        })
+    })
+    .await?;
+    Ok(Json(detail))
 }
 
 async fn remove(
@@ -939,29 +1106,21 @@ async fn remove(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    let (_, head) = platform
-        .moment_row(&moment_id)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no such moment"))?;
-    if head.author != authed.user_id {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "only the author may delete",
-        ));
-    }
-    if !platform.delete_moment(&moment_id, &authed.user_id)? {
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let viewer = authed.user_id.clone();
+    // 只有作者能删：`delete_moment` 的 WHERE 里就带 author，所以"不是你的"
+    // 与"不存在/已删"一起落到同一个 404 —— 不再用 403 泄露"这个 id 存在"。
+    let deleted = offload(&platform, move |p| p.delete_moment(&moment_id, &viewer)).await?;
+    if !deleted {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "no such moment"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Both like handlers need the moment to be visible to the caller first.
-async fn require_visible(platform: &Platform, moment_id: &str, viewer: &str) -> Result<()> {
-    platform
-        .moment_row(moment_id)?
-        .ok_or(PlatformError::NotFound)?;
+/// 点赞/评论/举报/删评论共用的可见性闸。
+/// 同步函数：调用方已经在 `offload` 里，不能再 `await`（ADR-28）。
+fn require_visible(platform: &Platform, moment_id: &str, viewer: &str) -> Result<()> {
+    platform.moment_row(moment_id)?;
     if !platform.moment_visible(viewer, moment_id)? {
         return Err(PlatformError::NotFound);
     }
@@ -973,13 +1132,13 @@ async fn like(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    require_visible(&platform, &moment_id, &authed.user_id)
-        .await
-        .map_err(ApiError::from)?;
-    let created = platform.like_moment(&moment_id, &authed.user_id)?;
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let viewer = authed.user_id.clone();
+    let created = offload(&platform, move |p| {
+        require_visible(p, &moment_id, &viewer)?;
+        p.like_moment(&moment_id, &viewer)
+    })
+    .await?;
     // idempotent: a repeat like is a 200 that added nothing
     Ok(Json(serde_json::json!({ "liked": true, "added": created })))
 }
@@ -989,16 +1148,14 @@ async fn unlike(
     authed: Authed,
     Path(moment_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    require_visible(&platform, &moment_id, &authed.user_id)
-        .await
-        .map_err(ApiError::from)?;
-    let removed = platform.unlike_moment(&moment_id, &authed.user_id)?;
-    Ok(Json(
-        serde_json::json!({ "liked": false, "removed": removed }),
-    ))
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let viewer = authed.user_id.clone();
+    let removed = offload(&platform, move |p| {
+        require_visible(p, &moment_id, &viewer)?;
+        p.unlike_moment(&moment_id, &viewer)
+    })
+    .await?;
+    Ok(Json(serde_json::json!({ "liked": false, "removed": removed })))
 }
 
 async fn remove_comment(
@@ -1006,16 +1163,15 @@ async fn remove_comment(
     authed: Authed,
     Path((moment_id, comment_id)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    let comment_id = validate::id(&comment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    require_visible(&platform, &moment_id, &authed.user_id)
-        .await
-        .map_err(ApiError::from)?;
-    if !platform.delete_comment(&moment_id, &comment_id, &authed.user_id)? {
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let comment_id = validate::id(&comment_id).map_err(ApiError::from)?.to_string();
+    let viewer = authed.user_id.clone();
+    let deleted = offload(&platform, move |p| {
+        require_visible(p, &moment_id, &viewer)?;
+        p.delete_comment(&moment_id, &comment_id, &viewer)
+    })
+    .await?;
+    if !deleted {
         // 不是评论作者、也不是动态作者；或者已经删过了
         return Err(ApiError::new(StatusCode::NOT_FOUND, "no such comment"));
     }
@@ -1028,18 +1184,15 @@ async fn comment(
     Path(moment_id): Path<String>,
     ApiJson(body): ApiJson<CommentBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let moment_id = validate::id(&moment_id)
-        .map_err(ApiError::from)?
-        .to_string();
-    require_visible(&platform, &moment_id, &authed.user_id)
-        .await
-        .map_err(ApiError::from)?;
-    let id = platform.comment_moment(
-        &moment_id,
-        &authed.user_id,
-        &body.text,
-        body.reply_to_comment_id.as_deref(),
-    )?;
+    let moment_id = validate::id(&moment_id).map_err(ApiError::from)?.to_string();
+    let viewer = authed.user_id.clone();
+    let text = body.text.clone();
+    let reply_to = body.reply_to_comment_id.clone();
+    let id = offload(&platform, move |p| {
+        require_visible(p, &moment_id, &viewer)?;
+        p.comment_moment(&moment_id, &viewer, &text, reply_to.as_deref())
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "comment_id": id })),
@@ -1051,11 +1204,50 @@ async fn feed(
     authed: Authed,
     Query(q): Query<FeedQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (rows, next, has_more) = platform.feed(
-        &authed.user_id,
-        q.since.filter(|s| *s > 0),
-        q.limit.unwrap_or(page::DEFAULT_PAGE),
-    )?;
+    let viewer = authed.user_id.clone();
+    let (rows, next, has_more) = offload(&platform, move |p| {
+        p.feed(
+            &viewer,
+            q.since.filter(|s| *s > 0),
+            q.limit.unwrap_or(page::DEFAULT_PAGE),
+        )
+    })
+    .await?;
+    Ok(Json(serde_json::json!({
+        "moments": rows,
+        "next_cursor": next,
+        "has_more": has_more,
+    })))
+}
+
+#[derive(Deserialize)]
+struct AlbumQuery {
+    /// 相册主人的用户 id。
+    user_id: String,
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+/// 个人主页相册。见 [`Platform::moment_album`]：任何"看不见"的情形都返回
+/// 空页，与"没有内容"同形。
+async fn album(
+    State(platform): State<PlatformState>,
+    authed: Authed,
+    Query(q): Query<AlbumQuery>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let owner = q.user_id.clone();
+    let viewer = authed.user_id.clone();
+    let (rows, next, has_more) = offload(&platform, move |p| {
+        p.moment_album(
+            &viewer,
+            &owner,
+            q.since.filter(|s| *s > 0),
+            q.limit.unwrap_or(page::DEFAULT_PAGE),
+        )
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "moments": rows,
         "next_cursor": next,

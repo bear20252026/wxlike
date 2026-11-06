@@ -1,14 +1,31 @@
-//! `wxlike-search` — P3 search-service 索引层（ADR-22，borrow-first：
-//! 嵌入式全文检索用 **Tantivy**，自 2026-10-17 起替换 P1 的子串过渡实现）。
+//! `wxlike-search` — 检索层（ADR-22，borrow-first：嵌入式全文检索用
+//! **Tantivy**，自 2026-10-17 起替换 P1 的子串过渡实现）。
 //!
-//! 索引只存 `(conv_id, seq, sender, text, sent_at)`——**信箱的投影，不是真相**。
-//! 可见性裁决永远在权威存储：命中结果回 Store 验证撤回状态与授权会话集
-//! （`authorize` 由调用方执行）。索引可随时弃可重建（append listener 重放）。
+//! 这个 crate 是 G02（消息检索）与 G05（公开内容检索）**共用**的地基，
+//! 分三层：
+//!
+//! * [`query`] —— 查询侧内核：输入校验/小写化、切词、LIKE 转义、有界摘要。
+//!   两个域都从这里过，改一处两边同时生效。
+//! * [`unified`] —— 编排层：多域归并、稳定游标、**先授权后投影**的
+//!   [`unified::Provider`] 契约。G05 的内容 provider 与 G02 的消息 provider
+//!   在这里汇成同一个 `/api/search` 语义。
+//! * [`trends`] —— 热搜聚合纯函数（时间窗 + 单作者贡献上限 + 去重作者计分）。
+//!
+//! [`SearchIndex`] 是信箱的**投影索引，不是真相**：索引只存
+//! `(conv_id, seq, sender, text, sent_at)`，可见性裁决永远在权威存储
+//! （命中结果回 Store 验证撤回状态与授权会话集，`authorize` 由调用方执行）。
+//! 索引可随时弃可重建（[`IndexerHandle`] 重放）——**写入与查询分离**：
+//! [`SearchIndex::open_writer`] 独占 writer（tantivy 目录锁全局唯一），
+//! [`SearchIndex::open_query`] 是无 writer 的只读副本，检索前 Manual reload。
 //!
 //! 分词：ngram(1..=10) 单字段——CJK 无词边界，ngram 让"慢速"命中"慢速模式"，
 //! 同时让英文 "pineapple" 命中 "pineapples"（≤10 字符内前缀/子串皆可）。
-//! 查询侧把用户输入切成字母数字/CJK token 后 AND 起来，Tantivy 查询语法
-//! （AND/OR/field:）不会泄漏给终端用户。
+//! 查询侧的切词就是 [`query::tokenize`]，把用户输入切成字母数字/CJK token
+//! 后 AND 起来，Tantivy 查询语法（AND/OR/field:）不会泄漏给终端用户。
+
+pub mod query;
+pub mod trends;
+pub mod unified;
 
 use std::path::Path;
 
@@ -17,6 +34,10 @@ use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{IndexRecordOption, Schema, Value as _, STORED, STRING, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+
+pub use query::{NormalizedQuery, QueryError};
+pub use trends::{rank_trends, TrendDoc, TrendOptions, TrendTerm};
+pub use unified::{Candidate, Item, Page, Provider, ProviderResult, SearchError, SearchService};
 
 /// 命中：调用方拿它回权威存储取正文并做撤回/授权裁决。
 #[derive(Clone, Debug, PartialEq)]
@@ -40,8 +61,6 @@ pub struct SearchIndex {
 
 /// ngram 分词器名（1..=10）。
 const NGRAM: &str = "ngram10";
-/// 查询 token 上限：超长输入截断，防查询风暴。
-const MAX_TOKENS: usize = 16;
 
 /// 打开目录索引；不存在时按本 crate 的 schema 新建（索引可弃可重建）。
 fn open_dir_index(dir: &Path) -> anyhow::Result<Index> {
@@ -175,7 +194,8 @@ impl SearchIndex {
         if conv_filter.is_empty() {
             return Ok(Vec::new());
         }
-        let tokens = tokenize(query);
+        // 切词走共用内核：与 G05 内容检索同一套 token 规则、同一个 token 上限
+        let tokens = crate::query::tokenize(query);
         if tokens.is_empty() {
             return Ok(Vec::new());
         }
@@ -243,25 +263,6 @@ impl SearchIndex {
         }
         Ok(hits)
     }
-}
-
-/// 查询侧切词：字母数字 + CJK 连续段为一个 token（ngram 分词器在索引侧再切）。
-/// 这层同时是 Tantivy 查询语法防火墙：`AND`/`field:`/引号不进解析器。
-fn tokenize(input: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in input.chars() {
-        if ch.is_alphanumeric() {
-            cur.push(ch);
-        } else if !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out.truncate(MAX_TOKENS);
-    out
 }
 
 // ---------------------------------------------------------------------------
