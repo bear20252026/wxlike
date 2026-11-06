@@ -129,14 +129,7 @@ impl Platform {
     /// 发布一条视频号内容。转码未成功的媒体直接拒绝（422 语义的 BadInput）。
     pub fn publish_video(&self, author: &str, media_id: &str, caption: &str) -> Result<VideoView> {
         let media_id = validate::id(media_id)?.to_string();
-        if caption.chars().count() > MAX_CAPTION_CHARS {
-            return Err(PlatformError::BadInput("caption too long"));
-        }
-        if caption.contains(|c: char| c.is_control() && c != '\n') {
-            return Err(PlatformError::BadInput(
-                "caption contains control characters",
-            ));
-        }
+        check_video_caption(caption)?;
         {
             let c = self.db().lock();
             check_video_gate(&c, author, &media_id)?;
@@ -157,15 +150,7 @@ impl Platform {
         let mut c = self.db().lock();
         let tx = c.transaction()?;
         // 幂等：同一作者重复发布同一份字节，返回已有记录。
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT id FROM video_posts
-                 WHERE author = ?1 AND media_id = ?2 AND state IN ('published', 'pending')
-                 ORDER BY seq LIMIT 1",
-                params![author, media_id],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let existing = find_active_video_post(&tx, author, &media_id)?;
         if let Some(id) = existing {
             let view = video_row(&tx, author, &id)?.ok_or(PlatformError::NotFound)?;
             tx.commit()?;
@@ -224,10 +209,10 @@ impl Platform {
         if state != STATE_PENDING {
             return Err(PlatformError::NotFound);
         }
-        let next = if action == "publish" {
-            STATE_PUBLISHED
+        let (next, note) = if action == "publish" {
+            (STATE_PUBLISHED, "视频审核通过，已发布")
         } else {
-            STATE_REJECTED
+            (STATE_REJECTED, "视频未通过审核")
         };
         tx.execute(
             "UPDATE video_posts SET state = ?2 WHERE id = ?1",
@@ -249,11 +234,7 @@ impl Platform {
             &format!("admin:{actor}"),
             "video",
             &id,
-            if action == "publish" {
-                "视频审核通过，已发布"
-            } else {
-                "视频未通过审核"
-            },
+            note,
             &format!("video_review:{id}"),
             now,
         )?;
@@ -741,6 +722,31 @@ fn index_video(
 }
 
 /// 发布门禁：媒体必须是本人上传，且转码已 succeeded（唯一播放依据）。
+/// 字幕输入校验（长度与控制字符）。发布路径入口用它，主体保持编排职责。
+fn check_video_caption(caption: &str) -> Result<()> {
+    if caption.chars().count() > MAX_CAPTION_CHARS {
+        return Err(PlatformError::BadInput("caption too long"));
+    }
+    if caption.contains(|c: char| c.is_control() && c != '\n') {
+        return Err(PlatformError::BadInput(
+            "caption contains control characters",
+        ));
+    }
+    Ok(())
+}
+
+/// 幂等发布查找：同作者同媒体、仍处于 published/pending 的既有行 id。
+fn find_active_video_post(c: &Connection, author: &str, media_id: &str) -> Result<Option<String>> {
+    c.query_row(
+        "SELECT id FROM video_posts
+         WHERE author = ?1 AND media_id = ?2 AND state IN ('published', 'pending')
+         ORDER BY seq LIMIT 1",
+        params![author, media_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 fn check_video_gate(c: &Connection, author: &str, media_id: &str) -> Result<()> {
     let media: Option<String> = c
         .query_row(

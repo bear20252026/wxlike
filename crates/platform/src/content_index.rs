@@ -355,24 +355,23 @@ impl Lane {
     }
 }
 
-/// 归并冠军：队头排序键 `(created_at, doc_id)` 最大的泳道下标。
+/// 归并冠军：队头排序键 `(created_at, doc_id)` 最大的泳道下标；
+/// 严格大于才替换，键相等时保留更靠前的泳道（与检索内核语义一致）。
 fn head_winner(lanes: &[Lane]) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for (idx, lane) in lanes.iter().enumerate() {
+    lanes.iter().enumerate().fold(None, |best, (idx, lane)| {
         let Some(head) = lane.buf.front() else {
-            continue;
+            return best;
         };
-        let better = match best.and_then(|b| lanes[b].buf.front()) {
-            None => true,
-            Some(cur) => {
-                (head.created_at, head.doc_id.as_str()) > (cur.created_at, cur.doc_id.as_str())
+        match best.and_then(|b| lanes[b].buf.front()) {
+            None => Some(idx),
+            Some(cur) if (head.created_at, head.doc_id.as_str())
+                > (cur.created_at, cur.doc_id.as_str()) =>
+            {
+                Some(idx)
             }
-        };
-        if better {
-            best = Some(idx);
+            _ => best,
         }
-    }
-    best
+    })
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]

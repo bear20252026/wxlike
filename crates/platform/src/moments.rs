@@ -374,6 +374,26 @@ fn notify_comment_inbox(
     Ok(())
 }
 
+/// 动态进统一检索索引的文档形状：可见性字段与落库行同源，
+/// 避免"行已更新、索引口径还手写一遍"的两处漂移。
+fn moment_index_doc<'a>(
+    id: &'a str,
+    author: &'a str,
+    visibility: Visibility,
+    group: &'a str,
+    text: &'a str,
+) -> content_index::IndexDoc<'a> {
+    content_index::IndexDoc {
+        doc_id: id,
+        kind: "moment",
+        owner: author,
+        audience: visibility.as_str(),
+        group_name: group,
+        title: "",
+        body: text,
+    }
+}
+
 fn require_media(conn: &rusqlite::Connection, media_ids: &[String]) -> Result<()> {
     for media_id in media_ids {
         let known: Option<i64> = conn
@@ -458,15 +478,7 @@ impl Platform {
         )?;
         content_index::upsert(
             &tx,
-            &content_index::IndexDoc {
-                doc_id: &id,
-                kind: "moment",
-                owner: &author,
-                audience: visibility.as_str(),
-                group_name: &group,
-                title: "",
-                body: text,
-            },
+            &moment_index_doc(&id, &author, visibility, &group, text),
             now,
         )?;
         content_index::add_media_refs(&tx, &cleaned, "moment", &id, &author, now)?;

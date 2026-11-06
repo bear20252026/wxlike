@@ -284,6 +284,9 @@ pub struct IndexerHandle {
     tx: std::sync::mpsc::Sender<IndexJob>,
 }
 
+/// 攒批上限：超过即强制 commit，防止低频流量让后台索引长期不落盘。
+const INDEXER_BATCH_MAX: usize = 128;
+
 impl IndexerHandle {
     /// 拉起后台线程：攒批（最多 128 条或通道暂空）→ 单次 commit。
     pub fn spawn(mut index: SearchIndex) -> Self {
@@ -291,7 +294,7 @@ impl IndexerHandle {
         std::thread::spawn(move || {
             while let Ok(first) = rx.recv() {
                 let mut batch = vec![first];
-                while batch.len() < 128 {
+                while batch.len() < INDEXER_BATCH_MAX {
                     let Ok(more) = rx.try_recv() else { break };
                     batch.push(more);
                 }

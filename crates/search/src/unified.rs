@@ -176,27 +176,7 @@ impl SearchService {
             })
             .collect();
 
-        let mut items: Vec<Item> = Vec::with_capacity(limit.min(16));
-        let mut has_more = false;
-        loop {
-            if items.len() == limit {
-                // 取满即停：还有缓冲或未翻完的域 => 有下一页
-                has_more = lanes.iter().any(|lane| !lane.buf.is_empty() || !lane.done);
-                break;
-            }
-            for lane in lanes.iter_mut() {
-                while lane.buf.is_empty() && !lane.done {
-                    lane.fill(&q, viewer, batch)?;
-                }
-            }
-            let Some(winner) = head_winner(&lanes) else {
-                break;
-            };
-            let Some(head) = lanes[winner].buf.pop_front() else {
-                break;
-            };
-            items.push(head);
-        }
+        let (items, has_more) = merge_lanes(&mut lanes, &q, viewer, batch, limit)?;
         let next_cursor = items
             .last()
             .map(|last| format!("{}:{}", last.created_at, last.doc_id))
@@ -237,6 +217,39 @@ impl SearchService {
         }
         Ok(out)
     }
+}
+
+/// 多域归并消费：反复"补缓冲 → 取队头冠军"，直到取满 `limit` 或所有域见底。
+/// 单独成函数是为了让 [`SearchService::search`] 只负责编排，扫描/翻页细节都在这。
+fn merge_lanes(
+    lanes: &mut [Lane],
+    q: &NormalizedQuery,
+    viewer: &str,
+    batch: usize,
+    limit: usize,
+) -> Result<(Vec<Item>, bool), SearchError> {
+    let mut items: Vec<Item> = Vec::with_capacity(limit.min(16));
+    let mut has_more = false;
+    loop {
+        if items.len() == limit {
+            // 取满即停：还有缓冲或未翻完的域 => 有下一页
+            has_more = lanes.iter().any(|lane| !lane.buf.is_empty() || !lane.done);
+            break;
+        }
+        for lane in lanes.iter_mut() {
+            while lane.buf.is_empty() && !lane.done {
+                lane.fill(q, viewer, batch)?;
+            }
+        }
+        let Some(winner) = head_winner(lanes) else {
+            break;
+        };
+        let Some(head) = lanes[winner].buf.pop_front() else {
+            break;
+        };
+        items.push(head);
+    }
+    Ok((items, has_more))
 }
 
 /// 归并冠军：队头排序键最大的 lane 下标。
