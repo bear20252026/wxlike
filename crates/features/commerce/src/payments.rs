@@ -11,7 +11,7 @@ use serde::Deserialize;
 use wxlike_ledger::{Currency, Money, PostingLine, PostingRequest};
 
 use crate::error::{CommerceError, Result};
-use crate::ports::{map_provider, ProviderIntentRequest, ProviderPaymentStatus};
+use crate::ports::{map_provider, Entropy, ProviderIntentRequest, ProviderPaymentStatus};
 use crate::store;
 use crate::Commerce;
 
@@ -127,11 +127,117 @@ pub struct WebhookOutcome {
     pub status: IntentStatus,
 }
 
+/// 带 `operation_id` 的供应商回调信封。
+///
+/// `operation_id` 是平台统一的长操作把手（见
+/// `docs/full-platform-delivery/01_contracts_and_data.md` 与 G15-05）：
+/// 供应商对同一次业务结果的所有重试都必须复用同一个 `operation_id`，
+/// 换 `operation_id` 再投同一 `event_id` 会被事件去重拒绝。
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CallbackEnvelope {
+    pub operation_id: String,
+    pub event_id: String,
+    pub intent_id: String,
+    pub kind: String,
+    pub provider_ref: String,
+    /// 整数最小单位；本契约不接受浮点金额。
+    pub amount_minor: i64,
+    pub currency: String,
+    pub timestamp_ms: i64,
+}
+
+impl CallbackEnvelope {
+    /// 业务内容摘要：绑定操作与业务字段。
+    ///
+    /// 刻意不含 `timestamp_ms`——那是投递元数据而非业务内容；供应商用新
+    /// 时间戳重签同一次结果仍算重放（返回首次结果），而金额/类别/事件号
+    /// 任一变化都会触发 [`crate::CommerceError::IdempotencyConflict`]。
+    #[must_use]
+    pub fn digest(&self) -> String {
+        store::digest_hex(&[
+            CALLBACK_DIGEST_VERSION,
+            &self.operation_id,
+            &self.event_id,
+            &self.intent_id,
+            &self.kind,
+            &self.provider_ref,
+            &self.amount_minor.to_string(),
+            &self.currency,
+        ])
+    }
+
+    /// 幂等键：`operation_id` 全库唯一，作用域前缀避免与其它命令撞键。
+    #[must_use]
+    pub fn business_key(&self) -> String {
+        format!("callback:{}", self.operation_id)
+    }
+
+    /// 事件去重用的载荷摘要，与不带 `operation_id` 的旧回调同一规范，
+    /// 保证两条入口共享一套事件表去重语义。
+    #[must_use]
+    pub fn event_digest(&self) -> String {
+        store::digest_hex(&[
+            &self.event_id,
+            &self.intent_id,
+            &self.kind,
+            &self.provider_ref,
+            &self.amount_minor.to_string(),
+            &self.currency,
+        ])
+    }
+
+    fn payload(&self) -> WebhookPayload {
+        WebhookPayload {
+            event_id: self.event_id.clone(),
+            intent_id: self.intent_id.clone(),
+            kind: self.kind.clone(),
+            provider_ref: self.provider_ref.clone(),
+            amount_minor: self.amount_minor,
+            currency: self.currency.clone(),
+            timestamp_ms: self.timestamp_ms,
+        }
+    }
+}
+
+/// 回调端点的处理结果；`replayed` 为真表示本次没有产生任何副作用。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CallbackOutcome {
+    pub operation_id: String,
+    pub event_id: String,
+    pub intent_id: String,
+    pub kind: String,
+    pub applied: bool,
+    pub replayed: bool,
+    pub status: String,
+    pub reason: String,
+}
+
+impl CallbackOutcome {
+    /// 供重放路径回填：库里存的是首次结果，本次是重复投递。
+    #[must_use]
+    fn as_replay(self) -> Self {
+        Self {
+            replayed: true,
+            ..self
+        }
+    }
+}
+
+/// 操作台账里一行回调记录（值对象的只读视图）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallbackRecord {
+    pub outcome: CallbackOutcome,
+    pub received_at: i64,
+}
+
 #[derive(Clone, Debug)]
 struct IntentRow {
     intent: PaymentIntent,
     nonce_hash: String,
 }
+
+/// 回调摘要的规范版本：一旦字段构成变化就 bump，旧记录自然视为异参。
+const CALLBACK_DIGEST_VERSION: &str = "callback-v1";
 
 #[derive(Deserialize)]
 struct WebhookPayload {
@@ -451,13 +557,92 @@ impl Commerce {
         Ok(())
     }
 
+    /// 用供应商查询解决"未知状态"（验收：超时不能本地写已支付）。
+    ///
+    /// 只有供应商证据能推进状态：
+    /// * `Succeeded` → 走与回调同一套入账逻辑（分录业务键 `intent:{id}:success`
+    ///   在账本层幂等，所以与稍后到达的回执并发也不会二次入账）；
+    /// * `Failed` → 只从可支付态前进为失败；
+    /// * `Pending` → 原样返回，本地一个字都不改；
+    /// * 查询本身超时/不可达 → 返回错误，意图继续停在未知态等下一次；
+    /// * 已是终态 → 直接回读，不再发起查询，也不允许终态倒退。
+    ///
+    /// 没有 `provider_ref` 的意图（创建时就超时）先做幂等创建：供应商侧的
+    /// 键由意图 ID 派生，重复调用不会产生第二张单。
+    ///
+    /// # Errors
+    /// 无权查看、参数非法、供应商失败或存储失败。
+    pub fn refresh_payment_intent(&self, viewer: &str, intent_id: &str) -> Result<PaymentIntent> {
+        store::validate_id("viewer", viewer)?;
+        store::validate_id("intent", intent_id)?;
+        let row = {
+            let conn = self.lock();
+            load_intent(&conn, intent_id)?.ok_or(CommerceError::NotFound)?
+        };
+        if row.intent.actor_id != viewer && row.intent.payee_id != viewer {
+            return Err(CommerceError::Forbidden);
+        }
+        if matches!(
+            row.intent.status,
+            IntentStatus::Succeeded
+                | IntentStatus::Refunded
+                | IntentStatus::PartiallyRefunded
+                | IntentStatus::Failed
+                | IntentStatus::Expired
+        ) {
+            return Ok(row.intent);
+        }
+        let Some(provider_ref) = row.intent.provider_ref.clone() else {
+            // 创建时就超时的单：先幂等补建，再按本地状态回读（鉴权已在上一步做过）。
+            self.advance_provider(&row)?;
+            let conn = self.lock();
+            let updated = load_intent(&conn, intent_id)?.ok_or(CommerceError::NotFound)?;
+            return Ok(updated.intent);
+        };
+        let payment = self
+            .ports
+            .provider
+            .query_payment(&provider_ref)
+            .map_err(map_provider)?;
+        if payment.amount != row.intent.amount {
+            return Err(CommerceError::BadInput(
+                "provider query amount does not match the intent".into(),
+            ));
+        }
+        match payment.status {
+            ProviderPaymentStatus::Pending => Ok(row.intent),
+            ProviderPaymentStatus::Succeeded => {
+                let mut guard = self.lock();
+                let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                apply_success(&tx, self, intent_id, &provider_ref, self.now())?;
+                let updated = load_intent(&tx, intent_id)?.ok_or(CommerceError::NotFound)?;
+                tx.commit()?;
+                Ok(updated.intent)
+            }
+            ProviderPaymentStatus::Failed => {
+                let now = self.now();
+                // 连接守卫必须在这个块里释放：`payment_intent` 会再次取锁。
+                {
+                    let conn = self.lock();
+                    conn.execute(
+                        "UPDATE commerce_payment_intents
+                         SET status = 'failed', updated_at = ?1, version = version + 1
+                         WHERE id = ?2 AND status IN ('created', 'pending')",
+                        params![now, intent_id],
+                    )?;
+                }
+                self.payment_intent(viewer, intent_id)
+            }
+        }
+    }
+
     /// 回调签名（供应商与接入方共用同一规范）。
     #[must_use]
     pub fn webhook_signature(&self, raw_body: &str) -> String {
         store::hmac_hex(self.config.webhook_secret.as_slice(), &[raw_body])
     }
 
-    /// 处理供应商回调。
+    /// 处理供应商回调（旧入口：只按 `event_id` 去重）。
     ///
     /// # Errors
     /// 签名错误、时间窗外、金额/币种不符、重复事件或存储失败。
@@ -466,21 +651,77 @@ impl Commerce {
         let (payload, digest) = self.verify_webhook(raw_body, signature)?;
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row = load_intent(&tx, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
-        ensure_webhook_matches(&row.intent, &payload)?;
-        record_event(&tx, &payload, &digest, now)?;
-        let (applied, reason) = apply_webhook_event(&tx, self, &payload, now)?;
-        tx.execute(
-            "UPDATE commerce_payment_events SET applied = ?1, reason = ?2 WHERE event_id = ?3",
-            params![applied, reason, payload.event_id],
-        )?;
-        let updated = load_intent(&tx, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
+        let (applied, _reason, status) = apply_webhook_effect(&tx, self, &payload, &digest, now)?;
         tx.commit()?;
         Ok(WebhookOutcome {
             event_id: payload.event_id,
             applied: applied == 1,
-            status: updated.intent.status,
+            status,
         })
+    }
+
+    /// 处理带 `operation_id` 的供应商回调端点入口。
+    ///
+    /// 幂等与防重放走 [`store::replay`] 这一唯一入口：
+    /// * 同 `operation_id` + 同业务摘要 → 返回首次结果，`replayed = true`，
+    ///   不写事件、不推状态、不记账、不出 outbox；
+    /// * 同 `operation_id` + 异业务摘要 → [`CommerceError::IdempotencyConflict`]；
+    /// * 换 `operation_id` 再投同一 `event_id` → [`CommerceError::Replay`]
+    ///   （事件表去重，与新入参无关）。
+    ///
+    /// 首次投递的效果（事件行 + 状态推进 + 复式分录 + outbox + 台账行）在
+    /// 同一个 `IMMEDIATE` 事务里提交：崩溃只会导致"全无"或"全无重复"，
+    /// 不会出现半笔入账。
+    ///
+    /// # Errors
+    /// 验签失败、时间窗外、参数非法、幂等冲突、事件重复或存储失败。
+    pub fn handle_provider_callback(
+        &self,
+        raw_body: &str,
+        signature: &str,
+    ) -> Result<CallbackOutcome> {
+        let now = self.now();
+        let envelope = self.verify_callback(raw_body, signature)?;
+        let scoped_key = envelope.business_key();
+        let digest = envelope.digest();
+        let event_digest = envelope.event_digest();
+        let payload = envelope.payload();
+        let mut guard = self.lock();
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(previous) = store::replay(load_callback(&tx, &scoped_key)?, &digest)? {
+            tx.commit()?;
+            return Ok(previous.as_replay());
+        }
+        // 时间窗只约束"新效果"那一次：重试可能发生在很久以后，此时命中重放
+        // 应当原样返回首次结果，而不是把合法重试误判成伪造。
+        if (self.now() - envelope.timestamp_ms).abs() > self.config.callback_skew_ms {
+            return Err(CommerceError::InvalidSignature);
+        }
+        let (applied, reason, status) =
+            apply_webhook_effect(&tx, self, &payload, &event_digest, now)?;
+        let outcome = CallbackOutcome {
+            operation_id: envelope.operation_id.clone(),
+            event_id: envelope.event_id.clone(),
+            intent_id: envelope.intent_id.clone(),
+            kind: envelope.kind.clone(),
+            applied: applied == 1,
+            replayed: false,
+            status: status.as_str().to_string(),
+            reason,
+        };
+        insert_callback(&tx, self.entropy(), &envelope, &digest, &outcome, now)?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// 按 `operation_id` 读回回调台账（值班排障、对账与端到端重放取证）。
+    ///
+    /// # Errors
+    /// 参数非法或存储失败。
+    pub fn provider_callback(&self, operation_id: &str) -> Result<Option<CallbackRecord>> {
+        store::validate_id("operation", operation_id)?;
+        let conn = self.lock();
+        load_callback_by_operation(&conn, operation_id)
     }
 }
 
@@ -515,6 +756,147 @@ impl Commerce {
         ]);
         Ok((payload, digest))
     }
+
+    /// 验签并校验带 `operation_id` 的回调信封。
+    ///
+    /// 签名对象是**原始 body 字节**（不是重新序列化的 JSON），与
+    /// [`Self::webhook_signature`] 同一套规范；这样网关/中间层改写键顺序
+    /// 或空白时不会出现"看起来一样但验签失败"的运维陷阱。
+    ///
+    /// 这里刻意不做时间窗判定：`handle_provider_callback` 需要在重放命中时
+    /// 原样返回首次结果，时间窗只用于闸门新效果。
+    fn verify_callback(&self, raw_body: &str, signature: &str) -> Result<CallbackEnvelope> {
+        if !store::hmac_verify(
+            self.config.webhook_secret.as_slice(),
+            &[raw_body],
+            signature,
+        ) {
+            return Err(CommerceError::InvalidSignature);
+        }
+        let envelope: CallbackEnvelope = serde_json::from_str(raw_body)
+            .map_err(|_| CommerceError::BadInput("callback body".into()))?;
+        store::validate_id("operation", &envelope.operation_id)?;
+        store::validate_id("event", &envelope.event_id)?;
+        store::validate_id("intent", &envelope.intent_id)?;
+        store::validate_id("provider_ref", &envelope.provider_ref)?;
+        if !matches!(
+            envelope.kind.as_str(),
+            "payment.succeeded" | "payment.failed"
+        ) {
+            return Err(CommerceError::BadInput("unknown callback kind".into()));
+        }
+        if envelope.amount_minor <= 0 {
+            return Err(CommerceError::BadInput("callback amount".into()));
+        }
+        Currency::parse(&envelope.currency)?;
+        Ok(envelope)
+    }
+}
+
+/// 在调用方事务内落地一次回调效果。
+///
+/// 两条入口（[`Commerce::handle_webhook`] 与
+/// [`Commerce::handle_provider_callback`]）共用这一份实现，幂等与状态推进
+/// 因此只有一个语义来源；回调端点不会另造一套"看起来一样"的入账路径。
+fn apply_webhook_effect(
+    conn: &Connection,
+    commerce: &Commerce,
+    payload: &WebhookPayload,
+    event_digest: &str,
+    now: i64,
+) -> Result<(i64, String, IntentStatus)> {
+    let row = load_intent(conn, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
+    ensure_webhook_matches(&row.intent, payload)?;
+    record_event(conn, payload, event_digest, now)?;
+    let (applied, reason) = apply_webhook_event(conn, commerce, payload, now)?;
+    conn.execute(
+        "UPDATE commerce_payment_events SET applied = ?1, reason = ?2 WHERE event_id = ?3",
+        params![applied, reason, payload.event_id],
+    )?;
+    let updated = load_intent(conn, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
+    Ok((applied, reason, updated.intent.status))
+}
+
+/// 读回幂等键下的既有回调结果：`(存储摘要, 首次结果)`。
+fn load_callback(conn: &Connection, scoped_key: &str) -> Result<Option<(String, CallbackOutcome)>> {
+    let row = conn
+        .query_row(
+            "SELECT request_digest, result_json FROM commerce_provider_callbacks
+             WHERE business_key = ?1",
+            params![scoped_key],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((digest, result_json)) = row else {
+        return Ok(None);
+    };
+    let outcome: CallbackOutcome = serde_json::from_str(&result_json)
+        .map_err(|_| CommerceError::BadInput("stored callback result".into()))?;
+    Ok(Some((digest, outcome)))
+}
+
+/// 写回调台账一行。业务键唯一约束是最后一道防线：即使并发窗口里两次都
+/// 判定为"新"，第二次也会在 `IMMEDIATE` 事务内撞上 UNIQUE 并整体回滚。
+fn insert_callback(
+    conn: &Connection,
+    entropy: &dyn Entropy,
+    envelope: &CallbackEnvelope,
+    digest: &str,
+    outcome: &CallbackOutcome,
+    now: i64,
+) -> Result<()> {
+    let result_json = serde_json::to_string(outcome)
+        .map_err(|error| CommerceError::BadInput(format!("callback result: {error}")))?;
+    conn.execute(
+        "INSERT INTO commerce_provider_callbacks
+            (id, business_key, operation_id, event_id, intent_id, kind, provider_ref,
+             amount_minor, currency, request_digest, result_json, applied, reason,
+             received_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            store::new_id(entropy),
+            envelope.business_key(),
+            envelope.operation_id,
+            envelope.event_id,
+            envelope.intent_id,
+            envelope.kind,
+            envelope.provider_ref,
+            envelope.amount_minor,
+            envelope.currency,
+            digest,
+            result_json,
+            i64::from(outcome.applied),
+            outcome.reason,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+/// 按操作号读取台账记录。
+fn load_callback_by_operation(
+    conn: &Connection,
+    operation_id: &str,
+) -> Result<Option<CallbackRecord>> {
+    let row = conn
+        .query_row(
+            "SELECT result_json, received_at FROM commerce_provider_callbacks
+             WHERE operation_id = ?1",
+            params![operation_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((result_json, received_at)) = row else {
+        return Ok(None);
+    };
+    let mut outcome: CallbackOutcome = serde_json::from_str(&result_json)
+        .map_err(|_| CommerceError::BadInput("stored callback result".into()))?;
+    // 库里存的是首次投递的结果；按操作号回读时它已经是"过去完成的操作"。
+    outcome.replayed = true;
+    Ok(Some(CallbackRecord {
+        outcome,
+        received_at,
+    }))
 }
 
 /// 回调声称的金额/币种/供应商引用必须与本地意图一致。

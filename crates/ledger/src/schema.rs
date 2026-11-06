@@ -8,7 +8,9 @@
 //! 不可变性的底线：
 //! * `ledger_entries` 只 INSERT，没有余额列；
 //! * `ledger_journals.business_key` 唯一，重放只能命中同一笔；
-//! * 日结是快照表，重复日结只能与既有快照一致，不能覆盖。
+//! * 日结是快照表，重复日结只能与既有快照一致，不能覆盖；
+//! * 分录与分录头的 UPDATE/DELETE 由 `BEFORE ... RAISE(ABORT)` 触发器在
+//!   数据库层拒绝——`init_schema` 幂等，旧库文件下次打开即获得该兜底。
 
 use rusqlite::{Connection, Result};
 
@@ -66,6 +68,30 @@ fn init_posting_tables(conn: &Connection) -> Result<()> {
             ON ledger_entries(account, id);
         CREATE INDEX IF NOT EXISTS idx_ledger_entries_created
             ON ledger_entries(created_at, currency);
+
+        -- 不可变性由数据库兜底，而不是一句注释：任何绕过 `post_in` 的
+        -- UPDATE/DELETE（人工改余额、脚本回填、误用生产 fund 接口）都会在
+        -- 写入的那一刻被拒绝，事务整体回滚。
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_entries_no_update
+            BEFORE UPDATE ON ledger_entries
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_entries is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_entries_no_delete
+            BEFORE DELETE ON ledger_entries
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_entries is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_journals_no_update
+            BEFORE UPDATE ON ledger_journals
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_journals is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_journals_no_delete
+            BEFORE DELETE ON ledger_journals
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_journals is append-only');
+        END;
         "#,
     )
 }
@@ -117,6 +143,24 @@ fn init_closing_tables(conn: &Connection) -> Result<()> {
             balance_minor INTEGER NOT NULL,
             PRIMARY KEY (day, currency, account)
         );
+
+        -- 日结快照也只能追加：能改写历史快照，"日结余额与分录一致"就只是
+        -- 一句口号。重复日结由 save_closing 先比对再决定是否写入。
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_closings_no_update
+            BEFORE UPDATE ON ledger_closings
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_closings is an immutable snapshot');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_closings_no_delete
+            BEFORE DELETE ON ledger_closings
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_closings is an immutable snapshot');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_closing_balances_no_update
+            BEFORE UPDATE ON ledger_closing_balances
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_closing_balances is an immutable snapshot');
+        END;
         "#,
     )
 }
