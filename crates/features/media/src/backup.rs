@@ -413,8 +413,48 @@ impl MediaService {
             return Err(MediaError::bad("key reference is too long"));
         }
         let entries = self.owner_entries(user_id)?;
+        let (planned, missing_objects) = self.plan_entries(&entries);
+        let payload_bytes: u64 = planned.iter().map(|entry| entry.size).sum();
+        let chat_snapshot = self.chat.snapshot(user_id)?;
+        let chat_messages = chat_snapshot.len() as u32;
+        let created_at = now_ms();
+        let manifest = BackupManifest {
+            format: BACKUP_FORMAT.into(),
+            version: BACKUP_VERSION,
+            // The export stamps a fresh id here; the placeholder keeps the
+            // serialization shape (and therefore the size estimate) identical.
+            backup_id: String::new(),
+            created_at,
+            device_id: device_id.to_string(),
+            encryption: encryption.clone(),
+            chat_messages: chat_snapshot,
+            entries,
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest)?.len() as u64;
+        let estimated_package_bytes =
+            BACKUP_HEADER_LEN as u64 + manifest_bytes + payload_bytes + BACKUP_TRAILER_LEN as u64;
+        let within_budget = payload_bytes <= BACKUP_MAX_BYTES;
+        let publishable = within_budget && missing_objects.is_empty();
+        Ok(BackupPlan {
+            owner: user_id.to_string(),
+            device_id: device_id.to_string(),
+            created_at,
+            entries: planned,
+            payload_bytes,
+            estimated_package_bytes,
+            chat_messages,
+            missing_objects,
+            within_budget,
+            publishable,
+            encryption,
+        })
+    }
+
+    /// Integrity pre-check for a plan: a row counts as present only when the
+    /// store still holds a blob of exactly the recorded size.
+    fn plan_entries(&self, entries: &[BackupEntry]) -> (Vec<BackupPlanEntry>, Vec<String>) {
         let mut missing_objects = Vec::new();
-        let planned: Vec<BackupPlanEntry> = entries
+        let planned = entries
             .iter()
             .map(|entry| {
                 let present = self
@@ -436,39 +476,7 @@ impl MediaService {
                 }
             })
             .collect();
-        let payload_bytes: u64 = planned.iter().map(|entry| entry.size).sum();
-        let chat_snapshot = self.chat.snapshot(user_id)?;
-        let chat_messages = chat_snapshot.len() as u32;
-        let manifest = BackupManifest {
-            format: BACKUP_FORMAT.into(),
-            version: BACKUP_VERSION,
-            // The export stamps a fresh id here; the placeholder keeps the
-            // serialization shape (and therefore the size estimate) identical.
-            backup_id: String::new(),
-            created_at: now_ms(),
-            device_id: device_id.to_string(),
-            encryption: encryption.clone(),
-            chat_messages: chat_snapshot,
-            entries,
-        };
-        let manifest_bytes = serde_json::to_vec(&manifest)?.len() as u64;
-        let estimated_package_bytes =
-            BACKUP_HEADER_LEN as u64 + manifest_bytes + payload_bytes + BACKUP_TRAILER_LEN as u64;
-        let within_budget = payload_bytes <= BACKUP_MAX_BYTES;
-        let publishable = within_budget && missing_objects.is_empty();
-        Ok(BackupPlan {
-            owner: user_id.to_string(),
-            device_id: device_id.to_string(),
-            created_at: manifest.created_at,
-            entries: planned,
-            payload_bytes,
-            estimated_package_bytes,
-            chat_messages,
-            missing_objects,
-            within_budget,
-            publishable,
-            encryption,
-        })
+        (planned, missing_objects)
     }
 
     fn write_container(&self, package: &Path, manifest: &BackupManifest) -> Result<(String, u64)> {
@@ -699,18 +707,7 @@ impl MediaService {
         payload: &Path,
         outcome: &mut ImportOutcome,
     ) -> Result<()> {
-        let (imported, state): (i64, String) = {
-            let c = self.db.lock();
-            let (imported, state): (i64, String) = c.query_row(
-                "SELECT e.imported, b.state
-                 FROM media_backup_entry e
-                 JOIN media_backup b ON b.backup_id = e.backup_id
-                 WHERE e.backup_id = ?1 AND e.entry_idx = ?2",
-                params![backup_id, i64::from(entry.index)],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            (imported, state)
-        };
+        let (imported, state) = self.entry_cursor(backup_id, entry.index)?;
         if state != STATE_IMPORTING {
             return Err(MediaError::conflict(format!(
                 "import {backup_id} is no longer in state {state}"
@@ -724,50 +721,77 @@ impl MediaService {
         // "already present" means *usable*: a ready row **and** its bytes on
         // the store. A soft-deleted row (e.g. left by an earlier rollback of
         // this backup) is re-landed, not counted as dedup.
-        let existed = {
-            let row = object_by_id_conn(&self.db.lock(), &entry.object_id)?;
-            row.is_some_and(|object| object.ready())
-                && self
-                    .store
-                    .size(&entry.object_id)?
-                    .is_some_and(|size| size == entry.size)
-        };
+        let existed = self.entry_content_present(&entry.object_id, entry.size)?;
         if !existed {
-            let digest = crate::store::stream_digest_file(payload)?;
-            if digest != entry.object_id {
-                std::fs::remove_file(payload).ok();
-                return Err(MediaError::Tampered("entry digest mismatch".into()));
-            }
-            self.store.put_file(&entry.object_id, payload)?;
+            self.land_entry_blob(entry, payload)?;
         }
         std::fs::remove_file(payload).ok();
-        {
-            let mut c = self.db.lock();
-            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let guarded: String = tx.query_row(
-                "SELECT state FROM media_backup WHERE backup_id = ?1",
-                params![backup_id],
-                |row| row.get(0),
-            )?;
-            if guarded != STATE_IMPORTING {
-                return Err(MediaError::conflict(format!(
-                    "import {backup_id} changed state under it"
-                )));
-            }
-            let now = now_ms();
-            restored_object_conn(&tx, user_id, backup_id, entry, now)?;
-            tx.execute(
-                "UPDATE media_backup_entry SET imported = 1
-                 WHERE backup_id = ?1 AND entry_idx = ?2",
-                params![backup_id, i64::from(entry.index)],
-            )?;
-            tx.commit()?;
-        }
+        self.commit_entry_cursor(user_id, backup_id, entry)?;
         if existed {
             outcome.deduped += 1;
         } else {
             outcome.imported += 1;
         }
+        Ok(())
+    }
+
+    fn entry_cursor(&self, backup_id: &str, index: u32) -> Result<(i64, String)> {
+        let c = self.db.lock();
+        Ok(c.query_row(
+            "SELECT e.imported, b.state
+             FROM media_backup_entry e
+             JOIN media_backup b ON b.backup_id = e.backup_id
+             WHERE e.backup_id = ?1 AND e.entry_idx = ?2",
+            params![backup_id, i64::from(index)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    }
+
+    fn entry_content_present(&self, object_id: &str, size: u64) -> Result<bool> {
+        let row = object_by_id_conn(&self.db.lock(), object_id)?;
+        Ok(row.is_some_and(|object| object.ready())
+            && self
+                .store
+                .size(object_id)?
+                .is_some_and(|stored| stored == size))
+    }
+
+    fn land_entry_blob(&self, entry: &BackupEntry, payload: &Path) -> Result<()> {
+        let digest = crate::store::stream_digest_file(payload)?;
+        if digest != entry.object_id {
+            std::fs::remove_file(payload).ok();
+            return Err(MediaError::Tampered("entry digest mismatch".into()));
+        }
+        self.store.put_file(&entry.object_id, payload)?;
+        Ok(())
+    }
+
+    fn commit_entry_cursor(
+        &self,
+        user_id: &str,
+        backup_id: &str,
+        entry: &BackupEntry,
+    ) -> Result<()> {
+        let mut c = self.db.lock();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let guarded: String = tx.query_row(
+            "SELECT state FROM media_backup WHERE backup_id = ?1",
+            params![backup_id],
+            |row| row.get(0),
+        )?;
+        if guarded != STATE_IMPORTING {
+            return Err(MediaError::conflict(format!(
+                "import {backup_id} changed state under it"
+            )));
+        }
+        let now = now_ms();
+        restored_object_conn(&tx, user_id, backup_id, entry, now)?;
+        tx.execute(
+            "UPDATE media_backup_entry SET imported = 1
+             WHERE backup_id = ?1 AND entry_idx = ?2",
+            params![backup_id, i64::from(entry.index)],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -842,74 +866,15 @@ impl MediaService {
         if backup_id.is_empty() || backup_id.len() > ids::MAX_NAME_CHARS {
             return Err(MediaError::bad("backup id is out of range"));
         }
+        let (affected, removed_files, reset_entries) =
+            self.rollback_restore_landing(user_id, backup_id)?;
         let mut outcome = RollbackOutcome {
             backup_id: backup_id.to_string(),
             state: STATE_ROLLED_BACK.into(),
+            removed_files,
+            reset_entries,
             ..Default::default()
         };
-        let mut affected = Vec::new();
-        {
-            let mut c = self.db.lock();
-            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let row: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT owner, state FROM media_backup WHERE backup_id = ?1",
-                    params![backup_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let (owner, state) = row.ok_or(MediaError::NotFound)?;
-            if owner != user_id {
-                return Err(MediaError::NotFound);
-            }
-            let claimed = tx.execute(
-                "UPDATE media_backup SET state = ?1, updated_at = ?2
-                 WHERE backup_id = ?3 AND state IN (?4, ?5)",
-                params![
-                    STATE_ROLLING_BACK,
-                    now_ms(),
-                    backup_id,
-                    STATE_IMPORTING,
-                    STATE_FAILED
-                ],
-            )?;
-            if claimed == 0 {
-                return Err(MediaError::conflict(format!(
-                    "backup {state} is not rollback-able (resume it instead)"
-                )));
-            }
-            let landed: Vec<(i64, String)> = {
-                let mut stmt = tx.prepare(
-                    "SELECT entry_idx, object_id FROM media_backup_entry
-                     WHERE backup_id = ?1 AND imported = 1 ORDER BY entry_idx",
-                )?;
-                let rows =
-                    stmt.query_map(params![backup_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-                rows.collect::<std::result::Result<_, _>>()?
-            };
-            let now = now_ms();
-            for (index, object_id) in landed {
-                let file_id = format!("restore_{backup_id}_{index}");
-                remove_ref_conn(&tx, &object_id, RefType::File, &file_id, now)?;
-                outcome.removed_files += tx.execute(
-                    "DELETE FROM media_file WHERE file_id = ?1 AND owner = ?2",
-                    params![file_id, user_id],
-                )? as u32;
-                tx.execute(
-                    "UPDATE media_backup_entry SET imported = 0
-                     WHERE backup_id = ?1 AND entry_idx = ?2",
-                    params![backup_id, index],
-                )?;
-                outcome.reset_entries += 1;
-                affected.push(object_id);
-            }
-            tx.execute(
-                "UPDATE media_backup SET state = ?1, updated_at = ?2
-                 WHERE backup_id = ?3 AND state = ?4",
-                params![STATE_ROLLED_BACK, now_ms(), backup_id, STATE_ROLLING_BACK],
-            )?;
-            tx.commit()?;
-        }
         for object_id in affected {
             if self.gc_object(&object_id)? {
                 outcome.removed_objects += 1;
@@ -918,6 +883,56 @@ impl MediaService {
             }
         }
         Ok(outcome)
+    }
+
+    /// Transactional half of [`Self::rollback_backup_import`]: claim the row
+    /// (only `importing`/`failed` are rollback-able — a completed restore is
+    /// accepted history, and `chat_committed` means the cursor already moved),
+    /// undo every landed entry's metadata and flip the row to `rolled_back`.
+    /// Physical freeing happens outside, via ref-counted GC.
+    fn rollback_restore_landing(
+        &self,
+        user_id: &str,
+        backup_id: &str,
+    ) -> Result<(Vec<String>, u32, u32)> {
+        let mut c = self.db.lock();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT owner, state FROM media_backup WHERE backup_id = ?1",
+                params![backup_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (owner, state) = row.ok_or(MediaError::NotFound)?;
+        if owner != user_id {
+            return Err(MediaError::NotFound);
+        }
+        let claimed = tx.execute(
+            "UPDATE media_backup SET state = ?1, updated_at = ?2
+             WHERE backup_id = ?3 AND state IN (?4, ?5)",
+            params![
+                STATE_ROLLING_BACK,
+                now_ms(),
+                backup_id,
+                STATE_IMPORTING,
+                STATE_FAILED
+            ],
+        )?;
+        if claimed == 0 {
+            return Err(MediaError::conflict(format!(
+                "backup {state} is not rollback-able (resume it instead)"
+            )));
+        }
+        let (landed, removed_files) = undo_landed_entries(&tx, user_id, backup_id)?;
+        tx.execute(
+            "UPDATE media_backup SET state = ?1, updated_at = ?2
+             WHERE backup_id = ?3 AND state = ?4",
+            params![STATE_ROLLED_BACK, now_ms(), backup_id, STATE_ROLLING_BACK],
+        )?;
+        tx.commit()?;
+        let reset_entries = landed.len() as u32;
+        Ok((landed, removed_files, reset_entries))
     }
 
     /// Restore keys through the G02 escrow port. The package never contains key
@@ -1192,6 +1207,44 @@ fn restored_object_conn(
         ],
     )?;
     Ok(())
+}
+
+/// Undo the per-entry metadata half of a rollback: for every landed entry,
+/// drop the synthetic restore ref + file row and reset the `imported` cursor.
+/// Runs inside the caller's transaction. Returns the object ids touched (for
+/// the caller's ref-counted GC) and how many file rows were removed.
+fn undo_landed_entries(
+    tx: &rusqlite::Connection,
+    user_id: &str,
+    backup_id: &str,
+) -> Result<(Vec<String>, u32)> {
+    let landed: Vec<(i64, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT entry_idx, object_id FROM media_backup_entry
+             WHERE backup_id = ?1 AND imported = 1 ORDER BY entry_idx",
+        )?;
+        let rows = stmt.query_map(params![backup_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let mut removed_files = 0u32;
+    let now = now_ms();
+    for (index, object_id) in &landed {
+        let file_id = format!("restore_{backup_id}_{index}");
+        remove_ref_conn(tx, object_id, RefType::File, &file_id, now)?;
+        removed_files += tx.execute(
+            "DELETE FROM media_file WHERE file_id = ?1 AND owner = ?2",
+            params![file_id, user_id],
+        )? as u32;
+        tx.execute(
+            "UPDATE media_backup_entry SET imported = 0
+             WHERE backup_id = ?1 AND entry_idx = ?2",
+            params![backup_id, index],
+        )?;
+    }
+    Ok((
+        landed.into_iter().map(|(_, id)| id).collect(),
+        removed_files,
+    ))
 }
 
 fn read_header(file: &mut std::fs::File, hasher: &mut Sha256) -> Result<BackupManifest> {
