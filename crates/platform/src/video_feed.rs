@@ -187,7 +187,7 @@ impl Platform {
     /// 运营复核待审视频。放行才补索引 + 附件引用 + 通知作者；拒绝撤收藏引用。
     /// 非 `pending` 的行一律 404（与"不存在"同形），复核端点因此不是探测面。
     ///
-    /// 返回 [`ReviewResult`] 而不是 [`VideoView`]：驳回后这条内容**对外不存在**，
+    /// 返回 `ReviewResult` 而不是 `VideoView`：驳回后这条内容**对外不存在**，
     /// 用视图当返回值会逼读一条本来就该读不到的行（`video_row` 只认
     /// published/pending），事务会被自己的善后语句带崩。
     pub fn review_video(&self, id: &str, actor: &str, action: &str) -> Result<ReviewResult> {
@@ -737,14 +737,14 @@ fn check_video_caption(caption: &str) -> Result<()> {
 
 /// 幂等发布查找：同作者同媒体、仍处于 published/pending 的既有行 id。
 fn find_active_video_post(c: &Connection, author: &str, media_id: &str) -> Result<Option<String>> {
-    c.query_row(
+    Ok(c.query_row(
         "SELECT id FROM video_posts
          WHERE author = ?1 AND media_id = ?2 AND state IN ('published', 'pending')
          ORDER BY seq LIMIT 1",
         params![author, media_id],
         |r| r.get(0),
     )
-    .optional()
+    .optional()?)
 }
 
 fn check_video_gate(c: &Connection, author: &str, media_id: &str) -> Result<()> {

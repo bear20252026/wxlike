@@ -165,7 +165,7 @@ impl Platform {
     /// 检索：每个域一条泳道，候选页（无正文）→ 逐条授权 → 只为通过者取正文，
     /// 归并到取满 `limit` 或所有泳道翻到底。
     ///
-    /// `scopes` 为空 = 全部 [`KINDS`]；未知 scope 报错而不是退化成全量
+    /// `scopes` 为空 = 全部内置域（`KINDS`）；未知 scope 报错而不是退化成全量
     /// （退化会让"只搜文章"的调用变成对其它域的探测面）。
     pub fn search_content(
         &self,
@@ -364,8 +364,9 @@ fn head_winner(lanes: &[Lane]) -> Option<usize> {
         };
         match best.and_then(|b| lanes[b].buf.front()) {
             None => Some(idx),
-            Some(cur) if (head.created_at, head.doc_id.as_str())
-                > (cur.created_at, cur.doc_id.as_str()) =>
+            Some(cur)
+                if (head.created_at, head.doc_id.as_str())
+                    > (cur.created_at, cur.doc_id.as_str()) =>
             {
                 Some(idx)
             }
