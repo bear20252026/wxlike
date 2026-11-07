@@ -676,12 +676,17 @@ impl Commerce {
 
     /// 处理带 `operation_id` 的供应商回调端点入口。
     ///
-    /// 幂等与防重放走 crate 内 `store::replay()` 这一唯一入口：
-    /// * 同 `operation_id` + 同业务摘要 → 返回首次结果，`replayed = true`，
-    ///   不写事件、不推状态、不记账、不出 outbox；
+    /// 幂等与防重放走 crate 内 `store::replay()` / `store::replay_legs()`
+    /// 这一套唯一入口：
+    /// * 同 `operation_id` + 同业务摘要 **且事件腿也已落库** → 返回首次
+    ///   结果，`replayed = true`，不写事件、不推状态、不记账、不出 outbox；
     /// * 同 `operation_id` + 异业务摘要 → [`CommerceError::IdempotencyConflict`]；
     /// * 换 `operation_id` 再投同一 `event_id` → [`CommerceError::Replay`]
     ///   （事件表去重，与新入参无关）。
+    ///
+    /// "每条腿都落了库才算重放"是从 Blnk 的 inflight 动作重放判定借来的
+    /// （见 `third_party/reviews/patches/UP-BLNK-replay-legs.md`）：只命中
+    /// 台账腿、事件腿还缺着的状态不能被当成"已经做完"。
     ///
     /// 首次投递的效果（事件行 + 状态推进 + 复式分录 + outbox + 台账行）在
     /// 同一个 `IMMEDIATE` 事务里提交：崩溃只会导致"全无"或"全无重复"，
@@ -702,7 +707,23 @@ impl Commerce {
         let payload = envelope.payload();
         let mut guard = self.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(previous) = store::replay(load_callback(&tx, &scoped_key)?, &digest)? {
+        let stored_callback = load_callback(&tx, &scoped_key)?;
+        let stored_event = stored_event_digest(&tx, &payload.event_id)?;
+        let replayed = store::replay_legs(&[
+            store::Leg {
+                name: "provider callback",
+                stored: stored_callback.as_ref().map(|(d, _)| d.as_str()),
+                digest: &digest,
+            },
+            store::Leg {
+                name: "provider event",
+                stored: stored_event.as_deref(),
+                digest: &event_digest,
+            },
+        ])?;
+        if replayed {
+            let previous = store::replay(stored_callback, &digest)?
+                .ok_or_else(|| CommerceError::BadInput("callback ledger row vanished".into()))?;
             tx.commit()?;
             return Ok(previous.mark_replayed());
         }
@@ -829,6 +850,22 @@ fn apply_webhook_effect(
     )?;
     let updated = load_intent(conn, &payload.intent_id)?.ok_or(CommerceError::NotFound)?;
     Ok((applied, reason, updated.intent.status))
+}
+
+/// 读回事件表里某个 `event_id` 冻结的载荷摘要（幂等判定的第二条腿）。
+///
+/// Blnk 也是先按引用问"这个键占没占"再取整行
+/// （`transaction_inflight.go:691-712` 的 `TransactionExistsByRef` →
+/// `GetTransactionByRef` 两步式）：判定"是否重放"只需要摘要，不需要把
+/// 首次效果的载荷整份读出来。
+fn stored_event_digest(conn: &Connection, event_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT payload_digest FROM commerce_payment_events WHERE event_id = ?1",
+            params![event_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
 }
 
 /// 读回幂等键下的既有回调结果：`(存储摘要, 首次结果)`。
