@@ -15,6 +15,13 @@
 //!    数据形态会让后面的公开内容永远检索不到。这里按 k 路归并取满为止。
 //! 3. **全局游标稳定。** 排序键 `(created_at DESC, doc_id DESC)` 与服务端
 //!    时钟同源，翻页期间新内容不会把旧内容顶出结果集。
+//! 4. **时间窗闸两道，provider 那道不算数。** [`TimeRange`] 是半开区间
+//!    `[start, end)`；它既进 [`Provider::candidates`] 的入参（让存储层能走
+//!    索引），也在归并层按 `created_at` **逐行再量一次**。第二道是必须的：
+//!    OpenIM 的检索管道对同一个窗口就是先 `$match` 文档级粗筛、再 `$filter`
+//!    数组元素逐条精筛——文档级命中只保证"至少一条在窗内"，不保证"全在窗内"。
+//!    我们这里同构：一条候选批里混进窗外的行是可能的（provider 用天粒度、
+//!    用 `>=` 忘了 `<`、或索引里存了时钟超前的未来行），归并层不收。
 //!
 //! 排序键相同的跨域碰撞（两个域同一毫秒且 id 完全相同）在本项目里概率为零
 //! （id 由服务端 `random_hex(8)` 生成），故游标不带 kind 段；如将来接入
@@ -23,7 +30,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::query::{parse_cursor, NormalizedQuery, QueryError};
+use crate::query::{parse_cursor, NormalizedQuery, QueryError, TimeRange};
 
 /// 一条候选：只有 id 和排序键。**不得**携带正文。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,9 +60,15 @@ pub trait Provider: Send + Sync {
 
     /// 取 `(before_at, before_id)` **之前**的候选，最多 `limit` 条，
     /// 按排序键从新到旧。不判权限——那是 [`Self::authorize`] 的事。
+    ///
+    /// `range` = `None` 表示**不加时间约束**（不是"随便什么时间都行"的放宽：
+    /// 可见性仍由 [`Self::authorize`] 裁决）。给了就必须按半开区间
+    /// `[start_ms, end_ms)` 处理，并且**尽量下推到存储层**；下推不干净也没关系，
+    /// 归并层会逐行再量一次（见文件头不变式 4）。
     fn candidates(
         &self,
         q: &NormalizedQuery,
+        range: Option<&TimeRange>,
         before_at: i64,
         before_id: &str,
         limit: usize,
@@ -117,6 +130,8 @@ struct Lane {
     buf: VecDeque<Item>,
     /// 该域索引已翻到底（最后一批不足一页）。
     done: bool,
+    /// 本次检索的时间窗；`None` = 不加约束。见 [`Self::fill`] 的第二道闸。
+    range: Option<TimeRange>,
 }
 
 /// 多域检索编排器：注册一批 [`Provider`]，对外只暴露一个 [`Self::search`]。
@@ -144,6 +159,8 @@ impl SearchService {
 
     /// `scopes` 为空 = 全部已注册域；不认识的 scope 直接报错，
     /// **不静默退化成全量**（那会把"只能搜公开内容"的调用变成越权探测面）。
+    ///
+    /// 不带时间窗的入口，等价于 [`Self::search_in`] 传 [`None`]。
     pub fn search(
         &self,
         viewer: &str,
@@ -151,6 +168,24 @@ impl SearchService {
         scopes: &[String],
         cursor: Option<&str>,
         limit: usize,
+    ) -> Result<Page, SearchError> {
+        self.search_in(viewer, input, scopes, cursor, limit, None)
+    }
+
+    /// 带时间窗的一页。`range` 是半开区间 `[start, end)`，`None` = 不加约束。
+    ///
+    /// 窗口只做**收窄**：它不会因为"传了个窗"就让原本不可见的行变可见，
+    /// 也不会因为窗口解析失败而回退到无界（[`TimeRange::from_date`] 直接
+    /// `Err`，这个 `Err` 会顺着 [`SearchError::Query`] 变成 4xx）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_in(
+        &self,
+        viewer: &str,
+        input: &str,
+        scopes: &[String],
+        cursor: Option<&str>,
+        limit: usize,
+        range: Option<&TimeRange>,
     ) -> Result<Page, SearchError> {
         let q = NormalizedQuery::parse(input)?;
         let selected = self.select(scopes)?;
@@ -164,6 +199,7 @@ impl SearchService {
         let limit = limit.clamp(1, MAX_LIMIT);
         let batch = (limit + 1).max(MIN_BATCH);
         let (before_at, before_id) = parse_cursor(cursor, false)?;
+        let range = range.copied();
 
         let mut lanes: Vec<Lane> = selected
             .into_iter()
@@ -173,6 +209,7 @@ impl SearchService {
                 id: before_id.clone(),
                 buf: VecDeque::new(),
                 done: false,
+                range,
             })
             .collect();
 
@@ -274,7 +311,9 @@ fn head_winner(lanes: &[Lane]) -> Option<usize> {
 
 impl Lane {
     fn fill(&mut self, q: &NormalizedQuery, viewer: &str, batch: usize) -> Result<(), SearchError> {
-        let page = self.provider.candidates(q, self.at, &self.id, batch)?;
+        let page = self
+            .provider
+            .candidates(q, self.range.as_ref(), self.at, &self.id, batch)?;
         if let Some(last) = page.last() {
             // 游标跟着**候选**走，不是跟着可见行走：否则一整批不可见的候选
             // 会被反复重取（死循环），或被当成"到底了"（漏数据）。
@@ -285,6 +324,12 @@ impl Lane {
             self.done = true;
         }
         for candidate in page {
+            // 第二道闸：窗外的行直接丢，连授权都不问。被丢掉的行仍然推进了
+            // 上面的游标，所以翻页不会原地打转（这正是 OpenIM 在 mgo 侧对数组
+            // 元素再 filter 一次所要防的那类"粗筛过宽"）。
+            if !self.range.is_none_or(|r| r.contains(candidate.created_at)) {
+                continue;
+            }
             if !self.provider.authorize(viewer, &candidate.doc_id)? {
                 continue;
             }
@@ -299,6 +344,7 @@ impl Lane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::DAY_MS;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     /// 编排层的单元测试：这里的 provider 是脚本化的**排序夹具**，只用来钉死
@@ -331,6 +377,7 @@ mod tests {
         fn candidates(
             &self,
             q: &NormalizedQuery,
+            range: Option<&TimeRange>,
             before_at: i64,
             before_id: &str,
             limit: usize,
@@ -343,6 +390,14 @@ mod tests {
                 .filter(|(_, id, _)| id.contains(&needle))
                 .filter(|(at, id, _)| {
                     *at < before_at || (*at == before_at && id.as_str() < before_id)
+                })
+                // 下推到"存储层"的那道闸：故意做成**粗筛**——按天对齐，
+                // 用来验证归并层会补第二道（见 cross_check 用例）。
+                .filter(|(at, _, _)| {
+                    range.is_none_or(|r| {
+                        let day_floor = at.div_euclid(DAY_MS) * DAY_MS;
+                        day_floor < r.end_ms() && day_floor + DAY_MS > r.start_ms()
+                    })
                 })
                 .collect();
             matched.sort_by(|a, b| (b.0, b.1.as_str()).cmp(&(a.0, a.1.as_str())));
@@ -501,5 +556,91 @@ mod tests {
             1,
             "一批候选就够填满 limit=1，不该重复扫"
         );
+    }
+
+    /// 固定一个"天对齐"的时刻，让粗筛与精筛必然分叉。
+    const DAY0: i64 = 20_000 * DAY_MS;
+
+    fn day_service() -> SearchService {
+        SearchService::new(vec![Arc::new(Fake::new(
+            "moment",
+            &[
+                (DAY0 + 10, "m0010", true),
+                (DAY0 + 90, "m0090", true),
+                // 同一天的晚些时刻：天粒度粗筛**放它过**，只有逐行量才拦得住
+                (DAY0 + 500, "m0500", true),
+            ],
+        ))])
+    }
+
+    #[test]
+    fn coarse_provider_window_is_narrowed_by_the_merge_layer() {
+        // 借自 OpenIM：文档级 $match 只保证"至少一条在窗内"，数组元素还要
+        // 再 $filter 一次。这里 provider 故意按天粗筛，归并层必须补上精确闸。
+        let window = TimeRange::between(DAY0, DAY0 + 100).unwrap();
+        let page = day_service()
+            .search_in("u", "m0", &[], None, 10, Some(&window))
+            .unwrap();
+        assert_eq!(
+            ids(&page),
+            ["m0090", "m0010"],
+            "m0500 在同一天的粗筛窗口里，但不在 [start,end) 里"
+        );
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn absent_range_is_no_constraint_not_a_widening() {
+        // 同一份数据、同一套授权位，不传窗口 = 不加时间约束，三条都出。
+        // 这条用例是为"缺省即放宽"证伪：放宽与否只由 authorize 决定，
+        // 时间窗从来不是第二把开门的钥匙。
+        let page = day_service().search("u", "m0", &[], None, 10).unwrap();
+        assert_eq!(ids(&page), ["m0500", "m0090", "m0010"]);
+    }
+
+    #[test]
+    fn window_fully_outside_yields_empty_not_everything() {
+        let arc = Arc::new(Fake::new("moment", &[(9, "m9", true), (8, "m8", true)]));
+        let svc = SearchService::new(vec![Arc::clone(&arc) as Arc<dyn Provider>]);
+        let far = TimeRange::between(100_000_000, 200_000_000).unwrap();
+        let page = svc.search_in("u", "m", &[], None, 10, Some(&far)).unwrap();
+        assert!(page.items.is_empty(), "窗外就是窗外，不能退化成全量");
+        assert!(!page.has_more);
+        assert_eq!(page.next_cursor, "");
+        // 窗外的行仍然走完了候选（一次），这是"游标跟候选走"的推论
+        assert_eq!(arc.fetches.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn window_survives_paging() {
+        // 翻页时窗口是每次 fill 都量的，不是只在首页量：否则第二页会把
+        // 窗外行放进来。
+        let window = TimeRange::between(DAY0, DAY0 + 100).unwrap();
+        let svc = day_service();
+        let first = svc
+            .search_in("u", "m0", &[], None, 1, Some(&window))
+            .unwrap();
+        assert_eq!(ids(&first), ["m0090"]);
+        assert!(first.has_more);
+        let second = svc
+            .search_in("u", "m0", &[], Some(&first.next_cursor), 1, Some(&window))
+            .unwrap();
+        assert_eq!(ids(&second), ["m0010"]);
+        assert!(!second.has_more, "窗外那条不该被当成还有下一页");
+    }
+
+    #[test]
+    fn one_day_window_is_half_open_across_the_boundary() {
+        // OpenIM 的 sendTime 一天 = [dayStart, dayStart+1d)。
+        // 借它的日期串构造，右端那一毫秒必须落在窗外。
+        let date = "1970-01-01";
+        let day = TimeRange::from_date(date).unwrap();
+        assert_eq!(day, TimeRange::between(0, DAY_MS).unwrap());
+        let svc = SearchService::new(vec![Arc::new(Fake::new(
+            "moment",
+            &[(DAY_MS, "mnext", true), (DAY_MS - 1, "mprev", true)],
+        ))]);
+        let page = svc.search_in("u", "m", &[], None, 10, Some(&day)).unwrap();
+        assert_eq!(ids(&page), ["mprev"], "次日 00:00 属于下一天");
     }
 }

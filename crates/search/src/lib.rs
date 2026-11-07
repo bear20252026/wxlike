@@ -4,12 +4,13 @@
 //! 这个 crate 是 G02（消息检索）与 G05（公开内容检索）**共用**的地基，
 //! 分三层：
 //!
-//! * [`query`] —— 查询侧内核：输入校验/小写化、切词、LIKE 转义、有界摘要。
-//!   两个域都从这里过，改一处两边同时生效。
+//! * [`query`] —— 查询侧内核：输入校验/小写化、切词、LIKE 转义、有界摘要、
+//!   半开时间窗 [`query::TimeRange`]。两个域都从这里过，改一处两边同时生效。
 //! * [`unified`] —— 编排层：多域归并、稳定游标、**先授权后投影**的
-//!   [`unified::Provider`] 契约。G05 的内容 provider 与 G02 的消息 provider
-//!   在这里汇成同一个 `/api/search` 语义。
-//! * [`trends`] —— 热搜聚合纯函数（时间窗 + 单作者贡献上限 + 去重作者计分）。
+//!   [`unified::Provider`] 契约、**时间窗双闸**（provider 粗筛 + 归并逐行精筛）。
+//!   G05 的内容 provider 与 G02 的消息 provider 在这里汇成同一个 `/api/search` 语义。
+//! * [`trends`] —— 热搜聚合纯函数（时间窗 + 单作者贡献上限 + 去重作者计分），
+//!   分页遵守**先排名后切片**：统计基数按整窗算，翻页不改变总量。
 //!
 //! [`SearchIndex`] 是信箱的**投影索引，不是真相**：索引只存
 //! `(conv_id, seq, sender, text, sent_at)`，可见性裁决永远在权威存储
@@ -35,8 +36,11 @@ use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{IndexRecordOption, Schema, Value as _, STORED, STRING, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
-pub use query::{NormalizedQuery, QueryError};
-pub use trends::{rank_trends, TrendDoc, TrendOptions, TrendTerm};
+pub use query::{NormalizedQuery, QueryError, TimeRange, DAY_MS, MAX_RANGE_SPAN_MS};
+pub use trends::{
+    rank_trends, rank_trends_paged, utc_date_key, TrendDoc, TrendOptions, TrendRanking, TrendStats,
+    TrendTerm,
+};
 pub use unified::{Candidate, Item, Page, Provider, ProviderResult, SearchError, SearchService};
 
 /// 命中：调用方拿它回权威存储取正文并做撤回/授权裁决。
