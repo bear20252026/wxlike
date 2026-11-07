@@ -16,6 +16,7 @@ use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::page::{self, listing_response, parse_cursor};
@@ -254,12 +255,17 @@ async fn create(
     authed: Authed,
     ApiJson(body): ApiJson<CreateBody>,
 ) -> std::result::Result<(StatusCode, Json<Note>), ApiError> {
-    let note = platform.create_note(
-        &authed.user_id,
-        body.note_id.as_deref(),
-        &body.title,
-        &body.body,
-    )?;
+    // ADR-28：写笔记 = 主行 + 版本行一个事务，整段进阻塞线程池。
+    let CreateBody {
+        note_id,
+        title,
+        body: text,
+    } = body;
+    let user = authed.user_id.clone();
+    let note = offload(&platform, move |p| {
+        p.create_note(&user, note_id.as_deref(), &title, &text)
+    })
+    .await?;
     Ok((StatusCode::CREATED, Json(note)))
 }
 
@@ -268,11 +274,11 @@ async fn list(
     authed: Authed,
     Query(q): Query<ListQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (items, next, has_more) = platform.notes(
-        &authed.user_id,
-        q.cursor.as_deref(),
-        q.limit.unwrap_or(page::DEFAULT_PAGE),
-    )?;
+    let user = authed.user_id.clone();
+    let cursor = q.cursor.clone();
+    let limit = q.limit.unwrap_or(page::DEFAULT_PAGE);
+    let (items, next, has_more) =
+        offload(&platform, move |p| p.notes(&user, cursor.as_deref(), limit)).await?;
     Ok(listing_response(items, next, has_more))
 }
 
@@ -281,7 +287,8 @@ async fn one(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<Note>, ApiError> {
-    Ok(Json(platform.note(&authed.user_id, &id)?))
+    let user = authed.user_id.clone();
+    Ok(Json(offload(&platform, move |p| p.note(&user, &id)).await?))
 }
 
 async fn update(
@@ -290,13 +297,18 @@ async fn update(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<UpdateBody>,
 ) -> std::result::Result<Json<Note>, ApiError> {
-    Ok(Json(platform.update_note(
-        &authed.user_id,
-        &id,
-        &body.title,
-        &body.body,
-        body.expected_version,
-    )?))
+    let user = authed.user_id.clone();
+    let UpdateBody {
+        title,
+        body: text,
+        expected_version,
+    } = body;
+    Ok(Json(
+        offload(&platform, move |p| {
+            p.update_note(&user, &id, &title, &text, expected_version)
+        })
+        .await?,
+    ))
 }
 
 async fn autosave(
@@ -305,13 +317,20 @@ async fn autosave(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<UpdateBody>,
 ) -> std::result::Result<Json<Note>, ApiError> {
-    Ok(Json(platform.update_note(
-        &authed.user_id,
-        &id,
-        &body.title,
-        &body.body,
-        body.expected_version,
-    )?))
+    // 自动保存与手工保存走同一条写路径，因此也走同一个 offload：
+    // 高频自动保存最容易把 worker 掐死，这里没有特例。
+    let user = authed.user_id.clone();
+    let UpdateBody {
+        title,
+        body: text,
+        expected_version,
+    } = body;
+    Ok(Json(
+        offload(&platform, move |p| {
+            p.update_note(&user, &id, &title, &text, expected_version)
+        })
+        .await?,
+    ))
 }
 
 async fn remove(
@@ -319,7 +338,8 @@ async fn remove(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_note(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| p.delete_note(&user, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

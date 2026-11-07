@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::content_index;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::inbox;
@@ -820,7 +821,9 @@ fn load_editable_article(
         .optional()?
         .ok_or(PlatformError::NotFound)?;
     if owner != author {
-        return Err(PlatformError::Forbidden);
+        // 别人的稿子（尤其是未发布草稿）与不存在的稿子必须同形：403 会把
+        // "这个 id 是一篇别人的草稿"泄露给探测者。
+        return Err(PlatformError::NotFound);
     }
     if state == "deleted" {
         return Err(PlatformError::NotFound);
@@ -1105,12 +1108,16 @@ async fn set_publisher(
     authed: Authed,
     ApiJson(body): ApiJson<PublisherBody>,
 ) -> std::result::Result<Json<PublisherView>, ApiError> {
-    Ok(Json(platform.set_publisher(
-        &authed.user_id,
-        &body.name,
-        &body.bio,
-        &body.avatar_media_id,
-    )?))
+    let user = authed.user_id.clone();
+    let name = body.name.clone();
+    let bio = body.bio.clone();
+    let avatar = body.avatar_media_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| {
+            p.set_publisher(&user, &name, &bio, &avatar)
+        })
+        .await?,
+    ))
 }
 
 async fn list_publishers(
@@ -1118,7 +1125,9 @@ async fn list_publishers(
     authed: Authed,
     Query(q): Query<ListQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let items = platform.publishers(&authed.user_id, q.q.as_deref())?;
+    let user = authed.user_id.clone();
+    let needle = q.q.clone();
+    let items = offload(&platform, move |p| p.publishers(&user, needle.as_deref())).await?;
     Ok(Json(
         serde_json::json!({ "items": items, "snapshot_version": wxlike_core::types::now_ms() }),
     ))
@@ -1129,7 +1138,10 @@ async fn one_publisher(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<PublisherView>, ApiError> {
-    Ok(Json(platform.publisher_by_id(&id, &authed.user_id)?))
+    let user = authed.user_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| p.publisher_by_id(&id, &user)).await?,
+    ))
 }
 
 async fn follow(
@@ -1137,8 +1149,15 @@ async fn follow(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<PublisherView>, ApiError> {
-    platform.follow_publisher(&authed.user_id, &id)?;
-    Ok(Json(platform.publisher_by_id(&id, &authed.user_id)?))
+    // 关注 + 回读视图在一次 offload 里：分两次就得把连接所有权穿过 await。
+    let user = authed.user_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| {
+            p.follow_publisher(&user, &id)?;
+            p.publisher_by_id(&id, &user)
+        })
+        .await?,
+    ))
 }
 
 async fn unfollow(
@@ -1146,8 +1165,14 @@ async fn unfollow(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<PublisherView>, ApiError> {
-    platform.unfollow_publisher(&authed.user_id, &id)?;
-    Ok(Json(platform.publisher_by_id(&id, &authed.user_id)?))
+    let user = authed.user_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| {
+            p.unfollow_publisher(&user, &id)?;
+            p.publisher_by_id(&id, &user)
+        })
+        .await?,
+    ))
 }
 
 async fn publisher_articles(
@@ -1156,8 +1181,12 @@ async fn publisher_articles(
     Path(id): Path<String>,
     Query(q): Query<ArticleListQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (items, next, has_more) =
-        platform.articles_by_publisher(&id, q.cursor, q.limit.unwrap_or(page::DEFAULT_PAGE))?;
+    let cursor = q.cursor;
+    let limit = q.limit.unwrap_or(page::DEFAULT_PAGE);
+    let (items, next, has_more) = offload(&platform, move |p| {
+        p.articles_by_publisher(&id, cursor, limit)
+    })
+    .await?;
     Ok(page::listing_response(items, next, has_more))
 }
 
@@ -1166,9 +1195,12 @@ async fn create(
     authed: Authed,
     ApiJson(body): ApiJson<ArticleBody>,
 ) -> std::result::Result<(StatusCode, Json<ArticleView>), ApiError> {
+    let author = authed.user_id.clone();
     Ok((
         StatusCode::CREATED,
-        Json(platform.create_article(&authed.user_id, body)?),
+        // 发布 = 文章行 + 版本行 + 索引 + 附件引用 + 粉丝提醒，一个事务，
+        // 整段进阻塞线程池（ADR-28）。
+        Json(offload(&platform, move |p| p.create_article(&author, body)).await?),
     ))
 }
 
@@ -1177,7 +1209,10 @@ async fn one(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<ArticleView>, ApiError> {
-    Ok(Json(platform.article_for(&authed.user_id, &id)?))
+    let user = authed.user_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| p.article_for(&user, &id)).await?,
+    ))
 }
 
 async fn update(
@@ -1186,7 +1221,10 @@ async fn update(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ArticleUpdateBody>,
 ) -> std::result::Result<Json<ArticleView>, ApiError> {
-    Ok(Json(platform.update_article(&authed.user_id, &id, body)?))
+    let author = authed.user_id.clone();
+    Ok(Json(
+        offload(&platform, move |p| p.update_article(&author, &id, body)).await?,
+    ))
 }
 
 async fn remove(
@@ -1194,7 +1232,8 @@ async fn remove(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_article(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| p.delete_article(&user, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1203,7 +1242,8 @@ async fn mark_read(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let unread = platform.mark_article_read(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    let unread = offload(&platform, move |p| p.mark_article_read(&user, &id)).await?;
     Ok(Json(serde_json::json!({ "unread": unread })))
 }
 
@@ -1213,7 +1253,9 @@ async fn react(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ReactBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (active, counts) = platform.react_article(&authed.user_id, &id, &body.kind)?;
+    let user = authed.user_id.clone();
+    let kind = body.kind.clone();
+    let (active, counts) = offload(&platform, move |p| p.react_article(&user, &id, &kind)).await?;
     Ok(Json(
         serde_json::json!({ "active": active, "counts": counts }),
     ))
