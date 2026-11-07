@@ -425,3 +425,235 @@ async fn denial_stands_and_is_counted_when_the_audit_table_is_gone() {
         "留痕失败必须被数出来：{after}"
     );
 }
+
+/// 登记表与路由源码的**双向**对撞：`BODY_ROUTES` 少了不行、多了也不行。
+///
+/// 为什么还要这一条：上面那条 404 扫描只保证"表里每一行确实还在路由里"。
+/// 反方向不会红——**新登记一条会读 body 的写路由，忘了加进表**，鉴权顺序扫描
+/// 就悄悄少扫一条，而 #245 那类"未认证先拿到 422"的回归恰好藏在少掉的那条上。
+/// 判据不自己抄一份名单：路由从 `src/http.rs` + `src/g14.rs` 的登记语句里抠；
+/// 是否读 body 看 handler 参数表里有没有 `ApiJson(..)` 提取器；公开面用生产
+/// 同一个 [`wxlike_admin::auth::is_public`] 判断，免得测试里再养一份例外清单。
+#[test]
+fn every_body_route_in_the_source_is_registered() {
+    let mut writes: Vec<(String, String)> = Vec::new();
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    for src in ROUTER_FILES {
+        for (method, template, takes_body) in write_routes(src) {
+            // 公开面（`/api/login` 这类）本来就在闸门之前，不该进这张表
+            if wxlike_admin::auth::is_public(&template) {
+                continue;
+            }
+            writes.push((method.clone(), template.clone()));
+            if takes_body {
+                bodies.push((method, template));
+            }
+        }
+    }
+
+    let mut problems: Vec<String> = Vec::new();
+    // A 向：**读请求体的写路由必须逐条在册**。漏一条，鉴权顺序扫描就悄悄少扫一条，
+    // 而 #245 那类"未认证先拿到 422"的回归恰好藏在少掉的那条上。
+    for (method, template) in &bodies {
+        if !BODY_ROUTES
+            .iter()
+            .any(|(m, p)| m == method && shape_matches(template, p))
+        {
+            problems.push(format!(
+                "源码里有读 body 的写端点 {method} {template}，BODY_ROUTES 却没登记"
+            ));
+        }
+    }
+    // B 向：表里的每一行都得**仍是**一条已登记的写端点（改名或降级成 GET 都会红）。
+    // 不要求它也读 body：`/api/logout`、`/api/me/totp/enroll`、
+    // `/api/g14/publishing/mini/releases/{id}/sign` 这 9 条 POST 本来就没有请求体，
+    // 但"凭据先于任何解析"对它们同样成立，留在表里是刻意的。
+    for (method, path) in BODY_ROUTES {
+        if !writes
+            .iter()
+            .any(|(m, t)| m == method && shape_matches(t, path))
+        {
+            problems.push(format!(
+                "BODY_ROUTES 登记了 {method} {path}，源码里已没有这条写端点 → 表在漂"
+            ));
+        }
+    }
+    // 解析器整个失守时也不用额外地板：`bodies` 变空会让 A 向没内容可查，
+    // 但 `writes` 同时变空 ⇒ B 向把 30 行全报成"表在漂"，照样红。
+    assert!(
+        problems.is_empty(),
+        "登记表与路由源码分叉：
+{}
+源码写端点 {} 条 / 其中读 body {} 条：{bodies:?}",
+        problems.join(
+            "
+"
+        ),
+        writes.len(),
+        bodies.len()
+    );
+}
+
+/// 两份路由源码，测试编译期就嵌进来：不改文件就读不到真路由表。
+const ROUTER_FILES: [&str; 2] = [
+    include_str!("../src/http.rs"),
+    include_str!("../src/g14.rs"),
+];
+
+/// `.route("模板", post(h) / put(h) / delete(h))` 里的写端点，第三个字段=handler 是否读请求体。
+fn write_routes(src: &str) -> Vec<(String, String, bool)> {
+    let bodies = body_handlers(src);
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(found) = src[at..].find(".route(") {
+        let open = at + found + ".route(".len() - 1;
+        let close = matching_paren(src, open);
+        let Some(path) = first_string_literal(&src[open..close]) else {
+            at = close;
+            continue;
+        };
+        let args = &src[open + 1..close - 1];
+        for (kw, method) in [("post(", "POST"), ("put(", "PUT"), ("delete(", "DELETE")] {
+            let mut scan = 0usize;
+            while let Some(p) = args[scan..].find(kw) {
+                let name_at = scan + p + kw.len();
+                let name: String = args[name_at..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    out.push((method.to_string(), path.clone(), bodies.contains(&name)));
+                }
+                scan = name_at;
+            }
+        }
+        at = close;
+    }
+    out
+}
+
+/// 参数表里出现 `ApiJson` 的 handler 名字集合（读请求体的判据）。
+/// 判据写成子串而不是 `ApiJson(`：`Option<ApiJson<T>>` 这种可选 body 也算读 body。
+fn body_handlers(src: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut at = 0usize;
+    while let Some(found) = src[at..].find("async fn ") {
+        let name_at = at + found + "async fn ".len();
+        let name: String = src[name_at..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let Some(rel) = src[name_at..].find('(') else {
+            at = name_at;
+            continue;
+        };
+        let open = name_at + rel;
+        let close = matching_paren(src, open);
+        if src[open..close].contains("ApiJson") {
+            out.insert(name);
+        }
+        at = close;
+    }
+    out
+}
+
+/// 从 `open`（指向 `(`）找到配对的 `)`，返回其后一位；找不到就返回串尾。
+/// 跳过字符串字面量里的括号，注释里的中文括号是全角的、本来就不计数。
+fn matching_paren(src: &str, open: usize) -> usize {
+    let bytes = src.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut i = open;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if c == 0x5c {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                b'"' => in_string = true,
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// 取范围内第一个双引号字符串（路径字面量）。
+fn first_string_literal(text: &str) -> Option<String> {
+    let start = text.find('"')?;
+    let rest = &text[start + 1..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// 源码里的模板 vs 登记表里的具体路径：`{id}` 段吃任意一段非空路径。
+/// 所以 `/api/op/{op}` 能同时对上 `report.triage` 与 `moderation.mode`——
+/// 一张操作目录两条登记是刻意的，不是分叉。
+fn shape_matches(template: &str, concrete: &str) -> bool {
+    let t: Vec<&str> = template.trim_matches('/').split('/').collect();
+    let c: Vec<&str> = concrete.trim_matches('/').split('/').collect();
+    t.len() == c.len()
+        && t.iter().zip(c.iter()).all(|(a, b)| {
+            a == b || (a.starts_with('{') && a.ends_with('}') && !b.is_empty() && !b.contains('/'))
+        })
+}
+
+/// 4c：**被拒的读也留痕**（#19 剩下的那半边）。
+///
+/// 以前 `read_role` 收下 `trace` 却 `let _ = trace;` 丢掉，读侧拒绝一个审计行都不写：
+/// 写路径有留痕、读路径没有，而越权探测多半正是"试着看一看"。这条用例把
+/// 这个不对称钉死——顺带确认它没把留痕失败计数器碰脏。
+#[tokio::test]
+async fn denied_read_leaves_a_traceable_audit_row() {
+    let mut env = Env::new("g14-01-order-denied-read");
+    let publisher = env.token("pub");
+    let root = env.token("root");
+
+    // publisher 的读面是 content / miniapp / service / config，不含 case
+    let (status, resp) = env
+        .call("GET", "/api/g14/identity/cases", Some(&publisher), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{resp}");
+
+    let (status, page) = env
+        .call(
+            "GET",
+            "/api/g14/audit?actor=pub&action=g14.denied",
+            Some(&root),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["page"]["total"], 1, "被拒的读必须留下一条：{page}");
+    let row = &page["page"]["rows"][0];
+    assert_eq!(row["outcome"], "denied", "{row}");
+    assert_eq!(row["role"], "publisher", "{row}");
+    assert_eq!(row["object_kind"], "case", "{row}");
+    assert_eq!(row["detail"]["action"], "read", "{row}");
+    assert_eq!(row["reason"], "权限不足", "{row}");
+    assert!(
+        row["trace"].as_str().unwrap().starts_with("g14_"),
+        "没有 trace 就不是能追的那条线：{row}"
+    );
+
+    // 留痕本身没写失败：读侧拒绝不该贡献 append_failures
+    let (status, after) = env
+        .call("GET", "/api/g14/audit/verify", Some(&root), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after["chain"]["append_failures"], 0, "{after}");
+}

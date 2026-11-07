@@ -381,15 +381,32 @@ fn write_caller(
 }
 
 /// 读也要角色够（`viewer` 能看的面里没有 `privacy`）。
+///
+/// **被拒的读同样留痕**：写路径早就调 [`record_denial`]，读路径以前只
+/// `let _ = trace;` 把追踪 id 丢掉——于是"谁试过看哪些面"这条线索根本不存在，
+/// 而越权探测恰恰多半是读。这里 actor / role / trace 全都拿得到，没有借口。
 fn read_role(app: &Shared, headers: &HeaderMap, resource: Resource, trace: &str) -> Result<Role> {
     let incoming = admit(app, headers)?;
-    let _ = trace;
-    read_via(&incoming, resource)
+    read_via(&incoming, resource).inspect_err(|err| {
+        let (actor, role) = actor_role(&incoming);
+        record_denial(
+            app,
+            &actor,
+            role.as_str(),
+            resource,
+            Action::Read,
+            trace,
+            err,
+        );
+    })
 }
 
-fn actor_of(app: &Shared, headers: &HeaderMap, trace: &str) -> Result<(String, Role)> {
+/// 只需要"是后台会话 + 拿 actor/role"的面（读侧的作用域由调用点自己判）。
+///
+/// 以前它多收一个 `trace: &str` 再 `let _ = trace;`：这里没有任何授权判定，
+/// 也就没有该留痕的拒绝——参数留着只会让人以为拒绝已经进了审计。
+fn actor_of(app: &Shared, headers: &HeaderMap) -> Result<(String, Role)> {
     let incoming = admit(app, headers)?;
-    let _ = trace;
     Ok(actor_role(&incoming))
 }
 
@@ -1002,7 +1019,7 @@ async fn export_orders(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response> {
     let trace = new_trace();
-    let (actor, role) = actor_of(&app, &headers, &trace)?;
+    let (actor, role) = actor_of(&app, &headers)?;
     let scope = scope_of(&q, role)?;
     let filter = OrderFilter {
         merchant_id: qstr(&q, "merchant_id"),
