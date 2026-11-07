@@ -13,6 +13,10 @@
 //!    并发接受不会产生第二对（主键 + 条件 UPDATE）；
 //! 3. **群内越权失败**：角色、邀请、踢人、解散、可见性全部服务端判定，
 //!    前端传什么角色都不作数。
+//! 4. **权力是位，不是标签**：`port::Acs`（借 Tinode 的 `AccessMode`）是"谁能
+//!    看到谁、谁能加谁"的唯一判定口径——`given & want` 的交集说了算，
+//!    `friends`/`group_members` 里的行只是**授予记录**，不是"能"本身。
+//!    角色（owner/admin/member）保留为兼容展示列，越出角色上限的位一律夹掉。
 
 use rand::RngCore as _;
 
@@ -147,6 +151,34 @@ CREATE TABLE IF NOT EXISTS relations_audit (
     at         INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ra_actor ON relations_audit(actor, seq);
+
+-- G02 新增（借 Tinode AccessMode）：一对关系的两个 mode，方向各存一份。
+-- 对应上游 subs.ModeWant / subs.ModeGiven。空串 = UNSET = 没说过 = 走类目默认值，
+-- 'N' = 明确拒绝——两者在 friend.rs 的读取路径上是两条不同的分支。
+CREATE TABLE IF NOT EXISTS friend_acs (
+    user_id    TEXT NOT NULL,
+    peer_id    TEXT NOT NULL,
+    mode_want  TEXT NOT NULL DEFAULT '',
+    mode_given TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, peer_id)
+);
+-- 隐私规则：我对"已有关系者/陌生人"各给一把默认位（上游 types.DefaultAccess）。
+CREATE TABLE IF NOT EXISTS friend_policy (
+    user_id     TEXT PRIMARY KEY,
+    access_auth TEXT NOT NULL DEFAULT '',
+    access_anon TEXT NOT NULL DEFAULT '',
+    updated_at  INTEGER NOT NULL
+);
+-- 群成员的位（角色之外的更细一格：单独允许某人拉人、只读旁观、免打扰）。
+CREATE TABLE IF NOT EXISTS group_member_acs (
+    group_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    mode_want  TEXT NOT NULL DEFAULT '',
+    mode_given TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
 "#;
 
 /// 建表 + 补列（幂等）。

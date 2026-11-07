@@ -13,6 +13,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension as _};
 
+use crate::port::{Acs, DefaultAcs, RelationLevel};
 use crate::{audit, check_text, random_hex, RelError, Result, MAX_MESSAGE_CHARS, REQUEST_ID_BYTES};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +176,12 @@ pub fn send(
     }
     let msg = check_text(message, MAX_MESSAGE_CHARS, "message")?;
     if blocked_either(conn, from, to)? {
+        return Err(RelError::Forbidden("blocked"));
+    }
+    // 隐私规则（借源的 `S` 位）：能不能发申请由**被加方**手里的位决定，
+    // 不是发起方。错误串与拉黑刻意同形——调用方分不清"对方拉黑了我"和
+    // "对方关掉了加好友"，两者都不透露这个账号到底存不存在（防枚举）。
+    if !may_add(conn, from, to)? {
         return Err(RelError::Forbidden("blocked"));
     }
     if are_friends(conn, from, to)? {
@@ -431,6 +438,298 @@ pub fn friend_ids(conn: &Connection, me: &str) -> Result<Vec<String>> {
         conn.prepare("SELECT friend_id FROM friends WHERE user_id = ?1 ORDER BY created_at ASC")?;
     let rows = stmt.query_map(params![me], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 权限位视图（借 Tinode `AccessMode` 的推导规则；位的定义在 [`crate::port::Acs`]）
+//
+// `friends`/`blocks` 两张表只能回答"是不是好友"，答不了：
+//
+// * 我删了对方，但对方还没删我——他手里还有哪些位？（`given & want`）
+// * "仅好友可加我 / 不允许陌生人加我"（隐私规则 = `S` 位）
+// * 我把某人的提醒关了但还能看（`P` 位）
+//
+// 这几条全部落在**每一对关系**的两个字段上：`mode_want`（我自己要的）和
+// `mode_given`（对方授予我的）——对应上游 `subs.ModeWant` / `subs.ModeGiven`。
+// 有效权限永远是二者的交集，缺省（空串 = `UNSET`）走类目默认值而不是"关"。
+// ───────────────────────────────────────────────────────────────────────────
+
+/// 一对关系的两个方向各自存的位串。
+struct StoredAcs {
+    want: Acs,
+    given: Acs,
+}
+
+/// 读 `friend_acs` 的一行。没有这一行 = 双方都没显式说过 = `(UNSET, UNSET)`。
+///
+/// 有这一行但串读不懂 → [`RelError::Corrupt`]。绝不能折成 `NONE`：那等于
+/// "库里某行写坏了一个字母"就把两个人的关系判成互相屏蔽，而且和用户主动关
+/// 掉权限长得一模一样，排查时根本分不开。
+fn stored_acs(conn: &Connection, me: &str, peer: &str) -> Result<StoredAcs> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT mode_want, mode_given FROM friend_acs WHERE user_id = ?1 AND peer_id = ?2",
+            params![me, peer],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((want, given)) = row else {
+        return Ok(StoredAcs {
+            want: Acs::UNSET,
+            given: Acs::UNSET,
+        });
+    };
+    Ok(StoredAcs {
+        want: parse_stored(&want, "friend_acs.mode_want")?,
+        given: parse_stored(&given, "friend_acs.mode_given")?,
+    })
+}
+
+fn parse_stored(raw: &str, what: &'static str) -> Result<Acs> {
+    if raw.is_empty() {
+        return Ok(Acs::UNSET);
+    }
+    Acs::parse(raw).map_err(|_| RelError::Corrupt(what))
+}
+
+fn upsert_acs(
+    conn: &Connection,
+    me: &str,
+    peer: &str,
+    want: Acs,
+    given: Acs,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO friend_acs(user_id, peer_id, mode_want, mode_given, updated_at) \
+         VALUES(?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(user_id, peer_id) DO UPDATE SET mode_want = ?3, mode_given = ?4, updated_at = ?5",
+        params![me, peer, want.to_flags(), given.to_flags(), now],
+    )?;
+    Ok(())
+}
+
+/// 我的隐私规则：两类访问者各给一把默认位（上游 `types.DefaultAccess`）。
+pub fn policy(conn: &Connection, me: &str) -> Result<DefaultAcs> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT access_auth, access_anon FROM friend_policy WHERE user_id = ?1",
+            params![me],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((auth, anon)) = row else {
+        return Ok(DefaultAcs::PLATFORM_DEFAULT);
+    };
+    Ok(DefaultAcs {
+        auth: parse_stored(&auth, "friend_policy.access_auth")?,
+        anon: parse_stored(&anon, "friend_policy.access_anon")?,
+    })
+}
+
+/// 改隐私规则：`mutation` 是整串（`"JR"`）或增量（`"-S"` = "谁也别想加我"）。
+///
+/// 只允许改**自己**的规则；`me` 由调用方从会话里取，不接受前端传的用户 id。
+pub fn set_policy(
+    conn: &Connection,
+    me: &str,
+    level: RelationLevel,
+    mutation: &str,
+    now: i64,
+) -> Result<DefaultAcs> {
+    let mut current = policy(conn, me)?;
+    let slot = match level {
+        RelationLevel::Anon => &mut current.anon,
+        // Root/None 都落到 auth 档：本域没有比"已认证"更高的私人档，
+        // 系统自身的权力由服务端代码路径决定，不由用户表里的位决定。
+        _ => &mut current.auth,
+    };
+    if !slot.is_defined() {
+        *slot = match level {
+            RelationLevel::Anon => DefaultAcs::PLATFORM_DEFAULT.anon,
+            _ => DefaultAcs::PLATFORM_DEFAULT.auth,
+        };
+    }
+    slot.apply_mutation(mutation)?;
+    // 交集外的位（UNSET 之类）不该被写进库里。
+    *slot = slot.masked();
+    conn.execute(
+        "INSERT INTO friend_policy(user_id, access_auth, access_anon, updated_at) \
+         VALUES(?1, ?2, ?3, ?4) \
+         ON CONFLICT(user_id) DO UPDATE SET access_auth = ?2, access_anon = ?3, updated_at = ?4",
+        params![me, current.auth.to_flags(), current.anon.to_flags(), now],
+    )?;
+    audit(conn, me, me, "friend.policy", now)?;
+    Ok(current)
+}
+
+/// `actor` 相对 `target` 是哪一档访问者（对应上游按 `authLvl` + 关系选默认位）。
+///
+/// 这里没有"用户存在与否"的知识（那是 identity 域），所以档位只看**关系形状**：
+/// 互为好友或同处一个未解散的群 → [`RelationLevel::Auth`]，否则 [`RelationLevel::Anon`]。
+pub fn level_toward(conn: &Connection, actor: &str, target: &str) -> Result<RelationLevel> {
+    if actor == target {
+        return Ok(RelationLevel::Root);
+    }
+    if are_friends(conn, actor, target)? {
+        return Ok(RelationLevel::Auth);
+    }
+    let shared: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM group_members a \
+         JOIN group_members b ON b.group_id = a.group_id \
+         JOIN group_meta m ON m.group_id = a.group_id \
+         WHERE a.user_id = ?1 AND b.user_id = ?2 AND m.dissolved_at IS NULL",
+        params![actor, target],
+        |r| r.get(0),
+    )?;
+    if shared > 0 {
+        return Ok(RelationLevel::Auth);
+    }
+    Ok(RelationLevel::Anon)
+}
+
+/// `granter` 手里授予 `peer` 的那把位（还没算 `peer` 自己要的）。
+///
+/// 优先级照抄上游 `ownSub`/`anotherUserSub`：**显式授予 > 类目默认**，
+/// 但拉黑永远在最前面短路——上游是 `ErrPermissionDenied`，这里是 `NONE`。
+pub fn given_to(conn: &Connection, granter: &str, peer: &str) -> Result<Acs> {
+    if blocked_either(conn, granter, peer)? {
+        return Ok(Acs::NONE);
+    }
+    let stored = stored_acs(conn, granter, peer)?.given;
+    if stored.is_defined() {
+        return Ok(stored.masked());
+    }
+    // 没显式说过：好友按一对一默认（`ModeCP2P`），其余按对方的隐私规则。
+    if are_friends(conn, granter, peer)? {
+        return Ok(Acs::P2P);
+    }
+    Ok(policy(conn, granter)?.select(level_toward(conn, peer, granter)?))
+}
+
+/// `me` 自己主动要的那把位（`ModeWant`）。没人写过就是"能要的都想要"。
+///
+/// 默认给 `FULL` 而不是 `NONE` 是有意的：want 只会**收窄** given，
+/// 交集里出不来的位本来就没有；把缺省 want 读成 `NONE` 会让所有
+/// 从没动过"免打扰/屏蔽"的存量关系一起变成"看不见"。
+pub fn want_of(conn: &Connection, me: &str, peer: &str) -> Result<Acs> {
+    let stored = stored_acs(conn, me, peer)?.want;
+    Ok(if stored.is_defined() {
+        stored.masked()
+    } else {
+        Acs::FULL
+    })
+}
+
+/// 累积权限：`me` 对 `peer` 实际拥有哪些位。**上游 `modeGiven & modeWant`**。
+pub fn acs_toward(conn: &Connection, me: &str, peer: &str) -> Result<Acs> {
+    let given = given_to(conn, peer, me)?;
+    let want = want_of(conn, me, peer)?;
+    Ok(Acs::cumulative(given, want))
+}
+
+/// `actor` 能不能把 `target` 加进来（加好友、拉进群共用这一条）。
+///
+/// 判定的是 **target 授予 actor 的 `S` 位**——"谁能加谁"的权力在被加方手里，
+/// 不在发起方。拉黑同样在这里出局（`given_to` 已经把 `S` 关掉）。
+pub fn may_add(conn: &Connection, actor: &str, target: &str) -> Result<bool> {
+    if actor == target {
+        return Ok(true);
+    }
+    Ok(given_to(conn, target, actor)?.is_sharer())
+}
+
+/// `viewer` 能不能看到 `target` 的内容/资料（`R` 位）。
+pub fn may_see(conn: &Connection, viewer: &str, target: &str) -> Result<bool> {
+    Ok(acs_toward(conn, viewer, target)?.is_reader())
+}
+
+/// 自己这一侧改位：免打扰（`-P`）、屏蔽对方动态（`-R`）、自禁（`-J`）。
+///
+/// 只能改 `want`。上游同一条纪律：**订阅方不能放大自己手里的 `given`**，
+/// 否则"我把对方屏蔽了"和"我把对方给我的权限改了"就成了同一件事。
+pub fn set_want(
+    conn: &Connection,
+    me: &str,
+    peer: &str,
+    mutation: &str,
+    now: i64,
+) -> Result<Acs> {
+    if me == peer {
+        return Err(RelError::BadInput("self relation"));
+    }
+    let mut want = want_of(conn, me, peer)?;
+    want.apply_mutation(mutation)?;
+    let given = stored_acs(conn, me, peer)?.given;
+    upsert_acs(conn, me, peer, want.masked(), given, now)?;
+    audit(conn, me, peer, "friend.want", now)?;
+    Ok(want.masked())
+}
+
+/// 授予对方位（`given` 方向）。一对一里就是"我给 ta 开多少"。
+///
+/// 抄上游 `anotherUserSub` 里 P2P 的那两条夹紧：
+/// `modeGiven = (modeGiven & ModeCP2P) | ModeApprove`——
+/// 不能授出一对一范畴之外的位（`S`/`D`/`O` 在单聊里没有意义），
+/// 而且**批准权摘不掉**（否则一方能把另一方锁死在"只能读"上还不许对方放行）。
+pub fn grant(
+    conn: &Connection,
+    granter: &str,
+    peer: &str,
+    mutation: &str,
+    now: i64,
+) -> Result<Acs> {
+    if granter == peer {
+        return Err(RelError::BadInput("self relation"));
+    }
+    if blocked_either(conn, granter, peer)? {
+        return Err(RelError::Forbidden("blocked"));
+    }
+    let base = match stored_acs(conn, granter, peer)?.given {
+        stored if stored.is_defined() => stored,
+        // 从默认位出发，避免"第一次授权 = 只给增量里那几个位"。
+        _ => default_grant(conn, granter, peer)?,
+    };
+    let mut next = base;
+    next.apply_mutation(mutation)?;
+    let next = clamp_p2p(next);
+    let want = stored_acs(conn, granter, peer)?.want;
+    upsert_acs(conn, granter, peer, want, next, now)?;
+    audit(conn, granter, peer, "friend.grant", now)?;
+    Ok(next)
+}
+
+/// 上游的 `ModeCP2P` 夹紧 + `| ModeApprove`。
+fn clamp_p2p(given: Acs) -> Acs {
+    given.only(Acs::P2P.bits()).with(Acs::APPROVE).masked()
+}
+
+/// `given_to` 的默认部分，抽出来给 [`grant`] 复用。
+fn default_grant(conn: &Connection, granter: &str, peer: &str) -> Result<Acs> {
+    if are_friends(conn, granter, peer)? {
+        return Ok(Acs::P2P);
+    }
+    Ok(policy(conn, granter)?.select(level_toward(conn, peer, granter)?))
+}
+
+/// 解除自禁：重新订阅时把 want 抬到"不比默认差"。
+///
+/// 逐行对应上游 `ownSub` 里那段注释 *"Set permissions NO WORSE than default,
+/// but possibly better (admin or owner banned himself)"*：`!oldWant.isJoiner()`
+/// 时执行 `modeWant = modeGiven | accessFor(lvl)`。**为什么单独做一个函数**：
+/// 自禁是用户自己关的 J，别人给他开的位不该跟着一起丢；如果简单地
+/// `set_want("+J")`，那些年被授予过的额外位仍然缺着，"解除屏蔽"解不干净。
+pub fn rejoin(conn: &Connection, me: &str, peer: &str, now: i64) -> Result<Acs> {
+    let old_want = want_of(conn, me, peer)?;
+    if old_want.is_joiner() {
+        return Ok(old_want);
+    }
+    let given = given_to(conn, peer, me)?;
+    let next = given.union(default_grant(conn, peer, me)?).masked();
+    let stored_given = stored_acs(conn, me, peer)?.given;
+    upsert_acs(conn, me, peer, next, stored_given, now)?;
+    audit(conn, me, peer, "friend.rejoin", now)?;
+    Ok(next)
 }
 
 #[cfg(test)]
