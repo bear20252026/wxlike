@@ -1,0 +1,128 @@
+# G06-02 供应商回调端点（operation_id）—— 集成请求
+#
+# 目的：关闭 `PAYMENT-CALLBACK-REPLAY`（ci/jobs/policy/known-gaps.json 里
+# 当前唯一 blocks_release=true 的缺口）。G06 已经把领域侧与端到端测试做完，
+# 剩下的路由挂载、契约行与 e2e 用例翻转到 G00/G16 的写路径，本组不代改。
+
+request: G06-02-provider-callback
+card: G06-02
+task_issue: 130
+group_issue: 87
+owner: G06
+to: G00
+gap: PAYMENT-CALLBACK-REPLAY
+branch: feat/G06-ledger-payments
+status: ready-for-G00
+
+summary: >-
+  commerce 侧已提供带 operation_id 的回调入口
+  `wxlike_commerce::http::provider_callback(commerce, raw_body, signature)`
+  与领域方法 `Commerce::handle_provider_callback`，重放单一效果已被
+  `crates/features/commerce/tests/g06_06_provider_callback.rs`（13 个用例）
+  在文件库 + 独立 SQL 取证下钉死。缺的只是把它挂成 HTTP 路由，并把
+  `tests/fault/run.py` 里那条 Blocked 用例翻成真实重放场景。
+
+code_paths:
+  - crates/features/commerce/src/payments.rs
+  - crates/features/commerce/src/http.rs
+  - crates/features/commerce/src/schema.rs
+  - crates/features/commerce/tests/common/mod.rs
+  - crates/features/commerce/tests/g06_06_provider_callback.rs
+  - schema/proposals/G06/0001_ledger_commerce.sql
+  - schema/proposals/G06/ROLLBACK.md
+
+requests:
+  - id: REQ-G00-mount-provider-callback
+    target: G00
+    action: >-
+      挂载回调路由。`tests/fault/run.py:payment_callback_replay()` 探测的是
+      `POST /api/payment/callback`，建议就按这个路径落地；若 G00 统一走版本化
+      前缀（例如 `POST /api/v1/commerce/callbacks/payment`），必须同步改
+      tests/fault 的探测路径，两处只能有一个真相。
+    handler: wxlike_commerce::http::provider_callback
+    auth: >-
+      无 actor 会话：只信对**原始 body 字节**的 HMAC-SHA256（十六进制），
+      密钥 commerce.webhook.secret（只存引用）。必须先按原始字节读 body 再验签，
+      禁止先 serde_json::to_string 重排后再签；验签失败返回 401/400，
+      不回显供应商报文。
+    contract:
+      request_fields: [operation_id, event_id, intent_id, kind, provider_ref, amount_minor, currency, timestamp_ms]
+      required: [operation_id, event_id, intent_id, kind, provider_ref, amount_minor, currency, timestamp_ms]
+      money: amount_minor 是整数最小单位；出现浮点直接 BAD_INPUT
+      kinds: [payment.succeeded, payment.failed]
+      response_fields: [operation_id, event_id, intent_id, kind, applied, replayed, status, reason]
+      idempotency: >-
+        business_key = "callback:" + operation_id；同键同摘要返回首次结果且
+        replayed=true（零副作用），同键异摘要 IDEMPOTENCY_CONFLICT，
+        换键投同一 event_id REPLAY。时间窗只闸门新效果，命中重放不受窗口影响。
+    acceptance: >-
+      同一 operation_id 连续投递 5 次，`ledger_journals` 里
+      `intent:{id}:success` 仍只有 1 行、`ledger_entries` 只有 2 行、
+      `commerce_outbox` 只有 1 行；进程重启后重投结果不变。
+    rationale: >-
+      operation_id 是平台统一的长操作把手（见
+      docs/full-platform-delivery/01_contracts_and_data.md 与 G15-04/G15-05）；
+      没有它，供应商重试与排障无法对齐同一笔钱。
+
+  - id: REQ-G00-callback-contract-line
+    target: G00
+    action: >-
+      在 contracts/domains/commerce/actions.yaml 的 `webhooks:` 段新增
+      `payment_callback:`（operation_id 必填 + 上述幂等规则），并补一份
+      fixture `contracts/domains/commerce/fixtures/payment-callback-operation-replay.json`
+      （含 first_delivery / second_delivery / expected.ledger_entries_for_payment: 2
+      与 invariants）。G06 不编辑 contracts/**。
+    note: >-
+      既有 `webhooks.payment`（只按 event_id 去重）保留不动，两条入口共用
+      同一套事件表与入账内核，幂等语义只有一份实现。
+
+  - id: REQ-G16-flip-fault-case
+    target: G16
+    action: >-
+      路由挂上后，把 `tests/fault/run.py` 的 `payment_callback_replay()`
+      从"探测 404 → raise Blocked"翻成真实场景：创建意图 → 发一次签名回调 →
+      原样重投 N 次（含进程重启后一次）→ 断言恰好一行分录/一次 outbox，
+      并把该 case 从 blocked 记为 pass。
+    evidence_needed: >-
+      gap 的 close_when 要求"replay is proven single-effect"由 e2e 侧取证；
+      本组已提供 crate 内等价证据（g06_06 的 13 个用例，文件库 + 独立连接数行数），
+      但 e2e 证据必须由 tests/fault 在真实 server 进程上执行。
+
+  - id: REQ-G00-known-gap-flip
+    target: G00
+    action: >-
+      `ci/jobs/policy/known-gaps.json` 里 PAYMENT-CALLBACK-REPLAY 的
+      status/blocks_release 由所有者裁决；G06 不改门槛文件。
+    note: 门槛翻转属所有者权限，本条只登记依赖关系。
+
+  - id: REQ-G00-callback-schema-migration
+    target: G00
+    action: >-
+      新表 `commerce_provider_callbacks`（+ 两个索引）已写进
+      schema/proposals/G06/0001_ledger_commerce.sql 的 expand 段；
+      请分配正式迁移编号。SQLite 侧由 `commerce::schema::init_schema`
+      幂等建表，旧库下次打开即有该表，无需 backfill。
+    rollback: 见 schema/proposals/G06/ROLLBACK.md（新增表的 DROP 与兼容窗口说明）
+
+evidence:
+  tests:
+    - cargo test -p wxlike-commerce --test g06_06_provider_callback
+    - cargo test -p wxlike-commerce
+    - cargo test -p wxlike-ledger
+  cases:
+    - identical_callback_replay_is_single_effect
+    - replay_under_same_operation_id_with_changed_parameters_is_rejected
+    - same_event_under_a_new_operation_id_is_refused_by_event_dedup
+    - forged_or_tampered_callback_leaves_no_trace
+    - aged_new_callback_is_refused_but_an_aged_replay_still_returns_the_result
+    - crash_between_delivery_and_retry_does_not_double_post
+    - concurrent_identical_callbacks_have_exactly_one_effect
+    - concurrent_operation_ids_for_one_event_stay_single_effect
+  pii:
+    - 台账只存 operation_id/event_id/intent_id/provider_ref/金额/首次结果 JSON；
+      不存原始报文、不存密钥、不存用户资料
+    - 日志与错误只回稳定分类（INVALID_SIGNATURE / REPLAY / IDEMPOTENCY_CONFLICT）
+  provider_evidence: >-
+    本轮全部证据产自 SandboxProvider（沙箱通道，仅用于故障注入与状态推进验证），
+    科目名为 external:sandbox:CNY 以便与真实通道区分；
+    真实供应商凭据下的回调取证需要 live provider 挂载后由 G16 重跑。

@@ -11,8 +11,9 @@ use rusqlite::{named_params, params, Connection, OptionalExtension as _};
 use sha2::{Digest as _, Sha256};
 
 use crate::model::{
-    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Entry, FundClass, Hold,
-    HoldStatus, Journal, LedgerTransaction, PostingLine, PostingRequest, StatementPage,
+    Account, AccountSpec, AccountType, ApplyOutcome, Asset, ClosingBalance, ClosingReport, Entry,
+    FundClass, Hold, HoldStatus, Journal, LedgerTransaction, Metadata, PostReport, PostingLine,
+    PostingRequest, StatementPage,
 };
 use crate::{LedgerError, Result};
 use wxlike_types::{Currency, Money};
@@ -41,6 +42,25 @@ fn digest_parts(parts: &[String]) -> String {
 struct JournalRow {
     journal: Journal,
     digest: String,
+}
+
+/// 只读回某个业务键在库里冻结的摘要（不加载分录）。
+///
+/// 对应 Formance 在 FSM apply 之前"先按幂等键取回既有哈希"的那一步
+/// （`internal/infra/state/machine.go:1514-1526`）：比对哈希不需要把整笔
+/// 交易的载荷都读出来。也是 Blnk `TransactionExistsByRef` →
+/// `GetTransactionByRef` 的两步式判定在本仓库的形状。
+///
+/// # Errors
+/// 存储失败。
+pub fn stored_request_digest(conn: &Connection, business_key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT request_digest FROM ledger_journals WHERE business_key = ?1",
+            params![business_key],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
 }
 
 /// 开户；同参数幂等，异参数拒绝。
@@ -138,26 +158,64 @@ pub fn locked_minor(conn: &Connection, account: &str) -> Result<i64> {
 }
 
 /// 可用余额 = 已入账余额 - 冻结金额。
+///
+/// 减法也用 `checked_*`：借 Formance 的溢出即拒绝纪律
+/// （`processor_posting.go:150-160`：会回绕的加法等于凭空造钱或烧钱）。
+///
+/// # Errors
+/// 账户不存在、求和溢出或存储失败。
 pub fn available_minor(conn: &Connection, account: &str) -> Result<i64> {
-    Ok(balance_minor(conn, account)? - locked_minor(conn, account)?)
+    let booked = balance_minor(conn, account)?;
+    let held = locked_minor(conn, account)?;
+    booked.checked_sub(held).ok_or(LedgerError::VolumeOverflow {
+        account: account.to_string(),
+        current: booked,
+        amount: -held,
+    })
 }
 
 /// 记账。`business_key` 是唯一业务键；重复提交同参数只入账一次。
 pub fn post_in(conn: &Connection, req: &PostingRequest, now: i64) -> Result<LedgerTransaction> {
+    Ok(post_checked_in(conn, req, now)?.transaction)
+}
+
+/// 记账，并回报这笔是"新入账"还是"幂等重放"。
+///
+/// 三条分支与 Formance FSM 的分流一致
+/// （`internal/infra/state/machine.go:1514-1545`）：
+/// * 键命中 + 摘要一致 → 直接返回既有结果，不再跑一遍校验管道；
+/// * 键命中 + 摘要不符 → [`LedgerError::IdempotencyConflict`]（这是新的
+///   一次拒绝，不是重放）；
+/// * 键未命中 → 全量校验后入账。
+///
+/// # Errors
+/// 见 [`crate::LedgerError`]。
+pub fn post_checked_in(conn: &Connection, req: &PostingRequest, now: i64) -> Result<PostReport> {
     let digest = posting_digest(req)?;
     if let Some(row) = journal_by_key(conn, &req.business_key)? {
         if row.digest != digest {
             return Err(LedgerError::IdempotencyConflict);
         }
-        return load_transaction(conn, &row.journal);
+        return Ok(PostReport {
+            transaction: load_transaction(conn, &row.journal)?,
+            outcome: ApplyOutcome::Replayed,
+        });
     }
     let accounts = validate_lines(conn, req)?;
     check_available(conn, &accounts)?;
     insert_journal(conn, req, &digest, now)?;
     insert_entries(conn, req, now)?;
-    load_transaction_by_key(conn, &req.business_key)
+    Ok(PostReport {
+        transaction: load_transaction_by_key(conn, &req.business_key)?,
+        outcome: ApplyOutcome::Applied,
+    })
 }
 
+/// 本次请求的幂等摘要（含 `asset` 与规范化后的 `metadata`）。
+///
+/// 摘要片段顺序固定为：kind、currency、memo、(asset)、(metadata…)、
+/// 逐条 (account, amount)。`asset` 未声明、`metadata` 为空时不产生任何
+/// 片段，因此与升级前的摘要逐字节相同。
 fn posting_digest(req: &PostingRequest) -> Result<String> {
     if req.business_key.is_empty() || req.business_key.len() > 200 {
         return Err(LedgerError::BadInput("business key"));
@@ -176,6 +234,10 @@ fn posting_digest(req: &PostingRequest) -> Result<String> {
         req.currency.as_str().to_string(),
         req.memo.clone(),
     ];
+    if let Some(asset) = req.asset {
+        parts.push(format!("a{}", asset.canonical()));
+    }
+    parts.extend(req.metadata.digest_parts());
     for line in &req.lines {
         if line.amount == 0 {
             return Err(LedgerError::NonPositiveAmount);
@@ -186,10 +248,30 @@ fn posting_digest(req: &PostingRequest) -> Result<String> {
     Ok(digest_parts(&parts))
 }
 
+/// 声明式 typed asset 与币种的一致性检查。
+///
+/// 借 Formance `validatePostings`（`processor_transaction.go:344-366`）的
+/// 位置感：资产/账户形状的校验在幂等命中之后、写库之前跑一次，写进去的
+/// 就一定是校验过的。`Asset::parse` 已保证精度是规范值，这里只需核对
+/// 币种——不一致就是"同一笔钱按两种单位记"，直接拒绝。
+fn validate_asset(req: &PostingRequest) -> Result<()> {
+    let Some(asset) = req.asset else {
+        return Ok(());
+    };
+    if asset.currency() != req.currency {
+        return Err(LedgerError::AssetMismatch {
+            declared: asset.canonical(),
+            journal: req.currency.to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_lines(
     conn: &Connection,
     req: &PostingRequest,
 ) -> Result<BTreeMap<String, (Account, i64)>> {
+    validate_asset(req)?;
     let mut net: BTreeMap<String, (Account, i64)> = BTreeMap::new();
     let mut fund_class: Option<FundClass> = None;
     for line in &req.lines {
@@ -221,13 +303,24 @@ fn validate_lines(
     Ok(net)
 }
 
+/// 资产类科目的透支检查。
+///
+/// 两条从 Formance 借来的规则：
+/// 1. 只对"资产类"源科目检查，非资产科目（我们的 revenue/marketing，
+///    Formance 的 `world`）允许为负——见 `processor_posting.go:120`；
+/// 2. 累加必须用溢出即拒绝的加法，不能用会回绕的加法——见
+///    `processor_posting.go:150-160` 的注释（"plain uint256.Add wraps
+///    silently and would let an extreme posting … money silently created
+///    or destroyed (#321)"）。本仓库金额是 `i64`，同一防线用 `checked_*`
+///    实现，溢出回报 [`LedgerError::VolumeOverflow`] 并带上账户与两侧数值。
 fn check_available(conn: &Connection, net: &BTreeMap<String, (Account, i64)>) -> Result<()> {
     for (name, (account, amount)) in net {
         if *amount >= 0 || !account.kind.is_asset() {
             continue;
         }
         let available = available_minor(conn, name)?;
-        if available < -*amount {
+        let needed = amount.checked_neg().ok_or(LedgerError::Overflow)?;
+        if available < needed {
             return Err(LedgerError::InsufficientFunds(name.clone(), available));
         }
     }
@@ -236,14 +329,20 @@ fn check_available(conn: &Connection, net: &BTreeMap<String, (Account, i64)>) ->
 
 fn insert_journal(conn: &Connection, req: &PostingRequest, digest: &str, now: i64) -> Result<()> {
     let id = journal_id(&req.business_key);
+    let asset = req.asset.map(|asset| asset.canonical()).unwrap_or_default();
     conn.execute(
-        "INSERT INTO ledger_journals(id, business_key, kind, currency, request_digest, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO ledger_journals
+            (id, business_key, kind, currency, asset, metadata, entry_count,
+             request_digest, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             id,
             req.business_key,
             req.kind,
             req.currency.as_str(),
+            asset,
+            req.metadata.encode(),
+            i64::try_from(req.lines.len()).map_err(|_| LedgerError::BadInput("line count"))?,
             digest,
             now
         ],
@@ -280,7 +379,8 @@ fn insert_entries(conn: &Connection, req: &PostingRequest, now: i64) -> Result<(
 fn journal_by_key(conn: &Connection, key: &str) -> Result<Option<JournalRow>> {
     let row = conn
         .query_row(
-            "SELECT id, business_key, kind, currency, created_at, request_digest
+            "SELECT id, business_key, kind, currency, created_at, request_digest,
+                    asset, metadata
              FROM ledger_journals WHERE business_key = ?1",
             params![key],
             |r| {
@@ -291,23 +391,36 @@ fn journal_by_key(conn: &Connection, key: &str) -> Result<Option<JournalRow>> {
                     r.get::<_, String>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(id, business_key, kind, currency, created_at, digest)| {
+    row.map(|(id, business_key, kind, currency, created_at, digest, asset, metadata)| {
         Ok(JournalRow {
             journal: Journal {
                 id,
                 business_key,
                 kind,
                 currency: Currency::parse(&currency)?,
+                asset: decode_asset(&asset)?,
+                metadata: Metadata::decode(&metadata)?,
                 created_at,
             },
             digest,
         })
     })
     .transpose()
+}
+
+/// 库里的资产列 → `Option<Asset>`。空串是"未声明"（旧行与不带 asset 的
+/// 新行都走这一支），非空但解析不了就是账本被改写。
+fn decode_asset(raw: &str) -> Result<Option<Asset>> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Asset::parse(raw)?))
 }
 
 fn load_transaction(conn: &Connection, journal: &Journal) -> Result<LedgerTransaction> {
@@ -333,6 +446,8 @@ fn load_transaction(conn: &Connection, journal: &Journal) -> Result<LedgerTransa
         business_key: journal.business_key.clone(),
         kind: journal.kind.clone(),
         currency: journal.currency,
+        asset: journal.asset,
+        metadata: journal.metadata.clone(),
         created_at: journal.created_at,
         entries,
     })
@@ -881,4 +996,241 @@ pub fn transfer_request(
             PostingLine::credit(to.to_string(), amount.minor()),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema;
+
+    const EQUITY: &str = "revenue:capital";
+    const ALICE: &str = "wallet:alice";
+    const BOB: &str = "wallet:bob";
+
+    fn conn() -> Connection {
+        let c = Connection::open_in_memory().expect("db");
+        schema::init_schema(&c).expect("schema");
+        for (name, kind) in [
+            (EQUITY, AccountType::Revenue),
+            (ALICE, AccountType::Wallet),
+            (BOB, AccountType::Wallet),
+        ] {
+            create_account_in(
+                &c,
+                &AccountSpec::new(name, kind, Currency::CNY),
+                1_700_000_000_000,
+            )
+            .expect("account");
+        }
+        c
+    }
+
+    fn fund(c: &Connection, minor: i64, key: &str) {
+        post_in(
+            c,
+            &transfer_request(key, EQUITY, ALICE, Money::cny_minor(minor)),
+            1_700_000_000_000,
+        )
+        .expect("fund");
+    }
+
+    fn request(key: &str, lines: Vec<PostingLine>) -> PostingRequest {
+        PostingRequest::new(key, "transfer", Currency::CNY, lines)
+    }
+
+    /// 升级兼容：不带 asset/metadata 时，摘要必须与旧版逐字节一致，
+    /// 否则历史重试会被误判成"参数变更"。
+    #[test]
+    fn digest_matches_the_pre_asset_format_when_undeclared() {
+        let req = request(
+            "k1",
+            vec![
+                PostingLine::debit(ALICE, 100),
+                PostingLine::credit(BOB, 100),
+            ],
+        );
+        let legacy = digest_parts(&[
+            "transfer".to_string(),
+            "CNY".to_string(),
+            String::new(),
+            ALICE.to_string(),
+            (-100_i64).to_string(),
+            BOB.to_string(),
+            "100".to_string(),
+        ]);
+        assert_eq!(posting_digest(&req).expect("digest"), legacy);
+    }
+
+    #[test]
+    fn asset_and_metadata_join_the_idempotency_digest() {
+        let c = conn();
+        fund(&c, 1_000, "j-fund");
+        let plain = request(
+            "j-pay",
+            vec![
+                PostingLine::debit(ALICE, 100),
+                PostingLine::credit(BOB, 100),
+            ],
+        );
+        post_in(&c, &plain, 1).expect("first");
+
+        // 同键 + 补一个规范 asset：参数变了，必须拒。
+        let with_asset = plain.clone().with_asset(Asset::new(Currency::CNY));
+        assert!(matches!(
+            post_in(&c, &with_asset, 2),
+            Err(LedgerError::IdempotencyConflict)
+        ));
+        // 同键 + 补 metadata：同样拒。
+        let with_meta = plain.clone().with_metadata(
+            Metadata::from_pairs([("src".to_string(), "app".to_string())]).expect("m"),
+        );
+        assert!(matches!(
+            post_in(&c, &with_meta, 3),
+            Err(LedgerError::IdempotencyConflict)
+        ));
+        // 被拒的重试一个字都没写。
+        assert_eq!(journal_rows(&c), 2);
+
+        // 换一个新业务键声明 asset + metadata：入账一次，重放一次。
+        let both = with_asset.with_metadata(
+            Metadata::from_pairs([("src".to_string(), "app".to_string())]).expect("m"),
+        );
+        let declared = both
+            .clone()
+            .with_business_key("j-pay-declared")
+            .with_memo("declared");
+        let first = post_checked_in(&c, &declared, 4).expect("post");
+        assert_eq!(first.outcome, ApplyOutcome::Applied);
+        assert_eq!(first.transaction.entries.len(), 2);
+        let again = post_checked_in(&c, &declared, 5).expect("replay");
+        assert!(again.is_replay());
+        assert_eq!(again.transaction, first.transaction);
+        assert_eq!(again.transaction.asset, Some(Asset::new(Currency::CNY)));
+        assert_eq!(again.transaction.metadata.get("src"), Some("app"));
+        assert_eq!(journal_rows(&c), 3);
+        // 只改 metadata 的一个值 → 同键换参。
+        let changed = declared.clone().with_metadata(
+            Metadata::from_pairs([("src".to_string(), "h5".to_string())]).expect("m"),
+        );
+        assert!(matches!(
+            post_in(&c, &changed, 6),
+            Err(LedgerError::IdempotencyConflict)
+        ));
+        assert_eq!(journal_rows(&c), 3);
+    }
+
+    fn journal_rows(c: &Connection) -> i64 {
+        c.query_row("SELECT COUNT(*) FROM ledger_journals", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .expect("count")
+    }
+
+    /// 借 Formance 的 typed asset：声明错了币种就是记错账。
+    #[test]
+    fn declared_asset_must_match_the_journal_currency() {
+        let c = conn();
+        let usd = Asset::parse("USD/2").expect("usd");
+        let req = request(
+            "j-asset",
+            vec![
+                PostingLine::debit(ALICE, 1),
+                PostingLine::credit(BOB, 1),
+            ],
+        )
+        .with_asset(usd);
+        assert!(matches!(
+            post_in(&c, &req, 1),
+            Err(LedgerError::AssetMismatch { .. })
+        ));
+        // 非规范写法在进数据库之前就被拒。
+        assert!(matches!(
+            request("j-asset", vec![PostingLine::debit(ALICE, 1), PostingLine::credit(BOB, 1)])
+                .try_with_asset("CNY/1"),
+            Err(LedgerError::BadAsset(_))
+        ));
+    }
+
+    /// 幂等分流要能区分"这次真入账"和"这次只是重放"。
+    #[test]
+    fn replay_is_reported_separately_from_a_fresh_post() {
+        let c = conn();
+        fund(&c, 1_000, "j-fund");
+        let req = request(
+            "j-move",
+            vec![
+                PostingLine::debit(ALICE, 300),
+                PostingLine::credit(BOB, 300),
+            ],
+        );
+        let first = post_checked_in(&c, &req, 1).expect("first");
+        assert_eq!(first.outcome, ApplyOutcome::Applied);
+        let second = post_checked_in(&c, &req, 2).expect("second");
+        assert_eq!(second.outcome, ApplyOutcome::Replayed);
+        assert_eq!(second.transaction, first.transaction);
+        assert_eq!(balance_minor(&c, BOB).expect("bob"), 300);
+        assert!(matches!(
+            post_checked_in(&c, &request("j-move", req.lines.clone()).with_memo("改了附言"), 3),
+            Err(LedgerError::IdempotencyConflict)
+        ));
+    }
+
+    /// 分录集合在入账那一刻就定死：事后想给既有 journal 再补一条，
+    /// 由数据库拒绝（把"借贷必须相抵"从一次性的 Rust 校验升级成约束）。
+    #[test]
+    fn appending_an_extra_entry_to_a_journal_is_refused_by_the_database() {
+        let c = conn();
+        fund(&c, 1_000, "j-fund");
+        let error = c
+            .execute(
+                "INSERT INTO ledger_entries
+                    (journal_id, seq, account, amount_minor, currency, memo, created_at)
+                 SELECT id, 3, 'wallet:alice', -1, 'CNY', '多一条', 1
+                 FROM ledger_journals WHERE business_key = 'j-fund'",
+                [],
+            )
+            .expect_err("extra entry must be refused");
+        assert!(
+            error.to_string().contains("frozen"),
+            "unexpected error: {error}"
+        );
+        verify_journals(&c).expect("still balanced");
+    }
+
+    #[test]
+    fn stored_request_digest_reads_only_the_frozen_hash() {
+        let c = conn();
+        assert!(stored_request_digest(&c, "j-none").expect("query").is_none());
+        fund(&c, 500, "j-fund");
+        let digest = stored_request_digest(&c, "j-fund")
+            .expect("query")
+            .expect("present");
+        assert_eq!(digest.len(), 64);
+        assert_eq!(digest, stored_request_digest(&c, "j-fund").expect("q").expect("p2"));
+    }
+
+    #[test]
+    fn metadata_survives_the_round_trip_through_the_journal_row() {
+        let c = conn();
+        fund(&c, 1_000, "j-fund");
+        let meta = Metadata::from_pairs([
+            ("z".to_string(), "最后".to_string()),
+            ("a".to_string(), "第一".to_string()),
+        ])
+        .expect("pairs");
+        let req = request(
+            "j-meta",
+            vec![
+                PostingLine::debit(ALICE, 10),
+                PostingLine::credit(BOB, 10),
+            ],
+        )
+        .with_metadata(meta.clone());
+        post_in(&c, &req, 1).expect("post");
+        let tx = transaction_by_key(&c, "j-meta")
+            .expect("load")
+            .expect("present");
+        assert_eq!(tx.metadata, meta);
+        assert_eq!(tx.metadata.iter().next().map(|(k, _)| k.as_str()), Some("a"));
+    }
 }
