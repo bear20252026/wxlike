@@ -126,6 +126,11 @@ pub struct DeviceSeat {
     pub revision: u64,
     /// `Reconnecting` 的宽限截止时间（毫秒）；其它状态为 0。
     pub grace_until_ms: u64,
+    /// sidecar（LiveKit）自己那套参与者状态。**只前进不后退**，规则见
+    /// [`SidecarParticipantState::advance`]。与 [`DeviceSeat::state`] 是两回事：
+    /// 前者是"sidecar 报告到哪一步"，后者是"我们的房间决定到哪一步"。
+    #[serde(default)]
+    pub sidecar: SidecarParticipantState,
 }
 
 impl Default for DeviceSeat {
@@ -134,8 +139,481 @@ impl Default for DeviceSeat {
             state: MemberState::Joining,
             revision: 0,
             grace_until_ms: 0,
+            sidecar: SidecarParticipantState::default(),
         }
     }
+}
+
+// ==================== ADR-25：sidecar 侧状态机（借自 LiveKit） ====================
+//
+// 本节的四个类型是对 LiveKit 官方实现的**移植**，不是"参考思路"：
+//
+// * [`SidecarParticipantState`] ← `livekit/rust-sdks` 的
+//   `livekit/src/room/participant/mod.rs:39-45`（枚举成员）与
+//   `livekit-protocol/src/livekit.rs` 的 `participant_info::State`
+//   （数值 tag 与 `as_str_name`/`from_str_name`）；
+// * [`SidecarConnectionState`] ← 同库 `livekit/src/room/mod.rs:290-295`；
+// * [`DisconnectReason`] ← `livekit-protocol/src/livekit.rs` 的 `DisconnectReason`；
+// * [`RoomCloseReason`] 与其到 `DisconnectReason` 的映射 ← 服务端
+//   `livekit/livekit` 的 `pkg/rtc/types/interfaces.go:311-375`；
+// * 状态"只前进"的 CAS 规则 ← 服务端 `pkg/rtc/participant.go:2333-2358`
+//   （`updateState`）；房间关闭/空房判定 ← `pkg/rtc/room.go:754-822`
+//   （`IsClosed`/`CloseIfEmpty`/`Close`）；依附参与者 ← `pkg/rtc/participant.go:615-622`。
+//
+// 逐段差异、改动与"没拿什么"见
+// `third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-room-participant.md`。
+
+/// 上游 `livekit.ParticipantInfo_State`：sidecar 眼里这个连接走到哪一步了。
+///
+/// 顺序即 proto 的数值顺序（`JOINING=0 → JOINED=1 → ACTIVE=2 → DISCONNECTED=3`）。
+/// 上游 `ParticipantImpl.updateState`（`pkg/rtc/participant.go:2333`）依赖的正是
+/// 这个数值序：`state <= oldState` 一律当"乱序"忽略。所以 `PartialOrd` 不是
+/// 顺手加的装饰，而是那条规则的载体——**不要**调整成员顺序。
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SidecarParticipantState {
+    /// websocket 已连，但 sidecar 还没收到 offer（proto `JOINING = 0`）。
+    #[default]
+    Joining,
+    /// sidecar 收到了 client offer（proto `JOINED = 1`）。
+    Joined,
+    /// ICE 连通性建立（proto `ACTIVE = 2`）。
+    Active,
+    /// WS 断开（proto `DISCONNECTED = 3`）。
+    Disconnected,
+}
+
+impl SidecarParticipantState {
+    /// proto 的枚举数值。与 sidecar/遥测对表时用这个，不要用我们内部的排序。
+    pub fn tag(self) -> i32 {
+        match self {
+            Self::Joining => 0,
+            Self::Joined => 1,
+            Self::Active => 2,
+            Self::Disconnected => 3,
+        }
+    }
+
+    /// 上游 proto 的 `State::as_str_name()`（`livekit.rs` participant_info）。
+    pub fn as_str_name(self) -> &'static str {
+        match self {
+            Self::Joining => "JOINING",
+            Self::Joined => "JOINED",
+            Self::Active => "ACTIVE",
+            Self::Disconnected => "DISCONNECTED",
+        }
+    }
+
+    /// 上游 proto 的 `State::from_str_name()`：认不出来即 `None`，不猜。
+    pub fn from_str_name(raw: &str) -> Option<Self> {
+        match raw {
+            "JOINING" => Some(Self::Joining),
+            "JOINED" => Some(Self::Joined),
+            "ACTIVE" => Some(Self::Active),
+            "DISCONNECTED" => Some(Self::Disconnected),
+            _ => None,
+        }
+    }
+
+    /// 上游 `updateState` 的核心一条：`if state <= oldState { 忽略 }`。
+    ///
+    /// 返回 `Some(old)` 表示这次报告应当生效，`None` 表示是乱序/重复报告，
+    /// 调用方必须**原样保留旧状态**（上游连日志都只打 debug，不改状态）。
+    /// 注意 `DISCONNECTED` 之后任何报告都会被判为乱序——这与上游一致，
+    /// 一个已经结束的会话不会被迟到信令复活。
+    pub fn advance(current: Self, next: Self) -> Option<Self> {
+        if next <= current {
+            None
+        } else {
+            Some(current)
+        }
+    }
+
+    /// 上游 `ParticipantImpl.IsReady()`（`pkg/rtc/participant.go:632-641`）的
+    /// 非迁移分支："JOINED 或 ACTIVE 才算ready"。上游注释写明了这条迁移路径
+    /// （`JOINING -> ACTIVE -> DISCONNECTED`，没有 JoinResponse）不在此函数覆盖内，
+    /// 我们不做连接迁移，所以只取非迁移分支。
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Joined | Self::Active)
+    }
+
+    pub fn is_disconnected(self) -> bool {
+        self == Self::Disconnected
+    }
+
+    /// `DISCONNECTED` 且上一站是 `ACTIVE` —— 上游据此才记录会话时长
+    /// （`participant.go:2354-2357`），从 `JOINING` 直接掉线的不算一次完整会话。
+    pub fn is_clean_disconnect_from(self, old: Self) -> bool {
+        self == Self::Disconnected && old == Self::Active
+    }
+
+    /// sidecar 状态 → 我们的成员状态。
+    ///
+    /// `Disconnected` 落到 [`MemberState::Reconnecting`]（带宽限期），**不是**
+    /// 上游的"立即移除参与者"（`pkg/rtc/room.go:1279-1280` 直接
+    /// `RemoveParticipant`）。这是 ADR-25 下刻意的偏离：客户端网络抖动不该把
+    /// 名册打散、把 `generation` 前滚一轮；宽限期结束后由 [`Room::tick`] 回收。
+    pub fn to_member_state(self) -> MemberState {
+        match self {
+            Self::Joining | Self::Joined => MemberState::Joining,
+            Self::Active => MemberState::Active,
+            Self::Disconnected => MemberState::Reconnecting,
+        }
+    }
+
+    /// 反向：我们的成员状态映射回 sidecar 语义（`Removed` 无对应值，
+    /// 上游没有"被踢"这个参与者状态，只有 `DISCONNECTED` + 关闭原因）。
+    pub fn from_member_state(state: MemberState) -> Self {
+        match state {
+            MemberState::Joining => Self::Joining,
+            MemberState::Active => Self::Active,
+            MemberState::Reconnecting | MemberState::Removed => Self::Disconnected,
+            MemberState::Left => Self::Disconnected,
+        }
+    }
+}
+
+/// 上游 `livekit.ConnectionState`（`livekit/src/room/mod.rs:290-295`）：
+/// **客户端**侧的连接状态，只有三值。注意它没有 `Disconnected` 之外的粒度，
+/// 房间状态与参与者状态是三套不同的表，不能混用。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidecarConnectionState {
+    #[default]
+    Disconnected,
+    Connected,
+    Reconnecting,
+}
+
+/// 上游 `Room::update_connection_state`（`livekit/src/room/mod.rs:1224-1236`）
+/// 的两条规则，原样落地：
+///
+/// 1. 状态没变 → 返回 `false`，**不发事件**（上游靠这个把重复的
+///    `Reconnected` 折成一条）；
+/// 2. 一旦进入 `Disconnected` 即**终态锁存**：后续任何状态变化都不再上报
+///    （上游 `if ... || self.disconnected.load() { return false }`）。
+///    断线后还能"复活"等于两份房间事实并存。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionStateTracker {
+    state: SidecarConnectionState,
+    disconnected: bool,
+}
+
+impl ConnectionStateTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn state(&self) -> SidecarConnectionState {
+        self.state
+    }
+
+    /// `true` = 状态确实变了（调用方据此派发 `ConnectionStateChanged`）。
+    pub fn update(&mut self, next: SidecarConnectionState) -> bool {
+        if self.state == next || self.disconnected {
+            return false;
+        }
+        if next == SidecarConnectionState::Disconnected {
+            self.disconnected = true;
+        }
+        self.state = next;
+        true
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.disconnected
+    }
+}
+
+/// 上游 proto 的 `DisconnectReason`（`livekit-protocol/src/livekit.rs`，
+/// tag 0..=16，注释即上游原文的中文摘要）。这是 sidecar 给出的**关闭原因**，
+/// 我们把它原样记进房间审计：`Removed`/`Left` 这类内部状态说不清"为什么"，
+/// 而排障要的正是这个。
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum DisconnectReason {
+    #[default]
+    UnknownReason,
+    /// 客户端主动断开
+    ClientInitiated,
+    /// 同名 identity 的另一个参与者进来了（顶号）
+    DuplicateIdentity,
+    /// 服务实例正在下线
+    ServerShutdown,
+    /// RoomService.RemoveParticipant 被调用（即我们的 kick）
+    ParticipantRemoved,
+    /// RoomService.DeleteRoom 被调用
+    RoomDeleted,
+    /// 客户端想恢复一个服务端并不认识的会话
+    StateMismatch,
+    /// 客户端没能完成入房
+    JoinFailure,
+    /// 服务端要求把连接迁到别处（我们不迁移）
+    Migration,
+    /// 信令 WS 意外关闭
+    SignalClose,
+    /// 所有 Standard/Ingress 参与者都走了，房间被关闭
+    RoomClosed,
+    /// SIP 被叫没应答
+    UserUnavailable,
+    /// SIP 被叫拒接（忙线）
+    UserRejected,
+    /// SIP 信令失败或响应异常
+    SipTrunkFailure,
+    /// 服务端判定该会话超时
+    ConnectionTimeout,
+    /// 媒体流失败或媒体超时
+    MediaFailure,
+    /// agent 侧出错
+    AgentError,
+}
+
+impl DisconnectReason {
+    /// proto 数值（与 sidecar 对齐用）。
+    pub fn tag(self) -> i32 {
+        match self {
+            Self::UnknownReason => 0,
+            Self::ClientInitiated => 1,
+            Self::DuplicateIdentity => 2,
+            Self::ServerShutdown => 3,
+            Self::ParticipantRemoved => 4,
+            Self::RoomDeleted => 5,
+            Self::StateMismatch => 6,
+            Self::JoinFailure => 7,
+            Self::Migration => 8,
+            Self::SignalClose => 9,
+            Self::RoomClosed => 10,
+            Self::UserUnavailable => 11,
+            Self::UserRejected => 12,
+            Self::SipTrunkFailure => 13,
+            Self::ConnectionTimeout => 14,
+            Self::MediaFailure => 15,
+            Self::AgentError => 16,
+        }
+    }
+
+    /// 上游 proto 的 `as_str_name()`：稳定的 SCREAMING_SNAKE 字符串，
+    /// 直接进审计表的 `code`/`detail` 列。
+    pub fn as_str_name(self) -> &'static str {
+        match self {
+            Self::UnknownReason => "UNKNOWN_REASON",
+            Self::ClientInitiated => "CLIENT_INITIATED",
+            Self::DuplicateIdentity => "DUPLICATE_IDENTITY",
+            Self::ServerShutdown => "SERVER_SHUTDOWN",
+            Self::ParticipantRemoved => "PARTICIPANT_REMOVED",
+            Self::RoomDeleted => "ROOM_DELETED",
+            Self::StateMismatch => "STATE_MISMATCH",
+            Self::JoinFailure => "JOIN_FAILURE",
+            Self::Migration => "MIGRATION",
+            Self::SignalClose => "SIGNAL_CLOSE",
+            Self::RoomClosed => "ROOM_CLOSED",
+            Self::UserUnavailable => "USER_UNAVAILABLE",
+            Self::UserRejected => "USER_REJECTED",
+            Self::SipTrunkFailure => "SIP_TRUNK_FAILURE",
+            Self::ConnectionTimeout => "CONNECTION_TIMEOUT",
+            Self::MediaFailure => "MEDIA_FAILURE",
+            Self::AgentError => "AGENT_ERROR",
+        }
+    }
+
+    /// 上游 proto 的 `from_str_name()`。未知值 → `None`（审计宁缺不猜）。
+    pub fn from_str_name(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "UNKNOWN_REASON" => Self::UnknownReason,
+            "CLIENT_INITIATED" => Self::ClientInitiated,
+            "DUPLICATE_IDENTITY" => Self::DuplicateIdentity,
+            "SERVER_SHUTDOWN" => Self::ServerShutdown,
+            "PARTICIPANT_REMOVED" => Self::ParticipantRemoved,
+            "ROOM_DELETED" => Self::RoomDeleted,
+            "STATE_MISMATCH" => Self::StateMismatch,
+            "JOIN_FAILURE" => Self::JoinFailure,
+            "MIGRATION" => Self::Migration,
+            "SIGNAL_CLOSE" => Self::SignalClose,
+            "ROOM_CLOSED" => Self::RoomClosed,
+            "USER_UNAVAILABLE" => Self::UserUnavailable,
+            "USER_REJECTED" => Self::UserRejected,
+            "SIP_TRUNK_FAILURE" => Self::SipTrunkFailure,
+            "CONNECTION_TIMEOUT" => Self::ConnectionTimeout,
+            "MEDIA_FAILURE" => Self::MediaFailure,
+            "AGENT_ERROR" => Self::AgentError,
+            _ => return None,
+        })
+    }
+}
+
+/// 上游 `types.RoomCloseReason`（服务端 `pkg/rtc/types/interfaces.go:311-320`）。
+/// 六个值、`String()` 的名字、以及"房间关闭原因 ⇒ 参与者关闭原因"那张表
+/// （同文件 360-375 行，注释写明目的是"两边永远不能对不上"）都照抄。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RoomCloseReason {
+    #[default]
+    Unknown,
+    /// RoomService.DeleteRoom
+    ApiDelete,
+    /// 空房超时（`empty_timeout` / `departure_timeout` 到点）
+    IdleTimeout,
+    /// 服务实例下线
+    ServerShutdown,
+    /// 被新的同名房间顶掉
+    Superseded,
+    /// 房间没能开起来
+    OpenFailed,
+}
+
+impl RoomCloseReason {
+    /// 上游 `RoomCloseReason.String()`。
+    pub fn as_str_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::ApiDelete => "API_DELETE",
+            Self::IdleTimeout => "IDLE_TIMEOUT",
+            Self::ServerShutdown => "SERVER_SHUTDOWN",
+            Self::Superseded => "SUPERSEDED",
+            Self::OpenFailed => "OPEN_FAILED",
+        }
+    }
+
+    pub fn from_str_name(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "UNKNOWN" => Self::Unknown,
+            "API_DELETE" => Self::ApiDelete,
+            "IDLE_TIMEOUT" => Self::IdleTimeout,
+            "SERVER_SHUTDOWN" => Self::ServerShutdown,
+            "SUPERSEDED" => Self::Superseded,
+            "OPEN_FAILED" => Self::OpenFailed,
+            _ => return None,
+        })
+    }
+
+    /// 上游 `RoomCloseReason.ToParticipantCloseReason()` 的等价表，落到
+    /// Rust SDK 那一侧实际使用的 [`DisconnectReason`]（`Room::close(reason)`）：
+    ///
+    /// * `API_DELETE` → `ROOM_DELETED`（上游 `ServiceRequestDeleteRoom`）
+    /// * `IDLE_TIMEOUT` / `SUPERSEDED` → `ROOM_CLOSED`（上游 `RoomClosed`）
+    /// * `SERVER_SHUTDOWN` → `SERVER_SHUTDOWN`（上游 `RoomManagerStop`）
+    /// * 其余 → `UNKNOWN_REASON`（上游 `ParticipantCloseReasonNone`）
+    ///
+    /// 这张表存在的意义：客户端只会看到一个原因，房间审计里是另一个，
+    /// 两者必须是同一次决定的两个投影，不能各编各的。
+    pub fn to_disconnect_reason(self) -> DisconnectReason {
+        match self {
+            Self::ApiDelete => DisconnectReason::RoomDeleted,
+            Self::IdleTimeout | Self::Superseded => DisconnectReason::RoomClosed,
+            Self::ServerShutdown => DisconnectReason::ServerShutdown,
+            Self::Unknown | Self::OpenFailed => DisconnectReason::UnknownReason,
+        }
+    }
+}
+
+/// 上游 `Room.onStateChange`（服务端 `pkg/rtc/room.go:1227-1281`）在状态变更时
+/// 做的两件副作用，移植成显式的结论而不是隐藏行为：
+///
+/// * `ACTIVE` → 订阅既有轨道 + 上报 `telemetry.ParticipantActive`；
+/// * `DISCONNECTED` → `RemoveParticipant`。
+///
+/// 我们的 `DISCONNECTED` 分支改成宽限期回收（见
+/// [`SidecarParticipantState::to_member_state`]），所以这里只保留"要做什么"
+/// 的清单，具体动作由 [`Room::report_sidecar_state`] 的调用方执行。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidecarStateEffect {
+    /// 该参与者现在活了：把房间里已有的轨道订阅给它（上游 `subscribeToExistingTracks`）。
+    SubscribeExistingTracks,
+    /// 上报入房成功指标（上游 `telemetry.ParticipantActive`）。我们落到房间审计。
+    ReportActive,
+    /// 掉线：席位进入宽限期。
+    BeginReconnectGrace,
+}
+
+/// 一次 sidecar 状态回报的结论（[`Room::report_sidecar_state`] 的返回）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidecarStateReport {
+    /// `false` = 这条回报是乱序/重复，**没有**改动任何状态（上游同法）。
+    pub applied: bool,
+    pub previous: SidecarParticipantState,
+    pub current: SidecarParticipantState,
+    /// 房间侧要跟着做的事，顺序即上游 `Room.onStateChange` 里的先后。
+    pub effects: Vec<SidecarStateEffect>,
+}
+
+/// sidecar 房间事件（上游 `livekit::RoomEvent` 里与"名册"有关的那一小撮，
+/// `livekit/src/room/mod.rs:107-...`）。
+///
+/// 只移植名册相关分支：轨道/数据通道/chat/e2ee 那些事件归 sidecar 自己，
+/// ADR-25 下 Rust 侧不重复派发（否则同一件事会有两个订阅者、两份事实）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SidecarRoomEvent {
+    /// 新参与者进房（上游 `ParticipantConnected`）。
+    ParticipantConnected(String),
+    /// 参与者变为可用、可以收数据（上游 `ParticipantActive`：**边沿**触发）。
+    ParticipantActive(String),
+    /// 参与者离房（上游 `ParticipantDisconnected`）。
+    ParticipantDisconnected(String, DisconnectReason),
+    /// 一批名册更新结束（上游 `ParticipantsUpdated`：**每批只发一次**）。
+    ParticipantsUpdated(Vec<String>),
+    /// 房间连接状态变化（上游 `ConnectionStateChanged`）。
+    ConnectionStateChanged(SidecarConnectionState),
+}
+
+/// 上游 `Room` 名册更新的事件序（`livekit/src/room/mod.rs:1292-1350`）。
+///
+/// 这四条顺序规则是**实测出来的**，不是我们发明的：
+///
+/// 1. `state == DISCONNECTED` 且这个 sid 我们根本不认识 → 什么都不发
+///    （上游注释："Ignore, just received the ParticipantInfo but the
+///    participant is already disconnected"）；认识的话**只**发
+///    `ParticipantDisconnected` 就返回 —— 上游那一支没有把参与者 push 进
+///    `participants`，所以批尾的 `ParticipantsUpdated` 也不发；
+/// 2. 已认识：**只在"从非 Active 变 Active"的边沿**发 `ParticipantActive`，
+///    重复的 ACTIVE 不再发（上游先记 `already_active` 再 `update_info`）；
+/// 3. 不认识：**先** `ParticipantConnected`，**再**（若已经是 ACTIVE）**补一条**
+///    `ParticipantActive`，然后才 `update_info` 补轨道；
+/// 4. 整批处理完才发**一条** `ParticipantsUpdated`，不是每人一条。
+pub fn plan_participant_events(
+    known: bool,
+    already_active: bool,
+    reported: SidecarParticipantState,
+    identity: &str,
+) -> Vec<SidecarRoomEvent> {
+    let mut out = Vec::new();
+    let active = reported == SidecarParticipantState::Active;
+    if reported == SidecarParticipantState::Disconnected {
+        if known {
+            // 上游顺序：先 `update_info`（拿到正确的断开原因），再派发断开。
+            out.push(SidecarRoomEvent::ParticipantDisconnected(
+                identity.to_string(),
+                DisconnectReason::UnknownReason,
+            ));
+        }
+        return out;
+    }
+    if known {
+        if !already_active && active {
+            out.push(SidecarRoomEvent::ParticipantActive(identity.to_string()));
+        }
+    } else {
+        out.push(SidecarRoomEvent::ParticipantConnected(identity.to_string()));
+        if active {
+            // 上游：新参与者一进来就是 ACTIVE，Connected 之后紧跟一条 Active。
+            out.push(SidecarRoomEvent::ParticipantActive(identity.to_string()));
+        }
+    }
+    out.push(SidecarRoomEvent::ParticipantsUpdated(vec![
+        identity.to_string()
+    ]));
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -344,6 +822,10 @@ pub enum MemberErrorCode {
     NotFound,
     /// 策略关闭（ADR-25 的服务端 Egress 录制）。
     Disabled,
+    /// 房间已经关闭（上游 `Room.IsClosed()`）。关闭是终态，不再接受任何命令。
+    RoomClosed,
+    /// sidecar 报告乱序：`state <= current`，上游是**忽略**而不是回滚。
+    OutOfOrderSidecarState,
 }
 
 impl MemberErrorCode {
@@ -361,6 +843,8 @@ impl MemberErrorCode {
             Self::BadInput => "bad_input",
             Self::NotFound => "room_not_found",
             Self::Disabled => "policy_disabled",
+            Self::RoomClosed => "room_closed",
+            Self::OutOfOrderSidecarState => "out_of_order_sidecar_state",
         }
     }
 }
@@ -390,6 +874,13 @@ pub enum MemberError {
     WrongEngine(&'static str, &'static str),
     #[error("invalid member command: {0}")]
     BadInput(&'static str),
+    #[error("room is closed ({0:?})")]
+    RoomClosed(RoomCloseReason),
+    #[error("out-of-order sidecar state report: `{current:?}` already seen, ignoring `{next:?}`")]
+    OutOfOrderSidecarState {
+        current: SidecarParticipantState,
+        next: SidecarParticipantState,
+    },
 }
 
 impl MemberError {
@@ -406,6 +897,8 @@ impl MemberError {
             Self::IllegalState { .. } => MemberErrorCode::IllegalState,
             Self::WrongEngine(..) => MemberErrorCode::WrongEngine,
             Self::BadInput(_) => MemberErrorCode::BadInput,
+            Self::RoomClosed(_) => MemberErrorCode::RoomClosed,
+            Self::OutOfOrderSidecarState { .. } => MemberErrorCode::OutOfOrderSidecarState,
         }
     }
 }
@@ -474,6 +967,11 @@ impl MemberAction {
     }
 
     /// 是否会改变名册（改变即推进 `generation`，旧凭证整代失效）。
+    ///
+    /// 裁决点分散在各动作分支里（`cmd_join` / `Leave` / `Reconnect` 各自
+    /// `generation += 1`），这里只把"哪些动作算改名册"这条规则留在原地，
+    /// 供审计与切路由时对照——真正的判据是代次有没有前滚。
+    #[allow(dead_code)]
     fn changes_membership(&self) -> bool {
         matches!(
             self,
@@ -533,6 +1031,13 @@ pub const RECONNECT_GRACE_MS: u64 = 60_000;
 /// 待落库审计的排队上限。通话房间是短生命周期对象，超量说明有人在刷命令；
 /// 溢出只丢最旧的、并计数上报，绝不静默丢弃整个房间。
 pub const AUDIT_QUEUE_CAP: usize = 512;
+
+/// 上游 proto `Room.empty_timeout` 的默认值（秒），取自服务端
+/// `config-sample.yaml:246`（`#   empty_timeout: 300`）。
+pub const DEFAULT_EMPTY_TIMEOUT_SECS: u64 = 300;
+/// 上游 proto `Room.departure_timeout` 的默认值（秒），取自同文件 248 行
+/// （`#   departure_timeout: 20`）。给"人刚走"留出重连窗口，比空房超时短得多。
+pub const DEFAULT_DEPARTURE_TIMEOUT_SECS: u64 = 20;
 
 /// 房间审计记下的动作类别。允许与拒绝都走同一张表，运维才看得出
 /// "谁在试着干什么但没成功"。
@@ -714,6 +1219,28 @@ pub struct Room {
     pending_audit: std::collections::VecDeque<RoomAuditEntry>,
     audit_seq: u64,
     audit_dropped: u64,
+    /// 上游 `Room.closed`（`pkg/rtc/room.go:136`）那根 channel 的值语义版本：
+    /// `Some(reason)` 即房间已关闭且**不可逆**（`Close` 是幂等的，见
+    /// [`Room::close`]）。`None` 是开放中。
+    closed: Option<RoomCloseReason>,
+    /// 上游 `protoRoom.CreationTime` 对应的"空房计时起点"（毫秒）。
+    first_joined_at_ms: u64,
+    /// 上游 `Room.LastLeftAt()`（秒）的毫秒版：最后一次"独立成员全部离席"的时刻。
+    /// `0` 表示从未有人离开过——上游正是用 `FirstJoinedAt()>0 && LastLeftAt()>0`
+    /// 来区分"空房超时"和"离席超时"两种计时起点。
+    last_left_at_ms: u64,
+    /// 上游 proto `Room.empty_timeout`（秒）。默认 300，取自服务端
+    /// `config-sample.yaml:246` 的 `empty_timeout: 300`。
+    empty_timeout_secs: u64,
+    /// 上游 proto `Room.departure_timeout`（秒）。默认 20，取自同文件
+    /// `departure_timeout: 20`。
+    departure_timeout_secs: u64,
+    /// 依附参与者（上游 `ParticipantImpl.IsDependent()`，
+    /// `pkg/rtc/participant.go:615-622`）：agent/egress 这类连接**不决定房间
+    /// 生死**。上游是从 grants 现算，我们的 grants 只在签发那一刻过手，
+    /// 所以在 [`Room::mark_dependent`] 落一次，由调用方用
+    /// `AccessClaims::is_dependent` 的结论喂进来。
+    dependent: HashSet<String>,
 }
 
 /// 由会话 id 与房间 id 推出稳定且可反查的 sidecar 房间名。
@@ -819,6 +1346,14 @@ impl Room {
             pending_audit: std::collections::VecDeque::new(),
             audit_seq: 0,
             audit_dropped: 0,
+            closed: None,
+            // 建房人即第一个到场的人：`first_joined_at` 从这一刻算，
+            // 与上游 `Room.FirstJoinedAt()` 的语义一致（0 = 还没人来过）。
+            first_joined_at_ms: now_ms,
+            last_left_at_ms: 0,
+            empty_timeout_secs: DEFAULT_EMPTY_TIMEOUT_SECS,
+            departure_timeout_secs: DEFAULT_DEPARTURE_TIMEOUT_SECS,
+            dependent: HashSet::new(),
         };
         room.audit(RoomAuditAction::RoomCreated, None, host, None, None);
         room.audit(
@@ -1515,6 +2050,23 @@ impl Room {
         &mut self,
         cmd: &MemberCommand,
     ) -> std::result::Result<MemberOutcome, MemberError> {
+        // 上游 `Room.IsClosed()`：关闭后的房间不接受任何命令，连 CAS 都不必再看。
+        if let Some(reason) = self.closed {
+            self.audit_at(
+                RoomAuditAction::MemberChanged,
+                Some(MemberErrorCode::RoomClosed),
+                if cmd.actor.is_empty() {
+                    "<anonymous>"
+                } else {
+                    &cmd.actor
+                },
+                None,
+                cmd.action.device(),
+                Some(cmd.at_ms),
+                Some(reason.as_str_name()),
+            );
+            return Err(MemberError::RoomClosed(reason));
+        }
         if cmd.actor.is_empty() {
             self.audit_at(
                 RoomAuditAction::MemberChanged,
@@ -1608,6 +2160,9 @@ impl Room {
                 if let Some(seat) = p.devices.get_mut(device) {
                     seat.state = MemberState::Active;
                     seat.grace_until_ms = 0;
+                    // 与 sidecar 那张表对齐：这条路径生效时，proto 侧至少到
+                    // ACTIVE（上游 JOINING→JOINED→ACTIVE 的最后一跳）。
+                    seat.sidecar = SidecarParticipantState::Active;
                 }
                 p.refresh();
                 self.bump();
@@ -1634,6 +2189,8 @@ impl Room {
                         if need_bump {
                             seat.state = MemberState::Reconnecting;
                         }
+                        // 掉线在 proto 侧就是 DISCONNECTED（同一张表，不另开一套）。
+                        seat.sidecar = SidecarParticipantState::Disconnected;
                         // 宽限期内的重复上报只顺延截止，不再前滚状态。
                         seat.grace_until_ms = grace;
                     }
@@ -1669,6 +2226,11 @@ impl Room {
                 if let Some(seat) = p.devices.get_mut(device) {
                     seat.state = MemberState::Joining;
                     seat.grace_until_ms = 0;
+                    // 上游重连是**新建一个 ParticipantImpl**（状态表从 JOINING
+                    // 重新开始），我们复用同一个席位，所以这里显式重置那台
+                    // 单调时钟：否则 DISCONNECTED 之后新的 JOINING 会被
+                    // `advance` 当成乱序丢掉，重连永远成功不了。
+                    seat.sidecar = SidecarParticipantState::Joining;
                 }
                 p.refresh();
                 self.generation = self.generation.saturating_add(1);
@@ -1756,6 +2318,8 @@ impl Room {
             state: MemberState::Joining,
             revision: self.revision.saturating_add(1),
             grace_until_ms: 0,
+            // 上游 `ParticipantImpl` 的初始状态就是 JOINING（`participant.go:443`）。
+            sidecar: SidecarParticipantState::Joining,
         };
         if let Some(p) = self.participants.get_mut(actor) {
             // 已经是成员：设备级幂等，同设备重复入房不改变任何东西。
@@ -1799,6 +2363,9 @@ impl Room {
     /// 席位回收的公共部分：清席位、清积压、必要时清名册并前滚代次。
     /// 返回被丢弃的积压信令条数。
     fn remove_seat(&mut self, user: &str, device: &str, reason: &str, at_ms: u64) -> usize {
+        // 上游 `Room.LastLeftAt()`：离席时刻要记住，`close_if_empty` 用它决定
+        // 走 `departure_timeout` 还是 `empty_timeout`。
+        self.last_left_at_ms = at_ms;
         let mut became_empty = false;
         if let Some(p) = self.participants.get_mut(user) {
             p.devices.remove(device);
@@ -1912,6 +2479,18 @@ impl Room {
         call: &str,
         at_ms: u64,
     ) -> std::result::Result<crate::token::AccessRequest, MemberError> {
+        if let Some(reason) = self.closed {
+            self.audit_at(
+                RoomAuditAction::TokenIssued,
+                Some(MemberErrorCode::RoomClosed),
+                user,
+                Some(user),
+                Some(device),
+                Some(at_ms),
+                Some(reason.as_str_name()),
+            );
+            return Err(MemberError::RoomClosed(reason));
+        }
         if self.engine != MediaEngine::LiveKit {
             self.audit_at(
                 RoomAuditAction::TokenIssued,
@@ -2002,10 +2581,33 @@ impl Room {
             scope: MediaScope::Call,
             generation: self.generation,
             engine: self.engine.name().to_string(),
+            // sidecar 名册上的显示名由会话层给；房间只知道自己存了哪些 id，
+            // 没有昵称事实，所以这里留空（空即不写进 claim，与上游同法）。
+            name: String::new(),
+            // ADR-25：我们只签普通客户端。`kind` 留空即 STANDARD；
+            // egress/ingress/agent 会在 `LiveKitIssuer::issue` 里被拒签。
+            kind: String::new(),
+            metadata: String::new(),
+            attributes: Default::default(),
             key_fingerprint: None,
             ttl_ms: Some(ACCESS_TTL_MS),
             muted,
         })
+    }
+
+    /// 用一枚**已验签**的令牌结论标记该参与者的依附性（上游是
+    /// `Grants.IsDependent()` 现算，见 `pkg/rtc/participant.go:615-622`；
+    /// 我们的 grants 只在签发/校验那一刻过手，所以在那里落一次）。
+    ///
+    /// 目的是让 [`Room::close_if_empty`] 不被录制器/agent 连接"撑活"——
+    /// 否则一个自动录制的会话会让房间永远关不掉。
+    pub fn mark_dependent_from_claims(
+        &mut self,
+        user: &str,
+        claims: &crate::token::AccessClaims,
+    ) -> bool {
+        let dependent = claims.is_dependent();
+        self.mark_dependent(user, dependent)
     }
 
     /// 退群/封禁：撤销该用户在本房间的全部席位与加入权限。比 [`Room::kick`]
@@ -2133,6 +2735,277 @@ impl Room {
             );
         }
         removed
+    }
+
+    // ---------------- 移植自 LiveKit 的房间关闭与状态上报 ----------------
+
+    /// 房间是否已关闭（上游 `Room.IsClosed()`，`pkg/rtc/room.go:754-761`）。
+    pub fn is_closed(&self) -> bool {
+        self.closed.is_some()
+    }
+
+    /// 关闭原因；未关闭即 `None`。
+    pub fn close_reason(&self) -> Option<RoomCloseReason> {
+        self.closed
+    }
+
+    /// 关闭房间（上游 `Room.Close(reason)`，`pkg/rtc/room.go:800-822`）。
+    ///
+    /// 三条照抄的行为：
+    ///
+    /// * **幂等**：已经关了直接返回 `false`，不重复通知、不重复审计
+    ///   （上游先 `select { case <-r.closed: return }`）；
+    /// * 关闭时把每个在场参与者一起关掉，原因走
+    ///   [`RoomCloseReason::to_disconnect_reason`] 那张表 —— 房间侧与参与者侧
+    ///   的原因从此是**同一次决定的两个投影**；
+    /// * 关闭即终态：之后再有任何命令都撞 [`MemberError::RoomClosed`]。
+    ///
+    /// 返回 `true` 表示这次调用真正完成了关闭。
+    pub fn close(&mut self, reason: RoomCloseReason, at_ms: u64) -> bool {
+        if self.is_closed() {
+            return false;
+        }
+        self.closed = Some(reason);
+        // 上游关闭房间时逐个 `p.Close(...)`；我们这里等价地清空所有设备席位，
+        // 并把名册留在原地（房间对象还要出审计与最终快照）。
+        let participant_reason = reason.to_disconnect_reason();
+        let mut closed_users: Vec<String> = Vec::with_capacity(self.participants.len());
+        for (user, p) in self.participants.iter_mut() {
+            for seat in p.devices.values_mut() {
+                if seat.state.holds_media() {
+                    seat.state = MemberState::Left;
+                    seat.sidecar = SidecarParticipantState::Disconnected;
+                    seat.grace_until_ms = 0;
+                }
+            }
+            p.refresh();
+            closed_users.push(user.clone());
+        }
+        // 上游是先逐个 `p.Close(...)` 再打日志；这里同样把"每个参与者被一起
+        // 关掉"留成独立审计行，原因用的是那张一致性表的**参与侧**投影。
+        for user in closed_users {
+            self.audit_at(
+                RoomAuditAction::MemberChanged,
+                None,
+                "system",
+                Some(&user),
+                None,
+                Some(at_ms),
+                Some(participant_reason.as_str_name()),
+            );
+        }
+        self.generation = self.generation.saturating_add(1);
+        self.bump();
+        self.audit_at(
+            RoomAuditAction::RoomEnded,
+            None,
+            "system",
+            None,
+            None,
+            Some(at_ms),
+            Some(reason.as_str_name()),
+        );
+        true
+    }
+
+    /// 空房关闭（上游 `Room.CloseIfEmpty()`，`pkg/rtc/room.go:764-798`）。
+    ///
+    /// 判定顺序也照抄：
+    ///
+    /// 1. 已关闭 → 什么都不做；
+    /// 2. **还有一个独立成员在场**（非依附参与者）→ 直接返回。依附参与者
+    ///    （agent / egress 录制会话）不算数，见 [`Room::mark_dependent`]；
+    /// 3. 计时起点二选一：有人来过且有人走过 → 从 `last_left_at` 起算、
+    ///    用 `departure_timeout`；否则从建房时刻起算、用 `empty_timeout`；
+    /// 4. `elapsed >= timeout` 才真的关，原因是 `IDLE_TIMEOUT`。
+    ///
+    /// 与上游一致，超时判定用**秒**（proto 里这两个字段就是秒）。
+    pub fn close_if_empty(&mut self, now_ms: u64) -> Option<RoomCloseReason> {
+        if self.is_closed() {
+            return None;
+        }
+        for user in self.participants.keys() {
+            if !self.is_dependent(user) {
+                return None;
+            }
+        }
+        let (elapsed_secs, timeout_secs, _reason_name) =
+            if self.first_joined_at_ms != 0 && self.last_left_at_ms != 0 {
+                (
+                    (now_ms.saturating_sub(self.last_left_at_ms)) / 1_000,
+                    self.departure_timeout_secs,
+                    "departure timeout",
+                )
+            } else {
+                (
+                    (now_ms.saturating_sub(self.created_at)) / 1_000,
+                    self.empty_timeout_secs,
+                    "empty timeout",
+                )
+            };
+        if elapsed_secs >= timeout_secs {
+            let reason = RoomCloseReason::IdleTimeout;
+            self.close(reason, now_ms);
+            // 上游还会打一条 "closing idle room" 的 info 日志，把用的是哪个
+            // 超时留在审计里，运维才分得清"没人来过"和"来过的都走了"。
+            self.audit_at(
+                RoomAuditAction::RoomEnded,
+                None,
+                "system",
+                None,
+                None,
+                Some(now_ms),
+                Some(if timeout_secs == self.departure_timeout_secs {
+                    "departure_timeout"
+                } else {
+                    "empty_timeout"
+                }),
+            );
+            return Some(reason);
+        }
+        None
+    }
+
+    /// 计时参数（部署可调，与上游 proto 字段同名同单位）。
+    pub fn room_timeouts(&self) -> (u64, u64) {
+        (self.empty_timeout_secs, self.departure_timeout_secs)
+    }
+
+    /// 测试/部署用：覆盖两个超时（秒）。`0` 表示"到点即关"。
+    pub fn with_room_timeouts(mut self, empty_secs: u64, departure_secs: u64) -> Self {
+        self.empty_timeout_secs = empty_secs;
+        self.departure_timeout_secs = departure_secs;
+        self
+    }
+
+    /// 标记一个参与者是"依附"的（agent / egress 那类）。
+    ///
+    /// 结论必须由调用方从令牌算出来 —— 上游是 `Grants.IsDependent()`
+    /// （`pkg/rtc/participant.go:615-622`），我们这边对应
+    /// [`crate::token::AccessClaims::is_dependent`]。ADR-25 下我们**不会**签出
+    /// 这类令牌（见 `assert_participant_kind_allowed`），所以线上这里恒为空；
+    /// 保留它是为了让回滚/演练路径也能表达"这一路不决定房间生死"。
+    pub fn mark_dependent(&mut self, user: &str, dependent: bool) -> bool {
+        if !self.participants.contains_key(user) {
+            return false;
+        }
+        if dependent {
+            self.dependent.insert(user.to_string());
+        } else {
+            self.dependent.remove(user);
+        }
+        true
+    }
+
+    /// 该参与者是否依附于房间（不存在的人按"独立"处理，宁可让房间活着）。
+    pub fn is_dependent(&self, user: &str) -> bool {
+        self.dependent.contains(user)
+    }
+
+    /// sidecar 回报某个设备席位的参与者状态。
+    ///
+    /// 这里是上游 `ParticipantImpl.updateState`（`pkg/rtc/participant.go:2333-2358`）
+    /// 的行为移植：**乱序报告被忽略且不改任何状态**，只有严格前进才生效。
+    /// 数值序即 proto 序（JOINING < JOINED < ACTIVE < DISCONNECTED），所以
+    /// 已经 `ACTIVE` 的席位不会再被一条迟到的 `JOINED` 打回去，已经
+    /// `DISCONNECTED` 的席位也不会被迟到的 `ACTIVE` 复活。
+    ///
+    /// 生效之后的房间副作用见 [`SidecarStateEffect`]，与上游
+    /// `Room.onStateChange`（`pkg/rtc/room.go:1227-1281`）一一对应：
+    /// `ACTIVE` → 订阅既有轨道 + 上报入房成功；`DISCONNECTED` → 上游立刻移除，
+    /// 我们改为进入重连宽限期（刻意的偏离，理由见
+    /// [`SidecarParticipantState::to_member_state`]）。
+    pub fn report_sidecar_state(
+        &mut self,
+        user: &str,
+        device: &str,
+        next: SidecarParticipantState,
+        at_ms: u64,
+    ) -> std::result::Result<SidecarStateReport, MemberError> {
+        if let Some(reason) = self.closed {
+            return Err(MemberError::RoomClosed(reason));
+        }
+        let p = self.participants.get(user).ok_or(MemberError::NotMember)?;
+        let seat = p
+            .devices
+            .get(device)
+            .ok_or_else(|| MemberError::NoSuchDevice(device.to_string()))?;
+        let current = seat.sidecar;
+        let Some(old) = SidecarParticipantState::advance(current, next) else {
+            // 上游对乱序只打 debug 日志、不动状态；我们把"被忽略"这件事留痕，
+            // 因为它正是排障时想知道的"sidecar 报晚了还是报错了"。
+            self.audit_at(
+                RoomAuditAction::MemberChanged,
+                Some(MemberErrorCode::OutOfOrderSidecarState),
+                user,
+                Some(user),
+                Some(device),
+                Some(at_ms),
+                Some(current.as_str_name()),
+            );
+            return Ok(SidecarStateReport {
+                applied: false,
+                previous: current,
+                current,
+                effects: Vec::new(),
+            });
+        };
+        let effects = match next {
+            // 上游 `onStateChange` 的 ACTIVE 分支：先订阅既有轨道，再上报指标。
+            SidecarParticipantState::Active => vec![
+                SidecarStateEffect::SubscribeExistingTracks,
+                SidecarStateEffect::ReportActive,
+            ],
+            SidecarParticipantState::Disconnected => vec![SidecarStateEffect::BeginReconnectGrace],
+            SidecarParticipantState::Joining | SidecarParticipantState::Joined => Vec::new(),
+        };
+        let p = self
+            .participants
+            .get_mut(user)
+            .ok_or(MemberError::NotMember)?;
+        let seat = p
+            .devices
+            .get_mut(device)
+            .ok_or_else(|| MemberError::NoSuchDevice(device.to_string()))?;
+        seat.sidecar = next;
+        seat.state = next.to_member_state();
+        if next == SidecarParticipantState::Disconnected {
+            seat.grace_until_ms = at_ms.saturating_add(self.reconnect_grace_ms);
+        } else {
+            seat.grace_until_ms = 0;
+        }
+        p.refresh();
+        self.bump();
+        // 上游只在 `ACTIVE -> DISCONNECTED` 时记一次会话时长
+        // （`participant.go:2354-2357`）：从 JOINING 直接掉线的不算完整会话。
+        let detail = if next.is_clean_disconnect_from(old) {
+            "active_to_disconnected"
+        } else {
+            next.as_str_name()
+        };
+        self.audit_at(
+            RoomAuditAction::MemberChanged,
+            None,
+            user,
+            Some(user),
+            Some(device),
+            Some(at_ms),
+            Some(detail),
+        );
+        Ok(SidecarStateReport {
+            applied: true,
+            previous: old,
+            current: next,
+            effects,
+        })
+    }
+
+    /// 该席位当前对 sidecar 报的状态（诊断/给客户端的快照）。
+    pub fn sidecar_state(&self, user: &str, device: &str) -> Option<SidecarParticipantState> {
+        self.participants
+            .get(user)
+            .and_then(|p| p.devices.get(device))
+            .map(|seat| seat.sidecar)
     }
 
     fn role_of(&self, user: &str) -> Result<Role> {

@@ -147,6 +147,7 @@ impl CallManager {
                     media: None,
                     entered_ringing_at: None,
                     last_peer_activity: None,
+                    room: None,
                 },
             );
             actions.push(Action::Ended {

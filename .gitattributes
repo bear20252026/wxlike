@@ -12,6 +12,11 @@ crates/mcp/tests/snapshots/tools_list.json text eol=lf
 ui/src/vendor/tweb/slicedArray.ts text eol=lf
 ui/src/vendor/tweb/listenerSetter.ts text eol=lf
 crates/rtc/src/sfu.rs text eol=lf
+# 同一批 registry.json 里按 sha256 核对的 LiveKit 移植文件（UP-LIVEKIT-RUSTSDK）。
+# 本地 core.autocrlf=true，不钉 LF 的话重新 checkout 会变 CRLF ⇒ PROV-SHA-MISMATCH
+# 直接 CRITICAL，而 CI 在 ubuntu 上永远是绿的，只有换机器才红。
+crates/rtc/src/room.rs text eol=lf
+crates/rtc/src/token.rs text eol=lf
 
 # 部署脚本/清单（docker compose、verify/smoke 脚本等）同样按 LF 检出，
 # 容器内 bash 与 Linux 值班环境不认 CRLF。

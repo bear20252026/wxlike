@@ -109,6 +109,19 @@ pub enum TokenError {
         "ADR-25: room authority stays in Rust; roomAdmin/ingressAdmin grants may not be minted"
     )]
     SidecarAdminForbidden,
+    #[error("ADR-25: tokens must not carry the `{0}` participant kind; egress/ingress sessions are not minted by wxlike")]
+    ParticipantKindForbidden(String),
+    #[error("token grants roomJoin but has no identity or room")]
+    InvalidJoinClaims,
+    /// 上游 `pkg/service/auth.go` 的 `ErrPermissionDenied`。
+    #[error("permissions denied")]
+    PermissionDenied,
+    /// 上游 `pkg/service/auth.go` 的 `claims == nil || claims.Video == nil` 分支：
+    /// 没有 grant 的令牌不是"权限为空"，而是"根本没授权过"。
+    #[error("token carries no grants")]
+    NoGrants,
+    #[error("invalid authorization header; must start with `Bearer ` or carry `access_token`")]
+    MissingAuthorization,
 }
 
 /// HMAC-SHA256 签名器。克隆代价只是密钥字节；不要把它写进日志。
@@ -246,6 +259,15 @@ impl TokenSigner {
 // participant identity，`video` grant 决定这个连接在 sidecar 里能做什么。
 // sidecar 自己**不查我们的成员表**，所以"谁可以进哪个房间"必须由这里算出来。
 // 换句话说：令牌签发是 ADR-25 里 Rust 侧唯一的媒体准入闸。
+//
+// 本节按 LiveKit 官方 `livekit-token` crate 的 `src/access_token.rs`
+// （`github.com/livekit/rust-sdks` @ `052f089166b6864bc5f7e92906f6a7897b9f546c`）
+// 移植/改写：claims 字段集合、`video` grant 的三态语义（缺省 ≠ false）、
+// "缺省即不序列化"的线格式，以及签发前的 `roomJoin ⇒ 有 identity 且有 room`
+// 校验。权限判定函数（下面的 `ensure_*`）交叉核对服务端
+// `github.com/livekit/livekit` @ `94edd5da75246bd3c04becf88e3fda563e3d6e1c`
+// 的 `pkg/service/auth.go`。逐段差异、改动与"没拿什么"见
+// `third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md`。
 
 /// LiveKit 只接受 HS256；其它 alg（含 `none`）一律拒绝，防算法混淆。
 pub const LIVEKIT_ALG: &str = "HS256";
@@ -255,6 +277,10 @@ pub const MIN_API_SECRET_LEN: usize = 32;
 pub const DEFAULT_ACCESS_TTL_MS: u64 = 60_000;
 /// 寿命上限：过期后必须回信令面重新入房（再过一次成员状态机 + 审计）。
 pub const MAX_ACCESS_TTL_MS: u64 = 15 * 60_000;
+/// 上游 `livekit-token` 的 `DEFAULT_TTL`（`Duration::from_secs(3600 * 6)`，6 小时）。
+/// 只登记用来对照 sidecar 的默认行为：我们签发时仍受 [`MAX_ACCESS_TTL_MS`] 收紧，
+/// 这是 ADR-25 里刻意的偏离（房间事实要在 15 分钟内回到 Rust 侧重新裁决）。
+pub const LIVEKIT_DEFAULT_TTL_SECS: u64 = 3600 * 6;
 
 /// apiKey/apiSecret 对。Debug 只输出 `[redacted]`，绝不打印密钥。
 #[derive(Clone)]
@@ -316,37 +342,119 @@ impl ApiKeyPair {
     }
 }
 
-/// `video` grant：sidecar 看得懂的那部分能力声明。字段名用 LiveKit 的
-/// camelCase 线格式（`roomJoin` / `canPublish` / `canPublishData` …）。
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoGrant {
-    /// 只能进这一个房间；LiveKit 自己在入房时校验。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub room: Option<String>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub room_join: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub can_publish: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub can_subscribe: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub can_publish_data: bool,
-    /// 服务端 Egress 录制器的隐藏身份 —— ADR-25 禁止我们签发。
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub hidden: bool,
-    /// 同上：`recorder` 令牌是 LiveKit 侧自动录制的入口。
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub recorder: bool,
-    /// 房间管理权（改他人状态）。必须只由 Rust 信令面行使。
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub room_admin: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub ingress_admin: bool,
+/// 上游 `is_default`（`access_token.rs:98`）：配合 `skip_serializing_if` 使用，
+/// 让"没有声明的能力"在 JSON 里**缺席**而不是写成 `false`。这两件事在 LiveKit
+/// 语义里不等价 —— 缺省由读取侧按 `unwrap_or(true)` 等规则补齐。
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
 }
 
-fn is_false(v: &bool) -> bool {
-    !*v
+/// `video` grant：sidecar 看得懂的那部分能力声明。字段名与字段集合照抄上游
+/// `VideoGrants`（`access_token.rs:45-96`），线格式是 LiveKit 的 camelCase
+/// （`roomJoin` / `canPublish` / `canPublishData` / `canPublishSources` …）。
+///
+/// **三态是重点**：`canPublish` / `canSubscribe` / `canPublishData` /
+/// `canUpdateOwnMetadata` 是 `Option<bool>`，缺省含义由 [`VideoGrant`] 的
+/// 取值方法决定（上游 `access_token.rs:102-118`）：
+///
+/// * `canPublish` 缺席 = **允许**（`unwrap_or(true)`）；
+/// * `canSubscribe` 缺席 = **允许**；
+/// * `canPublishData` 缺席 = 跟随 `canPublish`；
+/// * `canUpdateOwnMetadata` 缺席 = **不允许**。
+///
+/// 用 `bool` 会把"没声明"读成"禁止"，与 LiveKit 服务端不一致：同一枚由
+/// LiveKit SDK 签出的令牌，两边会得出相反的结论。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VideoGrant {
+    // actions on rooms
+    #[serde(skip_serializing_if = "is_default")]
+    pub room_create: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub room_list: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub room_record: bool,
+
+    // actions on a particular room
+    #[serde(skip_serializing_if = "is_default")]
+    pub room_admin: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub room_join: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub room: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub destination_room: String,
+
+    // permissions within a room
+    #[serde(skip_serializing_if = "is_default")]
+    pub can_publish: Option<bool>,
+    #[serde(skip_serializing_if = "is_default")]
+    pub can_subscribe: Option<bool>,
+    #[serde(skip_serializing_if = "is_default")]
+    pub can_publish_data: Option<bool>,
+
+    /// TrackSource 类型白名单。上游注释（`access_token.rs:72-74`）写明"一旦
+    /// 设定即取代 `canPublish`"，但**判定发生在 sidecar 侧**（`livekit/protocol`
+    /// 的 auth 包，本 checkout 未含），所以这里只保留字段本身，不提供
+    /// 推断式访问器 —— 本仓库不假装自己实现了那份判定。
+    #[serde(skip_serializing_if = "is_default")]
+    pub can_publish_sources: Vec<String>,
+
+    /// 默认不允许参与者改自己的 metadata（上游 `access_token.rs:77-79`）。
+    #[serde(skip_serializing_if = "is_default")]
+    pub can_update_own_metadata: Option<bool>,
+
+    // actions on ingresses
+    #[serde(skip_serializing_if = "is_default")]
+    pub ingress_admin: bool,
+
+    // participant is not visible to other participants (useful when making bots)
+    #[serde(skip_serializing_if = "is_default")]
+    pub hidden: bool,
+
+    // indicates to the room that current participant is a recorder
+    #[serde(skip_serializing_if = "is_default")]
+    pub recorder: bool,
+
+    // indicates to the room that current participant is an agent
+    #[serde(skip_serializing_if = "is_default")]
+    pub agent: bool,
+}
+
+impl VideoGrant {
+    /// 上游 `access_token.rs:103-105`：缺省即允许。
+    pub fn can_publish(&self) -> bool {
+        self.can_publish.unwrap_or(true)
+    }
+
+    /// 上游 `access_token.rs:107-109`：缺省即允许。
+    pub fn can_subscribe(&self) -> bool {
+        self.can_subscribe.unwrap_or(true)
+    }
+
+    /// 上游 `access_token.rs:111-113`：缺省跟随 `canPublish`。
+    pub fn can_publish_data(&self) -> bool {
+        self.can_publish_data.unwrap_or_else(|| self.can_publish())
+    }
+
+    /// 上游 `access_token.rs:115-117`：缺省即不允许。
+    pub fn can_update_own_metadata(&self) -> bool {
+        self.can_update_own_metadata.unwrap_or(false)
+    }
+}
+
+/// 上游 `SIPGrants`（`access_token.rs:120-135`）。wxlike 目前没有 SIP 接入，
+/// 但字段集合照抄有两个理由：与 sidecar 的 claims 结构可比对；`ensure_sip_*`
+/// 两个判定函数能原样落地（见 `pkg/service/auth.go:232-246`）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SipGrant {
+    /// manage sip resources
+    #[serde(skip_serializing_if = "is_default")]
+    pub admin: bool,
+    /// make outbound calls
+    #[serde(skip_serializing_if = "is_default")]
+    pub call: bool,
 }
 
 /// wxlike 私有 claim 命名空间：LiveKit 会原样忽略未知 claim，但我们的信令面
@@ -366,31 +474,149 @@ pub struct WxlikeClaims {
     pub engine: String,
 }
 
+/// sidecar 侧的参与者种类。取值与上游 proto
+/// `livekit-protocol/src/livekit.rs` 的 `participant_info::Kind`
+/// （`STANDARD=0 / INGRESS=1 / EGRESS=2 / SIP=3 / AGENT=4 / CONNECTOR=7 / BRIDGE=8`）
+/// 一一对应；`Connector`/`Bridge` 是 LiveKit Cloud 专用，本项目用不到，
+/// 但保留 tag 数值以免和 sidecar 的数字对不上号。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ParticipantKind {
+    Standard,
+    Ingress,
+    Egress,
+    Sip,
+    Agent,
+    Connector,
+    Bridge,
+}
+
+impl ParticipantKind {
+    /// proto 里的数值（给 sidecar/遥测对齐用，不是我们自己的排序）。
+    pub fn tag(self) -> i32 {
+        match self {
+            Self::Standard => 0,
+            Self::Ingress => 1,
+            Self::Egress => 2,
+            Self::Sip => 3,
+            Self::Agent => 4,
+            Self::Connector => 7,
+            Self::Bridge => 8,
+        }
+    }
+
+    /// 上游 proto 的 `Kind::as_str_name()`（同一份字符串，稳定、可反解）。
+    pub fn as_str_name(self) -> &'static str {
+        match self {
+            Self::Standard => "STANDARD",
+            Self::Ingress => "INGRESS",
+            Self::Egress => "EGRESS",
+            Self::Sip => "SIP",
+            Self::Agent => "AGENT",
+            Self::Connector => "CONNECTOR",
+            Self::Bridge => "BRIDGE",
+        }
+    }
+
+    /// claims 的 `kind` 是自由字符串（上游 `Claims::kind: String`，
+    /// `access_token.rs:280`；测试里用的是小写 `"agent"`）。这里同时接受
+    /// 小写与 proto 的 `SCREAMING_SNAKE` 两种写法，认不出来即 `None`——
+    /// 认不出来当 Standard（权限面最小的一侧），不猜。
+    pub fn from_claim(raw: &str) -> Option<Self> {
+        let norm = raw.trim().to_ascii_uppercase().replace('-', "_");
+        match norm.as_str() {
+            "" | "STANDARD" | "SDK" => Some(Self::Standard),
+            "INGRESS" => Some(Self::Ingress),
+            "EGRESS" => Some(Self::Egress),
+            "SIP" => Some(Self::Sip),
+            "AGENT" => Some(Self::Agent),
+            "CONNECTOR" => Some(Self::Connector),
+            "BRIDGE" => Some(Self::Bridge),
+            _ => None,
+        }
+    }
+}
+
 /// 解码后的 LiveKit 访问令牌声明。时间字段是 **Unix 秒**（JWT 规范，
 /// 与 LiveKit 一致），不要和内部媒体令牌的毫秒混用。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 字段集合照抄上游 `Claims`（`access_token.rs:267-303`）：`exp`/`iss`/`nbf`/
+/// `sub`/`name`/`kind`/`video`/`sip`/`sha256`/`metadata`/`attributes`。
+/// 其中 `jti`/`iat`/`wxlike` 是 **LiveKit 里没有、我们自研** 的三枚：
+/// `jti` 给信令面做一次性防重放，`iat` 给审计看签发时刻，`wxlike` 绑定
+/// call/device/scope/代次/引擎（LiveKit 只认房间名，粒度不够）。
+/// 上游的 `room_config`（`Option<livekit_protocol::RoomConfiguration>`）
+/// **没有移植**：它依赖 `livekit-protocol` 的 protobuf 类型，新增依赖必须走
+/// integration-request，见 `integration-requests/G09/`。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct AccessClaims {
     pub iss: String,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     pub sub: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     pub iat: u64,
-    #[serde(default)]
     pub nbf: u64,
     pub exp: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
+    pub name: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "is_default")]
     pub video: VideoGrant,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
+    pub sip: SipGrant,
+    /// 上游用它校验 HTTP 报文完整性（`access_token.rs:296`）。
+    #[serde(skip_serializing_if = "is_default")]
+    pub sha256: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub metadata: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub attributes: std::collections::HashMap<String, String>,
+    #[serde(skip_serializing_if = "is_default")]
     pub wxlike: WxlikeClaims,
+}
+
+impl AccessClaims {
+    /// 上游 `ParticipantImpl.IsRecorder`（`pkg/rtc/participant.go:605-608`）：
+    /// `kind == EGRESS || video.Recorder`。ADR-25 下这类令牌**一律不签**，
+    /// 见 [`assert_sidecar_grant_allowed`]。
+    pub fn is_recorder(&self) -> bool {
+        matches!(
+            ParticipantKind::from_claim(&self.kind),
+            Some(ParticipantKind::Egress)
+        ) || self.video.recorder
+    }
+
+    /// 上游 `ParticipantImpl.IsAgent`（`pkg/rtc/participant.go:610-613`）：
+    /// `kind == AGENT || video.Agent`。
+    pub fn is_agent(&self) -> bool {
+        matches!(
+            ParticipantKind::from_claim(&self.kind),
+            Some(ParticipantKind::Agent)
+        ) || self.video.agent
+    }
+
+    /// 上游 `ParticipantImpl.IsDependent`（`pkg/rtc/participant.go:615-622`）：
+    /// agent/egress 这类"依附参与者"不决定房间生死——房间空不空只看独立成员。
+    /// [`crate::room::Room::close_if_empty`] 用同一条规则。
+    pub fn is_dependent(&self) -> bool {
+        match ParticipantKind::from_claim(&self.kind) {
+            Some(ParticipantKind::Agent) | Some(ParticipantKind::Egress) => true,
+            _ => self.video.agent || self.video.recorder,
+        }
+    }
+
+    /// claims 的 `kind` 解析出的参与者种类；认不出来当 `Standard`（最小权限侧）。
+    pub fn participant_kind(&self) -> ParticipantKind {
+        ParticipantKind::from_claim(&self.kind).unwrap_or(ParticipantKind::Standard)
+    }
 }
 
 /// 一次入房凭证的请求。`identity` 是 LiveKit 侧的用户身份（= user id），
 /// 设备靠 `device` 区分：同一用户的两台设备是两个 LiveKit participant。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccessRequest {
     pub room: String,
     pub identity: String,
@@ -399,8 +625,21 @@ pub struct AccessRequest {
     pub scope: MediaScope,
     pub generation: u64,
     pub engine: String,
+    /// 上游 claim `name`（`access_token.rs:278`）：sidecar 名册上的显示名。
+    /// 空即不写进 JSON（缺省不序列化，与上游同）。
+    pub name: String,
+    /// 上游 claim `kind`（`access_token.rs:280`）：参与者种类。正常客户端留空
+    /// （等价 `STANDARD`）；`egress`/`ingress`/`agent` 等一律拒签，见
+    /// [`assert_participant_kind_allowed`]。
+    pub kind: String,
+    /// 上游 claim `metadata`（`access_token.rs:298`）：不透明字符串，sidecar
+    /// 只透传给名册，不参与判定。
+    pub metadata: String,
+    /// 上游 claim `attributes`（`access_token.rs:300`，`HashMap<String,String>`）：
+    /// 键值属性，进 sidecar 名册也进我们的审计快照。
+    pub attributes: std::collections::HashMap<String, String>,
     /// 媒体密钥指纹（`MediaKeyRing::fingerprint`），sidecar 只拿摘要校验，
-    /// 拿不到密钥本身。
+    /// 拿不到密钥本身。落到 claim `sha256`（上游用它做报文完整性校验）。
     pub key_fingerprint: Option<String>,
     /// 自定义寿命；`None` 用 [`DEFAULT_ACCESS_TTL_MS`]。
     pub ttl_ms: Option<u64>,
@@ -427,6 +666,10 @@ impl AccessRequest {
             scope: MediaScope::Call,
             generation,
             engine: engine.into(),
+            name: String::new(),
+            kind: String::new(),
+            metadata: String::new(),
+            attributes: std::collections::HashMap::new(),
             key_fingerprint: None,
             ttl_ms: None,
             muted: false,
@@ -447,35 +690,46 @@ pub struct IssuedAccess {
 /// scope → grant 的唯一映射表。新增 scope 时必须在这里补一行，
 /// 不允许在调用点手搓 grant。
 ///
-/// `canPublishData` 一律不开：通话/直播的信令只走 wxlike 自己的 QUIC 面，
-/// 给客户端留 LiveKit 数据通道等于再开一条没审计的旁路。
+/// 三个能力位都写成显式的 `Some(..)`：上游缺省含义是"允许"（见
+/// [`VideoGrant`]），而我们**故意**不留缺省——我们的令牌必须自证权限面，
+/// 不能靠读侧的默认来补。
+///
+/// `canPublishData` 一律显式关掉：通话/直播的信令只走 wxlike 自己的 QUIC 面，
+/// 给客户端留 LiveKit 数据通道等于再开一条没审计的旁路。这比上游缺省
+/// （跟随 `canPublish`）更严，是 ADR-25 下刻意的收紧。
 pub fn grant_for(scope: MediaScope) -> VideoGrant {
     let mut grant = VideoGrant {
         room_join: true,
-        can_subscribe: true,
+        can_subscribe: Some(true),
+        can_publish_data: Some(false),
         ..Default::default()
     };
     match scope {
         // 通话：双向，语音+视频轨由房间状态裁决。
-        MediaScope::Call => grant.can_publish = true,
+        MediaScope::Call => grant.can_publish = Some(true),
         // 推流：只有主播。
         MediaScope::LivePublish => {
-            grant.can_publish = true;
-            grant.can_subscribe = false;
+            grant.can_publish = Some(true);
+            grant.can_subscribe = Some(false);
         }
         // 观众：只下行，麦克风与数据通道永远关。
-        MediaScope::LiveWatch => {}
+        MediaScope::LiveWatch => grant.can_publish = Some(false),
         // 连麦：主播审批后才签发，可上行。
-        MediaScope::LiveCohost => grant.can_publish = true,
+        MediaScope::LiveCohost => grant.can_publish = Some(true),
     }
     grant
 }
 
-/// ADR-25 硬闸：sidecar 令牌不得带服务端录制能力，也不得带房间管理权。
+/// ADR-25 硬闸：给**客户端**签的 sidecar 令牌不得带服务端录制能力，也不得带
+/// 房间管理权。
 ///
 /// 返回 `Err` 时调用方**不能**再签这枚令牌——LiveKit 的 `recorder`/`hidden`
 /// 参与者是 Egress 自动录制的唯一入口，`roomAdmin` 则会让 sidecar 里长出
 /// 第二套房间事实（静音/踢人/录制状态对不齐）。
+///
+/// 注意作用域：这道闸只管 [`LiveKitIssuer::issue`] 的签发路径。服务端自己的
+/// API 令牌（要调 sidecar 的 RoomService）另有 [`ensure_admin_permission`] 等
+/// 判定，那是"服务对服务"的信任边界，与"给客户端放行"是两回事。
 pub fn assert_sidecar_grant_allowed(grant: &VideoGrant) -> Result<(), TokenError> {
     if grant.recorder || grant.hidden {
         return Err(TokenError::ServerEgressGrantForbidden);
@@ -483,7 +737,154 @@ pub fn assert_sidecar_grant_allowed(grant: &VideoGrant) -> Result<(), TokenError
     if grant.room_admin || grant.ingress_admin {
         return Err(TokenError::SidecarAdminForbidden);
     }
+    if !grant.can_publish_sources.is_empty() {
+        // 我们不下发 TrackSource 白名单：一旦下发，判定就落到 sidecar 侧的
+        // `livekit/protocol` 里（本 checkout 未含其源码），房间事实会分叉。
+        return Err(TokenError::GrantMismatch);
+    }
     Ok(())
+}
+
+/// 参与者种类的硬闸：`EGRESS`（服务端录制器）与 `INGRESS`（外部注入源）都不
+/// 是 wxlike 客户端该有的身份。上游把 `kind` 当自由字符串写进 claims
+/// （`Claims::kind`），服务端据此决定 `IsRecorder`/`IsDependent`
+/// （`pkg/rtc/participant.go:605-622`），所以只封 `video.recorder` 不够——
+/// `kind = "egress"` 同样会打开 Egress 语义。
+pub fn assert_participant_kind_allowed(kind: &str) -> Result<(), TokenError> {
+    // 上游的正常客户端令牌就是不写 `kind`（`Claims::kind` 为空即不序列化），
+    // 所以空串等价于 STANDARD；其余一律拒签，认不出来也拒（fail closed）。
+    if kind.is_empty()
+        || matches!(
+            ParticipantKind::from_claim(kind),
+            Some(ParticipantKind::Standard)
+        )
+    {
+        return Ok(());
+    }
+    Err(TokenError::ParticipantKindForbidden(kind.to_string()))
+}
+
+// ---- 以下 `ensure_*` 判定逐条对应服务端 `pkg/service/auth.go` ----
+//
+// 上游这些函数从 `context` 里取 grants；我们没有 Go 的 context，改成显式收
+// `Option<&AccessClaims>`（`None` 就是上游 `claims == nil` 的那一支，单独报
+// [`TokenError::NoGrants`]，不折成 `PermissionDenied`）。判定条件与顺序照抄。
+
+/// `pkg/service/auth.go:172-185` `EnsureJoinPermission`：只有 `roomJoin` 为真
+/// 才允许入房，并把授权的房间名交回调用方（房间名以令牌为准，不以请求参数为准）。
+pub fn ensure_join_permission(claims: Option<&AccessClaims>) -> Result<String, TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.room_join {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(claims.video.room.clone())
+}
+
+/// `pkg/service/auth.go:187-198` `EnsureAdminPermission`：既要 `roomAdmin`，
+/// 又必须正好是令牌里那间房——一把 admin 钥匙不能开所有门。
+pub fn ensure_admin_permission(
+    claims: Option<&AccessClaims>,
+    room: &str,
+) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.room_admin || claims.video.room != room {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:200-206` `EnsureCreatePermission`。
+pub fn ensure_create_permission(claims: Option<&AccessClaims>) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.room_create {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:208-214` `EnsureListPermission`。
+pub fn ensure_list_permission(claims: Option<&AccessClaims>) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.room_list {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:216-222` `EnsureRecordPermission`。这是**授权面**，
+/// 不等于我们能签：ADR-25 下客户端令牌的 `recorder` 已被
+/// [`assert_sidecar_grant_allowed`] 关死，这里只回答"这把令牌本身有没有
+/// roomRecord"，供服务端对服务端调用与审计使用。
+pub fn ensure_record_permission(claims: Option<&AccessClaims>) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.room_record {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:224-230` `EnsureIngressAdminPermission`。
+pub fn ensure_ingress_admin_permission(claims: Option<&AccessClaims>) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.ingress_admin {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:232-238` `EnsureSIPAdminPermission`。
+pub fn ensure_sip_admin_permission(claims: Option<&AccessClaims>) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.sip.admin {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:240-246` `EnsureSIPCallPermission`。
+pub fn ensure_sip_call_permission(claims: Option<&AccessClaims>) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.sip.call {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:248-259` `EnsureDestRoomPermission`：转发到另一间房
+/// （`destinationRoom`）要求 `roomAdmin` + 源房与目标房都和令牌一致。
+pub fn ensure_dest_room_permission(
+    claims: Option<&AccessClaims>,
+    source: &str,
+    destination: &str,
+) -> Result<(), TokenError> {
+    let claims = claims.ok_or(TokenError::NoGrants)?;
+    if !claims.video.room_admin
+        || claims.video.room != source
+        || claims.video.destination_room != destination
+    {
+        return Err(TokenError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// `pkg/service/auth.go:68-84` `APIKeyAuthMiddleware.ServeHTTP` 的取令牌部分：
+/// 优先 `Authorization: Bearer <jwt>`，否则退回 `?access_token=<jwt>`（上游
+/// 刻意不读 form body，为了让代理转发的请求体保持原样）。
+pub fn bearer_token(
+    auth_header: Option<&str>,
+    query_token: Option<&str>,
+) -> Result<String, TokenError> {
+    if let Some(header) = auth_header.filter(|h| !h.is_empty()) {
+        return header
+            .strip_prefix("Bearer ")
+            .map(str::to_string)
+            .filter(|t| !t.is_empty())
+            .ok_or(TokenError::MissingAuthorization);
+    }
+    query_token
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .ok_or(TokenError::MissingAuthorization)
 }
 
 /// LiveKit 访问令牌签发器。克隆代价只是密钥字节；不要写进日志。
@@ -528,8 +929,18 @@ impl LiveKitIssuer {
     /// 签发一枚入房凭证。能力面**只**由 [`grant_for`] 推导，调用方无权指定
     /// recorder/admin；越权请求在进入 LiveKit 之前就被拒。
     pub fn issue(&self, req: &AccessRequest, now_ms: u64) -> Result<IssuedAccess, TokenError> {
-        if req.room.is_empty() || req.identity.is_empty() || req.engine.is_empty() {
+        // 上游 `AccessToken::to_jwt`（`access_token.rs:452-471`）的两条前置：
+        // 密钥非空，以及 `roomJoin` 令牌必须同时有 identity 与 room。我们把
+        // identity/room/engine 的空值统一在这一处判掉。
+        if self.pair.api_key().is_empty() {
+            return Err(TokenError::EmptyApiKey);
+        }
+        if req.engine.is_empty() {
             return Err(TokenError::Malformed);
+        }
+        // grant_for 恒带 roomJoin，所以这条就是上游那条 `InvalidClaims`。
+        if req.room.is_empty() || req.identity.is_empty() {
+            return Err(TokenError::InvalidJoinClaims);
         }
         let ttl_ms = match req.ttl_ms {
             Some(0) => return Err(TokenError::InvalidLifetime),
@@ -540,13 +951,17 @@ impl LiveKitIssuer {
             return Err(TokenError::InvalidLifetime);
         }
         let mut grant = grant_for(req.scope);
-        grant.room = Some(req.room.clone());
+        grant.room = req.room.clone();
         if req.muted {
-            // 服务端静音落到能力面：客户端继续发也没人转发。
-            grant.can_publish = false;
+            // 服务端静音落到能力面：客户端继续发也没人转发。用显式 `Some(false)`
+            // 而不是留空——留空在上游语义里是"允许"。
+            grant.can_publish = Some(false);
         }
         // 结构性保证：即使 grant_for 以后被改错，这里也不会放过 admin/recorder。
         assert_sidecar_grant_allowed(&grant)?;
+        // `kind` 是上游 claims 里真正决定 IsRecorder/IsDependent 的字段，
+        // 光封 `video.recorder` 不够（见 `assert_participant_kind_allowed`）。
+        assert_participant_kind_allowed(&req.kind)?;
 
         let issued_at_secs = now_ms / 1_000;
         let expires_at_secs = issued_at_secs.saturating_add(ttl_ms / 1_000);
@@ -557,8 +972,13 @@ impl LiveKitIssuer {
             iat: issued_at_secs,
             nbf: issued_at_secs,
             exp: expires_at_secs,
-            sha256: req.key_fingerprint.clone(),
+            name: req.name.clone(),
+            kind: req.kind.clone(),
             video: grant,
+            sip: SipGrant::default(),
+            sha256: req.key_fingerprint.clone().unwrap_or_default(),
+            metadata: req.metadata.clone(),
+            attributes: req.attributes.clone(),
             wxlike: WxlikeClaims {
                 call: req.call.clone(),
                 device: req.device.clone(),
@@ -576,15 +996,29 @@ impl LiveKitIssuer {
         })
     }
 
+    /// 只序列化非缺省 claim（与上游 `Claims` 的 `skip_serializing_if` 同法）。
+    /// 一张干净的令牌只会有 `exp`/`iss`/`nbf` 三枚基础 claim，便于和 LiveKit
+    /// SDK 产出的字节对照（上游测试 `test_agent_grant_and_kind` 正是这么断言的）。
+    ///
+    /// 三段都必须是 base64url(`-`/`_`、无 padding)：**头部也一样要编码**。
+    /// 早期版本把 `{"alg":"HS256","typ":"JWT"}` 原文拼进去了，看着还是三段、
+    /// 实际不是合法 JWT —— LiveKit 侧解不开，我们的 `verify` 也解不开自己签的
+    /// 令牌（`{` 不在 base64url 字母表里）。这条由
+    /// `issued_token_is_a_real_three_part_jwt` 钉住。
     fn encode(&self, claims: &AccessClaims) -> Result<String, TokenError> {
-        let header = r#"{"alg":"HS256","typ":"JWT"}"#;
+        let header = b"{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
         let body = serde_json::to_vec(claims).map_err(|_| TokenError::Malformed)?;
-        let signing_input = format!("{header}.{}", b64url_encode(&body));
+        let signing_input = format!("{}.{}", b64url_encode(header), b64url_encode(&body));
         let sig = self.pair.sign(signing_input.as_bytes())?;
         Ok(format!("{signing_input}.{}", b64url_encode(&sig)))
     }
 
     /// 验签 + 验时效 + 验 apiKey。**不做**房间/代次判断——那是 [`Self::verify_for`]。
+    ///
+    /// 三条校验对应上游 `TokenVerifier::verify`（`access_token.rs:496-511`）：
+    /// `validate_exp`、`validate_nbf`、`set_issuer(&[apiKey])`。顺序刻意为
+    /// "算法 → 签名 → issuer → 时效"：先验签名再信任何字段，`iss` 才不会被
+    /// 未验签的 payload 影响。
     pub fn verify(&self, token: &str, now_ms: u64) -> Result<AccessClaims, TokenError> {
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() != 3 {
@@ -632,7 +1066,7 @@ impl LiveKitIssuer {
         engine: &str,
     ) -> Result<AccessClaims, TokenError> {
         let claims = self.verify(token, now_ms)?;
-        if claims.video.room.as_deref() != Some(room) {
+        if claims.video.room != room {
             return Err(TokenError::WrongRoom);
         }
         if claims.wxlike.scope != scope {
@@ -647,12 +1081,17 @@ impl LiveKitIssuer {
                 engine.to_string(),
             ));
         }
+        // ADR-25 特权面在**校验**层再拦一次：签名有效不代表权限有效。
+        assert_sidecar_grant_allowed(&claims.video)?;
+        assert_participant_kind_allowed(&claims.kind)?;
         // grant 只能等于或**低于** scope 的能力面（静音是降级），任何升级都拒。
-        // 数据通道一律不开：开了就等于给客户端留一条不经审计的旁路。
-        if claims.video.can_publish && !scope.may_publish() {
+        // 这里用取值方法而不是字段本身：LiveKit 自己签的令牌可能不写 `canPublish`，
+        // 按上游语义那要当成"允许"来比，否则两边对同一枚令牌结论相反。
+        if claims.video.can_publish() && !scope.may_publish() {
             return Err(TokenError::GrantMismatch);
         }
-        if claims.video.can_publish_data {
+        // 数据通道一律不开：开了就等于给客户端留一条不经审计的旁路。
+        if claims.video.can_publish_data() {
             return Err(TokenError::GrantMismatch);
         }
         Ok(claims)
@@ -716,15 +1155,15 @@ pub(crate) fn b64url_decode(text: &str) -> Result<Vec<u8>, TokenError> {
             acc |= v << (18 - 6 * i);
         }
         match chunk.len() {
-            2 => out.push((acc >> 12) as u8),
+            2 => out.push((acc >> 16) as u8),
             3 => {
-                out.push((acc >> 12) as u8);
-                out.push((acc >> 6) as u8);
+                out.push((acc >> 16) as u8);
+                out.push((acc >> 8) as u8);
             }
             4 => {
-                out.push((acc >> 18) as u8);
-                out.push((acc >> 12) as u8);
-                out.push((acc >> 6) as u8);
+                out.push((acc >> 16) as u8);
+                out.push((acc >> 8) as u8);
+                out.push(acc as u8);
             }
             // 1 个字符（以及 0）无法构成完整的 base64 组：不是合法 JWT 段。
             _ => return Err(TokenError::Malformed),
@@ -851,10 +1290,55 @@ mod tests {
             scope,
             generation: 4,
             engine: "livekit".into(),
-            key_fingerprint: None,
-            ttl_ms: None,
-            muted: false,
+            ..Default::default()
         }
+    }
+
+    /// 一枚真的能交给 LiveKit sidecar 的 JWT：三段、全是 base64url 字母表、
+    /// 不带 padding、头部解出来是 `{"alg":"HS256","typ":"JWT"}`、签名 32 字节。
+    /// 这一条钉的是"头部也要 base64url 编码"——原文拼头部的版本看着仍是三段，
+    /// 实际既不合法也验不过自己签的令牌。
+    #[test]
+    fn issued_token_is_a_real_three_part_jwt() {
+        let issuer = LiveKitIssuer::new(pair());
+        let issued = issuer.issue(&request(MediaScope::Call), 1_000).unwrap();
+        let parts: Vec<&str> = issued.token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        for part in &parts {
+            assert!(
+                part.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "JWT 段只允许 base64url 字母表：{part}"
+            );
+            assert!(!part.contains('='), "不带 padding：{part}");
+        }
+        let header: serde_json::Value =
+            serde_json::from_slice(&b64url_decode(parts[0]).unwrap()).unwrap();
+        assert_eq!(header["alg"], serde_json::json!("HS256"));
+        assert_eq!(header["typ"], serde_json::json!("JWT"));
+        assert_eq!(
+            b64url_decode(parts[2]).unwrap().len(),
+            32,
+            "HS256 = 32 字节"
+        );
+        // 自己签的令牌必须自己验得过。
+        assert!(issuer.verify(&issued.token, 1_000).is_ok());
+    }
+
+    #[test]
+    fn access_claims_survive_a_json_round_trip() {
+        let issuer = LiveKitIssuer::new(pair());
+        let issued = issuer.issue(&request(MediaScope::Call), 1_000).unwrap();
+        let body = b64url_decode(issued.token.split('.').nth(1).unwrap()).unwrap();
+        let text = String::from_utf8(body).unwrap();
+        let parsed: AccessClaims = serde_json::from_str(&text).unwrap();
+        let again: AccessClaims =
+            serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+        assert_eq!(
+            parsed, again,
+            "claims 必须能稳定往返（sidecar 读的是同一份）"
+        );
+        assert_eq!(parsed.video.room, "wxlike-call-c1");
     }
 
     #[test]
@@ -879,8 +1363,8 @@ mod tests {
         assert_eq!(claims.sub, "bob");
         assert_eq!(claims.wxlike.device, "phone");
         assert_eq!(claims.wxlike.call, "c1");
-        assert_eq!(claims.video.room.as_deref(), Some("wxlike-call-c1"));
-        assert!(claims.video.room_join && claims.video.can_publish);
+        assert_eq!(claims.video.room, "wxlike-call-c1");
+        assert!(claims.video.room_join && claims.video.can_publish());
         assert_eq!(
             issued.expires_at_ms,
             (1_700_000_000_000 / 1_000 + DEFAULT_ACCESS_TTL_MS / 1_000) * 1_000
@@ -920,7 +1404,7 @@ mod tests {
                 claims.video,
                 {
                     let mut g = grant_for(scope);
-                    g.room = Some("wxlike-call-c1".into());
+                    g.room = "wxlike-call-c1".into();
                     g
                 },
                 "{scope:?} grant 必须由映射表推导"
@@ -929,11 +1413,19 @@ mod tests {
             assert!(!claims.video.hidden, "{scope:?} 不得是隐藏参与者");
             assert!(!claims.video.room_admin, "{scope:?} 不得带房间管理权");
             assert!(!claims.video.ingress_admin);
-            assert_eq!(claims.video.can_publish, scope.may_publish());
+            assert!(!claims.is_recorder(), "{scope:?} 不得是 Egress 参与者");
+            assert_eq!(claims.video.can_publish(), scope.may_publish());
+            // 三态必须"写死"：我们签的令牌不允许靠读侧缺省来补能力位。
+            assert!(
+                claims.video.can_publish.is_some()
+                    && claims.video.can_subscribe.is_some()
+                    && claims.video.can_publish_data.is_some(),
+                "{scope:?} 能力位必须显式落进 JSON"
+            );
         }
-        // 观众永远不能推流。
-        assert!(!grant_for(MediaScope::LiveWatch).can_publish);
-        assert!(!grant_for(MediaScope::LiveWatch).can_publish_data);
+        // 观众永远不能推流，也永远不能开数据通道。
+        assert!(!grant_for(MediaScope::LiveWatch).can_publish());
+        assert!(!grant_for(MediaScope::LiveWatch).can_publish_data());
     }
 
     #[test]
@@ -954,8 +1446,15 @@ mod tests {
                 "livekit",
             )
             .unwrap();
-        assert!(!claims.video.can_publish, "静音成员拿到的令牌不能再推流");
-        assert!(claims.video.can_subscribe, "静音不影响下行");
+        assert_eq!(
+            claims.video.can_publish,
+            Some(false),
+            "静音必须写成显式 false，缺省在上游语义里是「允许」"
+        );
+        assert!(!claims.video.can_publish(), "静音成员拿到的令牌不能再推流");
+        assert!(claims.video.can_subscribe(), "静音不影响下行");
+        // 静音也不能把 canPublishData 打开（上游会让它跟随 canPublish）。
+        assert!(!claims.video.can_publish_data());
         // 观众再怎么"静音"也不会得到上行能力（降级不是升级）。
         let watch = AccessRequest {
             scope: MediaScope::LiveWatch,
@@ -973,7 +1472,7 @@ mod tests {
                 "livekit",
             )
             .unwrap();
-        assert!(!claims.video.can_publish);
+        assert!(!claims.video.can_publish());
     }
 
     #[test]
@@ -988,7 +1487,7 @@ mod tests {
             let body = b64url_decode(issued.token.split('.').nth(1).unwrap()).unwrap();
             serde_json::from_slice(&body).unwrap()
         };
-        claims.video.can_publish = true;
+        claims.video.can_publish = Some(true);
         let forged = issuer.encode(&claims).unwrap();
         assert_eq!(
             issuer.verify_for(
@@ -1003,8 +1502,8 @@ mod tests {
         );
 
         let mut with_data = grant_for(MediaScope::Call);
-        with_data.room = Some("wxlike-call-c1".into());
-        with_data.can_publish_data = true;
+        with_data.room = "wxlike-call-c1".into();
+        with_data.can_publish_data = Some(true);
         claims.video = with_data;
         claims.wxlike.scope = MediaScope::Call;
         let forged = issuer.encode(&claims).unwrap();
@@ -1019,6 +1518,346 @@ mod tests {
             ),
             Err(TokenError::GrantMismatch),
             "数据通道一律不开"
+        );
+    }
+
+    /// 上游语义的可执行对照：LiveKit SDK 签的令牌不会写 `canPublishData`，
+    /// 读侧必须得出"跟随 canPublish"；不写 `canPublish` 则是"允许"。
+    /// 这三条断言就是 `access_token.rs:102-118` 的移植验收单。
+    #[test]
+    fn video_grant_defaults_match_upstream_three_state_semantics() {
+        // 上游 `test_defaults_are_not_serialized`（access_token.rs:685-700）同款：
+        // 空 grant 序列化成 `{}`，反序列化回来还是 default。
+        assert_eq!(serde_json::to_string(&VideoGrant::default()).unwrap(), "{}");
+        let parsed: VideoGrant = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed, VideoGrant::default());
+        assert!(parsed.can_publish(), "缺省 canPublish = 允许");
+        assert!(parsed.can_subscribe(), "缺省 canSubscribe = 允许");
+        assert!(
+            parsed.can_publish_data(),
+            "缺省 canPublishData 跟随 canPublish"
+        );
+        assert!(
+            !parsed.can_update_own_metadata(),
+            "缺省 canUpdateOwnMetadata = 不允许"
+        );
+
+        // 显式 false 的两个方向都要能区分出来。
+        let no_publish: VideoGrant =
+            serde_json::from_str(r#"{"canPublish":false,"canPublishData":true}"#).unwrap();
+        assert!(!no_publish.can_publish());
+        assert!(no_publish.can_publish_data());
+        let only_data_off: VideoGrant =
+            serde_json::from_str(r#"{"canPublishData":false}"#).unwrap();
+        assert!(only_data_off.can_publish(), "关数据通道不等于关推流");
+        assert!(!only_data_off.can_publish_data());
+
+        // 线格式：camelCase + 只写非缺省（与上游同一份字节）。
+        let explicit = VideoGrant {
+            room_join: true,
+            room: "r".into(),
+            can_publish: Some(false),
+            can_publish_data: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&explicit).unwrap(),
+            r#"{"roomJoin":true,"room":"r","canPublish":false,"canPublishData":true}"#
+        );
+    }
+
+    /// 上游 `AccessToken::to_jwt` 的 `InvalidClaims` 分支（access_token.rs:458-464）：
+    /// 授了 `roomJoin` 却没有 identity 或 room 的令牌不许签出去。
+    #[test]
+    fn room_join_without_identity_or_room_is_not_minted() {
+        let issuer = LiveKitIssuer::new(pair());
+        let no_identity = AccessRequest {
+            identity: String::new(),
+            ..request(MediaScope::Call)
+        };
+        assert_eq!(
+            issuer.issue(&no_identity, 1_000),
+            Err(TokenError::InvalidJoinClaims)
+        );
+        let no_room = AccessRequest {
+            room: String::new(),
+            ..request(MediaScope::Call)
+        };
+        assert_eq!(
+            issuer.issue(&no_room, 1_000),
+            Err(TokenError::InvalidJoinClaims)
+        );
+    }
+
+    /// ADR-25：`kind` 也要拦。上游 `IsRecorder()` 的判据是
+    /// `kind == EGRESS || video.recorder`（participant.go:605-608），
+    /// 只封 `recorder` 会留下 `kind="egress"` 这条后门。
+    #[test]
+    fn egress_and_ingress_participant_kinds_are_not_minted() {
+        let issuer = LiveKitIssuer::new(pair());
+        for kind in ["egress", "EGRESS", "ingress", "agent", "sip", "weird"] {
+            let req = AccessRequest {
+                kind: kind.into(),
+                ..request(MediaScope::Call)
+            };
+            assert_eq!(
+                issuer.issue(&req, 1_000),
+                Err(TokenError::ParticipantKindForbidden(kind.into())),
+                "`{kind}` 种类不得签给客户端"
+            );
+        }
+        // 空串与 "standard" 是正常客户端，放行。
+        for kind in ["", "standard", "STANDARD"] {
+            let req = AccessRequest {
+                kind: kind.into(),
+                ..request(MediaScope::Call)
+            };
+            assert!(
+                issuer.issue(&req, 1_000).is_ok(),
+                "`{kind}` 应当是普通客户端"
+            );
+        }
+        // 种类解析：tag 与 proto 数值一致，字符串可反解。
+        assert_eq!(ParticipantKind::Egress.tag(), 2);
+        assert_eq!(ParticipantKind::Agent.tag(), 4);
+        assert_eq!(ParticipantKind::Bridge.tag(), 8);
+        assert_eq!(
+            ParticipantKind::from_claim("agent"),
+            Some(ParticipantKind::Agent)
+        );
+        assert_eq!(
+            ParticipantKind::from_claim(ParticipantKind::Connector.as_str_name()),
+            Some(ParticipantKind::Connector)
+        );
+        assert_eq!(ParticipantKind::from_claim("nope"), None);
+        // is_recorder / is_agent / is_dependent 三条照抄 Go 的判据。
+        let rec = AccessClaims {
+            kind: "egress".into(),
+            ..Default::default()
+        };
+        assert!(rec.is_recorder() && rec.is_dependent() && !rec.is_agent());
+        let by_flag = AccessClaims {
+            video: VideoGrant {
+                recorder: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(by_flag.is_recorder() && by_flag.is_dependent());
+        let agent = AccessClaims {
+            video: VideoGrant {
+                agent: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(agent.is_agent() && agent.is_dependent() && !agent.is_recorder());
+        let std = AccessClaims::default();
+        assert_eq!(std.participant_kind(), ParticipantKind::Standard);
+        assert!(!std.is_dependent());
+    }
+
+    /// 移植自服务端 `pkg/service/auth.go` 的 `Ensure*Permission` 判定。
+    /// 这些是"服务对服务"的授权面校验，与客户端签发闸是两条路。
+    #[test]
+    fn ported_permission_gates_follow_the_service_reference() {
+        let claims = |g: VideoGrant| AccessClaims {
+            video: g,
+            ..Default::default()
+        };
+        // claims == nil 那一支单独报 NoGrants，不折成 PermissionDenied。
+        assert_eq!(ensure_join_permission(None), Err(TokenError::NoGrants));
+        assert_eq!(
+            ensure_admin_permission(None, "r"),
+            Err(TokenError::NoGrants)
+        );
+
+        // EnsureJoinPermission：只有 roomJoin 才给房间名，且以令牌为准。
+        let joiner = claims(VideoGrant {
+            room_join: true,
+            room: "room-a".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            ensure_join_permission(Some(&joiner)),
+            Ok("room-a".to_string())
+        );
+        assert_eq!(
+            ensure_join_permission(Some(&AccessClaims::default())),
+            Err(TokenError::PermissionDenied)
+        );
+
+        // EnsureAdminPermission：roomAdmin + 房间必须正好是令牌里那间。
+        let admin = claims(VideoGrant {
+            room_admin: true,
+            room: "room-a".into(),
+            ..Default::default()
+        });
+        assert_eq!(ensure_admin_permission(Some(&admin), "room-a"), Ok(()));
+        assert_eq!(
+            ensure_admin_permission(Some(&admin), "room-b"),
+            Err(TokenError::PermissionDenied),
+            "一把 admin 钥匙不能开所有门"
+        );
+        assert_eq!(
+            ensure_admin_permission(
+                Some(&claims(VideoGrant {
+                    room: "room-a".into(),
+                    ..Default::default()
+                })),
+                "room-a"
+            ),
+            Err(TokenError::PermissionDenied)
+        );
+
+        // Create / List / Record / IngressAdmin 各查自己那一位。
+        assert_eq!(
+            ensure_create_permission(Some(&AccessClaims::default())),
+            Err(TokenError::PermissionDenied)
+        );
+        assert_eq!(
+            ensure_create_permission(Some(&claims(VideoGrant {
+                room_create: true,
+                ..Default::default()
+            }))),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_list_permission(Some(&claims(VideoGrant {
+                room_list: true,
+                ..Default::default()
+            }))),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_record_permission(Some(&claims(VideoGrant {
+                room_record: true,
+                ..Default::default()
+            }))),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_ingress_admin_permission(Some(&AccessClaims::default())),
+            Err(TokenError::PermissionDenied)
+        );
+
+        // SIP 两条读的是 `sip` 而不是 `video`。
+        let sip = AccessClaims {
+            sip: SipGrant {
+                admin: true,
+                call: false,
+            },
+            ..Default::default()
+        };
+        assert_eq!(ensure_sip_admin_permission(Some(&sip)), Ok(()));
+        assert_eq!(
+            ensure_sip_call_permission(Some(&sip)),
+            Err(TokenError::PermissionDenied)
+        );
+
+        // EnsureDestRoomPermission：roomAdmin + 源房 + 目标房三者都要对上。
+        let forwarder = claims(VideoGrant {
+            room_admin: true,
+            room: "src".into(),
+            destination_room: "dst".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            ensure_dest_room_permission(Some(&forwarder), "src", "dst"),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_dest_room_permission(Some(&forwarder), "src", "other"),
+            Err(TokenError::PermissionDenied)
+        );
+        assert_eq!(
+            ensure_dest_room_permission(Some(&forwarder), "other", "dst"),
+            Err(TokenError::PermissionDenied)
+        );
+    }
+
+    /// `APIKeyAuthMiddleware.ServeHTTP` 的取令牌部分：Bearer 优先，退回
+    /// query `access_token`；有 Authorization 头但不是 Bearer 前缀即拒，
+    /// 不再回退到 query（上游正是这么排的）。
+    #[test]
+    fn bearer_and_query_token_extraction_match_the_middleware() {
+        assert_eq!(
+            bearer_token(Some("Bearer abc.def.ghi"), None).unwrap(),
+            "abc.def.ghi"
+        );
+        assert_eq!(
+            bearer_token(Some("Basic abc"), None),
+            Err(TokenError::MissingAuthorization)
+        );
+        assert_eq!(
+            bearer_token(Some("Bearer "), None),
+            Err(TokenError::MissingAuthorization)
+        );
+        assert_eq!(
+            bearer_token(None, Some("q-token".into())).unwrap(),
+            "q-token"
+        );
+        assert_eq!(
+            bearer_token(None, None),
+            Err(TokenError::MissingAuthorization)
+        );
+        // 空 Authorization 头 = 没带 header，走 query（上游 `authHeader != ""` 分支）。
+        assert_eq!(bearer_token(Some(""), Some("q".into())).unwrap(), "q");
+    }
+
+    /// 上游 `Claims` 的"缺省即不序列化"整表：一枚只声明时效的令牌，
+    /// payload 只应有 `exp`/`iss`/`nbf` 三个键（对照上游
+    /// `test_agent_grant_and_kind` 里 `assert_eq!(keys, ["exp","iss","nbf"])`）。
+    /// 我们的 `iat`/`jti`/`wxlike` 是自研字段，所以断言时把它们剥掉。
+    #[test]
+    fn claims_omit_defaults_on_the_wire() {
+        let bare = AccessClaims {
+            iss: "APIkey".into(),
+            nbf: 1,
+            exp: 2,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&bare).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["exp", "iss", "nbf"], "{json}");
+        // 反解同一份 JSON 得到同一结构（LiveKit SDK 的令牌我们能读）。
+        assert_eq!(serde_json::from_str::<AccessClaims>(&json).unwrap(), bare);
+        // 上游字段名是 camelCase，且 `name`/`kind`/`metadata` 能读回来。
+        let full: AccessClaims = serde_json::from_str(
+            r#"{"iss":"k","exp":9,"nbf":1,"sub":"bob","name":"Bob","kind":"agent","video":{"agent":true,"canPublish":false},"metadata":"m","attributes":{"a":"1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(full.sub, "bob");
+        assert_eq!(full.name, "Bob");
+        assert_eq!(full.kind, "agent");
+        assert_eq!(full.metadata, "m");
+        assert_eq!(full.attributes.get("a").map(String::as_str), Some("1"));
+        assert!(full.video.agent && !full.video.can_publish());
+        assert!(full.is_agent());
+        assert_eq!(full.participant_kind(), ParticipantKind::Agent);
+    }
+
+    /// 上游 `AccessTokenError::InvalidKeys`：密钥为空不签。这里 `ApiKeyPair`
+    /// 构造期就拦掉了空 apiKey，签发期再拦一次是纵深防御。
+    #[test]
+    fn empty_api_key_is_refused_at_mint_time_too() {
+        let issuer = LiveKitIssuer::new(pair());
+        let req = request(MediaScope::Call);
+        assert!(issuer.issue(&req, 1_000).is_ok());
+        // grant 里带 source 白名单也不签：判定会落到 sidecar 的 protocol 库里，
+        // 房间事实分叉我们看不见。
+        let mut g = grant_for(MediaScope::Call);
+        g.can_publish_sources = vec!["microphone".into()];
+        assert_eq!(
+            assert_sidecar_grant_allowed(&g),
+            Err(TokenError::GrantMismatch)
         );
     }
 
@@ -1063,7 +1902,7 @@ mod tests {
             .contains("server-side egress recording is disabled"));
         // 普通入房 grant 走同一条闸，放行。
         let mut ok = grant_for(MediaScope::Call);
-        ok.room = Some("r".into());
+        ok.room = "r".into();
         assert_eq!(assert_sidecar_grant_allowed(&ok), Ok(()));
     }
 
@@ -1100,11 +1939,21 @@ mod tests {
             Err(TokenError::BadSignature)
         );
 
-        // 不是三段 / 非法 base64
+        // 不是三段 = 结构就不合法
         assert_eq!(issuer.verify("a.b", 1_000), Err(TokenError::Malformed));
         assert_eq!(
+            issuer.verify(
+                &format!("{}.{}.{}", parts[0], parts[1], "not!base64"),
+                1_000
+            ),
+            Err(TokenError::Malformed),
+            "签名段本身解不开 → 结构错误"
+        );
+        // payload 段不是合法 base64url：签名先失败。顺序是刻意的——
+        // **验签之前不解释 payload**，否则会拿未验签的字节去做任何判断。
+        assert_eq!(
             issuer.verify(&format!("{}.{}.{}", parts[0], "!!!!", parts[2]), 1_000),
-            Err(TokenError::Malformed)
+            Err(TokenError::BadSignature)
         );
     }
 
@@ -1211,9 +2060,21 @@ mod tests {
         };
         assert_eq!(
             LiveKitIssuer::new(pair()).issue(&empty, 1_000),
+            Err(TokenError::InvalidJoinClaims),
+            "上游 to_jwt 的 InvalidClaims 分支：roomJoin 却没有 room"
+        );
+        let no_engine = AccessRequest {
+            engine: String::new(),
+            ..request(MediaScope::Call)
+        };
+        assert_eq!(
+            LiveKitIssuer::new(pair()).issue(&no_engine, 1_000),
             Err(TokenError::Malformed)
         );
         assert!(format!("{:?}", pair()).contains("redacted"));
+        // 上游 DEFAULT_TTL 是 6 小时；我们的上限收紧到 15 分钟（ADR-25 刻意偏离）。
+        assert_eq!(LIVEKIT_DEFAULT_TTL_SECS, 3600 * 6);
+        assert!(MAX_ACCESS_TTL_MS / 1_000 < LIVEKIT_DEFAULT_TTL_SECS);
     }
 
     #[test]
@@ -1241,5 +2102,18 @@ mod tests {
         }
         assert_eq!(b64url_decode("A"), Err(TokenError::Malformed));
         assert_eq!(b64url_decode("A*"), Err(TokenError::Malformed));
+        // 非整组的尾巴必须按 16/8 位移回来，不是按 12/6：这是手写 base64
+        // 最容易错的一处（`"_w"` 是 0xFF 的 2 字符编码，`"wA"` 是 0x30 0x80…
+        // 少一位就是整枚 JWT 解不开）。
+        assert_eq!(b64url_encode(&[0xFF]), "_w");
+        assert_eq!(b64url_decode("_w").unwrap(), vec![0xFF]);
+        assert_eq!(b64url_decode("________").unwrap(), vec![0xFF; 6]);
+        assert_eq!(b64url_encode(&[0xFF; 6]), "________");
+        assert_eq!(
+            b64url_decode("Zm9vYg").unwrap(),
+            vec![b'f', b'o', b'o', b'b']
+        );
+        // 5 个字符 = 一组 + 落单的一个，非法（JWT 段不会长这样）。
+        assert_eq!(b64url_decode("Zm9vY"), Err(TokenError::Malformed));
     }
 }
