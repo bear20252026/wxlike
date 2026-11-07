@@ -1,0 +1,108 @@
+# G00 交接：identity-v1 契约补 corrupt 错误码 + #103 覆盖行翻转
+task: G02-01
+card: G02-01
+issue: https://github.com/bear20252026/wxlike/issues/103
+task_issue: https://github.com/bear20252026/wxlike/issues/103
+group_issue: https://github.com/bear20252026/wxlike/issues/83
+request_id: G02-01-audience-fail-closed-and-ledger-flip
+crate: wxlike-identity
+contract: identity-v1
+branch: feat/G02-relations-identity
+status: 待本 PR 合并后执行（合并权在所有者）
+
+contract_change:
+  file: contracts/domains/identity/contract.json
+  action: add_error_code
+  current_error_codes:
+    - bad_input
+    - unauthorized
+    - forbidden
+    - not_found
+    - conflict
+    - expired
+    - rate_limited
+  requested_addition: corrupt
+  reason: >
+    IdError::Corrupt 在本 crate 已经存在（#114 的作业行加固引入），但
+    identity-v1 的 error_codes 清单一直没有登记它。本 PR 又新增了三处会返回
+    Corrupt 的路径（会话列表受众、刷新链受众、扫码挑战状态），契约不登记的话，
+    客户端与其他组按契约生成的错误处理表会把 500 当成未知错误吞掉或误重试。
+    HTTP 侧建议映射 500，响应体不回显列名与令牌片段。
+  affected_commands:
+    - command: identity.session.list
+      trigger: sessions.audience 不是 user/admin
+    - command: identity.refresh
+      trigger: identity_refresh.audience 不是 user/admin
+    - command: identity.qr_login.poll
+      trigger: identity_qr.state 不在六状态集合内
+    - command: identity.qr_login.exchange
+      trigger: 同上
+    - command: identity.qr_login.refresh
+      trigger: 同上
+  compatibility: additive，不改任何既有 code 的语义
+
+behavior_change:
+  - name: 扫码兑换时的设备归属对齐
+    file: crates/features/identity/src/qr_login.rs
+    function: exchange / adopt_device
+    what: >
+      桌面在扫码前没有账号，bind 只记录 device_id，设备行并不存在；而会话是
+      开给扫码批准方的，session::open 又要求设备行属于该用户。过去直接开会话，
+      于是两条路都错：正常路径会得到 Forbidden("device revoked")，整张卡走不通；
+      无条件覆盖归属的话，攻击者可以先占同一个 device_id 再等受害者批准。
+    rule: 没有设备行就以批准者名义登记；device_id 已被别人登记则拒绝（NotFound）。
+    impact: >
+      这是 #115 的正常路径修复，HTTP handler 不需要改签名。注意兑换失败时挑战
+      已经被置为 consumed，属于有意的失败封闭——已归属冲突的 device_id 不该被
+      重试到成功。
+  - name: 移除设备时一并清掉绑在该会话上的 step-up 授权
+    file: crates/features/identity/src/device.rs
+    function: revoke
+    what: >
+      session::logout 会连带 DELETE identity_step_up，而 device::revoke 过去只删
+      会话不删授权，导致"移除设备"与"退出登录"两条撤销路径强度不一致：前者会
+      留下一条绑在这台设备上的敏感操作授权。现在两边一致。
+    ordering_note: 清理必须在删除 sessions 行之前，否则子查询取不到 sid，会静默失效。
+
+ledger_flip:
+  file: crates/cmd/data/entries/relations.json
+  action: set_state
+  rows:
+    - label: 登录会话与设备
+      owner: G02
+      issue: 103
+      current_state: blocked
+      requested_state: implemented
+      basis: >
+        服务端读写面已在 crates/features/identity 落地并连真实 SQLite 验证：
+        会话/设备/刷新链/step-up/限速/找回/同意/验证码/扫码共 96 个用例
+        （58 单元 + 38 集成），覆盖失败、越权、并发三类路径。
+      still_missing: 见本 PR 的"未尽事项"，HTTP 面与真机证据不在本组本 PR 范围
+    - label: 资料与偏好设置
+      owner: G02
+      issue: 114
+      current_state: blocked
+      requested_state: 保持 blocked，见 114 片段
+      basis: 本 PR 对 #114 只补齐了偏好相关的一半（关系域私有偏好），详见 114 交接
+
+schema_change: none
+  # audience 与 state 都是既有列；本 PR 只改读法（折默认值 -> 显式失败），
+  # 不新增列、不改约束，因此没有迁移。回滚兼容：把三处 decode 改回
+  # unwrap_or 即可恢复旧读法，库内数据形状未变。
+
+paths_touched:
+  - crates/features/identity/src/session.rs
+  - crates/features/identity/src/refresh.rs
+  - crates/features/identity/src/qr_login.rs
+  - crates/features/identity/src/device.rs
+  - crates/features/identity/tests/common/mod.rs
+  - crates/features/identity/tests/session_device_lifecycle.rs
+  - crates/features/identity/tests/qr_challenge_consent.rs
+  - crates/features/identity/tests/corrupt_identity_rows.rs
+  - crates/features/identity/tests/identity_concurrency.rs
+
+verification:
+  local: 已跑 cargo check -p wxlike-identity --locked 与 cargo test -p wxlike-identity --locked
+  result: 58 个单元测试 + 38 个集成测试全绿；rustfmt --edition 2021 --check 无差异
+  workspace_build: 未跑（按验证边界禁止）
+  acceptance: 以 GitHub Actions 的 job 级结果为准

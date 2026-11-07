@@ -1,0 +1,55 @@
+# G00 交接：#114 资料与偏好设置 —— 账本行为什么还不能翻
+task: G02-05
+card: G02-05
+issue: https://github.com/bear20252026/wxlike/issues/114
+task_issue: https://github.com/bear20252026/wxlike/issues/114
+group_issue: https://github.com/bear20252026/wxlike/issues/83
+request_id: G02-05-114-still-blocked-and-what-this-pr-adds
+crates: [wxlike-identity, wxlike-relations]
+contract: identity-v1 + relations-v1
+branch: feat/G02-relations-identity
+status: 信息同步为主，无需 G00 动作；账本行保持 blocked
+
+ledger_row:
+  file: crates/cmd/data/entries/relations.json
+  label: 资料与偏好设置
+  owner: G02
+  issue: 114
+  current_state: blocked
+  requested_state: blocked
+  why_still_blocked: >
+    这张卡的阻塞点从来不是本域规则没实现，而是 G02-05 片段里 root_registration
+    标着 status=requested 的三项（命令登记 / 覆盖表翻转 / 路由挂载）要由 G00 执行。
+    本 PR 不改 crates/cmd、contracts、server，也不动 crates/platform，所以翻行条件
+    没有变化。等那三项落地后，按 G02-05 片段的 basis 直接翻 implemented 即可。
+
+what_this_pr_adds_for_114:
+  - name: 好友私有偏好的越权与隔离面
+    files:
+      - crates/features/relations/tests/friend_prefs_surface.rs
+      - crates/features/relations/tests/group_rbac.rs
+    covers: >
+      备注/星标/标签是每人自己的一套，对方读不到；这三样不参与任何权限判定
+      （改备注成"老板"不会换来权限，星标不改变消息闸门）；标签整体替换是原子的，
+      校验失败不许把已存在的标签清空；非好友写偏好一律 NotFound 而不是顺手建行。
+  - name: 偏好读法里的 fail-closed 口径统一
+    files:
+      - crates/features/identity/src/session.rs
+      - crates/features/identity/src/refresh.rs
+      - crates/features/identity/tests/corrupt_identity_rows.rs
+    covers: >
+      #114 已经把 identity_job 的 kind/status 折默认值改成 Corrupt（见
+      tests/preferences_jobs.rs）。本 PR 把同一口径补到剩下三处会"假装正常"的
+      读法上：会话受众、刷新链受众、扫码挑战状态——它们全都直接影响
+      "这条凭据属于哪一面、能不能进管理面"，与 G02-05 强调的设置面重启生效
+      是同一条底线。
+
+not_done_here:
+  - 服务端 profile.update 的写面（在 crates/platform/src/users.rs，本 PR 不许动）
+  - 导出产物只含本人可见数据的分域清理执行（跨 G03/G04/G05，属集成验收）
+  - 下载链接有效期的 HTTP 证据与真机证据
+
+verification:
+  local: 已跑 cargo test -p wxlike-relations --locked 与 cargo test -p wxlike-identity --locked
+  result: relations 62 全绿（含 37 个本 PR 新增），identity 96 全绿（含 32 个本 PR 新增）
+  workspace_build: 未跑（按验证边界禁止）

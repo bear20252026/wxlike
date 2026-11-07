@@ -261,6 +261,39 @@ CREATE TABLE IF NOT EXISTS identity_reset_token (
     expires_at INTEGER NOT NULL,
     used_at    INTEGER
 );
+
+-- G02 新增（借 Tinode auth/token/auth_token.go 的 tokenLayout）：
+-- 一次会话的"令牌载荷"侧车：认证级别、特性位、序列号。
+-- 之所以单独一张表而不是往平台的 sessions 上加列：sessions 由平台建，
+-- 加列等于改别人的合同；这里的三列全部由本 crate 写、本 crate 读。
+CREATE TABLE IF NOT EXISTS identity_session_token (
+    sid        TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    auth_level TEXT NOT NULL DEFAULT 'auth',
+    features   TEXT NOT NULL DEFAULT '',
+    serial     INTEGER NOT NULL DEFAULT 0,
+    issued_at  INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+
+-- 全局令牌序列号（上游 config 里的 serial_num：一次性作废所有已签发令牌）。
+-- 单行表，id 恒为 1，避免"取最新一行"这种靠 ORDER BY 兜底的读法。
+CREATE TABLE IF NOT EXISTS identity_token_serial (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    serial     INTEGER NOT NULL,
+    rotated_at INTEGER NOT NULL
+);
+
+-- G02 新增（借 Tinode auth/code 与 validate/email 的重试语义）：
+-- 与 identity_throttle 的固定窗口不同，这一张是**跟着凭据本身走**的计数器：
+-- 窗口过期不重置，只有验证成功或重新下发才清零。
+CREATE TABLE IF NOT EXISTS identity_retry (
+    bucket     TEXT PRIMARY KEY,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
 "#;
 
 /// 访问会话表的**规范形状**（平台 `sessions` + G02 新增 `audience` 列）。
