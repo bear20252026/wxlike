@@ -172,6 +172,52 @@ fn contract_v1_derived_names_are_frozen() {
     );
 }
 
+/// 类型闸门的一条 catalog 侧不变量：**钱与管理动作只能由人本人做**。
+///
+/// `ScopeClass::Payment` 与 `Admin` 这两类在 catalog 里至今一条命令都没有
+/// （G06 的钱包、G13/G14 的后台都还挂在覆盖表的 `blocked` 上），所以这条
+/// 当下**必然空跑**——它守的不是现在，是"以后有人加 `wallet.transfer` 或
+/// `admin.ban` 时忘了标第三级"。空跑不等于假：能咬的部分由
+/// `crates/cmd/tests/human_only_channel.rs` 用合成命令实测，那边断言的是
+/// 闸门本身，不是这条数字。
+#[test]
+fn payment_and_admin_commands_are_human_only() {
+    for spec in catalog::CATALOG {
+        if matches!(
+            spec.scope,
+            catalog::ScopeClass::Payment | catalog::ScopeClass::Admin
+        ) {
+            assert_eq!(
+                spec.confirmation,
+                catalog::Confirmation::HumanOnly,
+                "{} 是 {} 类命令：必须标 HumanOnly，不能让无人值守通道凭令牌执行",
+                spec.id,
+                spec.scope.as_str()
+            );
+        }
+    }
+}
+
+/// `HumanOnly` 不许用在只读命令上。
+///
+/// 只读是 agent 的眼睛：把它锁起来既没有安全收益（读不到就退化成"让人截图
+/// 给它看"，反而更不可控），又立刻打掉可诊断性——`wxlike policy` 的自查表
+/// 会变成一整屏"通道拒绝"，人就再也不看这张表了。真需要限制读取时，
+/// 走 scope，不走确认等级。
+#[test]
+fn human_only_is_never_a_read_command() {
+    for spec in catalog::CATALOG {
+        if spec.confirmation.is_human_only() {
+            assert_ne!(
+                spec.capability,
+                catalog::Capability::Read,
+                "{} 是只读命令：HumanOnly 该用在写与破坏性动作上",
+                spec.id
+            );
+        }
+    }
+}
+
 #[test]
 fn contract_v1_coverage_table_is_frozen() {
     let table = wxlike_cmd::domains::table();
