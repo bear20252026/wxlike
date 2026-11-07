@@ -28,8 +28,14 @@ pub enum MiniError {
     MissingResource(String),
     #[error("resource {0:?} is present but not declared")]
     ExtraResource(String),
+    #[error("resource {0:?} is reserved for installer metadata")]
+    ReservedResource(String),
     #[error("resource {0:?} digest mismatch")]
     DigestMismatch(String),
+    #[error("resource {0:?} unpacks to {1} bytes, over the {2} byte per-file limit")]
+    ResourceTooLarge(String, usize, usize),
+    #[error("package unpacks to {0} bytes, over the {1} byte package limit")]
+    PackageTooLarge(usize, usize),
     #[error("package {0:?} version {1} is below the installed watermark {2}")]
     Downgrade(String, String, String),
     #[error("package {0:?} version {1} conflicts with the installed digest")]

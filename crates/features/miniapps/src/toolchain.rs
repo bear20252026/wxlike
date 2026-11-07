@@ -22,7 +22,8 @@ use crate::packages::manifest::{digest_hex, seal_dir};
 use crate::packages::trust::now_seconds;
 use crate::packages::{
     decode_public_key, key_id_for, open, pack_unsigned, sign_blob, verify_detached, Channel,
-    Manifest, MiniError, PackageSignature, Result, SignedCert, TrustStore, MANIFEST_FILE,
+    InspectedPackage, Manifest, MiniError, PackageSignature, Result, SignedCert, TrustStore,
+    MANIFEST_FILE,
 };
 
 pub const DEFAULT_HOST_VERSION: &str = "0.1.0";
@@ -221,7 +222,7 @@ pub fn inspect(
     Ok(report)
 }
 
-fn report_for(opened: &crate::packages::VerifiedPackage) -> InspectReport {
+fn report_for(opened: &InspectedPackage) -> InspectReport {
     let resources = opened
         .manifest
         .resources

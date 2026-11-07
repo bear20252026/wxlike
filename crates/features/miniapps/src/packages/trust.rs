@@ -97,6 +97,19 @@ impl TrustStore {
         self.revoked_keys.contains(key_id) || self.revoked_publishers.contains(publisher)
     }
 
+    /// Is this exact certificate enrolled in the store?
+    ///
+    /// A [`VerifiedPackage`](super::VerifiedPackage) carries the certificate
+    /// that signed it; the installer uses this to refuse a proof that was
+    /// produced against somebody else's trust store (same `key_id`, different
+    /// public key, or simply a store that never enrolled it).
+    pub fn is_enrolled(&self, cert: &PublisherCert) -> bool {
+        matches!(
+            self.certs.get(&cert.key_id),
+            Some(enrolled) if enrolled == cert
+        )
+    }
+
     /// Verify the signature over the exact manifest bytes and return the
     /// certificate that signed it.
     pub fn verify_manifest(
