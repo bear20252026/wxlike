@@ -7,9 +7,9 @@
 //! 我们不要连这条一起抄。
 //!
 //! 所以这一层的规矩只有一条，而且是可测的：
-//! **`why_not` 不许自己判断任何事**。它按执行路径同样的顺序调用同样的三个
-//! 原语（[`auth::guard_channel`] → [`auth::guard_provenance`] →
-//! [`AuthGate::check_scope`] → [`policy::Policy::authorize`]），把它们的
+//! **`why_not` 不许自己判断任何事**。它按执行路径同样的顺序调用同样的四道
+//! 原语（[`crate::auth::guard_channel`] → [`crate::auth::guard_provenance`] →
+//! [`AuthGate::check_scope`] → [`crate::policy::Policy::authorize`]），把它们的
 //! 错误翻译成 `{code, message}`。执行侧改了判定，这里自动跟着变；
 //! 反过来如果有人在这里加了一条执行侧没有的规则，
 //! `crates/cmd/tests/availability_no_drift.rs` 会当场红。
