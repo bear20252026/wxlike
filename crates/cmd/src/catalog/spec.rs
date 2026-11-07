@@ -85,9 +85,20 @@ impl fmt::Display for ScopeClass {
     }
 }
 
-/// 是否需要人工确认（prepare → confirmation_token → execute）。
+/// 是否需要人工确认，以及**谁能确认**。
 ///
 /// 等级写进 catalog 而不是散在 handler 里：一句话能回答"哪些动作要先问人"。
+///
+/// 三级的真实含义（别再当成两级读）：
+///
+/// * `None`——直接执行；
+/// * `Required`——先出计划、再带一次性令牌执行。**注意这条在无人值守通道上
+///   并不等于"问过人了"**：`crates/mcp/src/server.rs` 的 `confirm_step` 由
+///   agent 自己调、自己拿令牌、自己兑换，它是"把参数摘要再核一遍"的断点，
+///   不是人的批准。CLI 那一侧才是人（`--confirm` 是人敲的，
+///   `crates/cli/src/args.rs:75`）；
+/// * `HumanOnly`——自动化通道**一律拒绝执行**，连令牌都不签发。人对人的
+///   确认做不了的事，agent 也不许替人做。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Confirmation {
@@ -95,11 +106,34 @@ pub enum Confirmation {
     None,
     /// 必须带一次性确认令牌；参数一改就要重新确认。
     Required,
+    /// 只有人守着的通道能执行（见 [`crate::auth::Channel`]）：动钱、动凭证、
+    /// 以及任何"出了事人不在场就没人能收场"的动作。
+    HumanOnly,
 }
 
 impl Confirmation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Confirmation::None => "none",
+            Confirmation::Required => "required",
+            Confirmation::HumanOnly => "human_only",
+        }
+    }
+
+    /// 需要"先给计划、再凭令牌执行"这一档（`HumanOnly` 不算：它不给令牌）。
     pub fn is_required(self) -> bool {
         matches!(self, Confirmation::Required)
+    }
+
+    /// 自动化通道不得执行。
+    pub fn is_human_only(self) -> bool {
+        matches!(self, Confirmation::HumanOnly)
+    }
+
+    /// 执行前要不要先把计划摊给人看。**`Required` 与 `HumanOnly` 都要**——
+    /// 区别只在谁能回答这个计划：前者 agent 也能自答，后者只有人。
+    pub fn needs_plan_step(self) -> bool {
+        !matches!(self, Confirmation::None)
     }
 }
 

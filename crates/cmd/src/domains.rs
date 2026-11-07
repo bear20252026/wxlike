@@ -306,11 +306,7 @@ fn fill_command(out: &mut Value, id: &str) {
     out["capability"] = json!(spec.capability.as_str());
     out["scope"] = json!(spec.scope.as_str());
     out["platforms"] = json!(spec.platforms.names());
-    out["confirmation"] = json!(if spec.confirmation.is_required() {
-        "required"
-    } else {
-        "none"
-    });
+    out["confirmation"] = json!(spec.confirmation.as_str());
 }
 
 /// 给人看的一张表：域 → 条目 → 状态。
