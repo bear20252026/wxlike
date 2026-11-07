@@ -13,6 +13,13 @@ ui/src/vendor/tweb/slicedArray.ts text eol=lf
 ui/src/vendor/tweb/listenerSetter.ts text eol=lf
 crates/rtc/src/sfu.rs text eol=lf
 
+# 同上：这三份是 UP-OPENIM 的 adapted 登记对象（third_party/reviews/registry.json
+# 里记了 local_sha256）。Windows 上 core.autocrlf=true 的工作区会把 .rs 检出成
+# CRLF，同一个文件于是算出两个摘要——本地绿、CI 红。钉成 LF 才谈得上"可复现"。
+crates/search/src/query.rs text eol=lf
+crates/search/src/unified.rs text eol=lf
+crates/search/src/trends.rs text eol=lf
+
 # 部署脚本/清单（docker compose、verify/smoke 脚本等）同样按 LF 检出，
 # 容器内 bash 与 Linux 值班环境不认 CRLF。
 deploy/** text eol=lf

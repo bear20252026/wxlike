@@ -1,0 +1,109 @@
+task: G05-authz-matrix-additions
+request_id: G05-AUTHZ-ADDED-IN-PR-365
+group_issue: https://github.com/bear20252026/wxlike/issues/135
+issue: https://github.com/bear20252026/wxlike/pull/365
+card: G05-05
+title: 本 PR 已直接写入授权矩阵的 3 行新端点，请 G00 复核或摘出
+group: G05
+branch: feat/G05-content-search
+file: security/threat-model/authz-matrix.json
+
+nature: |
+  security/threat-model/authz-matrix.json 是所有者指定的串行热点。
+  PR #365 的 72c2474 一笔里已经直接往该文件追加了 3 条端点登记（+36 行），
+  越界事实由所有者点出。本文件的立场是：改动**保留在分支上不动**——
+  既不自行 revert，也不自行合并——把判断依据完整交出来，由 G00 二选一：
+
+    A. 复核后保留（并按下面 notes 里的两处口径修正改掉 scope 值）；
+    B. 把这 36 行从 #365 摘出，由 G00 自己在矩阵的单写者通道里重新登记。
+
+  摘出不会让 #365 变红：authz 门禁读的正是这 3 行，摘出的同时需要 G00 用
+  自己的通道补回，否则 `security (authz + abuse + decode)` 会因
+  "路由未登记"失败。这一条是取舍的真实代价，请一并计入。
+
+endpoints:
+  - path: "GET /api/search/scopes"
+    handler: crates/platform/src/content_index.rs::scopes
+    row_as_registered:
+      auth: user
+      object: endpoint
+      scope: self
+      tests: [unauth_sweep_rejects_every_private_route]
+    upstream_basis: |
+      OpenIM Server @ 9502a1a1 的 internal/rpc/msg/sync_msg.go:152 SearchMessage
+      与 internal/rpc/msg/statistics.go:28/64 的 GetActiveUser / GetActiveGroup，
+      三个跨语料检索/聚合入口一律先 authverify.CheckAdmin(ctx)。
+      注意借的是"检索自省面不向匿名开放"这个判断方向，不是它的 admin 等级：
+      我们的 /api/search/* 只覆盖**公开内容域**，正文可见性另由授权表裁决，
+      跨全库消息检索在我们这里不存在。
+    authz_call: |
+      auth = user 是对的，且是**故意**的：handler 返回的是编译期常量
+      KINDS / MAX_SEARCH_PAGE / MAX_QUERY_CHARS / TREND_WINDOW_MS，
+      不含任何 per-viewer 数据。仍然挂 Authed，是为了不在匿名面上把
+      "可检索域清单 + 服务端调优参数"当免费广告——这四个值够攻击者把
+      扇出预算算准。同族的 /api/search/trends 已是 user，保持一致。
+      scope = self 在这里语义偏窄也偏宽：响应与 viewer 无关，
+      若矩阵想区分"返回常量"与"返回本人数据"，这一行更适合 object=endpoint
+      且不带 scope 断言；这一改请 G00 定，我不再动矩阵。
+
+  - path: "GET /api/moments/album"
+    handler: crates/platform/src/moments.rs::album
+    row_as_registered:
+      auth: user
+      object: endpoint
+      scope: self
+      tests: [unauth_sweep_rejects_every_private_route]
+    upstream_basis: |
+      box-im @ 58be3e1f 的 GroupMessageServiceImpl.loadHistoryMessage 先做
+      "您已不在群聊里面"的成员资格检查，再按 max(now-保留期, 入群时间) 收窗口——
+      即"相册/历史这类按他人 id 读的面，闸在成员关系而不是在请求参数"。
+      OpenIM 同构：可见性裁决全在服务端条件里，客户端传什么 id 都不算数。
+    authz_call: |
+      这一行我登记得**不准确**，需要 G00 修正：query 里带 user_id（owner 可以是
+      任何人），真正的裁决在 moment_album 的 SQL 内——author==viewer 或
+      friends 命中、private 仅作者、groups 还要 friend_group 命中、
+      双向 blocks 排除。所以它不是 scope=self，而是"按目标用户对象的
+      关系可见性读"。建议 object: user，scope 取矩阵里已有的好友/群语义档
+      （现网有 3 行 scope: member 的先例），而不是 self/owner。
+      我不自行改的原因：这是串行热点，二次编辑只会加重冲突面。
+
+  - path: "POST /api/videos/{id}/review"
+    handler: crates/platform/src/video_feed.rs::review
+    row_as_registered:
+      auth: admin
+      object: object
+      scope: owner
+      tests: [unauth_sweep_rejects_every_private_route]
+    upstream_basis: |
+      OpenIM 把"跨内容管理动作"整类放在 admin 门后（CheckAdmin），
+      且 pinned commit 9502a1a1 本身就是一笔 "enforce access checks on RPC
+      endpoints" 的安全修复——管理面漏鉴权在上游是被当真问题修过的。
+      我们的等价物是 AdminAuth 提取器（auth.rs:140，校验 admin_token），
+      review_video 再对**非 pending 行一律 404**（与"不存在"同形），
+      所以复核端点不构成存在性探测面。
+    authz_call: |
+      auth = admin 正确（handler 签名就是 AdminAuth）。但 scope = owner
+      与 admin 自相矛盾：复核者不是内容所有者。矩阵里已有 12 行 scope: admin
+      的先例，这一行应改成 scope: admin；object 保持 object 即可
+      （被裁决的是那条 video 行，不是调用者自己）。同样交 G00 落笔。
+
+coverage_note: |
+  三行的 tests 数组都只写了 unauth_sweep_rejects_every_private_route，
+  这是"未登录一律 401"的扫描用例，够用但不完整。真正的正例在
+  crates/platform/tests/g05_content.rs::scopes_album_and_admin_review_endpoints：
+  它对三个端点各断了一次 401，并对 album 断到"public 可见 / friends 可见 /
+  private 不可见 / groups 按 friend_group 命中"这一层，还断到
+  "拉黑者与不存在的用户响应逐字段一致"（防枚举）；对 review 断到
+  无 token 403、错 token 403、publish 与 reject 两条动作、
+  以及"已发布的行再审与不存在的 id 同形 404"。建议 G00 把该用例名补进 tests 数组。
+
+related:
+  - integration-requests/G05/G05-05.yaml
+  - third_party/reviews/registry.json
+  - third_party/reviews/patches/UP-OPENIM-query.md
+  - third_party/reviews/patches/UP-OPENIM-unified.md
+  - third_party/reviews/patches/UP-OPENIM-trends.md
+
+blocking: |
+  G05 侧不阻塞：#365 的编译/fmt/doc/clippy 已修，登记已过 provenance。
+  阻塞在 G00 的一次落笔——要么按上面三处口径修正后保留，要么摘出并补登。

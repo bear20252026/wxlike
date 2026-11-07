@@ -2,8 +2,10 @@
 //! `/api/search/scopes`）。
 //!
 //! 三条不变式（与 `crates/search/src/unified.rs` 的编排层同一套约定，
-//! 见 integration-requests/G05/135-search-core-dep.yaml —— 那条依赖边由 G00
-//! 挂上后，这里的多域归并会直接换成共用引擎，语义不变）：
+//! 见 integration-requests/G05/authz-matrix-additions.yaml 与
+//! `crates/search/` 那份共用内核 —— `platform -> wxlike-search` 这条依赖边
+//! 会动根 Cargo.lock，属串行热点，等 G00 挂上后这里的多域归并可直接换成
+//! 共用引擎，语义不变）：
 //!
 //! 1. **先授权、后取正文。** 候选页只查 `doc_id/kind/created_at`，逐条
 //!    回权威表判定可见性，通过后才读 `title/body` 生成 snippet。索引里的

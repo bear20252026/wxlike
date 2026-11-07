@@ -74,6 +74,18 @@
       "license_evidence": "https://github.com/bluexsx/box-im/blob/58be3e1fc48fee2f6655576f9aefc80a491dc1e5/LICENSE",
       "retrieved_at": "2026-10-24",
       "notes": "跨节点路由设计（队列名/hub 表/业务与推送分离）；Rust 独立实现，无源码复制。"
+    },
+    {
+      "id": "UP-OPENIM",
+      "repo": "openimsdk/open-im-server",
+      "url": "https://github.com/openimsdk/open-im-server",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/openimsdk/open-im-server/blob/9502a1a15fe63f6342fb1e2d8068346a82f278d8/LICENSE",
+      "retrieved_at": "2026-11-06",
+      "notes": "Go，Apache-2.0。只借检索/聚合的查询语义（半开时间窗、文档级+元素级双闸、先排名后切片），存储层是 Mongo DSL，落到 Rust 全部重写；offset 分页与扫到即止的 total 明确不移植。交叉核对 UP-BOXIM（MIT）同一 commit。"
     }
   ],
   "files": [
@@ -167,6 +179,39 @@
       "owner": "G17",
       "issue": "#193",
       "expires": "2099-12-31"
+    },
+    {
+      "path": "crates/search/src/query.rs",
+      "upstream": "UP-OPENIM",
+      "upstream_path": "pkg/common/storage/database/mgo/msg.go",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "28770e2b5caf645f162a80341cd8e1e981742519e5aea67312b76c17092f0ea3",
+      "patchlog": "third_party/reviews/patches/UP-OPENIM-query.md",
+      "used_by": "crates/search/src/unified.rs（TimeRange 双闸）、crates/search/src/trends.rs（窗口求交与日桶键）；G02 消息检索与 G05 内容检索共用同一条校验闸"
+    },
+    {
+      "path": "crates/search/src/unified.rs",
+      "upstream": "UP-OPENIM",
+      "upstream_path": "pkg/common/storage/database/mgo/msg.go",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "128f6a8dd64d1dd9548b2094f3a7a4e682ccd5fd8175ce6af3e99519a49a6e13",
+      "patchlog": "third_party/reviews/patches/UP-OPENIM-unified.md",
+      "used_by": "SearchService::search_in / Provider::candidates（G02 消息 provider 与 G05 内容 provider 的统一编排入口）"
+    },
+    {
+      "path": "crates/search/src/trends.rs",
+      "upstream": "UP-OPENIM",
+      "upstream_path": "pkg/common/storage/database/mgo/msg.go",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "153476a26ad95ce28d11f6884bd67ccb34f1405936e887fca2cce2851099580d",
+      "patchlog": "third_party/reviews/patches/UP-OPENIM-trends.md",
+      "used_by": "rank_trends / rank_trends_paged（热搜榜；平台侧 /api/search/trends 的算法基线。platform -> wxlike-search 这条依赖边会动根 Cargo.lock，属串行热点，见 integration-requests/G05/authz-matrix-additions.yaml 的 related 段，等 G00 挂）"
     }
   ]
 }
