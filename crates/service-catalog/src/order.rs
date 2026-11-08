@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,7 +17,8 @@ use crate::provider::{
     ProviderOrderRequest, ProviderOrderState, ProviderReceipt, ProviderResult, QuoteContext,
     ServiceProvider,
 };
-use crate::quote::{Quote, QuoteBook};
+use crate::quote::Quote;
+use crate::store::{MemoryStore, OrderStore};
 use crate::support::SupportPort;
 
 pub const DEFAULT_QUOTE_TTL_MS: i64 = 5 * 60 * 1000;
@@ -125,11 +125,6 @@ impl Default for OrderConfig {
     }
 }
 
-enum IdemEntry {
-    InFlight,
-    Done { hash: String, order_id: String },
-}
-
 pub struct OrderService {
     catalog: Arc<Catalog>,
     providers: Vec<Arc<dyn ServiceProvider>>,
@@ -138,9 +133,7 @@ pub struct OrderService {
     clock: Arc<dyn Clock>,
     support: Option<Arc<dyn SupportPort>>,
     config: OrderConfig,
-    quotes: QuoteBook,
-    orders: Mutex<HashMap<String, Order>>,
-    idem: Mutex<HashMap<String, IdemEntry>>,
+    store: Arc<dyn OrderStore>,
 }
 
 impl OrderService {
@@ -151,6 +144,26 @@ impl OrderService {
         auth: Arc<dyn Authenticator>,
         clock: Arc<dyn Clock>,
     ) -> Self {
+        Self::with_store(
+            catalog,
+            providers,
+            payments,
+            auth,
+            clock,
+            Arc::new(MemoryStore::default()),
+        )
+    }
+
+    /// 真实集成验收必须传入落盘仓储（[`crate::store::FileStore`]）；
+    /// [`MemoryStore`] 只允许出现在故障注入与并行开发路径里。
+    pub fn with_store(
+        catalog: Arc<Catalog>,
+        providers: Vec<Arc<dyn ServiceProvider>>,
+        payments: Arc<dyn PaymentPort>,
+        auth: Arc<dyn Authenticator>,
+        clock: Arc<dyn Clock>,
+        store: Arc<dyn OrderStore>,
+    ) -> Self {
         Self {
             catalog,
             providers,
@@ -159,9 +172,7 @@ impl OrderService {
             clock,
             support: None,
             config: OrderConfig::default(),
-            quotes: QuoteBook::new(),
-            orders: Mutex::new(HashMap::new()),
-            idem: Mutex::new(HashMap::new()),
+            store,
         }
     }
 
@@ -198,13 +209,13 @@ impl OrderService {
             .await
             .map_err(|err| map_provider_error(provider.id(), err))?;
         let quote = self.build_quote(actor, provider.id(), card, quantity, params, availability)?;
-        self.quotes.insert(quote.clone())?;
+        self.store.insert_quote(&quote).await?;
         Ok(quote)
     }
 
-    pub fn get_quote(&self, session: &str, quote_id: &str) -> Result<Quote> {
+    pub async fn get_quote(&self, session: &str, quote_id: &str) -> Result<Quote> {
         let actor = self.actor(session)?;
-        let quote = self.quotes.get(quote_id)?;
+        let quote = self.store.get_quote(quote_id).await?;
         if quote.actor != actor {
             return Err(ServiceError::new(Code::NotFound, "quote not found"));
         }
@@ -214,20 +225,26 @@ impl OrderService {
     pub async fn create(&self, session: &str, request: CreateOrderRequest) -> Result<Order> {
         let actor = self.actor(session)?;
         self.validate_create_input(&request)?;
-        let (quote, card) = self.validated_quote(&actor, &request)?;
+        let (quote, card) = self.validated_quote(&actor, &request).await?;
         let key = format!("{actor}:{}", request.idempotency_key);
         let hash = request_hash(&quote, request.confirmed_amount_minor);
-        if let Some(existing) = self.reserve_idem(&key, &hash)? {
-            return self.order_by_id(&existing);
+        // reserve 返回 Conflict 表示别人（或历史请求）持有该键：既不得执行，
+        // 也不得在后续错误分支里清掉别人的定稿记录。
+        let reserved = match self.store.reserve_idem(&key, &hash).await {
+            Ok(existing) => existing,
+            Err(err) => return Err(err),
+        };
+        if let Some(existing) = reserved {
+            return self.order_by_id(&existing).await;
         }
         let outcome = self.place(&actor, &quote, &card, &key).await;
         match &outcome {
-            Ok(order) => self.commit_idem(&key, &hash, &order.order_id)?,
+            Ok(order) => self.store.commit_idem(&key, &hash, &order.order_id).await?,
             Err(_) => {
-                if let Some(order) = self.order_for_quote(&actor, &quote.quote_id) {
-                    self.commit_idem(&key, &hash, &order.order_id)?;
+                if let Some(order) = self.order_for_quote(&actor, &quote.quote_id).await? {
+                    self.store.commit_idem(&key, &hash, &order.order_id).await?;
                 } else {
-                    self.abort_idem(&key);
+                    self.store.abort_idem(&key).await?;
                 }
             }
         }
@@ -236,7 +253,7 @@ impl OrderService {
 
     pub async fn fulfill(&self, session: &str, order_id: &str) -> Result<Order> {
         let actor = self.actor(session)?;
-        let mut order = self.owned_order(&actor, order_id)?;
+        let mut order = self.owned_order(&actor, order_id).await?;
         if order.state == OrderState::Fulfilled {
             return Ok(order);
         }
@@ -246,13 +263,13 @@ impl OrderService {
         let provider = self.provider_by_id(&order.provider)?;
         let now = self.clock.now_ms();
         order.transition(OrderState::Fulfilling, now);
-        self.store(order.clone())?;
+        self.persist(&order).await?;
         let key = format!("{order_id}:fulfill");
         match provider.fulfill(&order.provider_order_id, &key).await {
             Ok(receipt) if receipt.validate() => {
                 order.receipt = Some(receipt);
                 order.transition(OrderState::Fulfilled, now);
-                self.store(order.clone())?;
+                self.persist(&order).await?;
                 Ok(order)
             }
             Ok(_) => Err(ServiceError::new(
@@ -268,7 +285,7 @@ impl OrderService {
 
     pub async fn cancel(&self, session: &str, order_id: &str, reason: &str) -> Result<Order> {
         let actor = self.actor(session)?;
-        let mut order = self.owned_order(&actor, order_id)?;
+        let mut order = self.owned_order(&actor, order_id).await?;
         match order.state {
             OrderState::Cancelled | OrderState::Refunded => return Ok(order),
             OrderState::Fulfilled => {
@@ -287,7 +304,7 @@ impl OrderService {
         }
         let provider = self.provider_by_id(&order.provider)?;
         order.transition(OrderState::Cancelling, self.clock.now_ms());
-        self.store(order.clone())?;
+        self.persist(&order).await?;
         let key = format!("{order_id}:cancel");
         match provider.cancel(&order.provider_order_id, &key).await {
             Ok(cancellation) if cancellation.accepted => {
@@ -308,7 +325,7 @@ impl OrderService {
 
     pub async fn refund(&self, session: &str, order_id: &str, reason: &str) -> Result<Order> {
         let actor = self.actor(session)?;
-        let mut order = self.owned_order(&actor, order_id)?;
+        let mut order = self.owned_order(&actor, order_id).await?;
         if order.state == OrderState::Refunded {
             return Ok(order);
         }
@@ -326,7 +343,7 @@ impl OrderService {
             )
             .await;
         order.transition(OrderState::Refunding, self.clock.now_ms());
-        self.store(order.clone())?;
+        self.persist(&order).await?;
         let request = RefundRequest {
             actor: actor.to_owned(),
             order_id: order_id.to_owned(),
@@ -339,7 +356,7 @@ impl OrderService {
             Ok(receipt) => {
                 order.refund = Some(receipt);
                 order.transition(OrderState::Refunded, self.clock.now_ms());
-                self.store(order.clone())?;
+                self.persist(&order).await?;
                 Ok(order)
             }
             Err(err) => {
@@ -351,7 +368,7 @@ impl OrderService {
 
     pub async fn query(&self, session: &str, order_id: &str) -> Result<Order> {
         let actor = self.actor(session)?;
-        let mut order = self.owned_order(&actor, order_id)?;
+        let mut order = self.owned_order(&actor, order_id).await?;
         if matches!(
             order.state,
             OrderState::Cancelled | OrderState::Refunded | OrderState::Failed
@@ -365,17 +382,17 @@ impl OrderService {
             .map_err(|err| map_provider_error(provider.id(), err))?;
         self.apply_provider_status(&mut order, status.state, status.receipt, &actor)
             .await?;
-        self.store(order.clone())?;
+        self.persist(&order).await?;
         Ok(order)
     }
 
-    pub fn order(&self, session: &str, order_id: &str) -> Result<Order> {
+    pub async fn order(&self, session: &str, order_id: &str) -> Result<Order> {
         let actor = self.actor(session)?;
-        self.owned_order(&actor, order_id)
+        self.owned_order(&actor, order_id).await
     }
 
-    pub fn purge_expired_quotes(&self) -> usize {
-        self.quotes.purge_expired(self.clock.now_ms())
+    pub async fn purge_expired_quotes(&self) -> usize {
+        self.store.purge_expired(self.clock.now_ms()).await
     }
 
     fn actor(&self, session: &str) -> Result<String> {
@@ -395,12 +412,12 @@ impl OrderService {
         Ok(())
     }
 
-    fn validated_quote(
+    async fn validated_quote(
         &self,
         actor: &str,
         request: &CreateOrderRequest,
     ) -> Result<(Quote, ServiceCard)> {
-        let quote = self.quotes.get(&request.quote_id)?;
+        let quote = self.store.get_quote(&request.quote_id).await?;
         if quote.actor != actor {
             return Err(ServiceError::new(Code::NotFound, "quote not found"));
         }
@@ -581,7 +598,7 @@ impl OrderService {
             order.support_ticket = self
                 .ticket(actor, &order.order_id, "payment_declined")
                 .await;
-            self.store(order.clone())?;
+            self.persist(order).await?;
             return Err(ServiceError::new(Code::PaymentDeclined, "payment declined"));
         }
         if provider_state == ProviderOrderState::Fulfilled {
@@ -598,7 +615,7 @@ impl OrderService {
                 .ticket(actor, &order.order_id, "provider_pending")
                 .await;
         }
-        self.store(order.clone())?;
+        self.persist(order).await?;
         Ok(order.clone())
     }
 
@@ -612,11 +629,11 @@ impl OrderService {
         let refund_due = cancellation.refund_due_minor.min(order.amount_minor);
         let Some(payment_id) = order.payment_id.clone().filter(|_| refund_due > 0) else {
             order.transition(OrderState::Cancelled, self.clock.now_ms());
-            self.store(order.clone())?;
+            self.persist(&order).await?;
             return Ok(order);
         };
         order.transition(OrderState::Refunding, self.clock.now_ms());
-        self.store(order.clone())?;
+        self.persist(&order).await?;
         let request = RefundRequest {
             actor: actor.to_owned(),
             order_id: order.order_id.clone(),
@@ -629,7 +646,7 @@ impl OrderService {
             Ok(receipt) => {
                 order.refund = Some(receipt);
                 order.transition(OrderState::Refunded, self.clock.now_ms());
-                self.store(order.clone())?;
+                self.persist(&order).await?;
                 Ok(order)
             }
             Err(err) => {
@@ -650,7 +667,7 @@ impl OrderService {
     ) -> Result<Order> {
         order.transition(OrderState::PendingReconciliation, self.clock.now_ms());
         order.support_ticket = self.ticket(actor, &order.order_id, reason).await;
-        self.store(order)?;
+        self.persist(&order).await?;
         Err(map_provider_error(provider, err))
     }
 
@@ -683,72 +700,29 @@ impl OrderService {
         support.open_ticket(actor, order_id, reason).await.ok()
     }
 
-    fn owned_order(&self, actor: &str, order_id: &str) -> Result<Order> {
-        let orders = self.orders.lock().map_err(|_| internal())?;
-        let order = orders
-            .get(order_id)
+    async fn owned_order(&self, actor: &str, order_id: &str) -> Result<Order> {
+        let order = self
+            .store
+            .get_order(order_id)
+            .await?
+            .filter(|order| order.actor == actor)
             .ok_or_else(|| ServiceError::new(Code::NotFound, "order not found"))?;
-        if order.actor != actor {
-            return Err(ServiceError::new(Code::NotFound, "order not found"));
-        }
-        Ok(order.clone())
+        Ok(order)
     }
 
-    fn order_by_id(&self, order_id: &str) -> Result<Order> {
-        self.orders
-            .lock()
-            .map_err(|_| internal())?
-            .get(order_id)
-            .cloned()
+    async fn order_by_id(&self, order_id: &str) -> Result<Order> {
+        self.store
+            .get_order(order_id)
+            .await?
             .ok_or_else(|| ServiceError::new(Code::NotFound, "order not found"))
     }
 
-    fn order_for_quote(&self, actor: &str, quote_id: &str) -> Option<Order> {
-        let orders = self.orders.lock().ok()?;
-        orders
-            .values()
-            .find(|order| order.actor == actor && order.quote_id == quote_id)
-            .cloned()
+    async fn order_for_quote(&self, actor: &str, quote_id: &str) -> Result<Option<Order>> {
+        self.store.find_order_by_quote(actor, quote_id).await
     }
 
-    fn store(&self, order: Order) -> Result<()> {
-        self.orders
-            .lock()
-            .map_err(|_| internal())?
-            .insert(order.order_id.clone(), order);
-        Ok(())
-    }
-
-    fn reserve_idem(&self, key: &str, hash: &str) -> Result<Option<String>> {
-        let mut entries = self.idem.lock().map_err(|_| internal())?;
-        match entries.get(key) {
-            Some(IdemEntry::Done {
-                hash: existing,
-                order_id,
-            }) if existing == hash => Ok(Some(order_id.clone())),
-            Some(_) => Err(ServiceError::new(Code::Conflict, "idempotency key reused")),
-            None => {
-                entries.insert(key.to_owned(), IdemEntry::InFlight);
-                Ok(None)
-            }
-        }
-    }
-
-    fn commit_idem(&self, key: &str, hash: &str, order_id: &str) -> Result<()> {
-        self.idem.lock().map_err(|_| internal())?.insert(
-            key.to_owned(),
-            IdemEntry::Done {
-                hash: hash.to_owned(),
-                order_id: order_id.to_owned(),
-            },
-        );
-        Ok(())
-    }
-
-    fn abort_idem(&self, key: &str) {
-        if let Ok(mut entries) = self.idem.lock() {
-            entries.remove(key);
-        }
+    async fn persist(&self, order: &Order) -> Result<()> {
+        self.store.save_order(order).await
     }
 }
 
@@ -823,8 +797,4 @@ fn request_hash(quote: &Quote, confirmed_amount_minor: i64) -> String {
     hasher.update(confirmed_amount_minor.to_le_bytes());
     hasher.update(quote.params.to_string().as_bytes());
     hex::encode(hasher.finalize())
-}
-
-fn internal() -> ServiceError {
-    ServiceError::new(Code::Internal, "order state")
 }

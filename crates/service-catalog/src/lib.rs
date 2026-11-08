@@ -4,6 +4,9 @@
 //! 区域/启用配置。报价有 TTL，改价会使旧报价失效并强制重新确认；支付只经
 //! [`payment::PaymentPort`] 调 G06，本域不自建余额。没有 sandbox 凭据的供应
 //! 商返回 `BLOCKED_EXTERNAL`，不使用静态假数据或 toast 冒充完成。
+//! 订单/报价/幂等键的事实落在 [`store::OrderStore`]：验收路径用
+//! [`store::FileStore`]（落盘、重启可恢复、阻塞线程池 IO），
+//! [`store::MemoryStore`] 仅限故障注入与并行开发。
 
 pub mod auth;
 pub mod catalog;
@@ -15,6 +18,7 @@ pub mod payment;
 pub mod provider;
 pub mod providers;
 pub mod quote;
+pub mod store;
 pub mod support;
 
 pub use auth::{Authenticator, BearerAuthenticator};
@@ -29,4 +33,5 @@ pub use provider::{
     SandboxEvidence, ServiceProvider,
 };
 pub use quote::Quote;
+pub use store::{FileStore, MemoryStore, OrderStore};
 pub use support::SupportPort;
