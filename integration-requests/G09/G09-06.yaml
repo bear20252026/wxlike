@@ -1,0 +1,48 @@
+# G09-06 `room_config` 落地所需的新增根依赖 —— 集成请求
+# 为什么单独提一张：`third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md`
+# 的"没拿什么"第 4 条点名了这个文件。claims 里那一位的类型是 `livekit-protocol`
+# 的 protobuf 消息，而 G09 无权编辑根 `Cargo.toml`/`Cargo.lock`（G00 所有权），
+# 所以它现在是"有源但未落地"——既不是自研，也不是遗漏，而是一张欠着的请求。
+
+request_id: G09-06
+task_issue: 153
+group_issue: 90
+branch: feat/G09-livekit-signaling
+contract: calls-v1
+kind: root-dependency-request
+blocked_on: G00（根 workspace 依赖清单唯一裁决方）
+
+paths:
+  - crates/rtc/src/token.rs
+
+requests:
+  - id: REQ-G06-livekit-protocol
+    target: G00
+    action: >-
+      在根 `[workspace.dependencies]` 增加 `livekit-protocol`（上游
+      livekit/rust-sdks @ 052f089166b6864bc5f7e92906f6a7897b9f546c 的
+      `livekit-protocol` 成员）与其传递依赖 `prost`，并把两者登记进
+      `third_party/reviews/registry.json` 与 SBOM。G09 拿到批准后才在
+      `crates/rtc/Cargo.toml` 引用。
+    rationale: >-
+      `AccessClaims.room_config` 对应上游 `access_token.rs:302` 的
+      `Option<livekit_protocol::RoomConfiguration>`。这一位是"签发时就带上房间配置"
+      的通道，缺了它，与 sidecar 的 claims 只能逐字段比对、无法整体往返。
+      不移植是真的少一段可核对的结构，而不是我们用别的方式覆盖了它。
+    not_doing_instead: >-
+      不手搓一个形状相近的 `RoomConfiguration`。没有 proto 定义作依据的自造类型
+      会在下一次对齐上游时静默走偏，正是 C 类门禁要拦的那类"看着有实现"。
+
+interim_behavior:
+  - >-
+    `AccessClaims` 保持不带 `room_config` 的线格式；`LiveKitIssuer::verify`
+    对上游多出的未知 claim 不报错也不采纳（读侧宽容、写侧严格），因此批准前后
+    我们签出的令牌都不变，行为不存在中途漂移。
+  - >-
+    该缺口只影响"能否携带房间配置"，不影响入房裁决：房间/身份/权限面由
+    `VideoGrant` 与 wxlike 私有 claim（`call`/`device`/`scope`/`generation`/`engine`）
+    决定，这些都已落地并有测试。
+
+verification:
+  - PYTHONPATH=tools/source-audit python -m sourceaudit provenance check
+  - cargo test -p wxlike-rtc --lib token   # 批准并落地后需补一条 room_config 往返用例

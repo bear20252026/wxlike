@@ -76,6 +76,30 @@
       "notes": "跨节点路由设计（队列名/hub 表/业务与推送分离）；Rust 独立实现，无源码复制。"
     },
     {
+      "id": "UP-LIVEKIT-RUSTSDK",
+      "repo": "livekit/rust-sdks",
+      "url": "https://github.com/livekit/rust-sdks",
+      "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/livekit/rust-sdks/blob/052f089166b6864bc5f7e92906f6a7897b9f546c/LICENSE",
+      "retrieved_at": "2026-11-06",
+      "notes": "ADR-25 媒体面参考库。借 livekit-token 的 claims/grant 语义与 room/participant 的状态表、事件序。License 不阻挡（本项目只做内部研究），但来源必须可复查。"
+    },
+    {
+      "id": "UP-LIVEKIT-SERVER",
+      "repo": "livekit/livekit",
+      "url": "https://github.com/livekit/livekit",
+      "commit": "94edd5da75246bd3c04becf88e3fda563e3d6e1c",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/LICENSE",
+      "retrieved_at": "2026-11-06",
+      "notes": "服务端交叉核对源：pkg/service/auth.go 的权限判定、pkg/rtc/{room,participant}.go 的状态迁移与房间关闭、pkg/rtc/types/interfaces.go 的 RoomCloseReason 表。用于核对 Rust SDK 看不到的语义（有效期/粒度/原因映射）。"
+    },
+    {
       "id": "UP-FORMANCE",
       "repo": "formancehq/ledger",
       "url": "https://github.com/formancehq/ledger",
@@ -191,6 +215,36 @@
       "owner": "G17",
       "issue": "#193",
       "expires": "2099-12-31"
+    },
+    {
+      "path": "crates/rtc/src/token.rs",
+      "upstream": "UP-LIVEKIT-RUSTSDK",
+      "upstream_path": "livekit-token/src/access_token.rs",
+      "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "00fdaf23b9f779f06803a53e80262ded80e084b94a161988f37cee89afd2da51",
+      "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md",
+      "used_by": "crates/rtc/src/{call_session,room}.rs 的 ADR-25 入房凭证签发与校验",
+      "cross_checked_in": [
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/service/auth.go"
+      ]
+    },
+    {
+      "path": "crates/rtc/src/room.rs",
+      "upstream": "UP-LIVEKIT-RUSTSDK",
+      "upstream_path": "livekit/src/room/participant/mod.rs",
+      "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "55645b9cf5b5cc997b92ccd2e9a2823d454ff528a48482702963ec679b9ced21",
+      "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-room-participant.md",
+      "used_by": "crates/rtc/src/{call_session,room}.rs 的 sidecar 参与者状态机、房间关闭与审计",
+      "cross_checked_in": [
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/rtc/room.go",
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/rtc/participant.go",
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/rtc/types/interfaces.go"
+      ]
     },
     {
       "path": "crates/ledger/src/model.rs",
