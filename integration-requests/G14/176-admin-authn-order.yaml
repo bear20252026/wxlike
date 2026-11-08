@@ -1,0 +1,102 @@
+# G14-01（#176）管理身份 / RBAC / 审计骨架 —— 顺序契约收尾的集成请求
+# 本卡只在 crates/admin/** 内改动；凡超出 G14 独占写路径（授权矩阵、blockers 台账、
+# 交付文档、兄弟卡的 handler 签名）都登记在这里，由 G00 执行。
+
+request_id: G14-01-authn-order
+task: G14-01
+task_issue: 176
+card: 176
+group_issue: 95
+contract_version: admin-g14-v1
+wave: W3
+branch: feat/G14-admin-rbac
+base_issue: 245
+artifacts:
+  - crates/admin/src/auth.rs              # AdminAuth 提取器 + 路由层 gate + 精确公开面表
+  - crates/admin/src/http.rs              # 会话/口令/MFA/老操作目录改用提取器；router 挂门
+  - crates/admin/src/g14.rs               # matrix / stepup / audit / audit-verify 改用提取器
+  - crates/admin/src/audit.rs             # append_denied + 留痕失败计数进 ChainReport
+  - crates/admin/src/store.rs             # 计数落在 Store（六个子域共享同一个总数）
+  - crates/admin/src/error.rs             # AdminError::Admission（准入任务崩了 = fail closed）
+  - crates/admin/tests/g14_01_authn_order.rs
+
+# 本卡新登记的 action_id（审计 `g14_audit.action` 列的值）
+action_ids:
+  - g14.denied                 # 既有值；本页把它扩展到"静态运营令牌的写尝试"
+  - audit.append_failure       # 不是审计行，是 ChainReport.append_failures 计数
+
+requests:
+  - id: REQ-G17-adminx-routes-in-authz-matrix
+    target: G17-03
+    blocking: false
+    action: >-
+      把 adminx 进程自己的管理端点（`/api/*` 与 `/api/g14/*`，共 30 条会读请求体的
+      POST/PUT 路由，逐条列表见
+      `crates/admin/tests/g14_01_authn_order.rs::BODY_ROUTES`）登记进
+      `security/threat-model/authz-matrix.json`，`auth` 填 `admin`。
+      矩阵是 `sourceaudit authz sync` 从平台源码扫出来的，扫不到 adminx，
+      所以 `tests/security/tests/sweep.rs` 目前只覆盖 `wxlike-server` 的 12 条
+      `/api/admin/*`，adminx 的同一形状没有门禁。
+    rationale: >-
+      #245 的原始发现就是靠"把矩阵里每条私有端点打一遍"暴露的；adminx 不在矩阵里，
+      同类问题只能靠本卡新增的 `BODY_ROUTES` 用例发现。登记之后这条覆盖面随源码增长，
+      而不是随某张卡是否记得改用例而增长。
+    evidence: >-
+      crates/admin/tests/g14_01_authn_order.rs::unauthenticated_body_never_reaches_the_422_path
+
+  - id: REQ-G00-sec-admin-order-evidence-adminx
+    target: G00
+    blocking: false
+    action: >-
+      在 `security/release-reviews/blockers.json` 的 `SEC-ADMIN-ORDER` 条目里补一条
+      closed_evidence，指向 adminx 侧的同一契约（平台侧由 #343/#348 闭环）。
+      不改判定语义，只补证据链。
+    rationale: >-
+      该条目的建议修法原文是"12 个管理端点统一改"，实际只改了平台进程那 12 条；
+      adminx（`crates/admin`）的同形状问题当时没有登记，台账不留缺口比留一个
+      "已闭环"的空词更重要。
+    evidence: >-
+      crates/admin/tests/g14_01_authn_order.rs::public_surface_is_exact_and_everything_else_is_behind_the_gate
+
+  - id: REQ-G00-g14-delivery-doc-admission-model
+    target: G00
+    blocking: false
+    action: >-
+      更新 `docs/g14-delivery.md` §2 的"三条边界"与 `docs/adminx.md` §11：
+      管理面准入现在有两处落地（路由层 `wxlike_admin::auth::gate` 与 handler 参数
+      `wxlike_admin::auth::AdminAuth`），共用同一份实现 `auth::from_parts`；
+      `docs/adminx.md` 里"鉴权写在每个处理器第一行，不做通用包装"那段已经被 #245 否定，
+      请删掉，否则下一个读者会照抄。
+    rationale: >-
+      文档里那句旧规则是这次缺陷的成因之一；它比代码更常被复制。
+
+  - id: REQ-G14-02-03-04-05-adopt-admin-auth-extractor
+    target: G14-02
+    blocking: false
+    action: >-
+      兄弟卡把自己路由的 handler 参数从 `headers: HeaderMap` 换成
+      `incoming: wxlike_admin::auth::AdminAuth`，并把
+      `write_caller(&app, &headers, R, A, &trace)` 换成
+      `write_via(&app, &incoming, R, A, &trace)`（`read_role` 同理换 `read_via`）。
+      顺序安全已由路由层的门保证，所以这不是缺陷修复，只是省掉一次会话查询；
+      改完之后 `g14.rs` 里 `read_role` / `actor_of` 上那个为了兼容而留的
+      `trace: &str` 参数应当一并删除。
+    rationale: >-
+      本卡不跨卡改别人的 handler；这张单子把接法写清，避免五张卡各造一套准入。
+    evidence: >-
+      crates/admin/src/g14.rs（matrix / stepup_verify / stepup_state / audit_query /
+      audit_verify 已按此形状改完，可作为样板）
+
+notes:
+  - 认证与授权分层：门只做认证（你是谁），`auth::require` / `rbac::authorize` /
+    step-up 窗口仍然是服务端唯一的授权判定点，一个都没少。
+  - 门外的路径只有三条精确匹配（`/`、`/health`、`/api/login`）加一条按形状判定的
+    `GET /api/g14/privacy/requests/{id}/download`；后者由一次性 `download_token`
+    自己绑对象、过期与哈希，带后台会话也不能代替它（有用例钉住）。
+  - 静态运营令牌的写尝试现在也会落一条 `g14.denied`（outcome=denied，
+    actor=operator-token，role 字段记 audience）。以前这条路径直接返回 403，
+    一个审计行都不写。
+  - 留痕写入失败不再静默：`Store` 计数、`/api/g14/audit/verify` 的
+    `chain.append_failures` 可见，且**不会**把 403 变成 200（拒绝优先于留痕）。
+  - 未结项：登录限流与账号锁定（`docs/adminx.md` §11）仍不在本卡；
+    本卡没有引入新依赖，也没有新增数据库对象。

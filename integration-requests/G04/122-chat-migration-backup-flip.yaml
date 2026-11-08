@@ -1,0 +1,77 @@
+# 122 聊天记录迁移与备份：覆盖表翻转 + 命令登记 + 契约 action（交 G00 执行）
+request_id: G04-06
+task_issue: 122
+group_issue: 85
+card: G04-04
+contract_version: media-v1
+branch: feat/G04-media-backup
+title: "G04-04（#122）服务端已交付：翻转覆盖表 blocked 行并登记 media.backup.* 命令"
+
+owned_artifacts:
+  - crates/features/media/src/backup.rs      # plan/rollback/两阶段导入 + fsync
+  - crates/features/media/src/store.rs       # publish 先 fsync 再 rename（落盘语义）
+  - crates/features/media/src/http.rs        # POST /api/v1/backups/plan、POST /api/v1/backups/{id}/rollback
+  - crates/features/media/tests/g04.rs       # 计划一致性 / 失败回滚 / 去重保留 / 并发收敛
+  - crates/features/media/tests/http_api.rs  # HTTP 鉴权 / 409 / 404 形状
+
+db_schema_change: none  # 复用 media_backup.state 文本列与 media_backup_entry.imported，无新表新列，M009 不变
+
+g00_owned_changes:
+  - id: REQ-G00-coverage-flip
+    target: crates/cmd/data/entries/media.json
+    action: |
+      把 media 域 label=「聊天记录迁移与备份」的 blocked（owner=G04, issue=122）行
+      翻转为 automated，登记命令 media.backup.export（代表命令）。服务端能力已由
+      wxlike-media 交付并由 tests/g04.rs、tests/http_api.rs 端到端覆盖。
+  - id: REQ-G00-command-catalog
+    target: crates/cmd catalog + entries
+    action: |
+      在命令 catalog 新增 media.backup.* 族（CLI/MCP 两面，scope=media）：
+      media.backup.plan / media.backup.export / media.backup.verify /
+      media.backup.import / media.backup.rollback，分别对应
+      POST /api/v1/backups/plan、POST /api/v1/backups、
+      POST /api/v1/backups/verify、POST /api/v1/backups/import、
+      POST /api/v1/backups/{id}/rollback。
+  - id: REQ-G00-cmd-tests-sync
+    target: crates/cmd/tests/media_surface.rs
+    action: |
+      coverage_table_flips_and_keeps_the_rest 目前断言该行「必须仍是 blocked」且
+      CATALOG media.* 计数为 7；翻转后需同步为 automated + 计数 12。
+  - id: REQ-G00-contract-actions
+    target: contracts/domains/media/actions.yaml
+    action: |
+      为 media-v1 追加两个 action（向后兼容的纯新增）：
+      backup.plan  = POST /api/v1/backups/plan { device_id, encryption? } -> BackupPlan
+      backup.rollback = POST /api/v1/backups/{id}/rollback -> RollbackOutcome；
+      并在 backup.import 的说明里补两阶段语义（先落盘后切游标）与
+      state 机 importing/chat_committed/completed/failed/rolled_back。
+      新 DTO 样例可从 crates/features/media/src/backup.rs 的
+      BackupPlan / RollbackOutcome 序列化结果直接生成 fixtures。
+
+requests:
+  - id: REQ-G02-G05-real-ports
+    target: G02/G05
+    action: |
+      集成验收前把 ChatSnapshotPort / KeyEscrowPort 的真实实现注入
+      MediaService::with_chat_port / with_key_port；本卡 fixture 仅用于
+      并行开发与故障注入（rollback 用例需要端口可控失败）。
+
+notes:
+  - 恢复语义：每个条目 blob 先内容寻址校验 + fsync + publish，再与
+    media_object/media_ref/media_file/imported 游标同事务提交；全部条目落盘后
+    才调用快照端口切聊天记录游标（importing -> chat_committed -> completed）。
+  - 失败可回滚：chat 提交前失败 = state failed，POST rollback 撤销 restore
+    引用与合成文件行、按引用计数回收对象（去重命中的内容保留）、游标复位可重跑；
+    completed 之后拒绝回滚（409），那是数据丢失不是错误恢复。
+  - 「先落盘」有磁盘级失败注入证据（补 G04 代理首轮只注入了 G05 端口故障）：
+    tests/g04.rs 用 ObjectStore 包装（FaultStore）在 put_file 上注入两种故障——
+    (1) 落盘报错且一字节未写、(2) 字节已 rename 到位但回执丢失（断电那一格）。
+    两条用例都断言 media_backup_entry.imported 一律不前进、快照端口 import()
+    零次调用、state 停在 failed；用例 (2) 再断言 rollback 后现场（盘上字节、
+    media_object/media_ref/media_file 行数、逐条游标）逐项等于恢复前快照。
+  - 回滚的孤儿清扫只针对「账上无人引用」的内容地址：无 media_object 行（含软删）
+    且无 live 引用/文件行/未过期分享才删；本地已有同内容原件、他人对象、
+    dedup 命中的字节一律保留（第三条用例专门钉住这一点）。
+  - 状态机不倒退：上传会话状态机与「未完成上传不可引用为附件」基线测试
+    （instant_upload.rs / g04.rs）未放宽，本卡全部通过。
+  - 转码隔离执行面（G04-03）未被本卡触碰。
