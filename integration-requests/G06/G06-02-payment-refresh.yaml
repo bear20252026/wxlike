@@ -1,0 +1,68 @@
+# G06-02 未知状态用查询解决（payment.refresh）—— 集成请求
+#
+# 卡片要求第 4 条："超时用 query 解决未知状态，不能本地写已支付"。
+# 领域实现与测试在本组已完成；命令挂载与契约行属 G00 写路径。
+
+request: G06-02-payment-refresh
+card: G06-02
+task_issue: 130
+group_issue: 87
+owner: G06
+to: G00
+branch: feat/G06-ledger-payments
+status: ready-for-G00
+
+summary: >-
+  `crates/features/commerce/src/http.rs::dispatch` 新增 `payment.refresh` 分支，
+  落到 `Commerce::refresh_payment_intent`：只按供应商查询证据推进状态，
+  Pending 不改本地，查询超时保持未知，终态不可倒退，成功入账与回调共用
+  同一条 `intent:{id}:success` 账本幂等键。
+
+code_paths:
+  - crates/features/commerce/src/payments.rs
+  - crates/features/commerce/src/http.rs
+  - crates/features/commerce/tests/g06_07_unknown_state_and_splits.rs
+
+requests:
+  - id: REQ-G00-mount-payment-refresh
+    target: G00
+    action: >-
+      把 `payment.refresh` 加入 commerce 命令注册表与路由
+      `POST /api/v1/commerce/actions/payment.refresh`，并写进
+      contracts/domains/commerce/actions.yaml（params: { intent_id }；
+      scope: buyer 或 payee；idempotency: read-safe，重复调用不产生第二笔分录；
+      offline: not-allowed）。G06 不编辑 contracts/**。
+    handler: Commerce::refresh_payment_intent
+    errors: [BAD_INPUT, FORBIDDEN, NOT_FOUND, PROVIDER_UNAVAILABLE, PROVIDER_TIMEOUT]
+    acceptance: >-
+      支付响应丢失后调用本命令，供应商确认成功则恰好入账一笔；供应商仍在
+      处理中则状态保持 pending 且分录为 0；供应商返回超时则命令返回
+      PROVIDER_TIMEOUT，本地状态与分录数量都不变。
+    rationale: >-
+      回调可能永久丢失。没有主动查询入口，未知状态只能靠人肉对账收口；
+      而"本地写死已支付"会造成无证据入账——两条都被测试钉住。
+
+  - id: REQ-G00-refresh-cron
+    target: G00
+    action: >-
+      可选：把 `payment.refresh` 包一个面向 pending 意图的作业
+      （如 `commerce.payment.resolve_unknown`，只对 created/pending 且
+      provider_ref 非空的意图发起查询）。当前 `commerce.payment.expire`
+      只把过期未支付置为 expired，不做查询。
+    note: >-
+      若采纳，请一并确认与对账作业 `reconcile.run` 的分工：查询解决"这一笔的
+      未知态"，对账解决"整张对账单的差异"，两者都只追加反向分录、不改历史。
+
+evidence:
+  tests:
+    - cargo test -p wxlike-commerce --test g06_07_unknown_state_and_splits
+    - cargo test -p wxlike-commerce
+  cases:
+    - query_timeout_leaves_the_state_unknown_and_posts_nothing
+    - query_resolves_a_lost_payment_response_to_exactly_one_journal
+    - query_can_confirm_failure_without_creating_any_entry
+    - pending_query_changes_nothing_locally
+    - amount_drift_in_the_query_result_is_refused
+  provider_evidence: >-
+    同上，查询证据产自沙箱通道的状态侧写（force_payment_status），
+    用于验证状态机与账本幂等；真实供应商查询语义需 live 凭据后由 G16 复跑。

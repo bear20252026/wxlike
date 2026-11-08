@@ -15,13 +15,28 @@
        commerce_entitlements, commerce_entitlement_rules, commerce_redpacket_claims,
        commerce_redpacket_shares, commerce_redpackets, commerce_nonces,
        commerce_transfers, commerce_reconciliation_exceptions, commerce_refunds,
-       commerce_withdrawals, commerce_topups, commerce_cards, commerce_payment_events,
+       commerce_withdrawals, commerce_topups, commerce_cards,
+       commerce_provider_callbacks, commerce_payment_events,
        commerce_payment_intents, commerce_orders, commerce_meta CASCADE;
    DROP TABLE IF EXISTS ledger_closing_balances, ledger_closings, ledger_holds,
        ledger_entries, ledger_journals, ledger_accounts CASCADE;
    DROP FUNCTION IF EXISTS ledger_entries_immutable();
+   DROP FUNCTION IF EXISTS ledger_journals_immutable();
+   DROP FUNCTION IF EXISTS ledger_closings_immutable();
    ```
    一旦有任何真实支付/提现/退款，禁止执行本步骤。
+
+## 兼容窗口说明（append-only 触发器）
+
+`ledger_entries` / `ledger_journals` / `ledger_closings` / `ledger_closing_balances` 上的
+`BEFORE UPDATE OR DELETE` 触发器只拒绝写入，不改变任何读路径，也不改列：
+
+* 旧二进制只做 INSERT，因此装上触发器后**无需同步发版**，可以先 expand 触发器再上新代码；
+* 反过来（先上代码后装触发器）也只放宽一次兜底，不影响正确性；
+* SQLite 实现用 `CREATE TRIGGER IF NOT EXISTS`，在 `init_schema` 里幂等执行，
+  旧库文件下次打开即获得同样兜底，不需要人工回填；
+* 回滚触发器本身（`DROP TRIGGER`）是安全的，但会让"禁止直接改余额"退化为纯代码约束，
+  需要与 G14 一起确认没有其它服务在写这几张表。
 
 ## 禁止的操作
 

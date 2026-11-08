@@ -1,0 +1,69 @@
+# G06-01 账本不可变性的数据库兜底 —— 集成请求
+#
+# 卡片要求第 4 条："所有变更有唯一业务键与同库事务，禁止直接UPDATE余额或
+# 生产 fund 接口"。SQLite 侧已由本组落地触发器；PG 生产迁移需 G00 对齐编号。
+
+request: G06-01-ledger-append-only-ddl
+card: G06-01
+task_issue: 127
+group_issue: 87
+owner: G06
+to: G00
+branch: feat/G06-ledger-payments
+status: ready-for-G00
+
+summary: >-
+  `crates/ledger/src/schema.rs` 增加 `BEFORE UPDATE OR DELETE ... RAISE(ABORT)`
+  触发器，覆盖 ledger_entries / ledger_journals / ledger_closings /
+  ledger_closing_balances 四张表。此前"只 INSERT、余额由分录导出"只是注释与
+  Rust API 的自律；现在绕过 `post_in` 的人工改写会在写入那一刻失败并整体回滚。
+  同一份兜底早已写在 PG 迁移草稿里（只有 ledger_entries 一段），本次把草稿与
+  实现拉回一一对应，并补齐分录头与日结快照。
+
+code_paths:
+  - crates/ledger/src/schema.rs
+  - crates/ledger/tests/immutability.rs
+  - schema/proposals/G06/0001_ledger_commerce.sql
+  - schema/proposals/G06/ROLLBACK.md
+
+requests:
+  - id: REQ-G00-ledger-trigger-migration-number
+    target: G00
+    action: >-
+      为 `schema/proposals/G06/0001_ledger_commerce.sql` 新增的
+      `ledger_journals_immutable()` / `ledger_closings_immutable()` 与
+      `commerce_provider_callbacks` 分配正式迁移编号并按 expand → contract
+      串行落主干。全部为新增对象，不改列、不改既有行。
+    compatibility: >-
+      expand-only：旧二进制只做 INSERT，因此可以先装触发器再上新代码；
+      SQLite 侧用 CREATE TRIGGER IF NOT EXISTS，旧库文件下次打开即获得兜底，
+      无需 backfill。详见 schema/proposals/G06/ROLLBACK.md 的"兼容窗口说明"。
+    rollback: >-
+      DROP TRIGGER 安全但会把数据库兜底退化回代码自律，需 G14 确认没有其它
+      服务直接写这四张表。
+
+  - id: REQ-G00-no-direct-fund-path
+    target: G00
+    action: >-
+      组合根/运维持久层请确认不存在"直接 UPDATE 余额/回填分录"的通道；
+      纠错只允许追加反向分录（本组测试已断言这类语句被拒绝）。
+    rationale: >-
+      生产资金接口与余额列是同一件事的两个名字；数据库层拒绝之后，
+      任何"临时改一下"的运维脚本都会在第一次执行时暴露，而不是在月底对账时。
+
+evidence:
+  tests:
+    - cargo test -p wxlike-ledger --test immutability
+    - cargo test -p wxlike-ledger
+    - cargo test -p wxlike-commerce
+  cases:
+    - direct_balance_tampering_is_refused_by_the_database
+    - balance_is_derived_from_entries_and_holds
+    - virtual_and_real_funds_never_mix_in_one_journal
+    - cross_currency_totals_refuse_implicit_summation
+    - crash_restart_and_replay_keep_a_single_journal
+    - concurrent_debits_never_overdraw
+    - daily_closing_matches_entries_and_snapshot_is_immutable
+  note: >-
+    越权写入用第二个裸 SQL 连接执行，断言的是数据库行为而非 Rust API 行为；
+    日结快照与逐账户余额的等值核对覆盖"日结余额与分录一致"。

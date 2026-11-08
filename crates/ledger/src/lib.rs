@@ -8,6 +8,8 @@
 //! 4. **可用与冻结分开**：`available = 已入账 - 冻结合计`，提现先锁额；
 //! 5. **演示资金与真实资金隔离**：同一笔交易不能混用两种资金性质；
 //! 6. **幂等**：业务键唯一，重复提交同参数只入账一次，换参数即冲突；
+//!    业务键之外还核 `asset`/`metadata`（都为空时摘要与旧版逐字节一致，
+//!    升级不会把历史重试误判成参数变更）；
 //! 7. **日结不可变**：同一天重复日结必须与既有快照完全一致。
 //!
 //! commerce 域不另建账本：它把 [`schema::init_schema`] 建在自己的连接上，
@@ -22,15 +24,20 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub use model::{
-    Account, AccountSpec, AccountType, ClosingBalance, ClosingReport, Entry, FundClass, Hold,
-    HoldStatus, Journal, LedgerTransaction, PostingLine, PostingRequest, StatementPage,
+    Account, AccountSpec, AccountType, ApplyOutcome, Asset, ClosingBalance, ClosingReport, Entry,
+    FundClass, Hold, HoldStatus, Journal, LedgerTransaction, Metadata, PostReport, PostingLine,
+    PostingRequest, StatementPage,
+};
+pub use model::{
+    ASSET_PRECISION, MAX_METADATA_ENTRIES, MAX_METADATA_KEY_BYTES, MAX_METADATA_TOTAL_BYTES,
+    MAX_METADATA_VALUE_BYTES,
 };
 pub use schema::{init_schema, SCHEMA_VERSION};
 pub use store::{
     available_minor, balance_minor, capture_hold_in, close_range_in, closing_balances_in,
-    closings_in, create_account_in, hold_in, load_account, locked_minor, post_in, release_hold_in,
-    request_digest_hex, statement_in, total_sum_is_zero, transaction_by_key, transfer_request,
-    type_total, verify_closing_in, verify_journals, MAX_PAGE,
+    closings_in, create_account_in, hold_in, load_account, locked_minor, post_checked_in, post_in,
+    release_hold_in, request_digest_hex, statement_in, stored_request_digest, total_sum_is_zero,
+    transaction_by_key, transfer_request, type_total, verify_closing_in, verify_journals, MAX_PAGE,
 };
 pub use wxlike_types::{Currency, Money, MoneyError};
 
@@ -57,6 +64,28 @@ pub enum LedgerError {
     TooFewLines,
     #[error("posting mixes virtual and real funds")]
     MixedFundClass,
+    #[error("bad typed asset {0:?} (expected `BASE` or `BASE/2`)")]
+    BadAsset(String),
+    #[error("declared asset {declared} does not match journal currency {journal}")]
+    AssetMismatch { declared: String, journal: String },
+    #[error("metadata key {0:?} is invalid")]
+    MetadataKey(String),
+    #[error("metadata key {0:?} appears more than once")]
+    DuplicateMetadataKey(String),
+    #[error("metadata value for key {0:?} is invalid or too large")]
+    MetadataValue(String),
+    #[error("metadata exceeds the per-journal entry limit")]
+    MetadataEntryLimit,
+    #[error("metadata exceeds the {0} byte budget")]
+    MetadataSizeLimit(usize),
+    #[error("stored metadata is corrupt")]
+    BadStoredMetadata(String),
+    #[error("volume overflow on {account:?}: {current} + {amount} cannot fit i64")]
+    VolumeOverflow {
+        account: String,
+        current: i64,
+        amount: i64,
+    },
     #[error("implicit cross-currency sum is forbidden: {0}")]
     MixedCurrency(String),
     #[error("amount overflow")]
@@ -234,6 +263,14 @@ impl Ledger {
     /// 参数非法、余额不足、币种/资金性质混用或存储失败。
     pub fn post(&self, req: &PostingRequest) -> Result<LedgerTransaction> {
         self.post_at(req, now_ms())
+    }
+
+    /// 记一笔账，并区分"真正入账"与"幂等重放"。
+    ///
+    /// # Errors
+    /// 同 [`Ledger::post`]。
+    pub fn post_reported(&self, req: &PostingRequest) -> Result<PostReport> {
+        self.write(|tx| store::post_checked_in(tx, req, now_ms()))
     }
 
     /// 指定入账时间（日结/重放测试用）。
