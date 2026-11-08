@@ -66,9 +66,9 @@ impl SignalBox {
         self.per_user.get(user).map(|q| q.len()).unwrap_or(0)
     }
 
-    /// 有人离房/被踢：把发给他的积压清掉。
-    pub fn forget(&mut self, user: &str) {
-        self.per_user.remove(user);
+    /// 有人离房/被踢：把发给他的积压清掉，返回被丢弃的条数（审计要记数）。
+    pub fn forget(&mut self, user: &str) -> usize {
+        self.per_user.remove(user).map(|q| q.len()).unwrap_or(0)
     }
 
     pub fn total(&self) -> usize {
@@ -108,6 +108,60 @@ pub enum SignalContent {
         sdp_mline_index: u32,
         candidate: String,
     },
+    /// ADR-25 / LiveKit path: the server hands out the sidecar room instead of
+    /// negotiating media over this channel. The payload is a room name plus
+    /// the engine that owns it — deliberately **not** an SDP blob, because a
+    /// second engine writing into the same room means two room facts.
+    RoomAssigned { room: String, engine: String },
+}
+
+impl SignalContent {
+    /// True for the str0m cold-standby trickle path. A LiveKit room refuses
+    /// these (see `crate::room::Room::post_signal`).
+    pub fn is_trickle_candidate(&self) -> bool {
+        matches!(self, Self::Candidate { .. })
+    }
+
+    /// True when the content carries an SDP body — only the cold-standby
+    /// engine needs one; on the LiveKit path media negotiation happens
+    /// between the client SDK and the sidecar.
+    pub fn carries_sdp(&self) -> bool {
+        matches!(self, Self::Invite { .. } | Self::Accept { .. })
+    }
+}
+
+/// Client-side guard against replayed room snapshots.
+///
+/// Signaling is best-effort and can arrive out of order; a roster update whose
+/// `revision` is behind what we already applied must be dropped instead of
+/// resurrecting a member who left (or a call that ended). Equal revisions are
+/// treated as duplicate delivery of the same snapshot and are ignored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RosterWatermark {
+    applied: u64,
+}
+
+impl RosterWatermark {
+    pub fn new(applied: u64) -> Self {
+        Self { applied }
+    }
+
+    pub fn applied(&self) -> u64 {
+        self.applied
+    }
+
+    pub fn is_stale(&self, revision: u64) -> bool {
+        revision <= self.applied
+    }
+
+    /// True = apply this snapshot now. Advances the watermark.
+    pub fn accept(&mut self, revision: u64) -> bool {
+        if self.is_stale(revision) {
+            return false;
+        }
+        self.applied = revision;
+        true
+    }
 }
 
 impl Signal {

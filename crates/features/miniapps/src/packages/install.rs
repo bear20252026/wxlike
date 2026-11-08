@@ -23,14 +23,14 @@ use serde::{Deserialize, Serialize};
 
 use super::error::{MiniError, Result};
 use super::format::{verify, VerifiedPackage};
-use super::manifest::{compare_versions, parse_semver, Channel, Manifest, MANIFEST_FILE};
+use super::manifest::{
+    compare_versions, parse_semver, Channel, Manifest, COMPLETE_MARKER, MANIFEST_FILE, PIN_FILE,
+};
 use super::trust::{PackageSignature, TrustStore};
 
 const APPS_DIR: &str = "apps";
 const STAGING_DIR: &str = "staging";
 const WATERMARKS_DIR: &str = "watermarks";
-const COMPLETE_MARKER: &str = ".complete";
-const PIN_FILE: &str = "pin.json";
 const VERSION_PREFIX: &str = "v";
 const DIGEST_PREFIX_LEN: usize = 12;
 const MAX_KEPT_VERSIONS: usize = 3;
@@ -131,8 +131,20 @@ impl Installer {
 
     /// Install a package that was already verified and reviewed (G08-04).
     /// The channel, duplicate, watermark and staging rules still apply, so
-    /// callers cannot bypass the install transaction by pre-verifying.
+    /// callers cannot bypass the install transaction by pre-verifying: the
+    /// only way to obtain a [`VerifiedPackage`] is through a signature and
+    /// certificate check against this installer's trust store.
     pub fn install_verified(&mut self, verified: VerifiedPackage) -> Result<InstallOutcome> {
+        // A verification proof is only as fresh as the revocation list. Re-
+        // check the signer here so a key or publisher revoked between the
+        // review step (G08-04) and the install cannot still reach the disk.
+        let signer = verified.signer();
+        if !self.trust.is_enrolled(signer) {
+            return Err(MiniError::UntrustedPublisher);
+        }
+        if self.trust.is_revoked(&signer.publisher, &signer.key_id) {
+            return Err(MiniError::Revoked);
+        }
         if verified.manifest.channel != self.channel {
             return Err(MiniError::WrongChannel(
                 verified.manifest.channel.as_str().into(),
@@ -189,7 +201,16 @@ impl Installer {
         ));
         fs::create_dir_all(&staging)?;
         for (path, data) in &verified.files {
+            // `Manifest::validate` already rejected absolute, traversal and
+            // backslash paths; this is the second gate in front of the write,
+            // so a future loosening upstream cannot turn staging into an
+            // arbitrary file-write primitive.
             let target = staging.join(path);
+            if !target.starts_with(&staging) {
+                return Err(MiniError::BadPackage(format!(
+                    "resource {path:?} escapes the staging directory"
+                )));
+            }
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }

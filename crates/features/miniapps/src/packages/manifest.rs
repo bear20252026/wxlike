@@ -24,6 +24,26 @@ pub const MAX_APP_ID_LEN: usize = 64;
 pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_RESOURCES: usize = 2048;
 pub const SHA256_HEX_LEN: usize = 64;
+/// Per-resource budget. A single declared file bigger than this is either a
+/// packaging mistake or a decompression bomb, and it must be refused before
+/// the installer writes anything.
+pub const MAX_RESOURCE_BYTES: usize = 8 * 1024 * 1024;
+/// Whole-package budget: the sum of every declared resource, uncompressed
+/// (`mini.json` itself has its own cap in `format::MAX_MANIFEST_BYTES`). This
+/// is tighter than `wxlike_dpage::MAX_DECOMPRESSED` on purpose: the reader cap
+/// says "the codec will not OOM", this one says "an install may not fill the
+/// device".
+pub const MAX_PACKAGE_BYTES: usize = 32 * 1024 * 1024;
+/// Names the installer owns inside a version directory (see
+/// `install`): `.complete` is written after staging and `pin.json` is
+/// rollback state. A package that claims either one would have its digest
+/// describe a file that is later overwritten, so the sealed content and the
+/// content on disk would stop matching.
+pub const RESERVED_RESOURCES: [&str; 2] = [COMPLETE_MARKER, PIN_FILE];
+/// Install bookkeeping file names shared with the installer.
+pub const COMPLETE_MARKER: &str = ".complete";
+/// Operational rollback pin, written next to the version directories.
+pub const PIN_FILE: &str = "pin.json";
 const SEMVER_PARTS: usize = 3;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,8 +138,8 @@ impl Manifest {
             if !safe_relative(path) || path.len() > wxlike_dpage::MAX_PATH_LEN {
                 return Err(MiniError::BadManifest("resource path"));
             }
-            if path == MANIFEST_FILE {
-                return Err(MiniError::BadManifest("mini.json must not list itself"));
+            if path == MANIFEST_FILE || RESERVED_RESOURCES.contains(&path.as_str()) {
+                return Err(MiniError::ReservedResource(path.clone()));
             }
             if digest.len() != SHA256_HEX_LEN || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(MiniError::BadManifest("resource digest"));
@@ -155,15 +175,25 @@ pub fn seal_dir(
     let files = wxlike_dpage::collect_dir(dir)?;
     let mut manifest = template.clone();
     manifest.resources.clear();
+    let mut total = 0usize;
     for entry in &files.0 {
-        if entry.path == MANIFEST_FILE {
-            return Err(MiniError::BadManifest(
-                "source dir contains reserved mini.json",
+        if entry.path == MANIFEST_FILE || RESERVED_RESOURCES.contains(&entry.path.as_str()) {
+            return Err(MiniError::ReservedResource(entry.path.clone()));
+        }
+        if entry.data.len() > MAX_RESOURCE_BYTES {
+            return Err(MiniError::ResourceTooLarge(
+                entry.path.clone(),
+                entry.data.len(),
+                MAX_RESOURCE_BYTES,
             ));
         }
+        total = total.saturating_add(entry.data.len());
         manifest
             .resources
             .insert(entry.path.clone(), digest_hex(&entry.data));
+    }
+    if total > MAX_PACKAGE_BYTES {
+        return Err(MiniError::PackageTooLarge(total, MAX_PACKAGE_BYTES));
     }
     manifest.validate(host_version)?;
     Ok((manifest, files))

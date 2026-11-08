@@ -107,11 +107,21 @@ impl Signer {
 
 fn unique(name: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "wxlike-g08-catalog-{name}-{}-{}",
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Catalog installs carry a version watermark on disk, so a recycled
+    // (pid, counter) pair from an earlier run on the same runner would inherit
+    // that state and fail for reasons unrelated to the code under test.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "wxlike-g08-catalog-{name}-{}-{nanos}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    path
 }
 
 fn entry(

@@ -4,6 +4,8 @@
 //!
 //! 1. **签名**：包体（manifest + 资源清单）由发布方用 ed25519 私钥签名，宿主
 //!    只信任内置公钥。签名覆盖 manifest 原文，任何字段被改都会验签失败；
+//!    不在信任表里的 `key_id` 单独报 `UntrustedKey`——"外域的钥匙"和
+//!    "自家钥匙签错了内容"是两件事，运营处置完全不同；
 //! 2. **防降级**：同 `app_id` 只允许版本单调上升——否则攻击者可以拿一个旧版
 //!    有漏洞的签名包覆盖新版（签名本身是合法的，光验签挡不住）；
 //! 3. **权限白名单**：`im_bridge` 只暴露受限子集（合同 §4.1 不变式 6）。
@@ -26,12 +28,21 @@ pub const IM_BRIDGE_ALLOWED: [&str; 4] = [
     "pay.request",
 ];
 
+/// 清单最多声明多少条权限。授予面只由白名单决定，但**声明**面必须有界：
+/// 否则一份"十万条权限"的清单就能白白吃满解析与审计路径。
+pub const MAX_PERMISSIONS: usize = 32;
+/// 单条权限名的字节上限。
+pub const MAX_PERMISSION_LEN: usize = 64;
+/// 语义化版本的段数（`major.minor.patch`，缺一段或多一段都拒绝）。
+const SEMVER_PARTS: usize = 3;
+
 /// 包清单。序列化后即为签名对象，字段顺序由 serde 固定。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
     pub app_id: String,
     pub name: String,
-    /// 语义化版本，只比较前三段数字（`1.2.3-beta` 取 `(1,2,3)`）。
+    /// 语义化版本，必须是 `major.minor.patch` 三段数字（`1.2.3-beta` 取 `(1,2,3)`）。
+    /// 第四段会被拒：截断成 `(1,2,3)` 正好让一份降级包伪装成同版本。
     pub version: String,
     /// 入口脚本相对路径。
     pub entry: String,
@@ -42,13 +53,25 @@ pub struct Manifest {
 
 impl Manifest {
     /// 版本三元组；解析失败返回 `None`（调用方按"非法清单"拒绝）。
+    ///
+    /// 三段必须齐全且不多：`1.2` 会被补零成 `(1,2,0)`、`1.2.3.4` 会被截断成
+    /// `(1,2,3)`，两者都能让一份包绕过"版本严格上升"的水位判定。口径与
+    /// `miniapps::packages::manifest::parse_semver` 保持一致。
     pub fn semver(&self) -> Option<(u64, u64, u64)> {
         let core = self.version.split(['-', '+']).next()?;
         let mut parts = core.split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next().unwrap_or("0").parse().ok()?;
-        let patch = parts.next().unwrap_or("0").parse().ok()?;
-        Some((major, minor, patch))
+        let mut numbers = [0u64; SEMVER_PARTS];
+        for slot in &mut numbers {
+            let raw = parts.next()?;
+            if raw.is_empty() {
+                return None;
+            }
+            *slot = raw.parse().ok()?;
+        }
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((numbers[0], numbers[1], numbers[2]))
     }
 
     /// 清单自检：id/name/entry 的形状、入口路径不得穿越。
@@ -75,6 +98,16 @@ impl Manifest {
         }
         if self.semver().is_none() {
             return Err(PackageError::BadManifest("version"));
+        }
+        if self.permissions.len() > MAX_PERMISSIONS {
+            return Err(PackageError::BadManifest("too many permissions"));
+        }
+        if self
+            .permissions
+            .iter()
+            .any(|p| p.is_empty() || p.len() > MAX_PERMISSION_LEN)
+        {
+            return Err(PackageError::BadManifest("permission name"));
         }
         Ok(())
     }
@@ -106,6 +139,8 @@ pub enum PackageError {
     BadJson,
     #[error("signature malformed")]
     BadSignature,
+    #[error("signing key {0:?} is not in the trust store")]
+    UntrustedKey(String),
     #[error("signature does not verify against the trusted key")]
     BadSigning,
     #[error("package {0:?} version {1} is not newer than the installed {2}")]
@@ -138,7 +173,9 @@ pub fn verify_package(
     sig: &PackageSignature,
     trusted: &BTreeMap<String, VerifyingKey>,
 ) -> Result<Manifest> {
-    let key = trusted.get(&sig.key_id).ok_or(PackageError::BadSigning)?;
+    let key = trusted
+        .get(&sig.key_id)
+        .ok_or_else(|| PackageError::UntrustedKey(sig.key_id.clone()))?;
     let raw = hex::decode(&sig.sig).map_err(|_| PackageError::BadSignature)?;
     let bytes: [u8; 64] = raw.try_into().map_err(|_| PackageError::BadSignature)?;
     let signature = Signature::from_bytes(&bytes);
