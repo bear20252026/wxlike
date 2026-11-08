@@ -267,6 +267,20 @@ fn check_doc_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 幂等键已落盘时的复用判定：哈希不同＝复用；同键同请求但还没定稿＝在途，
+/// 两种情况都按冲突处理，只有带着 `done_order_id` 的历史记录才回放结果。
+fn reuse_idem_record(path: &Path, hash: &str) -> Result<Option<String>> {
+    let existing: IdemRecord =
+        read_json_at(path)?.ok_or_else(|| internal("idem record vanished"))?;
+    if existing.hash != hash {
+        return Err(ServiceError::new(Code::Conflict, "idempotency key reused"));
+    }
+    existing.done_order_id.map_or(
+        Err(ServiceError::new(Code::Conflict, "idempotency key reused")),
+        |order_id| Ok(Some(order_id)),
+    )
+}
+
 #[async_trait]
 impl OrderStore for FileStore {
     async fn insert_quote(&self, quote: &Quote) -> Result<()> {
@@ -353,10 +367,14 @@ impl OrderStore for FileStore {
                 if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                     continue;
                 }
-                if let Ok(Some(order)) = read_json_at::<Order>(&path) {
-                    if order.actor == actor && order.quote_id == quote_id {
-                        return Ok(Some(order));
-                    }
+                // 读失败与坏文档一律跳过：一次扫描不该被单个坏文件打断；
+                // 匹配条件并进 filter，省掉循环体里的第二层嵌套。
+                if let Some(order) = read_json_at::<Order>(&path)
+                    .ok()
+                    .flatten()
+                    .filter(|order| order.actor == actor && order.quote_id == quote_id)
+                {
+                    return Ok(Some(order));
                 }
             }
             Ok(None)
@@ -377,34 +395,23 @@ impl OrderStore for FileStore {
                 hash: hash.clone(),
                 done_order_id: None,
             };
-            match fs::OpenOptions::new()
+            let mut file = match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
             {
-                Ok(mut file) => {
-                    let bytes = serde_json::to_vec(&record).map_err(|_| internal("idem encode"))?;
-                    file.write_all(&bytes)
-                        .and_then(|_| file.sync_all())
-                        .map_err(|err| dependency(&path, err))?;
-                    Ok(None)
-                }
+                Ok(file) => file,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    Err(internal("idem reserve raced"))
+                    return Err(internal("idem reserve raced"));
                 }
-                Err(_) => {
-                    let existing: IdemRecord =
-                        read_json_at(&path)?.ok_or_else(|| internal("idem record vanished"))?;
-                    if existing.hash != hash {
-                        return Err(ServiceError::new(Code::Conflict, "idempotency key reused"));
-                    }
-                    // 同键同请求：只有已定稿才允许复用结果；在途一律视为冲突。
-                    existing.done_order_id.map_or(
-                        Err(ServiceError::new(Code::Conflict, "idempotency key reused")),
-                        |order_id| Ok(Some(order_id)),
-                    )
-                }
-            }
+                // 键已存在：复用/冲突判定交给 helper，避免在此再套一层块。
+                Err(_) => return reuse_idem_record(&path, &hash),
+            };
+            let bytes = serde_json::to_vec(&record).map_err(|_| internal("idem encode"))?;
+            file.write_all(&bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|err| dependency(&path, err))?;
+            Ok(None)
         })
         .await
     }
