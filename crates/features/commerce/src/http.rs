@@ -28,6 +28,7 @@ pub fn dispatch(commerce: &Commerce, actor: &str, action: &str, payload: &Value)
         "payment.pay" => payment_pay(commerce, actor, payload),
         "payment.get" => payment_get(commerce, actor, payload),
         "payment.qr.pay" => payment_qr_pay(commerce, actor, payload),
+        "payment.refresh" => payment_refresh(commerce, actor, payload),
         "card.bind" => card_bind(commerce, actor, payload),
         "card.list" => card_list(commerce, actor),
         "card.unbind" => card_unbind(commerce, actor, payload),
@@ -79,6 +80,55 @@ pub fn webhook(commerce: &Commerce, raw_body: &str, signature: &str) -> Result<V
         "event_id": outcome.event_id,
         "applied": outcome.applied,
         "status": outcome.status.as_str(),
+    }))
+}
+
+/// 供应商回调端点（`POST /api/payment/callback` 的领域实现）。
+///
+/// 与 [`webhook`] 的区别是契约里必须带 `operation_id`：它是平台统一的长操作
+/// 把手，也是本端点的幂等键。供应商对同一次结果的所有重试都必须复用同一个
+/// `operation_id`，重投返回首次结果且 `replayed = true`、零副作用。
+///
+/// 鉴权方式与 [`webhook`] 相同：只信对原始 body 的 HMAC 签名，不依赖 actor
+/// 会话。路由挂载与鉴权中间件由 G00 组合根负责（见
+/// `integration-requests/G06/`）。
+///
+/// # Errors
+/// 签名错误、时间窗外、参数非法、幂等冲突、事件重复或领域错误。
+pub fn provider_callback(commerce: &Commerce, raw_body: &str, signature: &str) -> Result<Value> {
+    let outcome = commerce.handle_provider_callback(raw_body, signature)?;
+    Ok(json!({
+        "operation_id": outcome.operation_id,
+        "event_id": outcome.event_id,
+        "intent_id": outcome.intent_id,
+        "kind": outcome.kind,
+        "applied": outcome.applied,
+        "replayed": outcome.replayed,
+        "status": outcome.status,
+        "reason": outcome.reason,
+    }))
+}
+
+/// 回调台账查询（值班排障用；只回业务标识与首次结果，不含密钥/原始报文）。
+///
+/// # Errors
+/// 参数非法或存储失败。
+pub fn provider_callback_get(commerce: &Commerce, operation_id: &str) -> Result<Value> {
+    let record = commerce.provider_callback(operation_id)?;
+    let Some(record) = record else {
+        return Err(CommerceError::NotFound);
+    };
+    let outcome = record.outcome;
+    Ok(json!({
+        "operation_id": outcome.operation_id,
+        "event_id": outcome.event_id,
+        "intent_id": outcome.intent_id,
+        "kind": outcome.kind,
+        "applied": outcome.applied,
+        "replayed": outcome.replayed,
+        "status": outcome.status,
+        "reason": outcome.reason,
+        "received_at": record.received_at.to_string(),
     }))
 }
 
@@ -219,6 +269,12 @@ fn payment_get(commerce: &Commerce, actor: &str, payload: &Value) -> Result<Valu
 
 fn payment_qr_pay(commerce: &Commerce, actor: &str, payload: &Value) -> Result<Value> {
     let intent = commerce.pay_with_ticket(actor, text(payload, "ticket")?)?;
+    Ok(json!({ "intent": intent_json(&intent) }))
+}
+
+/// 用供应商查询解决未知状态（响应丢失/超时后的对客与服务端自愈入口）。
+fn payment_refresh(commerce: &Commerce, actor: &str, payload: &Value) -> Result<Value> {
+    let intent = commerce.refresh_payment_intent(actor, text(payload, "intent_id")?)?;
     Ok(json!({ "intent": intent_json(&intent) }))
 }
 
