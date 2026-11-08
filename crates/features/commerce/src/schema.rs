@@ -16,6 +16,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 pub fn init_schema(conn: &Connection) -> Result<()> {
     wxlike_ledger::init_schema(conn)?;
     init_payment_tables(conn)?;
+    init_provider_callback_tables(conn)?;
     init_card_tables(conn)?;
     init_settlement_tables(conn)?;
     init_transfer_tables(conn)?;
@@ -75,6 +76,37 @@ fn init_payment_tables(conn: &Connection) -> Result<()> {
             applied       INTEGER NOT NULL,
             reason        TEXT NOT NULL DEFAULT ''
         );
+        "#,
+    )
+}
+
+/// 带 `operation_id` 的供应商回调台账。
+fn init_provider_callback_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        -- 供应商回调的操作台账。operation_id 是幂等把手：同键同摘要一律
+        -- 返回首次结果（result_json），不同摘要直接拒绝；本表与分录、
+        -- 事件行在同一 IMMEDIATE 事务里提交，所以崩溃后重投只会有一次效果。
+        CREATE TABLE IF NOT EXISTS commerce_provider_callbacks (
+            id            TEXT PRIMARY KEY,
+            business_key  TEXT NOT NULL UNIQUE,
+            operation_id  TEXT NOT NULL UNIQUE,
+            event_id      TEXT NOT NULL,
+            intent_id     TEXT NOT NULL,
+            kind          TEXT NOT NULL,
+            provider_ref  TEXT NOT NULL,
+            amount_minor  INTEGER NOT NULL,
+            currency      TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            result_json   TEXT NOT NULL,
+            applied       INTEGER NOT NULL,
+            reason        TEXT NOT NULL DEFAULT '',
+            received_at   INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_callbacks_event
+            ON commerce_provider_callbacks(event_id);
+        CREATE INDEX IF NOT EXISTS idx_provider_callbacks_intent
+            ON commerce_provider_callbacks(intent_id, received_at);
         "#,
     )
 }
