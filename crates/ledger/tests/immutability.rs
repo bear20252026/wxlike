@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 use wxlike_ledger::{
-    AccountSpec, AccountType, Currency, FundClass, Ledger, Money, PostingLine, PostingRequest,
+    AccountSpec, AccountType, ApplyOutcome, Currency, FundClass, Ledger, Money, PostingLine,
+    PostingRequest,
 };
 
 const ALICE: &str = "wallet:alice";
@@ -464,4 +465,103 @@ fn daily_closing_matches_entries_and_snapshot_is_immutable() {
     assert_eq!(again.len(), 1);
     assert_eq!(again[0].entry_count, 2);
     assert_eq!(again[0].checksum, report.checksum);
+}
+
+/// `Ledger::post_reported` 是账本对外的"这一次到底有没有写盘"口径。
+///
+/// 支付回调重投是常态：调用方若只能拿到 `LedgerTransaction`，就分不清
+/// "我刚记了一笔"和"我命中了既有那笔"，只能靠数行数反推。store 层的
+/// `replay_is_reported_separately_from_a_fresh_post` 只验证了内部函数，
+/// 这里把同一件事钉在公开 API 上——重放必须是 `Replayed`、必须零写入、
+/// 且同键异参仍然是拒绝而不是重放。
+#[test]
+fn post_reported_separates_first_post_from_replay_at_the_public_api() {
+    let db = Db::new("reported");
+    let l = db.open();
+    fund(&l, ALICE, 1_000, "j-fund");
+
+    let req = PostingRequest::new(
+        "j-reported",
+        "transfer",
+        Currency::CNY,
+        vec![
+            PostingLine::debit(ALICE, 400),
+            PostingLine::credit(BOB, 400),
+        ],
+    )
+    .with_memo("首投与重投");
+
+    let journals_after_fund = db.count("SELECT COUNT(*) FROM ledger_journals");
+
+    let first = l.post_reported(&req).expect("first post");
+    assert_eq!(first.outcome, ApplyOutcome::Applied, "首投必须报告为已入账");
+    assert!(!first.is_replay());
+    assert_eq!(
+        db.count("SELECT COUNT(*) FROM ledger_journals"),
+        journals_after_fund + 1,
+        "首投写入恰好一条 journal"
+    );
+
+    // 同键同参重投：报告为重放，返回既有交易，且磁盘一字不动。
+    let replay = l.post_reported(&req).expect("replay");
+    assert_eq!(replay.outcome, ApplyOutcome::Replayed, "重投必须是重放");
+    assert!(replay.is_replay());
+    assert_eq!(
+        replay.transaction, first.transaction,
+        "重放原样返回既有交易，不另造一份"
+    );
+    assert_eq!(
+        db.count("SELECT COUNT(*) FROM ledger_journals"),
+        journals_after_fund + 1,
+        "重放不得新增 journal"
+    );
+    assert_eq!(
+        db.count("SELECT COUNT(*) FROM ledger_entries"),
+        4,
+        "注资 2 条 + 首投 2 条；重放不追加分录"
+    );
+    assert_eq!(l.balance(BOB).expect("bob"), 400, "重投没有多记一笔");
+
+    // 同键换金额：这是第二次不同的请求，必须拒绝，而不是被当成重放悄悄吞掉。
+    let changed = PostingRequest::new(
+        "j-reported",
+        "transfer",
+        Currency::CNY,
+        vec![
+            PostingLine::debit(ALICE, 401),
+            PostingLine::credit(BOB, 401),
+        ],
+    );
+    assert!(matches!(
+        l.post_reported(&changed),
+        Err(wxlike_ledger::LedgerError::IdempotencyConflict)
+    ));
+    assert_eq!(
+        db.count("SELECT COUNT(*) FROM ledger_journals"),
+        journals_after_fund + 1,
+        "被拒的异参重放不该留下任何 journal"
+    );
+    assert_eq!(l.balance(BOB).expect("bob"), 400, "拒绝路径不动余额");
+
+    // 余额不足走的是同一条公开入口：报错，且不留半笔。
+    let over = PostingRequest::new(
+        "j-reported-over",
+        "transfer",
+        Currency::CNY,
+        vec![
+            PostingLine::debit(ALICE, 100_000),
+            PostingLine::credit(BOB, 100_000),
+        ],
+    );
+    assert!(matches!(
+        l.post_reported(&over),
+        Err(wxlike_ledger::LedgerError::InsufficientFunds(..))
+    ));
+    assert_eq!(
+        db.count("SELECT COUNT(*) FROM ledger_journals"),
+        journals_after_fund + 1,
+        "失败路径必须整体回滚"
+    );
+    l.verify_journals().expect("balanced");
+    assert!(l.total_sum_is_zero().expect("conserved"));
 }

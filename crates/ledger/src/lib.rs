@@ -25,8 +25,8 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub use model::{
     Account, AccountSpec, AccountType, ApplyOutcome, Asset, ClosingBalance, ClosingReport, Entry,
-    FundClass, Hold, HoldStatus, Journal, LedgerTransaction, Metadata, PostingLine, PostingRequest,
-    PostReport, StatementPage,
+    FundClass, Hold, HoldStatus, Journal, LedgerTransaction, Metadata, PostReport, PostingLine,
+    PostingRequest, StatementPage,
 };
 pub use model::{
     ASSET_PRECISION, MAX_METADATA_ENTRIES, MAX_METADATA_KEY_BYTES, MAX_METADATA_TOTAL_BYTES,

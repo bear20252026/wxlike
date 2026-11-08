@@ -133,9 +133,15 @@ pub(crate) fn replay_legs(legs: &[Leg<'_>]) -> Result<bool> {
     Ok(true)
 }
 
+/// SHA-256 摘要的十六进制长度：32 字节编码成小写 hex 正好 64 个字符。
+const SHA256_HEX_LEN: usize = 64;
+
 /// SHA-256 的小写十六进制摘要恰好 64 位；除此以外的值都不是摘要。
 fn is_canonical_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    value.len() == SHA256_HEX_LEN
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// HMAC-SHA256，输出 hex。

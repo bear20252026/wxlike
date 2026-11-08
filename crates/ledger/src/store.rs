@@ -397,20 +397,22 @@ fn journal_by_key(conn: &Connection, key: &str) -> Result<Option<JournalRow>> {
             },
         )
         .optional()?;
-    row.map(|(id, business_key, kind, currency, created_at, digest, asset, metadata)| {
-        Ok(JournalRow {
-            journal: Journal {
-                id,
-                business_key,
-                kind,
-                currency: Currency::parse(&currency)?,
-                asset: decode_asset(&asset)?,
-                metadata: Metadata::decode(&metadata)?,
-                created_at,
-            },
-            digest,
-        })
-    })
+    row.map(
+        |(id, business_key, kind, currency, created_at, digest, asset, metadata)| {
+            Ok(JournalRow {
+                journal: Journal {
+                    id,
+                    business_key,
+                    kind,
+                    currency: Currency::parse(&currency)?,
+                    asset: decode_asset(&asset)?,
+                    metadata: Metadata::decode(&metadata)?,
+                    created_at,
+                },
+                digest,
+            })
+        },
+    )
     .transpose()
 }
 
@@ -1133,10 +1135,7 @@ mod tests {
         let usd = Asset::parse("USD/2").expect("usd");
         let req = request(
             "j-asset",
-            vec![
-                PostingLine::debit(ALICE, 1),
-                PostingLine::credit(BOB, 1),
-            ],
+            vec![PostingLine::debit(ALICE, 1), PostingLine::credit(BOB, 1)],
         )
         .with_asset(usd);
         assert!(matches!(
@@ -1145,8 +1144,11 @@ mod tests {
         ));
         // 非规范写法在进数据库之前就被拒。
         assert!(matches!(
-            request("j-asset", vec![PostingLine::debit(ALICE, 1), PostingLine::credit(BOB, 1)])
-                .try_with_asset("CNY/1"),
+            request(
+                "j-asset",
+                vec![PostingLine::debit(ALICE, 1), PostingLine::credit(BOB, 1)]
+            )
+            .try_with_asset("CNY/1"),
             Err(LedgerError::BadAsset(_))
         ));
     }
@@ -1170,7 +1172,11 @@ mod tests {
         assert_eq!(second.transaction, first.transaction);
         assert_eq!(balance_minor(&c, BOB).expect("bob"), 300);
         assert!(matches!(
-            post_checked_in(&c, &request("j-move", req.lines.clone()).with_memo("改了附言"), 3),
+            post_checked_in(
+                &c,
+                &request("j-move", req.lines.clone()).with_memo("改了附言"),
+                3
+            ),
             Err(LedgerError::IdempotencyConflict)
         ));
     }
@@ -1200,13 +1206,18 @@ mod tests {
     #[test]
     fn stored_request_digest_reads_only_the_frozen_hash() {
         let c = conn();
-        assert!(stored_request_digest(&c, "j-none").expect("query").is_none());
+        assert!(stored_request_digest(&c, "j-none")
+            .expect("query")
+            .is_none());
         fund(&c, 500, "j-fund");
         let digest = stored_request_digest(&c, "j-fund")
             .expect("query")
             .expect("present");
         assert_eq!(digest.len(), 64);
-        assert_eq!(digest, stored_request_digest(&c, "j-fund").expect("q").expect("p2"));
+        assert_eq!(
+            digest,
+            stored_request_digest(&c, "j-fund").expect("q").expect("p2")
+        );
     }
 
     #[test]
@@ -1220,10 +1231,7 @@ mod tests {
         .expect("pairs");
         let req = request(
             "j-meta",
-            vec![
-                PostingLine::debit(ALICE, 10),
-                PostingLine::credit(BOB, 10),
-            ],
+            vec![PostingLine::debit(ALICE, 10), PostingLine::credit(BOB, 10)],
         )
         .with_metadata(meta.clone());
         post_in(&c, &req, 1).expect("post");
@@ -1231,6 +1239,9 @@ mod tests {
             .expect("load")
             .expect("present");
         assert_eq!(tx.metadata, meta);
-        assert_eq!(tx.metadata.iter().next().map(|(k, _)| k.as_str()), Some("a"));
+        assert_eq!(
+            tx.metadata.iter().next().map(|(k, _)| k.as_str()),
+            Some("a")
+        );
     }
 }

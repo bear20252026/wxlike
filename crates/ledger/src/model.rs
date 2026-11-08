@@ -10,6 +10,7 @@
 //!   的非规范后缀一律拒绝；
 //! * metadata——键值对要参与幂等摘要，所以必须先规范化（按键升序、无重复
 //!   键）再受大小约束。
+//!
 //! 借用关系与"没抄什么"逐条记在
 //! `third_party/reviews/patches/UP-FORMANCE-*.md`。
 
@@ -160,9 +161,7 @@ impl Metadata {
     ///
     /// # Errors
     /// 键或值非法、重复键、超出条数或总字节上限。
-    pub fn from_pairs(
-        pairs: impl IntoIterator<Item = (String, String)>,
-    ) -> Result<Self> {
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Result<Self> {
         let mut entries: Vec<(String, String)> = pairs.into_iter().collect();
         for (key, value) in &entries {
             validate_metadata_key(key)?;
@@ -296,7 +295,9 @@ fn check_metadata_budget(entries: &[(String, String)]) -> Result<()> {
     if entries.len() > MAX_METADATA_ENTRIES {
         return Err(LedgerError::MetadataEntryLimit);
     }
-    let total = entries.iter().fold(0usize, |acc, (k, v)| acc + k.len() + v.len());
+    let total = entries
+        .iter()
+        .fold(0usize, |acc, (k, v)| acc + k.len() + v.len());
     if total > MAX_METADATA_TOTAL_BYTES {
         return Err(LedgerError::MetadataSizeLimit(total));
     }
@@ -708,8 +709,18 @@ mod tests {
             Asset::parse("CNY/2").expect("b").canonical()
         );
         for bad in [
-            "", "usd", "CNY/0", "CNY/1", "CNY/3", "CNY/02", "CNY/2/3", "CNY/", "/2", "CNYK/2",
-            "CN", "人民币",
+            "",
+            "usd",
+            "CNY/0",
+            "CNY/1",
+            "CNY/3",
+            "CNY/02",
+            "CNY/2/3",
+            "CNY/",
+            "/2",
+            "CNYK/2",
+            "CN",
+            "人民币",
         ] {
             assert!(
                 matches!(Asset::parse(bad), Err(LedgerError::BadAsset(_))),
