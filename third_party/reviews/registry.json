@@ -199,7 +199,7 @@
       "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
       "decision": "adapted",
       "license_spdx": "NOASSERTION",
-      "local_sha256": "ee6f041c63b68fec9e64a30af86fc0858fc0e9b45ab74d91e70950ae3dbac4e4",
+      "local_sha256": "638c9483407625f806cbe169fefd0edfea9c2274963864df6a0f2459ff400cbe",
       "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-asset-metadata.md",
       "used_by": "wxlike-ledger 记账请求的 typed asset（CNY 与 CNY/2 规范形态）与 metadata（128 条/256B 键/16KiB 值/64KiB 总额）校验；commerce 的分录构造全部经此"
     },
@@ -210,7 +210,7 @@
       "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
       "decision": "adapted",
       "license_spdx": "NOASSERTION",
-      "local_sha256": "2360eeae35e219efe771a7c2c033a7ef4ea289cf3424001a1cefa9da3debee39",
+      "local_sha256": "805a8557679ea698d45c48cf3b7a233d6319c7d9f2d9df65c58777271d69ad37",
       "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-idempotency.md",
       "used_by": "wxlike-ledger post_checked_in/post_in 的幂等分流（命中即返回、异参冲突、Applied 与 Replayed 回报）、stored_request_digest 两步读回、validate_lines 的资产与借贷平衡校验"
     },
@@ -232,7 +232,7 @@
       "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
       "decision": "adapted",
       "license_spdx": "NOASSERTION",
-      "local_sha256": "825d885d331168b091f775191cc0afcb38f3de393a6d652cbc947cf1755f4a65",
+      "local_sha256": "e801fa96ddf45d06ccb16c73523d8bf91d233ee6664800a270954ba893479ada",
       "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-errors.md",
       "used_by": "LedgerError 新增变体的载荷形状（VolumeOverflow/BadAsset/AssetMismatch/Metadata 系列）与 ApplyOutcome/PostReport 再导出"
     },
@@ -243,7 +243,7 @@
       "commit": "cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "81f60c37bdffc53b176241371583b2ec7b82c6f9e21821ac2d2eba7718a0ecee",
+      "local_sha256": "97b3799b8e44ebdb4c66fed1eebfff9c00a4220273df18a316b4e430c7b3c206",
       "patchlog": "third_party/reviews/patches/UP-BLNK-replay-legs.md",
       "used_by": "commerce 幂等入口：replay() 摘要形状检查 + 新增 replay_legs()/Leg/is_canonical_digest()，全部腿落库才算重放"
     },
