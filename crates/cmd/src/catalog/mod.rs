@@ -21,16 +21,18 @@ pub use spec::{
 /// 资源 URI 前缀。MCP `resources/read` 与审计日志引用同一个 URI。
 pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 
-/// 现有 49 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
+/// 现有 50 条：首批 18 条，加 Zone C 的社区/频道 2 条、Zone E 的视频/点播 6 条，
 /// 再加 #316 relations 第一批 6 条、#317 第二批 7 条、#318 群管理 3 条
-/// 与 #319 媒体对象 7 条。
+/// 与 #319 媒体对象 7 条，再加后续补录。逐条清单与顺序以
+/// `crates/cmd/tests/contract_v1_baseline.rs` 的 `BASELINE_IDS` 为准；上面这段
+/// 分批数字是历史沿革，不随每次纳入重算。
 /// **加功能先加这里**，再去实现执行器——`crates/client` 的防漂移测试会盯着。
 ///
 /// 顺序按"人怎么用"排，不按字母：先看（会话/消息/成员/自己/好友），再写，最后危险操作。
 ///
 /// ## contract-v1 已冻结（#314；#316 第一次扩基线，#317 第二次，#318 第三次，#319 第四次）
-/// 这 49 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
-/// 的 81 条入口（automated 49 / blocked 27 / host_only 5）是当前基线，
+/// 这 50 个 id 与 `crates/cmd/data/domains.json`（+ `data/entries/<域>.json`）
+/// 的 81 条入口（automated 50 / blocked 26 / host_only 5）是当前基线，
 /// 机器可读的形式在 `crates/cmd/tests/contract_v1_baseline.rs`：
 /// id 全集与顺序、派生名（工具名 / action_id / 资源 URI）、逐域数字、
 /// 以及**生成面的 SHA-256**（MCP 工具定义 + JSON Schema + CLI 帮助 + 覆盖表报告）。
@@ -75,6 +77,15 @@ pub const ACTION_URI_PREFIX: &str = "wxlike://actions/";
 /// 把日常操作也套上确认，人就会开始无脑点确认，那是另一类事故。
 /// 确认链路的令牌一次性与"改参重确认"在 `crate::confirmation`，
 /// 用例在 `crates/cmd/tests/confirmation_token.rs`。
+///
+/// **`Confirmation::HumanOnly` 是第三级，别跟 `Required` 混用**。`Required`
+/// 在无人值守通道上只是"把参数摘要再核一遍"——计划与令牌都回给同一个 agent，
+/// 它自己就能走完（见 `crates/mcp/src/server.rs` 的 `confirm_step`）。
+/// 标 `HumanOnly` 的意思是**这个通道的令牌根本发不出来**：动钱（`Payment`）、
+/// 后台动作（`Admin`）、以及任何"出了事得人自己收场"的凭证类操作。
+/// 判据只有一条：**能否把后果完整地交回给人**。能——`Required`；
+/// 不能——`HumanOnly`。`ScopeClass::Payment` 与 `Admin` 必须标这一级，
+/// 由 `contract_v1_baseline.rs` 的 `payment_and_admin_commands_are_human_only` 守着。
 ///
 /// ## 为什么按域拆成数据文件（#329）
 /// #314 时试过把这张表**机械**拆成 per-domain 模块：生成面逐字节
@@ -380,7 +391,7 @@ pub fn tool_definition(spec: &CommandSpec) -> Value {
         "_meta": {
             "wxlike/actionId": spec.action_id(),
             "wxlike/scope": spec.scope.as_str(),
-            "wxlike/confirmation": if spec.confirmation.is_required() { "required" } else { "none" },
+            "wxlike/confirmation": spec.confirmation.as_str(),
             "wxlike/platforms": spec.platforms.names(),
             "wxlike/host": spec.host.as_str(),
         }

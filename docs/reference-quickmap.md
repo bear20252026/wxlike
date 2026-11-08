@@ -36,7 +36,7 @@
 | G12 | #93 | 移动壳/实时消息/投影 | **Signal-Android**(AGPL·`app/src/main/java/.../{calls,chats,messages,components}/` 会话状态机/通知聚合/媒体压缩)；**uniffi-rs**(Dart 绑定)；**matrix-rust-sdk**·`matrix-sdk-sqlite` 本地投影 |
 | G13 | #94 | 内容面/视频号/直播 | **spreed**(通话/直播面板)；**Signal-Android**(通知聚合)；**blivedm_rs**(直播弹幕流 Rust)；**false-world**(卡片内容交互) |
 | G14 | #95 | adminx/RBAC/审计 | **mattermost**(AGPL+Apache webapp·`server/` 群角色/管理操作/审计；webapp Apache 部分可直接看)；**Rocket.Chat**(MIT·用户/群管理/审计交互) |
-| G15 | #96 | MCP/CLI/AI 命令面 | 待评审 #212–#216；`rmcp` 官方接入与 `agent-policy` 抽取已登记 `integration-requests/G15/`，无新增参照 |
+| G15 | #96 | MCP/CLI/AI 命令面 | **wordcraft**(`storytold/wordcraft`@`729cd0a5`·**仅行为参照**：一条命令一处定义、同一个 `enabled` 谓词同时喂界面灰化与执行报错、自动化通道的路径根与"只有人能开的开关"、`--connect` 模式无 confinement 是它自己的债，别连样板一起搬)；**deepseek-harness**(`deepseek-ai/deepseek-harness`@`fcc0ad46`·仅行为参照：approval 缺席即拒、monotonic guard 只能 deny 不能被后装插件放宽)。两份都是临时浅克隆核对，**未落 `refs/` 镜像**，也未引入一行上游代码。待评审 #212–#216；`rmcp` 官方接入与 `agent-policy` 抽取已登记 `integration-requests/G15/` |
 | G16 | #97 | CI/构建/发布 | **mattermost**(部署测试矩阵)；**tauri**(跨平台构建/更新通道) |
 | G17 | #98 | 来源审查/威胁模型 | 本组就是门禁；**ammonia** 选型对比；mmtls 公开文献已投递 `integration-requests/G17/borrow-public-research.yaml` |
 

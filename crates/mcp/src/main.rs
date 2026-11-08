@@ -178,6 +178,8 @@ impl Flags {
             scope,
             self.session_id.as_deref(),
             self.origin_allow.clone(),
+            // 与 `server::CHANNEL` 同一个判断：这个进程没有人在场。
+            wxlike_cmd::auth::Channel::Agent,
         )
         .map(Some)
         .map_err(|e| e.to_string())

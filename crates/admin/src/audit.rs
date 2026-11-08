@@ -300,6 +300,9 @@ pub struct ChainReport {
     /// 断链原因，给运维看的。
     pub detail: String,
     pub head_hash: String,
+    /// 本进程累计的**留痕写入失败**次数。链自洽不代表"每件事都记上了"：
+    /// 写失败的那条根本不在链里，只有这个计数知道它发生过。
+    pub append_failures: u64,
 }
 
 /// 递归脱敏。返回新值，不改入参。
@@ -380,6 +383,31 @@ impl AuditLog {
         Self { store }
     }
 
+    /// 累计的留痕写入失败次数。
+    ///
+    /// 计数器挂在 [`Store`] 上而不是这里：六个子域各持一个 `AuditLog` 实例，
+    /// 但写的是同一张 `g14_audit`——失败次数必须只有一个总数，否则"谁掉了多少"
+    /// 要看六遍才知道。
+    pub fn write_failures(&self) -> u64 {
+        self.store.audit_write_failures()
+    }
+
+    fn note_write_failure(&self, context: &str, err: &rusqlite::Error) {
+        let seen = self.store.note_audit_write_failure();
+        tracing::error!(failures = seen, %err, context, "审计留痕写入失败：这次动作将无法追责");
+    }
+
+    /// 追加一条**拒绝留痕**：写失败不改变准入结论（403 该给还是得给），
+    /// 但绝不静默——失败会进 [`AuditLog::write_failures`] 计数并写日志。
+    ///
+    /// 这里为什么不 `?`：调用点已经决定了要拒绝。如果"留痕写不上"反而把
+    /// 403 变成 200，就等于用一个故障换掉一道闸门。
+    pub fn append_denied(&self, draft: Draft) {
+        if let Err(err) = self.append(draft) {
+            tracing::warn!(%err, "越权尝试的留痕没能落库（已计入留痕失败总数）");
+        }
+    }
+
     /// 追加一条。`reason`/`trace` 缺失即拒——审计行没有理由就等于没有审计。
     pub fn append(&self, draft: Draft) -> Result<Entry> {
         validate(&draft)?;
@@ -408,7 +436,7 @@ impl AuditLog {
             )
             .unwrap_or_else(|_| String::new());
         let hash = entry_hash(&prev, at_ms, &draft, &before, &after, &detail_text);
-        conn.execute(
+        if let Err(err) = conn.execute(
             INSERT_AUDIT,
             params![
                 at_ms,
@@ -426,7 +454,10 @@ impl AuditLog {
                 prev,
                 hash
             ],
-        )?;
+        ) {
+            self.note_write_failure("audit.append", &err);
+            return Err(err.into());
+        }
         Ok(draft.into_entry(
             conn.last_insert_rowid(),
             at_ms,
@@ -461,6 +492,8 @@ impl AuditLog {
 
     /// 从头重算整条链。任何一行被改、被删、被插，都会在这里暴露。
     pub fn verify(&self) -> Result<ChainReport> {
+        // 先取计数再上锁：它是进程内的原子值，不该被一次链校验的排队时间影响。
+        let append_failures = self.write_failures();
         let conn = self.store.lock();
         let mut stmt = conn.prepare(
             "SELECT id, at_ms, actor, role, action, object_kind, object_id, reason, before_digest, \
@@ -482,6 +515,7 @@ impl AuditLog {
                         i + 1
                     ),
                     head_hash: prev,
+                    append_failures,
                 });
             }
             let want = row.expected_hash()?;
@@ -491,6 +525,7 @@ impl AuditLog {
                     broken_at: Some(i as i64 + 1),
                     detail: format!("第 {} 行的 hash 与内容不符（该行被改过）", i + 1),
                     head_hash: prev,
+                    append_failures,
                 });
             }
             prev = row.hash.clone();
@@ -500,10 +535,15 @@ impl AuditLog {
             broken_at: None,
             detail: if count == 0 {
                 "空链".to_string()
+            } else if append_failures > 0 {
+                // 链自洽但计数不为 0：说明有动作**根本没记上**，
+                // 这种缺口链校验本身看不见，必须靠计数器说出来。
+                format!("整条链自洽，但有 {append_failures} 次动作的留痕写入失败")
             } else {
                 "整条链自洽".to_string()
             },
             head_hash: prev,
+            append_failures,
         })
     }
 }
@@ -725,5 +765,54 @@ mod tests {
         assert_eq!(a, b, "正文不同但脱敏后应同摘要——审计不承载正文");
         let c = digest(&serde_json::json!({"status": "suspended", "message": "第一版"}));
         assert_ne!(a, c, "判定字段变了摘要必须变");
+    }
+
+    /// 留痕写不上时的两条纪律：**不 panic**、**不静默**。
+    ///
+    /// 计数挂在 store 上，所以六个子域各自的 `AuditLog` 实例看到同一个总数；
+    /// `verify()` 把它一起报出来，否则"链自洽"会被读成"什么都记上了"——
+    /// 写失败的那条根本不在链里，链自己不可能知道自己缺行。
+    #[test]
+    fn append_failure_is_counted_not_swallowed() {
+        let store = Store::open_memory().unwrap();
+        let log = AuditLog::new(store.clone());
+        assert_eq!(log.write_failures(), 0);
+
+        // 正常写一条：不计数
+        log.append(draft("user.suspend")).unwrap();
+        assert_eq!(log.write_failures(), 0);
+
+        store.rollback_all().unwrap(); // 模拟留痕落不下去（表没了 / 盘满了）
+        log.append_denied(draft("g14.denied").outcome(Outcome::Denied));
+        assert_eq!(log.write_failures(), 1);
+        // 同一个 store 的另一个实例（另一个子域）也看得到
+        assert_eq!(AuditLog::new(store.clone()).write_failures(), 1);
+
+        // 普通 `append` 的失败同样计数，并且错误照原样抛给调用方
+        let err = log.append(draft("user.suspend")).unwrap_err();
+        assert!(err.to_string().contains("database"), "{err}");
+        assert_eq!(log.write_failures(), 2);
+
+        // 参数不合法不是"写失败"：那种情况根本没走到 INSERT
+        let bad = Draft::new("ops", "viewer", "x", "user", "u1").trace("t");
+        assert!(log.append(bad).is_err());
+        assert_eq!(log.write_failures(), 2, "校验阶段的拒绝不该进失败计数");
+
+        // 恢复后：链自洽，但报告必须说出"这段时间掉过 2 条"
+        store.lock().execute_batch(crate::store::UP_SQL).unwrap();
+        let report = log.verify().unwrap();
+        assert_eq!(report.entries, 0, "重建的表是空的");
+        assert_eq!(report.append_failures, 2);
+        assert!(report.broken_at.is_none(), "{report:?}");
+        assert!(report.detail.contains("空链"), "{}", report.detail);
+
+        log.append(draft("user.suspend")).unwrap();
+        let report = log.verify().unwrap();
+        assert_eq!(report.append_failures, 2);
+        assert!(
+            report.detail.contains("2 次动作的留痕写入失败"),
+            "有行但掉过留痕，detail 必须说出来：{}",
+            report.detail
+        );
     }
 }

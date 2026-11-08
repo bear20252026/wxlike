@@ -16,6 +16,8 @@
 //! * [`catalog`]：命令表 + 参数声明 + 生成的 JSON Schema / CLI 帮助 / MCP 工具定义；
 //! * [`policy`]：授权判定（会话白名单 + 能力开关）；
 //! * [`auth`]：会话/audience/scope 校验与代理衰减（G15-02）；
+//! * [`availability`]：把上面几个判定串成"现在能不能做 + 为什么"，
+//!   供界面置灰、`list_commands` 与 `wxlike policy` 共读一份；
 //! * [`domains`]：业务域覆盖表（命令 ↔ 入口 ↔ 例外，G15-03）；
 //! * [`contract`]：contract-v1 适配（ActionRequest/ActionResult/DomainError）；
 //! * [`confirmation`]：危险动作的 prepare → token → execute（G15-04）；
@@ -26,6 +28,7 @@
 //! `wxlike-admin`）继续按原路径使用，不需要改一行。
 
 pub mod auth;
+pub mod availability;
 pub mod catalog;
 pub mod confirmation;
 pub mod contract;
