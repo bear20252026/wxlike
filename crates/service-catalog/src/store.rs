@@ -395,23 +395,41 @@ impl OrderStore for FileStore {
                 hash: hash.clone(),
                 done_order_id: None,
             };
-            let mut file = match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => file,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(internal("idem reserve raced"));
-                }
-                // 键已存在：复用/冲突判定交给 helper，避免在此再套一层块。
-                Err(_) => return reuse_idem_record(&path, &hash),
-            };
+            // 占坑必须"发布即完整"。原来是 `create_new` 先把路径建出来、再 `write_all`
+            // 填内容：这两次系统调用之间路径**已存在但内容 0 字节**，抢输的一方走下面的
+            // `reuse_idem_record`，`read_json_at` 解析空字节 ⇒ 报
+            // `INTERNAL: corrupt store document` 而不是 Conflict。CI 在 ubuntu 与 macOS
+            // 上同红就是这条窗口（orders/quotes 早已是 tmp+rename 原子发布，只有幂等不是）。
+            // 改法：内容先落到同目录的临时文件并 fsync，再用 `hard_link` 原子占坑——
+            // `AlreadyExists` 就是 test-and-set 失败，落点只可能是已完整写入的文档。
             let bytes = serde_json::to_vec(&record).map_err(|_| internal("idem encode"))?;
-            file.write_all(&bytes)
+            let tmp = path.with_extension(format!("{}.reserve.tmp", rand::random::<u32>()));
+            let mut file = fs::File::create(&tmp).map_err(|err| dependency(&tmp, err))?;
+            if let Err(err) = file
+                .write_all(&bytes)
                 .and_then(|_| file.sync_all())
-                .map_err(|err| dependency(&path, err))?;
-            Ok(None)
+                .map_err(|err| dependency(&tmp, err))
+            {
+                drop(file);
+                let _ = fs::remove_file(&tmp);
+                return Err(err);
+            }
+            drop(file);
+            match fs::hard_link(&tmp, &path) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&tmp);
+                    Ok(None)
+                }
+                // 键已存在：复用/冲突判定仍走原来那个 helper，一行语义没改。
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let _ = fs::remove_file(&tmp);
+                    reuse_idem_record(&path, &hash)
+                }
+                Err(err) => {
+                    let _ = fs::remove_file(&tmp);
+                    Err(dependency(&path, err))
+                }
+            }
         })
         .await
     }
