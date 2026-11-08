@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use ed25519_dalek::SigningKey;
 use wxlike_container::package::{
     generate_key, sign_manifest, verify_package, Manifest, PackageError, PackageRegistry,
+    MAX_PERMISSIONS, MAX_PERMISSION_LEN,
 };
 
 fn manifest(app_id: &str, version: &str, perms: &[&str]) -> Manifest {
@@ -81,11 +82,20 @@ fn unknown_key_and_malformed_signature_are_rejected() {
     let raw = bytes(&manifest("com.demo.app", "1.0.0", &[]));
     let sig = sign_manifest(&raw, &key, "k1");
 
-    // 信任表里没有这个 key_id
+    // 信任表里没有这个 key_id：这是"外域密钥"，与"签名对不上"必须可区分，
+    // 运营面板要能回答"谁试图用哪把钥匙发包"。
     let trusted = BTreeMap::new();
     assert_eq!(
         verify_package(&raw, &sig, &trusted).unwrap_err(),
-        PackageError::BadSigning
+        PackageError::UntrustedKey("k1".into())
+    );
+    // 换一把受信任的钥匙也救不了它（签名不是这把钥匙出的）
+    let other = generate_key();
+    let mut other_trusted = BTreeMap::new();
+    other_trusted.insert("k2".to_string(), other.verifying_key());
+    assert_eq!(
+        verify_package(&raw, &sig, &other_trusted).unwrap_err(),
+        PackageError::UntrustedKey("k1".into())
     );
 
     // 签名不是 64 字节
@@ -96,6 +106,13 @@ fn unknown_key_and_malformed_signature_are_rejected() {
     assert_eq!(
         verify_package(&raw, &short, &trusted2).unwrap_err(),
         PackageError::BadSignature
+    );
+
+    // 注册表走的是同一条判定，卸载/重装都不会绕过
+    let mut reg = PackageRegistry::new(BTreeMap::new());
+    assert_eq!(
+        reg.install(&raw, &sig).unwrap_err(),
+        PackageError::UntrustedKey("k1".into())
     );
 }
 
@@ -165,10 +182,99 @@ fn manifest_validation_rejects_path_traversal_and_bad_version() {
 }
 
 #[test]
-fn semver_ignores_prerelease_suffix() {
+fn semver_ignores_prerelease_suffix_but_requires_three_parts() {
     let m = manifest("com.demo.app", "2.3.4-beta.1", &[]);
     assert_eq!(m.semver(), Some((2, 3, 4)));
-    assert_eq!(manifest("a", "1", &[]).semver(), Some((1, 0, 0)));
+    assert_eq!(
+        manifest("a", "2.3.4+build.9", &[]).semver(),
+        Some((2, 3, 4))
+    );
+    // 补零与截断都会让"版本严格上升"的水位形同虚设，因此一律拒绝。
+    for hostile in [
+        "1", "1.2", "1.2.3.4", "1.2.3.9", "1..3", "01.2.-3", "v1.2.3",
+    ] {
+        assert_eq!(
+            manifest("a", hostile, &[]).semver(),
+            None,
+            "must reject {hostile}"
+        );
+    }
+}
+
+#[test]
+fn a_fourth_version_component_cannot_disguise_a_downgrade() {
+    let key = generate_key();
+    let mut reg = registry_with(&key, "k1");
+    let v1 = bytes(&manifest("com.demo.app", "1.2.3", &[]));
+    reg.install(&v1, &sign_manifest(&v1, &key, "k1")).unwrap();
+
+    // 旧口径会把 "1.2.3.9" 截断成 (1,2,3) 当成同版本；现在按非法清单拒绝。
+    let sneaky = bytes(&manifest("com.demo.app", "1.2.3.9", &[]));
+    assert_eq!(
+        reg.install(&sneaky, &sign_manifest(&sneaky, &key, "k1"))
+            .unwrap_err(),
+        PackageError::BadManifest("version")
+    );
+    // 真正的回滚（哪怕签名合法）仍然是降级。
+    let older = bytes(&manifest("com.demo.app", "1.2.2", &[]));
+    assert_eq!(
+        reg.install(&older, &sign_manifest(&older, &key, "k1"))
+            .unwrap_err(),
+        PackageError::Downgrade("com.demo.app".into(), "1.2.2".into(), "1.2.3".into())
+    );
+}
+
+#[test]
+fn permission_budget_is_enforced_at_the_boundary() {
+    let key = generate_key();
+    let mut trusted = BTreeMap::new();
+    trusted.insert("k1".to_string(), key.verifying_key());
+
+    let at_limit: Vec<String> = (0..MAX_PERMISSIONS)
+        .map(|index| format!("im.perm-{index}"))
+        .collect();
+    let m = Manifest {
+        app_id: "com.demo.app".into(),
+        name: "演示小程序".into(),
+        version: "1.0.0".into(),
+        entry: "index.js".into(),
+        permissions: at_limit,
+    };
+    let raw = bytes(&m);
+    // 全部在白名单外：一条都不授予，但清单本身合法。
+    let parsed = verify_package(&raw, &sign_manifest(&raw, &key, "k1"), &trusted).unwrap();
+    assert!(parsed.granted_permissions().is_empty());
+    assert_eq!(parsed.denied_permissions().len(), MAX_PERMISSIONS);
+
+    let mut over = Manifest {
+        app_id: "com.demo.app".into(),
+        name: "演示小程序".into(),
+        version: "1.0.0".into(),
+        entry: "index.js".into(),
+        permissions: (0..=MAX_PERMISSIONS)
+            .map(|index| format!("im.perm-{index}"))
+            .collect(),
+    };
+    let raw = bytes(&over);
+    assert_eq!(
+        verify_package(&raw, &sign_manifest(&raw, &key, "k1"), &trusted).unwrap_err(),
+        PackageError::BadManifest("too many permissions")
+    );
+
+    // 名字本身也必须有界（空名和超长名都不是权限名）。
+    for name in ["", &"x".repeat(MAX_PERMISSION_LEN + 1)] {
+        over.permissions = vec![(*name).to_string()];
+        let raw = bytes(&over);
+        assert_eq!(
+            verify_package(&raw, &sign_manifest(&raw, &key, "k1"), &trusted).unwrap_err(),
+            PackageError::BadManifest("permission name"),
+            "must reject permission {name:?}"
+        );
+    }
+    // 边界内合法：正好 MAX_PERMISSION_LEN 字节。
+    over.permissions = vec!["x".repeat(MAX_PERMISSION_LEN)];
+    let raw = bytes(&over);
+    verify_package(&raw, &sign_manifest(&raw, &key, "k1"), &trusted).unwrap();
 }
 
 #[test]

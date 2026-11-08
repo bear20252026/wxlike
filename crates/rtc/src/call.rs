@@ -46,6 +46,8 @@ struct Call {
     media: Option<MediaSession>,
     entered_ringing_at: Option<Instant>,
     last_peer_activity: Option<Instant>,
+    /// ADR-25 sidecar room, once the server assigned one (`RoomAssigned`).
+    room: Option<String>,
 }
 
 impl Call {
@@ -145,6 +147,7 @@ impl CallManager {
                     media: None,
                     entered_ringing_at: None,
                     last_peer_activity: None,
+                    room: None,
                 },
             );
             actions.push(Action::Ended {
@@ -183,6 +186,7 @@ impl CallManager {
                 media: Some(media),
                 entered_ringing_at: Some(now),
                 last_peer_activity: Some(now),
+                room: None,
             },
         );
         (call_id, actions)
@@ -274,7 +278,32 @@ impl CallManager {
                 // nothing to do here for now (host adds them via media_mut).
                 Vec::new()
             }
+            SignalContent::RoomAssigned { room, engine } => {
+                self.on_room_assigned(signal, room, engine)
+            }
         }
+    }
+
+    /// ADR-25: remember which sidecar room backs this call. The host picks it
+    /// up via [`CallManager::room_of`] and lets the SDK join; a stale
+    /// assignment for an already-ended call is dropped instead of resurrecting
+    /// the call.
+    fn on_room_assigned(&mut self, signal: Signal, room: String, engine: String) -> Vec<Action> {
+        let Some(call) = self.calls.get_mut(&signal.call_id) else {
+            return Vec::new();
+        };
+        call.last_peer_activity = Some(Instant::now());
+        if !call.live() || engine != crate::room::MediaEngine::LiveKit.name() {
+            // 已结束 / 冷备引擎的房间分配：忽略，不猜。
+            return Vec::new();
+        }
+        call.room = Some(room);
+        Vec::new()
+    }
+
+    /// The sidecar room assigned to a call, if any (ADR-25 LiveKit path).
+    pub fn room_of(&self, call_id: &str) -> Option<&str> {
+        self.calls.get(call_id).and_then(|c| c.room.as_deref())
     }
 
     fn on_invite(&mut self, signal: Signal, sdp: serde_json::Value, video: bool) -> Vec<Action> {
@@ -320,6 +349,7 @@ impl CallManager {
                 media: Some(media),
                 entered_ringing_at: Some(now),
                 last_peer_activity: Some(now),
+                room: None,
             },
         );
         Vec::new()

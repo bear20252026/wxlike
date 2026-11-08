@@ -7,6 +7,12 @@
 # 加词的原则：**只加确实不是错字的**。为了让 CI 变绿而把真错字塞进白名单，
 # 等于把工具关掉。
 
+[default]
+# RFC 4648 的 base64 示例向量：`b64url_encode(b"fo") == "Zm8"` 是标准原文里的
+# 输入，不是 "of" 的错字。这里只豁免这一处写法，不把 `fo` 整个词从检查里拿掉
+# ——`extend-words` 是仓库级的长期白名单，随手加等于把工具关掉。
+extend-ignore-re = ['b64url_encode\(b"fo"\)']
+
 [default.extend-words]
 # owner type / owner id：`MessageStore::owner_pair` 的返回值，全仓库都这么叫
 ot = "ot"
