@@ -30,6 +30,18 @@ CREATE TABLE IF NOT EXISTS ledger_journals (
     business_key   TEXT NOT NULL UNIQUE,
     kind           TEXT NOT NULL,
     currency       TEXT NOT NULL,
+    -- 声明式 typed asset（规范形态 `CNY/2`）；空串表示这笔 journal 未声明。
+    -- 借 Formance 的 asset 形状（`internal/pkg/filterexpr/parser.go:819` 的
+    -- splitAsset：只接受规范写法），非规范形态在 Rust 层就被拒绝，
+    -- 落库的永远是 `Asset::canonical()` 那一种写法。
+    asset          TEXT NOT NULL DEFAULT '',
+    -- 记账附带的键值信息；长度前缀编码，与 SQLite 实现同格式。
+    -- 大小上限借 Formance `internal/domain/metadata_limits.go:40-45`
+    -- （128 条 / 键 256B / 值 16KiB / 单笔记账 64KiB），由 Rust 层校验。
+    metadata       TEXT NOT NULL DEFAULT '',
+    -- 入账那一刻声明的分录条数；配合下面的触发器，事后往既有 journal
+    -- 追加一条（把配平的账做歪）会被数据库拒绝。
+    entry_count    INTEGER NOT NULL DEFAULT 0,
     request_digest TEXT NOT NULL,
     created_at     BIGINT NOT NULL
 );
@@ -61,6 +73,26 @@ DROP TRIGGER IF EXISTS trg_ledger_entries_immutable ON ledger_entries;
 CREATE TRIGGER trg_ledger_entries_immutable
     BEFORE UPDATE OR DELETE ON ledger_entries
     FOR EACH ROW EXECUTE FUNCTION ledger_entries_immutable();
+
+-- "多借多贷必须平衡"不能只是写入前的一次 Rust 校验：历史 journal 如果被
+-- 追加一条分录，配平就被破坏了。entry_count 在入账那一刻声明，之后
+-- 任何让同一 journal 的分录数超出声明值的插入都在这里撞死。
+-- （对应 SQLite 侧 crates/ledger/src/schema.rs 的
+-- trg_ledger_entries_no_extra_row。）
+CREATE OR REPLACE FUNCTION ledger_entries_frozen_set() RETURNS trigger AS $$
+BEGIN
+    IF (SELECT COUNT(*) FROM ledger_entries WHERE journal_id = NEW.journal_id) >
+       (SELECT entry_count FROM ledger_journals WHERE id = NEW.journal_id) THEN
+        RAISE EXCEPTION 'journal entry set is frozen at posting time';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_ledger_entries_frozen_set ON ledger_entries;
+CREATE TRIGGER trg_ledger_entries_frozen_set
+    AFTER INSERT ON ledger_entries
+    FOR EACH ROW EXECUTE FUNCTION ledger_entries_frozen_set();
 
 CREATE TABLE IF NOT EXISTS ledger_holds (
     business_key   TEXT PRIMARY KEY,
@@ -98,6 +130,36 @@ CREATE TABLE IF NOT EXISTS ledger_closing_balances (
     balance_minor BIGINT NOT NULL,
     PRIMARY KEY (day, currency, account)
 );
+
+-- 分录头同样不可改写：business_key 是全平台幂等键，改它等于把一笔钱挪到
+-- 另一个操作号下，重放判定会失效。
+CREATE OR REPLACE FUNCTION ledger_journals_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'ledger_journals is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_ledger_journals_immutable ON ledger_journals;
+CREATE TRIGGER trg_ledger_journals_immutable
+    BEFORE UPDATE OR DELETE ON ledger_journals
+    FOR EACH ROW EXECUTE FUNCTION ledger_journals_immutable();
+
+-- 日结是快照：能改写快照，"日结余额与分录一致"就只是口号。
+CREATE OR REPLACE FUNCTION ledger_closings_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'ledger_closings is an immutable snapshot';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_ledger_closings_immutable ON ledger_closings;
+CREATE TRIGGER trg_ledger_closings_immutable
+    BEFORE UPDATE OR DELETE ON ledger_closings
+    FOR EACH ROW EXECUTE FUNCTION ledger_closings_immutable();
+
+DROP TRIGGER IF EXISTS trg_ledger_closing_balances_immutable ON ledger_closing_balances;
+CREATE TRIGGER trg_ledger_closing_balances_immutable
+    BEFORE UPDATE OR DELETE ON ledger_closing_balances
+    FOR EACH ROW EXECUTE FUNCTION ledger_closings_immutable();
 
 -- ---------------------------------------------------------------------------
 -- commerce（G06-02 .. G06-05）
@@ -146,6 +208,36 @@ CREATE TABLE IF NOT EXISTS commerce_payment_events (
     applied        BOOLEAN NOT NULL,
     reason         TEXT NOT NULL DEFAULT ''
 );
+
+CREATE INDEX IF NOT EXISTS idx_payment_events_intent
+    ON commerce_payment_events(intent_id, received_at);
+
+-- 供应商回调操作台账（G06-02 / PAYMENT-CALLBACK-REPLAY）。
+-- operation_id 是平台统一的长操作把手，也是本端点的幂等键：
+-- 同 operation_id + 同业务摘要 → 返回首次结果且零副作用；
+-- 同 operation_id + 异业务摘要 → IDEMPOTENCY_CONFLICT；
+-- 换 operation_id 再投同一 event_id → REPLAY（由事件表去重兜底）。
+-- 本表与分录、事件行同事务写入，因此崩溃后重投只会有一次效果。
+CREATE TABLE IF NOT EXISTS commerce_provider_callbacks (
+    id             TEXT PRIMARY KEY,
+    business_key   TEXT NOT NULL UNIQUE,
+    operation_id   TEXT NOT NULL UNIQUE,
+    event_id       TEXT NOT NULL,
+    intent_id      TEXT NOT NULL REFERENCES commerce_payment_intents(id),
+    kind           TEXT NOT NULL,
+    provider_ref   TEXT NOT NULL,
+    amount_minor   BIGINT NOT NULL CHECK (amount_minor > 0),
+    currency       TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    result_json    TEXT NOT NULL,
+    applied        BOOLEAN NOT NULL,
+    reason         TEXT NOT NULL DEFAULT '',
+    received_at    BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_callbacks_event
+    ON commerce_provider_callbacks(event_id);
+CREATE INDEX IF NOT EXISTS idx_provider_callbacks_intent
+    ON commerce_provider_callbacks(intent_id, received_at);
 
 CREATE TABLE IF NOT EXISTS commerce_cards (
     id             TEXT PRIMARY KEY,
