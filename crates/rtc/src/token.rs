@@ -644,7 +644,8 @@ pub struct AccessRequest {
     /// 自定义寿命；`None` 用 [`DEFAULT_ACCESS_TTL_MS`]。
     pub ttl_ms: Option<u64>,
     /// 服务端静音（合同 §3.7）：为真时上行能力被降级为无——客户端继续发包
-    /// 也不会被 sidecar 转发。只能**降**不能**升**（见 [`Self::verify_for`]）。
+    /// 也不会被 sidecar 转发。只能**降**不能**升**（见
+    /// [`crate::token::LiveKitIssuer::verify_for`]）。
     pub muted: bool,
 }
 
@@ -929,9 +930,21 @@ impl LiveKitIssuer {
     /// 签发一枚入房凭证。能力面**只**由 [`grant_for`] 推导，调用方无权指定
     /// recorder/admin；越权请求在进入 LiveKit 之前就被拒。
     pub fn issue(&self, req: &AccessRequest, now_ms: u64) -> Result<IssuedAccess, TokenError> {
-        // 上游 `AccessToken::to_jwt`（`access_token.rs:452-471`）的两条前置：
-        // 密钥非空，以及 `roomJoin` 令牌必须同时有 identity 与 room。我们把
-        // identity/room/engine 的空值统一在这一处判掉。
+        let ttl_ms = self.check_issue_input(req)?;
+        let grant = self.access_grant(req)?;
+        let claims = self.access_claims(req, &grant, ttl_ms, now_ms);
+        Ok(IssuedAccess {
+            token: self.encode(&claims)?,
+            room: req.room.clone(),
+            identity: req.identity.clone(),
+            device: req.device.clone(),
+            expires_at_ms: claims.exp.saturating_mul(1_000),
+        })
+    }
+
+    /// 上游 `AccessToken::to_jwt`（`access_token.rs:452-471`）的前置校验，
+    /// 通过则返回本次签发的寿命（毫秒）。
+    fn check_issue_input(&self, req: &AccessRequest) -> Result<u64, TokenError> {
         if self.pair.api_key().is_empty() {
             return Err(TokenError::EmptyApiKey);
         }
@@ -950,6 +963,12 @@ impl LiveKitIssuer {
         if ttl_ms > MAX_ACCESS_TTL_MS {
             return Err(TokenError::InvalidLifetime);
         }
+        Ok(ttl_ms)
+    }
+
+    /// 能力面**只**由 [`grant_for`] 推导，调用方无权指定 recorder/admin；
+    /// 越权请求在进入 LiveKit 之前就被拒。
+    fn access_grant(&self, req: &AccessRequest) -> Result<VideoGrant, TokenError> {
         let mut grant = grant_for(req.scope);
         grant.room = req.room.clone();
         if req.muted {
@@ -962,19 +981,28 @@ impl LiveKitIssuer {
         // `kind` 是上游 claims 里真正决定 IsRecorder/IsDependent 的字段，
         // 光封 `video.recorder` 不够（见 `assert_participant_kind_allowed`）。
         assert_participant_kind_allowed(&req.kind)?;
+        Ok(grant)
+    }
 
+    /// 把请求 + 能力面摊平成一份 JWT claims。
+    fn access_claims(
+        &self,
+        req: &AccessRequest,
+        grant: &VideoGrant,
+        ttl_ms: u64,
+        now_ms: u64,
+    ) -> AccessClaims {
         let issued_at_secs = now_ms / 1_000;
-        let expires_at_secs = issued_at_secs.saturating_add(ttl_ms / 1_000);
-        let claims = AccessClaims {
+        AccessClaims {
             iss: self.pair.api_key().to_string(),
             sub: req.identity.clone(),
             jti: Some(random_jti()),
             iat: issued_at_secs,
             nbf: issued_at_secs,
-            exp: expires_at_secs,
+            exp: issued_at_secs.saturating_add(ttl_ms / 1_000),
             name: req.name.clone(),
             kind: req.kind.clone(),
-            video: grant,
+            video: grant.clone(),
             sip: SipGrant::default(),
             sha256: req.key_fingerprint.clone().unwrap_or_default(),
             metadata: req.metadata.clone(),
@@ -986,14 +1014,7 @@ impl LiveKitIssuer {
                 generation: req.generation,
                 engine: req.engine.clone(),
             },
-        };
-        Ok(IssuedAccess {
-            token: self.encode(&claims)?,
-            room: req.room.clone(),
-            identity: req.identity.clone(),
-            device: req.device.clone(),
-            expires_at_ms: expires_at_secs.saturating_mul(1_000),
-        })
+        }
     }
 
     /// 只序列化非缺省 claim（与上游 `Claims` 的 `skip_serializing_if` 同法）。
@@ -1108,17 +1129,30 @@ fn random_jti() -> String {
 /// base64url（无 padding），JWT 的线格式。手写以免为一个小函数新增依赖。
 const URL_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+/// 一个 base64 字符承载的位数；`0x3F` 就是它的掩码。
+const B64_BITS: u32 = 6;
+/// 一组的长度：3 字节 ↔ 4 字符，两个方向都按这个粒度走。
+const B64_GROUP_BYTES: usize = 3;
+const B64_GROUP_CHARS: usize = 4;
+/// 码表分段偏移：A-Z、a-z 各 26 个，再往后是 10 个数字，最后两位留给
+/// URL-safe 的 `-` 与 `_`。
+const B64_LETTERS: u32 = 26;
+const B64_DIGITS_OFFSET: u32 = 2 * B64_LETTERS;
+const B64_DASH_INDEX: u32 = B64_DIGITS_OFFSET + 10;
+const B64_UNDERSCORE_INDEX: u32 = B64_DASH_INDEX + 1;
+const B64_TOP_SHIFT: u32 = (B64_GROUP_CHARS - 1) as u32 * B64_BITS;
+
 pub(crate) fn b64url_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
-    for chunk in bytes.chunks(3) {
+    let mut out = String::with_capacity(bytes.len().div_ceil(B64_GROUP_BYTES) * B64_GROUP_CHARS);
+    for chunk in bytes.chunks(B64_GROUP_BYTES) {
         let b0 = chunk[0];
         let b1 = *chunk.get(1).unwrap_or(&0);
         let b2 = *chunk.get(2).unwrap_or(&0);
         let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
-        out.push(URL_ALPHABET[(n >> 18) as usize & 0x3F] as char);
-        out.push(URL_ALPHABET[(n >> 12) as usize & 0x3F] as char);
+        out.push(URL_ALPHABET[(n >> B64_TOP_SHIFT) as usize & 0x3F] as char);
+        out.push(URL_ALPHABET[(n >> (2 * B64_BITS)) as usize & 0x3F] as char);
         if chunk.len() > 1 {
-            out.push(URL_ALPHABET[(n >> 6) as usize & 0x3F] as char);
+            out.push(URL_ALPHABET[(n >> B64_BITS) as usize & 0x3F] as char);
         }
         if chunk.len() > 2 {
             out.push(URL_ALPHABET[n as usize & 0x3F] as char);
@@ -1130,10 +1164,10 @@ pub(crate) fn b64url_encode(bytes: &[u8]) -> String {
 fn url_index(c: u8) -> Result<u32, TokenError> {
     match c {
         b'A'..=b'Z' => Ok(u32::from(c - b'A')),
-        b'a'..=b'z' => Ok(u32::from(c - b'a') + 26),
-        b'0'..=b'9' => Ok(u32::from(c - b'0') + 52),
-        b'-' => Ok(62),
-        b'_' => Ok(63),
+        b'a'..=b'z' => Ok(u32::from(c - b'a') + B64_LETTERS),
+        b'0'..=b'9' => Ok(u32::from(c - b'0') + B64_DIGITS_OFFSET),
+        b'-' => Ok(B64_DASH_INDEX),
+        b'_' => Ok(B64_UNDERSCORE_INDEX),
         _ => Err(TokenError::Malformed),
     }
 }
@@ -1144,15 +1178,15 @@ pub(crate) fn b64url_decode(text: &str) -> Result<Vec<u8>, TokenError> {
     if raw.is_empty() {
         return Ok(Vec::new());
     }
-    if raw.len() % 4 == 1 {
+    if raw.len() % B64_GROUP_CHARS == 1 {
         return Err(TokenError::Malformed);
     }
-    let mut out = Vec::with_capacity(raw.len() / 4 * 3 + 3);
-    for chunk in raw.chunks(4) {
+    let mut out = Vec::with_capacity(raw.len() / B64_GROUP_CHARS * B64_GROUP_BYTES + 3);
+    for chunk in raw.chunks(B64_GROUP_CHARS) {
         let mut acc: u32 = 0;
         for (i, byte) in chunk.iter().enumerate() {
             let v = url_index(*byte)?;
-            acc |= v << (18 - 6 * i);
+            acc |= v << (B64_TOP_SHIFT - i as u32 * B64_BITS);
         }
         match chunk.len() {
             2 => out.push((acc >> 16) as u8),
@@ -1793,16 +1827,13 @@ mod tests {
             bearer_token(Some("Bearer "), None),
             Err(TokenError::MissingAuthorization)
         );
-        assert_eq!(
-            bearer_token(None, Some("q-token".into())).unwrap(),
-            "q-token"
-        );
+        assert_eq!(bearer_token(None, Some("q-token")).unwrap(), "q-token");
         assert_eq!(
             bearer_token(None, None),
             Err(TokenError::MissingAuthorization)
         );
         // 空 Authorization 头 = 没带 header，走 query（上游 `authHeader != ""` 分支）。
-        assert_eq!(bearer_token(Some(""), Some("q".into())).unwrap(), "q");
+        assert_eq!(bearer_token(Some(""), Some("q")).unwrap(), "q");
     }
 
     /// 上游 `Claims` 的"缺省即不序列化"整表：一枚只声明时效的令牌，
@@ -2073,8 +2104,8 @@ mod tests {
         );
         assert!(format!("{:?}", pair()).contains("redacted"));
         // 上游 DEFAULT_TTL 是 6 小时；我们的上限收紧到 15 分钟（ADR-25 刻意偏离）。
+        const { assert!(MAX_ACCESS_TTL_MS / 1_000 < LIVEKIT_DEFAULT_TTL_SECS) };
         assert_eq!(LIVEKIT_DEFAULT_TTL_SECS, 3600 * 6);
-        assert!(MAX_ACCESS_TTL_MS / 1_000 < LIVEKIT_DEFAULT_TTL_SECS);
     }
 
     #[test]

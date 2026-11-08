@@ -344,9 +344,12 @@ impl ConnectionStateTracker {
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[repr(i32)]
 pub enum DisconnectReason {
+    /// 判别值即上游 proto 的 tag：变体顺序 0..=16 与 proto 一一对应，
+    /// 只显式锚定 0，其余由编译器顺序编号（见 [`Self::tag`]）。
     #[default]
-    UnknownReason,
+    UnknownReason = 0,
     /// 客户端主动断开
     ClientInitiated,
     /// 同名 identity 的另一个参与者进来了（顶号）
@@ -382,27 +385,10 @@ pub enum DisconnectReason {
 }
 
 impl DisconnectReason {
-    /// proto 数值（与 sidecar 对齐用）。
+    /// proto 数值（与 sidecar 对齐用）。就是 `#[repr(i32)]` 的判别值本身，
+    /// 不再有第二份数字表可以走偏。
     pub fn tag(self) -> i32 {
-        match self {
-            Self::UnknownReason => 0,
-            Self::ClientInitiated => 1,
-            Self::DuplicateIdentity => 2,
-            Self::ServerShutdown => 3,
-            Self::ParticipantRemoved => 4,
-            Self::RoomDeleted => 5,
-            Self::StateMismatch => 6,
-            Self::JoinFailure => 7,
-            Self::Migration => 8,
-            Self::SignalClose => 9,
-            Self::RoomClosed => 10,
-            Self::UserUnavailable => 11,
-            Self::UserRejected => 12,
-            Self::SipTrunkFailure => 13,
-            Self::ConnectionTimeout => 14,
-            Self::MediaFailure => 15,
-            Self::AgentError => 16,
-        }
+        self as i32
     }
 
     /// 上游 proto 的 `as_str_name()`：稳定的 SCREAMING_SNAKE 字符串，
@@ -1153,9 +1139,11 @@ impl RoomAuditEntry {
 }
 
 /// 录制来源。ADR-25 只允许 `Client`。
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode")]
 pub enum RecordingMode {
+    /// ADR-25 下的默认态：没有任何一侧在录。
+    #[default]
     Off,
     /// 客户端侧录制：旗标由服务端持有并广播给全员，媒体数据不进服务端。
     Client {
@@ -1163,12 +1151,6 @@ pub enum RecordingMode {
         /// [`Room::set_recording`]）。
         reported_by: String,
     },
-}
-
-impl Default for RecordingMode {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 /// 服务端 Egress 的拒绝结论（ADR-25：录制只允许客户端侧）。
@@ -1314,16 +1296,7 @@ impl Room {
         if !(2..=1000).contains(&capacity) {
             return Err(RoomError::BadCapacity);
         }
-        let mut participants = BTreeMap::new();
-        participants.insert(
-            host.to_string(),
-            Participant::new(host, Role::Host, now_ms, MemberState::Active),
-        );
-        let mut allocators = HashMap::new();
-        allocators.insert(
-            host.to_string(),
-            EgressBitrateAllocator::new(DEFAULT_MAX_EGRESS_BPS),
-        );
+        let (participants, allocators) = Self::host_seed(host, now_ms);
         let sidecar_room = sidecar_room_name(engine, owner_conv, id);
         let mut room = Self {
             id: id.to_string(),
@@ -1364,6 +1337,28 @@ impl Room {
             Some(engine.name()),
         );
         Ok(room)
+    }
+
+    /// 建房的唯一起点：名册与出口码率分配器都只放主持人一个人。
+    /// 抽出来是因为这两张表必须同进同退，漏一张就会出现"有席位没配额"。
+    fn host_seed(
+        host: &str,
+        now_ms: u64,
+    ) -> (
+        BTreeMap<String, Participant>,
+        HashMap<String, EgressBitrateAllocator>,
+    ) {
+        let mut participants = BTreeMap::new();
+        participants.insert(
+            host.to_string(),
+            Participant::new(host, Role::Host, now_ms, MemberState::Active),
+        );
+        let mut allocators = HashMap::new();
+        allocators.insert(
+            host.to_string(),
+            EgressBitrateAllocator::new(DEFAULT_MAX_EGRESS_BPS),
+        );
+        (participants, allocators)
     }
 
     pub fn id(&self) -> &str {
@@ -1538,14 +1533,7 @@ impl Room {
             });
         }
         if self.host == user {
-            // 管理员优先，其次最早加入者（BTreeMap 按 id 排序，不能当加入序用，
-            // 所以显式按 joined_at 再按 id 取最小）
-            let successor = self
-                .participants
-                .values()
-                .min_by_key(|p| (p.role != Role::Moderator, p.joined_at, p.user.clone()))
-                .map(|p| p.user.clone());
-            if let Some(next) = successor {
+            if let Some(next) = self.elect_successor() {
                 self.host = next.clone();
                 if let Some(p) = self.participants.get_mut(&next) {
                     p.role = Role::Host;
@@ -1567,6 +1555,15 @@ impl Room {
             new_host: None,
             ended: false,
         })
+    }
+
+    /// 主持人离席后的接任者：管理员优先，其次最早加入者。
+    /// BTreeMap 按 id 排序，不能当加入序用，所以显式按 joined_at 再按 id 取最小。
+    fn elect_successor(&self) -> Option<String> {
+        self.participants
+            .values()
+            .min_by_key(|p| (p.role != Role::Moderator, p.joined_at, p.user.clone()))
+            .map(|p| p.user.clone())
     }
 
     /// 静音：本人可静自己；管理员/主持人可静他人。返回静音后的状态。
@@ -2050,6 +2047,17 @@ impl Room {
         &mut self,
         cmd: &MemberCommand,
     ) -> std::result::Result<MemberOutcome, MemberError> {
+        if let Some(err) = self.reject_member_command(cmd) {
+            return Err(err);
+        }
+        let applied = self.apply_member_command(cmd);
+        self.audit_member_result(cmd, &applied);
+        applied
+    }
+
+    /// 三道前置裁决，命中即留拒绝审计并返回错误；全部通过返回 `None`。
+    /// 这里刻意**不**改动任何状态：被拒的命令不能让 `revision` 前滚。
+    fn reject_member_command(&mut self, cmd: &MemberCommand) -> Option<MemberError> {
         // 上游 `Room.IsClosed()`：关闭后的房间不接受任何命令，连 CAS 都不必再看。
         if let Some(reason) = self.closed {
             self.audit_at(
@@ -2065,7 +2073,7 @@ impl Room {
                 Some(cmd.at_ms),
                 Some(reason.as_str_name()),
             );
-            return Err(MemberError::RoomClosed(reason));
+            return Some(MemberError::RoomClosed(reason));
         }
         if cmd.actor.is_empty() {
             self.audit_at(
@@ -2077,7 +2085,7 @@ impl Room {
                 Some(cmd.at_ms),
                 Some("empty_actor"),
             );
-            return Err(MemberError::BadInput("actor is required"));
+            return Some(MemberError::BadInput("actor is required"));
         }
         if let Some(seen) = cmd.expected_revision {
             if seen != self.revision {
@@ -2090,26 +2098,32 @@ impl Room {
                     Some(cmd.at_ms),
                     Some("cas"),
                 );
-                return Err(MemberError::StaleRevision {
+                return Some(MemberError::StaleRevision {
                     seen,
                     current: self.revision,
                 });
             }
         }
-        let applied = self.apply_member_command(cmd);
+        None
+    }
+
+    /// 允许与拒绝都要留痕，且拒绝那条必须带上错误码——审计表是唯一能回答
+    /// "为什么这个人没能进房"的地方。
+    fn audit_member_result(
+        &mut self,
+        cmd: &MemberCommand,
+        applied: &std::result::Result<MemberOutcome, MemberError>,
+    ) {
         match applied {
-            Ok(outcome) => {
-                self.audit_at(
-                    RoomAuditAction::MemberChanged,
-                    None,
-                    &cmd.actor,
-                    Some(outcome.user.as_str()),
-                    outcome.device.as_deref(),
-                    Some(cmd.at_ms),
-                    Some(cmd.action.name()),
-                );
-                Ok(outcome)
-            }
+            Ok(outcome) => self.audit_at(
+                RoomAuditAction::MemberChanged,
+                None,
+                &cmd.actor,
+                Some(outcome.user.as_str()),
+                outcome.device.as_deref(),
+                Some(cmd.at_ms),
+                Some(cmd.action.name()),
+            ),
             Err(err) => {
                 let code = err.code();
                 self.audit_at(
@@ -2121,11 +2135,12 @@ impl Room {
                     Some(cmd.at_ms),
                     Some(cmd.action.name()),
                 );
-                Err(err)
             }
         }
     }
 
+    /// 按动作分发。每个 `cmd_*` 只负责自己那一条状态迁移，公共的水印/代次
+    /// 前滚都写在各自里面——审计由 [`Self::member_command`] 统一补。
     fn apply_member_command(
         &mut self,
         cmd: &MemberCommand,
@@ -2135,170 +2150,226 @@ impl Room {
             MemberAction::Join { device } | MemberAction::JoinAsModerator { device, .. } => {
                 self.cmd_join(cmd, device, role_of_action(&cmd.action))
             }
-            MemberAction::MarkActive { device } => {
-                if !self.participants.contains_key(actor) {
-                    return Err(MemberError::NotMember);
-                }
-                match self.seat_state(actor, device) {
-                    None => return Err(MemberError::NoSuchDevice(device.clone())),
-                    Some(MemberState::Active) => {
-                        // 幂等：重复的 connected 不前滚代次。
-                        return Ok(self.outcome(actor, Some(device), false, None, 0));
-                    }
-                    Some(MemberState::Joining | MemberState::Reconnecting) => {}
-                    Some(other) => {
-                        return Err(MemberError::IllegalState {
-                            action: "mark_active",
-                            state: other,
-                        })
-                    }
-                }
-                let p = self
-                    .participants
-                    .get_mut(actor)
-                    .ok_or(MemberError::NotMember)?;
-                if let Some(seat) = p.devices.get_mut(device) {
-                    seat.state = MemberState::Active;
-                    seat.grace_until_ms = 0;
-                    // 与 sidecar 那张表对齐：这条路径生效时，proto 侧至少到
-                    // ACTIVE（上游 JOINING→JOINED→ACTIVE 的最后一跳）。
-                    seat.sidecar = SidecarParticipantState::Active;
-                }
-                p.refresh();
-                self.bump();
-                Ok(self.outcome(actor, Some(device), false, None, 0))
-            }
-            MemberAction::Disconnect { device } => {
-                if !self.participants.contains_key(actor) {
-                    return Err(MemberError::NotMember);
-                }
-                let current = match self.seat_state(actor, device) {
-                    None => return Err(MemberError::NoSuchDevice(device.clone())),
-                    Some(MemberState::Removed) => {
-                        return Err(MemberError::IllegalState {
-                            action: "disconnect",
-                            state: MemberState::Removed,
-                        })
-                    }
-                    Some(state) => state,
-                };
-                let grace = cmd.at_ms.saturating_add(self.reconnect_grace_ms);
-                let need_bump = current != MemberState::Reconnecting;
-                if let Some(p) = self.participants.get_mut(actor) {
-                    if let Some(seat) = p.devices.get_mut(device) {
-                        if need_bump {
-                            seat.state = MemberState::Reconnecting;
-                        }
-                        // 掉线在 proto 侧就是 DISCONNECTED（同一张表，不另开一套）。
-                        seat.sidecar = SidecarParticipantState::Disconnected;
-                        // 宽限期内的重复上报只顺延截止，不再前滚状态。
-                        seat.grace_until_ms = grace;
-                    }
-                    p.refresh();
-                }
-                if need_bump {
-                    self.bump();
-                }
-                Ok(self.outcome(actor, Some(device), true, None, 0))
-            }
-            MemberAction::Reconnect { device } => {
-                if self.banned.contains(actor) {
-                    return Err(MemberError::Banned);
-                }
-                if !self.participants.contains_key(actor) {
-                    return Err(MemberError::NotMember);
-                }
-                match self.seat_state(actor, device) {
-                    None => return Err(MemberError::NoSuchDevice(device.clone())),
-                    Some(MemberState::Left | MemberState::Removed) => {
-                        return Err(MemberError::IllegalState {
-                            action: "reconnect",
-                            state: self.seat_state(actor, device).unwrap_or(MemberState::Left),
-                        })
-                    }
-                    Some(_) => {}
-                }
-                // 重连必须换新凭证：旧 JWT 不再代表这一次连接。
-                let p = self
-                    .participants
-                    .get_mut(actor)
-                    .ok_or(MemberError::NotMember)?;
-                if let Some(seat) = p.devices.get_mut(device) {
-                    seat.state = MemberState::Joining;
-                    seat.grace_until_ms = 0;
-                    // 上游重连是**新建一个 ParticipantImpl**（状态表从 JOINING
-                    // 重新开始），我们复用同一个席位，所以这里显式重置那台
-                    // 单调时钟：否则 DISCONNECTED 之后新的 JOINING 会被
-                    // `advance` 当成乱序丢掉，重连永远成功不了。
-                    seat.sidecar = SidecarParticipantState::Joining;
-                }
-                p.refresh();
-                self.generation = self.generation.saturating_add(1);
-                self.bump();
-                Ok(self.outcome(actor, Some(device), true, None, 0))
-            }
-            MemberAction::Leave { device } => {
-                if !self.participants.contains_key(actor) {
-                    return Err(MemberError::NotMember);
-                }
-                if self.seat_state(actor, device).is_none() {
-                    return Err(MemberError::NoSuchDevice(device.clone()));
-                }
-                let dropped = self.remove_seat(actor, device, "leave", cmd.at_ms);
-                let ended = self.participants.is_empty();
-                if ended {
-                    self.audit_at(
-                        RoomAuditAction::RoomEnded,
-                        None,
-                        actor,
-                        None,
-                        Some(device),
-                        Some(cmd.at_ms),
-                        None,
-                    );
-                }
-                let new_host = if ended {
-                    None
-                } else {
-                    self.takeover_if_host(actor)
-                };
-                Ok(self.outcome(actor, Some(device), false, new_host, dropped))
-            }
-            MemberAction::MuteSelf { track, muted } => {
-                if !self.participants.contains_key(actor) {
-                    return Err(MemberError::NotMember);
-                }
-                self.set_mute(actor, actor, *track, *muted)
-                    .map_err(room_to_member)?;
-                Ok(self.outcome(actor, None, true, None, 0))
-            }
+            MemberAction::MarkActive { device } => self.cmd_mark_active(actor, device),
+            MemberAction::Disconnect { device } => self.cmd_disconnect(actor, device, cmd.at_ms),
+            MemberAction::Reconnect { device } => self.cmd_reconnect(actor, device),
+            MemberAction::Leave { device } => self.cmd_leave(actor, device, cmd.at_ms),
+            MemberAction::MuteSelf { track, muted } => self.cmd_mute_self(actor, *track, *muted),
             MemberAction::MuteOther {
                 target,
                 track,
                 muted,
-            } => {
-                let allowed = self
-                    .participants
-                    .get(actor)
-                    .is_some_and(|p| p.role.can_moderate());
-                if !allowed {
-                    return Err(MemberError::Forbidden);
-                }
-                if !self.participants.contains_key(target) {
-                    return Err(MemberError::NotMember);
-                }
-                self.set_mute(actor, target, *track, *muted)
-                    .map_err(room_to_member)?;
-                Ok(self.outcome(target, None, true, None, 0))
+            } => self.cmd_mute_other(actor, target, *track, *muted),
+            MemberAction::Hand { raised } => self.cmd_hand(actor, *raised),
+        }
+    }
+
+    /// 席位从 JOINING/RECONNECTING 走到 ACTIVE。已经是 ACTIVE 的重复上报走幂等
+    /// 分支（不前滚代次），其余状态一律非法。
+    fn cmd_mark_active(
+        &mut self,
+        actor: &str,
+        device: &str,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        if !self.participants.contains_key(actor) {
+            return Err(MemberError::NotMember);
+        }
+        match self.seat_state(actor, device) {
+            None => return Err(MemberError::NoSuchDevice(device.to_string())),
+            Some(MemberState::Active) => {
+                // 幂等：重复的 connected 不前滚代次。
+                return Ok(self.outcome(actor, Some(device), false, None, 0));
             }
-            MemberAction::Hand { raised } => {
-                if !self.participants.contains_key(actor) {
-                    return Err(MemberError::NotMember);
-                }
-                self.raise_hand(actor, *raised).map_err(room_to_member)?;
-                Ok(self.outcome(actor, None, false, None, 0))
+            Some(MemberState::Joining | MemberState::Reconnecting) => {}
+            Some(other) => {
+                return Err(MemberError::IllegalState {
+                    action: "mark_active",
+                    state: other,
+                })
             }
         }
+        let p = self
+            .participants
+            .get_mut(actor)
+            .ok_or(MemberError::NotMember)?;
+        if let Some(seat) = p.devices.get_mut(device) {
+            seat.state = MemberState::Active;
+            seat.grace_until_ms = 0;
+            // 与 sidecar 那张表对齐：这条路径生效时，proto 侧至少到
+            // ACTIVE（上游 JOINING→JOINED→ACTIVE 的最后一跳）。
+            seat.sidecar = SidecarParticipantState::Active;
+        }
+        p.refresh();
+        self.bump();
+        Ok(self.outcome(actor, Some(device), false, None, 0))
+    }
+
+    /// 掉线：进重连宽限期，而不是立刻当作离席。
+    fn cmd_disconnect(
+        &mut self,
+        actor: &str,
+        device: &str,
+        at_ms: u64,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        if !self.participants.contains_key(actor) {
+            return Err(MemberError::NotMember);
+        }
+        let current = match self.seat_state(actor, device) {
+            None => return Err(MemberError::NoSuchDevice(device.to_string())),
+            Some(MemberState::Removed) => {
+                return Err(MemberError::IllegalState {
+                    action: "disconnect",
+                    state: MemberState::Removed,
+                })
+            }
+            Some(state) => state,
+        };
+        let grace = at_ms.saturating_add(self.reconnect_grace_ms);
+        let need_bump = current != MemberState::Reconnecting;
+        if let Some(p) = self.participants.get_mut(actor) {
+            if let Some(seat) = p.devices.get_mut(device) {
+                if need_bump {
+                    seat.state = MemberState::Reconnecting;
+                }
+                // 掉线在 proto 侧就是 DISCONNECTED（同一张表，不另开一套）。
+                seat.sidecar = SidecarParticipantState::Disconnected;
+                // 宽限期内的重复上报只顺延截止，不再前滚状态。
+                seat.grace_until_ms = grace;
+            }
+            p.refresh();
+        }
+        if need_bump {
+            self.bump();
+        }
+        Ok(self.outcome(actor, Some(device), true, None, 0))
+    }
+
+    /// 重连：席位重新从 JOINING 起步，代次 +1（旧凭证随之作废）。
+    fn cmd_reconnect(
+        &mut self,
+        actor: &str,
+        device: &str,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        if self.banned.contains(actor) {
+            return Err(MemberError::Banned);
+        }
+        if !self.participants.contains_key(actor) {
+            return Err(MemberError::NotMember);
+        }
+        let current = self.seat_state(actor, device);
+        match current {
+            None => return Err(MemberError::NoSuchDevice(device.to_string())),
+            Some(MemberState::Left | MemberState::Removed) => {
+                return Err(MemberError::IllegalState {
+                    action: "reconnect",
+                    state: current.unwrap_or(MemberState::Left),
+                })
+            }
+            Some(_) => {}
+        }
+        // 重连必须换新凭证：旧 JWT 不再代表这一次连接。
+        let p = self
+            .participants
+            .get_mut(actor)
+            .ok_or(MemberError::NotMember)?;
+        if let Some(seat) = p.devices.get_mut(device) {
+            seat.state = MemberState::Joining;
+            seat.grace_until_ms = 0;
+            // 上游重连是**新建一个 ParticipantImpl**（状态表从 JOINING
+            // 重新开始），我们复用同一个席位，所以这里显式重置那台
+            // 单调时钟：否则 DISCONNECTED 之后新的 JOINING 会被
+            // `advance` 当成乱序丢掉，重连永远成功不了。
+            seat.sidecar = SidecarParticipantState::Joining;
+        }
+        p.refresh();
+        self.generation = self.generation.saturating_add(1);
+        self.bump();
+        Ok(self.outcome(actor, Some(device), true, None, 0))
+    }
+
+    /// 某个席位的离席：回收席位，空房则记 `RoomEnded`。
+    fn cmd_leave(
+        &mut self,
+        actor: &str,
+        device: &str,
+        at_ms: u64,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        if !self.participants.contains_key(actor) {
+            return Err(MemberError::NotMember);
+        }
+        if self.seat_state(actor, device).is_none() {
+            return Err(MemberError::NoSuchDevice(device.to_string()));
+        }
+        let dropped = self.remove_seat(actor, device, "leave", at_ms);
+        let ended = self.participants.is_empty();
+        if ended {
+            self.audit_at(
+                RoomAuditAction::RoomEnded,
+                None,
+                actor,
+                None,
+                Some(device),
+                Some(at_ms),
+                None,
+            );
+        }
+        let new_host = if ended {
+            None
+        } else {
+            self.takeover_if_host(actor)
+        };
+        Ok(self.outcome(actor, Some(device), false, new_host, dropped))
+    }
+
+    /// 自己静音自己：不需要主持人/管理员权限。
+    fn cmd_mute_self(
+        &mut self,
+        actor: &str,
+        track: Track,
+        muted: bool,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        if !self.participants.contains_key(actor) {
+            return Err(MemberError::NotMember);
+        }
+        self.set_mute(actor, actor, track, muted)
+            .map_err(room_to_member)?;
+        Ok(self.outcome(actor, None, true, None, 0))
+    }
+
+    /// 管理员/主持人静音他人。
+    fn cmd_mute_other(
+        &mut self,
+        actor: &str,
+        target: &str,
+        track: Track,
+        muted: bool,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        let allowed = self
+            .participants
+            .get(actor)
+            .is_some_and(|p| p.role.can_moderate());
+        if !allowed {
+            return Err(MemberError::Forbidden);
+        }
+        if !self.participants.contains_key(target) {
+            return Err(MemberError::NotMember);
+        }
+        self.set_mute(actor, target, track, muted)
+            .map_err(room_to_member)?;
+        Ok(self.outcome(target, None, true, None, 0))
+    }
+
+    /// 举手/放下手。
+    fn cmd_hand(
+        &mut self,
+        actor: &str,
+        raised: bool,
+    ) -> std::result::Result<MemberOutcome, MemberError> {
+        if !self.participants.contains_key(actor) {
+            return Err(MemberError::NotMember);
+        }
+        self.raise_hand(actor, raised).map_err(room_to_member)?;
+        Ok(self.outcome(actor, None, false, None, 0))
     }
 
     fn cmd_join(
@@ -2417,11 +2488,7 @@ impl Room {
         if self.host != user || self.participants.is_empty() {
             return None;
         }
-        let successor = self
-            .participants
-            .values()
-            .min_by_key(|p| (p.role != Role::Moderator, p.joined_at, p.user.clone()))
-            .map(|p| p.user.clone())?;
+        let successor = self.elect_successor()?;
         self.host = successor.clone();
         if let Some(p) = self.participants.get_mut(&successor) {
             p.role = Role::Host;
@@ -2469,7 +2536,7 @@ impl Room {
     /// 房间只决定"给不给、给什么能力、哪一代"）。
     ///
     /// 绑定关系：sidecar 房间名 + identity(=user) + device + call + 成员代次
-    /// + 引擎。服务端静音在这里落地为 `canPublish=false`——这正是 ADR-25 下
+    /// 与引擎。服务端静音在这里落地为 `canPublish=false`——这正是 ADR-25 下
     /// "服务端静音"唯一诚实的实现：我们不再自己转发媒体，只能通过凭证让
     /// sidecar 停止转发。
     pub fn prepare_access(
@@ -2479,91 +2546,13 @@ impl Room {
         call: &str,
         at_ms: u64,
     ) -> std::result::Result<crate::token::AccessRequest, MemberError> {
-        if let Some(reason) = self.closed {
-            self.audit_at(
-                RoomAuditAction::TokenIssued,
-                Some(MemberErrorCode::RoomClosed),
-                user,
-                Some(user),
-                Some(device),
-                Some(at_ms),
-                Some(reason.as_str_name()),
-            );
-            return Err(MemberError::RoomClosed(reason));
-        }
-        if self.engine != MediaEngine::LiveKit {
-            self.audit_at(
-                RoomAuditAction::TokenIssued,
-                Some(MemberErrorCode::WrongEngine),
-                user,
-                Some(user),
-                Some(device),
-                Some(at_ms),
-                Some("not_a_livekit_room"),
-            );
-            return Err(MemberError::WrongEngine(
-                self.engine.name(),
-                MediaEngine::LiveKit.name(),
-            ));
-        }
-        if self.banned.contains(user) {
-            self.audit_at(
-                RoomAuditAction::TokenIssued,
-                Some(MemberErrorCode::Banned),
-                user,
-                Some(user),
-                Some(device),
-                Some(at_ms),
-                Some("banned"),
-            );
-            return Err(MemberError::Banned);
-        }
-        if !self.participants.contains_key(user) {
-            // 未邀请者想进房：留痕，但不改任何状态。
-            self.audit_at(
-                RoomAuditAction::TokenIssued,
-                Some(MemberErrorCode::NotMember),
-                user,
-                Some(user),
-                Some(device),
-                Some(at_ms),
-                Some("not_invited"),
-            );
-            return Err(MemberError::NotMember);
-        }
-        let state = self.seat_state(user, device);
-        let state = match state {
-            Some(state) => state,
-            None => {
-                self.audit_at(
-                    RoomAuditAction::TokenIssued,
-                    Some(MemberErrorCode::NoSuchDevice),
-                    user,
-                    Some(user),
-                    Some(device),
-                    Some(at_ms),
-                    Some("no_seat"),
-                );
-                return Err(MemberError::NoSuchDevice(device.to_string()));
-            }
-        };
-        if !state.may_receive_token() {
-            self.audit_at(
-                RoomAuditAction::TokenIssued,
-                Some(MemberErrorCode::IllegalState),
-                user,
-                Some(user),
-                Some(device),
-                Some(at_ms),
-                Some(state.as_str()),
-            );
-            return Err(MemberError::IllegalState {
-                action: "prepare_access",
-                state,
-            });
-        }
-        let p = self.participants.get(user).ok_or(MemberError::NotMember)?;
-        let muted = p.audio_muted;
+        self.check_access(user, device, at_ms)?;
+        let muted = self
+            .participants
+            .get(user)
+            .ok_or(MemberError::NotMember)?
+            .audio_muted;
+        // 允许的那条也要留痕：静音降权签发与正常签发在审计上必须可分辨。
         self.audit_at(
             RoomAuditAction::TokenIssued,
             None,
@@ -2573,7 +2562,136 @@ impl Room {
             Some(at_ms),
             Some(if muted { "publish_revoked" } else { "allowed" }),
         );
-        Ok(crate::token::AccessRequest {
+        Ok(self.access_request_for(user, device, call, muted))
+    }
+
+    /// 签发前的六道裁决，顺序即优先级；每条拒绝都进审计且都不改动状态。
+    fn check_access(
+        &mut self,
+        user: &str,
+        device: &str,
+        at_ms: u64,
+    ) -> std::result::Result<(), MemberError> {
+        self.check_access_room(user, device, at_ms)?;
+        self.check_access_seat(user, device, at_ms)
+    }
+
+    /// 房间层面的四道裁决：关闭 / 引擎 / 黑名单 / 不在名册。
+    fn check_access_room(
+        &mut self,
+        user: &str,
+        device: &str,
+        at_ms: u64,
+    ) -> std::result::Result<(), MemberError> {
+        if let Some(reason) = self.closed {
+            self.deny_access(
+                user,
+                device,
+                at_ms,
+                MemberErrorCode::RoomClosed,
+                reason.as_str_name(),
+            );
+            return Err(MemberError::RoomClosed(reason));
+        }
+        if self.engine != MediaEngine::LiveKit {
+            self.deny_access(
+                user,
+                device,
+                at_ms,
+                MemberErrorCode::WrongEngine,
+                "not_a_livekit_room",
+            );
+            return Err(MemberError::WrongEngine(
+                self.engine.name(),
+                MediaEngine::LiveKit.name(),
+            ));
+        }
+        if self.banned.contains(user) {
+            self.deny_access(user, device, at_ms, MemberErrorCode::Banned, "banned");
+            return Err(MemberError::Banned);
+        }
+        if !self.participants.contains_key(user) {
+            // 未邀请者想进房：留痕，但不改任何状态。
+            self.deny_access(
+                user,
+                device,
+                at_ms,
+                MemberErrorCode::NotMember,
+                "not_invited",
+            );
+            return Err(MemberError::NotMember);
+        }
+        Ok(())
+    }
+
+    /// 席位层面的两道裁决：有没有这个席位、这个状态还发不发得了凭证。
+    fn check_access_seat(
+        &mut self,
+        user: &str,
+        device: &str,
+        at_ms: u64,
+    ) -> std::result::Result<(), MemberError> {
+        let state = match self.seat_state(user, device) {
+            Some(state) => state,
+            None => {
+                self.deny_access(
+                    user,
+                    device,
+                    at_ms,
+                    MemberErrorCode::NoSuchDevice,
+                    "no_seat",
+                );
+                return Err(MemberError::NoSuchDevice(device.to_string()));
+            }
+        };
+        if !state.may_receive_token() {
+            // 这一条的 detail 用状态名，排障要能看出席位卡在哪个状态。
+            self.deny_access(
+                user,
+                device,
+                at_ms,
+                MemberErrorCode::IllegalState,
+                state.as_str(),
+            );
+            return Err(MemberError::IllegalState {
+                action: "prepare_access",
+                state,
+            });
+        }
+        Ok(())
+    }
+
+    /// 被拒的签发也要留痕：`code` 列回答"为什么没给凭证"，`detail` 给排障
+    /// 留一个稳定的可查字符串。
+    fn deny_access(
+        &mut self,
+        user: &str,
+        device: &str,
+        at_ms: u64,
+        code: MemberErrorCode,
+        detail: &str,
+    ) {
+        self.audit_at(
+            RoomAuditAction::TokenIssued,
+            Some(code),
+            user,
+            Some(user),
+            Some(device),
+            Some(at_ms),
+            Some(detail),
+        );
+    }
+
+    /// 把房间事实组装成一张待签的入房请求（签名在
+    /// [`crate::token::LiveKitIssuer`]，房间只决定给什么能力）。
+    fn access_request_for(
+        &self,
+        user: &str,
+        device: &str,
+        call: &str,
+        muted: bool,
+    ) -> crate::token::AccessRequest {
+        crate::token::AccessRequest {
             room: self.sidecar_room.clone(),
             identity: user.to_string(),
             device: device.to_string(),
@@ -2592,7 +2710,7 @@ impl Room {
             key_fingerprint: None,
             ttl_ms: Some(ACCESS_TTL_MS),
             muted,
-        })
+        }
     }
 
     /// 用一枚**已验签**的令牌结论标记该参与者的依附性（上游是
@@ -2636,36 +2754,9 @@ impl Room {
             .unwrap_or_default();
         if devices.is_empty() {
             // 冷备路径（没有设备席位）也要能撤销：直接摘名册。
-            self.participants.remove(user);
-            self.allocators.remove(user);
-            let dropped = self.signals.forget(user);
-            self.generation = self.generation.saturating_add(1);
-            self.bump();
-            if dropped > 0 {
-                self.audit_at(
-                    RoomAuditAction::SignalDropped,
-                    None,
-                    user,
-                    Some(user),
-                    None,
-                    Some(at_ms),
-                    Some("revoked"),
-                );
-            }
+            self.drop_roster_entry(user, at_ms);
         } else {
-            for device in devices {
-                self.remove_seat(user, &device, "revoke", at_ms);
-            }
-            if let Some(p) = self.participants.get_mut(user) {
-                for seat in p.devices.values_mut() {
-                    seat.state = MemberState::Removed;
-                }
-                p.state = MemberState::Removed;
-                self.bump();
-            }
-            self.participants.remove(user);
-            self.allocators.remove(user);
-            let _ = self.signals.forget(user);
+            self.drop_seats(user, &devices, at_ms);
         }
         self.banned.insert(user.to_string());
         self.audit_at(
@@ -2690,6 +2781,43 @@ impl Room {
             );
         }
         Ok(())
+    }
+
+    /// 无席位成员的撤销：整个名册条目直接摘掉，积压信令随之丢弃。
+    fn drop_roster_entry(&mut self, user: &str, at_ms: u64) {
+        self.participants.remove(user);
+        self.allocators.remove(user);
+        let dropped = self.signals.forget(user);
+        self.generation = self.generation.saturating_add(1);
+        self.bump();
+        if dropped > 0 {
+            self.audit_at(
+                RoomAuditAction::SignalDropped,
+                None,
+                user,
+                Some(user),
+                None,
+                Some(at_ms),
+                Some("revoked"),
+            );
+        }
+    }
+
+    /// 有席位成员的撤销：先逐席回收，再把残余席位标成 `Removed`，最后摘名册。
+    fn drop_seats(&mut self, user: &str, devices: &[String], at_ms: u64) {
+        for device in devices {
+            self.remove_seat(user, device, "revoke", at_ms);
+        }
+        if let Some(p) = self.participants.get_mut(user) {
+            for seat in p.devices.values_mut() {
+                seat.state = MemberState::Removed;
+            }
+            p.state = MemberState::Removed;
+            self.bump();
+        }
+        self.participants.remove(user);
+        self.allocators.remove(user);
+        let _ = self.signals.forget(user);
     }
 
     /// 定时器：回收超过宽限期的 `Reconnecting` 席位。返回被回收的用户。
@@ -2934,48 +3062,10 @@ impl Room {
         let Some(old) = SidecarParticipantState::advance(current, next) else {
             // 上游对乱序只打 debug 日志、不动状态；我们把"被忽略"这件事留痕，
             // 因为它正是排障时想知道的"sidecar 报晚了还是报错了"。
-            self.audit_at(
-                RoomAuditAction::MemberChanged,
-                Some(MemberErrorCode::OutOfOrderSidecarState),
-                user,
-                Some(user),
-                Some(device),
-                Some(at_ms),
-                Some(current.as_str_name()),
-            );
-            return Ok(SidecarStateReport {
-                applied: false,
-                previous: current,
-                current,
-                effects: Vec::new(),
-            });
+            return Ok(self.record_ignored_sidecar_state(user, device, current, at_ms));
         };
-        let effects = match next {
-            // 上游 `onStateChange` 的 ACTIVE 分支：先订阅既有轨道，再上报指标。
-            SidecarParticipantState::Active => vec![
-                SidecarStateEffect::SubscribeExistingTracks,
-                SidecarStateEffect::ReportActive,
-            ],
-            SidecarParticipantState::Disconnected => vec![SidecarStateEffect::BeginReconnectGrace],
-            SidecarParticipantState::Joining | SidecarParticipantState::Joined => Vec::new(),
-        };
-        let p = self
-            .participants
-            .get_mut(user)
-            .ok_or(MemberError::NotMember)?;
-        let seat = p
-            .devices
-            .get_mut(device)
-            .ok_or_else(|| MemberError::NoSuchDevice(device.to_string()))?;
-        seat.sidecar = next;
-        seat.state = next.to_member_state();
-        if next == SidecarParticipantState::Disconnected {
-            seat.grace_until_ms = at_ms.saturating_add(self.reconnect_grace_ms);
-        } else {
-            seat.grace_until_ms = 0;
-        }
-        p.refresh();
-        self.bump();
+        let effects = sidecar_effects(next);
+        self.commit_sidecar_state(user, device, next, at_ms)?;
         // 上游只在 `ACTIVE -> DISCONNECTED` 时记一次会话时长
         // （`participant.go:2354-2357`）：从 JOINING 直接掉线的不算完整会话。
         let detail = if next.is_clean_disconnect_from(old) {
@@ -2998,6 +3088,60 @@ impl Room {
             current: next,
             effects,
         })
+    }
+
+    /// 生效那一步：proto 状态、我们的席位状态、宽限截止三张表一起前滚。
+    /// `DISCONNECTED` 起宽限期，其余状态一律清零。
+    fn commit_sidecar_state(
+        &mut self,
+        user: &str,
+        device: &str,
+        next: SidecarParticipantState,
+        at_ms: u64,
+    ) -> std::result::Result<(), MemberError> {
+        let p = self
+            .participants
+            .get_mut(user)
+            .ok_or(MemberError::NotMember)?;
+        let seat = p
+            .devices
+            .get_mut(device)
+            .ok_or_else(|| MemberError::NoSuchDevice(device.to_string()))?;
+        seat.sidecar = next;
+        seat.state = next.to_member_state();
+        if next == SidecarParticipantState::Disconnected {
+            seat.grace_until_ms = at_ms.saturating_add(self.reconnect_grace_ms);
+        } else {
+            seat.grace_until_ms = 0;
+        }
+        p.refresh();
+        self.bump();
+        Ok(())
+    }
+
+    /// 一条被判定为乱序的回报：留 `OutOfOrderSidecarState` 审计，状态不变。
+    fn record_ignored_sidecar_state(
+        &mut self,
+        user: &str,
+        device: &str,
+        current: SidecarParticipantState,
+        at_ms: u64,
+    ) -> SidecarStateReport {
+        self.audit_at(
+            RoomAuditAction::MemberChanged,
+            Some(MemberErrorCode::OutOfOrderSidecarState),
+            user,
+            Some(user),
+            Some(device),
+            Some(at_ms),
+            Some(current.as_str_name()),
+        );
+        SidecarStateReport {
+            applied: false,
+            previous: current,
+            current,
+            effects: Vec::new(),
+        }
     }
 
     /// 该席位当前对 sidecar 报的状态（诊断/给客户端的快照）。
@@ -3044,5 +3188,19 @@ fn role_of_action(action: &MemberAction) -> Role {
     match action {
         MemberAction::JoinAsModerator { role, .. } => *role,
         _ => Role::Member,
+    }
+}
+
+/// sidecar 状态迁移生效之后的房间副作用，与上游 `Room.onStateChange`
+/// （`pkg/rtc/room.go:1227-1281`）一一对应。
+fn sidecar_effects(next: SidecarParticipantState) -> Vec<SidecarStateEffect> {
+    match next {
+        // ACTIVE 分支：先订阅既有轨道，再上报指标。
+        SidecarParticipantState::Active => vec![
+            SidecarStateEffect::SubscribeExistingTracks,
+            SidecarStateEffect::ReportActive,
+        ],
+        SidecarParticipantState::Disconnected => vec![SidecarStateEffect::BeginReconnectGrace],
+        SidecarParticipantState::Joining | SidecarParticipantState::Joined => Vec::new(),
     }
 }
