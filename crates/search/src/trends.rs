@@ -53,11 +53,14 @@ pub struct TrendOptions {
     pub min_authors: usize,
 }
 
+/// 榜默认取多少条：与 `limit` 的入参上限分开设，调默认值不该动校验。
+const DEFAULT_TREND_LIMIT: usize = 20;
+
 impl Default for TrendOptions {
     fn default() -> Self {
         Self {
             window_ms: 7 * 24 * 60 * 60 * 1000,
-            limit: 20,
+            limit: DEFAULT_TREND_LIMIT,
             owner_cap: 3,
             min_authors: 1,
         }

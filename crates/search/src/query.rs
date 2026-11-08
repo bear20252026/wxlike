@@ -366,6 +366,25 @@ impl TimeRange {
     }
 }
 
+/// 日历常量，[`split_ymd`] / [`days_from_civil`] / [`civil_from_days`] 共用一份。
+///
+/// 提出来不只是为了好看：这三个函数里的数字互相咬合（纪元 400 年、5 个月 153 天、
+/// 400 年 146097 天、到 1970 的偏移 719468），散在算式里时**任何一处走偏都只有
+/// 跨闰世纪的那条用例才会红**。C10 的 `magic_total` 不数 const 行，正好把
+/// "同一份常数抄了三遍"这类债挡在门外。
+const MONTHS_PER_YEAR: i64 = 12;
+const DAYS_PER_YEAR: i64 = 365;
+const DAYS_IN_5_MONTHS: i64 = 153; // 3..7 月：31+28+31+30+31
+const YEARS_PER_ERA: i64 = 400;
+const DAYS_IN_4_YEARS_MINUS_1: i64 = 1460;
+const DAYS_IN_100_YEARS_MINUS_1: i64 = 36_524;
+const DAYS_IN_400_YEARS_MINUS_1: i64 = 146_096;
+const DAYS_IN_400_YEARS: i64 = 146_097;
+const DAYS_FROM_0000_TO_1970: i64 = 719_468;
+const DAYS_IN_FEBRUARY_LEAP: i64 = 29;
+/// 平年每月天数；2 月由调用方按闰年替换（见 [`split_ymd`]）。
+const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
 /// `YYYY-MM-DD` 拆分 + 日历合法性（含闰年）。返回 `(year, month, day)`。
 fn split_ymd(s: &str) -> Result<(i64, i64, i64), QueryError> {
     let bytes = s.as_bytes();
@@ -383,24 +402,16 @@ fn split_ymd(s: &str) -> Result<(i64, i64, i64), QueryError> {
         .parse()
         .map_err(|_| QueryError::MalformedTimeRange)?;
     let d: i64 = s[8..].parse().map_err(|_| QueryError::MalformedTimeRange)?;
-    if !(1..=12).contains(&m) || d < 1 {
+    if !(1..=MONTHS_PER_YEAR).contains(&m) || d < 1 {
         return Err(QueryError::MalformedTimeRange);
     }
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let days_in_month: [i64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % YEARS_PER_ERA == 0;
+    let mut days_in_month = MONTH_DAYS;
+    days_in_month[1] = if leap {
+        DAYS_IN_FEBRUARY_LEAP
+    } else {
+        MONTH_DAYS[1]
+    };
     if d > days_in_month[(m - 1) as usize] {
         return Err(QueryError::MalformedTimeRange);
     }
@@ -415,24 +426,30 @@ fn split_ymd(s: &str) -> Result<(i64, i64, i64), QueryError> {
 /// 因此 1969-12-31 得到 `-1` 而不是 Rust 截断除法给出的 `0`。
 pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    let era = (if y >= 0 { y } else { y - (YEARS_PER_ERA - 1) }) / YEARS_PER_ERA;
+    let yoe = y - era * YEARS_PER_ERA; // [0, 399]
+    let mp = (m + 9) % MONTHS_PER_YEAR;
+    let doy = (DAYS_IN_5_MONTHS * mp + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * DAYS_PER_YEAR + yoe / 4 - yoe / 100 + doy;
+    era * DAYS_IN_400_YEARS + doe - DAYS_FROM_0000_TO_1970
 }
 
 /// [`days_from_civil`] 的逆：天数（地板除到日）→ `(年, 月, 日)`，UTC。
 pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]，3 月为首
-    let d = doy - (153 * mp + 2) / 5 + 1;
+    let z = z + DAYS_FROM_0000_TO_1970;
+    let era = (if z >= 0 {
+        z
+    } else {
+        z - (DAYS_IN_400_YEARS - 1)
+    }) / DAYS_IN_400_YEARS;
+    let doe = z - era * DAYS_IN_400_YEARS; // [0, 146096]
+    let yoe = (doe - doe / DAYS_IN_4_YEARS_MINUS_1 + doe / DAYS_IN_100_YEARS_MINUS_1
+        - doe / DAYS_IN_400_YEARS_MINUS_1)
+        / DAYS_PER_YEAR; // [0, 399]
+    let y = yoe + era * YEARS_PER_ERA;
+    let doy = doe - (DAYS_PER_YEAR * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / DAYS_IN_5_MONTHS; // [0, 11]，3 月为首
+    let d = doy - (DAYS_IN_5_MONTHS * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
