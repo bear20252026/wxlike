@@ -11,6 +11,13 @@
 //! 危险动作走 `prepare → confirmation_token → execute`（G15-04）：
 //! 第一次调用只回计划与令牌，**不执行**；带令牌再调才真正执行，且令牌一次性。
 //!
+//! **但这条链在 MCP 上不是"问过人了"**：这里没有人在场，计划与令牌都回给
+//! 同一个 agent，它自己能走完两步。它的价值是"参数摘要必须再核一遍"
+//! （换人/换金额要重新确认、跨动作不能挪用），不是人的批准。
+//! 真正要"只有人能做"的动作标 `Confirmation::HumanOnly`：本进程是
+//! [`Channel::Agent`]，这类命令在 [`wxlike_cmd::auth::guard_channel`]
+//! 处直接拒，**不签发也不兑换令牌**，错误消息让人去有人守着的界面里做。
+//!
 //! #320 之后，JSON-RPC 的分派与 MCP 的数据模型都由官方 **rmcp** 承担
 //! （根 `Cargo.toml` 钉 3.8.0，只开 `server` / `transport-io`）：本文件不再自己
 //! 数 `method` 字符串、不再自己拼 `{"jsonrpc":"2.0",...}` 错误帧、也不再自己
@@ -49,7 +56,8 @@ use tokio::sync::mpsc;
 use wxlike_types::{ActionResult, DomainError};
 
 use wxlike_client::execute::Executor;
-use wxlike_cmd::auth::{ActorContext, AuthGate, Provenance};
+use wxlike_cmd::auth::{ActorContext, AuthGate, Channel, Provenance};
+use wxlike_cmd::availability;
 use wxlike_cmd::catalog::{self, ArgError, CommandSpec};
 use wxlike_cmd::confirmation::ConfirmationStore;
 use wxlike_cmd::contract;
@@ -89,6 +97,11 @@ const SERVED_METHODS: [&str; 5] = [
 /// 主体与会话**——"没有身份"不能成为跳过绑定的理由。
 const LOCAL_ACTOR: &str = "local-agent";
 const LOCAL_SESSION: &str = "local-session";
+
+/// 本进程的通道身份。**写死，不是命令行开关**：一个能被调用方（或它的模型）
+/// 改成 `Human` 的闸门等于没有闸门。将来若加远程 transport 或定时任务入口，
+/// 各自在自己的进程里同样写死，不共用这个常量。
+const CHANNEL: Channel = Channel::Agent;
 
 /// JSON-RPC / MCP 错误码。
 pub mod code {
@@ -396,7 +409,7 @@ impl Core {
         meta: &RequestMetaObject,
     ) -> Result<Value, RpcError> {
         if META_TOOLS.contains(&name) {
-            return Ok(self.meta_call(name, args));
+            return Ok(self.meta_call(name, args, meta));
         }
         let spec = self.resolve_tool(name)?;
         if args.to_string().len() > MAX_ARGS_BYTES {
@@ -407,21 +420,38 @@ impl Core {
         }
         // 未知/缺失/类型不符一律协议级拒绝：这不是"业务失败"，是调用方拼错了。
         catalog::validate_args(spec, args).map_err(arg_error)?;
-        // 来源可信度**不依赖是否配了 scope**：聊天正文里的指令永远不能触发写。
-        if let Err(e) = wxlike_cmd::auth::guard_provenance(spec, provenance_of(meta)) {
-            return Ok(tool_failed(spec, &contract::classify(&e.to_string())));
-        }
-        // 会话与 scope：先于执行，且拒绝是**工具错误**（调用方能读懂并改 token）
-        if let Some(gate) = &self.gate {
-            if let Err(e) = gate.check(spec, args, provenance_of(meta)) {
-                return Ok(tool_err(&e.to_string()));
-            }
+        if let Some(denial) = self.deny(spec, args, meta) {
+            return Ok(refusal(spec, &denial));
         }
         let env = match envelope_of(meta) {
             Ok(env) => env,
             Err(e) => return Ok(tool_failed(spec, &e)),
         };
         Ok(self.execute_checked(spec, args, &env))
+    }
+
+    /// 执行前的判定，**只有这一处实现**：全部委托给
+    /// [`wxlike_cmd::availability`]，它内部按执行顺序调用与以前相同的三个原语
+    /// （通道 → 参数来源 → scope → 本地策略）。
+    ///
+    /// 为什么不再在这里直接调 `guard_*`：`im_execute` 这条兼容路径以前**绕过了
+    /// 全部三道判定**（`meta_call` 在 `tools_call` 的守卫之前就 return 了），
+    /// 一次 `{"command":"group.kick"}` 就能带着不可信参数走到底。判定收敛到一个
+    /// 函数之后，两条入口共用同一份，`listed_availability_is_the_same_refusal`
+    /// 与 `meta_execute_cannot_bypass_the_guards` 一边测一致、一边测绕过。
+    fn deny(
+        &self,
+        spec: &CommandSpec,
+        params: &Value,
+        meta: &RequestMetaObject,
+    ) -> Option<availability::Denial> {
+        let ctx = availability::Context {
+            channel: CHANNEL,
+            provenance: provenance_of(meta),
+            gate: self.gate.as_ref(),
+            policy: &self.policy,
+        };
+        availability::why_not(spec, params, &ctx)
     }
 
     fn resolve_tool(&self, name: &str) -> Result<&'static CommandSpec, RpcError> {
@@ -507,6 +537,18 @@ impl Core {
         }
     }
 
+    /// 可用性判定的现场：本进程的通道、当前闸门与策略。
+    /// 列表侧用**可信来源**：这里回答的是"这条命令在此进程里能不能做"，
+    /// 某一次调用的参数是不是从聊天正文里抠出来的，由 `tools_call` 那关管。
+    fn availability_ctx(&self) -> availability::Context<'_> {
+        availability::Context {
+            channel: CHANNEL,
+            provenance: Provenance::Trusted,
+            gate: self.gate.as_ref(),
+            policy: &self.policy,
+        }
+    }
+
     /// 只有长任务进作业账：一次就结束的写命令记进去只会让账变噪音。
     fn record_job(&mut self, spec: &CommandSpec, operation_id: &str, result: &ActionResult) {
         if spec.id != LONG_RUNNING_ACTION {
@@ -517,17 +559,53 @@ impl Core {
         let _ = self.jobs.finish(&job.id, output, now());
     }
 
-    fn meta_call(&mut self, name: &str, args: &Value) -> Value {
+    fn meta_call(&mut self, name: &str, args: &Value, meta: &RequestMetaObject) -> Value {
         match name {
             "im_list_commands" => {
                 let q = args.get("query").and_then(Value::as_str).unwrap_or("");
-                tool_ok(&catalog_list(q))
+                tool_ok(&catalog_list(q, &self.availability_ctx()))
             }
             "im_inspect" => inspect(&self.exec),
             "im_jobs" => self.jobs_call(args),
-            // 兼容旧客户端：保留统一入口，但仍然按 catalog 校验参数
-            _ => execute_one(&self.exec, args),
+            // 兼容旧客户端的统一执行入口。它不再是判定之外的一条路：
+            // 解析、校验参数、过同一份 `deny`，与 `tools/call` 完全同源。
+            _ => self.meta_execute(args, meta),
         }
+    }
+
+    /// `im_execute` 的一整条路：解析 → 判定 → 执行。
+    /// 单独成函数而不是嵌在 `match` 里，是为了让"判定在中间"这件事在缩进上
+    /// 也看得出来（同时压住质量闸门的嵌套层数指标）。
+    fn meta_execute(&self, args: &Value, meta: &RequestMetaObject) -> Value {
+        let (spec, params) = match self.resolve_execute_request(args) {
+            Err(frame) => return frame,
+            Ok(pair) => pair,
+        };
+        if let Some(denial) = self.deny(spec, &params, meta) {
+            return refusal(spec, &denial);
+        }
+        execute_one(&self.exec, spec, &params)
+    }
+
+    /// `im_execute` 的入参解析：把 `{"command","params"}` 变成 `(spec, params)`。
+    /// 返回 `Err(Value)` 时那个帧就是最终响应（形状与收敛前一致）。
+    fn resolve_execute_request(
+        &self,
+        args: &Value,
+    ) -> Result<(&'static CommandSpec, Value), Value> {
+        let Some(cmd) = args.get("command").and_then(Value::as_str) else {
+            return Err(tool_err("im_execute 需要 command 参数"));
+        };
+        let Some(spec) = catalog::get(cmd) else {
+            return Err(tool_err(&format!(
+                "unknown command {cmd:?}（先 im_list_commands）"
+            )));
+        };
+        let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+        if let Err(e) = catalog::validate_args(spec, &params) {
+            return Err(tool_err(&e.to_string()));
+        }
+        Ok((spec, params))
     }
 
     /// 作业账：`list` / `get` / `cancel`。取消只改本地账，远端是否停住如实回报。
@@ -590,7 +668,8 @@ impl Core {
     fn resources_read(&self, uri: &str) -> Result<Value, RpcError> {
         let (text, mime) = match uri {
             "wxlike://catalog" => (
-                serde_json::to_string_pretty(&catalog_list("")).unwrap_or_default(),
+                serde_json::to_string_pretty(&catalog_list("", &self.availability_ctx()))
+                    .unwrap_or_default(),
                 "application/json",
             ),
             "wxlike://policy" => (wxlike_cmd::policy::render(&self.policy), "text/plain"),
@@ -902,21 +981,36 @@ fn arg_error(e: ArgError) -> RpcError {
     RpcError::new(code::INVALID_PARAMS, e.to_string())
 }
 
-fn execute_one(exec: &Executor, args: &Value) -> Value {
-    let Some(cmd) = args.get("command").and_then(Value::as_str) else {
-        return tool_err("im_execute 需要 command 参数");
-    };
-    let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
-    let Some(spec) = catalog::get(cmd) else {
-        return tool_err(&format!("unknown command {cmd:?}（先 im_list_commands）"));
-    };
-    if let Err(e) = catalog::validate_args(spec, &params) {
-        return tool_err(&e.to_string());
-    }
-    match exec.run(spec.id, &params) {
+/// `im_execute` 的执行段：判定已经在外层做过，这里只剩"跑 + 包结果"。
+fn execute_one(exec: &Executor, spec: &CommandSpec, params: &Value) -> Value {
+    match exec.run(spec.id, params) {
         Ok(data) => tool_result(&contract::ok_result(spec, data, contract::now_ms())),
         Err(message) => tool_failed(spec, &contract::classify(&message)),
     }
+}
+
+/// 一条拒绝的**外形**映射，与三道判定收敛前逐字一致：
+///
+/// * 参数来源不可信、本地策略（写/破坏性没开、会话不在白名单）这两类，原来
+///   就是从 `guard_provenance` / `Executor.run` 里以 contract-v1 失败结果出去
+///   的，业务面看得见 `status`，所以继续走 `tool_failed`；
+/// * 通道与 scope 原来就是工具错误（改配置或换 token 即可重试），继续 `tool_err`。
+///
+/// 收敛的是**判断**，不是响应形状——形状一变就会把 contract-v1 的既有断言
+/// 一起卷进来，那种改法该单独走一次基线变更。
+fn refusal(spec: &CommandSpec, denial: &availability::Denial) -> Value {
+    const RESULT_SHAPED: [&str; 6] = [
+        "untrusted_content",
+        "read_only",
+        "write_disabled",
+        "destructive_disabled",
+        "conv_not_allowed",
+        "missing_conv",
+    ];
+    if RESULT_SHAPED.contains(&denial.code) {
+        return tool_failed(spec, &contract::classify(&denial.message));
+    }
+    tool_err(&denial.message)
 }
 
 fn inspect(exec: &Executor) -> Value {
@@ -932,10 +1026,13 @@ fn inspect(exec: &Executor) -> Value {
     tool_ok(&Value::Object(out))
 }
 
-fn catalog_list(query: &str) -> Value {
+fn catalog_list(query: &str, ctx: &availability::Context<'_>) -> Value {
     let items: Vec<Value> = catalog::search(query)
         .into_iter()
         .map(|s| {
+            // 可用性由 `wxlike_cmd::availability` 判定，与执行路径同一个函数、
+            // 与 `wxlike policy` 同一组探针参数。这里不加任何本地推断。
+            let denial = availability::why_not(s, &availability::probe_params(s), ctx);
             json!({
                 "id": s.id,
                 "action_id": s.action_id(),
@@ -944,14 +1041,20 @@ fn catalog_list(query: &str) -> Value {
                 "params": s.params,
                 "capability": s.capability.as_str(),
                 "scope": s.scope.as_str(),
-                "confirmation": if s.confirmation.is_required() { "required" } else { "none" },
+                "confirmation": s.confirmation.as_str(),
                 "idempotency": if s.idempotency.is_required() { "required" } else { "none" },
                 "platforms": s.platforms.names(),
                 "host": s.host.as_str(),
+                "available": denial.is_none(),
+                "why_not": denial.map(|d| json!({ "code": d.code, "message": d.message })),
             })
         })
         .collect();
-    json!({ "count": items.len(), "commands": items })
+    let available = items
+        .iter()
+        .filter(|i| i["available"] == Value::Bool(true))
+        .count();
+    json!({ "count": items.len(), "available": available, "commands": items })
 }
 
 /// 工具面的**唯一出处**：四个元工具在前，然后按 catalog 顺序一条命令一个工具。
@@ -1491,5 +1594,195 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":24,"result":{"anything":true}}"#,
         );
         assert_eq!(v["error"]["code"], code::INVALID_REQUEST, "{v}");
+    }
+
+    /// 指定策略的握手会话。
+    fn ready_with(policy: Policy) -> Server {
+        let mut srv = server(policy);
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
+        assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+        srv
+    }
+
+    /// 不带 query 的全量列表。
+    fn list_all(srv: &mut Server) -> Value {
+        call(
+            srv,
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"im_list_commands","arguments":{}}}"#,
+        )
+    }
+
+    /// 握手 + 挂闸门的会话。scope 收窄时用，专测"判定是不是真的在执行前"。
+    fn gated(policy: Policy, scope: &str) -> Server {
+        let exec = Executor::new(Http::new("http://127.0.0.1:1"), policy.clone());
+        let gate = AuthGate::from_parts(
+            "u-alice",
+            "s-1",
+            scope,
+            Some("s-1"),
+            Vec::new(),
+            Channel::Agent,
+        )
+        .expect("gate");
+        let mut srv = Server::new(exec, policy).with_gate(Some(gate));
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
+        assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+        srv
+    }
+
+    /// **兼容入口不是后门**。`im_execute` 以前在 `tools_call` 的三道判定之外
+    /// 直接落到执行器：同样一条 `msg.send`，用 `msg-send` 工具会被来源与 scope
+    /// 拦下，包进 `im_execute` 就畅通无阻。现在两条路共用 `Core::deny`，
+    /// 这里逐条测那两道拦得住的判定。
+    #[test]
+    fn meta_execute_cannot_bypass_the_guards() {
+        // 写权限开着、会话 g-1 在白名单里，所以拦住它的只可能是判定本身
+        // （空 `allow_conv` 是"一个都不许"，不能拿来当"不设限"用）
+        let write = Policy::new(["g-1"], true, false);
+        let mut srv = gated(write, "conv:g-1");
+        // 1) 不可信来源：正文里的指令不许触发写
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"im_execute","arguments":{"command":"msg.send","params":{"conv":"g-1","text":"hi","idempotency_key":"k"}},"_meta":{"wxlike/provenance":"untrusted: message body"}}}"#,
+        );
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        let text = v["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(text.contains("untrusted content"), "{text}");
+        // 2) scope：会话不在授权范围内，必须和工具面一样拒
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"im_execute","arguments":{"command":"msg.send","params":{"conv":"g-2","text":"hi","idempotency_key":"k"}}}}"#,
+        );
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        let text = v["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(text.contains("conv:g-2"), "应点名缺哪个 scope：{text}");
+        // 3) 三道判定都过了，才会轮到执行本身（这里必然是连不上桩服务端的失败，
+        //    绝不是判定类拒绝——判定类文案一次都不该出现）
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"im_execute","arguments":{"command":"msg.send","params":{"conv":"g-1","text":"hi","idempotency_key":"k"}}}}"#,
+        );
+        let text = v["result"]["content"][0]["text"].as_str().expect("text");
+        for phrase in [
+            "untrusted",
+            "is not allowed",
+            "not granted",
+            "missing scope",
+            "read-only",
+        ] {
+            assert!(
+                !text.contains(phrase),
+                "过了判定还报判定类拒绝（{phrase:?}）：{text}"
+            );
+        }
+    }
+
+    /// `im_list_commands` 报的"不能做"必须与真调用的拒绝**同源同文**。
+    /// 分成两套判定的后果是模型反复撞同一堵墙，而人看不出为什么——
+    /// wordcraft 就漏了这一半（headless 的 `list_commands` 干脆不输出可用性）。
+    #[test]
+    fn listed_availability_is_the_same_refusal_as_the_call() {
+        let mut srv = ready(); // Policy::none()：写权限没开
+        let listed = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"im_list_commands","arguments":{"query":"msg.send"}}}"#,
+        );
+        let items = listed["result"]["structuredContent"]["commands"]
+            .as_array()
+            .expect("commands");
+        assert_eq!(items.len(), 1, "{listed}");
+        let item = &items[0];
+        assert_eq!(item["id"], "msg.send");
+        assert_eq!(item["available"], false, "写权限没开就该报不可用");
+        assert_eq!(item["why_not"]["code"], "write_disabled", "{item}");
+        let listed_text = item["why_not"]["message"].as_str().expect("message");
+
+        // 同一参数的真调用，拒绝文案必须逐字相同（同一函数、同一 Display）
+        let v = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"im_execute","arguments":{"command":"msg.send","params":{"conv":"g-1","text":"hi","idempotency_key":"k"}}}}"#,
+        );
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        assert_eq!(
+            v["result"]["content"][0]["text"].as_str().expect("text"),
+            listed_text,
+            "列表与调用给出两句不同的拒绝，就是两份真相"
+        );
+    }
+
+    /// `available` 必须**跟着策略变**：只读时报出的可用数正好是只读那批，
+    /// 开写之后全部可用。两个方向都测，否则这个字段可能一直是 `false`
+    /// （或一直 `true`），照样"看起来有报"。
+    #[test]
+    fn listing_availability_moves_with_the_policy_in_both_directions() {
+        let reads = catalog::CATALOG
+            .iter()
+            .filter(|s| s.capability == wxlike_cmd::Capability::Read)
+            .count();
+        assert!(
+            reads > 0 && reads < catalog::CATALOG.len(),
+            "catalog 形状变了"
+        );
+
+        // 会话全放行，只留"写"这一个开关——否则读也会被白名单拦，测不出这一档
+        let mut srv = ready_with(Policy::new(["*"], false, false));
+        let content = &list_all(&mut srv)["result"]["structuredContent"];
+        let items = content["commands"].as_array().expect("commands");
+        assert_eq!(items.len(), catalog::CATALOG.len(), "不带 query 是全集");
+        assert_eq!(
+            content["available"].as_u64().expect("count") as usize,
+            reads,
+            "只读策略下可用的应当就是只读那批：{content}"
+        );
+        for item in items.iter().filter(|i| i["available"] == false) {
+            // 只读策略拦的是"要写的两类"：write 缺写权限、destructive 缺破坏性
+            let cap = item["capability"].as_str().expect("capability");
+            let expected = match cap {
+                "write" => "write_disabled",
+                "destructive" => "destructive_disabled",
+                "read" => panic!("只读策略不该拦只读命令：{item}"),
+                other => panic!("未知能力 {other:?}：{item}"),
+            };
+            assert_eq!(item["why_not"]["code"], expected, "{item}");
+            let flag = if expected == "write_disabled" {
+                "--allow-write"
+            } else {
+                "--allow-destructive"
+            };
+            assert!(
+                item["why_not"]["message"].as_str().unwrap().contains(flag),
+                "要说清怎么放开：{item}"
+            );
+        }
+
+        // 会话通配全开 + 写与破坏性都开：一条都不该被拦
+        let mut srv = ready_with(Policy::new(["*"], true, true));
+        let content = &list_all(&mut srv)["result"]["structuredContent"];
+        assert_eq!(
+            content["available"].as_u64().expect("count") as usize,
+            catalog::CATALOG.len(),
+            "全放开还报不可用，就是判定过保守：{content}"
+        );
+    }
+
+    /// 会话白名单没覆盖到探针会话时，只读命令也会标不可用——
+    /// 这一条测的是"列表不许把做不到的说成做得到"。
+    #[test]
+    fn listing_reports_the_conv_allowlist_gap_even_for_reads() {
+        let mut srv = ready_with(Policy::new(["g-1"], true, true));
+        let listed = call(
+            &mut srv,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"im_list_commands","arguments":{"query":"msg.forward"}}}"#,
+        );
+        let item = &listed["result"]["structuredContent"]["commands"][0];
+        assert_eq!(item["id"], "msg.forward", "{listed}");
+        // 探针参数落在白名单外 ⇒ 列表按"这个形状现在不能做"报，不粉饰
+        assert_eq!(item["why_not"]["code"], "conv_not_allowed", "{item}");
     }
 }

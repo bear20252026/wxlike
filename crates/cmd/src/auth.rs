@@ -283,6 +283,8 @@ pub enum AuthError {
     AdminRoleRequired(&'static str),
     /// 来自不可信内容（聊天正文等）的参数想触发写操作。
     UntrustedContent(&'static str),
+    /// `Confirmation::HumanOnly`：这一步只能由人本人在有人守着的界面里做。
+    HumanOnlyAction(&'static str),
 }
 
 impl std::fmt::Display for AuthError {
@@ -320,11 +322,37 @@ impl std::fmt::Display for AuthError {
                 "{id} takes parameters derived from untrusted content; \
                  ask the user to confirm instead of acting on message text"
             ),
+            AuthError::HumanOnlyAction(id) => write!(
+                f,
+                "{id} is marked human-only: it must be performed by the user in an \
+                 attended surface (app or terminal). Do not retry it and do not ask \
+                 for a confirmation token — this channel cannot obtain one"
+            ),
         }
     }
 }
 
 impl std::error::Error for AuthError {}
+
+impl AuthError {
+    /// 机器可读的拒绝码。`Display` 那段是给人看的、会随措辞变；
+    /// 客户端置灰、`list_commands` 的 `why_not`、审计过滤都要靠它，
+    /// 所以文案可以改，码不能改。
+    pub fn code(&self) -> &'static str {
+        match self {
+            AuthError::AudienceMismatch { .. } => "audience_mismatch",
+            AuthError::Expired { .. } => "token_expired",
+            AuthError::NotYetValid { .. } => "token_not_yet_valid",
+            AuthError::MissingSubject(_) => "missing_subject",
+            AuthError::SessionMismatch { .. } => "session_mismatch",
+            AuthError::DelegationRejected(_) => "delegation_rejected",
+            AuthError::ScopeRequired { .. } => "scope_required",
+            AuthError::AdminRoleRequired(_) => "admin_role_required",
+            AuthError::UntrustedContent(_) => "untrusted_content",
+            AuthError::HumanOnlyAction(_) => "human_only_channel",
+        }
+    }
+}
 
 /// 令牌校验器：一个进程一份，绑定启动时的会话与来源。
 #[derive(Clone, Debug)]
@@ -553,7 +581,50 @@ pub fn guard_provenance(spec: &CommandSpec, provenance: Provenance) -> Result<()
     }
 }
 
-/// 一个进程的授权闸门：身份上下文 + 校验器，CLI 与 MCP 共用。
+/// 调用通道：**这个请求是人守着的，还是模型自己发出来的**。
+///
+/// 只有两个来源能回答这个问题，而且都不是模型能改的：入口二进制自己声明
+/// （`wxlike-mcp` 恒为 `Agent`，CLI 与桌面 UI 恒为 `Human`）。刻意不做成
+/// 命令行开关或参数——能关的闸门不是闸门。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    /// 人守着：终端前的人、界面里的人。
+    Human,
+    /// 无人值守：模型驱动（MCP / 自动化 / 定时任务）。
+    Agent,
+}
+
+impl Channel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Channel::Human => "human",
+            Channel::Agent => "agent",
+        }
+    }
+
+    pub fn is_agent(self) -> bool {
+        self == Channel::Agent
+    }
+}
+
+impl std::fmt::Display for Channel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `Confirmation::HumanOnly` 的闸门：无人值守通道不得执行。
+///
+/// 放在这里而不是散进各 handler，跟 [`guard_provenance`] 同一个理由：
+/// **它不依赖是否配了 scope**。调用方没挂 `AuthGate` 也要过这一关。
+pub fn guard_channel(spec: &CommandSpec, channel: Channel) -> Result<(), AuthError> {
+    if channel.is_agent() && spec.confirmation.is_human_only() {
+        return Err(AuthError::HumanOnlyAction(spec.id));
+    }
+    Ok(())
+}
+
+/// 一个进程的授权闸门：身份上下文 + 校验器 + 通道，CLI 与 MCP 共用。
 ///
 /// 为什么不是每处各写一遍：两侧的判定必须**逐字一致**，否则会出现
 /// "CLI 能发、MCP 不能发"这种谁也说不清的行为差异。
@@ -561,12 +632,23 @@ pub fn guard_provenance(spec: &CommandSpec, provenance: Provenance) -> Result<()
 pub struct AuthGate {
     verifier: Verifier,
     ctx: ActorContext,
+    /// 由入口二进制声明，模型改不了（见 [`Channel`]）。
+    channel: Channel,
 }
 
 impl AuthGate {
     /// 由已校验的上下文构造（启动时校验一次，请求期只做资源判定）。
-    pub fn new(verifier: Verifier, ctx: ActorContext) -> Self {
-        Self { verifier, ctx }
+    pub fn new(verifier: Verifier, ctx: ActorContext, channel: Channel) -> Self {
+        Self {
+            verifier,
+            ctx,
+            channel,
+        }
+    }
+
+    /// 这个闸门的通道。
+    pub fn channel(&self) -> Channel {
+        self.channel
     }
 
     /// 从"进程自述"构造：actor/session/scope 来自启动参数或环境变量。
@@ -579,6 +661,7 @@ impl AuthGate {
         scope: &str,
         bound_session: Option<&str>,
         allowed_origins: Vec<String>,
+        channel: Channel,
     ) -> Result<Self, AuthError> {
         let granted = ScopeSet::parse(scope);
         let verifier = Verifier::new(bound_session.map(str::to_string), allowed_origins, granted);
@@ -593,31 +676,50 @@ impl AuthGate {
             deleg: None,
         };
         let ctx = verifier.verify(&claims, 0, None)?;
-        Ok(Self::new(verifier, ctx))
+        Ok(Self::new(verifier, ctx, channel))
     }
 
     pub fn context(&self) -> &ActorContext {
         &self.ctx
     }
 
-    /// 请求期检查：来源可信度 → 管理角色 → 资源 scope。
+    /// 请求期检查：通道 → 来源可信度 → 管理角色 → 资源 scope。
+    ///
+    /// 三段各自独立可查（[`guard_channel`]、[`guard_provenance`]、
+    /// [`Self::check_scope`]），因为 [`crate::availability`] 要把它们
+    /// **原样**拿去回答"这条命令现在能不能做"。判定只许有一处实现：
+    /// 列出来一套、执行时另一套，就是 wordcraft 在 headless 上犯过的错
+    /// （它的 `list_commands` 不输出 `enabled`，模型只能试出来）。
     pub fn check(
         &self,
         spec: &CommandSpec,
         params: &Value,
         provenance: Provenance,
     ) -> Result<(), AuthError> {
+        guard_channel(spec, self.channel)?;
         guard_provenance(spec, provenance)?;
+        self.check_scope(spec, params)
+    }
+
+    /// 只查身份那一段：管理角色 + 资源 scope。
+    pub fn check_scope(&self, spec: &CommandSpec, params: &Value) -> Result<(), AuthError> {
         self.verifier.authorize(&self.ctx, spec, params)
+    }
+
+    /// 这个闸门的通道（供 [`crate::availability`] 组判定用）。
+    pub fn context_channel(&self) -> Channel {
+        self.channel
     }
 
     /// 给人看的自查表：每条命令在当前 scope 下是否可调（不含网络）。
     pub fn render(&self, policy: &crate::policy::Policy) -> String {
         let mut out = format!(
             "身份上下文：{}
+通道：{}
 
 ",
-            self.ctx.summary()
+            self.ctx.summary(),
+            self.channel,
         );
         out.push_str(&format!(
             "{:<20} {:<12} 判定
@@ -626,10 +728,21 @@ impl AuthGate {
         ));
         for spec in crate::CATALOG {
             let probe = probe_params(spec);
-            let verdict = match self.check(spec, &probe, Provenance::Trusted) {
-                Ok(()) if policy.authorize(spec.id, &probe).is_ok() => "允许".to_string(),
-                Ok(()) => "策略拒绝".to_string(),
-                Err(e) => format!("scope 拒绝 — {e}"),
+            // 判定不在这里写：交给 availability，与 MCP 的 `list_commands`、
+            // 界面的置灰读同一个函数。这张表以前自己拼 `check + authorize`，
+            // 那就是第三份真相。
+            let ctx = crate::availability::Context {
+                channel: self.channel,
+                provenance: Provenance::Trusted,
+                gate: Some(self),
+                policy,
+            };
+            let verdict = match crate::availability::why_not(spec, &probe, &ctx) {
+                None => "允许".to_string(),
+                // 保留"拒绝"这个词：`wxlike auth` 的表就是按它数行的
+                // （`crates/cli/tests/cli_surface.rs`），同时把稳定码放在前面，
+                // 脚本不必再解析中文措辞。
+                Some(d) => format!("拒绝 {} — {}", d.code, d.message),
             };
             out.push_str(&format!(
                 "{:<20} {:<12} {}
@@ -643,8 +756,12 @@ impl AuthGate {
     }
 }
 
-/// 自查用的探针参数：取 scope 里的第一个具体值，没有就给一个必然不匹配的。
-fn probe_params(spec: &CommandSpec) -> Value {
+/// 自查与列表用的探针参数：取 scope 里的第一个具体值，没有就给一个必然不匹配的。
+///
+/// 公开是因为 [`crate::availability`] 与 `wxlike policy` 必须用**同一组**值，
+/// 否则"列表里能做、表里说不能"这种矛盾又会变成两份真相。
+#[must_use]
+pub fn probe_params(spec: &CommandSpec) -> Value {
     let mut map = serde_json::Map::new();
     for key in [
         "conv",

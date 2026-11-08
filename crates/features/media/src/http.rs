@@ -23,7 +23,10 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use tokio_util::io::ReaderStream;
 
 use crate::access::constant_time_eq;
-use crate::backup::{BackupSummary, CacheCandidate, CachePlan, EncryptionMeta, ImportOutcome};
+use crate::backup::{
+    BackupPlan, BackupSummary, CacheCandidate, CachePlan, EncryptionMeta, ImportOutcome,
+    RollbackOutcome,
+};
 use crate::error::{MediaError, Result as MediaResult};
 use crate::files::{FileListQuery, FilePage, ShareGrant};
 use crate::ids;
@@ -119,10 +122,12 @@ impl MediaApp {
             .route("/api/v1/jobs", post(submit_job))
             .route("/api/v1/jobs/{id}", get(job_status))
             .route("/api/v1/jobs/{id}/cancel", post(cancel_job))
+            .route("/api/v1/backups/plan", post(plan_backup))
             .route("/api/v1/backups", post(export_backup))
             .route("/api/v1/backups/{id}/package", get(download_backup))
             .route("/api/v1/backups/verify", post(verify_backup))
             .route("/api/v1/backups/import", post(import_backup))
+            .route("/api/v1/backups/{id}/rollback", post(rollback_backup))
             .route("/api/v1/backups/{id}/keys", post(restore_backup_keys))
             .route("/api/v1/cache/plan", post(cache_plan))
             .route("/api/v1/cache/execute", post(cache_execute))
@@ -514,6 +519,41 @@ async fn export_backup(
         .export_backup(&auth.0, &body.0.device_id, encryption)
         .map_err(map_err)?;
     Ok((StatusCode::CREATED, Json(summary)))
+}
+
+/// ADR-28 (#122): the plan walks every owned object with store stats and the
+/// snapshot port — blocking work that must never run on the async runtime.
+async fn plan_backup(
+    State(state): State<Arc<AppState>>,
+    auth: Principal,
+    body: Json<ExportBody>,
+) -> std::result::Result<Json<BackupPlan>, wxlike_api::ApiError> {
+    let encryption = body.0.encryption.unwrap_or_else(EncryptionMeta::plaintext);
+    let service = Arc::clone(&state.service);
+    let user = auth.0;
+    let device = body.0.device_id;
+    let plan =
+        tokio::task::spawn_blocking(move || service.plan_backup_export(&user, &device, encryption))
+            .await
+            .map_err(|_| MediaError::internal("backup plan task panicked"))?
+            .map_err(map_err)?;
+    Ok(Json(plan))
+}
+
+/// ADR-28 (#122): rollback is multi-statement SQL plus physical GC; offload
+/// it to the blocking pool like every other durable media mutation here.
+async fn rollback_backup(
+    State(state): State<Arc<AppState>>,
+    auth: Principal,
+    Path(id): Path<String>,
+) -> std::result::Result<Json<RollbackOutcome>, wxlike_api::ApiError> {
+    let service = Arc::clone(&state.service);
+    let user = auth.0;
+    let outcome = tokio::task::spawn_blocking(move || service.rollback_backup_import(&user, &id))
+        .await
+        .map_err(|_| MediaError::internal("rollback task panicked"))?
+        .map_err(map_err)?;
+    Ok(Json(outcome))
 }
 
 async fn download_backup(

@@ -296,3 +296,190 @@ async fn http_file_center_and_platform_contracts() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json(&body)["status"], "permission_denied");
 }
+
+/// #122 HTTP 面：导出计划与失败回滚的路由、鉴权、错误形状。
+#[tokio::test]
+async fn http_backup_plan_and_rollback_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service(dir.path());
+    let app = app(Arc::clone(&service));
+
+    // 真仓储造一个可备份的对象（域调用，HTTP 上传链路由上面用例覆盖）。
+    let payload = b"planned backup content";
+    let start = service
+        .upload_start(
+            "u1",
+            UploadStart {
+                purpose: Purpose::File,
+                name: "plan.txt".into(),
+                size: payload.len() as u64,
+                mime: "text/plain".into(),
+                digest: ids::sha256_hex(payload),
+            },
+        )
+        .unwrap();
+    service
+        .upload_chunk("u1", &start.upload_id, 0, payload, None)
+        .unwrap();
+    let done = service
+        .upload_complete("u1", &start.upload_id, Some(&ids::sha256_hex(payload)))
+        .unwrap();
+
+    let (status, _, body) = send(
+        &app,
+        authed(
+            "POST",
+            "/api/v1/backups/plan",
+            "tok-a",
+            Some(serde_json::json!({ "device_id": "dev-1" })),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{:?}",
+        String::from_utf8_lossy(&body)
+    );
+    let plan = json(&body);
+    assert_eq!(plan["publishable"], true);
+    assert_eq!(plan["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["payload_bytes"], payload.len() as u64);
+
+    // 未授权 401 / 缺参数 4xx。
+    let unsigned = Request::builder()
+        .method("POST")
+        .uri("/api/v1/backups/plan")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"device_id":"d"}"#))
+        .unwrap();
+    let (status, _, _) = send(&app, unsigned).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(
+        &app,
+        authed(
+            "POST",
+            "/api/v1/backups/plan",
+            "tok-a",
+            Some(serde_json::json!({})),
+        ),
+    )
+    .await;
+    assert!(status.is_client_error(), "缺 device_id 必须 4xx: {status}");
+
+    // 导出后立刻回滚 = 409：ready 不是 failed，没有可撤销的 restore。
+    let (status, _, body) = send(
+        &app,
+        authed(
+            "POST",
+            "/api/v1/backups",
+            "tok-a",
+            Some(serde_json::json!({ "device_id": "dev-1" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let backup_id = json(&body)["backup_id"].as_str().unwrap().to_string();
+
+    let (status, _, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v1/backups/{backup_id}/rollback"),
+            "tok-a",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 下载包 → 走 HTTP 导入 → completed 后回滚仍是 409（历史已接受=不可回滚）。
+    let (status, _, package) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v1/backups/{backup_id}/package"),
+            "tok-a",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pkg_start = service
+        .upload_start(
+            "u1",
+            UploadStart {
+                purpose: Purpose::Backup,
+                name: "package.wxbk".into(),
+                size: package.len() as u64,
+                mime: "application/octet-stream".into(),
+                digest: ids::sha256_hex(&package),
+            },
+        )
+        .unwrap();
+    service
+        .upload_chunk("u1", &pkg_start.upload_id, 0, &package, None)
+        .unwrap();
+    let pkg_done = service
+        .upload_complete("u1", &pkg_start.upload_id, Some(&ids::sha256_hex(&package)))
+        .unwrap();
+    let (status, _, body) = send(
+        &app,
+        authed(
+            "POST",
+            "/api/v1/backups/import",
+            "tok-a",
+            Some(serde_json::json!({
+                "device_id": "dev-2",
+                "object_id": pkg_done.object_id,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{:?}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(json(&body)["state"], "completed");
+    let (status, _, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v1/backups/{backup_id}/rollback"),
+            "tok-a",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 越权回滚他人备份与未知 id 同为 404；未授权 401。
+    let (status, _, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v1/backups/{backup_id}/rollback"),
+            "tok-b",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(
+        &app,
+        authed("POST", "/api/v1/backups/bk_nope/rollback", "tok-a", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let unsigned = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/backups/{backup_id}/rollback"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app, unsigned).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // 对象仍在（回滚被拒后不得有物理副作用）。
+    assert!(service.authorize_read("u1", &done.object_id).is_ok());
+}

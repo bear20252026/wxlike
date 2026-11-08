@@ -61,6 +61,24 @@ impl LocalObjectStore {
         dir.join(format!("{PART_PREFIX}{tag}"))
     }
 
+    /// Durability seam for "land on disk first, then move the cursor": after
+    /// a publish rename, ask the directory entry itself to reach the platter.
+    /// Best effort — the rename is atomic regardless; this only narrows the
+    /// power-loss window in which the cursor could reference a blob whose
+    /// directory entry was lost.
+    fn sync_parent_dir(dest: &Path) {
+        #[cfg(unix)]
+        if let Some(parent) = dest.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = dest;
+        }
+    }
+
     fn publish(&self, object_id: &str, tmp: &Path) -> Result<u64> {
         let dest = self.object_path(object_id)?;
         if let Some(parent) = dest.parent() {
@@ -78,6 +96,7 @@ impl LocalObjectStore {
             }
             return Err(err.into());
         }
+        Self::sync_parent_dir(&dest);
         Ok(size)
     }
 
@@ -102,13 +121,22 @@ impl ObjectStore for LocalObjectStore {
         let mut output = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
         std::io::copy(&mut input, &mut output)?;
         output.flush()?;
+        // Land-then-cursor: the bytes are durable *before* `publish` renames
+        // them into the content-addressed location the import cursor will
+        // point at. Without this, a power loss could leave the cursor
+        // referencing a blob that never reached the platter.
+        output.sync_all()?;
         drop(output);
         self.publish(object_id, &tmp)
     }
 
     fn put_bytes(&self, object_id: &str, bytes: &[u8]) -> Result<u64> {
         let tmp = Self::staged_path(&self.root, &random_hex(8));
-        std::fs::write(&tmp, bytes)?;
+        let mut output = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+        output.write_all(bytes)?;
+        output.flush()?;
+        output.sync_all()?;
+        drop(output);
         self.publish(object_id, &tmp)
     }
 

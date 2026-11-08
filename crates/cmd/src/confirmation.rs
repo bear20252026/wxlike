@@ -58,6 +58,9 @@ struct Record {
 pub enum ConfirmError {
     /// 这条命令不需要确认（调用方多此一举）。
     NotRequired(&'static str),
+    /// 这条命令标了 `Confirmation::HumanOnly`：**这里不发令牌**。
+    /// 令牌只能由人守着的界面给，自动化通道拿不到，也不该拿到。
+    HumanOnly(&'static str),
     /// 令牌不存在：伪造、已被使用，或来自另一个进程/会话。
     UnknownToken,
     /// 令牌过期：**不自动续**，必须重新 prepare。
@@ -81,6 +84,11 @@ impl std::fmt::Display for ConfirmError {
             ConfirmError::NotRequired(id) => {
                 write!(f, "{id} does not require confirmation")
             }
+            ConfirmError::HumanOnly(id) => write!(
+                f,
+                "{id} is human-only: no confirmation token is ever issued for it. \
+                 The user must perform it in an attended surface (app or terminal)"
+            ),
             ConfirmError::UnknownToken => f.write_str(
                 "confirmation token unknown or already used; run prepare again \
                  (tokens are single-use)",
@@ -175,6 +183,9 @@ impl ConfirmationStore {
         params: &Value,
         now: i64,
     ) -> Result<Prepared, ConfirmError> {
+        if spec.confirmation.is_human_only() {
+            return Err(ConfirmError::HumanOnly(spec.id));
+        }
         if spec.confirmation != Confirmation::Required {
             return Err(ConfirmError::NotRequired(spec.id));
         }
@@ -212,6 +223,9 @@ impl ConfirmationStore {
         token: &str,
         now: i64,
     ) -> Result<Plan, ConfirmError> {
+        if spec.confirmation.is_human_only() {
+            return Err(ConfirmError::HumanOnly(spec.id));
+        }
         if spec.confirmation != Confirmation::Required {
             return Err(ConfirmError::NotRequired(spec.id));
         }
