@@ -24,9 +24,10 @@ pub struct SignedPackage {
 /// validity window, host compatibility, and a digest match for every resource.
 ///
 /// The `trust` field has no constructor outside this module, so the type
-/// cannot be forged: [`Installer::install_verified`] only accepts a value that
-/// [`verify`] produced. An unsigned bundle - or one that merely passed
-/// [`open`] - is unrepresentable here rather than merely discouraged.
+/// cannot be forged: [`crate::packages::Installer::install_verified`] only
+/// accepts a value that [`verify`] produced. An unsigned bundle - or one that
+/// merely passed [`open`] - is unrepresentable here rather than merely
+/// discouraged.
 #[derive(Clone, Debug)]
 pub struct VerifiedPackage {
     pub manifest: Manifest,

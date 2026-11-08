@@ -706,7 +706,7 @@ fn per_file_resource_cap_is_enforced_at_the_boundary() {
     // One byte over: refused by the verifier and by the packer, and nothing
     // reaches the disk either way.
     let mut over = b"body".to_vec();
-    over.extend(std::iter::repeat(0u8).take(MAX_RESOURCE_BYTES));
+    over.extend(std::iter::repeat_n(0u8, MAX_RESOURCE_BYTES));
     let mut oversized = manifest.clone();
     oversized
         .resources
