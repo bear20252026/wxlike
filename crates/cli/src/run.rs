@@ -139,7 +139,8 @@ fn emit_plan(spec: &CommandSpec, params: &Value, json_out: bool, mode: &str) -> 
     let (domain, verb) = spec.cli_path();
     let payload = json!({
         "mode": mode,
-        "confirmation_required": spec.confirmation.is_required(),
+        "confirmation_required": spec.confirmation.needs_plan_step(),
+        "confirmation": spec.confirmation.as_str(),
         "capability": spec.capability.as_str(),
         "plan": plan.to_json(),
         "hint": if mode == "dry_run" {
@@ -241,6 +242,11 @@ fn build_gate(options: &Options) -> Result<Option<AuthGate>, String> {
         scope,
         Some(&session),
         options.origin_allow.clone(),
+        // CLI 算有人守着：`--confirm` 是人敲下去的那一下（`args.rs:75`）。
+        // 这只对"人坐在终端前"这个前提成立；若把 CLI 接到无人值守的编排里，
+        // 那条编排就同时握着 `--confirm`，HumanOnly 拦不住它——那种用法请走
+        // `wxlike-mcp`（进程身份写死为 Agent），别用 CLI 冒充人。
+        wxlike_cmd::auth::Channel::Human,
     )
     .map(Some)
     .map_err(|e| e.to_string())
@@ -295,7 +301,9 @@ fn invoke(
     env: &contract::Envelope,
 ) -> u8 {
     // 危险动作先出计划：没 `--confirm` 就停在这里，**不发任何请求**。
-    if spec.confirmation.is_required() && !confirmed {
+    // `HumanOnly` 也走这一步——在这里它是"人自己确认"，令牌机制才是不给人
+    // 走的通道用的。
+    if spec.confirmation.needs_plan_step() && !confirmed {
         return emit_plan(spec, params, json_out, "confirmation_required");
     }
     // scope 先行：注定被服务端拒的请求不发出去，也顺便省掉一次网络往返

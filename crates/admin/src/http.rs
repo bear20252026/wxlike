@@ -6,31 +6,44 @@
 //!   登录后的会话令牌；
 //! * **写**必须带会话令牌，且会话 `mfa=true`（D3 的验收面），且角色够级别；
 //!   静态令牌**不能**写——它不对应任何一个"人"，写不出可追责的留痕；
-//! * 静态令牌走常量时间比较（`constant_time_eq`）：能被计时探测的凭据就
+//! * 静态令牌走常量时间比较（`auth::constant_time_eq`）：能被计时探测的凭据就
 //!   不该有短路返回。
 //!
-//! 鉴权写在每个处理器第一行，不做通用包装：这类"一行门槛"散开反而比一个
-//! 泛型中间件更好读，也少一层 trait bound 的体操。漏写的可能由两个集成用例兜住：
-//! `d1_read_only.rs::reads_require_a_credential_and_reject_a_wrong_one`（每个读端点
-//! 无令牌/错令牌都打一遍）与 `d3_rbac_mfa.rs::static_token_cannot_write_at_all`
-//! （每条写操作都要能拒掉静态令牌）。
+//! # 准入写在哪，就是什么性质（#245）
 //!
-//! 查询参数一律手工解析（`qstr`/`qint`/…），拒绝时返回统一的
-//! `{"error": …}` 并写清"该怎么改"。理由：`Query<T>` 的 serde 拒绝给的是
-//! 纯文本 400，前端和运维都没法稳定读。
+//! 以前这个文件在每个处理器第一行写一句 `require_*(&app, &headers)?`，读起来像
+//! "先鉴权"。但 axum 的参数提取发生在 handler 体**之前**，那句实际跑在
+//! `ApiJson` 之后：未认证的人先拿到 422，而 422 的消息里带着字段名。
+//!
+//! 现在认证只有一份实现（[`crate::auth::from_parts`]），从两处调用：
+//!
+//! 1. 路由层的 [`crate::auth::gate`]：包在 router 外面，body 还没被碰过。
+//!    [`crate::auth::is_public`] 之外的路径**默认在门后**——
+//!    新增管理端点不登记任何东西就已经有这条顺序保证。
+//! 2. handler 参数上的 [`crate::auth::AdminAuth`] 提取器：本文件的会话面
+//!    （`/api/me`、`/api/me/totp/*`、`/api/logout`、`/api/op/{op}`）用它拿身份。
+//!
+//! 顺序契约由 `crates/admin/tests/g14_01_authn_order.rs` 逐条钉住；
+//! 两个老兜底用例仍然有效（`d1_read_only.rs::reads_require_a_credential_and_reject_a_wrong_one`
+//! 每个读端点无令牌/错令牌各打一遍，`d3_rbac_mfa.rs::static_token_cannot_write_at_all`
+//! 每条写操作都要能拒掉静态令牌）。
+//!
+//! 授权（谁能做什么）照旧在服务端：[`crate::rbac::authorize`] 与
+//! [`crate::auth::require`]，一句都不许少。
+//!
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::accounts::{AccountStore, OpLogQuery, OpRecord, OpStatus, Session};
-use crate::auth::constant_time_eq;
+use crate::auth::{self, AdminAuth};
 use crate::config::Config;
 use crate::error::{AdminError, Result};
 use crate::g14::G14;
@@ -162,6 +175,12 @@ impl App {
             .route("/api/op/{op}", post(run_op))
             .merge(crate::g14::router())
             .with_state(self.clone())
+            // 默认拒绝：除 `auth::is_public` 之外的每一条路由都先过门。
+            // 门跑在 router 外面，所以 body 解析不可能先于凭据校验（#245）。
+            .layer(axum::middleware::from_fn_with_state(
+                self.clone(),
+                auth::gate,
+            ))
     }
 
     /// 起服务并返回监听地址（测试用 `127.0.0.1:0`；转发面必须走真 HTTP）。
@@ -191,44 +210,14 @@ type Shared = Arc<App>;
 // 鉴权
 // ---------------------------------------------------------------------------
 
-/// 只认 `Authorization: Bearer <x>`。
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-}
-
-/// 读面门槛：静态令牌或有效会话，二选一。
-fn require_read(app: &Shared, headers: &HeaderMap) -> Result<()> {
-    let Some(presented) = bearer(headers) else {
-        return Err(AdminError::Unauthorized);
-    };
-    if constant_time_eq(presented, &app.cfg.token) {
-        return Ok(());
-    }
-    if app.accounts.session(presented)?.is_some() {
-        return Ok(());
-    }
-    Err(AdminError::Unauthorized)
-}
-
-/// 写面门槛：必须是会话（静态令牌在这里就挡掉）。
-fn require_session(app: &Shared, headers: &HeaderMap) -> Result<Session> {
-    let Some(presented) = bearer(headers) else {
-        return Err(AdminError::Unauthorized);
-    };
-    if constant_time_eq(presented, &app.cfg.token) {
-        return Err(AdminError::Forbidden(
-            "静态令牌只能读：写操作必须用登录后的会话（先 POST /api/login）".into(),
-        ));
-    }
-    app.accounts
-        .session(presented)?
-        .ok_or(AdminError::SessionExpired)
-}
+// 认证只有一份实现，在 `crate::auth`：
+//
+// * 路由层的 `auth::gate` 先跑，**body 一次都不会被解析**（#245 的顺序契约）；
+// * handler 参数上的 `AdminAuth` 提取器复用门的结论（见 `auth::from_parts`），
+//   读面拿 audience、写面拿 session。
+//
+// 这里不再留 `bearer` / `require_read` / `require_session` 三个本地版本：
+// 同一个判定写三遍，最贵的那次误差一定出现在"其中一遍被人改过"之后。
 
 // ---------------------------------------------------------------------------
 // 无鉴权：存活检查与页面
@@ -285,8 +274,7 @@ async fn page() -> Response {
 // 读面
 // ---------------------------------------------------------------------------
 
-async fn stats(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
+async fn stats(State(app): State<Shared>, _incoming: AdminAuth) -> Result<Json<serde_json::Value>> {
     let stats = app.read.stats()?;
     Ok(Json(
         serde_json::to_value(stats).map_err(AdminError::Codec)?,
@@ -295,10 +283,9 @@ async fn stats(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<ser
 
 async fn users(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
     let page = app.read.users(&filter)?;
     Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
@@ -306,10 +293,9 @@ async fn users(
 
 async fn groups(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
     let page = app.read.groups(&filter)?;
     Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
@@ -318,10 +304,9 @@ async fn groups(
 /// D2 的验收面：`?actor=&command=&from=&to=`（外加 `action` / `target`）。
 async fn audit(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let filter = AuditFilter::new(AuditQuery {
         actor: qstr(&q, "q_actor").or_else(|| qstr(&q, "actor")),
         command: qstr(&q, "command"),
@@ -338,10 +323,9 @@ async fn audit(
 
 async fn reports(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let state = qstr(&q, "state");
     let open_only = match qbool(&q, "open_only")? {
         // 没指定状态就默认只看未终结：这是处置队列，不是归档浏览器
@@ -367,10 +351,9 @@ async fn reports(
 
 async fn read_one_report(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let target = upstream::check_target(&id)?;
     let ticket = app.read.report(&target)?.ok_or(AdminError::NotFound)?;
     let now = crate::read::now_ms() as u64;
@@ -384,10 +367,9 @@ async fn read_one_report(
 
 async fn moderation(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
     let page = app.read.moderation(&filter)?;
     Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
@@ -395,10 +377,9 @@ async fn moderation(
 
 async fn oplog(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
     let query = OpLogQuery {
         actor: qstr(&q, "actor"),
         op: qstr(&q, "op"),
@@ -423,8 +404,7 @@ struct OpView {
     description: &'static str,
 }
 
-async fn catalog(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
-    require_read(&app, &headers)?;
+async fn catalog(_incoming: AdminAuth) -> Result<Json<serde_json::Value>> {
     let ops: Vec<OpView> = OPS
         .iter()
         .map(|o| OpView {
@@ -477,18 +457,15 @@ async fn login(
     Ok(Json(LoginReply { token, session }))
 }
 
-async fn logout(State(app): State<Shared>, headers: HeaderMap) -> Result<StatusCode> {
+async fn logout(State(app): State<Shared>, incoming: AdminAuth) -> Result<StatusCode> {
     // 先验会话，再删：否则任何人拿任意串都能触发一次 DELETE
-    let _ = require_session(&app, &headers)?;
-    if let Some(token) = bearer(&headers) {
-        let token = token.to_string();
-        app.accounts.logout(&token)?;
-    }
+    let _ = incoming.writer()?;
+    app.accounts.logout(incoming.credential())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn me(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
-    let session = require_session(&app, &headers)?;
+async fn me(State(app): State<Shared>, incoming: AdminAuth) -> Result<Json<serde_json::Value>> {
+    let session = incoming.writer()?;
     let account = app
         .accounts
         .account(&session.actor)?
@@ -507,9 +484,9 @@ struct CodeBody {
 
 async fn totp_enroll(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
-    let session = require_session(&app, &headers)?;
+    let session = incoming.writer()?;
     let secret = app.accounts.totp_enroll(&session.actor)?;
     // 密钥只在这一次响应里出现；之后任何接口都只说"已配置"。
     Ok(Json(serde_json::json!({
@@ -519,12 +496,15 @@ async fn totp_enroll(
     })))
 }
 
+/// `incoming` 必须排在 `ApiJson` **前面**：axum 按参数顺序跑提取器，
+/// 于是未认证的请求只会拿到 401/403，不会拿到"缺 `code` 字段"这句
+/// 请求体契约（#245 的原始形状就是这样漏的）。
 async fn totp_confirm(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: AdminAuth,
     ApiJson(body): ApiJson<CodeBody>,
 ) -> Result<Json<serde_json::Value>> {
-    let session = require_session(&app, &headers)?;
+    let session = incoming.writer()?;
     app.accounts.totp_confirm(&session.actor, &body.code)?;
     Ok(Json(serde_json::json!({
         "mfa_enabled": true,
@@ -534,10 +514,10 @@ async fn totp_confirm(
 
 async fn totp_disable(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: AdminAuth,
     ApiJson(body): ApiJson<CodeBody>,
 ) -> Result<StatusCode> {
-    let session = require_session(&app, &headers)?;
+    let session = incoming.writer()?;
     app.accounts.totp_disable(&session.actor, &body.code)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -575,11 +555,12 @@ struct OpReply {
 
 async fn run_op(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: AdminAuth,
     Path(op_id): Path<String>,
     body: ApiJson<serde_json::Value>,
 ) -> Result<Json<OpReply>> {
-    let session = require_session(&app, &headers)?;
+    // 静态令牌在这里给 403（它写不出可追责的留痕），而且早于 body 解析。
+    let session = incoming.writer()?.clone();
     let body = parse_op_body(&body.0)?;
     let target = match body
         .target
@@ -917,33 +898,14 @@ fn qbool(q: &HashMap<String, String>, key: &str) -> Result<Option<bool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     #[test]
     fn constant_time_compare_matches_only_equal_strings() {
-        assert!(constant_time_eq("abc123", "abc123"));
-        assert!(!constant_time_eq("abc123", "abc124"));
-        assert!(!constant_time_eq("abc123", "abc12"));
-        assert!(!constant_time_eq("", "x"));
-        assert!(constant_time_eq("", ""));
-    }
-
-    #[test]
-    fn bearer_only_accepts_the_bearer_scheme() {
-        let mut h = HeaderMap::new();
-        assert!(bearer(&h).is_none());
-        h.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer abc"),
-        );
-        assert_eq!(bearer(&h), Some("abc"));
-        h.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic abc"));
-        assert_eq!(bearer(&h), None);
-        h.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer    "),
-        );
-        assert_eq!(bearer(&h), None);
+        assert!(auth::constant_time_eq("abc123", "abc123"));
+        assert!(!auth::constant_time_eq("abc123", "abc124"));
+        assert!(!auth::constant_time_eq("abc123", "abc12"));
+        assert!(!auth::constant_time_eq("", "x"));
+        assert!(auth::constant_time_eq("", ""));
     }
 
     #[test]
