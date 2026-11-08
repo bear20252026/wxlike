@@ -58,6 +58,21 @@ impl fmt::Display for Deny {
 
 impl std::error::Error for Deny {}
 
+impl Deny {
+    /// 机器可读的拒绝码，用途与 [`crate::auth::AuthError::code`] 同一条：
+    /// 文案会改，码不能改。
+    pub fn code(&self) -> &'static str {
+        match self {
+            Deny::UnknownCommand(_) => "unknown_command",
+            Deny::ConvNotAllowed { .. } => "conv_not_allowed",
+            Deny::MissingConv(_) => "missing_conv",
+            Deny::ReadOnly(_) => "read_only",
+            Deny::WriteDisabled(_) => "write_disabled",
+            Deny::DestructiveDisabled(_) => "destructive_disabled",
+        }
+    }
+}
+
 /// 一个 agent 会话被授予的能力边界。
 #[derive(Clone, Debug, Default)]
 pub struct Policy {

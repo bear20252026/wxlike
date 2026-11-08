@@ -31,9 +31,9 @@ pub mod uploads;
 
 pub use access::{AccessGrant, AudiencePort, SignedAccess};
 pub use backup::{
-    BackupEntry, BackupManifest, BackupSummary, CacheCandidate, CacheEntry, CacheKind, CachePlan,
-    ChatImportReport, ChatSnapshotMessage, ChatSnapshotPort, EncryptionMeta, EncryptionMode,
-    ImportOutcome, KeyEscrowPort,
+    BackupEntry, BackupManifest, BackupPlan, BackupPlanEntry, BackupSummary, CacheCandidate,
+    CacheEntry, CacheKind, CachePlan, ChatImportReport, ChatSnapshotMessage, ChatSnapshotPort,
+    EncryptionMeta, EncryptionMode, ImportOutcome, KeyEscrowPort, RollbackOutcome,
 };
 pub use db::MediaDb;
 pub use error::{MediaError, Result};
