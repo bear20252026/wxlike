@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
 use crate::content_index;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::favorites;
@@ -651,8 +652,14 @@ async fn set_status(
     authed: Authed,
     ApiJson(body): ApiJson<StatusBody>,
 ) -> std::result::Result<(StatusCode, Json<StatusView>), ApiError> {
-    let view = platform.set_status(&authed.user_id, &body)?;
-    let to = platform.friend_ids(&authed.user_id)?;
+    let user = authed.user_id.clone();
+    // 设置状态（含清旧行、消费背景草稿、写索引）与取扇出收件人是同一个
+    // 同步临界区，一次 offload 搬走。
+    let (view, to) = offload(&platform, move |p| {
+        let view = p.set_status(&user, &body)?;
+        Ok((view, p.friend_ids(&user)?))
+    })
+    .await?;
     platform
         .emit(crate::system_envelope(
             &format!("status:{}", authed.user_id),
@@ -668,7 +675,8 @@ async fn list_statuses(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let items = platform.statuses(&authed.user_id)?;
+    let user = authed.user_id.clone();
+    let items = offload(&platform, move |p| p.statuses(&user)).await?;
     Ok(Json(serde_json::json!({
         "items": items,
         "snapshot_version": wxlike_core::types::now_ms(),
@@ -680,8 +688,9 @@ async fn one(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<StatusView>, ApiError> {
-    let view = platform
-        .status(&authed.user_id, &id)?
+    let user = authed.user_id.clone();
+    let view = offload(&platform, move |p| p.status(&user, &id))
+        .await?
         .ok_or_else(|| ApiError::from(PlatformError::NotFound))?;
     Ok(Json(view))
 }
@@ -691,12 +700,18 @@ async fn clear_one(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.clear_status(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    let cleared_for = user.clone();
+    let (to, _) = offload(&platform, move |p| {
+        p.clear_status(&cleared_for, &id)?;
+        Ok((p.friend_ids(&cleared_for)?, ()))
+    })
+    .await?;
     platform
         .emit(crate::system_envelope(
             &format!("status:{}", authed.user_id),
             &authed.user_id,
-            platform.friend_ids(&authed.user_id)?,
+            to,
             "StatusChanged",
         ))
         .await;
@@ -707,12 +722,18 @@ async fn clear_all(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let cleared = platform.clear_all_statuses(&authed.user_id)?;
+    let user = authed.user_id.clone();
+    let all_for = user.clone();
+    let (cleared, to) = offload(&platform, move |p| {
+        let cleared = p.clear_all_statuses(&all_for)?;
+        Ok((cleared, p.friend_ids(&all_for)?))
+    })
+    .await?;
     platform
         .emit(crate::system_envelope(
             &format!("status:{}", authed.user_id),
             &authed.user_id,
-            platform.friend_ids(&authed.user_id)?,
+            to,
             "StatusChanged",
         ))
         .await;
@@ -724,7 +745,8 @@ async fn react(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (active, count) = platform.react_status(&authed.user_id, &id)?;
+    let user = authed.user_id.clone();
+    let (active, count) = offload(&platform, move |p| p.react_status(&user, &id)).await?;
     Ok(Json(
         serde_json::json!({ "active": active, "count": count }),
     ))
@@ -735,9 +757,17 @@ async fn save_background(
     authed: Authed,
     ApiJson(body): ApiJson<BackgroundBody>,
 ) -> std::result::Result<(StatusCode, Json<BackgroundDraft>), ApiError> {
+    let user = authed.user_id.clone();
+    let media_id = body.media_id.clone();
     Ok((
         StatusCode::CREATED,
-        Json(platform.save_status_background(&authed.user_id, &body.media_id)?),
+        // 背景草稿先校验归属再落行，一次 offload 内完成
+        Json(
+            offload(&platform, move |p| {
+                p.save_status_background(&user, &media_id)
+            })
+            .await?,
+        ),
     ))
 }
 
@@ -745,8 +775,9 @@ async fn background(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let user = authed.user_id.clone();
     Ok(Json(serde_json::json!({
-        "background": platform.status_background(&authed.user_id)?,
+        "background": offload(&platform, move |p| p.status_background(&user)).await?,
     })))
 }
 
@@ -754,6 +785,7 @@ async fn remove_background(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.remove_status_background(&authed.user_id)?;
+    let user = authed.user_id.clone();
+    offload(&platform, move |p| p.remove_status_background(&user)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1201,3 +1201,367 @@ async fn statuses_audience_background_expiry_and_reactions() {
         StatusCode::NOT_FOUND
     );
 }
+
+// ---------------------------------------------------------------------------
+// G05 本轮新增端点：/api/search/scopes、/api/moments/album、
+// /api/videos/{id}/review（鉴权、可见性同形、状态机）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn scopes_album_and_admin_review_endpoints() {
+    let opts = PlatformOptions {
+        session_ttl_ms: 60_000,
+        pbkdf2_rounds: 1_000,
+        video_callback_token: Some("video-token".into()),
+        admin_token: Some("s3cret".into()),
+        ..Default::default()
+    };
+    let st = Platform::in_memory_with(opts).unwrap().shared();
+    let app = Platform::router(st.clone());
+    let (alice, at) = signup(&app, "alice").await;
+    let (bob, bt) = signup(&app, "bob").await;
+    let (_carol, ct) = signup(&app, "carol").await;
+    befriend(&app, &at, &bob, &bt).await;
+    st.db()
+        .lock()
+        .execute(
+            "UPDATE friends SET friend_group = 'close' WHERE user_id = ?1 AND friend_id = ?2",
+            params![alice, bob],
+        )
+        .unwrap();
+
+    // ---- GET /api/search/scopes：Authed 先行，未登录 401 ----
+    assert_eq!(
+        call(&app, req("GET", "/api/search/scopes", None, None))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let scopes = ok(&app, req("GET", "/api/search/scopes", None, Some(&at))).await;
+    let kinds: Vec<&str> = scopes["scopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["moment", "article", "video", "status"]);
+    assert!(scopes["max_page"].is_number());
+
+    // ---- GET /api/moments/album：可见性判定全在服务端 SQL ----
+    assert_eq!(
+        call(
+            &app,
+            req("GET", "/api/moments/album?user_id=alice", None, None)
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let pub_m = ok(
+        &app,
+        req(
+            "POST",
+            "/api/moments",
+            Some(json!({"text": "album public note", "visibility": "public"})),
+            Some(&at),
+        ),
+    )
+    .await;
+    let pub_id = pub_m["moment_id"].as_str().unwrap().to_string();
+    ok(
+        &app,
+        req(
+            "POST",
+            "/api/moments",
+            Some(json!({"text": "album private note", "visibility": "private"})),
+            Some(&at),
+        ),
+    )
+    .await;
+    let grp_m = ok(
+        &app,
+        req(
+            "POST",
+            "/api/moments",
+            Some(json!({
+                "text": "album group note",
+                "visibility": "groups",
+                "audience_group": "close"
+            })),
+            Some(&at),
+        ),
+    )
+    .await;
+    let grp_id = grp_m["moment_id"].as_str().unwrap().to_string();
+
+    let album_url = format!("/api/moments/album?user_id={alice}");
+    // 分组好友看得到 groups+public、看不到 private；非好友整页为空（同"无内容"）
+    let bob_album = ok(&app, req("GET", &album_url, None, Some(&bt))).await;
+    let bob_ids: Vec<&str> = bob_album["moments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["moment_id"].as_str().unwrap())
+        .collect();
+    assert!(bob_ids.contains(&grp_id.as_str()) && bob_ids.contains(&pub_id.as_str()));
+    assert_eq!(bob_ids.len(), 2, "{bob_ids:?}");
+    let carol_album = ok(&app, req("GET", &album_url, None, Some(&ct))).await;
+    assert!(
+        carol_album["moments"].as_array().unwrap().is_empty(),
+        "非好友不应看到任何相册项"
+    );
+    // 作者本人：三连全量 + 游标分页（seq 降序，grp 最新）
+    let own = ok(&app, req("GET", &album_url, None, Some(&at))).await;
+    assert_eq!(own["moments"].as_array().unwrap().len(), 3);
+    let page = ok(
+        &app,
+        req("GET", &format!("{album_url}&limit=1"), None, Some(&at)),
+    )
+    .await;
+    assert_eq!(page["moments"].as_array().unwrap().len(), 1);
+    assert_eq!(page["moments"][0]["moment_id"], grp_m["moment_id"]);
+    assert_eq!(page["has_more"], true);
+    let next_cursor = page["next_cursor"].as_i64().unwrap();
+    let older = ok(
+        &app,
+        req(
+            "GET",
+            &format!("{album_url}&limit=1&since={next_cursor}"),
+            None,
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_ne!(
+        older["moments"][0]["moment_id"],
+        page["moments"][0]["moment_id"]
+    );
+
+    // 拉黑与"不存在的用户"同形：都是空页，响应体逐字段一致（防枚举）
+    ok(
+        &app,
+        req("PUT", &format!("/api/blocks/{alice}"), None, Some(&bt)),
+    )
+    .await;
+    let blocked = ok(&app, req("GET", &album_url, None, Some(&bt))).await;
+    let ghost = ok(
+        &app,
+        req(
+            "GET",
+            "/api/moments/album?user_id=ghostuser000000",
+            None,
+            Some(&bt),
+        ),
+    )
+    .await;
+    assert!(blocked["moments"].as_array().unwrap().is_empty());
+    assert_eq!(blocked, ghost);
+    ok(
+        &app,
+        req("DELETE", &format!("/api/blocks/{alice}"), None, Some(&bt)),
+    )
+    .await;
+
+    // ---- POST /api/videos/{id}/review：AdminAuth 先行，pending 才可审 ----
+    let vid = media_id(77);
+    seed_media(&st, &vid, &bob, "application/octet-stream", 1_024);
+    let mut cb = req(
+        "POST",
+        "/api/video/callback",
+        Some(json!({
+            "job_id": vid,
+            "state": "succeeded",
+            "attempts": 1,
+            "result": {
+                "video_id": vid,
+                "playlist_url": format!("/api/video/{vid}/playlist.m3u8"),
+                "play_url": format!("/api/video/{vid}/play.mp4"),
+                "thumb_url": format!("/api/video/{vid}/thumb.png"),
+                "duration_ms": 1_200,
+                "width": 640,
+                "height": 360,
+                "renditions": []
+            }
+        })),
+        None,
+    );
+    cb.headers_mut()
+        .insert("x-wxlike-video-token", "video-token".parse().unwrap());
+    assert_eq!(call(&app, cb).await.0, StatusCode::OK);
+
+    // 软违规词 + 默认先审后发 → pending：不进 feed、不进检索
+    let pending = ok(
+        &app,
+        req(
+            "POST",
+            "/api/videos",
+            Some(json!({"media_id": vid, "caption": "加我微信 g05revterm"})),
+            Some(&bt),
+        ),
+    )
+    .await;
+    let v_id = pending["id"].as_str().unwrap().to_string();
+    assert_eq!(pending["state"], "pending");
+    let feed = ok(
+        &app,
+        req("GET", "/api/videos/feed?mode=hot", None, Some(&ct)),
+    )
+    .await;
+    assert!(feed["items"].as_array().unwrap().is_empty());
+    let hits = ok(
+        &app,
+        req("GET", "/api/search/content?q=g05revterm", None, Some(&ct)),
+    )
+    .await;
+    assert!(hits["items"].as_array().unwrap().is_empty());
+
+    let review_url = format!("/api/videos/{v_id}/review");
+    let admin_review = |action: serde_json::Value, token: Option<&str>, want_actor: bool| {
+        let mut r = req(
+            "POST",
+            &review_url,
+            Some(json!({"action": action})),
+            Some(&ct), // 用户令牌不替代管理令牌：两路都要过 AdminAuth
+        );
+        if let Some(t) = token {
+            r.headers_mut().insert("x-admin-token", t.parse().unwrap());
+        }
+        if want_actor {
+            r.headers_mut()
+                .insert("x-admin-actor", "ops-1".parse().unwrap());
+        }
+        call(&app, r)
+    };
+    // 缺令牌 / 错令牌：403，且先于 body 校验（不会 422）
+    assert_eq!(
+        admin_review(json!("publish"), None, false).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        admin_review(json!("publish"), Some("wrong"), false).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // 放行后进入 feed 与检索
+    let done = admin_review(json!("publish"), Some("s3cret"), true).await;
+    assert_eq!(done.0, StatusCode::OK, "{:?}", done.1);
+    assert_eq!(done.1["state"], "published");
+    assert_eq!(done.1["id"], v_id.clone());
+    assert_eq!(done.1["author"], bob);
+    let feed = ok(
+        &app,
+        req("GET", "/api/videos/feed?mode=hot", None, Some(&ct)),
+    )
+    .await;
+    assert_eq!(feed["items"].as_array().unwrap().len(), 1);
+    let hits = ok(
+        &app,
+        req("GET", "/api/search/content?q=g05revterm", None, Some(&ct)),
+    )
+    .await;
+    assert_eq!(hits["items"].as_array().unwrap().len(), 1);
+
+    // 再审一次（此时是 published）与不存在的 id 同形：都是 404
+    let again = admin_review(json!("publish"), Some("s3cret"), false).await;
+    let ghost_vid = {
+        let mut r = req(
+            "POST",
+            "/api/videos/ghostvideo000000/review",
+            Some(json!({"action": "publish"})),
+            Some(&ct),
+        );
+        r.headers_mut()
+            .insert("x-admin-token", "s3cret".parse().unwrap());
+        call(&app, r).await
+    };
+    assert_eq!(again.0, StatusCode::NOT_FOUND);
+    assert_eq!(ghost_vid.0, StatusCode::NOT_FOUND);
+    assert_eq!(again.1, ghost_vid.1);
+
+    // 驳回路径：reject 后内容对外不存在，且不可再审
+    let vid2 = media_id(78);
+    seed_media(&st, &vid2, &bob, "application/octet-stream", 1_024);
+    let mut cb2 = req(
+        "POST",
+        "/api/video/callback",
+        Some(json!({
+            "job_id": vid2,
+            "state": "succeeded",
+            "attempts": 1,
+            "result": {
+                "video_id": vid2,
+                "playlist_url": format!("/api/video/{vid2}/playlist.m3u8"),
+                "play_url": format!("/api/video/{vid2}/play.mp4"),
+                "thumb_url": format!("/api/video/{vid2}/thumb.png"),
+                "duration_ms": 1_200,
+                "width": 640,
+                "height": 360,
+                "renditions": []
+            }
+        })),
+        None,
+    );
+    cb2.headers_mut()
+        .insert("x-wxlike-video-token", "video-token".parse().unwrap());
+    assert_eq!(call(&app, cb2).await.0, StatusCode::OK);
+    let pending2 = ok(
+        &app,
+        req(
+            "POST",
+            "/api/videos",
+            Some(json!({"media_id": vid2, "caption": "加我微信 g05rejterm"})),
+            Some(&bt),
+        ),
+    )
+    .await;
+    assert_eq!(pending2["state"], "pending");
+    let v2 = pending2["id"].as_str().unwrap().to_string();
+    let rej = call(&app, {
+        let mut r = req(
+            "POST",
+            &format!("/api/videos/{v2}/review"),
+            Some(json!({"action": "reject"})),
+            None,
+        );
+        r.headers_mut()
+            .insert("x-admin-token", "s3cret".parse().unwrap());
+        r
+    })
+    .await;
+    assert_eq!(rej.0, StatusCode::OK, "{:?}", rej.1);
+    assert_eq!(rej.1["state"], "rejected");
+    assert_eq!(
+        call(
+            &app,
+            req("GET", &format!("/api/videos/{v2}"), None, Some(&ct))
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let hits = ok(
+        &app,
+        req("GET", "/api/search/content?q=g05rejterm", None, Some(&ct)),
+    )
+    .await;
+    assert!(hits["items"].as_array().unwrap().is_empty());
+    let bad_action = call(&app, {
+        let mut r = req(
+            "POST",
+            &format!("/api/videos/{v2}/review"),
+            Some(json!({"action": "approve"})),
+            None,
+        );
+        r.headers_mut()
+            .insert("x-admin-token", "s3cret".parse().unwrap());
+        r
+    })
+    .await;
+    // 未知动作是输入错误（422），且发生在读取行之前——不给"哪些 id 存在"留探测面
+    assert_eq!(
+        bad_action.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        bad_action.1
+    );
+}
