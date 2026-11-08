@@ -703,12 +703,14 @@ mod adr28_evidence {
 
     use super::Db;
     use crate::error::PlatformError;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     const HOLD: Duration = Duration::from_millis(250);
     const TICK: Duration = Duration::from_millis(10);
+    /// `armed` 还没被 handler 写入时的哨兵值。
+    const NOT_ARMED: u64 = u64::MAX;
 
     fn one_worker_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -722,38 +724,99 @@ mod adr28_evidence {
         Db::open(None).expect("in-memory platform db")
     }
 
-    /// 每 10ms 记一次 tick，**只在 `HOLD` 这段窗口里数**。
-    ///
-    /// 窗口必须收紧到与 handler 等长：早先给的是 `HOLD + 100ms`，多出来的尾巴
-    /// 让"改前"也能补到 7 跳——那 100ms 里 worker 已经空了，测的就不是
-    /// "SQL 占住 worker 的那段"了。窗口对齐之后：改前 0～1，改后 ≈16。
-    fn tick_driver(ticks: Arc<AtomicUsize>) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let deadline = Instant::now() + HOLD;
-            while Instant::now() < deadline {
-                tokio::time::sleep(TICK).await;
-                ticks.fetch_add(1, Ordering::SeqCst);
+    /// 交给 handler 的"报到"句柄：`Window` 借不到 `'static`，所以单独给一份可克隆的。
+    #[derive(Clone)]
+    struct Arm(Arc<AtomicU64>, Instant);
+
+    impl Arm {
+        /// 记下"我从这一刻起占住 worker"。调用点与占用之间**不许有 await**，
+        /// 否则计时任务能插进一次调度，窗口就又开早了。
+        fn now(&self) {
+            self.0
+                .store(self.1.elapsed().as_millis() as u64, Ordering::SeqCst);
+        }
+    }
+
+    /// 一次测量的现场：只在 handler 占用 worker 的那段窗口里数计时步。
+    struct Window {
+        ticks: Arc<AtomicUsize>,
+        armed_at: Arc<AtomicU64>,
+        start: Instant,
+    }
+
+    impl Window {
+        fn new() -> Self {
+            Self {
+                ticks: Arc::new(AtomicUsize::new(0)),
+                armed_at: Arc::new(AtomicU64::new(NOT_ARMED)),
+                start: Instant::now(),
             }
-        })
+        }
+
+        fn arm(&self) -> Arm {
+            Arm(Arc::clone(&self.armed_at), self.start)
+        }
+
+        /// 每 `TICK` 一跳，只数 `armed_at .. armed_at + HOLD`。
+        ///
+        /// 关键改动：窗口**不再**从"计时任务开工"算起，而是从 handler 自己报到的
+        /// 那一刻算起。旧写法里 worker 被占死，计时任务在窗口内一次都排不上；等它
+        /// 醒来窗口已经关掉 ⇒ `ticks == 0` 是**构造出来的**，不是调出来的阈值。
+        ///
+        /// 原实现把 deadline 取在计时任务自己开工时，于是它与 handler 抢同一个
+        /// worker，谁先被调度是竞态——慢一点的 runner 上它能先攒 4~7 跳，
+        /// `old_ticks <= 3` 就无端红了（main 的 ci run 42409122864，windows job）。
+        /// 那类"把等时间改成等事件"的修法只能用注入延迟验证，加压复跑验不出来。
+        fn start_driver(&self) -> tokio::task::JoinHandle<()> {
+            let ticks = Arc::clone(&self.ticks);
+            let armed_at = Arc::clone(&self.armed_at);
+            let start = self.start;
+            let hold = HOLD.as_millis() as u64;
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(TICK).await;
+                    let now = start.elapsed().as_millis() as u64;
+                    let armed = armed_at.load(Ordering::SeqCst);
+                    // 失控护栏：handler 一直没报到也别把用例挂死。不参与改前/改后比较。
+                    let base = if armed == NOT_ARMED { 0 } else { armed };
+                    if now - base >= 4 * hold {
+                        return;
+                    }
+                    if armed != NOT_ARMED && now - armed < hold {
+                        ticks.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+        }
+
+        fn ticks(&self) -> usize {
+            self.ticks.load(Ordering::SeqCst)
+        }
     }
 
     /// 把 handler 作为**任务**放上唯一的 worker——这才是 axum handler 的形状。
     /// （早先我把它写在 `block_on` 的 future 里，结果测的是调用线程，数字全是假的。）
-    async fn old_case(db: Db, ticks: Arc<AtomicUsize>) -> i64 {
-        let driver = tick_driver(Arc::clone(&ticks));
+    async fn old_case(db: Db) -> (i64, usize) {
+        let window = Window::new();
+        let driver = window.start_driver();
+        let arm = window.arm();
         let handler = tokio::spawn(async move {
+            arm.now();
             let c = db.lock();
             std::thread::sleep(HOLD);
             c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).unwrap()
         });
         let value = handler.await.unwrap();
         driver.await.unwrap();
-        value
+        (value, window.ticks())
     }
 
-    async fn new_case(db: Db, ticks: Arc<AtomicUsize>) -> i64 {
-        let driver = tick_driver(Arc::clone(&ticks));
+    async fn new_case(db: Db) -> (i64, usize) {
+        let window = Window::new();
+        let driver = window.start_driver();
+        let arm = window.arm();
         let handler = tokio::spawn(async move {
+            arm.now();
             db.blocking(move |c| -> std::result::Result<i64, PlatformError> {
                 std::thread::sleep(HOLD);
                 c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
@@ -764,7 +827,7 @@ mod adr28_evidence {
         });
         let value = handler.await.unwrap();
         driver.await.unwrap();
-        value
+        (value, window.ticks())
     }
 
     #[test]
@@ -772,30 +835,28 @@ mod adr28_evidence {
         // 同一个 runtime、同一次运行里量两种写法 ⇒ "改前/改后"不跨环境比较。
         let rt = one_worker_runtime();
         let (old_value, old_ticks, new_value, new_ticks) = rt.block_on(async {
-            let t_old = Arc::new(AtomicUsize::new(0));
-            let v_old = old_case(fresh_db(), Arc::clone(&t_old)).await;
-            let t_new = Arc::new(AtomicUsize::new(0));
-            let v_new = new_case(fresh_db(), Arc::clone(&t_new)).await;
-            (
-                v_old,
-                t_old.load(Ordering::SeqCst),
-                v_new,
-                t_new.load(Ordering::SeqCst),
-            )
+            let (v_old, t_old) = old_case(fresh_db()).await;
+            let (v_new, t_new) = new_case(fresh_db()).await;
+            (v_old, t_old, v_new, t_new)
         });
         println!(
-            "ADR-28 并发证据：持有 {}ms / 计时步长 {}ms ⇒ 改前 tick={old_ticks}，改后 tick={new_ticks}",
+            "ADR-28 并发证据：持有 {}ms / 计时步长 {}ms ⇒ 占用窗口内 tick：改前={old_ticks}，改后={new_ticks}",
             HOLD.as_millis(),
             TICK.as_millis()
         );
         assert_eq!((old_value, new_value), (1, 1), "两条路径必须读出同一个结果");
-        assert!(
-            old_ticks <= 3,
-            "旧写法本该把唯一的 worker 占住、饿死计时任务，实测 tick={old_ticks} ⇒              这个用例没有测量它声称的东西（runtime 形状变了，必须重写而不是放宽阈值）"
+        assert_eq!(
+            old_ticks, 0,
+            "旧写法把唯一的 worker 占死，计时任务在占用窗口内一次都排不上；实测 {old_ticks} 跳 \
+             ⇒ 窗口又开早了（计时与 handler 在抢同一个 worker）。这是测量形状的问题，\
+             放宽阈值只会让这个用例不再测量它声称的东西"
         );
+        // 名义上 HOLD/TICK 跳；留 5 倍调度余量。旧写法再怎么抖都到不了这个量级，
+        // 因为窗口关着；所以这条断言仍然能抓住"blocking 入口退回 worker 上跑"的回归。
+        let floor = HOLD.as_millis() as usize / TICK.as_millis() as usize / 5;
         assert!(
-            new_ticks >= old_ticks + 10,
-            "改后 worker 应当空出来：old={old_ticks} new={new_ticks}"
+            new_ticks >= floor,
+            "改后 worker 应当空出来、计时任务能跑：期望至少 {floor} 跳，实测 {new_ticks}"
         );
     }
 
