@@ -12,10 +12,12 @@
   本文件里"只前进的状态表"与"房间关闭"两组行为只在 Go 侧存在，Rust SDK 侧没有对应实现，
   所以行号引的是 Go。
 - 许可：Apache-2.0（许可不阻挡本项目，但来源必须可复查）
-- 本地 sha256：`00495cebb615ffb97daa657171b55f740c0e9de23d6bc2876c461878113c0602`
+- 本地 sha256：`55645b9cf5b5cc997b92ccd2e9a2823d454ff528a48482702963ec679b9ced21`
   （按 Git LF 字节计算；本仓库 `core.autocrlf=true`，未钉 LF 的文件在 Windows 重新 checkout
   会变成 CRLF 从而指纹漂移——`sfu.rs` 就踩过这个坑，`.gitattributes` 现已把
-  `crates/rtc/src/room.rs` 与 `crates/rtc/src/token.rs` 一并钉成 `text eol=lf`）
+  `crates/rtc/src/room.rs` 与 `crates/rtc/src/token.rs` 一并钉成 `text eol=lf`。
+  该 sha 是 `036e5c3`（清 CI 三个红项）之后的值，见下文"拆函数不改语义"一节；
+  registry 的 `local_sha256` 已同步）
 - 形态：**adapted**（逐段照抄行为/状态表/枚举语义，Rust 化改写 + 去依赖 + 换错误类型；
   不是 copy-paste 改 import，也不是"参考思路"）
 - 需求：#153 / ADR-25（媒体面 LiveKit sidecar；信令、成员裁决、房间审计留 Rust）
@@ -200,6 +202,27 @@
 `host_leave_transfers_to_moderator_first`、`host_leave_without_moderator_falls_back_to_earliest_member`、
 `last_participant_leaving_ends_the_room`、`transfer_host_demotes_previous_host`、
 `hands_raise_in_join_order`、`bad_capacity_is_refused`）——它们与上游无关，改借来的语义不该红它们。
+
+## 拆函数不改语义（`036e5c3`，本地 sha 由此变更）
+
+这一笔是为了清 CI 的三个红项（clippy / rustdoc / C10 体量门禁），**状态机语义与审计结论
+一律未动**，所以借来的规则仍然逐条对得上上面的行号表。做了这些事：
+
+- `DisconnectReason` 加 `#[repr(i32)]`，`tag()` 直接返回判别值（原来是 17 行的数字表）。
+  **这是对上游数值的依赖方式变了，不是数值变了**：变体顺序 `0..=16` 仍必须与
+  `livekit-protocol/src/livekit.rs:2118-2152` 一一对应，`UnknownReason` 显式锚 `= 0`，
+  其余由编译器顺序编号。以后往里插变体等于改 proto 数值，必须同步改顺序——
+  `disconnect_reason_names_round_trip_and_tags_match_proto` 仍是那条兜底的测试。
+- 长函数按动作拆开，只是移动代码、不改判定顺序：`apply_member_command` → `cmd_mark_active`
+  / `cmd_disconnect` / `cmd_reconnect` / `cmd_leave` / `cmd_mute_self` / `cmd_mute_other`
+  / `cmd_hand` / `cmd_join`；`member_command` → `reject_member_command` + `apply_member_command`
+  + `audit_member_result`；`prepare_access` → `check_access_room` + `check_access_seat`
+  + `access_request_for`；`report_sidecar_state` → `commit_sidecar_state`
+  + `record_ignored_sidecar_state`；`revoke_membership` → `drop_seats` + `drop_roster_entry`；
+  `with_engine` → `host_seed`；leave 与 takeover 共用 `elect_successor`。
+  拆 `reject_member_command` 时刻意保持"被拒的命令不让 `revision` 前滚"这条性质。
+- `RecordingMode` 的手写 `Default` 换成 `derive(Default)` + `#[default] Off`；行为等价。
+- 拒绝签发那几条审计的 `detail` 字面值逐条原样保留（测试断言了 `ROOM_DELETED`）。
 
 ## 复核方式
 

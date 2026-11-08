@@ -5,11 +5,15 @@
 - 交叉核对源（服务端，另一条 upstream）：
   <https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/service/auth.go>（`UP-LIVEKIT-SERVER`）
 - 许可：Apache-2.0（许可不阻挡本项目，但来源必须可复查）
-- 本地 sha256：`6b547affba07443f0570c27bb8641489df5454504ed3f42ccb6cfe7d0d3e3f39`
+- 本地 sha256：`00fdaf23b9f779f06803a53e80262ded80e084b94a161988f37cee89afd2da51`
   （按 Git LF 字节计算；根目录 `.gitattributes` 把该文件钉成 `text eol=lf`，
   避免 Windows `core.autocrlf=true` 下检出成 CRLF 后指纹漂移——`sfu.rs` 就踩过这个坑。
-  该 sha 是 `cargo fmt` 之后的值：G09 #369 一并跑了全仓 fmt，本文件与 `room.rs` 都只有
-  排版变化，行为未动，registry 的 `local_sha256` 已同步）
+  该 sha 是 `036e5c3`（清 CI 三个红项）之后的值：本文件只做了 `LiveKitIssuer::issue`
+  拆成 `check_issue_input` / `access_grant` / `access_claims` 三段、`b64url_encode` 改用
+  `div_ceil`、base64 的位移与码表偏移提成命名常量（`B64_TOP_SHIFT`、`B64_DIGITS_OFFSET` 等）、
+  `AccessRequest.muted` 的 doc 链接换成 `crate::token::LiveKitIssuer::verify_for` 全路径，
+  以及测试里的 `to_string` 去重与一处 `assert!` 改 `const { assert!(..) }`；
+  签发与校验的判定顺序和结论都没动，registry 的 `local_sha256` 已同步）
 - 形态：**adapted**（逐段照抄行为，Rust 化改写 + 去依赖 + 换错误类型；不是 copy-paste 改 import）
 - 需求：#153 / ADR-25（媒体面 LiveKit sidecar，信令/token/房间审计留 Rust）
 
