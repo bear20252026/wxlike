@@ -480,13 +480,20 @@ async fn only_the_author_may_delete() {
     let (_, body) = publish(&app, &at, json!({"text": "mine", "visibility": "public"})).await;
     let id = body["moment_id"].as_str().unwrap().to_string();
 
-    // A2: forging a delete against someone else's moment id
-    let (status, _) = call(
+    // A2: forging a delete against someone else's moment id.
+    // 越权删除必须与"不存在"**同形**（404，不是 403）：403 等于告诉探测者
+    // "这个 id 确实是一条别人的动态"，动态 id 就成了可枚举资源。
+    let (status, body) = call(
         &app,
         req("DELETE", &format!("/api/moments/{id}"), None, Some(&bt)),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(
+        body["error"].as_str(),
+        Some("no such moment"),
+        "越权与不存在返回同一形状"
+    );
     assert_eq!(
         detail(&app, &at, &id).await.0,
         StatusCode::OK,

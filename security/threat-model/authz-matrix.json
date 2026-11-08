@@ -1624,6 +1624,18 @@
     },
     {
       "method": "GET",
+      "path": "/api/moments/album",
+      "handler": "album",
+      "module": "crates/platform/src/moments.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/moments/drafts",
       "handler": "list_drafts",
       "module": "crates/platform/src/moments.rs",
@@ -2152,6 +2164,18 @@
       "method": "GET",
       "path": "/api/search/content",
       "handler": "search",
+      "module": "crates/platform/src/content_index.rs",
+      "auth": "user",
+      "object": "endpoint",
+      "scope": "self",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/search/scopes",
+      "handler": "scopes",
       "module": "crates/platform/src/content_index.rs",
       "auth": "user",
       "object": "endpoint",
@@ -2799,6 +2823,18 @@
       "handler": "report",
       "module": "crates/platform/src/video_feed.rs",
       "auth": "user",
+      "object": "object",
+      "scope": "owner",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/videos/{id}/review",
+      "handler": "review",
+      "module": "crates/platform/src/video_feed.rs",
+      "auth": "admin",
       "object": "object",
       "scope": "owner",
       "tests": [

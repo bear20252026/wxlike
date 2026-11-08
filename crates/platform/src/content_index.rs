@@ -1,8 +1,13 @@
-//! G05-05 公开内容索引与检索（`/api/search/content`、`/api/search/trends`）。
+//! G05-05 公开内容索引与检索（`/api/search/content`、`/api/search/trends`、
+//! `/api/search/scopes`）。
 //!
-//! 三条不变式：
+//! 三条不变式（与 `crates/search/src/unified.rs` 的编排层同一套约定，
+//! 见 integration-requests/G05/authz-matrix-additions.yaml 与
+//! `crates/search/` 那份共用内核 —— `platform -> wxlike-search` 这条依赖边
+//! 会动根 Cargo.lock，属串行热点，等 G00 挂上后这里的多域归并可直接换成
+//! 共用引擎，语义不变）：
 //!
-//! 1. **先授权、后取正文。** 候选页只查 `doc_id/kind/owner` 等元数据，逐条
+//! 1. **先授权、后取正文。** 候选页只查 `doc_id/kind/created_at`，逐条
 //!    回权威表判定可见性，通过后才读 `title/body` 生成 snippet。索引里的
 //!    死行、撤权行不会以任何形式出现在响应里。
 //! 2. **写同步、删同步。** 发布内容与写索引在同一个事务；删除内容同时删行。
@@ -10,10 +15,14 @@
 //! 3. **私聊永不进索引。** 索引只接收朋友圈/文章/视频号/状态；消息正文
 //!    仍只在客户端本地检索，服务端没有明文建索引的入口。
 //!
-//! 热搜是索引上的聚合：按**去重作者**计数（同一作者最多算 3 篇），只统计
-//! `audience = 'public'` 的内容，因此好友可见/私密内容和个人私聊都不会出现。
+//! 分页正确性（#135 验收"多类别分页稳定 / 索引落后不漏数据"的那一条）：
+//! 每个域各自持有一条 keyset 游标 `(created_at, doc_id)`，**游标跟着候选行
+//! 推进，不跟着可见行推进**。老实现一次取 `limit + 1` 条候选、把不可见的滤掉
+//! 之后就直接宣布 `has_more = false`——"最新两条是好友可见、第三条才公开"这种
+//! 数据形态会让第三条及其后的公开内容永远检索不到。现在归并取满 `limit` 条
+//! 或所有域翻到底才停。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -22,6 +31,7 @@ use rusqlite::{params, Connection, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError, Result};
 use crate::page;
 use crate::{Platform, PlatformState};
@@ -39,12 +49,16 @@ const TREND_MAX_LIMIT: usize = 50;
 /// 每个作者对单个词条最多贡献的文档数（防单人刷榜）。
 const TREND_OWNER_CAP: usize = 3;
 
-const KINDS: [&str; 4] = ["moment", "article", "video", "status"];
+pub const KINDS: [&str; 4] = ["moment", "article", "video", "status"];
+
+/// 单批候选下限：至少取这么多，免得归并每前进一步都打一次库。
+const MIN_BATCH: i64 = 32;
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
         .route("/api/search/content", get(search))
         .route("/api/search/trends", get(trends))
+        .route("/api/search/scopes", get(scopes))
 }
 
 /// 一条索引记录的写入形状。正文只存纯文本，HTML/结构留在原表。
@@ -150,57 +164,84 @@ impl Platform {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// 检索：候选页（无正文）→ 逐条授权 → 只为通过者取正文。
+    /// 检索：每个域一条泳道，候选页（无正文）→ 逐条授权 → 只为通过者取正文，
+    /// 归并到取满 `limit` 或所有泳道翻到底。
+    ///
+    /// `scopes` 为空 = 全部内置域（`KINDS`）；未知 scope 报错而不是退化成全量
+    /// （退化会让"只搜文章"的调用变成对其它域的探测面）。
     pub fn search_content(
         &self,
         viewer: &str,
         q: &str,
-        kind: Option<&str>,
+        scopes: &[String],
         cursor: Option<&str>,
         limit: i64,
     ) -> Result<(Vec<SearchItem>, String, bool)> {
         let needle = validate_query(q)?;
-        let kind = match kind {
-            Some(k) if !k.is_empty() => {
-                if !KINDS.contains(&k) {
-                    return Err(PlatformError::BadInput("unknown search kind"));
-                }
-                Some(k.to_string())
-            }
-            _ => None,
-        };
-        let (before_at, before_id) = parse_cursor(cursor)?;
+        let selected = select_scopes(scopes)?;
         let limit = limit.clamp(1, MAX_SEARCH_PAGE);
+        let batch = (limit + 1).max(MIN_BATCH);
+        let (before_at, before_id) = parse_cursor(cursor)?;
         let pattern = like_pattern(&needle);
 
-        let candidates =
-            self.search_candidates(&pattern, kind.as_deref(), before_at, &before_id, limit)?;
-        let mut items = Vec::new();
-        let mut more = false;
-        for (doc_id, kind, _owner, created_at) in candidates {
-            if !self.content_visible(viewer, &kind, &doc_id)? {
-                continue;
-            }
+        let mut lanes: Vec<Lane> = selected
+            .into_iter()
+            .map(|kind| Lane {
+                kind,
+                at: before_at,
+                id: before_id.clone(),
+                buf: VecDeque::new(),
+                done: false,
+            })
+            .collect();
+
+        let mut items: Vec<SearchItem> = Vec::new();
+        let mut has_more = false;
+        loop {
             if items.len() as i64 == limit {
-                more = true;
+                has_more = lanes.iter().any(|lane| !lane.buf.is_empty() || !lane.done);
                 break;
             }
-            let Some((title, body)) = self.index_body(&doc_id)? else {
-                continue;
+            for lane in lanes.iter_mut() {
+                while lane.buf.is_empty() && !lane.done {
+                    lane.fill(self, viewer, &pattern, &needle, batch)?;
+                }
+            }
+            let Some(winner) = head_winner(&lanes) else {
+                break;
             };
-            items.push(SearchItem {
-                doc_id,
-                kind,
-                title,
-                snippet: snippet(&body, &needle),
-                created_at,
-            });
+            match lanes[winner].buf.pop_front() {
+                Some(head) => items.push(head),
+                None => break,
+            }
         }
         let next = items
             .last()
             .map(|i| format!("{}:{}", i.created_at, i.doc_id))
             .unwrap_or_default();
-        Ok((items, next, more))
+        Ok((items, next, has_more))
+    }
+
+    /// 某个域的一批候选：只有 id 与排序键，**没有**正文。
+    fn search_candidates(
+        &self,
+        pattern: &str,
+        kind: &str,
+        before_at: i64,
+        before_id: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        let c = self.db().lock();
+        let mut stmt = c.prepare(
+            "SELECT doc_id, created_at FROM content_index
+             WHERE kind = ?2 AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\')
+               AND (created_at < ?3 OR (created_at = ?3 AND doc_id < ?4))
+             ORDER BY created_at DESC, doc_id DESC LIMIT ?5",
+        )?;
+        let rows = stmt.query_map(params![pattern, kind, before_at, before_id, limit], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     fn index_body(&self, doc_id: &str) -> Result<Option<(String, String)>> {
@@ -213,49 +254,7 @@ impl Platform {
         .optional()?)
     }
 
-    /// 候选页只含元数据。`kind` 分支各用一套占位符编号，避免把 `None`
-    /// 塞进 `? IS NOT NULL` 造成整页被过滤。
-    fn search_candidates(
-        &self,
-        pattern: &str,
-        kind: Option<&str>,
-        before_at: i64,
-        before_id: &str,
-        limit: i64,
-    ) -> Result<Vec<(String, String, String, i64)>> {
-        let c = self.db().lock();
-        let take = limit + 1;
-        let mut rows = Vec::new();
-        if let Some(kind) = kind {
-            let mut stmt = c.prepare(
-                "SELECT doc_id, kind, owner, created_at FROM content_index
-                 WHERE (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\') AND kind = ?2
-                   AND (created_at < ?3 OR (created_at = ?3 AND doc_id < ?4))
-                 ORDER BY created_at DESC, doc_id DESC LIMIT ?5",
-            )?;
-            let it = stmt.query_map(
-                params![pattern, kind, before_at, before_id, take],
-                candidate_row,
-            )?;
-            for row in it {
-                rows.push(row?);
-            }
-        } else {
-            let mut stmt = c.prepare(
-                "SELECT doc_id, kind, owner, created_at FROM content_index
-                 WHERE (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\')
-                   AND (created_at < ?2 OR (created_at = ?2 AND doc_id < ?3))
-                 ORDER BY created_at DESC, doc_id DESC LIMIT ?4",
-            )?;
-            let it = stmt.query_map(params![pattern, before_at, before_id, take], candidate_row)?;
-            for row in it {
-                rows.push(row?);
-            }
-        }
-        Ok(rows)
-    }
-
-    /// 热搜：去重作者 + 单人贡献上限 + 只用公开内容。
+    /// 热搜：时间窗 + 去重作者 + 单人贡献上限 + 只用公开内容。
     pub fn content_trends(&self, limit: usize) -> Result<Vec<TrendTerm>> {
         let limit = limit.clamp(1, TREND_MAX_LIMIT);
         let cutoff = wxlike_core::types::now_ms() as i64 - TREND_WINDOW_MS;
@@ -277,15 +276,14 @@ impl Platform {
         let mut contributions: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         for (owner, title, body) in rows {
             let mut doc_terms = BTreeSet::new();
-            for text in [title, body] {
-                for term in extract_terms(&text) {
-                    doc_terms.insert(term);
-                }
-            }
+            doc_terms.extend(extract_terms(&title));
+            doc_terms.extend(extract_terms(&body));
             for term in doc_terms {
-                let entry = contributions.entry(term).or_default();
-                let count = entry.entry(owner.clone()).or_insert(0);
-                *count += 1;
+                *contributions
+                    .entry(term)
+                    .or_default()
+                    .entry(owner.clone())
+                    .or_insert(0) += 1;
             }
         }
         let mut terms: Vec<TrendTerm> = contributions
@@ -304,10 +302,79 @@ impl Platform {
                 }
             })
             .collect();
+        // score DESC, term ASC：同分按词条字典序，结果与 map 迭代顺序无关
         terms.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.term.cmp(&b.term)));
         terms.truncate(limit);
         Ok(terms)
     }
+}
+
+/// 一个域在归并中的泳标与已授权缓冲。
+struct Lane {
+    kind: String,
+    at: i64,
+    id: String,
+    buf: VecDeque<SearchItem>,
+    done: bool,
+}
+
+impl Lane {
+    fn fill(
+        &mut self,
+        platform: &Platform,
+        viewer: &str,
+        pattern: &str,
+        needle: &str,
+        batch: i64,
+    ) -> Result<()> {
+        let page = platform.search_candidates(pattern, &self.kind, self.at, &self.id, batch)?;
+        if let Some((doc_id, created_at)) = page.last() {
+            // 游标跟着**候选**走：一整批不可见的候选也必须把游标推过去，
+            // 否则要么死循环重取，要么被当成"到底了"而漏数据。
+            self.at = *created_at;
+            self.id = doc_id.clone();
+        }
+        if (page.len() as i64) < batch {
+            self.done = true;
+        }
+        for (doc_id, created_at) in page {
+            if !platform.content_visible(viewer, &self.kind, &doc_id)? {
+                continue;
+            }
+            // 索引行没了（同事务删行的极端情况）就丢弃，不返回半个对象
+            let Some((title, body)) = platform.index_body(&doc_id)? else {
+                continue;
+            };
+            self.buf.push_back(SearchItem {
+                doc_id,
+                kind: self.kind.clone(),
+                title,
+                snippet: snippet(&body, needle),
+                created_at,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// 归并冠军：队头排序键 `(created_at, doc_id)` 最大的泳道下标；
+/// 严格大于才替换，键相等时保留更靠前的泳道（与检索内核语义一致）。
+fn head_winner(lanes: &[Lane]) -> Option<usize> {
+    lanes.iter().enumerate().fold(None, |best, (idx, lane)| {
+        let Some(head) = lane.buf.front() else {
+            return best;
+        };
+        match best.and_then(|b| lanes[b].buf.front()) {
+            None => Some(idx),
+            Some(cur)
+                if (head.created_at, head.doc_id.as_str())
+                    > (cur.created_at, cur.doc_id.as_str()) =>
+            {
+                Some(idx)
+            }
+            _ => best,
+        }
+    })
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -327,10 +394,6 @@ pub struct TrendTerm {
     pub distinct_authors: i64,
 }
 
-fn candidate_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, String, i64)> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-}
-
 fn validate_query(q: &str) -> Result<String> {
     let q = q.trim();
     if q.is_empty() {
@@ -343,6 +406,26 @@ fn validate_query(q: &str) -> Result<String> {
         return Err(PlatformError::BadInput("query contains control characters"));
     }
     Ok(q.to_lowercase())
+}
+
+fn select_scopes(scopes: &[String]) -> Result<Vec<String>> {
+    if scopes.is_empty() {
+        return Ok(KINDS.iter().map(|k| (*k).to_string()).collect());
+    }
+    let mut out: Vec<String> = Vec::with_capacity(scopes.len());
+    for want in scopes {
+        let trimmed = want.trim().to_lowercase();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !KINDS.contains(&trimmed.as_str()) {
+            return Err(PlatformError::BadInput("unknown search scope"));
+        }
+        if !out.iter().any(|held| held == &trimmed) {
+            out.push(trimmed);
+        }
+    }
+    Ok(out)
 }
 
 /// 转义 LIKE 的通配符，用户输入里的 `%`/`_` 只能当字面量。
@@ -378,14 +461,14 @@ fn snippet(body: &str, needle: &str) -> String {
     body.chars().skip(skip).take(MAX_SNIPPET_CHARS).collect()
 }
 
-/// 从标题/正文提取热搜词：ASCII 词（≥3）、CJK 二元组、#话题。
+/// 从标题/正文提取热搜词：ASCII 词（≥3）、CJK 二元组。
 fn extract_terms(text: &str) -> Vec<String> {
     let mut terms = Vec::new();
     let mut ascii = String::new();
     let mut cjk = Vec::new();
     let flush_ascii = |buf: &mut String, out: &mut Vec<String>| {
         if buf.chars().count() >= 3 && !STOPWORDS.contains(&buf.as_str()) {
-            out.push(buf.clone());
+            out.push(std::mem::take(buf));
         }
         buf.clear();
     };
@@ -420,14 +503,34 @@ fn is_cjk(ch: char) -> bool {
     matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
 }
 
+/// 英文高频词：进热搜等于把榜单让给 "the"。
 const STOPWORDS: [&str; 6] = ["the", "and", "for", "with", "this", "that"];
 
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String,
+    /// 单域过滤（P3 起的既有参数，保留）。
     kind: Option<String>,
+    /// 多域过滤，逗号分隔；与 `kind` 同时给出时取并集。
+    scope: Option<String>,
     cursor: Option<String>,
     limit: Option<i64>,
+}
+
+/// 把 `kind` + `scope` 合成一个 scope 列表。
+fn requested_scopes(kind: Option<&str>, scope: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in kind
+        .into_iter()
+        .chain(scope.into_iter().flat_map(|s| s.split(',')))
+        .flat_map(|s| s.split(','))
+    {
+        let trimmed = piece.trim().to_lowercase();
+        if !trimmed.is_empty() && !out.contains(&trimmed) {
+            out.push(trimmed);
+        }
+    }
+    out
 }
 
 async fn search(
@@ -435,13 +538,16 @@ async fn search(
     authed: Authed,
     Query(q): Query<SearchQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (items, next_cursor, has_more) = platform.search_content(
-        &authed.user_id,
-        &q.q,
-        q.kind.as_deref(),
-        q.cursor.as_deref(),
-        q.limit.unwrap_or(page::DEFAULT_PAGE),
-    )?;
+    let viewer = authed.user_id.clone();
+    let input = q.q.clone();
+    let scopes = requested_scopes(q.kind.as_deref(), q.scope.as_deref());
+    let cursor = q.cursor.clone();
+    let limit = q.limit.unwrap_or(page::DEFAULT_PAGE);
+    // ADR-28：检索是多轮 keyset 查询，整段搬到阻塞线程池，handler 只 await。
+    let (items, next_cursor, has_more) = offload(&platform, move |p| {
+        p.search_content(&viewer, &input, &scopes, cursor.as_deref(), limit)
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "items": items,
         "next_cursor": next_cursor,
@@ -460,11 +566,23 @@ async fn trends(
     _authed: Authed,
     Query(q): Query<TrendQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let terms = platform.content_trends(q.limit.unwrap_or(DEFAULT_TREND_PAGE))?;
+    let limit = q.limit.unwrap_or(DEFAULT_TREND_PAGE);
+    let terms = offload(&platform, move |p| p.content_trends(limit)).await?;
     Ok(Json(serde_json::json!({
         "terms": terms,
         "window_ms": TREND_WINDOW_MS,
         "snapshot_version": wxlike_core::types::now_ms(),
+    })))
+}
+
+/// 自省：这个统一入口现在能搜哪些域、上限是多少。客户端据此渲染 tab，不用猜，
+/// 也不用把"支持哪些 scope"硬编码到三端。纯常量读取，不碰数据库。
+async fn scopes(_authed: Authed) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(serde_json::json!({
+        "scopes": KINDS,
+        "max_page": MAX_SEARCH_PAGE,
+        "max_query_chars": MAX_QUERY_CHARS,
+        "trend_window_ms": TREND_WINDOW_MS,
     })))
 }
 
@@ -503,5 +621,24 @@ mod tests {
         assert!(terms.contains(&"慢速".to_string()));
         assert!(terms.contains(&"rust".to_string()));
         assert!(!terms.contains(&"the".to_string()));
+    }
+
+    #[test]
+    fn scope_selection_never_widens_on_unknown_input() {
+        assert_eq!(requested_scopes(None, None).len(), 0);
+        assert_eq!(
+            requested_scopes(Some("Article"), Some("video, moment ,video")),
+            ["article", "video", "moment"]
+        );
+        // 空 scope 列表 = 全部域；未知域在 select_scopes 里报错，不静默忽略
+        assert_eq!(
+            select_scopes(&[]).unwrap(),
+            ["moment", "article", "video", "status"]
+        );
+        assert!(select_scopes(&["wallet".to_string()]).is_err());
+        assert_eq!(
+            select_scopes(&["Video".to_string(), "video".to_string()]).unwrap(),
+            ["video"]
+        );
     }
 }
