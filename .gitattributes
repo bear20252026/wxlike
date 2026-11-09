@@ -28,3 +28,14 @@ crates/search/src/trends.rs text eol=lf
 # 部署脚本/清单（docker compose、verify/smoke 脚本等）同样按 LF 检出，
 # 容器内 bash 与 Linux 值班环境不认 CRLF。
 deploy/** text eol=lf
+
+# 同一批 registry.json 里按 sha256 核对的 adapted 文件（G06：UP-FORMANCE / UP-BLNK）。
+# 登记值是按 Git LF 字节算的，本地 core.autocrlf=true 会把没钉的文件检出成 CRLF，
+# 于是同一个文件在这台机器上算出两个摘要：本地 provenance 报 6 条 PROV-SHA-MISMATCH
+# CRITICAL，而 CI 在 ubuntu 上永远绿——即"只有换机器才红"，正是 sfu.rs 那次踩过的坑。
+crates/ledger/src/model.rs text eol=lf
+crates/ledger/src/store.rs text eol=lf
+crates/ledger/src/schema.rs text eol=lf
+crates/ledger/src/lib.rs text eol=lf
+crates/features/commerce/src/store.rs text eol=lf
+crates/features/commerce/src/payments.rs text eol=lf
