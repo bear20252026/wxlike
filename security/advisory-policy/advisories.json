@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.advisories.v1",
-  "checked_at": "2026-11-05",
+  "checked_at": "2026-11-10",
   "source": "docs/full-platform-delivery/00_master_guide.md#6（当日已联网核对）",
   "note": "机器可读的公告表。affected 是**受影响区间**（数组元素之间是 OR，单个元素内逗号是 AND），fixed 只是当日最低修复版本，冻结时会重查。severity 未在上游明确分级时按保守值登记并在 severity_source 里注明。",
   "advisories": [
@@ -278,6 +278,36 @@
       ],
       "url": "https://rustsec.org/advisories/RUSTSEC-2024-0429",
       "note": "VariantStrIter 的 Iterator/DoubleEndedIterator 实现 unsound（受影响函数仅限该迭代器的 next/next_back/nth/nth_back/last）。桌面图锁内 0.18.5 在受影响区间；本仓桌面应用代码未使用 VariantStrIter（ui/src-tauri、ui/src 已 grep 核对），glib 内部路径风险靠桌面栈升级 glib >=0.20 根除，另行跟踪；按 medium 候选告警处理，不构成冻结阻断（阻断级为 critical/high）。"
+    },
+    {
+      "id": "RUSTSEC-2026-0459",
+      "component": "libsqlite3-sys",
+      "ecosystem": "crates.io",
+      "severity": "medium",
+      "severity_source": "人工核实 2026-11-10：cargo-audit 0.22.2 给 6.8 (medium)，OSV 无 CVSS v3 分数",
+      "affected": [
+        ">=0.6.0, <0.39.0"
+      ],
+      "fixed": [
+        "0.39.0"
+      ],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0459",
+      "note": "经 rusqlite 的 bundled 特性编进二进制的 C SQLite（CVE-2026-119375）。本仓锁在 0.30.1，由 rusqlite 0.32 带入；逐个查 crates.io 依赖表后确认只有 rusqlite 0.41.1 才要 libsqlite3-sys ^0.39.0（0.35→^0.33、0.37→^0.35、0.38→^0.36、0.39→^0.37、0.40.2→^0.38），所以这不是抬一个小版本能修的，迁移记在 issue #376。**没有登记任何 skip/ignore**：`.cargo/audit.toml` 的适用条件是'不在默认编译图'，bundled SQLite 恰在图内。"
+    },
+    {
+      "id": "RUSTSEC-2026-0462",
+      "component": "rmcp",
+      "ecosystem": "crates.io",
+      "severity": "medium",
+      "severity_source": "人工核实 2026-11-10：cargo-audit 0.22.2 给 6.5 (medium)",
+      "affected": [
+        ">=0.2.0, <3.9.0"
+      ],
+      "fixed": [
+        "3.9.0"
+      ],
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0462",
+      "note": "Streamable HTTP 客户端无上限缓冲响应体。已随 PR #375 抬到 3.9.0（根 Cargo.toml 的 pin 与 lock 同步，SBOM 一并重生成），登记此行是为了让台账记住这条曾在锁里、以及它是被哪一笔清掉的。"
     }
   ]
 }
