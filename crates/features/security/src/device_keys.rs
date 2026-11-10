@@ -29,7 +29,6 @@ fn epoch_to_db(v: u64) -> Result<i64> {
     i64::try_from(v).map_err(|_| SecError::Corrupted("epoch"))
 }
 
-
 /// 一次认领的结果：够对方建立会话的最小信息集。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claimed {
@@ -293,15 +292,14 @@ pub fn rotate(
 
 /// 当前代次（不存在 → `None`）。
 pub fn epoch_of(conn: &Connection, user: &str, device_id: &str) -> Result<Option<u64>> {
-    Ok(conn
-        .query_row(
-            "SELECT epoch FROM security_device_key WHERE device_id = ?1 AND user_id = ?2",
-            params![device_id, user],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .map(epoch_from_db)
-        .transpose()?)
+    conn.query_row(
+        "SELECT epoch FROM security_device_key WHERE device_id = ?1 AND user_id = ?2",
+        params![device_id, user],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()?
+    .map(epoch_from_db)
+    .transpose()
 }
 
 /// 记录"我验证过对方的这台设备"。安全码由用户线下比对得出。
