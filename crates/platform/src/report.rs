@@ -380,8 +380,10 @@ impl Platform {
                 t.state.as_str(),
                 action,
                 t.handler,
-                t.created_at,
-                t.updated_at,
+                // rusqlite 0.41 起 `u64` 不再实现 `ToSql`。SQLite 的 INTEGER 就是
+                // 有符号 64 位，而工单时间戳是正数且远小于 `i64::MAX`，直接 `as i64`。
+                t.created_at as i64,
+                t.updated_at as i64,
                 history
             ],
         )?;

@@ -55,7 +55,19 @@ impl Db {
         )?;
         // WP-13 slow-query log: SQLite itself times every statement, so the
         // threshold applies to what actually ran, not to lock acquisition.
-        conn.profile(Some(slow_sql_log));
+        //
+        // rusqlite 0.41: `Connection::profile` was removed. The replacement is
+        // `trace_v2` with an event-code mask — we register only
+        // `SQLITE_TRACE_PROFILE` (statement-finished events), so the callback
+        // fires once per completed statement with its wall time.
+        //
+        // The callback signature changed from `fn(&str, Duration)` to
+        // `FnMut(TraceEvent<'_>)`; we extract the SQL text from
+        // `StmtRef::sql()` and the duration from the `Profile` variant.
+        conn.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+            Some(slow_sql_log_v2),
+        )?;
         let db = Self {
             inner: Arc::new(Mutex::new(conn)),
         };
@@ -436,11 +448,19 @@ where
 /// Statements slower than this land in the log with their text (truncated).
 const SLOW_SQL_MS: u64 = 100;
 
-/// Profile callback (rusqlite `trace` feature). A plain fn, as required.
-fn slow_sql_log(sql: &str, elapsed: std::time::Duration) {
-    if elapsed.as_millis() >= SLOW_SQL_MS as u128 {
-        let text: String = sql.chars().take(160).collect();
-        tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, stmt = %text, "slow sql");
+/// Trace callback for rusqlite 0.41+ (`trace_v2`). Replaces the old
+/// `Connection::profile` hook. Only registered for `SQLITE_TRACE_PROFILE`
+/// events, so this fires once per completed statement.
+///
+/// The callback receives a `TraceEvent` enum; we match on `Profile` to get
+/// the statement reference and its elapsed `Duration`. The SQL text comes
+/// from `StmtRef::sql()` (the prepared statement's original SQL).
+fn slow_sql_log_v2(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Profile(stmt_ref, elapsed) = event {
+        if elapsed.as_millis() >= SLOW_SQL_MS as u128 {
+            let text: String = stmt_ref.sql().chars().take(160).collect();
+            tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, stmt = %text, "slow sql");
+        }
     }
 }
 

@@ -16,7 +16,11 @@ use tokio::sync::Mutex as AsyncMutex;
 /// 领取后多久没确认就重新可见（进程被杀 / 连接断在半路）。
 ///
 /// 30 秒：够一次握手 + 发一批的时间，又不至于让"重连后要等很久才补发"。
-pub const LEASE_MS: u64 = 30_000;
+///
+/// rusqlite 0.41 起 `u64` 不再实现 `ToSql`，SQLite 的 INTEGER 就是有符号
+/// 64 位。lease 时长是正数且远小于 `i64::MAX`，用 `i64` 与数据库列类型
+/// 直接对齐，避免在每个绑定处 `as i64`。
+pub const LEASE_MS: i64 = 30_000;
 
 /// Parked-message store. Semantics: per-user FIFO, capped, oldest dropped past
 /// the cap.
@@ -64,10 +68,14 @@ pub trait OfflineStore: Send + Sync + 'static {
 }
 
 /// 队列里的一条：id 给 ack/release 用，`claimed_until` 是 lease 到期时间（ms）。
+///
+/// `i64`：SQLite 的 INTEGER 列就是有符号 64 位；rusqlite 0.41 不再给
+/// `u64` 实现 `ToSql`，内存表示与磁盘表示统一成一种类型，比较和写入
+/// 都不需要 `as` 转换。
 struct MemEntry {
     id: i64,
     frame: Vec<u8>,
-    claimed_until: u64,
+    claimed_until: i64,
 }
 
 /// Per-user FIFO with a cap (oldest dropped beyond cap).
@@ -107,7 +115,7 @@ impl OfflineStore for MemoryOffline {
     }
 
     async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<(i64, Vec<u8>)>> {
-        let now = wxlike_core::types::now_ms();
+        let now = wxlike_core::types::now_ms() as i64;
         let mut m = self.inner.lock().await;
         let Some(dq) = m.get_mut(user) else {
             return Ok(Vec::new());
@@ -239,7 +247,7 @@ impl OfflineStore for SqliteOffline {
     }
 
     async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<(i64, Vec<u8>)>> {
-        let now = wxlike_core::types::now_ms();
+        let now = wxlike_core::types::now_ms() as i64;
         // `usize::MAX`（drain 的便捷封装会传）不能直接塞进 SQLite 的 LIMIT
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let c = self.c();
