@@ -321,7 +321,9 @@ impl Store {
              ORDER BY seq DESC LIMIT ?3"
         ))?;
         let mut rows = stmt
-            .query_map(params![conv_id, before_seq, limit], row_to_message)?
+            // `limit as i64`：rusqlite 0.41 不再给 `usize` 实现 `ToSql`（原来靠它）。
+            // 这里不换个数字类型糊过去——`LIMIT ?3` 就是要一个 SQLite INTEGER。
+            .query_map(params![conv_id, before_seq, limit as i64], row_to_message)?
             .collect::<Result<Vec<_>, _>>()?;
         if rows.is_empty() {
             return Ok((Vec::new(), None));
