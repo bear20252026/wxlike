@@ -1,0 +1,50 @@
+# G17-06 libsqlite3-sys 公告只能靠 rusqlite 迁移修 —— 集成请求
+task: G17-06
+title: 把 rusqlite 从 0.32 迁到 0.41，以清掉 RUSTSEC-2026-0459
+issue: https://github.com/bear20252026/wxlike/issues/193
+branch: chore/G17-rmcp-3.9.0
+contract: none（纯依赖迁移，不动运行时入口）
+entry_ids: []
+action_ids: []
+
+paths:
+  - Cargo.toml
+  - Cargo.lock
+
+why_now: >
+  main 上 `cargo audit (RustSec)` 已经红：2 条真公告（不是 unmaintained 警告）。
+  其中一条在本 PR 里直接修掉了（rmcp 3.8.0 → 3.9.0，RUSTSEC-2026-0462）。
+  另一条修不了——只能迁 rusqlite：
+
+measured_facts:
+  advisory: RUSTSEC-2026-0459（published 2026-10-30，severity 6.8 medium，
+    title "`libsqlite3-sys` via C SQLite CVE-2026-119375"）
+  vulnerable_in_lock: libsqlite3-sys 0.30.1（经 `bundled` 特性编译进二进制的 C SQLite）
+  fixed_from: libsqlite3-sys >= 0.39.0
+  which_rusqlite_carries_it: >
+    逐个查 crates.io 依赖表：0.35.0 要 ^0.33.0、0.37.0 要 ^0.35.0、0.38.0 要 ^0.36.0、
+    0.39.0 要 ^0.37.0、0.40.2 要 ^0.38.x、**只有 0.41.1 要 ^0.39.0**。
+    也就是说没有"顺手抬一个小版本"的路：必须从 0.32 跨 9 个 minor 到 0.41。
+  blast_radius: 15 个 crate 声明 rusqlite（grep crates/*/Cargo.toml），
+    全仓 `rusqlite::` 触点 418 处（grep --include=*.rs）
+  not_a_workaround: >
+    `.cargo/audit.toml` 的 `ignore = []` 头部写死了规矩：只登记"已知且**不在默认编译图**"的公告。
+    libsqlite3-sys 是 bundled 编进二进制的主图依赖，正是这条例外明确不许用的情形；
+    `deny.toml` 那边同理（"有豁免必须写在这里并注明原因，而不是把整个检查关掉"）。
+
+ask: >
+  请 G17 与 SQLite 事实归属方（G02/G03/G06 都直接压在 rusqlite 上）定迁移窗口。
+  这条不该塞进任何一张功能卡：它同时改 15 个 crate 的持久层底座，
+  而且 bundled SQLite 版本一变，schema/迁移/`PRAGMA` 行为都要重跑一遍证据。
+
+constraint_i_hit: >
+  本仓库并行会话共用一块 552 G 的 D: 盘，我这轮把它写到过 0 G 空闲（多 worktree 各带一份
+  target/ 是主因，已回收共享 target/debug/incremental 约 2.5 G 与自己那几个 worktree）。
+  rusqlite 这种全仓迁移必须等一块能跑完整 `cargo test --workspace` 的空间，
+  否则改到一半只能靠"看起来编过了"来交付，那正是这个项目反对的交付方式。
+
+verification:
+  - python ci/jobs/audit/check_integration_requests.py
+  - cargo metadata --locked --format-version 1 > /dev/null   # 本 PR 已跑，exit 0
+  - cargo check -p wxlike-mcp                                 # 本 PR 已跑，exit 0
+  - cargo audit                                               # 迁移后应由 2 条 → 0 条
