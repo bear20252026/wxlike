@@ -4,6 +4,7 @@
 
 - [全局总跟踪 #80](https://github.com/bear20252026/wxlike/issues/80)：18个职责组、100张开发任务卡。
 - [开发交接总目录](docs/full-platform-delivery/README.md) · [任务可视化索引](docs/full-platform-delivery/issues/index.md) · [最新 UI 变更](docs/full-platform-delivery/03_ui_v2_changes.md)。
+- 交接清单（**接手从这里开始**）：[2026-11-10 最新](docs/handover-2026-11-10.md)（交付台账、门禁现状与误读点、未完工作各自的接手第一步、待裁决事项）· [上一份 r5](docs/handover-r5.md)。台账类快照按日期排，越新越可信；它们都不取代代码、任务卡与实时 CI。
 - [最新UI原型源码与原始设计包](design/ui-v2/README.md)：桌面10页、手机27页；设计原型不代表生产功能已实现。
 - [全部本轮任务](https://github.com/bear20252026/wxlike/issues?q=is%3Aissue+label%3Adelivery%3Aui-v2)：用group:G00—group:G17标签筛选、认领与追踪。
 
