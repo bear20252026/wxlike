@@ -30,7 +30,7 @@ sha2 = "0.10"
 # 秘密聊天设备密钥（静态加密的密钥材料）
 rand = "0.8"
 hex = "0.4"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 [features]
 # 真实声卡（cpal + libopus，需要 cmake 构建 vendored opus）。
