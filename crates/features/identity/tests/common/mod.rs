@@ -49,7 +49,7 @@ impl FileDb {
         let conn = Connection::open(&self.path).expect("open file sqlite");
         conn.pragma_update(None, "journal_mode", "WAL")
             .expect("WAL pragma");
-        conn.pragma_update(None, "busy_timeout", 8_000_u64)
+        conn.pragma_update(None, "busy_timeout", 8_000_i64)
             .expect("busy_timeout pragma");
         conn
     }
