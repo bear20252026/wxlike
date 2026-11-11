@@ -6,14 +6,14 @@
 //!
 //! 提取到这里的价值不在"少写几行"，而在**统一错误分层**：
 //!
-//! * **技术基础设施错误**（数据库、序列化、IO）→ 用 [`StorageError`] 表达，
-//!   各 crate 的错误类型通过 [`From`] 自动转换，不必各自重复定义。
+//! * **技术基础设施错误**（数据库、序列化、IO）→ 用 `StorageError` 表达，
+//!   各 crate 的错误类型通过 `From` 自动转换，不必各自重复定义。
 //! * **领域语义错误**（`Failed` / `Pending` / `Cancelled`）→ 留在各 crate 的
 //!   枚举里，因为它们**不是同一件事**：`AdminError::Failed` 和
 //!   `RtcError::Failed` 语义完全不同。
 //!
 //! 迁移策略是**渐进式**的：现有 `IdError::NotFound(...)` 调用点继续工作，
-//! 新代码可以用 [`StorageError::not_found`] 构造后 `?` 自动转换。
+//! 新代码可以用 `StorageError::not_found` 构造后 `?` 自动转换。
 //!
 //! 这是 `#[doc(hidden)]` 的内部 API，不进生产代码的直接返回路径。
 
