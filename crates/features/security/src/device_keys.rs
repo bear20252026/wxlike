@@ -17,6 +17,18 @@ use wxlike_core::e2ee::PreKeyBundle;
 
 use crate::{now_ms, Result, SecError, MAX_KEY_CHARS, MAX_OTKS, MAX_SAFETY_CHARS};
 
+/// rusqlite 0.41 起不再为 `u64`（和 `usize`）实现 `ToSql`/`FromSql`，而 SQLite 的
+/// INTEGER 本就是有符号 64 位。**刻意不用 `as`**：库里出现负数或超过 `i64::MAX` 的
+/// epoch 行一定是被写坏的，`as u64` 会把它折成一个巨大的合法代次，
+/// 于是"`epoch` 更大即更新"的判定从此永远接受这台设备。两处都按 Corrupted 报。
+fn epoch_from_db(v: i64) -> Result<u64> {
+    u64::try_from(v).map_err(|_| SecError::Corrupted("epoch"))
+}
+
+fn epoch_to_db(v: u64) -> Result<i64> {
+    i64::try_from(v).map_err(|_| SecError::Corrupted("epoch"))
+}
+
 /// 一次认领的结果：够对方建立会话的最小信息集。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claimed {
@@ -106,7 +118,7 @@ pub fn publish(
     now: i64,
 ) -> Result<u64> {
     validate(user, bundle)?;
-    let existing: Option<(String, String, u64)> = conn
+    let existing: Option<(String, String, i64)> = conn
         .query_row(
             "SELECT identity, otks, epoch FROM security_device_key \
              WHERE device_id = ?1 AND revoked_at IS NULL",
@@ -135,7 +147,8 @@ pub fn publish(
             )?;
             Ok(0)
         }
-        Some((identity, otks, epoch)) => {
+        Some((identity, otks, epoch_raw)) => {
+            let epoch = epoch_from_db(epoch_raw)?;
             if identity != bundle.identity {
                 return Err(SecError::Conflict("identity change requires rotate"));
             }
@@ -174,7 +187,7 @@ fn merge(old: &[(String, String)], new: &[(String, String)]) -> Vec<(String, Str
 /// 原子认领一枚一次性预密钥。设备不存在/已撤销/已用尽 → `None`。
 pub fn claim(conn: &Connection, user: &str, device_id: &str, now: i64) -> Result<Option<Claimed>> {
     let tx = conn.unchecked_transaction()?;
-    let row: Option<(String, String, String, String, u64)> = tx
+    let row: Option<(String, String, String, String, i64)> = tx
         .query_row(
             "SELECT identity, identity_signing, signature, otks, epoch \
              FROM security_device_key WHERE device_id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
@@ -182,9 +195,10 @@ pub fn claim(conn: &Connection, user: &str, device_id: &str, now: i64) -> Result
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((identity, signing, signature, otks, epoch)) = row else {
+    let Some((identity, signing, signature, otks, epoch_raw)) = row else {
         return Ok(None);
     };
+    let epoch = epoch_from_db(epoch_raw)?;
     let mut pairs = parse_otks(&otks)?;
     if pairs.is_empty() {
         return Ok(None);
@@ -236,7 +250,7 @@ pub fn rotate(
     now: i64,
 ) -> Result<u64> {
     validate(user, bundle)?;
-    let current: Option<(String, u64)> = conn
+    let current: Option<(String, i64)> = conn
         .query_row(
             "SELECT identity, epoch FROM security_device_key \
              WHERE device_id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
@@ -244,9 +258,10 @@ pub fn rotate(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let Some((identity, epoch)) = current else {
+    let Some((identity, epoch_raw)) = current else {
         return Err(SecError::NotFound("device key"));
     };
+    let epoch = epoch_from_db(epoch_raw)?;
     if identity == bundle.identity {
         return Err(SecError::Conflict("identity unchanged"));
     }
@@ -262,14 +277,14 @@ pub fn rotate(
             bundle.identity_signing,
             bundle.signature,
             encode_otks(&pairs_of(bundle))?,
-            next,
+            epoch_to_db(next)?,
             now
         ],
     )?;
     tx.execute(
         "INSERT INTO security_rotation(user_id, device_id, epoch, reason, at) \
          VALUES(?1, ?2, ?3, ?4, ?5)",
-        params![user, device_id, next, reason, now],
+        params![user, device_id, epoch_to_db(next)?, reason, now],
     )?;
     tx.commit()?;
     Ok(next)
@@ -277,13 +292,14 @@ pub fn rotate(
 
 /// 当前代次（不存在 → `None`）。
 pub fn epoch_of(conn: &Connection, user: &str, device_id: &str) -> Result<Option<u64>> {
-    Ok(conn
-        .query_row(
-            "SELECT epoch FROM security_device_key WHERE device_id = ?1 AND user_id = ?2",
-            params![device_id, user],
-            |r| r.get(0),
-        )
-        .optional()?)
+    conn.query_row(
+        "SELECT epoch FROM security_device_key WHERE device_id = ?1 AND user_id = ?2",
+        params![device_id, user],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()?
+    .map(epoch_from_db)
+    .transpose()
 }
 
 /// 记录"我验证过对方的这台设备"。安全码由用户线下比对得出。
@@ -360,7 +376,7 @@ pub fn list(conn: &Connection, user: &str) -> Result<Vec<DeviceKey>> {
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
-            r.get::<_, u64>(3)?,
+            r.get::<_, i64>(3)?,
             otks,
             r.get::<_, i64>(5)?,
             revoked,
@@ -368,7 +384,8 @@ pub fn list(conn: &Connection, user: &str) -> Result<Vec<DeviceKey>> {
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (device_id, user_id, identity, epoch, otks, updated_at, revoked) = row?;
+        let (device_id, user_id, identity, epoch_raw, otks, updated_at, revoked) = row?;
+        let epoch = epoch_from_db(epoch_raw)?;
         out.push(DeviceKey {
             device_id,
             user_id,

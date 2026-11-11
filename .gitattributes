@@ -12,7 +12,30 @@ crates/mcp/tests/snapshots/tools_list.json text eol=lf
 ui/src/vendor/tweb/slicedArray.ts text eol=lf
 ui/src/vendor/tweb/listenerSetter.ts text eol=lf
 crates/rtc/src/sfu.rs text eol=lf
+# 同一批 registry.json 里按 sha256 核对的 LiveKit 移植文件（UP-LIVEKIT-RUSTSDK）。
+# 本地 core.autocrlf=true，不钉 LF 的话重新 checkout 会变 CRLF ⇒ PROV-SHA-MISMATCH
+# 直接 CRITICAL，而 CI 在 ubuntu 上永远是绿的，只有换机器才红。
+crates/rtc/src/room.rs text eol=lf
+crates/rtc/src/token.rs text eol=lf
+
+# 同上：这三份是 UP-OPENIM 的 adapted 登记对象（third_party/reviews/registry.json
+# 里记了 local_sha256）。Windows 上 core.autocrlf=true 的工作区会把 .rs 检出成
+# CRLF，同一个文件于是算出两个摘要——本地绿、CI 红。钉成 LF 才谈得上"可复现"。
+crates/search/src/query.rs text eol=lf
+crates/search/src/unified.rs text eol=lf
+crates/search/src/trends.rs text eol=lf
 
 # 部署脚本/清单（docker compose、verify/smoke 脚本等）同样按 LF 检出，
 # 容器内 bash 与 Linux 值班环境不认 CRLF。
 deploy/** text eol=lf
+
+# 同一批 registry.json 里按 sha256 核对的 adapted 文件（G06：UP-FORMANCE / UP-BLNK）。
+# 登记值是按 Git LF 字节算的，本地 core.autocrlf=true 会把没钉的文件检出成 CRLF，
+# 于是同一个文件在这台机器上算出两个摘要：本地 provenance 报 6 条 PROV-SHA-MISMATCH
+# CRITICAL，而 CI 在 ubuntu 上永远绿——即"只有换机器才红"，正是 sfu.rs 那次踩过的坑。
+crates/ledger/src/model.rs text eol=lf
+crates/ledger/src/store.rs text eol=lf
+crates/ledger/src/schema.rs text eol=lf
+crates/ledger/src/lib.rs text eol=lf
+crates/features/commerce/src/store.rs text eol=lf
+crates/features/commerce/src/payments.rs text eol=lf

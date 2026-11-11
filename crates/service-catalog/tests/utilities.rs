@@ -544,7 +544,7 @@ async fn refund_failure_parks_order_for_reconciliation_with_ticket() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::DependencyUnavailable);
-    let parked = h.service.order("s1", &order.order_id).unwrap();
+    let parked = h.service.order("s1", &order.order_id).await.unwrap();
     assert_eq!(parked.state, OrderState::PendingReconciliation);
     assert!(parked.support_ticket.is_some());
     assert_eq!(h.support.count(), 1);

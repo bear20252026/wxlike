@@ -358,10 +358,14 @@ async fn quote_comes_from_live_availability_not_static_card_price() {
     assert_eq!(quote.quantity, 2);
     assert_eq!(quote.terms_version, "terms-v1");
     assert_eq!(quote.expires_at_ms, 6_000);
-    assert_eq!(h.service.get_quote("s1", &quote.quote_id).unwrap(), quote);
+    assert_eq!(
+        h.service.get_quote("s1", &quote.quote_id).await.unwrap(),
+        quote
+    );
     assert_eq!(
         h.service
             .get_quote("s2", &quote.quote_id)
+            .await
             .unwrap_err()
             .code(),
         Code::NotFound
@@ -517,7 +521,7 @@ async fn offline_between_payment_and_delivery_recovers_by_query() {
     let err = h.service.fulfill("s1", &order.order_id).await.unwrap_err();
     assert_eq!(err.code(), Code::DependencyUnavailable);
 
-    let pending = h.service.order("s1", &order.order_id).unwrap();
+    let pending = h.service.order("s1", &order.order_id).await.unwrap();
     assert_eq!(pending.state, OrderState::PendingReconciliation);
     assert!(pending.support_ticket.is_some());
 
@@ -603,7 +607,11 @@ async fn payment_decline_cancels_provider_order_and_opens_ticket() {
     assert_eq!(retry.state, OrderState::Failed);
     assert_eq!(
         retry.order_id,
-        h.service.order("s1", &retry.order_id).unwrap().order_id
+        h.service
+            .order("s1", &retry.order_id)
+            .await
+            .unwrap()
+            .order_id
     );
     assert_eq!(h.provider.state.lock().unwrap().place_calls, 1);
 }
@@ -647,7 +655,11 @@ async fn other_users_cannot_see_or_operate_on_orders() {
         .await
         .unwrap();
     assert_eq!(
-        h.service.order("s2", &order.order_id).unwrap_err().code(),
+        h.service
+            .order("s2", &order.order_id)
+            .await
+            .unwrap_err()
+            .code(),
         Code::NotFound
     );
     assert_eq!(
@@ -673,6 +685,6 @@ async fn expired_quotes_are_purged() {
     let h = harness();
     quote(&h).await;
     h.clock.advance(6_000);
-    assert_eq!(h.service.purge_expired_quotes(), 1);
-    assert_eq!(h.service.purge_expired_quotes(), 0);
+    assert_eq!(h.service.purge_expired_quotes().await, 1);
+    assert_eq!(h.service.purge_expired_quotes().await, 0);
 }

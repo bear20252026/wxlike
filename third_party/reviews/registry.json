@@ -76,6 +76,66 @@
       "notes": "跨节点路由设计（队列名/hub 表/业务与推送分离）；Rust 独立实现，无源码复制。"
     },
     {
+      "id": "UP-OPENIM",
+      "repo": "openimsdk/open-im-server",
+      "url": "https://github.com/openimsdk/open-im-server",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/openimsdk/open-im-server/blob/9502a1a15fe63f6342fb1e2d8068346a82f278d8/LICENSE",
+      "retrieved_at": "2026-11-06",
+      "notes": "Go，Apache-2.0。只借检索/聚合的查询语义（半开时间窗、文档级+元素级双闸、先排名后切片），存储层是 Mongo DSL，落到 Rust 全部重写；offset 分页与扫到即止的 total 明确不移植。交叉核对 UP-BOXIM（MIT）同一 commit。"
+    },
+    {
+      "id": "UP-LIVEKIT-RUSTSDK",
+      "repo": "livekit/rust-sdks",
+      "url": "https://github.com/livekit/rust-sdks",
+      "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/livekit/rust-sdks/blob/052f089166b6864bc5f7e92906f6a7897b9f546c/LICENSE",
+      "retrieved_at": "2026-11-06",
+      "notes": "ADR-25 媒体面参考库。借 livekit-token 的 claims/grant 语义与 room/participant 的状态表、事件序。License 不阻挡（本项目只做内部研究），但来源必须可复查。"
+    },
+    {
+      "id": "UP-LIVEKIT-SERVER",
+      "repo": "livekit/livekit",
+      "url": "https://github.com/livekit/livekit",
+      "commit": "94edd5da75246bd3c04becf88e3fda563e3d6e1c",
+      "commit_kind": "repo_head",
+      "license": "Apache-2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/LICENSE",
+      "retrieved_at": "2026-11-06",
+      "notes": "服务端交叉核对源：pkg/service/auth.go 的权限判定、pkg/rtc/{room,participant}.go 的状态迁移与房间关闭、pkg/rtc/types/interfaces.go 的 RoomCloseReason 表。用于核对 Rust SDK 看不到的语义（有效期/粒度/原因映射）。"
+    },
+    {
+      "id": "UP-FORMANCE",
+      "repo": "formancehq/ledger",
+      "url": "https://github.com/formancehq/ledger",
+      "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
+      "commit_kind": "repo_head",
+      "license": "NOASSERTION",
+      "license_spdx": "NOASSERTION",
+      "license_evidence": "本地快照 find -iname '*licen*' 无命中；gh api repos/formancehq/ledger 的 license 字段为 null（2026-11-07 现查）",
+      "retrieved_at": "2026-11-07",
+      "notes": "G06 双录记账内核：typed asset/metadata 校验形状、幂等分流（先比哈希再决定跑不跑管道、冲突不等于重放、重放要能被发现）、余额检查的 world 豁免与溢出即拒绝。Go 到 Rust 全部为行为改编，无源码复制。"
+    },
+    {
+      "id": "UP-BLNK",
+      "repo": "blnkfinance/blnk",
+      "url": "https://github.com/blnkfinance/blnk",
+      "commit": "cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e",
+      "commit_kind": "repo_head",
+      "license": "Apache License 2.0",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "https://github.com/blnkfinance/blnk/blob/cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e/LICENSE.md",
+      "retrieved_at": "2026-11-07",
+      "notes": "G06 幂等与重放交叉核对：多腿动作只有全部腿落库才算重放、派生引用撞 UNIQUE 的分类、exists 后 fetch 的两步读回。注意 blnk 无 HTTP Idempotency-Key 头（全仓 grep 零命中），其幂等靠 transactions.reference 唯一索引（sql/1770611011.sql）。Go 到 Rust 全部为行为改编。"
+    },
+    {
       "id": "UP-TINODE",
       "repo": "tinode/chat",
       "url": "https://github.com/tinode/chat",
@@ -179,6 +239,142 @@
       "owner": "G17",
       "issue": "#193",
       "expires": "2099-12-31"
+    },
+    {
+      "path": "crates/search/src/query.rs",
+      "upstream": "UP-OPENIM",
+      "upstream_path": "pkg/common/storage/database/mgo/msg.go",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "b299c61095a2e10c65b5772966a9c26d1b2b2706db3d10eaf4909a6ad676800f",
+      "patchlog": "third_party/reviews/patches/UP-OPENIM-query.md",
+      "used_by": "crates/search/src/unified.rs（TimeRange 双闸）、crates/search/src/trends.rs（窗口求交与日桶键）；G02 消息检索与 G05 内容检索共用同一条校验闸"
+    },
+    {
+      "path": "crates/search/src/unified.rs",
+      "upstream": "UP-OPENIM",
+      "upstream_path": "pkg/common/storage/database/mgo/msg.go",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "128f6a8dd64d1dd9548b2094f3a7a4e682ccd5fd8175ce6af3e99519a49a6e13",
+      "patchlog": "third_party/reviews/patches/UP-OPENIM-unified.md",
+      "used_by": "SearchService::search_in / Provider::candidates（G02 消息 provider 与 G05 内容 provider 的统一编排入口）"
+    },
+    {
+      "path": "crates/search/src/trends.rs",
+      "upstream": "UP-OPENIM",
+      "upstream_path": "pkg/common/storage/database/mgo/msg.go",
+      "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "468bbd0c88cd667acbe68e14e265be9da8ca442c555c9d12aa2a046ec1d2c1fb",
+      "patchlog": "third_party/reviews/patches/UP-OPENIM-trends.md",
+      "used_by": "rank_trends / rank_trends_paged（热搜榜；平台侧 /api/search/trends 的算法基线。platform -> wxlike-search 这条依赖边会动根 Cargo.lock，属串行热点，见 integration-requests/G05/authz-matrix-additions.yaml 的 related 段，等 G00 挂）"
+    },
+    {
+      "path": "crates/rtc/src/token.rs",
+      "upstream": "UP-LIVEKIT-RUSTSDK",
+      "upstream_path": "livekit-token/src/access_token.rs",
+      "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "00fdaf23b9f779f06803a53e80262ded80e084b94a161988f37cee89afd2da51",
+      "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md",
+      "used_by": "crates/rtc/src/{call_session,room}.rs 的 ADR-25 入房凭证签发与校验",
+      "cross_checked_in": [
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/service/auth.go"
+      ]
+    },
+    {
+      "path": "crates/rtc/src/room.rs",
+      "upstream": "UP-LIVEKIT-RUSTSDK",
+      "upstream_path": "livekit/src/room/participant/mod.rs",
+      "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "55645b9cf5b5cc997b92ccd2e9a2823d454ff528a48482702963ec679b9ced21",
+      "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-room-participant.md",
+      "used_by": "crates/rtc/src/{call_session,room}.rs 的 sidecar 参与者状态机、房间关闭与审计",
+      "cross_checked_in": [
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/rtc/room.go",
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/rtc/participant.go",
+        "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/rtc/types/interfaces.go"
+      ]
+    },
+    {
+      "path": "crates/ledger/src/model.rs",
+      "upstream": "UP-FORMANCE",
+      "upstream_path": "internal/pkg/filterexpr/parser.go",
+      "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
+      "decision": "adapted",
+      "license_spdx": "NOASSERTION",
+      "local_sha256": "638c9483407625f806cbe169fefd0edfea9c2274963864df6a0f2459ff400cbe",
+      "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-asset-metadata.md",
+      "used_by": "wxlike-ledger 记账请求的 typed asset（CNY 与 CNY/2 规范形态）与 metadata（128 条/256B 键/16KiB 值/64KiB 总额）校验；commerce 的分录构造全部经此"
+    },
+    {
+      "path": "crates/ledger/src/store.rs",
+      "upstream": "UP-FORMANCE",
+      "upstream_path": "internal/infra/state/machine.go",
+      "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
+      "decision": "adapted",
+      "license_spdx": "NOASSERTION",
+      "local_sha256": "805a8557679ea698d45c48cf3b7a233d6319c7d9f2d9df65c58777271d69ad37",
+      "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-idempotency.md",
+      "used_by": "wxlike-ledger post_checked_in/post_in 的幂等分流（命中即返回、异参冲突、Applied 与 Replayed 回报）、stored_request_digest 两步读回、validate_lines 的资产与借贷平衡校验"
+    },
+    {
+      "path": "crates/ledger/src/schema.rs",
+      "upstream": "UP-FORMANCE",
+      "upstream_path": "internal/domain/processing/processor_posting.go",
+      "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
+      "decision": "adapted",
+      "license_spdx": "NOASSERTION",
+      "local_sha256": "884a7579cd490940d22b185648dfa2b0a01de8efd9a916f44e609b2337087fb3",
+      "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-entry-set.md",
+      "used_by": "账本 DDL：ledger_journals 的 asset/metadata/entry_count 三列与升级路径、分录集合冻结触发器（把借贷平衡升级成数据库约束）"
+    },
+    {
+      "path": "crates/ledger/src/lib.rs",
+      "upstream": "UP-FORMANCE",
+      "upstream_path": "internal/domain/errors.go",
+      "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
+      "decision": "adapted",
+      "license_spdx": "NOASSERTION",
+      "local_sha256": "e801fa96ddf45d06ccb16c73523d8bf91d233ee6664800a270954ba893479ada",
+      "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-errors.md",
+      "used_by": "LedgerError 新增变体的载荷形状（VolumeOverflow/BadAsset/AssetMismatch/Metadata 系列）与 ApplyOutcome/PostReport 再导出"
+    },
+    {
+      "path": "crates/features/commerce/src/store.rs",
+      "upstream": "UP-BLNK",
+      "upstream_path": "transaction_inflight.go",
+      "commit": "cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "97b3799b8e44ebdb4c66fed1eebfff9c00a4220273df18a316b4e430c7b3c206",
+      "patchlog": "third_party/reviews/patches/UP-BLNK-replay-legs.md",
+      "used_by": "commerce 幂等入口：replay() 摘要形状检查 + 新增 replay_legs()/Leg/is_canonical_digest()，全部腿落库才算重放"
+    },
+    {
+      "path": "crates/features/commerce/src/payments.rs",
+      "upstream": "UP-BLNK",
+      "upstream_path": "transaction_inflight.go",
+      "commit": "cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e",
+      "decision": "adapted",
+      "license_spdx": "Apache-2.0",
+      "local_sha256": "ddf27f101d75976f4d537b390c6604771ec63f9bddcbafc74dc115a2edbae6b4",
+      "patchlog": "third_party/reviews/patches/UP-BLNK-callback-legs.md",
+      "used_by": "handle_provider_callback 的双腿幂等判定与 stored_event_digest()（exists 后 fetch 的两步读回，只取摘要）"
+    },
+    {
+      "path": "schema/proposals/G06/0001_ledger_commerce.sql",
+      "upstream": "UP-FORMANCE",
+      "upstream_path": "internal/infra/state/write_set.go",
+      "decision": "behavior_reference",
+      "notes": "PostgreSQL 提案 DDL：ledger_journals 三列与 trg_ledger_entries_frozen_set 是本仓库 SQLite 实现（已登记 adapted）的同构转写，未抄上游 SQL；借的是分录集合不可事后撑大这一条行为。"
     },
     {
       "path": "crates/features/relations/src/port.rs",

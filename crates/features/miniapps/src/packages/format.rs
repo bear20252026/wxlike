@@ -4,8 +4,10 @@
 use std::collections::BTreeMap;
 
 use super::error::{MiniError, Result};
-use super::manifest::{digest_hex, seal_dir, Manifest, MANIFEST_FILE};
-use super::trust::{sign_manifest, PackageSignature, TrustStore};
+use super::manifest::{
+    digest_hex, seal_dir, Manifest, MANIFEST_FILE, MAX_PACKAGE_BYTES, MAX_RESOURCE_BYTES,
+};
+use super::trust::{sign_manifest, PackageSignature, PublisherCert, TrustStore};
 
 pub const MAX_MANIFEST_BYTES: usize = 512 * 1024;
 
@@ -17,6 +19,15 @@ pub struct SignedPackage {
     pub signature: PackageSignature,
 }
 
+/// A package that passed **every** release check: signature over the exact
+/// manifest bytes, an enrolled and unrevoked publisher certificate inside its
+/// validity window, host compatibility, and a digest match for every resource.
+///
+/// The `trust` field has no constructor outside this module, so the type
+/// cannot be forged: [`crate::packages::Installer::install_verified`] only
+/// accepts a value that [`verify`] produced. An unsigned bundle - or one that
+/// merely passed [`open`] - is unrepresentable here rather than merely
+/// discouraged.
 #[derive(Clone, Debug)]
 pub struct VerifiedPackage {
     pub manifest: Manifest,
@@ -24,6 +35,32 @@ pub struct VerifiedPackage {
     pub files: BTreeMap<String, Vec<u8>>,
     /// SHA-256 of `mini.json`; identifies the package content independently
     /// of its version string.
+    pub digest: String,
+    trust: TrustProof,
+}
+
+#[derive(Clone, Debug)]
+struct TrustProof {
+    cert: PublisherCert,
+}
+
+impl VerifiedPackage {
+    /// The certificate that signed this package: who published it and with
+    /// which key. Revocation was re-checked against it during `verify`.
+    pub fn signer(&self) -> &PublisherCert {
+        &self.trust.cert
+    }
+}
+
+/// A package whose *contents* are internally consistent (paths, host version,
+/// per-resource digests) but whose signature was never checked, because the
+/// caller had no trust store. Tooling output only: this type cannot be
+/// installed.
+#[derive(Clone, Debug)]
+pub struct InspectedPackage {
+    pub manifest: Manifest,
+    pub manifest_bytes: Vec<u8>,
+    pub files: BTreeMap<String, Vec<u8>>,
     pub digest: String,
 }
 
@@ -106,24 +143,26 @@ pub fn verify(
 ) -> Result<VerifiedPackage> {
     let parts = read_parts(blob)?;
     parts.manifest.validate(host_version)?;
-    trust.verify_manifest(&parts.manifest, &parts.manifest_bytes, sig, now)?;
+    let cert = trust.verify_manifest(&parts.manifest, &parts.manifest_bytes, sig, now)?;
     verify_resources(&parts.manifest, &parts.files)?;
     Ok(VerifiedPackage {
         digest: digest_hex(&parts.manifest_bytes),
         manifest: parts.manifest,
         manifest_bytes: parts.manifest_bytes,
         files: parts.files,
+        trust: TrustProof { cert },
     })
 }
 
 /// Parse a blob without any signature trust decision: shape, host
 /// compatibility and every resource digest. `mini inspect` uses this to show
-/// what a package claims before checking who signed it.
-pub fn open(blob: &[u8], host_version: &str) -> Result<VerifiedPackage> {
+/// what a package claims before checking who signed it. The return type is
+/// deliberately not installable - see [`InspectedPackage`].
+pub fn open(blob: &[u8], host_version: &str) -> Result<InspectedPackage> {
     let parts = read_parts(blob)?;
     parts.manifest.validate(host_version)?;
     verify_resources(&parts.manifest, &parts.files)?;
-    Ok(VerifiedPackage {
+    Ok(InspectedPackage {
         digest: digest_hex(&parts.manifest_bytes),
         manifest: parts.manifest,
         manifest_bytes: parts.manifest_bytes,
@@ -156,13 +195,25 @@ fn read_parts(blob: &[u8]) -> Result<Parts> {
 }
 
 fn verify_resources(manifest: &Manifest, files: &BTreeMap<String, Vec<u8>>) -> Result<()> {
+    let mut total = 0usize;
     for (path, expected) in &manifest.resources {
         let data = files
             .get(path)
             .ok_or_else(|| MiniError::MissingResource(path.clone()))?;
+        if data.len() > MAX_RESOURCE_BYTES {
+            return Err(MiniError::ResourceTooLarge(
+                path.clone(),
+                data.len(),
+                MAX_RESOURCE_BYTES,
+            ));
+        }
         if digest_hex(data) != *expected {
             return Err(MiniError::DigestMismatch(path.clone()));
         }
+        total = total.saturating_add(data.len());
+    }
+    if total > MAX_PACKAGE_BYTES {
+        return Err(MiniError::PackageTooLarge(total, MAX_PACKAGE_BYTES));
     }
     for path in files.keys() {
         if path != MANIFEST_FILE && !manifest.resources.contains_key(path) {
