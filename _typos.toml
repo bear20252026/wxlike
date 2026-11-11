@@ -28,6 +28,13 @@ rto = "rto"
 flate = "flate"
 # ICU4X 的 writeable crate：合法包名，非 writable 误拼；SBOM 生成物里出现
 writeable = "writeable"
+# 测试里故意写入的坏数据（corrupt_rows.rs）：验证系统能识别并拒绝损坏的行。
+# 这些拼写是**故意的**，不是错字。
+accepteed = "accepteed"
+onwer = "onwer"
+userr = "userr"
+# `fnd` 是 Tinode 的 `ModeCMeFnd`（friend 的缩写），协议常量。
+fnd = "fnd"
 
 [files]
 # 生成物与第三方镜像不参与检查
