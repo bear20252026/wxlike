@@ -141,6 +141,17 @@ fn random_code() -> String {
     format!("{n:0width$}", width = CODE_DIGITS as usize)
 }
 
+/// 清掉库里已经过期或已消费太久的挑战行（`sweep` 的挑战表版本）。
+///
+/// 只做"过期且没被消费"这一类：`consumed_at` 有值的行**留着**，
+/// 它是重放检测的证据（`verify` 靠它把"用过的码再用一次"判成失败）。
+fn purge_expired_rows(conn: &rusqlite::Connection, now: i64) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM identity_challenge WHERE expires_at <= ?1 AND consumed_at IS NULL",
+        params![now],
+    )?)
+}
+
 /// 生成好的挑战材料（id/code/摘要/两个时间点）。
 struct Prepared {
     id: String,
@@ -227,6 +238,12 @@ pub fn issue(
     let ip_bucket = crate::throttle::key_ip(ip);
     crate::throttle::check(conn, &ip_bucket, crate::throttle::SMS_IP, now)?;
 
+    // 上游 `GenSecret` 第一件事就是 `PCache.Expire(prefix, now - lifetime)`：
+    // **在发新码的时候顺手扫垃圾**，不另起定时任务。本平台照抄这个位置——
+    // 过期挑战行与过期预算行如果只能靠后台任务清，测试环境与新部署的库里
+    // 就会一直留着早该失效的凭据。
+    crate::throttle::sweep(conn, now, crate::throttle::SWEEP_LIMIT)?;
+    purge_expired_rows(conn, now)?;
     let prepared = prepare(&phone, purpose, device_id, pepper, limits, now)?;
     insert_row(
         conn,
@@ -235,6 +252,13 @@ pub fn issue(
         purpose,
         device_id,
         limits.max_attempts,
+        now,
+    )?;
+    // 预算上弦：有行只续期不清零（与上游的 `":0:"` 是不同的，理由见 arm_budget）。
+    crate::throttle::arm_budget(
+        conn,
+        &crate::throttle::key_credential("phone", &phone),
+        crate::throttle::CODE_BUDGET,
         now,
     )?;
     crate::throttle::record_failure(conn, &phone_bucket, crate::throttle::SMS_PHONE, now)?;
@@ -305,26 +329,61 @@ pub fn verify(
         return Err(IdError::Expired);
     }
     if attempts >= max_attempts {
+        // 单枚挑战的上限先判，**顺序**照抄上游 `auth_code.Authenticate`：
+        // `count >= maxRetries → ErrFailed`，连比对都不做。
+        // 反过来（先比对再判上限）会让"已锁"与"码错"的耗时不同，
+        // 计时差异就此变成一根探针：能测出这枚挑战是不是已经锁死了。
         return Err(IdError::Unauthorized("too many attempts"));
     }
-    bump_attempts(conn, &id)?;
+    // 第二层：跨重发累计的预算桶（见 `throttle::CODE_BUDGET`）。同样在比对之前判。
+    let budget_bucket = crate::throttle::key_credential("phone", &phone);
+    crate::throttle::check_budget(conn, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
     let candidate = code_hash(pepper, &id, &phone, &purpose, &device_id, code)?;
     if !crate::ct_eq(candidate.as_bytes(), stored_hash.as_bytes()) {
+        // 只有**失败**才计数（上游 `parts[0] != code` 才 `count+1`）。
+        // 原实现是"进来先 bump 再比对"，差别不只在美观：一次正确验证也会
+        // 白白吃掉一格配额，用户输对了却被告知"尝试次数超限"。
+        bump_attempts(conn, &id)?;
+        crate::throttle::spend_failure(conn, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
-    let n = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
         "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1 AND consumed_at IS NULL",
         params![id, now],
     )?;
     if n != 1 {
         // 并发验证：另一个请求已经把这枚码用掉了。
+        drop(tx);
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
+    // 上游一个凭据只有一个键（`code_<method>:<value>`），验证成功即 `Delete`。
+    // 本平台把同一手机号+用途下**其它仍在有效期内的挑战一并作废**：
+    // 否则"下发 20 枚、猜中任意一枚"就成了免费的多次尝试，
+    // 而 `identity_retry` 的预算也拦不住这种横向铺开。
+    retire_siblings(&tx, &phone, &purpose, &id, now)?;
+    tx.commit()?;
+    crate::throttle::clear_budget(conn, &budget_bucket)?;
     crate::throttle::reset(conn, &crate::throttle::key_phone(&phone))?;
     Ok(Verified {
         challenge_id: id,
         phone_e164: phone,
     })
+}
+
+/// 作废同一 `phone + purpose` 下除 `keep` 以外的所有未消费挑战。
+fn retire_siblings(
+    conn: &rusqlite::Connection,
+    phone: &str,
+    purpose: &str,
+    keep: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE identity_challenge SET consumed_at = ?3 WHERE phone_e164 = ?1 AND purpose = ?2 AND id <> ?4 AND consumed_at IS NULL",
+        params![phone, purpose, now, keep],
+    )?;
+    Ok(())
 }
 
 fn bump_attempts(conn: &Connection, id: &str) -> Result<()> {
@@ -362,6 +421,13 @@ pub fn resend(
         });
     }
     let prepared = prepare(&phone, &purpose, &device_id, pepper, limits, now)?;
+    // 重发**不重置**重试预算：重置就等于"再换一枚码又能从头试"。
+    crate::throttle::arm_budget(
+        conn,
+        &crate::throttle::key_credential("phone", &phone),
+        crate::throttle::CODE_BUDGET,
+        now,
+    )?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1",
@@ -500,6 +566,129 @@ mod tests {
             verify(&conn, &capped.id, &capped.code, PEPPER, 3_200),
             Err(IdError::Unauthorized(m)) if m.contains("too many")
         ));
+    }
+
+    #[test]
+    fn attempts_are_counted_only_on_failure() {
+        // 上游只在比对失配时 `count+1`。原实现是"进门先加"，输对了也扣一格。
+        let conn = db();
+        let c = issue_one(&conn, 1_000);
+        for _ in 0..2 {
+            assert!(verify(&conn, &c.id, "000000", PEPPER, 1_100).is_err());
+        }
+        let attempts: i64 = conn
+            .query_row(
+                "SELECT attempts FROM identity_challenge WHERE id = ?1",
+                params![c.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempts, 2, "两次错 = 2，不是 3");
+        // 正确那次不该再吃掉配额（这枚码本身仍是单次可用的）。
+        verify(&conn, &c.id, &c.code, PEPPER, 1_200).unwrap();
+    }
+
+    #[test]
+    fn budget_locks_the_credential_across_codes() {
+        // 单枚挑战 5 次就到顶；预算拦的是"换一枚码继续试"。
+        // 3 枚 × 5 次 = 15 次正好撞到 CODE_BUDGET.max_retries（SMS 每号每小时 5 条
+        // 的下发上限在 3 枚这一档还没到，测试因此不会被另一层限速提前挡下）。
+        let conn = db();
+        let budget = crate::throttle::key_credential("phone", "+8613800000000");
+        for round in 0..3 {
+            let c = issue(
+                &conn,
+                "138 0000 0000",
+                "+86",
+                "login",
+                "dev-aaaa1111",
+                "10.0.0.1",
+                PEPPER,
+                DEFAULT_LIMITS,
+                1_000 + round,
+            )
+            .unwrap();
+            for _ in 0..5 {
+                assert!(verify(&conn, &c.id, "000000", PEPPER, 1_000 + round).is_err());
+            }
+        }
+        assert_eq!(
+            crate::throttle::budget_attempts(&conn, &budget).unwrap(),
+            15,
+            "重发不得清零预算（与上游 :0: 的分歧点）"
+        );
+        let last = issue(
+            &conn,
+            "138 0000 0000",
+            "+86",
+            "login",
+            "dev-aaaa1111",
+            "10.0.0.1",
+            PEPPER,
+            DEFAULT_LIMITS,
+            2_000,
+        )
+        .unwrap();
+        // 预算见底之后：**连码都不比**（顺序与上游一致），且正确的码也一样失败。
+        assert!(matches!(
+            verify(&conn, &last.id, &last.code, PEPPER, 2_001),
+            Err(IdError::RateLimited { .. })
+        ));
+    }
+
+    #[test]
+    fn success_retires_sibling_codes_of_the_same_credential() {
+        let conn = db();
+        let a = issue_one(&conn, 1_000);
+        let b = issue(
+            &conn,
+            "138 0000 0000",
+            "+86",
+            "login",
+            "dev-aaaa1111",
+            "10.0.0.2",
+            PEPPER,
+            DEFAULT_LIMITS,
+            1_001,
+        )
+        .unwrap();
+        verify(&conn, &a.id, &a.code, PEPPER, 1_100).unwrap();
+        // 同一手机号+用途下的另一枚码即便自己没被用过，也不能再换会话。
+        assert!(matches!(
+            verify(&conn, &b.id, &b.code, PEPPER, 1_101),
+            Err(IdError::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn issuing_sweeps_expired_rows() {
+        let conn = db();
+        let stale = issue_one(&conn, 1_000);
+        let horizon = 1_000 + DEFAULT_TTL_MS + 1;
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM identity_challenge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+        issue(
+            &conn,
+            "139 0000 0001",
+            "+86",
+            "login",
+            "dev-bbbb2222",
+            "10.0.0.5",
+            PEPPER,
+            DEFAULT_LIMITS,
+            horizon,
+        )
+        .unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identity_challenge WHERE id = ?1",
+                params![stale.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0, "过期未消费的旧挑战必须在下发时被扫掉");
     }
 
     #[test]

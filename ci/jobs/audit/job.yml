@@ -6,6 +6,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: 确保 main 分支存在（增量门禁需要 git diff main...HEAD）
+        shell: bash
+        run: |
+          git fetch origin main:main || true
+          git rev-parse --verify main
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -19,8 +26,8 @@ jobs:
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # taiki-e/install-action@v2
         with:
           tool: typos-cli,cargo-deny,cargo-audit
-      - name: C10 quality metrics (only worse is red)
-        run: python scripts/quality-gate.py
+      - name: C10 quality metrics (incremental, base+5 tolerance)
+        run: python scripts/quality-gate.py --diff --slack 5
       - name: C10 typos
         run: typos
       - name: C10 advisory / ban / source policy

@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.provenance.v1",
-  "updated_at": "2026-10-24",
+  "updated_at": "2026-11-30",
   "note": "三段式登记：upstreams（仓级）→ files（片段级）→ 本地文件 sha256。ported/adapted 必须能在本地复现，且点名出现在 THIRD-PARTY-NOTICES.md。commit 是完整 SHA；每条的永久链接由 `sourceaudit provenance check` 打印。",
   "upstreams": [
     {
@@ -134,6 +134,18 @@
       "license_evidence": "https://github.com/blnkfinance/blnk/blob/cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e/LICENSE.md",
       "retrieved_at": "2026-11-07",
       "notes": "G06 幂等与重放交叉核对：多腿动作只有全部腿落库才算重放、派生引用撞 UNIQUE 的分类、exists 后 fetch 的两步读回。注意 blnk 无 HTTP Idempotency-Key 头（全仓 grep 零命中），其幂等靠 transactions.reference 唯一索引（sql/1770611011.sql）。Go 到 Rust 全部为行为改编。"
+    },
+    {
+      "id": "UP-TINODE",
+      "repo": "tinode/chat",
+      "url": "https://github.com/tinode/chat",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "commit_kind": "branch_head_at_checkout",
+      "license": "GPL-3.0",
+      "license_spdx": "GPL-3.0-only",
+      "license_evidence": "https://github.com/tinode/chat/blob/eb90ef83acae6542f52719377ee5a76d267a5618/LICENSE",
+      "retrieved_at": "2026-11-30",
+      "notes": "Go 服务端（Tinode IM server）。借两样：话题权限位 AccessMode 的位语义与 given&want 推导（relations），与短期凭证/令牌的状态机 auth/token + auth/code + validate/email 的计数、过期、重试语义（identity）。许可证不作判据（G00 决定），来源照实登记。"
     }
   ],
   "files": [
@@ -175,7 +187,8 @@
       "upstream": "UP-ROCKETCHAT",
       "upstream_path": "apps/meteor/app/authorization/server/functions/upsertPermissions.js",
       "decision": "behavior_reference",
-      "notes": "channel-role 形状：角色持有权限字符串，端点问 can(user,'post-message') 而不看角色名。命名保持可比，但判定逻辑是本仓库自有纯函数 channel_role_perms/perm_for_type。无源码复制。"
+      "notes": "channel-role 形状：角色持有权限字符串，端点问 can(user,'post-message') 而不看角色名。命名保持可比，但判定逻辑是本仓库自有纯函数 channel_role_perms/perm_for_type。无源码复制。",
+      "local_sha256": "9454410f82d81f1d03a1bc81ef02435198060e08e0b282c3294ba10d015fe952"
     },
     {
       "path": "crates/mq/src",
@@ -193,7 +206,8 @@
       "reason": "Rocket.Chat 的 ee/ 为专有目录，未阅读、未复制；朋友圈可见性判定完全自研。",
       "owner": "G17",
       "issue": "#193",
-      "expires": "2099-12-31"
+      "expires": "2099-12-31",
+      "local_sha256": "90064c2a56003c4da09ff7e0736acbe0a167262a9427423288c3bba234236365"
     },
     {
       "path": "packages/modules/{payment,promotion,order,cart,auth}/**",
@@ -226,7 +240,8 @@
       "reason": "manifest 自己写明 status = Research HEAD pins, not approved vendoring：锚点用于阅读定位，不构成引入批准。",
       "owner": "G17",
       "issue": "#193",
-      "expires": "2099-12-31"
+      "expires": "2099-12-31",
+      "local_sha256": "d7eb2a96265f26d614870b25c0eb9f107854a82e6d3aac8d3bafd64ce692d0da"
     },
     {
       "path": "crates/search/src/query.rs",
@@ -362,7 +377,107 @@
       "upstream": "UP-FORMANCE",
       "upstream_path": "internal/infra/state/write_set.go",
       "decision": "behavior_reference",
-      "notes": "PostgreSQL 提案 DDL：ledger_journals 三列与 trg_ledger_entries_frozen_set 是本仓库 SQLite 实现（已登记 adapted）的同构转写，未抄上游 SQL；借的是分录集合不可事后撑大这一条行为。"
+      "notes": "PostgreSQL 提案 DDL：ledger_journals 三列与 trg_ledger_entries_frozen_set 是本仓库 SQLite 实现（已登记 adapted）的同构转写，未抄上游 SQL；借的是分录集合不可事后撑大这一条行为。",
+      "local_sha256": "875f941af024ff7c517b69f77443a7a2b65e1b6829db68e8b21f127db86f7b6d"
+    },
+    {
+      "path": "crates/features/relations/src/port.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/store/types/types.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "5dce0007d17580ee0a02ff6216792679ed5fdd93236a7b2cd1b69ee131b7fbae",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-relations-acs.md",
+      "used_by": "权限位模型 Acs 与全部预设/推导；friend.rs、group.rs、platform 侧的可见性判定都走它"
+    },
+    {
+      "path": "crates/features/relations/src/friend.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/topic.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "2708629ac9231044321d2765a507c831b763ea18a066c345862e1fe973ca367a",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-relations-friend-acs.md",
+      "used_by": "好友方向的 given/want 推导、隐私规则（谁能加谁）、自禁与解除、P2P 夹紧"
+    },
+    {
+      "path": "crates/features/relations/src/group.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/topic.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "df48ef1dba4cce779a215dfe19fb640a52bc9661f1a733b3ece5d0964090adcf",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-relations-group-acs.md",
+      "used_by": "群成员的位判定：邀人/审批/转让/踢人/可见性，与 role 列的双向同步"
+    },
+    {
+      "path": "crates/features/relations/src/lib.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/store/types/types.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "41e365a9de361612ca8f5f2e4c09f5e8f90a2d63063546b2fe86908922518e91",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-relations-schema.md",
+      "used_by": "friend_acs / friend_policy / group_member_acs 三张表的列形状（两列 mode + 两档默认位）"
+    },
+    {
+      "path": "crates/features/identity/src/session.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/auth/auth.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "fdc9443d7a881fc6700d6673b3400fff4b2ec197b389ed54509ec3e36685c4ad",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-identity-auth-level.md",
+      "used_by": "AuthLevel / Features / 令牌序列号 / 签发侧车表与鉴权时的作废与级别判定"
+    },
+    {
+      "path": "crates/features/identity/src/refresh.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/auth/token/auth_token.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "78bc8b8456af362313a728eb9b3fbe144d44d3744f58d28590bdd2b534322fa5",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-identity-signed-ticket.md",
+      "used_by": "HMAC 自包含签名票据（TicketSigner）的签发与五步校验；刷新链的 lifetime 三态与临时认证闸门"
+    },
+    {
+      "path": "crates/features/identity/src/throttle.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/auth/code/auth_code.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "c194130109b9e164d56eaefebd0293f65e66159b3d3fb15c6bb605fd7bf33662",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-identity-retry-budget.md",
+      "used_by": "凭据级重试预算（先判上限、失配才计数、成功即删、下发时 GC）"
+    },
+    {
+      "path": "crates/features/identity/src/login_challenge.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/validate/email/validate.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "2bc0fbc6cf08e365df561ca4a6a54bb5fc5169e82a51da6f5a3c8b7d902ed7d1",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-identity-credential-retry.md",
+      "used_by": "验证码校验顺序与重试语义、成功连坐同凭据其它挑战、过期行清扫"
+    },
+    {
+      "path": "crates/features/identity/src/lib.rs",
+      "upstream": "UP-TINODE",
+      "upstream_path": "server/store/types/types.go",
+      "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
+      "decision": "adapted",
+      "license_spdx": "GPL-3.0-only",
+      "local_sha256": "ad6b8f33bed6c00559d00b9e6cfc8962671332352c15c1c5f18b62178dfdab92",
+      "patchlog": "third_party/reviews/patches/UP-TINODE-identity-schema.md",
+      "used_by": "identity_session_token / identity_token_serial / identity_retry 三张表的列形状"
     }
   ]
 }
