@@ -260,7 +260,14 @@ pub fn open(
     now: i64,
 ) -> Result<SessionGrant> {
     open_with(
-        conn, user_id, device_id, audience, ttl_ms, ip, now, Features::empty(),
+        conn,
+        user_id,
+        device_id,
+        audience,
+        ttl_ms,
+        ip,
+        now,
+        Features::empty(),
     )
 }
 
@@ -753,7 +760,9 @@ mod tests {
         let conn = db();
         device(&conn, "u1", "dev-aaaa1111", 1_000);
         let user = open_default(&conn, "u1", "dev-aaaa1111", Audience::User, "", 1_000).unwrap();
-        let rec = token_record(&conn, &user.sid).unwrap().expect("sidecar row");
+        let rec = token_record(&conn, &user.sid)
+            .unwrap()
+            .expect("sidecar row");
         assert_eq!(rec.auth_level, AuthLevel::Auth);
         // 手工把级别降到 anon（模拟一行被写坏/被降级签发的会话）。
         conn.execute(
@@ -771,7 +780,9 @@ mod tests {
             Err(IdError::Unauthorized(_))
         ));
         let admin = open_default(&conn, "u1", "dev-aaaa1111", Audience::Admin, "", 1_100).unwrap();
-        let rec = token_record(&conn, &admin.sid).unwrap().expect("sidecar row");
+        let rec = token_record(&conn, &admin.sid)
+            .unwrap()
+            .expect("sidecar row");
         assert_eq!(rec.auth_level, AuthLevel::Root);
         authenticate(&conn, &admin.access_token, Audience::Admin, 1_101).unwrap();
     }
@@ -794,8 +805,19 @@ mod tests {
     fn temp_session_carries_no_login_flag_and_cannot_rotate() {
         let conn = db();
         device(&conn, "u1", "dev-aaaa1111", 1_000);
-        let temp = open_temp(&conn, "u1", "dev-aaaa1111", Audience::User, 60_000, "", 1_000).unwrap();
-        let rec = token_record(&conn, &temp.sid).unwrap().expect("sidecar row");
+        let temp = open_temp(
+            &conn,
+            "u1",
+            "dev-aaaa1111",
+            Audience::User,
+            60_000,
+            "",
+            1_000,
+        )
+        .unwrap();
+        let rec = token_record(&conn, &temp.sid)
+            .unwrap()
+            .expect("sidecar row");
         assert!(rec.features.contains(Features::NO_LOGIN));
         assert_eq!(rec.features.to_flags(), "L");
         // 临时认证能过鉴权（它得撑住确认页），但换不出新会话。
@@ -835,7 +857,9 @@ mod tests {
     fn feature_flags_round_trip_and_reject_unknown_letters() {
         assert_eq!(Features::empty().to_flags(), "");
         assert_eq!(Features::parse("").unwrap(), Features::empty());
-        let both = Features::empty().with(Features::VALIDATED).with(Features::NO_LOGIN);
+        let both = Features::empty()
+            .with(Features::VALIDATED)
+            .with(Features::NO_LOGIN);
         assert_eq!(both.to_flags(), "VL");
         assert_eq!(Features::parse("LV").unwrap(), both, "字母顺序不表示优先级");
         assert!(matches!(

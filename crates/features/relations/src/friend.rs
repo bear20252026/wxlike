@@ -648,13 +648,7 @@ pub fn may_see(conn: &Connection, viewer: &str, target: &str) -> Result<bool> {
 ///
 /// 只能改 `want`。上游同一条纪律：**订阅方不能放大自己手里的 `given`**，
 /// 否则"我把对方屏蔽了"和"我把对方给我的权限改了"就成了同一件事。
-pub fn set_want(
-    conn: &Connection,
-    me: &str,
-    peer: &str,
-    mutation: &str,
-    now: i64,
-) -> Result<Acs> {
+pub fn set_want(conn: &Connection, me: &str, peer: &str, mutation: &str, now: i64) -> Result<Acs> {
     if me == peer {
         return Err(RelError::BadInput("self relation"));
     }

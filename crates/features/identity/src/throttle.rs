@@ -199,7 +199,10 @@ pub fn budget_attempts(conn: &Connection, bucket: &str) -> Result<i64> {
 /// 验证成功即删（上游 `store.PCache.Delete(key)`：留着没有意义——
 /// 一枚用过的凭据不该继续占着一个计数，也不该让「重试预算」变成可查询的账号状态）。
 pub fn clear_budget(conn: &Connection, bucket: &str) -> Result<()> {
-    conn.execute("DELETE FROM identity_retry WHERE bucket = ?1", params![bucket])?;
+    conn.execute(
+        "DELETE FROM identity_retry WHERE bucket = ?1",
+        params![bucket],
+    )?;
     Ok(())
 }
 
@@ -411,7 +414,11 @@ mod tests {
         assert_eq!(budget_attempts(&conn, &bucket).unwrap(), 1);
         let fresh = key_credential("email", "brand-new@y.z");
         arm_budget(&conn, &fresh, CODE_BUDGET, 2_000).unwrap();
-        assert_eq!(budget_attempts(&conn, &fresh).unwrap(), 0, "没有行才从 0 开始");
+        assert_eq!(
+            budget_attempts(&conn, &fresh).unwrap(),
+            0,
+            "没有行才从 0 开始"
+        );
         spend_failure(&conn, &bucket, CODE_BUDGET, 3_000).unwrap();
         assert_eq!(budget_attempts(&conn, &bucket).unwrap(), 2);
         clear_budget(&conn, &bucket).unwrap();

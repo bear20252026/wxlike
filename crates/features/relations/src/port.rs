@@ -413,7 +413,9 @@ impl Acs {
         }
         let bytes = delta.as_bytes();
         if !matches!(bytes.first(), Some(b'+') | Some(b'-')) {
-            return Err(RelError::BadInput("access mode delta must start with + or -"));
+            return Err(RelError::BadInput(
+                "access mode delta must start with + or -",
+            ));
         }
         let mut acc = *self;
         let mut i = 0usize;
@@ -663,7 +665,11 @@ mod acs_tests {
         assert_eq!(Acs::P2P_DELETE.bits(), 95, "JRWPAD");
         assert_eq!(Acs::AUTH.bits(), 63, "JRWPAS");
         assert_eq!(Acs::READ_ONLY.bits(), 3, "JR");
-        assert_eq!(Acs::CHN_WRITER.bits(), 46, "RWPS：上游注释写的是 78/RWPD，代码是 SHARE，以代码为准");
+        assert_eq!(
+            Acs::CHN_WRITER.bits(),
+            46,
+            "RWPS：上游注释写的是 78/RWPD，代码是 SHARE，以代码为准"
+        );
         assert_eq!(Acs::CHN_READER.bits(), 11, "JRP");
         assert_eq!(Acs::ADMIN.bits(), 144, "OA");
         assert_eq!(Acs::SHARER.bits(), 176, "OAS");
@@ -739,10 +745,22 @@ mod acs_tests {
     fn level_select_is_fail_closed() {
         assert_eq!(Acs::PUBLIC, Acs::parse("JRWPS").unwrap());
         use super::select_access_mode;
-        assert_eq!(select_access_mode(RelationLevel::None, Acs::PUBLIC, Acs::AUTH, Acs::FULL), Acs::NONE);
-        assert_eq!(select_access_mode(RelationLevel::Anon, Acs::PUBLIC, Acs::AUTH, Acs::FULL), Acs::PUBLIC);
-        assert_eq!(select_access_mode(RelationLevel::Auth, Acs::PUBLIC, Acs::AUTH, Acs::FULL), Acs::AUTH);
-        assert_eq!(select_access_mode(RelationLevel::Root, Acs::PUBLIC, Acs::AUTH, Acs::FULL), Acs::FULL);
+        assert_eq!(
+            select_access_mode(RelationLevel::None, Acs::PUBLIC, Acs::AUTH, Acs::FULL),
+            Acs::NONE
+        );
+        assert_eq!(
+            select_access_mode(RelationLevel::Anon, Acs::PUBLIC, Acs::AUTH, Acs::FULL),
+            Acs::PUBLIC
+        );
+        assert_eq!(
+            select_access_mode(RelationLevel::Auth, Acs::PUBLIC, Acs::AUTH, Acs::FULL),
+            Acs::AUTH
+        );
+        assert_eq!(
+            select_access_mode(RelationLevel::Root, Acs::PUBLIC, Acs::AUTH, Acs::FULL),
+            Acs::FULL
+        );
         assert!(RelationLevel::Auth > RelationLevel::Anon);
         assert_eq!(RelationLevel::parse("anon"), RelationLevel::Anon);
         assert_eq!(RelationLevel::parse("别的"), RelationLevel::None);
@@ -750,12 +768,30 @@ mod acs_tests {
 
     #[test]
     fn category_defaults_and_platform_default_policy() {
-        assert_eq!(super::default_access(RelationCat::P2p, true, false), Acs::P2P);
-        assert_eq!(super::default_access(RelationCat::Grp, true, false), Acs::PUBLIC);
-        assert_eq!(super::default_access(RelationCat::Grp, true, true), Acs::CHN_WRITER);
-        assert_eq!(super::default_access(RelationCat::P2p, false, false), Acs::NONE);
+        assert_eq!(
+            super::default_access(RelationCat::P2p, true, false),
+            Acs::P2P
+        );
+        assert_eq!(
+            super::default_access(RelationCat::Grp, true, false),
+            Acs::PUBLIC
+        );
+        assert_eq!(
+            super::default_access(RelationCat::Grp, true, true),
+            Acs::CHN_WRITER
+        );
+        assert_eq!(
+            super::default_access(RelationCat::P2p, false, false),
+            Acs::NONE
+        );
         let d = DefaultAcs::PLATFORM_DEFAULT;
-        assert!(d.select(RelationLevel::Anon).is_sharer(), "陌生人能不能加由 S 位决定");
-        assert!(d.select(RelationLevel::None).is_zero(), "级别都认不出来时一律无权");
+        assert!(
+            d.select(RelationLevel::Anon).is_sharer(),
+            "陌生人能不能加由 S 位决定"
+        );
+        assert!(
+            d.select(RelationLevel::None).is_zero(),
+            "级别都认不出来时一律无权"
+        );
     }
 }

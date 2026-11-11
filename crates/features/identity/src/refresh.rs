@@ -349,7 +349,15 @@ impl TicketSigner {
             n => n,
         };
         let expires_at = now_secs.saturating_add(lifetime);
-        let body = encode_body(user_id, sid, generation, expires_at, level, features, self.serial);
+        let body = encode_body(
+            user_id,
+            sid,
+            generation,
+            expires_at,
+            level,
+            features,
+            self.serial,
+        );
         let mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.key)
             .map_err(|_| IdError::BadInput("ticket key"))?;
         let mut mac = mac;
@@ -384,7 +392,12 @@ impl TicketSigner {
         }
         let ticket = decode_body(&body)?;
         // 级别合法性（上游：`auth.Level(tl.AuthLevel) > auth.LevelRoot` → Malformed）。
-        if !matches!(ticket.level, crate::session::AuthLevel::Auth | crate::session::AuthLevel::Root | crate::session::AuthLevel::Anon) {
+        if !matches!(
+            ticket.level,
+            crate::session::AuthLevel::Auth
+                | crate::session::AuthLevel::Root
+                | crate::session::AuthLevel::Anon
+        ) {
             return Err(IdError::BadInput("ticket auth level"));
         }
         if ticket.serial != self.serial {
@@ -422,7 +435,11 @@ fn encode_body(
 
 fn decode_body(body: &[u8]) -> Result<Ticket> {
     // 长度前缀全部要先验证再切片：宁可报 Malformed，也不要 panic。
-    let need = |offset: usize, take: usize| offset.checked_add(take).is_some_and(|end| end <= body.len());
+    let need = |offset: usize, take: usize| {
+        offset
+            .checked_add(take)
+            .is_some_and(|end| end <= body.len())
+    };
     let mut i = 0usize;
     let mut strings = Vec::with_capacity(2);
     for _ in 0..2 {
@@ -437,7 +454,10 @@ fn decode_body(body: &[u8]) -> Result<Ticket> {
         if !need(i, len) {
             return Err(IdError::BadInput("malformed ticket"));
         }
-        strings.push(String::from_utf8(body[i..i + len].to_vec()).map_err(|_| IdError::BadInput("malformed ticket"))?);
+        strings.push(
+            String::from_utf8(body[i..i + len].to_vec())
+                .map_err(|_| IdError::BadInput("malformed ticket"))?,
+        );
         i += len;
     }
     let mut numbers = Vec::with_capacity(3);
@@ -671,11 +691,22 @@ mod tests {
             .unwrap();
         assert_eq!(expires, 1_060);
         // 还剩 1 秒 = 上游的 `expires.Before(now+1s)`：按已过期处理。
-        assert!(matches!(signer.verify(&token, 1_059), Err(IdError::Expired)));
+        assert!(matches!(
+            signer.verify(&token, 1_059),
+            Err(IdError::Expired)
+        ));
         assert!(signer.verify(&token, 1_058).is_ok());
         // 负寿命：上游 `rec.Lifetime < 0 → ErrExpired`，拒签。
         assert!(matches!(
-            signer.mint("u_a", "s", 1, crate::session::AuthLevel::Auth, crate::session::Features::empty(), -1, 1_000),
+            signer.mint(
+                "u_a",
+                "s",
+                1,
+                crate::session::AuthLevel::Auth,
+                crate::session::Features::empty(),
+                -1,
+                1_000
+            ),
             Err(IdError::Expired)
         ));
     }
@@ -703,8 +734,7 @@ mod tests {
     fn temp_auth_chain_is_killed_instead_of_rotated() {
         let conn = db();
         session_row(&conn, "s1", 1_000);
-        let raw =
-            issue_default(&conn, "u1", "s1", "dev-aaaa1111", Audience::User, 1_000).unwrap();
+        let raw = issue_default(&conn, "u1", "s1", "dev-aaaa1111", Audience::User, 1_000).unwrap();
         // 直接落一条带 `L` 的侧车行：等价于 `session::open_temp` 的产物，
         // 但不必把 device 注册那套搬进本模块的测试里。
         conn.execute(

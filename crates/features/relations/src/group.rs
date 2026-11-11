@@ -303,7 +303,14 @@ pub fn set_role(
     upsert_member_acs(&tx, group_id, target, target_want, acs_of_role(role), now)?;
     if role == Role::Owner {
         let (actor_want, _) = stored_member_acs(&tx, group_id, actor)?;
-        upsert_member_acs(&tx, group_id, actor, actor_want, acs_of_role(Role::Admin), now)?;
+        upsert_member_acs(
+            &tx,
+            group_id,
+            actor,
+            actor_want,
+            acs_of_role(Role::Admin),
+            now,
+        )?;
         tx.execute(
             "UPDATE groups SET owner_uid = ?2 WHERE id = ?1",
             params![group_id, target],
@@ -763,7 +770,10 @@ pub fn set_member_want(
     next.apply_mutation(mutation)?;
     upsert_member_acs(conn, group_id, user, next.masked(), given, now)?;
     audit(conn, user, group_id, "group.want", now)?;
-    Ok(Acs::cumulative(given_of_member(conn, &group, user)?, next.masked()))
+    Ok(Acs::cumulative(
+        given_of_member(conn, &group, user)?,
+        next.masked(),
+    ))
 }
 
 /// 清掉一位成员的两个位（踢人/退群时调用，避免残留行在重新入群后复活旧特权）。
@@ -811,9 +821,15 @@ mod acs_tests {
         let g = seed(&conn);
         let acs = member_acs(&conn, &g.id, "u9", &g).unwrap();
         assert_eq!(acs, Acs::READ_ONLY, "看得见、进不来、发不了");
-        assert!(!acs.is_writer(), "READ_ONLY 里的 J 只表示能被看见，发不了言");
+        assert!(
+            !acs.is_writer(),
+            "READ_ONLY 里的 J 只表示能被看见，发不了言"
+        );
         let secret = create(&conn, "u1", "私密", &[], Visibility::Private, 2_000).unwrap();
-        assert_eq!(member_acs(&conn, &secret.id, "u9", &secret).unwrap(), Acs::NONE);
+        assert_eq!(
+            member_acs(&conn, &secret.id, "u9", &secret).unwrap(),
+            Acs::NONE
+        );
         assert!(!may_see(&conn, "u9", &secret.id).unwrap());
         assert!(may_see(&conn, "u2", &g.id).unwrap());
     }
@@ -829,14 +845,8 @@ mod acs_tests {
         grant_member(&conn, "u1", &g.id, "u2", "+S", 1_100).unwrap();
         assert!(may_invite(&conn, "u2", &g.id, "u8").unwrap());
         // 被邀方自己关掉了"允许别人加我"：拉人方有 S 也不行。
-        crate::friend::set_policy(
-            &conn,
-            "u8",
-            crate::port::RelationLevel::Anon,
-            "-S",
-            1_200,
-        )
-        .unwrap();
+        crate::friend::set_policy(&conn, "u8", crate::port::RelationLevel::Anon, "-S", 1_200)
+            .unwrap();
         assert!(!may_invite(&conn, "u1", &g.id, "u8").unwrap());
         assert!(!crate::friend::may_add(&conn, "u1", "u8").unwrap());
     }
@@ -886,8 +896,14 @@ mod acs_tests {
         let conn = db();
         let g = seed(&conn);
         assert!(can_kick(&conn, &g.id, "u1", "u2").unwrap());
-        assert!(!can_kick(&conn, &g.id, "u1", "u1").unwrap(), "owner 不能踢自己");
-        assert!(!can_kick(&conn, &g.id, "u2", "u3").unwrap(), "member 没有 A");
+        assert!(
+            !can_kick(&conn, &g.id, "u1", "u1").unwrap(),
+            "owner 不能踢自己"
+        );
+        assert!(
+            !can_kick(&conn, &g.id, "u2", "u3").unwrap(),
+            "member 没有 A"
+        );
         set_role(&conn, "u1", &g.id, "u2", Role::Admin, 1_100).unwrap();
         assert!(can_kick(&conn, &g.id, "u2", "u3").unwrap());
         assert!(!can_kick(&conn, &g.id, "u2", "u1").unwrap(), "不能动 owner");
@@ -925,9 +941,20 @@ mod acs_tests {
         let group = load(&conn, &g.id).unwrap();
         let acs = member_acs(&conn, &g.id, "u2", &group).unwrap();
         assert!(!acs.is_owner() && !acs.is_approver(), "越权位不产生特权");
-        assert!(acs.is_reader() && acs.is_writer(), "合法位不该被一行坏数据连坐");
+        assert!(
+            acs.is_reader() && acs.is_writer(),
+            "合法位不该被一行坏数据连坐"
+        );
         // 纯越权的一行（只有 O）夹完就是零位：宁可不给，也不凭空造出第二个 owner。
-        upsert_member_acs(&conn, &g.id, "u3", Acs::UNSET, Acs::parse("O").unwrap(), 1_100).unwrap();
+        upsert_member_acs(
+            &conn,
+            &g.id,
+            "u3",
+            Acs::UNSET,
+            Acs::parse("O").unwrap(),
+            1_100,
+        )
+        .unwrap();
         let acs = member_acs(&conn, &g.id, "u3", &group).unwrap();
         assert!(acs.is_zero(), "只写着 O 的 member 行 → 无任何权限");
     }

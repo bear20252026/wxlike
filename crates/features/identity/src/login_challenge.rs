@@ -344,12 +344,7 @@ pub fn verify(
         // 原实现是"进来先 bump 再比对"，差别不只在美观：一次正确验证也会
         // 白白吃掉一格配额，用户输对了却被告知"尝试次数超限"。
         bump_attempts(conn, &id)?;
-        crate::throttle::spend_failure(
-            conn,
-            &budget_bucket,
-            crate::throttle::CODE_BUDGET,
-            now,
-        )?;
+        crate::throttle::spend_failure(conn, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
     let tx = conn.unchecked_transaction()?;
@@ -674,9 +669,24 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM identity_challenge", [], |r| r.get(0))
             .unwrap();
         assert_eq!(before, 1);
-        issue(&conn, "139 0000 0001", "+86", "login", "dev-bbbb2222", "10.0.0.5", PEPPER, DEFAULT_LIMITS, horizon).unwrap();
+        issue(
+            &conn,
+            "139 0000 0001",
+            "+86",
+            "login",
+            "dev-bbbb2222",
+            "10.0.0.5",
+            PEPPER,
+            DEFAULT_LIMITS,
+            horizon,
+        )
+        .unwrap();
         let left: i64 = conn
-            .query_row("SELECT COUNT(*) FROM identity_challenge WHERE id = ?1", params![stale.id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM identity_challenge WHERE id = ?1",
+                params![stale.id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(left, 0, "过期未消费的旧挑战必须在下发时被扫掉");
     }
