@@ -63,6 +63,23 @@ pub enum RelError {
 
 pub type Result<T> = std::result::Result<T, RelError>;
 
+/// 让存储层的共享错误可以 `?` 自动转换到 [`RelError`]。
+///
+/// 新代码推荐用 `wxlike_core::error::StorageError` 构造错误后 `?` 转换，
+/// 避免在每个域的错误枚举里重复定义 `NotFound` / `Db` / `Json` 等变体。
+/// 现有 `RelError::NotFound(...)` 调用点继续工作，无需修改。
+impl From<wxlike_core::error::StorageError> for RelError {
+    fn from(e: wxlike_core::error::StorageError) -> Self {
+        match e {
+            wxlike_core::error::StorageError::NotFound(w) => Self::NotFound(w),
+            wxlike_core::error::StorageError::Conflict(w) => Self::Conflict(w),
+            wxlike_core::error::StorageError::Corrupt(w) => Self::Corrupt(w),
+            wxlike_core::error::StorageError::Db(e) => Self::Db(e),
+            wxlike_core::error::StorageError::Json(e) => Self::Json(e),
+        }
+    }
+}
+
 pub fn now_ms() -> i64 {
     wxlike_core::types::now_ms() as i64
 }

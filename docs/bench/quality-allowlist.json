@@ -1,0 +1,10 @@
+{
+  "_comment": "质量门禁豁免名单。只有在这里登记的位点才算豁免，未登记的退化一律报错。",
+  "_usage": "确实无法避免退化时，在对应指标下登记位点，并写明理由。",
+  "dup_windows": [],
+  "count_len_gt100": [],
+  "count_nest_gt3": [],
+  "magic_total": [],
+  "long_fn_keys": [],
+  "deep_fn_keys": []
+}

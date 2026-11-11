@@ -6,19 +6,37 @@
 口径：**只看生产代码**——不含 `tests/` 目录，也不含文件内 `#[cfg(test)]`
 之后的模块。测试里的 `assert_eq!(x, 250)` 不是"魔法数字"，把它算进去会让
 指标失去意义。
+
+支持 `--diff` 模式：只扫 PR diff 涉及的文件，用于增量质量门禁。
 """
 import os
 import re
 import json
 import hashlib
 import collections
+import subprocess
+import sys
 
 ROOTS = ["crates", "server/src", "ui/src-tauri/src"]
 
 TEST_MODULE_RE = re.compile(r"^\s*#\[cfg\(test\)\]")
 
 
+def diff_files() -> set[str]:
+    """拿到 PR diff 涉及的文件列表（与 main 的 diff）。"""
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", "main...HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return set()
+    return set(proc.stdout.strip().split("\n"))
+
+
 def rust_files():
+    diff_mode = "--diff" in sys.argv
+    only = diff_files() if diff_mode else None
     for root in ROOTS:
         for dp, _dn, fn in os.walk(root):
             if any(s in dp for s in ("target", "node_modules", ".git")):
@@ -28,6 +46,8 @@ def rust_files():
                     continue
                 p = os.path.join(dp, f).replace("\\", "/")
                 if "/tests/" in p:
+                    continue
+                if only is not None and p not in only:
                     continue
                 yield p
 

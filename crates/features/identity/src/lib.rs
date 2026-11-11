@@ -68,6 +68,23 @@ pub enum IdError {
 
 pub type Result<T> = std::result::Result<T, IdError>;
 
+/// 让存储层的共享错误可以 `?` 自动转换到 [`IdError`]。
+///
+/// 新代码推荐用 `wxlike_core::error::StorageError` 构造错误后 `?` 转换，
+/// 避免在每个域的错误枚举里重复定义 `NotFound` / `Db` / `Json` 等变体。
+/// 现有 `IdError::NotFound(...)` 调用点继续工作，无需修改。
+impl From<wxlike_core::error::StorageError> for IdError {
+    fn from(e: wxlike_core::error::StorageError) -> Self {
+        match e {
+            wxlike_core::error::StorageError::NotFound(w) => Self::NotFound(w),
+            wxlike_core::error::StorageError::Conflict(w) => Self::Conflict(w),
+            wxlike_core::error::StorageError::Corrupt(w) => Self::Corrupt(w),
+            wxlike_core::error::StorageError::Db(e) => Self::Db(e),
+            wxlike_core::error::StorageError::Json(e) => Self::Json(e),
+        }
+    }
+}
+
 /// 令牌/凭据的受众。管理面与用户面**不共用**令牌。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Audience {
