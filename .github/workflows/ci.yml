@@ -306,8 +306,8 @@ jobs:
     - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
       with:
         tool: typos-cli,cargo-deny,cargo-audit
-    - name: C10 quality metrics (incremental, base+5 tolerance)
-      run: python scripts/quality-gate.py --diff --slack 5
+    - name: C10 quality metrics (base+5 tolerance)
+      run: python scripts/quality-gate.py --slack 5
     - name: C10 typos
       run: typos
     - name: C10 advisory / ban / source policy
