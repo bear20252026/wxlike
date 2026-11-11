@@ -293,9 +293,11 @@ jobs:
         fetch-depth: 0
     - name: 确保 main 分支存在（增量门禁需要 git diff main...HEAD）
       shell: bash
-      run: |
-        git fetch origin main:main || true
+      run: 'git fetch origin main:main || true
+
         git rev-parse --verify main
+
+        '
     - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
       with:
         python-version: '3.12'
