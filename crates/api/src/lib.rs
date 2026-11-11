@@ -5,10 +5,17 @@
 //! 同一个服务端进程，两套错误形状。客户端按 `body["error"]` 取原因，
 //! 遇到视频接口的错误只能拿到 `null`，把"这段视频还没转完"显示成"未知错误"。
 //!
-//! 契约本身只有两条，但两条都必须由**一份代码**保证：
+//! 契约有三条，但每条都必须由**一份代码**保证：
 //!
 //! 1. 任何非 2xx 响应体都是 `{"error": "<一句给人看的原因>"}`；
-//! 2. 请求体解析失败也是这个形状（[`ApiJson`]），并且要说出**哪个字段**错了。
+//! 2. 请求体解析失败也是这个形状（[`ApiJson`]），并且要说出**哪个字段**错了；
+//! 3. 有语义的错误**额外**带 `code`（见 [`ApiError::code`]）。
+//!
+//! 第三条补的是一个真实的坑：在只有状态码的时候，客户端只能"猜"语义——
+//! 413 和 428 都落到 `Unavailable`，于是"文件太大"和"需要人机验证"被判成
+//! 可重试，同样的请求重发 5 次。`code` 让服务端把分类**直接说清楚**，
+//! 状态码退回它本来的角色（传输层分类）。没有 `code` 的响应仍然合法：
+//! 客户端按 `DomainError::from_http_status` 兜底。
 //!
 //! 刻意不放进来的东西：业务错误枚举（`PlatformError` / `JobFailure` 之类）。
 //! 那些属于各自领域，这个 crate 只管"怎么把错误讲给 HTTP 客户端听"。
@@ -29,7 +36,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 
-/// HTTP 可见错误：状态码 + 一句给客户端看的原因。
+/// HTTP 可见错误：状态码 + 一句给客户端看的原因 + 可选的语义码。
 ///
 /// 与 axum 的 `(StatusCode, String)` 的区别只有一个，但很关键：
 /// 后者渲染成**纯文本**，前者渲染成 `{"error": ...}`。
@@ -37,6 +44,15 @@ use serde::de::DeserializeOwned;
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
+    /// 三端契约里的精确错误码（就是 `DomainError::code()` 的那 13 个之一）。
+    ///
+    /// `None` = 调用点给不出语义（`ApiJson` 的解析失败、`ApiError::bad_request`
+    /// 这类纯传输层问题）。此时 body 只有 `error` 一个键，与加这个字段之前
+    /// **逐字一致**——老客户端不受影响。
+    ///
+    /// 客户端**先读 `code`，读不到才按状态码兜底**。顺序不能反：状态码会折叠
+    /// 语义（403 与 409 都各含两种领域错误），`code` 不会。
+    pub code: Option<&'static str>,
 }
 
 /// 处理函数的常见返回类型。名字短，是因为它出现在几乎每个 handler 的签名里。
@@ -47,6 +63,19 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            code: None,
+        }
+    }
+
+    /// 带语义码的错误（`{"error": ..., "code": ...}`）。
+    ///
+    /// 业务错误走这条：`PlatformError` → `DomainError` → `ApiError`，
+    /// 客户端据此分流（重试 / 弹人机验证 / 提示文件过大），不再靠状态码猜。
+    pub fn with_code(status: StatusCode, message: impl Into<String>, code: &'static str) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            code: Some(code),
         }
     }
 
@@ -100,11 +129,13 @@ impl std::error::Error for ApiError {}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            axum::Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        // 有 code 才多一个键。没 code 的响应体与加这个字段之前逐字一致，
+        // "只许有一个 error 键"这条契约对它们仍然成立。
+        let body = match self.code {
+            Some(code) => serde_json::json!({ "error": self.message, "code": code }),
+            None => serde_json::json!({ "error": self.message }),
+        };
+        (self.status, axum::Json(body)).into_response()
     }
 }
 
@@ -224,6 +255,27 @@ mod tests {
                 "只许有一个 error 键"
             );
         }
+    }
+
+    /// 带 `code` 的响应多一个键，`code` 与 `error` 逐字回显。
+    ///
+    /// `code` 是 `&'static str` 而不是枚举：`api` 刻意不依赖 `types`，
+    /// 否则"怎么渲染"就会反过来约束"怎么分类"。码表由 `types` 的
+    /// `CODES` 钉住，`platform` 的 `From<PlatformError>` 测试负责不断层。
+    #[tokio::test]
+    async fn coded_errors_carry_a_code_from_the_contract_table() {
+        let err = ApiError::with_code(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "文件或请求体过大",
+            "payload_too_large",
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "文件或请求体过大");
+        assert_eq!(body["code"], "payload_too_large");
     }
 
     /// 状态码不能靠"猜"：构造器名与码必须一一对应。

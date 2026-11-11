@@ -8,6 +8,10 @@ license.workspace = true
 wxlike-core = { path = "../core" }
 # HTTP 错误契约的唯一实现（`{"error": ...}` + `ApiJson`）
 wxlike-api = { path = "../api" }
+# 领域错误码（`DomainError`）：`PlatformError` → `DomainError` 的转换是
+# 服务端→客户端语义不断层的唯一保证。客户端按 code 精确分流，不再靠
+# HTTP 状态码猜（`from_http_status` 只是兜底）。
+wxlike-types = { path = "../types" }
 wxlike-message = { path = "../message" }
 wxlike-risk = { path = "../risk" }
 wxlike-moderation = { path = "../moderation" }

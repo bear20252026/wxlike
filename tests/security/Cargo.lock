@@ -3433,6 +3433,7 @@ dependencies = [
  "wxlike-risk",
  "wxlike-rtc",
  "wxlike-security",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -3523,6 +3524,15 @@ dependencies = [
  "wxlike-risk",
  "wxlike-video",
  "zstd",
+]
+
+[[package]]
+name = "wxlike-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

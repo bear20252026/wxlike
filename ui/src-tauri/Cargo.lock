@@ -7482,6 +7482,7 @@ dependencies = [
  "wxlike-risk",
  "wxlike-rtc",
  "wxlike-security",
+ "wxlike-types",
 ]
 
 [[package]]
