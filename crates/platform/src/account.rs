@@ -728,7 +728,10 @@ impl Platform {
             // 用固定措辞——用户在作业列表里看得到"为什么没导出来"，
             // 但拿不到服务端文件系统形状。
             tracing::error!(job = %job.id, error = %err, "export: 媒体仓写入失败");
-            return Err(PlatformError::Internal("export storage unreachable".into()));
+            // 媒体仓连不上是**依赖暂时不可用**（503、可重试），不是我们的代码
+            // 出错（500、不重试）。以前借用 `Internal` 表达，客户端于是不重试，
+            // 用户得手动再点一次——而存储恢复后重试本来就能成。
+            return Err(PlatformError::Unavailable("export storage unreachable"));
         }
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();

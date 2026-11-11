@@ -131,6 +131,8 @@ fn every_domain_error_maps_into_the_ts_error_code_set() {
         DomainError::cancelled(),
         DomainError::unavailable("x"),
         DomainError::internal("x"),
+        DomainError::payload_too_large("x"),
+        DomainError::blocked("x"),
     ];
     for sample in &samples {
         assert!(
