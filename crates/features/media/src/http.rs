@@ -71,7 +71,10 @@ pub struct StaticBearer {
 impl SessionVerifier for StaticBearer {
     fn verify(&self, headers: &HeaderMap) -> Option<String> {
         let raw = headers.get("authorization")?.to_str().ok()?;
-        let token = raw.strip_prefix("Bearer ")?;
+        // 解析与平台/管理面共用一份（`wxlike_types::Bearer`）：以前这里自己
+        // 写 `strip_prefix("Bearer ")`，大小写敏感，于是合法的
+        // `Authorization: bearer abc` 直接当"没带凭据"。
+        let token = wxlike_types::Bearer::parse(raw)?.token();
         if constant_time_eq(token.as_bytes(), self.token.as_bytes()) {
             Some(self.user_id.clone())
         } else {
@@ -721,7 +724,7 @@ pub fn fixture_verifier(tokens: &[(&str, &str)]) -> Arc<dyn SessionVerifier> {
         .collect();
     Arc::new(FnVerifier(move |headers: &HeaderMap| {
         let raw = headers.get("authorization")?.to_str().ok()?;
-        let token = raw.strip_prefix("Bearer ")?;
+        let token = wxlike_types::Bearer::parse(raw)?.token();
         map.get(token).cloned()
     }))
 }

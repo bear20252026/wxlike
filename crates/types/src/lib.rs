@@ -25,6 +25,7 @@
 #![warn(missing_docs)]
 
 pub mod action;
+pub mod bearer;
 pub mod contract;
 pub mod conv;
 pub mod cursor;
@@ -36,6 +37,7 @@ pub mod money;
 pub mod seq;
 
 pub use action::{is_empty_payload, ActionOutcome, ActionRequest, ActionResult};
+pub use bearer::Bearer;
 pub use contract::{ContractVersion, SchemaStamp, CONTRACT_VERSION};
 pub use conv::{direct_conv, direct_conv_id, parse_conv, ConvKind, ParsedConv};
 pub use cursor::{Cursor, CursorKind, CursorValue};

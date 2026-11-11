@@ -40,8 +40,12 @@ pub async fn command_audit(
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .and_then(|token| platform.lookup_token(token).ok().flatten())
+        // 解析规则与 `Authed` 共用一份（`wxlike_types::Bearer`）：这里曾经
+        // 自己写了一遍 `strip_prefix("Bearer ")`，大小写敏感，于是
+        // `Authorization: bearer abc` 在审计里记成空 actor，而同一个请求
+        // 在 handler 里是被认出来的。
+        .and_then(wxlike_types::Bearer::parse)
+        .and_then(|presented| platform.lookup_token(presented.token()).ok().flatten())
         .unwrap_or_default();
     let path = req.uri().path().to_string();
     let method = req.method().to_string();

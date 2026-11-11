@@ -5,7 +5,7 @@
 - 交叉核对源（服务端，另一条 upstream）：
   <https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/service/auth.go>（`UP-LIVEKIT-SERVER`）
 - 许可：Apache-2.0（许可不阻挡本项目，但来源必须可复查）
-- 本地 sha256：`00fdaf23b9f779f06803a53e80262ded80e084b94a161988f37cee89afd2da51`
+- 本地 sha256：`f50d49f0ffd260c951d6129b0e2445cfae2fd563a0ce068ae4f0c67ff0341c97`
   （按 Git LF 字节计算；根目录 `.gitattributes` 把该文件钉成 `text eol=lf`，
   避免 Windows `core.autocrlf=true` 下检出成 CRLF 后指纹漂移——`sfu.rs` 就踩过这个坑。
   该 sha 是 `036e5c3`（清 CI 三个红项）之后的值：本文件只做了 `LiveKitIssuer::issue`
@@ -67,6 +67,12 @@
 7. **`VideoGrant`/`AccessClaims` 加了 `Default` 派生**并让 `AccessRequest` 也 `Default`，
    以便测试用 `..Default::default()` 构造，不靠手搓全字段。
 8. **多签一枚 `wxlike` 私有 claim + `jti`**：见"没拿什么"最后一条。
+9. **`bearer_token` 的 `Authorization` 解析改用 `wxlike_types::Bearer`**（G02
+   "统一鉴权提取"）：以前自己写 `strip_prefix("Bearer ")`，大小写敏感，于是合法的
+   `bearer <jwt>`（RFC 6750 §2.1）被当成"没带凭据"；而平台面那份大小写不敏感、
+   接受——同一个头写法在不同面上结论不同。现在全服务端只有一份解析
+   （`wxlike_types::Bearer`），本函数因此比上游 Go 的 `HasPrefix(h, "Bearer ")`
+   多接受几种合法写法；多接受不放宽鉴权，令牌照样要过 `verify_access`。
 
 ## 顺手修掉的两个真缺陷（都是 WIP 提交留下的、不是上游带来的）
 

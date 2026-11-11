@@ -283,7 +283,7 @@
       "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "00fdaf23b9f779f06803a53e80262ded80e084b94a161988f37cee89afd2da51",
+      "local_sha256": "f50d49f0ffd260c951d6129b0e2445cfae2fd563a0ce068ae4f0c67ff0341c97",
       "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md",
       "used_by": "crates/rtc/src/{call_session,room}.rs 的 ADR-25 入房凭证签发与校验",
       "cross_checked_in": [
