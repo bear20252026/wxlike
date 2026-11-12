@@ -277,9 +277,7 @@ impl Platform {
                  WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
                 params![id, author, STATE_DELETED],
             )?;
-            if changed == 0 {
-                return Err(PlatformError::NotFound);
-            }
+            crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "video", id)?;
             crate::domain::repo::favorites::revoke_source(tx, "video", id)?;
@@ -433,9 +431,7 @@ impl Platform {
                AND (author = ?3 OR ?3 = (SELECT author FROM video_posts WHERE id = ?2))",
             params![comment_id, video_id, by],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 

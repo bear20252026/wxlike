@@ -11,12 +11,12 @@
 //! 这一组测试全部走公开 API，用真 SQL 造出损坏行，断言**必须报错**。
 
 use rusqlite::Connection;
+use wxlike_core::test_support::memory_db;
 use wxlike_identity::preferences::{self, JobKind, JobStatus};
 
 fn db() -> Connection {
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    wxlike_identity::migrate(&conn).expect("identity migrate");
-    conn
+    memory_db(|conn| wxlike_identity::migrate(conn).expect("identity migrate"))
+        .expect("in-memory sqlite")
 }
 
 /// 直接写原文：这些行模拟"迁移/人工/别的写入方留下的坏数据"，

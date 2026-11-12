@@ -101,8 +101,7 @@ pub(crate) mod testing {
     use rusqlite::Connection;
 
     pub fn db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        super::migrate(&conn).expect("migrate");
-        conn
+        wxlike_core::test_support::memory_db(|conn| super::migrate(conn).expect("migrate"))
+            .expect("in-memory db")
     }
 }

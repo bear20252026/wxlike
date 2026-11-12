@@ -231,9 +231,7 @@ impl Platform {
              WHERE user_id = ?2 AND sticker_id = ?3",
             params![sort_order, user, sticker_id],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 
@@ -243,9 +241,7 @@ impl Platform {
             "DELETE FROM user_stickers WHERE user_id = ?1 AND sticker_id = ?2",
             params![user, sticker_id],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 
@@ -256,9 +252,7 @@ impl Platform {
             "DELETE FROM sticker_packs WHERE id = ?1 AND owner = ?2",
             params![pack_id, owner],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 }

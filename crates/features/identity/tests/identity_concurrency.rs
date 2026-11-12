@@ -11,43 +11,17 @@
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
-use std::time::Duration;
 
 use rusqlite::Connection;
+use wxlike_core::test_support;
 use wxlike_identity::{
     device, login_challenge as lc, qr_login, refresh, session, step_up, Audience, IdError,
 };
 
 mod common;
-use common::FileDb;
+use common::{file_db, is_busy, setup, FileDb};
 
 type Action = Arc<dyn Fn(&Connection) -> Result<(), IdError> + Send + Sync>;
-
-fn is_busy(err: &IdError) -> bool {
-    matches!(
-        err,
-        IdError::Db(rusqlite::Error::SqliteFailure(code, _))
-            if matches!(
-                code.code,
-                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            )
-    )
-}
-
-fn setup<T>(db: &FileDb, f: impl Fn(&Connection) -> Result<T, IdError>) -> T {
-    let conn = db.connect();
-    let mut attempts = 0;
-    loop {
-        match f(&conn) {
-            Ok(v) => return v,
-            Err(e) if is_busy(&e) && attempts < 300 => {
-                attempts += 1;
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(e) => panic!("setup 失败: {e}"),
-        }
-    }
-}
 
 /// 注册一台设备（`session::open` 要求设备行存在且属于该用户）。
 fn ensure_device(db: &FileDb, who: &str, id: &str) {
@@ -74,20 +48,9 @@ fn race(db: &Arc<FileDb>, actions: Vec<Action>) -> Vec<Result<(), IdError>> {
         let db = Arc::clone(db);
         let start = Arc::clone(&start);
         handles.push(thread::spawn(move || {
-            let conn = db.connect();
+            let conn = db.connect().expect("connect file sqlite");
             start.wait();
-            let mut last_busy = None;
-            for _ in 0..300 {
-                match action(&conn) {
-                    Ok(v) => return Ok(v),
-                    Err(e) if is_busy(&e) => {
-                        last_busy = Some(e);
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            Err(last_busy.expect("racing thread records a busy error before giving up"))
+            test_support::retry(&conn, is_busy, |c| action(c))
         }));
     }
     handles
@@ -106,7 +69,7 @@ const PEPPER: &[u8] = b"pepper-for-concurrency";
 
 #[test]
 fn concurrent_rotation_lets_one_through_and_treats_the_other_as_replay() {
-    let db = Arc::new(FileDb::new("rot"));
+    let db = Arc::new(file_db("rot"));
     ensure_device(&db, "u1", DEV1);
     let tokens = setup(&db, |c| {
         session::open_default(c, "u1", DEV1, Audience::User, "ip", 1_000)
@@ -154,7 +117,7 @@ fn concurrent_rotation_lets_one_through_and_treats_the_other_as_replay() {
 
 #[test]
 fn concurrent_exchange_produces_exactly_one_session() {
-    let db = Arc::new(FileDb::new("qr"));
+    let db = Arc::new(file_db("qr"));
     let id = setup(&db, |c| {
         let t = qr_login::create(c, 1_000)?;
         qr_login::bind(c, &t.id, VERIFIER, DEV1, "desktop", "本机", "ip", 1_000)?;
@@ -175,7 +138,7 @@ fn concurrent_exchange_produces_exactly_one_session() {
         1,
         "三台桌面同时兑换只有一台能成: {out:?}"
     );
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     assert_eq!(rows(&conn, "SELECT COUNT(*) FROM sessions"), 1);
     assert_eq!(
         rows(
@@ -188,7 +151,7 @@ fn concurrent_exchange_produces_exactly_one_session() {
 
 #[test]
 fn concurrent_step_up_consume_is_single_use() {
-    let db = Arc::new(FileDb::new("step"));
+    let db = Arc::new(file_db("step"));
     ensure_device(&db, "u1", DEV1);
     let sid = setup(&db, |c| {
         session::open_default(c, "u1", DEV1, Audience::User, "ip", 1_000).map(|g| g.sid)
@@ -209,7 +172,7 @@ fn concurrent_step_up_consume_is_single_use() {
     );
     // 换个用途也不给过：授权是按 (user, sid, purpose) 存的。
     // setup 会把非锁错误直接 panic，所以要错误本身就不能走它。
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let other = step_up::consume(&conn, "u1", &sid, "account.delete", 2_100);
     assert!(
         matches!(other, Err(IdError::Unauthorized(_))),
@@ -219,7 +182,7 @@ fn concurrent_step_up_consume_is_single_use() {
 
 #[test]
 fn concurrent_verify_of_the_same_code_consumes_once() {
-    let db = Arc::new(FileDb::new("chal"));
+    let db = Arc::new(file_db("chal"));
     let (cid, code) = setup(&db, |c| {
         let issued = lc::issue(
             c,
@@ -243,7 +206,7 @@ fn concurrent_verify_of_the_same_code_consumes_once() {
     let out = race(&db, vec![mk(2_000), mk(2_001)]);
     let ok = out.iter().filter(|r| r.is_ok()).count();
     assert!(ok <= 1, "同一个验证码不能被两次确认登录: {out:?}");
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let consumed = rows(
         &conn,
         "SELECT COUNT(*) FROM identity_challenge WHERE consumed_at IS NOT NULL",
@@ -253,7 +216,7 @@ fn concurrent_verify_of_the_same_code_consumes_once() {
 
 #[test]
 fn same_device_id_cannot_be_claimed_by_two_accounts() {
-    let db = Arc::new(FileDb::new("devid"));
+    let db = Arc::new(file_db("devid"));
     let reg = || device::Registration {
         platform: "web".to_string(),
         ..Default::default()
@@ -264,7 +227,7 @@ fn same_device_id_cannot_be_claimed_by_two_accounts() {
     let out = race(&db, vec![mk("alice"), mk("bob")]);
     assert_eq!(out.iter().filter(|r| r.is_ok()).count(), 1, "{out:?}");
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     assert_eq!(
         rows(&conn, "SELECT COUNT(*) FROM identity_device"),
         1,
@@ -299,13 +262,13 @@ fn same_device_id_cannot_be_claimed_by_two_accounts() {
 /// 这条是"不许用内存 mock 交差"的直接验证——内存仓储在这里必然失败。
 #[test]
 fn session_state_survives_reopening_the_database_file() {
-    let db = FileDb::new("persist");
+    let db = file_db("persist");
     ensure_device(&db, "u1", DEV1);
     let access = setup(&db, |c| {
         session::open_default(c, "u1", DEV1, Audience::Admin, "ip", 1_000).map(|g| g.access_token)
     });
     {
-        let conn = db.connect();
+        let conn = db.connect().expect("connect file sqlite");
         assert!(session::authenticate(&conn, &access, Audience::Admin, 1_100).is_ok());
     }
     // 全新的进程内连接（等价于进程重启后重开库）。

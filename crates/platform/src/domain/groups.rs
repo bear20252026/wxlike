@@ -465,9 +465,7 @@ impl Platform {
             "UPDATE group_members SET my_remark = ?1 WHERE group_id = ?2 AND user_id = ?3",
             params![remark, &group_id, actor],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 

@@ -241,8 +241,7 @@ pub(crate) mod testing {
 
     /// 真实 SQLite 内存库：跑真实 DDL 与 SQL。
     pub fn db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        super::migrate(&conn).expect("migrate");
-        conn
+        wxlike_core::test_support::memory_db(|conn| super::migrate(conn).expect("migrate"))
+            .expect("in-memory db")
     }
 }

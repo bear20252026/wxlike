@@ -364,10 +364,7 @@ pub(crate) mod testing {
 
     /// 每个测试一份真实 SQLite（内存库）：跑真实 DDL、真实 SQL，不用假存储。
     pub fn db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        conn.execute_batch("PRAGMA foreign_keys = ON;")
-            .expect("pragma");
-        super::migrate(&conn).expect("migrate");
-        conn
+        wxlike_core::test_support::memory_db(|conn| super::migrate(conn).expect("migrate"))
+            .expect("in-memory db")
     }
 }
