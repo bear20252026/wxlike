@@ -21,7 +21,7 @@ use crate::audit::{AuditLog, Draft};
 use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
 use crate::rbac::Role;
-use crate::read::{now_ms, page_limit, Paged};
+use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
 use crate::upstream::{self, Upstream};
 
@@ -329,34 +329,28 @@ impl CommerceService {
     pub fn orders(&self, scope: &MerchantScope, filter: &OrderFilter) -> Result<Paged<Order>> {
         let limit = page_limit(filter.limit);
         let offset = filter.offset.unwrap_or(0).max(0);
-        let mut where_sql = String::from(" WHERE 1=1");
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut clause = Clause::new();
         match scope {
             MerchantScope::All => {}
             MerchantScope::Only(id) => {
                 // 商户隔离在 SQL 层：不是查完再过滤，避免分页数与总数对不上
-                where_sql.push_str(" AND merchant_id = ?");
-                args.push(Box::new(id.clone()));
+                clause.add(" merchant_id = ?", Bind::Text(id.clone()));
             }
         }
         if let Some(m) = &filter.merchant_id {
-            where_sql.push_str(" AND merchant_id = ?");
-            args.push(Box::new(m.clone()));
+            clause.add(" merchant_id = ?", Bind::Text(m.clone()));
         }
         if let Some(s) = &filter.state {
-            where_sql.push_str(" AND state = ?");
-            args.push(Box::new(s.clone()));
+            clause.add(" state = ?", Bind::Text(s.clone()));
         }
         let conn = self.store.lock();
-        let sql = format!(
-            "SELECT id, merchant_id, internal_no, external_no, amount_cents, currency, state, \
-             created_at FROM g14_order{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        );
         Paged::query(
             &conn,
-            &format!("SELECT count(*) FROM g14_order{where_sql}"),
-            &sql,
-            args,
+            &mut clause,
+            "g14_order",
+            "id, merchant_id, internal_no, external_no, amount_cents, currency, state, \
+             created_at",
+            " ORDER BY created_at DESC",
             limit,
             offset,
             row_to_order,

@@ -276,9 +276,7 @@ async fn page() -> Response {
 
 async fn stats(State(app): State<Shared>, _incoming: AdminAuth) -> Result<Json<serde_json::Value>> {
     let stats = app.read.stats()?;
-    Ok(Json(
-        serde_json::to_value(stats).map_err(AdminError::Codec)?,
-    ))
+    Ok(Json(to_value(stats)?))
 }
 
 async fn users(
@@ -288,7 +286,7 @@ async fn users(
 ) -> Result<Json<serde_json::Value>> {
     let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
     let page = app.read.users(&filter)?;
-    Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(page)?))
 }
 
 async fn groups(
@@ -298,7 +296,7 @@ async fn groups(
 ) -> Result<Json<serde_json::Value>> {
     let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
     let page = app.read.groups(&filter)?;
-    Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(page)?))
 }
 
 /// D2 的验收面：`?actor=&command=&from=&to=`（外加 `action` / `target`）。
@@ -318,7 +316,7 @@ async fn audit(
         offset: qint(&q, "offset")?,
     })?;
     let page = app.read.audit(&filter)?;
-    Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(page)?))
 }
 
 async fn reports(
@@ -346,7 +344,7 @@ async fn reports(
     for row in &mut page.rows {
         row.overdue = row.ticket.is_overdue(now, app.cfg.report_sla_ms);
     }
-    Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(page)?))
 }
 
 async fn read_one_report(
@@ -362,7 +360,7 @@ async fn read_one_report(
         overdue: ticket.is_overdue(now, app.cfg.report_sla_ms),
         ticket,
     };
-    Ok(Json(serde_json::to_value(row).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(row)?))
 }
 
 async fn moderation(
@@ -372,7 +370,7 @@ async fn moderation(
 ) -> Result<Json<serde_json::Value>> {
     let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
     let page = app.read.moderation(&filter)?;
-    Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(page)?))
 }
 
 async fn oplog(
@@ -389,7 +387,7 @@ async fn oplog(
         offset: qint(&q, "offset")?,
     };
     let page = app.accounts.ops(&query)?;
-    Ok(Json(serde_json::to_value(page).map_err(AdminError::Codec)?))
+    Ok(Json(to_value(page)?))
 }
 
 #[derive(Serialize)]
@@ -789,7 +787,7 @@ fn build_payload(op: &Op, body: &OpBody) -> Result<Option<serde_json::Value>> {
             // 序列化出来就是 `{"action":"mute","duration_ms":60000}`。
             // 以前这里包了一层 `{"action": {...}}`，导致平台收到的是嵌套的
             // `{"action":{"action":"mute"}}`——同一个键出现两次。
-            let mut payload = match serde_json::to_value(action).map_err(AdminError::Codec)? {
+            let mut payload = match to_value(action)? {
                 serde_json::Value::Object(map) => map,
                 other => {
                     return Err(AdminError::bad_input(format!(
@@ -847,6 +845,19 @@ fn echo(value: &serde_json::Value) -> String {
         .take(limit - CAP_MARKER.chars().count())
         .collect();
     format!("{keep}{CAP_MARKER}")
+}
+
+// ---------------------------------------------------------------------------
+// 响应序列化
+// ---------------------------------------------------------------------------
+
+/// 序列化响应体，失败统一是 [`AdminError::Codec`]。
+///
+/// 管理端的响应体几乎都是 `Json<Value>`（形状由 `Serialize` 决定，不写死），
+/// 于是"序列化 + 错误映射"这串在文件里重复了九次。收成一个函数，顺带保证所有
+/// 端点的编码错误是同一个变体——排查时只看一处。
+fn to_value<T: Serialize>(v: T) -> Result<serde_json::Value> {
+    serde_json::to_value(v).map_err(AdminError::Codec)
 }
 
 // ---------------------------------------------------------------------------

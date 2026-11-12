@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{AdminError, Result};
-use crate::read::{now_ms, page_limit, Paged};
+use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
 
 const INSERT_AUDIT: &str = concat!(
@@ -252,43 +252,31 @@ impl Entry {
     }
 }
 
-type SqlArgs = Vec<Box<dyn rusqlite::ToSql>>;
-
 impl Filter {
-    fn sql_args(&self) -> (String, SqlArgs) {
-        let mut where_sql = String::from(" WHERE 1=1");
-        let mut args: SqlArgs = Vec::new();
-
+    fn clause(&self) -> Clause {
+        let mut c = Clause::new();
         if let Some(v) = &self.actor {
-            where_sql.push_str(" AND actor = ?");
-            args.push(Box::new(v.clone()));
+            c.add(" actor = ?", Bind::Text(v.clone()));
         }
         if let Some(v) = &self.action {
-            where_sql.push_str(" AND action = ?");
-            args.push(Box::new(v.clone()));
+            c.add(" action = ?", Bind::Text(v.clone()));
         }
         if let Some(v) = &self.object_kind {
-            where_sql.push_str(" AND object_kind = ?");
-            args.push(Box::new(v.clone()));
+            c.add(" object_kind = ?", Bind::Text(v.clone()));
         }
         if let Some(v) = &self.object_id {
-            where_sql.push_str(" AND object_id = ?");
-            args.push(Box::new(v.clone()));
+            c.add(" object_id = ?", Bind::Text(v.clone()));
         }
         if let Some(v) = self.outcome {
-            where_sql.push_str(" AND outcome = ?");
-            args.push(Box::new(v.as_str().to_string()));
+            c.add(" outcome = ?", Bind::Text(v.as_str().to_string()));
         }
         if let Some(v) = self.from {
-            where_sql.push_str(" AND at_ms >= ?");
-            args.push(Box::new(v));
+            c.add(" at_ms >= ?", Bind::Int(v));
         }
         if let Some(v) = self.to {
-            where_sql.push_str(" AND at_ms <= ?");
-            args.push(Box::new(v));
+            c.add(" at_ms <= ?", Bind::Int(v));
         }
-
-        (where_sql, args)
+        c
     }
 }
 
@@ -471,19 +459,15 @@ impl AuditLog {
     pub fn query(&self, f: &Filter) -> Result<Paged<Entry>> {
         let limit = page_limit(f.limit);
         let offset = f.offset.unwrap_or(0).max(0);
-        let (where_sql, args) = f.sql_args();
-
         let conn = self.store.lock();
-        let sql = format!(
-            "SELECT id, at_ms, actor, role, action, object_kind, object_id, reason, before_digest, \
-             after_digest, trace, outcome, detail, prev_hash, hash FROM g14_audit{where_sql} \
-             ORDER BY id DESC LIMIT ? OFFSET ?"
-        );
+        let mut clause = f.clause();
         Paged::query(
             &conn,
-            &format!("SELECT count(*) FROM g14_audit{where_sql}"),
-            &sql,
-            args,
+            &mut clause,
+            "g14_audit",
+            "id, at_ms, actor, role, action, object_kind, object_id, reason, before_digest, \
+             after_digest, trace, outcome, detail, prev_hash, hash",
+            " ORDER BY id DESC",
             limit,
             offset,
             row_to_entry,

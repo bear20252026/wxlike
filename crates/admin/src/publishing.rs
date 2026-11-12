@@ -23,7 +23,7 @@ use crate::audit::{AuditLog, Draft, Outcome};
 use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
 use crate::rbac::Role;
-use crate::read::{now_ms, page_limit, Paged};
+use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
 use crate::upstream::{self, Upstream};
 
@@ -559,20 +559,24 @@ impl PublishingService {
     pub fn queue(&self, filter: &QueueFilter) -> Result<Paged<Item>> {
         let limit = page_limit(filter.limit);
         let offset = filter.offset.unwrap_or(0).max(0);
-        let mut where_sql = String::from(" WHERE 1=1");
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut clause = Clause::new();
         if let Some(kind) = &filter.kind {
-            where_sql.push_str(" AND kind = ?");
-            args.push(Box::new(kind.clone()));
+            clause.add(" kind = ?", Bind::Text(kind.clone()));
         }
         if let Some(state) = filter.state {
-            where_sql.push_str(" AND state = ?");
-            args.push(Box::new(state.as_str().to_string()));
+            clause.add(" state = ?", Bind::Text(state.as_str().to_string()));
         }
         let conn = self.store.lock();
-        Paged::query(&conn, &format!("SELECT count(*) FROM g14_review_item{where_sql}"),
-            &format!("SELECT {ITEM_COLS} FROM g14_review_item{where_sql} ORDER BY created_at ASC LIMIT ? OFFSET ?"),
-            args, limit, offset, row_to_item)
+        Paged::query(
+            &conn,
+            &mut clause,
+            "g14_review_item",
+            ITEM_COLS,
+            " ORDER BY created_at ASC",
+            limit,
+            offset,
+            row_to_item,
+        )
     }
 
     pub fn item(&self, id: &str) -> Result<Option<Item>> {

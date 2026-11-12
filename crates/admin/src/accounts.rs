@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use rusqlite::{params, Connection, Row, ToSql};
+use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 use wxlike_report::Action;
 
@@ -622,82 +622,43 @@ impl AccountStore {
             .unwrap_or(crate::read::DEFAULT_PAGE)
             .clamp(1, crate::read::MAX_PAGE) as i64;
         let offset = q.offset.unwrap_or(0).max(0);
-        let mut args: Vec<Arg> = Vec::new();
-        let mut where_sql = String::new();
-        let mut next = 1usize;
-        for (col, v) in [
-            ("actor =", clean(q.actor.clone())),
-            ("op =", clean(q.op.clone())),
-            ("status =", clean(q.status.clone())),
-        ] {
-            if let Some(val) = v {
-                push_cond(&mut where_sql, next, col);
-                args.push(Arg::Text(val));
-                next += 1;
-            }
+        let mut clause = crate::read::Clause::new();
+        if let Some(v) = clean(q.actor.clone()) {
+            clause.add(" actor = ?", crate::read::Bind::Text(v));
+        }
+        if let Some(v) = clean(q.op.clone()) {
+            clause.add(" op = ?", crate::read::Bind::Text(v));
+        }
+        if let Some(v) = clean(q.status.clone()) {
+            clause.add(" status = ?", crate::read::Bind::Text(v));
         }
         if let Some(from) = q.from.filter(|v| *v >= 0) {
-            push_cond(&mut where_sql, next, "at_ms >=");
-            args.push(Arg::Int(from));
-            next += 1;
+            clause.add(" at_ms >= ?", crate::read::Bind::Int(from));
         }
         let c = self.lock();
-        let total: i64 = {
-            let mut stmt = c.prepare(&format!("SELECT COUNT(*) FROM admin_oplog{where_sql}"))?;
-            let refs: Vec<&dyn ToSql> = args.iter().map(Arg::r#dyn).collect();
-            stmt.query_row(refs.as_slice(), |r| r.get(0))?
-        };
-        let sql = format!(
-            "SELECT at_ms, actor, op, capability, target, upstream, status, detail, mfa \
-             FROM admin_oplog{where_sql} ORDER BY id DESC LIMIT ?{next} OFFSET ?{}",
-            next + 1
-        );
-        let mut stmt = c.prepare(&sql)?;
-        let mut refs: Vec<&dyn ToSql> = args.iter().map(Arg::r#dyn).collect();
-        refs.push(&limit);
-        refs.push(&offset);
-        let rows = stmt.query_map(refs.as_slice(), |r| {
-            Ok(OpLogRow {
-                at_ms: r.get(0)?,
-                actor: r.get(1)?,
-                op: r.get(2)?,
-                capability: r.get(3)?,
-                target: r.get(4)?,
-                upstream: r.get(5)?,
-                status: r.get(6)?,
-                detail: r.get(7)?,
-                mfa: r.get::<_, i64>(8)? != 0,
-            })
-        })?;
-        Ok(crate::read::Paged {
-            total,
+        crate::read::Paged::query(
+            &c,
+            &mut clause,
+            "admin_oplog",
+            "at_ms, actor, op, capability, target, upstream, status, detail, mfa",
+            " ORDER BY id DESC",
             limit,
             offset,
-            rows: rows.collect::<std::result::Result<Vec<_>, _>>()?,
-        })
+            |r| {
+                Ok(OpLogRow {
+                    at_ms: r.get(0)?,
+                    actor: r.get(1)?,
+                    op: r.get(2)?,
+                    capability: r.get(3)?,
+                    target: r.get(4)?,
+                    upstream: r.get(5)?,
+                    status: r.get(6)?,
+                    detail: r.get(7)?,
+                    mfa: r.get::<_, i64>(8)? != 0,
+                })
+            },
+        )
     }
-}
-
-/// 动态绑定的槽（拥有数据）。
-enum Arg {
-    Text(String),
-    Int(i64),
-}
-
-impl Arg {
-    fn r#dyn(&self) -> &dyn ToSql {
-        // &String / &i64 都能 coerce 成 &dyn ToSql；写成 s.as_str() 反而是
-        // 把 &str（unsized）往 &dyn 上转，编不过。
-        match self {
-            Arg::Text(s) => s,
-            Arg::Int(i) => i,
-        }
-    }
-}
-
-fn push_cond(sql: &mut String, index: usize, fragment: &str) {
-    sql.push_str(if index == 1 { " WHERE" } else { " AND" });
-    sql.push_str(&format!(" {fragment} ?{index}"));
 }
 
 fn clean(v: Option<String>) -> Option<String> {

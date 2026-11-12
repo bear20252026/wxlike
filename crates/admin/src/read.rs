@@ -65,7 +65,10 @@ fn clean(v: Option<String>) -> Option<String> {
 }
 
 /// 动态绑定用的参数槽（拥有数据，查询时再借出去）。
-enum Bind {
+///
+/// 管理端检索条件只有"字符串 / epoch 毫秒"两种，所以只有两个变体。
+/// 需要第三种时**加变体**，不要退回 `Box<dyn ToSql>`——那正是这个枚举消掉的东西。
+pub(crate) enum Bind {
     Text(String),
     Int(i64),
 }
@@ -74,31 +77,47 @@ enum Bind {
 ///
 /// 拼进 SQL 的永远只有 `AND col = ?n` 这种**形状**，值一律走绑定
 /// （本仓库的硬规矩：字符串拼 SQL 视为违规）。
-struct Clause {
+///
+/// 管理端的检索过滤**只有这一套**实现。重构前这个 crate 里有三种写法解决同一件事：
+/// 五处裸 `where_sql` + `Vec<Box<dyn ToSql>>`（audit / commerce / identity /
+/// jobs / publishing），一处 `Arg` + `push_cond`（accounts），加上这里这一套。
+/// "第一个条件用 WHERE 还是 AND""limit/offset 排在第几个占位符"这些细节被重答
+/// 了七遍——而答错的后果不是编译失败，是**绑定错位**：SQL 照跑，数是错的。
+pub(crate) struct Clause {
     sql: String,
     binds: Vec<Bind>,
     next: usize,
+    used: bool,
 }
 
 impl Clause {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sql: String::new(),
             binds: Vec::new(),
             next: 1,
+            used: false,
         }
     }
 
-    fn add(&mut self, fragment: &str, bind: Bind) {
-        self.sql.push_str(if self.binds.is_empty() {
-            " WHERE"
-        } else {
-            " AND"
-        });
+    /// 追加一个带绑定的条件；`fragment` 不写占位符，编号由这里接。
+    pub(crate) fn add(&mut self, fragment: &str, bind: Bind) {
+        self.sep();
         self.sql.push_str(fragment);
         self.sql.push_str(&self.next.to_string());
         self.binds.push(bind);
         self.next += 1;
+    }
+
+    /// 追加一个**不带绑定**的常量片段（`AND state IN ('open',...)`）。
+    pub(crate) fn add_raw(&mut self, fragment: &str) {
+        self.sep();
+        self.sql.push_str(fragment);
+    }
+
+    fn sep(&mut self) {
+        self.sql.push_str(if self.used { " AND" } else { " WHERE" });
+        self.used = true;
     }
 
     /// 追加 `order` + `LIMIT ?n OFFSET ?n+1`，并把两个数排进绑定表。
@@ -365,22 +384,16 @@ impl PlatformRead {
     pub fn audit(&self, f: &AuditFilter) -> Result<Paged<AuditRow>> {
         let c = self.lock();
         let mut clause = f.clause();
-        let count_sql = format!("SELECT COUNT(*) FROM audit_log{}", clause.sql);
-        let total: i64 = {
-            let refs = clause.refs();
-            c.query_row(&count_sql, refs.as_slice(), |r| r.get(0))?
-        };
-        let tail = clause.finish(" ORDER BY id DESC", f.limit, f.offset);
-        let sql = format!("{AUDIT_SQL_HEAD}{tail}");
-        let mut stmt = c.prepare(&sql)?;
-        let refs = clause.refs();
-        let rows = stmt.query_map(refs.as_slice(), AuditRow::from_row)?;
-        Ok(Paged {
-            total,
-            limit: f.limit,
-            offset: f.offset,
-            rows: rows.collect::<std::result::Result<Vec<_>, _>>()?,
-        })
+        Paged::query(
+            &c,
+            &mut clause,
+            "audit_log",
+            "id, at_ms, actor, action, target, detail",
+            " ORDER BY id DESC",
+            f.limit,
+            f.offset,
+            AuditRow::from_row,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -487,8 +500,6 @@ const GROUPS_SQL: &str =
 const REPORTS_HEAD: &str = "SELECT id, reporter, target_kind, target_id, reason, detail, state, \
      action_json, handler, created_at, updated_at, history_json FROM reports";
 
-const AUDIT_SQL_HEAD: &str = "SELECT id, at_ms, actor, action, target, detail FROM audit_log";
-
 /// 转义 LIKE 的元字符：用户可以搜 `a%b` 这样的串，`%` 不能变成通配符。
 fn escape_like(q: &str) -> String {
     let mut out = String::with_capacity(q.len() + 4);
@@ -513,12 +524,19 @@ pub struct Paged<T> {
 }
 
 impl<T> Paged<T> {
-    /// Count and page use the same filter bindings, then append limit/offset in that order.
+    /// 按 [`Clause`] 过滤分页：COUNT 与 SELECT 共用同一套绑定。
+    ///
+    /// 拼接点只剩三个，且都是**编译期常量**：`table` / `cols` / `order`。
+    /// WHERE、LIMIT、OFFSET 全由 `Clause` 生成，占位符编号连续分配——调用方
+    /// 不再需要（也不应该）自己算编号。
+    ///
+    /// `order` 传 `" ORDER BY created_at DESC"` 这种尾巴，**不带 LIMIT**。
     pub(crate) fn query<F>(
         conn: &rusqlite::Connection,
-        count_sql: &str,
-        sql: &str,
-        mut args: Vec<Box<dyn rusqlite::ToSql>>,
+        clause: &mut Clause,
+        table: &str,
+        cols: &str,
+        order: &str,
         limit: i64,
         offset: i64,
         row: F,
@@ -526,19 +544,19 @@ impl<T> Paged<T> {
     where
         F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     {
-        let total = conn.query_row(
-            count_sql,
-            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-            |r| r.get(0),
-        )?;
-        args.push(Box::new(limit));
-        args.push(Box::new(offset));
-        let mut stmt = conn.prepare(sql)?;
+        let total = {
+            let sql = format!("SELECT count(*) FROM {table}{}", clause.sql);
+            let refs = clause.refs();
+            conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?
+        };
+        let sql = format!(
+            "SELECT {cols} FROM {table}{}",
+            clause.finish(order, limit, offset)
+        );
+        let refs = clause.refs();
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
-                row,
-            )?
+            .query_map(refs.as_slice(), row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Self::new(total, limit, offset, rows))
     }
@@ -923,9 +941,7 @@ impl ReportFilter {
             c.add(" reporter = ?", Bind::Text(r.clone()));
         }
         if self.open_only {
-            c.sql
-                .push_str(if c.binds.is_empty() { " WHERE" } else { " AND" });
-            c.sql.push_str(OPEN_STATES);
+            c.add_raw(OPEN_STATES);
         }
         c
     }
