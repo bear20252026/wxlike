@@ -10,6 +10,7 @@ pub mod msgmeta;
 pub mod outbox;
 pub mod retry;
 pub mod store;
+pub mod tx;
 pub mod types;
 
 pub use store::{Conversation, Store, StoredMessage};

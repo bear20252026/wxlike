@@ -25,6 +25,7 @@ use crate::inbox;
 use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 pub const MAX_ARTICLE_BLOCKS: usize = 200;
 pub const MAX_TITLE_CHARS: usize = 120;
@@ -392,40 +393,41 @@ impl Platform {
         let state = if body.publish { "published" } else { "draft" };
 
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        tx.execute(
-            "INSERT INTO articles(seq, id, publisher_id, author, title, doc, body_text, body_html,
+        c.with_tx(|tx| -> Result<()> {
+            tx.execute(
+                "INSERT INTO articles(seq, id, publisher_id, author, title, doc, body_text, body_html,
                                   state, version, created_at, updated_at, published_at)
-             VALUES(NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, ?10)",
-            params![
-                id,
-                publisher_id,
-                author,
-                title,
-                doc_json,
-                plain,
-                html,
-                state,
-                now,
-                body.publish.then_some(now)
-            ],
-        )?;
-        tx.execute(
-            "INSERT INTO article_versions(article_id, version, doc, saved_at) VALUES(?1, 1, ?2, ?3)",
-            params![id, serde_json::to_string(&body.doc)?, now],
-        )?;
-        if body.publish {
-            publish_side_effects(&tx, &id, &publisher_id, author, &title, &plain, now)?;
-            content_index::add_media_refs(
-                &tx,
-                &doc_media_ids(&body.doc),
-                "article",
-                &id,
-                author,
-                now,
+                 VALUES(NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, ?10)",
+                params![
+                    id,
+                    publisher_id,
+                    author,
+                    title,
+                    doc_json,
+                    plain,
+                    html,
+                    state,
+                    now,
+                    body.publish.then_some(now)
+                ],
             )?;
-        }
-        tx.commit()?;
+            tx.execute(
+                "INSERT INTO article_versions(article_id, version, doc, saved_at) VALUES(?1, 1, ?2, ?3)",
+                params![id, serde_json::to_string(&body.doc)?, now],
+            )?;
+            if body.publish {
+                publish_side_effects(tx, &id, &publisher_id, author, &title, &plain, now)?;
+                content_index::add_media_refs(
+                    tx,
+                    &doc_media_ids(&body.doc),
+                    "article",
+                    &id,
+                    author,
+                    now,
+                )?;
+            }
+            Ok(())
+        })?;
         drop(c);
         self.article_for(author, &id)
     }
@@ -541,43 +543,44 @@ impl Platform {
         };
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let (publisher_id, state, version) =
-            load_editable_article(&tx, id, author, body.expected_version)?;
-        let next_version = version + 1;
-        let next_state = if body.publish || state == "published" {
-            "published"
-        } else {
-            "draft"
-        };
-        let publish_now = state != "published" && next_state == "published";
-        write_article_revision(
-            &tx,
-            id,
-            &ArticleRevision {
-                title: &title,
-                doc_json: &serde_json::to_string(&body.doc)?,
-                plain: &plain,
-                html: &html,
-                next_state,
-                next_version,
-                now,
-                publish_now,
-            },
-        )?;
-        if next_state == "published" {
-            publish_side_effects(&tx, id, &publisher_id, author, &title, &plain, now)?;
-            content_index::remove_media_refs(&tx, "article", id)?;
-            content_index::add_media_refs(
-                &tx,
-                &doc_media_ids(&body.doc),
-                "article",
+        c.with_tx(|tx| -> Result<()> {
+            let (publisher_id, state, version) =
+                load_editable_article(tx, id, author, body.expected_version)?;
+            let next_version = version + 1;
+            let next_state = if body.publish || state == "published" {
+                "published"
+            } else {
+                "draft"
+            };
+            let publish_now = state != "published" && next_state == "published";
+            write_article_revision(
+                tx,
                 id,
-                author,
-                now,
+                &ArticleRevision {
+                    title: &title,
+                    doc_json: &serde_json::to_string(&body.doc)?,
+                    plain: &plain,
+                    html: &html,
+                    next_state,
+                    next_version,
+                    now,
+                    publish_now,
+                },
             )?;
-        }
-        tx.commit()?;
+            if next_state == "published" {
+                publish_side_effects(tx, id, &publisher_id, author, &title, &plain, now)?;
+                content_index::remove_media_refs(tx, "article", id)?;
+                content_index::add_media_refs(
+                    tx,
+                    &doc_media_ids(&body.doc),
+                    "article",
+                    id,
+                    author,
+                    now,
+                )?;
+            }
+            Ok(())
+        })?;
         drop(c);
         self.article_for(author, id)
     }
@@ -585,20 +588,20 @@ impl Platform {
     pub fn delete_article(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let changed = tx.execute(
-            "UPDATE articles SET state = 'deleted', updated_at = ?1
-             WHERE id = ?2 AND author = ?3 AND state <> 'deleted'",
-            params![wxlike_core::types::now_ms() as i64, id, author],
-        )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
-        content_index::remove(&tx, id)?;
-        content_index::remove_media_refs(&tx, "article", id)?;
-        crate::favorites::revoke_source(&tx, "article", id)?;
-        tx.commit()?;
-        Ok(())
+        c.with_tx(|tx| -> Result<()> {
+            let changed = tx.execute(
+                "UPDATE articles SET state = 'deleted', updated_at = ?1
+                 WHERE id = ?2 AND author = ?3 AND state <> 'deleted'",
+                params![wxlike_core::types::now_ms() as i64, id, author],
+            )?;
+            if changed == 0 {
+                return Err(PlatformError::NotFound);
+            }
+            content_index::remove(tx, id)?;
+            content_index::remove_media_refs(tx, "article", id)?;
+            crate::favorites::revoke_source(tx, "article", id)?;
+            Ok(())
+        })
     }
 
     pub fn articles_by_publisher(
@@ -654,31 +657,32 @@ impl Platform {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let (seq, publisher_id, state): (i64, String, String) = tx
-            .query_row(
-                "SELECT seq, publisher_id, state FROM articles WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?
-            .ok_or(PlatformError::NotFound)?;
-        if state != "published" {
-            return Err(PlatformError::NotFound);
-        }
-        tx.execute(
-            "INSERT INTO article_reads(user_id, article_id, read_at) VALUES(?1, ?2, ?3)
-             ON CONFLICT(user_id, article_id) DO UPDATE SET read_at = excluded.read_at",
-            params![user, id, now],
-        )?;
-        tx.execute(
-            "INSERT INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
-             VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(user_id, publisher_id) DO UPDATE SET
-               read_cursor = MAX(read_cursor, excluded.read_cursor)",
-            params![user, publisher_id, seq, now],
-        )?;
-        tx.commit()?;
+        let publisher_id = c.with_tx(|tx| -> Result<String> {
+            let (seq, publisher_id, state): (i64, String, String) = tx
+                .query_row(
+                    "SELECT seq, publisher_id, state FROM articles WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?
+                .ok_or(PlatformError::NotFound)?;
+            if state != "published" {
+                return Err(PlatformError::NotFound);
+            }
+            tx.execute(
+                "INSERT INTO article_reads(user_id, article_id, read_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(user_id, article_id) DO UPDATE SET read_at = excluded.read_at",
+                params![user, id, now],
+            )?;
+            tx.execute(
+                "INSERT INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(user_id, publisher_id) DO UPDATE SET
+                   read_cursor = MAX(read_cursor, excluded.read_cursor)",
+                params![user, publisher_id, seq, now],
+            )?;
+            Ok(publisher_id)
+        })?;
         let unread = unread_count(&c, user, &publisher_id)?;
         drop(c);
         Ok(unread)

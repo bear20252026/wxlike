@@ -21,6 +21,7 @@ use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
 use crate::{direct_conv_id, system_envelope, Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
@@ -205,29 +206,29 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let changed = tx.execute(
-            "UPDATE friend_requests SET status = 'accepted' WHERE id = ?1 AND status = 'pending'",
-            params![req_id],
-        )?;
-        if changed == 0 {
-            // lost a race with a concurrent accept/decline
-            return Err(PlatformError::Conflict("request".into()));
-        }
-        for (a, b) in [
-            (req.from_uid.as_str(), req.to_uid.as_str()),
-            (req.to_uid.as_str(), req.from_uid.as_str()),
-        ] {
-            tx.execute(
-                "INSERT INTO friends(user_id, friend_id, remark, source, created_at)
+        c.with_tx(|tx| -> Result<RequestRow> {
+            let changed = tx.execute(
+                "UPDATE friend_requests SET status = 'accepted' WHERE id = ?1 AND status = 'pending'",
+                params![req_id],
+            )?;
+            if changed == 0 {
+                // lost a race with a concurrent accept/decline
+                return Err(PlatformError::Conflict("request".into()));
+            }
+            for (a, b) in [
+                (req.from_uid.as_str(), req.to_uid.as_str()),
+                (req.to_uid.as_str(), req.from_uid.as_str()),
+            ] {
+                tx.execute(
+                    "INSERT INTO friends(user_id, friend_id, remark, source, created_at)
                  VALUES(?1, ?2, '', ?3, ?4)
                  ON CONFLICT(user_id, friend_id) DO NOTHING",
-                params![a, b, req_id, now],
-            )?;
-            log_tx(&tx, a, b, "accepted", now)?;
-        }
-        tx.commit()?;
-        Ok(req)
+                    params![a, b, req_id, now],
+                )?;
+                log_tx(tx, a, b, "accepted", now)?;
+            }
+            Ok(req)
+        })
     }
 
     pub fn decline_request(&self, me: &str, req_id: &str) -> Result<RequestRow> {
@@ -240,22 +241,22 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        // #340: the verdict rides on the write itself, like accept above —
-        // the pre-check reads outside the lock, so two concurrent declines
-        // can both pass it; only the conditional UPDATE picks one winner.
-        let changed = tx.execute(
-            "UPDATE friend_requests SET status = 'declined' WHERE id = ?1 AND status = 'pending'",
-            params![req_id],
-        )?;
-        if changed == 0 {
-            // lost a race with a concurrent accept/decline
-            return Err(PlatformError::Conflict("request".into()));
-        }
-        log_tx(&tx, &req.from_uid, &req.to_uid, "declined", now)?;
-        log_tx(&tx, &req.to_uid, &req.from_uid, "declined", now)?;
-        tx.commit()?;
-        Ok(req)
+        c.with_tx(|tx| -> Result<RequestRow> {
+            // #340: the verdict rides on the write itself, like accept above —
+            // the pre-check reads outside the lock, so two concurrent declines
+            // can both pass it; only the conditional UPDATE picks one winner.
+            let changed = tx.execute(
+                "UPDATE friend_requests SET status = 'declined' WHERE id = ?1 AND status = 'pending'",
+                params![req_id],
+            )?;
+            if changed == 0 {
+                // lost a race with a concurrent accept/decline
+                return Err(PlatformError::Conflict("request".into()));
+            }
+            log_tx(tx, &req.from_uid, &req.to_uid, "declined", now)?;
+            log_tx(tx, &req.to_uid, &req.from_uid, "declined", now)?;
+            Ok(req)
+        })
     }
 
     pub fn incoming_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
@@ -358,20 +359,20 @@ impl Platform {
         if !self.are_friends_inner(&mut c, me, &other)? {
             return Err(PlatformError::NotFound);
         }
-        let tx = c.transaction()?;
-        tx.execute(
-            "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
-            params![me, other],
-        )?;
-        tx.execute(
-            "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
-            params![other, me],
-        )?;
-        for (a, b) in [(me, other.as_str()), (other.as_str(), me)] {
-            log_tx(&tx, a, b, "removed", now)?;
-        }
-        tx.commit()?;
-        Ok(())
+        c.with_tx(|tx| -> Result<()> {
+            tx.execute(
+                "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
+                params![me, other],
+            )?;
+            tx.execute(
+                "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
+                params![other, me],
+            )?;
+            for (a, b) in [(me, other.as_str()), (other.as_str(), me)] {
+                log_tx(tx, a, b, "removed", now)?;
+            }
+            Ok(())
+        })
     }
 
     fn are_friends_inner(&self, c: &mut rusqlite::Connection, a: &str, b: &str) -> Result<bool> {

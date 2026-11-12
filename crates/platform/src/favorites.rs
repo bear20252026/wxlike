@@ -26,6 +26,7 @@ use crate::extract::ApiJson;
 use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 /// Page cap; callers asking for more get this many.
 pub const MAX_FAVORITE_PAGE: usize = 100;
@@ -380,27 +381,27 @@ impl Platform {
             cleaned.push(validate::id(id)?.to_string());
         }
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        for id in &cleaned {
-            let owned: Option<i64> = tx
-                .query_row(
-                    "SELECT 1 FROM favorites WHERE id = ?1 AND user_id = ?2",
-                    params![id, user],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if owned.is_none() {
-                return Err(PlatformError::NotFound);
+        c.with_tx(|tx| -> Result<usize> {
+            for id in &cleaned {
+                let owned: Option<i64> = tx
+                    .query_row(
+                        "SELECT 1 FROM favorites WHERE id = ?1 AND user_id = ?2",
+                        params![id, user],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if owned.is_none() {
+                    return Err(PlatformError::NotFound);
+                }
             }
-        }
-        for (i, id) in cleaned.iter().enumerate() {
-            tx.execute(
-                "UPDATE favorites SET sort_order = ?1 WHERE id = ?2 AND user_id = ?3",
-                params![i as i64, id, user],
-            )?;
-        }
-        tx.commit()?;
-        Ok(cleaned.len())
+            for (i, id) in cleaned.iter().enumerate() {
+                tx.execute(
+                    "UPDATE favorites SET sort_order = ?1 WHERE id = ?2 AND user_id = ?3",
+                    params![i as i64, id, user],
+                )?;
+            }
+            Ok(cleaned.len())
+        })
     }
 
     pub fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {

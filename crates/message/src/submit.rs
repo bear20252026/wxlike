@@ -11,6 +11,7 @@ use super::{
     bump_change, channel_class_of, insert_mailbox_tx, next_seq_tx, touch_projection_tx, BodyKind,
     ChannelClass, MailError, MailInsert, MessageStore, OwnerType, Result,
 };
+use wxlike_core::tx::ConnectionTx as _;
 
 /// Server-side default for the author recall window ("2 分钟内可撤回").
 pub const RECALL_WINDOW_MS: u64 = 2 * 60 * 1000;
@@ -138,15 +139,13 @@ impl MessageStore {
             submit_fingerprint(oid, req.type_id, req.payload, req.body_kind, req.forward_of);
 
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        if let Some(found) = lookup_submit(&tx, req)? {
-            let outcome = replay_submit(&tx, &found, req, &fingerprint, now)?;
-            tx.commit()?;
-            return Ok(outcome);
-        }
-        let outcome = insert_submit(&tx, req, ot, oid, &fingerprint, now)?;
-        tx.commit()?;
-        Ok(outcome)
+        conn.with_tx(|tx| -> Result<SubmitOutcome> {
+            if let Some(found) = lookup_submit(tx, req)? {
+                // 幂等重放：命中的那一行就是结果，直接提交返回。
+                return replay_submit(tx, &found, req, &fingerprint, now);
+            }
+            insert_submit(tx, req, ot, oid, &fingerprint, now)
+        })
     }
 
     /// messaging.recall — same as [`MessageStore::withdraw`] but with the
@@ -178,47 +177,47 @@ impl MessageStore {
         let (ot, oid) = (owner.0.as_str(), owner.1);
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let row: Option<(String, i64, i64)> = tx
-            .query_row(
-                "SELECT sender, edit_version, withdrawn FROM mailbox
+        conn.with_tx(|tx| -> Result<u32> {
+            let row: Option<(String, i64, i64)> = tx
+                .query_row(
+                    "SELECT sender, edit_version, withdrawn FROM mailbox
                  WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3",
-                params![ot, oid, msg_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let Some((sender, version, withdrawn)) = row else {
-            return Err(MailError::EditRefused("unknown message"));
-        };
-        if sender != actor {
-            return Err(MailError::EditRefused("not the author"));
-        }
-        if withdrawn != 0 {
-            return Err(MailError::EditRefused("message recalled"));
-        }
-        let version = version as u32;
-        if expected_version.is_some_and(|expected| expected != version) {
-            return Err(MailError::EditRefused("edit version conflict"));
-        }
-        let next_version = version + 1;
-        tx.execute(
-            "UPDATE mailbox SET payload = ?4, body_kind = ?5, edit_version = ?6
+                    params![ot, oid, msg_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((sender, version, withdrawn)) = row else {
+                return Err(MailError::EditRefused("unknown message"));
+            };
+            if sender != actor {
+                return Err(MailError::EditRefused("not the author"));
+            }
+            if withdrawn != 0 {
+                return Err(MailError::EditRefused("message recalled"));
+            }
+            let version = version as u32;
+            if expected_version.is_some_and(|expected| expected != version) {
+                return Err(MailError::EditRefused("edit version conflict"));
+            }
+            let next_version = version + 1;
+            tx.execute(
+                "UPDATE mailbox SET payload = ?4, body_kind = ?5, edit_version = ?6
              WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3",
-            params![
-                ot,
-                oid,
-                msg_id,
-                payload,
-                body_kind.as_str(),
-                next_version as i64
-            ],
-        )?;
-        bump_change(&tx, ot, oid, msg_id, "edit", actor)?;
-        // Re-projects the row only when it is the newest message; the preview
-        // of an older edit is superseded by later traffic.
-        super::refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
-        tx.commit()?;
-        Ok(next_version)
+                params![
+                    ot,
+                    oid,
+                    msg_id,
+                    payload,
+                    body_kind.as_str(),
+                    next_version as i64
+                ],
+            )?;
+            bump_change(tx, ot, oid, msg_id, "edit", actor)?;
+            // Re-projects the row only when it is the newest message; the preview
+            // of an older edit is superseded by later traffic.
+            super::refresh_projection_after_recall_tx(tx, ot, oid, msg_id, now)?;
+            Ok(next_version)
+        })
     }
 
     /// messaging.forward — copies a plain source row into a new message and

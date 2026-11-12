@@ -429,7 +429,7 @@ fn join_blocking<T: Send>(
 ///
 /// Deliberately coarse — the *call* crosses the thread boundary, the
 /// transaction inside it does not. `f` may use every synchronous method of the
-/// platform unchanged (`db().lock()`, `c.transaction()`, the same ordering), so
+/// platform unchanged (`db().lock()`, `with_tx`, the same ordering), so
 /// converting a handler cannot split a transaction in half or reorder its
 /// statements; it only stops the await context from owning the wait.
 ///
@@ -726,6 +726,7 @@ mod adr28_evidence {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use wxlike_core::tx::ConnectionTx as _;
 
     const HOLD: Duration = Duration::from_millis(250);
     const TICK: Duration = Duration::from_millis(10);
@@ -886,16 +887,14 @@ mod adr28_evidence {
         let rows = rt
             .block_on(async {
                 let db = fresh_db();
-                db.blocking(|c| -> std::result::Result<i64, PlatformError> {
-                    let tx = c.transaction()?;
-                    tx.execute_batch(
-                        "CREATE TABLE IF NOT EXISTS adr28_probe(x INTEGER PRIMARY KEY);
-                         INSERT INTO adr28_probe VALUES (1), (2);",
-                    )?;
-                    let n: i64 =
-                        tx.query_row("SELECT COUNT(*) FROM adr28_probe", [], |r| r.get(0))?;
-                    tx.commit()?;
-                    Ok(n)
+                db.blocking(|c| {
+                    c.with_tx(|tx| -> std::result::Result<i64, PlatformError> {
+                        tx.execute_batch(
+                            "CREATE TABLE IF NOT EXISTS adr28_probe(x INTEGER PRIMARY KEY);
+                             INSERT INTO adr28_probe VALUES (1), (2);",
+                        )?;
+                        Ok(tx.query_row("SELECT COUNT(*) FROM adr28_probe", [], |r| r.get(0))?)
+                    })
                 })
                 .await
             })
