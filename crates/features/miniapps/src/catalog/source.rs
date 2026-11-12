@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// 与本资源上限的关系（默认 ≤ 上限）由紧跟其后的编译期断言钉住。
 pub const DEFAULT_SEARCH_LIMIT: usize = wxlike_limits::DEFAULT_SEARCH_LIMIT as usize;
-/// 目录搜索自己的上限。**上限是按资源定的政策**，不进共享 crate
-/// （见 `crates/limits` 的 "放什么、不放什么"）。
+/// 目录搜索自己的上限。**上限按资源定，不进共享 crate**（理由同
+/// `media::model::MAX_PAGE_LIMIT`）：默认值必须 ≤ 本上限，由紧跟其后的编译期
+/// 断言钉住。
 pub const MAX_SEARCH_LIMIT: usize = 50;
 pub const MAX_QUERY_CHARS: usize = 64;
 pub const MAX_PUBLISHED_VERSIONS: usize = 32;
