@@ -1,72 +1,30 @@
 //! G02 关系域集成测试的公共基座。
 //!
 //! 这里只提供**真实存储**：内存 SQLite（单连接的快路径）与文件 SQLite
-//! （多个连接指向同一个数据库文件，才是真并发）。没有任何假仓储——本域的
-//! 规则本身就是 SQL 上的条件写，换成内存实现就测不到要测的东西。
+//! （多个连接指向同一个数据库文件，才是真并发）。存储与重试原语在
+//! `wxlike_core::test_support`（与身份域共用一份）；本模块只放关系域特有的
+//! 东西：好友、群、以及本域错误到 BUSY 判定的拆包。
+//!
+//! 本域的规则本身就是 SQL 上的条件写，换成内存实现就测不到要测的东西。
 #![allow(dead_code)]
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use rusqlite::Connection;
-use wxlike_relations::{friend, group, group::Visibility, migrate};
-
-static SEQ: AtomicUsize = AtomicUsize::new(0);
+use wxlike_core::test_support;
+pub use wxlike_core::test_support::FileDb;
+use wxlike_relations::{friend, group, group::Visibility, migrate, RelError};
 
 /// 单连接内存库：跑真实 DDL 与真实 SQL。
 pub fn db() -> Connection {
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    migrate(&conn).expect("relations migrate");
-    conn
+    test_support::memory_db(|conn| migrate(conn).expect("relations migrate"))
+        .expect("in-memory sqlite")
 }
 
-/// 一个真实的数据库**文件**。
-///
-/// 并发用例必须是多连接：`open_in_memory()` 每次 `open` 得到的是一个全新的库，
-/// 两个线程各拿一个内存库"并发"，测到的只是各自单线程重放一遍。
-pub struct FileDb {
-    path: PathBuf,
-}
-
-impl FileDb {
-    pub fn new(tag: &str) -> Self {
-        let n = SEQ.fetch_add(1, Ordering::SeqCst);
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "wxlike-g02-relations-{tag}-{}-{n}.sqlite",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let me = Self { path };
-        // 建表只在第一个连接上做一次，后面每个连接只读已建好的库。
-        let conn = me.connect();
-        migrate(&conn).expect("relations migrate on file");
-        me
-    }
-
-    /// 新开一个连接。每个连接独立持锁，互不共享语句缓存。
-    pub fn connect(&self) -> Connection {
-        let conn = Connection::open(&self.path).expect("open file sqlite");
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .expect("WAL");
-        conn.pragma_update(None, "busy_timeout", 8_000_i64)
-            .expect("busy_timeout");
-        conn
-    }
-
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for FileDb {
-    fn drop(&mut self) {
-        // WAL 会留下 -wal / -shm 两个伴生文件，一起清掉，别在临时目录里堆垃圾。
-        let base = self.path.to_string_lossy().to_string();
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{base}{suffix}"));
-        }
-    }
+/// 关系域的文件库：建表走 `wxlike_relations::migrate`。
+pub fn file_db(tag: &str) -> FileDb {
+    let db = FileDb::new(tag);
+    let conn = db.connect().expect("connect file sqlite");
+    migrate(&conn).expect("relations migrate on file");
+    db
 }
 
 /// 造一对好友（走真实申请状态机，不是直接 INSERT）。
@@ -81,4 +39,23 @@ pub fn make_group(conn: &Connection, owner: &str, members: &[&str], vis: Visibil
     let list: Vec<String> = members.iter().map(|s| s.to_string()).collect();
     let g = group::create(conn, owner, "测试群", &list, vis, 1_000).expect("create group");
     g.id
+}
+
+/// BUSY / LOCKED = "这次没排上锁"，与业务失败是两回事。
+pub fn is_busy(err: &RelError) -> bool {
+    matches!(err, RelError::Db(e) if test_support::is_busy(e))
+}
+
+/// 新开一个连接跑 `f`，只对锁竞争重试；其它结果原样交出。
+pub fn retry<T>(
+    db: &FileDb,
+    f: impl Fn(&Connection) -> Result<T, RelError>,
+) -> Result<T, RelError> {
+    let conn = db.connect().expect("connect file sqlite");
+    test_support::retry(&conn, is_busy, f)
+}
+
+/// `retry` 的"就当我确定它会成功"版本，用于准备数据。
+pub fn setup<T>(db: &FileDb, f: impl Fn(&Connection) -> Result<T, RelError>) -> T {
+    retry(db, f).expect("setup step must succeed")
 }

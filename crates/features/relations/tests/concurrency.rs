@@ -17,45 +17,16 @@
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
-use std::time::Duration;
 
 use rusqlite::Connection;
+use wxlike_core::test_support;
 use wxlike_relations::{friend, group, RelError};
 
 mod common;
-use common::FileDb;
+use common::{file_db, is_busy, retry, FileDb};
 
 /// 一个"动作"：拿一个真实连接，做一次关系写。
 type Action = Arc<dyn Fn(&Connection) -> Result<(), RelError> + Send + Sync>;
-
-/// BUSY / LOCKED = "这次没排上锁"，与业务失败是两回事。
-fn is_busy(err: &RelError) -> bool {
-    matches!(
-        err,
-        RelError::Db(rusqlite::Error::SqliteFailure(code, _))
-            if matches!(
-                code.code,
-                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            )
-    )
-}
-
-/// 重试到出现**非锁**结果为止。
-fn retry<T>(db: &FileDb, f: impl Fn(&Connection) -> Result<T, RelError>) -> Result<T, RelError> {
-    let conn = db.connect();
-    let mut last_busy = None;
-    for _ in 0..300 {
-        match f(&conn) {
-            Ok(v) => return Ok(v),
-            Err(e) if is_busy(&e) => {
-                last_busy = Some(e);
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Err(last_busy.expect("retry loop always records a busy error before giving up"))
-}
 
 /// 两个动作在同一时刻起跑（栅栏对齐），各自独立重试锁竞争。
 fn race(db: &Arc<FileDb>, a: Action, b: Action) -> (Result<(), RelError>, Result<(), RelError>) {
@@ -65,20 +36,9 @@ fn race(db: &Arc<FileDb>, a: Action, b: Action) -> (Result<(), RelError>, Result
         let db = Arc::clone(db);
         let start = Arc::clone(&start);
         handles.push(thread::spawn(move || {
-            let conn = db.connect();
+            let conn = db.connect().expect("connect file sqlite");
             start.wait();
-            let mut last_busy = None;
-            for _ in 0..300 {
-                match action(&conn) {
-                    Ok(v) => return Ok(v),
-                    Err(e) if is_busy(&e) => {
-                        last_busy = Some(e);
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            Err(last_busy.expect("racing thread always records a busy error before giving up"))
+            test_support::retry(&conn, is_busy, |c| action(c))
         }));
     }
     let mut out = Vec::new();
@@ -109,7 +69,7 @@ fn busy_detection_actually_matches_sqlite_busy() {
 
 #[test]
 fn concurrent_accepts_create_exactly_one_pair() {
-    let db = Arc::new(FileDb::new("acc-pair"));
+    let db = Arc::new(file_db("acc-pair"));
     let id = retry(&db, |c| {
         friend::send(c, "u1", "u2", "", 1_000).map(|o| match o {
             friend::SendOutcome::Created(req) => req.id,
@@ -134,7 +94,7 @@ fn concurrent_accepts_create_exactly_one_pair() {
         "并发败者应读成冲突: {loser:?}"
     );
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     assert_eq!(
         count(&conn, "SELECT COUNT(*) FROM friends"),
         2,
@@ -145,7 +105,7 @@ fn concurrent_accepts_create_exactly_one_pair() {
 
 #[test]
 fn accept_and_cancel_never_both_succeed() {
-    let db = Arc::new(FileDb::new("acc-cancel"));
+    let db = Arc::new(file_db("acc-cancel"));
     let id = retry(&db, |c| {
         friend::send(c, "u1", "u2", "", 1_000).map(|o| match o {
             friend::SendOutcome::Created(req) => req.id,
@@ -168,7 +128,7 @@ fn accept_and_cancel_never_both_succeed() {
     let ok = [&ra, &rc].iter().filter(|r| r.is_ok()).count();
     assert_eq!(ok, 1, "接受与撤回不能都成功: {ra:?} / {rc:?}");
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let status: String = conn
         .query_row(
             "SELECT status FROM friend_requests WHERE id = ?1",
@@ -187,7 +147,7 @@ fn accept_and_cancel_never_both_succeed() {
 
 #[test]
 fn block_and_friends_never_coexist() {
-    let db = Arc::new(FileDb::new("blk-acc"));
+    let db = Arc::new(file_db("blk-acc"));
     let id = retry(&db, |c| {
         friend::send(c, "u1", "u2", "", 1_000).map(|o| match o {
             friend::SendOutcome::Created(req) => req.id,
@@ -204,7 +164,7 @@ fn block_and_friends_never_coexist() {
     let (ra, rb) = race(&db, accept, block);
     assert!(ra.is_ok() || rb.is_ok(), "{ra:?} / {rb:?}");
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let blocked = friend::is_blocked(&conn, "u2", "u1").unwrap();
     let friends = count(&conn, "SELECT COUNT(*) FROM friends");
     assert!(
@@ -218,12 +178,12 @@ fn block_and_friends_never_coexist() {
 
 #[test]
 fn concurrent_duplicate_send_creates_one_request_row() {
-    let db = Arc::new(FileDb::new("dup-send"));
+    let db = Arc::new(file_db("dup-send"));
     let a: Action = Arc::new(|c: &Connection| friend::send(c, "u1", "u2", "hi", 1_000).map(|_| ()));
     let b: Action = Arc::new(|c: &Connection| friend::send(c, "u1", "u2", "hi", 1_001).map(|_| ()));
     let (ra, rb) = race(&db, a, b);
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let rows = count(
         &conn,
         "SELECT COUNT(*) FROM friend_requests WHERE from_uid='u1' AND to_uid='u2'",
@@ -240,7 +200,7 @@ fn concurrent_duplicate_send_creates_one_request_row() {
 
 #[test]
 fn concurrent_add_same_member_writes_one_row() {
-    let db = Arc::new(FileDb::new("grp-add"));
+    let db = Arc::new(file_db("grp-add"));
     let gid = retry(&db, |c| {
         group::create(
             c,
@@ -263,7 +223,7 @@ fn concurrent_add_same_member_writes_one_row() {
     let (r1, r2) = race(&db, mk(2_000), mk(2_001));
     assert!(r1.is_ok() || r2.is_ok(), "{r1:?} / {r2:?}");
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let rows: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM group_members WHERE group_id=?1 AND user_id='u9'",
@@ -289,7 +249,7 @@ fn concurrent_add_same_member_writes_one_row() {
 
 #[test]
 fn dissolve_and_invite_do_not_write_into_a_dead_group() {
-    let db = Arc::new(FileDb::new("grp-dis"));
+    let db = Arc::new(file_db("grp-dis"));
     let gid = retry(&db, |c| {
         group::create(
             c,
@@ -315,7 +275,7 @@ fn dissolve_and_invite_do_not_write_into_a_dead_group() {
     };
     let (rd, ri) = race(&db, dissolve, invite);
 
-    let conn = db.connect();
+    let conn = db.connect().expect("connect file sqlite");
     let dissolved = count(
         &conn,
         &format!(
@@ -336,9 +296,9 @@ fn dissolve_and_invite_do_not_write_into_a_dead_group() {
 /// 真实落盘：换一个连接重开这个文件，数据还在。
 #[test]
 fn writes_survive_reopening_the_database_file() {
-    let db = FileDb::new("persist");
+    let db = file_db("persist");
     {
-        let conn = db.connect();
+        let conn = db.connect().expect("connect file sqlite");
         friend::send(&conn, "u1", "u2", "", 1_000).expect("send");
         group::create(
             &conn,
