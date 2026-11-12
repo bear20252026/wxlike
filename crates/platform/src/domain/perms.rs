@@ -293,3 +293,31 @@ pub(crate) struct PermsReply {
 pub fn parse_perm(s: &str) -> Option<Perm> {
     Perm::parse(s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `parse_perm` 是 `pub` 且经 handler 层原路径转发（`wxlike_platform::perms::parse_perm`），
+    /// 此前一个测试都没有。权限点名是管理后台/审计回放的契约，名对不上会静默放行或拒绝，
+    /// 所以每个变体都往返一遍。
+    #[test]
+    fn parse_perm_round_trips_every_variant() {
+        for p in [
+            Perm::PostMessage,
+            Perm::PostInAnnounce,
+            Perm::PostMedia,
+            Perm::CreateThread,
+            Perm::CreateChannel,
+            Perm::ManageChannel,
+            Perm::ManageMembers,
+            Perm::ManageRoles,
+            Perm::DeleteAnyMessage,
+            Perm::PinMessage,
+            Perm::RecordCall,
+        ] {
+            assert_eq!(parse_perm(p.as_str()), Some(p), "{}", p.as_str());
+        }
+        assert_eq!(parse_perm("no-such-perm"), None);
+    }
+}
