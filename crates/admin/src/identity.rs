@@ -25,7 +25,7 @@ use crate::audit::{AuditLog, Draft, Outcome};
 use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
 use crate::rbac::Role;
-use crate::read::{now_ms, page_limit, Paged};
+use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
 use crate::upstream::{self, Upstream};
 
@@ -643,29 +643,23 @@ impl IdentityService {
     pub fn cases(&self, filter: &CaseFilter) -> Result<Paged<Case>> {
         let limit = page_limit(filter.limit);
         let offset = filter.offset.unwrap_or(0).max(0);
-        let mut where_sql = String::from(" WHERE 1=1");
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut clause = Clause::new();
         if let Some(state) = filter.state {
-            where_sql.push_str(" AND state = ?");
-            args.push(Box::new(state.as_str().to_string()));
+            clause.add(" state = ?", Bind::Text(state.as_str().to_string()));
         }
         if let Some(kind) = &filter.kind {
-            where_sql.push_str(" AND kind = ?");
-            args.push(Box::new(kind.clone()));
+            clause.add(" kind = ?", Bind::Text(kind.clone()));
         }
         if let Some(subject) = &filter.subject_id {
-            where_sql.push_str(" AND subject_id = ?");
-            args.push(Box::new(subject.clone()));
+            clause.add(" subject_id = ?", Bind::Text(subject.clone()));
         }
         let conn = self.store.lock();
-        let sql = format!(
-            "SELECT {CASE_COLS} FROM g14_case{where_sql} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
-        );
         Paged::query(
             &conn,
-            &format!("SELECT count(*) FROM g14_case{where_sql}"),
-            &sql,
-            args,
+            &mut clause,
+            "g14_case",
+            CASE_COLS,
+            " ORDER BY updated_at DESC",
             limit,
             offset,
             row_to_case,

@@ -25,7 +25,7 @@ use crate::auth::{self, Action, Resource};
 use crate::error::{AdminError, Result};
 use crate::identity::PlatformPort;
 use crate::rbac::Role;
-use crate::read::{now_ms, page_limit, Paged};
+use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
 
 /// 隐私导出令牌有效期。24 小时：够申请者下载，又不至于长期躺在聊天记录里。
@@ -215,20 +215,24 @@ impl JobService {
     pub fn list(&self, filter: &JobFilter) -> Result<Paged<Job>> {
         let limit = page_limit(filter.limit);
         let offset = filter.offset.unwrap_or(0).max(0);
-        let mut where_sql = String::from(" WHERE 1=1");
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut clause = Clause::new();
         if let Some(kind) = &filter.kind {
-            where_sql.push_str(" AND kind = ?");
-            args.push(Box::new(kind.clone()));
+            clause.add(" kind = ?", Bind::Text(kind.clone()));
         }
         if let Some(state) = filter.state {
-            where_sql.push_str(" AND state = ?");
-            args.push(Box::new(state.as_str().to_string()));
+            clause.add(" state = ?", Bind::Text(state.as_str().to_string()));
         }
         let conn = self.store.lock();
-        Paged::query(&conn, &format!("SELECT count(*) FROM g14_job{where_sql}"),
-            &format!("SELECT {JOB_COLS} FROM g14_job{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"),
-            args, limit, offset, row_to_job)
+        Paged::query(
+            &conn,
+            &mut clause,
+            "g14_job",
+            JOB_COLS,
+            " ORDER BY created_at DESC",
+            limit,
+            offset,
+            row_to_job,
+        )
     }
 
     pub fn job(&self, id: &str) -> Result<Option<Job>> {
