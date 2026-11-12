@@ -138,7 +138,7 @@ impl Platform {
     pub fn register(&self, name: &str, password: &str) -> Result<String> {
         let name = validate::name(name)?;
         validate::password(password)?;
-        let phc = crate::security::hash_argon2id(password)?;
+        let phc = super::security::hash_argon2id(password)?;
         let user_id = auth::random_hex(8);
         let now = wxlike_core::types::now_ms();
         let c = self.db().lock();
@@ -198,7 +198,7 @@ impl Platform {
             return Ok(None);
         };
         let ok = match algo.as_str() {
-            "argon2id" => crate::security::verify_argon2id(password, &hash),
+            "argon2id" => super::security::verify_argon2id(password, &hash),
             _ => {
                 let rounds = if rounds <= 0 {
                     auth::DEFAULT_ROUNDS

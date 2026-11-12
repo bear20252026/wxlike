@@ -15,7 +15,9 @@
 //!   to fit inside it;
 //! * `offload`（本模块内）— for handlers that call an existing synchronous `Platform`
 //!   method: the *call* moves to the blocking pool, the transaction boundary
-//!   does not move at all.
+//!   does not move at all. `offload_api` is the same thing for methods that
+//!   return `ApiError` (their HTTP statuses are not expressible as
+//!   `PlatformError`).
 //!
 //! Both deliberately hand the caller a *connection*, never a guard, so nothing
 //! can escape the blocking task and no transaction can be split across two of
@@ -25,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::Connection;
 
-use crate::error::{PlatformError, Result};
+use crate::error::{ApiError, PlatformError, Result};
 
 #[derive(Clone)]
 pub struct Db {
@@ -443,6 +445,39 @@ where
     let state = Arc::clone(platform);
     let ran = tokio::task::spawn_blocking(move || f(&state)).await;
     join_blocking(ran)
+}
+
+/// [`offload`]，给返回 `ApiError` 的同步方法用。
+///
+/// 为什么单独一个而不是把 `offload` 改成泛型 `<T, E, F>`：`E` 一旦由调用点
+/// 推断，每个以 `Ok(..)` 收尾的闭包都定不下来（`From<PlatformError>` 有
+/// `PlatformError` / `DomainError` / `ApiError` 三个实现）——本 crate 里有 60
+/// 处会当场编译失败。把 `E` 在签名里钉成 `ApiError` 就没这个问题：调用点
+/// 一个字不用改，类型由函数自己确定。
+///
+/// 谁需要它：`qr_login` 的领域方法返回 `ApiError`，因为票过期要回 410 GONE，
+/// 而 `PlatformError` 没有对应变体。若把它塞进 `PlatformError`，要么把 410
+/// 降级成 500，要么同一个「票已过期」在 scan（410）与 exchange（410）之外
+/// 再分裂出第三种口径。
+///
+/// 语义与 `offload` 逐字一致：只有「阻塞任务本身没跑起来」（panic / 取消）
+/// 才折成 500，闭包里的业务错误原样透传。
+pub(crate) async fn offload_api<T, F>(
+    platform: &crate::PlatformState,
+    f: F,
+) -> std::result::Result<T, ApiError>
+where
+    F: FnOnce(&crate::Platform) -> std::result::Result<T, ApiError> + Send + 'static,
+    T: Send + 'static,
+{
+    let state = Arc::clone(platform);
+    let ran = tokio::task::spawn_blocking(move || f(&state)).await;
+    match ran {
+        Ok(inner) => inner,
+        Err(err) => Err(ApiError::from(PlatformError::Internal(format!(
+            "blocking db task failed: {err}"
+        )))),
+    }
 }
 
 /// `UPDATE` / `DELETE` 影响行数为 0 → `NotFound`：**唯一**的一处判定。

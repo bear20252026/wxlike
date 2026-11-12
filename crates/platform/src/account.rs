@@ -138,7 +138,7 @@ async fn sync_preferences(
 
 /// `POST /api/account/step-up`：为导出 / 注销换一张短时、单次的通行证。
 ///
-/// 验证本体在 `identity::step_up`，口令/TOTP 的判定在 `security::confirm_identity`。
+/// 验证本体在 `identity::step_up`，口令/TOTP 的判定在 `domain::security::confirm_identity`。
 /// 两个凭证都没给 → 422，不把"忘了带凭据"当成验证通过；sid 取不到 → 401，
 /// 不 `unwrap_or_default()` 造一个空 sid 的授权（那张证谁都能领）。
 async fn step_up_grant(

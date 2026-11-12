@@ -1,5 +1,19 @@
 //! **handler 层**（`qr_login`）：路由 + 提取器 + 响应组装。
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
+//!
+//! 这个模块原来有三段裸 SQL（建票登记、轮询取 verifier、扫到的人是谁），
+//! 还有四处 `platform.db().lock()` 直接写在 `async fn` 里。两层问题同源：
+//! handler 自己写 SQL，就必然自己在 await 上下文里上锁。现在两件事一起收：
+//! SQL 全部下沉到 [`crate::domain::qr_login`] / `domain::repo::qr_login`，
+//! 那四处上锁搬进 [`crate::db::offload_api`]。
+//!
+//! `offload_api` 而不是 `offload`：本模块的领域方法返回 `ApiError`（票过期
+//! 要回 410 GONE，`PlatformError` 没有对应变体），而 `offload` 的类型钉在
+//! `PlatformError` 上。
+//!
+//! `exchange_ticket` 的两段结构**刻意不动**：它是匿名端点，"消费票"与"签发
+//! 会话"必须分开——消费那段的锁在 [`crate::domain::qr_login::consume_qr_ticket`]
+//! 里，本来就不跨 await。
 
 use crate::auth::Authed;
 use crate::error::ApiError;
@@ -9,12 +23,9 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::{params, OptionalExtension as _};
-use wxlike_identity::qr_login::{self};
 
 use crate::domain::qr_login::{
-    consume_qr_ticket, db_err, id_err, parse_create_body, scan_json, secret_must_match, state_str,
-    QR_SECRET_HEX_LEN,
+    consume_qr_ticket, parse_create_body, scan_json, secret_must_match, state_str,
 };
 
 pub fn routes() -> Router<PlatformState> {
@@ -42,36 +53,9 @@ async fn create_ticket(
     body: Bytes,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let prefs = parse_create_body(&body)?;
-    let now = wxlike_core::types::now_ms() as i64;
-    // verifier 是服务端持有的 PKCE 秘密（见模块头第 2 点），64 hex 满足
-    // qr_login 的长度/字符集校验。
-    let verifier = crate::auth::random_hex(QR_SECRET_HEX_LEN);
-
-    let ticket = {
-        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——建票 + 绑 verifier 的
-        // 两条写语句在 await 上下文里上锁。handler 手里有 `PlatformState`，改法
-        // 与 friends.rs 一样：`offload(&platform, move |p| { .. })` 整段搬走。
-        let conn = platform.db().lock();
-        let ticket = qr_login::create(&conn, now).map_err(id_err)?;
-        qr_login::bind(
-            &conn,
-            &ticket.id,
-            &verifier,
-            &prefs.device_id,
-            &prefs.platform,
-            &prefs.label,
-            "",
-            now,
-        )
-        .map_err(id_err)?;
-        conn.execute(
-            "INSERT INTO qr_ticket_creator(ticket_id, creator, verifier, created_at) \
-             VALUES(?1, ?2, ?3, ?4)",
-            params![ticket.id, authed.user_id, verifier, now],
-        )
-        .map_err(db_err)?;
-        ticket
-    };
+    let creator = authed.user_id.clone();
+    let ticket =
+        crate::db::offload_api(&platform, move |p| p.create_qr_ticket(&creator, &prefs)).await?;
     platform.audit(&authed.user_id, "qr.ticket.create", &ticket.id, "");
     Ok(Json(serde_json::json!({
         "ticket_id": ticket.id,
@@ -86,38 +70,9 @@ async fn ticket_state(
     authed: Authed,
     Path(ticket_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let now = wxlike_core::types::now_ms() as i64;
-    let (state, account_hint) = {
-        // TODO(ADR-28): 同类点位——票状态这条读在 await 上下文里上锁（改法同 `create_ticket`）。
-        let conn = platform.db().lock();
-        let row: Option<(String, String)> = conn
-            .query_row(
-                "SELECT verifier, creator FROM qr_ticket_creator WHERE ticket_id = ?1",
-                params![ticket_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(db_err)?;
-        let Some((verifier, creator)) = row else {
-            return Err(ApiError::not_found("no such ticket"));
-        };
-        if creator != authed.user_id {
-            return Err(ApiError::forbidden("not your ticket"));
-        }
-        let state = qr_login::poll(&conn, &ticket_id, &verifier, now).map_err(id_err)?;
-        // 扫过码才给提示：让创建端能显示"xxx 的手机扫了码"。
-        let hint: Option<String> = conn
-            .query_row(
-                "SELECT COALESCE(u.name, q.scanned_by) FROM identity_qr q \
-                 LEFT JOIN users u ON u.id = q.scanned_by \
-                 WHERE q.id = ?1 AND q.scanned_by <> ''",
-                params![ticket_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_err)?;
-        (state, hint)
-    };
+    let viewer = authed.user_id.clone();
+    let (state, account_hint) =
+        crate::db::offload_api(&platform, move |p| p.qr_ticket_state(&ticket_id, &viewer)).await?;
     let mut v = serde_json::json!({ "state": state_str(state) });
     if let Some(hint) = account_hint {
         v["account_hint"] = serde_json::Value::String(hint);
@@ -131,13 +86,11 @@ async fn scan_ticket(
     Path(ticket_id): Path<String>,
     ApiJson(body): ApiJson<SecretBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let now = wxlike_core::types::now_ms() as i64;
-    let view = {
-        // TODO(ADR-28): 同类点位——扫码那次上锁跑在 await 上下文里（改法同 `create_ticket`）。
-        let conn = platform.db().lock();
-        // qr_login::scan 按 secret 定位（secret 是二维码里唯一能对上的东西）
-        qr_login::scan(&conn, body.secret.trim(), &authed.user_id, now).map_err(id_err)?
-    };
+    let scanner = authed.user_id.clone();
+    // secret 是二维码里唯一能对上的东西，identity 状态机按它定位票据。
+    let secret = body.secret.trim().to_string();
+    let view =
+        crate::db::offload_api(&platform, move |p| p.scan_qr_ticket(&secret, &scanner)).await?;
     secret_must_match(&ticket_id, &view.challenge_id)?;
     Ok(scan_json(&view))
 }
@@ -201,18 +154,13 @@ async fn decide(
     ticket_id: String,
     approve: bool,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let now = wxlike_core::types::now_ms() as i64;
-    {
-        // TODO(ADR-28): 同类点位——approve/reject 这两条写在 await 上下文里上锁
-        // （`decide` 收的是 `PlatformState`，改造直接套 friends.rs 的 `offload` 样板）。
-        let conn = platform.db().lock();
-        let outcome = if approve {
-            qr_login::approve(&conn, &ticket_id, &authed.user_id, now)
-        } else {
-            qr_login::reject(&conn, &ticket_id, &authed.user_id, now)
-        };
-        outcome.map_err(id_err)?;
-    }
+    let scanner = authed.user_id.clone();
+    // `ticket_id` 之后还要进审计与回包，闭包只能拿走一份 clone。
+    let target = ticket_id.clone();
+    crate::db::offload_api(&platform, move |p| {
+        p.decide_qr_ticket(&target, &scanner, approve)
+    })
+    .await?;
     platform.audit(
         &authed.user_id,
         if approve {
