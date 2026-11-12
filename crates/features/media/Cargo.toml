@@ -10,6 +10,8 @@ wxlike-core = { path = "../../core" }
 wxlike-api = { path = "../../api" }
 # `Authorization: Bearer` 的解析与平台/管理面共用一份（`wxlike_types::Bearer`）
 wxlike-types = { path = "../../types" }
+# 默认页/搜索条数的唯一出处（见 `crates/limits` 的 "放什么、不放什么"）
+wxlike-limits = { path = "../../limits" }
 axum = { version = "0.8", features = ["macros"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }

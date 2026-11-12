@@ -6704,6 +6704,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "wxlike-cmd",
+ "wxlike-limits",
  "wxlike-types",
 ]
 
@@ -6767,6 +6768,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "wxlike-ledger",
+ "wxlike-limits",
 ]
 
 [[package]]
@@ -6923,6 +6925,7 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-limits",
  "wxlike-types",
 ]
 
@@ -6952,6 +6955,7 @@ dependencies = [
  "thiserror 2.0.21",
  "wxlike-container",
  "wxlike-dpage",
+ "wxlike-limits",
 ]
 
 [[package]]
