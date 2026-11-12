@@ -349,6 +349,13 @@ impl LocalStore for SqliteStore {
 
     async fn purge(&self) -> Result<(), StoreError> {
         self.run(|conn| {
+            // 全仓库唯一一处仍然手写的 `.transaction()`，理由是类型而不是疏忽：
+            // `StoreError` 定义在 `wxlike-client-core`——平台中立的端口层，刻意不
+            // 认识任何具体驱动（没有 rusqlite 依赖）。`with_tx` 要求
+            // `E: From<rusqlite::Error>`，而 `client-native` 既不能为 `StoreError`
+            // 实现它（orphan rule：trait 与类型都来自别的 crate），也不该把驱动
+            // 类型塞进端口层。所以这里保留 `map_sqlite` 的显式映射，并把这条例外
+            // 写在这里，免得下一个人以为漏改了。
             let tx = conn.transaction().map_err(map_sqlite)?;
             tx.execute("DELETE FROM outbox", []).map_err(map_sqlite)?;
             tx.execute("DELETE FROM events", []).map_err(map_sqlite)?;

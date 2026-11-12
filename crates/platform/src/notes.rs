@@ -22,6 +22,7 @@ use crate::extract::ApiJson;
 use crate::page::{self, listing_response, parse_cursor};
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 pub const MAX_NOTE_TITLE_CHARS: usize = 120;
 pub const MAX_NOTE_BODY_CHARS: usize = 100_000;
@@ -89,32 +90,31 @@ impl Platform {
         };
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT user_id FROM notes WHERE id = ?1",
-                params![note_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if existing.is_some() {
-            let note = note_row(&tx, user, &note_id)?.ok_or(PlatformError::NotFound)?;
-            tx.commit()?;
-            return Ok(note);
-        }
-        tx.execute(
-            "INSERT INTO notes(id, user_id, title, body, version, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, 1, ?5, ?5)",
-            params![note_id, user, title, body, now],
-        )?;
-        tx.execute(
-            "INSERT INTO note_versions(note_id, version, title, body, saved_at)
-             VALUES(?1, 1, ?2, ?3, ?4)",
-            params![note_id, title, body, now],
-        )?;
-        let note = note_row(&tx, user, &note_id)?.ok_or(PlatformError::NotFound)?;
-        tx.commit()?;
-        Ok(note)
+        c.with_tx(|tx| -> Result<Note> {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT user_id FROM notes WHERE id = ?1",
+                    params![note_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if existing.is_some() {
+                // 已存在：返回现有行，不覆盖（幂等）。空事务直接提交。
+                let note = note_row(tx, user, &note_id)?.ok_or(PlatformError::NotFound)?;
+                return Ok(note);
+            }
+            tx.execute(
+                "INSERT INTO notes(id, user_id, title, body, version, created_at, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, 1, ?5, ?5)",
+                params![note_id, user, title, body, now],
+            )?;
+            tx.execute(
+                "INSERT INTO note_versions(note_id, version, title, body, saved_at)
+                 VALUES(?1, 1, ?2, ?3, ?4)",
+                params![note_id, title, body, now],
+            )?;
+            note_row(tx, user, &note_id)?.ok_or(PlatformError::NotFound)
+        })
     }
 
     /// `expected_version` 必须等于服务端当前版本；不等就 409，绝不覆盖。
@@ -133,36 +133,35 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let current: Option<i64> = tx
-            .query_row(
-                "SELECT version FROM notes WHERE id = ?1 AND user_id = ?2",
-                params![id, user],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(current) = current else {
-            return Err(PlatformError::NotFound);
-        };
-        if current != expected_version {
-            return Err(PlatformError::Conflict(format!(
-                "version mismatch: current {current}"
-            )));
-        }
-        let next = current + 1;
-        tx.execute(
-            "UPDATE notes SET title = ?1, body = ?2, version = ?3, updated_at = ?4
-             WHERE id = ?5 AND user_id = ?6",
-            params![title, body, next, now, id, user],
-        )?;
-        tx.execute(
-            "INSERT INTO note_versions(note_id, version, title, body, saved_at)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![id, next, title, body, now],
-        )?;
-        let note = note_row(&tx, user, id)?.ok_or(PlatformError::NotFound)?;
-        tx.commit()?;
-        Ok(note)
+        c.with_tx(|tx| -> Result<Note> {
+            let current: Option<i64> = tx
+                .query_row(
+                    "SELECT version FROM notes WHERE id = ?1 AND user_id = ?2",
+                    params![id, user],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(current) = current else {
+                return Err(PlatformError::NotFound);
+            };
+            if current != expected_version {
+                return Err(PlatformError::Conflict(format!(
+                    "version mismatch: current {current}"
+                )));
+            }
+            let next = current + 1;
+            tx.execute(
+                "UPDATE notes SET title = ?1, body = ?2, version = ?3, updated_at = ?4
+                 WHERE id = ?5 AND user_id = ?6",
+                params![title, body, next, now, id, user],
+            )?;
+            tx.execute(
+                "INSERT INTO note_versions(note_id, version, title, body, saved_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![id, next, title, body, now],
+            )?;
+            note_row(tx, user, id)?.ok_or(PlatformError::NotFound)
+        })
     }
 
     pub fn note(&self, user: &str, id: &str) -> Result<Note> {

@@ -11,6 +11,7 @@
 use rusqlite::{params, OptionalExtension as _};
 
 use super::{MailError, MessageStore, OwnerType, Result};
+use wxlike_core::tx::ConnectionTx as _;
 
 /// Who may see the page. The mailbox does not own membership (the social layer
 /// does), so the caller passes the set it is authorised for.
@@ -221,47 +222,48 @@ impl MessageStore {
     ) -> Result<ConvPrefs> {
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let exists: bool = tx
-            .query_row(
-                "SELECT 1 FROM conversation_projection WHERE conv_id = ?1",
-                params![conv_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !exists {
-            return Err(MailError::BadOwner(conv_id.to_string()));
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO conversation_pref(
+        conn.with_tx(|tx| -> Result<()> {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT 1 FROM conversation_projection WHERE conv_id = ?1",
+                    params![conv_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(MailError::BadOwner(conv_id.to_string()));
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO conversation_pref(
                  user_id, conv_id, pinned, muted, archived, hidden, version, updated_at)
              VALUES(?1, ?2, 0, 0, 0, 0, 0, ?3)",
-            params![user, conv_id, now as i64],
-        )?;
-        let current: (i64, i64, i64, i64, i64) = tx.query_row(
-            "SELECT pinned, muted, archived, hidden, version FROM conversation_pref
+                params![user, conv_id, now as i64],
+            )?;
+            let current: (i64, i64, i64, i64, i64) = tx.query_row(
+                "SELECT pinned, muted, archived, hidden, version FROM conversation_pref
               WHERE user_id = ?1 AND conv_id = ?2",
-            params![user, conv_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )?;
-        let unchanged = match field {
-            PrefField::Pinned => (current.0 != 0) == value,
-            PrefField::Muted => (current.1 != 0) == value,
-            PrefField::Archived => (current.2 != 0) == value,
-        };
-        if !unchanged {
-            tx.execute(
-                &format!(
-                    "UPDATE conversation_pref
+                params![user, conv_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
+            let unchanged = match field {
+                PrefField::Pinned => (current.0 != 0) == value,
+                PrefField::Muted => (current.1 != 0) == value,
+                PrefField::Archived => (current.2 != 0) == value,
+            };
+            if !unchanged {
+                tx.execute(
+                    &format!(
+                        "UPDATE conversation_pref
                         SET {column} = ?3, version = version + 1, updated_at = ?4
                       WHERE user_id = ?1 AND conv_id = ?2",
-                    column = field.column()
-                ),
-                params![user, conv_id, value as i64, now as i64],
-            )?;
-        }
-        tx.commit()?;
+                        column = field.column()
+                    ),
+                    params![user, conv_id, value as i64, now as i64],
+                )?;
+            }
+            Ok(())
+        })?;
         drop(conn);
         self.conversation_prefs(user, conv_id)
     }
@@ -282,49 +284,49 @@ impl MessageStore {
     pub fn clear_local_history(&self, user: &str, conv_id: &str, before_seq: u64) -> Result<u64> {
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let head: Option<i64> = tx
-            .query_row(
-                "SELECT last_seq FROM conversation_projection
+        conn.with_tx(|tx| -> Result<u64> {
+            let head: Option<i64> = tx
+                .query_row(
+                    "SELECT last_seq FROM conversation_projection
                   WHERE conv_id = ?1 AND deleted = 0",
-                params![conv_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(head) = head else {
-            return Err(MailError::BadOwner(conv_id.to_string()));
-        };
-        let before = before_seq.min(head as u64);
-        let current: i64 = tx
-            .query_row(
-                "SELECT cleared_before_seq FROM conversation_clear
+                    params![conv_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(head) = head else {
+                return Err(MailError::BadOwner(conv_id.to_string()));
+            };
+            let before = before_seq.min(head as u64);
+            let current: i64 = tx
+                .query_row(
+                    "SELECT cleared_before_seq FROM conversation_clear
                   WHERE user_id = ?1 AND conv_id = ?2",
-                params![user, conv_id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        let next = current.max(before as i64);
-        tx.execute(
-            "INSERT INTO conversation_clear(user_id, conv_id, cleared_before_seq, updated_at)
+                    params![user, conv_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let next = current.max(before as i64);
+            tx.execute(
+                "INSERT INTO conversation_clear(user_id, conv_id, cleared_before_seq, updated_at)
              VALUES(?1, ?2, ?3, ?4)
              ON CONFLICT(user_id, conv_id) DO UPDATE SET
                  cleared_before_seq = excluded.cleared_before_seq,
                  updated_at = excluded.updated_at",
-            params![user, conv_id, next, now as i64],
-        )?;
-        if next > current {
-            emit_event(
-                &tx,
-                user,
-                conv_id,
-                "conversation.cleared",
-                &format!("{{\"cleared_before_seq\":{next}}}"),
-                now,
+                params![user, conv_id, next, now as i64],
             )?;
-        }
-        tx.commit()?;
-        Ok(next as u64)
+            if next > current {
+                emit_event(
+                    tx,
+                    user,
+                    conv_id,
+                    "conversation.cleared",
+                    &format!("{{\"cleared_before_seq\":{next}}}"),
+                    now,
+                )?;
+            }
+            Ok(next as u64)
+        })
     }
 
     /// Remove the conversation from this user's list. Distinct from
@@ -332,20 +334,20 @@ impl MessageStore {
     pub fn hide_conversation(&self, user: &str, conv_id: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let exists: bool = tx
-            .query_row(
-                "SELECT 1 FROM conversation_projection WHERE conv_id = ?1",
-                params![conv_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !exists {
-            return Err(MailError::BadOwner(conv_id.to_string()));
-        }
-        tx.execute(
-            "INSERT INTO conversation_pref(
+        conn.with_tx(|tx| -> Result<()> {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT 1 FROM conversation_projection WHERE conv_id = ?1",
+                    params![conv_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(MailError::BadOwner(conv_id.to_string()));
+            }
+            tx.execute(
+                "INSERT INTO conversation_pref(
                  user_id, conv_id, pinned, muted, archived, hidden, version, updated_at)
              VALUES(?1, ?2, 0, 0, 0, 1, 1, ?3)
              ON CONFLICT(user_id, conv_id) DO UPDATE SET
@@ -353,11 +355,11 @@ impl MessageStore {
                  version = conversation_pref.version + CASE
                      WHEN conversation_pref.hidden = 1 THEN 0 ELSE 1 END,
                  updated_at = excluded.updated_at",
-            params![user, conv_id, now as i64],
-        )?;
-        emit_event(&tx, user, conv_id, "conversation.deleted_local", "{}", now)?;
-        tx.commit()?;
-        Ok(())
+                params![user, conv_id, now as i64],
+            )?;
+            emit_event(tx, user, conv_id, "conversation.deleted_local", "{}", now)?;
+            Ok(())
+        })
     }
 
     /// conversation.delete — hide for everyone (soft delete of the projection).
@@ -366,34 +368,34 @@ impl MessageStore {
     pub fn delete_conversation(&self, actor: &str, conv_id: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let changed = tx.execute(
-            "UPDATE conversation_projection SET deleted = 1, updated_at = ?2
+        conn.with_tx(|tx| -> Result<()> {
+            let changed = tx.execute(
+                "UPDATE conversation_projection SET deleted = 1, updated_at = ?2
               WHERE conv_id = ?1 AND deleted = 0",
-            params![conv_id, now as i64],
-        )?;
-        if changed == 0 {
-            return Err(MailError::BadOwner(conv_id.to_string()));
-        }
-        emit_event(&tx, actor, conv_id, "conversation.deleted", "{}", now)?;
-        emit_event(
-            &tx,
-            actor,
-            conv_id,
-            "search.index.remove",
-            "{\"scope\":\"conversation\"}",
-            now,
-        )?;
-        emit_event(
-            &tx,
-            actor,
-            conv_id,
-            "attachment.release",
-            "{\"scope\":\"conversation\"}",
-            now,
-        )?;
-        tx.commit()?;
-        Ok(())
+                params![conv_id, now as i64],
+            )?;
+            if changed == 0 {
+                return Err(MailError::BadOwner(conv_id.to_string()));
+            }
+            emit_event(tx, actor, conv_id, "conversation.deleted", "{}", now)?;
+            emit_event(
+                tx,
+                actor,
+                conv_id,
+                "search.index.remove",
+                "{\"scope\":\"conversation\"}",
+                now,
+            )?;
+            emit_event(
+                tx,
+                actor,
+                conv_id,
+                "attachment.release",
+                "{\"scope\":\"conversation\"}",
+                now,
+            )?;
+            Ok(())
+        })
     }
 
     /// Member-count maintenance for the list (system messages remain ordinary

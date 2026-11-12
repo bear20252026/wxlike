@@ -25,6 +25,7 @@ use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 pub const MAX_STICKER_BYTES: u64 = 5 * 1024 * 1024;
 pub const MAX_STICKERS_PER_PACK: usize = 100;
@@ -118,24 +119,23 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let pack_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        tx.execute(
-            "INSERT INTO sticker_packs(id, owner, name, license, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![pack_id, owner, name, license, now],
-        )?;
-        for (i, sticker) in body.stickers.iter().enumerate() {
-            let media_id = validate::id(&sticker.media_id)?;
-            let id = crate::auth::random_hex(8);
+        c.with_tx(|tx| -> Result<StickerPack> {
             tx.execute(
-                "INSERT INTO stickers(id, pack_id, media_id, name, sort_order, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, pack_id, media_id, sticker.name, i as i64, now],
+                "INSERT INTO sticker_packs(id, owner, name, license, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![pack_id, owner, name, license, now],
             )?;
-        }
-        let pack = pack_row(&tx, &pack_id, owner)?.ok_or(PlatformError::NotFound)?;
-        tx.commit()?;
-        Ok(pack)
+            for (i, sticker) in body.stickers.iter().enumerate() {
+                let media_id = validate::id(&sticker.media_id)?;
+                let id = crate::auth::random_hex(8);
+                tx.execute(
+                    "INSERT INTO stickers(id, pack_id, media_id, name, sort_order, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![id, pack_id, media_id, sticker.name, i as i64, now],
+                )?;
+            }
+            pack_row(tx, &pack_id, owner)?.ok_or(PlatformError::NotFound)
+        })
     }
 
     fn check_sticker_media(&self, owner: &str, media_ids: &[String]) -> Result<()> {
@@ -192,37 +192,37 @@ impl Platform {
         let pack_id = validate::id(pack_id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let exists: Option<i64> = tx
-            .query_row(
-                "SELECT 1 FROM sticker_packs WHERE id = ?1",
-                params![pack_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            return Err(PlatformError::NotFound);
-        }
-        let mut stmt = tx.prepare(
-            "SELECT id, sort_order FROM stickers WHERE pack_id = ?1 ORDER BY sort_order",
-        )?;
-        let stickers = stmt
-            .query_map(params![pack_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        drop(stmt);
-        let mut added = 0usize;
-        for (sticker_id, sort_order) in stickers {
-            added += tx.execute(
-                "INSERT INTO user_stickers(user_id, sticker_id, sort_order, installed_at)
+        c.with_tx(|tx| -> Result<usize> {
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM sticker_packs WHERE id = ?1",
+                    params![pack_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(PlatformError::NotFound);
+            }
+            let mut stmt = tx.prepare(
+                "SELECT id, sort_order FROM stickers WHERE pack_id = ?1 ORDER BY sort_order",
+            )?;
+            let stickers = stmt
+                .query_map(params![pack_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut added = 0usize;
+            for (sticker_id, sort_order) in stickers {
+                added += tx.execute(
+                    "INSERT INTO user_stickers(user_id, sticker_id, sort_order, installed_at)
                  VALUES(?1, ?2, ?3, ?4)
                  ON CONFLICT(user_id, sticker_id) DO NOTHING",
-                params![user, sticker_id, sort_order, now],
-            )?;
-        }
-        tx.commit()?;
-        Ok(added)
+                    params![user, sticker_id, sort_order, now],
+                )?;
+            }
+            Ok(added)
+        })
     }
 
     pub fn uninstall_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {

@@ -34,6 +34,7 @@ use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 /// 题目有效期。
 pub const CAPTCHA_TTL_MS: u64 = 5 * 60 * 1000;
@@ -258,18 +259,19 @@ impl Platform {
 
         let phc = crate::security::hash_argon2id(new_password)?;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        tx.execute(
-            "UPDATE users SET pw_algo = 'argon2id', pw_salt = '', pw_hash = ?2, pw_rounds = 0
-             WHERE id = ?1",
-            params![user_id, phc],
-        )?;
-        tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
-        tx.execute(
-            "UPDATE recovery_codes SET used_at = ?2 WHERE user_id = ?1",
-            params![user_id, now],
-        )?;
-        tx.commit()?;
+        c.with_tx(|tx| -> Result<()> {
+            tx.execute(
+                "UPDATE users SET pw_algo = 'argon2id', pw_salt = '', pw_hash = ?2, pw_rounds = 0
+                 WHERE id = ?1",
+                params![user_id, phc],
+            )?;
+            tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+            tx.execute(
+                "UPDATE recovery_codes SET used_at = ?2 WHERE user_id = ?1",
+                params![user_id, now],
+            )?;
+            Ok(())
+        })?;
         drop(c);
         self.audit(&user_id, "account.recovery.reset", &user_id, "ok");
         Ok(user_id)

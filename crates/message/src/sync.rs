@@ -20,6 +20,7 @@ use super::{
     apply_projection_row_tx, BodyKind, MailError, MailMessage, MessageStore, OwnerType, Result,
     ResumePlan, ResumePolicy,
 };
+use wxlike_core::tx::ConnectionTx as _;
 
 /// Why the queue is being driven. All four must end in the same state; they only
 /// differ in how urgent the reply is.
@@ -310,41 +311,41 @@ impl MessageStore {
     pub(crate) fn refresh_projection(&self, conv_id: &str, owner_type: OwnerType) -> Result<()> {
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let latest: Option<(i64, String, String, String, String, String, i64)> = tx
-            .query_row(
-                "SELECT seq, msg_id, sender, type_id, payload, body_kind, withdrawn
+        conn.with_tx(|tx| -> Result<()> {
+            let latest: Option<(i64, String, String, String, String, String, i64)> = tx
+                .query_row(
+                    "SELECT seq, msg_id, sender, type_id, payload, body_kind, withdrawn
                    FROM mailbox WHERE owner_type = ?1 AND owner_id = ?2
                   ORDER BY seq DESC LIMIT 1",
-                params![owner_type.as_str(), conv_id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                    ))
-                },
-            )
-            .optional()?;
-        if let Some((seq, _msg_id, sender, type_id, payload, kind, withdrawn)) = latest {
-            apply_projection_row_tx(
-                &tx,
-                owner_type.as_str(),
-                conv_id,
-                seq as u64,
-                &sender,
-                &type_id,
-                &payload,
-                BodyKind::parse(&kind).unwrap_or(BodyKind::Plain),
-                withdrawn != 0,
-                now,
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+                    params![owner_type.as_str(), conv_id],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((seq, _msg_id, sender, type_id, payload, kind, withdrawn)) = latest {
+                apply_projection_row_tx(
+                    tx,
+                    owner_type.as_str(),
+                    conv_id,
+                    seq as u64,
+                    &sender,
+                    &type_id,
+                    &payload,
+                    BodyKind::parse(&kind).unwrap_or(BodyKind::Plain),
+                    withdrawn != 0,
+                    now,
+                )?;
+            }
+            Ok(())
+        })
     }
 }

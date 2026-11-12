@@ -19,6 +19,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::tx::ConnectionTx as _;
 use crate::types::{Envelope, MsgBody, MsgId, NO_MSG_ID, PROTOCOL_VERSION};
 use anyhow::Context as _;
 use rusqlite::{params, Connection, OptionalExtension as _};
@@ -247,17 +248,17 @@ impl Store {
         }
         let now = crate::types::now_ms() as i64;
         let mut c = self.c();
-        let tx = c.transaction()?;
-        for rcpt in recipients {
-            tx.execute(
-                "INSERT INTO delivery_outbox(msg_id, recipient, state, attempts, created_at, updated_at)
-                 VALUES(?1, ?2, 'pending', 0, ?3, ?3)
-                 ON CONFLICT(msg_id, recipient) DO NOTHING",
-                params![msg_id, rcpt, now],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+        c.with_tx(|tx| -> anyhow::Result<()> {
+            for rcpt in recipients {
+                tx.execute(
+                    "INSERT INTO delivery_outbox(msg_id, recipient, state, attempts, created_at, updated_at)
+                     VALUES(?1, ?2, 'pending', 0, ?3, ?3)
+                     ON CONFLICT(msg_id, recipient) DO NOTHING",
+                    params![msg_id, rcpt, now],
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// 还没交出去的收件人。

@@ -9,6 +9,7 @@
 use rusqlite::{params, OptionalExtension as _};
 
 use super::{MailMessage, MessageStore, OwnerType, Result};
+use wxlike_core::tx::ConnectionTx as _;
 
 /// Lease for one delivery attempt. A worker that dies without acking loses the
 /// lease and the task becomes claimable again.
@@ -77,10 +78,10 @@ impl MessageStore {
         let limit = limit.clamp(1, MAX_CLAIM_BATCH) as i64;
         let lease_ms = lease_ms.max(1_000);
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let rows: Vec<DeliveryTask> = {
-            let mut stmt = tx.prepare(
-                "SELECT m.seq, d.msg_id, m.owner_type, m.owner_id, d.target_user,
+        conn.with_tx(|tx| -> Result<Vec<DeliveryTask>> {
+            let rows: Vec<DeliveryTask> = {
+                let mut stmt = tx.prepare(
+                    "SELECT m.seq, d.msg_id, m.owner_type, m.owner_id, d.target_user,
                         d.target_device, d.attempts
                    FROM delivery_task d
                    JOIN mailbox m ON m.msg_id = d.msg_id
@@ -88,40 +89,40 @@ impl MessageStore {
                      OR (d.state = 'inflight' AND d.lease_until <= ?1)
                   ORDER BY d.next_at, d.msg_id
                   LIMIT ?2",
-            )?;
-            let found = stmt
-                .query_map(params![now_ms as i64, limit], |r| {
-                    Ok(DeliveryTask {
-                        seq: r.get::<_, i64>(0)? as u64,
-                        msg_id: r.get(1)?,
-                        owner_type: r.get(2)?,
-                        conv_id: r.get(3)?,
-                        target_user: r.get(4)?,
-                        target_device: r.get(5)?,
-                        attempts: r.get::<_, i64>(6)? as u32 + 1,
-                    })
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            found
-        };
-        for task in &rows {
-            tx.execute(
-                "UPDATE delivery_task
+                )?;
+                let found = stmt
+                    .query_map(params![now_ms as i64, limit], |r| {
+                        Ok(DeliveryTask {
+                            seq: r.get::<_, i64>(0)? as u64,
+                            msg_id: r.get(1)?,
+                            owner_type: r.get(2)?,
+                            conv_id: r.get(3)?,
+                            target_user: r.get(4)?,
+                            target_device: r.get(5)?,
+                            attempts: r.get::<_, i64>(6)? as u32 + 1,
+                        })
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                found
+            };
+            for task in &rows {
+                tx.execute(
+                    "UPDATE delivery_task
                     SET state = 'inflight', lease_owner = ?4, lease_until = ?5,
                         attempts = attempts + 1, updated_at = ?6
                   WHERE msg_id = ?1 AND target_user = ?2 AND target_device = ?3",
-                params![
-                    task.msg_id,
-                    task.target_user,
-                    task.target_device,
-                    worker,
-                    (now_ms + lease_ms) as i64,
-                    now_ms as i64
-                ],
-            )?;
-        }
-        tx.commit()?;
-        Ok(rows)
+                    params![
+                        task.msg_id,
+                        task.target_user,
+                        task.target_device,
+                        worker,
+                        (now_ms + lease_ms) as i64,
+                        now_ms as i64
+                    ],
+                )?;
+            }
+            Ok(rows)
+        })
     }
 
     /// Socket write finished but the client has not persisted yet: put the task
@@ -164,22 +165,22 @@ impl MessageStore {
         }
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let advanced = advance_cursor(&tx, device_id, conv_id, seq, false, now)?;
-        if advanced {
-            tx.execute(
-                "UPDATE delivery_task
+        conn.with_tx(|tx| -> Result<bool> {
+            let advanced = advance_cursor(tx, device_id, conv_id, seq, false, now)?;
+            if advanced {
+                tx.execute(
+                    "UPDATE delivery_task
                     SET state = 'stored', lease_owner = NULL, lease_until = 0, updated_at = ?4
                   WHERE target_user = ?1
                     AND (target_device = '*' OR target_device = ?2)
                     AND state != 'stored'
                     AND msg_id IN (SELECT msg_id FROM mailbox
                                     WHERE owner_id = ?3 AND seq <= ?5)",
-                params![user, device_id, conv_id, now as i64, seq as i64],
-            )?;
-        }
-        tx.commit()?;
-        Ok(advanced)
+                    params![user, device_id, conv_id, now as i64, seq as i64],
+                )?;
+            }
+            Ok(advanced)
+        })
     }
 
     /// Read acknowledgement. The account-level `read_cursor` (unread source)
@@ -190,26 +191,26 @@ impl MessageStore {
         }
         let now = wxlike_core::types::now_ms();
         let mut conn = self.c();
-        let tx = conn.transaction()?;
-        let advanced = advance_cursor(&tx, device_id, conv_id, seq, true, now)?;
-        if let Some(owner_type) = owner_type_of(&tx, conv_id)? {
-            let cursor_advanced = tx.execute(
-                "UPDATE read_cursor SET last_ack_seq = ?4, updated_at = ?5
+        conn.with_tx(|tx| -> Result<bool> {
+            let advanced = advance_cursor(tx, device_id, conv_id, seq, true, now)?;
+            if let Some(owner_type) = owner_type_of(tx, conv_id)? {
+                let cursor_advanced = tx.execute(
+                    "UPDATE read_cursor SET last_ack_seq = ?4, updated_at = ?5
                   WHERE owner_type = ?1 AND owner_id = ?2 AND user_id = ?3
                     AND last_ack_seq < ?4",
-                params![owner_type, conv_id, user, seq as i64, now as i64],
-            )?;
-            if cursor_advanced == 0 {
-                tx.execute(
-                    "INSERT OR IGNORE INTO read_cursor(
-                         owner_type, owner_id, user_id, last_ack_seq, updated_at)
-                     VALUES(?1, ?2, ?3, ?4, ?5)",
                     params![owner_type, conv_id, user, seq as i64, now as i64],
                 )?;
+                if cursor_advanced == 0 {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO read_cursor(
+                         owner_type, owner_id, user_id, last_ack_seq, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                        params![owner_type, conv_id, user, seq as i64, now as i64],
+                    )?;
+                }
             }
-        }
-        tx.commit()?;
-        Ok(advanced)
+            Ok(advanced)
+        })
     }
 
     pub fn device_cursor(&self, device_id: &str, conv_id: &str) -> Result<(u64, u64)> {

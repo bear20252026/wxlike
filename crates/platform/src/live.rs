@@ -34,6 +34,7 @@ use crate::error::{ApiError, PlatformError, Result};
 use crate::extract::ApiJson;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -153,26 +154,27 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT id FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
-                params![channel],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if existing.is_some() {
-            return Err(PlatformError::Conflict("channel is already live".into()));
-        }
-        let id = crate::auth::random_hex(8);
-        let stream_key = crate::auth::random_hex(12);
-        tx.execute(
-            "INSERT INTO live_sessions(id, channel_id, host, stream_key, state, recording,
+        let (id, stream_key) = c.with_tx(|tx| -> Result<(String, String)> {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
+                    params![channel],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if existing.is_some() {
+                return Err(PlatformError::Conflict("channel is already live".into()));
+            }
+            let id = crate::auth::random_hex(8);
+            let stream_key = crate::auth::random_hex(12);
+            tx.execute(
+                "INSERT INTO live_sessions(id, channel_id, host, stream_key, state, recording,
                                        started_at, ended_at, viewers, peak_viewers)
-             VALUES(?1, ?2, ?3, ?4, 'live', ?5, ?6, NULL, 0, 0)",
-            params![id, channel, actor, stream_key, i64::from(recording), now],
-        )?;
-        tx.commit()?;
+                 VALUES(?1, ?2, ?3, ?4, 'live', ?5, ?6, NULL, 0, 0)",
+                params![id, channel, actor, stream_key, i64::from(recording), now],
+            )?;
+            Ok((id, stream_key))
+        })?;
         drop(c);
         self.audit(actor, "live.start", &channel, &id);
         Ok(LiveSession {
@@ -201,30 +203,31 @@ impl Platform {
         let is_manager = self.require_manager(&community, actor).is_ok();
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let session: Option<(String, String)> = tx
-            .query_row(
-                "SELECT id, host FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
-                params![channel],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        let Some((id, host)) = session else {
-            return Err(PlatformError::NotFound);
-        };
-        // 主播本人，或社群管理员（主持人失联时的兜底）
-        if host != actor && !is_manager {
-            return Err(PlatformError::Forbidden);
-        }
-        tx.execute(
-            "UPDATE live_sessions SET state = 'ended', ended_at = ?2 WHERE id = ?1",
-            params![id, now],
-        )?;
-        tx.execute(
-            "DELETE FROM live_viewers WHERE session_id = ?1",
-            params![id],
-        )?;
-        tx.commit()?;
+        let id = c.with_tx(|tx| -> Result<String> {
+            let session: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT id, host FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
+                    params![channel],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((id, host)) = session else {
+                return Err(PlatformError::NotFound);
+            };
+            // 主播本人，或社群管理员（主持人失联时的兜底）
+            if host != actor && !is_manager {
+                return Err(PlatformError::Forbidden);
+            }
+            tx.execute(
+                "UPDATE live_sessions SET state = 'ended', ended_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )?;
+            tx.execute(
+                "DELETE FROM live_viewers WHERE session_id = ?1",
+                params![id],
+            )?;
+            Ok(id)
+        })?;
         drop(c);
         self.audit(actor, "live.stop", &channel, &id);
         Ok(())
@@ -287,48 +290,46 @@ impl Platform {
         let session = self.live_session_id(&channel)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        tx.execute(
-            "INSERT INTO live_viewers(session_id, user_id, joined_at) VALUES(?1, ?2, ?3)
-             ON CONFLICT(session_id, user_id) DO NOTHING",
-            params![session, user, now],
-        )?;
-        tx.execute(
-            "UPDATE live_sessions SET viewers = (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1),
+        c.with_tx(|tx| -> Result<i64> {
+            tx.execute(
+                "INSERT INTO live_viewers(session_id, user_id, joined_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(session_id, user_id) DO NOTHING",
+                params![session, user, now],
+            )?;
+            tx.execute(
+                "UPDATE live_sessions SET viewers = (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1),
                     peak_viewers = MAX(peak_viewers, (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1))
-             WHERE id = ?1",
-            params![session],
-        )?;
-        let viewers: i64 = tx.query_row(
-            "SELECT viewers FROM live_sessions WHERE id = ?1",
-            params![session],
-            |r| r.get(0),
-        )?;
-        tx.commit()?;
-        Ok(viewers)
+                 WHERE id = ?1",
+                params![session],
+            )?;
+            Ok(tx.query_row(
+                "SELECT viewers FROM live_sessions WHERE id = ?1",
+                params![session],
+                |r| r.get(0),
+            )?)
+        })
     }
 
     pub fn leave_live(&self, channel: &str, user: &str) -> Result<i64> {
         let channel = validate::id(channel)?.to_string();
         let session = self.live_session_id(&channel)?;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        tx.execute(
-            "DELETE FROM live_viewers WHERE session_id = ?1 AND user_id = ?2",
-            params![session, user],
-        )?;
-        tx.execute(
-            "UPDATE live_sessions SET viewers = (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1)
-             WHERE id = ?1",
-            params![session],
-        )?;
-        let viewers: i64 = tx.query_row(
-            "SELECT viewers FROM live_sessions WHERE id = ?1",
-            params![session],
-            |r| r.get(0),
-        )?;
-        tx.commit()?;
-        Ok(viewers)
+        c.with_tx(|tx| -> Result<i64> {
+            tx.execute(
+                "DELETE FROM live_viewers WHERE session_id = ?1 AND user_id = ?2",
+                params![session, user],
+            )?;
+            tx.execute(
+                "UPDATE live_sessions SET viewers = (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1)
+                 WHERE id = ?1",
+                params![session],
+            )?;
+            Ok(tx.query_row(
+                "SELECT viewers FROM live_sessions WHERE id = ?1",
+                params![session],
+                |r| r.get(0),
+            )?)
+        })
     }
 
     /// 弹幕：只发给当前在房观众，走 `high_priority`（不落库、不占序列号）。

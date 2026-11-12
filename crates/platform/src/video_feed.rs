@@ -42,6 +42,7 @@ use crate::inbox;
 use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 pub const MAX_VIDEO_PAGE: i64 = 50;
 
@@ -148,25 +149,24 @@ impl Platform {
         let labels = decision.labels.clone();
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        // 幂等：同一作者重复发布同一份字节，返回已有记录。
-        let existing = find_active_video_post(&tx, author, &media_id)?;
-        if let Some(id) = existing {
-            let view = video_row(&tx, author, &id)?.ok_or(PlatformError::NotFound)?;
-            tx.commit()?;
-            return Ok(view);
-        }
-        let id = crate::auth::random_hex(8);
-        tx.execute(
-            "INSERT INTO video_posts(seq, id, author, media_id, caption, state, created_at)
-             VALUES(NULL, ?1, ?2, ?3, ?4, ?6, ?5)",
-            params![id, author, media_id, caption, now, state],
-        )?;
-        if state == STATE_PUBLISHED {
-            index_video(&tx, &id, author, caption, &media_id, now)?;
-        }
-        let view = video_row(&tx, author, &id)?.ok_or(PlatformError::NotFound)?;
-        tx.commit()?;
+        let (id, view) = c.with_tx(|tx| -> Result<(String, VideoView)> {
+            // 幂等：同一作者重复发布同一份字节，返回已有记录。
+            if let Some(existing) = find_active_video_post(tx, author, &media_id)? {
+                let view = video_row(tx, author, &existing)?.ok_or(PlatformError::NotFound)?;
+                return Ok((existing, view));
+            }
+            let id = crate::auth::random_hex(8);
+            tx.execute(
+                "INSERT INTO video_posts(seq, id, author, media_id, caption, state, created_at)
+                 VALUES(NULL, ?1, ?2, ?3, ?4, ?6, ?5)",
+                params![id, author, media_id, caption, now, state],
+            )?;
+            if state == STATE_PUBLISHED {
+                index_video(tx, &id, author, caption, &media_id, now)?;
+            }
+            let view = video_row(tx, author, &id)?.ok_or(PlatformError::NotFound)?;
+            Ok((id, view))
+        })?;
         drop(c);
         // 审计不能拿连接锁调用（`audit` 自己会 lock），所以放在事务提交之后。
         if state != STATE_PUBLISHED || !labels.is_empty() {
@@ -197,55 +197,56 @@ impl Platform {
         let id = validate::id(id)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let row: Option<(String, String, String, String)> = tx
-            .query_row(
-                "SELECT author, state, caption, media_id FROM video_posts WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-        let (author, state, caption, media_id) = row.ok_or(PlatformError::NotFound)?;
-        if state != STATE_PENDING {
-            return Err(PlatformError::NotFound);
-        }
-        let (next, note) = if action == "publish" {
-            (STATE_PUBLISHED, "视频审核通过，已发布")
-        } else {
-            (STATE_REJECTED, "视频未通过审核")
-        };
-        tx.execute(
-            "UPDATE video_posts SET state = ?2 WHERE id = ?1",
-            params![id, next],
-        )?;
-        if action == "publish" {
-            index_video(&tx, &id, &author, &caption, &media_id, now)?;
-        } else {
-            // pending 本来就没进索引，这里删 0 行：走的是与"直接发布"完全
-            // 对称的撤权路径，不给驳回留一个"引用还在"的分支。
-            content_index::remove(&tx, &id)?;
-            content_index::remove_media_refs(&tx, "video", &id)?;
-            favorites::revoke_source(&tx, "video", &id)?;
-        }
-        inbox::notify(
-            &tx,
-            &author,
-            "video_review",
-            &format!("admin:{actor}"),
-            "video",
-            &id,
-            note,
-            &format!("video_review:{id}"),
-            now,
-        )?;
-        tx.commit()?;
+        let result = c.with_tx(|tx| -> Result<ReviewResult> {
+            let row: Option<(String, String, String, String)> = tx
+                .query_row(
+                    "SELECT author, state, caption, media_id FROM video_posts WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let (author, state, caption, media_id) = row.ok_or(PlatformError::NotFound)?;
+            if state != STATE_PENDING {
+                return Err(PlatformError::NotFound);
+            }
+            let (next, note) = if action == "publish" {
+                (STATE_PUBLISHED, "视频审核通过，已发布")
+            } else {
+                (STATE_REJECTED, "视频未通过审核")
+            };
+            tx.execute(
+                "UPDATE video_posts SET state = ?2 WHERE id = ?1",
+                params![id, next],
+            )?;
+            if action == "publish" {
+                index_video(tx, &id, &author, &caption, &media_id, now)?;
+            } else {
+                // pending 本来就没进索引，这里删 0 行：走的是与“直接发布”完全
+                // 对称的撤权路径，不给驳回留一个“引用还在”的分支。
+                content_index::remove(tx, &id)?;
+                content_index::remove_media_refs(tx, "video", &id)?;
+                favorites::revoke_source(tx, "video", &id)?;
+            }
+            inbox::notify(
+                tx,
+                &author,
+                "video_review",
+                &format!("admin:{actor}"),
+                "video",
+                &id,
+                note,
+                &format!("video_review:{id}"),
+                now,
+            )?;
+            Ok(ReviewResult {
+                id: id.clone(),
+                state: next.to_string(),
+                author,
+            })
+        })?;
         drop(c);
         self.audit(actor, &format!("video.review_{action}"), &id, "");
-        Ok(ReviewResult {
-            id,
-            state: next.to_string(),
-            author,
-        })
+        Ok(result)
     }
 
     pub fn video_visible(&self, viewer: &str, id: &str) -> Result<bool> {
@@ -306,20 +307,20 @@ impl Platform {
     pub fn delete_video(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let changed = tx.execute(
-            "UPDATE video_posts SET state = ?3
-             WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
-            params![id, author, STATE_DELETED],
-        )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
-        content_index::remove(&tx, id)?;
-        content_index::remove_media_refs(&tx, "video", id)?;
-        favorites::revoke_source(&tx, "video", id)?;
-        tx.commit()?;
-        Ok(())
+        c.with_tx(|tx| -> Result<()> {
+            let changed = tx.execute(
+                "UPDATE video_posts SET state = ?3
+                 WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
+                params![id, author, STATE_DELETED],
+            )?;
+            if changed == 0 {
+                return Err(PlatformError::NotFound);
+            }
+            content_index::remove(tx, id)?;
+            content_index::remove_media_refs(tx, "video", id)?;
+            favorites::revoke_source(tx, "video", id)?;
+            Ok(())
+        })
     }
 
     pub fn like_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
@@ -329,41 +330,41 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let added = tx.execute(
-            "INSERT INTO video_likes(video_id, user_id, created_at) VALUES(?1, ?2, ?3)
-             ON CONFLICT(video_id, user_id) DO NOTHING",
-            params![id, by, now],
-        )?;
-        if added == 1 {
-            let author: Option<String> = tx
-                .query_row(
-                    "SELECT author FROM video_posts WHERE id = ?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(author) = author {
-                inbox::notify(
-                    &tx,
-                    &author,
-                    "video_like",
-                    by,
-                    "video",
-                    id,
-                    "赞了你的视频",
-                    &format!("like:video:{id}:{by}"),
-                    now,
-                )?;
+        c.with_tx(|tx| -> Result<(bool, i64)> {
+            let added = tx.execute(
+                "INSERT INTO video_likes(video_id, user_id, created_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(video_id, user_id) DO NOTHING",
+                params![id, by, now],
+            )?;
+            if added == 1 {
+                let author: Option<String> = tx
+                    .query_row(
+                        "SELECT author FROM video_posts WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(author) = author {
+                    inbox::notify(
+                        tx,
+                        &author,
+                        "video_like",
+                        by,
+                        "video",
+                        id,
+                        "赞了你的视频",
+                        &format!("like:video:{id}:{by}"),
+                        now,
+                    )?;
+                }
             }
-        }
-        let count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM video_likes WHERE video_id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        tx.commit()?;
-        Ok((added == 1, count))
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM video_likes WHERE video_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            Ok((added == 1, count))
+        })
     }
 
     pub fn unlike_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
@@ -397,33 +398,34 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let comment_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        tx.execute(
-            "INSERT INTO video_comments(seq, id, video_id, author, text, created_at)
-             VALUES(NULL, ?1, ?2, ?3, ?4, ?5)",
-            params![comment_id, id, by, text, now],
-        )?;
-        let author: Option<String> = tx
-            .query_row(
-                "SELECT author FROM video_posts WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(author) = author {
-            inbox::notify(
-                &tx,
-                &author,
-                "video_comment",
-                by,
-                "video",
-                id,
-                "评论了你的视频",
-                "",
-                now,
+        c.with_tx(|tx| -> Result<()> {
+            tx.execute(
+                "INSERT INTO video_comments(seq, id, video_id, author, text, created_at)
+                 VALUES(NULL, ?1, ?2, ?3, ?4, ?5)",
+                params![comment_id, id, by, text, now],
             )?;
-        }
-        tx.commit()?;
+            let author: Option<String> = tx
+                .query_row(
+                    "SELECT author FROM video_posts WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(author) = author {
+                inbox::notify(
+                    tx,
+                    &author,
+                    "video_comment",
+                    by,
+                    "video",
+                    id,
+                    "评论了你的视频",
+                    "",
+                    now,
+                )?;
+            }
+            Ok(())
+        })?;
         Ok(comment_id)
     }
 

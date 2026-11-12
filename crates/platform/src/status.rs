@@ -27,6 +27,7 @@ use crate::favorites;
 use crate::inbox;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 /// 微信语义：24 小时。客户端不能把它改长。
 pub const STATUS_TTL_MS: i64 = 24 * 60 * 60 * 1000;
@@ -123,61 +124,57 @@ impl Platform {
         let expires_at = now + STATUS_TTL_MS;
         let id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        clear_owner(&tx, &owner, now)?;
-        if !background.is_empty() {
-            // 背景草稿被用掉了；清掉引用，不留下一个"未使用"的草稿。
-            tx.execute(
-                "DELETE FROM status_background_drafts WHERE owner = ?1 AND media_id = ?2",
-                params![owner, background],
+        c.with_tx(|tx| -> Result<StatusView> {
+            clear_owner(tx, &owner, now)?;
+            if !background.is_empty() {
+                // 背景草稿被用掉了；清掉引用，不留下一个“未使用”的草稿。
+                tx.execute(
+                    "DELETE FROM status_background_drafts WHERE owner = ?1 AND media_id = ?2",
+                    params![owner, background],
+                )?;
+            }
+            insert_status_indexed(
+                tx,
+                StatusInsert {
+                    id: &id,
+                    owner: &owner,
+                    kind,
+                    text: &body.text,
+                    media_id: &media_id,
+                    background: &background,
+                    audience: &audience,
+                    now,
+                    expires_at,
+                },
             )?;
-        }
-        insert_status_indexed(
-            &tx,
-            StatusInsert {
-                id: &id,
-                owner: &owner,
-                kind,
-                text: &body.text,
-                media_id: &media_id,
-                background: &background,
-                audience: &audience,
-                now,
-                expires_at,
-            },
-        )?;
-        let view = status_row(&tx, &owner, &id)?.ok_or(PlatformError::NotFound)?;
-        tx.commit()?;
-        Ok(view)
+            status_row(tx, &owner, &id)?.ok_or(PlatformError::NotFound)
+        })
     }
 
     pub fn clear_status(&self, owner: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let changed = tx.execute(
-            "UPDATE statuses SET cleared_at = ?1, updated_at = ?1
-             WHERE id = ?2 AND owner = ?3 AND cleared_at IS NULL",
-            params![now, id, owner],
-        )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
-        content_index::remove(&tx, id)?;
-        content_index::remove_media_refs(&tx, "status", id)?;
-        favorites::revoke_source(&tx, "status", id)?;
-        tx.commit()?;
-        Ok(())
+        c.with_tx(|tx| -> Result<()> {
+            let changed = tx.execute(
+                "UPDATE statuses SET cleared_at = ?1, updated_at = ?1
+                 WHERE id = ?2 AND owner = ?3 AND cleared_at IS NULL",
+                params![now, id, owner],
+            )?;
+            if changed == 0 {
+                return Err(PlatformError::NotFound);
+            }
+            content_index::remove(tx, id)?;
+            content_index::remove_media_refs(tx, "status", id)?;
+            favorites::revoke_source(tx, "status", id)?;
+            Ok(())
+        })
     }
 
     pub fn clear_all_statuses(&self, owner: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let n = clear_owner(&tx, owner, now)?;
-        tx.commit()?;
-        Ok(n)
+        c.with_tx(|tx| -> Result<usize> { clear_owner(tx, owner, now) })
     }
 
     /// 好友 + 自己的可见状态（每人只返回最新一条活跃状态）。
@@ -258,49 +255,49 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let removed = tx.execute(
-            "DELETE FROM status_reactions WHERE status_id = ?1 AND user_id = ?2",
-            params![id, user],
-        )?;
-        let active = if removed == 0 {
-            tx.execute(
-                "INSERT INTO status_reactions(status_id, user_id, created_at) VALUES(?1, ?2, ?3)",
-                params![id, user, now],
+        c.with_tx(|tx| -> Result<(bool, i64)> {
+            let removed = tx.execute(
+                "DELETE FROM status_reactions WHERE status_id = ?1 AND user_id = ?2",
+                params![id, user],
             )?;
-            true
-        } else {
-            false
-        };
-        if active {
-            if let Some(owner) = tx
-                .query_row(
-                    "SELECT owner FROM statuses WHERE id = ?1",
-                    params![id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?
-            {
-                inbox::notify(
-                    &tx,
-                    &owner,
-                    "status_reaction",
-                    user,
-                    "status",
-                    id,
-                    "回应了你的状态",
-                    &format!("heart:status:{id}:{user}"),
-                    now,
+            let active = if removed == 0 {
+                tx.execute(
+                    "INSERT INTO status_reactions(status_id, user_id, created_at) VALUES(?1, ?2, ?3)",
+                    params![id, user, now],
                 )?;
+                true
+            } else {
+                false
+            };
+            if active {
+                if let Some(owner) = tx
+                    .query_row(
+                        "SELECT owner FROM statuses WHERE id = ?1",
+                        params![id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?
+                {
+                    inbox::notify(
+                        tx,
+                        &owner,
+                        "status_reaction",
+                        user,
+                        "status",
+                        id,
+                        "回应了你的状态",
+                        &format!("heart:status:{id}:{user}"),
+                        now,
+                    )?;
+                }
             }
-        }
-        let count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM status_reactions WHERE status_id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        tx.commit()?;
-        Ok((active, count))
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM status_reactions WHERE status_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            Ok((active, count))
+        })
     }
 
     /// 背景草稿：先校验再落行；校验失败不会覆盖已存在的草稿。
@@ -353,28 +350,28 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let expired: Vec<(String, String)> = {
             let mut c = self.db().lock();
-            let tx = c.transaction()?;
-            let mut stmt = tx.prepare(
-                "SELECT id, owner FROM statuses
-                 WHERE cleared_at IS NULL AND expires_at <= ?1",
-            )?;
-            let rows = stmt
-                .query_map(params![now], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            drop(stmt);
-            for (id, _) in &rows {
-                tx.execute(
-                    "UPDATE statuses SET cleared_at = ?1 WHERE id = ?2 AND cleared_at IS NULL",
-                    params![now, id],
+            c.with_tx(|tx| -> Result<Vec<(String, String)>> {
+                let mut stmt = tx.prepare(
+                    "SELECT id, owner FROM statuses
+                     WHERE cleared_at IS NULL AND expires_at <= ?1",
                 )?;
-                content_index::remove(&tx, id)?;
-                content_index::remove_media_refs(&tx, "status", id)?;
-                favorites::revoke_source(&tx, "status", id)?;
-            }
-            tx.commit()?;
-            rows
+                let rows = stmt
+                    .query_map(params![now], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                drop(stmt);
+                for (id, _) in &rows {
+                    tx.execute(
+                        "UPDATE statuses SET cleared_at = ?1 WHERE id = ?2 AND cleared_at IS NULL",
+                        params![now, id],
+                    )?;
+                    content_index::remove(tx, id)?;
+                    content_index::remove_media_refs(tx, "status", id)?;
+                    favorites::revoke_source(tx, "status", id)?;
+                }
+                Ok(rows)
+            })?
         };
         for (id, owner) in &expired {
             self.audit(owner, "status_expire", id, "expires_at reached");

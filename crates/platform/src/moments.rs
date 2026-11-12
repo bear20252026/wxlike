@@ -33,6 +33,7 @@ use crate::inbox;
 use crate::page;
 use crate::validate;
 use crate::{Platform, PlatformState};
+use wxlike_core::tx::ConnectionTx as _;
 
 /// Contract: text above this is refused (the task book allows either refusing
 /// or accepting-with-documentation; we refuse).
@@ -461,41 +462,42 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
 
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        require_media(&tx, &cleaned)?;
-        tx.execute(
-            "INSERT INTO moments(id, author, text, media, visibility, audience_group, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id,
-                author,
-                text,
-                serde_json::to_string(&cleaned)?,
-                visibility.as_str(),
-                group,
-                now
-            ],
-        )?;
-        content_index::upsert(
-            &tx,
-            &moment_index_doc(&id, &author, visibility, &group, text),
-            now,
-        )?;
-        content_index::add_media_refs(&tx, &cleaned, "moment", &id, &author, now)?;
-        // 发布时扇出（issue #126 要求 4）：与插入同事务，所以"帖在提醒不在"
-        // 或"提醒先于帖可见"的窗口都不存在。
-        fanout_new_moment(&tx, &author, visibility, &group, &id, now)?;
-        if let Some(draft_id) = draft_id {
-            let draft_id = validate::id(draft_id)?;
-            let changed = tx.execute(
-                "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
-                params![draft_id, author],
+        c.with_tx(|tx| -> Result<()> {
+            require_media(tx, &cleaned)?;
+            tx.execute(
+                "INSERT INTO moments(id, author, text, media, visibility, audience_group, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    author,
+                    text,
+                    serde_json::to_string(&cleaned)?,
+                    visibility.as_str(),
+                    group,
+                    now
+                ],
             )?;
-            if changed == 0 {
-                return Err(PlatformError::Forbidden);
+            content_index::upsert(
+                tx,
+                &moment_index_doc(&id, &author, visibility, &group, text),
+                now,
+            )?;
+            content_index::add_media_refs(tx, &cleaned, "moment", &id, &author, now)?;
+            // 发布时扇出（issue #126 要求 4）：与插入同事务，所以“帖在提醒不在”
+            // 或“提醒先于帖可见”的窗口都不存在。
+            fanout_new_moment(tx, &author, visibility, &group, &id, now)?;
+            if let Some(draft_id) = draft_id {
+                let draft_id = validate::id(draft_id)?;
+                let changed = tx.execute(
+                    "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
+                    params![draft_id, author],
+                )?;
+                if changed == 0 {
+                    return Err(PlatformError::Forbidden);
+                }
             }
-        }
-        tx.commit()?;
+            Ok(())
+        })?;
         Ok(id)
     }
 
@@ -516,34 +518,35 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let media = serde_json::to_string(&cleaned)?;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        require_media(&tx, &cleaned)?;
-        let id = match draft_id {
-            Some(id) => {
-                let id = validate::id(id)?.to_string();
-                let changed = tx.execute(
-                    "UPDATE moment_drafts SET text = ?1, media = ?2, visibility = ?3,
+        let id = c.with_tx(|tx| -> Result<String> {
+            require_media(tx, &cleaned)?;
+            let id = match draft_id {
+                Some(id) => {
+                    let id = validate::id(id)?.to_string();
+                    let changed = tx.execute(
+                        "UPDATE moment_drafts SET text = ?1, media = ?2, visibility = ?3,
                                               audience_group = ?4, updated_at = ?5
-                     WHERE id = ?6 AND author = ?7",
-                    params![text, media, visibility.as_str(), group, now, id, author],
-                )?;
-                if changed == 0 {
-                    return Err(PlatformError::NotFound);
+                         WHERE id = ?6 AND author = ?7",
+                        params![text, media, visibility.as_str(), group, now, id, author],
+                    )?;
+                    if changed == 0 {
+                        return Err(PlatformError::NotFound);
+                    }
+                    id
                 }
-                id
-            }
-            None => {
-                let id = crate::auth::random_hex(8);
-                tx.execute(
-                    "INSERT INTO moment_drafts(id, author, text, media, visibility,
+                None => {
+                    let id = crate::auth::random_hex(8);
+                    tx.execute(
+                        "INSERT INTO moment_drafts(id, author, text, media, visibility,
                                                audience_group, updated_at)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![id, author, text, media, visibility.as_str(), group, now],
-                )?;
-                id
-            }
-        };
-        tx.commit()?;
+                         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![id, author, text, media, visibility.as_str(), group, now],
+                    )?;
+                    id
+                }
+            };
+            Ok(id)
+        })?;
         Ok(id)
     }
 
@@ -727,18 +730,18 @@ impl Platform {
     /// 附件不会留下指向已删动态的孤儿引用。
     pub fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let changed = tx.execute(
-            "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
-            params![moment_id, by],
-        )?;
-        if changed == 1 {
-            content_index::remove(&tx, moment_id)?;
-            content_index::remove_media_refs(&tx, "moment", moment_id)?;
-            crate::favorites::revoke_source(&tx, "moment", moment_id)?;
-        }
-        tx.commit()?;
-        Ok(changed == 1)
+        c.with_tx(|tx| -> Result<bool> {
+            let changed = tx.execute(
+                "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
+                params![moment_id, by],
+            )?;
+            if changed == 1 {
+                content_index::remove(tx, moment_id)?;
+                content_index::remove_media_refs(tx, "moment", moment_id)?;
+                crate::favorites::revoke_source(tx, "moment", moment_id)?;
+            }
+            Ok(changed == 1)
+        })
     }
 
     /// 删评论。**动态作者可以删任何人的评论，评论作者可以删自己的**——
@@ -762,36 +765,36 @@ impl Platform {
     pub fn like_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        let changed = tx.execute(
-            "INSERT INTO moment_likes(moment_id, user_id, created_at) VALUES(?1, ?2, ?3)
-             ON CONFLICT(moment_id, user_id) DO NOTHING",
-            params![moment_id, by, now],
-        )?;
-        if changed == 1 {
-            let author: Option<String> = tx
-                .query_row(
-                    "SELECT author FROM moments WHERE id = ?1 AND deleted = 0",
-                    params![moment_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(author) = author {
-                inbox::notify(
-                    &tx,
-                    &author,
-                    "moment_like",
-                    by,
-                    "moment",
-                    moment_id,
-                    "赞了你的朋友圈",
-                    &format!("like:moment:{moment_id}:{by}"),
-                    now,
-                )?;
+        c.with_tx(|tx| -> Result<bool> {
+            let changed = tx.execute(
+                "INSERT INTO moment_likes(moment_id, user_id, created_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(moment_id, user_id) DO NOTHING",
+                params![moment_id, by, now],
+            )?;
+            if changed == 1 {
+                let author: Option<String> = tx
+                    .query_row(
+                        "SELECT author FROM moments WHERE id = ?1 AND deleted = 0",
+                        params![moment_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(author) = author {
+                    inbox::notify(
+                        tx,
+                        &author,
+                        "moment_like",
+                        by,
+                        "moment",
+                        moment_id,
+                        "赞了你的朋友圈",
+                        &format!("like:moment:{moment_id}:{by}"),
+                        now,
+                    )?;
+                }
             }
-        }
-        tx.commit()?;
-        Ok(changed == 1)
+            Ok(changed == 1)
+        })
     }
 
     pub fn unlike_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
@@ -822,24 +825,25 @@ impl Platform {
             _ => None,
         };
         let mut c = self.db().lock();
-        let tx = c.transaction()?;
-        if let Some(rt) = &reply_to {
-            check_reply_target(&tx, moment_id, rt)?;
-        }
-        tx.execute(
-            "INSERT INTO moment_comments(id, moment_id, author, text, reply_to, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                id,
-                moment_id,
-                by,
-                text,
-                reply_to.as_deref().unwrap_or(""),
-                now
-            ],
-        )?;
-        notify_comment_inbox(&tx, moment_id, &by, reply_to.as_deref(), now)?;
-        tx.commit()?;
+        c.with_tx(|tx| -> Result<()> {
+            if let Some(rt) = &reply_to {
+                check_reply_target(tx, moment_id, rt)?;
+            }
+            tx.execute(
+                "INSERT INTO moment_comments(id, moment_id, author, text, reply_to, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id,
+                    moment_id,
+                    by,
+                    text,
+                    reply_to.as_deref().unwrap_or(""),
+                    now
+                ],
+            )?;
+            notify_comment_inbox(tx, moment_id, &by, reply_to.as_deref(), now)?;
+            Ok(())
+        })?;
         Ok(id)
     }
 

@@ -25,6 +25,7 @@ use thiserror::Error;
 
 use rusqlite::{params, Connection, OptionalExtension as _};
 use wxlike_core::msgmeta::rich_kind;
+use wxlike_core::tx::ConnectionTx as _;
 
 mod conversations;
 mod delivery;
@@ -568,33 +569,30 @@ impl MessageStore {
         }
         let now = wxlike_core::types::now_ms();
         let mut c = self.c();
-        let tx = c.transaction()?;
-        let seq = next_seq_tx(&tx, ot, oid)?;
-        let row = MailInsert {
-            owner_type: ot,
-            owner_id: oid,
-            seq,
-            msg_id,
-            sender,
-            sender_device,
-            type_id,
-            payload,
-            now_ms: now,
-            body_kind,
-            edit_version,
-            forward_of,
-        };
-        match insert_mailbox_tx(&tx, &row)? {
-            true => {
-                touch_projection_tx(&tx, ot, oid, seq, sender, type_id, payload, body_kind, now)?;
-                tx.commit()?;
-                Ok(Some(seq))
+        c.with_tx_opt(|tx| -> Result<Option<u64>> {
+            let seq = next_seq_tx(tx, ot, oid)?;
+            let row = MailInsert {
+                owner_type: ot,
+                owner_id: oid,
+                seq,
+                msg_id,
+                sender,
+                sender_device,
+                type_id,
+                payload,
+                now_ms: now,
+                body_kind,
+                edit_version,
+                forward_of,
+            };
+            if !insert_mailbox_tx(tx, &row)? {
+                // 重复投递：静默，不是错误。这里必须回滚，不能提交——`next_seq_tx`
+                // 已经把 seq 加上去了，提交就等于为一条没有落库的消息烧掉一个序号。
+                return Ok(None);
             }
-            false => {
-                tx.rollback()?;
-                Ok(None) // 重复投递：静默，不是错误
-            }
-        }
+            touch_projection_tx(tx, ot, oid, seq, sender, type_id, payload, body_kind, now)?;
+            Ok(Some(seq))
+        })
     }
 
     /// **high_priority 通道**显式拒绝落库的入口：存在性说明语义（网关直投），
@@ -835,37 +833,37 @@ impl MessageStore {
         let (ot, oid) = self.owner_pair(owner)?;
         let now = wxlike_core::types::now_ms();
         let mut c = self.c();
-        let tx = c.transaction()?;
-        let sent: Option<i64> = tx
-            .query_row(
-                "SELECT sent_at_ms FROM mailbox
+        c.with_tx(|tx| -> Result<()> {
+            let sent: Option<i64> = tx
+                .query_row(
+                    "SELECT sent_at_ms FROM mailbox
                  WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4
                    AND withdrawn = 0",
-                params![ot, oid, msg_id, actor],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(sent) = sent else {
-            return Err(MailError::WithdrawRefused);
-        };
-        if let Some(window) = window_ms {
-            let age = now.saturating_sub(sent as u64);
-            if age > window {
-                return Err(MailError::RecallWindowElapsed(age));
+                    params![ot, oid, msg_id, actor],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(sent) = sent else {
+                return Err(MailError::WithdrawRefused);
+            };
+            if let Some(window) = window_ms {
+                let age = now.saturating_sub(sent as u64);
+                if age > window {
+                    return Err(MailError::RecallWindowElapsed(age));
+                }
             }
-        }
-        let touched = tx.execute(
-            "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?5
+            let touched = tx.execute(
+                "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?5
              WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4 AND withdrawn = 0",
-            params![ot, oid, msg_id, actor, now as i64],
-        )?;
-        if touched != 1 {
-            return Err(MailError::WithdrawRefused);
-        }
-        bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
-        refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
-        tx.commit()?;
-        Ok(())
+                params![ot, oid, msg_id, actor, now as i64],
+            )?;
+            if touched != 1 {
+                return Err(MailError::WithdrawRefused);
+            }
+            bump_change(tx, ot, oid, msg_id, "recall", actor)?;
+            refresh_projection_after_recall_tx(tx, ot, oid, msg_id, now)?;
+            Ok(())
+        })
     }
 
     /// 管理员代撤（频道/群管层用）：与 [`MessageStore::withdraw`] 的唯一区别是
@@ -876,19 +874,19 @@ impl MessageStore {
         let (ot, oid) = self.owner_pair(owner)?;
         let now = wxlike_core::types::now_ms();
         let mut c = self.c();
-        let tx = c.transaction()?;
-        let touched = tx.execute(
-            "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?4
+        c.with_tx(|tx| -> Result<()> {
+            let touched = tx.execute(
+                "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?4
              WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND withdrawn = 0",
-            params![ot, oid, msg_id, now as i64],
-        )?;
-        if touched != 1 {
-            return Err(MailError::WithdrawRefused);
-        }
-        bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
-        refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
-        tx.commit()?;
-        Ok(())
+                params![ot, oid, msg_id, now as i64],
+            )?;
+            if touched != 1 {
+                return Err(MailError::WithdrawRefused);
+            }
+            bump_change(tx, ot, oid, msg_id, "recall", actor)?;
+            refresh_projection_after_recall_tx(tx, ot, oid, msg_id, now)?;
+            Ok(())
+        })
     }
 
     /// 批量撤回（“一键撤回本次全部”）：全部成功才提交，否则整体回滚。
@@ -902,25 +900,25 @@ impl MessageStore {
         let (ot, oid) = self.owner_pair(owner)?;
         let now = wxlike_core::types::now_ms();
         let mut c = self.c();
-        let tx = c.transaction()?;
-        let mut done = 0usize;
-        for msg_id in msg_ids {
-            let touched = tx.execute(
-                "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?5
+        c.with_tx(|tx| -> Result<usize> {
+            let mut done = 0usize;
+            for msg_id in msg_ids {
+                let touched = tx.execute(
+                    "UPDATE mailbox SET withdrawn = 1, recalled_at_ms = ?5
                  WHERE owner_type = ?1 AND owner_id = ?2 AND msg_id = ?3 AND sender = ?4 AND withdrawn = 0",
-                params![ot, oid, msg_id, actor, now as i64],
-            )?;
-            if touched == 1 {
-                done += 1;
-                bump_change(&tx, ot, oid, msg_id, "recall", actor)?;
-                refresh_projection_after_recall_tx(&tx, ot, oid, msg_id, now)?;
+                    params![ot, oid, msg_id, actor, now as i64],
+                )?;
+                if touched == 1 {
+                    done += 1;
+                    bump_change(tx, ot, oid, msg_id, "recall", actor)?;
+                    refresh_projection_after_recall_tx(tx, ot, oid, msg_id, now)?;
+                }
             }
-        }
-        if done != msg_ids.len() {
-            return Err(MailError::WithdrawRefused); // 整批拒绝，不半提交
-        }
-        tx.commit()?;
-        Ok(done)
+            if done != msg_ids.len() {
+                return Err(MailError::WithdrawRefused); // 整批拒绝，不半提交
+            }
+            Ok(done)
+        })
     }
 
     /// 信箱变更事件流：`since_version` 之后的增量（离线端重连补同步——
@@ -1342,24 +1340,24 @@ impl MessageStore {
     ) -> Result<u64> {
         let (ot, oid) = self.owner_pair(owner)?;
         let mut c = self.c();
-        let tx = c.transaction()?;
-        let version = bump_change(&tx, ot, oid, user_id, kind, "system")? as u64;
-        // 复用 mailbox_change 的 version 序列，但成员日志单独成表
-        tx.execute(
-            "INSERT INTO member_log(owner_type, owner_id, version, kind, user_id, payload, at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                ot,
-                oid,
-                version as i64,
-                kind,
-                user_id,
-                payload,
-                wxlike_core::types::now_ms() as i64
-            ],
-        )?;
-        tx.commit()?;
-        Ok(version)
+        c.with_tx(|tx| -> Result<u64> {
+            let version = bump_change(tx, ot, oid, user_id, kind, "system")? as u64;
+            // 复用 mailbox_change 的 version 序列，但成员日志单独成表
+            tx.execute(
+                "INSERT INTO member_log(owner_type, owner_id, version, kind, user_id, payload, at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    ot,
+                    oid,
+                    version as i64,
+                    kind,
+                    user_id,
+                    payload,
+                    wxlike_core::types::now_ms() as i64
+                ],
+            )?;
+            Ok(version)
+        })
     }
 
     /// 成员日志头版本（摘要判断的基准）。
@@ -1477,20 +1475,20 @@ impl MessageStore {
     ) -> Result<()> {
         let (ot, oid) = self.owner_pair(owner)?;
         let mut c = self.c();
-        let tx = c.transaction()?;
-        tx.execute(
-            "DELETE FROM member_snapshot WHERE owner_type = ?1 AND owner_id = ?2",
-            params![ot, oid],
-        )?;
-        for user in members {
+        c.with_tx(|tx| -> Result<()> {
             tx.execute(
-                "INSERT OR IGNORE INTO member_snapshot(owner_type, owner_id, user_id)
-                 VALUES(?1, ?2, ?3)",
-                params![ot, oid, user],
+                "DELETE FROM member_snapshot WHERE owner_type = ?1 AND owner_id = ?2",
+                params![ot, oid],
             )?;
-        }
-        tx.commit()?;
-        Ok(())
+            for user in members {
+                tx.execute(
+                    "INSERT OR IGNORE INTO member_snapshot(owner_type, owner_id, user_id)
+                     VALUES(?1, ?2, ?3)",
+                    params![ot, oid, user],
+                )?;
+            }
+            Ok(())
+        })
     }
 }
 
