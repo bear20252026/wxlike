@@ -29,6 +29,9 @@ pub(in crate::domain) fn locate_ticket_by_secret(
 ///
 /// 两个一起回：轮询要 verifier 才能问 identity 状态机，兑换只要 creator。
 /// 拆成两条查询只会让同一张表被查两次。
+///
+/// 返回顺序 `(creator, verifier)` 与 `SELECT` 的列序一致——两个都是 `String`，
+/// 写反了编译期看不出来，只会变成 403。
 pub(in crate::domain) fn creator_and_verifier(
     conn: &rusqlite::Connection,
     ticket_id: &str,

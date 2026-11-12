@@ -229,7 +229,9 @@ impl Platform {
     ) -> std::result::Result<(PollState, Option<String>), ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
         let conn = self.db().lock();
-        let (verifier, creator) = super::repo::qr_login::creator_and_verifier(&conn, ticket_id)?;
+        // 顺序与 repo 的 `SELECT creator, verifier` 一致：先是创建者，再是 verifier。
+        // 两个都是 `String`，写反了编译期看不出来，只会变成 403。
+        let (creator, verifier) = creator_and_verifier(&conn, ticket_id)?;
         if creator != viewer {
             return Err(ApiError::forbidden("not your ticket"));
         }
