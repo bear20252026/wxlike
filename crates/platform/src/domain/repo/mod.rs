@@ -30,6 +30,7 @@ pub mod recovery;
 pub mod relations;
 pub mod report;
 pub mod secret;
+pub mod security;
 pub mod sessions;
 pub mod status;
 pub mod stickers;

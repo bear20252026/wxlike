@@ -185,7 +185,7 @@ impl Platform {
             &raw[10..15],
             &raw[15..20]
         );
-        let hash = crate::security::hash_argon2id(&code)?;
+        let hash = super::security::hash_argon2id(&code)?;
         let c = self.db().lock();
         c.execute(
             "INSERT INTO recovery_codes(user_id, code_hash, created_at, used_at)
@@ -240,12 +240,12 @@ impl Platform {
         if now.saturating_sub(created_at) > RECOVERY_TTL_MS as i64 {
             return Err(PlatformError::Forbidden);
         }
-        if !crate::security::verify_argon2id(code, &hash) {
+        if !super::security::verify_argon2id(code, &hash) {
             self.audit(&user_id, "account.recovery.reset", &user_id, "bad code");
             return Err(PlatformError::Forbidden);
         }
 
-        let phc = crate::security::hash_argon2id(new_password)?;
+        let phc = super::security::hash_argon2id(new_password)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
             tx.execute(

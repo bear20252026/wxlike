@@ -8,6 +8,12 @@
 //! **TOTP 2FA**：`enable` 生成 base32 密钥返回（客户端录进验证器），
 //! `confirm` 用首个验证码确认激活；激活后 `verify_credentials` 要求验证码。
 //! 备用恢复码属 P6（与恢复码找回一起）。
+//!
+//! **领域层**：本模块含 `impl Platform`（口令透明升级、TOTP 开关）与纯算法
+//! 函数（argon2id 哈希/校验、TOTP 生成/校验）。它原来住在 crate 根——那是
+//! handler 层的位置，于是「handler 不碰 SQL」这条编译期保证对它无效：
+//! `impl Platform` 里的 `self.db().lock()` 就写在 handler 层的文件里。
+//! 搬进 `domain` 后，handler 只能调方法，看不到 SQL。
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;

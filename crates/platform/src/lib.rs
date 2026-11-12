@@ -50,7 +50,6 @@ mod relations;
 mod report;
 mod risk_mw;
 mod secret;
-mod security;
 mod sessions;
 mod status;
 mod stickers;
@@ -84,11 +83,13 @@ pub use crate::domain::media::{
 pub use crate::domain::perms::Perm;
 pub use crate::domain::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::domain::relations::{StrangerRequest, StrangerState};
+pub use crate::domain::security::{
+    hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id,
+};
 pub use crate::domain::status::spawn_status_sweeper;
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
-pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
 /// tests call [`Platform::sweep_expired_redpackets`] directly so the expiry path
