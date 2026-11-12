@@ -117,15 +117,18 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
 // 认证提取器：**凭据先于请求体**（#245 的顺序契约）
 // ---------------------------------------------------------------------------
 
-/// 只认 `Authorization: Bearer <x>`。整个后台只有这一份解析代码：
-/// 两处各写一遍的话，迟早有一处忘了 `trim` 或忘了拒空串。
+/// 只认 `Authorization: Bearer <x>`，规则只有一份： [`wxlike_types::Bearer`]。
+///
+/// 这里曾经自己写了一遍 `strip_prefix("Bearer ")`——大小写敏感，于是
+/// `Authorization: bearer abc`（RFC 6750 §2.1 下完全合法）在管理面被
+/// 判成"没带凭据"，而同一个令牌在平台面是被认出来的。头写法差异不该
+/// 改变鉴权结论，所以解析收缩成一处。
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    wxlike_types::Bearer::parse(raw).map(wxlike_types::Bearer::token)
 }
 
 /// 静态令牌对应的"操作者名"。它不是任何一个人的账号名——
@@ -846,13 +849,22 @@ mod tests {
 
     // --- #245 顺序契约的三块地基：header 解析、公开面表、认证结论的读法 ---
 
+    /// 头解析与 [`wxlike_types::Bearer`] 逐字一致。
+    ///
+    /// 钉住的是**合法写法的全集**：scheme 大小写不敏感（RFC 6750 §2.1）、
+    /// 分隔符是任意空白、头值两端 OWS 不算凭据。以前这里断言
+    /// `"bearer abc"` 为 `None`，那是把当时的实现当成了规范——小写
+    /// scheme 是合法的，拒绝它只是"这个客户端换个写法就 401"。
     #[test]
     fn bearer_only_accepts_a_non_empty_bearer_scheme() {
         let mut h = HeaderMap::new();
         assert_eq!(bearer(&h), None);
         for (raw, want) in [
             ("Bearer abc", Some("abc")),
-            ("bearer abc", None),
+            ("bearer abc", Some("abc")),
+            ("BEARER abc", Some("abc")),
+            ("Bearer\tabc", Some("abc")),
+            ("  Bearer abc  ", Some("abc")),
             ("Bearer    ", None),
             ("Basic abc", None),
             ("Bearer", None),

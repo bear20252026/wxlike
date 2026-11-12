@@ -11,12 +11,12 @@
 //! * 每个响应带 `trace`，与审计里那一行对得上号。
 //! * **凭据先于请求体**（#245）：路由层的 `auth::gate` 包在整个 adminx router 外面，
 //!   所以未认证的请求不会先被 `ApiJson` 解析、也就拿不到 422 里的字段名。
-//!   本卡的 5 条路由另外用 `auth::AdminAuth` 提取器直接拿到身份结论。
+//!   本卡全部路由另外用 `auth::AdminAuth` 提取器直接拿到身份结论——不再有
+//!   哪个 handler 自己从 `HeaderMap` 里刨凭据。
 
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -245,23 +245,27 @@ fn new_trace() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 认证（一处实现，两种接法）
+// 认证（一处实现，一种接法）
 // ---------------------------------------------------------------------------
 //
-// [`auth::from_parts`] 是唯一的凭据→身份判定。它被两条路共用：
+// [`auth::from_parts`] 是唯一的凭据→身份判定，两条路共用：
 //
-// * 路由层的 `auth::gate`：跑在**任何 body 解析之前**（#245 的顺序契约由它保证）。
-// * handler 参数上的 `auth::AdminAuth`：本卡的 5 条路由用这种，
-//   这样"是谁、什么角色"不需要每个 handler 自己再从 header 里刨一遍。
+// * 路由层的 `auth::gate`：跑在**任何 body 解析之前**（#245 的顺序契约由它保证）；
+// * handler 参数上的 `auth::AdminAuth`：本卡全部路由都用这种。结论由门那里
+//   复用（见 `from_parts` 开头的 extensions 检查），不重复查会话表。
 //
-// 兄弟卡（G14-02/03/04/05）的 handler 仍然收 `HeaderMap` 并调下面的
-// `admit`。它们的**顺序**已经是安全的（门在路由外面），只是多一次会话查询；
-// 换成提取器属于逐 handler 的机械改写，留给各自那张卡，本卡不跨卡改签名。
-
-/// 老接法：从 header 认证。新代码请直接用 `incoming: auth::AdminAuth` 参数。
-fn admit(app: &Shared, headers: &HeaderMap) -> Result<auth::AdminAuth> {
-    auth::authenticate(app.as_ref(), auth::bearer(headers))
-}
+// 以前还有一条"老接法"：handler 收 `HeaderMap`、自己调 `admit()`。整条删掉，
+// 因为它有三个问题：
+//
+// 1. `auth::authenticate` 是**同步**的，会碰 SQLite——它跑在 async 上下文里，
+//    违反 ADR-28（会碰库的那一段必须整段进阻塞池）；
+// 2. 门已经查过一次会话表，它再查一次，纯多一次锁竞争；
+// 3. "凭据先于请求体"在它那里靠 handler 自己把准入写在体第一行——而 axum
+//    的参数提取发生在 handler 体之前，那一行其实跑在 `ApiJson` 之后，
+//    等于没有（#245 就是这么被发现的）。
+//
+// 提取器按参数顺序执行，所以 `incoming: auth::AdminAuth` 必须写在任何
+// `ApiJson` 之前——本卡所有 handler 都已经是这个顺序。
 
 /// 读面的角色：静态令牌按 `viewer` 的读面处理——能看运营面板，
 /// 但看不到隐私请求这类逐人数据。
@@ -363,21 +367,18 @@ fn session_via(app: &Shared, incoming: &auth::AdminAuth) -> Result<Caller> {
     Ok(Caller { session })
 }
 
-// --- 老接法的薄壳：认证 + 上面那套判定，签名保持不变（兄弟卡的路由不受影响）---
+// --- 判定薄壳：身份结论由提取器给，这里只做"角色够不够" ---
 //
-// `trace` 参数留着不是为了用，是为了让 G14-02/03/04/05 的 handler 一行都不用改
-// （调用点已经写着 `read_role(&app, &headers, R, &trace)?`）。
-// 每张卡把自己的路由换成 `incoming: auth::AdminAuth` 时，这个参数就该删了。
+// `trace` 只用于越权留痕（`record_denial`），不是认证参数。
 
 fn write_caller(
     app: &Shared,
-    headers: &HeaderMap,
+    incoming: &auth::AdminAuth,
     resource: Resource,
     action: Action,
     trace: &str,
 ) -> Result<Caller> {
-    let incoming = admit(app, headers)?;
-    write_via(app, &incoming, resource, action, trace)
+    write_via(app, incoming, resource, action, trace)
 }
 
 /// 读也要角色够（`viewer` 能看的面里没有 `privacy`）。
@@ -385,10 +386,14 @@ fn write_caller(
 /// **被拒的读同样留痕**：写路径早就调 [`record_denial`]，读路径以前只
 /// `let _ = trace;` 把追踪 id 丢掉——于是"谁试过看哪些面"这条线索根本不存在，
 /// 而越权探测恰恰多半是读。这里 actor / role / trace 全都拿得到，没有借口。
-fn read_role(app: &Shared, headers: &HeaderMap, resource: Resource, trace: &str) -> Result<Role> {
-    let incoming = admit(app, headers)?;
-    read_via(&incoming, resource).inspect_err(|err| {
-        let (actor, role) = actor_role(&incoming);
+fn read_role(
+    app: &Shared,
+    incoming: &auth::AdminAuth,
+    resource: Resource,
+    trace: &str,
+) -> Result<Role> {
+    read_via(incoming, resource).inspect_err(|err| {
+        let (actor, role) = actor_role(incoming);
         record_denial(
             app,
             &actor,
@@ -403,11 +408,11 @@ fn read_role(app: &Shared, headers: &HeaderMap, resource: Resource, trace: &str)
 
 /// 只需要"是后台会话 + 拿 actor/role"的面（读侧的作用域由调用点自己判）。
 ///
-/// 以前它多收一个 `trace: &str` 再 `let _ = trace;`：这里没有任何授权判定，
-/// 也就没有该留痕的拒绝——参数留着只会让人以为拒绝已经进了审计。
-fn actor_of(app: &Shared, headers: &HeaderMap) -> Result<(String, Role)> {
-    let incoming = admit(app, headers)?;
-    Ok(actor_role(&incoming))
+/// 这里没有任何授权判定，也就没有该留痕的拒绝，所以既不要 `trace` 也不要
+/// `app`——以前那版把 `trace` 收下再 `let _ = trace;` 丢掉，只会让人以为
+/// 拒绝已经进了审计。
+fn actor_of(incoming: &auth::AdminAuth) -> (String, Role) {
+    actor_role(incoming)
 }
 
 // ---------------------------------------------------------------------------
@@ -497,9 +502,12 @@ async fn audit_verify(
     Ok(Json(serde_json::json!({"trace": trace, "chain": report})))
 }
 
-async fn health(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
+async fn health(
+    State(app): State<Shared>,
+    incoming: auth::AdminAuth,
+) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Health, &trace)?;
+    read_role(&app, &incoming, Resource::Health, &trace)?;
     let summary = health_summary(app.store(), app.g14().store_audit(), app.uptime_ms())?;
     Ok(Json(serde_json::json!({"trace": trace, "health": summary})))
 }
@@ -510,11 +518,11 @@ async fn health(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<se
 
 async fn list_cases(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Case, &trace)?;
+    read_role(&app, &incoming, Resource::Case, &trace)?;
     let filter = CaseFilter {
         state: qstr(&q, "state").and_then(|v| CaseState::parse(&v)),
         kind: qstr(&q, "kind"),
@@ -540,11 +548,11 @@ struct NewCaseBody {
 
 async fn create_case(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     ApiJson(body): ApiJson<NewCaseBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Case, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Case, Action::Write, &trace)?;
     let case = app.g14().identity.create_case(
         &caller.session.actor,
         caller.session.role,
@@ -563,11 +571,11 @@ async fn create_case(
 
 async fn get_case(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Case, &trace)?;
+    read_role(&app, &incoming, Resource::Case, &trace)?;
     let case = app.g14().identity.case(&id)?.ok_or(AdminError::NotFound)?;
     Ok(Json(serde_json::json!({"trace": trace, "case": case})))
 }
@@ -582,12 +590,12 @@ struct TransitionBody {
 
 async fn transition_case(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<TransitionBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Case, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Case, Action::Write, &trace)?;
     let next = CaseState::parse(&body.state).ok_or_else(|| {
         AdminError::bad_input("state 只能是 open/triaged/actioned/rejected/closed")
     })?;
@@ -618,12 +626,18 @@ struct DangerBody {
 
 fn danger_request(
     app: &Shared,
-    headers: &HeaderMap,
+    incoming: &auth::AdminAuth,
     id: &str,
     body: DangerBody,
     trace: &str,
 ) -> Result<DangerRequest> {
-    let caller = write_caller(app, headers, Resource::Identity, Action::Destructive, trace)?;
+    let caller = write_caller(
+        app,
+        incoming,
+        Resource::Identity,
+        Action::Destructive,
+        trace,
+    )?;
     Ok(DangerRequest {
         actor: caller.session.actor,
         role: caller.session.role,
@@ -638,43 +652,43 @@ fn danger_request(
 
 async fn suspend_user(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let req = danger_request(&app, &headers, &id, body, &trace)?;
+    let req = danger_request(&app, &incoming, &id, body, &trace)?;
     let out = app.g14().identity.suspend(req).await?;
     Ok(Json(serde_json::json!({"trace": trace, "result": out})))
 }
 
 async fn unsuspend_user(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let req = danger_request(&app, &headers, &id, body, &trace)?;
+    let req = danger_request(&app, &incoming, &id, body, &trace)?;
     let out = app.g14().identity.unsuspend(req).await?;
     Ok(Json(serde_json::json!({"trace": trace, "result": out})))
 }
 
 async fn revoke_device(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let req = danger_request(&app, &headers, &id, body, &trace)?;
+    let req = danger_request(&app, &incoming, &id, body, &trace)?;
     let out = app.g14().identity.revoke_device(req).await?;
     Ok(Json(serde_json::json!({"trace": trace, "result": out})))
 }
 
 async fn govern_group(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
@@ -685,7 +699,7 @@ async fn govern_group(
             "action 只能是 freeze/unfreeze/transfer/dissolve",
         ));
     }
-    let req = danger_request(&app, &headers, &id, body, &trace)?;
+    let req = danger_request(&app, &incoming, &id, body, &trace)?;
     let out = app.g14().identity.govern_group(req, &verb).await?;
     Ok(Json(serde_json::json!({"trace": trace, "result": out})))
 }
@@ -698,13 +712,13 @@ struct BatchBody {
 
 async fn batch_suspend(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     ApiJson(body): ApiJson<BatchBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
     let caller = write_caller(
         &app,
-        &headers,
+        &incoming,
         Resource::Identity,
         Action::Destructive,
         &trace,
@@ -729,10 +743,10 @@ async fn batch_suspend(
 
 async fn publish_rules(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Content, &trace)?;
+    read_role(&app, &incoming, Resource::Content, &trace)?;
     Ok(Json(serde_json::json!({
         "trace": trace,
         "rules": crate::publishing::rules(),
@@ -741,11 +755,11 @@ async fn publish_rules(
 
 async fn publish_queue(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Content, &trace)?;
+    read_role(&app, &incoming, Resource::Content, &trace)?;
     let filter = QueueFilter {
         kind: qstr(&q, "kind"),
         state: qstr(&q, "state").and_then(|v| ItemState::parse(&v)),
@@ -768,11 +782,11 @@ struct SubmissionBody {
 
 async fn submit_review(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     ApiJson(body): ApiJson<SubmissionBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Content, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Content, Action::Write, &trace)?;
     let item = app.g14().publishing.submit(
         &caller.session.actor,
         caller.session.role,
@@ -796,12 +810,12 @@ struct DecideBody {
 
 async fn decide_item(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<DecideBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Content, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Content, Action::Write, &trace)?;
     let decision = Decision::parse(&body.decision)
         .ok_or_else(|| AdminError::bad_input("decision 只能是 approve/reject/take_down/restore"))?;
     let item = app
@@ -821,11 +835,11 @@ async fn decide_item(
 
 async fn list_releases(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(app_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::MiniApp, &trace)?;
+    read_role(&app, &incoming, Resource::MiniApp, &trace)?;
     let releases = app.g14().publishing.releases(Some(&app_id))?;
     Ok(Json(
         serde_json::json!({"trace": trace, "releases": releases}),
@@ -840,12 +854,12 @@ struct ReleaseBody {
 
 async fn create_release(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(app_id): Path<String>,
     ApiJson(body): ApiJson<ReleaseBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::MiniApp, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &trace)?;
     let release = app.g14().publishing.create_release(
         &caller.session.actor,
         caller.session.role,
@@ -861,13 +875,13 @@ async fn create_release(
 
 async fn sign_release(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
     let caller = write_caller(
         &app,
-        &headers,
+        &incoming,
         Resource::MiniApp,
         Action::SignPackage,
         &trace,
@@ -884,11 +898,11 @@ async fn sign_release(
 
 async fn publish_release(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::MiniApp, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &trace)?;
     let release = app
         .g14()
         .publishing
@@ -907,14 +921,14 @@ struct ReasonBody {
 
 async fn revoke_release(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
     let caller = write_caller(
         &app,
-        &headers,
+        &incoming,
         Resource::MiniApp,
         Action::Destructive,
         &trace,
@@ -937,10 +951,10 @@ async fn revoke_release(
 
 async fn list_services(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Service, &trace)?;
+    read_role(&app, &incoming, Resource::Service, &trace)?;
     Ok(Json(serde_json::json!({
         "trace": trace,
         "services": app.g14().publishing.services()?,
@@ -949,12 +963,12 @@ async fn list_services(
 
 async fn upsert_service(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<crate::publishing::ServicePatch>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Service, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Service, Action::Write, &trace)?;
     let cfg = app.g14().publishing.upsert_service(
         &caller.session.actor,
         caller.session.role,
@@ -985,10 +999,10 @@ fn scope_of(q: &std::collections::HashMap<String, String>, role: Role) -> Result
 
 async fn list_merchants(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Merchant, &trace)?;
+    read_role(&app, &incoming, Resource::Merchant, &trace)?;
     Ok(Json(serde_json::json!({
         "trace": trace,
         "merchants": app.g14().commerce.merchants()?,
@@ -997,11 +1011,11 @@ async fn list_merchants(
 
 async fn list_orders(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let role = read_role(&app, &headers, Resource::Order, &trace)?;
+    let role = read_role(&app, &incoming, Resource::Order, &trace)?;
     let scope = scope_of(&q, role)?;
     let filter = OrderFilter {
         merchant_id: qstr(&q, "merchant_id"),
@@ -1015,11 +1029,11 @@ async fn list_orders(
 
 async fn export_orders(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response> {
     let trace = new_trace();
-    let (actor, role) = actor_of(&app, &headers)?;
+    let (actor, role) = actor_of(&incoming);
     let scope = scope_of(&q, role)?;
     let filter = OrderFilter {
         merchant_id: qstr(&q, "merchant_id"),
@@ -1047,12 +1061,12 @@ struct RefundBody {
 
 async fn request_refund(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<RefundBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Order, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Order, Action::Write, &trace)?;
     let refund = app.g14().commerce.request_refund(
         &caller.session.actor,
         caller.session.role,
@@ -1068,10 +1082,10 @@ async fn request_refund(
 
 async fn list_refunds(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Order, &trace)?;
+    read_role(&app, &incoming, Resource::Order, &trace)?;
     Ok(Json(serde_json::json!({
         "trace": trace,
         "refunds": app.g14().commerce.refunds()?,
@@ -1085,14 +1099,14 @@ struct ApproveBody {
 
 async fn approve_refund(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ApproveBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
     let caller = write_caller(
         &app,
-        &headers,
+        &incoming,
         Resource::Order,
         Action::ApproveMoney,
         &trace,
@@ -1113,11 +1127,11 @@ async fn approve_refund(
 
 async fn list_recon(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Recon, &trace)?;
+    read_role(&app, &incoming, Resource::Recon, &trace)?;
     let batch = qstr(&q, "batch");
     Ok(Json(serde_json::json!({
         "trace": trace,
@@ -1133,14 +1147,14 @@ struct ResolveBody {
 
 async fn resolve_recon(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ResolveBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
     let caller = write_caller(
         &app,
-        &headers,
+        &incoming,
         Resource::Recon,
         Action::ApproveMoney,
         &trace,
@@ -1158,10 +1172,10 @@ async fn resolve_recon(
 
 async fn list_journal(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Journal, &trace)?;
+    read_role(&app, &incoming, Resource::Journal, &trace)?;
     Ok(Json(serde_json::json!({
         "trace": trace,
         "entries": app.g14().commerce.journal()?,
@@ -1178,13 +1192,13 @@ struct JournalBody {
 
 async fn post_journal(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     ApiJson(body): ApiJson<JournalBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
     let caller = write_caller(
         &app,
-        &headers,
+        &incoming,
         Resource::Journal,
         Action::ApproveMoney,
         &trace,
@@ -1209,11 +1223,11 @@ async fn post_journal(
 
 async fn list_jobs(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Job, &trace)?;
+    read_role(&app, &incoming, Resource::Job, &trace)?;
     let filter = JobFilter {
         kind: qstr(&q, "kind"),
         state: qstr(&q, "state").and_then(|v| JobState::parse(&v)),
@@ -1226,11 +1240,11 @@ async fn list_jobs(
 
 async fn retry_job(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Job, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Job, Action::Write, &trace)?;
     let job = app
         .g14()
         .jobs
@@ -1240,11 +1254,11 @@ async fn retry_job(
 
 async fn cancel_job(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Job, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Job, Action::Write, &trace)?;
     let job = app
         .g14()
         .jobs
@@ -1254,11 +1268,11 @@ async fn cancel_job(
 
 async fn list_privacy(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &headers, Resource::Privacy, &trace)?;
+    read_role(&app, &incoming, Resource::Privacy, &trace)?;
     let user = qstr(&q, "user_id");
     Ok(Json(serde_json::json!({
         "trace": trace,
@@ -1275,11 +1289,11 @@ struct PrivacyBody {
 
 async fn request_privacy(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     ApiJson(body): ApiJson<PrivacyBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Privacy, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Privacy, Action::Write, &trace)?;
     let kind = PrivacyKind::parse(&body.kind)
         .ok_or_else(|| AdminError::bad_input("kind 只能是 export 或 delete"))?;
     let action = match kind {
@@ -1306,12 +1320,12 @@ async fn request_privacy(
 
 async fn fulfill_privacy(
     State(app): State<Shared>,
-    headers: HeaderMap,
+    incoming: auth::AdminAuth,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &headers, Resource::Privacy, Action::Write, &trace)?;
+    let caller = write_caller(&app, &incoming, Resource::Privacy, Action::Write, &trace)?;
     let request = app.g14().privacy.fulfill(
         &caller.session.actor,
         caller.session.role,

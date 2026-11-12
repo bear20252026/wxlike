@@ -6654,6 +6654,7 @@ dependencies = [
  "wxlike-core",
  "wxlike-platform",
  "wxlike-report",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -6922,6 +6923,7 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -7126,6 +7128,7 @@ dependencies = [
  "wxlike-core",
  "wxlike-mq",
  "wxlike-net",
+ "wxlike-types",
 ]
 
 [[package]]

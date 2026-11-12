@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 wxlike-core = { path = "../core" }
+# `Authorization: Bearer` 的解析与平台/管理面共用一份（`wxlike_types::Bearer`）。
+# 选 types 而不是 api 是刻意的：rtc 是纯 WebRTC/DTLS 层，不该为了
+# 一个纯字符串解析把 axum 拖进依赖树。
+wxlike-types = { path = "../types" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

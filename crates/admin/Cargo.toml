@@ -16,6 +16,9 @@ wxlike-report = { path = "../report" }
 wxlike-core = { path = "../core" }
 # 权限模型只有一份：后台的角色矩阵复用命令面的 `Capability`，不复制枚举
 wxlike-cmd = { path = "../cmd" }
+# `Authorization: Bearer` 的解析只有一份（`wxlike_types::Bearer`）：管理面自己写
+# 一遍的结果是大小写敏感，合法的 `bearer abc` 被当成没带凭据。
+wxlike-types = { path = "../types" }
 tokio = { workspace = true }
 axum = { version = "0.8" }
 serde = { workspace = true }

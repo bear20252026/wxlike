@@ -3487,6 +3487,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wxlike-core",
+ "wxlike-types",
 ]
 
 [[package]]

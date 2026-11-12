@@ -8,6 +8,8 @@ description = "G04 object storage, uploads, files, isolated transcoding, backup 
 [dependencies]
 wxlike-core = { path = "../../core" }
 wxlike-api = { path = "../../api" }
+# `Authorization: Bearer` 的解析与平台/管理面共用一份（`wxlike_types::Bearer`）
+wxlike-types = { path = "../../types" }
 axum = { version = "0.8", features = ["macros"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }

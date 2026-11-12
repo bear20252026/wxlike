@@ -87,15 +87,15 @@ pub struct Authed {
 }
 
 impl Authed {
+    /// 从 `Authorization: Bearer <token>` 里取令牌。
+    ///
+    /// 解析规则只有一份，在 [`wxlike_types::Bearer`]（RFC 6750 §2.1：
+    /// scheme 大小写不敏感、分隔符是任意空白、头值两端 OWS 不算凭据）。
+    /// 这里只做"从 HeaderMap 里把头值取出来"这一步——各服务的错误类型
+    /// 不同，拒绝形状由调用方自己定。
     pub fn bearer_from(headers: &axum::http::HeaderMap) -> Option<&str> {
         let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-        let (_, token) = raw.split_once(char::is_whitespace)?;
-        let scheme = &raw[..raw.len() - token.len() - 1];
-        if scheme.trim().eq_ignore_ascii_case("bearer") && !token.trim().is_empty() {
-            Some(token.trim())
-        } else {
-            None
-        }
+        wxlike_types::Bearer::parse(raw).map(wxlike_types::Bearer::token)
     }
 }
 

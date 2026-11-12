@@ -7390,6 +7390,7 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -7555,6 +7556,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wxlike-core",
+ "wxlike-types",
 ]
 
 [[package]]

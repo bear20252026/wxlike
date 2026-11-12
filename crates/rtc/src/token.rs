@@ -871,15 +871,19 @@ pub fn ensure_dest_room_permission(
 /// `pkg/service/auth.go:68-84` `APIKeyAuthMiddleware.ServeHTTP` 的取令牌部分：
 /// 优先 `Authorization: Bearer <jwt>`，否则退回 `?access_token=<jwt>`（上游
 /// 刻意不读 form body，为了让代理转发的请求体保持原样）。
+///
+/// 解析用 [`wxlike_types::Bearer`]（全服务端一份），因此这里比上游的 Go
+/// 中间件**多接受**几种合法写法：上游写的是 `strings.HasPrefix(h,
+/// "Bearer ")`，大小写敏感，而 RFC 6750 §2.1 规定 scheme 大小写不敏感。
+/// 多接受不是放宽鉴权：令牌后面还要过 `verify_access`，错一个字符就
+/// `PermissionDenied`。
 pub fn bearer_token(
     auth_header: Option<&str>,
     query_token: Option<&str>,
 ) -> Result<String, TokenError> {
     if let Some(header) = auth_header.filter(|h| !h.is_empty()) {
-        return header
-            .strip_prefix("Bearer ")
-            .map(str::to_string)
-            .filter(|t| !t.is_empty())
+        return wxlike_types::Bearer::parse(header)
+            .map(|presented| presented.token().to_string())
             .ok_or(TokenError::MissingAuthorization);
     }
     query_token
@@ -1813,10 +1817,23 @@ mod tests {
     /// `APIKeyAuthMiddleware.ServeHTTP` 的取令牌部分：Bearer 优先，退回
     /// query `access_token`；有 Authorization 头但不是 Bearer 前缀即拒，
     /// 不再回退到 query（上游正是这么排的）。
+    ///
+    /// 合法写法这一侧比上游宽（scheme 大小写不敏感、头值两端 OWS 不算凭据，
+    /// 见 [`wxlike_types::Bearer`]）：上游的 Go 是 `HasPrefix(h, "Bearer ")`。
     #[test]
     fn bearer_and_query_token_extraction_match_the_middleware() {
         assert_eq!(
             bearer_token(Some("Bearer abc.def.ghi"), None).unwrap(),
+            "abc.def.ghi"
+        );
+        // RFC 6750 §2.1：scheme 大小写不敏感。上游会拒，我们接受——
+        // 令牌照样要过 `verify_access`，多接受一种写法不放宽鉴权。
+        assert_eq!(
+            bearer_token(Some("bearer abc.def.ghi"), None).unwrap(),
+            "abc.def.ghi"
+        );
+        assert_eq!(
+            bearer_token(Some("  Bearer\tabc.def.ghi  "), None).unwrap(),
             "abc.def.ghi"
         );
         assert_eq!(
