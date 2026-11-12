@@ -35,9 +35,11 @@ use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::Json;
 use rusqlite::{params, OptionalExtension as _};
-use wxlike_identity::qr_login::{PollState, ScanView};
+use wxlike_identity::qr_login::{self, PollState, ScanView, Ticket};
 
-use super::repo::qr_login::{check_qr_state, locate_ticket_by_secret, ticket_creator};
+use super::repo::qr_login::{
+    check_qr_state, creator_and_verifier, locate_ticket_by_secret, register_creator, scan_hint,
+};
 
 /// QR 票据 secret 的十六进制长度（与 identity::qr_login 生成侧一致）。
 pub(crate) const QR_SECRET_HEX_LEN: usize = 32;
@@ -90,7 +92,7 @@ pub(crate) fn consume_qr_ticket(
     let conn = platform.db().lock();
     let id = locate_ticket_by_secret(&conn, secret)?;
     secret_must_match(ticket_id, &id)?;
-    let creator = ticket_creator(&conn, &id)?;
+    let (creator, _verifier) = creator_and_verifier(&conn, &id)?;
 
     let (state, expires_at, device_id, label): (String, i64, String, String) = conn
         .query_row(
@@ -189,6 +191,82 @@ pub(crate) fn db_err(err: rusqlite::Error) -> ApiError {
 }
 
 impl Platform {
+    /// 建票：identity 状态机（`create` + `bind`）+ 平台自有创建者登记，
+    /// 一次持锁做完。
+    ///
+    /// `verifier` 是服务端持有的 PKCE 秘密（见模块头第 2 点），64 hex 满足
+    /// qr_login 的长度/字符集校验。它进 `qr_ticket_creator` 而不是
+    /// `identity_qr`——identity 状态机不知道 "creator" 是谁。
+    pub(crate) fn create_qr_ticket(
+        &self,
+        creator: &str,
+        prefs: &TicketPrefs,
+    ) -> std::result::Result<Ticket, ApiError> {
+        let verifier = crate::auth::random_hex(QR_SECRET_HEX_LEN);
+        let now = wxlike_core::types::now_ms() as i64;
+        let conn = self.db().lock();
+        let ticket = qr_login::create(&conn, now).map_err(id_err)?;
+        qr_login::bind(
+            &conn,
+            &ticket.id,
+            &verifier,
+            &prefs.device_id,
+            &prefs.platform,
+            &prefs.label,
+            "",
+            now,
+        )
+        .map_err(id_err)?;
+        register_creator(&conn, &ticket.id, creator, &verifier, now)?;
+        Ok(ticket)
+    }
+
+    /// 轮询（只有创建者能看）：状态 + "扫过码的账号线索"。
+    pub(crate) fn qr_ticket_state(
+        &self,
+        ticket_id: &str,
+        viewer: &str,
+    ) -> std::result::Result<(PollState, Option<String>), ApiError> {
+        let now = wxlike_core::types::now_ms() as i64;
+        let conn = self.db().lock();
+        let (verifier, creator) = super::repo::qr_login::creator_and_verifier(&conn, ticket_id)?;
+        if creator != viewer {
+            return Err(ApiError::forbidden("not your ticket"));
+        }
+        let state = qr_login::poll(&conn, ticket_id, &verifier, now).map_err(id_err)?;
+        // 扫过码才给提示：让创建端能显示 "xxx 的手机扫了码"。
+        let hint = scan_hint(&conn, ticket_id)?;
+        Ok((state, hint))
+    }
+
+    /// 扫码：identity 状态机按 secret 定位（secret 是二维码里唯一能对上的东西）。
+    pub(crate) fn scan_qr_ticket(
+        &self,
+        secret: &str,
+        scanner: &str,
+    ) -> std::result::Result<ScanView, ApiError> {
+        let now = wxlike_core::types::now_ms() as i64;
+        let conn = self.db().lock();
+        qr_login::scan(&conn, secret, scanner, now).map_err(id_err)
+    }
+
+    /// 批准 / 拒绝。
+    pub(crate) fn decide_qr_ticket(
+        &self,
+        ticket_id: &str,
+        scanner: &str,
+        approve: bool,
+    ) -> std::result::Result<(), ApiError> {
+        let now = wxlike_core::types::now_ms() as i64;
+        let conn = self.db().lock();
+        let outcome = if approve {
+            qr_login::approve(&conn, ticket_id, scanner, now)
+        } else {
+            qr_login::reject(&conn, ticket_id, scanner, now)
+        };
+        outcome.map_err(id_err)
+    }
+
     /// 用户显示名（兑换回包 `{name}` 用；用户不存在时退回 id 本身）。
     pub fn display_name_of(&self, user_id: &str) -> crate::error::Result<String> {
         let c = self.db().lock();
