@@ -420,7 +420,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "41e365a9de361612ca8f5f2e4c09f5e8f90a2d63063546b2fe86908922518e91",
+      "local_sha256": "434f31173f7ecb65aeafed1a53f1280229dd63a1130a157ea2dcd18e45075c2f",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-schema.md",
       "used_by": "friend_acs / friend_policy / group_member_acs 三张表的列形状（两列 mode + 两档默认位）"
     },
@@ -475,7 +475,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "ad6b8f33bed6c00559d00b9e6cfc8962671332352c15c1c5f18b62178dfdab92",
+      "local_sha256": "736450fc102a06461115b2eff85e5b206f062d7cd7fbb8c030bb803114389157",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-schema.md",
       "used_by": "identity_session_token / identity_token_serial / identity_retry 三张表的列形状"
     }
