@@ -26,6 +26,7 @@ mod communities;
 mod content_index;
 mod db;
 mod devices;
+mod domain;
 mod error;
 pub mod extract;
 mod favorites;
@@ -68,24 +69,26 @@ use axum::{Json, Router};
 use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
-pub use crate::account::{spawn_account_job_worker, JobReply};
 pub use crate::auth::{
     hash_password, random_hex, token_digest, verify_password, AdminAuth, Authed,
 };
-pub use crate::call::CallRegistry;
 pub use crate::db::Db;
-pub use crate::devices::{DeviceReg, DeviceRow};
+pub use crate::domain::account::{spawn_account_job_worker, JobReply};
+pub use crate::domain::call::CallRegistry;
+pub use crate::domain::devices::{DeviceReg, DeviceRow};
+pub use crate::domain::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
+pub use crate::domain::groups_admin::GroupInvite;
+pub use crate::domain::media::{
+    LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE,
+};
+pub use crate::domain::perms::Perm;
+pub use crate::domain::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
+pub use crate::domain::relations::{StrangerRequest, StrangerState};
+pub use crate::domain::status::spawn_status_sweeper;
+pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
+pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
-pub use crate::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
-pub use crate::groups_admin::GroupInvite;
-pub use crate::media::{LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE};
-pub use crate::perms::Perm;
-pub use crate::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
-pub use crate::relations::{StrangerRequest, StrangerState};
 pub use crate::security::{hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id};
-pub use crate::status::spawn_status_sweeper;
-pub use crate::users::{Credentials, Profile, ProfilePatch, PublicProfile};
-pub use crate::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
 /// tests call [`Platform::sweep_expired_redpackets`] directly so the expiry path
@@ -161,7 +164,7 @@ impl Default for PlatformOptions {
         Self {
             session_ttl_ms: DEFAULT_SESSION_TTL_MS,
             pbkdf2_rounds: auth::DEFAULT_ROUNDS,
-            max_media_bytes: media::MAX_MEDIA_BYTES,
+            max_media_bytes: crate::domain::media::MAX_MEDIA_BYTES,
             admin_token: None,
             report_sla_ms: wxlike_report::DEFAULT_SLA_MS,
             moderation_mode: wxlike_moderation::Mode::PreReview,
@@ -247,7 +250,7 @@ pub struct Platform {
     /// group_id -> member ids, invalidated on every membership change (WP-04).
     group_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
     /// swappable object store behind `/api/media` (WP-05).
-    media: std::sync::Mutex<Arc<dyn media::MediaStore>>,
+    media: std::sync::Mutex<Arc<dyn crate::domain::media::MediaStore>>,
     /// P3 支柱 C 频道时间线的读扩散信箱（与主库同文件/同内存实例）。
     message_store: Option<wxlike_message::MessageStore>,
     /// P4 风控前置层（ADR-20 第一层）：进程内滑动窗口，不落库。
@@ -293,7 +296,9 @@ impl Platform {
             sink: std::sync::Mutex::new(None),
             group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             // an in-memory platform must not write into the working directory
-            media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(temp_media_dir()))),
+            media: std::sync::Mutex::new(Arc::new(crate::domain::media::LocalDirStore::new(
+                temp_media_dir(),
+            ))),
             message_store: Some(wxlike_message::MessageStore::open(None)?),
             calls: CallRegistry::default(),
             risk: wxlike_risk::RiskEngine::with_defaults(),
@@ -329,8 +334,8 @@ impl Platform {
             options,
             sink: std::sync::Mutex::new(None),
             group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            media: std::sync::Mutex::new(Arc::new(media::LocalDirStore::new(
-                media::default_media_dir(),
+            media: std::sync::Mutex::new(Arc::new(crate::domain::media::LocalDirStore::new(
+                crate::domain::media::default_media_dir(),
             ))),
             message_store: Some(wxlike_message::MessageStore::open(path)?),
             calls: CallRegistry::default(),

@@ -431,10 +431,11 @@ describe("会话切换 — 真清，不是注释", () => {
 });
 
 describe("台账漂移守卫 — 与 Rust 服务端同源", () => {
-  it("LEDGER_KINDS 与 crates/platform/src/wallet.rs 的 mod kind 完全一致", () => {
-    const rust = readFileSync(path.resolve(HERE, "../../../../crates/platform/src/wallet.rs"), "utf8").replace(/\r\n/g, "\n");
+  it("LEDGER_KINDS 与 crates/platform/src/domain/wallet.rs 的 mod kind 完全一致", () => {
+    // P3-11 拆层后 `mod kind` 住在 domain 层，handler 只剩路由。
+    const rust = readFileSync(path.resolve(HERE, "../../../../crates/platform/src/domain/wallet.rs"), "utf8").replace(/\r\n/g, "\n");
     const block = rust.match(/pub mod kind\s*\{([\s\S]*?)\n\}/);
-    expect(block, "wallet.rs 里找不到 pub mod kind").toBeTruthy();
+    expect(block, "domain/wallet.rs 里找不到 pub mod kind").toBeTruthy();
     const consts = [...(block?.[1] ?? "").matchAll(/pub const \w+: &str = "([^"]+)";/g)].map((m) => m[1]);
     expect(consts.sort()).toEqual(LEDGER_KINDS);
   });

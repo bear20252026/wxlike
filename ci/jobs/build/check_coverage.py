@@ -21,8 +21,35 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "ci" / "jobs"))
 
-from lib.gitdiff import GitError, added_lines, changed_files  # noqa: E402
+from lib.gitdiff import GitError, added_line_text, changed_files  # noqa: E402
 from lib.paths import GlobSet, normalize  # noqa: E402
+
+
+def instrumentable_lines(added: dict[int, str]) -> set[int]:
+    """从 `added_line_text` 的结果里挑出会生成可插桩代码的行号。
+
+    注释、属性、空行一律不生成代码；`use` 也不生成——包括跨多行的
+    `use crate::domain::users::{`（它的续行 `};` 看上去像代码，其实不是）。
+    把这些行算进“必须被覆盖的改动行”只会产生假失败：P3-11 拆层给每个
+    handler 文件加了 `//!` 层说明，又把 `use crate::<f>::X` 改写成
+    `use crate::domain::<f>::X`，于是这几个安全路径文件的“改动行”全是非代码行。
+    """
+    out: set[int] = set()
+    in_use = False
+    for n in sorted(added):
+        s = added[n].strip()
+        if in_use:
+            if s.endswith(';'):
+                in_use = False
+            continue
+        if not s or s.startswith(('//', '#[', '#!')):
+            continue
+        if s.startswith(('use ', 'pub use ')):
+            if not s.endswith(';'):
+                in_use = True
+            continue
+        out.add(n)
+    return out
 
 
 def parse_lcov(path: Path) -> dict[str, dict[int, int]]:
@@ -99,10 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"coverage gate: {len(targets)} security-sensitive file(s) changed")
     for path in targets:
         try:
-            changed = added_lines(args.root, args.base, args.head, path)
+            added = added_line_text(args.root, args.base, args.head, path)
         except GitError as err:
             print(f"ERROR cannot diff {path}: {err}", file=sys.stderr)
             return 1
+        changed = instrumentable_lines(added)
         if not changed:
             continue
         matched = match_lcov(coverage, path)
