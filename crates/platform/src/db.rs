@@ -445,6 +445,27 @@ where
     join_blocking(ran)
 }
 
+/// `UPDATE` / `DELETE` 影响行数为 0 → `NotFound`：**唯一**的一处判定。
+///
+/// 写语句的 `WHERE` 里带着归属条件（`AND user_id = ?`、`AND author = ?`），
+/// 所以"没这行"与"不是你的"落进同一个 0。这时候**必须**回同一个 404：
+/// 分开回（403 vs 404）就等于告诉对方"这个 id 存在，只是不属于你"——
+/// 一个可枚举的账号/内容id 列表就这么送出去了。
+///
+/// 这条规则原来是 `page::ensure_updated`，但它是**任何写操作**共用的，
+/// 不是列表语义（`page` 里另外四件才是一回事）。搬到这里，
+/// 让 `page` 只讲列表，写路径的判定只有一处。
+///
+/// 各 feature 里曾各自手抄一遍 `if changed == 0 { NotFound }`（17 处），
+/// 抄错的形式不是编译失败而是**语义漂移**：把 0 行当成"冲突"或"禁止"，
+/// 于是同一张表上出现两种 404/409 口径，客户端分流跟着分叉。
+pub(crate) fn ensure_updated(changed: usize) -> Result<()> {
+    if changed == 0 {
+        return Err(PlatformError::NotFound);
+    }
+    Ok(())
+}
+
 /// Statements slower than this land in the log with their text (truncated).
 const SLOW_SQL_MS: u64 = 100;
 
@@ -914,5 +935,35 @@ mod adr28_evidence {
             matches!(outcome, Err(PlatformError::Internal(_))),
             "阻塞池里的崩溃必须归成 Internal（可重试与否由调用方判），实际 {outcome:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod zero_rows_rule {
+    //! [`super::ensure_updated`] 的规则钉桩：**0 行只能有一种解释**。
+    //!
+    //! 这条规则的价值全在"统一"上——调用方的 `WHERE ... AND owner = ?` 让
+    //! "没这行"和"不是你的"落进同一个 0，所以 0 必须**无条件**回 `NotFound`。
+    //! 一旦某个 feature 改成 `Conflict` / `Forbidden`，同一张表上就出现了两种
+    //! 口径，客户端分流跟着分叉，而 id 存在与否也随之可枚举。
+    //!
+    //! 这里只守映射本身；"两种情况确实都返回 0"由调用方的 SQL 与各 feature
+    //! 的端到端用例覆盖。
+
+    use super::ensure_updated;
+    use crate::error::PlatformError;
+
+    #[test]
+    fn zero_rows_is_always_not_found() {
+        assert!(
+            matches!(ensure_updated(0), Err(PlatformError::NotFound)),
+            "0 行必须回 NotFound；回 Conflict/Forbidden 等于承认这个 id 存在"
+        );
+    }
+
+    #[test]
+    fn non_zero_rows_passes() {
+        assert!(ensure_updated(1).is_ok(), "影响 1 行是成功");
+        assert!(ensure_updated(7).is_ok(), "影响多行同样是成功，不是错误");
     }
 }

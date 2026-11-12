@@ -301,9 +301,7 @@ impl Platform {
                          WHERE id = ?6 AND author = ?7",
                         params![text, media, visibility.as_str(), group, now, id, author],
                     )?;
-                    if changed == 0 {
-                        return Err(PlatformError::NotFound);
-                    }
+                    crate::db::ensure_updated(changed)?;
                     id
                 }
                 None => {
@@ -349,9 +347,7 @@ impl Platform {
             "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
             params![draft_id, author],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 

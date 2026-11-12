@@ -2,6 +2,9 @@
 //!
 //! 这些不是业务逻辑，是"每个列表端点都要写一遍"的机械件。集中一处的原因
 //! 很实际：九个 G05 模块各自抄一份后，跨文件重复窗口和质量闸门先红给你看。
+//!
+//! 写路径的对应机械件（"影响行数为 0"怎么翻译）不在这里，在 [`crate::db`]：
+//! 那不是列表语义，是任何写操作都共用的判定。
 
 use axum::Json;
 
@@ -38,14 +41,6 @@ pub(crate) fn escape_like(s: &str) -> String {
         out.push(ch);
     }
     out
-}
-
-/// DELETE/UPDATE 影响行数为 0 即"不存在或不是你的"（防探测统一 404）。
-pub(crate) fn ensure_updated(changed: usize) -> Result<()> {
-    if changed == 0 {
-        return Err(PlatformError::NotFound);
-    }
-    Ok(())
 }
 
 /// 列表端点统一的响应尾：items + 游标 + 快照版本。

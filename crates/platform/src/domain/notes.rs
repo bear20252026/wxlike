@@ -11,7 +11,7 @@
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::notes`]。
 
 use crate::error::{PlatformError, Result};
-use crate::page::{self, parse_cursor};
+use crate::page::parse_cursor;
 use crate::validate;
 use crate::Platform;
 use rusqlite::{params, OptionalExtension as _};
@@ -165,7 +165,7 @@ impl Platform {
             "DELETE FROM notes WHERE id = ?1 AND user_id = ?2",
             params![id, user],
         )?;
-        page::ensure_updated(changed)
+        crate::db::ensure_updated(changed)
     }
 }
 

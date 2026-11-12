@@ -71,9 +71,7 @@ impl Platform {
             "DELETE FROM blocks WHERE user_id = ?1 AND blocked_id = ?2",
             params![user, target],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 
@@ -198,9 +196,7 @@ impl Platform {
              WHERE id = ?2 AND to_uid = ?3 AND status = 'pending'",
             params![status, id, user],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 
@@ -267,9 +263,7 @@ impl Platform {
              WHERE user_id = ?1 AND friend_id = ?2",
             params![user, friend, starred.map(|s| s as i64), tags_json, group],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 }

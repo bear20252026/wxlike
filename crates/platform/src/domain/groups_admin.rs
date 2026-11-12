@@ -113,9 +113,7 @@ impl Platform {
             "DELETE FROM group_mutes WHERE group_id = ?1 AND user_id = ?2",
             params![group, target],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 
@@ -322,9 +320,7 @@ impl Platform {
              WHERE group_id = ?2 AND user_id = ?3 AND status = 'pending'",
             params![status, group, user],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 }

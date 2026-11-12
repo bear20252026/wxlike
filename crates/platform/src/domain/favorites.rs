@@ -332,9 +332,7 @@ impl Platform {
              WHERE id = ?3 AND user_id = ?4",
             params![label, sort_order, id, user],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         let row = favorite_row(&c, user, id)?.ok_or(PlatformError::NotFound)?;
         Ok(scrub(row))
     }
@@ -378,7 +376,7 @@ impl Platform {
             "DELETE FROM favorites WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )?;
-        page::ensure_updated(changed)
+        crate::db::ensure_updated(changed)
     }
 }
 

@@ -287,9 +287,7 @@ impl Platform {
             "UPDATE friends SET remark = ?1 WHERE user_id = ?2 AND friend_id = ?3",
             params![remark, me, friend],
         )?;
-        if changed == 0 {
-            return Err(PlatformError::NotFound);
-        }
+        crate::db::ensure_updated(changed)?;
         Ok(())
     }
 

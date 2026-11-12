@@ -531,9 +531,7 @@ impl Platform {
                  WHERE id = ?2 AND author = ?3 AND state <> 'deleted'",
                 params![wxlike_core::types::now_ms() as i64, id, author],
             )?;
-            if changed == 0 {
-                return Err(PlatformError::NotFound);
-            }
+            crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "article", id)?;
             crate::domain::repo::favorites::revoke_source(tx, "article", id)?;

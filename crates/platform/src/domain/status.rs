@@ -123,9 +123,7 @@ impl Platform {
                  WHERE id = ?2 AND owner = ?3 AND cleared_at IS NULL",
                 params![now, id, owner],
             )?;
-            if changed == 0 {
-                return Err(PlatformError::NotFound);
-            }
+            crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
             crate::domain::repo::favorites::revoke_source(tx, "status", id)?;
