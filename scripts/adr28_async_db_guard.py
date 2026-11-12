@@ -47,15 +47,27 @@ SCAN_ROOTS = (
 )
 SKIP_DIR_PARTS = ("/cmd/", "/mcp/", "/client", "/ffi/", "/features/media/", "/ui/", "/apps/", "/target/")
 # 本卡三条样板热点（消息写 / 关系写 / 群管理写）：规则 3 在这些文件里整文件强制。
+#
+# handler 路径与 domain 路径**成对列出**：P3-11 把 `impl Platform` 搬进
+# `domain/<feature>.rs` 之后，阻塞调用是跟着方法走的，不是跟着 handler 走的。
+# 只留 handler 路径等于把闸门的下半截悄悄撤掉——`mention_all` 的
+# `TODO(ADR-28)` 就是这样变成"挂着的待办"的。
 ENFORCED_FILES = (
     "crates/platform/src/friends.rs",
     "crates/platform/src/groups.rs",
     "crates/platform/src/groups_admin.rs",
+    "crates/platform/src/domain/friends.rs",
+    "crates/platform/src/domain/groups.rs",
+    "crates/platform/src/domain/groups_admin.rs",
 )
 # 规则 3 点名的样板函数：`communities.rs` 不是本卡独占文件，整文件强制会把 20 个
 # 无关读接口一起卷进来，所以只把"消息写"这两条样板钉住——样板不许退化。
+# 这两条样板**刻意不是 `async fn`**（见 domain/communities.rs 的 ADR-28 样板注释），
+# 规则 3 只看 async fn，所以它们不再命中——钉在这里是为了让"样板不许退化"这条
+# 有据可查，而不是靠 review 记着。
 ENFORCED_FNS = {
     "crates/platform/src/communities.rs": {"send_channel_message", "send_thread_reply"},
+    "crates/platform/src/domain/communities.rs": {"send_channel_message", "send_thread_reply"},
 }
 WAIVER = "TODO(ADR-28)"
 
