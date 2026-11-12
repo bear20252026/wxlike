@@ -339,9 +339,18 @@ pub const ROUTES: &[Route] = &[
 ];
 
 /// 分页命令的默认页大小。
-const DEFAULT_PAGE_LIMIT: i64 = 100;
-/// 搜索命令的默认返回条数（搜索结果比历史更贵）。
-const DEFAULT_SEARCH_LIMIT: i64 = 50;
+///
+/// 取自 [`wxlike_limits::DEFAULT_PAGE_LIMIT`]——**这是唯一的出处**。这里曾经是自
+/// 己的 `100`：于是同一条 `conv.history`，MCP 路径（`wxlike-client`，用共享值）
+/// 要 50 条、运行时路径（本 crate）要 100 条，而编译器对此一言不发。
+///
+/// 换成共享值是**零行为变更**：`conv.history` 唯一真实调用点
+/// （`ffi::client::history`）显式传 `limit`；`msg.search` / `community.threads`
+/// 没有经由本路由的调用方。默认值只在调用方省略时生效，目前只有本文件的单测
+/// 会走到（`optional_params_get_defaults` / `query_metacharacters_do_not_break_the_path`）。
+const DEFAULT_PAGE_LIMIT: i64 = wxlike_limits::DEFAULT_PAGE_LIMIT as i64;
+/// 搜索命令的默认返回条数。同样取自共享 crate（搜索比历史更贵，所以更小）。
+const DEFAULT_SEARCH_LIMIT: i64 = wxlike_limits::DEFAULT_SEARCH_LIMIT as i64;
 /// 拼路径时预留的额外容量（参数替换会变长）。
 const PATH_SLACK: usize = 32;
 
@@ -671,7 +680,7 @@ mod tests {
     #[test]
     fn optional_params_get_defaults() {
         let request = route(&action("conv.history"), &json!({"conv": "c1"})).expect("route");
-        assert_eq!(request.path, "/api/history/c1?before_seq=0&limit=100");
+        assert_eq!(request.path, "/api/history/c1?before_seq=0&limit=50");
     }
 
     #[test]
@@ -679,7 +688,7 @@ mod tests {
         let request = route(&action("msg.search"), &json!({"q": "a b&c#d"})).expect("route");
         assert_eq!(
             request.path,
-            "/api/search/messages?q=a%20b%26c%23d&limit=50"
+            "/api/search/messages?q=a%20b%26c%23d&limit=20"
         );
     }
 

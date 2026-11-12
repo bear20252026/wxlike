@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 wxlike-ledger = { path = "../../ledger" }
+# 默认页/搜索条数的唯一出处（见 `crates/limits` 的 "放什么、不放什么"）
+wxlike-limits = { path = "../../limits" }
 thiserror = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }

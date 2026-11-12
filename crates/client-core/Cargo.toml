@@ -9,6 +9,8 @@ description = "wxlike 客户端核心：端口（ports）与运行时状态机�
 wxlike-types = { path = "../types" }
 # 命令目录（纯数据）：核心用它判断"这条 action 是不是写、要不要幂等键"
 wxlike-cmd = { path = "../cmd" }
+# 默认页/搜索条数的唯一出处（见 `crates/limits` 的 "放什么、不放什么"）
+wxlike-limits = { path = "../limits" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

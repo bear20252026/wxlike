@@ -11,7 +11,13 @@ pub const IMAGE_MAX_BYTES: u64 = 20 * MIB;
 pub const STICKER_MAX_BYTES: u64 = 5 * MIB;
 pub const VOICE_MAX_BYTES: u64 = 20 * MIB;
 pub const VOICE_MAX_MS: u32 = 10 * 60 * 1000;
-pub const DEFAULT_PAGE_LIMIT: u32 = 50;
+/// 默认页大小。**值只有 [`wxlike_limits::DEFAULT_PAGE_LIMIT`] 一个出处**，
+/// 这里按本模块的 `u32` 口径转发——文件列表、备份列表用的是同一个默认值，
+/// 各订一套就会出现"同一个产品里两个面默认条数不一样"。
+/// 与本资源上限的关系由 `limits_are_sane` 里的编译期断言钉住。
+pub const DEFAULT_PAGE_LIMIT: u32 = wxlike_limits::DEFAULT_PAGE_LIMIT as u32;
+/// 媒体文件列表自己的上限。**上限是按资源定的政策**，不进共享 crate
+/// （见 `crates/limits` 的 "放什么、不放什么"）。
 pub const MAX_PAGE_LIMIT: u32 = 100;
 pub const HEIGHT_360: u32 = 360;
 pub const HEIGHT_720: u32 = 720;

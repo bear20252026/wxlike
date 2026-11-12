@@ -7,10 +7,22 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_SEARCH_LIMIT: usize = 20;
+/// 搜索默认条数。**值只有 [`wxlike_limits::DEFAULT_SEARCH_LIMIT`] 一个出处**，
+/// 这里按本模块的 `usize` 口径转发——同一条 `msg.search` / 目录搜索在不同
+/// 入口该拿一样多的结果，各订一套就会出现"同一个产品里两个面默认条数不一样"。
+///
+/// 与本资源上限的关系（默认 ≤ 上限）由紧跟其后的编译期断言钉住。
+pub const DEFAULT_SEARCH_LIMIT: usize = wxlike_limits::DEFAULT_SEARCH_LIMIT as usize;
+/// 目录搜索自己的上限。**上限是按资源定的政策**，不进共享 crate
+/// （见 `crates/limits` 的 "放什么、不放什么"）。
 pub const MAX_SEARCH_LIMIT: usize = 50;
 pub const MAX_QUERY_CHARS: usize = 64;
 pub const MAX_PUBLISHED_VERSIONS: usize = 32;
+
+const _: () = assert!(
+    DEFAULT_SEARCH_LIMIT <= MAX_SEARCH_LIMIT,
+    "搜索默认条数应当 <= 本资源上限"
+);
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]

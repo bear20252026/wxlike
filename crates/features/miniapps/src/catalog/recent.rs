@@ -9,7 +9,14 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+/// "最近使用"列表的默认条数。
+///
+/// **刻意不复用 [`wxlike_limits::DEFAULT_SEARCH_LIMIT`] 或 `catalog::source` 的同名
+/// 常量**：那是"搜索"的默认，这是"最近使用"的默认——含义不同，只是当前取值碰巧
+/// 都是 20。`crates/limits` 的口径是"按含义命名，不按值命名"，所以这里保留独立
+/// 定义；哪天最近列表想显示更多，改这一处就够了，不会连带改掉搜索。
 pub const DEFAULT_RECENT_LIMIT: usize = 20;
+/// 最近使用列表自己的上限（上限按资源定，不进共享 crate）。
 pub const MAX_RECENT_LIMIT: usize = 50;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
