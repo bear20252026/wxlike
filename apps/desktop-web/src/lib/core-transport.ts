@@ -351,8 +351,8 @@ function needIsoMs(value: unknown, key: string): number {
 }
 
 /**
- * kind → 记账方向。**这份名单必须与 `crates/platform/src/wallet.rs` 的 `mod kind`
- * 一致**（`wallet-core.test.ts` 直接读那个 Rust 源文件比对，防止两边各写一套）。
+ * kind → 记账方向。**这份名单必须与 `crates/platform/src/domain/wallet.rs` 的
+ * `mod kind` 一致**（`core-transport.test.ts` 直接读那个 Rust 源文件比对，防止两边各写一套）。
  * 桥刻意不给金额补符号（方向是服务端口径），界面要显示 `+/-` 就只能按 kind 判，
  * 判不出来就报错 —— 认不出的 kind 兜成"收入"是把账做错。
  */
