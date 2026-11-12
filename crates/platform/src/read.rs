@@ -1,49 +1,16 @@
-//! P3 读扩散接线：把**已存在**的信箱能力暴露成 HTTP。
-//!
-//! 重要：这里不新建表、不新建游标。序列号、已读游标、未读数、五层同步指令
-//! 全部来自 [`wxlike_message::MessageStore`]（`crates/message`，ADR-16/17）。
-//! 之前我在 platform 层另写了一套 `read_cursor`，与它重复，已回滚——见
-//! `docs/p3-mailbox.md`。
-//!
-//! 本模块只解决一件事：**会话 id → 属主三元组**（owner_type, owner_id）。
-//! 信箱按属主组织，而 HTTP 拿到的是 conv_id，所以需要一张映射表。direct 的
-//! `d-a~b` 可以推出来，群与频道是随机 id，必须落表（`conv_owner`）。
-//!
-//! 当前覆盖：channel（`communities::send_channel_message` 已写入信箱）。
-//! direct/group 仍走 `core::Store` 扇出，**未镜像进信箱**，因此它们的
-//! `unread` 会是 0——这是接线未完成，不是算错。
-//!
-//! 参与者闸门（AUTHZ-012 / #230）：三个入口都先过
-//! [`Platform::assert_conv_participant`]——登录不等于有资格读这个会话。
+//! **handler 层**（`read`）：路由 + 提取器 + 响应组装。
+//! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
+use crate::auth::Authed;
+use crate::error::{ApiError, PlatformError};
+use crate::PlatformState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::params;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::auth::Authed;
-use crate::error::{ApiError, PlatformError, Result};
-use crate::{Platform, PlatformState};
-
-/// 信箱错误 → 平台错误（`Mail` 变体已有，别再 leak 字符串）。
-fn mail<T>(r: wxlike_message::Result<T>) -> Result<T> {
-    r.map_err(|e| PlatformError::Mail(e.to_string()))
-}
-
-/// 直聊 id 的两半；不是恰好 `d-a~b` 形状就返回 `None`。
-///
-/// 畸形 id（`d-a~b~c`、空段）不猜参与者——宁可拒绝也不放行。
-fn direct_participants(conv: &str) -> Option<(&str, &str)> {
-    let mut parts = conv.strip_prefix("d-")?.split('~');
-    let a = parts.next()?;
-    let b = parts.next()?;
-    if parts.next().is_some() || a.is_empty() || b.is_empty() {
-        return None;
-    }
-    Some((a, b))
-}
+use crate::domain::read::{SyncView, UnreadView};
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
@@ -52,165 +19,11 @@ pub fn routes() -> Router<PlatformState> {
         .route("/api/conv/{conv}/sync", get(sync))
 }
 
-/// 未读快照（全部来自信箱）。
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct UnreadView {
-    pub conv: String,
-    /// 属主类型：direct / group / channel。
-    pub owner: String,
-    /// 信箱最新序列号。
-    pub head_seq: u64,
-    /// 我的已读游标。
-    pub read_seq: u64,
-    /// `head_seq − read_seq`。
-    pub unread: u64,
-}
-
 #[derive(Deserialize, Default)]
 pub struct MarkRead {
     /// 读到第几条；缺省 = 读到最新。
     #[serde(default)]
     pub seq: Option<u64>,
-}
-
-/// 五层差分指令（原样透出 `MessageStore::sync_plan` 的判定）。
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "directive", rename_all = "snake_case")]
-pub enum SyncView {
-    UpToDate,
-    Delta { since_version: u64 },
-    BatchCollapse,
-    FullResync,
-}
-
-impl Platform {
-    /// 会话 → 属主类型。direct 由 id 推导，其余查 `conv_owner`。
-    pub fn owner_kind_of(&self, conv: &str) -> Result<wxlike_message::OwnerType> {
-        use wxlike_message::OwnerType;
-        if conv.starts_with("d-") {
-            return Ok(OwnerType::Direct);
-        }
-        let c = self.db().lock();
-        let kind: Option<String> = c
-            .query_row(
-                "SELECT owner_type FROM conv_owner WHERE conv_id = ?1",
-                params![conv],
-                |r| r.get(0),
-            )
-            .ok();
-        match kind.as_deref() {
-            Some("group") => Ok(OwnerType::Group),
-            Some("channel") => Ok(OwnerType::Channel),
-            // 没有记录的老会话：默认按群处理（比 500 更有用，且可后续补录）
-            _ => Ok(OwnerType::Group),
-        }
-    }
-
-    /// 登记会话属主（建群 / 建频道时调用）。幂等。
-    pub fn set_owner_kind(&self, conv: &str, kind: wxlike_message::OwnerType) -> Result<()> {
-        let name = match kind {
-            wxlike_message::OwnerType::Direct => "direct",
-            wxlike_message::OwnerType::Group => "group",
-            wxlike_message::OwnerType::Channel => "channel",
-        };
-        self.db().lock().execute(
-            "INSERT INTO conv_owner(conv_id, owner_type) VALUES(?1, ?2)
-             ON CONFLICT(conv_id) DO UPDATE SET owner_type = excluded.owner_type",
-            params![conv, name],
-        )?;
-        Ok(())
-    }
-
-    /// 调用者是不是这个会话的参与者（AUTHZ-012 / #230）。
-    ///
-    /// 直聊 id `d-a~b` 可预测（uid 能从好友列表/群成员拿到），所以
-    /// "登录即可读"会变成通信量侧信道：`head_seq` 泄露两人之间有多少条消息，
-    /// `read` 还能给别人会话写自己的已读游标。三个入口（unread/read/sync）
-    /// 都必须先过这道闸。
-    ///
-    /// 判定复用权威关系数据，不靠 id 形状猜成员：
-    /// - direct：参与者就是 id 两半（与 `media::may_read_conv` 同规则）；
-    /// - group：`group_members` 有行；
-    /// - channel：`channel_role` 专属行或社区角色继承（`effective_channel_role`）。
-    ///
-    /// 查不到/查错一律按非成员处理——鉴权闸门 fail closed。
-    pub fn assert_conv_participant(&self, user_id: &str, conv: &str) -> Result<()> {
-        use wxlike_message::OwnerType;
-        let allowed = match self.owner_kind_of(conv)? {
-            OwnerType::Direct => {
-                direct_participants(conv).is_some_and(|(a, b)| a == user_id || b == user_id)
-            }
-            OwnerType::Group => self.is_member(conv, user_id)?,
-            OwnerType::Channel => self
-                .effective_channel_role(conv, user_id)
-                .ok()
-                .flatten()
-                .is_some(),
-        };
-        if allowed {
-            Ok(())
-        } else {
-            Err(PlatformError::Forbidden)
-        }
-    }
-
-    pub fn conv_unread(&self, user_id: &str, conv: &str) -> Result<UnreadView> {
-        self.assert_conv_participant(user_id, conv)?;
-        let owner = self.owner_kind_of(conv)?;
-        let store = self
-            .message_store()
-            .ok_or(PlatformError::Mail("mailbox unavailable".into()))?;
-        let head_seq = mail(store.head_seq((owner, conv)))?;
-        let unread = mail(store.unread((owner, conv), user_id))?;
-        Ok(UnreadView {
-            conv: conv.to_string(),
-            owner: match owner {
-                wxlike_message::OwnerType::Direct => "direct",
-                wxlike_message::OwnerType::Group => "group",
-                wxlike_message::OwnerType::Channel => "channel",
-            }
-            .to_string(),
-            head_seq,
-            read_seq: head_seq.saturating_sub(unread),
-            unread,
-        })
-    }
-
-    pub fn mark_conv_read(
-        &self,
-        user_id: &str,
-        conv: &str,
-        upto: Option<u64>,
-    ) -> Result<UnreadView> {
-        self.assert_conv_participant(user_id, conv)?;
-        let owner = self.owner_kind_of(conv)?;
-        let store = self
-            .message_store()
-            .ok_or(PlatformError::Mail("mailbox unavailable".into()))?;
-        let target = match upto {
-            Some(seq) => seq,
-            None => mail(store.head_seq((owner, conv)))?,
-        };
-        mail(store.ack((owner, conv), user_id, target))?;
-        self.conv_unread(user_id, conv)
-    }
-
-    pub fn conv_sync(&self, user_id: &str, conv: &str, client_version: u64) -> Result<SyncView> {
-        self.assert_conv_participant(user_id, conv)?;
-        let owner = self.owner_kind_of(conv)?;
-        let store = self
-            .message_store()
-            .ok_or(PlatformError::Mail("mailbox unavailable".into()))?;
-        let plan = mail(store.sync_plan((owner, conv), client_version))?;
-        Ok(match plan {
-            wxlike_message::SyncDirective::UpToDate => SyncView::UpToDate,
-            wxlike_message::SyncDirective::Delta { since_version } => {
-                SyncView::Delta { since_version }
-            }
-            wxlike_message::SyncDirective::BatchCollapse => SyncView::BatchCollapse,
-            wxlike_message::SyncDirective::FullResync => SyncView::FullResync,
-        })
-    }
 }
 
 async fn unread(
