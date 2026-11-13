@@ -21,7 +21,7 @@ jobs:
             GIT_REVISION=${{ github.sha }}
             WXLIKE_VERSION=0.1.0
           cache-from: type=gha,scope=server-image
-          cache-to: type=gha,mode=max,scope=server-image
+          cache-to: type=gha,mode=min,scope=server-image
       - name: C9 non-root/read-only/secret checks
         run: bash containers/server/verify-image.sh wxlike-server:ci
       - name: C9 start -> login -> send -> restart recovery
@@ -74,6 +74,6 @@ jobs:
           tags: wxlike-live-ingest:ci
           build-args: GIT_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=ingest-image
-          cache-to: type=gha,mode=max,scope=ingest-image
+          cache-to: type=gha,mode=min,scope=ingest-image
       - name: C9 FFmpeg version, licence and NOTICE
         run: bash ci/jobs/server/check_ffmpeg_notice.sh wxlike-live-ingest:ci

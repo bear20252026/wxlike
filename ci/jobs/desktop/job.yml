@@ -24,9 +24,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
-      # 不缓存 target：这条 entry 1069 MB（全仓最大），而作业本身只有 ~3 min，
-      # 实测缓存带来的温差 ≈ 0（对比 test/native 冷跑要多花 4-9 min）。
-      # 理由见 ci/jobs/README.md「Caching and supply chain」。
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          # key 不含 manifest 哈希：既不放 hashFiles(...)，也显式关掉 rust-cache 自带的
+          # add-rust-environment-hash-key（它默认会哈希所有 Cargo.toml/Cargo.lock）。
+          # 理由见 ci/jobs/README.md「Caching and supply chain」。
+          add-rust-environment-hash-key: false
+          key: ${{ runner.os }}-desktop-${{ env.RUSTUP_TOOLCHAIN }}
+          workspaces: ui/src-tauri
       - run: npm ci
         working-directory: ui
       - name: C9 frontend bundle consumed by Tauri

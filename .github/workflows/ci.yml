@@ -464,7 +464,7 @@ jobs:
 
           '
         cache-from: type=gha,scope=server-image
-        cache-to: type=gha,mode=max,scope=server-image
+        cache-to: type=gha,mode=min,scope=server-image
     - name: C9 non-root/read-only/secret checks
       run: bash containers/server/verify-image.sh wxlike-server:ci
     - name: C9 start -> login -> send -> restart recovery
@@ -520,7 +520,7 @@ jobs:
         tags: wxlike-live-ingest:ci
         build-args: GIT_REVISION=${{ github.sha }}
         cache-from: type=gha,scope=ingest-image
-        cache-to: type=gha,mode=max,scope=ingest-image
+        cache-to: type=gha,mode=min,scope=ingest-image
     - name: C9 FFmpeg version, licence and NOTICE
       run: bash ci/jobs/server/check_ffmpeg_notice.sh wxlike-live-ingest:ci
   android:
@@ -679,6 +679,11 @@ jobs:
         sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
 
         '
+    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      with:
+        add-rust-environment-hash-key: false
+        key: ${{ runner.os }}-desktop-${{ env.RUSTUP_TOOLCHAIN }}
+        workspaces: ui/src-tauri
     - run: npm ci
       working-directory: ui
     - name: C9 frontend bundle consumed by Tauri
