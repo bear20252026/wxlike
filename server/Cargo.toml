@@ -51,6 +51,9 @@ redis = ["wxlike-mq/redis"]
 nats = ["wxlike-mq/nats", "dep:async-nats"]
 
 [dev-dependencies]
+# 集成测试用 `Client::connect`（跳过证书校验）。它只在 `insecure-lab` feature
+# 打开时存在，所以这里显式开；生产构建不走 dev-dependencies，不受影响。
+wxlike-net = { path = "../crates/net", features = ["insecure-lab"] }
 # integration tests drive the real HTTP surface (ureq matches the UI's client)
 ureq = { version = "3", features = ["json"] }
 # #295：挂载后的 media 路由要像 crates/platform/tests 那样用 tower::oneshot 打

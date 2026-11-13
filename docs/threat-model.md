@@ -25,7 +25,10 @@
 2. **群聊消息体** — Megolm sender-key（每说话者一把出站密钥，1:1 通道分发）。
    N 人群不做 O(N²) 两两协商；成员变更触发轮换，新成员读不到轮换前的历史。
 3. **传输层身份** — QUIC 证书 TOFU 钉扎（首连记指纹，之后证书变了就拒绝），
-   替换默认的 skip-verify；`--insecure-lab` 显式开关才允许跳过。
+   替换默认的 skip-verify；`--insecure-lab` 显式开关才允许跳过——库侧落地为
+   **默认关闭**的 cargo feature `insecure-lab`：打开后 `Client::connect` /
+   `connect_anonymous` / `connect_retry_insecure` 才存在，默认构建里没有
+   任何跳过校验的公开入口。
 4. **推送内容** — 离线推送 payload 只含"谁发了消息"，不含正文。
 
 ## 不保护什么（明确边界）

@@ -22,3 +22,6 @@ bytes = "1"
 wxlike-platform = { path = "../platform" }
 wxlike-mq = { path = "../mq" }
 serde_json = { workspace = true }
+# 集成测试用 `Client::connect`（跳过校验）。它只在 `insecure-lab` feature
+# 打开时存在，所以这里显式开；生产构建不走 dev-dependencies，不受影响。
+wxlike-net = { path = "../net", features = ["insecure-lab"] }

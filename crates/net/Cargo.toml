@@ -31,8 +31,21 @@ tracing = "0.1"
 # already in the monolith's tree; the "ws" feature is what we actually need.
 axum = { version = "0.8", features = ["ws"] }
 
+[features]
+# 实验室专用构造（`Client::connect` / `connect_anonymous` /
+# `connect_retry_insecure`）跳过证书校验，**默认关闭**。
+#
+# 这是 `--insecure-lab` 开关在库侧的落地：库没有 CLI，编译期 feature 是唯一
+# 的"显式 opt-in"。默认构建里这三个构造根本不存在，生产代码请用
+# `connect_verified` / `connect_retry_verified`（TOFU + 证书固定）。
+insecure-lab = []
+
 [dev-dependencies]
 futures-util = "0.3"
+# 自依赖只为在**测试与示例**里打开 `insecure-lab`：本仓 20+ 个集成测试和
+# scripts/bench_*.rs 需要跳过校验的构造。`cargo build` 不走 dev-dependencies，
+# 所以默认构建里仍然没有它们。
+wxlike-net = { path = ".", features = ["insecure-lab"] }
 # WP-02/A2 integration test drives the platform HTTP API against a live hub.
 wxlike-platform = { path = "../platform" }
 axum = { version = "0.8", features = ["macros", "multipart"] }

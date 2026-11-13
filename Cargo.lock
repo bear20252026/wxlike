@@ -7009,6 +7009,7 @@ dependencies = [
  "wxlike-core",
  "wxlike-message",
  "wxlike-mq",
+ "wxlike-net",
  "wxlike-platform",
 ]
 

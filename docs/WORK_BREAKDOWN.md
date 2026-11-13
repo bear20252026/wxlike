@@ -344,7 +344,7 @@ GET  /api/wallet/ledger?since=                                 -> 流水（分�
 
 - 新模块 `wxlike-core::ratchet`：X3DH 风格预共享密钥协商（预密钥表经 platform 上传/拉取：`POST/GET /api/keys`）+ 对称 ratchet + DH ratchet（RustCrypto）。
 - 每消息头含 ratchet 公钥+计数；乱序到达可解（out-of-order 支持 ≥ 64 条窗口）。
-- QUIC：客户端预置 CA 或 TOFU（首连钉扎指纹，存本地），替换 `connect_insecure`（保留为 `--insecure-lab` 显式开关）。
+- QUIC：客户端预置 CA 或 TOFU（首连钉扎指纹，存本地），替换 `connect_insecure`（保留为 `--insecure-lab` 显式开关，库侧落地为默认关闭的 cargo feature `wxlike-net/insecure-lab`）。
 - 兼容：ratchet 失败回退旧 static-static 需打日志（过渡期），文档写明迁移计划。
 - **群组 E2EE（2026-10-16 增补）**：单聊 ratchet 之外补 Megolm 风格 sender-key 方案（Matrix 规范，Apache-2.0 可实现）——N 人群不做 O(N²) 两两协商；验收含 10 人群加解密正确性与新成员入群后的密钥轮换。
 

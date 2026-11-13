@@ -322,7 +322,8 @@ cargo test -p wxlike-core --test envelope_v2     # 19 项
 预密钥目录 `POST/GET /api/keys`：**GET 是认领语义**，每次弹出一把一次性密钥，
 两个发起者永远拿不到同一把；库存见底返回空列表，属主 `bundle_refilled` 补货。
 QUIC 传输默认 **TOFU 钉扎**（首连记指纹进本地文件，之后证书变了直接拒绝），
-skip-verify 保留给 `--insecure-lab` 显式开关。群聊 Megolm sender-key，N 人群不做 O(N²)；
+skip-verify 保留给 `--insecure-lab` 显式开关（库侧落地为 cargo feature
+`wxlike-net/insecure-lab`，默认关闭；生产代码用 `connect_verified`）。群聊 Megolm sender-key，N 人群不做 O(N²)；
 成员变更轮换密钥，新成员读不到轮换前历史。威胁模型（保护什么/不保护什么——
 **元数据不隐藏**）见 [docs/threat-model.md](docs/threat-model.md)。
 

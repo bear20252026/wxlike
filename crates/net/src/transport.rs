@@ -147,8 +147,10 @@ fn endpoint_from_cert(
 
 /// Connect a client that skips server-cert verification (lab only).
 ///
-/// Production code must call [`connect_tofu`] instead; keep this behind an
-/// explicit `--insecure-lab` switch wherever it is used.
+/// Production code must call [`connect_tofu`] instead. This is crate-private,
+/// and the only callers are the `Client` constructors gated behind the
+/// `insecure-lab` cargo feature — so the skip-verify path cannot be reached
+/// from a default build.
 pub(crate) async fn connect_insecure(
     server_addr: std::net::SocketAddr,
     server_name: &str,
