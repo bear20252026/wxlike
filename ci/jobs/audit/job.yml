@@ -8,7 +8,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: 确保 main 分支存在（增量门禁需要 git diff main...HEAD）
+      - name: 确保 diff 基线可用（质量门优先 origin/main，其次本地 main）
         shell: bash
         run: |
           git fetch origin main:main || true
