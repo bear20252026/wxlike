@@ -39,7 +39,8 @@ jobs:
             "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0" > /dev/null
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-android-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+          # key 里故意不放 hashFiles('Cargo.lock')——理由见 ci/jobs/README.md「Caching and supply chain」。
+          key: ${{ runner.os }}-android-release-${{ env.RUSTUP_TOOLCHAIN }}
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
         with:
           flutter-version: 3.47.0
@@ -155,7 +156,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-ios-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+          key: ${{ runner.os }}-ios-release-${{ env.RUSTUP_TOOLCHAIN }}
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
         with:
           flutter-version: 3.47.0
