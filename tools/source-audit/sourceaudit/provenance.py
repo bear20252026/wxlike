@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,7 @@ def _check_ported(
     if not target.is_file():
         report.fail("PROV-MISSING", subject, "登记了 vendored 片段，但文件不存在", Severity.CRITICAL)
         return
+    _check_lf_pin(report, root, target, subject)
     claimed = entry.get("local_sha256", "")
     actual = sha256_file(target)
     if claimed != actual:
@@ -232,6 +234,89 @@ def _check_ported(
                 report.fail("PROV-PATCHLOG", subject, f"patchlog 不存在：{patchlog}", Severity.HIGH)
             elif len(read_text(log_path).strip().splitlines()) < 3:
                 report.fail("PROV-PATCHLOG", subject, f"patchlog 过于空泛：{patchlog}", Severity.MEDIUM)
+
+
+def _gitattributes_eol(root: Path, target: Path) -> tuple[str, str] | None:
+    """返回 `.gitattributes` 里**最后一条**命中 `target` 的规则（Git 是后写覆盖）。
+
+    没有命中任何规则时返回 `None`——那意味着检出端按平台默认走，正是要拦的情况。
+    """
+    path = root / ".gitattributes"
+    if not path.is_file():
+        return None
+    rel = target.relative_to(root).as_posix()
+    hit: tuple[str, str] | None = None
+    for raw in read_text(path).splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        pattern = parts[0]
+        if _gitattr_match(pattern, rel):
+            hit = (pattern, " ".join(parts[1:]))
+    return hit
+
+
+def _gitattr_match(pattern: str, rel: str) -> bool:
+    """按 Git 的 `.gitattributes` 通配语义匹配（`**` 跨段，`*` 不跨 `/`）。"""
+    anchored = "/" in pattern
+    if not anchored:
+        # 不含斜线的模式匹配任意层级的同名文件
+        rel = rel.rsplit("/", 1)[-1]
+    regex = ""
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            regex += "(?:.*/)?"
+            i += 3
+        elif pattern.startswith("**", i):
+            regex += ".*"
+            i += 2
+        elif pattern[i] == "*":
+            regex += "[^/]*"
+            i += 1
+        elif pattern[i] == "?":
+            regex += "[^/]"
+            i += 1
+        else:
+            regex += re.escape(pattern[i])
+            i += 1
+    return re.fullmatch(regex, rel) is not None
+
+
+def _check_lf_pin(report: Report, root: Path, target: Path, subject: str) -> None:
+    """登记文件必须被 `.gitattributes` 钉住换行，否则 sha256 是**机器相关**的。
+
+    本仓库 `core.autocrlf` 在 Windows 上通常是 true：没钉 LF 的文本文件重新
+    checkout 会变成 CRLF，于是同一个文件在这台机器上算出两个摘要——本地绿、
+    CI 红，换台机器就反过来。`crates/rtc/src/sfu.rs` 踩过一次，现在把这条
+    变成门禁而不是靠人记得。
+    """
+    hit = _gitattributes_eol(root, target)
+    if hit is None:
+        report.fail(
+            "PROV-NO-LF-PIN",
+            subject,
+            "登记文件没有 .gitattributes 规则：检出端会按平台默认翻译换行，"
+            "core.autocrlf=true 的机器上 sha256 与登记值对不上。"
+            f"加一行 `{target.relative_to(root).as_posix()} text eol=lf`",
+            Severity.HIGH,
+        )
+        return
+    pattern, attrs = hit
+    # `-text` / `binary` 是"不翻译"，与 `text eol=lf` 一样能保证跨平台同字节
+    if attrs in {"text eol=lf", "-text", "binary"}:
+        report.ok("PROV-LF-PIN", subject, f"{pattern} → {attrs}")
+        return
+    report.fail(
+        "PROV-LF-PIN",
+        subject,
+        f"`.gitattributes` 里命中的规则是 `{pattern} {attrs}`，没有把换行钉成 LF："
+        "检出端会按平台默认翻译，sha256 变成机器相关。改成 `text eol=lf`",
+        Severity.HIGH,
+    )
 
 
 def expires_ok(value: str | None, field: str, report: Report, subject: str) -> bool:

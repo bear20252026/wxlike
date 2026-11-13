@@ -19,6 +19,11 @@ crates/rtc/src/room.rs text eol=lf
 # token.rs 在 P3-12 后只剩 pub use 转发，不再是 sha256 登记对象；登记对象是子模块。
 crates/rtc/src/token/livekit.rs text eol=lf
 
+# 契约生成物是三端共用的**逐字节**基线：`generate.py --check` 按字节比，
+# 而生成器固定写 LF。检出端若被 core.autocrlf 改成 CRLF，--check 就在所有平台变红；
+# 钉 LF 让"检出"与"生成"永远一致。
+tools/codegen/out/** text eol=lf
+
 # 同上：这三份是 UP-OPENIM 的 adapted 登记对象（third_party/reviews/registry.json
 # 里记了 local_sha256）。Windows 上 core.autocrlf=true 的工作区会把 .rs 检出成
 # CRLF，同一个文件于是算出两个摘要——本地绿、CI 红。钉成 LF 才谈得上"可复现"。
@@ -40,3 +45,17 @@ crates/ledger/src/schema.rs text eol=lf
 crates/ledger/src/lib.rs text eol=lf
 crates/features/commerce/src/store.rs text eol=lf
 crates/features/commerce/src/payments.rs text eol=lf
+
+# UP-TINODE 的 adapted 登记对象（relations / identity 两个 crate）。同一个坑：
+# 不钉 LF，core.autocrlf=true 的机器上这 9 个文件重新 checkout 会变 CRLF，
+# sha256 与 registry 对不上。现在 `sourceaudit provenance check` 会把"登记文件
+# 没有 LF 钉"直接报成 PROV-NO-LF-PIN，不再靠人记得补。
+crates/features/relations/src/port.rs text eol=lf
+crates/features/relations/src/friend.rs text eol=lf
+crates/features/relations/src/group.rs text eol=lf
+crates/features/relations/src/lib.rs text eol=lf
+crates/features/identity/src/session.rs text eol=lf
+crates/features/identity/src/refresh.rs text eol=lf
+crates/features/identity/src/throttle.rs text eol=lf
+crates/features/identity/src/login_challenge.rs text eol=lf
+crates/features/identity/src/lib.rs text eol=lf
