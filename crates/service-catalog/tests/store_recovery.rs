@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 use wxlike_service_catalog::auth::{Authenticator, BearerAuthenticator};
 use wxlike_service_catalog::{
     Availability, Catalog, Clock, CreateOrderRequest, FileStore, Order, OrderConfig, OrderService,
@@ -58,16 +59,48 @@ impl VendorState {
     }
 }
 
+/// 供应商侧的闸门：`place_order` 一进来就停住，直到测试放行。
+///
+/// 用途是**确定性地**拉开 `reserve_idem` 与 `commit_idem` 之间的窗口。
+/// 并发同键提交真正的危险窗口就在这里：抢输的一方必须读到"在途、未定稿"
+/// 的记录并回 Conflict，而不是读到空文档报 INTERNAL。靠 spawn 时序去碰这个
+/// 窗口是测不准的——见 `concurrent_submits_reserve_once` 的注释。
+struct Gate {
+    entered: AtomicUsize,
+    go: Notify,
+}
+
+impl Gate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: AtomicUsize::new(0),
+            go: Notify::new(),
+        })
+    }
+
+    fn release(&self) {
+        // `notify_one` 在没有等待者时会存一个 permit，所以先 release 再 await 也不会丢。
+        self.go.notify_one();
+    }
+}
+
 /// 只用于故障注入的供应商替身；真实供应商适配器在 G07-03 侧。
 struct FaultProvider {
     state: Mutex<VendorState>,
+    gate: Mutex<Option<Arc<Gate>>>,
 }
 
 impl FaultProvider {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(VendorState::ready()),
+            gate: Mutex::new(None),
         })
+    }
+
+    /// 让后续的 `place_order` 停在供应商调用里，直到 `Gate::release`。
+    fn hold_at_place(&self, gate: Arc<Gate>) {
+        *self.gate.lock().unwrap() = Some(gate);
     }
 
     fn with<F: FnOnce(&mut VendorState)>(&self, change: F) {
@@ -125,6 +158,13 @@ impl ServiceProvider for FaultProvider {
         &self,
         request: &ProviderOrderRequest,
     ) -> Result<ProviderOrder, ProviderError> {
+        // 锁只在这个 let 语句里：`async_trait` 要求 future 是 Send，
+        // 而 `MutexGuard` 不是 Send，跨 await 持有会直接编译不过。
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.entered.fetch_add(1, Ordering::SeqCst);
+            gate.go.notified().await;
+        }
         let mut state = self.state.lock().unwrap();
         state.place_calls += 1;
         state.provider_seq += 1;
@@ -426,40 +466,74 @@ async fn concurrent_submits_reserve_once() {
     let dir = TempDir::new("conc");
     let h = restart(&dir, 1_000).await;
     let q = quote(&h).await;
+    // 闸门挡在供应商调用里：赢家占坑成功后在 `place_order` 停住，定稿尚未发生。
+    // 这样"抢输者读到在途记录"的窗口是**确定**的，不靠 spawn 时序碰运气。
+    let gate = Gate::new();
+    h.provider.hold_at_place(Arc::clone(&gate));
     let service = Arc::new(h.service);
+    let conflicts = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::new();
     for _ in 0..5 {
         let service = Arc::clone(&service);
         let q = q.clone();
+        let conflicts = Arc::clone(&conflicts);
         tasks.push(tokio::spawn(async move {
-            service.create("s1", request(&q.quote_id, "race")).await
+            match service.create("s1", request(&q.quote_id, "race")).await {
+                Ok(order) => Ok(order.order_id),
+                Err(err) if err.code() == Code::Conflict => {
+                    conflicts.fetch_add(1, Ordering::SeqCst);
+                    Err(())
+                }
+                Err(err) => panic!("unexpected create error: {err}"),
+            }
         }));
     }
-    let mut succeeded = 0;
-    let mut conflicts = 0;
-    let mut order_id = String::new();
+
+    // 等赢家走进 place_order、其余 4 个都撞回 Conflict，再放行。
+    // 放行前定稿不会发生，所以成功者必然只有赢家一个。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if gate.entered.load(Ordering::SeqCst) >= 1 && conflicts.load(Ordering::SeqCst) >= 4 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "并发用例超时：赢家未进 place_order，或输家未全部撞 Conflict"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    gate.release();
+
+    let mut order_ids = Vec::new();
     for task in tasks {
-        match task.await.expect("task join") {
-            Ok(order) => {
-                succeeded += 1;
-                order_id = order.order_id;
-            }
-            Err(err) if err.code() == Code::Conflict => conflicts += 1,
-            Err(err) => panic!("unexpected create error: {err}"),
+        if let Ok(order_id) = task.await.expect("task join") {
+            order_ids.push(order_id);
         }
     }
-    assert_eq!(succeeded, 1, "exactly one submit may create the order");
-    assert_eq!(conflicts, 4, "the rest must be rejected, not duplicated");
+
+    // 真变量只有一个：落盘订单数。`create` 的 Ok 有两种来源——赢家新建，
+    // 以及定稿之后的同键重放（下面那段单独验）。两者必须返回同一个订单。
+    // 旧版本这里断言 `succeeded == 1`，是把"重放"误当成"重复下单"：Windows
+    // 上赢家可能跑完整个流程后其余任务才轮到 reserve，于是合法地返回同一订单，
+    // 断言随机变红（PR #392 的 windows 作业就是这么红的）。
+    assert_eq!(order_ids.len(), 1, "闸门放开前只有赢家能成功");
+    assert_eq!(
+        conflicts.load(Ordering::SeqCst),
+        4,
+        "其余必须撞 Conflict，不是各建一单"
+    );
+    assert_eq!(h.provider.place_calls(), 1, "供应商只该被下一次单");
+    assert_eq!(h.payment.intents.load(Ordering::SeqCst), 1);
     let docs = order_docs(dir.path());
-    assert_eq!(docs.len(), 1);
-    assert!(docs[0].contains(&format!("\"order_id\":\"{order_id}\"")));
+    assert_eq!(docs.len(), 1, "并发同键提交只能落一个订单");
+    assert!(docs[0].contains(&format!("\"order_id\":\"{}\"", order_ids[0])));
 
     // 定稿后同键同请求重复提交：返回同一订单而不是失败。
     let after = service
         .create("s1", request(&q.quote_id, "race"))
         .await
         .unwrap();
-    assert_eq!(after.order_id, order_id);
+    assert_eq!(after.order_id, order_ids[0]);
 }
 
 #[tokio::test]
