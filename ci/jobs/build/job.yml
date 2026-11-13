@@ -141,10 +141,9 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup default "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
-        with:
-          add-rust-environment-hash-key: false
-          key: ${{ runner.os }}-wasm-${{ env.RUSTUP_TOOLCHAIN }}
+      # 不缓存 target：这条 entry 246 MB，而作业本身只有 ~1 min，
+      # 实测缓存带来的温差 ≈ 0（对比 test/native 冷跑要多花 4-9 min）。
+      # 理由见 ci/jobs/README.md「Caching and supply chain」。
       - name: C6 wasm compile (gap-aware)
         run: python3 ci/jobs/build/check_wasm.py
       - name: record known gaps
