@@ -35,7 +35,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA_DIR = ROOT / "crates" / "types" / "contract"
 OUT_DIR = ROOT / "tools" / "codegen" / "out"
 LOCK_FILE = ROOT / "tools" / "codegen" / "contract.lock.json"
-CATALOG_SRC = ROOT / "crates" / "cmd" / "src" / "lib.rs"
+CATALOG_DIR = ROOT / "crates" / "cmd" / "src" / "catalog"
+# `mod.rs` 是装配（`CATALOG` 常量），`spec.rs` 是类型定义；只有域文件里是命令
+# 数据。这是 catalog 模块自己写死的划分（见 mod.rs 的模块说明），不是猜测。
+CATALOG_NON_DATA = {"mod.rs", "spec.rs"}
+
+_COMMAND_ID = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_.]*$")
 
 SCHEMA_VERSION = "contract-v1"
 CONTRACT_VERSION = "1.0"
@@ -62,29 +67,203 @@ def digest_of(schemas: dict[str, dict]) -> str:
     return hasher.hexdigest()[:DIGEST_LEN]
 
 
+def _mask_rust(text: str) -> str:
+    """把注释与字符串字面量的**内容**替换成空格（保留长度与换行）。
+
+    生成器要在源码里找 `spec(` / `read_no_args(` 的调用点，而每个域文件的
+    模块文档里就写着这两个名字（"每条命令一个 `spec(...)` 调用"）。不遮掉
+    注释，就会把文档里的括号当成调用。
+
+    保留长度是为了让遮罩后的偏移能直接拿去原串上取参数。
+    """
+    out = list(text)
+    i, n = 0, len(text)
+
+    def blank(index: int) -> None:
+        if 0 <= index < n and out[index] != "\n":
+            out[index] = " "
+
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    blank(i)
+                    blank(i + 1)
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    break
+                blank(i)
+                i += 1
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                blank(i)
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            blank(i)
+            blank(i + 1)
+            i += 2
+            while i < n:
+                if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    blank(i)
+                    blank(i + 1)
+                    i += 2
+                    break
+                blank(i)
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _string_literals(text: str) -> list[str]:
+    """按出现顺序返回 `text` 里字符串字面量的内容（处理 `\\"` 转义）。"""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != '"':
+            i += 1
+            continue
+        i += 1
+        buf: list[str] = []
+        while i < n:
+            ch = text[i]
+            if ch == "\\" and i + 1 < n:
+                buf.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                break
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+        i += 1
+    return out
+
+
+def _balanced(text: str, open_index: int) -> str:
+    """返回 `text[open_index]` 处 `(` 到匹配 `)` 之间的内容（跳过字符串）。"""
+    depth = 0
+    i, n = open_index, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    break
+                i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1 : i]
+        i += 1
+    raise SystemExit("命令目录解析失败：括号不匹配")
+
+
 def parse_catalog() -> list[dict]:
-    """从 `crates/cmd/src/lib.rs` 抽出命令目录。
+    """从 `crates/cmd/src/catalog/` 的域文件里抽出命令目录。
 
     为什么解析 Rust 源码而不是维护一份 JSON：目录**只能有一处定义**。
     多一份副本就一定会漂移，而漂移的表现是"CLI 说支持、执行器没实现"。
-    这里的正则只认 `id:` / `summary:` / `capability:` 三个字段，格式变了
-    会立刻在这里报错（而不是悄悄生成一个空列表）。
+
+    定义形式（#329 起 catalog 按域拆成 `catalog/<域>.rs`，每条命令一次构造器
+    调用）：`spec(id, summary, params, capability, …)`，以及它的简写
+    `read_no_args(id, summary, scope)`（能力恒为 Read）。生成器只取前两个
+    字符串字面量当 id / summary，能力取 `spec` 实参里的 `Capability::X`。
+    `with_host(spec(…), HostCapability::X)` 这种包一层的照取不误——里面的
+    `spec(` 也是调用点。
+
+    两道闸，都是为了"格式变了要吵"：
+
+    1. **一条都解析不出来就报错**。旧的 `len(ids) == len(summaries) ==
+       len(capabilities)` 在 0==0==0 时也成立，于是解析器与源码脱节时会
+       静默生成空列表——跑一次就把三端命令表清空。这是本函数最不能出的
+       错，所以单独拦。
+    2. **与 `CATALOG` 装配的条数对账**。域文件里加了一条命令却没进装配表
+       （或反过来），这里会红，而不是等运行时才发现。
     """
-    if not CATALOG_SRC.is_file():
-        raise SystemExit(f"找不到命令目录：{CATALOG_SRC}")
-    text = CATALOG_SRC.read_text(encoding="utf-8")
-    ids = re.findall(r'id:\s*"([^"]+)"', text)
-    summaries = re.findall(r'summary:\s*"([^"]*)"', text)
-    capabilities = re.findall(r'capability:\s*Capability::(\w+)', text)
-    if not (len(ids) == len(summaries) == len(capabilities)):
+    if not CATALOG_DIR.is_dir():
+        raise SystemExit(f"找不到命令目录：{CATALOG_DIR}")
+    commands: list[dict] = []
+    for path in sorted(CATALOG_DIR.glob("*.rs")):
+        if path.name in CATALOG_NON_DATA:
+            continue
+        text = path.read_text(encoding="utf-8")
+        masked = _mask_rust(text)
+        for match in re.finditer(r"\b(spec|read_no_args)\s*\(", masked):
+            # `const fn spec(` 是定义，不是调用点
+            if text[: match.start()].rstrip().endswith("fn"):
+                continue
+            body = _balanced(text, match.end() - 1)
+            literals = _string_literals(body)
+            if len(literals) < 2:
+                # 注释/文档里提到的 `spec(…)` 已被 `_mask_rust` 遮成空格，
+                # 不会走到这里。真走到这里 = 一个真实调用点没有字面量 id /
+                # summary，那就是目录写法变了——报错，不要静默跳过。
+                raise SystemExit(
+                    f"命令目录解析失败：{path.name} 的 {match.group(1)}(…) "
+                    "里抽不到 id / summary 字符串字面量"
+                )
+            command_id, summary = literals[0], literals[1]
+            if not _COMMAND_ID.match(command_id):
+                raise SystemExit(
+                    f"命令目录解析失败：{path.name} 抽出非法命令 id {command_id!r}"
+                    "（命令 id 的形状是 `域.动作`）"
+                )
+            if match.group(1) == "read_no_args":
+                capability = "read"
+            else:
+                found = re.search(r"Capability::(\w+)", body)
+                if not found:
+                    raise SystemExit(
+                        f"命令目录解析失败：{path.name} 的 spec(…) 里找不到 Capability::"
+                    )
+                capability = found.group(1).lower()
+            commands.append(
+                {"id": command_id, "summary": summary, "capability": capability}
+            )
+
+    if not commands:
         raise SystemExit(
-            "命令目录解析失败：id/summary/capability 数量不一致 "
-            f"({len(ids)}/{len(summaries)}/{len(capabilities)})"
+            "命令目录解析出 0 条命令。这比生成一个空列表更危险——空列表会让"
+            "三端命令表全部清空。解析器与 catalog 的定义形式不一致了，请修"
+            " tools/codegen/generate.py 的 parse_catalog()。"
         )
-    return [
-        {"id": command_id, "summary": summary, "capability": capability.lower()}
-        for command_id, summary, capability in zip(ids, summaries, capabilities)
-    ]
+    _reconcile_with_assembly(commands)
+    return commands
+
+
+def _reconcile_with_assembly(commands: list[dict]) -> None:
+    """与 `catalog/mod.rs` 里 `CATALOG` 装配的条数对账。
+
+    域文件里那条命令没进装配表（或装配表多了一条），生成物会少一条/多一条，
+    而这条偏差只有在运行时才看得出来——所以在这里就拦住。
+    """
+    mod_rs = CATALOG_DIR / "mod.rs"
+    if not mod_rs.is_file():
+        raise SystemExit(f"找不到命令目录装配：{mod_rs}")
+    text = mod_rs.read_text(encoding="utf-8")
+    block = re.search(r"pub const CATALOG[^=]*=\s*&\[(.*?)\];", text, re.S)
+    if not block:
+        raise SystemExit("命令目录解析失败：mod.rs 里找不到 CATALOG 装配")
+    assembled = re.findall(r"::([A-Za-z_][A-Za-z0-9_]*)", re.sub(r"//[^\n]*", "", block.group(1)))
+    if len(assembled) != len(commands):
+        raise SystemExit(
+            f"命令目录解析失败：域文件里解析出 {len(commands)} 条命令，"
+            f"而 mod.rs 的 CATALOG 装配了 {len(assembled)} 条。两者必须一致"
+            "——新增命令要同时加 spec(…) 与装配项。"
+        )
 
 
 def header(comment: str, digest: str) -> str:
@@ -314,7 +493,11 @@ def build_outputs() -> dict[pathlib.Path, str]:
 def write_all(outputs: dict[pathlib.Path, str]) -> None:
     for path, text in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        # `newline="\n"` 是必须的：`write_text` 默认按 `os.linesep` 翻译，
+        # Windows 上会写出 CRLF。生成物是三端共用的**逐字节**基线，行尾漂一次
+        # `--check` 就在所有平台变红，而且 `git diff` 里是一整片噪声。
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
         print(f"写出 {path.relative_to(ROOT)}")
 
 
@@ -324,8 +507,14 @@ def check(outputs: dict[pathlib.Path, str]) -> int:
         if not path.is_file():
             stale.append(f"{path.relative_to(ROOT)}: 缺失")
             continue
-        if path.read_text(encoding="utf-8") != text:
-            stale.append(f"{path.relative_to(ROOT)}: 与契约不一致（重跑生成器）")
+        # 按**字节**比，不按解码后的 str 比：`read_text` 会把 CRLF 折成 LF，
+        # 那样行尾漂移会被悄悄放过。生成物必须逐字节等于生成结果。
+        if path.read_bytes() != text.encode("utf-8"):
+            actual = path.read_bytes().count(b"\r\n")
+            stale.append(
+                f"{path.relative_to(ROOT)}: 与契约不一致（重跑生成器）"
+                + (f"（含 {actual} 个 CRLF 行尾）" if actual else "")
+            )
     if stale:
         print("生成物已过期：", file=sys.stderr)
         for line in stale:

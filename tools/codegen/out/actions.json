@@ -2,6 +2,16 @@
   "actions": [
     {
       "capability": "read",
+      "id": "channel.roles",
+      "summary": "频道角色名单：谁在这个频道里是 owner/moderator/member/guest，含继承标记"
+    },
+    {
+      "capability": "read",
+      "id": "community.threads",
+      "summary": "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）"
+    },
+    {
+      "capability": "read",
       "id": "conv.list",
       "summary": "列出我参与的会话（含未读数）"
     },
@@ -21,6 +31,166 @@
       "summary": "五层差分指令：客户端该全量拉还是增量拉"
     },
     {
+      "capability": "write",
+      "id": "conv.ack",
+      "summary": "把已读游标推到指定 seq（缺省=最新）"
+    },
+    {
+      "capability": "read",
+      "id": "friend.list",
+      "summary": "好友列表（我的通讯录，按加入时间排）"
+    },
+    {
+      "capability": "read",
+      "id": "friend.requests.incoming",
+      "summary": "待我处理的好友申请（收件向，只含 pending）"
+    },
+    {
+      "capability": "read",
+      "id": "friend.requests.outgoing",
+      "summary": "我发出去的好友申请（发起向，含已接受/已拒绝）"
+    },
+    {
+      "capability": "write",
+      "id": "friend.request.create",
+      "summary": "发起好友申请（同一对象重复提交回 409，不会排第二队）"
+    },
+    {
+      "capability": "write",
+      "id": "friend.request.accept",
+      "summary": "同意一条好友申请（只有 pending 能被改，重复同意回 409）"
+    },
+    {
+      "capability": "write",
+      "id": "friend.request.decline",
+      "summary": "拒绝一条好友申请（只有 pending 能被改，重复拒绝回 409）"
+    },
+    {
+      "capability": "write",
+      "id": "friend.remark.set",
+      "summary": "给好友设置/修改备注（只有自己可见，随时可改）"
+    },
+    {
+      "capability": "destructive",
+      "id": "friend.remove",
+      "summary": "删除好友（双向移除、不可撤销，需确认令牌）"
+    },
+    {
+      "capability": "read",
+      "id": "friend.block.list",
+      "summary": "列出我的黑名单（只有自己看得到）"
+    },
+    {
+      "capability": "destructive",
+      "id": "friend.block.add",
+      "summary": "拉黑一个用户（其申请与陌生人消息将被拒绝，需确认令牌）"
+    },
+    {
+      "capability": "write",
+      "id": "friend.block.remove",
+      "summary": "解除拉黑（恢复对方发申请与陌生人消息的通道）"
+    },
+    {
+      "capability": "read",
+      "id": "friend.privacy.get",
+      "summary": "查看我的隐私规则（当前：是否允许陌生人发消息请求）"
+    },
+    {
+      "capability": "write",
+      "id": "friend.privacy.set",
+      "summary": "设置我的隐私规则（是否允许陌生人发消息请求）"
+    },
+    {
+      "capability": "read",
+      "id": "group.members",
+      "summary": "群成员列表（按游标翻页；翻页目前切在客户端）"
+    },
+    {
+      "capability": "read",
+      "id": "group.info",
+      "summary": "群基本信息与我的角色"
+    },
+    {
+      "capability": "read",
+      "id": "group.announcement.get",
+      "summary": "查看群公告（仅群成员，无公告时报错）"
+    },
+    {
+      "capability": "read",
+      "id": "group.mute_all.get",
+      "summary": "查看全员禁言状态（仅群成员）"
+    },
+    {
+      "capability": "write",
+      "id": "group.create",
+      "summary": "建群并拉入初始成员"
+    },
+    {
+      "capability": "write",
+      "id": "group.add_member",
+      "summary": "拉人进群"
+    },
+    {
+      "capability": "write",
+      "id": "group.announcement.set",
+      "summary": "设置/修改群公告（仅群主或管理员）"
+    },
+    {
+      "capability": "write",
+      "id": "group.mute_all.set",
+      "summary": "开启/关闭全员禁言（仅群主或管理员，对管理者无效）"
+    },
+    {
+      "capability": "destructive",
+      "id": "group.kick",
+      "summary": "把成员移出群（不可撤销）"
+    },
+    {
+      "capability": "read",
+      "id": "me.info",
+      "summary": "我是谁：user_id、昵称、在线设备"
+    },
+    {
+      "capability": "read",
+      "id": "me.sessions",
+      "summary": "我的登录会话（设备/时间），用于排查异地登录"
+    },
+    {
+      "capability": "read",
+      "id": "media.files.list",
+      "summary": "文件中心：按分类/文件夹翻页列出我能看到的文件与附件"
+    },
+    {
+      "capability": "read",
+      "id": "media.upload.get",
+      "summary": "查一个上传会话的状态（进度、是否秒传完成、过期时间）"
+    },
+    {
+      "capability": "write",
+      "id": "media.upload.start",
+      "summary": "开一个上传会话（声明 digest 命中已有对象时秒传完成）"
+    },
+    {
+      "capability": "write",
+      "id": "media.upload.complete",
+      "summary": "确认上传完成（分片传齐后落对象；未完成前对象不可引用）"
+    },
+    {
+      "capability": "write",
+      "id": "media.upload.cancel",
+      "summary": "取消一个未完成的上传会话（释放其分片与配额）"
+    },
+    {
+      "capability": "write",
+      "id": "media.object.access",
+      "summary": "为有权读的对象签发短期下载授权（带过期时间）"
+    },
+    {
+      "capability": "write",
+      "id": "media.object.revoke",
+      "summary": "撤销一个对象已签发的全部下载授权（旧链接立即失效）"
+    },
+    {
       "capability": "read",
       "id": "msg.list",
       "summary": "按 seq 区间取消息（不翻页，给脚本用）"
@@ -36,44 +206,9 @@
       "summary": "取单条消息（含撤回状态）"
     },
     {
-      "capability": "read",
-      "id": "group.members",
-      "summary": "群成员列表（分页，万人群不全量拉）"
-    },
-    {
-      "capability": "read",
-      "id": "group.info",
-      "summary": "群基本信息与我的角色"
-    },
-    {
-      "capability": "read",
-      "id": "community.threads",
-      "summary": "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）"
-    },
-    {
-      "capability": "read",
-      "id": "channel.roles",
-      "summary": "频道角色名单：谁在这个频道里是 owner/moderator/member/guest，含继承标记"
-    },
-    {
-      "capability": "read",
-      "id": "me.info",
-      "summary": "我是谁：user_id、昵称、在线设备"
-    },
-    {
-      "capability": "read",
-      "id": "me.sessions",
-      "summary": "我的登录会话（设备/时间），用于排查异地登录"
-    },
-    {
       "capability": "write",
       "id": "msg.send",
       "summary": "发一条文本消息（必须带 idempotency_key，重试不会重复发）"
-    },
-    {
-      "capability": "write",
-      "id": "conv.ack",
-      "summary": "把已读游标推到指定 seq（缺省=最新）"
     },
     {
       "capability": "write",
@@ -81,14 +216,9 @@
       "summary": "转发一条消息到另一个会话"
     },
     {
-      "capability": "write",
-      "id": "group.create",
-      "summary": "建群并拉入初始成员"
-    },
-    {
-      "capability": "write",
-      "id": "group.add_member",
-      "summary": "拉人进群"
+      "capability": "destructive",
+      "id": "msg.recall",
+      "summary": "撤回一条消息（他人消息需管理员）"
     },
     {
       "capability": "read",
@@ -119,16 +249,6 @@
       "capability": "write",
       "id": "video.view.report",
       "summary": "上报一次观看心跳（本次新增时长必须为正）"
-    },
-    {
-      "capability": "destructive",
-      "id": "group.kick",
-      "summary": "把成员移出群（不可撤销）"
-    },
-    {
-      "capability": "destructive",
-      "id": "msg.recall",
-      "summary": "撤回一条消息（他人消息需管理员）"
     }
   ],
   "contract": "1.0",
