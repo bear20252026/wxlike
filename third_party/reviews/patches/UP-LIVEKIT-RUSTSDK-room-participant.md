@@ -15,7 +15,7 @@
 - 本地 sha256：`55645b9cf5b5cc997b92ccd2e9a2823d454ff528a48482702963ec679b9ced21`
   （按 Git LF 字节计算；本仓库 `core.autocrlf=true`，未钉 LF 的文件在 Windows 重新 checkout
   会变成 CRLF 从而指纹漂移——`sfu.rs` 就踩过这个坑，`.gitattributes` 现已把
-  `crates/rtc/src/room.rs` 与 `crates/rtc/src/token.rs` 一并钉成 `text eol=lf`。
+  `crates/rtc/src/room.rs` 与 `crates/rtc/src/token/livekit.rs` 一并钉成 `text eol=lf`。
   该 sha 是 `036e5c3`（清 CI 三个红项）之后的值，见下文"拆函数不改语义"一节；
   registry 的 `local_sha256` 已同步）
 - 形态：**adapted**（逐段照抄行为/状态表/枚举语义，Rust 化改写 + 去依赖 + 换错误类型；

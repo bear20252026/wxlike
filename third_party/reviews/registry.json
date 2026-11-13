@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.provenance.v1",
-  "updated_at": "2026-11-30",
+  "updated_at": "2026-11-12",
   "note": "三段式登记：upstreams（仓级）→ files（片段级）→ 本地文件 sha256。ported/adapted 必须能在本地复现，且点名出现在 THIRD-PARTY-NOTICES.md。commit 是完整 SHA；每条的永久链接由 `sourceaudit provenance check` 打印。",
   "upstreams": [
     {
@@ -277,15 +277,15 @@
       "used_by": "rank_trends / rank_trends_paged（热搜榜；平台侧 /api/search/trends 的算法基线。platform -> wxlike-search 这条依赖边会动根 Cargo.lock，属串行热点，见 integration-requests/G05/authz-matrix-additions.yaml 的 related 段，等 G00 挂）"
     },
     {
-      "path": "crates/rtc/src/token.rs",
+      "path": "crates/rtc/src/token/livekit.rs",
       "upstream": "UP-LIVEKIT-RUSTSDK",
       "upstream_path": "livekit-token/src/access_token.rs",
       "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "f50d49f0ffd260c951d6129b0e2445cfae2fd563a0ce068ae4f0c67ff0341c97",
+      "local_sha256": "a2c3a74383f13b1fe79a88bde53f97827d4a9011b97af2fafab1f28971f14275",
       "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md",
-      "used_by": "crates/rtc/src/{call_session,room}.rs 的 ADR-25 入房凭证签发与校验",
+      "used_by": "crates/rtc/src/{call_session,room}.rs 的 ADR-25 入房凭证签发与校验（P3-12 从 crates/rtc/src/token.rs 纯移动拆出，代码逐字节未变）",
       "cross_checked_in": [
         "https://github.com/livekit/livekit/blob/94edd5da75246bd3c04becf88e3fda563e3d6e1c/pkg/service/auth.go"
       ]

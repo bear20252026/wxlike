@@ -16,7 +16,8 @@ crates/rtc/src/sfu.rs text eol=lf
 # 本地 core.autocrlf=true，不钉 LF 的话重新 checkout 会变 CRLF ⇒ PROV-SHA-MISMATCH
 # 直接 CRITICAL，而 CI 在 ubuntu 上永远是绿的，只有换机器才红。
 crates/rtc/src/room.rs text eol=lf
-crates/rtc/src/token.rs text eol=lf
+# token.rs 在 P3-12 后只剩 pub use 转发，不再是 sha256 登记对象；登记对象是子模块。
+crates/rtc/src/token/livekit.rs text eol=lf
 
 # 同上：这三份是 UP-OPENIM 的 adapted 登记对象（third_party/reviews/registry.json
 # 里记了 local_sha256）。Windows 上 core.autocrlf=true 的工作区会把 .rs 检出成
