@@ -81,11 +81,20 @@ The classification is fail-safe: if `git diff` cannot be computed, `full=true`.
   so its delta is rebuilt on every run. Bump `prefix-key` (`v0-rust` →
   `v0-rust-1`, …) in the same PR that changes dependencies; the next run
   re-populates the entry once and later runs are exact matches again.
+- **The Flutter SDK is deliberately not cached.** `subosito/flutter-action`
+  with `cache: true` stores the whole SDK as a single entry: measured
+  1.7 GB (`flutter-linux-stable-3.47.0-x64-…`), the largest entry in the
+  repository. A runner re-downloads it in ~5 s (1499 MB, measured
+  2026-11-13), because the tarball is already compressed and the runner
+  network is fast; restoring the cache costs a comparable download plus an
+  untar. Keeping it held the repository at 10.84 GB / 36 entries against
+  the 10 GB quota, so GitHub evicted Rust target entries, and an evicted
+  entry costs that job a ~5 min full dependency recompile. `cache: false`
+  trades about a minute of parallel SDK setup for removing the evictions.
 - Node caches use `ui/package-lock.json` (and `apps/desktop-web/package-lock.json`
   for the `web-v2` job; `packages/mini-sdk` has no dependencies, so no npm
-  cache or lockfile is claimed for it); Flutter uses the SDK version plus
-  `apps/mobile/pubspec.lock`. No Gradle cache is configured yet, so no claim is
-  made about Gradle reproducibility.
+  cache or lockfile is claimed for it). No Gradle cache is configured yet, so
+  no claim is made about Gradle reproducibility.
 - Every `uses:` is pinned to a 40-hex commit in `policy/action-pins.json`;
   `check_pins.py` also verifies the SHA is one of the policy's approved SHAs for
   that repository. `docker://` images must use `@sha256:`. npm tools such as

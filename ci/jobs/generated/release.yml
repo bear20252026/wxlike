@@ -61,7 +61,7 @@ jobs:
       with:
         flutter-version: 3.47.0
         channel: stable
-        cache: true
+        cache: false
     - name: C8 require signing material
       shell: bash
       env:
@@ -129,7 +129,7 @@ jobs:
       with:
         flutter-version: 3.47.0
         channel: stable
-        cache: true
+        cache: false
     - name: C8 require signing material
       shell: bash
       env:

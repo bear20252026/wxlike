@@ -49,7 +49,11 @@ jobs:
         with:
           flutter-version: 3.47.0
           channel: stable
-          cache: true
+          # 不缓存 SDK：一条 1.7 GB 的条目，而 runner 重新下载只要 ~5 s
+          # （实测 1499 MB / 约 5 s）。配额只有 10 GB，留着它就会把 Rust
+          # target 条目挤掉，被挤掉的重编要 ~5 min。
+          # 理由见 ci/jobs/README.md「Caching and supply chain」。
+          cache: false
       - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
         run: bash crates/ffi/regenerate.sh
       - name: C8 cross-compile libwxlike_ffi.so
@@ -189,7 +193,11 @@ jobs:
         with:
           flutter-version: 3.47.0
           channel: stable
-          cache: true
+          # 不缓存 SDK：一条 1.7 GB 的条目，而 runner 重新下载只要 ~5 s
+          # （实测 1499 MB / 约 5 s）。配额只有 10 GB，留着它就会把 Rust
+          # target 条目挤掉，被挤掉的重编要 ~5 min。
+          # 理由见 ci/jobs/README.md「Caching and supply chain」。
+          cache: false
       - name: C8 unsigned iOS compile (signing happens in release)
         if: steps.project.outputs.present == 'true'
         shell: bash
