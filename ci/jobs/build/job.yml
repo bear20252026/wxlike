@@ -60,7 +60,10 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
-          # key 里故意不放 hashFiles('Cargo.lock')——理由见 ci/jobs/README.md「Caching and supply chain」。
+          # key 不含 manifest 哈希：既不放 hashFiles(...)，也显式关掉 rust-cache 自带的
+          # add-rust-environment-hash-key（它默认会哈希所有 Cargo.toml/Cargo.lock）。
+          # 理由见 ci/jobs/README.md「Caching and supply chain」。
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-clippy-${{ env.RUSTUP_TOOLCHAIN }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -82,6 +85,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-test-${{ env.RUSTUP_TOOLCHAIN }}
       - run: cargo test --workspace --locked
 
@@ -103,6 +107,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-native-${{ env.RUSTUP_TOOLCHAIN }}
       - run: cargo build --workspace --all-targets --locked
 
@@ -120,6 +125,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-doc-${{ env.RUSTUP_TOOLCHAIN }}
       - run: cargo doc --no-deps --workspace --locked
 
@@ -137,6 +143,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-wasm-${{ env.RUSTUP_TOOLCHAIN }}
       - name: C6 wasm compile (gap-aware)
         run: python3 ci/jobs/build/check_wasm.py
@@ -184,6 +191,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-flutter-${{ env.RUSTUP_TOOLCHAIN }}
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
         with:

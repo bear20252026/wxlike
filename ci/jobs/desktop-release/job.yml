@@ -51,7 +51,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
-          # key 里故意不放 hashFiles('ui/src-tauri/Cargo.lock')——理由见 ci/jobs/README.md「Caching and supply chain」。
+          # key 不含 manifest 哈希：既不放 hashFiles(...)，也显式关掉 rust-cache 自带的
+          # add-rust-environment-hash-key（它默认会哈希所有 Cargo.toml/Cargo.lock）。
+          # 理由见 ci/jobs/README.md「Caching and supply chain」。
+          add-rust-environment-hash-key: false
           key: ${{ runner.os }}-desktop-release-${{ env.RUSTUP_TOOLCHAIN }}
           workspaces: ui/src-tauri
       - run: npm ci
