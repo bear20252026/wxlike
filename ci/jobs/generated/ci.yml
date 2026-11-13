@@ -75,7 +75,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-clippy-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-clippy-${{ env.RUSTUP_TOOLCHAIN }}
     - run: cargo clippy --workspace --all-targets --locked -- -D warnings
   test:
     name: test (${{ matrix.os }})
@@ -101,7 +101,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-test-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-test-${{ env.RUSTUP_TOOLCHAIN }}
     - run: cargo test --workspace --locked
   native:
     name: native (${{ matrix.os }})
@@ -127,7 +127,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-native-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-native-${{ env.RUSTUP_TOOLCHAIN }}
     - run: cargo build --workspace --all-targets --locked
   doc:
     name: doc
@@ -146,7 +146,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-doc-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-doc-${{ env.RUSTUP_TOOLCHAIN }}
     - run: cargo doc --no-deps --workspace --locked
   wasm:
     name: wasm
@@ -165,7 +165,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-wasm-${{ env.RUSTUP_TOOLCHAIN }}
     - name: C6 wasm compile (gap-aware)
       run: python3 ci/jobs/build/check_wasm.py
     - name: record known gaps
@@ -214,7 +214,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-flutter-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-flutter-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
       with:
         flutter-version: 3.47.0
@@ -362,7 +362,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-coverage-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
       with:
         tool: cargo-llvm-cov
@@ -552,7 +552,7 @@ jobs:
       run: "# `flutter.ndkVersion` 是 28.2.13676358（Flutter 3.47 默认）。runner 预装的\n# NDK 比它旧，AGP 会直接报 \"NDK not configured\"，所以显式装一次——\n# 版本写死在这里，别指望\"runner 上应该会有\"。\nSDKMANAGER=\"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager\"\nif [ ! -x \"$SDKMANAGER\" ]; then\n  echo \"::error::sdkmanager 不在 $SDKMANAGER；runner 镜像可能变了，检查 ANDROID_HOME\" >&2\n  ls \"$ANDROID_HOME\" >&2 || true\n  exit 1\nfi\nyes | \"$SDKMANAGER\" --licenses > /dev/null 2>&1 || true\n\"$SDKMANAGER\" --install \\\n  \"ndk;28.2.13676358\" \"platforms;android-36\" \"build-tools;36.0.0\" > /dev/null\n"
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-android-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-android-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
       with:
         flutter-version: 3.47.0
@@ -615,7 +615,7 @@ jobs:
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       if: steps.project.outputs.present == 'true'
       with:
-        key: ${{ runner.os }}-ios-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-ios-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
       if: steps.project.outputs.present == 'true'
       with:
@@ -676,7 +676,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-desktop-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-desktop-${{ env.RUSTUP_TOOLCHAIN }}
         workspaces: ui/src-tauri
     - run: npm ci
       working-directory: ui
@@ -755,7 +755,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-desktop-package-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-desktop-package-${{ env.RUSTUP_TOOLCHAIN }}
         workspaces: ui/src-tauri
     - run: npm ci
       working-directory: ui
@@ -823,7 +823,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-e2e-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-e2e-${{ env.RUSTUP_TOOLCHAIN }}
     - name: C11 build server
       run: cargo build --locked -p wxlike-server
     - name: C11 e2e, restart recovery and fault suites
@@ -861,7 +861,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-perf-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-perf-${{ env.RUSTUP_TOOLCHAIN }}
     - name: C11 build server
       run: cargo build --locked -p wxlike-server
     - name: C11 measured load against budgets

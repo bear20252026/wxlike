@@ -55,7 +55,7 @@ jobs:
       run: "# `flutter.ndkVersion` 是 28.2.13676358（Flutter 3.47 默认）。runner 预装的\n# NDK 比它旧，AGP 会直接报 \"NDK not configured\"，所以显式装一次——\n# 版本写死在这里，别指望\"runner 上应该会有\"。\nSDKMANAGER=\"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager\"\nif [ ! -x \"$SDKMANAGER\" ]; then\n  echo \"::error::sdkmanager 不在 $SDKMANAGER；runner 镜像可能变了，检查 ANDROID_HOME\" >&2\n  ls \"$ANDROID_HOME\" >&2 || true\n  exit 1\nfi\nyes | \"$SDKMANAGER\" --licenses > /dev/null 2>&1 || true\n\"$SDKMANAGER\" --install \\\n  \"ndk;28.2.13676358\" \"platforms;android-36\" \"build-tools;36.0.0\" > /dev/null\n"
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-android-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-android-release-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
       with:
         flutter-version: 3.47.0
@@ -122,7 +122,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-ios-release-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-ios-release-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
       with:
         flutter-version: 3.47.0
@@ -223,7 +223,7 @@ jobs:
         '
     - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
       with:
-        key: ${{ runner.os }}-desktop-release-${{ hashFiles('ui/src-tauri/Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+        key: ${{ runner.os }}-desktop-release-${{ env.RUSTUP_TOOLCHAIN }}
         workspaces: ui/src-tauri
     - run: npm ci
       working-directory: ui
