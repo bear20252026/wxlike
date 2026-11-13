@@ -167,10 +167,6 @@ jobs:
         rustup default "$RUSTUP_TOOLCHAIN"
 
         '
-    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
-      with:
-        add-rust-environment-hash-key: false
-        key: ${{ runner.os }}-wasm-${{ env.RUSTUP_TOOLCHAIN }}
     - name: C6 wasm compile (gap-aware)
       run: python3 ci/jobs/build/check_wasm.py
     - name: record known gaps
@@ -468,7 +464,7 @@ jobs:
 
           '
         cache-from: type=gha,scope=server-image
-        cache-to: type=gha,mode=max,scope=server-image
+        cache-to: type=gha,mode=min,scope=server-image
     - name: C9 non-root/read-only/secret checks
       run: bash containers/server/verify-image.sh wxlike-server:ci
     - name: C9 start -> login -> send -> restart recovery
@@ -524,7 +520,7 @@ jobs:
         tags: wxlike-live-ingest:ci
         build-args: GIT_REVISION=${{ github.sha }}
         cache-from: type=gha,scope=ingest-image
-        cache-to: type=gha,mode=max,scope=ingest-image
+        cache-to: type=gha,mode=min,scope=ingest-image
     - name: C9 FFmpeg version, licence and NOTICE
       run: bash ci/jobs/server/check_ffmpeg_notice.sh wxlike-live-ingest:ci
   android:
@@ -832,10 +828,6 @@ jobs:
         rustup default "$RUSTUP_TOOLCHAIN"
 
         '
-    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
-      with:
-        add-rust-environment-hash-key: false
-        key: ${{ runner.os }}-e2e-${{ env.RUSTUP_TOOLCHAIN }}
     - name: C11 build server
       run: cargo build --locked -p wxlike-server
     - name: C11 e2e, restart recovery and fault suites
@@ -871,10 +863,6 @@ jobs:
         rustup default "$RUSTUP_TOOLCHAIN"
 
         '
-    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
-      with:
-        add-rust-environment-hash-key: false
-        key: ${{ runner.os }}-perf-${{ env.RUSTUP_TOOLCHAIN }}
     - name: C11 build server
       run: cargo build --locked -p wxlike-server
     - name: C11 measured load against budgets

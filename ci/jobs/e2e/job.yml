@@ -13,13 +13,9 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup default "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
-        with:
-          # key 不含 manifest 哈希：既不放 hashFiles(...)，也显式关掉 rust-cache 自带的
-          # add-rust-environment-hash-key（它默认会哈希所有 Cargo.toml/Cargo.lock）。
-          # 理由见 ci/jobs/README.md「Caching and supply chain」。
-          add-rust-environment-hash-key: false
-          key: ${{ runner.os }}-e2e-${{ env.RUSTUP_TOOLCHAIN }}
+      # 不缓存 target：这条 entry 588 MB，而作业本身只有 ~4 min，
+      # 实测缓存带来的温差 ≈ 0（对比 test/native 冷跑要多花 4-9 min）。
+      # 理由见 ci/jobs/README.md「Caching and supply chain」。
       - name: C11 build server
         run: cargo build --locked -p wxlike-server
       - name: C11 e2e, restart recovery and fault suites

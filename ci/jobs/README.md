@@ -91,6 +91,19 @@ The classification is fail-safe: if `git diff` cannot be computed, `full=true`.
   the 10 GB quota, so GitHub evicted Rust target entries, and an evicted
   entry costs that job a ~5 min full dependency recompile. `cache: false`
   trades about a minute of parallel SDK setup for removing the evictions.
+- **Three jobs deliberately do not cache their target directory**: `perf`
+  (588 MB), `e2e` (588 MB) and `wasm` (246 MB). Their measured warm-vs-cold
+  deltas are all ≈ 0 (run 43429818798 vs 43424145950), while a cold
+  `test`/`native`/`desktop` run costs 4-9 min more. Keeping them held the
+  repository at ~11.4 GB against the 10 GB quota, so GitHub kept evicting the
+  entries that *do* pay off. `desktop` was in the first cut of this list and
+  was reverted: removing its cache took that job from 163 s to 440 s. The jobs
+  that keep their cache are exactly the long ones: `test` (x3 OS), `native`
+  (x3), `desktop` and `desktop-package` (x3), `coverage`, `clippy`, `doc`,
+  `android`, `flutter`, `security-regression`.
+- **Image layer caches use `mode=min`, not `mode=max`.** `mode=max` caches
+  every intermediate build stage, which accumulated 17 `buildkit-blob-*`
+  entries / 0.78 GB; `mode=min` keeps only the final image layers.
 - Node caches use `ui/package-lock.json` (and `apps/desktop-web/package-lock.json`
   for the `web-v2` job; `packages/mini-sdk` has no dependencies, so no npm
   cache or lockfile is claimed for it). No Gradle cache is configured yet, so
