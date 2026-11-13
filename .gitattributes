@@ -45,3 +45,17 @@ crates/ledger/src/schema.rs text eol=lf
 crates/ledger/src/lib.rs text eol=lf
 crates/features/commerce/src/store.rs text eol=lf
 crates/features/commerce/src/payments.rs text eol=lf
+
+# UP-TINODE 的 adapted 登记对象（relations / identity 两个 crate）。同一个坑：
+# 不钉 LF，core.autocrlf=true 的机器上这 9 个文件重新 checkout 会变 CRLF，
+# sha256 与 registry 对不上。现在 `sourceaudit provenance check` 会把"登记文件
+# 没有 LF 钉"直接报成 PROV-NO-LF-PIN，不再靠人记得补。
+crates/features/relations/src/port.rs text eol=lf
+crates/features/relations/src/friend.rs text eol=lf
+crates/features/relations/src/group.rs text eol=lf
+crates/features/relations/src/lib.rs text eol=lf
+crates/features/identity/src/session.rs text eol=lf
+crates/features/identity/src/refresh.rs text eol=lf
+crates/features/identity/src/throttle.rs text eol=lf
+crates/features/identity/src/login_challenge.rs text eol=lf
+crates/features/identity/src/lib.rs text eol=lf

@@ -66,6 +66,9 @@ class FakeRepo:
             ],
         }
         self.write_json("third_party/reviews/registry.json", self.registry)
+        # 登记文件按 sha256 核对，而 sha256 是**机器相关**的：检出端不钉换行，
+        # Windows 上同一个文件会算出另一个摘要。所以夹具默认就钉上 LF。
+        self.write_gitattributes("ui/src/vendor/x.ts text eol=lf\n")
 
     # ---- 操作 -------------------------------------------------------------
     def write_json(self, rel: str, data: object) -> Path:
@@ -73,6 +76,9 @@ class FakeRepo:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
+
+    def write_gitattributes(self, text: str) -> Path:
+        return (self.root / ".gitattributes").write_text(text, encoding="utf-8")
 
     def load_json(self, rel: str):
         return json.loads((self.root / rel).read_text(encoding="utf-8"))

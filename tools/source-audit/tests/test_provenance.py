@@ -43,6 +43,34 @@ class ProvenanceTest(unittest.TestCase):
         self.repo.rm("ui/src/vendor/x.ts")
         self.assertIn("PROV-MISSING", self.codes())
 
+    def test_unpinned_file_is_caught(self) -> None:
+        """登记文件没钉换行：sha256 会随检出平台变，本地绿 / 换机红。"""
+        self.repo.rm(".gitattributes")
+        self.assertIn("PROV-NO-LF-PIN", self.codes())
+
+    def test_native_eol_rule_is_not_enough(self) -> None:
+        """只写 `text` 是声明"这是文本"，不钉换行——Windows 上照样翻成 CRLF。"""
+        self.repo.write_gitattributes("ui/src/vendor/x.ts text\n")
+        self.assertIn("PROV-LF-PIN", self.codes())
+
+    def test_dash_text_is_accepted(self) -> None:
+        """`-text` = 不翻译，与 `text eol=lf` 一样能保证跨平台同字节。"""
+        self.repo.write_gitattributes("ui/src/vendor/x.ts -text\n")
+        report = provenance.check(self.repo.root)
+        self.assertEqual(report.blocking, [], report.render_text())
+
+    def test_glob_pin_and_last_rule_wins(self) -> None:
+        """`**` 能跨段匹配；同一文件被多条规则命中时，后写的生效（Git 语义）。"""
+        self.repo.write_gitattributes(
+            "crates/** text eol=lf\nui/src/vendor/** text eol=lf\n"
+        )
+        report = provenance.check(self.repo.root)
+        self.assertEqual(report.blocking, [], report.render_text())
+        self.repo.write_gitattributes(
+            "ui/src/vendor/** text eol=lf\nui/src/vendor/x.ts text\n"
+        )
+        self.assertIn("PROV-LF-PIN", self.codes())
+
     def test_path_traversal_is_refused(self) -> None:
         """未授权面：登记表是数据，不能变成读仓库外任意文件的手段。"""
         reg = self.repo.load_json("third_party/reviews/registry.json")
@@ -103,6 +131,19 @@ class ProvenanceTest(unittest.TestCase):
         self.repo.rm("third_party/reviews/registry.json")
         with self.assertRaises(DataError):
             provenance.check(self.repo.root)
+
+    def test_gitattr_match_semantics(self) -> None:
+        """通配语义单独核一遍：`*` 不跨 `/`，`**` 跨，不含斜线的模式匹配任意层级。"""
+        match = provenance._gitattr_match
+        self.assertTrue(match("*.rs", "crates/demo/src/lib.rs"))
+        self.assertTrue(match("*.rs", "crates/demo/src/nested/lib.rs"))
+        self.assertTrue(match("**/lib.rs", "crates/demo/src/lib.rs"))
+        # 含斜线的模式从仓库根锚定，`*` 不跨 `/`
+        self.assertFalse(match("crates/*.rs", "crates/demo/lib.rs"))
+        self.assertTrue(match("crates/**", "crates/demo/src/lib.rs"))
+        self.assertFalse(match("crates/demo/*.rs", "crates/demo/src/lib.rs"))
+        self.assertTrue(match("crates/demo/*.rs", "crates/demo/lib.rs"))
+        self.assertFalse(match("crates/**", "ui/src/vendor/x.ts"))
 
     def test_permalink_is_full_sha_not_branch(self) -> None:
         link = provenance.permalink({"url": "https://github.com/a/b", "commit": "c" * 40}, "src/x.ts")
