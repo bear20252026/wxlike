@@ -225,7 +225,7 @@ jobs:
       with:
         flutter-version: 3.47.0
         channel: stable
-        cache: true
+        cache: false
     - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
       run: bash crates/ffi/regenerate.sh
     - name: C8 pub get
@@ -565,7 +565,7 @@ jobs:
       with:
         flutter-version: 3.47.0
         channel: stable
-        cache: true
+        cache: false
     - name: C8 regenerate UniFFI bindings (generated, never hand-edited)
       run: bash crates/ffi/regenerate.sh
     - name: C8 cross-compile libwxlike_ffi.so
@@ -630,7 +630,7 @@ jobs:
       with:
         flutter-version: 3.47.0
         channel: stable
-        cache: true
+        cache: false
     - name: C8 unsigned iOS compile (signing happens in release)
       if: steps.project.outputs.present == 'true'
       shell: bash
