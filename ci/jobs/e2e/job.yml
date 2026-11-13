@@ -15,7 +15,8 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-e2e-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+          # key 里故意不放 hashFiles('Cargo.lock')——理由见 ci/jobs/README.md「Caching and supply chain」。
+          key: ${{ runner.os }}-e2e-${{ env.RUSTUP_TOOLCHAIN }}
       - name: C11 build server
         run: cargo build --locked -p wxlike-server
       - name: C11 e2e, restart recovery and fault suites

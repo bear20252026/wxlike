@@ -69,7 +69,8 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}-${{ env.RUSTUP_TOOLCHAIN }}
+          # key 里故意不放 hashFiles('Cargo.lock')——理由见 ci/jobs/README.md「Caching and supply chain」。
+          key: ${{ runner.os }}-coverage-${{ env.RUSTUP_TOOLCHAIN }}
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov

@@ -52,10 +52,25 @@ The classification is fail-safe: if `git diff` cannot be computed, `full=true`.
 
 ## Caching and supply chain
 
-- Rust caches are keyed by OS + `Cargo.lock` + toolchain version
-  (`RUSTUP_TOOLCHAIN`), and separated per purpose (`clippy`, `test`, `native`,
-  `doc`, `wasm`, `coverage`, `desktop`, `android`, `ios`, `e2e`, `performance`).
-  No cross-purpose `restore-keys` exist.
+- Rust caches are keyed by OS + toolchain version (`RUSTUP_TOOLCHAIN`) and
+  separated per purpose (`clippy`, `test`, `native`, `doc`, `wasm`, `coverage`,
+  `desktop`, `android`, `ios`, `e2e`, `performance`). No cross-purpose
+  `restore-keys` exist.
+- **Rust cache keys deliberately omit `hashFiles('Cargo.lock')`.** With the
+  lock hash in the key, every dependency change — including one carried by a
+  single PR — mints a *parallel* entry per job instead of updating the existing
+  one. Measured 2026-11-13: the repository stood at 10.199 GB of Actions cache
+  (`actions/cache/usage` → `active_caches_size_in_bytes` = 10199384614), over the
+  10 GB quota, and the lock set carried by PR #393 (`05d4c051…`) alone held 10
+  entries / 5.8 GB — two sets coexisting is already over quota, so GitHub evicts
+  the older set wholesale and the next run on `main` finds nothing and
+  re-downloads / re-compiles everything. `test (ubuntu-latest)` saved a 728 MB
+  entry (`v0-rust-Linux-test-fdf3ad8e…`) at 03:51:03, and it was gone from the
+  cache listing after PR #393's run created the `05d4c051…` entries at
+  04:23–04:39. A stable key updates the entry in place; reusing artifacts built
+  against a different lock is safe because cargo keys its fingerprints on
+  dependency versions, and `Swatinem/rust-cache`'s prefix fallback still bridges
+  its own environment/workspace hashes.
 - Node caches use `ui/package-lock.json` (and `apps/desktop-web/package-lock.json`
   for the `web-v2` job; `packages/mini-sdk` has no dependencies, so no npm
   cache or lockfile is claimed for it); Flutter uses the SDK version plus
