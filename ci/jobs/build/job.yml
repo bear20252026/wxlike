@@ -58,13 +58,9 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
           rustup default "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
-        with:
-          # key 不含 manifest 哈希：既不放 hashFiles(...)，也显式关掉 rust-cache 自带的
-          # add-rust-environment-hash-key（它默认会哈希所有 Cargo.toml/Cargo.lock）。
-          # 理由见 ci/jobs/README.md「Caching and supply chain」。
-          add-rust-environment-hash-key: false
-          key: ${{ runner.os }}-clippy-${{ env.RUSTUP_TOOLCHAIN }}
+      # 不缓存 target：这条 entry 445 MB，而作业只有 ~1 min（lint），
+      # 且与 test/coverage 并行——冷跑多花的几分钟被并行吸收。
+      # 理由见 ci/jobs/README.md「Caching and supply chain」。
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
@@ -123,10 +119,9 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup default "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
-        with:
-          add-rust-environment-hash-key: false
-          key: ${{ runner.os }}-doc-${{ env.RUSTUP_TOOLCHAIN }}
+      # 不缓存 target：这条 entry 445 MB，而作业只有 ~1 min（cargo doc），
+      # 且与 test/coverage 并行——冷跑多花的几分钟被并行吸收。
+      # 理由见 ci/jobs/README.md「Caching and supply chain」。
       - run: cargo doc --no-deps --workspace --locked
 
   wasm:
@@ -188,10 +183,9 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup default "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
-        with:
-          add-rust-environment-hash-key: false
-          key: ${{ runner.os }}-flutter-${{ env.RUSTUP_TOOLCHAIN }}
+      # 不缓存 target：这条 entry 475 MB，而作业只有 ~2 min（UniFFI 绑定 + flutter test），
+      # 且与 test/coverage 并行——冷跑多花的几分钟被并行吸收。
+      # 理由见 ci/jobs/README.md「Caching and supply chain」。
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # subosito/flutter-action@v2
         with:
           flutter-version: 3.47.0

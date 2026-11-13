@@ -73,10 +73,6 @@ jobs:
         rustup default "$RUSTUP_TOOLCHAIN"
 
         '
-    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
-      with:
-        add-rust-environment-hash-key: false
-        key: ${{ runner.os }}-clippy-${{ env.RUSTUP_TOOLCHAIN }}
     - run: cargo clippy --workspace --all-targets --locked -- -D warnings
   test:
     name: test (${{ matrix.os }})
@@ -147,10 +143,6 @@ jobs:
         rustup default "$RUSTUP_TOOLCHAIN"
 
         '
-    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
-      with:
-        add-rust-environment-hash-key: false
-        key: ${{ runner.os }}-doc-${{ env.RUSTUP_TOOLCHAIN }}
     - run: cargo doc --no-deps --workspace --locked
   wasm:
     name: wasm
@@ -213,10 +205,6 @@ jobs:
         rustup default "$RUSTUP_TOOLCHAIN"
 
         '
-    - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
-      with:
-        add-rust-environment-hash-key: false
-        key: ${{ runner.os }}-flutter-${{ env.RUSTUP_TOOLCHAIN }}
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
       with:
         flutter-version: 3.47.0
