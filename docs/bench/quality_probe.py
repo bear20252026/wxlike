@@ -14,24 +14,63 @@ import re
 import json
 import hashlib
 import collections
+import pathlib
 import subprocess
 import sys
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 ROOTS = ["crates", "server/src", "ui/src-tauri/src"]
 
 TEST_MODULE_RE = re.compile(r"^\s*#\[cfg\(test\)\]")
 
 
+def resolve_diff_base() -> str:
+    """挑一个能代表"PR 基线"的 ref，别写死 `main...HEAD`。
+
+    写死 `main...HEAD` 在两种环境下会失控：
+
+    - 本地 `main` 滞后（多年没 fetch）时，merge-base 会退化成 HEAD，diff 变空
+      ——门禁**静默放行**；或退化成一个无关旧点，把不相干的文件全扫进来。
+    - 多 worktree 下 `main` 可能检出在别的 worktree 里，本地根本动不了它。
+
+    CI 的 `audit` 任务在跑质量门之前会 `git fetch origin main:main`，所以那里
+    `main` 是新的；本地优先 `origin/main`。`CI_BASE_SHA` 显式指定时最优先
+    （与 coverage 任务 `CI_BASE_SHA` 的口径一致）。
+    """
+    env = os.environ.get("CI_BASE_SHA")
+    if env:
+        return env
+    for candidate in ("origin/main", "main"):
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", candidate],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return candidate
+    sys.exit(
+        "找不到 diff 基线：CI_BASE_SHA 未设置，origin/main 与 main 都不存在。\n"
+        "先 `git fetch origin main`，或显式设 CI_BASE_SHA=<merge-base sha>。"
+    )
+
+
 def diff_files() -> set[str]:
-    """拿到 PR diff 涉及的文件列表（与 main 的 diff）。"""
+    """拿到 PR diff 涉及的文件列表。基线挑选见 `resolve_diff_base`。"""
+    base = resolve_diff_base()
     proc = subprocess.run(
-        ["git", "diff", "--name-only", "main...HEAD"],
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
-        return set()
-    return set(proc.stdout.strip().split("\n"))
+        # 返回空集 = 门禁静默放行，比报错危险得多
+        sys.exit(f"git diff {base}...HEAD 失败：{proc.stderr.strip()[-500:]}")
+    out = proc.stdout.strip()
+    # 空 diff 要返回空集：`"".split("\n")` 会给出 `[""]`，扫描面变成"1 个名字
+    # 为空的文件"，比 0 个更难排查。
+    return set(out.split("\n")) if out else set()
 
 
 def rust_files():
