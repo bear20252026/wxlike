@@ -58,6 +58,7 @@ optional = true
 features = ["input-native"]
 
 [dev-dependencies]
-wxlike-net = { path = "../net" }
+# `insecure-lab`：集成测试用跳过证书校验的 `Client::connect`。
+wxlike-net = { path = "../net", features = ["insecure-lab"] }
 wxlike-mq = { path = "../mq" }
 tokio = { workspace = true }

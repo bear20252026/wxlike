@@ -36,9 +36,12 @@ impl Client {
         Self::hello(conn, token.into()).await
     }
 
-    /// Lab constructor: skips certificate verification. Gate behind an
-    /// explicit `--insecure-lab` switch; use [`Client::connect_verified`]
-    /// everywhere else.
+    /// Lab constructor: skips certificate verification.
+    ///
+    /// **只在 cargo feature `insecure-lab` 打开时才存在**——那是 `--insecure-lab`
+    /// 开关在库侧的落地（库没有 CLI）。生产代码请用
+    /// [`Client::connect_verified`]（TOFU + 证书固定）。
+    #[cfg(feature = "insecure-lab")]
     pub async fn connect(
         server_addr: SocketAddr,
         server_name: &str,
@@ -76,6 +79,9 @@ impl Client {
 
     /// 实验室用的重连（跳过校验）。**不要在生产调用**——用
     /// [`Client::connect_retry_verified`]。
+    ///
+    /// 与 [`Client::connect`] 一样，只在 feature `insecure-lab` 打开时存在。
+    #[cfg(feature = "insecure-lab")]
     #[doc(hidden)]
     pub async fn connect_retry_insecure(
         server_addr: SocketAddr,
@@ -160,6 +166,9 @@ impl Client {
     }
 
     /// Back-compat constructor used by the broadcast-hub tests/examples.
+    ///
+    /// 同样只在 feature `insecure-lab` 打开时存在：它跳过证书校验。
+    #[cfg(feature = "insecure-lab")]
     pub async fn connect_anonymous(
         server_addr: SocketAddr,
         server_name: &str,
