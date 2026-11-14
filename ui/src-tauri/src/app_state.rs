@@ -1402,15 +1402,20 @@ mod tests {
     /// 游标置 null，seq 1 被静默丢弃。
     #[test]
     fn local_history_cursor_survives_ttl_filtering() {
-        let dir = std::env::temp_dir().join(format!("wxlike-ttl-cursor-{}", std::process::id()));
+        // 纳秒级唯一目录+会话 id：避免并行测试/残留文件互相干扰（flaky 防护）。
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("wxlike-ttl-cursor-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("local.db");
-        let _ = std::fs::remove_file(&db);
 
         let state = AppState::new("http://127.0.0.1:1");
         state.local_open(&db).unwrap();
 
-        let conv = "d-ttl-cursor";
+        let conv = format!("d-ttl-cursor-{uniq}");
+        let conv = conv.as_str();
         let now = wxlike_core::types::now_ms() as i64;
         let ttl_ms: u64 = 1_000;
         // 直接写内存 TTL 缓存，避免依赖服务端（单元测试离线）。

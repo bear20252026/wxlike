@@ -263,11 +263,30 @@ impl Http {
         match resp {
             Ok(mut resp) => {
                 let status = resp.status().as_u16();
-                let value = resp
-                    .body_mut()
-                    .read_json::<serde_json::Value>()
-                    .unwrap_or(serde_json::json!({"error": format!("HTTP {status}")}));
-                Ok((status, value))
+                // 先读文本再解析：read_json 会消费流，失败后再读就拿不到
+                // 原文，无法区分"空体"与"非 JSON"。
+                let text = resp.body_mut().read_to_string().unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(value) => Ok((status, value)),
+                    // 2xx 空体（204 No Content / 空 200）是合法成功，返回 Null；
+                    // 但**有内容却不是 JSON**（代理错误页等）不能当成功数据吞掉，
+                    // 否则 expect_json 会把合成错误体当业务结果返回（R5 #60）。
+                    Err(err) if (200..300).contains(&status) => {
+                        if text.trim().is_empty() {
+                            Ok((status, serde_json::Value::Null))
+                        } else {
+                            Err(format!(
+                                "{method} {path}: 响应体不是合法 JSON（HTTP {status}）：{err}"
+                            ))
+                        }
+                    }
+                    // 非 2xx 保留兜底错误体：调用方仍要按 status 分流，
+                    // 错误体非 JSON 时给一个带状态码的可读错误。
+                    Err(_) => Ok((
+                        status,
+                        serde_json::json!({"error": format!("HTTP {status}")}),
+                    )),
+                }
             }
             Err(err) => Err(format!("{method} {path}: {}", transport_text(&err))),
         }

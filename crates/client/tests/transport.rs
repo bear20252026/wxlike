@@ -130,3 +130,40 @@ fn command_header_is_sent_with_the_request() {
         "请求里没有命令标记：{request}"
     );
 }
+
+/// R5 #60：2xx 但响应体不是合法 JSON（空体/代理错误页）必须报错，
+/// 不能把合成错误体当成功数据返回。修复前 expect_json 会 Ok 一个
+/// {"error":"HTTP 200"}，调用方误以为拿到了业务结果。
+#[test]
+fn success_with_non_json_body_is_an_error() {
+    let (base, _rx) = one_shot("200 OK", "this is not json");
+    let http = Http::new(base);
+    let err = http
+        .expect_json("GET", "/api/me", None)
+        .expect_err("2xx 非 JSON 体必须报错");
+    assert!(err.contains("JSON"), "{err}");
+    assert!(err.contains("200"), "{err}");
+}
+
+/// 204 No Content（空体）是合法成功：登出/切换账号这类端点靠它表达
+/// "已完成、无返回体"，不能因为体不是 JSON 就报错（R5 #60 回归）。
+#[test]
+fn no_content_204_is_a_success() {
+    let (base, _rx) = one_shot("204 No Content", "");
+    let http = Http::new(base);
+    let value = http
+        .expect_json("POST", "/api/logout", None)
+        .expect("204 空体必须算成功");
+    assert!(value.is_null(), "空体应返回 Null，实际：{value}");
+}
+
+/// 非 2xx 且错误体非 JSON 时，仍按状态码分流给可读错误（兜底保留）。
+#[test]
+fn error_status_with_non_json_body_still_reports_status() {
+    let (base, _rx) = one_shot("500 Internal Server Error", "<html>boom</html>");
+    let http = Http::new(base);
+    let err = http
+        .expect_json("GET", "/api/me", None)
+        .expect_err("5xx 必须报错");
+    assert!(err.contains("500"), "{err}");
+}
