@@ -21,7 +21,7 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -491,7 +491,17 @@ const PROBE_REL = "apps/desktop-web/src/features/commerce/_injected_probe.ts";
 
 /** 读仓库里的源码作为注入底本——检出是 CRLF，先归一成 LF 再改，否则 replace 打不中。 */
 function readSource(rel: string): string {
-  return readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
+  let text = readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
+  // core_bridge 已按域拆分为 core_bridge/*.inc（include! 组装）；注入底本需完整源码。
+  if (rel === BRIDGE_REL) {
+    const dir = path.join(ROOT, "ui/src-tauri/src/core_bridge");
+    if (existsSync(dir)) {
+      for (const f of readdirSync(dir).filter((x) => x.endsWith(".inc")).sort()) {
+        text += readFileSync(path.join(dir, f), "utf8").replace(/\r\n/g, "\n");
+      }
+    }
+  }
+  return text;
 }
 
 function runCheck(args: string[] = [], overrides?: Record<string, string>): { status: number; stdout: string; stderr: string } {

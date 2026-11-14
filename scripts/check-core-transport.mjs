@@ -120,8 +120,20 @@ function readDefaultSources() {
   const sources = new Map();
   for (const rel of CONFIG_SOURCES) {
     const abs = path.join(ROOT, rel);
-    if (fs.existsSync(abs)) sources.set(rel, normalize(fs.readFileSync(abs, "utf8")));
-    else sources.set(rel, "");
+    if (fs.existsSync(abs)) {
+      let text = normalize(fs.readFileSync(abs, "utf8"));
+      // core_bridge 已按域物理拆分为 core_bridge/*.inc（include! 组装，语义不变）。
+      // 静态对账需要完整源码：入口 + 全部片段拼接。
+      if (rel === "ui/src-tauri/src/core_bridge.rs") {
+        const dir = path.join(ROOT, "ui/src-tauri/src/core_bridge");
+        if (fs.existsSync(dir)) {
+          for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".inc")).sort()) {
+            text += normalize(fs.readFileSync(path.join(dir, f), "utf8"));
+          }
+        }
+      }
+      sources.set(rel, text);
+    } else sources.set(rel, "");
   }
   const base = path.join(ROOT, WEB_REL);
   if (fs.existsSync(base)) {
