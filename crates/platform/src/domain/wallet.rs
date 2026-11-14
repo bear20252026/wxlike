@@ -798,4 +798,41 @@ mod ephemeral_tests {
             .unwrap();
         assert!(updates.is_empty());
     }
+
+    /// R5 #62：群红包（conv 非 `d-` 前缀）的卡片更新必须落 Group 信箱。
+    /// 原来硬编码 Direct，群红包卡片更新落进了永不存在的信箱——这里钉住
+    /// 前缀推导：群会话走 Group，直聊信箱里不应有这条更新。
+    #[test]
+    fn group_redpacket_card_update_lands_in_group_owner() {
+        let p = Platform::in_memory().unwrap();
+        let a = p.register("alice", "pw").unwrap();
+        let b = p.register("bob", "pw").unwrap();
+        p.fund(&a, 10_000, "test").unwrap();
+
+        // 群会话 id 不带 d- 前缀 → 属主类型应推导为 Group
+        let rp = p
+            .create_redpacket(&a, 300, 2, "包", Some("g-team~room"))
+            .unwrap();
+        let _ = p.claim_redpacket(&rp, &b).unwrap();
+
+        let store = p.message_store.as_ref().unwrap();
+        let (updates, _) = store
+            .fetch_ephemeral((wxlike_message::OwnerType::Group, "g-team~room"), 0, 10)
+            .unwrap();
+        assert_eq!(updates.len(), 1, "群红包 claim 写了一条 Group 卡片更新");
+        assert_eq!(updates[0].target_msg_id, rp);
+        assert!(updates[0].payload.contains(&b));
+
+        // 不能落进 Direct 信箱（原 bug 的形状）
+        let (wrong, _) = store
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "g-team~room"), 0, 10)
+            .unwrap();
+        assert!(wrong.is_empty(), "群红包卡片更新不应落进 Direct 信箱");
+
+        // 频道主时间线不受影响（不变式 3）
+        let (timeline, _) = store
+            .fetch((wxlike_message::OwnerType::Group, "g-team~room"), 0, 10)
+            .unwrap();
+        assert!(timeline.is_empty(), "ephemeral 不占时间线");
+    }
 }

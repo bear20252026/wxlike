@@ -848,6 +848,10 @@ impl AppState {
         };
         let ttl = self.conv_ttl_ms(conv_id);
         let now = wxlike_core::types::now_ms();
+        // 翻页游标必须按 TTL 过滤**前**的原始页判定：store.page 取满 limit
+        // 就说明库里还有更旧的消息，哪怕这一页里有到期消息被滤掉，也不能
+        // 误判成"到底了"——否则更旧的未到期消息会被静默丢弃（R5 #73）。
+        let next = rows.last().map(|r| r.seq).filter(|_| rows.len() == limit);
         let rows: Vec<_> = rows
             .into_iter()
             .filter(|r| !expired(r.to_json().get("sent_at_ms"), ttl, now))
@@ -856,7 +860,6 @@ impl AppState {
         // 由本地库自己的清理负责，这里先保证"看不见"——界面上的承诺是
         // "到点消失"，不是"到点仍在但灰掉"。
         let messages: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
-        let next = rows.last().map(|r| r.seq).filter(|_| rows.len() == limit);
         Ok(serde_json::json!({ "messages": messages, "next_before_seq": next }))
     }
 
@@ -1383,5 +1386,69 @@ impl AppState {
     /// come out as cleartext for the UI, or as a marked failure).
     pub(crate) fn render_event(&self, env: &Envelope) -> serde_json::Value {
         render_event_with(env, &self.secret, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R5 #73 复核：local_history 的翻页游标必须在 TTL 过滤**前**按原始页判定。
+    ///
+    /// 构造：5 条消息，最新一条（seq 5）已到期，其余 4 条新鲜；limit=4。
+    /// store.page 取满 4 条（seq 5,4,3,2），TTL 过滤掉 seq 5 后只剩 3 条。
+    /// 正确行为：原始页取满 limit ⇒ 还有更旧消息（seq 1），游标应非空，
+    /// 翻页能拿到 seq 1。若用过滤后的 rows.len()==limit 判定，会误以为到底，
+    /// 游标置 null，seq 1 被静默丢弃。
+    #[test]
+    fn local_history_cursor_survives_ttl_filtering() {
+        let dir = std::env::temp_dir().join(format!("wxlike-ttl-cursor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("local.db");
+        let _ = std::fs::remove_file(&db);
+
+        let state = AppState::new("http://127.0.0.1:1");
+        state.local_open(&db).unwrap();
+
+        let conv = "d-ttl-cursor";
+        let now = wxlike_core::types::now_ms() as i64;
+        let ttl_ms: u64 = 1_000;
+        // 直接写内存 TTL 缓存，避免依赖服务端（单元测试离线）。
+        state.cache_secret_conv(conv, true, ttl_ms);
+
+        // seq 1..4 新鲜；seq 5 已到期（sent_at + ttl <= now）。
+        for seq in 1..=4i64 {
+            state.local_append(&serde_json::json!({
+                "kind": "msg.text", "conv_id": conv, "seq": seq,
+                "msg_id": format!("m{seq}"), "sender": "a", "text": format!("fresh {seq}"),
+                "sent_at_ms": now,
+            }));
+        }
+        state.local_append(&serde_json::json!({
+            "kind": "msg.text", "conv_id": conv, "seq": 5,
+            "msg_id": "m5", "sender": "a", "text": "expired 5",
+            "sent_at_ms": now - ttl_ms as i64 - 10_000,
+        }));
+
+        let page1 = state.local_history(conv, 0, 4).unwrap();
+        let msgs = page1["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3, "到期的 seq 5 被过滤，剩 seq 2,3,4");
+        assert!(msgs.iter().all(|m| m["text"] != "expired 5"));
+
+        let cursor = page1["next_before_seq"].as_i64();
+        assert!(
+            cursor.is_some(),
+            "原始页取满 limit，仍有更旧的 seq 1，游标不能为 null（R5 #73）"
+        );
+
+        let page2 = state.local_history(conv, cursor.unwrap(), 4).unwrap();
+        let msgs2 = page2["messages"].as_array().unwrap();
+        assert!(
+            msgs2.iter().any(|m| m["text"] == "fresh 1"),
+            "翻页必须能拿到更旧的 seq 1，不能被静默丢弃"
+        );
+
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
