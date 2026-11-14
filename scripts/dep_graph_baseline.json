@@ -1,0 +1,16 @@
+{
+  "orphans": [
+    "wxlike-admin",
+    "wxlike-cli",
+    "wxlike-client-web",
+    "wxlike-commerce",
+    "wxlike-container",
+    "wxlike-discovery",
+    "wxlike-ffi",
+    "wxlike-mcp",
+    "wxlike-miniapps",
+    "wxlike-service-catalog",
+    "wxlike-sfu",
+    "wxlike-translation"
+  ]
+}
