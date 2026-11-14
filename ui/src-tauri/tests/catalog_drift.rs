@@ -28,7 +28,27 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use wxlike_ui_lib::core_bridge::{capabilities, IMPLEMENTED_ACTIONS};
 
-const SRC: &str = include_str!("../src/core_bridge.rs");
+/// core_bridge 已按域物理拆分为 `core_bridge/*.inc`（include! 组装，语义不变）。
+/// 静态对账需要完整源码文本：入口 + 全部片段拼接（顺序不影响字符串扫描）。
+fn bridge_source() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let mut s = String::from(include_str!("../src/core_bridge.rs"));
+        s.push_str(include_str!("../src/core_bridge/types.inc"));
+        s.push_str(include_str!("../src/core_bridge/support.inc"));
+        s.push_str(include_str!("../src/core_bridge/dispatch.inc"));
+        s.push_str(include_str!("../src/core_bridge/identity.inc"));
+        s.push_str(include_str!("../src/core_bridge/messaging.inc"));
+        s.push_str(include_str!("../src/core_bridge/media.inc"));
+        s.push_str(include_str!("../src/core_bridge/relations.inc"));
+        s.push_str(include_str!("../src/core_bridge/wallet.inc"));
+        s.push_str(include_str!("../src/core_bridge/search.inc"));
+        s.push_str(include_str!("../src/core_bridge/prefs.inc"));
+        s.push_str(include_str!("../src/core_bridge/storage.inc"));
+        s.push_str(include_str!("../src/core_bridge/tests.inc"));
+        s
+    })
+}
 
 /// 已核实的共享处理器：一条 action 一个分支，副作用互不污染。
 /// 逐条证明在 `tests/shared_handlers.rs`（pin/mute、accept/decline、tag/star）。
@@ -331,6 +351,7 @@ fn catalog() -> BTreeSet<String> {
 }
 
 fn stubbed() -> BTreeSet<String> {
+    let SRC = bridge_source();
     const_list(SRC, "STUBBED_ACTIONS")
         .unwrap_or_default()
         .into_iter()
@@ -344,6 +365,7 @@ fn stubbed() -> BTreeSet<String> {
 /// 解析器自身的健康检查：它要是扫空了，后面的断言就会假绿。
 #[test]
 fn parser_finds_the_routing_tables() {
+    let SRC = bridge_source();
     let tables = routing_tables(SRC);
     let names: Vec<&str> = tables.iter().map(|(n, _)| n.as_str()).collect();
     for entry in ["dispatch_inner", "route_for"] {
@@ -403,6 +425,7 @@ fn parser_finds_the_routing_tables() {
 /// 核心不变式：路由 == 能力目录 ∪ 有意 stub 表，且两表互斥、目录无重复。
 #[test]
 fn capability_catalog_matches_the_dispatch_table() {
+    let SRC = bridge_source();
     let routed = routed_set(&routing_tables(SRC));
     let parsed_catalog = const_list(SRC, "IMPLEMENTED_ACTIONS")
         .expect("IMPLEMENTED_ACTIONS 常量必须存在（capabilities 就靠它）")
@@ -449,6 +472,7 @@ fn routed_union(left: &BTreeSet<String>, right: &BTreeSet<String>) -> BTreeSet<S
 ///   （否则是死代码），前缀表里指向的函数必须是真存在的子路由。
 #[test]
 fn prefix_table_routes_every_router_arm() {
+    let SRC = bridge_source();
     let tables = routing_tables(SRC);
     let entry = tables
         .iter()
@@ -531,6 +555,7 @@ fn prefix_table_routes_every_router_arm() {
 /// 一个 action_id 都不许出现（前缀本身没有点号，不是 action_id 形状）。
 #[test]
 fn no_action_is_listed_in_both_the_entry_and_a_router() {
+    let SRC = bridge_source();
     let tables = routing_tables(SRC);
     let arms = routed_set(&tables);
     assert!(!arms.is_empty(), "子路由一条臂都没有：这条对账就失去意义了");
@@ -560,6 +585,7 @@ fn no_action_is_listed_in_both_the_entry_and_a_router() {
 /// （`messaging.conversation.mute` 曾被指望"顺带"把 pin 的事也做了）。
 #[test]
 fn shared_handlers_are_deliberately_registered() {
+    let SRC = bridge_source();
     let tables = routing_tables(SRC);
     let mut by_handler: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, body) in &tables {
@@ -664,6 +690,7 @@ fn capabilities_advertise_exactly_the_catalog() {
 /// * 把某条臂改名/挪进别的子路由（对账只看"路由==目录"，看不出它走错了域）。
 #[test]
 fn the_wallet_vertical_slice_stays_registered() {
+    let SRC = bridge_source();
     // 真实现的六条：读余额/账本，写转账/发红包/读红包/领红包。
     const REAL: [&str; 6] = [
         "wallet.balance.get",
