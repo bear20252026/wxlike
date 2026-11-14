@@ -244,13 +244,6 @@ pub fn friend_requests_incoming(
 }
 
 #[tauri::command]
-pub fn friend_requests_outgoing(
-    state: tauri::State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    state.friend_requests_outgoing()
-}
-
-#[tauri::command]
 pub fn friend_accept(state: tauri::State<'_, AppState>, req_id: String) -> Result<(), String> {
     state.friend_accept(&req_id)
 }
@@ -258,11 +251,6 @@ pub fn friend_accept(state: tauri::State<'_, AppState>, req_id: String) -> Resul
 #[tauri::command]
 pub fn friend_decline(state: tauri::State<'_, AppState>, req_id: String) -> Result<(), String> {
     state.friend_decline(&req_id)
-}
-
-#[tauri::command]
-pub fn friend_delete(state: tauri::State<'_, AppState>, user_id: String) -> Result<(), String> {
-    state.friend_delete(&user_id)
 }
 
 #[tauri::command]
@@ -275,31 +263,8 @@ pub fn groups_create(
 }
 
 #[tauri::command]
-pub fn groups_mine(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    state.groups_mine()
-}
-
-#[tauri::command]
-pub fn group_info(
-    state: tauri::State<'_, AppState>,
-    group_id: String,
-) -> Result<serde_json::Value, String> {
-    state.group_info(&group_id)
-}
-
-#[tauri::command]
 pub fn wallet_balance(state: tauri::State<'_, AppState>) -> Result<i64, String> {
     state.wallet_balance()
-}
-
-#[tauri::command]
-pub fn wallet_transfer(
-    state: tauri::State<'_, AppState>,
-    to_uid: String,
-    amount: i64,
-    memo: String,
-) -> Result<String, String> {
-    state.wallet_transfer(&to_uid, amount, &memo)
 }
 
 #[tauri::command]
@@ -345,12 +310,6 @@ pub fn download_media(
     thumb: bool,
 ) -> Result<MediaBlob, String> {
     state.download_media(&media_id, thumb)
-}
-
-#[tauri::command]
-pub fn conversation_id(state: tauri::State<'_, AppState>, peer: String) -> Result<String, String> {
-    let me = state.user_id()?;
-    Ok(direct_conv_id(&me, &peer))
 }
 
 #[tauri::command]
