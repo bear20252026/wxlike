@@ -28,9 +28,11 @@ import { fileURLToPath } from "node:url";
 import { ApiError, fetchTransport, isCoreOnlyPath, request, setTransport } from "./http";
 import {
   BLOCKED_WALLET_PREFIXES,
+  CALL_ROUTES,
   LEDGER_KINDS,
   WALLET_ROUTES,
   __resetCoreSessionForTests,
+  callRouteCensus,
   coreSessionSnapshot,
   installCoreSession,
   isRoutedOrBlocked,
@@ -382,6 +384,102 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
   });
 });
 
+describe("通话域 — 读写只经 CoreHandle（D6 逐域退役）", () => {
+  it("state：dispatch call.state，并把桥形状投影成 api.ts 认的 CallState", async () => {
+    localStorage.setItem("wxlike-web-token", "上一个用户的 bearer");
+    const h = makeCore(() =>
+      ok({ conv_id: "c1", live: true, locked: false, recording: true, participants: [{ user: "u1" }] }),
+    );
+    installCoreSession(h.core);
+
+    const body = await request<{ conv: string; state: string; participants: unknown[]; recording?: boolean }>(
+      "GET",
+      "/api/call/c1",
+    );
+
+    expect(body).toEqual({ conv: "c1", state: "active", participants: [{ user: "u1" }], recording: true });
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0]?.action_id).toBe("call.state");
+    expect(h.requests[0]?.params).toEqual({ conv: "c1" });
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("state：live=false 投影成 idle；locked 投影成 locked", async () => {
+    const idle = makeCore(() => ok({ conv_id: "c2", live: false, participants: [] }));
+    installCoreSession(idle.core);
+    expect(await request("GET", "/api/call/c2")).toEqual({ conv: "c2", state: "idle", participants: [] });
+
+    __resetCoreSessionForTests();
+    const locked = makeCore(() => ok({ conv_id: "c3", live: true, locked: true, participants: [] }));
+    installCoreSession(locked.core);
+    expect(await request("GET", "/api/call/c3")).toEqual({ conv: "c3", state: "locked", participants: [] });
+  });
+
+  it("控制端点：start 带 capacity，桥回 204 读成 {}，如实成功", async () => {
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    await request("POST", "/api/call/c1/start", { body: { capacity: 8 }, idempotencyKey: "call-start-1" });
+    expect(h.requests[0]?.action_id).toBe("call.start");
+    expect(h.requests[0]?.params).toEqual({ conv: "c1", capacity: 8 });
+    expect(h.requests[0]?.idempotency_key).toBe("call-start-1");
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("mute：target 缺省不兜默认（透传），track/muted 带上", async () => {
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    await request("POST", "/api/call/c1/mute", { body: { track: "audio", muted: true } });
+    expect(h.requests[0]?.action_id).toBe("call.mute");
+    expect(h.requests[0]?.params).toEqual({ conv: "c1", track: "audio", muted: true });
+  });
+
+  it("signal.post：整个 body 作为不透明 signal 透传", async () => {
+    const h = makeCore(() => ok({ dropped: 0 }));
+    installCoreSession(h.core);
+    const envelope = { kind: "offer", sdp: "offer-sdp" };
+    await request("POST", "/api/call/c1/signal", { body: envelope });
+    expect(h.requests[0]?.action_id).toBe("call.signal.post");
+    expect(h.requests[0]?.params).toEqual({ conv: "c1", signal: envelope });
+  });
+
+  it("signal.take：桥回 {signals} 原样透传", async () => {
+    const signals = [{ kind: "answer", sdp: "answer-sdp" }];
+    const h = makeCore(() => ok({ signals }));
+    installCoreSession(h.core);
+    const body = await request<{ signals: unknown[] }>("GET", "/api/call/c1/signal");
+    expect(body).toEqual({ signals });
+    expect(h.requests[0]?.action_id).toBe("call.signal.take");
+  });
+
+  it("错误映射：桥的 UNAUTHENTICATED → 401，不折成空数据", async () => {
+    const h = makeCore(() => failWith("UNAUTHENTICATED", "尚未登录"));
+    installCoreSession(h.core);
+    const error = (await request("GET", "/api/call/c1").catch((err) => err)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(401);
+    expect(error.code).toBe("unauthorized");
+  });
+
+  it("CORE_ONLY 覆盖通话路径，且每条都有归属；直接打遗留出口被拒", async () => {
+    for (const p of ["/api/call/c1", "/api/call/c1/start", "/api/call/c1/signal"]) {
+      expect(isCoreOnlyPath(p), p).toBe(true);
+      expect(isRoutedOrBlocked(p), p).toBe(true);
+    }
+    expect(callRouteCensus()).toHaveLength(CALL_ROUTES.length);
+    const error = (await fetchTransport("GET", "/api/call/c1").catch((err) => err)) as ApiError;
+    expect(error.code).toBe("blocked");
+    expect(error.status).toBe(501);
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("没装核心时打通话：显式阻塞，绝不回落到 localStorage 会话", async () => {
+    localStorage.setItem("wxlike-web-token", "旧 bearer");
+    const error = (await request("POST", "/api/call/c1/join").catch((err) => err)) as ApiError;
+    expect(error.code).toBe("blocked");
+    expect(fetchCalls).toEqual([]);
+  });
+});
+
 describe("会话切换 — 真清，不是注释", () => {
   it("切换前挂着的钱包请求：结果落地时被丢弃，并计入 dropped 台账", async () => {
     const h = makeCore(() => ok({ balance_minor: 999999, currency: "CNY" }), { delayFirst: true });
@@ -440,13 +538,18 @@ describe("台账漂移守卫 — 与 Rust 服务端同源", () => {
     expect(consts.sort()).toEqual(LEDGER_KINDS);
   });
 
-  it("DOMAIN_REGISTRY 里 core 域的 action 名单与路由表一致（七条，不多不少）", () => {
+  it("DOMAIN_REGISTRY 里 core 域的 action 名单与路由表一致（钱包七条、通话十二条，不多不少）", () => {
     const wallet = DOMAIN_REGISTRY.find((domain) => domain.id === "wallet");
     expect(wallet?.state).toBe("core");
     expect(wallet?.providerSha).toBe("71cc90c5");
     expect([...(wallet?.actions ?? [])].sort()).toEqual(WALLET_ROUTES.map((r) => r.action).sort());
     expect([...new Set(WALLET_ROUTES.map((r) => r.action))]).toHaveLength(WALLET_ROUTES.length);
-    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(6);
+    const calls = DOMAIN_REGISTRY.find((domain) => domain.id === "calls");
+    expect(calls?.state).toBe("core");
+    expect(calls?.providerSha).toBeTruthy();
+    expect([...(calls?.actions ?? [])].sort()).toEqual(CALL_ROUTES.map((r) => r.action).sort());
+    expect([...new Set(CALL_ROUTES.map((r) => r.action))]).toHaveLength(CALL_ROUTES.length);
+    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(5);
   });
 });
 
@@ -475,6 +578,9 @@ interface CheckJson {
   routes: { method: string; pattern: string; action: string }[];
   bridgeArms: string[];
   contractActions: string[];
+  callRoutes: { method: string; pattern: string; action: string }[];
+  callBridgeArms: string[];
+  callContractActions: string[];
   coreOnlyPrefixes: string[];
   violations: Violation[];
   ledger: Record<string, { files: string[]; counts: Record<string, number> }>;
@@ -485,7 +591,7 @@ interface CheckJson {
 const REGISTRY_REL = "apps/desktop-web/src/lib/domain-registry.ts";
 const TRANSPORT_REL = "apps/desktop-web/src/lib/core-transport.ts";
 const BRIDGE_REL = "ui/src-tauri/src/core_bridge.rs";
-const CALLS_API_REL = "apps/desktop-web/src/features/calls/api.ts";
+const VIDEO_API_REL = "apps/desktop-web/src/features/video/api.ts";
 /** 人造违例的落脚点：钱包（唯一已迁移域）里的一个探针文件，只存在于 override 里。 */
 const PROBE_REL = "apps/desktop-web/src/features/commerce/_injected_probe.ts";
 
@@ -599,20 +705,20 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
 
   it("今天判定为绿，并把现存违例的条数如实打印出来（条数来自扫描，不是写死的常量）", () => {
     const res = runCheck();
-    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet）零遗留 HTTP");
+    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/calls）零遗留 HTTP");
     expect(res.status).toBe(0);
     const count = /现存违例：(\d+) 条，分布在 (\d+) 个未迁移域/.exec(res.stdout);
     expect(count, `输出里必须自带现存违例计数，实际：${res.stdout}`).toBeTruthy();
     expect(Number(count?.[1]), "违例条数为 0 就说明这条检查在空转").toBeGreaterThan(0);
     expect(Number(count?.[1])).toBe(disk.total);
-    expect(Number(count?.[2])).toBe(6);
+    expect(Number(count?.[2])).toBe(5);
   });
 
-  it("六个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
+  it("五个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
     expect(disk.problems).toEqual([]);
     expect(disk.total).toBeGreaterThan(0);
     const blocked = disk.domains.filter((d) => d.state === "blocked").map((d) => d.featureDir).sort();
-    expect(blocked).toEqual(["calls", "content", "discover", "files", "mini", "video"]);
+    expect(blocked).toEqual(["content", "discover", "files", "mini", "video"]);
     for (const dir of blocked) {
       const entry = disk.ledger[dir];
       expect(entry, `债台账里应当有 features/${dir} 这一格`).toBeTruthy();
@@ -624,11 +730,15 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(commerceHits.filter((v) => v.rule !== "legacy_transport")).toEqual([]);
   });
 
-  it("四份 action 名单同源：路由表 ↔ core-contract ↔ Rust 桥（七条，不多不少）", () => {
+  it("四份 action 名单同源：路由表 ↔ core-contract ↔ Rust 桥（钱包七条、通话十二条，不多不少）", () => {
     const routed = [...new Set(disk.routes.map((r) => r.action))].sort();
     expect(routed).toEqual([...new Set(disk.contractActions)].sort());
     expect(routed).toEqual([...new Set(disk.bridgeArms)].sort());
     expect(routed).toHaveLength(7);
+    const callRouted = [...new Set(disk.callRoutes.map((r) => r.action))].sort();
+    expect(callRouted).toEqual([...new Set(disk.callContractActions)].sort());
+    expect(callRouted).toEqual([...new Set(disk.callBridgeArms)].sort());
+    expect(callRouted).toHaveLength(12);
   });
 
   it("规则清单与注入用例一一对应（往 RULES 里加一条打死规则就会在这里红）", () => {
@@ -697,19 +807,19 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
   });
 
   it("注入证明：未迁移域悄悄加一条新违例 → 判红（债台账不是只往下走的摆设）", () => {
-    const calls = readSource(CALLS_API_REL);
-    const worse = `${calls}\n/** 注入证明用：通话域自己发了一次 HTTP。 */\nexport const _extraFetch = (url: string) => fetch(url);\n`;
-    const res = runCheck([], { [CALLS_API_REL]: worse });
+    const video = readSource(VIDEO_API_REL);
+    const worse = `${video}\n/** 注入证明用：视频域自己发了一次 HTTP。 */\nexport const _extraFetch = (url: string) => fetch(url);\n`;
+    const res = runCheck([], { [VIDEO_API_REL]: worse });
     expect(res.status).toBe(1);
-    expect(res.stderr).toContain("债台账漂移：features/calls");
+    expect(res.stderr).toContain("债台账漂移：features/video");
   });
 
   it("注入证明：某个域迁走了却不改基线/注册表 → 同样判红（台账只许「两边一起动」）", () => {
-    const migratedAway = 'export const calls = { migrated: true };\n';
-    const res = runCheck([], { [CALLS_API_REL]: migratedAway });
+    const migratedAway = 'export const video = { migrated: true };\n';
+    const res = runCheck([], { [VIDEO_API_REL]: migratedAway });
     expect(res.status).toBe(1);
     expect(res.stderr).toContain("登记为 blocked");
-    expect(res.stderr).toContain("债台账漂移：features/calls");
+    expect(res.stderr).toContain("债台账漂移：features/video");
   });
 
   it("注入证明：名单被清空/解析不出条目 → fail-closed，不会当成「零违例所以绿」", () => {

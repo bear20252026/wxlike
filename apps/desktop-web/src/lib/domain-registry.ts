@@ -37,6 +37,9 @@ import { ACTIONS } from "../shell/core-contract";
 /** #293 的钱包竖切片：`origin/main` 上的提交。消费者（本卡）按卡面要求记录此 SHA。 */
 export const WALLET_PROVIDER_SHA = "71cc90c5";
 
+/** D6 通话域竖切片：Rust 提供者（call.* 桥 action）合入的提交短 SHA。 */
+export const CALLS_PROVIDER_SHA = "b3fbb40";
+
 /** id 字符串只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份，这里只做聚合。 */
 const WALLET_ACTIONS = [
   ACTIONS.walletBalanceGet,
@@ -46,6 +49,21 @@ const WALLET_ACTIONS = [
   ACTIONS.walletRedpacketGet,
   ACTIONS.walletRedpacketClaim,
   ACTIONS.walletRedpacketList,
+] as const;
+
+const CALL_ACTIONS = [
+  ACTIONS.callState,
+  ACTIONS.callStart,
+  ACTIONS.callJoin,
+  ACTIONS.callLeave,
+  ACTIONS.callMute,
+  ACTIONS.callMuteAll,
+  ACTIONS.callLock,
+  ACTIONS.callRecord,
+  ACTIONS.callHand,
+  ACTIONS.callKick,
+  ACTIONS.callSignalPost,
+  ACTIONS.callSignalTake,
 ] as const;
 
 /**
@@ -85,10 +103,10 @@ export const DOMAIN_REGISTRY: readonly DomainStatus[] = [
     id: "calls",
     featureDir: "calls",
     label: "通话",
-    state: "blocked",
-    providerSha: null,
-    reason: "#293 只交付钱包竖切片，通话域没有 Rust 提供者；信令与 RTC 凭据都不能由界面自己发 HTTP 获取",
-    actions: [],
+    state: "core",
+    providerSha: CALLS_PROVIDER_SHA,
+    reason: `房间控制与信令的读写全部经 D6 的认证桥 action（${CALL_ACTIONS.length} 条），Bearer 不进 webview`,
+    actions: CALL_ACTIONS,
   },
   {
     id: "files",

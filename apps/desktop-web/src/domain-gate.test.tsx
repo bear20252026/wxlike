@@ -50,18 +50,19 @@ describe("组合根横幅：每条域的会话来源都要看得见、说得清"
     await waitFor(() => expect(screen.getByTestId("domain-blocked-moments")).toBeInTheDocument());
   });
 
-  it("注册表与现实同源：1 格已迁移 + 6 格阻塞，每格都有路由归属", () => {
-    expect(domainsInState("core").map((domain) => domain.id)).toEqual(["wallet"]);
+  it("注册表与现实同源：2 格已迁移 + 5 格阻塞，每格都有路由归属", () => {
+    expect(domainsInState("core").map((domain) => domain.id)).toEqual(["wallet", "calls"]);
     expect(domainsInState("blocked").map((domain) => domain.id).sort()).toEqual([
-      "calls",
       "discover",
       "files",
       "mini",
       "moments",
       "video",
     ]);
-    // 已迁移的那一格必须记着提供者的 SHA（卡面：消费者记录 provider SHA）
-    expect(domainsInState("core")[0]?.providerSha).toBe("71cc90c5");
+    // 已迁移的每一格都必须记着提供者的 SHA（卡面：消费者记录 provider SHA）
+    const coreById = Object.fromEntries(domainsInState("core").map((d) => [d.id, d]));
+    expect(coreById.wallet?.providerSha).toBe("71cc90c5");
+    expect(coreById.calls?.providerSha).toBe("b3fbb40");
     for (const domain of domainsInState("blocked")) {
       expect(domain.providerSha, domain.id).toBeNull();
       expect(domain.actions, domain.id).toEqual([]);

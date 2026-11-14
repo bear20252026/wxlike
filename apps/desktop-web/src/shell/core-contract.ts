@@ -137,6 +137,22 @@ export const ACTIONS = {
   walletRedpacketClaim: "wallet.redpacket.claim",
   walletRedpacketList: "wallet.redpacket.list",
 
+  // 通话域（D6 逐域退役）。名单与 `core_bridge` 的 `call_router` 逐条对齐；
+  // `scripts/check-core-transport.mjs` 会把这里与 `lib/core-transport.ts` 的
+  // CALL_ROUTES 对一遍，两边写歪任一处都红。控制类端点服务端回 204，桥读成 {}。
+  callState: "call.state",
+  callStart: "call.start",
+  callJoin: "call.join",
+  callLeave: "call.leave",
+  callMute: "call.mute",
+  callMuteAll: "call.mute_all",
+  callLock: "call.lock",
+  callRecord: "call.record",
+  callHand: "call.hand",
+  callKick: "call.kick",
+  callSignalPost: "call.signal.post",
+  callSignalTake: "call.signal.take",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",
