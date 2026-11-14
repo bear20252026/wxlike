@@ -386,7 +386,12 @@ search、video、hub、router 全串在一个函数里。
    并打印"基线 → 当前（+N）"。除数值外还比对 `文件::函数名` 名单：
    数量不变但换了个函数变长，同样算退化。`--update` 只允许把基线**收紧**，
    变差时拒绝更新。
-3. **CI 新增 `quality` job**：`python scripts/quality-gate.py`，不跑 cargo，十几秒。
+   `--diff` 模式（CI 日常，`--slack 5`）只扫 PR diff 涉及的文件，并与**这些
+   文件的 base 版本**比较（同文件集，用临时 worktree 检出 base）。比较对象
+   不能是全量基线——「全仓库 vs diff 文件」的 delta 结构上恒为 0，门禁会
+   形同虚设。探针的 `--files <listfile>` 让同一份列表能分别喂给 base 与
+   HEAD。
+3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线**：函数 >60 行 **46**、>100 行 **14**、嵌套 >3 层 **63**、
 跨文件重复窗口 **78**、魔法数字总数 **170**。

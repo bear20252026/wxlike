@@ -76,6 +76,17 @@ def diff_files() -> set[str]:
 def rust_files():
     diff_mode = "--diff" in sys.argv
     only = diff_files() if diff_mode else None
+    # `--files <listfile>`：只扫指定文件列表（一行一个 repo 相对路径）。
+    # 质量门 diff 模式用它把**同一份列表**分别喂给 base 与 HEAD，做同文件集
+    # 比较——这是增量门禁能真正拦住退化的前提。
+    files_arg = None
+    if "--files" in sys.argv:
+        idx = sys.argv.index("--files")
+        if idx + 1 < len(sys.argv):
+            files_arg = sys.argv[idx + 1]
+    if files_arg:
+        txt = pathlib.Path(files_arg).read_text(encoding="utf-8")
+        only = {p.strip() for p in txt.splitlines() if p.strip()}
     for root in ROOTS:
         for dp, _dn, fn in os.walk(root):
             if any(s in dp for s in ("target", "node_modules", ".git")):

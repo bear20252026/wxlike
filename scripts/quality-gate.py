@@ -29,8 +29,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PROBE = ROOT / "docs" / "bench" / "quality_probe.py"
@@ -58,21 +60,37 @@ EXPLAIN = """
 
 三种模式：
 - 全量：扫全项目，任何变差都报错。适合发布前检查。
-- 增量（--diff）：只扫 PR diff 涉及的文件。存量问题不阻塞新 PR。
+- 增量（--diff）：只扫 PR diff 涉及的文件，并与这些文件的 base 版本比较
+  （同文件集）。存量问题不阻塞新 PR。
 - 容错（--slack N）：允许 base+N 的退化。适合大型重构期间。
 
 豁免：在 docs/bench/quality-allowlist.json 里登记位点并写明理由。
 """
 
 
-def run_probe(diff_mode: bool = False) -> dict:
-    """跑探针。增量模式下只扫 diff 涉及的文件。"""
-    cmd = [sys.executable, str(PROBE)]
+def run_probe(diff_mode: bool = False, files: pathlib.Path | None = None,
+              cwd: pathlib.Path | None = None, probe: pathlib.Path | None = None) -> dict:
+    """跑探针。
+
+    diff_mode：只扫 PR diff 涉及的文件（基线挑选见 quality_probe.resolve_diff_base）。
+    files：显式给出文件列表（文本文件，一行一个 repo 相对路径）。质量门 diff
+    模式用它把**同一份列表**分别喂给 base 与 HEAD，做同文件集比较。
+    cwd：探针的工作目录（决定扫哪份代码）。diff 模式下的 base 版本跑在临时
+    worktree 里。
+    probe：探针脚本路径。base 侧必须传主 repo 的脚本——worktree 里检出的是
+    base 版本，它的 probe 可能还没有 `--files` 支持，用它会把全项目扫一遍，
+    比较就退化成「全量 vs diff 文件」。
+    """
+    workdir = cwd or ROOT
+    script = probe or PROBE
+    cmd = [sys.executable, str(script)]
     if diff_mode:
         cmd.append("--diff")
+    if files is not None:
+        cmd.extend(["--files", str(files)])
     proc = subprocess.run(
         cmd,
-        cwd=ROOT,
+        cwd=workdir,
         capture_output=True,
         text=True,
     )
@@ -155,6 +173,56 @@ def get_diff_files() -> set[str]:
     return set(out.split("\n")) if out else set()
 
 
+def write_file_list(files: set[str]) -> pathlib.Path:
+    """把文件列表写成临时文件，供探针 `--files` 读取。"""
+    fd, name = tempfile.mkstemp(prefix="wxlike-qg-files-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(files)))
+    return pathlib.Path(name)
+
+
+def run_base_probe(listfile: pathlib.Path) -> dict:
+    """在 base 版本的临时 worktree 里跑探针。
+
+    为什么用 worktree：diff 模式要回答的是「这几个文件有没有变差」，比较对象
+    必须是**同一批文件的 base 版本**，而不是全量基线。worktree 让 base 版本的
+    文件出现在探针认得的路径上（探针按 repo 相对路径扫 crates/ 等目录）。
+
+    新增文件在 base 里不存在，探针按列表扫不到就跳过——这是对的：新增文件
+    没有 base 可比，它的退化由 HEAD 侧的绝对值体现。
+    """
+    base_ref = resolve_diff_base()
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="wxlike-qg-base-"))
+    try:
+        proc = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(tmpdir), base_ref],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as err:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print(f"无法创建 base worktree：{err}", file=sys.stderr)
+        sys.exit(2)
+    if proc.returncode != 0:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print(
+            f"git worktree add --detach {tmpdir} {base_ref} 失败：\n"
+            f"{proc.stderr.strip()[-800:]}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        return run_probe(files=listfile, cwd=tmpdir, probe=PROBE)
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(tmpdir)],
+            cwd=ROOT,
+            capture_output=True,
+        )
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def main() -> int:
     if "--explain" in sys.argv:
         print(EXPLAIN)
@@ -167,9 +235,8 @@ def main() -> int:
         if idx + 1 < len(sys.argv):
             slack = int(sys.argv[idx + 1])
 
-    current = run_probe(diff_mode)
-
     if "--update" in sys.argv:
+        current = run_probe()
         if not BASELINE.exists():
             BASELINE.write_text(
                 json.dumps(current, ensure_ascii=False, indent=1), encoding="utf-8"
@@ -192,27 +259,33 @@ def main() -> int:
                 print(f"  {label}: {base[key]} → {current[key]}")
         return 0
 
-    if not BASELINE.exists():
-        print(
-            f"缺少基线 {BASELINE.relative_to(ROOT)}；先跑 "
-            "`python scripts/quality-gate.py --update` 生成",
-            file=sys.stderr,
-        )
-        return 2
-
-    base = json.loads(BASELINE.read_text(encoding="utf-8"))
-    allowlist = load_allowlist()
-    failures: list[str] = []
-
-    # 增量模式下，probe 已经只扫 diff 文件，这里只打印 diff 文件列表
     if diff_mode:
         diff_files = get_diff_files()
-        print(f"增量模式：只检查 {len(diff_files)} 个 diff 文件")
+        listfile = write_file_list(diff_files)
+        try:
+            current = run_probe(files=listfile, cwd=ROOT)
+            base = run_base_probe(listfile)
+        finally:
+            os.unlink(listfile)
+        print(f"增量模式：只检查 {len(diff_files)} 个 diff 文件（与 base 同文件集比较）")
         for f in sorted(diff_files)[:10]:
             print(f"  {f}")
         if len(diff_files) > 10:
             print(f"  ... 等共 {len(diff_files)} 个")
         print()
+    else:
+        if not BASELINE.exists():
+            print(
+                f"缺少基线 {BASELINE.relative_to(ROOT)}；先跑 "
+                "`python scripts/quality-gate.py --update` 生成",
+                file=sys.stderr,
+            )
+            return 2
+        current = run_probe()
+        base = json.loads(BASELINE.read_text(encoding="utf-8"))
+
+    allowlist = load_allowlist()
+    failures: list[str] = []
 
     print(f"{'指标':<22}{'基线':>8}{'当前':>8}{'容错':>8}{'变化':>8}")
     for key, label, _ in METRICS:
@@ -221,12 +294,11 @@ def main() -> int:
         allowed = allowlist.get(key, [])
         if isinstance(allowed, list):
             now = max(0, now - len(allowed))
-        if diff_mode:
-            # 增量模式：diff 文件的指标值通常远小于全量基线，
-            # 只检查"新增"部分（now - before 的正值），负值视为 0。
-            delta = max(0, now - before)
-        else:
-            delta = now - before
+        # 两种模式的 before/now 都是「同一份文件集」：
+        #   全量模式 = 全仓库的基线 vs 当前；
+        #   增量模式 = diff 文件的 base 版本 vs HEAD。
+        # 所以直接相减即可，负值表示改善。
+        delta = now - before
         mark = "  " if delta <= slack else " ✗"
         slack_str = f"+{slack}" if slack else ""
         print(f"{label:<22}{before:>8}{now:>8}{slack_str:>8}{delta:>+8}{mark}")
@@ -235,16 +307,15 @@ def main() -> int:
                 f"{label}：{before} → {now}（+{delta}，容错 +{slack}）"
             )
 
-    # 名单比对：数量没变，但"哪个函数长"变了，也要能看出来
-    # 增量模式下，基线是全量的，比较无意义——只检查新增
-    if not diff_mode:
-        base_long = set(base.get("long_fn_keys", []))
-        now_long = set(current.get("long_fn_keys", []))
-        allowed_long = set(allowlist.get("long_fn_keys", []))
-        for key in sorted(now_long - base_long - allowed_long):
-            failures.append(f"新增长函数（>100 行）：{key}")
-        for key in sorted(base_long - now_long):
-            print(f"  ✓ 已拆掉：{key}")
+    # 名单比对：数量没变，但"哪个函数长"变了，也要能看出来。
+    # 增量模式下 base 是「同文件集的 base 版本」，比较同样成立。
+    base_long = set(base.get("long_fn_keys", []))
+    now_long = set(current.get("long_fn_keys", []))
+    allowed_long = set(allowlist.get("long_fn_keys", []))
+    for key in sorted(now_long - base_long - allowed_long):
+        failures.append(f"新增长函数（>100 行）：{key}")
+    for key in sorted(base_long - now_long):
+        print(f"  ✓ 已拆掉：{key}")
 
     print()
     if failures:
