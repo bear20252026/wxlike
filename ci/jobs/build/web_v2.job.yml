@@ -31,6 +31,12 @@ jobs:
         # 注入的那份 meta CSP，只有交集算得过真产物才有意义（#158）。
         run: npm test
         working-directory: apps/desktop-web
-      - name: C7b mini-sdk contract parity (packages/mini-sdk, no deps to install)
+      - name: C7b mini-sdk install (packages/mini-sdk)
+        run: npm ci --no-audit --no-fund
+        working-directory: packages/mini-sdk
+      - name: C7b mini-sdk typecheck
+        run: npm run typecheck
+        working-directory: packages/mini-sdk
+      - name: C7b mini-sdk contract parity
         run: npm test
         working-directory: packages/mini-sdk
