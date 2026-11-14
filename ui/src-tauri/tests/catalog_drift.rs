@@ -42,6 +42,7 @@ fn bridge_source() -> &'static str {
         s.push_str(include_str!("../src/core_bridge/media.inc"));
         s.push_str(include_str!("../src/core_bridge/relations.inc"));
         s.push_str(include_str!("../src/core_bridge/wallet.inc"));
+        s.push_str(include_str!("../src/core_bridge/call.inc"));
         s.push_str(include_str!("../src/core_bridge/search.inc"));
         s.push_str(include_str!("../src/core_bridge/prefs.inc"));
         s.push_str(include_str!("../src/core_bridge/storage.inc"));

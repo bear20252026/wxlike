@@ -26,6 +26,7 @@ include!("core_bridge/messaging.inc");
 include!("core_bridge/media.inc");
 include!("core_bridge/relations.inc");
 include!("core_bridge/wallet.inc");
+include!("core_bridge/call.inc");
 include!("core_bridge/search.inc");
 include!("core_bridge/prefs.inc");
 include!("core_bridge/storage.inc");

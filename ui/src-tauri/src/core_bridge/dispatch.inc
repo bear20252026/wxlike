@@ -41,6 +41,7 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("media", _) => media_router::<R>,
         ("relations", _) => relations_router::<R>,
         ("wallet", _) => wallet_router::<R>,
+        ("call", _) => call_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -183,6 +184,33 @@ fn wallet_router<R: tauri::Runtime>(
         "wallet.redpacket.get" => act_wallet_redpacket_get(app, state, core, req),
         "wallet.redpacket.claim" => act_wallet_redpacket_claim(app, state, core, req),
         "wallet.redpacket.list" => act_wallet_redpacket_list(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
+
+/// 通话域（D6 逐域退役）：信令与房间控制都从这里过，UI 侧不再自己发 HTTP。
+///
+/// 每条臂都走 [`authed_json`]（见 `call.inc`）。控制类端点服务端回 204，
+/// 桥读成 `{}` 如实上报成功；mute-all/signal 回各自的 JSON 形状，原样透传。
+fn call_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "call.state" => act_call_state(app, state, core, req),
+        "call.start" => act_call_start(app, state, core, req),
+        "call.join" => act_call_join(app, state, core, req),
+        "call.leave" => act_call_leave(app, state, core, req),
+        "call.mute" => act_call_mute(app, state, core, req),
+        "call.mute_all" => act_call_mute_all(app, state, core, req),
+        "call.lock" => act_call_lock(app, state, core, req),
+        "call.record" => act_call_record(app, state, core, req),
+        "call.hand" => act_call_hand(app, state, core, req),
+        "call.kick" => act_call_kick(app, state, core, req),
+        "call.signal.post" => act_call_signal_post(app, state, core, req),
+        "call.signal.take" => act_call_signal_take(app, state, core, req),
         _ => Err(unrouted(req)),
     }
 }
