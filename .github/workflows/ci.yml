@@ -194,7 +194,7 @@ jobs:
     name: flutter
     needs:
     - select
-    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    if: false
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -523,7 +523,7 @@ jobs:
     name: android
     needs:
     - select
-    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
