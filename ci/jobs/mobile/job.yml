@@ -2,7 +2,10 @@ jobs:
   android:
     name: android
     needs: [select]
-    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    # ADR-29 D1「−Dart」退役过渡：同 flutter——D3 回调致 Dart 绑定不可编译，
+    # Flutter APK 构建暂停；原生 Android（Kotlin + cargo-ndk）排 P0 spike。
+    # gate.py 接受路径跳过的作业。完整移除排 P3。
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read

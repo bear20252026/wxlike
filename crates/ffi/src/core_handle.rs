@@ -9,13 +9,19 @@
 //!   poll(timeout_ms) ─────────> 阻塞等结果/事件，成批返回 JSON
 //! ```
 //!
-//! 为什么不做回调：
+//! 为什么**默认**不做回调（poll 是兜底）：
 //!
 //! * 从 Rust 的**工作线程**直接调进 Dart 需要跨 isolate 端口，一旦 Dart 侧
 //!   卡住，Rust 的发送路径就被反向阻塞（"UI 卡住导致消息发不出去"）；
 //! * worker isolate 本来就在跑循环，`poll` 是它的自然形状；
 //! * 取消与销毁的语义更干净：`dispose` 之后 `poll` 直接返回空、`dispatch`
 //!   直接报错，不存在"晚到的回调打到已销毁的对象上"。
+//!
+//! D3 / ADR-29 的扩展：原生移动端（iOS/Android）轮询费电费延迟，所以新增
+//! [`EventSink`] 回调 + `subscribe(sink)`。关键是**回调不在工作线程上触发**，
+//! 而是每个 sink 一条专用分发线程——慢回调卡的是它自己那条线程，不会反向
+//! 阻塞发送路径，上面三条顾虑因此不成立。`poll` 保留为兜底：结果是**扇出**
+//! （既进 poll 队列也推给回调），不是二选一。销毁后分发线程随 closed 退出。
 //!
 //! 三条硬约束（每条都有测试）：
 //!
@@ -36,6 +42,20 @@ use wxlike_client_native::{NativeConfig, NativeCore};
 use wxlike_types::{ActionRequest, DomainError};
 
 use crate::error::WxlikeError;
+
+/// 事件回调接口（D3 / ADR-29）：原生壳实现它来**接收推送**，而不是轮询。
+///
+/// iOS 侧把 `on_event` hop 到主线程转 `AsyncStream`，Android 侧转 `Flow`。
+/// 这是对"CoreHandle 刻意无回调"旧设计的**显式扩展**：`poll` 保留为兜底，
+/// 回调只是把同一条结果**额外**推一份给已注册的 sink（扇出，不替换）。
+///
+/// 硬约束：回调在**专用分发线程**上触发，不在工作线程上——慢回调卡住的是
+/// 它自己那条线程，不会反向阻塞 dispatch 的发送路径（旧设计担心的正是这个）。
+#[uniffi::export(callback_interface)]
+pub trait EventSink: Send + Sync {
+    /// 收到一条事件（JSON 字符串，形状与 `poll` 返回的数组元素一致）。
+    fn on_event(&self, event_json: String);
+}
 
 /// 一次 `poll` 最多返回多少条。
 const POLL_BATCH: usize = 64;
@@ -82,13 +102,94 @@ impl Results {
     }
 }
 
+/// 已注册的事件回调 + 它们的专用分发队列（D3）。
+///
+/// 扇出语义：每条结果既进 `results`（poll 兜底），也进这里每个 sink 的队列。
+/// 每个 sink 配一条分发线程，回调在那条线程上触发——慢回调不阻塞工作线程。
+#[derive(Default)]
+struct Sinks {
+    inner: Mutex<Vec<SinkEntry>>,
+}
+
+/// 每个 sink 一条队列 + **自己的** condvar。condvar 必须与它等待的那把
+/// mutex 一一绑定：pthread（macOS/Linux）禁止同一个 condvar 配多把 mutex
+/// （"attempted to use a condition variable with two mutexes"），所以不能
+/// 全体 sink 共享一条 condvar——每个 sink 各带一条。
+struct SinkEntry {
+    queue: Arc<Mutex<VecDeque<String>>>,
+    signal: Arc<Condvar>,
+}
+
+impl Sinks {
+    /// 把一条事件扇出给所有已注册 sink（非阻塞：只入队 + 叫醒各自的 condvar）。
+    fn fan_out(&self, text: &str) {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for entry in inner.iter() {
+            entry
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(text.to_string());
+            entry.signal.notify_all();
+        }
+    }
+
+    /// 注册一个 sink，起一条分发线程。`closed` 用 Shared 的销毁标志，
+    /// dispose 置位后分发线程随之退出。
+    fn register(&self, sink: Arc<dyn EventSink>, closed: &Arc<AtomicBool>) {
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let signal = Arc::new(Condvar::new());
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.push(SinkEntry {
+                queue: queue.clone(),
+                signal: signal.clone(),
+            });
+        }
+        let closed = closed.clone();
+        // 分发线程：从队列取事件 → 调回调。closed 后退出（dispose 会叫醒）。
+        std::thread::Builder::new()
+            .name("wxlike-sink".to_string())
+            .spawn(move || loop {
+                if closed.load(Ordering::SeqCst) {
+                    break;
+                }
+                let next = {
+                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if q.is_empty() {
+                        let (next, _) = signal
+                            .wait_timeout(q, Duration::from_millis(WORKER_TICK_MS))
+                            .unwrap_or_else(|e| e.into_inner());
+                        q = next;
+                    }
+                    q.pop_front()
+                };
+                match next {
+                    Some(text) => sink.on_event(text),
+                    None => continue,
+                }
+            })
+            .ok();
+    }
+
+    /// 叫醒所有分发线程（dispose 时让它们看到 closed 后退出）。
+    fn wake_all(&self) {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for entry in inner.iter() {
+            entry.signal.notify_all();
+        }
+    }
+}
+
 /// 工作线程与它共享的状态。
 struct Shared {
     jobs: Mutex<VecDeque<Job>>,
     job_signal: Condvar,
     results: Results,
+    /// D3：已注册的事件回调（扇出推送，poll 仍是兜底）。
+    sinks: Sinks,
     cancelled: Mutex<HashSet<String>>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
     /// 用于生成 request_id（单调，避免随机数依赖）。
     sequence: AtomicU64,
     /// 工作线程退出信号：dispose 带超时等它，而不是无限 join。
@@ -218,20 +319,23 @@ fn idle_pump(
 
 /// 已取消的任务：把"已取消"回给调用方（否则 UI 会一直等），再清掉记录。
 fn reject_cancelled(shared: &Shared, request_id: &str) {
-    shared
-        .results
-        .push(error_json(request_id, &DomainError::cancelled()));
+    emit(shared, error_json(request_id, &DomainError::cancelled()));
     forget_cancelled(shared, request_id);
 }
 
 /// 结果落队列：失败转 error JSON，其余按 result JSON（Dart 侧按 `kind` 分流）。
 fn push_outcome(shared: &Shared, request_id: &str, outcome: &wxlike_types::ActionResult) {
-    match &outcome.outcome {
-        wxlike_types::ActionOutcome::Failed { error } => {
-            shared.results.push(error_json(request_id, error));
-        }
-        _ => shared.results.push(result_json(request_id, outcome)),
-    }
+    let text = match &outcome.outcome {
+        wxlike_types::ActionOutcome::Failed { error } => error_json(request_id, error),
+        _ => result_json(request_id, outcome),
+    };
+    emit(shared, text);
+}
+
+/// 扇出：一条结果既进 poll 队列（兜底），也推给已注册的回调（D3）。
+fn emit(shared: &Shared, text: String) {
+    shared.results.push(text.clone());
+    shared.sinks.fan_out(&text);
 }
 
 /// 工作线程主循环：取一条、跑一条、写结果。
@@ -248,9 +352,10 @@ fn run_worker(shared: Arc<Shared>, core: NativeCore) {
     let runtime = match worker_runtime() {
         Ok(runtime) => runtime,
         Err(message) => {
-            shared
-                .results
-                .push(json!({"kind": "fatal", "message": message}).to_string());
+            emit(
+                &shared,
+                json!({"kind": "fatal", "message": message}).to_string(),
+            );
             note_worker_exit(&shared);
             return;
         }
@@ -348,8 +453,9 @@ impl CoreHandle {
                 jobs: Mutex::new(VecDeque::new()),
                 job_signal: Condvar::new(),
                 results: Results::default(),
+                sinks: Sinks::default(),
                 cancelled: Mutex::new(HashSet::new()),
-                closed: AtomicBool::new(false),
+                closed: Arc::new(AtomicBool::new(false)),
                 sequence: AtomicU64::new(1),
                 worker_exited: Mutex::new(false),
                 worker_exit_signal: Condvar::new(),
@@ -396,6 +502,23 @@ impl CoreHandle {
         format!("[{}]", items.join(","))
     }
 
+    /// 注册一个事件回调（D3）：此后每条结果除了进 `poll` 队列，还会推给
+    /// 这个 sink。可注册多个；`poll` 始终可用作兜底。销毁后回调停止。
+    ///
+    /// # Errors
+    /// 核心已销毁。
+    pub fn subscribe(&self, sink: Box<dyn EventSink>) -> Result<(), WxlikeError> {
+        guard(|| {
+            if self.shared.closed.load(Ordering::SeqCst) {
+                return Err(WxlikeError::disposed());
+            }
+            self.shared
+                .sinks
+                .register(Arc::from(sink), &self.shared.closed);
+            Ok(())
+        })
+    }
+
     /// 取消一条还没跑完的请求。
     pub fn cancel(&self, request_id: String) {
         let mut cancelled = self
@@ -422,6 +545,8 @@ impl CoreHandle {
     pub fn dispose(&self) {
         self.shared.closed.store(true, Ordering::SeqCst);
         self.shared.job_signal.notify_all();
+        // 叫醒回调分发线程，让它们看到 closed 后退出（D3）。
+        self.shared.sinks.wake_all();
         let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = worker.take() {
             let exited = {
