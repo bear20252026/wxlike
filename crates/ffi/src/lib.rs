@@ -35,7 +35,7 @@ mod types;
 
 pub use cache::Cache;
 pub use client::{direct_conv_id, WxlikeClient};
-pub use core_handle::CoreHandle;
+pub use core_handle::{CoreHandle, EventSink};
 pub use error::{classify, WxlikeError};
 pub use types::{
     ChatMessage, ConversationList, ConversationRow, FlushReport, LiveInfo, LiveState, MessagePage,
