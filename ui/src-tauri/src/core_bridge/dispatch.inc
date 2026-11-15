@@ -42,6 +42,8 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("relations", _) => relations_router::<R>,
         ("wallet", _) => wallet_router::<R>,
         ("call", _) => call_router::<R>,
+        ("video", _) => video_router::<R>,
+        ("live", _) => video_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -211,6 +213,31 @@ fn call_router<R: tauri::Runtime>(
         "call.kick" => act_call_kick(app, state, core, req),
         "call.signal.post" => act_call_signal_post(app, state, core, req),
         "call.signal.take" => act_call_signal_take(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
+
+/// 视频/直播域（D6 逐域退役）：只退役控制面（读旧会话的那部分）。
+///
+/// 播放面（meta/清单/分片/mp4/缩略图）服务端按设计匿名（issue #7），不经过桥；
+/// 上传（multipart 二进制）在消费侧显式阻塞，无流式提供者。见 `video.inc`。
+fn video_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "video.meta" => act_video_meta(app, state, core, req),
+        "video.stats" => act_video_stats(app, state, core, req),
+        "video.view" => act_video_view(app, state, core, req),
+        "video.feed" => act_video_feed(app, state, core, req),
+        "live.state" => act_live_state(app, state, core, req),
+        "live.start" => act_live_start(app, state, core, req),
+        "live.stop" => act_live_stop(app, state, core, req),
+        "live.join" => act_live_join(app, state, core, req),
+        "live.leave" => act_live_leave(app, state, core, req),
+        "live.danmaku" => act_live_danmaku(app, state, core, req),
         _ => Err(unrouted(req)),
     }
 }
