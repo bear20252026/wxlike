@@ -153,6 +153,20 @@ export const ACTIONS = {
   callSignalPost: "call.signal.post",
   callSignalTake: "call.signal.take",
 
+  // 视频/直播域（D6 逐域退役）：只退役控制面。播放面（清单/分片/mp4/缩略图）
+  // 服务端按设计匿名（issue #7），不经过桥；上传在消费侧显式阻塞。名单与
+  // `core_bridge` 的 `video_router` 逐条对齐。
+  videoMeta: "video.meta",
+  videoStats: "video.stats",
+  videoView: "video.view",
+  videoFeed: "video.feed",
+  liveState: "live.state",
+  liveStart: "live.start",
+  liveStop: "live.stop",
+  liveJoin: "live.join",
+  liveLeave: "live.leave",
+  liveDanmaku: "live.danmaku",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",

@@ -73,6 +73,23 @@ const CALL_ACTIONS = {
   signalTake: ACTIONS.callSignalTake,
 } as const;
 
+/**
+ * 视频/直播 action 别名（名单只留一处，同钱包/通话）。只覆盖控制面；
+ * 播放面匿名、上传显式阻塞，都不在这张表里。
+ */
+const VIDEO_ACTIONS = {
+  meta: ACTIONS.videoMeta,
+  stats: ACTIONS.videoStats,
+  view: ACTIONS.videoView,
+  feed: ACTIONS.videoFeed,
+  liveState: ACTIONS.liveState,
+  liveStart: ACTIONS.liveStart,
+  liveStop: ACTIONS.liveStop,
+  liveJoin: ACTIONS.liveJoin,
+  liveLeave: ACTIONS.liveLeave,
+  liveDanmaku: ACTIONS.liveDanmaku,
+} as const;
+
 export interface CoreSessionSnapshot {
   installed: boolean;
   generation: number;
@@ -362,6 +379,89 @@ export function callRouteCensus(): string[] {
   return CALL_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
 }
 
+// ---------------------------------------------------------------------------
+// 视频/直播路由表：只覆盖控制面。
+//
+// `features/video/api.ts` 的控制面调用经此映射到 video.*/live.* action；桥透传
+// 服务端形状，feed 的行映射（mapFeedRow）仍留在 api.ts。播放面（play.mp4/
+// playlist.m3u8/thumb.png/分片）服务端按设计匿名，不在 CORE_ONLY 拒绝面里；
+// 上传（POST /api/video）无流式提供者，归入 BLOCKED_WALLET_PREFIXES 显式阻塞。
+// ---------------------------------------------------------------------------
+
+export const VIDEO_ROUTES: readonly WalletRoute[] = [
+  {
+    method: "GET",
+    pattern: "/api/video/:id",
+    action: VIDEO_ACTIONS.meta,
+    toParams: (match) => ({ video_id: match.params.id }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/video/:id/stats",
+    action: VIDEO_ACTIONS.stats,
+    toParams: (match) => ({ video_id: match.params.id }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/video/:id/view",
+    action: VIDEO_ACTIONS.view,
+    toParams: (match, body) => ({ video_id: match.params.id, viewer: body.viewer, watched_ms: body.watched_ms }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/videos/feed",
+    action: VIDEO_ACTIONS.feed,
+    toParams: ({ query }) => {
+      const params: Json = { mode: query.get("mode") ?? "hot" };
+      const cursor = query.get("cursor");
+      const limit = query.get("limit");
+      if (cursor !== null) params.cursor = cursor;
+      if (limit !== null) params.limit = Number(limit);
+      return params;
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/api/live/:channel",
+    action: VIDEO_ACTIONS.liveState,
+    toParams: (match) => ({ channel: match.params.channel }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/live/:channel/start",
+    action: VIDEO_ACTIONS.liveStart,
+    toParams: (match, body) => ({ channel: match.params.channel, recording: body.recording }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/live/:channel/stop",
+    action: VIDEO_ACTIONS.liveStop,
+    toParams: (match) => ({ channel: match.params.channel }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/live/:channel/join",
+    action: VIDEO_ACTIONS.liveJoin,
+    toParams: (match) => ({ channel: match.params.channel }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/live/:channel/leave",
+    action: VIDEO_ACTIONS.liveLeave,
+    toParams: (match) => ({ channel: match.params.channel }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/live/:channel/danmaku",
+    action: VIDEO_ACTIONS.liveDanmaku,
+    toParams: (match, body) => ({ channel: match.params.channel, text: body.text }),
+  },
+];
+
+export function videoRouteCensus(): string[] {
+  return VIDEO_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
+}
+
 /**
  * 已迁移域里**明确没有 provider** 的出口：登记在此，运行时一律 `blocked`（501），
  * 静态检查据此确认"钱包域的每条路径都有归属"——要么进 `WALLET_ROUTES` 走核心，
@@ -377,6 +477,8 @@ export const BLOCKED_WALLET_PREFIXES: readonly string[] = [
   "/api/topups",
   "/api/cards",
   "/api/entitlements",
+  // 视频上传（multipart 二进制）：无流式提供者，显式阻塞，不回落旧会话。
+  "/api/video",
 ];
 
 /** 路径是否落在某条路由模板上（`:x` 段通配；模板末尾可再带子段）。 */
@@ -391,7 +493,7 @@ function matchesPattern(bare: string, pattern: string): boolean {
 export function isRoutedOrBlocked(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
   if (BLOCKED_WALLET_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`))) return true;
-  return [...WALLET_ROUTES, ...CALL_ROUTES].some((route) => matchesPattern(bare, route.pattern));
+  return [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES].some((route) => matchesPattern(bare, route.pattern));
 }
 
 /** 路径（去掉 query）+ 方法 → 指定路由表里的条目；不匹配返回 null。 */
@@ -422,8 +524,8 @@ function matchRoute(
   return null;
 }
 
-/** 已迁移域的路由表（按域顺序匹配；钱包与通话的 URL 前缀不重叠）。 */
-const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES];
+/** 已迁移域的路由表（按域顺序匹配；各域控制面 URL 模板互不重叠）。 */
+const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES];
 
 // ---------------------------------------------------------------------------
 // 投影用到的严格读数（缺字段就抛，不兜默认值）
