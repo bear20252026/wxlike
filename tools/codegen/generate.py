@@ -181,6 +181,21 @@ _PARAM_KOTLIN = {"Str": "String", "Int": "Long", "NonNegativeInt": "Long", "Bool
 _PARAM_DART = {"Str": "String", "Int": "int", "NonNegativeInt": "int", "Bool": "bool", "StrList": "List<String>"}
 
 
+def _str_lit(text: str) -> str:
+    """把任意文本转成可嵌入 Swift/Kotlin/Dart 双引号串的字面量内容。
+
+    参数 note 含中文与标点（可能有引号/反斜杠/换行），统一转义，避免生成的
+    源码被一个裸引号截断。三端双引号串的转义规则一致。
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
 def _params_ts(action: dict) -> str:
     """一条命令的参数对象类型（无参数 → Record<string, never>）。"""
     if not action["params"]:
@@ -500,7 +515,8 @@ def emit_dart(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str
     parts.append("  final String name;")
     parts.append("  final String type;")
     parts.append("  final bool required;")
-    parts.append("  const ParamSpec(this.name, this.type, this.required);")
+    parts.append("  final String note;")
+    parts.append("  const ParamSpec(this.name, this.type, this.required, this.note);")
     parts.append("}")
     parts.append("")
     parts.append("/// 逐命令的参数规格。")
@@ -510,7 +526,7 @@ def emit_dart(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str
             parts.append(f"  '{action['id']}': [],")
             continue
         specs = ", ".join(
-            f"ParamSpec('{p['name']}', '{_PARAM_DART[p['type']]}', {'true' if p['required'] else 'false'})"
+            f'ParamSpec(\'{p["name"]}\', \'{_PARAM_DART[p["type"]]}\', {"true" if p["required"] else "false"}, "{_str_lit(p["note"])}")'
             for p in action["params"]
         )
         parts.append(f"  '{action['id']}': [{specs}],")
@@ -598,10 +614,12 @@ def emit_swift(schemas: dict[str, dict], digest: str, actions: list[dict]) -> st
     parts.append("    public let name: String")
     parts.append("    public let type: String")
     parts.append("    public let required: Bool")
-    parts.append("    public init(name: String, type: String, required: Bool) {")
+    parts.append("    public let note: String")
+    parts.append("    public init(name: String, type: String, required: Bool, note: String) {")
     parts.append("        self.name = name")
     parts.append("        self.type = type")
     parts.append("        self.required = required")
+    parts.append("        self.note = note")
     parts.append("    }")
     parts.append("}")
     parts.append("")
@@ -612,7 +630,7 @@ def emit_swift(schemas: dict[str, dict], digest: str, actions: list[dict]) -> st
             parts.append(f'    "{action["id"]}": [],')
             continue
         specs = ", ".join(
-            f'ParamSpec(name: "{p["name"]}", type: "{_PARAM_SWIFT[p["type"]]}", required: {"true" if p["required"] else "false"})'
+            f'ParamSpec(name: "{p["name"]}", type: "{_PARAM_SWIFT[p["type"]]}", required: {"true" if p["required"] else "false"}, note: "{_str_lit(p["note"])}")'
             for p in action["params"]
         )
         parts.append(f'    "{action["id"]}": [{specs}],')
@@ -702,7 +720,7 @@ def emit_kotlin(schemas: dict[str, dict], digest: str, actions: list[dict]) -> s
     parts.append(")")
     parts.append("")
     parts.append("// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。")
-    parts.append("data class ParamSpec(val name: String, val type: String, val required: Boolean)")
+    parts.append("data class ParamSpec(val name: String, val type: String, val required: Boolean, val note: String)")
     parts.append("")
     parts.append("// 逐命令的参数规格。")
     parts.append("val actionParams: Map<String, List<ParamSpec>> = mapOf(")
@@ -711,7 +729,7 @@ def emit_kotlin(schemas: dict[str, dict], digest: str, actions: list[dict]) -> s
             parts.append(f'    "{action["id"]}" to emptyList(),')
             continue
         specs = ", ".join(
-            f'ParamSpec("{p["name"]}", "{_PARAM_KOTLIN[p["type"]]}", {"true" if p["required"] else "false"})'
+            f'ParamSpec("{p["name"]}", "{_PARAM_KOTLIN[p["type"]]}", {"true" if p["required"] else "false"}, "{_str_lit(p["note"])}")'
             for p in action["params"]
         )
         parts.append(f'    "{action["id"]}" to listOf({specs}),')

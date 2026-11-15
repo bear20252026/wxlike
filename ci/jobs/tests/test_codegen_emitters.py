@@ -92,6 +92,17 @@ class CodegenEmittersTest(unittest.TestCase):
         # 参数总数与目录同源（89 条 Param 声明）。
         self.assertEqual(sum(len(a["params"]) for a in self.actions), 89)
 
+    def test_param_notes_emitted_in_swift_kotlin_dart(self):
+        # conv.history 的 conv 参数 note 是「会话 id」，三端都应带上。
+        note = "会话 id"
+        self.assertIn(f'note: "{note}"', self.swift)
+        self.assertIn(f'"{note}"', self.kotlin)
+        self.assertIn(f'"{note}"', self.dart)
+        # ParamSpec 三端都有 note 字段。
+        self.assertIn("public let note: String", self.swift)
+        self.assertIn("val note: String", self.kotlin)
+        self.assertIn("final String note;", self.dart)
+
     def test_action_params_cover_all_actions_in_all_languages(self):
         blocks = (
             ("ts", self.ts, "export interface ActionParams {", "\n}"),
