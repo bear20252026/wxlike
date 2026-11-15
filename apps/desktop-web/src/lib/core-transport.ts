@@ -124,6 +124,19 @@ const FILES_ACTIONS = {
   remove: ACTIONS.fileRemove,
 } as const;
 
+/**
+ * 发现域 action 别名（名单只留一处）。服务目录控制面（目录/报价/下单/查单/
+ * 列举/退款）；识图/翻译（multipart + 外部 AI）显式阻塞，不在这张表里。
+ */
+const DISCOVER_ACTIONS = {
+  services: ACTIONS.discoverServices,
+  quote: ACTIONS.discoverQuote,
+  orderCreate: ACTIONS.discoverOrderCreate,
+  orderGet: ACTIONS.discoverOrderGet,
+  orders: ACTIONS.discoverOrders,
+  orderRefund: ACTIONS.discoverOrderRefund,
+} as const;
+
 export interface CoreSessionSnapshot {
   installed: boolean;
   generation: number;
@@ -722,6 +735,61 @@ export const FILES_ROUTES: readonly WalletRoute[] = [
 export function filesRouteCensus(): string[] {
   return FILES_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
 }
+// ---------------------------------------------------------------------------
+// 发现路由表：服务目录控制面（目录/报价/下单/查单/列举/退款）。
+//
+// 前端旧路径 /api/services、/api/quotes、/api/orders* 经此映射到 discover.*
+// action，桥打到 G07 服务目录服务端。服务端已把内部模型投影成前端契约形状
+// （ServiceEntry/Quote/ServiceOrder），这里只做信封拆包：services 与 orders 的
+// {items}→裸数组。识图/翻译（/api/vision）无核心提供者，归 BLOCKED 显式阻塞。
+// ---------------------------------------------------------------------------
+
+export const DISCOVER_ROUTES: readonly WalletRoute[] = [
+  {
+    method: "GET",
+    pattern: "/api/services",
+    action: DISCOVER_ACTIONS.services,
+    toParams: () => ({}),
+    project: (data) => needArray(asRecord(data, "services"), "items"),
+  },
+  {
+    method: "GET",
+    pattern: "/api/quotes",
+    action: DISCOVER_ACTIONS.quote,
+    toParams: ({ query }) => ({ service_id: query.get("service_id") }),
+    // 服务端已投影成 {quote_id, service_id, price_minor, currency, expires_at}。
+  },
+  {
+    method: "POST",
+    pattern: "/api/orders",
+    action: DISCOVER_ACTIONS.orderCreate,
+    toParams: (_m, body) => ({ service_id: body.service_id, quote_id: body.quote_id }),
+    // 服务端已投影成 ServiceOrder。
+  },
+  {
+    method: "GET",
+    pattern: "/api/orders/:id",
+    action: DISCOVER_ACTIONS.orderGet,
+    toParams: (m) => ({ order_id: m.params.id }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/orders",
+    action: DISCOVER_ACTIONS.orders,
+    toParams: () => ({}),
+    project: (data) => needArray(asRecord(data, "orders"), "items"),
+  },
+  {
+    method: "POST",
+    pattern: "/api/orders/:id/refund",
+    action: DISCOVER_ACTIONS.orderRefund,
+    toParams: (m) => ({ order_id: m.params.id }),
+  },
+];
+
+export function discoverRouteCensus(): string[] {
+  return DISCOVER_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
+}
 
 /**
  * 已迁移域里**明确没有 provider** 的出口：登记在此，运行时一律 `blocked`（501），
@@ -750,6 +818,8 @@ export const BLOCKED_WALLET_PREFIXES: readonly string[] = [
   "/api/media",
   // 文件域备份/清理计划：服务端导出包计划与前端清理契约未对齐，显式阻塞。
   "/api/backups",
+  // 发现域识图/翻译（multipart + 外部 AI）：无核心提供者，显式阻塞。
+  "/api/vision",
 ];
 
 /** 路径是否落在某条路由模板上（`:x` 段通配；模板末尾可再带子段）。 */
@@ -767,7 +837,7 @@ function matchesPattern(bare: string, pattern: string): boolean {
 export function isRoutedOrBlocked(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
   if (
-    [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES].some((route) =>
+    [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES, ...DISCOVER_ROUTES].some((route) =>
       matchesPattern(bare, route.pattern),
     )
   ) {
@@ -805,7 +875,7 @@ function matchRoute(
 }
 
 /** 已迁移域的路由表（按域顺序匹配；各域控制面 URL 模板互不重叠）。 */
-const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES];
+const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES, ...DISCOVER_ROUTES];
 
 // ---------------------------------------------------------------------------
 // 投影用到的严格读数（缺字段就抛，不兜默认值）

@@ -38,22 +38,21 @@ describe("组合根横幅：每条域的会话来源都要看得见、说得清"
     setTransport(fixtureTransport({}));
     renderApp({ hash: "#/login" });
     await loginAs("user-alpha", "demo1234");
-    navigate({ id: "discover" } as Route);
+    navigate({ id: "mini" } as Route);
 
-    const banner = await screen.findByTestId("domain-blocked-discover");
+    const banner = await screen.findByTestId("domain-blocked-mini");
     expect(banner.getAttribute("role")).toBe("alert");
     expect(banner.textContent).toContain("未接入认证 Rust 核心（阻塞，非成功）");
     expect(banner.textContent).toContain("没有 Rust 提供者");
     expect(banner.textContent).toContain("不能当验收依据");
     // 核心那一格的横幅此刻不该出现在这个页面上
     expect(screen.queryByTestId("domain-state-wallet")).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId("domain-blocked-discover")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("domain-blocked-mini")).toBeInTheDocument());
   });
 
-  it("注册表与现实同源：5 格已迁移 + 2 格阻塞，每格都有路由归属", () => {
-    expect(domainsInState("core").map((domain) => domain.id)).toEqual(["wallet", "moments", "video", "calls", "files"]);
+  it("注册表与现实同源：6 格已迁移 + 1 格阻塞，每格都有路由归属", () => {
+    expect(domainsInState("core").map((domain) => domain.id)).toEqual(["wallet", "moments", "video", "calls", "files", "discover"]);
     expect(domainsInState("blocked").map((domain) => domain.id).sort()).toEqual([
-      "discover",
       "mini",
     ]);
     // 已迁移的每一格都必须记着提供者的 SHA（卡面：消费者记录 provider SHA）
@@ -63,6 +62,7 @@ describe("组合根横幅：每条域的会话来源都要看得见、说得清"
     expect(coreById.video?.providerSha).toBeTruthy();
     expect(coreById.moments?.providerSha).toBeTruthy();
     expect(coreById.files?.providerSha).toBeTruthy();
+    expect(coreById.discover?.providerSha).toBeTruthy();
     for (const domain of domainsInState("blocked")) {
       expect(domain.providerSha, domain.id).toBeNull();
       expect(domain.actions, domain.id).toEqual([]);

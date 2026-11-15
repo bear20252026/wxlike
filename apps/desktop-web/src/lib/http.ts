@@ -78,6 +78,13 @@ const CORE_ONLY_PREFIXES: readonly string[] = [
   "/api/files",
   "/api/backups",
   "/api/media",
+  // 发现域（D6）：整域归核心。服务目录控制面（目录/报价/订单）走 discover.*
+  // action 打到 G07 服务目录服务端；识图/翻译（/api/vision，multipart + 外部
+  // AI）无核心提供者，显式阻塞（同视频上传口径）。
+  "/api/services",
+  "/api/quotes",
+  "/api/orders",
+  "/api/vision",
 ];
 
 /**

@@ -10,8 +10,15 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
+# G07/D6：服务目录控制面的 HTTP 投影（与 media 域同款 axum 0.8）。
+axum = { version = "0.8", features = ["macros"] }
 sha2 = { workspace = true }
 hmac = "0.12"
 chacha20poly1305 = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+
+[dev-dependencies]
+# HTTP 投影测试用 tower::oneshot 打路由（与 media 域测试同款）。
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

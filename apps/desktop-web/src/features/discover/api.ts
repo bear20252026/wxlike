@@ -4,7 +4,7 @@
  * upstream states. Camera scanning itself is real (see ScanPanel).
  */
 
-import { ApiError, idemKey, request } from "../../lib/http";
+import { ApiError, blockedError, idemKey, request } from "../../lib/http";
 import type { DiscoverPorts, OrderState, Quote, RequestOpts, ServiceEntry, ServiceOrder, VisionJob } from "./model";
 
 export function isUpstreamMissing(err: unknown): boolean {
@@ -48,48 +48,22 @@ export class DiscoverApi implements DiscoverPorts {
     });
   }
 
-  async recognizeImage(image: Blob, opts?: RequestOpts): Promise<VisionJob> {
-    return this.submitVision("recognition", image, undefined, opts);
+  /**
+   * 识图/翻译（multipart 图片 + 外部 AI 能力）没有核心提供者：显式阻塞（#294，
+   * 同视频上传口径）。vision crate 的 VisionService 在无 provider 时本就拒绝，
+   * 把图片字节流搬进 CoreHandle 需要独立的流式 action 契约与外部 AI 凭据，
+   * 不在本控制面切片里伪造识别结果。
+   */
+  async recognizeImage(_image: Blob, _opts?: RequestOpts): Promise<VisionJob> {
+    throw blockedError("/api/vision/recognition", "识图（multipart + 外部 AI）尚无核心提供者");
   }
 
-  async translateImage(image: Blob, targetLang: string, opts?: RequestOpts): Promise<VisionJob> {
-    return this.submitVision("translation", image, targetLang, opts);
+  async translateImage(_image: Blob, _targetLang: string, _opts?: RequestOpts): Promise<VisionJob> {
+    throw blockedError("/api/vision/translation", "图片翻译（multipart + 外部 AI）尚无核心提供者");
   }
 
-  private async submitVision(
-    kind: "recognition" | "translation",
-    image: Blob,
-    targetLang: string | undefined,
-    opts?: RequestOpts,
-  ): Promise<VisionJob> {
-    const form = new FormData();
-    form.append("image", image, "capture.jpg");
-    if (targetLang) form.append("target_lang", targetLang);
-    const tok = (await import("../../lib/http")).token();
-    const res = await fetch(`/api/vision/${kind}`, {
-      method: "POST",
-      headers: tok ? { authorization: `Bearer ${tok}` } : {},
-      body: form,
-      signal: opts?.signal,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      let message = text.trim() || `识别请求失败 (${res.status})`;
-      try {
-        const parsed = JSON.parse(text) as { error?: string };
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // plain-text error body
-      }
-      throw new ApiError(res.status, message, `/api/vision/${kind}`);
-    }
-    return (await res.json()) as VisionJob;
-  }
-
-  async visionJob(jobId: string, opts?: RequestOpts): Promise<VisionJob> {
-    return request<VisionJob>("GET", `/api/vision/jobs/${encodeURIComponent(jobId)}`, {
-      signal: opts?.signal,
-    });
+  async visionJob(jobId: string, _opts?: RequestOpts): Promise<VisionJob> {
+    throw blockedError(`/api/vision/jobs/${jobId}`, "识图/翻译作业查询尚无核心提供者");
   }
 }
 

@@ -391,6 +391,12 @@ impl OrderService {
         self.owned_order(&actor, order_id).await
     }
 
+    /// 列举当前用户的全部订单（更新时间倒序）。先换取可信 actor，只读自己的。
+    pub async fn list_orders(&self, session: &str) -> Result<Vec<Order>> {
+        let actor = self.actor(session)?;
+        self.store.list_orders(&actor).await
+    }
+
     pub async fn purge_expired_quotes(&self) -> usize {
         self.store.purge_expired(self.clock.now_ms()).await
     }

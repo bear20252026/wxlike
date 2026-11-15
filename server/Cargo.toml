@@ -22,6 +22,8 @@ wxlike-video = { path = "../crates/video" }
 wxlike-search = { path = "../crates/search" }
 # #295/G00：media 域（上传/对象授权/文件系统/转码/备份/缓存预算）首次进组合根
 wxlike-media = { path = "../crates/features/media" }
+# G07/D6：服务目录域（目录/报价/订单/退款控制面）首次进组合根
+wxlike-service-catalog = { path = "../crates/service-catalog" }
 async-nats = { version = "0.50", optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }

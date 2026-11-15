@@ -49,6 +49,7 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("report", _) => content_router::<R>,
         ("sticker", _) => content_router::<R>,
         ("file", _) => files_router::<R>,
+        ("discover", _) => discover_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -291,6 +292,27 @@ fn files_router<R: tauri::Runtime>(
         "file.rename" => act_file_rename(app, state, core, req),
         "file.share" => act_file_share(app, state, core, req),
         "file.remove" => act_file_remove(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
+
+/// 发现域（D6 逐域退役）：服务目录控制面（目录/报价/下单/查单/列举/退款）经
+/// 认证桥打到 G07 服务目录服务端。识图/翻译（multipart + 外部 AI）无核心提供者，
+/// 在消费侧显式阻塞，不在本桥伪造。无供应商凭据时服务端诚实回 501。
+fn discover_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    match req.action_id.as_str() {
+        "discover.services" => act_discover_services(app, state, core, req),
+        "discover.quote" => act_discover_quote(app, state, core, req),
+        "discover.order_create" => act_discover_order_create(app, state, core, req),
+        "discover.order_get" => act_discover_order_get(app, state, core, req),
+        "discover.orders" => act_discover_orders(app, state, core, req),
+        "discover.order_refund" => act_discover_order_refund(app, state, core, req),
         _ => Err(unrouted(req)),
     }
 }

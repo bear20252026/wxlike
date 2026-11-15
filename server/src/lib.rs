@@ -14,6 +14,8 @@
 
 use std::sync::Arc;
 
+/// G07/D6：服务目录域的组合根装配（会话校验落平台 sessions 表，无凭据诚实阻塞）。
+pub mod discover_mount;
 mod history_archive;
 /// #295/G00：media 域的组合根装配（会话校验/成员事实/签名密钥都落在这里）。
 /// `pub` 是给集成测试的：挂载的鉴权与迁移可重入性要能在不起 hub 的情况下复验。
@@ -189,6 +191,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     });
     // #295：media 域装一次 = 顺带把 M009 打到平台那个库里（MediaDb::open 幂等建表）。
     let (media_app, media_service) = media_mount::assemble(&platform, opts.db_path.as_deref())?;
+    let discover_app = discover_mount::assemble(&platform, opts.db_path.as_deref()).await?;
     let _workers = spawn_background_workers(&platform, &media_service);
     let app = build_app(
         opts.hub_id.clone(),
@@ -198,6 +201,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         handle.clone(),
         deps,
         media_app,
+        discover_app,
     );
     let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app.clone()).await?;
 
@@ -492,6 +496,7 @@ fn build_app(
     handle: HubHandle,
     deps: Arc<HistoryDeps>,
     media_app: Router,
+    discover_app: Router,
 ) -> Router {
     let admin_platform = platform.clone();
     let endpoints_platform = platform.clone();
@@ -521,6 +526,8 @@ fn build_app(
         // #295/G00：G04 media 域（`/api/v1/*`，29 条路由）。路径前缀与上面的
         // `/api/media`（platform 的 WP-05 面）不重叠，两套并存的退役关系另议。
         .merge(media_app)
+        // G07/D6：服务目录域（/api/services、/api/quotes、/api/orders）。
+        .merge(discover_app)
         .merge(wxlike_video::routes(video_state))
         .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone(), platform.clone()))

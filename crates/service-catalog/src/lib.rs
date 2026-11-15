@@ -12,6 +12,7 @@ pub mod auth;
 pub mod catalog;
 pub mod clock;
 pub mod error;
+pub mod http;
 pub mod ids;
 pub mod order;
 pub mod payment;
