@@ -3,8 +3,9 @@
 #
 #   crates/ffi/regenerate.sh [release]
 #
-# 产出两处：
+# 产出三处：
 #   crates/ffi/generated/kotlin/  —— B1 验收用的 Kotlin（不提交，.gitignore）
+#   crates/ffi/generated/swift/   —— D1 原生 iOS 壳用的 Swift（不提交，.gitignore）
 #   apps/mobile/lib/src/rust/     —— Flutter 直接 import 的 Dart（**不提交**，见 .gitignore：
 #                                    生成物靠本脚本重建，和 ui/dist/app.js 同一个口径）
 #
@@ -33,12 +34,20 @@ echo "==> build cdylib ($PROFILE)"
 cargo build -p wxlike-ffi --features bindgen,dart "${CARGO_FLAGS[@]}"
 
 KOTLIN_OUT="crates/ffi/generated/kotlin"
+SWIFT_OUT="crates/ffi/generated/swift"
 DART_OUT="apps/mobile/lib/src/rust"
-mkdir -p "$KOTLIN_OUT" "$DART_OUT"
+mkdir -p "$KOTLIN_OUT" "$SWIFT_OUT" "$DART_OUT"
 
 echo "==> kotlin 绑定 → $KOTLIN_OUT"
 cargo run -q -p wxlike-ffi --features bindgen --bin uniffi-bindgen -- \
   generate --library "$LIB" --language kotlin --out-dir "$KOTLIN_OUT"
+
+echo "==> swift 绑定 → $SWIFT_OUT"
+# D1：官方 UniFFI 后端原生支持 Swift（与 Kotlin 同一个 uniffi-bindgen）。
+# iOS 壳消费这份绑定 + tools/codegen/out/swift/Contract.swift（D5 契约）。
+# XCFramework 包装（lipo + xcodebuild）需 macOS 工具链，排在 P0 spike，不在本脚本。
+cargo run -q -p wxlike-ffi --features bindgen --bin uniffi-bindgen -- \
+  generate --library "$LIB" --language swift --out-dir "$SWIFT_OUT"
 
 echo "==> dart 绑定 → $DART_OUT"
 # --config 必须显式给：library mode 下 uniffi-bindgen-dart 不会自己去 crate 根
@@ -49,4 +58,4 @@ cargo run -q -p wxlike-ffi --features bindgen,dart --bin uniffi-bindgen-dart -- 
 
 echo "==> dart format"
 dart format "$DART_OUT" >/dev/null 2>&1 || true
-echo "完成：$(ls "$KOTLIN_OUT" | tr '\n' ' ')| $(ls "$DART_OUT" | tr '\n' ' ')"
+echo "完成：$(ls "$KOTLIN_OUT" | tr '\n' ' ')| $(ls "$SWIFT_OUT" | tr '\n' ' ')| $(ls "$DART_OUT" | tr '\n' ' ')"
