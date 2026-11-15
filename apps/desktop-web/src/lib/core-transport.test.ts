@@ -33,6 +33,7 @@ import {
   DISCOVER_ROUTES,
   FILES_ROUTES,
   LEDGER_KINDS,
+  MINI_ROUTES,
   VIDEO_ROUTES,
   WALLET_ROUTES,
   __resetCoreSessionForTests,
@@ -42,6 +43,7 @@ import {
   discoverRouteCensus,
   filesRouteCensus,
   installCoreSession,
+  miniRouteCensus,
   isRoutedOrBlocked,
   resetCoreSession,
   uninstallCoreSession,
@@ -56,7 +58,7 @@ import {
   type CoreHandle,
   type ErrorCode,
 } from "../shell/core-contract";
-import { DOMAIN_REGISTRY } from "./domain-registry";
+import { DOMAIN_REGISTRY, MINI_PROVIDER_SHA } from "./domain-registry";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -376,24 +378,13 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
     expect(fetchCalls).toEqual([]);
   });
 
-  it("未迁移的域仍然走遗留出口（mini/discover 尚未迁）", async () => {
-    const h = makeCore(() => ok({}));
+  it("D6 退役完成：小程序域也走核心路由，不再回落遗留出口", async () => {
+    const h = makeCore(() => ok({ items: [] }));
     installCoreSession(h.core);
-    globalThis.fetch = (async () => ({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ ok: true }),
-    })) as unknown as typeof fetch;
-    try {
-      const body = await request<{ ok: boolean }>("GET", "/api/miniapps");
-      expect(body).toEqual({ ok: true });
-      expect(h.requests).toEqual([]);
-    } finally {
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        fetchCalls.push(String(input));
-        throw new Error(`不该发 HTTP：${String(input)}`);
-      }) as typeof fetch;
-    }
+    const body = await request<unknown[]>("GET", "/api/miniapps");
+    expect(body).toEqual([]);
+    expect(h.requests[0]?.action_id).toBe("mini.list");
+    expect(fetchCalls).toEqual([]);
   });
 });
 
@@ -806,6 +797,63 @@ describe("发现域 — 控制面经核心打到 G07、识图翻译阻塞（D6�
     expect(fetchCalls).toEqual([]);
   });
 });
+describe("小程序域 — 控制面经核心打到 G08、install 与包体阻塞（D6）", () => {
+  it("list：dispatch mini.list，并把 {items} 投影成裸数组", async () => {
+    const h = makeCore(() => ok({ items: [{ app_id: "wxmini-0001", name: "出行助手", origins: ["https://mini.example.com"] }] }));
+    installCoreSession(h.core);
+    const body = await request<unknown[]>("GET", "/api/miniapps");
+    expect(h.requests[0]?.action_id).toBe("mini.list");
+    expect(body).toEqual([{ app_id: "wxmini-0001", name: "出行助手", origins: ["https://mini.example.com"] }]);
+  });
+
+  it("releases：dispatch mini.releases，app_id 走路径", async () => {
+    const h = makeCore(() => ok({ items: [{ version: "1.2.0", manifest_digest: "aa", signature: "sig", package_url: "https://x/p", released_at: 1, revoked: false }] }));
+    installCoreSession(h.core);
+    const body = await request<unknown[]>("GET", "/api/miniapps/wxmini-0001/releases");
+    expect(h.requests[0]?.action_id).toBe("mini.releases");
+    expect(h.requests[0]?.params).toEqual({ app_id: "wxmini-0001" });
+    expect(body).toHaveLength(1);
+  });
+
+  it("grant：dispatch mini.grant，透传 app_id/scopes", async () => {
+    const h = makeCore(() => ok({ app_id: "wxmini-0001", scopes: ["profile.read"], granted_at: 1 }));
+    installCoreSession(h.core);
+    const body = await request<{ app_id: string }>("POST", "/api/mini-grants", { body: { app_id: "wxmini-0001", scopes: ["profile.read"] } });
+    expect(h.requests[0]?.action_id).toBe("mini.grant");
+    expect(h.requests[0]?.params).toEqual({ app_id: "wxmini-0001", scopes: ["profile.read"] });
+    expect(body.app_id).toBe("wxmini-0001");
+  });
+
+  it("revoke / uninstall：dispatch DELETE，app_id 走路径", async () => {
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    await request("DELETE", "/api/mini-grants/wxmini-0001");
+    expect(h.requests[0]?.action_id).toBe("mini.revoke");
+    await request("DELETE", "/api/mini-installs/wxmini-0001");
+    expect(h.requests[1]?.action_id).toBe("mini.uninstall");
+    expect(h.requests[1]?.params).toEqual({ app_id: "wxmini-0001" });
+  });
+
+  it("控制面 CORE_ONLY 且有归属；install 与包体下载显式阻塞", async () => {
+    for (const p of ["/api/miniapps", "/api/miniapps/wxmini-0001/releases", "/api/mini-grants", "/api/mini-installs/wxmini-0001"]) {
+      expect(isCoreOnlyPath(p), p).toBe(true);
+      expect(isRoutedOrBlocked(p), p).toBe(true);
+    }
+    expect(miniRouteCensus()).toHaveLength(MINI_ROUTES.length);
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    for (const [method, p] of [
+      ["POST", "/api/mini-installs"],
+      ["GET", "/api/miniapps/wxmini-0001/releases/1.2.0/package"],
+    ] as const) {
+      const error = (await request(method, p).catch((err) => err)) as ApiError;
+      expect(error.code, p).toBe("blocked");
+      expect(error.status, p).toBe(501);
+    }
+    expect(h.requests).toEqual([]);
+    expect(fetchCalls).toEqual([]);
+  });
+});
 describe("会话切换 — 真清，不是注释", () => {
   it("切换前挂着的钱包请求：结果落地时被丢弃，并计入 dropped 台账", async () => {
     const h = makeCore(() => ok({ balance_minor: 999999, currency: "CNY" }), { delayFirst: true });
@@ -895,7 +943,12 @@ describe("台账漂移守卫 — 与 Rust 服务端同源", () => {
     expect(discover?.providerSha).toBeTruthy();
     expect([...(discover?.actions ?? [])].sort()).toEqual(DISCOVER_ROUTES.map((r) => r.action).sort());
     expect([...new Set(DISCOVER_ROUTES.map((r) => r.action))]).toHaveLength(DISCOVER_ROUTES.length);
-    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(1);
+    const mini = DOMAIN_REGISTRY.find((domain) => domain.id === "mini");
+    expect(mini?.state).toBe("core");
+    expect(mini?.providerSha).toBe(MINI_PROVIDER_SHA);
+    expect([...(mini?.actions ?? [])].sort()).toEqual(MINI_ROUTES.map((r) => r.action).sort());
+    expect([...new Set(MINI_ROUTES.map((r) => r.action))]).toHaveLength(MINI_ROUTES.length);
+    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(0);
   });
 });
 
@@ -939,6 +992,9 @@ interface CheckJson {
   discoverRoutes: { method: string; pattern: string; action: string }[];
   discoverBridgeArms: string[];
   discoverContractActions: string[];
+  miniRoutes: { method: string; pattern: string; action: string }[];
+  miniBridgeArms: string[];
+  miniContractActions: string[];
   coreOnlyPrefixes: string[];
   violations: Violation[];
   ledger: Record<string, { files: string[]; counts: Record<string, number> }>;
@@ -1061,28 +1117,26 @@ function dropRoute(text: string, pattern: string): string {
 describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 第 5 条）", { timeout: 60_000 }, () => {
   const disk = runJson();
 
-  it("今天判定为绿，并把现存违例的条数如实打印出来（条数来自扫描，不是写死的常量）", () => {
+  it("今天判定为绿：七域全 core，零遗留违例（条数来自扫描，不是写死的常量）", () => {
     const res = runCheck();
-    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls/files/discover）零遗留 HTTP");
+    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls/files/mini/discover）零遗留 HTTP");
     expect(res.status).toBe(0);
     const count = /现存违例：(\d+) 条，分布在 (\d+) 个未迁移域/.exec(res.stdout);
     expect(count, `输出里必须自带现存违例计数，实际：${res.stdout}`).toBeTruthy();
-    expect(Number(count?.[1]), "违例条数为 0 就说明这条检查在空转").toBeGreaterThan(0);
     expect(Number(count?.[1])).toBe(disk.total);
-    expect(Number(count?.[2])).toBe(1);
+    // D6 退役完成：七个业务域全部经核心，没有未迁移域，遗留违例归零。
+    expect(Number(count?.[1])).toBe(0);
+    expect(Number(count?.[2])).toBe(0);
   });
 
-  it("一个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
+  it("七域全 core：阻塞名单为空，已迁移域只许「经公共 request() 走核心」这一种用法", () => {
     expect(disk.problems).toEqual([]);
-    expect(disk.total).toBeGreaterThan(0);
-    const blocked = disk.domains.filter((d) => d.state === "blocked").map((d) => d.featureDir).sort();
-    expect(blocked).toEqual(["mini"]);
-    for (const dir of blocked) {
-      const entry = disk.ledger[dir];
-      expect(entry, `债台账里应当有 features/${dir} 这一格`).toBeTruthy();
-      expect(Object.keys(entry?.counts ?? {}).length, `features/${dir} 应该至少有一条现存违例`).toBeGreaterThan(0);
-    }
-    // 钱包是唯一的已迁移域，它的违例只许是"经公共 request() 走核心"这一种
+    expect(disk.total).toBe(0);
+    const blocked = disk.domains.filter((d) => d.state === "blocked").map((d) => d.featureDir);
+    expect(blocked).toEqual([]);
+    expect(disk.domains.filter((d) => d.state === "core")).toHaveLength(7);
+    // 钱包域的违例只许是"经公共 request() 走核心"这一种（legacy_transport），
+    // 不许有 bearer/base/fetch 等真正绕过核心的用法。
     const commerceHits = disk.violations.filter((v) => v.file === "features/commerce");
     expect(commerceHits.length).toBeGreaterThan(0);
     expect(commerceHits.filter((v) => v.rule !== "legacy_transport")).toEqual([]);
@@ -1113,6 +1167,10 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(discoverRouted).toEqual([...new Set(disk.discoverContractActions)].sort());
     expect(discoverRouted).toEqual([...new Set(disk.discoverBridgeArms)].sort());
     expect(discoverRouted).toHaveLength(6);
+    const miniRouted = [...new Set(disk.miniRoutes.map((r) => r.action))].sort();
+    expect(miniRouted).toEqual([...new Set(disk.miniContractActions)].sort());
+    expect(miniRouted).toEqual([...new Set(disk.miniBridgeArms)].sort());
+    expect(miniRouted).toHaveLength(6);
   });
 
   it("规则清单与注入用例一一对应（往 RULES 里加一条打死规则就会在这里红）", () => {
@@ -1150,17 +1208,15 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     );
   });
 
-  it("注入证明：允许名单写成包含全部七域 → 判红（红在「这些域没有 provider」，不是红在「名单长了」）", () => {
+  it("注入证明：把已迁移域的 provider SHA 抹掉（谎报无提供者）→ 判红", () => {
     const registry = readSource(REGISTRY_REL);
-    const claimAllSeven = registry.replace(/state: "blocked"/g, 'state: "core"');
-    expect(claimAllSeven).not.toBe(registry);
-    const res = runCheck([], { [REGISTRY_REL]: claimAllSeven });
+    // 七域全 core 后，"谎报"的形状是把某格的 providerSha 抹成 null。
+    const noProvider = registry.replace(/providerSha: MINI_PROVIDER_SHA,/g, "providerSha: null,");
+    expect(noProvider).not.toBe(registry);
+    const res = runCheck([], { [REGISTRY_REL]: noProvider });
     expect(res.status).toBe(1);
     expect(res.stderr).toContain("FAIL");
-    expect(res.stderr).toContain("里仍有遗留会话用法");
     expect(res.stderr).toContain("标成 core 却没有可解析的 providerSha");
-    // 只剩 mini 一个阻塞域：谎报 core 仍会因遗留用法 + 缺 SHA + 路径无归属多条报红。
-    expect(runJson({ [REGISTRY_REL]: claimAllSeven }).problems.length).toBeGreaterThan(4);
   });
 
   it("注入证明：桥少注册一条钱包臂（UI 声称接了但桥没有）→ 判红", () => {
@@ -1181,20 +1237,24 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(res.stderr).toContain("与 core-contract 的 ACTIONS.wallet* 不一致");
   });
 
-  it("注入证明：未迁移域悄悄加一条新违例 → 判红（债台账不是只往下走的摆设）", () => {
+  it("注入证明：已迁移域悄悄加一条绕过核心的 fetch → 判红（零额度，不是摆设）", () => {
     const mini = readSource(MINI_API_REL);
     const worse = `${mini}\n/** 注入证明用：小程序域自己发了一次 HTTP。 */\nexport const _extraFetch = (url: string) => fetch(url);\n`;
     const res = runCheck([], { [MINI_API_REL]: worse });
     expect(res.status).toBe(1);
-    expect(res.stderr).toContain("债台账漂移：features/mini");
+    expect(res.stderr).toContain("已迁移域 features/mini");
+    expect(res.stderr).toContain("里仍有遗留会话用法");
   });
 
-  it("注入证明：某个域迁走了却不改基线/注册表 → 同样判红（台账只许「两边一起动」）", () => {
-    const migratedAway = 'export const mini = { migrated: true };\n';
-    const res = runCheck([], { [MINI_API_REL]: migratedAway });
+  it("注入证明：把已迁移域谎报回 blocked（其实早已无遗留用法）→ 判红（名单要与现实一致）", () => {
+    const registry = readSource(REGISTRY_REL);
+    const mislabeled = registry.replace(/id: "mini",\s*featureDir: "mini",\s*label: "小程序",\s*state: "core",/s, 'id: "mini",\n    featureDir: "mini",\n    label: "小程序",\n    state: "blocked",');
+    expect(mislabeled).not.toBe(registry);
+    // 同时把小程序客户端清空（无任何遗留用法）：blocked 域却零遗留 = 名单与现实不符。
+    const emptyMini = "export const _mini = {};\n";
+    const res = runCheck([], { [REGISTRY_REL]: mislabeled, [MINI_API_REL]: emptyMini });
     expect(res.status).toBe(1);
     expect(res.stderr).toContain("登记为 blocked");
-    expect(res.stderr).toContain("债台账漂移：features/mini");
   });
 
   it("注入证明：名单被清空/解析不出条目 → fail-closed，不会当成「零违例所以绿」", () => {

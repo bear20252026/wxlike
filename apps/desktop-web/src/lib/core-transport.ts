@@ -136,6 +136,18 @@ const DISCOVER_ACTIONS = {
   orders: ACTIONS.discoverOrders,
   orderRefund: ACTIONS.discoverOrderRefund,
 } as const;
+/**
+ * 小程序域 action 别名（名单只留一处）。目录/授权/卸载控制面；install 与
+ * 包体下载（二进制 + sha256 校验）显式阻塞，不在这张表里。
+ */
+const MINI_ACTIONS = {
+  list: ACTIONS.miniList,
+  releases: ACTIONS.miniReleases,
+  grants: ACTIONS.miniGrants,
+  grant: ACTIONS.miniGrant,
+  revoke: ACTIONS.miniRevoke,
+  uninstall: ACTIONS.miniUninstall,
+} as const;
 
 export interface CoreSessionSnapshot {
   installed: boolean;
@@ -790,6 +802,63 @@ export const DISCOVER_ROUTES: readonly WalletRoute[] = [
 export function discoverRouteCensus(): string[] {
   return DISCOVER_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
 }
+// ---------------------------------------------------------------------------
+// 小程序路由表：目录/授权/卸载控制面。
+//
+// 前端旧路径 /api/miniapps*、/api/mini-grants*、/api/mini-installs/{id} 经此
+// 映射到 mini.* action，桥打到 G08 服务端。list/releases/grants 的 {items}
+// 信封投影成裸数组。install（POST /api/mini-installs）与包体下载（二进制 +
+// sha256 校验）无核心提供者，归 BLOCKED 显式阻塞。
+// ---------------------------------------------------------------------------
+
+export const MINI_ROUTES: readonly WalletRoute[] = [
+  {
+    method: "GET",
+    pattern: "/api/miniapps",
+    action: MINI_ACTIONS.list,
+    toParams: () => ({}),
+    project: (data) => needArray(asRecord(data, "miniapps"), "items"),
+  },
+  {
+    method: "GET",
+    pattern: "/api/miniapps/:id/releases",
+    action: MINI_ACTIONS.releases,
+    toParams: (m) => ({ app_id: m.params.id }),
+    project: (data) => needArray(asRecord(data, "releases"), "items"),
+  },
+  {
+    method: "GET",
+    pattern: "/api/mini-grants",
+    action: MINI_ACTIONS.grants,
+    toParams: ({ query }) => {
+      const appId = query.get("app_id");
+      return appId !== null ? { app_id: appId } : {};
+    },
+    project: (data) => needArray(asRecord(data, "grants"), "items"),
+  },
+  {
+    method: "POST",
+    pattern: "/api/mini-grants",
+    action: MINI_ACTIONS.grant,
+    toParams: (_m, body) => ({ app_id: body.app_id, scopes: body.scopes }),
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/mini-grants/:id",
+    action: MINI_ACTIONS.revoke,
+    toParams: (m) => ({ app_id: m.params.id }),
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/mini-installs/:id",
+    action: MINI_ACTIONS.uninstall,
+    toParams: (m) => ({ app_id: m.params.id }),
+  },
+];
+
+export function miniRouteCensus(): string[] {
+  return MINI_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
+}
 
 /**
  * 已迁移域里**明确没有 provider** 的出口：登记在此，运行时一律 `blocked`（501），
@@ -820,6 +889,10 @@ export const BLOCKED_WALLET_PREFIXES: readonly string[] = [
   "/api/backups",
   // 发现域识图/翻译（multipart + 外部 AI）：无核心提供者，显式阻塞。
   "/api/vision",
+  // 小程序 install（依赖包体二进制下载 + sha256 校验）：无流式核心提供者，显式阻塞。
+  "/api/mini-installs",
+  // 小程序包体下载（二进制流）：无流式核心提供者，显式阻塞。
+  "/api/miniapps/:id/releases/:version/package",
 ];
 
 /** 路径是否落在某条路由模板上（`:x` 段通配；模板末尾可再带子段）。 */
@@ -837,7 +910,7 @@ function matchesPattern(bare: string, pattern: string): boolean {
 export function isRoutedOrBlocked(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
   if (
-    [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES, ...DISCOVER_ROUTES].some((route) =>
+    [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES, ...DISCOVER_ROUTES, ...MINI_ROUTES].some((route) =>
       matchesPattern(bare, route.pattern),
     )
   ) {
@@ -875,7 +948,7 @@ function matchRoute(
 }
 
 /** 已迁移域的路由表（按域顺序匹配；各域控制面 URL 模板互不重叠）。 */
-const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES, ...DISCOVER_ROUTES];
+const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES, ...DISCOVER_ROUTES, ...MINI_ROUTES];
 
 // ---------------------------------------------------------------------------
 // 投影用到的严格读数（缺字段就抛，不兜默认值）

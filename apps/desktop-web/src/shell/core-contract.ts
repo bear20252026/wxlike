@@ -205,6 +205,16 @@ export const ACTIONS = {
   discoverOrders: "discover.orders",
   discoverOrderRefund: "discover.order_refund",
 
+  // 小程序域（D6 逐域退役）：目录/授权/卸载控制面经桥打到 G08 服务端。
+  // install 与包体下载（二进制 + sha256 校验）无核心提供者，在消费侧显式阻塞。
+  // 名单与 `core_bridge` 的 `mini_router` 逐条对齐。
+  miniList: "mini.list",
+  miniReleases: "mini.releases",
+  miniGrants: "mini.grants",
+  miniGrant: "mini.grant",
+  miniRevoke: "mini.revoke",
+  miniUninstall: "mini.uninstall",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",
