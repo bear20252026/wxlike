@@ -94,9 +94,7 @@ export const LEGACY_EGRESS = "lib/http.ts";
  * （`legacy_bearer_call` 是补出来的规则：台账因此比 71cc90c5 多 5 条裸 `token()`。
  * 数字变长只可能是"看得更清"，闸门本身仍然只许降不许升。）
  */
-export const DEBT_BASELINE = {
-  mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
-};
+export const DEBT_BASELINE = {};
 
 const CONFIG_SOURCES = [
   "apps/desktop-web/src/lib/domain-registry.ts",
@@ -290,6 +288,16 @@ const MIGRATED_DOMAINS = [
     contractLabel: "core-contract 的 ACTIONS.discover*",
     bridgeLabel: "core_bridge.rs 的 discover_router",
   },
+  {
+    id: "mini",
+    routesConst: "MINI_ROUTES",
+    aliasConst: "MINI_ACTIONS",
+    actionPrefix: "mini.",
+    routerName: "mini_router",
+    routeLabel: "core-transport 的 MINI_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.mini*",
+    bridgeLabel: "core_bridge.rs 的 mini_router",
+  },
 ];
 
 /** 与 `lib/http.ts` 的 ANONYMOUS_PLAYBACK 同口径：只豁免播放面，控制面不在其中。 */
@@ -459,6 +467,7 @@ export function runChecks(overrides = {}) {
   const content = perDomain.find((d) => d.cfg.id === "moments");
   const files = perDomain.find((d) => d.cfg.id === "files");
   const discover = perDomain.find((d) => d.cfg.id === "discover");
+  const mini = perDomain.find((d) => d.cfg.id === "mini");
   const routes = wallet.routes;
   const contractActions = wallet.contractActions;
   const bridgeArms = wallet.bridgeArms;
@@ -630,6 +639,7 @@ export function runChecks(overrides = {}) {
   notes.push(`内容出口归属：控制面路由 ${content.routes.length} 条（moment/favorite/report/sticker）/ G05 未对齐面显式阻塞`);
   notes.push(`文件出口归属：控制面路由 ${files.routes.length} 条（file.* 打到 G04）/ 二进制上传下载与备份计划显式阻塞`);
   notes.push(`发现出口归属：控制面路由 ${discover.routes.length} 条（discover.* 打到 G07）/ 识图翻译显式阻塞`);
+  notes.push(`小程序出口归属：控制面路由 ${mini.routes.length} 条（mini.* 打到 G08）/ install 与包体下载显式阻塞`);
 
   return {
     problems,
@@ -653,6 +663,9 @@ export function runChecks(overrides = {}) {
     discoverRoutes: discover.routes,
     discoverBridgeArms: discover.bridgeArms,
     discoverContractActions: discover.contractActions,
+    miniRoutes: mini.routes,
+    miniBridgeArms: mini.bridgeArms,
+    miniContractActions: mini.contractActions,
     coreOnlyPrefixes,
     blockedWalletPrefixes,
     violations: found,
@@ -711,6 +724,9 @@ function main() {
     discoverRoutes: result.discoverRoutes,
     discoverBridgeArms: result.discoverBridgeArms,
     discoverContractActions: result.discoverContractActions,
+    miniRoutes: result.miniRoutes,
+    miniBridgeArms: result.miniBridgeArms,
+    miniContractActions: result.miniContractActions,
     coreOnlyPrefixes: result.coreOnlyPrefixes,
     violations: result.violations,
     ledger: result.ledger,

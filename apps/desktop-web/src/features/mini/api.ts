@@ -6,8 +6,7 @@
  * an install is ever confirmed.
  */
 
-import { ApiError, idemKey, request } from "../../lib/http";
-import { sha256Hex } from "../files/bytes";
+import { ApiError, blockedError, idemKey, request } from "../../lib/http";
 import type { MiniAppRecord, MiniAppRelease, MiniGrant, MiniPorts, MiniScope, RequestOpts } from "./model";
 
 export function isUpstreamMissing(err: unknown): boolean {
@@ -27,36 +26,18 @@ export class MiniAppApi implements MiniPorts {
     );
   }
 
+  /**
+   * 安装依赖"下载签名包 → sha256 校验 → 提交"的二进制链路，没有 JSON 流式
+   * 核心提供者：显式阻塞（#294，同视频上传口径）。把包体字节流搬进 CoreHandle
+   * 需要独立的流式 action 契约，不在本控制面切片里伪造安装成功。
+   */
   async install(
     appId: string,
-    version: string,
-    manifestDigest: string,
-    opts?: RequestOpts,
+    _version: string,
+    _manifestDigest: string,
+    _opts?: RequestOpts,
   ): Promise<{ installed_version: string }> {
-    // Verify before telling the server anything: fetch the signed package,
-    // hash it, compare to the release record. Tampered package → refuse.
-    const bytes = await this.fetchPackage(appId, version, opts);
-    const digest = await sha256Hex(bytes);
-    if (digest !== manifestDigest.toLowerCase()) {
-      throw new ApiError(0, "小程序包校验失败：manifest digest 与发布记录不一致", `/api/miniapps/${appId}`, "server");
-    }
-    return request<{ installed_version: string }>(
-      "POST",
-      `/api/mini-installs`,
-      {
-        body: { app_id: appId, version, manifest_digest: manifestDigest },
-        idempotencyKey: opts?.idempotencyKey ?? idemKey("mini-install"),
-        signal: opts?.signal,
-      },
-    );
-  }
-
-  private async fetchPackage(appId: string, version: string, opts?: RequestOpts): Promise<Uint8Array> {
-    const res = await fetch(`/api/miniapps/${encodeURIComponent(appId)}/releases/${encodeURIComponent(version)}/package`, {
-      signal: opts?.signal,
-    });
-    if (!res.ok) throw new ApiError(res.status, `小程序包下载失败 (${res.status})`, `/api/miniapps/${appId}`, "server");
-    return new Uint8Array(await res.arrayBuffer());
+    throw blockedError(`/api/miniapps/${appId}`, "小程序安装依赖包体二进制下载与 sha256 校验，尚无流式核心提供者");
   }
 
   async grants(appId?: string, opts?: RequestOpts): Promise<MiniGrant[]> {

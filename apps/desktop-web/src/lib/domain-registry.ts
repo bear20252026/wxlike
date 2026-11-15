@@ -52,6 +52,9 @@ export const FILES_PROVIDER_SHA = "e224705";
 /** G07 发现域竖切片：Rust 提供者（discover.* 桥 action 打到服务目录）合入的提交短 SHA。 */
 export const DISCOVER_PROVIDER_SHA = "65d14fd";
 
+/** G08 小程序域竖切片：Rust 提供者（mini.* 桥 action）合入的提交短 SHA。 */
+export const MINI_PROVIDER_SHA = "9a8715e";
+
 /** id 字符串只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份，这里只做聚合。 */
 const WALLET_ACTIONS = [
   ACTIONS.walletBalanceGet,
@@ -125,6 +128,14 @@ const DISCOVER_ACTIONS = [
   ACTIONS.discoverOrders,
   ACTIONS.discoverOrderRefund,
 ] as const;
+const MINI_ACTIONS = [
+  ACTIONS.miniList,
+  ACTIONS.miniReleases,
+  ACTIONS.miniGrants,
+  ACTIONS.miniGrant,
+  ACTIONS.miniRevoke,
+  ACTIONS.miniUninstall,
+] as const;
 
 /**
  * 六域阻塞名单。**这张表就是"不许用页面能点当验收"的机器可读版本**：
@@ -181,10 +192,10 @@ export const DOMAIN_REGISTRY: readonly DomainStatus[] = [
     id: "mini",
     featureDir: "mini",
     label: "小程序",
-    state: "blocked",
-    providerSha: null,
-    reason: "#293 只交付钱包竖切片，小程序域没有 Rust 提供者；包体拉取与 iframe 来源还需宿主精确策略",
-    actions: [],
+    state: "core",
+    providerSha: MINI_PROVIDER_SHA,
+    reason: `目录/授权/卸载控制面经 G08 认证桥 action（${MINI_ACTIONS.length} 条）；install 与包体下载（二进制 + sha256 校验）无流式提供者，显式阻塞`,
+    actions: MINI_ACTIONS,
   },
   {
     id: "discover",

@@ -85,6 +85,12 @@ const CORE_ONLY_PREFIXES: readonly string[] = [
   "/api/quotes",
   "/api/orders",
   "/api/vision",
+  // 小程序域（D6）：整域归核心。目录/授权/卸载走 mini.* action 打到 G08；
+  // install（POST /api/mini-installs，依赖包体二进制 + sha256 校验）与包体
+  // 下载（二进制流）无核心提供者，显式阻塞（同视频上传口径）。
+  "/api/miniapps",
+  "/api/mini-grants",
+  "/api/mini-installs",
 ];
 
 /**
