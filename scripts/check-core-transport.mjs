@@ -95,7 +95,6 @@ export const LEGACY_EGRESS = "lib/http.ts";
  * 数字变长只可能是"看得更清"，闸门本身仍然只许降不许升。）
  */
 export const DEBT_BASELINE = {
-  files: { files: ["features/files/api.ts"], counts: { legacy_base: 3, direct_fetch: 2, legacy_token: 2, legacy_bearer_call: 3, legacy_transport: 8 } },
   mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
   discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1, legacy_bearer_call: 1 } },
 };
@@ -272,6 +271,16 @@ const MIGRATED_DOMAINS = [
     contractLabel: "core-contract 的 ACTIONS.moment*/favorite*/report*/sticker*",
     bridgeLabel: "core_bridge.rs 的 content_router",
   },
+  {
+    id: "files",
+    routesConst: "FILES_ROUTES",
+    aliasConst: "FILES_ACTIONS",
+    actionPrefix: "file.",
+    routerName: "files_router",
+    routeLabel: "core-transport 的 FILES_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.file*",
+    bridgeLabel: "core_bridge.rs 的 files_router",
+  },
 ];
 
 /** 与 `lib/http.ts` 的 ANONYMOUS_PLAYBACK 同口径：只豁免播放面，控制面不在其中。 */
@@ -300,7 +309,7 @@ function parseRoutes(text, aliasMap, contract, problems, domain) {
     return [];
   }
   const routes = [];
-  const armRe = new RegExp(`method:\\s*"(GET|POST|DELETE|PUT)",\\s*pattern:\\s*"([^"]+)",\\s*action:\\s*${aliasConst}\\.(\\w+)`, "g");
+  const armRe = new RegExp(`method:\\s*"(GET|POST|DELETE|PUT|PATCH)",\\s*pattern:\\s*"([^"]+)",\\s*action:\\s*${aliasConst}\\.(\\w+)`, "g");
   for (const match of block[0].matchAll(armRe)) {
     const aliasKey = aliasMap[match[3]];
     routes.push({
@@ -439,6 +448,7 @@ export function runChecks(overrides = {}) {
   const calls = perDomain.find((d) => d.cfg.id === "calls");
   const video = perDomain.find((d) => d.cfg.id === "video");
   const content = perDomain.find((d) => d.cfg.id === "moments");
+  const files = perDomain.find((d) => d.cfg.id === "files");
   const routes = wallet.routes;
   const contractActions = wallet.contractActions;
   const bridgeArms = wallet.bridgeArms;
@@ -608,6 +618,7 @@ export function runChecks(overrides = {}) {
   notes.push(`通话出口归属：路由 ${calls.routes.length} 条（call.* 全部经认证桥）`);
   notes.push(`视频出口归属：控制面路由 ${video.routes.length} 条（video.*/live.*）/ 播放面匿名 / 上传显式阻塞`);
   notes.push(`内容出口归属：控制面路由 ${content.routes.length} 条（moment/favorite/report/sticker）/ G05 未对齐面显式阻塞`);
+  notes.push(`文件出口归属：控制面路由 ${files.routes.length} 条（file.* 打到 G04）/ 二进制上传下载与备份计划显式阻塞`);
 
   return {
     problems,
@@ -625,6 +636,9 @@ export function runChecks(overrides = {}) {
     contentRoutes: content.routes,
     contentBridgeArms: content.bridgeArms,
     contentContractActions: content.contractActions,
+    filesRoutes: files.routes,
+    filesBridgeArms: files.bridgeArms,
+    filesContractActions: files.contractActions,
     coreOnlyPrefixes,
     blockedWalletPrefixes,
     violations: found,
@@ -677,6 +691,9 @@ function main() {
     contentRoutes: result.contentRoutes,
     contentBridgeArms: result.contentBridgeArms,
     contentContractActions: result.contentContractActions,
+    filesRoutes: result.filesRoutes,
+    filesBridgeArms: result.filesBridgeArms,
+    filesContractActions: result.filesContractActions,
     coreOnlyPrefixes: result.coreOnlyPrefixes,
     violations: result.violations,
     ledger: result.ledger,

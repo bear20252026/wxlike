@@ -70,9 +70,14 @@ const CORE_ONLY_PREFIXES: readonly string[] = [
   "/api/stickers",
   "/api/articles",
   "/api/publishers",
-  // 朋友圈图片的媒体签名 URL（认证读面，归内容域）；files 域的上传/下载
-  // 二进制仍无提供者，不在此列（保持遗留出口，待 files 域迁移）。
+  // 朋友圈图片的媒体签名 URL（认证读面，归内容域）。
   "/api/media/:id/url",
+  // 文件域（D6）：整域归核心。文件中心控制面（列表/改名/分享/删除）走 file.*
+  // action 打到 G04 /api/v1/files*；二进制上传/下载（/api/media）与备份清理
+  // 计划（/api/backups）无 JSON 流式提供者，显式阻塞（同视频域上传口径）。
+  "/api/files",
+  "/api/backups",
+  "/api/media",
 ];
 
 /**

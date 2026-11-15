@@ -46,6 +46,9 @@ export const VIDEO_PROVIDER_SHA = "7051522";
 /** D6 内容域竖切片：Rust 提供者（moment/favorite/report/sticker 桥 action）合入的提交短 SHA。 */
 export const CONTENT_PROVIDER_SHA = "3e9d13c";
 
+/** D6 文件域竖切片：Rust 提供者（file.* 桥 action 打到 G04）合入的提交短 SHA。 */
+export const FILES_PROVIDER_SHA = "e224705";
+
 /** id 字符串只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份，这里只做聚合。 */
 const WALLET_ACTIONS = [
   ACTIONS.walletBalanceGet,
@@ -104,6 +107,13 @@ const CONTENT_ACTIONS = [
   ACTIONS.momentMediaUrl,
 ] as const;
 
+const FILES_ACTIONS = [
+  ACTIONS.fileList,
+  ACTIONS.fileRename,
+  ACTIONS.fileShare,
+  ACTIONS.fileRemove,
+] as const;
+
 /**
  * 六域阻塞名单。**这张表就是"不许用页面能点当验收"的机器可读版本**：
  * 谁给某个域补上提供者，就把那条改成 `state: "core"` + 记录 SHA，静态检查与
@@ -150,10 +160,10 @@ export const DOMAIN_REGISTRY: readonly DomainStatus[] = [
     id: "files",
     featureDir: "files",
     label: "文件",
-    state: "blocked",
-    providerSha: null,
-    reason: "#293 只交付钱包竖切片，文件域没有 Rust 提供者；上传下载需走 media 桥（#295 尚未合入）",
-    actions: [],
+    state: "core",
+    providerSha: FILES_PROVIDER_SHA,
+    reason: `文件中心控制面（列表/改名/分享/删除）经 D6 认证桥 action（${FILES_ACTIONS.length} 条）打到 G04；二进制上传/下载与备份清理计划无流式提供者，显式阻塞`,
+    actions: FILES_ACTIONS,
   },
   {
     id: "mini",

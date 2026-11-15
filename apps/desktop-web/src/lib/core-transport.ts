@@ -113,6 +113,17 @@ const CONTENT_ACTIONS = {
   momentMediaUrl: ACTIONS.momentMediaUrl,
 } as const;
 
+/**
+ * 文件域 action 别名（名单只留一处）。文件中心控制面（列表/改名/分享/删除）；
+ * 二进制上传/下载与备份清理计划显式阻塞，不在这张表里。
+ */
+const FILES_ACTIONS = {
+  list: ACTIONS.fileList,
+  rename: ACTIONS.fileRename,
+  share: ACTIONS.fileShare,
+  remove: ACTIONS.fileRemove,
+} as const;
+
 export interface CoreSessionSnapshot {
   installed: boolean;
   generation: number;
@@ -195,7 +206,7 @@ interface Match {
 }
 
 interface WalletRoute {
-  method: "GET" | "POST" | "DELETE" | "PUT";
+  method: "GET" | "POST" | "DELETE" | "PUT" | "PATCH";
   /** 路径模板，`:x` 为段参数；不含 query。 */
   pattern: string;
   action: string;
@@ -636,6 +647,82 @@ export function contentRouteCensus(): string[] {
   return CONTENT_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
 }
 
+// ---------------------------------------------------------------------------
+// 文件路由表：文件中心控制面（列表/改名/分享/删除）。
+//
+// 前端旧路径 `/api/files*` 经此映射到 file.* action，桥打到 G04 `/api/v1/files*`。
+// 服务端形状与 api.ts 期望形状有几处出入，投影在这里对齐（同钱包/内容口径）：
+// 列表 FilePage 信封 {items}→裸数组，FileItem→FileRecord（file_id→media_id、
+// object_id→digest 的内容地址、mime→content_type、created_at→uploaded_at）；
+// 分享 ShareGrant→{url, expires_at}。二进制上传/下载（/api/media）与备份清理
+// 计划（/api/backups）无 JSON 流式提供者，归 BLOCKED 显式阻塞，不在这张表里。
+// ---------------------------------------------------------------------------
+
+/** G04 FileItem → api.ts 的 FileRecord。内容地址即 digest（media_id 是 sha256）。 */
+function fileRecord(row: unknown): Json {
+  const r = asRecord(row, "file");
+  return {
+    media_id: needString(r, "file_id"),
+    name: needString(r, "name"),
+    size: needNumber(r, "size"),
+    content_type: needString(r, "mime"),
+    digest: needString(r, "digest"),
+    uploaded_at: needNumber(r, "created_at"),
+    visibility: "private",
+  };
+}
+
+export const FILES_ROUTES: readonly WalletRoute[] = [
+  {
+    method: "GET",
+    pattern: "/api/files",
+    action: FILES_ACTIONS.list,
+    toParams: ({ query }) => {
+      const params: Json = {};
+      const category = query.get("category");
+      const sort = query.get("sort");
+      const cursor = query.get("cursor");
+      const limit = query.get("limit");
+      if (category !== null) params.category = category;
+      if (sort !== null) params.sort = sort;
+      if (cursor !== null) params.cursor = cursor;
+      if (limit !== null) params.limit = Number(limit);
+      return params;
+    },
+    // 桥透传 G04 FilePage {items, next_cursor, has_more}；api.ts 读裸数组。
+    project: (data) => needArray(asRecord(data, "files"), "items").map(fileRecord),
+  },
+  {
+    method: "PATCH",
+    pattern: "/api/files/:id",
+    action: FILES_ACTIONS.rename,
+    toParams: (m, body) => ({ file_id: m.params.id, name: body.name }),
+    project: (data) => fileRecord(data),
+  },
+  {
+    method: "POST",
+    pattern: "/api/files/:id/share",
+    action: FILES_ACTIONS.share,
+    toParams: (m) => ({ file_id: m.params.id }),
+    // 桥透传 ShareGrant {share_id, token, url, expires_at}；api.ts 读 {url, expires_at}。
+    project: (data) => {
+      const r = asRecord(data, "share");
+      return { url: needString(r, "url"), expires_at: needNumber(r, "expires_at") };
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/files/:id",
+    action: FILES_ACTIONS.remove,
+    toParams: (m) => ({ file_id: m.params.id }),
+    // 服务端 204 → 桥 {}；api.ts remove 不读返回体。
+  },
+];
+
+export function filesRouteCensus(): string[] {
+  return FILES_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
+}
+
 /**
  * 已迁移域里**明确没有 provider** 的出口：登记在此，运行时一律 `blocked`（501），
  * 静态检查据此确认"钱包域的每条路径都有归属"——要么进 `WALLET_ROUTES` 走核心，
@@ -657,6 +744,12 @@ export const BLOCKED_WALLET_PREFIXES: readonly string[] = [
   // watching），显式阻塞，不回落旧会话、不伪造成功。
   "/api/articles",
   "/api/publishers",
+  // 文件域二进制面（multipart 上传 / Range 下载）：无 JSON 流式核心提供者，
+  // 显式阻塞（同视频上传口径）。媒体签名 URL（/api/media/:id/url）是内容域
+  // 认证读面，由 CONTENT_ROUTES 精确路由先命中，不受这条粗前缀影响。
+  "/api/media",
+  // 文件域备份/清理计划：服务端导出包计划与前端清理契约未对齐，显式阻塞。
+  "/api/backups",
 ];
 
 /** 路径是否落在某条路由模板上（`:x` 段通配；模板末尾可再带子段）。 */
@@ -667,13 +760,20 @@ function matchesPattern(bare: string, pattern: string): boolean {
   return template.every((token, i) => token.startsWith(":") || token === parts[i]);
 }
 
-/** 这个已迁移域路径是否有明确归属（路由 or 显式阻塞）。 */
+/** 这个已迁移域路径是否有明确归属（路由 or 显式阻塞）。
+ *
+ * 先查精确路由模板、再查阻塞前缀：媒体签名 URL（`/api/media/:id/url`，内容域
+ * 路由）必须先于文件域的 `/api/media` 阻塞前缀命中，否则会被粗前缀误判成阻塞。 */
 export function isRoutedOrBlocked(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
-  if (BLOCKED_WALLET_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`))) return true;
-  return [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES].some((route) =>
-    matchesPattern(bare, route.pattern),
-  );
+  if (
+    [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES].some((route) =>
+      matchesPattern(bare, route.pattern),
+    )
+  ) {
+    return true;
+  }
+  return BLOCKED_WALLET_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`));
 }
 
 /** 路径（去掉 query）+ 方法 → 指定路由表里的条目；不匹配返回 null。 */
@@ -705,7 +805,7 @@ function matchRoute(
 }
 
 /** 已迁移域的路由表（按域顺序匹配；各域控制面 URL 模板互不重叠）。 */
-const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES];
+const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES, ...FILES_ROUTES];
 
 // ---------------------------------------------------------------------------
 // 投影用到的严格读数（缺字段就抛，不兜默认值）

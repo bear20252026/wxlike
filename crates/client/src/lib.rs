@@ -206,7 +206,7 @@ impl Http {
         self.prepare(req)
     }
 
-    /// 写请求（POST / PUT）：带 body，用 `.send()` / `.send_json()`。
+    /// 写请求（POST / PUT / PATCH）：带 body，用 `.send()` / `.send_json()`。
     pub fn req_write(
         &self,
         method: &str,
@@ -216,7 +216,8 @@ impl Http {
         let req = match method {
             "POST" => self.agent.post(&url),
             "PUT" => self.agent.put(&url),
-            other => unreachable!("req_write() is for POST/PUT, got {other}"),
+            "PATCH" => self.agent.patch(&url),
+            other => unreachable!("req_write() is for POST/PUT/PATCH, got {other}"),
         };
         self.prepare(req)
     }

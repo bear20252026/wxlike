@@ -48,6 +48,7 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("favorite", _) => content_router::<R>,
         ("report", _) => content_router::<R>,
         ("sticker", _) => content_router::<R>,
+        ("file", _) => files_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -271,6 +272,25 @@ fn content_router<R: tauri::Runtime>(
         "favorite.update" => act_favorite_update(app, state, core, req),
         "sticker.packs" => act_sticker_packs(app, state, core, req),
         "moment.media_url" => act_media_signed_url(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
+
+/// 文件域（D6 逐域退役）：文件中心控制面（列表/改名/分享/删除）经认证桥打到
+/// G04 的 `/api/v1/files*`。二进制上传/下载与备份清理计划无 JSON 流式提供者，
+/// 在消费侧显式阻塞（同视频域上传口径），不在本桥伪造。
+fn files_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    match req.action_id.as_str() {
+        "file.list" => act_file_list(app, state, core, req),
+        "file.rename" => act_file_rename(app, state, core, req),
+        "file.share" => act_file_share(app, state, core, req),
+        "file.remove" => act_file_remove(app, state, core, req),
         _ => Err(unrouted(req)),
     }
 }

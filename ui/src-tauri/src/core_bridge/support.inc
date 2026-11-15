@@ -322,6 +322,10 @@ pub const IMPLEMENTED_ACTIONS: &[&str] = &[
     "favorite.update",
     "sticker.packs",
     "moment.media_url",
+    "file.list",
+    "file.rename",
+    "file.share",
+    "file.remove",
     "search.query",
     "preferences.get",
     "preferences.set",
@@ -1097,7 +1101,7 @@ fn authed_json(
 ) -> Result<Value, BridgeError> {
     require_session(state)?;
     let read = matches!(method, "GET" | "DELETE");
-    if !read && !matches!(method, "POST" | "PUT") {
+    if !read && !matches!(method, "POST" | "PUT" | "PATCH") {
         return Err(BridgeError::Other(format!("core 桥不支持的方法：{method}")));
     }
     if read && body.is_some() {
