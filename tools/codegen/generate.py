@@ -10,6 +10,8 @@
     out/manifest.json     schema 版本 + 源文件摘要（生成物的"出生证明"）
     out/ts/contract.ts    TypeScript 类型 + 解码器
     out/dart/contract.dart Dart 类型 + 解码器
+    out/swift/Contract.swift Swift 类型 + 解码器（iOS 原生壳消费，D5）
+    out/kotlin/Contract.kt   Kotlin 类型 + 解码器（Android 原生壳消费，D5）
     out/actions.json      Action Catalog → CLI / MCP 描述
 
 三条规则，写在最前面：
@@ -454,6 +456,174 @@ bool isKnownAction(String actionId) => actionCapabilities.containsKey(actionId);
     return "\n".join(parts) + "\n"
 
 
+def swift_type(schema: dict) -> str:
+    # 枚举在 JSON 上仍是字符串（与 TS/Dart 同口径），不另造 Swift enum：
+    # 服务端先上线新码、旧客户端后升级是常态，String 才能"解出来再跳过"。
+    if "enum" in schema:
+        return "String"
+    kind = schema.get("type")
+    if kind == "string":
+        return "String"
+    if kind == "integer":
+        return "Int"
+    if kind == "boolean":
+        return "Bool"
+    if kind == "object":
+        return "[String: Any]"
+    return "Any"
+
+
+def swift_struct(name: str, schema: dict) -> str:
+    required = set(schema.get("required", []))
+    fields = schema.get("properties", {})
+    lines = [f"public struct {name} {{"]
+    for field, spec in fields.items():
+        kind = swift_type(spec)
+        optional = "?" if field not in required else ""
+        lines.append(f"    public let {field}: {kind}{optional}")
+    lines.append("")
+    lines.append(f"    public init({', '.join(f'{f}: {swift_type(s)}{"" if f in required else "?"}' for f, s in fields.items())}) {{")
+    for field in fields:
+        lines.append(f"        self.{field} = {field}")
+    lines.append("    }")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def emit_swift(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str:
+    parts = [header("//", digest), "", "import Foundation", ""]
+    parts.append(f'public let schemaVersion = "{SCHEMA_VERSION}"')
+    parts.append(f'public let contractVersion = "{CONTRACT_VERSION}"')
+    parts.append(f'public let schemaDigest = "{digest}"')
+    parts.append("")
+    parts.append(swift_struct("Money", schemas["money.schema.json"]))
+    parts.append("")
+    parts.append(swift_struct("DomainError", schemas["error.schema.json"]))
+    parts.append("")
+    action_defs = schemas["action.schema.json"]["definitions"]
+    parts.append(swift_struct("ActionRequest", action_defs["ActionRequest"]))
+    parts.append("")
+    parts.append(swift_struct("ActionResult", action_defs["ActionResult"]))
+    parts.append("")
+    parts.append(swift_struct("EventEnvelope", schemas["event.schema.json"]))
+    parts.append("")
+    parts.append("/// 已登记的命令（与 crates/cmd 的目录同源）。")
+    parts.append("public let actionCapabilities: [String: String] = [")
+    for action in actions:
+        parts.append(f'    "{action["id"]}": "{action["capability"]}",')
+    parts.append("]")
+    parts.append("")
+    parts.append(
+        """/// 解码一条命令结果；未知 status 返回 nil（跳过，不抛）。
+///
+/// 服务端先上线新状态、旧客户端后升级是常态：这时候应当"跳过并记一笔"，
+/// 不是抛异常把整条渲染链打断。与 TS/Dart 的 decodeActionResult 同语义。
+public func decodeActionResult(_ raw: Any?) -> ActionResult? {
+    guard let value = raw as? [String: Any] else { return nil }
+    guard let actionId = value["action_id"] as? String else { return nil }
+    guard let status = value["status"] as? String,
+          status == "ok" || status == "empty" || status == "failed" else { return nil }
+    guard let completedAtMs = value["completed_at_ms"] as? Int else { return nil }
+    return ActionResult(
+        action_id: actionId,
+        status: status,
+        data: value["data"] as? [String: Any],
+        error: value["error"] as? [String: Any],
+        cursor: value["cursor"] as? String,
+        completed_at_ms: completedAtMs
+    )
+}
+
+/// 这条命令认不认识。
+public func isKnownAction(_ actionId: String) -> Bool {
+    return actionCapabilities[actionId] != nil
+}
+"""
+    )
+    return "\n".join(parts) + "\n"
+
+
+def kotlin_type(schema: dict) -> str:
+    if "enum" in schema:
+        return "String"
+    kind = schema.get("type")
+    if kind == "string":
+        return "String"
+    if kind == "integer":
+        return "Long"
+    if kind == "boolean":
+        return "Boolean"
+    if kind == "object":
+        return "Map<String, Any>"
+    return "Any"
+
+
+def kotlin_class(name: str, schema: dict) -> str:
+    required = set(schema.get("required", []))
+    fields = schema.get("properties", {})
+    lines = [f"data class {name}("]
+    params = []
+    for field, spec in fields.items():
+        kind = kotlin_type(spec)
+        optional = "?" if field not in required else ""
+        default = " = null" if field not in required else ""
+        params.append(f"    val {field}: {kind}{optional}{default}")
+    lines.append(",\n".join(params))
+    lines.append(")")
+    return "\n".join(lines)
+
+
+def emit_kotlin(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str:
+    parts = [header("//", digest), "", "@file:Suppress(\"unused\")", "", "package wxlike.contract", ""]
+    parts.append(f'const val SCHEMA_VERSION = "{SCHEMA_VERSION}"')
+    parts.append(f'const val CONTRACT_VERSION = "{CONTRACT_VERSION}"')
+    parts.append(f'const val SCHEMA_DIGEST = "{digest}"')
+    parts.append("")
+    parts.append(kotlin_class("Money", schemas["money.schema.json"]))
+    parts.append("")
+    parts.append(kotlin_class("DomainError", schemas["error.schema.json"]))
+    parts.append("")
+    action_defs = schemas["action.schema.json"]["definitions"]
+    parts.append(kotlin_class("ActionRequest", action_defs["ActionRequest"]))
+    parts.append("")
+    parts.append(kotlin_class("ActionResult", action_defs["ActionResult"]))
+    parts.append("")
+    parts.append(kotlin_class("EventEnvelope", schemas["event.schema.json"]))
+    parts.append("")
+    parts.append("// 已登记的命令（与 crates/cmd 的目录同源）。")
+    parts.append("val actionCapabilities: Map<String, String> = mapOf(")
+    for action in actions:
+        parts.append(f'    "{action["id"]}" to "{action["capability"]}",')
+    parts.append(")")
+    parts.append("")
+    parts.append(
+        """// 解码一条命令结果；未知 status 返回 null（跳过，不抛）。
+//
+// 服务端先上线新状态、旧客户端后升级是常态：这时候应当"跳过并记一笔"，
+// 不是抛异常把整条渲染链打断。与 TS/Dart 的 decodeActionResult 同语义。
+fun decodeActionResult(raw: Any?): ActionResult? {
+    val value = raw as? Map<*, *> ?: return null
+    val actionId = value["action_id"] as? String ?: return null
+    val status = value["status"] as? String ?: return null
+    if (status != "ok" && status != "empty" && status != "failed") return null
+    val completedAtMs = (value["completed_at_ms"] as? Number)?.toLong() ?: return null
+    return ActionResult(
+        action_id = actionId,
+        status = status,
+        data = value["data"] as? Map<String, Any>,
+        error = value["error"] as? Map<String, Any>,
+        cursor = value["cursor"] as? String,
+        completed_at_ms = completedAtMs,
+    )
+}
+
+// 这条命令认不认识。
+fun isKnownAction(actionId: String): Boolean = actionCapabilities.containsKey(actionId)
+"""
+    )
+    return "\n".join(parts) + "\n"
+
+
 def emit_actions(actions: list[dict], digest: str) -> str:
     doc = {
         "schema_version": SCHEMA_VERSION,
@@ -482,9 +652,18 @@ def build_outputs() -> dict[pathlib.Path, str]:
     outputs = {
         OUT_DIR / "ts" / "contract.ts": emit_ts(schemas, digest, actions),
         OUT_DIR / "dart" / "contract.dart": emit_dart(schemas, digest, actions),
+        OUT_DIR / "swift" / "Contract.swift": emit_swift(schemas, digest, actions),
+        OUT_DIR / "kotlin" / "Contract.kt": emit_kotlin(schemas, digest, actions),
         OUT_DIR / "actions.json": emit_actions(actions, digest),
         OUT_DIR / "manifest.json": emit_manifest(
-            digest, ["ts/contract.ts", "dart/contract.dart", "actions.json"]
+            digest,
+            [
+                "ts/contract.ts",
+                "dart/contract.dart",
+                "swift/Contract.swift",
+                "kotlin/Contract.kt",
+                "actions.json",
+            ],
         ),
     }
     return outputs
