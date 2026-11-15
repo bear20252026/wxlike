@@ -40,6 +40,9 @@ pub trait OrderStore: Send + Sync {
     async fn save_order(&self, order: &Order) -> Result<()>;
     async fn get_order(&self, order_id: &str) -> Result<Option<Order>>;
     async fn find_order_by_quote(&self, actor: &str, quote_id: &str) -> Result<Option<Order>>;
+    /// 按用户列举其全部订单（更新时间倒序）。只返回该 actor 自己的订单，
+    /// 不泄露别人的；空结果就是空结果，不拿假数据填充。
+    async fn list_orders(&self, actor: &str) -> Result<Vec<Order>>;
 
     /// 返回 `Ok(Some(order_id))` 表示同键同请求已定稿；`Ok(None)` 表示本次抢到执行权；
     /// `Err(Conflict)` 表示同键不同请求或有并发请求在途。
@@ -126,6 +129,23 @@ impl OrderStore for MemoryStore {
             .values()
             .find(|order| order.actor == actor && order.quote_id == quote_id)
             .cloned())
+    }
+
+    async fn list_orders(&self, actor: &str) -> Result<Vec<Order>> {
+        let mut orders: Vec<Order> = self
+            .orders
+            .lock()
+            .map_err(|_| internal("order state"))?
+            .values()
+            .filter(|order| order.actor == actor)
+            .cloned()
+            .collect();
+        orders.sort_by(|a, b| {
+            b.updated_at_ms
+                .cmp(&a.updated_at_ms)
+                .then(b.order_id.cmp(&a.order_id))
+        });
+        Ok(orders)
     }
 
     async fn reserve_idem(&self, key: &str, hash: &str) -> Result<Option<String>> {
@@ -378,6 +398,41 @@ impl OrderStore for FileStore {
                 }
             }
             Ok(None)
+        })
+        .await
+    }
+
+    async fn list_orders(&self, actor: &str) -> Result<Vec<Order>> {
+        let root = self.root.clone();
+        let actor = actor.to_owned();
+        offload("order list failed", move || {
+            let dir = root.join("orders");
+            let entries = match fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(err) => return Err(dependency(&dir, err)),
+            };
+            let mut orders = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                // 坏文档跳过：一次列举不该被单个坏文件打断（同 find_order_by_quote）。
+                if let Some(order) = read_json_at::<Order>(&path)
+                    .ok()
+                    .flatten()
+                    .filter(|order| order.actor == actor)
+                {
+                    orders.push(order);
+                }
+            }
+            orders.sort_by(|a, b| {
+                b.updated_at_ms
+                    .cmp(&a.updated_at_ms)
+                    .then(b.order_id.cmp(&a.order_id))
+            });
+            Ok(orders)
         })
         .await
     }

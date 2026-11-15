@@ -30,6 +30,7 @@ include!("core_bridge/call.inc");
 include!("core_bridge/video.inc");
 include!("core_bridge/content.inc");
 include!("core_bridge/files.inc");
+include!("core_bridge/discover.inc");
 include!("core_bridge/search.inc");
 include!("core_bridge/prefs.inc");
 include!("core_bridge/storage.inc");
