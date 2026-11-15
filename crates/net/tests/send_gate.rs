@@ -65,6 +65,36 @@ impl DeliveryPolicy for DefaultGatePolicy {
     }
 }
 
+/// 轮询等待落库条数达到 `n`（最多 ~3s）。
+///
+/// 固定 `sleep` 在 coverage 插桩下会时序漂移（CI 上偶发"还没落库就断言"），
+/// 与 `sleep_gate_delays_then_delivers` 同口径改用轮询：条件成立即返回，
+/// 不靠拍脑袋的等待时长。
+async fn wait_for_rows(store: &Store, conv: &str, n: usize) -> Vec<wxlike_core::StoredMessage> {
+    let mut rows = Vec::new();
+    for _ in 0..150 {
+        rows = store.list_messages(conv).unwrap();
+        if rows.len() >= n {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    rows
+}
+
+/// 轮询等待 Prometheus 文本含某指标（最多 ~3s）。
+async fn wait_for_metric(substr: &str) -> String {
+    let mut text = String::new();
+    for _ in 0..150 {
+        text = wxlike_net::prometheus_text();
+        if text.contains(substr) {
+            return text;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    text
+}
+
 async fn hub_with(policy: Arc<dyn DeliveryPolicy>) -> (Arc<Store>, std::net::SocketAddr) {
     let router = MqRouter::new(Arc::new(MemoryMq::new()), MemoryRoutes::new());
     let store = Arc::new(Store::open(None).unwrap());
@@ -123,9 +153,7 @@ async fn rejected_and_throttled_frames_leave_no_trace() {
     .await
     .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    let rows = store.list_messages("d-alice~bob").unwrap();
+    let rows = wait_for_rows(&store, "d-alice~bob", 1).await;
     assert_eq!(rows.len(), 1, "只有放行的那条落库: {rows:?}");
     let text = match &rows[0].envelope.body {
         wxlike_core::MsgBody::Text(t) => t.clone(),
@@ -150,9 +178,7 @@ async fn default_gate_allows_everything() {
     ))
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let rows = store.list_messages("d-alice~bob").unwrap();
+    let rows = wait_for_rows(&store, "d-alice~bob", 1).await;
     assert_eq!(rows.len(), 1, "默认实现必须放行（P3 行为不变）");
 }
 
@@ -216,13 +242,13 @@ async fn sleep_beyond_cap_is_dropped() {
     ))
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(600)).await;
-
+    // 先等拒绝指标出现（证明 hub 已处理完这帧），再断言不落库——
+    // 固定 sleep 在 coverage 下会"还没处理就断言"，轮询消除该时序漂移。
+    let text = wait_for_metric("wxlike_rate_limit_reject_total").await;
     assert!(
         store.list_messages("d-alice~bob").unwrap().is_empty(),
         "超上限的退避必须按拒绝丢弃"
     );
-    let text = wxlike_net::prometheus_text();
     assert!(text.contains("wxlike_rate_limit_reject_total"), "{text}");
     assert!(text.contains("rate_limiter_name=\"send_gate\""), "{text}");
 }
