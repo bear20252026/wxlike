@@ -203,9 +203,11 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         video_state,
         handle.clone(),
         deps,
-        media_app,
-        discover_app,
-        mini_app,
+        FeatureApps {
+            media: media_app,
+            discover: discover_app,
+            mini: mini_app,
+        },
     );
     let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app.clone()).await?;
 
@@ -491,6 +493,17 @@ fn session_fingerprint(token: &str) -> String {
     wxlike_core::msgmeta::sha256_hex(token.as_bytes())[..16].to_string()
 }
 
+/// 各特性域装配好的路由。打包成一个参数传入 `build_app`：逐域退役会持续
+/// 往这里加域，散着传会撞 clippy 的参数上限（too_many_arguments）。
+struct FeatureApps {
+    /// G04 media 域（`/api/v1/*`）。
+    media: Router,
+    /// G07 服务目录域（`/api/services`、`/api/quotes`、`/api/orders`）。
+    discover: Router,
+    /// G08 小程序域（`/api/miniapps`、`/api/mini-grants`、`/api/mini-installs`）。
+    mini: Router,
+}
+
 /// 拼路由：健康检查、平台、media 域、视频、WS、在线状态、历史、静态页、开发辅助。
 fn build_app(
     hub_id: String,
@@ -499,9 +512,7 @@ fn build_app(
     video_state: wxlike_video::VideoState,
     handle: HubHandle,
     deps: Arc<HistoryDeps>,
-    media_app: Router,
-    discover_app: Router,
-    mini_app: Router,
+    features: FeatureApps,
 ) -> Router {
     let admin_platform = platform.clone();
     let endpoints_platform = platform.clone();
@@ -530,11 +541,11 @@ fn build_app(
         .merge(wxlike_platform::Platform::router(platform.clone()))
         // #295/G00：G04 media 域（`/api/v1/*`，29 条路由）。路径前缀与上面的
         // `/api/media`（platform 的 WP-05 面）不重叠，两套并存的退役关系另议。
-        .merge(media_app)
+        .merge(features.media)
         // G07/D6：服务目录域（/api/services、/api/quotes、/api/orders）。
-        .merge(discover_app)
+        .merge(features.discover)
         // G08/D6：小程序域（/api/miniapps、/api/mini-grants、/api/mini-installs）。
-        .merge(mini_app)
+        .merge(features.mini)
         .merge(wxlike_video::routes(video_state))
         .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone(), platform.clone()))
