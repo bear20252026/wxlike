@@ -50,6 +50,7 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("sticker", _) => content_router::<R>,
         ("file", _) => files_router::<R>,
         ("discover", _) => discover_router::<R>,
+        ("mini", _) => mini_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -317,6 +318,26 @@ fn discover_router<R: tauri::Runtime>(
     }
 }
 
+/// 小程序域（D6 逐域退役）：目录/授权/卸载控制面经认证桥打到 G08 服务端。
+/// install 与包体下载（二进制 + sha256 校验）无 JSON 流式提供者，在消费侧
+/// 显式阻塞，不在本桥伪造。
+fn mini_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    let _ = (app, core);
+    match req.action_id.as_str() {
+        "mini.list" => act_mini_list(app, state, core, req),
+        "mini.releases" => act_mini_releases(app, state, core, req),
+        "mini.grants" => act_mini_grants(app, state, core, req),
+        "mini.grant" => act_mini_grant(app, state, core, req),
+        "mini.revoke" => act_mini_revoke(app, state, core, req),
+        "mini.uninstall" => act_mini_uninstall(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
 fn search_router<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
