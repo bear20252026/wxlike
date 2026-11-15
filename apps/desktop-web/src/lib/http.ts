@@ -48,6 +48,7 @@ const KEY_USER = "wxlike-web-user";
  */
 const CORE_ONLY_PREFIXES: readonly string[] = [
   "/api/wallet",
+  "/api/call",
   "/api/payment-intents",
   "/api/payments",
   "/api/withdrawals",

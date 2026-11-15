@@ -54,6 +54,25 @@ const WALLET_ACTIONS = {
   redpacketClaim: ACTIONS.walletRedpacketClaim,
 } as const;
 
+/**
+ * 通话 action 的名字同样只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份；
+ * 这里只是给路由表起短别名（#296 的"名单只留一处"）。
+ */
+const CALL_ACTIONS = {
+  state: ACTIONS.callState,
+  start: ACTIONS.callStart,
+  join: ACTIONS.callJoin,
+  leave: ACTIONS.callLeave,
+  mute: ACTIONS.callMute,
+  muteAll: ACTIONS.callMuteAll,
+  lock: ACTIONS.callLock,
+  record: ACTIONS.callRecord,
+  hand: ACTIONS.callHand,
+  kick: ACTIONS.callKick,
+  signalPost: ACTIONS.callSignalPost,
+  signalTake: ACTIONS.callSignalTake,
+} as const;
+
 export interface CoreSessionSnapshot {
   installed: boolean;
   generation: number;
@@ -231,6 +250,118 @@ export function walletRouteCensus(): string[] {
   return WALLET_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
 }
 
+// ---------------------------------------------------------------------------
+// 通话路由表：URL → action →（响应投影）
+//
+// 与钱包同机制：`features/calls/api.ts` 仍调 `request("POST", "/api/call/…")`，
+// 装好核心会话后这句话变成 `core.dispatch({ action_id: "call.…", … })`。控制类
+// 端点服务端回 204，桥读成 {}，这里无需投影；call.state 把服务端的
+// {conv_id,live,locked,…} 投影成 api.ts 本来就在解析的 CallState 形状。
+// ---------------------------------------------------------------------------
+
+export const CALL_ROUTES: readonly WalletRoute[] = [
+  {
+    method: "GET",
+    pattern: "/api/call/:conv",
+    action: CALL_ACTIONS.state,
+    toParams: (match) => ({ conv: match.params.conv }),
+    // 桥透传服务端 {conv_id, live, locked, recording, participants}；
+    // api.ts 的 CallState 读 {conv, state, participants, recording}。
+    project: (data) => {
+      const row = asRecord(data, "call.state");
+      const live = row.live === true;
+      const locked = row.locked === true;
+      return {
+        conv: needString(row, "conv_id"),
+        state: live ? (locked ? "locked" : "active") : "idle",
+        participants: needArray(row, "participants"),
+        ...(typeof row.recording === "boolean" ? { recording: row.recording } : {}),
+      };
+    },
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/start",
+    action: CALL_ACTIONS.start,
+    toParams: (match, body) => ({
+      conv: match.params.conv,
+      ...(body.capacity !== undefined ? { capacity: body.capacity } : {}),
+    }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/join",
+    action: CALL_ACTIONS.join,
+    toParams: (match) => ({ conv: match.params.conv }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/leave",
+    action: CALL_ACTIONS.leave,
+    toParams: (match) => ({ conv: match.params.conv }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/mute",
+    action: CALL_ACTIONS.mute,
+    // target 可选：旧前端单人静音不传 target，服务端按 422 拒绝——保持透传，不兜默认。
+    toParams: (match, body) => ({
+      conv: match.params.conv,
+      track: body.track,
+      muted: body.muted,
+      ...(body.target !== undefined ? { target: body.target } : {}),
+    }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/mute-all",
+    action: CALL_ACTIONS.muteAll,
+    toParams: (match, body) => ({ conv: match.params.conv, track: body.track, muted: body.muted }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/lock",
+    action: CALL_ACTIONS.lock,
+    toParams: (match, body) => ({ conv: match.params.conv, value: body.value }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/record",
+    action: CALL_ACTIONS.record,
+    toParams: (match, body) => ({ conv: match.params.conv, value: body.value }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/hand",
+    action: CALL_ACTIONS.hand,
+    toParams: (match, body) => ({ conv: match.params.conv, value: body.value }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/kick",
+    action: CALL_ACTIONS.kick,
+    toParams: (match, body) => ({ conv: match.params.conv, target: body.target }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/call/:conv/signal",
+    action: CALL_ACTIONS.signalPost,
+    // 信令信封不透明：整个 body 作为 signal 透传，桥不改写内容。
+    toParams: (match, body) => ({ conv: match.params.conv, signal: body }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/call/:conv/signal",
+    action: CALL_ACTIONS.signalTake,
+    toParams: (match) => ({ conv: match.params.conv }),
+    // 桥回 {signals}；api.ts 读 reply.signals ?? []，原样透传。
+  },
+];
+
+export function callRouteCensus(): string[] {
+  return CALL_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
+}
+
 /**
  * 已迁移域里**明确没有 provider** 的出口：登记在此，运行时一律 `blocked`（501），
  * 静态检查据此确认"钱包域的每条路径都有归属"——要么进 `WALLET_ROUTES` 走核心，
@@ -248,18 +379,30 @@ export const BLOCKED_WALLET_PREFIXES: readonly string[] = [
   "/api/entitlements",
 ];
 
+/** 路径是否落在某条路由模板上（`:x` 段通配；模板末尾可再带子段）。 */
+function matchesPattern(bare: string, pattern: string): boolean {
+  const parts = bare.split("/").filter(Boolean);
+  const template = pattern.split("/").filter(Boolean);
+  if (parts.length < template.length) return false;
+  return template.every((token, i) => token.startsWith(":") || token === parts[i]);
+}
+
 /** 这个已迁移域路径是否有明确归属（路由 or 显式阻塞）。 */
 export function isRoutedOrBlocked(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
   if (BLOCKED_WALLET_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`))) return true;
-  return WALLET_ROUTES.some((route) => bare === route.pattern || bare.startsWith(`${route.pattern}/`));
+  return [...WALLET_ROUTES, ...CALL_ROUTES].some((route) => matchesPattern(bare, route.pattern));
 }
 
-/** 路径（去掉 query）+ 方法 → 路由条目；不匹配返回 null。 */
-function matchWalletRoute(method: string, path: string): { route: WalletRoute; match: Match } | null {
+/** 路径（去掉 query）+ 方法 → 指定路由表里的条目；不匹配返回 null。 */
+function matchRoute(
+  routes: readonly WalletRoute[],
+  method: string,
+  path: string,
+): { route: WalletRoute; match: Match } | null {
   const [bare = "", text = ""] = path.split("?");
   const parts = bare.split("/").filter(Boolean);
-  for (const route of WALLET_ROUTES) {
+  for (const route of routes) {
     if (route.method !== method) continue;
     const template = route.pattern.split("/").filter(Boolean);
     if (template.length !== parts.length) continue;
@@ -278,6 +421,9 @@ function matchWalletRoute(method: string, path: string): { route: WalletRoute; m
   }
   return null;
 }
+
+/** 已迁移域的路由表（按域顺序匹配；钱包与通话的 URL 前缀不重叠）。 */
+const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES];
 
 // ---------------------------------------------------------------------------
 // 投影用到的严格读数（缺字段就抛，不兜默认值）
@@ -441,11 +587,11 @@ function coreRoutingTransport(): Transport {
     if (!core) {
       throw blockedError(path, "组合根尚未装上 Rust 核心会话");
     }
-    const hit = matchWalletRoute(method, path);
+    const hit = matchRoute(CORE_ROUTES, method, path);
     if (!hit) {
       throw blockedError(
         path,
-        `${method} ${path} 在 #293 的桥里没有对应 action（该能力没有 provider，不允许回落到遗留 HTTP）`,
+        `${method} ${path} 在核心桥里没有对应 action（该能力没有 provider，不允许回落到遗留 HTTP）`,
       );
     }
     const { route, match } = hit;

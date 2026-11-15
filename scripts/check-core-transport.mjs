@@ -97,7 +97,6 @@ export const LEGACY_EGRESS = "lib/http.ts";
 export const DEBT_BASELINE = {
   content: { files: ["features/content/MomentsPage.tsx", "features/content/api.ts"], counts: { legacy_transport: 21, legacy_user: 1 } },
   video: { files: ["features/video/api.ts"], counts: { legacy_base: 1, legacy_bearer_call: 1, legacy_transport: 9, legacy_user: 1 } },
-  calls: { files: ["features/calls/api.ts"], counts: { legacy_transport: 12 } },
   files: { files: ["features/files/api.ts"], counts: { legacy_base: 3, direct_fetch: 2, legacy_token: 2, legacy_bearer_call: 3, legacy_transport: 8 } },
   mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
   discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1, legacy_bearer_call: 1 } },
@@ -226,50 +225,82 @@ function parseContractActions(text, problems) {
   return Object.fromEntries([...block[1].matchAll(/(\w+):\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]));
 }
 
-function parseRoutes(text, aliasMap, contract, problems) {
+/**
+ * 已迁移域的同源对账配置。每个域有自己的路由表/别名块/桥子路由/action 前缀。
+ * `label`/`routerLabel` 用于问题文案——钱包的文案必须与历史注入证明逐字一致。
+ */
+const MIGRATED_DOMAINS = [
+  {
+    id: "wallet",
+    routesConst: "WALLET_ROUTES",
+    aliasConst: "WALLET_ACTIONS",
+    actionPrefix: "wallet.",
+    routerName: "wallet_router",
+    routeLabel: "core-transport 的 WALLET_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.wallet*",
+    bridgeLabel: "core_bridge.rs 的 wallet_router",
+  },
+  {
+    id: "calls",
+    routesConst: "CALL_ROUTES",
+    aliasConst: "CALL_ACTIONS",
+    actionPrefix: "call.",
+    routerName: "call_router",
+    routeLabel: "core-transport 的 CALL_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.call*",
+    bridgeLabel: "core_bridge.rs 的 call_router",
+  },
+];
+
+function parseRoutes(text, aliasMap, contract, problems, domain) {
+  const { routesConst, aliasConst } = domain;
   if (!text) {
     problems.push("core-transport.ts 缺失：已迁移域没有路由");
     return [];
   }
-  const block = text.match(/export const WALLET_ROUTES[\s\S]*?\n\];/);
+  const block = text.match(new RegExp(`export const ${routesConst}[\\s\\S]*?\\n\\];`));
   if (!block) {
-    problems.push("core-transport.ts 里找不到 WALLET_ROUTES：已迁移域没有路由，只能回落到旧 HTTP");
+    problems.push(`core-transport.ts 里找不到 ${routesConst}：已迁移域没有路由，只能回落到旧 HTTP`);
     return [];
   }
   const routes = [];
-  for (const match of block[0].matchAll(/method:\s*"(GET|POST)",\s*pattern:\s*"([^"]+)",\s*action:\s*WALLET_ACTIONS\.(\w+)/g)) {
+  const armRe = new RegExp(`method:\\s*"(GET|POST)",\\s*pattern:\\s*"([^"]+)",\\s*action:\\s*${aliasConst}\\.(\\w+)`, "g");
+  for (const match of block[0].matchAll(armRe)) {
     const aliasKey = aliasMap[match[3]];
     routes.push({
       method: match[1],
       pattern: match[2],
-      action: aliasKey ? (contract[aliasKey] ?? `#unresolved:ACTIONS.${aliasKey}`) : `?unresolved:WALLET_ACTIONS.${match[3]}`,
+      action: aliasKey ? (contract[aliasKey] ?? `#unresolved:ACTIONS.${aliasKey}`) : `?unresolved:${aliasConst}.${match[3]}`,
     });
   }
-  if (routes.length === 0) problems.push("WALLET_ROUTES 解析出 0 条路由：规则会空转，故 fail-closed");
+  if (routes.length === 0) problems.push(`${routesConst} 解析出 0 条路由：规则会空转，故 fail-closed`);
   return routes;
 }
 
-function parseAliasMap(text, problems) {
+function parseAliasMap(text, problems, domain) {
+  const { aliasConst } = domain;
   if (!text) return {};
-  const aliasBlock = text.match(/const WALLET_ACTIONS\s*=\s*\{([\s\S]*?)\}\s*as const/);
+  const aliasBlock = text.match(new RegExp(`const ${aliasConst}\\s*=\\s*\\{([\\s\\S]*?)\\}\\s*as const`));
   if (!aliasBlock) {
-    problems.push("core-transport.ts 的 WALLET_ACTIONS 别名块不见了：action id 疑似在本文件又抄了一份");
+    problems.push(`core-transport.ts 的 ${aliasConst} 别名块不见了：action id 疑似在本文件又抄了一份`);
     return {};
   }
   return Object.fromEntries([...aliasBlock[1].matchAll(/(\w+):\s*ACTIONS\.(\w+)/g)].map((m) => [m[1], m[2]]));
 }
 
-function parseBridgeArms(text, problems) {
+function parseBridgeArms(text, problems, domain) {
+  const { routerName, actionPrefix } = domain;
   if (!text) {
-    problems.push("core_bridge.rs 缺失：无法核对桥真实注册的钱包臂");
+    problems.push(`core_bridge.rs 缺失：无法核对桥真实注册的 ${routerName} 臂`);
     return [];
   }
-  const block = text.match(/fn wallet_router[\s\S]*?\n\}/);
+  const block = text.match(new RegExp(`fn ${routerName}[\\s\\S]*?\\n\\}`));
   if (!block) {
-    problems.push("core_bridge.rs 里找不到 wallet_router：桥的钱包臂无法核对");
+    problems.push(`core_bridge.rs 里找不到 ${routerName}：桥的 ${routerName} 臂无法核对`);
     return [];
   }
-  return [...block[0].matchAll(/"(wallet\.[\w.]+)"/g)].map((m) => m[1]);
+  const armRe = new RegExp(`"(${actionPrefix.replace(/\./g, "\\.")}[\\w.]+)"`, "g");
+  return [...block[0].matchAll(armRe)].map((m) => m[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,12 +378,23 @@ export function runChecks(overrides = {}) {
     problems,
   );
   const contract = parseContractActions(sources.get("apps/desktop-web/src/shell/core-contract.ts") ?? "", problems);
-  const contractActions = Object.values(contract).filter((id) => id.startsWith("wallet."));
   const transportText = sources.get("apps/desktop-web/src/lib/core-transport.ts") ?? "";
-  const aliasMap = parseAliasMap(transportText, problems);
-  const routes = parseRoutes(transportText, aliasMap, contract, problems);
+  const bridgeText = sources.get("ui/src-tauri/src/core_bridge.rs") ?? "";
   const blockedWalletPrefixes = parseArrayConstant(transportText, "BLOCKED_WALLET_PREFIXES", "core-transport.ts", problems);
-  const bridgeArms = parseBridgeArms(sources.get("ui/src-tauri/src/core_bridge.rs") ?? "", problems);
+  // 按域解析四份名单。钱包变量保留原名（JSON 输出与历史注入证明都按它断言）。
+  const perDomain = MIGRATED_DOMAINS.map((cfg) => {
+    const aliasMap = parseAliasMap(transportText, problems, cfg);
+    const routes = parseRoutes(transportText, aliasMap, contract, problems, cfg);
+    const contractActions = Object.values(contract).filter((id) => id.startsWith(cfg.actionPrefix));
+    const bridgeArms = parseBridgeArms(bridgeText, problems, cfg);
+    return { cfg, routes, contractActions, bridgeArms };
+  });
+  const wallet = perDomain.find((d) => d.cfg.id === "wallet");
+  const calls = perDomain.find((d) => d.cfg.id === "calls");
+  const routes = wallet.routes;
+  const contractActions = wallet.contractActions;
+  const bridgeArms = wallet.bridgeArms;
+  const allRoutes = perDomain.flatMap((d) => d.routes);
   const { found, byDir, byDomain } = scan(sources);
 
   const coveredBy = (p, prefixes) => prefixes.some((prefix) => p === prefix || p.startsWith(`${prefix}/`));
@@ -435,11 +477,8 @@ export function runChecks(overrides = {}) {
     }
   }
 
-  /** (g) 四份名单同源。 */
+  /** (g) 四份名单同源（逐域对账；钱包文案与历史注入证明逐字一致）。 */
   {
-    const routeActions = [...new Set(routes.map((r) => r.action))].sort();
-    const contractSorted = [...new Set(contractActions)].sort();
-    const bridgeSorted = [...new Set(bridgeArms)].sort();
     const cmp = (label, a, b, bLabel) => {
       const missing = b.filter((x) => !a.includes(x));
       const extra = a.filter((x) => !b.includes(x));
@@ -447,11 +486,16 @@ export function runChecks(overrides = {}) {
         problems.push(`${label} 与 ${bLabel} 不一致：只在 ${label} 有 = [${extra.join(", ")}]；只在 ${bLabel} 有 = [${missing.join(", ")}]`);
       }
     };
-    cmp("core-transport 的 WALLET_ROUTES", routeActions, contractSorted, "core-contract 的 ACTIONS.wallet*");
-    cmp("core-contract 的 ACTIONS.wallet*", contractSorted, bridgeSorted, "core_bridge.rs 的 wallet_router");
-    const unresolved = routes.filter((r) => r.action.includes("unresolved"));
-    if (unresolved.length > 0) {
-      problems.push(`WALLET_ROUTES 有 action 解析不出 id：${unresolved.map((r) => `${r.method} ${r.pattern} -> ${r.action}`).join(", ")}`);
+    for (const { cfg, routes: dRoutes, contractActions: dContract, bridgeArms: dArms } of perDomain) {
+      const routeActions = [...new Set(dRoutes.map((r) => r.action))].sort();
+      const contractSorted = [...new Set(dContract)].sort();
+      const bridgeSorted = [...new Set(dArms)].sort();
+      cmp(cfg.routeLabel, routeActions, contractSorted, cfg.contractLabel);
+      cmp(cfg.contractLabel, contractSorted, bridgeSorted, cfg.bridgeLabel);
+      const unresolved = dRoutes.filter((r) => r.action.includes("unresolved"));
+      if (unresolved.length > 0) {
+        problems.push(`${cfg.routesConst} 有 action 解析不出 id：${unresolved.map((r) => `${r.method} ${r.pattern} -> ${r.action}`).join(", ")}`);
+      }
     }
   }
 
@@ -467,12 +511,12 @@ export function runChecks(overrides = {}) {
     }
     const orphans = coreOnlyPrefixes.filter(
       (prefix) =>
-        !routes.some((r) => r.pattern === prefix || r.pattern.startsWith(`${prefix}/`)) &&
+        !allRoutes.some((r) => r.pattern === prefix || r.pattern.startsWith(`${prefix}/`)) &&
         !blockedWalletPrefixes.some((p) => prefix === p || prefix.startsWith(`${p}/`) || p.startsWith(prefix)),
     );
     if (orphans.length > 0) {
       problems.push(
-        `CORE_ONLY_PREFIXES 里有前缀既没被 WALLET_ROUTES 路由、也没登记进 BLOCKED_WALLET_PREFIXES（归属不清就别说这个域迁完了）：${orphans.join(", ")}`,
+        `CORE_ONLY_PREFIXES 里有前缀既没被已迁移域路由、也没登记进 BLOCKED_WALLET_PREFIXES（归属不清就别说这个域迁完了）：${orphans.join(", ")}`,
       );
     }
   }
@@ -501,6 +545,7 @@ export function runChecks(overrides = {}) {
   const total = Object.values(ledger).reduce((sum, d) => sum + Object.values(d.counts).reduce((s, n) => s + n, 0), 0);
   notes.push(`现存违例：${total} 条，分布在 ${Object.keys(DEBT_BASELINE).length} 个未迁移域（已迁移域额度 0）`);
   notes.push(`钱包出口归属：路由 ${routes.length} 条 / 显式阻塞前缀 ${blockedWalletPrefixes.length} 条 / 遗留拒绝面 ${coreOnlyPrefixes.length} 条`);
+  notes.push(`通话出口归属：路由 ${calls.routes.length} 条（call.* 全部经认证桥）`);
 
   return {
     problems,
@@ -509,6 +554,9 @@ export function runChecks(overrides = {}) {
     routes,
     bridgeArms,
     contractActions,
+    callRoutes: calls.routes,
+    callBridgeArms: calls.bridgeArms,
+    callContractActions: calls.contractActions,
     coreOnlyPrefixes,
     blockedWalletPrefixes,
     violations: found,
@@ -552,6 +600,9 @@ function main() {
     routes: result.routes,
     bridgeArms: result.bridgeArms,
     contractActions: result.contractActions,
+    callRoutes: result.callRoutes,
+    callBridgeArms: result.callBridgeArms,
+    callContractActions: result.callContractActions,
     coreOnlyPrefixes: result.coreOnlyPrefixes,
     violations: result.violations,
     ledger: result.ledger,
