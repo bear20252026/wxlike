@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use wxlike_client_core::ports::Ports;
+use wxlike_client_core::ports::{Ports, Secrets};
 use wxlike_client_core::runtime::{PumpReport, Session, SessionError};
 use wxlike_types::{ActionRequest, ActionResult, DomainError};
 
@@ -99,6 +99,27 @@ impl NativeCore {
     /// # Errors
     /// 见 [`NativeError`]。
     pub async fn open(config: NativeConfig) -> Result<Self, NativeError> {
+        let secrets = Arc::new(
+            FileSecrets::open(config.secrets_path())
+                .map_err(|err| NativeError::Secrets(err.to_string()))?,
+        );
+        Self::open_with_secrets(config, secrets).await
+    }
+
+    /// 打开，但由宿主注入密钥后端（D4 平台端口）。
+    ///
+    /// 桌面默认走 [`FileSecrets`]（见 [`NativeCore::open`]）；移动端必须把
+    /// 密钥放进系统安全存储——iOS Keychain / Android Keystore——而不是明文
+    /// 落盘。`Secrets` 在 `Ports`/`Session` 层本就是 `Arc<dyn Secrets>` 注入
+    /// （已有 `MemSecrets`/`WebSecrets` 两个替代实现为证），这里把同样的缝隙
+    /// 开到 `NativeCore` 装配层：平台特化的后端从外面传进来，核心逻辑不动。
+    ///
+    /// # Errors
+    /// 见 [`NativeError`]。
+    pub async fn open_with_secrets(
+        config: NativeConfig,
+        secrets: Arc<dyn Secrets>,
+    ) -> Result<Self, NativeError> {
         std::fs::create_dir_all(&config.data_dir)
             .map_err(|err| NativeError::Io(err.to_string()))?;
         let store = Arc::new(
@@ -107,10 +128,6 @@ impl NativeCore {
         );
         let platform = Arc::new(FileLockPlatform::new(config.lock_path()));
         let notifications = Arc::new(ChannelNotifications::new());
-        let secrets = Arc::new(
-            FileSecrets::open(config.secrets_path())
-                .map_err(|err| NativeError::Secrets(err.to_string()))?,
-        );
         let cipher = CacheCipher::load_or_create(secrets.as_ref())
             .await
             .map_err(|err| NativeError::Secrets(err.to_string()))?;
