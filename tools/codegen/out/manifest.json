@@ -4,6 +4,8 @@
   "files": [
     "actions.json",
     "dart/contract.dart",
+    "kotlin/Contract.kt",
+    "swift/Contract.swift",
     "ts/contract.ts"
   ],
   "generated_by": "tools/codegen/generate.py",
