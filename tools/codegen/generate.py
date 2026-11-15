@@ -173,6 +173,53 @@ def _balanced(text: str, open_index: int) -> str:
     raise SystemExit("命令目录解析失败：括号不匹配")
 
 
+# ParamType → 各端类型。NonNegativeInt 与 Int 在 JSON 上都是整数（minimum:0
+# 是服务端校验，不是客户端类型差异）；StrList 是字符串数组。
+_PARAM_TS = {"Str": "string", "Int": "number", "NonNegativeInt": "number", "Bool": "boolean", "StrList": "string[]"}
+_PARAM_SWIFT = {"Str": "String", "Int": "Int", "NonNegativeInt": "Int", "Bool": "Bool", "StrList": "[String]"}
+_PARAM_KOTLIN = {"Str": "String", "Int": "Long", "NonNegativeInt": "Long", "Bool": "Boolean", "StrList": "List<String>"}
+_PARAM_DART = {"Str": "String", "Int": "int", "NonNegativeInt": "int", "Bool": "bool", "StrList": "List<String>"}
+
+
+def _params_ts(action: dict) -> str:
+    """一条命令的参数对象类型（无参数 → Record<string, never>）。"""
+    if not action["params"]:
+        return "Record<string, never>"
+    fields = []
+    for p in action["params"]:
+        opt = "" if p["required"] else "?"
+        fields.append(f'{p["name"]}{opt}: {_PARAM_TS[p["type"]]}')
+    return "{ " + "; ".join(fields) + " }"
+
+
+def _parse_params(body: str, masked_body: str, where: str) -> list[dict]:
+    """从 spec(…) 实参里抽出 `Param::req/opt("name", ParamType::X, "note")`。
+
+    `req` = 必填、`opt` = 可选。在遮罩串上定位调用点（避开注释/字符串里的
+    同名文字），再回到原串取字面量。read_no_args 没有 Param 调用 → 空列表。
+    """
+    params: list[dict] = []
+    for m in re.finditer(r"Param::(req|opt)\s*\(", masked_body):
+        # 定位原串里对应的 '('：遮罩保留长度，偏移可直接复用。
+        open_idx = m.end() - 1
+        inner = _balanced(body, open_idx)
+        names = _string_literals(inner)
+        if len(names) < 2:
+            raise SystemExit(f"命令目录解析失败：{where} 的 Param 调用抽不到 name/note")
+        ty = re.search(r"ParamType::(\w+)", inner)
+        if not ty:
+            raise SystemExit(f"命令目录解析失败：{where} 的 Param 调用找不到 ParamType::")
+        params.append(
+            {
+                "name": names[0],
+                "type": ty.group(1),
+                "required": m.group(1) == "req",
+                "note": names[1],
+            }
+        )
+    return params
+
+
 def parse_catalog() -> list[dict]:
     """从 `crates/cmd/src/catalog/` 的域文件里抽出命令目录。
 
@@ -232,8 +279,14 @@ def parse_catalog() -> list[dict]:
                         f"命令目录解析失败：{path.name} 的 spec(…) 里找不到 Capability::"
                     )
                 capability = found.group(1).lower()
+            params = _parse_params(body, _mask_rust(body), f"{path.name} {command_id}")
             commands.append(
-                {"id": command_id, "summary": summary, "capability": capability}
+                {
+                    "id": command_id,
+                    "summary": summary,
+                    "capability": capability,
+                    "params": params,
+                }
             )
 
     if not commands:
@@ -334,6 +387,12 @@ def emit_ts(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str:
     parts.append("")
     parts.append("/** 已知 action id 集合。 */")
     parts.append("export const KNOWN_ACTIONS: ReadonlySet<string> = new Set(ACTIONS.map((a) => a.id));")
+    parts.append("")
+    parts.append("/** 逐命令的参数类型（与 crates/cmd 的 Param 声明同源）。 */")
+    parts.append("export interface ActionParams {")
+    for action in actions:
+        parts.append(f'  "{action["id"]}": {_params_ts(action)};')
+    parts.append("}")
     parts.append("")
     parts.append(
         """/**
@@ -436,6 +495,27 @@ def emit_dart(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str
         parts.append(f"  '{action['id']}': '{action['capability']}',")
     parts.append("};")
     parts.append("")
+    parts.append("/// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。")
+    parts.append("class ParamSpec {")
+    parts.append("  final String name;")
+    parts.append("  final String type;")
+    parts.append("  final bool required;")
+    parts.append("  const ParamSpec(this.name, this.type, this.required);")
+    parts.append("}")
+    parts.append("")
+    parts.append("/// 逐命令的参数规格。")
+    parts.append("const Map<String, List<ParamSpec>> actionParams = {")
+    for action in actions:
+        if not action["params"]:
+            parts.append(f"  '{action['id']}': [],")
+            continue
+        specs = ", ".join(
+            f"ParamSpec('{p['name']}', '{_PARAM_DART[p['type']]}', {'true' if p['required'] else 'false'})"
+            for p in action["params"]
+        )
+        parts.append(f"  '{action['id']}': [{specs}],")
+    parts.append("};")
+    parts.append("")
     parts.append(
         """/// 解码一条命令结果；未知 status 返回 null（跳过，不抛）。
 ActionResult? decodeActionResult(Object? raw) {
@@ -511,6 +591,31 @@ def emit_swift(schemas: dict[str, dict], digest: str, actions: list[dict]) -> st
     parts.append("public let actionCapabilities: [String: String] = [")
     for action in actions:
         parts.append(f'    "{action["id"]}": "{action["capability"]}",')
+    parts.append("]")
+    parts.append("")
+    parts.append("/// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。")
+    parts.append("public struct ParamSpec {")
+    parts.append("    public let name: String")
+    parts.append("    public let type: String")
+    parts.append("    public let required: Bool")
+    parts.append("    public init(name: String, type: String, required: Bool) {")
+    parts.append("        self.name = name")
+    parts.append("        self.type = type")
+    parts.append("        self.required = required")
+    parts.append("    }")
+    parts.append("}")
+    parts.append("")
+    parts.append("/// 逐命令的参数规格。")
+    parts.append("public let actionParams: [String: [ParamSpec]] = [")
+    for action in actions:
+        if not action["params"]:
+            parts.append(f'    "{action["id"]}": [],')
+            continue
+        specs = ", ".join(
+            f'ParamSpec(name: "{p["name"]}", type: "{_PARAM_SWIFT[p["type"]]}", required: {"true" if p["required"] else "false"})'
+            for p in action["params"]
+        )
+        parts.append(f'    "{action["id"]}": [{specs}],')
     parts.append("]")
     parts.append("")
     parts.append(
@@ -594,6 +699,22 @@ def emit_kotlin(schemas: dict[str, dict], digest: str, actions: list[dict]) -> s
     parts.append("val actionCapabilities: Map<String, String> = mapOf(")
     for action in actions:
         parts.append(f'    "{action["id"]}" to "{action["capability"]}",')
+    parts.append(")")
+    parts.append("")
+    parts.append("// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。")
+    parts.append("data class ParamSpec(val name: String, val type: String, val required: Boolean)")
+    parts.append("")
+    parts.append("// 逐命令的参数规格。")
+    parts.append("val actionParams: Map<String, List<ParamSpec>> = mapOf(")
+    for action in actions:
+        if not action["params"]:
+            parts.append(f'    "{action["id"]}" to emptyList(),')
+            continue
+        specs = ", ".join(
+            f'ParamSpec("{p["name"]}", "{_PARAM_KOTLIN[p["type"]]}", {"true" if p["required"] else "false"})'
+            for p in action["params"]
+        )
+        parts.append(f'    "{action["id"]}" to listOf({specs}),')
     parts.append(")")
     parts.append("")
     parts.append(

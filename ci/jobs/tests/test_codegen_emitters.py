@@ -75,6 +75,37 @@ class CodegenEmittersTest(unittest.TestCase):
             kt_pair = f'"{action["id"]}" to "{action["capability"]}"'
             self.assertIn(kt_pair, self.kotlin, f"kotlin 缺 {kt_pair}")
 
+    def test_params_parsed_from_catalog(self):
+        by_id = {a["id"]: a for a in self.actions}
+        # conv.history：conv 必填 Str，before_seq/limit 可选 NonNegativeInt。
+        history = by_id["conv.history"]["params"]
+        self.assertEqual([p["name"] for p in history], ["conv", "before_seq", "limit"])
+        self.assertEqual([p["required"] for p in history], [True, False, False])
+        self.assertEqual([p["type"] for p in history], ["Str", "NonNegativeInt", "NonNegativeInt"])
+        # read_no_args 命令无参数。
+        self.assertEqual(by_id["me.info"]["params"], [])
+        # StrList 参数（group.create 的 member_ids）。
+        create = by_id["group.create"]["params"]
+        member_ids = [p for p in create if p["name"] == "member_ids"][0]
+        self.assertEqual(member_ids["type"], "StrList")
+        self.assertFalse(member_ids["required"])
+        # 参数总数与目录同源（89 条 Param 声明）。
+        self.assertEqual(sum(len(a["params"]) for a in self.actions), 89)
+
+    def test_action_params_cover_all_actions_in_all_languages(self):
+        blocks = (
+            ("ts", self.ts, "export interface ActionParams {", "\n}"),
+            ("swift", self.swift, "public let actionParams: [String: [ParamSpec]] = [", "\n]"),
+            ("kotlin", self.kotlin, "val actionParams: Map<String, List<ParamSpec>> = mapOf(", "\n)"),
+            ("dart", self.dart, "const Map<String, List<ParamSpec>> actionParams = {", "\n};"),
+        )
+        for name, text, start, end in blocks:
+            self.assertEqual(
+                _action_ids(text, start, end),
+                self.catalog_ids,
+                f"{name} 的参数表未覆盖全部命令",
+            )
+
     def test_shared_types_present_in_all_languages(self):
         types = ("Money", "DomainError", "ActionRequest", "ActionResult", "EventEnvelope")
         for name, text in (

@@ -237,6 +237,68 @@ const Map<String, String> actionCapabilities = {
   'video.view.report': 'write',
 };
 
+/// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。
+class ParamSpec {
+  final String name;
+  final String type;
+  final bool required;
+  const ParamSpec(this.name, this.type, this.required);
+}
+
+/// 逐命令的参数规格。
+const Map<String, List<ParamSpec>> actionParams = {
+  'channel.roles': [ParamSpec('conv', 'String', true)],
+  'community.threads': [ParamSpec('community', 'String', true), ParamSpec('limit', 'int', false)],
+  'conv.list': [],
+  'conv.unread': [ParamSpec('conv', 'String', true)],
+  'conv.history': [ParamSpec('conv', 'String', true), ParamSpec('before_seq', 'int', false), ParamSpec('limit', 'int', false)],
+  'conv.sync': [ParamSpec('conv', 'String', true), ParamSpec('version', 'int', true)],
+  'conv.ack': [ParamSpec('conv', 'String', true), ParamSpec('seq', 'int', false)],
+  'friend.list': [],
+  'friend.requests.incoming': [],
+  'friend.requests.outgoing': [],
+  'friend.request.create': [ParamSpec('to_user_id', 'String', true), ParamSpec('message', 'String', false)],
+  'friend.request.accept': [ParamSpec('req_id', 'String', true)],
+  'friend.request.decline': [ParamSpec('req_id', 'String', true)],
+  'friend.remark.set': [ParamSpec('user_id', 'String', true), ParamSpec('remark', 'String', true)],
+  'friend.remove': [ParamSpec('user_id', 'String', true), ParamSpec('confirmation_token', 'String', false)],
+  'friend.block.list': [],
+  'friend.block.add': [ParamSpec('user_id', 'String', true), ParamSpec('confirmation_token', 'String', false)],
+  'friend.block.remove': [ParamSpec('user_id', 'String', true)],
+  'friend.privacy.get': [],
+  'friend.privacy.set': [ParamSpec('allow', 'bool', true)],
+  'group.members': [ParamSpec('conv', 'String', true), ParamSpec('after_user', 'String', false), ParamSpec('limit', 'int', false)],
+  'group.info': [ParamSpec('conv', 'String', true)],
+  'group.announcement.get': [ParamSpec('conv', 'String', true)],
+  'group.mute_all.get': [ParamSpec('conv', 'String', true)],
+  'group.create': [ParamSpec('name', 'String', true), ParamSpec('member_ids', 'List<String>', false), ParamSpec('idempotency_key', 'String', true)],
+  'group.add_member': [ParamSpec('conv', 'String', true), ParamSpec('user_ids', 'List<String>', true)],
+  'group.announcement.set': [ParamSpec('conv', 'String', true), ParamSpec('text', 'String', true), ParamSpec('media_id', 'String', false)],
+  'group.mute_all.set': [ParamSpec('conv', 'String', true), ParamSpec('on', 'bool', true)],
+  'group.kick': [ParamSpec('conv', 'String', true), ParamSpec('user_id', 'String', true), ParamSpec('confirmation_token', 'String', false)],
+  'me.info': [],
+  'me.sessions': [],
+  'media.files.list': [ParamSpec('category', 'String', false), ParamSpec('folder', 'String', false), ParamSpec('sort', 'String', false), ParamSpec('cursor', 'String', false), ParamSpec('limit', 'int', false)],
+  'media.upload.get': [ParamSpec('upload_id', 'String', true)],
+  'media.upload.start': [ParamSpec('purpose', 'String', true), ParamSpec('name', 'String', true), ParamSpec('size', 'int', true), ParamSpec('mime', 'String', true), ParamSpec('digest', 'String', false)],
+  'media.upload.complete': [ParamSpec('upload_id', 'String', true), ParamSpec('digest', 'String', false)],
+  'media.upload.cancel': [ParamSpec('upload_id', 'String', true)],
+  'media.object.access': [ParamSpec('object_id', 'String', true)],
+  'media.object.revoke': [ParamSpec('object_id', 'String', true)],
+  'msg.list': [ParamSpec('conv', 'String', true), ParamSpec('from_seq', 'int', true), ParamSpec('to_seq', 'int', false)],
+  'msg.search': [ParamSpec('q', 'String', true), ParamSpec('limit', 'int', false)],
+  'msg.get': [ParamSpec('conv', 'String', true), ParamSpec('msg_id', 'String', true)],
+  'msg.send': [ParamSpec('conv', 'String', true), ParamSpec('text', 'String', true), ParamSpec('reply_to', 'String', false), ParamSpec('idempotency_key', 'String', true)],
+  'msg.forward': [ParamSpec('from_conv', 'String', true), ParamSpec('to_conv', 'String', true), ParamSpec('msg_id', 'String', true), ParamSpec('idempotency_key', 'String', true)],
+  'msg.recall': [ParamSpec('conv', 'String', true), ParamSpec('msg_id', 'String', true), ParamSpec('confirmation_token', 'String', false)],
+  'video.select': [ParamSpec('video_id', 'String', true), ParamSpec('kbps', 'int', true)],
+  'video.stats': [ParamSpec('video_id', 'String', true)],
+  'video.job.get': [ParamSpec('job_id', 'String', true)],
+  'video.job.create': [ParamSpec('path', 'String', true), ParamSpec('callback_url', 'String', false)],
+  'video.job.retry': [ParamSpec('job_id', 'String', true)],
+  'video.view.report': [ParamSpec('video_id', 'String', true), ParamSpec('viewer', 'String', true), ParamSpec('watched_ms', 'int', true), ParamSpec('position_ms', 'int', false), ParamSpec('completed', 'bool', false), ParamSpec('session_id', 'String', false)],
+};
+
 /// 解码一条命令结果；未知 status 返回 null（跳过，不抛）。
 ActionResult? decodeActionResult(Object? raw) {
   if (raw is! Map<String, dynamic>) return null;

@@ -3,251 +3,877 @@
     {
       "capability": "read",
       "id": "channel.roles",
+      "params": [
+        {
+          "name": "conv",
+          "note": "频道 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "频道角色名单：谁在这个频道里是 owner/moderator/member/guest，含继承标记"
     },
     {
       "capability": "read",
       "id": "community.threads",
+      "params": [
+        {
+          "name": "community",
+          "note": "社区 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "limit",
+          "note": "条数上限",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "社区里正在讨论的话题（跨频道汇总，带回复数与我的订阅状态）"
     },
     {
       "capability": "read",
       "id": "conv.list",
+      "params": [],
       "summary": "列出我参与的会话（含未读数）"
     },
     {
       "capability": "read",
       "id": "conv.unread",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "某个会话的未读快照：head_seq / read_seq / unread"
     },
     {
       "capability": "read",
       "id": "conv.history",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "before_seq",
+          "note": "只取 seq 小于它的",
+          "required": false,
+          "type": "NonNegativeInt"
+        },
+        {
+          "name": "limit",
+          "note": "条数上限",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "翻历史消息，按会话内序列号倒序分页"
     },
     {
       "capability": "read",
       "id": "conv.sync",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "version",
+          "note": "客户端持有的版本号",
+          "required": true,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "五层差分指令：客户端该全量拉还是增量拉"
     },
     {
       "capability": "write",
       "id": "conv.ack",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "seq",
+          "note": "推到哪个 seq",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "把已读游标推到指定 seq（缺省=最新）"
     },
     {
       "capability": "read",
       "id": "friend.list",
+      "params": [],
       "summary": "好友列表（我的通讯录，按加入时间排）"
     },
     {
       "capability": "read",
       "id": "friend.requests.incoming",
+      "params": [],
       "summary": "待我处理的好友申请（收件向，只含 pending）"
     },
     {
       "capability": "read",
       "id": "friend.requests.outgoing",
+      "params": [],
       "summary": "我发出去的好友申请（发起向，含已接受/已拒绝）"
     },
     {
       "capability": "write",
       "id": "friend.request.create",
+      "params": [
+        {
+          "name": "to_user_id",
+          "note": "要添加的那个人 user_id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "message",
+          "note": "申请附言；不给=只发空附言，服务端限长",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "发起好友申请（同一对象重复提交回 409，不会排第二队）"
     },
     {
       "capability": "write",
       "id": "friend.request.accept",
+      "params": [
+        {
+          "name": "req_id",
+          "note": "申请 id（incoming 列表里的 id 字段）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "同意一条好友申请（只有 pending 能被改，重复同意回 409）"
     },
     {
       "capability": "write",
       "id": "friend.request.decline",
+      "params": [
+        {
+          "name": "req_id",
+          "note": "申请 id（incoming 列表里的 id 字段）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "拒绝一条好友申请（只有 pending 能被改，重复拒绝回 409）"
     },
     {
       "capability": "write",
       "id": "friend.remark.set",
+      "params": [
+        {
+          "name": "user_id",
+          "note": "好友的 user_id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "remark",
+          "note": "备注名（服务端校验长度）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "给好友设置/修改备注（只有自己可见，随时可改）"
     },
     {
       "capability": "destructive",
       "id": "friend.remove",
+      "params": [
+        {
+          "name": "user_id",
+          "note": "要删除的好友 user_id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "confirmation_token",
+          "note": "确认令牌：先 prepare，再把令牌带回来",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "删除好友（双向移除、不可撤销，需确认令牌）"
     },
     {
       "capability": "read",
       "id": "friend.block.list",
+      "params": [],
       "summary": "列出我的黑名单（只有自己看得到）"
     },
     {
       "capability": "destructive",
       "id": "friend.block.add",
+      "params": [
+        {
+          "name": "user_id",
+          "note": "要拉黑的 user_id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "confirmation_token",
+          "note": "确认令牌：先 prepare，再把令牌带回来",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "拉黑一个用户（其申请与陌生人消息将被拒绝，需确认令牌）"
     },
     {
       "capability": "write",
       "id": "friend.block.remove",
+      "params": [
+        {
+          "name": "user_id",
+          "note": "要解除拉黑的 user_id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "解除拉黑（恢复对方发申请与陌生人消息的通道）"
     },
     {
       "capability": "read",
       "id": "friend.privacy.get",
+      "params": [],
       "summary": "查看我的隐私规则（当前：是否允许陌生人发消息请求）"
     },
     {
       "capability": "write",
       "id": "friend.privacy.set",
+      "params": [
+        {
+          "name": "allow",
+          "note": "true = 允许陌生人发消息请求（默认）；false = 直接拒绝",
+          "required": true,
+          "type": "Bool"
+        }
+      ],
       "summary": "设置我的隐私规则（是否允许陌生人发消息请求）"
     },
     {
       "capability": "read",
       "id": "group.members",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "after_user",
+          "note": "游标：上一页最后一个 user_id，从它之后继续；它已不在名单里就给空页",
+          "required": false,
+          "type": "Str"
+        },
+        {
+          "name": "limit",
+          "note": "这一页最多几条（缺省=剩下的全给）",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "群成员列表（按游标翻页；翻页目前切在客户端）"
     },
     {
       "capability": "read",
       "id": "group.info",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "群基本信息与我的角色"
     },
     {
       "capability": "read",
       "id": "group.announcement.get",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "查看群公告（仅群成员，无公告时报错）"
     },
     {
       "capability": "read",
       "id": "group.mute_all.get",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "查看全员禁言状态（仅群成员）"
     },
     {
       "capability": "write",
       "id": "group.create",
+      "params": [
+        {
+          "name": "name",
+          "note": "群名",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "member_ids",
+          "note": "初始成员 user_id 列表",
+          "required": false,
+          "type": "StrList"
+        },
+        {
+          "name": "idempotency_key",
+          "note": "幂等键",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "建群并拉入初始成员"
     },
     {
       "capability": "write",
       "id": "group.add_member",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "user_ids",
+          "note": "要拉进来的 user_id 列表",
+          "required": true,
+          "type": "StrList"
+        }
+      ],
       "summary": "拉人进群"
     },
     {
       "capability": "write",
       "id": "group.announcement.set",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "text",
+          "note": "公告全文（上限 2000 字，服务端校验）",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "media_id",
+          "note": "附带媒体 id（可选，服务端默认空）",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "设置/修改群公告（仅群主或管理员）"
     },
     {
       "capability": "write",
       "id": "group.mute_all.set",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "on",
+          "note": "true = 开启全员禁言；false = 关闭",
+          "required": true,
+          "type": "Bool"
+        }
+      ],
       "summary": "开启/关闭全员禁言（仅群主或管理员，对管理者无效）"
     },
     {
       "capability": "destructive",
       "id": "group.kick",
+      "params": [
+        {
+          "name": "conv",
+          "note": "群 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "user_id",
+          "note": "被移出的 user_id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "confirmation_token",
+          "note": "确认令牌：先 prepare，再把令牌带回来",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "把成员移出群（不可撤销）"
     },
     {
       "capability": "read",
       "id": "me.info",
+      "params": [],
       "summary": "我是谁：user_id、昵称、在线设备"
     },
     {
       "capability": "read",
       "id": "me.sessions",
+      "params": [],
       "summary": "我的登录会话（设备/时间），用于排查异地登录"
     },
     {
       "capability": "read",
       "id": "media.files.list",
+      "params": [
+        {
+          "name": "category",
+          "note": "分类（如 file/image/video/voice，服务端定义）",
+          "required": false,
+          "type": "Str"
+        },
+        {
+          "name": "folder",
+          "note": "文件夹（服务端定义）",
+          "required": false,
+          "type": "Str"
+        },
+        {
+          "name": "sort",
+          "note": "排序：recent（默认）/ name / size",
+          "required": false,
+          "type": "Str"
+        },
+        {
+          "name": "cursor",
+          "note": "上一页给的续页游标",
+          "required": false,
+          "type": "Str"
+        },
+        {
+          "name": "limit",
+          "note": "本页条数（服务端有上限）",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "文件中心：按分类/文件夹翻页列出我能看到的文件与附件"
     },
     {
       "capability": "read",
       "id": "media.upload.get",
+      "params": [
+        {
+          "name": "upload_id",
+          "note": "上传会话 id（up_ 前缀）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "查一个上传会话的状态（进度、是否秒传完成、过期时间）"
     },
     {
       "capability": "write",
       "id": "media.upload.start",
+      "params": [
+        {
+          "name": "purpose",
+          "note": "用途：attachment / avatar / sticker / voice / video / file / backup / derived（服务端校验）",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "name",
+          "note": "文件名",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "size",
+          "note": "声明大小（字节）",
+          "required": true,
+          "type": "NonNegativeInt"
+        },
+        {
+          "name": "mime",
+          "note": "MIME 类型",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "digest",
+          "note": "内容 SHA-256（hex）：填了才有秒传快路径，服务端会核对",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "开一个上传会话（声明 digest 命中已有对象时秒传完成）"
     },
     {
       "capability": "write",
       "id": "media.upload.complete",
+      "params": [
+        {
+          "name": "upload_id",
+          "note": "上传会话 id（up_ 前缀）",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "digest",
+          "note": "期望的内容 SHA-256（hex，可选，服务端核对）",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "确认上传完成（分片传齐后落对象；未完成前对象不可引用）"
     },
     {
       "capability": "write",
       "id": "media.upload.cancel",
+      "params": [
+        {
+          "name": "upload_id",
+          "note": "上传会话 id（up_ 前缀）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "取消一个未完成的上传会话（释放其分片与配额）"
     },
     {
       "capability": "write",
       "id": "media.object.access",
+      "params": [
+        {
+          "name": "object_id",
+          "note": "对象 id（内容 digest）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "为有权读的对象签发短期下载授权（带过期时间）"
     },
     {
       "capability": "write",
       "id": "media.object.revoke",
+      "params": [
+        {
+          "name": "object_id",
+          "note": "对象 id（内容 digest）",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "撤销一个对象已签发的全部下载授权（旧链接立即失效）"
     },
     {
       "capability": "read",
       "id": "msg.list",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "from_seq",
+          "note": "起始 seq（含）",
+          "required": true,
+          "type": "NonNegativeInt"
+        },
+        {
+          "name": "to_seq",
+          "note": "结束 seq（含）",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "按 seq 区间取消息（不翻页，给脚本用）"
     },
     {
       "capability": "read",
       "id": "msg.search",
+      "params": [
+        {
+          "name": "q",
+          "note": "搜索词",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "limit",
+          "note": "条数上限",
+          "required": false,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "在可见会话内全文搜索"
     },
     {
       "capability": "read",
       "id": "msg.get",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "msg_id",
+          "note": "消息 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "取单条消息（含撤回状态）"
     },
     {
       "capability": "write",
       "id": "msg.send",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "text",
+          "note": "消息正文",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "reply_to",
+          "note": "引用回复：被引消息的 msg_id（hex）；服务端会校验它属于本会话且未撤回",
+          "required": false,
+          "type": "Str"
+        },
+        {
+          "name": "idempotency_key",
+          "note": "幂等键",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "发一条文本消息（必须带 idempotency_key，重试不会重复发）"
     },
     {
       "capability": "write",
       "id": "msg.forward",
+      "params": [
+        {
+          "name": "from_conv",
+          "note": "来源会话",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "to_conv",
+          "note": "目标会话",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "msg_id",
+          "note": "消息 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "idempotency_key",
+          "note": "幂等键",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "转发一条消息到另一个会话"
     },
     {
       "capability": "destructive",
       "id": "msg.recall",
+      "params": [
+        {
+          "name": "conv",
+          "note": "会话 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "msg_id",
+          "note": "消息 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "confirmation_token",
+          "note": "确认令牌：先 prepare，再把令牌带回来",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "撤回一条消息（他人消息需管理员）"
     },
     {
       "capability": "read",
       "id": "video.select",
+      "params": [
+        {
+          "name": "video_id",
+          "note": "视频 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "kbps",
+          "note": "实测可用带宽（千比特/秒）",
+          "required": true,
+          "type": "NonNegativeInt"
+        }
+      ],
       "summary": "按实测带宽选一档码率（服务端留余量，三端选到同一档）"
     },
     {
       "capability": "read",
       "id": "video.stats",
+      "params": [
+        {
+          "name": "video_id",
+          "note": "视频 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "点播观看统计：条数 / 独立观众 / 总时长 / 人均时长"
     },
     {
       "capability": "read",
       "id": "video.job.get",
+      "params": [
+        {
+          "name": "job_id",
+          "note": "作业 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "查一个转码作业的状态与失败原因"
     },
     {
       "capability": "write",
       "id": "video.job.create",
+      "params": [
+        {
+          "name": "path",
+          "note": "本地文件路径",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "callback_url",
+          "note": "完成后回调地址",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "提交一个本地视频文件转码（读本地路径，上传后入队）"
     },
     {
       "capability": "write",
       "id": "video.job.retry",
+      "params": [
+        {
+          "name": "job_id",
+          "note": "作业 id",
+          "required": true,
+          "type": "Str"
+        }
+      ],
       "summary": "重试一个失败的转码作业（同一条作业，不新建）"
     },
     {
       "capability": "write",
       "id": "video.view.report",
+      "params": [
+        {
+          "name": "video_id",
+          "note": "视频 id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "viewer",
+          "note": "观众 user_id",
+          "required": true,
+          "type": "Str"
+        },
+        {
+          "name": "watched_ms",
+          "note": "本次新增观看时长",
+          "required": true,
+          "type": "NonNegativeInt"
+        },
+        {
+          "name": "position_ms",
+          "note": "当前播放位置",
+          "required": false,
+          "type": "NonNegativeInt"
+        },
+        {
+          "name": "completed",
+          "note": "是否看完",
+          "required": false,
+          "type": "Bool"
+        },
+        {
+          "name": "session_id",
+          "note": "播放会话 id",
+          "required": false,
+          "type": "Str"
+        }
+      ],
       "summary": "上报一次观看心跳（本次新增时长必须为正）"
     }
   ],
