@@ -109,15 +109,19 @@ impl Results {
 #[derive(Default)]
 struct Sinks {
     inner: Mutex<Vec<SinkEntry>>,
+}
+
+/// 每个 sink 一条队列 + **自己的** condvar。condvar 必须与它等待的那把
+/// mutex 一一绑定：pthread（macOS/Linux）禁止同一个 condvar 配多把 mutex
+/// （"attempted to use a condition variable with two mutexes"），所以不能
+/// 全体 sink 共享一条 condvar——每个 sink 各带一条。
+struct SinkEntry {
+    queue: Arc<Mutex<VecDeque<String>>>,
     signal: Arc<Condvar>,
 }
 
-struct SinkEntry {
-    queue: Arc<Mutex<VecDeque<String>>>,
-}
-
 impl Sinks {
-    /// 把一条事件扇出给所有已注册 sink（非阻塞：只入队 + 叫醒）。
+    /// 把一条事件扇出给所有已注册 sink（非阻塞：只入队 + 叫醒各自的 condvar）。
     fn fan_out(&self, text: &str) {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for entry in inner.iter() {
@@ -126,22 +130,22 @@ impl Sinks {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push_back(text.to_string());
+            entry.signal.notify_all();
         }
-        self.signal.notify_all();
     }
 
     /// 注册一个 sink，起一条分发线程。`closed` 用 Shared 的销毁标志，
     /// dispose 置位后分发线程随之退出。
     fn register(&self, sink: Arc<dyn EventSink>, closed: &Arc<AtomicBool>) {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let signal = Arc::new(Condvar::new());
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.push(SinkEntry {
                 queue: queue.clone(),
+                signal: signal.clone(),
             });
         }
-        self.signal.notify_all();
-        let signal = self.signal.clone();
         let closed = closed.clone();
         // 分发线程：从队列取事件 → 调回调。closed 后退出（dispose 会叫醒）。
         std::thread::Builder::new()
@@ -166,6 +170,14 @@ impl Sinks {
                 }
             })
             .ok();
+    }
+
+    /// 叫醒所有分发线程（dispose 时让它们看到 closed 后退出）。
+    fn wake_all(&self) {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for entry in inner.iter() {
+            entry.signal.notify_all();
+        }
     }
 }
 
@@ -534,7 +546,7 @@ impl CoreHandle {
         self.shared.closed.store(true, Ordering::SeqCst);
         self.shared.job_signal.notify_all();
         // 叫醒回调分发线程，让它们看到 closed 后退出（D3）。
-        self.shared.sinks.signal.notify_all();
+        self.shared.sinks.wake_all();
         let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = worker.take() {
             let exited = {
