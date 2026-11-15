@@ -203,18 +203,18 @@ def _parse_params(body: str, masked_body: str, where: str) -> list[dict]:
         # 定位原串里对应的 '('：遮罩保留长度，偏移可直接复用。
         open_idx = m.end() - 1
         inner = _balanced(body, open_idx)
-        lits = _string_literals(inner)
-        if len(lits) < 2:
+        names = _string_literals(inner)
+        if len(names) < 2:
             raise SystemExit(f"命令目录解析失败：{where} 的 Param 调用抽不到 name/note")
         ty = re.search(r"ParamType::(\w+)", inner)
         if not ty:
             raise SystemExit(f"命令目录解析失败：{where} 的 Param 调用找不到 ParamType::")
         params.append(
             {
-                "name": lits[0],
+                "name": names[0],
                 "type": ty.group(1),
                 "required": m.group(1) == "req",
-                "note": lits[1],
+                "note": names[1],
             }
         )
     return params
