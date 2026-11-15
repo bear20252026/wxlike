@@ -90,6 +90,29 @@ const VIDEO_ACTIONS = {
   liveDanmaku: ACTIONS.liveDanmaku,
 } as const;
 
+/**
+ * 内容域 action 别名（名单只留一处）。moments/favorites/report/stickers 控制面；
+ * G05 未对齐面（articles/publishers）显式阻塞，不在这张表里。
+ */
+const CONTENT_ACTIONS = {
+  momentPublish: ACTIONS.momentPublish,
+  momentFeed: ACTIONS.momentFeed,
+  momentDetail: ACTIONS.momentDetail,
+  momentRemove: ACTIONS.momentRemove,
+  momentLike: ACTIONS.momentLike,
+  momentUnlike: ACTIONS.momentUnlike,
+  momentComment: ACTIONS.momentComment,
+  momentCommentRemove: ACTIONS.momentCommentRemove,
+  reportCreate: ACTIONS.reportCreate,
+  favoriteList: ACTIONS.favoriteList,
+  favoriteOne: ACTIONS.favoriteOne,
+  favoriteRemove: ACTIONS.favoriteRemove,
+  favoriteAdd: ACTIONS.favoriteAdd,
+  favoriteUpdate: ACTIONS.favoriteUpdate,
+  stickerPacks: ACTIONS.stickerPacks,
+  momentMediaUrl: ACTIONS.momentMediaUrl,
+} as const;
+
 export interface CoreSessionSnapshot {
   installed: boolean;
   generation: number;
@@ -172,7 +195,7 @@ interface Match {
 }
 
 interface WalletRoute {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "DELETE" | "PUT";
   /** 路径模板，`:x` 为段参数；不含 query。 */
   pattern: string;
   action: string;
@@ -462,6 +485,157 @@ export function videoRouteCensus(): string[] {
   return VIDEO_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
 }
 
+// ---------------------------------------------------------------------------
+// 内容路由表：moments/favorites/report/stickers 控制面。
+//
+// 服务端形状与 api.ts 期望形状有几处出入，投影在这里对齐（同钱包口径）：
+// feed 信封 {moments}→{items}；favorites 信封 {favorites}→裸数组；packs 信封
+// {packs}→裸数组；detail 的评论 reply_to→reply_to_comment_id。publish/comment
+// 服务端只回 id，由 api.ts 回读补全（见 features/content/api.ts）。
+// G05 未对齐面（articles/publishers）不在这张表里，归 BLOCKED 显式阻塞。
+// ---------------------------------------------------------------------------
+
+function momentCommentRow(row: unknown): Json {
+  const r = asRecord(row, "comment");
+  return {
+    comment_id: needString(r, "comment_id"),
+    author: needString(r, "author"),
+    author_name: typeof r.author_name === "string" ? r.author_name : undefined,
+    text: needString(r, "text"),
+    reply_to_comment_id:
+      typeof r.reply_to_comment_id === "string"
+        ? r.reply_to_comment_id
+        : typeof r.reply_to === "string" && r.reply_to !== ""
+          ? r.reply_to
+          : null,
+    created_at: needNumber(r, "created_at"),
+  };
+}
+
+export const CONTENT_ROUTES: readonly WalletRoute[] = [
+  {
+    method: "POST",
+    pattern: "/api/moments",
+    action: CONTENT_ACTIONS.momentPublish,
+    toParams: (_m, body) => ({ text: body.text, media_ids: body.media_ids, visibility: body.visibility }),
+    // 服务端只回 {moment_id}；api.ts 回读 detail 补全 head。
+  },
+  {
+    method: "GET",
+    pattern: "/api/moments/feed",
+    action: CONTENT_ACTIONS.momentFeed,
+    toParams: ({ query }) => {
+      const params: Json = {};
+      const since = query.get("since");
+      const limit = query.get("limit");
+      if (since !== null) params.since = Number(since);
+      if (limit !== null) params.limit = Number(limit);
+      return params;
+    },
+    project: (data) => {
+      const row = asRecord(data, "feed");
+      return { items: needArray(row, "moments"), next_cursor: optionalNumberOrNull(row, "next_cursor") };
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/api/moments/:id",
+    action: CONTENT_ACTIONS.momentDetail,
+    toParams: (m) => ({ moment_id: m.params.id }),
+    project: (data) => {
+      const row = asRecord(data, "detail");
+      return { ...row, comments: needArray(row, "comments").map(momentCommentRow) };
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/moments/:id",
+    action: CONTENT_ACTIONS.momentRemove,
+    toParams: (m) => ({ moment_id: m.params.id }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/moments/:id/likes",
+    action: CONTENT_ACTIONS.momentLike,
+    toParams: (m) => ({ moment_id: m.params.id }),
+    // 服务端回 {liked,added}，无 like_count；api.ts 保留乐观计数。
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/moments/:id/likes",
+    action: CONTENT_ACTIONS.momentUnlike,
+    toParams: (m) => ({ moment_id: m.params.id }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/moments/:id/comments",
+    action: CONTENT_ACTIONS.momentComment,
+    toParams: (m, body) => ({ moment_id: m.params.id, text: body.text, reply_to_comment_id: body.reply_to_comment_id }),
+    // 服务端只回 {comment_id}；api.ts 回读 detail 补全评论。
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/moments/:id/comments/:cid",
+    action: CONTENT_ACTIONS.momentCommentRemove,
+    toParams: (m) => ({ moment_id: m.params.id, comment_id: m.params.cid }),
+  },
+  {
+    method: "POST",
+    pattern: "/api/reports",
+    action: CONTENT_ACTIONS.reportCreate,
+    toParams: (_m, body) => ({ target_kind: body.target_kind, target_id: body.target_id, reason: body.reason, detail: body.detail }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/favorites",
+    action: CONTENT_ACTIONS.favoriteList,
+    toParams: () => ({}),
+    project: (data) => needArray(asRecord(data, "favorites"), "favorites"),
+  },
+  {
+    method: "POST",
+    pattern: "/api/favorites",
+    action: CONTENT_ACTIONS.favoriteAdd,
+    toParams: (_m, body) => ({ body }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/favorites/:id",
+    action: CONTENT_ACTIONS.favoriteOne,
+    toParams: (m) => ({ id: m.params.id }),
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/favorites/:id",
+    action: CONTENT_ACTIONS.favoriteRemove,
+    toParams: (m) => ({ id: m.params.id }),
+  },
+  {
+    method: "PUT",
+    pattern: "/api/favorites/:id",
+    action: CONTENT_ACTIONS.favoriteUpdate,
+    toParams: (m, body) => ({ id: m.params.id, snapshot_label: body.snapshot_label }),
+  },
+  {
+    method: "GET",
+    pattern: "/api/stickers/packs",
+    action: CONTENT_ACTIONS.stickerPacks,
+    toParams: () => ({}),
+    project: (data) => needArray(asRecord(data, "packs"), "packs"),
+  },
+  {
+    method: "GET",
+    pattern: "/api/media/:id/url",
+    action: CONTENT_ACTIONS.momentMediaUrl,
+    toParams: (m) => ({ media_id: m.params.id }),
+    // 服务端回 {url, expires_at}；MomentImage 读 reply.url，原样透传。
+  },
+];
+
+export function contentRouteCensus(): string[] {
+  return CONTENT_ROUTES.map((route) => `${route.method} ${route.pattern} -> ${route.action}`);
+}
+
 /**
  * 已迁移域里**明确没有 provider** 的出口：登记在此，运行时一律 `blocked`（501），
  * 静态检查据此确认"钱包域的每条路径都有归属"——要么进 `WALLET_ROUTES` 走核心，
@@ -479,6 +653,10 @@ export const BLOCKED_WALLET_PREFIXES: readonly string[] = [
   "/api/entitlements",
   // 视频上传（multipart 二进制）：无流式提供者，显式阻塞，不回落旧会话。
   "/api/video",
+  // 内容域 G05 契约面：服务端尚未对齐（articles 列表/publisher 订阅/article
+  // watching），显式阻塞，不回落旧会话、不伪造成功。
+  "/api/articles",
+  "/api/publishers",
 ];
 
 /** 路径是否落在某条路由模板上（`:x` 段通配；模板末尾可再带子段）。 */
@@ -493,7 +671,9 @@ function matchesPattern(bare: string, pattern: string): boolean {
 export function isRoutedOrBlocked(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
   if (BLOCKED_WALLET_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`))) return true;
-  return [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES].some((route) => matchesPattern(bare, route.pattern));
+  return [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES].some((route) =>
+    matchesPattern(bare, route.pattern),
+  );
 }
 
 /** 路径（去掉 query）+ 方法 → 指定路由表里的条目；不匹配返回 null。 */
@@ -525,7 +705,7 @@ function matchRoute(
 }
 
 /** 已迁移域的路由表（按域顺序匹配；各域控制面 URL 模板互不重叠）。 */
-const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES];
+const CORE_ROUTES: readonly WalletRoute[] = [...WALLET_ROUTES, ...CALL_ROUTES, ...VIDEO_ROUTES, ...CONTENT_ROUTES];
 
 // ---------------------------------------------------------------------------
 // 投影用到的严格读数（缺字段就抛，不兜默认值）

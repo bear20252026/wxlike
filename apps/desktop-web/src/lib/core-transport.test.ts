@@ -29,11 +29,13 @@ import { ApiError, fetchTransport, isCoreOnlyPath, request, setTransport } from 
 import {
   BLOCKED_WALLET_PREFIXES,
   CALL_ROUTES,
+  CONTENT_ROUTES,
   LEDGER_KINDS,
   VIDEO_ROUTES,
   WALLET_ROUTES,
   __resetCoreSessionForTests,
   callRouteCensus,
+  contentRouteCensus,
   coreSessionSnapshot,
   installCoreSession,
   isRoutedOrBlocked,
@@ -365,7 +367,7 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
     expect(fetchCalls).toEqual([]);
   });
 
-  it("未迁移的域仍然走遗留出口（本卡只动钱包这一格）", async () => {
+  it("未迁移的域仍然走遗留出口（files/mini/discover 尚未迁）", async () => {
     const h = makeCore(() => ok({}));
     installCoreSession(h.core);
     globalThis.fetch = (async () => ({
@@ -374,7 +376,7 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
       text: async () => JSON.stringify({ ok: true }),
     })) as unknown as typeof fetch;
     try {
-      const body = await request<{ ok: boolean }>("GET", "/api/moments/list");
+      const body = await request<{ ok: boolean }>("GET", "/api/files");
       expect(body).toEqual({ ok: true });
       expect(h.requests).toEqual([]);
     } finally {
@@ -556,6 +558,71 @@ describe("视频域 — 控制面经核心、播放面匿名、上传阻塞（D6
   });
 });
 
+describe("内容域 — 控制面经核心、G05 未对齐面阻塞（D6）", () => {
+  it("feed：dispatch moment.feed，信封 {moments} 投影成 {items}", async () => {
+    const h = makeCore(() => ok({ moments: [{ moment_id: "m1" }], next_cursor: null, has_more: false }));
+    installCoreSession(h.core);
+    const body = await request<{ items: unknown[]; next_cursor: number | null }>("GET", "/api/moments/feed?limit=20");
+    expect(body).toEqual({ items: [{ moment_id: "m1" }], next_cursor: null });
+    expect(h.requests[0]?.action_id).toBe("moment.feed");
+    expect(h.requests[0]?.params).toEqual({ limit: 20 });
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("favorites：信封 {favorites} 投影成裸数组", async () => {
+    const h = makeCore(() => ok({ favorites: [{ id: "f1" }], next_cursor: null, has_more: false }));
+    installCoreSession(h.core);
+    const body = await request<unknown[]>("GET", "/api/favorites");
+    expect(body).toEqual([{ id: "f1" }]);
+    expect(h.requests[0]?.action_id).toBe("favorite.list");
+  });
+
+  it("detail：评论 reply_to 投影成 reply_to_comment_id", async () => {
+    const h = makeCore(() => ok({ moment_id: "m1", comments: [{ comment_id: "c1", author: "a", text: "t", reply_to: "", created_at: 1 }] }));
+    installCoreSession(h.core);
+    const body = await request<{ comments: { reply_to_comment_id: string | null }[] }>("GET", "/api/moments/m1");
+    expect(body.comments[0]?.reply_to_comment_id).toBeNull();
+    expect(h.requests[0]?.action_id).toBe("moment.detail");
+  });
+
+  it("媒体签名 URL：dispatch moment.media_url（朋友圈图片依赖）", async () => {
+    const h = makeCore(() => ok({ url: "http://x/sig", expires_at: 1 }));
+    installCoreSession(h.core);
+    const body = await request<{ url: string }>("GET", "/api/media/m9/url");
+    expect(body.url).toBe("http://x/sig");
+    expect(h.requests[0]?.action_id).toBe("moment.media_url");
+    expect(h.requests[0]?.params).toEqual({ media_id: "m9" });
+  });
+
+  it("控制面 CORE_ONLY 且有归属；直接打遗留出口被拒", async () => {
+    for (const p of ["/api/moments/feed", "/api/favorites", "/api/stickers/packs", "/api/media/m9/url"]) {
+      expect(isCoreOnlyPath(p), p).toBe(true);
+      expect(isRoutedOrBlocked(p), p).toBe(true);
+    }
+    expect(contentRouteCensus()).toHaveLength(CONTENT_ROUTES.length);
+    const error = (await fetchTransport("GET", "/api/moments/feed").catch((err) => err)) as ApiError;
+    expect(error.code).toBe("blocked");
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("G05 未对齐面（articles/publishers）：显式阻塞，不发 HTTP", async () => {
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    for (const p of ["/api/articles", "/api/publishers"]) {
+      const error = (await request("GET", p).catch((err) => err)) as ApiError;
+      expect(error.code, p).toBe("blocked");
+      expect(error.status, p).toBe(501);
+    }
+    expect(h.requests).toEqual([]);
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("files 域上传/下载二进制不在拒绝面（仍走遗留出口，待 files 迁移）", () => {
+    expect(isCoreOnlyPath("/api/media")).toBe(false);
+    expect(isCoreOnlyPath("/api/media/m9")).toBe(false);
+  });
+});
+
 describe("会话切换 — 真清，不是注释", () => {
   it("切换前挂着的钱包请求：结果落地时被丢弃，并计入 dropped 台账", async () => {
     const h = makeCore(() => ok({ balance_minor: 999999, currency: "CNY" }), { delayFirst: true });
@@ -630,7 +697,12 @@ describe("台账漂移守卫 — 与 Rust 服务端同源", () => {
     expect(video?.providerSha).toBeTruthy();
     expect([...(video?.actions ?? [])].sort()).toEqual(VIDEO_ROUTES.map((r) => r.action).sort());
     expect([...new Set(VIDEO_ROUTES.map((r) => r.action))]).toHaveLength(VIDEO_ROUTES.length);
-    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(4);
+    const content = DOMAIN_REGISTRY.find((domain) => domain.id === "moments");
+    expect(content?.state).toBe("core");
+    expect(content?.providerSha).toBeTruthy();
+    expect([...(content?.actions ?? [])].sort()).toEqual(CONTENT_ROUTES.map((r) => r.action).sort());
+    expect([...new Set(CONTENT_ROUTES.map((r) => r.action))]).toHaveLength(CONTENT_ROUTES.length);
+    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(3);
   });
 });
 
@@ -665,6 +737,9 @@ interface CheckJson {
   videoRoutes: { method: string; pattern: string; action: string }[];
   videoBridgeArms: string[];
   videoContractActions: string[];
+  contentRoutes: { method: string; pattern: string; action: string }[];
+  contentBridgeArms: string[];
+  contentContractActions: string[];
   coreOnlyPrefixes: string[];
   violations: Violation[];
   ledger: Record<string, { files: string[]; counts: Record<string, number> }>;
@@ -789,20 +864,20 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
 
   it("今天判定为绿，并把现存违例的条数如实打印出来（条数来自扫描，不是写死的常量）", () => {
     const res = runCheck();
-    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/video/calls）零遗留 HTTP");
+    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls）零遗留 HTTP");
     expect(res.status).toBe(0);
     const count = /现存违例：(\d+) 条，分布在 (\d+) 个未迁移域/.exec(res.stdout);
     expect(count, `输出里必须自带现存违例计数，实际：${res.stdout}`).toBeTruthy();
     expect(Number(count?.[1]), "违例条数为 0 就说明这条检查在空转").toBeGreaterThan(0);
     expect(Number(count?.[1])).toBe(disk.total);
-    expect(Number(count?.[2])).toBe(4);
+    expect(Number(count?.[2])).toBe(3);
   });
 
-  it("四个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
+  it("三个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
     expect(disk.problems).toEqual([]);
     expect(disk.total).toBeGreaterThan(0);
     const blocked = disk.domains.filter((d) => d.state === "blocked").map((d) => d.featureDir).sort();
-    expect(blocked).toEqual(["content", "discover", "files", "mini"]);
+    expect(blocked).toEqual(["discover", "files", "mini"]);
     for (const dir of blocked) {
       const entry = disk.ledger[dir];
       expect(entry, `债台账里应当有 features/${dir} 这一格`).toBeTruthy();
@@ -827,6 +902,10 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(videoRouted).toEqual([...new Set(disk.videoContractActions)].sort());
     expect(videoRouted).toEqual([...new Set(disk.videoBridgeArms)].sort());
     expect(videoRouted).toHaveLength(10);
+    const contentRouted = [...new Set(disk.contentRoutes.map((r) => r.action))].sort();
+    expect(contentRouted).toEqual([...new Set(disk.contentContractActions)].sort());
+    expect(contentRouted).toEqual([...new Set(disk.contentBridgeArms)].sort());
+    expect(contentRouted).toHaveLength(16);
   });
 
   it("规则清单与注入用例一一对应（往 RULES 里加一条打死规则就会在这里红）", () => {

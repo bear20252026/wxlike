@@ -418,6 +418,20 @@ export function useAppState(): AppState {
   return useSyncExternalStore(store.subscribe, store.getSnapshot);
 }
 
+/**
+ * 可选读取当前会话身份：组合根之外（独立渲染/测试）没有 AppProvider 时返回
+ * null，不抛错。供只需要"当前是谁"的展示逻辑使用（如朋友圈的 own/评论归属）。
+ */
+export function useOptionalUserId(): string | null {
+  const value = useContext(AppContext);
+  const snapshot = useSyncExternalStore(
+    value ? value.store.subscribe : () => () => undefined,
+    value ? value.store.getSnapshot : () => null,
+  );
+  if (!snapshot || snapshot.session.phase !== "authenticated") return null;
+  return snapshot.session.account?.user_id ?? null;
+}
+
 /** Dispatch helper used by every screen; errors are reported once, never swallowed. */
 export function useCoreAction() {
   const { core, store } = useApp();

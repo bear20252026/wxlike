@@ -44,6 +44,10 @@ fn route_for<R: tauri::Runtime>(action_id: &str) -> Option<Route<R>> {
         ("call", _) => call_router::<R>,
         ("video", _) => video_router::<R>,
         ("live", _) => video_router::<R>,
+        ("moment", _) => content_router::<R>,
+        ("favorite", _) => content_router::<R>,
+        ("report", _) => content_router::<R>,
+        ("sticker", _) => content_router::<R>,
         ("search", _) => search_router::<R>,
         ("preferences", _) => settings_router::<R>,
         ("secrets", _) => settings_router::<R>,
@@ -238,6 +242,35 @@ fn video_router<R: tauri::Runtime>(
         "live.join" => act_live_join(app, state, core, req),
         "live.leave" => act_live_leave(app, state, core, req),
         "live.danmaku" => act_live_danmaku(app, state, core, req),
+        _ => Err(unrouted(req)),
+    }
+}
+
+/// 内容域（D6 逐域退役）：moments/favorites/report/stickers 控制面。
+/// G05 契约面里服务端未对齐的部分（articles/publishers）在消费侧显式阻塞。
+fn content_router<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    core: &CoreState,
+    req: &CoreRequest,
+) -> Result<Value, BridgeError> {
+    match req.action_id.as_str() {
+        "moment.publish" => act_moment_publish(app, state, core, req),
+        "moment.feed" => act_moment_feed(app, state, core, req),
+        "moment.detail" => act_moment_detail(app, state, core, req),
+        "moment.remove" => act_moment_remove(app, state, core, req),
+        "moment.like" => act_moment_like(app, state, core, req),
+        "moment.unlike" => act_moment_unlike(app, state, core, req),
+        "moment.comment" => act_moment_comment(app, state, core, req),
+        "moment.comment.remove" => act_moment_comment_remove(app, state, core, req),
+        "report.create" => act_report(app, state, core, req),
+        "favorite.list" => act_favorite_list(app, state, core, req),
+        "favorite.one" => act_favorite_one(app, state, core, req),
+        "favorite.remove" => act_favorite_remove(app, state, core, req),
+        "favorite.add" => act_favorite_add(app, state, core, req),
+        "favorite.update" => act_favorite_update(app, state, core, req),
+        "sticker.packs" => act_sticker_packs(app, state, core, req),
+        "moment.media_url" => act_media_signed_url(app, state, core, req),
         _ => Err(unrouted(req)),
     }
 }

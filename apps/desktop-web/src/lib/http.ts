@@ -62,6 +62,17 @@ const CORE_ONLY_PREFIXES: readonly string[] = [
   "/api/video",
   "/api/videos/feed",
   "/api/live",
+  // 内容域（D6）：整域归核心。moments/favorites/report/stickers 走 action；
+  // G05 契约面里服务端未对齐的部分（articles/publishers）显式阻塞，不回落旧会话。
+  "/api/moments",
+  "/api/favorites",
+  "/api/reports",
+  "/api/stickers",
+  "/api/articles",
+  "/api/publishers",
+  // 朋友圈图片的媒体签名 URL（认证读面，归内容域）；files 域的上传/下载
+  // 二进制仍无提供者，不在此列（保持遗留出口，待 files 域迁移）。
+  "/api/media/:id/url",
 ];
 
 /**
@@ -82,11 +93,19 @@ export function isAnonymousPlaybackPath(path: string): boolean {
   return ANONYMOUS_PLAYBACK.some((re) => re.test(bare));
 }
 
+/** 前缀按段匹配：`:x` 段通配；模板末尾可再带子段（子路径归属同域）。 */
+function prefixMatches(bare: string, prefix: string): boolean {
+  const parts = bare.split("/").filter(Boolean);
+  const template = prefix.split("/").filter(Boolean);
+  if (parts.length < template.length) return false;
+  return template.every((token, i) => token.startsWith(":") || token === parts[i]);
+}
+
 /** 这个请求路径是否属于"只能经 Rust 核心"的已迁移域（匿名播放面除外）。 */
 export function isCoreOnlyPath(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
   if (isAnonymousPlaybackPath(bare)) return false;
-  return CORE_ONLY_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`));
+  return CORE_ONLY_PREFIXES.some((prefix) => prefixMatches(bare, prefix));
 }
 
 export type Json = Record<string, unknown>;

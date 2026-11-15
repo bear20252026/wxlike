@@ -13,8 +13,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clearDraft, loadDraft, saveDraft } from "../../lib/draft";
-import { errorText, request, userIdSafe } from "../../lib/http";
+import { errorText, request } from "../../lib/http";
 import { platform } from "../../lib/platform";
+import { useOptionalUserId } from "../../shell/store";
 import { sanitizeRichText } from "../../lib/sanitize";
 import type { ContentPorts } from "./model";
 import type { MomentComment, MomentDetail, MomentHead, PublishInput, Visibility } from "./model";
@@ -222,7 +223,8 @@ function MomentCard({
   ports: ContentPorts;
   onRemoved: (id: string) => void;
 }) {
-  const me = userIdSafe();
+  // 身份读核心会话投影（D6 退役后不再读旧 localStorage）；组合根之外回退 ""。
+  const me = useOptionalUserId() ?? "";
   const own = head.author === me;
   const [likeCount, setLikeCount] = useState(head.like_count);
   const [liked, setLiked] = useState(false);

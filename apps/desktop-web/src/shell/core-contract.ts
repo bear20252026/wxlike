@@ -167,6 +167,26 @@ export const ACTIONS = {
   liveLeave: "live.leave",
   liveDanmaku: "live.danmaku",
 
+  // 内容域（D6 逐域退役）：moments/favorites/report/stickers 控制面经桥；
+  // G05 契约面里服务端未对齐的部分（articles/publishers）在消费侧显式阻塞。
+  // 名单与 `core_bridge` 的 `content_router` 逐条对齐。
+  momentPublish: "moment.publish",
+  momentFeed: "moment.feed",
+  momentDetail: "moment.detail",
+  momentRemove: "moment.remove",
+  momentLike: "moment.like",
+  momentUnlike: "moment.unlike",
+  momentComment: "moment.comment",
+  momentCommentRemove: "moment.comment.remove",
+  reportCreate: "report.create",
+  favoriteList: "favorite.list",
+  favoriteOne: "favorite.one",
+  favoriteRemove: "favorite.remove",
+  favoriteAdd: "favorite.add",
+  favoriteUpdate: "favorite.update",
+  stickerPacks: "sticker.packs",
+  momentMediaUrl: "moment.media_url",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",

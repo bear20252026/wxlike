@@ -43,6 +43,9 @@ export const CALLS_PROVIDER_SHA = "b3fbb40";
 /** D6 视频域竖切片：Rust 提供者（video.* 与 live.* 控制面桥 action）合入的提交短 SHA。 */
 export const VIDEO_PROVIDER_SHA = "7051522";
 
+/** D6 内容域竖切片：Rust 提供者（moment/favorite/report/sticker 桥 action）合入的提交短 SHA。 */
+export const CONTENT_PROVIDER_SHA = "3e9d13c";
+
 /** id 字符串只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份，这里只做聚合。 */
 const WALLET_ACTIONS = [
   ACTIONS.walletBalanceGet,
@@ -82,6 +85,25 @@ const VIDEO_ACTIONS = [
   ACTIONS.liveDanmaku,
 ] as const;
 
+const CONTENT_ACTIONS = [
+  ACTIONS.momentPublish,
+  ACTIONS.momentFeed,
+  ACTIONS.momentDetail,
+  ACTIONS.momentRemove,
+  ACTIONS.momentLike,
+  ACTIONS.momentUnlike,
+  ACTIONS.momentComment,
+  ACTIONS.momentCommentRemove,
+  ACTIONS.reportCreate,
+  ACTIONS.favoriteList,
+  ACTIONS.favoriteOne,
+  ACTIONS.favoriteRemove,
+  ACTIONS.favoriteAdd,
+  ACTIONS.favoriteUpdate,
+  ACTIONS.stickerPacks,
+  ACTIONS.momentMediaUrl,
+] as const;
+
 /**
  * 六域阻塞名单。**这张表就是"不许用页面能点当验收"的机器可读版本**：
  * 谁给某个域补上提供者，就把那条改成 `state: "core"` + 记录 SHA，静态检查与
@@ -101,10 +123,10 @@ export const DOMAIN_REGISTRY: readonly DomainStatus[] = [
     id: "moments",
     featureDir: "content",
     label: "内容（朋友圈/公众号/收藏/表情）",
-    state: "blocked",
-    providerSha: null,
-    reason: "#293 只交付钱包竖切片，内容域没有 Rust 提供者；遗留 HTTP 出口拿不到认证会话",
-    actions: [],
+    state: "core",
+    providerSha: CONTENT_PROVIDER_SHA,
+    reason: `朋友圈/收藏/举报/表情控制面经 D6 认证桥 action（${CONTENT_ACTIONS.length} 条）；G05 未对齐面（文章/订阅号）显式阻塞`,
+    actions: CONTENT_ACTIONS,
   },
   {
     id: "video",
