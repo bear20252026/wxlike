@@ -50,11 +50,10 @@ describe("组合根横幅：每条域的会话来源都要看得见、说得清"
     await waitFor(() => expect(screen.getByTestId("domain-blocked-discover")).toBeInTheDocument());
   });
 
-  it("注册表与现实同源：4 格已迁移 + 3 格阻塞，每格都有路由归属", () => {
-    expect(domainsInState("core").map((domain) => domain.id)).toEqual(["wallet", "moments", "video", "calls"]);
+  it("注册表与现实同源：5 格已迁移 + 2 格阻塞，每格都有路由归属", () => {
+    expect(domainsInState("core").map((domain) => domain.id)).toEqual(["wallet", "moments", "video", "calls", "files"]);
     expect(domainsInState("blocked").map((domain) => domain.id).sort()).toEqual([
       "discover",
-      "files",
       "mini",
     ]);
     // 已迁移的每一格都必须记着提供者的 SHA（卡面：消费者记录 provider SHA）
@@ -63,6 +62,7 @@ describe("组合根横幅：每条域的会话来源都要看得见、说得清"
     expect(coreById.calls?.providerSha).toBe("b3fbb40");
     expect(coreById.video?.providerSha).toBeTruthy();
     expect(coreById.moments?.providerSha).toBeTruthy();
+    expect(coreById.files?.providerSha).toBeTruthy();
     for (const domain of domainsInState("blocked")) {
       expect(domain.providerSha, domain.id).toBeNull();
       expect(domain.actions, domain.id).toEqual([]);

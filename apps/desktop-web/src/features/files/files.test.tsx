@@ -6,13 +6,13 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setTransport } from "../../lib/http";
+import { ApiError, setTransport } from "../../lib/http";
 import { err, fixtureTransport } from "../../test/fixture";
 import { FilesApi, journalAll, applyFileQuery } from "./api";
 import { categoryOf } from "./model";
 import type { FileRecord, FilesPorts, UploadReply } from "./model";
 import { FilesPage } from "./FilesPage";
-import { sha256Hex, formatBytes } from "./bytes";
+import { formatBytes } from "./bytes";
 
 beforeEach(() => {
   localStorage.clear();
@@ -163,38 +163,21 @@ describe("FilesPage — upload", () => {
   });
 });
 
-describe("FilesPage — download", () => {
-  it("下载与源 hash 一致：digest 相符通过、不符拒绝", async () => {
-    const bytes = new TextEncoder().encode("hello");
-    const goodDigest = await sha256Hex(bytes);
-    const wrongDigest = "ff".repeat(32);
-    const originalFetch = global.fetch;
-    global.fetch = (async () => new Response(bytes, { status: 200 })) as typeof fetch;
-    try {
-      const api = new FilesApi();
-      const blob = await api.download("xx".repeat(32), { expectedDigest: goodDigest });
-      expect(blob.size).toBe(5);
-      await expect(
-        api.download("xx".repeat(32), { expectedDigest: wrongDigest }),
-      ).rejects.toThrow("sha256 与源不一致");
-    } finally {
-      global.fetch = originalFetch;
-    }
+describe("FilesPage — download（D6：二进制面无流式核心提供者，显式阻塞）", () => {
+  it("下载显式阻塞（501/blocked），不回落旧会话、不伪造字节", async () => {
+    const api = new FilesApi();
+    const error = await api.download("xx".repeat(32), { expectedDigest: "ab".repeat(32) }).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(501);
+    expect((error as ApiError).code).toBe("blocked");
+    expect((error as ApiError).message).toContain("流式核心提供者");
   });
 
-  it("别人的对象 ID 无法读取：403 显示无权限", async () => {
-    const originalFetch = global.fetch;
-    global.fetch = (async () =>
-      new Response(JSON.stringify({ error: "not your object" }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      })) as typeof fetch;
-    try {
-      const api = new FilesApi();
-      await expect(api.download("ee".repeat(32))).rejects.toThrow("not your object");
-    } finally {
-      global.fetch = originalFetch;
-    }
+  it("downloadBytes 同样显式阻塞，不偷偷发 fetch", async () => {
+    const api = new FilesApi();
+    const error = await api.downloadBytes("ee".repeat(32)).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("blocked");
   });
 });
 

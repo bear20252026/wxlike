@@ -187,6 +187,14 @@ export const ACTIONS = {
   stickerPacks: "sticker.packs",
   momentMediaUrl: "moment.media_url",
 
+  // 文件域（D6 逐域退役）：文件中心控制面（列表/改名/分享/删除）经桥打到 G04
+  // `/api/v1/files*`。二进制上传/下载与备份清理计划无 JSON 流式提供者，在消费侧
+  // 显式阻塞。名单与 `core_bridge` 的 `files_router` 逐条对齐。
+  fileList: "file.list",
+  fileRename: "file.rename",
+  fileShare: "file.share",
+  fileRemove: "file.remove",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",

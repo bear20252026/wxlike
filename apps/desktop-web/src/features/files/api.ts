@@ -17,8 +17,7 @@
  * digest dedup is the honest equivalent.
  */
 
-import { ApiError, baseUrl, idemKey, request, token } from "../../lib/http";
-import { sha256Hex } from "./bytes";
+import { ApiError, blockedError, idemKey, request } from "../../lib/http";
 import type {
   BackupPlan,
   FileActionResult,
@@ -33,115 +32,39 @@ import type {
 } from "./model";
 import { categoryOf } from "./model";
 
-/**
- * Production uploader. XHR because fetch has no upload progress. Resolves on
- * 2xx, rejects with `ApiError` using the same error contract as `http.ts`.
- */
-export const xhrUpload = async (
-  form: FormData,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
-): Promise<UploadReply> => {
-  return new Promise<UploadReply>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${baseUrl()}/api/media`);
-    const tok = token();
-    if (tok) xhr.setRequestHeader("authorization", `Bearer ${tok}`);
-    xhr.responseType = "json";
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) opts.onProgress?.(event.loaded / event.total);
-    };
-    xhr.onload = () => {
-      const body = xhr.response as UploadReply | { error?: string } | null;
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(body as UploadReply);
-      } else {
-        const message =
-          body && typeof body === "object" && "error" in body && body.error
-            ? String(body.error)
-            : `上传失败 (${xhr.status})`;
-        reject(new ApiError(xhr.status, message, "/api/media"));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError(0, "网络错误：上传中断", "/api/media", "network"));
-    xhr.onabort = () => reject(new ApiError(0, "已取消", "/api/media", "cancelled"));
-    opts.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
-    xhr.send(form);
-  });
-};
-
 export class FilesApi implements FilesPorts {
-  async upload(file: File | Blob, meta: UploadMeta, opts: UploadOpts = {}): Promise<UploadReply> {
-    // Digest first: the server verifies the declared sha256, and a retry with
-    // the same digest lands on the same object (dedup), never a duplicate.
-    const bytes = await blobToBytes(file);
-    const digest = await sha256Hex(bytes);
-    const form = new FormData();
-    form.append("file", file, meta.name);
-    form.append("sha256", digest);
-    if (meta.conv) form.append("conv", meta.conv);
-    if (meta.visibility) form.append("visibility", meta.visibility);
-    const send = opts.send ?? xhrUpload;
-    return send(form, { signal: opts.signal, onProgress: opts.onProgress });
+  /**
+   * 二进制上传（multipart）没有 JSON 流式核心提供者：显式阻塞（同视频域上传
+   * 口径，#294）。G04 的分片上传通道（/api/v1/uploads*）已在服务端落地，但把
+   * 字节流搬进 CoreHandle 需要独立的流式 action 契约，不在本控制面切片里伪造。
+   * 注入式 send（测试夹具）仍然优先，便于用例驱动进度/取消语义。
+   */
+  async upload(_file: File | Blob, _meta: UploadMeta, opts: UploadOpts = {}): Promise<UploadReply> {
+    if (opts.send) {
+      const form = new FormData();
+      return opts.send(form, { signal: opts.signal, onProgress: opts.onProgress });
+    }
+    throw blockedError("/api/media", "文件上传（multipart 二进制）尚无流式核心提供者");
   }
 
   /**
-   * Download and verify: when the caller supplies the record's digest, bytes
-   * must hash to it (下载与源 hash 一致) or the promise rejects. Bytes are
-   * taken straight off the Response — no Blob round-trip, which is realm-safe
-   * under jsdom and avoids re-copying in the browser.
+   * 二进制下载（Range 流）同样没有 JSON 流式核心提供者：显式阻塞。签名 URL
+   * 读面（/api/media/{id}/url）归内容域 moment.media_url，可经核心取短期链接；
+   * 整对象字节流下载待流式 action 契约落地，不在本切片伪造成功。
    */
-  async download(mediaId: string, opts: RequestOpts & { expectedDigest?: string } = {}): Promise<Blob> {
-    const tok = token();
-    const res = await fetch(`${baseUrl()}/api/media/${encodeURIComponent(mediaId)}`, {
-      headers: tok ? { authorization: `Bearer ${tok}` } : {},
-      signal: opts?.signal,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      let message = text.trim();
-      try {
-        const parsed = JSON.parse(text) as { error?: string };
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // plain-text error body (server route family)
-      }
-      throw new ApiError(res.status, message || `下载失败 (${res.status})`, `/api/media/${mediaId}`);
-    }
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (opts.expectedDigest) {
-      const digest = await sha256Hex(bytes);
-      if (digest !== opts.expectedDigest.toLowerCase()) {
-        throw new ApiError(0, "下载校验失败：sha256 与源不一致", `/api/media/${mediaId}`, "server");
-      }
-    }
-    return new Blob([bytes], { type: res.headers.get("content-type") ?? "application/octet-stream" });
+  async download(mediaId: string, _opts: RequestOpts & { expectedDigest?: string } = {}): Promise<Blob> {
+    throw blockedError(`/api/media/${mediaId}`, "文件下载（二进制流）尚无流式核心提供者");
   }
 
   /** Raw bytes for direct callers (tests, hash checks). */
-  async downloadBytes(mediaId: string, opts?: RequestOpts): Promise<Uint8Array> {
-    const tok = token();
-    const res = await fetch(`${baseUrl()}/api/media/${encodeURIComponent(mediaId)}`, {
-      headers: tok ? { authorization: `Bearer ${tok}` } : {},
-      signal: opts?.signal,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      let message = text.trim();
-      try {
-        const parsed = JSON.parse(text) as { error?: string };
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // plain-text error body (server route family)
-      }
-      throw new ApiError(res.status, message || `下载失败 (${res.status})`, `/api/media/${mediaId}`);
-    }
-    return new Uint8Array(await res.arrayBuffer());
+  async downloadBytes(mediaId: string, _opts?: RequestOpts): Promise<Uint8Array> {
+    throw blockedError(`/api/media/${mediaId}`, "文件下载（二进制流）尚无流式核心提供者");
   }
 
   /**
-   * G04 /files contract. The current server stores content-addressed blobs
-   * without a listing; when the endpoint is absent we fall back to the local
-   * upload journal so the page reflects what this client really uploaded.
+   * 文件列表：经核心路由 file.list 打到 G04 /api/v1/files，投影回 FileRecord[]。
+   * 服务端不可达/未授权时如实抛错，页面据此呈现明确状态 + 本端真实上传日志，
+   * 不伪造一份空目录当成功。
    */
   async list(_query: FileQuery = {}, _opts?: RequestOpts): Promise<FileRecord[]> {
     try {
@@ -154,8 +77,16 @@ export class FilesApi implements FilesPorts {
     }
   }
 
+  /**
+   * 用量：G04 没有独立的 usage 端点，由文件列表客户端派生（总字节 + 计数）。
+   * 列表经核心路由（file.list），所以这份用量也来自认证会话，不读旧 localStorage。
+   */
   async usage(_opts?: RequestOpts): Promise<StorageUsage> {
-    return request<StorageUsage>("GET", "/api/files/usage");
+    const records = await this.list();
+    return {
+      totalBytes: records.reduce((sum, record) => sum + record.size, 0),
+      fileCount: records.length,
+    };
   }
 
   async rename(mediaId: string, name: string, opts?: RequestOpts): Promise<FileRecord> {
@@ -184,45 +115,40 @@ export class FilesApi implements FilesPorts {
     });
   }
 
-  /** Batch: server answers per item; one item's failure never hides the rest. */
+  /**
+   * 批量删除：G04 没有 batch-remove 端点，逐项经核心删除（file.remove）并汇总
+   * 逐项结果——一项失败不掩盖其余（与原契约的逐项语义一致）。每项独立幂等键。
+   */
   async batchRemove(mediaIds: string[], opts?: RequestOpts): Promise<FileActionResult[]> {
-    return request<FileActionResult[]>("POST", "/api/files/batch-remove", {
-      body: { media_ids: mediaIds },
-      idempotencyKey: opts?.idempotencyKey ?? idemKey("file-batch-remove"),
-      signal: opts?.signal,
-    });
+    const results: FileActionResult[] = [];
+    for (const mediaId of mediaIds) {
+      try {
+        await this.remove(mediaId, opts);
+        results.push({ media_id: mediaId, action: "delete", ok: true });
+      } catch (err) {
+        results.push({
+          media_id: mediaId,
+          action: "delete",
+          ok: false,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return results;
   }
 
+  /**
+   * 备份/清理计划：G04 服务端是导出包计划（BackupPlan：entries/payload_bytes/
+   * publishable…），与前端清理契约（plan_id/steps/evidence）形状未对齐，没有
+   * 可诚实投影的提供者：显式阻塞（#294），不伪造一份看起来像清理计划的数据。
+   */
   async backupPlan(_opts?: RequestOpts): Promise<BackupPlan> {
-    return request<BackupPlan>("GET", "/api/backups/plan");
+    throw blockedError("/api/backups/plan", "备份/清理计划契约尚未与服务端导出包计划对齐");
   }
 
-  async backupExecute(planId: string, opts?: RequestOpts): Promise<BackupPlan> {
-    return request<BackupPlan>("POST", "/api/backups/plan/execute", {
-      body: { plan_id: planId },
-      idempotencyKey: opts?.idempotencyKey ?? idemKey("backup-execute"),
-      signal: opts?.signal,
-    });
+  async backupExecute(_planId: string, _opts?: RequestOpts): Promise<BackupPlan> {
+    throw blockedError("/api/backups/plan/execute", "备份/清理执行契约尚未与服务端导出包计划对齐");
   }
-}
-
-/**
- * Blob → bytes without `Blob.arrayBuffer`, which some realms (jsdom) lack;
- * FileReader is universal and stays on one copy.
- */
-async function blobToBytes(blob: Blob): Promise<Uint8Array> {
-  const withAB = blob as Blob & { arrayBuffer?: () => Promise<ArrayBuffer> };
-  if (typeof withAB.arrayBuffer === "function") {
-    return new Uint8Array(await withAB.arrayBuffer());
-  }
-  return new Uint8Array(
-    await new Promise<ArrayBuffer>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as ArrayBuffer);
-      reader.onerror = () => reject(reader.error ?? new Error("读取文件失败"));
-      reader.readAsArrayBuffer(blob);
-    }),
-  );
 }
 
 /** Local upload journal: real records of what this client uploaded. */

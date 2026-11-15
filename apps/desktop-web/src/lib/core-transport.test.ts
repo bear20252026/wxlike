@@ -30,6 +30,7 @@ import {
   BLOCKED_WALLET_PREFIXES,
   CALL_ROUTES,
   CONTENT_ROUTES,
+  FILES_ROUTES,
   LEDGER_KINDS,
   VIDEO_ROUTES,
   WALLET_ROUTES,
@@ -37,6 +38,7 @@ import {
   callRouteCensus,
   contentRouteCensus,
   coreSessionSnapshot,
+  filesRouteCensus,
   installCoreSession,
   isRoutedOrBlocked,
   resetCoreSession,
@@ -314,7 +316,12 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
       expect(isCoreOnlyPath(prefix), prefix).toBe(true);
       expect(isRoutedOrBlocked(prefix), prefix).toBe(true);
     }
-    expect(isCoreOnlyPath("/api/media/m1")).toBe(false);
+    // 文件域迁移后：媒体二进制下载面归核心拒绝面（无流式提供者→阻塞）；
+    // 媒体签名 URL 仍是内容域认证读面（路由先命中，不被粗前缀误判）。
+    expect(isCoreOnlyPath("/api/media/m1")).toBe(true);
+    expect(isRoutedOrBlocked("/api/media/m1")).toBe(true);
+    expect(isCoreOnlyPath("/api/media/m1/url")).toBe(true);
+    expect(isRoutedOrBlocked("/api/media/m1/url")).toBe(true);
     expect(walletRouteCensus()).toHaveLength(WALLET_ROUTES.length);
     expect(BLOCKED_WALLET_PREFIXES.length).toBeGreaterThan(0);
   });
@@ -367,7 +374,7 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
     expect(fetchCalls).toEqual([]);
   });
 
-  it("未迁移的域仍然走遗留出口（files/mini/discover 尚未迁）", async () => {
+  it("未迁移的域仍然走遗留出口（mini/discover 尚未迁）", async () => {
     const h = makeCore(() => ok({}));
     installCoreSession(h.core);
     globalThis.fetch = (async () => ({
@@ -376,7 +383,7 @@ describe("钱包域 — 遗留出口已经被拆掉", () => {
       text: async () => JSON.stringify({ ok: true }),
     })) as unknown as typeof fetch;
     try {
-      const body = await request<{ ok: boolean }>("GET", "/api/files");
+      const body = await request<{ ok: boolean }>("GET", "/api/miniapps");
       expect(body).toEqual({ ok: true });
       expect(h.requests).toEqual([]);
     } finally {
@@ -617,9 +624,118 @@ describe("内容域 — 控制面经核心、G05 未对齐面阻塞（D6）", ()
     expect(fetchCalls).toEqual([]);
   });
 
-  it("files 域上传/下载二进制不在拒绝面（仍走遗留出口，待 files 迁移）", () => {
-    expect(isCoreOnlyPath("/api/media")).toBe(false);
-    expect(isCoreOnlyPath("/api/media/m9")).toBe(false);
+  it("files 域二进制上传/下载已归核心拒绝面（无流式提供者→阻塞，不回落旧会话）", () => {
+    expect(isCoreOnlyPath("/api/media")).toBe(true);
+    expect(isCoreOnlyPath("/api/media/m9")).toBe(true);
+    expect(isRoutedOrBlocked("/api/media")).toBe(true);
+    expect(isRoutedOrBlocked("/api/media/m9")).toBe(true);
+  });
+});
+
+describe("文件域 — 控制面经核心打到 G04、二进制与备份阻塞（D6）", () => {
+  it("list：dispatch file.list，并把 FilePage 投影成 FileRecord[]", async () => {
+    const h = makeCore(() =>
+      ok({
+        items: [
+          {
+            file_id: "file_1",
+            object_id: "obj_1",
+            owner: "u1",
+            name: "纪要.txt",
+            folder: "",
+            category: "file",
+            size: 11,
+            digest: "ab".repeat(32),
+            mime: "text/plain",
+            created_at: 1_700_000_000_000,
+            updated_at: 1_700_000_000_000,
+          },
+        ],
+        next_cursor: null,
+        has_more: false,
+        snapshot_version: 1,
+      }),
+    );
+    installCoreSession(h.core);
+    const body = await request<unknown[]>("GET", "/api/files");
+    expect(h.requests[0]?.action_id).toBe("file.list");
+    expect(body).toEqual([
+      {
+        media_id: "file_1",
+        name: "纪要.txt",
+        size: 11,
+        content_type: "text/plain",
+        digest: "ab".repeat(32),
+        uploaded_at: 1_700_000_000_000,
+        visibility: "private",
+      },
+    ]);
+  });
+
+  it("rename：dispatch file.rename（PATCH），投影回 FileRecord", async () => {
+    const h = makeCore(() =>
+      ok({
+        file_id: "file_1",
+        object_id: "obj_1",
+        owner: "u1",
+        name: "修订.txt",
+        folder: "",
+        category: "file",
+        size: 11,
+        digest: "ab".repeat(32),
+        mime: "text/plain",
+        created_at: 1_700_000_000_000,
+        updated_at: 1_700_000_000_001,
+      }),
+    );
+    installCoreSession(h.core);
+    const body = await request<{ media_id: string; name: string }>("PATCH", "/api/files/file_1", {
+      body: { name: "修订.txt" },
+    });
+    expect(h.requests[0]?.action_id).toBe("file.rename");
+    expect(h.requests[0]?.params).toEqual({ file_id: "file_1", name: "修订.txt" });
+    expect(body.name).toBe("修订.txt");
+    expect(body.media_id).toBe("file_1");
+  });
+
+  it("share：dispatch file.share，投影成 {url, expires_at}", async () => {
+    const h = makeCore(() =>
+      ok({ share_id: "s1", token: "t", url: "/api/v1/objects/obj_1?share=t", expires_at: 1_700_000_060_000 }),
+    );
+    installCoreSession(h.core);
+    const body = await request<{ url: string; expires_at: number }>("POST", "/api/files/file_1/share");
+    expect(h.requests[0]?.action_id).toBe("file.share");
+    expect(body.url).toBe("/api/v1/objects/obj_1?share=t");
+    expect(body.expires_at).toBe(1_700_000_060_000);
+  });
+
+  it("remove：dispatch file.remove（DELETE），204 读成 {}", async () => {
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    await request("DELETE", "/api/files/file_1");
+    expect(h.requests[0]?.action_id).toBe("file.remove");
+    expect(h.requests[0]?.params).toEqual({ file_id: "file_1" });
+  });
+
+  it("控制面 CORE_ONLY 且有归属；二进制/备份显式阻塞", async () => {
+    for (const p of ["/api/files", "/api/files/file_1", "/api/files/file_1/share"]) {
+      expect(isCoreOnlyPath(p), p).toBe(true);
+      expect(isRoutedOrBlocked(p), p).toBe(true);
+    }
+    expect(filesRouteCensus()).toHaveLength(FILES_ROUTES.length);
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    for (const [method, p] of [
+      ["POST", "/api/media"],
+      ["GET", "/api/media/m9"],
+      ["GET", "/api/backups/plan"],
+    ] as const) {
+      const error = (await request(method, p).catch((err) => err)) as ApiError;
+      expect(error.code, p).toBe("blocked");
+      expect(error.status, p).toBe(501);
+    }
+    expect(h.requests).toEqual([]);
+    expect(fetchCalls).toEqual([]);
   });
 });
 
@@ -702,7 +818,12 @@ describe("台账漂移守卫 — 与 Rust 服务端同源", () => {
     expect(content?.providerSha).toBeTruthy();
     expect([...(content?.actions ?? [])].sort()).toEqual(CONTENT_ROUTES.map((r) => r.action).sort());
     expect([...new Set(CONTENT_ROUTES.map((r) => r.action))]).toHaveLength(CONTENT_ROUTES.length);
-    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(3);
+    const files = DOMAIN_REGISTRY.find((domain) => domain.id === "files");
+    expect(files?.state).toBe("core");
+    expect(files?.providerSha).toBeTruthy();
+    expect([...(files?.actions ?? [])].sort()).toEqual(FILES_ROUTES.map((r) => r.action).sort());
+    expect([...new Set(FILES_ROUTES.map((r) => r.action))]).toHaveLength(FILES_ROUTES.length);
+    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(2);
   });
 });
 
@@ -740,6 +861,9 @@ interface CheckJson {
   contentRoutes: { method: string; pattern: string; action: string }[];
   contentBridgeArms: string[];
   contentContractActions: string[];
+  filesRoutes: { method: string; pattern: string; action: string }[];
+  filesBridgeArms: string[];
+  filesContractActions: string[];
   coreOnlyPrefixes: string[];
   violations: Violation[];
   ledger: Record<string, { files: string[]; counts: Record<string, number> }>;
@@ -864,20 +988,20 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
 
   it("今天判定为绿，并把现存违例的条数如实打印出来（条数来自扫描，不是写死的常量）", () => {
     const res = runCheck();
-    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls）零遗留 HTTP");
+    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls/files）零遗留 HTTP");
     expect(res.status).toBe(0);
     const count = /现存违例：(\d+) 条，分布在 (\d+) 个未迁移域/.exec(res.stdout);
     expect(count, `输出里必须自带现存违例计数，实际：${res.stdout}`).toBeTruthy();
     expect(Number(count?.[1]), "违例条数为 0 就说明这条检查在空转").toBeGreaterThan(0);
     expect(Number(count?.[1])).toBe(disk.total);
-    expect(Number(count?.[2])).toBe(3);
+    expect(Number(count?.[2])).toBe(2);
   });
 
-  it("三个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
+  it("两个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
     expect(disk.problems).toEqual([]);
     expect(disk.total).toBeGreaterThan(0);
     const blocked = disk.domains.filter((d) => d.state === "blocked").map((d) => d.featureDir).sort();
-    expect(blocked).toEqual(["discover", "files", "mini"]);
+    expect(blocked).toEqual(["discover", "mini"]);
     for (const dir of blocked) {
       const entry = disk.ledger[dir];
       expect(entry, `债台账里应当有 features/${dir} 这一格`).toBeTruthy();
@@ -906,6 +1030,10 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(contentRouted).toEqual([...new Set(disk.contentContractActions)].sort());
     expect(contentRouted).toEqual([...new Set(disk.contentBridgeArms)].sort());
     expect(contentRouted).toHaveLength(16);
+    const filesRouted = [...new Set(disk.filesRoutes.map((r) => r.action))].sort();
+    expect(filesRouted).toEqual([...new Set(disk.filesContractActions)].sort());
+    expect(filesRouted).toEqual([...new Set(disk.filesBridgeArms)].sort());
+    expect(filesRouted).toHaveLength(4);
   });
 
   it("规则清单与注入用例一一对应（往 RULES 里加一条打死规则就会在这里红）", () => {
