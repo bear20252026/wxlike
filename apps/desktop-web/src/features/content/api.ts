@@ -13,7 +13,7 @@
  * click, network flap) cannot create a second like/comment/post.
  */
 
-import { idemKey, request } from "../../lib/http";
+import { ApiError, blockedError, idemKey, request } from "../../lib/http";
 import type {
   ArticleHead,
   ContentPorts,
@@ -40,11 +40,15 @@ function q(params: Record<string, string | number | undefined>): string {
 
 export class ContentApi implements ContentPorts {
   async publishMoment(input: PublishInput, opts?: RequestOpts): Promise<MomentHead> {
-    return request<MomentHead>("POST", "/api/moments", {
+    const created = await request<MomentHead & { moment_id: string }>("POST", "/api/moments", {
       body: { text: input.text, media_ids: input.media_ids, visibility: input.visibility },
       idempotencyKey: opts?.idempotencyKey ?? idemKey("moment-publish"),
       signal: opts?.signal,
     });
+    // 服务端只回 {moment_id} 时回读 detail 补全 head（不编造作者/计数）；
+    // 若已带完整 head（夹具/旧服务端）则直接用。
+    if (typeof created.author === "string" && typeof created.like_count === "number") return created;
+    return this.moment(created.moment_id, opts);
   }
 
   async feed(
@@ -77,19 +81,26 @@ export class ContentApi implements ContentPorts {
   }
 
   async like(id: string, opts?: RequestOpts): Promise<{ like_count: number }> {
-    return request<{ like_count: number }>(
+    const reply = await request<{ like_count?: number }>(
       "POST",
       `/api/moments/${encodeURIComponent(id)}/likes`,
       { idempotencyKey: opts?.idempotencyKey ?? idemKey("moment-like"), signal: opts?.signal },
     );
+    // 服务端回 {liked,added} 不带 like_count 时回读 detail 取真实计数。
+    if (typeof reply.like_count === "number") return { like_count: reply.like_count };
+    const detail = await this.moment(id, opts);
+    return { like_count: detail.like_count };
   }
 
   async unlike(id: string, opts?: RequestOpts): Promise<{ like_count: number }> {
-    return request<{ like_count: number }>(
+    const reply = await request<{ like_count?: number }>(
       "DELETE",
       `/api/moments/${encodeURIComponent(id)}/likes`,
       { idempotencyKey: opts?.idempotencyKey ?? idemKey("moment-unlike"), signal: opts?.signal },
     );
+    if (typeof reply.like_count === "number") return { like_count: reply.like_count };
+    const detail = await this.moment(id, opts);
+    return { like_count: detail.like_count };
   }
 
   async comment(
@@ -98,7 +109,7 @@ export class ContentApi implements ContentPorts {
     replyTo?: string,
     opts?: RequestOpts,
   ): Promise<MomentComment> {
-    return request<MomentComment>(
+    const created = await request<MomentComment & { comment_id: string }>(
       "POST",
       `/api/moments/${encodeURIComponent(id)}/comments`,
       {
@@ -107,6 +118,12 @@ export class ContentApi implements ContentPorts {
         signal: opts?.signal,
       },
     );
+    // 已带完整评论（夹具/旧服务端）直接用；只回 {comment_id} 时回读 detail。
+    if (typeof created.text === "string" && typeof created.author === "string") return created;
+    const detail = await this.moment(id, opts);
+    const comment = detail.comments.find((c) => c.comment_id === created.comment_id);
+    if (!comment) throw new ApiError(502, "评论已提交但回读不到（不编造）", `/api/moments/${id}`, "server");
+    return comment;
   }
 
   async removeComment(id: string, commentId: string, opts?: RequestOpts): Promise<void> {
@@ -126,7 +143,8 @@ export class ContentApi implements ContentPorts {
   }
 
   async listFavorites(query: FavoriteQuery = {}, opts?: RequestOpts): Promise<FavoriteRecord[]> {
-    const all = await request<FavoriteRecord[]>("GET", "/api/favorites", { signal: opts?.signal });
+    const body = await request<FavoriteRecord[] | { favorites?: FavoriteRecord[] }>("GET", "/api/favorites", { signal: opts?.signal });
+    const all = Array.isArray(body) ? body : (body.favorites ?? []);
     return applyFavoriteQuery(all, query);
   }
 
@@ -150,61 +168,42 @@ export class ContentApi implements ContentPorts {
    * touching callers — they only see `ContentPorts`.
    */
   async updateFavoriteNote(id: string, text: string, opts?: RequestOpts): Promise<FavoriteRecord> {
-    const current = await this.favorite(id, opts);
-    await request<unknown>("DELETE", `/api/favorites/${encodeURIComponent(id)}`, {
-      idempotencyKey: idemKey("favorite-remove"),
-      signal: opts?.signal,
-    });
-    return request<FavoriteRecord>("POST", "/api/favorites", {
-      body: {
-        source_conv: current.source_conv,
-        source_msg_id: current.source_msg_id,
-        kind: current.kind,
-        text,
-        media_id: current.media_id,
-        sender: current.sender,
-        sent_at_ms: current.sent_at_ms,
-      },
+    // 服务端 inline PUT（snapshot_label），不再 remove+add 往返。
+    return request<FavoriteRecord>("PUT", `/api/favorites/${encodeURIComponent(id)}`, {
+      body: { snapshot_label: text },
       idempotencyKey: opts?.idempotencyKey ?? idemKey("favorite-edit"),
       signal: opts?.signal,
     });
   }
 
   // --- G05 ContentPort contract surface (upstream pending) -------------------
+  // 服务端尚未对齐这些契约面（articles 列表/publisher 订阅/article watching）。
+  // D6 退役后旧 HTTP 出口已拆，这里显式阻塞（501），页面渲染"上游未开通"，
+  // 不回落旧会话、不伪造成功。等服务端对齐后接桥 action。
 
   async articles(_opts?: RequestOpts): Promise<ArticleHead[]> {
-    // Raises until G05 merges; the page renders the explicit state.
-    return request<ArticleHead[]>("GET", "/api/articles");
+    throw blockedError("/api/articles", "文章列表（G05 ContentPort）尚无核心提供者");
   }
 
-  async article(id: string, opts?: RequestOpts): Promise<ArticleHead> {
-    return request<ArticleHead>("GET", `/api/articles/${encodeURIComponent(id)}`, {
-      signal: opts?.signal,
-    });
+  async article(id: string, _opts?: RequestOpts): Promise<ArticleHead> {
+    throw blockedError(`/api/articles/${id}`, "文章详情（G05 ContentPort）尚无核心提供者");
   }
 
   async publishers(_opts?: RequestOpts): Promise<PublisherRecord[]> {
-    return request<PublisherRecord[]>("GET", "/api/publishers");
+    throw blockedError("/api/publishers", "订阅号列表（G05 ContentPort）尚无核心提供者");
   }
 
-  async followPublisher(publisherId: string, follow: boolean, opts?: RequestOpts): Promise<PublisherRecord> {
-    return request<PublisherRecord>(
-      follow ? "POST" : "DELETE",
-      `/api/publishers/${encodeURIComponent(publisherId)}/subscription`,
-      { idempotencyKey: opts?.idempotencyKey ?? idemKey("publisher-subscribe"), signal: opts?.signal },
-    );
+  async followPublisher(publisherId: string, _follow: boolean, _opts?: RequestOpts): Promise<PublisherRecord> {
+    throw blockedError(`/api/publishers/${publisherId}/subscription`, "订阅（G05 ContentPort）尚无核心提供者");
   }
 
-  async markWatching(articleId: string, watching: boolean, opts?: RequestOpts): Promise<void> {
-    await request<unknown>("POST", `/api/articles/${encodeURIComponent(articleId)}/watching`, {
-      body: { watching },
-      idempotencyKey: opts?.idempotencyKey ?? idemKey("article-watching"),
-      signal: opts?.signal,
-    });
+  async markWatching(articleId: string, _watching: boolean, _opts?: RequestOpts): Promise<void> {
+    throw blockedError(`/api/articles/${articleId}/watching`, "在看（G05 ContentPort）尚无核心提供者");
   }
 
   async stickerPacks(_opts?: RequestOpts): Promise<StickerPack[]> {
-    return request<StickerPack[]>("GET", "/api/stickers/packs");
+    const body = await request<StickerPack[] | { packs?: StickerPack[] }>("GET", "/api/stickers/packs");
+    return Array.isArray(body) ? body : (body.packs ?? []);
   }
 }
 

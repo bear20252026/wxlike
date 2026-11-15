@@ -6,9 +6,13 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ReactNode } from "react";
 import { setPlatform, type PlatformPort } from "../../lib/platform";
 import { setTransport } from "../../lib/http";
 import { err, fixtureTransport, loggingTransport, type CallLog } from "../../test/fixture";
+import { AppProvider } from "../../shell/store";
+import { createTestPlatform } from "../../test/helpers";
+import type { CoreHandle } from "../../shell/core-contract";
 import { ContentApi } from "./api";
 import { ArticlesPage } from "./ArticlesPage";
 import { FavoritesPage } from "./FavoritesPage";
@@ -42,13 +46,37 @@ function moment(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/** 最小 authenticated 核心 stub：只供组合根读身份；业务请求仍走显式 fixture transport。 */
+function sessionCore(userId: string): CoreHandle {
+  return {
+    dispatch: (async (req: { action_id: string }) => {
+      if (req.action_id === "identity.session.projection") {
+        return { ok: true, data: { phase: "authenticated", account: { user_id: userId, name: userId, device_id: "d", session_id: "s" } } };
+      }
+      return { ok: true, data: { items: [] } };
+    }) as CoreHandle["dispatch"],
+    subscribe: () => () => undefined,
+    capabilities: async () => ({ contract_version: "test", transport: "fixture", actions: [], qr_login: false, secrets_os_backed: false, sync_range: false }),
+  };
+}
+
+function withSession(userId: string, ui: ReactNode): ReactNode {
+  return (
+    <AppProvider core={sessionCore(userId)} platform={createTestPlatform()} fixture={null} source="fixture">
+      {ui}
+    </AppProvider>
+  );
+}
+
 async function renderMoments(
   routes: Record<string, (method: string, path: string, body: unknown) => unknown>,
   log?: CallLog,
+  userId?: string,
 ): Promise<ContentPorts> {
   const api = new ContentApi();
   setTransport(log ? loggingTransport(routes as never, log) : fixtureTransport(routes as never));
-  render(<MomentsPage ports={api} />);
+  const page = <MomentsPage ports={api} />;
+  render(userId ? withSession(userId, page) : page);
   return api;
 }
 
@@ -244,7 +272,6 @@ describe("MomentsPage — interactions", () => {
   });
 
   it("自己的动态：菜单有删除，删除后从 feed 移除", async () => {
-    localStorage.setItem("wxlike-web-user", "user-a");
     let deleted = false;
     await renderMoments({
       "GET /api/moments/feed": () => ({ items: [moment({ author: "user-a" })], next_cursor: null }),
@@ -252,7 +279,7 @@ describe("MomentsPage — interactions", () => {
         deleted = true;
         return null;
       },
-    });
+    }, undefined, "user-a");
     await waitFor(() => expect(screen.getByTestId("moment-m1")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("dot-menu-trigger"));
     fireEvent.click(screen.getByRole("menuitem", { name: "删除" }));
@@ -261,14 +288,13 @@ describe("MomentsPage — interactions", () => {
   });
 
   it("三点菜单：评论菜单可展开并包含举报评论项", async () => {
-    localStorage.setItem("wxlike-web-user", "user-c");
     await renderMoments({
       "GET /api/moments/feed": () => ({ items: [moment({ author: "user-a" })], next_cursor: null }),
       "GET /api/moments/:id": () => ({
         ...moment(),
         comments: [{ comment_id: "c1", author: "user-a", text: "评论内容", reply_to_comment_id: null, created_at: now }],
       }),
-    });
+    }, undefined, "user-c");
     await waitFor(() => expect(screen.getByTestId("moment-m1")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("comments-toggle-m1"));
     await waitFor(() => expect(screen.getByText(/评论内容/)).toBeInTheDocument());
@@ -278,7 +304,6 @@ describe("MomentsPage — interactions", () => {
   });
 
   it("评论：发送成功后追加并清空输入", async () => {
-    localStorage.setItem("wxlike-web-user", "user-me");
     await renderMoments({
       "GET /api/moments/feed": () => ({ items: [moment({ author: "user-a" })], next_cursor: null }),
       "GET /api/moments/:id": () => ({ ...moment(), comments: [] }),
@@ -289,7 +314,7 @@ describe("MomentsPage — interactions", () => {
         reply_to_comment_id: null,
         created_at: now,
       }),
-    });
+    }, undefined, "user-me");
     await waitFor(() => expect(screen.getByTestId("moment-m1")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("comments-toggle-m1"));
     fireEvent.change(await screen.findByTestId("comment-input-m1"), { target: { value: "好文" } });
@@ -397,40 +422,14 @@ describe("ArticlesPage", () => {
     );
   });
 
-  it("成功：渲染文章与关注状态切换", async () => {
-    setTransport(
-      (await import("../../test/fixture")).fixtureTransport({
-        "GET /api/articles": () => [
-          {
-            article_id: "a1",
-            publisher_id: "p1",
-            publisher_name: "团队周刊",
-            title: "发布 v2 计划",
-            doc_html: "<p>正文内容</p>",
-            doc_version: 1,
-            published_at: now,
-          },
-        ],
-        "GET /api/publishers": () => [
-          { publisher_id: "p1", name: "团队周刊", verified: true, subscribed: false, watching: false },
-        ],
-        "POST /api/publishers/:id/subscription": () => ({
-          publisher_id: "p1",
-          name: "团队周刊",
-          verified: true,
-          subscribed: true,
-          watching: false,
-        }),
-        "POST /api/articles/:id/watching": () => null,
-      }),
-    );
+  it("D6 退役后 G05 未对齐面显式阻塞：渲染未开通而不是假数据", async () => {
+    // 旧 HTTP 出口已拆，articles/publishers 无核心提供者 → blockedError(501)，
+    // 页面渲染"尚未开通"。这里不装任何 fixture，验证阻塞不依赖网络。
     render(<ArticlesPage ports={new ContentApi()} />);
-    await waitFor(() => expect(screen.getByTestId("article-a1")).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId("publisher-p1"));
-    await waitFor(() => expect(screen.getByTestId("publisher-p1")).toHaveTextContent("已关注"));
-    fireEvent.click(screen.getByText("阅读"));
-    expect(screen.getByTestId("article-reader")).toHaveTextContent("正文内容");
-    fireEvent.click(screen.getByRole("button", { name: "在看" }));
+    await waitFor(() =>
+      expect(screen.getByText(/文章与订阅号服务（G05 ContentPort）尚未开通/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("article-a1")).not.toBeInTheDocument();
   });
 });
 

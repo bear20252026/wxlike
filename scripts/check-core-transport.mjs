@@ -95,7 +95,6 @@ export const LEGACY_EGRESS = "lib/http.ts";
  * 数字变长只可能是"看得更清"，闸门本身仍然只许降不许升。）
  */
 export const DEBT_BASELINE = {
-  content: { files: ["features/content/MomentsPage.tsx", "features/content/api.ts"], counts: { legacy_transport: 21, legacy_user: 1 } },
   files: { files: ["features/files/api.ts"], counts: { legacy_base: 3, direct_fetch: 2, legacy_token: 2, legacy_bearer_call: 3, legacy_transport: 8 } },
   mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
   discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1, legacy_bearer_call: 1 } },
@@ -262,6 +261,17 @@ const MIGRATED_DOMAINS = [
     // 播放面按服务端设计匿名（issue #7）：不算"必须经核心"的路径。
     anonymous: true,
   },
+  {
+    id: "moments",
+    routesConst: "CONTENT_ROUTES",
+    aliasConst: "CONTENT_ACTIONS",
+    // 内容域一个 router 挂四类 action（moment/favorite/report/sticker）。
+    actionPrefixes: ["moment.", "favorite.", "report.", "sticker."],
+    routerName: "content_router",
+    routeLabel: "core-transport 的 CONTENT_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.moment*/favorite*/report*/sticker*",
+    bridgeLabel: "core_bridge.rs 的 content_router",
+  },
 ];
 
 /** 与 `lib/http.ts` 的 ANONYMOUS_PLAYBACK 同口径：只豁免播放面，控制面不在其中。 */
@@ -290,7 +300,7 @@ function parseRoutes(text, aliasMap, contract, problems, domain) {
     return [];
   }
   const routes = [];
-  const armRe = new RegExp(`method:\\s*"(GET|POST)",\\s*pattern:\\s*"([^"]+)",\\s*action:\\s*${aliasConst}\\.(\\w+)`, "g");
+  const armRe = new RegExp(`method:\\s*"(GET|POST|DELETE|PUT)",\\s*pattern:\\s*"([^"]+)",\\s*action:\\s*${aliasConst}\\.(\\w+)`, "g");
   for (const match of block[0].matchAll(armRe)) {
     const aliasKey = aliasMap[match[3]];
     routes.push({
@@ -382,8 +392,14 @@ function apiLiteralsFor(sources, featureDir) {
   for (const [rel, text] of sources) {
     if (!rel.startsWith(`${WEB_REL}/features/${featureDir}/`)) continue;
     if (/\.test\.(ts|tsx)$/.test(rel)) continue;
-    for (const m of text.matchAll(/["'`](\/api\/[^"'`\r\n]*)/g)) {
-      out.add(m[1].split("?")[0].replace(/\$\{[^}]*\}/g, "x"));
+    // 逐行扫描，跳过注释行（// 与块注释续行 *／首行 /*）：注释里举例的路径
+    // （如 `/api/moments*`）不是真实出口，不该算进覆盖判定。
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+      for (const m of line.matchAll(/["'`](\/api\/[^"'`\r\n]*)/g)) {
+        out.add(m[1].split("?")[0].replace(/\$\{[^}]*\}/g, "x"));
+      }
     }
   }
   return [...out].sort();
@@ -422,13 +438,21 @@ export function runChecks(overrides = {}) {
   const wallet = perDomain.find((d) => d.cfg.id === "wallet");
   const calls = perDomain.find((d) => d.cfg.id === "calls");
   const video = perDomain.find((d) => d.cfg.id === "video");
+  const content = perDomain.find((d) => d.cfg.id === "moments");
   const routes = wallet.routes;
   const contractActions = wallet.contractActions;
   const bridgeArms = wallet.bridgeArms;
   const allRoutes = perDomain.flatMap((d) => d.routes);
   const { found, byDir, byDomain } = scan(sources);
 
-  const coveredBy = (p, prefixes) => prefixes.some((prefix) => p === prefix || p.startsWith(`${prefix}/`));
+  // 与 lib/http.ts 的 prefixMatches 同口径：`:x` 段通配，模板末尾可再带子段。
+  const coveredBy = (p, prefixes) =>
+    prefixes.some((prefix) => {
+      const parts = p.split("/").filter(Boolean);
+      const template = prefix.split("/").filter(Boolean);
+      if (parts.length < template.length) return false;
+      return template.every((token, i) => token.startsWith(":") || token === parts[i]);
+    });
   const cfgFor = (id) => MIGRATED_DOMAINS.find((c) => c.id === id);
   const domainPrefixesCovered = (domain) => {
     const anon = cfgFor(domain.id)?.anonymous === true;
@@ -583,6 +607,7 @@ export function runChecks(overrides = {}) {
   notes.push(`钱包出口归属：路由 ${routes.length} 条 / 显式阻塞前缀 ${blockedWalletPrefixes.length} 条 / 遗留拒绝面 ${coreOnlyPrefixes.length} 条`);
   notes.push(`通话出口归属：路由 ${calls.routes.length} 条（call.* 全部经认证桥）`);
   notes.push(`视频出口归属：控制面路由 ${video.routes.length} 条（video.*/live.*）/ 播放面匿名 / 上传显式阻塞`);
+  notes.push(`内容出口归属：控制面路由 ${content.routes.length} 条（moment/favorite/report/sticker）/ G05 未对齐面显式阻塞`);
 
   return {
     problems,
@@ -597,6 +622,9 @@ export function runChecks(overrides = {}) {
     videoRoutes: video.routes,
     videoBridgeArms: video.bridgeArms,
     videoContractActions: video.contractActions,
+    contentRoutes: content.routes,
+    contentBridgeArms: content.bridgeArms,
+    contentContractActions: content.contractActions,
     coreOnlyPrefixes,
     blockedWalletPrefixes,
     violations: found,
@@ -646,6 +674,9 @@ function main() {
     videoRoutes: result.videoRoutes,
     videoBridgeArms: result.videoBridgeArms,
     videoContractActions: result.videoContractActions,
+    contentRoutes: result.contentRoutes,
+    contentBridgeArms: result.contentBridgeArms,
+    contentContractActions: result.contentContractActions,
     coreOnlyPrefixes: result.coreOnlyPrefixes,
     violations: result.violations,
     ledger: result.ledger,
