@@ -49,6 +49,9 @@ export const CONTENT_PROVIDER_SHA = "3e9d13c";
 /** D6 文件域竖切片：Rust 提供者（file.* 桥 action 打到 G04）合入的提交短 SHA。 */
 export const FILES_PROVIDER_SHA = "e224705";
 
+/** G07 发现域竖切片：Rust 提供者（discover.* 桥 action 打到服务目录）合入的提交短 SHA。 */
+export const DISCOVER_PROVIDER_SHA = "65d14fd";
+
 /** id 字符串只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份，这里只做聚合。 */
 const WALLET_ACTIONS = [
   ACTIONS.walletBalanceGet,
@@ -112,6 +115,15 @@ const FILES_ACTIONS = [
   ACTIONS.fileRename,
   ACTIONS.fileShare,
   ACTIONS.fileRemove,
+] as const;
+
+const DISCOVER_ACTIONS = [
+  ACTIONS.discoverServices,
+  ACTIONS.discoverQuote,
+  ACTIONS.discoverOrderCreate,
+  ACTIONS.discoverOrderGet,
+  ACTIONS.discoverOrders,
+  ACTIONS.discoverOrderRefund,
 ] as const;
 
 /**
@@ -178,10 +190,10 @@ export const DOMAIN_REGISTRY: readonly DomainStatus[] = [
     id: "discover",
     featureDir: "discover",
     label: "发现",
-    state: "blocked",
-    providerSha: null,
-    reason: "#293 只交付钱包竖切片，发现域没有 Rust 提供者；识图/翻译不能由界面自己带 bearer",
-    actions: [],
+    state: "core",
+    providerSha: DISCOVER_PROVIDER_SHA,
+    reason: `服务目录控制面（目录/报价/下单/查单/列举/退款）经 G07 认证桥 action（${DISCOVER_ACTIONS.length} 条）；识图/翻译（multipart + 外部 AI）无核心提供者，显式阻塞`,
+    actions: DISCOVER_ACTIONS,
   },
 ];
 

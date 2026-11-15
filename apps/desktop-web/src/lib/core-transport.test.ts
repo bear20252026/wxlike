@@ -30,6 +30,7 @@ import {
   BLOCKED_WALLET_PREFIXES,
   CALL_ROUTES,
   CONTENT_ROUTES,
+  DISCOVER_ROUTES,
   FILES_ROUTES,
   LEDGER_KINDS,
   VIDEO_ROUTES,
@@ -38,6 +39,7 @@ import {
   callRouteCensus,
   contentRouteCensus,
   coreSessionSnapshot,
+  discoverRouteCensus,
   filesRouteCensus,
   installCoreSession,
   isRoutedOrBlocked,
@@ -739,6 +741,71 @@ describe("文件域 — 控制面经核心打到 G04、二进制与备份阻塞�
   });
 });
 
+describe("发现域 — 控制面经核心打到 G07、识图翻译阻塞（D6）", () => {
+  it("services：dispatch discover.services，并把 {items} 投影成裸数组", async () => {
+    const h = makeCore(() => ok({ items: [{ service_id: "svc-1", name: "云打印", category: "life", target: { kind: "quote" } }] }));
+    installCoreSession(h.core);
+    const body = await request<unknown[]>("GET", "/api/services");
+    expect(h.requests[0]?.action_id).toBe("discover.services");
+    expect(body).toEqual([{ service_id: "svc-1", name: "云打印", category: "life", target: { kind: "quote" } }]);
+  });
+
+  it("quote：dispatch discover.quote，service_id 走 query", async () => {
+    const h = makeCore(() => ok({ quote_id: "q1", service_id: "svc-1", price_minor: 250, currency: "CNY", expires_at: 1_700_000_060_000 }));
+    installCoreSession(h.core);
+    const body = await request<{ price_minor: number }>("GET", "/api/quotes?service_id=svc-1");
+    expect(h.requests[0]?.action_id).toBe("discover.quote");
+    expect(h.requests[0]?.params).toEqual({ service_id: "svc-1" });
+    expect(body.price_minor).toBe(250);
+  });
+
+  it("createOrder：dispatch discover.order_create，透传 service_id/quote_id", async () => {
+    const h = makeCore(() => ok({ order_id: "o1", service_id: "svc-1", quote_id: "q1", state: "fulfilled", created_at: 1, updated_at: 1 }));
+    installCoreSession(h.core);
+    const body = await request<{ order_id: string }>("POST", "/api/orders", { body: { service_id: "svc-1", quote_id: "q1" } });
+    expect(h.requests[0]?.action_id).toBe("discover.order_create");
+    expect(h.requests[0]?.params).toEqual({ service_id: "svc-1", quote_id: "q1" });
+    expect(body.order_id).toBe("o1");
+  });
+
+  it("orders：dispatch discover.orders，并把 {items} 投影成裸数组", async () => {
+    const h = makeCore(() => ok({ items: [{ order_id: "o1", service_id: "svc-1", quote_id: "q1", state: "fulfilled", created_at: 1, updated_at: 1 }] }));
+    installCoreSession(h.core);
+    const body = await request<unknown[]>("GET", "/api/orders");
+    expect(h.requests[0]?.action_id).toBe("discover.orders");
+    expect(body).toHaveLength(1);
+  });
+
+  it("refund：dispatch discover.order_refund", async () => {
+    const h = makeCore(() => ok({ order_id: "o1", service_id: "svc-1", quote_id: "q1", state: "refunded", created_at: 1, updated_at: 2 }));
+    installCoreSession(h.core);
+    const body = await request<{ state: string }>("POST", "/api/orders/o1/refund");
+    expect(h.requests[0]?.action_id).toBe("discover.order_refund");
+    expect(h.requests[0]?.params).toEqual({ order_id: "o1" });
+    expect(body.state).toBe("refunded");
+  });
+
+  it("控制面 CORE_ONLY 且有归属；识图翻译显式阻塞", async () => {
+    for (const p of ["/api/services", "/api/quotes", "/api/orders", "/api/orders/o1", "/api/orders/o1/refund"]) {
+      expect(isCoreOnlyPath(p), p).toBe(true);
+      expect(isRoutedOrBlocked(p), p).toBe(true);
+    }
+    expect(discoverRouteCensus()).toHaveLength(DISCOVER_ROUTES.length);
+    const h = makeCore(() => ok({}));
+    installCoreSession(h.core);
+    for (const [method, p] of [
+      ["POST", "/api/vision/recognition"],
+      ["POST", "/api/vision/translation"],
+      ["GET", "/api/vision/jobs/j1"],
+    ] as const) {
+      const error = (await request(method, p).catch((err) => err)) as ApiError;
+      expect(error.code, p).toBe("blocked");
+      expect(error.status, p).toBe(501);
+    }
+    expect(h.requests).toEqual([]);
+    expect(fetchCalls).toEqual([]);
+  });
+});
 describe("会话切换 — 真清，不是注释", () => {
   it("切换前挂着的钱包请求：结果落地时被丢弃，并计入 dropped 台账", async () => {
     const h = makeCore(() => ok({ balance_minor: 999999, currency: "CNY" }), { delayFirst: true });
@@ -823,7 +890,12 @@ describe("台账漂移守卫 — 与 Rust 服务端同源", () => {
     expect(files?.providerSha).toBeTruthy();
     expect([...(files?.actions ?? [])].sort()).toEqual(FILES_ROUTES.map((r) => r.action).sort());
     expect([...new Set(FILES_ROUTES.map((r) => r.action))]).toHaveLength(FILES_ROUTES.length);
-    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(2);
+    const discover = DOMAIN_REGISTRY.find((domain) => domain.id === "discover");
+    expect(discover?.state).toBe("core");
+    expect(discover?.providerSha).toBeTruthy();
+    expect([...(discover?.actions ?? [])].sort()).toEqual(DISCOVER_ROUTES.map((r) => r.action).sort());
+    expect([...new Set(DISCOVER_ROUTES.map((r) => r.action))]).toHaveLength(DISCOVER_ROUTES.length);
+    expect(DOMAIN_REGISTRY.filter((d) => d.state === "blocked")).toHaveLength(1);
   });
 });
 
@@ -864,6 +936,9 @@ interface CheckJson {
   filesRoutes: { method: string; pattern: string; action: string }[];
   filesBridgeArms: string[];
   filesContractActions: string[];
+  discoverRoutes: { method: string; pattern: string; action: string }[];
+  discoverBridgeArms: string[];
+  discoverContractActions: string[];
   coreOnlyPrefixes: string[];
   violations: Violation[];
   ledger: Record<string, { files: string[]; counts: Record<string, number> }>;
@@ -988,20 +1063,20 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
 
   it("今天判定为绿，并把现存违例的条数如实打印出来（条数来自扫描，不是写死的常量）", () => {
     const res = runCheck();
-    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls/files）零遗留 HTTP");
+    expect(res.stdout + res.stderr).toContain("OK: 已迁移域（wallet/moments/video/calls/files/discover）零遗留 HTTP");
     expect(res.status).toBe(0);
     const count = /现存违例：(\d+) 条，分布在 (\d+) 个未迁移域/.exec(res.stdout);
     expect(count, `输出里必须自带现存违例计数，实际：${res.stdout}`).toBeTruthy();
     expect(Number(count?.[1]), "违例条数为 0 就说明这条检查在空转").toBeGreaterThan(0);
     expect(Number(count?.[1])).toBe(disk.total);
-    expect(Number(count?.[2])).toBe(2);
+    expect(Number(count?.[2])).toBe(1);
   });
 
-  it("两个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
+  it("一个未迁移域逐域都有现存违例（规则抓到的是真的，不是永远为真）", () => {
     expect(disk.problems).toEqual([]);
     expect(disk.total).toBeGreaterThan(0);
     const blocked = disk.domains.filter((d) => d.state === "blocked").map((d) => d.featureDir).sort();
-    expect(blocked).toEqual(["discover", "mini"]);
+    expect(blocked).toEqual(["mini"]);
     for (const dir of blocked) {
       const entry = disk.ledger[dir];
       expect(entry, `债台账里应当有 features/${dir} 这一格`).toBeTruthy();
@@ -1034,6 +1109,10 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(filesRouted).toEqual([...new Set(disk.filesContractActions)].sort());
     expect(filesRouted).toEqual([...new Set(disk.filesBridgeArms)].sort());
     expect(filesRouted).toHaveLength(4);
+    const discoverRouted = [...new Set(disk.discoverRoutes.map((r) => r.action))].sort();
+    expect(discoverRouted).toEqual([...new Set(disk.discoverContractActions)].sort());
+    expect(discoverRouted).toEqual([...new Set(disk.discoverBridgeArms)].sort());
+    expect(discoverRouted).toHaveLength(6);
   });
 
   it("规则清单与注入用例一一对应（往 RULES 里加一条打死规则就会在这里红）", () => {
@@ -1080,7 +1159,8 @@ describe("静态守卫：绕过 Core 的 fetch / localStorage 会话（#294 DoD 
     expect(res.stderr).toContain("FAIL");
     expect(res.stderr).toContain("里仍有遗留会话用法");
     expect(res.stderr).toContain("标成 core 却没有可解析的 providerSha");
-    expect(runJson({ [REGISTRY_REL]: claimAllSeven }).problems.length).toBeGreaterThan(10);
+    // 只剩 mini 一个阻塞域：谎报 core 仍会因遗留用法 + 缺 SHA + 路径无归属多条报红。
+    expect(runJson({ [REGISTRY_REL]: claimAllSeven }).problems.length).toBeGreaterThan(4);
   });
 
   it("注入证明：桥少注册一条钱包臂（UI 声称接了但桥没有）→ 判红", () => {

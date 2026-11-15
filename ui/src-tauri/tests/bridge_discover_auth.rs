@@ -138,9 +138,11 @@ async fn empty_catalog_and_blocked_quote_are_honest() {
     let orders = ok_data(&call(&handle, "discover.orders", json!({})), "订单列举").clone();
     assert_eq!(orders["items"], json!([]), "{orders}");
 
-    // 报价：生产默认无供应商沙箱凭据 → NOT_IMPLEMENTED（501），不伪造价格。
+    // 报价：生产默认目录为空，报价一个不存在的服务 → 服务端 404 → VALIDATION，
+    // 不伪造价格。（无供应商凭据的 BLOCKED_EXTERNAL→NOT_IMPLEMENTED 路径由
+    // crate 侧 HTTP 测试在"目录有卡但供应商无凭据"时钉住。）
     let reply = call(&handle, "discover.quote", json!({"service_id": "topup-cn"}));
-    error(&reply, "无凭据报价", "NOT_IMPLEMENTED");
+    error(&reply, "空目录报价不存在的服务", "VALIDATION");
 
     let _ = app;
 }

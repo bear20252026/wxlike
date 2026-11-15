@@ -252,23 +252,19 @@ describe("ServicesPage — 服务格子", () => {
     await waitFor(() => expect(screen.getByTestId("order-state")).toHaveTextContent("退款中"));
   });
 
-  it("识物/翻译：选图提交真实 Blob 请求", async () => {
-    const submitted: string[] = [];
+  it("识物/翻译（D6）：无核心提供者，选图后显式阻塞而非伪造识别结果", async () => {
     setTransport(
       fixtureTransport({
         "GET /api/services": () => tiles,
         "GET /api/orders": () => [],
       }),
     );
-    // vision endpoints use raw fetch — stub it
+    // vision 面已改 blockedError：不再发 fetch，任何 fetch 调用都判失败。
     const originalFetch = global.fetch;
-    global.fetch = (async (input: RequestInfo | URL) => {
-      const url = String(input);
-      submitted.push(url);
-      return new Response(
-        JSON.stringify({ job_id: "j1", kind: "recognition", state: "done", result_text: "一把红色雨伞" }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
+    let fetched = false;
+    global.fetch = (async () => {
+      fetched = true;
+      throw new Error("vision 不应再发 fetch");
     }) as typeof fetch;
     try {
       render(<ServicesPage />);
@@ -276,8 +272,10 @@ describe("ServicesPage — 服务格子", () => {
       fireEvent.change(screen.getByTestId("vision-input"), {
         target: { files: [new File(["imagebytes"], "photo.jpg", { type: "image/jpeg" })] },
       });
-      await waitFor(() => expect(screen.getByTestId("vision-result")).toHaveTextContent("一把红色雨伞"));
-      expect(submitted.some((url) => url.includes("/api/vision/recognition"))).toBe(true);
+      // 阻塞横幅出现，且不伪造识别结果。
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("核心提供者"));
+      expect(screen.queryByTestId("vision-result")).not.toBeInTheDocument();
+      expect(fetched).toBe(false);
     } finally {
       global.fetch = originalFetch;
     }

@@ -195,6 +195,16 @@ export const ACTIONS = {
   fileShare: "file.share",
   fileRemove: "file.remove",
 
+  // 发现域（D6 逐域退役）：服务目录控制面（目录/报价/下单/查单/列举/退款）经桥
+  // 打到 G07 服务目录服务端。识图/翻译（multipart + 外部 AI）无核心提供者，在
+  // 消费侧显式阻塞。名单与 `core_bridge` 的 `discover_router` 逐条对齐。
+  discoverServices: "discover.services",
+  discoverQuote: "discover.quote",
+  discoverOrderCreate: "discover.order_create",
+  discoverOrderGet: "discover.order_get",
+  discoverOrders: "discover.orders",
+  discoverOrderRefund: "discover.order_refund",
+
   searchQuery: "search.query",
   preferencesGet: "preferences.get",
   preferencesSet: "preferences.set",

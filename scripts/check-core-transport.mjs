@@ -96,7 +96,6 @@ export const LEGACY_EGRESS = "lib/http.ts";
  */
 export const DEBT_BASELINE = {
   mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
-  discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1, legacy_bearer_call: 1 } },
 };
 
 const CONFIG_SOURCES = [
@@ -281,6 +280,16 @@ const MIGRATED_DOMAINS = [
     contractLabel: "core-contract 的 ACTIONS.file*",
     bridgeLabel: "core_bridge.rs 的 files_router",
   },
+  {
+    id: "discover",
+    routesConst: "DISCOVER_ROUTES",
+    aliasConst: "DISCOVER_ACTIONS",
+    actionPrefix: "discover.",
+    routerName: "discover_router",
+    routeLabel: "core-transport 的 DISCOVER_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.discover*",
+    bridgeLabel: "core_bridge.rs 的 discover_router",
+  },
 ];
 
 /** 与 `lib/http.ts` 的 ANONYMOUS_PLAYBACK 同口径：只豁免播放面，控制面不在其中。 */
@@ -449,6 +458,7 @@ export function runChecks(overrides = {}) {
   const video = perDomain.find((d) => d.cfg.id === "video");
   const content = perDomain.find((d) => d.cfg.id === "moments");
   const files = perDomain.find((d) => d.cfg.id === "files");
+  const discover = perDomain.find((d) => d.cfg.id === "discover");
   const routes = wallet.routes;
   const contractActions = wallet.contractActions;
   const bridgeArms = wallet.bridgeArms;
@@ -619,6 +629,7 @@ export function runChecks(overrides = {}) {
   notes.push(`视频出口归属：控制面路由 ${video.routes.length} 条（video.*/live.*）/ 播放面匿名 / 上传显式阻塞`);
   notes.push(`内容出口归属：控制面路由 ${content.routes.length} 条（moment/favorite/report/sticker）/ G05 未对齐面显式阻塞`);
   notes.push(`文件出口归属：控制面路由 ${files.routes.length} 条（file.* 打到 G04）/ 二进制上传下载与备份计划显式阻塞`);
+  notes.push(`发现出口归属：控制面路由 ${discover.routes.length} 条（discover.* 打到 G07）/ 识图翻译显式阻塞`);
 
   return {
     problems,
@@ -639,6 +650,9 @@ export function runChecks(overrides = {}) {
     filesRoutes: files.routes,
     filesBridgeArms: files.bridgeArms,
     filesContractActions: files.contractActions,
+    discoverRoutes: discover.routes,
+    discoverBridgeArms: discover.bridgeArms,
+    discoverContractActions: discover.contractActions,
     coreOnlyPrefixes,
     blockedWalletPrefixes,
     violations: found,
@@ -694,6 +708,9 @@ function main() {
     filesRoutes: result.filesRoutes,
     filesBridgeArms: result.filesBridgeArms,
     filesContractActions: result.filesContractActions,
+    discoverRoutes: result.discoverRoutes,
+    discoverBridgeArms: result.discoverBridgeArms,
+    discoverContractActions: result.discoverContractActions,
     coreOnlyPrefixes: result.coreOnlyPrefixes,
     violations: result.violations,
     ledger: result.ledger,
