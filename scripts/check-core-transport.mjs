@@ -96,7 +96,6 @@ export const LEGACY_EGRESS = "lib/http.ts";
  */
 export const DEBT_BASELINE = {
   content: { files: ["features/content/MomentsPage.tsx", "features/content/api.ts"], counts: { legacy_transport: 21, legacy_user: 1 } },
-  video: { files: ["features/video/api.ts"], counts: { legacy_base: 1, legacy_bearer_call: 1, legacy_transport: 9, legacy_user: 1 } },
   files: { files: ["features/files/api.ts"], counts: { legacy_base: 3, direct_fetch: 2, legacy_token: 2, legacy_bearer_call: 3, legacy_transport: 8 } },
   mini: { files: ["features/mini/api.ts"], counts: { legacy_transport: 7, direct_fetch: 1 } },
   discover: { files: ["features/discover/api.ts"], counts: { legacy_transport: 7, legacy_token: 2, direct_fetch: 1, legacy_bearer_call: 1 } },
@@ -250,7 +249,34 @@ const MIGRATED_DOMAINS = [
     contractLabel: "core-contract 的 ACTIONS.call*",
     bridgeLabel: "core_bridge.rs 的 call_router",
   },
+  {
+    id: "video",
+    routesConst: "VIDEO_ROUTES",
+    aliasConst: "VIDEO_ACTIONS",
+    // 视频域一个 router 挂两类 action（video.* 与 live.*）。
+    actionPrefixes: ["video.", "live."],
+    routerName: "video_router",
+    routeLabel: "core-transport 的 VIDEO_ROUTES",
+    contractLabel: "core-contract 的 ACTIONS.video*/live*",
+    bridgeLabel: "core_bridge.rs 的 video_router",
+    // 播放面按服务端设计匿名（issue #7）：不算"必须经核心"的路径。
+    anonymous: true,
+  },
 ];
+
+/** 与 `lib/http.ts` 的 ANONYMOUS_PLAYBACK 同口径：只豁免播放面，控制面不在其中。 */
+const ANONYMOUS_PLAYBACK_RE = [
+  /^\/api\/video\/[^/]+\/play\.mp4$/,
+  /^\/api\/video\/[^/]+\/playlist\.m3u8$/,
+  /^\/api\/video\/[^/]+\/thumb\.png$/,
+  /^\/api\/video\/[^/]+\/[^/]+\.(ts|m4s)$/,
+];
+function isAnonymousPlayback(p) {
+  return ANONYMOUS_PLAYBACK_RE.some((re) => re.test(p));
+}
+function domainPrefixes(cfg) {
+  return cfg.actionPrefixes ?? [cfg.actionPrefix];
+}
 
 function parseRoutes(text, aliasMap, contract, problems, domain) {
   const { routesConst, aliasConst } = domain;
@@ -289,7 +315,7 @@ function parseAliasMap(text, problems, domain) {
 }
 
 function parseBridgeArms(text, problems, domain) {
-  const { routerName, actionPrefix } = domain;
+  const { routerName } = domain;
   if (!text) {
     problems.push(`core_bridge.rs 缺失：无法核对桥真实注册的 ${routerName} 臂`);
     return [];
@@ -299,7 +325,10 @@ function parseBridgeArms(text, problems, domain) {
     problems.push(`core_bridge.rs 里找不到 ${routerName}：桥的 ${routerName} 臂无法核对`);
     return [];
   }
-  const armRe = new RegExp(`"(${actionPrefix.replace(/\./g, "\\.")}[\\w.]+)"`, "g");
+  const alt = domainPrefixes(domain)
+    .map((p) => p.replace(/\./g, "\\."))
+    .join("|");
+  const armRe = new RegExp(`"((?:${alt})[\\w.]+)"`, "g");
   return [...block[0].matchAll(armRe)].map((m) => m[1]);
 }
 
@@ -385,12 +414,14 @@ export function runChecks(overrides = {}) {
   const perDomain = MIGRATED_DOMAINS.map((cfg) => {
     const aliasMap = parseAliasMap(transportText, problems, cfg);
     const routes = parseRoutes(transportText, aliasMap, contract, problems, cfg);
-    const contractActions = Object.values(contract).filter((id) => id.startsWith(cfg.actionPrefix));
+    const prefixes = domainPrefixes(cfg);
+    const contractActions = Object.values(contract).filter((id) => prefixes.some((p) => id.startsWith(p)));
     const bridgeArms = parseBridgeArms(bridgeText, problems, cfg);
     return { cfg, routes, contractActions, bridgeArms };
   });
   const wallet = perDomain.find((d) => d.cfg.id === "wallet");
   const calls = perDomain.find((d) => d.cfg.id === "calls");
+  const video = perDomain.find((d) => d.cfg.id === "video");
   const routes = wallet.routes;
   const contractActions = wallet.contractActions;
   const bridgeArms = wallet.bridgeArms;
@@ -398,8 +429,10 @@ export function runChecks(overrides = {}) {
   const { found, byDir, byDomain } = scan(sources);
 
   const coveredBy = (p, prefixes) => prefixes.some((prefix) => p === prefix || p.startsWith(`${prefix}/`));
+  const cfgFor = (id) => MIGRATED_DOMAINS.find((c) => c.id === id);
   const domainPrefixesCovered = (domain) => {
-    const literals = apiLiteralsFor(sources, domain.featureDir);
+    const anon = cfgFor(domain.id)?.anonymous === true;
+    const literals = apiLiteralsFor(sources, domain.featureDir).filter((p) => !(anon && isAnonymousPlayback(p)));
     return literals.length === 0 || literals.every((p) => coveredBy(p, coreOnlyPrefixes));
   };
 
@@ -502,7 +535,10 @@ export function runChecks(overrides = {}) {
   /** (h) 已迁移域每条路径都要有归属：路由 or 显式阻塞。 */
   {
     for (const domain of coreDomains) {
-      const uncovered = apiLiteralsFor(sources, domain.featureDir).filter((p) => !coveredBy(p, coreOnlyPrefixes));
+      const anon = cfgFor(domain.id)?.anonymous === true;
+      const uncovered = apiLiteralsFor(sources, domain.featureDir).filter(
+        (p) => !(anon && isAnonymousPlayback(p)) && !coveredBy(p, coreOnlyPrefixes),
+      );
       if (uncovered.length > 0) {
         problems.push(
           `已迁移域 features/${domain.featureDir} 用了这些路径，而 CORE_ONLY_PREFIXES 没拒绝它们（= 还能回落到旧 localStorage 会话）：${uncovered.join(", ")}`,
@@ -546,6 +582,7 @@ export function runChecks(overrides = {}) {
   notes.push(`现存违例：${total} 条，分布在 ${Object.keys(DEBT_BASELINE).length} 个未迁移域（已迁移域额度 0）`);
   notes.push(`钱包出口归属：路由 ${routes.length} 条 / 显式阻塞前缀 ${blockedWalletPrefixes.length} 条 / 遗留拒绝面 ${coreOnlyPrefixes.length} 条`);
   notes.push(`通话出口归属：路由 ${calls.routes.length} 条（call.* 全部经认证桥）`);
+  notes.push(`视频出口归属：控制面路由 ${video.routes.length} 条（video.*/live.*）/ 播放面匿名 / 上传显式阻塞`);
 
   return {
     problems,
@@ -557,6 +594,9 @@ export function runChecks(overrides = {}) {
     callRoutes: calls.routes,
     callBridgeArms: calls.bridgeArms,
     callContractActions: calls.contractActions,
+    videoRoutes: video.routes,
+    videoBridgeArms: video.bridgeArms,
+    videoContractActions: video.contractActions,
     coreOnlyPrefixes,
     blockedWalletPrefixes,
     violations: found,
@@ -603,6 +643,9 @@ function main() {
     callRoutes: result.callRoutes,
     callBridgeArms: result.callBridgeArms,
     callContractActions: result.callContractActions,
+    videoRoutes: result.videoRoutes,
+    videoBridgeArms: result.videoBridgeArms,
+    videoContractActions: result.videoContractActions,
     coreOnlyPrefixes: result.coreOnlyPrefixes,
     violations: result.violations,
     ledger: result.ledger,

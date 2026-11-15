@@ -40,6 +40,9 @@ export const WALLET_PROVIDER_SHA = "71cc90c5";
 /** D6 通话域竖切片：Rust 提供者（call.* 桥 action）合入的提交短 SHA。 */
 export const CALLS_PROVIDER_SHA = "b3fbb40";
 
+/** D6 视频域竖切片：Rust 提供者（video.* 与 live.* 控制面桥 action）合入的提交短 SHA。 */
+export const VIDEO_PROVIDER_SHA = "7051522";
+
 /** id 字符串只在 `shell/core-contract.ts` 的 `ACTIONS` 里有一份，这里只做聚合。 */
 const WALLET_ACTIONS = [
   ACTIONS.walletBalanceGet,
@@ -64,6 +67,19 @@ const CALL_ACTIONS = [
   ACTIONS.callKick,
   ACTIONS.callSignalPost,
   ACTIONS.callSignalTake,
+] as const;
+
+const VIDEO_ACTIONS = [
+  ACTIONS.videoMeta,
+  ACTIONS.videoStats,
+  ACTIONS.videoView,
+  ACTIONS.videoFeed,
+  ACTIONS.liveState,
+  ACTIONS.liveStart,
+  ACTIONS.liveStop,
+  ACTIONS.liveJoin,
+  ACTIONS.liveLeave,
+  ACTIONS.liveDanmaku,
 ] as const;
 
 /**
@@ -94,10 +110,10 @@ export const DOMAIN_REGISTRY: readonly DomainStatus[] = [
     id: "video",
     featureDir: "video",
     label: "视频号",
-    state: "blocked",
-    providerSha: null,
-    reason: "#293 只交付钱包竖切片，视频域没有 Rust 提供者；遗留 HTTP 出口拿不到认证会话",
-    actions: [],
+    state: "core",
+    providerSha: VIDEO_PROVIDER_SHA,
+    reason: `控制面（meta/stats/view/feed 与 live 六条）经 D6 认证桥 action（${VIDEO_ACTIONS.length} 条）；播放面按设计匿名、上传显式阻塞`,
+    actions: VIDEO_ACTIONS,
   },
   {
     id: "calls",

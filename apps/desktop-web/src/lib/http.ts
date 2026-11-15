@@ -55,11 +55,37 @@ const CORE_ONLY_PREFIXES: readonly string[] = [
   "/api/topups",
   "/api/cards",
   "/api/entitlements",
+  // 视频/直播域（D6）：整域归核心。控制面走 video.*/live.* action；上传
+  // （POST /api/video，multipart 二进制）无流式提供者，显式阻塞（同钱包 G06 口径）。
+  // 唯一例外是匿名播放面（见 isAnonymousPlaybackPath）：服务端按设计不鉴权
+  // （issue #7），<video>/HLS 直连，不经核心也不带凭据。
+  "/api/video",
+  "/api/videos/feed",
+  "/api/live",
 ];
 
-/** 这个请求路径是否属于"只能经 Rust 核心"的已迁移域。 */
+/**
+ * 匿名播放面（服务端 issue #7 按设计不鉴权）：mp4 / HLS 清单 / 缩略图 / HLS 分片。
+ * 这些路径**不属于**"只能经核心"的拒绝面——<video> 与 HLS 播放器不会带
+ * Authorization，也不该带。名单只放播放面，控制面（meta/stats/view）不在其中。
+ */
+const ANONYMOUS_PLAYBACK: readonly RegExp[] = [
+  /^\/api\/video\/[^/]+\/play\.mp4$/,
+  /^\/api\/video\/[^/]+\/playlist\.m3u8$/,
+  /^\/api\/video\/[^/]+\/thumb\.png$/,
+  /^\/api\/video\/[^/]+\/[^/]+\.(ts|m4s)$/,
+];
+
+/** 是否是匿名播放面路径（控制面/上传面一律 false）。 */
+export function isAnonymousPlaybackPath(path: string): boolean {
+  const bare = path.split("?")[0] ?? path;
+  return ANONYMOUS_PLAYBACK.some((re) => re.test(bare));
+}
+
+/** 这个请求路径是否属于"只能经 Rust 核心"的已迁移域（匿名播放面除外）。 */
 export function isCoreOnlyPath(path: string): boolean {
   const bare = path.split("?")[0] ?? path;
+  if (isAnonymousPlaybackPath(bare)) return false;
   return CORE_ONLY_PREFIXES.some((prefix) => bare === prefix || bare.startsWith(`${prefix}/`));
 }
 

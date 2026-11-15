@@ -1,13 +1,19 @@
 /**
- * Video/live client (G11-03): video.* / live.*.
+ * Video/live client (G11-03): video.* / live.* — D6 逐域退役后的形态。
  *
- * Real today: upload (POST /api/video, multipart field "bytes"), meta/playback
- * (mp4 · HLS playlist · thumb), view/stats (`crates/video`), feed
- * (GET /api/videos/feed?mode=hot|follow, `crates/platform/src/video_feed.rs`),
- * live start/stop/state/join/leave/danmaku (`crates/platform/src/live.rs`).
+ * 控制面（meta/stats/view/feed 与 live 六条）不再自己读旧会话：`request()` 的
+ * 默认出口在组合根装上核心会话后是"按域路由"的 transport，这些路径已被
+ * `lib/http.ts` 的 CORE_ONLY_PREFIXES 拒绝走遗留 fetch，只能通过 video.* 与 live.*
+ * action 经认证 Rust 核心出去（Bearer 不进 webview）。
+ *
+ * 两个面按服务端设计（crates/video/src/lib.rs，issue #7）区别对待：
+ * - 播放面（play.mp4 / playlist.m3u8 / thumb.png / 分片）**匿名可用**：<video>
+ *   与 HLS 播放器不会带 Authorization，故保留为相对 URL，不经核心也不带凭据。
+ * - 上传（POST /api/video，multipart 二进制）**没有流式提供者**：显式阻塞
+ *   （501），不回落旧会话、不伪造成功；页面渲染"上游未开通"。
  */
 
-import { ApiError, baseUrl, idemKey, request, token, userIdSafe } from "../../lib/http";
+import { blockedError, idemKey, request } from "../../lib/http";
 import type {
   DanmakuMessage,
   FeedEnvelope,
@@ -26,6 +32,7 @@ import type {
   ViewOpts,
 } from "./model";
 
+/** 匿名播放面：服务端按设计不鉴权（issue #7），返回相对 URL 供播放器直连。 */
 export function playbackUrls(videoId: string): PlaybackUrls {
   const id = encodeURIComponent(videoId);
   return {
@@ -54,41 +61,7 @@ export function mapFeedRow(row: VideoViewRow): VideoFeedItem {
   };
 }
 
-/** XHR upload — the video ingest endpoint takes one multipart "bytes" field. */
-export const xhrVideoUpload = async (
-  form: FormData,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
-): Promise<IngestedVideo> =>
-  new Promise<IngestedVideo>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${baseUrl()}/api/video`);
-    const tok = token();
-    if (tok) xhr.setRequestHeader("authorization", `Bearer ${tok}`);
-    xhr.responseType = "json";
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) opts.onProgress?.(event.loaded / event.total);
-    };
-    xhr.onload = () => {
-      const body = xhr.response as IngestedVideo | { error?: string } | null;
-      if (xhr.status >= 200 && xhr.status < 300) resolve(body as IngestedVideo);
-      else {
-        const message =
-          body && typeof body === "object" && "error" in body && body.error
-            ? String(body.error)
-            : `视频上传失败 (${xhr.status})`;
-        reject(new ApiError(xhr.status, message, "/api/video"));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError(0, "网络错误：上传中断", "/api/video", "network"));
-    xhr.onabort = () => reject(new ApiError(0, "已取消", "/api/video", "cancelled"));
-    opts.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
-    xhr.send(form);
-  });
-
 export class VideoApi implements VideoPorts {
-  /** Low-level sender injectable for tests (default: real XHR upload). */
-  constructor(private readonly sendVideo: typeof xhrVideoUpload = xhrVideoUpload) {}
-
   async meta(videoId: string, opts?: RequestOpts): Promise<VideoMeta> {
     return request<VideoMeta>("GET", `/api/video/${encodeURIComponent(videoId)}`, {
       signal: opts?.signal,
@@ -99,20 +72,19 @@ export class VideoApi implements VideoPorts {
     return playbackUrls(videoId);
   }
 
-  async uploadVideo(file: File | Blob, opts: UploadVideoOpts = {}): Promise<IngestedVideo> {
-    const form = new FormData();
-    // crates/video read_field expects the multipart part to be named "bytes"
-    // (`curl -F bytes=@demo.mp4 POST /api/video`).
-    form.append("bytes", file, file instanceof File ? file.name : "clip.mp4");
-    const send = (opts as { send?: typeof xhrVideoUpload }).send ?? this.sendVideo;
-    return send(form, { signal: opts.signal, onProgress: opts.onProgress });
+  /**
+   * 上传契约面：multipart 二进制无流式提供者（桥不搬二进制），显式阻塞。
+   * 旧实现用 XHR 读 localStorage bearer——那条出口已随 D6 退役拆除。
+   */
+  async uploadVideo(_file: File | Blob, _opts: UploadVideoOpts = {}): Promise<IngestedVideo> {
+    throw blockedError("/api/video", "视频上传（multipart）尚无流式核心提供者");
   }
 
   async recordView(videoId: string, watchedMs: number, opts: ViewOpts = {}): Promise<void> {
-    const viewer = (opts.viewer ?? (userIdSafe() || "ui")).trim();
+    // viewer 缺省 "ui"：服务端点播面不鉴权、viewer 为自报标识（stats.rs）。
+    // 不再从 localStorage 读身份（旧会话出口已退役）；调用方可显式传 viewer。
+    const viewer = (opts.viewer ?? "ui").trim();
     await request<unknown>("POST", `/api/video/${encodeURIComponent(videoId)}/view`, {
-      // The stats endpoint requires a JSON body {viewer, watched_ms} — it
-      // rejects an empty body before the payload is ever validated.
       body: { viewer, watched_ms: Math.max(1, Math.round(watchedMs)) },
       idempotencyKey: opts.idempotencyKey ?? idemKey("video-view"),
       signal: opts.signal,
@@ -190,7 +162,7 @@ export class VideoApi implements VideoPorts {
       text,
       at: Date.now(),
       self: true,
-      ...(reply.delivered === false ? { } : {}),
+      ...(reply.delivered === false ? {} : {}),
     };
   }
 }

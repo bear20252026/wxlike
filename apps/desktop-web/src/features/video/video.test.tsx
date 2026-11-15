@@ -81,7 +81,6 @@ describe("ChannelsPage", () => {
   });
 
   it("feed 命中真实端点：VideoView 行映射为界面条目，view 上报带 viewer/watched_ms", async () => {
-    localStorage.setItem("wxlike-web-user", "user-a");
     const viewBodies: Record<string, unknown>[] = [];
     setTransport(
       fixtureTransport({
@@ -125,37 +124,23 @@ describe("ChannelsPage", () => {
     const video = screen.getByTestId("video-v-9");
     video.dispatchEvent(new Event("play"));
     await waitFor(() =>
-      expect(viewBodies).toEqual([{ viewer: "user-a", watched_ms: 1_000 }]),
+      expect(viewBodies).toEqual([{ viewer: "ui", watched_ms: 1_000 }]),
     );
   });
 
-  it("发布：真实上传后可播放（multipart 字段名为 bytes）", async () => {
+  it("发布：上传无流式提供者 → 显式阻塞（501），不回落旧会话、不伪造成功", async () => {
     setTransport(
       fixtureTransport({
         "GET /api/videos/feed": () => err(404, "not found"),
         "GET /api/live/:channel": () => ({ channel: "main", live: false, viewers: 0 }),
       }),
     );
-    const api = new VideoApi(async (form) => {
-      expect(form).toBeInstanceOf(FormData);
-      expect(form.get("bytes")).not.toBeNull();
-      expect(form.get("file")).toBeNull();
-      return {
-        video_id: "dd".repeat(32),
-        playlist_url: "/api/video/x/playlist.m3u8",
-        play_url: "/api/video/x/play.mp4",
-        thumb_url: "/api/video/x/thumb.png",
-        duration_ms: 1000,
-        width: 640,
-        height: 360,
-        renditions: [],
-      };
-    });
-    render(<ChannelsPage ports={api} />);
+    render(<ChannelsPage ports={new VideoApi()} />);
     const input = (await screen.findByTestId("publish-input")) as HTMLInputElement;
     fireEvent.change(input, { target: { files: [new File(["clipdata"], "clip.mp4", { type: "video/mp4" })] } });
-    await waitFor(() => expect(screen.getByTestId("published-video")).toBeInTheDocument());
-    expect(screen.getByTestId("published-video")).toHaveTextContent("dd".repeat(32));
+    // D6 退役后上传契约面显式阻塞：页面报错而非"发布成功"。
+    await waitFor(() => expect(screen.getByTestId("channels-page")).toHaveTextContent("旧 HTTP 出口已停用"));
+    expect(screen.queryByTestId("published-video")).not.toBeInTheDocument();
   });
 
   it("开播/停播/观众数走真实状态（stream_key 嵌在 session 里）", async () => {
