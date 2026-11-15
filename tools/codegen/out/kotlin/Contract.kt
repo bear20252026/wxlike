@@ -106,6 +106,63 @@ val actionCapabilities: Map<String, String> = mapOf(
     "video.view.report" to "write",
 )
 
+// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。
+data class ParamSpec(val name: String, val type: String, val required: Boolean)
+
+// 逐命令的参数规格。
+val actionParams: Map<String, List<ParamSpec>> = mapOf(
+    "channel.roles" to listOf(ParamSpec("conv", "String", true)),
+    "community.threads" to listOf(ParamSpec("community", "String", true), ParamSpec("limit", "Long", false)),
+    "conv.list" to emptyList(),
+    "conv.unread" to listOf(ParamSpec("conv", "String", true)),
+    "conv.history" to listOf(ParamSpec("conv", "String", true), ParamSpec("before_seq", "Long", false), ParamSpec("limit", "Long", false)),
+    "conv.sync" to listOf(ParamSpec("conv", "String", true), ParamSpec("version", "Long", true)),
+    "conv.ack" to listOf(ParamSpec("conv", "String", true), ParamSpec("seq", "Long", false)),
+    "friend.list" to emptyList(),
+    "friend.requests.incoming" to emptyList(),
+    "friend.requests.outgoing" to emptyList(),
+    "friend.request.create" to listOf(ParamSpec("to_user_id", "String", true), ParamSpec("message", "String", false)),
+    "friend.request.accept" to listOf(ParamSpec("req_id", "String", true)),
+    "friend.request.decline" to listOf(ParamSpec("req_id", "String", true)),
+    "friend.remark.set" to listOf(ParamSpec("user_id", "String", true), ParamSpec("remark", "String", true)),
+    "friend.remove" to listOf(ParamSpec("user_id", "String", true), ParamSpec("confirmation_token", "String", false)),
+    "friend.block.list" to emptyList(),
+    "friend.block.add" to listOf(ParamSpec("user_id", "String", true), ParamSpec("confirmation_token", "String", false)),
+    "friend.block.remove" to listOf(ParamSpec("user_id", "String", true)),
+    "friend.privacy.get" to emptyList(),
+    "friend.privacy.set" to listOf(ParamSpec("allow", "Boolean", true)),
+    "group.members" to listOf(ParamSpec("conv", "String", true), ParamSpec("after_user", "String", false), ParamSpec("limit", "Long", false)),
+    "group.info" to listOf(ParamSpec("conv", "String", true)),
+    "group.announcement.get" to listOf(ParamSpec("conv", "String", true)),
+    "group.mute_all.get" to listOf(ParamSpec("conv", "String", true)),
+    "group.create" to listOf(ParamSpec("name", "String", true), ParamSpec("member_ids", "List<String>", false), ParamSpec("idempotency_key", "String", true)),
+    "group.add_member" to listOf(ParamSpec("conv", "String", true), ParamSpec("user_ids", "List<String>", true)),
+    "group.announcement.set" to listOf(ParamSpec("conv", "String", true), ParamSpec("text", "String", true), ParamSpec("media_id", "String", false)),
+    "group.mute_all.set" to listOf(ParamSpec("conv", "String", true), ParamSpec("on", "Boolean", true)),
+    "group.kick" to listOf(ParamSpec("conv", "String", true), ParamSpec("user_id", "String", true), ParamSpec("confirmation_token", "String", false)),
+    "me.info" to emptyList(),
+    "me.sessions" to emptyList(),
+    "media.files.list" to listOf(ParamSpec("category", "String", false), ParamSpec("folder", "String", false), ParamSpec("sort", "String", false), ParamSpec("cursor", "String", false), ParamSpec("limit", "Long", false)),
+    "media.upload.get" to listOf(ParamSpec("upload_id", "String", true)),
+    "media.upload.start" to listOf(ParamSpec("purpose", "String", true), ParamSpec("name", "String", true), ParamSpec("size", "Long", true), ParamSpec("mime", "String", true), ParamSpec("digest", "String", false)),
+    "media.upload.complete" to listOf(ParamSpec("upload_id", "String", true), ParamSpec("digest", "String", false)),
+    "media.upload.cancel" to listOf(ParamSpec("upload_id", "String", true)),
+    "media.object.access" to listOf(ParamSpec("object_id", "String", true)),
+    "media.object.revoke" to listOf(ParamSpec("object_id", "String", true)),
+    "msg.list" to listOf(ParamSpec("conv", "String", true), ParamSpec("from_seq", "Long", true), ParamSpec("to_seq", "Long", false)),
+    "msg.search" to listOf(ParamSpec("q", "String", true), ParamSpec("limit", "Long", false)),
+    "msg.get" to listOf(ParamSpec("conv", "String", true), ParamSpec("msg_id", "String", true)),
+    "msg.send" to listOf(ParamSpec("conv", "String", true), ParamSpec("text", "String", true), ParamSpec("reply_to", "String", false), ParamSpec("idempotency_key", "String", true)),
+    "msg.forward" to listOf(ParamSpec("from_conv", "String", true), ParamSpec("to_conv", "String", true), ParamSpec("msg_id", "String", true), ParamSpec("idempotency_key", "String", true)),
+    "msg.recall" to listOf(ParamSpec("conv", "String", true), ParamSpec("msg_id", "String", true), ParamSpec("confirmation_token", "String", false)),
+    "video.select" to listOf(ParamSpec("video_id", "String", true), ParamSpec("kbps", "Long", true)),
+    "video.stats" to listOf(ParamSpec("video_id", "String", true)),
+    "video.job.get" to listOf(ParamSpec("job_id", "String", true)),
+    "video.job.create" to listOf(ParamSpec("path", "String", true), ParamSpec("callback_url", "String", false)),
+    "video.job.retry" to listOf(ParamSpec("job_id", "String", true)),
+    "video.view.report" to listOf(ParamSpec("video_id", "String", true), ParamSpec("viewer", "String", true), ParamSpec("watched_ms", "Long", true), ParamSpec("position_ms", "Long", false), ParamSpec("completed", "Boolean", false), ParamSpec("session_id", "String", false)),
+)
+
 // 解码一条命令结果；未知 status 返回 null（跳过，不抛）。
 //
 // 服务端先上线新状态、旧客户端后升级是常态：这时候应当"跳过并记一笔"，

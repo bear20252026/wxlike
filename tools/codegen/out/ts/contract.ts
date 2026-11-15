@@ -111,6 +111,60 @@ export const ACTIONS = [
 /** 已知 action id 集合。 */
 export const KNOWN_ACTIONS: ReadonlySet<string> = new Set(ACTIONS.map((a) => a.id));
 
+/** 逐命令的参数类型（与 crates/cmd 的 Param 声明同源）。 */
+export interface ActionParams {
+  "channel.roles": { conv: string };
+  "community.threads": { community: string; limit?: number };
+  "conv.list": Record<string, never>;
+  "conv.unread": { conv: string };
+  "conv.history": { conv: string; before_seq?: number; limit?: number };
+  "conv.sync": { conv: string; version: number };
+  "conv.ack": { conv: string; seq?: number };
+  "friend.list": Record<string, never>;
+  "friend.requests.incoming": Record<string, never>;
+  "friend.requests.outgoing": Record<string, never>;
+  "friend.request.create": { to_user_id: string; message?: string };
+  "friend.request.accept": { req_id: string };
+  "friend.request.decline": { req_id: string };
+  "friend.remark.set": { user_id: string; remark: string };
+  "friend.remove": { user_id: string; confirmation_token?: string };
+  "friend.block.list": Record<string, never>;
+  "friend.block.add": { user_id: string; confirmation_token?: string };
+  "friend.block.remove": { user_id: string };
+  "friend.privacy.get": Record<string, never>;
+  "friend.privacy.set": { allow: boolean };
+  "group.members": { conv: string; after_user?: string; limit?: number };
+  "group.info": { conv: string };
+  "group.announcement.get": { conv: string };
+  "group.mute_all.get": { conv: string };
+  "group.create": { name: string; member_ids?: string[]; idempotency_key: string };
+  "group.add_member": { conv: string; user_ids: string[] };
+  "group.announcement.set": { conv: string; text: string; media_id?: string };
+  "group.mute_all.set": { conv: string; on: boolean };
+  "group.kick": { conv: string; user_id: string; confirmation_token?: string };
+  "me.info": Record<string, never>;
+  "me.sessions": Record<string, never>;
+  "media.files.list": { category?: string; folder?: string; sort?: string; cursor?: string; limit?: number };
+  "media.upload.get": { upload_id: string };
+  "media.upload.start": { purpose: string; name: string; size: number; mime: string; digest?: string };
+  "media.upload.complete": { upload_id: string; digest?: string };
+  "media.upload.cancel": { upload_id: string };
+  "media.object.access": { object_id: string };
+  "media.object.revoke": { object_id: string };
+  "msg.list": { conv: string; from_seq: number; to_seq?: number };
+  "msg.search": { q: string; limit?: number };
+  "msg.get": { conv: string; msg_id: string };
+  "msg.send": { conv: string; text: string; reply_to?: string; idempotency_key: string };
+  "msg.forward": { from_conv: string; to_conv: string; msg_id: string; idempotency_key: string };
+  "msg.recall": { conv: string; msg_id: string; confirmation_token?: string };
+  "video.select": { video_id: string; kbps: number };
+  "video.stats": { video_id: string };
+  "video.job.get": { job_id: string };
+  "video.job.create": { path: string; callback_url?: string };
+  "video.job.retry": { job_id: string };
+  "video.view.report": { video_id: string; viewer: string; watched_ms: number; position_ms?: number; completed?: boolean; session_id?: string };
+}
+
 /**
  * 解码一条命令结果。
  *

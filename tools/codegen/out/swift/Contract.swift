@@ -145,6 +145,72 @@ public let actionCapabilities: [String: String] = [
     "video.view.report": "write",
 ]
 
+/// 一条命令参数的规格（与 crates/cmd 的 Param 声明同源）。
+public struct ParamSpec {
+    public let name: String
+    public let type: String
+    public let required: Bool
+    public init(name: String, type: String, required: Bool) {
+        self.name = name
+        self.type = type
+        self.required = required
+    }
+}
+
+/// 逐命令的参数规格。
+public let actionParams: [String: [ParamSpec]] = [
+    "channel.roles": [ParamSpec(name: "conv", type: "String", required: true)],
+    "community.threads": [ParamSpec(name: "community", type: "String", required: true), ParamSpec(name: "limit", type: "Int", required: false)],
+    "conv.list": [],
+    "conv.unread": [ParamSpec(name: "conv", type: "String", required: true)],
+    "conv.history": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "before_seq", type: "Int", required: false), ParamSpec(name: "limit", type: "Int", required: false)],
+    "conv.sync": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "version", type: "Int", required: true)],
+    "conv.ack": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "seq", type: "Int", required: false)],
+    "friend.list": [],
+    "friend.requests.incoming": [],
+    "friend.requests.outgoing": [],
+    "friend.request.create": [ParamSpec(name: "to_user_id", type: "String", required: true), ParamSpec(name: "message", type: "String", required: false)],
+    "friend.request.accept": [ParamSpec(name: "req_id", type: "String", required: true)],
+    "friend.request.decline": [ParamSpec(name: "req_id", type: "String", required: true)],
+    "friend.remark.set": [ParamSpec(name: "user_id", type: "String", required: true), ParamSpec(name: "remark", type: "String", required: true)],
+    "friend.remove": [ParamSpec(name: "user_id", type: "String", required: true), ParamSpec(name: "confirmation_token", type: "String", required: false)],
+    "friend.block.list": [],
+    "friend.block.add": [ParamSpec(name: "user_id", type: "String", required: true), ParamSpec(name: "confirmation_token", type: "String", required: false)],
+    "friend.block.remove": [ParamSpec(name: "user_id", type: "String", required: true)],
+    "friend.privacy.get": [],
+    "friend.privacy.set": [ParamSpec(name: "allow", type: "Bool", required: true)],
+    "group.members": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "after_user", type: "String", required: false), ParamSpec(name: "limit", type: "Int", required: false)],
+    "group.info": [ParamSpec(name: "conv", type: "String", required: true)],
+    "group.announcement.get": [ParamSpec(name: "conv", type: "String", required: true)],
+    "group.mute_all.get": [ParamSpec(name: "conv", type: "String", required: true)],
+    "group.create": [ParamSpec(name: "name", type: "String", required: true), ParamSpec(name: "member_ids", type: "[String]", required: false), ParamSpec(name: "idempotency_key", type: "String", required: true)],
+    "group.add_member": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "user_ids", type: "[String]", required: true)],
+    "group.announcement.set": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "text", type: "String", required: true), ParamSpec(name: "media_id", type: "String", required: false)],
+    "group.mute_all.set": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "on", type: "Bool", required: true)],
+    "group.kick": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "user_id", type: "String", required: true), ParamSpec(name: "confirmation_token", type: "String", required: false)],
+    "me.info": [],
+    "me.sessions": [],
+    "media.files.list": [ParamSpec(name: "category", type: "String", required: false), ParamSpec(name: "folder", type: "String", required: false), ParamSpec(name: "sort", type: "String", required: false), ParamSpec(name: "cursor", type: "String", required: false), ParamSpec(name: "limit", type: "Int", required: false)],
+    "media.upload.get": [ParamSpec(name: "upload_id", type: "String", required: true)],
+    "media.upload.start": [ParamSpec(name: "purpose", type: "String", required: true), ParamSpec(name: "name", type: "String", required: true), ParamSpec(name: "size", type: "Int", required: true), ParamSpec(name: "mime", type: "String", required: true), ParamSpec(name: "digest", type: "String", required: false)],
+    "media.upload.complete": [ParamSpec(name: "upload_id", type: "String", required: true), ParamSpec(name: "digest", type: "String", required: false)],
+    "media.upload.cancel": [ParamSpec(name: "upload_id", type: "String", required: true)],
+    "media.object.access": [ParamSpec(name: "object_id", type: "String", required: true)],
+    "media.object.revoke": [ParamSpec(name: "object_id", type: "String", required: true)],
+    "msg.list": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "from_seq", type: "Int", required: true), ParamSpec(name: "to_seq", type: "Int", required: false)],
+    "msg.search": [ParamSpec(name: "q", type: "String", required: true), ParamSpec(name: "limit", type: "Int", required: false)],
+    "msg.get": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "msg_id", type: "String", required: true)],
+    "msg.send": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "text", type: "String", required: true), ParamSpec(name: "reply_to", type: "String", required: false), ParamSpec(name: "idempotency_key", type: "String", required: true)],
+    "msg.forward": [ParamSpec(name: "from_conv", type: "String", required: true), ParamSpec(name: "to_conv", type: "String", required: true), ParamSpec(name: "msg_id", type: "String", required: true), ParamSpec(name: "idempotency_key", type: "String", required: true)],
+    "msg.recall": [ParamSpec(name: "conv", type: "String", required: true), ParamSpec(name: "msg_id", type: "String", required: true), ParamSpec(name: "confirmation_token", type: "String", required: false)],
+    "video.select": [ParamSpec(name: "video_id", type: "String", required: true), ParamSpec(name: "kbps", type: "Int", required: true)],
+    "video.stats": [ParamSpec(name: "video_id", type: "String", required: true)],
+    "video.job.get": [ParamSpec(name: "job_id", type: "String", required: true)],
+    "video.job.create": [ParamSpec(name: "path", type: "String", required: true), ParamSpec(name: "callback_url", type: "String", required: false)],
+    "video.job.retry": [ParamSpec(name: "job_id", type: "String", required: true)],
+    "video.view.report": [ParamSpec(name: "video_id", type: "String", required: true), ParamSpec(name: "viewer", type: "String", required: true), ParamSpec(name: "watched_ms", type: "Int", required: true), ParamSpec(name: "position_ms", type: "Int", required: false), ParamSpec(name: "completed", type: "Bool", required: false), ParamSpec(name: "session_id", type: "String", required: false)],
+]
+
 /// 解码一条命令结果；未知 status 返回 nil（跳过，不抛）。
 ///
 /// 服务端先上线新状态、旧客户端后升级是常态：这时候应当"跳过并记一笔"，
