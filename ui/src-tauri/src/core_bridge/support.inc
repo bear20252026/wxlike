@@ -683,8 +683,13 @@ pub fn forward_inbound<R: tauri::Runtime>(
     if conv_id.is_empty() || payload.get("kind").and_then(Value::as_str) == Some("typing") {
         return; // 控制帧与坏事件不进新 UI 的状态机
     }
+    // S5a：事件类型经 S4 适配器从规范事件派生，不在这里第二套手写映射。
+    // 渲染后的 payload 重建为线上 Envelope 形状 → envelope_to_event 得规范
+    // EventKind → 映射到 UI 投影类型。消息体仍走 row_to_message（含 E2EE 渲染），
+    // UI 投影形状不变（前端契约稳定）。
+    let event_type = ui_event_type(payload);
     let message = row_to_message(payload, me.unwrap_or(""));
-    emit_core(app, "message.created", conv_id, message.clone());
+    emit_core(app, event_type, conv_id, message.clone());
     // 会话卡片：标题先用缓存/conv_id，列表 action 会补全真实标题。
     let conversation = json!({
         "conv_id": conv_id,
@@ -698,6 +703,28 @@ pub fn forward_inbound<R: tauri::Runtime>(
         "draft": "",
     });
     emit_core(app, "conversation.upsert", conv_id, conversation);
+}
+
+/// S5a：把渲染后的入站 payload 经 S4 适配器派生成 UI 投影事件类型。
+///
+/// 复用 `wxlike_client_native::realtime::envelope_to_event`（wire→canonical 的
+/// 唯一映射点），不在这里手写第二套 kind 判断。规范 EventKind → UI 投影类型：
+/// message.new→message.created、message.recalled→message.updated（撤回是消息
+/// 变更），其余消息类→message.created。UI 投影类型与规范事件类型是两层概念，
+/// 这里只做名称映射，不改 payload 形状。
+fn ui_event_type(payload: &Value) -> &'static str {
+    use wxlike_client_native::realtime::envelope_to_event;
+    use wxlike_types::EventKind;
+    // 渲染后的 payload 是线上 Envelope 的 JSON 形状（conv_id/sender/seq/kind/
+    // body/sent_at_ms/msg_id）；重建 Envelope 交给适配器分类。重建失败兜底
+    // message.created（与旧行为一致，不丢消息）。
+    let Ok(env) = serde_json::from_value::<wxlike_core::Envelope>(payload.clone()) else {
+        return "message.created";
+    };
+    match envelope_to_event(&env).kind {
+        EventKind::MessageRecalled => "message.updated",
+        _ => "message.created",
+    }
 }
 
 fn conv_kind(conv_id: &str) -> &'static str {
