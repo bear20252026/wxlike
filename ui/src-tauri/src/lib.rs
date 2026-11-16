@@ -43,6 +43,7 @@ pub use wxlike_client::{direct_conv_id, Http};
 mod app_state;
 pub mod commands;
 pub mod core_bridge;
+pub mod realtime;
 mod render;
 mod store;
 mod util;

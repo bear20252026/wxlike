@@ -11,9 +11,8 @@ wxlike-client-core = { path = "../client-core" }
 # 复用已有的协议层（鉴权头、审计标记、错误文案都在里面），不重写第二套
 wxlike-client = { path = "../client" }
 # S4：实时事件适配器把线上 Envelope（core 类型）映射成规范 EventEnvelope。
+# 只依赖 core+types（纯映射）；不链接 wxlike-net（含 axum，分层守卫禁止）。
 wxlike-core = { path = "../core" }
-# S4：QuicEventSource 包装宿主无关的 QUIC 客户端（next_envelope）。
-wxlike-net = { path = "../net" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

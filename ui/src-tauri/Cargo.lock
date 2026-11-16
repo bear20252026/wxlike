@@ -7322,6 +7322,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-client-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chacha20poly1305 0.10.1",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wxlike-cmd",
+ "wxlike-limits",
+ "wxlike-types",
+]
+
+[[package]]
+name = "wxlike-client-native"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chacha20poly1305 0.10.1",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "wxlike-client",
+ "wxlike-client-core",
+ "wxlike-core",
+ "wxlike-types",
+]
+
+[[package]]
 name = "wxlike-cmd"
 version = "0.1.0"
 dependencies = [
@@ -7650,6 +7683,7 @@ name = "wxlike-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "hex",
@@ -7665,12 +7699,15 @@ dependencies = [
  "tokio",
  "ureq",
  "wxlike-client",
+ "wxlike-client-core",
+ "wxlike-client-native",
  "wxlike-core",
  "wxlike-mq",
  "wxlike-net",
  "wxlike-platform",
  "wxlike-rtc",
  "wxlike-server",
+ "wxlike-types",
 ]
 
 [[package]]
