@@ -595,7 +595,7 @@ jobs:
     name: ios
     needs:
     - select
-    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    if: false
     runs-on: macos-latest
     permissions:
       contents: read
