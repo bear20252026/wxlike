@@ -21,6 +21,18 @@
       "status": "\"ok\" | \"empty\" | \"failed\""
     },
     "ConvId": {},
+    "CoreFrame": {
+      "action_id": "string",
+      "completed_at_ms": "number",
+      "cursor": "string",
+      "data": "Record<string, unknown>",
+      "error": "Record<string, unknown>",
+      "kind": "\"result\" | \"error\" | \"fatal\"",
+      "message": "string",
+      "request_id": "string",
+      "retryable": "boolean",
+      "status": "\"ok\" | \"empty\" | \"failed\""
+    },
     "DomainError": {
       "code": "\"invalid_argument\" | \"unauthorized\" | \"forbidden\" | \"not_found\" | \"conflict\" | \"precondition\" | \"rate_limited\" | \"timeout\" | \"cancelled\" | \"unavailable\" | \"internal\"",
       "field": "string",

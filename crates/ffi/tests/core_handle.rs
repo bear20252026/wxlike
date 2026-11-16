@@ -90,3 +90,47 @@ fn dispose_is_idempotent() {
     handle.dispose();
     assert_eq!(handle.pending(), 0);
 }
+
+/// S2：帧是类型化 serde 产物，不是旧的手写 json!。
+/// 网络不可达 → 传输层错误走 kind=error 帧，error 是规范 DomainError
+/// （code 为 serde tag，含 message），retryable 独立标注。旧形状把 error
+/// 拍平成顶层 code/message——这里 error 必须是嵌套对象。
+#[test]
+fn error_frame_carries_canonical_domain_error() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let handle = CoreHandle::open(config(dir.path())).expect("打开");
+    let request = serde_json::json!({
+        "action_id": "me.info",
+        "params": {},
+        "trace_id": "t-frame",
+        "contract": "1.0",
+    })
+    .to_string();
+    handle.dispatch(request).expect("投递");
+    let batch = handle.poll(5_000);
+    let frames: Vec<serde_json::Value> = serde_json::from_str(&batch).expect("帧数组");
+    assert!(!frames.is_empty(), "应至少有一帧");
+    let frame = &frames[0];
+    // 传输层字段。
+    assert_eq!(frame["kind"], "error", "{frame}");
+    assert!(
+        frame["request_id"].as_str().unwrap().starts_with("req-"),
+        "{frame}"
+    );
+    assert!(frame["retryable"].is_boolean(), "{frame}");
+    // 规范 DomainError：嵌套对象，code 为 tag，含 message。
+    let error = &frame["error"];
+    assert!(
+        error.is_object(),
+        "error 必须是规范 DomainError 对象：{frame}"
+    );
+    assert!(error["code"].is_string(), "error.code 缺失：{frame}");
+    assert!(error["message"].is_string(), "error.message 缺失：{frame}");
+    // 旧手写形状把 code/message 拍平到顶层——必须消失。
+    assert!(frame.get("code").is_none(), "不应再有顶层 code：{frame}");
+    assert!(
+        frame.get("payload").is_none(),
+        "不应再有 payload 包裹：{frame}"
+    );
+    handle.dispose();
+}

@@ -184,6 +184,39 @@ class CodegenEmittersTest(unittest.TestCase):
                 f"产物与契约不一致（重跑生成器）：{path}",
             )
 
+    def test_str_lit_escapes_interpolation_per_language(self):
+        # Dart/Kotlin 双引号串里 $ 触发插值 → 必须转义；Swift 不转义 $。
+        self.assertEqual(gen._str_lit("cost $5", "dart"), "cost \\$5")
+        self.assertEqual(gen._str_lit("cost $5", "kotlin"), "cost \\$5")
+        self.assertEqual(gen._str_lit("cost $5", "swift"), "cost $5")
+        # Swift 的 \( 插值：反斜杠先转义成 \\，\( 变 \\( 即字面量。
+        self.assertEqual(gen._str_lit("a\\(b)", "swift"), "a\\\\(b)")
+        # 通用转义：引号/反斜杠/换行。
+        self.assertEqual(gen._str_lit('q"q', "swift"), 'q\\"q')
+        self.assertEqual(gen._str_lit("a\nb", "dart"), "a\\nb")
+
+    def test_frame_decoders_present_in_all_languages(self):
+        # S2：四端都有 decodeCoreFrame，且 result 帧复用 decodeActionResult。
+        for name, text in (
+            ("ts", self.ts),
+            ("dart", self.dart),
+            ("swift", self.swift),
+            ("kotlin", self.kotlin),
+        ):
+            self.assertIn("decodeCoreFrame", text, f"{name} 缺帧解码器")
+            self.assertIn("CoreFrame", text, f"{name} 缺帧类型")
+            # 三种 kind 都要处理（Dart 用单引号，其余双引号）。
+            for kind in ("result", "error", "fatal"):
+                self.assertTrue(
+                    f'"{kind}"' in text or f"'{kind}'" in text,
+                    f"{name} 帧解码器缺 kind {kind}",
+                )
+
+    def test_frame_schema_is_loaded(self):
+        # frame.schema.json 进了 schema 池（CoreFrame 类型同源）。
+        self.assertIn("frame.schema.json", self.schemas)
+        self.assertEqual(self.schemas["frame.schema.json"]["title"], "CoreFrame")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 // 由 tools/codegen/generate.py 生成，**不要手改**。
-// schema: contract-v1  摘要: ad2d2be657637cf7  contract: 1.0
+// schema: contract-v1  摘要: 470793a94f99707f  contract: 1.0
 // 改了契约就重跑生成器；`--check` 会在 CI 上盯着这一步。
 
 
@@ -7,7 +7,7 @@
 
 export const SCHEMA_VERSION = "contract-v1" as const;
 export const CONTRACT_VERSION = "1.0" as const;
-export const SCHEMA_DIGEST = "ad2d2be657637cf7" as const;
+export const SCHEMA_DIGEST = "470793a94f99707f" as const;
 
 export type ActionId = string;
 export type EntryId = string;
@@ -182,5 +182,35 @@ export function decodeActionResult(raw: unknown): ActionResult | null {
 /** 金额：字符串 → BigInt（超过 2^53 也不能丢精度）。 */
 export function moneyToMinor(money: Money): bigint {
   return BigInt(money.minor);
+}
+
+/**
+ * FFI 事件帧（S2）：CoreHandle.poll / subscribe 推出的每条消息。
+ * result 帧把规范 ActionResult 整个 flatten，故 decodeActionResult 可直接解。
+ * 与 crates/ffi 的类型化帧（ResultFrame/ErrorFrame/FatalFrame）同源。
+ */
+export type CoreFrame =
+  | ({ kind: "result"; request_id: string } & ActionResult)
+  | { kind: "error"; request_id: string; error: DomainError; retryable: boolean }
+  | { kind: "fatal"; message: string };
+
+/** 解码一条 FFI 帧；未知 kind 返回 null（跳过，不抛）。 */
+export function decodeCoreFrame(raw: unknown): CoreFrame | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  if (value.kind === "result") {
+    const result = decodeActionResult(value);
+    if (result === null || typeof value.request_id !== "string") return null;
+    return { kind: "result", request_id: value.request_id, ...result };
+  }
+  if (value.kind === "error") {
+    if (typeof value.request_id !== "string" || value.error === null || typeof value.error !== "object") return null;
+    return { kind: "error", request_id: value.request_id, error: value.error as DomainError, retryable: value.retryable === true };
+  }
+  if (value.kind === "fatal") {
+    if (typeof value.message !== "string") return null;
+    return { kind: "fatal", message: value.message };
+  }
+  return null;
 }
 

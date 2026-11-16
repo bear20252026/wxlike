@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "wxlike://contract/frame",
+  "title": "CoreFrame",
+  "description": "FFI 事件帧（S2 / ADR-29）：CoreHandle.poll 与 subscribe 推出的每条消息。Rust 侧由 crates/ffi/src/core_handle.rs 的类型化帧（ResultFrame/ErrorFrame/FatalFrame）serde 序列化产出，与本 schema 逐字段一致；四端 decodeCoreFrame 由此生成。result 帧把规范 ActionResult 整个 flatten（action_id/status/data/error/cursor/completed_at_ms），故 decodeActionResult 可直接解 result 帧。帧只多两个传输层字段：kind（分流判别）与 request_id（对齐并发请求）。",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "type": "string", "enum": ["result", "error", "fatal"] },
+    "request_id": { "type": "string", "description": "result/error 帧携带，对齐并发请求；fatal 帧无。" },
+    "action_id": { "type": "string", "description": "result 帧：回显命令 id（来自 ActionResult）。" },
+    "status": { "type": "string", "enum": ["ok", "empty", "failed"], "description": "result 帧：结果三态（来自 ActionResult.outcome 的 serde tag）。" },
+    "data": { "type": "object", "description": "result 帧 status=ok 时的业务数据。" },
+    "error": { "type": "object", "description": "result 帧 status=failed 的领域错误，或 error 帧的传输层错误（DomainError，code 为 tag）。" },
+    "cursor": { "type": "string", "description": "result 帧可选：执行后应推进到的游标。" },
+    "completed_at_ms": { "type": "integer", "description": "result 帧：完成时间（unix 毫秒）。" },
+    "retryable": { "type": "boolean", "description": "error 帧：传输层错误是否可重试。" },
+    "message": { "type": "string", "description": "fatal 帧：运行时致命错误描述。" }
+  }
+}

@@ -37,11 +37,45 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use wxlike_client_native::{NativeConfig, NativeCore};
-use wxlike_types::{ActionRequest, DomainError};
+use wxlike_types::{ActionRequest, ActionResult, DomainError};
 
 use crate::error::WxlikeError;
+
+/// FFI 事件帧（S2 / ADR-29）：poll 与 subscribe 推出的每条消息都是这些**类型化
+/// 帧**之一，serde 序列化而非手写 `json!`。
+///
+/// 关键：result 帧把规范 [`ActionResult`] 整个 flatten 进来——`action_id` /
+/// `status` / `data` / `error` / `cursor` / `completed_at_ms` 与
+/// `action.schema.json` 逐字段一致，生成的 `decodeActionResult` 能直接解
+/// `frame.result`。旧手写形状把业务数据包在 `payload`（= 重序列化的 outcome，
+/// 含重复 status）、丢掉 cursor、把失败拍平成 code/message——那套与契约不同源，
+/// 生成解码器解不了（2026-11-16 审计根因 1）。这里以规范类型为唯一事实源。
+///
+/// 帧只多两个传输层字段：`kind`（分流判别）与 `request_id`（对齐并发请求）。
+#[derive(Serialize)]
+struct ResultFrame<'a> {
+    kind: &'static str,
+    request_id: &'a str,
+    #[serde(flatten)]
+    result: &'a ActionResult,
+}
+
+#[derive(Serialize)]
+struct ErrorFrame<'a> {
+    kind: &'static str,
+    request_id: &'a str,
+    error: &'a DomainError,
+    retryable: bool,
+}
+
+#[derive(Serialize)]
+struct FatalFrame<'a> {
+    kind: &'static str,
+    message: &'a str,
+}
 
 /// 事件回调接口（D3 / ADR-29）：原生壳实现它来**接收推送**，而不是轮询。
 ///
@@ -213,32 +247,26 @@ pub struct CoreHandle {
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-/// 结果 JSON 的形状（Dart 侧按 `kind` 分流）。
-fn result_json(request_id: &str, result: &wxlike_types::ActionResult) -> String {
-    json!({
-        "kind": "result",
-        "request_id": request_id,
-        "action_id": result.action_id.as_str(),
-        "status": match &result.outcome {
-            wxlike_types::ActionOutcome::Ok { .. } => "ok",
-            wxlike_types::ActionOutcome::Empty => "empty",
-            wxlike_types::ActionOutcome::Failed { .. } => "failed",
-        },
-        "payload": serde_json::to_value(&result.outcome).unwrap_or(Value::Null),
-        "completed_at_ms": result.completed_at_ms,
+/// 结果帧：规范 ActionResult 整个 flatten，生成解码器可直接解（S2）。
+fn result_json(request_id: &str, result: &ActionResult) -> String {
+    serde_json::to_string(&ResultFrame {
+        kind: "result",
+        request_id,
+        result,
     })
-    .to_string()
+    .unwrap_or_else(|_| json!({"kind": "fatal", "message": "结果序列化失败"}).to_string())
 }
 
+/// 传输层错误帧（取消 / 投递失败等，非动作业务失败——后者走 result 帧的
+/// status=failed + error）。error 用规范 DomainError 序列化。
 fn error_json(request_id: &str, error: &DomainError) -> String {
-    json!({
-        "kind": "error",
-        "request_id": request_id,
-        "code": error.code(),
-        "message": error.message(),
-        "retryable": error.is_retryable(),
+    serde_json::to_string(&ErrorFrame {
+        kind: "error",
+        request_id,
+        error,
+        retryable: error.is_retryable(),
     })
-    .to_string()
+    .unwrap_or_else(|_| json!({"kind": "fatal", "message": "错误序列化失败"}).to_string())
 }
 
 /// 把 panic 转成可返回的错误。
@@ -354,7 +382,13 @@ fn run_worker(shared: Arc<Shared>, core: NativeCore) {
         Err(message) => {
             emit(
                 &shared,
-                json!({"kind": "fatal", "message": message}).to_string(),
+                serde_json::to_string(&FatalFrame {
+                    kind: "fatal",
+                    message: &message,
+                })
+                .unwrap_or_else(|_| {
+                    json!({"kind": "fatal", "message": "致命错误序列化失败"}).to_string()
+                }),
             );
             note_worker_exit(&shared);
             return;
@@ -586,5 +620,73 @@ impl std::fmt::Debug for CoreHandle {
 impl Drop for CoreHandle {
     fn drop(&mut self) {
         self.dispose();
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    //! S2：帧形状契约——result 帧 flatten 规范 ActionResult，error 帧带规范
+    //! DomainError，fatal 帧带 message。生成端 decodeCoreFrame 据此解码。
+    use super::*;
+    use wxlike_types::{ActionId, ActionResult, Cursor, CursorKind, Seq};
+
+    #[test]
+    fn result_frame_flattens_action_result() {
+        let result = ActionResult::ok(
+            ActionId::parse("me.info").unwrap(),
+            json!({"user_id": "u-1"}),
+            1_700_000_000_000,
+        );
+        let frame: Value = serde_json::from_str(&result_json("req-9", &result)).unwrap();
+        assert_eq!(frame["kind"], "result");
+        assert_eq!(frame["request_id"], "req-9");
+        assert_eq!(frame["action_id"], "me.info");
+        assert_eq!(frame["status"], "ok");
+        assert_eq!(frame["data"]["user_id"], "u-1");
+        assert_eq!(frame["completed_at_ms"], 1_700_000_000_000u64);
+        assert!(frame.get("payload").is_none(), "不应有 payload 包裹");
+    }
+
+    #[test]
+    fn result_frame_preserves_cursor_and_failed_error() {
+        let mut result = ActionResult::ok(ActionId::parse("conv.history").unwrap(), json!({}), 1);
+        result.cursor = Some(Cursor::at(CursorKind::Message, Seq::new(42)));
+        let frame: Value = serde_json::from_str(&result_json("req-1", &result)).unwrap();
+        assert!(frame["cursor"].is_string(), "cursor 不能丢：{frame}");
+
+        let failed = ActionResult::failed(
+            ActionId::parse("msg.send").unwrap(),
+            DomainError::InvalidArgument {
+                message: "bad".to_string(),
+                field: None,
+            },
+            2,
+        );
+        let frame: Value = serde_json::from_str(&result_json("req-2", &failed)).unwrap();
+        assert_eq!(frame["status"], "failed");
+        assert_eq!(frame["error"]["code"], "invalid_argument");
+    }
+
+    #[test]
+    fn error_frame_nests_domain_error() {
+        let err = DomainError::unavailable("net down");
+        let frame: Value = serde_json::from_str(&error_json("req-3", &err)).unwrap();
+        assert_eq!(frame["kind"], "error");
+        assert_eq!(frame["request_id"], "req-3");
+        assert_eq!(frame["error"]["code"], "unavailable");
+        assert!(frame["retryable"].is_boolean());
+        assert!(frame.get("code").is_none(), "code 不应拍平到顶层");
+    }
+
+    #[test]
+    fn fatal_frame_has_message() {
+        let json = serde_json::to_string(&FatalFrame {
+            kind: "fatal",
+            message: "runtime gone",
+        })
+        .unwrap();
+        let frame: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(frame["kind"], "fatal");
+        assert_eq!(frame["message"], "runtime gone");
     }
 }

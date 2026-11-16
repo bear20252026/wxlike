@@ -181,19 +181,26 @@ _PARAM_KOTLIN = {"Str": "String", "Int": "Long", "NonNegativeInt": "Long", "Bool
 _PARAM_DART = {"Str": "String", "Int": "int", "NonNegativeInt": "int", "Bool": "bool", "StrList": "List<String>"}
 
 
-def _str_lit(text: str) -> str:
-    """把任意文本转成可嵌入 Swift/Kotlin/Dart 双引号串的字面量内容。
+def _str_lit(text: str, lang: str = "swift") -> str:
+    """把任意文本转成可嵌入目标语言双引号串的字面量内容。
 
     参数 note 含中文与标点（可能有引号/反斜杠/换行），统一转义，避免生成的
-    源码被一个裸引号截断。三端双引号串的转义规则一致。
+    源码被一个裸引号截断。此外按语言防**插值**（2026-11-16 审计）：
+    * Dart 双引号串里 ``$`` 触发插值（``$name`` / ``${expr}``）→ 转义成 ``\\$``；
+    * Swift 双引号串里 ``\\(expr)`` 触发插值 → 反斜杠已先转义成 ``\\\\``，
+      ``\\(`` 变成 ``\\\\(`` 即字面量，无需额外处理；
+    * Kotlin 双引号串里 ``$`` 也触发插值 → 同 Dart 转义 ``\\$``。
     """
-    return (
+    out = (
         text.replace("\\", "\\\\")
         .replace('"', '\\"')
         .replace("\n", "\\n")
         .replace("\r", "\\r")
         .replace("\t", "\\t")
     )
+    if lang in ("dart", "kotlin"):
+        out = out.replace("$", "\\$")
+    return out
 
 
 def _params_ts(action: dict) -> str:
@@ -428,6 +435,36 @@ export function decodeActionResult(raw: unknown): ActionResult | null {
 export function moneyToMinor(money: Money): bigint {
   return BigInt(money.minor);
 }
+
+/**
+ * FFI 事件帧（S2）：CoreHandle.poll / subscribe 推出的每条消息。
+ * result 帧把规范 ActionResult 整个 flatten，故 decodeActionResult 可直接解。
+ * 与 crates/ffi 的类型化帧（ResultFrame/ErrorFrame/FatalFrame）同源。
+ */
+export type CoreFrame =
+  | ({ kind: "result"; request_id: string } & ActionResult)
+  | { kind: "error"; request_id: string; error: DomainError; retryable: boolean }
+  | { kind: "fatal"; message: string };
+
+/** 解码一条 FFI 帧；未知 kind 返回 null（跳过，不抛）。 */
+export function decodeCoreFrame(raw: unknown): CoreFrame | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  if (value.kind === "result") {
+    const result = decodeActionResult(value);
+    if (result === null || typeof value.request_id !== "string") return null;
+    return { kind: "result", request_id: value.request_id, ...result };
+  }
+  if (value.kind === "error") {
+    if (typeof value.request_id !== "string" || value.error === null || typeof value.error !== "object") return null;
+    return { kind: "error", request_id: value.request_id, error: value.error as DomainError, retryable: value.retryable === true };
+  }
+  if (value.kind === "fatal") {
+    if (typeof value.message !== "string") return null;
+    return { kind: "fatal", message: value.message };
+  }
+  return null;
+}
 """
     )
     return "\n".join(parts) + "\n"
@@ -526,7 +563,7 @@ def emit_dart(schemas: dict[str, dict], digest: str, actions: list[dict]) -> str
             parts.append(f"  '{action['id']}': [],")
             continue
         specs = ", ".join(
-            f'ParamSpec(\'{p["name"]}\', \'{_PARAM_DART[p["type"]]}\', {"true" if p["required"] else "false"}, "{_str_lit(p["note"])}")'
+            f'ParamSpec(\'{p["name"]}\', \'{_PARAM_DART[p["type"]]}\', {"true" if p["required"] else "false"}, "{_str_lit(p["note"], "dart")}")'
             for p in action["params"]
         )
         parts.append(f"  '{action['id']}': [{specs}],")
@@ -547,6 +584,28 @@ BigInt moneyToMinor(Money money) => BigInt.parse(money.minor!);
 
 /// 这条命令认不认识。
 bool isKnownAction(String actionId) => actionCapabilities.containsKey(actionId);
+
+/// 解码一条 FFI 帧（S2）；未知 kind 返回 null（跳过，不抛）。
+/// result 帧把规范 ActionResult 整个 flatten，decodeActionResult 可直接解。
+/// 返回规范化 Map：result 帧含 kind/request_id + ActionResult 字段。
+Map<String, dynamic>? decodeCoreFrame(Object? raw) {
+  if (raw is! Map<String, dynamic>) return null;
+  final kind = raw['kind'];
+  if (kind == 'result') {
+    final result = decodeActionResult(raw);
+    if (result == null || raw['request_id'] is! String) return null;
+    return {'kind': 'result', 'request_id': raw['request_id'], ...result.toJson()};
+  }
+  if (kind == 'error') {
+    if (raw['request_id'] is! String || raw['error'] is! Map<String, dynamic>) return null;
+    return {'kind': 'error', 'request_id': raw['request_id'], 'error': raw['error'], 'retryable': raw['retryable'] == true};
+  }
+  if (kind == 'fatal') {
+    if (raw['message'] is! String) return null;
+    return {'kind': 'fatal', 'message': raw['message']};
+  }
+  return null;
+}
 """
     )
     return "\n".join(parts) + "\n"
@@ -661,6 +720,34 @@ public func decodeActionResult(_ raw: Any?) -> ActionResult? {
 public func isKnownAction(_ actionId: String) -> Bool {
     return actionCapabilities[actionId] != nil
 }
+
+/// FFI 事件帧（S2）：CoreHandle.poll / subscribe 推出的每条消息。
+/// result 帧携带规范 ActionResult，与 action.schema 逐字段一致。
+public enum CoreFrame {
+    case result(requestId: String, result: ActionResult)
+    case error(requestId: String, error: [String: Any], retryable: Bool)
+    case fatal(message: String)
+}
+
+/// 解码一条 FFI 帧；未知 kind 返回 nil（跳过，不抛）。
+public func decodeCoreFrame(_ raw: Any?) -> CoreFrame? {
+    guard let value = raw as? [String: Any], let kind = value["kind"] as? String else { return nil }
+    if kind == "result" {
+        guard let requestId = value["request_id"] as? String,
+              let result = decodeActionResult(value) else { return nil }
+        return .result(requestId: requestId, result: result)
+    }
+    if kind == "error" {
+        guard let requestId = value["request_id"] as? String,
+              let error = value["error"] as? [String: Any] else { return nil }
+        return .error(requestId: requestId, error: error, retryable: (value["retryable"] as? Bool) ?? false)
+    }
+    if kind == "fatal" {
+        guard let message = value["message"] as? String else { return nil }
+        return .fatal(message: message)
+    }
+    return nil
+}
 """
     )
     return "\n".join(parts) + "\n"
@@ -729,7 +816,7 @@ def emit_kotlin(schemas: dict[str, dict], digest: str, actions: list[dict]) -> s
             parts.append(f'    "{action["id"]}" to emptyList(),')
             continue
         specs = ", ".join(
-            f'ParamSpec("{p["name"]}", "{_PARAM_KOTLIN[p["type"]]}", {"true" if p["required"] else "false"}, "{_str_lit(p["note"])}")'
+            f'ParamSpec("{p["name"]}", "{_PARAM_KOTLIN[p["type"]]}", {"true" if p["required"] else "false"}, "{_str_lit(p["note"], "kotlin")}")'
             for p in action["params"]
         )
         parts.append(f'    "{action["id"]}" to listOf({specs}),')
@@ -758,6 +845,36 @@ fun decodeActionResult(raw: Any?): ActionResult? {
 
 // 这条命令认不认识。
 fun isKnownAction(actionId: String): Boolean = actionCapabilities.containsKey(actionId)
+
+// FFI 事件帧（S2）：CoreHandle.poll / subscribe 推出的每条消息。
+// result 帧携带规范 ActionResult，与 action.schema 逐字段一致。
+sealed class CoreFrame {
+    data class Result(val requestId: String, val result: ActionResult) : CoreFrame()
+    data class Error(val requestId: String, val error: Map<String, Any>, val retryable: Boolean) : CoreFrame()
+    data class Fatal(val message: String) : CoreFrame()
+}
+
+// 解码一条 FFI 帧；未知 kind 返回 null（跳过，不抛）。
+fun decodeCoreFrame(raw: Any?): CoreFrame? {
+    val value = raw as? Map<*, *> ?: return null
+    return when (value["kind"]) {
+        "result" -> {
+            val requestId = value["request_id"] as? String ?: return null
+            val result = decodeActionResult(value) ?: return null
+            CoreFrame.Result(requestId, result)
+        }
+        "error" -> {
+            val requestId = value["request_id"] as? String ?: return null
+            val error = value["error"] as? Map<String, Any> ?: return null
+            CoreFrame.Error(requestId, error, value["retryable"] == true)
+        }
+        "fatal" -> {
+            val message = value["message"] as? String ?: return null
+            CoreFrame.Fatal(message)
+        }
+        else -> null
+    }
+}
 """
     )
     return "\n".join(parts) + "\n"

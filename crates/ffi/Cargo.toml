@@ -27,6 +27,7 @@ uniffi = { version = "0.32.2", features = ["scaffolding-ffi-buffer-fns"] }
 # 第三方 Dart 后端（Mozilla 的 uniffi 官方只有 Kotlin/Swift/Python/Ruby）。
 # MIT；只在生成绑定时用，见 crates/ffi/src/bin/uniffi-bindgen-dart.rs。
 uniffi-bindgen-dart = { version = "0.2.0", optional = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
 anyhow = { workspace = true }
