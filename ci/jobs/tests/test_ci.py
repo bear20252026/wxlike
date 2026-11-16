@@ -33,6 +33,7 @@ def load_optional(name: str, path: Path):
 
 select_targets = load("select_targets", JOBS / "build" / "select_targets.py")
 gate = load("gate", JOBS / "build" / "gate.py")
+check_pins = load("check_pins", JOBS / "audit" / "check_pins.py")
 device = load_optional("check_device_evidence", JOBS / "mobile" / "check_device_evidence.py")
 apk_gate = load_optional("check_apk", JOBS / "mobile" / "check_apk.py")
 
@@ -129,8 +130,8 @@ class GateTest(unittest.TestCase):
         required = json.loads((JOBS / "policy" / "required-checks.json").read_text(encoding="utf-8"))["required"]
         return {name: {"result": results.get(name, "success")} for name in required if name != "gate"}
 
-    def run_gate(self, needs: dict) -> subprocess.CompletedProcess:
-        env = dict(os.environ, NEEDS_JSON=json.dumps(needs))
+    def run_gate(self, needs: dict, select: dict | None = None) -> subprocess.CompletedProcess:
+        env = dict(os.environ, NEEDS_JSON=json.dumps(needs), SELECT_JSON=json.dumps(select or {}))
         env.pop("GITHUB_STEP_SUMMARY", None)
         return subprocess.run([sys.executable, str(JOBS / "build" / "gate.py")], env=env, capture_output=True, text=True)
 
@@ -138,7 +139,21 @@ class GateTest(unittest.TestCase):
         self.assertEqual(self.run_gate(self.needs({})).returncode, 0)
 
     def test_path_selected_skips_pass(self):
-        self.assertEqual(self.run_gate(self.needs({"ui": "skipped", "flutter": "skipped"})).returncode, 0)
+        # ui 跳过且 select.ui=false → 路径跳过，绿。flutter 跳过且在退役台账 → 绿。
+        result = self.run_gate(self.needs({"ui": "skipped", "flutter": "skipped"}), select={"ui": "false"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ledgered_retirement_skip_passes(self):
+        # android 在 disabled-jobs.json 登记 → 即使无 select 也绿（声明退役）。
+        result = self.run_gate(self.needs({"android": "skipped"}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("declared retirements", result.stdout)
+
+    def test_unexplained_skip_blocks(self):
+        # desktop 跳过：既不在台账，select.desktop 又非 false → 未解释跳过，红。
+        result = self.run_gate(self.needs({"desktop": "skipped"}), select={"desktop": "true"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unexplained skips", result.stderr)
 
     def test_failure_blocks(self):
         result = self.run_gate(self.needs({"test": "failure"}))
@@ -156,6 +171,47 @@ class GateTest(unittest.TestCase):
         needs = self.needs({})
         needs.pop("audit")
         self.assertEqual(self.run_gate(needs).returncode, 1)
+
+
+class RetirementLedgerTest(unittest.TestCase):
+    """if:false 作业必须在 disabled-jobs.json 登记（check_pins 静态强制）。"""
+
+    def _workflow(self, tmp: Path, jobs: dict) -> Path:
+        path = tmp / "ci.yml"
+        path.write_text(yaml.safe_dump({"permissions": {"contents": "read"}, "jobs": jobs}), encoding="utf-8")
+        return path
+
+    def _required(self) -> dict:
+        return json.loads((JOBS / "policy" / "required-checks.json").read_text(encoding="utf-8"))
+
+    def test_static_false_helper(self):
+        self.assertTrue(check_pins._is_static_false(False))
+        self.assertTrue(check_pins._is_static_false("false"))
+        self.assertTrue(check_pins._is_static_false("${{ false }}"))
+        self.assertFalse(check_pins._is_static_false("needs.select.outputs.mobile == 'true'"))
+        self.assertFalse(check_pins._is_static_false(None))
+
+    def test_unledgered_disabled_job_is_violation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 用一个不在台账里的作业名，if:false → 必须判红。
+            path = self._workflow(Path(tmp), {"bogus-retired": {"runs-on": "ubuntu-latest", "if": False, "steps": []}})
+            problems = check_pins.check_workflow(path, {}, self._required())
+            self.assertTrue(any("disabled-jobs.json" in p for p in problems), problems)
+
+    def test_ledgered_disabled_job_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # flutter 已在台账登记 → if:false 不报退役违规。
+            path = self._workflow(Path(tmp), {"flutter": {"runs-on": "ubuntu-latest", "if": False, "steps": []}})
+            problems = check_pins.check_workflow(path, {}, self._required())
+            self.assertFalse(any("disabled-jobs.json" in p for p in problems), problems)
+
+    def test_composed_workflows_have_no_unledgered_disabled_jobs(self):
+        # 真实产物：ci.yml 与 release.yml 的所有 if:false 作业都已登记。
+        pins = json.loads((JOBS / "policy" / "action-pins.json").read_text(encoding="utf-8")).get("actions", {})
+        required = self._required()
+        for name in ("ci.yml", "release.yml"):
+            problems = check_pins.check_workflow(JOBS / "generated" / name, pins, required)
+            self.assertFalse(any("disabled-jobs.json" in p for p in problems), (name, problems))
 
 
 @unittest.skipUnless(device is not None, "G16-03 assets not in this branch")

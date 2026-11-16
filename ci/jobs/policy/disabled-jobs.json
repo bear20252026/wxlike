@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "updated_at": "2026-11-16",
+  "note": "永久禁用（if: false）的作业必须在此登记，否则 check_pins 判红。这是 CI 与 release 共享的『构建目标退役』单一声明：gate.py 也读它来区分『路径跳过』与『声明退役』。只减不增——重新启用某作业时，先恢复其 if 条件，再从本台账删除条目。镜像 known-gaps.json / unwrap-baseline.json 的 fail-closed 约定。",
+  "disabled": [
+    {
+      "job": "flutter",
+      "workflow": "ci.yml",
+      "owner": "G13",
+      "reason": "ADR-29 D1「−Dart」：D3 的 EventSink 回调接口不被第三方 uniffi-bindgen-dart 0.2.0 支持（生成的 Dart 把回调对象当 int，编译即失败）。原生移动端走 Swift/Kotlin（官方后端），Flutter 旧壳暂停 CI 构建。",
+      "close_when": "Flutter 壳完整退役（P3）并从仓库移除，或 Dart 绑定生成器恢复回调支持后重新启用。"
+    },
+    {
+      "job": "android",
+      "workflow": "ci.yml",
+      "owner": "G13",
+      "reason": "同 flutter：Dart 绑定不可编译，Flutter APK 构建暂停。原生 Android（Kotlin + cargo-ndk）排 P0 spike。",
+      "close_when": "原生 Android 构建链接入 CI，或 Flutter 壳退役（P3）。"
+    },
+    {
+      "job": "android-release",
+      "workflow": "release.yml",
+      "owner": "G13",
+      "reason": "与 CI android 同一根因：regenerate.sh 的 Dart 步骤对 EventSink 回调生成非法 Dart，flutter build apk 必失败。发布链与 CI 共享本退役声明，避免两套作业定义脱钩。",
+      "close_when": "原生 Android 发布链接入，或 Flutter 壳退役（P3）。"
+    },
+    {
+      "job": "ios-release",
+      "workflow": "release.yml",
+      "owner": "G13",
+      "reason": "apps/mobile/ios 工程不存在（fail-closed exit 1），且 Dart 绑定同样不可编译。原生 iOS（XCFramework + Swift 壳）排 P0 spike。",
+      "close_when": "原生 iOS 发布链接入（apps/mobile-ios 工程 + XCFramework），或 Flutter 壳退役（P3）。"
+    }
+  ]
+}

@@ -432,6 +432,7 @@ jobs:
     - name: C0-C11 gate
       env:
         NEEDS_JSON: ${{ toJSON(needs) }}
+        SELECT_JSON: ${{ toJSON(needs.select.outputs) }}
       run: python ci/jobs/build/gate.py
     - name: report known gaps (non-blocking daily; release blocks)
       run: python ci/jobs/build/check_gaps.py

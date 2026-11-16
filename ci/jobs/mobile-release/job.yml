@@ -1,6 +1,10 @@
 jobs:
   android-release:
     name: android-release
+    # ADR-29 D1「−Dart」退役：Dart 绑定对 EventSink 回调不可编译，flutter build
+    # 必失败。与 CI android 共享 policy/disabled-jobs.json 的退役声明（check_pins
+    # 强制 if:false 必须登记）。原生 Android 发布链接入后恢复。
+    if: false
     runs-on: ubuntu-latest
     environment: mobile-release
     permissions:
@@ -143,6 +147,10 @@ jobs:
 
   ios-release:
     name: ios-release
+    # ADR-29 D1「−Dart」退役：apps/mobile/ios 工程不存在（fail-closed），且 Dart
+    # 绑定不可编译。与 CI 共享 policy/disabled-jobs.json 退役声明。原生 iOS
+    # 发布链（apps/mobile-ios + XCFramework）接入后恢复。
+    if: false
     runs-on: macos-latest
     environment: mobile-release
     permissions:

@@ -2,6 +2,10 @@ jobs:
   release:
     name: release
     needs: [android-release, ios-release, desktop-release]
+    # 移动端发布作业已退役（disabled-jobs.json）→ 跳过。release 仍须运行以发布
+    # 桌面 + 服务端镜像，故 always() 但要求 desktop-release 成功；移动端产物步骤
+    # 各自按 needs.<job>.result 条件化，跳过时不下载/不校验。
+    if: always() && needs.desktop-release.result == 'success'
     runs-on: ubuntu-latest
     environment: production-release
     permissions:
@@ -32,12 +36,15 @@ jobs:
           echo "version=$version publish=$publish"
       - name: release gate - contract registry must be complete
         run: python3 ci/jobs/contract/check_contracts.py --require-registry
-      - name: download mobile artefacts
+      - name: download android artefacts
+        if: needs.android-release.result == 'success'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
         with:
           name: android-release
           path: artifacts/android
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
+      - name: download ios artefacts
+        if: needs.ios-release.result == 'success'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # actions/download-artifact@v7
         with:
           name: ios-release
           path: artifacts/ios
@@ -97,6 +104,7 @@ jobs:
               sys.exit(f"desktop version {data.get('version')} != release {sys.argv[1]}")
           PY
       - name: validate mobile and device evidence
+        if: needs.android-release.result == 'success' && needs.ios-release.result == 'success'
         shell: bash
         run: |
           set -euo pipefail
