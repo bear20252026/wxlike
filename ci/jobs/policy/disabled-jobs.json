@@ -18,6 +18,13 @@
       "close_when": "原生 Android 构建链接入 CI，或 Flutter 壳退役（P3）。"
     },
     {
+      "job": "ios",
+      "workflow": "ci.yml",
+      "owner": "G13",
+      "reason": "apps/mobile/ios 工程不存在，iOS 编译是追踪缺口（MOBILE-DEVICE-EVIDENCE / MOBILE-NATIVE-SHELLS）。此前靠 precondition fail-closed，但作业仍排队 macOS runner，runner 获取失败就把 gate 拖红。显式退役避免无效排队。",
+      "close_when": "原生 iOS 构建链接入 CI（apps/mobile-ios 工程 + XCFramework），或 Flutter 壳退役（P3）。"
+    },
+    {
       "job": "android-release",
       "workflow": "release.yml",
       "owner": "G13",

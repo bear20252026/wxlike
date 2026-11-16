@@ -164,7 +164,11 @@ jobs:
   ios:
     name: ios
     needs: [select]
-    if: needs.select.outputs.mobile == 'true' || needs.select.outputs.contract == 'true'
+    # ADR-29 D1 退役：apps/mobile/ios 工程不存在，iOS 编译是追踪缺口
+    # （MOBILE-DEVICE-EVIDENCE / MOBILE-NATIVE-SHELLS）。此前靠 precondition
+    # fail-closed，但作业仍排队 macOS runner，runner 获取失败就把 gate 拖红。
+    # 与 flutter/android 一致登记 disabled-jobs.json，原生 iOS 链接入后恢复。
+    if: false
     runs-on: macos-latest
     permissions:
       contents: read
