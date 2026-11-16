@@ -18,6 +18,12 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 wxlike-core = { path = "../../crates/core" }
 wxlike-net = { path = "../../crates/net" }
+# S4：宿主装配层把 QUIC 客户端包装成规范 EventSource（QuicEventSource）。
+# 客户端闭包（client-native）不许链接 net（含 axum），故事件源放宿主层。
+wxlike-client-core = { path = "../../crates/client-core" }
+wxlike-client-native = { path = "../../crates/client-native" }
+wxlike-types = { path = "../../crates/types" }
+async-trait = "0.1"
 # 通话引擎：CallHost + str0m 媒体（纯 Rust，无 libwebrtc）
 wxlike-rtc = { path = "../../crates/rtc" }
 # WP-11: all backend interaction goes through these Rust commands (the

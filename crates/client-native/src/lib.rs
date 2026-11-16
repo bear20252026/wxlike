@@ -21,6 +21,7 @@ pub mod clock;
 pub mod core;
 pub mod notify;
 pub mod platform;
+pub mod realtime;
 pub mod secrets;
 pub mod store;
 pub mod transport;

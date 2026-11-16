@@ -6723,6 +6723,7 @@ dependencies = [
  "tokio",
  "wxlike-client",
  "wxlike-client-core",
+ "wxlike-core",
  "wxlike-types",
 ]
 

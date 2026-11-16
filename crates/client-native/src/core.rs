@@ -68,6 +68,9 @@ pub enum NativeError {
     Secrets(String),
     /// 目录建不出来。
     Io(String),
+    /// 实时订阅不可用（S4）：无长连接能力（caps.websocket=false），或订阅
+    /// 建立失败。宿主应改用推送 + 拉取（`conv.sync`），而不是反复重试订阅。
+    RealtimeUnavailable(String),
 }
 
 impl std::fmt::Display for NativeError {
@@ -76,6 +79,9 @@ impl std::fmt::Display for NativeError {
             NativeError::Session(err) => write!(f, "{err}"),
             NativeError::Secrets(why) => write!(f, "密钥存储不可用：{why}"),
             NativeError::Io(why) => write!(f, "数据目录不可用：{why}"),
+            NativeError::RealtimeUnavailable(why) => {
+                write!(f, "实时订阅不可用（请改用推送 + 拉取）：{why}")
+            }
         }
     }
 }
@@ -120,13 +126,30 @@ impl NativeCore {
         config: NativeConfig,
         secrets: Arc<dyn Secrets>,
     ) -> Result<Self, NativeError> {
+        let platform = Arc::new(FileLockPlatform::new(config.lock_path()));
+        Self::open_with_platform(config, secrets, platform).await
+    }
+
+    /// 打开，且由宿主注入密钥后端**与平台**（S4 能力驱动装配）。
+    ///
+    /// 平台决定 `caps()`（是否有长连接 / 安全存储 / 后台任务）。实时订阅
+    /// [`Self::subscribe_events`] 读 `caps().websocket` 决定是否可用——所以
+    /// 注入一个 `minimal()` caps 的平台就能让订阅走"无能力拒绝"路径。这是
+    /// 能力从"只写声明"变成"驱动装配"的接缝。
+    ///
+    /// # Errors
+    /// 见 [`NativeError`]。
+    pub async fn open_with_platform(
+        config: NativeConfig,
+        secrets: Arc<dyn Secrets>,
+        platform: Arc<FileLockPlatform>,
+    ) -> Result<Self, NativeError> {
         std::fs::create_dir_all(&config.data_dir)
             .map_err(|err| NativeError::Io(err.to_string()))?;
         let store = Arc::new(
             SqliteStore::open(config.store_path())
                 .map_err(|err| NativeError::Session(SessionError::Store(err)))?,
         );
-        let platform = Arc::new(FileLockPlatform::new(config.lock_path()));
         let notifications = Arc::new(ChannelNotifications::new());
         let cipher = CacheCipher::load_or_create(secrets.as_ref())
             .await
@@ -254,6 +277,33 @@ impl NativeCore {
     #[must_use]
     pub fn notifications(&self) -> Arc<ChannelNotifications> {
         self.notifications.clone()
+    }
+
+    /// 订阅实时事件流（S4 / ADR-29），**由平台能力驱动**。
+    ///
+    /// 只有 `caps().websocket` 为真（桌面 / 有长连接的原生端）才提供实时流；
+    /// 移动端若没有长连接能力，返回 [`NativeError::RealtimeUnavailable`]，
+    /// 宿主据此改用推送 + 拉取（`conv.sync`），而不是反复重试订阅。
+    ///
+    /// 能力此前是"只写不读"的声明（仅 Debug 用到）；这里让它**真正驱动装配**，
+    /// 闭合审计根因 2（传输能力未契约化、各宿主重写实时）。
+    ///
+    /// # Errors
+    /// 无实时能力 → `RealtimeUnavailable`；订阅建立失败 → `Session`。
+    pub async fn subscribe_events(
+        &self,
+        request: wxlike_types::SubscribeRequest,
+    ) -> Result<wxlike_client_core::runtime::EventSubscription, NativeError> {
+        use wxlike_client_core::ports::Platform as _;
+        if !self.platform.caps().websocket {
+            return Err(NativeError::RealtimeUnavailable(
+                "本平台无实时长连接能力（caps.websocket=false）".to_string(),
+            ));
+        }
+        self.session
+            .subscribe(request)
+            .await
+            .map_err(|err| NativeError::RealtimeUnavailable(err.to_string()))
     }
 
     /// 宿主投递生命周期事件。

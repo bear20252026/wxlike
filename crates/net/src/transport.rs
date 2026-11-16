@@ -151,6 +151,7 @@ fn endpoint_from_cert(
 /// and the only callers are the `Client` constructors gated behind the
 /// `insecure-lab` cargo feature — so the skip-verify path cannot be reached
 /// from a default build.
+#[cfg(feature = "insecure-lab")]
 pub(crate) async fn connect_insecure(
     server_addr: std::net::SocketAddr,
     server_name: &str,
@@ -356,17 +357,20 @@ impl ServerCertVerifier for TofuVerifier {
     }
 }
 
+#[cfg(feature = "insecure-lab")]
 #[derive(Debug)]
 struct SkipServerVerification {
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+#[cfg(feature = "insecure-lab")]
 impl SkipServerVerification {
     fn new(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
         Self { provider }
     }
 }
 
+#[cfg(feature = "insecure-lab")]
 impl ServerCertVerifier for SkipServerVerification {
     fn verify_server_cert(
         &self,
