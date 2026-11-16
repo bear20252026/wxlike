@@ -77,6 +77,30 @@ def _walk_continue_on_error(node, path="job") -> list[str]:
     return found
 
 
+def _load_disabled_jobs() -> set[str]:
+    """Retired job names from the ledger (fail-closed: missing/malformed → error)."""
+    path = POLICY_DIR / "disabled-jobs.json"
+    if not path.is_file():
+        raise SystemExit(f"ERROR retirement ledger missing: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {entry["job"] for entry in data.get("disabled", [])}
+
+
+def _is_static_false(expr) -> bool:
+    """Whether an ``if:`` expression is statically false (always skipped).
+
+    YAML parses bare ``false`` as a bool; ``"false"``/``"${{ false }}"`` as text.
+    A path-selection expression (``needs.select.outputs.x == 'true'``) is NOT
+    static false — it can run — so it is left to gate.py's runtime check.
+    """
+    if expr is False:
+        return True
+    if isinstance(expr, str):
+        stripped = expr.strip().strip("${{ }}").strip().lower()
+        return stripped == "false"
+    return False
+
+
 def check_workflow(path: Path, pins: dict[str, str], required: dict) -> list[str]:
     problems: list[str] = []
     text = path.read_text(encoding="utf-8")
@@ -107,6 +131,18 @@ def check_workflow(path: Path, pins: dict[str, str], required: dict) -> list[str
         for need in job.get("needs", []) if isinstance(job.get("needs"), list) else ([job["needs"]] if job.get("needs") else []):
             if need not in jobs:
                 problems.append(f"{path}: job {name} needs unknown job {need}")
+
+    # A permanently-disabled job (if: false) must be declared in the retirement
+    # ledger. This is the static half of "green means verified or explicitly
+    # retired"; gate.py is the runtime half. Applies to every workflow (ci AND
+    # release) so the two cannot diverge silently (2026-11-16 audit).
+    disabled = _load_disabled_jobs()
+    for name, job in jobs.items():
+        if _is_static_false(job.get("if")) and name not in disabled:
+            problems.append(
+                f"{path}: job {name} is permanently disabled (if: false) but not registered in "
+                "ci/jobs/policy/disabled-jobs.json"
+            )
 
     env_map = required.get("environments", {})
     for name, spec in env_map.items():
