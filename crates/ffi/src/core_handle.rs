@@ -95,6 +95,10 @@ pub trait EventSink: Send + Sync {
 const POLL_BATCH: usize = 64;
 /// `poll` 的超时上限（毫秒）：再长就是在拿 Dart 的线程开玩笑。
 const MAX_POLL_MS: u64 = 30_000;
+/// 队列容量上限（S3 / ADR-29）。**有界**是硬约束：纯回调模式下消费端不 poll，
+/// 无界队列会随消息量线性吃内存直到 OOM（2026-11-16 审计探针实证）。满了丢最旧
+/// 并累计溢出数，drain 时前置一条 `overflow` 帧让消费者知道丢了多少、据此重同步。
+const QUEUE_CAP: usize = 1024;
 
 /// 一条排队的请求。
 struct Job {
@@ -102,37 +106,76 @@ struct Job {
     request: ActionRequest,
 }
 
-/// 结果队列。
-#[derive(Default)]
-struct Results {
-    items: Mutex<VecDeque<String>>,
+/// 有界事件队列（S3）：results 兜底队列与每个 sink 队列共用此结构。
+///
+/// 容量 [`QUEUE_CAP`]，满则丢最旧（`pop_front`）并 `dropped += 1`。`drain` 取走
+/// 一批时，若期间有溢出，先在批首插一条 `{"kind":"overflow","dropped":N}` 帧
+/// 再给真实事件——消费者据此知道"中间丢了 N 条"，可以触发重同步而不是静默缺数据。
+struct BoundedQueue {
+    items: Mutex<QueueState>,
     signal: Condvar,
 }
 
-impl Results {
+#[derive(Default)]
+struct QueueState {
+    items: VecDeque<String>,
+    dropped: u64,
+}
+
+impl Default for BoundedQueue {
+    fn default() -> Self {
+        Self {
+            items: Mutex::new(QueueState::default()),
+            signal: Condvar::new(),
+        }
+    }
+}
+
+impl BoundedQueue {
+    /// 入队；满则丢最旧并累计溢出。非阻塞。
     fn push(&self, text: String) {
-        let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
-        items.push_back(text);
+        let mut state = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        if state.items.len() >= QUEUE_CAP {
+            state.items.pop_front();
+            state.dropped += 1;
+        }
+        state.items.push_back(text);
         self.signal.notify_all();
     }
 
-    fn drain(&self, timeout: Duration) -> Vec<String> {
-        let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
-        if items.is_empty() {
+    /// 取走一批（最多 `batch` 条）。若期间有溢出，批首前置 overflow 帧。
+    /// 空则等到超时。overflow 帧不占 batch 名额（它是元信息，不是事件）。
+    fn drain(&self, timeout: Duration, batch: usize) -> Vec<String> {
+        let mut state = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        if state.items.is_empty() && state.dropped == 0 {
             let (next, _timeout) = self
                 .signal
-                .wait_timeout(items, timeout)
+                .wait_timeout(state, timeout)
                 .unwrap_or_else(|e| e.into_inner());
-            items = next;
+            state = next;
         }
         let mut out = Vec::new();
-        while let Some(item) = items.pop_front() {
+        if state.dropped > 0 {
+            out.push(json!({"kind": "overflow", "dropped": state.dropped}).to_string());
+            state.dropped = 0;
+        }
+        while let Some(item) = state.items.pop_front() {
             out.push(item);
-            if out.len() >= POLL_BATCH {
+            if out.len() >= batch {
                 break;
             }
         }
         out
+    }
+
+    /// 当前积压条数（测试用）。
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.items
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .items
+            .len()
     }
 }
 
@@ -150,57 +193,43 @@ struct Sinks {
 /// （"attempted to use a condition variable with two mutexes"），所以不能
 /// 全体 sink 共享一条 condvar——每个 sink 各带一条。
 struct SinkEntry {
-    queue: Arc<Mutex<VecDeque<String>>>,
-    signal: Arc<Condvar>,
+    queue: Arc<BoundedQueue>,
 }
 
 impl Sinks {
-    /// 把一条事件扇出给所有已注册 sink（非阻塞：只入队 + 叫醒各自的 condvar）。
+    /// 把一条事件扇出给所有已注册 sink（非阻塞：有界入队 + 叫醒各自的 condvar）。
     fn fan_out(&self, text: &str) {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for entry in inner.iter() {
-            entry
-                .queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(text.to_string());
-            entry.signal.notify_all();
+            entry.queue.push(text.to_string());
         }
     }
 
     /// 注册一个 sink，起一条分发线程。`closed` 用 Shared 的销毁标志，
     /// dispose 置位后分发线程随之退出。
     fn register(&self, sink: Arc<dyn EventSink>, closed: &Arc<AtomicBool>) {
-        let queue = Arc::new(Mutex::new(VecDeque::new()));
-        let signal = Arc::new(Condvar::new());
+        let queue = Arc::new(BoundedQueue::default());
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.push(SinkEntry {
                 queue: queue.clone(),
-                signal: signal.clone(),
             });
         }
         let closed = closed.clone();
-        // 分发线程：从队列取事件 → 调回调。closed 后退出（dispose 会叫醒）。
+        // 分发线程：从有界队列取事件 → 调回调。closed 后退出（dispose 会叫醒）。
+        // 每次取一条（batch=1），溢出时 drain 会前置 overflow 帧，回调据此重同步。
         std::thread::Builder::new()
             .name("wxlike-sink".to_string())
             .spawn(move || loop {
                 if closed.load(Ordering::SeqCst) {
                     break;
                 }
-                let next = {
-                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                    if q.is_empty() {
-                        let (next, _) = signal
-                            .wait_timeout(q, Duration::from_millis(WORKER_TICK_MS))
-                            .unwrap_or_else(|e| e.into_inner());
-                        q = next;
+                let batch = queue.drain(Duration::from_millis(WORKER_TICK_MS), 1);
+                for text in batch {
+                    if closed.load(Ordering::SeqCst) {
+                        break;
                     }
-                    q.pop_front()
-                };
-                match next {
-                    Some(text) => sink.on_event(text),
-                    None => continue,
+                    sink.on_event(text);
                 }
             })
             .ok();
@@ -210,7 +239,7 @@ impl Sinks {
     fn wake_all(&self) {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for entry in inner.iter() {
-            entry.signal.notify_all();
+            entry.queue.signal.notify_all();
         }
     }
 }
@@ -219,7 +248,7 @@ impl Sinks {
 struct Shared {
     jobs: Mutex<VecDeque<Job>>,
     job_signal: Condvar,
-    results: Results,
+    results: BoundedQueue,
     /// D3：已注册的事件回调（扇出推送，poll 仍是兜底）。
     sinks: Sinks,
     cancelled: Mutex<HashSet<String>>,
@@ -486,7 +515,7 @@ impl CoreHandle {
             let shared = Arc::new(Shared {
                 jobs: Mutex::new(VecDeque::new()),
                 job_signal: Condvar::new(),
-                results: Results::default(),
+                results: BoundedQueue::default(),
                 sinks: Sinks::default(),
                 cancelled: Mutex::new(HashSet::new()),
                 closed: Arc::new(AtomicBool::new(false)),
@@ -532,7 +561,7 @@ impl CoreHandle {
             return "[]".to_string();
         }
         let timeout = Duration::from_millis(timeout_ms.min(MAX_POLL_MS));
-        let items = self.shared.results.drain(timeout);
+        let items = self.shared.results.drain(timeout, POLL_BATCH);
         format!("[{}]", items.join(","))
     }
 
@@ -688,5 +717,52 @@ mod frame_tests {
         let frame: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(frame["kind"], "fatal");
         assert_eq!(frame["message"], "runtime gone");
+    }
+
+    /// S3：队列有界——超容量丢最旧，队长不超过 QUEUE_CAP。
+    #[test]
+    fn bounded_queue_caps_length() {
+        let q = BoundedQueue::default();
+        for i in 0..(QUEUE_CAP + 500) {
+            q.push(format!("evt-{i}"));
+        }
+        assert_eq!(q.len(), QUEUE_CAP, "队长必须封顶在 QUEUE_CAP");
+    }
+
+    /// S3：溢出后 drain 批首前置 overflow 帧，带丢弃数；消费者据此重同步。
+    #[test]
+    fn bounded_queue_drain_prepends_overflow_marker() {
+        let q = BoundedQueue::default();
+        for i in 0..(QUEUE_CAP + 10) {
+            q.push(format!("evt-{i}"));
+        }
+        let batch = q.drain(Duration::from_millis(10), POLL_BATCH);
+        let first: Value = serde_json::from_str(&batch[0]).unwrap();
+        assert_eq!(first["kind"], "overflow", "批首应是 overflow 帧");
+        assert_eq!(first["dropped"], 10, "丢了 10 条");
+        // overflow 帧不占 batch 名额：其后还有真实事件（裸字符串）。
+        assert!(batch.len() > 1, "overflow 后应仍有真实事件");
+        assert!(batch[1].starts_with("evt-"), "第二条应是真实事件");
+        // 溢出计数已清零：再 drain 不再重复报 overflow。
+        let rest = q.drain(Duration::from_millis(10), POLL_BATCH);
+        if !rest.is_empty() {
+            assert!(
+                !rest[0].contains("\"overflow\""),
+                "溢出计数应已清零：{}",
+                rest[0]
+            );
+        }
+    }
+
+    /// S3：未溢出时 drain 不插 overflow 帧（正常路径不受影响）。
+    #[test]
+    fn bounded_queue_no_overflow_marker_when_not_full() {
+        let q = BoundedQueue::default();
+        q.push("a".to_string());
+        q.push("b".to_string());
+        let batch = q.drain(Duration::from_millis(10), POLL_BATCH);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0], "a");
+        assert_eq!(batch[1], "b");
     }
 }
