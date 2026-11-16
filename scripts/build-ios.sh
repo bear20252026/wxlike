@@ -70,13 +70,26 @@ mkdir -p "$SWIFT_OUT"
 cargo run -q -p wxlike-ffi --features bindgen --bin uniffi-bindgen -- \
   generate --library "$DEVICE_LIB" --language swift --out-dir "$SWIFT_OUT"
 
+echo "==> 准备 headers 目录（只含 C 头 + modulemap）"
+# XCFramework 的 -headers 目录**只能**放 C 头文件与 modulemap。UniFFI 的
+# 输出目录里还有 wxlike_ffi.swift（约 90KB 的 Swift 源码）——直接传整个
+# 目录会把 Swift 源码当头文件打进 framework（2026-11-16 审计发现）。
+# Swift 源码必须作为**独立源码 target** 由壳工程编译，不进 binaryTarget。
+HEADERS_DIR="$OUT_DIR/headers"
+rm -rf "$HEADERS_DIR"
+mkdir -p "$HEADERS_DIR"
+cp "$SWIFT_OUT/wxlike_ffiFFI.h" "$HEADERS_DIR/"
+# modulemap 里的 module 名须与 XCFramework 约定一致；UniFFI 生成的
+# wxlike_ffiFFI.modulemap 内容即 `module wxlike_ffiFFI { header ... }`，
+# xcodebuild 要求目录内文件名为 module.modulemap。
+cp "$SWIFT_OUT/wxlike_ffiFFI.modulemap" "$HEADERS_DIR/module.modulemap"
+
 echo "==> xcodebuild 打包 XCFramework"
 XCFRAMEWORK="$OUT_DIR/wxlike_ffi.xcframework"
 rm -rf "$XCFRAMEWORK"
-# modulemap 用 UniFFI 生成的那份（wxlike_ffiFFI.modulemap）。
 xcodebuild -create-xcframework \
-  -library "$DEVICE_LIB" -headers "$SWIFT_OUT" \
-  -library "$SIM_FAT" -headers "$SWIFT_OUT" \
+  -library "$DEVICE_LIB" -headers "$HEADERS_DIR" \
+  -library "$SIM_FAT" -headers "$HEADERS_DIR" \
   -output "$XCFRAMEWORK"
 
 echo "OK: $XCFRAMEWORK 已生成"
