@@ -1,5 +1,5 @@
 // 由 tools/codegen/generate.py 生成，**不要手改**。
-// schema: contract-v1  摘要: ad2d2be657637cf7  contract: 1.0
+// schema: contract-v1  摘要: 470793a94f99707f  contract: 1.0
 // 改了契约就重跑生成器；`--check` 会在 CI 上盯着这一步。
 
 
@@ -9,7 +9,7 @@ package wxlike.contract
 
 const val SCHEMA_VERSION = "contract-v1"
 const val CONTRACT_VERSION = "1.0"
-const val SCHEMA_DIGEST = "ad2d2be657637cf7"
+const val SCHEMA_DIGEST = "470793a94f99707f"
 
 data class Money(
     val minor: String,
@@ -185,4 +185,34 @@ fun decodeActionResult(raw: Any?): ActionResult? {
 
 // 这条命令认不认识。
 fun isKnownAction(actionId: String): Boolean = actionCapabilities.containsKey(actionId)
+
+// FFI 事件帧（S2）：CoreHandle.poll / subscribe 推出的每条消息。
+// result 帧携带规范 ActionResult，与 action.schema 逐字段一致。
+sealed class CoreFrame {
+    data class Result(val requestId: String, val result: ActionResult) : CoreFrame()
+    data class Error(val requestId: String, val error: Map<String, Any>, val retryable: Boolean) : CoreFrame()
+    data class Fatal(val message: String) : CoreFrame()
+}
+
+// 解码一条 FFI 帧；未知 kind 返回 null（跳过，不抛）。
+fun decodeCoreFrame(raw: Any?): CoreFrame? {
+    val value = raw as? Map<*, *> ?: return null
+    return when (value["kind"]) {
+        "result" -> {
+            val requestId = value["request_id"] as? String ?: return null
+            val result = decodeActionResult(value) ?: return null
+            CoreFrame.Result(requestId, result)
+        }
+        "error" -> {
+            val requestId = value["request_id"] as? String ?: return null
+            val error = value["error"] as? Map<String, Any> ?: return null
+            CoreFrame.Error(requestId, error, value["retryable"] == true)
+        }
+        "fatal" -> {
+            val message = value["message"] as? String ?: return null
+            CoreFrame.Fatal(message)
+        }
+        else -> null
+    }
+}
 

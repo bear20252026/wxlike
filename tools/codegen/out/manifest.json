@@ -1,6 +1,6 @@
 {
   "contract": "1.0",
-  "digest": "ad2d2be657637cf7",
+  "digest": "470793a94f99707f",
   "files": [
     "actions.json",
     "dart/contract.dart",

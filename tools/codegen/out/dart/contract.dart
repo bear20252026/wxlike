@@ -1,5 +1,5 @@
 // 由 tools/codegen/generate.py 生成，**不要手改**。
-// schema: contract-v1  摘要: ad2d2be657637cf7  contract: 1.0
+// schema: contract-v1  摘要: 470793a94f99707f  contract: 1.0
 // 改了契约就重跑生成器；`--check` 会在 CI 上盯着这一步。
 
 
@@ -7,7 +7,7 @@
 
 const String schemaVersion = 'contract-v1';
 const String contractVersion = '1.0';
-const String schemaDigest = 'ad2d2be657637cf7';
+const String schemaDigest = '470793a94f99707f';
 
 class Money {
   final String minor;
@@ -314,4 +314,26 @@ BigInt moneyToMinor(Money money) => BigInt.parse(money.minor!);
 
 /// 这条命令认不认识。
 bool isKnownAction(String actionId) => actionCapabilities.containsKey(actionId);
+
+/// 解码一条 FFI 帧（S2）；未知 kind 返回 null（跳过，不抛）。
+/// result 帧把规范 ActionResult 整个 flatten，decodeActionResult 可直接解。
+/// 返回规范化 Map：result 帧含 kind/request_id + ActionResult 字段。
+Map<String, dynamic>? decodeCoreFrame(Object? raw) {
+  if (raw is! Map<String, dynamic>) return null;
+  final kind = raw['kind'];
+  if (kind == 'result') {
+    final result = decodeActionResult(raw);
+    if (result == null || raw['request_id'] is! String) return null;
+    return {'kind': 'result', 'request_id': raw['request_id'], ...result.toJson()};
+  }
+  if (kind == 'error') {
+    if (raw['request_id'] is! String || raw['error'] is! Map<String, dynamic>) return null;
+    return {'kind': 'error', 'request_id': raw['request_id'], 'error': raw['error'], 'retryable': raw['retryable'] == true};
+  }
+  if (kind == 'fatal') {
+    if (raw['message'] is! String) return null;
+    return {'kind': 'fatal', 'message': raw['message']};
+  }
+  return null;
+}
 
