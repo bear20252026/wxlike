@@ -10,6 +10,8 @@ wxlike-types = { path = "../types" }
 wxlike-client-core = { path = "../client-core" }
 # 复用已有的协议层（鉴权头、审计标记、错误文案都在里面），不重写第二套
 wxlike-client = { path = "../client" }
+# S4：实时事件适配器把线上 Envelope（core 类型）映射成规范 EventEnvelope。
+wxlike-core = { path = "../core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
