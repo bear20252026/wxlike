@@ -81,6 +81,36 @@
       "check": "image",
       "evidence": "Trivy runs in the image job and publishes trivy-server-image.json + a job summary, but summarize_image_scan.py is called with --fail-on none: the base-image CVE baseline has never been read, and the image job is one of the 22 required contexts, so switching the gate on blind would red-line every PR touching Rust or CI.",
       "close_when": "Read the first published report, fix or accept every CRITICAL/HIGH finding, then change --fail-on none to --fail-on critical-high in ci/jobs/server/job.yml and keep the image job green."
+    },
+    {
+      "id": "SECRETS-OS-BACKED",
+      "owner": "G13",
+      "task": "ADR-29 D4 / S6",
+      "status": "open",
+      "blocks_release": false,
+      "check": "native",
+      "evidence": "D4 opened the injection seam (NativeCore::open_with_secrets / open_with_platform) but no OS-backed Secrets backend is wired: CoreHandle::open still uses FileSecrets (hex plaintext on disk; Windows has no 0600 equivalent). The seam is scaffolding, NOT a landed secure-storage capability. capabilities()/secrets_os_backed must be derived from actual wiring, never hardcoded.",
+      "close_when": "An OS-backed Secrets backend (Windows wincred / macOS Keychain / Android Keystore) is injected through the seam, secrets_os_backed reflects the real wiring, and a test proves the cache key lands in the OS store rather than secrets.tsv. Keychain/Keystore legs need macOS/Android runners."
+    },
+    {
+      "id": "MOBILE-NATIVE-SHELLS",
+      "owner": "G13",
+      "task": "ADR-29 D1 / S4",
+      "status": "open",
+      "blocks_release": false,
+      "check": "mobile",
+      "evidence": "The shared-core realtime path exists (Envelope->EventEnvelope adapter, QuicEventSource, caps-driven subscribe_events) and Swift/Kotlin bindings generate, but there is no native iOS/Android shell app consuming them. apps/mobile-ios does not exist; the Flutter shell is retired from CI (disabled-jobs.json). Connection lifecycle (connect/reconnect) is the host assembly layer's responsibility and is not yet built.",
+      "close_when": "Native iOS (XCFramework + Swift shell) and Android (Kotlin + cargo-ndk) shells consume the shared core, build on macOS/Android runners, and record real-device push/reconnect evidence."
+    },
+    {
+      "id": "DART-BINDGEN-RETIRED",
+      "owner": "G13",
+      "task": "ADR-29 D1",
+      "status": "open",
+      "blocks_release": false,
+      "check": "contract",
+      "evidence": "The third-party uniffi-bindgen-dart 0.2.0 cannot generate valid Dart for the EventSink callback interface (assigns a callback object to an int). regenerate.sh defaults to kotlin+swift only; Dart is behind an explicit --dart flag and the flutter/android CI + release jobs are ledger-retired. The Dart toolchain (apps/mobile, gen_dart.py) is still present pending full P3 removal.",
+      "close_when": "Either the Flutter shell and Dart toolchain are fully removed (P3), or a Dart bindgen with callback support is adopted and the flutter/android jobs are re-enabled and removed from disabled-jobs.json."
     }
   ],
   "note": "blocks_release is a policy switch, not a work tracker: every gap below stays status=open with owner+task. Per the owner decision on 2026-11-05 only PAYMENT-CALLBACK-REPLAY still blocks publication."
