@@ -16,9 +16,50 @@
 //! * `payload`：整个 Envelope 的 JSON（保留 sender/body/receipt 等原文）。
 //! * `contract`：本端 [`CONTRACT_VERSION`]（线上信封不带，由本端补）。
 
+use wxlike_client_core::ports::{EventSource, TransportError};
 use wxlike_core::{Envelope, MsgBody, MsgKind, Receipt};
 use wxlike_types::contract::CONTRACT_VERSION;
 use wxlike_types::{ConvId, EventEnvelope, EventId, EventKind, Seq};
+
+/// S4：把宿主无关的 QUIC 客户端（[`wxlike_net::Client`]）包装成规范
+/// [`EventSource`]。`next()` 拉一条线上信封并经 [`envelope_to_event`] 映射。
+///
+/// 连接生命周期（建连/鉴权/重连）由持有 `Client` 的装配层负责——本结构只
+/// 消费一个**已连接**的客户端，不自己建连。这样桌面与移动端共用同一条
+/// 事件流路径，差别只在"谁来建连、何时重连"（宿主策略），不在事件语义。
+pub struct QuicEventSource {
+    client: wxlike_net::Client,
+    closed: bool,
+}
+
+impl QuicEventSource {
+    /// 用一个已连接的客户端构造事件源。
+    #[must_use]
+    pub fn new(client: wxlike_net::Client) -> Self {
+        Self {
+            client,
+            closed: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl EventSource for QuicEventSource {
+    async fn next(&mut self) -> Result<Option<EventEnvelope>, TransportError> {
+        if self.closed {
+            return Ok(None);
+        }
+        match self.client.next_envelope().await {
+            Ok(env) => Ok(Some(envelope_to_event(&env))),
+            // 连接断了：流结束（None），调用方据此重连/重订阅。
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn close(&mut self) {
+        self.closed = true;
+    }
+}
 
 /// 把一条线上信封映射成规范事件信封。
 ///

@@ -12,6 +12,8 @@ wxlike-client-core = { path = "../client-core" }
 wxlike-client = { path = "../client" }
 # S4：实时事件适配器把线上 Envelope（core 类型）映射成规范 EventEnvelope。
 wxlike-core = { path = "../core" }
+# S4：QuicEventSource 包装宿主无关的 QUIC 客户端（next_envelope）。
+wxlike-net = { path = "../net" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -6724,6 +6724,7 @@ dependencies = [
  "wxlike-client",
  "wxlike-client-core",
  "wxlike-core",
+ "wxlike-net",
  "wxlike-types",
 ]
 
