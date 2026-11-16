@@ -38,21 +38,49 @@ def load_disabled() -> set[str]:
     return {entry["job"] for entry in data.get("disabled", [])}
 
 
+# 每个作业受哪些 C0 选路标志驱动（镜像各 job.yml 的 `if:` 条件）。
+# 作业在**任一**标志为 true 时运行；只有全部标志都 false 才是路径跳过。
+# 新增/改作业 if 条件时要同步这里——否则该作业的合法跳过会被误判为"未解释"。
+JOB_SELECT_FLAGS = {
+    "fmt": ["rust"],
+    "clippy": ["rust"],
+    "test": ["rust"],
+    "native": ["rust"],
+    "doc": ["rust"],
+    "wasm": ["rust"],
+    "unwrap": ["rust"],
+    "coverage": ["rust", "contract"],
+    "audit": ["rust", "ci"],
+    "contract": ["contract", "rust"],
+    "ui": ["ui", "desktop"],
+    "web-v2": ["ui"],
+    "desktop": ["desktop", "ui"],
+    "desktop-package": ["desktop", "ui"],
+    "image": ["rust", "ci"],
+    "ingest-image": ["rust", "ci"],
+    "e2e": ["rust", "ci"],
+    "performance": ["rust", "ci"],
+    "ios": ["mobile", "contract"],
+    # flutter / android 已退役（disabled-jobs.json），不走选路判定。
+}
+
+
 def select_skips_job(name: str, select: dict) -> bool:
     """Whether C0 path-selection deselects this job.
 
-    Conservative: a job is path-skipped only if a select flag named after it (or
-    its domain) is explicitly false. Unknown jobs are NOT assumed path-skipped,
-    so an unexplained skip stays red rather than silently green.
+    A job is path-skipped only if **all** its driving select flags are explicitly
+    false (mirrors the `if: a == 'true' || b == 'true'` condition). Unknown jobs
+    are NOT assumed path-skipped, so an unexplained skip stays red.
     """
-    # select outputs are domain flags (rust/contract/ui/mobile/desktop/...).
-    # A job named after a domain maps directly; matrix legs like "test" ride on
-    # the rust flag. We only credit a skip when the matching flag is "false".
     domain = name.split(" ")[0].split("(")[0].strip()
-    aliases = {"test": "rust", "native": "rust", "clippy": "rust", "fmt": "rust", "doc": "rust", "unwrap": "rust", "coverage": "rust"}
-    flag = aliases.get(domain, domain)
-    value = select.get(flag)
-    return isinstance(value, str) and value.lower() == "false"
+    flags = JOB_SELECT_FLAGS.get(domain)
+    if not flags:
+        return False
+    for flag in flags:
+        value = select.get(flag)
+        if isinstance(value, str) and value.lower() == "true":
+            return False  # 任一标志为 true → 作业本应运行，不是路径跳过
+    return True
 
 
 def main() -> int:

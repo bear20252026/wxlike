@@ -155,6 +155,24 @@ class GateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("unexplained skips", result.stderr)
 
+    def test_multi_flag_job_path_skip_passes(self):
+        # web-v2 受 ui 驱动、desktop-package 受 desktop||ui 驱动：
+        # 两者都 false 时是合法路径跳过（曾误判为未解释，回归覆盖）。
+        result = self.run_gate(
+            self.needs({"web-v2": "skipped", "desktop-package": "skipped"}),
+            select={"ui": "false", "desktop": "false"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_multi_flag_job_runs_when_any_flag_true(self):
+        # desktop-package 受 desktop||ui：ui=true 时本应运行，跳过即未解释 → 红。
+        result = self.run_gate(
+            self.needs({"desktop-package": "skipped"}),
+            select={"ui": "true", "desktop": "false"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unexplained skips", result.stderr)
+
     def test_failure_blocks(self):
         result = self.run_gate(self.needs({"test": "failure"}))
         self.assertEqual(result.returncode, 1)
