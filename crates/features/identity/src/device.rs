@@ -131,15 +131,28 @@ pub fn register(
         return Err(IdError::BadInput("identity_key"));
     }
     if let Some(existing) = get(conn, device_id)? {
-        return refresh_existing(conn, existing, reg, &label, &os, &app, now);
+        return refresh_existing(conn, existing, user_id, reg, &label, &os, &app, now);
     }
-    admit(conn, user_id, device_id, reg, &label, &os, &app, now)
+    // R6：get→admit 是 check-then-act。两个账号并发注册同一 device_id 时，
+    // 双方都可能通过 get=None 检查；device_id 是 PRIMARY KEY，输家的 INSERT
+    // 撞唯一约束。这不是数据库故障，是"设备已被别人认领"的业务冲突——
+    // 语义化成 Conflict，而不是把裸 rusqlite 约束错误漏给调用方。
+    // （慢 runner 上 identity_concurrency 曾偶发双 Ok，见第二轮审计 §10。）
+    match admit(conn, user_id, device_id, reg, &label, &os, &app, now) {
+        Err(IdError::Db(rusqlite::Error::SqliteFailure(err, _)))
+            if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Err(IdError::Conflict("device already claimed"))
+        }
+        other => other,
+    }
 }
 
 /// 已存在的设备：撤销的拒绝复活，换了身份密钥的拒绝静默覆盖。
 fn refresh_existing(
     conn: &Connection,
     existing: DeviceRow,
+    user_id: &str,
     reg: &Registration,
     label: &str,
     os: &str,
@@ -148,6 +161,14 @@ fn refresh_existing(
 ) -> Result<DeviceRow> {
     if !existing.is_active() {
         return Err(IdError::Forbidden("device revoked"));
+    }
+    // R6：设备归属不可变（qr_login::adopt_device 的既有规则："已被别人登记
+    // 就拒绝"）。register 的 get→admit 是 check-then-act：两个账号并发注册
+    // 同一 device_id 时，输家可能在赢家提交后才读到行——没有这条检查，输家
+    // 会走"刷新"路径把赢家的设备当自己的用（双 Ok，CI 慢 runner 实证）。
+    // 归属不符 = 业务冲突，宁可失败也不改变已存在设备的归属。
+    if existing.user_id != user_id {
+        return Err(IdError::Conflict("device already claimed"));
     }
     if !existing.identity_key.is_empty()
         && !reg.identity_key.is_empty()
@@ -352,6 +373,27 @@ mod tests {
             app_version: "2.0.0".into(),
             identity_key: key.into(),
         }
+    }
+
+    /// R6：设备归属不可变——别的账号拿着同一个 device_id 来注册，必须拒绝，
+    /// 不能走"刷新"路径把赢家的设备当自己的用（并发输家晚读到行时的窗口，
+    /// CI 慢 runner 曾实证双 Ok）。与 qr_login::adopt_device 的规则一致。
+    #[test]
+    fn register_cannot_claim_a_device_owned_by_another_account() {
+        let conn = db();
+        register(&conn, "alice", "dev-aaaa1111", &reg("android", ""), 1_000).unwrap();
+        let err = register(&conn, "bob", "dev-aaaa1111", &reg("web", ""), 2_000)
+            .expect_err("别人的设备必须拒绝");
+        assert!(
+            matches!(err, IdError::Conflict("device already claimed")),
+            "{err:?}"
+        );
+        let row = get(&conn, "dev-aaaa1111").unwrap().unwrap();
+        assert_eq!(row.user_id, "alice", "归属不得被改写");
+        assert_eq!(row.last_seen, 1_000, "输家不得刷新赢家的 last_seen");
+        // 本人重复注册仍幂等（合法路径不受影响）。
+        let again = register(&conn, "alice", "dev-aaaa1111", &reg("android", ""), 3_000).unwrap();
+        assert_eq!(again.last_seen, 3_000);
     }
 
     #[test]
