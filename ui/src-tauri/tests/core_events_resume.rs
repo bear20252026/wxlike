@@ -37,6 +37,22 @@ fn inbound(msg: &str, seq: u64, conv: &str, sender: &str) -> Value {
     })
 }
 
+/// R2：与渲染行对应的**原始线上信封**（收包泵先有 env 再渲染出 payload）。
+fn wire_of(payload: &Value) -> wxlike_core::Envelope {
+    wxlike_core::Envelope::direct(
+        payload["conv_id"].as_str().unwrap_or_default(),
+        payload["sender"].as_str().unwrap_or_default(),
+        vec![],
+        payload["seq"].as_u64().unwrap_or_default(),
+        payload["text"].as_str().unwrap_or_default(),
+    )
+}
+
+/// 驱动真实生产者 forward_inbound（R2 签名：env + 渲染行）。
+fn forward_text(handle: &MockHandle, payload: &Value, me: Option<&str>) {
+    forward_inbound(handle, &wire_of(payload), payload, me);
+}
+
 /// 已收到的信封（webview 侧视角）。
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<Value>>>);
@@ -106,7 +122,7 @@ fn fresh_subscribe_establishes_a_baseline_and_replays_nothing() {
     let (_app, handle) = boot();
     let capture = Capture::default();
     let _id = capture.attach(&handle);
-    forward_inbound(&handle, &inbound("第一条", 1, "d-a~b", "b"), Some("a"));
+    forward_text(&handle, &inbound("第一条", 1, "d-a~b", "b"), Some("a"));
 
     let reply = resume(&handle, None);
     assert_eq!(reply["subscribed"], json!(true), "回执: {reply}");
@@ -131,7 +147,7 @@ fn resume_replays_everything_missed_while_unsubscribed() {
     let (_app, handle) = boot();
     let capture = Capture::default();
     let id = capture.attach(&handle);
-    forward_inbound(
+    forward_text(
         &handle,
         &inbound("在线时收到的", 1, "d-a~b", "b"),
         Some("a"),
@@ -141,12 +157,12 @@ fn resume_replays_everything_missed_while_unsubscribed() {
     handle.unlisten(id);
 
     // 断线期间到的两条：客户端一条都没收到，但桥已经发过并记进了日志。
-    forward_inbound(
+    forward_text(
         &handle,
         &inbound("漏掉的第一条", 2, "d-a~b", "b"),
         Some("a"),
     );
-    forward_inbound(
+    forward_text(
         &handle,
         &inbound("漏掉的第二条", 3, "d-a~b", "b"),
         Some("a"),
@@ -193,11 +209,11 @@ fn resubscribing_with_the_same_cursor_does_not_double_deliver() {
     let (_app, handle) = boot();
     let capture = Capture::default();
     let id = capture.attach(&handle);
-    forward_inbound(&handle, &inbound("第一条", 1, "d-a~b", "b"), Some("a"));
+    forward_text(&handle, &inbound("第一条", 1, "d-a~b", "b"), Some("a"));
     let cursor = capture.last_cursor();
     handle.unlisten(id);
 
-    forward_inbound(&handle, &inbound("第二条", 2, "d-a~b", "b"), Some("a"));
+    forward_text(&handle, &inbound("第二条", 2, "d-a~b", "b"), Some("a"));
     let _id2 = capture.attach(&handle);
     let first = resume(&handle, Some(json!(cursor.clone())));
     assert_eq!(first["replayed"], json!(2), "第一次订阅补上漏掉的: {first}");
@@ -212,7 +228,7 @@ fn resubscribing_with_the_same_cursor_does_not_double_deliver() {
     assert_eq!(capture.len(), after_first, "一次订阅都没多出来");
 
     // 但游标推进后仍然照常补发（去重不能变成"补发被永久关掉"）。
-    forward_inbound(&handle, &inbound("第三条", 3, "d-a~b", "b"), Some("a"));
+    forward_text(&handle, &inbound("第三条", 3, "d-a~b", "b"), Some("a"));
     let third = resume(&handle, Some(json!(cursor)));
     assert_eq!(
         third["replayed"],
@@ -229,7 +245,7 @@ fn a_cursor_from_a_previous_boot_reports_a_gap_instead_of_lying() {
     let (_app_a, handle_a) = boot();
     let capture_a = Capture::default();
     let _id = capture_a.attach(&handle_a);
-    forward_inbound(
+    forward_text(
         &handle_a,
         &inbound("重启前的消息", 1, "d-a~b", "b"),
         Some("a"),
@@ -264,7 +280,7 @@ fn a_cursor_from_a_previous_boot_reports_a_gap_instead_of_lying() {
     // 重启后新发的事件仍然正常投递（gap 不等于订阅失效）。
     let capture_b = Capture::default();
     let _id_b = capture_b.attach(&handle_b);
-    forward_inbound(
+    forward_text(
         &handle_b,
         &inbound("重启后的消息", 1, "d-a~b", "b"),
         Some("a"),
@@ -277,10 +293,10 @@ fn a_cursor_from_a_previous_boot_reports_a_gap_instead_of_lying() {
 #[test]
 fn event_ids_stay_unique_across_boots() {
     let (_app_a, handle_a) = boot();
-    forward_inbound(&handle_a, &inbound("重启前", 1, "d-a~b", "b"), Some("a"));
+    forward_text(&handle_a, &inbound("重启前", 1, "d-a~b", "b"), Some("a"));
     let capture_a = Capture::default();
     let _id = capture_a.attach(&handle_a);
-    forward_inbound(
+    forward_text(
         &handle_a,
         &inbound("重启前第二条", 2, "d-a~b", "b"),
         Some("a"),
@@ -290,7 +306,7 @@ fn event_ids_stay_unique_across_boots() {
     let (_app_b, handle_b) = boot();
     let capture_b = Capture::default();
     let _id = capture_b.attach(&handle_b);
-    forward_inbound(&handle_b, &inbound("重启后", 1, "d-a~b", "b"), Some("a"));
+    forward_text(&handle_b, &inbound("重启后", 1, "d-a~b", "b"), Some("a"));
     let ids_b = capture_b.ids();
 
     let head_a: &str = ids_a[0].as_str();
@@ -314,7 +330,7 @@ fn a_truncated_journal_still_replays_what_it_kept() {
     let (_app, handle) = boot();
     let capture = Capture::default();
     let _id = capture.attach(&handle);
-    forward_inbound(&handle, &inbound("最早的一条", 1, "d-a~b", "b"), Some("a"));
+    forward_text(&handle, &inbound("最早的一条", 1, "d-a~b", "b"), Some("a"));
     let oldest_cursor = capture.last_cursor();
 
     let capacity = resume(&handle, None)["journal_capacity"]
@@ -322,7 +338,7 @@ fn a_truncated_journal_still_replays_what_it_kept() {
         .expect("要报日志容量") as usize;
     // 灌到容量之上（一条入站消息产 2 个事件）。
     for n in 0..(capacity + 4) {
-        forward_inbound(
+        forward_text(
             &handle,
             &inbound("灌满用", 100 + n as u64, "d-a~b", "b"),
             Some("a"),
@@ -355,7 +371,7 @@ fn a_truncated_journal_still_replays_what_it_kept() {
 #[test]
 fn unusable_cursors_are_reported_not_swallowed() {
     let (_app, handle) = boot();
-    forward_inbound(&handle, &inbound("第一条", 1, "d-a~b", "b"), Some("a"));
+    forward_text(&handle, &inbound("第一条", 1, "d-a~b", "b"), Some("a"));
 
     let bogus = resume(
         &handle,
@@ -391,4 +407,60 @@ fn unusable_cursors_are_reported_not_swallowed() {
         json!(2),
         "从 0 号补到当前 head: {numeric}"
     );
+}
+
+/// R2（第二轮审计 §2 回归）：撤回消息必须发 `message.updated`，不是
+/// `message.created`。此前 ui_event_type 把渲染行重建成 Envelope 必然失败、
+/// 永远落 fallback——这条用例钉死"分类用原始信封、经 S4 适配器"真实生效。
+#[test]
+fn recall_envelope_emits_message_updated_via_adapter() {
+    let (_app, handle) = boot();
+    let capture = Capture::default();
+    let _id = capture.attach(&handle);
+
+    // 原始线上信封：Recall body（收包泵拿到的就是它）。
+    let mut env = wxlike_core::Envelope::direct("d-a~b", "b", vec![], 9, "");
+    env.body = wxlike_core::MsgBody::Recall { target: [7u8; 16] };
+    // 渲染行（render.rs 对 Recall 的输出形状）。
+    let payload = json!({
+        "conv_id": "d-a~b", "kind": "recall", "seq": 9,
+        "sent_at_ms": 1_700_000_000_009i64,
+        "msg_id": "m-9", "sender": "b",
+        "target": "07070707070707070707070707070707",
+    });
+    forward_inbound(&handle, &env, &payload, Some("a"));
+
+    let events = capture.tail_from(0);
+    let types: Vec<&str> = events
+        .iter()
+        .map(|e| e["event_type"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        types.contains(&"message.updated"),
+        "撤回应发 message.updated（经适配器分类），实际: {types:?}"
+    );
+    assert!(
+        !types.contains(&"message.created"),
+        "撤回不该再发 message.created，实际: {types:?}"
+    );
+    assert!(
+        types.contains(&"conversation.upsert"),
+        "会话卡片照常更新: {types:?}"
+    );
+}
+
+/// 对照：普通文本信封仍发 message.created（分类没有一刀切）。
+#[test]
+fn text_envelope_still_emits_message_created() {
+    let (_app, handle) = boot();
+    let capture = Capture::default();
+    let _id = capture.attach(&handle);
+    forward_text(&handle, &inbound("你好", 1, "d-a~b", "b"), Some("a"));
+    let types: Vec<String> = capture
+        .tail_from(0)
+        .iter()
+        .map(|e| e["event_type"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(types.contains(&"message.created".to_string()), "{types:?}");
+    assert!(!types.contains(&"message.updated".to_string()), "{types:?}");
 }

@@ -1353,7 +1353,7 @@ impl AppState {
                         }
                         let _ = app.emit("im-in", &payload);
                         // 新 UI（契约 v1）的事件面：同一payload再发一份信封。
-                        crate::core_bridge::forward_inbound(&app, &payload, me.as_deref());
+                        crate::core_bridge::forward_inbound(&app, &env, &payload, me.as_deref());
                     }
                     Err(_) => {
                         if pump_generation.load(Ordering::SeqCst) == generation {
