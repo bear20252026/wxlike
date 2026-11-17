@@ -92,8 +92,17 @@ done
 # ---------------------------------------------------------------- 1. 绑定
 # `regenerate.sh` 会先 `cargo build -p wxlike-ffi --features bindgen,dart`，
 # 再从编译产物里读接口形状（proc-macro 模式没有 .udl）。所以它自己就能跑。
-echo "==> 1/3 生成 UniFFI 绑定（Dart + Kotlin）"
-bash crates/ffi/regenerate.sh "$MODE"
+# R4（ADR-29 D1 退役过渡）：Dart 绑定生成器不支持 EventSink 回调，默认路径
+# 已不可用。要继续构建旧 Flutter 壳必须显式 --allow-retired 并承担 Dart
+# 生成失败的风险；否则 fail-fast，别让开发者撞 109 个 flutter analyze error。
+if [[ "${ALLOW_RETIRED:-0}" != "1" ]]; then
+  echo "本 Flutter 壳已退役（ADR-29 D1，ci/jobs/policy/disabled-jobs.json）。" >&2
+  echo "Dart 绑定生成器不支持 EventSink 回调，此流程当前不可用。" >&2
+  echo "如确要尝试旧壳构建：ALLOW_RETIRED=1 apps/mobile/build_android.sh" >&2
+  exit 1
+fi
+echo "==> 1/3 生成 UniFFI 绑定（Dart + Kotlin，--dart 显式启用）"
+bash crates/ffi/regenerate.sh "$MODE" --dart
 
 # ---------------------------------------------------------------- 2. .so
 # 不加 `--features bindgen,dart`：那会把 uniffi_bindgen 链进手机上的库。

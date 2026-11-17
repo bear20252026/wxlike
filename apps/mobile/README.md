@@ -1,5 +1,12 @@
 # wxlike 移动端（Zone B：Flutter + Rust UniFFI）
 
+> **⚠️ 退役过渡（ADR-29 D1「−Dart」，2026-11-16）**
+> 本 Flutter 壳已从 CI 与发布链退役（ci/jobs/policy/disabled-jobs.json）。
+> 第三方 uniffi-bindgen-dart 0.2.0 不支持 D3 的 EventSink 回调接口，生成的
+> Dart 绑定不可编译；crates/ffi/regenerate.sh 默认**不再产 Dart**（需显式
+> --dart，且生成器恢复回调支持前该路径仍不可用）。**下文流程当前走不通**，
+> 保留作历史参考。原生路线见 ADR-29：Kotlin/Swift 绑定（官方后端）+ 共享
+> Rust 核心；完整移除排 P3。
 三屏：登录 → 会话列表 → 聊天。逻辑全在 Rust，Dart 只画界面。
 
 ## 出 APK（一条命令）
