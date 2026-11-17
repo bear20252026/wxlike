@@ -58,6 +58,11 @@ ignore = [
     "RUSTSEC-2024-0384",
     # paste，经 boa_string（小程序容器的 JS 引擎）传递引入
     "RUSTSEC-2024-0436",
+    # chrono 停止维护（2026-11-17 发布，所有版本受影响，无安全升级版本）。
+    # 经 rmcp 3.9（MCP SDK，wxlike-mcp）及其 schemars 传递引入，本仓库不直接
+    # 依赖 chrono。官方推荐替代 jiff/time，但迁移取决于上游 rmcp，不是本仓库
+    # 能单独完成的——登记为知情接受。rmcp 换掉 chrono 后应删除本条。
+    "RUSTSEC-2026-0543",
 ]
 
 [sources]
