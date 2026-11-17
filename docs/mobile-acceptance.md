@@ -1,5 +1,10 @@
 # Zone B 真机验收清单
 
+> **⚠️ 退役过渡（ADR-29 D1，2026-11-16）**：Flutter 壳已从 CI/发布退役
+> （disabled-jobs.json）；Dart 绑定生成器不支持 EventSink 回调，本清单的
+> regenerate + flutter test 流程当前不可执行，保留作历史验收记录。
+> 原生移动端验收将随 MOBILE-NATIVE-SHELLS 缺口另立清单。
+
 > 2026-10-20 · 适用于 `feat/zone-b`（B1–B5）· 目标机型：已 root 的小米 MI 8
 > （Android 10 / SDK 29 / arm64-v8a）。其他 arm64 机器同样适用，只是第 1 步的
 > `arm64-v8a` 与安装命令要跟着改。

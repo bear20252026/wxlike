@@ -99,7 +99,7 @@
       "status": "open",
       "blocks_release": false,
       "check": "mobile",
-      "evidence": "The shared-core realtime path exists (Envelope->EventEnvelope adapter, QuicEventSource, caps-driven subscribe_events) and Swift/Kotlin bindings generate, but there is no native iOS/Android shell app consuming them. apps/mobile-ios does not exist; the Flutter shell is retired from CI (disabled-jobs.json). Connection lifecycle (connect/reconnect) is the host assembly layer's responsibility and is not yet built.",
+      "evidence": "The shared-core realtime path exists (Envelope->EventEnvelope adapter, QuicEventSource, caps-driven subscribe_events) and Swift/Kotlin bindings generate, but there is no native iOS/Android shell app consuming them. apps/mobile-ios does not exist; the Flutter shell is retired from CI (disabled-jobs.json). Connection lifecycle (connect/reconnect) is the host assembly layer's responsibility and is not yet built. The desktop host pump also still uses the legacy render path; QuicEventSource and subscribe_events have no production caller yet (R2 wired envelope_to_event into forward_inbound classification only).",
       "close_when": "Native iOS (XCFramework + Swift shell) and Android (Kotlin + cargo-ndk) shells consume the shared core, build on macOS/Android runners, and record real-device push/reconnect evidence."
     },
     {
