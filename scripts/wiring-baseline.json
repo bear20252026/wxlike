@@ -1,0 +1,67 @@
+{
+  "seams": [
+    {
+      "crate": "wxlike-client-web",
+      "owner": "G01",
+      "task": "G01-03",
+      "close_when": "apps/desktop-web loads the wasm module through a wasm-bindgen entry (JS packaging wired into its build) and the wasm job stays green; mirrors G01-03-WASM in ci/jobs/policy/known-gaps.json.",
+      "evidence": "6 tests, zero production dependents. The CI wasm job compiles it for wasm32-unknown-unknown, but no wasm-bindgen entry point / packaging integration exists in apps/desktop-web yet."
+    },
+    {
+      "crate": "wxlike-commerce",
+      "owner": "G06",
+      "task": "G06 payments integration",
+      "close_when": "Server wallet/payment routes dispatch into wxlike-commerce (replacing crates/platform/src/wallet.rs) and the provider callback contract with operation_id lands, closing PAYMENT-CALLBACK-REPLAY in ci/jobs/policy/known-gaps.json.",
+      "evidence": "69 tests, zero production dependents (dep_graph_guard rule 4, 2026-11-17). Live wallet path is crates/platform/src/wallet.rs + domain/wallet.rs; commerce is tested but unwired."
+    },
+    {
+      "crate": "wxlike-container",
+      "owner": "G08",
+      "task": "G08 miniapps integration",
+      "close_when": "The server miniapp mount dispatches into wxlike-container (Boa host + wxhost bridge) instead of the independent shadow registry, and a real miniapp lifecycle runs end-to-end through the crate.",
+      "evidence": "58 tests, zero production dependents. server/src/mini_mount.rs keeps an independent shadow implementation; the container crate is not on any entry closure."
+    },
+    {
+      "crate": "wxlike-discovery",
+      "owner": "G07",
+      "task": "G07 discovery integration",
+      "close_when": "Server discovery/search routes dispatch into wxlike-discovery and the crate leaves the unwired set (guard baseline shrinks).",
+      "evidence": "30 tests, zero production dependents. No entry crate (server/admin/cli/mcp/ffi/sfu/ui) depends on it."
+    },
+    {
+      "crate": "wxlike-dpage",
+      "owner": "G08",
+      "task": "G08 miniapps integration",
+      "close_when": "The miniapp package path (pack/unpack CLI + runtime loading) goes through wxlike-dpage from a production entry, not only from other unwired crates.",
+      "evidence": "8 tests. Only dependents are wxlike-container and wxlike-miniapps, themselves unwired; being depended on by another island does not count as wiring."
+    },
+    {
+      "crate": "wxlike-ledger",
+      "owner": "G06",
+      "task": "G06 payments integration",
+      "close_when": "Server wallet ledger reads/writes dispatch into wxlike-ledger (replacing the platform wallet ledger tables path) with the concurrency soul-test passing against the live route.",
+      "evidence": "24 tests. Only dependent is wxlike-commerce, itself unwired; live ledger path is crates/platform/src/domain/repo/wallet.rs."
+    },
+    {
+      "crate": "wxlike-miniapps",
+      "owner": "G08",
+      "task": "G08 miniapps integration",
+      "close_when": "server/src/mini_mount.rs dispatches into wxlike-miniapps (single registry fact) and the shadow BTreeMap implementation is retired.",
+      "evidence": "54 tests, zero production dependents. server/src/mini_mount.rs maintains an independent BTreeMap shadow registry parallel to the crate."
+    },
+    {
+      "crate": "wxlike-translation",
+      "owner": "G07",
+      "task": "G07 translation integration",
+      "close_when": "A production entry (server message translation route or client action) dispatches into wxlike-translation and the crate leaves the unwired set.",
+      "evidence": "9 tests, zero production dependents. Depends on wxlike-vision (also unwired); no entry closure covers either."
+    },
+    {
+      "crate": "wxlike-vision",
+      "owner": "G07",
+      "task": "G07 vision integration",
+      "close_when": "A production entry dispatches into wxlike-vision (scan/OCR path) and the crate leaves the unwired set.",
+      "evidence": "15 tests. Only dependent is wxlike-translation, itself unwired; no entry crate depends on it."
+    }
+  ]
+}
