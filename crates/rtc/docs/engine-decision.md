@@ -1,39 +1,57 @@
-# G09-01 唯一 RTC 引擎决策与兼容矩阵
+# G09-01 RTC 引擎决策与兼容矩阵（ADR-25 修订）
 
-状态：**已实现并通过本机自动化验收；真实设备项见文末待验清单。**
-决策日期：2026-10-24。适用范围：全部客户端（桌面浏览器、Android、iOS、
-Flutter 移动/桌面、CI 探针）。
+状态：**str0m 冷备路径已实现并通过本机自动化验收；LiveKit 线上接入未完成，
+真实设备项见文末待验清单。**
+决策日期：2026-10-24（str0m 采用）；**2026-10-28 ADR-25 改定 LiveKit，
+2026-11-05 所有者确认执行**。适用范围：全部客户端（桌面浏览器、Android、
+iOS、Flutter 移动/桌面、CI 探针）。
 
-## 1. 结论
+## 1. 结论（ADR-25 修订）
 
-全平台只保留一套房间事实：
+全平台仍然只保留**一套房间事实**，但线上引擎换为 LiveKit sidecar：
 
 ```text
 signaling（QUIC envelope / rtc-signal）
         │
         ▼
-str0m MediaSession（纯 Rust，sans-I/O，DTLS-SRTP）
+LiveKit sidecar（线上：媒体转发 + 房间状态；独立进程）
         │
-        ├── P2P（1:1，直连或 TURN 中继）
-        └── 本仓库 SFU（多人通话 / 直播 / 连麦）
+        └── 本仓库 Room 名册/授权事实 + LiveKit token（短时绑定 user/device/call）
+
+冷备（代码保留，仅对照与回滚演练，不许拥有在线房间）：
+str0m MediaSession（纯 Rust，sans-I/O，DTLS-SRTP）+ 本仓库 SFU
 ```
 
-* 配置项 `CallEngine` 只接受 `str0m`；出现 `livekit` 或未知引擎直接失败，
-  报 `NeedsGlobalAdr` / `Unknown`（`crates/rtc/src/compat.rs`）。
-* 任何第二个引擎都意味着两套房间事实（成员、静音、录制、计费无法对齐），
-  必须走全局 ADR 后才能进入比较实现。
+* 配置门禁 `compat::approved_engine` 白名单只接受 `livekit`（线上，缺省）
+  与 `str0m`（冷备）；未知引擎直接失败报 `Unknown`、拒绝启动
+  （`crates/rtc/src/compat.rs`）。
+* **单一在线闸继续有效**：`room::EngineGate` 保证同一时刻只有一个引擎
+  在线——线上 LiveKit 时冷备 str0m 不许拥有房间（`ColdStandby`）；回滚
+  演练把冷备升为在线后 LiveKit 反过来不许开房间（`AlreadyOnline`）。
+  任何第二个引擎同时在线都意味着两套房间事实（成员、静音、录制、计费
+  无法对齐），再换引擎仍须新的全局 ADR。
 * UI 组不得各自接入不同的 RTC 服务；跨端差异只能通过原生桥补能力，
   不能换协议栈。
+* **接线现状（诚实标注）**：LiveKit token（`token/livekit.rs`）与房间/
+  参与者状态机（`room.rs`，移植自上游并逐文件审查）已落地并有测试；
+  sidecar 部署与四端 SDK 媒体接入**未完成**，现有 `/api/call/*` 路由仍走
+  str0m 冷备路径（`Room::new`），切换需求登记在
+  `integration-requests/G09/`。在切换完成前不得宣称线上通话已用 LiveKit。
 
-## 2. 候选比较（为什么不是 LiveKit）
+## 2. 候选比较（2026-10-24 原评估，ADR-25 修订结论）
 
 | 候选 | 语言/形态 | 与本仓库的契合度 | 结论 |
 |---|---|---|---|
-| **str0m + 自建 SFU** | 纯 Rust，无 C++ 绑定 | 已有 P2P/SFU/QUIC 信令与测试基座；符合任务书"禁 libwebrtc C++ 绑定" | **采用** |
-| LiveKit | Go 服务 + 多语言 SDK | 功能完整，但会引入第二套房间/鉴权/Token 体系；跨节点与录制语义都要重接 | 仅作研究锚点 |
+| str0m + 自建 SFU | 纯 Rust，无 C++ 绑定 | 已有 P2P/SFU/QUIC 信令与测试基座；符合任务书"禁 libwebrtc C++ 绑定" | 原采用；**ADR-25 转冷备** |
+| **LiveKit** | Go 服务 + 多语言 SDK | 功能完整；房间/鉴权/Token 体系经逐文件审查移植为 Rust 状态机 + token（`UP-LIVEKIT-RUSTSDK`），媒体面以 sidecar 独立进程接入，不拼两套房间事实 | **ADR-25 采用（2026-11-05 确认执行）** |
 | mediasoup | C++ worker | 违背纯 Rust 约束，构建与崩溃面扩大 | 排除 |
 | Janus | C 插件 | 同上，且 SFU 转发策略需重写 | 排除 |
 | Pion | Go | 客户端无法复用，服务端与现有 Rust 房间模型割裂 | 排除 |
+
+ADR-25 的取舍：str0m 的媒体协议栈继续作为冷备与回滚演练保留；线上媒体
+转发与房间状态交给 LiveKit sidecar，本仓库只持有名册/授权/计费事实与
+短时 token，避免自维护 SFU 的长期运维面。移植边界与许可审查见
+`third_party/reviews/registry.json`（`UP-LIVEKIT-RUSTSDK`）。
 
 研究锚点（不复制代码）：LiveKit commit `9644b99…`、coturn commit
 `596c48b…`、Nextcloud Talk commit `1fd0f21…`、Signal-Desktop commit
@@ -96,6 +114,10 @@ str0m MediaSession（纯 Rust，sans-I/O，DTLS-SRTP）
 
 ## 6. 待验清单（不得据此标 ACCEPTED）
 
+0. **LiveKit 线上接入（ADR-25）**：sidecar 部署 + token/信令面接线 +
+   四端 SDK 媒体接入与跨端解密验证；`/api/call/*` 路由从 str0m 冷备切到
+   `Room::livekit` + `EngineGate::production()`。完成前线上通话仍走冷备
+   路径，G09 不得标"LiveKit 已上线"。
 1. 四类真实客户端两两语音/视频（真机 + 真实浏览器，含权限弹窗）。
 2. iOS 听筒/扬声器/蓝牙切换、被其他 App 抢占音频后的恢复。
 3. Android/iOS 后台来电响铃与接听（依赖 G10/G12 桥）。

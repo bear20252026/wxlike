@@ -1,10 +1,13 @@
-//! G09-01 唯一 RTC 引擎门禁与客户端兼容矩阵。
+//! G09-01 RTC 引擎门禁与客户端兼容矩阵（ADR-25 修订）。
 //!
-//! 全平台只有一套房间事实：`str0m` 媒体栈（[`crate::media`]）加本仓库的
-//! SFU。UI 组不得各自接不同的 RTC 服务；LiveKit 仅作为候选比较，换引擎
-//! 必须走全局 ADR。本模块把这个约束变成可执行的门禁：
+//! ADR-25（2026-10-28 裁决，2026-11-05 所有者确认执行）把通话引擎定为
+//! **LiveKit sidecar**，`str0m` 媒体栈（[`crate::media`]）+ 本仓库 SFU 转
+//! **冷备**（代码保留，仅对照与回滚演练）。本模块是**配置装载门禁**：
 //!
-//! * [`approved_engine`] —— 配置里出现第二个引擎就直接失败；
+//! * [`approved_engine`] —— 白名单只认 `livekit` 与 `str0m`，未知引擎拒绝
+//!   启动；「不拼两套房间事实」不变——同一时刻只有一个引擎在线，由
+//!   [`crate::room::EngineGate`] 在**房间创建**时强制（冷备不许拥有在线
+//!   房间），本函数不做在线裁决；
 //! * [`support`] —— 每类客户端 × 每项能力的明确结论（原生 / 需原生桥 / 阻塞）；
 //! * [`require`] —— UI 接线前的强制检查，`Blocked`/`NeedsBridge` 不许被当成可用；
 //! * [`budget`] / [`power_budget`] —— 带宽与耗电预算，按质量档位给出上限。
@@ -16,10 +19,16 @@
 
 use serde::Serialize;
 
-/// 唯一获批的引擎名。配置项只接受这一个值。
-pub const ENGINE: &str = "str0m";
+/// ADR-25 的线上引擎名。配置缺省时用它（sidecar 部署 + 四端 SDK 接入
+/// 完成前，线上链路尚未切换，见 `docs/engine-decision.md` 待验清单）。
+pub const ENGINE: &str = "livekit";
 
-/// 已知的 RTC 引擎。`LiveKit` 只在 ADR 比较里存在，不是可选项。
+/// ADR-25 获批的冷备引擎名：代码保留在仓库，仅对照与回滚演练；
+/// 在线房间里它不许出现（由 [`crate::room::EngineGate`] 强制）。
+pub const COLD_STANDBY_ENGINE: &str = "str0m";
+
+/// ADR-25 白名单内的 RTC 引擎。白名单之外（janus/mediasoup 等）一律拒绝；
+/// 再换引擎仍须新的全局 ADR。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Engine {
@@ -38,28 +47,27 @@ impl Engine {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Str0m => ENGINE,
-            Self::LiveKit => "livekit",
+            Self::Str0m => COLD_STANDBY_ENGINE,
+            Self::LiveKit => ENGINE,
         }
     }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum EngineError {
-    #[error("unknown RTC engine `{0}`")]
+    #[error("unknown RTC engine `{0}`; the ADR-25 whitelist is livekit + str0m (cold standby)")]
     Unknown(String),
-    #[error("`{0}` is a comparison candidate only; switching engines needs a global ADR")]
-    NeedsGlobalAdr(&'static str),
 }
 
-/// 所有客户端必须经过的门禁。`None` 表示使用默认引擎。
+/// 配置装载门禁（ADR-25）：白名单只认 `livekit`（线上）与 `str0m`（冷备），
+/// 未知引擎直接失败、拒绝启动。`None` 表示使用默认线上引擎 [`ENGINE`]。
+///
+/// 注意分工：本函数只回答「这个引擎是否获 ADR 批准」；「同一时刻只有一个
+/// 引擎在线、冷备不许拥有在线房间」由 [`crate::room::EngineGate::admit`]
+/// 在房间创建时强制。两层都过，才不会出现两套房间事实。
 pub fn approved_engine(configured: Option<&str>) -> Result<Engine, EngineError> {
     let raw = configured.unwrap_or(ENGINE);
-    let engine = Engine::parse(raw).ok_or_else(|| EngineError::Unknown(raw.to_string()))?;
-    match engine {
-        Engine::Str0m => Ok(engine),
-        Engine::LiveKit => Err(EngineError::NeedsGlobalAdr(engine.name())),
-    }
+    Engine::parse(raw).ok_or_else(|| EngineError::Unknown(raw.to_string()))
 }
 
 /// 需要接线的客户端类别。验收四类 = 桌面浏览器 / Android / iOS / Flutter。
@@ -380,15 +388,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_str0m_is_approved() {
-        assert_eq!(approved_engine(None), Ok(Engine::Str0m));
+    fn adr25_whitelist_accepts_livekit_and_cold_standby_str0m() {
+        // 缺省 = ADR-25 线上引擎 LiveKit（与 room::MediaEngine::production 同源）。
+        assert_eq!(approved_engine(None), Ok(Engine::LiveKit));
+        assert_eq!(approved_engine(Some("LIVEKIT")), Ok(Engine::LiveKit));
+        // str0m 转冷备但仍在白名单：配置显式选它合法（回滚演练），
+        // 在线房间归谁由 room::EngineGate 裁决，不在本函数。
         assert_eq!(approved_engine(Some("STR0M")), Ok(Engine::Str0m));
-        assert_eq!(
-            approved_engine(Some("livekit")),
-            Err(EngineError::NeedsGlobalAdr("livekit"))
-        );
+        // 白名单之外的引擎一律拒绝启动。
         assert!(matches!(
             approved_engine(Some("janus")),
+            Err(EngineError::Unknown(_))
+        ));
+        assert!(matches!(
+            approved_engine(Some("mediasoup")),
             Err(EngineError::Unknown(_))
         ));
     }

@@ -12,6 +12,7 @@ use wxlike_rtc::compat::{
     Engine, EngineError, Quality, Support,
 };
 use wxlike_rtc::media::{pump, MediaSession};
+use wxlike_rtc::room::{EngineGate, MediaEngine};
 
 const A_AUDIO: [u8; 80] = [0xA1; 80];
 const B_AUDIO: [u8; 80] = [0xB2; 80];
@@ -44,7 +45,7 @@ fn exercise_pair(left: ClientClass, right: ClientClass) {
 
     assert!(
         approved_engine(None).is_ok(),
-        "{left:?}/{right:?} 只允许唯一引擎"
+        "{left:?}/{right:?} 引擎必须在 ADR-25 白名单内"
     );
     connect(&mut a, &mut b);
 
@@ -93,12 +94,32 @@ fn all_four_client_classes_exchange_audio_and_video_pairwise() {
 }
 
 #[test]
-fn second_engine_requires_a_global_adr() {
+fn engine_whitelist_is_adr25_and_single_online_gate_still_holds() {
+    // 配置门禁：白名单 = livekit（线上）+ str0m（冷备），其余拒绝启动。
+    assert_eq!(approved_engine(Some("livekit")), Ok(Engine::LiveKit));
     assert_eq!(approved_engine(Some("str0m")), Ok(Engine::Str0m));
-    assert_eq!(
-        approved_engine(Some("livekit")),
-        Err(EngineError::NeedsGlobalAdr("livekit"))
-    );
+    assert!(matches!(
+        approved_engine(Some("janus")),
+        Err(EngineError::Unknown(_))
+    ));
+
+    // 单一在线闸（ADR-25 继续有效）：线上 LiveKit 时，冷备不许拥有房间。
+    let gate = EngineGate::production();
+    assert_eq!(gate.active(), MediaEngine::LiveKit);
+    assert_eq!(gate.admit(MediaEngine::LiveKit), Ok(MediaEngine::LiveKit));
+    assert!(matches!(
+        gate.admit(MediaEngine::Str0m),
+        Err(wxlike_rtc::room::EngineError::ColdStandby("str0m"))
+    ));
+
+    // 回滚演练把冷备升为在线后，LiveKit 反过来不许再开房间——
+    // 任何时刻都只有一份房间事实。
+    let drill = EngineGate::cold_drill();
+    assert_eq!(drill.admit(MediaEngine::Str0m), Ok(MediaEngine::Str0m));
+    assert!(matches!(
+        drill.admit(MediaEngine::LiveKit),
+        Err(wxlike_rtc::room::EngineError::AlreadyOnline("str0m"))
+    ));
 }
 
 #[test]
