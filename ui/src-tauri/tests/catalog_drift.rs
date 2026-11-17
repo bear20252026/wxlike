@@ -35,7 +35,14 @@ fn bridge_source() -> &'static str {
     SRC.get_or_init(|| {
         let mut s = String::from(include_str!("../src/core_bridge.rs"));
         s.push_str(include_str!("../src/core_bridge/types.inc"));
-        s.push_str(include_str!("../src/core_bridge/support.inc"));
+        // support.inc 已拆为 6 个职责碎片（F4），编排入口只剩 include! 链；
+        // 静态对账要读碎片本体（与 check-core-transport.mjs 读全部 *.inc 同口径）。
+        s.push_str(include_str!("../src/core_bridge/support_state.inc"));
+        s.push_str(include_str!("../src/core_bridge/support_events.inc"));
+        s.push_str(include_str!("../src/core_bridge/support_subscribe.inc"));
+        s.push_str(include_str!("../src/core_bridge/support_session.inc"));
+        s.push_str(include_str!("../src/core_bridge/support_http.inc"));
+        s.push_str(include_str!("../src/core_bridge/support_params.inc"));
         s.push_str(include_str!("../src/core_bridge/dispatch.inc"));
         s.push_str(include_str!("../src/core_bridge/identity.inc"));
         s.push_str(include_str!("../src/core_bridge/messaging.inc"));
