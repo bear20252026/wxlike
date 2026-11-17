@@ -397,6 +397,46 @@ class ReleaseGateScopeTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("real-device evidence is missing", result.stdout)
 
+    def test_retired_mobile_targets_do_not_block_desktop_publication(self):
+        # R1：android-release/ios-release 已登记退役 → 缺它们的证据不再阻塞
+        # 桌面+服务端发布（此前 --require-clean 无条件必填，真实发布必失败）。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self._fixtures(root)
+            # 去掉移动端证据参数。
+            stripped = []
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ("--android-evidence", "--ios-evidence"):
+                    skip_next = True
+                    continue
+                stripped.append(a)
+            result = self._run([*stripped, "--require-clean", "--output", str(root / "out.json")])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            payload = json.loads((root / "out.json").read_text(encoding="utf-8"))
+            self.assertTrue(payload["published"])
+            self.assertIn("android-release", payload["retired_targets"])
+            self.assertIn("ios-release", payload["retired_targets"])
+
+    def test_retired_target_evidence_still_validated_when_present(self):
+        # 退役豁免的是"缺席必填"，不是校验本身：给了 debug-key 证据照样红。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self._fixtures(root)
+            (root / "android-release.json").write_text(json.dumps({"debug_key": True}), encoding="utf-8")
+            result = self._run([*args, "--require-clean", "--output", str(root / "out.json")])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("debug-key", result.stdout)
+
+    def test_ledger_lists_exactly_the_retired_release_jobs(self):
+        # 台账与豁免范围同源：只有 release.yml 的登记条目被豁免。
+        data = json.loads((JOBS / "policy" / "disabled-jobs.json").read_text(encoding="utf-8"))
+        release_retired = {e["job"] for e in data["disabled"] if e["workflow"] == "release.yml"}
+        self.assertEqual(release_retired, {"android-release", "ios-release"})
+
 
 class WireVariantTest(unittest.TestCase):
     def test_rust_and_browser_orders_match(self):

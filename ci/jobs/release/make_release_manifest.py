@@ -40,6 +40,25 @@ def load(path: Path | None, default=None):
         raise SystemExit(f"cannot read {path}: {exc}")
 
 
+def _retired_release_targets() -> set[str]:
+    """从退役台账取已退役的 release 作业名（fail-closed）。
+
+    台账缺失或损坏 → 返回空集（当作未退役，移动证据照旧必填），并打印
+    警告——绝不因台账读不到就放宽发布门禁。
+    """
+    ledger = Path(__file__).resolve().parents[1] / "policy" / "disabled-jobs.json"
+    try:
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+        return {
+            entry["job"]
+            for entry in data.get("disabled", [])
+            if entry.get("workflow") == "release.yml"
+        }
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        print(f"WARNING cannot read retirement ledger ({exc}); mobile evidence stays mandatory")
+        return set()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -92,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     if desktop and desktop.get("version") and desktop["version"] != args.version:
         problems.append(f"desktop manifest version {desktop['version']} != {args.version}")
 
+    # R1（第二轮审计）：移动端证据要求与退役台账联动。android-release /
+    # ios-release 在 policy/disabled-jobs.json 登记退役后永远不会产出证据，
+    # 若这里仍无条件必填，真实发布（--require-clean）就永远失败——退役声明
+    # 必须是单一事实源，CI if / release if / 证据校验三处消费同一份。
+    # 台账缺失/损坏时 fail-closed（当作未退役，证据照旧必填）。
+    retired_targets = _retired_release_targets()
     mobile = {}
     for name, path, flag in (
         ("android", args.android_evidence, args.require_clean),
@@ -102,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             if data.get("debug_key"):
                 problems.append(f"{name} evidence shows a debug-key signature")
             mobile[name] = {"path": str(path), "sha256": sha256(path), **data}
-        elif flag:
+        elif flag and f"{name}-release" not in retired_targets:
             problems.append(f"{name} release evidence is missing")
 
     device = None
@@ -136,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         "image": {"reference": args.image, "digest": digest or None, "sbom": sbom},
         "desktop": {"manifest_version": desktop.get("version"), "platforms": platforms},
         "mobile": mobile,
+        "retired_targets": sorted(retired_targets),
         "device_evidence": device,
         "gaps": {
             "total": gaps.get("total", 0),
