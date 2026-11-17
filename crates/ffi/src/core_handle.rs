@@ -155,13 +155,17 @@ impl BoundedQueue {
             state = next;
         }
         let mut out = Vec::new();
+        let mut meta = 0usize;
         if state.dropped > 0 {
             out.push(json!({"kind": "overflow", "dropped": state.dropped}).to_string());
             state.dropped = 0;
+            meta = 1;
         }
+        // R5：overflow 是元信息，不占 batch 名额——batch=1 的 sink 线程也能
+        // 在同一批里拿到 overflow + 首条真实事件，不再延迟一个 tick。
         while let Some(item) = state.items.pop_front() {
             out.push(item);
-            if out.len() >= batch {
+            if out.len() >= batch + meta {
                 break;
             }
         }
@@ -752,6 +756,25 @@ mod frame_tests {
                 rest[0]
             );
         }
+    }
+
+    /// R5：batch=1 且有溢出时，同一批里 overflow + 首条真实事件都拿到
+    /// （overflow 不占名额，sink 线程不再延迟一个 tick）。
+    #[test]
+    fn overflow_does_not_consume_batch_slot() {
+        let q = BoundedQueue::default();
+        for i in 0..(QUEUE_CAP + 3) {
+            q.push(format!("evt-{i}"));
+        }
+        let batch = q.drain(Duration::from_millis(10), 1);
+        assert_eq!(
+            batch.len(),
+            2,
+            "batch=1 应是 overflow + 1 条事件：{batch:?}"
+        );
+        let first: Value = serde_json::from_str(&batch[0]).unwrap();
+        assert_eq!(first["kind"], "overflow");
+        assert!(batch[1].starts_with("evt-"), "第二条应是真实事件");
     }
 
     /// S3：未溢出时 drain 不插 overflow 帧（正常路径不受影响）。
