@@ -190,6 +190,56 @@ class GateTest(unittest.TestCase):
         needs.pop("audit")
         self.assertEqual(self.run_gate(needs).returncode, 1)
 
+    def test_unwrap_contract_only_skip_is_not_path_selected(self):
+        # R3 回归：unwrap 真实条件 rust||contract。rust=false、contract=true 时
+        # 作业本应运行；若此时被跳过（如依赖失败），不是路径跳过 → 必须红。
+        # 旧手工表漏了 contract，会把这种跳过静默放行（fail-open）。
+        result = self.run_gate(
+            self.needs({"unwrap": "skipped"}),
+            select={"rust": "false", "contract": "true"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unexplained skips", result.stderr)
+
+    def test_unwrap_both_false_skip_is_path_selected(self):
+        # rust 与 contract 都 false → unwrap 合法路径跳过，绿。
+        result = self.run_gate(
+            self.needs({"unwrap": "skipped"}),
+            select={"rust": "false", "contract": "false"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class GateMappingParityTest(unittest.TestCase):
+    """R3：gate 的选路映射必须与生成工作流的真实 if 条件同源。
+
+    手工镜像两次漂移（web-v2/desktop-package、unwrap）。gate 现在从
+    generated/ci.yml 自动提取；本测试同时对账**兜底表**——兜底也不许漂移。
+    """
+
+    def _real_flags(self) -> dict[str, set[str]]:
+        workflow = yaml.safe_load((JOBS / "generated" / "ci.yml").read_text(encoding="utf-8"))
+        real = {}
+        for name, job in workflow["jobs"].items():
+            expr = job.get("if")
+            if isinstance(expr, str):
+                found = set(re.findall(r"needs\.select\.outputs\.(\w+)", expr))
+                if found:
+                    real[name] = found
+        return real
+
+    def test_dynamic_mapping_matches_workflow(self):
+        real = self._real_flags()
+        dynamic = {k: set(v) for k, v in gate.job_select_flags().items()}
+        for name, flags in real.items():
+            self.assertEqual(dynamic.get(name), flags, f"动态映射与 {name} 真实条件不同源")
+
+    def test_fallback_table_matches_workflow(self):
+        real = self._real_flags()
+        fallback = {k: set(v) for k, v in gate._FALLBACK_SELECT_FLAGS.items()}
+        for name, flags in real.items():
+            self.assertEqual(fallback.get(name), flags, f"兜底表与 {name} 真实条件漂移")
+
 
 class RetirementLedgerTest(unittest.TestCase):
     """if:false 作业必须在 disabled-jobs.json 登记（check_pins 静态强制）。"""
