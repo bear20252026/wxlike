@@ -111,6 +111,16 @@
       "check": "contract",
       "evidence": "The third-party uniffi-bindgen-dart 0.2.0 cannot generate valid Dart for the EventSink callback interface (assigns a callback object to an int). regenerate.sh defaults to kotlin+swift only; Dart is behind an explicit --dart flag and the flutter/android CI + release jobs are ledger-retired. The Dart toolchain (apps/mobile, gen_dart.py) is still present pending full P3 removal.",
       "close_when": "Either the Flutter shell and Dart toolchain are fully removed (P3), or a Dart bindgen with callback support is adopted and the flutter/android jobs are re-enabled and removed from disabled-jobs.json."
+    },
+    {
+      "id": "OLD-UI-RETIREMENT",
+      "owner": "G10",
+      "task": "desktop-web migration / old-UI escape hatch retirement",
+      "status": "open",
+      "blocks_release": false,
+      "check": "ui",
+      "evidence": "Default Tauri host loads apps/desktop-web/dist (tauri.conf.json, pinned by scripts/check-tauri-host.mjs + host-config.test.ts). The old UI (ui/src, esbuild -> ui/dist) is still shipped as an escape hatch (tauri.conf.old-ui.json + scripts/build-old-ui.sh). Of the 70 registered commands in ui/src-tauri/src/commands.rs, desktop-web invokes only 8 (core_dispatch/core_subscribe/core_capabilities + register/login/logout/me/friends); 62 are old-UI-only with no retirement ledger until now. Boundary and retirement plan: ui/README.md.",
+      "close_when": "The old-UI escape hatch is retired by explicit decision: ui/src + tauri.conf.old-ui.json + scripts/build-old-ui.sh removed, the 62 old-UI-only commands dropped from generate_handler (or re-homed behind core_bridge actions), check-tauri-host.mjs escape-hatch check updated, and desktop-web covers every feature the old UI still exclusively serves (calls UI, secret chat, local history, wallet/redpacket, video, favorites, session management)."
     }
   ],
   "note": "blocks_release is a policy switch, not a work tracker: every gap below stays status=open with owner+task. Per the owner decision on 2026-11-05 only PAYMENT-CALLBACK-REPLAY still blocks publication."

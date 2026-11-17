@@ -826,5 +826,44 @@ async fn bad_tx(&self) -> Result<()> {
         self.assertIn("offload", red.stderr)
 
 
+class OldUiRetirementTest(unittest.TestCase):
+    """F3：旧 UI 退役台账必须与命令注册表/宿主配置同源（第三轮审计 2026-11-17）。
+
+    62 个旧命令曾无退役登记；README 的清单若与 generate_handler 漂移，
+    退役时就会漏删或误删。这里把「文档 ↔ 代码」钉成机器检查。
+    """
+
+    def _registered(self) -> list[str]:
+        lib = (ROOT / "ui" / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+        m = re.search(r"generate_handler!\[(.*?)\]", lib, re.S)
+        self.assertIsNotNone(m, "generate_handler 注册表不见了")
+        return [x.strip().split("::")[-1] for x in m.group(1).split(",") if x.strip()]
+
+    def _readme(self) -> str:
+        return (ROOT / "ui" / "README.md").read_text(encoding="utf-8")
+
+    def test_gap_is_registered_and_not_release_blocking(self):
+        data = json.loads((JOBS / "policy" / "known-gaps.json").read_text(encoding="utf-8"))
+        gap = next(g for g in data["gaps"] if g["id"] == "OLD-UI-RETIREMENT")
+        self.assertEqual(gap["status"], "open")
+        self.assertFalse(gap["blocks_release"])
+        self.assertTrue(gap["owner"])
+        self.assertTrue(gap["close_when"])
+
+    def test_readme_command_lists_match_registry(self):
+        cmds = set(self._registered())
+        text = self._readme()
+        # README 用反引号列出每个命令名；注册表里的每个命令都必须被文档覆盖。
+        documented = set(re.findall(r"`([a-z_]+)`", text))
+        missing = cmds - documented
+        self.assertFalse(missing, f"注册表命令未出现在 ui/README.md: {sorted(missing)}")
+
+    def test_default_host_still_points_to_desktop_web(self):
+        conf = json.loads((ROOT / "ui" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+        self.assertIn("desktop-web", conf["build"]["frontendDist"])
+        old = json.loads((ROOT / "ui" / "src-tauri" / "tauri.conf.old-ui.json").read_text(encoding="utf-8"))
+        self.assertEqual(old["build"]["frontendDist"], "../dist")
+
+
 if __name__ == "__main__":
     unittest.main()
