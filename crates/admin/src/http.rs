@@ -671,6 +671,17 @@ async fn run_op(
     }
 }
 
+/// [`run_op_prepare`] 的结论：会话、目录条目、目标、载荷、上游路径、留痕标签。
+/// 命名成一个类型而不是裸六元组——它要在阻塞池边界上来回搬，读的人得看得懂。
+type PreparedOp = (
+    Session,
+    &'static Op,
+    Option<String>,
+    Option<serde_json::Value>,
+    String,
+    String,
+);
+
 /// [`run_op`] 的同步前段：准入 → 目标校验 → 授权 → 载荷。整段在阻塞池里跑。
 /// 每一步被拒都留痕（含路径穿越尝试），拒绝结论原样返回。
 fn run_op_prepare(
@@ -678,14 +689,7 @@ fn run_op_prepare(
     incoming: &AdminAuth,
     op_id: &str,
     raw: &serde_json::Value,
-) -> Result<(
-    Session,
-    &'static Op,
-    Option<String>,
-    Option<serde_json::Value>,
-    String,
-    String,
-)> {
+) -> Result<PreparedOp> {
     // 静态令牌在这里给 403（它写不出可追责的留痕），而且早于 body 解析。
     let session = incoming.writer()?.clone();
     let body = parse_op_body(raw)?;
