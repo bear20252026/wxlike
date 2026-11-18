@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::audit::{AuditLog, Draft};
 use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
+use crate::offload::offload;
 use crate::rbac::Role;
 use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
@@ -243,6 +244,20 @@ pub struct CommerceService {
     audit: AuditLog,
     port: Arc<dyn MoneyPort>,
     stepup: StepUp,
+}
+
+/// [`CommerceService::approve_refund_prepare`] 的结论：幂等命中直接返回，
+/// 否则带着审批人判定进入"出账 await → 落库"两段。私有搬运形状。
+enum RefundPrep {
+    Done(Refund),
+    Proceed {
+        refund: Refund,
+        first: Option<String>,
+        second: Option<String>,
+        needs_two: bool,
+        /// true = 本段要真的调域侧出账；false = 只记 partially_approved。
+        apply: bool,
+    },
 }
 
 impl CommerceService {
@@ -563,6 +578,9 @@ impl CommerceService {
 
     /// 审批。同一个人批两次不算双人；超过阈值必须两个不同审批人。
     /// 已完成的退款再批 = 幂等返回（不重复打款）。
+    ///
+    /// ADR-28：前段（准入/读单/审批人判定）与后段（UPDATE+审计）各自整段进
+    /// 阻塞池；域侧出账的 await 留在 async，锁不跨 await。
     pub async fn approve_refund(
         &self,
         actor: &str,
@@ -571,19 +589,32 @@ impl CommerceService {
         refund_id: &str,
         note: &str,
     ) -> Result<Refund> {
-        auth::require(role, Resource::Order, Action::ApproveMoney)?;
-        self.stepup.require(actor, Action::ApproveMoney)?;
-        if note.trim().is_empty() {
-            return Err(AdminError::bad_input("审批必须写意见"));
-        }
-        let refund = self.refund(refund_id)?.ok_or(AdminError::NotFound)?;
-        if refund.state == "approved" {
-            return Ok(refund);
-        }
-        let (first, second) = refund_approvers(&refund, actor)?;
-        let needs_two = refund.amount_cents >= DUAL_APPROVAL_THRESHOLD_CENTS;
-        let both = first.is_some() && second.is_some();
-        let (state, reference) = if !needs_two || both {
+        let svc = self.clone();
+        let (actor, trace, refund_id, note) = (
+            actor.to_string(),
+            trace.to_string(),
+            refund_id.to_string(),
+            note.to_string(),
+        );
+        let (a, t, rid, n) = (
+            actor.clone(),
+            trace.clone(),
+            refund_id.clone(),
+            note.clone(),
+        );
+        let prepared = offload(move || svc.approve_refund_prepare(&a, role, &t, &rid, &n)).await?;
+        let (refund, first, second, needs_two, apply) = match prepared {
+            RefundPrep::Done(refund) => return Ok(refund),
+            RefundPrep::Proceed {
+                refund,
+                first,
+                second,
+                needs_two,
+                apply,
+            } => (refund, first, second, needs_two, apply),
+        };
+
+        let (state, reference) = if apply {
             let reference = self
                 .port
                 .apply_refund(&refund.id, &refund.order_id, refund.amount_cents)
@@ -593,6 +624,62 @@ impl CommerceService {
             ("partially_approved", String::new())
         };
 
+        let svc = self.clone();
+        offload(move || {
+            svc.approve_refund_finish(
+                &actor, role, &trace, &refund_id, &note, &refund, first, second, needs_two, state,
+                &reference,
+            )
+        })
+        .await
+    }
+
+    /// [`Self::approve_refund`] 的同步前段。整段在阻塞池里跑。
+    fn approve_refund_prepare(
+        &self,
+        actor: &str,
+        role: Role,
+        _trace: &str,
+        refund_id: &str,
+        note: &str,
+    ) -> Result<RefundPrep> {
+        auth::require(role, Resource::Order, Action::ApproveMoney)?;
+        self.stepup.require(actor, Action::ApproveMoney)?;
+        if note.trim().is_empty() {
+            return Err(AdminError::bad_input("审批必须写意见"));
+        }
+        let refund = self.refund(refund_id)?.ok_or(AdminError::NotFound)?;
+        if refund.state == "approved" {
+            return Ok(RefundPrep::Done(refund));
+        }
+        let (first, second) = refund_approvers(&refund, actor)?;
+        let needs_two = refund.amount_cents >= DUAL_APPROVAL_THRESHOLD_CENTS;
+        let both = first.is_some() && second.is_some();
+        Ok(RefundPrep::Proceed {
+            apply: !needs_two || both,
+            refund,
+            first,
+            second,
+            needs_two,
+        })
+    }
+
+    /// [`Self::approve_refund`] 的同步后段：UPDATE + 审计整段一个临界区。
+    #[allow(clippy::too_many_arguments)]
+    fn approve_refund_finish(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        refund_id: &str,
+        note: &str,
+        refund: &Refund,
+        first: Option<String>,
+        second: Option<String>,
+        needs_two: bool,
+        state: &str,
+        reference: &str,
+    ) -> Result<Refund> {
         let now = now_ms();
         self.store.lock().execute(
             "UPDATE g14_refund SET state = ?2, approved_by = ?3, second_approver = ?4, \

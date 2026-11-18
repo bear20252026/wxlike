@@ -1,0 +1,59 @@
+{
+  "contract": "webhooks.payment_callback",
+  "gap": "PAYMENT-CALLBACK-REPLAY",
+  "description": "带 operation_id 的供应商回调：同键同摘要重投返回首次结果且零副作用；一借一贷两行分录、一行 outbox、一行台账。",
+  "first_delivery": {
+    "request": {
+      "operation_id": "op-fixture-1",
+      "event_id": "evt-fixture-1",
+      "intent_id": "intent-fixture-1",
+      "kind": "payment.succeeded",
+      "provider_ref": "sandbox-ref-fixture-1",
+      "amount_minor": 9900,
+      "currency": "CNY",
+      "timestamp_ms": 1700000000000
+    },
+    "signature_header": "x-payment-signature",
+    "signature_scheme": "length-prefixed HMAC-SHA256: update(len(raw_body) as 8-byte big-endian) then update(raw_body), key=webhook_secret, hex (matches commerce store::hmac_hex)",
+    "expected_response": {
+      "operation_id": "op-fixture-1",
+      "event_id": "evt-fixture-1",
+      "intent_id": "intent-fixture-1",
+      "kind": "payment.succeeded",
+      "applied": true,
+      "replayed": false,
+      "status": "succeeded"
+    }
+  },
+  "second_delivery": {
+    "note": "原样重投同一份原始字节（同 operation_id 同摘要）",
+    "request_identical_to": "first_delivery.request",
+    "expected_response": {
+      "operation_id": "op-fixture-1",
+      "applied": true,
+      "replayed": true,
+      "status": "succeeded"
+    }
+  },
+  "expected": {
+    "ledger_journals_for_payment": 1,
+    "ledger_entries_for_payment": 2,
+    "commerce_outbox_rows": 1,
+    "commerce_provider_callbacks_rows": 1,
+    "journal_business_key": "intent:intent-fixture-1:success"
+  },
+  "invariants": [
+    "同 operation_id 同摘要重投 N 次，分录/outbox/台账行数不变（单一效果）",
+    "同 operation_id 异摘要 → IDEMPOTENCY_CONFLICT（409），不留新痕迹",
+    "换 operation_id 投同一 event_id → REPLAY（409），事件表去重",
+    "伪造/篡改签名 → INVALID_SIGNATURE（401），不留任何痕迹",
+    "时间窗外新回调被拒，但命中重放不受时间窗影响",
+    "进程重启后重投结果不变（台账与分录落盘，非内存幂等表）",
+    "并发同回调/并发不同 operation_id 投同一事件，都只有一笔分录"
+  ],
+  "evidence": {
+    "crate_tests": "crates/features/commerce/tests/g06_06_provider_callback.rs（13 用例，文件库 + 独立 SQL 取证）",
+    "server_tests": "server/tests/commerce_mount.rs（真实组合根 oneshot + 文件库重启重投）",
+    "e2e": "tests/fault/run.py:payment_callback_replay（真实 server 进程，--payment-webhook-secret 签名）"
+  }
+}

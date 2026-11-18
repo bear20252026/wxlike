@@ -37,6 +37,7 @@ use crate::identity::{
 use crate::jobs::{
     health_summary, JobFilter, JobService, JobState, PrivacyKind, PrivacyService, RateLimiter,
 };
+use crate::offload::offload;
 use crate::publishing::{
     ContentPort, Decision, HttpContentPort, ItemState, PublishingService, QueueFilter,
 };
@@ -240,8 +241,10 @@ struct Caller {
     session: Session,
 }
 
-fn new_trace() -> String {
-    format!("g14_{}", wxlike_platform::random_hex(8))
+/// 追踪 id 用 `Arc<str>`：handler 把准入/域调用整段搬进 blocking 池（ADR-28）时，
+/// 闭包要拿走一份 trace，响应里还要回显同一份——clone 的是指针，不是字符串。
+fn new_trace() -> Arc<str> {
+    Arc::from(format!("g14_{}", wxlike_platform::random_hex(8)))
 }
 
 // ---------------------------------------------------------------------------
@@ -424,12 +427,16 @@ async fn matrix(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_via(&incoming, Resource::Audit)?;
+    let ttl = offload(move || {
+        read_via(&incoming, Resource::Audit)?;
+        Ok(app.g14().stepup.ttl_ms())
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
+        "trace": trace.as_ref(),
         "grants": auth::grants(),
         "roles": Role::NAMES,
-        "step_up_ttl_ms": app.g14().stepup.ttl_ms(),
+        "step_up_ttl_ms": ttl,
     })))
 }
 
@@ -447,12 +454,16 @@ async fn stepup_verify(
     ApiJson(body): ApiJson<StepUpBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = session_via(&app, &incoming)?;
-    let state = app
-        .g14()
-        .stepup
-        .verify(app.accounts(), &caller.session.actor, &body.code)?;
-    Ok(Json(serde_json::json!({"trace": trace, "stepup": state})))
+    let state = offload(move || {
+        let caller = session_via(&app, &incoming)?;
+        app.g14()
+            .stepup
+            .verify(app.accounts(), &caller.session.actor, &body.code)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "stepup": state}),
+    ))
 }
 
 async fn stepup_state(
@@ -460,9 +471,14 @@ async fn stepup_state(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = session_via(&app, &incoming)?;
-    let state = app.g14().stepup.state(&caller.session.actor)?;
-    Ok(Json(serde_json::json!({"trace": trace, "stepup": state})))
+    let state = offload(move || {
+        let caller = session_via(&app, &incoming)?;
+        app.g14().stepup.state(&caller.session.actor)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "stepup": state}),
+    ))
 }
 
 async fn audit_query(
@@ -471,25 +487,30 @@ async fn audit_query(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_via(&incoming, Resource::Audit)?;
-    let filter = AuditFilter {
-        actor: qstr(&q, "actor"),
-        action: qstr(&q, "action"),
-        object_kind: qstr(&q, "object_kind"),
-        object_id: qstr(&q, "object_id"),
-        outcome: qstr(&q, "outcome").and_then(|v| match v.as_str() {
-            "ok" => Some(crate::audit::Outcome::Ok),
-            "denied" => Some(crate::audit::Outcome::Denied),
-            "failed" => Some(crate::audit::Outcome::Failed),
-            _ => None,
-        }),
-        from: qint(&q, "from"),
-        to: qint(&q, "to"),
-        limit: qusize(&q, "limit"),
-        offset: qint(&q, "offset"),
-    };
-    let page = app.g14().audit.query(&filter)?;
-    Ok(Json(serde_json::json!({"trace": trace, "page": page})))
+    let page = offload(move || {
+        read_via(&incoming, Resource::Audit)?;
+        let filter = AuditFilter {
+            actor: qstr(&q, "actor"),
+            action: qstr(&q, "action"),
+            object_kind: qstr(&q, "object_kind"),
+            object_id: qstr(&q, "object_id"),
+            outcome: qstr(&q, "outcome").and_then(|v| match v.as_str() {
+                "ok" => Some(crate::audit::Outcome::Ok),
+                "denied" => Some(crate::audit::Outcome::Denied),
+                "failed" => Some(crate::audit::Outcome::Failed),
+                _ => None,
+            }),
+            from: qint(&q, "from"),
+            to: qint(&q, "to"),
+            limit: qusize(&q, "limit"),
+            offset: qint(&q, "offset"),
+        };
+        app.g14().audit.query(&filter)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "page": page}),
+    ))
 }
 
 async fn audit_verify(
@@ -497,9 +518,14 @@ async fn audit_verify(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_via(&incoming, Resource::Audit)?;
-    let report = app.g14().audit.verify()?;
-    Ok(Json(serde_json::json!({"trace": trace, "chain": report})))
+    let report = offload(move || {
+        read_via(&incoming, Resource::Audit)?;
+        app.g14().audit.verify()
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "chain": report}),
+    ))
 }
 
 async fn health(
@@ -507,9 +533,15 @@ async fn health(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Health, &trace)?;
-    let summary = health_summary(app.store(), app.g14().store_audit(), app.uptime_ms())?;
-    Ok(Json(serde_json::json!({"trace": trace, "health": summary})))
+    let t = trace.clone();
+    let summary = offload(move || {
+        read_role(&app, &incoming, Resource::Health, &t)?;
+        health_summary(app.store(), app.g14().store_audit(), app.uptime_ms())
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "health": summary}),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -522,16 +554,22 @@ async fn list_cases(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Case, &trace)?;
-    let filter = CaseFilter {
-        state: qstr(&q, "state").and_then(|v| CaseState::parse(&v)),
-        kind: qstr(&q, "kind"),
-        subject_id: qstr(&q, "subject_id"),
-        limit: qusize(&q, "limit"),
-        offset: qint(&q, "offset"),
-    };
-    let page = app.g14().identity.cases(&filter)?;
-    Ok(Json(serde_json::json!({"trace": trace, "page": page})))
+    let t = trace.clone();
+    let page = offload(move || {
+        read_role(&app, &incoming, Resource::Case, &t)?;
+        let filter = CaseFilter {
+            state: qstr(&q, "state").and_then(|v| CaseState::parse(&v)),
+            kind: qstr(&q, "kind"),
+            subject_id: qstr(&q, "subject_id"),
+            limit: qusize(&q, "limit"),
+            offset: qint(&q, "offset"),
+        };
+        app.g14().identity.cases(&filter)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "page": page}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -552,21 +590,27 @@ async fn create_case(
     ApiJson(body): ApiJson<NewCaseBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Case, Action::Write, &trace)?;
-    let case = app.g14().identity.create_case(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        NewCase {
-            kind: body.kind,
-            subject_kind: body.subject_kind,
-            subject_id: body.subject_id,
-            reporter: body.reporter,
-            reason: body.reason,
-            appeal_of: body.appeal_of,
-        },
-    )?;
-    Ok(Json(serde_json::json!({"trace": trace, "case": case})))
+    let t = trace.clone();
+    let case = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Case, Action::Write, &t)?;
+        app.g14().identity.create_case(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            NewCase {
+                kind: body.kind,
+                subject_kind: body.subject_kind,
+                subject_id: body.subject_id,
+                reporter: body.reporter,
+                reason: body.reason,
+                appeal_of: body.appeal_of,
+            },
+        )
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "case": case}),
+    ))
 }
 
 async fn get_case(
@@ -575,9 +619,15 @@ async fn get_case(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Case, &trace)?;
-    let case = app.g14().identity.case(&id)?.ok_or(AdminError::NotFound)?;
-    Ok(Json(serde_json::json!({"trace": trace, "case": case})))
+    let t = trace.clone();
+    let case = offload(move || {
+        read_role(&app, &incoming, Resource::Case, &t)?;
+        app.g14().identity.case(&id)?.ok_or(AdminError::NotFound)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "case": case}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -595,20 +645,26 @@ async fn transition_case(
     ApiJson(body): ApiJson<TransitionBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Case, Action::Write, &trace)?;
-    let next = CaseState::parse(&body.state).ok_or_else(|| {
-        AdminError::bad_input("state 只能是 open/triaged/actioned/rejected/closed")
-    })?;
-    let case = app.g14().identity.transition(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &id,
-        next,
-        &body.reason,
-        body.assignee.as_deref(),
-    )?;
-    Ok(Json(serde_json::json!({"trace": trace, "case": case})))
+    let t = trace.clone();
+    let case = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Case, Action::Write, &t)?;
+        let next = CaseState::parse(&body.state).ok_or_else(|| {
+            AdminError::bad_input("state 只能是 open/triaged/actioned/rejected/closed")
+        })?;
+        app.g14().identity.transition(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &id,
+            next,
+            &body.reason,
+            body.assignee.as_deref(),
+        )
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "case": case}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -657,9 +713,13 @@ async fn suspend_user(
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let req = danger_request(&app, &incoming, &id, body, &trace)?;
-    let out = app.g14().identity.suspend(req).await?;
-    Ok(Json(serde_json::json!({"trace": trace, "result": out})))
+    let svc = app.g14().identity.clone();
+    let t = trace.clone();
+    let req = offload(move || danger_request(&app, &incoming, &id, body, &t)).await?;
+    let out = svc.suspend(req).await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "result": out}),
+    ))
 }
 
 async fn unsuspend_user(
@@ -669,9 +729,13 @@ async fn unsuspend_user(
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let req = danger_request(&app, &incoming, &id, body, &trace)?;
-    let out = app.g14().identity.unsuspend(req).await?;
-    Ok(Json(serde_json::json!({"trace": trace, "result": out})))
+    let svc = app.g14().identity.clone();
+    let t = trace.clone();
+    let req = offload(move || danger_request(&app, &incoming, &id, body, &t)).await?;
+    let out = svc.unsuspend(req).await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "result": out}),
+    ))
 }
 
 async fn revoke_device(
@@ -681,9 +745,13 @@ async fn revoke_device(
     ApiJson(body): ApiJson<DangerBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let req = danger_request(&app, &incoming, &id, body, &trace)?;
-    let out = app.g14().identity.revoke_device(req).await?;
-    Ok(Json(serde_json::json!({"trace": trace, "result": out})))
+    let svc = app.g14().identity.clone();
+    let t = trace.clone();
+    let req = offload(move || danger_request(&app, &incoming, &id, body, &t)).await?;
+    let out = svc.revoke_device(req).await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "result": out}),
+    ))
 }
 
 async fn govern_group(
@@ -699,9 +767,13 @@ async fn govern_group(
             "action 只能是 freeze/unfreeze/transfer/dissolve",
         ));
     }
-    let req = danger_request(&app, &incoming, &id, body, &trace)?;
-    let out = app.g14().identity.govern_group(req, &verb).await?;
-    Ok(Json(serde_json::json!({"trace": trace, "result": out})))
+    let svc = app.g14().identity.clone();
+    let t = trace.clone();
+    let req = offload(move || danger_request(&app, &incoming, &id, body, &t)).await?;
+    let out = svc.govern_group(req, &verb).await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "result": out}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -716,25 +788,19 @@ async fn batch_suspend(
     ApiJson(body): ApiJson<BatchBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(
-        &app,
-        &incoming,
-        Resource::Identity,
-        Action::Destructive,
-        &trace,
-    )?;
-    let job = app
-        .g14()
-        .jobs
-        .run_batch(
-            &caller.session.actor,
-            caller.session.role,
-            &trace,
-            &body.reason,
-            &body.targets,
-        )
+    let jobs = app.g14().jobs.clone();
+    let t = trace.clone();
+    let (actor, role) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Identity, Action::Destructive, &t)?;
+        Ok((caller.session.actor, caller.session.role))
+    })
+    .await?;
+    let job = jobs
+        .run_batch(&actor, role, &trace, &body.reason, &body.targets)
         .await?;
-    Ok(Json(serde_json::json!({"trace": trace, "job": job})))
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "job": job}),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -746,9 +812,10 @@ async fn publish_rules(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Content, &trace)?;
+    let t = trace.clone();
+    offload(move || read_role(&app, &incoming, Resource::Content, &t).map(|_| ())).await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
+        "trace": trace.as_ref(),
         "rules": crate::publishing::rules(),
     })))
 }
@@ -759,15 +826,21 @@ async fn publish_queue(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Content, &trace)?;
-    let filter = QueueFilter {
-        kind: qstr(&q, "kind"),
-        state: qstr(&q, "state").and_then(|v| ItemState::parse(&v)),
-        limit: qusize(&q, "limit"),
-        offset: qint(&q, "offset"),
-    };
-    let page = app.g14().publishing.queue(&filter)?;
-    Ok(Json(serde_json::json!({"trace": trace, "page": page})))
+    let t = trace.clone();
+    let page = offload(move || {
+        read_role(&app, &incoming, Resource::Content, &t)?;
+        let filter = QueueFilter {
+            kind: qstr(&q, "kind"),
+            state: qstr(&q, "state").and_then(|v| ItemState::parse(&v)),
+            limit: qusize(&q, "limit"),
+            offset: qint(&q, "offset"),
+        };
+        app.g14().publishing.queue(&filter)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "page": page}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -786,20 +859,26 @@ async fn submit_review(
     ApiJson(body): ApiJson<SubmissionBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Content, Action::Write, &trace)?;
-    let item = app.g14().publishing.submit(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        crate::publishing::Submission {
-            kind: body.kind,
-            subject_id: body.subject_id,
-            version: body.version,
-            submitted_by: body.submitted_by,
-            idem: body.idem,
-        },
-    )?;
-    Ok(Json(serde_json::json!({"trace": trace, "item": item})))
+    let t = trace.clone();
+    let item = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Content, Action::Write, &t)?;
+        app.g14().publishing.submit(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            crate::publishing::Submission {
+                kind: body.kind,
+                subject_id: body.subject_id,
+                version: body.version,
+                submitted_by: body.submitted_by,
+                idem: body.idem,
+            },
+        )
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "item": item}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -815,22 +894,21 @@ async fn decide_item(
     ApiJson(body): ApiJson<DecideBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Content, Action::Write, &trace)?;
+    let publishing = app.g14().publishing.clone();
+    let t = trace.clone();
+    let (actor, role) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Content, Action::Write, &t)?;
+        Ok((caller.session.actor, caller.session.role))
+    })
+    .await?;
     let decision = Decision::parse(&body.decision)
         .ok_or_else(|| AdminError::bad_input("decision 只能是 approve/reject/take_down/restore"))?;
-    let item = app
-        .g14()
-        .publishing
-        .decide(
-            &caller.session.actor,
-            caller.session.role,
-            &trace,
-            &id,
-            decision,
-            &body.reason,
-        )
+    let item = publishing
+        .decide(&actor, role, &trace, &id, decision, &body.reason)
         .await?;
-    Ok(Json(serde_json::json!({"trace": trace, "item": item})))
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "item": item}),
+    ))
 }
 
 async fn list_releases(
@@ -839,10 +917,14 @@ async fn list_releases(
     Path(app_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::MiniApp, &trace)?;
-    let releases = app.g14().publishing.releases(Some(&app_id))?;
+    let t = trace.clone();
+    let releases = offload(move || {
+        read_role(&app, &incoming, Resource::MiniApp, &t)?;
+        app.g14().publishing.releases(Some(&app_id))
+    })
+    .await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "releases": releases}),
+        serde_json::json!({"trace": trace.as_ref(), "releases": releases}),
     ))
 }
 
@@ -859,17 +941,21 @@ async fn create_release(
     ApiJson(body): ApiJson<ReleaseBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &trace)?;
-    let release = app.g14().publishing.create_release(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &app_id,
-        &body.version,
-        &body.idem,
-    )?;
+    let t = trace.clone();
+    let release = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &t)?;
+        app.g14().publishing.create_release(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &app_id,
+            &body.version,
+            &body.idem,
+        )
+    })
+    .await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "release": release}),
+        serde_json::json!({"trace": trace.as_ref(), "release": release}),
     ))
 }
 
@@ -879,20 +965,16 @@ async fn sign_release(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(
-        &app,
-        &incoming,
-        Resource::MiniApp,
-        Action::SignPackage,
-        &trace,
-    )?;
-    let release = app
-        .g14()
-        .publishing
-        .sign(&caller.session.actor, caller.session.role, &trace, &id)
-        .await?;
+    let publishing = app.g14().publishing.clone();
+    let t = trace.clone();
+    let (actor, role) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::SignPackage, &t)?;
+        Ok((caller.session.actor, caller.session.role))
+    })
+    .await?;
+    let release = publishing.sign(&actor, role, &trace, &id).await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "release": release}),
+        serde_json::json!({"trace": trace.as_ref(), "release": release}),
     ))
 }
 
@@ -902,14 +984,16 @@ async fn publish_release(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &trace)?;
-    let release = app
-        .g14()
-        .publishing
-        .publish(&caller.session.actor, caller.session.role, &trace, &id)
-        .await?;
+    let publishing = app.g14().publishing.clone();
+    let t = trace.clone();
+    let (actor, role) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &t)?;
+        Ok((caller.session.actor, caller.session.role))
+    })
+    .await?;
+    let release = publishing.publish(&actor, role, &trace, &id).await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "release": release}),
+        serde_json::json!({"trace": trace.as_ref(), "release": release}),
     ))
 }
 
@@ -926,26 +1010,18 @@ async fn revoke_release(
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(
-        &app,
-        &incoming,
-        Resource::MiniApp,
-        Action::Destructive,
-        &trace,
-    )?;
-    let release = app
-        .g14()
-        .publishing
-        .revoke(
-            &caller.session.actor,
-            caller.session.role,
-            &trace,
-            &id,
-            &body.reason,
-        )
+    let publishing = app.g14().publishing.clone();
+    let t = trace.clone();
+    let (actor, role) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Destructive, &t)?;
+        Ok((caller.session.actor, caller.session.role))
+    })
+    .await?;
+    let release = publishing
+        .revoke(&actor, role, &trace, &id, &body.reason)
         .await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "release": release}),
+        serde_json::json!({"trace": trace.as_ref(), "release": release}),
     ))
 }
 
@@ -954,10 +1030,15 @@ async fn list_services(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Service, &trace)?;
+    let t = trace.clone();
+    let services = offload(move || {
+        read_role(&app, &incoming, Resource::Service, &t)?;
+        app.g14().publishing.services()
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
-        "services": app.g14().publishing.services()?,
+        "trace": trace.as_ref(),
+        "services": services,
     })))
 }
 
@@ -968,15 +1049,21 @@ async fn upsert_service(
     ApiJson(body): ApiJson<crate::publishing::ServicePatch>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Service, Action::Write, &trace)?;
-    let cfg = app.g14().publishing.upsert_service(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &id,
-        body,
-    )?;
-    Ok(Json(serde_json::json!({"trace": trace, "service": cfg})))
+    let t = trace.clone();
+    let cfg = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Service, Action::Write, &t)?;
+        app.g14().publishing.upsert_service(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &id,
+            body,
+        )
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "service": cfg}),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,10 +1089,15 @@ async fn list_merchants(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Merchant, &trace)?;
+    let t = trace.clone();
+    let merchants = offload(move || {
+        read_role(&app, &incoming, Resource::Merchant, &t)?;
+        app.g14().commerce.merchants()
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
-        "merchants": app.g14().commerce.merchants()?,
+        "trace": trace.as_ref(),
+        "merchants": merchants,
     })))
 }
 
@@ -1015,16 +1107,22 @@ async fn list_orders(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let role = read_role(&app, &incoming, Resource::Order, &trace)?;
-    let scope = scope_of(&q, role)?;
-    let filter = OrderFilter {
-        merchant_id: qstr(&q, "merchant_id"),
-        state: qstr(&q, "state"),
-        limit: qusize(&q, "limit"),
-        offset: qint(&q, "offset"),
-    };
-    let page = app.g14().commerce.orders(&scope, &filter)?;
-    Ok(Json(serde_json::json!({"trace": trace, "page": page})))
+    let t = trace.clone();
+    let page = offload(move || {
+        let role = read_role(&app, &incoming, Resource::Order, &t)?;
+        let scope = scope_of(&q, role)?;
+        let filter = OrderFilter {
+            merchant_id: qstr(&q, "merchant_id"),
+            state: qstr(&q, "state"),
+            limit: qusize(&q, "limit"),
+            offset: qint(&q, "offset"),
+        };
+        app.g14().commerce.orders(&scope, &filter)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "page": page}),
+    ))
 }
 
 async fn export_orders(
@@ -1033,18 +1131,21 @@ async fn export_orders(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response> {
     let trace = new_trace();
-    let (actor, role) = actor_of(&incoming);
-    let scope = scope_of(&q, role)?;
-    let filter = OrderFilter {
-        merchant_id: qstr(&q, "merchant_id"),
-        state: qstr(&q, "state"),
-        limit: qusize(&q, "limit"),
-        offset: qint(&q, "offset"),
-    };
-    let csv = app
-        .g14()
-        .commerce
-        .export_orders(&actor, role, &trace, &scope, &filter)?;
+    let t = trace.clone();
+    let csv = offload(move || {
+        let (actor, role) = actor_of(&incoming);
+        let scope = scope_of(&q, role)?;
+        let filter = OrderFilter {
+            merchant_id: qstr(&q, "merchant_id"),
+            state: qstr(&q, "state"),
+            limit: qusize(&q, "limit"),
+            offset: qint(&q, "offset"),
+        };
+        app.g14()
+            .commerce
+            .export_orders(&actor, role, &t, &scope, &filter)
+    })
+    .await?;
     Ok((
         [(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")],
         csv,
@@ -1066,18 +1167,24 @@ async fn request_refund(
     ApiJson(body): ApiJson<RefundBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Order, Action::Write, &trace)?;
-    let refund = app.g14().commerce.request_refund(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &MerchantScope::All,
-        &id,
-        body.amount_cents,
-        &body.reason,
-        &body.idem,
-    )?;
-    Ok(Json(serde_json::json!({"trace": trace, "refund": refund})))
+    let t = trace.clone();
+    let refund = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Order, Action::Write, &t)?;
+        app.g14().commerce.request_refund(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &MerchantScope::All,
+            &id,
+            body.amount_cents,
+            &body.reason,
+            &body.idem,
+        )
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "refund": refund}),
+    ))
 }
 
 async fn list_refunds(
@@ -1085,10 +1192,15 @@ async fn list_refunds(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Order, &trace)?;
+    let t = trace.clone();
+    let refunds = offload(move || {
+        read_role(&app, &incoming, Resource::Order, &t)?;
+        app.g14().commerce.refunds()
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
-        "refunds": app.g14().commerce.refunds()?,
+        "trace": trace.as_ref(),
+        "refunds": refunds,
     })))
 }
 
@@ -1104,25 +1216,19 @@ async fn approve_refund(
     ApiJson(body): ApiJson<ApproveBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(
-        &app,
-        &incoming,
-        Resource::Order,
-        Action::ApproveMoney,
-        &trace,
-    )?;
-    let refund = app
-        .g14()
-        .commerce
-        .approve_refund(
-            &caller.session.actor,
-            caller.session.role,
-            &trace,
-            &id,
-            &body.note,
-        )
+    let commerce = app.g14().commerce.clone();
+    let t = trace.clone();
+    let (actor, role) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Order, Action::ApproveMoney, &t)?;
+        Ok((caller.session.actor, caller.session.role))
+    })
+    .await?;
+    let refund = commerce
+        .approve_refund(&actor, role, &trace, &id, &body.note)
         .await?;
-    Ok(Json(serde_json::json!({"trace": trace, "refund": refund})))
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "refund": refund}),
+    ))
 }
 
 async fn list_recon(
@@ -1131,11 +1237,16 @@ async fn list_recon(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Recon, &trace)?;
-    let batch = qstr(&q, "batch");
+    let t = trace.clone();
+    let diffs = offload(move || {
+        read_role(&app, &incoming, Resource::Recon, &t)?;
+        let batch = qstr(&q, "batch");
+        app.g14().commerce.diffs(batch.as_deref())
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
-        "diffs": app.g14().commerce.diffs(batch.as_deref())?,
+        "trace": trace.as_ref(),
+        "diffs": diffs,
     })))
 }
 
@@ -1152,22 +1263,22 @@ async fn resolve_recon(
     ApiJson(body): ApiJson<ResolveBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(
-        &app,
-        &incoming,
-        Resource::Recon,
-        Action::ApproveMoney,
-        &trace,
-    )?;
-    let diff = app.g14().commerce.resolve_diff(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &id,
-        &body.decision,
-        &body.note,
-    )?;
-    Ok(Json(serde_json::json!({"trace": trace, "diff": diff})))
+    let t = trace.clone();
+    let diff = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Recon, Action::ApproveMoney, &t)?;
+        app.g14().commerce.resolve_diff(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &id,
+            &body.decision,
+            &body.note,
+        )
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "diff": diff}),
+    ))
 }
 
 async fn list_journal(
@@ -1175,10 +1286,15 @@ async fn list_journal(
     incoming: auth::AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Journal, &trace)?;
+    let t = trace.clone();
+    let entries = offload(move || {
+        read_role(&app, &incoming, Resource::Journal, &t)?;
+        app.g14().commerce.journal()
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
-        "entries": app.g14().commerce.journal()?,
+        "trace": trace.as_ref(),
+        "entries": entries,
     })))
 }
 
@@ -1196,24 +1312,22 @@ async fn post_journal(
     ApiJson(body): ApiJson<JournalBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(
-        &app,
-        &incoming,
-        Resource::Journal,
-        Action::ApproveMoney,
-        &trace,
-    )?;
-    let entries = app.g14().commerce.post_journal(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &body.entry_no,
-        &body.memo,
-        &body.source,
-        &body.lines,
-    )?;
+    let t = trace.clone();
+    let entries = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Journal, Action::ApproveMoney, &t)?;
+        app.g14().commerce.post_journal(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &body.entry_no,
+            &body.memo,
+            &body.source,
+            &body.lines,
+        )
+    })
+    .await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "entries": entries}),
+        serde_json::json!({"trace": trace.as_ref(), "entries": entries}),
     ))
 }
 
@@ -1227,15 +1341,21 @@ async fn list_jobs(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Job, &trace)?;
-    let filter = JobFilter {
-        kind: qstr(&q, "kind"),
-        state: qstr(&q, "state").and_then(|v| JobState::parse(&v)),
-        limit: qusize(&q, "limit"),
-        offset: qint(&q, "offset"),
-    };
-    let page = app.g14().jobs.list(&filter)?;
-    Ok(Json(serde_json::json!({"trace": trace, "page": page})))
+    let t = trace.clone();
+    let page = offload(move || {
+        read_role(&app, &incoming, Resource::Job, &t)?;
+        let filter = JobFilter {
+            kind: qstr(&q, "kind"),
+            state: qstr(&q, "state").and_then(|v| JobState::parse(&v)),
+            limit: qusize(&q, "limit"),
+            offset: qint(&q, "offset"),
+        };
+        app.g14().jobs.list(&filter)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "page": page}),
+    ))
 }
 
 async fn retry_job(
@@ -1244,12 +1364,17 @@ async fn retry_job(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Job, Action::Write, &trace)?;
-    let job = app
-        .g14()
-        .jobs
-        .retry(&caller.session.actor, caller.session.role, &trace, &id)?;
-    Ok(Json(serde_json::json!({"trace": trace, "job": job})))
+    let t = trace.clone();
+    let job = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Job, Action::Write, &t)?;
+        app.g14()
+            .jobs
+            .retry(&caller.session.actor, caller.session.role, &t, &id)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "job": job}),
+    ))
 }
 
 async fn cancel_job(
@@ -1258,12 +1383,17 @@ async fn cancel_job(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Job, Action::Write, &trace)?;
-    let job = app
-        .g14()
-        .jobs
-        .cancel(&caller.session.actor, caller.session.role, &trace, &id)?;
-    Ok(Json(serde_json::json!({"trace": trace, "job": job})))
+    let t = trace.clone();
+    let job = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Job, Action::Write, &t)?;
+        app.g14()
+            .jobs
+            .cancel(&caller.session.actor, caller.session.role, &t, &id)
+    })
+    .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "job": job}),
+    ))
 }
 
 async fn list_privacy(
@@ -1272,11 +1402,16 @@ async fn list_privacy(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    read_role(&app, &incoming, Resource::Privacy, &trace)?;
-    let user = qstr(&q, "user_id");
+    let t = trace.clone();
+    let requests = offload(move || {
+        read_role(&app, &incoming, Resource::Privacy, &t)?;
+        let user = qstr(&q, "user_id");
+        app.g14().privacy.list(user.as_deref())
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "trace": trace,
-        "requests": app.g14().privacy.list(user.as_deref())?,
+        "trace": trace.as_ref(),
+        "requests": requests,
     })))
 }
 
@@ -1293,25 +1428,29 @@ async fn request_privacy(
     ApiJson(body): ApiJson<PrivacyBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Privacy, Action::Write, &trace)?;
-    let kind = PrivacyKind::parse(&body.kind)
-        .ok_or_else(|| AdminError::bad_input("kind 只能是 export 或 delete"))?;
-    let action = match kind {
-        PrivacyKind::Export => Action::ExportPii,
-        PrivacyKind::Delete => Action::Destructive,
-    };
-    auth::require(caller.session.role, Resource::Privacy, action)?;
-    let (request, token) = app.g14().privacy.request(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &body.user_id,
-        kind,
-        &body.reason,
-    )?;
+    let t = trace.clone();
+    let (request, token) = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Privacy, Action::Write, &t)?;
+        let kind = PrivacyKind::parse(&body.kind)
+            .ok_or_else(|| AdminError::bad_input("kind 只能是 export 或 delete"))?;
+        let action = match kind {
+            PrivacyKind::Export => Action::ExportPii,
+            PrivacyKind::Delete => Action::Destructive,
+        };
+        auth::require(caller.session.role, Resource::Privacy, action)?;
+        app.g14().privacy.request(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &body.user_id,
+            kind,
+            &body.reason,
+        )
+    })
+    .await?;
     // 令牌只在这一条响应里出现一次
     Ok(Json(serde_json::json!({
-        "trace": trace,
+        "trace": trace.as_ref(),
         "request": request,
         "download_token": token,
         "next": "把 download_token 交给申请者；GET /api/g14/privacy/requests/{id}/download?token=…",
@@ -1325,16 +1464,20 @@ async fn fulfill_privacy(
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<serde_json::Value>> {
     let trace = new_trace();
-    let caller = write_caller(&app, &incoming, Resource::Privacy, Action::Write, &trace)?;
-    let request = app.g14().privacy.fulfill(
-        &caller.session.actor,
-        caller.session.role,
-        &trace,
-        &id,
-        &body.reason,
-    )?;
+    let t = trace.clone();
+    let request = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::Privacy, Action::Write, &t)?;
+        app.g14().privacy.fulfill(
+            &caller.session.actor,
+            caller.session.role,
+            &t,
+            &id,
+            &body.reason,
+        )
+    })
+    .await?;
     Ok(Json(
-        serde_json::json!({"trace": trace, "request": request}),
+        serde_json::json!({"trace": trace.as_ref(), "request": request}),
     ))
 }
 
@@ -1346,7 +1489,7 @@ async fn download_privacy(
     // 这条路由**不要**会话令牌：申请者手里只有 download_token。
     let token = qstr(&q, "token")
         .ok_or_else(|| AdminError::bad_input("缺少 token：用申请时返回的 download_token"))?;
-    let request = app.g14().privacy.claim(&id, &token)?;
+    let request = offload(move || app.g14().privacy.claim(&id, &token)).await?;
     Ok(Json(serde_json::json!({
         "request": request,
         "note": "导出内容由域侧作业产出；此端点只放行申请者本人拿令牌取件",

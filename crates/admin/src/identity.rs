@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::audit::{AuditLog, Draft, Outcome};
 use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
+use crate::offload::offload;
 use crate::rbac::Role;
 use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
@@ -552,6 +553,17 @@ pub struct IdentityService {
     confirmer: Confirmer,
 }
 
+/// [`IdentityService::danger_prepare`] 的结论：要么只发预览，要么放行执行。
+/// 私有类型——它只是"同步前段 → 端口 await → 同步后段"之间的搬运形状。
+enum DangerPrep {
+    Preview(Preview),
+    Execute {
+        target: String,
+        reason: String,
+        cmd: Command,
+    },
+}
+
 /// 一次危险动作的请求。
 #[derive(Clone, Debug)]
 pub struct DangerRequest {
@@ -779,6 +791,8 @@ impl IdentityService {
         .await
     }
 
+    /// ADR-28：三段式——准入/确认（碰库）进阻塞池，端口 await 留在 async，
+    /// 结果留痕（碰库）再进阻塞池。锁与审计哈希链都不跨 await。
     async fn danger<F, Fut>(
         &self,
         req: DangerRequest,
@@ -790,6 +804,37 @@ impl IdentityService {
         F: FnOnce(Command) -> Fut,
         Fut: std::future::Future<Output = Result<Effect>>,
     {
+        let svc = self.clone();
+        let op = op.to_string();
+        let kind = object_kind.to_string();
+        let req_for_prepare = req.clone();
+        let (op_for_prepare, kind_for_prepare) = (op.clone(), kind.clone());
+        let prepared = offload(move || {
+            svc.danger_prepare(&req_for_prepare, &op_for_prepare, &kind_for_prepare)
+        })
+        .await?;
+        let (target, reason, cmd) = match prepared {
+            DangerPrep::Preview(preview) => return Ok(Dangerous::Preview(preview)),
+            DangerPrep::Execute {
+                target,
+                reason,
+                cmd,
+            } => (target, reason, cmd),
+        };
+
+        // 执行并留痕。失败也留痕（含上游 5xx / 传输失败）；留痕段整段进池。
+        let outcome = run(cmd).await;
+        let svc = self.clone();
+        offload(move || svc.record_effect(&req, &op, &kind, &target, &reason, outcome)).await
+    }
+
+    /// [`Self::danger`] 的同步前段：准入 + 两阶段确认。整段在阻塞池里跑。
+    fn danger_prepare(
+        &self,
+        req: &DangerRequest,
+        op: &str,
+        object_kind: &str,
+    ) -> Result<DangerPrep> {
         let reason = required_reason(&req.reason)?;
         let target = upstream::check_target(&req.target)?;
 
@@ -797,7 +842,7 @@ impl IdentityService {
         let gate = auth::require(req.role, resource_for(object_kind), Action::Destructive)
             .and_then(|()| self.stepup.require(&req.actor, Action::Destructive));
         if let Err(err) = gate {
-            self.audit_denied(&req, op, object_kind, &target, &reason, &err)?;
+            self.audit_denied(req, op, object_kind, &target, &reason, &err)?;
             return Err(err);
         }
 
@@ -805,7 +850,7 @@ impl IdentityService {
         let want = fingerprint(op, &target, &reason, req.until_ms);
         let Some(token) = req.confirm.as_deref() else {
             let confirmation = self.confirmer.prepare(op, &target, &reason, req.until_ms);
-            return Ok(Dangerous::Preview(Preview {
+            return Ok(DangerPrep::Preview(Preview {
                 action: op.to_string(),
                 target,
                 reason,
@@ -816,20 +861,22 @@ impl IdentityService {
             }));
         };
         if let Err(err) = self.confirmer.consume(token, &want) {
-            self.audit_denied(&req, op, object_kind, &target, &reason, &err)?;
+            self.audit_denied(req, op, object_kind, &target, &reason, &err)?;
             return Err(err);
         }
 
-        // 3) 执行并留痕。失败也留痕（含上游 5xx / 传输失败）。
-        let cmd = Command {
+        Ok(DangerPrep::Execute {
             target: target.clone(),
             reason: reason.clone(),
-            until_ms: req.until_ms,
-            actor: req.actor.clone(),
-            trace: req.trace.clone(),
-            verb: None,
-        };
-        self.record_effect(&req, op, object_kind, &target, &reason, run(cmd).await)
+            cmd: Command {
+                target,
+                reason,
+                until_ms: req.until_ms,
+                actor: req.actor.clone(),
+                trace: req.trace.clone(),
+                verb: None,
+            },
+        })
     }
 
     fn audit_denied(

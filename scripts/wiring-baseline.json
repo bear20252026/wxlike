@@ -8,13 +8,6 @@
       "evidence": "6 tests, zero production dependents. The CI wasm job compiles it for wasm32-unknown-unknown, but no wasm-bindgen entry point / packaging integration exists in apps/desktop-web yet."
     },
     {
-      "crate": "wxlike-commerce",
-      "owner": "G06",
-      "task": "G06 payments integration",
-      "close_when": "Server wallet/payment routes dispatch into wxlike-commerce (replacing crates/platform/src/wallet.rs) and the provider callback contract with operation_id lands, closing PAYMENT-CALLBACK-REPLAY in ci/jobs/policy/known-gaps.json.",
-      "evidence": "69 tests, zero production dependents (dep_graph_guard rule 4, 2026-11-17). Live wallet path is crates/platform/src/wallet.rs + domain/wallet.rs; commerce is tested but unwired."
-    },
-    {
       "crate": "wxlike-container",
       "owner": "G08",
       "task": "G08 miniapps integration",
@@ -34,13 +27,6 @@
       "task": "G08 miniapps integration",
       "close_when": "The miniapp package path (pack/unpack CLI + runtime loading) goes through wxlike-dpage from a production entry, not only from other unwired crates.",
       "evidence": "8 tests. Only dependents are wxlike-container and wxlike-miniapps, themselves unwired; being depended on by another island does not count as wiring."
-    },
-    {
-      "crate": "wxlike-ledger",
-      "owner": "G06",
-      "task": "G06 payments integration",
-      "close_when": "Server wallet ledger reads/writes dispatch into wxlike-ledger (replacing the platform wallet ledger tables path) with the concurrency soul-test passing against the live route.",
-      "evidence": "24 tests. Only dependent is wxlike-commerce, itself unwired; live ledger path is crates/platform/src/domain/repo/wallet.rs."
     },
     {
       "crate": "wxlike-miniapps",

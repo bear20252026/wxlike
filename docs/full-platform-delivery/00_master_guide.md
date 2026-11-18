@@ -289,6 +289,8 @@ W5：独立验收人从种子清单展开所有variant做全回归，所有对�
 
 每卡必交：需求对应入口列表、代码/契约/数据迁移、upstream_manifest条目、功能和对抗测试、云端CI链接、实际设备证据、配置文档、回滚/兼容窗口、已知限制。禁止只提交壳、TODO、假数据、成功toast或“框架已完成”。任务卡正文在本包teams/下；task_board.csv可用于导入管理工具，GitHub任务编号见issues/index.md；未指定真人账号，先按职责组认领。
 
+**单一权威进度源（第四轮审计 N5）**：`progress-snapshot.json` 是完成度的唯一权威快照，由 `scripts/progress_snapshot.py` 以代码事实（孤岛台账/缺口台账/集成请求/审计判定）生成，带核对日期 `verified_at`。tasks.json 的 status（历史全 PLANNED）、GitHub issue 开闭、各组 delivery.md 自述、蓝图都**只作旁证**，不作完成度依据（issue 闭≠验收过）。想知道"项目完成多少"读快照，不要四源手工对账。CI audit 作业跑 `progress_snapshot.py --check`，快照与代码事实漂移即红；完成度变化后须 `--write` 重新生成并提交。GitHub 开闭旁证存 `issues-state.json`（`gh issue list --state all --json number,state,title` 导出）。
+
 ## 10. 研究来源与边界
 
 本包references.md详细记录用户指定8仓及新增候选的可借部分、禁复制范围和联网定位；upstream_manifest.json保存检索时完整SHA。本次仅发布规划/设计与任务管理文件，没有实现Rust产品业务或复制第三方实现。许可判断是工程准入分类，具体引入必须由G17按文件头/NOTICE/商用目录再核；不是对整个仓库提供无限制搬运保证。

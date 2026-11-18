@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::audit::{AuditLog, Draft, Outcome};
 use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
+use crate::offload::offload;
 use crate::rbac::Role;
 use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
@@ -463,6 +464,17 @@ pub struct PublishingService {
     stepup: StepUp,
 }
 
+/// [`PublishingService::publish_prepare`] 的结论：幂等命中直接返回，
+/// 否则带着签名进入"发布 await → 落库"两段。私有搬运形状。
+enum PublishPrep {
+    Done(Release),
+    Proceed {
+        release: Release,
+        state: ReleaseState,
+        signature: String,
+    },
+}
+
 impl PublishingService {
     pub fn new(store: Store, audit: AuditLog, port: Arc<dyn ContentPort>, stepup: StepUp) -> Self {
         Self {
@@ -592,6 +604,9 @@ impl PublishingService {
     }
 
     /// 判定。`reason` 必填（复核要看依据）；下架/恢复还要 step-up。
+    ///
+    /// ADR-28：前段（准入/状态机）与后段（UPDATE+审计）各自整段进阻塞池；
+    /// 线上效果的 await 留在 async。"先线上后落库"的顺序不变。
     pub async fn decide(
         &self,
         actor: &str,
@@ -601,6 +616,66 @@ impl PublishingService {
         decision: Decision,
         reason: &str,
     ) -> Result<Item> {
+        let svc = self.clone();
+        let (actor, trace, id, reason) = (
+            actor.to_string(),
+            trace.to_string(),
+            id.to_string(),
+            reason.to_string(),
+        );
+        let (a, i, r) = (actor.clone(), id.clone(), reason.clone());
+        let (item, state, next, reason) =
+            offload(move || svc.decide_prepare(&a, role, &i, decision, &r)).await?;
+
+        // 线上效果先做：域侧失败就**不改库**，否则"库里下架了、线上还在"。
+        if decision.needs_step_up() {
+            let state_word = if decision == Decision::TakeDown {
+                "taken_down"
+            } else {
+                "approved"
+            };
+            if let Err(err) = self
+                .port
+                .set_visibility(&item.kind, &item.subject_id, state_word, &reason)
+                .await
+            {
+                let svc = self.clone();
+                let item_id = item.id.clone();
+                let err_text = err.to_string();
+                let (a, t, r) = (actor.clone(), trace.clone(), reason.clone());
+                offload(move || {
+                    svc.audit.append(
+                        Draft::new(&a, role.as_str(), "publish.decide", "review_item", &item_id)
+                            .reason(&r)
+                            .trace(&t)
+                            .outcome(Outcome::Failed)
+                            .detail(serde_json::json!({
+                                "decision": decision.as_str(),
+                                "error": err_text,
+                            })),
+                    )
+                })
+                .await?;
+                return Err(err);
+            }
+        }
+
+        let svc = self.clone();
+        offload(move || {
+            svc.decide_finish(&actor, role, &trace, &id, decision, &reason, &state, next)
+        })
+        .await
+    }
+
+    /// [`Self::decide`] 的同步前段：准入 + 状态机 + 步进验证。整段在阻塞池里跑。
+    fn decide_prepare(
+        &self,
+        actor: &str,
+        role: Role,
+        id: &str,
+        decision: Decision,
+        reason: &str,
+    ) -> Result<(Item, ItemState, ItemState, String)> {
         let action = if decision.needs_step_up() {
             Action::Destructive
         } else {
@@ -625,16 +700,28 @@ impl PublishingService {
         if action.needs_step_up() {
             self.stepup.require(actor, action)?;
         }
-
         let next = match decision {
             Decision::Approve => ItemState::Approved,
             Decision::Reject => ItemState::Rejected,
             Decision::TakeDown => ItemState::TakenDown,
             Decision::Restore => ItemState::Approved,
         };
-        self.apply_visibility(actor, role, trace, &item, decision, &reason)
-            .await?;
+        Ok((item, state, next, reason))
+    }
 
+    /// [`Self::decide`] 的同步后段：UPDATE + 审计整段一个临界区。
+    #[allow(clippy::too_many_arguments)]
+    fn decide_finish(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        id: &str,
+        decision: Decision,
+        reason: &str,
+        state: &ItemState,
+        next: ItemState,
+    ) -> Result<Item> {
         let now = now_ms();
         self.store.lock().execute(
             "UPDATE g14_review_item SET state = ?2, decided_by = ?3, reason = ?4, decided_at = ?5 \
@@ -644,59 +731,12 @@ impl PublishingService {
         let updated = self.item(id)?.ok_or(AdminError::NotFound)?;
         self.audit.append(
             Draft::new(actor, role.as_str(), "publish.decide", "review_item", id)
-                .reason(&reason)
+                .reason(reason)
                 .trace(trace)
                 .before(serde_json::json!({"state": state.as_str()}))
                 .after(serde_json::json!({"state": next.as_str(), "decision": decision.as_str()})),
         )?;
         Ok(updated)
-    }
-
-    async fn apply_visibility(
-        &self,
-        actor: &str,
-        role: Role,
-        trace: &str,
-        item: &Item,
-        decision: Decision,
-        reason: &str,
-    ) -> Result<()> {
-        // 线上效果先做：域侧失败就**不改库**，否则"库里下架了、线上还在"。
-        if decision.needs_step_up() {
-            let state_word = if decision == Decision::TakeDown {
-                "taken_down"
-            } else {
-                "approved"
-            };
-            match self
-                .port
-                .set_visibility(&item.kind, &item.subject_id, state_word, reason)
-                .await
-            {
-                Ok(_reference) => {}
-                Err(err) => {
-                    self.audit.append(
-                        Draft::new(
-                            actor,
-                            role.as_str(),
-                            "publish.decide",
-                            "review_item",
-                            &item.id,
-                        )
-                        .reason(reason)
-                        .trace(trace)
-                        .outcome(Outcome::Failed)
-                        .detail(serde_json::json!({
-                            "decision": decision.as_str(),
-                            "error": err.to_string(),
-                        })),
-                    )?;
-                    return Err(err);
-                }
-            }
-        }
-
-        Ok(())
     }
 
     // -- 小程序 -------------------------------------------------------------
@@ -766,6 +806,8 @@ impl PublishingService {
     }
 
     /// 签名。审核岗没有这个权限——这是任务单点名的"审核角色不能签包"。
+    ///
+    /// ADR-28：前段（准入/状态）与后段（UPDATE+审计）进阻塞池，签名 await 留 async。
     pub async fn sign(
         &self,
         actor: &str,
@@ -773,6 +815,27 @@ impl PublishingService {
         trace: &str,
         release_id: &str,
     ) -> Result<Release> {
+        let svc = self.clone();
+        let (actor, trace, release_id) =
+            (actor.to_string(), trace.to_string(), release_id.to_string());
+        let (a, rid) = (actor.clone(), release_id.clone());
+        let (release, state) = offload(move || svc.sign_prepare(&a, role, &rid)).await?;
+        let signature = self
+            .port
+            .sign_package(&release.app_id, &release.version)
+            .await?;
+        let svc = self.clone();
+        offload(move || svc.sign_finish(&actor, role, &trace, &release_id, &state, &signature))
+            .await
+    }
+
+    /// [`Self::sign`] 的同步前段。整段在阻塞池里跑。
+    fn sign_prepare(
+        &self,
+        actor: &str,
+        role: Role,
+        release_id: &str,
+    ) -> Result<(Release, ReleaseState)> {
         auth::require(role, Resource::MiniApp, Action::SignPackage)?;
         self.stepup.require(actor, Action::SignPackage)?;
         let release = self.release(release_id)?.ok_or(AdminError::NotFound)?;
@@ -784,10 +847,19 @@ impl PublishingService {
                 state.as_str()
             )));
         }
-        let signature = self
-            .port
-            .sign_package(&release.app_id, &release.version)
-            .await?;
+        Ok((release, state))
+    }
+
+    /// [`Self::sign`] 的同步后段：UPDATE + 审计整段一个临界区。
+    fn sign_finish(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        release_id: &str,
+        state: &ReleaseState,
+        signature: &str,
+    ) -> Result<Release> {
         let now = now_ms();
         self.store.lock().execute(
             "UPDATE g14_mini_release SET state = ?2, signed_by = ?3, signature = ?4, updated_at = ?5 \
@@ -821,6 +893,9 @@ impl PublishingService {
     }
 
     /// 发布。失败不改状态，重试用同一个 release 即可——不会多出一个版本。
+    ///
+    /// ADR-28：前段（准入/状态/读签名）与后段（UPDATE+审计）进阻塞池，
+    /// 发布 await 留 async。
     pub async fn publish(
         &self,
         actor: &str,
@@ -828,13 +903,37 @@ impl PublishingService {
         trace: &str,
         release_id: &str,
     ) -> Result<Release> {
+        let svc = self.clone();
+        let (actor, trace, release_id) =
+            (actor.to_string(), trace.to_string(), release_id.to_string());
+        let rid = release_id.clone();
+        let prepared = offload(move || svc.publish_prepare(role, &rid)).await?;
+        let (release, state, signature) = match prepared {
+            PublishPrep::Done(release) => return Ok(release),
+            PublishPrep::Proceed {
+                release,
+                state,
+                signature,
+            } => (release, state, signature),
+        };
+        let reference = self
+            .port
+            .publish_release(&release.app_id, &release.version, &signature)
+            .await?;
+        let svc = self.clone();
+        offload(move || svc.publish_finish(&actor, role, &trace, &release_id, &state, &reference))
+            .await
+    }
+
+    /// [`Self::publish`] 的同步前段。整段在阻塞池里跑。
+    fn publish_prepare(&self, role: Role, release_id: &str) -> Result<PublishPrep> {
         auth::require(role, Resource::MiniApp, Action::Write)?;
         let release = self.release(release_id)?.ok_or(AdminError::NotFound)?;
         let state = ReleaseState::parse(&release.state)
             .ok_or_else(|| AdminError::bad_input("库里的发行状态认不出"))?;
         if state == ReleaseState::Published {
             // 幂等：重复发布返回当前状态，不再打一次上游
-            return Ok(release);
+            return Ok(PublishPrep::Done(release));
         }
         if state != ReleaseState::Signed {
             return Err(AdminError::bad_input(format!(
@@ -842,14 +941,27 @@ impl PublishingService {
                 state.as_str()
             )));
         }
-        // 先把签名读出来再 await：锁不能跨 await 活着（MutexGuard 不是 Send）
+        // 签名在前段里读出来：锁不能跨 await 活着（MutexGuard 不是 Send）
         let signature = self
             .signature_of(release_id)?
             .ok_or_else(|| AdminError::bad_input("这条发行没有签名记录，先重新签名"))?;
-        let reference = self
-            .port
-            .publish_release(&release.app_id, &release.version, &signature)
-            .await?;
+        Ok(PublishPrep::Proceed {
+            release,
+            state,
+            signature,
+        })
+    }
+
+    /// [`Self::publish`] 的同步后段：UPDATE + 审计整段一个临界区。
+    fn publish_finish(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        release_id: &str,
+        state: &ReleaseState,
+        reference: &str,
+    ) -> Result<Release> {
         let now = now_ms();
         self.store.lock().execute(
             "UPDATE g14_mini_release SET state = ?2, published_by = ?3, updated_at = ?4 WHERE id = ?1",
@@ -875,6 +987,7 @@ impl PublishingService {
         Ok(updated)
     }
 
+    /// ADR-28：前段（准入/状态）与后段（UPDATE+审计）进阻塞池，撤回 await 留 async。
     pub async fn revoke(
         &self,
         actor: &str,
@@ -883,6 +996,43 @@ impl PublishingService {
         release_id: &str,
         reason: &str,
     ) -> Result<Release> {
+        let svc = self.clone();
+        let (actor, trace, release_id, reason) = (
+            actor.to_string(),
+            trace.to_string(),
+            release_id.to_string(),
+            reason.to_string(),
+        );
+        let (a, rid, r) = (actor.clone(), release_id.clone(), reason.clone());
+        let (release, state, reason) =
+            offload(move || svc.revoke_prepare(&a, role, &rid, &r)).await?;
+        let reference = self
+            .port
+            .revoke_release(&release.app_id, &release.version, &reason)
+            .await?;
+        let svc = self.clone();
+        offload(move || {
+            svc.revoke_finish(
+                &actor,
+                role,
+                &trace,
+                &release_id,
+                &reason,
+                &state,
+                &reference,
+            )
+        })
+        .await
+    }
+
+    /// [`Self::revoke`] 的同步前段。整段在阻塞池里跑。
+    fn revoke_prepare(
+        &self,
+        actor: &str,
+        role: Role,
+        release_id: &str,
+        reason: &str,
+    ) -> Result<(Release, ReleaseState, String)> {
         auth::require(role, Resource::MiniApp, Action::Destructive)?;
         self.stepup.require(actor, Action::Destructive)?;
         let reason = required_reason(reason)?;
@@ -895,10 +1045,21 @@ impl PublishingService {
                 state.as_str()
             )));
         }
-        let reference = self
-            .port
-            .revoke_release(&release.app_id, &release.version, &reason)
-            .await?;
+        Ok((release, state, reason))
+    }
+
+    /// [`Self::revoke`] 的同步后段：UPDATE + 审计整段一个临界区。
+    #[allow(clippy::too_many_arguments)]
+    fn revoke_finish(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        release_id: &str,
+        reason: &str,
+        state: &ReleaseState,
+        reference: &str,
+    ) -> Result<Release> {
         let now = now_ms();
         self.store.lock().execute(
             "UPDATE g14_mini_release SET state = ?2, updated_at = ?3 WHERE id = ?1",
@@ -913,7 +1074,7 @@ impl PublishingService {
                 "mini_release",
                 release_id,
             )
-            .reason(&reason)
+            .reason(reason)
             .trace(trace)
             .before(serde_json::json!({"state": state.as_str()}))
             .after(serde_json::json!({

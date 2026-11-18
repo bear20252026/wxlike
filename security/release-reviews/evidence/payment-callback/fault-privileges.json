@@ -1,0 +1,26 @@
+{
+  "suite": "privileges",
+  "base_url": "http://127.0.0.1:3656",
+  "finished_at": "2026-11-18T03:53:12Z",
+  "ok": false,
+  "cases": [
+    {
+      "name": "community/channel privileges",
+      "status": "pass",
+      "detail": "owner can post; non-member send/read/role-change refused",
+      "duration_ms": 965
+    },
+    {
+      "name": "payment callback replay",
+      "status": "pass",
+      "detail": "callback op-2a390101e9b94ef7a5f54f4c4fe0a9dd settled once; 4 replays + post-restart replay all replayed=true, ledger single-effect",
+      "duration_ms": 3546
+    },
+    {
+      "name": "RTC weak network",
+      "status": "blocked",
+      "detail": "/api/turn/credentials -> 404; no TURN/SFU provider is attached, RTC-WEAK-NET (G09) is open",
+      "duration_ms": 2
+    }
+  ]
+}

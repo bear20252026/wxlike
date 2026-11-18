@@ -367,18 +367,30 @@ class ManifestMergeTest(unittest.TestCase):
 
 
 class ReleaseGateScopeTest(unittest.TestCase):
-    """Pins the 2026-11-05 owner decision: only the payment replay gap blocks release."""
+    """支付回调缺口已于 2026-11-17 关闭（第四轮审计 N7，真实进程取证）。
 
-    def test_exactly_one_release_blocking_gap(self):
+    原 2026-11-05 所有者裁决"只有支付重放缺口阻塞发布"已随缺口关闭而失效：
+    现在没有任何 open 且 blocks_release 的缺口。关闭不等于抹掉登记——
+    PAYMENT-CALLBACK-REPLAY 仍以 closed 状态留在台账里，证据可追溯。
+    """
+
+    def test_no_open_release_blocking_gap(self):
         data = json.loads((JOBS / "policy" / "known-gaps.json").read_text(encoding="utf-8"))
-        blocking = [g["id"] for g in data["gaps"] if g.get("blocks_release")]
-        self.assertEqual(blocking, ["PAYMENT-CALLBACK-REPLAY"])
+        blocking = [g["id"] for g in data["gaps"] if g.get("status") == "open" and g.get("blocks_release")]
+        self.assertEqual(blocking, [], "支付回调缺口关闭后不应再有 open 的发布阻塞缺口")
+
+    def test_payment_callback_gap_closed_with_evidence(self):
+        data = json.loads((JOBS / "policy" / "known-gaps.json").read_text(encoding="utf-8"))
+        gap = next(g for g in data["gaps"] if g["id"] == "PAYMENT-CALLBACK-REPLAY")
+        self.assertEqual(gap["status"], "closed")
+        self.assertFalse(gap["blocks_release"])
+        self.assertIn("commerce_mount", gap["evidence"])
 
     def test_downgraded_gaps_are_still_tracked(self):
-        """Flipping blocks_release must not erase the gap registry."""
+        """Flipping blocks_release/status must not erase the gap registry."""
         data = json.loads((JOBS / "policy" / "known-gaps.json").read_text(encoding="utf-8"))
         for gap in data["gaps"]:
-            self.assertEqual(gap["status"], "open", gap["id"])
+            self.assertIn(gap["status"], ("open", "closed"), gap["id"])
             self.assertTrue(gap.get("owner"), gap["id"])
             self.assertTrue(gap.get("task"), gap["id"])
             self.assertTrue(gap.get("evidence"), gap["id"])
@@ -824,6 +836,68 @@ async fn bad_tx(&self) -> Result<()> {
         red = self._run(root)
         self.assertNotEqual(red.returncode, 0, "同步查库调用没被规则 3 抓到")
         self.assertIn("offload", red.stderr)
+
+    # --- adminx 纳入守卫（第四轮审计 N1）+ 内存锁替身的类型级豁免 ---
+
+    def _admin_fixture(self, body: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="adr28-admin-"))
+        target = root / "crates" / "admin" / "src"
+        target.mkdir(parents=True)
+        (target / "identity.rs").write_text(body, encoding="utf-8")
+        return root
+
+    def test_admin_indirect_lock_in_async_handler_goes_red(self):
+        # N1 的形状：async handler 经同步方法间接持 store 锁。admin 整 crate
+        # 强制（ENFORCED_ROOTS），种子来自 admin 自己的持锁方法。
+        body = (
+            "impl IdentityService {\n"
+            "    pub fn create_case(&self) -> Result<()> {\n"
+            "        self.store.lock().execute(\"INSERT\", [])?;\n        Ok(())\n    }\n}\n"
+            "async fn h(state: &State) -> Result<()> {\n"
+            "    state.create_case()?;\n    Ok(())\n}\n"
+        )
+        red = self._run(self._admin_fixture(body))
+        self.assertNotEqual(red.returncode, 0, "admin 的间接持锁没被抓到")
+        self.assertIn("offload", red.stderr)
+        # 包进 offload → 回绿
+        fixed = body.replace(
+            "    state.create_case()?;",
+            "    offload(|| state.create_case()).await?;",
+        )
+        green = self._run(self._admin_fixture(fixed))
+        self.assertEqual(green.returncode, 0, green.stderr)
+
+    def test_fixture_memory_lock_is_waived_but_db_lock_is_not(self):
+        # 登记过的替身类型（FixturePort）里的内存锁不算违规……
+        waived = (
+            "impl FixturePort {\n"
+            "    fn record(&self) -> Result<()> {\n"
+            "        self.calls.lock().unwrap().push(1);\n        Ok(())\n    }\n}\n"
+            "#[async_trait]\nimpl PlatformPort for FixturePort {\n"
+            "    async fn suspend_user(&self) -> Result<()> {\n"
+            "        self.record()\n    }\n}\n"
+        )
+        self.assertEqual(self._run(self._admin_fixture(waived)).returncode, 0)
+        # ……但 async 体里直接持连接锁（db().lock()）不享受豁免，照样判红。
+        db_lock = waived.replace(
+            "        self.record()\n",
+            "        let c = self.db().lock();\n        Ok(())\n",
+        )
+        red = self._run(self._admin_fixture(db_lock))
+        self.assertNotEqual(red.returncode, 0, "替身 async 体里的连接锁竟然被豁免了")
+        self.assertIn("db().lock()", red.stderr)
+
+    def test_unregistered_type_memory_lock_still_red(self):
+        # 没登记的类型不享受豁免：同名 record 在别的 impl 里照样判红。
+        body = (
+            "impl SomeService {\n"
+            "    fn record(&self) -> Result<()> {\n"
+            "        self.store.lock().execute(\"INSERT\", [])?;\n        Ok(())\n    }\n}\n"
+            "async fn h(state: &State) -> Result<()> {\n"
+            "    state.record()?;\n    Ok(())\n}\n"
+        )
+        red = self._run(self._admin_fixture(body))
+        self.assertNotEqual(red.returncode, 0)
 
 
 class OldUiRetirementTest(unittest.TestCase):

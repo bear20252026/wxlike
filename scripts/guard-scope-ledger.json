@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "updated_at": "2026-11-17",
+  "note": "ADR-28 守卫扫描范围台账（第四轮审计 N1 的结构性修复）。凡生产依赖同时含 tokio 与 rusqlite 的 crate，必须在此登记：covered=已被 SCAN_ROOTS 覆盖且不被 SKIP_DIR_PARTS 跳过；exempt=显式豁免且必须给理由。新增 crate 未登记即判红（scripts/guard_scope_guard.py）。豁免不是永久状态：改造完成后把 exempt 改 covered 并删理由，陈旧豁免由守卫判红。",
+  "crates": [
+    {
+      "crate": "wxlike-platform",
+      "manifest": "crates/platform/Cargo.toml",
+      "src": "crates/platform/src",
+      "status": "covered"
+    },
+    {
+      "crate": "wxlike-net",
+      "manifest": "crates/net/Cargo.toml",
+      "src": "crates/net/src",
+      "status": "covered"
+    },
+    {
+      "crate": "wxlike-admin",
+      "manifest": "crates/admin/Cargo.toml",
+      "src": "crates/admin/src",
+      "status": "covered",
+      "note": "第四轮审计 N1：整 crate 纳入 SCAN_ROOTS + ENFORCED_ROOTS，async handler 的 DB 段经 offload/Store::blocking 进阻塞池。"
+    },
+    {
+      "crate": "wxlike-rtc",
+      "manifest": "crates/rtc/Cargo.toml",
+      "src": "crates/rtc/src",
+      "status": "covered",
+      "note": "锁均为内存态（音频队列/房间活跃标记），无 async 持连接锁；纳入扫描以防退化。"
+    },
+    {
+      "crate": "wxlike-video",
+      "manifest": "crates/video/Cargo.toml",
+      "src": "crates/video/src",
+      "status": "covered",
+      "note": "读面已走 *_blocking 卸载；纳入扫描以防退化。"
+    },
+    {
+      "crate": "wxlike-media",
+      "manifest": "crates/features/media/Cargo.toml",
+      "src": "crates/features/media/src",
+      "status": "exempt",
+      "reason": "handler 层与 admin 同型的间接持锁改造未完成（约 30 个 async handler 经 service 同步方法持 db 锁）。SKIP_DIR_PARTS 显式跳过 /features/media/；改造完成后改 covered 并删本理由。"
+    },
+    {
+      "crate": "wxlike-ffi",
+      "manifest": "crates/ffi/Cargo.toml",
+      "src": "crates/ffi/src",
+      "status": "exempt",
+      "reason": "FFI 绑定层，不是服务端 await 上下文里的 axum handler；SKIP_DIR_PARTS 跳过 /ffi/。其 async 入口的 DB 卸载由 client-native 侧负责。"
+    },
+    {
+      "crate": "wxlike-client-native",
+      "manifest": "crates/client-native/Cargo.toml",
+      "src": "crates/client-native/src",
+      "status": "exempt",
+      "reason": "桌面客户端运行时，非服务端 handler；SKIP_DIR_PARTS 跳过 /client。客户端单线程事件循环形状与服务端不同，另行治理。"
+    },
+    {
+      "crate": "wxlike-ui",
+      "manifest": "ui/src-tauri/Cargo.toml",
+      "src": "ui/src-tauri/src",
+      "status": "exempt",
+      "reason": "Tauri 桌面壳（workspace 外），非服务端 handler；SKIP_DIR_PARTS 跳过 /ui/。命令面经 core_bridge 走客户端核心，另行治理。"
+    }
+  ]
+}

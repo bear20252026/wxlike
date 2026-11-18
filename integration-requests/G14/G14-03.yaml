@@ -22,20 +22,23 @@ requests:
     blocking: true
     evidence: crates/admin/tests/g14_03_publishing.rs::takedown_and_restore_change_client_visible_state
 
-  - id: REQ-G07-mini-release-lifecycle
-    target: G07-07
+  # 目标纠正（第四轮审计 N2）：签包/发布/撤回是小程序**包供应链**能力，归
+  # G08-01（包格式、签名与发布供应链），不是 G07-07（购物/游戏/应用服务路由）。
+  - id: REQ-G08-mini-release-lifecycle
+    target: G08-01
     action: >-
       提供三个端点：`POST /api/admin/mini/{app}/versions/{v}/sign`（回 signature）、
       `/publish`（body: signature，回 reference）、`/revoke`（body: reason）。
-      签名密钥只在 G07 侧，**不要**把私钥或签名服务凭据交给 adminx。
-      `/publish`（body: signature，回 reference）、`/revoke`（body: reason）。
-      签名密钥只在 G07 侧，**不要**把私钥或签名服务凭据交给 adminx。
-    rationale: 签包与发布是 G07 的能力，后台只是编排与权限分离。
+      签名密钥只在 G08 侧，**不要**把私钥或签名服务凭据交给 adminx。
+    rationale: 签包与发布是 G08 的包供应链能力（G07-07 的游戏也"由 G08 签名分发"），
+      后台只是编排与权限分离。
     blocking: true
     evidence: crates/admin/tests/g14_03_publishing.rs::publish_failure_is_retryable_without_new_version
 
-  - id: REQ-G08-service-catalog-visibility
-    target: G08-04
+  # 目标纠正（第四轮审计 N2）：服务卡片目录归 G07-04（服务目录、报价与统一供应商
+  # 订单，"管理员可配置服务可用区域"），不是 G08-04（那是**小程序**目录）。
+  - id: REQ-G07-service-catalog-visibility
+    target: G07-04
     action: >-
       服务卡片可见性端点 `POST /api/admin/services/{id}/visibility`（body: state, note），
       并确认目录页按 region 过滤时读的是同一份配置。

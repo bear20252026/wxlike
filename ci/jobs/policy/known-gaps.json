@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-06",
+  "updated_at": "2026-11-17",
   "gaps": [
     {
       "id": "G01-03-WASM",
@@ -57,9 +57,9 @@
       "owner": "G06",
       "task": "G16-04 integration",
       "check": "e2e",
-      "status": "open",
-      "blocks_release": true,
-      "evidence": "There is no provider callback endpoint with an idempotency key; the replay scenario cannot be executed against the real domain.",
+      "status": "closed",
+      "blocks_release": false,
+      "evidence": "Closed 2026-11-17 (第四轮审计 N7): POST /api/payment/callback mounted in server/src/commerce_mount.rs (raw-body length-prefixed HMAC, operation_id idempotency). Replay proven single-effect on a REAL server process: tests/fault/run.py:payment_callback_replay passed (create intent -> signed callback -> 4 replays + post-restart replay, all replayed=true, ledger single-effect); evidence security/release-reviews/evidence/payment-callback/fault-privileges.json. Crate evidence: commerce g06_06 (13 cases) + server/tests/commerce_mount.rs (6 cases incl. file-backed restart). Contract: webhooks.payment_callback + fixtures/payment-callback-operation-replay.json.",
       "close_when": "G06 exposes a callback contract with operation_id and replay is proven single-effect."
     },
     {

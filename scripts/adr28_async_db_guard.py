@@ -43,8 +43,14 @@ SCAN_ROOTS = (
     "crates/net/src",
     "crates/core/src",
     "crates/features",
+    "crates/admin/src",
+    "crates/rtc/src",
+    "crates/video/src",
     "server/src",
 )
+# 客户端/CLI/MCP/FFI 与桌面壳不在本闸范围（它们不是服务端 await 上下文里的
+# handler）；media 的 handler 层同型改造未完成，先显式跳过并在
+# scripts/guard_scope_ledger.json 登记理由——跳过必须登记，不许静默。
 SKIP_DIR_PARTS = ("/cmd/", "/mcp/", "/client", "/ffi/", "/features/media/", "/ui/", "/apps/", "/target/")
 # 本卡三条样板热点（消息写 / 关系写 / 群管理写）：规则 3 在这些文件里整文件强制。
 #
@@ -60,6 +66,10 @@ ENFORCED_FILES = (
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",
 )
+# adminx（第四轮审计 N1）：整 crate 强制。它的 async handler 经
+# write_caller→record_denial→audit.append→store.lock() 间接持锁，只加
+# SCAN_ROOTS 不加种子与强制名单等于没加——所以三处一起扩。
+ENFORCED_ROOTS = ("crates/admin/src",)
 # 规则 3 点名的样板函数：`communities.rs` 不是本卡独占文件，整文件强制会把 20 个
 # 无关读接口一起卷进来，所以只把"消息写"这两条样板钉住——样板不许退化。
 # 这两条样板**刻意不是 `async fn`**（见 domain/communities.rs 的 ADR-28 样板注释），
@@ -70,6 +80,17 @@ ENFORCED_FNS = {
     "crates/platform/src/domain/communities.rs": {"send_channel_message", "send_thread_reply"},
 }
 WAIVER = "TODO(ADR-28)"
+# 规则 3 的**类型级**豁免：这些 impl 块里的同步方法锁的是内存态（测试替身的
+# 调用记录/故障注入），不是 SQLite 连接——ADR-28 管的是"async 里持同步**连接**锁"。
+# 豁免按 (文件, impl 的类型名) 精确登记，不许按方法名泛免（`record` 这种通用名
+# 一旦泛免，真查库的同名方法就漏网了）。块里出现连接锁形状（db().lock() /
+# .lock()+transaction）时豁免自动失效。改造完删登记，陈旧登记由
+# scripts/guard_scope_guard.py 判红。
+NON_DB_IMPL_TYPES = {
+    ("crates/admin/src/identity.rs", "FixturePort"),
+    ("crates/admin/src/publishing.rs", "FixtureContentPort"),
+}
+IMPL_TYPE = re.compile(r"\bimpl\s+(?:[A-Za-z0-9_:]+\s+for\s+)?([A-Za-z0-9_]+)")
 
 ASYNC_FN = re.compile(r"\basync\s+fn\s+([A-Za-z0-9_]+)")
 SYNC_FN = re.compile(r"\bfn\s+([A-Za-z0-9_]+)\s*[(<]")
@@ -227,12 +248,14 @@ def sync_db_names(files) -> set:
     bodies, seeds = {}, set()
     for path in files:
         code = code_of(path)
-        platform_method = "/platform/src/" in path.as_posix()
+        posix = path.as_posix()
+        # 种子来源：platform 与 adminx 的服务方法（带 self 接收者且体内持锁）。
+        seed_root = "/platform/src/" in posix or "/admin/src/" in posix
         for name, _, sig, (start, end) in iter_fns(code, SYNC_FN):
             body = code[start:end]
             bodies.setdefault(name, []).append(handle_calls(body))
             locks = ANY_LOCK.search(body) or DB_LOCK.search(body)
-            if locks and platform_method and "self" in code[sig:start]:
+            if locks and seed_root and "self" in code[sig:start]:
                 seeds.add(name)
     for _ in range(12):
         grown = {n for n, calls in bodies.items() if any(c & seeds for c in calls)} - seeds
@@ -243,15 +266,51 @@ def sync_db_names(files) -> set:
 
 
 def is_enforced(rel: str, name: str) -> bool:
-    return rel in ENFORCED_FILES or name in ENFORCED_FNS.get(rel, ())
+    return (
+        rel in ENFORCED_FILES
+        or name in ENFORCED_FNS.get(rel, ())
+        or any(rel.startswith(root + "/") for root in ENFORCED_ROOTS)
+    )
 
 
-def check_async_fn(rel: str, name: str, line: int, raw_body: str, code_body: str, sync_names: set):
+def non_db_impl_spans(code: str, rel: str) -> list:
+    """登记过的"内存锁替身" impl 块的区间（掩码后代码，下标与原文对齐）。
+
+    块里出现连接锁形状（db().lock() / .lock()+transaction）时**不给豁免**：
+    替身哪天真的接了库，豁免自动失效，而不是靠人记得删登记。
+    """
+    spans = []
+    for match in IMPL_TYPE.finditer(code):
+        if (rel, match.group(1)) not in NON_DB_IMPL_TYPES:
+            continue
+        brace = code.find("{", match.end())
+        if brace < 0:
+            continue
+        end = balanced_end(code, brace)
+        block = code[brace:end]
+        if DB_LOCK.search(block):
+            continue
+        lock = ANY_LOCK.search(block)
+        if lock and TRANSACTION.search(block[lock.end():]):
+            continue
+        spans.append((brace, end))
+    return spans
+
+
+def check_async_fn(
+    rel: str,
+    name: str,
+    line: int,
+    raw_body: str,
+    code_body: str,
+    sync_names: set,
+    in_non_db_impl: bool = False,
+):
     """返回违规描述，或 None。"""
     has_waiver = WAIVER in raw_body
     problem = direct_lock_violation(code_body)
     leaked = ""
-    if is_enforced(rel, name) and not problem:
+    if is_enforced(rel, name) and not problem and not in_non_db_impl:
         leaked = leaked_call(code_body, sync_names)
     if has_waiver:
         if problem or leaked:
@@ -280,10 +339,26 @@ def scan(root: pathlib.Path):
         raw = read(path)
         code = mask(drop_test_modules(raw))
         rel = path.relative_to(root).as_posix()
+        non_db_spans = non_db_impl_spans(code, rel)
         for name, line, sig, (start, end) in iter_fns(code, ASYNC_FN):
             # mask/drop_test_modules 都不改长度，所以 raw 与 code 下标一一对应：
             # 违规看 code，waiver 看含注释的原文。
-            hit = check_async_fn(rel, name, line, raw[sig:end], code[start:end], sync_names)
+            in_non_db = any(s <= sig < e for s, e in non_db_spans)
+            body = code[start:end]
+            hit = check_async_fn(
+                rel, name, line, raw[sig:end], body, sync_names, in_non_db
+            )
+            # 替身块里的 async 方法：规则 3 的"调内存锁方法"豁免，但连接锁
+            # 形状不豁免——替身哪天在 async 体里直接 db().lock()，照样判红。
+            if not hit and in_non_db and WAIVER not in raw[sig:end]:
+                if DB_LOCK.search(body):
+                    hit = (f"{rel}:{line}: async fn `{name}`：体内出现 db().lock()"
+                           "（替身豁免不覆盖连接锁）")
+                else:
+                    lock = ANY_LOCK.search(body)
+                    if lock and TRANSACTION.search(body[lock.end():]):
+                        hit = (f"{rel}:{line}: async fn `{name}`：.lock() 之后紧跟 "
+                               "transaction()（替身豁免不覆盖连接锁）")
             if hit:
                 findings.append(hit)
     return findings
