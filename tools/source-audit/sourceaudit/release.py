@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import datetime
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,13 @@ STATUSES = {PASS, FAIL, BLOCKED, NOT_APPLICABLE, UNVERIFIED}
 # 证据强度：`checklist` 是自报，不算验证；`test`/`artifact`/`device` 才是
 KINDS = {"checklist", "test", "artifact", "device", "external"}
 STRONG_KINDS = {"test", "artifact", "device"}
+
+# 新鲜度阈值（第四轮审计 N6）：评审证据落后主干超过这些阈值就**显式报告**，
+# 不让"发布评审通过"在几百个 commit 之后仍然被当作有效声明。阈值是所有者政策，
+# 调整须走所有者裁决（与 blocks_release 同口径）；当前为 warn 级——研究骨架
+# 不对外分发，先把"过时"变成机器可见的事实，升为阻断由所有者另行决定。
+MAX_COMMIT_DISTANCE = 50
+MAX_REVIEW_AGE_DAYS = 30
 
 
 def check(root: Path | None = None, evidence: Path | None = None) -> Report:
@@ -53,6 +62,7 @@ def check(root: Path | None = None, evidence: Path | None = None) -> Report:
     _check_claims(report, bundle)
     _check_blockers(report, blockers, exceptions)
     _check_corpus_cross_reference(report, root, blockers)
+    _check_freshness(report, bundle, root)
     _summarize(report, bundle, blockers)
     return report
 
@@ -223,6 +233,70 @@ def _check_corpus_cross_reference(report: Report, root: Path, blockers: list[dic
                 sample.get("file", "?"),
                 f"语料仍为 blocked，但 {blocker_id} 已标 closed：须重放成功并更新裁决",
                 Severity.HIGH,
+            )
+
+
+# ---- 新鲜度（第四轮审计 N6） ---------------------------------------------
+def _git(root: Path, *args: str) -> str | None:
+    """跑一条只读 git 命令；仓库/命令不可用时返回 None（降级为 warn，不崩门禁）。"""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+
+def _check_freshness(report: Report, bundle: dict[str, Any], root: Path) -> None:
+    """评审证据必须跟得上主干：commit 距离与评审日期都要核。
+
+    N6 的事实：证据停在 2026-11-05，落后 297 个 commit，而 release check 只验
+    形式不验新鲜度——"发布评审通过"的含金量被静默稀释。这里把它变成机器可见：
+    缺 commit、距离超限、日期过旧都显式报告（warn 级，升阻断属所有者裁决）。
+    """
+    release = bundle.get("release") or {}
+    commit = (release.get("commit") or "").strip()
+    head = _git(root, "rev-parse", "HEAD")
+    if head is None:
+        report.warn("REL-FRESHNESS-NO-GIT", "freshness", "无法读取 git HEAD：新鲜度未核验（非 git 环境？）", Severity.LOW)
+        return
+    if not commit:
+        report.warn("REL-NO-COMMIT", "freshness", "证据包没有 release.commit：无法核对评审覆盖到哪次提交", Severity.MEDIUM)
+        return
+    distance_raw = _git(root, "rev-list", "--count", f"{commit}..HEAD")
+    if distance_raw is None or not distance_raw.isdigit():
+        report.warn(
+            "REL-COMMIT-UNKNOWN", "freshness",
+            f"release.commit={commit[:12]} 不在本仓库历史里：无法计算距离（浅克隆或错误提交号）",
+            Severity.MEDIUM,
+        )
+        return
+    distance = int(distance_raw)
+    report.meta["commit_distance"] = distance
+    if distance > MAX_COMMIT_DISTANCE:
+        report.warn(
+            "REL-STALE-COMMIT", "freshness",
+            f"评审证据落后主干 {distance} 个 commit（阈值 {MAX_COMMIT_DISTANCE}）：重新评审或更新证据包",
+            Severity.MEDIUM,
+        )
+    reviewed_at = (release.get("reviewed_at") or "").strip()
+    if reviewed_at:
+        try:
+            reviewed = datetime.date.fromisoformat(reviewed_at)
+        except ValueError:
+            report.warn("REL-REVIEW-DATE", "freshness", f"reviewed_at 不是 ISO 日期：{reviewed_at!r}", Severity.MEDIUM)
+            return
+        age = (datetime.date.today() - reviewed).days
+        report.meta["review_age_days"] = age
+        if age > MAX_REVIEW_AGE_DAYS:
+            report.warn(
+                "REL-STALE-DATE", "freshness",
+                f"评审日期已过去 {age} 天（阈值 {MAX_REVIEW_AGE_DAYS}）：重新评审或更新证据包",
+                Severity.MEDIUM,
             )
 
 
