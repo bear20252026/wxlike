@@ -815,7 +815,11 @@ impl IdentityService {
         .await?;
         let (target, reason, cmd) = match prepared {
             DangerPrep::Preview(preview) => return Ok(Dangerous::Preview(preview)),
-            DangerPrep::Execute { target, reason, cmd } => (target, reason, cmd),
+            DangerPrep::Execute {
+                target,
+                reason,
+                cmd,
+            } => (target, reason, cmd),
         };
 
         // 执行并留痕。失败也留痕（含上游 5xx / 传输失败）；留痕段整段进池。

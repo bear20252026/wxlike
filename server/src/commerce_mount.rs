@@ -251,9 +251,7 @@ fn classify(err: &CommerceError) -> (StatusCode, &'static str) {
         CommerceError::BadInput(_) | CommerceError::Money(_) => {
             (StatusCode::BAD_REQUEST, "BAD_INPUT")
         }
-        CommerceError::IdempotencyConflict => {
-            (StatusCode::CONFLICT, "IDEMPOTENCY_CONFLICT")
-        }
+        CommerceError::IdempotencyConflict => (StatusCode::CONFLICT, "IDEMPOTENCY_CONFLICT"),
         CommerceError::Replay => (StatusCode::CONFLICT, "REPLAY"),
         CommerceError::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND"),
         CommerceError::Forbidden | CommerceError::Unauthorized => {
@@ -269,9 +267,7 @@ fn classify(err: &CommerceError) -> (StatusCode, &'static str) {
         | CommerceError::ProviderTimeout
         | CommerceError::ProviderRejected
         | CommerceError::ProviderNotConfigured
-        | CommerceError::MembershipUnavailable => {
-            (StatusCode::BAD_GATEWAY, "PROVIDER_UNAVAILABLE")
-        }
+        | CommerceError::MembershipUnavailable => (StatusCode::BAD_GATEWAY, "PROVIDER_UNAVAILABLE"),
         CommerceError::Ledger(_) | CommerceError::Storage(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL")
         }

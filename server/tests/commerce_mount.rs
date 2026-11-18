@@ -101,8 +101,10 @@ fn entry_rows(db_path: &str, intent_id: &str) -> i64 {
 
 fn outbox_rows(db_path: &str) -> i64 {
     let conn = wxlike_ledger::open_connection(Some(db_path)).expect("read conn");
-    conn.query_row("SELECT COUNT(*) FROM commerce_outbox", [], |r| r.get::<_, i64>(0))
-        .expect("count")
+    conn.query_row("SELECT COUNT(*) FROM commerce_outbox", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .expect("count")
 }
 
 #[tokio::test]
@@ -113,7 +115,11 @@ async fn unsigned_callback_is_401_not_404() {
         callback_request("{\"operation_id\":\"probe\"}", None),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "未签名应 401（404=没挂）: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "未签名应 401（404=没挂）: {body}"
+    );
     assert_eq!(body["error"], "INVALID_SIGNATURE");
 }
 
@@ -121,7 +127,14 @@ async fn unsigned_callback_is_401_not_404() {
 async fn forged_signature_is_401() {
     let stack = boot().await;
     let (intent_id, provider_ref) = make_intent(&stack.commerce, "forge");
-    let raw = callback_body("op-forge", "evt-forge", &intent_id, &provider_ref, 9_900, now_ms());
+    let raw = callback_body(
+        "op-forge",
+        "evt-forge",
+        &intent_id,
+        &provider_ref,
+        9_900,
+        now_ms(),
+    );
     let (status, body) = send(&stack.app, callback_request(&raw, Some("deadbeef"))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "错签名应 401: {body}");
 }
@@ -213,7 +226,14 @@ async fn file_backed_restart_replay_stays_single_effect() {
     let db_str = commerce_db_path.to_str().unwrap();
 
     let (intent_id, provider_ref) = make_intent(&stack.commerce, "restart");
-    let raw = callback_body("op-rs", "evt-rs", &intent_id, &provider_ref, 9_900, now_ms());
+    let raw = callback_body(
+        "op-rs",
+        "evt-rs",
+        &intent_id,
+        &provider_ref,
+        9_900,
+        now_ms(),
+    );
     let sig = stack.commerce.webhook_signature(&raw);
     let (status, body) = send(&stack.app, callback_request(&raw, Some(&sig))).await;
     assert_eq!(status, StatusCode::OK, "首次回调: {body}");

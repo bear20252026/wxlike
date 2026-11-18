@@ -825,10 +825,8 @@ impl PublishingService {
             .sign_package(&release.app_id, &release.version)
             .await?;
         let svc = self.clone();
-        offload(move || {
-            svc.sign_finish(&actor, role, &trace, &release_id, &state, &signature)
-        })
-        .await
+        offload(move || svc.sign_finish(&actor, role, &trace, &release_id, &state, &signature))
+            .await
     }
 
     /// [`Self::sign`] 的同步前段。整段在阻塞池里跑。
@@ -923,10 +921,8 @@ impl PublishingService {
             .publish_release(&release.app_id, &release.version, &signature)
             .await?;
         let svc = self.clone();
-        offload(move || {
-            svc.publish_finish(&actor, role, &trace, &release_id, &state, &reference)
-        })
-        .await
+        offload(move || svc.publish_finish(&actor, role, &trace, &release_id, &state, &reference))
+            .await
     }
 
     /// [`Self::publish`] 的同步前段。整段在阻塞池里跑。
@@ -1016,7 +1012,15 @@ impl PublishingService {
             .await?;
         let svc = self.clone();
         offload(move || {
-            svc.revoke_finish(&actor, role, &trace, &release_id, &reason, &state, &reference)
+            svc.revoke_finish(
+                &actor,
+                role,
+                &trace,
+                &release_id,
+                &reason,
+                &state,
+                &reference,
+            )
         })
         .await
     }

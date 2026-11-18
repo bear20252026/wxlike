@@ -602,8 +602,7 @@ impl CommerceService {
             refund_id.clone(),
             note.clone(),
         );
-        let prepared =
-            offload(move || svc.approve_refund_prepare(&a, role, &t, &rid, &n)).await?;
+        let prepared = offload(move || svc.approve_refund_prepare(&a, role, &t, &rid, &n)).await?;
         let (refund, first, second, needs_two, apply) = match prepared {
             RefundPrep::Done(refund) => return Ok(refund),
             RefundPrep::Proceed {
@@ -628,8 +627,8 @@ impl CommerceService {
         let svc = self.clone();
         offload(move || {
             svc.approve_refund_finish(
-                &actor, role, &trace, &refund_id, &note, &refund, first, second, needs_two,
-                state, &reference,
+                &actor, role, &trace, &refund_id, &note, &refund, first, second, needs_two, state,
+                &reference,
             )
         })
         .await

@@ -336,8 +336,7 @@ impl JobService {
             targets.to_vec(),
         );
         let (r, tg) = (reason.clone(), targets.clone());
-        let (id, mut receipt) =
-            offload(move || svc.run_batch_start(role, &r, &tg)).await?;
+        let (id, mut receipt) = offload(move || svc.run_batch_start(role, &r, &tg)).await?;
 
         self.run_batch_items(&actor, role, &trace, &reason, &targets, &id, &mut receipt)
             .await?;
