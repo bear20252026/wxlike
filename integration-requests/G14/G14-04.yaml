@@ -11,9 +11,11 @@ artifacts:
   - crates/admin/src/g14.rs      # /api/g14/commerce/*
   - crates/admin/tests/g14_04_commerce.rs
 
+# 目标纠正（第四轮审计 N2）：退款出账与对账是**账本/资金**能力，归 G06-03
+# （充值提现退款与对账），不是 G09（通话/音视频/直播，无任何资金能力）。
 requests:
-  - id: REQ-G09-refund-apply
-    target: G09
+  - id: REQ-G06-refund-apply
+    target: G06-03
     action: >-
       提供 `POST /api/admin/commerce/refunds/{refund_id}/apply`（body: order_id, amount_cents），
       回执含 reference；同一 refund_id 重复调用必须幂等（不重复出账）。
@@ -21,8 +23,8 @@ requests:
     blocking: true
     evidence: crates/admin/tests/g14_04_commerce.rs::refund_over_threshold_needs_two_different_approvers
 
-  - id: REQ-G09-order-recon-projection
-    target: G09
+  - id: REQ-G06-order-recon-projection
+    target: G06-03
     action: 给出对账作业写入的差异格式（batch / external_no / internal_no / kind /
       amount_delta_cents），以及订单号映射的权威来源；G14 只落运营投影，不改账本。
     rationale: >-

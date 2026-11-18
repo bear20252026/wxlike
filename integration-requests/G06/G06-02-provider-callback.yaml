@@ -12,7 +12,12 @@ owner: G06
 to: G00
 gap: PAYMENT-CALLBACK-REPLAY
 branch: feat/G06-ledger-payments
-status: ready-for-G00
+# 2026-11-17 G00 已执行（第四轮审计 N7）：路由挂载 server/src/commerce_mount.rs
+# （POST /api/payment/callback + 会话鉴权动作面 /api/v1/commerce/actions/{action}），
+# 契约行 webhooks.payment_callback + fixture 已补，fault 用例已翻转为真实重放并在
+# 真实 server 进程取证通过，known-gaps PAYMENT-CALLBACK-REPLAY 已 closed。
+# 剩余：PG 正式迁移编号（REQ-G00-callback-schema-migration，归 G00-04，不阻塞 SQLite）。
+status: executed-pending-pg-migration
 
 summary: >-
   commerce 侧已提供带 operation_id 的回调入口

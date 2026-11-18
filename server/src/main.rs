@@ -110,6 +110,10 @@ fn check_secrets() -> anyhow::Result<()> {
             "WXLIKE_MEDIA_SECRET",
             "否则下载签名链接重启即失效、多实例互不认（media 域装配另有长度闸）",
         ),
+        (
+            "WXLIKE_PAYMENT_WEBHOOK_SECRET",
+            "否则任何人都能用已知密钥伪造支付回调入账（commerce 回调验签密钥）",
+        ),
     ] {
         if secret_missing(key) && !dev_insecure() {
             anyhow::bail!(

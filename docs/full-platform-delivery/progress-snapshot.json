@@ -1,0 +1,1243 @@
+{
+  "schema": 1,
+  "verified_at": "2026-11-17",
+  "authority": "代码事实（孤岛台账/缺口台账/集成请求/审计判定）；GitHub 开闭仅旁证，issue 闭≠验收过",
+  "note": "单一权威进度源（第四轮审计 N5）。替代 tasks.json/GitHub/delivery/蓝图四源手工对账。LANDED 指代码+接线+测试存在，不代表真机/生产验证。",
+  "card_count": 101,
+  "by_status": {
+    "PARTIAL": 47,
+    "LANDED": 35,
+    "SEAM": 6,
+    "RETIRED": 12,
+    "MISSING": 1
+  },
+  "by_group": {
+    "G00": {
+      "total": 5,
+      "statuses": {
+        "PARTIAL": 5
+      }
+    },
+    "G01": {
+      "total": 5,
+      "statuses": {
+        "LANDED": 4,
+        "SEAM": 1
+      }
+    },
+    "G02": {
+      "total": 8,
+      "statuses": {
+        "PARTIAL": 7,
+        "MISSING": 1
+      }
+    },
+    "G03": {
+      "total": 5,
+      "statuses": {
+        "LANDED": 5
+      }
+    },
+    "G04": {
+      "total": 5,
+      "statuses": {
+        "LANDED": 5
+      }
+    },
+    "G05": {
+      "total": 6,
+      "statuses": {
+        "PARTIAL": 6
+      }
+    },
+    "G06": {
+      "total": 5,
+      "statuses": {
+        "PARTIAL": 5
+      }
+    },
+    "G07": {
+      "total": 9,
+      "statuses": {
+        "PARTIAL": 9
+      }
+    },
+    "G08": {
+      "total": 5,
+      "statuses": {
+        "SEAM": 5
+      }
+    },
+    "G09": {
+      "total": 5,
+      "statuses": {
+        "PARTIAL": 5
+      }
+    },
+    "G10": {
+      "total": 6,
+      "statuses": {
+        "LANDED": 6
+      }
+    },
+    "G11": {
+      "total": 5,
+      "statuses": {
+        "LANDED": 5
+      }
+    },
+    "G12": {
+      "total": 6,
+      "statuses": {
+        "RETIRED": 6
+      }
+    },
+    "G13": {
+      "total": 6,
+      "statuses": {
+        "RETIRED": 6
+      }
+    },
+    "G14": {
+      "total": 5,
+      "statuses": {
+        "PARTIAL": 5
+      }
+    },
+    "G15": {
+      "total": 5,
+      "statuses": {
+        "LANDED": 5
+      }
+    },
+    "G16": {
+      "total": 5,
+      "statuses": {
+        "PARTIAL": 5
+      }
+    },
+    "G17": {
+      "total": 5,
+      "statuses": {
+        "LANDED": 5
+      }
+    }
+  },
+  "release_blocking_gaps": [],
+  "ready_for_g00_backlog": {
+    "G06": 7
+  },
+  "cards": [
+    {
+      "id": "G00-01",
+      "group": "G00",
+      "title": "入口总账与范围冻结",
+      "wave": "W0",
+      "status": "PARTIAL",
+      "evidence": "拆分/契约/所有权落地；PG 迁移未做（G00-04）；G06/G14 集成请求积压 ready-for-G00",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 99,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G00-02",
+      "group": "G00",
+      "title": "纯移动拆分与文件所有权",
+      "wave": "W0",
+      "status": "PARTIAL",
+      "evidence": "拆分/契约/所有权落地；PG 迁移未做（G00-04）；G06/G14 集成请求积压 ready-for-G00",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 100,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G00-03",
+      "group": "G00",
+      "title": "契约版本与组合根冻结",
+      "wave": "W0",
+      "status": "PARTIAL",
+      "evidence": "拆分/契约/所有权落地；PG 迁移未做（G00-04）；G06/G14 集成请求积压 ready-for-G00",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 101,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G00-04",
+      "group": "G00",
+      "title": "服务端数据库生产迁移",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "拆分/契约/所有权落地；PG 迁移未做（G00-04）；G06/G14 集成请求积压 ready-for-G00",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 104,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G00-05",
+      "group": "G00",
+      "title": "集成节奏、容量与发布标准",
+      "wave": "W0–W5 continuous",
+      "status": "PARTIAL",
+      "evidence": "拆分/契约/所有权落地；PG 迁移未做（G00-04）；G06/G14 集成请求积压 ready-for-G00",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 107,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G01-01",
+      "group": "G01",
+      "title": "共享类型、领域不变量与ports",
+      "wave": "W1",
+      "status": "LANDED",
+      "evidence": "类型/核心/UniFFI/生成落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 102,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G01-02",
+      "group": "G01",
+      "title": "原生核心状态机与缓存适配",
+      "wave": "W1",
+      "status": "LANDED",
+      "evidence": "类型/核心/UniFFI/生成落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 105,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G01-03",
+      "group": "G01",
+      "title": "Rust WASM网页可运行闭环",
+      "wave": "W1",
+      "status": "SEAM",
+      "evidence": "client-web WASM 入口未打包进 desktop-web",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 106,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G01-04",
+      "group": "G01",
+      "title": "UniFFI异步与移动生命周期",
+      "wave": "W1",
+      "status": "LANDED",
+      "evidence": "类型/核心/UniFFI/生成落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 109,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G01-05",
+      "group": "G01",
+      "title": "统一生成、兼容包与契约验证",
+      "wave": "W1",
+      "status": "LANDED",
+      "evidence": "类型/核心/UniFFI/生成落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 110,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G02-01",
+      "group": "G02",
+      "title": "账号会话与设备生命周期",
+      "wave": "W1",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 103,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G02-02",
+      "group": "G02",
+      "title": "好友、新朋友、群与隐私规则",
+      "wave": "W1",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 108,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G02-03",
+      "group": "G02",
+      "title": "多设备E2EE与密钥分发",
+      "wave": "W1",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 111,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G02-04",
+      "group": "G02",
+      "title": "本地SecretStore与口令快照接线",
+      "wave": "W1",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 113,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G02-05",
+      "group": "G02",
+      "title": "设置、账户数据生命周期与通知偏好",
+      "wave": "W1",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 114,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G03-01",
+      "group": "G03",
+      "title": "消息提交事务与幂等",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "读扩散信箱/多设备/WS/未读落地；推送聚合已实现，APNs 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 116,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G03-02",
+      "group": "G03",
+      "title": "设备持久化确认与离线队列",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "读扩散信箱/多设备/WS/未读落地；推送聚合已实现，APNs 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 118,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G03-03",
+      "group": "G03",
+      "title": "会话投影、未读与跨设备偏好",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "读扩散信箱/多设备/WS/未读落地；推送聚合已实现，APNs 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 121,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G03-04",
+      "group": "G03",
+      "title": "路由租约、重连与协议兼容",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "读扩散信箱/多设备/WS/未读落地；推送聚合已实现，APNs 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 123,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G03-05",
+      "group": "G03",
+      "title": "移动推送与同步调度",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "读扩散信箱/多设备/WS/未读落地；推送聚合已实现，APNs 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 124,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G04-01",
+      "group": "G04",
+      "title": "上传会话、对象权限与下载",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "media_mount 装配、备份导入回滚落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 117,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G04-02",
+      "group": "G04",
+      "title": "文件中心与消息附件",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "media_mount 装配、备份导入回滚落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 119,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G04-03",
+      "group": "G04",
+      "title": "音视频解码与隔离转码",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "media_mount 装配、备份导入回滚落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 120,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G04-04",
+      "group": "G04",
+      "title": "聊天迁移、备份恢复与空间清理",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "media_mount 装配、备份导入回滚落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 122,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G04-05",
+      "group": "G04",
+      "title": "平台媒体能力接口与资源预算",
+      "wave": "W1/W2",
+      "status": "LANDED",
+      "evidence": "media_mount 装配、备份导入回滚落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 125,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G05-01",
+      "group": "G05",
+      "title": "朋友圈、相册与可见性",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "朋友圈/收藏/贴纸/搜索落地；内容治理 admin 端点不存在（G14-03 上游缺口）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 126,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G05-02",
+      "group": "G05",
+      "title": "自主公众号与文章订阅",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "朋友圈/收藏/贴纸/搜索落地；内容治理 admin 端点不存在（G14-03 上游缺口）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 128,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G05-03",
+      "group": "G05",
+      "title": "收藏、笔记与表情包",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "朋友圈/收藏/贴纸/搜索落地；内容治理 admin 端点不存在（G14-03 上游缺口）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 131,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G05-04",
+      "group": "G05",
+      "title": "视频号与创作者内容流",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "朋友圈/收藏/贴纸/搜索落地；内容治理 admin 端点不存在（G14-03 上游缺口）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 132,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G05-05",
+      "group": "G05",
+      "title": "统一授权搜索、热搜与通知",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "朋友圈/收藏/贴纸/搜索落地；内容治理 admin 端点不存在（G14-03 上游缺口）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 135,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G06-01",
+      "group": "G06",
+      "title": "不可变账本与资金账户",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 127,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G06-02",
+      "group": "G06",
+      "title": "支付意图、绑卡与回调",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 130,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G06-03",
+      "group": "G06",
+      "title": "充值提现退款与对账",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 133,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G06-04",
+      "group": "G06",
+      "title": "转账、红包与领取并发",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 134,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G06-05",
+      "group": "G06",
+      "title": "会员卡、券、票证与订单接口",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 137,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-01",
+      "group": "G07",
+      "title": "二维码解码与安全深链",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 136,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-02",
+      "group": "G07",
+      "title": "识物、OCR、翻译与语音模型服务",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 139,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-03",
+      "group": "G07",
+      "title": "位置、附近与摇一摇匹配",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 140,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-04",
+      "group": "G07",
+      "title": "服务目录、报价与统一供应商订单",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 143,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-05",
+      "group": "G07",
+      "title": "充值、生活缴费与公益服务适配",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 144,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-06",
+      "group": "G07",
+      "title": "出行酒店电影票务与医疗适配",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 146,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-07",
+      "group": "G07",
+      "title": "购物、游戏与应用服务路由",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 148,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G08-01",
+      "group": "G08",
+      "title": "包格式、签名与发布供应链",
+      "wave": "W2",
+      "status": "SEAM",
+      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 141,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G08-02",
+      "group": "G08",
+      "title": "跨端隔离运行与预算",
+      "wave": "W2",
+      "status": "SEAM",
+      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 145,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G08-03",
+      "group": "G08",
+      "title": "宿主权限broker与能力SDK",
+      "wave": "W2",
+      "status": "SEAM",
+      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 147,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G08-04",
+      "group": "G08",
+      "title": "目录、最近使用与升级撤销",
+      "wave": "W2",
+      "status": "SEAM",
+      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 149,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G08-05",
+      "group": "G08",
+      "title": "可运行示例与开发工具链",
+      "wave": "W2",
+      "status": "SEAM",
+      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 150,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G09-01",
+      "group": "G09",
+      "title": "唯一RTC引擎可行性门禁",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "str0m 媒体+房间制+直播控制面+信令落地；ADR-25 门禁对齐但 LiveKit sidecar 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 151,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G09-02",
+      "group": "G09",
+      "title": "呼叫信令与成员状态机",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "str0m 媒体+房间制+直播控制面+信令落地；ADR-25 门禁对齐但 LiveKit sidecar 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 153,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G09-03",
+      "group": "G09",
+      "title": "媒体轨、设备与TURN",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "str0m 媒体+房间制+直播控制面+信令落地；ADR-25 门禁对齐但 LiveKit sidecar 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 155,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G09-04",
+      "group": "G09",
+      "title": "媒体E2EE、录制与权限",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "str0m 媒体+房间制+直播控制面+信令落地；ADR-25 门禁对齐但 LiveKit sidecar 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 156,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G09-05",
+      "group": "G09",
+      "title": "直播、观看与恢复",
+      "wave": "W2",
+      "status": "PARTIAL",
+      "evidence": "str0m 媒体+房间制+直播控制面+信令落地；ADR-25 门禁对齐但 LiveKit sidecar 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 159,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G10-01",
+      "group": "G10",
+      "title": "从展示稿拆分产品壳与登录",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 152,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G10-02",
+      "group": "G10",
+      "title": "聊天闭环与消息操作",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 154,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G10-03",
+      "group": "G10",
+      "title": "联系人、新朋友与群管理",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 157,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G10-04",
+      "group": "G10",
+      "title": "桌面系统与网页能力适配",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 158,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G10-05",
+      "group": "G10",
+      "title": "搜索、设置与本地安全界面",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 161,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G11-01",
+      "group": "G11",
+      "title": "朋友圈、收藏、文章与表情",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 162,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G11-02",
+      "group": "G11",
+      "title": "文件中心与传输管理",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 164,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G11-03",
+      "group": "G11",
+      "title": "视频流、通话与直播面板",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 167,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G11-04",
+      "group": "G11",
+      "title": "钱包、收付款、红包与卡包",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 168,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G11-05",
+      "group": "G11",
+      "title": "小程序、扫码与服务目录",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 170,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G12-01",
+      "group": "G12",
+      "title": "移动产品壳、主题与账号",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 163,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G12-02",
+      "group": "G12",
+      "title": "实时消息页与本地投影",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 165,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G12-03",
+      "group": "G12",
+      "title": "输入器、附件与消息菜单",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 166,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G12-04",
+      "group": "G12",
+      "title": "联系人、新朋友、群与资料",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 169,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G12-05",
+      "group": "G12",
+      "title": "Android/iOS原生平台能力与后台",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 171,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G13-01",
+      "group": "G13",
+      "title": "朋友圈、公众号、收藏与卡片内容",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；团队卡未标退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 172,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G13-02",
+      "group": "G13",
+      "title": "视频号、语音视频通话与直播",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；团队卡未标退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 175,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G13-03",
+      "group": "G13",
+      "title": "钱包、银行卡、红包、收付款与卡包",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；团队卡未标退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 177,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G13-04",
+      "group": "G13",
+      "title": "发现、扫码、识物翻译与小程序",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；团队卡未标退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 179,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G13-05",
+      "group": "G13",
+      "title": "搜索、设置、我的资料与账号安全",
+      "wave": "W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；团队卡未标退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 181,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G14-01",
+      "group": "G14",
+      "title": "管理身份、RBAC与审计骨架",
+      "wave": "W3",
+      "status": "PARTIAL",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 176,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G14-02",
+      "group": "G14",
+      "title": "用户、设备、群与申诉管理",
+      "wave": "W3",
+      "status": "PARTIAL",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 178,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G14-03",
+      "group": "G14",
+      "title": "内容、小程序与服务发布审核",
+      "wave": "W3",
+      "status": "PARTIAL",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 180,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G14-04",
+      "group": "G14",
+      "title": "商户、卡券、资金与对账台",
+      "wave": "W3",
+      "status": "PARTIAL",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 182,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G14-05",
+      "group": "G14",
+      "title": "运营作业、隐私请求与可观测入口",
+      "wave": "W3",
+      "status": "PARTIAL",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 185,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G15-01",
+      "group": "G15",
+      "title": "动作目录与协议SDK适配",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "50 命令目录、MCP tools/list+call、AuthGate+Policy 落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 183,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G15-02",
+      "group": "G15",
+      "title": "会话授权、资源scope与代理隔离",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "50 命令目录、MCP tools/list+call、AuthGate+Policy 落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 184,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G15-03",
+      "group": "G15",
+      "title": "全业务命令与能力差异映射",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "50 命令目录、MCP tools/list+call、AuthGate+Policy 落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 186,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G15-04",
+      "group": "G15",
+      "title": "危险动作确认、幂等与作业控制",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "50 命令目录、MCP tools/list+call、AuthGate+Policy 落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 188,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G15-05",
+      "group": "G15",
+      "title": "协议兼容、诊断与可审查脚本",
+      "wave": "W3",
+      "status": "LANDED",
+      "evidence": "50 命令目录、MCP tools/list+call、AuthGate+Policy 落地",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 190,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G16-01",
+      "group": "G16",
+      "title": "统一云CI门禁与缓存",
+      "wave": "W0/W1",
+      "status": "PARTIAL",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 187,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G16-02",
+      "group": "G16",
+      "title": "服务端和桌面跨系统构建",
+      "wave": "W4/W5",
+      "status": "PARTIAL",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 189,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G16-03",
+      "group": "G16",
+      "title": "Android/iOS云构建、签名与设备证据",
+      "wave": "W4/W5",
+      "status": "PARTIAL",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 191,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G16-04",
+      "group": "G16",
+      "title": "端到端、故障与容量门禁",
+      "wave": "W4/W5",
+      "status": "PARTIAL",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 192,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G16-05",
+      "group": "G16",
+      "title": "生产可观测、恢复与发布演练",
+      "wave": "W4/W5",
+      "status": "PARTIAL",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 194,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G17-01",
+      "group": "G17",
+      "title": "成熟代码来源审查与SBOM",
+      "wave": "W0/W1",
+      "status": "LANDED",
+      "evidence": "威胁模型/越权/滥用/模糊测试 51 条、来源审查落地；评审证据过时（N6）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 193,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G17-02",
+      "group": "G17",
+      "title": "近期漏洞与依赖准入门禁",
+      "wave": "W0/W1",
+      "status": "LANDED",
+      "evidence": "威胁模型/越权/滥用/模糊测试 51 条、来源审查落地；评审证据过时（N6）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 195,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G17-03",
+      "group": "G17",
+      "title": "威胁模型与越权/滥用回归",
+      "wave": "W4/W5",
+      "status": "LANDED",
+      "evidence": "威胁模型/越权/滥用/模糊测试 51 条、来源审查落地；评审证据过时（N6）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 196,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G17-04",
+      "group": "G17",
+      "title": "解码、XSS、SSRF与沙箱模糊测试",
+      "wave": "W4/W5",
+      "status": "LANDED",
+      "evidence": "威胁模型/越权/滥用/模糊测试 51 条、来源审查落地；评审证据过时（N6）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 197,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G17-05",
+      "group": "G17",
+      "title": "独立发布评审与事实核对",
+      "wave": "W4/W5",
+      "status": "LANDED",
+      "evidence": "威胁模型/越权/滥用/模糊测试 51 条、来源审查落地；评审证据过时（N6）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 198,
+      "github_issue_state": "CLOSED"
+    },
+    {
+      "id": "G02-06",
+      "group": "G02",
+      "title": "手机号验证码、登录方式与协议同意记录",
+      "wave": "W2/W3",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 112,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G02-07",
+      "group": "G02",
+      "title": "桌面扫码登录、手机授权与设备信任",
+      "wave": "W2/W3",
+      "status": "PARTIAL",
+      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 115,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G05-06",
+      "group": "G05",
+      "title": "我的状态、好友状态、背景与到期",
+      "wave": "W2/W3",
+      "status": "PARTIAL",
+      "evidence": "朋友圈/收藏/贴纸/搜索落地；内容治理 admin 端点不存在（G14-03 上游缺口）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 129,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-08",
+      "group": "G07",
+      "title": "位置消息、POI、导航与实时位置共享",
+      "wave": "W2/W3",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 142,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G07-09",
+      "group": "G07",
+      "title": "个人名片二维码、样式、保存分享与撤销",
+      "wave": "W2/W3",
+      "status": "PARTIAL",
+      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 138,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G10-06",
+      "group": "G10",
+      "title": "桌面扫码登录与新版界面字面承诺接线",
+      "wave": "W2/W3",
+      "status": "LANDED",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 160,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G12-06",
+      "group": "G12",
+      "title": "手机号登录、扫码授权与移动协议界面",
+      "wave": "W2/W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 173,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G13-06",
+      "group": "G13",
+      "title": "新版状态、位置共享、名片码与订阅号整合",
+      "wave": "W2/W3",
+      "status": "RETIRED",
+      "evidence": "Flutter 退役（ADR-29）；团队卡未标退役",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": 174,
+      "github_issue_state": "OPEN"
+    },
+    {
+      "id": "G02-09",
+      "group": "G02",
+      "title": "账户治理与管理端点",
+      "wave": "W3",
+      "status": "MISSING",
+      "evidence": "账户治理卡第四轮审计 N2 新增，域侧未建",
+      "tasks_json_status": "PLANNED",
+      "github_issue_number": null,
+      "github_issue_state": null
+    }
+  ]
+}

@@ -24,6 +24,8 @@ wxlike-search = { path = "../crates/search" }
 wxlike-media = { path = "../crates/features/media" }
 # G07/D6：服务目录域（目录/报价/订单/退款控制面）首次进组合根
 wxlike-service-catalog = { path = "../crates/service-catalog" }
+# G06/N7：支付/账本域供应商回调首次进组合根（解 PAYMENT-CALLBACK-REPLAY 阻塞）
+wxlike-commerce = { path = "../crates/features/commerce" }
 async-nats = { version = "0.50", optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
@@ -61,6 +63,9 @@ ureq = { version = "3", features = ["json"] }
 # #295：挂载后的 media 路由要像 crates/platform/tests 那样用 tower::oneshot 打
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# G06/N7：回调单一效果取证要用独立连接裸 SQL 数分录/outbox 行数
+wxlike-ledger = { path = "../crates/ledger" }
+rusqlite = { workspace = true }
 # P3 ADR-8: the WS-gateway test is a real browser-shaped client
 tokio-tungstenite = "0.24"
 futures-util = "0.3"

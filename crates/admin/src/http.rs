@@ -47,6 +47,7 @@ use crate::auth::{self, AdminAuth};
 use crate::config::Config;
 use crate::error::{AdminError, Result};
 use crate::g14::G14;
+use crate::offload::offload;
 use crate::rbac::{self, ModerationMode, Op, OPS};
 use crate::read::{
     AuditFilter, AuditQuery, ListFilter, PlatformRead, ReportFilter, ReportQuery, TicketRow,
@@ -238,12 +239,19 @@ struct Health {
 }
 
 async fn health(State(app): State<Shared>) -> Response {
-    // 缺表查询失败本身就是必须暴露的事实，不能当"没有缺表"
-    let missing = match app.read.missing_tables() {
-        Ok(v) => v,
-        Err(err) => vec![format!("<查询失败: {err}>")],
-    };
-    let accounts_present = app.accounts.has_any_account().unwrap_or(false);
+    // 缺表查询失败本身就是必须暴露的事实，不能当"没有缺表"。
+    // 查库段进阻塞池（ADR-28）；健康面不抛错，失败折成可见文案。
+    let probe = app.clone();
+    let (missing, accounts_present) = offload(move || {
+        let missing = match probe.read.missing_tables() {
+            Ok(v) => v,
+            Err(err) => vec![format!("<查询失败: {err}>")],
+        };
+        let accounts_present = probe.accounts.has_any_account().unwrap_or(false);
+        Ok((missing, accounts_present))
+    })
+    .await
+    .unwrap_or_else(|_| (vec!["<阻塞池任务异常结束>".to_string()], false));
     let body = Health {
         ok: missing.is_empty(),
         version: env!("CARGO_PKG_VERSION"),
@@ -275,7 +283,7 @@ async fn page() -> Response {
 // ---------------------------------------------------------------------------
 
 async fn stats(State(app): State<Shared>, _incoming: AdminAuth) -> Result<Json<serde_json::Value>> {
-    let stats = app.read.stats()?;
+    let stats = offload(move || app.read.stats()).await?;
     Ok(Json(to_value(stats)?))
 }
 
@@ -284,8 +292,11 @@ async fn users(
     _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
-    let page = app.read.users(&filter)?;
+    let page = offload(move || {
+        let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
+        app.read.users(&filter)
+    })
+    .await?;
     Ok(Json(to_value(page)?))
 }
 
@@ -294,8 +305,11 @@ async fn groups(
     _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
-    let page = app.read.groups(&filter)?;
+    let page = offload(move || {
+        let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
+        app.read.groups(&filter)
+    })
+    .await?;
     Ok(Json(to_value(page)?))
 }
 
@@ -305,17 +319,20 @@ async fn audit(
     _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let filter = AuditFilter::new(AuditQuery {
-        actor: qstr(&q, "q_actor").or_else(|| qstr(&q, "actor")),
-        command: qstr(&q, "command"),
-        action: qstr(&q, "action"),
-        target: qstr(&q, "target"),
-        from: qint(&q, "from")?,
-        to: qint(&q, "to")?,
-        limit: qusize(&q, "limit")?,
-        offset: qint(&q, "offset")?,
-    })?;
-    let page = app.read.audit(&filter)?;
+    let page = offload(move || {
+        let filter = AuditFilter::new(AuditQuery {
+            actor: qstr(&q, "q_actor").or_else(|| qstr(&q, "actor")),
+            command: qstr(&q, "command"),
+            action: qstr(&q, "action"),
+            target: qstr(&q, "target"),
+            from: qint(&q, "from")?,
+            to: qint(&q, "to")?,
+            limit: qusize(&q, "limit")?,
+            offset: qint(&q, "offset")?,
+        })?;
+        app.read.audit(&filter)
+    })
+    .await?;
     Ok(Json(to_value(page)?))
 }
 
@@ -324,26 +341,30 @@ async fn reports(
     _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let state = qstr(&q, "state");
-    let open_only = match qbool(&q, "open_only")? {
-        // 没指定状态就默认只看未终结：这是处置队列，不是归档浏览器
-        Some(v) => v,
-        None => state.is_none(),
-    };
-    let filter = ReportFilter::new(ReportQuery {
-        state,
-        handler: qstr(&q, "handler"),
-        target_id: qstr(&q, "target_id"),
-        reporter: qstr(&q, "reporter"),
-        open_only: Some(open_only),
-        limit: qusize(&q, "limit")?,
-        offset: qint(&q, "offset")?,
-    })?;
-    let mut page = app.read.reports(&filter)?;
-    let now = crate::read::now_ms() as u64;
-    for row in &mut page.rows {
-        row.overdue = row.ticket.is_overdue(now, app.cfg.report_sla_ms);
-    }
+    let page = offload(move || {
+        let state = qstr(&q, "state");
+        let open_only = match qbool(&q, "open_only")? {
+            // 没指定状态就默认只看未终结：这是处置队列，不是归档浏览器
+            Some(v) => v,
+            None => state.is_none(),
+        };
+        let filter = ReportFilter::new(ReportQuery {
+            state,
+            handler: qstr(&q, "handler"),
+            target_id: qstr(&q, "target_id"),
+            reporter: qstr(&q, "reporter"),
+            open_only: Some(open_only),
+            limit: qusize(&q, "limit")?,
+            offset: qint(&q, "offset")?,
+        })?;
+        let mut page = app.read.reports(&filter)?;
+        let now = crate::read::now_ms() as u64;
+        for row in &mut page.rows {
+            row.overdue = row.ticket.is_overdue(now, app.cfg.report_sla_ms);
+        }
+        Ok(page)
+    })
+    .await?;
     Ok(Json(to_value(page)?))
 }
 
@@ -352,14 +373,17 @@ async fn read_one_report(
     _incoming: AdminAuth,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let target = upstream::check_target(&id)?;
-    let ticket = app.read.report(&target)?.ok_or(AdminError::NotFound)?;
-    let now = crate::read::now_ms() as u64;
-    let row = TicketRow {
-        id: ticket.id.clone(),
-        overdue: ticket.is_overdue(now, app.cfg.report_sla_ms),
-        ticket,
-    };
+    let row = offload(move || {
+        let target = upstream::check_target(&id)?;
+        let ticket = app.read.report(&target)?.ok_or(AdminError::NotFound)?;
+        let now = crate::read::now_ms() as u64;
+        Ok(TicketRow {
+            id: ticket.id.clone(),
+            overdue: ticket.is_overdue(now, app.cfg.report_sla_ms),
+            ticket,
+        })
+    })
+    .await?;
     Ok(Json(to_value(row)?))
 }
 
@@ -368,8 +392,11 @@ async fn moderation(
     _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
-    let page = app.read.moderation(&filter)?;
+    let page = offload(move || {
+        let filter = ListFilter::new(qstr(&q, "q"), qusize(&q, "limit")?, qint(&q, "offset")?);
+        app.read.moderation(&filter)
+    })
+    .await?;
     Ok(Json(to_value(page)?))
 }
 
@@ -378,15 +405,18 @@ async fn oplog(
     _incoming: AdminAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let query = OpLogQuery {
-        actor: qstr(&q, "actor"),
-        op: qstr(&q, "op"),
-        status: qstr(&q, "status"),
-        from: qint(&q, "from")?,
-        limit: qusize(&q, "limit")?,
-        offset: qint(&q, "offset")?,
-    };
-    let page = app.accounts.ops(&query)?;
+    let page = offload(move || {
+        let query = OpLogQuery {
+            actor: qstr(&q, "actor"),
+            op: qstr(&q, "op"),
+            status: qstr(&q, "status"),
+            from: qint(&q, "from")?,
+            limit: qusize(&q, "limit")?,
+            offset: qint(&q, "offset")?,
+        };
+        app.accounts.ops(&query)
+    })
+    .await?;
     Ok(Json(to_value(page)?))
 }
 
@@ -444,34 +474,45 @@ async fn login(
     State(app): State<Shared>,
     ApiJson(body): ApiJson<LoginBody>,
 ) -> Result<Json<LoginReply>> {
-    let (session, token) = app.accounts.login(
-        &body.username,
-        &body.password,
-        body.totp.as_deref(),
-        app.cfg.session_ttl_ms,
-        body.ip.as_deref().unwrap_or(""),
-    )?;
+    // 登录里有 argon2 校验 + 会话表写入：整段进阻塞池（ADR-28）。
+    let (session, token) = offload(move || {
+        app.accounts.login(
+            &body.username,
+            &body.password,
+            body.totp.as_deref(),
+            app.cfg.session_ttl_ms,
+            body.ip.as_deref().unwrap_or(""),
+        )
+    })
+    .await?;
     tracing::info!(actor = %session.actor, role = session.role.as_str(), mfa = session.mfa, "后台登录");
     Ok(Json(LoginReply { token, session }))
 }
 
 async fn logout(State(app): State<Shared>, incoming: AdminAuth) -> Result<StatusCode> {
-    // 先验会话，再删：否则任何人拿任意串都能触发一次 DELETE
-    let _ = incoming.writer()?;
-    app.accounts.logout(incoming.credential())?;
+    offload(move || {
+        // 先验会话，再删：否则任何人拿任意串都能触发一次 DELETE
+        let _ = incoming.writer()?;
+        app.accounts.logout(incoming.credential())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn me(State(app): State<Shared>, incoming: AdminAuth) -> Result<Json<serde_json::Value>> {
-    let session = incoming.writer()?;
-    let account = app
-        .accounts
-        .account(&session.actor)?
-        .ok_or(AdminError::NotFound)?;
+    let (session, account, sla) = offload(move || {
+        let session = incoming.writer()?.clone();
+        let account = app
+            .accounts
+            .account(&session.actor)?
+            .ok_or(AdminError::NotFound)?;
+        Ok((session, account, app.cfg.report_sla_ms))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "session": session,
         "account": account,
-        "report_sla_ms": app.cfg.report_sla_ms,
+        "report_sla_ms": sla,
     })))
 }
 
@@ -484,12 +525,16 @@ async fn totp_enroll(
     State(app): State<Shared>,
     incoming: AdminAuth,
 ) -> Result<Json<serde_json::Value>> {
-    let session = incoming.writer()?;
-    let secret = app.accounts.totp_enroll(&session.actor)?;
+    let (actor, secret) = offload(move || {
+        let session = incoming.writer()?;
+        let secret = app.accounts.totp_enroll(&session.actor)?;
+        Ok((session.actor.clone(), secret))
+    })
+    .await?;
     // 密钥只在这一次响应里出现；之后任何接口都只说"已配置"。
     Ok(Json(serde_json::json!({
         "secret": secret,
-        "otpauth": format!("otpauth://totp/wxlike-admin:{}?secret={}&issuer=wxlike-admin", session.actor, secret),
+        "otpauth": format!("otpauth://totp/wxlike-admin:{}?secret={}&issuer=wxlike-admin", actor, secret),
         "next": "POST /api/me/totp/confirm {code} 激活；激活后重新登录才会拿到可写的会话",
     })))
 }
@@ -502,8 +547,11 @@ async fn totp_confirm(
     incoming: AdminAuth,
     ApiJson(body): ApiJson<CodeBody>,
 ) -> Result<Json<serde_json::Value>> {
-    let session = incoming.writer()?;
-    app.accounts.totp_confirm(&session.actor, &body.code)?;
+    offload(move || {
+        let session = incoming.writer()?;
+        app.accounts.totp_confirm(&session.actor, &body.code)
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "mfa_enabled": true,
         "next": "重新登录（带动态码）才会得到 mfa=true 的会话，那才能写",
@@ -515,8 +563,11 @@ async fn totp_disable(
     incoming: AdminAuth,
     ApiJson(body): ApiJson<CodeBody>,
 ) -> Result<StatusCode> {
-    let session = incoming.writer()?;
-    app.accounts.totp_disable(&session.actor, &body.code)?;
+    offload(move || {
+        let session = incoming.writer()?;
+        app.accounts.totp_disable(&session.actor, &body.code)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -551,15 +602,93 @@ struct OpReply {
     logged: bool,
 }
 
+/// ADR-28：前段（准入/授权/载荷/拒绝留痕）与后段（结果留痕）各自整段进
+/// 阻塞池；上游转发的 await 留在 async。拒绝留痕与错误转述语义不变。
 async fn run_op(
     State(app): State<Shared>,
     incoming: AdminAuth,
     Path(op_id): Path<String>,
     body: ApiJson<serde_json::Value>,
 ) -> Result<Json<OpReply>> {
+    let raw = body.0;
+    let svc = app.clone();
+    let prepared = offload(move || run_op_prepare(&svc, &incoming, &op_id, &raw)).await?;
+    let (session, op, target, payload, path, label) = prepared;
+
+    let outcome = app
+        .upstream
+        .call(op.method.as_str(), &path, &session.actor, payload)
+        .await;
+
+    // 先分类留痕，再把**原始错误**抛出去：平台拒绝的理由（409 非法流转 / 404 没有
+    // 这条工单）必须原样到达操作者，不能被 adminx 二次加工成"上游失败"。
+    let svc = app.clone();
+    let logged = offload(move || {
+        let (status, detail, result) = match &outcome {
+            Ok(reply) => (OpStatus::Ok, echo(&reply.body), reply.body.clone()),
+            Err(AdminError::Upstream { status: 0, detail }) => (
+                OpStatus::TransportError,
+                detail.clone(),
+                serde_json::Value::Null,
+            ),
+            Err(AdminError::Upstream { status, detail }) => (
+                OpStatus::UpstreamError,
+                format!("platform {status}: {detail}"),
+                serde_json::Value::Null,
+            ),
+            Err(other) => (OpStatus::Denied, other.to_string(), serde_json::Value::Null),
+        };
+        let rec = OpRecord {
+            account_id: session.account_id.clone(),
+            actor: session.actor.clone(),
+            op: op.id.to_string(),
+            capability: op.capability.as_str().to_string(),
+            target: target.clone().unwrap_or_default(),
+            upstream: label,
+            status,
+            detail,
+            mfa: session.mfa,
+        };
+        let logged = svc.accounts.log_op(&rec).is_ok();
+        if !logged {
+            tracing::error!(op = %op.id, "留痕写入失败：这次操作将无法追责");
+        }
+        Ok((outcome, op, target, session, result, logged))
+    })
+    .await?;
+    let (outcome, op, target, session, result, logged) = logged;
+
+    match outcome {
+        Ok(_reply) => Ok(Json(OpReply {
+            op: op.id,
+            capability: op.capability.as_str(),
+            target,
+            actor: session.actor,
+            result,
+            logged,
+        })),
+        Err(err) => Err(err),
+    }
+}
+
+/// [`run_op`] 的同步前段：准入 → 目标校验 → 授权 → 载荷。整段在阻塞池里跑。
+/// 每一步被拒都留痕（含路径穿越尝试），拒绝结论原样返回。
+fn run_op_prepare(
+    app: &Shared,
+    incoming: &AdminAuth,
+    op_id: &str,
+    raw: &serde_json::Value,
+) -> Result<(
+    Session,
+    &'static Op,
+    Option<String>,
+    Option<serde_json::Value>,
+    String,
+    String,
+)> {
     // 静态令牌在这里给 403（它写不出可追责的留痕），而且早于 body 解析。
     let session = incoming.writer()?.clone();
-    let body = parse_op_body(&body.0)?;
+    let body = parse_op_body(raw)?;
     let target = match body
         .target
         .as_deref()
@@ -571,10 +700,10 @@ async fn run_op(
             // 目标 id 的形状校验在转发之前：它会被拼进上游 URL 的路径段。
             // 这种尝试也要留痕（谁在拿路径穿越打后台，运维必须看得见）。
             log_denied(
-                &app,
+                app,
                 &session,
-                &op_id,
-                rbac::get(&op_id)
+                op_id,
+                rbac::get(op_id)
                     .map(|o| o.capability.as_str())
                     .unwrap_or("unknown"),
                 None,
@@ -585,17 +714,17 @@ async fn run_op(
     };
     let has_target = target.is_some();
 
-    let op = match rbac::authorize(&op_id, session.role, session.mfa, has_target) {
+    let op = match rbac::authorize(op_id, session.role, session.mfa, has_target) {
         Ok(op) => op,
         Err(deny) => {
             // 被拒也要留痕：运维想知道"谁试过什么"
-            let capability = rbac::get(&op_id)
+            let capability = rbac::get(op_id)
                 .map(|o| o.capability.as_str())
                 .unwrap_or("unknown");
             let rec = OpRecord {
                 account_id: session.account_id.clone(),
                 actor: session.actor.clone(),
-                op: op_id.clone(),
+                op: op_id.to_string(),
                 capability: capability.to_string(),
                 target: target.clone().unwrap_or_default(),
                 upstream: String::new(),
@@ -622,7 +751,7 @@ async fn run_op(
         Ok(p) => p,
         Err(err) => {
             log_denied(
-                &app,
+                app,
                 &session,
                 op.id,
                 op.capability.as_str(),
@@ -634,55 +763,7 @@ async fn run_op(
     };
     let path = upstream::render_path(op.path, target.as_deref())?;
     let label = format!("{} {}", op.method.as_str(), path);
-
-    let outcome = app
-        .upstream
-        .call(op.method.as_str(), &path, &session.actor, payload)
-        .await;
-
-    // 先分类留痕，再把**原始错误**抛出去：平台拒绝的理由（409 非法流转 / 404 没有
-    // 这条工单）必须原样到达操作者，不能被 adminx 二次加工成"上游失败"。
-    let (status, detail, result) = match &outcome {
-        Ok(reply) => (OpStatus::Ok, echo(&reply.body), reply.body.clone()),
-        Err(AdminError::Upstream { status: 0, detail }) => (
-            OpStatus::TransportError,
-            detail.clone(),
-            serde_json::Value::Null,
-        ),
-        Err(AdminError::Upstream { status, detail }) => (
-            OpStatus::UpstreamError,
-            format!("platform {status}: {detail}"),
-            serde_json::Value::Null,
-        ),
-        Err(other) => (OpStatus::Denied, other.to_string(), serde_json::Value::Null),
-    };
-    let rec = OpRecord {
-        account_id: session.account_id.clone(),
-        actor: session.actor.clone(),
-        op: op.id.to_string(),
-        capability: op.capability.as_str().to_string(),
-        target: target.clone().unwrap_or_default(),
-        upstream: label,
-        status,
-        detail,
-        mfa: session.mfa,
-    };
-    let logged = app.accounts.log_op(&rec).is_ok();
-    if !logged {
-        tracing::error!(op = %op.id, "留痕写入失败：这次操作将无法追责");
-    }
-
-    match outcome {
-        Ok(_reply) => Ok(Json(OpReply {
-            op: op.id,
-            capability: op.capability.as_str(),
-            target,
-            actor: session.actor,
-            result,
-            logged,
-        })),
-        Err(err) => Err(err),
-    }
+    Ok((session, op, target, payload, path, label))
 }
 
 fn log_denied(

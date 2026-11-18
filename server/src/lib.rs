@@ -14,6 +14,8 @@
 
 use std::sync::Arc;
 
+/// G06/N7：支付/账本域供应商回调的组合根装配（原始 body 验签，幂等落 commerce 域）。
+pub mod commerce_mount;
 /// G07/D6：服务目录域的组合根装配（会话校验落平台 sessions 表，无凭据诚实阻塞）。
 pub mod discover_mount;
 mod history_archive;
@@ -55,6 +57,8 @@ pub struct HistoryDeps {
 pub struct Stack {
     pub platform: PlatformState,
     pub store: Arc<Store>,
+    /// G06/N7：支付/账本域句柄。集成测试用它创建意图、签名回调、独立 SQL 取证。
+    pub commerce: Arc<wxlike_commerce::Commerce>,
     pub hub: HubHandle,
     /// M-11（#32）：hub 常驻钩子（`MqHub::leak` 的返回物）。hub 本体泄漏
     /// 到进程退出（与原 `mem::forget` 语义一致，ops_recovery 这类依赖
@@ -195,6 +199,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let (media_app, media_service) = media_mount::assemble(&platform, opts.db_path.as_deref())?;
     let discover_app = discover_mount::assemble(&platform, opts.db_path.as_deref()).await?;
     let mini_app = mini_mount::assemble(&platform, opts.db_path.as_deref())?;
+    // G06/N7：支付回调域装一次 = 顺带把 commerce/ledger 表幂等建到 sidecar 库。
+    let (commerce_app, commerce) = commerce_mount::assemble(&platform, opts.db_path.as_deref())?;
     let _workers = spawn_background_workers(&platform, &media_service);
     let app = build_app(
         opts.hub_id.clone(),
@@ -207,6 +213,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             media: media_app,
             discover: discover_app,
             mini: mini_app,
+            commerce: commerce_app,
         },
     );
     let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app.clone()).await?;
@@ -215,6 +222,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     Ok(Stack {
         platform,
         store,
+        commerce,
         hub: handle,
         hub_lease,
         app,
@@ -502,6 +510,8 @@ struct FeatureApps {
     discover: Router,
     /// G08 小程序域（`/api/miniapps`、`/api/mini-grants`、`/api/mini-installs`）。
     mini: Router,
+    /// G06 支付回调域（`/api/payment/callback`）。
+    commerce: Router,
 }
 
 /// 拼路由：健康检查、平台、media 域、视频、WS、在线状态、历史、静态页、开发辅助。
@@ -546,6 +556,8 @@ fn build_app(
         .merge(features.discover)
         // G08/D6：小程序域（/api/miniapps、/api/mini-grants、/api/mini-installs）。
         .merge(features.mini)
+        // G06/N7：支付回调域（/api/payment/callback，原始 body 验签 + operation_id 幂等）。
+        .merge(features.commerce)
         .merge(wxlike_video::routes(video_state))
         .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone(), platform.clone()))

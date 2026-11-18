@@ -24,6 +24,7 @@ use crate::audit::{AuditLog, Draft, Outcome};
 use crate::auth::{self, Action, Resource};
 use crate::error::{AdminError, Result};
 use crate::identity::PlatformPort;
+use crate::offload::offload;
 use crate::rbac::Role;
 use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
 use crate::store::Store;
@@ -317,6 +318,8 @@ impl JobService {
     ///
     /// 取消判定放在**每一项之前**读库：这样另一个请求（`cancel`）写下的标记
     /// 会在下一项生效，而不是等整批跑完才看。
+    /// ADR-28：建单、逐项的取消判定/留痕/回执、收尾各自整段进阻塞池；
+    /// 每一项的域侧 await 留在 async。取消标记仍在每一项之前读库判定。
     pub async fn run_batch(
         &self,
         actor: &str,
@@ -325,6 +328,30 @@ impl JobService {
         reason: &str,
         targets: &[String],
     ) -> Result<Job> {
+        let svc = self.clone();
+        let (actor, trace, reason, targets) = (
+            actor.to_string(),
+            trace.to_string(),
+            reason.to_string(),
+            targets.to_vec(),
+        );
+        let (r, tg) = (reason.clone(), targets.clone());
+        let (id, mut receipt) =
+            offload(move || svc.run_batch_start(role, &r, &tg)).await?;
+
+        self.run_batch_items(&actor, role, &trace, &reason, &targets, &id, &mut receipt)
+            .await?;
+        let svc = self.clone();
+        offload(move || svc.finish_batch(&actor, role, &trace, &reason, &id, &receipt)).await
+    }
+
+    /// [`Self::run_batch`] 的同步建单段。整段在阻塞池里跑。
+    fn run_batch_start(
+        &self,
+        role: Role,
+        reason: &str,
+        targets: &[String],
+    ) -> Result<(String, Receipt)> {
         auth::require(role, Resource::Identity, Action::Destructive)?;
         if reason.trim().is_empty() {
             return Err(AdminError::bad_input("批量处罚必须给统一理由"));
@@ -334,7 +361,7 @@ impl JobService {
         }
         let now = now_ms();
         let id = format!("job_{}", wxlike_platform::random_hex(8));
-        let mut receipt = Receipt {
+        let receipt = Receipt {
             total: targets.len(),
             ..Default::default()
         };
@@ -343,10 +370,7 @@ impl JobService {
              created_at, updated_at, finished_at) VALUES (?1,'batch_identity','', 'running',1,NULL,?2,'',?3,?3,NULL)",
             params![id, serde_json::json!({"receipt": receipt}).to_string(), now],
         )?;
-
-        self.run_batch_items(actor, role, trace, reason, targets, &id, &mut receipt)
-            .await?;
-        self.finish_batch(actor, role, trace, reason, &id, &receipt)
+        Ok((id, receipt))
     }
 
     async fn run_batch_items(
@@ -360,10 +384,16 @@ impl JobService {
         receipt: &mut Receipt,
     ) -> Result<()> {
         for target in targets {
-            let cancelled = self
-                .job(id)?
-                .map(|j| j.state == "cancelled")
-                .unwrap_or(true);
+            // 取消判定读库：整段进池（ADR-28）。
+            let svc = self.clone();
+            let id_owned = id.to_string();
+            let cancelled = offload(move || {
+                Ok(svc
+                    .job(&id_owned)?
+                    .map(|j| j.state == "cancelled")
+                    .unwrap_or(true))
+            })
+            .await?;
             if cancelled {
                 receipt.cancelled = true;
                 receipt.skipped = receipt.total - receipt.processed;
@@ -380,17 +410,28 @@ impl JobService {
             let outcome = self.port.suspend_user(&cmd).await;
             receipt.record(target, &outcome);
             // **逐条**审计：批量不等于一条"批量"记录。每个目标都要能单独追责。
-            self.audit.append(
-                Draft::new(actor, role.as_str(), "identity.suspend", "user", target)
-                    .reason(reason)
-                    .trace(trace)
-                    .outcome(match &outcome {
-                        Ok(_) => Outcome::Ok,
-                        Err(_) => Outcome::Failed,
-                    })
-                    .detail(serde_json::json!({"batch_job": id})),
-            )?;
-            self.write_receipt(id, receipt)?;
+            // 留痕 + 回执写库整段进池；outcome 的 Ok/Err 先折成布尔再进闭包。
+            let ok = outcome.is_ok();
+            let svc = self.clone();
+            let (actor, trace, reason, id_owned, target) = (
+                actor.to_string(),
+                trace.to_string(),
+                reason.to_string(),
+                id.to_string(),
+                target.clone(),
+            );
+            let snapshot = receipt.clone();
+            offload(move || {
+                svc.audit.append(
+                    Draft::new(&actor, role.as_str(), "identity.suspend", "user", &target)
+                        .reason(&reason)
+                        .trace(&trace)
+                        .outcome(if ok { Outcome::Ok } else { Outcome::Failed })
+                        .detail(serde_json::json!({"batch_job": id_owned})),
+                )?;
+                svc.write_receipt(&id_owned, &snapshot)
+            })
+            .await?;
         }
 
         Ok(())

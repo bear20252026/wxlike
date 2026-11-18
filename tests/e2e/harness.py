@@ -135,12 +135,21 @@ class Client:
         token: str | None = None,
         admin_token: str | None = None,
         timeout: float | None = None,
+        raw_body: bytes | None = None,
+        extra_headers: dict | None = None,
     ) -> Response:
         data = None
         headers = {"Accept": "application/json", "Connection": "close"}
-        if body is not None:
+        if raw_body is not None:
+            # 原始字节直发：签名回调必须对**未经重排**的 body 验签，
+            # 不能走 json.dumps（键序/空白会变，签名就失效了）。
+            data = raw_body
+            headers["Content-Type"] = "application/json"
+        elif body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        if extra_headers:
+            headers.update(extra_headers)
         if token:
             headers["Authorization"] = f"Bearer {token}"
             self.suite.remember_secret(token)

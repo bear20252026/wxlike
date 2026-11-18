@@ -3764,5 +3764,44 @@
       171,
       134
     ]
+  },
+  {
+    "id": "G02-09",
+    "group": "G02",
+    "title": "账户治理与管理端点",
+    "wave": "W3",
+    "paths": [
+      "crates/features/identity/src/governance",
+      "crates/features/relations/src/governance"
+    ],
+    "contract": "admin.identity.suspend/unsuspend/device.revoke/group.govern；AdminUserView",
+    "implementation": "四个管理端点与crates/admin/src/identity.rs::HttpPort逐字对应；封禁即时撤销全部会话并发事件清缓存、解封可逆且留痕；管理操作者与普通账号token分开audience、服务端再次鉴权；只返回元数据的用户视图不复用带正文详情接口；写命令幂等；users表补suspended/disabled字段。第四轮审计N2新增卡，承接G14-02原误派给G02-05的身份管理端点（G02-08编号已被draft PR #364占用，顺延09）",
+    "acceptance": "封禁后该用户WS与API立即失效、sessions_revoked非零；解封恢复且留痕；越权管理操作失败封闭；管理员视图不含消息正文；重复提交幂等",
+    "status": "PLANNED",
+    "integration_dependencies": [
+      "G14-02"
+    ],
+    "reference_repositories": [
+      "matrix-org/vodozemac",
+      "signalapp/Signal-Desktop"
+    ],
+    "hard_dependencies": [
+      "G02-01",
+      "G02-02",
+      "G00-02",
+      "G00-03"
+    ],
+    "github_issue_number": null,
+    "github_issue_url": null,
+    "github_group_issue_number": 83,
+    "hard_dependency_issue_numbers": [
+      103,
+      108,
+      100,
+      101
+    ],
+    "integration_dependency_issue_numbers": [
+      178
+    ]
   }
 ]

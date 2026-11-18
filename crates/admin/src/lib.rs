@@ -63,6 +63,7 @@ pub mod g14;
 pub mod http;
 pub mod identity;
 pub mod jobs;
+mod offload;
 pub mod publishing;
 pub mod rbac;
 pub mod read;

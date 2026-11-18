@@ -484,3 +484,20 @@ webhooks:
     skew: "时间戳偏离超过配置窗口拒绝"
     transitions: "created|pending -> succeeded|failed；终态不可逆"
     notes: 金额/币种/收款人/provider_ref 必须与本地意图一致；未知状态保持 pending。
+  # G06/N7：带 operation_id 的供应商回调（PAYMENT-CALLBACK-REPLAY 的契约面）。
+  # 与 payment 共用同一套事件表与入账内核，幂等语义只有一份实现。
+  payment_callback:
+    endpoint: POST /api/payment/callback
+    auth: "长度前缀 HMAC-SHA256：mac.update(len(raw_body) 的 8 字节大端) 后 mac.update(raw_body)，密钥 WXLIKE_PAYMENT_WEBHOOK_SECRET，十六进制放 x-payment-signature 头；先按原始字节读 body 再验签，禁止重排后签（与 commerce store::hmac_hex 一致）"
+    request_fields: [operation_id, event_id, intent_id, kind, provider_ref, amount_minor, currency, timestamp_ms]
+    required: [operation_id, event_id, intent_id, kind, provider_ref, amount_minor, currency, timestamp_ms]
+    money: "amount_minor 整数最小单位；浮点直接 BAD_INPUT"
+    kinds: [payment.succeeded, payment.failed]
+    response_fields: [operation_id, event_id, intent_id, kind, applied, replayed, status, reason]
+    idempotency: >-
+      business_key = "callback:" + operation_id；同键同摘要返回首次结果且
+      replayed=true（零副作用），同键异摘要 IDEMPOTENCY_CONFLICT（409），
+      换键投同一 event_id REPLAY（409）。时间窗只闸门新效果，命中重放不受窗口影响。
+    errors: "INVALID_SIGNATURE→401；BAD_INPUT→400；IDEMPOTENCY_CONFLICT/REPLAY→409；NOT_FOUND→404；只回稳定分类，不回显供应商报文"
+    fixture: fixtures/payment-callback-operation-replay.json
+    notes: 路由挂载见 server/src/commerce_mount.rs；e2e 取证见 tests/fault/run.py:payment_callback_replay。

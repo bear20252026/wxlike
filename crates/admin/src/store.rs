@@ -88,6 +88,32 @@ impl Store {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// ADR-28：一个同步 SQLite 临界区整段进 blocking 池。
+    ///
+    /// 锁在闭包**里面**取、在闭包里面放：调用方拿不到守卫，也就没法把它
+    /// 带过 `await`。需要原子性的整段（例如审计哈希链的"读尾 + 插入"）必须
+    /// 整个放进一个 `f`——搬线程不许搬原子边界。形状与
+    /// `wxlike_platform::Db::blocking` 逐字对齐。
+    pub async fn blocking<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let conn = Arc::clone(&self.conn);
+        let ran = tokio::task::spawn_blocking(move || {
+            let mut guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
+            f(&mut guard)
+        })
+        .await;
+        match ran {
+            Ok(inner) => inner,
+            Err(err) => {
+                tracing::error!(%err, "adminx 阻塞库任务异常结束（blocking 池 panic 或被取消）");
+                Err(crate::error::AdminError::Admission)
+            }
+        }
+    }
+
     /// 记一次留痕写入失败，返回累计值（1-based，日志里直接可读）。
     pub(crate) fn note_audit_write_failure(&self) -> u64 {
         self.audit_write_failures.fetch_add(1, Ordering::Relaxed) + 1

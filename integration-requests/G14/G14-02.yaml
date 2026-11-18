@@ -12,16 +12,14 @@ artifacts:
   - crates/admin/tests/g14_02_identity.rs
 
 # 本卡的域侧动作归 G02。adminx 只发命令，不复制域算法、不改平台库。
+# 目标纠正（第四轮审计 N2）：封禁/解封/撤设备/群治理是**管理员治理**动作，
+# 归 G02-09（账户治理与管理端点），不是 G02-05（设置/账户数据生命周期/通知偏好，
+# 那是用户自助的 profile/preferences/export/delete）。原 target 派错了责任卡。
 requests:
-  - id: REQ-G02-05-identity-admin-endpoints
-    target: G02-05
+  - id: REQ-G02-09-identity-admin-endpoints
+    target: G02-09
     action: >-
       提供并冻结四个管理端点（与 crates/admin/src/identity.rs::HttpPort 逐字对应）：
-      `POST /api/admin/identity/users/{id}/suspend`（body: reason/until_ms/actor/trace，
-      回执含 before/after/sessions_revoked/already）、
-      `POST /api/admin/identity/users/{id}/unsuspend`、
-      `POST /api/admin/identity/devices/{id}/revoke`、
-      `POST /api/admin/identity/groups/{id}/govern`（body 含 action=freeze|unfreeze|transfer|dissolve）。
       `POST /api/admin/identity/users/{id}/suspend`（body: reason/until_ms/actor/trace，
       回执含 before/after/sessions_revoked/already）、
       `POST /api/admin/identity/users/{id}/unsuspend`、
@@ -34,8 +32,8 @@ requests:
     until_merged: 用 tests/g14_common 的 FixturePort（任务单允许的并行开发 fixture），
       合入后把 App::open 的端口换成 HttpPort 并把本用例改成打真平台（见 docs/g14-delivery.md §5）。
 
-  - id: REQ-G02-05-metadata-view
-    target: G02-05
+  - id: REQ-G02-09-metadata-view
+    target: G02-09
     action: 提供一个只返回元数据的用户视图端点（user_id/display_name/state/created_at/
       last_seen_ms/device_count/group_count/report_count/suspended_until_ms/labels），
       **不要**复用会带正文的详情接口。

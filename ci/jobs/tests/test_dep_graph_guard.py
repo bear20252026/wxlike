@@ -205,13 +205,17 @@ class RealRepoWiringTest(unittest.TestCase):
     def test_ledger_pins_known_islands(self):
         data = json.loads((ROOT / "scripts" / "wiring-baseline.json").read_text(encoding="utf-8"))
         crates = {e["crate"] for e in data["seams"]}
-        # 第三轮审计实证的孤岛（267+ 测试零生产调用方）必须全部在台账里。
+        # 第三轮审计实证的孤岛必须全部在台账里。commerce/ledger 已于第四轮审计 N7
+        # 经 server/src/commerce_mount.rs 接线（支付回调挂载），按"基线只许收紧"
+        # 移出台账——这里钉死它们**不再**是孤岛，防止有人把它们悄悄加回去。
         for island in (
-            "wxlike-commerce", "wxlike-ledger", "wxlike-miniapps", "wxlike-discovery",
+            "wxlike-miniapps", "wxlike-discovery",
             "wxlike-vision", "wxlike-translation", "wxlike-container", "wxlike-dpage",
             "wxlike-client-web",
         ):
             self.assertIn(island, crates)
+        for wired in ("wxlike-commerce", "wxlike-ledger"):
+            self.assertNotIn(wired, crates, f"{wired} 已接线，不应再登记为孤岛")
         for entry in data["seams"]:
             for field in ("owner", "task", "close_when", "evidence"):
                 self.assertTrue(str(entry.get(field, "")).strip(), (entry["crate"], field))

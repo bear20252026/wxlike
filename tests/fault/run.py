@@ -17,6 +17,9 @@ Optional:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import json
 import os
 import shlex
 import socket
@@ -50,12 +53,17 @@ def free_port(kind: str = "tcp") -> int:
 
 
 def run_cmd(command: str, timeout: float = 90.0) -> str:
-    argv = shlex.split(command)
-    if not argv:
+    if not command.strip():
         raise CaseFailure("empty command")
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    # Windows 上 shlex.split 会按 POSIX 规则吃掉反斜杠路径，交给 CreateProcess
+    # 自行解析整条命令更稳；POSIX 保留 shlex 分词（不经 shell，避免注入）。
+    if os.name == "nt":
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    else:
+        argv = shlex.split(command)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        raise CaseFailure(f"command failed ({result.returncode}): {argv[0]}\n{result.stderr.strip()[:400]}")
+        raise CaseFailure(f"command failed ({result.returncode}): {command}\n{result.stderr.strip()[:400]}")
     return (result.stdout + result.stderr).strip()
 
 
@@ -151,14 +159,99 @@ def suite_privileges(args) -> Suite:
         return "owner can post; non-member send/read/role-change refused"
 
     def payment_callback_replay():
-        # The contract has no provider callback endpoint yet; prove that
-        # observation instead of pretending the replay passed.
-        probe = client.request("POST", "/api/payment/callback", body={"operation_id": "probe"})
-        if probe.status != 404:
-            raise CaseFailure(
-                f"payment callback unexpectedly exists ({probe.status}); implement the replay scenario before closing PAYMENT-CALLBACK-REPLAY"
+        # G06/N7：回调已挂载。真实场景：创建意图 → 签名回调 → 原样重投 N 次
+        # （含进程重启后一次）→ 断言台账单一效果。签名密钥必须与服务端
+        # WXLIKE_PAYMENT_WEBHOOK_SECRET 一致（--payment-webhook-secret）。
+        if not args.payment_webhook_secret:
+            raise Blocked(
+                "no --payment-webhook-secret; runner cannot sign callbacks "
+                "(must match server WXLIKE_PAYMENT_WEBHOOK_SECRET)"
             )
-        raise Blocked("POST /api/payment/callback -> 404; PAYMENT-CALLBACK-REPLAY (G06) is open")
+        alice = client.register(make_name("pay_a"), password(), "pay-device-a")
+        bob = client.register(make_name("pay_b"), password(), "pay-device-b")
+        idem = "pay-" + uuid.uuid4().hex
+        created = client.expect(
+            "POST",
+            "/api/v1/commerce/actions/payment.create",
+            200,
+            body={
+                "direction": "order",
+                "payee_id": bob["user_id"],
+                "amount": "99.00",
+                "currency": "CNY",
+                "idempotency_key": idem,
+            },
+            token=alice["token"],
+        )
+        intent = (created.body or {}).get("intent") or {}
+        intent_id = intent.get("intent_id")
+        provider_ref = intent.get("provider_ref")
+        if not intent_id or not provider_ref:
+            raise CaseFailure(f"payment.create reply: {created.body}")
+
+        operation_id = "op-" + uuid.uuid4().hex
+        event_id = "evt-" + uuid.uuid4().hex
+        envelope = {
+            "operation_id": operation_id,
+            "event_id": event_id,
+            "intent_id": intent_id,
+            "kind": "payment.succeeded",
+            "provider_ref": provider_ref,
+            "amount_minor": 9900,
+            "currency": "CNY",
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        # 原始字节签名：紧凑序列化一次，之后重投都用同一份字节，绝不重排。
+        # commerce 的 HMAC 是长度前缀方案（store::hmac_hex）：每段先更新
+        # 8 字节大端长度，再更新内容字节。裸 HMAC(body) 验不过。
+        raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        mac = hmac.new(args.payment_webhook_secret.encode("utf-8"), digestmod=hashlib.sha256)
+        mac.update(len(raw).to_bytes(8, "big"))
+        mac.update(raw)
+        sig = mac.hexdigest()
+        headers = {"x-payment-signature": sig}
+
+        first = client.request(
+            "POST", "/api/payment/callback", raw_body=raw, extra_headers=headers
+        )
+        if first.status != 200 or not (first.body or {}).get("applied"):
+            raise CaseFailure(f"first callback -> {first.status}: {first.text[:200]}")
+        if (first.body or {}).get("replayed"):
+            raise CaseFailure("first callback unexpectedly marked replayed")
+
+        # 原样重投 4 次：都必须 replayed=true、零副作用。
+        for _ in range(4):
+            again = client.request(
+                "POST", "/api/payment/callback", raw_body=raw, extra_headers=headers
+            )
+            if again.status != 200 or not (again.body or {}).get("replayed"):
+                raise CaseFailure(f"replay -> {again.status}: {again.text[:200]}")
+
+        # 进程重启后再重投一次（运维提供 --restart-cmd）。
+        if args.restart_cmd:
+            run_cmd(args.restart_cmd)
+            wait_http(args.base_url, timeout=90)
+            after = client.request(
+                "POST", "/api/payment/callback", raw_body=raw, extra_headers=headers
+            )
+            if after.status != 200 or not (after.body or {}).get("replayed"):
+                raise CaseFailure(f"post-restart replay -> {after.status}: {after.text[:200]}")
+
+        # 台账单一效果：按 operation_id 回读，applied=true 且只有一条记录。
+        lookup = client.expect(
+            "GET",
+            f"/api/v1/commerce/callbacks/{operation_id}",
+            200,
+            token=alice["token"],
+        )
+        record = lookup.body or {}
+        if not record.get("applied") or record.get("operation_id") != operation_id:
+            raise CaseFailure(f"callback ledger lookup: {lookup.body}")
+        return (
+            f"callback {operation_id} settled once; 4 replays"
+            + (" + post-restart replay" if args.restart_cmd else "")
+            + " all replayed=true, ledger single-effect"
+        )
 
     def rtc_weak_network():
         probe = client.request("GET", "/api/turn/credentials")
@@ -228,6 +321,11 @@ def main() -> int:
     parser.add_argument("--partition-on-cmd", default="")
     parser.add_argument("--partition-off-cmd", default="")
     parser.add_argument("--server-bin", default="")
+    parser.add_argument(
+        "--payment-webhook-secret",
+        default=os.environ.get("WXLIKE_PAYMENT_WEBHOOK_SECRET", ""),
+        help="HMAC key for signing payment callbacks; must match server WXLIKE_PAYMENT_WEBHOOK_SECRET",
+    )
     parser.add_argument("--release", action="store_true", help="treat tracked-gap scenarios as release blockers")
     args = parser.parse_args()
 

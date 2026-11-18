@@ -321,6 +321,10 @@ jobs:
       run: cargo metadata --locked --format-version 1 > /dev/null
     - name: C10 dependency graph (cycles / layering / orphans)
       run: python scripts/dep_graph_guard.py
+    - name: C10 ADR-28 scan scope covers every async+DB crate
+      run: python scripts/guard_scope_guard.py
+    - name: C10 single authoritative progress snapshot is in sync
+      run: python scripts/progress_snapshot.py --check
     - name: C10 desktop lock is closed
       run: cargo metadata --locked --format-version 1 > /dev/null
       working-directory: ui/src-tauri
