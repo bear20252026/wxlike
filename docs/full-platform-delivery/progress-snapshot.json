@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "verified_at": "2026-11-17",
+  "verified_at": "2026-11-18",
   "authority": "代码事实（孤岛台账/缺口台账/集成请求/审计判定）；GitHub 开闭仅旁证，issue 闭≠验收过",
   "note": "单一权威进度源（第四轮审计 N5）。替代 tasks.json/GitHub/delivery/蓝图四源手工对账。LANDED 指代码+接线+测试存在，不代表真机/生产验证。",
   "card_count": 101,
@@ -926,7 +926,7 @@
       "title": "管理身份、RBAC与审计骨架",
       "wave": "W3",
       "status": "PARTIAL",
-      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在（目标已纠正 G02-09/G08-01/G07-04/G06-03）、未部署（N2/N3，缺口 ADMIN-NOT-DEPLOYED 已显式登记）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 176,
       "github_issue_state": "OPEN"
@@ -937,7 +937,7 @@
       "title": "用户、设备、群与申诉管理",
       "wave": "W3",
       "status": "PARTIAL",
-      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在（目标已纠正 G02-09/G08-01/G07-04/G06-03）、未部署（N2/N3，缺口 ADMIN-NOT-DEPLOYED 已显式登记）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 178,
       "github_issue_state": "OPEN"
@@ -948,7 +948,7 @@
       "title": "内容、小程序与服务发布审核",
       "wave": "W3",
       "status": "PARTIAL",
-      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在（目标已纠正 G02-09/G08-01/G07-04/G06-03）、未部署（N2/N3，缺口 ADMIN-NOT-DEPLOYED 已显式登记）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 180,
       "github_issue_state": "OPEN"
@@ -959,7 +959,7 @@
       "title": "商户、卡券、资金与对账台",
       "wave": "W3",
       "status": "PARTIAL",
-      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在（目标已纠正 G02-09/G08-01/G07-04/G06-03）、未部署（N2/N3，缺口 ADMIN-NOT-DEPLOYED 已显式登记）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 182,
       "github_issue_state": "OPEN"
@@ -970,7 +970,7 @@
       "title": "运营作业、隐私请求与可观测入口",
       "wave": "W3",
       "status": "PARTIAL",
-      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）",
+      "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在（目标已纠正 G02-09/G08-01/G07-04/G06-03）、未部署（N2/N3，缺口 ADMIN-NOT-DEPLOYED 已显式登记）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 185,
       "github_issue_state": "OPEN"
@@ -1036,7 +1036,7 @@
       "title": "统一云CI门禁与缓存",
       "wave": "W0/W1",
       "status": "PARTIAL",
-      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度守卫已落地（release check 核 commit 距离/评审日期，N6），但证据包本身仍过时（落后 298 commit，待重新评审）；设备证据缺",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 187,
       "github_issue_state": "CLOSED"
@@ -1047,7 +1047,7 @@
       "title": "服务端和桌面跨系统构建",
       "wave": "W4/W5",
       "status": "PARTIAL",
-      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度守卫已落地（release check 核 commit 距离/评审日期，N6），但证据包本身仍过时（落后 298 commit，待重新评审）；设备证据缺",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 189,
       "github_issue_state": "OPEN"
@@ -1058,7 +1058,7 @@
       "title": "Android/iOS云构建、签名与设备证据",
       "wave": "W4/W5",
       "status": "PARTIAL",
-      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度守卫已落地（release check 核 commit 距离/评审日期，N6），但证据包本身仍过时（落后 298 commit，待重新评审）；设备证据缺",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 191,
       "github_issue_state": "OPEN"
@@ -1069,7 +1069,7 @@
       "title": "端到端、故障与容量门禁",
       "wave": "W4/W5",
       "status": "PARTIAL",
-      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度守卫已落地（release check 核 commit 距离/评审日期，N6），但证据包本身仍过时（落后 298 commit，待重新评审）；设备证据缺",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 192,
       "github_issue_state": "OPEN"
@@ -1080,7 +1080,7 @@
       "title": "生产可观测、恢复与发布演练",
       "wave": "W4/W5",
       "status": "PARTIAL",
-      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺",
+      "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度守卫已落地（release check 核 commit 距离/评审日期，N6），但证据包本身仍过时（落后 298 commit，待重新评审）；设备证据缺",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 194,
       "github_issue_state": "OPEN"

@@ -202,5 +202,94 @@ class ReleaseTest(unittest.TestCase):
             release.check(self.repo.root, evidence=self.repo.root / "nope.json")
 
 
+class ReleaseFreshnessTest(unittest.TestCase):
+    """第四轮审计 N6：评审证据的新鲜度必须被机器核验，不能停在旧 commit 上装有效。"""
+
+    def setUp(self) -> None:
+        self.repo = FakeRepo()
+        self.repo.write_json(
+            "security/release-reviews/blockers.json",
+            {"schema": "wxlike.release-blockers.v1", "blockers": []},
+        )
+        (self.repo.root / "tests/security/corpus").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self.repo.cleanup()
+
+    def _git(self, *args: str) -> str:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "-C", str(self.repo.root), *args],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.strip()
+
+    def _init_repo(self, commits: int = 1) -> str:
+        """在夹具里造一个真 git 历史，返回第一个提交的 sha。"""
+        self._git("init", "-q")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "test")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "c0")
+        first = self._git("rev-parse", "HEAD")
+        for i in range(1, commits):
+            marker = self.repo.root / f"marker-{i}.txt"
+            marker.write_text(str(i), encoding="utf-8")
+            self._git("add", "-A")
+            self._git("commit", "-q", "-m", f"c{i}")
+        return first
+
+    def _bundle(self, commit: str, reviewed_at: str | None = None) -> Path:
+        import datetime
+
+        bundle = clean_bundle()
+        bundle["release"]["commit"] = commit
+        bundle["release"]["reviewed_at"] = reviewed_at or datetime.date.today().isoformat()
+        return self.repo.write_json("security/release-reviews/evidence/latest.json", bundle)
+
+    def _codes(self, path: Path) -> list[str]:
+        return [f.code for f in release.check(self.repo.root, evidence=path).findings]
+
+    def test_fresh_evidence_has_no_freshness_warning(self) -> None:
+        head = self._init_repo(commits=1)
+        codes = self._codes(self._bundle(head))
+        self.assertNotIn("REL-STALE-COMMIT", codes)
+        self.assertNotIn("REL-STALE-DATE", codes)
+
+    def test_stale_commit_distance_warns(self) -> None:
+        first = self._init_repo(commits=release.MAX_COMMIT_DISTANCE + 2)
+        codes = self._codes(self._bundle(first))
+        self.assertIn("REL-STALE-COMMIT", codes)
+
+    def test_old_review_date_warns(self) -> None:
+        head = self._init_repo(commits=1)
+        codes = self._codes(self._bundle(head, reviewed_at="2020-01-01"))
+        self.assertIn("REL-STALE-DATE", codes)
+
+    def test_missing_commit_warns(self) -> None:
+        self._init_repo(commits=1)
+        codes = self._codes(self._bundle(""))
+        self.assertIn("REL-NO-COMMIT", codes)
+
+    def test_unknown_commit_warns(self) -> None:
+        self._init_repo(commits=1)
+        codes = self._codes(self._bundle("f" * 40))
+        self.assertIn("REL-COMMIT-UNKNOWN", codes)
+
+    def test_non_git_repo_degrades_to_warn_not_crash(self) -> None:
+        # 夹具默认不是 git 仓库：新鲜度核验降级为 warn，门禁本体不崩。
+        codes = self._codes(self._bundle("abcdef0"))
+        self.assertIn("REL-FRESHNESS-NO-GIT", codes)
+
+    def test_freshness_is_warn_not_block_by_default(self) -> None:
+        # 阈值策略当前为 warn 级（研究骨架不对外分发）；升阻断属所有者裁决。
+        first = self._init_repo(commits=release.MAX_COMMIT_DISTANCE + 2)
+        report = release.check(self.repo.root, evidence=self._bundle(first))
+        self.assertEqual(report.blocking, [], report.render_text())
+        self.assertIn("REL-STALE-COMMIT", [f.code for f in report.findings])
+
+
 if __name__ == "__main__":
     unittest.main()

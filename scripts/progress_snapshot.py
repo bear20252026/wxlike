@@ -65,9 +65,9 @@ GROUP_ASSESSMENT = {
     "G11": {"default": "LANDED", "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地", "overrides": {}},
     "G12": {"default": "RETIRED", "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）", "overrides": {}},
     "G13": {"default": "RETIRED", "evidence": "Flutter 退役（ADR-29）；团队卡未标退役", "overrides": {}},
-    "G14": {"default": "PARTIAL", "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在、未部署（N2/N3）", "overrides": {}},
+    "G14": {"default": "PARTIAL", "evidence": "RBAC/审计/幂等真实（d1/d2/d3 打真平台）；域侧动作全 fixture、上游端点不存在（目标已纠正 G02-09/G08-01/G07-04/G06-03）、未部署（N2/N3，缺口 ADMIN-NOT-DEPLOYED 已显式登记）", "overrides": {}},
     "G15": {"default": "LANDED", "evidence": "50 命令目录、MCP tools/list+call、AuthGate+Policy 落地", "overrides": {}},
-    "G16": {"default": "PARTIAL", "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度无保障（N6）；设备证据缺", "overrides": {}},
+    "G16": {"default": "PARTIAL", "evidence": "CI 门禁/发布证据链/桌面打包落地；发布评审新鲜度守卫已落地（release check 核 commit 距离/评审日期，N6），但证据包本身仍过时（落后 298 commit，待重新评审）；设备证据缺", "overrides": {}},
     "G17": {"default": "LANDED", "evidence": "威胁模型/越权/滥用/模糊测试 51 条、来源审查落地；评审证据过时（N6）", "overrides": {}},
 }
 

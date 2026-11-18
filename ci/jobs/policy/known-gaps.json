@@ -121,7 +121,17 @@
       "check": "ui",
       "evidence": "Default Tauri host loads apps/desktop-web/dist (tauri.conf.json, pinned by scripts/check-tauri-host.mjs + host-config.test.ts). The old UI (ui/src, esbuild -> ui/dist) is still shipped as an escape hatch (tauri.conf.old-ui.json + scripts/build-old-ui.sh). Of the 70 registered commands in ui/src-tauri/src/commands.rs, desktop-web invokes only 8 (core_dispatch/core_subscribe/core_capabilities + register/login/logout/me/friends); 62 are old-UI-only with no retirement ledger until now. Boundary and retirement plan: ui/README.md.",
       "close_when": "The old-UI escape hatch is retired by explicit decision: ui/src + tauri.conf.old-ui.json + scripts/build-old-ui.sh removed, the 62 old-UI-only commands dropped from generate_handler (or re-homed behind core_bridge actions), check-tauri-host.mjs escape-hatch check updated, and desktop-web covers every feature the old UI still exclusively serves (calls UI, secret chat, local history, wallet/redpacket, video, favorites, session management)."
+    },
+    {
+      "id": "ADMIN-NOT-DEPLOYED",
+      "owner": "G14",
+      "task": "G14 / G16 deployment",
+      "status": "open",
+      "blocks_release": false,
+      "check": "deploy",
+      "evidence": "Registered 2026-11-18 (第四轮审计 N3): wxlike-admin is a workspace member (compiled and tested by cargo test --workspace) but containers/server/Dockerfile only builds/copies wxlike-server, and neither docker-compose.yml nor containers/server/compose.prod.yml defines an admin service. docs/g14-delivery.md draws adminx(:8090) as an independent process, yet no deployment artefact runs it: compilable, testable, not deployable. G14 domain-side endpoints are also still fixtures (see G14-02/03/04 integration requests, targets corrected to G02-09/G08-01/G07-04/G06-03).",
+      "close_when": "Either admin is added to the deployment stack (Dockerfile builds wxlike-admin, compose defines the adminx service with WXLIKE_ADMIN_DB/WXLIKE_ADMIN_TOKEN wiring and a smoke check), or the owner explicitly decides admin stays research-only and records that decision here; G14 ACCEPTED additionally requires the real domain endpoints per integration-requests/G14."
     }
   ],
-  "note": "blocks_release is a policy switch, not a work tracker: every gap below stays status=open with owner+task. Per the owner decision on 2026-11-05 only PAYMENT-CALLBACK-REPLAY still blocks publication."
+  "note": "blocks_release is a policy switch, not a work tracker: every gap below stays status=open with owner+task. PAYMENT-CALLBACK-REPLAY was closed on 2026-11-17 with real-process replay evidence (第四轮审计 N7); no gap currently blocks publication."
 }
