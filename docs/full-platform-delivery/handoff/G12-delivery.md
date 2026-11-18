@@ -1,5 +1,11 @@
 # G12 交付说明（Flutter 核心界面与原生桥）
 
+> **⚠️ 历史交付记录（标注 2026-11-18，第四轮审计 §4）**：Flutter 路线已被 ADR-29
+> （2026-11-15）整体取代——移动端改为 Swift/Kotlin 原生壳 + Rust 共享核心。
+> 本文的 flutter analyze/test 证据与"待评审"状态**不再代表现行路线的完成度**；
+> 原生壳工作见缺口台账 `MOBILE-NATIVE-SHELLS`。完成度以
+> `docs/full-platform-delivery/progress-snapshot.json` 为准（G12 = RETIRED）。
+
 日期：2026-10-24　工作树：`D:/mimo/test/wxlike-g12`　基线：`origin/main@9d00452`
 组跟踪 [#93](https://github.com/bear20252026/wxlike/issues/93)；总跟踪 [#80](https://github.com/bear20252026/wxlike/issues/80)。
 

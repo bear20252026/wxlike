@@ -924,13 +924,33 @@ class OldUiRetirementTest(unittest.TestCase):
         self.assertTrue(gap["owner"])
         self.assertTrue(gap["close_when"])
 
+    def _readme_listed(self) -> set[str]:
+        """README「命令面盘点」两条清单 bullet 里列出的命令名。
+
+        只取盘点段（到「注意：」为止），不扫全文——正文里提到的
+        `core_bridge`/`render_event_with` 等不是命令清单的一部分。
+        """
+        text = self._readme()
+        section = text.split("**命令面盘点", 1)[1].split("注意：", 1)[0]
+        listed = set(re.findall(r"`([a-z_][a-z_0-9]*)`", section))
+        listed.discard("lib.rs")
+        return listed
+
     def test_readme_command_lists_match_registry(self):
         cmds = set(self._registered())
-        text = self._readme()
-        # README 用反引号列出每个命令名；注册表里的每个命令都必须被文档覆盖。
-        documented = set(re.findall(r"`([a-z_]+)`", text))
-        missing = cmds - documented
+        # 正向：注册表里的每个命令都必须被文档覆盖（原有检查）。
+        missing = cmds - self._readme_listed()
         self.assertFalse(missing, f"注册表命令未出现在 ui/README.md: {sorted(missing)}")
+
+    def test_readme_lists_no_phantom_commands(self):
+        """反向（第四轮审计 F3 残留）：文档多写一个已删/不存在的命令也要红。
+
+        原对账只查「注册表→文档」，README 留着幽灵命令不会红——退役时
+        照文档删命令就会删错。双向钉死后，清单与注册表必须逐字相等。
+        """
+        cmds = set(self._registered())
+        phantom = self._readme_listed() - cmds
+        self.assertFalse(phantom, f"ui/README.md 列了注册表里不存在的命令: {sorted(phantom)}")
 
     def test_default_host_still_points_to_desktop_web(self):
         conf = json.loads((ROOT / "ui" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
