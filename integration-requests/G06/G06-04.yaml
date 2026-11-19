@@ -2,7 +2,10 @@ request: G06-04
 owner: G06
 task_issue: 134
 branch: feat/FP-G06
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行（feat/G06-actions-mount）：transfer.*/redpacket.* 经通用动作面
+# 挂载；群成员校验落平台 group_members 表（PlatformMembership，不再 DenyAll）；
+# 转账/红包 24h 到期退回 sweep 作业已起。
 depends_on:
   - G06-03
 code_paths:
