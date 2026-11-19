@@ -356,6 +356,12 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 /// 装配 mini 域路由。返回值由 `build_app` 直接 `merge`。
+///
+/// 两个面合并：本模块的落盘控制面（目录卡/授权/卸载，install 与包体下载诚实 501）
+/// 与 [`crate::mini_runtime`] 的真实域面（审核目录搜索/包检视/验签/容器沙箱启动，
+/// dispatch 进 wxlike-miniapps / wxlike-container / wxlike-dpage）。路径前缀不重叠
+/// （控制面 `/api/miniapps*`、`/api/mini-grants*`、`/api/mini-installs*`；真实域
+/// `/api/mini/*`），`merge` 不会撞路由。
 pub fn assemble(platform: &PlatformState, db_path: Option<&str>) -> anyhow::Result<Router> {
     let path = crate::sidecar_dir(db_path, "mini").join("mini-state.json");
     let service = Arc::new(MiniService::open(path)?);
@@ -363,5 +369,6 @@ pub fn assemble(platform: &PlatformState, db_path: Option<&str>) -> anyhow::Resu
         service,
         platform: platform.clone(),
     });
-    Ok(router(state))
+    let runtime = crate::mini_runtime::assemble(platform, db_path)?;
+    Ok(router(state).merge(runtime))
 }
