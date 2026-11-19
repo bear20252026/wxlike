@@ -16,6 +16,7 @@ use rand::RngCore as _;
 
 pub mod consent;
 pub mod device;
+pub mod governance;
 pub mod login_challenge;
 pub mod preferences;
 pub mod qr_login;
@@ -337,6 +338,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(SESSIONS)?;
     conn.execute_batch(SCHEMA)?;
+    governance::migrate(conn)?;
     ensure_sessions_audience(conn)
 }
 

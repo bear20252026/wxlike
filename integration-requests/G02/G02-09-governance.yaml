@@ -1,0 +1,124 @@
+# G02-09 账户治理与管理端点 —— 集成请求（域侧已实现，HTTP 面/平台联动待 G00）
+#
+# 域侧能力已落地（纯同步，无 tokio 生产依赖，ADR-28 无 async 体）：
+#   crates/features/identity/src/governance/{mod,user,device,view}.rs
+#   crates/features/relations/src/governance.rs
+# 本文件只提交"我需要什么"，根清单/路由/迁移编号由 G00 串行执行。
+
+request_id: G02-09-governance
+task: G02-09
+title: 账户治理与管理端点（域侧）
+branch: feat/G02-09-governance
+crate: [wxlike-identity, wxlike-relations]
+contract: [identity-v1, relations-v1]
+status: ready-for-G00
+wave: W3
+depends_on:
+  - G02-01 (#103) 会话/设备/audience 分离（已复用 session::authenticate + Audience::Admin）
+  - G02-02 (#108) 群角色/位模型（已复用 group_meta / group_member_acs）
+  - G00-02 (#100) crates/features 目录
+  - G00-03 (#101) contract-v1 冻结
+acceptance_dependencies:
+  - G14-02 (#178) adminx 消费方（HttpPort 逐字对应，见下）
+
+code_paths:
+  - crates/features/identity/src/governance/mod.rs
+  - crates/features/identity/src/governance/user.rs
+  - crates/features/identity/src/governance/device.rs
+  - crates/features/identity/src/governance/view.rs
+  - crates/features/identity/src/lib.rs
+  - crates/features/relations/src/governance.rs
+  - crates/features/relations/src/group.rs
+  - crates/features/relations/src/lib.rs
+  - crates/features/identity/tests/governance.rs
+  - crates/features/relations/tests/governance.rs
+  - schema/proposals/G02/governance.sql
+
+# 与 crates/admin/src/identity.rs::HttpPort 的逐字对应（消费方契约）：
+contract_mapping:
+  - admin_endpoint: POST /api/admin/identity/users/{id}/suspend
+    domain_fn: wxlike_identity::governance::suspend
+    body: [reason, until_ms, actor, trace]
+    receipt: [reference, before, after, sessions_revoked, already]
+  - admin_endpoint: POST /api/admin/identity/users/{id}/unsuspend
+    domain_fn: wxlike_identity::governance::unsuspend
+    body: [reason, actor, trace]
+    receipt: [reference, before, after, sessions_revoked, already]
+  - admin_endpoint: POST /api/admin/identity/devices/{id}/revoke
+    domain_fn: wxlike_identity::governance::revoke_device
+    body: [reason, actor, trace]
+    receipt: [reference, before, after, sessions_revoked, already]
+  - admin_endpoint: POST /api/admin/identity/groups/{id}/govern
+    domain_fn: wxlike_relations::governance::govern
+    body: [reason, actor, trace, action]
+    receipt: [reference, before, after, sessions_revoked, already]
+  - admin_view: AdminUserView（元数据投影，REQ-G02-09-metadata-view）
+    domain_fn: wxlike_identity::governance::user_view
+    fields: [user_id, display_name, state, created_at, last_seen_ms, device_count,
+             group_count, report_count, suspended_until_ms, labels]
+
+requests:
+  - id: REQ-G00-governance-session-linkage
+    target: G00
+    action: >-
+      平台进程执行治理联动：实现 identity 域的 PlatformGovernancePort
+      （mirror_user_state + dispatch）。封禁/停用即时撤销会话已在域内完成
+      （删 sessions/identity_session_token/identity_refresh/identity_step_up）；
+      平台侧需据 GovernanceEvent 断 WS、清缓存、作废设备密钥，并把治理状态
+      镜像到 users 表。登录/签发会话入口接 governance::ensure_user_active 闸门。
+      群治理据 GroupGovernanceEvent 刷新群成员缓存。
+    rationale: >-
+      会话表、设备密钥、群成员缓存都在平台进程内存里；绕过平台改库会留下
+      "后台封了、服务还通"的静默不一致（G14-02 REQ-G02-09-identity-admin-endpoints
+      的同一条）。域只发事件/回执，进程内效果必须由平台执行。
+    blocking: true
+    evidence: crates/features/identity/tests/governance.rs::suspend_revokes_all_sessions_and_blocks_access
+
+  - id: REQ-G00-governance-http-mount
+    target: G00
+    action: >-
+      在平台管理面挂载四个端点（与 admin HttpPort 逐字对应）：
+      POST /api/admin/identity/users/{id}/suspend、/unsuspend、
+      /api/admin/identity/devices/{id}/revoke、/api/admin/identity/groups/{id}/govern，
+      以及元数据视图 GET /api/admin/identity/users/{id}（AdminUserView）。
+      鉴权用 admin audience（x-admin-token → session::authenticate(Audience::Admin)，
+      复用 G02-01 受众分离）；整段同步域调用包进 spawn_blocking（ADR-28）。
+      群转让需透传 new_owner 字段（adminx 当前 DangerBody 未带，见下 note）。
+    rationale: adminx 经 HttpPort 转发到这些路径；域函数已就绪，只差 HTTP 装配。
+    blocking: true
+    evidence: crates/admin/src/identity.rs::HttpPort
+
+  - id: REQ-G00-governance-users-migration
+    target: G00
+    action: >-
+      为平台 users 表补治理镜像列 suspended/disabled/suspended_until_ms
+      （草稿 schema/proposals/G02/governance.sql），并分配迁移编号。
+      identity/relations 域自有表（identity_user_governance、identity_governance_audit、
+      identity_governance_label、group_governance_audit）与 group_meta.frozen_at
+      已随 crate migrate() 幂等落地；users 补列由 G00 在平台库执行（域不直接 ALTER users）。
+    rationale: >-
+      users 表归平台；封禁状态要在平台登录/会话路径可读，需镜像列。
+      与 sessions.audience / users.deleted_at 同一幂等补列手法。
+    blocking: false
+    evidence: schema/proposals/G02/governance.sql
+
+notes:
+  - 域侧纯同步、无 tokio 生产依赖；guard-scope-ledger 无需为这两个 crate 新增登记。
+  - 生产代码无新增 unwrap/expect；测试用真实 SQLite（内存/文件），平台联动用
+    RecordingPort fixture（任务单允许的并行开发替身），最终验收换真实平台端口。
+  - 群转让 new_owner：adminx 的 DangerBody/Command 目前只有 verb，无转让目标字段。
+    域侧 GroupGovernCommand.new_owner 已就绪；请 G00/G14 在 adminx 透传 new_owner
+    （或约定 transfer 的默认受让规则），否则 transfer 动作在 HTTP 面缺参会被域侧拒绝。
+  - 临时封禁到期为惰性判定（ensure_user_active/user_view 读有效状态），另提供
+    governance::settle_expired 供平台定时作业物理结算并留痕。
+  - 幂等命中（already=true）不产生二次状态变更/会话撤销，但平台镜像与事件照常重放，
+    保证平台侧向域状态收敛。
+
+tests:
+  - cargo test -p wxlike-identity --test governance
+  - cargo test -p wxlike-relations --test governance
+
+remaining_before_accept:
+  - G00 完成上述三项集成（端口实现/HTTP 挂载/users 补列）后，把 adminx 的
+    FixturePort 换成 HttpPort 打真平台（G14-02 until_merged），方可标 ACCEPTED。
+  - 真机/云 CI 证据：封禁后 WS 与 API 立即失效、sessions_revoked 非零。
