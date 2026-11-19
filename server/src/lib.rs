@@ -24,6 +24,9 @@ mod history_archive;
 pub mod media_mount;
 /// G08/D6：小程序域的组合根装配（目录/授权/安装落盘，install 与包体下载诚实阻塞）。
 pub mod mini_mount;
+/// G08：小程序真实域面（目录搜索/包检视/验签/容器沙箱启动），dispatch 进
+/// wxlike-miniapps / wxlike-container / wxlike-dpage，收口「测而未接」。
+pub mod mini_runtime;
 /// A2：`/app` 静态托管（`WXLIKE_WEB_DIR`）。
 mod web_static;
 
