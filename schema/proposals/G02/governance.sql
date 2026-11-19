@@ -1,6 +1,9 @@
 -- G02-09 账户治理迁移草稿
 --
 -- 执行者：G00（迁移编号与串行合入归 G00，本文件只是草稿）。
+-- 【2026-11-19 已执行】users 三列（suspended/disabled/suspended_until_ms）随
+-- crates/platform/src/db.rs::migrate_governance_columns 幂等落地，schema 快照
+-- 已同步；域内四表已随 crate migrate() 落地（见下）。本文件转为执行记录。
 -- 幂等：全部 IF NOT EXISTS；对既有 users / group_meta 表只做"补列"，不改既有列语义。
 -- 回滚：见同目录 README.md「回滚兼容说明」与 integration-requests/G02/G02-09-governance.yaml。
 --

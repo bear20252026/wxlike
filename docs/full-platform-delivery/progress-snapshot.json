@@ -122,9 +122,7 @@
     }
   },
   "release_blocking_gaps": [],
-  "ready_for_g00_backlog": {
-    "G02": 1
-  },
+  "ready_for_g00_backlog": {},
   "cards": [
     {
       "id": "G00-01",
@@ -1233,7 +1231,7 @@
       "wave": "W3",
       "status": "PARTIAL",
       "evidence": "2026-11-19 域侧实现（identity/relations governance）；HTTP 面挂载/平台会话联动/users 表迁移编号待 G00 集成（G02-09-governance.yaml ready-for-G00）",
-      "tasks_json_status": "IMPLEMENTING",
+      "tasks_json_status": "INTEGRATED",
       "github_issue_number": null,
       "github_issue_state": null
     }

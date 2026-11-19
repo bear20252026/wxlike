@@ -11,7 +11,18 @@ title: 账户治理与管理端点（域侧）
 branch: feat/G02-09-governance
 crate: [wxlike-identity, wxlike-relations]
 contract: [identity-v1, relations-v1]
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行记录（feat/G02-09-governance-mount）：
+#   - REQ-G00-governance-http-mount ✅ 五个端点挂载（crates/platform/src/identity_admin.rs，
+#     x-admin-token → Admin audience 会话鉴权，spawn_blocking，ApiError 稳定分类）；
+#   - REQ-G00-governance-session-linkage ✅ PlatformGovernancePort/UserMetadataPort 生产
+#     实现（crates/platform/src/domain/governance.rs，独立第二条连接防死锁）；users 镜像落库、
+#     群成员缓存清理、登录/签发闸门（ensure_user_active）接 create_session_for_device；
+#     WS 泵/设备密钥进程内联动为留痕（接入点在 server 层，见 notes）；
+#   - REQ-G00-governance-users-migration ✅ users 补列随 Db 迁移幂等落地
+#     （migrate_governance_columns），schema 快照已同步；
+#   - 平台侧验收：crates/platform/tests/governance_admin.rs 6 用例全绿（封禁撤销+镜像+
+#     闸门 403/受众分离/惰性到期/群治理幂等/元数据视图计数）。
 wave: W3
 depends_on:
   - G02-01 (#103) 会话/设备/audience 分离（已复用 session::authenticate + Audience::Admin）
@@ -119,6 +130,9 @@ tests:
   - cargo test -p wxlike-relations --test governance
 
 remaining_before_accept:
-  - G00 完成上述三项集成（端口实现/HTTP 挂载/users 补列）后，把 adminx 的
-    FixturePort 换成 HttpPort 打真平台（G14-02 until_merged），方可标 ACCEPTED。
+  - adminx 部署面换 HttpPort 打真平台（G14-02 until_merged；adminx 未部署，
+    ADMIN-NOT-DEPLOYED），且 platform_token 换成 Admin audience 会话令牌
+    （静态密钥不是会话，本挂载不认静态密钥）。
   - 真机/云 CI 证据：封禁后 WS 与 API 立即失效、sessions_revoked 非零。
+  - WS 泵/设备密钥的进程内联动（断 WS、密钥作废）目前只留痕，接入点在
+    server 层 hub/密钥面；会话撤销已保证令牌面失效。

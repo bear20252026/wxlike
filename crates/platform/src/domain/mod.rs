@@ -24,6 +24,7 @@ pub mod content_index;
 pub mod devices;
 pub mod favorites;
 pub mod friends;
+pub(crate) mod governance;
 pub mod groups;
 pub mod groups_admin;
 pub mod inbox;
