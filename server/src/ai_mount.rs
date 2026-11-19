@@ -28,7 +28,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::PlatformState;
 use wxlike_translation::{
     TranslationConfig, TranslationProvider, TranslationRequest, TranslationService,
 };
@@ -169,19 +169,7 @@ struct AiState {
     translation: Arc<TranslationService<UnconfiguredTranslationProvider>>,
 }
 
-/// 从请求头解析可信 actor（平台 sessions 表）。失败 → None → 401。
-/// 同步函数：连接锁在这里拿、这里放，async handler 不持锁跨 await。
-fn actor_of(platform: &PlatformState, headers: &HeaderMap) -> Option<String> {
-    let token = Authed::bearer_from(headers)?;
-    match platform.lookup_token(token) {
-        Ok(Some(user_id)) => Some(user_id),
-        _ => None,
-    }
-}
-
-fn err_response(status: StatusCode, label: &str) -> Response {
-    (status, Json(serde_json::json!({"error": label}))).into_response()
-}
+use crate::mount_common::{actor_of, authed_json, err_response};
 
 /// 域错误码（两域同一套字符串）→ HTTP 状态码。供应商未配置 = 503，
 /// 与「服务暂时不可用」的语义一致；客户端可据稳定分类决定重试/提示。
@@ -203,13 +191,6 @@ fn coded_error(code: &str) -> Response {
     err_response(status_of(code), code)
 }
 
-fn parse_json(body: &Bytes) -> Option<serde_json::Value> {
-    if body.is_empty() {
-        return Some(serde_json::json!({}));
-    }
-    serde_json::from_slice(body).ok()
-}
-
 fn now_ms() -> i64 {
     wxlike_core::types::now_ms() as i64
 }
@@ -220,11 +201,9 @@ fn now_ms() -> i64 {
 
 /// `POST /api/v1/recognition/consent`：上传前显式授权（域内 TTL 到期自动失效）。
 async fn vision_consent(State(state): State<AiState>, headers: HeaderMap, body: Bytes) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     match state
         .vision
@@ -252,11 +231,9 @@ async fn vision_consent_revoke(State(state): State<AiState>, headers: HeaderMap)
 /// `{"kind": "identify"|"ocr"|"transcribe", "image_base64"|"audio_base64",
 ///   "mime", "languages": [...]}`。无供应商 → 503 DEPENDENCY_UNAVAILABLE。
 async fn vision_run(State(state): State<AiState>, headers: HeaderMap, body: Bytes) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let request = match vision_request(&payload) {
         Ok(request) => request,
@@ -378,11 +355,9 @@ async fn translation_consent(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     match state
         .translation
@@ -413,11 +388,9 @@ async fn translation_run(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let (Some(text), Some(target)) = (payload["text"].as_str(), payload["target"].as_str()) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");

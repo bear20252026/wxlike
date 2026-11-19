@@ -153,6 +153,68 @@ fn summary(state: UserState, until_ms: Option<i64>) -> serde_json::Value {
 ///
 /// 即时撤销该用户**全部**会话（sessions + 令牌侧车 + 刷新链 + step-up），
 /// 与 `session::logout_all` 同口径；回执 `sessions_revoked` 即撤销条数。
+/// 即时撤销全部会话：sessions 行删掉即拿到撤销条数；侧车/刷新链/step-up
+/// 按 user_id 直接清，不依赖会话行还在（与 session::logout_all 同口径）。
+/// suspend 与 disable 共用这一份——撤销口径只有一处定义。
+fn revoke_all_sessions(tx: &Connection, target: &str, now: i64) -> Result<usize> {
+    let revoked = tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![target])?;
+    tx.execute(
+        "DELETE FROM identity_session_token WHERE user_id = ?1",
+        params![target],
+    )?;
+    crate::refresh::revoke_user(tx, target, now)?;
+    tx.execute(
+        "DELETE FROM identity_step_up WHERE user_id = ?1",
+        params![target],
+    )?;
+    Ok(revoked)
+}
+
+/// 治理处置的公共收尾：事件构造 + 平台镜像 + 回执。suspend/disable/enable
+/// 的事件形状完全一致（状态变更 + 会话撤销 + 缓存清理），只有 action 名不同。
+#[allow(clippy::too_many_arguments)]
+fn finish_govern(
+    target: &str,
+    after_state: UserState,
+    after_until: Option<i64>,
+    after_row: Option<&GovRow>,
+    now: i64,
+    action: &str,
+    seq: i64,
+    before: serde_json::Value,
+    after: serde_json::Value,
+    sessions_revoked: usize,
+    already: bool,
+    port: &dyn PlatformGovernancePort,
+) -> Result<GovernEffect> {
+    let mut events = vec![GovernanceEvent::UserStateChanged {
+        user_id: target.to_string(),
+        state: after_state.as_str().to_string(),
+        suspended_until_ms: after_until,
+    }];
+    if sessions_revoked > 0 {
+        events.push(GovernanceEvent::SessionsRevoked {
+            user_id: target.to_string(),
+            count: sessions_revoked as u64,
+        });
+    }
+    events.push(GovernanceEvent::CacheClear {
+        scope: "user".to_string(),
+        key: target.to_string(),
+    });
+    let (suspended, disabled) = flags_of(after_row, now);
+    port.mirror_user_state(target, suspended, disabled, after_until)?;
+    port.dispatch(&events);
+    Ok(GovernEffect {
+        reference: reference(action, seq),
+        before,
+        after,
+        sessions_revoked: sessions_revoked as u64,
+        already,
+        events,
+    })
+}
+
 pub fn suspend(
     conn: &Connection,
     operator_token: &str,
@@ -196,19 +258,7 @@ pub fn suspend(
              reason = ?3, actor = ?4, updated_at = ?5",
             params![target, cmd.until_ms, reason, actor, now],
         )?;
-        // 即时撤销全部会话：sessions 行删掉即拿到撤销条数；侧车/刷新链/step-up
-        // 按 user_id 直接清，不依赖会话行还在（与 session::logout_all 同口径）。
-        sessions_revoked =
-            tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![target])?;
-        tx.execute(
-            "DELETE FROM identity_session_token WHERE user_id = ?1",
-            params![target],
-        )?;
-        crate::refresh::revoke_user(&tx, &target, now)?;
-        tx.execute(
-            "DELETE FROM identity_step_up WHERE user_id = ?1",
-            params![target],
-        )?;
+        sessions_revoked = revoke_all_sessions(&tx, &target, now)?;
     }
     let after_row = load(&tx, &target)?;
     let after_state = after_row
@@ -235,34 +285,22 @@ pub fn suspend(
     )?;
     tx.commit()?;
 
-    let mut events = vec![GovernanceEvent::UserStateChanged {
-        user_id: target.clone(),
-        state: after_state.as_str().to_string(),
-        suspended_until_ms: after_until,
-    }];
-    if sessions_revoked > 0 {
-        events.push(GovernanceEvent::SessionsRevoked {
-            user_id: target.clone(),
-            count: sessions_revoked as u64,
-        });
-    }
-    events.push(GovernanceEvent::CacheClear {
-        scope: "user".to_string(),
-        key: target.clone(),
-    });
     // 镜像与事件**幂等命中也重放**：平台侧据此收敛（"后台封了、服务还通"
     // 的残留就是靠重放消掉的）。操作者上下文只用于鉴权，审计落 cmd.actor。
-    let (suspended, disabled) = flags_of(after_row.as_ref(), now);
-    port.mirror_user_state(&target, suspended, disabled, after_until)?;
-    port.dispatch(&events);
-    Ok(GovernEffect {
-        reference: reference("suspend", seq),
+    finish_govern(
+        &target,
+        after_state,
+        after_until,
+        after_row.as_ref(),
+        now,
+        "suspend",
+        seq,
         before,
         after,
-        sessions_revoked: sessions_revoked as u64,
+        sessions_revoked,
         already,
-        events,
-    })
+        port,
+    )
 }
 
 /// 解封（可逆且本身留痕）。永久/临时封禁都清；`disabled` 是独立处置，不受影响。
@@ -385,17 +423,7 @@ pub fn set_disabled(
             params![target, disabled, reason, actor, now],
         )?;
         if disabled {
-            sessions_revoked =
-                tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![target])?;
-            tx.execute(
-                "DELETE FROM identity_session_token WHERE user_id = ?1",
-                params![target],
-            )?;
-            crate::refresh::revoke_user(&tx, &target, now)?;
-            tx.execute(
-                "DELETE FROM identity_step_up WHERE user_id = ?1",
-                params![target],
-            )?;
+            sessions_revoked = revoke_all_sessions(&tx, &target, now)?;
         }
     }
     let after_row = load(&tx, &target)?;
@@ -424,32 +452,20 @@ pub fn set_disabled(
     )?;
     tx.commit()?;
 
-    let mut events = vec![GovernanceEvent::UserStateChanged {
-        user_id: target.clone(),
-        state: after_state.as_str().to_string(),
-        suspended_until_ms: after_until,
-    }];
-    if sessions_revoked > 0 {
-        events.push(GovernanceEvent::SessionsRevoked {
-            user_id: target.clone(),
-            count: sessions_revoked as u64,
-        });
-    }
-    events.push(GovernanceEvent::CacheClear {
-        scope: "user".to_string(),
-        key: target.clone(),
-    });
-    let (suspended, mirror_disabled) = flags_of(after_row.as_ref(), now);
-    port.mirror_user_state(&target, suspended, mirror_disabled, after_until)?;
-    port.dispatch(&events);
-    Ok(GovernEffect {
-        reference: reference(action, seq),
+    finish_govern(
+        &target,
+        after_state,
+        after_until,
+        after_row.as_ref(),
+        now,
+        action,
+        seq,
         before,
         after,
-        sessions_revoked: sessions_revoked as u64,
+        sessions_revoked,
         already,
-        events,
-    })
+        port,
+    )
 }
 
 /// 结算到期的临时封禁（平台定时作业调用；读路径的惰性判定不依赖它）。

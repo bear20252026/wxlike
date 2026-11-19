@@ -39,7 +39,7 @@ use wxlike_discovery::geo::{
 use wxlike_discovery::matching::{MatchOutcome, MotionSample, ShakeMatcher};
 use wxlike_discovery::qr::{DeeplinkPolicy, QrCodec, QrScanner, QrTarget, ScanAction};
 use wxlike_discovery::DiscoveryError;
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::PlatformState;
 
 /// 二维码 payload 签名密钥。生产必配；多实例必须配成同一个值。
 pub const QR_SECRET_ENV: &str = "WXLIKE_QR_SIGNING_KEY";
@@ -175,17 +175,7 @@ fn geo_config_from_env() -> GeoConfig {
     config
 }
 
-/// 从请求头解析可信 actor（平台 sessions 表）。失败 → None → 401。
-/// 同步函数：连接锁在这里拿、这里放，async handler 不持锁跨 await。
-fn actor_of(platform: &PlatformState, headers: &HeaderMap) -> Option<String> {
-    let token = Authed::bearer_from(headers)?;
-    platform.lookup_token(token).ok().flatten()
-}
-
-fn err_response(status: StatusCode, label: &str) -> Response {
-    let body = serde_json::json!({"error": label});
-    (status, Json(body)).into_response()
-}
+use crate::mount_common::{actor_of, authed_json, err_response, parse_json};
 
 /// 域错误 → HTTP 状态码 + 稳定分类。只回分类字符串，不回显内部细节。
 fn classify(err: &DiscoveryError) -> (StatusCode, &'static str) {
@@ -227,13 +217,6 @@ fn join_reply(
     }
 }
 
-fn parse_json(body: &Bytes) -> Option<serde_json::Value> {
-    match body.is_empty() {
-        true => Some(serde_json::json!({})),
-        false => serde_json::from_slice(body).ok(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // 扫码 / 二维码（G07-01）
 // ---------------------------------------------------------------------------
@@ -245,11 +228,9 @@ async fn scan_payload(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let scanner = Arc::clone(&state.scanner);
     let now_ms = wxlike_core::types::now_ms() as i64;
@@ -335,11 +316,9 @@ async fn scan_confirm(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let scanner = Arc::clone(&state.scanner);
     let now_ms = wxlike_core::types::now_ms() as i64;
@@ -431,11 +410,9 @@ async fn geo_opt_in(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let Some(enabled) = payload["enabled"].as_bool() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
@@ -455,11 +432,9 @@ async fn geo_publish(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let (Some(lat), Some(lng)) = (payload["lat"].as_f64(), payload["lng"].as_f64()) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
@@ -508,11 +483,9 @@ async fn geo_nearby(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let (Some(lat), Some(lng), Some(radius_m)) = (
         payload["lat"].as_f64(),
@@ -534,11 +507,9 @@ async fn geo_block(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let Some(target) = payload["target"].as_str() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
@@ -557,11 +528,9 @@ async fn geo_report(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let (Some(target), Some(reason)) = (payload["target"].as_str(), payload["reason"].as_str())
     else {
@@ -616,11 +585,9 @@ async fn shake_start(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(actor) = actor_of(&state.platform, &headers) else {
-        return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
-    };
-    let Some(payload) = parse_json(&body) else {
-        return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
+    let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let Some(magnitude_g) = payload["magnitude_g"].as_f64() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");

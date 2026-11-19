@@ -31,6 +31,8 @@ pub mod mini_mount;
 /// G08：小程序真实域面（目录搜索/包检视/验签/容器沙箱启动），dispatch 进
 /// wxlike-miniapps / wxlike-container / wxlike-dpage，收口「测而未接」。
 pub mod mini_runtime;
+/// 域挂载公共前置（会话鉴权/JSON 解析/稳定错误形状），三个挂载共用一份。
+mod mount_common;
 /// A2：`/app` 静态托管（`WXLIKE_WEB_DIR`）。
 mod web_static;
 

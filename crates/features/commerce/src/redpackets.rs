@@ -319,37 +319,16 @@ impl Commerce {
     /// 选取到期清单时存储失败。
     pub fn expire_due_red_packets(&self) -> Result<usize> {
         let now = self.now();
-        let due: Vec<String> = {
-            let conn = self.lock();
-            let mut stmt = conn.prepare(
-                "SELECT id FROM commerce_redpackets
-                 WHERE status = 'active' AND expires_at <= ?1
-                 ORDER BY expires_at ASC, id ASC LIMIT 200",
-            )?;
-            let rows = stmt.query_map(params![now], |r| r.get::<_, String>(0))?;
-            let mut ids = Vec::new();
-            for row in rows {
-                ids.push(row?);
-            }
-            ids
-        };
-        let mut expired = 0usize;
-        for id in due {
-            let mut guard = self.lock();
-            let Ok(tx) = guard.transaction_with_behavior(TransactionBehavior::Immediate) else {
-                continue;
-            };
-            let Ok(Some(packet)) = load(&tx, &id) else {
-                continue;
-            };
-            if packet.status != RedPacketStatus::Active || now < packet.expires_at {
-                continue;
-            }
-            if expire_locked(&tx, &packet, now).is_ok() && tx.commit().is_ok() {
-                expired += 1;
-            }
-        }
-        Ok(expired)
+        let due = crate::sweep::due_ids(&self.lock(), "commerce_redpackets", "active", now)?;
+        let mut guard = self.lock();
+        Ok(crate::sweep::expire_due(
+            &mut guard,
+            due,
+            now,
+            load,
+            |p: &RedPacket, now| p.status == RedPacketStatus::Active && now >= p.expires_at,
+            expire_locked,
+        ))
     }
 
     fn is_member(&self, conversation: &str, user: &str) -> Result<bool> {

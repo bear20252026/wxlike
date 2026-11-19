@@ -36,7 +36,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use wxlike_commerce::infrastructure::sandbox::SandboxProvider;
 use wxlike_commerce::{Commerce, CommerceConfig, CommerceError, GroupMembership, Ports};
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::PlatformState;
 
 /// 回调验签密钥的环境变量。生产必配；多实例必须配成同一个值。
 pub const SECRET_ENV: &str = "WXLIKE_PAYMENT_WEBHOOK_SECRET";
@@ -119,14 +119,7 @@ struct CommerceActions {
     platform: PlatformState,
 }
 
-/// 从请求头解析可信 actor（平台 sessions 表）。失败 → None → 401。
-fn actor_of(platform: &PlatformState, headers: &HeaderMap) -> Option<String> {
-    let token = Authed::bearer_from(headers)?;
-    match platform.lookup_token(token) {
-        Ok(Some(user_id)) => Some(user_id),
-        _ => None,
-    }
-}
+use crate::mount_common::actor_of;
 
 /// `POST /api/v1/commerce/actions/{action}`：会话鉴权的命令分发。
 async fn commerce_action(

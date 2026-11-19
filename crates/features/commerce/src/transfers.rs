@@ -347,37 +347,16 @@ impl Commerce {
     /// 选取到期清单时存储失败。
     pub fn expire_due_transfers(&self) -> Result<usize> {
         let now = self.now();
-        let due: Vec<String> = {
-            let conn = self.lock();
-            let mut stmt = conn.prepare(
-                "SELECT id FROM commerce_transfers
-                 WHERE status = 'pending' AND expires_at <= ?1
-                 ORDER BY expires_at ASC, id ASC LIMIT 200",
-            )?;
-            let rows = stmt.query_map(params![now], |r| r.get::<_, String>(0))?;
-            let mut ids = Vec::new();
-            for row in rows {
-                ids.push(row?);
-            }
-            ids
-        };
-        let mut expired = 0usize;
-        for id in due {
-            let mut guard = self.lock();
-            let Ok(tx) = guard.transaction_with_behavior(TransactionBehavior::Immediate) else {
-                continue;
-            };
-            let Ok(Some(transfer)) = load(&tx, &id) else {
-                continue;
-            };
-            if transfer.status != TransferStatus::Pending || now < transfer.expires_at {
-                continue;
-            }
-            if expire_locked(&tx, &transfer, now).is_ok() && tx.commit().is_ok() {
-                expired += 1;
-            }
-        }
-        Ok(expired)
+        let due = crate::sweep::due_ids(&self.lock(), "commerce_transfers", "pending", now)?;
+        let mut guard = self.lock();
+        Ok(crate::sweep::expire_due(
+            &mut guard,
+            due,
+            now,
+            load,
+            |t: &Transfer, now| t.status == TransferStatus::Pending && now >= t.expires_at,
+            expire_locked,
+        ))
     }
 
     fn transfer_token(
