@@ -2,7 +2,11 @@ request: G06-03
 owner: G06
 task_issue: 133
 branch: feat/FP-G06
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行（feat/G06-actions-mount）：topup/withdrawal/refund/reconcile 经
+# 通用动作面挂载；reconcile.* 路由层 audience 闸门（x-admin-token，没配=整面关闭，
+# G14 真实 admin audience 落地前的失败关闭 interim）；processing 提现重试与每日对账
+# 作业已起。真实供应商出款取证 deferred（G16）。
 depends_on:
   - G06-02
 code_paths:

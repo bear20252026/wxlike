@@ -10,7 +10,11 @@ group_issue: 87
 owner: G06
 to: G00
 branch: feat/G06-ledger-payments
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行（feat/G06-actions-mount）：payment.refresh 经
+# /api/v1/commerce/actions/payment.refresh 挂载（会话鉴权），契约行已补
+# contracts/domains/commerce/actions.yaml；server/tests/commerce_actions.rs 覆盖
+# 未知状态查询/超时分类。真实供应商查询取证 deferred（G16）。
 
 summary: >-
   `crates/features/commerce/src/http.rs::dispatch` 新增 `payment.refresh` 分支，

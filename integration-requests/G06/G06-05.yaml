@@ -2,7 +2,10 @@ request: G06-05
 owner: G06
 task_issue: 137
 branch: feat/FP-G06
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行（feat/G06-actions-mount）：entitlement.*/order.* 经通用动作面
+# 挂载；rule.publish/issue 路由层 audience 闸门（x-admin-token 失败关闭 interim，
+# 真实 merchant audience 待 G14）。
 depends_on:
   - G06-04
 code_paths:

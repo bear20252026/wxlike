@@ -202,6 +202,9 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     // G06/N7：支付回调域装一次 = 顺带把 commerce/ledger 表幂等建到 sidecar 库。
     let (commerce_app, commerce) = commerce_mount::assemble(&platform, opts.db_path.as_deref())?;
     let _workers = spawn_background_workers(&platform, &media_service);
+    // G06-02/03/04 的 jobs：支付意图到期、转账/红包 24h 退回、processing 提现
+    // 重试、每日对账。没有这几条循环，那些"只入队的表"在真实进程里永远没人推进。
+    let _commerce_workers = commerce_mount::spawn_commerce_workers(Arc::clone(&commerce));
     let app = build_app(
         opts.hub_id.clone(),
         quic_addr,

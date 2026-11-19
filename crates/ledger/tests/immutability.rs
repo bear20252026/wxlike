@@ -106,6 +106,9 @@ fn direct_balance_tampering_is_refused_by_the_database() {
         "UPDATE ledger_closings SET credit_minor = 0 WHERE day = '2026-11-05'",
         "DELETE FROM ledger_closings",
         "UPDATE ledger_closing_balances SET balance_minor = 0 WHERE day = '2026-11-05'",
+        // G06-01-ledger-append-only-ddl：DELETE 与 UPDATE 一样是改写历史，
+        // 四张表都必须被数据库拒绝（与 PG 提案 BEFORE UPDATE OR DELETE 对齐）。
+        "DELETE FROM ledger_closing_balances WHERE day = '2026-11-05'",
     ] {
         let conn = db.conn();
         let error = conn

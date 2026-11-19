@@ -236,6 +236,13 @@ fn init_closing_tables(conn: &Connection) -> Result<()> {
         BEGIN
             SELECT RAISE(ABORT, 'ledger_closing_balances is an immutable snapshot');
         END;
+        -- 删除同样是改写历史（G06-01-ledger-append-only-ddl：四张表都要
+        -- UPDATE 与 DELETE 双兜底，与 PG 提案的 BEFORE UPDATE OR DELETE 对齐）。
+        CREATE TRIGGER IF NOT EXISTS trg_ledger_closing_balances_no_delete
+            BEFORE DELETE ON ledger_closing_balances
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_closing_balances is an immutable snapshot');
+        END;
         "#,
     )
 }

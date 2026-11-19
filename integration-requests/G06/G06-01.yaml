@@ -2,7 +2,10 @@ request: G06-01
 owner: G06
 task_issue: 127
 branch: feat/FP-G06
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行（feat/G06-actions-mount）：balance.get/statement.page 经
+# /api/v1/commerce/actions/{action} 通用动作面挂载（会话鉴权）；SQLite append-only
+# 触发器补齐 closing_balances DELETE 兜底。PG 正式迁移编号仍归 G00-04（deferred）。
 depends_on:
   - G00-02 (#100) 新建 crates/features 与 contracts 目录
   - G00-03 (#101) contract-v1 冻结
