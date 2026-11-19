@@ -187,7 +187,10 @@ fn spawn_g07_workers(
             nonces.prune(wxlike_core::types::now_ms() as i64);
         }
     });
-    vec![nonce_worker, ai.spawn_purge_worker(std::time::Duration::from_secs(60))]
+    vec![
+        nonce_worker,
+        ai.spawn_purge_worker(std::time::Duration::from_secs(60)),
+    ]
 }
 
 /// 起栈。

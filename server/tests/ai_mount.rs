@@ -54,7 +54,12 @@ fn request(method: &str, uri: &str, token: Option<&str>, body: Option<Value>) ->
 async fn register(app: &Router, name: &str) -> (String, String) {
     let (status, reply) = send(
         app,
-        request("POST", "/api/register", None, Some(json!({"name": name, "password": "pw"}))),
+        request(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"name": name, "password": "pw"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "register {name}: {reply}");
@@ -89,8 +94,12 @@ async fn anonymous_ai_requests_are_rejected() {
     }
     let (status, _) = send(
         &app,
-        request("POST", "/api/v1/translation", Some("obviously-not-a-session"),
-            Some(json!({"text": "hi", "target": "zh-CN"}))),
+        request(
+            "POST",
+            "/api/v1/translation",
+            Some("obviously-not-a-session"),
+            Some(json!({"text": "hi", "target": "zh-CN"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "伪造 bearer 必须 401");
@@ -108,12 +117,25 @@ async fn recognition_without_provider_fails_honestly() {
     });
 
     // 未 consent → 403 CONSENT_REQUIRED（不是直接 503：闸门先于供应商）。
-    let (status, body) = send(&app, request("POST", "/api/v1/recognition/jobs", Some(&token), Some(ocr.clone()))).await;
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            "/api/v1/recognition/jobs",
+            Some(&token),
+            Some(ocr.clone()),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "未授权应拒: {body}");
     assert_eq!(body["error"], "CONSENT_REQUIRED");
 
     // 显式 consent。
-    let (status, body) = send(&app, request("POST", "/api/v1/recognition/consent", Some(&token), None)).await;
+    let (status, body) = send(
+        &app,
+        request("POST", "/api/v1/recognition/consent", Some(&token), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "consent: {body}");
     assert!(body["expires_at_ms"].as_i64().unwrap() > 0);
 
@@ -122,45 +144,93 @@ async fn recognition_without_provider_fails_honestly() {
         let payload = json!({
             "kind": kind, "image_base64": TINY_PNG, "mime": "image/png", "languages": ["zh-CN"],
         });
-        let (status, body) = send(&app, request("POST", "/api/v1/recognition/jobs", Some(&token), Some(payload))).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{kind} 无供应商应 503: {body}");
+        let (status, body) = send(
+            &app,
+            request(
+                "POST",
+                "/api/v1/recognition/jobs",
+                Some(&token),
+                Some(payload),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{kind} 无供应商应 503: {body}"
+        );
         assert_eq!(body["error"], "DEPENDENCY_UNAVAILABLE");
-        assert!(body.get("output").is_none() && body.get("job_id").is_none(),
-            "诚实拒绝面不得携带任何结果字段: {body}");
+        assert!(
+            body.get("output").is_none() && body.get("job_id").is_none(),
+            "诚实拒绝面不得携带任何结果字段: {body}"
+        );
     }
     // 转写（音频面）同样诚实拒绝。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/recognition/jobs", Some(&token),
-            Some(json!({"kind": "transcribe", "audio_base64": "UklGRg==", "mime": "audio/wav"}))),
+        request(
+            "POST",
+            "/api/v1/recognition/jobs",
+            Some(&token),
+            Some(json!({"kind": "transcribe", "audio_base64": "UklGRg==", "mime": "audio/wav"})),
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "transcribe: {body}");
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "transcribe: {body}"
+    );
     assert_eq!(body["error"], "DEPENDENCY_UNAVAILABLE");
 
     // 参数错误先于供应商缺失：mime 不合法 → 400。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/recognition/jobs", Some(&token),
-            Some(json!({"kind": "ocr", "image_base64": TINY_PNG, "mime": "text/plain"}))),
+        request(
+            "POST",
+            "/api/v1/recognition/jobs",
+            Some(&token),
+            Some(json!({"kind": "ocr", "image_base64": TINY_PNG, "mime": "text/plain"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "坏 mime 应 400: {body}");
     assert_eq!(body["error"], "INVALID_ARGUMENT");
 
     // 结果读面：没有作业 → 404（不是编造一个结果）。
-    let (status, body) = send(&app, request("GET", "/api/v1/recognition/jobs/vjob_none", Some(&token), None)).await;
+    let (status, body) = send(
+        &app,
+        request(
+            "GET",
+            "/api/v1/recognition/jobs/vjob_none",
+            Some(&token),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 
     // 一键删除入口可用。
-    let (status, body) = send(&app, request("DELETE", "/api/v1/recognition/data", Some(&token), None)).await;
+    let (status, body) = send(
+        &app,
+        request("DELETE", "/api/v1/recognition/data", Some(&token), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["removed"].is_u64());
 
     // 吊销会话 → 同一个 token 立刻 401。
     stack.platform.revoke_session(&token).unwrap();
-    let (status, _) = send(&app, request("POST", "/api/v1/recognition/jobs", Some(&token), Some(ocr))).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "吊销后仍放行 = 有第二套鉴权");
+    let (status, _) = send(
+        &app,
+        request("POST", "/api/v1/recognition/jobs", Some(&token), Some(ocr)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "吊销后仍放行 = 有第二套鉴权"
+    );
     stack.shutdown(std::time::Duration::from_secs(2)).await;
 }
 
@@ -173,38 +243,80 @@ async fn translation_without_provider_fails_honestly() {
     let ask = json!({"text": "hello world", "target": "zh-CN"});
 
     // 未 consent → 403。
-    let (status, body) = send(&app, request("POST", "/api/v1/translation", Some(&token), Some(ask.clone()))).await;
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            "/api/v1/translation",
+            Some(&token),
+            Some(ask.clone()),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "未授权应拒: {body}");
     assert_eq!(body["error"], "CONSENT_REQUIRED");
 
-    let (status, body) = send(&app, request("POST", "/api/v1/translation/consent", Some(&token), None)).await;
+    let (status, body) = send(
+        &app,
+        request("POST", "/api/v1/translation/consent", Some(&token), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "consent: {body}");
 
     // 无供应商 → 503；响应只有错误分类，没有译文。
-    let (status, body) = send(&app, request("POST", "/api/v1/translation", Some(&token), Some(ask.clone()))).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "无供应商应 503: {body}");
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            "/api/v1/translation",
+            Some(&token),
+            Some(ask.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "无供应商应 503: {body}"
+    );
     assert_eq!(body["error"], "DEPENDENCY_UNAVAILABLE");
     assert!(body.get("text").is_none(), "诚实拒绝面不得携带译文: {body}");
 
     // 参数错误先于供应商缺失：源/目标语言相同 → 400。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/translation", Some(&token),
-            Some(json!({"text": "hello", "source": "en", "target": "en"}))),
+        request(
+            "POST",
+            "/api/v1/translation",
+            Some(&token),
+            Some(json!({"text": "hello", "source": "en", "target": "en"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "同语言应 400: {body}");
     assert_eq!(body["error"], "INVALID_ARGUMENT");
 
     // 撤回授权后再跑 → 回到 CONSENT_REQUIRED（授权真的被删了）。
-    let (status, body) = send(&app, request("DELETE", "/api/v1/translation/consent", Some(&token), None)).await;
+    let (status, body) = send(
+        &app,
+        request("DELETE", "/api/v1/translation/consent", Some(&token), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = send(&app, request("POST", "/api/v1/translation", Some(&token), Some(ask))).await;
+    let (status, body) = send(
+        &app,
+        request("POST", "/api/v1/translation", Some(&token), Some(ask)),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "撤回应回到授权闸门: {body}");
     assert_eq!(body["error"], "CONSENT_REQUIRED");
 
     // 一键删除入口可用。
-    let (status, body) = send(&app, request("DELETE", "/api/v1/translation/data", Some(&token), None)).await;
+    let (status, body) = send(
+        &app,
+        request("DELETE", "/api/v1/translation/data", Some(&token), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     stack.shutdown(std::time::Duration::from_secs(2)).await;
 }

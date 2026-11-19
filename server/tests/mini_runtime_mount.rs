@@ -172,7 +172,12 @@ fn package_fixture() -> PackageFixture {
     };
     let signed_cert = issue_cert("root-1", &root, cert).unwrap();
     let mut trust = TrustStore::new("root-1", root.verifying_key());
-    trust.enroll(&signed_cert, wxlike_miniapps::packages::trust::now_seconds()).unwrap();
+    trust
+        .enroll(
+            &signed_cert,
+            wxlike_miniapps::packages::trust::now_seconds(),
+        )
+        .unwrap();
 
     let template = Manifest {
         app_id: APP_ID.to_string(),
@@ -220,7 +225,11 @@ async fn anonymous_runtime_requests_are_rejected() {
         ("POST", "/api/mini/install"),
     ] {
         let (status, _) = send(&app, request(method, uri, None, None)).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} 匿名必须 401");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} 匿名必须 401"
+        );
     }
 }
 
@@ -243,7 +252,12 @@ async fn catalog_search_and_recommend_dispatch_into_the_domain() {
     // 推荐（真实 Catalog::recommend）。
     let (status, body) = send(
         &app,
-        request("GET", "/api/mini/catalog/recommend?limit=5", Some(&token), None),
+        request(
+            "GET",
+            "/api/mini/catalog/recommend?limit=5",
+            Some(&token),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -252,7 +266,12 @@ async fn catalog_search_and_recommend_dispatch_into_the_domain() {
     // 无匹配 → 空数组（不是错误，也不填充假数据）。
     let (status, body) = send(
         &app,
-        request("GET", "/api/mini/catalog/search?q=不存在的应用", Some(&token), None),
+        request(
+            "GET",
+            "/api/mini/catalog/search?q=不存在的应用",
+            Some(&token),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -261,7 +280,12 @@ async fn catalog_search_and_recommend_dispatch_into_the_domain() {
     // 非法 limit → 400（域校验）。
     let (status, _) = send(
         &app,
-        request("GET", "/api/mini/catalog/search?limit=0", Some(&token), None),
+        request(
+            "GET",
+            "/api/mini/catalog/search?limit=0",
+            Some(&token),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -344,7 +368,11 @@ async fn launch_refuses_a_package_outside_the_reviewed_catalog() {
     let dir = unique_dir("foreign");
     let source = dir.join("source");
     std::fs::create_dir_all(&source).unwrap();
-    std::fs::write(source.join("index.js"), "globalThis.onLoad=function(){};globalThis.onShow=function(){};").unwrap();
+    std::fs::write(
+        source.join("index.js"),
+        "globalThis.onLoad=function(){};globalThis.onShow=function(){};",
+    )
+    .unwrap();
     let signer = generate_key();
     let template = Manifest {
         app_id: "com.wxlike.foreign".to_string(),
@@ -390,7 +418,10 @@ async fn verify_is_honest_501_without_root_trust() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
-    assert!(body["error"].as_str().unwrap_or_default().contains("WXLIKE_MINI_TRUST"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("WXLIKE_MINI_TRUST"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -420,7 +451,10 @@ async fn verify_with_root_trust_accepts_signed_and_rejects_tampered() {
     let mut files = dpage::unpack_raw(&blob).unwrap().files;
     files.insert("index.js".to_string(), b"tampered".to_vec());
     let map = dpage::FileMap(
-        files.into_iter().map(|(path, data)| dpage::FileEntry { path, data }).collect(),
+        files
+            .into_iter()
+            .map(|(path, data)| dpage::FileEntry { path, data })
+            .collect(),
     );
     let tampered = dpage::pack_files(map).unwrap();
     let (status, body) = send(
@@ -451,7 +485,10 @@ async fn install_is_honest_501() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
-    assert!(body["error"].as_str().unwrap_or_default().contains("流式核心提供者"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("流式核心提供者"));
 }
 
 /// 真实组合根（start_stack）上这些路由确实挂上了：匿名 401 而非 404。
@@ -465,7 +502,11 @@ async fn runtime_routes_are_mounted_in_the_real_stack() {
         ("POST", "/api/mini/install"),
     ] {
         let (status, _) = send(&stack.app, request(method, uri, None, None)).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} 应已挂载（401 而非 404）");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} 应已挂载（401 而非 404）"
+        );
     }
     // 登录后可达真实域面。
     let token = register(&stack.app, "mini-rt-stack").await;

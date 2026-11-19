@@ -55,7 +55,12 @@ fn request(method: &str, uri: &str, token: Option<&str>, body: Option<Value>) ->
 async fn register(app: &Router, name: &str) -> (String, String) {
     let (status, reply) = send(
         app,
-        request("POST", "/api/register", None, Some(json!({"name": name, "password": "pw"}))),
+        request(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"name": name, "password": "pw"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "register {name}: {reply}");
@@ -95,7 +100,12 @@ async fn anonymous_discovery_requests_are_rejected() {
     // 假 token 也不行：认证问的是库，不是"有没有 Authorization 头"。
     let (status, _) = send(
         &app,
-        request("GET", "/api/v1/nearby/presence", Some("obviously-not-a-session"), None),
+        request(
+            "GET",
+            "/api/v1/nearby/presence",
+            Some("obviously-not-a-session"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "伪造 bearer 必须 401");
@@ -113,8 +123,12 @@ async fn nearby_read_surface_respects_opt_in_and_coarse_grid() {
     // 未 opt-in 直接发布 → 域内拒绝（位置默认关闭）。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/nearby/presence", Some(&alice),
-            Some(json!({"lat": 31.2304, "lng": 121.4737, "visibility": "everyone"}))),
+        request(
+            "POST",
+            "/api/v1/nearby/presence",
+            Some(&alice),
+            Some(json!({"lat": 31.2304, "lng": 121.4737, "visibility": "everyone"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "未授权发布应被拒: {body}");
@@ -124,70 +138,130 @@ async fn nearby_read_surface_respects_opt_in_and_coarse_grid() {
     for token in [&alice, &bob] {
         let (status, body) = send(
             &app,
-            request("POST", "/api/v1/nearby/opt-in", Some(token), Some(json!({"enabled": true}))),
+            request(
+                "POST",
+                "/api/v1/nearby/opt-in",
+                Some(token),
+                Some(json!({"enabled": true})),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "opt-in: {body}");
     }
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/nearby/presence", Some(&bob),
-            Some(json!({"lat": 31.2309, "lng": 121.4742, "visibility": "everyone"}))),
+        request(
+            "POST",
+            "/api/v1/nearby/presence",
+            Some(&bob),
+            Some(json!({"lat": 31.2309, "lng": 121.4742, "visibility": "everyone"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "发布: {body}");
     assert!(body["cell"]["lat_idx"].is_i64(), "只回粗网格: {body}");
-    assert!(body.get("lat").is_none() && body.get("lng").is_none(), "不得回精确坐标: {body}");
+    assert!(
+        body.get("lat").is_none() && body.get("lng").is_none(),
+        "不得回精确坐标: {body}"
+    );
 
     // alice 读附近：能看到 bob，且只有距离档，没有精确距离/坐标。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/nearby", Some(&alice),
-            Some(json!({"lat": 31.2304, "lng": 121.4737, "radius_m": 1000.0}))),
+        request(
+            "POST",
+            "/api/v1/nearby",
+            Some(&alice),
+            Some(json!({"lat": 31.2304, "lng": 121.4737, "radius_m": 1000.0})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "nearby: {body}");
     let peers = body["peers"].as_array().unwrap();
-    assert!(peers.iter().any(|p| p["user_id"] == json!(bob_id)), "应看到 bob: {body}");
-    assert!(!peers.iter().any(|p| p["user_id"] == json!(alice_id)), "不含自己");
+    assert!(
+        peers.iter().any(|p| p["user_id"] == json!(bob_id)),
+        "应看到 bob: {body}"
+    );
+    assert!(
+        !peers.iter().any(|p| p["user_id"] == json!(alice_id)),
+        "不含自己"
+    );
     for peer in peers {
         assert!(peer["distance_band"].is_string(), "只有距离档: {peer}");
         assert!(peer.get("distance_m").is_none(), "不得回精确距离: {peer}");
-        assert!(peer.get("lat").is_none() && peer.get("lng").is_none(), "不得回精确坐标: {peer}");
+        assert!(
+            peer.get("lat").is_none() && peer.get("lng").is_none(),
+            "不得回精确坐标: {peer}"
+        );
     }
 
     // 拉黑后双向不可见。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/nearby/block", Some(&alice), Some(json!({"target": bob_id}))),
+        request(
+            "POST",
+            "/api/v1/nearby/block",
+            Some(&alice),
+            Some(json!({"target": bob_id})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "block: {body}");
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/nearby", Some(&alice),
-            Some(json!({"lat": 31.2304, "lng": 121.4737, "radius_m": 1000.0}))),
+        request(
+            "POST",
+            "/api/v1/nearby",
+            Some(&alice),
+            Some(json!({"lat": 31.2304, "lng": 121.4737, "radius_m": 1000.0})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(!body["peers"].as_array().unwrap().iter().any(|p| p["user_id"] == json!(bob_id)),
-        "拉黑后不应再看到 bob: {body}");
+    assert!(
+        !body["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["user_id"] == json!(bob_id)),
+        "拉黑后不应再看到 bob: {body}"
+    );
 
     // bob 撤回授权 → alice 的附近立刻为空（撤回即删）。
-    let (status, body) = send(&app, request("DELETE", "/api/v1/nearby/presence", Some(&bob), None)).await;
+    let (status, body) = send(
+        &app,
+        request("DELETE", "/api/v1/nearby/presence", Some(&bob), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body}");
-    let (status, body) = send(&app, request("GET", "/api/v1/nearby/presence", Some(&bob), None)).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "撤回后不应有可发现状态: {body}");
+    let (status, body) = send(
+        &app,
+        request("GET", "/api/v1/nearby/presence", Some(&bob), None),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "撤回后不应有可发现状态: {body}"
+    );
 
     // 吊销会话 → 同一个 token 立刻 401（鉴权只有一条路）。
     stack.platform.revoke_session(&alice).unwrap();
     let (status, _) = send(
         &app,
-        request("POST", "/api/v1/nearby", Some(&alice),
-            Some(json!({"lat": 31.2304, "lng": 121.4737, "radius_m": 1000.0}))),
+        request(
+            "POST",
+            "/api/v1/nearby",
+            Some(&alice),
+            Some(json!({"lat": 31.2304, "lng": 121.4737, "radius_m": 1000.0})),
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "吊销后仍放行 = 有第二套鉴权");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "吊销后仍放行 = 有第二套鉴权"
+    );
     stack.shutdown(std::time::Duration::from_secs(2)).await;
 }
 
@@ -201,8 +275,12 @@ async fn scan_surface_round_trips_and_blocks_unsafe_links() {
     // 签发好友码（带 PNG）。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/qr", Some(&token),
-            Some(json!({"target": {"kind": "friend", "user_id": user_id}, "png": true}))),
+        request(
+            "POST",
+            "/api/v1/qr",
+            Some(&token),
+            Some(json!({"target": {"kind": "friend", "user_id": user_id}, "png": true})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "签发好友码: {body}");
@@ -213,7 +291,12 @@ async fn scan_surface_round_trips_and_blocks_unsafe_links() {
     // 文本扫码：同一 wire 解出签发目标，且要求确认（不自动加好友）。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/scan", Some(&token), Some(json!({"text": wire}))),
+        request(
+            "POST",
+            "/api/v1/scan",
+            Some(&token),
+            Some(json!({"text": wire})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "文本扫码: {body}");
@@ -225,7 +308,12 @@ async fn scan_surface_round_trips_and_blocks_unsafe_links() {
     // 图片识码：PNG base64 → 同一目标（真实 rqrr 解码，不是回显）。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/scan", Some(&token), Some(json!({"image_base64": png_b64}))),
+        request(
+            "POST",
+            "/api/v1/scan",
+            Some(&token),
+            Some(json!({"image_base64": png_b64})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "图片识码: {body}");
@@ -234,7 +322,12 @@ async fn scan_surface_round_trips_and_blocks_unsafe_links() {
     // 恶意 scheme：javascript: 一律拒绝。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/scan", Some(&token), Some(json!({"text": "javascript:alert(1)"}))),
+        request(
+            "POST",
+            "/api/v1/scan",
+            Some(&token),
+            Some(json!({"text": "javascript:alert(1)"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "恶意 scheme: {body}");
@@ -243,15 +336,24 @@ async fn scan_surface_round_trips_and_blocks_unsafe_links() {
     // 外链：白名单未配置 → 确认后仍不放行（诚实拒绝，不自动跳转）。
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/scan", Some(&token), Some(json!({"text": "https://example.com/x"}))),
+        request(
+            "POST",
+            "/api/v1/scan",
+            Some(&token),
+            Some(json!({"text": "https://example.com/x"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "外链扫码应给出待确认动作: {body}");
     assert_eq!(body["action"]["type"], "external");
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/scan/confirm", Some(&token),
-            Some(json!({"url": "https://example.com/x"}))),
+        request(
+            "POST",
+            "/api/v1/scan/confirm",
+            Some(&token),
+            Some(json!({"url": "https://example.com/x"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "白名单未配应拒绝: {body}");
@@ -269,28 +371,52 @@ async fn shake_requires_two_party_confirmation() {
 
     let (status, body) = send(
         &app,
-        request("POST", "/api/v1/shake/start", Some(&alice), Some(json!({"magnitude_g": 3.0}))),
+        request(
+            "POST",
+            "/api/v1/shake/start",
+            Some(&alice),
+            Some(json!({"magnitude_g": 3.0})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let ticket_id = body["ticket_id"].as_str().unwrap().to_string();
 
     // 读面：窗口可见。
-    let (status, body) = send(&app, request("GET", &format!("/api/v1/shake/{ticket_id}"), Some(&bob), None)).await;
+    let (status, body) = send(
+        &app,
+        request(
+            "GET",
+            &format!("/api/v1/shake/{ticket_id}"),
+            Some(&bob),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "ticket 读面: {body}");
     assert_eq!(body["user_id"], json!(alice_id));
 
     // 自己加入自己的窗口 → 域内拒绝。
     let (status, _) = send(
         &app,
-        request("POST", &format!("/api/v1/shake/{ticket_id}/join"), Some(&alice), None),
+        request(
+            "POST",
+            &format!("/api/v1/shake/{ticket_id}/join"),
+            Some(&alice),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "self join 应拒绝");
 
     let (status, body) = send(
         &app,
-        request("POST", &format!("/api/v1/shake/{ticket_id}/join"), Some(&bob), None),
+        request(
+            "POST",
+            &format!("/api/v1/shake/{ticket_id}/join"),
+            Some(&bob),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "join: {body}");

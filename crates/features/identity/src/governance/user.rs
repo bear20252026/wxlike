@@ -198,7 +198,8 @@ pub fn suspend(
         )?;
         // 即时撤销全部会话：sessions 行删掉即拿到撤销条数；侧车/刷新链/step-up
         // 按 user_id 直接清，不依赖会话行还在（与 session::logout_all 同口径）。
-        sessions_revoked = tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![target])?;
+        sessions_revoked =
+            tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![target])?;
         tx.execute(
             "DELETE FROM identity_session_token WHERE user_id = ?1",
             params![target],

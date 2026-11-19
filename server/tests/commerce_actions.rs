@@ -54,7 +54,9 @@ fn post_json(uri: &str, token: Option<&str>, body: Option<Value>) -> Request<Bod
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
     }
-    let raw = body.map(|v| v.to_string()).unwrap_or_else(|| "{}".to_string());
+    let raw = body
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "{}".to_string());
     builder.body(Body::from(raw)).unwrap()
 }
 
@@ -70,7 +72,11 @@ fn action_request(action: &str, token: Option<&str>, body: Value) -> Request<Bod
 async fn register(app: &Router, name: &str) -> (String, String) {
     let (status, reply) = send(
         app,
-        post_json("/api/register", None, Some(json!({"name": name, "password": "pw"}))),
+        post_json(
+            "/api/register",
+            None,
+            Some(json!({"name": name, "password": "pw"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "register {name}: {reply}");
@@ -102,7 +108,8 @@ fn cny(minor: i64) -> wxlike_commerce::Money {
 /// 独立连接上的裸 SQL 计数：单一效果的外部证据（不是域内自报）。
 fn count(db_path: &str, sql: &str) -> i64 {
     let conn = wxlike_ledger::open_connection(Some(db_path)).expect("read conn");
-    conn.query_row(sql, [], |r| r.get::<_, i64>(0)).expect("count")
+    conn.query_row(sql, [], |r| r.get::<_, i64>(0))
+        .expect("count")
 }
 
 fn count_param(db_path: &str, sql: &str, param: &str) -> i64 {
@@ -119,11 +126,7 @@ fn count_param(db_path: &str, sql: &str, param: &str) -> i64 {
 async fn action_without_token_is_401_not_404() {
     let stack = boot().await;
     // 404 说明压根没挂；401 才说明路由在、只是没带凭据。
-    let (status, body) = send(
-        &stack.app,
-        action_request("balance.get", None, json!({})),
-    )
-    .await;
+    let (status, body) = send(&stack.app, action_request("balance.get", None, json!({}))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "无令牌应 401: {body}");
     assert_eq!(body["error"], "UNAUTHORIZED");
 }
@@ -161,7 +164,10 @@ async fn actor_comes_from_token_not_payload() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["total"]["minor"], "0", "alice 未注资，余额应为 0: {body}");
+    assert_eq!(
+        body["total"]["minor"], "0",
+        "alice 未注资，余额应为 0: {body}"
+    );
     let _ = alice_id;
 }
 
@@ -190,11 +196,18 @@ async fn balance_and_statement_are_self_scoped_reads() {
 
     let (status, body) = send(
         &stack.app,
-        action_request("statement.page", Some(&token), json!({"currency": "CNY", "limit": 10})),
+        action_request(
+            "statement.page",
+            Some(&token),
+            json!({"currency": "CNY", "limit": 10}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["items"].as_array().unwrap().len() >= 1, "应有注资流水: {body}");
+    assert!(
+        body["items"].as_array().unwrap().len() >= 1,
+        "应有注资流水: {body}"
+    );
 }
 
 #[tokio::test]
@@ -226,7 +239,10 @@ async fn payment_create_is_idempotent_and_conflict_on_changed_params() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "幂等重试: {again}");
-    assert_eq!(again["intent"]["intent_id"], intent_id, "同键应返回同一意图");
+    assert_eq!(
+        again["intent"]["intent_id"], intent_id,
+        "同键应返回同一意图"
+    );
 
     // 同键换金额：异参 → 409 IDEMPOTENCY_CONFLICT。
     let changed = json!({
@@ -281,7 +297,11 @@ async fn payment_error_classification() {
     // NOT_FOUND：查询不存在的意图。
     let (status, body) = send(
         &stack.app,
-        action_request("payment.get", Some(&buyer_tok), json!({"intent_id": "no-such-intent"})),
+        action_request(
+            "payment.get",
+            Some(&buyer_tok),
+            json!({"intent_id": "no-such-intent"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -302,7 +322,11 @@ async fn payment_error_classification() {
         let intent_id = body["intent"]["intent_id"].as_str().unwrap().to_string();
         let (status, body) = send(
             &stack.app,
-            action_request("payment.pay", Some(&buyer_tok), json!({"intent_id": intent_id})),
+            action_request(
+                "payment.pay",
+                Some(&buyer_tok),
+                json!({"intent_id": intent_id}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "自付应 403: {body}");
@@ -354,16 +378,27 @@ async fn payment_refresh_pending_changes_nothing_and_is_read_safe() {
     // 沙箱默认 pending：refresh 查询后仍 pending，本地一个字都不改、分录为 0。
     let (status, body) = send(
         &stack.app,
-        action_request("payment.refresh", Some(&buyer_tok), json!({"intent_id": intent_id})),
+        action_request(
+            "payment.refresh",
+            Some(&buyer_tok),
+            json!({"intent_id": intent_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["intent"]["status"], "pending", "供应商仍处理中应保持 pending: {body}");
+    assert_eq!(
+        body["intent"]["status"], "pending",
+        "供应商仍处理中应保持 pending: {body}"
+    );
 
     // 再 refresh 一次：read-safe，不产生第二笔分录。
     let (status, again) = send(
         &stack.app,
-        action_request("payment.refresh", Some(&buyer_tok), json!({"intent_id": intent_id})),
+        action_request(
+            "payment.refresh",
+            Some(&buyer_tok),
+            json!({"intent_id": intent_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{again}");
@@ -394,7 +429,11 @@ async fn payment_refresh_forbidden_for_outsider() {
 
     let (status, body) = send(
         &stack.app,
-        action_request("payment.refresh", Some(&outsider_tok), json!({"intent_id": intent_id})),
+        action_request(
+            "payment.refresh",
+            Some(&outsider_tok),
+            json!({"intent_id": intent_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "非收付双方应 403: {body}");
@@ -418,9 +457,7 @@ async fn provider_timeout_maps_to_504_and_leaves_state_unknown() {
 
     // 直接经平台注册一个会话（与 register 路由同一套 sessions 表）。
     let user_id = "timeoutbuyer";
-    platform
-        .register(user_id, "pw")
-        .expect("register user");
+    platform.register(user_id, "pw").expect("register user");
     let token = platform
         .create_session(user_id, wxlike_platform::DEFAULT_SESSION_TTL_MS)
         .expect("session");
@@ -444,7 +481,11 @@ async fn provider_timeout_maps_to_504_and_leaves_state_unknown() {
     handle.fail_next_query(wxlike_commerce::ProviderError::Timeout);
     let (status, body) = send(
         &app,
-        action_request("payment.refresh", Some(&token), json!({"intent_id": intent_id})),
+        action_request(
+            "payment.refresh",
+            Some(&token),
+            json!({"intent_id": intent_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "超时应 504: {body}");
@@ -502,7 +543,10 @@ async fn transfer_prepare_create_accept_is_idempotent() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "创建转账: {created}");
-    let transfer_id = created["transfer"]["transfer_id"].as_str().unwrap().to_string();
+    let transfer_id = created["transfer"]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(created["transfer"]["status"], "pending");
 
     // 创建即冻结发送方资金：available 减少，total 不变。
@@ -515,7 +559,11 @@ async fn transfer_prepare_create_accept_is_idempotent() {
     // 收款人确认收款。
     let (status, accepted) = send(
         &stack.app,
-        action_request("transfer.accept", Some(&payee_tok), json!({"transfer_id": transfer_id})),
+        action_request(
+            "transfer.accept",
+            Some(&payee_tok),
+            json!({"transfer_id": transfer_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "收款: {accepted}");
@@ -524,7 +572,11 @@ async fn transfer_prepare_create_accept_is_idempotent() {
     // 重复 accept：幂等返回原状态，不二次入账。
     let (status, again) = send(
         &stack.app,
-        action_request("transfer.accept", Some(&payee_tok), json!({"transfer_id": transfer_id})),
+        action_request(
+            "transfer.accept",
+            Some(&payee_tok),
+            json!({"transfer_id": transfer_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{again}");
@@ -568,11 +620,18 @@ async fn transfer_accept_forbidden_for_non_payee() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");
-    let transfer_id = created["transfer"]["transfer_id"].as_str().unwrap().to_string();
+    let transfer_id = created["transfer"]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (status, body) = send(
         &stack.app,
-        action_request("transfer.accept", Some(&outsider_tok), json!({"transfer_id": transfer_id})),
+        action_request(
+            "transfer.accept",
+            Some(&outsider_tok),
+            json!({"transfer_id": transfer_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "非收款人应 403: {body}");
@@ -639,7 +698,11 @@ async fn redpacket_requires_real_group_membership() {
     // 非群成员领取 → 403（真实成员校验，不是 DenyAll 也不是伪造成员）。
     let (status, body) = send(
         &stack.app,
-        action_request("redpacket.claim", Some(&outsider_tok), json!({"packet_id": packet_id})),
+        action_request(
+            "redpacket.claim",
+            Some(&outsider_tok),
+            json!({"packet_id": packet_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "非成员应 403: {body}");
@@ -648,18 +711,29 @@ async fn redpacket_requires_real_group_membership() {
     // 群成员领取成功；同一用户重试返回首次结果（幂等）。
     let (status, claimed) = send(
         &stack.app,
-        action_request("redpacket.claim", Some(&member_tok), json!({"packet_id": packet_id})),
+        action_request(
+            "redpacket.claim",
+            Some(&member_tok),
+            json!({"packet_id": packet_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "成员领取应成功: {claimed}");
     let first_amount = claimed["amount"]["minor"].as_str().unwrap().to_string();
     let (status, again) = send(
         &stack.app,
-        action_request("redpacket.claim", Some(&member_tok), json!({"packet_id": packet_id})),
+        action_request(
+            "redpacket.claim",
+            Some(&member_tok),
+            json!({"packet_id": packet_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(again["amount"]["minor"], first_amount, "同一用户重试返回首次份额");
+    assert_eq!(
+        again["amount"]["minor"], first_amount,
+        "同一用户重试返回首次份额"
+    );
     let _ = outsider_id;
 }
 
@@ -707,7 +781,11 @@ async fn reconcile_requires_admin_audience() {
         action_request("reconcile.run", Some(&token), json!({})),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "普通会话跑对账应 403: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "普通会话跑对账应 403: {body}"
+    );
     assert_eq!(body["error"], "FORBIDDEN");
 
     // 持 admin token → 放行（对账生成新 run，不改账）。
@@ -732,7 +810,11 @@ async fn reconcile_closed_when_admin_token_not_configured() {
         action_request("reconcile.list", Some(&token), json!({"run_id": "any"})),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "未配 admin token 应整面关闭: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "未配 admin token 应整面关闭: {body}"
+    );
 }
 
 #[tokio::test]
@@ -751,7 +833,11 @@ async fn entitlement_publish_requires_backstage_audience() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "普通会话发规则应 403: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "普通会话发规则应 403: {body}"
+    );
 
     // 持 admin token → 放行。
     let mut req = action_request(
@@ -806,7 +892,11 @@ async fn order_create_pay_fulfil_flow_and_idempotency() {
     // 买家支付（沙箱默认成功）。
     let (status, paid) = send(
         &stack.app,
-        action_request("order.pay", Some(&buyer_tok), json!({"order_id": order_id, "idempotency_key": "order-pay"})),
+        action_request(
+            "order.pay",
+            Some(&buyer_tok),
+            json!({"order_id": order_id, "idempotency_key": "order-pay"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "支付订单: {paid}");
@@ -815,7 +905,11 @@ async fn order_create_pay_fulfil_flow_and_idempotency() {
     // 非收款方履约 → 403。
     let (status, body) = send(
         &stack.app,
-        action_request("order.fulfil", Some(&buyer_tok), json!({"order_id": order_id, "provider_order_ref": "prov-1"})),
+        action_request(
+            "order.fulfil",
+            Some(&buyer_tok),
+            json!({"order_id": order_id, "provider_order_ref": "prov-1"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "非收款方履约应 403: {body}");
@@ -823,14 +917,22 @@ async fn order_create_pay_fulfil_flow_and_idempotency() {
     // 收款方履约成功；同一 provider_order_ref 重复履约幂等。
     let (status, fulfilled) = send(
         &stack.app,
-        action_request("order.fulfil", Some(&merchant_tok), json!({"order_id": order_id, "provider_order_ref": "prov-1"})),
+        action_request(
+            "order.fulfil",
+            Some(&merchant_tok),
+            json!({"order_id": order_id, "provider_order_ref": "prov-1"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "履约: {fulfilled}");
     assert_eq!(fulfilled["order"]["status"], "fulfilled");
     let (status, again) = send(
         &stack.app,
-        action_request("order.fulfil", Some(&merchant_tok), json!({"order_id": order_id, "provider_order_ref": "prov-1"})),
+        action_request(
+            "order.fulfil",
+            Some(&merchant_tok),
+            json!({"order_id": order_id, "provider_order_ref": "prov-1"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "重复履约幂等: {again}");
@@ -859,7 +961,11 @@ async fn order_cancel_paid_is_illegal_transition() {
     let order_id = created["order"]["order_id"].as_str().unwrap().to_string();
     let (status, _paid) = send(
         &stack.app,
-        action_request("order.pay", Some(&buyer_tok), json!({"order_id": order_id, "idempotency_key": "oc-pay"})),
+        action_request(
+            "order.pay",
+            Some(&buyer_tok),
+            json!({"order_id": order_id, "idempotency_key": "oc-pay"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{_paid}");
@@ -867,7 +973,11 @@ async fn order_cancel_paid_is_illegal_transition() {
     // 已支付订单直接取消 → 409 CONFLICT（必须走退款）。
     let (status, body) = send(
         &stack.app,
-        action_request("order.cancel", Some(&buyer_tok), json!({"order_id": order_id})),
+        action_request(
+            "order.cancel",
+            Some(&buyer_tok),
+            json!({"order_id": order_id}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "已支付取消应 409: {body}");

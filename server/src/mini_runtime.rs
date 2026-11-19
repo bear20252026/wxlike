@@ -253,8 +253,8 @@ async fn package_inspect(
     body: Option<Json<PackageBody>>,
 ) -> ApiResult {
     actor(&state, &headers).await?;
-    let Json(body) = body
-        .ok_or_else(|| RuntimeError::new(StatusCode::BAD_REQUEST, "request body is required"))?;
+    let Json(body) =
+        body.ok_or_else(|| RuntimeError::new(StatusCode::BAD_REQUEST, "request body is required"))?;
     let blob = decode_package(&body.package_hex)?;
     run_blocking(move || inspect_package(&state, &blob)).await
 }
@@ -296,8 +296,8 @@ async fn package_verify(
     body: Option<Json<VerifyBody>>,
 ) -> ApiResult {
     actor(&state, &headers).await?;
-    let Json(body) = body
-        .ok_or_else(|| RuntimeError::new(StatusCode::BAD_REQUEST, "request body is required"))?;
+    let Json(body) =
+        body.ok_or_else(|| RuntimeError::new(StatusCode::BAD_REQUEST, "request body is required"))?;
     let blob = decode_package(&body.package_hex)?;
     let signature = PackageSignature {
         key_id: body.key_id,
@@ -319,8 +319,8 @@ fn verify_package(
     };
     let trust = toolchain::load_trust(path).map_err(mini_err)?;
     let now = packages::trust::now_seconds();
-    let verified = packages::verify(blob, signature, &trust, now, &state.host_version)
-        .map_err(mini_err)?;
+    let verified =
+        packages::verify(blob, signature, &trust, now, &state.host_version).map_err(mini_err)?;
     let signer = verified.signer();
     Ok(json!({
         "app_id": verified.manifest.app_id,
@@ -349,8 +349,8 @@ async fn launch(
     body: Option<Json<LaunchBody>>,
 ) -> ApiResult {
     actor(&state, &headers).await?;
-    let Json(body) = body
-        .ok_or_else(|| RuntimeError::new(StatusCode::BAD_REQUEST, "request body is required"))?;
+    let Json(body) =
+        body.ok_or_else(|| RuntimeError::new(StatusCode::BAD_REQUEST, "request body is required"))?;
     let blob = decode_package(&body.package_hex)?;
     let target = parse_target(body.target.as_deref())?;
     let payload = body.payload.unwrap_or_else(|| "{}".to_string());

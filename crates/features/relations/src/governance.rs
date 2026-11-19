@@ -194,7 +194,15 @@ fn load(conn: &Connection, group_id: &str) -> Result<group::Group> {
     // 复用 group 的公开读路径：groups_of 只给未解散，这里直接按 id 查。
     let sql = "SELECT g.id, g.name, g.owner_uid, g.created_at, m.visibility, m.dissolved_at, \
          m.frozen_at FROM groups g LEFT JOIN group_meta m ON m.group_id = g.id WHERE g.id = ?1";
-    let raw: Option<(String, String, String, i64, Option<String>, Option<i64>, Option<i64>)> = conn
+    let raw: Option<(
+        String,
+        String,
+        String,
+        i64,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    )> = conn
         .query_row(sql, params![group_id], |r| {
             Ok((
                 r.get(0)?,
@@ -227,11 +235,7 @@ fn load(conn: &Connection, group_id: &str) -> Result<group::Group> {
 
 /// 群治理入口。audience 鉴权由 identity 域在 HTTP 面完成（本函数收到的是已鉴权
 /// 命令）；这里做目标/理由/状态校验、幂等写入、留痕与事件产出。
-pub fn govern(
-    conn: &Connection,
-    cmd: &GroupGovernCommand,
-    now: i64,
-) -> Result<GroupGovernEffect> {
+pub fn govern(conn: &Connection, cmd: &GroupGovernCommand, now: i64) -> Result<GroupGovernEffect> {
     let group_id = check_target(&cmd.group_id)?;
     let reason = check_reason(&cmd.reason)?;
     let actor = check_actor(&cmd.actor)?;
@@ -259,7 +263,15 @@ pub fn govern(
     let kind = format!("group.govern.{}", cmd.action.as_str());
     audit(conn, &actor, &group_id, &kind, now)?;
     // 治理理由单独落一条可复核记录（relations_audit 只有 kind，理由进 detail 表）。
-    let seq = append_reason(conn, &group_id, cmd.action.as_str(), &actor, &reason, &cmd.trace, now)?;
+    let seq = append_reason(
+        conn,
+        &group_id,
+        cmd.action.as_str(),
+        &actor,
+        &reason,
+        &cmd.trace,
+        now,
+    )?;
 
     events.push(GroupGovernanceEvent::CacheClear {
         scope: "group".to_string(),
@@ -434,13 +446,7 @@ fn upsert_meta(
          VALUES(?1, ?2, ?3, ?4, ?5) \
          ON CONFLICT(group_id) DO UPDATE SET dissolved_at = ?3, \
          dissolved_by = CASE WHEN ?3 IS NOT NULL THEN ?4 ELSE dissolved_by END, frozen_at = ?5",
-        params![
-            g.id,
-            g.visibility.as_str(),
-            dissolved_at,
-            actor,
-            frozen_at
-        ],
+        params![g.id, g.visibility.as_str(), dissolved_at, actor, frozen_at],
     )?;
     Ok(())
 }
@@ -536,9 +542,11 @@ mod tests {
         let g = load(&conn, &id).unwrap();
         assert!(group::member_acs(&conn, &id, "u2", &g).unwrap().is_writer());
         // 幂等：再解一次 already。
-        assert!(govern(&conn, &cmd(&id, GroupAction::Unfreeze), 1_400)
-            .unwrap()
-            .already);
+        assert!(
+            govern(&conn, &cmd(&id, GroupAction::Unfreeze), 1_400)
+                .unwrap()
+                .already
+        );
     }
 
     #[test]
@@ -551,8 +559,14 @@ mod tests {
         let e = govern(&conn, &c, 1_100).unwrap();
         assert!(!e.already);
         assert_eq!(e.after["owner_uid"], "u2");
-        assert_eq!(group::role_of(&conn, &id, "u2").unwrap(), Some(group::Role::Owner));
-        assert_eq!(group::role_of(&conn, &id, "u1").unwrap(), Some(group::Role::Admin));
+        assert_eq!(
+            group::role_of(&conn, &id, "u2").unwrap(),
+            Some(group::Role::Owner)
+        );
+        assert_eq!(
+            group::role_of(&conn, &id, "u1").unwrap(),
+            Some(group::Role::Admin)
+        );
         // 幂等：转给同一个群主 already。
         assert!(govern(&conn, &c, 1_200).unwrap().already);
     }
@@ -563,9 +577,15 @@ mod tests {
         migrate(&conn).unwrap();
         let id = seed(&conn);
         let mut c = cmd(&id, GroupAction::Transfer);
-        assert!(matches!(govern(&conn, &c, 1_100), Err(RelError::BadInput(_))));
+        assert!(matches!(
+            govern(&conn, &c, 1_100),
+            Err(RelError::BadInput(_))
+        ));
         c.new_owner = Some("u9".into()); // 非成员
-        assert!(matches!(govern(&conn, &c, 1_100), Err(RelError::NotFound(_))));
+        assert!(matches!(
+            govern(&conn, &c, 1_100),
+            Err(RelError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -576,9 +596,11 @@ mod tests {
         let e = govern(&conn, &cmd(&id, GroupAction::Dissolve), 1_100).unwrap();
         assert!(!e.already);
         assert_eq!(e.after["state"], "dissolved");
-        assert!(govern(&conn, &cmd(&id, GroupAction::Dissolve), 1_200)
-            .unwrap()
-            .already);
+        assert!(
+            govern(&conn, &cmd(&id, GroupAction::Dissolve), 1_200)
+                .unwrap()
+                .already
+        );
         // 解散后不能再冻结/解冻/转让。
         assert!(matches!(
             govern(&conn, &cmd(&id, GroupAction::Freeze), 1_300),
@@ -597,7 +619,10 @@ mod tests {
         let id = seed(&conn);
         let mut c = cmd(&id, GroupAction::Freeze);
         c.reason = "  ".into();
-        assert!(matches!(govern(&conn, &c, 1_100), Err(RelError::BadInput(_))));
+        assert!(matches!(
+            govern(&conn, &c, 1_100),
+            Err(RelError::BadInput(_))
+        ));
         c.reason = "群体违规".into();
         govern(&conn, &c, 1_100).unwrap();
         let n: i64 = conn

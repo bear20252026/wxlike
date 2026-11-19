@@ -390,9 +390,8 @@ impl Commerce {
                  WHERE status = 'processing'
                  ORDER BY updated_at ASC, id ASC LIMIT 50",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             let mut ids = Vec::new();
             for row in rows {
                 ids.push(row?);

@@ -15,7 +15,7 @@
 use std::sync::Mutex;
 
 use wxlike_identity::governance::{
-    self, GovernanceEvent, GovernCommand, PlatformGovernancePort, UserMetadataPort,
+    self, GovernCommand, GovernanceEvent, PlatformGovernancePort, UserMetadataPort,
 };
 use wxlike_identity::{session, Audience, IdError};
 
@@ -133,9 +133,7 @@ fn unsuspend_restores_access_and_leaves_trail() {
                  WHERE target = 'u1' ORDER BY seq",
             )
             .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
     };
     let actions: Vec<&str> = rows.iter().map(|(a, _)| a.as_str()).collect();

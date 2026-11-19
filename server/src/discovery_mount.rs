@@ -33,7 +33,9 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use wxlike_discovery::clock::SystemClock;
 use wxlike_discovery::crypto::MemoryNonceStore;
-use wxlike_discovery::geo::{DistanceBand, GeoConfig, GeoService, NearbyPeer, PresenceView, Visibility};
+use wxlike_discovery::geo::{
+    DistanceBand, GeoConfig, GeoService, NearbyPeer, PresenceView, Visibility,
+};
 use wxlike_discovery::matching::{MatchOutcome, MotionSample, ShakeMatcher};
 use wxlike_discovery::qr::{DeeplinkPolicy, QrCodec, QrScanner, QrTarget, ScanAction};
 use wxlike_discovery::DiscoveryError;
@@ -75,16 +77,29 @@ pub fn assemble(platform: &PlatformState) -> anyhow::Result<DiscoveryMount> {
     let nonces = Arc::new(MemoryNonceStore::default());
     let codec = Arc::new(QrCodec::new(qr_key.clone()));
     let scanner = Arc::new(QrScanner::new(
-        QrCodec::new(qr_key), signing_key(PAYMENT_CONFIRM_ENV), deeplink_policy()?, Arc::clone(&nonces),
+        QrCodec::new(qr_key),
+        signing_key(PAYMENT_CONFIRM_ENV),
+        deeplink_policy()?,
+        Arc::clone(&nonces),
     ));
     let geo = Arc::new(GeoService::new(SystemClock, geo_config_from_env()));
     let shake = Arc::new(ShakeMatcher::new(SystemClock));
     let state = DiscoveryState {
-        platform: platform.clone(), scanner: Arc::clone(&scanner), codec: Arc::clone(&codec),
-        geo: Arc::clone(&geo), shake: Arc::clone(&shake),
+        platform: platform.clone(),
+        scanner: Arc::clone(&scanner),
+        codec: Arc::clone(&codec),
+        geo: Arc::clone(&geo),
+        shake: Arc::clone(&shake),
     };
     let router = routes().with_state(state);
-    Ok(DiscoveryMount { router, scanner, codec, geo, shake, nonces })
+    Ok(DiscoveryMount {
+        router,
+        scanner,
+        codec,
+        geo,
+        shake,
+        nonces,
+    })
 }
 
 fn routes() -> Router<DiscoveryState> {
@@ -93,7 +108,10 @@ fn routes() -> Router<DiscoveryState> {
         .route("/api/v1/scan/confirm", post(scan_confirm))
         .route("/api/v1/qr", post(qr_encode))
         .route("/api/v1/nearby/opt-in", post(geo_opt_in))
-        .route("/api/v1/nearby/presence", post(geo_publish).get(geo_presence).delete(geo_revoke))
+        .route(
+            "/api/v1/nearby/presence",
+            post(geo_publish).get(geo_presence).delete(geo_revoke),
+        )
         .route("/api/v1/nearby", post(geo_nearby))
         .route("/api/v1/nearby/block", post(geo_block))
         .route("/api/v1/nearby/report", post(geo_report))
@@ -101,7 +119,10 @@ fn routes() -> Router<DiscoveryState> {
         .route("/api/v1/shake/{ticket_id}/join", post(shake_join))
         .route("/api/v1/shake/{ticket_id}", get(shake_ticket))
         .route("/api/v1/shake/{ticket_id}/cancel", delete(shake_cancel))
-        .route("/api/v1/shake/proposals/{proposal_id}/confirm", post(shake_confirm))
+        .route(
+            "/api/v1/shake/proposals/{proposal_id}/confirm",
+            post(shake_confirm),
+        )
 }
 
 #[derive(Clone)]
@@ -132,7 +153,11 @@ fn deeplink_policy() -> anyhow::Result<DeeplinkPolicy> {
     let Some(raw) = crate::non_empty_env(SCAN_HOSTS_ENV) else {
         return Ok(DeeplinkPolicy::strict());
     };
-    let hosts: Vec<String> = raw.split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect();
+    let hosts: Vec<String> = raw
+        .split(',')
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect();
     DeeplinkPolicy::with_hosts(hosts, false)
         .map_err(|err| anyhow::anyhow!("{SCAN_HOSTS_ENV} 配置非法: {err}"))
 }
@@ -140,7 +165,8 @@ fn deeplink_policy() -> anyhow::Result<DeeplinkPolicy> {
 /// 附近位置的 TTL 配置（G07-03：WXLIKE_GEO_DEFAULT_TTL_MS / WXLIKE_GEO_MAX_TTL_MS）。
 fn geo_config_from_env() -> GeoConfig {
     let mut config = GeoConfig::default();
-    if let Some(v) = crate::non_empty_env("WXLIKE_GEO_DEFAULT_TTL_MS").and_then(|v| v.parse().ok()) {
+    if let Some(v) = crate::non_empty_env("WXLIKE_GEO_DEFAULT_TTL_MS").and_then(|v| v.parse().ok())
+    {
         config.default_ttl_ms = v;
     }
     if let Some(v) = crate::non_empty_env("WXLIKE_GEO_MAX_TTL_MS").and_then(|v| v.parse().ok()) {
@@ -214,7 +240,11 @@ fn parse_json(body: &Bytes) -> Option<serde_json::Value> {
 
 /// `POST /api/v1/scan`：扫码入口。JSON `{"text": "..."}` 或
 /// `{"image_base64": "..."}`。解码结果只是待确认动作，不自动执行。
-async fn scan_payload(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn scan_payload(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
@@ -224,7 +254,9 @@ async fn scan_payload(State(state): State<DiscoveryState>, headers: HeaderMap, b
     let scanner = Arc::clone(&state.scanner);
     let now_ms = wxlike_core::types::now_ms() as i64;
     // CPU 密集的解码/验签整段进阻塞池，不占 async worker。
-    let ran = tokio::task::spawn_blocking(move || scan_dispatch(&scanner, &actor, &payload, now_ms)).await;
+    let ran =
+        tokio::task::spawn_blocking(move || scan_dispatch(&scanner, &actor, &payload, now_ms))
+            .await;
     match ran {
         Ok(Ok(result)) => match scan_json(&result) {
             Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -245,31 +277,48 @@ async fn scan_payload(State(state): State<DiscoveryState>, headers: HeaderMap, b
 }
 
 fn scan_dispatch(
-    scanner: &QrScanner<MemoryNonceStore>, actor: &str, payload: &serde_json::Value, now_ms: i64,
+    scanner: &QrScanner<MemoryNonceStore>,
+    actor: &str,
+    payload: &serde_json::Value,
+    now_ms: i64,
 ) -> wxlike_discovery::Result<wxlike_discovery::qr::ScanResult> {
     if let Some(text) = payload["text"].as_str() {
         return scanner.scan_text(actor, text, now_ms);
     }
     if let Some(encoded) = payload["image_base64"].as_str() {
         use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
             .map_err(|_| DiscoveryError::InvalidArgument("image base64"))?;
         return scanner.scan_image(actor, &bytes, now_ms);
     }
     Err(DiscoveryError::InvalidArgument("scan payload"))
 }
 
-fn scan_json(result: &wxlike_discovery::qr::ScanResult) -> std::result::Result<serde_json::Value, serde_json::Error> {
+fn scan_json(
+    result: &wxlike_discovery::qr::ScanResult,
+) -> std::result::Result<serde_json::Value, serde_json::Error> {
     let action = match &result.action {
-        ScanAction::Signed(target) => serde_json::json!({"type": "signed", "target": serde_json::to_value(target)?}),
-        ScanAction::Payment { intent_id, amount_minor, currency, payee_id, confirm_token, confirm_expires_at_ms } => {
+        ScanAction::Signed(target) => {
+            serde_json::json!({"type": "signed", "target": serde_json::to_value(target)?})
+        }
+        ScanAction::Payment {
+            intent_id,
+            amount_minor,
+            currency,
+            payee_id,
+            confirm_token,
+            confirm_expires_at_ms,
+        } => {
             serde_json::json!({
                 "type": "payment", "intent_id": intent_id, "amount_minor": amount_minor,
                 "currency": currency, "payee_id": payee_id,
                 "confirm_token": confirm_token, "confirm_expires_at_ms": confirm_expires_at_ms,
             })
         }
-        ScanAction::External { url, host } => serde_json::json!({"type": "external", "url": url, "host": host}),
+        ScanAction::External { url, host } => {
+            serde_json::json!({"type": "external", "url": url, "host": host})
+        }
         ScanAction::Text { text } => serde_json::json!({"type": "text", "text": text}),
     };
     Ok(serde_json::json!({
@@ -281,7 +330,11 @@ fn scan_json(result: &wxlike_discovery::qr::ScanResult) -> std::result::Result<s
 
 /// `POST /api/v1/scan/confirm`：用户确认后的二次入口。`{"url": ...}` 走外链
 /// 白名单复核；支付字段组校验确认令牌与金额/收款人绑定。
-async fn scan_confirm(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn scan_confirm(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
@@ -290,12 +343,17 @@ async fn scan_confirm(State(state): State<DiscoveryState>, headers: HeaderMap, b
     };
     let scanner = Arc::clone(&state.scanner);
     let now_ms = wxlike_core::types::now_ms() as i64;
-    let ran = tokio::task::spawn_blocking(move || confirm_dispatch(&scanner, &actor, &payload, now_ms)).await;
+    let ran =
+        tokio::task::spawn_blocking(move || confirm_dispatch(&scanner, &actor, &payload, now_ms))
+            .await;
     join_reply(ran, "扫码确认")
 }
 
 fn confirm_dispatch(
-    scanner: &QrScanner<MemoryNonceStore>, actor: &str, payload: &serde_json::Value, now_ms: i64,
+    scanner: &QrScanner<MemoryNonceStore>,
+    actor: &str,
+    payload: &serde_json::Value,
+    now_ms: i64,
 ) -> wxlike_discovery::Result<serde_json::Value> {
     if let Some(url) = payload["url"].as_str() {
         return Ok(serde_json::json!({"url": scanner.execute_external(url)?}));
@@ -318,7 +376,11 @@ fn confirm_dispatch(
 
 /// `POST /api/v1/qr`：给会话用户签发业务二维码（好友/群/支付/小程序分型）。
 /// 请求体 `{"target": {...}, "ttl_ms": 可选, "png": 可选 bool}`；nonce 服务端生成。
-async fn qr_encode(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn qr_encode(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if actor_of(&state.platform, &headers).is_none() {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     }
@@ -328,23 +390,33 @@ async fn qr_encode(State(state): State<DiscoveryState>, headers: HeaderMap, body
     let Ok(target) = serde_json::from_value::<QrTarget>(payload["target"].clone()) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    let expires_at_ms = payload["ttl_ms"].as_i64().map(|ttl| wxlike_core::types::now_ms() as i64 + ttl.max(1));
+    let expires_at_ms = payload["ttl_ms"]
+        .as_i64()
+        .map(|ttl| wxlike_core::types::now_ms() as i64 + ttl.max(1));
     let want_png = payload["png"].as_bool().unwrap_or(false);
     let codec = Arc::clone(&state.codec);
     let nonce = wxlike_discovery::id::new_id("qrnonce");
-    let ran = tokio::task::spawn_blocking(move || encode_qr(&codec, &target, &nonce, expires_at_ms, want_png)).await;
+    let ran = tokio::task::spawn_blocking(move || {
+        encode_qr(&codec, &target, &nonce, expires_at_ms, want_png)
+    })
+    .await;
     join_reply(ran, "二维码签发")
 }
 
 fn encode_qr(
-    codec: &QrCodec, target: &QrTarget, nonce: &str, expires_at_ms: Option<i64>, want_png: bool,
+    codec: &QrCodec,
+    target: &QrTarget,
+    nonce: &str,
+    expires_at_ms: Option<i64>,
+    want_png: bool,
 ) -> wxlike_discovery::Result<serde_json::Value> {
     let wire = codec.encode(target, nonce, expires_at_ms)?;
     let mut value = serde_json::json!({"wire": wire, "expires_at_ms": expires_at_ms});
     if want_png {
         use base64::Engine as _;
         let png = wxlike_discovery::qr::render_png(&wire)?;
-        value["png_base64"] = serde_json::json!(base64::engine::general_purpose::STANDARD.encode(png));
+        value["png_base64"] =
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(png));
     }
     Ok(value)
 }
@@ -354,7 +426,11 @@ fn encode_qr(
 // ---------------------------------------------------------------------------
 
 /// `POST /api/v1/nearby/opt-in`：`{"enabled": bool}`。位置默认关闭，显式授权。
-async fn geo_opt_in(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn geo_opt_in(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
@@ -364,12 +440,21 @@ async fn geo_opt_in(State(state): State<DiscoveryState>, headers: HeaderMap, bod
     let Some(enabled) = payload["enabled"].as_bool() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    discovery_reply(state.geo.set_opt_in(&actor, enabled).map(|()| serde_json::json!({"enabled": enabled})))
+    discovery_reply(
+        state
+            .geo
+            .set_opt_in(&actor, enabled)
+            .map(|()| serde_json::json!({"enabled": enabled})),
+    )
 }
 
 /// `POST /api/v1/nearby/presence`：发布粗网格位置。
 /// `{"lat", "lng", "visibility": "everyone"|"friends", "ttl_ms": 可选}`。
-async fn geo_publish(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn geo_publish(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
@@ -384,7 +469,12 @@ async fn geo_publish(State(state): State<DiscoveryState>, headers: HeaderMap, bo
         "everyone" => Visibility::Everyone,
         _ => return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT"),
     };
-    discovery_reply(state.geo.publish(&actor, lat, lng, visibility, payload["ttl_ms"].as_i64()).map(presence_json))
+    discovery_reply(
+        state
+            .geo
+            .publish(&actor, lat, lng, visibility, payload["ttl_ms"].as_i64())
+            .map(presence_json),
+    )
 }
 
 /// `GET /api/v1/nearby/presence`：读自己的可发现状态；没有发布过 → 404。
@@ -403,29 +493,47 @@ async fn geo_revoke(State(state): State<DiscoveryState>, headers: HeaderMap) -> 
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
-    discovery_reply(state.geo.revoke(&actor).map(|()| serde_json::json!({"revoked": true})))
+    discovery_reply(
+        state
+            .geo
+            .revoke(&actor)
+            .map(|()| serde_json::json!({"revoked": true})),
+    )
 }
 
 /// `POST /api/v1/nearby`：附近的人。`{"lat", "lng", "radius_m"}`；
 /// 只回粗网格与距离档，永不回精确坐标/精确距离。
-async fn geo_nearby(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn geo_nearby(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
     let Some(payload) = parse_json(&body) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    let (Some(lat), Some(lng), Some(radius_m)) =
-        (payload["lat"].as_f64(), payload["lng"].as_f64(), payload["radius_m"].as_f64())
-    else {
+    let (Some(lat), Some(lng), Some(radius_m)) = (
+        payload["lat"].as_f64(),
+        payload["lng"].as_f64(),
+        payload["radius_m"].as_f64(),
+    ) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    discovery_reply(state.geo.nearby(&actor, lat, lng, radius_m)
-        .map(|peers| serde_json::json!({"peers": peers.iter().map(peer_json).collect::<Vec<_>>()})))
+    discovery_reply(
+        state.geo.nearby(&actor, lat, lng, radius_m).map(
+            |peers| serde_json::json!({"peers": peers.iter().map(peer_json).collect::<Vec<_>>()}),
+        ),
+    )
 }
 
 /// `POST /api/v1/nearby/block`：拉黑（双向从附近结果中过滤）。`{"target"}`。
-async fn geo_block(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn geo_block(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
@@ -435,18 +543,28 @@ async fn geo_block(State(state): State<DiscoveryState>, headers: HeaderMap, body
     let Some(target) = payload["target"].as_str() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    discovery_reply(state.geo.block(&actor, target).map(|()| serde_json::json!({"blocked": true})))
+    discovery_reply(
+        state
+            .geo
+            .block(&actor, target)
+            .map(|()| serde_json::json!({"blocked": true})),
+    )
 }
 
 /// `POST /api/v1/nearby/report`：骚扰举报（可追溯）。`{"target", "reason"}`。
-async fn geo_report(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn geo_report(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
     let Some(payload) = parse_json(&body) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    let (Some(target), Some(reason)) = (payload["target"].as_str(), payload["reason"].as_str()) else {
+    let (Some(target), Some(reason)) = (payload["target"].as_str(), payload["reason"].as_str())
+    else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
     discovery_reply(state.geo.report(&actor, target, reason).map(|record| serde_json::json!({
@@ -493,7 +611,11 @@ fn band_str(band: DistanceBand) -> &'static str {
 
 /// `POST /api/v1/shake/start`：`{"magnitude_g", "sampled_at_ms": 可选}`。
 /// 有时限窗口；域内校验加速度与采样新鲜度。
-async fn shake_start(State(state): State<DiscoveryState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn shake_start(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
@@ -503,22 +625,37 @@ async fn shake_start(State(state): State<DiscoveryState>, headers: HeaderMap, bo
     let Some(magnitude_g) = payload["magnitude_g"].as_f64() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    let sampled_at_ms = payload["sampled_at_ms"].as_i64().unwrap_or_else(|| wxlike_core::types::now_ms() as i64);
+    let sampled_at_ms = payload["sampled_at_ms"]
+        .as_i64()
+        .unwrap_or_else(|| wxlike_core::types::now_ms() as i64);
     discovery_reply(state.shake.start(&actor, MotionSample { magnitude_g, sampled_at_ms }).map(|ticket| {
         serde_json::json!({"ticket_id": ticket.id, "expires_at_ms": ticket.expires_at_ms})
     }))
 }
 
 /// `POST /api/v1/shake/{ticket_id}/join`：加入仍在时限内的窗口（单对方）。
-async fn shake_join(State(state): State<DiscoveryState>, headers: HeaderMap, Path(ticket_id): Path<String>) -> Response {
+async fn shake_join(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<String>,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
-    discovery_reply(state.shake.join(&actor, &ticket_id).map(|id| serde_json::json!({"proposal_id": id})))
+    discovery_reply(
+        state
+            .shake
+            .join(&actor, &ticket_id)
+            .map(|id| serde_json::json!({"proposal_id": id})),
+    )
 }
 
 /// `GET /api/v1/shake/{ticket_id}`：读窗口状态（过期 → 404）。
-async fn shake_ticket(State(state): State<DiscoveryState>, headers: HeaderMap, Path(ticket_id): Path<String>) -> Response {
+async fn shake_ticket(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<String>,
+) -> Response {
     if actor_of(&state.platform, &headers).is_none() {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     }
@@ -531,15 +668,28 @@ async fn shake_ticket(State(state): State<DiscoveryState>, headers: HeaderMap, P
 }
 
 /// `DELETE /api/v1/shake/{ticket_id}/cancel`：取消窗口（参与者限定）。
-async fn shake_cancel(State(state): State<DiscoveryState>, headers: HeaderMap, Path(ticket_id): Path<String>) -> Response {
+async fn shake_cancel(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<String>,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
-    discovery_reply(state.shake.cancel(&actor, &ticket_id).map(|()| serde_json::json!({"cancelled": true})))
+    discovery_reply(
+        state
+            .shake
+            .cancel(&actor, &ticket_id)
+            .map(|()| serde_json::json!({"cancelled": true})),
+    )
 }
 
 /// `POST /api/v1/shake/proposals/{proposal_id}/confirm`：双边确认才产生匹配。
-async fn shake_confirm(State(state): State<DiscoveryState>, headers: HeaderMap, Path(proposal_id): Path<String>) -> Response {
+async fn shake_confirm(
+    State(state): State<DiscoveryState>,
+    headers: HeaderMap,
+    Path(proposal_id): Path<String>,
+) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
         return err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };

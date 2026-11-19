@@ -190,7 +190,10 @@ mod tests {
         let view = user_view(&conn, &token, "u1", &NoCounts, 1_000).unwrap();
         let text = serde_json::to_string(&view).unwrap();
         for field in ["message", "ciphertext", "session_key", "content", "body"] {
-            assert!(!text.contains(field), "视图出现正文相关字段 {field}: {text}");
+            assert!(
+                !text.contains(field),
+                "视图出现正文相关字段 {field}: {text}"
+            );
         }
     }
 
@@ -202,15 +205,9 @@ mod tests {
             ..Default::default()
         };
         crate::device::register(&conn, "u1", "dev-aaaa1111", &reg, 1_000).unwrap();
-        let user = crate::session::open_default(
-            &conn,
-            "u1",
-            "dev-aaaa1111",
-            Audience::User,
-            "",
-            1_000,
-        )
-        .unwrap();
+        let user =
+            crate::session::open_default(&conn, "u1", "dev-aaaa1111", Audience::User, "", 1_000)
+                .unwrap();
         let err = user_view(&conn, &user.access_token, "u1", &NoCounts, 1_100).unwrap_err();
         assert!(matches!(err, IdError::Unauthorized(_)));
     }

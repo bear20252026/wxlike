@@ -483,9 +483,7 @@ fn classify(err: &CommerceError) -> (StatusCode, &'static str) {
         CommerceError::ProviderNotConfigured => {
             (StatusCode::BAD_GATEWAY, "PROVIDER_NOT_CONFIGURED")
         }
-        CommerceError::MembershipUnavailable => {
-            (StatusCode::BAD_GATEWAY, "MEMBERSHIP_UNAVAILABLE")
-        }
+        CommerceError::MembershipUnavailable => (StatusCode::BAD_GATEWAY, "MEMBERSHIP_UNAVAILABLE"),
         CommerceError::ProviderUnavailable => (StatusCode::BAD_GATEWAY, "PROVIDER_UNAVAILABLE"),
         CommerceError::Ledger(_) | CommerceError::Storage(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL")

@@ -34,7 +34,11 @@ fn freeze_blocks_member_writes_and_unfreeze_restores() {
     assert_eq!(e.after["state"], "frozen");
 
     // 冻结真实生效：成员只读，拉人/踢人等写操作被权限闸门挡住。
-    let g = group::groups_of(&conn, "u1").unwrap().into_iter().next().unwrap();
+    let g = group::groups_of(&conn, "u1")
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     let acs = group::member_acs(&conn, &id, "u2", &g).unwrap();
     assert!(acs.is_reader() && !acs.is_writer(), "冻结后成员只读");
     assert!(!group::may_invite(&conn, "u1", &id, "u9").unwrap());
@@ -43,7 +47,11 @@ fn freeze_blocks_member_writes_and_unfreeze_restores() {
     let un = governance::govern(&conn, &cmd(&id, GroupAction::Unfreeze), 1_200).unwrap();
     assert!(!un.already);
     assert_eq!(un.after["state"], "active");
-    let g = group::groups_of(&conn, "u1").unwrap().into_iter().next().unwrap();
+    let g = group::groups_of(&conn, "u1")
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert!(group::member_acs(&conn, &id, "u2", &g).unwrap().is_writer());
 }
 
@@ -69,8 +77,14 @@ fn transfer_changes_owner_and_demotes_old() {
     let e = governance::govern(&conn, &c, 1_100).unwrap();
     assert!(!e.already);
     assert_eq!(e.after["owner_uid"], "u2");
-    assert_eq!(group::role_of(&conn, &id, "u2").unwrap(), Some(group::Role::Owner));
-    assert_eq!(group::role_of(&conn, &id, "u1").unwrap(), Some(group::Role::Admin));
+    assert_eq!(
+        group::role_of(&conn, &id, "u2").unwrap(),
+        Some(group::Role::Owner)
+    );
+    assert_eq!(
+        group::role_of(&conn, &id, "u1").unwrap(),
+        Some(group::Role::Admin)
+    );
     // 事件含转让双方。
     assert!(e.events.iter().any(|ev| matches!(
         ev,
@@ -96,7 +110,10 @@ fn transfer_requires_new_owner_and_existing_member() {
         Err(RelError::NotFound(_))
     ));
     // 群主未变。
-    assert_eq!(group::role_of(&conn, &id, "u1").unwrap(), Some(group::Role::Owner));
+    assert_eq!(
+        group::role_of(&conn, &id, "u1").unwrap(),
+        Some(group::Role::Owner)
+    );
 }
 
 #[test]
@@ -111,11 +128,17 @@ fn dissolve_is_terminal_and_notifies_members() {
         GroupGovernanceEvent::GroupDissolved { members, .. } if members.len() == 3
     )));
     // 幂等。
-    assert!(governance::govern(&conn, &cmd(&id, GroupAction::Dissolve), 1_200)
-        .unwrap()
-        .already);
+    assert!(
+        governance::govern(&conn, &cmd(&id, GroupAction::Dissolve), 1_200)
+            .unwrap()
+            .already
+    );
     // 终态封闭：不能再冻结/解冻/转让。
-    for action in [GroupAction::Freeze, GroupAction::Unfreeze, GroupAction::Transfer] {
+    for action in [
+        GroupAction::Freeze,
+        GroupAction::Unfreeze,
+        GroupAction::Transfer,
+    ] {
         let mut c = cmd(&id, action);
         c.new_owner = Some("u2".into());
         assert!(matches!(
@@ -167,7 +190,9 @@ fn every_action_leaves_a_reviewable_reason() {
     };
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().any(|(a, r)| a == "freeze" && r == "群体违规"));
-    assert!(rows.iter().any(|(a, r)| a == "transfer" && r.contains("移交运营")));
+    assert!(rows
+        .iter()
+        .any(|(a, r)| a == "transfer" && r.contains("移交运营")));
     // relations_audit 也有治理 kind 行。
     let n: i64 = conn
         .query_row(

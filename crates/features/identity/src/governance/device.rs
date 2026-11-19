@@ -117,15 +117,9 @@ mod tests {
             ..Default::default()
         };
         device::register(conn, "ops", "dev-ops00001", &reg, 1_000).unwrap();
-        let grant = crate::session::open_default(
-            conn,
-            "ops",
-            "dev-ops00001",
-            Audience::Admin,
-            "",
-            1_000,
-        )
-        .unwrap();
+        let grant =
+            crate::session::open_default(conn, "ops", "dev-ops00001", Audience::Admin, "", 1_000)
+                .unwrap();
         grant.access_token
     }
 
@@ -150,26 +144,17 @@ mod tests {
             ..Default::default()
         };
         device::register(&conn, "u1", "dev-aaaa1111", &reg, 1_000).unwrap();
-        let grant = crate::session::open_default(
-            &conn,
-            "u1",
-            "dev-aaaa1111",
-            Audience::User,
-            "",
-            1_000,
-        )
-        .unwrap();
+        let grant =
+            crate::session::open_default(&conn, "u1", "dev-aaaa1111", Audience::User, "", 1_000)
+                .unwrap();
 
         let effect = revoke_device(&conn, &token, &cmd("dev-aaaa1111"), &NoopPort, 1_100).unwrap();
         assert_eq!(effect.sessions_revoked, 1);
         assert!(!effect.already);
-        assert!(crate::session::authenticate(
-            &conn,
-            &grant.access_token,
-            Audience::User,
-            1_200
-        )
-        .is_err());
+        assert!(
+            crate::session::authenticate(&conn, &grant.access_token, Audience::User, 1_200)
+                .is_err()
+        );
 
         let again = revoke_device(&conn, &token, &cmd("dev-aaaa1111"), &NoopPort, 1_300).unwrap();
         assert!(again.already);
@@ -184,15 +169,9 @@ mod tests {
             ..Default::default()
         };
         device::register(&conn, "u1", "dev-aaaa1111", &reg, 1_000).unwrap();
-        let user = crate::session::open_default(
-            &conn,
-            "u1",
-            "dev-aaaa1111",
-            Audience::User,
-            "",
-            1_000,
-        )
-        .unwrap();
+        let user =
+            crate::session::open_default(&conn, "u1", "dev-aaaa1111", Audience::User, "", 1_000)
+                .unwrap();
         let err = revoke_device(
             &conn,
             &user.access_token,
@@ -203,7 +182,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, IdError::Unauthorized(_)));
         // 设备仍然活跃（越权没有产生效果）。
-        assert!(device::get(&conn, "dev-aaaa1111").unwrap().unwrap().is_active());
+        assert!(device::get(&conn, "dev-aaaa1111")
+            .unwrap()
+            .unwrap()
+            .is_active());
     }
 
     #[test]
