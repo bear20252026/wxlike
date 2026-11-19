@@ -137,6 +137,34 @@ pub struct AdminAuth {
     pub actor: String,
 }
 
+/// G02-09 治理面（identity_admin）的操作者凭证提取器：`x-admin-token` 头 =
+/// identity 域签发的 **Admin audience 会话令牌**（与 `AdminAuth` 的静态密钥是
+/// 两套口径，互不通用）。这里只做**提取**，不校验令牌——校验在域函数内的
+/// `authenticate_operator`（`session::authenticate(.., Audience::Admin)`，服务端
+/// 二次鉴权，失败即 401/403）。缺头/空值立即 401：不给调用方任何 body 契约
+/// 的探测面（与 `AdminAuth` 同一理由）。
+pub struct AdminAuthSession {
+    pub token: String,
+}
+
+impl FromRequestParts<std::sync::Arc<Platform>> for AdminAuthSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &std::sync::Arc<Platform>,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let token = parts
+            .headers
+            .get("x-admin-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "operator token required"))?;
+        Ok(AdminAuthSession { token })
+    }
+}
+
 impl FromRequestParts<std::sync::Arc<Platform>> for AdminAuth {
     type Rejection = ApiError;
 

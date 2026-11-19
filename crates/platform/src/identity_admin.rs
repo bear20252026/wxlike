@@ -27,11 +27,12 @@
 //! relations 的 `RelError` 在本模块就地映射（两边错误集不同名同义）。
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use crate::auth::AdminAuthSession;
 use crate::domain::qr_login::id_err;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
@@ -52,17 +53,6 @@ pub fn routes() -> Router<PlatformState> {
         )
         .route("/api/admin/identity/groups/{id}/govern", post(govern_group))
         .route("/api/admin/identity/users/{id}", get(user_metadata_view))
-}
-
-/// `x-admin-token` 头 = Admin audience 会话令牌（交给域做服务端鉴权）。
-/// 缺失即 401，不给调用方任何 body 契约的探测面。
-fn operator_token(headers: &HeaderMap) -> Result<String, ApiError> {
-    headers
-        .get("x-admin-token")
-        .and_then(|v| v.to_str().ok())
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| ApiError::unauthorized("operator token required"))
 }
 
 /// spawn_blocking 的 JoinError：阻塞任务 panic/被取消时结论不可信，
@@ -132,16 +122,15 @@ fn command_from_reason(target: String, body: ReasonBody) -> GovernCommand {
 async fn suspend_user(
     State(platform): State<PlatformState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    operator: AdminAuthSession,
     ApiJson(body): ApiJson<SuspendBody>,
 ) -> Result<Json<GovernEffect>, ApiError> {
-    let operator_token = operator_token(&headers)?;
     let cmd = command(id, body);
     let ran = tokio::task::spawn_blocking(move || {
         let c = platform.db.lock();
         governance::suspend(
             &c,
-            &operator_token,
+            &operator.token,
             &cmd,
             &platform.governance,
             wxlike_core::types::now_ms() as i64,
@@ -159,16 +148,15 @@ async fn suspend_user(
 async fn unsuspend_user(
     State(platform): State<PlatformState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    operator: AdminAuthSession,
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<GovernEffect>, ApiError> {
-    let operator_token = operator_token(&headers)?;
     let cmd = command_from_reason(id, body);
     let ran = tokio::task::spawn_blocking(move || {
         let c = platform.db.lock();
         governance::unsuspend(
             &c,
-            &operator_token,
+            &operator.token,
             &cmd,
             &platform.governance,
             wxlike_core::types::now_ms() as i64,
@@ -187,16 +175,15 @@ async fn unsuspend_user(
 async fn revoke_device(
     State(platform): State<PlatformState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    operator: AdminAuthSession,
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<GovernEffect>, ApiError> {
-    let operator_token = operator_token(&headers)?;
     let cmd = command_from_reason(id, body);
     let ran = tokio::task::spawn_blocking(move || {
         let c = platform.db.lock();
         governance::revoke_device(
             &c,
-            &operator_token,
+            &operator.token,
             &cmd,
             &platform.governance,
             wxlike_core::types::now_ms() as i64,
@@ -236,10 +223,9 @@ fn rel_err(err: wxlike_relations::RelError) -> ApiError {
 async fn govern_group(
     State(platform): State<PlatformState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    operator: AdminAuthSession,
     ApiJson(body): ApiJson<GroupGovernBody>,
 ) -> Result<Json<GroupGovernEffect>, ApiError> {
-    let operator_token = operator_token(&headers)?;
     let action = wxlike_relations::governance::GroupAction::parse(&body.action)
         .ok_or_else(|| ApiError::unprocessable("bad input: unknown action"))?;
     let cmd = GroupGovernCommand {
@@ -255,7 +241,7 @@ async fn govern_group(
         // 受众先行（relations 域函数不鉴权，IR 要求挂载面统一 admin audience）。
         wxlike_identity::session::authenticate(
             &c,
-            &operator_token,
+            &operator.token,
             wxlike_identity::Audience::Admin,
             wxlike_core::types::now_ms() as i64,
         )
@@ -287,14 +273,13 @@ async fn govern_group(
 async fn user_metadata_view(
     State(platform): State<PlatformState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    operator: AdminAuthSession,
 ) -> Result<Json<wxlike_identity::governance::AdminUserView>, ApiError> {
-    let operator_token = operator_token(&headers)?;
     let ran = tokio::task::spawn_blocking(move || {
         let c = platform.db.lock();
         governance::user_view(
             &c,
-            &operator_token,
+            &operator.token,
             &id,
             &platform.governance,
             wxlike_core::types::now_ms() as i64,

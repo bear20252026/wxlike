@@ -134,6 +134,66 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/admin/identity/devices/{id}/revoke",
+      "handler": "revoke_device",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/identity/groups/{id}/govern",
+      "handler": "govern_group",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/identity/users/{id}",
+      "handler": "user_metadata_view",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/identity/users/{id}/suspend",
+      "handler": "suspend_user",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/identity/users/{id}/unsuspend",
+      "handler": "unsuspend_user",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "PUT",
       "path": "/api/admin/moderation/mode",
       "handler": "set_mode",
@@ -2914,6 +2974,6 @@
       ]
     }
   ],
-  "updated_at": "2026-10-26",
+  "updated_at": "2026-11-19",
   "policy": "auth 由源码扫描得出（Authed 提取器=user、require_admin/admin_ok=admin、否则 public）；check 会与源码逐条核对，手改 auth 会触发 AUTHZ-AUTH-DRIFT。tests 必须指向 tests/security 里真实存在的用例函数名；缺证据的私有端点会被 AUTHZ-NO-TEST 拦住。"
 }
