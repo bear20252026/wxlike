@@ -2,7 +2,10 @@ request: G06-02
 owner: G06
 task_issue: 130
 branch: feat/FP-G06
-status: ready-for-G00
+status: executed-pending-live-evidence
+# 2026-11-19 G00 执行（feat/G06-actions-mount）：payment.*/card.* 经通用动作面挂载；
+# 旧事件入口 /api/v1/commerce/webhooks/payment 已挂（原始 body HMAC，event_id 去重）；
+# payment.refresh 契约行已补；到期意图 sweep 作业已起。真实供应商凭据取证 deferred（G16）。
 depends_on:
   - G06-01
 code_paths:

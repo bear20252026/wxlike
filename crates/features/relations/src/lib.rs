@@ -21,6 +21,7 @@
 use rand::RngCore as _;
 
 pub mod friend;
+pub mod governance;
 pub mod group;
 pub mod port;
 pub mod prefs;
@@ -151,12 +152,13 @@ CREATE TABLE IF NOT EXISTS friend_tag (
     PRIMARY KEY (user_id, friend_id, tag)
 );
 
--- G02 新增：群可见性与解散标记
+-- G02 新增：群可见性与解散标记；G02-09 补 frozen_at（管理端冻结，可解冻）。
 CREATE TABLE IF NOT EXISTS group_meta (
     group_id     TEXT PRIMARY KEY,
     visibility   TEXT NOT NULL DEFAULT 'public',
     dissolved_at INTEGER,
-    dissolved_by TEXT NOT NULL DEFAULT ''
+    dissolved_by TEXT NOT NULL DEFAULT '',
+    frozen_at    INTEGER
 );
 
 -- G02 新增：关系写操作审计（谁在什么时候动了哪条关系）
@@ -201,6 +203,7 @@ CREATE TABLE IF NOT EXISTS group_member_acs (
 /// 建表 + 补列（幂等）。
 pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
+    governance::migrate(conn)?;
     ensure_friends_starred(conn)
 }
 

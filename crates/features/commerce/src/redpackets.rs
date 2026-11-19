@@ -308,6 +308,29 @@ impl Commerce {
         Ok(RedPacketView { packet, claims })
     }
 
+    /// 到期红包批量退回未领份额（后台作业 `commerce.redpacket.expire`）。
+    ///
+    /// 每笔都走与 [`Self::expire_red_packet`] 完全相同的 `expire_locked`：
+    /// 只退未领取份额给发送者，已领取份额不回滚；状态只从 active 前进为
+    /// expired。单笔失败只跳过该笔（事务随 drop 回滚，下一轮再试），
+    /// 失败的可观测性由作业层负责。返回本轮成功退回的红包数。
+    ///
+    /// # Errors
+    /// 选取到期清单时存储失败。
+    pub fn expire_due_red_packets(&self) -> Result<usize> {
+        let now = self.now();
+        let due = crate::sweep::due_ids(&self.lock(), "commerce_redpackets", "active", now)?;
+        let mut guard = self.lock();
+        Ok(crate::sweep::expire_due(
+            &mut guard,
+            due,
+            now,
+            load,
+            |p: &RedPacket, now| p.status == RedPacketStatus::Active && now >= p.expires_at,
+            expire_locked,
+        ))
+    }
+
     fn is_member(&self, conversation: &str, user: &str) -> Result<bool> {
         self.ports
             .membership

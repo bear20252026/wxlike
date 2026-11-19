@@ -336,6 +336,29 @@ impl Commerce {
         Ok(transfer)
     }
 
+    /// 到期未确认的转账批量退回（后台作业 `commerce.transfer.expire`）。
+    ///
+    /// 每笔都走与 [`Self::expire_transfer`] 完全相同的 `expire_locked`：
+    /// 解冻退回原路、状态只从 pending 前进为 expired。单笔失败只跳过该笔
+    /// （事务随 drop 回滚，下一轮还会再试），不影响其它笔；失败的可观测性
+    /// 由作业层负责。返回本轮成功退回的笔数。
+    ///
+    /// # Errors
+    /// 选取到期清单时存储失败。
+    pub fn expire_due_transfers(&self) -> Result<usize> {
+        let now = self.now();
+        let due = crate::sweep::due_ids(&self.lock(), "commerce_transfers", "pending", now)?;
+        let mut guard = self.lock();
+        Ok(crate::sweep::expire_due(
+            &mut guard,
+            due,
+            now,
+            load,
+            |t: &Transfer, now| t.status == TransferStatus::Pending && now >= t.expires_at,
+            expire_locked,
+        ))
+    }
+
     fn transfer_token(
         &self,
         sender: &str,

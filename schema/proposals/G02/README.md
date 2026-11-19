@@ -10,6 +10,7 @@
 | `identity.sql` | G02-01 / 05 / 06 / 07 | 11 张 `identity_*` | `sessions` 补列 `audience` |
 | `relations.sql` | G02-02 | `friend_tag` / `group_meta` / `relations_audit` | `friends` 补列 `starred` |
 | `security.sql` | G02-03 / 04 | `security_device_key` / `security_device_verify` / `security_rotation` | 无 |
+| `governance.sql` | G02-09 | `identity_user_governance` / `identity_governance_audit` / `identity_governance_label` / `group_governance_audit` | `users` 补列 `suspended/disabled/suspended_until_ms`（G00 执行）；`group_meta` 补列 `frozen_at` |
 
 全部语句幂等（`IF NOT EXISTS`），两处补列必须先查 `PRAGMA table_info(...)` 再
 `ALTER`——SQLite 没有 `ADD COLUMN IF NOT EXISTS`。crate 内的 `migrate()` 已经这么做
@@ -33,6 +34,9 @@
 | 回滚 G02-03 | `DROP TABLE security_device_key / security_device_verify / security_rotation` | 多设备密钥目录丢失；平台旧 `prekey_bundles`（每用户一份）仍在，单设备路径可继续用 |
 | `sessions.audience` | 保留列不删 | 旧代码不读该列，`DEFAULT 'user'` 语义正确 |
 | `friends.starred` | 保留列不删 | 同上；旧代码不读，默认 0 |
+| 回滚 G02-09 | `DROP TABLE identity_user_governance / identity_governance_audit / identity_governance_label / group_governance_audit` | 治理状态/审计/标签丢失；**回滚前必须先导出在封禁/停用清单**，否则被封账号会恢复访问。群冻结标记丢失 → 已冻结群恢复可写 |
+| `users.suspended/disabled/suspended_until_ms` | 保留列不删 | 旧代码不读，默认 0/NULL；镜像列由 G00 补，域不直接 ALTER users |
+| `group_meta.frozen_at` | 保留列不删 | 旧代码不读，NULL = 未冻结 |
 
 ## 与平台旧表的关系
 

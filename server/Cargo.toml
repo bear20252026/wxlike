@@ -26,6 +26,16 @@ wxlike-media = { path = "../crates/features/media" }
 wxlike-service-catalog = { path = "../crates/service-catalog" }
 # G06/N7：支付/账本域供应商回调首次进组合根（解 PAYMENT-CALLBACK-REPLAY 阻塞）
 wxlike-commerce = { path = "../crates/features/commerce" }
+# G08：小程序真实域首次进组合根（目录/包供应链/容器沙箱），收口第四轮审计「测而未接」。
+wxlike-miniapps = { path = "../crates/features/miniapps" }
+wxlike-container = { path = "../crates/container" }
+wxlike-dpage = { path = "../crates/dpage" }
+# G07/第四轮审计：发现域（扫码/附近/摇一摇）首次进组合根（discovery_mount）
+wxlike-discovery = { path = "../crates/features/discovery" }
+# G07/第四轮审计：识物/OCR/转写编排域首次进组合根；无供应商凭据诚实拒绝
+wxlike-vision = { path = "../crates/vision" }
+# G07/第四轮审计：文本翻译编排域首次进组合根；无供应商凭据诚实拒绝
+wxlike-translation = { path = "../crates/translation" }
 async-nats = { version = "0.50", optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }

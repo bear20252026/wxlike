@@ -54,10 +54,13 @@ class ProgressSnapshotTest(unittest.TestCase):
         self.assertNotIn("PAYMENT-CALLBACK-REPLAY", data["release_blocking_gaps"])
         self.assertEqual(data["release_blocking_gaps"], [])
 
-    def test_g02_09_is_missing_new_card(self):
+    def test_g02_09_domain_implemented_pending_integration(self):
+        # 2026-11-19：治理域已实现（identity/relations governance + 38 测试），
+        # HTTP 面/平台联动待 G00 集成 → PARTIAL，不再是 MISSING。
         data = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
         card = next(c for c in data["cards"] if c["id"] == "G02-09")
-        self.assertEqual(card["status"], "MISSING")
+        self.assertEqual(card["status"], "PARTIAL")
+        self.assertIn("G00", card["evidence"])
 
     def test_github_is_side_evidence_not_authority(self):
         # issue 闭 ≠ 验收过：快照的 status 不由 github_issue_state 决定。

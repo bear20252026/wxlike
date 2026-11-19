@@ -20,6 +20,7 @@ pub mod transfers;
 mod config;
 mod schema;
 mod store;
+mod sweep;
 pub mod testkit;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

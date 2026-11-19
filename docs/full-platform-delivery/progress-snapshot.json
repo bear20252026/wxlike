@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "verified_at": "2026-11-18",
+  "verified_at": "2026-11-19",
   "authority": "代码事实（孤岛台账/缺口台账/集成请求/审计判定）；GitHub 开闭仅旁证，issue 闭≠验收过",
   "note": "单一权威进度源（第四轮审计 N5）。替代 tasks.json/GitHub/delivery/蓝图四源手工对账。LANDED 指代码+接线+测试存在，不代表真机/生产验证。",
   "card_count": 101,
   "by_status": {
-    "PARTIAL": 47,
+    "PARTIAL": 53,
     "LANDED": 35,
-    "SEAM": 6,
-    "RETIRED": 12,
-    "MISSING": 1
+    "SEAM": 1,
+    "RETIRED": 12
   },
   "by_group": {
     "G00": {
@@ -28,8 +27,7 @@
     "G02": {
       "total": 8,
       "statuses": {
-        "PARTIAL": 7,
-        "MISSING": 1
+        "PARTIAL": 8
       }
     },
     "G03": {
@@ -65,7 +63,7 @@
     "G08": {
       "total": 5,
       "statuses": {
-        "SEAM": 5
+        "PARTIAL": 5
       }
     },
     "G09": {
@@ -125,7 +123,7 @@
   },
   "release_blocking_gaps": [],
   "ready_for_g00_backlog": {
-    "G06": 7
+    "G02": 1
   },
   "cards": [
     {
@@ -244,7 +242,7 @@
       "title": "账号会话与设备生命周期",
       "wave": "W1",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 103,
       "github_issue_state": "OPEN"
@@ -255,7 +253,7 @@
       "title": "好友、新朋友、群与隐私规则",
       "wave": "W1",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 108,
       "github_issue_state": "OPEN"
@@ -266,7 +264,7 @@
       "title": "多设备E2EE与密钥分发",
       "wave": "W1",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 111,
       "github_issue_state": "OPEN"
@@ -277,7 +275,7 @@
       "title": "本地SecretStore与口令快照接线",
       "wave": "W1",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 113,
       "github_issue_state": "OPEN"
@@ -288,7 +286,7 @@
       "title": "设置、账户数据生命周期与通知偏好",
       "wave": "W1",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 114,
       "github_issue_state": "OPEN"
@@ -464,7 +462,7 @@
       "title": "不可变账本与资金账户",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "evidence": "commerce+ledger 域实现+测试完整；回调+全部动作面已挂载（2026-11-19：通用动作面/旧 webhook 入口/audience 闸门/真实群成员端口/到期与对账后台作业），PAYMENT-CALLBACK-REPLAY 已关闭；七个集成请求 executed-pending-live-evidence，真实供应商取证归 G16、PG 迁移归 G00-04",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 127,
       "github_issue_state": "OPEN"
@@ -475,7 +473,7 @@
       "title": "支付意图、绑卡与回调",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "evidence": "commerce+ledger 域实现+测试完整；回调+全部动作面已挂载（2026-11-19：通用动作面/旧 webhook 入口/audience 闸门/真实群成员端口/到期与对账后台作业），PAYMENT-CALLBACK-REPLAY 已关闭；七个集成请求 executed-pending-live-evidence，真实供应商取证归 G16、PG 迁移归 G00-04",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 130,
       "github_issue_state": "OPEN"
@@ -486,7 +484,7 @@
       "title": "充值提现退款与对账",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "evidence": "commerce+ledger 域实现+测试完整；回调+全部动作面已挂载（2026-11-19：通用动作面/旧 webhook 入口/audience 闸门/真实群成员端口/到期与对账后台作业），PAYMENT-CALLBACK-REPLAY 已关闭；七个集成请求 executed-pending-live-evidence，真实供应商取证归 G16、PG 迁移归 G00-04",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 133,
       "github_issue_state": "OPEN"
@@ -497,7 +495,7 @@
       "title": "转账、红包与领取并发",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "evidence": "commerce+ledger 域实现+测试完整；回调+全部动作面已挂载（2026-11-19：通用动作面/旧 webhook 入口/audience 闸门/真实群成员端口/到期与对账后台作业），PAYMENT-CALLBACK-REPLAY 已关闭；七个集成请求 executed-pending-live-evidence，真实供应商取证归 G16、PG 迁移归 G00-04",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 134,
       "github_issue_state": "OPEN"
@@ -508,7 +506,7 @@
       "title": "会员卡、券、票证与订单接口",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "commerce+ledger 域实现+测试完整；支付回调已挂载（server/src/commerce_mount.rs，第四轮审计 N7），PAYMENT-CALLBACK-REPLAY 已关闭（真实进程取证）；钱包/红包等其余动作面尚未全部接进生产路由",
+      "evidence": "commerce+ledger 域实现+测试完整；回调+全部动作面已挂载（2026-11-19：通用动作面/旧 webhook 入口/audience 闸门/真实群成员端口/到期与对账后台作业），PAYMENT-CALLBACK-REPLAY 已关闭；七个集成请求 executed-pending-live-evidence，真实供应商取证归 G16、PG 迁移归 G00-04",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 137,
       "github_issue_state": "OPEN"
@@ -519,7 +517,7 @@
       "title": "二维码解码与安全深链",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 136,
       "github_issue_state": "OPEN"
@@ -530,7 +528,7 @@
       "title": "识物、OCR、翻译与语音模型服务",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 139,
       "github_issue_state": "OPEN"
@@ -541,7 +539,7 @@
       "title": "位置、附近与摇一摇匹配",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 140,
       "github_issue_state": "OPEN"
@@ -552,7 +550,7 @@
       "title": "服务目录、报价与统一供应商订单",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 143,
       "github_issue_state": "OPEN"
@@ -563,7 +561,7 @@
       "title": "充值、生活缴费与公益服务适配",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 144,
       "github_issue_state": "OPEN"
@@ -574,7 +572,7 @@
       "title": "出行酒店电影票务与医疗适配",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 146,
       "github_issue_state": "OPEN"
@@ -585,7 +583,7 @@
       "title": "购物、游戏与应用服务路由",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 148,
       "github_issue_state": "OPEN"
@@ -595,8 +593,8 @@
       "group": "G08",
       "title": "包格式、签名与发布供应链",
       "wave": "W2",
-      "status": "SEAM",
-      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "status": "PARTIAL",
+      "evidence": "container/dpage/miniapps 2026-11-19 经 mini_runtime 真实接线（审核目录搜索/推荐、包检视、根信任验签、容器沙箱启动）；安装/签包发布诚实 501（缺签名上传流式核心与离线根密钥）；SEAM 登记已移除",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 141,
       "github_issue_state": "OPEN"
@@ -606,8 +604,8 @@
       "group": "G08",
       "title": "跨端隔离运行与预算",
       "wave": "W2",
-      "status": "SEAM",
-      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "status": "PARTIAL",
+      "evidence": "container/dpage/miniapps 2026-11-19 经 mini_runtime 真实接线（审核目录搜索/推荐、包检视、根信任验签、容器沙箱启动）；安装/签包发布诚实 501（缺签名上传流式核心与离线根密钥）；SEAM 登记已移除",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 145,
       "github_issue_state": "OPEN"
@@ -617,8 +615,8 @@
       "group": "G08",
       "title": "宿主权限broker与能力SDK",
       "wave": "W2",
-      "status": "SEAM",
-      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "status": "PARTIAL",
+      "evidence": "container/dpage/miniapps 2026-11-19 经 mini_runtime 真实接线（审核目录搜索/推荐、包检视、根信任验签、容器沙箱启动）；安装/签包发布诚实 501（缺签名上传流式核心与离线根密钥）；SEAM 登记已移除",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 147,
       "github_issue_state": "OPEN"
@@ -628,8 +626,8 @@
       "group": "G08",
       "title": "目录、最近使用与升级撤销",
       "wave": "W2",
-      "status": "SEAM",
-      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "status": "PARTIAL",
+      "evidence": "container/dpage/miniapps 2026-11-19 经 mini_runtime 真实接线（审核目录搜索/推荐、包检视、根信任验签、容器沙箱启动）；安装/签包发布诚实 501（缺签名上传流式核心与离线根密钥）；SEAM 登记已移除",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 149,
       "github_issue_state": "OPEN"
@@ -639,8 +637,8 @@
       "group": "G08",
       "title": "可运行示例与开发工具链",
       "wave": "W2",
-      "status": "SEAM",
-      "evidence": "container/dpage/miniapps 域实现就绪；server/mini_mount 是影子；签包发布端点不存在",
+      "status": "PARTIAL",
+      "evidence": "container/dpage/miniapps 2026-11-19 经 mini_runtime 真实接线（审核目录搜索/推荐、包检视、根信任验签、容器沙箱启动）；安装/签包发布诚实 501（缺签名上传流式核心与离线根密钥）；SEAM 登记已移除",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 150,
       "github_issue_state": "OPEN"
@@ -1146,7 +1144,7 @@
       "title": "手机号验证码、登录方式与协议同意记录",
       "wave": "W2/W3",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 112,
       "github_issue_state": "OPEN"
@@ -1157,7 +1155,7 @@
       "title": "桌面扫码登录、手机授权与设备信任",
       "wave": "W2/W3",
       "status": "PARTIAL",
-      "evidence": "会话/关系/拉黑/群管理落地；用户封禁能力不存在（users 表无字段，G02-09 待建）；E2EE 库就绪新 UI 未接",
+      "evidence": "会话/关系/拉黑/群管理落地；G02-09 治理域已实现（封禁/解封/撤设备/群治理+元数据视图，38 测试）；E2EE 库就绪新 UI 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 115,
       "github_issue_state": "OPEN"
@@ -1179,7 +1177,7 @@
       "title": "位置消息、POI、导航与实时位置共享",
       "wave": "W2/W3",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 142,
       "github_issue_state": "OPEN"
@@ -1190,7 +1188,7 @@
       "title": "个人名片二维码、样式、保存分享与撤销",
       "wave": "W2/W3",
       "status": "PARTIAL",
-      "evidence": "service-catalog 已挂载；discovery/vision/translation 孤岛；识图翻译无服务端路由",
+      "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 138,
       "github_issue_state": "OPEN"
@@ -1233,9 +1231,9 @@
       "group": "G02",
       "title": "账户治理与管理端点",
       "wave": "W3",
-      "status": "MISSING",
-      "evidence": "账户治理卡第四轮审计 N2 新增，域侧未建",
-      "tasks_json_status": "PLANNED",
+      "status": "PARTIAL",
+      "evidence": "2026-11-19 域侧实现（identity/relations governance）；HTTP 面挂载/平台会话联动/users 表迁移编号待 G00 集成（G02-09-governance.yaml ready-for-G00）",
+      "tasks_json_status": "IMPLEMENTING",
       "github_issue_number": null,
       "github_issue_state": null
     }

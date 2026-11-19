@@ -81,10 +81,12 @@ pub struct Group {
     pub visibility: Visibility,
     pub created_at: i64,
     pub dissolved: bool,
+    /// G02-09 管理端冻结：冻结后成员只读（与解散同口径，但可解冻恢复）。
+    pub frozen: bool,
 }
 
 const SELECT_GROUP: &str = "SELECT g.id, g.name, g.owner_uid, g.created_at, \
-     m.visibility, m.dissolved_at FROM groups g \
+     m.visibility, m.dissolved_at, m.frozen_at FROM groups g \
      LEFT JOIN group_meta m ON m.group_id = g.id";
 
 /// 原文读法：`visibility` 取 `Option<String>`，判定留到 [`decode_group`]。
@@ -95,6 +97,7 @@ struct RawGroup {
     created_at: i64,
     visibility: Option<String>,
     dissolved_at: Option<i64>,
+    frozen_at: Option<i64>,
 }
 
 fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawGroup> {
@@ -105,6 +108,7 @@ fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawGroup> {
         created_at: r.get(3)?,
         visibility: r.get(4)?,
         dissolved_at: r.get(5)?,
+        frozen_at: r.get(6)?,
     })
 }
 
@@ -130,6 +134,7 @@ fn decode_group(raw: RawGroup) -> Result<Group> {
         created_at: raw.created_at,
         visibility,
         dissolved: raw.dissolved_at.is_some(),
+        frozen: raw.frozen_at.is_some(),
     })
 }
 
@@ -573,19 +578,21 @@ fn upsert_member_acs(
 /// 3. 非成员：公开且未解散 → `JR`（[`Acs::READ_ONLY`]，看得见进不来），
 ///    私有 → `N`。
 fn given_of_member(conn: &Connection, group: &Group, user: &str) -> Result<Acs> {
+    // 解散或管理端冻结 → 整群只读（冻结可经 unfreeze 恢复，解散不可）。
+    let read_only = group.dissolved || group.frozen;
     let (_, stored) = stored_member_acs(conn, &group.id, user)?;
     if stored.is_defined() {
         // 显式授予也要被角色上限夹住：member 行里写着 `O` 是坏数据，不是特权。
         let cap = role_cap(role_of(conn, &group.id, user)?.unwrap_or(Role::Member));
         let given = stored.only(cap.bits()).masked();
-        return Ok(if group.dissolved {
+        return Ok(if read_only {
             given.only(Acs::JOIN | Acs::READ)
         } else {
             given
         });
     }
     match role_of(conn, &group.id, user)? {
-        Some(role) => Ok(if group.dissolved {
+        Some(role) => Ok(if read_only {
             acs_of_role(role).only(Acs::JOIN | Acs::READ)
         } else {
             acs_of_role(role)

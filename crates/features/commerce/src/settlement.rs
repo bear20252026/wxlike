@@ -372,6 +372,51 @@ impl Commerce {
         }
     }
 
+    /// 处理中提现批量重试（后台作业 `commerce.withdrawal.refresh`）。
+    ///
+    /// 只挑 `processing` 状态（超时后资金保持冻结的那批），逐笔走与
+    /// [`Self::refresh_withdrawal`] 相同的供应商通道与同一 payout 幂等键
+    /// `withdrawal:{id}`——供应商侧重复提交不会出第二笔款。单笔仍超时/
+    /// 不可达只跳过该笔，状态保持 processing 等下一轮；绝不本地写已到账。
+    /// 返回本轮推进到终态（paid/failed）的笔数。
+    ///
+    /// # Errors
+    /// 选取清单时存储失败。
+    pub fn refresh_processing_withdrawals(&self) -> Result<usize> {
+        let due: Vec<(String, String)> = {
+            let conn = self.lock();
+            let mut stmt = conn.prepare(
+                "SELECT id, actor_id FROM commerce_withdrawals
+                 WHERE status = 'processing'
+                 ORDER BY updated_at ASC, id ASC LIMIT 50",
+            )?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row?);
+            }
+            ids
+        };
+        let mut advanced = 0usize;
+        for (id, actor) in due {
+            match self.refresh_withdrawal(&actor, &id) {
+                Ok(withdrawal) => {
+                    if matches!(
+                        withdrawal.status,
+                        WithdrawalStatus::Paid | WithdrawalStatus::Failed
+                    ) {
+                        advanced += 1;
+                    }
+                }
+                Err(_) => {
+                    // 仍未知：保持冻结与 processing，下一轮用同一幂等键再试。
+                }
+            }
+        }
+        Ok(advanced)
+    }
+
     fn apply_payout(
         &self,
         withdrawal_id: &str,

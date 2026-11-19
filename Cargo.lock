@@ -7191,10 +7191,14 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "wxlike-commerce",
+ "wxlike-container",
  "wxlike-core",
+ "wxlike-discovery",
+ "wxlike-dpage",
  "wxlike-ledger",
  "wxlike-media",
  "wxlike-message",
+ "wxlike-miniapps",
  "wxlike-moderation",
  "wxlike-mq",
  "wxlike-net",
@@ -7204,7 +7208,9 @@ dependencies = [
  "wxlike-risk",
  "wxlike-search",
  "wxlike-service-catalog",
+ "wxlike-translation",
  "wxlike-video",
+ "wxlike-vision",
 ]
 
 [[package]]

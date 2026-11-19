@@ -106,6 +106,23 @@ actions:
     platform: [server, android, desktop]
     errors_extra: [INVALID_SIGNATURE, EXPIRED, FORBIDDEN]
 
+  # G06-02-payment-refresh：超时/响应丢失后用供应商查询解决未知状态。
+  # 2026-11-19 由 G06 挂载落地（POST /api/v1/commerce/actions/payment.refresh，
+  # 会话鉴权，见 server/src/commerce_mount.rs 与 server/tests/commerce_actions.rs）。
+  payment.refresh:
+    params: { intent_id }
+    result: { intent }
+    scope: "actor（buyer）或 payee"
+    confirmation: none
+    idempotency: "read-safe：重复调用不产生第二笔分录；成功入账与回调共用 intent:{id}:success 账本幂等键"
+    offline: not-allowed
+    platform: [server]
+    errors_extra: [BAD_INPUT, FORBIDDEN, NOT_FOUND, PROVIDER_UNAVAILABLE, PROVIDER_TIMEOUT]
+    notes: >-
+      只按供应商查询证据推进状态：Pending 不改本地；查询超时返回
+      PROVIDER_TIMEOUT 且本地状态与分录数量都不变；终态不可倒退；
+      禁止本地写已支付。
+
   card.bind:
     params: { pan, cvv, brand, exp_month, exp_year, idempotency_key }
     result: { card_id, brand, last4, exp_month, exp_year, status }
@@ -476,9 +493,16 @@ actions:
     offline: not-allowed
     platform: [server, admin]
 
+# 2026-11-19 G06 挂载补充（integration-requests/G06）：
+# * webhooks.payment 已挂进 server/src/commerce_mount.rs（原始 body 验签，
+#   签名头 x-payment-signature，与 payment_callback 同一密钥与内核）。
+# * audience=admin/merchant 的动作（reconcile.*、entitlement.rule.publish、
+#   entitlement.issue）在路由层要求平台 x-admin-token（没配=整面关闭）。
+#   这是 G14 真实 admin/merchant audience 落地前的失败关闭 interim。
 webhooks:
   payment:
     endpoint: POST /api/v1/commerce/webhooks/payment
+    mounted: "server/src/commerce_mount.rs::payment_webhook（2026-11-19）"
     auth: "HMAC-SHA256(raw_body, webhook_secret) 十六进制，常数时间比较"
     replay: "event_id 唯一；重复事件返回 REPLAY 且无副作用"
     skew: "时间戳偏离超过配置窗口拒绝"

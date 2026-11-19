@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.provenance.v1",
-  "updated_at": "2026-11-12",
+  "updated_at": "2026-11-19",
   "note": "三段式登记：upstreams（仓级）→ files（片段级）→ 本地文件 sha256。ported/adapted 必须能在本地复现，且点名出现在 THIRD-PARTY-NOTICES.md。commit 是完整 SHA；每条的永久链接由 `sourceaudit provenance check` 打印。",
   "upstreams": [
     {
@@ -335,7 +335,7 @@
       "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
       "decision": "adapted",
       "license_spdx": "NOASSERTION",
-      "local_sha256": "884a7579cd490940d22b185648dfa2b0a01de8efd9a916f44e609b2337087fb3",
+      "local_sha256": "d3ca053eef2c555ae39fadca4277aa1f72b7abf044a04141098cdc8e5d8d79b9",
       "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-entry-set.md",
       "used_by": "账本 DDL：ledger_journals 的 asset/metadata/entry_count 三列与升级路径、分录集合冻结触发器（把借贷平衡升级成数据库约束）"
     },
@@ -409,7 +409,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "df48ef1dba4cce779a215dfe19fb640a52bc9661f1a733b3ece5d0964090adcf",
+      "local_sha256": "d614b8500918cd8f2f4997063c2c9be514c0da1662e303ca992dff7f4a2a3147",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-group-acs.md",
       "used_by": "群成员的位判定：邀人/审批/转让/踢人/可见性，与 role 列的双向同步"
     },
@@ -420,7 +420,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "434f31173f7ecb65aeafed1a53f1280229dd63a1130a157ea2dcd18e45075c2f",
+      "local_sha256": "fa77c3a20a2a8f8d388123def986bf8f0a5dfce6d38fb9ea6f3513536305c024",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-schema.md",
       "used_by": "friend_acs / friend_policy / group_member_acs 三张表的列形状（两列 mode + 两档默认位）"
     },
@@ -475,7 +475,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "736450fc102a06461115b2eff85e5b206f062d7cd7fbb8c030bb803114389157",
+      "local_sha256": "6b587f356710d1028944d556a6198c47307b96f8ae67f64833aff3dcdfdbb919",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-schema.md",
       "used_by": "identity_session_token / identity_token_serial / identity_retry 三张表的列形状"
     }

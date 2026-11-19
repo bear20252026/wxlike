@@ -206,15 +206,20 @@ class RealRepoWiringTest(unittest.TestCase):
         data = json.loads((ROOT / "scripts" / "wiring-baseline.json").read_text(encoding="utf-8"))
         crates = {e["crate"] for e in data["seams"]}
         # 第三轮审计实证的孤岛必须全部在台账里。commerce/ledger 已于第四轮审计 N7
-        # 经 server/src/commerce_mount.rs 接线（支付回调挂载），按"基线只许收紧"
-        # 移出台账——这里钉死它们**不再**是孤岛，防止有人把它们悄悄加回去。
+        # 经 server/src/commerce_mount.rs 接线（支付回调挂载）；miniapps/container/
+        # dpage 经 server/src/mini_runtime.rs 真实接线（G08）；discovery/vision/
+        # translation 经 server/src/discovery_mount.rs 与 ai_mount.rs 进组合根
+        # （G07，vision/translation 无供应商凭据时是诚实拒绝面）。按"基线只许
+        # 收紧"移出台账——这里钉死它们**不再**是孤岛，防止有人悄悄加回去。
         for island in (
-            "wxlike-miniapps", "wxlike-discovery",
-            "wxlike-vision", "wxlike-translation", "wxlike-container", "wxlike-dpage",
             "wxlike-client-web",
         ):
             self.assertIn(island, crates)
-        for wired in ("wxlike-commerce", "wxlike-ledger"):
+        for wired in (
+            "wxlike-commerce", "wxlike-ledger",
+            "wxlike-miniapps", "wxlike-container", "wxlike-dpage",
+            "wxlike-discovery", "wxlike-vision", "wxlike-translation",
+        ):
             self.assertNotIn(wired, crates, f"{wired} 已接线，不应再登记为孤岛")
         for entry in data["seams"]:
             for field in ("owner", "task", "close_when", "evidence"):
