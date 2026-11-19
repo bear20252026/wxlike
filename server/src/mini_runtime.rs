@@ -476,8 +476,8 @@ fn mini_err(err: MiniError) -> RuntimeError {
             (StatusCode::PAYLOAD_TOO_LARGE, "package too large")
         }
         MiniError::Downgrade(_, _, _)
-        | MiniError::VersionConflict(_, _, _)
-        | MiniError::WrongChannel(_, _, _) => (StatusCode::CONFLICT, "version conflict"),
+        | MiniError::VersionConflict(_, _)
+        | MiniError::WrongChannel(_, _) => (StatusCode::CONFLICT, "version conflict"),
         MiniError::HostTooOld(_, _) => (StatusCode::CONFLICT, "host too old"),
         MiniError::NotInstalled(_) => (StatusCode::NOT_FOUND, "app not installed"),
         MiniError::Io(_) | MiniError::Codec(_) | MiniError::InjectedFault(_) => {

@@ -53,7 +53,7 @@ const SIGNING_KEY_BYTES: usize = 32;
 /// 挂载句柄：路由进 `build_app`；后台清理与集成测试取证用这些域句柄。
 pub struct DiscoveryMount {
     pub router: Router,
-    pub scanner: Arc<QrScanner<MemoryNonceStore>>,
+    pub scanner: Arc<QrScanner<Arc<MemoryNonceStore>>>,
     pub codec: Arc<QrCodec>,
     pub geo: Arc<GeoService<SystemClock>>,
     pub shake: Arc<ShakeMatcher<SystemClock>>,
@@ -128,7 +128,7 @@ fn routes() -> Router<DiscoveryState> {
 #[derive(Clone)]
 struct DiscoveryState {
     platform: PlatformState,
-    scanner: Arc<QrScanner<MemoryNonceStore>>,
+    scanner: Arc<QrScanner<Arc<MemoryNonceStore>>>,
     codec: Arc<QrCodec>,
     geo: Arc<GeoService<SystemClock>>,
     shake: Arc<ShakeMatcher<SystemClock>>,
@@ -258,7 +258,7 @@ async fn scan_payload(
 }
 
 fn scan_dispatch(
-    scanner: &QrScanner<MemoryNonceStore>,
+    scanner: &QrScanner<Arc<MemoryNonceStore>>,
     actor: &str,
     payload: &serde_json::Value,
     now_ms: i64,
@@ -329,7 +329,7 @@ async fn scan_confirm(
 }
 
 fn confirm_dispatch(
-    scanner: &QrScanner<MemoryNonceStore>,
+    scanner: &QrScanner<Arc<MemoryNonceStore>>,
     actor: &str,
     payload: &serde_json::Value,
     now_ms: i64,

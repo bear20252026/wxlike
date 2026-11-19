@@ -244,7 +244,7 @@ pub fn govern(conn: &Connection, cmd: &GroupGovernCommand, now: i64) -> Result<G
 
     let (after_group, already, mut events) = match cmd.action {
         GroupAction::Freeze => freeze(conn, &before_group, &actor, now)?,
-        GroupAction::Unfreeze => unfreeze(conn, &before_group, &actor, now)?,
+        GroupAction::Unfreeze => unfreeze(conn, &before_group, &actor)?,
         GroupAction::Transfer => {
             let new_owner = cmd
                 .new_owner
@@ -313,7 +313,6 @@ fn unfreeze(
     conn: &Connection,
     g: &group::Group,
     actor: &str,
-    now: i64,
 ) -> Result<(group::Group, bool, Vec<GroupGovernanceEvent>)> {
     if g.dissolved {
         return Err(RelError::Conflict("group dissolved"));
