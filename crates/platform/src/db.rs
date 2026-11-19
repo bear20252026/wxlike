@@ -85,6 +85,7 @@ impl Db {
         db.migrate_g05()?;
         db.migrate_round5()?;
         db.migrate_account()?;
+        db.migrate_governance_columns()?;
         Ok(db)
     }
 
@@ -100,6 +101,32 @@ impl Db {
         let c = self.lock();
         if !Self::has_column(&c, "users", "deleted_at")? {
             c.execute_batch("ALTER TABLE users ADD COLUMN deleted_at INTEGER;")?;
+        }
+        Ok(())
+    }
+
+    /// G02-09 治理镜像列（schema/proposals/G02/governance.sql，集成请求
+    /// REQ-G00-governance-users-migration）：users 表归平台，治理状态要在
+    /// 平台登录/会话路径可读。域自有表（identity_user_governance 等）已随
+    /// `wxlike_identity::migrate` 幂等落地；这三个补列是**镜像**，权威在域表。
+    fn migrate_governance_columns(&self) -> Result<()> {
+        let c = self.lock();
+        let mut have = Vec::new();
+        {
+            let mut stmt = c.prepare("PRAGMA table_info(users)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for name in rows {
+                have.push(name?);
+            }
+        }
+        for (col, ddl) in [
+            ("suspended", "INTEGER NOT NULL DEFAULT 0"),
+            ("disabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("suspended_until_ms", "INTEGER"),
+        ] {
+            if !have.iter().any(|name| name == col) {
+                c.execute_batch(&format!("ALTER TABLE users ADD COLUMN {col} {ddl};"))?;
+            }
         }
         Ok(())
     }

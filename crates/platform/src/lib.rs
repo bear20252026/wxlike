@@ -33,6 +33,7 @@ mod favorites;
 mod friends;
 mod groups;
 mod groups_admin;
+mod identity_admin;
 mod inbox;
 mod keys;
 mod live;
@@ -249,7 +250,12 @@ pub struct Platform {
     options: PlatformOptions,
     sink: std::sync::Mutex<Option<Arc<dyn EventSink>>>,
     /// group_id -> member ids, invalidated on every membership change (WP-04).
-    group_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+    /// Arc 化：G02-09 治理端口共享同一把缓存执行 CacheClear 联动。
+    group_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>>,
+    /// G02-09 账户治理联动端口（镜像 users 补列 + 群缓存清理 + 跨域计数）。
+    /// 独立第二条连接：域调用在 spawn_blocking 里持有主库锁，端口复用同一
+    /// 把锁立即死锁（`domain::governance`）。
+    governance: crate::domain::governance::GovernanceLinks,
     /// swappable object store behind `/api/media` (WP-05).
     media: std::sync::Mutex<Arc<dyn crate::domain::media::MediaStore>>,
     /// P3 支柱 C 频道时间线的读扩散信箱（与主库同文件/同内存实例）。
@@ -291,11 +297,15 @@ impl Platform {
     pub fn in_memory_with(options: PlatformOptions) -> Result<Self> {
         let options = normalize_options(options);
         let moderation_mode = options.moderation_mode;
+        let group_cache = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let governance =
+            crate::domain::governance::GovernanceLinks::open(None, Arc::clone(&group_cache))?;
         Ok(Self {
             db: Db::open(None)?,
             options,
             sink: std::sync::Mutex::new(None),
-            group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            group_cache,
+            governance,
             // an in-memory platform must not write into the working directory
             media: std::sync::Mutex::new(Arc::new(crate::domain::media::LocalDirStore::new(
                 temp_media_dir(),
@@ -330,11 +340,15 @@ impl Platform {
     pub fn open_with(path: Option<&str>, options: PlatformOptions) -> Result<Self> {
         let options = normalize_options(options);
         let moderation_mode = options.moderation_mode;
+        let group_cache = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let governance =
+            crate::domain::governance::GovernanceLinks::open(path, Arc::clone(&group_cache))?;
         Ok(Self {
             db: Db::open(path)?,
             options,
             sink: std::sync::Mutex::new(None),
-            group_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            group_cache,
+            governance,
             media: std::sync::Mutex::new(Arc::new(crate::domain::media::LocalDirStore::new(
                 crate::domain::media::default_media_dir(),
             ))),
@@ -418,6 +432,11 @@ impl Platform {
         if exists.is_none() {
             return Err(PlatformError::NotFound);
         }
+        // G02-09 治理闸门（集成请求 REQ-G00-governance-session-linkage）：
+        // 被封禁/停用的账号不再签发任何会话——登录、设备重登、内部签发全部
+        // 经过这一个咽喉。临时封禁到期自动放行（域内惰性判定）。
+        wxlike_identity::governance::ensure_user_active(&c, user_id, now as i64)
+            .map_err(|_| PlatformError::Forbidden)?;
         c.execute(
             "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, device_name, ip, last_seen)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -497,6 +516,7 @@ impl Platform {
             .merge(favorites::routes())
             .merge(relations::routes())
             .merge(groups_admin::routes())
+            .merge(identity_admin::routes())
             .merge(communities::routes())
             .merge(notification::routes())
             .merge(recovery::routes())
