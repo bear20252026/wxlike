@@ -30,6 +30,12 @@ wxlike-commerce = { path = "../crates/features/commerce" }
 wxlike-miniapps = { path = "../crates/features/miniapps" }
 wxlike-container = { path = "../crates/container" }
 wxlike-dpage = { path = "../crates/dpage" }
+# G07/第四轮审计：发现域（扫码/附近/摇一摇）首次进组合根（discovery_mount）
+wxlike-discovery = { path = "../crates/features/discovery" }
+# G07/第四轮审计：识物/OCR/转写编排域首次进组合根；无供应商凭据诚实拒绝
+wxlike-vision = { path = "../crates/vision" }
+# G07/第四轮审计：文本翻译编排域首次进组合根；无供应商凭据诚实拒绝
+wxlike-translation = { path = "../crates/translation" }
 async-nats = { version = "0.50", optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }

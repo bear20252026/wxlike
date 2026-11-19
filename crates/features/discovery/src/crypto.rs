@@ -71,3 +71,11 @@ impl NonceStore for MemoryNonceStore {
         true
     }
 }
+
+// 组合根把同一份账本同时交给扫码器与后台清理循环，这里只做透传，
+// 不复制第二份 nonce 表（形状参照 clock.rs 对 Arc 的处理）。
+impl<T: NonceStore + ?Sized> NonceStore for std::sync::Arc<T> {
+    fn consume(&self, nonce: &str, expires_at_ms: i64, now_ms: i64) -> bool {
+        (**self).consume(nonce, expires_at_ms, now_ms)
+    }
+}

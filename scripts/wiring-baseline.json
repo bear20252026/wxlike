@@ -6,27 +6,6 @@
       "task": "G01-03",
       "close_when": "apps/desktop-web loads the wasm module through a wasm-bindgen entry (JS packaging wired into its build) and the wasm job stays green; mirrors G01-03-WASM in ci/jobs/policy/known-gaps.json.",
       "evidence": "6 tests, zero production dependents. The CI wasm job compiles it for wasm32-unknown-unknown, but no wasm-bindgen entry point / packaging integration exists in apps/desktop-web yet."
-    },
-    {
-      "crate": "wxlike-discovery",
-      "owner": "G07",
-      "task": "G07 discovery integration",
-      "close_when": "Server discovery/search routes dispatch into wxlike-discovery and the crate leaves the unwired set (guard baseline shrinks).",
-      "evidence": "30 tests, zero production dependents. No entry crate (server/admin/cli/mcp/ffi/sfu/ui) depends on it."
-    },
-    {
-      "crate": "wxlike-translation",
-      "owner": "G07",
-      "task": "G07 translation integration",
-      "close_when": "A production entry (server message translation route or client action) dispatches into wxlike-translation and the crate leaves the unwired set.",
-      "evidence": "9 tests, zero production dependents. Depends on wxlike-vision (also unwired); no entry closure covers either."
-    },
-    {
-      "crate": "wxlike-vision",
-      "owner": "G07",
-      "task": "G07 vision integration",
-      "close_when": "A production entry dispatches into wxlike-vision (scan/OCR path) and the crate leaves the unwired set.",
-      "evidence": "15 tests. Only dependent is wxlike-translation, itself unwired; no entry crate depends on it."
     }
   ]
 }
