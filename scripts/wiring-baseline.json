@@ -15,13 +15,6 @@
       "evidence": "58 tests, zero production dependents. server/src/mini_mount.rs keeps an independent shadow implementation; the container crate is not on any entry closure."
     },
     {
-      "crate": "wxlike-discovery",
-      "owner": "G07",
-      "task": "G07 discovery integration",
-      "close_when": "Server discovery/search routes dispatch into wxlike-discovery and the crate leaves the unwired set (guard baseline shrinks).",
-      "evidence": "30 tests, zero production dependents. No entry crate (server/admin/cli/mcp/ffi/sfu/ui) depends on it."
-    },
-    {
       "crate": "wxlike-dpage",
       "owner": "G08",
       "task": "G08 miniapps integration",
@@ -34,20 +27,6 @@
       "task": "G08 miniapps integration",
       "close_when": "server/src/mini_mount.rs dispatches into wxlike-miniapps (single registry fact) and the shadow BTreeMap implementation is retired.",
       "evidence": "54 tests, zero production dependents. server/src/mini_mount.rs maintains an independent BTreeMap shadow registry parallel to the crate."
-    },
-    {
-      "crate": "wxlike-translation",
-      "owner": "G07",
-      "task": "G07 translation integration",
-      "close_when": "A production entry (server message translation route or client action) dispatches into wxlike-translation and the crate leaves the unwired set.",
-      "evidence": "9 tests, zero production dependents. Depends on wxlike-vision (also unwired); no entry closure covers either."
-    },
-    {
-      "crate": "wxlike-vision",
-      "owner": "G07",
-      "task": "G07 vision integration",
-      "close_when": "A production entry dispatches into wxlike-vision (scan/OCR path) and the crate leaves the unwired set.",
-      "evidence": "15 tests. Only dependent is wxlike-translation, itself unwired; no entry crate depends on it."
     }
   ]
 }

@@ -14,10 +14,14 @@
 
 use std::sync::Arc;
 
+/// G07/第四轮审计：识物/OCR/转写与翻译域的组合根装配（无供应商凭据诚实拒绝）。
+pub mod ai_mount;
 /// G06/N7：支付/账本域供应商回调的组合根装配（原始 body 验签，幂等落 commerce 域）。
 pub mod commerce_mount;
 /// G07/D6：服务目录域的组合根装配（会话校验落平台 sessions 表，无凭据诚实阻塞）。
 pub mod discover_mount;
+/// G07/第四轮审计：发现域（扫码/附近/摇一摇）的组合根装配（会话校验落平台 sessions 表）。
+pub mod discovery_mount;
 mod history_archive;
 /// #295/G00：media 域的组合根装配（会话校验/成员事实/签名密钥都落在这里）。
 /// `pub` 是给集成测试的：挂载的鉴权与迁移可重入性要能在不起 hub 的情况下复验。
@@ -166,6 +170,23 @@ fn spawn_background_workers(
     .collect()
 }
 
+/// G07 孤岛接线后的进程级清理循环（integration-requests/G07 登记的 job）：
+/// 扫码支付 nonce 过期清理 + 识别结果 TTL 清理，都是每分钟一轮。
+/// 句柄交给调用方攥着（与 `spawn_background_workers` 同一口径）。
+fn spawn_g07_workers(
+    discovery: &discovery_mount::DiscoveryMount,
+    ai: &ai_mount::AiMount,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let nonces = discovery.nonces_handle();
+    let nonce_worker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            nonces.prune(wxlike_core::types::now_ms() as i64);
+        }
+    });
+    vec![nonce_worker, ai.spawn_purge_worker(std::time::Duration::from_secs(60))]
+}
+
 /// 起栈。
 ///
 /// 这个函数只做**编排**：读配置 → 开存储 → 起 hub → 拼路由 → 起 HTTP。
@@ -201,7 +222,13 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
     let mini_app = mini_mount::assemble(&platform, opts.db_path.as_deref())?;
     // G06/N7：支付回调域装一次 = 顺带把 commerce/ledger 表幂等建到 sidecar 库。
     let (commerce_app, commerce) = commerce_mount::assemble(&platform, opts.db_path.as_deref())?;
+    // G07/第四轮审计：发现域（扫码/附近/摇一摇）与识物/翻译域进组合根。
+    // 状态是进程内的（域实现即内存态）；视觉/翻译无供应商凭据 → 诚实拒绝面。
+    let discovery_mount = discovery_mount::assemble(&platform)?;
+    let ai_mount = ai_mount::assemble(&platform);
     let _workers = spawn_background_workers(&platform, &media_service);
+    // G07 契约登记的两个清理 job：过期 nonce / 过期识别结果（每分钟一轮）。
+    let _g07_workers = spawn_g07_workers(&discovery_mount, &ai_mount);
     let app = build_app(
         opts.hub_id.clone(),
         quic_addr,
@@ -214,6 +241,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
             discover: discover_app,
             mini: mini_app,
             commerce: commerce_app,
+            discovery: discovery_mount.router,
+            ai: ai_mount.router,
         },
     );
     let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app.clone()).await?;
@@ -512,6 +541,10 @@ struct FeatureApps {
     mini: Router,
     /// G06 支付回调域（`/api/payment/callback`）。
     commerce: Router,
+    /// G07 发现域（`/api/v1/scan|qr|nearby|shake`）。
+    discovery: Router,
+    /// G07 识物/OCR/转写与翻译域（`/api/v1/recognition|translation`，无凭据诚实拒绝）。
+    ai: Router,
 }
 
 /// 拼路由：健康检查、平台、media 域、视频、WS、在线状态、历史、静态页、开发辅助。
@@ -558,6 +591,11 @@ fn build_app(
         .merge(features.mini)
         // G06/N7：支付回调域（/api/payment/callback，原始 body 验签 + operation_id 幂等）。
         .merge(features.commerce)
+        // G07/第四轮审计：发现域（/api/v1/scan、/api/v1/qr、/api/v1/nearby、/api/v1/shake）。
+        .merge(features.discovery)
+        // G07/第四轮审计：识物/翻译域（/api/v1/recognition、/api/v1/translation；
+        // 无供应商凭据 → 503 DEPENDENCY_UNAVAILABLE，绝不返回样例结果）。
+        .merge(features.ai)
         .merge(wxlike_video::routes(video_state))
         .merge(ws_routes(handle.clone()))
         .merge(presence_routes(handle.clone(), platform.clone()))

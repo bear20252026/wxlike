@@ -7192,6 +7192,7 @@ dependencies = [
  "ureq",
  "wxlike-commerce",
  "wxlike-core",
+ "wxlike-discovery",
  "wxlike-ledger",
  "wxlike-media",
  "wxlike-message",
@@ -7204,7 +7205,9 @@ dependencies = [
  "wxlike-risk",
  "wxlike-search",
  "wxlike-service-catalog",
+ "wxlike-translation",
  "wxlike-video",
+ "wxlike-vision",
 ]
 
 [[package]]
