@@ -205,7 +205,7 @@ async fn balance_and_statement_are_self_scoped_reads() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
-        body["items"].as_array().unwrap().len() >= 1,
+        !body["items"].as_array().unwrap().is_empty(),
         "应有注资流水: {body}"
     );
 }
@@ -456,13 +456,15 @@ async fn provider_timeout_maps_to_504_and_leaves_state_unknown() {
     .unwrap();
 
     // 直接经平台注册一个会话（与 register 路由同一套 sessions 表）。
-    let user_id = "timeoutbuyer";
-    platform.register(user_id, "pw").expect("register user");
+    // register 返回**生成的 user_id**（名字只是查重键），会话与钱包都必须用 id。
+    let user_id = platform
+        .register("timeoutbuyer", "pw")
+        .expect("register user");
     let token = platform
-        .create_session(user_id, wxlike_platform::DEFAULT_SESSION_TTL_MS)
+        .create_session(&user_id, wxlike_platform::DEFAULT_SESSION_TTL_MS)
         .expect("session");
     commerce
-        .sandbox_credit(user_id, cny(100_000), "fund:timeout")
+        .sandbox_credit(&user_id, cny(100_000), "fund:timeout")
         .expect("fund");
 
     let (status, created) = send(
@@ -493,7 +495,7 @@ async fn provider_timeout_maps_to_504_and_leaves_state_unknown() {
 
     // 本地状态不变（仍 pending/created），分录为 0：超时不能本地写已支付。
     let intent = commerce
-        .payment_intent(user_id, &intent_id)
+        .payment_intent(&user_id, &intent_id)
         .expect("read intent");
     assert!(
         matches!(
@@ -680,7 +682,7 @@ async fn redpacket_requires_real_group_membership() {
         .commerce
         .sandbox_credit(&owner_id, cny(100_000), "fund:rp-owner")
         .expect("fund owner");
-    let group = create_group(&stack.app, &owner_tok, &[member_id.clone()]).await;
+    let group = create_group(&stack.app, &owner_tok, std::slice::from_ref(&member_id)).await;
 
     // 群主发红包：成员事实来自平台 group_members 表（真实端口）。
     let (status, created) = send(
@@ -768,9 +770,13 @@ async fn redpacket_create_forbidden_for_non_member() {
 // 4. audience 闸门（G06-03 reconcile / G06-05 权益发行）
 // ---------------------------------------------------------------------------
 
+// 三个后台面场景合并成一个**顺序**测试：`WXLIKE_ADMIN_TOKEN` 是进程级环境
+// 变量，`boot()` 在栈装配时读它；并行测试各自 set/remove 会互相污染对方
+// 刚 boot 出来的栈（三个用例并行跑时按交错结果随机红）。合并后时序完全
+// 受控，其他测试不触及后台面动作，不受这把 env 影响。
 #[tokio::test]
-async fn reconcile_requires_admin_audience() {
-    // 配了 admin token 的栈：普通会话 403，持 x-admin-token 才放行。
+async fn backstage_audience_gate_reconcile_and_entitlement() {
+    // 场景 1：配了 admin token 的栈——普通会话 403，持 x-admin-token 才放行。
     std::env::set_var("WXLIKE_ADMIN_TOKEN", "test-admin-token-g06");
     let stack = boot().await;
     let (_id, token) = register(&stack.app, "recon-user").await;
@@ -796,12 +802,7 @@ async fn reconcile_requires_admin_audience() {
     assert_eq!(status, StatusCode::OK, "admin 跑对账应 200: {body}");
     assert!(body["run_id"].as_str().is_some(), "应返回 run_id: {body}");
 
-    std::env::remove_var("WXLIKE_ADMIN_TOKEN");
-}
-
-#[tokio::test]
-async fn reconcile_closed_when_admin_token_not_configured() {
-    // 没配 admin token：后台面整面关闭（不是放行）。即便登录也 403。
+    // 场景 2：没配 admin token——后台面整面关闭（不是放行）。即便登录也 403。
     std::env::remove_var("WXLIKE_ADMIN_TOKEN");
     let stack = boot().await;
     let (_id, token) = register(&stack.app, "recon-noadmin").await;
@@ -815,15 +816,13 @@ async fn reconcile_closed_when_admin_token_not_configured() {
         StatusCode::FORBIDDEN,
         "未配 admin token 应整面关闭: {body}"
     );
-}
 
-#[tokio::test]
-async fn entitlement_publish_requires_backstage_audience() {
+    // 场景 3：权益发行同闸门——普通会话 403（不能给自己发无限权益），
+    // 持 admin token 放行。
     std::env::set_var("WXLIKE_ADMIN_TOKEN", "test-admin-token-g06-ent");
     let stack = boot().await;
     let (_id, token) = register(&stack.app, "ent-issuer").await;
 
-    // 普通会话发布权益规则 → 403（不能给自己发无限权益）。
     let (status, body) = send(
         &stack.app,
         action_request(
@@ -1032,7 +1031,7 @@ async fn file_backed_payment_posts_exactly_one_journal() {
         now_ms()
     );
     let sig = stack.commerce.webhook_signature(&raw);
-    let mut req = Request::builder()
+    let req = Request::builder()
         .method("POST")
         .uri("/api/payment/callback")
         .header("content-type", "application/json")
@@ -1058,7 +1057,7 @@ async fn file_backed_payment_posts_exactly_one_journal() {
 
     // 原样重投回调：replayed=true，行数不变（幂等只有一份实现）。
     let sig2 = stack.commerce.webhook_signature(&raw);
-    let mut req = Request::builder()
+    let req = Request::builder()
         .method("POST")
         .uri("/api/payment/callback")
         .header("content-type", "application/json")

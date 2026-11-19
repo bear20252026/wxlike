@@ -203,7 +203,7 @@ fn now_ms() -> i64 {
 async fn vision_consent(State(state): State<AiState>, headers: HeaderMap, body: Bytes) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match state
         .vision
@@ -233,7 +233,7 @@ async fn vision_consent_revoke(State(state): State<AiState>, headers: HeaderMap)
 async fn vision_run(State(state): State<AiState>, headers: HeaderMap, body: Bytes) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let request = match vision_request(&payload) {
         Ok(request) => request,
@@ -357,7 +357,7 @@ async fn translation_consent(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match state
         .translation
@@ -390,7 +390,7 @@ async fn translation_run(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (Some(text), Some(target)) = (payload["text"].as_str(), payload["target"].as_str()) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");

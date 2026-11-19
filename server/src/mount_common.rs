@@ -35,16 +35,22 @@ pub(crate) fn parse_json(body: &Bytes) -> Option<serde_json::Value> {
 
 /// 会话 + JSON 的公共前置：一次拿齐 actor 与 payload，失败即回响应。
 /// 三个挂载的 handler 开头不再各抄八行。
+///
+/// `Err` 装箱：axum `Response` 本体超过 clippy `result_large_err` 的 128 字节
+/// 阈值；错误是冷路径（鉴权失败/坏输入才走），装箱不影响热路径。
 pub(crate) fn authed_json(
     platform: &PlatformState,
     headers: &HeaderMap,
     body: &Bytes,
-) -> Result<(String, serde_json::Value), Response> {
+) -> Result<(String, serde_json::Value), Box<Response>> {
     let Some(actor) = actor_of(platform, headers) else {
-        return Err(err_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED"));
+        return Err(Box::new(err_response(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+        )));
     };
     let Some(payload) = parse_json(body) else {
-        return Err(err_response(StatusCode::BAD_REQUEST, "BAD_INPUT"));
+        return Err(Box::new(err_response(StatusCode::BAD_REQUEST, "BAD_INPUT")));
     };
     Ok((actor, payload))
 }

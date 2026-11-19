@@ -133,17 +133,48 @@ pub fn provider_callback_get(commerce: &Commerce, operation_id: &str) -> Result<
 }
 
 fn money(payload: &Value, max_minor: i64) -> Result<Money> {
-    let currency = payload
-        .get("currency")
-        .and_then(Value::as_str)
-        .unwrap_or("CNY");
-    let currency = Currency::parse(currency)?;
-    let raw = payload
+    // 两种输入形状：小数字符串（首次请求，"30.00"），或 prepare 草稿的规范
+    // 输出对象 `{"minor","currency"}` 原样回灌（transfer/redpacket 的
+    // prepare→create 往返）。对象分支直接按 minor 构造——"3000" 走小数解析
+    // 会变成 3000.00 元（差百倍），确认令牌的 HMAC 因此对不上。
+    let amount = payload
         .get("amount")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CommerceError::BadInput("amount must be a decimal string".into()))?;
-    let minor = store::parse_decimal_minor(raw, max_minor)?;
-    Ok(Money::from_minor(minor, currency))
+        .ok_or_else(|| CommerceError::BadInput("amount is required".into()))?;
+    match amount {
+        Value::Object(_) => {
+            let minor = amount
+                .get("minor")
+                .and_then(Value::as_str)
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .filter(|m| *m >= 0)
+                .ok_or_else(|| {
+                    CommerceError::BadInput("amount.minor must be a non-negative integer".into())
+                })?;
+            if minor > max_minor {
+                return Err(CommerceError::AmountTooLarge);
+            }
+            let currency = Currency::parse(
+                amount
+                    .get("currency")
+                    .and_then(Value::as_str)
+                    .unwrap_or("CNY"),
+            )?;
+            Ok(Money::from_minor(minor, currency))
+        }
+        _ => {
+            let currency = Currency::parse(
+                payload
+                    .get("currency")
+                    .and_then(Value::as_str)
+                    .unwrap_or("CNY"),
+            )?;
+            let raw = amount
+                .as_str()
+                .ok_or_else(|| CommerceError::BadInput("amount must be a decimal string".into()))?;
+            let minor = store::parse_decimal_minor(raw, max_minor)?;
+            Ok(Money::from_minor(minor, currency))
+        }
+    }
 }
 
 fn text<'a>(payload: &'a Value, key: &str) -> Result<&'a str> {

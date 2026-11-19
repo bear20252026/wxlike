@@ -230,7 +230,7 @@ async fn scan_payload(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let scanner = Arc::clone(&state.scanner);
     let now_ms = wxlike_core::types::now_ms() as i64;
@@ -318,7 +318,7 @@ async fn scan_confirm(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let scanner = Arc::clone(&state.scanner);
     let now_ms = wxlike_core::types::now_ms() as i64;
@@ -412,7 +412,7 @@ async fn geo_opt_in(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let Some(enabled) = payload["enabled"].as_bool() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
@@ -434,7 +434,7 @@ async fn geo_publish(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (Some(lat), Some(lng)) = (payload["lat"].as_f64(), payload["lng"].as_f64()) else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
@@ -485,7 +485,7 @@ async fn geo_nearby(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (Some(lat), Some(lng), Some(radius_m)) = (
         payload["lat"].as_f64(),
@@ -509,7 +509,7 @@ async fn geo_block(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let Some(target) = payload["target"].as_str() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
@@ -530,7 +530,7 @@ async fn geo_report(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (Some(target), Some(reason)) = (payload["target"].as_str(), payload["reason"].as_str())
     else {
@@ -587,7 +587,7 @@ async fn shake_start(
 ) -> Response {
     let (actor, payload) = match authed_json(&state.platform, &headers, &body) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let Some(magnitude_g) = payload["magnitude_g"].as_f64() else {
         return err_response(StatusCode::BAD_REQUEST, "BAD_INPUT");

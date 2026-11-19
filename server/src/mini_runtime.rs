@@ -5,7 +5,8 @@
 //! `wxlike-dpage` 三个域 crate，所以审计称其为「影子」。本模块补上真实域面：
 //!
 //! 1. **目录搜索/推荐**走 `wxlike_miniapps::catalog::Catalog`（审核目录的唯一事实
-//!    源是管理后台配置的 [`CatalogStore`]，空目录就是空数组，不拿静态假数据填充）。
+//!    源是管理后台配置的 [`CatalogStore`](crate::mini_runtime::CatalogStore)，
+//!    空目录就是空数组，不拿静态假数据填充）。
 //! 2. **包体检视**走 `wxlike_miniapps::packages::open` + `wxlike_dpage::peek`
 //!    （形状/宿主兼容/逐资源摘要校验，不做信任判定）。
 //! 3. **包体验签**走 `wxlike_miniapps::packages::verify` + `toolchain::load_trust`
