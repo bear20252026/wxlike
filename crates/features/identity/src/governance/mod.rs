@@ -16,7 +16,7 @@
 //!
 //! # 三条纪律
 //!
-//! 1. **audience 分离**：每个写命令都先用 [`authenticate_operator`] 走
+//! 1. **audience 分离**：每个写命令都先用 `authenticate_operator` 走
 //!    `session::authenticate(.., Audience::Admin)`——普通用户令牌进不来
 //!    （复用 G02-01 的受众/认证级别判定，服务端再次鉴权）。
 //! 2. **幂等**：同操作重复提交命中 `already=true`，不产生二次状态变更、不再
@@ -25,7 +25,7 @@
 //! 3. **域发事件、平台执行**：封禁即时撤销会话（删 `sessions`/刷新链/step-up），
 //!    进程内效果（断 WS、清缓存、设备密钥作废、users 表镜像）由
 //!    [`PlatformGovernancePort`] 交平台进程执行——本 crate 不发 IO、不写 admin
-//!    审计表，只落自己的 [`append_audit`] 回执并把事件交回调用方。
+//!    审计表，只落自己的 `append_audit` 回执并把事件交回调用方。
 //!
 //! # ADR-28
 //!

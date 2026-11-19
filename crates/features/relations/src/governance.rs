@@ -189,20 +189,23 @@ fn summary(g: &group::Group) -> serde_json::Value {
     })
 }
 
+/// `groups LEFT JOIN group_meta` 的原始行（按 SELECT 列序展开）。
+type GroupRawRow = (
+    String,         // g.id
+    String,         // g.name
+    String,         // g.owner_uid
+    i64,            // g.created_at
+    Option<String>, // m.visibility
+    Option<i64>,    // m.dissolved_at
+    Option<i64>,    // m.frozen_at
+);
+
 /// 读群（含已解散/已冻结；治理要能对已冻结的群解冻）。
 fn load(conn: &Connection, group_id: &str) -> Result<group::Group> {
     // 复用 group 的公开读路径：groups_of 只给未解散，这里直接按 id 查。
     let sql = "SELECT g.id, g.name, g.owner_uid, g.created_at, m.visibility, m.dissolved_at, \
          m.frozen_at FROM groups g LEFT JOIN group_meta m ON m.group_id = g.id WHERE g.id = ?1";
-    let raw: Option<(
-        String,
-        String,
-        String,
-        i64,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-    )> = conn
+    let raw: Option<GroupRawRow> = conn
         .query_row(sql, params![group_id], |r| {
             Ok((
                 r.get(0)?,

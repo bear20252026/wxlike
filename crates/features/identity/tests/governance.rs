@@ -25,10 +25,13 @@ use common::{add_device, db, login};
 const DEV1: &str = "device-aaaaaaaa";
 const DEV2: &str = "device-bbbbbbbb";
 
+/// `mirror_user_state` 的一次调用记录（user_id, suspended, disabled, until_ms）。
+type MirrorRecord = (String, bool, bool, Option<i64>);
+
 /// 记录平台联动调用的 fixture（镜像 + 事件）。
 #[derive(Default)]
 struct RecordingPort {
-    mirrors: Mutex<Vec<(String, bool, bool, Option<i64>)>>,
+    mirrors: Mutex<Vec<MirrorRecord>>,
     events: Mutex<Vec<GovernanceEvent>>,
 }
 
