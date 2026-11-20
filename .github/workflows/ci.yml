@@ -161,6 +161,11 @@ jobs:
         '
     - name: C6 wasm compile (gap-aware)
       run: python3 ci/jobs/build/check_wasm.py
+    - name: install wasm-pack (pinned)
+      shell: bash
+      run: "curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \\\n  | tar -xz -C /tmp\nsudo install /tmp/wasm-pack-v0.13.1-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack\nwasm-pack --version\n"
+    - name: C6 wasm package (G01-03 JS packaging)
+      run: bash scripts/build-wasm.sh
     - name: record known gaps
       run: python3 ci/jobs/build/check_gaps.py
   ui:

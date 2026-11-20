@@ -141,6 +141,17 @@ jobs:
       # 理由见 ci/jobs/README.md「Caching and supply chain」。
       - name: C6 wasm compile (gap-aware)
         run: python3 ci/jobs/build/check_wasm.py
+      # wasm-pack 固定版本：G01-03 的 JS 打包产物由它生成，版本漂移会让
+      # pkg 的 package.json / .d.ts 形状变化，消费侧（desktop-web）跟着漂。
+      - name: install wasm-pack (pinned)
+        shell: bash
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz -C /tmp
+          sudo install /tmp/wasm-pack-v0.13.1-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack
+          wasm-pack --version
+      - name: C6 wasm package (G01-03 JS packaging)
+        run: bash scripts/build-wasm.sh
       - name: record known gaps
         run: python3 ci/jobs/build/check_gaps.py
 
