@@ -73,9 +73,14 @@ async fn live(tag: &str) -> Live {
 
 /// 注册一个用户并真登录一次，返回它的会话令牌（封禁的验收面就是这条会话被撤掉）。
 async fn login(base: &str, name: &str) -> String {
-    let (status, body) =
-        common::post_platform(base, "/api/login", json!({"name": name, "password": "pw"}), None, None)
-            .await;
+    let (status, body) = common::post_platform(
+        base,
+        "/api/login",
+        json!({"name": name, "password": "pw"}),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, 200, "登录 {name}: {body}");
     body["token"].as_str().unwrap().to_string()
 }
@@ -89,7 +94,13 @@ fn mfa_session(app: &Arc<App>, name: &str, role: Role) -> (String, String) {
     app.accounts().totp_confirm(name, &code).unwrap();
     let (session, token) = app
         .accounts()
-        .login(name, common::PW, Some(&code), app.config().session_ttl_ms, "")
+        .login(
+            name,
+            common::PW,
+            Some(&code),
+            app.config().session_ttl_ms,
+            "",
+        )
         .unwrap();
     assert!(session.mfa, "{name} 的会话必须 mfa=true");
     (token, secret)
@@ -200,7 +211,12 @@ async fn adminx_platform_token_drives_suspend_through_upstream() {
         common::PLATFORM_TOKEN.to_string(),
     );
     let err = static_up
-        .call("POST", &path, "ops", Some(json!({"reason": "spam", "actor": "ops"})))
+        .call(
+            "POST",
+            &path,
+            "ops",
+            Some(json!({"reason": "spam", "actor": "ops"})),
+        )
         .await
         .unwrap_err();
     match err {
