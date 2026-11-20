@@ -1025,6 +1025,10 @@ async fn serve_transport(
 /// 消失才解绑路由）。**幂等**：主动撤销（[`HubHandle::disconnect_user`]）与
 /// 对端自然断开可能各调一次，重复调用必须是 no-op。
 async fn release_conn(state: &Arc<HubState>, user_id: &str, conn_id: ConnId, generation: u64) {
+    // 先清主动撤销侧的登记：`ConnCloser::Quic` 持有整个 `quinn::Connection`，
+    // 不在这里 drop 掉的话，连接对端永远收不到关闭（自然断开路径同样要走）。
+    state.conn_closers.write().await.remove(&conn_id);
+    state.conn_devices.write().await.remove(&conn_id);
     let mut keep_bound = false;
     {
         let mut peers = state.peers.write().await;
