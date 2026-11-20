@@ -37,6 +37,8 @@ jobs:
       - name: C9 frontend bundle consumed by Tauri
         run: npm run build
         working-directory: ui
+      - name: C9 prepare wasm client for the new UI (G01-03)
+        run: bash scripts/ci-prepare-wasm-client.sh
       - name: C9 new UI bundle consumed by the default host
         shell: bash
         run: |
