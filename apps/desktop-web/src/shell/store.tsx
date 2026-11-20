@@ -353,7 +353,7 @@ interface AppContextValue {
   core: CoreHandle;
   platform: PlatformPort;
   fixture: FixtureCore | null;
-  source: "tauri" | "fixture" | "unavailable";
+  source: "tauri" | "fixture" | "wasm" | "unavailable";
   note?: string;
 }
 
@@ -370,7 +370,7 @@ export function AppProvider({
   core: CoreHandle;
   platform: PlatformPort;
   fixture: FixtureCore | null;
-  source: "tauri" | "fixture" | "unavailable";
+  source: "tauri" | "fixture" | "wasm" | "unavailable";
   note?: string;
   children: ReactNode;
 }) {
