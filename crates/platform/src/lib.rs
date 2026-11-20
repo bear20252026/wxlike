@@ -126,6 +126,13 @@ fn temp_media_dir() -> std::path::PathBuf {
 /// Thirty days, as required by WP-01.
 pub const DEFAULT_SESSION_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
+/// G02-09 设备侧联动端口（断 WS/QUIC 泵）。定义在 `domain::governance`，
+/// 在装配面（`server`）注入实现；[`ChannelGovernanceSink`] 是现成的
+/// "同步 dispatch → async hub" 通道桥。
+pub use crate::domain::governance::{
+    ChannelGovernanceSink, GovernanceDeviceSink, GovernanceDisconnect,
+};
+
 #[derive(Clone, Debug)]
 pub struct PlatformOptions {
     pub session_ttl_ms: u64,
@@ -600,6 +607,14 @@ impl Platform {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(sink);
+    }
+
+    /// 装配 G02-09 设备侧联动句柄（断 WS/QUIC 泵）。由 `server` 在拿到
+    /// hub 句柄后调用；未装配时治理断连事件只留痕。
+    ///
+    /// 与 [`Self::set_event_sink`] 同一模式：进程启动期一次性注入，之后只读。
+    pub fn set_governance_sink(&self, sink: Arc<dyn GovernanceDeviceSink>) {
+        self.governance.set_device_sink(Some(sink));
     }
 
     /// Best-effort push: a peer that cannot be reached must not roll back an

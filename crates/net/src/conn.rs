@@ -22,6 +22,10 @@ use tokio::sync::Mutex;
 #[async_trait::async_trait]
 pub trait FrameTx: Send {
     async fn send_frame(&mut self, frame: &[u8]) -> anyhow::Result<()>;
+
+    /// 主动关闭本连接的发送侧（管理端撤销会话/设备时用）。默认空实现：
+    /// 不支持主动关闭的载体只需自然断开。
+    async fn close(&mut self) {}
 }
 
 /// Read half of a connection, in frames. `Err` = connection over.
@@ -77,6 +81,14 @@ impl PeerConn {
             .await
             .context("read frame")
     }
+
+    /// 主动关闭发送侧：管理端撤销时让对端立刻收到结束信号。
+    ///
+    /// QUIC 只有发送流句柄，`finish` 是优雅结束；要立即断开整个连接用
+    /// `quinn::Connection::close`（由 hub 的 `ConnCloser` 持有，见 `mq_hub`）。
+    pub async fn close(&self) {
+        self.tx.lock().await.close().await;
+    }
 }
 
 struct QuicTx {
@@ -88,6 +100,11 @@ impl FrameTx for QuicTx {
     async fn send_frame(&mut self, frame: &[u8]) -> anyhow::Result<()> {
         crate::framing::write_frame(&mut self.send, frame).await?;
         Ok(())
+    }
+
+    async fn close(&mut self) {
+        // 优雅结束发送方向（发 FIN）；立即断开整个连接走 ConnCloser。
+        let _ = self.send.finish();
     }
 }
 
@@ -132,6 +149,11 @@ pub mod ws {
             sink.send(Message::Binary(frame.to_vec().into()))
                 .await
                 .context("ws send")
+        }
+
+        async fn close(&mut self) {
+            let mut sink = self.0.lock().await;
+            let _ = sink.close().await;
         }
     }
 
