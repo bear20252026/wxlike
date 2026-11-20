@@ -42,6 +42,14 @@
 规范事件链（QuicEventSource/subscribe_events）尚无生产调用方，见
 `MOBILE-NATIVE-SHELLS` 台账证据。
 
+## 已知风险（随退役消除）
+
+**Dependabot `GHSA-wrw7-89jp-8q8g`（RUSTSEC-2024-0429，medium）**：`ui/src-tauri/Cargo.lock` 的 `glib 0.18.5` 的 `VariantStrIter` 存在未定义行为（优化构建；影响 glib 0.15.0–0.18.5），修复版本是 `glib 0.20.0`。
+
+**tauri 2.x 稳定线修不了**：`tauri 2.12.7` 依赖 `gtk ^0.18`，gtk-rs 0.18 家族与 glib 0.18 绑定；升到 glib 0.20 要换 tauri 3.x 的 gtk4 线，不在稳定线，而这是待退役的 UI。故这条随旧 UI 退役自然消除，不单独升级（升级窗口见 MOBILE-NATIVE-SHELLS 台账）。
+
+实际暴露面很小：仅 Linux 旧 UI 桌面路径，且 `VariantStrIter` 在本项目 Rust 代码里没有被调用。
+
 ## 退役条件（close_when，与台账同源）
 
 1. 新 UI 覆盖旧 UI 独占的全部功能：通话 UI、秘密聊天、本地历史、钱包/红包、
