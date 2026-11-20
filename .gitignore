@@ -20,6 +20,8 @@ ui/dist/app.js
 ui/dist-web/
 # G10 新版 Web UI 产物（vite build 输出）
 apps/desktop-web/dist/
+# G01-03 Rust WASM 打包产物（scripts/build-wasm.sh 生成，wasm-pack 出）
+packages/wasm-client/
 
 # Zone B：绑定生成产物与交叉编译出来的 .so（都靠脚本重建，不进 git）
 crates/ffi/generated/

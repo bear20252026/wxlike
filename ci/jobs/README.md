@@ -16,7 +16,7 @@ directly.
 | C3 | `test` | yes | rust | Workspace tests on Linux, Windows and macOS |
 | C4 | `contract` | yes | contract or rust | JSON contracts parse, entry/action IDs are unique, seed ↔ registry mapping is complete, API fixtures are stable |
 | C5 | `native` | yes | rust | `cargo build --workspace --all-targets --locked` on all three OSes |
-| C6 | `wasm` | yes\* | rust | WASM target compiles (`wxlike-client-web` on wasm32-unknown-unknown). \*The wasm-bindgen entry / JS packaging in `apps/desktop-web` is still open (G01-03); it blocks **release**, not day-to-day CI |
+| C6 | `wasm` | yes\* | rust | WASM target compiles (`wxlike-client-web` on wasm32-unknown-unknown) **and** the JS package is produced (`scripts/build-wasm.sh`, wasm-pack pinned in CI). \*Consuming that package in `apps/desktop-web` is still open (G01-03 / G10); it blocks **release**, not day-to-day CI |
 | C7 | `ui` | yes | ui or desktop | React typecheck, production bundle, wire self-test, message-index contract |
 | C7b | `web-v2` | yes | ui | `apps/desktop-web` (React + Vite, G10): `npm ci` → typecheck → lint → test → build, plus `packages/mini-sdk` contract-parity tests |
 | C8 | `flutter`, `android`, `ios` | yes\* | mobile, contract or rust | UniFFI bindings regenerate, `flutter analyze`, `flutter test`, release-mode APK with symbol/signature evidence. \*`ios` records `apps/mobile/ios` absence as a tracked gap; the release job fails closed |
@@ -25,10 +25,14 @@ directly.
 | C11 | `coverage`, `unwrap`, `image`, `e2e`, `performance` | yes | rust, contract or ci | Incremental security-path coverage; no new `unwrap()/expect()`; container image constraints and smoke; HTTP e2e (success/empty/param/unauthorized/timeout/cancel/restart) and measured latency/throughput budgets |
 | — | `gate` | yes | always | Aggregates all of the above. Failed/cancelled dependencies fail; skipped dependencies pass only when C0 selected them out |
 
-`C6` is deliberately split: the wasm job compiles every workspace crate that
-declares a wasm32 target (today `wxlike-client-web`), and the remaining gap —
-wiring the wasm module into the `apps/desktop-web` build through a
-wasm-bindgen entry — is tracked in `policy/known-gaps.json`. The **release**
+`C6` is deliberately split in two halves: the wasm job compiles every
+workspace crate that declares a wasm32 target (today `wxlike-client-web`)
+and runs `scripts/build-wasm.sh` to produce the JS package into
+`packages/wasm-client` (wasm-pack pinned to v0.13.1; the job fails when the
+package lacks `package.json` / `.wasm` / `.js` / `.d.ts`). The other half —
+wiring that package into the `apps/desktop-web` build — belongs to G10 and is
+tracked as `G01-03-WASM-CONSUMER` in `policy/known-gaps.json` (the G01 half,
+`G01-03-WASM-PACKAGE`, is closed). The **release**
 workflow calls `check_contracts.py --require-registry` and
 `check_gaps.py --release`, which fails while any `blocks_release` gap is open —
 since 2026-11-05 that is only `PAYMENT-CALLBACK-REPLAY`; the other gaps stay
