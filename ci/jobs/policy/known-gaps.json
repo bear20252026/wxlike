@@ -19,7 +19,7 @@
       "check": "ui",
       "status": "open",
       "blocks_release": false,
-      "evidence": "apps/desktop-web still selects UnavailableCore in production web and does not depend on packages/wasm-client yet. G01 owns crates/client-web/** only; the adapters wiring belongs to G10 (issue #106).",
+      "evidence": "G10 已接线（PR #454）：apps/desktop-web 生产 Web 经 wasm-bindgen 入口动态 import packages/wasm-client，wasm 产物由 scripts/ci-prepare-wasm-client.sh 在 web-v2/desktop/desktop-package 的 npm ci 前构建，三平台 lint/typecheck/test/打包全绿。剩余：浏览器验收路径（chromedriver）未做，故 close_when 未满足。",
       "close_when": "apps/desktop-web loads the wasm module through the wasm-bindgen entry in its build and the browser acceptance path is green."
     },
     {
@@ -129,7 +129,7 @@
       "status": "open",
       "blocks_release": false,
       "check": "ui",
-      "evidence": "Default Tauri host loads apps/desktop-web/dist (tauri.conf.json, pinned by scripts/check-tauri-host.mjs + host-config.test.ts). The old UI (ui/src, esbuild -> ui/dist) is still shipped as an escape hatch (tauri.conf.old-ui.json + scripts/build-old-ui.sh). Of the 70 registered commands in ui/src-tauri/src/commands.rs, desktop-web invokes only 8 (core_dispatch/core_subscribe/core_capabilities + register/login/logout/me/friends); 62 are old-UI-only with no retirement ledger until now. Boundary and retirement plan: ui/README.md.",
+      "evidence": "Default Tauri host loads apps/desktop-web/dist (tauri.conf.json, pinned by scripts/check-tauri-host.mjs + host-config.test.ts). The old UI (ui/src, esbuild -> ui/dist) is still shipped as an escape hatch (tauri.conf.old-ui.json + scripts/build-old-ui.sh). Of the 70 registered commands in ui/src-tauri/src/commands.rs, desktop-web invokes only 8 (core_dispatch/core_subscribe/core_capabilities + register/login/logout/me/friends); 62 are old-UI-only with no retirement ledger until now. Carried risk: Dependabot GHSA-wrw7-89jp-8q8g (RUSTSEC-2024-0429, glib 0.18.5 VariantStrIter UB, fixed in glib 0.20.0) cannot be fixed on the tauri 2.x stable line (tauri 2.12.7 pins gtk ^0.18) and disappears with the old UI -- see ui/README.md. Boundary and retirement plan: ui/README.md.",
       "close_when": "The old-UI escape hatch is retired by explicit decision: ui/src + tauri.conf.old-ui.json + scripts/build-old-ui.sh removed, the 62 old-UI-only commands dropped from generate_handler (or re-homed behind core_bridge actions), check-tauri-host.mjs escape-hatch check updated, and desktop-web covers every feature the old UI still exclusively serves (calls UI, secret chat, local history, wallet/redpacket, video, favorites, session management)."
     },
     {
