@@ -610,7 +610,7 @@ impl Platform {
     }
 
     /// 装配 G02-09 设备侧联动句柄（断 WS/QUIC 泵）。由 `server` 在拿到
-    /// [`wxlike_net::HubHandle`] 后调用；未装配时治理断连事件只留痕。
+    /// hub 句柄后调用；未装配时治理断连事件只留痕。
     ///
     /// 与 [`Self::set_event_sink`] 同一模式：进程启动期一次性注入，之后只读。
     pub fn set_governance_sink(&self, sink: Arc<dyn GovernanceDeviceSink>) {

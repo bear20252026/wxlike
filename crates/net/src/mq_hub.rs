@@ -286,7 +286,7 @@ impl HubHandle {
     }
 
     /// 只断开该用户绑在某设备上的连接（设备撤销精确打击）。
-    /// `device_id` 来自 `ClientHello`（见 [`HubState::conn_devices`]），
+    /// `device_id` 来自 `ClientHello`（记在 `conn_devices` 表），
     /// 未认领设备的连接（空 device_id）不会被误伤。返回是否真的断开了连接。
     pub async fn disconnect_device(&self, user: &str, device_id: &str) -> bool {
         let conn_id = {
