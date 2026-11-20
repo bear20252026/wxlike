@@ -30,8 +30,8 @@ declare module "wxlike-core" {
   }
 
   export interface WxlikeCoreStatic {
-    /** async 工厂：打开 IndexedDB / 抢跨 tab 租约，失败 reject。 */
-    new (baseUrl: string): Promise<WxlikeCore>;
+    /** async 工厂：打开 IndexedDB / 抢跨 tab 租约，失败 reject。属性形式＝静态方法。 */
+    new: (baseUrl: string) => Promise<WxlikeCore>;
   }
 
   export const WxlikeCore: WxlikeCoreStatic;

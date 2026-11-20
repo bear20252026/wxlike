@@ -33,8 +33,13 @@ import {
 interface WasmModule {
   default?: (input?: unknown) => Promise<unknown>;
   init?: (input?: unknown) => Promise<unknown>;
+  /**
+   * wasm-bindgen 对 `pub async fn new` 生成的是**静态方法**（不是构造签名），
+   * 所以 `WxlikeCore.new(url)` 才是合法调用。必须用属性形式：写成
+   * `{ new(...): ... }` 会被 TS 解析成构造签名，而构造签名没有 `.new` 可访问。
+   */
   WxlikeCore: {
-    new (baseUrl: string): Promise<WasmCoreInstance>;
+    new: (baseUrl: string) => Promise<WasmCoreInstance>;
   };
 }
 
@@ -87,7 +92,7 @@ function normaliseCode(code: unknown): ErrorCode {
 
 /** 把 wasm 核心返回的 JSON 文本折成 CoreHandle 的 ActionResponse。 */
 function parseResponse(text: string, requestId: string): ActionResponse<unknown> {
-  let raw: RawResponse = {};
+  let raw: RawResponse;
   try {
     raw = JSON.parse(text) as RawResponse;
   } catch {
@@ -137,7 +142,7 @@ export async function createWasmCore(options: WasmCoreOptions = {}): Promise<Cor
       let disposed = false;
       let subscription: WasmSubscription | null = null;
       instance
-        .subscribe((text) => {
+        .subscribe((text: string) => {
           if (disposed) return;
           let envelope: EventEnvelope;
           try {
@@ -149,7 +154,7 @@ export async function createWasmCore(options: WasmCoreOptions = {}): Promise<Cor
           if (!envelope || typeof envelope.event_type !== "string") return;
           handler(envelope);
         })
-        .then((handle) => {
+        .then((handle: WasmSubscription) => {
           if (disposed) handle.unsubscribe();
           else subscription = handle;
         })
@@ -163,7 +168,7 @@ export async function createWasmCore(options: WasmCoreOptions = {}): Promise<Cor
     },
 
     async capabilities(): Promise<CoreCapabilities> {
-      let parsed: Partial<CoreCapabilities> | null = null;
+      let parsed: Partial<CoreCapabilities> | null;
       try {
         parsed = JSON.parse(instance.capabilities()) as Partial<CoreCapabilities> | null;
       } catch {
