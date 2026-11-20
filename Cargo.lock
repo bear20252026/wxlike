@@ -7009,6 +7009,7 @@ dependencies = [
  "tower",
  "tracing",
  "wxlike-core",
+ "wxlike-identity",
  "wxlike-message",
  "wxlike-mq",
  "wxlike-net",

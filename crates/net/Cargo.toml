@@ -48,6 +48,8 @@ futures-util = "0.3"
 wxlike-net = { path = ".", features = ["insecure-lab"] }
 # WP-02/A2 integration test drives the platform HTTP API against a live hub.
 wxlike-platform = { path = "../platform" }
+# G02-09 端到端：经 identity 域签发 Admin audience 操作者会话，才能打管理端点。
+wxlike-identity = { path = "../features/identity" }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

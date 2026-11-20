@@ -196,6 +196,12 @@ impl MqHub {
 
 type Peers = Arc<RwLock<HashMap<String, HashMap<ConnId, PeerConn>>>>;
 
+/// 主动断开连接的句柄。QUIC 用整个连接（`close` 立即断开，所有流 reset）；
+/// WS 载体没有等价的单句柄，走 [`PeerConn::close`]。
+pub(crate) enum ConnCloser {
+    Quic(quinn::Connection),
+}
+
 /// Everything the routing tasks share.
 struct HubState {
     hub_id: String,
@@ -225,6 +231,11 @@ struct HubState {
     subscriptions: Arc<RwLock<HashMap<ConnId, usize>>>,
     /// 续租循环需要的世代号：`user -> generation`（G03-04 要求 1）。
     route_generations: Arc<RwLock<HashMap<String, u64>>>,
+    /// conn_id -> 设备认领（v3 `ClientHello`），供按设备撤销（G02-09）。
+    conn_devices: Arc<RwLock<HashMap<ConnId, String>>>,
+    /// conn_id -> 主动断开句柄。QUIC 立即 `Connection::close`；WS 无句柄，
+    /// 走 `PeerConn::close`（发 Close 帧）。
+    conn_closers: Arc<RwLock<HashMap<ConnId, ConnCloser>>>,
     /// WP-13: connections / throughput / parked / latency, per hub.
     metrics: crate::metrics::HubMetrics,
 }
@@ -257,12 +268,50 @@ impl HubHandle {
             .unwrap_or(0)
     }
 
+    /// 断开某用户在本 hub 上的**全部**连接（多设备，ADR-4），返回断开的连接数。
+    /// G02-09 封禁/撤销会话的进程内效果：会话行已被域删掉，这里把还连着的
+    /// WS/QUIC 泵一并拔掉，否则"后台封了、前端还收消息"。
+    pub async fn disconnect_user(&self, user: &str) -> usize {
+        let conns: Vec<ConnId> = {
+            let peers = self.state.peers.read().await;
+            peers
+                .get(user)
+                .map(|m| m.keys().copied().collect())
+                .unwrap_or_default()
+        };
+        for conn_id in conns.iter().copied() {
+            disconnect_conn(&self.state, user, conn_id).await;
+        }
+        conns.len()
+    }
+
+    /// 只断开该用户绑在某设备上的连接（设备撤销精确打击）。
+    /// `device_id` 来自 `ClientHello`（见 [`HubState::conn_devices`]），
+    /// 未认领设备的连接（空 device_id）不会被误伤。返回是否真的断开了连接。
+    pub async fn disconnect_device(&self, user: &str, device_id: &str) -> bool {
+        let conn_id = {
+            let devices = self.state.conn_devices.read().await;
+            devices
+                .iter()
+                .find(|(_, d)| d.as_str() == device_id)
+                .map(|(c, _)| *c)
+        };
+        match conn_id {
+            Some(c) => {
+                disconnect_conn(&self.state, user, c).await;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Attaches an already-established transport (WS route path, ADR-8):
     /// identical lifecycle to a QUIC connection — Hello, bind, drain, serve.
     pub fn attach_transport(&self, conn: PeerConn) -> tokio::task::JoinHandle<()> {
         let state = self.state.clone();
         tokio::spawn(async move {
-            if let Err(err) = serve_transport(state, conn).await {
+            // WS 载体无 ConnCloser：主动撤销走 `PeerConn::close`（发 Close 帧）。
+            if let Err(err) = serve_transport(state, conn, None).await {
                 eprintln!("[mq-hub] attached conn error: {err:#}");
             }
         })
@@ -426,6 +475,8 @@ pub async fn run_mq_hub_with(
         user_rate: Arc::new(RwLock::new(HashMap::new())),
         subscriptions: Arc::new(RwLock::new(HashMap::new())),
         route_generations: Arc::new(RwLock::new(HashMap::new())),
+        conn_devices: Arc::new(RwLock::new(HashMap::new())),
+        conn_closers: Arc::new(RwLock::new(HashMap::new())),
         metrics: crate::metrics::HubMetrics::new(hub_id.clone()),
     });
 
@@ -630,7 +681,12 @@ async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) -> anyhow::Result<()
 
 async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Result<()> {
     let (send, recv) = conn.accept_bi().await.context("accept control stream")?;
-    serve_transport(state, PeerConn::quic(send, recv)).await
+    serve_transport(
+        state,
+        PeerConn::quic(send, recv),
+        Some(ConnCloser::Quic(conn)),
+    )
+    .await
 }
 
 /// One bound connection of any carrier (QUIC stream pair or WS): Hello →
@@ -658,7 +714,11 @@ async fn reject_hello(conn: &PeerConn, reason: &str) {
     }
 }
 
-async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result<()> {
+async fn serve_transport(
+    state: Arc<HubState>,
+    conn: PeerConn,
+    closer: Option<ConnCloser>,
+) -> anyhow::Result<()> {
     let conn_id = state
         .next_conn
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -759,6 +819,16 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
         .entry(user_id.clone())
         .or_default()
         .insert(conn_id, conn.clone());
+    if !device_id.is_empty() {
+        state
+            .conn_devices
+            .write()
+            .await
+            .insert(conn_id, device_id.clone());
+    }
+    if let Some(c) = closer {
+        state.conn_closers.write().await.insert(conn_id, c);
+    }
     state.metrics.connected();
     state
         .user_rate
@@ -947,15 +1017,21 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
         }
     };
 
-    // remove exactly this connection; unbind the route only when the user's
-    // last connection on this hub is gone (ADR-4)
+    release_conn(&state, &user_id, conn_id, generation).await;
+    res
+}
+
+/// 一条连接结束时把它从 hub 摘掉（ADR-4 多设备：只摘自己，用户最后一条连接
+/// 消失才解绑路由）。**幂等**：主动撤销（[`HubHandle::disconnect_user`]）与
+/// 对端自然断开可能各调一次，重复调用必须是 no-op。
+async fn release_conn(state: &Arc<HubState>, user_id: &str, conn_id: ConnId, generation: u64) {
     let mut keep_bound = false;
     {
         let mut peers = state.peers.write().await;
-        if let Some(conns) = peers.get_mut(&user_id) {
+        if let Some(conns) = peers.get_mut(user_id) {
             conns.remove(&conn_id);
             if conns.is_empty() {
-                peers.remove(&user_id);
+                peers.remove(user_id);
             } else {
                 keep_bound = true;
             }
@@ -963,9 +1039,9 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
     }
     state.subscriptions.write().await.remove(&conn_id);
     if !keep_bound {
-        state.user_rate.write().await.remove(&user_id);
+        state.user_rate.write().await.remove(user_id);
         if generation != 0 {
-            state.route_generations.write().await.remove(&user_id);
+            state.route_generations.write().await.remove(user_id);
         }
     }
     // G03-02：这条连接写了但没被确认落库的帧，全部放回离线队列。
@@ -981,18 +1057,18 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
                 );
             }
         }
-        tracing::info!(hub = %state.hub_id, user = %user_id, conn = conn_id, count = owed.len(), "unacked writes requeued");
+        tracing::info!(hub = %state.hub_id, user = %user_id, conn = %conn_id, count = owed.len(), "unacked writes requeued");
     }
     state.metrics.disconnected();
     if keep_bound {
-        tracing::debug!(hub = %state.hub_id, user = %user_id, conn = conn_id, "conn unbound (devices remain)");
+        tracing::debug!(hub = %state.hub_id, user = %user_id, conn = %conn_id, "conn unbound (devices remain)");
     } else {
         tracing::debug!(hub = %state.hub_id, user = %user_id, "user unbound");
         let cleared = if generation == 0 {
             let _ = state
                 .router
                 .routes
-                .unbind_user(&user_id, &state.hub_id)
+                .unbind_user(user_id, &state.hub_id)
                 .await;
             true
         } else {
@@ -1000,7 +1076,7 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
             state
                 .router
                 .routes
-                .clear_route(&user_id, &state.hub_id, generation)
+                .clear_route(user_id, &state.hub_id, generation)
                 .await
                 .unwrap_or(false)
         };
@@ -1008,7 +1084,41 @@ async fn serve_transport(state: Arc<HubState>, conn: PeerConn) -> anyhow::Result
             tracing::info!(hub = %state.hub_id, user = %user_id, "stale route unlink refused: a newer generation holds it");
         }
     }
-    res
+}
+
+/// 主动断开一条连接（G02-09 设备撤销的进程内效果）。先清自己登记的两张表
+/// （`conn_devices`/`conn_closers`），再断链：QUIC 用 `Connection::close`（立即
+/// 断开、所有流 reset），WS 载体无句柄则走 [`PeerConn::close`]（发 Close 帧）。
+/// 最后调 [`release_conn`] 收尾，与对端自然断开走同一套逻辑。
+///
+/// 返回该连接是否真的存在过（不存在 = 幂等命中 / 已经断开了）。
+async fn disconnect_conn(state: &Arc<HubState>, user_id: &str, conn_id: ConnId) -> bool {
+    let closer = state.conn_closers.write().await.remove(&conn_id);
+    state.conn_devices.write().await.remove(&conn_id);
+    let peer = {
+        let mut peers = state.peers.write().await;
+        peers.get_mut(user_id).and_then(|m| m.remove(&conn_id))
+    };
+    let existed = peer.is_some();
+    match closer {
+        Some(ConnCloser::Quic(conn)) => {
+            conn.close(0u32.into(), b"revoked by administrator");
+        }
+        None => {
+            if let Some(p) = peer.as_ref() {
+                p.close().await;
+            }
+        }
+    }
+    let generation = state
+        .route_generations
+        .read()
+        .await
+        .get(user_id)
+        .copied()
+        .unwrap_or(0);
+    release_conn(state, user_id, conn_id, generation).await;
+    existed
 }
 
 /// Parse a parked frame into the ledger key: which conversation, which seq.
