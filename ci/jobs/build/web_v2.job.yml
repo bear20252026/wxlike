@@ -11,6 +11,8 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/desktop-web/package-lock.json
+      - name: C7b prepare wasm client (G01-03)
+        run: bash scripts/ci-prepare-wasm-client.sh
       - name: C7b install (apps/desktop-web)
         run: npm ci
         working-directory: apps/desktop-web

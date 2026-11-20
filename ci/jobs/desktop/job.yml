@@ -37,6 +37,8 @@ jobs:
       - name: C9 frontend bundle consumed by Tauri
         run: npm run build
         working-directory: ui
+      - name: C9 prepare wasm client for the new UI (G01-03)
+        run: bash scripts/ci-prepare-wasm-client.sh
       - name: C9 new UI bundle consumed by the default host
         shell: bash
         run: |
@@ -103,10 +105,14 @@ jobs:
       - name: C9 frontend bundle consumed by Tauri
         run: npm run build
         working-directory: ui
+      - name: C9 prepare wasm client for the new UI (G01-03)
+        run: bash scripts/ci-prepare-wasm-client.sh
       - name: C9 new UI bundle consumed by the default host
         shell: bash
         run: |
           # 同上：安装包必须带上默认宿主真正装载的那份产物。
+          # prepare 必须在 npm ci 之前：`wxlike-core` 是 `file:` 依赖，
+          # npm ci 只会把当时目录里的内容装进 node_modules。
           npm ci
           npm run build
           npm run check:host

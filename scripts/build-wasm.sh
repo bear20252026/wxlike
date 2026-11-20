@@ -46,8 +46,10 @@ wasms=("$OUT_DIR"/*.wasm)
 js=("$OUT_DIR"/*.js)
 dts=("$OUT_DIR"/*.d.ts)
 if [[ ! -f "$OUT_DIR/package.json" || ${#wasms[@]} -lt 1 || ${#js[@]} -lt 1 || ${#dts[@]} -lt 1 ]]; then
-  echo "产物不完整：$OUT_DIR（需要 package.json + .wasm + .js + .d.ts）" >&2
+  # 用 ${OUT_DIR} 显式划界：macOS 自带 bash 3.2 会把紧跟其后的全角括号
+  # 首字节当成变量名的一部分，`$OUT_DIR（` 会报 unbound variable。
+  echo "产物不完整：${OUT_DIR}（需要 package.json + .wasm + .js + .d.ts）" >&2
   exit 1
 fi
 
-echo "已产出 $OUT_DIR（wasm-pack 生成，勿手改；--$PROFILE）"
+echo "已产出 ${OUT_DIR}（wasm-pack 生成，勿手改；--${PROFILE}）"

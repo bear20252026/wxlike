@@ -208,7 +208,7 @@ function DomainSessionGate({
   source,
 }: {
   route: Route;
-  source: "tauri" | "fixture" | "unavailable";
+  source: "tauri" | "fixture" | "wasm" | "unavailable";
 }) {
   const domain: DomainStatus | undefined = DOMAIN_BY_ROUTE[route.id];
   if (!domain) return null;
@@ -217,15 +217,17 @@ function DomainSessionGate({
     const text =
       source === "tauri"
         ? `钱包：读写经认证 Rust 核心会话（provider #293 @ ${domain.providerSha}）；Bearer 与服务器地址不进界面`
-        : source === "fixture"
-          ? `钱包：当前是开发夹具核心（${domain.providerSha ?? "?"} 的桥未挂载），页面数据不连服务端，不作为验收证据`
-          : "钱包：本宿主没有 Rust 核心，所有钱包请求都会显式阻塞，不会回落到旧 localStorage 会话";
+        : source === "wasm"
+          ? `钱包：读写经浏览器端 Rust WASM 核心会话（provider #293 @ ${domain.providerSha}）；本地真相=IndexedDB，请求经 fetch 出站`
+          : source === "fixture"
+            ? `钱包：当前是开发夹具核心（${domain.providerSha ?? "?"} 的桥未挂载），页面数据不连服务端，不作为验收证据`
+            : "钱包：本宿主没有 Rust 核心，所有钱包请求都会显式阻塞，不会回落到旧 localStorage 会话";
     return (
       <p
         role="status"
         data-testid={`domain-state-${domain.id}`}
         className={`mx-auto w-full max-w-2xl rounded-lg border px-3 py-2 text-xs ${
-          source === "tauri"
+          source === "tauri" || source === "wasm"
             ? "border-emerald-200 bg-emerald-50 text-emerald-800"
             : "border-amber-200 bg-amber-50 text-amber-800"
         }`}
@@ -256,7 +258,7 @@ function AuthenticatedShell({
   route: Route;
   onOpenSearch: () => void;
   note?: string;
-  source: "tauri" | "fixture" | "unavailable";
+  source: "tauri" | "fixture" | "wasm" | "unavailable";
 }) {
   return (
     <ShellFrame route={route} title={routeTitle(route)} onOpenSearch={onOpenSearch} note={note}>
@@ -413,8 +415,27 @@ export function App({
   selection?: CoreSelection;
   platform?: PlatformPort;
 } = {}) {
-  const [coreSelection] = useState(() => selection ?? selectCore());
+  const [coreSelection, setCoreSelection] = useState<CoreSelection | null>(selection ?? null);
   const [platformPort] = useState(() => platform ?? detectPlatform());
+
+  // 生产 Web 的核心是异步加载的（wasm import + init + 打开 IndexedDB）；
+  // 显式传入 selection 的宿主（测试 / 预览）直接同步可用。
+  useEffect(() => {
+    if (selection) return;
+    let alive = true;
+    selectCore()
+      .then((next) => {
+        if (alive) setCoreSelection(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [selection]);
+
+  if (!coreSelection) {
+    return <LoadingState label="正在加载本地核心…" />;
+  }
 
   return (
     <AppProvider
