@@ -1,16 +1,26 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-17",
+  "updated_at": "2026-11-20",
   "gaps": [
     {
-      "id": "G01-03-WASM",
+      "id": "G01-03-WASM-PACKAGE",
       "owner": "G01",
       "task": "G01-03",
       "check": "wasm",
+      "status": "closed",
+      "blocks_release": false,
+      "evidence": "scripts/build-wasm.sh runs wasm-pack (pinned v0.13.1 in CI) over crates/client-web and self-checks the artifacts (package.json + .wasm + .js + .d.ts) in packages/wasm-client; the wasm CI job fails when any is missing.",
+      "close_when": "done: the package is reproducible from a clean checkout by one command and its shape is asserted."
+    },
+    {
+      "id": "G01-03-WASM-CONSUMER",
+      "owner": "G10",
+      "task": "G01-03",
+      "check": "ui",
       "status": "open",
       "blocks_release": false,
-      "evidence": "wxlike-client-web exists and the CI wasm job compiles it for wasm32-unknown-unknown; the remaining gap is the JS side: no wasm-bindgen entry point / packaging integration in apps/desktop-web yet, so the web adapter wiring is still pending.",
-      "close_when": "apps/desktop-web loads the wasm module through a wasm-bindgen entry (JS packaging wired into its build) and the wasm job stays green."
+      "evidence": "apps/desktop-web still selects UnavailableCore in production web and does not depend on packages/wasm-client yet. G01 owns crates/client-web/** only; the adapters wiring belongs to G10 (issue #106).",
+      "close_when": "apps/desktop-web loads the wasm module through the wasm-bindgen entry in its build and the browser acceptance path is green."
     },
     {
       "id": "G00-04-PG",

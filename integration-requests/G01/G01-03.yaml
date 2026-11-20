@@ -18,7 +18,7 @@ requests:
 
   - id: G01-03-R2
     kind: ci
-    status: requested
+    status: applied-pending-ratification
     reason: >-
       没有 wasm 任务时，这个 crate 在 CI 里等于不存在——浏览器代码永远不会
       被编译，写了等于没写。
@@ -29,9 +29,15 @@ requests:
         - rustup target add wasm32-unknown-unknown
         - cargo check -p wxlike-client-web --target wasm32-unknown-unknown
         - cargo clippy -p wxlike-client-web --target wasm32-unknown-unknown -- -D warnings
-      note: >-
-        浏览器行为测试需要 chromedriver（wasm-pack test --headless --chrome），
-        建议单独一个非阻断任务先跑起来，稳定后再设为阻断。
+        - bash scripts/build-wasm.sh
+    applied: >-
+      2026-11-20（feat/G01-03-wasm-pack）：wasm 作业已加 wasm-pack（v0.13.1
+      固定）与 `bash scripts/build-wasm.sh`——产出 packages/wasm-client 并自检
+      package.json/.wasm/.js/.d.ts，缺一即红。known-gaps 的
+      G01-03-WASM-PACKAGE 随之关闭；消费侧拆为 G01-03-WASM-CONSUMER（G10）。
+    note: >-
+      浏览器行为测试需要 chromedriver（wasm-pack test --headless --chrome），
+      建议单独一个非阻断任务先跑起来，稳定后再设为阻断。
 
   - id: G01-03-R3
     kind: ui-handoff
