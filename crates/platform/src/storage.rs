@@ -338,25 +338,28 @@ impl StorageProfile {
         sqlite_path: Option<&str>,
     ) -> Result<Self> {
         let storage = storage.map(str::trim).filter(|s| !s.is_empty());
-        match storage.unwrap_or("sqlite") {
-            "sqlite" => Ok(Self::Sqlite {
+        // 大小写不敏感：env 由人写，`SQLITE` 与 `SQLite` 都当作 sqlite；
+        // 但拼写错误（`sqlte`）仍然报错，不做模糊匹配。
+        let kind = storage.unwrap_or("sqlite");
+        if kind.eq_ignore_ascii_case("sqlite") {
+            Ok(Self::Sqlite {
                 path: sqlite_path
                     .map(str::trim)
                     .filter(|s| !s.is_empty() && *s != ":memory:")
                     .map(PathBuf::from),
-            }),
-            "postgres" => {
-                let url = pg_url
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| PlatformError::Storage(PG_URL_MISSING.to_string()))?;
-                Ok(Self::Postgres {
-                    url: url.to_string(),
-                })
-            }
-            other => Err(PlatformError::Storage(format!(
-                "WXLIKE_STORAGE={other:?} 无法解析：只接受 sqlite / postgres"
-            ))),
+            })
+        } else if kind.eq_ignore_ascii_case("postgres") {
+            let url = pg_url
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| PlatformError::Storage(PG_URL_MISSING.to_string()))?;
+            Ok(Self::Postgres {
+                url: url.to_string(),
+            })
+        } else {
+            Err(PlatformError::Storage(format!(
+                "WXLIKE_STORAGE={kind:?} 无法解析：只接受 sqlite / postgres"
+            )))
         }
     }
 
