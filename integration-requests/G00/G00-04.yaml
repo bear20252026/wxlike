@@ -6,6 +6,11 @@ group_issue: 81
 # ports/runtime 骨架进入编译图。本卡可开工，按 plan_after_unblock 五步执行。
 # 依据：#80 解锁通告 / Discussions #232 的全量依赖对账。
 status: UNBLOCKED_READY
+progress:
+  - date: 2026-11-21
+    landed: "#460 PG 迁移骨架——pg-migration 作业在真实 PostgreSQL 16 上连跑两次 M010 DDL 并断言 26 表/5 触发器/4 函数与四张不可变表的 UPDATE/DELETE 拒绝；schema/registry/pg-cutover.md 登记编号线与待办；M010 登记（next_id M011）；G06-01 状态纠正为 executed-pending-pg-migration"
+    remaining: "S2 PG profile/repository（crates/platform 的 repo 仍为 SQLite）、S3 数据导入与影子读对账、S4 可回退快照与停写窗口、S5 restore drill、S6 真实 PG 版本裁决"
+    decision_needed: "PG 驱动选型（sqlx vs tokio-postgres）、SQLite/PG 双实现策略（trait 双实现 vs 条件编译）、停写切换窗口的度量口径"
 unblocked_at: 2026-10-24
 unblock_evidence:
   - issue: 102
