@@ -6,7 +6,7 @@ workflow *fragments*: `compose.py` merges them into the workflow files under
 `integration-requests/G16/G16-01.yaml`). G16 never edits `.github/workflows/`
 directly.
 
-## Gate matrix (C0–C11)
+## Gate matrix (C0–C12)
 
 | Gate | Job | Blocking | Executes when | What it proves |
 |---|---|---|---|---|
@@ -24,6 +24,7 @@ directly.
 | C9 | `desktop`, `desktop-package` | yes | desktop or ui | Tauri command tests; Windows/macOS/Linux installers; updater signature negative test; per-platform manifest with hashes |
 | C10 | `audit` | yes | rust or ci | typos, `cargo deny check advisories bans sources`（许可证不在闸内）, `cargo audit` (root and Tauri), both lockfiles `--locked`, action pins, workflow policy, composed-workflow freshness |
 | C11 | `coverage`, `unwrap`, `image`, `e2e`, `performance` | yes | rust, contract or ci | Incremental security-path coverage; no new `unwrap()/expect()`; container image constraints and smoke; HTTP e2e (success/empty/param/unauthorized/timeout/cancel/restart) and measured latency/throughput budgets |
+| C12 | `pg-migration` | yes | rust | PostgreSQL 迁移冒烟（G00-04 S1 可验证子集）：`postgres:16` service container 上把 M010 DDL（`schema/proposals/G06/0001_ledger_commerce.sql`）连跑两次验幂等，再断言关键表/触发器/函数存在、四张账本表 UPDATE/DELETE 被触发器拒绝、`ledger_closing_balances` 绑定 `ledger_closings_immutable()`。只证 DDL 在稳定版 PG 上成立，不代表生产 PG profile 已落地 |
 | — | `gate` | yes | always | Aggregates all of the above. Failed/cancelled dependencies fail; skipped dependencies pass only when C0 selected them out |
 
 `C6` is deliberately split in two halves: the wasm job compiles every

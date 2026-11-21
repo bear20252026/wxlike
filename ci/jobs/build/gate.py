@@ -63,6 +63,7 @@ _FALLBACK_SELECT_FLAGS = {
     "image": ["rust", "ci"],
     "ingest-image": ["rust", "ci"],
     "e2e": ["rust", "ci"],
+    "pg-migration": ["rust"],
     "performance": ["rust", "ci"],
     "ios": ["mobile", "contract"],
     # flutter / android 已退役（disabled-jobs.json），不走选路判定。

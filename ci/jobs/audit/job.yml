@@ -153,6 +153,7 @@ jobs:
       - android
       - ios
       - e2e
+      - pg-migration
       - performance
     if: always()
     runs-on: ubuntu-latest
