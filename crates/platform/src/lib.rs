@@ -54,6 +54,9 @@ mod secret;
 mod sessions;
 mod status;
 mod stickers;
+// G00-04 S2 存储端口：profile/方言/连接生命周期。pub 是为了让组合根与后续
+// repo 改造能用它；本步 Db 已真正经过 SqliteStorage。
+pub mod storage;
 mod trust;
 mod users;
 mod validate;
