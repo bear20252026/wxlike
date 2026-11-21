@@ -35,6 +35,12 @@
   这只证明 DDL 在稳定版 PostgreSQL 上成立，**不代表**生产 PG profile 已落地。
 - 回滚：全部为新增对象，无 down migration；说明见 `schema/proposals/G06/ROLLBACK.md`。
 
+## S2 设计决策（开工前需拍板）
+- **PG 驱动**：`sqlx`（编译期校验、自带池）vs `tokio-postgres`（更贴近现有手写 SQL 风格）。现有 `crates/platform/src/domain/repo/*.rs` 是手写 SQL，`tokio-postgres` 迁移成本可能更低；`sqlx` 的编译期查询校验在 132K 行手写 SQL 上收益有限。
+- **双实现策略**：trait 双实现（`PlatformXxxRepo for SqliteRepo / PgRepo`）vs 条件编译 vs 单一 `Storage` 端口。trait 双实现类型与编译时间翻倍；条件编译会让"同一份逻辑两种方言"难以对账；单一端口需在 repo 层引入方言抽象。**建议先做单一 `Storage` 端口 + SQLite 实现跑通，再落 PG 实现**——方向性决策，需 owner 拍板。
+- **停写窗口**：切换必须"停写 > 导入 > 影子读对账 > 切读 > 启用写"；窗口时长要有测量（`data-import` 对账脚本产出），不允许无测量的在线双写。
+- **真实版本**：CI 冒烟用 `postgres:16`，生产版本按部署环境裁决（§3 S6）。
+
 ## 后续待办（未落地，属 G00-04 剩余工作）
 
 1. **PG repository**：`composition/storage-profile.rs` + platform/commerce/ledger 的 PG

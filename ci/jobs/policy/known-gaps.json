@@ -29,7 +29,7 @@
       "check": "server",
       "status": "open",
       "blocks_release": false,
-      "evidence": "Server still opens SQLite; production PG repository and migrations are not merged.",
+      "evidence": "Server still opens SQLite; production PG repository and migrations are not merged. S1 已落（#460，2026-11-21）：pg-migration 作业在真实 PostgreSQL 16 上连跑两次 schema/proposals/G06/0001_ledger_commerce.sql 并断言 26 张表 / 5 触发器 / 4 函数与四张不可变表的 UPDATE/DELETE 拒绝；schema/registry/pg-cutover.md 登记编号线与后续待办；M010 已登记（next_id M011）。未做：PG profile 与 repository（crates/platform 的 repo 仍是 SQLite）、数据导入、restore drill。",
       "close_when": "G00-04 lands PG profile and the restore drill runs against PostgreSQL."
     },
     {
