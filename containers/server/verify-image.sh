@@ -2,13 +2,21 @@
 # Verify an image before it is allowed to be published.
 #
 #   ./containers/server/verify-image.sh wxlike-server:test
+#   ./containers/admin/verify-image.sh wxlike-admin:test
+#
+# The second and third arguments are the in-image binary and the argument used
+# for the read-only-rootfs probe (default: wxlike-server `--check`). They exist
+# so the admin image can reuse these invariants with a probe that needs no
+# database (`wxlike-admin --help`).
 #
 # Requires a running Docker daemon. Checks are deliberately observable rather
 # than "trust the Dockerfile": the Dockerfile can be edited, the image cannot
 # lie about its Config.User.
 set -euo pipefail
 
-IMAGE="${1:?usage: verify-image.sh <image>}"
+IMAGE="${1:?usage: verify-image.sh <image> [binary] [probe-arg]}"
+BIN="${2:-/usr/local/bin/wxlike-server}"
+PROBE="${3:---check}"
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 say() { printf '[verify-image] %s\n' "$*"; }
 
@@ -43,10 +51,11 @@ if printf '%s\n' "$env_dump" | grep -Eiq '^[A-Z0-9_]*(SECRET|PASSWORD|PRIVATE_KE
 fi
 say "no secret-looking ENV"
 
-# The command must run with a read-only rootfs. --check binds nothing and writes
-# nothing, so a failure here means the image needs a writable root.
+# The command must run with a read-only rootfs. The probe (`--check` for the
+# server, `--help` for adminx) binds nothing and writes nothing, so a failure
+# here means the image needs a writable root.
 docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=32m \
-  --user 10001:10001 --entrypoint /usr/local/bin/wxlike-server "$IMAGE" --check >/dev/null \
+  --user 10001:10001 --entrypoint "$BIN" "$IMAGE" "$PROBE" >/dev/null \
   || fail "image cannot run with a read-only root filesystem"
 say "read-only rootfs compatible"
 
