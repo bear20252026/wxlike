@@ -136,10 +136,10 @@
       "id": "ADMIN-NOT-DEPLOYED",
       "owner": "G14",
       "task": "G14 / G16 deployment",
-      "status": "open",
+      "status": "closed",
       "blocks_release": false,
       "check": "deploy",
-      "evidence": "Registered 2026-11-18 (第四轮审计 N3): wxlike-admin is a workspace member (compiled and tested by cargo test --workspace) but containers/server/Dockerfile only builds/copies wxlike-server, and neither docker-compose.yml nor containers/server/compose.prod.yml defines an admin service. docs/g14-delivery.md draws adminx(:8090) as an independent process, yet no deployment artefact runs it: compilable, testable, not deployable. G14 domain-side endpoints are also still fixtures (see G14-02/03/04 integration requests, targets corrected to G02-09/G08-01/G07-04/G06-03).",
+      "evidence": "Closed 2026-11-21 (#458): containers/admin/Dockerfile builds wxlike-admin with the same invariants as the server image (non-root 10001, read-only root, /data + /tmp, HEALTHCHECK /health, tini); containers/server/compose.prod.yml and docker-compose.yml define the adminx service with explicit WXLIKE_DB/WXLIKE_ADMIN_DB/WXLIKE_ADMIN_BIND/WXLIKE_PLATFORM_URL/WXLIKE_ADMIN_TOKEN/WXLIKE_ADMIN_PLATFORM_TOKEN wiring; containers/admin/verify-image.sh + smoke.sh run inside ci/jobs/server's image job (CI green). Platform DB is opened read-only and NOT mounted :ro -- SQLite WAL's -shm sibling needs the same directory writable, which would break the query_only fallback. WXLIKE_ADMIN_PLATFORM_TOKEN must be an Admin-audience session token (#453); no issuing CLI yet. Remaining: G14 domain-side endpoints are still fixtures; the real-platform evidence is tracked by G02-09-governance.",
       "close_when": "Either admin is added to the deployment stack (Dockerfile builds wxlike-admin, compose defines the adminx service with WXLIKE_ADMIN_DB/WXLIKE_ADMIN_TOKEN wiring and a smoke check), or the owner explicitly decides admin stays research-only and records that decision here; G14 ACCEPTED additionally requires the real domain endpoints per integration-requests/G14."
     }
   ],

@@ -51,6 +51,15 @@
    动态码（step-up，15 分钟窗口）。`g14_audit` 与 `g14_journal` 由 SQLite 触发器
    拒绝 `UPDATE/DELETE`。
 
+**部署接线（2026-11-21 补）**：`containers/admin/Dockerfile` 构建并运行
+`wxlike-admin`，`containers/server/compose.prod.yml` 新增 `adminx` 服务
+（`WXLIKE_ADMIN_DB` / `WXLIKE_ADMIN_TOKEN` / `WXLIKE_ADMIN_PLATFORM_TOKEN`
+显式接线；平台库与 server 共享 `/data` 卷，adminx 只读打开、只写自己的
+`adminx.db`），`docker-compose.yml` 增加开发用 adminx；镜像不变量由
+`containers/admin/verify-image.sh` 校验，冒烟见 `containers/admin/smoke.sh`。
+`WXLIKE_ADMIN_PLATFORM_TOKEN` 必须是 identity 域签发的 **Admin audience
+会话令牌**（PR #453），静态 `WXLIKE_ADMIN_TOKEN` 打治理端点会 401。
+
 模块与路由：
 
 | 模块 | 职责 | 路由前缀 |

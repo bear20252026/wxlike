@@ -109,6 +109,53 @@ platform_options.admin_token = std::env::var("WXLIKE_ADMIN_TOKEN")
 前台运行 + 接 SIGTERM/SIGINT，与 `wxlike-server` 同一套 supervisor 约定
 （`deploy/` 的 launchd/systemd 模板可以照抄一份，只是服务名与变量不同）。
 
+### 3.2 容器部署（docker compose）
+
+镜像 `containers/admin/Dockerfile` 构建并运行 `wxlike-admin`，不变量与
+`containers/server/Dockerfile` 一致（非 root 10001、read-only 根 fs、只有
+`/data` 卷 + `/tmp` tmpfs、不烘焙密钥、`HEALTHCHECK /health`、
+`STOPSIGNAL SIGTERM`、tini），由 `containers/admin/verify-image.sh` 逐条验。
+
+```bash
+# 生产（单机 compose，镜像按 digest 引用；两个 env-file 都要给）
+cp deploy/production/wxlike-admin.env.example deploy/production/wxlike-admin.env
+# 填写 WXLIKE_ADMIN_TOKEN 与 WXLIKE_ADMIN_PLATFORM_TOKEN（见下）
+docker compose -f containers/server/compose.prod.yml \
+  --env-file deploy/production/wxlike.env \
+  --env-file deploy/production/wxlike-admin.env up -d
+# 探针：curl --noproxy '*' http://127.0.0.1:8090/health
+
+# 开发（本地构建镜像）
+docker compose up -d adminx
+```
+
+必需环境变量（完整模板见 `deploy/production/wxlike-admin.env.example`）：
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `WXLIKE_ADMIN_TOKEN` | **是** | 读面令牌。缺失或全空白 → **拒绝启动** |
+| `WXLIKE_ADMIN_PLATFORM_TOKEN` | **是（写面）** | 必须是 identity 域签发的 **Admin audience 会话令牌**（PR #453）；静态令牌打 `/api/admin/identity/*` 治理端点一律 401 |
+| `WXLIKE_DB` | 是（部署） | 平台库路径，adminx 只读打开 |
+| `WXLIKE_ADMIN_DB` | 是（部署） | adminx 自己的账号库，唯一可写文件 |
+
+两条部署约束：
+
+1. **平台库只读**。adminx 以 `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only`
+   打开 `WXLIKE_DB`，不写它。compose 里 adminx 与 server 共享同一个 `/data`
+   卷（`wxlike.db` 与 `adminx.db` 是两个文件）：SQLite WAL 的 `-shm` 兄弟文件
+   必须与库同目录，挂成 `:ro` 会让 adminx 的 `query_only` 回退路径失效
+   （`read.rs::open`）。"不写平台库"由代码两层拒绝，不依赖卷的挂载模式。
+2. **平台令牌不是读面令牌**。`WXLIKE_ADMIN_PLATFORM_TOKEN` 是 adminx 转发写操作时
+   发的 `x-admin-token`；平台侧要的是 identity 域签发的 Admin audience 会话
+   （`crates/platform/src/identity_admin.rs`）。静态 `WXLIKE_ADMIN_TOKEN` 只被
+   `/api/admin/reports` 那套 `AdminAuth` 接受，打治理端点会 401。仓库目前没有专门
+   签发 Admin 会话的 CLI，签发途径由 identity 域/集成方提供
+   （构造方式见 `crates/admin/tests/g02_09_live_evidence.rs`）。
+
+容器冒烟：`bash containers/admin/smoke.sh wxlike-admin:test [wxlike-server:test]`
+——起一个真 server 产出平台库，再验 `/health` 公开、读面无令牌 401 / 带令牌 200、
+写面无令牌 401 / 静态令牌 403。
+
 ---
 
 ## 4. 端点清单

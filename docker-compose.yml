@@ -54,6 +54,37 @@ services:
       start_period: 20s
 
 
+  # 运营后台 adminx（独立进程 wxlike-admin，crates/admin）。对平台库只读，
+  # 写操作转发给 server。镜像不变量见 containers/admin/verify-image.sh。
+  # 本地开发用 dev-admin-token；生产必须用真令牌与 Admin audience 会话令牌
+  # （见 deploy/production/wxlike-admin.env.example 与 docs/adminx.md §3.2）。
+  adminx:
+    build:
+      context: .
+      dockerfile: containers/admin/Dockerfile
+    environment:
+      WXLIKE_ADMIN_TOKEN: "${WXLIKE_ADMIN_TOKEN:-dev-admin-token}"
+      # 本地只验 adminx 自己的准入（静态令牌不能写）；真转发需要 Admin 会话令牌。
+      WXLIKE_ADMIN_PLATFORM_TOKEN: "${WXLIKE_ADMIN_PLATFORM_TOKEN:-dev-admin-token}"
+      # 与 server 共享同一个 /data 卷：平台库只读打开，adminx 只写 adminx.db。
+      WXLIKE_DB: /data/wxlike.db
+      WXLIKE_ADMIN_DB: /data/adminx.db
+      WXLIKE_PLATFORM_URL: http://server:8099
+      WXLIKE_ADMIN_BIND: 0.0.0.0:8090
+    ports:
+      - "8090:8090"
+    volumes:
+      - server-data:/data
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   # P3 realtime channel: JetStream durable queues for cross-hub routing.
   #
   # 放在 `profiles: ["nats"]` 下：默认 `docker compose up` **不启动**它

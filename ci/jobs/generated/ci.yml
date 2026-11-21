@@ -508,6 +508,26 @@ jobs:
       env:
         WXLIKE_SMOKE_EVIDENCE: ${{ github.workspace }}/.smoke-evidence
       run: bash containers/server/smoke.sh wxlike-server:ci
+    - name: C9 build adminx image
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      with:
+        context: .
+        file: containers/admin/Dockerfile
+        load: true
+        tags: wxlike-admin:ci
+        build-args: 'GIT_REVISION=${{ github.sha }}
+
+          WXLIKE_VERSION=0.1.0
+
+          '
+        cache-from: type=gha,scope=admin-image
+        cache-to: type=gha,mode=min,scope=admin-image
+    - name: C9 adminx non-root/read-only/secret checks
+      run: bash containers/admin/verify-image.sh wxlike-admin:ci
+    - name: C9 adminx start -> health/read/write-gate smoke
+      env:
+        WXLIKE_SMOKE_EVIDENCE: ${{ github.workspace }}/.smoke-evidence
+      run: bash containers/admin/smoke.sh wxlike-admin:ci wxlike-server:ci
     - name: C9 image SBOM
       uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
       with:
