@@ -38,6 +38,13 @@ pub type Result<T> = std::result::Result<T, PlatformError>;
 pub enum PlatformError {
     #[error("database failure")]
     Sqlite(#[from] rusqlite::Error),
+    /// 存储端口错误（G00-04 S2）：profile 无法解析、PG profile 尚未实现等。
+    ///
+    /// 与 [`PlatformError::Sqlite`] 的分工：`Sqlite` 是"一条 SQL 跑失败了"，
+    /// `Storage` 是"存储配置/连接生命周期本身有问题"（非法 `WXLIKE_STORAGE`、
+    /// PG profile 未落地）。两者都不把底层细节给客户端。
+    #[error("storage failure: {0}")]
+    Storage(String),
     #[error("filesystem failure")]
     Io(#[from] std::io::Error),
     #[error("json codec failure")]
@@ -105,6 +112,7 @@ impl PlatformError {
             // 存储/编码/邮箱/自身代码：都是 5xx。客户端不重试（见
             // `DomainError::is_retryable`），交给上层熔断。
             PlatformError::Sqlite(_)
+            | PlatformError::Storage(_)
             | PlatformError::Io(_)
             | PlatformError::Codec(_)
             | PlatformError::Mail(_)
@@ -136,6 +144,7 @@ impl From<PlatformError> for DomainError {
     fn from(e: PlatformError) -> Self {
         match e {
             PlatformError::Sqlite(_) => DomainError::internal("database failure"),
+            PlatformError::Storage(msg) => DomainError::internal(format!("storage: {msg}")),
             PlatformError::Io(_) => DomainError::internal("storage failure"),
             PlatformError::Codec(_) => DomainError::internal("encoding failure"),
             PlatformError::BadInput(m) => DomainError::invalid(m),
@@ -189,6 +198,7 @@ mod tests {
                 PlatformError::Sqlite(rusqlite::Error::QueryReturnedNoRows),
                 "internal",
             ),
+            (PlatformError::Storage("pg not implemented".into()), "internal"),
             (PlatformError::Io(std::io::Error::other("disk")), "internal"),
             (
                 PlatformError::Codec(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
