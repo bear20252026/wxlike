@@ -11,6 +11,7 @@
     "doc",
     "contract",
     "wasm",
+    "wasm-browser",
     "ui",
     "web-v2",
     "flutter",
