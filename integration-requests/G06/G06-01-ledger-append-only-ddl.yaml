@@ -10,7 +10,7 @@ group_issue: 87
 owner: G06
 to: G00
 branch: feat/G06-ledger-payments
-status: executed-pending-live-evidence
+status: executed-pending-pg-migration
 # 2026-11-19 G00 执行（feat/G06-actions-mount）：SQLite 侧四张表 UPDATE+DELETE 双兜底
 # 已齐（closing_balances DELETE 触发器本次补齐，immutability 测试同步）。
 # PG 正式迁移编号仍归 G00-04（deferred，不阻塞 SQLite）。

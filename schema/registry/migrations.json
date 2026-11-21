@@ -17,8 +17,9 @@
     { "id": "M006", "name": "communities", "module": "db.rs migrate_communities", "description": "社群层表", "introduced": "P3-C" },
     { "id": "M007", "name": "prekey-signature", "module": "db.rs migrate_prekey_signature", "description": "prekey_bundles.signature 列（AR-1：预密钥包签名）", "introduced": "第四轮审计" },
     { "id": "M008", "name": "g05-tables", "module": "db.rs migrate_g05 + SCHEMA_G05", "description": "G05 内容扩展表（status_reactions 等）", "introduced": "UI v2 前序" },
-    { "id": "M009", "name": "media-domain-tables", "module": "crates/features/media/src/db.rs SCHEMA_SQL = schema/proposals/G04/0001_media.sql", "description": "G04 media 域元数据面 9 张表（media_object/media_ref/media_upload/media_upload_chunk/media_file/media_share/media_job/media_backup/media_backup_entry）。DDL 只有一份，在 features crate 里；执行点是 MediaDb::open（IF NOT EXISTS，幂等可重入），由 server 组合根在平台同一个 SQLite 文件上调用（server/src/media_mount.rs::assemble，issue #295）。回滚：全部新表、只增不删，删代码不回收表；旧二进制按显式列名查询不受影响", "introduced": "#295 / G00-295" }
+    { "id": "M009", "name": "media-domain-tables", "module": "crates/features/media/src/db.rs SCHEMA_SQL = schema/proposals/G04/0001_media.sql", "description": "G04 media 域元数据面 9 张表（media_object/media_ref/media_upload/media_upload_chunk/media_file/media_share/media_job/media_backup/media_backup_entry）。DDL 只有一份，在 features crate 里；执行点是 MediaDb::open（IF NOT EXISTS，幂等可重入），由 server 组合根在平台同一个 SQLite 文件上调用（server/src/media_mount.rs::assemble，issue #295）。回滚：全部新表、只增不删，删代码不回收表；旧二进制按显式列名查询不受影响", "introduced": "#295 / G00-295" },
+    { "id": "M010", "name": "pg-ledger-commerce", "module": "schema/proposals/G06/0001_ledger_commerce.sql", "description": "PG 侧 ledger/commerce 建表（ledger_accounts/journals/entries/holds/closings/closing_balances + commerce_* 共 26 张），expand-only，不改既有表。四张账本表带 UPDATE/DELETE 不可变触发器（ledger_closing_balances 复用 ledger_closings_immutable()），ledger_entries 另有入账分录集冻结触发器。DDL 唯一来源是提案 0001；该文件已自带 BEGIN/COMMIT 且可重入（IF NOT EXISTS / CREATE OR REPLACE / DROP TRIGGER IF EXISTS / ON CONFLICT DO NOTHING），CI 由 pg-migration 作业连跑两次验证幂等。回滚：全部新增对象，无 down migration，见 schema/proposals/G06/ROLLBACK.md", "introduced": "G00-04" }
   ],
-  "next_id": "M010",
+  "next_id": "M011",
   "postgres_cutover": "见 G00-04（#104）；PG 迁移沿用本编号线，SQLite→PG 一致性对账由该卡交付"
 }

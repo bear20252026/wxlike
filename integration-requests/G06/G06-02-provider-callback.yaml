@@ -1,7 +1,9 @@
 # G06-02 供应商回调端点（operation_id）—— 集成请求
 #
-# 目的：关闭 `PAYMENT-CALLBACK-REPLAY`（ci/jobs/policy/known-gaps.json 里
-# 当前唯一 blocks_release=true 的缺口）。G06 已经把领域侧与端到端测试做完，
+# 目的：关闭 `PAYMENT-CALLBACK-REPLAY`。该缺口已于 2026-11-17 关闭（重放 4 次 +
+# 重启后重投单一效果，证据见
+# security/release-reviews/evidence/payment-callback/fault-privileges.json），
+# 本 IR 剩余为 PG 迁移编号。G06 已经把领域侧与端到端测试做完，
 # 剩下的路由挂载、契约行与 e2e 用例翻转到 G00/G16 的写路径，本组不代改。
 
 request: G06-02-provider-callback
