@@ -17,7 +17,9 @@ use wxlike_media::db::SCHEMA_SQL;
 /// media 域的正式编号（G00-295 / issue #295）。
 const MEDIA_ID: &str = "M009";
 /// 登记后 `next_id` 应当指向的下一个编号：编号永不复用、永不重排。
-const NEXT_ID: &str = "M010";
+/// M010 由 G00-04 的 PG ledger/commerce DDL 占用（schema/registry/migrations.json），
+/// 故此处随登记表前移到 M011。
+const NEXT_ID: &str = "M011";
 /// M009 应当建的 9 张表。
 const MEDIA_TABLES: &[&str] = &[
     "media_object",

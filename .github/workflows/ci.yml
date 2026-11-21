@@ -254,6 +254,37 @@ jobs:
     - name: C8 test
       run: flutter test
       working-directory: apps/mobile
+  pg-migration:
+    name: pg-migration
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wxlike
+        ports:
+        - 5432:5432
+        options: --health-cmd "pg_isready -U postgres -d wxlike" --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wxlike
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: 等 PostgreSQL 就绪
+      shell: bash
+      run: "set -euo pipefail\nfor _ in $(seq 1 30); do\n  if pg_isready -h localhost -p 5432 -U postgres -d wxlike >/dev/null 2>&1; then\n    exit 0\n  fi\n  sleep 2\ndone\necho \"postgres did not become ready\" >&2\nexit 1\n"
+    - name: M010 DDL 首次执行
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
+    - name: M010 DDL 重跑（幂等/可重入）
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
+    - name: M010 schema/触发器/不可变性断言
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
   web-v2:
     name: web-v2
     needs:
@@ -461,6 +492,7 @@ jobs:
     - android
     - ios
     - e2e
+    - pg-migration
     - performance
     if: always()
     runs-on: ubuntu-latest
