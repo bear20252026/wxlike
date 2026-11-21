@@ -155,6 +155,47 @@ jobs:
       - name: record known gaps
         run: python3 ci/jobs/build/check_gaps.py
 
+  # 编译通过 != 能跑。crates/client-web 的浏览器行为（IndexedDB 事务时序、
+  # WebCrypto、fetch AbortSignal、Web Locks 跨 tab 互斥）由 tests/browser.rs
+  # 的 wasm-bindgen-test 覆盖，必须在真实 headless Chrome 里跑（G01-03-R2）。
+  wasm-browser:
+    name: wasm-browser
+    needs: [select]
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+          rustup target add wasm32-unknown-unknown
+      # 与 wasm 作业同一钉法：pkg 形状与 wasm-bindgen 版本绑定。
+      - name: install wasm-pack (pinned)
+        shell: bash
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz -C /tmp
+          sudo install /tmp/wasm-pack-v0.13.1-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack
+          wasm-pack --version
+      # chromedriver 必须与镜像自带 chrome 同版本；预装缺失时显式安装。
+      - name: chromedriver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v chromedriver >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y chromedriver
+          fi
+          chromedriver --version
+          google-chrome --version
+      - name: C6 wasm browser acceptance (G01-03)
+        shell: bash
+        run: wasm-pack test --headless --chrome crates/client-web
+      - name: record known gaps
+        run: python3 ci/jobs/build/check_gaps.py
+
   ui:
     name: ui
     needs: [select]

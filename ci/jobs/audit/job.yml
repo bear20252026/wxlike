@@ -139,6 +139,7 @@ jobs:
       - native
       - doc
       - wasm
+      - wasm-browser
       - contract
       - ui
       - web-v2

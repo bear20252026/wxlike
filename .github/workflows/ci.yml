@@ -168,6 +168,34 @@ jobs:
       run: bash scripts/build-wasm.sh
     - name: record known gaps
       run: python3 ci/jobs/build/check_gaps.py
+  wasm-browser:
+    name: wasm-browser
+    needs:
+    - select
+    if: needs.select.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: toolchain
+      shell: bash
+      run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        rustup default "$RUSTUP_TOOLCHAIN"
+
+        rustup target add wasm32-unknown-unknown
+
+        '
+    - name: install wasm-pack (pinned)
+      shell: bash
+      run: "curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \\\n  | tar -xz -C /tmp\nsudo install /tmp/wasm-pack-v0.13.1-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack\nwasm-pack --version\n"
+    - name: chromedriver
+      shell: bash
+      run: "set -euo pipefail\nif ! command -v chromedriver >/dev/null 2>&1; then\n  sudo apt-get update\n  sudo apt-get install -y chromedriver\nfi\nchromedriver --version\ngoogle-chrome --version\n"
+    - name: C6 wasm browser acceptance (G01-03)
+      shell: bash
+      run: wasm-pack test --headless --chrome crates/client-web
+    - name: record known gaps
+      run: python3 ci/jobs/build/check_gaps.py
   ui:
     name: ui
     needs:
@@ -419,6 +447,7 @@ jobs:
     - native
     - doc
     - wasm
+    - wasm-browser
     - contract
     - ui
     - web-v2

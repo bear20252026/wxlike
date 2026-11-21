@@ -17,6 +17,7 @@ directly.
 | C4 | `contract` | yes | contract or rust | JSON contracts parse, entry/action IDs are unique, seed ↔ registry mapping is complete, API fixtures are stable |
 | C5 | `native` | yes | rust | `cargo build --workspace --all-targets --locked` on all three OSes |
 | C6 | `wasm` | yes\* | rust | WASM target compiles (`wxlike-client-web` on wasm32-unknown-unknown) **and** the JS package is produced (`scripts/build-wasm.sh`, wasm-pack pinned in CI). \*Consuming that package in `apps/desktop-web` is still open (G01-03 / G10); it blocks **release**, not day-to-day CI |
+| C6b | `wasm-browser` | yes | rust | 浏览器验收：`wasm-pack test --headless --chrome crates/client-web` —— `tests/browser.rs` 的 wasm-bindgen-test 在真实 headless Chrome 里跑（IndexedDB 事务时序 / WebCrypto / fetch AbortSignal / Web Locks 跨 tab 互斥）。编译绿不等于能跑，这条是 G01-03 的 close_when |
 | C7 | `ui` | yes | ui or desktop | React typecheck, production bundle, wire self-test, message-index contract |
 | C7b | `web-v2` | yes | ui | `apps/desktop-web` (React + Vite, G10): `npm ci` → typecheck → lint → test → build, plus `packages/mini-sdk` contract-parity tests |
 | C8 | `flutter`, `android`, `ios` | yes\* | mobile, contract or rust | UniFFI bindings regenerate, `flutter analyze`, `flutter test`, release-mode APK with symbol/signature evidence. \*`ios` records `apps/mobile/ios` absence as a tracked gap; the release job fails closed |

@@ -51,6 +51,7 @@ _FALLBACK_SELECT_FLAGS = {
     "native": ["rust"],
     "doc": ["rust"],
     "wasm": ["rust"],
+    "wasm-browser": ["rust"],
     "unwrap": ["rust", "contract"],
     "coverage": ["rust", "contract"],
     "audit": ["rust", "ci"],
