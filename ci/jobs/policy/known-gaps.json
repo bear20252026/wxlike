@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-20",
+  "updated_at": "2026-11-21",
   "gaps": [
     {
       "id": "G01-03-WASM-PACKAGE",
@@ -17,9 +17,9 @@
       "owner": "G10",
       "task": "G01-03",
       "check": "ui",
-      "status": "open",
+      "status": "closed",
       "blocks_release": false,
-      "evidence": "G10 已接线（PR #454）：apps/desktop-web 生产 Web 经 wasm-bindgen 入口动态 import packages/wasm-client，wasm 产物由 scripts/ci-prepare-wasm-client.sh 在 web-v2/desktop/desktop-package 的 npm ci 前构建，三平台 lint/typecheck/test/打包全绿。剩余：浏览器验收路径（chromedriver）未做，故 close_when 未满足。",
+      "evidence": "闭环（#454 + #456）：apps/desktop-web 生产 Web 经 wasm-bindgen 入口动态 import packages/wasm-client，产物由 scripts/ci-prepare-wasm-client.sh 在 web-v2/desktop/desktop-package 的 npm ci 前构建；wasm-browser 作业（C6b）以 wasm-pack test --headless --chrome crates/client-web 跑 tests/browser.rs（IndexedDB 事务/游标/重开、WebCrypto、fetch 断网重试、Web Locks 跨 tab 互斥），CI 绿。",
       "close_when": "apps/desktop-web loads the wasm module through the wasm-bindgen entry in its build and the browser acceptance path is green."
     },
     {

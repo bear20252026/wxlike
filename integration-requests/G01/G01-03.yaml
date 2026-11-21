@@ -35,9 +35,14 @@ requests:
       固定）与 `bash scripts/build-wasm.sh`——产出 packages/wasm-client 并自检
       package.json/.wasm/.js/.d.ts，缺一即红。known-gaps 的
       G01-03-WASM-PACKAGE 随之关闭；消费侧拆为 G01-03-WASM-CONSUMER（G10）。
+      2026-11-21（feat/G01-03-browser-acceptance / #456）：新增 wasm-browser
+      作业（C6b）跑 `wasm-pack test --headless --chrome crates/client-web`，
+      注册进 required-checks 并由 gate 依赖（阻断）；G01-03-WASM-CONSUMER
+      随之关闭。
     note: >-
-      浏览器行为测试需要 chromedriver（wasm-pack test --headless --chrome），
-      建议单独一个非阻断任务先跑起来，稳定后再设为阻断。
+      chromedriver 方案已落地：wasm-browser 作业在预装缺失时 apt 装 chromedriver，
+      与镜像自带 chrome 版本绑定；tests/browser.rs 的 8 个用例在 headless
+      Chrome 里真实执行（IndexedDB / WebCrypto / fetch / Web Locks）。
 
   - id: G01-03-R3
     kind: ui-handoff
