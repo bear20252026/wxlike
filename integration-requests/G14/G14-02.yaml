@@ -52,3 +52,4 @@ notes:
   - 管理员能看到的最细粒度是元数据投影；`project()` 会返回 `dropped_fields` 计数，
     让人知道自己没看全。
   - 批量处置在 `jobs::JobService::run_batch`，逐条命令、逐条审计、逐条回执，可中途取消。
+  - 部署接线（#458）：adminx 已进部署栈——`containers/admin/Dockerfile`（与 server 同套镜像不变量）+ `verify-image.sh` + `smoke.sh`，`containers/server/compose.prod.yml` 与 `docker-compose.yml` 定义 adminx 服务；镜像构建/校验/冒烟在 `ci/jobs/server` 的 image 作业（CI 绿）。平台库只读打开且不挂 `:ro`（SQLite WAL 的 `-shm` 兄弟文件需同目录可建）；`WXLIKE_ADMIN_PLATFORM_TOKEN` 须为 Admin audience 会话令牌（#453），仓库暂无签发 CLI。域侧端点仍是 fixture，打真平台取证归 `G02-09-governance`。
