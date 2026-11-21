@@ -435,7 +435,7 @@ pub trait Storage: Send + Sync {
 /// 连接仍包在 `Arc<Mutex<Connection>>` 里——这是 `Db::lock()` 的既有形状，
 /// 本步不改调用方。`Db::open` 的迁移链也搬了进来（`db/schema.rs` 用
 /// `#[path = "db/schema.rs"]` 引用，文件本身未改一字节）。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SqliteStorage {
     profile: StorageProfile,
     inner: Arc<Mutex<Connection>>,
@@ -990,17 +990,24 @@ mod tests {
         assert_eq!(storage.dialect(), StorageDialect::Sqlite);
         storage.health().unwrap();
 
-        // 端口入口交出 SQLite 守卫，且守卫能跑 SQL
+        // 端口入口交出 SQLite 守卫，且守卫能跑 SQL。
+        // 末尾分号不能省：`StorageConnection` 含 MutexGuard，match 作为表达式
+        // 会让临时值活到块尾，`storage` 先被 drop 就报 E0597。
         match storage.acquire() {
             StorageConnection::Sqlite(c) => {
-                assert_eq!(c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+                assert_eq!(
+                    c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).unwrap(),
+                    1
+                );
             }
-        }
+        };
     }
 
     #[test]
     fn postgres_profile_is_a_controlled_error_not_a_panic() {
-        let profile = StorageProfile::Postgres { url: "postgresql://localhost/wxlike".into() };
+        let profile = StorageProfile::Postgres {
+            url: "postgresql://localhost/wxlike".into(),
+        };
         let err = SqliteStorage::open(profile, None).unwrap_err();
         assert!(matches!(err, PlatformError::Storage(_)));
         assert!(

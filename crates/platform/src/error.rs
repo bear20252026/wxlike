@@ -198,7 +198,10 @@ mod tests {
                 PlatformError::Sqlite(rusqlite::Error::QueryReturnedNoRows),
                 "internal",
             ),
-            (PlatformError::Storage("pg not implemented".into()), "internal"),
+            (
+                PlatformError::Storage("pg not implemented".into()),
+                "internal",
+            ),
             (PlatformError::Io(std::io::Error::other("disk")), "internal"),
             (
                 PlatformError::Codec(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
