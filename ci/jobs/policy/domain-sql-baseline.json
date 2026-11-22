@@ -1,9 +1,8 @@
 {
-  "total": 117,
+  "total": 103,
   "files": {
     "content_index.rs": 5,
     "devices.rs": 3,
-    "favorites.rs": 14,
     "governance.rs": 3,
     "inbox.rs": 4,
     "keys.rs": 6,

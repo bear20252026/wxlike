@@ -18,12 +18,13 @@ use crate::error::{PlatformError, Result};
 use crate::page;
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::favorites::{
-    favorite_row, find_message_snapshot, insert_message_favorite, read_row,
+    delete_one, favorite_row, find_message_snapshot, insert_message_favorite,
+    insert_object_favorite, list_page, object_favorite_exists, object_favorite_id, owned_exists,
+    search_page, set_sort_order, snapshot_source, sorted_page, update_fields,
 };
 
 /// Page cap; callers asking for more get this many.
@@ -106,18 +107,12 @@ impl Platform {
             return Err(PlatformError::BadInput("unknown favorite kind"));
         }
         let id = validate::id(id)?.to_string();
-        if self
-            .db()
-            .lock()
-            .query_row(
-                "SELECT 1 FROM favorites WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
-                params![user, kind, id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
         {
-            return self.object_favorite(user, kind, &id);
+            let c = self.db().lock();
+            if object_favorite_exists(&c, user, kind, &id)? {
+                drop(c);
+                return self.object_favorite(user, kind, &id);
+            }
         }
         if !self.content_visible(user, kind, &id)? {
             return Err(PlatformError::NotFound);
@@ -126,29 +121,14 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let fav_id = crate::auth::random_hex(8);
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
-                                   media_id, sender, sent_at_ms, created_at,
-                                   source_kind, source_id, snapshot_label, sort_order, revoked)
-             VALUES(?1, ?2, '', '', ?3, ?4, '', '', 0, ?5, ?3, ?6, ?7, 0, 0)
-             ON CONFLICT DO NOTHING",
-            params![fav_id, user, kind, snapshot.0, now, id, snapshot.1],
-        )?;
+        insert_object_favorite(&c, &fav_id, user, kind, &id, &snapshot.0, &snapshot.1, now)?;
         drop(c);
         self.object_favorite(user, kind, &id)
     }
 
     fn object_favorite(&self, user: &str, kind: &str, id: &str) -> Result<Favorite> {
         let c = self.db().lock();
-        let row = c
-            .query_row(
-                "SELECT id FROM favorites
-                 WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
-                params![user, kind, id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        let Some(id) = row else {
+        let Some(id) = object_favorite_id(&c, user, kind, id)? else {
             return Err(PlatformError::NotFound);
         };
         favorite_row(&c, user, &id)?.ok_or(PlatformError::NotFound)
@@ -156,55 +136,12 @@ impl Platform {
 
     /// 服务端快照：`(正文摘要, 标签)`。只读权威表的一小段，不复制全文。
     fn snapshot_of(&self, kind: &str, id: &str) -> Result<(String, String)> {
-        let c = self.db().lock();
-        match kind {
-            "moment" => c
-                .query_row(
-                    "SELECT text FROM moments WHERE id = ?1 AND deleted = 0",
-                    params![id],
-                    |r| {
-                        let text: String = r.get(0)?;
-                        Ok((capture(&text), String::new()))
-                    },
-                )
-                .optional()?
-                .ok_or(PlatformError::NotFound),
-            "article" => c
-                .query_row(
-                    "SELECT title, body_text FROM articles WHERE id = ?1 AND state = 'published'",
-                    params![id],
-                    |r| {
-                        let title: String = r.get(0)?;
-                        let body: String = r.get(1)?;
-                        Ok((capture(&body), title))
-                    },
-                )
-                .optional()?
-                .ok_or(PlatformError::NotFound),
-            "video" => c
-                .query_row(
-                    "SELECT caption FROM video_posts WHERE id = ?1 AND state = 'published'",
-                    params![id],
-                    |r| {
-                        let caption: String = r.get(0)?;
-                        Ok((capture(&caption), String::new()))
-                    },
-                )
-                .optional()?
-                .ok_or(PlatformError::NotFound),
-            "status" => c
-                .query_row(
-                    "SELECT text FROM statuses WHERE id = ?1 AND cleared_at IS NULL",
-                    params![id],
-                    |r| {
-                        let text: String = r.get(0)?;
-                        Ok((capture(&text), String::new()))
-                    },
-                )
-                .optional()?
-                .ok_or(PlatformError::NotFound),
-            _ => Err(PlatformError::BadInput("unknown favorite kind")),
+        if !OBJECT_KINDS.contains(&kind) {
+            return Err(PlatformError::BadInput("unknown favorite kind"));
         }
+        let c = self.db().lock();
+        let source = snapshot_source(&c, kind, id)?.ok_or(PlatformError::NotFound)?;
+        Ok((capture(&source.text), source.label))
     }
 
     /// Legacy 分页（按 created_at）。新客户端用 [`Platform::favorites_sorted`]。
@@ -217,19 +154,8 @@ impl Platform {
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE) as i64;
         let before = before_created.unwrap_or(i64::MAX);
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
-                    sender, sent_at_ms, created_at, source_kind, source_id,
-                    snapshot_label, sort_order, revoked
-             FROM favorites WHERE user_id = ?1 AND created_at < ?2
-             ORDER BY created_at DESC, id DESC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![user_id, before, limit], read_row)?;
-        Ok(rows
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(scrub)
-            .collect())
+        let rows = list_page(&c, user_id, before, limit)?;
+        Ok(rows.into_iter().map(scrub).collect())
     }
 
     /// 排序列表：`sort_order ASC, created_at DESC`，游标 `"{sort}:{created}:{id}"`。
@@ -242,19 +168,7 @@ impl Platform {
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE as i64);
         let (sort, created, id) = parse_cursor(cursor)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
-                    sender, sent_at_ms, created_at, source_kind, source_id,
-                    snapshot_label, sort_order, revoked
-             FROM favorites
-             WHERE user_id = ?1
-               AND (sort_order > ?2
-                    OR (sort_order = ?2 AND (created_at < ?3
-                        OR (created_at = ?3 AND id < ?4))))
-             ORDER BY sort_order ASC, created_at DESC, id DESC LIMIT ?5",
-        )?;
-        let it = stmt.query_map(params![user, sort, created, id, limit + 1], read_row)?;
-        let mut rows = it.collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut rows = sorted_page(&c, user, sort, created, &id, limit + 1)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
             rows.pop();
@@ -285,22 +199,8 @@ impl Platform {
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE as i64);
         let pattern = format!("%{}%", page::escape_like(q));
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
-                    sender, sent_at_ms, created_at, source_kind, source_id,
-                    snapshot_label, sort_order, revoked
-             FROM favorites
-             WHERE user_id = ?1 AND revoked = 0
-               AND (text LIKE ?2 ESCAPE '\\' OR snapshot_label LIKE ?2 ESCAPE '\\'
-                    OR kind LIKE ?2 ESCAPE '\\')
-             ORDER BY sort_order ASC, created_at DESC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![user, pattern, limit], read_row)?;
-        Ok(rows
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(scrub)
-            .collect())
+        let rows = search_page(&c, user, &pattern, limit)?;
+        Ok(rows.into_iter().map(scrub).collect())
     }
 
     pub fn update_favorite(
@@ -325,13 +225,7 @@ impl Platform {
             }
         }
         let c = self.db().lock();
-        let changed = c.execute(
-            "UPDATE favorites SET
-               snapshot_label = COALESCE(?1, snapshot_label),
-               sort_order = COALESCE(?2, sort_order)
-             WHERE id = ?3 AND user_id = ?4",
-            params![label, sort_order, id, user],
-        )?;
+        let changed = update_fields(&c, user, id, label, sort_order)?;
         crate::db::ensure_updated(changed)?;
         let row = favorite_row(&c, user, id)?.ok_or(PlatformError::NotFound)?;
         Ok(scrub(row))
@@ -349,22 +243,12 @@ impl Platform {
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
             for id in &cleaned {
-                let owned: Option<i64> = tx
-                    .query_row(
-                        "SELECT 1 FROM favorites WHERE id = ?1 AND user_id = ?2",
-                        params![id, user],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if owned.is_none() {
+                if !owned_exists(tx, user, id)? {
                     return Err(PlatformError::NotFound);
                 }
             }
             for (i, id) in cleaned.iter().enumerate() {
-                tx.execute(
-                    "UPDATE favorites SET sort_order = ?1 WHERE id = ?2 AND user_id = ?3",
-                    params![i as i64, id, user],
-                )?;
+                set_sort_order(tx, user, id, i as i64)?;
             }
             Ok(cleaned.len())
         })
@@ -372,10 +256,10 @@ impl Platform {
 
     pub fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
-        let changed = self.db().lock().execute(
-            "DELETE FROM favorites WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )?;
+        let changed = {
+            let c = self.db().lock();
+            delete_one(&c, user_id, id)?
+        };
         crate::db::ensure_updated(changed)
     }
 }

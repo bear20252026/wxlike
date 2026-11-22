@@ -9,6 +9,230 @@ use crate::domain::favorites::{
     COL_SOURCE_ID, COL_SOURCE_KIND,
 };
 
+/// 对象收藏的服务端快照原料；摘要裁剪仍在 domain。
+pub(in crate::domain) struct SnapshotSource {
+    pub(crate) text: String,
+    pub(crate) label: String,
+}
+
+pub(in crate::domain) fn object_favorite_exists(
+    c: &Connection,
+    user: &str,
+    kind: &str,
+    source_id: &str,
+) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT 1 FROM favorites WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
+        params![user, kind, source_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::domain) fn insert_object_favorite(
+    c: &Connection,
+    fav_id: &str,
+    user: &str,
+    kind: &str,
+    source_id: &str,
+    text: &str,
+    label: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
+                               media_id, sender, sent_at_ms, created_at,
+                               source_kind, source_id, snapshot_label, sort_order, revoked)
+         VALUES(?1, ?2, '', '', ?3, ?4, '', '', 0, ?5, ?3, ?6, ?7, 0, 0)
+         ON CONFLICT DO NOTHING",
+        params![fav_id, user, kind, text, now, source_id, label],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn object_favorite_id(
+    c: &Connection,
+    user: &str,
+    kind: &str,
+    source_id: &str,
+) -> Result<Option<String>> {
+    Ok(c.query_row(
+        "SELECT id FROM favorites
+         WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
+        params![user, kind, source_id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()?)
+}
+
+/// 从权威表读一小段快照；对象不存在或未发布返回 `None`。
+pub(in crate::domain) fn snapshot_source(
+    c: &Connection,
+    kind: &str,
+    id: &str,
+) -> Result<Option<SnapshotSource>> {
+    let row = match kind {
+        "moment" => c
+            .query_row(
+                "SELECT text FROM moments WHERE id = ?1 AND deleted = 0",
+                params![id],
+                |r| {
+                    Ok(SnapshotSource {
+                        text: r.get(0)?,
+                        label: String::new(),
+                    })
+                },
+            )
+            .optional()?,
+        "article" => c
+            .query_row(
+                "SELECT title, body_text FROM articles WHERE id = ?1 AND state = 'published'",
+                params![id],
+                |r| {
+                    Ok(SnapshotSource {
+                        text: r.get(1)?,
+                        label: r.get(0)?,
+                    })
+                },
+            )
+            .optional()?,
+        "video" => c
+            .query_row(
+                "SELECT caption FROM video_posts WHERE id = ?1 AND state = 'published'",
+                params![id],
+                |r| {
+                    Ok(SnapshotSource {
+                        text: r.get(0)?,
+                        label: String::new(),
+                    })
+                },
+            )
+            .optional()?,
+        "status" => c
+            .query_row(
+                "SELECT text FROM statuses WHERE id = ?1 AND cleared_at IS NULL",
+                params![id],
+                |r| {
+                    Ok(SnapshotSource {
+                        text: r.get(0)?,
+                        label: String::new(),
+                    })
+                },
+            )
+            .optional()?,
+        _ => None,
+    };
+    Ok(row)
+}
+
+pub(in crate::domain) fn list_page(
+    c: &Connection,
+    user: &str,
+    before: i64,
+    limit: i64,
+) -> Result<Vec<Favorite>> {
+    let mut stmt = c.prepare(
+        "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
+                sender, sent_at_ms, created_at, source_kind, source_id,
+                snapshot_label, sort_order, revoked
+         FROM favorites WHERE user_id = ?1 AND created_at < ?2
+         ORDER BY created_at DESC, id DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![user, before, limit], read_row)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn sorted_page(
+    c: &Connection,
+    user: &str,
+    sort: i64,
+    created: i64,
+    cursor_id: &str,
+    limit: i64,
+) -> Result<Vec<Favorite>> {
+    let mut stmt = c.prepare(
+        "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
+                sender, sent_at_ms, created_at, source_kind, source_id,
+                snapshot_label, sort_order, revoked
+         FROM favorites
+         WHERE user_id = ?1
+           AND (sort_order > ?2
+                OR (sort_order = ?2 AND (created_at < ?3
+                    OR (created_at = ?3 AND id < ?4))))
+         ORDER BY sort_order ASC, created_at DESC, id DESC LIMIT ?5",
+    )?;
+    let it = stmt.query_map(params![user, sort, created, cursor_id, limit], read_row)?;
+    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn search_page(
+    c: &Connection,
+    user: &str,
+    pattern: &str,
+    limit: i64,
+) -> Result<Vec<Favorite>> {
+    let mut stmt = c.prepare(
+        "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
+                sender, sent_at_ms, created_at, source_kind, source_id,
+                snapshot_label, sort_order, revoked
+         FROM favorites
+         WHERE user_id = ?1 AND revoked = 0
+           AND (text LIKE ?2 ESCAPE '\\' OR snapshot_label LIKE ?2 ESCAPE '\\'
+                OR kind LIKE ?2 ESCAPE '\\')
+         ORDER BY sort_order ASC, created_at DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![user, pattern, limit], read_row)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn update_fields(
+    c: &Connection,
+    user: &str,
+    id: &str,
+    label: Option<&str>,
+    sort_order: Option<i64>,
+) -> Result<usize> {
+    Ok(c.execute(
+        "UPDATE favorites SET
+           snapshot_label = COALESCE(?1, snapshot_label),
+           sort_order = COALESCE(?2, sort_order)
+         WHERE id = ?3 AND user_id = ?4",
+        params![label, sort_order, id, user],
+    )?)
+}
+
+pub(in crate::domain) fn owned_exists(c: &Connection, user: &str, id: &str) -> Result<bool> {
+    let owned: Option<i64> = c
+        .query_row(
+            "SELECT 1 FROM favorites WHERE id = ?1 AND user_id = ?2",
+            params![id, user],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(owned.is_some())
+}
+
+pub(in crate::domain) fn set_sort_order(
+    c: &Connection,
+    user: &str,
+    id: &str,
+    order: i64,
+) -> Result<()> {
+    c.execute(
+        "UPDATE favorites SET sort_order = ?1 WHERE id = ?2 AND user_id = ?3",
+        params![order, id, user],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn delete_one(c: &Connection, user: &str, id: &str) -> Result<usize> {
+    Ok(c.execute(
+        "DELETE FROM favorites WHERE id = ?1 AND user_id = ?2",
+        params![id, user],
+    )?)
+}
 /// 源对象删除/撤权/到期时调用（与删除同事务）。只标记，不删用户的行：
 /// 用户仍能看到"这条收藏已不可用"，且排序位置保持不变。
 pub(in crate::domain) fn revoke_source(
