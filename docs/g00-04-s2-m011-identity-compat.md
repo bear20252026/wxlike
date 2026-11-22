@@ -107,7 +107,7 @@ PostgreSQL **不支持** `ON CONFLICT` 作用在视图上。因此：
 - [x] `cargo test -p wxlike-platform --test media`：14 passed（SQLite 上传/下载/去重/Range/缩略图全绿，证明分支没有破坏原路径）。
 - [x] `domain::media::store_media` 已按 `Db::dialect()` 分支：SQLite 保留旧 upsert，PG profile 走普通 `INSERT + media_insert_trg`；写入语句已搬到 `Db::blocking`，不在 await 上下文持同步连接锁（ADR-28），`cargo check` / clippy / fmt 通过。
 - [ ] `import_ledger_wallets.py` 全链路 `COPY + CALL` 已接入 CI 的 `ci/jobs/build/pg_import_smoke.sh`，待 GitHub Actions 实跑；本机只做过 `--dry-run` / `py_compile`。
-- [ ] `ci/jobs/build/pg_restore_drill.sh` 已接入 `pg-migration`（`pg_dump` → 新库 `pg_restore` → 重跑 M010/M011-M013 断言），待 GitHub Actions 实跑；本机无 PostgreSQL 客户端。
+- [ ] `ci/jobs/build/pg_restore_drill.sh` 已接入 `pg-migration`（(`pg_dump` plain SQL → 新库 `psql` 还原 → 重跑 M010/M011-M013 断言)），待 GitHub Actions 实跑；本机无 PostgreSQL 客户端。
 - [x] M013 在 PG16 上跑两次：u1/u2 余额 100/50 与聚合视图一致；第二次 0 pending、3 个 journal 不重复；`p_allow_adjustment=true` 的 u3 补差 10 且状态 adjusted。
 
 本机 PG 验证命令（可复现）：
@@ -119,4 +119,5 @@ docker exec -i wxlike-m011-test psql -v ON_ERROR_STOP=1 -U postgres -d wxlike -f
 # 再跑一次验证幂等
 docker exec -i wxlike-m011-test psql -v ON_ERROR_STOP=1 -U postgres -d wxlike -f /tmp/m011.sql
 ```
+
 
