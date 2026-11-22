@@ -27,9 +27,12 @@
 use crate::error::{PlatformError, Result};
 use crate::page;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use super::repo::content_index::{
+    article_published, body, candidates, media_referrers, trend_rows,
+};
 
 /// 单页上限：公开检索是扇出查询，别让它变成全表扫描的放大器。
 pub const MAX_SEARCH_PAGE: i64 = 50;
@@ -68,13 +71,7 @@ impl Platform {
             "moment" => self.moment_visible(viewer, doc_id),
             "article" => {
                 let c = self.db().lock();
-                Ok(c.query_row(
-                    "SELECT 1 FROM articles WHERE id = ?1 AND state = 'published'",
-                    params![doc_id],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some())
+                article_published(&c, doc_id)
             }
             "video" => self.video_visible(viewer, doc_id),
             "status" => self.status_visible(viewer, doc_id),
@@ -84,14 +81,7 @@ impl Platform {
 
     pub fn media_referrers(&self, media_id: &str) -> Result<Vec<(String, String)>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT ref_kind, ref_id FROM content_media_refs WHERE media_id = ?1
-             ORDER BY created_at",
-        )?;
-        let rows = stmt.query_map(params![media_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        media_referrers(&c, media_id)
     }
 
     /// 检索：每个域一条泳道，候选页（无正文）→ 逐条授权 → 只为通过者取正文，
@@ -162,26 +152,12 @@ impl Platform {
         limit: i64,
     ) -> Result<Vec<(String, i64)>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT doc_id, created_at FROM content_index
-             WHERE kind = ?2 AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\')
-               AND (created_at < ?3 OR (created_at = ?3 AND doc_id < ?4))
-             ORDER BY created_at DESC, doc_id DESC LIMIT ?5",
-        )?;
-        let rows = stmt.query_map(params![pattern, kind, before_at, before_id, limit], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        candidates(&c, pattern, kind, before_at, before_id, limit)
     }
 
     fn index_body(&self, doc_id: &str) -> Result<Option<(String, String)>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT title, body FROM content_index WHERE doc_id = ?1",
-            params![doc_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .optional()?)
+        body(&c, doc_id)
     }
 
     /// 热搜：时间窗 + 去重作者 + 单人贡献上限 + 只用公开内容。
@@ -190,18 +166,7 @@ impl Platform {
         let cutoff = wxlike_core::types::now_ms() as i64 - TREND_WINDOW_MS;
         let rows = {
             let c = self.db().lock();
-            let mut stmt = c.prepare(
-                "SELECT owner, title, body FROM content_index
-                 WHERE audience = 'public' AND created_at >= ?1",
-            )?;
-            let it = stmt.query_map(params![cutoff], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })?;
-            it.collect::<std::result::Result<Vec<_>, _>>()?
+            trend_rows(&c, cutoff)?
         };
         let mut contributions: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         for (owner, title, body) in rows {

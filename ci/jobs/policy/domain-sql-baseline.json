@@ -1,7 +1,6 @@
 {
-  "total": 42,
+  "total": 37,
   "files": {
-    "content_index.rs": 5,
     "devices.rs": 3,
     "governance.rs": 3,
     "inbox.rs": 4,
