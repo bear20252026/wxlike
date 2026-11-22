@@ -1,7 +1,6 @@
 {
-  "total": 11,
+  "total": 8,
   "files": {
-    "governance.rs": 3,
     "notification.rs": 3,
     "qr_login.rs": 3,
     "read.rs": 2

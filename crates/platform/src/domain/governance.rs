@@ -31,6 +31,8 @@ use tracing::warn;
 
 use wxlike_identity::governance::{GovernanceEvent, PlatformGovernancePort, UserMetadataPort};
 
+use super::repo::governance as governance_repo;
+
 /// 设备侧进程内联动端口（G02-09，**G00 集成面**）。
 ///
 /// 域只发 [`GovernanceEvent`]，断连动作落在这里。`dispatch` 是**同步**的
@@ -187,12 +189,7 @@ impl PlatformGovernancePort for GovernanceLinks {
             warn!(%user_id, "内存平台无第二条连接，治理镜像跳过（域表仍为权威）");
             return Ok(());
         };
-        guard
-            .execute(
-                "UPDATE users SET suspended = ?2, disabled = ?3, suspended_until_ms = ?4 \
-                 WHERE id = ?1",
-                rusqlite::params![user_id, suspended as i64, disabled as i64, until_ms],
-            )
+        governance_repo::mirror_user_state(&guard, user_id, suspended, disabled, until_ms)
             .map_err(wxlike_identity::IdError::Db)?;
         Ok(())
     }
@@ -253,15 +250,7 @@ impl UserMetadataPort for GovernanceLinks {
         let Some(guard) = self.conn() else {
             return Err(wxlike_identity::IdError::Db(rusqlite::Error::InvalidQuery));
         };
-        guard
-            .query_row(
-                "SELECT COUNT(DISTINCT m.group_id) FROM group_members m \
-                 LEFT JOIN group_meta g ON g.group_id = m.group_id \
-                 WHERE m.user_id = ?1 AND COALESCE(g.dissolved_at, 0) = 0",
-                rusqlite::params![user_id],
-                |r| r.get(0),
-            )
-            .map_err(wxlike_identity::IdError::Db)
+        governance_repo::group_count(&guard, user_id).map_err(wxlike_identity::IdError::Db)
     }
 
     /// 针对该用户的举报工单数（平台 `reports` 表，按 target_kind='user'）。
@@ -269,12 +258,6 @@ impl UserMetadataPort for GovernanceLinks {
         let Some(guard) = self.conn() else {
             return Err(wxlike_identity::IdError::Db(rusqlite::Error::InvalidQuery));
         };
-        guard
-            .query_row(
-                "SELECT COUNT(*) FROM reports WHERE target_kind = 'user' AND target_id = ?1",
-                rusqlite::params![user_id],
-                |r| r.get(0),
-            )
-            .map_err(wxlike_identity::IdError::Db)
+        governance_repo::report_count(&guard, user_id).map_err(wxlike_identity::IdError::Db)
     }
 }
