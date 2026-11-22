@@ -12,7 +12,7 @@ use crate::domain::repo::users::SqliteUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::{Platform, PlatformState};
-use wxlike_persistence::NewUser;
+use wxlike_persistence::{NewUser, UsersRepo};
 
 impl Credentials {
     pub(crate) fn captcha(&self) -> Option<(&str, &str)> {

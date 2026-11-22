@@ -19,6 +19,7 @@ use crate::Platform;
 use serde::Serialize;
 use wxlike_identity::refresh::{self, Rotated};
 use wxlike_identity::{step_up, Audience, IdError};
+use wxlike_persistence::SessionsRepo;
 
 /// device_id 的长度上限（客户端生成串，超长按畸形拒绝）。
 const DEVICE_ID_MAX_LEN: usize = 64;

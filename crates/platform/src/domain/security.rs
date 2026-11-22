@@ -21,6 +21,7 @@ use argon2::Argon2;
 use crate::domain::repo::users::SqliteUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
+use wxlike_persistence::UsersRepo;
 
 /// argon2id 参数（默认 OWASP 配置：m=19MiB, t=2, p=1 由 crate 默认给出）。
 fn argon2() -> Argon2<'static> {
