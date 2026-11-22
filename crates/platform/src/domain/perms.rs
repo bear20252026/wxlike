@@ -22,6 +22,10 @@ use crate::validate;
 use crate::Platform;
 use serde::Serialize;
 
+use super::repo::perms::{
+    delete_channel_row, remove_member, rename_channel, set_channel_kind, set_member_role_row,
+};
+
 /// 权限点。字符串名与 Rocket.Chat 的 permission 命名保持一致或可直接对照。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Perm {
@@ -186,16 +190,10 @@ impl Platform {
         {
             let c = self.db().lock();
             if let Some(n) = name {
-                c.execute(
-                    "UPDATE channels SET name = ?1 WHERE id = ?2",
-                    rusqlite::params![n, channel],
-                )?;
+                rename_channel(&c, &channel, n)?;
             }
             if let Some(k) = kind {
-                c.execute(
-                    "UPDATE channels SET kind = ?1 WHERE id = ?2",
-                    rusqlite::params![k, channel],
-                )?;
+                set_channel_kind(&c, &channel, k)?;
             }
         }
         self.audit(actor, "channel.update", &channel, "");
@@ -209,10 +207,7 @@ impl Platform {
         let community = self.require_channel_perm(&channel, actor, Perm::ManageChannel)?;
         {
             let c = self.db().lock();
-            c.execute(
-                "DELETE FROM channels WHERE id = ?1",
-                rusqlite::params![channel],
-            )?;
+            delete_channel_row(&c, &channel)?;
         }
         self.audit(actor, "channel.delete", &channel, "");
         let _ = community;
@@ -250,10 +245,7 @@ impl Platform {
         }
         {
             let c = self.db().lock();
-            c.execute(
-                "UPDATE community_members SET role = ?1 WHERE community_id = ?2 AND user_id = ?3",
-                rusqlite::params![new_role, community, target],
-            )?;
+            set_member_role_row(&c, &community, &target, new_role)?;
         }
         self.audit(actor, "community.set_role", &target, role);
         Ok(())
@@ -273,10 +265,7 @@ impl Platform {
         }
         {
             let c = self.db().lock();
-            c.execute(
-                "DELETE FROM community_members WHERE community_id = ?1 AND user_id = ?2",
-                rusqlite::params![community, target],
-            )?;
+            remove_member(&c, &community, &target)?;
         }
         self.audit(actor, "community.kick", &target, "");
         Ok(())
