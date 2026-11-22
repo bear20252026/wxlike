@@ -133,8 +133,7 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 - 不改 `domain/repo/**` 的 51 个 `&Connection` 签名（见 §3 分批）。
 - `Db::open` 仍不打开 postgres profile；PG 连接只在新端口 `PostgresPool` 中存在。
 - 不动 `server/**`、`ci/**`、`schema/**`、`integration-requests/**` 之外的东西。
-- `G00-04-PG` gap 仍 open：`close_when`（51 个旧 repo 切 PG + restore drill）
-  未满足；本轮只完成了首批端口与 DDL 闭环。
+- `G00-04-PG` gap 仍 open：restore drill 已在 GitHub Actions `44989751565` 的 `pg-migration` 中实跑通过，但 `close_when` 的另一半（51 个旧 repo 切 PG / PG profile）未满足；本轮只完成了首批端口与 DDL/导入/恢复闭环。
 - `db/schema.rs` 未改一字节，仅由 `storage.rs` 用 `#[path = "db/schema.rs"]` 引用
   （G00-02 的纯移动产物随迁移链一起归位）。
 
