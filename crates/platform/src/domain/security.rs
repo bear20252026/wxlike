@@ -80,12 +80,12 @@ impl Platform {
 
     pub fn totp_secret_of(&self, user_id: &str) -> Result<Option<String>> {
         let c = self.db().lock();
-        Ok(SqliteUsersRepo::new(&c).totp_secret(user_id)?)
+        SqliteUsersRepo::new(&c).totp_secret(user_id)
     }
 
     pub fn totp_enabled(&self, user_id: &str) -> Result<bool> {
         let c = self.db().lock();
-        Ok(SqliteUsersRepo::new(&c).totp_enabled(user_id)?)
+        SqliteUsersRepo::new(&c).totp_enabled(user_id)
     }
 
     /// 生成（或重生成）TOTP 密钥；未确认前不改变 `totp_enabled`。

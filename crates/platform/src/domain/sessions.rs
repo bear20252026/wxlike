@@ -119,7 +119,7 @@ impl Platform {
     pub fn session_sid(&self, token: &str) -> Result<Option<String>> {
         let digest = crate::auth::token_digest(token);
         let c = self.db().lock();
-        Ok(SqliteSessionsRepo::new(&c).sid_by_token(&digest)?)
+        SqliteSessionsRepo::new(&c).sid_by_token(&digest)
     }
 
     /// 登录成功后签发首枚刷新令牌（与访问会话同 sid，便于一起撤销）。
