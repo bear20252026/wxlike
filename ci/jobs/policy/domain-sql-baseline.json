@@ -1,11 +1,10 @@
 {
-  "total": 163,
+  "total": 146,
   "files": {
     "content_index.rs": 5,
     "devices.rs": 3,
     "favorites.rs": 14,
     "governance.rs": 3,
-    "groups_admin.rs": 17,
     "inbox.rs": 4,
     "keys.rs": 6,
     "live.rs": 15,

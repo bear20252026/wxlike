@@ -10,8 +10,14 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
+
+use super::repo::groups_admin::{
+    all_muted, announcement, delete_member_mute, insert_invite, insert_member_direct, invite,
+    join_approval, join_requests, member_count, mute_until, set_all_muted, set_join_approval,
+    set_join_request_status, upsert_announcement, upsert_join_request, upsert_member_mute,
+    user_exists,
+};
 
 // ---------------------------------------------------------------------------
 // 公告
@@ -38,42 +44,27 @@ impl Platform {
         if text.chars().count() > 2_000 {
             return Err(PlatformError::BadInput("announcement too long"));
         }
-        self.db().lock().execute(
-            "INSERT INTO group_announcement(group_id, text, media_id, pinned_by, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(group_id) DO UPDATE SET
-               text = excluded.text, media_id = excluded.media_id,
-               pinned_by = excluded.pinned_by, updated_at = excluded.updated_at",
-            params![
-                group,
-                text,
-                media_id,
-                actor,
-                wxlike_core::types::now_ms() as i64
-            ],
+        upsert_announcement(
+            &self.db().lock(),
+            group,
+            text,
+            media_id,
+            actor,
+            wxlike_core::types::now_ms() as i64,
         )?;
         Ok(())
     }
 
     pub fn announcement(&self, group: &str) -> Result<Option<GroupAnnouncement>> {
         let group = validate::id(group)?;
-        let c = self.db().lock();
-        let row = c
-            .query_row(
-                "SELECT text, media_id, pinned_by, updated_at FROM group_announcement
-                 WHERE group_id = ?1",
-                params![group],
-                |r| {
-                    Ok(GroupAnnouncement {
-                        text: r.get(0)?,
-                        media_id: r.get(1)?,
-                        pinned_by: r.get(2)?,
-                        updated_at: r.get(3)?,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(row)
+        Ok(
+            announcement(&self.db().lock(), group)?.map(|r| GroupAnnouncement {
+                text: r.text,
+                media_id: r.media_id,
+                pinned_by: r.pinned_by,
+                updated_at: r.updated_at,
+            }),
+        )
     }
 }
 
@@ -98,33 +89,24 @@ impl Platform {
         if role == "owner" {
             return Err(PlatformError::BadInput("the owner cannot be muted"));
         }
-        self.db().lock().execute(
-            "INSERT INTO group_mutes(group_id, user_id, until_ms) VALUES(?1, ?2, ?3)
-             ON CONFLICT(group_id, user_id) DO UPDATE SET until_ms = excluded.until_ms",
-            params![group, target, until_ms as i64],
-        )?;
+        let c = self.db().lock();
+        upsert_member_mute(&c, group, target, until_ms as i64)?;
         Ok(())
     }
 
     pub fn clear_member_mute(&self, group: &str, actor: &str, target: &str) -> Result<()> {
         let (group, target) = (validate::id(group)?, validate::id(target)?);
         self.assert_manager(group, actor)?;
-        let changed = self.db().lock().execute(
-            "DELETE FROM group_mutes WHERE group_id = ?1 AND user_id = ?2",
-            params![group, target],
-        )?;
-        crate::db::ensure_updated(changed)?;
+        if !delete_member_mute(&self.db().lock(), group, target)? {
+            return Err(PlatformError::NotFound);
+        }
         Ok(())
     }
 
     pub fn set_all_mute(&self, group: &str, actor: &str, on: bool) -> Result<()> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
-        self.db().lock().execute(
-            "UPDATE groups SET all_muted = ?1 WHERE id = ?2",
-            params![on as i64, group],
-        )?;
-        Ok(())
+        set_all_muted(&self.db().lock(), group, on)
     }
 
     /// 全员禁言的当前状态（#318 遗留缺口的服务端一半）：写入侧只有
@@ -132,12 +114,7 @@ impl Platform {
     /// 客户端都无从读——这里给一个与公告读取对称的域方法。
     pub fn all_muted(&self, group: &str) -> Result<bool> {
         let group = validate::id(group)?;
-        let all: i64 = self.db().lock().query_row(
-            "SELECT all_muted FROM groups WHERE id = ?1",
-            params![group],
-            |r| r.get(0),
-        )?;
-        Ok(all != 0)
+        all_muted(&self.db().lock(), group)
     }
 
     /// 发送侧裁决（hub 接线复用）：全员禁言对 owner/admin 无效；单人禁言
@@ -151,15 +128,7 @@ impl Platform {
         if self.all_muted(group)? {
             return Ok(true);
         }
-        let until: Option<i64> = self
-            .db()
-            .lock()
-            .query_row(
-                "SELECT until_ms FROM group_mutes WHERE group_id = ?1 AND user_id = ?2",
-                params![group, user],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let until = mute_until(&self.db().lock(), group, user)?;
         Ok(until
             .map(|u| u > wxlike_core::types::now_ms() as i64)
             .unwrap_or(false))
@@ -188,28 +157,13 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let current: i64 = c.query_row(
-            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1",
-            params![group],
-            |r| r.get(0),
-        )?;
-        if current as usize >= crate::domain::groups::MAX_GROUP_MEMBERS {
+        if member_count(&c, group)? as usize >= crate::domain::groups::MAX_GROUP_MEMBERS {
             return Err(PlatformError::BadInput("group member limit exceeded"));
         }
-        let exists: Option<String> = c
-            .query_row("SELECT id FROM users WHERE id = ?1", params![user], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?;
-        if exists.is_none() {
+        if !user_exists(&c, user)? {
             return Err(PlatformError::NotFound);
         }
-        c.execute(
-            "INSERT INTO group_members(group_id, user_id, role, my_remark, joined_at)
-             VALUES(?1, ?2, ?3, '', ?4)
-             ON CONFLICT(group_id, user_id) DO NOTHING",
-            params![group, user, crate::domain::groups::ROLE_MEMBER, now],
-        )?;
+        insert_member_direct(&c, group, user, crate::domain::groups::ROLE_MEMBER, now)?;
         drop(c);
         self.invalidate_group(group);
         Ok(())
@@ -219,11 +173,7 @@ impl Platform {
     pub fn set_join_approval(&self, group: &str, actor: &str, on: bool) -> Result<()> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
-        self.db().lock().execute(
-            "UPDATE groups SET approval = ?1 WHERE id = ?2",
-            params![on as i64, group],
-        )?;
-        Ok(())
+        set_join_approval(&self.db().lock(), group, on)
     }
 
     pub fn create_invite(&self, group: &str, actor: &str, ttl_ms: u64) -> Result<GroupInvite> {
@@ -231,11 +181,7 @@ impl Platform {
         self.assert_manager(group, actor)?;
         let token = crate::auth::random_hex(16);
         let expires = wxlike_core::types::now_ms() as i64 + ttl_ms as i64;
-        self.db().lock().execute(
-            "INSERT INTO group_invites(token, group_id, created_by, expires_at)
-             VALUES(?1, ?2, ?3, ?4)",
-            params![token, group, actor, expires],
-        )?;
+        insert_invite(&self.db().lock(), &token, group, actor, expires)?;
         Ok(GroupInvite {
             token,
             group_id: group.to_string(),
@@ -250,39 +196,30 @@ impl Platform {
         let user = validate::id(user)?;
         // scope the guard: is_member/add_members re-lock the same non-reentrant
         // Mutex — holding it across those calls deadlocked the caller's thread
-        let row: Option<(String, i64)> = {
+        let row = {
             let c = self.db().lock();
-            c.query_row(
-                "SELECT group_id, expires_at FROM group_invites WHERE token = ?1",
-                params![token],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?
+            invite(&c, token)?
         };
-        let Some((group, expires_at)) = row else {
+        let Some(invite) = row else {
             return Err(PlatformError::NotFound);
         };
+        let (group, expires_at) = (invite.group_id, invite.expires_at);
         if expires_at <= wxlike_core::types::now_ms() as i64 {
             return Err(PlatformError::BadInput("invite expired"));
         }
         if self.is_member(&group, user)? {
             return Ok("already_member");
         }
-        let approval: i64 = self.db().lock().query_row(
-            "SELECT approval FROM groups WHERE id = ?1",
-            params![group],
-            |r| r.get(0),
-        )?;
+        let approval = join_approval(&self.db().lock(), &group)?;
         if approval == 0 {
             self.add_member_direct(&group, user)?;
             Ok("joined")
         } else {
-            self.db().lock().execute(
-                "INSERT INTO group_join_requests(group_id, user_id, status, requested_at)
-                 VALUES(?1, ?2, 'pending', ?3)
-                 ON CONFLICT(group_id, user_id) DO UPDATE SET status = 'pending',
-                   requested_at = excluded.requested_at",
-                params![group, user, wxlike_core::types::now_ms() as i64],
+            upsert_join_request(
+                &self.db().lock(),
+                &group,
+                user,
+                wxlike_core::types::now_ms() as i64,
             )?;
             Ok("pending")
         }
@@ -291,15 +228,10 @@ impl Platform {
     pub fn join_requests(&self, group: &str, actor: &str) -> Result<Vec<(String, String)>> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
-        let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT user_id, requested_at FROM group_join_requests
-             WHERE group_id = ?1 AND status = 'pending' ORDER BY requested_at",
-        )?;
-        let rows = stmt.query_map(params![group], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.to_string()))
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        Ok(join_requests(&self.db().lock(), group)?
+            .into_iter()
+            .map(|r| (r.user_id, r.requested_at.to_string()))
+            .collect())
     }
 
     pub fn decide_join_request(
@@ -315,12 +247,9 @@ impl Platform {
             self.add_member_direct(group, user)?;
         }
         let status = if approve { "approved" } else { "rejected" };
-        let changed = self.db().lock().execute(
-            "UPDATE group_join_requests SET status = ?1
-             WHERE group_id = ?2 AND user_id = ?3 AND status = 'pending'",
-            params![status, group, user],
-        )?;
-        crate::db::ensure_updated(changed)?;
+        if !set_join_request_status(&self.db().lock(), group, user, status)? {
+            return Err(PlatformError::NotFound);
+        }
         Ok(())
     }
 }
