@@ -1,5 +1,5 @@
 {
-  "total": 146,
+  "total": 131,
   "files": {
     "content_index.rs": 5,
     "devices.rs": 3,
@@ -7,7 +7,6 @@
     "governance.rs": 3,
     "inbox.rs": 4,
     "keys.rs": 6,
-    "live.rs": 15,
     "media.rs": 4,
     "notes.rs": 8,
     "notification.rs": 3,

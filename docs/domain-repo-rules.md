@@ -24,7 +24,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `video_feed.rs`：发布/复核、可见性、点赞、评论、关注与删除语句全部移入
 `domain/repo/video_feed.rs`，三道内容门禁与 feed 模式选择留在 domain。第九批清
 `groups_admin.rs`：公告、禁言、审批开关、邀请 token、入群请求语句全部移入
-`domain/repo/groups_admin.rs`，管理员断言与状态机留在 domain。
+`domain/repo/groups_admin.rs`，管理员断言与状态机留在 domain。第十批清
+`live.rs`：在播会话、推流状态、观众进出、弹幕收件人语句全部移入
+`domain/repo/live.rs`，凭据签名、权限校验与计数刷新时机留在 domain。
 
 ## 现在的边界
 
@@ -57,7 +59,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::video_feed`：视频主行、复核行、点赞/评论行、可见性查询与关注关系都在
   仓储层；domain 只保留转码/审核门禁、状态机与 feed 模式选择；
 - `repo::groups_admin`：公告、禁言、审批开关、邀请 token 与入群请求行都在
-  仓储层；domain 只保留管理员断言、成员上限与审批状态机。
+  仓储层；domain 只保留管理员断言、成员上限与审批状态机；
+- `repo::live`：在播会话、推流状态、观众行与弹幕收件人都在仓储层；domain 只
+  保留推流凭据签名、权限校验、计数刷新时机与弹幕审核。
 
 ## 防回潮
 
@@ -69,19 +73,20 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **21 个文件 / 146 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **20 个文件 / 131 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
 清零，第七批把 friends 的 **19 条**清零，第八批把 video_feed 的 **17 条**清零，
-第九批把 groups_admin 的 **17 条**清零，总数从 425 降到 146。
+第九批把 groups_admin 的 **17 条**清零，第十批把 live 的 **15 条**清零，
+总数从 425 降到 131。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `live.rs`（15）：直播状态与信令；
-2. `status.rs`（14）/ `favorites.rs`（14）；
+1. `status.rs`（14）：状态/动态读模型；
+2. `favorites.rs`（14）/ `relations.rs`（13）；
 3. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：

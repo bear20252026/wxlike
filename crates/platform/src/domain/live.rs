@@ -26,10 +26,15 @@ use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
 use hmac::{Hmac, Mac as _};
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use sha2::Sha256;
 use wxlike_core::tx::ConnectionTx as _;
+
+use super::repo::live::{
+    active_live_snapshot, active_session_exists, active_session_id, active_session_ref,
+    danmaku_recipients, delete_viewer, end_live_session, insert_live_session, insert_viewer,
+    live_state_for_stream, refresh_viewer_counts,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -97,14 +102,7 @@ impl Platform {
         }
         // 会话状态：停播后的凭据即使未过期也不能推流
         let c = self.db().lock();
-        let live: Option<String> = c
-            .query_row(
-                "SELECT state FROM live_sessions WHERE stream_key = ?1 ORDER BY started_at DESC LIMIT 1",
-                params![stream_key],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match live.as_deref() {
+        match live_state_for_stream(&c, stream_key)?.as_deref() {
             Some("live") => Ok(()),
             _ => Err(PlatformError::Forbidden),
         }
@@ -123,24 +121,12 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let (id, stream_key) = c.with_tx(|tx| -> Result<(String, String)> {
-            let existing: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
-                    params![channel],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if existing.is_some() {
+            if active_session_exists(tx, &channel)? {
                 return Err(PlatformError::Conflict("channel is already live".into()));
             }
             let id = crate::auth::random_hex(8);
             let stream_key = crate::auth::random_hex(12);
-            tx.execute(
-                "INSERT INTO live_sessions(id, channel_id, host, stream_key, state, recording,
-                                       started_at, ended_at, viewers, peak_viewers)
-                 VALUES(?1, ?2, ?3, ?4, 'live', ?5, ?6, NULL, 0, 0)",
-                params![id, channel, actor, stream_key, i64::from(recording), now],
-            )?;
+            insert_live_session(tx, &id, &channel, actor, &stream_key, recording, now)?;
             Ok((id, stream_key))
         })?;
         drop(c);
@@ -172,28 +158,13 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let id = c.with_tx(|tx| -> Result<String> {
-            let session: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT id, host FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
-                    params![channel],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            let Some((id, host)) = session else {
-                return Err(PlatformError::NotFound);
-            };
+            let session = active_session_ref(tx, &channel)?.ok_or(PlatformError::NotFound)?;
+            let (id, host) = (session.id, session.host);
             // 主播本人，或社群管理员（主持人失联时的兜底）
             if host != actor && !is_manager {
                 return Err(PlatformError::Forbidden);
             }
-            tx.execute(
-                "UPDATE live_sessions SET state = 'ended', ended_at = ?2 WHERE id = ?1",
-                params![id, now],
-            )?;
-            tx.execute(
-                "DELETE FROM live_viewers WHERE session_id = ?1",
-                params![id],
-            )?;
+            end_live_session(tx, &id, now)?;
             Ok(id)
         })?;
         drop(c);
@@ -209,22 +180,15 @@ impl Platform {
             .ok_or(PlatformError::NotFound)?;
         self.require_member(&community, user)?;
         let c = self.db().lock();
-        let row: Option<(String, String, i64, i64, i64)> = c
-            .query_row(
-                "SELECT host, stream_key, recording, viewers, peak_viewers
-                 FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
-                params![channel],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .optional()?;
+        let row = active_live_snapshot(&c, &channel)?;
         Ok(match row {
-            Some((host, key, recording, viewers, _peak)) => LiveState {
+            Some(snapshot) => LiveState {
                 channel_id: channel,
                 live: true,
-                host: Some(host),
-                viewers,
-                recording: recording != 0,
-                hls_url: format!("/live/{key}/index.m3u8"),
+                host: Some(snapshot.host),
+                viewers: snapshot.viewers,
+                recording: snapshot.recording != 0,
+                hls_url: format!("/live/{}/index.m3u8", snapshot.stream_key),
             },
             None => LiveState {
                 channel_id: channel,
@@ -238,14 +202,7 @@ impl Platform {
     }
 
     fn live_session_id(&self, channel: &str) -> Result<String> {
-        let c = self.db().lock();
-        c.query_row(
-            "SELECT id FROM live_sessions WHERE channel_id = ?1 AND state = 'live'",
-            params![channel],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .ok_or(PlatformError::NotFound)
+        active_session_id(&self.db().lock(), channel)?.ok_or(PlatformError::NotFound)
     }
 
     /// 进房：观众计数 +1，峰值同步抬升。
@@ -259,22 +216,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<i64> {
-            tx.execute(
-                "INSERT INTO live_viewers(session_id, user_id, joined_at) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(session_id, user_id) DO NOTHING",
-                params![session, user, now],
-            )?;
-            tx.execute(
-                "UPDATE live_sessions SET viewers = (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1),
-                    peak_viewers = MAX(peak_viewers, (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1))
-                 WHERE id = ?1",
-                params![session],
-            )?;
-            Ok(tx.query_row(
-                "SELECT viewers FROM live_sessions WHERE id = ?1",
-                params![session],
-                |r| r.get(0),
-            )?)
+            insert_viewer(tx, &session, user, now)?;
+            refresh_viewer_counts(tx, &session)
         })
     }
 
@@ -283,20 +226,8 @@ impl Platform {
         let session = self.live_session_id(&channel)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<i64> {
-            tx.execute(
-                "DELETE FROM live_viewers WHERE session_id = ?1 AND user_id = ?2",
-                params![session, user],
-            )?;
-            tx.execute(
-                "UPDATE live_sessions SET viewers = (SELECT COUNT(*) FROM live_viewers WHERE session_id = ?1)
-                 WHERE id = ?1",
-                params![session],
-            )?;
-            Ok(tx.query_row(
-                "SELECT viewers FROM live_sessions WHERE id = ?1",
-                params![session],
-                |r| r.get(0),
-            )?)
+            delete_viewer(tx, &session, user)?;
+            refresh_viewer_counts(tx, &session)
         })
     }
 
@@ -324,11 +255,7 @@ impl Platform {
         let session = self.live_session_id(&channel)?;
         let recipients: Vec<String> = {
             let c = self.db().lock();
-            let mut stmt = c.prepare(
-                "SELECT user_id FROM live_viewers WHERE session_id = ?1 AND user_id <> ?2",
-            )?;
-            let rows = stmt.query_map(params![session, user], |r| r.get::<_, String>(0))?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
+            danmaku_recipients(&c, &session, user)?
         };
         if recipients.is_empty() {
             return Ok(0);
