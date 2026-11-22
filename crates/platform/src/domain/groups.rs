@@ -21,8 +21,15 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
+
+use super::repo::groups::{
+    delete_member, group_exists as repo_group_exists, group_header as repo_group_header,
+    groups_of_user as repo_groups_of_user, has_member, idempotent_response, insert_group,
+    insert_member, mark_dissolved, member_count, member_ids, members as repo_members, members_page,
+    meta_of, owner_of, remember_idempotent as repo_remember_idempotent, role_of as repo_role_of,
+    set_my_remark as repo_set_my_remark, set_visibility, summary, user_exists,
+};
 
 /// Task book A4: adding more members than this is refused.
 pub const MAX_GROUP_MEMBERS: usize = 1_000;
@@ -68,13 +75,7 @@ impl Platform {
     /// 只有服务端记住才有效。键由调用方给（`Idempotency-Key` 头）。
     pub fn replay_idempotent(&self, key: &str) -> Result<Option<serde_json::Value>> {
         let c = self.db().lock();
-        let row: Option<String> = c
-            .query_row(
-                "SELECT response FROM idempotency WHERE key = ?1",
-                rusqlite::params![key],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let row = idempotent_response(&c, key)?;
         drop(c);
         match row {
             Some(text) => Ok(Some(
@@ -85,15 +86,10 @@ impl Platform {
     }
 
     pub fn remember_idempotent(&self, key: &str, response: &serde_json::Value) -> Result<()> {
-        self.db().lock().execute(
-            "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3)
-             ON CONFLICT(key) DO NOTHING",
-            rusqlite::params![
-                key,
-                serde_json::to_string(response).map_err(PlatformError::Codec)?,
-                wxlike_core::types::now_ms() as i64
-            ],
-        )?;
+        let body = serde_json::to_string(response).map_err(PlatformError::Codec)?;
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        repo_remember_idempotent(&c, key, &body, now)?;
         Ok(())
     }
 
@@ -121,12 +117,7 @@ impl Platform {
     /// 群成员 id 列表（不含角色等展示字段）。
     fn group_member_ids(&self, group_id: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
-        let mut stmt =
-            c.prepare("SELECT user_id FROM group_members WHERE group_id = ?1 ORDER BY joined_at")?;
-        let rows = stmt
-            .query_map(rusqlite::params![group_id], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        member_ids(&c, group_id)
     }
 
     pub fn create_group(&self, owner: &str, name: &str, member_ids: &[String]) -> Result<String> {
@@ -149,30 +140,14 @@ impl Platform {
 
         let c = self.db().lock();
         for m in &requested {
-            let exists: Option<String> = c
-                .query_row("SELECT id FROM users WHERE id = ?1", params![m], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?;
-            if exists.is_none() {
+            if !user_exists(&c, m)? {
                 return Err(PlatformError::NotFound);
             }
         }
-        c.execute(
-            "INSERT INTO groups(id, name, owner_uid, created_at) VALUES(?1, ?2, ?3, ?4)",
-            params![id, name, owner, now],
-        )?;
-        c.execute(
-            "INSERT INTO group_members(group_id, user_id, role, my_remark, joined_at)
-             VALUES(?1, ?2, ?3, '', ?4)",
-            params![id, owner, ROLE_OWNER, now],
-        )?;
+        insert_group(&c, &id, &name, &owner, now)?;
+        insert_member(&c, &id, &owner, ROLE_OWNER, now)?;
         for m in &requested {
-            c.execute(
-                "INSERT INTO group_members(group_id, user_id, role, my_remark, joined_at)
-                 VALUES(?1, ?2, ?3, '', ?4)",
-                params![id, m, ROLE_MEMBER, now],
-            )?;
+            insert_member(&c, &id, m, ROLE_MEMBER, now)?;
         }
         drop(c);
         self.invalidate_group(&id);
@@ -184,40 +159,17 @@ impl Platform {
     /// Header row of a group: `(id, name, owner_uid, created_at)`.
     pub fn group_header(&self, group_id: &str) -> Result<Option<(String, String, String, i64)>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT id, name, owner_uid, created_at FROM groups WHERE id = ?1",
-            params![group_id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            },
-        )
-        .optional()?)
+        repo_group_header(&c, group_id)
     }
 
     pub fn group_exists(&self, group_id: &str) -> Result<bool> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT 1 FROM groups WHERE id = ?1",
-            params![group_id],
-            |_| Ok(1i64),
-        )
-        .optional()?
-        .is_some())
+        repo_group_exists(&c, group_id)
     }
 
     fn role_of_row(&self, group_id: &str, user_id: &str) -> Result<Option<String>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT role FROM group_members WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, user_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?)
+        repo_role_of(&c, group_id, user_id)
     }
 
     pub fn is_member(&self, group_id: &str, user_id: &str) -> Result<bool> {
@@ -240,19 +192,7 @@ impl Platform {
 
     pub fn group_members(&self, group_id: &str) -> Result<Vec<MemberRow>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT user_id, role, my_remark, joined_at FROM group_members
-             WHERE group_id = ?1 ORDER BY joined_at, user_id",
-        )?;
-        let rows = stmt.query_map(params![group_id], |r| {
-            Ok(MemberRow {
-                user_id: r.get(0)?,
-                role: r.get(1)?,
-                my_remark: r.get(2)?,
-                joined_at: r.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        repo_members(&c, group_id)
     }
 
     /// 游标页：`group_members` 的下推版（#331 第 3 条）。
@@ -275,68 +215,13 @@ impl Platform {
             None => -1,
             Some(n) => n.max(0),
         };
-        let map_row = |r: &rusqlite::Row<'_>| {
-            Ok(MemberRow {
-                user_id: r.get(0)?,
-                role: r.get(1)?,
-                my_remark: r.get(2)?,
-                joined_at: r.get(3)?,
-            })
-        };
         let c = self.db().lock();
-        let rows = match after_user.filter(|u| !u.is_empty()) {
-            Some(after) => {
-                let joined: Option<i64> = c
-                    .query_row(
-                        "SELECT joined_at FROM group_members
-                         WHERE group_id = ?1 AND user_id = ?2",
-                        params![group_id, after],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                let Some(joined) = joined else {
-                    return Ok(Vec::new());
-                };
-                let mut stmt = c.prepare(
-                    "SELECT user_id, role, my_remark, joined_at FROM group_members
-                     WHERE group_id = ?1
-                       AND (joined_at > ?2 OR (joined_at = ?2 AND user_id > ?3))
-                     ORDER BY joined_at, user_id LIMIT ?4",
-                )?;
-                let mapped =
-                    stmt.query_map(params![group_id, joined, after, sql_limit], map_row)?;
-                mapped.collect::<std::result::Result<Vec<_>, _>>()?
-            }
-            None => {
-                let mut stmt = c.prepare(
-                    "SELECT user_id, role, my_remark, joined_at FROM group_members
-                     WHERE group_id = ?1 ORDER BY joined_at, user_id LIMIT ?2",
-                )?;
-                let mapped = stmt.query_map(params![group_id, sql_limit], map_row)?;
-                mapped.collect::<std::result::Result<Vec<_>, _>>()?
-            }
-        };
-        Ok(rows)
+        members_page(&c, group_id, after_user, sql_limit)
     }
 
     pub fn group_summary(&self, me: &str) -> Result<Vec<GroupSummary>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT g.id, g.name, g.owner_uid, m.role,
-                    (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id)
-             FROM groups g JOIN group_members m ON m.group_id = g.id
-             WHERE m.user_id = ?1 ORDER BY g.created_at DESC",
-        )?;
-        let rows = stmt.query_map(params![me], |r| {
-            Ok(GroupSummary {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                owner_uid: r.get(2)?,
-                my_role: r.get(3)?,
-                member_count: r.get(4)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        summary(&c, me)
     }
 
     /// Returns how many members were actually added (duplicates are idempotent).
@@ -356,44 +241,22 @@ impl Platform {
 
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let current: i64 = c.query_row(
-            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1",
-            params![&group_id],
-            |r| r.get(0),
-        )?;
-        let new_count: usize = (current as usize)
-            + cleaned
-                .iter()
-                .filter(|u| {
-                    c.query_row(
-                        "SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2",
-                        params![&group_id, u],
-                        |_| Ok(1i64),
-                    )
-                    .optional()
-                    .map(|r| r.map(|_| false).unwrap_or(true))
-                    .unwrap_or(true)
-                })
-                .count();
+        let current = member_count(&c, &group_id)? as usize;
+        let mut new_count = current;
+        for u in &cleaned {
+            if !has_member(&c, &group_id, u)? {
+                new_count += 1;
+            }
+        }
         if new_count > MAX_GROUP_MEMBERS {
             return Err(PlatformError::BadInput("group member limit exceeded"));
         }
         let mut added = 0usize;
         for u in &cleaned {
-            let exists: Option<String> = c
-                .query_row("SELECT id FROM users WHERE id = ?1", params![u], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?;
-            if exists.is_none() {
+            if !user_exists(&c, u)? {
                 return Err(PlatformError::NotFound);
             }
-            added += c.execute(
-                "INSERT INTO group_members(group_id, user_id, role, my_remark, joined_at)
-                 VALUES(?1, ?2, ?3, '', ?4)
-                 ON CONFLICT(group_id, user_id) DO NOTHING",
-                params![&group_id, u, ROLE_MEMBER, now],
-            )?;
+            added += insert_member(&c, &group_id, u, ROLE_MEMBER, now)?;
         }
         drop(c);
         self.invalidate_group(&group_id);
@@ -418,10 +281,7 @@ impl Platform {
             _ => {}
         }
         let c = self.db().lock();
-        c.execute(
-            "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
-            params![&group_id, target],
-        )?;
+        delete_member(&c, &group_id, &target)?;
         drop(c);
         self.invalidate_group(&group_id);
         self.sync_mailbox_members(&group_id);
@@ -447,10 +307,7 @@ impl Platform {
             ));
         }
         let c = self.db().lock();
-        c.execute(
-            "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
-            params![&group_id, actor],
-        )?;
+        delete_member(&c, &group_id, actor)?;
         drop(c);
         self.invalidate_group(&group_id);
         self.sync_mailbox_members(&group_id);
@@ -461,10 +318,7 @@ impl Platform {
         let group_id = validate::id(group_id)?.to_string();
         let remark = validate::remark(remark)?.to_string();
         let c = self.db().lock();
-        let changed = c.execute(
-            "UPDATE group_members SET my_remark = ?1 WHERE group_id = ?2 AND user_id = ?3",
-            params![remark, &group_id, actor],
-        )?;
+        let changed = repo_set_my_remark(&c, &group_id, actor, &remark)?;
         crate::db::ensure_updated(changed)?;
         Ok(())
     }
@@ -473,10 +327,7 @@ impl Platform {
     /// conversations whose history and search results this user may see).
     pub fn groups_of_user(&self, user_id: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
-        let mut stmt =
-            c.prepare("SELECT group_id FROM group_members WHERE user_id = ?1 ORDER BY group_id")?;
-        let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_groups_of_user(&c, user_id)
     }
 
     // ---- membership cache (used by the hub through Membership) ----
@@ -555,24 +406,13 @@ impl Platform {
             _ => return Err(PlatformError::BadInput("visibility")),
         };
         let c = self.db().lock();
-        let owner: Option<String> = c
-            .query_row(
-                "SELECT owner_uid FROM groups WHERE id = ?1",
-                params![group_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(owner) = owner else {
+        let Some(owner) = owner_of(&c, group_id)? else {
             return Err(PlatformError::NotFound);
         };
         if owner != actor {
             return Err(PlatformError::Forbidden);
         }
-        c.execute(
-            "INSERT INTO group_meta(group_id, visibility) VALUES(?1, ?2) \
-             ON CONFLICT(group_id) DO UPDATE SET visibility = excluded.visibility",
-            params![group_id, vis],
-        )?;
+        set_visibility(&c, group_id, vis)?;
         Ok(())
     }
 
@@ -583,43 +423,20 @@ impl Platform {
     pub fn dissolve_group(&self, actor: &str, group_id: &str) -> Result<Vec<String>> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let owner: Option<String> = c
-            .query_row(
-                "SELECT owner_uid FROM groups WHERE id = ?1",
-                params![group_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(owner) = owner else {
+        let Some(owner) = owner_of(&c, group_id)? else {
             return Err(PlatformError::NotFound);
         };
         if owner != actor {
             return Err(PlatformError::Forbidden);
         }
-        c.execute(
-            "INSERT INTO group_meta(group_id, visibility, dissolved_at, dissolved_by) \
-             VALUES(?1, 'public', ?2, ?3) \
-             ON CONFLICT(group_id) DO UPDATE SET dissolved_at = excluded.dissolved_at, \
-               dissolved_by = excluded.dissolved_by",
-            params![group_id, now, actor],
-        )?;
-        let mut stmt = c.prepare("SELECT user_id FROM group_members WHERE group_id = ?1")?;
-        let rows = stmt
-            .query_map(params![group_id], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        mark_dissolved(&c, group_id, now, actor)?;
+        member_ids(&c, group_id)
     }
 
     /// 群元数据（可见性 / 解散）—— 缺行时按 public、未解散处理。
     pub fn group_meta_of(&self, group_id: &str) -> Result<(String, bool)> {
         let c = self.db().lock();
-        let row: Option<(String, Option<i64>)> = c
-            .query_row(
-                "SELECT visibility, dissolved_at FROM group_meta WHERE group_id = ?1",
-                params![group_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
+        let row = meta_of(&c, group_id)?;
         Ok(match row {
             Some((vis, dissolved)) => (vis, dissolved.is_some()),
             None => ("public".to_string(), false),

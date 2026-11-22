@@ -1,5 +1,5 @@
 {
-  "total": 333,
+  "total": 304,
   "files": {
     "articles.rs": 27,
     "communities.rs": 29,
@@ -8,7 +8,6 @@
     "favorites.rs": 14,
     "friends.rs": 19,
     "governance.rs": 3,
-    "groups.rs": 29,
     "groups_admin.rs": 17,
     "inbox.rs": 4,
     "keys.rs": 6,
