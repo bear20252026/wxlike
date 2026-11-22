@@ -268,9 +268,10 @@ pub(in crate::domain) fn publisher_owner(c: &Connection, id: &str) -> Result<Opt
 }
 
 pub(in crate::domain) fn user_name(c: &Connection, id: &str) -> Result<String> {
-    c.query_row("SELECT name FROM users WHERE id = ?1", params![id], |r| {
+    let name = c.query_row("SELECT name FROM users WHERE id = ?1", params![id], |r| {
         r.get(0)
-    })
+    })?;
+    Ok(name)
 }
 
 pub(in crate::domain) fn reaction_active(
