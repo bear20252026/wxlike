@@ -190,7 +190,7 @@ impl Platform {
         {
             let c = self.db().lock();
             if let Some(n) = name {
-                rename_channel(&c, &channel, n)?;
+                rename_channel(&c, &channel, &n)?;
             }
             if let Some(k) = kind {
                 set_channel_kind(&c, &channel, k)?;
