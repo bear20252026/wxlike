@@ -20,8 +20,9 @@
 
 use crate::error::{PlatformError, Result};
 use crate::Platform;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
+
+use super::repo::read::{owner_kind, set_owner_kind as set_owner_kind_row};
 
 /// 信箱错误 → 平台错误（`Mail` 变体已有，别再 leak 字符串）。
 fn mail<T>(r: wxlike_message::Result<T>) -> Result<T> {
@@ -73,13 +74,7 @@ impl Platform {
             return Ok(OwnerType::Direct);
         }
         let c = self.db().lock();
-        let kind: Option<String> = c
-            .query_row(
-                "SELECT owner_type FROM conv_owner WHERE conv_id = ?1",
-                params![conv],
-                |r| r.get(0),
-            )
-            .ok();
+        let kind = owner_kind(&c, conv)?;
         match kind.as_deref() {
             Some("group") => Ok(OwnerType::Group),
             Some("channel") => Ok(OwnerType::Channel),
@@ -95,11 +90,8 @@ impl Platform {
             wxlike_message::OwnerType::Group => "group",
             wxlike_message::OwnerType::Channel => "channel",
         };
-        self.db().lock().execute(
-            "INSERT INTO conv_owner(conv_id, owner_type) VALUES(?1, ?2)
-             ON CONFLICT(conv_id) DO UPDATE SET owner_type = excluded.owner_type",
-            params![conv, name],
-        )?;
+        let c = self.db().lock();
+        set_owner_kind_row(&c, conv, name)?;
         Ok(())
     }
 

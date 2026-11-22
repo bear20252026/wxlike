@@ -65,6 +65,8 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `domain/repo/notification.rs`，级别/关键词校验与 JSON 解码留在 domain。
 第二十九批清 `qr_login.rs`：票据字段读取、抢占式消费与用户显示名语句移入
 `domain/repo/qr_login.rs`，状态机调用、secret 比对与错误映射留在 domain。
+第三十批清 `read.rs`：会话属主读取与登记语句移入 `domain/repo/read.rs`，
+参与者闸门与信箱调用留在 domain。至此 `domain/*.rs` 生产代码 SQL 归零。
 
 ## 现在的边界
 
@@ -137,19 +139,22 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::notification`：免打扰规则 upsert、单条读取与列表都在仓储层；domain 只
   保留级别/关键词校验与 JSON 解码；
 - `repo::qr_login`：票据字段读取、抢占式消费与用户显示名都在仓储层；domain 只
-  保留状态机调用、secret 比对与错误映射。
+  保留状态机调用、secret 比对与错误映射；
+- `repo::read`：会话属主读取与登记都在仓储层；domain 只保留参与者闸门与信箱
+  调用。
 
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
 `ci/jobs/policy/domain-sql-baseline.json`：
 
-- 已列入基线的文件，SQL 数只能下降，不能上升；
-- 新文件出现任何 SQL 直接失败；
+- 基线里的文件，SQL 数只能下降，不能上升；
+- 不在基线里的文件出现任何 SQL 直接失败（当前基线为空 = 全部文件零容忍）；
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **1 个文件 / 2 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **0 个文件 / 0 条 SQL**，也就是"任何新 SQL 直接失败"的零容忍
+口径；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
@@ -160,22 +165,27 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 第十五批把 recovery 的 **9 条**清零，第十六批把 reconcile 的 **8 条**清零，
 第十七批把 notes 的 **8 条**清零，第十八批把 keys 的 **6 条**清零，
 第十九批把 perms 的 **5 条**清零，第二十批把 content_index 的 **5 条**清零，
-第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，第二十三批把 trust 的 **5 条**清零，第二十四批把 inbox 的 **4 条**清零，第二十五批把 media 的 **4 条**清零，第二十六批把 devices 的 **3 条**清零，第二十七批把 governance 的 **3 条**清零，第二十八批把 notification 的 **3 条**清零，第二十九批把 qr_login 的 **3 条**
-清零，总数从 425 降到 2。
+第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，
+第二十三批把 trust 的 **5 条**清零，第二十四批把 inbox 的 **4 条**清零，
+第二十五批把 media 的 **4 条**清零，第二十六批把 devices 的 **3 条**清零，
+第二十七批把 governance 的 **3 条**清零，第二十八批把 notification 的 **3 条**
+清零，第二十九批把 qr_login 的 **3 条**清零，第三十批把 read 的 **2 条**清零，
+总数从 425 降到 0。
 
-## 下一批顺序
+## 收尾与边界
 
-按剩余 SQL 数量排：
+`domain/*.rs` 的生产 SQL 已全部清零，没有下一批。后续只守边界：
 
-1. `read.rs`（2）；
-2. 收尾：基线归零后把门禁从"逐文件棘轮"改成"任何新 SQL 直接失败"。
+1. 新 SQL 只进 `domain/repo/*.rs`；
+2. 基线保持 0/0，门禁即零容忍；
+3. 想接 PostgreSQL 时改 repo 层实现，不改 domain。
 
 每批的验收标准一致：
 
 - 该模块生产代码 SQL 计数为 0；
 - `Platform` 公开签名不变；
 - SQL 只留在 `domain/repo`，domain 不再依赖 rusqlite；
-- `check_domain_sql.py` 基线只降不升；
+- `check_domain_sql.py` 保持 0/0，新增 SQL 即失败；
 - CI 的 `pg-migration` / `test` / `audit` 全绿。
 
 ## 不要做的事
