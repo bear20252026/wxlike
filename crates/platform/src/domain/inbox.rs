@@ -12,8 +12,9 @@
 
 use crate::error::{PlatformError, Result};
 use crate::Platform;
-use rusqlite::params;
 use serde::Serialize;
+
+use super::repo::inbox::{mark_id, mark_up_to, page, unread};
 
 pub const MAX_PAGE: i64 = 50;
 const MAX_READ_IDS: usize = 200;
@@ -41,25 +42,7 @@ impl Platform {
         let limit = limit.clamp(1, MAX_PAGE);
         let before = before_seq.unwrap_or(i64::MAX);
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT seq, id, kind, actor, target_kind, target_id, text, created_at, read_at
-             FROM notifications WHERE user_id = ?1 AND seq < ?2
-             ORDER BY seq DESC LIMIT ?3",
-        )?;
-        let it = stmt.query_map(params![user, before, limit + 1], |r| {
-            Ok(Notification {
-                seq: r.get(0)?,
-                id: r.get(1)?,
-                kind: r.get(2)?,
-                actor: r.get(3)?,
-                target_kind: r.get(4)?,
-                target_id: r.get(5)?,
-                text: r.get(6)?,
-                created_at: r.get(7)?,
-                read: r.get::<_, Option<i64>>(8)?.is_some(),
-            })
-        })?;
-        let mut rows = it.collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut rows = page(&c, user, before, limit + 1)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
             rows.pop();
@@ -70,11 +53,7 @@ impl Platform {
 
     pub fn unread_notifications(&self, user: &str) -> Result<i64> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT COUNT(*) FROM notifications WHERE user_id = ?1 AND read_at IS NULL",
-            params![user],
-            |r| r.get(0),
-        )?)
+        unread(&c, user)
     }
 
     /// 已读只能推进到 `up_to_seq`（含），或者按 id 列表。两者都限定本人。
@@ -94,19 +73,11 @@ impl Platform {
         let c = self.db().lock();
         let mut changed = 0usize;
         if let Some(up_to) = up_to_seq {
-            changed += c.execute(
-                "UPDATE notifications SET read_at = ?1
-                 WHERE user_id = ?2 AND seq <= ?3 AND read_at IS NULL",
-                params![now, user, up_to],
-            )?;
+            changed += mark_up_to(&c, user, up_to, now)?;
         }
         for id in ids {
             let id = crate::validate::id(id)?;
-            changed += c.execute(
-                "UPDATE notifications SET read_at = ?1
-                 WHERE user_id = ?2 AND id = ?3 AND read_at IS NULL",
-                params![now, user, id],
-            )?;
+            changed += mark_id(&c, user, id, now)?;
         }
         Ok(changed)
     }
