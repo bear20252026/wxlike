@@ -199,7 +199,8 @@ def main() -> None:
             psql,
             args.dsn,
             "COPY migration_ledger (id, user_id, kind, amount_minor, counterparty, ref_id, memo, created_at) "
-            "FROM STDIN WITH (FORMAT csv, HEADER true)",
+            "FROM STDIN WITH (FORMAT csv, HEADER true, "
+            "FORCE_NOT_NULL (counterparty, ref_id, memo))",
             ledger_csv,
         )
 
