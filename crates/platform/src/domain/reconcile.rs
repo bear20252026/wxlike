@@ -26,11 +26,12 @@
 
 use crate::error::Result;
 use crate::{Platform, PlatformState};
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-/// `reconcile_runs` 一行的读取形状（列多，别名避免 clippy::type_complexity）。
-type RunRow = (i64, i64, i64, i64, i64, i64, String, i64);
+use super::repo::reconcile::{
+    escrow_sum, funded_total, history_rows, insert_run, last_run, redpacket_rows,
+    wallet_balance_sum, wallet_ledger_rows,
+};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -67,54 +68,11 @@ impl Platform {
 
         let (wallet_sum, users_checked, per_user, escrow, funded_total, packets) = {
             let c = self.db().lock();
-            let wallet_sum: i64 =
-                c.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
-                    r.get(0)
-                })?;
-            let per_user: Vec<(String, i64, i64)> = {
-                let mut stmt = c.prepare(
-                    "SELECT w.user_id, w.balance,
-                            COALESCE((SELECT SUM(CASE
-                                WHEN l.kind IN ('transfer_out', 'redpacket_out') THEN -l.amount
-                                ELSE l.amount END)
-                              FROM ledger l WHERE l.user_id = w.user_id), 0)
-                     FROM wallets w",
-                )?;
-                let rows = stmt.query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-            };
-            let escrow: i64 = c.query_row(
-                "SELECT COALESCE(SUM(total - claimed_total), 0) FROM redpackets WHERE status = 'open'",
-                [],
-                |r| r.get(0),
-            )?;
-            let funded_total: i64 = c.query_row(
-                "SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind = 'fund_in'",
-                [],
-                |r| r.get(0),
-            )?;
-            let packets: Vec<(String, i64, i64, i64, i64, String)> = {
-                let mut stmt = c.prepare(
-                    "SELECT id, total, count, claimed, claimed_total, status FROM redpackets",
-                )?;
-                let rows = stmt.query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, i64>(4)?,
-                        r.get::<_, String>(5)?,
-                    ))
-                })?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-            };
+            let wallet_sum = wallet_balance_sum(&c)?;
+            let per_user = wallet_ledger_rows(&c)?;
+            let escrow = escrow_sum(&c)?;
+            let funded_total = funded_total(&c)?;
+            let packets = redpacket_rows(&c)?;
             (
                 wallet_sum,
                 per_user.len(),
@@ -125,12 +83,12 @@ impl Platform {
             )
         };
 
-        for (user, balance, ledger_sum) in per_user {
-            if balance != ledger_sum {
+        for row in per_user {
+            if row.balance != row.ledger_sum {
                 mismatches.push(Mismatch::Wallet {
-                    user,
-                    balance,
-                    ledger_sum,
+                    user: row.user,
+                    balance: row.balance,
+                    ledger_sum: row.ledger_sum,
                 });
             }
         }
@@ -143,23 +101,23 @@ impl Platform {
             });
         }
 
-        for (id, total, count, claimed, claimed_total, status) in packets {
-            let reason = if claimed_total > total {
+        for packet in packets {
+            let reason = if packet.claimed_total > packet.total {
                 Some("claimed_total exceeds total")
-            } else if claimed > count {
+            } else if packet.claimed > packet.count {
                 Some("claimed count exceeds slots")
-            } else if status == "finished" && claimed != count {
+            } else if packet.status == "finished" && packet.claimed != packet.count {
                 Some("finished but slots remain")
-            } else if status == "open" && claimed >= count {
+            } else if packet.status == "open" && packet.claimed >= packet.count {
                 Some("open but no slots remain")
-            } else if status == "expired" && claimed > count {
+            } else if packet.status == "expired" && packet.claimed > packet.count {
                 Some("expired with impossible claim count")
             } else {
                 None
             };
             if let Some(reason) = reason {
                 mismatches.push(Mismatch::Redpacket {
-                    id,
+                    id: packet.id,
                     reason: reason.to_string(),
                 });
             }
@@ -194,61 +152,35 @@ impl Platform {
     fn persist_reconcile(&self, report: &ReconcileReport) -> Result<()> {
         let detail = serde_json::to_string(&report.mismatches)?;
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO reconcile_runs(at_ms, users_checked, wallet_sum, escrow, supply,
-                                         funded_total, mismatches, detail, ok)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                report.at_ms,
-                report.users_checked as i64,
-                report.wallet_sum,
-                report.escrow,
-                report.supply,
-                report.funded_total,
-                report.mismatches.len() as i64,
-                detail,
-                i64::from(report.ok)
-            ],
-        )?;
-        Ok(())
+        insert_run(
+            &c,
+            report.at_ms,
+            report.users_checked as i64,
+            report.wallet_sum,
+            report.escrow,
+            report.supply,
+            report.funded_total,
+            report.mismatches.len() as i64,
+            &detail,
+            report.ok,
+        )
     }
 
     /// 最近一次对账（运营看板/告警查询用）。
     pub fn last_reconcile(&self) -> Result<Option<ReconcileReport>> {
         let c = self.db().lock();
-        let row: Option<RunRow> = c
-            .query_row(
-                "SELECT at_ms, users_checked, wallet_sum, escrow, supply, funded_total, detail, ok
-                 FROM reconcile_runs ORDER BY id DESC LIMIT 1",
-                [],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                    ))
-                },
-            )
-            .ok();
-        let Some((at_ms, users_checked, wallet_sum, escrow, supply, funded_total, detail, ok)) =
-            row
-        else {
+        let Some(row) = last_run(&c)? else {
             return Ok(None);
         };
-        let mismatches: Vec<Mismatch> = serde_json::from_str(&detail).unwrap_or_default();
+        let mismatches: Vec<Mismatch> = serde_json::from_str(&row.detail).unwrap_or_default();
         Ok(Some(ReconcileReport {
-            at_ms,
-            users_checked: users_checked.max(0) as usize,
-            wallet_sum,
-            escrow,
-            supply,
-            funded_total,
-            ok: ok != 0,
+            at_ms: row.at_ms,
+            users_checked: row.users_checked.max(0) as usize,
+            wallet_sum: row.wallet_sum,
+            escrow: row.escrow,
+            supply: row.supply,
+            funded_total: row.funded_total,
+            ok: row.ok != 0,
             mismatches,
         }))
     }
@@ -256,19 +188,7 @@ impl Platform {
     /// 最近 N 次运行摘要 `(at_ms, ok, mismatches)`，最新在前。
     pub fn reconcile_history(&self, limit: usize) -> Result<Vec<(i64, bool, i64)>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT at_ms, ok, mismatches FROM reconcile_runs ORDER BY id DESC LIMIT ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![limit.clamp(1, 200) as i64], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)? != 0,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        history_rows(&c, limit.clamp(1, 200) as i64)
     }
 }
 
