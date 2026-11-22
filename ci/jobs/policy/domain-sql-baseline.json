@@ -1,7 +1,6 @@
 {
-  "total": 247,
+  "total": 220,
   "files": {
-    "articles.rs": 27,
     "content_index.rs": 5,
     "devices.rs": 3,
     "favorites.rs": 14,

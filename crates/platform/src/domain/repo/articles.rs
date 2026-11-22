@@ -11,6 +11,413 @@ use crate::domain::articles::{
     MAX_ARTICLE_BLOCKS, MAX_BODY_TEXT_CHARS,
 };
 
+/// 发布者主行；`following` / `unread` / 文章数是读模型，不在这里。
+pub(in crate::domain) struct PublisherRecord {
+    pub id: String,
+    pub owner: String,
+    pub name: String,
+    pub bio: String,
+    pub avatar_media_id: String,
+    pub created_at: i64,
+}
+
+/// 新文章一次落库的全部字段；主行与首个版本历史共用。
+pub(in crate::domain) struct ArticleCreate<'a> {
+    pub id: &'a str,
+    pub publisher_id: &'a str,
+    pub author: &'a str,
+    pub title: &'a str,
+    pub doc_json: &'a str,
+    pub plain: &'a str,
+    pub html: &'a str,
+    pub state: &'a str,
+    pub now: i64,
+    pub published_at: Option<i64>,
+}
+
+/// 列表页的原始行；`excerpt` 与 reaction 计数是领域读模型。
+pub(in crate::domain) struct ArticleListRow {
+    pub seq: i64,
+    pub id: String,
+    pub publisher_id: String,
+    pub publisher_name: String,
+    pub title: String,
+    pub body_text: String,
+    pub state: String,
+    pub version: i64,
+    pub created_at: i64,
+    pub published_at: Option<i64>,
+}
+
+pub(in crate::domain) fn publisher_id_by_owner(
+    c: &Connection,
+    owner: &str,
+) -> Result<Option<String>> {
+    let id = c
+        .query_row(
+            "SELECT id FROM publishers WHERE owner = ?1",
+            params![owner],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(id)
+}
+
+pub(in crate::domain) fn publisher_record(
+    c: &Connection,
+    id: &str,
+) -> Result<Option<PublisherRecord>> {
+    let row = c
+        .query_row(
+            "SELECT id, owner, name, bio, avatar_media_id, created_at FROM publishers
+             WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(PublisherRecord {
+                    id: r.get(0)?,
+                    owner: r.get(1)?,
+                    name: r.get(2)?,
+                    bio: r.get(3)?,
+                    avatar_media_id: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub(in crate::domain) fn publisher_followed(
+    c: &Connection,
+    user: &str,
+    publisher_id: &str,
+) -> Result<bool> {
+    let found = c
+        .query_row(
+            "SELECT 1 FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
+            params![user, publisher_id],
+            |_| Ok(1i64),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+pub(in crate::domain) fn publisher_published_count(
+    c: &Connection,
+    publisher_id: &str,
+) -> Result<i64> {
+    let count = c.query_row(
+        "SELECT COUNT(*) FROM articles WHERE publisher_id = ?1 AND state = 'published'",
+        params![publisher_id],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+pub(in crate::domain) fn publisher_followers(
+    c: &Connection,
+    publisher_id: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = c.prepare("SELECT user_id FROM publisher_follows WHERE publisher_id = ?1")?;
+    let rows = stmt.query_map(params![publisher_id], |r| r.get::<_, String>(0))?;
+    let followers = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(followers)
+}
+
+pub(in crate::domain) fn update_publisher(
+    c: &Connection,
+    id: &str,
+    name: &str,
+    bio: &str,
+    avatar_media_id: &str,
+) -> Result<()> {
+    c.execute(
+        "UPDATE publishers SET name = ?1, bio = ?2, avatar_media_id = ?3
+         WHERE id = ?4",
+        params![name, bio, avatar_media_id, id],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn insert_publisher(
+    c: &Connection,
+    id: &str,
+    owner: &str,
+    name: &str,
+    bio: &str,
+    avatar_media_id: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO publishers(id, owner, name, bio, avatar_media_id, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, owner, name, bio, avatar_media_id, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn publisher_exists(c: &Connection, id: &str) -> Result<bool> {
+    let found = c
+        .query_row(
+            "SELECT 1 FROM publishers WHERE id = ?1",
+            params![id],
+            |_| Ok(1i64),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+pub(in crate::domain) fn insert_follow_ignore(
+    c: &Connection,
+    user: &str,
+    publisher_id: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT OR IGNORE INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
+         VALUES(?1, ?2, 0, ?3)",
+        params![user, publisher_id, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn delete_follow(
+    c: &Connection,
+    user: &str,
+    publisher_id: &str,
+) -> Result<()> {
+    c.execute(
+        "DELETE FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
+        params![user, publisher_id],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn publisher_ids_for_user(c: &Connection, user: &str) -> Result<Vec<String>> {
+    let mut stmt = c.prepare(
+        "SELECT DISTINCT p.id FROM publishers p
+         LEFT JOIN publisher_follows f
+           ON f.publisher_id = p.id AND f.user_id = ?1
+         WHERE f.user_id IS NOT NULL OR p.owner = ?1
+         ORDER BY p.created_at DESC, p.id",
+    )?;
+    let ids = stmt
+        .query_map(params![user], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+pub(in crate::domain) fn publisher_name_matches(
+    c: &Connection,
+    id: &str,
+    pattern: &str,
+) -> Result<bool> {
+    let found = c
+        .query_row(
+            "SELECT 1 FROM publishers WHERE id = ?1 AND name LIKE ?2 ESCAPE '\\'",
+            params![id, pattern],
+            |_| Ok(1i64),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+pub(in crate::domain) fn insert_article(c: &Connection, a: &ArticleCreate<'_>) -> Result<()> {
+    c.execute(
+        "INSERT INTO articles(seq, id, publisher_id, author, title, doc, body_text, body_html,
+                          state, version, created_at, updated_at, published_at)
+         VALUES(NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, ?10)",
+        params![
+            a.id,
+            a.publisher_id,
+            a.author,
+            a.title,
+            a.doc_json,
+            a.plain,
+            a.html,
+            a.state,
+            a.now,
+            a.published_at
+        ],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn insert_article_version(
+    c: &Connection,
+    id: &str,
+    doc_json: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO article_versions(article_id, version, doc, saved_at) VALUES(?1, 1, ?2, ?3)",
+        params![id, doc_json, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn publisher_owner(c: &Connection, id: &str) -> Result<Option<String>> {
+    let owner = c
+        .query_row(
+            "SELECT owner FROM publishers WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(owner)
+}
+
+pub(in crate::domain) fn user_name(c: &Connection, id: &str) -> Result<String> {
+    c.query_row("SELECT name FROM users WHERE id = ?1", params![id], |r| {
+        r.get(0)
+    })
+}
+
+pub(in crate::domain) fn reaction_active(
+    c: &Connection,
+    article_id: &str,
+    user: &str,
+    kind: &str,
+) -> Result<bool> {
+    let found = c
+        .query_row(
+            "SELECT 1 FROM article_reactions WHERE article_id = ?1 AND user_id = ?2 AND kind = ?3",
+            params![article_id, user, kind],
+            |_| Ok(1i64),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+pub(in crate::domain) fn article_list(
+    c: &Connection,
+    publisher_id: &str,
+    before: i64,
+    limit: i64,
+) -> Result<Vec<ArticleListRow>> {
+    let mut stmt = c.prepare(
+        "SELECT a.seq, a.id, a.publisher_id, p.name, a.title, a.body_text, a.state,
+                a.version, a.created_at, a.published_at
+         FROM articles a JOIN publishers p ON p.id = a.publisher_id
+         WHERE a.publisher_id = ?1 AND a.state = 'published' AND a.seq < ?2
+         ORDER BY a.seq DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![publisher_id, before, limit + 1], |r| {
+        Ok(ArticleListRow {
+            seq: r.get(0)?,
+            id: r.get(1)?,
+            publisher_id: r.get(2)?,
+            publisher_name: r.get(3)?,
+            title: r.get(4)?,
+            body_text: r.get(5)?,
+            state: r.get(6)?,
+            version: r.get(7)?,
+            created_at: r.get(8)?,
+            published_at: r.get(9)?,
+        })
+    })?;
+    let list = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(list)
+}
+
+pub(in crate::domain) fn article_read_target(
+    c: &Connection,
+    id: &str,
+) -> Result<Option<(i64, String, String)>> {
+    let row = c
+        .query_row(
+            "SELECT seq, publisher_id, state FROM articles WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub(in crate::domain) fn record_article_read(
+    c: &Connection,
+    user: &str,
+    article_id: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO article_reads(user_id, article_id, read_at) VALUES(?1, ?2, ?3)
+         ON CONFLICT(user_id, article_id) DO UPDATE SET read_at = excluded.read_at",
+        params![user, article_id, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn advance_follow_cursor(
+    c: &Connection,
+    user: &str,
+    publisher_id: &str,
+    cursor: i64,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
+         VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(user_id, publisher_id) DO UPDATE SET
+           read_cursor = MAX(read_cursor, excluded.read_cursor)",
+        params![user, publisher_id, cursor, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn article_is_published(c: &Connection, id: &str) -> Result<bool> {
+    let published = c
+        .query_row(
+            "SELECT 1 FROM articles WHERE id = ?1 AND state = 'published'",
+            params![id],
+            |_| Ok(1i64),
+        )
+        .optional()?;
+    Ok(published.is_some())
+}
+
+pub(in crate::domain) fn remove_reaction(
+    c: &Connection,
+    article_id: &str,
+    user: &str,
+    kind: &str,
+) -> Result<usize> {
+    let removed = c.execute(
+        "DELETE FROM article_reactions WHERE article_id = ?1 AND user_id = ?2 AND kind = ?3",
+        params![article_id, user, kind],
+    )?;
+    Ok(removed)
+}
+
+pub(in crate::domain) fn insert_reaction(
+    c: &Connection,
+    article_id: &str,
+    user: &str,
+    kind: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO article_reactions(article_id, user_id, kind, created_at)
+         VALUES(?1, ?2, ?3, ?4)",
+        params![article_id, user, kind, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn soft_delete_article(
+    c: &Connection,
+    id: &str,
+    author: &str,
+    now: i64,
+) -> Result<usize> {
+    let changed = c.execute(
+        "UPDATE articles SET state = 'deleted', updated_at = ?1
+         WHERE id = ?2 AND author = ?3 AND state <> 'deleted'",
+        params![now, id, author],
+    )?;
+    Ok(changed)
+}
+
 pub(in crate::domain) fn article_row(c: &Connection, id: &str) -> Result<Option<ArticleRow>> {
     Ok(c.query_row(
         "SELECT a.id, a.publisher_id, p.name, a.author, a.title, a.body_text, a.body_html,

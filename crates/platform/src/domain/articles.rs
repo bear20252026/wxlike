@@ -15,13 +15,18 @@ use crate::error::{PlatformError, Result};
 use crate::page;
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::articles::{
-    article_row, load_editable_article, publish_side_effects, reaction_counts, render_doc,
-    require_image_media, unread_count, write_article_revision,
+    advance_follow_cursor, article_is_published, article_list, article_read_target, article_row,
+    delete_follow, insert_article, insert_article_version, insert_follow_ignore, insert_publisher,
+    insert_reaction, load_editable_article, publish_side_effects, publisher_exists,
+    publisher_followed, publisher_followers, publisher_id_by_owner, publisher_ids_for_user,
+    publisher_name_matches, publisher_owner, publisher_published_count, publisher_record,
+    reaction_active, reaction_counts, record_article_read, remove_reaction, render_doc,
+    require_image_media, soft_delete_article, unread_count, update_publisher, user_name,
+    write_article_revision, ArticleCreate, PublisherRecord,
 };
 
 pub const MAX_ARTICLE_BLOCKS: usize = 200;
@@ -143,29 +148,15 @@ impl Platform {
         };
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let existing: Option<String> = c
-            .query_row(
-                "SELECT id FROM publishers WHERE owner = ?1",
-                params![owner],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let existing = publisher_id_by_owner(&c, owner)?;
         let id = match existing {
             Some(id) => {
-                c.execute(
-                    "UPDATE publishers SET name = ?1, bio = ?2, avatar_media_id = ?3
-                     WHERE id = ?4",
-                    params![name, bio, avatar, id],
-                )?;
+                update_publisher(&c, &id, &name, &bio, &avatar)?;
                 id
             }
             None => {
                 let id = crate::auth::random_hex(8);
-                c.execute(
-                    "INSERT INTO publishers(id, owner, name, bio, avatar_media_id, created_at)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, owner, name, bio, avatar, now],
-                )?;
+                insert_publisher(&c, &id, owner, &name, &bio, &avatar, now)?;
                 id
             }
         };
@@ -175,49 +166,29 @@ impl Platform {
 
     pub fn publisher_by_id(&self, id: &str, viewer: &str) -> Result<PublisherView> {
         let c = self.db().lock();
-        let row = c
-            .query_row(
-                "SELECT id, owner, name, bio, avatar_media_id, created_at FROM publishers
-                 WHERE id = ?1",
-                params![id],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, String>(4)?,
-                        r.get::<_, i64>(5)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((id, owner, name, bio, avatar, created_at)) = row else {
+        let Some(PublisherRecord {
+            id,
+            owner,
+            name,
+            bio,
+            avatar_media_id: avatar,
+            created_at,
+        }) = publisher_record(&c, id)?
+        else {
             return Err(PlatformError::NotFound);
         };
-        let following: bool = c
-            .query_row(
-                "SELECT 1 FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
-                params![viewer, id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
+        let following = publisher_followed(&c, viewer, &id)?;
         // 未读数属于"订阅者"；发布者看自己的号不应该显示成全部未读。
-        let unread = if viewer == owner {
+        let unread = if viewer == owner.as_str() {
             0
         } else {
             unread_count(&c, viewer, &id)?
         };
-        let published_articles: i64 = c.query_row(
-            "SELECT COUNT(*) FROM articles WHERE publisher_id = ?1 AND state = 'published'",
-            params![id],
-            |r| r.get(0),
-        )?;
+        let published_articles = publisher_published_count(&c, &id)?;
         Ok(PublisherView {
             id,
             owner,
-            name: name.to_string(),
+            name,
             bio,
             avatar_media_id: avatar,
             created_at,
@@ -229,41 +200,23 @@ impl Platform {
 
     pub fn publish_followers(&self, publisher_id: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
-        let mut stmt =
-            c.prepare("SELECT user_id FROM publisher_follows WHERE publisher_id = ?1")?;
-        let rows = stmt.query_map(params![publisher_id], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        publisher_followers(&c, publisher_id)
     }
 
     pub fn follow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
         let publisher_id = validate::id(publisher_id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let exists: Option<i64> = c
-            .query_row(
-                "SELECT 1 FROM publishers WHERE id = ?1",
-                params![publisher_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if exists.is_none() {
+        if !publisher_exists(&c, publisher_id)? {
             return Err(PlatformError::NotFound);
         }
-        c.execute(
-            "INSERT OR IGNORE INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
-             VALUES(?1, ?2, 0, ?3)",
-            params![user, publisher_id, now],
-        )?;
-        Ok(())
+        insert_follow_ignore(&c, user, publisher_id, now)
     }
 
     pub fn unfollow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
         let publisher_id = validate::id(publisher_id)?;
-        self.db().lock().execute(
-            "DELETE FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
-            params![user, publisher_id],
-        )?;
-        Ok(())
+        let c = self.db().lock();
+        delete_follow(&c, user, publisher_id)
     }
 
     /// 我关注的 + 我自己的发布者。`q` 只做名称子串匹配（管理页搜索）。
@@ -277,28 +230,9 @@ impl Platform {
                 Some(q) => Some(format!("%{}%", page::escape_like(q))),
                 None => None,
             };
-            let mut stmt = c.prepare(
-                "SELECT DISTINCT p.id FROM publishers p
-                 LEFT JOIN publisher_follows f
-                   ON f.publisher_id = p.id AND f.user_id = ?1
-                 WHERE f.user_id IS NOT NULL OR p.owner = ?1
-                 ORDER BY p.created_at DESC, p.id",
-            )?;
-            let mut ids = stmt
-                .query_map(params![user], |r| r.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            if let Some(pattern) = pattern {
-                ids.retain(|id| {
-                    c.query_row(
-                        "SELECT 1 FROM publishers WHERE id = ?1 AND name LIKE ?2 ESCAPE '\\'",
-                        params![id, pattern],
-                        |_| Ok(()),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-                    .is_some()
-                });
+            let mut ids = publisher_ids_for_user(&c, user)?;
+            if let Some(pattern) = pattern.as_deref() {
+                ids.retain(|id| publisher_name_matches(&c, id, pattern).unwrap_or(false));
             }
             ids
         };
@@ -331,27 +265,22 @@ impl Platform {
 
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            tx.execute(
-                "INSERT INTO articles(seq, id, publisher_id, author, title, doc, body_text, body_html,
-                                  state, version, created_at, updated_at, published_at)
-                 VALUES(NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, ?10)",
-                params![
-                    id,
-                    publisher_id,
+            insert_article(
+                tx,
+                &ArticleCreate {
+                    id: &id,
+                    publisher_id: &publisher_id,
                     author,
-                    title,
-                    doc_json,
-                    plain,
-                    html,
+                    title: &title,
+                    doc_json: &doc_json,
+                    plain: &plain,
+                    html: &html,
                     state,
                     now,
-                    body.publish.then_some(now)
-                ],
+                    published_at: body.publish.then_some(now),
+                },
             )?;
-            tx.execute(
-                "INSERT INTO article_versions(article_id, version, doc, saved_at) VALUES(?1, 1, ?2, ?3)",
-                params![id, serde_json::to_string(&body.doc)?, now],
-            )?;
+            insert_article_version(tx, &id, &doc_json, now)?;
             if body.publish {
                 publish_side_effects(tx, &id, &publisher_id, author, &title, &plain, now)?;
                 crate::domain::repo::content_index::add_media_refs(
@@ -371,15 +300,8 @@ impl Platform {
 
     fn require_publisher_owner(&self, publisher_id: &str, owner: &str) -> Result<()> {
         let c = self.db().lock();
-        let found: Option<String> = c
-            .query_row(
-                "SELECT owner FROM publishers WHERE id = ?1",
-                params![publisher_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match found {
-            Some(found) if found == owner => Ok(()),
+        match publisher_owner(&c, publisher_id)? {
+            Some(found) if found.as_str() == owner => Ok(()),
             Some(_) => Err(PlatformError::Forbidden),
             None => Err(PlatformError::NotFound),
         }
@@ -387,26 +309,19 @@ impl Platform {
 
     fn ensure_publisher(&self, owner: &str) -> Result<String> {
         let c = self.db().lock();
-        if let Some(id) = c
-            .query_row(
-                "SELECT id FROM publishers WHERE owner = ?1",
-                params![owner],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
+        if let Some(id) = publisher_id_by_owner(&c, owner)? {
             return Ok(id);
         }
-        let name: String = c.query_row(
-            "SELECT name FROM users WHERE id = ?1",
-            params![owner],
-            |r| r.get(0),
-        )?;
+        let name = user_name(&c, owner)?;
         let id = crate::auth::random_hex(8);
-        c.execute(
-            "INSERT INTO publishers(id, owner, name, bio, avatar_media_id, created_at)
-             VALUES(?1, ?2, ?3, '', '', ?4)",
-            params![id, owner, name, wxlike_core::types::now_ms() as i64],
+        insert_publisher(
+            &c,
+            &id,
+            owner,
+            &name,
+            "",
+            "",
+            wxlike_core::types::now_ms() as i64,
         )?;
         Ok(id)
     }
@@ -433,14 +348,7 @@ impl Platform {
         let reactions = reaction_counts(&c, id)?;
         let mut my = Vec::new();
         for kind in REACTION_KINDS {
-            if c.query_row(
-                "SELECT 1 FROM article_reactions WHERE article_id = ?1 AND user_id = ?2 AND kind = ?3",
-                params![id, viewer, kind],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
-            {
+            if reaction_active(&c, id, viewer, kind)? {
                 my.push(kind.to_string());
             }
         }
@@ -524,13 +432,10 @@ impl Platform {
 
     pub fn delete_article(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
+        let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            let changed = tx.execute(
-                "UPDATE articles SET state = 'deleted', updated_at = ?1
-                 WHERE id = ?2 AND author = ?3 AND state <> 'deleted'",
-                params![wxlike_core::types::now_ms() as i64, id, author],
-            )?;
+            let changed = soft_delete_article(tx, id, author, now)?;
             crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "article", id)?;
@@ -549,40 +454,27 @@ impl Platform {
         let limit = limit.clamp(1, MAX_PAGE);
         let before = cursor.unwrap_or(i64::MAX);
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT a.seq, a.id, a.publisher_id, p.name, a.title, a.body_text, a.state,
-                    a.version, a.created_at, a.published_at
-             FROM articles a JOIN publishers p ON p.id = a.publisher_id
-             WHERE a.publisher_id = ?1 AND a.state = 'published' AND a.seq < ?2
-             ORDER BY a.seq DESC LIMIT ?3",
-        )?;
-        let it = stmt.query_map(params![publisher_id, before, limit + 1], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                ArticleSummary {
-                    id: r.get(1)?,
-                    publisher_id: r.get(2)?,
-                    publisher_name: r.get(3)?,
-                    title: r.get(4)?,
-                    excerpt: excerpt(&r.get::<_, String>(5)?),
-                    state: r.get(6)?,
-                    version: r.get(7)?,
-                    created_at: r.get(8)?,
-                    published_at: r.get(9)?,
-                    reactions: ReactionCounts::default(),
-                },
-            ))
-        })?;
-        let mut rows = it.collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut rows = article_list(&c, publisher_id, before, limit)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
             rows.pop();
         }
-        let next = rows.last().map(|(seq, _)| *seq).unwrap_or(0);
+        let next = rows.last().map(|row| row.seq).unwrap_or(0);
         let mut out = Vec::with_capacity(rows.len());
-        for (_, mut summary) in rows {
-            summary.reactions = reaction_counts(&c, &summary.id)?;
-            out.push(summary);
+        for row in rows {
+            let reactions = reaction_counts(&c, &row.id)?;
+            out.push(ArticleSummary {
+                id: row.id,
+                publisher_id: row.publisher_id,
+                publisher_name: row.publisher_name,
+                title: row.title,
+                excerpt: excerpt(&row.body_text),
+                state: row.state,
+                version: row.version,
+                created_at: row.created_at,
+                published_at: row.published_at,
+                reactions,
+            });
         }
         Ok((out, next, has_more))
     }
@@ -593,29 +485,13 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let publisher_id = c.with_tx(|tx| -> Result<String> {
-            let (seq, publisher_id, state): (i64, String, String) = tx
-                .query_row(
-                    "SELECT seq, publisher_id, state FROM articles WHERE id = ?1",
-                    params![id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?
-                .ok_or(PlatformError::NotFound)?;
+            let (seq, publisher_id, state) =
+                article_read_target(tx, id)?.ok_or(PlatformError::NotFound)?;
             if state != "published" {
                 return Err(PlatformError::NotFound);
             }
-            tx.execute(
-                "INSERT INTO article_reads(user_id, article_id, read_at) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(user_id, article_id) DO UPDATE SET read_at = excluded.read_at",
-                params![user, id, now],
-            )?;
-            tx.execute(
-                "INSERT INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
-                 VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(user_id, publisher_id) DO UPDATE SET
-                   read_cursor = MAX(read_cursor, excluded.read_cursor)",
-                params![user, publisher_id, seq, now],
-            )?;
+            record_article_read(tx, user, id, now)?;
+            advance_follow_cursor(tx, user, &publisher_id, seq, now)?;
             Ok(publisher_id)
         })?;
         let unread = unread_count(&c, user, &publisher_id)?;
@@ -635,26 +511,12 @@ impl Platform {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let published: Option<i64> = c
-            .query_row(
-                "SELECT 1 FROM articles WHERE id = ?1 AND state = 'published'",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if published.is_none() {
+        if !article_is_published(&c, id)? {
             return Err(PlatformError::NotFound);
         }
-        let removed = c.execute(
-            "DELETE FROM article_reactions WHERE article_id = ?1 AND user_id = ?2 AND kind = ?3",
-            params![id, user, kind],
-        )?;
+        let removed = remove_reaction(&c, id, user, kind)?;
         let active = if removed == 0 {
-            c.execute(
-                "INSERT INTO article_reactions(article_id, user_id, kind, created_at)
-                 VALUES(?1, ?2, ?3, ?4)",
-                params![id, user, kind, now],
-            )?;
+            insert_reaction(&c, id, user, kind, now)?;
             true
         } else {
             false
