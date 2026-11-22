@@ -28,8 +28,9 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use sha2::{Digest as _, Sha256};
+
+use super::repo::secret as secret_repo;
 
 /// 允许的消失消息时长：关 / 30 秒 / 5 分钟 / 1 小时 / 1 天 / 7 天。
 pub const TTL_CHOICES_MS: [u64; 6] = [
@@ -64,19 +65,12 @@ impl Platform {
         // 只有会话参与者能改（直聊 conv_id 形如 d-<a>~<b>）
         self.require_conv_member(user_id, &conv_id)?;
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO secret_settings(conv_id, enabled, ttl_ms, updated_at)
-             VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(conv_id) DO UPDATE SET
-               enabled = excluded.enabled,
-               ttl_ms = excluded.ttl_ms,
-               updated_at = excluded.updated_at",
-            params![
-                conv_id,
-                i64::from(enabled),
-                ttl_ms as i64,
-                wxlike_core::types::now_ms() as i64
-            ],
+        secret_repo::set_settings(
+            &c,
+            &conv_id,
+            enabled,
+            ttl_ms as i64,
+            wxlike_core::types::now_ms() as i64,
         )?;
         Ok(SecretState {
             conv_id,
@@ -88,13 +82,7 @@ impl Platform {
     pub fn secret_state(&self, conv_id: &str) -> Result<SecretState> {
         let conv_id = validate::conv(conv_id)?.to_string();
         let c = self.db().lock();
-        let row: Option<(i64, i64)> = c
-            .query_row(
-                "SELECT enabled, ttl_ms FROM secret_settings WHERE conv_id = ?1",
-                params![conv_id],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .optional()?;
+        let row = secret_repo::settings(&c, &conv_id)?;
         Ok(match row {
             Some((enabled, ttl)) => SecretState {
                 conv_id,
@@ -134,13 +122,7 @@ impl Platform {
 
     fn identity_of(&self, user_id: &str) -> Result<String> {
         let c = self.db().lock();
-        c.query_row(
-            "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
-            params![user_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .ok_or(PlatformError::NotFound)
+        secret_repo::identity(&c, user_id)?.ok_or(PlatformError::NotFound)
     }
 
     /// 记录"我已核对过对方安全码"。`peer_identity` 与当前密钥不一致时拒绝，
@@ -154,18 +136,12 @@ impl Platform {
         }
         let conv = crate::direct_conv_id(user_id, peer_id);
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO secret_verifications(conv_id, user_id, peer_identity, verified_at)
-             VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(conv_id, user_id) DO UPDATE SET
-               peer_identity = excluded.peer_identity,
-               verified_at = excluded.verified_at",
-            params![
-                conv,
-                user_id,
-                peer_identity,
-                wxlike_core::types::now_ms() as i64
-            ],
+        secret_repo::save_verification(
+            &c,
+            &conv,
+            user_id,
+            peer_identity,
+            wxlike_core::types::now_ms() as i64,
         )?;
         Ok(())
     }
@@ -175,14 +151,7 @@ impl Platform {
         let conv = crate::direct_conv_id(user_id, peer_id);
         let current = self.identity_of(peer_id)?;
         let c = self.db().lock();
-        let row: Option<(String, i64)> = c
-            .query_row(
-                "SELECT peer_identity, verified_at FROM secret_verifications
-                 WHERE conv_id = ?1 AND user_id = ?2",
-                params![conv, user_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .optional()?;
+        let row = secret_repo::verification(&c, &conv, user_id)?;
         Ok(match row {
             Some((identity, at)) if identity == current => Some(at),
             _ => None,

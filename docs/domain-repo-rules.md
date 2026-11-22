@@ -48,7 +48,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `content_index.rs`：文章授权回源、媒体引用、候选页、正文与热搜语料语句全部
 移入 `domain/repo/content_index.rs`，泳道归并、摘要与热搜打分留在 domain。
 第二十一批清 `report.rs`：工单读取、举报人/队列索引与 upsert 语句全部移入
-`domain/repo/report.rs`，状态机流转与错误映射留在 domain。
+`domain/repo/report.rs`，状态机流转与错误映射留在 domain。第二十二批清
+`secret.rs`：会话开关/TTL、身份公钥与核对记录语句全部移入
+`domain/repo/secret.rs`，TTL 白名单、安全码计算与核对语义留在 domain。
 
 ## 现在的边界
 
@@ -105,7 +107,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::content_index`：索引写入/删除、媒体引用、候选页、正文与热搜语料都在
   仓储层；domain 只保留授权回源顺序、泳道归并、摘要截取与热搜打分；
 - `repo::report`：工单读取、举报人/队列索引与 upsert 都在仓储层；domain 只保留
-  状态机流转、审计与错误映射。
+  状态机流转、审计与错误映射；
+- `repo::secret`：会话开关/TTL、身份公钥与核对记录都在仓储层；domain 只保留
+  TTL 白名单、安全码计算与核对失效语义。
 
 ## 防回潮
 
@@ -117,7 +121,7 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **9 个文件 / 32 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **8 个文件 / 27 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
@@ -128,13 +132,14 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 第十五批把 recovery 的 **9 条**清零，第十六批把 reconcile 的 **8 条**清零，
 第十七批把 notes 的 **8 条**清零，第十八批把 keys 的 **6 条**清零，
 第十九批把 perms 的 **5 条**清零，第二十批把 content_index 的 **5 条**清零，
-第二十一批把 report 的 **5 条**清零，总数从 425 降到 32。
+第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，
+总数从 425 降到 27。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `secret.rs`（5）/ `trust.rs`（5）；
+1. `trust.rs`（5）；
 2. `inbox.rs`（4）/ `media.rs`（4）/ `devices.rs`（3）；
 3. 其余文件按 feature 逐个清到 0。
 
