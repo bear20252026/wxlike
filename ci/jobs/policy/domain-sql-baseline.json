@@ -1,5 +1,5 @@
 {
-  "total": 37,
+  "total": 32,
   "files": {
     "devices.rs": 3,
     "governance.rs": 3,
@@ -8,7 +8,6 @@
     "notification.rs": 3,
     "qr_login.rs": 3,
     "read.rs": 2,
-    "report.rs": 5,
     "secret.rs": 5,
     "trust.rs": 5
   }

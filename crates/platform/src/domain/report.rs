@@ -12,12 +12,13 @@
 
 use crate::error::{PlatformError, Result};
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use wxlike_report::{Action, Reason, State as TicketState, Ticket};
 
+use super::repo::report::{ids_by_reporter, ids_by_state, load, open_ids, save as save_ticket};
+
 /// `reports` 一行的读取形状（列多，别名避免 clippy::type_complexity）。
-type ReportRow = (
+pub(crate) type ReportRow = (
     String,
     String,
     String,
@@ -163,29 +164,7 @@ impl Platform {
 
     pub fn report(&self, id: &str) -> Result<Option<Ticket>> {
         let c = self.db().lock();
-        let row: Option<ReportRow> = c
-            .query_row(
-                "SELECT reporter, target_kind, target_id, reason, detail, state, action_json,
-                        handler, created_at, updated_at, history_json
-                 FROM reports WHERE id = ?1",
-                params![id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                        r.get(8)?,
-                        r.get(9)?,
-                        r.get(10)?,
-                    ))
-                },
-            )
-            .optional()?;
+        let row = load(&c, id)?;
         let Some((
             reporter,
             target_kind,
@@ -222,13 +201,7 @@ impl Platform {
     pub fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<Ticket>> {
         let ids: Vec<String> = {
             let c = self.db().lock();
-            let mut stmt = c.prepare(
-                "SELECT id FROM reports WHERE reporter = ?1 ORDER BY created_at DESC LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(params![reporter, limit.clamp(1, 200) as i64], |r| {
-                r.get::<_, String>(0)
-            })?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
+            ids_by_reporter(&c, reporter, limit.clamp(1, 200) as i64)?
         };
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -243,26 +216,10 @@ impl Platform {
     pub fn report_queue(&self, state: Option<&str>, limit: usize) -> Result<Vec<Ticket>> {
         let ids: Vec<String> = {
             let c = self.db().lock();
+            let limit = limit.clamp(1, 200) as i64;
             match state {
-                Some(s) => {
-                    let mut stmt = c.prepare(
-                        "SELECT id FROM reports WHERE state = ?1 ORDER BY created_at ASC LIMIT ?2",
-                    )?;
-                    let rows = stmt.query_map(params![s, limit.clamp(1, 200) as i64], |r| {
-                        r.get::<_, String>(0)
-                    })?;
-                    rows.collect::<std::result::Result<Vec<_>, _>>()?
-                }
-                None => {
-                    let mut stmt = c.prepare(
-                        "SELECT id FROM reports WHERE state IN ('open','triaged','actioned')
-                         ORDER BY created_at ASC LIMIT ?1",
-                    )?;
-                    let rows = stmt.query_map(params![limit.clamp(1, 200) as i64], |r| {
-                        r.get::<_, String>(0)
-                    })?;
-                    rows.collect::<std::result::Result<Vec<_>, _>>()?
-                }
+                Some(s) => ids_by_state(&c, s, limit)?,
+                None => open_ids(&c, limit)?,
             }
         };
         let mut out = Vec::with_capacity(ids.len());
@@ -320,34 +277,7 @@ impl Platform {
         };
         let history = serde_json::to_string(&t.history)?;
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO reports(id, reporter, target_kind, target_id, reason, detail, state,
-                                 action_json, handler, created_at, updated_at, history_json)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(id) DO UPDATE SET
-               state = excluded.state,
-               action_json = excluded.action_json,
-               handler = excluded.handler,
-               updated_at = excluded.updated_at,
-               history_json = excluded.history_json",
-            params![
-                t.id,
-                t.reporter,
-                t.target_kind,
-                t.target_id,
-                t.reason.as_str(),
-                t.detail,
-                t.state.as_str(),
-                action,
-                t.handler,
-                // rusqlite 0.41 起 `u64` 不再实现 `ToSql`。SQLite 的 INTEGER 就是
-                // 有符号 64 位，而工单时间戳是正数且远小于 `i64::MAX`，直接 `as i64`。
-                t.created_at as i64,
-                t.updated_at as i64,
-                history
-            ],
-        )?;
-        Ok(())
+        save_ticket(&c, t, action, history)
     }
 }
 
