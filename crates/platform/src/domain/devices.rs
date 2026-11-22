@@ -9,7 +9,8 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::params;
+
+use super::repo::devices as devices_repo;
 
 #[derive(serde::Serialize, PartialEq, Debug)]
 pub struct DeviceRow {
@@ -27,31 +28,13 @@ impl Platform {
         }
         let replaced = {
             let c = self.db().lock();
-            let existing: Option<String> = c
-                .query_row(
-                    "SELECT device_token FROM devices WHERE user_id = ?1 AND platform = ?2",
-                    params![user_id, platform],
-                    |r| r.get::<_, String>(0),
-                )
-                .map(Some)
-                .or_else(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                    other => Err(other),
-                })?;
-            c.execute(
-                "INSERT INTO devices(user_id, platform, device_token, last_seen)
-                 VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(user_id, platform) DO UPDATE SET
-                   device_token = excluded.device_token,
-                   last_seen = excluded.last_seen",
-                params![
-                    user_id,
-                    platform,
-                    reg.device_token,
-                    wxlike_core::types::now_ms() as i64
-                ],
-            )?;
-            existing
+            devices_repo::register(
+                &c,
+                user_id,
+                platform,
+                &reg.device_token,
+                wxlike_core::types::now_ms() as i64,
+            )?
         };
         Ok(replaced.is_some())
     }
@@ -59,17 +42,7 @@ impl Platform {
     /// All registered devices of a user (push dispatch reads this).
     pub fn devices_of(&self, user_id: &str) -> Result<Vec<DeviceRow>> {
         let c = self.db().lock();
-        let mut stmt =
-            c.prepare("SELECT platform, device_token FROM devices WHERE user_id = ?1")?;
-        let rows = stmt
-            .query_map(params![user_id], |r| {
-                Ok(DeviceRow {
-                    platform: r.get(0)?,
-                    device_token: r.get(1)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        devices_repo::list(&c, user_id)
     }
 }
 

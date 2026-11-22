@@ -1,7 +1,6 @@
 {
-  "total": 14,
+  "total": 11,
   "files": {
-    "devices.rs": 3,
     "governance.rs": 3,
     "notification.rs": 3,
     "qr_login.rs": 3,
