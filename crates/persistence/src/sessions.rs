@@ -43,6 +43,13 @@ pub trait SessionsRepo {
 
     fn sid_by_token(&self, token: &str) -> Result<Option<String>, Self::Error>;
 
+    /// 令牌所属会话的设备 id。外层 `None` = 没有这一行；内层 `None` = 行在但
+    /// `device_id` 为空（历史会话确实可能没记），两者不能混成同一个答案。
+    fn device_id_by_token(&self, token: &str) -> Result<Option<Option<String>>, Self::Error>;
+
+    /// 该用户名下的会话行数（含过期行）。注销流程在落标记前用它报“撤了多少”。
+    fn count_for_user(&self, user_id: &str) -> Result<i64, Self::Error>;
+
     /// 按 sid 读设备展示名；刷新轮换时用来沿用旧会话的设备名。行不存在或
     /// 设备名为空都返回 `None`，由调用方决定默认值。
     fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>, Self::Error>;

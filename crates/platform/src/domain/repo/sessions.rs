@@ -74,6 +74,27 @@ impl SessionsRepo for SqliteSessionsRepo<'_> {
         Ok(sid.flatten())
     }
 
+    fn device_id_by_token(&self, token: &str) -> Result<Option<Option<String>>> {
+        let device: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT device_id FROM sessions WHERE token = ?1",
+                params![token],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(device)
+    }
+
+    fn count_for_user(&self, user_id: &str) -> Result<i64> {
+        let n = self.conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )?;
+        Ok(n)
+    }
+
     fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>> {
         let name: Option<String> = self
             .conn
@@ -266,6 +287,30 @@ impl SessionsRepo for PostgresSessionsRepo<'_> {
             )
             .map_err(pg_error)?;
         Ok(sid.flatten())
+    }
+
+    fn device_id_by_token(&self, token: &str) -> Result<Option<Option<String>>> {
+        self.pg
+            .block_on(
+                sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT device_id FROM identity_session_token WHERE token = $1",
+                )
+                .bind(token)
+                .fetch_optional(self.pg.pool()),
+            )
+            .map_err(pg_error)
+    }
+
+    fn count_for_user(&self, user_id: &str) -> Result<i64> {
+        self.pg
+            .block_on(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM identity_session_token WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .fetch_one(self.pg.pool()),
+            )
+            .map_err(pg_error)
     }
 
     fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>> {
@@ -476,11 +521,17 @@ mod tests {
             repo.device_name_by_sid("s1").unwrap().as_deref(),
             Some("phone")
         );
+        assert_eq!(
+            repo.device_id_by_token("t1").unwrap(),
+            Some(Some("d1".to_string()))
+        );
+        assert_eq!(repo.count_for_user(&user_id).unwrap(), 1);
         assert_eq!(repo.list_for_user(&user_id, 0).unwrap().len(), 1);
         assert_eq!(repo.touch("t1", 50).unwrap(), 1);
         assert_eq!(repo.find_by_token("t1").unwrap().unwrap().last_seen, 50);
         assert_eq!(repo.revoke_by_sid(&user_id, "s1").unwrap(), 1);
         assert!(repo.find_by_token("t1").unwrap().is_none());
+        assert_eq!(repo.count_for_user(&user_id).unwrap(), 0);
     }
 
     #[test]
