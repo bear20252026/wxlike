@@ -18,11 +18,13 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use wxlike_core::tx::ConnectionTx as _;
 
-use super::repo::stickers::pack_row;
+use super::repo::stickers::{
+    delete_pack, delete_user_sticker, insert_pack, insert_sticker, install_sticker, installed_for,
+    media_info, pack_exists, pack_row, pack_stickers, packs_for, set_sticker_order, uninstall_pack,
+};
 
 pub const MAX_STICKER_BYTES: u64 = 5 * 1024 * 1024;
 pub const MAX_STICKERS_PER_PACK: usize = 100;
@@ -85,19 +87,11 @@ impl Platform {
         let pack_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<StickerPack> {
-            tx.execute(
-                "INSERT INTO sticker_packs(id, owner, name, license, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![pack_id, owner, name, license, now],
-            )?;
+            insert_pack(tx, &pack_id, owner, &name, &license, now)?;
             for (i, sticker) in body.stickers.iter().enumerate() {
                 let media_id = validate::id(&sticker.media_id)?;
                 let id = crate::auth::random_hex(8);
-                tx.execute(
-                    "INSERT INTO stickers(id, pack_id, media_id, name, sort_order, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, pack_id, media_id, sticker.name, i as i64, now],
-                )?;
+                insert_sticker(tx, &id, &pack_id, media_id, &sticker.name, i as i64, now)?;
             }
             pack_row(tx, &pack_id, owner)?.ok_or(PlatformError::NotFound)
         })
@@ -106,23 +100,16 @@ impl Platform {
     fn check_sticker_media(&self, owner: &str, media_ids: &[String]) -> Result<()> {
         let c = self.db().lock();
         for media_id in media_ids {
-            let row: Option<(String, i64, String)> = c
-                .query_row(
-                    "SELECT uploader, size, content_type FROM media WHERE id = ?1",
-                    params![media_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?;
-            let Some((uploader, size, content_type)) = row else {
+            let Some(info) = media_info(&c, media_id)? else {
                 return Err(PlatformError::BadInput("unknown sticker media"));
             };
-            if uploader != owner {
+            if info.uploader != owner {
                 return Err(PlatformError::Forbidden);
             }
-            if !content_type.starts_with("image/") {
+            if !info.content_type.starts_with("image/") {
                 return Err(PlatformError::BadInput("sticker must be an image"));
             }
-            if size as u64 > MAX_STICKER_BYTES {
+            if info.size as u64 > MAX_STICKER_BYTES {
                 return Err(PlatformError::PayloadTooLarge);
             }
         }
@@ -132,16 +119,7 @@ impl Platform {
     pub fn sticker_packs(&self, user: &str) -> Result<Vec<StickerPack>> {
         let ids: Vec<String> = {
             let c = self.db().lock();
-            let mut stmt = c.prepare(
-                "SELECT p.id FROM sticker_packs p
-                 WHERE p.owner = ?1
-                    OR EXISTS (SELECT 1 FROM user_stickers us
-                               JOIN stickers s ON s.id = us.sticker_id
-                               WHERE us.user_id = ?1 AND s.pack_id = p.id)
-                 ORDER BY p.created_at DESC",
-            )?;
-            let it = stmt.query_map(params![user], |r| r.get::<_, String>(0))?;
-            it.collect::<std::result::Result<Vec<_>, _>>()?
+            packs_for(&c, user)?
         };
         ids.iter().map(|id| self.sticker_pack(user, id)).collect()
     }
@@ -158,33 +136,13 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
-            let exists: Option<i64> = tx
-                .query_row(
-                    "SELECT 1 FROM sticker_packs WHERE id = ?1",
-                    params![pack_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if exists.is_none() {
+            if !pack_exists(tx, pack_id)? {
                 return Err(PlatformError::NotFound);
             }
-            let mut stmt = tx.prepare(
-                "SELECT id, sort_order FROM stickers WHERE pack_id = ?1 ORDER BY sort_order",
-            )?;
-            let stickers = stmt
-                .query_map(params![pack_id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            drop(stmt);
+            let stickers = pack_stickers(tx, pack_id)?;
             let mut added = 0usize;
             for (sticker_id, sort_order) in stickers {
-                added += tx.execute(
-                    "INSERT INTO user_stickers(user_id, sticker_id, sort_order, installed_at)
-                 VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(user_id, sticker_id) DO NOTHING",
-                    params![user, sticker_id, sort_order, now],
-                )?;
+                added += install_sticker(tx, user, &sticker_id, sort_order, now)?;
             }
             Ok(added)
         })
@@ -193,32 +151,13 @@ impl Platform {
     pub fn uninstall_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
         let pack_id = validate::id(pack_id)?;
         let c = self.db().lock();
-        Ok(c.execute(
-            "DELETE FROM user_stickers
-             WHERE user_id = ?1 AND sticker_id IN (SELECT id FROM stickers WHERE pack_id = ?2)",
-            params![user, pack_id],
-        )?)
+        uninstall_pack(&c, user, pack_id)
     }
 
     /// 已安装表情（发送面板的数据源），按用户自己的排序返回。
     pub fn installed_stickers(&self, user: &str) -> Result<Vec<Sticker>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT s.id, s.pack_id, s.media_id, s.name, us.sort_order
-             FROM user_stickers us JOIN stickers s ON s.id = us.sticker_id
-             WHERE us.user_id = ?1
-             ORDER BY us.sort_order, us.installed_at, s.id",
-        )?;
-        let rows = stmt.query_map(params![user], |r| {
-            Ok(Sticker {
-                id: r.get(0)?,
-                pack_id: r.get(1)?,
-                media_id: r.get(2)?,
-                name: r.get(3)?,
-                sort_order: r.get(4)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        installed_for(&c, user)
     }
 
     pub fn order_sticker(&self, user: &str, sticker_id: &str, sort_order: i64) -> Result<()> {
@@ -226,21 +165,20 @@ impl Platform {
         if !(0..=1_000_000).contains(&sort_order) {
             return Err(PlatformError::BadInput("sort_order out of range"));
         }
-        let changed = self.db().lock().execute(
-            "UPDATE user_stickers SET sort_order = ?1
-             WHERE user_id = ?2 AND sticker_id = ?3",
-            params![sort_order, user, sticker_id],
-        )?;
+        let changed = {
+            let c = self.db().lock();
+            set_sticker_order(&c, user, sticker_id, sort_order)?
+        };
         crate::db::ensure_updated(changed)?;
         Ok(())
     }
 
     pub fn remove_sticker(&self, user: &str, sticker_id: &str) -> Result<()> {
         let sticker_id = validate::id(sticker_id)?;
-        let changed = self.db().lock().execute(
-            "DELETE FROM user_stickers WHERE user_id = ?1 AND sticker_id = ?2",
-            params![user, sticker_id],
-        )?;
+        let changed = {
+            let c = self.db().lock();
+            delete_user_sticker(&c, user, sticker_id)?
+        };
         crate::db::ensure_updated(changed)?;
         Ok(())
     }
@@ -248,10 +186,10 @@ impl Platform {
     /// 只允许包的所有者删除；安装行随 `stickers` 的外键级联清掉。
     pub fn delete_sticker_pack(&self, owner: &str, pack_id: &str) -> Result<()> {
         let pack_id = validate::id(pack_id)?;
-        let changed = self.db().lock().execute(
-            "DELETE FROM sticker_packs WHERE id = ?1 AND owner = ?2",
-            params![pack_id, owner],
-        )?;
+        let changed = {
+            let c = self.db().lock();
+            delete_pack(&c, owner, pack_id)?
+        };
         crate::db::ensure_updated(changed)?;
         Ok(())
     }
