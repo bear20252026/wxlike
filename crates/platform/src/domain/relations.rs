@@ -18,8 +18,8 @@ use wxlike_relations::port::RelationsPort as _;
 
 use super::repo::relations::{
     accepted_request, allow_strangers, blocked, blocked_ids, decide_request, delete_block,
-    insert_block, patch_friend_meta, requests_in, requests_out, set_allow_strangers, upsert_request,
-    user_exists,
+    insert_block, patch_friend_meta, requests_in, requests_out, set_allow_strangers,
+    upsert_request, user_exists,
 };
 
 /// 关系域错误 → 平台错误。规则在 `wxlike-relations` 里，这里只做类型搬运；

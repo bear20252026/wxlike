@@ -38,11 +38,7 @@ pub(in crate::domain) fn insert_block(
     Ok(())
 }
 
-pub(in crate::domain) fn delete_block(
-    c: &Connection,
-    user: &str,
-    target: &str,
-) -> Result<usize> {
+pub(in crate::domain) fn delete_block(c: &Connection, user: &str, target: &str) -> Result<usize> {
     Ok(c.execute(
         "DELETE FROM blocks WHERE user_id = ?1 AND blocked_id = ?2",
         params![user, target],
