@@ -13,11 +13,14 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use wxlike_core::tx::ConnectionTx as _;
 
-use super::repo::friends::{log, log_tx};
+use super::repo::friends::{
+    accept_request, are_friends, changes, changes_head, delete_friend, ensure_friend, friends,
+    incoming_requests, insert_request, log, log_tx, outgoing_requests, reopen_request,
+    request_by_id, request_by_pair, set_remark, user_exists, RequestRecord,
+};
 
 #[derive(Serialize)]
 pub struct RequestRow {
@@ -53,6 +56,17 @@ pub(crate) fn display_name(p: &Platform, user_id: &str) -> String {
     p.profile_of(user_id).map(|x| x.name).unwrap_or_default()
 }
 
+fn request_row(r: RequestRecord) -> RequestRow {
+    RequestRow {
+        id: r.id,
+        from_uid: r.from_uid,
+        to_uid: r.to_uid,
+        message: r.message,
+        status: r.status,
+        created_at: r.created_at,
+    }
+}
+
 impl Platform {
     /// Creates (or reuses) the pending request from `from_uid` to `to_uid`.
     /// Returns `(request_id, recipient_id)`.
@@ -75,40 +89,21 @@ impl Platform {
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let target: Option<String> = c
-            .query_row("SELECT id FROM users WHERE id = ?1", params![to_uid], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?;
-        if target.is_none() {
+        if !user_exists(&c, &to_uid)? {
             return Err(PlatformError::NotFound);
         }
-        let existing: Option<(String, String)> = c
-            .query_row(
-                "SELECT id, status FROM friend_requests WHERE from_uid = ?1 AND to_uid = ?2",
-                params![from_uid, to_uid],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        if let Some((existing_id, status)) = existing {
+        if let Some((existing_id, status)) = request_by_pair(&c, &from_uid, &to_uid)? {
             // Re-adding someone you already added: idempotent for the caller but
             // never a second inbox entry.
             if status == "pending" || status == "accepted" {
                 return Err(PlatformError::Conflict("request".into()));
             }
-            c.execute(
-                "UPDATE friend_requests SET status = 'pending', message = ?2, created_at = ?3 WHERE id = ?1",
-                params![existing_id, message, now],
-            )?;
+            reopen_request(&c, &existing_id, &message, now)?;
             log(&c, &to_uid, &from_uid, "request", now)?;
             log(&c, &from_uid, &to_uid, "request", now)?;
             return Ok((existing_id, to_uid));
         }
-        c.execute(
-            "INSERT INTO friend_requests(id, from_uid, to_uid, message, status, created_at)
-             VALUES(?1, ?2, ?3, ?4, 'pending', ?5)",
-            params![id, from_uid, to_uid, message, now],
-        )?;
+        insert_request(&c, &id, &from_uid, &to_uid, &message, now)?;
         // Both sides log it: the sender's other devices need to learn that a
         // request exists, not just the recipient.
         log(&c, &to_uid, &from_uid, "request", now)?;
@@ -117,23 +112,9 @@ impl Platform {
     }
 
     pub(crate) fn load_request(&self, req_id: &str) -> Result<RequestRow> {
-        let c = self.db().lock();
-        c.query_row(
-            "SELECT id, from_uid, to_uid, message, status, created_at FROM friend_requests WHERE id = ?1",
-            params![req_id],
-            |r| {
-                Ok(RequestRow {
-                    id: r.get(0)?,
-                    from_uid: r.get(1)?,
-                    to_uid: r.get(2)?,
-                    message: r.get(3)?,
-                    status: r.get(4)?,
-                    created_at: r.get(5)?,
-                })
-            },
-        )
-        .optional()?
-        .ok_or(PlatformError::NotFound)
+        request_by_id(&self.db().lock(), req_id)?
+            .map(request_row)
+            .ok_or(PlatformError::NotFound)
     }
 
     /// Only the recipient of a pending request may accept it, and the
@@ -149,11 +130,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<RequestRow> {
-            let changed = tx.execute(
-                "UPDATE friend_requests SET status = 'accepted' WHERE id = ?1 AND status = 'pending'",
-                params![req_id],
-            )?;
-            if changed == 0 {
+            if !accept_request(tx, req_id)? {
                 // lost a race with a concurrent accept/decline
                 return Err(PlatformError::Conflict("request".into()));
             }
@@ -161,12 +138,7 @@ impl Platform {
                 (req.from_uid.as_str(), req.to_uid.as_str()),
                 (req.to_uid.as_str(), req.from_uid.as_str()),
             ] {
-                tx.execute(
-                    "INSERT INTO friends(user_id, friend_id, remark, source, created_at)
-                 VALUES(?1, ?2, '', ?3, ?4)
-                 ON CONFLICT(user_id, friend_id) DO NOTHING",
-                    params![a, b, req_id, now],
-                )?;
+                ensure_friend(tx, a, b, req_id, now)?;
                 log_tx(tx, a, b, "accepted", now)?;
             }
             Ok(req)
@@ -187,11 +159,7 @@ impl Platform {
             // #340: the verdict rides on the write itself, like accept above —
             // the pre-check reads outside the lock, so two concurrent declines
             // can both pass it; only the conditional UPDATE picks one winner.
-            let changed = tx.execute(
-                "UPDATE friend_requests SET status = 'declined' WHERE id = ?1 AND status = 'pending'",
-                params![req_id],
-            )?;
-            if changed == 0 {
+            if !decline_request(tx, req_id)? {
                 // lost a race with a concurrent accept/decline
                 return Err(PlatformError::Conflict("request".into()));
             }
@@ -204,90 +172,45 @@ impl Platform {
     pub fn incoming_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // The inbox is the pending queue: answered requests (accepted/declined)
         // leave it, which is what makes "decline empties the inbox" observable.
-        let sql = "SELECT id, from_uid, to_uid, message, status, created_at FROM friend_requests WHERE to_uid = ?1 AND status = 'pending' ORDER BY created_at DESC";
-        let c = self.db().lock();
-        let mut stmt = c.prepare(sql)?;
-        let rows = stmt.query_map(params![me], |r| {
-            Ok(RequestRow {
-                id: r.get(0)?,
-                from_uid: r.get(1)?,
-                to_uid: r.get(2)?,
-                message: r.get(3)?,
-                status: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        Ok(incoming_requests(&self.db().lock(), me)?
+            .into_iter()
+            .map(request_row)
+            .collect())
     }
 
     pub fn outgoing_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // Outgoing keeps every status so the sender can see who declined.
-        self.list_requests("from_uid", me)
-    }
-
-    fn list_requests(&self, col: &str, me: &str) -> Result<Vec<RequestRow>> {
-        // `col` is a closed set chosen by the caller, never user input.
-        let sql = match col {
-            "to_uid" => "SELECT id, from_uid, to_uid, message, status, created_at FROM friend_requests WHERE to_uid = ?1 ORDER BY created_at DESC",
-            _ => "SELECT id, from_uid, to_uid, message, status, created_at FROM friend_requests WHERE from_uid = ?1 ORDER BY created_at DESC",
-        };
-        let c = self.db().lock();
-        let mut stmt = c.prepare(sql)?;
-        let rows = stmt.query_map(params![me], |r| {
-            Ok(RequestRow {
-                id: r.get(0)?,
-                from_uid: r.get(1)?,
-                to_uid: r.get(2)?,
-                message: r.get(3)?,
-                status: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        Ok(outgoing_requests(&self.db().lock(), me)?
+            .into_iter()
+            .map(request_row)
+            .collect())
     }
 
     pub fn friends(&self, me: &str) -> Result<Vec<FriendRow>> {
-        let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT friend_id, remark, source, created_at, starred, tags, friend_group
-             FROM friends WHERE user_id = ?1 ORDER BY created_at",
-        )?;
-        let rows = stmt.query_map(params![me], |r| {
-            Ok(FriendRow {
-                friend_id: r.get(0)?,
-                remark: r.get(1)?,
-                source: r.get(2)?,
-                created_at: r.get(3)?,
-                starred: r.get::<_, i64>(4)? != 0,
-                tags: serde_json::from_str(&r.get::<_, String>(5)?)
-                    .unwrap_or(serde_json::json!([])),
-                friend_group: r.get(6)?,
+        Ok(friends(&self.db().lock(), me)?
+            .into_iter()
+            .map(|f| FriendRow {
+                friend_id: f.friend_id,
+                remark: f.remark,
+                source: f.source,
+                created_at: f.created_at,
+                starred: f.starred,
+                tags: f.tags,
+                friend_group: f.friend_group,
             })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            .collect())
     }
 
     pub fn are_friends(&self, a: &str, b: &str) -> Result<bool> {
-        let c = self.db().lock();
-        let hit: Option<i64> = c
-            .query_row(
-                "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2",
-                params![a, b],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?;
-        Ok(hit.is_some())
+        are_friends(&self.db().lock(), a, b)
     }
 
     pub fn set_remark(&self, me: &str, friend: &str, remark: &str) -> Result<()> {
         let friend = validate::id(friend)?.to_string();
         let remark = validate::remark(remark)?.to_string();
-        let c = self.db().lock();
-        let changed = c.execute(
-            "UPDATE friends SET remark = ?1 WHERE user_id = ?2 AND friend_id = ?3",
-            params![remark, me, friend],
-        )?;
-        crate::db::ensure_updated(changed)?;
+        if !set_remark(&self.db().lock(), me, &friend, &remark)? {
+            return Err(PlatformError::NotFound);
+        }
         Ok(())
     }
 
@@ -296,18 +219,12 @@ impl Platform {
         let other = validate::id(other)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        if !self.are_friends_inner(&mut c, me, &other)? {
+        if !are_friends(&c, me, &other)? {
             return Err(PlatformError::NotFound);
         }
         c.with_tx(|tx| -> Result<()> {
-            tx.execute(
-                "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
-                params![me, other],
-            )?;
-            tx.execute(
-                "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
-                params![other, me],
-            )?;
+            delete_friend(tx, me, &other)?;
+            delete_friend(tx, &other, me)?;
             for (a, b) in [(me, other.as_str()), (other.as_str(), me)] {
                 log_tx(tx, a, b, "removed", now)?;
             }
@@ -315,41 +232,21 @@ impl Platform {
         })
     }
 
-    fn are_friends_inner(&self, c: &mut rusqlite::Connection, a: &str, b: &str) -> Result<bool> {
-        Ok(c.query_row(
-            "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2",
-            params![a, b],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .is_some())
-    }
-
     /// Incremental address-book sync: everything for `me` after `since`.
     pub fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<ChangeRow>> {
-        let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT seq, subject_id, kind, changed_at FROM contact_log
-             WHERE user_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![me, since, limit], |r| {
-            Ok(ChangeRow {
-                seq: r.get(0)?,
-                subject_id: r.get(1)?,
-                kind: r.get(2)?,
-                changed_at: r.get(3)?,
+        Ok(changes(&self.db().lock(), me, since, limit)?
+            .into_iter()
+            .map(|c| ChangeRow {
+                seq: c.seq,
+                subject_id: c.subject_id,
+                kind: c.kind,
+                changed_at: c.changed_at,
             })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            .collect())
     }
 
     /// Highest log sequence, for the client to store as its next cursor.
     pub fn changes_head(&self, me: &str) -> Result<i64> {
-        let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM contact_log WHERE user_id = ?1",
-            params![me],
-            |r| r.get::<_, i64>(0),
-        )?)
+        changes_head(&self.db().lock(), me)
     }
 }

@@ -19,6 +19,8 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 全部移入 `domain/repo/articles.rs`，渲染与可见性规则留在 domain。第六批清
 `moments.rs`：发布、草稿、主行与计数、可见性查询、feed/相册分页、点赞与评论
 语句全部移入 `domain/repo/moments.rs`，读时可见性判定与分页裁剪留在 domain。
+第七批清 `friends.rs`：好友申请、通讯录行、备注、双向删除、增量游标语句全部
+移入 `domain/repo/friends.rs`，申请状态机与授权顺序留在 domain。
 
 ## 现在的边界
 
@@ -45,7 +47,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::articles`：发布者主行、订阅关系、文章主行与版本、分页读模型、
   阅读游标和 reaction 行都在仓储层；domain 只保留渲染、可见性与文本校验；
 - `repo::moments`：动态/草稿主行、计数列、feed 与相册读时可见性 SQL、点赞和
-  评论行都在仓储层；domain 只保留输入闸门、可见性组合规则与游标裁剪。
+  评论行都在仓储层；domain 只保留输入闸门、可见性组合规则与游标裁剪；
+- `repo::friends`：申请行、通讯录行、备注、双向删除与 contact_log 游标都在
+  仓储层；domain 只保留申请状态机、权限校验与事务边界。
 
 ## 防回潮
 
@@ -57,18 +61,18 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **24 个文件 / 199 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **23 个文件 / 180 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
-清零，总数从 425 降到 199。
+清零，第七批把 friends 的 **19 条**清零，总数从 425 降到 180。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `friends.rs`（19）：关系读模型；
-2. `video_feed.rs`（17）/ `groups_admin.rs`（17）：分发与运营面；
+1. `video_feed.rs`（17）/ `groups_admin.rs`（17）：分发与运营面；
+2. `live.rs`（15）/ `status.rs`（14）/ `favorites.rs`（14）；
 3. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：
