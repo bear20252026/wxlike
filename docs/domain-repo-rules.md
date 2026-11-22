@@ -67,6 +67,10 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `domain/repo/qr_login.rs`，状态机调用、secret 比对与错误映射留在 domain。
 第三十批清 `read.rs`：会话属主读取与登记语句移入 `domain/repo/read.rs`，
 参与者闸门与信箱调用留在 domain。至此 `domain/*.rs` 生产代码 SQL 归零。
+第三十一批补清 `video_refs.rs`：转码回调的幂等写入与引用读取语句移入
+`domain/repo/video_refs.rs`。这两条是 `r#"..."` 原始字符串，此前被门禁的
+普通双引号正则漏检；本批同时把 `check_domain_sql.py` 的匹配扩到原始字符串，
+收紧口径后仍为 0/0。
 
 ## 现在的边界
 
@@ -141,7 +145,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::qr_login`：票据字段读取、抢占式消费与用户显示名都在仓储层；domain 只
   保留状态机调用、secret 比对与错误映射；
 - `repo::read`：会话属主读取与登记都在仓储层；domain 只保留参与者闸门与信箱
-  调用。
+  调用；
+- `repo::video_refs`：转码回调的幂等写入与引用读取都在仓储层；domain 只保留
+  令牌校验、URL 形状校验与错误映射。
 
 ## 防回潮
 
@@ -151,10 +157,12 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - 基线里的文件，SQL 数只能下降，不能上升；
 - 不在基线里的文件出现任何 SQL 直接失败（当前基线为空 = 全部文件零容忍）；
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
-- 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
+- 统计只看生产代码，普通双引号与 `r#"..."` 原始字符串都算，遇到 root 级
+  `#[cfg(test)]` 就停止，测试夹具不算。
 
 当前基线是 **0 个文件 / 0 条 SQL**，也就是"任何新 SQL 直接失败"的零容忍
-口径；第一批从 **33 个文件 / 425 条**降下来，
+口径；第一批从 **33 个文件 / 425 条**降下来（另有 video_refs 的 2 条原始
+字符串 SQL 直到第三十一批才被门禁发现，含它的真实起点是 427 条），
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
@@ -170,7 +178,7 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 第二十五批把 media 的 **4 条**清零，第二十六批把 devices 的 **3 条**清零，
 第二十七批把 governance 的 **3 条**清零，第二十八批把 notification 的 **3 条**
 清零，第二十九批把 qr_login 的 **3 条**清零，第三十批把 read 的 **2 条**清零，
-总数从 425 降到 0。
+第三十一批补清 video_refs 的 **2 条**，总数从 427 降到 0。
 
 ## 收尾与边界
 

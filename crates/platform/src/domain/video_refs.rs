@@ -22,8 +22,9 @@
 use crate::error::{ApiError, PlatformError, Result};
 use crate::Platform;
 use axum::http::{HeaderMap, StatusCode};
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
+
+use super::repo::video_refs::{load, store};
 
 /// 回调令牌的环境变量名（装配层读它，本模块不直接读 env——测试要能注入）。
 pub const CALLBACK_TOKEN_ENV: &str = "WXLIKE_VIDEO_CALLBACK_TOKEN";
@@ -159,39 +160,14 @@ pub(crate) fn store_callback(
     let renditions = serde_json::to_string(&result.renditions)?;
     {
         let c = platform.db().lock();
-        c.execute(
-            r#"
-            INSERT INTO video_refs (
-                video_id, job_id, state, playlist_url, play_url, thumb_url,
-                duration_ms, width, height, renditions, attempts, updated_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-            ON CONFLICT(video_id) DO UPDATE SET
-                job_id       = excluded.job_id,
-                state        = excluded.state,
-                playlist_url = excluded.playlist_url,
-                play_url     = excluded.play_url,
-                thumb_url    = excluded.thumb_url,
-                duration_ms  = excluded.duration_ms,
-                width        = excluded.width,
-                height       = excluded.height,
-                renditions   = excluded.renditions,
-                attempts     = excluded.attempts,
-                updated_at_ms= excluded.updated_at_ms
-            "#,
-            params![
-                result.video_id,
-                body.job_id,
-                body.state,
-                result.playlist_url,
-                result.play_url.unwrap_or_default(),
-                result.thumb_url.unwrap_or_default(),
-                result.duration_ms as i64,
-                result.width as i64,
-                result.height as i64,
-                renditions,
-                body.attempts as i64,
-                at,
-            ],
+        store(
+            &c,
+            &result,
+            &body.job_id,
+            &body.state,
+            &renditions,
+            body.attempts as i64,
+            at,
         )?;
     }
     platform
@@ -201,7 +177,7 @@ pub(crate) fn store_callback(
 
 /// `video_refs` 一行的读取形状。列多，别名避免 `clippy::type_complexity`
 /// （`report.rs` 里同一个坑）。
-type RefRow = (
+pub(crate) type RefRow = (
     String,
     String,
     String,
@@ -250,32 +226,7 @@ impl Platform {
     /// 读一条视频引用。`None` = 还没收到回调（作业没转完，或根本没提交过）。
     pub fn video_ref(&self, video_id: &str) -> Result<Option<VideoRefView>> {
         let c = self.db().lock();
-        let row: Option<RefRow> = c
-            .query_row(
-                r#"
-                SELECT video_id, job_id, state, playlist_url, play_url, thumb_url,
-                       duration_ms, width, height, renditions, attempts, updated_at_ms
-                FROM video_refs WHERE video_id = ?1
-                "#,
-                params![video_id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                        r.get(8)?,
-                        r.get(9)?,
-                        r.get(10)?,
-                        r.get(11)?,
-                    ))
-                },
-            )
-            .optional()?;
+        let row = load(&c, video_id)?;
         Ok(row.map(row_to_view))
     }
 }

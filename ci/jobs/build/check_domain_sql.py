@@ -8,8 +8,9 @@
 - 新文件出现任何 SQL 都失败（说明又开了一条绕过 repo 的路径）；
 - 基线只允许单向收紧；`--update` 默认拒绝上升。
 
-统计口径：只数生产代码的双引号 SQL 开头（SELECT/INSERT/UPDATE/DELETE），
-遇到第一个 root 级 `#[cfg(test)]` 就停止，测试夹具里的 SQL 不计入。
+统计口径：只数生产代码的 SQL 字符串开头（SELECT/INSERT/UPDATE/DELETE），
+普通双引号与 `r#"..."` 原始字符串都算，遇到第一个 root 级 `#[cfg(test)]`
+就停止，测试夹具里的 SQL 不计入。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 DOMAIN_ROOT = REPO_ROOT / "crates" / "platform" / "src" / "domain"
 BASELINE = REPO_ROOT / "ci" / "jobs" / "policy" / "domain-sql-baseline.json"
-SQL_RE = re.compile(r'"(?:SELECT|INSERT|UPDATE|DELETE)\b')
+SQL_RE = re.compile(r'(?:r#*)?"\s*(?:SELECT|INSERT|UPDATE|DELETE)\b')
 TEST_MODULE_RE = re.compile(r"^\s*#\[cfg\(test\)\]", re.M)
 
 
