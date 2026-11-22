@@ -316,7 +316,7 @@ impl Platform {
         let reply_content_type = content_type.clone();
         db.blocking(move |c| {
             media_repo::insert(
-                &c,
+                c,
                 dialect,
                 &sha_hex,
                 size as i64,

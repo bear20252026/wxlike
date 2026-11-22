@@ -30,7 +30,7 @@ pub(in crate::domain) fn queue(conn: &Connection, limit: i64) -> Result<Vec<Queu
          FROM moderation_queue ORDER BY created_at ASC LIMIT ?1",
     )?;
     let rows = stmt
-        .query_map(params![limit], |r| item_from_row(r))?
+        .query_map(params![limit], item_from_row)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -41,7 +41,7 @@ pub(in crate::domain) fn item(conn: &Connection, id: &str) -> Result<Option<Queu
             "SELECT id, conv_id, sender, text, labels, created_at
              FROM moderation_queue WHERE id = ?1",
             params![id],
-            |r| item_from_row(r),
+            item_from_row,
         )
         .optional()?)
 }
