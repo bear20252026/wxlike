@@ -199,11 +199,13 @@ pub(in crate::domain) fn row_channel(r: &rusqlite::Row<'_>) -> rusqlite::Result<
 
 /// 频道角色名单的原始列：`(user_id, 社区角色, 显式频道角色, granted_by)`。
 /// 角色继承是业务规则，留给 domain 决定，仓储层不在这里造 `ChannelRole`。
+pub(in crate::domain) type ChannelRoleRaw = (String, i64, Option<String>, Option<String>);
+
 pub(in crate::domain) fn channel_roles_raw(
     conn: &Connection,
     channel: &str,
     community: &str,
-) -> Result<Vec<(String, i64, Option<String>, Option<String>)>> {
+) -> Result<Vec<ChannelRoleRaw>> {
     let mut stmt = conn.prepare(
         "SELECT m.user_id, m.role, r.role, r.granted_by
          FROM community_members m

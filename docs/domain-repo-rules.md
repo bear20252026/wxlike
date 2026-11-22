@@ -10,7 +10,10 @@
 本批先把身份域的 **users / sessions / security** 三个模块收口：它们不再直接写
 SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持不变，旧调用点
 不需要改。随后第二批继续清 `account.rs`：资料补丁、注销、导出与清理语句全部
-移入 `domain/repo/account.rs`，账户域生产代码 SQL 归零。
+移入 `domain/repo/account.rs`，账户域生产代码 SQL 归零。第三批清
+`groups.rs` 与 `communities.rs`：群成员/角色/可见性、社区频道话题的语句与
+`execute_batch(format!)` 拼接全部移入各自仓储层，建群/建社区/建话题改用绑定
+参数与事务。
 
 ## 现在的边界
 
@@ -29,7 +32,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `SessionsRepo::device_name_by_sid`：刷新轮换沿用旧设备名；
 - `SessionsRepo::device_id_by_token`：区分“会话行不存在”与“设备 id 为空”；
 - `SessionsRepo::count_for_user`：注销前统计撤销的会话数；
-- `repo::account`：导出六个域的取数、注销清理表清单与脱敏语句都只留在仓储层。
+- `repo::account`：导出六个域的取数、注销清理表清单与脱敏语句都只留在仓储层；
+- `repo::groups` / `repo::communities`：群成员、角色、可见性、频道与话题语句
+  全部下沉；domain 只保留成员上限、角色继承和发送闸门。
 
 ## 防回潮
 
@@ -41,17 +46,17 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **29 个文件 / 333 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **27 个文件 / 275 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
-清零，总数再降 67。
+清零，第三批把 groups / communities 各 **29 条**清零，总数从 425 降到 275。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `groups.rs` / `communities.rs`（各 29）：成员、权限、群状态；
-2. `wallet.rs`（28）：余额、红包、幂等与账本边界；
-3. `articles.rs`（27）/ `moments.rs`（21）/ `friends.rs`（19）：内容与关系读模型；
+1. `wallet.rs`（28）：余额、红包、幂等与账本边界；
+2. `articles.rs`（27）/ `moments.rs`（21）/ `friends.rs`（19）：内容与关系读模型；
+3. `video_feed.rs`（17）/ `groups_admin.rs`（17）：分发与运营面；
 4. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：
