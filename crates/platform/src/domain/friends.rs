@@ -17,9 +17,9 @@ use serde::Serialize;
 use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::friends::{
-    accept_request, are_friends, changes, changes_head, delete_friend, ensure_friend, friends,
-    incoming_requests, insert_request, log, log_tx, outgoing_requests, reopen_request,
-    request_by_id, request_by_pair, set_remark, user_exists, RequestRecord,
+    accept_request, are_friends, changes, changes_head, decline_request, delete_friend,
+    ensure_friend, friends, incoming_requests, insert_request, log, log_tx, outgoing_requests,
+    reopen_request, request_by_id, request_by_pair, set_remark, user_exists, RequestRecord,
 };
 
 #[derive(Serialize)]
