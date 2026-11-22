@@ -9,11 +9,12 @@
 
 本批先把身份域的 **users / sessions / security** 三个模块收口：它们不再直接写
 SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持不变，旧调用点
-不需要改。随后第二批继续清 `account.rs`：资料补丁、注销、导出与清理语句全部
+不需要改。第二批继续清 `account.rs`：资料补丁、注销、导出与清理语句全部
 移入 `domain/repo/account.rs`，账户域生产代码 SQL 归零。第三批清
 `groups.rs` 与 `communities.rs`：群成员/角色/可见性、社区频道话题的语句与
 `execute_batch(format!)` 拼接全部移入各自仓储层，建群/建社区/建话题改用绑定
-参数与事务。
+参数与事务。第四批清 `wallet.rs`：余额、账本、幂等记录、红包状态与过期退款
+全部移入 `domain/repo/wallet.rs`，资金守恒的事务边界仍留在 domain。
 
 ## 现在的边界
 
@@ -34,7 +35,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `SessionsRepo::count_for_user`：注销前统计撤销的会话数；
 - `repo::account`：导出六个域的取数、注销清理表清单与脱敏语句都只留在仓储层；
 - `repo::groups` / `repo::communities`：群成员、角色、可见性、频道与话题语句
-  全部下沉；domain 只保留成员上限、角色继承和发送闸门。
+  全部下沉；domain 只保留成员上限、角色继承和发送闸门；
+- `repo::wallet`：余额、钱包建立、账本读写、幂等行、红包行与过期扫描都在
+  仓储层；domain 只保留金额校验、份额分配、领取状态机与事务边界。
 
 ## 防回潮
 
@@ -46,24 +49,24 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **27 个文件 / 275 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **26 个文件 / 247 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
-清零，第三批把 groups / communities 各 **29 条**清零，总数从 425 降到 275。
+清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
+**28 条**清零，总数从 425 降到 247。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `wallet.rs`（28）：余额、红包、幂等与账本边界；
-2. `articles.rs`（27）/ `moments.rs`（21）/ `friends.rs`（19）：内容与关系读模型；
-3. `video_feed.rs`（17）/ `groups_admin.rs`（17）：分发与运营面；
-4. 其余文件按 feature 逐个清到 0。
+1. `articles.rs`（27）/ `moments.rs`（21）/ `friends.rs`（19）：内容与关系读模型；
+2. `video_feed.rs`（17）/ `groups_admin.rs`（17）：分发与运营面；
+3. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：
 
 - 该模块生产代码 SQL 计数为 0；
 - `Platform` 公开签名不变；
-- SQLite 与 PostgreSQL 实现都走同一个 trait；
+- SQL 只留在 `domain/repo`，domain 不再依赖 rusqlite；
 - `check_domain_sql.py` 基线只降不升；
 - CI 的 `pg-migration` / `test` / `audit` 全绿。
 

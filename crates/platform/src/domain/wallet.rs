@@ -23,9 +23,15 @@ use crate::validate;
 use crate::Platform;
 use axum::http::HeaderMap;
 use rand::Rng as _;
-use rusqlite::{params, Connection, OptionalExtension as _};
 use serde::Serialize;
 use wxlike_core::tx::ConnectionTx as _;
+
+use super::repo::wallet::{
+    credit, debit_if_sufficient, ensure_wallet, expired_packets, idem_gc, idem_insert, idem_lookup,
+    insert_redpacket, ledger_head as repo_ledger_head, ledger_of as repo_ledger_of, log_ledger,
+    mark_expired, open_escrow, redpacket as repo_redpacket, redpacket_state, total_wallets,
+    update_claim, user_exists, wallet_balance as repo_wallet_balance, RedpacketState,
+};
 
 /// Ledger kinds (contract names them explicitly).
 pub mod kind {
@@ -105,47 +111,7 @@ impl Platform {
     /// Reads a balance, treating a wallet-less user as holding zero.
     pub fn wallet_balance(&self, user_id: &str) -> Result<i64> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT balance FROM wallets WHERE user_id = ?1",
-            params![user_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(0))
-    }
-
-    fn ensure_wallet(c: &Connection, user_id: &str) -> Result<()> {
-        c.execute(
-            "INSERT INTO wallets(user_id, balance) VALUES(?1, 0)
-             ON CONFLICT(user_id) DO NOTHING",
-            params![user_id],
-        )?;
-        Ok(())
-    }
-
-    fn log(
-        c: &Connection,
-        user: &str,
-        k: &str,
-        amount: i64,
-        counterparty: &str,
-        ref_id: &str,
-        memo: &str,
-    ) -> Result<()> {
-        c.execute(
-            "INSERT INTO ledger(user_id, kind, amount, counterparty, ref_id, memo, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                user,
-                k,
-                amount,
-                counterparty,
-                ref_id,
-                memo,
-                wxlike_core::types::now_ms() as i64
-            ],
-        )?;
-        Ok(())
+        Ok(repo_wallet_balance(&c, user_id)?.unwrap_or(0))
     }
 
     /// The only way balance enters the system: a virtual funding entry.
@@ -156,22 +122,21 @@ impl Platform {
         let user_id = validate::id(user_id)?.to_string();
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            Self::ensure_wallet(tx, &user_id)?;
-            let exists: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM users WHERE id = ?1",
-                    params![user_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?;
-            if exists.is_none() {
+            ensure_wallet(tx, &user_id)?;
+            if !user_exists(tx, &user_id)? {
                 return Err(PlatformError::NotFound);
             }
-            tx.execute(
-                "UPDATE wallets SET balance = balance + ?1 WHERE user_id = ?2",
-                params![amount, user_id],
+            credit(tx, &user_id, amount)?;
+            log_ledger(
+                tx,
+                &user_id,
+                kind::FUND_IN,
+                amount,
+                "",
+                "",
+                memo,
+                wxlike_core::types::now_ms() as i64,
             )?;
-            Self::log(tx, &user_id, kind::FUND_IN, amount, "", "", memo)?;
             Ok(())
         })
     }
@@ -191,35 +156,43 @@ impl Platform {
         let ref_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
+            let now = wxlike_core::types::now_ms() as i64;
             for user in [&from, &to] {
-                let exists: Option<String> = tx
-                    .query_row("SELECT id FROM users WHERE id = ?1", params![user], |r| {
-                        r.get::<_, String>(0)
-                    })
-                    .optional()?;
-                if exists.is_none() {
+                if !user_exists(tx, user)? {
                     return Err(PlatformError::NotFound);
                 }
-                Self::ensure_wallet(tx, user)?;
+                ensure_wallet(tx, user)?;
             }
 
             // The whole exchange runs under one connection guard, so no other
             // transfer can read a half-applied balance. The CHECK constraint is the
             // backstop if this guard were ever removed.
-            let updated = tx.execute(
-                "UPDATE wallets SET balance = balance - ?1 WHERE user_id = ?2 AND balance >= ?1",
-                params![amount, from],
-            )?;
+            let updated = debit_if_sufficient(tx, &from, amount)?;
             if updated == 0 {
                 // roll the whole transaction back, including the ensure_wallet rows
                 return Err(PlatformError::BadInput("insufficient balance"));
             }
-            tx.execute(
-                "UPDATE wallets SET balance = balance + ?1 WHERE user_id = ?2",
-                params![amount, to],
+            credit(tx, &to, amount)?;
+            log_ledger(
+                tx,
+                &from,
+                kind::TRANSFER_OUT,
+                amount,
+                &to,
+                &ref_id,
+                &memo,
+                now,
             )?;
-            Self::log(tx, &from, kind::TRANSFER_OUT, amount, &to, &ref_id, &memo)?;
-            Self::log(tx, &to, kind::TRANSFER_IN, amount, &from, &ref_id, &memo)?;
+            log_ledger(
+                tx,
+                &to,
+                kind::TRANSFER_IN,
+                amount,
+                &from,
+                &ref_id,
+                &memo,
+                now,
+            )?;
             Ok(())
         })?;
         Ok(ref_id)
@@ -230,33 +203,13 @@ impl Platform {
     /// than mixing a newest-first sort with an ascending cursor.
     pub fn ledger_of(&self, user_id: &str, since: i64, limit: i64) -> Result<Vec<LedgerRow>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, kind, amount, counterparty, ref_id, memo, created_at
-             FROM ledger WHERE user_id = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![user_id, since, limit.clamp(1, 200)], |r| {
-            Ok(LedgerRow {
-                id: r.get(0)?,
-                kind: r.get(1)?,
-                amount: r.get(2)?,
-                counterparty: r.get(3)?,
-                ref_id: r.get(4)?,
-                memo: r.get(5)?,
-                created_at: r.get(6)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        repo_ledger_of(&c, user_id, since, limit.clamp(1, 200))
     }
 
     pub fn ledger_head(&self, user_id: &str) -> Result<i64> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM ledger WHERE user_id = ?1",
-            params![user_id],
-            |r| r.get::<_, i64>(0),
-        )?)
+        repo_ledger_head(&c, user_id)
     }
-
     // ---- 写接口幂等（Idempotency-Key，审计第 5 轮）-----------------------
     //
     // `wallet_idem(user_id, key) -> (request_hash, response)`。同键同参 →
@@ -268,12 +221,7 @@ impl Platform {
     /// 查一条幂等记录：`(request_hash, response_json)`。
     pub fn wallet_idem_lookup(&self, user_id: &str, key: &str) -> Result<Option<(String, String)>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT request_hash, response FROM wallet_idem WHERE user_id = ?1 AND key = ?2",
-            params![user_id, key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?)
+        idem_lookup(&c, user_id, key)
     }
 
     /// 记一条幂等记录；顺手清掉过期行（24h）。
@@ -287,15 +235,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            tx.execute(
-                "DELETE FROM wallet_idem WHERE created_at < ?1",
-                params![now - IDEMPOTENCY_TTL_MS],
-            )?;
-            tx.execute(
-                "INSERT INTO wallet_idem(user_id, key, request_hash, response, created_at) \
-                 VALUES(?1, ?2, ?3, ?4, ?5) ON CONFLICT(user_id, key) DO NOTHING",
-                params![user_id, key, request_hash, response.to_string(), now],
-            )?;
+            idem_gc(tx, now - IDEMPOTENCY_TTL_MS)?;
+            idem_insert(tx, user_id, key, request_hash, &response.to_string(), now)?;
             Ok(())
         })
     }
@@ -319,28 +260,17 @@ impl Platform {
 
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            let exists: Option<String> = tx
-                .query_row("SELECT id FROM users WHERE id = ?1", params![&from], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?;
-            if exists.is_none() {
+            if !user_exists(tx, &from)? {
                 return Err(PlatformError::NotFound);
             }
-            Self::ensure_wallet(tx, &from)?;
-            let frozen = tx.execute(
-                "UPDATE wallets SET balance = balance - ?1 WHERE user_id = ?2 AND balance >= ?1",
-                params![amount, from],
-            )?;
-            if frozen == 0 {
+            ensure_wallet(tx, &from)?;
+            if debit_if_sufficient(tx, &from, amount)? == 0 {
                 return Err(PlatformError::BadInput("insufficient balance"));
             }
-            tx.execute(
-                "INSERT INTO redpackets(id, from_uid, conv_id, total, count, claimed, claimed_total, claimers, memo, status, created_at, expire_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, 0, 0, '[]', ?6, 'open', ?7, ?8)",
-                params![id, from, conv_id, amount, count, memo, now, expire_at],
+            insert_redpacket(
+                tx, &id, &from, &conv_id, amount, count, &memo, now, expire_at,
             )?;
-            Self::log(tx, &from, kind::REDPACKET_OUT, amount, "", &id, &memo)?;
+            log_ledger(tx, &from, kind::REDPACKET_OUT, amount, "", &id, &memo, now)?;
             Ok(())
         })?;
         Ok(id)
@@ -348,27 +278,7 @@ impl Platform {
 
     pub fn redpacket(&self, id: &str) -> Result<Option<RedpacketRow>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT id, from_uid, conv_id, total, count, claimed, claimed_total, memo, status, created_at, expire_at
-             FROM redpackets WHERE id = ?1",
-            params![id],
-            |r| {
-                Ok(RedpacketRow {
-                    id: r.get(0)?,
-                    from_uid: r.get(1)?,
-                    conv_id: r.get(2)?,
-                    total: r.get(3)?,
-                    count: r.get(4)?,
-                    claimed: r.get(5)?,
-                    claimed_total: r.get(6)?,
-                    memo: r.get(7)?,
-                    status: r.get(8)?,
-                    created_at: r.get(9)?,
-                    expire_at: r.get(10)?,
-                })
-            },
-        )
-        .optional()?)
+        repo_redpacket(&c, id)
     }
 
     /// Claims one share. Exactly `count` claims can succeed; the shares are
@@ -380,40 +290,24 @@ impl Platform {
         let mut c = self.db().lock();
         // `claimed` / `count` 是**领取前**的快照，事务外的卡片回写要用它判断
         // “这是不是最后一手”（`status_now_finished` 自己会 +1）。
-        let (share, claimed, count) = c.with_tx(|tx| -> Result<(i64, i64, i64)> {
-            let row: Option<(i64, i64, i64, i64, String, String, String)> = tx
-                .query_row(
-                    "SELECT total, count, claimed, claimed_total, claimers, status, conv_id
-                     FROM redpackets WHERE id = ?1",
-                    params![&id],
-                    |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, i64>(1)?,
-                            r.get::<_, i64>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, String>(4)?,
-                            r.get::<_, String>(5)?,
-                            r.get::<_, String>(6)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            let Some((total, count, claimed, claimed_total, claimers_json, status, _conv_id)) = row
-            else {
+        let (share, claimed, count, conv) = c.with_tx(|tx| -> Result<(i64, i64, i64, String)> {
+            let Some(state) = redpacket_state(tx, &id)? else {
                 return Err(PlatformError::NotFound);
             };
+            let RedpacketState {
+                from_uid,
+                conv_id,
+                total,
+                count,
+                claimed,
+                claimed_total,
+                claimers_json,
+                status,
+            } = state;
             if status != "open" {
                 return Err(PlatformError::Conflict("redpacket".into()));
             }
-            let owner: Option<String> = tx
-                .query_row(
-                    "SELECT from_uid FROM redpackets WHERE id = ?1",
-                    params![&id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?;
-            if owner.as_deref() == Some(by.as_str()) {
+            if from_uid == by {
                 // the sender already paid; grabbing their own packet would just move
                 // money from escrow back into their wallet early
                 return Err(PlatformError::Forbidden);
@@ -421,7 +315,8 @@ impl Platform {
             if claimed >= count {
                 return Err(PlatformError::Conflict("redpacket is empty".into()));
             }
-            let mut claimers: Vec<String> = serde_json::from_str(&claimers_json).unwrap_or_default();
+            let mut claimers: Vec<String> =
+                serde_json::from_str(&claimers_json).unwrap_or_default();
             if claimers.contains(&by) {
                 // one share per person; a second grab is refused without touching money
                 return Err(PlatformError::Conflict("already claimed".into()));
@@ -431,28 +326,29 @@ impl Platform {
             let remaining_money = total - claimed_total;
             let share = draw_share(remaining_money, remaining_slots);
 
-            Self::ensure_wallet(tx, &by)?;
-            tx.execute(
-                "UPDATE wallets SET balance = balance + ?1 WHERE user_id = ?2",
-                params![share, by],
-            )?;
+            ensure_wallet(tx, &by)?;
+            credit(tx, &by, share)?;
             claimers.push(by.clone());
             let claimers_json = serde_json::to_string(&claimers)
                 .map_err(|_| PlatformError::BadInput("claimers record is corrupt"))?;
-            tx.execute(
-                "UPDATE redpackets SET claimed = claimed + 1, claimed_total = claimed_total + ?1,
-                        claimers = ?2, status = CASE WHEN claimed + 1 >= count THEN 'finished' ELSE status END
-                 WHERE id = ?3",
-                params![share, claimers_json, id],
+            update_claim(tx, &id, share, &claimers_json)?;
+            log_ledger(
+                tx,
+                &by,
+                kind::REDPACKET_IN,
+                share,
+                "",
+                &id,
+                "",
+                wxlike_core::types::now_ms() as i64,
             )?;
-            Self::log(tx, &by, kind::REDPACKET_IN, share, "", &id, "")?;
-            Ok((share, claimed, count))
+            Ok((share, claimed, count, conv_id))
         })?;
         drop(c);
 
         // P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片
         // （不占时间线、不占序列号——不变式 3）。未带 conv 的包没有卡片，跳过。
-        if let Some(conv) = self.redpacket_conv(&id)? {
+        if let Some(conv) = conv.filter(|s| !s.is_empty()) {
             self.notify_redpacket_claim(
                 &id,
                 &conv,
@@ -490,57 +386,30 @@ impl Platform {
         );
     }
 
-    /// 红包卡片所在会话（发红包时可带 conv_id；未带则无卡片）。
-    fn redpacket_conv(&self, id: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
-        let conv: Option<String> = c
-            .query_row(
-                "SELECT conv_id FROM redpackets WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(conv.filter(|s| !s.is_empty()))
-    }
-
     /// Refunds whatever is unclaimed on expired packets. Idempotent: the status
     /// flip is part of the same transaction, so a second sweep changes nothing.
     pub fn sweep_expired_redpackets(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
-            let mut expired = Vec::new();
-            {
-                let mut stmt = tx.prepare(
-                    "SELECT id, from_uid, total, claimed_total FROM redpackets
-                     WHERE status = 'open' AND expire_at <= ?1",
-                )?;
-                let rows = stmt.query_map(params![now], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
-                    ))
-                })?;
-                for row in rows {
-                    expired.push(row?);
-                }
-            }
+            let expired = expired_packets(tx, now)?;
             let refunded = expired.len();
-            for (id, from_uid, total, claimed_total) in expired {
-                let refund = total - claimed_total;
+            for packet in expired {
+                let refund = packet.total - packet.claimed_total;
                 if refund > 0 {
-                    tx.execute(
-                        "UPDATE wallets SET balance = balance + ?1 WHERE user_id = ?2",
-                        params![refund, from_uid],
+                    credit(tx, &packet.from_uid, refund)?;
+                    log_ledger(
+                        tx,
+                        &packet.from_uid,
+                        kind::REDPACKET_REFUND,
+                        refund,
+                        "",
+                        &packet.id,
+                        "",
+                        now,
                     )?;
-                    Self::log(tx, &from_uid, kind::REDPACKET_REFUND, refund, "", &id, "")?;
                 }
-                tx.execute(
-                    "UPDATE redpackets SET status = 'expired' WHERE id = ?1",
-                    params![id],
-                )?;
+                mark_expired(tx, &packet.id)?;
             }
             Ok(refunded)
         })
@@ -551,11 +420,7 @@ impl Platform {
     /// [`Platform::money_supply`] instead.
     pub fn total_money(&self) -> Result<i64> {
         let c = self.db().lock();
-        Ok(
-            c.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
-                r.get::<_, i64>(0)
-            })?,
-        )
+        total_wallets(&c)
     }
 
     /// The invariant that must never move except through [`Platform::fund`]:
@@ -564,16 +429,7 @@ impl Platform {
     /// that ignores escrow would "lose" money on every red packet.
     pub fn money_supply(&self) -> Result<i64> {
         let c = self.db().lock();
-        let wallets: i64 =
-            c.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
-                r.get::<_, i64>(0)
-            })?;
-        let escrow: i64 = c.query_row(
-            "SELECT COALESCE(SUM(total - claimed_total), 0) FROM redpackets WHERE status = 'open'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )?;
-        Ok(wallets + escrow)
+        Ok(total_wallets(&c)? + open_escrow(&c)?)
     }
 }
 
