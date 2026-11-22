@@ -14,8 +14,9 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::e2ee::PreKeyBundle;
+
+use super::repo::keys::{bundle_row, identity_for, shares_group, update_otks, upsert_bundle};
 
 /// Sanity cap: nobody needs more one-time keys published than this.
 const MAX_PUBLISHED_OTKS: usize = 256;
@@ -90,23 +91,14 @@ impl Platform {
             .map_err(|_| PlatformError::BadInput("bundle is not signed by its identity key"))?;
         let otks = serialize_otk_pairs(bundle)?;
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO prekey_bundles(user_id, identity, identity_signing, signature, otks, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(user_id) DO UPDATE SET
-               identity = excluded.identity,
-               identity_signing = excluded.identity_signing,
-               signature = excluded.signature,
-               otks = excluded.otks,
-               updated_at = excluded.updated_at",
-            params![
-                user_id,
-                bundle.identity,
-                bundle.identity_signing,
-                bundle.signature,
-                otks,
-                wxlike_core::types::now_ms() as i64
-            ],
+        upsert_bundle(
+            &c,
+            user_id,
+            &bundle.identity,
+            &bundle.identity_signing,
+            &bundle.signature,
+            &otks,
+            wxlike_core::types::now_ms() as i64,
         )?;
         Ok(())
     }
@@ -124,48 +116,27 @@ impl Platform {
             return Ok(true);
         }
         let c = self.db().lock();
-        let shares: Option<i64> = c
-            .query_row(
-                "SELECT 1 FROM group_members a JOIN group_members b
-                    ON a.group_id = b.group_id
-                 WHERE a.user_id = ?1 AND b.user_id = ?2 LIMIT 1",
-                params![caller, target],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(shares.is_some())
+        shares_group(&c, caller, target)
     }
 
     /// 对方当前发布的身份公钥（秘密聊天安全码用；不消费一次性密钥）。
     pub fn public_identity(&self, user_id: &str) -> Result<Option<String>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
-            params![user_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?)
+        identity_for(&c, user_id)
     }
 
     /// The caller's own bundle as stored (no claim). Lets a client see how
     /// many one-time keys it still has published and decide to top up.
     pub fn own_keys(&self, user_id: &str) -> Result<PreKeyBundle> {
         let c = self.db().lock();
-        let row: Option<(String, String, String, String)> = c
-            .query_row(
-                "SELECT identity, identity_signing, signature, otks FROM prekey_bundles WHERE user_id = ?1",
-                params![user_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-        match row {
-            Some((identity, identity_signing, signature, otks)) => {
-                let pairs = parse_otk_pairs(&otks)?;
+        match bundle_row(&c, user_id)? {
+            Some(row) => {
+                let pairs = parse_otk_pairs(&row.otks)?;
                 Ok(PreKeyBundle {
                     user_id: user_id.to_string(),
-                    identity,
-                    identity_signing,
-                    signature,
+                    identity: row.identity,
+                    identity_signing: row.identity_signing,
+                    signature: row.signature,
                     one_time_keys: pairs.iter().map(|(k, _)| k.clone()).collect(),
                     one_time_key_signatures: pairs.iter().map(|(_, s)| s.clone()).collect(),
                 })
@@ -189,31 +160,22 @@ impl Platform {
         // The pop-and-update runs under one guard, so two concurrent claims
         // cannot read the same array.
         let c = self.db().lock();
-        let row: Option<(String, String, String, String)> = c
-            .query_row(
-                "SELECT identity, identity_signing, signature, otks FROM prekey_bundles WHERE user_id = ?1",
-                params![user_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-        let Some((identity, identity_signing, signature, otks)) = row else {
+        let Some(row) = bundle_row(&c, user_id)? else {
             return Ok(None);
         };
-        let mut pairs = parse_otk_pairs(&otks)?;
+        let mut pairs = parse_otk_pairs(&row.otks)?;
         let claimed = pairs.pop().unwrap_or_default();
-        c.execute(
-            "UPDATE prekey_bundles SET otks = ?1, updated_at = ?2 WHERE user_id = ?3",
-            params![
-                serde_json::to_string(&pairs)?,
-                wxlike_core::types::now_ms() as i64,
-                user_id
-            ],
+        update_otks(
+            &c,
+            user_id,
+            &serde_json::to_string(&pairs)?,
+            wxlike_core::types::now_ms() as i64,
         )?;
         Ok(Some(PreKeyBundle {
             user_id: user_id.to_string(),
-            identity,
-            identity_signing,
-            signature,
+            identity: row.identity,
+            identity_signing: row.identity_signing,
+            signature: row.signature,
             one_time_keys: if claimed.0.is_empty() {
                 Vec::new()
             } else {
