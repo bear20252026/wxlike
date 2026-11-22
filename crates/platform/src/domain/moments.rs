@@ -22,12 +22,15 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::moments::{
-    check_reply_target, fanout_new_moment, notify_comment_inbox, require_media,
+    album_page, check_reply_target, delete_draft, delete_draft_for_author, delete_like,
+    drafts_by_author, fanout_new_moment, feed_page, friend_group_contains, insert_comment,
+    insert_draft, insert_like, insert_moment, moment_access, moment_author_if_live,
+    moment_comments, moment_likes, moment_record, notify_comment_inbox, require_media,
+    soft_delete_comment, soft_delete_moment, update_draft, MomentRecord,
 };
 
 /// Contract: text above this is refused (the task book allows either refusing
@@ -204,6 +207,47 @@ pub struct MomentDetail {
     pub comments: Vec<CommentRow>,
 }
 
+impl MomentRecord {
+    fn into_head(self) -> MomentHead {
+        MomentHead {
+            moment_id: self.moment_id,
+            author: self.author,
+            author_name: self.author_name,
+            text: self.text,
+            media_ids: self.media_ids,
+            visibility: self.visibility,
+            created_at: self.created_at,
+            like_count: self.like_count,
+            comment_count: self.comment_count,
+        }
+    }
+}
+
+fn page_from_rows(rows: Vec<MomentRecord>, limit: i64, upper: i64) -> (Vec<MomentHead>, i64, bool) {
+    let has_more = rows.len() as i64 > limit;
+    let next = if has_more {
+        rows.get(limit as usize - 1).map(|r| r.seq).unwrap_or(upper)
+    } else {
+        rows.last().map(|r| r.seq).unwrap_or(upper)
+    };
+    let heads = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(MomentRecord::into_head)
+        .collect();
+    (heads, next, has_more)
+}
+
+/// 点赞/评论/举报/删评论共用的可见性闸。
+/// 同步函数：调用方已经在 `offload` 里，不能再 `await`（ADR-28）。
+pub(crate) fn require_visible(platform: &Platform, moment_id: &str, viewer: &str) -> Result<()> {
+    platform.moment_row(moment_id)?;
+    if !platform.moment_visible(viewer, moment_id)? {
+        return Err(PlatformError::NotFound);
+    }
+    Ok(())
+}
+
 impl Platform {
     /// Stores a new moment. Media ids must already exist (WP-05), so a moment
     /// cannot dangle a reference to an object nobody uploaded.
@@ -236,35 +280,30 @@ impl Platform {
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
             require_media(tx, &cleaned)?;
-            tx.execute(
-                "INSERT INTO moments(id, author, text, media, visibility, audience_group, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    id,
-                    author,
-                    text,
-                    serde_json::to_string(&cleaned)?,
-                    visibility.as_str(),
-                    group,
-                    now
-                ],
+            insert_moment(
+                tx,
+                &id,
+                &author,
+                text,
+                &serde_json::to_string(&cleaned)?,
+                visibility.as_str(),
+                &group,
+                now,
             )?;
             crate::domain::repo::content_index::upsert(
                 tx,
                 &moment_index_doc(&id, &author, visibility, &group, text),
                 now,
             )?;
-            crate::domain::repo::content_index::add_media_refs(tx, &cleaned, "moment", &id, &author, now)?;
+            crate::domain::repo::content_index::add_media_refs(
+                tx, &cleaned, "moment", &id, &author, now,
+            )?;
             // 发布时扇出（issue #126 要求 4）：与插入同事务，所以“帖在提醒不在”
             // 或“提醒先于帖可见”的窗口都不存在。
             fanout_new_moment(tx, &author, visibility, &group, &id, now)?;
             if let Some(draft_id) = draft_id {
                 let draft_id = validate::id(draft_id)?;
-                let changed = tx.execute(
-                    "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
-                    params![draft_id, author],
-                )?;
-                if changed == 0 {
+                if !delete_draft_for_author(tx, draft_id, &author)? {
                     return Err(PlatformError::Forbidden);
                 }
             }
@@ -295,22 +334,31 @@ impl Platform {
             let id = match draft_id {
                 Some(id) => {
                     let id = validate::id(id)?.to_string();
-                    let changed = tx.execute(
-                        "UPDATE moment_drafts SET text = ?1, media = ?2, visibility = ?3,
-                                              audience_group = ?4, updated_at = ?5
-                         WHERE id = ?6 AND author = ?7",
-                        params![text, media, visibility.as_str(), group, now, id, author],
-                    )?;
-                    crate::db::ensure_updated(changed)?;
+                    if !update_draft(
+                        tx,
+                        &id,
+                        &author,
+                        text,
+                        &media,
+                        visibility.as_str(),
+                        &group,
+                        now,
+                    )? {
+                        return Err(PlatformError::NotFound);
+                    }
                     id
                 }
                 None => {
                     let id = crate::auth::random_hex(8);
-                    tx.execute(
-                        "INSERT INTO moment_drafts(id, author, text, media, visibility,
-                                               audience_group, updated_at)
-                         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![id, author, text, media, visibility.as_str(), group, now],
+                    insert_draft(
+                        tx,
+                        &id,
+                        &author,
+                        text,
+                        &media,
+                        visibility.as_str(),
+                        &group,
+                        now,
                     )?;
                     id
                 }
@@ -322,76 +370,32 @@ impl Platform {
 
     pub fn moment_drafts(&self, author: &str) -> Result<Vec<MomentDraft>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, author, text, media, visibility, audience_group, updated_at
-             FROM moment_drafts WHERE author = ?1 ORDER BY updated_at DESC",
-        )?;
-        let rows = stmt.query_map(params![author], |r| {
-            let media: String = r.get(3)?;
-            Ok(MomentDraft {
-                id: r.get(0)?,
-                author: r.get(1)?,
-                text: r.get(2)?,
-                media_ids: serde_json::from_str(&media).unwrap_or_default(),
-                visibility: r.get(4)?,
-                audience_group: r.get(5)?,
-                updated_at: r.get(6)?,
+        Ok(drafts_by_author(&c, author)?
+            .into_iter()
+            .map(|d| MomentDraft {
+                id: d.id,
+                author: d.author,
+                text: d.text,
+                media_ids: d.media_ids,
+                visibility: d.visibility,
+                audience_group: d.audience_group,
+                updated_at: d.updated_at,
             })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            .collect())
     }
 
     pub fn delete_moment_draft(&self, author: &str, draft_id: &str) -> Result<()> {
         let draft_id = validate::id(draft_id)?;
-        let changed = self.db().lock().execute(
-            "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
-            params![draft_id, author],
-        )?;
-        crate::db::ensure_updated(changed)?;
+        if !delete_draft(&self.db().lock(), draft_id, author)? {
+            return Err(PlatformError::NotFound);
+        }
         Ok(())
     }
 
     pub(crate) fn moment_row(&self, moment_id: &str) -> Result<Option<(i64, MomentHead)>> {
         let c = self.db().lock();
-        let row = c
-            .query_row(
-                "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at
-                 FROM moments m JOIN users u ON u.id = m.author
-                 WHERE m.id = ?1 AND m.deleted = 0",
-                params![moment_id],
-                |r| {
-                    let media: String = r.get(5)?;
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        MomentHead {
-                            moment_id: r.get(1)?,
-                            author: r.get(2)?,
-                            author_name: r.get(3)?,
-                            text: r.get(4)?,
-                            media_ids: serde_json::from_str(&media).unwrap_or_default(),
-                            visibility: r.get(6)?,
-                            created_at: r.get(7)?,
-                            like_count: 0,
-                            comment_count: 0,
-                        },
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((seq, mut head)) = row else {
-            return Ok(None);
-        };
-        head.like_count = c.query_row(
-            "SELECT COUNT(*) FROM moment_likes WHERE moment_id = ?1",
-            params![moment_id],
-            |r| r.get::<_, i64>(0),
-        )?;
-        head.comment_count = c.query_row(
-            "SELECT COUNT(*) FROM moment_comments WHERE moment_id = ?1 AND deleted = 0",
-            params![moment_id],
-            |r| r.get::<_, i64>(0),
-        )?;
-        Ok(Some((seq, head)))
+        let row = moment_record(&c, moment_id)?;
+        Ok(row.map(|r| (r.seq, r.into_head())))
     }
 
     /// Whether `viewer` may see this moment. Authors always see their own;
@@ -429,69 +433,43 @@ impl Platform {
         if group.is_empty() {
             return Ok(false);
         }
-        let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2 AND friend_group = ?3",
-            params![author, viewer, group],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+        friend_group_contains(&self.db().lock(), author, viewer, group)
     }
 
     /// 按 id 判定可见性（检索/点赞/详情共用的授权入口）。
     pub fn moment_visible(&self, viewer: &str, moment_id: &str) -> Result<bool> {
-        let row: Option<(String, String, String)> = {
+        let row = {
             let c = self.db().lock();
-            c.query_row(
-                "SELECT author, visibility, audience_group FROM moments
-                 WHERE id = ?1 AND deleted = 0",
-                params![moment_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?
+            moment_access(&c, moment_id)?
         };
-        let Some((author, visibility, group)) = row else {
+        let Some(access) = row else {
             return Ok(false);
         };
-        self.can_see_moment_full(viewer, &author, &visibility, &group)
+        self.can_see_moment_full(
+            viewer,
+            &access.author,
+            &access.visibility,
+            &access.audience_group,
+        )
     }
 
     pub fn moment_visitors_likes(&self, moment_id: &str) -> Result<Vec<(String, String)>> {
-        let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT l.user_id, u.name FROM moment_likes l JOIN users u ON u.id = l.user_id
-             WHERE l.moment_id = ?1 ORDER BY l.created_at",
-        )?;
-        let rows = stmt.query_map(params![moment_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        moment_likes(&self.db().lock(), moment_id)
     }
 
     pub fn moment_comments(&self, moment_id: &str) -> Result<Vec<CommentRow>> {
-        let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT cm.id, cm.author, u.name, cm.text, cm.reply_to, rt.name, cm.created_at
-             FROM moment_comments cm
-             JOIN users u ON u.id = cm.author
-             LEFT JOIN moment_comments rc ON rc.id = cm.reply_to
-             LEFT JOIN users rt ON rt.id = rc.author
-             WHERE cm.moment_id = ?1 AND cm.deleted = 0
-             ORDER BY cm.seq",
-        )?;
-        let rows = stmt.query_map(params![moment_id], |r| {
-            Ok(CommentRow {
-                comment_id: r.get(0)?,
-                author: r.get(1)?,
-                author_name: r.get(2)?,
-                text: r.get(3)?,
-                reply_to: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                reply_to_name: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
-                created_at: r.get(6)?,
+        Ok(moment_comments(&self.db().lock(), moment_id)?
+            .into_iter()
+            .map(|c| CommentRow {
+                comment_id: c.comment_id,
+                author: c.author,
+                author_name: c.author_name,
+                text: c.text,
+                reply_to: c.reply_to,
+                reply_to_name: c.reply_to_name,
+                created_at: c.created_at,
             })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            .collect())
     }
 
     /// Author-only removal. 索引与媒体引用同事务清理：检索同步不可见，
@@ -499,16 +477,13 @@ impl Platform {
     pub fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<bool> {
-            let changed = tx.execute(
-                "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
-                params![moment_id, by],
-            )?;
-            if changed == 1 {
+            let changed = soft_delete_moment(tx, moment_id, by)?;
+            if changed {
                 crate::domain::repo::content_index::remove(tx, moment_id)?;
                 crate::domain::repo::content_index::remove_media_refs(tx, "moment", moment_id)?;
                 crate::domain::repo::favorites::revoke_source(tx, "moment", moment_id)?;
             }
-            Ok(changed == 1)
+            Ok(changed)
         })
     }
 
@@ -517,15 +492,7 @@ impl Platform {
     /// 软删除（`deleted = 1`）：feed 的计数与详情都按 `deleted = 0` 过滤，
     /// 硬删会让分页游标与计数对不上。
     pub fn delete_comment(&self, moment_id: &str, comment_id: &str, by: &str) -> Result<bool> {
-        let c = self.db().lock();
-        let changed = c.execute(
-            "UPDATE moment_comments SET deleted = 1
-             WHERE id = ?1 AND moment_id = ?2 AND deleted = 0
-               AND (author = ?3
-                    OR ?3 = (SELECT author FROM moments WHERE id = ?2))",
-            params![comment_id, moment_id, by],
-        )?;
-        Ok(changed == 1)
+        soft_delete_comment(&self.db().lock(), comment_id, moment_id, by)
     }
 
     /// Idempotent like: re-liking reports success without a second row, and the
@@ -534,20 +501,9 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<bool> {
-            let changed = tx.execute(
-                "INSERT INTO moment_likes(moment_id, user_id, created_at) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(moment_id, user_id) DO NOTHING",
-                params![moment_id, by, now],
-            )?;
-            if changed == 1 {
-                let author: Option<String> = tx
-                    .query_row(
-                        "SELECT author FROM moments WHERE id = ?1 AND deleted = 0",
-                        params![moment_id],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if let Some(author) = author {
+            let changed = insert_like(tx, moment_id, by, now)?;
+            if changed {
+                if let Some(author) = moment_author_if_live(tx, moment_id)? {
                     crate::domain::repo::inbox::notify(
                         tx,
                         &author,
@@ -561,17 +517,12 @@ impl Platform {
                     )?;
                 }
             }
-            Ok(changed == 1)
+            Ok(changed)
         })
     }
 
     pub fn unlike_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
-        let c = self.db().lock();
-        let changed = c.execute(
-            "DELETE FROM moment_likes WHERE moment_id = ?1 AND user_id = ?2",
-            params![moment_id, by],
-        )?;
-        Ok(changed == 1)
+        delete_like(&self.db().lock(), moment_id, by)
     }
 
     /// Adds a comment, optionally as a reply to another comment **in the same
@@ -597,18 +548,7 @@ impl Platform {
             if let Some(rt) = &reply_to {
                 check_reply_target(tx, moment_id, rt)?;
             }
-            tx.execute(
-                "INSERT INTO moment_comments(id, moment_id, author, text, reply_to, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    id,
-                    moment_id,
-                    by,
-                    text,
-                    reply_to.as_deref().unwrap_or(""),
-                    now
-                ],
-            )?;
+            insert_comment(tx, &id, moment_id, &by, text, reply_to.as_deref(), now)?;
             notify_comment_inbox(tx, moment_id, &by, reply_to.as_deref(), now)?;
             Ok(())
         })?;
@@ -635,48 +575,8 @@ impl Platform {
         let limit = limit.clamp(1, MAX_FEED_PAGE);
         let upper = since.unwrap_or(i64::MAX);
         let c = self.db().lock();
-        let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
-                    (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
-                    (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
-             FROM moments m JOIN users u ON u.id = m.author
-             WHERE m.deleted = 0 AND m.author = ?2
-               AND (m.author = ?1 OR EXISTS (
-                     SELECT 1 FROM friends f WHERE f.user_id = ?1 AND f.friend_id = m.author))
-               AND (m.visibility <> 'private' OR m.author = ?1)
-               AND (m.visibility <> 'groups' OR m.author = ?1 OR EXISTS (
-                     SELECT 1 FROM friends f WHERE f.user_id = m.author AND f.friend_id = ?1
-                       AND f.friend_group = m.audience_group))
-               AND NOT EXISTS (
-                     SELECT 1 FROM blocks b
-                     WHERE (b.user_id = ?1 AND b.blocked_id = m.author)
-                        OR (b.user_id = m.author AND b.blocked_id = ?1))
-               AND m.seq < ?3
-             ORDER BY m.seq DESC LIMIT ?4";
-        let mut stmt = c.prepare(sql)?;
-        let rows = stmt.query_map(params![viewer, author, upper, limit + 1], |r| {
-            let media: String = r.get(5)?;
-            Ok((
-                r.get::<_, i64>(0)?,
-                MomentHead {
-                    moment_id: r.get(1)?,
-                    author: r.get(2)?,
-                    author_name: r.get(3)?,
-                    text: r.get(4)?,
-                    media_ids: serde_json::from_str(&media).unwrap_or_default(),
-                    visibility: r.get(6)?,
-                    created_at: r.get(7)?,
-                    like_count: r.get(8)?,
-                    comment_count: r.get(9)?,
-                },
-            ))
-        })?;
-        let mut all = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-        let has_more = all.len() as i64 > limit;
-        if has_more {
-            all.pop();
-        }
-        let next = all.last().map(|(seq, _)| *seq).unwrap_or(upper);
-        Ok((all.into_iter().map(|(_, h)| h).collect(), next, has_more))
+        let rows = album_page(&c, viewer, &author, upper, limit + 1)?;
+        Ok(page_from_rows(rows, limit, upper))
     }
 
     /// Read fan-out: self + friends, newest first, at most `MAX_FEED_PAGE`.
@@ -693,57 +593,7 @@ impl Platform {
         let c = self.db().lock();
         // 作者列表、可见性、拉黑全部在同一条 SQL 里判定：好友关系与分组是
         // 读时事实，删好友/改分组/拉黑立即反映到下一次 feed。
-        let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
-                    (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
-                    (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
-             FROM moments m JOIN users u ON u.id = m.author
-             WHERE m.deleted = 0
-               AND (m.author = ?1 OR m.author IN (SELECT friend_id FROM friends WHERE user_id = ?1))
-               AND (m.visibility <> 'private' OR m.author = ?1)
-               AND (m.visibility <> 'groups' OR m.author = ?1 OR EXISTS (
-                     SELECT 1 FROM friends f WHERE f.user_id = m.author AND f.friend_id = ?1
-                       AND f.friend_group = m.audience_group))
-               AND NOT EXISTS (
-                     SELECT 1 FROM blocks b
-                     WHERE (b.user_id = ?1 AND b.blocked_id = m.author)
-                        OR (b.user_id = m.author AND b.blocked_id = ?1))
-               AND m.seq < ?2
-             ORDER BY m.seq DESC LIMIT ?3";
-        let mut stmt = c.prepare(sql)?;
-        // (seq, head) internally so the cursor needs no `seq` field in the API shape
-        let rows = stmt.query_map(params![me, upper, limit + 1], |r| {
-            let media: String = r.get(5)?;
-            Ok((
-                r.get::<_, i64>(0)?,
-                MomentHead {
-                    moment_id: r.get(1)?,
-                    author: r.get(2)?,
-                    author_name: r.get(3)?,
-                    text: r.get(4)?,
-                    media_ids: serde_json::from_str(&media).unwrap_or_default(),
-                    visibility: r.get(6)?,
-                    created_at: r.get(7)?,
-                    like_count: r.get(8)?,
-                    comment_count: r.get(9)?,
-                },
-            ))
-        })?;
-        let mut all = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-        let has_more = all.len() as i64 > limit;
-        if has_more {
-            all.pop();
-        }
-        let next = all.last().map(|(seq, _)| *seq).unwrap_or(upper);
-        Ok((all.into_iter().map(|(_, h)| h).collect(), next, has_more))
+        let rows = feed_page(&c, me, upper, limit + 1)?;
+        Ok(page_from_rows(rows, limit, upper))
     }
-}
-
-/// 点赞/评论/举报/删评论共用的可见性闸。
-/// 同步函数：调用方已经在 `offload` 里，不能再 `await`（ADR-28）。
-pub(crate) fn require_visible(platform: &Platform, moment_id: &str, viewer: &str) -> Result<()> {
-    platform.moment_row(moment_id)?;
-    if !platform.moment_visible(viewer, moment_id)? {
-        return Err(PlatformError::NotFound);
-    }
-    Ok(())
 }

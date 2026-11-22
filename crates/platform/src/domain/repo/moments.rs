@@ -2,9 +2,68 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
-use rusqlite::{params, OptionalExtension as _};
+use rusqlite::{params, Connection, OptionalExtension as _};
 
 use crate::domain::moments::{Visibility, MAX_COMMENT_DEPTH, MAX_FANOUT_RECIPIENTS};
+
+/// 动态主行 + 两个读时计数列；`seq` 只用于时间倒序翻页游标。
+pub(in crate::domain) struct MomentRecord {
+    pub seq: i64,
+    pub moment_id: String,
+    pub author: String,
+    pub author_name: String,
+    pub text: String,
+    pub media_ids: Vec<String>,
+    pub visibility: String,
+    pub created_at: i64,
+    pub like_count: i64,
+    pub comment_count: i64,
+}
+
+/// 草稿主行；`media` 在仓储层解成 id 列表，领域层不再碰 JSON。
+pub(in crate::domain) struct DraftRecord {
+    pub id: String,
+    pub author: String,
+    pub text: String,
+    pub media_ids: Vec<String>,
+    pub visibility: String,
+    pub audience_group: String,
+    pub updated_at: i64,
+}
+
+/// 按 id 判定可见性所需的三个字段。
+pub(in crate::domain) struct MomentAccess {
+    pub author: String,
+    pub visibility: String,
+    pub audience_group: String,
+}
+
+/// 评论行；被回复者名字可能为空（顶层评论或数据缺失）。
+pub(in crate::domain) struct CommentRecord {
+    pub comment_id: String,
+    pub author: String,
+    pub author_name: String,
+    pub text: String,
+    pub reply_to: String,
+    pub reply_to_name: String,
+    pub created_at: i64,
+}
+
+fn moment_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MomentRecord> {
+    let media: String = row.get(5)?;
+    Ok(MomentRecord {
+        seq: row.get(0)?,
+        moment_id: row.get(1)?,
+        author: row.get(2)?,
+        author_name: row.get(3)?,
+        text: row.get(4)?,
+        media_ids: serde_json::from_str(&media).unwrap_or_default(),
+        visibility: row.get(6)?,
+        created_at: row.get(7)?,
+        like_count: row.get(8)?,
+        comment_count: row.get(9)?,
+    })
+}
 
 /// 发布扇出：给**此刻有权看到这条动态的人**各插一条收件箱提醒。
 ///
@@ -159,10 +218,7 @@ pub(in crate::domain) fn notify_comment_inbox(
     Ok(())
 }
 
-pub(in crate::domain) fn require_media(
-    conn: &rusqlite::Connection,
-    media_ids: &[String],
-) -> Result<()> {
+pub(in crate::domain) fn require_media(conn: &Connection, media_ids: &[String]) -> Result<()> {
     for media_id in media_ids {
         let known: Option<i64> = conn
             .query_row(
@@ -176,4 +232,362 @@ pub(in crate::domain) fn require_media(
         }
     }
     Ok(())
+}
+
+/// 动态主行与两个计数列（点赞数、未删评论数）在同一事务/连接上读。
+pub(in crate::domain) fn moment_record(
+    conn: &Connection,
+    moment_id: &str,
+) -> Result<Option<MomentRecord>> {
+    let row = conn
+        .query_row(
+            "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
+                    (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
+                    (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
+             FROM moments m JOIN users u ON u.id = m.author
+             WHERE m.id = ?1 AND m.deleted = 0",
+            params![moment_id],
+            moment_record,
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub(in crate::domain) fn insert_moment(
+    conn: &Connection,
+    id: &str,
+    author: &str,
+    text: &str,
+    media_json: &str,
+    visibility: &str,
+    audience_group: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO moments(id, author, text, media, visibility, audience_group, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            author,
+            text,
+            media_json,
+            visibility,
+            audience_group,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+/// 发布成功后消费掉草稿；返回 false 表示草稿不属于该作者（调用方拒绝）。
+pub(in crate::domain) fn delete_draft_for_author(
+    conn: &Connection,
+    draft_id: &str,
+    author: &str,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
+        params![draft_id, author],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn update_draft(
+    conn: &Connection,
+    id: &str,
+    author: &str,
+    text: &str,
+    media_json: &str,
+    visibility: &str,
+    audience_group: &str,
+    now: i64,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE moment_drafts SET text = ?1, media = ?2, visibility = ?3,
+                              audience_group = ?4, updated_at = ?5
+         WHERE id = ?6 AND author = ?7",
+        params![
+            text,
+            media_json,
+            visibility,
+            audience_group,
+            now,
+            id,
+            author
+        ],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn insert_draft(
+    conn: &Connection,
+    id: &str,
+    author: &str,
+    text: &str,
+    media_json: &str,
+    visibility: &str,
+    audience_group: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO moment_drafts(id, author, text, media, visibility,
+                               audience_group, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            author,
+            text,
+            media_json,
+            visibility,
+            audience_group,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn drafts_by_author(
+    conn: &Connection,
+    author: &str,
+) -> Result<Vec<DraftRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, author, text, media, visibility, audience_group, updated_at
+         FROM moment_drafts WHERE author = ?1 ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map(params![author], |r| {
+        let media: String = r.get(3)?;
+        Ok(DraftRecord {
+            id: r.get(0)?,
+            author: r.get(1)?,
+            text: r.get(2)?,
+            media_ids: serde_json::from_str(&media).unwrap_or_default(),
+            visibility: r.get(4)?,
+            audience_group: r.get(5)?,
+            updated_at: r.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn delete_draft(conn: &Connection, id: &str, author: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
+        params![id, author],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn friend_group_contains(
+    conn: &Connection,
+    author: &str,
+    viewer: &str,
+    group: &str,
+) -> Result<bool> {
+    let found = conn
+        .query_row(
+            "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2 AND friend_group = ?3",
+            params![author, viewer, group],
+            |_| Ok(()),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+pub(in crate::domain) fn moment_access(
+    conn: &Connection,
+    moment_id: &str,
+) -> Result<Option<MomentAccess>> {
+    let row = conn
+        .query_row(
+            "SELECT author, visibility, audience_group FROM moments
+             WHERE id = ?1 AND deleted = 0",
+            params![moment_id],
+            |r| {
+                Ok(MomentAccess {
+                    author: r.get(0)?,
+                    visibility: r.get(1)?,
+                    audience_group: r.get(2)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub(in crate::domain) fn moment_likes(
+    conn: &Connection,
+    moment_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT l.user_id, u.name FROM moment_likes l JOIN users u ON u.id = l.user_id
+         WHERE l.moment_id = ?1 ORDER BY l.created_at",
+    )?;
+    let rows = stmt.query_map(params![moment_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn moment_comments(
+    conn: &Connection,
+    moment_id: &str,
+) -> Result<Vec<CommentRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT cm.id, cm.author, u.name, cm.text, cm.reply_to, rt.name, cm.created_at
+         FROM moment_comments cm
+         JOIN users u ON u.id = cm.author
+         LEFT JOIN moment_comments rc ON rc.id = cm.reply_to
+         LEFT JOIN users rt ON rt.id = rc.author
+         WHERE cm.moment_id = ?1 AND cm.deleted = 0
+         ORDER BY cm.seq",
+    )?;
+    let rows = stmt.query_map(params![moment_id], |r| {
+        Ok(CommentRecord {
+            comment_id: r.get(0)?,
+            author: r.get(1)?,
+            author_name: r.get(2)?,
+            text: r.get(3)?,
+            reply_to: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            reply_to_name: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            created_at: r.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn soft_delete_moment(
+    conn: &Connection,
+    moment_id: &str,
+    by: &str,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
+        params![moment_id, by],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn soft_delete_comment(
+    conn: &Connection,
+    comment_id: &str,
+    moment_id: &str,
+    by: &str,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE moment_comments SET deleted = 1
+         WHERE id = ?1 AND moment_id = ?2 AND deleted = 0
+           AND (author = ?3
+                OR ?3 = (SELECT author FROM moments WHERE id = ?2))",
+        params![comment_id, moment_id, by],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn insert_like(
+    conn: &Connection,
+    moment_id: &str,
+    by: &str,
+    now: i64,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "INSERT INTO moment_likes(moment_id, user_id, created_at) VALUES(?1, ?2, ?3)
+         ON CONFLICT(moment_id, user_id) DO NOTHING",
+        params![moment_id, by, now],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn moment_author_if_live(
+    conn: &Connection,
+    moment_id: &str,
+) -> Result<Option<String>> {
+    let author = conn
+        .query_row(
+            "SELECT author FROM moments WHERE id = ?1 AND deleted = 0",
+            params![moment_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(author)
+}
+
+pub(in crate::domain) fn delete_like(conn: &Connection, moment_id: &str, by: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "DELETE FROM moment_likes WHERE moment_id = ?1 AND user_id = ?2",
+        params![moment_id, by],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn insert_comment(
+    conn: &Connection,
+    id: &str,
+    moment_id: &str,
+    by: &str,
+    text: &str,
+    reply_to: Option<&str>,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO moment_comments(id, moment_id, author, text, reply_to, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, moment_id, by, text, reply_to.unwrap_or(""), now],
+    )?;
+    Ok(())
+}
+
+/// 相册页：某个作者对 `viewer` 读时可见的动态，时间倒序。
+pub(in crate::domain) fn album_page(
+    conn: &Connection,
+    viewer: &str,
+    author: &str,
+    upper: i64,
+    limit: i64,
+) -> Result<Vec<MomentRecord>> {
+    let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
+                    (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
+                    (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
+             FROM moments m JOIN users u ON u.id = m.author
+             WHERE m.deleted = 0 AND m.author = ?2
+               AND (m.author = ?1 OR EXISTS (
+                     SELECT 1 FROM friends f WHERE f.user_id = ?1 AND f.friend_id = m.author))
+               AND (m.visibility <> 'private' OR m.author = ?1)
+               AND (m.visibility <> 'groups' OR m.author = ?1 OR EXISTS (
+                     SELECT 1 FROM friends f WHERE f.user_id = m.author AND f.friend_id = ?1
+                       AND f.friend_group = m.audience_group))
+               AND NOT EXISTS (
+                     SELECT 1 FROM blocks b
+                     WHERE (b.user_id = ?1 AND b.blocked_id = m.author)
+                        OR (b.user_id = m.author AND b.blocked_id = ?1))
+               AND m.seq < ?3
+             ORDER BY m.seq DESC LIMIT ?4";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![viewer, author, upper, limit], moment_record)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// Feed 页：自 + 好友，读时判定可见性、分组与双向拉黑。
+pub(in crate::domain) fn feed_page(
+    conn: &Connection,
+    me: &str,
+    upper: i64,
+    limit: i64,
+) -> Result<Vec<MomentRecord>> {
+    let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
+                    (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
+                    (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
+             FROM moments m JOIN users u ON u.id = m.author
+             WHERE m.deleted = 0
+               AND (m.author = ?1 OR m.author IN (SELECT friend_id FROM friends WHERE user_id = ?1))
+               AND (m.visibility <> 'private' OR m.author = ?1)
+               AND (m.visibility <> 'groups' OR m.author = ?1 OR EXISTS (
+                     SELECT 1 FROM friends f WHERE f.user_id = m.author AND f.friend_id = ?1
+                       AND f.friend_group = m.audience_group))
+               AND NOT EXISTS (
+                     SELECT 1 FROM blocks b
+                     WHERE (b.user_id = ?1 AND b.blocked_id = m.author)
+                        OR (b.user_id = m.author AND b.blocked_id = ?1))
+               AND m.seq < ?2
+             ORDER BY m.seq DESC LIMIT ?3";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![me, upper, limit], moment_record)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }

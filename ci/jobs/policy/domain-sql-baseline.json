@@ -1,5 +1,5 @@
 {
-  "total": 220,
+  "total": 199,
   "files": {
     "content_index.rs": 5,
     "devices.rs": 3,
@@ -11,7 +11,6 @@
     "keys.rs": 6,
     "live.rs": 15,
     "media.rs": 4,
-    "moments.rs": 21,
     "notes.rs": 8,
     "notification.rs": 3,
     "perms.rs": 5,
