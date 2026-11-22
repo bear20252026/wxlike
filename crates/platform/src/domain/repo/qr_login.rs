@@ -110,3 +110,46 @@ pub(in crate::domain) fn check_qr_state(
         _ => Err(ApiError::conflict("ticket not approved yet")),
     }
 }
+
+/// 兑换所需的票据字段：`(state, expires_at, device_id, label)`。
+pub(in crate::domain) fn ticket_row(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> std::result::Result<(String, i64, String, String), ApiError> {
+    conn.query_row(
+        "SELECT state, expires_at, device_id, label FROM identity_qr WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .optional()
+    .map_err(db_err)?
+    .ok_or_else(|| ApiError::not_found("no such ticket"))
+}
+
+/// 抢占式消费：只有 `approved` 能推进到 `consumed`，返回受影响行数。
+pub(in crate::domain) fn consume(
+    conn: &rusqlite::Connection,
+    id: &str,
+    now: i64,
+) -> std::result::Result<usize, ApiError> {
+    conn.execute(
+        "UPDATE identity_qr SET state = 'consumed', consumed_at = ?2 \
+         WHERE id = ?1 AND state = 'approved'",
+        params![id, now],
+    )
+    .map_err(db_err)
+}
+
+/// 用户显示名；行不存在时返回 `None`，由调用方回落到 id 本身。
+pub(in crate::domain) fn display_name(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+) -> crate::error::Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT name FROM users WHERE id = ?1",
+            params![user_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+}

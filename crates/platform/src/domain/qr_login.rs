@@ -34,11 +34,11 @@ use crate::Platform;
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::Json;
-use rusqlite::{params, OptionalExtension as _};
 use wxlike_identity::qr_login::{self, PollState, ScanView, Ticket};
 
 use super::repo::qr_login::{
-    check_qr_state, creator_and_verifier, locate_ticket_by_secret, register_creator, scan_hint,
+    check_qr_state, consume, creator_and_verifier, display_name, locate_ticket_by_secret,
+    register_creator, scan_hint, ticket_row,
 };
 
 /// QR 票据 secret 的十六进制长度（与 identity::qr_login 生成侧一致）。
@@ -94,24 +94,11 @@ pub(crate) fn consume_qr_ticket(
     secret_must_match(ticket_id, &id)?;
     let (creator, _verifier) = creator_and_verifier(&conn, &id)?;
 
-    let (state, expires_at, device_id, label): (String, i64, String, String) = conn
-        .query_row(
-            "SELECT state, expires_at, device_id, label FROM identity_qr WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()
-        .map_err(db_err)?
-        .ok_or_else(|| ApiError::not_found("no such ticket"))?;
+    let (state, expires_at, device_id, label): (String, i64, String, String) =
+        ticket_row(&conn, &id)?;
     check_qr_state(&conn, &id, &state, expires_at, now)?;
 
-    let consumed = conn
-        .execute(
-            "UPDATE identity_qr SET state = 'consumed', consumed_at = ?2 \
-             WHERE id = ?1 AND state = 'approved'",
-            params![id, now],
-        )
-        .map_err(db_err)?;
+    let consumed = consume(&conn, &id, now)?;
     if consumed != 1 {
         return Err(ApiError::conflict("ticket already used"));
     }
@@ -272,13 +259,7 @@ impl Platform {
     /// 用户显示名（兑换回包 `{name}` 用；用户不存在时退回 id 本身）。
     pub fn display_name_of(&self, user_id: &str) -> crate::error::Result<String> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT name FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .unwrap_or_else(|| user_id.to_string()))
+        Ok(display_name(&c, user_id)?.unwrap_or_else(|| user_id.to_string()))
     }
 }
 

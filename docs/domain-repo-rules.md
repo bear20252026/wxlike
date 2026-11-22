@@ -63,6 +63,8 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `domain/repo/governance.rs`，事件分发、缓存清理与断连留痕留在 domain。
 第二十八批清 `notification.rs`：免打扰规则 upsert、单条读取与列表语句全部移入
 `domain/repo/notification.rs`，级别/关键词校验与 JSON 解码留在 domain。
+第二十九批清 `qr_login.rs`：票据字段读取、抢占式消费与用户显示名语句移入
+`domain/repo/qr_login.rs`，状态机调用、secret 比对与错误映射留在 domain。
 
 ## 现在的边界
 
@@ -133,7 +135,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::governance`：治理镜像、群数与举报数都在仓储层；domain 只保留事件
   分发、缓存清理与断连留痕；
 - `repo::notification`：免打扰规则 upsert、单条读取与列表都在仓储层；domain 只
-  保留级别/关键词校验与 JSON 解码。
+  保留级别/关键词校验与 JSON 解码；
+- `repo::qr_login`：票据字段读取、抢占式消费与用户显示名都在仓储层；domain 只
+  保留状态机调用、secret 比对与错误映射。
 
 ## 防回潮
 
@@ -145,7 +149,7 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **2 个文件 / 5 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **1 个文件 / 2 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
@@ -156,16 +160,15 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 第十五批把 recovery 的 **9 条**清零，第十六批把 reconcile 的 **8 条**清零，
 第十七批把 notes 的 **8 条**清零，第十八批把 keys 的 **6 条**清零，
 第十九批把 perms 的 **5 条**清零，第二十批把 content_index 的 **5 条**清零，
-第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，第二十三批把 trust 的 **5 条**清零，第二十四批把 inbox 的 **4 条**清零，第二十五批把 media 的 **4 条**清零，第二十六批把 devices 的 **3 条**清零，第二十七批把 governance 的 **3 条**清零，第二十八批把 notification 的 **3 条**
-清零，总数从 425 降到 5。
+第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，第二十三批把 trust 的 **5 条**清零，第二十四批把 inbox 的 **4 条**清零，第二十五批把 media 的 **4 条**清零，第二十六批把 devices 的 **3 条**清零，第二十七批把 governance 的 **3 条**清零，第二十八批把 notification 的 **3 条**清零，第二十九批把 qr_login 的 **3 条**
+清零，总数从 425 降到 2。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `qr_login.rs`（3）；
-2. `read.rs`（2）；
-3. 其余文件按 feature 逐个清到 0。
+1. `read.rs`（2）；
+2. 收尾：基线归零后把门禁从"逐文件棘轮"改成"任何新 SQL 直接失败"。
 
 每批的验收标准一致：
 
