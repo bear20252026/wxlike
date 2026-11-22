@@ -14,11 +14,13 @@ use crate::error::{PlatformError, Result};
 use crate::page::parse_cursor;
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use wxlike_core::tx::ConnectionTx as _;
 
-use super::repo::notes::{note_map, note_row};
+use super::repo::notes::{
+    delete_one, insert_note, insert_version, note_exists, note_row, note_version, notes_page,
+    update_note,
+};
 
 pub const MAX_NOTE_TITLE_CHARS: usize = 120;
 pub const MAX_NOTE_BODY_CHARS: usize = 100_000;
@@ -51,28 +53,13 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<Note> {
-            let existing: Option<String> = tx
-                .query_row(
-                    "SELECT user_id FROM notes WHERE id = ?1",
-                    params![note_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if existing.is_some() {
+            if note_exists(tx, &note_id)? {
                 // 已存在：返回现有行，不覆盖（幂等）。空事务直接提交。
                 let note = note_row(tx, user, &note_id)?.ok_or(PlatformError::NotFound)?;
                 return Ok(note);
             }
-            tx.execute(
-                "INSERT INTO notes(id, user_id, title, body, version, created_at, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, 1, ?5, ?5)",
-                params![note_id, user, title, body, now],
-            )?;
-            tx.execute(
-                "INSERT INTO note_versions(note_id, version, title, body, saved_at)
-                 VALUES(?1, 1, ?2, ?3, ?4)",
-                params![note_id, title, body, now],
-            )?;
+            insert_note(tx, &note_id, user, title, body, now)?;
+            insert_version(tx, &note_id, 1, title, body, now)?;
             note_row(tx, user, &note_id)?.ok_or(PlatformError::NotFound)
         })
     }
@@ -94,14 +81,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<Note> {
-            let current: Option<i64> = tx
-                .query_row(
-                    "SELECT version FROM notes WHERE id = ?1 AND user_id = ?2",
-                    params![id, user],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let Some(current) = current else {
+            let Some(current) = note_version(tx, user, id)? else {
                 return Err(PlatformError::NotFound);
             };
             if current != expected_version {
@@ -110,16 +90,8 @@ impl Platform {
                 )));
             }
             let next = current + 1;
-            tx.execute(
-                "UPDATE notes SET title = ?1, body = ?2, version = ?3, updated_at = ?4
-                 WHERE id = ?5 AND user_id = ?6",
-                params![title, body, next, now, id, user],
-            )?;
-            tx.execute(
-                "INSERT INTO note_versions(note_id, version, title, body, saved_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![id, next, title, body, now],
-            )?;
+            update_note(tx, user, id, title, body, next, now)?;
+            insert_version(tx, id, next, title, body, now)?;
             note_row(tx, user, id)?.ok_or(PlatformError::NotFound)
         })
     }
@@ -140,14 +112,7 @@ impl Platform {
         let limit = limit.clamp(1, MAX_NOTE_PAGE);
         let (before_at, before_id) = parse_cursor(cursor)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, user_id, title, body, version, created_at, updated_at
-             FROM notes WHERE user_id = ?1
-               AND (updated_at < ?2 OR (updated_at = ?2 AND id < ?3))
-             ORDER BY updated_at DESC, id DESC LIMIT ?4",
-        )?;
-        let it = stmt.query_map(params![user, before_at, before_id, limit + 1], note_map)?;
-        let mut rows = it.collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut rows = notes_page(&c, user, before_at, &before_id, limit + 1)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
             rows.pop();
@@ -161,10 +126,10 @@ impl Platform {
 
     pub fn delete_note(&self, user: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
-        let changed = self.db().lock().execute(
-            "DELETE FROM notes WHERE id = ?1 AND user_id = ?2",
-            params![id, user],
-        )?;
+        let changed = {
+            let c = self.db().lock();
+            delete_one(&c, user, id)?
+        };
         crate::db::ensure_updated(changed)
     }
 }

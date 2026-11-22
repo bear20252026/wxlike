@@ -38,7 +38,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `recovery.rs`：验证码、恢复码与重置密码语句全部移入
 `domain/repo/recovery.rs`，摘要校验与风控闸门留在 domain。第十六批清
 `reconcile.rs`：余额、供给、红包算术与运行记录语句全部移入
-`domain/repo/reconcile.rs`，差异判定与告警留在 domain。
+`domain/repo/reconcile.rs`，差异判定与告警留在 domain。第十七批清
+`notes.rs`：笔记主行、版本行、分页与删除语句全部移入
+`domain/repo/notes.rs`，版本冲突与输入闸门留在 domain。
 
 ## 现在的边界
 
@@ -85,7 +87,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::recovery`：验证码、恢复码与重置密码语句都在仓储层；domain 只保留
   摘要校验、时效判断与风控闸门；
 - `repo::reconcile`：余额、供给、红包算术与运行记录都在仓储层；domain 只保留
-  差异判定、报告组装与告警。
+  差异判定、报告组装与告警；
+- `repo::notes`：笔记主行、版本行、分页与删除都在仓储层；domain 只保留版本
+  冲突、输入闸门与游标裁剪。
 
 ## 防回潮
 
@@ -97,7 +101,7 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **14 个文件 / 61 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **13 个文件 / 53 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
@@ -106,14 +110,14 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 第十一批把 status 的 **14 条**清零，第十二批把 favorites 的 **14 条**清零，
 第十三批把 relations 的 **13 条**清零，第十四批把 stickers 的 **12 条**清零，
 第十五批把 recovery 的 **9 条**清零，第十六批把 reconcile 的 **8 条**清零，
-总数从 425 降到 61。
+第十七批把 notes 的 **8 条**清零，总数从 425 降到 53。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `notes.rs`（8）：笔记读写；
-2. `keys.rs`（6）：密钥环；
+1. `keys.rs`（6）：密钥环；
+2. `perms.rs`（5）/ `content_index.rs`（5）；
 3. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：
