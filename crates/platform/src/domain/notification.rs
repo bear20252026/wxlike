@@ -9,8 +9,9 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
+
+use super::repo::notification as notification_repo;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct NotificationRule {
@@ -42,27 +43,16 @@ impl Platform {
                 return Err(PlatformError::BadInput("keyword must be 1..=64 chars"));
             }
         }
-        self.db().lock().execute(
-            "INSERT INTO notification_settings(user_id, conv_id, level, keywords)
-             VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(user_id, conv_id) DO UPDATE SET
-               level = excluded.level, keywords = excluded.keywords",
-            params![user, conv, level, serde_json::to_string(keywords)?],
-        )?;
+        let keywords = serde_json::to_string(keywords)?;
+        let c = self.db().lock();
+        notification_repo::set(&c, user, conv, level, &keywords)?;
         Ok(())
     }
 
     pub fn notification_rule(&self, user: &str, conv: &str) -> Result<Option<NotificationRule>> {
         let conv = validate::conv(conv)?;
         let c = self.db().lock();
-        let row: Option<(String, String)> = c
-            .query_row(
-                "SELECT level, keywords FROM notification_settings
-                 WHERE user_id = ?1 AND conv_id = ?2",
-                params![user, conv],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
+        let row = notification_repo::get(&c, user, conv)?;
         match row {
             Some((level, keywords_json)) => Ok(Some(NotificationRule {
                 conv_id: conv.to_string(),
@@ -75,20 +65,9 @@ impl Platform {
 
     pub fn notification_rules(&self, user: &str) -> Result<Vec<NotificationRule>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT conv_id, level, keywords FROM notification_settings
-             WHERE user_id = ?1 ORDER BY conv_id",
-        )?;
-        let rows = stmt.query_map(params![user], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (conv_id, level, keywords_json) = row?;
+        let rows = notification_repo::list(&c, user)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (conv_id, level, keywords_json) in rows {
             out.push(NotificationRule {
                 conv_id,
                 level,
