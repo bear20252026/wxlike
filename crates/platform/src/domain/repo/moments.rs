@@ -49,7 +49,7 @@ pub(in crate::domain) struct CommentRecord {
     pub created_at: i64,
 }
 
-fn moment_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MomentRecord> {
+fn map_moment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MomentRecord> {
     let media: String = row.get(5)?;
     Ok(MomentRecord {
         seq: row.get(0)?,
@@ -247,7 +247,7 @@ pub(in crate::domain) fn moment_record(
              FROM moments m JOIN users u ON u.id = m.author
              WHERE m.id = ?1 AND m.deleted = 0",
             params![moment_id],
-            moment_record,
+            map_moment,
         )
         .optional()?;
     Ok(row)
@@ -560,7 +560,7 @@ pub(in crate::domain) fn album_page(
                AND m.seq < ?3
              ORDER BY m.seq DESC LIMIT ?4";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![viewer, author, upper, limit], moment_record)?;
+    let rows = stmt.query_map(params![viewer, author, upper, limit], map_moment)?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
@@ -588,6 +588,6 @@ pub(in crate::domain) fn feed_page(
                AND m.seq < ?2
              ORDER BY m.seq DESC LIMIT ?3";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![me, upper, limit], moment_record)?;
+    let rows = stmt.query_map(params![me, upper, limit], map_moment)?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
