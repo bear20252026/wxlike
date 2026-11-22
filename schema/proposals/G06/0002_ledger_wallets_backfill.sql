@@ -60,6 +60,22 @@ CREATE TABLE IF NOT EXISTS migration_ledger (
 CREATE INDEX IF NOT EXISTS idx_migration_ledger_user
     ON migration_ledger(user_id, id);
 
+-- `CREATE TABLE IF NOT EXISTS` 不会给已存在的旧 staging 表补 CHECK；
+-- 早期试跑过的库可能没有 kind 约束，这里幂等补上，避免导入未知 kind。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'migration_ledger_kind_check'
+          AND conrelid = 'migration_ledger'::regclass
+    ) THEN
+        ALTER TABLE migration_ledger
+            ADD CONSTRAINT migration_ledger_kind_check
+            CHECK (kind IN ('fund_in', 'transfer_in', 'transfer_out',
+                            'redpacket_out', 'redpacket_in', 'redpacket_refund'));
+    END IF;
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- 2. 余额展示：实时聚合视图（不建物化表）
 -- ---------------------------------------------------------------------------

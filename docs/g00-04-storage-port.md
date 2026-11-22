@@ -138,7 +138,9 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 - `db/schema.rs` 未改一字节，仅由 `storage.rs` 用 `#[path = "db/schema.rs"]` 引用
   （G00-02 的纯移动产物随迁移链一起归位）。
 
-## 6. 自检（本机）
+## 6. 自检与 CI
+
+本轮起本地不再编译 Rust；构建、clippy、workspace check 与 PostgreSQL 作业全部交给 GitHub Actions。下表保留上一轮已完成的本地结果作为历史证据，后续以 `pg-migration` / `test` / `clippy` 的 CI 结果为准。
 
 | 检查 | 结果 |
 |---|---|

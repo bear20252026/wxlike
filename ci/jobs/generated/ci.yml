@@ -290,6 +290,14 @@ jobs:
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
     - name: M011-M013 兼容层与回填断言
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_compat.sql
+    - name: M013 导入器全链路（SQLite → COPY → CALL）
+      run: bash ci/jobs/build/pg_import_smoke.sh
+    - name: 备份/恢复演练（pg_dump → pg_restore → 断言）
+      env:
+        ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wxlike_restore
+        RESTORE_DB: wxlike_restore
+      run: bash ci/jobs/build/pg_restore_drill.sh
     - name: toolchain
       shell: bash
       run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal

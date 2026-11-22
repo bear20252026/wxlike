@@ -29,7 +29,7 @@
       "check": "server",
       "status": "open",
       "blocks_release": false,
-      "evidence": "Server still opens SQLite; the 51 legacy repo functions and Db::lock() are not cut over to PostgreSQL. S1/S2 已落（#460/#462，2026-11-21）：pg-migration 作业在真实 PostgreSQL 16 上执行 M010/M011/M012/M013 DDL 并各连跑两次验幂等；M010 断言 26 张表 / 5 触发器 / 4 函数与四张不可变表的 UPDATE/DELETE 拒绝；M011-M013 断言 identity/media 兼容视图写入、M013 分批回填、wallet_balances 聚合与二次 CALL 幂等。M011 身份兼容、M012 media 视图、M013 钱包/账本回填已登记；PostgresUsersRepo/PostgresSessionsRepo 已用 sqlx 实现并通过真实 PG16 测试。未做：Db 的 PG profile、51 个旧 repo 函数切 PG、SQLite→PG 全量数据导入、restore drill。",
+      "evidence": "Server still opens SQLite; the 51 legacy repo functions and Db::lock() are not cut over to PostgreSQL. S1/S2 已落（#460/#462，2026-11-21）：pg-migration 作业在真实 PostgreSQL 16 上执行 M010/M011/M012/M013 DDL 并各连跑两次验幂等；M010 断言 26 张表 / 5 触发器 / 4 函数与四张不可变表的 UPDATE/DELETE 拒绝；M011-M013 断言 identity/media 兼容视图写入、M013 分批回填、wallet_balances 聚合与二次 CALL 幂等。M011 身份兼容、M012 media 视图、M013 钱包/账本回填已登记；PostgresUsersRepo/PostgresSessionsRepo 已用 sqlx 实现并通过真实 PG16 测试。未做：Db 的 PG profile、51 个旧 repo 函数切 PG、SQLite→PG 全量数据导入。备份/恢复演练脚本（pg_dump → pg_restore → 同一组断言）与 M013 导入器全链路已接入 pg-migration CI 作业（尚未在 GitHub 实跑）。",
       "close_when": "G00-04 lands PG profile and the restore drill runs against PostgreSQL."
     },
     {
