@@ -102,6 +102,52 @@ impl UsersRepo for SqliteUsersRepo<'_> {
             .optional()?)
     }
 
+    fn active_exists(&self, user_id: &str) -> Result<bool> {
+        let exists = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM users WHERE id = ?1 AND deleted_at IS NULL",
+                params![user_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok(exists)
+    }
+
+    fn update_profile(
+        &self,
+        user_id: &str,
+        name: Option<&str>,
+        avatar: Option<&str>,
+        signature: Option<&str>,
+    ) -> Result<usize> {
+        // 三条 UPDATE 必须同事务：旧实现逐字段写，`signature` 校验失败会
+        // 留下已经改掉的 `name`。这里把原子性收进仓储层，domain 只负责校验。
+        let tx = self.conn.unchecked_transaction()?;
+        let mut changed = 0;
+        if let Some(name) = name {
+            changed += tx.execute(
+                "UPDATE users SET name = ?1 WHERE id = ?2",
+                params![name, user_id],
+            )?;
+        }
+        if let Some(avatar) = avatar {
+            changed += tx.execute(
+                "UPDATE users SET avatar = ?1 WHERE id = ?2",
+                params![avatar, user_id],
+            )?;
+        }
+        if let Some(signature) = signature {
+            changed += tx.execute(
+                "UPDATE users SET signature = ?1 WHERE id = ?2",
+                params![signature, user_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     fn insert(&self, user: &NewUser<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, pw_algo, avatar, signature, created_at)
@@ -155,6 +201,30 @@ impl UsersRepo for SqliteUsersRepo<'_> {
              WHERE id = ?1",
             params![user_id, phc],
         )?)
+    }
+
+    fn totp_secret(&self, user_id: &str) -> Result<Option<String>> {
+        let secret: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT totp_secret FROM users WHERE id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(secret.flatten())
+    }
+
+    fn totp_enabled(&self, user_id: &str) -> Result<bool> {
+        let enabled: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT totp_enabled FROM users WHERE id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(enabled.map(|v| v != 0).unwrap_or(false))
     }
 
     fn set_totp_secret(&self, user_id: &str, secret: &str) -> Result<usize> {
@@ -259,6 +329,65 @@ impl UsersRepo for PostgresUsersRepo<'_> {
         }))
     }
 
+    fn active_exists(&self, user_id: &str) -> Result<bool> {
+        let row = self
+            .pg
+            .block_on(
+                sqlx::query_scalar::<_, i32>(
+                    "SELECT 1 FROM identity_user WHERE user_id = $1 AND deleted_at IS NULL",
+                )
+                .bind(user_id)
+                .fetch_optional(self.pg.pool()),
+            )
+            .map_err(pg_error)?;
+        Ok(row.is_some())
+    }
+
+    fn update_profile(
+        &self,
+        user_id: &str,
+        name: Option<&str>,
+        avatar: Option<&str>,
+        signature: Option<&str>,
+    ) -> Result<usize> {
+        let changed = self
+            .pg
+            .block_on(async {
+                let mut tx = self.pg.pool().begin().await?;
+                let mut changed = 0u64;
+                if let Some(name) = name {
+                    changed += sqlx::query("UPDATE identity_user SET name = $1 WHERE user_id = $2")
+                        .bind(name)
+                        .bind(user_id)
+                        .execute(&mut *tx)
+                        .await?
+                        .rows_affected();
+                }
+                if let Some(avatar) = avatar {
+                    changed +=
+                        sqlx::query("UPDATE identity_user SET avatar = $1 WHERE user_id = $2")
+                            .bind(avatar)
+                            .bind(user_id)
+                            .execute(&mut *tx)
+                            .await?
+                            .rows_affected();
+                }
+                if let Some(signature) = signature {
+                    changed +=
+                        sqlx::query("UPDATE identity_user SET signature = $1 WHERE user_id = $2")
+                            .bind(signature)
+                            .bind(user_id)
+                            .execute(&mut *tx)
+                            .await?
+                            .rows_affected();
+                }
+                tx.commit().await?;
+                Ok::<u64, sqlx::Error>(changed)
+            })
+            .map_err(pg_error)?;
+        Ok(changed as usize)
+    }
+
     fn insert(&self, user: &NewUser<'_>) -> Result<()> {
         self.pg
             .block_on(
@@ -355,6 +484,34 @@ impl UsersRepo for PostgresUsersRepo<'_> {
         Ok(result.rows_affected() as usize)
     }
 
+    fn totp_secret(&self, user_id: &str) -> Result<Option<String>> {
+        let secret: Option<Option<String>> = self
+            .pg
+            .block_on(
+                sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT totp_secret FROM identity_user WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .fetch_optional(self.pg.pool()),
+            )
+            .map_err(pg_error)?;
+        Ok(secret.flatten())
+    }
+
+    fn totp_enabled(&self, user_id: &str) -> Result<bool> {
+        let enabled: Option<i32> = self
+            .pg
+            .block_on(
+                sqlx::query_scalar::<_, i32>(
+                    "SELECT totp_enabled FROM identity_user WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .fetch_optional(self.pg.pool()),
+            )
+            .map_err(pg_error)?;
+        Ok(enabled.map(|v| v != 0).unwrap_or(false))
+    }
+
     fn set_totp_secret(&self, user_id: &str, secret: &str) -> Result<usize> {
         let result = self
             .pg
@@ -434,14 +591,29 @@ mod tests {
             "u1"
         );
         assert_eq!(repo.load_profile("u1").unwrap().unwrap().name, "alice");
+        assert!(repo.active_exists("u1").unwrap());
 
         assert_eq!(repo.update_name("u1", "alice2").unwrap(), 1);
         assert_eq!(repo.update_avatar("u1", "a.png").unwrap(), 1);
         assert_eq!(repo.update_signature("u1", "sig").unwrap(), 1);
-        assert_eq!(repo.load_profile("u1").unwrap().unwrap().name, "alice2");
+        assert_eq!(
+            repo.update_profile("u1", Some("alice3"), Some("a2.png"), Some("sig2"))
+                .unwrap(),
+            3
+        );
+        assert_eq!(repo.load_profile("u1").unwrap().unwrap().name, "alice3");
+
+        assert_eq!(repo.set_totp_secret("u1", "sec").unwrap(), 1);
+        assert_eq!(repo.totp_secret("u1").unwrap().as_deref(), Some("sec"));
+        assert!(!repo.totp_enabled("u1").unwrap());
+        assert_eq!(repo.enable_totp("u1").unwrap(), 1);
+        assert!(repo.totp_enabled("u1").unwrap());
+        assert_eq!(repo.disable_totp("u1").unwrap(), 1);
+        assert!(repo.totp_secret("u1").unwrap().is_none());
 
         assert_eq!(repo.mark_deleted("u1", 99).unwrap(), 1);
-        assert!(repo.load_credentials("alice2").unwrap().is_none());
+        assert!(!repo.active_exists("u1").unwrap());
+        assert!(repo.load_credentials("alice3").unwrap().is_none());
         assert_eq!(
             repo.find_id_by_name("alice2", false, None).unwrap(),
             None,

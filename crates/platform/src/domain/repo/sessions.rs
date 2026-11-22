@@ -74,6 +74,18 @@ impl SessionsRepo for SqliteSessionsRepo<'_> {
         Ok(sid.flatten())
     }
 
+    fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>> {
+        let name: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT device_name FROM sessions WHERE sid = ?1",
+                params![sid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(name.filter(|v| !v.is_empty()))
+    }
+
     fn list_for_user(&self, user_id: &str, now: i64) -> Result<Vec<SessionRecord>> {
         self.conn.execute(
             "DELETE FROM sessions WHERE user_id = ?1 AND expires_at <= ?2",
@@ -254,6 +266,20 @@ impl SessionsRepo for PostgresSessionsRepo<'_> {
             )
             .map_err(pg_error)?;
         Ok(sid.flatten())
+    }
+
+    fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>> {
+        let name: Option<String> = self
+            .pg
+            .block_on(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT device_name FROM identity_session_token WHERE sid = $1",
+                )
+                .bind(sid)
+                .fetch_optional(self.pg.pool()),
+            )
+            .map_err(pg_error)?;
+        Ok(name.filter(|v| !v.is_empty()))
     }
 
     fn list_for_user(&self, user_id: &str, now: i64) -> Result<Vec<SessionRecord>> {
@@ -446,6 +472,10 @@ mod tests {
             Some("s1")
         );
         assert_eq!(repo.sid_by_token("t1").unwrap().as_deref(), Some("s1"));
+        assert_eq!(
+            repo.device_name_by_sid("s1").unwrap().as_deref(),
+            Some("phone")
+        );
         assert_eq!(repo.list_for_user(&user_id, 0).unwrap().len(), 1);
         assert_eq!(repo.touch("t1", 50).unwrap(), 1);
         assert_eq!(repo.find_by_token("t1").unwrap().unwrap().last_seen, 50);

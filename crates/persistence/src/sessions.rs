@@ -43,6 +43,10 @@ pub trait SessionsRepo {
 
     fn sid_by_token(&self, token: &str) -> Result<Option<String>, Self::Error>;
 
+    /// 按 sid 读设备展示名；刷新轮换时用来沿用旧会话的设备名。行不存在或
+    /// 设备名为空都返回 `None`，由调用方决定默认值。
+    fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>, Self::Error>;
+
     /// 该用户全部有效会话，最近活跃在前；顺手清掉过期行（与旧实现一致）。
     fn list_for_user(&self, user_id: &str, now: i64) -> Result<Vec<SessionRecord>, Self::Error>;
 

@@ -409,6 +409,8 @@ jobs:
         tool: typos-cli,cargo-deny,cargo-audit
     - name: C10 quality metrics (incremental, base+5 tolerance)
       run: python scripts/quality-gate.py --diff --slack 5
+    - name: C10 domain layer SQL ratchet
+      run: python ci/jobs/build/check_domain_sql.py
     - name: C10 typos
       run: typos
     - name: C10 advisory / ban / source policy

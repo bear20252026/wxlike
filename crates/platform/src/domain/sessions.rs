@@ -13,9 +13,9 @@
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::sessions`]。
 
+use crate::domain::repo::sessions::SqliteSessionsRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use wxlike_identity::refresh::{self, Rotated};
 use wxlike_identity::{step_up, Audience, IdError};
@@ -74,31 +74,24 @@ impl Platform {
     /// 该用户全部有效会话，最近活跃在前。过期行顺手清掉。
     pub fn sessions_of(&self, user_id: &str, current_token: &str) -> Result<Vec<SessionRow>> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
-        c.execute(
-            "DELETE FROM sessions WHERE user_id = ?1 AND expires_at <= ?2",
-            params![user_id, now],
-        )?;
-        let mut stmt = c.prepare(
-            "SELECT sid, device_id, device_name, ip, created_at, last_seen, token
-             FROM sessions WHERE user_id = ?1 ORDER BY last_seen DESC, created_at DESC",
-        )?;
-        let rows = stmt
-            .query_map(params![user_id], |r| {
-                let token: String = r.get(6)?;
-                Ok(SessionRow {
-                    sid: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                    device_id: r.get(1)?,
-                    device_name: r.get(2)?,
-                    ip: r.get(3)?,
-                    created_at: r.get(4)?,
-                    last_seen: r.get(5)?,
-                    // 列里是摘要（AR-3/H-2），比对也要用摘要
-                    current: token == crate::auth::token_digest(current_token),
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        let digest = crate::auth::token_digest(current_token);
+        let records = {
+            let c = self.db().lock();
+            SqliteSessionsRepo::new(&c).list_for_user(user_id, now)?
+        };
+        Ok(records
+            .into_iter()
+            .map(|r| SessionRow {
+                sid: r.sid.unwrap_or_default(),
+                device_id: r.device_id,
+                device_name: r.device_name,
+                ip: r.ip,
+                created_at: r.created_at,
+                last_seen: r.last_seen,
+                // 列里是摘要（AR-3/H-2），比对也要用摘要
+                current: r.token == digest,
+            })
+            .collect())
     }
 
     /// 按 sid 下线一台设备。返回是否命中（不存在/已过期 → false，不报错，
@@ -108,10 +101,7 @@ impl Platform {
             return Err(PlatformError::BadInput("sid malformed"));
         }
         let c = self.db().lock();
-        let n = c.execute(
-            "DELETE FROM sessions WHERE user_id = ?1 AND sid = ?2",
-            params![user_id, sid],
-        )?;
+        let n = SqliteSessionsRepo::new(&c).revoke_by_sid(user_id, sid)?;
         Ok(n > 0)
     }
 
@@ -120,24 +110,15 @@ impl Platform {
         // keep 参数同样要以摘要比对，否则会把当前会话一并删掉（AR-3/H-2）
         let keep = crate::auth::token_digest(keep_token);
         let c = self.db().lock();
-        let n = c.execute(
-            "DELETE FROM sessions WHERE user_id = ?1 AND token <> ?2",
-            params![user_id, keep],
-        )?;
+        let n = SqliteSessionsRepo::new(&c).revoke_others(user_id, &keep)?;
         Ok(n)
     }
 
     /// 会话的 `sid`（刷新链按 sid 归组）。
     pub fn session_sid(&self, token: &str) -> Result<Option<String>> {
+        let digest = crate::auth::token_digest(token);
         let c = self.db().lock();
-        let sid: Option<Option<String>> = c
-            .query_row(
-                "SELECT sid FROM sessions WHERE token = ?1",
-                params![crate::auth::token_digest(token)],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(sid.flatten())
+        Ok(SqliteSessionsRepo::new(&c).sid_by_token(&digest)?)
     }
 
     /// 登录成功后签发首枚刷新令牌（与访问会话同 sid，便于一起撤销）。
@@ -163,13 +144,8 @@ impl Platform {
         let device_name = {
             let c = self.db().lock();
             match refresh::find(&c, raw)? {
-                Some(chain) => c
-                    .query_row(
-                        "SELECT device_name FROM sessions WHERE sid = ?1",
-                        params![chain.sid],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?
+                Some(chain) => SqliteSessionsRepo::new(&c)
+                    .device_name_by_sid(&chain.sid)?
                     .unwrap_or_default(),
                 None => String::new(),
             }
@@ -188,14 +164,9 @@ impl Platform {
         // 新会话沿用链上的 sid：同一台设备只有一个 sid，撤销时一并失效。
         let digest = crate::auth::token_digest(&token);
         let c = self.db().lock();
-        c.execute(
-            "UPDATE sessions SET sid = ?2 WHERE token = ?1",
-            params![digest, rotated.sid],
-        )?;
-        c.execute(
-            "DELETE FROM sessions WHERE sid = ?1 AND token <> ?2",
-            params![rotated.sid, digest],
-        )?;
+        let repo = SqliteSessionsRepo::new(&c);
+        repo.update_sid(&digest, &rotated.sid)?;
+        repo.delete_by_sid_except_token(&rotated.sid, &digest)?;
         Ok((rotated, token))
     }
 
@@ -221,10 +192,7 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let n = c.execute(
-            "DELETE FROM sessions WHERE user_id = ?1 AND device_id = ?2",
-            params![user_id, device_id],
-        )?;
+        let n = SqliteSessionsRepo::new(&c).delete_by_device(user_id, device_id)?;
         refresh::revoke_device(&c, user_id, device_id, now)?;
         Ok(n)
     }
@@ -239,11 +207,9 @@ impl Platform {
     /// 记录活跃时间（登录、设备页访问、关键操作时调用）。
     pub fn touch_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
+        let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        c.execute(
-            "UPDATE sessions SET last_seen = ?2 WHERE token = ?1",
-            params![token, wxlike_core::types::now_ms() as i64],
-        )?;
+        SqliteSessionsRepo::new(&c).touch(&token, now)?;
         Ok(())
     }
 }

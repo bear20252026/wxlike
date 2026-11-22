@@ -8,10 +8,11 @@
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::users`]。
 
 use crate::auth::{self};
+use crate::domain::repo::users::SqliteUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::{Platform, PlatformState};
-use rusqlite::{params, OptionalExtension as _};
+use wxlike_persistence::NewUser;
 
 impl Credentials {
     pub(crate) fn captcha(&self) -> Option<(&str, &str)> {
@@ -141,28 +142,31 @@ impl Platform {
         let phc = super::security::hash_argon2id(password)?;
         let user_id = auth::random_hex(8);
         let now = wxlike_core::types::now_ms();
-        let c = self.db().lock();
-        let taken: Option<String> = c
-            .query_row("SELECT id FROM users WHERE name = ?1", params![name], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?;
-        if taken.is_some() {
-            return Err(PlatformError::Conflict("name".into()));
-        }
-        c.execute(
-            "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, pw_algo, avatar, signature, created_at)
-             VALUES(?1, ?2, '', ?3, 0, 'argon2id', '', '', ?4)",
-            params![user_id, name, phc, now as i64],
-        )
-        .map_err(|e| {
-            if is_unique_violation(&e) {
-                PlatformError::Conflict("name".into())
-            } else {
-                PlatformError::Sqlite(e)
+        {
+            let c = self.db().lock();
+            let repo = SqliteUsersRepo::new(&c);
+            if repo.find_id_by_name(name, true, None)?.is_some() {
+                return Err(PlatformError::Conflict("name".into()));
             }
-        })?;
-        drop(c); // audit re-locks the same non-reentrant mutex
+            repo.insert(&NewUser {
+                id: user_id.as_str(),
+                name,
+                pw_salt: "",
+                pw_hash: phc.as_str(),
+                pw_rounds: 0,
+                pw_algo: "argon2id",
+                avatar: "",
+                signature: "",
+                created_at: now as i64,
+            })
+            .map_err(|e| match e {
+                PlatformError::Sqlite(err) if is_unique_violation(&err) => {
+                    PlatformError::Conflict("name".into())
+                }
+                other => other,
+            })?;
+        }
+        // 审计会重新锁同一个非重入 mutex，所以连接守卫已经在上面的块里释放。
         self.audit(&user_id, "user.register", &user_id, "");
         Ok(user_id)
     }
@@ -173,69 +177,51 @@ impl Platform {
     /// 透明升级到 argon2id（用户无感）。
     pub fn verify_credentials(&self, name: &str, password: &str) -> Result<Option<String>> {
         let name = validate::name(name)?;
-        let row: Option<(String, String, String, i64, String)> = {
+        let creds = {
             let c = self.db().lock();
-            c.query_row(
-                // 已注销的账号在这里直接"不存在"：口令校验返回 None，登录回
-                // 401 invalid credentials——既不泄露"这个号注销过"，也不给
-                // 任何凭据换回会话的机会（#114）。
-                "SELECT id, pw_salt, pw_hash, pw_rounds, pw_algo
-                 FROM users WHERE name = ?1 AND deleted_at IS NULL",
-                params![name],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()?
+            SqliteUsersRepo::new(&c).load_credentials(name)?
         };
-        let Some((user_id, salt, hash, rounds, algo)) = row else {
+        let Some(creds) = creds else {
             return Ok(None);
         };
-        let ok = match algo.as_str() {
-            "argon2id" => super::security::verify_argon2id(password, &hash),
+        // 已注销的账号在端口里已经变成“不存在”：口令校验返回 None，登录回
+        // 401 invalid credentials——既不泄露“这个号注销过”，也不给任何凭据
+        // 换回会话的机会（#114）。
+        let ok = match creds.pw_algo.as_str() {
+            "argon2id" => super::security::verify_argon2id(password, &creds.pw_hash),
             _ => {
-                let rounds = if rounds <= 0 {
+                let rounds = if creds.pw_rounds <= 0 {
                     auth::DEFAULT_ROUNDS
                 } else {
-                    rounds as u32
+                    creds.pw_rounds as u32
                 };
-                auth::verify_password(password, &salt, &hash, rounds)?
+                auth::verify_password(password, &creds.pw_salt, &creds.pw_hash, rounds)?
             }
         };
         if !ok {
             return Ok(None);
         }
         // 透明升级：老算法成功一次即重哈希（失败不阻断登录）
-        if algo != "argon2id" {
-            if let Err(err) = self.upgrade_password_to_argon2id(&user_id, password) {
-                tracing::warn!(user = %user_id, "argon2 upgrade failed: {err}");
+        if creds.pw_algo != "argon2id" {
+            if let Err(err) = self.upgrade_password_to_argon2id(&creds.user_id, password) {
+                tracing::warn!(user = %creds.user_id, "argon2 upgrade failed: {err}");
             }
         }
-        Ok(Some(user_id))
+        Ok(Some(creds.user_id))
     }
 
     pub fn profile_of(&self, user_id: &str) -> Result<Profile> {
-        let c = self.db().lock();
-        c.query_row(
-            "SELECT name, avatar, signature FROM users WHERE id = ?1",
-            params![user_id],
-            |r| {
-                Ok(Profile {
-                    user_id: user_id.to_string(),
-                    name: r.get(0)?,
-                    avatar: r.get(1)?,
-                    signature: r.get(2)?,
-                })
-            },
-        )
-        .optional()?
-        .ok_or(PlatformError::NotFound)
+        let row = {
+            let c = self.db().lock();
+            SqliteUsersRepo::new(&c).load_profile(user_id)?
+        };
+        let row = row.ok_or(PlatformError::NotFound)?;
+        Ok(Profile {
+            user_id: user_id.to_string(),
+            name: row.name,
+            avatar: row.avatar,
+            signature: row.signature,
+        })
     }
 
     /// Applies only the fields present in the patch.
@@ -248,61 +234,32 @@ impl Platform {
     ///   畸形时 `name` 已经落库——一次"参数错误"的失败请求留下半套资料；
     /// * 重名检查跳过已注销行，与 `verify_credentials` 的口径一致。
     pub fn update_profile(&self, user_id: &str, patch: &ProfilePatch) -> Result<Profile> {
-        let c = self.db().lock();
-        let exists: Option<String> = c
-            .query_row(
-                "SELECT id FROM users WHERE id = ?1 AND deleted_at IS NULL",
-                params![user_id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            return Err(PlatformError::NotFound);
-        }
-        let name = patch.name.as_ref().map(|v| validate::name(v)).transpose()?;
-        let avatar = patch
-            .avatar
-            .as_ref()
-            .map(|v| validate::avatar(v))
-            .transpose()?;
-        let signature = patch
-            .signature
-            .as_ref()
-            .map(|v| validate::signature(v))
-            .transpose()?;
-        if let Some(name) = &name {
-            let taken: Option<String> = c
-                .query_row(
-                    "SELECT id FROM users WHERE name = ?1 AND id <> ?2 AND deleted_at IS NULL",
-                    params![name, user_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?;
-            if taken.is_some() {
-                return Err(PlatformError::Conflict("name".into()));
+        {
+            let c = self.db().lock();
+            let repo = SqliteUsersRepo::new(&c);
+            if !repo.active_exists(user_id)? {
+                return Err(PlatformError::NotFound);
             }
+            let name = patch.name.as_ref().map(|v| validate::name(v)).transpose()?;
+            let avatar = patch
+                .avatar
+                .as_ref()
+                .map(|v| validate::avatar(v))
+                .transpose()?;
+            let signature = patch
+                .signature
+                .as_ref()
+                .map(|v| validate::signature(v))
+                .transpose()?;
+            if let Some(name) = name {
+                if repo.find_id_by_name(name, false, Some(user_id))?.is_some() {
+                    return Err(PlatformError::Conflict("name".into()));
+                }
+            }
+            // 先验完再写：仓储层用一个事务写三条 UPDATE，避免畸形 signature
+            // 留下已经改掉的 name。
+            repo.update_profile(user_id, name, avatar, signature)?;
         }
-        let tx = c.unchecked_transaction()?;
-        if let Some(name) = &name {
-            tx.execute(
-                "UPDATE users SET name = ?1 WHERE id = ?2",
-                params![name, user_id],
-            )?;
-        }
-        if let Some(avatar) = &avatar {
-            tx.execute(
-                "UPDATE users SET avatar = ?1 WHERE id = ?2",
-                params![avatar, user_id],
-            )?;
-        }
-        if let Some(signature) = &signature {
-            tx.execute(
-                "UPDATE users SET signature = ?1 WHERE id = ?2",
-                params![signature, user_id],
-            )?;
-        }
-        tx.commit()?;
-        drop(c);
         self.profile_of(user_id)
     }
 }

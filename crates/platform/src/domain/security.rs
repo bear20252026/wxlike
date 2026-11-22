@@ -17,8 +17,8 @@
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rusqlite::{params, OptionalExtension as _};
 
+use crate::domain::repo::users::SqliteUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
 
@@ -72,35 +72,19 @@ impl Platform {
     /// 登录成功的透明升级：PBKDF2 → argon2id。
     pub(crate) fn upgrade_password_to_argon2id(&self, user_id: &str, password: &str) -> Result<()> {
         let phc = hash_argon2id(password)?;
-        self.db().lock().execute(
-            "UPDATE users SET pw_algo = 'argon2id', pw_salt = '', pw_hash = ?2, pw_rounds = 0
-             WHERE id = ?1",
-            params![user_id, phc],
-        )?;
+        let c = self.db().lock();
+        SqliteUsersRepo::new(&c).update_password_hash(user_id, &phc)?;
         Ok(())
     }
 
     pub fn totp_secret_of(&self, user_id: &str) -> Result<Option<String>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT totp_secret FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .optional()?
-        .flatten())
+        Ok(SqliteUsersRepo::new(&c).totp_secret(user_id)?)
     }
 
     pub fn totp_enabled(&self, user_id: &str) -> Result<bool> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT totp_enabled FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .map(|v| v != 0)
-        .unwrap_or(false))
+        Ok(SqliteUsersRepo::new(&c).totp_enabled(user_id)?)
     }
 
     /// 生成（或重生成）TOTP 密钥；未确认前不改变 `totp_enabled`。
@@ -110,10 +94,8 @@ impl Platform {
         if secret.len() > TOTP_SECRET_MAX {
             return Err(PlatformError::BadInput("secret too long"));
         }
-        self.db().lock().execute(
-            "UPDATE users SET totp_secret = ?2, totp_enabled = 0 WHERE id = ?1",
-            params![user_id, secret],
-        )?;
+        let c = self.db().lock();
+        SqliteUsersRepo::new(&c).set_totp_secret(user_id, &secret)?;
         Ok(secret)
     }
 
@@ -125,10 +107,8 @@ impl Platform {
         if !totp_verify(&secret, code) {
             return Err(PlatformError::BadInput("invalid code"));
         }
-        self.db().lock().execute(
-            "UPDATE users SET totp_enabled = 1 WHERE id = ?1",
-            params![user_id],
-        )?;
+        let c = self.db().lock();
+        SqliteUsersRepo::new(&c).enable_totp(user_id)?;
         Ok(())
     }
 
@@ -139,10 +119,8 @@ impl Platform {
         if !totp_verify(&secret, code) {
             return Err(PlatformError::Forbidden);
         }
-        self.db().lock().execute(
-            "UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?1",
-            params![user_id],
-        )?;
+        let c = self.db().lock();
+        SqliteUsersRepo::new(&c).disable_totp(user_id)?;
         Ok(())
     }
 

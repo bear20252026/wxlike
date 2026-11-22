@@ -53,6 +53,21 @@ pub trait UsersRepo {
 
     fn load_profile(&self, user_id: &str) -> Result<Option<UserProfileRow>, Self::Error>;
 
+    /// 账号是否存在且未注销。资料更新前的存在性检查必须和“已注销不可写”
+    /// 用同一口径，不能在 domain 里另写一条 SQL。
+    fn active_exists(&self, user_id: &str) -> Result<bool, Self::Error>;
+
+    /// 原子写资料补丁：只写 `Some` 字段；任一字段失败整批回滚。
+    ///
+    /// `None` 表示“不修改该字段”，空字符串是合法值，不能被当成不修改。
+    fn update_profile(
+        &self,
+        user_id: &str,
+        name: Option<&str>,
+        avatar: Option<&str>,
+        signature: Option<&str>,
+    ) -> Result<usize, Self::Error>;
+
     fn insert(&self, user: &NewUser<'_>) -> Result<(), Self::Error>;
 
     fn update_name(&self, user_id: &str, name: &str) -> Result<usize, Self::Error>;
@@ -64,6 +79,12 @@ pub trait UsersRepo {
     fn mark_deleted(&self, user_id: &str, deleted_at: i64) -> Result<usize, Self::Error>;
 
     fn update_password_hash(&self, user_id: &str, phc: &str) -> Result<usize, Self::Error>;
+
+    /// 读取 TOTP 密钥；行不存在或未配置都返回 `None`。是否启用由
+    /// [`UsersRepo::totp_enabled`] 单独回答，避免把“没配”和“没启用”混在一起。
+    fn totp_secret(&self, user_id: &str) -> Result<Option<String>, Self::Error>;
+
+    fn totp_enabled(&self, user_id: &str) -> Result<bool, Self::Error>;
 
     fn set_totp_secret(&self, user_id: &str, secret: &str) -> Result<usize, Self::Error>;
 
