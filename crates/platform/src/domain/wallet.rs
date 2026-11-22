@@ -348,7 +348,7 @@ impl Platform {
 
         // P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片
         // （不占时间线、不占序列号——不变式 3）。未带 conv 的包没有卡片，跳过。
-        if let Some(conv) = conv.filter(|s| !s.is_empty()) {
+        if !conv.is_empty() {
             self.notify_redpacket_claim(
                 &id,
                 &conv,
