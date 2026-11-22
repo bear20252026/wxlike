@@ -1,5 +1,5 @@
 {
-  "total": 131,
+  "total": 117,
   "files": {
     "content_index.rs": 5,
     "devices.rs": 3,
@@ -18,7 +18,6 @@
     "relations.rs": 13,
     "report.rs": 5,
     "secret.rs": 5,
-    "status.rs": 14,
     "stickers.rs": 12,
     "trust.rs": 5
   }

@@ -16,11 +16,15 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::{Platform, PlatformState};
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use wxlike_core::tx::ConnectionTx as _;
 
-use super::repo::status::{check_media, clear_owner, insert_status_indexed, status_row};
+use super::repo::status::{
+    background_draft, check_media, clear_owner, delete_background, delete_background_draft,
+    expired_statuses, friend_ids_for, insert_status_indexed, mark_cleared, mark_expired,
+    reaction_count, status_meta, status_owner, status_row, toggle_reaction,
+    upsert_background_draft, visible_status_ids,
+};
 
 /// 微信语义：24 小时。客户端不能把它改长。
 pub const STATUS_TTL_MS: i64 = 24 * 60 * 60 * 1000;
@@ -63,9 +67,7 @@ impl Platform {
     /// 好友 id 列表（状态变更事件的收件人集合）。
     pub fn friend_ids(&self, user: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare("SELECT friend_id FROM friends WHERE user_id = ?1")?;
-        let it = stmt.query_map(params![user], |r| r.get::<_, String>(0))?;
-        Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+        friend_ids_for(&c, user)
     }
 
     /// 设置状态。同一用户旧的活跃状态在**同一事务**里被清掉（含索引与
@@ -90,10 +92,7 @@ impl Platform {
             clear_owner(tx, &owner, now)?;
             if !background.is_empty() {
                 // 背景草稿被用掉了；清掉引用，不留下一个“未使用”的草稿。
-                tx.execute(
-                    "DELETE FROM status_background_drafts WHERE owner = ?1 AND media_id = ?2",
-                    params![owner, background],
-                )?;
+                delete_background_draft(tx, &owner, &background)?;
             }
             insert_status_indexed(
                 tx,
@@ -118,11 +117,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            let changed = tx.execute(
-                "UPDATE statuses SET cleared_at = ?1, updated_at = ?1
-                 WHERE id = ?2 AND owner = ?3 AND cleared_at IS NULL",
-                params![now, id, owner],
-            )?;
+            let changed = mark_cleared(tx, id, owner, now)?;
             crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
@@ -142,22 +137,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let ids: Vec<String> = {
             let c = self.db().lock();
-            let mut stmt = c.prepare(
-                "SELECT s.id FROM statuses s
-                 WHERE s.cleared_at IS NULL AND s.expires_at > ?2
-                   AND (s.owner = ?1
-                        OR (s.owner IN (SELECT friend_id FROM friends WHERE user_id = ?1)
-                            AND s.audience <> 'private'
-                            AND NOT EXISTS (SELECT 1 FROM blocks b
-                                 WHERE (b.user_id = ?1 AND b.blocked_id = s.owner)
-                                    OR (b.user_id = s.owner AND b.blocked_id = ?1))))
-                   AND s.rowid = (SELECT MAX(s2.rowid) FROM statuses s2
-                                  WHERE s2.owner = s.owner AND s2.cleared_at IS NULL
-                                    AND s2.expires_at > ?2)
-                 ORDER BY s.updated_at DESC",
-            )?;
-            let it = stmt.query_map(params![viewer, now], |r| r.get::<_, String>(0))?;
-            it.collect::<std::result::Result<Vec<_>, _>>()?
+            visible_status_ids(&c, viewer, now)?
         };
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -171,30 +151,25 @@ impl Platform {
     }
 
     pub fn status_visible(&self, viewer: &str, id: &str) -> Result<bool> {
-        let row: Option<(String, String, i64, Option<i64>)> = {
+        let meta = {
             let c = self.db().lock();
-            c.query_row(
-                "SELECT owner, audience, expires_at, cleared_at FROM statuses WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?
+            status_meta(&c, id)?
         };
-        let Some((owner, audience, expires_at, cleared_at)) = row else {
+        let Some(meta) = meta else {
             return Ok(false);
         };
-        if cleared_at.is_some() || expires_at <= wxlike_core::types::now_ms() as i64 {
+        if meta.cleared_at.is_some() || meta.expires_at <= wxlike_core::types::now_ms() as i64 {
             return Ok(false);
         }
-        if owner == viewer {
+        if meta.owner == viewer {
             return Ok(true);
         }
-        if self.is_blocked(viewer, &owner)? || self.is_blocked(&owner, viewer)? {
+        if self.is_blocked(viewer, &meta.owner)? || self.is_blocked(&meta.owner, viewer)? {
             return Ok(false);
         }
-        match audience.as_str() {
+        match meta.audience.as_str() {
             "public" => Ok(true),
-            "friends" => self.are_friends(&owner, viewer),
+            "friends" => self.are_friends(&meta.owner, viewer),
             _ => Ok(false),
         }
     }
@@ -216,28 +191,9 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<(bool, i64)> {
-            let removed = tx.execute(
-                "DELETE FROM status_reactions WHERE status_id = ?1 AND user_id = ?2",
-                params![id, user],
-            )?;
-            let active = if removed == 0 {
-                tx.execute(
-                    "INSERT INTO status_reactions(status_id, user_id, created_at) VALUES(?1, ?2, ?3)",
-                    params![id, user, now],
-                )?;
-                true
-            } else {
-                false
-            };
+            let active = toggle_reaction(tx, id, user, now)?;
             if active {
-                if let Some(owner) = tx
-                    .query_row(
-                        "SELECT owner FROM statuses WHERE id = ?1",
-                        params![id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?
-                {
+                if let Some(owner) = status_owner(tx, id)? {
                     crate::domain::repo::inbox::notify(
                         tx,
                         &owner,
@@ -251,11 +207,7 @@ impl Platform {
                     )?;
                 }
             }
-            let count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM status_reactions WHERE status_id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
+            let count = reaction_count(tx, id)?;
             Ok((active, count))
         })
     }
@@ -266,13 +218,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         check_media(&c, owner, &media_id, "image")?;
-        c.execute(
-            "INSERT INTO status_background_drafts(owner, media_id, updated_at)
-             VALUES(?1, ?2, ?3)
-             ON CONFLICT(owner) DO UPDATE SET media_id = excluded.media_id,
-                                              updated_at = excluded.updated_at",
-            params![owner, media_id, now],
-        )?;
+        upsert_background_draft(&c, owner, &media_id, now)?;
         Ok(BackgroundDraft {
             owner: owner.to_string(),
             media_id,
@@ -282,26 +228,12 @@ impl Platform {
 
     pub fn status_background(&self, owner: &str) -> Result<Option<BackgroundDraft>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT owner, media_id, updated_at FROM status_background_drafts WHERE owner = ?1",
-            params![owner],
-            |r| {
-                Ok(BackgroundDraft {
-                    owner: r.get(0)?,
-                    media_id: r.get(1)?,
-                    updated_at: r.get(2)?,
-                })
-            },
-        )
-        .optional()?)
+        background_draft(&c, owner)
     }
 
     pub fn remove_status_background(&self, owner: &str) -> Result<()> {
-        self.db().lock().execute(
-            "DELETE FROM status_background_drafts WHERE owner = ?1",
-            params![owner],
-        )?;
-        Ok(())
+        let c = self.db().lock();
+        delete_background(&c, owner)
     }
 
     /// 服务端到期清理：清可见性、删索引、撤收藏、留审计。返回清理条数。
@@ -311,21 +243,9 @@ impl Platform {
         let expired: Vec<(String, String)> = {
             let mut c = self.db().lock();
             c.with_tx(|tx| -> Result<Vec<(String, String)>> {
-                let mut stmt = tx.prepare(
-                    "SELECT id, owner FROM statuses
-                     WHERE cleared_at IS NULL AND expires_at <= ?1",
-                )?;
-                let rows = stmt
-                    .query_map(params![now], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                drop(stmt);
+                let rows = expired_statuses(tx, now)?;
                 for (id, _) in &rows {
-                    tx.execute(
-                        "UPDATE statuses SET cleared_at = ?1 WHERE id = ?2 AND cleared_at IS NULL",
-                        params![now, id],
-                    )?;
+                    mark_expired(tx, id, now)?;
                     crate::domain::repo::content_index::remove(tx, id)?;
                     crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
                     crate::domain::repo::favorites::revoke_source(tx, "status", id)?;
