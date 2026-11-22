@@ -144,7 +144,7 @@ impl Platform {
                 return Err(PlatformError::NotFound);
             }
         }
-        insert_group(&c, &id, &name, &owner, now)?;
+        insert_group(&c, &id, name, &owner, now)?;
         insert_member(&c, &id, &owner, ROLE_OWNER, now)?;
         for m in &requested {
             insert_member(&c, &id, m, ROLE_MEMBER, now)?;

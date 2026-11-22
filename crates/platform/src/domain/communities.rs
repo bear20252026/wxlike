@@ -28,10 +28,24 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
-use super::repo::communities::row_channel;
+use super::repo::communities::{
+    channel_community as repo_channel_community, channel_ids as repo_channel_ids,
+    channel_kind as repo_channel_kind, channel_role_raw as repo_channel_role,
+    channel_roles_raw as repo_channel_roles_raw, community_member_ids as repo_community_member_ids,
+    community_members as repo_community_members, community_role as repo_community_role,
+    community_threads as repo_community_threads, create_community as repo_create_community,
+    delete_channel_role as repo_delete_channel_role, delete_thread_sub as repo_delete_thread_sub,
+    fetch_thread_messages as repo_fetch_thread_messages, insert_channel as repo_insert_channel,
+    insert_community_member as repo_insert_community_member, insert_thread as repo_insert_thread,
+    insert_thread_message as repo_insert_thread_message, join_limits as repo_join_limits,
+    list_channels as repo_list_channels, list_threads as repo_list_threads,
+    my_communities as repo_my_communities, thread_channel as repo_thread_channel,
+    thread_community as repo_thread_community, thread_fanout as repo_thread_fanout,
+    thread_subscribers as repo_thread_subscribers, upsert_channel_role as repo_upsert_channel_role,
+    upsert_thread_sub as repo_upsert_thread_sub,
+};
 
 /// TangSeng 借用的角色编号（0 成员 / 1 群主 / 2 管理员）。
 pub const ROLE_MEMBER: i64 = 0;
@@ -235,12 +249,7 @@ impl Platform {
 
     fn community_role(&self, community: &str, user: &str) -> Result<Option<i64>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT role FROM community_members WHERE community_id = ?1 AND user_id = ?2",
-            params![community, user],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?)
+        repo_community_role(&c, community, user)
     }
 
     pub(crate) fn require_member(&self, community: &str, user: &str) -> Result<i64> {
@@ -257,12 +266,7 @@ impl Platform {
 
     pub(crate) fn channel_community(&self, channel: &str) -> Result<Option<String>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT community_id FROM channels WHERE id = ?1",
-            params![channel],
-            |r| r.get(0),
-        )
-        .optional()?)
+        repo_channel_community(&c, channel)
     }
 
     /// 频道发送裁决：announce 型仅管理员/群主（Mattermost 广播频道语义）；
@@ -270,12 +274,7 @@ impl Platform {
     /// 频道类型（`text|announce|voice|live`）；不存在返回 `None`。
     pub(crate) fn channel_kind(&self, channel: &str) -> Result<Option<String>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT kind FROM channels WHERE id = ?1",
-            params![channel],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?)
+        repo_channel_kind(&c, channel)
     }
 
     pub fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
@@ -292,13 +291,7 @@ impl Platform {
     /// 频道专属的那一行；没有行 = 继承社区角色。
     fn channel_role_row(&self, channel: &str, user: &str) -> Result<Option<ChannelRole>> {
         let c = self.db().lock();
-        let stored: Option<String> = c
-            .query_row(
-                "SELECT role FROM channel_role WHERE channel_id = ?1 AND user_id = ?2",
-                params![channel, user],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
+        let stored = repo_channel_role(&c, channel, user)?;
         Ok(stored.and_then(|s| ChannelRole::parse(&s)))
     }
 
@@ -370,17 +363,9 @@ impl Platform {
         let owner = validate::id(owner)?;
         let member_limit = member_limit.clamp(2, 100_000);
         let id = crate::auth::random_hex(8);
-        self.db().lock().execute_batch(&format!(
-            "INSERT INTO communities(id, name, owner_uid, member_limit, tenant_id, created_at)
-             VALUES('{id}', '{}', '{owner}', {member_limit}, 'default', {});",
-            name.replace('\'', "''"),
-            wxlike_core::types::now_ms() as i64
-        ))?;
-        self.db().lock().execute(
-            "INSERT INTO community_members(community_id, user_id, role, joined_at)
-             VALUES(?1, ?2, ?3, ?4)",
-            params![id, owner, ROLE_OWNER, wxlike_core::types::now_ms() as i64],
-        )?;
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        repo_create_community(&c, &id, name, owner, member_limit, now)?;
         Ok(id)
     }
 
@@ -393,25 +378,18 @@ impl Platform {
         // 锁必须在 sync 之前放掉：sync 自己还要开一次锁，std Mutex 不可重入。
         {
             let c = self.db().lock();
-            let (limit, current): (i64, i64) = c.query_row(
-                "SELECT member_limit,
-                        (SELECT COUNT(*) FROM community_members WHERE community_id = ?1)
-                 FROM communities WHERE id = ?1",
-                params![community],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
+            let Some((limit, current)) = repo_join_limits(&c, community)? else {
+                return Err(PlatformError::NotFound);
+            };
             if current >= limit {
                 return Err(PlatformError::BadInput("community member limit reached"));
             }
-            c.execute(
-                "INSERT INTO community_members(community_id, user_id, role, joined_at)
-                 VALUES(?1, ?2, ?3, ?4)",
-                params![
-                    community,
-                    user,
-                    ROLE_MEMBER,
-                    wxlike_core::types::now_ms() as i64
-                ],
+            repo_insert_community_member(
+                &c,
+                community,
+                user,
+                ROLE_MEMBER,
+                wxlike_core::types::now_ms() as i64,
             )?;
         }
         self.sync_community_channels(community)?;
@@ -420,41 +398,13 @@ impl Platform {
 
     pub fn my_communities(&self, user: &str) -> Result<Vec<(CommunityRow, i64)>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT c.id, c.name, c.owner_uid, c.member_limit, c.announcement, c.tenant_id,
-                    c.created_at, m.role
-             FROM communities c JOIN community_members m
-               ON m.community_id = c.id AND m.user_id = ?1
-             ORDER BY c.created_at",
-        )?;
-        let rows = stmt.query_map(params![user], |r| {
-            Ok((
-                CommunityRow {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    owner_uid: r.get(2)?,
-                    member_limit: r.get(3)?,
-                    announcement: r.get(4)?,
-                    tenant_id: r.get(5)?,
-                    created_at: r.get(6)?,
-                },
-                r.get(7)?,
-            ))
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_my_communities(&c, user)
     }
 
     pub fn community_members(&self, community: &str, user: &str) -> Result<Vec<(String, i64)>> {
         self.require_member(community, user)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT user_id, role FROM community_members WHERE community_id = ?1
-             ORDER BY role DESC, joined_at",
-        )?;
-        let rows = stmt.query_map(params![community], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_community_members(&c, community)
     }
 
     // ---- 频道 ----
@@ -475,17 +425,16 @@ impl Platform {
             ));
         }
         let id = crate::auth::random_hex(8);
-        self.db().lock().execute(
-            "INSERT INTO channels(id, community_id, name, kind, tenant_id, created_at)
-             VALUES(?1, ?2, ?3, ?4, 'default', ?5)",
-            params![
-                id,
-                community,
-                name,
-                kind,
-                wxlike_core::types::now_ms() as i64
-            ],
+        let c = self.db().lock();
+        repo_insert_channel(
+            &c,
+            &id,
+            community,
+            name,
+            kind,
+            wxlike_core::types::now_ms() as i64,
         )?;
+        drop(c);
         // 信箱按属主组织，HTTP 拿到的是 conv_id，所以要落一张映射
         self.set_owner_kind(&id, wxlike_message::OwnerType::Channel)?;
         // 频道的扇出名单从社区成员来（C3）——不落这一步，频道时间线只有作者
@@ -497,14 +446,7 @@ impl Platform {
     pub fn list_channels(&self, community: &str, user: &str) -> Result<Vec<ChannelRow>> {
         self.require_member(community, user)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, community_id, name, kind, tenant_id, created_at
-             FROM channels WHERE community_id = ?1 ORDER BY created_at",
-        )?;
-        let rows = stmt
-            .query_map(params![community], row_channel)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        repo_list_channels(&c, community)
     }
 
     /// 频道发消息：走读扩散信箱（不变式 1/3），按消息类型与频道形态双重闸门。
@@ -583,30 +525,22 @@ impl Platform {
             .channel_community(channel)?
             .ok_or(PlatformError::NotFound)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT m.user_id, m.role, r.role, r.granted_by
-             FROM community_members m
-             LEFT JOIN channel_role r ON r.channel_id = ?1 AND r.user_id = m.user_id
-             WHERE m.community_id = ?2
-             ORDER BY m.joined_at",
-        )?;
-        let rows = stmt
-            .query_map(params![channel, community], |r| {
-                let community_role: i64 = r.get(1)?;
-                let explicit: Option<String> = r.get(2)?;
+        let rows = repo_channel_roles_raw(&c, channel, &community)?;
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, community_role, explicit, granted_by)| {
                 let role = explicit
                     .as_deref()
                     .and_then(ChannelRole::parse)
                     .unwrap_or_else(|| ChannelRole::from_community(community_role));
-                Ok(ChannelRoleRow {
-                    user_id: r.get(0)?,
+                ChannelRoleRow {
+                    user_id,
                     role: role.as_str().to_string(),
                     inherited: explicit.is_none(),
-                    granted_by: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+                    granted_by: granted_by.unwrap_or_default(),
+                }
+            })
+            .collect())
     }
 
     /// 覆盖某人的频道角色。`owner` 不在可授予之列——频道 owner 就是社区群主，
@@ -636,19 +570,16 @@ impl Platform {
         if current == ROLE_OWNER {
             return Err(PlatformError::Forbidden);
         }
-        self.db().lock().execute(
-            "INSERT INTO channel_role(channel_id, user_id, role, granted_by, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(channel_id, user_id) DO UPDATE
-               SET role = excluded.role, granted_by = excluded.granted_by",
-            params![
-                channel,
-                target,
-                parsed.as_str(),
-                actor,
-                wxlike_core::types::now_ms() as i64
-            ],
+        let c = self.db().lock();
+        repo_upsert_channel_role(
+            &c,
+            channel,
+            target,
+            parsed.as_str(),
+            actor,
+            wxlike_core::types::now_ms() as i64,
         )?;
+        drop(c);
         self.audit(actor, "channel.set_role", target, role);
         Ok(parsed)
     }
@@ -658,10 +589,9 @@ impl Platform {
         let channel = validate::id(channel)?;
         let target = validate::id(target)?;
         self.require_grantor(channel, actor)?;
-        self.db().lock().execute(
-            "DELETE FROM channel_role WHERE channel_id = ?1 AND user_id = ?2",
-            params![channel, target],
-        )?;
+        let c = self.db().lock();
+        repo_delete_channel_role(&c, channel, target)?;
+        drop(c);
         self.audit(actor, "channel.reset_role", target, "");
         Ok(())
     }
@@ -728,23 +658,17 @@ impl Platform {
             return Err(PlatformError::BadInput("root_seq beyond channel timeline"));
         }
         let id = crate::auth::random_hex(8);
-        self.db().lock().execute(
-            "INSERT INTO threads(id, channel_id, root_seq, title, created_by, tenant_id, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, 'default', ?6)",
-            params![
-                id,
-                channel,
-                root_seq,
-                title,
-                actor,
-                wxlike_core::types::now_ms() as i64
-            ],
+        let c = self.db().lock();
+        repo_insert_thread(
+            &c,
+            &id,
+            channel,
+            root_seq,
+            title,
+            actor,
+            wxlike_core::types::now_ms() as i64,
         )?;
-        // 发起者自动订阅
-        self.db().lock().execute(
-            "INSERT OR IGNORE INTO thread_subs(thread_id, user_id) VALUES(?1, ?2)",
-            params![id, actor],
-        )?;
+        drop(c);
         Ok(id)
     }
 
@@ -755,21 +679,7 @@ impl Platform {
         };
         self.require_member(&community, user)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, channel_id, root_seq, title, created_by, created_at
-             FROM threads WHERE channel_id = ?1 ORDER BY created_at, id",
-        )?;
-        let rows = stmt.query_map(params![channel], |r| {
-            Ok(ThreadRow {
-                id: r.get(0)?,
-                channel_id: r.get(1)?,
-                root_seq: r.get(2)?,
-                title: r.get(3)?,
-                created_by: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_list_threads(&c, channel)
     }
 
     /// 社区内**全部**话题（跨频道），带回复数与"我是否订阅"。
@@ -786,55 +696,18 @@ impl Platform {
         self.require_member(community, user)?;
         let limit = limit.clamp(1, 200) as i64;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT t.id, t.channel_id, ch.name, t.root_seq, t.title, t.created_by, t.created_at,
-                    (SELECT COUNT(*) FROM thread_messages m WHERE m.thread_id = t.id),
-                    EXISTS(SELECT 1 FROM thread_subs s WHERE s.thread_id = t.id AND s.user_id = ?2)
-             FROM threads t
-             JOIN channels ch ON ch.id = t.channel_id
-             WHERE ch.community_id = ?1
-             ORDER BY t.created_at DESC, t.id DESC LIMIT ?3",
-        )?;
-        let rows = stmt
-            .query_map(params![community, user, limit], |r| {
-                Ok(CommunityThreadRow {
-                    thread_id: r.get(0)?,
-                    channel_id: r.get(1)?,
-                    channel_name: r.get(2)?,
-                    root_seq: r.get(3)?,
-                    title: r.get(4)?,
-                    created_by: r.get(5)?,
-                    created_at: r.get(6)?,
-                    replies: r.get(7)?,
-                    subscribed: r.get::<_, i64>(8)? != 0,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        repo_community_threads(&c, community, user, limit)
     }
 
     fn thread_community(&self, thread: &str) -> Result<String> {
         let c = self.db().lock();
-        c.query_row(
-            "SELECT c.community_id FROM channels c JOIN threads t ON t.channel_id = c.id
-             WHERE t.id = ?1",
-            params![thread],
-            |r| r.get(0),
-        )
-        .optional()?
-        .ok_or(PlatformError::NotFound)
+        repo_thread_community(&c, thread)?.ok_or(PlatformError::NotFound)
     }
 
     /// 话题属于哪个频道：推送要挂回频道会话，客户端才认得这条信封。
     fn thread_channel(&self, thread: &str) -> Result<String> {
         let c = self.db().lock();
-        c.query_row(
-            "SELECT channel_id FROM threads WHERE id = ?1",
-            params![thread],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .ok_or(PlatformError::NotFound)
+        repo_thread_channel(&c, thread)?.ok_or(PlatformError::NotFound)
     }
 
     /// 话题内回复的**写入部分**：落话题自持序列（绝不写频道信箱，不变式 3），
@@ -860,12 +733,13 @@ impl Platform {
         }
         let seq = {
             let c = self.db().lock();
-            c.execute(
-                "INSERT INTO thread_messages(thread_id, sender, text, created_at)
-                 VALUES(?1, ?2, ?3, ?4)",
-                params![thread, actor, text, wxlike_core::types::now_ms() as i64],
-            )?;
-            c.last_insert_rowid()
+            repo_insert_thread_message(
+                &c,
+                thread,
+                actor,
+                text,
+                wxlike_core::types::now_ms() as i64,
+            )?
         };
         let to: Vec<String> = {
             let roster = self.thread_fanout(thread)?;
@@ -882,14 +756,7 @@ impl Platform {
         let thread = validate::id(thread)?;
         let community = self.thread_community(thread)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT s.user_id FROM thread_subs s
-             JOIN community_members m ON m.community_id = ?2 AND m.user_id = s.user_id
-             WHERE s.thread_id = ?1 AND s.muted = 0
-             ORDER BY s.user_id",
-        )?;
-        let rows = stmt.query_map(params![thread, community], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_thread_fanout(&c, thread, &community)
     }
 
     pub fn fetch_thread_messages(
@@ -904,21 +771,7 @@ impl Platform {
         self.require_member(&community, user)?;
         let limit = limit.clamp(1, 200) as i64;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT seq, sender, text, created_at FROM thread_messages
-             WHERE thread_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
-        )?;
-        let rows = stmt
-            .query_map(params![thread, after_seq, limit], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })?
-            .collect::<std::result::Result<_, _>>()?;
-        Ok(rows)
+        repo_fetch_thread_messages(&c, thread, after_seq, limit)
     }
 
     pub fn subscribe_thread(&self, thread: &str, user: &str) -> Result<()> {
@@ -932,22 +785,16 @@ impl Platform {
         let user = validate::id(user)?;
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
-        self.db().lock().execute(
-            "INSERT INTO thread_subs(thread_id, user_id, muted) VALUES(?1, ?2, ?3)
-             ON CONFLICT(thread_id, user_id) DO UPDATE SET muted = excluded.muted",
-            params![thread, user, muted as i64],
-        )?;
-        Ok(())
+        let c = self.db().lock();
+        repo_upsert_thread_sub(&c, thread, user, muted)
     }
 
     pub fn unsubscribe_thread(&self, thread: &str, user: &str) -> Result<()> {
         let thread = validate::id(thread)?;
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
-        self.db().lock().execute(
-            "DELETE FROM thread_subs WHERE thread_id = ?1 AND user_id = ?2",
-            params![thread, user],
-        )?;
+        let c = self.db().lock();
+        repo_delete_thread_sub(&c, thread, user)?;
         Ok(())
     }
 
@@ -956,16 +803,7 @@ impl Platform {
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT user_id, muted FROM thread_subs WHERE thread_id = ?1 ORDER BY user_id",
-        )?;
-        let rows = stmt.query_map(params![thread], |r| {
-            Ok(ThreadSubscription {
-                user_id: r.get(0)?,
-                muted: r.get::<_, i64>(1)? != 0,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_thread_subscribers(&c, thread)
     }
 
     /// 频道信箱的成员快照（C3：扇出的第一层）。全量重置，理由同
@@ -989,11 +827,9 @@ impl Platform {
     /// 成员变更是低频操作，所以宁可整表重写也不要漏。真到了万人社区 × 几十个
     /// 频道，这里要换成增量成员日志（`append_member_change` 已经有位置）。
     pub fn sync_community_channels(&self, community: &str) -> Result<()> {
-        let channels: Vec<String> = {
+        let channels = {
             let c = self.db().lock();
-            let mut stmt = c.prepare("SELECT id FROM channels WHERE community_id = ?1")?;
-            let rows = stmt.query_map(params![community], |r| r.get::<_, String>(0))?;
-            rows.collect::<std::result::Result<_, _>>()?
+            repo_channel_ids(&c, community)?
         };
         for channel in channels {
             self.sync_channel_members(&channel)?;
@@ -1003,10 +839,7 @@ impl Platform {
 
     fn community_member_ids(&self, community: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
-        let mut stmt =
-            c.prepare("SELECT user_id FROM community_members WHERE community_id = ?1")?;
-        let rows = stmt.query_map(params![community], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        repo_community_member_ids(&c, community)
     }
 }
 
