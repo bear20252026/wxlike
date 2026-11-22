@@ -1,9 +1,8 @@
 {
-  "total": 18,
+  "total": 14,
   "files": {
     "devices.rs": 3,
     "governance.rs": 3,
-    "media.rs": 4,
     "notification.rs": 3,
     "qr_login.rs": 3,
     "read.rs": 2

@@ -55,6 +55,8 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `domain/repo/trust.rs`，判定结论、放行投递语义与审计留在 domain。
 第二十四批清 `inbox.rs`：收件箱分页、未读计数与两种已读推进语句全部移入
 `domain/repo/inbox.rs`，分页裁剪、id 校验与入参约束留在 domain。
+第二十五批清 `media.rs`：内容寻址行的幂等写入、归属与元数据读取语句全部移入
+`domain/repo/media.rs`（含 SQLite/PG 两条写入语句），摘要、授权与签名留在 domain。
 
 ## 现在的边界
 
@@ -117,7 +119,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::trust`：挂起入队、队列读取、单条取出与删除都在仓储层；domain 只保留
   判定结论、放行投递语义与审计；
 - `repo::inbox`：收件箱分页、未读计数与已读推进都在仓储层；domain 只保留分页
-  裁剪、id 校验与入参约束。
+  裁剪、id 校验与入参约束；
+- `repo::media`：内容寻址幂等写入（含方言分支）、归属与元数据读取都在仓储层；
+  domain 只保留摘要校验、缩略图、授权与签名。
 
 ## 防回潮
 
@@ -129,7 +133,7 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **6 个文件 / 18 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **5 个文件 / 14 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
@@ -140,15 +144,15 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 第十五批把 recovery 的 **9 条**清零，第十六批把 reconcile 的 **8 条**清零，
 第十七批把 notes 的 **8 条**清零，第十八批把 keys 的 **6 条**清零，
 第十九批把 perms 的 **5 条**清零，第二十批把 content_index 的 **5 条**清零，
-第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，第二十三批把 trust 的 **5 条**清零，第二十四批把 inbox 的 **4 条**清零，
-总数从 425 降到 18。
+第二十一批把 report 的 **5 条**清零，第二十二批把 secret 的 **5 条**清零，第二十三批把 trust 的 **5 条**清零，第二十四批把 inbox 的 **4 条**清零，第二十五批把 media 的 **4 条**清零，
+总数从 425 降到 14。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `media.rs`（4）；
-2. `devices.rs`（3）/ `governance.rs`（3）/ `notification.rs`（3）/ `qr_login.rs`（3）；
+1. `devices.rs`（3）/ `governance.rs`（3）；
+2. `notification.rs`（3）/ `qr_login.rs`（3）/ `read.rs`（2）；
 3. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：

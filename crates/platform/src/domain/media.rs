@@ -14,17 +14,17 @@
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
-use crate::storage::StorageDialect;
 use crate::Platform;
 use async_trait::async_trait;
 use axum::extract::multipart::Field;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read as _, Seek as _};
 use std::path::{Path, PathBuf};
+
+use super::repo::media as media_repo;
 
 /// WP-05 A1: uploads larger than this are refused with 413.
 pub const MAX_MEDIA_BYTES: usize = 100 * 1024 * 1024;
@@ -308,47 +308,25 @@ impl Platform {
         // ADR-28: 媒体行这条 INSERT 已搬到 blocking 池；前面的 `store.*().await`
         // 仍是真异步 IO，故意不包进来，避免把网络 IO 塞进 SQLite 临界区。
         let db = self.db();
-        // PostgreSQL 兼容视图没有唯一约束，`ON CONFLICT` 不能直接作用在视图上；
-        // PG profile 走普通 INSERT，由 `media_insert_trg` 在 media_object 上做幂等
-        // upsert。SQLite 仍是原语句，行为逐字不变。PG profile 目前仍被
-        // `SqliteStorage::open` 拒绝，此分支是下一阶段 PG 连接落地后的预留。
-        let sql = match db.dialect() {
-            StorageDialect::Sqlite => {
-                "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(id) DO UPDATE SET size = excluded.size,
-                    -- 一旦公开就不回收：头像被别的用户引用着
-                    public = MAX(media.public, excluded.public),
-                    -- 同一份字节可能被不同会话引用：保留第一次的归属，
-                    -- 空归属则补上（内容寻址下，归属是引用关系而不是字节属性）
-                    conv_id = CASE WHEN media.conv_id = '' THEN excluded.conv_id
-                                   ELSE media.conv_id END"
-            }
-            StorageDialect::Postgres => {
-                "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
-                 VALUES($1, $2, $3, $4, $5, $6, $7, $8)"
-            }
-        };
+        let dialect = db.dialect();
         let conv_id = conv_id.unwrap_or_default().to_owned();
         let uploader = uploader.to_owned();
         let now = wxlike_core::types::now_ms() as i64;
         let media_id = sha_hex.clone();
         let reply_content_type = content_type.clone();
         db.blocking(move |c| {
-            c.execute(
-                sql,
-                params![
-                    sha_hex,
-                    size as i64,
-                    content_type,
-                    uploader,
-                    conv_id,
-                    public as i64,
-                    has_thumb as i64,
-                    now
-                ],
-            )?;
-            Ok(())
+            media_repo::insert(
+                &c,
+                dialect,
+                &sha_hex,
+                size as i64,
+                &content_type,
+                &uploader,
+                &conv_id,
+                public,
+                has_thumb,
+                now,
+            )
         })
         .await?;
 
@@ -379,18 +357,7 @@ impl Platform {
     /// 媒体归属：`(uploader, conv_id)`。`None` = 没这条记录。
     fn media_owner(&self, media_id: &str) -> Result<Option<(String, String, bool)>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT uploader, conv_id, public FROM media WHERE id = ?1",
-            params![media_id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)? != 0,
-                ))
-            },
-        )
-        .optional()?)
+        media_repo::owner(&c, media_id)
     }
 
     /// 这个用户能不能下载这条媒体（issue #14）。
@@ -442,18 +409,7 @@ impl Platform {
 
     pub fn media_meta(&self, media_id: &str) -> Result<Option<(u64, String, bool)>> {
         let c = self.db().lock();
-        Ok(c.query_row(
-            "SELECT size, content_type, has_thumb FROM media WHERE id = ?1",
-            params![media_id],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)? as u64,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)? != 0,
-                ))
-            },
-        )
-        .optional()?)
+        media_repo::meta(&c, media_id)
     }
 
     /// The object store this platform writes through.
