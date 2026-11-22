@@ -30,7 +30,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `status.rs`：状态软清除、可见候选、点赞计数、背景草稿与到期清扫语句全部移入
 `domain/repo/status.rs`，可见性判定与到期审计留在 domain。第十二批清
 `favorites.rs`：收藏读页、对象快照、排序游标、标签更新与撤权语句全部移入
-`domain/repo/favorites.rs`，撤权后清洗与游标解析留在 domain。
+`domain/repo/favorites.rs`，撤权后清洗与游标解析留在 domain。第十三批清
+`relations.rs`：拉黑、陌生人请求、直发许可、用户开关与好友元数据语句全部移入
+`domain/repo/relations.rs`，关系状态机与输入校验留在 domain。
 
 ## 现在的边界
 
@@ -69,7 +71,9 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::status`：状态行、可见候选、点赞行、背景草稿与到期行都在仓储层；
   domain 只保留可见性组合、媒体闸门与到期审计；
 - `repo::favorites`：收藏读页、对象快照、排序游标、标签更新与撤权语句都在
-  仓储层；domain 只保留输入校验、快照裁剪与撤权清洗。
+  仓储层；domain 只保留输入校验、快照裁剪与撤权清洗；
+- `repo::relations`：拉黑、陌生人请求箱、直发许可、用户开关与好友元数据都在
+  仓储层；domain 只保留关系状态机、权限顺序与输入校验。
 
 ## 防回潮
 
@@ -81,21 +85,21 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
 - 统计只看生产代码，遇到 root 级 `#[cfg(test)]` 就停止，测试夹具不算。
 
-当前基线是 **18 个文件 / 103 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
+当前基线是 **17 个文件 / 90 条 SQL**；第一批从 **33 个文件 / 425 条**降下来，
 users、sessions、security 三个文件已经是 **0**；第二批把 account 的 **67 条**
 清零，第三批把 groups / communities 各 **29 条**清零，第四批把 wallet 的
 **28 条**清零，第五批把 articles 的 **27 条**清零，第六批把 moments 的 **21 条**
 清零，第七批把 friends 的 **19 条**清零，第八批把 video_feed 的 **17 条**清零，
 第九批把 groups_admin 的 **17 条**清零，第十批把 live 的 **15 条**清零，
 第十一批把 status 的 **14 条**清零，第十二批把 favorites 的 **14 条**清零，
-总数从 425 降到 103。
+第十三批把 relations 的 **13 条**清零，总数从 425 降到 90。
 
 ## 下一批顺序
 
 按剩余 SQL 数量排：
 
-1. `relations.rs`（13）：关注/拉黑关系；
-2. `stickers.rs`（12）：表情包读写；
+1. `stickers.rs`（12）：表情包读写；
+2. `recovery.rs`（9）：账号恢复；
 3. 其余文件按 feature 逐个清到 0。
 
 每批的验收标准一致：
