@@ -1,0 +1,5360 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-21",
+  "state": "invalidated-pending-pg-dialect-recheck",
+  "source_commit": "39b9315f",
+  "scope": {
+    "name": "platform_shared_schema",
+    "sqlite_sources": [
+      "crates/platform/src/**/*.rs",
+      "crates/features/**/*.rs"
+    ],
+    "definition": "平台主库（Db::open + storage.rs 迁移链）里的 116 张业务表；不含 adminx 独立库、client 本地库，也不含 message/video/core/net 的邻接表。",
+    "total_tables": 116
+  },
+  "actions_legend": {
+    "direct": "PG 已有同名表且列名对齐；迁移时复核类型/PK/约束",
+    "port": "PG 缺表或缺列；补同名 DDL，现有 SQL 不改",
+    "compat-view": "PG 有目标表；加兼容视图 + 必要时 INSTEAD OF 触发器，现有 SQL 不改",
+    "rewrite": "PG 目标模型不同；repo/SQL 需改写，按域分批",
+    "drop": "SQLite 遗留，PG 不需要"
+  },
+  "counts": {
+    "total": 116,
+    "direct": 67,
+    "port": 42,
+    "port_missing": 41,
+    "port_present": 1,
+    "compat_view": 0,
+    "rewrite": 7,
+    "rewrite_missing": 7,
+    "drop": 0,
+    "missing_tables": 48,
+    "port_or_rewrite": 49
+  },
+  "priority_order": [
+    "P0",
+    "P1",
+    "P2"
+  ],
+  "tables": [
+    {
+      "sqlite_table": "captcha",
+      "pg_target": [
+        "captcha"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "图形验证码；PG identity_challenge 是短信挑战（phone_e164/code_hash），字段不可互换。",
+      "open_question": null,
+      "sqlite_columns": [
+        "answer_hash",
+        "created_at",
+        "expires_at",
+        "id",
+        "used"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "answer_hash",
+        "created_at",
+        "expires_at",
+        "id",
+        "used"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/recovery.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "devices",
+      "pg_target": [
+        "devices"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "推送 token 注册表（每 user+platform 一行）；PG 没有对等表。先 port 保 4 处 SQL。",
+      "open_question": "与 message.push_device 明显重复（device_id/token/epoch），是否统一到 push_device？",
+      "sqlite_columns": [
+        "device_token",
+        "last_seen",
+        "platform",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "device_token",
+        "last_seen",
+        "platform",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/devices.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "identity_challenge",
+      "pg_target": [
+        "identity_challenge"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "attempts",
+        "code_hash",
+        "consumed_at",
+        "created_at",
+        "device_id",
+        "expires_at",
+        "id",
+        "max_attempts",
+        "phone_e164",
+        "phone_hash",
+        "purpose",
+        "resend_after"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "attempts",
+        "code_hash",
+        "consumed_at",
+        "created_at",
+        "device_id",
+        "expires_at",
+        "id",
+        "max_attempts",
+        "phone_e164",
+        "phone_hash",
+        "purpose",
+        "resend_after"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/login_challenge.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_consent",
+      "pg_target": [
+        "identity_consent"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "agreed_at",
+        "doc",
+        "id",
+        "ip_hash",
+        "locale",
+        "purpose",
+        "user_id",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "agreed_at",
+        "doc",
+        "id",
+        "ip_hash",
+        "locale",
+        "purpose",
+        "user_id",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/consent.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_device",
+      "pg_target": [
+        "identity_device"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "app_version",
+        "created_at",
+        "device_id",
+        "identity_key",
+        "label",
+        "last_seen",
+        "os_version",
+        "platform",
+        "revoked_at",
+        "trust",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "app_version",
+        "created_at",
+        "device_id",
+        "identity_key",
+        "label",
+        "last_seen",
+        "os_version",
+        "platform",
+        "revoked_at",
+        "trust",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 13,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/device.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_export_link",
+      "pg_target": [
+        "identity_export_link"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "expires_at",
+        "job_id",
+        "token_hash",
+        "used_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "expires_at",
+        "job_id",
+        "token_hash",
+        "used_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/preferences.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_governance_audit",
+      "pg_target": [
+        "identity_governance_audit"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "action",
+        "actor",
+        "after_json",
+        "already",
+        "at",
+        "before_json",
+        "reason",
+        "seq",
+        "sessions_revoked",
+        "target",
+        "trace"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "action",
+        "actor",
+        "after_json",
+        "already",
+        "at",
+        "before_json",
+        "reason",
+        "seq",
+        "sessions_revoked",
+        "target",
+        "trace"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 1,
+      "sqlite_sources": [
+        "crates/features/identity/src/governance/mod.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/governance/mod.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/governance.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_governance_label",
+      "pg_target": [
+        "identity_governance_label"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "label",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "label",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/identity/src/governance/mod.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/governance/user.rs",
+        "crates/features/identity/src/governance/view.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/governance.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_job",
+      "pg_target": [
+        "identity_job"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "artifact",
+        "bytes",
+        "error",
+        "finished_at",
+        "id",
+        "kind",
+        "requested_at",
+        "started_at",
+        "status",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "artifact",
+        "bytes",
+        "error",
+        "finished_at",
+        "id",
+        "kind",
+        "requested_at",
+        "started_at",
+        "status",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 10,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/preferences.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_pref",
+      "pg_target": [
+        "identity_pref"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "device_id",
+        "key",
+        "seq",
+        "updated_at",
+        "user_id",
+        "value"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "device_id",
+        "key",
+        "seq",
+        "updated_at",
+        "user_id",
+        "value"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/preferences.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_qr",
+      "pg_target": [
+        "identity_qr"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "consumed_at",
+        "created_at",
+        "decided_at",
+        "device_id",
+        "expires_at",
+        "id",
+        "ip_hint",
+        "label",
+        "pkce_hash",
+        "platform",
+        "scanned_at",
+        "scanned_by",
+        "secret_hash",
+        "state"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "consumed_at",
+        "created_at",
+        "decided_at",
+        "device_id",
+        "expires_at",
+        "id",
+        "ip_hint",
+        "label",
+        "pkce_hash",
+        "platform",
+        "scanned_at",
+        "scanned_by",
+        "secret_hash",
+        "state"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 15,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/qr_login.rs",
+        "crates/platform/src/domain/repo/qr_login.rs",
+        "crates/platform/src/domain/qr_login.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_refresh",
+      "pg_target": [
+        "identity_refresh"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "audience",
+        "created_at",
+        "device_id",
+        "expires_at",
+        "generation",
+        "revoked_at",
+        "sid",
+        "token_hash",
+        "used_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "audience",
+        "created_at",
+        "device_id",
+        "expires_at",
+        "generation",
+        "revoked_at",
+        "sid",
+        "token_hash",
+        "used_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 7,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/refresh.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_reset_token",
+      "pg_target": [
+        "identity_reset_token"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "expires_at",
+        "token_hash",
+        "used_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "expires_at",
+        "token_hash",
+        "used_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/recovery.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_retry",
+      "pg_target": [
+        "identity_retry"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "TTL 重试桶；PG identity_throttle 是固定窗口（window_start/blocked_until），语义不同，不能直接替。",
+      "open_question": "是否把 identity_throttle 改成 TTL 桶，删掉 identity_retry？",
+      "sqlite_columns": [
+        "attempts",
+        "bucket",
+        "created_at",
+        "expires_at",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "attempts",
+        "bucket",
+        "created_at",
+        "expires_at",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 9,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/throttle.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "identity_session_token",
+      "pg_target": [
+        "identity_session_token"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "访问会话元数据（auth_level/features/serial）；PG identity_refresh 是刷新链，不对等。",
+      "open_question": null,
+      "sqlite_columns": [
+        "auth_level",
+        "expires_at",
+        "features",
+        "issued_at",
+        "serial",
+        "sid",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "auth_level",
+        "expires_at",
+        "features",
+        "issued_at",
+        "serial",
+        "sid",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 7,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/session.rs",
+        "crates/features/identity/src/governance/user.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "identity_step_up",
+      "pg_target": [
+        "identity_step_up"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "consumed_at",
+        "expires_at",
+        "granted_at",
+        "purpose",
+        "sid",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "consumed_at",
+        "expires_at",
+        "granted_at",
+        "purpose",
+        "sid",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 9,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/step_up.rs",
+        "crates/features/identity/src/session.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_throttle",
+      "pg_target": [
+        "identity_throttle"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "attempts",
+        "blocked_until",
+        "bucket",
+        "window_start"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "attempts",
+        "blocked_until",
+        "bucket",
+        "window_start"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/throttle.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "identity_token_serial",
+      "pg_target": [
+        "identity_token_serial"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "单行全局 token 序列号；PG 用一行表或 sequence 都可，先 port。",
+      "open_question": null,
+      "sqlite_columns": [
+        "id",
+        "rotated_at",
+        "serial"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "id",
+        "rotated_at",
+        "serial"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/session.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "identity_user_governance",
+      "pg_target": [
+        "identity_user_governance"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor",
+        "disabled",
+        "reason",
+        "suspended",
+        "suspended_until_ms",
+        "updated_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor",
+        "disabled",
+        "reason",
+        "suspended",
+        "suspended_until_ms",
+        "updated_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 9,
+      "sqlite_sources": [
+        "crates/features/identity/src/governance/mod.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/governance/user.rs",
+        "crates/features/identity/src/governance/view.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/governance.sql"
+      ]
+    },
+    {
+      "sqlite_table": "prekey_bundles",
+      "pg_target": [
+        "security_device_key"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "SQLite 是 user 级单 bundle；PG security_device_key 是 device 级（device_id/epoch/revoked）。",
+      "open_question": "prekey API 必须开始带 device_id；旧客户端单设备如何回填 device_id？",
+      "sqlite_columns": [
+        "identity",
+        "identity_signing",
+        "otks",
+        "signature",
+        "updated_at",
+        "user_id"
+      ],
+      "alter_added_columns": [
+        "signature"
+      ],
+      "pg_columns": [
+        "created_at",
+        "device_id",
+        "epoch",
+        "identity",
+        "identity_signing",
+        "otks",
+        "revoked_at",
+        "signature",
+        "updated_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [
+        "created_at",
+        "device_id",
+        "epoch",
+        "revoked_at"
+      ],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/keys.rs",
+        "crates/platform/src/storage.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/security.sql"
+      ]
+    },
+    {
+      "sqlite_table": "qr_ticket_creator",
+      "pg_target": [
+        "qr_ticket_creator"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "扫码票 creator/verifier 审计列；PG identity_qr 只有 scanned_by/decided_at，不能一一对应。",
+      "open_question": "是否把 creator/verifier 并进 identity_qr，删掉独立表？",
+      "sqlite_columns": [
+        "created_at",
+        "creator",
+        "ticket_id",
+        "verifier"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "creator",
+        "ticket_id",
+        "verifier"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/repo/qr_login.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "recovery_codes",
+      "pg_target": [
+        "recovery_codes"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "账户找回码；PG 无对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "code_hash",
+        "created_at",
+        "used_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "code_hash",
+        "created_at",
+        "used_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/recovery.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "secret_settings",
+      "pg_target": [
+        "secret_settings"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "会话级阅后即焚开关/TTL；PG 无对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "conv_id",
+        "enabled",
+        "ttl_ms",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "conv_id",
+        "enabled",
+        "ttl_ms",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/secret.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "secret_verifications",
+      "pg_target": [
+        "secret_verifications"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "会话级 peer identity 校验；PG security_device_verify 是设备级（peer_device/safety_number），粒度不同。",
+      "open_question": "E2EE 多设备后是否统一到 security_device_verify？",
+      "sqlite_columns": [
+        "conv_id",
+        "peer_identity",
+        "user_id",
+        "verified_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "conv_id",
+        "peer_identity",
+        "user_id",
+        "verified_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/secret.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "security_device_key",
+      "pg_target": [
+        "security_device_key"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "device_id",
+        "epoch",
+        "identity",
+        "identity_signing",
+        "otks",
+        "revoked_at",
+        "signature",
+        "updated_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "device_id",
+        "epoch",
+        "identity",
+        "identity_signing",
+        "otks",
+        "revoked_at",
+        "signature",
+        "updated_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 13,
+      "sqlite_sources": [
+        "crates/features/security/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/security/src/device_keys.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/security.sql"
+      ]
+    },
+    {
+      "sqlite_table": "security_device_verify",
+      "pg_target": [
+        "security_device_verify"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "peer_device",
+        "peer_identity",
+        "peer_user",
+        "safety_number",
+        "user_id",
+        "verified_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "peer_device",
+        "peer_identity",
+        "peer_user",
+        "safety_number",
+        "user_id",
+        "verified_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/features/security/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/security/src/device_keys.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/security.sql"
+      ]
+    },
+    {
+      "sqlite_table": "security_rotation",
+      "pg_target": [
+        "security_rotation"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "at",
+        "device_id",
+        "epoch",
+        "reason",
+        "seq",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "at",
+        "device_id",
+        "epoch",
+        "reason",
+        "seq",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 1,
+      "sqlite_sources": [
+        "crates/features/security/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/security/src/device_keys.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/security.sql"
+      ]
+    },
+    {
+      "sqlite_table": "sessions",
+      "pg_target": [
+        "sessions"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P0",
+      "confidence": "high",
+      "reason": "40 处引用；PG identity_refresh 是刷新令牌链，不是访问会话。先同名 port，并带上 audience。",
+      "open_question": "长期是否把 HTTP 会话合并到 identity_session_token？",
+      "sqlite_columns": [
+        "audience",
+        "created_at",
+        "expires_at",
+        "token",
+        "user_id"
+      ],
+      "alter_added_columns": [
+        "audience"
+      ],
+      "pg_columns": [
+        "audience",
+        "created_at",
+        "expires_at",
+        "token",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 40,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs",
+        "crates/features/identity/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/identity/src/session.rs",
+        "crates/platform/src/domain/sessions.rs",
+        "crates/platform/src/lib.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "user_settings",
+      "pg_target": [
+        "identity_pref"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "identity",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "只有 allow_strangers 一列；PG identity_pref 是 user/key/value 模型，改写 4 处查询即可。",
+      "open_question": "allow_strangers 的 key 命名与默认值要在 G02 侧固定。",
+      "sqlite_columns": [
+        "allow_strangers",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "device_id",
+        "key",
+        "seq",
+        "updated_at",
+        "user_id",
+        "value"
+      ],
+      "column_gaps": [
+        "allow_strangers"
+      ],
+      "column_extras": [
+        "device_id",
+        "key",
+        "seq",
+        "updated_at",
+        "value"
+      ],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/relations.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/identity.sql"
+      ]
+    },
+    {
+      "sqlite_table": "users",
+      "pg_target": [
+        "users"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "identity",
+      "priority": "P0",
+      "confidence": "high",
+      "reason": "56 处 SQL 引用；G02 提案假设 users 已存在，却没有给 PG DDL。先同名 port，并带上 deleted_at。",
+      "open_question": "是否保留 users 作为账户根表，还是建 identity_user + users 兼容视图？",
+      "sqlite_columns": [
+        "avatar",
+        "created_at",
+        "deleted_at",
+        "id",
+        "name",
+        "pw_algo",
+        "pw_hash",
+        "pw_rounds",
+        "pw_salt",
+        "signature",
+        "totp_enabled",
+        "totp_secret"
+      ],
+      "alter_added_columns": [
+        "deleted_at"
+      ],
+      "pg_columns": [
+        "avatar",
+        "created_at",
+        "deleted_at",
+        "id",
+        "name",
+        "pw_algo",
+        "pw_hash",
+        "pw_rounds",
+        "pw_salt",
+        "signature",
+        "totp_enabled",
+        "totp_secret"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 56,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/users.rs",
+        "crates/platform/src/domain/moments.rs",
+        "crates/platform/src/domain/security.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "blocks",
+      "pg_target": [
+        "blocks"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "blocked_id",
+        "created_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "blocked_id",
+        "created_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 17,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs",
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/relations.rs",
+        "crates/features/relations/src/friend.rs",
+        "crates/platform/src/domain/repo/video_feed.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "contact_log",
+      "pg_target": [
+        "contact_log"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "联系人变更流水；PG 没有对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "changed_at",
+        "kind",
+        "seq",
+        "subject_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "changed_at",
+        "kind",
+        "seq",
+        "subject_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/friends.rs",
+        "crates/platform/src/domain/repo/friends.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "friend_acs",
+      "pg_target": [
+        "friend_acs"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "好友访问控制模式；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "mode_given",
+        "mode_want",
+        "peer_id",
+        "updated_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "mode_given",
+        "mode_want",
+        "peer_id",
+        "updated_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/friend.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "friend_policy",
+      "pg_target": [
+        "friend_policy"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "好友默认访问策略；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "access_anon",
+        "access_auth",
+        "updated_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "access_anon",
+        "access_auth",
+        "updated_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/friend.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "friend_requests",
+      "pg_target": [
+        "friend_requests"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "from_uid",
+        "id",
+        "message",
+        "status",
+        "to_uid"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "from_uid",
+        "id",
+        "message",
+        "status",
+        "to_uid"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 21,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs",
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/friends.rs",
+        "crates/features/relations/src/friend.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "friend_tag",
+      "pg_target": [
+        "friend_tag"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "friend_id",
+        "tag",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "friend_id",
+        "tag",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/prefs.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "friends",
+      "pg_target": [
+        "friends"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "friend_id",
+        "remark",
+        "source",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "friend_id",
+        "remark",
+        "source",
+        "starred",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [
+        "starred"
+      ],
+      "sqlite_refs": 33,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs",
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/friends.rs",
+        "crates/platform/src/domain/moments.rs",
+        "crates/features/relations/src/friend.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "group_announcement",
+      "pg_target": [
+        "group_announcement"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "群公告；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "group_id",
+        "media_id",
+        "pinned_by",
+        "text",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "group_id",
+        "media_id",
+        "pinned_by",
+        "text",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups_admin.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "group_governance_audit",
+      "pg_target": [
+        "group_governance_audit"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "action",
+        "actor",
+        "at",
+        "group_id",
+        "reason",
+        "seq",
+        "trace"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "action",
+        "actor",
+        "at",
+        "group_id",
+        "reason",
+        "seq",
+        "trace"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 1,
+      "sqlite_sources": [
+        "crates/features/relations/src/governance.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/governance.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/governance.sql"
+      ]
+    },
+    {
+      "sqlite_table": "group_invites",
+      "pg_target": [
+        "group_invites"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "群邀请 token；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_by",
+        "expires_at",
+        "group_id",
+        "token"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_by",
+        "expires_at",
+        "group_id",
+        "token"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups_admin.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "group_join_requests",
+      "pg_target": [
+        "group_join_requests"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "入群申请；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "group_id",
+        "requested_at",
+        "status",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "group_id",
+        "requested_at",
+        "status",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups_admin.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "group_member_acs",
+      "pg_target": [
+        "group_member_acs"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "群成员访问控制模式；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "group_id",
+        "mode_given",
+        "mode_want",
+        "updated_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "group_id",
+        "mode_given",
+        "mode_want",
+        "updated_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/group.rs",
+        "crates/features/relations/src/governance.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "group_members",
+      "pg_target": [
+        "group_members"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "group_id",
+        "joined_at",
+        "my_remark",
+        "role",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "group_id",
+        "joined_at",
+        "my_remark",
+        "role",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 41,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs",
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups.rs",
+        "crates/features/relations/src/group.rs",
+        "crates/platform/src/domain/groups_admin.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "group_meta",
+      "pg_target": [
+        "group_meta"
+      ],
+      "action": "port",
+      "status": "column-gap",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG group_meta 缺 frozen_at（SQLite 由 G02 relations 的 ALTER 补列）。",
+      "open_question": "frozen_at 是补进 PG group_meta，还是并进 groups 的治理列？",
+      "sqlite_columns": [
+        "dissolved_at",
+        "dissolved_by",
+        "frozen_at",
+        "group_id",
+        "visibility"
+      ],
+      "alter_added_columns": [
+        "frozen_at"
+      ],
+      "pg_columns": [
+        "dissolved_at",
+        "dissolved_by",
+        "group_id",
+        "visibility"
+      ],
+      "column_gaps": [
+        "frozen_at"
+      ],
+      "column_extras": [],
+      "sqlite_refs": 14,
+      "sqlite_sources": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/group.rs",
+        "crates/features/relations/src/governance.rs",
+        "crates/platform/src/domain/groups.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "group_mutes",
+      "pg_target": [
+        "group_mutes"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "群禁言；PG relations.sql 未覆盖。",
+      "open_question": null,
+      "sqlite_columns": [
+        "group_id",
+        "until_ms",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "group_id",
+        "until_ms",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups_admin.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "groups",
+      "pg_target": [
+        "groups"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "id",
+        "name",
+        "owner_uid"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "id",
+        "name",
+        "owner_uid"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 20,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs",
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups.rs",
+        "crates/platform/src/domain/groups_admin.rs",
+        "crates/features/relations/src/group.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "relations_audit",
+      "pg_target": [
+        "relations_audit"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "relations",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor",
+        "at",
+        "kind",
+        "seq",
+        "subject"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor",
+        "at",
+        "kind",
+        "seq",
+        "subject"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 1,
+      "sqlite_sources": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/relations/src/lib.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G02/relations.sql"
+      ]
+    },
+    {
+      "sqlite_table": "article_reactions",
+      "pg_target": [
+        "article_reactions"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "article_id",
+        "created_at",
+        "kind",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "article_id",
+        "created_at",
+        "kind",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/articles.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/repo/articles.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "article_reads",
+      "pg_target": [
+        "article_reads"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "article_id",
+        "read_at",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "article_id",
+        "read_at",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/articles.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "article_versions",
+      "pg_target": [
+        "article_versions"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "article_id",
+        "doc",
+        "saved_at",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "article_id",
+        "doc",
+        "saved_at",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/articles.rs",
+        "crates/platform/src/domain/repo/articles.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "articles",
+      "pg_target": [
+        "articles"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "author",
+        "body_html",
+        "body_text",
+        "created_at",
+        "doc",
+        "id",
+        "published_at",
+        "publisher_id",
+        "seq",
+        "state",
+        "title",
+        "updated_at",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "author",
+        "body_html",
+        "body_text",
+        "created_at",
+        "doc",
+        "id",
+        "published_at",
+        "publisher_id",
+        "seq",
+        "state",
+        "title",
+        "updated_at",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 13,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/articles.rs",
+        "crates/platform/src/domain/repo/articles.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "channel_role",
+      "pg_target": [
+        "channel_role"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "频道角色；PG 没有社区/频道模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "channel_id",
+        "created_at",
+        "granted_by",
+        "role",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "channel_id",
+        "created_at",
+        "granted_by",
+        "role",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "channels",
+      "pg_target": [
+        "channels"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "社区频道；PG 没有社区/频道模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "community_id",
+        "created_at",
+        "id",
+        "kind",
+        "name",
+        "tenant_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "community_id",
+        "created_at",
+        "id",
+        "kind",
+        "name",
+        "tenant_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 10,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs",
+        "crates/platform/src/domain/perms.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "communities",
+      "pg_target": [
+        "communities"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "社区主表；PG 没有社区模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "announcement",
+        "created_at",
+        "id",
+        "member_limit",
+        "name",
+        "owner_uid",
+        "tenant_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "announcement",
+        "created_at",
+        "id",
+        "member_limit",
+        "name",
+        "owner_uid",
+        "tenant_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs",
+        "crates/admin/src/read.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "community_members",
+      "pg_target": [
+        "community_members"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "社区成员；PG 没有社区模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "community_id",
+        "joined_at",
+        "role",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "community_id",
+        "joined_at",
+        "role",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 12,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs",
+        "crates/platform/src/domain/perms.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "content_index",
+      "pg_target": [
+        "content_index"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "audience",
+        "body",
+        "created_at",
+        "doc_id",
+        "group_name",
+        "kind",
+        "owner",
+        "title",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "audience",
+        "body",
+        "created_at",
+        "doc_id",
+        "group_name",
+        "kind",
+        "owner",
+        "title",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/content_index.rs",
+        "crates/platform/src/domain/repo/content_index.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "content_media_refs",
+      "pg_target": [
+        "content_media_refs"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "media_id",
+        "owner",
+        "ref_id",
+        "ref_kind"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "media_id",
+        "owner",
+        "ref_id",
+        "ref_kind"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/repo/content_index.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/content_index.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "favorites",
+      "pg_target": [
+        "favorites"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "收藏是独立内容实体（source_conv/source_msg_id/kind/media_id），不能塞进 content_index。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "id",
+        "kind",
+        "media_id",
+        "sender",
+        "sent_at_ms",
+        "source_conv",
+        "source_msg_id",
+        "text",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "id",
+        "kind",
+        "media_id",
+        "sender",
+        "sent_at_ms",
+        "source_conv",
+        "source_msg_id",
+        "text",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 16,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/favorites.rs",
+        "crates/platform/src/domain/repo/favorites.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "moment_comments",
+      "pg_target": [
+        "moment_comments"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG G05 没有朋友圈评论表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "author",
+        "created_at",
+        "deleted",
+        "id",
+        "moment_id",
+        "reply_to",
+        "seq",
+        "text"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "author",
+        "created_at",
+        "deleted",
+        "id",
+        "moment_id",
+        "reply_to",
+        "seq",
+        "text"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 11,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/moments.rs",
+        "crates/platform/src/domain/repo/moments.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "moment_drafts",
+      "pg_target": [
+        "moment_drafts"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "audience_group",
+        "author",
+        "id",
+        "media",
+        "text",
+        "updated_at",
+        "visibility"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "audience_group",
+        "author",
+        "id",
+        "media",
+        "text",
+        "updated_at",
+        "visibility"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/moments.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "moment_likes",
+      "pg_target": [
+        "moment_likes"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG G05 没有朋友圈点赞表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "moment_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "moment_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 7,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/moments.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "moments",
+      "pg_target": [
+        "moments"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG G05 只有 moment_drafts（草稿），没有已发布朋友圈主表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "author",
+        "created_at",
+        "deleted",
+        "id",
+        "media",
+        "seq",
+        "text",
+        "visibility"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "author",
+        "created_at",
+        "deleted",
+        "id",
+        "media",
+        "seq",
+        "text",
+        "visibility"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 11,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/moments.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/favorites.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "note_versions",
+      "pg_target": [
+        "note_versions"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "body",
+        "note_id",
+        "saved_at",
+        "title",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "body",
+        "note_id",
+        "saved_at",
+        "title",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/notes.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "notes",
+      "pg_target": [
+        "notes"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "body",
+        "created_at",
+        "id",
+        "title",
+        "updated_at",
+        "user_id",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "body",
+        "created_at",
+        "id",
+        "title",
+        "updated_at",
+        "user_id",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/notes.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/repo/notes.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "notification_settings",
+      "pg_target": [
+        "notification_settings"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "按会话的免打扰级别/关键词；PG 无对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "conv_id",
+        "keywords",
+        "level",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "conv_id",
+        "keywords",
+        "level",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/notification.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "notifications",
+      "pg_target": [
+        "notifications"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor",
+        "created_at",
+        "dedupe_key",
+        "id",
+        "kind",
+        "read_at",
+        "seq",
+        "target_id",
+        "target_kind",
+        "text",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor",
+        "created_at",
+        "dedupe_key",
+        "id",
+        "kind",
+        "read_at",
+        "seq",
+        "target_id",
+        "target_kind",
+        "text",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/inbox.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/repo/inbox.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "publisher_follows",
+      "pg_target": [
+        "publisher_follows"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "publisher_id",
+        "read_cursor",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "publisher_id",
+        "read_cursor",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 9,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/articles.rs",
+        "crates/platform/src/domain/repo/articles.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "publishers",
+      "pg_target": [
+        "publishers"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "avatar_media_id",
+        "bio",
+        "created_at",
+        "id",
+        "name",
+        "owner"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "avatar_media_id",
+        "bio",
+        "created_at",
+        "id",
+        "name",
+        "owner"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 13,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/articles.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/repo/articles.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "status_background_drafts",
+      "pg_target": [
+        "status_background_drafts"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "media_id",
+        "owner",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "media_id",
+        "owner",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/status.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "status_reactions",
+      "pg_target": [
+        "status_reactions"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "status_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "status_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/status.rs",
+        "crates/platform/src/domain/repo/status.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "statuses",
+      "pg_target": [
+        "statuses"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "audience",
+        "background_media_id",
+        "cleared_at",
+        "created_at",
+        "expires_at",
+        "id",
+        "kind",
+        "media_id",
+        "owner",
+        "text",
+        "updated_at",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "audience",
+        "background_media_id",
+        "cleared_at",
+        "created_at",
+        "expires_at",
+        "id",
+        "kind",
+        "media_id",
+        "owner",
+        "text",
+        "updated_at",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 13,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/status.rs",
+        "crates/platform/src/domain/repo/status.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "sticker_packs",
+      "pg_target": [
+        "sticker_packs"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "id",
+        "license",
+        "name",
+        "owner"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "id",
+        "license",
+        "name",
+        "owner"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/stickers.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/repo/stickers.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "stickers",
+      "pg_target": [
+        "stickers"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "id",
+        "media_id",
+        "name",
+        "pack_id",
+        "sort_order"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "id",
+        "media_id",
+        "name",
+        "pack_id",
+        "sort_order"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 7,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/stickers.rs",
+        "crates/platform/src/domain/repo/stickers.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "thread_messages",
+      "pg_target": [
+        "thread_messages"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "帖子回复；PG 没有社区/频道模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "sender",
+        "seq",
+        "text",
+        "thread_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "sender",
+        "seq",
+        "text",
+        "thread_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "thread_subs",
+      "pg_target": [
+        "thread_subs"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "帖子订阅；PG 没有社区/频道模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "thread_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "thread_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs",
+        "crates/platform/src/storage.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "threads",
+      "pg_target": [
+        "threads"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "频道帖子；PG 没有社区/频道模型。",
+      "open_question": null,
+      "sqlite_columns": [
+        "channel_id",
+        "created_at",
+        "created_by",
+        "id",
+        "root_seq",
+        "tenant_id",
+        "title"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "channel_id",
+        "created_at",
+        "created_by",
+        "id",
+        "root_seq",
+        "tenant_id",
+        "title"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/communities.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "user_stickers",
+      "pg_target": [
+        "user_stickers"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "installed_at",
+        "sort_order",
+        "sticker_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "installed_at",
+        "sort_order",
+        "sticker_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/stickers.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/repo/stickers.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "video_comments",
+      "pg_target": [
+        "video_comments"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "author",
+        "created_at",
+        "deleted",
+        "id",
+        "seq",
+        "text",
+        "video_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "author",
+        "created_at",
+        "deleted",
+        "id",
+        "seq",
+        "text",
+        "video_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 7,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/video_feed.rs",
+        "crates/platform/src/domain/repo/video_feed.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "video_follows",
+      "pg_target": [
+        "video_follows"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "creator",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "creator",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/video_feed.rs",
+        "crates/platform/src/domain/repo/video_feed.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "video_likes",
+      "pg_target": [
+        "video_likes"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "user_id",
+        "video_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "user_id",
+        "video_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 12,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/repo/video_feed.rs",
+        "crates/platform/src/domain/video_feed.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "video_posts",
+      "pg_target": [
+        "video_posts"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "content",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "author",
+        "caption",
+        "created_at",
+        "id",
+        "media_id",
+        "seq",
+        "state"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "author",
+        "caption",
+        "created_at",
+        "id",
+        "media_id",
+        "seq",
+        "state"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 15,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/video_feed.rs",
+        "crates/platform/src/domain/repo/video_feed.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G05/content.sql"
+      ]
+    },
+    {
+      "sqlite_table": "media",
+      "pg_target": [
+        "media_object",
+        "media_ref"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "media",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "media 的 uploader/content_type/has_thumb 对应 media_object.owner/mime；conv_id/public 对应 media_ref.audience/purpose。",
+      "open_question": "12 处 SQL 是改写还是先建 media 兼容视图 + INSTEAD OF 触发器？",
+      "sqlite_columns": [
+        "content_type",
+        "conv_id",
+        "created_at",
+        "has_thumb",
+        "id",
+        "public",
+        "size",
+        "uploader"
+      ],
+      "alter_added_columns": [
+        "conv_id",
+        "public"
+      ],
+      "pg_columns": [
+        "access_epoch",
+        "audience",
+        "created_at",
+        "deleted_at",
+        "digest",
+        "mime",
+        "object_id",
+        "owner",
+        "purpose",
+        "ref_id",
+        "ref_id_ext",
+        "ref_type",
+        "size",
+        "status"
+      ],
+      "column_gaps": [
+        "content_type",
+        "conv_id",
+        "has_thumb",
+        "id",
+        "public",
+        "uploader"
+      ],
+      "column_extras": [
+        "access_epoch",
+        "audience",
+        "deleted_at",
+        "digest",
+        "mime",
+        "object_id",
+        "owner",
+        "purpose",
+        "ref_id",
+        "ref_id_ext",
+        "ref_type",
+        "status"
+      ],
+      "sqlite_refs": 12,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/media.rs",
+        "crates/platform/src/storage.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G04/0001_media.sql"
+      ]
+    },
+    {
+      "sqlite_table": "conv_owner",
+      "pg_target": [
+        "conv_owner"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "messaging",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "会话 owner_type 投影；PG 没有对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "conv_id",
+        "owner_type"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "conv_id",
+        "owner_type"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/read.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "message_requests",
+      "pg_target": [
+        "message_requests"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "messaging",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "陌生人消息请求；PG 没有对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "from_uid",
+        "id",
+        "status",
+        "text",
+        "to_uid"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "from_uid",
+        "id",
+        "status",
+        "text",
+        "to_uid"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 7,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/relations.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "ledger",
+      "pg_target": [
+        "ledger_journals",
+        "ledger_entries"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "ledger",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "单边钱包流水（user_id/kind/amount）必须映射到 G06 双分录（journal + entries + accounts）。",
+      "open_question": "旧 ledger 行如何生成 journal/entries/accounts 的开户与期初余额？需要数据迁移脚本。",
+      "sqlite_columns": [
+        "amount",
+        "counterparty",
+        "created_at",
+        "id",
+        "kind",
+        "memo",
+        "ref_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "account",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "id",
+        "journal_id",
+        "kind",
+        "memo",
+        "request_digest",
+        "seq"
+      ],
+      "column_gaps": [
+        "amount",
+        "counterparty",
+        "ref_id",
+        "user_id"
+      ],
+      "column_extras": [
+        "account",
+        "amount_minor",
+        "business_key",
+        "currency",
+        "journal_id",
+        "request_digest",
+        "seq"
+      ],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/wallet.rs",
+        "crates/platform/src/domain/account.rs",
+        "crates/platform/src/domain/reconcile.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "reconcile_runs",
+      "pg_target": [
+        "reconcile_runs"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "ledger",
+      "priority": "P2",
+      "confidence": "high",
+      "reason": "对账运行摘要；PG commerce_reconciliation_exceptions 只存异常，不存每次 run 的合计。",
+      "open_question": null,
+      "sqlite_columns": [
+        "at_ms",
+        "detail",
+        "escrow",
+        "funded_total",
+        "id",
+        "mismatches",
+        "ok",
+        "supply",
+        "users_checked",
+        "wallet_sum"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "at_ms",
+        "detail",
+        "escrow",
+        "funded_total",
+        "id",
+        "mismatches",
+        "ok",
+        "supply",
+        "users_checked",
+        "wallet_sum"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/reconcile.rs",
+        "crates/admin/src/read.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "wallet_idem",
+      "pg_target": [
+        "commerce_transfers",
+        "ledger_holds"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "ledger",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "幂等键在 PG 由 commerce_transfers/ledger_holds 的 business_key + request_digest 承担。",
+      "open_question": "通用 wallet 接口是否统一走 commerce_transfers，还是保留独立 idem 表？",
+      "sqlite_columns": [
+        "created_at",
+        "key",
+        "request_hash",
+        "response",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "account",
+        "amount_minor",
+        "business_key",
+        "confirmation_hash",
+        "created_at",
+        "currency",
+        "expires_at",
+        "hold_key",
+        "id",
+        "journal_id",
+        "memo",
+        "nonce_hash",
+        "payee_id",
+        "request_digest",
+        "sender_id",
+        "status",
+        "updated_at"
+      ],
+      "column_gaps": [
+        "key",
+        "request_hash",
+        "response",
+        "user_id"
+      ],
+      "column_extras": [
+        "account",
+        "amount_minor",
+        "business_key",
+        "confirmation_hash",
+        "currency",
+        "expires_at",
+        "hold_key",
+        "id",
+        "journal_id",
+        "memo",
+        "nonce_hash",
+        "payee_id",
+        "request_digest",
+        "sender_id",
+        "status",
+        "updated_at"
+      ],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/platform/src/storage.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/wallet.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "wallets",
+      "pg_target": [
+        "ledger_accounts"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "ledger",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "balance 列在 PG 模型里不存在；余额只能由 ledger_entries 聚合，账户用 ledger_accounts。",
+      "open_question": "读余额的 16 处查询改成聚合视图还是物化余额表？",
+      "sqlite_columns": [
+        "balance",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "currency",
+        "fund_class",
+        "kind",
+        "name",
+        "owner_id"
+      ],
+      "column_gaps": [
+        "balance",
+        "user_id"
+      ],
+      "column_extras": [
+        "created_at",
+        "currency",
+        "fund_class",
+        "kind",
+        "name",
+        "owner_id"
+      ],
+      "sqlite_refs": 16,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/wallet.rs",
+        "crates/platform/src/domain/reconcile.rs",
+        "crates/admin/src/read.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_cards",
+      "pg_target": [
+        "commerce_cards"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "brand",
+        "business_key",
+        "created_at",
+        "exp_month",
+        "exp_year",
+        "id",
+        "last4",
+        "owner_id",
+        "provider",
+        "provider_token",
+        "request_digest",
+        "status",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "brand",
+        "business_key",
+        "created_at",
+        "exp_month",
+        "exp_year",
+        "id",
+        "last4",
+        "owner_id",
+        "provider",
+        "provider_token",
+        "request_digest",
+        "status",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/cards.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_entitlement_rules",
+      "pg_target": [
+        "commerce_entitlement_rules"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "digest",
+        "issuer_id",
+        "kind",
+        "rule_json",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "digest",
+        "issuer_id",
+        "kind",
+        "rule_json",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/entitlements.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_entitlements",
+      "pg_target": [
+        "commerce_entitlements"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "business_key",
+        "id",
+        "issued_at",
+        "issuer_id",
+        "kind",
+        "owner_id",
+        "payload_json",
+        "redeemed_at",
+        "rule_issuer",
+        "rule_kind",
+        "rule_version",
+        "status",
+        "valid_from",
+        "valid_to"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "business_key",
+        "id",
+        "issued_at",
+        "issuer_id",
+        "kind",
+        "owner_id",
+        "payload_json",
+        "redeemed_at",
+        "rule_issuer",
+        "rule_kind",
+        "rule_version",
+        "status",
+        "valid_from",
+        "valid_to"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/entitlements.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_meta",
+      "pg_target": [
+        "commerce_meta"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "key",
+        "value"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "key",
+        "value"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 1,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_nonces",
+      "pg_target": [
+        "commerce_nonces"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "nonce_hash",
+        "purpose",
+        "used_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "nonce_hash",
+        "purpose",
+        "used_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/transfers.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_orders",
+      "pg_target": [
+        "commerce_orders"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "id",
+        "payee_id",
+        "payment_intent_id",
+        "provider_order_ref",
+        "quote_ref",
+        "status",
+        "updated_at",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "id",
+        "payee_id",
+        "payment_intent_id",
+        "provider_order_ref",
+        "quote_ref",
+        "status",
+        "updated_at",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/orders.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_outbox",
+      "pg_target": [
+        "commerce_outbox"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "aggregate_id",
+        "created_at",
+        "event_id",
+        "event_type",
+        "payload_json",
+        "published_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "aggregate_id",
+        "created_at",
+        "event_id",
+        "event_type",
+        "payload_json",
+        "published_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 1,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/store.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_payment_events",
+      "pg_target": [
+        "commerce_payment_events"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "amount_minor",
+        "applied",
+        "currency",
+        "event_id",
+        "intent_id",
+        "kind",
+        "payload_digest",
+        "provider_ref",
+        "reason",
+        "received_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "applied",
+        "currency",
+        "event_id",
+        "intent_id",
+        "kind",
+        "payload_digest",
+        "provider_ref",
+        "reason",
+        "received_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/payments.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_payment_intents",
+      "pg_target": [
+        "commerce_payment_intents"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "direction",
+        "expires_at",
+        "id",
+        "nonce_hash",
+        "payee_id",
+        "provider",
+        "provider_ref",
+        "qr_token_hash",
+        "refunded_minor",
+        "request_digest",
+        "status",
+        "updated_at",
+        "version"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "direction",
+        "expires_at",
+        "id",
+        "nonce_hash",
+        "payee_id",
+        "provider",
+        "provider_ref",
+        "qr_token_hash",
+        "refunded_minor",
+        "request_digest",
+        "status",
+        "updated_at",
+        "version"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 15,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/payments.rs",
+        "crates/features/commerce/src/settlement.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_provider_callbacks",
+      "pg_target": [
+        "commerce_provider_callbacks"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "amount_minor",
+        "applied",
+        "business_key",
+        "currency",
+        "event_id",
+        "id",
+        "intent_id",
+        "kind",
+        "operation_id",
+        "provider_ref",
+        "reason",
+        "received_at",
+        "request_digest",
+        "result_json"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "applied",
+        "business_key",
+        "currency",
+        "event_id",
+        "id",
+        "intent_id",
+        "kind",
+        "operation_id",
+        "provider_ref",
+        "reason",
+        "received_at",
+        "request_digest",
+        "result_json"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/payments.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_reconciliation_exceptions",
+      "pg_target": [
+        "commerce_reconciliation_exceptions"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "amount_minor",
+        "approval_ref",
+        "created_at",
+        "currency",
+        "id",
+        "journal_key",
+        "local_id",
+        "local_kind",
+        "provider_ref",
+        "reason",
+        "resolved_by",
+        "run_id",
+        "status"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "approval_ref",
+        "created_at",
+        "currency",
+        "id",
+        "journal_key",
+        "local_id",
+        "local_kind",
+        "provider_ref",
+        "reason",
+        "resolved_by",
+        "run_id",
+        "status"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/settlement.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_redemption_tokens",
+      "pg_target": [
+        "commerce_redemption_tokens"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "business_key",
+        "created_at",
+        "entitlement_id",
+        "expires_at",
+        "token_hash",
+        "used_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "business_key",
+        "created_at",
+        "entitlement_id",
+        "expires_at",
+        "token_hash",
+        "used_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/entitlements.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_redemptions",
+      "pg_target": [
+        "commerce_redemptions"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor_id",
+        "business_key",
+        "entitlement_id",
+        "id",
+        "redeemed_at",
+        "token_hash"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor_id",
+        "business_key",
+        "entitlement_id",
+        "id",
+        "redeemed_at",
+        "token_hash"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/entitlements.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_redpacket_claims",
+      "pg_target": [
+        "commerce_redpacket_claims"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "amount_minor",
+        "claimed_at",
+        "packet_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "claimed_at",
+        "packet_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/redpackets.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_redpacket_shares",
+      "pg_target": [
+        "commerce_redpacket_shares"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "amount_minor",
+        "claimed_at",
+        "claimed_by",
+        "packet_id",
+        "slot"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "claimed_at",
+        "claimed_by",
+        "packet_id",
+        "slot"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/redpackets.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_redpackets",
+      "pg_target": [
+        "commerce_redpackets"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "business_key",
+        "conv_id",
+        "count",
+        "created_at",
+        "currency",
+        "expires_at",
+        "id",
+        "memo",
+        "sender_id",
+        "status",
+        "total_minor"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "business_key",
+        "conv_id",
+        "count",
+        "created_at",
+        "currency",
+        "expires_at",
+        "id",
+        "memo",
+        "sender_id",
+        "status",
+        "total_minor"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/redpackets.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_refunds",
+      "pg_target": [
+        "commerce_refunds"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "hold_key",
+        "id",
+        "intent_id",
+        "provider_ref",
+        "status",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "hold_key",
+        "id",
+        "intent_id",
+        "provider_ref",
+        "status",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/settlement.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_topups",
+      "pg_target": [
+        "commerce_topups"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "id",
+        "intent_id",
+        "provider_ref",
+        "status",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "id",
+        "intent_id",
+        "provider_ref",
+        "status",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 4,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/settlement.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_transfers",
+      "pg_target": [
+        "commerce_transfers"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "amount_minor",
+        "business_key",
+        "confirmation_hash",
+        "created_at",
+        "currency",
+        "expires_at",
+        "hold_key",
+        "id",
+        "memo",
+        "nonce_hash",
+        "payee_id",
+        "sender_id",
+        "status",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "business_key",
+        "confirmation_hash",
+        "created_at",
+        "currency",
+        "expires_at",
+        "hold_key",
+        "id",
+        "memo",
+        "nonce_hash",
+        "payee_id",
+        "sender_id",
+        "status",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 6,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/transfers.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "commerce_withdrawals",
+      "pg_target": [
+        "commerce_withdrawals"
+      ],
+      "action": "direct",
+      "status": "aligned",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "PG 提案已有同名表，列名对齐；类型/PK/自增与约束仍需在 PG 迁移里逐条复核。",
+      "open_question": null,
+      "sqlite_columns": [
+        "account_ref",
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "hold_key",
+        "id",
+        "provider_ref",
+        "status",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "account_ref",
+        "actor_id",
+        "amount_minor",
+        "business_key",
+        "created_at",
+        "currency",
+        "hold_key",
+        "id",
+        "provider_ref",
+        "status",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 10,
+      "sqlite_sources": [
+        "crates/features/commerce/src/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/features/commerce/src/settlement.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "redpackets",
+      "pg_target": [
+        "commerce_redpackets",
+        "commerce_redpacket_claims",
+        "commerce_redpacket_shares"
+      ],
+      "action": "rewrite",
+      "status": "rewrite-required",
+      "domain": "commerce",
+      "priority": "P1",
+      "confidence": "medium",
+      "reason": "PG 把红包拆成 packet/claims/shares；SQLite 的 claimed/claimed_total/claimers 是聚合列。",
+      "open_question": "聚合列是否保留为视图，还是全部改成分表查询？",
+      "sqlite_columns": [
+        "claimed",
+        "claimed_total",
+        "claimers",
+        "conv_id",
+        "count",
+        "created_at",
+        "expire_at",
+        "from_uid",
+        "id",
+        "memo",
+        "status",
+        "total"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "amount_minor",
+        "business_key",
+        "claimed_at",
+        "claimed_by",
+        "conv_id",
+        "count",
+        "created_at",
+        "currency",
+        "expires_at",
+        "id",
+        "memo",
+        "packet_id",
+        "sender_id",
+        "slot",
+        "status",
+        "total_minor",
+        "user_id"
+      ],
+      "column_gaps": [
+        "claimed",
+        "claimed_total",
+        "claimers",
+        "expire_at",
+        "from_uid",
+        "total"
+      ],
+      "column_extras": [
+        "amount_minor",
+        "business_key",
+        "claimed_at",
+        "claimed_by",
+        "currency",
+        "expires_at",
+        "packet_id",
+        "sender_id",
+        "slot",
+        "total_minor",
+        "user_id"
+      ],
+      "sqlite_refs": 12,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/wallet.rs",
+        "crates/platform/src/domain/reconcile.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": [
+        "schema/proposals/G06/0001_ledger_commerce.sql"
+      ]
+    },
+    {
+      "sqlite_table": "live_sessions",
+      "pg_target": [
+        "live_sessions"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "live",
+      "priority": "P2",
+      "confidence": "medium",
+      "reason": "直播场次；PG G09 只有 calls，没有 live 表。",
+      "open_question": "live 域是否随平台 PG 一起迁，还是继续 SQLite？",
+      "sqlite_columns": [
+        "channel_id",
+        "ended_at",
+        "host",
+        "id",
+        "peak_viewers",
+        "recording",
+        "started_at",
+        "state",
+        "stream_key",
+        "viewers"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "channel_id",
+        "ended_at",
+        "host",
+        "id",
+        "peak_viewers",
+        "recording",
+        "started_at",
+        "state",
+        "stream_key",
+        "viewers"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 12,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/live.rs",
+        "crates/platform/src/domain/repo/video_feed.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "live_viewers",
+      "pg_target": [
+        "live_viewers"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "live",
+      "priority": "P2",
+      "confidence": "medium",
+      "reason": "直播观众；PG G09 只有 calls，没有 live 表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "joined_at",
+        "session_id",
+        "user_id"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "joined_at",
+        "session_id",
+        "user_id"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/live.rs",
+        "crates/platform/src/domain/account.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "video_refs",
+      "pg_target": [
+        "video_refs"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "live",
+      "priority": "P2",
+      "confidence": "medium",
+      "reason": "视频转码产物索引；PG G09 只有 calls，没有 video 表。",
+      "open_question": "video 域是否随平台 PG 一起迁，还是独立 SQLite sidecar？",
+      "sqlite_columns": [
+        "attempts",
+        "duration_ms",
+        "height",
+        "job_id",
+        "play_url",
+        "playlist_url",
+        "renditions",
+        "state",
+        "thumb_url",
+        "updated_at_ms",
+        "video_id",
+        "width"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "attempts",
+        "duration_ms",
+        "height",
+        "job_id",
+        "play_url",
+        "playlist_url",
+        "renditions",
+        "state",
+        "thumb_url",
+        "updated_at_ms",
+        "video_id",
+        "width"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 5,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/video_refs.rs",
+        "crates/platform/src/domain/repo/video_feed.rs",
+        "crates/platform/src/domain/repo/status.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "audit_log",
+      "pg_target": [
+        "audit_log"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "ops",
+      "priority": "P2",
+      "confidence": "high",
+      "reason": "通用审计流水；PG 治理审计表按身份/群拆分，无法一一对应。",
+      "open_question": null,
+      "sqlite_columns": [
+        "action",
+        "actor",
+        "at_ms",
+        "detail",
+        "id",
+        "target"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "action",
+        "actor",
+        "at_ms",
+        "detail",
+        "id",
+        "target"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 3,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/lib.rs",
+        "crates/admin/src/read.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "idempotency",
+      "pg_target": [
+        "idempotency"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "ops",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "通用 key→response 幂等表；PG 的 services_order_idempotency 只覆盖服务订单，不通用。",
+      "open_question": null,
+      "sqlite_columns": [
+        "created_at",
+        "key",
+        "response"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "created_at",
+        "key",
+        "response"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 2,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/groups.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "moderation_queue",
+      "pg_target": [
+        "moderation_queue"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "ops",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "审核队列；PG 无对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "conv_id",
+        "created_at",
+        "decision",
+        "id",
+        "labels",
+        "sender",
+        "text"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "conv_id",
+        "created_at",
+        "decision",
+        "id",
+        "labels",
+        "sender",
+        "text"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 8,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/trust.rs",
+        "crates/admin/src/read.rs"
+      ],
+      "pg_sources": []
+    },
+    {
+      "sqlite_table": "reports",
+      "pg_target": [
+        "reports"
+      ],
+      "action": "port",
+      "status": "port-required",
+      "domain": "ops",
+      "priority": "P1",
+      "confidence": "high",
+      "reason": "内容举报单（状态机 + action/history）；PG 无对等表。",
+      "open_question": null,
+      "sqlite_columns": [
+        "action_json",
+        "created_at",
+        "detail",
+        "handler",
+        "history_json",
+        "id",
+        "reason",
+        "reporter",
+        "state",
+        "target_id",
+        "target_kind",
+        "updated_at"
+      ],
+      "alter_added_columns": [],
+      "pg_columns": [
+        "action_json",
+        "created_at",
+        "detail",
+        "handler",
+        "history_json",
+        "id",
+        "reason",
+        "reporter",
+        "state",
+        "target_id",
+        "target_kind",
+        "updated_at"
+      ],
+      "column_gaps": [],
+      "column_extras": [],
+      "sqlite_refs": 10,
+      "sqlite_sources": [
+        "crates/platform/src/db/schema.rs"
+      ],
+      "top_ref_files": [
+        "crates/platform/src/domain/report.rs",
+        "crates/admin/src/read.rs",
+        "crates/platform/src/domain/governance.rs"
+      ],
+      "pg_sources": []
+    }
+  ],
+  "adjacent_scope": {
+    "note": "server 今天用同一个 opts.db_path 打开 platform / message / ledger / video 等多个 store（server/src/lib.rs:208-232）。这 23 张表不在 116 张映射里，割接前必须裁决：并入 PG，还是拆成独立 SQLite sidecar。",
+    "message": [
+      "conversation_clear",
+      "conversation_event",
+      "conversation_pref",
+      "conversation_projection",
+      "delivery_task",
+      "device_cursor",
+      "ephemeral",
+      "mailbox",
+      "mailbox_change",
+      "member_log",
+      "member_snapshot",
+      "message_submit",
+      "msg_user_state",
+      "owner_seq",
+      "push_device",
+      "read_cursor"
+    ],
+    "video": [
+      "video_jobs",
+      "video_owners",
+      "watch_events"
+    ],
+    "core": [
+      "delivery_outbox",
+      "outbox"
+    ],
+    "net": [
+      "offline_inbox"
+    ],
+    "rtc": [
+      "call_room_audit"
+    ],
+    "already_pg_m010": [
+      "ledger_accounts",
+      "ledger_closing_balances",
+      "ledger_closings",
+      "ledger_entries",
+      "ledger_holds",
+      "ledger_journals"
+    ],
+    "excluded_separate_db": {
+      "adminx": [
+        "admin_accounts",
+        "admin_oplog",
+        "admin_sessions"
+      ],
+      "client_local": [
+        "cache",
+        "events",
+        "conversations",
+        "messages",
+        "meta"
+      ]
+    },
+    "counts": {
+      "message": 16,
+      "video": 3,
+      "core": 2,
+      "net": 1,
+      "rtc": 1,
+      "already_pg_m010": 6
+    }
+  },
+  "open_questions": [
+    "users：保留 users 作账户根表，还是 identity_user + users 兼容视图？",
+    "sessions：保留同名会话表，还是合并到 identity_session_token / identity_refresh？",
+    "media：media(conv_id/public) 直接改写 media_object+media_ref，还是先建 media 兼容视图？",
+    "ledger/wallets：单边钱包流水迁双分录，旧行如何开户、期初余额与对账口径？",
+    "prekey_bundles：user 级 bundle 迁 device 级 security_device_key，旧单设备客户端如何回填 device_id？",
+    "message/video/core/net 23 张邻接表：并入同一 PG，还是拆独立 SQLite sidecar？",
+    "devices 与 message.push_device 重复：合并到 push_device，还是保留两张表？",
+    "所有 SQLite ALTER 补列（users.deleted_at / sessions.audience / group_meta.frozen_at）必须进 PG DDL，否则同名表也会缺列。"
+  ],
+  "next_steps": [
+    "评审本表：P0 先拍 users/sessions；P1 按 identity → relations → content → ledger/commerce 顺序。",
+    "给 port 表分配 PG 迁移编号（M011 起），沿用 migrations.json 的同一编号线。",
+    "给 rewrite 表各写一个 repo 竖切片（先 content_index，再 favorites/media，再 ledger/wallets）。",
+    "把 23 张邻接表的 scope 决策写进 G00-04 或 G03/G09 的 IR，不要默认它们不存在。"
+  ],
+  "known_issue": {
+    "reason": "G02/G04/G05 是 SQLite DDL（AUTOINCREMENT / MediaDb::open），被误计入 PG 目标；实际 PG DDL 只有 G06/G07/G09。",
+    "actual_pg_groups": [
+      "G06",
+      "G07",
+      "G09"
+    ],
+    "actual_pg_table_count": 61,
+    "platform_shared_overlap": 20,
+    "platform_shared_missing": 96,
+    "corrected_counts": {
+      "direct": 20,
+      "port": 89,
+      "rewrite": 7,
+      "missing_tables": 96
+    },
+    "note": "本文 counts 是旧口径；在重算完成前只能当历史草案，不能当割接范围。M011 不依赖旧统计。"
+  }
+}

@@ -30,10 +30,13 @@
 //!   设了 `WXLIKE_DB` 就悄悄写成文件库）。
 
 use std::fmt;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::Connection;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 
 use crate::error::{PlatformError, Result};
 
@@ -410,6 +413,60 @@ fn mask_pg_url(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+/// PostgreSQL 连接句柄（G00-04 S2 的第二段）。
+///
+/// 现有 `Db` / 51 个 repo 函数仍只认 `&rusqlite::Connection`，所以这里**不是**
+/// `Db` 的替代，而是给新端口（`PostgresUsersRepo` / `PostgresSessionsRepo`）
+/// 用的连接池。等 repo 全量改造时，再让 `Db` 持有它并统一 `lock()` 的返回类型。
+///
+/// 端口方法目前是同步 trait；sqlx 是异步 API，所以这里在专属 runtime 上
+/// `block_on`。调用点必须把它放在阻塞上下文（`Db::blocking` / 普通线程）里；
+/// 不要在 async 任务里直接调 `PostgresUsersRepo` 的方法。
+pub struct PostgresPool {
+    pool: PgPool,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl PostgresPool {
+    /// 打开连接池并跑一次 `SELECT 1`。`url` 是 sqlx 风格 DSN。
+    pub fn open(url: &str) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| PlatformError::Storage(format!("postgres runtime: {e}")))?;
+        let pool = runtime
+            .block_on(async { PgPoolOptions::new().max_connections(8).connect(url).await })
+            .map_err(|e| PlatformError::Storage(format!("postgres connect: {e}")))?;
+        let this = Self {
+            pool,
+            runtime: Arc::new(runtime),
+        };
+        this.health()?;
+        Ok(this)
+    }
+
+    #[must_use]
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// 在专属 runtime 上执行一个 sqlx future。若已经在 tokio 上下文里，
+    /// 用 `block_in_place` 把当前线程让给 runtime；current-thread runtime
+    /// 下会 panic，调用方必须保证是 multi-thread/阻塞上下文。
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+            Err(_) => self.runtime.block_on(future),
+        }
+    }
+
+    pub fn health(&self) -> Result<()> {
+        self.block_on(async { sqlx::query("SELECT 1").execute(&self.pool).await })
+            .map(|_| ())
+            .map_err(|e| PlatformError::Storage(format!("postgres health: {e}")))
+    }
 }
 
 /// 连接/事务入口。今天只有 SQLite 一种实现；PG 落地时加第二个变体。

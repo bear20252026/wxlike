@@ -307,5 +307,32 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
       - name: M010 DDL 重跑（幂等/可重入）
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
+      - name: M011-M013 DDL 首次 + 重跑（幂等）
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            schema/proposals/G02/0002_identity_pg_compat.sql \
+            schema/proposals/G04/0002_media_pg_compat.sql \
+            schema/proposals/G06/0002_ledger_wallets_backfill.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
       - name: M010 schema/触发器/不可变性断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
+      - name: M011-M013 兼容层与回填断言
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_compat.sql
+      - name: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup default "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # Swatinem/rust-cache@v2
+        with:
+          add-rust-environment-hash-key: false
+          key: ${{ runner.os }}-pg-repo-${{ env.RUSTUP_TOOLCHAIN }}
+      - name: PostgreSQL repo tests
+        env:
+          WXLIKE_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/wxlike
+        run: |
+          cargo test --locked -p wxlike-platform --lib domain::repo:: -- --ignored

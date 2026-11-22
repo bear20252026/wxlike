@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 wxlike-core = { path = "../core" }
+# G00-04 S2：跨 crate 的持久化端口（trait + DTO），不绑定数据库驱动。
+wxlike-persistence = { path = "../persistence" }
 # HTTP 错误契约的唯一实现（`{"error": ...}` + `ApiJson`）
 wxlike-api = { path = "../api" }
 # 领域错误码（`DomainError`）：`PlatformError` → `DomainError` 的转换是
@@ -45,6 +47,8 @@ hex = { workspace = true }
 # P5 直播推流凭据（HMAC-SHA256）；hmac 已在 pbkdf2 的依赖树里
 hmac = "0.12"
 async-trait = { workspace = true }
+# G00-04 S2：PostgreSQL 适配器（只用于新 repo 端口；旧 51 个 SQLite 函数不走它）
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
 
 [dev-dependencies]
 wxlike-client = { path = "../client" }

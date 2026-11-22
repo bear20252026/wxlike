@@ -7,6 +7,7 @@
 
 | 文件 | 覆盖任务 | 新建表 | 改动既有表 |
 |---|---|---|---|
+| `0002_identity_pg_compat.sql` | G00-04 S2 / M011（已分配） | PG：`identity_user` / `identity_session_token` / `identity_refresh` / `identity_user_governance` / `identity_governance_audit` / `identity_governance_label` | PG 同名视图 `users` / `sessions`；不改 SQLite 既有表 |
 | `identity.sql` | G02-01 / 05 / 06 / 07 | 11 张 `identity_*` | `sessions` 补列 `audience` |
 | `relations.sql` | G02-02 | `friend_tag` / `group_meta` / `relations_audit` | `friends` 补列 `starred` |
 | `security.sql` | G02-03 / 04 | `security_device_key` / `security_device_verify` / `security_rotation` | 无 |

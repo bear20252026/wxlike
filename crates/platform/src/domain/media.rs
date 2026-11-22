@@ -14,6 +14,7 @@
 
 use crate::auth::Authed;
 use crate::error::{ApiError, PlatformError, Result};
+use crate::storage::StorageDialect;
 use crate::Platform;
 use async_trait::async_trait;
 use axum::extract::multipart::Field;
@@ -304,37 +305,57 @@ impl Platform {
         };
 
         let size = bytes.len() as u64;
-        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——媒体行这条 INSERT 跑在
-        // await 上下文里上锁。改法：`self.db().blocking(move |c| ..)` 把这一句搬走
-        // （前面几次 `store.*().await` 是真的异步 IO，不能整段包住）。
-        let c = self.db().lock();
-        c.execute(
-            "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO UPDATE SET size = excluded.size,
-                -- 一旦公开就不回收：头像被别的用户引用着
-                public = MAX(media.public, excluded.public),
-                -- 同一份字节可能被不同会话引用：保留第一次的归属，
-                -- 空归属则补上（内容寻址下，归属是引用关系而不是字节属性）
-                conv_id = CASE WHEN media.conv_id = '' THEN excluded.conv_id
-                               ELSE media.conv_id END",
-            params![
-                sha_hex,
-                size as i64,
-                content_type,
-                uploader,
-                conv_id.unwrap_or_default(),
-                public as i64,
-                has_thumb as i64,
-                wxlike_core::types::now_ms() as i64
-            ],
-        )?;
-        drop(c);
+        // ADR-28: 媒体行这条 INSERT 已搬到 blocking 池；前面的 `store.*().await`
+        // 仍是真异步 IO，故意不包进来，避免把网络 IO 塞进 SQLite 临界区。
+        let db = self.db();
+        // PostgreSQL 兼容视图没有唯一约束，`ON CONFLICT` 不能直接作用在视图上；
+        // PG profile 走普通 INSERT，由 `media_insert_trg` 在 media_object 上做幂等
+        // upsert。SQLite 仍是原语句，行为逐字不变。PG profile 目前仍被
+        // `SqliteStorage::open` 拒绝，此分支是下一阶段 PG 连接落地后的预留。
+        let sql = match db.dialect() {
+            StorageDialect::Sqlite => {
+                "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET size = excluded.size,
+                    -- 一旦公开就不回收：头像被别的用户引用着
+                    public = MAX(media.public, excluded.public),
+                    -- 同一份字节可能被不同会话引用：保留第一次的归属，
+                    -- 空归属则补上（内容寻址下，归属是引用关系而不是字节属性）
+                    conv_id = CASE WHEN media.conv_id = '' THEN excluded.conv_id
+                                   ELSE media.conv_id END"
+            }
+            StorageDialect::Postgres => {
+                "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
+                 VALUES($1, $2, $3, $4, $5, $6, $7, $8)"
+            }
+        };
+        let conv_id = conv_id.unwrap_or_default().to_owned();
+        let uploader = uploader.to_owned();
+        let now = wxlike_core::types::now_ms() as i64;
+        let media_id = sha_hex.clone();
+        let reply_content_type = content_type.clone();
+        db.blocking(move |c| {
+            c.execute(
+                sql,
+                params![
+                    sha_hex,
+                    size as i64,
+                    content_type,
+                    uploader,
+                    conv_id,
+                    public as i64,
+                    has_thumb as i64,
+                    now
+                ],
+            )?;
+            Ok(())
+        })
+        .await?;
 
         Ok(UploadReply {
-            media_id: sha_hex,
+            media_id,
             size,
-            content_type,
+            content_type: reply_content_type,
             newly_stored: !existed,
             has_thumb,
         })

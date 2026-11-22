@@ -63,16 +63,19 @@
 - `with_tx`（`wxlike_core::tx`）仍由调用方在 `&mut Connection` 上使用。
 - PG 实现的事务边界在 S2 后续落地：sqlx 事务句柄通过 `StorageConnection::Postgres`
   交给 repo，`with_tx` 的等价包装再对齐。**不允许**把一次事务拆到多个 `await` 上。
+  当前已落 `PostgresPool`（sqlx 池 + 专属 runtime），但只服务新端口
+  `PostgresUsersRepo` / `PostgresSessionsRepo`；`Db::lock()` 仍只返回 SQLite 连接。
 
 ### 1.4 错误口径
 
 - 新增 `PlatformError::Storage(String)`：profile 非法、缺 `WXLIKE_PG_URL`、
-  PG profile 未实现。
+  PG 连接/池初始化失败。
 - `status()` → 500；`From<PlatformError> for DomainError` → `internal("storage: {msg}")`。
 - 与 `PlatformError::Sqlite` 的分工：`Sqlite` 是"一条 SQL 跑失败了"，`Storage` 是
   "存储配置 / 连接生命周期本身有问题"。两者都不把底层细节给客户端。
-- PG 未实现返回 `PlatformError::Storage("postgres profile 尚未实现（G00-04 S2）：…")`，
-  **不 `todo!()`、不 panic**。
+- `Db::open` 的 postgres profile 仍返回 `PlatformError::Storage("postgres profile
+  尚未实现（G00-04 S2）：…")`，**不 `todo!()`、不 panic**；新端口走
+  `PostgresPool::open`，不经过 `Db::open`。
 
 ### 1.5 健康检查
 
@@ -115,32 +118,39 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 ## 4. sqlx 的接入位置
 
 - PG 驱动用 **sqlx**（编译期校验 + 自带池）。
-- 接入点：`impl Storage for PgStorage`，`StorageConnection::Postgres` 包 sqlx
-  事务/连接；`StorageProfile::Postgres { url }` 直接喂给 `sqlx::PgPool` / `PgConnection`。
-- ADR-28 的等价物：sqlx 是 async，PG 路径的 repo 改造天然在 async 上下文里跑，
-  不需要 `spawn_blocking`；但事务边界仍要在一个 `&mut PgConnection`（或一次
-  `&mut Transaction`）里，不能跨 `await` 拆分。
-- 本步**不写 sqlx，也不加依赖**：未使用的依赖会进 `Cargo.toml` 与 dependency-tree
-  护栏，等 PG 实现真正落地再加。
+- 已经落了最小接入：`crates/platform/src/storage.rs` 的 `PostgresPool`，持有
+  `sqlx::PgPool` + 专属 multi-thread runtime；`PostgresUsersRepo` /
+  `PostgresSessionsRepo` 通过它执行 `$1` 查询。
+- 还没落的是 `impl Storage for PgStorage` 与 `StorageConnection::Postgres`；
+  `Db` 仍只认 `MutexGuard<Connection>`，所以 51 个旧 repo 函数还在 SQLite。
+- ADR-28 的等价物：sqlx 是 async，端口 trait 目前是同步的，`PostgresPool::block_on`
+  负责桥接；调用点必须在阻塞上下文（`Db::blocking` / 普通线程），不要在 async
+  任务里直接调。
+- 未使用依赖护栏已满足：sqlx 已被 `PostgresPool` 与 PG repo 真实使用，不再是死依赖。
 
 ## 5. 本步刻意没做的事
 
-- 不改 `domain/repo/**`：51 个 `&Connection` 签名原样（见 §3 分批）。
-- 不实现 PG 真实连接：`SqliteStorage::open` 对 postgres profile 返回受控错误。
-- 不动 `server/**`、`ci/**`、`schema/**`、`integration-requests/**`、其它 worktree。
-- 未更新 `ci/jobs/policy/known-gaps.json` 的 `G00-04-PG`：本步只落端口，
-  `close_when`（PG profile 落地 + restore drill 跑 PG）未满足，gap 保持 open。
+- 不改 `domain/repo/**` 的 51 个 `&Connection` 签名（见 §3 分批）。
+- `Db::open` 仍不打开 postgres profile；PG 连接只在新端口 `PostgresPool` 中存在。
+- 不动 `server/**`、`ci/**`、`schema/**`、`integration-requests/**` 之外的东西。
+- `G00-04-PG` gap 仍 open：`close_when`（51 个旧 repo 切 PG + restore drill）
+  未满足；本轮只完成了首批端口与 DDL 闭环。
 - `db/schema.rs` 未改一字节，仅由 `storage.rs` 用 `#[path = "db/schema.rs"]` 引用
   （G00-02 的纯移动产物随迁移链一起归位）。
 
-## 6. 自检（本机，未跑任何 cargo / npm / docker / psql）
+## 6. 自检（本机）
 
-| 检查 | 退出码 |
+| 检查 | 结果 |
 |---|---|
-| `python3 ci/jobs/tests/test_ci.py` | 0 |
-| `python3 ci/jobs/build/check_gaps.py` | 0 |
-| `python3 ci/jobs/contract/check_contracts.py` | 0 |
-| `python3 ci/jobs/compose.py --check` | 0 |
+| `python ci/jobs/tests/test_ci.py`（或 `unittest discover`） | 106 tests，绿 |
+| `python ci/jobs/build/check_gaps.py` | 0 |
+| `python ci/jobs/contract/check_contracts.py` | 0 |
+| `python ci/jobs/compose.py --check` | 0；`generated/ci.yml` 已重新 compose |
+| `cargo fmt --all -- --check` | 绿 |
+| `cargo clippy -p wxlike-platform --all-targets -- -D warnings` | 绿 |
+| `cargo check -p wxlike-platform --all-targets` | 绿 |
+| `cargo test -p wxlike-platform --test media` | 14 passed |
+| `cargo test -p wxlike-platform --lib domain::repo::` | SQLite 2 passed |
+| `WXLIKE_TEST_PG_URL=… cargo test -p wxlike-platform --lib domain::repo:: -- --ignored` | PG16 2 passed |
 
-Rust 测试（`storage` 模块内的 profile 解析 / 方言 / 探活 / PG 受控错误用例）随
-CI 的 `cargo test --workspace` 跑；本机按硬纪律不编译。
+| `cargo check --workspace --all-targets` | 绿（清理一次旧的 `serde` 元数据后复跑，12m） |

@@ -1,0 +1,8 @@
+[package]
+name = "wxlike-persistence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# 纯 trait + DTO；不依赖任何数据库驱动，也不依赖业务 crate。

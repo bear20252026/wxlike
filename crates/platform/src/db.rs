@@ -31,7 +31,7 @@ use std::sync::{Arc, MutexGuard};
 use rusqlite::Connection;
 
 use crate::error::{ApiError, PlatformError, Result};
-use crate::storage::{SqliteStorage, Storage, StorageConnection, StorageProfile};
+use crate::storage::{SqliteStorage, Storage, StorageConnection, StorageDialect, StorageProfile};
 
 #[derive(Clone)]
 pub struct Db {
@@ -49,6 +49,12 @@ impl Db {
         let profile = StorageProfile::from_env()?;
         let storage = SqliteStorage::open(profile, path)?;
         Ok(Self { storage })
+    }
+
+    /// 当前连接走哪种方言。业务层只在一处需要分支：media 的旧 upsert
+    /// 不能作用在 PG 兼容视图上，SQLite 仍保留原语句。
+    pub(crate) fn dialect(&self) -> StorageDialect {
+        self.storage.profile().dialect()
     }
 
     /// A poisoned lock only happens if SQL panicked mid-statement; SQLite
