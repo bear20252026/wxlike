@@ -9,6 +9,31 @@ use crate::domain::video_feed::{
     COL_PLAY_URL, COL_THUMB_URL, HOT_WINDOW_MS,
 };
 
+/// 复核事务需要的四个字段；状态机仍在 domain。
+pub(in crate::domain) struct ReviewRecord {
+    pub author: String,
+    pub state: String,
+    pub caption: String,
+    pub media_id: String,
+}
+
+/// 可见性判定只看作者与状态。
+pub(in crate::domain) struct VideoAccess {
+    pub author: String,
+    pub state: String,
+}
+
+/// 评论行；`seq` 同时用作倒序翻页游标。
+pub(in crate::domain) struct VideoCommentRecord {
+    pub seq: i64,
+    pub id: String,
+    pub video_id: String,
+    pub author: String,
+    pub author_name: String,
+    pub text: String,
+    pub created_at: i64,
+}
+
 pub(in crate::domain) fn feed_by_seq(
     c: &Connection,
     viewer: &str,
@@ -310,4 +335,207 @@ pub(in crate::domain) fn video_row(
         return Ok(None);
     };
     Ok(Some(video_view_from(row)))
+}
+
+pub(in crate::domain) fn insert_video_post(
+    c: &Connection,
+    id: &str,
+    author: &str,
+    media_id: &str,
+    caption: &str,
+    state: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO video_posts(seq, id, author, media_id, caption, state, created_at)
+         VALUES(NULL, ?1, ?2, ?3, ?4, ?6, ?5)",
+        params![id, author, media_id, caption, now, state],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn review_record(c: &Connection, id: &str) -> Result<Option<ReviewRecord>> {
+    let row = c
+        .query_row(
+            "SELECT author, state, caption, media_id FROM video_posts WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(ReviewRecord {
+                    author: r.get(0)?,
+                    state: r.get(1)?,
+                    caption: r.get(2)?,
+                    media_id: r.get(3)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub(in crate::domain) fn set_video_state(c: &Connection, id: &str, state: &str) -> Result<()> {
+    c.execute(
+        "UPDATE video_posts SET state = ?2 WHERE id = ?1",
+        params![id, state],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn video_access(c: &Connection, id: &str) -> Result<Option<VideoAccess>> {
+    let row = c
+        .query_row(
+            "SELECT author, state FROM video_posts WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(VideoAccess {
+                    author: r.get(0)?,
+                    state: r.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub(in crate::domain) fn soft_delete_video(
+    c: &Connection,
+    id: &str,
+    author: &str,
+    deleted_state: &str,
+) -> Result<bool> {
+    let changed = c.execute(
+        "UPDATE video_posts SET state = ?3
+         WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
+        params![id, author, deleted_state],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn insert_video_like(
+    c: &Connection,
+    id: &str,
+    by: &str,
+    now: i64,
+) -> Result<bool> {
+    let added = c.execute(
+        "INSERT INTO video_likes(video_id, user_id, created_at) VALUES(?1, ?2, ?3)
+         ON CONFLICT(video_id, user_id) DO NOTHING",
+        params![id, by, now],
+    )?;
+    Ok(added == 1)
+}
+
+pub(in crate::domain) fn video_author(c: &Connection, id: &str) -> Result<Option<String>> {
+    let author = c
+        .query_row(
+            "SELECT author FROM video_posts WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(author)
+}
+
+pub(in crate::domain) fn video_like_count(c: &Connection, id: &str) -> Result<i64> {
+    let count = c.query_row(
+        "SELECT COUNT(*) FROM video_likes WHERE video_id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+pub(in crate::domain) fn delete_video_like(c: &Connection, id: &str, by: &str) -> Result<bool> {
+    let removed = c.execute(
+        "DELETE FROM video_likes WHERE video_id = ?1 AND user_id = ?2",
+        params![id, by],
+    )?;
+    Ok(removed == 1)
+}
+
+pub(in crate::domain) fn insert_video_comment(
+    c: &Connection,
+    comment_id: &str,
+    video_id: &str,
+    author: &str,
+    text: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO video_comments(seq, id, video_id, author, text, created_at)
+         VALUES(NULL, ?1, ?2, ?3, ?4, ?5)",
+        params![comment_id, video_id, author, text, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn video_comments(
+    c: &Connection,
+    id: &str,
+    before: i64,
+    limit: i64,
+) -> Result<Vec<VideoCommentRecord>> {
+    let mut stmt = c.prepare(
+        "SELECT cm.id, cm.video_id, cm.author, u.name, cm.text, cm.created_at, cm.seq
+         FROM video_comments cm JOIN users u ON u.id = cm.author
+         WHERE cm.video_id = ?1 AND cm.deleted = 0 AND cm.seq < ?2
+         ORDER BY cm.seq DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![id, before, limit], |r| {
+        Ok(VideoCommentRecord {
+            id: r.get(0)?,
+            video_id: r.get(1)?,
+            author: r.get(2)?,
+            author_name: r.get(3)?,
+            text: r.get(4)?,
+            created_at: r.get(5)?,
+            seq: r.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(in crate::domain) fn soft_delete_video_comment(
+    c: &Connection,
+    video_id: &str,
+    comment_id: &str,
+    by: &str,
+) -> Result<bool> {
+    let changed = c.execute(
+        "UPDATE video_comments SET deleted = 1
+         WHERE id = ?1 AND video_id = ?2 AND deleted = 0
+           AND (author = ?3 OR ?3 = (SELECT author FROM video_posts WHERE id = ?2))",
+        params![comment_id, video_id, by],
+    )?;
+    Ok(changed == 1)
+}
+
+pub(in crate::domain) fn creator_exists(c: &Connection, creator: &str) -> Result<bool> {
+    let exists = c
+        .query_row("SELECT 1 FROM users WHERE id = ?1", params![creator], |r| {
+            r.get::<_, i64>(0)
+        })
+        .optional()?;
+    Ok(exists.is_some())
+}
+
+pub(in crate::domain) fn follow_creator(
+    c: &Connection,
+    user: &str,
+    creator: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT OR IGNORE INTO video_follows(user_id, creator, created_at)
+         VALUES(?1, ?2, ?3)",
+        params![user, creator, now],
+    )?;
+    Ok(())
+}
+
+pub(in crate::domain) fn unfollow_creator(c: &Connection, user: &str, creator: &str) -> Result<()> {
+    c.execute(
+        "DELETE FROM video_follows WHERE user_id = ?1 AND creator = ?2",
+        params![user, creator],
+    )?;
+    Ok(())
 }

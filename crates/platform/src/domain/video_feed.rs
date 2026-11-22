@@ -30,13 +30,15 @@
 use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
-use rusqlite::{params, OptionalExtension as _};
 use serde::Serialize;
 use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::video_feed::{
-    check_video_gate, feed_by_seq, feed_hot, feed_recommend, find_active_video_post, index_video,
-    video_row,
+    check_video_gate, creator_exists, delete_video_like, feed_by_seq, feed_hot, feed_recommend,
+    find_active_video_post, follow_creator, index_video, insert_video_comment, insert_video_like,
+    insert_video_post, review_record, set_video_state, soft_delete_video,
+    soft_delete_video_comment, unfollow_creator, video_access, video_author, video_comments,
+    video_like_count, video_row,
 };
 
 pub const MAX_VIDEO_PAGE: i64 = 50;
@@ -120,11 +122,7 @@ impl Platform {
                 return Ok((existing, view));
             }
             let id = crate::auth::random_hex(8);
-            tx.execute(
-                "INSERT INTO video_posts(seq, id, author, media_id, caption, state, created_at)
-                 VALUES(NULL, ?1, ?2, ?3, ?4, ?6, ?5)",
-                params![id, author, media_id, caption, now, state],
-            )?;
+            insert_video_post(tx, &id, author, &media_id, caption, state, now)?;
             if state == STATE_PUBLISHED {
                 index_video(tx, &id, author, caption, &media_id, now)?;
             }
@@ -162,14 +160,9 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let result = c.with_tx(|tx| -> Result<ReviewResult> {
-            let row: Option<(String, String, String, String)> = tx
-                .query_row(
-                    "SELECT author, state, caption, media_id FROM video_posts WHERE id = ?1",
-                    params![id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .optional()?;
-            let (author, state, caption, media_id) = row.ok_or(PlatformError::NotFound)?;
+            let row = review_record(tx, &id)?.ok_or(PlatformError::NotFound)?;
+            let (author, state, caption, media_id) =
+                (row.author, row.state, row.caption, row.media_id);
             if state != STATE_PENDING {
                 return Err(PlatformError::NotFound);
             }
@@ -178,10 +171,7 @@ impl Platform {
             } else {
                 (STATE_REJECTED, "视频未通过审核")
             };
-            tx.execute(
-                "UPDATE video_posts SET state = ?2 WHERE id = ?1",
-                params![id, next],
-            )?;
+            set_video_state(tx, &id, next)?;
             if action == "publish" {
                 index_video(tx, &id, &author, &caption, &media_id, now)?;
             } else {
@@ -214,18 +204,14 @@ impl Platform {
     }
 
     pub fn video_visible(&self, viewer: &str, id: &str) -> Result<bool> {
-        let row: Option<(String, String)> = {
+        let access = {
             let c = self.db().lock();
-            c.query_row(
-                "SELECT author, state FROM video_posts WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?
+            video_access(&c, id)?
         };
-        let Some((author, state)) = row else {
+        let Some(access) = access else {
             return Ok(false);
         };
+        let (author, state) = (access.author, access.state);
         if author == viewer {
             // 待审记录对作者自己可见（否则客户端无法展示"审核中"）；
             // 已删/已驳回的一律按不存在处理。
@@ -272,12 +258,9 @@ impl Platform {
         let id = validate::id(id)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            let changed = tx.execute(
-                "UPDATE video_posts SET state = ?3
-                 WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
-                params![id, author, STATE_DELETED],
-            )?;
-            crate::db::ensure_updated(changed)?;
+            if !soft_delete_video(tx, id, author, STATE_DELETED)? {
+                return Err(PlatformError::NotFound);
+            }
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "video", id)?;
             crate::domain::repo::favorites::revoke_source(tx, "video", id)?;
@@ -293,20 +276,9 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<(bool, i64)> {
-            let added = tx.execute(
-                "INSERT INTO video_likes(video_id, user_id, created_at) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(video_id, user_id) DO NOTHING",
-                params![id, by, now],
-            )?;
-            if added == 1 {
-                let author: Option<String> = tx
-                    .query_row(
-                        "SELECT author FROM video_posts WHERE id = ?1",
-                        params![id],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if let Some(author) = author {
+            let added = insert_video_like(tx, id, by, now)?;
+            if added {
+                if let Some(author) = video_author(tx, id)? {
                     crate::domain::repo::inbox::notify(
                         tx,
                         &author,
@@ -320,28 +292,17 @@ impl Platform {
                     )?;
                 }
             }
-            let count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM video_likes WHERE video_id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            Ok((added == 1, count))
+            let count = video_like_count(tx, id)?;
+            Ok((added, count))
         })
     }
 
     pub fn unlike_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
         let id = validate::id(id)?;
         let c = self.db().lock();
-        let removed = c.execute(
-            "DELETE FROM video_likes WHERE video_id = ?1 AND user_id = ?2",
-            params![id, by],
-        )?;
-        let count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM video_likes WHERE video_id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        Ok((removed == 1, count))
+        let removed = delete_video_like(&c, id, by)?;
+        let count = video_like_count(&c, id)?;
+        Ok((removed, count))
     }
 
     pub fn comment_video(&self, id: &str, by: &str, text: &str) -> Result<String> {
@@ -361,19 +322,8 @@ impl Platform {
         let comment_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            tx.execute(
-                "INSERT INTO video_comments(seq, id, video_id, author, text, created_at)
-                 VALUES(NULL, ?1, ?2, ?3, ?4, ?5)",
-                params![comment_id, id, by, text, now],
-            )?;
-            let author: Option<String> = tx
-                .query_row(
-                    "SELECT author FROM video_posts WHERE id = ?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(author) = author {
+            insert_video_comment(tx, &comment_id, id, by, text, now)?;
+            if let Some(author) = video_author(tx, id)? {
                 crate::domain::repo::inbox::notify(
                     tx,
                     &author,
@@ -401,37 +351,27 @@ impl Platform {
         let limit = limit.clamp(1, MAX_VIDEO_PAGE);
         let before = cursor.unwrap_or(i64::MAX);
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT cm.id, cm.video_id, cm.author, u.name, cm.text, cm.created_at, cm.seq
-             FROM video_comments cm JOIN users u ON u.id = cm.author
-             WHERE cm.video_id = ?1 AND cm.deleted = 0 AND cm.seq < ?2
-             ORDER BY cm.seq DESC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![id, before, limit], |r| {
-            Ok(VideoComment {
-                id: r.get(0)?,
-                video_id: r.get(1)?,
-                author: r.get(2)?,
-                author_name: r.get(3)?,
-                text: r.get(4)?,
-                created_at: r.get(5)?,
-                seq: r.get(6)?,
+        Ok(video_comments(&c, id, before, limit)?
+            .into_iter()
+            .map(|cm| VideoComment {
+                seq: cm.seq,
+                id: cm.id,
+                video_id: cm.video_id,
+                author: cm.author,
+                author_name: cm.author_name,
+                text: cm.text,
+                created_at: cm.created_at,
             })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            .collect())
     }
 
     /// 视频作者或评论作者可删；软删除保留分页/计数稳定。
     pub fn delete_video_comment(&self, video_id: &str, comment_id: &str, by: &str) -> Result<()> {
         let video_id = validate::id(video_id)?;
         let comment_id = validate::id(comment_id)?;
-        let changed = self.db().lock().execute(
-            "UPDATE video_comments SET deleted = 1
-             WHERE id = ?1 AND video_id = ?2 AND deleted = 0
-               AND (author = ?3 OR ?3 = (SELECT author FROM video_posts WHERE id = ?2))",
-            params![comment_id, video_id, by],
-        )?;
-        crate::db::ensure_updated(changed)?;
+        if !soft_delete_video_comment(&self.db().lock(), video_id, comment_id, by)? {
+            return Err(PlatformError::NotFound);
+        }
         Ok(())
     }
 
@@ -442,29 +382,15 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let exists: Option<i64> = c
-            .query_row("SELECT 1 FROM users WHERE id = ?1", params![creator], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if exists.is_none() {
+        if !creator_exists(&c, creator)? {
             return Err(PlatformError::NotFound);
         }
-        c.execute(
-            "INSERT OR IGNORE INTO video_follows(user_id, creator, created_at)
-             VALUES(?1, ?2, ?3)",
-            params![user, creator, now],
-        )?;
-        Ok(())
+        follow_creator(&c, user, creator, now)
     }
 
     pub fn unfollow_creator(&self, user: &str, creator: &str) -> Result<()> {
         let creator = validate::id(creator)?;
-        self.db().lock().execute(
-            "DELETE FROM video_follows WHERE user_id = ?1 AND creator = ?2",
-            params![user, creator],
-        )?;
-        Ok(())
+        unfollow_creator(&self.db().lock(), user, creator)
     }
 }
 
