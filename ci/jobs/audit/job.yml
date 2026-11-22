@@ -87,7 +87,7 @@ jobs:
         run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
       - name: C11 incremental security-path gate
         env:
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -119,7 +119,7 @@ jobs:
         run: python scripts/count_unwraps.py --fail-on-increase --details
       - name: C11 no new unwrap/expect in critical paths
         env:
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail

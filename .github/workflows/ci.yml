@@ -469,7 +469,7 @@ jobs:
       run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
     - name: C11 incremental security-path gate
       env:
-        CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
         CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       run: "set -euo pipefail\nif [ -z \"${CI_BASE_SHA:-}\" ] || [ \"${CI_BASE_SHA:-}\" = \"0000000000000000000000000000000000000000\" ]; then\n  echo \"no base sha: security-path diff cannot be measured\" >&2\n  exit 1\nfi\npython ci/jobs/build/check_coverage.py --lcov lcov.info\n"
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -495,7 +495,7 @@ jobs:
       run: python scripts/count_unwraps.py --fail-on-increase --details
     - name: C11 no new unwrap/expect in critical paths
       env:
-        CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
         CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       run: "set -euo pipefail\nif [ -z \"${CI_BASE_SHA:-}\" ] || [ \"${CI_BASE_SHA:-}\" = \"0000000000000000000000000000000000000000\" ]; then\n  echo \"no base sha: added-line scan cannot be measured\" >&2\n  exit 1\nfi\npython ci/jobs/build/check_added_unwraps.py\n"
   gate:
