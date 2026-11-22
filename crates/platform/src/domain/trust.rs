@@ -18,9 +18,10 @@
 
 use crate::error::Result;
 use crate::Platform;
-use rusqlite::params;
 use serde::Serialize;
 use wxlike_moderation::{Decision, Mode};
+
+use super::repo::trust as trust_repo;
 
 /// 发送闸门的返回：结论 + 挂起队列 id（仅 Hold 时有值）。
 #[derive(Clone, Debug, Serialize)]
@@ -57,19 +58,17 @@ impl Platform {
         if decision.outcome == wxlike_moderation::Outcome::Hold {
             let id = crate::auth::random_hex(8);
             let labels = serde_json::to_string(&decision.labels)?;
+            let decision_json = serde_json::to_string(&decision)?;
             let c = self.db().lock();
-            c.execute(
-                "INSERT INTO moderation_queue(id, conv_id, sender, text, labels, decision, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    id,
-                    conv_id,
-                    sender,
-                    text,
-                    labels,
-                    serde_json::to_string(&decision)?,
-                    wxlike_core::types::now_ms() as i64
-                ],
+            trust_repo::enqueue(
+                &c,
+                &id,
+                conv_id,
+                sender,
+                text,
+                &labels,
+                &decision_json,
+                wxlike_core::types::now_ms() as i64,
             )?;
             queued_id = Some(id);
         }
@@ -91,50 +90,16 @@ impl Platform {
     /// 挂起队列（最早在前：先挂起的先处理）。
     pub fn moderation_queue(&self, limit: usize) -> Result<Vec<QueuedItem>> {
         let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT id, conv_id, sender, text, labels, created_at
-             FROM moderation_queue ORDER BY created_at ASC LIMIT ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![limit.clamp(1, 200) as i64], |r| {
-                let labels: String = r.get(4)?;
-                Ok(QueuedItem {
-                    id: r.get(0)?,
-                    conv_id: r.get(1)?,
-                    sender: r.get(2)?,
-                    text: r.get(3)?,
-                    labels: serde_json::from_str(&labels).unwrap_or_default(),
-                    created_at: r.get(5)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        trust_repo::queue(&c, limit.clamp(1, 200) as i64)
     }
 
     /// 放行：从队列取出并返回原文（调用方负责真正投递）。
     pub fn release_moderated(&self, id: &str, actor: &str) -> Result<Option<QueuedItem>> {
         let item = {
             let c = self.db().lock();
-            let row = c
-                .query_row(
-                    "SELECT id, conv_id, sender, text, labels, created_at
-                     FROM moderation_queue WHERE id = ?1",
-                    params![id],
-                    |r| {
-                        let labels: String = r.get(4)?;
-                        Ok(QueuedItem {
-                            id: r.get(0)?,
-                            conv_id: r.get(1)?,
-                            sender: r.get(2)?,
-                            text: r.get(3)?,
-                            labels: serde_json::from_str(&labels).unwrap_or_default(),
-                            created_at: r.get(5)?,
-                        })
-                    },
-                )
-                .ok();
+            let row = trust_repo::item(&c, id)?;
             if row.is_some() {
-                c.execute("DELETE FROM moderation_queue WHERE id = ?1", params![id])?;
+                trust_repo::delete(&c, id)?;
             }
             row
         };
@@ -147,7 +112,7 @@ impl Platform {
     /// 拒绝：从队列删除，不投递。
     pub fn reject_moderated(&self, id: &str, actor: &str) -> Result<bool> {
         let c = self.db().lock();
-        let n = c.execute("DELETE FROM moderation_queue WHERE id = ?1", params![id])?;
+        let n = trust_repo::delete(&c, id)?;
         drop(c);
         if n > 0 {
             self.audit(actor, "moderation.reject", id, "");
