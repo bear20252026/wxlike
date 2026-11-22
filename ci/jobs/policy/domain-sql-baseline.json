@@ -1,5 +1,5 @@
 {
-  "total": 78,
+  "total": 69,
   "files": {
     "content_index.rs": 5,
     "devices.rs": 3,
@@ -13,7 +13,6 @@
     "qr_login.rs": 3,
     "read.rs": 2,
     "reconcile.rs": 8,
-    "recovery.rs": 9,
     "report.rs": 5,
     "secret.rs": 5,
     "trust.rs": 5

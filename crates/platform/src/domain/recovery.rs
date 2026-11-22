@@ -27,9 +27,13 @@ use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
 use rand::Rng as _;
-use rusqlite::{params, OptionalExtension as _};
 use sha2::{Digest as _, Sha256};
 use wxlike_core::tx::ConnectionTx as _;
+
+use super::repo::recovery::{
+    captcha_row, consume_captcha, delete_sessions, insert_captcha, mark_recovery_used,
+    recovery_row, recovery_used_at, update_password, upsert_recovery_code,
+};
 
 /// 题目有效期。
 pub const CAPTCHA_TTL_MS: u64 = 5 * 60 * 1000;
@@ -129,15 +133,12 @@ impl Platform {
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms();
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO captcha(id, answer_hash, created_at, expires_at, used)
-             VALUES(?1, ?2, ?3, ?4, 0)",
-            params![
-                id,
-                sha256_hex(&(a + b).to_string()),
-                now as i64,
-                now.saturating_add(CAPTCHA_TTL_MS) as i64
-            ],
+        insert_captcha(
+            &c,
+            &id,
+            &sha256_hex(&(a + b).to_string()),
+            now as i64,
+            now.saturating_add(CAPTCHA_TTL_MS) as i64,
         )?;
         Ok((id, question))
     }
@@ -147,30 +148,18 @@ impl Platform {
     pub fn solve_captcha(&self, id: &str, answer: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        let row: Option<(String, i64, i64)> = c
-            .query_row(
-                "SELECT answer_hash, expires_at, used FROM captcha WHERE id = ?1",
-                params![id],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((hash, expires_at, used)) = row else {
+        let row = captcha_row(&c, id)?;
+        let Some(row) = row else {
             return Err(PlatformError::BadInput("captcha not found"));
         };
-        if used != 0 || expires_at <= now {
+        if row.used != 0 || row.expires_at <= now {
             return Err(PlatformError::BadInput("captcha expired"));
         }
         let normalized = answer.trim().to_string();
-        if sha256_hex(&normalized) != hash {
+        if sha256_hex(&normalized) != row.answer_hash {
             return Err(PlatformError::BadInput("captcha wrong"));
         }
-        c.execute("UPDATE captcha SET used = 1 WHERE id = ?1", params![id])?;
+        consume_captcha(&c, id)?;
         Ok(())
     }
 
@@ -187,15 +176,7 @@ impl Platform {
         );
         let hash = super::security::hash_argon2id(&code)?;
         let c = self.db().lock();
-        c.execute(
-            "INSERT INTO recovery_codes(user_id, code_hash, created_at, used_at)
-             VALUES(?1, ?2, ?3, NULL)
-             ON CONFLICT(user_id) DO UPDATE SET
-               code_hash = excluded.code_hash,
-               created_at = excluded.created_at,
-               used_at = NULL",
-            params![user_id, hash, wxlike_core::types::now_ms() as i64],
-        )?;
+        upsert_recovery_code(&c, &user_id, &hash, wxlike_core::types::now_ms() as i64)?;
         drop(c);
         self.audit(&user_id, "account.recovery.issue", &user_id, "");
         Ok(code)
@@ -215,32 +196,21 @@ impl Platform {
         let user_id = self
             .user_id_by_name(&name)?
             .ok_or(PlatformError::NotFound)?;
-        let row: Option<(String, i64, Option<i64>)> = {
+        let row = {
             let c = self.db().lock();
-            c.query_row(
-                "SELECT code_hash, created_at, used_at FROM recovery_codes WHERE user_id = ?1",
-                params![user_id],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, Option<i64>>(2)?,
-                    ))
-                },
-            )
-            .optional()?
+            recovery_row(&c, &user_id)?
         };
-        let Some((hash, created_at, used_at)) = row else {
+        let Some(row) = row else {
             return Err(PlatformError::Forbidden);
         };
-        if used_at.is_some() {
+        if row.used_at.is_some() {
             return Err(PlatformError::Forbidden);
         }
         let now = wxlike_core::types::now_ms() as i64;
-        if now.saturating_sub(created_at) > RECOVERY_TTL_MS as i64 {
+        if now.saturating_sub(row.created_at) > RECOVERY_TTL_MS as i64 {
             return Err(PlatformError::Forbidden);
         }
-        if !super::security::verify_argon2id(code, &hash) {
+        if !super::security::verify_argon2id(code, &row.code_hash) {
             self.audit(&user_id, "account.recovery.reset", &user_id, "bad code");
             return Err(PlatformError::Forbidden);
         }
@@ -248,16 +218,9 @@ impl Platform {
         let phc = super::security::hash_argon2id(new_password)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            tx.execute(
-                "UPDATE users SET pw_algo = 'argon2id', pw_salt = '', pw_hash = ?2, pw_rounds = 0
-                 WHERE id = ?1",
-                params![user_id, phc],
-            )?;
-            tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
-            tx.execute(
-                "UPDATE recovery_codes SET used_at = ?2 WHERE user_id = ?1",
-                params![user_id, now],
-            )?;
+            update_password(tx, &user_id, &phc)?;
+            delete_sessions(tx, &user_id)?;
+            mark_recovery_used(tx, &user_id, now)?;
             Ok(())
         })?;
         drop(c);
@@ -268,13 +231,7 @@ impl Platform {
     /// 是否已设置恢复码（UI 提示"未设置"用）。
     pub fn has_recovery_code(&self, user_id: &str) -> Result<bool> {
         let c = self.db().lock();
-        let used: Option<Option<i64>> = c
-            .query_row(
-                "SELECT used_at FROM recovery_codes WHERE user_id = ?1",
-                params![user_id],
-                |r| r.get::<_, Option<i64>>(0),
-            )
-            .optional()?;
+        let used = recovery_used_at(&c, user_id)?;
         Ok(matches!(used, Some(None)))
     }
 }
