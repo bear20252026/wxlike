@@ -461,7 +461,9 @@ mark_job_failed` 登记到 `ENFORCED_FNS`，避免“整文件豁免”把真正
 - `media.rs::download`：`Range` 解析、字节读取、200/206 响应组装拆成三个
   free function，授权顺序与 416/404 形状不变；
 - `domain/media.rs::store_media`：上传校验/摘要与对象仓写入拆成
-  `media_digest` / `put_media_object`，去重、缩略图、媒体行插入的顺序不变。
+  `media_digest` / `put_media_object`，去重、缩略图、媒体行插入的顺序不变；
+- `domain/reconcile.rs::reconcile`：钱包差异、红包差异、审计上报各自成段，
+  对账查询仍在一个连接临界区内完成。
 
 拆分只移动代码，不改变事务边界、错误映射或日志措辞。
 

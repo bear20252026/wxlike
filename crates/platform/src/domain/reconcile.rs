@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use super::repo::reconcile::{
     escrow_sum, funded_total, history_rows, insert_run, last_run, redpacket_rows,
-    wallet_balance_sum, wallet_ledger_rows,
+    wallet_balance_sum, wallet_ledger_rows, PacketRow, WalletRow,
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -60,39 +60,62 @@ pub struct ReconcileReport {
     pub ok: bool,
 }
 
+fn wallet_mismatches(rows: Vec<WalletRow>) -> Vec<Mismatch> {
+    rows.into_iter()
+        .filter(|row| row.balance != row.ledger_sum)
+        .map(|row| Mismatch::Wallet {
+            user: row.user,
+            balance: row.balance,
+            ledger_sum: row.ledger_sum,
+        })
+        .collect()
+}
+
+fn redpacket_mismatches(packets: Vec<PacketRow>) -> Vec<Mismatch> {
+    packets
+        .into_iter()
+        .filter_map(|packet| {
+            packet_reason(&packet).map(|reason| Mismatch::Redpacket {
+                id: packet.id,
+                reason: reason.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn packet_reason(packet: &PacketRow) -> Option<&'static str> {
+    if packet.claimed_total > packet.total {
+        Some("claimed_total exceeds total")
+    } else if packet.claimed > packet.count {
+        Some("claimed count exceeds slots")
+    } else if packet.status == "finished" && packet.claimed != packet.count {
+        Some("finished but slots remain")
+    } else if packet.status == "open" && packet.claimed >= packet.count {
+        Some("open but no slots remain")
+    } else if packet.status == "expired" && packet.claimed > packet.count {
+        Some("expired with impossible claim count")
+    } else {
+        None
+    }
+}
+
 impl Platform {
     /// 执行一次全量对账（只读 + 落一行运行记录）。
     pub fn reconcile(&self) -> Result<ReconcileReport> {
         let at = wxlike_core::types::now_ms() as i64;
-        let mut mismatches = Vec::new();
 
-        let (wallet_sum, users_checked, per_user, escrow, funded_total, packets) = {
+        let (wallet_sum, per_user, escrow, funded_total, packets) = {
             let c = self.db().lock();
             let wallet_sum = wallet_balance_sum(&c)?;
             let per_user = wallet_ledger_rows(&c)?;
             let escrow = escrow_sum(&c)?;
             let funded_total = funded_total(&c)?;
             let packets = redpacket_rows(&c)?;
-            (
-                wallet_sum,
-                per_user.len(),
-                per_user,
-                escrow,
-                funded_total,
-                packets,
-            )
+            (wallet_sum, per_user, escrow, funded_total, packets)
         };
+        let users_checked = per_user.len();
 
-        for row in per_user {
-            if row.balance != row.ledger_sum {
-                mismatches.push(Mismatch::Wallet {
-                    user: row.user,
-                    balance: row.balance,
-                    ledger_sum: row.ledger_sum,
-                });
-            }
-        }
-
+        let mut mismatches = wallet_mismatches(per_user);
         let supply = wallet_sum + escrow;
         if supply != funded_total {
             mismatches.push(Mismatch::Supply {
@@ -100,28 +123,7 @@ impl Platform {
                 funded_total,
             });
         }
-
-        for packet in packets {
-            let reason = if packet.claimed_total > packet.total {
-                Some("claimed_total exceeds total")
-            } else if packet.claimed > packet.count {
-                Some("claimed count exceeds slots")
-            } else if packet.status == "finished" && packet.claimed != packet.count {
-                Some("finished but slots remain")
-            } else if packet.status == "open" && packet.claimed >= packet.count {
-                Some("open but no slots remain")
-            } else if packet.status == "expired" && packet.claimed > packet.count {
-                Some("expired with impossible claim count")
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                mismatches.push(Mismatch::Redpacket {
-                    id: packet.id,
-                    reason: reason.to_string(),
-                });
-            }
-        }
+        mismatches.extend(redpacket_mismatches(packets));
 
         let report = ReconcileReport {
             at_ms: at,
@@ -134,19 +136,24 @@ impl Platform {
             mismatches,
         };
         self.persist_reconcile(&report)?;
-        if !report.ok {
-            let detail = format!(
-                "{} mismatch(es): {}",
-                report.mismatches.len(),
-                report
-                    .mismatches
-                    .first()
-                    .map(|m| format!("{m:?}"))
-                    .unwrap_or_default()
-            );
-            self.audit("system", "wallet.reconcile", "", &detail);
-        }
+        self.audit_reconcile(&report);
         Ok(report)
+    }
+
+    fn audit_reconcile(&self, report: &ReconcileReport) {
+        if report.ok {
+            return;
+        }
+        let detail = format!(
+            "{} mismatch(es): {}",
+            report.mismatches.len(),
+            report
+                .mismatches
+                .first()
+                .map(|m| format!("{m:?}"))
+                .unwrap_or_default()
+        );
+        self.audit("system", "wallet.reconcile", "", &detail);
     }
 
     fn persist_reconcile(&self, report: &ReconcileReport) -> Result<()> {
