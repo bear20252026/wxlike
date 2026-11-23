@@ -467,6 +467,23 @@ mark_job_failed` 登记到 `ENFORCED_FNS`，避免“整文件豁免”把真正
 
 拆分只移动代码，不改变事务边界、错误映射或日志措辞。
 
+## 第五十三批：Platform 长函数收尾与门面清单
+
+本批继续拆 Platform 侧最后三个 `>60` 行函数，并补上存储端口 / 门面门禁：
+
+- `domain/wallet.rs::claim_redpacket`：事务体收进 `claim_redpacket_tx`，外层只做
+  校验、调用和卡片回写；领取顺序、余额校验、ledger 写入不变；
+- `domain/live.rs::send_danmaku`：成员校验、内容审核、收件人查询各自成 helper，
+  审核顺序仍是“成员 → 长度 → moderate → 收件人”；
+- `users.rs::login`：请求字段收进 `LoginAttempt`，风控、失败记账、主流程分开；
+  “全部因子通过后才清失败计数”的顺序不变；
+- `storage.rs` 新增 `PgStorage` 与 `StorageConnection::Postgres(&PostgresPool)`；
+  `Db` 仍只持有 `SqliteStorage`，51 个旧 repo 签名未动；
+- `scripts/platform_surface_audit.py` 增加门面归属表与 `--check-facades`，
+  `fmt` job 同时检查公开面 ≤120 和“每个 pub 方法都有门面”。
+
+拆分后 Platform 侧 `long_fns` 归零；全仓 `>60` 行函数从 54 降到 51。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
