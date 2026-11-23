@@ -24,7 +24,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::{AccountSessions, Authed, PlatformState};
 
 /// 小程序发布记录（前端 MiniAppRelease 契约形状）。
 #[derive(Clone, Debug, Serialize, Deserialize)]

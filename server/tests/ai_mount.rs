@@ -18,6 +18,7 @@ use axum::Router;
 use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
+use wxlike_platform::AccountSessions;
 use wxlike_server::{start_stack, StackOptions};
 
 async fn boot() -> wxlike_server::Stack {

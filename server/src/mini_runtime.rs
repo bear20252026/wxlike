@@ -46,7 +46,7 @@ use wxlike_miniapps::catalog::source::{
 use wxlike_miniapps::catalog::{Catalog, CatalogError};
 use wxlike_miniapps::packages::{self, MiniError, PackageSignature};
 use wxlike_miniapps::toolchain::{self, DEFAULT_HOST_VERSION};
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::{AccountSessions, Authed, PlatformState};
 
 /// 根信任快照路径的环境变量（验签面用）。没配 = 验签诚实阻塞。
 pub const TRUST_ENV: &str = "WXLIKE_MINI_TRUST";

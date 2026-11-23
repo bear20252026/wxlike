@@ -464,7 +464,7 @@ search、video、hub、router 全串在一个函数里。
 | 2 | `start_stack` | ✅ | 204 行 → 55 行，拆成 5 个 `build_*` |
 | 2 | 错误契约收口（`crates/api`） | ✅ | 新增零业务依赖的 `wxlike-api`；`video` 的 30 处 `(StatusCode, String)` → `ApiResult`，顺带修掉 Windows 上"视频不存在返回 500" |
 | 2 | `mq_hub` 拆帧 | ⏳ | 主链路，需先补帧级测试 |
-| 3 | `Platform` 门面化 | 🚧 | 四批共降 151 个方法（21+43+48+39），公开方法 258→**107**，已达成 ≤120；下一步按 façade 归并 |
+| 3 | `Platform` 门面化 | 🚧 | 四批共降 151 个方法（21+43+48+39），公开方法 258→**105**；`AccountSessions` trait 试点已落，剩余门面按 `docs/platform-facades.md` 迁移 |
 | 3 | 抽 `crates/wire` | ⏳ | 单独排期 |
 
 指标变化（口径修正后重新计算，只算生产代码）：

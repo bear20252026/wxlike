@@ -17,6 +17,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 use wxlike_media::ids;
+use wxlike_platform::AccountSessions;
 use wxlike_server::{start_stack, StackOptions};
 
 /// media 域的全部受保护面（抽查 5 条路径 + 1 条写路径）。

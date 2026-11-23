@@ -8,7 +8,7 @@ use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
-use wxlike_platform::{Platform, PlatformOptions};
+use wxlike_platform::{AccountSessions, Platform, PlatformOptions};
 
 fn app() -> Router {
     // low rounds keep the suite quick; the production default is asserted in

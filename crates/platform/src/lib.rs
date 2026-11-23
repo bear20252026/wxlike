@@ -29,6 +29,7 @@ mod devices;
 mod domain;
 mod error;
 pub mod extract;
+mod facade;
 mod favorites;
 mod friends;
 mod groups;
@@ -93,6 +94,7 @@ pub use crate::domain::status::spawn_status_sweeper;
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
+pub use crate::facade::AccountSessions;
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
 /// tests call `Platform::sweep_expired_redpackets` directly so the expiry path

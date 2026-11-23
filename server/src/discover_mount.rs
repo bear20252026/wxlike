@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use axum::http::HeaderMap;
 use axum::Router;
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::{AccountSessions, Authed, PlatformState};
 use wxlike_service_catalog::auth::Authenticator;
 use wxlike_service_catalog::http::{AppState, CatalogApp, SessionVerifier};
 use wxlike_service_catalog::{

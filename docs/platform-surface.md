@@ -26,6 +26,7 @@ python scripts/platform_surface_audit.py --json
 | 第二批后 | 282 | **194** | **88** |
 | 第三批后 | 281 | **146** | **135** |
 | 第四批后 | 279 | **107** | **172** |
+| 门面试点后 | 279 | **105** | **174** |
 
 目标：`pub` 方法 ≤120。
 
@@ -105,6 +106,11 @@ sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内�
 方法 `call::call_host`、`content_index::media_referrers` 及后者专用的 repo
 函数，方法总数 281→279。剩下的 `pub` 都能看到真实外部调用点；后续不再为了
 数字批量降级，而是按 façade 归并。
+
+`AccountSessions` 试点把 `lookup_token` 与 `revoke_session` 收进 trait，
+`Platform` 的同名方法降为 `pub(crate)`，公开面 107→**105**；这是第一次用
+trait 而非只靠盘点表约束门面。其余 105 个方法仍按 `docs/platform-facades.md`
+的归属逐门面迁移。
 
 ## 后续约定
 

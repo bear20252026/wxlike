@@ -127,14 +127,14 @@ impl Platform {
     /// 注销（#114）：连 `users` 表并要求 `deleted_at IS NULL`。删会话行是
     /// `request_delete` 干的，这里是**第二道**——别的实例或别的写入方留下的会话行、
     /// 以及"清账与建行之间"的任何窗口，都不该让一个已注销账号再认证成功。
-    pub fn lookup_token(&self, token: &str) -> Result<Option<String>> {
+    pub(crate) fn lookup_token(&self, token: &str) -> Result<Option<String>> {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         lookup_live(&c, &token, now)
     }
 
-    pub fn revoke_session(&self, token: &str) -> Result<()> {
+    pub(crate) fn revoke_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
         let c = self.db().lock();
         SqliteSessionsRepo::new(&c).delete_by_token(&token)?;

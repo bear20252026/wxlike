@@ -12,7 +12,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use wxlike_platform::{Authed, PlatformState};
+use wxlike_platform::{AccountSessions, Authed, PlatformState};
 
 /// 从请求头解析可信 actor（平台 sessions 表）。失败 → `None` → 调用方回 401。
 pub(crate) fn actor_of(platform: &PlatformState, headers: &HeaderMap) -> Option<String> {
