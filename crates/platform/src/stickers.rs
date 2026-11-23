@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -36,19 +37,18 @@ async fn create_pack(
     authed: Authed,
     ApiJson(body): ApiJson<PackBody>,
 ) -> std::result::Result<(StatusCode, Json<StickerPack>), ApiError> {
-    Ok((
-        StatusCode::CREATED,
-        Json(platform.create_sticker_pack(&authed.user_id, &body)?),
-    ))
+    let actor = authed.user_id.clone();
+    let pack = offload(&platform, move |p| p.create_sticker_pack(&actor, &body)).await?;
+    Ok((StatusCode::CREATED, Json(pack)))
 }
 
 async fn list_packs(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(
-        serde_json::json!({ "packs": platform.sticker_packs(&authed.user_id)? }),
-    ))
+    let actor = authed.user_id.clone();
+    let packs = offload(&platform, move |p| p.sticker_packs(&actor)).await?;
+    Ok(Json(serde_json::json!({ "packs": packs })))
 }
 
 async fn one_pack(
@@ -56,7 +56,9 @@ async fn one_pack(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<StickerPack>, ApiError> {
-    Ok(Json(platform.sticker_pack(&authed.user_id, &id)?))
+    let actor = authed.user_id.clone();
+    let pack = offload(&platform, move |p| p.sticker_pack(&actor, &id)).await?;
+    Ok(Json(pack))
 }
 
 async fn remove_pack(
@@ -64,7 +66,8 @@ async fn remove_pack(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_sticker_pack(&authed.user_id, &id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.delete_sticker_pack(&actor, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -73,8 +76,14 @@ async fn install(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let added = platform.install_sticker_pack(&authed.user_id, &id)?;
-    let pack = platform.sticker_pack(&authed.user_id, &id)?;
+    let actor = authed.user_id.clone();
+    let id_for_task = id.clone();
+    let (added, pack) = offload(&platform, move |p| {
+        let added = p.install_sticker_pack(&actor, &id_for_task)?;
+        let pack = p.sticker_pack(&actor, &id_for_task)?;
+        Ok((added, pack))
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "added": added, "pack": pack })))
 }
 
@@ -83,7 +92,8 @@ async fn uninstall(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let removed = platform.uninstall_sticker_pack(&authed.user_id, &id)?;
+    let actor = authed.user_id.clone();
+    let removed = offload(&platform, move |p| p.uninstall_sticker_pack(&actor, &id)).await?;
     Ok(Json(serde_json::json!({ "removed": removed })))
 }
 
@@ -91,9 +101,9 @@ async fn installed(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(
-        serde_json::json!({ "stickers": platform.installed_stickers(&authed.user_id)? }),
-    ))
+    let actor = authed.user_id.clone();
+    let stickers = offload(&platform, move |p| p.installed_stickers(&actor)).await?;
+    Ok(Json(serde_json::json!({ "stickers": stickers })))
 }
 
 async fn order(
@@ -102,7 +112,9 @@ async fn order(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<OrderBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.order_sticker(&authed.user_id, &id, body.sort_order)?;
+    let actor = authed.user_id.clone();
+    let sort_order = body.sort_order;
+    offload(&platform, move |p| p.order_sticker(&actor, &id, sort_order)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -111,6 +123,7 @@ async fn remove(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.remove_sticker(&authed.user_id, &id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.remove_sticker(&actor, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

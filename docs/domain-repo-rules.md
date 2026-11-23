@@ -292,6 +292,15 @@ await 侧被借用。
 
 `wallet.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十一批：stickers handler 收口
+
+`stickers.rs` 的 9 个表情包读写接口都在 `async fn` 里直接调同步方法。
+
+本批全部改成 `offload`；`install` 的"安装 + 回读 pack"、`order` 的排序值都
+在同一个闭包里完成，响应形状不变。
+
+`stickers.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

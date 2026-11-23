@@ -71,6 +71,7 @@ ENFORCED_FILES = (
     "crates/platform/src/relations.rs",
     "crates/platform/src/report.rs",
     "crates/platform/src/wallet.rs",
+    "crates/platform/src/stickers.rs",
     "crates/platform/src/domain/friends.rs",
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",
