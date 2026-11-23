@@ -24,6 +24,7 @@ python scripts/platform_surface_audit.py --json
 | 第一批前 | 285 | 258 | 27 |
 | 第一批后 | 285 | **237** | **48** |
 | 第二批后 | 282 | **194** | **88** |
+| 第三批后 | 281 | **146** | **135** |
 
 目标：`pub` 方法 ≤120。
 
@@ -62,10 +63,23 @@ sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内�
 `publisher_followers`。它们变成 `pub(crate)` 后触发 dead_code，正好证明
 “留着 public 只是为了不报错”，不如直接删。
 
+## 第三批：communities / groups_admin / relations / stickers
+
+48 个零外部调用的方法从 `pub` 降为 `pub(crate)`：
+
+- `domain/communities.rs`：17 个；
+- `domain/groups_admin.rs`：11 个；
+- `domain/relations.rs`：11 个；
+- `domain/stickers.rs`：9 个。
+
+同一批里 `groups_admin::can_mention_all` 在降级后触发 dead_code：它只是把
+角色判断包了一层，`mention_all` 自己已经直接判断。删除后方法总数 282→281。
+
 ## 后续约定
 
 1. 新增 `Platform` 方法默认 `pub(crate)`，需要跨 crate 时才加 `pub`；
 2. 每批先跑盘点脚本，再改可见性，最后用 CI 编译兜底；
-3. 下一批优先 `articles / moments / media / video_feed` 等纯 handler 模块；
+3. 下一批优先 `sessions / content_index / security / wallet / account /
+   groups / inbox / trust` 等剩余零外部调用模块；
 4. 目标不是把方法藏起来，而是把真正的对外面收敛成 Account / Session /
    Message / Media / Wallet / Governance / Realtime / Health 几个 façade。

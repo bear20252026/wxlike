@@ -267,11 +267,6 @@ impl Platform {
 // ---------------------------------------------------------------------------
 
 impl Platform {
-    pub(crate) fn can_mention_all(&self, group: &str, user: &str) -> Result<bool> {
-        let role = self.role_of(group, user)?;
-        Ok(role == "owner" || role == "admin")
-    }
-
     /// @所有人：manager 专属。构造 mention Custom 帧并经 EventSink 扇给全体
     /// 成员（未指定 user_ids 语义 = all），帧内带 all 标记。
     pub(crate) async fn mention_all(&self, group: &str, actor: &str, text: &str) -> Result<String> {
