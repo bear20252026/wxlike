@@ -54,8 +54,6 @@ ignore = [
     "RUSTSEC-2025-0141",
     # fxhash，经 sctp-proto（WebRTC 数据通道）传递引入
     "RUSTSEC-2025-0057",
-    # instant，经 measure_time（rtc 的计时）传递引入
-    "RUSTSEC-2024-0384",
     # paste，经 boa_string（小程序容器的 JS 引擎）传递引入
     "RUSTSEC-2024-0436",
     # chrono 停止维护（2026-11-17 发布，所有版本受影响，无安全升级版本）。
