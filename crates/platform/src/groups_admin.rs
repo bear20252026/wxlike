@@ -68,13 +68,20 @@ async fn get_announcement(
     authed: Authed,
     Path(group): Path<String>,
 ) -> std::result::Result<Json<GroupAnnouncement>, ApiError> {
-    // TODO(ADR-28): 公告读取（`is_member` + `announcement` 两次上锁）仍在 await
-    // 上下文里同步跑；与本卡三条样板同类的只读点位，改法照 `set_announcement`。
-    if !platform.is_member(&group, &authed.user_id)? {
+    // ADR-28「群管理读」：成员校验 + 公告读取同一次阻塞执行，不在 await
+    // 上下文里直接调同步查库函数。
+    let actor = authed.user_id.clone();
+    let (is_member, announcement) = offload(&platform, move |p| {
+        if !p.is_member(&group, &actor)? {
+            return Ok((false, None));
+        }
+        Ok((true, p.announcement(&group)?))
+    })
+    .await?;
+    if !is_member {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "members only"));
     }
-    platform
-        .announcement(&group)?
+    announcement
         .map(Json)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no announcement"))
 }
@@ -211,9 +218,9 @@ async fn list_join_requests(
     authed: Authed,
     Path(group): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    // TODO(ADR-28): 申请列表读取（鉴权 + 一次上锁查行）仍在 await 上下文里同步跑；
-    // 与 `get_announcement` 同一类只读点位。
-    let rows = platform.join_requests(&group, &authed.user_id)?;
+    // ADR-28「群管理读」：鉴权 + 查行同一次阻塞执行。
+    let actor = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.join_requests(&group, &actor)).await?;
     Ok(Json(serde_json::json!({
         "requests": rows.into_iter().map(|(user, at)| serde_json::json!({
             "user_id": user, "requested_at": at
