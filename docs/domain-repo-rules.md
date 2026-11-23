@@ -200,6 +200,27 @@ handler 从此不再出现 `.db().lock()`；根层只有 `lib.rs` 的 WAL checkp
 
 三个文件里的 `TODO(ADR-28)` 归零；`crates/platform/src/*.rs` 全文搜索也为 0。
 
+## 第三十五批：account handler 的同步查库进阻塞池
+
+`account.rs` 是 handler 层里剩余同步查库最集中的文件：偏好读写/增量同步、
+step-up 发证、导出作业的提交/查询/取消、导出链接和账号注销，跨 10 个
+`async fn` 的多处同步调用仍直接跑在 await 上下文里。
+
+本批按"一次阻塞任务 = 一段完整业务顺序"处理：
+
+- 单段读（偏好文档、增量、作业详情、作业列表）直接 `offload`；
+- 多步写（偏好补丁、step-up、导出/取消/注销）用 `offload_api`，把鉴权
+  （`take_step_up` / `step_up_gate` / `confirm_identity`）、写库、审计收进同一
+  次阻塞执行，响应码与错误文案不变；
+- 口令与 TOTP 只在闭包内参与 `confirm_identity`，审计仍只记用途和结果；
+- `download` 保持不动：`take_export_download` 本身是 async，且取件故意不要求
+  Bearer。
+
+`account.rs` 同时加入 `adr28_async_db_guard.py` 的 `ENFORCED_FILES`，此后该文件
+再出现"async 里直接调同步查库"就会在 CI 判红。当前 guard 名单为
+`friends / groups / groups_admin / inbox / devices / keys / account`，加上
+`crates/admin/src` 整 crate。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
@@ -238,7 +259,9 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 ## 收尾与边界
 
 `domain/*.rs` 与 crate 根 handler 的生产 SQL 已清零，handler 也不再直连
-`db().lock()`，且 `TODO(ADR-28)` 已全部收口，没有下一批。后续只守边界：
+`db().lock()`，且 `TODO(ADR-28)` 已全部收口：SQL 与直连锁的清理没有下一批。
+ADR-28 的阻塞池覆盖仍按模块推进，已强制 `friends / groups / groups_admin /
+inbox / devices / keys / account` 与 `crates/admin/src`，后续只守边界：
 
 1. 新 SQL 只进 `domain/repo/*.rs`；
 2. 基线保持 0/0，门禁即零容忍；

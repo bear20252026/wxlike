@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::{offload, offload_api};
 use crate::error::{ApiError, PlatformError};
 use crate::extract::ApiJson;
 use axum::extract::{Path, Query, State};
@@ -89,9 +90,13 @@ async fn get_preferences(
     authed: Authed,
     Query(q): Query<PreferencesQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(
-        platform.preferences_document(&authed.user_id, q.quiet_hours)?,
-    ))
+    let me = authed.user_id.clone();
+    let quiet_hours = q.quiet_hours;
+    let value = offload(&platform, move |p| {
+        Ok(p.preferences_document(&me, quiet_hours)?)
+    })
+    .await?;
+    Ok(Json(value))
 }
 
 async fn put_preferences(
@@ -99,18 +104,22 @@ async fn put_preferences(
     authed: Authed,
     Json(body): Json<PreferencesPatch>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let patch = body.patch()?;
-    let device = platform.patch_device(&authed, &body.device_id)?;
-    let keys = patch.keys().cloned().collect::<Vec<_>>();
-    platform.patch_preferences(&authed.user_id, patch, &device)?;
-    // 审计只记改了哪些键——白名单内的键名不是个人数据，**值**才是。
-    platform.audit(
-        &authed.user_id,
-        "preferences.patch",
-        "preferences",
-        &keys.join(","),
-    );
-    Ok(Json(platform.preferences_document(&authed.user_id, None)?))
+    let value = offload_api(&platform, move |p| {
+        let patch = body.patch()?;
+        let device = p.patch_device(&authed, &body.device_id)?;
+        let keys = patch.keys().cloned().collect::<Vec<_>>();
+        p.patch_preferences(&authed.user_id, patch, &device)?;
+        // 审计只记改了哪些键——白名单内的键名不是个人数据，**值**才是。
+        p.audit(
+            &authed.user_id,
+            "preferences.patch",
+            "preferences",
+            &keys.join(","),
+        );
+        Ok(p.preferences_document(&authed.user_id, None)?)
+    })
+    .await?;
+    Ok(Json(value))
 }
 
 async fn sync_preferences(
@@ -123,7 +132,11 @@ async fn sync_preferences(
         .limit
         .unwrap_or(MAX_PREF_SYNC_PAGE)
         .clamp(1, MAX_PREF_SYNC_PAGE);
-    let (rows, head) = platform.preferences_since(&authed.user_id, since, limit)?;
+    let me = authed.user_id.clone();
+    let (rows, head) = offload(&platform, move |p| {
+        Ok(p.preferences_since(&me, since, limit)?)
+    })
+    .await?;
     let changes = rows
         .iter()
         .map(|r| {
@@ -153,12 +166,13 @@ async fn step_up_grant(
         ));
     }
     if body.password.is_empty() && body.totp_code.is_empty() {
-        platform.audit(
-            &authed.user_id,
-            "account.step_up",
-            &body.purpose,
-            "missing_credentials",
-        );
+        let me = authed.user_id.clone();
+        let purpose = body.purpose.clone();
+        offload_api(&platform, move |p| {
+            p.audit(&me, "account.step_up", &purpose, "missing_credentials");
+            Ok(())
+        })
+        .await?;
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "password or totp_code required",
@@ -166,22 +180,32 @@ async fn step_up_grant(
     }
     // 先闸后验：这个端点是一张**口令预言机**（持有会话的人可以离线重试到
     // 猜中），不闸就等于免费送第二条撞库通道。
-    platform.step_up_gate(&authed.user_id)?;
-    if !platform.confirm_identity(&authed.user_id, &body.totp_code, &body.password)? {
-        platform.step_up_denied(&authed.user_id);
-        platform.audit(&authed.user_id, "account.step_up", &body.purpose, "denied");
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid credentials",
-        ));
-    }
-    platform.step_up_passed(&authed.user_id);
-    let sid = platform.account_sid(&authed.token)?;
-    let expires_at = platform.grant_step_up(&authed.user_id, &sid, &body.purpose)?;
-    // 审计只记"给哪张用途发了证"。口令一个字节都不进审计，也不进日志。
-    platform.audit(&authed.user_id, "account.step_up", &body.purpose, "granted");
+    let me = authed.user_id.clone();
+    let token = authed.token.clone();
+    let purpose = body.purpose.clone();
+    let purpose_for_task = purpose.clone();
+    let password = body.password;
+    let totp_code = body.totp_code;
+    let expires_at = offload_api(&platform, move |p| {
+        p.step_up_gate(&me)?;
+        if !p.confirm_identity(&me, &totp_code, &password)? {
+            p.step_up_denied(&me);
+            p.audit(&me, "account.step_up", &purpose_for_task, "denied");
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials",
+            ));
+        }
+        p.step_up_passed(&me);
+        let sid = p.account_sid(&token)?;
+        let expires_at = p.grant_step_up(&me, &sid, &purpose_for_task)?;
+        // 审计只记"给哪张用途发了证"。口令一个字节都不进审计，也不进日志。
+        p.audit(&me, "account.step_up", &purpose_for_task, "granted");
+        Ok(expires_at)
+    })
+    .await?;
     Ok(Json(
-        json!({ "purpose": body.purpose, "expires_at": expires_at }),
+        json!({ "purpose": purpose, "expires_at": expires_at }),
     ))
 }
 
@@ -190,9 +214,13 @@ async fn request_export(
     authed: Authed,
     ApiJson(body): ApiJson<JobRequest>,
 ) -> std::result::Result<(StatusCode, Json<JobReply>), ApiError> {
-    platform.take_step_up(&authed, PURPOSE_EXPORT, &body.step_up_purpose)?;
-    let job = platform.request_export_job(&authed.user_id)?;
-    platform.audit(&authed.user_id, "account.export.requested", &job.id, "");
+    let job = offload_api(&platform, move |p| {
+        p.take_step_up(&authed, PURPOSE_EXPORT, &body.step_up_purpose)?;
+        let job = p.request_export_job(&authed.user_id)?;
+        p.audit(&authed.user_id, "account.export.requested", &job.id, "");
+        Ok(job)
+    })
+    .await?;
     Ok((StatusCode::ACCEPTED, Json(JobReply::of(&job))))
 }
 
@@ -201,9 +229,9 @@ async fn export_status(
     authed: Authed,
     Path(job_id): Path<String>,
 ) -> std::result::Result<Json<JobReply>, ApiError> {
-    Ok(Json(JobReply::of(
-        &platform.account_job(&authed.user_id, &job_id)?,
-    )))
+    let me = authed.user_id.clone();
+    let job = offload(&platform, move |p| p.account_job(&me, &job_id)).await?;
+    Ok(Json(JobReply::of(&job)))
 }
 
 async fn create_link(
@@ -211,8 +239,13 @@ async fn create_link(
     authed: Authed,
     Path(job_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let (raw, expires_in_ms) = platform.create_export_link(&authed.user_id, &job_id)?;
-    platform.audit(&authed.user_id, "account.export.link", &job_id, "");
+    let me = authed.user_id.clone();
+    let (raw, expires_in_ms) = offload_api(&platform, move |p| {
+        let pair = p.create_export_link(&me, &job_id)?;
+        p.audit(&me, "account.export.link", &job_id, "");
+        Ok(pair)
+    })
+    .await?;
     Ok(Json(json!({
         "download_token": raw,
         "url": format!("/api/account/export/download/{raw}"),
@@ -237,7 +270,8 @@ async fn list_jobs(
     State(platform): State<crate::PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let jobs = platform.account_jobs(&authed.user_id)?;
+    let me = authed.user_id.clone();
+    let jobs = offload(&platform, move |p| p.account_jobs(&me)).await?;
     let list = jobs.iter().map(JobReply::of).collect::<Vec<_>>();
     Ok(Json(
         json!({ "jobs": list, "purge_domains": PURGE_DOMAINS }),
@@ -253,13 +287,13 @@ async fn cancel_job(
     authed: Authed,
     Path(job_id): Path<String>,
 ) -> std::result::Result<Json<JobReply>, ApiError> {
-    let job = platform.cancel_account_job(&authed.user_id, &job_id)?;
-    platform.audit(
-        &authed.user_id,
-        "account.job.cancel",
-        &job.id,
-        job.kind.as_str(),
-    );
+    let me = authed.user_id.clone();
+    let job = offload_api(&platform, move |p| {
+        let job = p.cancel_account_job(&me, &job_id)?;
+        p.audit(&me, "account.job.cancel", &job.id, job.kind.as_str());
+        Ok(job)
+    })
+    .await?;
     Ok(Json(JobReply::of(&job)))
 }
 
@@ -276,14 +310,18 @@ async fn delete_account(
             "confirm must be true",
         ));
     }
-    platform.take_step_up(&authed, PURPOSE_DELETE, &body.step_up_purpose)?;
-    let (job, revoked) = platform.schedule_deletion(&authed.user_id)?;
-    platform.audit(
-        &authed.user_id,
-        "account.delete",
-        &job.id,
-        &format!("revoked_sessions={revoked}"),
-    );
+    let (job, revoked) = offload_api(&platform, move |p| {
+        p.take_step_up(&authed, PURPOSE_DELETE, &body.step_up_purpose)?;
+        let (job, revoked) = p.schedule_deletion(&authed.user_id)?;
+        p.audit(
+            &authed.user_id,
+            "account.delete",
+            &job.id,
+            &format!("revoked_sessions={revoked}"),
+        );
+        Ok((job, revoked))
+    })
+    .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({

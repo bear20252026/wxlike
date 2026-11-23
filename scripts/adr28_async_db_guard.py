@@ -65,6 +65,7 @@ ENFORCED_FILES = (
     "crates/platform/src/inbox.rs",
     "crates/platform/src/devices.rs",
     "crates/platform/src/keys.rs",
+    "crates/platform/src/account.rs",
     "crates/platform/src/domain/friends.rs",
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",
