@@ -13,8 +13,8 @@ python scripts/platform_surface_audit.py --json
 口径：
 
 - 只统计 `impl Platform` 块内的方法，混不进 free function / 其它 impl；
-- “外部调用”指 `crates/platform` 之外的 Rust 文件里出现 `.method(` 或
-  `Platform::method(`；
+- “外部调用”指 `crates/platform/src` 之外的 Rust 文件里出现 `.method(` 或
+  `Platform::method(`，包括 `server/tests`、平台集成测试与 `ui/src-tauri`；
 - 同名方法可能来自别的类型，脚本会给出位置，最终以编译结果为准。
 
 ## 当前基线
@@ -25,6 +25,7 @@ python scripts/platform_surface_audit.py --json
 | 第一批后 | 285 | **237** | **48** |
 | 第二批后 | 282 | **194** | **88** |
 | 第三批后 | 281 | **146** | **135** |
+| 第四批后 | 279 | **107** | **172** |
 
 目标：`pub` 方法 ≤120。
 
@@ -75,11 +76,30 @@ sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内�
 同一批里 `groups_admin::can_mention_all` 在降级后触发 dead_code：它只是把
 角色判断包了一层，`mention_all` 自己已经直接判断。删除后方法总数 282→281。
 
+## 第四批：剩余零外部调用方法
+
+40 个候选方法里，39 个从 `pub` 降为 `pub(crate)`：
+
+- `domain/sessions.rs`：8 个；
+- `domain/security.rs`、`domain/content_index.rs`、`domain/wallet.rs`：各 4 个；
+- `domain/account.rs`、`domain/groups.rs`、`domain/inbox.rs`、`domain/trust.rs`：各 3 个；
+- `domain/friends.rs`、`domain/notification.rs`、`domain/read.rs`：各 2 个；
+- `domain/call.rs`、`domain/qr_login.rs`：各 1 个。
+
+`groups_admin::set_member_mute` 被 `server/tests/policy_integration.rs` 直接调用，
+降级后 `native` job 报 `E0624: method is private`，已恢复为 `pub`。这也暴露了
+旧盘点口径漏掉 `server/tests` 的缺陷，脚本扫描范围已扩到 `server` 全目录、
+`tests` 与 `ui/src-tauri/src`。
+
+这一批把 `pub` 从 146 压到 **107**，低于 ≤120 的目标。同时删掉两个 dead
+方法 `call::call_host`、`content_index::media_referrers` 及后者专用的 repo
+函数，方法总数 281→279。剩下的 `pub` 都能看到真实外部调用点；后续不再为了
+数字批量降级，而是按 façade 归并。
+
 ## 后续约定
 
 1. 新增 `Platform` 方法默认 `pub(crate)`，需要跨 crate 时才加 `pub`；
 2. 每批先跑盘点脚本，再改可见性，最后用 CI 编译兜底；
-3. 下一批优先 `sessions / content_index / security / wallet / account /
-   groups / inbox / trust` 等剩余零外部调用模块；
-4. 目标不是把方法藏起来，而是把真正的对外面收敛成 Account / Session /
-   Message / Media / Wallet / Governance / Realtime / Health 几个 façade。
+3. 数量目标已达成，下一步转向按 Account / Session / Message / Media /
+   Wallet / Governance / Realtime / Health 归并 façade；
+4. 目标不是把方法藏起来，而是让组合根只暴露真正的跨 crate 入口。

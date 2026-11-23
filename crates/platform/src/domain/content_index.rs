@@ -30,9 +30,7 @@ use crate::Platform;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use super::repo::content_index::{
-    article_published, body, candidates, media_referrers, trend_rows,
-};
+use super::repo::content_index::{article_published, body, candidates, trend_rows};
 
 /// 单页上限：公开检索是扇出查询，别让它变成全表扫描的放大器。
 pub const MAX_SEARCH_PAGE: i64 = 50;
@@ -77,11 +75,6 @@ impl Platform {
             "status" => self.status_visible(viewer, doc_id),
             _ => Ok(false),
         }
-    }
-
-    pub(crate) fn media_referrers(&self, media_id: &str) -> Result<Vec<(String, String)>> {
-        let c = self.db().lock();
-        media_referrers(&c, media_id)
     }
 
     /// 检索：每个域一条泳道，候选页（无正文）→ 逐条授权 → 只为通过者取正文，

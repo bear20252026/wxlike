@@ -10,19 +10,26 @@ pub(crate)”或“拆 façade”时做依据。
 
 口径：
 - 只统计 `impl Platform` 块里的方法，不把 free function / 其它 impl 混进来；
-- “外部调用”指 `crates/platform` 之外的 Rust 文件里出现 `.method(` 或
-  `Platform::method(`。同名方法可能来自别的类型，脚本给出位置供人工复核。
+- “外部调用”指 `crates/platform/src` 之外的 Rust 文件里出现 `.method(` 或
+  `Platform::method(`，包括 `server/tests` 与平台集成测试。同名方法可能来自
+  别的类型，脚本给出位置供人工复核。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_SRC = REPO_ROOT / "crates" / "platform" / "src"
-SCAN_ROOTS = [REPO_ROOT / "crates", REPO_ROOT / "server" / "src"]
+SCAN_ROOTS = [
+    REPO_ROOT / "crates",
+    REPO_ROOT / "server",
+    REPO_ROOT / "tests",
+    REPO_ROOT / "ui" / "src-tauri" / "src",
+]
 
 METHOD_RE = re.compile(r"^\s{4}pub(?:\(crate\))?\s+(?:async\s+)?fn\s+([A-Za-z0-9_]+)", re.M)
 VIS_RE = re.compile(r"^\s{4}pub(\(crate\))?\s+(?:async\s+)?fn\s+([A-Za-z0-9_]+)", re.M)
@@ -67,20 +74,28 @@ def platform_methods() -> list[dict[str, str]]:
     return methods
 
 
+SKIP_DIRS = {".git", "target", "node_modules", "dist"}
+
+
 def rust_files() -> list[Path]:
     files: list[Path] = []
     for root in SCAN_ROOTS:
         if not root.exists():
             continue
-        for path in root.rglob("*.rs"):
-            try:
-                rel = path.relative_to(REPO_ROOT)
-            except ValueError:
-                continue
-            rel = str(rel).replace("\\", "/")
-            if rel.startswith("crates/platform/src/"):
-                continue
-            files.append(path)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for name in filenames:
+                if not name.endswith(".rs"):
+                    continue
+                path = Path(dirpath) / name
+                try:
+                    rel = path.relative_to(REPO_ROOT)
+                except ValueError:
+                    continue
+                rel = str(rel).replace("\\", "/")
+                if rel.startswith("crates/platform/src/"):
+                    continue
+                files.append(path)
     return files
 
 

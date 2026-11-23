@@ -80,20 +80,6 @@ pub(in crate::domain) fn article_published(conn: &Connection, doc_id: &str) -> R
         .is_some())
 }
 
-pub(in crate::domain) fn media_referrers(
-    conn: &Connection,
-    media_id: &str,
-) -> Result<Vec<(String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT ref_kind, ref_id FROM content_media_refs WHERE media_id = ?1
-         ORDER BY created_at",
-    )?;
-    let rows = stmt.query_map(params![media_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-}
-
 /// 单个域的一批候选，只有 id 与排序键，正文另外按条取。
 pub(in crate::domain) fn candidates(
     conn: &Connection,

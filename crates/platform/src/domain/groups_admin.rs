@@ -76,7 +76,7 @@ impl Platform {
 // ---------------------------------------------------------------------------
 
 impl Platform {
-    pub(crate) fn set_member_mute(
+    pub fn set_member_mute(
         &self,
         group: &str,
         actor: &str,
