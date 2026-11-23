@@ -38,7 +38,7 @@ pub struct Note {
 }
 
 impl Platform {
-    pub fn create_note(
+    pub(crate) fn create_note(
         &self,
         user: &str,
         note_id: Option<&str>,
@@ -65,7 +65,7 @@ impl Platform {
     }
 
     /// `expected_version` 必须等于服务端当前版本；不等就 409，绝不覆盖。
-    pub fn update_note(
+    pub(crate) fn update_note(
         &self,
         user: &str,
         id: &str,
@@ -96,14 +96,14 @@ impl Platform {
         })
     }
 
-    pub fn note(&self, user: &str, id: &str) -> Result<Note> {
+    pub(crate) fn note(&self, user: &str, id: &str) -> Result<Note> {
         let id = validate::id(id)?;
         let c = self.db().lock();
         note_row(&c, user, id)?.ok_or(PlatformError::NotFound)
     }
 
     /// `updated_at DESC` 分页；`cursor` = `"{updated_at}:{id}"`，与检索游标同形。
-    pub fn notes(
+    pub(crate) fn notes(
         &self,
         user: &str,
         cursor: Option<&str>,
@@ -124,7 +124,7 @@ impl Platform {
         Ok((rows, next, has_more))
     }
 
-    pub fn delete_note(&self, user: &str, id: &str) -> Result<()> {
+    pub(crate) fn delete_note(&self, user: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let changed = {
             let c = self.db().lock();

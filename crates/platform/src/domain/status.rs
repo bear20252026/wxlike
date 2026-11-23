@@ -65,14 +65,14 @@ pub struct BackgroundDraft {
 
 impl Platform {
     /// 好友 id 列表（状态变更事件的收件人集合）。
-    pub fn friend_ids(&self, user: &str) -> Result<Vec<String>> {
+    pub(crate) fn friend_ids(&self, user: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
         friend_ids_for(&c, user)
     }
 
     /// 设置状态。同一用户旧的活跃状态在**同一事务**里被清掉（含索引与
     /// 收藏撤权），因此两端不会同时看到两条"当前状态"。
-    pub fn set_status(&self, owner: &str, body: &StatusBody) -> Result<StatusView> {
+    pub(crate) fn set_status(&self, owner: &str, body: &StatusBody) -> Result<StatusView> {
         let owner = validate::id(owner)?.to_string();
         let kind = body.kind.as_str();
         if !KINDS.contains(&kind) {
@@ -112,7 +112,7 @@ impl Platform {
         })
     }
 
-    pub fn clear_status(&self, owner: &str, id: &str) -> Result<()> {
+    pub(crate) fn clear_status(&self, owner: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
@@ -126,14 +126,14 @@ impl Platform {
         })
     }
 
-    pub fn clear_all_statuses(&self, owner: &str) -> Result<usize> {
+    pub(crate) fn clear_all_statuses(&self, owner: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> { clear_owner(tx, owner, now) })
     }
 
     /// 好友 + 自己的可见状态（每人只返回最新一条活跃状态）。
-    pub fn statuses(&self, viewer: &str) -> Result<Vec<StatusView>> {
+    pub(crate) fn statuses(&self, viewer: &str) -> Result<Vec<StatusView>> {
         let now = wxlike_core::types::now_ms() as i64;
         let ids: Vec<String> = {
             let c = self.db().lock();
@@ -150,7 +150,7 @@ impl Platform {
         Ok(out)
     }
 
-    pub fn status_visible(&self, viewer: &str, id: &str) -> Result<bool> {
+    pub(crate) fn status_visible(&self, viewer: &str, id: &str) -> Result<bool> {
         let meta = {
             let c = self.db().lock();
             status_meta(&c, id)?
@@ -174,7 +174,7 @@ impl Platform {
         }
     }
 
-    pub fn status(&self, viewer: &str, id: &str) -> Result<Option<StatusView>> {
+    pub(crate) fn status(&self, viewer: &str, id: &str) -> Result<Option<StatusView>> {
         let id = validate::id(id)?;
         if !self.status_visible(viewer, id)? {
             return Ok(None);
@@ -183,7 +183,7 @@ impl Platform {
         status_row(&c, viewer, id)
     }
 
-    pub fn react_status(&self, user: &str, id: &str) -> Result<(bool, i64)> {
+    pub(crate) fn react_status(&self, user: &str, id: &str) -> Result<(bool, i64)> {
         let id = validate::id(id)?;
         if !self.status_visible(user, id)? {
             return Err(PlatformError::NotFound);
@@ -213,7 +213,11 @@ impl Platform {
     }
 
     /// 背景草稿：先校验再落行；校验失败不会覆盖已存在的草稿。
-    pub fn save_status_background(&self, owner: &str, media_id: &str) -> Result<BackgroundDraft> {
+    pub(crate) fn save_status_background(
+        &self,
+        owner: &str,
+        media_id: &str,
+    ) -> Result<BackgroundDraft> {
         let media_id = validate::id(media_id)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
@@ -226,19 +230,19 @@ impl Platform {
         })
     }
 
-    pub fn status_background(&self, owner: &str) -> Result<Option<BackgroundDraft>> {
+    pub(crate) fn status_background(&self, owner: &str) -> Result<Option<BackgroundDraft>> {
         let c = self.db().lock();
         background_draft(&c, owner)
     }
 
-    pub fn remove_status_background(&self, owner: &str) -> Result<()> {
+    pub(crate) fn remove_status_background(&self, owner: &str) -> Result<()> {
         let c = self.db().lock();
         delete_background(&c, owner)
     }
 
     /// 服务端到期清理：清可见性、删索引、撤收藏、留审计。返回清理条数。
     /// 由 `spawn_status_sweeper` 定时调用；测试直接调用以获得确定性。
-    pub fn sweep_expired_statuses(&self) -> Result<usize> {
+    pub(crate) fn sweep_expired_statuses(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let expired: Vec<(String, String)> = {
             let mut c = self.db().lock();

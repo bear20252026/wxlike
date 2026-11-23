@@ -88,7 +88,7 @@ pub struct Favorite {
 }
 
 impl Platform {
-    pub fn add_favorite(&self, user_id: &str, input: &FavoriteInput) -> Result<Favorite> {
+    pub(crate) fn add_favorite(&self, user_id: &str, input: &FavoriteInput) -> Result<Favorite> {
         let source_conv = validate::conv(&input.source_conv)?;
         validate_snapshot_input(input)?;
         let c = self.db().lock();
@@ -102,7 +102,7 @@ impl Platform {
 
     /// 收藏一个内容对象。授权在写入前完成；快照由服务端从权威表生成
     /// （不信任客户端提交的正文）。重复收藏同一对象返回已有行。
-    pub fn add_object_favorite(&self, user: &str, kind: &str, id: &str) -> Result<Favorite> {
+    pub(crate) fn add_object_favorite(&self, user: &str, kind: &str, id: &str) -> Result<Favorite> {
         if !OBJECT_KINDS.contains(&kind) {
             return Err(PlatformError::BadInput("unknown favorite kind"));
         }
@@ -145,7 +145,7 @@ impl Platform {
     }
 
     /// Legacy 分页（按 created_at）。新客户端用 [`Platform::favorites_sorted`]。
-    pub fn list_favorites(
+    pub(crate) fn list_favorites(
         &self,
         user_id: &str,
         before_created: Option<i64>,
@@ -159,7 +159,7 @@ impl Platform {
     }
 
     /// 排序列表：`sort_order ASC, created_at DESC`，游标 `"{sort}:{created}:{id}"`。
-    pub fn favorites_sorted(
+    pub(crate) fn favorites_sorted(
         &self,
         user: &str,
         cursor: Option<&str>,
@@ -180,7 +180,7 @@ impl Platform {
         Ok((rows.into_iter().map(scrub).collect(), next, has_more))
     }
 
-    pub fn favorite(&self, user_id: &str, id: &str) -> Result<Favorite> {
+    pub(crate) fn favorite(&self, user_id: &str, id: &str) -> Result<Favorite> {
         let id = validate::id(id)?;
         let c = self.db().lock();
         let row = favorite_row(&c, user_id, id)?.ok_or(PlatformError::NotFound)?;
@@ -188,7 +188,12 @@ impl Platform {
     }
 
     /// 收藏夹内搜索：只搜自己的行，撤权行不参与。
-    pub fn search_favorites(&self, user: &str, q: &str, limit: i64) -> Result<Vec<Favorite>> {
+    pub(crate) fn search_favorites(
+        &self,
+        user: &str,
+        q: &str,
+        limit: i64,
+    ) -> Result<Vec<Favorite>> {
         let q = q.trim();
         if q.is_empty() {
             return Err(PlatformError::BadInput("query must not be empty"));
@@ -203,7 +208,7 @@ impl Platform {
         Ok(rows.into_iter().map(scrub).collect())
     }
 
-    pub fn update_favorite(
+    pub(crate) fn update_favorite(
         &self,
         user: &str,
         id: &str,
@@ -232,7 +237,7 @@ impl Platform {
     }
 
     /// 拖拽排序：把 `ids` 依次写成 0..n。任一 id 不属于本人则整单拒绝。
-    pub fn reorder_favorites(&self, user: &str, ids: &[String]) -> Result<usize> {
+    pub(crate) fn reorder_favorites(&self, user: &str, ids: &[String]) -> Result<usize> {
         if ids.len() > MAX_FAVORITE_PAGE {
             return Err(PlatformError::BadInput("too many favorites"));
         }
@@ -254,7 +259,7 @@ impl Platform {
         })
     }
 
-    pub fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
+    pub(crate) fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let changed = {
             let c = self.db().lock();
