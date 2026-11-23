@@ -129,30 +129,31 @@ async fn decline(
     Ok(Json(serde_json::json!({ "status": "declined" })))
 }
 
-// TODO(ADR-28): 通讯录的四个读接口仍在 await 上下文里同步查库（只读、本卡三条
-// 样板热点之外的点位）。改法与 `accept` 一致：`offload(&platform, move |p| ..)`。
 async fn incoming(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Vec<RequestRow>>, ApiError> {
-    // TODO(ADR-28): 见上面的模块级说明——同步查库留在 await 上下文里。
-    Ok(Json(platform.incoming_requests(&authed.user_id)?))
+    let me = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.incoming_requests(&me)).await?;
+    Ok(Json(rows))
 }
 
 async fn outgoing(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Vec<RequestRow>>, ApiError> {
-    // TODO(ADR-28): 同步查库留在 await 上下文里（见 `incoming` 上方说明）。
-    Ok(Json(platform.outgoing_requests(&authed.user_id)?))
+    let me = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.outgoing_requests(&me)).await?;
+    Ok(Json(rows))
 }
 
 async fn list_friends(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Vec<FriendRow>>, ApiError> {
-    // TODO(ADR-28): 同步查库留在 await 上下文里（见 `incoming` 上方说明）。
-    Ok(Json(platform.friends(&authed.user_id)?))
+    let me = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.friends(&me)).await?;
+    Ok(Json(rows))
 }
 
 async fn set_remark(
@@ -202,11 +203,12 @@ async fn changes(
     authed: Authed,
     Query(q): Query<ChangesQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    // TODO(ADR-28): 增量同步两次上锁（changes + changes_head）都在 await 上下文里
-    // 跑（见 `incoming` 上方说明）。
     let since = q.since.unwrap_or(0).max(0);
-    let rows = platform.changes(&authed.user_id, since, 200)?;
-    let head = platform.changes_head(&authed.user_id)?;
+    let me = authed.user_id.clone();
+    let (rows, head) = offload(&platform, move |p| {
+        Ok((p.changes(&me, since, 200)?, p.changes_head(&me)?))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "changes": rows,
         "cursor": head,
