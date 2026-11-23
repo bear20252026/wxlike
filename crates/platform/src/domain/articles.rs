@@ -22,11 +22,11 @@ use super::repo::articles::{
     advance_follow_cursor, article_is_published, article_list, article_read_target, article_row,
     delete_follow, insert_article, insert_article_version, insert_follow_ignore, insert_publisher,
     insert_reaction, load_editable_article, publish_side_effects, publisher_exists,
-    publisher_followed, publisher_followers, publisher_id_by_owner, publisher_ids_for_user,
-    publisher_name_matches, publisher_owner, publisher_published_count, publisher_record,
-    reaction_active, reaction_counts, record_article_read, remove_reaction, render_doc,
-    require_image_media, soft_delete_article, unread_count, update_publisher, user_name,
-    write_article_revision, ArticleCreate, PublisherRecord,
+    publisher_followed, publisher_id_by_owner, publisher_ids_for_user, publisher_name_matches,
+    publisher_owner, publisher_published_count, publisher_record, reaction_active, reaction_counts,
+    record_article_read, remove_reaction, render_doc, require_image_media, soft_delete_article,
+    unread_count, update_publisher, user_name, write_article_revision, ArticleCreate,
+    PublisherRecord,
 };
 
 pub const MAX_ARTICLE_BLOCKS: usize = 200;
@@ -196,11 +196,6 @@ impl Platform {
             unread,
             published_articles,
         })
-    }
-
-    pub(crate) fn publish_followers(&self, publisher_id: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
-        publisher_followers(&c, publisher_id)
     }
 
     pub(crate) fn follow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {

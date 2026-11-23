@@ -114,16 +114,6 @@ pub(in crate::domain) fn publisher_published_count(
     Ok(count)
 }
 
-pub(in crate::domain) fn publisher_followers(
-    c: &Connection,
-    publisher_id: &str,
-) -> Result<Vec<String>> {
-    let mut stmt = c.prepare("SELECT user_id FROM publisher_follows WHERE publisher_id = ?1")?;
-    let rows = stmt.query_map(params![publisher_id], |r| r.get::<_, String>(0))?;
-    let followers = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(followers)
-}
-
 pub(in crate::domain) fn update_publisher(
     c: &Connection,
     id: &str,

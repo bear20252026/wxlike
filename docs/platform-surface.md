@@ -23,7 +23,7 @@ python scripts/platform_surface_audit.py --json
 |---|---:|---:|---:|
 | 第一批前 | 285 | 258 | 27 |
 | 第一批后 | 285 | **237** | **48** |
-| 第二批后 | 285 | **194** | **91** |
+| 第二批后 | 282 | **194** | **88** |
 
 目标：`pub` 方法 ≤120。
 
@@ -56,6 +56,11 @@ sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内�
 - `domain/video_feed.rs`：13 个。
 
 `crates/platform/tests` 没有直接调用这些方法，HTTP 面测试不受影响。
+
+顺带删掉三个已经无人调用的包装方法：`publish_followers`、`publish_moment`、
+`can_see_moment`，以及只服务 `publish_followers` 的 repo 函数
+`publisher_followers`。它们变成 `pub(crate)` 后触发 dead_code，正好证明
+“留着 public 只是为了不报错”，不如直接删。
 
 ## 后续约定
 

@@ -249,18 +249,6 @@ pub(crate) fn require_visible(platform: &Platform, moment_id: &str, viewer: &str
 }
 
 impl Platform {
-    /// Stores a new moment. Media ids must already exist (WP-05), so a moment
-    /// cannot dangle a reference to an object nobody uploaded.
-    pub(crate) fn publish_moment(
-        &self,
-        author: &str,
-        text: &str,
-        media_ids: &[String],
-        visibility: Visibility,
-    ) -> Result<String> {
-        self.publish_moment_with(author, text, media_ids, visibility, "", None)
-    }
-
     /// 发布（可带分组可见与草稿来源）。发布、索引、媒体引用、删草稿同事务。
     pub(crate) fn publish_moment_with(
         &self,
@@ -396,19 +384,6 @@ impl Platform {
         let c = self.db().lock();
         let row = moment_record(&c, moment_id)?;
         Ok(row.map(|r| (r.seq, r.into_head())))
-    }
-
-    /// Whether `viewer` may see this moment. Authors always see their own;
-    /// `public` is open to non-blocked viewers; `friends` requires the
-    /// friendship row; `groups` additionally requires the author's friend
-    /// group label to match `audience_group`.
-    pub(crate) fn can_see_moment(
-        &self,
-        viewer: &str,
-        author: &str,
-        visibility: &str,
-    ) -> Result<bool> {
-        self.can_see_moment_full(viewer, author, visibility, "")
     }
 
     pub(crate) fn can_see_moment_full(
