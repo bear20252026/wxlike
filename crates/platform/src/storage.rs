@@ -527,6 +527,7 @@ mod tests {
                     1
                 );
             }
+            StorageConnection::Postgres(_) => panic!("SqliteStorage must hand out sqlite"),
         };
     }
 
@@ -553,7 +554,7 @@ mod tests {
         match storage.acquire() {
             StorageConnection::Postgres(pool) => pool.health().expect("pg health"),
             StorageConnection::Sqlite(_) => panic!("PgStorage must not hand out sqlite"),
-        }
+        };
     }
 
     #[test]
