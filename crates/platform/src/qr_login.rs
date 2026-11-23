@@ -54,9 +54,12 @@ async fn create_ticket(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let prefs = parse_create_body(&body)?;
     let creator = authed.user_id.clone();
-    let ticket =
-        crate::db::offload_api(&platform, move |p| p.create_qr_ticket(&creator, &prefs)).await?;
-    platform.audit(&authed.user_id, "qr.ticket.create", &ticket.id, "");
+    let ticket = crate::db::offload_api(&platform, move |p| {
+        let ticket = p.create_qr_ticket(&creator, &prefs)?;
+        p.audit(&creator, "qr.ticket.create", &ticket.id, "");
+        Ok(ticket)
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "ticket_id": ticket.id,
         "secret": ticket.secret,
@@ -119,7 +122,7 @@ async fn exchange_ticket(
     Path(ticket_id): Path<String>,
     ApiJson(body): ApiJson<SecretBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let secret = body.secret.trim();
+    let secret = body.secret.trim().to_string();
     if secret.is_empty() {
         return Err(ApiError::unprocessable("secret is required"));
     }
@@ -127,23 +130,25 @@ async fn exchange_ticket(
 
     // 第一段（持锁）：定位、验期、抢占式消费。锁在函数里放下：
     // create_session_for_device 会再拿一次库锁。
-    let (creator, device_id, label) = consume_qr_ticket(&platform, &ticket_id, secret, now)?;
+    let ticket_id_for_task = ticket_id.clone();
+    let (creator, device_id, label) = crate::db::offload_api(&platform, move |p| {
+        consume_qr_ticket(p, &ticket_id_for_task, &secret, now)
+    })
+    .await?;
 
     // 第二段（无锁）：签发创建者的真实会话——与 /api/login 同一条路径。
-    let token = platform
-        .create_session_for_device(
-            &creator,
-            platform.options().session_ttl_ms,
-            &device_id,
-            &label,
-            "",
-        )
-        .map_err(ApiError::from)?;
-    let name = platform.display_name_of(&creator).map_err(ApiError::from)?;
-    platform.audit(&creator, "qr.ticket.exchange", &ticket_id, "session issued");
+    let creator_for_response = creator.clone();
+    let session_ttl = platform.options().session_ttl_ms;
+    let (token, name) = crate::db::offload_api(&platform, move |p| {
+        let token = p.create_session_for_device(&creator, session_ttl, &device_id, &label, "")?;
+        let name = p.display_name_of(&creator)?;
+        p.audit(&creator, "qr.ticket.exchange", &ticket_id, "session issued");
+        Ok((token, name))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "token": token,
-        "user_id": creator,
+        "user_id": creator_for_response,
         "name": name,
     })))
 }
@@ -158,19 +163,20 @@ async fn decide(
     // `ticket_id` 之后还要进审计与回包，闭包只能拿走一份 clone。
     let target = ticket_id.clone();
     crate::db::offload_api(&platform, move |p| {
-        p.decide_qr_ticket(&target, &scanner, approve)
+        p.decide_qr_ticket(&target, &scanner, approve)?;
+        p.audit(
+            &scanner,
+            if approve {
+                "qr.ticket.approve"
+            } else {
+                "qr.ticket.reject"
+            },
+            &target,
+            "",
+        );
+        Ok(())
     })
     .await?;
-    platform.audit(
-        &authed.user_id,
-        if approve {
-            "qr.ticket.approve"
-        } else {
-            "qr.ticket.reject"
-        },
-        &ticket_id,
-        "",
-    );
     Ok(Json(serde_json::json!({
         "ticket_id": ticket_id,
         "state": if approve { "APPROVED" } else { "REJECTED" },

@@ -376,6 +376,17 @@ await 侧被借用。
 
 `perms.rs`、`trust.rs`、`secret.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十七批：video_feed / video_refs / qr_login 收口
+
+- `video_feed::feed` 一次 `offload` 取列表；
+- `video_refs` 的回调把 `store_callback`（校验 + 导出入库）放进 `offload_api`，
+  错误仍走 `explain`；按 id 取引用一次 `offload`，缺失仍 404；
+- `qr_login` 的建票把建票+审计合并；兑换保持两段：第一段消费票、第二段
+  签发会话+取显示名+审计，各一次 `offload_api`；approve/reject 把决定与审计
+  合并，响应里的 ticket_id 用外面的 clone。
+
+三个文件加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

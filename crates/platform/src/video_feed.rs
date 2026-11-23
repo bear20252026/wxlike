@@ -80,12 +80,14 @@ async fn feed(
     authed: Authed,
     Query(q): Query<FeedQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (items, next, has_more) = platform.video_feed(
-        &authed.user_id,
-        &q.mode,
-        q.cursor.as_deref(),
-        q.limit.unwrap_or(page::DEFAULT_PAGE),
-    )?;
+    let actor = authed.user_id.clone();
+    let mode = q.mode;
+    let cursor = q.cursor;
+    let limit = q.limit.unwrap_or(page::DEFAULT_PAGE);
+    let (items, next, has_more) = offload(&platform, move |p| {
+        p.video_feed(&actor, &mode, cursor.as_deref(), limit)
+    })
+    .await?;
     Ok(page::listing_response(items, next, has_more))
 }
 
