@@ -296,11 +296,34 @@ impl Platform {
     pub fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64> {
         let id = validate::id(id)?.to_string();
         let by = validate::id(by)?.to_string();
-        let mut c = self.db().lock();
-        // `claimed` / `count` 是**领取前**的快照，事务外的卡片回写要用它判断
-        // “这是不是最后一手”（`status_now_finished` 自己会 +1）。
-        let (share, claimed, count, conv) = c.with_tx(|tx| -> Result<(i64, i64, i64, String)> {
-            let Some(state) = redpacket_state(tx, &id)? else {
+        let (share, claimed, count, conv) = {
+            let mut c = self.db().lock();
+            claim_redpacket_tx(&mut c, &id, &by)?
+        };
+
+        if !conv.is_empty() {
+            self.notify_redpacket_claim(
+                &id,
+                &conv,
+                &by,
+                share,
+                status_now_finished(claimed, count),
+            );
+        }
+        Ok(share)
+    }
+
+    /// 红包领取的唯一事务边界：快照、校验、分钱、记账、写领取人。
+    ///
+    /// 返回的是**领取前**的 `(share, claimed, count, conv)`：`claimed/count`
+    /// 供事务外的卡片回写判断“最后一手”，`conv` 为空表示无需回写。
+    fn claim_redpacket_tx(
+        c: &mut rusqlite::Connection,
+        id: &str,
+        by: &str,
+    ) -> Result<(i64, i64, i64, String)> {
+        c.with_tx(|tx| -> Result<(i64, i64, i64, String)> {
+            let Some(state) = redpacket_state(tx, id)? else {
                 return Err(PlatformError::NotFound);
             };
             let RedpacketState {
@@ -326,7 +349,7 @@ impl Platform {
             }
             let mut claimers: Vec<String> =
                 serde_json::from_str(&claimers_json).unwrap_or_default();
-            if claimers.contains(&by) {
+            if claimers.iter().any(|claimer| claimer == by) {
                 // one share per person; a second grab is refused without touching money
                 return Err(PlatformError::Conflict("already claimed".into()));
             }
@@ -335,38 +358,24 @@ impl Platform {
             let remaining_money = total - claimed_total;
             let share = draw_share(remaining_money, remaining_slots);
 
-            ensure_wallet(tx, &by)?;
-            credit(tx, &by, share)?;
-            claimers.push(by.clone());
+            ensure_wallet(tx, by)?;
+            credit(tx, by, share)?;
+            claimers.push(by.to_string());
             let claimers_json = serde_json::to_string(&claimers)
                 .map_err(|_| PlatformError::BadInput("claimers record is corrupt"))?;
-            update_claim(tx, &id, share, &claimers_json)?;
+            update_claim(tx, id, share, &claimers_json)?;
             log_ledger(
                 tx,
-                &by,
+                by,
                 kind::REDPACKET_IN,
                 share,
                 "",
-                &id,
+                id,
                 "",
                 wxlike_core::types::now_ms() as i64,
             )?;
             Ok((share, claimed, count, conv_id))
-        })?;
-        drop(c);
-
-        // P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片
-        // （不占时间线、不占序列号——不变式 3）。未带 conv 的包没有卡片，跳过。
-        if !conv.is_empty() {
-            self.notify_redpacket_claim(
-                &id,
-                &conv,
-                &by,
-                share,
-                status_now_finished(claimed, count),
-            );
-        }
-        Ok(share)
+        })
     }
 
     /// P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片（不占

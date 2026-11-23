@@ -239,7 +239,29 @@ impl Platform {
     /// 返回实际收件人数（不含发送者自己）。
     pub async fn send_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<usize> {
         let channel = validate::id(channel)?.to_string();
-        let channel_for_task = channel.clone();
+        let user = user.to_string();
+        self.ensure_danmaku_member(&channel, &user).await?;
+        self.moderate_danmaku(&channel, &user, text).await?;
+        let (session, recipients) = self.danmaku_delivery(&channel, &user).await?;
+        if recipients.is_empty() {
+            return Ok(0);
+        }
+        let mut env = crate::system_envelope(&channel, &user, recipients.clone(), "");
+        env.body = wxlike_core::MsgBody::Custom {
+            kind: "live.danmaku".into(),
+            payload: serde_json::json!({
+                "session_id": session,
+                "text": text,
+                "sent_at_ms": wxlike_core::types::now_ms(),
+            }),
+        };
+        self.emit(env).await;
+        Ok(recipients.len())
+    }
+
+    /// 频道成员才能发弹幕；权限判定在阻塞池里完成。
+    async fn ensure_danmaku_member(&self, channel: &str, user: &str) -> Result<()> {
+        let channel_for_task = channel.to_string();
         let user_for_task = user.to_string();
         self.db()
             .blocking(move |c| {
@@ -249,19 +271,23 @@ impl Platform {
                     .ok_or(PlatformError::Forbidden)?;
                 Ok(())
             })
-            .await?;
+            .await
+    }
+
+    /// 弹幕同样过内容管线；软违规挂起写队列，硬违规直接拒绝。
+    async fn moderate_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<()> {
         if text.trim().is_empty() || text.chars().count() > DANMAKU_MAX_CHARS {
             return Err(PlatformError::BadInput("danmaku text length"));
         }
-        // 审核：弹幕同样过内容管线（软违规按模式挂起/打标，硬违规拒绝）。
-        // 判定是纯内存的；挂起写队列进阻塞池，避免在 await 上下文里上锁。
         let decision = self.moderate(text);
         match decision.outcome {
-            wxlike_moderation::Outcome::Publish | wxlike_moderation::Outcome::PublishFlagged => {}
+            wxlike_moderation::Outcome::Publish | wxlike_moderation::Outcome::PublishFlagged => {
+                Ok(())
+            }
             wxlike_moderation::Outcome::Hold => {
                 let labels = serde_json::to_string(&decision.labels)?;
                 let decision_json = serde_json::to_string(&decision)?;
-                let conv = channel.clone();
+                let conv = channel.to_string();
                 let sender = user.to_string();
                 let body = text.to_string();
                 let now = wxlike_core::types::now_ms() as i64;
@@ -280,35 +306,24 @@ impl Platform {
                         )
                     })
                     .await?;
-                return Err(PlatformError::Forbidden);
+                Err(PlatformError::Forbidden)
             }
-            wxlike_moderation::Outcome::Reject => return Err(PlatformError::Forbidden),
+            wxlike_moderation::Outcome::Reject => Err(PlatformError::Forbidden),
         }
-        let channel_for_task = channel.clone();
+    }
+
+    /// 当前活跃场次 + 收件人；空列表由调用方直接返回 0。
+    async fn danmaku_delivery(&self, channel: &str, user: &str) -> Result<(String, Vec<String>)> {
+        let channel_for_task = channel.to_string();
         let user_for_task = user.to_string();
-        let (session, recipients) = self
-            .db()
+        self.db()
             .blocking(move |c| {
                 let session =
                     active_session_id(c, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
                 let recipients = danmaku_recipients(c, &session, &user_for_task)?;
                 Ok((session, recipients))
             })
-            .await?;
-        if recipients.is_empty() {
-            return Ok(0);
-        }
-        let mut env = crate::system_envelope(&channel, user, recipients.clone(), "");
-        env.body = wxlike_core::MsgBody::Custom {
-            kind: "live.danmaku".into(),
-            payload: serde_json::json!({
-                "session_id": session,
-                "text": text,
-                "sent_at_ms": wxlike_core::types::now_ms(),
-            }),
-        };
-        self.emit(env).await;
-        Ok(recipients.len())
+            .await
     }
 }
 

@@ -139,6 +139,18 @@ async fn totp_disable(
     Ok(StatusCode::NO_CONTENT)
 }
 
+struct LoginAttempt {
+    account_key: String,
+    client: Option<String>,
+    captcha: Option<(String, String)>,
+    name: String,
+    password: String,
+    totp_code: Option<String>,
+    device_id: String,
+    device_name: String,
+    session_ttl: u64,
+}
+
 async fn login(
     State(platform): State<PlatformState>,
     PeerAddr(peer): PeerAddr,
@@ -152,64 +164,88 @@ async fn login(
     let captcha = req
         .captcha()
         .map(|(id, answer)| (id.to_string(), answer.to_string()));
-    let name = req.name;
-    let password = req.password;
-    let totp_code = req.totp_code;
-    let device_id = req.device_id;
-    let device_name = req.device_name;
-    let session_ttl = platform.options().session_ttl_ms;
-    let reply = offload_api(&platform, move |p| {
-        let mut checks = vec![(wxlike_risk::Action::Login, account_key.as_str())];
-        if let Some(c) = client.as_deref() {
-            checks.push((wxlike_risk::Action::Login, c));
-        }
-        p.risk_gate_many(
-            &checks,
-            captcha
-                .as_ref()
-                .map(|(id, answer)| (id.as_str(), answer.as_str())),
-        )?;
-
-        let verified = p.verify_credentials(&name, &password)?;
-        let Some(user_id) = verified else {
-            p.risk_record(wxlike_risk::Action::Login, &account_key)?;
-            if let Some(c) = client.as_deref() {
-                p.risk_record(wxlike_risk::Action::Login, c)?;
-            }
-            p.audit(&name, "user.login", "", "failed");
-            return Err(ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "invalid credentials",
-            ));
-        };
-        // **全部因子通过之后才清空失败计数**（issue #6）。
-        //
-        // 原来这里先 `risk_clear` 再校验 TOTP：知道密码的人可以拿错误的 6 位码
-        // 无限尝试，每次失败都把计数清零——等于 TOTP 没有失败限流。
-        if let Err(err) = p.totp_check_login(&user_id, totp_code.as_deref()) {
-            p.risk_record(wxlike_risk::Action::Login, &account_key)?;
-            if let Some(c) = client.as_deref() {
-                p.risk_record(wxlike_risk::Action::Login, c)?;
-            }
-            p.audit(&name, "user.login", "", "totp_failed");
-            return Err(err.into());
-        }
-        p.risk_clear(wxlike_risk::Action::Login, &account_key)?;
-        if let Some(c) = client.as_deref() {
-            p.risk_clear(wxlike_risk::Action::Login, c)?;
-        }
-        let token = p.create_session_for_device(
-            &user_id,
-            session_ttl,
-            &device_id,
-            &device_name,
-            client.as_deref().unwrap_or(""),
-        )?;
-        p.audit(&user_id, "user.login", &user_id, "ok");
-        Ok(auth_reply(p, user_id, token, &device_id))
-    })
-    .await?;
+    let attempt = LoginAttempt {
+        account_key,
+        client,
+        captcha,
+        name: req.name,
+        password: req.password,
+        totp_code: req.totp_code,
+        device_id: req.device_id,
+        device_name: req.device_name,
+        session_ttl: platform.options().session_ttl_ms,
+    };
+    let reply = offload_api(&platform, move |p| login_inner(p, attempt)).await?;
     Ok((StatusCode::OK, Json(reply)))
+}
+
+/// 登录失败：账号键与来源键都记，再留审计；返回 `Ok` 让调用方决定 HTTP 错误。
+fn login_failed(
+    p: &crate::Platform,
+    attempt: &LoginAttempt,
+    reason: &str,
+) -> std::result::Result<(), ApiError> {
+    p.risk_record(wxlike_risk::Action::Login, &attempt.account_key)?;
+    if let Some(c) = attempt.client.as_deref() {
+        p.risk_record(wxlike_risk::Action::Login, c)?;
+    }
+    p.audit(&attempt.name, "user.login", "", reason);
+    Ok(())
+}
+
+/// 登录前置风控：账号键 + 来源键都过闸，验证码按需带上。
+fn login_risk_gate(
+    p: &crate::Platform,
+    attempt: &LoginAttempt,
+) -> std::result::Result<(), ApiError> {
+    let mut checks = vec![(wxlike_risk::Action::Login, attempt.account_key.as_str())];
+    if let Some(c) = attempt.client.as_deref() {
+        checks.push((wxlike_risk::Action::Login, c));
+    }
+    p.risk_gate_many(
+        &checks,
+        attempt
+            .captcha
+            .as_ref()
+            .map(|(id, answer)| (id.as_str(), answer.as_str())),
+    )?;
+    Ok(())
+}
+
+/// 登录主流程：风控 → 口令 → TOTP → 清计数 → 建会话。
+///
+/// 顺序不能动：**全部因子通过之后才清空失败计数**（issue #6）。先清再验
+/// TOTP 会让知道密码的人用错误 6 位码无限尝试，等于 TOTP 没有失败限流。
+fn login_inner(
+    p: &crate::Platform,
+    attempt: LoginAttempt,
+) -> std::result::Result<AuthReply, ApiError> {
+    login_risk_gate(p, &attempt)?;
+    let verified = p.verify_credentials(&attempt.name, &attempt.password)?;
+    let Some(user_id) = verified else {
+        login_failed(p, &attempt, "failed")?;
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid credentials",
+        ));
+    };
+    if let Err(err) = p.totp_check_login(&user_id, attempt.totp_code.as_deref()) {
+        login_failed(p, &attempt, "totp_failed")?;
+        return Err(err.into());
+    }
+    p.risk_clear(wxlike_risk::Action::Login, &attempt.account_key)?;
+    if let Some(c) = attempt.client.as_deref() {
+        p.risk_clear(wxlike_risk::Action::Login, c)?;
+    }
+    let token = p.create_session_for_device(
+        &user_id,
+        attempt.session_ttl,
+        &attempt.device_id,
+        &attempt.device_name,
+        attempt.client.as_deref().unwrap_or(""),
+    )?;
+    p.audit(&user_id, "user.login", &user_id, "ok");
+    Ok(auth_reply(p, user_id, token, &attempt.device_id))
 }
 
 async fn me(
