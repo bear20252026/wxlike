@@ -298,7 +298,7 @@ impl Platform {
         let by = validate::id(by)?.to_string();
         let (share, claimed, count, conv) = {
             let mut c = self.db().lock();
-            claim_redpacket_tx(&mut c, &id, &by)?
+            Self::claim_redpacket_tx(&mut c, &id, &by)?
         };
 
         if !conv.is_empty() {
