@@ -293,96 +293,94 @@ pub struct TurnClient {
     lifetime: u32,
 }
 
-impl TurnClient {
-    /// 分配中继地址（含 401 挑战重发）。
-    pub fn allocate(cfg: &TurnConfig) -> anyhow::Result<Self> {
-        let server: SocketAddr = format!("{}:{}", cfg.host, cfg.port).parse().or_else(|_| {
-            use std::net::ToSocketAddrs;
-            format!("{}:{}", cfg.host, cfg.port)
-                .to_socket_addrs()
-                .ok()
-                .and_then(|mut it| it.next())
-                .ok_or_else(|| anyhow::anyhow!("TURN 地址解析失败"))
-        })?;
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect(server)?;
-        socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+fn resolve_server(cfg: &TurnConfig) -> anyhow::Result<SocketAddr> {
+    format!("{}:{}", cfg.host, cfg.port).parse().or_else(|_| {
+        use std::net::ToSocketAddrs;
+        format!("{}:{}", cfg.host, cfg.port)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut it| it.next())
+            .ok_or_else(|| anyhow::anyhow!("TURN 地址解析失败"))
+    })
+}
 
-        // 1) 不带凭据的 Allocate：正常会拿到 401 + realm/nonce
-        let req = build(
-            M_ALLOCATE,
-            C_REQUEST,
-            rand_txid(),
-            &[(A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0])],
-            None,
-        );
-        socket.send(&req)?;
-        let (msg, _) = read_message(&socket)?;
-        if msg.class == C_SUCCESS {
-            // 服务器开了匿名中继（罕见）：直接用它给的地址
-            let relayed = msg
-                .attr(A_XOR_RELAYED_ADDRESS)
-                .and_then(decode_xor_addr)
-                .ok_or_else(|| anyhow::anyhow!("Allocate 成功但没有 RELAYED-ADDRESS"))?;
-            return Ok(Self {
-                socket,
-                server,
-                relayed,
-                user: cfg.user.clone(),
-                pass: cfg.password.clone(),
-                realm: String::new(),
-                nonce: String::new(),
-                channels: HashMap::new(),
-                peers: HashMap::new(),
-                next_channel: CHANNEL_BASE,
-                allocated_at: Instant::now(),
-                lifetime: LIFETIME_SECS,
-            });
-        }
-        if msg.error_code() != Some(401) {
-            anyhow::bail!(
-                "Allocate 被拒: {} {}",
-                msg.error_code().unwrap_or(0),
-                msg.error_reason()
-            );
-        }
-        let realm = String::from_utf8_lossy(msg.attr(A_REALM).unwrap_or(b"")).to_string();
-        let nonce = String::from_utf8_lossy(msg.attr(A_NONCE).unwrap_or(b"")).to_string();
-        let key = long_term_key(&cfg.user, &realm, &cfg.password);
-
-        // 2) 带凭据重发
-        let req = build(
-            M_ALLOCATE,
-            C_REQUEST,
-            rand_txid(),
-            &[
-                (A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0]),
-                (A_USERNAME, cfg.user.clone().into_bytes()),
-                (A_REALM, realm.clone().into_bytes()),
-                (A_NONCE, nonce.clone().into_bytes()),
-                (A_LIFETIME, LIFETIME_SECS.to_be_bytes().to_vec()),
-            ],
-            Some(&key),
-        );
-        socket.send(&req)?;
-        let (msg, _) = read_message(&socket)?;
-        if msg.class != C_SUCCESS {
-            anyhow::bail!(
-                "Allocate 鉴权失败: {} {}",
-                msg.error_code().unwrap_or(0),
-                msg.error_reason()
-            );
-        }
+/// 跑 Allocate 的 401 挑战/带凭据重发，返回中继地址与可复用的 realm/nonce/寿命。
+fn allocate_relayed(
+    socket: &UdpSocket,
+    cfg: &TurnConfig,
+) -> anyhow::Result<(SocketAddr, String, String, u32)> {
+    // 1) 不带凭据的 Allocate：正常会拿到 401 + realm/nonce
+    let req = build(
+        M_ALLOCATE,
+        C_REQUEST,
+        rand_txid(),
+        &[(A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0])],
+        None,
+    );
+    socket.send(&req)?;
+    let (msg, _) = read_message(socket)?;
+    if msg.class == C_SUCCESS {
+        // 服务器开了匿名中继（罕见）：直接用它给的地址
         let relayed = msg
             .attr(A_XOR_RELAYED_ADDRESS)
             .and_then(decode_xor_addr)
             .ok_or_else(|| anyhow::anyhow!("Allocate 成功但没有 RELAYED-ADDRESS"))?;
-        let lifetime = msg
-            .attr(A_LIFETIME)
-            .filter(|v| v.len() >= 4)
-            .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]))
-            .unwrap_or(LIFETIME_SECS);
+        return Ok((relayed, String::new(), String::new(), LIFETIME_SECS));
+    }
+    if msg.error_code() != Some(401) {
+        anyhow::bail!(
+            "Allocate 被拒: {} {}",
+            msg.error_code().unwrap_or(0),
+            msg.error_reason()
+        );
+    }
+    let realm = String::from_utf8_lossy(msg.attr(A_REALM).unwrap_or(b"")).to_string();
+    let nonce = String::from_utf8_lossy(msg.attr(A_NONCE).unwrap_or(b"")).to_string();
+    let key = long_term_key(&cfg.user, &realm, &cfg.password);
 
+    // 2) 带凭据重发
+    let req = build(
+        M_ALLOCATE,
+        C_REQUEST,
+        rand_txid(),
+        &[
+            (A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0]),
+            (A_USERNAME, cfg.user.clone().into_bytes()),
+            (A_REALM, realm.clone().into_bytes()),
+            (A_NONCE, nonce.clone().into_bytes()),
+            (A_LIFETIME, LIFETIME_SECS.to_be_bytes().to_vec()),
+        ],
+        Some(&key),
+    );
+    socket.send(&req)?;
+    let (msg, _) = read_message(socket)?;
+    if msg.class != C_SUCCESS {
+        anyhow::bail!(
+            "Allocate 鉴权失败: {} {}",
+            msg.error_code().unwrap_or(0),
+            msg.error_reason()
+        );
+    }
+    let relayed = msg
+        .attr(A_XOR_RELAYED_ADDRESS)
+        .and_then(decode_xor_addr)
+        .ok_or_else(|| anyhow::anyhow!("Allocate 成功但没有 RELAYED-ADDRESS"))?;
+    let lifetime = msg
+        .attr(A_LIFETIME)
+        .filter(|v| v.len() >= 4)
+        .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]))
+        .unwrap_or(LIFETIME_SECS);
+    Ok((relayed, realm, nonce, lifetime))
+}
+
+impl TurnClient {
+    /// 分配中继地址（含 401 挑战重发）。
+    pub fn allocate(cfg: &TurnConfig) -> anyhow::Result<Self> {
+        let server = resolve_server(cfg)?;
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.connect(server)?;
+        socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let (relayed, realm, nonce, lifetime) = allocate_relayed(&socket, cfg)?;
         Ok(Self {
             socket,
             server,
