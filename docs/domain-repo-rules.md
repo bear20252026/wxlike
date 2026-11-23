@@ -149,11 +149,30 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 - `repo::video_refs`：转码回调的幂等写入与引用读取都在仓储层；domain 只保留
   令牌校验、URL 形状校验与错误映射。
 
+## 第三十二批：crate 根会话/审计 SQL 收口
+
+`domain/*.rs` 清零不等于平台生产 SQL 清零。把门禁口径往外扩一层后，crate 根的
+`lib.rs` 还留着 **8 条** SQL：会话签发、token 解析、撤销、用户名解析、审计读写。
+它们不属于任何 feature，所以一直留在基础设施文件里。
+
+本批按归属拆开：
+
+- 会话签发/解析/撤销 → `domain/sessions.rs` + `repo/sessions.rs`；认证专用的
+  "会话有效且账号未注销"仍是一条 SQL（`lookup_live`），不在 domain 里做两次查询；
+- `user_id_by_name` → `domain/users.rs`，走已有的 `SqliteUsersRepo`；
+- 审计读写 → `domain/audit.rs` + `repo/audit.rs`；时间戳与条数夹紧留在 domain，
+  写失败仍只留日志、不阻断业务。
+
+`Platform` 的公开方法签名与调用点一个都没改；`lib.rs` 只剩构造、路由装配等
+基础设施，生产代码 SQL 归零。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
 `ci/jobs/policy/domain-sql-baseline.json`：
 
+- 扫描范围是 `crates/platform/src/*.rs`（handler 根层）+ `domain/*.rs`；
+  `storage.rs` 是存储端口/迁移 DDL，单独排除；
 - 基线里的文件，SQL 数只能下降，不能上升；
 - 不在基线里的文件出现任何 SQL 直接失败（当前基线为空 = 全部文件零容忍）；
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
@@ -182,7 +201,7 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 
 ## 收尾与边界
 
-`domain/*.rs` 的生产 SQL 已全部清零，没有下一批。后续只守边界：
+`domain/*.rs` 与 crate 根 handler 的生产 SQL 已清零，没有下一批。后续只守边界：
 
 1. 新 SQL 只进 `domain/repo/*.rs`；
 2. 基线保持 0/0，门禁即零容忍；
