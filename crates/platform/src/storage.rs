@@ -271,39 +271,8 @@ impl SqliteStorage {
                 "postgres profile 尚未实现（G00-04 S2）：{profile}"
             )));
         }
-        let mut conn = match path {
-            Some(p) => {
-                if let Some(dir) = std::path::Path::new(p).parent() {
-                    if !dir.as_os_str().is_empty() {
-                        std::fs::create_dir_all(dir)?;
-                    }
-                }
-                Connection::open(p)
-            }
-            None => Connection::open_in_memory(),
-        }?;
-        conn.execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
-            PRAGMA busy_timeout = 5000;
-            "#,
-        )?;
-        // WP-13 slow-query log: SQLite itself times every statement, so the
-        // threshold applies to what actually ran, not to lock acquisition.
-        //
-        // rusqlite 0.41: `Connection::profile` was removed. The replacement is
-        // `trace_v2` with an event-code mask — we register only
-        // `SQLITE_TRACE_PROFILE` (statement-finished events), so the callback
-        // fires once per completed statement with its wall time.
-        //
-        // The callback signature changed from `fn(&str, Duration)` to
-        // `FnMut(TraceEvent<'_>)`; we extract the SQL text from
-        // `StmtRef::sql()` and the duration from the `Profile` variant.
-        conn.trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
-            Some(slow_sql_log_v2),
-        )?;
+        let conn = open_sqlite(path)?;
+        configure_sqlite(&conn)?;
         let storage = Self {
             profile,
             inner: Arc::new(Mutex::new(conn)),
@@ -350,6 +319,52 @@ impl SqliteStorage {
         .await;
         join_blocking(ran)
     }
+}
+
+/// 建连接：`None` 是内存库；文件路径先建父目录，再交给 SQLite。
+fn open_sqlite(path: Option<&str>) -> Result<Connection> {
+    match path {
+        Some(p) => {
+            if let Some(dir) = std::path::Path::new(p).parent() {
+                if !dir.as_os_str().is_empty() {
+                    std::fs::create_dir_all(dir)?;
+                }
+            }
+            let conn = Connection::open(p)?;
+            Ok(conn)
+        }
+        None => {
+            let conn = Connection::open_in_memory()?;
+            Ok(conn)
+        }
+    }
+}
+
+/// 连接级设置：WAL、外键、忙等，以及慢查询 trace；必须在迁移链之前完成。
+fn configure_sqlite(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        PRAGMA journal_mode = WAL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+        "#,
+    )?;
+    // WP-13 slow-query log: SQLite itself times every statement, so the
+    // threshold applies to what actually ran, not to lock acquisition.
+    //
+    // rusqlite 0.41: `Connection::profile` was removed. The replacement is
+    // `trace_v2` with an event-code mask — we register only
+    // `SQLITE_TRACE_PROFILE` (statement-finished events), so the callback
+    // fires once per completed statement with its wall time.
+    //
+    // The callback signature changed from `fn(&str, Duration)` to
+    // `FnMut(TraceEvent<'_>)`; we extract the SQL text from
+    // `StmtRef::sql()` and the duration from the `Profile` variant.
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+        Some(slow_sql_log_v2),
+    )?;
+    Ok(())
 }
 
 /// PostgreSQL 存储实现：池 + 专属 runtime，打开时探活。
