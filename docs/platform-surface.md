@@ -23,6 +23,7 @@ python scripts/platform_surface_audit.py --json
 |---|---:|---:|---:|
 | 第一批前 | 285 | 258 | 27 |
 | 第一批后 | 285 | **237** | **48** |
+| 第二批后 | 285 | **194** | **91** |
 
 目标：`pub` 方法 ≤120。
 
@@ -44,6 +45,17 @@ sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内�
 `status` / `note` 两个通用方法名在外部搜索里有命中，但分别来自
 `http::Response::status()` 与 `message::sync::note()`，不是 `Platform` 调用，
 已人工核对；盘点脚本现在也把 `crates/platform/tests` 算作外部调用。
+
+## 第二批：articles / moments / video_feed
+
+43 个只被平台内 handler 与 HTTP 测试调用的方法从 `pub` 降为
+`pub(crate)`（这三个模块里另有 1 个方法原本已是 `pub(crate)`，合计 44 个）：
+
+- `domain/articles.rs`：13 个；
+- `domain/moments.rs`：18 个；
+- `domain/video_feed.rs`：13 个。
+
+`crates/platform/tests` 没有直接调用这些方法，HTTP 面测试不受影响。
 
 ## 后续约定
 

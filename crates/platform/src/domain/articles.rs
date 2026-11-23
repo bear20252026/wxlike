@@ -127,7 +127,7 @@ pub struct ArticleView {
 }
 
 impl Platform {
-    pub fn set_publisher(
+    pub(crate) fn set_publisher(
         &self,
         owner: &str,
         name: &str,
@@ -164,7 +164,7 @@ impl Platform {
         self.publisher_by_id(&id, owner)
     }
 
-    pub fn publisher_by_id(&self, id: &str, viewer: &str) -> Result<PublisherView> {
+    pub(crate) fn publisher_by_id(&self, id: &str, viewer: &str) -> Result<PublisherView> {
         let c = self.db().lock();
         let Some(PublisherRecord {
             id,
@@ -198,12 +198,12 @@ impl Platform {
         })
     }
 
-    pub fn publish_followers(&self, publisher_id: &str) -> Result<Vec<String>> {
+    pub(crate) fn publish_followers(&self, publisher_id: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
         publisher_followers(&c, publisher_id)
     }
 
-    pub fn follow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
+    pub(crate) fn follow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
         let publisher_id = validate::id(publisher_id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
@@ -213,14 +213,14 @@ impl Platform {
         insert_follow_ignore(&c, user, publisher_id, now)
     }
 
-    pub fn unfollow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
+    pub(crate) fn unfollow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
         let publisher_id = validate::id(publisher_id)?;
         let c = self.db().lock();
         delete_follow(&c, user, publisher_id)
     }
 
     /// 我关注的 + 我自己的发布者。`q` 只做名称子串匹配（管理页搜索）。
-    pub fn publishers(&self, user: &str, q: Option<&str>) -> Result<Vec<PublisherView>> {
+    pub(crate) fn publishers(&self, user: &str, q: Option<&str>) -> Result<Vec<PublisherView>> {
         let ids: Vec<String> = {
             let c = self.db().lock();
             let pattern = match q.map(str::trim).filter(|s| !s.is_empty()) {
@@ -241,7 +241,7 @@ impl Platform {
             .collect()
     }
 
-    pub fn create_article(&self, author: &str, body: ArticleBody) -> Result<ArticleView> {
+    pub(crate) fn create_article(&self, author: &str, body: ArticleBody) -> Result<ArticleView> {
         let title = check_text("title", &body.title, MAX_TITLE_CHARS, false)?;
         if title.trim().is_empty() {
             return Err(PlatformError::BadInput("title is required"));
@@ -326,7 +326,7 @@ impl Platform {
         Ok(id)
     }
 
-    pub fn article_for(&self, viewer: &str, id: &str) -> Result<ArticleView> {
+    pub(crate) fn article_for(&self, viewer: &str, id: &str) -> Result<ArticleView> {
         let id = validate::id(id)?;
         let row = {
             let c = self.db().lock();
@@ -371,7 +371,7 @@ impl Platform {
         })
     }
 
-    pub fn update_article(
+    pub(crate) fn update_article(
         &self,
         author: &str,
         id: &str,
@@ -430,7 +430,7 @@ impl Platform {
         self.article_for(author, id)
     }
 
-    pub fn delete_article(&self, author: &str, id: &str) -> Result<()> {
+    pub(crate) fn delete_article(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
@@ -444,7 +444,7 @@ impl Platform {
         })
     }
 
-    pub fn articles_by_publisher(
+    pub(crate) fn articles_by_publisher(
         &self,
         publisher_id: &str,
         cursor: Option<i64>,
@@ -480,7 +480,7 @@ impl Platform {
     }
 
     /// 打开全文：记阅读行并把订阅读游标推进到这篇文章的 seq。
-    pub fn mark_article_read(&self, user: &str, id: &str) -> Result<i64> {
+    pub(crate) fn mark_article_read(&self, user: &str, id: &str) -> Result<i64> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
@@ -499,7 +499,7 @@ impl Platform {
         Ok(unread)
     }
 
-    pub fn react_article(
+    pub(crate) fn react_article(
         &self,
         user: &str,
         id: &str,

@@ -94,7 +94,12 @@ pub struct VideoComment {
 
 impl Platform {
     /// 发布一条视频号内容。转码未成功的媒体直接拒绝（422 语义的 BadInput）。
-    pub fn publish_video(&self, author: &str, media_id: &str, caption: &str) -> Result<VideoView> {
+    pub(crate) fn publish_video(
+        &self,
+        author: &str,
+        media_id: &str,
+        caption: &str,
+    ) -> Result<VideoView> {
         let media_id = validate::id(media_id)?.to_string();
         check_video_caption(caption)?;
         {
@@ -152,7 +157,7 @@ impl Platform {
     /// 返回 `ReviewResult` 而不是 `VideoView`：驳回后这条内容**对外不存在**，
     /// 用视图当返回值会逼读一条本来就该读不到的行（`video_row` 只认
     /// published/pending），事务会被自己的善后语句带崩。
-    pub fn review_video(&self, id: &str, actor: &str, action: &str) -> Result<ReviewResult> {
+    pub(crate) fn review_video(&self, id: &str, actor: &str, action: &str) -> Result<ReviewResult> {
         if !REVIEW_ACTIONS.contains(&action) {
             return Err(PlatformError::BadInput("unknown review action"));
         }
@@ -203,7 +208,7 @@ impl Platform {
         Ok(result)
     }
 
-    pub fn video_visible(&self, viewer: &str, id: &str) -> Result<bool> {
+    pub(crate) fn video_visible(&self, viewer: &str, id: &str) -> Result<bool> {
         let access = {
             let c = self.db().lock();
             video_access(&c, id)?
@@ -227,7 +232,7 @@ impl Platform {
         Ok(true)
     }
 
-    pub fn video(&self, viewer: &str, id: &str) -> Result<VideoView> {
+    pub(crate) fn video(&self, viewer: &str, id: &str) -> Result<VideoView> {
         let id = validate::id(id)?;
         if !self.video_visible(viewer, id)? {
             return Err(PlatformError::NotFound);
@@ -237,7 +242,7 @@ impl Platform {
     }
 
     /// `mode` = follow / hot / recommend。返回 `(items, next_cursor, has_more)`。
-    pub fn video_feed(
+    pub(crate) fn video_feed(
         &self,
         viewer: &str,
         mode: &str,
@@ -254,7 +259,7 @@ impl Platform {
         }
     }
 
-    pub fn delete_video(&self, author: &str, id: &str) -> Result<()> {
+    pub(crate) fn delete_video(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
@@ -268,7 +273,7 @@ impl Platform {
         })
     }
 
-    pub fn like_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
+    pub(crate) fn like_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
         let id = validate::id(id)?;
         if !self.video_visible(by, id)? {
             return Err(PlatformError::NotFound);
@@ -297,7 +302,7 @@ impl Platform {
         })
     }
 
-    pub fn unlike_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
+    pub(crate) fn unlike_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
         let id = validate::id(id)?;
         let c = self.db().lock();
         let removed = delete_video_like(&c, id, by)?;
@@ -305,7 +310,7 @@ impl Platform {
         Ok((removed, count))
     }
 
-    pub fn comment_video(&self, id: &str, by: &str, text: &str) -> Result<String> {
+    pub(crate) fn comment_video(&self, id: &str, by: &str, text: &str) -> Result<String> {
         let id = validate::id(id)?;
         if !self.video_visible(by, id)? {
             return Err(PlatformError::NotFound);
@@ -341,7 +346,7 @@ impl Platform {
         Ok(comment_id)
     }
 
-    pub fn video_comments(
+    pub(crate) fn video_comments(
         &self,
         id: &str,
         cursor: Option<i64>,
@@ -366,7 +371,12 @@ impl Platform {
     }
 
     /// 视频作者或评论作者可删；软删除保留分页/计数稳定。
-    pub fn delete_video_comment(&self, video_id: &str, comment_id: &str, by: &str) -> Result<()> {
+    pub(crate) fn delete_video_comment(
+        &self,
+        video_id: &str,
+        comment_id: &str,
+        by: &str,
+    ) -> Result<()> {
         let video_id = validate::id(video_id)?;
         let comment_id = validate::id(comment_id)?;
         if !soft_delete_video_comment(&self.db().lock(), video_id, comment_id, by)? {
@@ -375,7 +385,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn follow_creator(&self, user: &str, creator: &str) -> Result<()> {
+    pub(crate) fn follow_creator(&self, user: &str, creator: &str) -> Result<()> {
         let creator = validate::id(creator)?;
         if creator == user {
             return Err(PlatformError::BadInput("cannot follow yourself"));
@@ -388,7 +398,7 @@ impl Platform {
         follow_creator(&c, user, creator, now)
     }
 
-    pub fn unfollow_creator(&self, user: &str, creator: &str) -> Result<()> {
+    pub(crate) fn unfollow_creator(&self, user: &str, creator: &str) -> Result<()> {
         let creator = validate::id(creator)?;
         unfollow_creator(&self.db().lock(), user, creator)
     }

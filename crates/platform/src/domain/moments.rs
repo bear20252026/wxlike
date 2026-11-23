@@ -251,7 +251,7 @@ pub(crate) fn require_visible(platform: &Platform, moment_id: &str, viewer: &str
 impl Platform {
     /// Stores a new moment. Media ids must already exist (WP-05), so a moment
     /// cannot dangle a reference to an object nobody uploaded.
-    pub fn publish_moment(
+    pub(crate) fn publish_moment(
         &self,
         author: &str,
         text: &str,
@@ -262,7 +262,7 @@ impl Platform {
     }
 
     /// 发布（可带分组可见与草稿来源）。发布、索引、媒体引用、删草稿同事务。
-    pub fn publish_moment_with(
+    pub(crate) fn publish_moment_with(
         &self,
         author: &str,
         text: &str,
@@ -314,7 +314,7 @@ impl Platform {
 
     /// 保存/覆盖草稿。草稿允许暂时引用不存在的媒体吗？不允许——"图片先上传
     /// 再发布"的同一道闸在草稿阶段就生效，客户端拿到明确错误后可重试上传。
-    pub fn save_moment_draft(
+    pub(crate) fn save_moment_draft(
         &self,
         author: &str,
         draft_id: Option<&str>,
@@ -368,7 +368,7 @@ impl Platform {
         Ok(id)
     }
 
-    pub fn moment_drafts(&self, author: &str) -> Result<Vec<MomentDraft>> {
+    pub(crate) fn moment_drafts(&self, author: &str) -> Result<Vec<MomentDraft>> {
         let c = self.db().lock();
         Ok(drafts_by_author(&c, author)?
             .into_iter()
@@ -384,7 +384,7 @@ impl Platform {
             .collect())
     }
 
-    pub fn delete_moment_draft(&self, author: &str, draft_id: &str) -> Result<()> {
+    pub(crate) fn delete_moment_draft(&self, author: &str, draft_id: &str) -> Result<()> {
         let draft_id = validate::id(draft_id)?;
         if !delete_draft(&self.db().lock(), draft_id, author)? {
             return Err(PlatformError::NotFound);
@@ -402,11 +402,16 @@ impl Platform {
     /// `public` is open to non-blocked viewers; `friends` requires the
     /// friendship row; `groups` additionally requires the author's friend
     /// group label to match `audience_group`.
-    pub fn can_see_moment(&self, viewer: &str, author: &str, visibility: &str) -> Result<bool> {
+    pub(crate) fn can_see_moment(
+        &self,
+        viewer: &str,
+        author: &str,
+        visibility: &str,
+    ) -> Result<bool> {
         self.can_see_moment_full(viewer, author, visibility, "")
     }
 
-    pub fn can_see_moment_full(
+    pub(crate) fn can_see_moment_full(
         &self,
         viewer: &str,
         author: &str,
@@ -437,7 +442,7 @@ impl Platform {
     }
 
     /// 按 id 判定可见性（检索/点赞/详情共用的授权入口）。
-    pub fn moment_visible(&self, viewer: &str, moment_id: &str) -> Result<bool> {
+    pub(crate) fn moment_visible(&self, viewer: &str, moment_id: &str) -> Result<bool> {
         let row = {
             let c = self.db().lock();
             moment_access(&c, moment_id)?
@@ -453,11 +458,11 @@ impl Platform {
         )
     }
 
-    pub fn moment_visitors_likes(&self, moment_id: &str) -> Result<Vec<(String, String)>> {
+    pub(crate) fn moment_visitors_likes(&self, moment_id: &str) -> Result<Vec<(String, String)>> {
         moment_likes(&self.db().lock(), moment_id)
     }
 
-    pub fn moment_comments(&self, moment_id: &str) -> Result<Vec<CommentRow>> {
+    pub(crate) fn moment_comments(&self, moment_id: &str) -> Result<Vec<CommentRow>> {
         Ok(moment_comments(&self.db().lock(), moment_id)?
             .into_iter()
             .map(|c| CommentRow {
@@ -474,7 +479,7 @@ impl Platform {
 
     /// Author-only removal. 索引与媒体引用同事务清理：检索同步不可见，
     /// 附件不会留下指向已删动态的孤儿引用。
-    pub fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
+    pub(crate) fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<bool> {
             let changed = soft_delete_moment(tx, moment_id, by)?;
@@ -491,13 +496,18 @@ impl Platform {
     /// 这是微信的行为，也是唯一不会让作者"被挂在自己动态下面"的规则。
     /// 软删除（`deleted = 1`）：feed 的计数与详情都按 `deleted = 0` 过滤，
     /// 硬删会让分页游标与计数对不上。
-    pub fn delete_comment(&self, moment_id: &str, comment_id: &str, by: &str) -> Result<bool> {
+    pub(crate) fn delete_comment(
+        &self,
+        moment_id: &str,
+        comment_id: &str,
+        by: &str,
+    ) -> Result<bool> {
         soft_delete_comment(&self.db().lock(), comment_id, moment_id, by)
     }
 
     /// Idempotent like: re-liking reports success without a second row, and the
     /// dedupe key keeps it from generating a second notification.
-    pub fn like_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
+    pub(crate) fn like_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<bool> {
@@ -521,14 +531,14 @@ impl Platform {
         })
     }
 
-    pub fn unlike_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
+    pub(crate) fn unlike_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         delete_like(&self.db().lock(), moment_id, by)
     }
 
     /// Adds a comment, optionally as a reply to another comment **in the same
     /// moment** (a reply pointing elsewhere is refused rather than silently
     /// re-parented).
-    pub fn comment_moment(
+    pub(crate) fn comment_moment(
         &self,
         moment_id: &str,
         by: &str,
@@ -564,7 +574,7 @@ impl Platform {
     /// **不存在的用户 / 不是好友 / 被拉黑 → 同一个形状**（200 + 空页）。
     /// 相册是"看某人发过什么"的入口，最容易变成用户 enumeration 探针，
     /// 所以这里刻意不返回 403/404 之类的区分信号。
-    pub fn moment_album(
+    pub(crate) fn moment_album(
         &self,
         viewer: &str,
         author: &str,
@@ -580,7 +590,7 @@ impl Platform {
     }
 
     /// Read fan-out: self + friends, newest first, at most `MAX_FEED_PAGE`.
-    pub fn feed(
+    pub(crate) fn feed(
         &self,
         me: &str,
         since: Option<i64>,
