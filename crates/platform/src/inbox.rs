@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::page;
@@ -28,12 +29,15 @@ async fn list(
     authed: Authed,
     Query(q): Query<ListQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (items, next, has_more) = platform.notifications(
-        &authed.user_id,
-        q.before_seq,
-        q.limit.unwrap_or(page::DEFAULT_PAGE),
-    )?;
-    let unread = platform.unread_notifications(&authed.user_id)?;
+    let me = authed.user_id.clone();
+    let before_seq = q.before_seq;
+    let limit = q.limit.unwrap_or(page::DEFAULT_PAGE);
+    let (items, next, has_more, unread) = offload(&platform, move |p| {
+        let (items, next, has_more) = p.notifications(&me, before_seq, limit)?;
+        let unread = p.unread_notifications(&me)?;
+        Ok((items, next, has_more, unread))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "items": items,
         "next_cursor": next,
@@ -56,8 +60,15 @@ async fn mark_read(
     authed: Authed,
     ApiJson(body): ApiJson<ReadBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let changed = platform.mark_notifications_read(&authed.user_id, body.up_to_seq, &body.ids)?;
-    let unread = platform.unread_notifications(&authed.user_id)?;
+    let me = authed.user_id.clone();
+    let up_to_seq = body.up_to_seq;
+    let ids = body.ids;
+    let (changed, unread) = offload(&platform, move |p| {
+        let changed = p.mark_notifications_read(&me, up_to_seq, &ids)?;
+        let unread = p.unread_notifications(&me)?;
+        Ok((changed, unread))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "updated": changed,
         "unread_count": unread,
