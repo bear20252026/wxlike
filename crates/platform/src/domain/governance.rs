@@ -198,48 +198,68 @@ impl PlatformGovernancePort for GovernanceLinks {
     /// 未注入 sink 时退化为日志留痕，保证事件不丢。
     fn dispatch(&self, events: &[GovernanceEvent]) {
         for event in events {
-            match event {
-                GovernanceEvent::CacheClear { scope, key } if scope == "group" => {
-                    self.group_cache
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .remove(key);
-                }
-                GovernanceEvent::CacheClear { scope, key } => {
-                    tracing::debug!(%scope, %key, "治理缓存清理事件（平台无对应缓存，留痕）");
-                }
-                GovernanceEvent::UserStateChanged {
-                    user_id,
-                    state,
-                    suspended_until_ms,
-                } => {
-                    tracing::info!(%user_id, %state, ?suspended_until_ms, "用户治理状态变化");
-                }
-                GovernanceEvent::SessionsRevoked { user_id, count } => {
-                    // 域内已删 sessions/刷新链/step-up；这里把还连着的 WS/QUIC 泵拔掉，
-                    // 否则"后台封了、前端还收消息"。count == 0 = 幂等重放，不断。
-                    if *count > 0 {
-                        match self.device_sink() {
-                            Some(sink) => sink.disconnect_user(user_id),
-                            None => tracing::info!(
-                                %user_id,
-                                %count,
-                                "治理撤销会话（本进程未装配 hub 句柄，断连留痕）"
-                            ),
-                        }
-                    } else {
-                        tracing::info!(%user_id, %count, "治理撤销会话（域内已删 sessions/刷新链/step-up）");
-                    }
-                }
-                GovernanceEvent::DeviceRevoked { user_id, device_id } => {
-                    let done = self
-                        .device_sink()
-                        .is_some_and(|sink| sink.disconnect_device(user_id, device_id));
-                    if !done {
-                        tracing::info!(%user_id, %device_id, "设备被管理端撤销（无 hub 句柄或连接已不在，留痕）");
-                    }
-                }
+            self.apply(event);
+        }
+    }
+}
+
+impl GovernanceLinks {
+    /// 单个联动事件的效果。拆出来是为了让 `dispatch` 只保留“遍历”，
+    /// 每个事件自己的分支各自成段，不再叠成五层嵌套。
+    fn apply(&self, event: &GovernanceEvent) {
+        match event {
+            GovernanceEvent::CacheClear { scope, key } if scope == "group" => {
+                self.clear_group_cache(key);
             }
+            GovernanceEvent::CacheClear { scope, key } => {
+                tracing::debug!(%scope, %key, "治理缓存清理事件（平台无对应缓存，留痕）");
+            }
+            GovernanceEvent::UserStateChanged {
+                user_id,
+                state,
+                suspended_until_ms,
+            } => {
+                tracing::info!(%user_id, %state, ?suspended_until_ms, "用户治理状态变化");
+            }
+            GovernanceEvent::SessionsRevoked { user_id, count } => {
+                self.revoke_sessions(user_id, *count);
+            }
+            GovernanceEvent::DeviceRevoked { user_id, device_id } => {
+                self.revoke_device(user_id, device_id);
+            }
+        }
+    }
+
+    fn clear_group_cache(&self, key: &str) {
+        self.group_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(key);
+    }
+
+    fn revoke_sessions(&self, user_id: &str, count: i64) {
+        // 域内已删 sessions/刷新链/step-up；这里把还连着的 WS/QUIC 泵拔掉，
+        // 否则"后台封了、前端还收消息"。count == 0 = 幂等重放，不断。
+        if count == 0 {
+            tracing::info!(%user_id, %count, "治理撤销会话（域内已删 sessions/刷新链/step-up）");
+            return;
+        }
+        match self.device_sink() {
+            Some(sink) => sink.disconnect_user(user_id),
+            None => tracing::info!(
+                %user_id,
+                %count,
+                "治理撤销会话（本进程未装配 hub 句柄，断连留痕）"
+            ),
+        }
+    }
+
+    fn revoke_device(&self, user_id: &str, device_id: &str) {
+        let done = self
+            .device_sink()
+            .is_some_and(|sink| sink.disconnect_device(user_id, device_id));
+        if !done {
+            tracing::info!(%user_id, %device_id, "设备被管理端撤销（无 hub 句柄或连接已不在，留痕）");
         }
     }
 }

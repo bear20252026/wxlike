@@ -269,42 +269,10 @@ impl Platform {
         conv_id: Option<&str>,
         public: bool,
     ) -> Result<UploadReply> {
-        if bytes.is_empty() {
-            return Err(PlatformError::BadInput("empty upload"));
-        }
-        if bytes.len() > self.options().max_media_bytes {
-            return Err(PlatformError::PayloadTooLarge);
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let sha_hex = hex::encode(hasher.finalize());
-
-        if let Some(declared) = declared_sha {
-            let declared = declared.trim().to_ascii_lowercase();
-            if declared != sha_hex {
-                return Err(PlatformError::BadInput("sha256 does not match content"));
-            }
-        }
-
-        let store = self.media_store();
-        let existed = store.size_of(&sha_hex).await?.is_some();
-        store.put(&sha_hex, &bytes).await?;
-
-        let content_type = sniff(&bytes).to_string();
-        let thumb = if is_image(&content_type) {
-            make_thumb(&bytes)
-        } else {
-            None
-        };
-        let has_thumb = match &thumb {
-            Some(png) => {
-                store.put_thumb(&sha_hex, png).await?;
-                true
-            }
-            None => false,
-        };
-
+        let sha_hex = self.media_digest(&bytes, declared_sha)?;
         let size = bytes.len() as u64;
+        let (content_type, existed, has_thumb) = self.put_media_object(&bytes, &sha_hex).await?;
+
         // ADR-28: 媒体行这条 INSERT 已搬到 blocking 池；前面的 `store.*().await`
         // 仍是真异步 IO，故意不包进来，避免把网络 IO 塞进 SQLite 临界区。
         let db = self.db();
@@ -337,6 +305,48 @@ impl Platform {
             newly_stored: !existed,
             has_thumb,
         })
+    }
+
+    /// 上传前置校验 + 内容摘要。放在一处，避免“先校验后计算”的顺序在
+    /// 调用点分叉。
+    fn media_digest(&self, bytes: &[u8], declared_sha: Option<&str>) -> Result<String> {
+        if bytes.is_empty() {
+            return Err(PlatformError::BadInput("empty upload"));
+        }
+        if bytes.len() > self.options().max_media_bytes {
+            return Err(PlatformError::PayloadTooLarge);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let sha_hex = hex::encode(hasher.finalize());
+        if let Some(declared) = declared_sha {
+            let declared = declared.trim().to_ascii_lowercase();
+            if declared != sha_hex {
+                return Err(PlatformError::BadInput("sha256 does not match content"));
+            }
+        }
+        Ok(sha_hex)
+    }
+
+    /// 内容寻址写对象仓：去重检查、原图、类型嗅探、缩略图。返回值里的
+    /// `existed` 是“写之前已在仓里”，供 `newly_stored` 判定。
+    async fn put_media_object(&self, bytes: &[u8], sha_hex: &str) -> Result<(String, bool, bool)> {
+        let store = self.media_store();
+        let existed = store.size_of(sha_hex).await?.is_some();
+        store.put(sha_hex, bytes).await?;
+        let content_type = sniff(bytes).to_string();
+        let has_thumb = if is_image(&content_type) {
+            match make_thumb(bytes) {
+                Some(png) => {
+                    store.put_thumb(sha_hex, &png).await?;
+                    true
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+        Ok((content_type, existed, has_thumb))
     }
 
     /// 这个用户能不能读这个会话（直聊看 id 两半，群看成员表）。

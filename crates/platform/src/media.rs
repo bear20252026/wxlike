@@ -150,52 +150,82 @@ async fn download(
     };
     let object = match resolve(&platform, &store, &media_id, want_thumb).await {
         Ok(Some(o)) => o,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_TYPE, "application/json")],
-                r#"{"error":"no such media"}"#,
-            )
-                .into_response()
-        }
+        Ok(None) => return not_found_media(),
         Err(err) => return ApiError::from(err).into_response(),
     };
 
     let total = object.total;
-    let range = parse_range(
+    let (start, end) = match requested_range(
         headers.get(header::RANGE).and_then(|v| v.to_str().ok()),
+        headers.contains_key(header::RANGE),
         total,
-    );
-    let (start, end) = match range {
-        Some(pair) => pair,
-        None if headers.contains_key(header::RANGE) => {
-            return (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                [(header::CONTENT_RANGE, format!("bytes */{total}"))],
-            )
-                .into_response();
-        }
-        None => (0, total.saturating_sub(1)),
+    ) {
+        Ok(pair) => pair,
+        Err(response) => return response,
     };
 
     // this handler answers with a bare `Response`, so errors are mapped inline.
     //
     // **总是按 Range 取**：`resolve` 只给了长度与类型（issue #14）。
     // 缩略图很小、且存在另一条路径里，单独取。
-    let bytes = if want_thumb {
-        match store.get_thumb(&media_id).await {
-            Ok(Some(b)) => b,
-            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-            Err(err) => return ApiError::from(err).into_response(),
-        }
-    } else {
-        match store.get(&media_id, start, end).await {
-            Ok(Some(b)) => b,
-            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-            Err(err) => return ApiError::from(err).into_response(),
-        }
+    let bytes = match load_media_bytes(&store, &media_id, want_thumb, start, end).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return not_found_media(),
+        Err(err) => return ApiError::from(err).into_response(),
     };
 
+    media_response(object, bytes, start, end, total)
+}
+
+/// 解析 `Range` 并为不可满足的范围生成 416。没有 Range 头时退化为完整对象。
+fn requested_range(
+    raw: Option<&str>,
+    has_range: bool,
+    total: u64,
+) -> std::result::Result<(u64, u64), Response> {
+    match parse_range(raw, total) {
+        Some(pair) => Ok(pair),
+        None if has_range => Err((
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{total}"))],
+        )
+            .into_response()),
+        None => Ok((0, total.saturating_sub(1))),
+    }
+}
+
+/// 按缩略图/原图分支从媒体仓取一段字节；`None` 统一交给 404。
+async fn load_media_bytes(
+    store: &std::sync::Arc<dyn MediaStore>,
+    media_id: &str,
+    want_thumb: bool,
+    start: u64,
+    end: u64,
+) -> Result<Option<Vec<u8>>> {
+    if want_thumb {
+        store.get_thumb(media_id).await
+    } else {
+        store.get(media_id, start, end).await
+    }
+}
+
+fn not_found_media() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "application/json")],
+        r#"{"error":"no such media"}"#,
+    )
+        .into_response()
+}
+
+/// 组装 200/206 响应；`Content-Range` 只在部分响应时出现。
+fn media_response(
+    object: StoredObject,
+    bytes: Vec<u8>,
+    start: u64,
+    end: u64,
+    total: u64,
+) -> Response {
     let partial = start != 0 || end + 1 != total;
     let status = if partial {
         StatusCode::PARTIAL_CONTENT

@@ -451,6 +451,20 @@ mark_job_failed` 登记到 `ENFORCED_FNS`，避免“整文件豁免”把真正
 本批不改业务代码，只扩大门禁；`domain/live.rs`、`domain/groups_admin.rs`
 仍在 `ENFORCED_FILES`，`domain/account.rs` 仍是按函数登记。
 
+## 第五十二批：拆长函数与深嵌套
+
+规范化不只看 SQL 和锁，长函数与深嵌套同样是维护成本。本批只做内部拆分，
+不改任何公开签名：
+
+- `domain/governance.rs::dispatch`：遍历与单事件效果分开，缓存清理、会话撤销、
+  设备断连各自成段，嵌套从 5 层降到 2 层；
+- `media.rs::download`：`Range` 解析、字节读取、200/206 响应组装拆成三个
+  free function，授权顺序与 416/404 形状不变；
+- `domain/media.rs::store_media`：上传校验/摘要与对象仓写入拆成
+  `media_digest` / `put_media_object`，去重、缩略图、媒体行插入的顺序不变。
+
+拆分只移动代码，不改变事务边界、错误映射或日志措辞。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
