@@ -11,7 +11,7 @@ use crate::auth::{self};
 use crate::domain::repo::users::SqliteUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::validate;
-use crate::{Platform, PlatformState};
+use crate::Platform;
 use wxlike_persistence::{NewUser, UsersRepo};
 
 impl Credentials {
@@ -278,7 +278,7 @@ impl Platform {
 /// 刷新链签发失败只记日志——登录本身已经成功，客户端可以退回到
 /// "过期重新登录"，不该因为刷新链的问题让登录失败。
 pub(crate) fn auth_reply(
-    platform: &PlatformState,
+    platform: &Platform,
     user_id: String,
     token: String,
     device_id: &str,
@@ -294,7 +294,7 @@ pub(crate) fn auth_reply(
 /// 为刚建立的访问会话挂一条刷新链（G02-01）。失败只记日志：登录本身已经
 /// 成功，客户端可以退回到"过期重新登录"。
 fn mint_refresh(
-    platform: &PlatformState,
+    platform: &Platform,
     user_id: &str,
     token: &str,
     device_id: &str,

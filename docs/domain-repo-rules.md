@@ -331,6 +331,24 @@ await 侧被借用。
 
 `live.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十四批：users 认证 handler 收口
+
+`users.rs` 的注册、登录、2FA 开启/确认/关闭、我的资料、资料更新、公开资料、
+登出共 9 个接口，除入口的 `options()` 读配置外，同步查库都改成阻塞池。
+
+- 注册把风控闸、建号、风控计数、建设备会话和 `auth_reply`（刷新链签发）
+  收进一次 `offload_api`；`auth_reply` / `mint_refresh` 的入参从
+  `&PlatformState` 改为 `&Platform`，这样阻塞闭包内部的 `&Platform` 也能签发
+  刷新链，公开行为不变；
+- 登录把双键风控、密码校验、失败/TOTP 失败计数与审计、清计数、建会话和
+  `auth_reply` 按原顺序收进一次 `offload_api`，失败仍回 401；
+- 2FA 开启保留"已启用才要求当前因子"的分支，拒绝仍是 403；确认/关闭各一次
+  `offload`；
+- 公开资料只把 `profile_of` 放进阻塞池，任何错误仍映射为 404；
+- 登出把 `revoke_session` 与审计收进 `offload_api`。
+
+`users.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

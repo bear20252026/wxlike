@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::{offload, offload_api};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::validate;
@@ -41,20 +42,36 @@ async fn register(
     let register_key = client
         .clone()
         .unwrap_or_else(|| format!("name:{}", req.name));
-    platform.risk_gate(wxlike_risk::Action::Register, &register_key, req.captcha())?;
-    let user_id = platform.register(&req.name, &req.password)?;
-    platform.risk_record(wxlike_risk::Action::Register, &register_key)?;
-    let token = platform.create_session_for_device(
-        &user_id,
-        platform.options().session_ttl_ms,
-        &req.device_id,
-        &req.device_name,
-        client.as_deref().unwrap_or(""),
-    )?;
-    Ok((
-        StatusCode::OK,
-        Json(auth_reply(&platform, user_id, token, "")),
-    ))
+    let captcha = req
+        .captcha()
+        .map(|(id, answer)| (id.to_string(), answer.to_string()));
+    let name = req.name;
+    let password = req.password;
+    let device_id = req.device_id;
+    let device_name = req.device_name;
+    let client_for_task = client.clone();
+    let session_ttl = platform.options().session_ttl_ms;
+    let reply = offload_api(&platform, move |p| {
+        p.risk_gate(
+            wxlike_risk::Action::Register,
+            &register_key,
+            captcha
+                .as_ref()
+                .map(|(id, answer)| (id.as_str(), answer.as_str())),
+        )?;
+        let user_id = p.register(&name, &password)?;
+        p.risk_record(wxlike_risk::Action::Register, &register_key)?;
+        let token = p.create_session_for_device(
+            &user_id,
+            session_ttl,
+            &device_id,
+            &device_name,
+            client_for_task.as_deref().unwrap_or(""),
+        )?;
+        Ok(auth_reply(p, user_id, token, ""))
+    })
+    .await?;
+    Ok((StatusCode::OK, Json(reply)))
 }
 
 /// 重新 enroll 时要求带上**当前第二因子或密码**（issue #5）。
@@ -75,22 +92,23 @@ async fn totp_enable(
     authed: Authed,
     ApiJson(body): ApiJson<TotpEnroll>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    if platform.totp_enabled(&authed.user_id)? {
-        if !platform.confirm_identity(&authed.user_id, &body.code, &body.password)? {
-            platform.audit(
-                &authed.user_id,
-                "user.2fa.re_enroll",
-                &authed.user_id,
-                "denied",
-            );
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "re-enrolling 2FA requires the current code or password",
-            ));
+    let actor = authed.user_id.clone();
+    let code = body.code;
+    let password = body.password;
+    let secret = offload_api(&platform, move |p| {
+        if p.totp_enabled(&actor)? {
+            if !p.confirm_identity(&actor, &code, &password)? {
+                p.audit(&actor, "user.2fa.re_enroll", &actor, "denied");
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "re-enrolling 2FA requires the current code or password",
+                ));
+            }
+            p.audit(&actor, "user.2fa.re_enroll", &actor, "ok");
         }
-        platform.audit(&authed.user_id, "user.2fa.re_enroll", &authed.user_id, "ok");
-    }
-    let secret = platform.totp_enable(&authed.user_id)?;
+        p.totp_enable(&actor).map_err(ApiError::from)
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "secret": secret })))
 }
 
@@ -104,7 +122,9 @@ async fn totp_confirm(
     authed: Authed,
     ApiJson(body): ApiJson<TotpCode>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.totp_confirm(&authed.user_id, &body.code)?;
+    let actor = authed.user_id.clone();
+    let code = body.code;
+    offload(&platform, move |p| p.totp_confirm(&actor, &code)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -113,7 +133,9 @@ async fn totp_disable(
     authed: Authed,
     ApiJson(body): ApiJson<TotpCode>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.totp_disable(&authed.user_id, &body.code)?;
+    let actor = authed.user_id.clone();
+    let code = body.code;
+    offload(&platform, move |p| p.totp_disable(&actor, &code)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -127,59 +149,76 @@ async fn login(
     // 让同一 NAT 后的正常用户互相连坐——两个键都记，取更严的那个。
     let account_key = format!("login:{}", req.name);
     let client = client_key(peer, &headers, platform.options().trust_proxy);
-    let mut checks = vec![(wxlike_risk::Action::Login, account_key.as_str())];
-    if let Some(c) = client.as_deref() {
-        checks.push((wxlike_risk::Action::Login, c));
-    }
-    platform.risk_gate_many(&checks, req.captcha())?;
+    let captcha = req
+        .captcha()
+        .map(|(id, answer)| (id.to_string(), answer.to_string()));
+    let name = req.name;
+    let password = req.password;
+    let totp_code = req.totp_code;
+    let device_id = req.device_id;
+    let device_name = req.device_name;
+    let session_ttl = platform.options().session_ttl_ms;
+    let reply = offload_api(&platform, move |p| {
+        let mut checks = vec![(wxlike_risk::Action::Login, account_key.as_str())];
+        if let Some(c) = client.as_deref() {
+            checks.push((wxlike_risk::Action::Login, c));
+        }
+        p.risk_gate_many(
+            &checks,
+            captcha
+                .as_ref()
+                .map(|(id, answer)| (id.as_str(), answer.as_str())),
+        )?;
 
-    let verified = platform.verify_credentials(&req.name, &req.password)?;
-    let Some(user_id) = verified else {
-        platform.risk_record(wxlike_risk::Action::Login, &account_key)?;
-        if let Some(c) = client.as_deref() {
-            platform.risk_record(wxlike_risk::Action::Login, c)?;
+        let verified = p.verify_credentials(&name, &password)?;
+        let Some(user_id) = verified else {
+            p.risk_record(wxlike_risk::Action::Login, &account_key)?;
+            if let Some(c) = client.as_deref() {
+                p.risk_record(wxlike_risk::Action::Login, c)?;
+            }
+            p.audit(&name, "user.login", "", "failed");
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials",
+            ));
+        };
+        // **全部因子通过之后才清空失败计数**（issue #6）。
+        //
+        // 原来这里先 `risk_clear` 再校验 TOTP：知道密码的人可以拿错误的 6 位码
+        // 无限尝试，每次失败都把计数清零——等于 TOTP 没有失败限流。
+        if let Err(err) = p.totp_check_login(&user_id, totp_code.as_deref()) {
+            p.risk_record(wxlike_risk::Action::Login, &account_key)?;
+            if let Some(c) = client.as_deref() {
+                p.risk_record(wxlike_risk::Action::Login, c)?;
+            }
+            p.audit(&name, "user.login", "", "totp_failed");
+            return Err(err.into());
         }
-        platform.audit(&req.name, "user.login", "", "failed");
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid credentials",
-        ));
-    };
-    // **全部因子通过之后才清空失败计数**（issue #6）。
-    //
-    // 原来这里先 `risk_clear` 再校验 TOTP：知道密码的人可以拿错误的 6 位码
-    // 无限尝试，每次失败都把计数清零——等于 TOTP 没有失败限流。
-    if let Err(err) = platform.totp_check_login(&user_id, req.totp_code.as_deref()) {
-        platform.risk_record(wxlike_risk::Action::Login, &account_key)?;
+        p.risk_clear(wxlike_risk::Action::Login, &account_key)?;
         if let Some(c) = client.as_deref() {
-            platform.risk_record(wxlike_risk::Action::Login, c)?;
+            p.risk_clear(wxlike_risk::Action::Login, c)?;
         }
-        platform.audit(&req.name, "user.login", "", "totp_failed");
-        return Err(err.into());
-    }
-    platform.risk_clear(wxlike_risk::Action::Login, &account_key)?;
-    if let Some(c) = client.as_deref() {
-        platform.risk_clear(wxlike_risk::Action::Login, c)?;
-    }
-    let token = platform.create_session_for_device(
-        &user_id,
-        platform.options().session_ttl_ms,
-        &req.device_id,
-        &req.device_name,
-        client.as_deref().unwrap_or(""),
-    )?;
-    platform.audit(&user_id, "user.login", &user_id, "ok");
-    Ok((
-        StatusCode::OK,
-        Json(auth_reply(&platform, user_id, token, &req.device_id)),
-    ))
+        let token = p.create_session_for_device(
+            &user_id,
+            session_ttl,
+            &device_id,
+            &device_name,
+            client.as_deref().unwrap_or(""),
+        )?;
+        p.audit(&user_id, "user.login", &user_id, "ok");
+        Ok(auth_reply(p, user_id, token, &device_id))
+    })
+    .await?;
+    Ok((StatusCode::OK, Json(reply)))
 }
 
 async fn me(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Profile>, ApiError> {
-    Ok(Json(platform.profile_of(&authed.user_id)?))
+    let actor = authed.user_id.clone();
+    let profile = offload(&platform, move |p| p.profile_of(&actor)).await?;
+    Ok(Json(profile))
 }
 
 async fn update_profile(
@@ -196,14 +235,14 @@ async fn update_profile(
             "empty profile patch",
         ));
     }
-    let profile = platform.update_profile(&authed.user_id, &patch)?;
-    // 审计记**改了哪些字段**，不记改成什么：昵称/签名/头像路径都是个人数据。
-    platform.audit(
-        &authed.user_id,
-        "profile.update",
-        "profile",
-        &changed.join(","),
-    );
+    let actor = authed.user_id.clone();
+    let profile = offload(&platform, move |p| {
+        let profile = p.update_profile(&actor, &patch)?;
+        // 审计记**改了哪些字段**，不记改成什么：昵称/签名/头像路径都是个人数据。
+        p.audit(&actor, "profile.update", "profile", &changed.join(","));
+        Ok(profile)
+    })
+    .await?;
     Ok(Json(profile))
 }
 
@@ -211,9 +250,9 @@ async fn public_profile(
     State(platform): State<PlatformState>,
     Path(user_id): Path<String>,
 ) -> std::result::Result<Json<PublicProfile>, ApiError> {
-    let user_id = validate::id(&user_id).map_err(ApiError::from)?;
-    let p = platform
-        .profile_of(user_id)
+    let user_id = validate::id(&user_id)?.to_string();
+    let p = offload(&platform, move |p| p.profile_of(&user_id))
+        .await
         .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "no such user"))?;
     Ok(Json(PublicProfile {
         user_id: p.user_id,
@@ -226,7 +265,13 @@ async fn logout(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.revoke_session(&authed.token)?;
-    platform.audit(&authed.user_id, "user.logout", "", "");
+    let actor = authed.user_id.clone();
+    let token = authed.token;
+    offload_api(&platform, move |p| {
+        p.revoke_session(&token)?;
+        p.audit(&actor, "user.logout", "", "");
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
