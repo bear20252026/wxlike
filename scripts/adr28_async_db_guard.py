@@ -69,6 +69,7 @@ ENFORCED_FILES = (
     "crates/platform/src/call.rs",
     "crates/platform/src/communities.rs",
     "crates/platform/src/relations.rs",
+    "crates/platform/src/report.rs",
     "crates/platform/src/domain/friends.rs",
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",

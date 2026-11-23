@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::{AdminAuth, Authed};
+use crate::db::{offload, offload_api};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::validate;
@@ -54,18 +55,19 @@ async fn create(
     ApiJson(body): ApiJson<ReportBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     // 举报轰炸过风控闸（Throttle/Deny 都落到 429）
-    platform.risk_gate(wxlike_risk::Action::Report, &authed.user_id, None)?;
+    let actor = authed.user_id.clone();
     let reason = Reason::parse(&body.reason)
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown reason"))?;
-    let target_id = validate::id(&body.target_id)?;
-    let ticket = platform.create_report(
-        &authed.user_id,
-        &body.target_kind,
-        target_id,
-        reason,
-        &body.detail,
-    )?;
-    platform.risk_record(wxlike_risk::Action::Report, &authed.user_id)?;
+    let target_kind = body.target_kind;
+    let target_id = validate::id(&body.target_id)?.to_string();
+    let detail = body.detail;
+    let ticket = offload_api(&platform, move |p| {
+        p.risk_gate(wxlike_risk::Action::Report, &actor, None)?;
+        let ticket = p.create_report(&actor, &target_kind, &target_id, reason, &detail)?;
+        p.risk_record(wxlike_risk::Action::Report, &actor)?;
+        Ok(ticket)
+    })
+    .await?;
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({ "ticket_id": ticket.id, "state": ticket.state })),
@@ -76,7 +78,8 @@ async fn mine(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.reports_by(&authed.user_id, 50)?;
+    let actor = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.reports_by(&actor, 50)).await?;
     Ok(Json(serde_json::json!({ "tickets": rows })))
 }
 
@@ -87,7 +90,9 @@ async fn queue(
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let sla = platform.options().report_sla_ms;
     let now = wxlike_core::types::now_ms();
-    let tickets = platform.report_queue(q.state.as_deref(), q.limit.unwrap_or(50))?;
+    let state = q.state;
+    let limit = q.limit.unwrap_or(50);
+    let tickets = offload(&platform, move |p| p.report_queue(state.as_deref(), limit)).await?;
     let views: Vec<TicketView> = tickets
         .iter()
         .map(|t| TicketView {
@@ -104,11 +109,10 @@ async fn triage(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    Ok(Json(platform.triage_report(
-        &id,
-        &admin.actor,
-        &body.note,
-    )?))
+    let actor = admin.actor;
+    let note = body.note;
+    let ticket = offload(&platform, move |p| p.triage_report(&id, &actor, &note)).await?;
+    Ok(Json(ticket))
 }
 
 async fn act(
@@ -127,12 +131,14 @@ async fn act(
             "report.act 收到旧的嵌套 action 形状（{{\"action\":{{\"action\":\"…\"}}}}）；建议客户端改用平铺"
         );
     }
-    Ok(Json(platform.act_on_report(
-        &id,
-        &admin.actor,
-        body.action,
-        &body.note,
-    )?))
+    let actor = admin.actor;
+    let action = body.action;
+    let note = body.note;
+    let ticket = offload(&platform, move |p| {
+        p.act_on_report(&id, &actor, action, &note)
+    })
+    .await?;
+    Ok(Json(ticket))
 }
 
 async fn close(
@@ -141,11 +147,10 @@ async fn close(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    Ok(Json(platform.close_report(
-        &id,
-        &admin.actor,
-        &body.note,
-    )?))
+    let actor = admin.actor;
+    let note = body.note;
+    let ticket = offload(&platform, move |p| p.close_report(&id, &actor, &note)).await?;
+    Ok(Json(ticket))
 }
 
 async fn reject(
@@ -154,9 +159,8 @@ async fn reject(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<NoteBody>,
 ) -> std::result::Result<Json<Ticket>, ApiError> {
-    Ok(Json(platform.reject_report(
-        &id,
-        &admin.actor,
-        &body.note,
-    )?))
+    let actor = admin.actor;
+    let note = body.note;
+    let ticket = offload(&platform, move |p| p.reject_report(&id, &actor, &note)).await?;
+    Ok(Json(ticket))
 }

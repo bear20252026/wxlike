@@ -269,6 +269,17 @@ await 侧被借用。
 
 `relations.rs` 加入 `ENFORCED_FILES`。
 
+## 第三十九批：report handler 收口
+
+`report.rs` 的举报创建、我的工单、管理队列、triage/act/close/reject 共 7 个
+接口在 `async fn` 里直接调同步方法。
+
+本批把风控闸、建单、风控计数收进同一个 `offload_api`，失败码仍是原来的
+422/429；队列只把查库放进阻塞任务，SLA/`overdue` 计算留在响应组装侧；
+四个管理动作各自一次 `offload`，`act` 的旧形状日志仍在 handler 里打。
+
+`report.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
