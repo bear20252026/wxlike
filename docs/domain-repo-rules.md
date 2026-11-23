@@ -301,6 +301,23 @@ await 侧被借用。
 
 `stickers.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十二批：sessions handler 收口
+
+`sessions.rs` 的会话列表、刷新、step-up、按 sid/设备撤销、撤销其他会话共
+6 个接口在 `async fn` 里直接调同步方法。
+
+本批按完整业务顺序收口：
+
+- 列表把 `touch_session + sessions_of + devices_of` 合成一次阻塞任务；
+- 按 sid 撤销把存在性判断、刷新链撤销和审计收进 `offload_api`，仍回同一个
+  404；
+- step-up 把 `confirm_identity` 失败审计、401、sid 提取、发证和成功审计收进
+  一次任务；
+- 设备撤销把 `session_sid + consume_step_up + revoke_device_sessions + audit`
+  收进一次任务，`cache_clear` 仍在 await 侧扇出。
+
+`sessions.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

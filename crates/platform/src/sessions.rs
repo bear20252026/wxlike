@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::{offload, offload_api};
 use crate::error::ApiError;
 use crate::PlatformState;
 use axum::extract::{Path, State};
@@ -39,10 +40,15 @@ async fn list(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    platform.touch_session(&authed.token)?;
-    let sessions = platform.sessions_of(&authed.user_id, &authed.token)?;
-    // 推送令牌一并返回：设备管理页要显示"这台设备能否收到推送"
-    let push = platform.devices_of(&authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let token = authed.token.clone();
+    let (sessions, push) = offload(&platform, move |p| {
+        p.touch_session(&token)?;
+        let sessions = p.sessions_of(&actor, &token)?;
+        let push = p.devices_of(&actor)?;
+        Ok((sessions, push))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "sessions": sessions,
         "push_devices": push,
@@ -54,13 +60,18 @@ async fn revoke(
     authed: Authed,
     Path(sid): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    let hit = platform.revoke_session_by_sid(&authed.user_id, &sid)?;
-    if !hit {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "no such session"));
-    }
-    // 刷新链跟着一起断：只删会话行的话，对方用刷新令牌就能把会话续回来。
-    platform.revoke_refresh_of_sid(&sid)?;
-    platform.audit(&authed.user_id, "session.revoke", &sid, "");
+    let actor = authed.user_id.clone();
+    offload_api(&platform, move |p| {
+        let hit = p.revoke_session_by_sid(&actor, &sid)?;
+        if !hit {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "no such session"));
+        }
+        // 刷新链跟着一起断：只删会话行的话，对方用刷新令牌就能把会话续回来。
+        p.revoke_refresh_of_sid(&sid)?;
+        p.audit(&actor, "session.revoke", &sid, "");
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -68,8 +79,14 @@ async fn revoke_others(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let n = platform.revoke_other_sessions(&authed.user_id, &authed.token)?;
-    platform.audit(&authed.user_id, "session.revoke_others", "", &n.to_string());
+    let actor = authed.user_id.clone();
+    let token = authed.token.clone();
+    let n = offload_api(&platform, move |p| {
+        let n = p.revoke_other_sessions(&actor, &token)?;
+        p.audit(&actor, "session.revoke_others", "", &n.to_string());
+        Ok(n)
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "revoked": n })))
 }
 
@@ -81,7 +98,9 @@ async fn refresh_session(
     State(platform): State<PlatformState>,
     Json(body): Json<RefreshBody>,
 ) -> std::result::Result<Json<RefreshReply>, ApiError> {
-    let (rotated, token) = platform.rotate_refresh(&body.refresh_token, "")?;
+    let refresh_token = body.refresh_token;
+    let (rotated, token) =
+        offload(&platform, move |p| p.rotate_refresh(&refresh_token, "")).await?;
     Ok(Json(RefreshReply {
         user_id: rotated.user_id,
         sid: rotated.sid,
@@ -107,16 +126,24 @@ async fn step_up_grant(
             "password or totp_code required",
         ));
     }
-    if !platform.confirm_identity(&authed.user_id, &body.totp_code, &body.password)? {
-        platform.audit(&authed.user_id, "session.step_up", "", "failed");
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid credentials",
-        ));
-    }
-    let sid = platform.session_sid(&authed.token)?.unwrap_or_default();
-    let expires_at = platform.grant_step_up(&authed.user_id, &sid, STEP_UP_DEVICE_REVOKE)?;
-    platform.audit(&authed.user_id, "session.step_up", "", "ok");
+    let actor = authed.user_id.clone();
+    let token = authed.token.clone();
+    let password = body.password;
+    let totp_code = body.totp_code;
+    let expires_at = offload_api(&platform, move |p| {
+        if !p.confirm_identity(&actor, &totp_code, &password)? {
+            p.audit(&actor, "session.step_up", "", "failed");
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials",
+            ));
+        }
+        let sid = p.session_sid(&token)?.unwrap_or_default();
+        let expires_at = p.grant_step_up(&actor, &sid, STEP_UP_DEVICE_REVOKE)?;
+        p.audit(&actor, "session.step_up", "", "ok");
+        Ok(expires_at)
+    })
+    .await?;
     Ok(Json(
         serde_json::json!({ "purpose": STEP_UP_DEVICE_REVOKE, "expires_at": expires_at }),
     ))
@@ -131,10 +158,17 @@ async fn revoke_device(
     authed: Authed,
     Path(device_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let sid = platform.session_sid(&authed.token)?.unwrap_or_default();
-    platform.consume_step_up(&authed.user_id, &sid, STEP_UP_DEVICE_REVOKE)?;
-    let revoked = platform.revoke_device_sessions(&authed.user_id, &device_id)?;
-    platform.audit(&authed.user_id, "device.revoke", &device_id, "");
+    let actor = authed.user_id.clone();
+    let token = authed.token.clone();
+    let device_id_for_task = device_id.clone();
+    let revoked = offload_api(&platform, move |p| {
+        let sid = p.session_sid(&token)?.unwrap_or_default();
+        p.consume_step_up(&actor, &sid, STEP_UP_DEVICE_REVOKE)?;
+        let revoked = p.revoke_device_sessions(&actor, &device_id_for_task)?;
+        p.audit(&actor, "device.revoke", &device_id_for_task, "");
+        Ok(revoked)
+    })
+    .await?;
     platform
         .emit(cache_clear_envelope(&authed.user_id, &device_id))
         .await;
