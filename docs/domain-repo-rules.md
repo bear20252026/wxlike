@@ -280,6 +280,18 @@ await 侧被借用。
 
 `report.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十批：wallet handler 收口
+
+`wallet.rs` 的转账、红包创建/查询/领取、余额、流水，以及红包公告扇出，
+共 7 个 handler 加 1 个 helper 在 await 上下文里直接调同步方法。
+
+本批把"幂等重放 + 记账"放在同一次 `offload_api`，命中重放直接返回；转账/
+红包成功后的公告扇出走 `emit`（异步），公告前所需的红包行和成员缓存再单独
+进阻塞池；幂等结果仍按原顺序在公告之后落库。余额与流水各一次阻塞任务，
+流水把 `ledger_of + ledger_head` 合并。
+
+`wallet.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
