@@ -161,7 +161,7 @@ async fn download(
         total,
     ) {
         Ok(pair) => pair,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     // this handler answers with a bare `Response`, so errors are mapped inline.
@@ -182,14 +182,16 @@ fn requested_range(
     raw: Option<&str>,
     has_range: bool,
     total: u64,
-) -> std::result::Result<(u64, u64), Response> {
+) -> std::result::Result<(u64, u64), Box<Response>> {
     match parse_range(raw, total) {
         Some(pair) => Ok(pair),
-        None if has_range => Err((
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            [(header::CONTENT_RANGE, format!("bytes */{total}"))],
-        )
-            .into_response()),
+        None if has_range => Err(Box::new(
+            (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{total}"))],
+            )
+                .into_response(),
+        )),
         None => Ok((0, total.saturating_sub(1))),
     }
 }
