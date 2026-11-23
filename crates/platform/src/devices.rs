@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -23,7 +24,8 @@ async fn register(
     authed: Authed,
     ApiJson(reg): ApiJson<DeviceReg>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.register_device(&authed.user_id, &reg)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.register_device(&me, &reg)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -31,5 +33,7 @@ async fn list(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Vec<DeviceRow>>, ApiError> {
-    Ok(Json(platform.devices_of(&authed.user_id)?))
+    let me = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.devices_of(&me)).await?;
+    Ok(Json(rows))
 }
