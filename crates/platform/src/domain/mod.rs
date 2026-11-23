@@ -29,6 +29,7 @@ pub mod friends;
 pub(crate) mod governance;
 pub mod groups;
 pub mod groups_admin;
+pub mod identity_admin;
 pub mod inbox;
 pub mod keys;
 pub mod live;

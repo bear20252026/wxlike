@@ -23,8 +23,8 @@
 //! # 错误形状
 //!
 //! 沿平台惯例：错误只回稳定分类与可行动消息（`ApiError`），不回显内部细节；
-//! identity/relations 的错误映射复用 `domain::qr_login::id_err` 的口径，
-//! relations 的 `RelError` 在本模块就地映射（两边错误集不同名同义）。
+//! identity/relations 的错误映射随治理编排一起收进
+//! `domain::identity_admin`，handler 只负责 HTTP 形状与 `spawn_blocking`。
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -33,12 +33,11 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::auth::AdminAuthSession;
-use crate::domain::qr_login::id_err;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
-use wxlike_identity::governance::{self, GovernCommand, GovernEffect};
-use wxlike_relations::governance::{GroupGovernCommand, GroupGovernEffect, GroupGovernanceEvent};
+use wxlike_identity::governance::{GovernCommand, GovernEffect};
+use wxlike_relations::governance::{GroupGovernCommand, GroupGovernEffect};
 
 pub fn routes() -> Router<PlatformState> {
     Router::new()
@@ -126,20 +125,11 @@ async fn suspend_user(
     ApiJson(body): ApiJson<SuspendBody>,
 ) -> Result<Json<GovernEffect>, ApiError> {
     let cmd = command(id, body);
-    let ran = tokio::task::spawn_blocking(move || {
-        let c = platform.db.lock();
-        governance::suspend(
-            &c,
-            &operator.token,
-            &cmd,
-            &platform.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-    })
-    .await;
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_suspend(&operator.token, &cmd)).await;
     match ran {
         Ok(Ok(effect)) => Ok(Json(effect)),
-        Ok(Err(err)) => Err(id_err(err)),
+        Ok(Err(err)) => Err(err),
         Err(err) => Err(join_err(err)),
     }
 }
@@ -152,20 +142,11 @@ async fn unsuspend_user(
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<GovernEffect>, ApiError> {
     let cmd = command_from_reason(id, body);
-    let ran = tokio::task::spawn_blocking(move || {
-        let c = platform.db.lock();
-        governance::unsuspend(
-            &c,
-            &operator.token,
-            &cmd,
-            &platform.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-    })
-    .await;
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_unsuspend(&operator.token, &cmd)).await;
     match ran {
         Ok(Ok(effect)) => Ok(Json(effect)),
-        Ok(Err(err)) => Err(id_err(err)),
+        Ok(Err(err)) => Err(err),
         Err(err) => Err(join_err(err)),
     }
 }
@@ -179,47 +160,19 @@ async fn revoke_device(
     ApiJson(body): ApiJson<ReasonBody>,
 ) -> Result<Json<GovernEffect>, ApiError> {
     let cmd = command_from_reason(id, body);
-    let ran = tokio::task::spawn_blocking(move || {
-        let c = platform.db.lock();
-        governance::revoke_device(
-            &c,
-            &operator.token,
-            &cmd,
-            &platform.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-    })
-    .await;
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_revoke_device(&operator.token, &cmd))
+            .await;
     match ran {
         Ok(Ok(effect)) => Ok(Json(effect)),
-        Ok(Err(err)) => Err(id_err(err)),
+        Ok(Err(err)) => Err(err),
         Err(err) => Err(join_err(err)),
     }
 }
 
-/// relations 的 `RelError` → HTTP。与 identity 的 `id_err` 同口径：
-/// 损坏/存储/解码一律 500（服务端问题），不伪装成客户端错误。
-fn rel_err(err: wxlike_relations::RelError) -> ApiError {
-    use axum::http::StatusCode;
-    use wxlike_relations::RelError;
-    match err {
-        RelError::BadInput(what) => ApiError::unprocessable(format!("bad input: {what}")),
-        RelError::Forbidden(what) => ApiError::forbidden(format!("forbidden: {what}")),
-        RelError::NotFound(what) => ApiError::not_found(format!("no such {what}")),
-        RelError::Conflict(what) => ApiError::conflict(what),
-        RelError::Corrupt(what) => {
-            tracing::error!(%what, "relations 治理读到损坏行");
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "corrupt stored row")
-        }
-        RelError::Db(_) | RelError::Json(_) => {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-        }
-    }
-}
-
 /// `POST /api/admin/identity/groups/{id}/govern`：群治理
-/// （freeze/unfreeze/transfer/dissolve）。域函数不带令牌参数，鉴权在本
-/// handler 先行；治理事件里的群成员缓存清理由平台就地执行。
+/// （freeze/unfreeze/transfer/dissolve）。audience 鉴权、域调用与群缓存失效
+/// 都在 `domain::identity_admin`，handler 只负责 HTTP 形状与阻塞边界。
 async fn govern_group(
     State(platform): State<PlatformState>,
     Path(id): Path<String>,
@@ -236,31 +189,9 @@ async fn govern_group(
         trace: body.trace,
         new_owner: body.new_owner,
     };
-    let ran = tokio::task::spawn_blocking(move || -> Result<GroupGovernEffect, ApiError> {
-        let c = platform.db.lock();
-        // 受众先行（relations 域函数不鉴权，IR 要求挂载面统一 admin audience）。
-        wxlike_identity::session::authenticate(
-            &c,
-            &operator.token,
-            wxlike_identity::Audience::Admin,
-            wxlike_core::types::now_ms() as i64,
-        )
-        .map_err(id_err)?;
-        let effect =
-            wxlike_relations::governance::govern(&c, &cmd, wxlike_core::types::now_ms() as i64)
-                .map_err(rel_err)?;
-        // 群成员缓存就地失效：群主换人/冻结/解散后，hub 的下一次成员查找
-        // 不能再吃到旧名单（WP-04）。
-        for event in &effect.events {
-            if let GroupGovernanceEvent::CacheClear { scope, key } = event {
-                if scope == "group" {
-                    platform.invalidate_group(key);
-                }
-            }
-        }
-        Ok(effect)
-    })
-    .await;
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_govern_group(&operator.token, &cmd))
+            .await;
     match ran {
         Ok(Ok(effect)) => Ok(Json(effect)),
         Ok(Err(err)) => Err(err),
@@ -275,20 +206,11 @@ async fn user_metadata_view(
     Path(id): Path<String>,
     operator: AdminAuthSession,
 ) -> Result<Json<wxlike_identity::governance::AdminUserView>, ApiError> {
-    let ran = tokio::task::spawn_blocking(move || {
-        let c = platform.db.lock();
-        governance::user_view(
-            &c,
-            &operator.token,
-            &id,
-            &platform.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-    })
-    .await;
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_user_view(&operator.token, &id)).await;
     match ran {
         Ok(Ok(view)) => Ok(Json(view)),
-        Ok(Err(err)) => Err(id_err(err)),
+        Ok(Err(err)) => Err(err),
         Err(err) => Err(join_err(err)),
     }
 }
