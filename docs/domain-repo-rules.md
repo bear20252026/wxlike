@@ -489,9 +489,12 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 ## 收尾与边界
 
 `domain/*.rs` 与 crate 根 handler 的生产 SQL 已清零，handler 也不再直连
-`db().lock()`，且 `TODO(ADR-28)` 已全部收口：SQL 与直连锁的清理没有下一批。
-ADR-28 的阻塞池覆盖仍按模块推进，已强制 `friends / groups / groups_admin /
-inbox / devices / keys / account` 与 `crates/admin/src`，后续只守边界：
+`db().lock()`，且源码里的 `TODO(ADR-28)` 已全部收口。ADR-28 的阻塞池覆盖
+已推进到 crate 根全部同步 handler、`auth / risk_mw / audit_mw` 三个中间件；
+domain 侧强制 `live / groups_admin`，`account` 按函数登记，其余 domain 只剩
+媒体仓内存访问器等不碰 SQLite 的点位。`scripts/adr28_async_db_guard.py` 的
+`ENFORCED_FILES / ENFORCED_FNS / ENFORCED_ROOTS` 是唯一清单，新增 handler
+默认应纳入，不再靠“记得包 offload”：
 
 1. 新 SQL 只进 `domain/repo/*.rs`；
 2. 基线保持 0/0，门禁即零容忍；
@@ -501,7 +504,7 @@ inbox / devices / keys / account` 与 `crates/admin/src`，后续只守边界：
 
 - 该模块生产代码 SQL 计数为 0；
 - `Platform` 公开签名不变；
-- SQL 只留在 `domain/repo`，domain 不再依赖 rusqlite；
+- SQL 只留在 `domain/repo`，domain 只用 `&Connection` 作为端口参数，不执行 SQL；
 - `check_domain_sql.py` 保持 0/0，新增 SQL 即失败；
 - CI 的 `pg-migration` / `test` / `audit` 全绿。
 
