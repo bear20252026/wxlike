@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::validate;
@@ -64,7 +65,10 @@ async fn state(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    match platform.call_state(&conv, &authed.user_id)? {
+    let me = authed.user_id.clone();
+    let conv_for_task = conv.clone();
+    let view = offload(&platform, move |p| p.call_state(&conv_for_task, &me)).await?;
+    match view {
         Some(view) => Ok(Json(serde_json::json!({
             "conv_id": view.conv_id,
             "live": view.live,
@@ -95,7 +99,8 @@ async fn start(
             .and_then(|b| b.capacity)
             .unwrap_or(DEFAULT_CAPACITY)
     };
-    platform.start_call(&conv, &authed.user_id, capacity)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.start_call(&conv, &me, capacity)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -104,7 +109,8 @@ async fn join(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.join_call(&conv, &authed.user_id)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.join_call(&conv, &me)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -113,7 +119,8 @@ async fn leave(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.leave_call(&conv, &authed.user_id)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.leave_call(&conv, &me)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -133,7 +140,12 @@ async fn mute(
         "video" => Track::Video,
         _ => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "track")),
     };
-    platform.mute_in_call(&conv, &authed.user_id, &target, track, body.muted)?;
+    let me = authed.user_id.clone();
+    let muted = body.muted;
+    offload(&platform, move |p| {
+        p.mute_in_call(&conv, &me, &target, track, muted)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -148,7 +160,12 @@ async fn mute_all(
         "video" => Track::Video,
         _ => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "track")),
     };
-    let affected = platform.mute_all_in_call(&conv, &authed.user_id, track, body.muted)?;
+    let me = authed.user_id.clone();
+    let muted = body.muted;
+    let affected = offload(&platform, move |p| {
+        p.mute_all_in_call(&conv, &me, track, muted)
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "affected": affected })))
 }
 
@@ -159,7 +176,8 @@ async fn kick(
     ApiJson(body): ApiJson<TargetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let target = require_body_target(&body)?;
-    platform.kick_from_call(&conv, &authed.user_id, &target)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.kick_from_call(&conv, &me, &target)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -169,7 +187,9 @@ async fn lock(
     Path(conv): Path<String>,
     ApiJson(body): ApiJson<ToggleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.lock_call(&conv, &authed.user_id, body.value)?;
+    let me = authed.user_id.clone();
+    let value = body.value;
+    offload(&platform, move |p| p.lock_call(&conv, &me, value)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -179,7 +199,9 @@ async fn record(
     Path(conv): Path<String>,
     ApiJson(body): ApiJson<ToggleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.record_call(&conv, &authed.user_id, body.value)?;
+    let me = authed.user_id.clone();
+    let value = body.value;
+    offload(&platform, move |p| p.record_call(&conv, &me, value)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -189,7 +211,9 @@ async fn hand(
     Path(conv): Path<String>,
     ApiJson(body): ApiJson<ToggleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.hand_in_call(&conv, &authed.user_id, body.value)?;
+    let me = authed.user_id.clone();
+    let value = body.value;
+    offload(&platform, move |p| p.hand_in_call(&conv, &me, value)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -200,7 +224,8 @@ async fn transfer(
     ApiJson(body): ApiJson<TargetBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let target = require_body_target(&body)?;
-    platform.transfer_call(&conv, &authed.user_id, &target)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.transfer_call(&conv, &me, &target)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -210,7 +235,8 @@ async fn post_signal(
     Path(conv): Path<String>,
     ApiJson(signal): ApiJson<wxlike_rtc::signal::Signal>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let dropped = platform.post_call_signal(&conv, &authed.user_id, signal)?;
+    let me = authed.user_id.clone();
+    let dropped = offload(&platform, move |p| p.post_call_signal(&conv, &me, signal)).await?;
     Ok(Json(serde_json::json!({ "dropped": dropped })))
 }
 
@@ -219,7 +245,8 @@ async fn take_signals(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let signals = platform.take_call_signals(&conv, &authed.user_id)?;
+    let me = authed.user_id.clone();
+    let signals = offload(&platform, move |p| p.take_call_signals(&conv, &me)).await?;
     Ok(Json(serde_json::json!({ "signals": signals })))
 }
 
@@ -229,11 +256,10 @@ async fn egress(
     Path(conv): Path<String>,
     axum::extract::Query(q): axum::extract::Query<EgressQuery>,
 ) -> std::result::Result<Json<EgressPlan>, ApiError> {
-    let plan = platform.call_egress(
-        &conv,
-        &authed.user_id,
-        q.estimate_bps
-            .unwrap_or(wxlike_rtc::sfu::DEFAULT_MAX_EGRESS_BPS),
-    )?;
+    let me = authed.user_id.clone();
+    let max_bps = q
+        .estimate_bps
+        .unwrap_or(wxlike_rtc::sfu::DEFAULT_MAX_EGRESS_BPS);
+    let plan = offload(&platform, move |p| p.call_egress(&conv, &me, max_bps)).await?;
     Ok(Json(plan))
 }

@@ -221,6 +221,22 @@ step-up 发证、导出作业的提交/查询/取消、导出链接和账号注�
 `friends / groups / groups_admin / inbox / devices / keys / account`，加上
 `crates/admin/src` 整 crate。
 
+## 第三十六批：call handler 全部进阻塞池
+
+`call.rs` 的 14 个路由（状态、开房、加入/离开、静音/全员静音、踢人、锁定、
+录制、举手、转交、egress、信令投递/收取）都在 `async fn` 里直接调同步方法。
+
+本批统一改成 `offload`；每个 handler 只包一次阻塞任务，房间状态机、权限判断
+和返回结构仍由 `domain::call` 决定：
+
+- `state` 一次取回房间视图，未开房时仍返回原来的 `live:false` 空视图；
+- `mute` / `mute_all` 的参数校验与 `track` 解析留在 handler，变更加锁；
+- `post_signal` / `take_signals` 的信令对象、`egress` 的码率估算直接移入闭包；
+- 响应仍是 `204` 或原来的 JSON 形状，没有新增错误码。
+
+`call.rs` 也加入 `ENFORCED_FILES`，名单更新为
+`friends / groups / groups_admin / inbox / devices / keys / account / call`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
