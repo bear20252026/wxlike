@@ -85,6 +85,7 @@ ENFORCED_FILES = (
     "crates/platform/src/video_feed.rs",
     "crates/platform/src/video_refs.rs",
     "crates/platform/src/qr_login.rs",
+    "crates/platform/src/media.rs",
     "crates/platform/src/domain/friends.rs",
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",

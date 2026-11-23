@@ -387,6 +387,20 @@ await 侧被借用。
 
 三个文件加入 `ENFORCED_FILES`。
 
+## 第四十八批：media handler 收口
+
+`media.rs` 的四个接口：
+
+- 上传：会话归属校验（`may_read_conv`）进 `offload`，随后 `store_media` 仍是
+  原来的 async 存储调用；没有声明会话时行为不变；
+- 签名 URL：权限检查 + 签名放进一次 `offload_api`，无权限仍回 404；
+- 下载：`authorize_download`（签名或 Bearer + 归属）整体进 `offload`，拒绝
+  响应原样返回；`resolve` 改为接收 `PlatformState`，`media_meta` 查询进阻塞池，
+  读文件仍走 async `MediaStore`；
+- 缩略图/对象读取保持 async，不在阻塞池里搬大文件。
+
+`media.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

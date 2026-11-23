@@ -2,8 +2,9 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::{offload, offload_api};
 use crate::error::{ApiError, Result};
-use crate::{Platform, PlatformState};
+use crate::PlatformState;
 use axum::extract::multipart::{Field, Multipart};
 use axum::extract::{DefaultBodyLimit, Path as ApiPath, Query, State};
 use axum::http::header;
@@ -13,8 +14,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::domain::media::{
-    authorize_download, parse_range, read_field, DownloadQuery, SignedUrl, StoredObject,
-    UploadReply, MAX_MEDIA_BYTES, MEDIA_URL_DEFAULT_TTL_SECS, MEDIA_URL_MAX_TTL_SECS,
+    authorize_download, parse_range, read_field, DownloadQuery, MediaStore, SignedUrl,
+    StoredObject, UploadReply, MAX_MEDIA_BYTES, MEDIA_URL_DEFAULT_TTL_SECS, MEDIA_URL_MAX_TTL_SECS,
 };
 
 pub fn routes() -> Router<PlatformState> {
@@ -70,7 +71,10 @@ async fn upload(
     let conv = conv.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
     if let Some(conv) = conv.as_deref() {
         // 不能把附件挂到别人的会话上——那等于给会话成员投递任意内容
-        if !platform.may_read_conv(&authed.user_id, conv) {
+        let actor = authed.user_id.clone();
+        let conv = conv.to_string();
+        let allowed = offload(&platform, move |p| Ok(p.may_read_conv(&actor, &conv))).await?;
+        if !allowed {
             return Err(ApiError::forbidden("not your conversation"));
         }
     }
@@ -97,17 +101,19 @@ async fn signed_url(
     ApiPath(media_id): ApiPath<String>,
     Query(q): Query<UrlQuery>,
 ) -> std::result::Result<Json<SignedUrl>, ApiError> {
-    if !platform
-        .may_read_media(&media_id, &authed.user_id)
-        .map_err(ApiError::from)?
-    {
-        return Err(ApiError::not_found("no such media"));
-    }
+    let actor = authed.user_id.clone();
+    let media_id_for_task = media_id.clone();
     let ttl = q
         .ttl_secs
         .unwrap_or(MEDIA_URL_DEFAULT_TTL_SECS)
         .clamp(1, MEDIA_URL_MAX_TTL_SECS);
-    let (url, expires_at) = platform.sign_media_url(&media_id, ttl.saturating_mul(1_000));
+    let (url, expires_at) = offload_api(&platform, move |p| {
+        if !p.may_read_media(&media_id_for_task, &actor)? {
+            return Err(ApiError::not_found("no such media"));
+        }
+        Ok(p.sign_media_url(&media_id_for_task, ttl.saturating_mul(1_000)))
+    })
+    .await?;
     Ok(Json(SignedUrl { url, expires_at }))
 }
 
@@ -124,13 +130,25 @@ async fn download(
     Query(q): Query<DownloadQuery>,
 ) -> Response {
     // **先授权再碰路径**（issue #14）。
-    if let Some(rejected) = authorize_download(&platform, &media_id, &headers, &q) {
-        return rejected;
+    let want_thumb = q.thumb.unwrap_or(0) == 1;
+    let auth_id = media_id.clone();
+    let auth_headers = headers.clone();
+    let rejected = offload(&platform, move |p| {
+        Ok(authorize_download(p, &auth_id, &auth_headers, &q))
+    })
+    .await;
+    match rejected {
+        Ok(Some(rejected)) => return rejected,
+        Ok(None) => {}
+        Err(err) => return ApiError::from(err).into_response(),
     }
 
     // An unknown or malformed id must be a 404 before any path is touched.
-    let want_thumb = q.thumb.unwrap_or(0) == 1;
-    let object = match resolve(&platform, &media_id, want_thumb).await {
+    let store = match offload(&platform, |p| Ok(p.media_store())).await {
+        Ok(store) => store,
+        Err(err) => return ApiError::from(err).into_response(),
+    };
+    let object = match resolve(&platform, &store, &media_id, want_thumb).await {
         Ok(Some(o)) => o,
         Ok(None) => {
             return (
@@ -165,13 +183,13 @@ async fn download(
     // **总是按 Range 取**：`resolve` 只给了长度与类型（issue #14）。
     // 缩略图很小、且存在另一条路径里，单独取。
     let bytes = if want_thumb {
-        match platform.media_store().get_thumb(&media_id).await {
+        match store.get_thumb(&media_id).await {
             Ok(Some(b)) => b,
             Ok(None) => return StatusCode::NOT_FOUND.into_response(),
             Err(err) => return ApiError::from(err).into_response(),
         }
     } else {
-        match platform.media_store().get(&media_id, start, end).await {
+        match store.get(&media_id, start, end).await {
             Ok(Some(b)) => b,
             Ok(None) => return StatusCode::NOT_FOUND.into_response(),
             Err(err) => return ApiError::from(err).into_response(),
@@ -206,11 +224,11 @@ async fn read_text(field: Field<'_>) -> std::result::Result<String, ApiError> {
 
 /// Reads the object (or its thumbnail) through the store.
 async fn resolve(
-    platform: &Platform,
+    platform: &PlatformState,
+    store: &std::sync::Arc<dyn MediaStore>,
     media_id: &str,
     want_thumb: bool,
 ) -> Result<Option<StoredObject>> {
-    let store = platform.media_store();
     if want_thumb {
         // the thumbnail exists only for decoded images; the row records that
         let png = store.get_thumb(media_id).await?;
@@ -231,7 +249,9 @@ async fn resolve(
         // not a valid id: no filesystem lookup at all
         Err(_) => return Ok(None),
     }
-    let Some((total, content_type, _has_thumb)) = platform.media_meta(media_id)? else {
+    let id = media_id.to_string();
+    let meta = offload(platform, move |p| p.media_meta(&id)).await?;
+    let Some((total, content_type, _has_thumb)) = meta else {
         return Ok(None);
     };
     // **不再读整个对象**（issue #14）：`resolve` 只需要长度与类型，
