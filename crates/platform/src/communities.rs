@@ -2,7 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
-use crate::db::offload;
+use crate::db::{offload, offload_api};
 use crate::error::{ApiError, PlatformError};
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -56,7 +56,13 @@ async fn create_community(
     authed: Authed,
     ApiJson(body): ApiJson<CommunityBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let id = platform.create_community(&authed.user_id, &body.name, body.member_limit)?;
+    let actor = authed.user_id.clone();
+    let name = body.name;
+    let member_limit = body.member_limit;
+    let id = offload(&platform, move |p| {
+        p.create_community(&actor, &name, member_limit)
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "community_id": id })),
@@ -67,7 +73,8 @@ async fn my_communities(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.my_communities(&authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.my_communities(&actor)).await?;
     Ok(Json(serde_json::json!({
         "communities": rows.into_iter().map(|(c, role)| serde_json::json!({
             "id": c.id, "name": c.name, "owner_uid": c.owner_uid,
@@ -81,7 +88,8 @@ async fn join_community(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let state = platform.join_community(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let state = offload(&platform, move |p| p.join_community(&id, &actor)).await?;
     Ok(Json(serde_json::json!({ "state": state })))
 }
 
@@ -90,7 +98,8 @@ async fn community_members(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.community_members(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.community_members(&id, &actor)).await?;
     Ok(Json(serde_json::json!({
         "members": rows.into_iter().map(|(user, role)| serde_json::json!({
             "user_id": user, "role": role
@@ -110,7 +119,13 @@ async fn create_channel(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ChannelBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let channel = platform.create_channel(&id, &authed.user_id, &body.name, &body.kind)?;
+    let actor = authed.user_id.clone();
+    let name = body.name;
+    let kind = body.kind;
+    let channel = offload(&platform, move |p| {
+        p.create_channel(&id, &actor, &name, &kind)
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "channel_id": channel })),
@@ -122,7 +137,8 @@ async fn list_channels(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.list_channels(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.list_channels(&id, &actor)).await?;
     Ok(Json(serde_json::json!({ "channels": rows })))
 }
 
@@ -167,7 +183,12 @@ async fn recall_channel_message(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<RecallBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.recall_channel_message(&id, &authed.user_id, &body.msg_id)?;
+    let actor = authed.user_id.clone();
+    let msg_id = body.msg_id;
+    offload(&platform, move |p| {
+        p.recall_channel_message(&id, &actor, &msg_id)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -184,12 +205,12 @@ async fn fetch_channel_messages(
     Path(id): Path<String>,
     Query(q): Query<FetchQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let (rows, next) = platform.fetch_channel_messages(
-        &id,
-        &authed.user_id,
-        q.after_seq,
-        q.limit.unwrap_or(50),
-    )?;
+    let actor = authed.user_id.clone();
+    let limit = q.limit.unwrap_or(50);
+    let (rows, next) = offload(&platform, move |p| {
+        p.fetch_channel_messages(&id, &actor, q.after_seq, limit)
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "messages": rows.into_iter().map(|m| serde_json::json!({
             "seq": m.seq, "sender": m.sender, "text": m.payload,
@@ -210,7 +231,9 @@ async fn community_threads(
     Path(id): Path<String>,
     Query(q): Query<CommunityThreadQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.community_threads(&id, &authed.user_id, q.limit.unwrap_or(50))?;
+    let actor = authed.user_id.clone();
+    let limit = q.limit.unwrap_or(50);
+    let rows = offload(&platform, move |p| p.community_threads(&id, &actor, limit)).await?;
     Ok(Json(serde_json::json!({ "threads": rows })))
 }
 
@@ -231,7 +254,13 @@ async fn create_thread(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ThreadBody>,
 ) -> std::result::Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let thread = platform.create_thread(&id, &authed.user_id, body.root_seq, &body.title)?;
+    let actor = authed.user_id.clone();
+    let title = body.title;
+    let root_seq = body.root_seq;
+    let thread = offload(&platform, move |p| {
+        p.create_thread(&id, &actor, root_seq, &title)
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "thread_id": thread })),
@@ -254,10 +283,17 @@ async fn create_thread_in_community(
             )
         })?;
     // 频道必须属于这个社区，否则就是拿社区 id 越权写到别的社区里
-    if platform.channel_community(&channel)?.as_deref() != Some(id.as_str()) {
-        return Err(PlatformError::NotFound.into());
-    }
-    let thread = platform.create_thread(&channel, &authed.user_id, body.root_seq, &body.title)?;
+    let actor = authed.user_id.clone();
+    let title = body.title;
+    let root_seq = body.root_seq;
+    let thread = offload_api(&platform, move |p| {
+        if p.channel_community(&channel)?.as_deref() != Some(id.as_str()) {
+            return Err(PlatformError::NotFound.into());
+        }
+        p.create_thread(&channel, &actor, root_seq, &title)
+            .map_err(ApiError::from)
+    })
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "thread_id": thread })),
@@ -269,7 +305,8 @@ async fn list_threads(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.list_threads(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.list_threads(&id, &actor)).await?;
     Ok(Json(serde_json::json!({ "threads": rows })))
 }
 
@@ -284,10 +321,16 @@ async fn list_channel_roles(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.channel_roles(&id, &authed.user_id)?;
-    let me = platform
-        .effective_channel_role(&id, &authed.user_id)?
-        .map(|r| r.as_str());
+    let actor = authed.user_id.clone();
+    let id_for_task = id.clone();
+    let (rows, me) = offload(&platform, move |p| {
+        let rows = p.channel_roles(&id_for_task, &actor)?;
+        let me = p
+            .effective_channel_role(&id_for_task, &actor)?
+            .map(|r| r.as_str().to_string());
+        Ok((rows, me))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "channel_id": id, "my_role": me, "roles": rows
     })))
@@ -299,9 +342,16 @@ async fn set_channel_role(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ChannelRoleBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let role = platform.set_channel_role(&id, &authed.user_id, &body.user_id, &body.role)?;
+    let actor = authed.user_id.clone();
+    let user_id = body.user_id;
+    let user_id_for_response = user_id.clone();
+    let role_arg = body.role;
+    let role = offload(&platform, move |p| {
+        p.set_channel_role(&id, &actor, &user_id, &role_arg)
+    })
+    .await?;
     Ok(Json(
-        serde_json::json!({ "user_id": body.user_id, "role": role.as_str() }),
+        serde_json::json!({ "user_id": user_id_for_response, "role": role.as_str() }),
     ))
 }
 
@@ -310,7 +360,8 @@ async fn reset_channel_role(
     authed: Authed,
     Path((id, user)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.reset_channel_role(&id, &authed.user_id, &user)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.reset_channel_role(&id, &actor, &user)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -365,12 +416,12 @@ async fn fetch_thread_messages(
     Path(id): Path<String>,
     Query(q): Query<ThreadFetchQuery>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.fetch_thread_messages(
-        &id,
-        &authed.user_id,
-        q.after_seq,
-        q.limit.unwrap_or(100),
-    )?;
+    let actor = authed.user_id.clone();
+    let limit = q.limit.unwrap_or(100);
+    let rows = offload(&platform, move |p| {
+        p.fetch_thread_messages(&id, &actor, q.after_seq, limit)
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "messages": rows.into_iter().map(|(seq, sender, text, _)| serde_json::json!({
             "seq": seq, "sender": sender, "text": text
@@ -383,7 +434,8 @@ async fn subscribe_thread(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.subscribe_thread(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.subscribe_thread(&id, &actor)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -392,7 +444,8 @@ async fn unsubscribe_thread(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.unsubscribe_thread(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.unsubscribe_thread(&id, &actor)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -401,8 +454,13 @@ async fn thread_subscribers(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.thread_subscribers(&id, &authed.user_id)?;
-    let fanout = platform.thread_fanout(&id)?;
+    let actor = authed.user_id.clone();
+    let (rows, fanout) = offload(&platform, move |p| {
+        let rows = p.thread_subscribers(&id, &actor)?;
+        let fanout = p.thread_fanout(&id)?;
+        Ok((rows, fanout))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
         "subscribers": rows,
         "fanout": fanout,
@@ -422,6 +480,11 @@ async fn set_thread_subscription(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<SubscriptionBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_thread_subscription(&id, &authed.user_id, body.muted)?;
+    let actor = authed.user_id.clone();
+    let muted = body.muted;
+    offload(&platform, move |p| {
+        p.set_thread_subscription(&id, &actor, muted)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

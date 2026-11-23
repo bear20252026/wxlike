@@ -237,6 +237,27 @@ step-up 发证、导出作业的提交/查询/取消、导出链接和账号注�
 `call.rs` 也加入 `ENFORCED_FILES`，名单更新为
 `friends / groups / groups_admin / inbox / devices / keys / account / call`。
 
+## 第三十七批：communities handler 收口
+
+`communities.rs` 的频道、话题和订阅接口原先只有 `send_channel_message` /
+`send_thread_reply` 两条样板进了阻塞池，其余 20 个路由仍在 `async fn` 里直接
+调同步方法。
+
+本批按读/写分开收口：
+
+- 单段读（我的社区、成员、频道、频道消息、社区话题、话题列表、话题消息）；
+- 单段写（建社区、加入、建频道、撤回、建话题、角色设置/重置、订阅/退订、
+  静音设置）；
+- 需要保持原有 404 语义的 `create_thread_in_community` 用 `offload_api`，
+  把"频道属于该社区"的判断与建话题放进同一次阻塞任务；
+- `list_channel_roles`、`thread_subscribers` 把同一次请求里的两次查库合并成
+  一次阻塞任务；
+- `send_channel_message` / `send_thread_reply` 维持原样：行写入进阻塞池，
+  `thread.reply` 的扇出仍在 await 侧，不把投递和 SQL 混在一起。
+
+`communities.rs` 加入 `ENFORCED_FILES`。当前名单为
+`friends / groups / groups_admin / inbox / devices / keys / account / call / communities`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
