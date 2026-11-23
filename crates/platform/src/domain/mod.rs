@@ -14,7 +14,8 @@
 //! 于是"handler 直接写 SQL"这类问题不再靠 review 拦，靠编译器拦。
 //!
 //! 唯一还在 crate 根的 `impl Platform` 是 `lib.rs` 里的基础设施
-//! （构造、会话、审计、路由装配）——它们不属于任何 feature。
+//! （构造、路由装配、事件/治理句柄注入）——它们不属于任何 feature；
+//! 会话签发与审计日志已分别落在本层的 `sessions` / `audit`。
 
 pub mod account;
 pub mod articles;
