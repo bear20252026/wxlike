@@ -160,37 +160,7 @@ pub async fn run(target: &DiagTarget, opts: &DiagOptions) -> DiagReport {
 
     // 1) DNS
     let started = Instant::now();
-    let resolved = tokio::time::timeout(
-        opts.per_step_timeout,
-        tokio::net::lookup_host((target.host.as_str(), target.http_port)),
-    )
-    .await;
-    let mut addrs: Vec<SocketAddr> = Vec::new();
-    let dns_status = match resolved {
-        Err(_) => StepStatus::Failed {
-            detail: format!("解析超时（>{}s）", opts.per_step_timeout.as_secs()),
-        },
-        Ok(Err(err)) => StepStatus::Failed {
-            detail: format!("解析失败：{err}"),
-        },
-        Ok(Ok(iter)) => {
-            for addr in iter {
-                if !addrs.contains(&addr) {
-                    addrs.push(addr);
-                }
-            }
-            if addrs.is_empty() {
-                StepStatus::Failed {
-                    detail: "解析结果为空".into(),
-                }
-            } else {
-                let list: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
-                StepStatus::Ok {
-                    detail: format!("{} 个地址：{}", addrs.len(), list.join(", ")),
-                }
-            }
-        }
-    };
+    let (dns_status, addrs) = dns_probe(target, opts).await;
     let dns_ok = dns_status.is_ok();
     steps.push(StepReport {
         step: Step::Dns,
@@ -202,32 +172,8 @@ pub async fn run(target: &DiagTarget, opts: &DiagOptions) -> DiagReport {
     let mut tcp_addr: Option<SocketAddr> = None;
     if dns_ok {
         let started = Instant::now();
-        let mut last_err = String::new();
-        for addr in &addrs {
-            match tokio::time::timeout(opts.per_step_timeout, tokio::net::TcpStream::connect(addr))
-                .await
-            {
-                Ok(Ok(_)) => {
-                    tcp_addr = Some(*addr);
-                    last_err.clear();
-                    break;
-                }
-                Ok(Err(err)) => last_err = format!("{addr}：{err}"),
-                Err(_) => last_err = format!("{addr}：连接超时"),
-            }
-        }
-        let status = match tcp_addr {
-            Some(addr) => StepStatus::Ok {
-                detail: format!("已连接 {addr}"),
-            },
-            None => StepStatus::Failed {
-                detail: if last_err.is_empty() {
-                    "没有可用地址".into()
-                } else {
-                    last_err
-                },
-            },
-        };
+        let (status, reached) = tcp_probe(&addrs, opts).await;
+        tcp_addr = reached;
         steps.push(StepReport {
             step: Step::Tcp,
             status,
@@ -278,6 +224,74 @@ pub async fn run(target: &DiagTarget, opts: &DiagOptions) -> DiagReport {
         steps,
         summary,
     }
+}
+
+/// DNS 解析：超时、失败、空结果都映射成 `StepStatus`，同时交出解析到的地址。
+async fn dns_probe(target: &DiagTarget, opts: &DiagOptions) -> (StepStatus, Vec<SocketAddr>) {
+    let resolved = tokio::time::timeout(
+        opts.per_step_timeout,
+        tokio::net::lookup_host((target.host.as_str(), target.http_port)),
+    )
+    .await;
+    let mut addrs: Vec<SocketAddr> = Vec::new();
+    let status = match resolved {
+        Err(_) => StepStatus::Failed {
+            detail: format!("解析超时（>{}s）", opts.per_step_timeout.as_secs()),
+        },
+        Ok(Err(err)) => StepStatus::Failed {
+            detail: format!("解析失败：{err}"),
+        },
+        Ok(Ok(iter)) => {
+            for addr in iter {
+                if !addrs.contains(&addr) {
+                    addrs.push(addr);
+                }
+            }
+            if addrs.is_empty() {
+                StepStatus::Failed {
+                    detail: "解析结果为空".into(),
+                }
+            } else {
+                let list: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
+                StepStatus::Ok {
+                    detail: format!("{} 个地址：{}", addrs.len(), list.join(", ")),
+                }
+            }
+        }
+    };
+    (status, addrs)
+}
+
+/// TCP 连接：按解析顺序逐个试，第一个成功即停；全部失败时保留最后一条错误。
+async fn tcp_probe(addrs: &[SocketAddr], opts: &DiagOptions) -> (StepStatus, Option<SocketAddr>) {
+    let mut reached = None;
+    let mut last_err = String::new();
+    for addr in addrs {
+        match tokio::time::timeout(opts.per_step_timeout, tokio::net::TcpStream::connect(addr))
+            .await
+        {
+            Ok(Ok(_)) => {
+                reached = Some(*addr);
+                last_err.clear();
+                break;
+            }
+            Ok(Err(err)) => last_err = format!("{addr}：{err}"),
+            Err(_) => last_err = format!("{addr}：连接超时"),
+        }
+    }
+    let status = match reached {
+        Some(addr) => StepStatus::Ok {
+            detail: format!("已连接 {addr}"),
+        },
+        None => StepStatus::Failed {
+            detail: if last_err.is_empty() {
+                "没有可用地址".into()
+            } else {
+                last_err
+            },
+        },
+    };
+    (status, reached)
 }
 
 fn skipped(step: Step, why: &str) -> StepReport {

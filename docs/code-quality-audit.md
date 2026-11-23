@@ -481,11 +481,12 @@ search、video、hub、router 全串在一个函数里。
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
 2026-11-23 全仓生产代码重测（`docs/bench/quality_probe.py`）：`>60 行 50`、
-`>100 行 7`、`深嵌套 70`、`重复窗口 125`、`魔法数字 172`。统计面随仓库模块
+`>100 行 6`、`深嵌套 70`、`重复窗口 125`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
-抽成 `SCHEMA_SQL` 常量，`open` 由 233 行降到约 20 行。
+抽成 `SCHEMA_SQL` 常量，`open` 由 233 行降到约 20 行；`net/src/diag.rs::run`
+的 DNS/TCP 两段收进 `dns_probe` / `tcp_probe`，124→70 行。
 
 ### 测试有效性（2026-10-20 晚补测）
 
