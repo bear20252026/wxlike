@@ -22,22 +22,28 @@ python scripts/platform_surface_audit.py --json
 | 时点 | `Platform` 方法总数 | `pub` | `pub(crate)` |
 |---|---:|---:|---:|
 | 第一批前 | 285 | 258 | 27 |
-| 第一批后 | 285 | **232** | **53** |
+| 第一批后 | 285 | **237** | **48** |
 
 目标：`pub` 方法 ≤120。
 
 ## 第一批：status / favorites / notes
 
-这三个模块的 26 个方法只被平台内 handler 调用，已从 `pub` 降为
+这三个模块的 26 个方法只被平台内 handler 调用，其中 **21 个**已从 `pub` 降为
 `pub(crate)`：
 
-- `domain/status.rs`：12 个（`friend_ids` 到 `sweep_expired_statuses`）；
-- `domain/favorites.rs`：9 个；
+- `domain/status.rs`：11 个（`friend_ids` 到 `remove_status_background` 之间）；
+- `domain/favorites.rs`：5 个（`add_object_favorite`、`favorites_sorted`、
+  `search_favorites`、`update_favorite`、`reorder_favorites`）；
 - `domain/notes.rs`：5 个。
+
+保留 `pub` 的 5 个是平台集成测试直接调用的方法：
+`add_favorite / list_favorites / favorite / remove_favorite /
+sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内单测后才能
+降级，不能为了数字直接断测试。
 
 `status` / `note` 两个通用方法名在外部搜索里有命中，但分别来自
 `http::Response::status()` 与 `message::sync::note()`，不是 `Platform` 调用，
-已人工核对。
+已人工核对；盘点脚本现在也把 `crates/platform/tests` 算作外部调用。
 
 ## 后续约定
 

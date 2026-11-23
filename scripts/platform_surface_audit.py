@@ -77,7 +77,8 @@ def rust_files() -> list[Path]:
                 rel = path.relative_to(REPO_ROOT)
             except ValueError:
                 continue
-            if str(rel).replace("\\", "/").startswith("crates/platform/"):
+            rel = str(rel).replace("\\", "/")
+            if rel.startswith("crates/platform/src/"):
                 continue
             files.append(path)
     return files
