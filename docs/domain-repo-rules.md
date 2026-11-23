@@ -438,6 +438,19 @@ await 侧被借用。
 mark_job_failed` 登记到 `ENFORCED_FNS`，避免“整文件豁免”把真正的查库方法
 一起放过。
 
+## 第五十一批：把剩余 handler 全部纳入门禁
+
+复核根层剩余模块后，把已经完成 offload 但此前没进闸的文件补进
+`ENFORCED_FILES`，让“改完就回潮”没有缝隙：
+
+- `articles.rs`、`content_index.rs`、`favorites.rs`、`moments.rs`、
+  `notes.rs`、`status.rs`：所有 handler 都已在 `offload` 内完成同步查询；
+- `identity_admin.rs`：治理四端点与元数据视图都在 `spawn_blocking` 内调用
+  域方法，`join_err` 的口径不变。
+
+本批不改业务代码，只扩大门禁；`domain/live.rs`、`domain/groups_admin.rs`
+仍在 `ENFORCED_FILES`，`domain/account.rs` 仍是按函数登记。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
