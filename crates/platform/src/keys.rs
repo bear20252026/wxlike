@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::{offload, offload_api};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -23,7 +24,8 @@ async fn publish(
     authed: Authed,
     ApiJson(bundle): ApiJson<PreKeyBundle>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.publish_keys(&authed.user_id, &bundle)?;
+    let me = authed.user_id.clone();
+    offload(&platform, move |p| p.publish_keys(&me, &bundle)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -31,7 +33,9 @@ async fn own(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<PreKeyBundle>, ApiError> {
-    Ok(Json(platform.own_keys(&authed.user_id)?))
+    let me = authed.user_id.clone();
+    let bundle = offload(&platform, move |p| p.own_keys(&me)).await?;
+    Ok(Json(bundle))
 }
 
 async fn claim(
@@ -44,17 +48,26 @@ async fn claim(
     // 认领伴随一次 DB 写。两道闸：
     // 1) 关系校验——只能领"好友或同群成员"的密钥（自己当然可以）；
     // 2) 风控限流——按 (caller, target) 计数，Throttle/Deny 落 429。
-    if authed.user_id != user_id && !platform.may_claim_keys_of(&authed.user_id, &user_id)? {
-        // 404 而非 403：不确认"这个用户存在"，与 moments 的陌生人策略同款
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "no such user"));
-    }
-    let risk_key = format!("{}:{}", authed.user_id, user_id);
-    platform.risk_gate(wxlike_risk::Action::ClaimKeys, &risk_key, None)?;
-    let claimed = platform.claim_key(&user_id)?;
-    // 成功的认领才计数：失败重试不该吃掉正常用户的配额
-    if claimed.is_some() {
-        platform.risk_record(wxlike_risk::Action::ClaimKeys, &risk_key)?;
-    }
+    //
+    // 关系校验、风控、认领、成功计数四步收进同一次阻塞执行；顺序不变，
+    // 也不在 await 上下文里直接调同步查库函数。
+    let me = authed.user_id.clone();
+    let target = user_id;
+    let claimed = offload_api(&platform, move |p| {
+        if me != target && !p.may_claim_keys_of(&me, &target)? {
+            // 404 而非 403：不确认"这个用户存在"，与 moments 的陌生人策略同款
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "no such user"));
+        }
+        let risk_key = format!("{me}:{target}");
+        p.risk_gate(wxlike_risk::Action::ClaimKeys, &risk_key, None)?;
+        let claimed = p.claim_key(&target)?;
+        // 成功的认领才计数：失败重试不该吃掉正常用户的配额
+        if claimed.is_some() {
+            p.risk_record(wxlike_risk::Action::ClaimKeys, &risk_key)?;
+        }
+        Ok(claimed)
+    })
+    .await?;
     match claimed {
         Some(bundle) => Ok(Json(bundle)),
         None => Err(ApiError::new(StatusCode::NOT_FOUND, "no such user")),
