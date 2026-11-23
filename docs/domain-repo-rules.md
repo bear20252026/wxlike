@@ -166,6 +166,24 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 `Platform` 的公开方法签名与调用点一个都没改；`lib.rs` 只剩构造、路由装配等
 基础设施，生产代码 SQL 归零。
 
+## 第三十三批：identity_admin 的 handler 直连 DB 收口
+
+`identity_admin.rs` 是最后一个在 handler 层拿 `platform.db.lock()` 的文件：
+5 个管理端点各自在 `spawn_blocking` 闭包里拼"连接 + identity/relations 域调用
++ 群缓存失效"。虽然没跨 `await` 持锁，但 handler 仍然拥有连接和事务顺序。
+
+本批把这套编排移进 `domain/identity_admin.rs`：
+
+- `admin_suspend` / `admin_unsuspend` / `admin_revoke_device` / `admin_user_view`
+  各自拿一次连接并调用 identity 域；
+- `admin_govern_group` 把 Admin audience 鉴权、relations 治理和群缓存失效
+  放进同一个连接守卫；
+- identity/relations 错误映射（`id_err` / `rel_err`）随编排一起留在 domain，
+  handler 只保留 HTTP 形状和 `spawn_blocking`。
+
+handler 从此不再出现 `.db().lock()`；根层只有 `lib.rs` 的 WAL checkpoint、
+`db.rs`、`storage.rs` 三个基础设施文件允许直接拿连接。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
@@ -173,6 +191,8 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 
 - 扫描范围是 `crates/platform/src/*.rs`（handler 根层）+ `domain/*.rs`；
   `storage.rs` 是存储端口/迁移 DDL，单独排除；
+- 根层 handler 的 `.db().lock()` / `.db.lock()` 是零容忍：除 `lib.rs`
+  （WAL checkpoint）、`db.rs`、`storage.rs` 外，出现即失败；
 - 基线里的文件，SQL 数只能下降，不能上升；
 - 不在基线里的文件出现任何 SQL 直接失败（当前基线为空 = 全部文件零容忍）；
 - `--update` 默认拒绝把基线调高，必须显式 `--force`；
@@ -201,7 +221,8 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 
 ## 收尾与边界
 
-`domain/*.rs` 与 crate 根 handler 的生产 SQL 已清零，没有下一批。后续只守边界：
+`domain/*.rs` 与 crate 根 handler 的生产 SQL 已清零，handler 也不再直连
+`db().lock()`，没有下一批。后续只守边界：
 
 1. 新 SQL 只进 `domain/repo/*.rs`；
 2. 基线保持 0/0，门禁即零容忍；
