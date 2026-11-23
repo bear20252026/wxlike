@@ -128,6 +128,15 @@ fn is_unique_violation(e: &rusqlite::Error) -> bool {
 }
 
 impl Platform {
+    /// Resolves a display name to a user id (used by friend/group endpoints).
+    ///
+    /// 保留旧语义：**包含已注销账号**（历史调用点依赖"名字仍能解析到 id"）；
+    /// 是否允许继续操作由各自的授权路径判断。
+    pub fn user_id_by_name(&self, name: &str) -> Result<Option<String>> {
+        let c = self.db().lock();
+        SqliteUsersRepo::new(&c).find_id_by_name(name, true, None)
+    }
+
     /// Creates the user row. All SQL for one logical operation runs under a
     /// single connection guard, so existence-check + insert cannot interleave
     /// with another registrant.

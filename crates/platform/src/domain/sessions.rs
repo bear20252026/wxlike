@@ -13,13 +13,15 @@
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::sessions`]。
 
-use crate::domain::repo::sessions::SqliteSessionsRepo;
+use crate::domain::repo::sessions::{lookup_live, SqliteSessionsRepo};
+use crate::domain::repo::users::SqliteUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
 use serde::Serialize;
+use wxlike_identity::governance::ensure_user_active;
 use wxlike_identity::refresh::{self, Rotated};
 use wxlike_identity::{step_up, Audience, IdError};
-use wxlike_persistence::SessionsRepo;
+use wxlike_persistence::{NewSession, SessionsRepo, UsersRepo};
 
 /// device_id 的长度上限（客户端生成串，超长按畸形拒绝）。
 const DEVICE_ID_MAX_LEN: usize = 64;
@@ -72,6 +74,73 @@ pub struct SessionRow {
 }
 
 impl Platform {
+    /// Issues a session token valid for `ttl_ms` (0 = already expired, used by
+    /// tests to cover the expiry path without sleeping).
+    pub fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String> {
+        self.create_session_for_device(user_id, ttl_ms, "", "", "")
+    }
+
+    /// 带设备信息的会话（P4 设备管理页：按设备下线、看最近活跃）。
+    /// 设备字段为空时与老会话等价，只多一个 `sid` 供设备页寻址。
+    pub fn create_session_for_device(
+        &self,
+        user_id: &str,
+        ttl_ms: u64,
+        device_id: &str,
+        device_name: &str,
+        ip: &str,
+    ) -> Result<String> {
+        let token = crate::auth::random_hex(crate::auth::TOKEN_BYTES);
+        let token_digest = crate::auth::token_digest(&token);
+        let sid = crate::auth::random_hex(6);
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        // 注销后的账号不得再拿到任何会话（#114）。刷新链也在 `logout_all`
+        // 里一并作废，这里是第二道：即便有人手工插了一行会话、或哪条路径
+        // 漏判，签发环节也拒绝。
+        if !SqliteUsersRepo::new(&c).active_exists(user_id)? {
+            return Err(PlatformError::NotFound);
+        }
+        // G02-09 治理闸门（集成请求 REQ-G00-governance-session-linkage）：
+        // 被封禁/停用的账号不再签发任何会话——登录、设备重登、内部签发全部
+        // 经过这一个咽喉。临时封禁到期自动放行（域内惰性判定）。
+        ensure_user_active(&c, user_id, now).map_err(|_| PlatformError::Forbidden)?;
+        SqliteSessionsRepo::new(&c).insert(&NewSession {
+            token: &token_digest,
+            user_id,
+            created_at: now,
+            expires_at: now.saturating_add(ttl_ms as i64),
+            sid: Some(&sid),
+            device_id,
+            device_name,
+            ip,
+            last_seen: now,
+            audience: "user",
+        })?;
+        Ok(token)
+    }
+
+    /// Resolves a token to its user, dropping the row when it has expired.
+    /// The column holds [`crate::auth::token_digest`] output; the raw token never
+    /// touches the database (AR-3/H-2).
+    ///
+    /// 注销（#114）：连 `users` 表并要求 `deleted_at IS NULL`。删会话行是
+    /// `request_delete` 干的，这里是**第二道**——别的实例或别的写入方留下的会话行、
+    /// 以及"清账与建行之间"的任何窗口，都不该让一个已注销账号再认证成功。
+    pub fn lookup_token(&self, token: &str) -> Result<Option<String>> {
+        let token = crate::auth::token_digest(token);
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().lock();
+        lookup_live(&c, &token, now)
+    }
+
+    pub fn revoke_session(&self, token: &str) -> Result<()> {
+        let token = crate::auth::token_digest(token);
+        let c = self.db().lock();
+        SqliteSessionsRepo::new(&c).delete_by_token(&token)?;
+        Ok(())
+    }
+
     /// 该用户全部有效会话，最近活跃在前。过期行顺手清掉。
     pub fn sessions_of(&self, user_id: &str, current_token: &str) -> Result<Vec<SessionRow>> {
         let now = wxlike_core::types::now_ms() as i64;

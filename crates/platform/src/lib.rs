@@ -69,7 +69,6 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
-use rusqlite::{params, OptionalExtension as _};
 use wxlike_core::{Envelope, MsgBody, MsgKind};
 
 pub use crate::auth::{
@@ -409,110 +408,6 @@ impl Platform {
         }
     }
 
-    /// Issues a session token valid for `ttl_ms` (0 = already expired, used by
-    /// tests to cover the expiry path without sleeping).
-    pub fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String> {
-        self.create_session_for_device(user_id, ttl_ms, "", "", "")
-    }
-
-    /// 带设备信息的会话（P4 设备管理页：按设备下线、看最近活跃）。
-    /// 设备字段为空时与老会话等价，只多一个 `sid` 供设备页寻址。
-    pub fn create_session_for_device(
-        &self,
-        user_id: &str,
-        ttl_ms: u64,
-        device_id: &str,
-        device_name: &str,
-        ip: &str,
-    ) -> Result<String> {
-        let token = auth::random_hex(auth::TOKEN_BYTES);
-        let sid = auth::random_hex(6);
-        let now = wxlike_core::types::now_ms();
-        let c = self.db.lock();
-        let exists: Option<String> = c
-            .query_row(
-                // 注销后的账号不得再拿到任何会话（#114）。刷新链也在 `logout_all`
-                // 里一并作废，这里是第二道：即便有人手工插了一行会话、或哪条路径
-                // 漏判，签发环节也拒绝。
-                "SELECT id FROM users WHERE id = ?1 AND deleted_at IS NULL",
-                params![user_id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            return Err(PlatformError::NotFound);
-        }
-        // G02-09 治理闸门（集成请求 REQ-G00-governance-session-linkage）：
-        // 被封禁/停用的账号不再签发任何会话——登录、设备重登、内部签发全部
-        // 经过这一个咽喉。临时封禁到期自动放行（域内惰性判定）。
-        wxlike_identity::governance::ensure_user_active(&c, user_id, now as i64)
-            .map_err(|_| PlatformError::Forbidden)?;
-        c.execute(
-            "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, device_name, ip, last_seen)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                auth::token_digest(&token),
-                user_id,
-                now as i64,
-                now.saturating_add(ttl_ms) as i64,
-                sid,
-                device_id,
-                device_name,
-                ip,
-                now as i64
-            ],
-        )?;
-        Ok(token)
-    }
-
-    /// Resolves a token to its user, dropping the row when it has expired.
-    /// The column holds [`auth::token_digest`] output; the raw token never
-    /// touches the database (AR-3/H-2).
-    ///
-    /// 注销（#114）：连 `users` 表并要求 `deleted_at IS NULL`。删会话行是
-    /// `request_delete` 干的，这里是**第二道**——别的实例或别的写入方留下的会话行、
-    /// 以及"清账与建行之间"的任何窗口，都不该让一个已注销账号再认证成功。
-    pub fn lookup_token(&self, token: &str) -> Result<Option<String>> {
-        let token = &auth::token_digest(token);
-        let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db.lock();
-        let row: Option<(String, i64)> = c
-            .query_row(
-                "SELECT s.user_id, s.expires_at FROM sessions s
-                 JOIN users u ON u.id = s.user_id
-                 WHERE s.token = ?1 AND u.deleted_at IS NULL",
-                params![token],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .optional()?;
-        match row {
-            Some((user_id, expires)) if expires > now => Ok(Some(user_id)),
-            Some(_) => {
-                c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
-                Ok(None)
-            }
-            None => Ok(None),
-        }
-    }
-
-    pub fn revoke_session(&self, token: &str) -> Result<()> {
-        let token = auth::token_digest(token);
-        let c = self.db.lock();
-        c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
-        Ok(())
-    }
-
-    /// Resolves a display name to a user id (used by friend/group endpoints).
-    pub fn user_id_by_name(&self, name: &str) -> Result<Option<String>> {
-        let c = self.db.lock();
-        Ok(
-            c.query_row("SELECT id FROM users WHERE name = ?1", params![name], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?,
-        )
-    }
-
     pub fn router(state: PlatformState) -> Router {
         Router::new()
             .merge(users::routes())
@@ -560,47 +455,6 @@ impl Platform {
             // AR-5（#29）：写接口风控的声明式闸门，挂在最外层——
             // handler 不再各自记得调 risk_gate（见 risk_mw）
             .layer(axum::middleware::from_fn_with_state(state, risk_mw::gate))
-    }
-
-    /// P3 审计日志（不变式 7）：独立审计表，只写面。检索/留存策略归
-    /// P6 adminx；与运行日志（tracing → Loki）物理分离。
-    pub fn audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
-        let r = self.db().lock().execute(
-            "INSERT INTO audit_log(at_ms, actor, action, target, detail) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![
-                wxlike_core::types::now_ms() as i64,
-                actor,
-                action,
-                target,
-                detail
-            ],
-        );
-        if let Err(err) = r {
-            eprintln!("[platform] audit write failed: {err}");
-        }
-    }
-
-    /// 审计读取面（自查自己的记录；全量检索归 P6 adminx + RBAC）。
-    pub fn audit_of(
-        &self,
-        actor: &str,
-        limit: usize,
-    ) -> Result<Vec<(i64, String, String, String)>> {
-        let limit = limit.clamp(1, 200) as i64;
-        let c = self.db().lock();
-        let mut stmt = c.prepare(
-            "SELECT at_ms, action, target, detail FROM audit_log
-             WHERE actor = ?1 ORDER BY at_ms DESC LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![actor, limit], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Wires the hub (or a test recorder) that receives system envelopes.

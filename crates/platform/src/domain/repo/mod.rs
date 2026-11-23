@@ -7,6 +7,7 @@
 
 pub mod account;
 pub mod articles;
+pub mod audit;
 pub mod call;
 pub mod communities;
 pub mod content_index;

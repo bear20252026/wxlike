@@ -185,6 +185,35 @@ impl SessionsRepo for SqliteSessionsRepo<'_> {
     }
 }
 
+/// 认证入口专用查询：会话有效且账号未注销，才返回 `user_id`。
+///
+/// 与 `find_by_token` 分开：后者是设备管理面的纯会话读取，不关心账号状态；
+/// 认证咽喉必须把 `users.deleted_at` 和过期判定放进**同一条 SQL**，避免
+/// "先查会话、再查账号"之间被注销事务插队。过期行顺手删除，和旧实现一致。
+pub(in crate::domain) fn lookup_live(
+    conn: &Connection,
+    token: &str,
+    now: i64,
+) -> Result<Option<String>> {
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT s.user_id, s.expires_at FROM sessions s
+             JOIN users u ON u.id = s.user_id
+             WHERE s.token = ?1 AND u.deleted_at IS NULL",
+            params![token],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    match row {
+        Some((user_id, expires)) if expires > now => Ok(Some(user_id)),
+        Some(_) => {
+            conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
 fn row_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
         token: r.get(0)?,
