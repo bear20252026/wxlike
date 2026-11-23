@@ -92,10 +92,7 @@ async fn get_preferences(
 ) -> std::result::Result<Json<Value>, ApiError> {
     let me = authed.user_id.clone();
     let quiet_hours = q.quiet_hours;
-    let value = offload(&platform, move |p| {
-        Ok(p.preferences_document(&me, quiet_hours)?)
-    })
-    .await?;
+    let value = offload(&platform, move |p| p.preferences_document(&me, quiet_hours)).await?;
     Ok(Json(value))
 }
 
@@ -133,10 +130,7 @@ async fn sync_preferences(
         .unwrap_or(MAX_PREF_SYNC_PAGE)
         .clamp(1, MAX_PREF_SYNC_PAGE);
     let me = authed.user_id.clone();
-    let (rows, head) = offload(&platform, move |p| {
-        Ok(p.preferences_since(&me, since, limit)?)
-    })
-    .await?;
+    let (rows, head) = offload(&platform, move |p| p.preferences_since(&me, since, limit)).await?;
     let changes = rows
         .iter()
         .map(|r| {
