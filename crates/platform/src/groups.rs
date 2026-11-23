@@ -2,7 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
-use crate::db::offload;
+use crate::db::{offload, offload_api};
 use crate::error::{ApiError, PlatformError};
 use crate::extract::ApiJson;
 use crate::validate;
@@ -302,34 +302,37 @@ async fn dissolve(
     ))
 }
 
-// 群管理的三个读接口（group_info / list_members / my_groups）没在本卡三条样板热点
-// 里，逐个点位下面的 `TODO(ADR-28)` 各自记一笔，改造方式与 `dissolve` 相同。
+// 群管理的三个读接口（group_info / list_members / my_groups）统一走
+// `offload` / `offload_api`：同步查库不再落在 await 上下文里。
 async fn group_info(
     State(platform): State<PlatformState>,
     authed: Authed,
     Path(group_id): Path<String>,
 ) -> std::result::Result<Json<GroupInfo>, ApiError> {
-    // TODO(ADR-28): 一次请求里 4 次上锁（header/role/meta/members）全在 await
-    // 上下文里同步跑；改法：整段读包进一次 `offload`。
     let group_id = validate::id(&group_id).map_err(ApiError::from)?.to_string();
-    // existence first: "no such group" is a 404, "not yours to read" is a 403
-    let (id, name, owner_uid, created_at) = platform
-        .group_header(&group_id)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no such group"))?;
-    let my_role = platform
-        .role_of(&group_id, &authed.user_id)
-        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "not a member of this group"))?;
-    let (visibility, dissolved) = platform.group_meta_of(&group_id)?;
-    Ok(Json(GroupInfo {
-        id,
-        name,
-        owner_uid,
-        created_at,
-        my_role,
-        visibility,
-        dissolved,
-        members: platform.group_members(&group_id)?,
-    }))
+    let actor = authed.user_id.clone();
+    let info = offload_api(&platform, move |p| {
+        // existence first: "no such group" is a 404, "not yours to read" is a 403
+        let (id, name, owner_uid, created_at) = p
+            .group_header(&group_id)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no such group"))?;
+        let my_role = p
+            .role_of(&group_id, &actor)
+            .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "not a member of this group"))?;
+        let (visibility, dissolved) = p.group_meta_of(&group_id)?;
+        Ok(GroupInfo {
+            id,
+            name,
+            owner_uid,
+            created_at,
+            my_role,
+            visibility,
+            dissolved,
+            members: p.group_members(&group_id)?,
+        })
+    })
+    .await?;
+    Ok(Json(info))
 }
 
 /// 群成员列表。只对群成员开放——非成员拿到 403 而不是空列表，
@@ -343,26 +346,27 @@ async fn list_members(
     Path(group_id): Path<String>,
     Query(q): Query<ListMembersQuery>,
 ) -> std::result::Result<Json<Vec<MemberRow>>, ApiError> {
-    // TODO(ADR-28): 成员名单这条读（含 `is_member` 的存在性校验）在 await 上下文
-    // 里上锁同步跑；与 `group_info` 同一类点位。
-    if !platform.is_member(&group_id, &authed.user_id)? {
-        return Err(PlatformError::Forbidden.into());
-    }
-    if q.after_user.is_none() && q.limit.is_none() {
-        return Ok(Json(platform.group_members(&group_id)?));
-    }
-    Ok(Json(platform.group_members_page(
-        &group_id,
-        q.after_user.as_deref(),
-        q.limit,
-    )?))
+    let actor = authed.user_id.clone();
+    let after_user = q.after_user;
+    let limit = q.limit;
+    let rows = offload_api(&platform, move |p| {
+        if !p.is_member(&group_id, &actor)? {
+            return Err(PlatformError::Forbidden.into());
+        }
+        if after_user.is_none() && limit.is_none() {
+            return Ok(p.group_members(&group_id)?);
+        }
+        Ok(p.group_members_page(&group_id, after_user.as_deref(), limit)?)
+    })
+    .await?;
+    Ok(Json(rows))
 }
 
 async fn my_groups(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<Vec<GroupSummary>>, ApiError> {
-    // TODO(ADR-28): "我的群"这条带子查询的读在 await 上下文里同步上锁；
-    // 与 `group_info` / `list_members` 同一类点位。
-    Ok(Json(platform.group_summary(&authed.user_id)?))
+    let me = authed.user_id.clone();
+    let rows = offload(&platform, move |p| p.group_summary(&me)).await?;
+    Ok(Json(rows))
 }
