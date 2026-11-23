@@ -417,6 +417,27 @@ await 侧被借用。
 `auth.rs / risk_mw.rs / audit_mw.rs` 加入 `ENFORCED_FILES`，
 `lib.rs` 只把 `audit_self` 登记到 `ENFORCED_FNS`，不整文件纳入。
 
+## 第五十批：domain 内剩余的 await 同步查库
+
+把此前只留 `TODO(ADR-28)` 的 domain 点位真正搬走，而不是继续挂账：
+
+- `domain/account.rs`：导出令牌兑换、作业领取、导出打包的取数、注销清理
+  整段事务、失败原因回写，全部改走 `Db::blocking`；`export_document` 的取数
+  拆成 `export_document_for(&Connection, ..)`，公开签名不变。导出的
+  “先算文档、再 await 写媒体仓、最后收尾”顺序保持不变。
+- `domain/live.rs::send_danmaku`：频道/成员校验、会话与收件人查询各进一次
+  `Db::blocking`；审核判定留在纯内存侧，Hold 的队列写入也进阻塞池，扇出仍
+  在 await 侧。`moderate_for_send` 的对外行为不变。
+- `domain/groups_admin.rs::mention_all`：管理员校验和成员缓存读取分别进
+  `Db::blocking`，缓存命中/回填规则与 `cached_members` 一致，`emit` 仍在
+  await 侧。
+
+门禁上，`domain/live.rs` 加入 `ENFORCED_FILES`；`domain/account.rs` 不整文件
+纳入（`read_artifact` 只碰媒体仓的内存访问器，不碰 SQLite），而是把
+`take_export_download / run_account_jobs / run_export_job / run_delete_job /
+mark_job_failed` 登记到 `ENFORCED_FNS`，避免“整文件豁免”把真正的查库方法
+一起放过。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

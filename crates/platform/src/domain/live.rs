@@ -30,11 +30,15 @@ use serde::Serialize;
 use sha2::Sha256;
 use wxlike_core::tx::ConnectionTx as _;
 
+use super::repo::communities::{
+    channel_community as repo_channel_community, community_role as repo_community_role,
+};
 use super::repo::live::{
     active_live_snapshot, active_session_exists, active_session_id, active_session_ref,
     danmaku_recipients, delete_viewer, end_live_session, insert_live_session, insert_viewer,
     live_state_for_stream, refresh_viewer_counts,
 };
+use super::repo::trust as trust_repo;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -234,29 +238,63 @@ impl Platform {
     /// 弹幕：只发给当前在房观众，走 `high_priority`（不落库、不占序列号）。
     /// 返回实际收件人数（不含发送者自己）。
     pub async fn send_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<usize> {
-        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——收件人名单那条 SELECT
-        // 在 await 上下文里上锁。改法：把这段包进 `self.db().blocking(move |c| ..)`
-        // （见 db.rs 的 `blocking`），扇出留给 await 侧。样板见 friends.rs。
         let channel = validate::id(channel)?.to_string();
-        let community = self
-            .channel_community(&channel)?
-            .ok_or(PlatformError::NotFound)?;
-        self.require_member(&community, user)?;
+        let channel_for_task = channel.clone();
+        let user_for_task = user.to_string();
+        self.db()
+            .blocking(move |c| {
+                let community =
+                    repo_channel_community(c, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
+                repo_community_role(c, &community, &user_for_task)?
+                    .ok_or(PlatformError::Forbidden)?;
+                Ok(())
+            })
+            .await?;
         if text.trim().is_empty() || text.chars().count() > DANMAKU_MAX_CHARS {
             return Err(PlatformError::BadInput("danmaku text length"));
         }
-        // 审核：弹幕同样过内容管线（软违规按模式挂起/打标，硬违规拒绝）
-        let verdict = self.moderate_for_send(user, &channel, text)?;
-        match verdict.decision.outcome {
+        // 审核：弹幕同样过内容管线（软违规按模式挂起/打标，硬违规拒绝）。
+        // 判定是纯内存的；挂起写队列进阻塞池，避免在 await 上下文里上锁。
+        let decision = self.moderate(text);
+        match decision.outcome {
             wxlike_moderation::Outcome::Publish | wxlike_moderation::Outcome::PublishFlagged => {}
-            wxlike_moderation::Outcome::Hold => return Err(PlatformError::Forbidden),
+            wxlike_moderation::Outcome::Hold => {
+                let labels = serde_json::to_string(&decision.labels)?;
+                let decision_json = serde_json::to_string(&decision)?;
+                let conv = channel.clone();
+                let sender = user.to_string();
+                let body = text.to_string();
+                let now = wxlike_core::types::now_ms() as i64;
+                self.db()
+                    .blocking(move |c| {
+                        let id = crate::auth::random_hex(8);
+                        trust_repo::enqueue(
+                            c,
+                            &id,
+                            &conv,
+                            &sender,
+                            &body,
+                            &labels,
+                            &decision_json,
+                            now,
+                        )
+                    })
+                    .await?;
+                return Err(PlatformError::Forbidden);
+            }
             wxlike_moderation::Outcome::Reject => return Err(PlatformError::Forbidden),
         }
-        let session = self.live_session_id(&channel)?;
-        let recipients: Vec<String> = {
-            let c = self.db().lock();
-            danmaku_recipients(&c, &session, user)?
-        };
+        let channel_for_task = channel.clone();
+        let user_for_task = user.to_string();
+        let (session, recipients) = self
+            .db()
+            .blocking(move |c| {
+                let session =
+                    active_session_id(c, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
+                let recipients = danmaku_recipients(c, &session, &user_for_task)?;
+                Ok((session, recipients))
+            })
+            .await?;
         if recipients.is_empty() {
             return Ok(0);
         }

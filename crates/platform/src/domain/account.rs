@@ -41,6 +41,7 @@
 use crate::auth::Authed;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -322,16 +323,13 @@ impl Platform {
 
     /// 兑换下载令牌并读出产物。第二次兑换 401（单次）。
     pub async fn take_export_download(&self, raw: &str) -> Result<Vec<u8>> {
-        // TODO(ADR-28): 同类点位（非本卡三条样板热点）——`self.db().lock()` 在
-        // await 上下文里同步查询。改法与 friends.rs 的样板一致：整段读包进
-        // `Db::blocking`（这里拿不到 `Arc<Platform>`，用 `self.db().blocking(..)`
-        // 把 redeem 那一行搬走即可），别静默跳过。
         validate_id(raw)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let artifact = {
-            let c = self.db().lock();
-            preferences::redeem_link(&c, raw, now)?
-        };
+        let raw = raw.to_string();
+        let artifact = self
+            .db()
+            .blocking(move |c| preferences::redeem_link(c, &raw, now))
+            .await?;
         self.read_artifact(&artifact).await
     }
 
@@ -396,24 +394,22 @@ impl Platform {
     /// 直接调用本函数，于是"排队 → 执行中 → 完成/失败"的推进在测试里是确定的。
     /// 第一条失败即停止，并把那条作业标成 `failed`（用户能看到为什么）。
     pub async fn run_account_jobs(&self) -> Result<usize> {
-        // TODO(ADR-28): 同类点位——领作业的那条语句在 await 上下文里上锁（循环里
-        // 还有 await，所以不能整段搬走，只该把 `claim` 那一次上锁包进
-        // `Db::blocking`）。样板见 friends.rs。
         let mut done = 0;
         while done < MAX_JOBS_PER_RUN {
-            let claimed = {
-                let c = self.db().lock();
-                preferences::claim(&c, wxlike_core::types::now_ms() as i64)?
-            };
+            let now = wxlike_core::types::now_ms() as i64;
+            let claimed = self
+                .db()
+                .blocking(move |c| preferences::claim(c, now))
+                .await?;
             let Some(job) = claimed else {
                 break;
             };
             let outcome = match job.kind {
                 JobKind::Export => self.run_export_job(&job).await,
-                JobKind::Delete => self.run_delete_job(&job),
+                JobKind::Delete => self.run_delete_job(&job).await,
             };
             if let Err(err) = outcome {
-                self.mark_job_failed(&job.id, &err.to_string());
+                self.mark_job_failed(&job.id, &err.to_string()).await;
                 tracing::error!(job = %job.id, error = %err, "account job failed");
                 return Err(err);
             }
@@ -427,10 +423,11 @@ impl Platform {
     /// 顺序很讲究：先算文档（要拿数据库锁），再 await 写媒体仓，最后重新取锁
     /// 收尾——锁不能跨 `.await`（见 db.rs 模块头）。
     async fn run_export_job(&self, job: &Job) -> Result<()> {
-        // TODO(ADR-28): 同类点位——`export_document` 里两次上锁跑在 await 上下文
-        // 中（注释也写了"先算文档（要拿数据库锁），再 await 写媒体仓"）。改法是
-        // 把算文档整段包进 `Db::blocking`，别让 tokio worker 替 SQLite 等待。
-        let bytes = self.export_document(&job.user_id)?;
+        let user_id = job.user_id.clone();
+        let bytes = self
+            .db()
+            .blocking(move |c| export_document_for(c, &user_id))
+            .await?;
         let sha = wxlike_core::msgmeta::sha256_hex(&bytes);
         if let Err(err) = self.media_store().put(&sha, &bytes).await {
             // 底层 io/sqlite 文本只进服务端日志（它可能带路径），跨请求边界的那句
@@ -443,43 +440,59 @@ impl Platform {
             return Err(PlatformError::Unavailable("export storage unreachable"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
-        preferences::finish(&c, &job.id, &sha, bytes.len() as i64, now)?;
+        let job_id = job.id.clone();
+        let size = bytes.len() as i64;
+        self.db()
+            .blocking(move |c| preferences::finish(c, &job_id, &sha, size, now))
+            .await?;
         Ok(())
     }
 
     /// 执行注销清理。整个清理 + 脱敏 + 匿名化在**一个事务**里：任何一条语句
     /// 失败（含外键冲突）就整体回滚，作业记 `failed`，绝不留"删了一半"。
-    fn run_delete_job(&self, job: &Job) -> Result<()> {
+    async fn run_delete_job(&self, job: &Job) -> Result<()> {
+        let job = job.clone();
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
-        // 没有标记绝不清理：一条凭空出现的 delete 作业不属于注销流程。
-        if deleted_at(&c, &job.user_id)?.is_none() {
-            return Err(PlatformError::Blocked("deletion was never scheduled"));
-        }
-        // 余额没清零就不清钱包：静默销毁余额是不可接受的"清理成功"。
-        if wallet_balance(&c, &job.user_id)? != 0 {
-            return Err(PlatformError::Blocked("wallet not empty"));
-        }
-        let tx = c.unchecked_transaction()?;
-        let counts = purge_rows(&tx, &job.user_id)?;
-        mask_rows(&tx, &job.user_id)?;
-        anonymize_user(&tx, &job.user_id)?;
-        tx.commit()?;
-        let total: i64 = counts.iter().map(|(_, n)| *n as i64).sum();
-        // 注销作业的 artifact 存的是"每个域清掉多少行"的摘要，不是下载地址
-        // （`export_link` 只认 kind = export，所以这里不会被误当成产物路径）。
-        let summary = serde_json::to_string(&counts)?;
-        preferences::finish(&c, &job.id, &summary, total, now)?;
-        Ok(())
+        self.db()
+            .blocking(move |conn| {
+                let c = &*conn;
+                // 没有标记绝不清理：一条凭空出现的 delete 作业不属于注销流程。
+                if deleted_at(c, &job.user_id)?.is_none() {
+                    return Err(PlatformError::Blocked("deletion was never scheduled"));
+                }
+                // 余额没清零就不清钱包：静默销毁余额是不可接受的"清理成功"。
+                if wallet_balance(c, &job.user_id)? != 0 {
+                    return Err(PlatformError::Blocked("wallet not empty"));
+                }
+                let tx = c.unchecked_transaction()?;
+                let counts = purge_rows(&tx, &job.user_id)?;
+                mask_rows(&tx, &job.user_id)?;
+                anonymize_user(&tx, &job.user_id)?;
+                tx.commit()?;
+                let total: i64 = counts.iter().map(|(_, n)| *n as i64).sum();
+                // 注销作业的 artifact 存的是"每个域清掉多少行"的摘要，不是下载地址
+                // （`export_link` 只认 kind = export，所以这里不会被误当成产物路径）。
+                let summary = serde_json::to_string(&counts)?;
+                preferences::finish(c, &job.id, &summary, total, now)?;
+                Ok(())
+            })
+            .await
     }
 
-    fn mark_job_failed(&self, job_id: &str, reason: &str) {
+    async fn mark_job_failed(&self, job_id: &str, reason: &str) {
         let trimmed: String = reason.chars().take(MAX_FAIL_REASON_CHARS).collect();
+        let job_id = job_id.to_string();
+        let fail_id = job_id.clone();
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
-        if let Err(err) = preferences::fail(&c, job_id, &trimmed, now) {
-            tracing::error!(job = %job_id, error = %err, "account job: 连失败原因都没写进去");
+        let ran = self
+            .db()
+            .blocking(move |c| {
+                preferences::fail(c, &job_id, &trimmed, now)?;
+                Ok(())
+            })
+            .await;
+        if let Err(err) = ran {
+            tracing::error!(job = %fail_id, error = %err, "account job: 连失败原因都没写进去");
         }
     }
 
@@ -492,30 +505,37 @@ impl Platform {
     /// 不含凭据列"这条只能在内容上断言，看状态字段是不够的）。
     pub fn export_document(&self, user_id: &str) -> Result<Vec<u8>> {
         let c = self.db().lock();
-        let profile = export_profile(&c, user_id)?;
-        let Some(owner) = profile.first().cloned() else {
-            // 本人行读不到 = 这份导出没有内容可言，必须失败，不能交空包。
-            return Err(PlatformError::NotFound);
-        };
-        let prefs = preferences::get(&c, user_id)?;
-        let settings = json!({
-            "preferences": prefs.values,
-            "legacy_user_settings": export_user_settings(&c, user_id)?,
-            "privacy": privacy_view(&prefs),
-        });
-        let doc = json!({
-            "user_id": user_id,
-            "exported_at_ms": wxlike_core::types::now_ms(),
-            "scopes": EXPORT_SCOPES,
-            "profile": owner,
-            "contacts": export_contacts(&c, user_id)?,
-            "messages": export_messages(&c, user_id)?,
-            "media_manifest": export_media(&c, user_id)?,
-            "ledger": export_ledger(&c, user_id)?,
-            "settings": settings,
-        });
-        Ok(serde_json::to_vec_pretty(&doc)?)
+        export_document_for(&c, user_id)
     }
+}
+
+/// [`Platform::export_document`] 的取数部分：调用方已经持有连接，整段查询
+/// 因此可以作为一个阻塞任务搬进 `Db::blocking`，而不用在 await 上下文里
+/// 再取一次锁。
+fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
+    let profile = export_profile(c, user_id)?;
+    let Some(owner) = profile.first().cloned() else {
+        // 本人行读不到 = 这份导出没有内容可言，必须失败，不能交空包。
+        return Err(PlatformError::NotFound);
+    };
+    let prefs = preferences::get(c, user_id)?;
+    let settings = json!({
+        "preferences": prefs.values,
+        "legacy_user_settings": export_user_settings(c, user_id)?,
+        "privacy": privacy_view(&prefs),
+    });
+    let doc = json!({
+        "user_id": user_id,
+        "exported_at_ms": wxlike_core::types::now_ms(),
+        "scopes": EXPORT_SCOPES,
+        "profile": owner,
+        "contacts": export_contacts(c, user_id)?,
+        "messages": export_messages(c, user_id)?,
+        "media_manifest": export_media(c, user_id)?,
+        "ledger": export_ledger(c, user_id)?,
+        "settings": settings,
+    });
+    Ok(serde_json::to_vec_pretty(&doc)?)
 }
 
 /// step-up 口令桶：账号维度，前缀与登录桶隔开（`identity::throttle` 的键约定）。

@@ -92,6 +92,7 @@ ENFORCED_FILES = (
     "crates/platform/src/domain/friends.rs",
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",
+    "crates/platform/src/domain/live.rs",
 )
 # adminx（第四轮审计 N1）：整 crate 强制。它的 async handler 经
 # write_caller→record_denial→audit.append→store.lock() 间接持锁，只加
@@ -105,6 +106,13 @@ ENFORCED_ROOTS = ("crates/admin/src",)
 ENFORCED_FNS = {
     "crates/platform/src/communities.rs": {"send_channel_message", "send_thread_reply"},
     "crates/platform/src/domain/communities.rs": {"send_channel_message", "send_thread_reply"},
+    "crates/platform/src/domain/account.rs": {
+        "take_export_download",
+        "run_account_jobs",
+        "run_export_job",
+        "run_delete_job",
+        "mark_job_failed",
+    },
     "crates/platform/src/lib.rs": {"audit_self"},
 }
 WAIVER = "TODO(ADR-28)"

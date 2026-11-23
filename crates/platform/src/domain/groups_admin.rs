@@ -12,6 +12,9 @@ use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
 
+use super::repo::groups::{
+    group_exists as repo_group_exists, members as repo_members, role_of as repo_role_of,
+};
 use super::repo::groups_admin::{
     all_muted, announcement, delete_member_mute, insert_invite, insert_member_direct, invite,
     join_approval, join_requests, member_count, mute_until, set_all_muted, set_join_approval,
@@ -267,20 +270,46 @@ impl Platform {
     /// @所有人：manager 专属。构造 mention Custom 帧并经 EventSink 扇给全体
     /// 成员（未指定 user_ids 语义 = all），帧内带 all 标记。
     pub async fn mention_all(&self, group: &str, actor: &str, text: &str) -> Result<String> {
-        // TODO(ADR-28): `can_mention_all` / `cached_members` 是同步查库，现在跑在
-        // 这个 `async fn` 的 await 上下文里。它是 `&self` 方法（不是 handler），
-        // 拿不到 `Arc<Platform>`，所以改造要把签名换成接收 `PlatformState` 的
-        // handler 侧 offload——属于本卡之后的同类点位，不留静默。
-        let group = validate::id(group)?;
-        if !self.can_mention_all(group, actor)? {
-            return Err(PlatformError::Forbidden);
-        }
+        let group = validate::id(group)?.to_string();
+        let group_for_task = group.clone();
+        let actor_for_task = actor.to_string();
+        self.db()
+            .blocking(move |c| {
+                let role = repo_role_of(c, &group_for_task, &actor_for_task)?
+                    .ok_or(PlatformError::Forbidden)?;
+                if role == "owner" || role == "admin" {
+                    Ok(())
+                } else {
+                    Err(PlatformError::Forbidden)
+                }
+            })
+            .await?;
         if text.is_empty() || text.chars().count() > 2_000 {
             return Err(PlatformError::BadInput("text required"));
         }
-        let members = self.cached_members(group)?.unwrap_or_default();
-        let env = crate::system_envelope(group, actor, members.clone(), "");
-        let mut env = env;
+        let group_for_task = group.clone();
+        let cache = std::sync::Arc::clone(&self.group_cache);
+        let members = self
+            .db()
+            .blocking(move |c| {
+                if !repo_group_exists(c, &group_for_task)? {
+                    return Ok(Vec::new());
+                }
+                let mut guard = cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(hit) = guard.get(&group_for_task) {
+                    return Ok(hit.clone());
+                }
+                let members: Vec<String> = repo_members(c, &group_for_task)?
+                    .into_iter()
+                    .map(|m| m.user_id)
+                    .collect();
+                guard.insert(group_for_task, members.clone());
+                Ok(members)
+            })
+            .await?;
+        let mut env = crate::system_envelope(&group, actor, members.clone(), "");
         env.body = wxlike_core::MsgBody::Custom {
             kind: "mention".into(),
             payload: serde_json::json!({ "text": text, "all": true, "user_ids": members }),
