@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -37,7 +38,13 @@ async fn set_notification_rule(
     Path(conv): Path<String>,
     ApiJson(body): ApiJson<RuleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_notification_rule(&authed.user_id, &conv, &body.level, &body.keywords)?;
+    let actor = authed.user_id.clone();
+    let level = body.level;
+    let keywords = body.keywords;
+    offload(&platform, move |p| {
+        p.set_notification_rule(&actor, &conv, &level, &keywords)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -46,16 +53,16 @@ async fn get_notification_rule(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(serde_json::json!({
-        "rule": platform.notification_rule(&authed.user_id, &conv)?
-    })))
+    let actor = authed.user_id.clone();
+    let rule = offload(&platform, move |p| p.notification_rule(&actor, &conv)).await?;
+    Ok(Json(serde_json::json!({ "rule": rule })))
 }
 
 async fn list_notification_rules(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(serde_json::json!({
-        "rules": platform.notification_rules(&authed.user_id)?
-    })))
+    let actor = authed.user_id.clone();
+    let rules = offload(&platform, move |p| p.notification_rules(&actor)).await?;
+    Ok(Json(serde_json::json!({ "rules": rules })))
 }

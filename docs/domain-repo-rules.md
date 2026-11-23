@@ -349,6 +349,19 @@ await 侧被借用。
 
 `users.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十五批：notification / read / reconcile / recovery 收口
+
+四个小模块共 12 个 handler，都是“参数解析 + 一次同步查库 + 响应组装”：
+
+- `notification`：规则设置、单条读取、列表各一次 `offload`；
+- `read`：未读数、已读推进、增量同步各一次 `offload`，空 body 语义不变；
+- `reconcile`：触发、最近一次+历史、历史列表；最近一次把两次查库合并；
+- `recovery`：验证码签发、恢复码签发、重置密码。恢复码签发把“2FA 已启用
+  → 428”的判断和签发收进 `offload_api`；重置把风控闸、成功清计数/失败计数
+  与重置本身按原顺序收进一次任务，失败仍回原错误。
+
+四个文件都加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

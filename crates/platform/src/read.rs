@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::{ApiError, PlatformError};
 use crate::PlatformState;
 use axum::extract::{Path, Query, State};
@@ -31,7 +32,9 @@ async fn unread(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<Json<UnreadView>, ApiError> {
-    Ok(Json(platform.conv_unread(&authed.user_id, &conv)?))
+    let actor = authed.user_id.clone();
+    let view = offload(&platform, move |p| p.conv_unread(&actor, &conv)).await?;
+    Ok(Json(view))
 }
 
 async fn mark_read(
@@ -48,10 +51,9 @@ async fn mark_read(
             .map_err(|_| PlatformError::BadInput("bad read body"))?
             .seq
     };
-    Ok((
-        StatusCode::OK,
-        Json(platform.mark_conv_read(&authed.user_id, &conv, upto)?),
-    ))
+    let actor = authed.user_id.clone();
+    let view = offload(&platform, move |p| p.mark_conv_read(&actor, &conv, upto)).await?;
+    Ok((StatusCode::OK, Json(view)))
 }
 
 #[derive(Deserialize)]
@@ -66,9 +68,7 @@ async fn sync(
     Path(conv): Path<String>,
     Query(q): Query<SyncQuery>,
 ) -> std::result::Result<Json<SyncView>, ApiError> {
-    Ok(Json(platform.conv_sync(
-        &authed.user_id,
-        &conv,
-        q.version,
-    )?))
+    let actor = authed.user_id.clone();
+    let view = offload(&platform, move |p| p.conv_sync(&actor, &conv, q.version)).await?;
+    Ok(Json(view))
 }
