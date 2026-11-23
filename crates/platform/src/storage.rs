@@ -238,6 +238,21 @@ pub enum StorageConnection<'a> {
     Postgres(&'a PostgresPool),
 }
 
+impl<'a> StorageConnection<'a> {
+    /// 取出 SQLite 连接。PG 变体明确返回受控错误，而不是 panic 或静默降级。
+    ///
+    /// 这是 repo 迁移期的过渡方法：只接受 `&Connection` 的 repo 先通过它拿
+    /// 旧句柄；等该 repo 的 SQL 全部方言化后，调用点再改成直接匹配端口。
+    pub(crate) fn sqlite(&self) -> Result<&Connection> {
+        match self {
+            StorageConnection::Sqlite(c) => Ok(&**c),
+            StorageConnection::Postgres(_) => Err(PlatformError::Storage(
+                "postgres 连接尚未暴露 SQLite Connection；该 repo 仍在 SQLite 入口".into(),
+            )),
+        }
+    }
+}
+
 /// 存储端口。`Db` 持有具体实现（`SqliteStorage`）；repo 改造后改为持句柄。
 pub trait Storage: Send + Sync {
     /// 方言（占位符/名称）。

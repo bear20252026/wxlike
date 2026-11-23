@@ -70,6 +70,13 @@ impl Db {
         }
     }
 
+    /// 端口入口：repo 从这里拿 `StorageConnection`，不再直接依赖
+    /// `MutexGuard<Connection>`。当前 `Db` 只持有 SQLite，PG 入口仍走
+    /// `PgStorage`；等 `Db` 支持 PG profile 时，repo 签名不用再改。
+    pub fn acquire(&self) -> StorageConnection<'_> {
+        self.storage.acquire()
+    }
+
     /// ADR-28: run one synchronous SQLite critical section on the blocking pool.
     ///
     /// The `Mutex<Connection>` guard is acquired *inside* the closure and

@@ -49,7 +49,8 @@
 `SqliteStorage` 另有 `lock()`（`MutexGuard<Connection>`）与 `blocking()`（ADR-28：
 同步临界区搬上阻塞池）。`Db` 持有 `SqliteStorage`：
 
-- `Db::lock()` → `Storage::acquire()`；
+- `Db::lock()` → `Storage::acquire()`，再解出 SQLite 守卫；
+- `Db::acquire()` → 原样交出 `StorageConnection`，供 repo 迁移期使用；
 - `Db::blocking()` → `SqliteStorage::blocking()`；
 - `Db::open()` → `StorageProfile::from_env()` + `SqliteStorage::open(profile, path)`。
 
@@ -98,11 +99,10 @@
 现状（`crates/platform/src/domain/repo/`）：
 
 - 35 个 `.rs`（34 个 feature 文件 + `mod.rs`）。
-- **12 个 feature 文件、共 51 个函数**直接吃 `&rusqlite::Connection`
-  （`&Connection` / `&rusqlite::Connection`）：
-  `account`(7) / `articles`(9) / `content_index`(4) / `favorites`(4) / `friends`(1) /
-  `inbox`(1) / `moments`(5) / `notes`(1) / `qr_login`(5) / `status`(4) / `stickers`(1) /
-  `video_feed`(9)。
+- 多数 feature 文件仍直接吃 `&rusqlite::Connection`。第一批只读 pilot 已落：
+  `notification` 的 `set` / `get` / `list` 改为 `&StorageConnection<'_>`，通过
+  `StorageConnection::sqlite()` 拿旧守卫；`domain/notification.rs` 的三个调用点
+  改走 `Db::acquire()`。PG 变体当前返回受控 `PlatformError::Storage`，不 panic。
 
 改造目标：`&Connection` 参数换成端口句柄（`&StorageConnection` 或 `&dyn Storage`），
 SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
@@ -131,7 +131,8 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 
 ## 5. 本步刻意没做的事
 
-- 不改 `domain/repo/**` 的 51 个 `&Connection` 签名（见 §3 分批）。
+- 不改 `domain/repo/**` 其余 `&Connection` 签名（见 §3 分批）；本步只落
+  `notification` 三个函数的端口 pilot。
 - `Db::open` 仍不打开 postgres profile；PG 连接只在新端口 `PostgresPool` 中存在。
 - 不动 `server/**`、`ci/**`、`schema/**`、`integration-requests/**` 之外的东西。
 - `G00-04-PG` gap 仍 open：restore drill 已在 GitHub Actions `44989751565` 的 `pg-migration` 中实跑通过，但 `close_when` 的另一半（51 个旧 repo 切 PG / PG profile）未满足；本轮只完成了首批端口与 DDL/导入/恢复闭环。

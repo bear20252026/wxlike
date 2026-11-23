@@ -44,14 +44,14 @@ impl Platform {
             }
         }
         let keywords = serde_json::to_string(keywords)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         notification_repo::set(&c, user, conv, level, &keywords)?;
         Ok(())
     }
 
     pub fn notification_rule(&self, user: &str, conv: &str) -> Result<Option<NotificationRule>> {
         let conv = validate::conv(conv)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = notification_repo::get(&c, user, conv)?;
         match row {
             Some((level, keywords_json)) => Ok(Some(NotificationRule {
@@ -64,7 +64,7 @@ impl Platform {
     }
 
     pub(crate) fn notification_rules(&self, user: &str) -> Result<Vec<NotificationRule>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let rows = notification_repo::list(&c, user)?;
         let mut out = Vec::with_capacity(rows.len());
         for (conv_id, level, keywords_json) in rows {
