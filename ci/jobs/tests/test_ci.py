@@ -837,6 +837,21 @@ async fn bad_tx(&self) -> Result<()> {
         self.assertNotEqual(red.returncode, 0, "同步查库调用没被规则 3 抓到")
         self.assertIn("offload", red.stderr)
 
+    def test_offload_api_is_recognized_as_blocking_entry(self):
+        # offload_api 是 offload 的 ApiError 版本；群管理读/二维码登录都用它。
+        wrapped = (
+            "impl Platform {\n    pub fn load(&self, id: &str) -> Result<String> {\n"
+            "        let c = self.db().lock();\n        Ok(String::new())\n    }\n}\n"
+            "async fn h(platform: &PlatformState) -> Result<()> {\n"
+            "    let id = \"u1\".to_string();\n"
+            "    offload_api(&platform, move |p| p.load(&id)).await?;\n    Ok(())\n}\n"
+        )
+        root = self._fixture(wrapped)
+        moved = root / "crates" / "platform" / "src" / "friends.rs"
+        (root / "crates" / "platform" / "src" / "demo.rs").rename(moved)
+        green = self._run(root)
+        self.assertEqual(green.returncode, 0, green.stderr)
+
     # --- adminx 纳入守卫（第四轮审计 N1）+ 内存锁替身的类型级豁免 ---
 
     def _admin_fixture(self, body: str) -> Path:

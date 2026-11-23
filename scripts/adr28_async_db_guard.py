@@ -16,7 +16,7 @@ rusqlite 是**同步**驱动。axum 的 handler 是 `async fn`，里面一句
 3. `blocking-call`（只对本卡三条样板文件 `ENFORCED_FILES` 生效）：`async fn`
    在 await 上下文里直接调用"已知会同步上锁的函数"（先从函数体扫出种子，再沿
    `self.x()` / `p.x()` 调用关系做传递闭包），而没有包进
-   `offload(..)` / `blocking(..)` / `spawn_blocking(..)` → 违规。
+   `offload(..)` / `offload_api(..)` / `blocking(..)` / `spawn_blocking(..)` → 违规。
    `friends.rs:408` 那种"handler 调同步方法"的形状就是靠这条兜住的。
 
 豁免：命中 1/3 的函数体里必须有 `TODO(ADR-28)`（本卡只改三条样板热点，其余同类
@@ -100,8 +100,9 @@ TRANSACTION = re.compile(r"\.\s*transaction\s*\(\s*\)|\.\s*unchecked_transaction
 # 只认平台句柄上的方法调用，否则 `headers.get(..)`、`Vec::is_empty(..)` 这类
 # 同名通用方法会被误判成"同步查库"。
 RECEIVER = r"(?:self|this|platform|state|p)"
-# 搬进阻塞池的调用：这些括号里的同步代码不算违规。
-OFFLOAD_CALL = re.compile(r"\b(?:offload|spawn_blocking|blocking)\s*\(")
+# 搬进阻塞池的调用：这些括号里的同步代码不算违规。`offload_api` 是
+# `offload` 的 ApiError 版本（qr_login / 群管理读在用），同为阻塞池入口。
+OFFLOAD_CALL = re.compile(r"\b(?:offload|offload_api|spawn_blocking|blocking)\s*\(")
 
 
 def mask(text: str) -> str:
