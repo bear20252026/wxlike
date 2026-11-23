@@ -42,8 +42,9 @@
 
 - `dialect()`：方言。
 - `health()`：`SELECT 1`，连接不可用时返回受控错误。
-- `acquire()`：连接/事务入口。今天只有 `StorageConnection::Sqlite(MutexGuard<Connection>)`；
-  PG 落地后加第二个变体（sqlx 事务/连接）。
+- `acquire()`：连接/事务入口。`StorageConnection::Sqlite(MutexGuard<Connection>)`
+  保持旧形状；`StorageConnection::Postgres(&PostgresPool)` 已落，事务句柄待 repo
+  改造后再收窄。
 
 `SqliteStorage` 另有 `lock()`（`MutexGuard<Connection>`）与 `blocking()`（ADR-28：
 同步临界区搬上阻塞池）。`Db` 持有 `SqliteStorage`：
@@ -121,7 +122,7 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 - 已经落了最小接入：`crates/platform/src/storage.rs` 的 `PostgresPool`，持有
   `sqlx::PgPool` + 专属 multi-thread runtime；`PostgresUsersRepo` /
   `PostgresSessionsRepo` 通过它执行 `$1` 查询。
-- 还没落的是 `impl Storage for PgStorage` 与 `StorageConnection::Postgres`；
+- 已落 `impl Storage for PgStorage` 与 `StorageConnection::Postgres`；
   `Db` 仍只认 `MutexGuard<Connection>`，所以 51 个旧 repo 函数还在 SQLite。
 - ADR-28 的等价物：sqlx 是 async，端口 trait 目前是同步的，`PostgresPool::block_on`
   负责桥接；调用点必须在阻塞上下文（`Db::blocking` / 普通线程），不要在 async

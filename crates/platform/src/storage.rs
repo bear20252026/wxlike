@@ -226,13 +226,16 @@ impl PostgresPool {
     }
 }
 
-/// 连接/事务入口。今天只有 SQLite 一种实现；PG 落地时加第二个变体。
+/// 连接/事务入口：SQLite 交出旧守卫，PG 交出连接池句柄。
 ///
-/// 为什么现在就有枚举、却还不屏蔽 rusqlite：repo 层直接吃 `&Connection`，
-/// 所以 SQLite 变体只能包 `MutexGuard<'_, Connection>`。等 repo 改造完，
-/// `Postgres` 变体包 sqlx 事务，这个枚举才真正把方言差异挡在端口后面。
+/// 为什么还不完全屏蔽 rusqlite：repo 层仍直接吃 `&Connection`，所以 SQLite
+/// 变体只能包 `MutexGuard<'_, Connection>`。等 51 个 repo 改造完，
+/// `Postgres` 变体再收窄成 sqlx 事务，这个枚举才真正把方言差异挡在端口后面。
 pub enum StorageConnection<'a> {
     Sqlite(MutexGuard<'a, Connection>),
+    /// PG 连接池句柄。事务边界后续由 sqlx 事务补齐；当前 PG repo 通过
+    /// `PostgresPool::block_on` 在自己的 runtime 上执行。
+    Postgres(&'a PostgresPool),
 }
 
 /// 存储端口。`Db` 持有具体实现（`SqliteStorage`）；repo 改造后改为持句柄。
@@ -346,6 +349,53 @@ impl SqliteStorage {
         })
         .await;
         join_blocking(ran)
+    }
+}
+
+/// PostgreSQL 存储实现：池 + 专属 runtime，打开时探活。
+///
+/// 还没接进 `Db`（`Db` 仍只构造 `SqliteStorage`）：51 个旧 repo 仍以
+/// `&Connection` 为参数，先把 `StorageConnection::Postgres` 的端口形状立住。
+pub struct PgStorage {
+    profile: StorageProfile,
+    pool: PostgresPool,
+}
+
+impl PgStorage {
+    pub fn open(profile: StorageProfile) -> Result<Self> {
+        let StorageProfile::Postgres { url } = &profile else {
+            return Err(PlatformError::Storage(format!(
+                "PgStorage 只接受 postgres profile：{profile}"
+            )));
+        };
+        Ok(Self {
+            pool: PostgresPool::open(url)?,
+            profile,
+        })
+    }
+
+    #[must_use]
+    pub fn pool(&self) -> &PostgresPool {
+        &self.pool
+    }
+
+    #[must_use]
+    pub fn profile(&self) -> &StorageProfile {
+        &self.profile
+    }
+}
+
+impl Storage for PgStorage {
+    fn dialect(&self) -> StorageDialect {
+        StorageDialect::Postgres
+    }
+
+    fn health(&self) -> Result<()> {
+        self.pool.health()
+    }
+
+    fn acquire(&self) -> StorageConnection<'_> {
+        StorageConnection::Postgres(&self.pool)
     }
 }
 
@@ -491,6 +541,19 @@ mod tests {
             err.to_string().contains("postgres profile 尚未实现"),
             "错误文案要说明是未实现，实际：{err}"
         );
+    }
+
+    #[test]
+    fn pg_storage_exposes_postgres_connection() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let storage = PgStorage::open(StorageProfile::Postgres { url }).expect("postgres storage");
+        assert_eq!(storage.dialect(), StorageDialect::Postgres);
+        match storage.acquire() {
+            StorageConnection::Postgres(pool) => pool.health().expect("pg health"),
+            StorageConnection::Sqlite(_) => panic!("PgStorage must not hand out sqlite"),
+        }
     }
 
     #[test]
