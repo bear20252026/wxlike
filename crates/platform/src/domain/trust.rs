@@ -43,7 +43,7 @@ pub struct QueuedItem {
 impl Platform {
     /// 纯判定（不落库）。
     pub(crate) fn moderate(&self, text: &str) -> Decision {
-        self.moderation().judge_text(text)
+        self.moderation_pipeline().judge_text(text)
     }
 
     /// 发送闸门：判定 + （先审后发时）挂起。
@@ -53,7 +53,7 @@ impl Platform {
         conv_id: &str,
         text: &str,
     ) -> Result<SendVerdict> {
-        let decision = self.moderation().judge_text(text);
+        let decision = self.moderation_pipeline().judge_text(text);
         let mut queued_id = None;
         if decision.outcome == wxlike_moderation::Outcome::Hold {
             let id = crate::auth::random_hex(8);
@@ -79,12 +79,12 @@ impl Platform {
     }
 
     pub(crate) fn moderation_mode(&self) -> Mode {
-        self.moderation().mode()
+        self.moderation_pipeline().mode()
     }
 
     /// 热切换模式（运营在"先审后发/先发后审"之间调整，无需重启）。
     pub fn set_moderation_mode(&self, mode: Mode) {
-        self.moderation().set_mode(mode);
+        self.moderation_pipeline().set_mode(mode);
     }
 
     /// 挂起队列（最早在前：先挂起的先处理）。

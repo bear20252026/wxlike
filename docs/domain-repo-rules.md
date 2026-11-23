@@ -473,8 +473,12 @@ mark_job_failed` 登记到 `ENFORCED_FNS`，避免“整文件豁免”把真正
 
 - `domain/wallet.rs::claim_redpacket`：事务体收进 `claim_redpacket_tx`，外层只做
   校验、调用和卡片回写；领取顺序、余额校验、ledger 写入不变；
-- `domain/live.rs::send_danmaku`：成员校验、内容审核、收件人查询各自成 helper，
-  审核顺序仍是“成员 → 长度 → moderate → 收件人”；
+- `domain/live.rs::send_danmaku`：成员校验、长度校验、`moderate` 判定、收件人查询
+  保持“成员 → 长度 → moderate → 投递”的顺序；Hold 分支只把判定与原文入审核队列，
+  收进 `queue_held_danmaku`，`moderate_danmaku` 已删除。审核器锁是进程内纯 CPU
+  状态，`Platform::moderation` 收为 `pub(crate) moderation_pipeline`，并由
+  `scripts/adr28_async_db_guard.py` 的 `IN_MEMORY_LOCK_METHODS` 按 (文件, 方法)
+  精确登记，避免与 admin 查库同名方法一起进入同步查库闭包；
 - `users.rs::login`：请求字段收进 `LoginAttempt`，风控、失败记账、主流程分开；
   “全部因子通过后才清失败计数”的顺序不变；
 - `storage.rs` 新增 `PgStorage` 与 `StorageConnection::Postgres(&PostgresPool)`；

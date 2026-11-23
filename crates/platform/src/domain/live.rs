@@ -241,7 +241,19 @@ impl Platform {
         let channel = validate::id(channel)?.to_string();
         let user = user.to_string();
         self.ensure_danmaku_member(&channel, &user).await?;
-        self.moderate_danmaku(&channel, &user, text).await?;
+        if text.trim().is_empty() || text.chars().count() > DANMAKU_MAX_CHARS {
+            return Err(PlatformError::BadInput("danmaku text length"));
+        }
+        let decision = self.moderate(text);
+        match decision.outcome {
+            wxlike_moderation::Outcome::Publish | wxlike_moderation::Outcome::PublishFlagged => {}
+            wxlike_moderation::Outcome::Hold => {
+                self.queue_held_danmaku(&channel, &user, text, decision)
+                    .await?;
+                return Err(PlatformError::Forbidden);
+            }
+            wxlike_moderation::Outcome::Reject => return Err(PlatformError::Forbidden),
+        }
         let (session, recipients) = self.danmaku_delivery(&channel, &user).await?;
         if recipients.is_empty() {
             return Ok(0);
@@ -274,42 +286,26 @@ impl Platform {
             .await
     }
 
-    /// 弹幕同样过内容管线；软违规挂起写队列，硬违规直接拒绝。
-    async fn moderate_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<()> {
-        if text.trim().is_empty() || text.chars().count() > DANMAKU_MAX_CHARS {
-            return Err(PlatformError::BadInput("danmaku text length"));
-        }
-        let decision = self.moderate(text);
-        match decision.outcome {
-            wxlike_moderation::Outcome::Publish | wxlike_moderation::Outcome::PublishFlagged => {
-                Ok(())
-            }
-            wxlike_moderation::Outcome::Hold => {
-                let labels = serde_json::to_string(&decision.labels)?;
-                let decision_json = serde_json::to_string(&decision)?;
-                let conv = channel.to_string();
-                let sender = user.to_string();
-                let body = text.to_string();
-                let now = wxlike_core::types::now_ms() as i64;
-                self.db()
-                    .blocking(move |c| {
-                        let id = crate::auth::random_hex(8);
-                        trust_repo::enqueue(
-                            c,
-                            &id,
-                            &conv,
-                            &sender,
-                            &body,
-                            &labels,
-                            &decision_json,
-                            now,
-                        )
-                    })
-                    .await?;
-                Err(PlatformError::Forbidden)
-            }
-            wxlike_moderation::Outcome::Reject => Err(PlatformError::Forbidden),
-        }
+    /// 软违规挂起：只把判定结果与原文写进审核队列，正文不落消息时间线。
+    async fn queue_held_danmaku(
+        &self,
+        channel: &str,
+        user: &str,
+        text: &str,
+        decision: wxlike_moderation::Decision,
+    ) -> Result<()> {
+        let labels = serde_json::to_string(&decision.labels)?;
+        let decision_json = serde_json::to_string(&decision)?;
+        let conv = channel.to_string();
+        let sender = user.to_string();
+        let body = text.to_string();
+        let now = wxlike_core::types::now_ms() as i64;
+        self.db()
+            .blocking(move |c| {
+                let id = crate::auth::random_hex(8);
+                trust_repo::enqueue(c, &id, &conv, &sender, &body, &labels, &decision_json, now)
+            })
+            .await
     }
 
     /// 当前活跃场次 + 收件人；空列表由调用方直接返回 0。

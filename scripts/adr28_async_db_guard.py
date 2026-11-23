@@ -133,6 +133,15 @@ NON_DB_IMPL_TYPES = {
     ("crates/admin/src/identity.rs", "FixturePort"),
     ("crates/admin/src/publishing.rs", "FixtureContentPort"),
 }
+# 这些 `Platform` 方法锁的是进程内纯 CPU 状态（审核管线/风险窗口），不是
+# SQLite 连接。它们仍会被 `moderate` 这类同步方法调用；若把它们当种子，
+# `sync_db_names` 的传递闭包会把整条审核链误判成“同步查库”。只按精确
+# (文件, 方法) 登记，且方法体一旦出现 `db().lock()` 就自动失效。
+# 方法名必须全局唯一：`sync_db_names` 的种子集合是方法名集合，
+# `moderation_pipeline` 不与 admin 的查库 `moderation` 同名。
+IN_MEMORY_LOCK_METHODS = {
+    ("crates/platform/src/lib.rs", "moderation_pipeline"),
+}
 IMPL_TYPE = re.compile(r"\bimpl\s+(?:[A-Za-z0-9_:]+\s+for\s+)?([A-Za-z0-9_]+)")
 
 ASYNC_FN = re.compile(r"\basync\s+fn\s+([A-Za-z0-9_]+)")
@@ -299,7 +308,15 @@ def sync_db_names(files) -> set:
             body = code[start:end]
             bodies.setdefault(name, []).append(handle_calls(body))
             locks = ANY_LOCK.search(body) or DB_LOCK.search(body)
-            if locks and seed_root and "self" in code[sig:start]:
+            if (
+                locks
+                and seed_root
+                and "self" in code[sig:start]
+                and not any(
+                    posix.endswith(file) and name == method
+                    for file, method in IN_MEMORY_LOCK_METHODS
+                )
+            ):
                 seeds.add(name)
     for _ in range(12):
         grown = {n for n, calls in bodies.items() if any(c & seeds for c in calls)} - seeds

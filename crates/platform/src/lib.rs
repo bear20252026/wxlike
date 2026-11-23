@@ -397,7 +397,9 @@ impl Platform {
     }
 
     /// 审核管线。调用方拿锁后做一次判定即释放——判定是纯 CPU，不 await。
-    pub fn moderation(&self) -> std::sync::MutexGuard<'_, wxlike_moderation::Pipeline> {
+    pub(crate) fn moderation_pipeline(
+        &self,
+    ) -> std::sync::MutexGuard<'_, wxlike_moderation::Pipeline> {
         self.moderation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
