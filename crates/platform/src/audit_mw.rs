@@ -45,17 +45,25 @@ pub async fn command_audit(
         // `Authorization: bearer abc` 在审计里记成空 actor，而同一个请求
         // 在 handler 里是被认出来的。
         .and_then(wxlike_types::Bearer::parse)
-        .and_then(|presented| platform.lookup_token(presented.token()).ok().flatten())
-        .unwrap_or_default();
+        .map(|presented| presented.token().to_string());
+    let actor = match actor {
+        Some(token) => crate::db::offload(&platform, move |p| p.lookup_token(&token))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        None => String::new(),
+    };
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
 
     let response = next.run(req).await;
-    platform.audit(
-        &actor,
-        &format!("cmd.{command}"),
-        &path,
-        &format!("status={} method={method}", response.status().as_u16()),
-    );
+    let action = format!("cmd.{command}");
+    let detail = format!("status={} method={method}", response.status().as_u16());
+    let _ = crate::db::offload(&platform, move |p| {
+        p.audit(&actor, &action, &path, &detail);
+        Ok(())
+    })
+    .await;
     response
 }

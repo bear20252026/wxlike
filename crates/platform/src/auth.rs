@@ -113,9 +113,12 @@ impl FromRequestParts<std::sync::Arc<Platform>> for Authed {
             ));
         };
         let token = token.to_string();
-        let found = state.lookup_token(&token).map_err(|_| {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed")
-        })?;
+        let token_for_task = token.clone();
+        let found = crate::db::offload(state, move |p| p.lookup_token(&token_for_task))
+            .await
+            .map_err(|_| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed")
+            })?;
         match found {
             Some(user_id) => Ok(Authed { user_id, token }),
             None => Err(ApiError::new(

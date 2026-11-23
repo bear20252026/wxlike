@@ -30,7 +30,7 @@ use axum::response::{IntoResponse as _, Response};
 
 use crate::auth::Authed;
 use crate::error::ApiError;
-use crate::{PlatformState, Result as PlatformResult};
+use crate::PlatformState;
 
 /// (method, path) → 受控行为。`None` = 不归这层闸管（读接口、预密钥认领
 /// 等已有各自闸门的路径，以及直播推流回调）。
@@ -131,19 +131,25 @@ pub async fn gate(
     let Some(token) = bearer_of(request.headers()) else {
         return next.run(request).await;
     };
-    let user_id = match platform.lookup_token(&token) {
+    let action_for_task = action;
+    let token_for_task = token;
+    let user_id = match crate::db::offload(&platform, move |p| {
+        let Some(user_id) = p.lookup_token(&token_for_task)? else {
+            return Ok(None);
+        };
+        p.risk_gate(action_for_task, &user_id, None)?;
+        Ok(Some(user_id))
+    })
+    .await
+    {
         Ok(Some(user_id)) => user_id,
-        _ => return next.run(request).await,
+        Ok(None) => return next.run(request).await,
+        Err(err) => return ApiError::from(err).into_response(),
     };
-    // 检查本身不计入（extra=1 只影响本次裁决）；被限流的请求不落 handler
-    let gate: PlatformResult<()> = platform.risk_gate(action, &user_id, None);
-    if let Err(err) = gate {
-        return ApiError::from(err).into_response();
-    }
     let response = next.run(request).await;
     if !response.status().is_server_error() {
         // 计数失败不影响响应：风控是增强，不是可用性单点
-        let _ = platform.risk_record(action, &user_id);
+        let _ = crate::db::offload(&platform, move |p| p.risk_record(action, &user_id)).await;
     }
     response
 }

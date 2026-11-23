@@ -212,7 +212,10 @@ async fn audit_self(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = platform.audit_of(&authed.user_id, 100).unwrap_or_default();
+    let actor = authed.user_id.clone();
+    let rows = crate::db::offload(&platform, move |p| p.audit_of(&actor, 100))
+        .await
+        .unwrap_or_default();
     Ok(Json(serde_json::json!({
         "entries": rows.into_iter().map(|(at, action, target, detail)| {
             serde_json::json!({

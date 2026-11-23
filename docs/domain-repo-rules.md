@@ -401,6 +401,22 @@ await 侧被借用。
 
 `media.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十九批：auth / risk_mw / audit_mw / audit_self 收口
+
+认证与中间件也在 await 上下文里查库，本批一并收：
+
+- `Authed::from_request_parts` 的 `lookup_token` 进 `offload`，令牌字符串
+  clone 一份给闭包，解析失败仍回原来的 500；
+- `risk_mw::gate` 把“解析令牌 + 风控闸”收进一次 `offload`，查不到/无效仍
+  直接放行给 handler 的 401；响应后的 `risk_record` 再进阻塞池且失败忽略；
+- `audit_mw::command_audit` 把令牌解析后的 `lookup_token` 和响应后的
+  `audit` 分别进阻塞池，actor 为空、审计失败不影响响应；
+- `GET /api/audit/self` 的 `audit_of` 进 `offload`，失败仍回空 entries
+  （`unwrap_or_default` 语义不变）。
+
+`auth.rs / risk_mw.rs / audit_mw.rs` 加入 `ENFORCED_FILES`，
+`lib.rs` 只把 `audit_self` 登记到 `ENFORCED_FNS`，不整文件纳入。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

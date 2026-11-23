@@ -86,6 +86,9 @@ ENFORCED_FILES = (
     "crates/platform/src/video_refs.rs",
     "crates/platform/src/qr_login.rs",
     "crates/platform/src/media.rs",
+    "crates/platform/src/auth.rs",
+    "crates/platform/src/risk_mw.rs",
+    "crates/platform/src/audit_mw.rs",
     "crates/platform/src/domain/friends.rs",
     "crates/platform/src/domain/groups.rs",
     "crates/platform/src/domain/groups_admin.rs",
@@ -102,6 +105,7 @@ ENFORCED_ROOTS = ("crates/admin/src",)
 ENFORCED_FNS = {
     "crates/platform/src/communities.rs": {"send_channel_message", "send_thread_reply"},
     "crates/platform/src/domain/communities.rs": {"send_channel_message", "send_thread_reply"},
+    "crates/platform/src/lib.rs": {"audit_self"},
 }
 WAIVER = "TODO(ADR-28)"
 # 规则 3 的**类型级**豁免：这些 impl 块里的同步方法锁的是内存态（测试替身的
