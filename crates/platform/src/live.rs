@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -47,7 +48,12 @@ async fn start(
     Path(channel): Path<String>,
     ApiJson(body): ApiJson<StartBody>,
 ) -> std::result::Result<Json<StartReply>, ApiError> {
-    let session = platform.start_live(&channel, &authed.user_id, body.recording)?;
+    let actor = authed.user_id.clone();
+    let recording = body.recording;
+    let session = offload(&platform, move |p| {
+        p.start_live(&channel, &actor, recording)
+    })
+    .await?;
     let token = platform.ingest_token(&session.stream_key, INGEST_TTL_MS);
     let base = std::env::var("WXLIKE_RTMP_BASE")
         .unwrap_or_else(|_| "rtmp://127.0.0.1:1935/live".to_string());
@@ -64,7 +70,8 @@ async fn stop(
     authed: Authed,
     Path(channel): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.stop_live(&channel, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.stop_live(&channel, &actor)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -73,7 +80,9 @@ async fn state(
     authed: Authed,
     Path(channel): Path<String>,
 ) -> std::result::Result<Json<LiveState>, ApiError> {
-    Ok(Json(platform.live_state(&channel, &authed.user_id)?))
+    let actor = authed.user_id.clone();
+    let live = offload(&platform, move |p| p.live_state(&channel, &actor)).await?;
+    Ok(Json(live))
 }
 
 async fn join(
@@ -81,7 +90,8 @@ async fn join(
     authed: Authed,
     Path(channel): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let viewers = platform.join_live(&channel, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let viewers = offload(&platform, move |p| p.join_live(&channel, &actor)).await?;
     Ok(Json(serde_json::json!({ "viewers": viewers })))
 }
 
@@ -90,7 +100,8 @@ async fn leave(
     authed: Authed,
     Path(channel): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let viewers = platform.leave_live(&channel, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let viewers = offload(&platform, move |p| p.leave_live(&channel, &actor)).await?;
     Ok(Json(serde_json::json!({ "viewers": viewers })))
 }
 
@@ -111,6 +122,12 @@ async fn authorize_ingest(
     State(platform): State<PlatformState>,
     ApiJson(body): ApiJson<IngestAuthBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.verify_ingest(&body.stream_key, &body.token, wxlike_core::types::now_ms())?;
+    let stream_key = body.stream_key;
+    let token = body.token;
+    let now = wxlike_core::types::now_ms();
+    offload(&platform, move |p| {
+        p.verify_ingest(&stream_key, &token, now)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

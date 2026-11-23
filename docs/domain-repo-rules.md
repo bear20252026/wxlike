@@ -318,6 +318,19 @@ await 侧被借用。
 
 `sessions.rs` 加入 `ENFORCED_FILES`。
 
+## 第四十三批：live handler 收口
+
+`live.rs` 的开播、停播、状态、进房、退房和 ingest 回调共 7 个接口里，
+除弹幕外的同步方法调用全部改成 `offload`。
+
+- 开播只把 `start_live` 放进阻塞任务，`ingest_token` 与 URL 组装仍在 handler；
+- 状态/进房/退房/停播各一次阻塞任务；
+- ingest 回调把 `verify_ingest` 放进阻塞任务，时间戳在进池前取；
+- 弹幕仍调 `send_danmaku`（async），它内部的收件人查询属于 domain 层的
+  异步方法，不在本批 handler 边界内。
+
+`live.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
