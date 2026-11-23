@@ -237,7 +237,7 @@ impl GovernanceLinks {
             .remove(key);
     }
 
-    fn revoke_sessions(&self, user_id: &str, count: i64) {
+    fn revoke_sessions(&self, user_id: &str, count: u64) {
         // 域内已删 sessions/刷新链/step-up；这里把还连着的 WS/QUIC 泵拔掉，
         // 否则"后台封了、前端还收消息"。count == 0 = 幂等重放，不断。
         if count == 0 {
