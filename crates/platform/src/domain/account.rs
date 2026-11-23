@@ -14,7 +14,7 @@
 //! # 导出为什么不在请求路径里产出
 //!
 //! `POST /api/account/export` 只回执作业 handle（202）。打包由
-//! [`Platform::run_account_jobs`] 推进——与红包清扫 [`crate::spawn_redpacket_sweeper`]
+//! `Platform::run_account_jobs` 推进——与红包清扫 [`crate::spawn_redpacket_sweeper`]
 //! 同一个模式：服务端起周期任务，测试直接调函数，状态推进因此是确定的。
 //! 取件走 `export_link`/`redeem_link`（**短时 + 单次**）；产物按自身内容摘要
 //! 存在媒体仓里，`artifact` 就是那个摘要，不是路径，所以没有穿越面。
@@ -23,7 +23,7 @@
 //!
 //! # 注销的顺序
 //!
-//! [`Platform::schedule_deletion`] 先按既有规则撤销**全部会话 + 刷新链 + step-up**
+//! `Platform::schedule_deletion` 先按既有规则撤销**全部会话 + 刷新链 + step-up**
 //! （`preferences::request_delete`），再落 `users.deleted_at`，最后排清理作业。
 //! 标记一落，口令校验与会话签发同时 fail-closed，所以**不等 worker 跑完，数据
 //! 也已经取不到**。用户行本身留到清理作业完成：`groups.owner_uid`、
@@ -512,7 +512,7 @@ impl Platform {
     }
 }
 
-/// [`Platform::export_document`] 的取数部分：调用方已经持有连接，整段查询
+/// `Platform::export_document` 的取数部分：调用方已经持有连接，整段查询
 /// 因此可以作为一个阻塞任务搬进 `Db::blocking`，而不用在 await 上下文里
 /// 再取一次锁。
 fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
@@ -633,7 +633,7 @@ fn notify_view(prefs: &ServerPrefs, quiet_hours: bool) -> Value {
 }
 
 /// 注销清理的**周期任务**入口（与 [`crate::spawn_redpacket_sweeper`] 同一模式：
-/// 服务端起循环，测试直接调 [`Platform::run_account_jobs`]，推进因此是确定的）。
+/// 服务端起循环，测试直接调 `Platform::run_account_jobs`，推进因此是确定的）。
 ///
 /// 一轮失败只记日志不退出：一条卡住的作业（比如钱包还有余额）不该把整个
 /// 账户作业队列停掉——但那一条必须是 `failed` 状态、带原因，用户看得见。

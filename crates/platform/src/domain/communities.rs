@@ -16,7 +16,7 @@
 //!   模型参照 Rocket.Chat 的 channel roles（MIT，未镜像，按其分层与命名重写），
 //!   判定函数形状照 [`crate::perms`]，不另起一套；
 //! * **按消息类型的发送闸门**（文字 / 附件走不同权限点）；
-//! * **话题订阅的静音位 + 扇出名单**（[`Platform::thread_fanout`]）。
+//! * **话题订阅的静音位 + 扇出名单**（`Platform::thread_fanout`）。
 //!
 //! 两层的分工要说死，否则加一个权限要改两处：
 //! **社区角色**管"能不能建频道、踢人、提管理员"；**频道角色**管"在这个频道
@@ -308,7 +308,7 @@ impl Platform {
             .map(ChannelRole::from_community))
     }
 
-    /// 频道内的权限点判定（与 [`Platform::can`] 同形状：没权限返回 false，
+    /// 频道内的权限点判定（与 `Platform::can` 同形状：没权限返回 false，
     /// 不返回错误——UI 要能把按钮显示成灰的）。频道不存在才报错。
     pub fn can_in_channel(
         &self,
@@ -544,7 +544,7 @@ impl Platform {
     }
 
     /// 覆盖某人的频道角色。`owner` 不在可授予之列——频道 owner 就是社区群主，
-    /// 转让是另一套流程（与 [`Platform::set_member_role`] 同一道口子）。
+    /// 转让是另一套流程（与 `Platform::set_member_role` 同一道口子）。
     pub fn set_channel_role(
         &self,
         channel: &str,
@@ -798,7 +798,7 @@ impl Platform {
         Ok(())
     }
 
-    /// 订阅名单（含静音标记）——推送用的是 [`Platform::thread_fanout`]。
+    /// 订阅名单（含静音标记）——推送用的是 `Platform::thread_fanout`。
     pub fn thread_subscribers(&self, thread: &str, user: &str) -> Result<Vec<ThreadSubscription>> {
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;

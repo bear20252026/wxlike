@@ -7,7 +7,7 @@
 //! use per-user salted PBKDF2-HMAC-SHA256.
 //!
 //! Each feature area is a module exposing `routes() -> Router<PlatformState>`,
-//! merged by [`Platform::router`], so endpoints for accounts, friends, groups,
+//! merged by `Platform::router`, so endpoints for accounts, friends, groups,
 //! moments, media and wallet stay in separate files with one shared state.
 //!
 //! ```no_run
@@ -95,7 +95,7 @@ pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
-/// tests call [`Platform::sweep_expired_redpackets`] directly so the expiry path
+/// tests call `Platform::sweep_expired_redpackets` directly so the expiry path
 /// is deterministic instead of sleeping for a day.
 pub fn spawn_redpacket_sweeper(
     state: PlatformState,

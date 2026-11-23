@@ -14,7 +14,7 @@
 //! `unread` 会是 0——这是接线未完成，不是算错。
 //!
 //! 参与者闸门（AUTHZ-012 / #230）：三个入口都先过
-//! [`Platform::assert_conv_participant`]——登录不等于有资格读这个会话。
+//! `Platform::assert_conv_participant`——登录不等于有资格读这个会话。
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::read`]。
 

@@ -200,7 +200,7 @@ impl Platform {
 }
 
 /// 定时对账。与红包清扫器同形：`wxlike-server` 启动，测试直接调
-/// [`Platform::reconcile`] 以保证确定性。
+/// `Platform::reconcile` 以保证确定性。
 pub fn spawn_reconciler(
     state: PlatformState,
     every: std::time::Duration,

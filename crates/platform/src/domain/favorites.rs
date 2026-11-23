@@ -9,7 +9,7 @@
 //!   `revoked`；读取面随后清空 `text/media_id/snapshot_label`，只留
 //!   `revoked = true` 和来源类型。**撤权后不返回原文。**
 //!
-//! 排序：`sort_order` 由用户拖拽写入（[`Platform::reorder_favorites`]），
+//! 排序：`sort_order` 由用户拖拽写入（`Platform::reorder_favorites`），
 //! 存在服务端，因此跨端一致；同序时按创建时间倒序。
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::favorites`]。
@@ -144,7 +144,7 @@ impl Platform {
         Ok((capture(&source.text), source.label))
     }
 
-    /// Legacy 分页（按 created_at）。新客户端用 [`Platform::favorites_sorted`]。
+    /// Legacy 分页（按 created_at）。新客户端用 `Platform::favorites_sorted`。
     pub fn list_favorites(
         &self,
         user_id: &str,

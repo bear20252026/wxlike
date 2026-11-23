@@ -3,7 +3,7 @@
 //!
 //! 与 groups.rs 的关系：同一个 `Platform` 的扩展 impl（模块化单体的 crate
 //! 内分文件），路由独立注册。禁言的**发送侧拦截**由 hub 接线复用
-//! [`Platform::is_muted`]（P3-8）；此处先落存储面与 HTTP 面。
+//! `Platform::is_muted`（P3-8）；此处先落存储面与 HTTP 面。
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::groups_admin`]。
 

@@ -12,7 +12,7 @@
 //! * a red packet freezes its full total at creation and refunds whatever was
 //!   not claimed after `expire_at`, leaving a ledger row for the refund.
 //!
-//! Funding seam: [`Platform::fund`] is the only way balance enters the ledger.
+//! Funding seam: `Platform::fund` is the only way balance enters the ledger.
 //! There is no HTTP endpoint for it — that is precisely the seam a licensed
 //! channel would plug into later.
 //!
@@ -417,13 +417,13 @@ impl Platform {
 
     /// Sum of every balance in the system. Excludes money sitting in an open
     /// red packet, which is why the conservation tests use
-    /// [`Platform::money_supply`] instead.
+    /// `Platform::money_supply` instead.
     pub fn total_money(&self) -> Result<i64> {
         let c = self.db().lock();
         total_wallets(&c)
     }
 
-    /// The invariant that must never move except through [`Platform::fund`]:
+    /// The invariant that must never move except through `Platform::fund`:
     /// every wallet plus the unclaimed remainder of every open packet. Frozen
     /// money has left the sender but is still in the system, so a supply check
     /// that ignores escrow would "lose" money on every red packet.

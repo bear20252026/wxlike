@@ -13,8 +13,8 @@
 //! # 人机校验
 //!
 //! 内置的是算术挑战，够挡住脚本化的批量注册，**不是**对抗专业打码平台的
-//! 方案；生产接入（极验/Turnstile）只需替换 [`Platform::issue_captcha`]
-//! 的题目生成与 [`Platform::solve_captcha`] 的校验，接口形状不变。
+//! 方案；生产接入（极验/Turnstile）只需替换 `Platform::issue_captcha`
+//! 的题目生成与 `Platform::solve_captcha` 的校验，接口形状不变。
 //!
 //! 三条安全约束：
 //! * 答案只存摘要（`sha256`），库被读走也无法直接刷题；

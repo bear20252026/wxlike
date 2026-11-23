@@ -362,7 +362,7 @@ struct AlbumQuery {
     limit: Option<i64>,
 }
 
-/// 个人主页相册。见 [`Platform::moment_album`]：任何"看不见"的情形都返回
+/// 个人主页相册。见 `Platform::moment_album`：任何"看不见"的情形都返回
 /// 空页，与"没有内容"同形。
 async fn album(
     State(platform): State<PlatformState>,
