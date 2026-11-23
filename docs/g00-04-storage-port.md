@@ -100,9 +100,10 @@
 
 - 35 个 `.rs`（34 个 feature 文件 + `mod.rs`）。
 - 多数 feature 文件仍直接吃 `&rusqlite::Connection`。第一批只读 pilot 已落：
-  `notification` 的 `set` / `get` / `list` 改为 `&StorageConnection<'_>`，通过
-  `StorageConnection::sqlite()` 拿旧守卫；`domain/notification.rs` 的三个调用点
-  改走 `Db::acquire()`。PG 变体当前返回受控 `PlatformError::Storage`，不 panic。
+  `notification` 的 `set` / `get` / `list` 与 `audit` 的 `write` /
+  `list_for_actor` 改为 `&StorageConnection<'_>`，通过 `StorageConnection::sqlite()`
+  拿旧守卫；`domain/notification.rs` / `domain/audit.rs` 的调用点改走
+  `Db::acquire()`。PG 变体当前返回受控 `PlatformError::Storage`，不 panic。
 
 改造目标：`&Connection` 参数换成端口句柄（`&StorageConnection` 或 `&dyn Storage`），
 SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：

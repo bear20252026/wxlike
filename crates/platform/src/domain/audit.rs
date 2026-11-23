@@ -11,7 +11,7 @@ impl Platform {
     /// 写一条审计。失败只留日志、不向调用方扩散：审计不能反过来阻断业务。
     pub fn audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
         let r = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             audit_repo::write(
                 &c,
                 wxlike_core::types::now_ms() as i64,
@@ -33,7 +33,7 @@ impl Platform {
         limit: usize,
     ) -> Result<Vec<(i64, String, String, String)>> {
         let limit = limit.clamp(1, 200) as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         audit_repo::list_for_actor(&c, actor, limit)
     }
 }
