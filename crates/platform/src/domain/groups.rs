@@ -395,7 +395,7 @@ impl Platform {
     ///
     /// `private` 的含义是"不出现在发现 / 搜索里"，不是"成员看不到"——
     /// 非成员读群信息本来就是 403（见 `group_info`）。
-    pub fn set_group_visibility(
+    pub(crate) fn set_group_visibility(
         &self,
         actor: &str,
         group_id: &str,
@@ -420,7 +420,7 @@ impl Platform {
     ///
     /// 不删 `groups` / `group_members` / 消息：解散是可追溯事件，历史消息仍要能读；
     /// "不能再写"由 `dissolved` 判定，不靠删数据。
-    pub fn dissolve_group(&self, actor: &str, group_id: &str) -> Result<Vec<String>> {
+    pub(crate) fn dissolve_group(&self, actor: &str, group_id: &str) -> Result<Vec<String>> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         let Some(owner) = owner_of(&c, group_id)? else {
@@ -434,7 +434,7 @@ impl Platform {
     }
 
     /// 群元数据（可见性 / 解散）—— 缺行时按 public、未解散处理。
-    pub fn group_meta_of(&self, group_id: &str) -> Result<(String, bool)> {
+    pub(crate) fn group_meta_of(&self, group_id: &str) -> Result<(String, bool)> {
         let c = self.db().lock();
         let row = meta_of(&c, group_id)?;
         Ok(match row {

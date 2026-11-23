@@ -205,7 +205,7 @@ impl Platform {
         are_friends(&self.db().lock(), a, b)
     }
 
-    pub fn set_remark(&self, me: &str, friend: &str, remark: &str) -> Result<()> {
+    pub(crate) fn set_remark(&self, me: &str, friend: &str, remark: &str) -> Result<()> {
         let friend = validate::id(friend)?.to_string();
         let remark = validate::remark(remark)?.to_string();
         if !set_remark(&self.db().lock(), me, &friend, &remark)? {
@@ -215,7 +215,7 @@ impl Platform {
     }
 
     /// Mutual removal: both rows and both log entries in one transaction.
-    pub fn remove_friend(&self, me: &str, other: &str) -> Result<()> {
+    pub(crate) fn remove_friend(&self, me: &str, other: &str) -> Result<()> {
         let other = validate::id(other)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();

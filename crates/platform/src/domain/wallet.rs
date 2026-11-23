@@ -201,12 +201,17 @@ impl Platform {
     /// Ledger rows, oldest first: `since` is the last id already seen, so the
     /// cursor advances the same way as the contact-change log (WP-02) rather
     /// than mixing a newest-first sort with an ascending cursor.
-    pub fn ledger_of(&self, user_id: &str, since: i64, limit: i64) -> Result<Vec<LedgerRow>> {
+    pub(crate) fn ledger_of(
+        &self,
+        user_id: &str,
+        since: i64,
+        limit: i64,
+    ) -> Result<Vec<LedgerRow>> {
         let c = self.db().lock();
         repo_ledger_of(&c, user_id, since, limit.clamp(1, 200))
     }
 
-    pub fn ledger_head(&self, user_id: &str) -> Result<i64> {
+    pub(crate) fn ledger_head(&self, user_id: &str) -> Result<i64> {
         let c = self.db().lock();
         repo_ledger_head(&c, user_id)
     }
@@ -219,13 +224,17 @@ impl Platform {
     // 实现，把幂等行并进转账事务需要给 `transfer` 加可选参数，改动面大。
 
     /// 查一条幂等记录：`(request_hash, response_json)`。
-    pub fn wallet_idem_lookup(&self, user_id: &str, key: &str) -> Result<Option<(String, String)>> {
+    pub(crate) fn wallet_idem_lookup(
+        &self,
+        user_id: &str,
+        key: &str,
+    ) -> Result<Option<(String, String)>> {
         let c = self.db().lock();
         idem_lookup(&c, user_id, key)
     }
 
     /// 记一条幂等记录；顺手清掉过期行（24h）。
-    pub fn wallet_idem_store(
+    pub(crate) fn wallet_idem_store(
         &self,
         user_id: &str,
         key: &str,

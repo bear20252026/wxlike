@@ -84,7 +84,7 @@ impl Platform {
     }
 
     /// 登记会话属主（建群 / 建频道时调用）。幂等。
-    pub fn set_owner_kind(&self, conv: &str, kind: wxlike_message::OwnerType) -> Result<()> {
+    pub(crate) fn set_owner_kind(&self, conv: &str, kind: wxlike_message::OwnerType) -> Result<()> {
         let name = match kind {
             wxlike_message::OwnerType::Direct => "direct",
             wxlike_message::OwnerType::Group => "group",
@@ -108,7 +108,7 @@ impl Platform {
     /// - channel：`channel_role` 专属行或社区角色继承（`effective_channel_role`）。
     ///
     /// 查不到/查错一律按非成员处理——鉴权闸门 fail closed。
-    pub fn assert_conv_participant(&self, user_id: &str, conv: &str) -> Result<()> {
+    pub(crate) fn assert_conv_participant(&self, user_id: &str, conv: &str) -> Result<()> {
         use wxlike_message::OwnerType;
         let allowed = match self.owner_kind_of(conv)? {
             OwnerType::Direct => {

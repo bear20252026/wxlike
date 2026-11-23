@@ -42,7 +42,7 @@ pub struct QueuedItem {
 
 impl Platform {
     /// 纯判定（不落库）。
-    pub fn moderate(&self, text: &str) -> Decision {
+    pub(crate) fn moderate(&self, text: &str) -> Decision {
         self.moderation().judge_text(text)
     }
 
@@ -78,7 +78,7 @@ impl Platform {
         })
     }
 
-    pub fn moderation_mode(&self) -> Mode {
+    pub(crate) fn moderation_mode(&self) -> Mode {
         self.moderation().mode()
     }
 
@@ -110,7 +110,7 @@ impl Platform {
     }
 
     /// 拒绝：从队列删除，不投递。
-    pub fn reject_moderated(&self, id: &str, actor: &str) -> Result<bool> {
+    pub(crate) fn reject_moderated(&self, id: &str, actor: &str) -> Result<bool> {
         let c = self.db().lock();
         let n = trust_repo::delete(&c, id)?;
         drop(c);

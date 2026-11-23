@@ -21,7 +21,7 @@ pub struct NotificationRule {
 }
 
 impl Platform {
-    pub fn set_notification_rule(
+    pub(crate) fn set_notification_rule(
         &self,
         user: &str,
         conv: &str,
@@ -63,7 +63,7 @@ impl Platform {
         }
     }
 
-    pub fn notification_rules(&self, user: &str) -> Result<Vec<NotificationRule>> {
+    pub(crate) fn notification_rules(&self, user: &str) -> Result<Vec<NotificationRule>> {
         let c = self.db().lock();
         let rows = notification_repo::list(&c, user)?;
         let mut out = Vec::with_capacity(rows.len());

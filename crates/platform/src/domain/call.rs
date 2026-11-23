@@ -286,7 +286,7 @@ impl Platform {
     }
 
     /// 主持人离开后若房间移交，返回新主持人（供上层广播系统事件）。
-    pub fn call_host(&self, conv: &str) -> Option<String> {
+    pub(crate) fn call_host(&self, conv: &str) -> Option<String> {
         let guard = self.calls.lock();
         guard.get(conv).map(|r| r.host().to_string())
     }

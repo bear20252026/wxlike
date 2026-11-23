@@ -78,7 +78,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn totp_secret_of(&self, user_id: &str) -> Result<Option<String>> {
+    pub(crate) fn totp_secret_of(&self, user_id: &str) -> Result<Option<String>> {
         let c = self.db().lock();
         SqliteUsersRepo::new(&c).totp_secret(user_id)
     }
@@ -89,7 +89,7 @@ impl Platform {
     }
 
     /// 生成（或重生成）TOTP 密钥；未确认前不改变 `totp_enabled`。
-    pub fn totp_enable(&self, user_id: &str) -> Result<String> {
+    pub(crate) fn totp_enable(&self, user_id: &str) -> Result<String> {
         let user_id = crate::validate::id(user_id)?;
         let secret = totp_generate_secret();
         if secret.len() > TOTP_SECRET_MAX {
@@ -134,7 +134,12 @@ impl Platform {
     ///
     /// 两个都为空的调用返回 `false`（不是"通过"）：不能因为调用方忘了带凭据
     /// 就当成验证成功。
-    pub fn confirm_identity(&self, user_id: &str, code: &str, password: &str) -> Result<bool> {
+    pub(crate) fn confirm_identity(
+        &self,
+        user_id: &str,
+        code: &str,
+        password: &str,
+    ) -> Result<bool> {
         if !code.is_empty() {
             if let Some(secret) = self.totp_secret_of(user_id)? {
                 if totp_verify(&secret, code) {
@@ -152,7 +157,7 @@ impl Platform {
     }
 
     /// 2FA 校验（登录路径调用）：未启用 → Ok(())；启用 → 验证码必须正确。
-    pub fn totp_check_login(&self, user_id: &str, code: Option<&str>) -> Result<()> {
+    pub(crate) fn totp_check_login(&self, user_id: &str, code: Option<&str>) -> Result<()> {
         if !self.totp_enabled(user_id)? {
             return Ok(());
         }

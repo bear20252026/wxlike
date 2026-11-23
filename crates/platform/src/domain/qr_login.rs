@@ -257,7 +257,7 @@ impl Platform {
     }
 
     /// 用户显示名（兑换回包 `{name}` 用；用户不存在时退回 id 本身）。
-    pub fn display_name_of(&self, user_id: &str) -> crate::error::Result<String> {
+    pub(crate) fn display_name_of(&self, user_id: &str) -> crate::error::Result<String> {
         let c = self.db().lock();
         Ok(display_name(&c, user_id)?.unwrap_or_else(|| user_id.to_string()))
     }

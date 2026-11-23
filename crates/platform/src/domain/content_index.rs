@@ -66,7 +66,7 @@ pub(crate) struct IndexDoc<'a> {
 impl Platform {
     /// 公开内容是否对 `viewer` 可见。**唯一**的检索授权入口：索引只给候选，
     /// 这里回权威表作答。
-    pub fn content_visible(&self, viewer: &str, kind: &str, doc_id: &str) -> Result<bool> {
+    pub(crate) fn content_visible(&self, viewer: &str, kind: &str, doc_id: &str) -> Result<bool> {
         match kind {
             "moment" => self.moment_visible(viewer, doc_id),
             "article" => {
@@ -79,7 +79,7 @@ impl Platform {
         }
     }
 
-    pub fn media_referrers(&self, media_id: &str) -> Result<Vec<(String, String)>> {
+    pub(crate) fn media_referrers(&self, media_id: &str) -> Result<Vec<(String, String)>> {
         let c = self.db().lock();
         media_referrers(&c, media_id)
     }
@@ -89,7 +89,7 @@ impl Platform {
     ///
     /// `scopes` 为空 = 全部内置域（`KINDS`）；未知 scope 报错而不是退化成全量
     /// （退化会让"只搜文章"的调用变成对其它域的探测面）。
-    pub fn search_content(
+    pub(crate) fn search_content(
         &self,
         viewer: &str,
         q: &str,
@@ -161,7 +161,7 @@ impl Platform {
     }
 
     /// 热搜：时间窗 + 去重作者 + 单人贡献上限 + 只用公开内容。
-    pub fn content_trends(&self, limit: usize) -> Result<Vec<TrendTerm>> {
+    pub(crate) fn content_trends(&self, limit: usize) -> Result<Vec<TrendTerm>> {
         let limit = limit.clamp(1, TREND_MAX_LIMIT);
         let cutoff = wxlike_core::types::now_ms() as i64 - TREND_WINDOW_MS;
         let rows = {

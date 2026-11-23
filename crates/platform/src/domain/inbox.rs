@@ -33,7 +33,7 @@ pub struct Notification {
 }
 
 impl Platform {
-    pub fn notifications(
+    pub(crate) fn notifications(
         &self,
         user: &str,
         before_seq: Option<i64>,
@@ -51,13 +51,13 @@ impl Platform {
         Ok((rows, next, has_more))
     }
 
-    pub fn unread_notifications(&self, user: &str) -> Result<i64> {
+    pub(crate) fn unread_notifications(&self, user: &str) -> Result<i64> {
         let c = self.db().lock();
         unread(&c, user)
     }
 
     /// 已读只能推进到 `up_to_seq`（含），或者按 id 列表。两者都限定本人。
-    pub fn mark_notifications_read(
+    pub(crate) fn mark_notifications_read(
         &self,
         user: &str,
         up_to_seq: Option<i64>,

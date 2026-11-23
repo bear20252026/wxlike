@@ -185,14 +185,19 @@ impl Platform {
     }
 
     /// 会话的 `sid`（刷新链按 sid 归组）。
-    pub fn session_sid(&self, token: &str) -> Result<Option<String>> {
+    pub(crate) fn session_sid(&self, token: &str) -> Result<Option<String>> {
         let digest = crate::auth::token_digest(token);
         let c = self.db().lock();
         SqliteSessionsRepo::new(&c).sid_by_token(&digest)
     }
 
     /// 登录成功后签发首枚刷新令牌（与访问会话同 sid，便于一起撤销）。
-    pub fn issue_refresh(&self, user_id: &str, sid: &str, device_id: &str) -> Result<String> {
+    pub(crate) fn issue_refresh(
+        &self,
+        user_id: &str,
+        sid: &str,
+        device_id: &str,
+    ) -> Result<String> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         Ok(refresh::issue_default(
@@ -209,7 +214,7 @@ impl Platform {
     ///
     /// 重放检测在 [`refresh::rotate`] 里：旧令牌第二次出现即作废整条链。
     /// 这里的顺序是"先轮换、再换会话"——轮换失败就不该留下新会话。
-    pub fn rotate_refresh(&self, raw: &str, ip: &str) -> Result<(Rotated, String)> {
+    pub(crate) fn rotate_refresh(&self, raw: &str, ip: &str) -> Result<(Rotated, String)> {
         let now = wxlike_core::types::now_ms() as i64;
         let device_name = {
             let c = self.db().lock();
@@ -241,14 +246,14 @@ impl Platform {
     }
 
     /// 授予一次 step-up（密码或 TOTP 已在上层校验过）。
-    pub fn grant_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<i64> {
+    pub(crate) fn grant_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<i64> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         Ok(step_up::grant_default(&c, user_id, sid, purpose, now)?)
     }
 
     /// 消费一次 step-up（单次有效）。
-    pub fn consume_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<()> {
+    pub(crate) fn consume_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         step_up::consume(&c, user_id, sid, purpose, now)?;
@@ -256,7 +261,7 @@ impl Platform {
     }
 
     /// 下线一台设备：删会话 + 作废该设备全部刷新令牌。
-    pub fn revoke_device_sessions(&self, user_id: &str, device_id: &str) -> Result<usize> {
+    pub(crate) fn revoke_device_sessions(&self, user_id: &str, device_id: &str) -> Result<usize> {
         if device_id.is_empty() || device_id.len() > DEVICE_ID_MAX_LEN {
             return Err(PlatformError::BadInput("device_id malformed"));
         }
@@ -268,14 +273,14 @@ impl Platform {
     }
 
     /// 撤销指定 sid 时同步作废它的刷新链（否则刷新能把会话续回来）。
-    pub fn revoke_refresh_of_sid(&self, sid: &str) -> Result<usize> {
+    pub(crate) fn revoke_refresh_of_sid(&self, sid: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
         Ok(refresh::revoke_sid(&c, sid, now)?)
     }
 
     /// 记录活跃时间（登录、设备页访问、关键操作时调用）。
-    pub fn touch_session(&self, token: &str) -> Result<()> {
+    pub(crate) fn touch_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();

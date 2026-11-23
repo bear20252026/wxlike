@@ -141,7 +141,11 @@ impl Platform {
     /// `quiet_hours` 是 `Option`：`None` = 客户端没说，此时响铃判定是**在"不在
     /// 免打扰时段"这个假设下**算出来的，文档里用 `quiet_hours_known: false`
     /// 明说，不把它伪装成确定答案。
-    pub fn preferences_document(&self, user_id: &str, quiet_hours: Option<bool>) -> Result<Value> {
+    pub(crate) fn preferences_document(
+        &self,
+        user_id: &str,
+        quiet_hours: Option<bool>,
+    ) -> Result<Value> {
         let c = self.db().lock();
         let prefs = preferences::get(&c, user_id)?;
         let head = preferences::head_seq(&c, user_id)?;
@@ -158,7 +162,7 @@ impl Platform {
     }
 
     /// 写一次字段级补丁（键不在白名单 → 422，值畸形 → 422）。
-    pub fn patch_preferences(
+    pub(crate) fn patch_preferences(
         &self,
         user_id: &str,
         patch: &BTreeMap<String, String>,
@@ -171,7 +175,7 @@ impl Platform {
     }
 
     /// 增量：`since_seq` 之后的变更 + 当前游标（下次从这里接着拉）。
-    pub fn preferences_since(
+    pub(crate) fn preferences_since(
         &self,
         user_id: &str,
         since_seq: i64,
