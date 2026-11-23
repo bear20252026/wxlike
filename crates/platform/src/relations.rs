@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -40,9 +41,9 @@ async fn list_blocks(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(serde_json::json!({
-        "blocked": platform.blocked_list(&authed.user_id)?
-    })))
+    let actor = authed.user_id.clone();
+    let blocked = offload(&platform, move |p| p.blocked_list(&actor)).await?;
+    Ok(Json(serde_json::json!({ "blocked": blocked })))
 }
 
 async fn block(
@@ -50,7 +51,8 @@ async fn block(
     authed: Authed,
     Path(uid): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.block_user(&authed.user_id, &uid)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.block_user(&actor, &uid)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -59,7 +61,8 @@ async fn unblock(
     authed: Authed,
     Path(uid): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.unblock_user(&authed.user_id, &uid)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.unblock_user(&actor, &uid)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -74,7 +77,14 @@ async fn send_stranger_message(
     authed: Authed,
     ApiJson(body): ApiJson<StrangerBody>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    match platform.send_stranger_message(&authed.user_id, &body.to_uid, &body.text)? {
+    let actor = authed.user_id.clone();
+    let to_uid = body.to_uid;
+    let text = body.text;
+    let state = offload(&platform, move |p| {
+        p.send_stranger_message(&actor, &to_uid, &text)
+    })
+    .await?;
+    match state {
         StrangerState::Queued => Ok(Json(
             serde_json::json!({"state": "queued", "detail": "delivered to the request inbox"}),
         )),
@@ -89,11 +99,16 @@ async fn list_stranger_requests(
     authed: Authed,
     Query(dir): Query<std::collections::HashMap<String, String>>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let rows = if dir.get("dir").map(|d| d == "out").unwrap_or(false) {
-        platform.stranger_requests_out(&authed.user_id)?
-    } else {
-        platform.stranger_requests_in(&authed.user_id)?
-    };
+    let actor = authed.user_id.clone();
+    let out = dir.get("dir").map(|d| d == "out").unwrap_or(false);
+    let rows = offload(&platform, move |p| {
+        if out {
+            p.stranger_requests_out(&actor)
+        } else {
+            p.stranger_requests_in(&actor)
+        }
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "requests": rows })))
 }
 
@@ -102,7 +117,8 @@ async fn accept_stranger_request(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.accept_stranger_request(&authed.user_id, &id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.accept_stranger_request(&actor, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -111,7 +127,8 @@ async fn decline_stranger_request(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.decline_stranger_request(&authed.user_id, &id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.decline_stranger_request(&actor, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -129,7 +146,14 @@ async fn patch_friend_meta(
     Path(uid): Path<String>,
     ApiJson(body): ApiJson<FriendPatch>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.patch_friend_meta(&authed.user_id, &uid, body.starred, body.tags, body.group)?;
+    let actor = authed.user_id.clone();
+    let starred = body.starred;
+    let tags = body.tags;
+    let group = body.group;
+    offload(&platform, move |p| {
+        p.patch_friend_meta(&actor, &uid, starred, tags, group)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -137,8 +161,10 @@ async fn get_stranger_setting(
     State(platform): State<PlatformState>,
     authed: Authed,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let actor = authed.user_id.clone();
+    let allow = offload(&platform, move |p| p.allow_strangers(&actor)).await?;
     Ok(Json(serde_json::json!({
-        "allow_strangers": platform.allow_strangers(&authed.user_id)?
+        "allow_strangers": allow
     })))
 }
 
@@ -152,6 +178,8 @@ async fn set_stranger_setting(
     authed: Authed,
     ApiJson(body): ApiJson<StrangerSetting>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_allow_strangers(&authed.user_id, body.allow)?;
+    let actor = authed.user_id.clone();
+    let allow = body.allow;
+    offload(&platform, move |p| p.set_allow_strangers(&actor, allow)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

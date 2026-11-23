@@ -258,6 +258,17 @@ step-up 发证、导出作业的提交/查询/取消、导出链接和账号注�
 `communities.rs` 加入 `ENFORCED_FILES`。当前名单为
 `friends / groups / groups_admin / inbox / devices / keys / account / call / communities`。
 
+## 第三十八批：relations handler 收口
+
+`relations.rs` 的拉黑/解除、陌生人消息、陌生人申请、好友备注、陌生人开关共
+10 个读写接口都在 `async fn` 里直接调同步方法。
+
+本批全部改成 `offload`；`send_stranger_message` 仍按返回的 `StrangerState`
+组装两种响应，`patch_friend_meta` 的三个可选字段原样传入闭包，请求体不再在
+await 侧被借用。
+
+`relations.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
