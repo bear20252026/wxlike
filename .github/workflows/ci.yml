@@ -58,6 +58,8 @@ jobs:
 
         '
     - run: cargo fmt --check
+    - name: Platform surface budget
+      run: python3 scripts/platform_surface_audit.py --max-pub 120
   clippy:
     name: clippy
     needs:

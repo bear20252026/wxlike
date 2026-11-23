@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -109,33 +110,40 @@ def load_sources() -> list[tuple[Path, str]]:
     return sources
 
 
-def external_calls(method: str, sources: list[tuple[Path, str]]) -> list[str]:
-    call_re = re.compile(rf"(?:\.|Platform::)\s*{re.escape(method)}\s*\(")
-    hits: list[str] = []
+CALL_RE = re.compile(r"(?:\.|Platform::)\s*([A-Za-z0-9_]+)\s*\(")
+
+
+def call_sites(sources: list[tuple[Path, str]]) -> dict[str, list[str]]:
+    sites: dict[str, list[str]] = {}
     for path, text in sources:
         for n, line in enumerate(text.splitlines(), 1):
-            if call_re.search(line):
-                hits.append(f"{path.relative_to(REPO_ROOT)}:{n}")
-    return hits
+            for method in CALL_RE.findall(line):
+                sites.setdefault(method, []).append(f"{path.relative_to(REPO_ROOT)}:{n}")
+    return sites
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--max-pub", type=int)
     args = parser.parse_args()
 
     files = load_sources()
+    all_sites = call_sites(files)
     rows = []
     for m in platform_methods():
-        hits = external_calls(m["method"], files)
+        hits = all_sites.get(m["method"], [])
         rows.append({**m, "external_calls": len(hits), "sites": hits[:8]})
 
+    pub = sum(1 for r in rows if r["visibility"] == "pub")
+    crate = len(rows) - pub
+    if args.max_pub is not None and pub > args.max_pub:
+        print(f"Platform pub surface grew: {pub} > {args.max_pub}", file=sys.stderr)
+        raise SystemExit(1)
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
         return
 
-    pub = sum(1 for r in rows if r["visibility"] == "pub")
-    crate = len(rows) - pub
     print(f"Platform methods: {len(rows)} (pub={pub}, pub(crate)={crate})")
     print("外部有调用的 pub 方法：")
     for r in sorted(

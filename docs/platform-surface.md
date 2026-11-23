@@ -29,6 +29,16 @@ python scripts/platform_surface_audit.py --json
 
 目标：`pub` 方法 ≤120。
 
+## CI 门禁
+
+`ci.yml` 的 `fmt` job 会执行：
+
+```bash
+python3 scripts/platform_surface_audit.py --max-pub 120
+```
+
+超过 120 直接失败，防止 `Platform` 的公开面在后续迭代里重新膨胀。
+
 ## 第一批：status / favorites / notes
 
 这三个模块的 26 个方法只被平台内 handler 调用，其中 **21 个**已从 `pub` 降为
