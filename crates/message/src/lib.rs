@@ -244,6 +244,219 @@ pub struct MessageStore {
     conn: Mutex<Connection>,
 }
 
+const SCHEMA_SQL: &str = r#"
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;
+
+-- 单点原子序列号：每属主一行，分配即 UPDATE … RETURNING
+CREATE TABLE IF NOT EXISTS owner_seq (
+    owner_type TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    seq        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner_type, owner_id)
+);
+
+-- normal 通道时间线（唯一占 seq 的表）
+CREATE TABLE IF NOT EXISTS mailbox (
+    owner_type TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    msg_id     TEXT NOT NULL,
+    sender     TEXT NOT NULL,
+    type_id    TEXT NOT NULL,
+    payload    TEXT NOT NULL DEFAULT '',
+    sent_at_ms INTEGER NOT NULL,
+    withdrawn  INTEGER NOT NULL DEFAULT 0,
+    -- G03-01: submit metadata travels with the timeline row so a
+    -- retry, edit or recall never needs a second source of truth.
+    sender_device TEXT NOT NULL DEFAULT '',
+    body_kind     TEXT NOT NULL DEFAULT 'plain',
+    edit_version  INTEGER NOT NULL DEFAULT 0,
+    recalled_at_ms INTEGER,
+    forward_of    TEXT,
+    PRIMARY KEY (owner_type, owner_id, seq)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_msgid ON mailbox(msg_id);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner ON mailbox(owner_type, owner_id, seq);
+
+-- 已读游标：公共信箱 + 个人进度，未读数是差值不是计数器
+CREATE TABLE IF NOT EXISTS read_cursor (
+    owner_type  TEXT NOT NULL,
+    owner_id    TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    last_ack_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner_type, owner_id, user_id)
+);
+
+-- 消息个人状态：只对自己生效
+CREATE TABLE IF NOT EXISTS msg_user_state (
+    owner_type TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    user_id    TEXT NOT NULL,
+    state_type TEXT NOT NULL,
+    PRIMARY KEY (owner_type, owner_id, seq, user_id, state_type)
+);
+
+-- 信箱变更事件：撤回/批量撤回/编辑态，按 version 增量同步
+CREATE TABLE IF NOT EXISTS mailbox_change (
+    owner_type TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    msg_id     TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    at_ms      INTEGER NOT NULL,
+    PRIMARY KEY (owner_type, owner_id, version)
+);
+
+-- ephemeral 通道：卡片状态回写（不进时间线，不占序列号）
+CREATE TABLE IF NOT EXISTS ephemeral (
+    rowid_hint    INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_type    TEXT NOT NULL,
+    owner_id      TEXT NOT NULL,
+    msg_id        TEXT NOT NULL,
+    target_msg_id TEXT NOT NULL DEFAULT '',
+    type_id       TEXT NOT NULL,
+    payload       TEXT NOT NULL DEFAULT '',
+    sent_at_ms    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_owner ON ephemeral(owner_type, owner_id, rowid_hint);
+
+-- sync-service：成员变更日志（version 单调，五层差分的增量源）
+CREATE TABLE IF NOT EXISTS member_log (
+    owner_type TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    payload    TEXT NOT NULL DEFAULT '',
+    at_ms      INTEGER NOT NULL,
+    PRIMARY KEY (owner_type, owner_id, version)
+);
+
+-- 成员快照：全量兜底与懒加载分页的真相源
+CREATE TABLE IF NOT EXISTS member_snapshot (
+    owner_type TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    PRIMARY KEY (owner_type, owner_id, user_id)
+);
+
+-- 提交幂等账（G03 提交卡）。唯一键是 (sender_device, idempotency_key)，
+-- 与消息、seq、投递任务在同一个 SQLite 事务里写入。
+CREATE TABLE IF NOT EXISTS message_submit (
+    sender_device   TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    conv_id         TEXT NOT NULL,
+    msg_id          TEXT NOT NULL UNIQUE,
+    seq             INTEGER NOT NULL,
+    payload_hash    TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (sender_device, idempotency_key)
+);
+
+-- 每消息×每设备的投递任务（G03 投递卡）。socket 写成功不删唯一副本，
+-- 只有客户端持久化后的 stored ack 才把 state 推到 stored。
+CREATE TABLE IF NOT EXISTS delivery_task (
+    msg_id         TEXT NOT NULL,
+    target_user    TEXT NOT NULL,
+    target_device  TEXT NOT NULL DEFAULT '*',
+    state          TEXT NOT NULL DEFAULT 'pending',
+    lease_owner    TEXT,
+    lease_until    INTEGER NOT NULL DEFAULT 0,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    next_at        INTEGER NOT NULL DEFAULT 0,
+    joined_seq     INTEGER NOT NULL DEFAULT 0,
+    left_seq       INTEGER,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    PRIMARY KEY (msg_id, target_user, target_device)
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_ready
+    ON delivery_task(state, next_at, lease_until);
+CREATE INDEX IF NOT EXISTS idx_delivery_device
+    ON delivery_task(target_user, target_device, state);
+
+-- 设备游标与账号游标分离；stored/read 各自单调。
+CREATE TABLE IF NOT EXISTS device_cursor (
+    device_id    TEXT NOT NULL,
+    conv_id      TEXT NOT NULL,
+    stored_cursor INTEGER NOT NULL DEFAULT 0,
+    read_cursor   INTEGER NOT NULL DEFAULT 0,
+    version       INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, conv_id)
+);
+
+-- 会话投影表（G03 会话卡）。keyset 分页只读这张表，不 OFFSET 扫信箱。
+CREATE TABLE IF NOT EXISTS conversation_projection (
+    conv_id      TEXT PRIMARY KEY,
+    owner_type   TEXT NOT NULL,
+    last_seq     INTEGER NOT NULL DEFAULT 0,
+    last_at_ms   INTEGER NOT NULL DEFAULT 0,
+    last_sender  TEXT NOT NULL DEFAULT '',
+    last_type    TEXT NOT NULL DEFAULT '',
+    preview      TEXT NOT NULL DEFAULT '',
+    member_count INTEGER NOT NULL DEFAULT 0,
+    deleted      INTEGER NOT NULL DEFAULT 0,
+    last_withdrawn INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_conv_projection_page
+    ON conversation_projection(last_at_ms DESC, conv_id DESC);
+
+-- 置顶/静音/归档是用户跨端偏好，不是设备本地状态。
+CREATE TABLE IF NOT EXISTS conversation_pref (
+    user_id    TEXT NOT NULL,
+    conv_id    TEXT NOT NULL,
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    muted      INTEGER NOT NULL DEFAULT 0,
+    archived   INTEGER NOT NULL DEFAULT 0,
+    hidden     INTEGER NOT NULL DEFAULT 0,
+    version    INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, conv_id)
+);
+
+-- 清空本地历史只影响本人视图；与删除全端历史是两条命令。
+CREATE TABLE IF NOT EXISTS conversation_clear (
+    user_id   TEXT NOT NULL,
+    conv_id   TEXT NOT NULL,
+    cleared_before_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, conv_id)
+);
+
+-- 会话删除/清空产生的域事件，供搜索与附件引用异步收口。
+CREATE TABLE IF NOT EXISTS conversation_event (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor   TEXT NOT NULL,
+    conv_id TEXT NOT NULL,
+    kind    TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '',
+    at_ms   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_event_conv
+    ON conversation_event(conv_id, id);
+
+-- 推送 token 归设备，可轮换、可撤销。epoch 是让撤销"落地"的
+-- 那一列：撤销把 epoch 前移，任何仍带旧 epoch 的投递一律拒绝。
+CREATE TABLE IF NOT EXISTS push_device (
+    device_id    TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    platform     TEXT NOT NULL,
+    token        TEXT NOT NULL,
+    epoch        INTEGER NOT NULL DEFAULT 1,
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    created_ms   INTEGER NOT NULL,
+    last_seen_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_user
+    ON push_device(user_id, revoked);
+"#;
+
 impl MessageStore {
     /// `None` opens in-memory (tests / demos); a path persists to disk.
     pub fn open(path: Option<&str>) -> Result<Self> {
@@ -259,220 +472,7 @@ impl MessageStore {
             }
             None => Connection::open_in_memory()?,
         };
-        conn.execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA busy_timeout = 5000;
-
-            -- 单点原子序列号：每属主一行，分配即 UPDATE … RETURNING
-            CREATE TABLE IF NOT EXISTS owner_seq (
-                owner_type TEXT NOT NULL,
-                owner_id   TEXT NOT NULL,
-                seq        INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (owner_type, owner_id)
-            );
-
-            -- normal 通道时间线（唯一占 seq 的表）
-            CREATE TABLE IF NOT EXISTS mailbox (
-                owner_type TEXT NOT NULL,
-                owner_id   TEXT NOT NULL,
-                seq        INTEGER NOT NULL,
-                msg_id     TEXT NOT NULL,
-                sender     TEXT NOT NULL,
-                type_id    TEXT NOT NULL,
-                payload    TEXT NOT NULL DEFAULT '',
-                sent_at_ms INTEGER NOT NULL,
-                withdrawn  INTEGER NOT NULL DEFAULT 0,
-                -- G03-01: submit metadata travels with the timeline row so a
-                -- retry, edit or recall never needs a second source of truth.
-                sender_device TEXT NOT NULL DEFAULT '',
-                body_kind     TEXT NOT NULL DEFAULT 'plain',
-                edit_version  INTEGER NOT NULL DEFAULT 0,
-                recalled_at_ms INTEGER,
-                forward_of    TEXT,
-                PRIMARY KEY (owner_type, owner_id, seq)
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_msgid ON mailbox(msg_id);
-            CREATE INDEX IF NOT EXISTS idx_mailbox_owner ON mailbox(owner_type, owner_id, seq);
-
-            -- 已读游标：公共信箱 + 个人进度，未读数是差值不是计数器
-            CREATE TABLE IF NOT EXISTS read_cursor (
-                owner_type  TEXT NOT NULL,
-                owner_id    TEXT NOT NULL,
-                user_id     TEXT NOT NULL,
-                last_ack_seq INTEGER NOT NULL DEFAULT 0,
-                updated_at  INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (owner_type, owner_id, user_id)
-            );
-
-            -- 消息个人状态：只对自己生效
-            CREATE TABLE IF NOT EXISTS msg_user_state (
-                owner_type TEXT NOT NULL,
-                owner_id   TEXT NOT NULL,
-                seq        INTEGER NOT NULL,
-                user_id    TEXT NOT NULL,
-                state_type TEXT NOT NULL,
-                PRIMARY KEY (owner_type, owner_id, seq, user_id, state_type)
-            );
-
-            -- 信箱变更事件：撤回/批量撤回/编辑态，按 version 增量同步
-            CREATE TABLE IF NOT EXISTS mailbox_change (
-                owner_type TEXT NOT NULL,
-                owner_id   TEXT NOT NULL,
-                version    INTEGER NOT NULL,
-                msg_id     TEXT NOT NULL,
-                kind       TEXT NOT NULL,
-                actor      TEXT NOT NULL,
-                at_ms      INTEGER NOT NULL,
-                PRIMARY KEY (owner_type, owner_id, version)
-            );
-
-            -- ephemeral 通道：卡片状态回写（不进时间线，不占序列号）
-            CREATE TABLE IF NOT EXISTS ephemeral (
-                rowid_hint    INTEGER PRIMARY KEY AUTOINCREMENT,
-                owner_type    TEXT NOT NULL,
-                owner_id      TEXT NOT NULL,
-                msg_id        TEXT NOT NULL,
-                target_msg_id TEXT NOT NULL DEFAULT '',
-                type_id       TEXT NOT NULL,
-                payload       TEXT NOT NULL DEFAULT '',
-                sent_at_ms    INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_ephemeral_owner ON ephemeral(owner_type, owner_id, rowid_hint);
-
-            -- sync-service：成员变更日志（version 单调，五层差分的增量源）
-            CREATE TABLE IF NOT EXISTS member_log (
-                owner_type TEXT NOT NULL,
-                owner_id   TEXT NOT NULL,
-                version    INTEGER NOT NULL,
-                kind       TEXT NOT NULL,
-                user_id    TEXT NOT NULL,
-                payload    TEXT NOT NULL DEFAULT '',
-                at_ms      INTEGER NOT NULL,
-                PRIMARY KEY (owner_type, owner_id, version)
-            );
-
-            -- 成员快照：全量兜底与懒加载分页的真相源
-            CREATE TABLE IF NOT EXISTS member_snapshot (
-                owner_type TEXT NOT NULL,
-                owner_id   TEXT NOT NULL,
-                user_id    TEXT NOT NULL,
-                PRIMARY KEY (owner_type, owner_id, user_id)
-            );
-
-            -- 提交幂等账（G03 提交卡）。唯一键是 (sender_device, idempotency_key)，
-            -- 与消息、seq、投递任务在同一个 SQLite 事务里写入。
-            CREATE TABLE IF NOT EXISTS message_submit (
-                sender_device   TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL,
-                conv_id         TEXT NOT NULL,
-                msg_id          TEXT NOT NULL UNIQUE,
-                seq             INTEGER NOT NULL,
-                payload_hash    TEXT NOT NULL DEFAULT '',
-                created_at      INTEGER NOT NULL,
-                PRIMARY KEY (sender_device, idempotency_key)
-            );
-
-            -- 每消息×每设备的投递任务（G03 投递卡）。socket 写成功不删唯一副本，
-            -- 只有客户端持久化后的 stored ack 才把 state 推到 stored。
-            CREATE TABLE IF NOT EXISTS delivery_task (
-                msg_id         TEXT NOT NULL,
-                target_user    TEXT NOT NULL,
-                target_device  TEXT NOT NULL DEFAULT '*',
-                state          TEXT NOT NULL DEFAULT 'pending',
-                lease_owner    TEXT,
-                lease_until    INTEGER NOT NULL DEFAULT 0,
-                attempts       INTEGER NOT NULL DEFAULT 0,
-                next_at        INTEGER NOT NULL DEFAULT 0,
-                joined_seq     INTEGER NOT NULL DEFAULT 0,
-                left_seq       INTEGER,
-                created_at     INTEGER NOT NULL,
-                updated_at     INTEGER NOT NULL,
-                PRIMARY KEY (msg_id, target_user, target_device)
-            );
-            CREATE INDEX IF NOT EXISTS idx_delivery_ready
-                ON delivery_task(state, next_at, lease_until);
-            CREATE INDEX IF NOT EXISTS idx_delivery_device
-                ON delivery_task(target_user, target_device, state);
-
-            -- 设备游标与账号游标分离；stored/read 各自单调。
-            CREATE TABLE IF NOT EXISTS device_cursor (
-                device_id    TEXT NOT NULL,
-                conv_id      TEXT NOT NULL,
-                stored_cursor INTEGER NOT NULL DEFAULT 0,
-                read_cursor   INTEGER NOT NULL DEFAULT 0,
-                version       INTEGER NOT NULL DEFAULT 0,
-                updated_at    INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (device_id, conv_id)
-            );
-
-            -- 会话投影表（G03 会话卡）。keyset 分页只读这张表，不 OFFSET 扫信箱。
-            CREATE TABLE IF NOT EXISTS conversation_projection (
-                conv_id      TEXT PRIMARY KEY,
-                owner_type   TEXT NOT NULL,
-                last_seq     INTEGER NOT NULL DEFAULT 0,
-                last_at_ms   INTEGER NOT NULL DEFAULT 0,
-                last_sender  TEXT NOT NULL DEFAULT '',
-                last_type    TEXT NOT NULL DEFAULT '',
-                preview      TEXT NOT NULL DEFAULT '',
-                member_count INTEGER NOT NULL DEFAULT 0,
-                deleted      INTEGER NOT NULL DEFAULT 0,
-                last_withdrawn INTEGER NOT NULL DEFAULT 0,
-                updated_at   INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_conv_projection_page
-                ON conversation_projection(last_at_ms DESC, conv_id DESC);
-
-            -- 置顶/静音/归档是用户跨端偏好，不是设备本地状态。
-            CREATE TABLE IF NOT EXISTS conversation_pref (
-                user_id    TEXT NOT NULL,
-                conv_id    TEXT NOT NULL,
-                pinned     INTEGER NOT NULL DEFAULT 0,
-                muted      INTEGER NOT NULL DEFAULT 0,
-                archived   INTEGER NOT NULL DEFAULT 0,
-                hidden     INTEGER NOT NULL DEFAULT 0,
-                version    INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, conv_id)
-            );
-
-            -- 清空本地历史只影响本人视图；与删除全端历史是两条命令。
-            CREATE TABLE IF NOT EXISTS conversation_clear (
-                user_id   TEXT NOT NULL,
-                conv_id   TEXT NOT NULL,
-                cleared_before_seq INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, conv_id)
-            );
-
-            -- 会话删除/清空产生的域事件，供搜索与附件引用异步收口。
-            CREATE TABLE IF NOT EXISTS conversation_event (
-                id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                actor   TEXT NOT NULL,
-                conv_id TEXT NOT NULL,
-                kind    TEXT NOT NULL,
-                payload TEXT NOT NULL DEFAULT '',
-                at_ms   INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conversation_event_conv
-                ON conversation_event(conv_id, id);
-
-            -- 推送 token 归设备，可轮换、可撤销。epoch 是让撤销"落地"的
-            -- 那一列：撤销把 epoch 前移，任何仍带旧 epoch 的投递一律拒绝。
-            CREATE TABLE IF NOT EXISTS push_device (
-                device_id    TEXT PRIMARY KEY,
-                user_id      TEXT NOT NULL,
-                platform     TEXT NOT NULL,
-                token        TEXT NOT NULL,
-                epoch        INTEGER NOT NULL DEFAULT 1,
-                revoked      INTEGER NOT NULL DEFAULT 0,
-                created_ms   INTEGER NOT NULL,
-                last_seen_ms INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_push_user
-                ON push_device(user_id, revoked);
-            "#,
-        )?;
+        conn.execute_batch(SCHEMA_SQL)?;
         let store = Self {
             conn: Mutex::new(conn),
         };
