@@ -271,8 +271,8 @@ impl SqliteStorage {
                 "postgres profile 尚未实现（G00-04 S2）：{profile}"
             )));
         }
-        let conn = open_sqlite(path)?;
-        configure_sqlite(&conn)?;
+        let mut conn = open_sqlite(path)?;
+        configure_sqlite(&mut conn)?;
         let storage = Self {
             profile,
             inner: Arc::new(Mutex::new(conn)),
@@ -341,7 +341,7 @@ fn open_sqlite(path: Option<&str>) -> Result<Connection> {
 }
 
 /// 连接级设置：WAL、外键、忙等，以及慢查询 trace；必须在迁移链之前完成。
-fn configure_sqlite(conn: &Connection) -> Result<()> {
+fn configure_sqlite(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
