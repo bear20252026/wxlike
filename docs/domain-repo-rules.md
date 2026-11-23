@@ -184,6 +184,22 @@ SQL，全部走 `domain/repo` 的端口；`Platform` 的公开方法签名保持
 handler 从此不再出现 `.db().lock()`；根层只有 `lib.rs` 的 WAL checkpoint、
 `db.rs`、`storage.rs` 三个基础设施文件允许直接拿连接。
 
+## 第三十四批：handler ADR-28 TODO 清零
+
+`friends`、`groups_admin`、`groups` 三个 handler 文件里还挂着 11 个
+`TODO(ADR-28)`：通讯录的五个读、公告/申请列表两个群管理读、群详情/成员/我的群
+三个读，最后都在 `async fn` 的 await 上下文里直接跑同步查库。
+
+本批逐个改成 `offload` / `offload_api`：
+
+- 单段读直接 `offload(&platform, move |p| p.method(..))`；
+- 需要保留 403/404 文案的读（群公告、群详情、成员名单）用 `offload_api`，
+  把鉴权、存在性判断和查询收进同一次阻塞执行；
+- 群详情原来的 4 次上锁、成员名单的 `is_member + 查询` 都合并到一次任务，
+  响应形状与错误码不变。
+
+三个文件里的 `TODO(ADR-28)` 归零；`crates/platform/src/*.rs` 全文搜索也为 0。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线
@@ -222,7 +238,7 @@ users、sessions、security 三个文件已经是 **0**；第二批把 account �
 ## 收尾与边界
 
 `domain/*.rs` 与 crate 根 handler 的生产 SQL 已清零，handler 也不再直连
-`db().lock()`，没有下一批。后续只守边界：
+`db().lock()`，且 `TODO(ADR-28)` 已全部收口，没有下一批。后续只守边界：
 
 1. 新 SQL 只进 `domain/repo/*.rs`；
 2. 基线保持 0/0，门禁即零容忍；
