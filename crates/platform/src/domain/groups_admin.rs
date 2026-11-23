@@ -35,7 +35,7 @@ pub struct GroupAnnouncement {
 }
 
 impl Platform {
-    pub fn set_announcement(
+    pub(crate) fn set_announcement(
         &self,
         group: &str,
         actor: &str,
@@ -58,7 +58,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn announcement(&self, group: &str) -> Result<Option<GroupAnnouncement>> {
+    pub(crate) fn announcement(&self, group: &str) -> Result<Option<GroupAnnouncement>> {
         let group = validate::id(group)?;
         Ok(
             announcement(&self.db().lock(), group)?.map(|r| GroupAnnouncement {
@@ -76,7 +76,7 @@ impl Platform {
 // ---------------------------------------------------------------------------
 
 impl Platform {
-    pub fn set_member_mute(
+    pub(crate) fn set_member_mute(
         &self,
         group: &str,
         actor: &str,
@@ -97,7 +97,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn clear_member_mute(&self, group: &str, actor: &str, target: &str) -> Result<()> {
+    pub(crate) fn clear_member_mute(&self, group: &str, actor: &str, target: &str) -> Result<()> {
         let (group, target) = (validate::id(group)?, validate::id(target)?);
         self.assert_manager(group, actor)?;
         if !delete_member_mute(&self.db().lock(), group, target)? {
@@ -106,7 +106,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn set_all_mute(&self, group: &str, actor: &str, on: bool) -> Result<()> {
+    pub(crate) fn set_all_mute(&self, group: &str, actor: &str, on: bool) -> Result<()> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
         set_all_muted(&self.db().lock(), group, on)
@@ -115,7 +115,7 @@ impl Platform {
     /// 全员禁言的当前状态（#318 遗留缺口的服务端一半）：写入侧只有
     /// `set_all_mute`，读取侧此前只有发送裁决内部查得到，命令面与
     /// 客户端都无从读——这里给一个与公告读取对称的域方法。
-    pub fn all_muted(&self, group: &str) -> Result<bool> {
+    pub(crate) fn all_muted(&self, group: &str) -> Result<bool> {
         let group = validate::id(group)?;
         all_muted(&self.db().lock(), group)
     }
@@ -173,13 +173,18 @@ impl Platform {
     }
 
     /// 审批开关（owner/admin 切换；审批开的群 token 入群转请求）。
-    pub fn set_join_approval(&self, group: &str, actor: &str, on: bool) -> Result<()> {
+    pub(crate) fn set_join_approval(&self, group: &str, actor: &str, on: bool) -> Result<()> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
         set_join_approval(&self.db().lock(), group, on)
     }
 
-    pub fn create_invite(&self, group: &str, actor: &str, ttl_ms: u64) -> Result<GroupInvite> {
+    pub(crate) fn create_invite(
+        &self,
+        group: &str,
+        actor: &str,
+        ttl_ms: u64,
+    ) -> Result<GroupInvite> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
         let token = crate::auth::random_hex(16);
@@ -194,7 +199,7 @@ impl Platform {
     }
 
     /// token 入群：审批开 → pending 请求；审批关 → 直接入群。
-    pub fn join_by_token(&self, token: &str, user: &str) -> Result<&'static str> {
+    pub(crate) fn join_by_token(&self, token: &str, user: &str) -> Result<&'static str> {
         let token = validate::id(token)?;
         let user = validate::id(user)?;
         // scope the guard: is_member/add_members re-lock the same non-reentrant
@@ -262,14 +267,14 @@ impl Platform {
 // ---------------------------------------------------------------------------
 
 impl Platform {
-    pub fn can_mention_all(&self, group: &str, user: &str) -> Result<bool> {
+    pub(crate) fn can_mention_all(&self, group: &str, user: &str) -> Result<bool> {
         let role = self.role_of(group, user)?;
         Ok(role == "owner" || role == "admin")
     }
 
     /// @所有人：manager 专属。构造 mention Custom 帧并经 EventSink 扇给全体
     /// 成员（未指定 user_ids 语义 = all），帧内带 all 标记。
-    pub async fn mention_all(&self, group: &str, actor: &str, text: &str) -> Result<String> {
+    pub(crate) async fn mention_all(&self, group: &str, actor: &str, text: &str) -> Result<String> {
         let group = validate::id(group)?.to_string();
         let group_for_task = group.clone();
         let actor_for_task = actor.to_string();

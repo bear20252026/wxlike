@@ -310,7 +310,7 @@ impl Platform {
 
     /// 频道内的权限点判定（与 `Platform::can` 同形状：没权限返回 false，
     /// 不返回错误——UI 要能把按钮显示成灰的）。频道不存在才报错。
-    pub fn can_in_channel(
+    pub(crate) fn can_in_channel(
         &self,
         channel: &str,
         user: &str,
@@ -396,12 +396,16 @@ impl Platform {
         Ok("joined")
     }
 
-    pub fn my_communities(&self, user: &str) -> Result<Vec<(CommunityRow, i64)>> {
+    pub(crate) fn my_communities(&self, user: &str) -> Result<Vec<(CommunityRow, i64)>> {
         let c = self.db().lock();
         repo_my_communities(&c, user)
     }
 
-    pub fn community_members(&self, community: &str, user: &str) -> Result<Vec<(String, i64)>> {
+    pub(crate) fn community_members(
+        &self,
+        community: &str,
+        user: &str,
+    ) -> Result<Vec<(String, i64)>> {
         self.require_member(community, user)?;
         let c = self.db().lock();
         repo_community_members(&c, community)
@@ -443,7 +447,7 @@ impl Platform {
         Ok(id)
     }
 
-    pub fn list_channels(&self, community: &str, user: &str) -> Result<Vec<ChannelRow>> {
+    pub(crate) fn list_channels(&self, community: &str, user: &str) -> Result<Vec<ChannelRow>> {
         self.require_member(community, user)?;
         let c = self.db().lock();
         repo_list_channels(&c, community)
@@ -494,7 +498,12 @@ impl Platform {
     /// 撤别人的必须先过 `DeleteAnyMessage`，再走 `withdraw_as`——**权限判断在
     /// 平台层，信箱只多一个"actor 不必是作者"的入口**，且变更事件里记的是
     /// 管理员本人，谁撤的可查（不变式 7）。
-    pub fn recall_channel_message(&self, channel: &str, actor: &str, msg_id: &str) -> Result<()> {
+    pub(crate) fn recall_channel_message(
+        &self,
+        channel: &str,
+        actor: &str,
+        msg_id: &str,
+    ) -> Result<()> {
         let channel = validate::id(channel)?;
         let actor = validate::id(actor)?;
         let msg_id = validate::id(msg_id)?;
@@ -585,7 +594,12 @@ impl Platform {
     }
 
     /// 撤掉覆盖行 = 回到继承（社区角色说了算），不是"把人踢出频道"。
-    pub fn reset_channel_role(&self, channel: &str, actor: &str, target: &str) -> Result<()> {
+    pub(crate) fn reset_channel_role(
+        &self,
+        channel: &str,
+        actor: &str,
+        target: &str,
+    ) -> Result<()> {
         let channel = validate::id(channel)?;
         let target = validate::id(target)?;
         self.require_grantor(channel, actor)?;
@@ -601,7 +615,7 @@ impl Platform {
         self.require_in_channel(channel, actor, crate::domain::perms::Perm::ManageRoles)
     }
 
-    pub fn fetch_channel_messages(
+    pub(crate) fn fetch_channel_messages(
         &self,
         channel: &str,
         user: &str,
@@ -672,7 +686,7 @@ impl Platform {
         Ok(id)
     }
 
-    pub fn list_threads(&self, channel: &str, user: &str) -> Result<Vec<ThreadRow>> {
+    pub(crate) fn list_threads(&self, channel: &str, user: &str) -> Result<Vec<ThreadRow>> {
         let channel = validate::id(channel)?;
         let Some(community) = self.channel_community(channel)? else {
             return Err(PlatformError::NotFound);
@@ -686,7 +700,7 @@ impl Platform {
     ///
     /// 这是 C4 的 `/api/community/{id}/threads`：客户端只需要一个入口就能把
     /// "社区里正在讨论什么"列出来，不必先枚举频道再逐个问。
-    pub fn community_threads(
+    pub(crate) fn community_threads(
         &self,
         community: &str,
         user: &str,
@@ -718,7 +732,7 @@ impl Platform {
     /// 同步 SQL 全程占住 await 上下文。现在签名回到同步，写与读仍在**同一次
     /// 阻塞执行**里按原顺序跑完（`offload`），扇出留给 handler 在 async 侧做。
     /// 返回 `(seq, channel, 扇出名单)`。
-    pub fn post_thread_reply(
+    pub(crate) fn post_thread_reply(
         &self,
         thread: &str,
         actor: &str,
@@ -759,7 +773,7 @@ impl Platform {
         repo_thread_fanout(&c, thread, &community)
     }
 
-    pub fn fetch_thread_messages(
+    pub(crate) fn fetch_thread_messages(
         &self,
         thread: &str,
         user: &str,
@@ -774,13 +788,18 @@ impl Platform {
         repo_fetch_thread_messages(&c, thread, after_seq, limit)
     }
 
-    pub fn subscribe_thread(&self, thread: &str, user: &str) -> Result<()> {
+    pub(crate) fn subscribe_thread(&self, thread: &str, user: &str) -> Result<()> {
         self.set_thread_subscription(thread, user, false)
     }
 
     /// 订阅 / 改静音状态。静音的人**仍在订阅名单里**（他要在话题列表里看得见
     /// 这条话题），只是从推送扇出名单里掉出去。
-    pub fn set_thread_subscription(&self, thread: &str, user: &str, muted: bool) -> Result<()> {
+    pub(crate) fn set_thread_subscription(
+        &self,
+        thread: &str,
+        user: &str,
+        muted: bool,
+    ) -> Result<()> {
         let thread = validate::id(thread)?;
         let user = validate::id(user)?;
         let community = self.thread_community(thread)?;
@@ -789,7 +808,7 @@ impl Platform {
         repo_upsert_thread_sub(&c, thread, user, muted)
     }
 
-    pub fn unsubscribe_thread(&self, thread: &str, user: &str) -> Result<()> {
+    pub(crate) fn unsubscribe_thread(&self, thread: &str, user: &str) -> Result<()> {
         let thread = validate::id(thread)?;
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
@@ -799,7 +818,11 @@ impl Platform {
     }
 
     /// 订阅名单（含静音标记）——推送用的是 `Platform::thread_fanout`。
-    pub fn thread_subscribers(&self, thread: &str, user: &str) -> Result<Vec<ThreadSubscription>> {
+    pub(crate) fn thread_subscribers(
+        &self,
+        thread: &str,
+        user: &str,
+    ) -> Result<Vec<ThreadSubscription>> {
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
         let c = self.db().lock();
@@ -809,7 +832,7 @@ impl Platform {
     /// 频道信箱的成员快照（C3：扇出的第一层）。全量重置，理由同
     /// `groups::sync_mailbox_members`——漏一次增量会让某人永远收不到消息。
     /// 没有信箱时静默跳过（纯控制面测试/演示没有投递）。
-    pub fn sync_channel_members(&self, channel: &str) -> Result<()> {
+    pub(crate) fn sync_channel_members(&self, channel: &str) -> Result<()> {
         let Some(community) = self.channel_community(channel)? else {
             return Err(PlatformError::NotFound);
         };
@@ -826,7 +849,7 @@ impl Platform {
     /// 成本是 频道数 × 成员数 行插入；社区内频道数受"管理员手工建频道"约束，
     /// 成员变更是低频操作，所以宁可整表重写也不要漏。真到了万人社区 × 几十个
     /// 频道，这里要换成增量成员日志（`append_member_change` 已经有位置）。
-    pub fn sync_community_channels(&self, community: &str) -> Result<()> {
+    pub(crate) fn sync_community_channels(&self, community: &str) -> Result<()> {
         let channels = {
             let c = self.db().lock();
             repo_channel_ids(&c, community)?

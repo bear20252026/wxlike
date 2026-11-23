@@ -46,7 +46,7 @@ impl From<wxlike_relations::RelError> for PlatformError {
 // ---------------------------------------------------------------------------
 
 impl Platform {
-    pub fn block_user(&self, user: &str, target: &str) -> Result<()> {
+    pub(crate) fn block_user(&self, user: &str, target: &str) -> Result<()> {
         let (user, target) = (validate::id(user)?, validate::id(target)?);
         if user == target {
             return Err(PlatformError::BadInput("cannot block yourself"));
@@ -63,7 +63,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn unblock_user(&self, user: &str, target: &str) -> Result<()> {
+    pub(crate) fn unblock_user(&self, user: &str, target: &str) -> Result<()> {
         let (user, target) = (validate::id(user)?, validate::id(target)?);
         let changed = {
             let c = self.db().lock();
@@ -73,7 +73,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn blocked_list(&self, user: &str) -> Result<Vec<String>> {
+    pub(crate) fn blocked_list(&self, user: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
         blocked_ids(&c, user)
     }
@@ -107,7 +107,7 @@ pub const MUTE_LEVELS: [&str; 3] = ["all", "mention", "none"];
 impl Platform {
     /// 陌生人首条消息：非好友、未拉黑、对方允许 → 请求箱。已好友直接放行
     /// （调用方返回 Accepted 语义）；重复 pending 请求幂等更新文本。
-    pub fn send_stranger_message(
+    pub(crate) fn send_stranger_message(
         &self,
         from: &str,
         to: &str,
@@ -142,23 +142,23 @@ impl Platform {
         Ok(StrangerState::Queued)
     }
 
-    pub fn stranger_requests_in(&self, user: &str) -> Result<Vec<StrangerRequest>> {
+    pub(crate) fn stranger_requests_in(&self, user: &str) -> Result<Vec<StrangerRequest>> {
         let c = self.db().lock();
         requests_in(&c, user)
     }
 
-    pub fn stranger_requests_out(&self, user: &str) -> Result<Vec<StrangerRequest>> {
+    pub(crate) fn stranger_requests_out(&self, user: &str) -> Result<Vec<StrangerRequest>> {
         let c = self.db().lock();
         requests_out(&c, user)
     }
 
     /// 接受：状态置 accepted，发送方从此可直发（会话许可，不是好友）。
-    pub fn accept_stranger_request(&self, user: &str, id: &str) -> Result<()> {
+    pub(crate) fn accept_stranger_request(&self, user: &str, id: &str) -> Result<()> {
         self.decide_stranger_request(user, id, "accepted")
     }
 
     /// 拒绝：状态置 declined（该请求关闭；不等于拉黑，可再申请新请求）。
-    pub fn decline_stranger_request(&self, user: &str, id: &str) -> Result<()> {
+    pub(crate) fn decline_stranger_request(&self, user: &str, id: &str) -> Result<()> {
         self.decide_stranger_request(user, id, "declined")
     }
 
@@ -180,19 +180,19 @@ impl Platform {
 
     // ---- 用户设置（是否允许陌生人发起） ----
 
-    pub fn allow_strangers(&self, user: &str) -> Result<bool> {
+    pub(crate) fn allow_strangers(&self, user: &str) -> Result<bool> {
         let c = self.db().lock();
         Ok(allow_strangers(&c, user)?.map(|v| v != 0).unwrap_or(true))
     }
 
-    pub fn set_allow_strangers(&self, user: &str, allow: bool) -> Result<()> {
+    pub(crate) fn set_allow_strangers(&self, user: &str, allow: bool) -> Result<()> {
         let c = self.db().lock();
         set_allow_strangers(&c, user, allow)
     }
 
     // ---- 星标 / 标签 / 分组（friends 表的成员私有元数据） ----
 
-    pub fn patch_friend_meta(
+    pub(crate) fn patch_friend_meta(
         &self,
         user: &str,
         friend: &str,

@@ -56,7 +56,7 @@ pub struct StickerPack {
 }
 
 impl Platform {
-    pub fn create_sticker_pack(&self, owner: &str, body: &PackBody) -> Result<StickerPack> {
+    pub(crate) fn create_sticker_pack(&self, owner: &str, body: &PackBody) -> Result<StickerPack> {
         let name = check_text("pack name", &body.name, MAX_PACK_NAME_CHARS)?;
         if name.trim().is_empty() {
             return Err(PlatformError::BadInput("pack name is required"));
@@ -116,7 +116,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn sticker_packs(&self, user: &str) -> Result<Vec<StickerPack>> {
+    pub(crate) fn sticker_packs(&self, user: &str) -> Result<Vec<StickerPack>> {
         let ids: Vec<String> = {
             let c = self.db().lock();
             packs_for(&c, user)?
@@ -124,14 +124,14 @@ impl Platform {
         ids.iter().map(|id| self.sticker_pack(user, id)).collect()
     }
 
-    pub fn sticker_pack(&self, viewer: &str, id: &str) -> Result<StickerPack> {
+    pub(crate) fn sticker_pack(&self, viewer: &str, id: &str) -> Result<StickerPack> {
         let id = validate::id(id)?;
         let c = self.db().lock();
         pack_row(&c, id, viewer)?.ok_or(PlatformError::NotFound)
     }
 
     /// 安装（可重复执行）：只为缺失的行补记录，不重排用户已有的自定义顺序。
-    pub fn install_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
+    pub(crate) fn install_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
         let pack_id = validate::id(pack_id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
@@ -148,19 +148,24 @@ impl Platform {
         })
     }
 
-    pub fn uninstall_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
+    pub(crate) fn uninstall_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
         let pack_id = validate::id(pack_id)?;
         let c = self.db().lock();
         uninstall_pack(&c, user, pack_id)
     }
 
     /// 已安装表情（发送面板的数据源），按用户自己的排序返回。
-    pub fn installed_stickers(&self, user: &str) -> Result<Vec<Sticker>> {
+    pub(crate) fn installed_stickers(&self, user: &str) -> Result<Vec<Sticker>> {
         let c = self.db().lock();
         installed_for(&c, user)
     }
 
-    pub fn order_sticker(&self, user: &str, sticker_id: &str, sort_order: i64) -> Result<()> {
+    pub(crate) fn order_sticker(
+        &self,
+        user: &str,
+        sticker_id: &str,
+        sort_order: i64,
+    ) -> Result<()> {
         let sticker_id = validate::id(sticker_id)?;
         if !(0..=1_000_000).contains(&sort_order) {
             return Err(PlatformError::BadInput("sort_order out of range"));
@@ -173,7 +178,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn remove_sticker(&self, user: &str, sticker_id: &str) -> Result<()> {
+    pub(crate) fn remove_sticker(&self, user: &str, sticker_id: &str) -> Result<()> {
         let sticker_id = validate::id(sticker_id)?;
         let changed = {
             let c = self.db().lock();
@@ -184,7 +189,7 @@ impl Platform {
     }
 
     /// 只允许包的所有者删除；安装行随 `stickers` 的外键级联清掉。
-    pub fn delete_sticker_pack(&self, owner: &str, pack_id: &str) -> Result<()> {
+    pub(crate) fn delete_sticker_pack(&self, owner: &str, pack_id: &str) -> Result<()> {
         let pack_id = validate::id(pack_id)?;
         let changed = {
             let c = self.db().lock();
