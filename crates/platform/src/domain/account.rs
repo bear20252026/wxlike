@@ -328,7 +328,7 @@ impl Platform {
         let raw = raw.to_string();
         let artifact = self
             .db()
-            .blocking(move |c| preferences::redeem_link(c, &raw, now))
+            .blocking(move |c| Ok(preferences::redeem_link(c, &raw, now)?))
             .await?;
         self.read_artifact(&artifact).await
     }
@@ -399,7 +399,7 @@ impl Platform {
             let now = wxlike_core::types::now_ms() as i64;
             let claimed = self
                 .db()
-                .blocking(move |c| preferences::claim(c, now))
+                .blocking(move |c| Ok(preferences::claim(c, now)?))
                 .await?;
             let Some(job) = claimed else {
                 break;
@@ -443,7 +443,10 @@ impl Platform {
         let job_id = job.id.clone();
         let size = bytes.len() as i64;
         self.db()
-            .blocking(move |c| preferences::finish(c, &job_id, &sha, size, now))
+            .blocking(move |c| {
+                preferences::finish(c, &job_id, &sha, size, now)?;
+                Ok(())
+            })
             .await?;
         Ok(())
     }
