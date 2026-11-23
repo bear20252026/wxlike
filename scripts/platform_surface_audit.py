@@ -75,6 +75,30 @@ def platform_methods() -> list[dict[str, str]]:
     return methods
 
 
+FACADE_BY_FILE = {
+    "sessions.rs": "Account",
+    "security.rs": "Account",
+    "recovery.rs": "Account",
+    "devices.rs": "Account",
+    "read.rs": "Messaging",
+    "notification.rs": "Messaging",
+    "video_refs.rs": "Media",
+    "wallet.rs": "Wallet",
+    "report.rs": "Governance",
+    "audit.rs": "Governance",
+    "secret.rs": "Governance",
+    "perms.rs": "Governance",
+    "trust.rs": "Governance",
+    "call.rs": "Realtime",
+    "live.rs": "Realtime",
+    "communities.rs": "Social",
+    "friends.rs": "Social",
+    "relations.rs": "Social",
+    "favorites.rs": "Social",
+    "status.rs": "Social",
+    "groups_admin.rs": "Social",
+}
+
 SKIP_DIRS = {".git", "target", "node_modules", "dist"}
 
 
@@ -113,6 +137,10 @@ def load_sources() -> list[tuple[Path, str]]:
 CALL_RE = re.compile(r"(?:\.|Platform::)\s*([A-Za-z0-9_]+)\s*\(")
 
 
+def path_name(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
 def call_sites(sources: list[tuple[Path, str]]) -> dict[str, list[str]]:
     sites: dict[str, list[str]] = {}
     for path, text in sources:
@@ -126,6 +154,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--max-pub", type=int)
+    parser.add_argument("--check-facades", action="store_true")
     args = parser.parse_args()
 
     files = load_sources()
@@ -133,18 +162,42 @@ def main() -> None:
     rows = []
     for m in platform_methods():
         hits = all_sites.get(m["method"], [])
-        rows.append({**m, "external_calls": len(hits), "sites": hits[:8]})
+        facade = FACADE_BY_FILE.get(path_name(m["file"]))
+        rows.append(
+            {**m, "facade": facade, "external_calls": len(hits), "sites": hits[:8]}
+        )
 
     pub = sum(1 for r in rows if r["visibility"] == "pub")
     crate = len(rows) - pub
     if args.max_pub is not None and pub > args.max_pub:
         print(f"Platform pub surface grew: {pub} > {args.max_pub}", file=sys.stderr)
         raise SystemExit(1)
+    if args.check_facades:
+        missing = sorted(
+            {r["file"] for r in rows if r["visibility"] == "pub" and not r["facade"]}
+        )
+        if missing:
+            print(
+                "Platform public methods have no facade: " + ", ".join(missing),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
         return
 
     print(f"Platform methods: {len(rows)} (pub={pub}, pub(crate)={crate})")
+    by_facade: dict[str, int] = {}
+    for row in rows:
+        if row["visibility"] == "pub":
+            by_facade[row["facade"] or "UNASSIGNED"] = (
+                by_facade.get(row["facade"] or "UNASSIGNED", 0) + 1
+            )
+    print(
+        "Public by facade: "
+        + ", ".join(f"{k}={v}" for k, v in sorted(by_facade.items()))
+    )
     print("外部有调用的 pub 方法：")
     for r in sorted(
         (r for r in rows if r["visibility"] == "pub" and r["external_calls"]),

@@ -34,7 +34,7 @@ python scripts/platform_surface_audit.py --json
 `ci.yml` 的 `fmt` job 会执行：
 
 ```bash
-python3 scripts/platform_surface_audit.py --max-pub 120
+python3 scripts/platform_surface_audit.py --max-pub 120 --check-facades
 ```
 
 超过 120 直接失败，防止 `Platform` 的公开面在后续迭代里重新膨胀。
