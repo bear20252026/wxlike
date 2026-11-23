@@ -362,6 +362,20 @@ await 侧被借用。
 
 四个文件都加入 `ENFORCED_FILES`。
 
+## 第四十六批：perms / trust / secret 收口
+
+三个管理/隐私模块共 14 个 handler：
+
+- `perms`：权限查询、成员角色、踢人、频道改/删各一次 `offload`；频道补丁的
+  `Option<String>` 原样移入闭包；
+- `trust`：审核检查、队列、放行、拒绝、模式切换。队列把 `mode + queue` 合并，
+  放行/拒绝保留原来的 404，模式切换把设置与审计收进 `offload_api`；
+- `secret`：秘密会话设置/读取、安全码、验证。读取把“状态 + 成员校验”收进
+  `offload_api` 并保留 403；安全码把三次查询合并，缺少公钥仍 404；设置与
+  验证各一次阻塞任务。
+
+`perms.rs`、`trust.rs`、`secret.rs` 加入 `ENFORCED_FILES`。
+
 ## 防回潮
 
 新增 `ci/jobs/build/check_domain_sql.py` 和逐文件基线

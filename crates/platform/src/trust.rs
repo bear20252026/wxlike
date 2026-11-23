@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::{AdminAuth, Authed};
+use crate::db::{offload, offload_api};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -32,16 +33,24 @@ async fn check(
     _authed: Authed,
     ApiJson(body): ApiJson<CheckBody>,
 ) -> std::result::Result<Json<Decision>, ApiError> {
-    Ok(Json(platform.moderate(&body.text)))
+    let text = body.text;
+    let decision = offload(&platform, move |p| Ok(p.moderate(&text))).await?;
+    Ok(Json(decision))
 }
 
 async fn queue(
     State(platform): State<PlatformState>,
     _admin: AdminAuth,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let (mode, queue) = offload(&platform, |p| {
+        let mode = p.moderation_mode();
+        let queue = p.moderation_queue(100)?;
+        Ok((mode, queue))
+    })
+    .await?;
     Ok(Json(serde_json::json!({
-        "mode": platform.moderation_mode(),
-        "queue": platform.moderation_queue(100)?,
+        "mode": mode,
+        "queue": queue,
     })))
 }
 
@@ -50,7 +59,9 @@ async fn release(
     admin: AdminAuth,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<QueuedItem>, ApiError> {
-    match platform.release_moderated(&id, &admin.actor)? {
+    let actor = admin.actor;
+    let item = offload(&platform, move |p| p.release_moderated(&id, &actor)).await?;
+    match item {
         Some(item) => Ok(Json(item)),
         None => Err(ApiError::new(StatusCode::NOT_FOUND, "no such queued item")),
     }
@@ -61,7 +72,9 @@ async fn reject(
     admin: AdminAuth,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    if platform.reject_moderated(&id, &admin.actor)? {
+    let actor = admin.actor;
+    let ok = offload(&platform, move |p| p.reject_moderated(&id, &actor)).await?;
+    if ok {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::new(StatusCode::NOT_FOUND, "no such queued item"))
@@ -78,15 +91,21 @@ async fn set_mode(
     admin: AdminAuth,
     ApiJson(body): ApiJson<ModeBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_moderation_mode(body.mode);
-    platform.audit(
-        &admin.actor,
-        "moderation.mode",
-        "",
-        match body.mode {
-            Mode::PreReview => "pre_review",
-            Mode::PostReview => "post_review",
-        },
-    );
+    let actor = admin.actor;
+    let mode = body.mode;
+    offload_api(&platform, move |p| {
+        p.set_moderation_mode(mode);
+        p.audit(
+            &actor,
+            "moderation.mode",
+            "",
+            match mode {
+                Mode::PreReview => "pre_review",
+                Mode::PostReview => "post_review",
+            },
+        );
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

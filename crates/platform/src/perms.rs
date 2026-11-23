@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::offload;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::PlatformState;
@@ -28,7 +29,9 @@ async fn my_perms(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<PermsReply>, ApiError> {
-    let perms = platform.effective_perms(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    let id_for_task = id.clone();
+    let perms = offload(&platform, move |p| p.effective_perms(&id_for_task, &actor)).await?;
     Ok(Json(PermsReply {
         community_id: id,
         perms,
@@ -46,7 +49,12 @@ async fn set_role(
     Path((id, user)): Path<(String, String)>,
     ApiJson(body): ApiJson<RoleBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.set_member_role(&id, &authed.user_id, &user, &body.role)?;
+    let actor = authed.user_id.clone();
+    let role = body.role;
+    offload(&platform, move |p| {
+        p.set_member_role(&id, &actor, &user, &role)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -55,7 +63,8 @@ async fn kick(
     authed: Authed,
     Path((id, user)): Path<(String, String)>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.kick_member(&id, &authed.user_id, &user)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.kick_member(&id, &actor, &user)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -73,12 +82,13 @@ async fn update_channel(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ChannelPatch>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.update_channel(
-        &id,
-        &authed.user_id,
-        body.name.as_deref(),
-        body.kind.as_deref(),
-    )?;
+    let actor = authed.user_id.clone();
+    let name = body.name;
+    let kind = body.kind;
+    offload(&platform, move |p| {
+        p.update_channel(&id, &actor, name.as_deref(), kind.as_deref())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -87,6 +97,7 @@ async fn delete_channel(
     authed: Authed,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    platform.delete_channel(&id, &authed.user_id)?;
+    let actor = authed.user_id.clone();
+    offload(&platform, move |p| p.delete_channel(&id, &actor)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -2,6 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 
 use crate::auth::Authed;
+use crate::db::{offload, offload_api};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::validate;
@@ -34,13 +35,20 @@ async fn configure(
     Path(conv): Path<String>,
     ApiJson(body): ApiJson<SecretConfig>,
 ) -> std::result::Result<Json<SecretState>, ApiError> {
-    let state = platform.set_secret_chat(&authed.user_id, &conv, body.enabled, body.ttl_ms)?;
-    platform.audit(
-        &authed.user_id,
-        "secret.configure",
-        &conv,
-        if body.enabled { "on" } else { "off" },
-    );
+    let actor = authed.user_id.clone();
+    let enabled = body.enabled;
+    let ttl_ms = body.ttl_ms;
+    let state = offload(&platform, move |p| {
+        let state = p.set_secret_chat(&actor, &conv, enabled, ttl_ms)?;
+        p.audit(
+            &actor,
+            "secret.configure",
+            &conv,
+            if enabled { "on" } else { "off" },
+        );
+        Ok(state)
+    })
+    .await?;
     Ok(Json(state))
 }
 
@@ -49,11 +57,15 @@ async fn state(
     authed: Authed,
     Path(conv): Path<String>,
 ) -> std::result::Result<Json<SecretState>, ApiError> {
-    // 读也要校验成员：会话状态本身（是否秘密、TTL 多久）属隐私
-    let state = platform.secret_state(&conv)?;
-    platform
-        .require_conv_member(&authed.user_id, &state.conv_id)
-        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "not a participant"))?;
+    let actor = authed.user_id.clone();
+    let state = offload_api(&platform, move |p| {
+        // 读也要校验成员：会话状态本身（是否秘密、TTL 多久）属隐私
+        let state = p.secret_state(&conv)?;
+        p.require_conv_member(&actor, &state.conv_id)
+            .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "not a participant"))?;
+        Ok(state)
+    })
+    .await?;
     Ok(Json(state))
 }
 
@@ -63,14 +75,20 @@ async fn safety_number(
     Path(peer): Path<String>,
 ) -> std::result::Result<Json<SafetyReply>, ApiError> {
     let peer = validate::id(&peer)?.to_string();
-    let number = platform.safety_number(&authed.user_id, &peer)?;
-    let identity = platform
-        .public_identity(&peer)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "peer has no published keys"))?;
+    let actor = authed.user_id.clone();
+    let (number, identity, verified_at) = offload_api(&platform, move |p| {
+        let number = p.safety_number(&actor, &peer)?;
+        let identity = p
+            .public_identity(&peer)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "peer has no published keys"))?;
+        let verified_at = p.verification_of(&actor, &peer)?;
+        Ok((number, identity, verified_at))
+    })
+    .await?;
     Ok(Json(SafetyReply {
         safety_number: number,
         peer_identity: identity,
-        verified_at: platform.verification_of(&authed.user_id, &peer)?,
+        verified_at,
     }))
 }
 
@@ -86,7 +104,13 @@ async fn verify(
     ApiJson(body): ApiJson<VerifyBody>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let peer = validate::id(&peer)?.to_string();
-    platform.verify_peer(&authed.user_id, &peer, &body.peer_identity)?;
-    platform.audit(&authed.user_id, "secret.verify", &peer, "");
+    let actor = authed.user_id.clone();
+    let peer_identity = body.peer_identity;
+    offload_api(&platform, move |p| {
+        p.verify_peer(&actor, &peer, &peer_identity)?;
+        p.audit(&actor, "secret.verify", &peer, "");
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
