@@ -105,7 +105,7 @@ impl Platform {
         let at = wxlike_core::types::now_ms() as i64;
 
         let (wallet_sum, per_user, escrow, funded_total, packets) = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             let wallet_sum = wallet_balance_sum(&c)?;
             let per_user = wallet_ledger_rows(&c)?;
             let escrow = escrow_sum(&c)?;
@@ -158,7 +158,7 @@ impl Platform {
 
     fn persist_reconcile(&self, report: &ReconcileReport) -> Result<()> {
         let detail = serde_json::to_string(&report.mismatches)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         insert_run(
             &c,
             report.at_ms,
@@ -175,7 +175,7 @@ impl Platform {
 
     /// 最近一次对账（运营看板/告警查询用）。
     pub fn last_reconcile(&self) -> Result<Option<ReconcileReport>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let Some(row) = last_run(&c)? else {
             return Ok(None);
         };
@@ -194,7 +194,7 @@ impl Platform {
 
     /// 最近 N 次运行摘要 `(at_ms, ok, mismatches)`，最新在前。
     pub fn reconcile_history(&self, limit: usize) -> Result<Vec<(i64, bool, i64)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         history_rows(&c, limit.clamp(1, 200) as i64)
     }
 }

@@ -2,9 +2,11 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
-pub(in crate::domain) fn wallet_balance_sum(c: &Connection) -> Result<i64> {
+pub(in crate::domain) fn wallet_balance_sum(c: &StorageConnection<'_>) -> Result<i64> {
+    let c = c.sqlite()?;
     Ok(
         c.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
             r.get(0)
@@ -18,7 +20,8 @@ pub(in crate::domain) struct WalletRow {
     pub(crate) ledger_sum: i64,
 }
 
-pub(in crate::domain) fn wallet_ledger_rows(c: &Connection) -> Result<Vec<WalletRow>> {
+pub(in crate::domain) fn wallet_ledger_rows(c: &StorageConnection<'_>) -> Result<Vec<WalletRow>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT w.user_id, w.balance,
                 COALESCE((SELECT SUM(CASE
@@ -37,7 +40,8 @@ pub(in crate::domain) fn wallet_ledger_rows(c: &Connection) -> Result<Vec<Wallet
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(in crate::domain) fn escrow_sum(c: &Connection) -> Result<i64> {
+pub(in crate::domain) fn escrow_sum(c: &StorageConnection<'_>) -> Result<i64> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT COALESCE(SUM(total - claimed_total), 0) FROM redpackets WHERE status = 'open'",
         [],
@@ -45,7 +49,8 @@ pub(in crate::domain) fn escrow_sum(c: &Connection) -> Result<i64> {
     )?)
 }
 
-pub(in crate::domain) fn funded_total(c: &Connection) -> Result<i64> {
+pub(in crate::domain) fn funded_total(c: &StorageConnection<'_>) -> Result<i64> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind = 'fund_in'",
         [],
@@ -62,7 +67,8 @@ pub(in crate::domain) struct PacketRow {
     pub(crate) status: String,
 }
 
-pub(in crate::domain) fn redpacket_rows(c: &Connection) -> Result<Vec<PacketRow>> {
+pub(in crate::domain) fn redpacket_rows(c: &StorageConnection<'_>) -> Result<Vec<PacketRow>> {
+    let c = c.sqlite()?;
     let mut stmt =
         c.prepare("SELECT id, total, count, claimed, claimed_total, status FROM redpackets")?;
     let rows = stmt.query_map([], |r| {
@@ -80,7 +86,7 @@ pub(in crate::domain) fn redpacket_rows(c: &Connection) -> Result<Vec<PacketRow>
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn insert_run(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     at_ms: i64,
     users_checked: i64,
     wallet_sum: i64,
@@ -91,6 +97,7 @@ pub(in crate::domain) fn insert_run(
     detail: &str,
     ok: bool,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO reconcile_runs(at_ms, users_checked, wallet_sum, escrow, supply,
                                      funded_total, mismatches, detail, ok)
@@ -121,7 +128,8 @@ pub(in crate::domain) struct RunRow {
     pub(crate) ok: i64,
 }
 
-pub(in crate::domain) fn last_run(c: &Connection) -> Result<Option<RunRow>> {
+pub(in crate::domain) fn last_run(c: &StorageConnection<'_>) -> Result<Option<RunRow>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT at_ms, users_checked, wallet_sum, escrow, supply, funded_total, detail, ok
          FROM reconcile_runs ORDER BY id DESC LIMIT 1",
@@ -142,7 +150,11 @@ pub(in crate::domain) fn last_run(c: &Connection) -> Result<Option<RunRow>> {
     .optional()?)
 }
 
-pub(in crate::domain) fn history_rows(c: &Connection, limit: i64) -> Result<Vec<(i64, bool, i64)>> {
+pub(in crate::domain) fn history_rows(
+    c: &StorageConnection<'_>,
+    limit: i64,
+) -> Result<Vec<(i64, bool, i64)>> {
+    let c = c.sqlite()?;
     let mut stmt =
         c.prepare("SELECT at_ms, ok, mismatches FROM reconcile_runs ORDER BY id DESC LIMIT ?1")?;
     let rows = stmt.query_map(params![limit], |r| {
