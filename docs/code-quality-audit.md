@@ -480,8 +480,8 @@ search、video、hub、router 全串在一个函数里。
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
-2026-11-23 全仓生产代码重测（`docs/bench/quality_probe.py`）：`>60 行 50`、
-`>100 行 4`、`深嵌套 70`、`重复窗口 125`、`魔法数字 172`。统计面随仓库模块
+2026-11-23 全仓生产代码重测（`docs/bench/quality_probe.py`）：`>60 行 49`、
+`>100 行 2`、`深嵌套 73`、`重复窗口 125`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -490,7 +490,12 @@ search、video、hub、router 全串在一个函数里。
 `rtc/src/turn.rs::allocate` 的地址解析与 401 挑战重发收进 `resolve_server` /
 `allocate_relayed`，103→约 25 行；`video/src/lib.rs::run_pipeline` 的逐档编码、
 master 写出、缩略图收进 `encode_renditions` / `encode_one` /
-`publish_playlists` / `make_thumbnail`，157→约 45 行。
+`publish_playlists` / `make_thumbnail`，157→约 45 行。`net/src/mq_hub.rs` 的
+`run_mq_hub_with`（204 行 / 9 层）与 `serve_transport`（306 行 / 6 层）已拆成
+状态装配、accept/consume/patrol/续租/清理四类后台任务、握手（`accept_hello` /
+`authenticate_hello` / `register_connection`）、控制帧（订阅 / stored-ack /
+resume）与入站泵；两者都降到约 30 行。全仓 `>100 行` 只剩
+`mq_hub::handle_inbound` 与 `ui/src-tauri::callrtc::run` 两个，下一批处理。
 
 ### 测试有效性（2026-10-20 晚补测）
 
