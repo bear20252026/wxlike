@@ -103,7 +103,7 @@ impl Platform {
         let media_id = validate::id(media_id)?.to_string();
         check_video_caption(caption)?;
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             check_video_gate(&c, author, &media_id)?;
         }
         // 审核判定不碰库（只过词表），所以放在取连接之前：先定状态，再写行。
@@ -121,17 +121,18 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let (id, view) = c.with_tx(|tx| -> Result<(String, VideoView)> {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
             // 幂等：同一作者重复发布同一份字节，返回已有记录。
-            if let Some(existing) = find_active_video_post(tx, author, &media_id)? {
-                let view = video_row(tx, author, &existing)?.ok_or(PlatformError::NotFound)?;
+            if let Some(existing) = find_active_video_post(&port, author, &media_id)? {
+                let view = video_row(&port, author, &existing)?.ok_or(PlatformError::NotFound)?;
                 return Ok((existing, view));
             }
             let id = crate::auth::random_hex(8);
-            insert_video_post(tx, &id, author, &media_id, caption, state, now)?;
+            insert_video_post(&port, &id, author, &media_id, caption, state, now)?;
             if state == STATE_PUBLISHED {
-                index_video(tx, &id, author, caption, &media_id, now)?;
+                index_video(&port, &id, author, caption, &media_id, now)?;
             }
-            let view = video_row(tx, author, &id)?.ok_or(PlatformError::NotFound)?;
+            let view = video_row(&port, author, &id)?.ok_or(PlatformError::NotFound)?;
             Ok((id, view))
         })?;
         drop(c);
@@ -165,7 +166,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let result = c.with_tx(|tx| -> Result<ReviewResult> {
-            let row = review_record(tx, &id)?.ok_or(PlatformError::NotFound)?;
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            let row = review_record(&port, &id)?.ok_or(PlatformError::NotFound)?;
             let (author, state, caption, media_id) =
                 (row.author, row.state, row.caption, row.media_id);
             if state != STATE_PENDING {
@@ -176,9 +178,9 @@ impl Platform {
             } else {
                 (STATE_REJECTED, "视频未通过审核")
             };
-            set_video_state(tx, &id, next)?;
+            set_video_state(&port, &id, next)?;
             if action == "publish" {
-                index_video(tx, &id, &author, &caption, &media_id, now)?;
+                index_video(&port, &id, &author, &caption, &media_id, now)?;
             } else {
                 // pending 本来就没进索引，这里删 0 行：走的是与“直接发布”完全
                 // 对称的撤权路径，不给驳回留一个“引用还在”的分支。
@@ -210,7 +212,7 @@ impl Platform {
 
     pub(crate) fn video_visible(&self, viewer: &str, id: &str) -> Result<bool> {
         let access = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             video_access(&c, id)?
         };
         let Some(access) = access else {
@@ -237,7 +239,7 @@ impl Platform {
         if !self.video_visible(viewer, id)? {
             return Err(PlatformError::NotFound);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         video_row(&c, viewer, id)?.ok_or(PlatformError::NotFound)
     }
 
@@ -250,7 +252,7 @@ impl Platform {
         limit: i64,
     ) -> Result<(Vec<VideoView>, String, bool)> {
         let limit = limit.clamp(1, MAX_VIDEO_PAGE);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         match mode {
             "follow" => feed_by_seq(&c, viewer, cursor, limit),
             "hot" => feed_hot(&c, viewer, cursor, limit),
@@ -263,7 +265,8 @@ impl Platform {
         let id = validate::id(id)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            if !soft_delete_video(tx, id, author, STATE_DELETED)? {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            if !soft_delete_video(&port, id, author, STATE_DELETED)? {
                 return Err(PlatformError::NotFound);
             }
             crate::domain::repo::content_index::remove_tx(tx, id)?;
@@ -281,9 +284,10 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<(bool, i64)> {
-            let added = insert_video_like(tx, id, by, now)?;
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            let added = insert_video_like(&port, id, by, now)?;
             if added {
-                if let Some(author) = video_author(tx, id)? {
+                if let Some(author) = video_author(&port, id)? {
                     crate::domain::repo::inbox::notify_tx(
                         tx,
                         &author,
@@ -297,14 +301,14 @@ impl Platform {
                     )?;
                 }
             }
-            let count = video_like_count(tx, id)?;
+            let count = video_like_count(&port, id)?;
             Ok((added, count))
         })
     }
 
     pub(crate) fn unlike_video(&self, id: &str, by: &str) -> Result<(bool, i64)> {
         let id = validate::id(id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let removed = delete_video_like(&c, id, by)?;
         let count = video_like_count(&c, id)?;
         Ok((removed, count))
@@ -327,8 +331,9 @@ impl Platform {
         let comment_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            insert_video_comment(tx, &comment_id, id, by, text, now)?;
-            if let Some(author) = video_author(tx, id)? {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            insert_video_comment(&port, &comment_id, id, by, text, now)?;
+            if let Some(author) = video_author(&port, id)? {
                 crate::domain::repo::inbox::notify_tx(
                     tx,
                     &author,
@@ -355,7 +360,7 @@ impl Platform {
         let id = validate::id(id)?;
         let limit = limit.clamp(1, MAX_VIDEO_PAGE);
         let before = cursor.unwrap_or(i64::MAX);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         Ok(video_comments(&c, id, before, limit)?
             .into_iter()
             .map(|cm| VideoComment {
@@ -379,7 +384,7 @@ impl Platform {
     ) -> Result<()> {
         let video_id = validate::id(video_id)?;
         let comment_id = validate::id(comment_id)?;
-        if !soft_delete_video_comment(&self.db().lock(), video_id, comment_id, by)? {
+        if !soft_delete_video_comment(&self.db().acquire(), video_id, comment_id, by)? {
             return Err(PlatformError::NotFound);
         }
         Ok(())
@@ -391,7 +396,7 @@ impl Platform {
             return Err(PlatformError::BadInput("cannot follow yourself"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if !creator_exists(&c, creator)? {
             return Err(PlatformError::NotFound);
         }
@@ -400,7 +405,7 @@ impl Platform {
 
     pub(crate) fn unfollow_creator(&self, user: &str, creator: &str) -> Result<()> {
         let creator = validate::id(creator)?;
-        unfollow_creator(&self.db().lock(), user, creator)
+        unfollow_creator(&self.db().acquire(), user, creator)
     }
 }
 
