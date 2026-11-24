@@ -843,48 +843,62 @@ fn build_payload(op: &Op, body: &OpBody) -> Result<Option<serde_json::Value>> {
     }
 }
 
+/// 字符串写法：`{"action":"mute","duration_ms":N}`。
+fn tag_action(tag: &str, ms: Option<u64>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("action".into(), serde_json::Value::String(tag.to_string()));
+    if let Some(ms) = ms {
+        map.insert("duration_ms".into(), serde_json::json!(ms));
+    }
+    serde_json::Value::Object(map)
+}
+
+/// 对象写法：已带 `action` 键就原样，`{"mute":{...}}` 这种包一层。
+fn object_action(
+    mut map: serde_json::Map<String, serde_json::Value>,
+    ms: Option<u64>,
+) -> serde_json::Value {
+    if let Some(ms) = ms {
+        map.entry("duration_ms").or_insert(serde_json::json!(ms));
+    }
+    if map.contains_key("action") {
+        serde_json::Value::Object(map)
+    } else {
+        serde_json::json!({ "action": serde_json::Value::Object(map) })
+    }
+}
+
+/// 把客户端两种 action 写法归一到内部标签枚举的原生形状。
+fn normalize_action(body: &OpBody) -> Result<serde_json::Value> {
+    match (&body.action, body.duration_ms) {
+        (Some(serde_json::Value::String(tag)), ms) => Ok(tag_action(tag, ms)),
+        (Some(serde_json::Value::Object(inner)), ms) => Ok(object_action(inner.clone(), ms)),
+        (Some(other), _) => Err(AdminError::bad_input(format!(
+            "action 只能是字符串或对象，收到 {other}"
+        ))),
+        (None, _) => Err(AdminError::bad_input(
+            "report.act 需要 action：warn / mute{duration_ms} / ban / remove_content / none",
+        )),
+    }
+}
+
+/// 平铺的 mute 时长也可能写在外层 body 上（表单习惯），补进来。
+fn attach_duration(merged: &mut serde_json::Value, ms: Option<u64>) {
+    let (Some(ms), Some(map)) = (ms, merged.as_object_mut()) else {
+        return;
+    };
+    if map.get("action").is_some() {
+        map.entry("duration_ms").or_insert(serde_json::json!(ms));
+    }
+}
+
 /// `action+note` 载荷：归一成平台 `Action` 的平铺形状，再补 note。
 fn build_action_payload(note: String, body: &OpBody) -> Result<serde_json::Value> {
     // 归一成 `wxlike_report::Action` 的原生形状（内部标签枚举）：
     // {"action":"mute","duration_ms":60000}。客户端既可以把 action 写成
     // 字符串（配 duration_ms），也可以直接写整个对象。缺时长就报错，不猜。
-    let mut merged =
-        match (&body.action, body.duration_ms) {
-            (Some(serde_json::Value::String(tag)), ms) => {
-                let mut map = serde_json::Map::new();
-                map.insert("action".into(), serde_json::Value::String(tag.clone()));
-                if let Some(ms) = ms {
-                    map.insert("duration_ms".into(), serde_json::json!(ms));
-                }
-                serde_json::Value::Object(map)
-            }
-            (Some(serde_json::Value::Object(inner)), ms) => {
-                let mut map = inner.clone();
-                if let Some(ms) = ms {
-                    map.entry("duration_ms").or_insert(serde_json::json!(ms));
-                }
-                if map.contains_key("action") {
-                    serde_json::Value::Object(map)
-                } else {
-                    // {"mute":{"duration_ms":N}} 这种写法包一层，仍然要求时长在对象里
-                    serde_json::json!({ "action": serde_json::Value::Object(map) })
-                }
-            }
-            (Some(other), _) => {
-                return Err(AdminError::bad_input(format!(
-                    "action 只能是字符串或对象，收到 {other}"
-                )))
-            }
-            (None, _) => return Err(AdminError::bad_input(
-                "report.act 需要 action：warn / mute{duration_ms} / ban / remove_content / none",
-            )),
-        };
-    // 平铺的 mute 时长也可能写在外层 body 上（表单习惯），补进来
-    if let (Some(ms), Some(map)) = (body.duration_ms, merged.as_object_mut()) {
-        if map.get("action").is_some() {
-            map.entry("duration_ms").or_insert(serde_json::json!(ms));
-        }
-    }
+    let mut merged = normalize_action(body)?;
+    attach_duration(&mut merged, body.duration_ms);
     let action = crate::accounts::parse_action(&merged)?;
     // 转发给平台时用**平铺**形状：`Action` 是内部标签枚举，
     // 序列化出来就是 `{"action":"mute","duration_ms":60000}`。
