@@ -84,6 +84,136 @@ impl ConversationAccess for Platform {
     }
 }
 
+/// Governance 门面的审计切片：只写、自查两条。
+///
+/// admin 的运维面是最大的调用方（56 处），但它只需要"记一笔"和"看自己的"，
+/// 不需要认识 `Platform` 的其余方法。
+pub trait AuditTrail {
+    fn audit(&self, actor: &str, action: &str, target: &str, detail: &str);
+    fn audit_of(&self, actor: &str, limit: usize) -> Result<Vec<(i64, String, String, String)>>;
+}
+
+impl AuditTrail for Platform {
+    fn audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
+        Platform::audit(self, actor, action, target, detail)
+    }
+
+    fn audit_of(&self, actor: &str, limit: usize) -> Result<Vec<(i64, String, String, String)>> {
+        Platform::audit_of(self, actor, limit)
+    }
+}
+
+/// Governance 门面的举报工单切片。
+pub trait ReportDesk {
+    fn create_report(
+        &self,
+        reporter: &str,
+        target_kind: &str,
+        target_id: &str,
+        reason: wxlike_report::Reason,
+        detail: &str,
+    ) -> Result<wxlike_report::Ticket>;
+    fn report(&self, id: &str) -> Result<Option<wxlike_report::Ticket>>;
+    fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<wxlike_report::Ticket>>;
+    fn report_queue(&self, state: Option<&str>, limit: usize)
+        -> Result<Vec<wxlike_report::Ticket>>;
+    fn triage_report(&self, id: &str, actor: &str, note: &str) -> Result<wxlike_report::Ticket>;
+    fn act_on_report(
+        &self,
+        id: &str,
+        actor: &str,
+        action: wxlike_report::Action,
+        note: &str,
+    ) -> Result<wxlike_report::Ticket>;
+    fn close_report(&self, id: &str, actor: &str, note: &str) -> Result<wxlike_report::Ticket>;
+    fn reject_report(&self, id: &str, actor: &str, note: &str) -> Result<wxlike_report::Ticket>;
+}
+
+impl ReportDesk for Platform {
+    fn create_report(
+        &self,
+        reporter: &str,
+        target_kind: &str,
+        target_id: &str,
+        reason: wxlike_report::Reason,
+        detail: &str,
+    ) -> Result<wxlike_report::Ticket> {
+        Platform::create_report(self, reporter, target_kind, target_id, reason, detail)
+    }
+
+    fn report(&self, id: &str) -> Result<Option<wxlike_report::Ticket>> {
+        Platform::report(self, id)
+    }
+
+    fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<wxlike_report::Ticket>> {
+        Platform::reports_by(self, reporter, limit)
+    }
+
+    fn report_queue(
+        &self,
+        state: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<wxlike_report::Ticket>> {
+        Platform::report_queue(self, state, limit)
+    }
+
+    fn triage_report(&self, id: &str, actor: &str, note: &str) -> Result<wxlike_report::Ticket> {
+        Platform::triage_report(self, id, actor, note)
+    }
+
+    fn act_on_report(
+        &self,
+        id: &str,
+        actor: &str,
+        action: wxlike_report::Action,
+        note: &str,
+    ) -> Result<wxlike_report::Ticket> {
+        Platform::act_on_report(self, id, actor, action, note)
+    }
+
+    fn close_report(&self, id: &str, actor: &str, note: &str) -> Result<wxlike_report::Ticket> {
+        Platform::close_report(self, id, actor, note)
+    }
+
+    fn reject_report(&self, id: &str, actor: &str, note: &str) -> Result<wxlike_report::Ticket> {
+        Platform::reject_report(self, id, actor, note)
+    }
+}
+
+/// Social 门面的好友/关系读写切片。
+///
+/// `may_message` 是 relations 端口（`features/relations`）唯一需要的判定；
+/// `friends` / `changes` 是客户端资料页与增量同步的真实入口。
+pub trait SocialRelations {
+    fn friends(&self, me: &str) -> Result<Vec<crate::FriendRow>>;
+    fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<crate::ChangeRow>>;
+    fn changes_head(&self, me: &str) -> Result<i64>;
+    fn may_message(&self, from: &str, to: &str) -> Result<wxlike_relations::port::MessageGate>;
+    fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>>;
+}
+
+impl SocialRelations for Platform {
+    fn friends(&self, me: &str) -> Result<Vec<crate::FriendRow>> {
+        Platform::friends(self, me)
+    }
+
+    fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<crate::ChangeRow>> {
+        Platform::changes(self, me, since, limit)
+    }
+
+    fn changes_head(&self, me: &str) -> Result<i64> {
+        Platform::changes_head(self, me)
+    }
+
+    fn may_message(&self, from: &str, to: &str) -> Result<wxlike_relations::port::MessageGate> {
+        Platform::may_message(self, from, to)
+    }
+
+    fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>> {
+        Platform::shared_group_ids(self, a, b)
+    }
+}
+
 /// Social 门面的群成员切片：给媒体面做"我属于哪些群"的事实查询。
 pub trait GroupMembership {
     fn groups_of_user(&self, user_id: &str) -> Result<Vec<String>>;

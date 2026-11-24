@@ -1055,7 +1055,7 @@ pub struct ListQuery {
 mod tests {
     use super::*;
     use crate::tmp::TmpDir;
-    use wxlike_platform::Platform;
+    use wxlike_platform::{AuditTrail, Platform, ReportDesk};
 
     /// 建一个**真的**平台库（跑平台自己的迁移），再只读打开。全程没有 mock。
     /// `hold` = 保留平台实例（WAL 的 `-shm` 还在），否则干净关闭后再读。

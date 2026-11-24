@@ -14,7 +14,7 @@ use common::{app, call, platform, req, signup, Recorder};
 use serde_json::json;
 use std::sync::Arc;
 use wxlike_core::MsgBody;
-use wxlike_platform::{Platform, PlatformState};
+use wxlike_platform::{AuditTrail, Platform, PlatformState};
 
 /// 建社区并让 owner 拉一个成员；返回内层 app/platform —— tokens 只对它们有效。
 #[allow(clippy::type_complexity)]

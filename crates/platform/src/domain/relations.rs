@@ -237,14 +237,18 @@ pub enum StrangerState {
 
 impl Platform {
     /// 这条消息能不能发。`Blocked` 不告诉调用方是哪一侧拉黑的。
-    pub fn may_message(&self, from: &str, to: &str) -> Result<wxlike_relations::port::MessageGate> {
+    pub(crate) fn may_message(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<wxlike_relations::port::MessageGate> {
         let c = self.db().lock();
         let port = wxlike_relations::port::SqlRelations { conn: &c };
         Ok(port.may_message(from, to)?)
     }
 
     /// 两人共同的群 id（交集查询，非成员拿不到任何行）。
-    pub fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>> {
+    pub(crate) fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>> {
         let c = self.db().lock();
         let port = wxlike_relations::port::SqlRelations { conn: &c };
         Ok(port.shared_groups(a, b)?)

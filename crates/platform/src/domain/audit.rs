@@ -9,7 +9,7 @@ use crate::Platform;
 
 impl Platform {
     /// 写一条审计。失败只留日志、不向调用方扩散：审计不能反过来阻断业务。
-    pub fn audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
+    pub(crate) fn audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
         let r = {
             let c = self.db().acquire();
             audit_repo::write(
@@ -27,7 +27,7 @@ impl Platform {
     }
 
     /// 审计读取面（自查自己的记录；全量检索归 P6 adminx + RBAC）。
-    pub fn audit_of(
+    pub(crate) fn audit_of(
         &self,
         actor: &str,
         limit: usize,

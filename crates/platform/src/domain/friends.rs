@@ -189,7 +189,7 @@ impl Platform {
             .collect())
     }
 
-    pub fn friends(&self, me: &str) -> Result<Vec<FriendRow>> {
+    pub(crate) fn friends(&self, me: &str) -> Result<Vec<FriendRow>> {
         Ok(friends(&self.db().acquire(), me)?
             .into_iter()
             .map(|f| FriendRow {
@@ -240,7 +240,7 @@ impl Platform {
     }
 
     /// Incremental address-book sync: everything for `me` after `since`.
-    pub fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<ChangeRow>> {
+    pub(crate) fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<ChangeRow>> {
         Ok(changes(&self.db().acquire(), me, since, limit)?
             .into_iter()
             .map(|c| ChangeRow {
@@ -253,7 +253,7 @@ impl Platform {
     }
 
     /// Highest log sequence, for the client to store as its next cursor.
-    pub fn changes_head(&self, me: &str) -> Result<i64> {
+    pub(crate) fn changes_head(&self, me: &str) -> Result<i64> {
         changes_head(&self.db().acquire(), me)
     }
 }

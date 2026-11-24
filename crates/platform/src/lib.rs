@@ -80,6 +80,7 @@ pub use crate::domain::account::{spawn_account_job_worker, JobReply};
 pub use crate::domain::call::{CallRegistry, CallView};
 pub use crate::domain::devices::{DeviceReg, DeviceRow};
 pub use crate::domain::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
+pub use crate::domain::friends::{ChangeRow, FriendRow};
 pub use crate::domain::groups_admin::GroupInvite;
 pub use crate::domain::live::{LiveSession, LiveState};
 pub use crate::domain::media::{
@@ -99,9 +100,11 @@ pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::facade::{
-    AccountDevices, AccountSessions, AdminAccess, ConversationAccess, GovernanceGate,
-    GroupMembership, GroupModeration, MessagingPrefs, RealtimeCalls, SocialGraph,
+    AccountDevices, AccountSessions, AdminAccess, AuditTrail, ConversationAccess, GovernanceGate,
+    GroupMembership, GroupModeration, MessagingPrefs, RealtimeCalls, ReportDesk, SocialGraph,
+    SocialRelations,
 };
+pub use wxlike_report::Ticket;
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
 /// tests call `Platform::sweep_expired_redpackets` directly so the expiry path

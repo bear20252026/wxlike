@@ -1,6 +1,6 @@
 # Platform 门面归属表
 
-`Platform` 的公开方法已经压到 68 个，但“少”不等于“有结构”。这份表把每个
+`Platform` 的公开方法已经压到 53 个，但“少”不等于“有结构”。这份表把每个
 公开方法归到一个门面，作为后续拆 trait / 收敛组合根的边界。
 
 ## 归属
@@ -11,12 +11,12 @@
 | Messaging | `read` / `notification` | 4 |
 | Media | `video_refs` | 1 |
 | Wallet | `wallet` | 6 |
-| Governance | `report` / `audit` / `secret` / `perms` / `trust` | 18 |
+| Governance | `report` / `audit` / `secret` / `perms` / `trust` | 8 |
 | Realtime | `call` / `live` | 2 |
-| Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 26 |
+| Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 21 |
 | Health | 组合根自身（readiness） | 0 |
 
-合计 **68**。
+合计 **53**。
 
 ## 规则
 
@@ -125,10 +125,58 @@ pub trait RealtimeCalls {
 crate 根再导出。Realtime 的公开面 24→**2**（`calls()` 与 `CallRegistry` 自身仍公开），
 总公开面 90→**68**。
 
+## Governance 的审计与工单切片
+
+admin 的运维面是这两块的唯一真实调用方：审计 56 处、工单 8 个动作，全部走
+HTTP 处理器或验收测试。切成两个 trait，类型从 crate 根再导出
+（`Ticket` 直接来自 `wxlike_report`）：
+
+```rust
+pub trait AuditTrail {              // 只写、自查
+    fn audit(&self, actor: &str, action: &str, target: &str, detail: &str);
+    fn audit_of(&self, actor: &str, limit: usize) -> Result<Vec<(i64, String, String, String)>>;
+}
+
+pub trait ReportDesk {              // 举报工单全生命周期
+    fn create_report(/* reporter, target_kind, target_id, Reason, detail */) -> Result<Ticket>;
+    fn report(&self, id: &str) -> Result<Option<Ticket>>;
+    fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<Ticket>>;
+    fn report_queue(&self, state: Option<&str>, limit: usize) -> Result<Vec<Ticket>>;
+    fn triage_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket>;
+    fn act_on_report(&self, id: &str, actor: &str, action: Action, note: &str) -> Result<Ticket>;
+    fn close_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket>;
+    fn reject_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket>;
+}
+```
+
+Governance 公开面 18→**8**，总公开面 68→**62**。
+
+## Social 的好友/关系切片
+
+`may_message` 是 relations 端口的唯一判定入口，`friends` / `changes` /
+`changes_head` 是客户端资料页与增量同步的真实入口；`shared_group_ids` 只有关系
+验收用例在用。五条合成 `SocialRelations`，`FriendRow` / `ChangeRow` 从 crate 根
+再导出。
+
+```rust
+pub trait SocialRelations {
+    fn friends(&self, me: &str) -> Result<Vec<FriendRow>>;
+    fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<ChangeRow>>;
+    fn changes_head(&self, me: &str) -> Result<i64>;
+    fn may_message(&self, from: &str, to: &str) -> Result<MessageGate>;
+    fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>>;
+}
+```
+
+Social 公开面 21（裁掉 5 条），总公开面 62→**53**。
+
 ## 下一步
 
-- Account 继续把 `create_session` 并入 `AccountSessions`，再处理 TOTP/recovery；
-- Wallet 的 6 个方法里只有 `fund` / `transfer` / `wallet_balance` 有平台外调用，
-  等 ledger 端口化时一起收成 `WalletLedger`；
-- Social 剩下的写路径（`communities` / `friends`）仍是大头，先拆读路径再动写路径；
-- Governance 的 `report` / `audit` 面被 admin 直接使用，下一批先切只读查询。
+- Account 继续把 `create_session` / `create_session_for_device` 并入
+  `AccountSessions`（24 + 2 处，几乎全是平台集成测试）；
+- Wallet 的 `fund` / `transfer` / `wallet_balance` 有真实平台外调用（commerce HTTP、
+  ledger 守恒测试），等 ledger 端口化时一起收成 `WalletLedger`；
+- Communities 的 `create_community` / `join_community` / `create_channel` 等
+  13 个方法只有集成测试在调，适合连测试一起搬进 domain 单测再降可见性；
+- TOTP/recovery 面（`totp_confirm` / `solve_captcha` 等）被 admin 与验收用例共用，
+  单独切 `AccountSecurity`。

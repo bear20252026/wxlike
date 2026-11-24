@@ -6,6 +6,8 @@
 
 mod common;
 
+use wxlike_platform::SocialRelations;
+
 use axum::http::StatusCode;
 use axum::Router;
 use serde_json::json;

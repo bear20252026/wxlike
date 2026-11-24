@@ -138,7 +138,7 @@ pub(crate) struct TicketView<'a> {
 impl Platform {
     /// 创建工单（风控由调用方在路由层过闸：举报轰炸在 `recovery` 模块的
     /// `risk_gate` 里拦）。
-    pub fn create_report(
+    pub(crate) fn create_report(
         &self,
         reporter: &str,
         target_kind: &str,
@@ -162,7 +162,7 @@ impl Platform {
         Ok(ticket)
     }
 
-    pub fn report(&self, id: &str) -> Result<Option<Ticket>> {
+    pub(crate) fn report(&self, id: &str) -> Result<Option<Ticket>> {
         let c = self.db().acquire();
         let row = load(&c, id)?;
         let Some((
@@ -198,7 +198,7 @@ impl Platform {
     }
 
     /// 举报人自己的工单，最新在前。
-    pub fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<Ticket>> {
+    pub(crate) fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<Ticket>> {
         let ids: Vec<String> = {
             let c = self.db().acquire();
             ids_by_reporter(&c, reporter, limit.clamp(1, 200) as i64)?
@@ -213,7 +213,7 @@ impl Platform {
     }
 
     /// 处置队列：按状态过滤（`open` / `triaged` / 空 = 全部未终结）。
-    pub fn report_queue(&self, state: Option<&str>, limit: usize) -> Result<Vec<Ticket>> {
+    pub(crate) fn report_queue(&self, state: Option<&str>, limit: usize) -> Result<Vec<Ticket>> {
         let ids: Vec<String> = {
             let c = self.db().acquire();
             let limit = limit.clamp(1, 200) as i64;
@@ -231,7 +231,7 @@ impl Platform {
         Ok(out)
     }
 
-    pub fn triage_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket> {
+    pub(crate) fn triage_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket> {
         let mut t = self.report(id)?.ok_or(PlatformError::NotFound)?;
         t.triage(actor, note, wxlike_core::types::now_ms())
             .map_err(map_report_error)?;
@@ -239,7 +239,7 @@ impl Platform {
         Ok(t)
     }
 
-    pub fn act_on_report(
+    pub(crate) fn act_on_report(
         &self,
         id: &str,
         actor: &str,
@@ -254,7 +254,7 @@ impl Platform {
         Ok(t)
     }
 
-    pub fn close_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket> {
+    pub(crate) fn close_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket> {
         let mut t = self.report(id)?.ok_or(PlatformError::NotFound)?;
         t.close(actor, note, wxlike_core::types::now_ms())
             .map_err(map_report_error)?;
@@ -262,7 +262,7 @@ impl Platform {
         Ok(t)
     }
 
-    pub fn reject_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket> {
+    pub(crate) fn reject_report(&self, id: &str, actor: &str, note: &str) -> Result<Ticket> {
         let mut t = self.report(id)?.ok_or(PlatformError::NotFound)?;
         t.reject(actor, note, wxlike_core::types::now_ms())
             .map_err(map_report_error)?;

@@ -15,6 +15,8 @@
 
 mod common;
 
+use wxlike_platform::ReportDesk;
+
 use axum::http::StatusCode;
 use serde_json::json;
 

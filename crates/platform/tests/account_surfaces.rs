@@ -31,7 +31,7 @@ use rusqlite::params;
 use serde_json::{json, Value};
 
 use common::{app, call, platform, req, signup};
-use wxlike_platform::PlatformState;
+use wxlike_platform::{AuditTrail, PlatformState};
 
 /// 读库做断言：状态以库里行为准，不以响应为准。
 fn count(st: &PlatformState, sql: &str, arg: &str) -> i64 {
