@@ -481,7 +481,7 @@ search、video、hub、router 全串在一个函数里。
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
 2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 620`、
-`>60 行 44`、`>100 行 0`、`深嵌套 70`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
+`>60 行 43`、`>100 行 0`、`深嵌套 70`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -514,7 +514,9 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 源字节落盘、作业行回读分别收进 `resolve_callback` / `record_ready_job` /
 `write_pending_source` / `submit_reply`，90→约 35 行。`ui::render::render_event_with`
 把信封正文分支收进 `render_body`、秘密聊天解密收进 `render_e2ee`，75→约 30 行。
-深嵌套从 73 降到 70，`>60` 从 49 降到 44。
+`adminx` 二进制的 `main` 把日志初始化、无配置子命令、`--check` 自检分别收进
+`init_tracing` / `early_command` / `check_config`，68→约 20 行。
+深嵌套从 73 降到 70，`>60` 从 49 降到 43。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /

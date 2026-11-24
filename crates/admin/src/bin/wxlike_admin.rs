@@ -230,8 +230,8 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// 日志过滤：显式 WXLIKE_ADMIN_LOG 优先，其次 RUST_LOG，最后 info。
+fn init_tracing() {
     let filter = std::env::var("WXLIKE_ADMIN_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
         .unwrap_or_else(|_| "info".into());
@@ -243,57 +243,71 @@ async fn main() -> ExitCode {
             }),
         )
         .init();
+}
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// 不需要读配置的子命令；`None` = 继续走服务器启动。
+fn early_command(args: &[String]) -> Option<ExitCode> {
     match args.first().map(|s| s.as_str()) {
         Some("--help") | Some("-h") | Some("help") => {
             print_help();
-            return ExitCode::SUCCESS;
+            Some(ExitCode::SUCCESS)
         }
         Some("rand-token") => {
             // 用平台同一个随机源，别在这里自己攒熵
             println!("{}", wxlike_platform::random_hex(32));
-            return ExitCode::SUCCESS;
+            Some(ExitCode::SUCCESS)
         }
         Some("account") => {
             if let Err(err) = account_command(&args[1..]) {
-                return die(&format!("account 子命令失败: {err:#}"));
+                return Some(die(&format!("account 子命令失败: {err:#}")));
             }
-            return ExitCode::SUCCESS;
+            Some(ExitCode::SUCCESS)
         }
-        _ => {}
+        _ => None,
     }
+}
 
+/// `--check`：只解析配置并验证两个库能打开，不绑定端口。
+fn check_config(cfg: &Config) -> ExitCode {
+    println!("wxlike-admin 配置自检（不绑定端口、不写库）");
+    print!("{}", cfg.describe());
+    // 自检也验一遍平台库能不能只读打开：路径写错要在部署时就发现
+    match wxlike_admin::PlatformRead::open(&cfg.platform_db) {
+        Ok(read) => {
+            println!("  平台库可读      是（打开方式 {}）", read.open_mode());
+            let missing = read.missing_tables().unwrap_or_default();
+            if missing.is_empty() {
+                println!("  表齐全          是");
+            } else {
+                println!("  表齐全          否，缺 {missing:?}");
+            }
+            match wxlike_admin::AccountStore::open(&cfg.accounts_db) {
+                Ok(store) => {
+                    let n = store.list().map(|v| v.len()).unwrap_or_default();
+                    println!("  账号库可写      是（{n} 个管理员账号）");
+                }
+                Err(err) => println!("  账号库可写      否: {err}"),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => die(&format!("平台库打不开: {err}")),
+    }
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    init_tracing();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = early_command(&args) {
+        return code;
+    }
     let cfg = match Config::from_env() {
         Ok(cfg) => cfg,
         Err(err) => return die(&format!("配置错误: {err}")),
     };
     if args.iter().any(|a| a == "--check") {
-        println!("wxlike-admin 配置自检（不绑定端口、不写库）");
-        print!("{}", cfg.describe());
-        // 自检也验一遍平台库能不能只读打开：路径写错要在部署时就发现
-        return match wxlike_admin::PlatformRead::open(&cfg.platform_db) {
-            Ok(read) => {
-                println!("  平台库可读      是（打开方式 {}）", read.open_mode());
-                let missing = read.missing_tables().unwrap_or_default();
-                if missing.is_empty() {
-                    println!("  表齐全          是");
-                } else {
-                    println!("  表齐全          否，缺 {missing:?}");
-                }
-                match wxlike_admin::AccountStore::open(&cfg.accounts_db) {
-                    Ok(store) => {
-                        let n = store.list().map(|v| v.len()).unwrap_or_default();
-                        println!("  账号库可写      是（{n} 个管理员账号）");
-                    }
-                    Err(err) => println!("  账号库可写      否: {err}"),
-                }
-                ExitCode::SUCCESS
-            }
-            Err(err) => die(&format!("平台库打不开: {err}")),
-        };
+        return check_config(&cfg);
     }
-
     match run(cfg).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => die(&format!("启动失败: {err:#}")),
