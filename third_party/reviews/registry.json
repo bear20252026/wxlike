@@ -346,9 +346,10 @@
       "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
       "decision": "adapted",
       "license_spdx": "NOASSERTION",
-      "local_sha256": "c70f9de911f3ee157b11fc55e99dc76af6915348e47f1d7781bad5b6eb6c9a10",
+      "local_sha256": "0eb414d4398dc7d8a2f16804954661e73cbbfa2fde6d4df048817500d1ea7913",
       "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-errors.md",
-      "used_by": "LedgerError 新增变体的载荷形状（VolumeOverflow/BadAsset/AssetMismatch/Metadata 系列）与 ApplyOutcome/PostReport 再导出"
+      "used_by": "LedgerError 新增变体的载荷形状（VolumeOverflow/BadAsset/AssetMismatch/Metadata 系列）与 ApplyOutcome/PostReport 再导出",
+      "updated_at": "2026-11-24"
     },
     {
       "path": "crates/features/commerce/src/store.rs",
