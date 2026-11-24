@@ -480,8 +480,8 @@ search、video、hub、router 全串在一个函数里。
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
-2026-11-23 全仓生产代码重测（`docs/bench/quality_probe.py`）：`>60 行 48`、
-`>100 行 1`、`深嵌套 73`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
+2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 619`、
+`>60 行 49`、`>100 行 0`、`深嵌套 73`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -496,8 +496,10 @@ master 写出、缩略图收进 `encode_renditions` / `encode_one` /
 `authenticate_hello` / `register_connection`）、控制帧（订阅 / stored-ack /
 resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 / 6 层）再按
 发送者校验 → 成员/直聊/广播形状 → send gate/关系策略 → 回执/撤回 → 内容
-持久化/重放/扇出拆开，主函数降到约 40 行。全仓 `>100 行` 只剩
-`ui/src-tauri::callrtc::run` 一个，下一批处理。
+持久化/重放/扇出拆开，主函数降到约 40 行。全仓 `>100 行` 的最后一个
+`ui/src-tauri::callrtc::run` 也已拆开：133 行降到 97 行，UI 命令处理、
+信令轮询、状态广播与收尾分别收进 `handle_command` / `poll_signals` /
+`publish_status` / `finish_status`，全仓 `>100 行` 归零。
 
 存储端口本波从 6 个 repo、20 个函数扩到 31 个 repo、350 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /
