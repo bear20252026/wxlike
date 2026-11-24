@@ -325,7 +325,7 @@ impl Platform {
 
     /// Every group `user_id` belongs to (P1 search authorization: the set of
     /// conversations whose history and search results this user may see).
-    pub fn groups_of_user(&self, user_id: &str) -> Result<Vec<String>> {
+    pub(crate) fn groups_of_user(&self, user_id: &str) -> Result<Vec<String>> {
         let c = self.db().acquire();
         repo_groups_of_user(&c, user_id)
     }

@@ -36,7 +36,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use wxlike_commerce::infrastructure::sandbox::SandboxProvider;
 use wxlike_commerce::{Commerce, CommerceConfig, CommerceError, GroupMembership, Ports};
-use wxlike_platform::PlatformState;
+use wxlike_platform::{AdminAccess, PlatformState};
 
 /// 回调验签密钥的环境变量。生产必配；多实例必须配成同一个值。
 pub const SECRET_ENV: &str = "WXLIKE_PAYMENT_WEBHOOK_SECRET";

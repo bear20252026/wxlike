@@ -28,7 +28,9 @@ use axum::http::HeaderMap;
 use axum::Router;
 use wxlike_media::http::{MediaApp, SessionVerifier};
 use wxlike_media::{AudiencePort, MediaConfig, MediaService};
-use wxlike_platform::{AccountSessions, Authed, PlatformState};
+use wxlike_platform::{
+    AccountSessions, Authed, ConversationAccess, GroupMembership, PlatformState,
+};
 
 /// 签名密钥的最短字节数。短于此长度的"密钥"是给部署方的错觉，不是安全边界；
 /// 平台自己随机生成时用的就是这个长度（`normalize_options`）。

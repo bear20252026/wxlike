@@ -354,7 +354,7 @@ impl Platform {
     ///
     /// 与 `server::authorize_conv` 同一条规则，放在这里是因为媒体下载也要用；
     /// 两份实现迟早会漂移，所以 server 那边改成调它。
-    pub fn may_read_conv(&self, user_id: &str, conv_id: &str) -> bool {
+    pub(crate) fn may_read_conv(&self, user_id: &str, conv_id: &str) -> bool {
         if let Some(rest) = conv_id.strip_prefix("d-") {
             let mut parts = rest.split('~');
             let (Some(a), Some(b), None) = (parts.next(), parts.next(), parts.next()) else {

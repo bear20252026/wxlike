@@ -98,7 +98,7 @@ impl Platform {
     }
 
     /// 会话是否处于秘密聊天模式（发送端据此选择密文路径 + 禁止转发）。
-    pub fn is_secret_conv(&self, conv_id: &str) -> Result<bool> {
+    pub(crate) fn is_secret_conv(&self, conv_id: &str) -> Result<bool> {
         Ok(self.secret_state(conv_id)?.enabled)
     }
 

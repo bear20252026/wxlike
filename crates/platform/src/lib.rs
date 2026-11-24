@@ -94,7 +94,7 @@ pub use crate::domain::status::spawn_status_sweeper;
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
-pub use crate::facade::AccountSessions;
+pub use crate::facade::{AccountSessions, AdminAccess, ConversationAccess, GroupMembership};
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
 /// tests call `Platform::sweep_expired_redpackets` directly so the expiry path
@@ -410,7 +410,7 @@ impl Platform {
     }
 
     /// 管理端点令牌校验：未配置时一律拒绝（P6 adminx 之前不暴露管理面）。
-    pub fn admin_ok(&self, presented: Option<&str>) -> bool {
+    pub(crate) fn admin_ok(&self, presented: Option<&str>) -> bool {
         match self.options.admin_token.as_deref() {
             Some(expected) if !expected.is_empty() => presented == Some(expected),
             _ => false,

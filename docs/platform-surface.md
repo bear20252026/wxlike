@@ -28,6 +28,7 @@ python scripts/platform_surface_audit.py --json
 | 第四批后 | 279 | **107** | **172** |
 | 门面试点后 | 279 | **105** | **174** |
 | 会话 trait 扩容后 | 279 | **102** | **177** |
+| 访问 trait 扩容后 | 279 | **101** | **178** |
 
 目标：`pub` 方法 ≤120。
 
@@ -113,7 +114,12 @@ sweep_expired_statuses`。它们要等测试改用 HTTP 面或迁回 crate 内�
 trait 而非只靠盘点表约束门面。随后把会话列表/按 `sid` 下线/清其它会话
 （`sessions_of` / `revoke_session_by_sid` / `revoke_other_sessions`）并进同一
 trait，公开面 105→**102**（Account 15→12），`SessionRow` 从 crate 根再导出。
-其余 102 个方法仍按 `docs/platform-facades.md` 的归属逐门面迁移。
+随后把 server 真正要问的访问判定收成 `AdminAccess` / `ConversationAccess` /
+`GroupMembership`（`admin_ok` / `may_read_conv` + `is_secret_conv` /
+`groups_of_user`），公开面再降到 **101**。审计脚本只把 `is_secret_conv` 计入
+这 4 个方法（`AdminAccess` 等三个同名 inherent 在扫描口径里本就没进方法表），
+所以这一批的数字只减 1，实际降级是 4 个。
+其余 101 个方法仍按 `docs/platform-facades.md` 的归属逐门面迁移。
 
 ## 后续约定
 

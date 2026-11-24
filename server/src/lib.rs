@@ -45,7 +45,10 @@ use wxlike_core::store::StoredMessage;
 use wxlike_core::{Envelope, MsgBody, MsgId, Store};
 use wxlike_net::HubHandle;
 use wxlike_platform::extract::ApiJson;
-use wxlike_platform::{AccountSessions, Authed, Platform, PlatformState};
+use wxlike_platform::{
+    AccountSessions, AdminAccess, Authed, ConversationAccess, GroupMembership, Platform,
+    PlatformState,
+};
 
 /// Shared by the history/search handlers (they need the platform for
 /// authorization and the store for the rows).
