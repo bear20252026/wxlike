@@ -481,7 +481,7 @@ search、video、hub、router 全串在一个函数里。
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
 2026-11-23 全仓生产代码重测（`docs/bench/quality_probe.py`）：`>60 行 48`、
-`>100 行 1`、`深嵌套 73`、`重复窗口 125`、`魔法数字 172`。统计面随仓库模块
+`>100 行 1`、`深嵌套 73`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -499,11 +499,11 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 持久化/重放/扇出拆开，主函数降到约 40 行。全仓 `>100 行` 只剩
 `ui/src-tauri::callrtc::run` 一个，下一批处理。
 
-存储端口本波从 6 个 repo、20 个函数扩到 19 个 repo、131 个函数：
+存储端口本波从 6 个 repo、20 个函数扩到 20 个 repo、139 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /
 `notes` / `favorites` / `stickers` / `friends` / `status` / `media` / `keys` /
-`report` / `inbox` / `perms` / `trust` / `secret` / `recovery` 的参数统一为
-`&StorageConnection<'_>`。`notes` 首个打通 `with_tx` 事务内的
+`report` / `inbox` / `perms` / `trust` / `secret` / `recovery` / `reconcile`
+的参数统一为 `&StorageConnection<'_>`。`notes` 首个打通 `with_tx` 事务内的
 `SqliteTx(&Connection)`，`favorites` / `stickers` / `friends` / `status` /
 `recovery` 随迁；跨域撤权与通知分别用 `revoke_source_tx` / `notify_tx` 桥接，
 旧签名 repo 内部调用走 `notify_conn` / `enqueue_conn` / `sqlite_borrow` 过渡。
