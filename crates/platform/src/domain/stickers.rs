@@ -87,18 +87,19 @@ impl Platform {
         let pack_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<StickerPack> {
-            insert_pack(tx, &pack_id, owner, &name, &license, now)?;
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            insert_pack(&conn, &pack_id, owner, &name, &license, now)?;
             for (i, sticker) in body.stickers.iter().enumerate() {
                 let media_id = validate::id(&sticker.media_id)?;
                 let id = crate::auth::random_hex(8);
-                insert_sticker(tx, &id, &pack_id, media_id, &sticker.name, i as i64, now)?;
+                insert_sticker(&conn, &id, &pack_id, media_id, &sticker.name, i as i64, now)?;
             }
-            pack_row(tx, &pack_id, owner)?.ok_or(PlatformError::NotFound)
+            pack_row(&conn, &pack_id, owner)?.ok_or(PlatformError::NotFound)
         })
     }
 
     fn check_sticker_media(&self, owner: &str, media_ids: &[String]) -> Result<()> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         for media_id in media_ids {
             let Some(info) = media_info(&c, media_id)? else {
                 return Err(PlatformError::BadInput("unknown sticker media"));
@@ -118,7 +119,7 @@ impl Platform {
 
     pub(crate) fn sticker_packs(&self, user: &str) -> Result<Vec<StickerPack>> {
         let ids: Vec<String> = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             packs_for(&c, user)?
         };
         ids.iter().map(|id| self.sticker_pack(user, id)).collect()
@@ -126,7 +127,7 @@ impl Platform {
 
     pub(crate) fn sticker_pack(&self, viewer: &str, id: &str) -> Result<StickerPack> {
         let id = validate::id(id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         pack_row(&c, id, viewer)?.ok_or(PlatformError::NotFound)
     }
 
@@ -136,13 +137,14 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
-            if !pack_exists(tx, pack_id)? {
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            if !pack_exists(&conn, pack_id)? {
                 return Err(PlatformError::NotFound);
             }
-            let stickers = pack_stickers(tx, pack_id)?;
+            let stickers = pack_stickers(&conn, pack_id)?;
             let mut added = 0usize;
             for (sticker_id, sort_order) in stickers {
-                added += install_sticker(tx, user, &sticker_id, sort_order, now)?;
+                added += install_sticker(&conn, user, &sticker_id, sort_order, now)?;
             }
             Ok(added)
         })
@@ -150,13 +152,13 @@ impl Platform {
 
     pub(crate) fn uninstall_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
         let pack_id = validate::id(pack_id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         uninstall_pack(&c, user, pack_id)
     }
 
     /// 已安装表情（发送面板的数据源），按用户自己的排序返回。
     pub(crate) fn installed_stickers(&self, user: &str) -> Result<Vec<Sticker>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         installed_for(&c, user)
     }
 
@@ -171,7 +173,7 @@ impl Platform {
             return Err(PlatformError::BadInput("sort_order out of range"));
         }
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             set_sticker_order(&c, user, sticker_id, sort_order)?
         };
         crate::db::ensure_updated(changed)?;
@@ -181,7 +183,7 @@ impl Platform {
     pub(crate) fn remove_sticker(&self, user: &str, sticker_id: &str) -> Result<()> {
         let sticker_id = validate::id(sticker_id)?;
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             delete_user_sticker(&c, user, sticker_id)?
         };
         crate::db::ensure_updated(changed)?;
@@ -192,7 +194,7 @@ impl Platform {
     pub(crate) fn delete_sticker_pack(&self, owner: &str, pack_id: &str) -> Result<()> {
         let pack_id = validate::id(pack_id)?;
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             delete_pack(&c, owner, pack_id)?
         };
         crate::db::ensure_updated(changed)?;
