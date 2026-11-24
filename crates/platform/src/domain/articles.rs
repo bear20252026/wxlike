@@ -143,11 +143,11 @@ impl Platform {
             String::new()
         } else {
             let id = validate::id(avatar_media_id)?.to_string();
-            require_image_media(&self.db().lock(), &id)?;
+            require_image_media(&self.db().acquire(), &id)?;
             id
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let existing = publisher_id_by_owner(&c, owner)?;
         let id = match existing {
             Some(id) => {
@@ -165,7 +165,7 @@ impl Platform {
     }
 
     pub(crate) fn publisher_by_id(&self, id: &str, viewer: &str) -> Result<PublisherView> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let Some(PublisherRecord {
             id,
             owner,
@@ -201,7 +201,7 @@ impl Platform {
     pub(crate) fn follow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
         let publisher_id = validate::id(publisher_id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if !publisher_exists(&c, publisher_id)? {
             return Err(PlatformError::NotFound);
         }
@@ -210,14 +210,14 @@ impl Platform {
 
     pub(crate) fn unfollow_publisher(&self, user: &str, publisher_id: &str) -> Result<()> {
         let publisher_id = validate::id(publisher_id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         delete_follow(&c, user, publisher_id)
     }
 
     /// 我关注的 + 我自己的发布者。`q` 只做名称子串匹配（管理页搜索）。
     pub(crate) fn publishers(&self, user: &str, q: Option<&str>) -> Result<Vec<PublisherView>> {
         let ids: Vec<String> = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             let pattern = match q.map(str::trim).filter(|s| !s.is_empty()) {
                 Some(q) if q.chars().count() > MAX_PUBLISHER_QUERY => {
                     return Err(PlatformError::BadInput("query too long"))
@@ -252,7 +252,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let id = crate::auth::random_hex(8);
         let (plain, html) = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             render_doc(&c, &body.doc)?
         };
         let doc_json = serde_json::to_string(&body.doc)?;
@@ -260,8 +260,9 @@ impl Platform {
 
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
             insert_article(
-                tx,
+                &port,
                 &ArticleCreate {
                     id: &id,
                     publisher_id: &publisher_id,
@@ -275,9 +276,9 @@ impl Platform {
                     published_at: body.publish.then_some(now),
                 },
             )?;
-            insert_article_version(tx, &id, &doc_json, now)?;
+            insert_article_version(&port, &id, &doc_json, now)?;
             if body.publish {
-                publish_side_effects(tx, &id, &publisher_id, author, &title, &plain, now)?;
+                publish_side_effects(&port, &id, &publisher_id, author, &title, &plain, now)?;
                 crate::domain::repo::content_index::add_media_refs_tx(
                     tx,
                     &doc_media_ids(&body.doc),
@@ -294,7 +295,7 @@ impl Platform {
     }
 
     fn require_publisher_owner(&self, publisher_id: &str, owner: &str) -> Result<()> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         match publisher_owner(&c, publisher_id)? {
             Some(found) if found.as_str() == owner => Ok(()),
             Some(_) => Err(PlatformError::Forbidden),
@@ -303,7 +304,7 @@ impl Platform {
     }
 
     fn ensure_publisher(&self, owner: &str) -> Result<String> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if let Some(id) = publisher_id_by_owner(&c, owner)? {
             return Ok(id);
         }
@@ -324,7 +325,7 @@ impl Platform {
     pub(crate) fn article_for(&self, viewer: &str, id: &str) -> Result<ArticleView> {
         let id = validate::id(id)?;
         let row = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             article_row(&c, id)?
         };
         let Some(row) = row else {
@@ -337,7 +338,7 @@ impl Platform {
             // 未发布稿只有授权编辑者（这里即作者/发布者 owner）可见。
             return Err(PlatformError::NotFound);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let doc: ArticleDoc =
             serde_json::from_str(&row.doc).unwrap_or(ArticleDoc { blocks: vec![] });
         let reactions = reaction_counts(&c, id)?;
@@ -378,14 +379,15 @@ impl Platform {
             return Err(PlatformError::BadInput("title is required"));
         }
         let (plain, html) = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             render_doc(&c, &body.doc)?
         };
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let (publisher_id, state, version) =
-                load_editable_article(tx, id, author, body.expected_version)?;
+                load_editable_article(&port, id, author, body.expected_version)?;
             let next_version = version + 1;
             let next_state = if body.publish || state == "published" {
                 "published"
@@ -394,7 +396,7 @@ impl Platform {
             };
             let publish_now = state != "published" && next_state == "published";
             write_article_revision(
-                tx,
+                &port,
                 id,
                 &ArticleRevision {
                     title: &title,
@@ -408,7 +410,7 @@ impl Platform {
                 },
             )?;
             if next_state == "published" {
-                publish_side_effects(tx, id, &publisher_id, author, &title, &plain, now)?;
+                publish_side_effects(&port, id, &publisher_id, author, &title, &plain, now)?;
                 crate::domain::repo::content_index::remove_media_refs_tx(tx, "article", id)?;
                 crate::domain::repo::content_index::add_media_refs_tx(
                     tx,
@@ -430,7 +432,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            let changed = soft_delete_article(tx, id, author, now)?;
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            let changed = soft_delete_article(&port, id, author, now)?;
             crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove_tx(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs_tx(tx, "article", id)?;
@@ -448,7 +451,7 @@ impl Platform {
         let publisher_id = validate::id(publisher_id)?;
         let limit = limit.clamp(1, MAX_PAGE);
         let before = cursor.unwrap_or(i64::MAX);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let mut rows = article_list(&c, publisher_id, before, limit)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
@@ -480,13 +483,14 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let publisher_id = c.with_tx(|tx| -> Result<String> {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let (seq, publisher_id, state) =
-                article_read_target(tx, id)?.ok_or(PlatformError::NotFound)?;
+                article_read_target(&port, id)?.ok_or(PlatformError::NotFound)?;
             if state != "published" {
                 return Err(PlatformError::NotFound);
             }
-            record_article_read(tx, user, id, now)?;
-            advance_follow_cursor(tx, user, &publisher_id, seq, now)?;
+            record_article_read(&port, user, id, now)?;
+            advance_follow_cursor(&port, user, &publisher_id, seq, now)?;
             Ok(publisher_id)
         })?;
         let unread = unread_count(&c, user, &publisher_id)?;
@@ -505,7 +509,7 @@ impl Platform {
         }
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if !article_is_published(&c, id)? {
             return Err(PlatformError::NotFound);
         }

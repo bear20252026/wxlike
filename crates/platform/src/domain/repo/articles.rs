@@ -2,8 +2,9 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
+use crate::storage::StorageConnection;
 use crate::validate;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::articles::{
     check_href, check_text, escape, push_plain, render_spans, ArticleBlock, ArticleDoc,
@@ -50,9 +51,10 @@ pub(in crate::domain) struct ArticleListRow {
 }
 
 pub(in crate::domain) fn publisher_id_by_owner(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     owner: &str,
 ) -> Result<Option<String>> {
+    let c = c.sqlite()?;
     let id = c
         .query_row(
             "SELECT id FROM publishers WHERE owner = ?1",
@@ -64,9 +66,10 @@ pub(in crate::domain) fn publisher_id_by_owner(
 }
 
 pub(in crate::domain) fn publisher_record(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<PublisherRecord>> {
+    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT id, owner, name, bio, avatar_media_id, created_at FROM publishers
@@ -88,10 +91,11 @@ pub(in crate::domain) fn publisher_record(
 }
 
 pub(in crate::domain) fn publisher_followed(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     publisher_id: &str,
 ) -> Result<bool> {
+    let c = c.sqlite()?;
     let found = c
         .query_row(
             "SELECT 1 FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
@@ -103,9 +107,10 @@ pub(in crate::domain) fn publisher_followed(
 }
 
 pub(in crate::domain) fn publisher_published_count(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     publisher_id: &str,
 ) -> Result<i64> {
+    let c = c.sqlite()?;
     let count = c.query_row(
         "SELECT COUNT(*) FROM articles WHERE publisher_id = ?1 AND state = 'published'",
         params![publisher_id],
@@ -115,12 +120,13 @@ pub(in crate::domain) fn publisher_published_count(
 }
 
 pub(in crate::domain) fn update_publisher(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     name: &str,
     bio: &str,
     avatar_media_id: &str,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE publishers SET name = ?1, bio = ?2, avatar_media_id = ?3
          WHERE id = ?4",
@@ -130,7 +136,7 @@ pub(in crate::domain) fn update_publisher(
 }
 
 pub(in crate::domain) fn insert_publisher(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     owner: &str,
     name: &str,
@@ -138,6 +144,7 @@ pub(in crate::domain) fn insert_publisher(
     avatar_media_id: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO publishers(id, owner, name, bio, avatar_media_id, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
@@ -146,7 +153,8 @@ pub(in crate::domain) fn insert_publisher(
     Ok(())
 }
 
-pub(in crate::domain) fn publisher_exists(c: &Connection, id: &str) -> Result<bool> {
+pub(in crate::domain) fn publisher_exists(c: &StorageConnection<'_>, id: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let found = c
         .query_row(
             "SELECT 1 FROM publishers WHERE id = ?1",
@@ -158,11 +166,12 @@ pub(in crate::domain) fn publisher_exists(c: &Connection, id: &str) -> Result<bo
 }
 
 pub(in crate::domain) fn insert_follow_ignore(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     publisher_id: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT OR IGNORE INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
          VALUES(?1, ?2, 0, ?3)",
@@ -172,10 +181,11 @@ pub(in crate::domain) fn insert_follow_ignore(
 }
 
 pub(in crate::domain) fn delete_follow(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     publisher_id: &str,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "DELETE FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
         params![user, publisher_id],
@@ -183,7 +193,11 @@ pub(in crate::domain) fn delete_follow(
     Ok(())
 }
 
-pub(in crate::domain) fn publisher_ids_for_user(c: &Connection, user: &str) -> Result<Vec<String>> {
+pub(in crate::domain) fn publisher_ids_for_user(
+    c: &StorageConnection<'_>,
+    user: &str,
+) -> Result<Vec<String>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT DISTINCT p.id FROM publishers p
          LEFT JOIN publisher_follows f
@@ -198,10 +212,11 @@ pub(in crate::domain) fn publisher_ids_for_user(c: &Connection, user: &str) -> R
 }
 
 pub(in crate::domain) fn publisher_name_matches(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     pattern: &str,
 ) -> Result<bool> {
+    let c = c.sqlite()?;
     let found = c
         .query_row(
             "SELECT 1 FROM publishers WHERE id = ?1 AND name LIKE ?2 ESCAPE '\\'",
@@ -212,7 +227,11 @@ pub(in crate::domain) fn publisher_name_matches(
     Ok(found.is_some())
 }
 
-pub(in crate::domain) fn insert_article(c: &Connection, a: &ArticleCreate<'_>) -> Result<()> {
+pub(in crate::domain) fn insert_article(
+    c: &StorageConnection<'_>,
+    a: &ArticleCreate<'_>,
+) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO articles(seq, id, publisher_id, author, title, doc, body_text, body_html,
                           state, version, created_at, updated_at, published_at)
@@ -234,11 +253,12 @@ pub(in crate::domain) fn insert_article(c: &Connection, a: &ArticleCreate<'_>) -
 }
 
 pub(in crate::domain) fn insert_article_version(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     doc_json: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO article_versions(article_id, version, doc, saved_at) VALUES(?1, 1, ?2, ?3)",
         params![id, doc_json, now],
@@ -246,7 +266,11 @@ pub(in crate::domain) fn insert_article_version(
     Ok(())
 }
 
-pub(in crate::domain) fn publisher_owner(c: &Connection, id: &str) -> Result<Option<String>> {
+pub(in crate::domain) fn publisher_owner(
+    c: &StorageConnection<'_>,
+    id: &str,
+) -> Result<Option<String>> {
+    let c = c.sqlite()?;
     let owner = c
         .query_row(
             "SELECT owner FROM publishers WHERE id = ?1",
@@ -257,7 +281,8 @@ pub(in crate::domain) fn publisher_owner(c: &Connection, id: &str) -> Result<Opt
     Ok(owner)
 }
 
-pub(in crate::domain) fn user_name(c: &Connection, id: &str) -> Result<String> {
+pub(in crate::domain) fn user_name(c: &StorageConnection<'_>, id: &str) -> Result<String> {
+    let c = c.sqlite()?;
     let name = c.query_row("SELECT name FROM users WHERE id = ?1", params![id], |r| {
         r.get(0)
     })?;
@@ -265,11 +290,12 @@ pub(in crate::domain) fn user_name(c: &Connection, id: &str) -> Result<String> {
 }
 
 pub(in crate::domain) fn reaction_active(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     article_id: &str,
     user: &str,
     kind: &str,
 ) -> Result<bool> {
+    let c = c.sqlite()?;
     let found = c
         .query_row(
             "SELECT 1 FROM article_reactions WHERE article_id = ?1 AND user_id = ?2 AND kind = ?3",
@@ -281,11 +307,12 @@ pub(in crate::domain) fn reaction_active(
 }
 
 pub(in crate::domain) fn article_list(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     publisher_id: &str,
     before: i64,
     limit: i64,
 ) -> Result<Vec<ArticleListRow>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT a.seq, a.id, a.publisher_id, p.name, a.title, a.body_text, a.state,
                 a.version, a.created_at, a.published_at
@@ -312,9 +339,10 @@ pub(in crate::domain) fn article_list(
 }
 
 pub(in crate::domain) fn article_read_target(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<(i64, String, String)>> {
+    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT seq, publisher_id, state FROM articles WHERE id = ?1",
@@ -326,11 +354,12 @@ pub(in crate::domain) fn article_read_target(
 }
 
 pub(in crate::domain) fn record_article_read(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     article_id: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO article_reads(user_id, article_id, read_at) VALUES(?1, ?2, ?3)
          ON CONFLICT(user_id, article_id) DO UPDATE SET read_at = excluded.read_at",
@@ -340,12 +369,13 @@ pub(in crate::domain) fn record_article_read(
 }
 
 pub(in crate::domain) fn advance_follow_cursor(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     publisher_id: &str,
     cursor: i64,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO publisher_follows(user_id, publisher_id, read_cursor, created_at)
          VALUES(?1, ?2, ?3, ?4)
@@ -356,7 +386,8 @@ pub(in crate::domain) fn advance_follow_cursor(
     Ok(())
 }
 
-pub(in crate::domain) fn article_is_published(c: &Connection, id: &str) -> Result<bool> {
+pub(in crate::domain) fn article_is_published(c: &StorageConnection<'_>, id: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let published = c
         .query_row(
             "SELECT 1 FROM articles WHERE id = ?1 AND state = 'published'",
@@ -368,11 +399,12 @@ pub(in crate::domain) fn article_is_published(c: &Connection, id: &str) -> Resul
 }
 
 pub(in crate::domain) fn remove_reaction(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     article_id: &str,
     user: &str,
     kind: &str,
 ) -> Result<usize> {
+    let c = c.sqlite()?;
     let removed = c.execute(
         "DELETE FROM article_reactions WHERE article_id = ?1 AND user_id = ?2 AND kind = ?3",
         params![article_id, user, kind],
@@ -381,12 +413,13 @@ pub(in crate::domain) fn remove_reaction(
 }
 
 pub(in crate::domain) fn insert_reaction(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     article_id: &str,
     user: &str,
     kind: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO article_reactions(article_id, user_id, kind, created_at)
          VALUES(?1, ?2, ?3, ?4)",
@@ -396,11 +429,12 @@ pub(in crate::domain) fn insert_reaction(
 }
 
 pub(in crate::domain) fn soft_delete_article(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     author: &str,
     now: i64,
 ) -> Result<usize> {
+    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE articles SET state = 'deleted', updated_at = ?1
          WHERE id = ?2 AND author = ?3 AND state <> 'deleted'",
@@ -409,7 +443,11 @@ pub(in crate::domain) fn soft_delete_article(
     Ok(changed)
 }
 
-pub(in crate::domain) fn article_row(c: &Connection, id: &str) -> Result<Option<ArticleRow>> {
+pub(in crate::domain) fn article_row(
+    c: &StorageConnection<'_>,
+    id: &str,
+) -> Result<Option<ArticleRow>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT a.id, a.publisher_id, p.name, a.author, a.title, a.body_text, a.body_html,
                 a.doc, a.state, a.version, a.created_at, a.published_at
@@ -436,7 +474,11 @@ pub(in crate::domain) fn article_row(c: &Connection, id: &str) -> Result<Option<
     .optional()?)
 }
 
-pub(in crate::domain) fn reaction_counts(c: &Connection, id: &str) -> Result<ReactionCounts> {
+pub(in crate::domain) fn reaction_counts(
+    c: &StorageConnection<'_>,
+    id: &str,
+) -> Result<ReactionCounts> {
+    let c = c.sqlite()?;
     let mut counts = ReactionCounts::default();
     let mut stmt = c.prepare(
         "SELECT kind, COUNT(*) FROM article_reactions WHERE article_id = ?1 GROUP BY kind",
@@ -457,10 +499,11 @@ pub(in crate::domain) fn reaction_counts(c: &Connection, id: &str) -> Result<Rea
 }
 
 pub(in crate::domain) fn unread_count(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     publisher_id: &str,
 ) -> Result<i64> {
+    let c = c.sqlite()?;
     let cursor: i64 = c
         .query_row(
             "SELECT read_cursor FROM publisher_follows WHERE user_id = ?1 AND publisher_id = ?2",
@@ -481,11 +524,12 @@ pub(in crate::domain) fn unread_count(
 /// 载入一篇可编辑的文章：必须存在、作者是本人、未删、乐观锁版本匹配。
 /// 返回 `(publisher_id, state, version)`。
 pub(in crate::domain) fn load_editable_article(
-    tx: &rusqlite::Connection,
+    tx: &StorageConnection<'_>,
     id: &str,
     author: &str,
     expected_version: i64,
 ) -> Result<(String, String, i64)> {
+    let tx = tx.sqlite()?;
     let (owner, publisher_id, state, version): (String, String, String, i64) = tx
         .query_row(
             "SELECT author, publisher_id, state, version FROM articles WHERE id = ?1",
@@ -511,10 +555,11 @@ pub(in crate::domain) fn load_editable_article(
 }
 
 pub(in crate::domain) fn write_article_revision(
-    tx: &rusqlite::Connection,
+    tx: &StorageConnection<'_>,
     id: &str,
     r: &ArticleRevision<'_>,
 ) -> Result<()> {
+    let tx = tx.sqlite()?;
     tx.execute(
         "UPDATE articles SET title = ?1, doc = ?2, body_text = ?3, body_html = ?4,
                              state = ?5, version = ?6, updated_at = ?7,
@@ -540,7 +585,7 @@ pub(in crate::domain) fn write_article_revision(
 }
 
 pub(in crate::domain) fn publish_side_effects(
-    tx: &Connection,
+    tx: &StorageConnection<'_>,
     id: &str,
     publisher_id: &str,
     author: &str,
@@ -548,8 +593,9 @@ pub(in crate::domain) fn publish_side_effects(
     plain: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = tx.sqlite()?;
     crate::domain::repo::content_index::upsert(
-        &crate::storage::StorageConnection::sqlite_borrow(tx),
+        tx,
         &crate::domain::content_index::IndexDoc {
             doc_id: id,
             kind: "article",
@@ -561,14 +607,14 @@ pub(in crate::domain) fn publish_side_effects(
         },
         now,
     )?;
-    let mut stmt = tx.prepare("SELECT user_id FROM publisher_follows WHERE publisher_id = ?1")?;
+    let mut stmt = conn.prepare("SELECT user_id FROM publisher_follows WHERE publisher_id = ?1")?;
     let followers: Vec<String> = stmt
         .query_map(params![publisher_id], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
     for follower in followers {
         crate::domain::repo::inbox::notify_conn(
-            tx,
+            conn,
             &follower,
             "article_published",
             author,
@@ -585,11 +631,12 @@ pub(in crate::domain) fn publish_side_effects(
 /// 校验 + 渲染。返回 `(plain_text, html)`；HTML 只由白名单标签拼出。
 /// 渲染单个内容块并追加到 plain/html 累积串（图片块只进 html 不进 plain）。
 pub(in crate::domain) fn render_block(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     block: &ArticleBlock,
     plain: &mut String,
     html: &mut String,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     match block {
         ArticleBlock::Paragraph { spans } => {
             let (text, inner) = render_spans(spans)?;
@@ -637,7 +684,11 @@ pub(in crate::domain) fn render_block(
     Ok(())
 }
 
-pub(in crate::domain) fn render_doc(c: &Connection, doc: &ArticleDoc) -> Result<(String, String)> {
+pub(in crate::domain) fn render_doc(
+    c: &StorageConnection<'_>,
+    doc: &ArticleDoc,
+) -> Result<(String, String)> {
+    let c = c.sqlite()?;
     if doc.blocks.is_empty() {
         return Err(PlatformError::BadInput("article is empty"));
     }
@@ -655,7 +706,11 @@ pub(in crate::domain) fn render_doc(c: &Connection, doc: &ArticleDoc) -> Result<
     Ok((plain, html))
 }
 
-pub(in crate::domain) fn require_image_media(c: &Connection, media_id: &str) -> Result<()> {
+pub(in crate::domain) fn require_image_media(
+    c: &StorageConnection<'_>,
+    media_id: &str,
+) -> Result<()> {
+    let c = c.sqlite()?;
     let mime: Option<String> = c
         .query_row(
             "SELECT content_type FROM media WHERE id = ?1",
