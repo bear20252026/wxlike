@@ -26,6 +26,19 @@ pub struct MicStream {
     channels: usize,
 }
 
+/// 采集回调里重复的三步：重采样 → 切 20 ms 帧 → 逐帧投递。
+fn send_mono_pcm(
+    tx: &Sender<Vec<i16>>,
+    resampler: &mut Resampler,
+    chunker: &mut FrameChunker,
+    mono: &[i16],
+) {
+    let pcm = resampler.process(mono);
+    for frame in chunker.push(&pcm) {
+        let _ = tx.send(frame);
+    }
+}
+
 impl MicStream {
     /// 打开默认输入设备。`tx` 满（引擎没跟上）时丢帧——通话里丢旧帧比积压好。
     pub fn start(tx: Sender<Vec<i16>>) -> anyhow::Result<Self> {
@@ -41,43 +54,30 @@ impl MicStream {
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
 
-        let mut resampler = Resampler::new(rate, RATE);
-        let mut chunker = FrameChunker::new();
         let err_fn = |e| eprintln!("[audio] 采集流出错: {e}");
 
         let stream = match format {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config,
-                move |data: &[f32], _| {
-                    let mono = dsp::interleaved_to_mono(data, channels);
-                    let pcm = resampler.process(&mono);
-                    for frame in chunker.push(&pcm) {
-                        let _ = tx.send(frame);
-                    }
-                },
-                err_fn,
-                None,
-            ),
+            cpal::SampleFormat::F32 => {
+                let mut resampler = Resampler::new(rate, RATE);
+                let mut chunker = FrameChunker::new();
+                device.build_input_stream(
+                    &config,
+                    move |data: &[f32], _| {
+                        let mono = dsp::interleaved_to_mono(data, channels);
+                        send_mono_pcm(&tx, &mut resampler, &mut chunker, &mono);
+                    },
+                    err_fn,
+                    None,
+                )
+            }
             cpal::SampleFormat::I16 => {
                 let mut resampler = Resampler::new(rate, RATE);
                 let mut chunker = FrameChunker::new();
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _| {
-                        let mono = if channels <= 1 {
-                            data.to_vec()
-                        } else {
-                            data.chunks_exact(channels)
-                                .map(|f| {
-                                    (f.iter().map(|s| i32::from(*s)).sum::<i32>() / channels as i32)
-                                        as i16
-                                })
-                                .collect()
-                        };
-                        let pcm = resampler.process(&mono);
-                        for frame in chunker.push(&pcm) {
-                            let _ = tx.send(frame);
-                        }
+                        let mono = dsp::interleaved_i16_to_mono(data, channels);
+                        send_mono_pcm(&tx, &mut resampler, &mut chunker, &mono);
                     },
                     err_fn,
                     None,
@@ -117,6 +117,24 @@ pub struct SpeakerSink {
 /// 越积越晚的队列最后会变成几秒钟的延迟。
 const QUEUE_CAP: usize = (RATE as usize / 1000) * 400;
 
+/// 播放回调：从队列取样本填满 `data`，欠载补静音。
+///
+/// 直接在输出缓冲上写，避免每次回调先 clear 再 push 一遍临时 `Vec`。
+fn fill_playback_f32(data: &mut [f32], queue: &Mutex<VecDeque<i16>>) {
+    let mut q = queue.lock().unwrap();
+    for sample in data.iter_mut() {
+        let value = q.pop_front().unwrap_or(0);
+        *sample = f32::from(value) / f32::from(i16::MAX);
+    }
+}
+
+fn fill_playback_i16(data: &mut [i16], queue: &Mutex<VecDeque<i16>>) {
+    let mut q = queue.lock().unwrap();
+    for sample in data.iter_mut() {
+        *sample = q.pop_front().unwrap_or(0);
+    }
+}
+
 impl SpeakerSink {
     pub fn new() -> anyhow::Result<Self> {
         let host = cpal::default_host();
@@ -136,43 +154,18 @@ impl SpeakerSink {
         let err_fn = |e| eprintln!("[audio] 播放流出错: {e}");
 
         let stream = match format {
-            cpal::SampleFormat::F32 => {
-                let mut out = Vec::<f32>::new();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| {
-                        let need = data.len();
-                        out.clear();
-                        let mut q = q.lock().unwrap();
-                        while out.len() < need {
-                            match q.pop_front() {
-                                Some(s) => out.push(f32::from(s) / f32::from(i16::MAX)),
-                                None => out.push(0.0), // 欠载补静音，不要卡住
-                            }
-                        }
-                        data.copy_from_slice(&out);
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            cpal::SampleFormat::I16 => {
-                let mut out = Vec::<i16>::new();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [i16], _| {
-                        let need = data.len();
-                        out.clear();
-                        let mut q = q.lock().unwrap();
-                        while out.len() < need {
-                            out.push(q.pop_front().unwrap_or(0));
-                        }
-                        data.copy_from_slice(&out);
-                    },
-                    err_fn,
-                    None,
-                )
-            }
+            cpal::SampleFormat::F32 => device.build_output_stream(
+                &config,
+                move |data: &mut [f32], _| fill_playback_f32(data, &q),
+                err_fn,
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_output_stream(
+                &config,
+                move |data: &mut [i16], _| fill_playback_i16(data, &q),
+                err_fn,
+                None,
+            ),
             other => anyhow::bail!("不支持的扬声器采样格式: {other:?}"),
         }
         .context("打开扬声器流失败")?;

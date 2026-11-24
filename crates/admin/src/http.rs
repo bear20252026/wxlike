@@ -682,6 +682,76 @@ type PreparedOp = (
     String,
 );
 
+/// 目标形状不合法：先留痕再原样返回（含路径穿越尝试）。
+fn target_denied(app: &Shared, session: &Session, op_id: &str, err: AdminError) -> AdminError {
+    log_denied(
+        app,
+        session,
+        op_id,
+        rbac::get(op_id)
+            .map(|o| o.capability.as_str())
+            .unwrap_or("unknown"),
+        None,
+        &err.to_string(),
+    );
+    err
+}
+
+/// 授权被拒：留一条 `Denied` 记录，再映射成 HTTP 错误。
+fn authorize_denied(
+    app: &Shared,
+    session: &Session,
+    op_id: &str,
+    deny: rbac::Deny,
+    target: Option<&str>,
+) -> AdminError {
+    let capability = rbac::get(op_id)
+        .map(|o| o.capability.as_str())
+        .unwrap_or("unknown");
+    let detail = deny.to_string();
+    let rec = OpRecord {
+        account_id: session.account_id.clone(),
+        actor: session.actor.clone(),
+        op: op_id.to_string(),
+        capability: capability.to_string(),
+        target: target.unwrap_or_default().to_string(),
+        upstream: String::new(),
+        status: OpStatus::Denied,
+        detail,
+        mfa: session.mfa,
+    };
+    if let Err(err) = app.accounts.log_op(&rec) {
+        tracing::error!(op = %op_id, %err, "留痕写入失败（被拒的操作也记不上）");
+    }
+    tracing::warn!(actor = %session.actor, op = %op_id, deny = %deny, "写操作被拒");
+    match deny {
+        rbac::Deny::UnknownOp(_) | rbac::Deny::MissingTarget(_) | rbac::Deny::MissingNote(_) => {
+            AdminError::bad_input(deny.to_string())
+        }
+        rbac::Deny::RoleLacks { .. } => AdminError::Forbidden(deny.to_string()),
+        rbac::Deny::NeedsMfa { .. } => AdminError::MfaRequired(deny.to_string()),
+    }
+}
+
+/// 载荷不合法：留痕后返回 422。
+fn payload_denied(
+    app: &Shared,
+    session: &Session,
+    op: &rbac::Op,
+    target: Option<&str>,
+    err: AdminError,
+) -> AdminError {
+    log_denied(
+        app,
+        session,
+        op.id,
+        op.capability.as_str(),
+        target,
+        &err.to_string(),
+    );
+    err
+}
+
 /// [`run_op`] 的同步前段：准入 → 目标校验 → 授权 → 载荷。整段在阻塞池里跑。
 /// 每一步被拒都留痕（含路径穿越尝试），拒绝结论原样返回。
 fn run_op_prepare(
@@ -693,78 +763,21 @@ fn run_op_prepare(
     // 静态令牌在这里给 403（它写不出可追责的留痕），而且早于 body 解析。
     let session = incoming.writer()?.clone();
     let body = parse_op_body(raw)?;
-    let target = match body
+    // 目标 id 的形状校验在转发之前：它会被拼进上游 URL 的路径段。
+    let target = body
         .target
         .as_deref()
         .map(upstream::check_target)
         .transpose()
-    {
-        Ok(t) => t,
-        Err(err) => {
-            // 目标 id 的形状校验在转发之前：它会被拼进上游 URL 的路径段。
-            // 这种尝试也要留痕（谁在拿路径穿越打后台，运维必须看得见）。
-            log_denied(
-                app,
-                &session,
-                op_id,
-                rbac::get(op_id)
-                    .map(|o| o.capability.as_str())
-                    .unwrap_or("unknown"),
-                None,
-                &err.to_string(),
-            );
-            return Err(err);
-        }
-    };
+        .map_err(|err| target_denied(app, &session, op_id, err))?;
     let has_target = target.is_some();
 
-    let op = match rbac::authorize(op_id, session.role, session.mfa, has_target) {
-        Ok(op) => op,
-        Err(deny) => {
-            // 被拒也要留痕：运维想知道"谁试过什么"
-            let capability = rbac::get(op_id)
-                .map(|o| o.capability.as_str())
-                .unwrap_or("unknown");
-            let rec = OpRecord {
-                account_id: session.account_id.clone(),
-                actor: session.actor.clone(),
-                op: op_id.to_string(),
-                capability: capability.to_string(),
-                target: target.clone().unwrap_or_default(),
-                upstream: String::new(),
-                status: OpStatus::Denied,
-                detail: deny.to_string(),
-                mfa: session.mfa,
-            };
-            if let Err(err) = app.accounts.log_op(&rec) {
-                tracing::error!(op = %op_id, %err, "留痕写入失败（被拒的操作也记不上）");
-            }
-            tracing::warn!(actor = %session.actor, op = %op_id, deny = %deny, "写操作被拒");
-            return Err(match deny {
-                rbac::Deny::UnknownOp(_)
-                | rbac::Deny::MissingTarget(_)
-                | rbac::Deny::MissingNote(_) => AdminError::bad_input(deny.to_string()),
-                rbac::Deny::RoleLacks { .. } => AdminError::Forbidden(deny.to_string()),
-                rbac::Deny::NeedsMfa { .. } => AdminError::MfaRequired(deny.to_string()),
-            });
-        }
-    };
+    let op = rbac::authorize(op_id, session.role, session.mfa, has_target)
+        .map_err(|deny| authorize_denied(app, &session, op_id, deny, target.as_deref()))?;
 
     // 参数按目录声明的形状取；缺了就 422，不猜默认值
-    let payload = match build_payload(op, &body) {
-        Ok(p) => p,
-        Err(err) => {
-            log_denied(
-                app,
-                &session,
-                op.id,
-                op.capability.as_str(),
-                target.as_deref(),
-                &err.to_string(),
-            );
-            return Err(err);
-        }
-    };
+    let payload = build_payload(op, &body)
+        .map_err(|err| payload_denied(app, &session, op, target.as_deref(), err))?;
     let path = upstream::render_path(op.path, target.as_deref())?;
     let label = format!("{} {}", op.method.as_str(), path);
     Ok((session, op, target, payload, path, label))

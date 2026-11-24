@@ -554,6 +554,59 @@ fn primary_ipv4() -> Option<Ipv4Addr> {
     }
 }
 
+/// 一个副作用的落地结果：是否需要退出循环，以及要不要播放这帧音频。
+#[derive(Default)]
+struct Applied {
+    ended: bool,
+    audio: Option<Vec<u8>>,
+}
+
+/// 落地一个副作用。状态锁/发信令/媒体发送都在这里，主循环只负责串起来。
+fn apply_effect(
+    effect: Effect,
+    conv: &str,
+    conn: &Connection,
+    transport: &mut Transport,
+    status: &Arc<Mutex<EngineStatus>>,
+    app: &AppHandle,
+) -> Applied {
+    match effect {
+        Effect::Signal(sig) => {
+            if let Err(err) = conn.post(conv, &sig) {
+                eprintln!("[call] 发送信令失败: {err}");
+            }
+        }
+        Effect::Transmit { to, bytes } => transport.send(to, &bytes),
+        Effect::Audio { payload, .. } => {
+            return Applied {
+                audio: Some(payload),
+                ended: false,
+            }
+        }
+        Effect::Connected { call_id } => {
+            if let Ok(mut s) = status.lock() {
+                s.connected = true;
+                s.phase = "connected".into();
+                s.call_id = call_id;
+            }
+            publish_status(status, app);
+        }
+        Effect::Ended { call_id, .. } => {
+            if let Ok(mut s) = status.lock() {
+                s.connected = false;
+                s.phase = "ended".into();
+                s.call_id = call_id;
+            }
+            publish_status(status, app);
+            return Applied {
+                ended: true,
+                audio: None,
+            };
+        }
+    }
+    Applied::default()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     app: AppHandle,
@@ -567,6 +620,7 @@ fn run(
 ) {
     let mut last_poll = Instant::now() - Duration::from_secs(1);
     let conn = Connection::new(&cfg);
+    let conv = host.conv().to_string();
     let mut audio_frames = 0u64;
     #[cfg(feature = "audio")]
     let mut audio = AudioLeg::start();
@@ -601,38 +655,15 @@ fn run(
         // 6. 落地所有副作用
         let mut ended = false;
         for effect in pending.drain(..) {
-            match effect {
-                Effect::Signal(sig) => {
-                    if let Err(err) = conn.post(host.conv(), &sig) {
-                        eprintln!("[call] 发送信令失败: {err}");
-                    }
-                }
-                Effect::Transmit { to, bytes } => transport.send(to, &bytes),
-                Effect::Audio { payload, .. } => {
-                    audio_frames += 1;
-                    #[cfg(feature = "audio")]
-                    audio.play(&payload);
-                    #[cfg(not(feature = "audio"))]
-                    let _ = &payload;
-                }
-                Effect::Connected { call_id } => {
-                    if let Ok(mut s) = status.lock() {
-                        s.connected = true;
-                        s.phase = "connected".into();
-                        s.call_id = call_id;
-                    }
-                    publish_status(&status, &app);
-                }
-                Effect::Ended { call_id, .. } => {
-                    ended = true;
-                    if let Ok(mut s) = status.lock() {
-                        s.connected = false;
-                        s.phase = "ended".into();
-                        s.call_id = call_id;
-                    }
-                    publish_status(&status, &app);
-                }
+            let applied = apply_effect(effect, &conv, &conn, &mut transport, &status, &app);
+            if let Some(payload) = applied.audio {
+                audio_frames += 1;
+                #[cfg(feature = "audio")]
+                audio.play(&payload);
+                #[cfg(not(feature = "audio"))]
+                let _ = &payload;
             }
+            ended |= applied.ended;
         }
 
         // 有新来电时把 call_id / ringing 同步给 UI

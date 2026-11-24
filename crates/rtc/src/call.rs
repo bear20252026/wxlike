@@ -80,6 +80,50 @@ fn rand_for_id() -> u32 {
     rand::thread_rng().next_u32()
 }
 
+/// Ring deadline: caller cancels, callee just ends as missed.
+fn ring_timeout(id: &str, me: &str, call: &mut Call, now: Instant, actions: &mut Vec<Action>) {
+    let Some(since) = call.entered_ringing_at else {
+        return;
+    };
+    if now.duration_since(since).as_secs() < RING_TIMEOUT_SECS {
+        return;
+    }
+    call.state.apply(Event::RingTimeout);
+    if call.state.is_caller() {
+        actions.push(Action::Send(Signal::new(
+            id.to_string(),
+            me.to_string(),
+            call.peer.clone(),
+            SignalContent::Cancel,
+        )));
+    }
+    actions.push(Action::Ended {
+        call_id: id.to_string(),
+        end: End::Cancelled,
+    });
+}
+
+/// Peer-silence watchdog: hang up and report failure.
+fn silence_timeout(id: &str, me: &str, call: &mut Call, now: Instant, actions: &mut Vec<Action>) {
+    let Some(last) = call.last_peer_activity else {
+        return;
+    };
+    if now.duration_since(last).as_secs() < PEER_SILENCE_TIMEOUT_SECS {
+        return;
+    }
+    call.state.apply(Event::PeerSilent);
+    actions.push(Action::Send(Signal::new(
+        id.to_string(),
+        me.to_string(),
+        call.peer.clone(),
+        SignalContent::Hangup,
+    )));
+    actions.push(Action::Ended {
+        call_id: id.to_string(),
+        end: End::Failed,
+    });
+}
+
 impl CallManager {
     pub fn new(me: impl Into<String>) -> Self {
         Self {
@@ -400,51 +444,15 @@ impl CallManager {
     /// Drive time-based behavior. Returns actions (timeouts, watchdogs).
     pub fn check_deadlines(&mut self, now: Instant) -> Vec<Action> {
         let mut actions = Vec::new();
+        let me = self.me.clone();
         let ids: Vec<String> = self.calls.keys().cloned().collect();
         for id in ids {
             let Some(call) = self.calls.get_mut(&id) else {
                 continue;
             };
             match call.state.phase() {
-                Phase::Ringing => {
-                    let Some(since) = call.entered_ringing_at else {
-                        continue;
-                    };
-                    if now.duration_since(since).as_secs() >= RING_TIMEOUT_SECS {
-                        call.state.apply(Event::RingTimeout);
-                        // tell the peer we stopped ringing (caller side)
-                        if call.state.is_caller() {
-                            actions.push(Action::Send(Signal::new(
-                                id.clone(),
-                                self.me.clone(),
-                                call.peer.clone(),
-                                SignalContent::Cancel,
-                            )));
-                        }
-                        actions.push(Action::Ended {
-                            call_id: id.clone(),
-                            end: End::Cancelled,
-                        });
-                    }
-                }
-                Phase::Active => {
-                    let Some(last) = call.last_peer_activity else {
-                        continue;
-                    };
-                    if now.duration_since(last).as_secs() >= PEER_SILENCE_TIMEOUT_SECS {
-                        call.state.apply(Event::PeerSilent);
-                        actions.push(Action::Send(Signal::new(
-                            id.clone(),
-                            self.me.clone(),
-                            call.peer.clone(),
-                            SignalContent::Hangup,
-                        )));
-                        actions.push(Action::Ended {
-                            call_id: id.clone(),
-                            end: End::Failed,
-                        });
-                    }
-                }
+                Phase::Ringing => ring_timeout(&id, &me, call, now, &mut actions),
+                Phase::Active => silence_timeout(&id, &me, call, now, &mut actions),
                 _ => {}
             }
         }

@@ -1857,47 +1857,55 @@ async fn replay_content(
     fanout_content(state, env, &recipients, &msg_key).await
 }
 
+/// 归档一帧；`append` 的唯一索引决定并发胜者。
+fn archive_content(store: &Store, env: &mut Envelope) -> anyhow::Result<()> {
+    // 唯一索引决定并发胜者，冲突帧必须在镜像与投递前退出。
+    if store.append(env, false)?.is_none() {
+        check_quoted_replay(store, env)?;
+    }
+    Ok(())
+}
+
+/// 把内容帧镜像进信箱，并把信箱序号写回 envelope。
+///
+/// `d-` 前缀 = 直聊，其余按群处理；频道的消息不走这里（由
+/// `platform::send_channel_message` 直接写信箱）。镜像失败只打印，不阻断投递。
+fn mirror_content(mailbox: &wxlike_message::MessageStore, env: &mut Envelope) {
+    let Some((type_id, payload)) = wxlike_message::mirror_of(env) else {
+        return;
+    };
+    let owner = if env.conv_id.starts_with("d-") {
+        wxlike_message::OwnerType::Direct
+    } else {
+        wxlike_message::OwnerType::Group
+    };
+    let msg_id = hex::encode(env.msg_id);
+    match mailbox.append(
+        (owner, &env.conv_id),
+        &env.sender,
+        &type_id,
+        &msg_id,
+        &payload,
+    ) {
+        Ok(Some(seq)) => env.seq = seq,
+        // 重复 msg_id：信箱已有这一条，沿用它的序号
+        Ok(None) => {
+            if let Ok(seq) = mailbox.head_seq((owner, &env.conv_id)) {
+                env.seq = seq;
+            }
+        }
+        // 镜像失败不该阻断投递：归档已成功，用户仍能收到消息
+        Err(err) => eprintln!("[mq-hub] mailbox mirror failed: {err}"),
+    }
+}
+
 /// 归档 + 信箱镜像。`append` 的唯一索引决定并发胜者；镜像失败不阻断投递。
 async fn persist_content(state: &Arc<HubState>, env: &mut Envelope) -> anyhow::Result<()> {
     if let Some(store) = &state.storage {
-        // 唯一索引决定并发胜者，冲突帧必须在镜像与投递前退出。
-        if store.append(env, false)?.is_none() {
-            check_quoted_replay(store, env)?;
-        }
+        archive_content(store, env)?;
     }
-    // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
-    // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。
-    //
-    // 顺带把**信箱序列号**写回 envelope：扇出到每个收件人的帧都带同一个
-    // 会话内序号（1,2,3…），客户端因此有了服务端权威的排序，与未读、
-    // ack、sync_plan 用的是同一套编号。之前 seq 是发送方填的（通常 0），
-    // 客户端只能按到达顺序排——多端之间会不一致。
     if let Some(mailbox) = &state.mailbox {
-        if let Some((type_id, payload)) = wxlike_message::mirror_of(env) {
-            let owner = if env.conv_id.starts_with("d-") {
-                wxlike_message::OwnerType::Direct
-            } else {
-                wxlike_message::OwnerType::Group
-            };
-            let msg_id = hex::encode(env.msg_id);
-            match mailbox.append(
-                (owner, &env.conv_id),
-                &env.sender,
-                &type_id,
-                &msg_id,
-                &payload,
-            ) {
-                Ok(Some(seq)) => env.seq = seq,
-                // 重复 msg_id：信箱已有这一条，沿用它的序号
-                Ok(None) => {
-                    if let Ok(seq) = mailbox.head_seq((owner, &env.conv_id)) {
-                        env.seq = seq;
-                    }
-                }
-                // 镜像失败不该阻断投递：归档已成功，用户仍能收到消息
-                Err(err) => eprintln!("[mq-hub] mailbox mirror failed: {err}"),
-            }
-        }
+        mirror_content(mailbox, env);
     }
     Ok(())
 }

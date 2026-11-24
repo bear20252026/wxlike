@@ -114,6 +114,28 @@ fn io_kind_text(kind: std::io::ErrorKind) -> &'static str {
     }
 }
 
+fn request_error(method: &str, path: &str, err: &ureq::Error) -> String {
+    format!("{method} {path}: {}", transport_text(err))
+}
+
+/// 3.x 关掉了"状态码即错误"：4xx/5xx 也是 Ok，调用方仍按 status 分流。
+///
+/// 解析规则（顺序即语义）：
+/// 1. 合法 JSON → 原样返回；
+/// 2. 非 2xx 且不是 JSON → 合成带状态码的错误体，调用方仍能按 status 处理；
+/// 3. 2xx 空体（204 / 空 200）→ `Null`，合法成功；
+/// 4. 2xx 有内容但不是 JSON（代理错误页等）→ 错误，不能当业务结果吞掉。
+fn decode_json_body(status: u16, text: &str) -> Result<serde_json::Value, String> {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => Ok(value),
+        Err(_) if !(200..300).contains(&status) => {
+            Ok(serde_json::json!({"error": format!("HTTP {status}")}))
+        }
+        Err(_) if text.trim().is_empty() => Ok(serde_json::Value::Null),
+        Err(err) => Err(format!("响应体不是合法 JSON（HTTP {status}）：{err}")),
+    }
+}
+
 impl Http {
     pub fn new(base: impl Into<String>) -> Self {
         let config = ureq::Agent::config_builder()
@@ -247,49 +269,41 @@ impl Http {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(u16, serde_json::Value), String> {
-        // 写方法**即使没有 body** 也要走 req_write：`send_empty()` 才是
-        // "POST/PUT 带一个空体"的正确形状。走 req() 会踩 typestate 的
-        // unreachable（GET/DELETE 才是无体请求）。
-        let resp = match (method, body) {
-            ("GET" | "DELETE", None) => self.req(method, path).call(),
-            ("GET" | "DELETE", Some(_)) => {
-                return Err(format!("{method} {path}: 读方法不该有 body"))
-            }
-            (_, Some(v)) => self.req_write(method, path).send_json(v),
-            (_, None) => self.req_write(method, path).send_empty(),
-        };
-        // 3.x 关掉了"状态码即错误"：4xx/5xx 也是 Ok。**调用方仍然要能按 status
-        // 分流**（有些端点就是靠 404/409 表达业务结果），所以这里照旧返回 status，
-        // 只是错误体不再由 ureq 替我们吞掉。
-        match resp {
-            Ok(mut resp) => {
-                let status = resp.status().as_u16();
-                // 先读文本再解析：read_json 会消费流，失败后再读就拿不到
-                // 原文，无法区分"空体"与"非 JSON"。
-                let text = resp.body_mut().read_to_string().unwrap_or_default();
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(value) => Ok((status, value)),
-                    // 2xx 空体（204 No Content / 空 200）是合法成功，返回 Null；
-                    // 但**有内容却不是 JSON**（代理错误页等）不能当成功数据吞掉，
-                    // 否则 expect_json 会把合成错误体当业务结果返回（R5 #60）。
-                    Err(err) if (200..300).contains(&status) => {
-                        if text.trim().is_empty() {
-                            Ok((status, serde_json::Value::Null))
-                        } else {
-                            Err(format!(
-                                "{method} {path}: 响应体不是合法 JSON（HTTP {status}）：{err}"
-                            ))
-                        }
-                    }
-                    // 非 2xx 保留兜底错误体：调用方仍要按 status 分流，
-                    // 错误体非 JSON 时给一个带状态码的可读错误。
-                    Err(_) => Ok((
-                        status,
-                        serde_json::json!({"error": format!("HTTP {status}")}),
-                    )),
-                }
-            }
-            Err(err) => Err(format!("{method} {path}: {}", transport_text(&err))),
+        let mut resp = self.send_request(method, path, body)?;
+        let status = resp.status().as_u16();
+        // 先读文本再解析：read_json 会消费流，失败后再读就拿不到
+        // 原文，无法区分"空体"与"非 JSON"。
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        let value =
+            decode_json_body(status, &text).map_err(|err| format!("{method} {path}: {err}"))?;
+        Ok((status, value))
+    }
+
+    /// 按方法与 body 选择 ureq 的 typestate 入口。
+    ///
+    /// 写方法**即使没有 body** 也要走 req_write：`send_empty()` 才是
+    /// "POST/PUT 带一个空体"的正确形状。走 req() 会踩 typestate 的
+    /// unreachable（GET/DELETE 才是无体请求）。
+    fn send_request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<http::Response<ureq::Body>, String> {
+        match (method, body) {
+            ("GET" | "DELETE", None) => self
+                .req(method, path)
+                .call()
+                .map_err(|err| request_error(method, path, &err)),
+            ("GET" | "DELETE", Some(_)) => Err(format!("{method} {path}: 读方法不该有 body")),
+            (_, Some(v)) => self
+                .req_write(method, path)
+                .send_json(v)
+                .map_err(|err| request_error(method, path, &err)),
+            (_, None) => self
+                .req_write(method, path)
+                .send_empty()
+                .map_err(|err| request_error(method, path, &err)),
         }
     }
 

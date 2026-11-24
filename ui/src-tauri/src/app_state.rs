@@ -143,6 +143,25 @@ fn pump_generation_is_current(generation: &AtomicU64, mine: u64) -> bool {
     generation.load(Ordering::SeqCst) == mine
 }
 
+/// 拉下一条信封；只有当前代才报 `im-down`，返回 `None` 表示泵该退出。
+async fn next_envelope_or_notify<R: tauri::Runtime>(
+    client: &Client,
+    app: &tauri::AppHandle<R>,
+    pump_generation: &AtomicU64,
+    generation: u64,
+) -> Option<wxlike_core::Envelope> {
+    use tauri::Emitter as _;
+    match client.next_envelope().await {
+        Ok(env) => Some(env),
+        Err(_) => {
+            if pump_generation_is_current(pump_generation, generation) {
+                let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
+            }
+            None
+        }
+    }
+}
+
 /// 收包泵主体：拉一条信封 → 渲染 → 落本地库 → 发 UI；断流时只由当前代报 `im-down`。
 async fn recv_pump_loop<R: tauri::Runtime>(
     client: Client,
@@ -153,16 +172,10 @@ async fn recv_pump_loop<R: tauri::Runtime>(
     pump_generation: Arc<AtomicU64>,
     generation: u64,
 ) {
-    use tauri::Emitter as _;
     while pump_generation_is_current(&pump_generation, generation) {
-        let env = match client.next_envelope().await {
-            Ok(env) => env,
-            Err(_) => {
-                if pump_generation_is_current(&pump_generation, generation) {
-                    let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
-                }
-                break;
-            }
+        let Some(env) = next_envelope_or_notify(&client, &app, &pump_generation, generation).await
+        else {
+            break;
         };
         if !pump_generation_is_current(&pump_generation, generation) {
             break;

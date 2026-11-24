@@ -110,6 +110,35 @@ pub fn binding_request(transaction_id: [u8; 12]) -> Vec<u8> {
     msg
 }
 
+/// Decodes the body of an XOR-MAPPED-ADDRESS attribute.
+fn xor_mapped_address(body: &[u8], alen: usize) -> Option<SocketAddr> {
+    if alen < 8 {
+        return None;
+    }
+    let family = body[1];
+    let xport = u16::from_be_bytes([body[2], body[3]]) ^ 0x2112;
+    let cookie = u32::from_be_bytes(MAGIC_COOKIE);
+    match family {
+        0x01 => {
+            let xaddr = u32::from_be_bytes([body[4], body[5], body[6], body[7]]) ^ cookie;
+            Some(SocketAddr::from((
+                std::net::IpAddr::V4(xaddr.into()),
+                xport,
+            )))
+        }
+        0x02 if alen >= 20 => {
+            let mut octets = [0u8; 16];
+            octets[..4].copy_from_slice(&MAGIC_COOKIE);
+            octets[4..].copy_from_slice(&body[4..20]);
+            Some(SocketAddr::from((
+                std::net::IpAddr::V6(octets.into()),
+                xport,
+            )))
+        }
+        _ => None,
+    }
+}
+
 /// Parses a Binding Response for XOR-MAPPED-ADDRESS.
 pub fn parse_xor_mapped_address(response: &[u8]) -> Option<SocketAddr> {
     if response.len() < 20 {
@@ -126,30 +155,9 @@ pub fn parse_xor_mapped_address(response: &[u8]) -> Option<SocketAddr> {
         let atype = u16::from_be_bytes([response[offset], response[offset + 1]]);
         let alen = u16::from_be_bytes([response[offset + 2], response[offset + 3]]) as usize;
         let body = response.get(offset + 4..offset + 4 + alen)?;
-        if atype == XOR_MAPPED_ADDRESS && alen >= 8 {
-            let family = body[1];
-            let xport = u16::from_be_bytes([body[2], body[3]]) ^ 0x2112;
-            let cookie = u32::from_be_bytes(MAGIC_COOKIE);
-            match family {
-                0x01 => {
-                    let xaddr = u32::from_be_bytes([body[4], body[5], body[6], body[7]]) ^ cookie;
-                    return Some(SocketAddr::from((
-                        std::net::IpAddr::V4(xaddr.into()),
-                        xport,
-                    )));
-                }
-                0x02 if alen >= 20 => {
-                    let mut octets = [0u8; 16];
-                    octets[..4].copy_from_slice(&MAGIC_COOKIE);
-                    for (i, b) in body[4..20].iter().enumerate() {
-                        octets[i + 4] = *b;
-                    }
-                    return Some(SocketAddr::from((
-                        std::net::IpAddr::V6(octets.into()),
-                        xport,
-                    )));
-                }
-                _ => {}
+        if atype == XOR_MAPPED_ADDRESS {
+            if let Some(addr) = xor_mapped_address(body, alen) {
+                return Some(addr);
             }
         }
         // RFC 5389 §15：属性按 32bit 对齐，padding 不计入 length，但必须跳过。

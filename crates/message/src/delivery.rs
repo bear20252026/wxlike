@@ -65,6 +65,68 @@ pub enum ResumePlan {
     Resync { head: u64, cursor: u64 },
 }
 
+/// 一行 `delivery_task` + 对应信箱序号。
+fn delivery_task_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryTask> {
+    Ok(DeliveryTask {
+        seq: r.get::<_, i64>(0)? as u64,
+        msg_id: r.get(1)?,
+        owner_type: r.get(2)?,
+        conv_id: r.get(3)?,
+        target_user: r.get(4)?,
+        target_device: r.get(5)?,
+        attempts: r.get::<_, i64>(6)? as u32 + 1,
+    })
+}
+
+/// 取到期或租约已过期的任务（pending / inflight 都在内）。
+fn select_ready_tasks(
+    tx: &rusqlite::Transaction<'_>,
+    now_ms: u64,
+    limit: i64,
+) -> Result<Vec<DeliveryTask>> {
+    let mut stmt = tx.prepare(
+        "SELECT m.seq, d.msg_id, m.owner_type, m.owner_id, d.target_user,
+                d.target_device, d.attempts
+           FROM delivery_task d
+           JOIN mailbox m ON m.msg_id = d.msg_id
+          WHERE (d.state = 'pending' AND d.next_at <= ?1)
+             OR (d.state = 'inflight' AND d.lease_until <= ?1)
+          ORDER BY d.next_at, d.msg_id
+          LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![now_ms as i64, limit], delivery_task_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// 把取到的任务改成当前 worker 的 inflight 租约。
+fn lease_tasks(
+    tx: &rusqlite::Transaction<'_>,
+    rows: &[DeliveryTask],
+    worker: &str,
+    now_ms: u64,
+    lease_ms: u64,
+) -> Result<()> {
+    for task in rows {
+        tx.execute(
+            "UPDATE delivery_task
+            SET state = 'inflight', lease_owner = ?4, lease_until = ?5,
+                attempts = attempts + 1, updated_at = ?6
+          WHERE msg_id = ?1 AND target_user = ?2 AND target_device = ?3",
+            params![
+                task.msg_id,
+                task.target_user,
+                task.target_device,
+                worker,
+                (now_ms + lease_ms) as i64,
+                now_ms as i64
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 impl MessageStore {
     /// Claim up to `limit` ready tasks for `worker`. Expired leases are
     /// reclaimable, so a hub crash re-delivers instead of losing messages.
@@ -79,48 +141,8 @@ impl MessageStore {
         let lease_ms = lease_ms.max(1_000);
         let mut conn = self.c();
         conn.with_tx(|tx| -> Result<Vec<DeliveryTask>> {
-            let rows: Vec<DeliveryTask> = {
-                let mut stmt = tx.prepare(
-                    "SELECT m.seq, d.msg_id, m.owner_type, m.owner_id, d.target_user,
-                        d.target_device, d.attempts
-                   FROM delivery_task d
-                   JOIN mailbox m ON m.msg_id = d.msg_id
-                  WHERE (d.state = 'pending' AND d.next_at <= ?1)
-                     OR (d.state = 'inflight' AND d.lease_until <= ?1)
-                  ORDER BY d.next_at, d.msg_id
-                  LIMIT ?2",
-                )?;
-                let found = stmt
-                    .query_map(params![now_ms as i64, limit], |r| {
-                        Ok(DeliveryTask {
-                            seq: r.get::<_, i64>(0)? as u64,
-                            msg_id: r.get(1)?,
-                            owner_type: r.get(2)?,
-                            conv_id: r.get(3)?,
-                            target_user: r.get(4)?,
-                            target_device: r.get(5)?,
-                            attempts: r.get::<_, i64>(6)? as u32 + 1,
-                        })
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                found
-            };
-            for task in &rows {
-                tx.execute(
-                    "UPDATE delivery_task
-                    SET state = 'inflight', lease_owner = ?4, lease_until = ?5,
-                        attempts = attempts + 1, updated_at = ?6
-                  WHERE msg_id = ?1 AND target_user = ?2 AND target_device = ?3",
-                    params![
-                        task.msg_id,
-                        task.target_user,
-                        task.target_device,
-                        worker,
-                        (now_ms + lease_ms) as i64,
-                        now_ms as i64
-                    ],
-                )?;
-            }
+            let rows = select_ready_tasks(tx, now_ms, limit)?;
+            lease_tasks(tx, &rows, worker, now_ms, lease_ms)?;
             Ok(rows)
         })
     }

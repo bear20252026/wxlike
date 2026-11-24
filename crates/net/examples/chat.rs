@@ -9,6 +9,74 @@ use std::sync::{Arc, Mutex};
 use wxlike_core::{Envelope, MsgId};
 use wxlike_net::Client;
 
+/// 后台收包：每条消息打印并把最后一条留给 `:read`。
+fn spawn_reader(reader: Client, state: Arc<Mutex<Option<Envelope>>>) {
+    tokio::spawn(async move {
+        loop {
+            match reader.next_envelope().await {
+                Ok(env) => {
+                    println!("[{}] {}: {}", env.conv_id, env.sender, text_of(&env));
+                    *state.lock().expect("demo lock") = Some(env);
+                }
+                Err(e) => {
+                    eprintln!("[recv] closed: {e}");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// 处理 `:recall` / `:read`；返回 true 表示这一行已被消费。
+async fn handle_special(
+    line: &str,
+    client: &Client,
+    who: &str,
+    received: &Arc<Mutex<Option<Envelope>>>,
+    last_sent: &mut Option<MsgId>,
+) -> anyhow::Result<bool> {
+    // ":recall" un-sends the last message this client wrote
+    if line.starts_with(":recall") {
+        let Some(target) = last_sent.clone() else {
+            println!("(nothing to recall yet)");
+            return Ok(true);
+        };
+        client
+            .send(&Envelope::recall("conv1", who.to_string(), target))
+            .await?;
+        println!("(recall sent)");
+        return Ok(true);
+    }
+    // ":read" acknowledges the last message received, back to its author
+    if line.starts_with(":read") {
+        let last_received = received.lock().expect("demo lock").clone();
+        let Some(msg) = last_received else {
+            println!("(nothing read yet)");
+            return Ok(true);
+        };
+        let ack = msg.receipt_from(
+            who.to_string(),
+            wxlike_core::Receipt::Read {
+                up_to_msg_id: msg.msg_id,
+            },
+        );
+        client.send(&ack).await?;
+        println!("(receipt sent)");
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// "name> text" 定向到一个人，纯文本广播。
+fn outgoing(line: &str, who: &str, seq: u64) -> Envelope {
+    match line.split_once("> ") {
+        Some((to, text)) => {
+            Envelope::direct("conv1", who.to_string(), vec![to.trim().into()], seq, text)
+        }
+        None => Envelope::text("conv1", who.to_string(), seq, line),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -24,22 +92,7 @@ async fn main() -> anyhow::Result<()> {
 
     // last inbound message, shared with the input loop for ":read"
     let received: Arc<Mutex<Option<Envelope>>> = Arc::new(Mutex::new(None));
-    let reader = client.clone();
-    let reader_state = received.clone();
-    tokio::spawn(async move {
-        loop {
-            match reader.next_envelope().await {
-                Ok(env) => {
-                    println!("[{}] {}: {}", env.conv_id, env.sender, text_of(&env));
-                    *reader_state.lock().expect("demo lock") = Some(env);
-                }
-                Err(e) => {
-                    eprintln!("[recv] closed: {e}");
-                    break;
-                }
-            }
-        }
-    });
+    spawn_reader(client.clone(), received.clone());
 
     let stdin = std::io::stdin();
     let mut seq = 0u64;
@@ -49,43 +102,11 @@ async fn main() -> anyhow::Result<()> {
         if line == ":quit" {
             break;
         }
-        // ":recall" un-sends the last message this client wrote
-        if line.starts_with(":recall") {
-            let Some(target) = last_sent else {
-                println!("(nothing to recall yet)");
-                continue;
-            };
-            client
-                .send(&Envelope::recall("conv1", who.clone(), target))
-                .await?;
-            println!("(recall sent)");
-            continue;
-        }
-        // ":read" acknowledges the last message received, back to its author
-        if line.starts_with(":read") {
-            let last_received = received.lock().expect("demo lock").clone();
-            let Some(msg) = last_received else {
-                println!("(nothing read yet)");
-                continue;
-            };
-            let ack = msg.receipt_from(
-                who.clone(),
-                wxlike_core::Receipt::Read {
-                    up_to_msg_id: msg.msg_id,
-                },
-            );
-            client.send(&ack).await?;
-            println!("(receipt sent)");
+        if handle_special(&line, &client, &who, &received, &mut last_sent).await? {
             continue;
         }
         seq += 1;
-        // "name> text" directs to one user; plain text broadcasts
-        let env = match line.split_once("> ") {
-            Some((to, text)) => {
-                Envelope::direct("conv1", who.clone(), vec![to.trim().into()], seq, text)
-            }
-            None => Envelope::text("conv1", who.clone(), seq, line),
-        };
+        let env = outgoing(&line, &who, seq);
         last_sent = Some(env.msg_id);
         client.send(&env).await?;
     }

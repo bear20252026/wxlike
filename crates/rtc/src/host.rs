@@ -239,24 +239,18 @@ impl CallHost {
         for addr in learned {
             self.route.insert(addr, call_id.to_string());
         }
-        for ev in events {
-            match ev {
-                str0m::Event::MediaData(data) => {
-                    if Some(data.mid) == audio_mid {
-                        out.push(Effect::Audio {
-                            call_id: call_id.to_string(),
-                            payload: data.data,
-                        });
-                    }
-                }
-                str0m::Event::Connected if self.connected.insert(call_id.to_string()) => {
-                    out.push(Effect::Connected {
-                        call_id: call_id.to_string(),
-                    });
-                }
-                _ => {}
+        out.extend(events.into_iter().filter_map(|ev| match ev {
+            str0m::Event::MediaData(data) if Some(data.mid) == audio_mid => Some(Effect::Audio {
+                call_id: call_id.to_string(),
+                payload: data.data,
+            }),
+            str0m::Event::Connected if self.connected.insert(call_id.to_string()) => {
+                Some(Effect::Connected {
+                    call_id: call_id.to_string(),
+                })
             }
-        }
+            _ => None,
+        }));
         out
     }
 

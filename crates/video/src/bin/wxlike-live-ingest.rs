@@ -77,6 +77,22 @@ fn main() {
     }
 }
 
+/// 推一个已写完的分片；失败时记下文件名，不中断整路直播。
+fn push_segment(packager: &Packager, seg: &Path, lost: &mut Vec<String>) -> bool {
+    match packager.push(seg) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("分片 {} 推送失败: {err:#}", seg.display());
+            lost.push(
+                seg.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
+            false
+        }
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     let cfg = Config::from_args()?;
     std::fs::create_dir_all(&cfg.work_dir)
@@ -99,52 +115,34 @@ fn run() -> anyhow::Result<()> {
 
     loop {
         let running = child.try_wait().with_context(|| "poll ffmpeg")?.is_none();
-        if path_at(&cfg.work_dir, next_index).is_file()
-            && (!running || path_at(&cfg.work_dir, next_index + 1).is_file())
-        {
-            let seg = path_at(&cfg.work_dir, next_index);
-            // 只推已经写完的片：下一片出现（或 ffmpeg 已退出）才算写完
-            match packager.push(&seg) {
-                Ok(()) => {
-                    last_change = Instant::now();
-                    next_index += 1;
-                    std::fs::remove_file(&seg).ok();
-                }
-                Err(err) => {
-                    eprintln!("分片 {} 推送失败: {err:#}", seg.display());
-                    lost.push(
-                        seg.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                    );
-                    next_index += 1;
-                    std::fs::remove_file(&seg).ok();
-                }
+        let next = path_at(&cfg.work_dir, next_index);
+        // 只推已经写完的片：下一片出现（或 ffmpeg 已退出）才算写完
+        let ready =
+            next.is_file() && (!running || path_at(&cfg.work_dir, next_index + 1).is_file());
+        if !ready {
+            if !running {
+                break;
             }
-        } else if !running {
-            break;
-        } else if STALL_EXIT_MS > 0 && last_change.elapsed() > Duration::from_millis(STALL_EXIT_MS)
-        {
-            anyhow::bail!(
-                "ffmpeg {STALL_EXIT_MS}ms 没有产出新分片，判定卡死（源断了？），退出以免一直占着这路流"
-            );
-        } else {
+            if STALL_EXIT_MS > 0 && last_change.elapsed() > Duration::from_millis(STALL_EXIT_MS) {
+                anyhow::bail!(
+                    "ffmpeg {STALL_EXIT_MS}ms 没有产出新分片，判定卡死（源断了？），退出以免一直占着这路流"
+                );
+            }
             std::thread::sleep(Duration::from_millis(POLL_MS));
+            continue;
         }
+        if push_segment(&packager, &next, &mut lost) {
+            last_change = Instant::now();
+        }
+        next_index += 1;
+        std::fs::remove_file(&next).ok();
     }
 
     // 收尾：把还没推的碎片推完，再告诉服务端"停播"
     while path_at(&cfg.work_dir, next_index).is_file() {
         let seg = path_at(&cfg.work_dir, next_index);
-        if let Err(err) = packager.push(&seg) {
-            eprintln!("收尾分片 {} 失败: {err:#}", seg.display());
-            // 拿不到文件名就退回完整路径：收尾路径上不能 panic（审计第 5 轮）
-            lost.push(
-                seg.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| seg.display().to_string()),
-            );
-        }
+        // 收尾路径上不能 panic（审计第 5 轮）；失败的文件名已由 push_segment 记下。
+        push_segment(&packager, &seg, &mut lost);
         std::fs::remove_file(&seg).ok();
         next_index += 1;
     }

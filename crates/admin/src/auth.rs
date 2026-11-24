@@ -505,6 +505,21 @@ pub struct Grant {
     pub step_up: bool,
 }
 
+/// 一个 (角色, 资源) 下所有允许的动作，追加到 `out`。
+fn push_resource_grants(role: Role, resource: Resource, actions: &[Action], out: &mut Vec<Grant>) {
+    for action in actions {
+        if !permits(role, resource, *action) {
+            continue;
+        }
+        out.push(Grant {
+            role: role.as_str(),
+            resource: resource.as_str(),
+            action: action.as_str(),
+            step_up: action.needs_step_up(),
+        });
+    }
+}
+
 pub fn grants() -> Vec<Grant> {
     let roles = [
         Role::Viewer,
@@ -524,16 +539,7 @@ pub fn grants() -> Vec<Grant> {
     let mut out = Vec::new();
     for role in roles {
         for resource in Resource::ALL {
-            for action in actions {
-                if permits(role, *resource, action) {
-                    out.push(Grant {
-                        role: role.as_str(),
-                        resource: resource.as_str(),
-                        action: action.as_str(),
-                        step_up: action.needs_step_up(),
-                    });
-                }
-            }
+            push_resource_grants(role, *resource, &actions, &mut out);
         }
     }
     out

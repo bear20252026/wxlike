@@ -393,15 +393,16 @@ search、video、hub、router 全串在一个函数里。
    HEAD。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
-**当前基线（2026-11-24 重置）**：函数 >60 行 **43**、>100 行 **0**、嵌套 >3 层
-**69**、跨文件重复窗口 **128**、魔法数字总数 **172**。旧基线（扫描面 134 个
-文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
-`docs/bench/quality-baseline-2026-10-25.json`：本轮扫描面扩到 472 个文件，
-绝对计数不能再和旧基线相减，否则 `--update` 永远拒绝收紧。重置只把当前值
-写成新起点，之后任何指标上涨仍会被全量闸门拦下。
+**当前基线（2026-11-24 第二轮收紧）**：函数 >60 行 **39**、>100 行 **0**、嵌套 >3 层
+**54**、跨文件重复窗口 **128**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+（扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
+当前值。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
+`docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
+不能再和旧基线相减，否则 `--update` 永远拒绝收紧。重置只把当前值写成新起点，
+之后任何指标上涨仍会被全量闸门拦下。
 
 **验收（已实测）**：临时塞一个 70 行函数，闸门输出
-`函数 >60 行：43 → 44（+1）` 与 `魔法数字总数：172 → 228（+56）`，退出码 1；
+`函数 >60 行：39 → 40（+1）` 与 `魔法数字总数：172 → 228（+56）`，退出码 1；
 删掉后恢复通过。
 
 ### 第 1 波：消灭语义重复（1–2 天，低风险高收益）
@@ -468,24 +469,24 @@ search、video、hub、router 全串在一个函数里。
 | 2 | `start_stack` | ✅ | 204 行 → 55 行，拆成 5 个 `build_*` |
 | 2 | 错误契约收口（`crates/api`） | ✅ | 新增零业务依赖的 `wxlike-api`；`video` 的 30 处 `(StatusCode, String)` → `ApiResult`，顺带修掉 Windows 上"视频不存在返回 500" |
 | 2 | `mq_hub` 拆帧 | ⏳ | 主链路，需先补帧级测试 |
-| 3 | `Platform` 门面化 | 🚧 | 四批共降 151 个方法（21+43+48+39），公开方法 258→**105**；`AccountSessions` trait 试点已落，剩余门面按 `docs/platform-facades.md` 迁移 |
+| 3 | `Platform` 门面化 | 🚧 | 四批共降 151 个方法（21+43+48+39），公开方法 258→**101**；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait；剩余门面按 `docs/platform-facades.md` 迁移 |
 | 3 | 抽 `crates/wire` | ⏳ | 单独排期 |
 
 指标变化（口径修正后重新计算，只算生产代码）：
 
 | 指标 | 审计时 | 现在 |
 |---|---|---|
-| 函数 >60 行 | 46 | **41** |
-| 函数 >100 行 | 14 | **10** |
-| 嵌套 >3 层 | 63 | 63 |
-| 跨文件重复窗口 | 78 | 78 |
-| 魔法数字总数 | 170 | **159** |
+| 函数 >60 行 | 46 | **39** |
+| 函数 >100 行 | 14 | **0** |
+| 嵌套 >3 层 | 63 | **54** |
+| 跨文件重复窗口 | 78 | 128（扫描面扩到 472 文件） |
+| 魔法数字总数 | 170 | 172（同上） |
 
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
-2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 618`、
-`>60 行 43`、`>100 行 0`、`深嵌套 68`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
+2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 614`、
+`>60 行 39`、`>100 行 0`、`深嵌套 54`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -523,6 +524,23 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 的线程主体整段搬进 `run_outbox_pump`，外层只留"取队列 + 单次启动 + spawn"。
 `ffi::client::send_now` 的成功/失败落地收进 `complete_sent` / `complete_failure`，
 主函数只剩一次 `try_send` 分派。深嵌套从 73 降到 68，`>60` 从 49 降到 43。
+
+2026-11-24 继续压：`rtc::audio_io` 的四个采集/播放回调把重采样投递与队列填充收进
+`send_mono_pcm` / `fill_playback_f32` / `fill_playback_i16`，i16 多声道平均抽到
+`dsp::interleaved_i16_to_mono`；`rtc::call::check_deadlines` 的响铃与静默看门狗
+各自收进 `ring_timeout` / `silence_timeout`；`rtc::host::pump_media` 的媒体事件
+改成一次 `filter_map`；`rtc::ice::parse_xor_mapped_address` 的地址解码抽到
+`xor_mapped_address`。`client::Http::json` 的发送与解析收进 `send_request` /
+`decode_json_body`；`video::jobs::read_job_fields` 的 bytes/callback 字段各抽一个
+异步读取函数；`net::mq_hub::persist_content` 的归档与信箱镜像收进
+`archive_content` / `mirror_content`；`admin::auth::grants` 的三重循环收进
+`push_resource_grants`，`admin::http::run_op_prepare` 的三类拒绝各抽一个留痕函数，
+`admin::publishing::decide` 的线上生效段搬进 `apply_online`；
+`message::delivery::claim_delivery` 的行映射/选任务/租约更新拆成三个自由函数；
+`net` 的 chat 示例把收包线程、特殊命令、出站信封各抽一层；
+`ui::callrtc::run` 的副作用落地整段搬进 `apply_effect`，
+`ui::app_state::recv_pump_loop` 的取包与断流上报收进 `next_envelope_or_notify`。
+深嵌套从 68 降到 54，`>60` 从 43 降到 39，`>30` 从 618 降到 614。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /

@@ -603,6 +603,50 @@ impl PublishingService {
             .ok())
     }
 
+    /// 线上效果先做：域侧失败就不改库，否则"库里下架了、线上还在"。
+    async fn apply_online(
+        &self,
+        item: &Item,
+        decision: Decision,
+        reason: &str,
+        actor: &str,
+        trace: &str,
+        role: Role,
+    ) -> Result<()> {
+        let state_word = if decision == Decision::TakeDown {
+            "taken_down"
+        } else {
+            "approved"
+        };
+        if let Err(err) = self
+            .port
+            .set_visibility(&item.kind, &item.subject_id, state_word, reason)
+            .await
+        {
+            let svc = self.clone();
+            let item_id = item.id.clone();
+            let err_text = err.to_string();
+            let a = actor.to_string();
+            let t = trace.to_string();
+            let r = reason.to_string();
+            offload(move || {
+                svc.audit.append(
+                    Draft::new(&a, role.as_str(), "publish.decide", "review_item", &item_id)
+                        .reason(&r)
+                        .trace(&t)
+                        .outcome(Outcome::Failed)
+                        .detail(serde_json::json!({
+                            "decision": decision.as_str(),
+                            "error": err_text,
+                        })),
+                )
+            })
+            .await?;
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// 判定。`reason` 必填（复核要看依据）；下架/恢复还要 step-up。
     ///
     /// ADR-28：前段（准入/状态机）与后段（UPDATE+审计）各自整段进阻塞池；
@@ -627,37 +671,9 @@ impl PublishingService {
         let (item, state, next, reason) =
             offload(move || svc.decide_prepare(&a, role, &i, decision, &r)).await?;
 
-        // 线上效果先做：域侧失败就**不改库**，否则"库里下架了、线上还在"。
         if decision.needs_step_up() {
-            let state_word = if decision == Decision::TakeDown {
-                "taken_down"
-            } else {
-                "approved"
-            };
-            if let Err(err) = self
-                .port
-                .set_visibility(&item.kind, &item.subject_id, state_word, &reason)
-                .await
-            {
-                let svc = self.clone();
-                let item_id = item.id.clone();
-                let err_text = err.to_string();
-                let (a, t, r) = (actor.clone(), trace.clone(), reason.clone());
-                offload(move || {
-                    svc.audit.append(
-                        Draft::new(&a, role.as_str(), "publish.decide", "review_item", &item_id)
-                            .reason(&r)
-                            .trace(&t)
-                            .outcome(Outcome::Failed)
-                            .detail(serde_json::json!({
-                                "decision": decision.as_str(),
-                                "error": err_text,
-                            })),
-                    )
-                })
+            self.apply_online(&item, decision, &reason, &actor, &trace, role)
                 .await?;
-                return Err(err);
-            }
         }
 
         let svc = self.clone();

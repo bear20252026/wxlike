@@ -134,6 +134,23 @@ pub fn interleaved_to_mono(samples: &[f32], channels: usize) -> Vec<i16> {
         .collect()
 }
 
+/// 交错多声道 i16 → 单声道 i16（取平均）。
+///
+/// 声卡直接给 i16 时不必先转 f32 再转回来：这条路径只做整数平均，避免
+/// 量化误差，也让采集回调少一次分配。
+pub fn interleaved_i16_to_mono(samples: &[i16], channels: usize) -> Vec<i16> {
+    if channels <= 1 {
+        return samples.to_vec();
+    }
+    samples
+        .chunks_exact(channels)
+        .map(|frame| {
+            let sum: i32 = frame.iter().map(|s| i32::from(*s)).sum();
+            (sum / channels as i32) as i16
+        })
+        .collect()
+}
+
 /// 单声道 i16 → 交错多声道 f32（写回声卡）。
 pub fn mono_to_interleaved(pcm: &[i16], channels: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(pcm.len() * channels.max(1));
@@ -225,6 +242,20 @@ mod tests {
         assert_eq!(mono.len(), 2);
         let half = i16::MAX / 2;
         assert!((mono[0] - half).abs() <= 2, "got {}", mono[0]);
+    }
+
+    #[test]
+    fn i16_stereo_is_averaged_too() {
+        let stereo = [0i16, i16::MAX, 0, i16::MAX];
+        let mono = interleaved_i16_to_mono(&stereo, 2);
+        assert_eq!(mono.len(), 2);
+        assert!((mono[0] - i16::MAX / 2).abs() <= 2, "got {}", mono[0]);
+    }
+
+    #[test]
+    fn i16_mono_is_copied_unchanged() {
+        let mono = [1i16, -2, 3000];
+        assert_eq!(interleaved_i16_to_mono(&mono, 1), mono);
     }
 
     #[test]

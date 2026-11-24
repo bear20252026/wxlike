@@ -1187,6 +1187,42 @@ async fn retry_job(
         .ok_or_else(|| ApiError::conflict("job left the failed state mid-retry"))
 }
 
+/// 读 `bytes` / `file` 字段；重复出现直接报错（否则静默丢第一份）。
+async fn read_bytes_field(
+    field: axum::extract::multipart::Field<'_>,
+    slot: &mut Option<Vec<u8>>,
+) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("duplicate `bytes` field".into());
+    }
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|e| format!("read bytes: {e}"))?;
+    *slot = Some(bytes.to_vec());
+    Ok(())
+}
+
+/// 读 `callback_url`；空串视为没给，非 http(s) 直接拒绝。
+async fn read_callback_field(
+    field: axum::extract::multipart::Field<'_>,
+    slot: &mut Option<String>,
+) -> Result<(), String> {
+    let raw = field
+        .bytes()
+        .await
+        .map_err(|e| format!("read callback_url: {e}"))?;
+    let text = String::from_utf8_lossy(&raw).trim().to_string();
+    if text.is_empty() {
+        return Ok(());
+    }
+    if !(text.starts_with("http://") || text.starts_with("https://")) {
+        return Err("callback_url must be an http(s) URL".into());
+    }
+    *slot = Some(text);
+    Ok(())
+}
+
 /// 一次遍历把 `bytes` 与可选的 `callback_url` 都读出来。
 ///
 /// 不能像同步上传那样"读到 bytes 就 return"——作业面允许多带一个字段，
@@ -1202,34 +1238,8 @@ async fn read_job_fields(form: &mut Multipart) -> Result<(Vec<u8>, Option<String
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
             // `file` 是 `bytes` 的别名（与 `/api/video` 同一收宽口径）
-            "bytes" | "file" => {
-                if bytes.is_some() {
-                    return Err("duplicate `bytes` field".into());
-                }
-                bytes = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map(|b| b.to_vec())
-                        .map_err(|e| format!("read bytes: {e}"))?,
-                );
-            }
-            "callback_url" => {
-                let text = String::from_utf8_lossy(
-                    &field
-                        .bytes()
-                        .await
-                        .map_err(|e| format!("read callback_url: {e}"))?,
-                )
-                .trim()
-                .to_string();
-                if !text.is_empty() {
-                    if !(text.starts_with("http://") || text.starts_with("https://")) {
-                        return Err("callback_url must be an http(s) URL".into());
-                    }
-                    callback_url = Some(text);
-                }
-            }
+            "bytes" | "file" => read_bytes_field(field, &mut bytes).await?,
+            "callback_url" => read_callback_field(field, &mut callback_url).await?,
             other => return Err(format!("unexpected field `{other}`")),
         }
     }
