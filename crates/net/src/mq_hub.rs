@@ -1570,17 +1570,43 @@ async fn handle_inbound(
     bound_user: &str,
     env: &Envelope,
 ) -> anyhow::Result<()> {
-    // 1. a client speaks only as itself
+    if !sender_allowed(bound_user, env) {
+        return Ok(());
+    }
+    let members = resolve_members(state, env).await?;
+    if !direct_shape_ok(env) || !broadcast_shape_ok(env, &members) {
+        return Ok(());
+    }
+    let Some(mut env) = gate_content(state, env.clone(), &members).await? else {
+        return Ok(());
+    };
+
+    // Transient signals (typing indicators) are the transitional form of the
+    // P3 `high_priority` channel: routed to whoever is online right now,
+    // never persisted, never parked — a user who connects later must not see
+    // "对方正在输入" from an hour ago (contract §3.5).
+    if env.is_typing() {
+        return route_or_fanout(state, &env, members, false).await;
+    }
+    // Control frames (receipts, recalls) are never conversation content.
+    if env.receipt.is_some() {
+        return handle_receipt(state, &env).await;
+    }
+    if env.is_recall() {
+        return handle_recall(state, &env, members).await;
+    }
+    handle_content(state, &mut env, members.as_deref()).await
+}
+
+/// 1 + 1.5：客户端只能以自己声明的身份说话，用户通道也不接受系统事件。
+fn sender_allowed(bound_user: &str, env: &Envelope) -> bool {
     if env.sender != bound_user {
         eprintln!(
             "[mq-hub] dropped frame from {bound_user} claiming sender {}",
             env.sender
         );
-        return Ok(());
+        return false;
     }
-
-    // 1.5 用户通道不接受"系统事件"（issue #13）。
-    //
     // `Notice` 与 `kind = System` 在客户端是用来渲染"XX 已成为好友""群已解散"
     // 这类服务端通知的。允许普通账号发它，等于让任何人往别人界面上伪造系统
     // 文案——而且这类帧以前还**跳过** send_gate 与关系过滤。
@@ -1592,285 +1618,214 @@ async fn handle_inbound(
             "[mq-hub] dropped server-only frame from {bound_user} (kind={:?})",
             env.kind
         );
-        return Ok(());
+        return false;
     }
+    true
+}
 
-    // 2. group scoping, before anything is persisted: a message from someone who
-    // is not a member is dropped and never stored (WP-04 A4).
-    // P3：**成员名单也归信箱**（`member_snapshot`）。平台在每次成员变更时全量
-    // 重置快照（建群/拉人/踢人/退群），这里直接读它。
-    //
-    // 信箱里没有成员时（老群、或部署没接信箱）退回平台成员表——这是迁移期
-    // 的兜底，不是第二套真相：一旦成员变更过一次，快照就补上了。
+/// 2. 群成员名单：优先信箱快照，缺失时退回平台成员表（迁移期兜底）。
+async fn resolve_members(
+    state: &Arc<HubState>,
+    env: &Envelope,
+) -> anyhow::Result<Option<Vec<String>>> {
     let from_mailbox = match (&state.mailbox, env.conv_id.starts_with("d-")) {
         (Some(mailbox), false) => mailbox
             .members((wxlike_message::OwnerType::Group, &env.conv_id))
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    let members = if from_mailbox.is_empty() {
-        match &state.membership {
-            Some(membership) => membership.members_of(&env.conv_id).await?,
-            None => None,
-        }
-    } else {
-        Some(from_mailbox)
-    };
-
-    // 2.2 直聊的三元组一致性（issue #13）：sender / to / conv_id 必须自洽。
-    //
-    // `d-<a>~<b>` 里只有 a、b 两个人。以前客户端可以在这条会话里填任意 `to`，
-    // 把"私聊"当成定向投递的跳板；也可以把 `to` 填成自己，制造一条谁也收不到
-    // 的幽灵消息。控制帧（回执/撤回）的 `to` 由 hub 自己填，不做这项检查。
-    if let Some((a, b)) = direct_members(&env.conv_id) {
-        let other = if env.sender == a {
-            Some(b)
-        } else if env.sender == b {
-            Some(a)
-        } else {
-            None
-        };
-        let Some(other) = other else {
-            eprintln!(
-                "[mq-hub] dropped frame from {} who is not in direct conv {}",
-                env.sender, env.conv_id
-            );
-            return Ok(());
-        };
-        if !is_user_control_frame(env) && (env.to.len() != 1 || env.to[0] != other) {
-            eprintln!(
-                "[mq-hub] dropped direct frame with recipients {:?} (conv {} expects [{other}])",
-                env.to, env.conv_id
-            );
-            return Ok(());
-        }
+    if !from_mailbox.is_empty() {
+        return Ok(Some(from_mailbox));
     }
+    match &state.membership {
+        Some(membership) => membership.members_of(&env.conv_id).await,
+        None => Ok(None),
+    }
+}
 
-    // 2.3 用户通道不允许"空收件人广播"（issue #13）。
-    //
-    // 空 `to` 以前意味着"发给本 hub 所有在线用户 + 其他 hub 各一份"。群消息
-    // 靠成员表扇出（`members` 有值），所以这里只拦非群的内容帧。服务端自己的
-    // 广播走 `HubHandle::publish`，不经过这条路径。
+/// 2.2 直聊三元组：sender 必须在 `d-a~b` 里，内容帧的 `to` 必须是另一个人。
+fn direct_shape_ok(env: &Envelope) -> bool {
+    let Some((a, b)) = direct_members(&env.conv_id) else {
+        return true;
+    };
+    let other = if env.sender == a {
+        Some(b)
+    } else if env.sender == b {
+        Some(a)
+    } else {
+        None
+    };
+    let Some(other) = other else {
+        eprintln!(
+            "[mq-hub] dropped frame from {} who is not in direct conv {}",
+            env.sender, env.conv_id
+        );
+        return false;
+    };
+    if !is_user_control_frame(env) && (env.to.len() != 1 || env.to[0] != other) {
+        eprintln!(
+            "[mq-hub] dropped direct frame with recipients {:?} (conv {} expects [{other}])",
+            env.to, env.conv_id
+        );
+        return false;
+    }
+    true
+}
+
+/// 2.3 用户通道不允许空收件人广播；群消息靠成员表扇出。
+fn broadcast_shape_ok(env: &Envelope, members: &Option<Vec<String>>) -> bool {
     if !is_user_control_frame(env) && env.to.is_empty() && members.is_none() {
         eprintln!(
             "[mq-hub] dropped broadcast content frame from {} (conv {})",
             env.sender, env.conv_id
         );
-        return Ok(());
+        return false;
     }
+    true
+}
 
-    // 2.5 P3 delivery policy (blocklist / mute / stranger gate) — content and
-    // typing frames only; receipts, recalls and system (Notice) frames are
-    // exempt. Dropped frames are not persisted, parked or fanned out.
-    let mut env = if let Some(policy) = &state.policy {
-        if !env.is_recall()
-            && env.receipt.is_none()
-            && !matches!(env.body, wxlike_core::MsgBody::Notice(_))
+/// 2.5 P3 投递策略：send gate → 关系裁决 → 群成员复核。
+/// 返回 `None` 表示丢弃（不落库、不暂存、不扇出）。
+async fn gate_content(
+    state: &Arc<HubState>,
+    env: Envelope,
+    members: &Option<Vec<String>>,
+) -> anyhow::Result<Option<Envelope>> {
+    let owned = if let Some(policy) = &state.policy {
+        if env.is_recall()
+            || env.receipt.is_some()
+            || matches!(env.body, wxlike_core::MsgBody::Notice(_))
         {
-            // P4 发送闸门（风控 + 内容审核）：先看"这个人此刻能不能发、
-            // 这条内容能不能投"，再做关系裁决。Throttle/Reject 与超上限的
-            // Sleep 一律丢弃——与拉黑同一处理哲学：不落库、不暂存、不扇出。
-            let text = match &env.body {
-                wxlike_core::MsgBody::Text(t) => t.as_str(),
-                _ => "",
-            };
-            let limiter = policy.rate_limiter_name();
-            match policy.send_gate(&env.sender, &env.conv_id, text).await {
-                crate::SendGate::Allow => {}
-                // Synapse `should_sleep` 同型：先退避再继续投递。上限存在的
-                // 理由是无上限 sleep 会把连接读循环交给策略方任意挂起。
-                crate::SendGate::Sleep { delay_ms }
-                    if delay_ms <= crate::MAX_SEND_GATE_SLEEP_MS =>
-                {
-                    state.metrics.rate_limit_sleep(limiter);
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-                other => {
-                    state.metrics.rate_limit_reject(limiter);
-                    tracing::info!(
-                        hub = %state.hub_id,
-                        from = %env.sender,
-                        conv = %env.conv_id,
-                        gate = ?other,
-                        limiter,
-                        "send gate dropped frame"
-                    );
-                    return Ok(());
-                }
-            }
-            match apply_delivery_policy(state, policy.as_ref(), env, &members).await? {
-                PolicyOutcome::Deliver(owned) => owned,
-                PolicyOutcome::Drop => {
-                    return Ok(());
-                }
-            }
+            env
         } else {
-            env.clone()
+            if !run_send_gate(state, policy.as_ref(), &env).await {
+                return Ok(None);
+            }
+            match apply_delivery_policy(state, policy.as_ref(), env, members).await? {
+                PolicyOutcome::Deliver(owned) => owned,
+                PolicyOutcome::Drop => return Ok(None),
+            }
         }
     } else {
-        env.clone()
+        env
     };
-    if let Some(members) = &members {
-        if !members.iter().any(|m| m == &env.sender) {
+    if let Some(members) = members {
+        if !members.iter().any(|m| m == &owned.sender) {
             eprintln!(
                 "[mq-hub] {} is not a member of group {}; frame dropped",
-                env.sender, env.conv_id
+                owned.sender, owned.conv_id
             );
-            return Ok(());
+            return Ok(None);
         }
     }
+    Ok(Some(owned))
+}
 
-    // Transient signals (typing indicators) are the transitional form of the
-    // P3 `high_priority` channel: routed to whoever is online right now,
-    // never persisted, never parked — a user who connects later must not see
-    // "对方正在输入" from an hour ago (contract §3.5).
-    if env.is_typing() {
-        return route_or_fanout(state, &env, members, false).await;
-    }
-
-    // Control frames (receipts, recalls) are never conversation content: they
-    // are routed, and the dedup cache keeps a replay from notifying twice.
-    if env.receipt.is_some() {
-        if env.msg_id != NO_MSG_ID && state.seen.lock().await.check_and_insert(env.msg_id) {
-            return Ok(());
+/// P4 发送闸门（风控 + 内容审核）：先看"这个人此刻能不能发、这条内容能不能投"。
+async fn run_send_gate(state: &Arc<HubState>, policy: &dyn DeliveryPolicy, env: &Envelope) -> bool {
+    let text = match &env.body {
+        wxlike_core::MsgBody::Text(t) => t.as_str(),
+        _ => "",
+    };
+    let limiter = policy.rate_limiter_name();
+    match policy.send_gate(&env.sender, &env.conv_id, text).await {
+        crate::SendGate::Allow => true,
+        // Synapse `should_sleep` 同型：先退避再继续投递。上限存在的
+        // 理由是无上限 sleep 会把连接读循环交给策略方任意挂起。
+        crate::SendGate::Sleep { delay_ms } if delay_ms <= crate::MAX_SEND_GATE_SLEEP_MS => {
+            state.metrics.rate_limit_sleep(limiter);
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            true
         }
-        let author = match (&state.storage, env.refers_to()) {
-            (Some(store), Some(target)) => store.sender_of(&target)?,
-            _ => None,
-        };
-        // addressed to the original author; `to` is kept as a hint but must not
-        // duplicate the author, or they would be notified twice.
-        let mut recipients: Vec<String> = Vec::with_capacity(env.to.len() + 1);
-        if let Some(author) = author {
-            recipients.push(author);
-        }
-        for rcpt in &env.to {
-            if !recipients.contains(rcpt) {
-                recipients.push(rcpt.clone());
-            }
-        }
-        if recipients.is_empty() {
-            eprintln!("[mq-hub] receipt for an unknown message, dropping");
-            return Ok(());
-        }
-        let mut directed = env.clone();
-        directed.to = recipients;
-        return route_envelope(state, &directed, true).await;
-    }
-
-    if env.is_recall() {
-        if env.msg_id != NO_MSG_ID && state.seen.lock().await.check_and_insert(env.msg_id) {
-            return Ok(());
-        }
-        // Only effective when the store accepts it: an unknown id or a recall
-        // of someone else's message is dropped before it can reach peers, so a
-        // forged recall leaves no trace at all (WP-03 A3).
-        // 信箱里的那份也要撤（时间线与未读都以它为准）
-        if let (Some(mailbox), Some(target)) = (&state.mailbox, env.refers_to()) {
-            let owner = if env.conv_id.starts_with("d-") {
-                wxlike_message::OwnerType::Direct
-            } else {
-                wxlike_message::OwnerType::Group
-            };
-            let _ = mailbox.withdraw((owner, &env.conv_id), &hex::encode(target), &env.sender);
-        }
-        let permitted = match (&state.storage, env.refers_to()) {
-            (Some(store), Some(target)) => store.withdraw(&target, &env.sender)?,
-            // no store on this hub: forward, peers apply it to their own copies
-            (None, _) => true,
-            (Some(_), None) => false,
-        };
-        if !permitted {
-            eprintln!("[mq-hub] recall refused (unknown or not the author's own)");
-            return Ok(());
-        }
-        return route_or_fanout(state, &env, members, true).await;
-    }
-
-    // 3. content frames: **persist, then mark seen, then route**（issue #11）
-    //
-    // 旧顺序是"先 seen.insert，再 append，最后 fanout"，两个后果：
-    // - `append` 失败时 seen 已经标记 → 客户端用同一个 msg_id 重试会被当成
-    //   重复直接 return，消息永久丢失；
-    // - `append` 返回 None（已落库，比如 hub 重启后）也直接 return，跳过 fanout
-    //   → 上一次扇出失败的那批收件人永远补不上。
-    //
-    // 现在：落库成功才标记；标记命中说明"消息已在库里"，**跳过落库但继续扇出**
-    // （收件人按 msg_id 去重，重复投递不会变成两条）。
-    if env.msg_id != NO_MSG_ID {
-        let already_persisted = state.seen.lock().await.contains(env.msg_id);
-        if already_persisted {
-            // 消息已在库里 → 不再落库，但**投递还要补**（issue #11）。
-            //
-            // `fanout_content` 只投 `delivery_outbox` 里还是 pending 的收件人：
-            // 全部投递过 → 一个都不发（`ten_replays` 那条测试要的就是这个），
-            // 上次有收件人失败 → 正好补齐。旧实现在这里直接 return，
-            // 于是"客户端用正确的幂等 id 重试"反而补不上失败的那几个。
-            let msg_key = hex::encode(env.msg_id);
-            let recipients = content_recipients(&env, members.as_deref());
-            if let Some(store) = &state.storage {
-                check_quoted_replay(store, &env)?;
-                store.ensure_deliveries(&msg_key, &recipients)?;
-            }
-            tracing::debug!(
+        other => {
+            state.metrics.rate_limit_reject(limiter);
+            tracing::info!(
                 hub = %state.hub_id,
-                msg = %msg_key,
-                "duplicate msg_id: persisted already, retrying undelivered recipients"
+                from = %env.sender,
+                conv = %env.conv_id,
+                gate = ?other,
+                limiter,
+                "send gate dropped frame"
             );
-            return fanout_content(state, &env, &recipients, &msg_key).await;
+            false
         }
-        if let Some(store) = &state.storage {
-            // 唯一索引决定并发胜者，冲突帧必须在镜像与投递前退出。
-            if store.append(&env, false)?.is_none() {
-                check_quoted_replay(store, &env)?;
-            }
+    }
+}
+
+/// 回执：只回原消息作者（`to` 仅作提示，去重后不再多通知一次）。
+async fn handle_receipt(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result<()> {
+    if env.msg_id != NO_MSG_ID && state.seen.lock().await.check_and_insert(env.msg_id) {
+        return Ok(());
+    }
+    let author = match (&state.storage, env.refers_to()) {
+        (Some(store), Some(target)) => store.sender_of(&target)?,
+        _ => None,
+    };
+    let mut recipients: Vec<String> = Vec::with_capacity(env.to.len() + 1);
+    if let Some(author) = author {
+        recipients.push(author);
+    }
+    for rcpt in &env.to {
+        if !recipients.contains(rcpt) {
+            recipients.push(rcpt.clone());
         }
-        // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
-        // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。
-        //
-        // 顺带把**信箱序列号**写回 envelope：扇出到每个收件人的帧都带同一个
-        // 会话内序号（1,2,3…），客户端因此有了服务端权威的排序，与未读、
-        // ack、sync_plan 用的是同一套编号。之前 seq 是发送方填的（通常 0），
-        // 客户端只能按到达顺序排——多端之间会不一致。
-        if let Some(mailbox) = &state.mailbox {
-            if let Some((type_id, payload)) = wxlike_message::mirror_of(&env) {
-                let owner = if env.conv_id.starts_with("d-") {
-                    wxlike_message::OwnerType::Direct
-                } else {
-                    wxlike_message::OwnerType::Group
-                };
-                let msg_id = hex::encode(env.msg_id);
-                match mailbox.append(
-                    (owner, &env.conv_id),
-                    &env.sender,
-                    &type_id,
-                    &msg_id,
-                    &payload,
-                ) {
-                    Ok(Some(seq)) => env.seq = seq,
-                    // 重复 msg_id：信箱已有这一条，沿用它的序号
-                    Ok(None) => {
-                        if let Ok(seq) = mailbox.head_seq((owner, &env.conv_id)) {
-                            env.seq = seq;
-                        }
-                    }
-                    // 镜像失败不该阻断投递：归档已成功，用户仍能收到消息
-                    Err(err) => eprintln!("[mq-hub] mailbox mirror failed: {err}"),
-                }
-            }
+    }
+    if recipients.is_empty() {
+        eprintln!("[mq-hub] receipt for an unknown message, dropping");
+        return Ok(());
+    }
+    let mut directed = env.clone();
+    directed.to = recipients;
+    route_envelope(state, &directed, true).await
+}
+
+/// 撤回：先撤信箱副本，再让归档裁决（非作者/未知 id 直接丢弃）。
+async fn handle_recall(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    members: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    if env.msg_id != NO_MSG_ID && state.seen.lock().await.check_and_insert(env.msg_id) {
+        return Ok(());
+    }
+    if let (Some(mailbox), Some(target)) = (&state.mailbox, env.refers_to()) {
+        let owner = if env.conv_id.starts_with("d-") {
+            wxlike_message::OwnerType::Direct
+        } else {
+            wxlike_message::OwnerType::Group
+        };
+        let _ = mailbox.withdraw((owner, &env.conv_id), &hex::encode(target), &env.sender);
+    }
+    let permitted = match (&state.storage, env.refers_to()) {
+        (Some(store), Some(target)) => store.withdraw(&target, &env.sender)?,
+        // no store on this hub: forward, peers apply it to their own copies
+        (None, _) => true,
+        (Some(_), None) => false,
+    };
+    if !permitted {
+        eprintln!("[mq-hub] recall refused (unknown or not the author's own)");
+        return Ok(());
+    }
+    route_or_fanout(state, env, members, true).await
+}
+
+/// 3. 内容帧：持久化 → 标记 seen → 登记投递 → 只投还没收到的人。
+async fn handle_content(
+    state: &Arc<HubState>,
+    env: &mut Envelope,
+    members: Option<&[String]>,
+) -> anyhow::Result<()> {
+    if env.msg_id != NO_MSG_ID {
+        if state.seen.lock().await.contains(env.msg_id) {
+            return replay_content(state, env, members).await;
         }
+        persist_content(state, env).await?;
         // **落库完成之后**才标记：这样"落库失败 → 客户端重试"仍然能进来。
         state.seen.lock().await.insert(env.msg_id);
     }
 
-    // 内容帧：登记每个收件人的投递任务，然后**只投还没投出去的人**。
-    //
-    // 这样同一条 msg_id 重放时：已收到的人不会再收一遍（`ten_replays` 那条
-    // 测试盯的就是这个），而上次失败的收件人会被补齐（issue #11）。
-    let recipients = content_recipients(&env, members.as_deref());
+    let recipients = content_recipients(env, members);
     // 没有 msg_id 的老帧（v1）没有投递任务可查：空串 = "不走 outbox"。
-    // 直接 `hex::encode(NO_MSG_ID)` 会得到一串 0，查出来是空列表，
-    // 于是被当成"全都投递过"而一条都不发。
     let msg_key = if env.msg_id == NO_MSG_ID {
         String::new()
     } else {
@@ -1879,7 +1834,72 @@ async fn handle_inbound(
     if let (Some(store), false) = (&state.storage, env.msg_id == NO_MSG_ID) {
         store.ensure_deliveries(&msg_key, &recipients)?;
     }
-    fanout_content(state, &env, &recipients, &msg_key).await
+    fanout_content(state, env, &recipients, &msg_key).await
+}
+
+/// 已落库的重放：跳过 append/mirror，只补投上次失败的收件人。
+async fn replay_content(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    members: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let msg_key = hex::encode(env.msg_id);
+    let recipients = content_recipients(env, members);
+    if let Some(store) = &state.storage {
+        check_quoted_replay(store, env)?;
+        store.ensure_deliveries(&msg_key, &recipients)?;
+    }
+    tracing::debug!(
+        hub = %state.hub_id,
+        msg = %msg_key,
+        "duplicate msg_id: persisted already, retrying undelivered recipients"
+    );
+    fanout_content(state, env, &recipients, &msg_key).await
+}
+
+/// 归档 + 信箱镜像。`append` 的唯一索引决定并发胜者；镜像失败不阻断投递。
+async fn persist_content(state: &Arc<HubState>, env: &mut Envelope) -> anyhow::Result<()> {
+    if let Some(store) = &state.storage {
+        // 唯一索引决定并发胜者，冲突帧必须在镜像与投递前退出。
+        if store.append(env, false)?.is_none() {
+            check_quoted_replay(store, env)?;
+        }
+    }
+    // 镜像进信箱（读扩散的唯一真相）。`d-` 前缀 = 直聊，其余按群处理；
+    // 频道的消息不走这里（由 platform::send_channel_message 直接写信箱）。
+    //
+    // 顺带把**信箱序列号**写回 envelope：扇出到每个收件人的帧都带同一个
+    // 会话内序号（1,2,3…），客户端因此有了服务端权威的排序，与未读、
+    // ack、sync_plan 用的是同一套编号。之前 seq 是发送方填的（通常 0），
+    // 客户端只能按到达顺序排——多端之间会不一致。
+    if let Some(mailbox) = &state.mailbox {
+        if let Some((type_id, payload)) = wxlike_message::mirror_of(env) {
+            let owner = if env.conv_id.starts_with("d-") {
+                wxlike_message::OwnerType::Direct
+            } else {
+                wxlike_message::OwnerType::Group
+            };
+            let msg_id = hex::encode(env.msg_id);
+            match mailbox.append(
+                (owner, &env.conv_id),
+                &env.sender,
+                &type_id,
+                &msg_id,
+                &payload,
+            ) {
+                Ok(Some(seq)) => env.seq = seq,
+                // 重复 msg_id：信箱已有这一条，沿用它的序号
+                Ok(None) => {
+                    if let Ok(seq) = mailbox.head_seq((owner, &env.conv_id)) {
+                        env.seq = seq;
+                    }
+                }
+                // 镜像失败不该阻断投递：归档已成功，用户仍能收到消息
+                Err(err) => eprintln!("[mq-hub] mailbox mirror failed: {err}"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 内容帧的收件人：群按成员表（去掉发送者），直聊按 `to`。
