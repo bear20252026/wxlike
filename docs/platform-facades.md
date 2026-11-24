@@ -1,6 +1,6 @@
 # Platform 门面归属表
 
-`Platform` 的公开方法已经压到 53 个，但“少”不等于“有结构”。这份表把每个
+`Platform` 的公开方法已经压到 47 个，但“少”不等于“有结构”。这份表把每个
 公开方法归到一个门面，作为后续拆 trait / 收敛组合根的边界。
 
 ## 归属
@@ -10,13 +10,13 @@
 | Account | `sessions` / `security` / `recovery` / `devices` | 11 |
 | Messaging | `read` / `notification` | 4 |
 | Media | `video_refs` | 1 |
-| Wallet | `wallet` | 6 |
+| Wallet | `wallet` | 0 |
 | Governance | `report` / `audit` / `secret` / `perms` / `trust` | 8 |
 | Realtime | `call` / `live` | 2 |
 | Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 21 |
 | Health | 组合根自身（readiness） | 0 |
 
-合计 **53**。
+合计 **47**。
 
 ## 规则
 
@@ -170,12 +170,19 @@ pub trait SocialRelations {
 
 Social 公开面 21（裁掉 5 条），总公开面 62→**53**。
 
+## Wallet 切片
+
+`fund` / `transfer` / `wallet_balance` 有真实平台外调用（commerce HTTP、ledger
+守恒测试、server），红包与总量只有验收用例在用；九条同属一张账，整体切成
+`WalletLedger`，`RedpacketRow` 从 crate 根再导出。Wallet 公开面 6→**0**，
+总公开面 53→**47**。
+
 ## 下一步
 
 - Account 继续把 `create_session` / `create_session_for_device` 并入
   `AccountSessions`（24 + 2 处，几乎全是平台集成测试）；
-- Wallet 的 `fund` / `transfer` / `wallet_balance` 有真实平台外调用（commerce HTTP、
-  ledger 守恒测试），等 ledger 端口化时一起收成 `WalletLedger`；
+- Wallet 已整张账切进 `WalletLedger`（9 个方法，公开面 6→0）；后续 ledger 端口化
+  只需替换 trait 实现，不动调用方；
 - Communities 的 `create_community` / `join_community` / `create_channel` 等
   13 个方法只有集成测试在调，适合连测试一起搬进 domain 单测再降可见性；
 - TOTP/recovery 面（`totp_confirm` / `solve_captcha` 等）被 admin 与验收用例共用，
