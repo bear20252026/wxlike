@@ -174,9 +174,9 @@ fn mask_pg_url(url: &str) -> String {
 
 /// PostgreSQL 连接句柄（G00-04 S2 的第二段）。
 ///
-/// 现有 `Db` / 51 个 repo 函数仍只认 `&rusqlite::Connection`，所以这里**不是**
+/// 现有 `Db` 与仍在迁移中的 repo 批次还只认 `&rusqlite::Connection`，所以这里**不是**
 /// `Db` 的替代，而是给新端口（`PostgresUsersRepo` / `PostgresSessionsRepo`）
-/// 用的连接池。等 repo 全量改造时，再让 `Db` 持有它并统一 `lock()` 的返回类型。
+/// 用的连接池。等 repo 全量改造时，再让 `Db` 持有它并统一 `acquire()` 的返回类型。
 ///
 /// 端口方法目前是同步 trait；sqlx 是异步 API，所以这里在专属 runtime 上
 /// `block_on`。调用点必须把它放在阻塞上下文（`Db::blocking` / 普通线程）里；
@@ -228,9 +228,9 @@ impl PostgresPool {
 
 /// 连接/事务入口：SQLite 交出旧守卫，PG 交出连接池句柄。
 ///
-/// 为什么还不完全屏蔽 rusqlite：repo 层仍直接吃 `&Connection`，所以 SQLite
-/// 变体只能包 `MutexGuard<'_, Connection>`。等 51 个 repo 改造完，
-/// `Postgres` 变体再收窄成 sqlx 事务，这个枚举才真正把方言差异挡在端口后面。
+/// 为什么还不完全屏蔽 rusqlite：repo 层仍在分批迁移，未迁移的函数直接吃
+/// `&Connection`，所以 SQLite 变体只能包 `MutexGuard<'_, Connection>`。等 repo
+/// 全量迁移完，`Postgres` 变体再收窄成 sqlx 事务，这个枚举才真正把方言差异挡在端口后面。
 pub enum StorageConnection<'a> {
     Sqlite(MutexGuard<'a, Connection>),
     /// 事务内的借用：`with_tx` 闭包只给 `&Transaction`，repo 要能用同一组
@@ -246,6 +246,12 @@ impl<'a> StorageConnection<'a> {
     /// `Connection`，这里只保留连接借用，端口方法不需要事务对象本身。
     pub(crate) fn sqlite_tx(tx: &'a rusqlite::Transaction<'_>) -> Self {
         Self::SqliteTx(tx)
+    }
+
+    /// 从已借出的 `&Connection` 构造端口值，用于仍以旧签名接收连接的
+    /// repo 内部再调用已迁移的端口函数。
+    pub(crate) fn sqlite_borrow(conn: &'a Connection) -> Self {
+        Self::SqliteTx(conn)
     }
 
     /// 取出 SQLite 连接。PG 变体明确返回受控错误，而不是 panic 或静默降级。

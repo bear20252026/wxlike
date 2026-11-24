@@ -251,7 +251,8 @@ pub(in crate::domain) fn clear_owner(conn: &Connection, owner: &str, now: i64) -
         )?;
         crate::domain::repo::content_index::remove(conn, id)?;
         crate::domain::repo::content_index::remove_media_refs(conn, "status", id)?;
-        crate::domain::repo::favorites::revoke_source(conn, "status", id)?;
+        let port = crate::storage::StorageConnection::sqlite_borrow(conn);
+        crate::domain::repo::favorites::revoke_source(&port, "status", id)?;
     }
     Ok(ids.len())
 }
