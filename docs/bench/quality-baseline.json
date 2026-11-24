@@ -1,11 +1,11 @@
 {
  "total_files": 472,
- "total_lines": 142971,
- "fn_total": 6814,
- "count_len_gt30": 619,
+ "total_lines": 142977,
+ "fn_total": 6816,
+ "count_len_gt30": 618,
  "count_len_gt60": 43,
  "count_len_gt100": 0,
- "count_nest_gt3": 69,
+ "count_nest_gt3": 68,
  "count_mixed_sql_http": 1,
  "magic_total": 172,
  "magic_unique": 55,
@@ -30,7 +30,6 @@
   "crates/features/relations/src/port.rs::apply_delta",
   "crates/features/relations/src/port.rs::parse",
   "crates/ffi/src/client.rs::conversations",
-  "crates/ffi/src/client.rs::send_now",
   "crates/ffi/src/client.rs::spawn_pump",
   "crates/ledger/src/lib.rs::open_connection",
   "crates/mcp/src/server.rs::execute_tool",
@@ -585,17 +584,6 @@
    "pub": true
   },
   {
-   "file": "crates/ffi/src/client.rs",
-   "name": "send_now",
-   "line": 251,
-   "len": 52,
-   "nest": 5,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
    "file": "crates/rtc/src/call.rs",
    "name": "check_deadlines",
    "line": 401,
@@ -825,6 +813,17 @@
    "http": true,
    "io": false,
    "pub": false
+  },
+  {
+   "file": "crates/net/src/offline.rs",
+   "name": "open",
+   "line": 181,
+   "len": 45,
+   "nest": 4,
+   "sql": true,
+   "http": false,
+   "io": true,
+   "pub": true
   }
  ],
  "mixed_fns": [

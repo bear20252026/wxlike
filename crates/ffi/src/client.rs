@@ -244,60 +244,66 @@ impl WxlikeClient {
         }
     }
 
+    /// 成功路径：队列状态与本地缓存各自记账，失败只进 notes。
+    fn complete_sent(&self, task: &OutboxTask, msg_id: String) -> SendOutcome {
+        let mut notes: Vec<String> = Vec::new();
+        if let Err(err) = self.outbox.mark_sent(&task.task_id) {
+            // 下一轮会用同一个幂等键重发，服务端返回第一次的结果，
+            // 所以"重复发"在这里是安全的，"看不见失败"才危险。
+            notes.push(format!("已发送但队列状态没写成 sent（会幂等重发）: {err}"));
+        }
+        let mut row = message_of(task, &self.my_id());
+        row.msg_id = msg_id.clone();
+        if let Err(err) = self.cache.put_sent(&row) {
+            notes.push(format!("已发送但本地缓存没写上: {err}"));
+        }
+        SendOutcome {
+            task_id: task.task_id.clone(),
+            state: OutboxState::Sent,
+            msg_id,
+            error: notes.join("; "),
+        }
+    }
+
+    /// 失败路径：可重试的写退避，不可重试的直接判死；写不进去也进 notes。
+    fn complete_failure(&self, task: &OutboxTask, failure: SendFailure) -> SendOutcome {
+        let mut notes: Vec<String> = Vec::new();
+        let state = if failure.retryable {
+            match self
+                .outbox
+                .record_failure(&task.task_id, &failure.message, Self::now_ms())
+            {
+                // None = 退避次数用尽，队列自己已经标成 failed
+                Ok(None) => OutboxState::Failed,
+                Ok(Some(_)) => OutboxState::Pending,
+                Err(err) => {
+                    notes.push(format!("退避状态没写上: {err}"));
+                    OutboxState::Pending
+                }
+            }
+        } else {
+            if let Err(err) = self.outbox.mark_failed(&task.task_id, &failure.message) {
+                notes.push(format!("失败状态没写上: {err}"));
+            }
+            OutboxState::Failed
+        };
+        notes.insert(0, failure.message);
+        SendOutcome {
+            task_id: task.task_id.clone(),
+            state,
+            msg_id: String::new(),
+            error: notes.join("; "),
+        }
+    }
+
     /// 发一条并落地：成功 → `sent` + 本地占位行；失败 → 按错误语义决定重试还是判死。
     ///
     /// 队列状态写不进去时不咽下去，把它拼进 `error`：那条消息**已经**在服务端了，
     /// UI 必须同时知道"发出去了"和"本地状态没落上"。
     fn send_now(&self, task: &OutboxTask) -> SendOutcome {
-        let mut notes: Vec<String> = Vec::new();
         match self.try_send(task) {
-            Ok(msg_id) => {
-                if let Err(err) = self.outbox.mark_sent(&task.task_id) {
-                    // 下一轮会用同一个幂等键重发，服务端返回第一次的结果，
-                    // 所以"重复发"在这里是安全的，"看不见失败"才危险。
-                    notes.push(format!("已发送但队列状态没写成 sent（会幂等重发）: {err}"));
-                }
-                let mut row = message_of(task, &self.my_id());
-                row.msg_id = msg_id.clone();
-                if let Err(err) = self.cache.put_sent(&row) {
-                    notes.push(format!("已发送但本地缓存没写上: {err}"));
-                }
-                SendOutcome {
-                    task_id: task.task_id.clone(),
-                    state: OutboxState::Sent,
-                    msg_id,
-                    error: notes.join("; "),
-                }
-            }
-            Err(failure) => {
-                let state = if failure.retryable {
-                    match self.outbox.record_failure(
-                        &task.task_id,
-                        &failure.message,
-                        Self::now_ms(),
-                    ) {
-                        // None = 退避次数用尽，队列自己已经标成 failed
-                        Ok(None) => OutboxState::Failed,
-                        Ok(Some(_)) => OutboxState::Pending,
-                        Err(err) => {
-                            notes.push(format!("退避状态没写上: {err}"));
-                            OutboxState::Pending
-                        }
-                    }
-                } else {
-                    if let Err(err) = self.outbox.mark_failed(&task.task_id, &failure.message) {
-                        notes.push(format!("失败状态没写上: {err}"));
-                    }
-                    OutboxState::Failed
-                };
-                notes.insert(0, failure.message);
-                SendOutcome {
-                    task_id: task.task_id.clone(),
-                    state,
-                    msg_id: String::new(),
-                    error: notes.join("; "),
-                }
-            }
+            Ok(msg_id) => self.complete_sent(task, msg_id),
+            Err(failure) => self.complete_failure(task, failure),
         }
     }
 }
