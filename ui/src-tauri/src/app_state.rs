@@ -173,6 +173,56 @@ async fn recv_pump_loop<R: tauri::Runtime>(
     }
 }
 
+/// 重发泵线程主体：每秒读一次连接槽，按自适应心跳采样，再冲一轮队列。
+fn run_outbox_pump<R: tauri::Runtime>(
+    outbox: Arc<wxlike_core::outbox::Outbox>,
+    client_slot: Arc<Mutex<Option<Client>>>,
+    local: Arc<Mutex<Option<LocalStore>>>,
+    secret: Arc<Mutex<Option<SecretStore>>>,
+    avalanche: Arc<wxlike_net::avalanche::Avalanche>,
+    app: tauri::AppHandle<R>,
+) {
+    use tauri::Emitter as _;
+    let mut next_sample = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let client = client_slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(client) = client else {
+            continue;
+        };
+        // 自适应心跳：按策略给的时间点采一次 RTT/存活状态。
+        // 收敛结果在**下一次连接**时生效——QUIC 的 TransportConfig 是
+        // 连接级不可变的，改不了已建连接的保活间隔。
+        if std::time::Instant::now() >= next_sample {
+            let interval = client.sample_heartbeat();
+            next_sample = std::time::Instant::now() + interval;
+        }
+        let now = wxlike_core::types::now_ms() as i64;
+        let report = outbox.flush_with(now, 20, |task| {
+            flush_outbox_task(&client, &secret, &local, &avalanche, task, now)
+        });
+        let Ok(report) = report else {
+            continue;
+        };
+        if report.sent > 0 || report.failed > 0 || report.throttled > 0 {
+            let pending = outbox.pending_count().unwrap_or(0);
+            let _ = app.emit(
+                "im-outbox",
+                serde_json::json!({
+                    "sent": report.sent,
+                    "retrying": report.retrying,
+                    "failed": report.failed,
+                    "throttled": report.throttled,
+                    "pending": pending,
+                }),
+            );
+        }
+    }
+}
+
 impl AppState {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -564,44 +614,7 @@ impl AppState {
         let secret = self.secret.clone();
         let avalanche = self.avalanche.clone();
         std::thread::spawn(move || {
-            use tauri::Emitter as _;
-            let mut next_sample = std::time::Instant::now();
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                let client = client_slot
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
-                let Some(client) = client else {
-                    continue;
-                };
-                // 自适应心跳：按策略给的时间点采一次 RTT/存活状态。
-                // 收敛结果在**下一次连接**时生效——QUIC 的 TransportConfig 是
-                // 连接级不可变的，改不了已建连接的保活间隔。
-                if std::time::Instant::now() >= next_sample {
-                    let interval = client.sample_heartbeat();
-                    next_sample = std::time::Instant::now() + interval;
-                }
-                let now = wxlike_core::types::now_ms() as i64;
-                let report = outbox.flush_with(now, 20, |task| {
-                    flush_outbox_task(&client, &secret, &local, &avalanche, task, now)
-                });
-                if let Ok(report) = report {
-                    if report.sent > 0 || report.failed > 0 || report.throttled > 0 {
-                        let pending = outbox.pending_count().unwrap_or(0);
-                        let _ = app.emit(
-                            "im-outbox",
-                            serde_json::json!({
-                                "sent": report.sent,
-                                "retrying": report.retrying,
-                                "failed": report.failed,
-                                "throttled": report.throttled,
-                                "pending": pending,
-                            }),
-                        );
-                    }
-                }
-            }
+            run_outbox_pump(outbox, client_slot, local, secret, avalanche, app);
         });
     }
 
