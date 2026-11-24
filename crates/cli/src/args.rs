@@ -129,22 +129,33 @@ struct Parser {
 /// 把参数列表解析成 [`Invocation`]。
 pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
     let mut p = Parser::default();
-    let mut i = 0;
-    while i < args.len() {
-        match p.step(args, i)? {
-            Step::Next(n) => i += n,
-            Step::Help => {
-                return Ok(Invocation {
-                    options: p.options,
-                    command: Command::Help(p.positional.first().cloned()),
-                })
-            }
-        }
+    if scan(&mut p, args)? {
+        return Ok(p.help_invocation());
     }
     p.finish()
 }
 
+/// 逐个吃参数；遇到 `-h` / `--help` 返回 `true`，由调用方立刻组 Help。
+fn scan(p: &mut Parser, args: &[String]) -> Result<bool, UsageError> {
+    let mut i = 0;
+    while i < args.len() {
+        match p.step(args, i)? {
+            Step::Next(n) => i += n,
+            Step::Help => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
 impl Parser {
+    /// `--help` 的返回：命令取第一个位置参数（可能没有）。
+    fn help_invocation(self) -> Invocation {
+        Invocation {
+            options: self.options,
+            command: Command::Help(self.positional.first().cloned()),
+        }
+    }
+
     /// 吃一个参数（带值的吃两个）。
     fn step(&mut self, args: &[String], i: usize) -> Result<Step, UsageError> {
         let arg = args[i].as_str();

@@ -520,20 +520,23 @@ fn build_hub_state(hub_id: String, router: MqRouter, options: MqHubOptions) -> A
 
 /// QUIC accept loop：每个进来的连接单独起一个 `serve_conn` 任务。
 fn spawn_accept_loop(endpoint: quinn::Endpoint, state: Arc<HubState>) -> JoinHandle<()> {
+    tokio::spawn(accept_loop(endpoint, state))
+}
+
+async fn accept_loop(endpoint: quinn::Endpoint, state: Arc<HubState>) {
+    while let Some(incoming) = endpoint.accept().await {
+        let Ok(conn) = incoming.await else { continue };
+        spawn_conn_task(conn, state.clone());
+    }
+}
+
+/// 一条连接一个任务；连接级错误只记一行。
+fn spawn_conn_task(conn: quinn::Connection, state: Arc<HubState>) {
     tokio::spawn(async move {
-        loop {
-            let Some(incoming) = endpoint.accept().await else {
-                break;
-            };
-            let Ok(conn) = incoming.await else { continue };
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(err) = serve_conn(conn, state).await {
-                    eprintln!("[mq-hub] conn error: {err:#}");
-                }
-            });
+        if let Err(err) = serve_conn(conn, state).await {
+            eprintln!("[mq-hub] conn error: {err:#}");
         }
-    })
+    });
 }
 
 /// queue consume loop：消费其他 hub 路由到本 hub 的帧。
@@ -587,18 +590,20 @@ async fn deliver_and_ack(
 /// 无 ack 能力的 memory 后端（仅测试/单机）：投递失败只能留日志。
 async fn consume_memory(state: Arc<HubState>, queue: String) {
     loop {
-        match state.router.mq.consume(&queue).await {
-            Ok(bytes) => {
-                if let Err(err) = deliver_bytes(&state, &bytes).await {
-                    eprintln!("[mq-hub] deliver failed (no-ack backend): {err:#}");
-                }
-            }
-            Err(err) => {
-                eprintln!("[mq-hub] consume error: {err:#}");
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
+        if let Err(err) = consume_memory_once(&state, &queue).await {
+            eprintln!("[mq-hub] consume error: {err:#}");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
+}
+
+/// 消费一条并投递；投递失败只记日志（无 ack 后端没有重投通道）。
+async fn consume_memory_once(state: &Arc<HubState>, queue: &str) -> anyhow::Result<()> {
+    let bytes = state.router.mq.consume(queue).await?;
+    if let Err(err) = deliver_bytes(state, &bytes).await {
+        eprintln!("[mq-hub] deliver failed (no-ack backend): {err:#}");
+    }
+    Ok(())
 }
 
 /// patrol: reclaim entries a dead consumer never acknowledged.
@@ -697,17 +702,19 @@ async fn renew_one_route(
 /// 留一周足够覆盖客户端重试窗口，再老的删掉——否则表只增不减。
 fn spawn_delivery_prune(state: Arc<HubState>) -> Option<JoinHandle<()>> {
     let store = state.storage.clone()?;
-    let period = DELIVERY_RETENTION_MS as u64 / 4;
-    Some(tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(period)).await;
-            match store.prune_deliveries(DELIVERY_RETENTION_MS) {
-                Ok(0) => {}
-                Ok(n) => tracing::debug!(rows = n, "pruned delivery outbox"),
-                Err(err) => eprintln!("[mq-hub] prune delivery outbox failed: {err:#}"),
-            }
+    Some(tokio::spawn(prune_deliveries_loop(store)))
+}
+
+async fn prune_deliveries_loop(store: Arc<Store>) {
+    let period = DELIVERY_RETENTION_MS / 4;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(period as u64)).await;
+        match store.prune_deliveries(DELIVERY_RETENTION_MS) {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!(rows = n, "pruned delivery outbox"),
+            Err(err) => eprintln!("[mq-hub] prune delivery outbox failed: {err:#}"),
         }
-    }))
+    }
 }
 
 /// Decode and route one payload taken off the queue.

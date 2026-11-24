@@ -138,20 +138,8 @@ impl Moderator {
     pub fn new(rules: Vec<Rule>) -> Self {
         let mut nodes = vec![Node::default()];
         for rule in &rules {
-            let mut cur = 0usize;
-            for ch in rule.term.chars() {
-                let next = match nodes[cur].children.get(&ch) {
-                    Some(&idx) => idx,
-                    None => {
-                        nodes.push(Node::default());
-                        let idx = nodes.len() - 1;
-                        nodes[cur].children.insert(ch, idx);
-                        idx
-                    }
-                };
-                cur = next;
-            }
-            nodes[cur].ends.push((rule.label.clone(), rule.severity));
+            let end = insert_term(&mut nodes, &rule.term);
+            nodes[end].ends.push((rule.label.clone(), rule.severity));
         }
         Self { nodes, rules }
     }
@@ -336,6 +324,26 @@ pub fn normalize(input: &str) -> String {
 fn is_cjk(ch: char) -> bool {
     matches!(ch as u32,
         0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+}
+
+/// 把词逐字插进 trie，返回词尾节点下标（已有前缀就复用）。
+fn insert_term(nodes: &mut Vec<Node>, term: &str) -> usize {
+    let mut cur = 0usize;
+    for ch in term.chars() {
+        cur = child_or_insert(nodes, cur, ch);
+    }
+    cur
+}
+
+/// 取 `cur` 的 `ch` 子节点；没有就新建一个。
+fn child_or_insert(nodes: &mut Vec<Node>, cur: usize, ch: char) -> usize {
+    if let Some(&idx) = nodes[cur].children.get(&ch) {
+        return idx;
+    }
+    nodes.push(Node::default());
+    let idx = nodes.len() - 1;
+    nodes[cur].children.insert(ch, idx);
+    idx
 }
 
 #[cfg(test)]

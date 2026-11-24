@@ -132,19 +132,23 @@ impl AudioLeg {
 
     /// 把麦克风攒下的 PCM 帧编码后写进媒体会话。
     fn pump_mic(&mut self, host: &mut CallHost, call_id: &str) {
-        let Some(codec) = self.codec.as_mut() else {
+        // 先把编解码器取出来，避免 `self.sent` 与它的可变借用打架。
+        let Some(mut codec) = self.codec.take() else {
             return;
         };
         while let Ok(pcm) = self.rx.try_recv() {
             match codec.encode(&pcm) {
-                Ok(bytes) => {
-                    // 还没连上时 write_audio 会报错：正常，丢帧即可
-                    if host.write_audio(call_id, &bytes).is_ok() {
-                        self.sent += 1;
-                    }
-                }
+                Ok(bytes) => self.write_frame(host, call_id, &bytes),
                 Err(err) => eprintln!("[call] Opus 编码失败: {err}"),
             }
+        }
+        self.codec = Some(codec);
+    }
+
+    /// 一帧编码结果写进会话；还没连上时 `write_audio` 会报错，丢帧即可。
+    fn write_frame(&mut self, host: &mut CallHost, call_id: &str, bytes: &[u8]) {
+        if host.write_audio(call_id, bytes).is_ok() {
+            self.sent += 1;
         }
     }
 

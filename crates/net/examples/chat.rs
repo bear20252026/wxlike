@@ -10,21 +10,24 @@ use wxlike_core::{Envelope, MsgId};
 use wxlike_net::Client;
 
 /// 后台收包：每条消息打印并把最后一条留给 `:read`。
-fn spawn_reader(reader: Client, state: Arc<Mutex<Option<Envelope>>>) {
+fn spawn_reader(mut reader: Client, state: Arc<Mutex<Option<Envelope>>>) {
     tokio::spawn(async move {
-        loop {
-            match reader.next_envelope().await {
-                Ok(env) => {
-                    println!("[{}] {}: {}", env.conv_id, env.sender, text_of(&env));
-                    *state.lock().expect("demo lock") = Some(env);
-                }
-                Err(e) => {
-                    eprintln!("[recv] closed: {e}");
-                    break;
-                }
-            }
+        while let Some(env) = next_or_log(&mut reader).await {
+            println!("[{}] {}: {}", env.conv_id, env.sender, text_of(&env));
+            *state.lock().expect("demo lock") = Some(env);
         }
     });
+}
+
+/// 拉一条；断线就记一行并返回 `None`，让收包循环退出。
+async fn next_or_log(reader: &mut Client) -> Option<Envelope> {
+    match reader.next_envelope().await {
+        Ok(env) => Some(env),
+        Err(e) => {
+            eprintln!("[recv] closed: {e}");
+            None
+        }
+    }
 }
 
 /// 处理 `:recall` / `:read`；返回 true 表示这一行已被消费。

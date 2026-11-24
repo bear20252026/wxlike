@@ -392,15 +392,20 @@ impl MediaService {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(every).await;
-                let svc = Arc::clone(&self);
-                match tokio::task::spawn_blocking(move || svc.run_due_jobs(batch)).await {
-                    Ok(Ok(0)) => {}
-                    Ok(Ok(n)) => tracing::info!(jobs = n, "media 作业循环：一轮做完"),
-                    Ok(Err(err)) => tracing::warn!(error = %err, "media 作业循环：一轮失败"),
-                    Err(err) => tracing::warn!(error = %err, "media 作业循环：扫描线程崩了"),
-                }
+                Self::worker_round(&self, batch).await;
             }
         })
+    }
+
+    /// 一轮：把到点的作业整段丢进阻塞池跑，结果只记日志。
+    async fn worker_round(self: &Arc<Self>, batch: u32) {
+        let svc = Arc::clone(self);
+        match tokio::task::spawn_blocking(move || svc.run_due_jobs(batch)).await {
+            Ok(Ok(0)) => {}
+            Ok(Ok(n)) => tracing::info!(jobs = n, "media 作业循环：一轮做完"),
+            Ok(Err(err)) => tracing::warn!(error = %err, "media 作业循环：一轮失败"),
+            Err(err) => tracing::warn!(error = %err, "media 作业循环：扫描线程崩了"),
+        }
     }
 
     fn claim_job(&self, job_id: &str, now: i64) -> Result<bool> {

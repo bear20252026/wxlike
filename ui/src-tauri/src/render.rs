@@ -90,30 +90,40 @@ pub(crate) fn render_event_with(
     secret: &Mutex<Option<SecretStore>>,
     own_text: Option<&str>,
 ) -> serde_json::Value {
-    let mut payload = serde_json::json!({
+    let mut payload = base_payload(env);
+    if let Some(receipt) = env.receipt {
+        payload["kind"] = "receipt".into();
+        payload["receipt"] = receipt_payload(env, receipt);
+        return payload;
+    }
+    render_body(&mut payload, env, secret, own_text);
+    payload
+}
+
+/// 每条信封都带的外层字段。
+fn base_payload(env: &Envelope) -> serde_json::Value {
+    serde_json::json!({
         "sender": env.sender,
         "conv_id": env.conv_id,
         "seq": env.seq,
         "sent_at_ms": env.sent_at_ms,
         "msg_id": hex_str(&env.msg_id),
         "quote_of": env.quote_of.map(|m| hex_str(&m)),
-    });
-    if let Some(receipt) = env.receipt {
-        payload["kind"] = "receipt".into();
-        payload["receipt"] = serde_json::json!({
-            "state": match receipt {
-                wxlike_core::Receipt::Delivered => "delivered",
-                wxlike_core::Receipt::Read { .. } => "read",
-            },
-            "target": env
-                .refers_to()
-                .map(|m| hex_str(&m))
-                .unwrap_or_default(),
-        });
-        return payload;
-    }
-    render_body(&mut payload, env, secret, own_text);
-    payload
+    })
+}
+
+/// 回执事件的 `receipt` 子对象：状态名 + 被回执的消息 id。
+fn receipt_payload(env: &Envelope, receipt: wxlike_core::Receipt) -> serde_json::Value {
+    serde_json::json!({
+        "state": match receipt {
+            wxlike_core::Receipt::Delivered => "delivered",
+            wxlike_core::Receipt::Read { .. } => "read",
+        },
+        "target": env
+            .refers_to()
+            .map(|m| hex_str(&m))
+            .unwrap_or_default(),
+    })
 }
 
 /// Standalone decryption used by [`render_event_with`] (kept separate so the

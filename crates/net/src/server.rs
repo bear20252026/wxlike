@@ -38,26 +38,30 @@ pub async fn run_hub(addr: std::net::SocketAddr) -> anyhow::Result<Hub> {
     let next_id = Arc::new(Mutex::new(0u64));
 
     let ep = endpoint.clone();
-    let accept_loop = tokio::spawn(async move {
-        loop {
-            let Some(incoming) = ep.accept().await else {
-                break;
-            };
-            let Ok(conn) = incoming.await else { continue };
-            let peers = peers.clone();
-            let next_id = next_id.clone();
-            tokio::spawn(async move {
-                if let Err(err) = serve_conn(conn, peers, next_id).await {
-                    eprintln!("[hub] conn error: {err:#}");
-                }
-            });
-        }
-    });
+    let accept_loop = tokio::spawn(accept_loop(ep, peers, next_id));
 
     Ok(Hub {
         endpoint,
         accept_loop,
     })
+}
+
+/// 接一个新连接就起一个 `serve_conn` 任务；accept 返回 `None` 时退出。
+async fn accept_loop(
+    ep: quinn::Endpoint,
+    peers: Arc<Mutex<HashMap<u64, Arc<Mutex<quinn::SendStream>>>>>,
+    next_id: Arc<Mutex<u64>>,
+) {
+    while let Some(incoming) = ep.accept().await {
+        let Ok(conn) = incoming.await else { continue };
+        let peers = peers.clone();
+        let next_id = next_id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = serve_conn(conn, peers, next_id).await {
+                eprintln!("[hub] conn error: {err:#}");
+            }
+        });
+    }
 }
 
 async fn serve_conn(

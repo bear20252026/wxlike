@@ -365,21 +365,20 @@ impl SqliteStorage {
 
 /// 建连接：`None` 是内存库；文件路径先建父目录，再交给 SQLite。
 fn open_sqlite(path: Option<&str>) -> Result<Connection> {
-    match path {
-        Some(p) => {
-            if let Some(dir) = std::path::Path::new(p).parent() {
-                if !dir.as_os_str().is_empty() {
-                    std::fs::create_dir_all(dir)?;
-                }
-            }
-            let conn = Connection::open(p)?;
-            Ok(conn)
-        }
-        None => {
-            let conn = Connection::open_in_memory()?;
-            Ok(conn)
+    let Some(p) = path else {
+        return Ok(Connection::open_in_memory()?);
+    };
+    ensure_parent_dir(p)?;
+    Ok(Connection::open(p)?)
+}
+
+fn ensure_parent_dir(path: &str) -> Result<()> {
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
         }
     }
+    Ok(())
 }
 
 /// 连接级设置：WAL、外键、忙等，以及慢查询 trace；必须在迁移链之前完成。

@@ -212,18 +212,25 @@ fn map_verdict(cfg: &RiskConfig, action: Action, stored: StoreVerdict) -> Verdic
     let limits = limits(cfg, action);
     match stored {
         StoreVerdict::Allow => Verdict::Allow,
-        StoreVerdict::Deny { .. } => Verdict::Deny {
+        StoreVerdict::Deny { .. } => denied(&limits),
+        StoreVerdict::Throttle { retry_after_ms } => throttled(&limits, retry_after_ms),
+    }
+}
+
+fn denied(limits: &Limits) -> Verdict {
+    Verdict::Deny {
+        reason: limits.reason.into(),
+    }
+}
+
+/// 被限流时：配了验证码就升级成 Challenge，否则按存储给的等待时长限流。
+fn throttled(limits: &Limits, retry_after_ms: u64) -> Verdict {
+    if limits.captcha {
+        Verdict::Challenge {
             reason: limits.reason.into(),
-        },
-        StoreVerdict::Throttle { retry_after_ms } => {
-            if limits.captcha {
-                Verdict::Challenge {
-                    reason: limits.reason.into(),
-                }
-            } else {
-                Verdict::Throttle { retry_after_ms }
-            }
         }
+    } else {
+        Verdict::Throttle { retry_after_ms }
     }
 }
 

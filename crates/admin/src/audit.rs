@@ -297,20 +297,27 @@ pub struct ChainReport {
 pub fn sanitize(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match value {
-        Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for (k, v) in map {
-                if is_sensitive_key(k) {
-                    out.insert(k.clone(), Value::String(REDACTED.into()));
-                } else {
-                    out.insert(k.clone(), sanitize(v));
-                }
-            }
-            Value::Object(out)
-        }
+        Value::Object(map) => Value::Object(sanitize_map(map)),
         Value::Array(items) => Value::Array(items.iter().map(sanitize).collect()),
         other => other.clone(),
     }
+}
+
+/// 复制一份 map：敏感键整体替换成占位符，其余递归脱敏。
+fn sanitize_map(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    let mut out = serde_json::Map::with_capacity(map.len());
+    for (k, v) in map {
+        let clean = if is_sensitive_key(k) {
+            Value::String(REDACTED.into())
+        } else {
+            sanitize(v)
+        };
+        out.insert(k.clone(), clean);
+    }
+    out
 }
 
 fn is_sensitive_key(key: &str) -> bool {

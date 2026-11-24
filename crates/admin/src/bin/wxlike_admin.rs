@@ -272,25 +272,33 @@ fn check_config(cfg: &Config) -> ExitCode {
     println!("wxlike-admin 配置自检（不绑定端口、不写库）");
     print!("{}", cfg.describe());
     // 自检也验一遍平台库能不能只读打开：路径写错要在部署时就发现
-    match wxlike_admin::PlatformRead::open(&cfg.platform_db) {
-        Ok(read) => {
-            println!("  平台库可读      是（打开方式 {}）", read.open_mode());
-            let missing = read.missing_tables().unwrap_or_default();
-            if missing.is_empty() {
-                println!("  表齐全          是");
-            } else {
-                println!("  表齐全          否，缺 {missing:?}");
-            }
-            match wxlike_admin::AccountStore::open(&cfg.accounts_db) {
-                Ok(store) => {
-                    let n = store.list().map(|v| v.len()).unwrap_or_default();
-                    println!("  账号库可写      是（{n} 个管理员账号）");
-                }
-                Err(err) => println!("  账号库可写      否: {err}"),
-            }
-            ExitCode::SUCCESS
+    let read = match wxlike_admin::PlatformRead::open(&cfg.platform_db) {
+        Ok(read) => read,
+        Err(err) => return die(&format!("平台库打不开: {err}")),
+    };
+    println!("  平台库可读      是（打开方式 {}）", read.open_mode());
+    report_table_state(&read);
+    report_accounts(cfg);
+    ExitCode::SUCCESS
+}
+
+/// 缺表要指名，不能只说"不全"。
+fn report_table_state(read: &wxlike_admin::PlatformRead) {
+    let missing = read.missing_tables().unwrap_or_default();
+    if missing.is_empty() {
+        println!("  表齐全          是");
+    } else {
+        println!("  表齐全          否，缺 {missing:?}");
+    }
+}
+
+fn report_accounts(cfg: &Config) {
+    match wxlike_admin::AccountStore::open(&cfg.accounts_db) {
+        Ok(store) => {
+            let n = store.list().map(|v| v.len()).unwrap_or_default();
+            println!("  账号库可写      是（{n} 个管理员账号）");
         }
-        Err(err) => die(&format!("平台库打不开: {err}")),
+        Err(err) => println!("  账号库可写      否: {err}"),
     }
 }
 

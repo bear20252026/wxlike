@@ -161,21 +161,23 @@ impl PlatformRead {
     pub fn open(path: &Path) -> Result<Self> {
         match Self::open_with(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
             Ok(read) => Ok(read),
-            Err(strict_err) => {
-                let fallback = Self::open_with(path, OpenFlags::SQLITE_OPEN_READ_WRITE);
-                match fallback {
-                    Ok(read) => {
-                        tracing::warn!(
-                            "严格只读打开失败（{strict_err}），改用 query_only 回退：\
-                             该连接仍然写不进平台库"
-                        );
-                        Ok(read.with_mode("query_only"))
-                    }
-                    Err(err) => {
-                        tracing::error!("只读打开失败: {strict_err}；query_only 回退也失败: {err}");
-                        Err(AdminError::from(err))
-                    }
-                }
+            Err(strict_err) => Self::open_query_only(path, strict_err),
+        }
+    }
+
+    /// 严格只读失败后的回退：读写标志 + `query_only`，仍然写不进平台库。
+    fn open_query_only(path: &Path, strict_err: rusqlite::Error) -> Result<Self> {
+        match Self::open_with(path, OpenFlags::SQLITE_OPEN_READ_WRITE) {
+            Ok(read) => {
+                tracing::warn!(
+                    "严格只读打开失败（{strict_err}），改用 query_only 回退：\
+                     该连接仍然写不进平台库"
+                );
+                Ok(read.with_mode("query_only"))
+            }
+            Err(err) => {
+                tracing::error!("只读打开失败: {strict_err}；query_only 回退也失败: {err}");
+                Err(AdminError::from(err))
             }
         }
     }

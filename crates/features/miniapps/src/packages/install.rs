@@ -311,30 +311,9 @@ impl Installer {
 
     /// Clean leftovers from an interrupted install. Safe to call at startup.
     pub fn recover(&mut self) -> Result<usize> {
-        let mut removed = 0;
         let staging = self.root.join(STAGING_DIR);
-        if staging.exists() {
-            for entry in fs::read_dir(&staging)? {
-                fs::remove_dir_all(entry?.path())?;
-                removed += 1;
-            }
-        }
-        let apps = self.root.join(APPS_DIR);
-        if apps.exists() {
-            for app in fs::read_dir(apps)? {
-                let dir = app?.path();
-                if !dir.is_dir() {
-                    continue;
-                }
-                for version in fs::read_dir(&dir)? {
-                    let version = version?.path();
-                    if version.is_dir() && !version.join(COMPLETE_MARKER).exists() {
-                        fs::remove_dir_all(&version)?;
-                        removed += 1;
-                    }
-                }
-            }
-        }
+        let mut removed = clear_staging(&staging)?;
+        removed += clear_incomplete_versions(&self.root.join(APPS_DIR))?;
         Ok(removed)
     }
 
@@ -518,4 +497,39 @@ fn sync_dir(path: &Path) {
     if let Ok(handle) = fs::File::open(path) {
         let _ = handle.sync_all();
     }
+}
+
+/// 清空 staging 目录下的所有条目，返回清掉的条数。
+fn clear_staging(staging: &Path) -> Result<usize> {
+    if !staging.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for entry in fs::read_dir(staging)? {
+        fs::remove_dir_all(entry?.path())?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// 删除没有完成标记的版本目录，返回清掉的条数。
+fn clear_incomplete_versions(apps: &Path) -> Result<usize> {
+    if !apps.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for app in fs::read_dir(apps)? {
+        let dir = app?.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        for version in fs::read_dir(&dir)? {
+            let version = version?.path();
+            if version.is_dir() && !version.join(COMPLETE_MARKER).exists() {
+                fs::remove_dir_all(&version)?;
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
 }

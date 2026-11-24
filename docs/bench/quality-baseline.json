@@ -1,44 +1,20 @@
 {
  "total_files": 472,
- "total_lines": 143481,
- "fn_total": 6901,
+ "total_lines": 143628,
+ "fn_total": 6934,
  "count_len_gt30": 596,
  "count_len_gt60": 38,
  "count_len_gt100": 0,
- "count_nest_gt3": 28,
+ "count_nest_gt3": 4,
  "count_mixed_sql_http": 1,
  "magic_total": 172,
  "magic_unique": 55,
  "long_fn_keys": [],
  "deep_fn_keys": [
-  "crates/admin/src/audit.rs::sanitize",
-  "crates/admin/src/bin/wxlike_admin.rs::check_config",
-  "crates/admin/src/read.rs::open",
-  "crates/cli/src/args.rs::parse",
-  "crates/cmd/src/policy.rs::authorize",
   "crates/container/examples/research_wmpf.rs::run",
-  "crates/features/media/src/processing.rs::spawn_job_worker",
-  "crates/features/miniapps/src/packages/install.rs::recover",
-  "crates/ledger/src/lib.rs::open_connection",
-  "crates/mcp/src/server.rs::execute_tool",
   "crates/mcp/src/server.rs::list_commands_tool",
   "crates/message/src/lib.rs::open",
-  "crates/moderation/src/lib.rs::new",
-  "crates/net/examples/chat.rs::spawn_reader",
-  "crates/net/src/mq_hub.rs::consume_memory",
-  "crates/net/src/mq_hub.rs::spawn_accept_loop",
-  "crates/net/src/mq_hub.rs::spawn_delivery_prune",
-  "crates/net/src/server.rs::run_hub",
-  "crates/platform/src/lib.rs::spawn_redpacket_sweeper",
-  "crates/platform/src/storage.rs::open_sqlite",
-  "crates/risk/src/lib.rs::map_verdict",
-  "crates/rtc/src/host.rs::drain",
-  "crates/search/src/lib.rs::spawn",
-  "crates/video/src/jobs.rs::spawn_worker",
-  "server/src/commerce_mount.rs::spawn_sweep",
-  "ui/src-tauri/src/app_state.rs::next_envelope_or_notify",
-  "ui/src-tauri/src/callrtc.rs::pump_mic",
-  "ui/src-tauri/src/render.rs::render_event_with"
+  "crates/video/src/jobs.rs::spawn_worker"
  ],
  "largest_files": [
   [
@@ -47,7 +23,7 @@
   ],
   [
    "crates/net/src/mq_hub.rs",
-   2460
+   2467
   ],
   [
    "server/src/lib.rs",
@@ -63,7 +39,7 @@
   ],
   [
    "ui/src-tauri/src/app_state.rs",
-   1470
+   1480
   ],
   [
    "crates/features/media/src/backup.rs",
@@ -90,11 +66,11 @@
    1248
   ],
   [
-   "crates/admin/src/commerce.rs",
-   1198
+   "crates/mcp/src/server.rs",
+   1204
   ],
   [
-   "crates/mcp/src/server.rs",
+   "crates/admin/src/commerce.rs",
    1198
   ],
   [
@@ -103,7 +79,7 @@
   ],
   [
    "crates/features/media/src/processing.rs",
-   1043
+   1048
   ],
   [
    "crates/admin/src/http.rs",
@@ -111,7 +87,7 @@
   ],
   [
    "crates/admin/src/read.rs",
-   1002
+   1004
   ],
   [
    "crates/ledger/src/store.rs",
@@ -236,7 +212,7 @@
   {
    "file": "crates/admin/src/read.rs",
    "name": "stats",
-   "line": 236,
+   "line": 238,
    "len": 78,
    "nest": 3,
    "sql": true,
@@ -313,7 +289,7 @@
   {
    "file": "ui/src-tauri/src/callrtc.rs",
    "name": "run",
-   "line": 611,
+   "line": 615,
    "len": 73,
    "nest": 3,
    "sql": false,
@@ -357,7 +333,7 @@
   {
    "file": "crates/net/src/mq_hub.rs",
    "name": "register_connection",
-   "line": 926,
+   "line": 933,
    "len": 67,
    "nest": 1,
    "sql": false,
@@ -412,7 +388,7 @@
   {
    "file": "crates/net/src/mq_hub.rs",
    "name": "release_conn",
-   "line": 1277,
+   "line": 1284,
    "len": 65,
    "nest": 3,
    "sql": false,
@@ -511,105 +487,6 @@
  ],
  "deep_fns": [
   {
-   "file": "ui/src-tauri/src/render.rs",
-   "name": "render_event_with",
-   "line": 88,
-   "len": 30,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/net/src/server.rs",
-   "name": "run_hub",
-   "line": 34,
-   "len": 28,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/miniapps/src/packages/install.rs",
-   "name": "recover",
-   "line": 313,
-   "len": 27,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/bin/wxlike_admin.rs",
-   "name": "check_config",
-   "line": 271,
-   "len": 25,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/cmd/src/policy.rs",
-   "name": "authorize",
-   "line": 180,
-   "len": 23,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/read.rs",
-   "name": "open",
-   "line": 161,
-   "len": 21,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/search/src/lib.rs",
-   "name": "spawn",
-   "line": 296,
-   "len": 21,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "server/src/commerce_mount.rs",
-   "name": "spawn_sweep",
-   "line": 435,
-   "len": 21,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/ledger/src/lib.rs",
-   "name": "open_connection",
-   "line": 135,
-   "len": 20,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": true,
-   "pub": true
-  },
-  {
    "file": "crates/message/src/lib.rs",
    "name": "open",
    "line": 462,
@@ -621,87 +498,10 @@
    "pub": true
   },
   {
-   "file": "crates/moderation/src/lib.rs",
-   "name": "new",
-   "line": 138,
-   "len": 20,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/audit.rs",
-   "name": "sanitize",
-   "line": 297,
-   "len": 18,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/media/src/processing.rs",
-   "name": "spawn_job_worker",
-   "line": 387,
-   "len": 18,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/risk/src/lib.rs",
-   "name": "map_verdict",
-   "line": 211,
-   "len": 18,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/platform/src/storage.rs",
-   "name": "open_sqlite",
-   "line": 367,
-   "len": 17,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": true,
-   "pub": false
-  },
-  {
-   "file": "crates/rtc/src/host.rs",
-   "name": "drain",
-   "line": 257,
-   "len": 17,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "ui/src-tauri/src/app_state.rs",
-   "name": "next_envelope_or_notify",
-   "line": 147,
-   "len": 17,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/cli/src/args.rs",
-   "name": "parse",
-   "line": 130,
-   "len": 16,
+   "file": "crates/video/src/jobs.rs",
+   "name": "spawn_worker",
+   "line": 991,
+   "len": 14,
    "nest": 4,
    "sql": false,
    "http": false,
@@ -710,9 +510,9 @@
   },
   {
    "file": "crates/mcp/src/server.rs",
-   "name": "execute_tool",
-   "line": 1126,
-   "len": 16,
+   "name": "list_commands_tool",
+   "line": 1082,
+   "len": 12,
    "nest": 4,
    "sql": false,
    "http": false,
@@ -720,65 +520,10 @@
    "pub": false
   },
   {
-   "file": "crates/net/examples/chat.rs",
-   "name": "spawn_reader",
-   "line": 13,
-   "len": 16,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/net/src/mq_hub.rs",
-   "name": "spawn_accept_loop",
-   "line": 522,
-   "len": 16,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "ui/src-tauri/src/callrtc.rs",
-   "name": "pump_mic",
-   "line": 134,
-   "len": 16,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/net/src/mq_hub.rs",
-   "name": "consume_memory",
-   "line": 588,
-   "len": 15,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/platform/src/lib.rs",
-   "name": "spawn_redpacket_sweeper",
-   "line": 102,
-   "len": 15,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/net/src/mq_hub.rs",
-   "name": "spawn_delivery_prune",
-   "line": 698,
-   "len": 14,
+   "file": "crates/container/examples/research_wmpf.rs",
+   "name": "run",
+   "line": 20,
+   "len": 1,
    "nest": 4,
    "sql": false,
    "http": false,
@@ -929,7 +674,7 @@
    "crates/core/src/store.rs:73",
    "crates/message/src/lib.rs:249",
    "crates/net/src/offline.rs:213",
-   "crates/platform/src/storage.rs:391"
+   "crates/platform/src/storage.rs:390"
   ],
   "512": [
    "crates/admin/src/accounts.rs:729",
@@ -943,10 +688,10 @@
    "crates/client/src/lib.rs:364",
    "crates/client/src/lib.rs:417",
    "crates/net/src/avalanche.rs:66",
-   "ui/src-tauri/src/app_state.rs:757"
+   "ui/src-tauri/src/app_state.rs:767"
   ],
   "11": [
-   "crates/admin/src/read.rs:734",
+   "crates/admin/src/read.rs:736",
    "crates/platform/src/domain/repo/report.rs:82",
    "crates/platform/src/domain/repo/video_refs.rs:26",
    "crates/platform/src/domain/repo/video_refs.rs:84",
@@ -968,7 +713,7 @@
   "300": [
    "crates/core/src/test_support.rs:114",
    "server/src/lib.rs:166",
-   "ui/src-tauri/src/callrtc.rs:715"
+   "ui/src-tauri/src/callrtc.rs:719"
   ],
   "17": [
    "crates/rtc/src/turn.rs:317",
@@ -977,8 +722,8 @@
   ],
   "2048": [
    "crates/sfu/src/lib.rs:355",
-   "ui/src-tauri/src/callrtc.rs:526",
-   "ui/src-tauri/src/callrtc.rs:533"
+   "ui/src-tauri/src/callrtc.rs:530",
+   "ui/src-tauri/src/callrtc.rs:537"
   ],
   "600": [
    "crates/admin/src/web.rs:25",

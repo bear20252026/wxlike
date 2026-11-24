@@ -255,20 +255,24 @@ impl CallHost {
     }
 
     fn drain(&mut self, actions: Vec<Action>) -> Vec<Effect> {
-        let mut out = Vec::new();
-        for action in actions {
-            match action {
-                Action::Send(sig) => out.push(Effect::Signal(sig)),
-                Action::Ended { call_id, end } => {
-                    self.connected.remove(&call_id);
-                    self.peers.remove(&call_id);
-                    self.route.retain(|_, id| *id != call_id);
-                    out.push(Effect::Ended { call_id, end });
-                }
-                // 同步核心从不发它；媒体由 `pump_media` 主动泵。
-                Action::MediaReady { .. } => {}
+        actions
+            .into_iter()
+            .filter_map(|action| self.drain_one(action))
+            .collect()
+    }
+
+    /// 一条动作 → 零或一条副作用；挂断时顺手清掉该通话的会话状态。
+    fn drain_one(&mut self, action: Action) -> Option<Effect> {
+        match action {
+            Action::Send(sig) => Some(Effect::Signal(sig)),
+            Action::Ended { call_id, end } => {
+                self.connected.remove(&call_id);
+                self.peers.remove(&call_id);
+                self.route.retain(|_, id| *id != call_id);
+                Some(Effect::Ended { call_id, end })
             }
+            // 同步核心从不发它；媒体由 `pump_media` 主动泵。
+            Action::MediaReady { .. } => None,
         }
-        out
     }
 }

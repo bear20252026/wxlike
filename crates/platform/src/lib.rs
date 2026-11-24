@@ -103,16 +103,18 @@ pub fn spawn_redpacket_sweeper(
     state: PlatformState,
     every: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(every).await;
-            match state.sweep_expired_redpackets() {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(refunded = n, "expired red packet(s) refunded"),
-                Err(err) => tracing::error!(error = %err, "redpacket sweep failed"),
-            }
+    tokio::spawn(async move { redpacket_sweep_loop(state, every).await })
+}
+
+async fn redpacket_sweep_loop(state: PlatformState, every: std::time::Duration) {
+    loop {
+        tokio::time::sleep(every).await;
+        match state.sweep_expired_redpackets() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(refunded = n, "expired red packet(s) refunded"),
+            Err(err) => tracing::error!(error = %err, "redpacket sweep failed"),
         }
-    })
+    }
 }
 
 /// A throwaway media root for an in-memory platform, so tests never touch the

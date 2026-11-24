@@ -185,20 +185,26 @@ impl Policy {
         let spec = get(id).ok_or_else(|| Deny::UnknownCommand(id.to_string()))?;
         self.check_capability(spec)?;
         if spec.needs_conv {
-            let convs = convs_in(params);
-            if convs.is_empty() {
-                return Err(Deny::MissingConv(id.to_string()));
-            }
-            for conv in convs {
-                if !self.conv_allowed(conv) {
-                    return Err(Deny::ConvNotAllowed {
-                        conv: conv.to_string(),
-                        reason: "outside the allowlist",
-                    });
-                }
-            }
+            self.check_convs(id, params)?;
         }
         Ok(spec)
+    }
+
+    /// 需要会话的命令：至少给一个会话，且每个都在白名单内。
+    fn check_convs(&self, id: &str, params: &serde_json::Value) -> Result<(), Deny> {
+        let convs = convs_in(params);
+        if convs.is_empty() {
+            return Err(Deny::MissingConv(id.to_string()));
+        }
+        for conv in convs {
+            if !self.conv_allowed(conv) {
+                return Err(Deny::ConvNotAllowed {
+                    conv: conv.to_string(),
+                    reason: "outside the allowlist",
+                });
+            }
+        }
+        Ok(())
     }
 
     fn check_capability(&self, spec: &CommandSpec) -> Result<(), Deny> {

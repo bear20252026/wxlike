@@ -295,26 +295,40 @@ impl IndexerHandle {
     /// 拉起后台线程：攒批（最多 128 条或通道暂空）→ 单次 commit。
     pub fn spawn(mut index: SearchIndex) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<IndexJob>();
-        std::thread::spawn(move || {
-            while let Ok(first) = rx.recv() {
-                let mut batch = vec![first];
-                while batch.len() < INDEXER_BATCH_MAX {
-                    let Ok(more) = rx.try_recv() else { break };
-                    batch.push(more);
-                }
-                for job in &batch {
-                    if let Err(err) = index.stage(&job.conv_id, job.seq, &job.sender, &job.text) {
-                        eprintln!("[search] stage failed: {err}");
-                    }
-                }
-                if let Err(err) = index.commit() {
-                    eprintln!("[search] commit failed ({} docs): {err}", batch.len());
-                }
-            }
-        });
+        std::thread::spawn(move || index_loop(&mut index, &rx));
         Self { tx }
     }
+}
 
+fn index_loop(index: &mut SearchIndex, rx: &std::sync::mpsc::Receiver<IndexJob>) {
+    while let Ok(first) = rx.recv() {
+        let batch = collect_batch(rx, first);
+        stage_batch(index, &batch);
+        if let Err(err) = index.commit() {
+            eprintln!("[search] commit failed ({} docs): {err}", batch.len());
+        }
+    }
+}
+
+/// 从通道里把这一批攒满（或攒到暂时没有为止）。
+fn collect_batch(rx: &std::sync::mpsc::Receiver<IndexJob>, first: IndexJob) -> Vec<IndexJob> {
+    let mut batch = vec![first];
+    while batch.len() < INDEXER_BATCH_MAX {
+        let Ok(more) = rx.try_recv() else { break };
+        batch.push(more);
+    }
+    batch
+}
+
+fn stage_batch(index: &mut SearchIndex, batch: &[IndexJob]) {
+    for job in batch {
+        if let Err(err) = index.stage(&job.conv_id, job.seq, &job.sender, &job.text) {
+            eprintln!("[search] stage failed: {err}");
+        }
+    }
+}
+
+impl IndexerHandle {
     /// 提交一条；通道满（极端背压）时静默丢弃——索引可重建，消息本体在信箱。
     pub fn submit(&self, conv_id: &str, seq: i64, sender: &str, text: String) {
         let _ = self.tx.send(IndexJob {

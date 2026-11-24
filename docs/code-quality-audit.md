@@ -393,10 +393,10 @@ search、video、hub、router 全串在一个函数里。
    HEAD。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
-**当前基线（2026-11-24 第三轮收紧）**：函数 >60 行 **38**、>100 行 **0**、嵌套 >3 层
-**28**、跨文件重复窗口 **128**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**当前基线（2026-11-24 第四轮收紧）**：函数 >60 行 **38**、>100 行 **0**、嵌套 >3 层
+**4**、跨文件重复窗口 **128**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
-当前值。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
+当前值（最近一次把嵌套从 28 收到 4）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
 不能再和旧基线相减，否则 `--update` 永远拒绝收紧。重置只把当前值写成新起点，
 之后任何指标上涨仍会被全量闸门拦下。
@@ -478,7 +478,7 @@ search、video、hub、router 全串在一个函数里。
 |---|---|---|
 | 函数 >60 行 | 46 | **38** |
 | 函数 >100 行 | 14 | **0** |
-| 嵌套 >3 层 | 63 | **28** |
+| 嵌套 >3 层 | 63 | **4** |
 | 跨文件重复窗口 | 78 | 128（扫描面扩到 472 文件） |
 | 魔法数字总数 | 170 | 172（同上） |
 
@@ -486,7 +486,7 @@ search、video、hub、router 全串在一个函数里。
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
 2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 596`、
-`>60 行 38`、`>100 行 0`、`深嵌套 28`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
+`>60 行 38`、`>100 行 0`、`深嵌套 4`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -570,6 +570,34 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 `delta_segments` / `apply_segment`；`commerce::settlement` 的批量重试收进
 `processing_withdrawals` / `refresh_advanced`。
 深嵌套从 54 降到 28，`>60` 从 39 降到 38，`>30` 从 614 降到 596。
+
+同一轮第三批把嵌套继续压到 4：`search::IndexerHandle::spawn` 的攒批/落盘搬到
+`index_loop` / `collect_batch` / `stage_batch`；`net::mq_hub::spawn_accept_loop`
+的 accept 循环搬进 `accept_loop`，每条连接的任务收进 `spawn_conn_task`；
+`consume_memory` 的一轮消费收进 `consume_memory_once`；`spawn_delivery_prune`
+的清理循环搬进 `prune_deliveries_loop`；`net::server::run_hub` 的接入循环搬进
+`accept_loop`；`miniapps::packages::install::recover` 的残留清理收进
+`clear_staging` / `clear_incomplete_versions`；`admin` 二进制的 `check_config`
+把表状态与账号读回拆成 `report_table_state` / `report_accounts`；
+`cmd::policy::authorize` 的会话白名单校验收进 `check_convs`；`admin::read::open`
+的只读回退收进 `open_query_only`；`server::commerce_mount::spawn_sweep` 的单轮
+收进 `run_sweep`；`ledger` / `message` / `moderation` 的建库流程各拆成
+`open_raw` / `apply_pragmas`、`open_connection` + `init_schema`、`insert_term` /
+`child_or_insert`；`admin::audit::sanitize` 的对象分支收进 `sanitize_map`；
+`media::processing::spawn_job_worker` 的一轮收进 `worker_round`；
+`risk::map_verdict` 的拒绝/限流翻译收进 `denied` / `throttled`；
+`platform::storage::open_sqlite` 的父目录创建收进 `ensure_parent_dir`；
+`rtc::host::drain` 的单条动作收进 `drain_one`；`ui::app_state` 的断流上报收进
+`notify_disconnected`；`cli::args::parse` 的扫描循环收进 `scan`，Help 组装收进
+`help_invocation`；`mcp::server::execute_tool` 的 properties 表先建好再拼；
+`net` chat 示例的取包收进 `next_or_log`；`ui::callrtc::pump_mic` 的写帧收进
+`write_frame`（先把编解码器 `take` 出来，避免与 `sent` 的借用冲突）；
+`ui::render::render_event_with` 的外层字段与回执体收进 `base_payload` /
+`receipt_payload`；`platform::spawn_redpacket_sweeper` 的循环收进
+`redpacket_sweep_loop`。
+深嵌套从 28 降到 4，其余指标不变（`>60` 38、`>30` 596、重复 128、魔法 172）。
+剩下 4 个仍是 4 层的是 `message::open`、`video::jobs::spawn_worker`、
+`mcp::list_commands_tool` 与 `container` 示例里的宏展开。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /

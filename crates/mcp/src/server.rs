@@ -1124,6 +1124,15 @@ fn jobs_tool() -> Value {
 }
 
 fn execute_tool() -> Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "command".into(),
+        json!({"type": "string", "description": "im_list_commands 给出的 id"}),
+    );
+    properties.insert(
+        "params".into(),
+        json!({"type": "object", "description": "该命令的参数对象"}),
+    );
     json!({
             "name": "im_execute",
             "description": "【兼容入口，建议改用按命令生成的工具】执行一条 IM 命令；参数同样按 catalog 校验。",
@@ -1131,10 +1140,7 @@ fn execute_tool() -> Value {
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["command"],
-                "properties": {
-                    "command": {"type": "string", "description": "im_list_commands 给出的 id"},
-                    "params": {"type": "object", "description": "该命令的参数对象"}
-                }
+                "properties": properties
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": true}
     })

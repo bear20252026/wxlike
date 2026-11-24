@@ -133,24 +133,31 @@ const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// # Errors
 /// 目录创建、SQLite 打开或 pragma 失败。
 pub fn open_connection(path: Option<&str>) -> Result<Connection> {
-    let conn = match path {
-        Some(path) => {
-            if let Some(dir) = std::path::Path::new(path).parent() {
-                if !dir.as_os_str().is_empty() {
-                    std::fs::create_dir_all(dir)
-                        .map_err(|_| LedgerError::BadInput("database path"))?;
-                }
-            }
-            Connection::open(path)?
-        }
-        None => Connection::open_in_memory()?,
+    let conn = open_raw(path)?;
+    apply_pragmas(&conn)?;
+    Ok(conn)
+}
+
+/// 打开文件库（先建父目录）或内存库。
+fn open_raw(path: Option<&str>) -> Result<Connection> {
+    let Some(path) = path else {
+        return Ok(Connection::open_in_memory()?);
     };
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).map_err(|_| LedgerError::BadInput("database path"))?;
+        }
+    }
+    Ok(Connection::open(path)?)
+}
+
+fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;",
     )?;
     conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
-    Ok(conn)
+    Ok(())
 }
 
 /// 一个独立的账本连接。

@@ -441,17 +441,26 @@ fn spawn_sweep(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
-            let commerce = Arc::clone(&commerce);
-            // ADR-28：sweep 是同步 rusqlite 段，整段进阻塞池。
-            let ran = tokio::task::spawn_blocking(move || sweep(&commerce)).await;
-            match ran {
-                Ok(Ok(n)) if n > 0 => tracing::info!(job = name, affected = n, "commerce 作业推进"),
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => tracing::warn!(job = name, %err, "commerce 作业本轮失败"),
-                Err(err) => tracing::error!(job = name, %err, "commerce 作业阻塞任务异常结束"),
-            }
+            run_sweep(&commerce, name, sweep).await;
         }
     })
+}
+
+/// 跑一轮 sweep 并按结果记日志。
+async fn run_sweep(
+    commerce: &Arc<Commerce>,
+    name: &'static str,
+    sweep: fn(&Commerce) -> wxlike_commerce::Result<usize>,
+) {
+    let commerce = Arc::clone(commerce);
+    // ADR-28：sweep 是同步 rusqlite 段，整段进阻塞池。
+    let ran = tokio::task::spawn_blocking(move || sweep(&commerce)).await;
+    match ran {
+        Ok(Ok(n)) if n > 0 => tracing::info!(job = name, affected = n, "commerce 作业推进"),
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => tracing::warn!(job = name, %err, "commerce 作业本轮失败"),
+        Err(err) => tracing::error!(job = name, %err, "commerce 作业阻塞任务异常结束"),
+    }
 }
 
 /// 错误 → HTTP 状态码 + 稳定分类。只回分类字符串，不回显供应商报文/SQL/密钥。
