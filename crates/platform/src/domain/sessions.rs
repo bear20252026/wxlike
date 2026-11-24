@@ -142,7 +142,11 @@ impl Platform {
     }
 
     /// 该用户全部有效会话，最近活跃在前。过期行顺手清掉。
-    pub fn sessions_of(&self, user_id: &str, current_token: &str) -> Result<Vec<SessionRow>> {
+    pub(crate) fn sessions_of(
+        &self,
+        user_id: &str,
+        current_token: &str,
+    ) -> Result<Vec<SessionRow>> {
         let now = wxlike_core::types::now_ms() as i64;
         let digest = crate::auth::token_digest(current_token);
         let records = {
@@ -166,7 +170,7 @@ impl Platform {
 
     /// 按 sid 下线一台设备。返回是否命中（不存在/已过期 → false，不报错，
     /// 避免把 sid 变成存在性探测面）。
-    pub fn revoke_session_by_sid(&self, user_id: &str, sid: &str) -> Result<bool> {
+    pub(crate) fn revoke_session_by_sid(&self, user_id: &str, sid: &str) -> Result<bool> {
         if sid.is_empty() || sid.len() > 32 {
             return Err(PlatformError::BadInput("sid malformed"));
         }
@@ -176,7 +180,7 @@ impl Platform {
     }
 
     /// 下线除当前设备外的全部会话（"一键退出其他设备"）。
-    pub fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize> {
+    pub(crate) fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize> {
         // keep 参数同样要以摘要比对，否则会把当前会话一并删掉（AR-3/H-2）
         let keep = crate::auth::token_digest(keep_token);
         let c = self.db().lock();

@@ -136,6 +136,8 @@ pub const DEFAULT_SESSION_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 pub use crate::domain::governance::{
     ChannelGovernanceSink, GovernanceDeviceSink, GovernanceDisconnect,
 };
+/// 会话列表投影（`AccountSessions::sessions_of` 的返回元素）。
+pub use crate::domain::sessions::SessionRow;
 
 #[derive(Clone, Debug)]
 pub struct PlatformOptions {
