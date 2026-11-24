@@ -2,7 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use wxlike_identity::preferences::{self, Job, JobKind, JobStatus};
@@ -11,7 +12,11 @@ use wxlike_identity::preferences::{self, Job, JobKind, JobStatus};
 const DELETED_NAME_PREFIX: &str = "deleted-";
 
 /// 已注销标记。`None` = 没注销（或没有这个用户——调用方都得当成"不许清理"）。
-pub(in crate::domain) fn deleted_at(conn: &Connection, user_id: &str) -> Result<Option<i64>> {
+pub(in crate::domain) fn deleted_at(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Option<i64>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT deleted_at FROM users WHERE id = ?1",
@@ -24,7 +29,11 @@ pub(in crate::domain) fn deleted_at(conn: &Connection, user_id: &str) -> Result<
 
 /// 有没有还在排队/执行中的注销作业。用的就是 `preferences::list` 这条
 /// 既有查询，不另开一条 SQL——判"是否已在注销"的口径只能有一处。
-pub(in crate::domain) fn open_delete_job(conn: &Connection, user_id: &str) -> Result<Option<Job>> {
+pub(in crate::domain) fn open_delete_job(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Option<Job>> {
+    let conn = conn.sqlite()?;
     Ok(preferences::list(conn, user_id)?.into_iter().find(|j| {
         j.kind == JobKind::Delete && matches!(j.status, JobStatus::Queued | JobStatus::Running)
     }))
@@ -32,7 +41,11 @@ pub(in crate::domain) fn open_delete_job(conn: &Connection, user_id: &str) -> Re
 
 /// 钱包余额。用 SQL 的 COALESCE 表达"没有钱包行就是 0"，不在 Rust 里
 /// `unwrap_or(0)`——那种写法会把"读库失败"也读成 0（然后真的去删钱包）。
-pub(in crate::domain) fn wallet_balance(conn: &Connection, user_id: &str) -> Result<i64> {
+pub(in crate::domain) fn wallet_balance(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<i64> {
+    let conn = conn.sqlite()?;
     Ok(conn.query_row(
         "SELECT COALESCE((SELECT balance FROM wallets WHERE user_id = ?1), 0)",
         params![user_id],
@@ -41,7 +54,13 @@ pub(in crate::domain) fn wallet_balance(conn: &Connection, user_id: &str) -> Res
 }
 
 /// 一条只带一个用户 id 参数的查询 → JSON 数组，列名由调用方给。
-fn rows_json(conn: &Connection, sql: &str, user_id: &str, cols: &[&str]) -> Result<Vec<Value>> {
+fn rows_json(
+    conn: &StorageConnection<'_>,
+    sql: &str,
+    user_id: &str,
+    cols: &[&str],
+) -> Result<Vec<Value>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![user_id], |r| {
         let mut obj = serde_json::Map::new();
@@ -67,9 +86,10 @@ fn json_of(v: rusqlite::types::Value) -> Value {
 
 /// 逐域执行 DELETE，返回每个域清掉的行数（写进作业的摘要）。
 pub(in crate::domain) fn purge_rows(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Vec<(&'static str, usize)>> {
+    let conn = conn.sqlite()?;
     let mut by_domain: BTreeMap<&'static str, usize> = BTreeMap::new();
     for (domain, sql) in PURGE_DELETES {
         let n = conn.execute(sql, params![user_id])?;
@@ -78,7 +98,8 @@ pub(in crate::domain) fn purge_rows(
     Ok(by_domain.into_iter().collect())
 }
 
-pub(in crate::domain) fn mask_rows(conn: &Connection, user_id: &str) -> Result<()> {
+pub(in crate::domain) fn mask_rows(conn: &StorageConnection<'_>, user_id: &str) -> Result<()> {
+    let conn = conn.sqlite()?;
     for (_, sql) in PURGE_MASKS {
         conn.execute(sql, params![user_id])?;
     }
@@ -90,7 +111,8 @@ pub(in crate::domain) fn mask_rows(conn: &Connection, user_id: &str) -> Result<(
 ///
 /// 行留着而不是 DELETE：`groups.owner_uid` / `communities.owner_uid` /
 /// `threads.created_by` 三条外键没有 CASCADE，硬删会把无关的域顶坏。
-pub(in crate::domain) fn anonymize_user(conn: &Connection, user_id: &str) -> Result<()> {
+pub(in crate::domain) fn anonymize_user(conn: &StorageConnection<'_>, user_id: &str) -> Result<()> {
+    let conn = conn.sqlite()?;
     let anon_name = format!("{DELETED_NAME_PREFIX}{user_id}");
     let n = conn.execute(
         "UPDATE users SET name = ?2, avatar = '', signature = '', pw_salt = '', \
@@ -168,28 +190,43 @@ const LEDGER_COLS: &[&str] = &[
 const SQL_USER_SETTINGS: &str = "SELECT allow_strangers FROM user_settings WHERE user_id = ?1";
 const USER_SETTINGS_COLS: &[&str] = &["allow_strangers"];
 
-pub(in crate::domain) fn export_profile(conn: &Connection, user_id: &str) -> Result<Vec<Value>> {
+pub(in crate::domain) fn export_profile(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<Value>> {
     rows_json(conn, SQL_PROFILE, user_id, PROFILE_COLS)
 }
 
-pub(in crate::domain) fn export_contacts(conn: &Connection, user_id: &str) -> Result<Vec<Value>> {
+pub(in crate::domain) fn export_contacts(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<Value>> {
     rows_json(conn, SQL_CONTACTS, user_id, CONTACTS_COLS)
 }
 
-pub(in crate::domain) fn export_messages(conn: &Connection, user_id: &str) -> Result<Vec<Value>> {
+pub(in crate::domain) fn export_messages(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<Value>> {
     rows_json(conn, SQL_MESSAGES, user_id, MESSAGES_COLS)
 }
 
-pub(in crate::domain) fn export_media(conn: &Connection, user_id: &str) -> Result<Vec<Value>> {
+pub(in crate::domain) fn export_media(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<Value>> {
     rows_json(conn, SQL_MEDIA, user_id, MEDIA_COLS)
 }
 
-pub(in crate::domain) fn export_ledger(conn: &Connection, user_id: &str) -> Result<Vec<Value>> {
+pub(in crate::domain) fn export_ledger(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<Value>> {
     rows_json(conn, SQL_LEDGER, user_id, LEDGER_COLS)
 }
 
 pub(in crate::domain) fn export_user_settings(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Vec<Value>> {
     rows_json(conn, SQL_USER_SETTINGS, user_id, USER_SETTINGS_COLS)

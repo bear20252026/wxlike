@@ -278,7 +278,8 @@ impl Platform {
     pub fn request_export_job(&self, user_id: &str) -> Result<Job> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        if deleted_at(&c, user_id)?.is_some() {
+        let port = crate::storage::StorageConnection::sqlite_borrow(&c);
+        if deleted_at(&port, user_id)?.is_some() {
             return Err(PlatformError::Blocked("account scheduled for deletion"));
         }
         Ok(preferences::request_export(&c, user_id, now)?)
@@ -367,8 +368,9 @@ impl Platform {
     pub fn schedule_deletion(&self, user_id: &str) -> Result<(Job, usize)> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        if deleted_at(&c, user_id)?.is_some() {
-            if let Some(job) = open_delete_job(&c, user_id)? {
+        let port = crate::storage::StorageConnection::sqlite_borrow(&c);
+        if deleted_at(&port, user_id)?.is_some() {
+            if let Some(job) = open_delete_job(&port, user_id)? {
                 tracing::warn!(
                     job = %job.id,
                     user = %user_id,
@@ -463,18 +465,23 @@ impl Platform {
         self.db()
             .blocking(move |conn| {
                 let c = &*conn;
+                let port = crate::storage::StorageConnection::sqlite_borrow(c);
                 // 没有标记绝不清理：一条凭空出现的 delete 作业不属于注销流程。
-                if deleted_at(c, &job.user_id)?.is_none() {
+                if deleted_at(&port, &job.user_id)?.is_none() {
                     return Err(PlatformError::Blocked("deletion was never scheduled"));
                 }
                 // 余额没清零就不清钱包：静默销毁余额是不可接受的"清理成功"。
-                if wallet_balance(c, &job.user_id)? != 0 {
+                if wallet_balance(&port, &job.user_id)? != 0 {
                     return Err(PlatformError::Blocked("wallet not empty"));
                 }
                 let tx = c.unchecked_transaction()?;
-                let counts = purge_rows(&tx, &job.user_id)?;
-                mask_rows(&tx, &job.user_id)?;
-                anonymize_user(&tx, &job.user_id)?;
+                let counts = {
+                    let tx_port = crate::storage::StorageConnection::sqlite_borrow(&tx);
+                    let counts = purge_rows(&tx_port, &job.user_id)?;
+                    mask_rows(&tx_port, &job.user_id)?;
+                    anonymize_user(&tx_port, &job.user_id)?;
+                    counts
+                };
                 tx.commit()?;
                 let total: i64 = counts.iter().map(|(_, n)| *n as i64).sum();
                 // 注销作业的 artifact 存的是"每个域清掉多少行"的摘要，不是下载地址
@@ -520,7 +527,8 @@ impl Platform {
 /// 因此可以作为一个阻塞任务搬进 `Db::blocking`，而不用在 await 上下文里
 /// 再取一次锁。
 fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
-    let profile = export_profile(c, user_id)?;
+    let port = crate::storage::StorageConnection::sqlite_borrow(c);
+    let profile = export_profile(&port, user_id)?;
     let Some(owner) = profile.first().cloned() else {
         // 本人行读不到 = 这份导出没有内容可言，必须失败，不能交空包。
         return Err(PlatformError::NotFound);
@@ -528,7 +536,7 @@ fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
     let prefs = preferences::get(c, user_id)?;
     let settings = json!({
         "preferences": prefs.values,
-        "legacy_user_settings": export_user_settings(c, user_id)?,
+        "legacy_user_settings": export_user_settings(&port, user_id)?,
         "privacy": privacy_view(&prefs),
     });
     let doc = json!({
@@ -536,10 +544,10 @@ fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
         "exported_at_ms": wxlike_core::types::now_ms(),
         "scopes": EXPORT_SCOPES,
         "profile": owner,
-        "contacts": export_contacts(c, user_id)?,
-        "messages": export_messages(c, user_id)?,
-        "media_manifest": export_media(c, user_id)?,
-        "ledger": export_ledger(c, user_id)?,
+        "contacts": export_contacts(&port, user_id)?,
+        "messages": export_messages(&port, user_id)?,
+        "media_manifest": export_media(&port, user_id)?,
+        "ledger": export_ledger(&port, user_id)?,
         "settings": settings,
     });
     Ok(serde_json::to_vec_pretty(&doc)?)
