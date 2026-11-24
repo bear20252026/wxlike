@@ -4,7 +4,7 @@
 //! # 为什么这一步端口没有完全屏蔽 rusqlite
 //!
 //! `crates/platform/src/domain/repo/*.rs` 最早有 12 个 feature 文件、共 51 个函数
-//! 直接吃 `&rusqlite::Connection`。本波分批迁移后，已有 29 个仓库、306 个函数
+//! 直接吃 `&rusqlite::Connection`。本波分批迁移后，已有 30 个仓库、317 个函数
 //! 改吃 [`StorageConnection`]；尚未迁移的函数仍保留旧签名，靠 `sqlite()` /
 //! `sqlite_borrow()` 在同一连接上过渡。因此端口当前仍做三件事：
 //!
