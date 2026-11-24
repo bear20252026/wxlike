@@ -41,7 +41,7 @@ impl Platform {
     ) -> Result<(Vec<Notification>, i64, bool)> {
         let limit = limit.clamp(1, MAX_PAGE);
         let before = before_seq.unwrap_or(i64::MAX);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let mut rows = page(&c, user, before, limit + 1)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
@@ -52,7 +52,7 @@ impl Platform {
     }
 
     pub(crate) fn unread_notifications(&self, user: &str) -> Result<i64> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         unread(&c, user)
     }
 
@@ -70,7 +70,7 @@ impl Platform {
             return Err(PlatformError::BadInput("too many notification ids"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let mut changed = 0usize;
         if let Some(up_to) = up_to_seq {
             changed += mark_up_to(&c, user, up_to, now)?;

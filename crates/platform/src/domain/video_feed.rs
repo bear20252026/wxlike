@@ -186,7 +186,7 @@ impl Platform {
                 crate::domain::repo::content_index::remove_media_refs(tx, "video", &id)?;
                 crate::domain::repo::favorites::revoke_source_tx(tx, "video", &id)?;
             }
-            crate::domain::repo::inbox::notify(
+            crate::domain::repo::inbox::notify_tx(
                 tx,
                 &author,
                 "video_review",
@@ -284,7 +284,7 @@ impl Platform {
             let added = insert_video_like(tx, id, by, now)?;
             if added {
                 if let Some(author) = video_author(tx, id)? {
-                    crate::domain::repo::inbox::notify(
+                    crate::domain::repo::inbox::notify_tx(
                         tx,
                         &author,
                         "video_like",
@@ -329,7 +329,7 @@ impl Platform {
         c.with_tx(|tx| -> Result<()> {
             insert_video_comment(tx, &comment_id, id, by, text, now)?;
             if let Some(author) = video_author(tx, id)? {
-                crate::domain::repo::inbox::notify(
+                crate::domain::repo::inbox::notify_tx(
                     tx,
                     &author,
                     "video_comment",

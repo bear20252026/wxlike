@@ -200,7 +200,7 @@ impl Platform {
             let active = toggle_reaction(&conn, id, user, now)?;
             if active {
                 if let Some(owner) = status_owner(&conn, id)? {
-                    crate::domain::repo::inbox::notify(
+                    crate::domain::repo::inbox::notify_tx(
                         tx,
                         &owner,
                         "status_reaction",

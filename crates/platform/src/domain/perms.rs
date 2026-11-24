@@ -188,7 +188,7 @@ impl Platform {
             }
         }
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             if let Some(n) = name {
                 rename_channel(&c, &channel, &n)?;
             }
@@ -206,7 +206,7 @@ impl Platform {
         let channel = validate::id(channel)?.to_string();
         let community = self.require_channel_perm(&channel, actor, Perm::ManageChannel)?;
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             delete_channel_row(&c, &channel)?;
         }
         self.audit(actor, "channel.delete", &channel, "");
@@ -244,7 +244,7 @@ impl Platform {
             self.require_perm(&community, actor, Perm::ManageRoles)?;
         }
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             set_member_role_row(&c, &community, &target, new_role)?;
         }
         self.audit(actor, "community.set_role", &target, role);
@@ -264,7 +264,7 @@ impl Platform {
             return Err(PlatformError::Forbidden);
         }
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             remove_member(&c, &community, &target)?;
         }
         self.audit(actor, "community.kick", &target, "");

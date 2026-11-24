@@ -418,7 +418,7 @@ impl Platform {
         hex::encode(mac.finalize().into_bytes())
     }
 
-    pub fn media_meta(&self, media_id: &str) -> Result<Option<(u64, String, bool)>> {
+    pub(crate) fn media_meta(&self, media_id: &str) -> Result<Option<(u64, String, bool)>> {
         let c = self.db().acquire();
         media_repo::meta(&c, media_id)
     }

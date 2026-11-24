@@ -2,9 +2,15 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use rusqlite::{params, Connection};
+use crate::storage::StorageConnection;
+use rusqlite::params;
 
-pub(in crate::domain) fn rename_channel(c: &Connection, channel: &str, name: &str) -> Result<()> {
+pub(in crate::domain) fn rename_channel(
+    c: &StorageConnection<'_>,
+    channel: &str,
+    name: &str,
+) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE channels SET name = ?1 WHERE id = ?2",
         params![name, channel],
@@ -12,7 +18,12 @@ pub(in crate::domain) fn rename_channel(c: &Connection, channel: &str, name: &st
     Ok(())
 }
 
-pub(in crate::domain) fn set_channel_kind(c: &Connection, channel: &str, kind: &str) -> Result<()> {
+pub(in crate::domain) fn set_channel_kind(
+    c: &StorageConnection<'_>,
+    channel: &str,
+    kind: &str,
+) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE channels SET kind = ?1 WHERE id = ?2",
         params![kind, channel],
@@ -20,17 +31,22 @@ pub(in crate::domain) fn set_channel_kind(c: &Connection, channel: &str, kind: &
     Ok(())
 }
 
-pub(in crate::domain) fn delete_channel_row(c: &Connection, channel: &str) -> Result<()> {
+pub(in crate::domain) fn delete_channel_row(
+    c: &StorageConnection<'_>,
+    channel: &str,
+) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute("DELETE FROM channels WHERE id = ?1", params![channel])?;
     Ok(())
 }
 
 pub(in crate::domain) fn set_member_role_row(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     community: &str,
     target: &str,
     role: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE community_members SET role = ?1 WHERE community_id = ?2 AND user_id = ?3",
         params![role, community, target],
@@ -39,10 +55,11 @@ pub(in crate::domain) fn set_member_role_row(
 }
 
 pub(in crate::domain) fn remove_member(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     community: &str,
     target: &str,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "DELETE FROM community_members WHERE community_id = ?1 AND user_id = ?2",
         params![community, target],

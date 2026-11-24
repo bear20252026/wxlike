@@ -3,12 +3,13 @@
 
 use crate::domain::inbox::Notification;
 use crate::error::Result;
-use rusqlite::{params, Connection};
+use crate::storage::StorageConnection;
+use rusqlite::params;
 
 /// 事务内插入一条通知。空 `dedupe` = 不参与去重（如每条评论各一条）。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn notify(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     kind: &str,
     actor: &str,
@@ -18,6 +19,7 @@ pub(in crate::domain) fn notify(
     dedupe: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     if user_id == actor {
         return Ok(());
     }
@@ -41,12 +43,39 @@ pub(in crate::domain) fn notify(
     Ok(())
 }
 
+/// 事务内调用：`with_tx` 闭包只给 `&Transaction`，这里转成端口值。
+#[allow(clippy::too_many_arguments)]
+pub(in crate::domain) fn notify_tx(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: &str,
+    kind: &str,
+    actor: &str,
+    target_kind: &str,
+    target_id: &str,
+    text: &str,
+    dedupe: &str,
+    now: i64,
+) -> Result<()> {
+    notify(
+        &StorageConnection::sqlite_tx(tx),
+        user_id,
+        kind,
+        actor,
+        target_kind,
+        target_id,
+        text,
+        dedupe,
+        now,
+    )
+}
+
 pub(in crate::domain) fn page(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user: &str,
     before: i64,
     limit: i64,
 ) -> Result<Vec<Notification>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT seq, id, kind, actor, target_kind, target_id, text, created_at, read_at
          FROM notifications WHERE user_id = ?1 AND seq < ?2
@@ -68,7 +97,8 @@ pub(in crate::domain) fn page(
     Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(in crate::domain) fn unread(conn: &Connection, user: &str) -> Result<i64> {
+pub(in crate::domain) fn unread(conn: &StorageConnection<'_>, user: &str) -> Result<i64> {
+    let conn = conn.sqlite()?;
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM notifications WHERE user_id = ?1 AND read_at IS NULL",
         params![user],
@@ -77,11 +107,12 @@ pub(in crate::domain) fn unread(conn: &Connection, user: &str) -> Result<i64> {
 }
 
 pub(in crate::domain) fn mark_up_to(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user: &str,
     up_to: i64,
     now: i64,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "UPDATE notifications SET read_at = ?1
          WHERE user_id = ?2 AND seq <= ?3 AND read_at IS NULL",
@@ -90,11 +121,12 @@ pub(in crate::domain) fn mark_up_to(
 }
 
 pub(in crate::domain) fn mark_id(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user: &str,
     id: &str,
     now: i64,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "UPDATE notifications SET read_at = ?1
          WHERE user_id = ?2 AND id = ?3 AND read_at IS NULL",

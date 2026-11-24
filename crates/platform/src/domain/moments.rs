@@ -489,7 +489,7 @@ impl Platform {
             let changed = insert_like(tx, moment_id, by, now)?;
             if changed {
                 if let Some(author) = moment_author_if_live(tx, moment_id)? {
-                    crate::domain::repo::inbox::notify(
+                    crate::domain::repo::inbox::notify_tx(
                         tx,
                         &author,
                         "moment_like",
