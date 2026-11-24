@@ -68,7 +68,7 @@ impl Platform {
         match kind {
             "moment" => self.moment_visible(viewer, doc_id),
             "article" => {
-                let c = self.db().lock();
+                let c = self.db().acquire();
                 article_published(&c, doc_id)
             }
             "video" => self.video_visible(viewer, doc_id),
@@ -144,12 +144,12 @@ impl Platform {
         before_id: &str,
         limit: i64,
     ) -> Result<Vec<(String, i64)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         candidates(&c, pattern, kind, before_at, before_id, limit)
     }
 
     fn index_body(&self, doc_id: &str) -> Result<Option<(String, String)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         body(&c, doc_id)
     }
 
@@ -158,7 +158,7 @@ impl Platform {
         let limit = limit.clamp(1, TREND_MAX_LIMIT);
         let cutoff = wxlike_core::types::now_ms() as i64 - TREND_WINDOW_MS;
         let rows = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             trend_rows(&c, cutoff)?
         };
         let mut contributions: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();

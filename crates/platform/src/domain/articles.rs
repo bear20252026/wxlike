@@ -278,7 +278,7 @@ impl Platform {
             insert_article_version(tx, &id, &doc_json, now)?;
             if body.publish {
                 publish_side_effects(tx, &id, &publisher_id, author, &title, &plain, now)?;
-                crate::domain::repo::content_index::add_media_refs(
+                crate::domain::repo::content_index::add_media_refs_tx(
                     tx,
                     &doc_media_ids(&body.doc),
                     "article",
@@ -409,8 +409,8 @@ impl Platform {
             )?;
             if next_state == "published" {
                 publish_side_effects(tx, id, &publisher_id, author, &title, &plain, now)?;
-                crate::domain::repo::content_index::remove_media_refs(tx, "article", id)?;
-                crate::domain::repo::content_index::add_media_refs(
+                crate::domain::repo::content_index::remove_media_refs_tx(tx, "article", id)?;
+                crate::domain::repo::content_index::add_media_refs_tx(
                     tx,
                     &doc_media_ids(&body.doc),
                     "article",
@@ -432,8 +432,8 @@ impl Platform {
         c.with_tx(|tx| -> Result<()> {
             let changed = soft_delete_article(tx, id, author, now)?;
             crate::db::ensure_updated(changed)?;
-            crate::domain::repo::content_index::remove(tx, id)?;
-            crate::domain::repo::content_index::remove_media_refs(tx, "article", id)?;
+            crate::domain::repo::content_index::remove_tx(tx, id)?;
+            crate::domain::repo::content_index::remove_media_refs_tx(tx, "article", id)?;
             crate::domain::repo::favorites::revoke_source_tx(tx, "article", id)?;
             Ok(())
         })

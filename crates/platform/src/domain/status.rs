@@ -121,8 +121,8 @@ impl Platform {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             let changed = mark_cleared(&conn, id, owner, now)?;
             crate::db::ensure_updated(changed)?;
-            crate::domain::repo::content_index::remove(tx, id)?;
-            crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
+            crate::domain::repo::content_index::remove_tx(tx, id)?;
+            crate::domain::repo::content_index::remove_media_refs_tx(tx, "status", id)?;
             crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
             Ok(())
         })
@@ -257,8 +257,8 @@ impl Platform {
                 let rows = expired_statuses(&conn, now)?;
                 for (id, _) in &rows {
                     mark_expired(&conn, id, now)?;
-                    crate::domain::repo::content_index::remove(tx, id)?;
-                    crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
+                    crate::domain::repo::content_index::remove_tx(tx, id)?;
+                    crate::domain::repo::content_index::remove_media_refs_tx(tx, "status", id)?;
                     crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
                 }
                 Ok(rows)

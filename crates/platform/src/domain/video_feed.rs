@@ -182,8 +182,8 @@ impl Platform {
             } else {
                 // pending 本来就没进索引，这里删 0 行：走的是与“直接发布”完全
                 // 对称的撤权路径，不给驳回留一个“引用还在”的分支。
-                crate::domain::repo::content_index::remove(tx, &id)?;
-                crate::domain::repo::content_index::remove_media_refs(tx, "video", &id)?;
+                crate::domain::repo::content_index::remove_tx(tx, &id)?;
+                crate::domain::repo::content_index::remove_media_refs_tx(tx, "video", &id)?;
                 crate::domain::repo::favorites::revoke_source_tx(tx, "video", &id)?;
             }
             crate::domain::repo::inbox::notify_tx(
@@ -266,8 +266,8 @@ impl Platform {
             if !soft_delete_video(tx, id, author, STATE_DELETED)? {
                 return Err(PlatformError::NotFound);
             }
-            crate::domain::repo::content_index::remove(tx, id)?;
-            crate::domain::repo::content_index::remove_media_refs(tx, "video", id)?;
+            crate::domain::repo::content_index::remove_tx(tx, id)?;
+            crate::domain::repo::content_index::remove_media_refs_tx(tx, "video", id)?;
             crate::domain::repo::favorites::revoke_source_tx(tx, "video", id)?;
             Ok(())
         })

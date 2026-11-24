@@ -278,12 +278,12 @@ impl Platform {
                 &group,
                 now,
             )?;
-            crate::domain::repo::content_index::upsert(
+            crate::domain::repo::content_index::upsert_tx(
                 tx,
                 &moment_index_doc(&id, &author, visibility, &group, text),
                 now,
             )?;
-            crate::domain::repo::content_index::add_media_refs(
+            crate::domain::repo::content_index::add_media_refs_tx(
                 tx, &cleaned, "moment", &id, &author, now,
             )?;
             // 发布时扇出（issue #126 要求 4）：与插入同事务，所以“帖在提醒不在”
@@ -459,8 +459,8 @@ impl Platform {
         c.with_tx(|tx| -> Result<bool> {
             let changed = soft_delete_moment(tx, moment_id, by)?;
             if changed {
-                crate::domain::repo::content_index::remove(tx, moment_id)?;
-                crate::domain::repo::content_index::remove_media_refs(tx, "moment", moment_id)?;
+                crate::domain::repo::content_index::remove_tx(tx, moment_id)?;
+                crate::domain::repo::content_index::remove_media_refs_tx(tx, "moment", moment_id)?;
                 crate::domain::repo::favorites::revoke_source_tx(tx, "moment", moment_id)?;
             }
             Ok(changed)
