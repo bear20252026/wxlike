@@ -3,10 +3,10 @@
 //!
 //! # 为什么这一步端口没有完全屏蔽 rusqlite
 //!
-//! `crates/platform/src/domain/repo/*.rs` 的 12 个 feature 文件、共 51 个函数
-//! 直接吃 `&rusqlite::Connection`（本步刻意不动，见 `docs/g00-04-storage-port.md`）。
-//! 如果端口现在就要求 repo 通过它访问连接，那 51 个签名要一起改，远超"引入端口"
-//! 这一步的范围。所以本步的端口只做三件事：
+//! `crates/platform/src/domain/repo/*.rs` 最早有 12 个 feature 文件、共 51 个函数
+//! 直接吃 `&rusqlite::Connection`。本波分批迁移后，已有 25 个仓库、227 个函数
+//! 改吃 [`StorageConnection`]；尚未迁移的函数仍保留旧签名，靠 `sqlite()` /
+//! `sqlite_borrow()` 在同一连接上过渡。因此端口当前仍做三件事：
 //!
 //! 1. [`StorageProfile`]：从 env 解析"用哪种存储"，非法值受控报错；
 //! 2. [`StorageDialect`]：提供方言差异（占位符 `?1` vs `$1`），供后续 repo 改造；
@@ -576,6 +576,40 @@ mod tests {
             StorageConnection::SqliteTx(_) => panic!("acquire must not hand out a transaction"),
             StorageConnection::Postgres(_) => panic!("SqliteStorage must hand out sqlite"),
         };
+    }
+
+    #[test]
+    fn sqlite_tx_and_borrowed_ports_reuse_the_same_connection() {
+        let storage = SqliteStorage::open(StorageProfile::Sqlite { path: None }, None).unwrap();
+        let mut guard = storage.lock().unwrap();
+        let tx = guard.transaction().unwrap();
+
+        // 事务内的端口只借连接，不接管提交/回滚。
+        let tx_port = StorageConnection::sqlite_tx(&tx);
+        assert_eq!(
+            tx_port
+                .sqlite()
+                .unwrap()
+                .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        tx.execute("CREATE TEMP TABLE port_probe(v INTEGER)", [])
+            .unwrap();
+
+        // 旧签名调用方用 sqlite_borrow 过渡时，看到的是同一个事务。
+        let borrowed = StorageConnection::sqlite_borrow(&tx);
+        borrowed
+            .sqlite()
+            .unwrap()
+            .execute("INSERT INTO port_probe(v) VALUES(42)", [])
+            .unwrap();
+        assert_eq!(
+            tx.query_row("SELECT v FROM port_probe", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+        tx.rollback().unwrap();
     }
 
     #[test]
