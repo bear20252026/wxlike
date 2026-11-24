@@ -66,7 +66,7 @@ pub struct BackgroundDraft {
 impl Platform {
     /// 好友 id 列表（状态变更事件的收件人集合）。
     pub(crate) fn friend_ids(&self, user: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         friend_ids_for(&c, user)
     }
 
@@ -89,13 +89,14 @@ impl Platform {
         let id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<StatusView> {
-            clear_owner(tx, &owner, now)?;
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            clear_owner(&conn, &owner, now)?;
             if !background.is_empty() {
                 // 背景草稿被用掉了；清掉引用，不留下一个“未使用”的草稿。
-                delete_background_draft(tx, &owner, &background)?;
+                delete_background_draft(&conn, &owner, &background)?;
             }
             insert_status_indexed(
-                tx,
+                &conn,
                 StatusInsert {
                     id: &id,
                     owner: &owner,
@@ -108,7 +109,7 @@ impl Platform {
                     expires_at,
                 },
             )?;
-            status_row(tx, &owner, &id)?.ok_or(PlatformError::NotFound)
+            status_row(&conn, &owner, &id)?.ok_or(PlatformError::NotFound)
         })
     }
 
@@ -117,7 +118,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            let changed = mark_cleared(tx, id, owner, now)?;
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            let changed = mark_cleared(&conn, id, owner, now)?;
             crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
@@ -129,14 +131,17 @@ impl Platform {
     pub(crate) fn clear_all_statuses(&self, owner: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
-        c.with_tx(|tx| -> Result<usize> { clear_owner(tx, owner, now) })
+        c.with_tx(|tx| -> Result<usize> {
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            clear_owner(&conn, owner, now)
+        })
     }
 
     /// 好友 + 自己的可见状态（每人只返回最新一条活跃状态）。
     pub(crate) fn statuses(&self, viewer: &str) -> Result<Vec<StatusView>> {
         let now = wxlike_core::types::now_ms() as i64;
         let ids: Vec<String> = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             visible_status_ids(&c, viewer, now)?
         };
         let mut out = Vec::with_capacity(ids.len());
@@ -152,7 +157,7 @@ impl Platform {
 
     pub(crate) fn status_visible(&self, viewer: &str, id: &str) -> Result<bool> {
         let meta = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             status_meta(&c, id)?
         };
         let Some(meta) = meta else {
@@ -179,7 +184,7 @@ impl Platform {
         if !self.status_visible(viewer, id)? {
             return Ok(None);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         status_row(&c, viewer, id)
     }
 
@@ -191,9 +196,10 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<(bool, i64)> {
-            let active = toggle_reaction(tx, id, user, now)?;
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            let active = toggle_reaction(&conn, id, user, now)?;
             if active {
-                if let Some(owner) = status_owner(tx, id)? {
+                if let Some(owner) = status_owner(&conn, id)? {
                     crate::domain::repo::inbox::notify(
                         tx,
                         &owner,
@@ -207,7 +213,7 @@ impl Platform {
                     )?;
                 }
             }
-            let count = reaction_count(tx, id)?;
+            let count = reaction_count(&conn, id)?;
             Ok((active, count))
         })
     }
@@ -220,7 +226,7 @@ impl Platform {
     ) -> Result<BackgroundDraft> {
         let media_id = validate::id(media_id)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         check_media(&c, owner, &media_id, "image")?;
         upsert_background_draft(&c, owner, &media_id, now)?;
         Ok(BackgroundDraft {
@@ -231,12 +237,12 @@ impl Platform {
     }
 
     pub(crate) fn status_background(&self, owner: &str) -> Result<Option<BackgroundDraft>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         background_draft(&c, owner)
     }
 
     pub(crate) fn remove_status_background(&self, owner: &str) -> Result<()> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         delete_background(&c, owner)
     }
 
@@ -247,9 +253,10 @@ impl Platform {
         let expired: Vec<(String, String)> = {
             let mut c = self.db().lock();
             c.with_tx(|tx| -> Result<Vec<(String, String)>> {
-                let rows = expired_statuses(tx, now)?;
+                let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+                let rows = expired_statuses(&conn, now)?;
                 for (id, _) in &rows {
-                    mark_expired(tx, id, now)?;
+                    mark_expired(&conn, id, now)?;
                     crate::domain::repo::content_index::remove(tx, id)?;
                     crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
                     crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
@@ -289,7 +296,7 @@ fn consume_background(
     }
     let id = validate::id(background_media_id)?.to_string();
     {
-        let c = platform.db().lock();
+        let c = platform.db().acquire();
         check_media(&c, owner, &id, "image")?;
     }
     Ok(id)
@@ -308,7 +315,7 @@ fn resolve_status_media(
         _ => {
             let media_id = validate::id(&body.media_id)?.to_string();
             {
-                let c = platform.db().lock();
+                let c = platform.db().acquire();
                 check_media(&c, owner, &media_id, kind)?;
             }
             media_id
