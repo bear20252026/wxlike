@@ -105,7 +105,7 @@ impl Platform {
             return Err(PlatformError::Forbidden);
         }
         // 会话状态：停播后的凭据即使未过期也不能推流
-        let c = self.db().lock();
+        let c = self.db().acquire();
         match live_state_for_stream(&c, stream_key)?.as_deref() {
             Some("live") => Ok(()),
             _ => Err(PlatformError::Forbidden),
@@ -125,12 +125,13 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let (id, stream_key) = c.with_tx(|tx| -> Result<(String, String)> {
-            if active_session_exists(tx, &channel)? {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            if active_session_exists(&port, &channel)? {
                 return Err(PlatformError::Conflict("channel is already live".into()));
             }
             let id = crate::auth::random_hex(8);
             let stream_key = crate::auth::random_hex(12);
-            insert_live_session(tx, &id, &channel, actor, &stream_key, recording, now)?;
+            insert_live_session(&port, &id, &channel, actor, &stream_key, recording, now)?;
             Ok((id, stream_key))
         })?;
         drop(c);
@@ -162,13 +163,14 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         let id = c.with_tx(|tx| -> Result<String> {
-            let session = active_session_ref(tx, &channel)?.ok_or(PlatformError::NotFound)?;
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            let session = active_session_ref(&port, &channel)?.ok_or(PlatformError::NotFound)?;
             let (id, host) = (session.id, session.host);
             // 主播本人，或社群管理员（主持人失联时的兜底）
             if host != actor && !is_manager {
                 return Err(PlatformError::Forbidden);
             }
-            end_live_session(tx, &id, now)?;
+            end_live_session(&port, &id, now)?;
             Ok(id)
         })?;
         drop(c);
@@ -183,7 +185,7 @@ impl Platform {
             .channel_community(&channel)?
             .ok_or(PlatformError::NotFound)?;
         self.require_member(&community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = active_live_snapshot(&c, &channel)?;
         Ok(match row {
             Some(snapshot) => LiveState {
@@ -206,7 +208,7 @@ impl Platform {
     }
 
     fn live_session_id(&self, channel: &str) -> Result<String> {
-        active_session_id(&self.db().lock(), channel)?.ok_or(PlatformError::NotFound)
+        active_session_id(&self.db().acquire(), channel)?.ok_or(PlatformError::NotFound)
     }
 
     /// 进房：观众计数 +1，峰值同步抬升。
@@ -220,8 +222,9 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<i64> {
-            insert_viewer(tx, &session, user, now)?;
-            refresh_viewer_counts(tx, &session)
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            insert_viewer(&port, &session, user, now)?;
+            refresh_viewer_counts(&port, &session)
         })
     }
 
@@ -230,8 +233,9 @@ impl Platform {
         let session = self.live_session_id(&channel)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<i64> {
-            delete_viewer(tx, &session, user)?;
-            refresh_viewer_counts(tx, &session)
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            delete_viewer(&port, &session, user)?;
+            refresh_viewer_counts(&port, &session)
         })
     }
 
