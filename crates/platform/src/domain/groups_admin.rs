@@ -275,7 +275,8 @@ impl Platform {
         let actor_for_task = actor.to_string();
         self.db()
             .blocking(move |c| {
-                let role = repo_role_of(c, &group_for_task, &actor_for_task)?
+                let port = crate::storage::StorageConnection::sqlite_borrow(c);
+                let role = repo_role_of(&port, &group_for_task, &actor_for_task)?
                     .ok_or(PlatformError::Forbidden)?;
                 if role == "owner" || role == "admin" {
                     Ok(())
@@ -292,7 +293,8 @@ impl Platform {
         let members = self
             .db()
             .blocking(move |c| {
-                if !repo_group_exists(c, &group_for_task)? {
+                let port = crate::storage::StorageConnection::sqlite_borrow(c);
+                if !repo_group_exists(&port, &group_for_task)? {
                     return Ok(Vec::new());
                 }
                 let mut guard = cache
@@ -301,7 +303,7 @@ impl Platform {
                 if let Some(hit) = guard.get(&group_for_task) {
                     return Ok(hit.clone());
                 }
-                let members: Vec<String> = repo_members(c, &group_for_task)?
+                let members: Vec<String> = repo_members(&port, &group_for_task)?
                     .into_iter()
                     .map(|m| m.user_id)
                     .collect();

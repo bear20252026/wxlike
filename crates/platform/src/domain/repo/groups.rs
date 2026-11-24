@@ -4,15 +4,16 @@
 //! 业务规则（谁能建群、谁能移除谁、成员上限、解散语义）留在
 //! [`crate::domain::groups`]；本文件只负责语句、事务边界外的读写与行映射。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
-
 use crate::domain::groups::{GroupSummary, MemberRow};
 use crate::error::Result;
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 pub(in crate::domain) fn idempotent_response(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     key: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT response FROM idempotency WHERE key = ?1",
@@ -23,11 +24,12 @@ pub(in crate::domain) fn idempotent_response(
 }
 
 pub(in crate::domain) fn remember_idempotent(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     key: &str,
     response_json: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3)
          ON CONFLICT(key) DO NOTHING",
@@ -36,7 +38,11 @@ pub(in crate::domain) fn remember_idempotent(
     Ok(())
 }
 
-pub(in crate::domain) fn member_ids(conn: &Connection, group_id: &str) -> Result<Vec<String>> {
+pub(in crate::domain) fn member_ids(
+    conn: &StorageConnection<'_>,
+    group_id: &str,
+) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt =
         conn.prepare("SELECT user_id FROM group_members WHERE group_id = ?1 ORDER BY joined_at")?;
     let rows = stmt
@@ -45,7 +51,8 @@ pub(in crate::domain) fn member_ids(conn: &Connection, group_id: &str) -> Result
     Ok(rows)
 }
 
-pub(in crate::domain) fn user_exists(conn: &Connection, user_id: &str) -> Result<bool> {
+pub(in crate::domain) fn user_exists(conn: &StorageConnection<'_>, user_id: &str) -> Result<bool> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT 1 FROM users WHERE id = ?1",
@@ -57,12 +64,13 @@ pub(in crate::domain) fn user_exists(conn: &Connection, user_id: &str) -> Result
 }
 
 pub(in crate::domain) fn insert_group(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     name: &str,
     owner: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO groups(id, name, owner_uid, created_at) VALUES(?1, ?2, ?3, ?4)",
         params![id, name, owner, now],
@@ -71,12 +79,13 @@ pub(in crate::domain) fn insert_group(
 }
 
 pub(in crate::domain) fn insert_member(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     user_id: &str,
     role: &str,
     now: i64,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "INSERT INTO group_members(group_id, user_id, role, my_remark, joined_at)
          VALUES(?1, ?2, ?3, '', ?4)
@@ -86,9 +95,10 @@ pub(in crate::domain) fn insert_member(
 }
 
 pub(in crate::domain) fn group_header(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
 ) -> Result<Option<(String, String, String, i64)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT id, name, owner_uid, created_at FROM groups WHERE id = ?1",
@@ -105,7 +115,11 @@ pub(in crate::domain) fn group_header(
         .optional()?)
 }
 
-pub(in crate::domain) fn group_exists(conn: &Connection, group_id: &str) -> Result<bool> {
+pub(in crate::domain) fn group_exists(
+    conn: &StorageConnection<'_>,
+    group_id: &str,
+) -> Result<bool> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT 1 FROM groups WHERE id = ?1",
@@ -117,10 +131,11 @@ pub(in crate::domain) fn group_exists(conn: &Connection, group_id: &str) -> Resu
 }
 
 pub(in crate::domain) fn role_of(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     user_id: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT role FROM group_members WHERE group_id = ?1 AND user_id = ?2",
@@ -130,7 +145,11 @@ pub(in crate::domain) fn role_of(
         .optional()?)
 }
 
-pub(in crate::domain) fn members(conn: &Connection, group_id: &str) -> Result<Vec<MemberRow>> {
+pub(in crate::domain) fn members(
+    conn: &StorageConnection<'_>,
+    group_id: &str,
+) -> Result<Vec<MemberRow>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT user_id, role, my_remark, joined_at FROM group_members
          WHERE group_id = ?1 ORDER BY joined_at, user_id",
@@ -140,11 +159,12 @@ pub(in crate::domain) fn members(conn: &Connection, group_id: &str) -> Result<Ve
 }
 
 pub(in crate::domain) fn members_page(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     after_user: Option<&str>,
     limit: i64,
 ) -> Result<Vec<MemberRow>> {
+    let conn = conn.sqlite()?;
     let rows = match after_user.filter(|u| !u.is_empty()) {
         Some(after) => {
             let joined: Option<i64> = conn
@@ -188,7 +208,11 @@ fn map_member(r: &rusqlite::Row<'_>) -> rusqlite::Result<MemberRow> {
     })
 }
 
-pub(in crate::domain) fn summary(conn: &Connection, me: &str) -> Result<Vec<GroupSummary>> {
+pub(in crate::domain) fn summary(
+    conn: &StorageConnection<'_>,
+    me: &str,
+) -> Result<Vec<GroupSummary>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT g.id, g.name, g.owner_uid, m.role,
                 (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id)
@@ -207,7 +231,8 @@ pub(in crate::domain) fn summary(conn: &Connection, me: &str) -> Result<Vec<Grou
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(in crate::domain) fn member_count(conn: &Connection, group_id: &str) -> Result<i64> {
+pub(in crate::domain) fn member_count(conn: &StorageConnection<'_>, group_id: &str) -> Result<i64> {
+    let conn = conn.sqlite()?;
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM group_members WHERE group_id = ?1",
         params![group_id],
@@ -216,10 +241,11 @@ pub(in crate::domain) fn member_count(conn: &Connection, group_id: &str) -> Resu
 }
 
 pub(in crate::domain) fn has_member(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     user_id: &str,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT 1 FROM group_members WHERE group_id = ?1 AND user_id = ?2",
@@ -231,10 +257,11 @@ pub(in crate::domain) fn has_member(
 }
 
 pub(in crate::domain) fn delete_member(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     user_id: &str,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
         params![group_id, user_id],
@@ -242,25 +269,34 @@ pub(in crate::domain) fn delete_member(
 }
 
 pub(in crate::domain) fn set_my_remark(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     user_id: &str,
     remark: &str,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "UPDATE group_members SET my_remark = ?1 WHERE group_id = ?2 AND user_id = ?3",
         params![remark, group_id, user_id],
     )?)
 }
 
-pub(in crate::domain) fn groups_of_user(conn: &Connection, user_id: &str) -> Result<Vec<String>> {
+pub(in crate::domain) fn groups_of_user(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt =
         conn.prepare("SELECT group_id FROM group_members WHERE user_id = ?1 ORDER BY group_id")?;
     let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-pub(in crate::domain) fn owner_of(conn: &Connection, group_id: &str) -> Result<Option<String>> {
+pub(in crate::domain) fn owner_of(
+    conn: &StorageConnection<'_>,
+    group_id: &str,
+) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT owner_uid FROM groups WHERE id = ?1",
@@ -271,10 +307,11 @@ pub(in crate::domain) fn owner_of(conn: &Connection, group_id: &str) -> Result<O
 }
 
 pub(in crate::domain) fn set_visibility(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     visibility: &str,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO group_meta(group_id, visibility) VALUES(?1, ?2) \
          ON CONFLICT(group_id) DO UPDATE SET visibility = excluded.visibility",
@@ -284,11 +321,12 @@ pub(in crate::domain) fn set_visibility(
 }
 
 pub(in crate::domain) fn mark_dissolved(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
     now: i64,
     actor: &str,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO group_meta(group_id, visibility, dissolved_at, dissolved_by) \
          VALUES(?1, 'public', ?2, ?3) \
@@ -300,9 +338,10 @@ pub(in crate::domain) fn mark_dissolved(
 }
 
 pub(in crate::domain) fn meta_of(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     group_id: &str,
 ) -> Result<Option<(String, Option<i64>)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT visibility, dissolved_at FROM group_meta WHERE group_id = ?1",

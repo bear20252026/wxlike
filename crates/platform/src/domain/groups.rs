@@ -74,7 +74,7 @@ impl Platform {
     /// 为什么放在平台层而不是命令层：重试可能来自 CLI、MCP、UI 任意一个入口，
     /// 只有服务端记住才有效。键由调用方给（`Idempotency-Key` 头）。
     pub fn replay_idempotent(&self, key: &str) -> Result<Option<serde_json::Value>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = idempotent_response(&c, key)?;
         drop(c);
         match row {
@@ -88,7 +88,7 @@ impl Platform {
     pub fn remember_idempotent(&self, key: &str, response: &serde_json::Value) -> Result<()> {
         let body = serde_json::to_string(response).map_err(PlatformError::Codec)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_remember_idempotent(&c, key, &body, now)?;
         Ok(())
     }
@@ -116,7 +116,7 @@ impl Platform {
 
     /// 群成员 id 列表（不含角色等展示字段）。
     fn group_member_ids(&self, group_id: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         member_ids(&c, group_id)
     }
 
@@ -138,7 +138,7 @@ impl Platform {
             return Err(PlatformError::BadInput("group member limit exceeded"));
         }
 
-        let c = self.db().lock();
+        let c = self.db().acquire();
         for m in &requested {
             if !user_exists(&c, m)? {
                 return Err(PlatformError::NotFound);
@@ -158,17 +158,17 @@ impl Platform {
 
     /// Header row of a group: `(id, name, owner_uid, created_at)`.
     pub fn group_header(&self, group_id: &str) -> Result<Option<(String, String, String, i64)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_group_header(&c, group_id)
     }
 
     pub fn group_exists(&self, group_id: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_group_exists(&c, group_id)
     }
 
     fn role_of_row(&self, group_id: &str, user_id: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_role_of(&c, group_id, user_id)
     }
 
@@ -191,7 +191,7 @@ impl Platform {
     }
 
     pub fn group_members(&self, group_id: &str) -> Result<Vec<MemberRow>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_members(&c, group_id)
     }
 
@@ -215,12 +215,12 @@ impl Platform {
             None => -1,
             Some(n) => n.max(0),
         };
-        let c = self.db().lock();
+        let c = self.db().acquire();
         members_page(&c, group_id, after_user, sql_limit)
     }
 
     pub fn group_summary(&self, me: &str) -> Result<Vec<GroupSummary>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         summary(&c, me)
     }
 
@@ -240,7 +240,7 @@ impl Platform {
         }
 
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let current = member_count(&c, &group_id)? as usize;
         let mut new_count = current;
         for u in &cleaned {
@@ -280,7 +280,7 @@ impl Platform {
             }
             _ => {}
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         delete_member(&c, &group_id, &target)?;
         drop(c);
         self.invalidate_group(&group_id);
@@ -306,7 +306,7 @@ impl Platform {
                 "owner must transfer the group before leaving",
             ));
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         delete_member(&c, &group_id, actor)?;
         drop(c);
         self.invalidate_group(&group_id);
@@ -317,7 +317,7 @@ impl Platform {
     pub fn set_my_remark(&self, group_id: &str, actor: &str, remark: &str) -> Result<()> {
         let group_id = validate::id(group_id)?.to_string();
         let remark = validate::remark(remark)?.to_string();
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let changed = repo_set_my_remark(&c, &group_id, actor, &remark)?;
         crate::db::ensure_updated(changed)?;
         Ok(())
@@ -326,7 +326,7 @@ impl Platform {
     /// Every group `user_id` belongs to (P1 search authorization: the set of
     /// conversations whose history and search results this user may see).
     pub fn groups_of_user(&self, user_id: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_groups_of_user(&c, user_id)
     }
 
@@ -405,7 +405,7 @@ impl Platform {
             "public" | "private" => visibility,
             _ => return Err(PlatformError::BadInput("visibility")),
         };
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let Some(owner) = owner_of(&c, group_id)? else {
             return Err(PlatformError::NotFound);
         };
@@ -422,7 +422,7 @@ impl Platform {
     /// "不能再写"由 `dissolved` 判定，不靠删数据。
     pub(crate) fn dissolve_group(&self, actor: &str, group_id: &str) -> Result<Vec<String>> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let Some(owner) = owner_of(&c, group_id)? else {
             return Err(PlatformError::NotFound);
         };
@@ -435,7 +435,7 @@ impl Platform {
 
     /// 群元数据（可见性 / 解散）—— 缺行时按 public、未解散处理。
     pub(crate) fn group_meta_of(&self, group_id: &str) -> Result<(String, bool)> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = meta_of(&c, group_id)?;
         Ok(match row {
             Some((vis, dissolved)) => (vis, dissolved.is_some()),
