@@ -2,7 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::moments::{Visibility, MAX_COMMENT_DEPTH, MAX_FANOUT_RECIPIENTS};
 
@@ -79,7 +80,7 @@ fn map_moment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MomentRecord> {
 /// 收件箱里不会留着原文（最小权限与日志脱敏）。`dedupe_key` 让同一
 /// 收件人对同一条动态只有一条提醒，重试发布不会刷屏。
 pub(in crate::domain) fn fanout_new_moment(
-    conn: &rusqlite::Connection,
+    conn: &StorageConnection<'_>,
     author: &str,
     visibility: Visibility,
     audience_group: &str,
@@ -89,12 +90,13 @@ pub(in crate::domain) fn fanout_new_moment(
     if visibility == Visibility::Private {
         return Ok(0);
     }
+    let c = conn.sqlite()?;
     // groups 之外的可见性不带分组条件（空串 = 不过滤分组）
     let group = match visibility {
         Visibility::Groups => audience_group,
         _ => "",
     };
-    let mut stmt = conn.prepare(
+    let mut stmt = c.prepare(
         "SELECT f.friend_id FROM friends f
          WHERE f.user_id = ?1
            AND (?2 = '' OR f.friend_group = ?2)
@@ -111,7 +113,7 @@ pub(in crate::domain) fn fanout_new_moment(
     drop(stmt);
     for recipient in &recipients {
         crate::domain::repo::inbox::notify_conn(
-            conn,
+            c,
             recipient,
             "moment_published",
             author,
@@ -127,11 +129,12 @@ pub(in crate::domain) fn fanout_new_moment(
 
 /// 回复目标必须存在且属于同一条朋友圈，且嵌套不超上限。
 pub(in crate::domain) fn check_reply_target(
-    conn: &rusqlite::Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
     reply_to: &str,
 ) -> Result<()> {
-    let same_moment: Option<i64> = conn
+    let c = conn.sqlite()?;
+    let same_moment: Option<i64> = c
         .query_row(
             "SELECT 1 FROM moment_comments WHERE id = ?1 AND moment_id = ?2 AND deleted = 0",
             params![reply_to, moment_id],
@@ -150,14 +153,15 @@ pub(in crate::domain) fn check_reply_target(
 }
 
 pub(in crate::domain) fn comment_depth(
-    conn: &rusqlite::Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
     comment_id: &str,
 ) -> Result<usize> {
+    let c = conn.sqlite()?;
     let mut depth = 0usize;
     let mut cur = comment_id.to_string();
     for _ in 0..=(MAX_COMMENT_DEPTH + 1) {
-        let parent: Option<String> = conn
+        let parent: Option<String> = c
             .query_row(
                 "SELECT reply_to FROM moment_comments
                  WHERE id = ?1 AND moment_id = ?2 AND deleted = 0",
@@ -178,13 +182,14 @@ pub(in crate::domain) fn comment_depth(
 
 /// 评论/回复落评论者与被回复者两条事务内通知（楼中楼只补被回复者）。
 pub(in crate::domain) fn notify_comment_inbox(
-    conn: &rusqlite::Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
     by: &str,
     reply_to: Option<&str>,
     now: i64,
 ) -> Result<()> {
-    let (author, reply_author): (String, Option<String>) = conn.query_row(
+    let c = conn.sqlite()?;
+    let (author, reply_author): (String, Option<String>) = c.query_row(
         "SELECT m.author,
                 (SELECT author FROM moment_comments WHERE id = ?2)
          FROM moments m WHERE m.id = ?1",
@@ -192,7 +197,7 @@ pub(in crate::domain) fn notify_comment_inbox(
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     crate::domain::repo::inbox::notify_conn(
-        conn,
+        c,
         &author,
         "moment_comment",
         by,
@@ -204,7 +209,7 @@ pub(in crate::domain) fn notify_comment_inbox(
     )?;
     if let Some(reply_author) = reply_author {
         crate::domain::repo::inbox::notify_conn(
-            conn,
+            c,
             &reply_author,
             "moment_reply",
             by,
@@ -218,7 +223,11 @@ pub(in crate::domain) fn notify_comment_inbox(
     Ok(())
 }
 
-pub(in crate::domain) fn require_media(conn: &Connection, media_ids: &[String]) -> Result<()> {
+pub(in crate::domain) fn require_media(
+    conn: &StorageConnection<'_>,
+    media_ids: &[String],
+) -> Result<()> {
+    let conn = conn.sqlite()?;
     for media_id in media_ids {
         let known: Option<i64> = conn
             .query_row(
@@ -236,9 +245,10 @@ pub(in crate::domain) fn require_media(conn: &Connection, media_ids: &[String]) 
 
 /// 动态主行与两个计数列（点赞数、未删评论数）在同一事务/连接上读。
 pub(in crate::domain) fn moment_record(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
 ) -> Result<Option<MomentRecord>> {
+    let conn = conn.sqlite()?;
     let row = conn
         .query_row(
             "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
@@ -254,7 +264,7 @@ pub(in crate::domain) fn moment_record(
 }
 
 pub(in crate::domain) fn insert_moment(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     author: &str,
     text: &str,
@@ -263,6 +273,7 @@ pub(in crate::domain) fn insert_moment(
     audience_group: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO moments(id, author, text, media, visibility, audience_group, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -281,10 +292,11 @@ pub(in crate::domain) fn insert_moment(
 
 /// 发布成功后消费掉草稿；返回 false 表示草稿不属于该作者（调用方拒绝）。
 pub(in crate::domain) fn delete_draft_for_author(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     draft_id: &str,
     author: &str,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
         params![draft_id, author],
@@ -293,7 +305,7 @@ pub(in crate::domain) fn delete_draft_for_author(
 }
 
 pub(in crate::domain) fn update_draft(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     author: &str,
     text: &str,
@@ -302,6 +314,7 @@ pub(in crate::domain) fn update_draft(
     audience_group: &str,
     now: i64,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "UPDATE moment_drafts SET text = ?1, media = ?2, visibility = ?3,
                               audience_group = ?4, updated_at = ?5
@@ -320,7 +333,7 @@ pub(in crate::domain) fn update_draft(
 }
 
 pub(in crate::domain) fn insert_draft(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     author: &str,
     text: &str,
@@ -329,6 +342,7 @@ pub(in crate::domain) fn insert_draft(
     audience_group: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO moment_drafts(id, author, text, media, visibility,
                                audience_group, updated_at)
@@ -347,9 +361,10 @@ pub(in crate::domain) fn insert_draft(
 }
 
 pub(in crate::domain) fn drafts_by_author(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     author: &str,
 ) -> Result<Vec<DraftRecord>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id, author, text, media, visibility, audience_group, updated_at
          FROM moment_drafts WHERE author = ?1 ORDER BY updated_at DESC",
@@ -369,7 +384,12 @@ pub(in crate::domain) fn drafts_by_author(
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(in crate::domain) fn delete_draft(conn: &Connection, id: &str, author: &str) -> Result<bool> {
+pub(in crate::domain) fn delete_draft(
+    conn: &StorageConnection<'_>,
+    id: &str,
+    author: &str,
+) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "DELETE FROM moment_drafts WHERE id = ?1 AND author = ?2",
         params![id, author],
@@ -378,11 +398,12 @@ pub(in crate::domain) fn delete_draft(conn: &Connection, id: &str, author: &str)
 }
 
 pub(in crate::domain) fn friend_group_contains(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     author: &str,
     viewer: &str,
     group: &str,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let found = conn
         .query_row(
             "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2 AND friend_group = ?3",
@@ -394,9 +415,10 @@ pub(in crate::domain) fn friend_group_contains(
 }
 
 pub(in crate::domain) fn moment_access(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
 ) -> Result<Option<MomentAccess>> {
+    let conn = conn.sqlite()?;
     let row = conn
         .query_row(
             "SELECT author, visibility, audience_group FROM moments
@@ -415,9 +437,10 @@ pub(in crate::domain) fn moment_access(
 }
 
 pub(in crate::domain) fn moment_likes(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
 ) -> Result<Vec<(String, String)>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT l.user_id, u.name FROM moment_likes l JOIN users u ON u.id = l.user_id
          WHERE l.moment_id = ?1 ORDER BY l.created_at",
@@ -427,9 +450,10 @@ pub(in crate::domain) fn moment_likes(
 }
 
 pub(in crate::domain) fn moment_comments(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
 ) -> Result<Vec<CommentRecord>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT cm.id, cm.author, u.name, cm.text, cm.reply_to, rt.name, cm.created_at
          FROM moment_comments cm
@@ -454,10 +478,11 @@ pub(in crate::domain) fn moment_comments(
 }
 
 pub(in crate::domain) fn soft_delete_moment(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
     by: &str,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "UPDATE moments SET deleted = 1 WHERE id = ?1 AND author = ?2 AND deleted = 0",
         params![moment_id, by],
@@ -466,11 +491,12 @@ pub(in crate::domain) fn soft_delete_moment(
 }
 
 pub(in crate::domain) fn soft_delete_comment(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     comment_id: &str,
     moment_id: &str,
     by: &str,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "UPDATE moment_comments SET deleted = 1
          WHERE id = ?1 AND moment_id = ?2 AND deleted = 0
@@ -482,11 +508,12 @@ pub(in crate::domain) fn soft_delete_comment(
 }
 
 pub(in crate::domain) fn insert_like(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
     by: &str,
     now: i64,
 ) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "INSERT INTO moment_likes(moment_id, user_id, created_at) VALUES(?1, ?2, ?3)
          ON CONFLICT(moment_id, user_id) DO NOTHING",
@@ -496,9 +523,10 @@ pub(in crate::domain) fn insert_like(
 }
 
 pub(in crate::domain) fn moment_author_if_live(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     moment_id: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     let author = conn
         .query_row(
             "SELECT author FROM moments WHERE id = ?1 AND deleted = 0",
@@ -509,7 +537,12 @@ pub(in crate::domain) fn moment_author_if_live(
     Ok(author)
 }
 
-pub(in crate::domain) fn delete_like(conn: &Connection, moment_id: &str, by: &str) -> Result<bool> {
+pub(in crate::domain) fn delete_like(
+    conn: &StorageConnection<'_>,
+    moment_id: &str,
+    by: &str,
+) -> Result<bool> {
+    let conn = conn.sqlite()?;
     let changed = conn.execute(
         "DELETE FROM moment_likes WHERE moment_id = ?1 AND user_id = ?2",
         params![moment_id, by],
@@ -518,7 +551,7 @@ pub(in crate::domain) fn delete_like(conn: &Connection, moment_id: &str, by: &st
 }
 
 pub(in crate::domain) fn insert_comment(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     moment_id: &str,
     by: &str,
@@ -526,6 +559,7 @@ pub(in crate::domain) fn insert_comment(
     reply_to: Option<&str>,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO moment_comments(id, moment_id, author, text, reply_to, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
@@ -536,12 +570,13 @@ pub(in crate::domain) fn insert_comment(
 
 /// 相册页：某个作者对 `viewer` 读时可见的动态，时间倒序。
 pub(in crate::domain) fn album_page(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     viewer: &str,
     author: &str,
     upper: i64,
     limit: i64,
 ) -> Result<Vec<MomentRecord>> {
+    let conn = conn.sqlite()?;
     let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
                     (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
                     (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)
@@ -566,11 +601,12 @@ pub(in crate::domain) fn album_page(
 
 /// Feed 页：自 + 好友，读时判定可见性、分组与双向拉黑。
 pub(in crate::domain) fn feed_page(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     me: &str,
     upper: i64,
     limit: i64,
 ) -> Result<Vec<MomentRecord>> {
+    let conn = conn.sqlite()?;
     let sql = "SELECT m.seq, m.id, m.author, u.name, m.text, m.media, m.visibility, m.created_at,
                     (SELECT COUNT(*) FROM moment_likes l WHERE l.moment_id = m.id),
                     (SELECT COUNT(*) FROM moment_comments cm WHERE cm.moment_id = m.id AND cm.deleted = 0)

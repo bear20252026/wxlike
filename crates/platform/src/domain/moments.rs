@@ -20,6 +20,7 @@
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::moments`]。
 
 use crate::error::{PlatformError, Result};
+use crate::storage::StorageConnection;
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
@@ -267,9 +268,10 @@ impl Platform {
 
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            require_media(tx, &cleaned)?;
+            let port = StorageConnection::sqlite_tx(tx);
+            require_media(&port, &cleaned)?;
             insert_moment(
-                tx,
+                &port,
                 &id,
                 &author,
                 text,
@@ -288,10 +290,10 @@ impl Platform {
             )?;
             // 发布时扇出（issue #126 要求 4）：与插入同事务，所以“帖在提醒不在”
             // 或“提醒先于帖可见”的窗口都不存在。
-            fanout_new_moment(tx, &author, visibility, &group, &id, now)?;
+            fanout_new_moment(&port, &author, visibility, &group, &id, now)?;
             if let Some(draft_id) = draft_id {
                 let draft_id = validate::id(draft_id)?;
-                if !delete_draft_for_author(tx, draft_id, &author)? {
+                if !delete_draft_for_author(&port, draft_id, &author)? {
                     return Err(PlatformError::Forbidden);
                 }
             }
@@ -318,12 +320,13 @@ impl Platform {
         let media = serde_json::to_string(&cleaned)?;
         let mut c = self.db().lock();
         let id = c.with_tx(|tx| -> Result<String> {
-            require_media(tx, &cleaned)?;
+            let port = StorageConnection::sqlite_tx(tx);
+            require_media(&port, &cleaned)?;
             let id = match draft_id {
                 Some(id) => {
                     let id = validate::id(id)?.to_string();
                     if !update_draft(
-                        tx,
+                        &port,
                         &id,
                         &author,
                         text,
@@ -339,7 +342,7 @@ impl Platform {
                 None => {
                     let id = crate::auth::random_hex(8);
                     insert_draft(
-                        tx,
+                        &port,
                         &id,
                         &author,
                         text,
@@ -357,7 +360,7 @@ impl Platform {
     }
 
     pub(crate) fn moment_drafts(&self, author: &str) -> Result<Vec<MomentDraft>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         Ok(drafts_by_author(&c, author)?
             .into_iter()
             .map(|d| MomentDraft {
@@ -374,14 +377,14 @@ impl Platform {
 
     pub(crate) fn delete_moment_draft(&self, author: &str, draft_id: &str) -> Result<()> {
         let draft_id = validate::id(draft_id)?;
-        if !delete_draft(&self.db().lock(), draft_id, author)? {
+        if !delete_draft(&self.db().acquire(), draft_id, author)? {
             return Err(PlatformError::NotFound);
         }
         Ok(())
     }
 
     pub(crate) fn moment_row(&self, moment_id: &str) -> Result<Option<(i64, MomentHead)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = moment_record(&c, moment_id)?;
         Ok(row.map(|r| (r.seq, r.into_head())))
     }
@@ -413,13 +416,13 @@ impl Platform {
         if group.is_empty() {
             return Ok(false);
         }
-        friend_group_contains(&self.db().lock(), author, viewer, group)
+        friend_group_contains(&self.db().acquire(), author, viewer, group)
     }
 
     /// 按 id 判定可见性（检索/点赞/详情共用的授权入口）。
     pub(crate) fn moment_visible(&self, viewer: &str, moment_id: &str) -> Result<bool> {
         let row = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             moment_access(&c, moment_id)?
         };
         let Some(access) = row else {
@@ -434,11 +437,11 @@ impl Platform {
     }
 
     pub(crate) fn moment_visitors_likes(&self, moment_id: &str) -> Result<Vec<(String, String)>> {
-        moment_likes(&self.db().lock(), moment_id)
+        moment_likes(&self.db().acquire(), moment_id)
     }
 
     pub(crate) fn moment_comments(&self, moment_id: &str) -> Result<Vec<CommentRow>> {
-        Ok(moment_comments(&self.db().lock(), moment_id)?
+        Ok(moment_comments(&self.db().acquire(), moment_id)?
             .into_iter()
             .map(|c| CommentRow {
                 comment_id: c.comment_id,
@@ -457,7 +460,8 @@ impl Platform {
     pub(crate) fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<bool> {
-            let changed = soft_delete_moment(tx, moment_id, by)?;
+            let port = StorageConnection::sqlite_tx(tx);
+            let changed = soft_delete_moment(&port, moment_id, by)?;
             if changed {
                 crate::domain::repo::content_index::remove_tx(tx, moment_id)?;
                 crate::domain::repo::content_index::remove_media_refs_tx(tx, "moment", moment_id)?;
@@ -477,7 +481,7 @@ impl Platform {
         comment_id: &str,
         by: &str,
     ) -> Result<bool> {
-        soft_delete_comment(&self.db().lock(), comment_id, moment_id, by)
+        soft_delete_comment(&self.db().acquire(), comment_id, moment_id, by)
     }
 
     /// Idempotent like: re-liking reports success without a second row, and the
@@ -486,9 +490,10 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<bool> {
-            let changed = insert_like(tx, moment_id, by, now)?;
+            let port = StorageConnection::sqlite_tx(tx);
+            let changed = insert_like(&port, moment_id, by, now)?;
             if changed {
-                if let Some(author) = moment_author_if_live(tx, moment_id)? {
+                if let Some(author) = moment_author_if_live(&port, moment_id)? {
                     crate::domain::repo::inbox::notify_tx(
                         tx,
                         &author,
@@ -507,7 +512,7 @@ impl Platform {
     }
 
     pub(crate) fn unlike_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
-        delete_like(&self.db().lock(), moment_id, by)
+        delete_like(&self.db().acquire(), moment_id, by)
     }
 
     /// Adds a comment, optionally as a reply to another comment **in the same
@@ -530,11 +535,12 @@ impl Platform {
         };
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
+            let port = StorageConnection::sqlite_tx(tx);
             if let Some(rt) = &reply_to {
-                check_reply_target(tx, moment_id, rt)?;
+                check_reply_target(&port, moment_id, rt)?;
             }
-            insert_comment(tx, &id, moment_id, &by, text, reply_to.as_deref(), now)?;
-            notify_comment_inbox(tx, moment_id, &by, reply_to.as_deref(), now)?;
+            insert_comment(&port, &id, moment_id, &by, text, reply_to.as_deref(), now)?;
+            notify_comment_inbox(&port, moment_id, &by, reply_to.as_deref(), now)?;
             Ok(())
         })?;
         Ok(id)
@@ -559,7 +565,7 @@ impl Platform {
         let author = validate::id(author)?.to_string();
         let limit = limit.clamp(1, MAX_FEED_PAGE);
         let upper = since.unwrap_or(i64::MAX);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let rows = album_page(&c, viewer, &author, upper, limit + 1)?;
         Ok(page_from_rows(rows, limit, upper))
     }
@@ -575,7 +581,7 @@ impl Platform {
         // since is a watermark: strictly older than it; None = from the newest
         let upper = since.unwrap_or(i64::MAX);
 
-        let c = self.db().lock();
+        let c = self.db().acquire();
         // 作者列表、可见性、拉黑全部在同一条 SQL 里判定：好友关系与分组是
         // 读时事实，删好友/改分组/拉黑立即反映到下一次 feed。
         let rows = feed_page(&c, me, upper, limit + 1)?;
