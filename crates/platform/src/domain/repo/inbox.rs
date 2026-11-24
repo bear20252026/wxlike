@@ -69,6 +69,32 @@ pub(in crate::domain) fn notify_tx(
     )
 }
 
+/// 旧签名 repo 内部的调用：把已借出的 `&Connection` 转成端口值。
+#[allow(clippy::too_many_arguments)]
+pub(in crate::domain) fn notify_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    kind: &str,
+    actor: &str,
+    target_kind: &str,
+    target_id: &str,
+    text: &str,
+    dedupe: &str,
+    now: i64,
+) -> Result<()> {
+    notify(
+        &StorageConnection::sqlite_borrow(conn),
+        user_id,
+        kind,
+        actor,
+        target_kind,
+        target_id,
+        text,
+        dedupe,
+        now,
+    )
+}
+
 pub(in crate::domain) fn page(
     conn: &StorageConnection<'_>,
     user: &str,

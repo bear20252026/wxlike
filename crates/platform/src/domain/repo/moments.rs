@@ -110,7 +110,7 @@ pub(in crate::domain) fn fanout_new_moment(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
     for recipient in &recipients {
-        crate::domain::repo::inbox::notify(
+        crate::domain::repo::inbox::notify_conn(
             conn,
             recipient,
             "moment_published",
@@ -191,7 +191,7 @@ pub(in crate::domain) fn notify_comment_inbox(
         params![moment_id, reply_to.unwrap_or("")],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    crate::domain::repo::inbox::notify(
+    crate::domain::repo::inbox::notify_conn(
         conn,
         &author,
         "moment_comment",
@@ -203,7 +203,7 @@ pub(in crate::domain) fn notify_comment_inbox(
         now,
     )?;
     if let Some(reply_author) = reply_author {
-        crate::domain::repo::inbox::notify(
+        crate::domain::repo::inbox::notify_conn(
             conn,
             &reply_author,
             "moment_reply",

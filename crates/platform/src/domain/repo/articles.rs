@@ -567,7 +567,7 @@ pub(in crate::domain) fn publish_side_effects(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
     for follower in followers {
-        crate::domain::repo::inbox::notify(
+        crate::domain::repo::inbox::notify_conn(
             tx,
             &follower,
             "article_published",
