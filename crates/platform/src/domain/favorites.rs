@@ -91,7 +91,7 @@ impl Platform {
     pub fn add_favorite(&self, user_id: &str, input: &FavoriteInput) -> Result<Favorite> {
         let source_conv = validate::conv(&input.source_conv)?;
         validate_snapshot_input(input)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if let Some(existing) = find_message_snapshot(&c, user_id, source_conv, input)? {
             return favorite_row(&c, user_id, &existing)?.ok_or(PlatformError::NotFound);
         }
@@ -108,7 +108,7 @@ impl Platform {
         }
         let id = validate::id(id)?.to_string();
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             if object_favorite_exists(&c, user, kind, &id)? {
                 drop(c);
                 return self.object_favorite(user, kind, &id);
@@ -120,14 +120,14 @@ impl Platform {
         let snapshot = self.snapshot_of(kind, &id)?;
         let now = wxlike_core::types::now_ms() as i64;
         let fav_id = crate::auth::random_hex(8);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         insert_object_favorite(&c, &fav_id, user, kind, &id, &snapshot.0, &snapshot.1, now)?;
         drop(c);
         self.object_favorite(user, kind, &id)
     }
 
     fn object_favorite(&self, user: &str, kind: &str, id: &str) -> Result<Favorite> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let Some(id) = object_favorite_id(&c, user, kind, id)? else {
             return Err(PlatformError::NotFound);
         };
@@ -139,7 +139,7 @@ impl Platform {
         if !OBJECT_KINDS.contains(&kind) {
             return Err(PlatformError::BadInput("unknown favorite kind"));
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let source = snapshot_source(&c, kind, id)?.ok_or(PlatformError::NotFound)?;
         Ok((capture(&source.text), source.label))
     }
@@ -153,7 +153,7 @@ impl Platform {
     ) -> Result<Vec<Favorite>> {
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE) as i64;
         let before = before_created.unwrap_or(i64::MAX);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let rows = list_page(&c, user_id, before, limit)?;
         Ok(rows.into_iter().map(scrub).collect())
     }
@@ -167,7 +167,7 @@ impl Platform {
     ) -> Result<(Vec<Favorite>, String, bool)> {
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE as i64);
         let (sort, created, id) = parse_cursor(cursor)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let mut rows = sorted_page(&c, user, sort, created, &id, limit + 1)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
@@ -182,7 +182,7 @@ impl Platform {
 
     pub fn favorite(&self, user_id: &str, id: &str) -> Result<Favorite> {
         let id = validate::id(id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = favorite_row(&c, user_id, id)?.ok_or(PlatformError::NotFound)?;
         Ok(scrub(row))
     }
@@ -203,7 +203,7 @@ impl Platform {
         }
         let limit = limit.clamp(1, MAX_FAVORITE_PAGE as i64);
         let pattern = format!("%{}%", page::escape_like(q));
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let rows = search_page(&c, user, &pattern, limit)?;
         Ok(rows.into_iter().map(scrub).collect())
     }
@@ -229,7 +229,7 @@ impl Platform {
                 return Err(PlatformError::BadInput("sort_order out of range"));
             }
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let changed = update_fields(&c, user, id, label, sort_order)?;
         crate::db::ensure_updated(changed)?;
         let row = favorite_row(&c, user, id)?.ok_or(PlatformError::NotFound)?;
@@ -247,13 +247,14 @@ impl Platform {
         }
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             for id in &cleaned {
-                if !owned_exists(tx, user, id)? {
+                if !owned_exists(&conn, user, id)? {
                     return Err(PlatformError::NotFound);
                 }
             }
             for (i, id) in cleaned.iter().enumerate() {
-                set_sort_order(tx, user, id, i as i64)?;
+                set_sort_order(&conn, user, id, i as i64)?;
             }
             Ok(cleaned.len())
         })
@@ -262,7 +263,7 @@ impl Platform {
     pub fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             delete_one(&c, user_id, id)?
         };
         crate::db::ensure_updated(changed)

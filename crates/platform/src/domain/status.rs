@@ -121,7 +121,7 @@ impl Platform {
             crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
-            crate::domain::repo::favorites::revoke_source(tx, "status", id)?;
+            crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
             Ok(())
         })
     }
@@ -252,7 +252,7 @@ impl Platform {
                     mark_expired(tx, id, now)?;
                     crate::domain::repo::content_index::remove(tx, id)?;
                     crate::domain::repo::content_index::remove_media_refs(tx, "status", id)?;
-                    crate::domain::repo::favorites::revoke_source(tx, "status", id)?;
+                    crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
                 }
                 Ok(rows)
             })?

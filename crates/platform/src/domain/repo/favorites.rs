@@ -2,7 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::favorites::{
     kind_or_text, Favorite, FavoriteInput, COL_REVOKED, COL_SNAPSHOT_LABEL, COL_SORT_ORDER,
@@ -16,11 +17,12 @@ pub(in crate::domain) struct SnapshotSource {
 }
 
 pub(in crate::domain) fn object_favorite_exists(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     kind: &str,
     source_id: &str,
 ) -> Result<bool> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT 1 FROM favorites WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
         params![user, kind, source_id],
@@ -32,7 +34,7 @@ pub(in crate::domain) fn object_favorite_exists(
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn insert_object_favorite(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     fav_id: &str,
     user: &str,
     kind: &str,
@@ -41,6 +43,7 @@ pub(in crate::domain) fn insert_object_favorite(
     label: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
                                media_id, sender, sent_at_ms, created_at,
@@ -53,11 +56,12 @@ pub(in crate::domain) fn insert_object_favorite(
 }
 
 pub(in crate::domain) fn object_favorite_id(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     kind: &str,
     source_id: &str,
 ) -> Result<Option<String>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT id FROM favorites
          WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
@@ -69,10 +73,11 @@ pub(in crate::domain) fn object_favorite_id(
 
 /// 从权威表读一小段快照；对象不存在或未发布返回 `None`。
 pub(in crate::domain) fn snapshot_source(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     kind: &str,
     id: &str,
 ) -> Result<Option<SnapshotSource>> {
+    let c = c.sqlite()?;
     let row = match kind {
         "moment" => c
             .query_row(
@@ -128,11 +133,12 @@ pub(in crate::domain) fn snapshot_source(
 }
 
 pub(in crate::domain) fn list_page(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     before: i64,
     limit: i64,
 ) -> Result<Vec<Favorite>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
@@ -145,13 +151,14 @@ pub(in crate::domain) fn list_page(
 }
 
 pub(in crate::domain) fn sorted_page(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     sort: i64,
     created: i64,
     cursor_id: &str,
     limit: i64,
 ) -> Result<Vec<Favorite>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
@@ -168,11 +175,12 @@ pub(in crate::domain) fn sorted_page(
 }
 
 pub(in crate::domain) fn search_page(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     pattern: &str,
     limit: i64,
 ) -> Result<Vec<Favorite>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
@@ -188,12 +196,13 @@ pub(in crate::domain) fn search_page(
 }
 
 pub(in crate::domain) fn update_fields(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
     label: Option<&str>,
     sort_order: Option<i64>,
 ) -> Result<usize> {
+    let c = c.sqlite()?;
     Ok(c.execute(
         "UPDATE favorites SET
            snapshot_label = COALESCE(?1, snapshot_label),
@@ -203,7 +212,12 @@ pub(in crate::domain) fn update_fields(
     )?)
 }
 
-pub(in crate::domain) fn owned_exists(c: &Connection, user: &str, id: &str) -> Result<bool> {
+pub(in crate::domain) fn owned_exists(
+    c: &StorageConnection<'_>,
+    user: &str,
+    id: &str,
+) -> Result<bool> {
+    let c = c.sqlite()?;
     let owned: Option<i64> = c
         .query_row(
             "SELECT 1 FROM favorites WHERE id = ?1 AND user_id = ?2",
@@ -215,11 +229,12 @@ pub(in crate::domain) fn owned_exists(c: &Connection, user: &str, id: &str) -> R
 }
 
 pub(in crate::domain) fn set_sort_order(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
     order: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE favorites SET sort_order = ?1 WHERE id = ?2 AND user_id = ?3",
         params![order, id, user],
@@ -227,7 +242,12 @@ pub(in crate::domain) fn set_sort_order(
     Ok(())
 }
 
-pub(in crate::domain) fn delete_one(c: &Connection, user: &str, id: &str) -> Result<usize> {
+pub(in crate::domain) fn delete_one(
+    c: &StorageConnection<'_>,
+    user: &str,
+    id: &str,
+) -> Result<usize> {
+    let c = c.sqlite()?;
     Ok(c.execute(
         "DELETE FROM favorites WHERE id = ?1 AND user_id = ?2",
         params![id, user],
@@ -236,10 +256,11 @@ pub(in crate::domain) fn delete_one(c: &Connection, user: &str, id: &str) -> Res
 /// 源对象删除/撤权/到期时调用（与删除同事务）。只标记，不删用户的行：
 /// 用户仍能看到"这条收藏已不可用"，且排序位置保持不变。
 pub(in crate::domain) fn revoke_source(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     source_kind: &str,
     source_id: &str,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     if source_kind == "message" || source_id.is_empty() {
         return Ok(());
     }
@@ -251,14 +272,24 @@ pub(in crate::domain) fn revoke_source(
     Ok(())
 }
 
+/// 事务内调用：`with_tx` 闭包只给 `&Transaction`，这里把它转成端口值。
+pub(in crate::domain) fn revoke_source_tx(
+    tx: &rusqlite::Transaction<'_>,
+    source_kind: &str,
+    source_id: &str,
+) -> Result<()> {
+    revoke_source(&StorageConnection::sqlite_tx(tx), source_kind, source_id)
+}
+
 /// 幂等语义是"同一载荷重复提交"：同会话同消息、同快照内容返回已有行；
 /// 同消息不同快照（如重发后转发语不同）仍各成一行（P1 契约如此）。
 pub(in crate::domain) fn find_message_snapshot(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user_id: &str,
     source_conv: &str,
     input: &FavoriteInput,
 ) -> Result<Option<String>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT id FROM favorites
          WHERE user_id = ?1 AND source_kind = 'message' AND source_msg_id = ?2
@@ -278,12 +309,13 @@ pub(in crate::domain) fn find_message_snapshot(
 }
 
 pub(in crate::domain) fn insert_message_favorite(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user_id: &str,
     source_conv: &str,
     input: &FavoriteInput,
     id: &str,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     let now = wxlike_core::types::now_ms() as i64;
     c.execute(
         "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
@@ -307,10 +339,11 @@ pub(in crate::domain) fn insert_message_favorite(
 }
 
 pub(in crate::domain) fn favorite_row(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
 ) -> Result<Option<Favorite>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,

@@ -184,7 +184,7 @@ impl Platform {
                 // 对称的撤权路径，不给驳回留一个“引用还在”的分支。
                 crate::domain::repo::content_index::remove(tx, &id)?;
                 crate::domain::repo::content_index::remove_media_refs(tx, "video", &id)?;
-                crate::domain::repo::favorites::revoke_source(tx, "video", &id)?;
+                crate::domain::repo::favorites::revoke_source_tx(tx, "video", &id)?;
             }
             crate::domain::repo::inbox::notify(
                 tx,
@@ -268,7 +268,7 @@ impl Platform {
             }
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "video", id)?;
-            crate::domain::repo::favorites::revoke_source(tx, "video", id)?;
+            crate::domain::repo::favorites::revoke_source_tx(tx, "video", id)?;
             Ok(())
         })
     }

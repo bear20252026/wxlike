@@ -434,7 +434,7 @@ impl Platform {
             crate::db::ensure_updated(changed)?;
             crate::domain::repo::content_index::remove(tx, id)?;
             crate::domain::repo::content_index::remove_media_refs(tx, "article", id)?;
-            crate::domain::repo::favorites::revoke_source(tx, "article", id)?;
+            crate::domain::repo::favorites::revoke_source_tx(tx, "article", id)?;
             Ok(())
         })
     }

@@ -461,7 +461,7 @@ impl Platform {
             if changed {
                 crate::domain::repo::content_index::remove(tx, moment_id)?;
                 crate::domain::repo::content_index::remove_media_refs(tx, "moment", moment_id)?;
-                crate::domain::repo::favorites::revoke_source(tx, "moment", moment_id)?;
+                crate::domain::repo::favorites::revoke_source_tx(tx, "moment", moment_id)?;
             }
             Ok(changed)
         })
