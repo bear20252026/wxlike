@@ -61,17 +61,7 @@ pub(in crate::domain) fn log(
     Ok(())
 }
 
-pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user_id: &str) -> Result<bool> {
-    let c = c.sqlite()?;
-    let hit = c
-        .query_row(
-            "SELECT id FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    Ok(hit.is_some())
-}
+pub(in crate::domain) use crate::domain::repo::users::user_exists;
 
 /// 同一对 (from, to) 只保留一条申请；返回已有 id 与状态。
 pub(in crate::domain) fn request_by_pair(

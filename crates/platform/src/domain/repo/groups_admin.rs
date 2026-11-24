@@ -145,15 +145,7 @@ pub(in crate::domain) fn member_count(c: &StorageConnection<'_>, group: &str) ->
     Ok(count)
 }
 
-pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user: &str) -> Result<bool> {
-    let c = c.sqlite()?;
-    let hit = c
-        .query_row("SELECT id FROM users WHERE id = ?1", params![user], |r| {
-            r.get::<_, String>(0)
-        })
-        .optional()?;
-    Ok(hit.is_some())
-}
+pub(in crate::domain) use crate::domain::repo::users::user_exists;
 
 pub(in crate::domain) fn insert_member_direct(
     c: &StorageConnection<'_>,

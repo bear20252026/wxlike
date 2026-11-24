@@ -101,7 +101,7 @@ impl Platform {
     }
 
     /// 会话成员判定：直聊按 `d-a~b`、群按成员表、频道按社群成员表。
-    pub fn conv_member_allowed(&self, conv: &str, user: &str) -> Result<bool> {
+    pub(crate) fn conv_member_allowed(&self, conv: &str, user: &str) -> Result<bool> {
         let conv = validate::conv(conv)?;
         if let Some(rest) = conv.strip_prefix("d-") {
             let (a, b) = rest
@@ -133,7 +133,7 @@ impl Platform {
         f(room)
     }
 
-    pub fn call_state(&self, conv: &str, user: &str) -> Result<Option<CallView>> {
+    pub(crate) fn call_state(&self, conv: &str, user: &str) -> Result<Option<CallView>> {
         self.require_call_member(conv, user)?;
         // 借用检查：先把需要的数据复制出来，再构造视图
         let mut guard = self.calls.lock();
@@ -155,7 +155,7 @@ impl Platform {
         }))
     }
 
-    pub fn start_call(&self, conv: &str, user: &str, capacity: usize) -> Result<()> {
+    pub(crate) fn start_call(&self, conv: &str, user: &str, capacity: usize) -> Result<()> {
         self.require_call_member(conv, user)?;
         let conv = validate::conv(conv)?.to_string();
         let mut guard = self.calls.lock();
@@ -171,7 +171,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn join_call(&self, conv: &str, user: &str) -> Result<()> {
+    pub(crate) fn join_call(&self, conv: &str, user: &str) -> Result<()> {
         self.require_call_member(conv, user)?;
         let conv = validate::conv(conv)?.to_string();
         let mut guard = self.calls.lock();
@@ -185,7 +185,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn leave_call(&self, conv: &str, user: &str) -> Result<()> {
+    pub(crate) fn leave_call(&self, conv: &str, user: &str) -> Result<()> {
         let conv = validate::conv(conv)?.to_string();
         let mut guard = self.calls.lock();
         let Some(room) = guard.get_mut(&conv) else {
@@ -198,7 +198,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn mute_in_call(
+    pub(crate) fn mute_in_call(
         &self,
         conv: &str,
         actor: &str,
@@ -214,7 +214,7 @@ impl Platform {
     }
 
     /// 全员静音（参照 spreed 的 force-mute）：主持人/管理员。
-    pub fn mute_all_in_call(
+    pub(crate) fn mute_all_in_call(
         &self,
         conv: &str,
         actor: &str,
@@ -226,38 +226,43 @@ impl Platform {
         })
     }
 
-    pub fn kick_from_call(&self, conv: &str, actor: &str, target: &str) -> Result<()> {
+    pub(crate) fn kick_from_call(&self, conv: &str, actor: &str, target: &str) -> Result<()> {
         self.with_room(conv, |room| {
             room.kick(actor, target).map_err(map_room_error)
         })
     }
 
-    pub fn lock_call(&self, conv: &str, actor: &str, locked: bool) -> Result<()> {
+    pub(crate) fn lock_call(&self, conv: &str, actor: &str, locked: bool) -> Result<()> {
         self.with_room(conv, |room| {
             room.set_locked(actor, locked).map_err(map_room_error)
         })
     }
 
-    pub fn record_call(&self, conv: &str, actor: &str, recording: bool) -> Result<()> {
+    pub(crate) fn record_call(&self, conv: &str, actor: &str, recording: bool) -> Result<()> {
         self.with_room(conv, |room| {
             room.set_recording(actor, recording).map_err(map_room_error)
         })
     }
 
-    pub fn hand_in_call(&self, conv: &str, user: &str, raised: bool) -> Result<()> {
+    pub(crate) fn hand_in_call(&self, conv: &str, user: &str, raised: bool) -> Result<()> {
         self.with_room(conv, |room| {
             room.raise_hand(user, raised).map_err(map_room_error)
         })
     }
 
-    pub fn transfer_call(&self, conv: &str, actor: &str, target: &str) -> Result<()> {
+    pub(crate) fn transfer_call(&self, conv: &str, actor: &str, target: &str) -> Result<()> {
         self.with_room(conv, |room| {
             room.transfer_host(actor, target).map_err(map_room_error)
         })
     }
 
     /// 出口码率分配（参照 atm0s 的分配器）。`estimate_bps` 缺省用房间上限。
-    pub fn call_egress(&self, conv: &str, user: &str, estimate_bps: u64) -> Result<EgressPlan> {
+    pub(crate) fn call_egress(
+        &self,
+        conv: &str,
+        user: &str,
+        estimate_bps: u64,
+    ) -> Result<EgressPlan> {
         self.with_room(conv, |room| {
             room.allocate_egress(user, estimate_bps)
                 .map_err(map_room_error)
@@ -265,7 +270,7 @@ impl Platform {
     }
 
     /// 投递通话信令（offer/answer/ICE）。返回被队列上限挤掉的条数。
-    pub fn post_call_signal(
+    pub(crate) fn post_call_signal(
         &self,
         conv: &str,
         actor: &str,
@@ -277,7 +282,7 @@ impl Platform {
     }
 
     /// 取走发给我的信令（读即清）。
-    pub fn take_call_signals(
+    pub(crate) fn take_call_signals(
         &self,
         conv: &str,
         user: &str,

@@ -18,7 +18,7 @@ use sqlx::Row;
 use wxlike_persistence::{NewUser, UserCredentials, UserProfileRow, UsersRepo};
 
 use crate::error::{PlatformError, Result};
-use crate::storage::PostgresPool;
+use crate::storage::{PostgresPool, StorageConnection};
 
 /// `users` 表的跨 crate 端口定义在 `wxlike-persistence`，SQLite 实现留在
 /// 本 crate。这样身份 feature 后续接 PostgreSQL 时复用同一份 trait，不需要
@@ -26,6 +26,18 @@ use crate::storage::PostgresPool;
 ///
 /// SQLite 实现。SQL 与 `domain::users` / `domain::security` 里的既有语句
 /// 逐字一致；迁移调用点时先换端口，再换 SQL。
+/// 这个用户 id 在 `users` 表里存在吗（不区分注销状态，调用方各自再判）。
+pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user_id: &str) -> Result<bool> {
+    let c = c.sqlite()?;
+    Ok(c.query_row(
+        "SELECT 1 FROM users WHERE id = ?1",
+        params![user_id],
+        |_| Ok(1i64),
+    )
+    .optional()?
+    .is_some())
+}
+
 pub(in crate::domain) struct SqliteUsersRepo<'a> {
     conn: &'a Connection,
 }

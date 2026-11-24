@@ -60,6 +60,23 @@ pub fn page_limit(limit: Option<usize>) -> i64 {
     limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE) as i64
 }
 
+/// 分页参数：limit 走上限裁剪，offset 负数归零。
+pub(crate) fn paging(limit: Option<usize>, offset: Option<i64>) -> (i64, i64) {
+    (page_limit(limit), offset.unwrap_or(0).max(0))
+}
+
+/// 队列/任务列表共用过滤：按 kind 与 state 两列筛。
+pub(crate) fn kind_state_clause(kind: Option<&str>, state: Option<&str>) -> Clause {
+    let mut clause = Clause::new();
+    if let Some(kind) = kind {
+        clause.add(" kind = ?", Bind::Text(kind.to_string()));
+    }
+    if let Some(state) = state {
+        clause.add(" state = ?", Bind::Text(state.to_string()));
+    }
+    clause
+}
+
 fn clean(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }

@@ -24,7 +24,7 @@ use crate::auth::{self, Action, Resource, StepUp};
 use crate::error::{AdminError, Result};
 use crate::offload::offload;
 use crate::rbac::Role;
-use crate::read::{now_ms, page_limit, Bind, Clause, Paged};
+use crate::read::{kind_state_clause, now_ms, paging, Paged};
 use crate::store::Store;
 use crate::upstream::{self, Upstream};
 
@@ -621,15 +621,9 @@ impl PublishingService {
     }
 
     pub fn queue(&self, filter: &QueueFilter) -> Result<Paged<Item>> {
-        let limit = page_limit(filter.limit);
-        let offset = filter.offset.unwrap_or(0).max(0);
-        let mut clause = Clause::new();
-        if let Some(kind) = &filter.kind {
-            clause.add(" kind = ?", Bind::Text(kind.clone()));
-        }
-        if let Some(state) = filter.state {
-            clause.add(" state = ?", Bind::Text(state.as_str().to_string()));
-        }
+        let (limit, offset) = paging(filter.limit, filter.offset);
+        let mut clause =
+            kind_state_clause(filter.kind.as_deref(), filter.state.map(|s| s.as_str()));
         let conn = self.store.lock();
         Paged::query(
             &conn,

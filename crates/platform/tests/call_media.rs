@@ -17,7 +17,7 @@ use std::time::Duration;
 use common::{platform, signup};
 use serde_json::json;
 use str0m::Event;
-use wxlike_platform::Platform;
+use wxlike_platform::{Platform, RealtimeCalls};
 use wxlike_rtc::media::{pump, MediaSession};
 use wxlike_rtc::signal::{Signal, SignalContent};
 

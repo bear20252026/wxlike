@@ -17,15 +17,7 @@ pub(in crate::domain) fn row_request(r: &rusqlite::Row<'_>) -> rusqlite::Result<
     })
 }
 
-pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user: &str) -> Result<bool> {
-    let c = c.sqlite()?;
-    let exists: Option<String> = c
-        .query_row("SELECT id FROM users WHERE id = ?1", params![user], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    Ok(exists.is_some())
-}
+pub(in crate::domain) use crate::domain::repo::users::user_exists;
 
 pub(in crate::domain) fn insert_block(
     c: &StorageConnection<'_>,

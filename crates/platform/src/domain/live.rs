@@ -88,13 +88,13 @@ impl Platform {
     }
 
     /// 自包含推流凭据：`<exp_ms>.<sig>`。ingest 节点只需共享 secret。
-    pub fn ingest_token(&self, stream_key: &str, ttl_ms: u64) -> String {
+    pub(crate) fn ingest_token(&self, stream_key: &str, ttl_ms: u64) -> String {
         let exp = wxlike_core::types::now_ms().saturating_add(ttl_ms);
         format!("{exp}.{}", self.sign_ingest(stream_key, exp))
     }
 
     /// 校验推流凭据：签名 + 有效期 + 会话仍在直播。
-    pub fn verify_ingest(&self, stream_key: &str, token: &str, now_ms: u64) -> Result<()> {
+    pub(crate) fn verify_ingest(&self, stream_key: &str, token: &str, now_ms: u64) -> Result<()> {
         let (exp_s, sig) = token.split_once('.').ok_or(PlatformError::Forbidden)?;
         let exp: u64 = exp_s.parse().map_err(|_| PlatformError::Forbidden)?;
         if now_ms > exp {
@@ -113,7 +113,12 @@ impl Platform {
     }
 
     /// 开播：频道必须是 `live` 类型，且调用者是社群管理员/群主（合同 §3.4）。
-    pub fn start_live(&self, channel: &str, actor: &str, recording: bool) -> Result<LiveSession> {
+    pub(crate) fn start_live(
+        &self,
+        channel: &str,
+        actor: &str,
+        recording: bool,
+    ) -> Result<LiveSession> {
         let channel = validate::id(channel)?.to_string();
         let community = self
             .channel_community(&channel)?
@@ -151,7 +156,7 @@ impl Platform {
     }
 
     /// 停播：主播或社群管理员。幂等（已停播返回 `NotFound`）。
-    pub fn stop_live(&self, channel: &str, actor: &str) -> Result<()> {
+    pub(crate) fn stop_live(&self, channel: &str, actor: &str) -> Result<()> {
         let channel = validate::id(channel)?.to_string();
         let community = self
             .channel_community(&channel)?
@@ -179,7 +184,7 @@ impl Platform {
     }
 
     /// 直播状态（成员可见）：是否在播、主播、观众数、播放地址。
-    pub fn live_state(&self, channel: &str, user: &str) -> Result<LiveState> {
+    pub(crate) fn live_state(&self, channel: &str, user: &str) -> Result<LiveState> {
         let channel = validate::id(channel)?.to_string();
         let community = self
             .channel_community(&channel)?
@@ -212,7 +217,7 @@ impl Platform {
     }
 
     /// 进房：观众计数 +1，峰值同步抬升。
-    pub fn join_live(&self, channel: &str, user: &str) -> Result<i64> {
+    pub(crate) fn join_live(&self, channel: &str, user: &str) -> Result<i64> {
         let channel = validate::id(channel)?.to_string();
         let community = self
             .channel_community(&channel)?
@@ -228,7 +233,7 @@ impl Platform {
         })
     }
 
-    pub fn leave_live(&self, channel: &str, user: &str) -> Result<i64> {
+    pub(crate) fn leave_live(&self, channel: &str, user: &str) -> Result<i64> {
         let channel = validate::id(channel)?.to_string();
         let session = self.live_session_id(&channel)?;
         let mut c = self.db().lock();

@@ -77,10 +77,11 @@ pub use crate::auth::{
 };
 pub use crate::db::Db;
 pub use crate::domain::account::{spawn_account_job_worker, JobReply};
-pub use crate::domain::call::CallRegistry;
+pub use crate::domain::call::{CallRegistry, CallView};
 pub use crate::domain::devices::{DeviceReg, DeviceRow};
 pub use crate::domain::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
 pub use crate::domain::groups_admin::GroupInvite;
+pub use crate::domain::live::{LiveSession, LiveState};
 pub use crate::domain::media::{
     LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE,
 };
@@ -99,7 +100,7 @@ pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::facade::{
     AccountDevices, AccountSessions, AdminAccess, ConversationAccess, GovernanceGate,
-    GroupMembership, GroupModeration, MessagingPrefs, SocialGraph,
+    GroupMembership, GroupModeration, MessagingPrefs, RealtimeCalls, SocialGraph,
 };
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;

@@ -1,8 +1,8 @@
 {
  "total_files": 472,
- "total_lines": 144271,
- "fn_total": 7035,
- "count_len_gt30": 596,
+ "total_lines": 144517,
+ "fn_total": 7022,
+ "count_len_gt30": 588,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
  "count_nest_gt3": 0,
@@ -50,7 +50,7 @@
   ],
   [
    "crates/admin/src/publishing.rs",
-   1336
+   1330
   ],
   [
    "crates/features/commerce/src/payments.rs",
@@ -73,12 +73,12 @@
    1205
   ],
   [
-   "crates/features/media/src/processing.rs",
-   1048
+   "crates/admin/src/read.rs",
+   1053
   ],
   [
-   "crates/admin/src/read.rs",
-   1036
+   "crates/features/media/src/processing.rs",
+   1048
   ],
   [
    "crates/admin/src/http.rs",
@@ -215,7 +215,7 @@
   "12": [
    "crates/limits/src/lib.rs:164",
    "crates/platform/src/db/schema.rs:299",
-   "crates/platform/src/domain/live.rs:133",
+   "crates/platform/src/domain/live.rs:138",
    "crates/platform/src/domain/repo/report.rs:82",
    "crates/platform/src/domain/repo/video_refs.rs:26"
   ],
@@ -255,7 +255,7 @@
    "ui/src-tauri/src/app_state.rs:767"
   ],
   "11": [
-   "crates/admin/src/read.rs:768",
+   "crates/admin/src/read.rs:785",
    "crates/platform/src/domain/repo/report.rs:82",
    "crates/platform/src/domain/repo/video_refs.rs:26",
    "crates/platform/src/domain/repo/video_refs.rs:84",
@@ -310,7 +310,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 127,
+ "dup_windows": 114,
  "dup_sample": [
   [
    [
@@ -354,66 +354,6 @@
   ],
   [
    [
-    "crates/admin/src/jobs.rs",
-    217
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    624
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/jobs.rs",
-    218
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    625
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/jobs.rs",
-    219
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    626
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/jobs.rs",
-    220
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    627
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/jobs.rs",
-    221
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    628
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/jobs.rs",
-    222
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    629
-   ]
-  ],
-  [
-   [
     "crates/admin/src/accounts.rs",
     154
    ],
@@ -430,6 +370,66 @@
    [
     "crates/features/identity/src/lib.rs",
     61
+   ]
+  ],
+  [
+   [
+    "crates/core/src/error.rs",
+    31
+   ],
+   [
+    "crates/features/identity/src/lib.rs",
+    62
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/identity.rs",
+    395
+   ],
+   [
+    "crates/features/identity/src/governance/view.rs",
+    16
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/identity.rs",
+    396
+   ],
+   [
+    "crates/features/identity/src/governance/view.rs",
+    17
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/identity.rs",
+    397
+   ],
+   [
+    "crates/features/identity/src/governance/view.rs",
+    18
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/identity.rs",
+    398
+   ],
+   [
+    "crates/features/identity/src/governance/view.rs",
+    19
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/identity.rs",
+    399
+   ],
+   [
+    "crates/features/identity/src/governance/view.rs",
+    20
    ]
   ]
  ],

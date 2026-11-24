@@ -164,6 +164,178 @@ impl GovernanceGate for Platform {
     }
 }
 
+/// Realtime 门面的通话/直播控制切片。
+///
+/// 平台外真正的调用点是 `sfu` 的成员判定与集成测试（测试也是外部 crate）；
+/// HTTP 面自己走 `pub(crate)`，不需要这层。trait 存在的意义是让调用方
+/// 只说"我要开会/开播"，而不是认识 `Platform` 的其余方法。
+pub trait RealtimeCalls {
+    fn conv_member_allowed(&self, conv: &str, user: &str) -> Result<bool>;
+    fn call_state(&self, conv: &str, user: &str) -> Result<Option<crate::CallView>>;
+    fn start_call(&self, conv: &str, user: &str, capacity: usize) -> Result<()>;
+    fn join_call(&self, conv: &str, user: &str) -> Result<()>;
+    fn leave_call(&self, conv: &str, user: &str) -> Result<()>;
+    fn mute_in_call(
+        &self,
+        conv: &str,
+        actor: &str,
+        target: &str,
+        track: wxlike_rtc::room::Track,
+        muted: bool,
+    ) -> Result<()>;
+    fn mute_all_in_call(
+        &self,
+        conv: &str,
+        actor: &str,
+        track: wxlike_rtc::room::Track,
+        muted: bool,
+    ) -> Result<usize>;
+    fn kick_from_call(&self, conv: &str, actor: &str, target: &str) -> Result<()>;
+    fn lock_call(&self, conv: &str, actor: &str, locked: bool) -> Result<()>;
+    fn record_call(&self, conv: &str, actor: &str, recording: bool) -> Result<()>;
+    fn hand_in_call(&self, conv: &str, user: &str, raised: bool) -> Result<()>;
+    fn transfer_call(&self, conv: &str, actor: &str, target: &str) -> Result<()>;
+    fn call_egress(
+        &self,
+        conv: &str,
+        user: &str,
+        estimate_bps: u64,
+    ) -> Result<wxlike_rtc::room::EgressPlan>;
+    fn post_call_signal(
+        &self,
+        conv: &str,
+        actor: &str,
+        signal: wxlike_rtc::signal::Signal,
+    ) -> Result<usize>;
+    fn take_call_signals(&self, conv: &str, user: &str) -> Result<Vec<wxlike_rtc::signal::Signal>>;
+    fn ingest_token(&self, stream_key: &str, ttl_ms: u64) -> String;
+    fn verify_ingest(&self, stream_key: &str, token: &str, now_ms: u64) -> Result<()>;
+    fn start_live(&self, channel: &str, actor: &str, recording: bool)
+        -> Result<crate::LiveSession>;
+    fn stop_live(&self, channel: &str, actor: &str) -> Result<()>;
+    fn live_state(&self, channel: &str, user: &str) -> Result<crate::LiveState>;
+    fn join_live(&self, channel: &str, user: &str) -> Result<i64>;
+    fn leave_live(&self, channel: &str, user: &str) -> Result<i64>;
+}
+
+impl RealtimeCalls for Platform {
+    fn conv_member_allowed(&self, conv: &str, user: &str) -> Result<bool> {
+        Platform::conv_member_allowed(self, conv, user)
+    }
+
+    fn call_state(&self, conv: &str, user: &str) -> Result<Option<crate::CallView>> {
+        Platform::call_state(self, conv, user)
+    }
+
+    fn start_call(&self, conv: &str, user: &str, capacity: usize) -> Result<()> {
+        Platform::start_call(self, conv, user, capacity)
+    }
+
+    fn join_call(&self, conv: &str, user: &str) -> Result<()> {
+        Platform::join_call(self, conv, user)
+    }
+
+    fn leave_call(&self, conv: &str, user: &str) -> Result<()> {
+        Platform::leave_call(self, conv, user)
+    }
+
+    fn mute_in_call(
+        &self,
+        conv: &str,
+        actor: &str,
+        target: &str,
+        track: wxlike_rtc::room::Track,
+        muted: bool,
+    ) -> Result<()> {
+        Platform::mute_in_call(self, conv, actor, target, track, muted)
+    }
+
+    fn mute_all_in_call(
+        &self,
+        conv: &str,
+        actor: &str,
+        track: wxlike_rtc::room::Track,
+        muted: bool,
+    ) -> Result<usize> {
+        Platform::mute_all_in_call(self, conv, actor, track, muted)
+    }
+
+    fn kick_from_call(&self, conv: &str, actor: &str, target: &str) -> Result<()> {
+        Platform::kick_from_call(self, conv, actor, target)
+    }
+
+    fn lock_call(&self, conv: &str, actor: &str, locked: bool) -> Result<()> {
+        Platform::lock_call(self, conv, actor, locked)
+    }
+
+    fn record_call(&self, conv: &str, actor: &str, recording: bool) -> Result<()> {
+        Platform::record_call(self, conv, actor, recording)
+    }
+
+    fn hand_in_call(&self, conv: &str, user: &str, raised: bool) -> Result<()> {
+        Platform::hand_in_call(self, conv, user, raised)
+    }
+
+    fn transfer_call(&self, conv: &str, actor: &str, target: &str) -> Result<()> {
+        Platform::transfer_call(self, conv, actor, target)
+    }
+
+    fn call_egress(
+        &self,
+        conv: &str,
+        user: &str,
+        estimate_bps: u64,
+    ) -> Result<wxlike_rtc::room::EgressPlan> {
+        Platform::call_egress(self, conv, user, estimate_bps)
+    }
+
+    fn post_call_signal(
+        &self,
+        conv: &str,
+        actor: &str,
+        signal: wxlike_rtc::signal::Signal,
+    ) -> Result<usize> {
+        Platform::post_call_signal(self, conv, actor, signal)
+    }
+
+    fn take_call_signals(&self, conv: &str, user: &str) -> Result<Vec<wxlike_rtc::signal::Signal>> {
+        Platform::take_call_signals(self, conv, user)
+    }
+
+    fn ingest_token(&self, stream_key: &str, ttl_ms: u64) -> String {
+        Platform::ingest_token(self, stream_key, ttl_ms)
+    }
+
+    fn verify_ingest(&self, stream_key: &str, token: &str, now_ms: u64) -> Result<()> {
+        Platform::verify_ingest(self, stream_key, token, now_ms)
+    }
+
+    fn start_live(
+        &self,
+        channel: &str,
+        actor: &str,
+        recording: bool,
+    ) -> Result<crate::LiveSession> {
+        Platform::start_live(self, channel, actor, recording)
+    }
+
+    fn stop_live(&self, channel: &str, actor: &str) -> Result<()> {
+        Platform::stop_live(self, channel, actor)
+    }
+
+    fn live_state(&self, channel: &str, user: &str) -> Result<crate::LiveState> {
+        Platform::live_state(self, channel, user)
+    }
+
+    fn join_live(&self, channel: &str, user: &str) -> Result<i64> {
+        Platform::join_live(self, channel, user)
+    }
+
+    fn leave_live(&self, channel: &str, user: &str) -> Result<i64> {
+        Platform::leave_live(self, channel, user)
+    }
+}
+
 /// Social 门面的群禁言切片：投递策略问"这个人在群里被禁言了吗"。
 pub trait GroupModeration {
     fn is_muted(&self, group: &str, user: &str) -> Result<bool>;

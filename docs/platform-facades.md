@@ -1,6 +1,6 @@
 # Platform 门面归属表
 
-`Platform` 的公开方法已经压到 90 个，但“少”不等于“有结构”。这份表把每个
+`Platform` 的公开方法已经压到 68 个，但“少”不等于“有结构”。这份表把每个
 公开方法归到一个门面，作为后续拆 trait / 收敛组合根的边界。
 
 ## 归属
@@ -12,11 +12,11 @@
 | Media | `video_refs` | 1 |
 | Wallet | `wallet` | 6 |
 | Governance | `report` / `audit` / `secret` / `perms` / `trust` | 18 |
-| Realtime | `call` / `live` | 24 |
+| Realtime | `call` / `live` | 2 |
 | Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 26 |
 | Health | 组合根自身（readiness） | 0 |
 
-合计 **90**。
+合计 **68**。
 
 ## 规则
 
@@ -103,10 +103,32 @@ pub trait MessagingPrefs {
 `use wxlike_platform::…`。公开面 101→**90**（Account 12→11、Messaging 5→4、
 Governance 20→18、Social 30→26；Wallet 的 9 在审计口径里一直是 6）。
 
+## Realtime 切片
+
+`call` / `live` 的 22 个控制方法只有两个平台外调用点：`sfu` 的成员判定与集成测试
+（`platform/tests/call.rs`、`call_media.rs`、`p5_live.rs`，它们本身也是外部 crate）。
+按门面整体切成一个 trait：
+
+```rust
+pub trait RealtimeCalls {
+    fn conv_member_allowed(&self, conv: &str, user: &str) -> Result<bool>;
+    fn call_state(&self, conv: &str, user: &str) -> Result<Option<CallView>>;
+    fn start_call(&self, conv: &str, user: &str, capacity: usize) -> Result<()>;
+    // join/leave/mute/mute_all/kick/lock/record/hand/transfer/egress
+    fn post_call_signal(&self, conv: &str, actor: &str, signal: Signal) -> Result<usize>;
+    fn take_call_signals(&self, conv: &str, user: &str) -> Result<Vec<Signal>>;
+    // live: ingest_token / verify_ingest / start / stop / state / join / leave
+}
+```
+
+`Platform` 的同名方法收为 `pub(crate)`；`CallView` / `LiveSession` / `LiveState` 从
+crate 根再导出。Realtime 的公开面 24→**2**（`calls()` 与 `CallRegistry` 自身仍公开），
+总公开面 90→**68**。
+
 ## 下一步
 
 - Account 继续把 `create_session` 并入 `AccountSessions`，再处理 TOTP/recovery；
-- Realtime 的 24 个方法目前没有平台外调用点（只有 platform 自己的 HTTP 面与测试），
-  按“无调用点不建 trait”的约定暂不切；
-- Wallet 保持独立，等 ledger 端口化时一起迁移；
-- Social 剩下的写路径（`communities` / `friends`）仍是大头，先拆读路径再动写路径。
+- Wallet 的 6 个方法里只有 `fund` / `transfer` / `wallet_balance` 有平台外调用，
+  等 ledger 端口化时一起收成 `WalletLedger`；
+- Social 剩下的写路径（`communities` / `friends`）仍是大头，先拆读路径再动写路径；
+- Governance 的 `report` / `audit` 面被 admin 直接使用，下一批先切只读查询。

@@ -394,7 +394,7 @@ search、video、hub、router 全串在一个函数里。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
-**0**、跨文件重复窗口 **127**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**0**、跨文件重复窗口 **114**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
 当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
@@ -468,7 +468,7 @@ search、video、hub、router 全串在一个函数里。
 | 2 | `start_stack` | ✅ | 204 行 → 55 行，拆成 5 个 `build_*` |
 | 2 | 错误契约收口（`crates/api`） | ✅ | 新增零业务依赖的 `wxlike-api`；`video` 的 30 处 `(StatusCode, String)` → `ApiResult`，顺带修掉 Windows 上"视频不存在返回 500" |
 | 2 | `mq_hub` 拆帧 | ⏳ | 主链路，需先补帧级测试 |
-| 3 | `Platform` 门面化 | 🚧 | 五批共降 168 个方法（21+43+48+39+17），公开方法 258→**90**；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait，本批再把投递策略/设备目录/免打扰的七个判定切进 `SocialGraph` / `GroupModeration` / `GovernanceGate` / `AccountDevices` / `MessagingPrefs`；剩余门面按 `docs/platform-facades.md` 迁移 |
+| 3 | `Platform` 门面化 | 🚧 | 六批共降 190 个方法（21+43+48+39+17+22），公开方法 258→**68**；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait，再把这七个判定切进 `SocialGraph` / `GroupModeration` / `GovernanceGate` / `AccountDevices` / `MessagingPrefs`，本批又把 call/live 的 22 个控制方法整体切进 `RealtimeCalls`；剩余门面按 `docs/platform-facades.md` 迁移 |
 | 3 | 抽 `crates/wire` | ⏳ | 单独排期 |
 
 指标变化（口径修正后重新计算，只算生产代码）：
@@ -478,14 +478,14 @@ search、video、hub、router 全串在一个函数里。
 | 函数 >60 行 | 46 | **0** |
 | 函数 >100 行 | 14 | **0** |
 | 嵌套 >3 层 | 63 | **0** |
-| 跨文件重复窗口 | 78 | 127（扫描面扩到 472 文件） |
+| 跨文件重复窗口 | 78 | 114（扫描面扩到 472 文件，且探针不再把 trait 声明算成函数体） |
 | 魔法数字总数 | 170 | 172（同上） |
 
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
 2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 596`、
-`>60 行 0`、`>100 行 0`、`深嵌套 0`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
+`>60 行 0`、`>100 行 0`、`深嵌套 0`、`重复窗口 114`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -654,6 +654,17 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 示例拆 `register_and_login` / `set_profile` / `read_self`。
 复测 `>60 0`、`>30 596`、嵌套 0、重复 127、魔法 172，`quality-gate.py --update`
 输出"函数 >60 行: 14 → 0"，五项全 `+0` 通过。
+
+第六批做语义去重与门面收口：
+`user_exists` 在 `repo/{friends,groups,groups_admin,relations,wallet}` 里有五份逐字
+相同的实现，统一收敛到 `repo/users::user_exists`（其余模块只留一行 `pub use`），
+顺带把 `SELECT 1 FROM users` 的判定口径固定成一处；`admin` 的 `jobs::list` 与
+`publishing::queue` 各自重写一遍分页与 kind/state 过滤，抽成 `read::paging` +
+`read::kind_state_clause`。跨文件重复窗口 127 → 114。
+探针同时修了一处口径缺陷：trait 里的 `fn foo(...);` 声明没有函数体，旧实现会把
+它一路扫到后面 impl 的第一个 `{`，凭空造出"超长函数"（本批 `RealtimeCalls` 就被
+误报成 100+ 行）。现在遇到行尾 `;` 先于 `{` 就按声明跳过；`fn_total` 7039→7022、
+`>30` 597→588 属于口径纠正，不是删代码。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /

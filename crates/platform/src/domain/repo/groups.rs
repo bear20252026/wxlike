@@ -51,17 +51,7 @@ pub(in crate::domain) fn member_ids(
     Ok(rows)
 }
 
-pub(in crate::domain) fn user_exists(conn: &StorageConnection<'_>, user_id: &str) -> Result<bool> {
-    let conn = conn.sqlite()?;
-    Ok(conn
-        .query_row(
-            "SELECT 1 FROM users WHERE id = ?1",
-            params![user_id],
-            |_| Ok(1i64),
-        )
-        .optional()?
-        .is_some())
-}
+pub(in crate::domain) use crate::domain::repo::users::user_exists;
 
 pub(in crate::domain) fn insert_group(
     conn: &StorageConnection<'_>,

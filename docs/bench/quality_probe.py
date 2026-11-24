@@ -178,10 +178,23 @@ for path in rust_files():
             continue
         name = m.group(2)
         j = i
-        while j < len(lines) and "{" not in strip_code(lines[j]):
+        decl_only = False
+        while j < len(lines):
+            code = strip_code(lines[j])
+            if "{" in code:
+                break
+            # trait 里的方法声明没有函数体（行尾 `;`）：它不是函数，别把它和
+            # 后面 impl 的方法体拼成一条假的超长函数。
+            if ";" in code and j > i:
+                decl_only = True
+                break
+            if ";" in code and j == i and "{" not in code:
+                decl_only = True
+                break
             j += 1
-        if j >= len(lines):
-            break
+        if decl_only or j >= len(lines):
+            i += 1
+            continue
         depth = 0
         started = False
         maxdepth = 0
