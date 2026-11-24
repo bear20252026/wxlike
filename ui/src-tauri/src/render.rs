@@ -19,6 +19,72 @@ pub struct MediaBlob {
 /// `own_text` 是**自己发出的秘密消息的明文**：发送方不能走接收路径去解自己
 /// 的密文（对端是自己、没有会话），旧实现因此把每条自己发的秘密消息都渲染成
 /// "无法解密"。
+/// 秘密聊天正文：自己的明文直接回填，对端的密文解不开就留可见的失败标记。
+fn render_e2ee(
+    payload: &mut serde_json::Value,
+    body: &serde_json::Value,
+    secret: &Mutex<Option<SecretStore>>,
+    own_text: Option<&str>,
+    sender: &str,
+) {
+    payload["kind"] = "e2ee".into();
+    if let Some(text) = own_text {
+        // 自己发的：明文就在手里，不需要（也不能）解密
+        payload["text"] = text.into();
+        payload["encrypted"] = true.into();
+        return;
+    }
+    match try_decrypt_secret(secret, body, sender) {
+        Some(Ok(text)) => {
+            payload["text"] = text.into();
+            payload["encrypted"] = true.into();
+        }
+        Some(Err(err)) => {
+            eprintln!("[e2ee] inbound decrypt failed: {err}");
+            payload["text"] = "[加密消息·无法解密]".into();
+            payload["decrypt_failed"] = true.into();
+        }
+        None => {
+            payload["text"] = "[加密消息·本端未启用或格式不符]".into();
+            payload["decrypt_failed"] = true.into();
+        }
+    }
+}
+
+/// 信封正文 → UI 的 `kind` / 载荷字段。
+fn render_body(
+    payload: &mut serde_json::Value,
+    env: &Envelope,
+    secret: &Mutex<Option<SecretStore>>,
+    own_text: Option<&str>,
+) {
+    match &env.body {
+        MsgBody::Text(t) => {
+            payload["kind"] = "text".into();
+            payload["text"] = t.as_str().into();
+        }
+        MsgBody::Bytes(b) => {
+            payload["kind"] = "image".into();
+            payload["media_id"] = String::from_utf8_lossy(b).into_owned().into();
+        }
+        MsgBody::Notice(n) => {
+            payload["kind"] = "system".into();
+            payload["text"] = n.as_str().into();
+        }
+        MsgBody::Recall { target } => {
+            payload["kind"] = "recall".into();
+            payload["target"] = hex_str(target).into();
+        }
+        MsgBody::Custom { kind, payload: p } => {
+            payload["kind"] = kind.as_str().into();
+            payload["payload"] = p.clone();
+            if kind == custom_kind::E2EE_DM {
+                render_e2ee(payload, p, secret, own_text, &env.sender);
+            }
+        }
+    }
+}
+
 pub(crate) fn render_event_with(
     env: &Envelope,
     secret: &Mutex<Option<SecretStore>>,
@@ -46,52 +112,7 @@ pub(crate) fn render_event_with(
         });
         return payload;
     }
-    match &env.body {
-        MsgBody::Text(t) => {
-            payload["kind"] = "text".into();
-            payload["text"] = t.as_str().into();
-        }
-        MsgBody::Bytes(b) => {
-            payload["kind"] = "image".into();
-            payload["media_id"] = String::from_utf8_lossy(b).into_owned().into();
-        }
-        MsgBody::Notice(n) => {
-            payload["kind"] = "system".into();
-            payload["text"] = n.as_str().into();
-        }
-        MsgBody::Recall { target } => {
-            payload["kind"] = "recall".into();
-            payload["target"] = hex_str(target).into();
-        }
-        MsgBody::Custom { kind, payload: p } => {
-            payload["kind"] = kind.as_str().into();
-            payload["payload"] = p.clone();
-            if kind == custom_kind::E2EE_DM {
-                payload["kind"] = "e2ee".into();
-                if let Some(text) = own_text {
-                    // 自己发的：明文就在手里，不需要（也不能）解密
-                    payload["text"] = text.into();
-                    payload["encrypted"] = true.into();
-                    return payload;
-                }
-                match try_decrypt_secret(secret, p, &env.sender) {
-                    Some(Ok(text)) => {
-                        payload["text"] = text.into();
-                        payload["encrypted"] = true.into();
-                    }
-                    Some(Err(err)) => {
-                        eprintln!("[e2ee] inbound decrypt failed: {err}");
-                        payload["text"] = "[加密消息·无法解密]".into();
-                        payload["decrypt_failed"] = true.into();
-                    }
-                    None => {
-                        payload["text"] = "[加密消息·本端未启用或格式不符]".into();
-                        payload["decrypt_failed"] = true.into();
-                    }
-                }
-            }
-        }
-    }
+    render_body(&mut payload, env, secret, own_text);
     payload
 }
 
