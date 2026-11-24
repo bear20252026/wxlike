@@ -26,6 +26,30 @@ pub(in crate::domain) fn enqueue(
     Ok(())
 }
 
+/// 旧签名调用点（`Db::blocking` 闭包给的是 `&mut Connection`）的桥。
+#[allow(clippy::too_many_arguments)]
+pub(in crate::domain) fn enqueue_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+    conv_id: &str,
+    sender: &str,
+    text: &str,
+    labels: &str,
+    decision: &str,
+    now: i64,
+) -> Result<()> {
+    enqueue(
+        &StorageConnection::sqlite_borrow(conn),
+        id,
+        conv_id,
+        sender,
+        text,
+        labels,
+        decision,
+        now,
+    )
+}
+
 pub(in crate::domain) fn queue(
     conn: &StorageConnection<'_>,
     limit: i64,

@@ -303,7 +303,16 @@ impl Platform {
         self.db()
             .blocking(move |c| {
                 let id = crate::auth::random_hex(8);
-                trust_repo::enqueue(c, &id, &conv, &sender, &body, &labels, &decision_json, now)
+                trust_repo::enqueue_conn(
+                    c,
+                    &id,
+                    &conv,
+                    &sender,
+                    &body,
+                    &labels,
+                    &decision_json,
+                    now,
+                )
             })
             .await
     }
