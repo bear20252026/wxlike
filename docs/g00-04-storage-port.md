@@ -99,11 +99,15 @@
 现状（`crates/platform/src/domain/repo/`）：
 
 - 35 个 `.rs`（34 个 feature 文件 + `mod.rs`）。
-- 多数 feature 文件仍直接吃 `&rusqlite::Connection`。第一批小仓库 pilot 已落：
+- 多数 feature 文件仍直接吃 `&rusqlite::Connection`。已迁移 9 个小仓库、共 56 个函数：
   `notification`（3 个函数）、`audit`（2）、`devices`（3）、`read`（2）、
-  `video_refs`（2）、`qr_login`（8）。这些 repo 参数改为 `&StorageConnection<'_>`，
-  通过 `StorageConnection::sqlite()` 拿旧守卫；对应 domain 模块的调用点改走
+  `video_refs`（2）、`qr_login`（8）、`notes`（8）、`favorites`（15）、
+  `stickers`（13）。这些 repo 参数改为 `&StorageConnection<'_>`，通过
+  `StorageConnection::sqlite()` 拿旧守卫；对应 domain 模块的调用点改走
   `Db::acquire()`。PG 变体当前返回受控 `PlatformError::Storage`，不 panic。
+- `notes` 是首个事务内迁移的 repo：`StorageConnection::SqliteTx(&Connection)`
+  承接 `with_tx` 闭包里的 `&Transaction`，repo 不再要求 `&mut`；`favorites`
+  的跨域撤权走 `revoke_source_tx(tx, ...)` 同一桥接。
 
 改造目标：`&Connection` 参数换成端口句柄（`&StorageConnection` 或 `&dyn Storage`），
 SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
@@ -124,7 +128,7 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
   `sqlx::PgPool` + 专属 multi-thread runtime；`PostgresUsersRepo` /
   `PostgresSessionsRepo` 通过它执行 `$1` 查询。
 - 已落 `impl Storage for PgStorage` 与 `StorageConnection::Postgres`；
-  `Db` 仍只认 `MutexGuard<Connection>`，所以 51 个旧 repo 函数还在 SQLite。
+  `Db` 仍只认 `MutexGuard<Connection>`，旧 repo 的端口迁移仍在分批推进。
 - ADR-28 的等价物：sqlx 是 async，端口 trait 目前是同步的，`PostgresPool::block_on`
   负责桥接；调用点必须在阻塞上下文（`Db::blocking` / 普通线程），不要在 async
   任务里直接调。
@@ -132,11 +136,11 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 
 ## 5. 本步刻意没做的事
 
-- 不改 `domain/repo/**` 其余 `&Connection` 签名（见 §3 分批）；本步只落
-  `notification` 三个函数的端口 pilot。
+- 不改 `domain/repo/**` 其余 `&Connection` 签名（见 §3 分批）；端口 pilot 已从
+  `notification` 三个函数扩到 9 个仓库、56 个函数。
 - `Db::open` 仍不打开 postgres profile；PG 连接只在新端口 `PostgresPool` 中存在。
 - 不动 `server/**`、`ci/**`、`schema/**`、`integration-requests/**` 之外的东西。
-- `G00-04-PG` gap 仍 open：restore drill 已在 GitHub Actions `44989751565` 的 `pg-migration` 中实跑通过，但 `close_when` 的另一半（51 个旧 repo 切 PG / PG profile）未满足；本轮只完成了首批端口与 DDL/导入/恢复闭环。
+- `G00-04-PG` gap 仍 open：restore drill 已在 GitHub Actions `44989751565` 的 `pg-migration` 中实跑通过，但 `close_when` 的另一半（旧 repo 切 PG / PG profile）未满足；本轮只完成了首批端口与 DDL/导入/恢复闭环。
 - `db/schema.rs` 未改一字节，仅由 `storage.rs` 用 `#[path = "db/schema.rs"]` 引用
   （G00-02 的纯移动产物随迁移链一起归位）。
 
