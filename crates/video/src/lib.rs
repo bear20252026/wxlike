@@ -467,123 +467,14 @@ impl VideoStore {
 
         let hls_root = temp_dir.join("hls");
         std::fs::create_dir_all(&hls_root)?;
+        let (renditions, (best_h, best_mp4, best_w)) =
+            encode_renditions(&source, temp_dir, &hls_root, &probe, &heights, duration_ms)?;
 
-        let mut renditions: Vec<Rendition> = Vec::new();
-        // (height, mp4 path, width) —— 升序，最后一个即最高档
-        let mut best: Option<(u32, PathBuf, u32)> = None;
-
-        for height in &heights {
-            let height = *height;
-            let width = probe.width_at(height);
-            // libx264 要求偶数宽高；`-2` 保持比例并取偶
-            let scale = format!("scale=-2:{height}");
-            let mp4 = temp_dir.join(format!("play_{height}.mp4"));
-
-            // 一次编码/档：先出 progressive MP4，再从它 `-c copy` 切 HLS
-            run_tool(
-                &ffmpeg_bin(),
-                &[
-                    "-y",
-                    "-i",
-                    source.to_str().context("source path")?,
-                    "-vf",
-                    &scale,
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-crf",
-                    "26",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "96k",
-                    "-movflags",
-                    "+faststart",
-                    mp4.to_str().context("mp4 path")?,
-                ],
-            )
-            .with_context(|| format!("ffmpeg transcode {height}p to mp4"))?;
-            anyhow::ensure!(mp4.is_file(), "ffmpeg produced no {height}p mp4");
-
-            let rendition_dir = hls_root.join(height.to_string());
-            std::fs::create_dir_all(&rendition_dir)?;
-            run_tool(
-                &ffmpeg_bin(),
-                &[
-                    "-y",
-                    "-i",
-                    mp4.to_str().context("mp4 path")?,
-                    "-c",
-                    "copy",
-                    "-hls_time",
-                    &format!("{HLS_SECONDS}"),
-                    "-hls_playlist_type",
-                    "vod",
-                    "-hls_segment_filename",
-                    rendition_dir
-                        .join("seg_%03d.ts")
-                        .to_str()
-                        .context("seg path")?,
-                    rendition_dir
-                        .join("playlist.m3u8")
-                        .to_str()
-                        .context("playlist path")?,
-                ],
-            )
-            .with_context(|| format!("ffmpeg remux {height}p to hls"))?;
-            anyhow::ensure!(
-                rendition_dir.join("playlist.m3u8").is_file(),
-                "ffmpeg produced no {height}p playlist"
-            );
-
-            // 实测码率：比 CRF 猜一个常数靠谱，master 的 BANDWIDTH 直接可用
-            let size = std::fs::metadata(&mp4)?.len();
-            let bandwidth_bps = if duration_ms > 0 {
-                size.saturating_mul(8).saturating_mul(1_000) / u64::from(duration_ms)
-            } else {
-                0
-            };
-            renditions.push(Rendition {
-                height,
-                width,
-                bandwidth_bps,
-                playlist: format!("{height}/playlist.m3u8"),
-            });
-            best = Some((height, mp4, width));
-        }
-
-        let (best_h, best_mp4, best_w) = best.context("no rendition was produced")?;
         // 渐进播放源 = 最高档（webview 的 <video> 与倍速靠它）
         std::fs::copy(&best_mp4, temp_dir.join("play.mp4"))
             .with_context(|| "copy best rendition to play.mp4".to_string())?;
-
-        // master playlist：按升序声明各档，播放器自行选档
-        let master = master_playlist(&renditions);
-        std::fs::write(hls_root.join("master.m3u8"), master.as_bytes())
-            .with_context(|| "write master playlist".to_string())?;
-        // 固定路径兼容：老客户端只认 `hls/playlist.m3u8`
-        std::fs::write(hls_root.join("playlist.m3u8"), master.as_bytes())
-            .with_context(|| "write legacy playlist path".to_string())?;
-
-        // thumbnail: first frame at 1s (or 0 for shorter clips)
-        let seek = if duration_ms > 1_500 { "1" } else { "0" };
-        let thumb = temp_dir.join("thumb.png");
-        run_tool(
-            &ffmpeg_bin(),
-            &[
-                "-y",
-                "-ss",
-                seek,
-                "-i",
-                source.to_str().context("source path")?,
-                "-frames:v",
-                "1",
-                thumb.to_str().context("thumb path")?,
-            ],
-        )
-        .context("ffmpeg thumbnail")?;
-        anyhow::ensure!(thumb.is_file(), "ffmpeg produced no thumbnail");
+        publish_playlists(&hls_root, &renditions)?;
+        make_thumbnail(&source, temp_dir, duration_ms)?;
 
         let meta = VideoMeta {
             video_id: video_id.to_string(),
@@ -608,6 +499,150 @@ impl VideoStore {
         .with_context(|| "write meta.json".to_string())?;
         Ok(meta)
     }
+}
+
+/// 逐档编码：MP4 + 从 MP4 `-c copy` 切 HLS；返回升序 renditions 与最高档。
+fn encode_renditions(
+    source: &Path,
+    temp_dir: &Path,
+    hls_root: &Path,
+    probe: &Probe,
+    heights: &[u32],
+    duration_ms: u32,
+) -> anyhow::Result<(Vec<Rendition>, (u32, PathBuf, u32))> {
+    let mut renditions = Vec::new();
+    let mut best: Option<(u32, PathBuf, u32)> = None;
+    for height in heights {
+        let (rendition, mp4, width) =
+            encode_one(source, temp_dir, hls_root, probe, *height, duration_ms)?;
+        renditions.push(rendition);
+        best = Some((*height, mp4, width));
+    }
+    let best = best.context("no rendition was produced")?;
+    Ok((renditions, best))
+}
+
+fn encode_one(
+    source: &Path,
+    temp_dir: &Path,
+    hls_root: &Path,
+    probe: &Probe,
+    height: u32,
+    duration_ms: u32,
+) -> anyhow::Result<(Rendition, PathBuf, u32)> {
+    let width = probe.width_at(height);
+    // libx264 要求偶数宽高；`-2` 保持比例并取偶
+    let scale = format!("scale=-2:{height}");
+    let mp4 = temp_dir.join(format!("play_{height}.mp4"));
+
+    // 一次编码/档：先出 progressive MP4，再从它 `-c copy` 切 HLS
+    run_tool(
+        &ffmpeg_bin(),
+        &[
+            "-y",
+            "-i",
+            source.to_str().context("source path")?,
+            "-vf",
+            &scale,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "26",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            "-movflags",
+            "+faststart",
+            mp4.to_str().context("mp4 path")?,
+        ],
+    )
+    .with_context(|| format!("ffmpeg transcode {height}p to mp4"))?;
+    anyhow::ensure!(mp4.is_file(), "ffmpeg produced no {height}p mp4");
+
+    let rendition_dir = hls_root.join(height.to_string());
+    std::fs::create_dir_all(&rendition_dir)?;
+    run_tool(
+        &ffmpeg_bin(),
+        &[
+            "-y",
+            "-i",
+            mp4.to_str().context("mp4 path")?,
+            "-c",
+            "copy",
+            "-hls_time",
+            &format!("{HLS_SECONDS}"),
+            "-hls_playlist_type",
+            "vod",
+            "-hls_segment_filename",
+            rendition_dir
+                .join("seg_%03d.ts")
+                .to_str()
+                .context("seg path")?,
+            rendition_dir
+                .join("playlist.m3u8")
+                .to_str()
+                .context("playlist path")?,
+        ],
+    )
+    .with_context(|| format!("ffmpeg remux {height}p to hls"))?;
+    anyhow::ensure!(
+        rendition_dir.join("playlist.m3u8").is_file(),
+        "ffmpeg produced no {height}p playlist"
+    );
+
+    // 实测码率：比 CRF 猜一个常数靠谱，master 的 BANDWIDTH 直接可用
+    let size = std::fs::metadata(&mp4)?.len();
+    let bandwidth_bps = if duration_ms > 0 {
+        size.saturating_mul(8).saturating_mul(1_000) / u64::from(duration_ms)
+    } else {
+        0
+    };
+    Ok((
+        Rendition {
+            height,
+            width,
+            bandwidth_bps,
+            playlist: format!("{height}/playlist.m3u8"),
+        },
+        mp4,
+        width,
+    ))
+}
+
+/// master playlist 与老客户端兼容路径。
+fn publish_playlists(hls_root: &Path, renditions: &[Rendition]) -> anyhow::Result<()> {
+    let master = master_playlist(renditions);
+    std::fs::write(hls_root.join("master.m3u8"), master.as_bytes())
+        .with_context(|| "write master playlist".to_string())?;
+    // 固定路径兼容：老客户端只认 `hls/playlist.m3u8`
+    std::fs::write(hls_root.join("playlist.m3u8"), master.as_bytes())
+        .with_context(|| "write legacy playlist path".to_string())?;
+    Ok(())
+}
+
+/// 缩略图：第一条片段的 1s 处；短视频退回第 0 帧。
+fn make_thumbnail(source: &Path, temp_dir: &Path, duration_ms: u32) -> anyhow::Result<()> {
+    let seek = if duration_ms > 1_500 { "1" } else { "0" };
+    let thumb = temp_dir.join("thumb.png");
+    run_tool(
+        &ffmpeg_bin(),
+        &[
+            "-y",
+            "-ss",
+            seek,
+            "-i",
+            source.to_str().context("source path")?,
+            "-frames:v",
+            "1",
+            thumb.to_str().context("thumb path")?,
+        ],
+    )
+    .context("ffmpeg thumbnail")?;
+    anyhow::ensure!(thumb.is_file(), "ffmpeg produced no thumbnail");
+    Ok(())
 }
 
 pub fn playlist_url(video_id: &str) -> String {
