@@ -3,7 +3,8 @@
 
 use crate::domain::relations::StrangerRequest;
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 pub(in crate::domain) fn row_request(r: &rusqlite::Row<'_>) -> rusqlite::Result<StrangerRequest> {
     Ok(StrangerRequest {
@@ -16,7 +17,8 @@ pub(in crate::domain) fn row_request(r: &rusqlite::Row<'_>) -> rusqlite::Result<
     })
 }
 
-pub(in crate::domain) fn user_exists(c: &Connection, user: &str) -> Result<bool> {
+pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let exists: Option<String> = c
         .query_row("SELECT id FROM users WHERE id = ?1", params![user], |r| {
             r.get(0)
@@ -26,11 +28,12 @@ pub(in crate::domain) fn user_exists(c: &Connection, user: &str) -> Result<bool>
 }
 
 pub(in crate::domain) fn insert_block(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     target: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT OR IGNORE INTO blocks(user_id, blocked_id, created_at) VALUES(?1, ?2, ?3)",
         params![user, target, now],
@@ -38,21 +41,28 @@ pub(in crate::domain) fn insert_block(
     Ok(())
 }
 
-pub(in crate::domain) fn delete_block(c: &Connection, user: &str, target: &str) -> Result<usize> {
+pub(in crate::domain) fn delete_block(
+    c: &StorageConnection<'_>,
+    user: &str,
+    target: &str,
+) -> Result<usize> {
+    let c = c.sqlite()?;
     Ok(c.execute(
         "DELETE FROM blocks WHERE user_id = ?1 AND blocked_id = ?2",
         params![user, target],
     )?)
 }
 
-pub(in crate::domain) fn blocked_ids(c: &Connection, user: &str) -> Result<Vec<String>> {
+pub(in crate::domain) fn blocked_ids(c: &StorageConnection<'_>, user: &str) -> Result<Vec<String>> {
+    let c = c.sqlite()?;
     let mut stmt =
         c.prepare("SELECT blocked_id FROM blocks WHERE user_id = ?1 ORDER BY created_at")?;
     let rows = stmt.query_map(params![user], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-pub(in crate::domain) fn blocked(c: &Connection, user: &str, by: &str) -> Result<bool> {
+pub(in crate::domain) fn blocked(c: &StorageConnection<'_>, user: &str, by: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT 1 FROM blocks WHERE user_id = ?1 AND blocked_id = ?2",
         params![by, user],
@@ -64,13 +74,14 @@ pub(in crate::domain) fn blocked(c: &Connection, user: &str, by: &str) -> Result
 
 /// 同 from→to 已有 pending 则更新文本与时间；其余请求行不动。
 pub(in crate::domain) fn upsert_request(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     from: &str,
     to: &str,
     text: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO message_requests(id, from_uid, to_uid, text, status, created_at)
          VALUES(?1, ?2, ?3, ?4, 'pending', ?5)
@@ -82,7 +93,11 @@ pub(in crate::domain) fn upsert_request(
     Ok(())
 }
 
-pub(in crate::domain) fn requests_in(c: &Connection, user: &str) -> Result<Vec<StrangerRequest>> {
+pub(in crate::domain) fn requests_in(
+    c: &StorageConnection<'_>,
+    user: &str,
+) -> Result<Vec<StrangerRequest>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT id, from_uid, to_uid, text, status, created_at FROM message_requests
          WHERE to_uid = ?1 AND status = 'pending' ORDER BY created_at DESC",
@@ -91,7 +106,11 @@ pub(in crate::domain) fn requests_in(c: &Connection, user: &str) -> Result<Vec<S
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-pub(in crate::domain) fn requests_out(c: &Connection, user: &str) -> Result<Vec<StrangerRequest>> {
+pub(in crate::domain) fn requests_out(
+    c: &StorageConnection<'_>,
+    user: &str,
+) -> Result<Vec<StrangerRequest>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT id, from_uid, to_uid, text, status, created_at FROM message_requests
          WHERE from_uid = ?1 ORDER BY created_at DESC LIMIT 50",
@@ -101,11 +120,12 @@ pub(in crate::domain) fn requests_out(c: &Connection, user: &str) -> Result<Vec<
 }
 
 pub(in crate::domain) fn decide_request(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
     status: &str,
 ) -> Result<usize> {
+    let c = c.sqlite()?;
     Ok(c.execute(
         "UPDATE message_requests SET status = ?1
          WHERE id = ?2 AND to_uid = ?3 AND status = 'pending'",
@@ -113,7 +133,12 @@ pub(in crate::domain) fn decide_request(
     )?)
 }
 
-pub(in crate::domain) fn accepted_request(c: &Connection, from: &str, to: &str) -> Result<bool> {
+pub(in crate::domain) fn accepted_request(
+    c: &StorageConnection<'_>,
+    from: &str,
+    to: &str,
+) -> Result<bool> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT 1 FROM message_requests
          WHERE from_uid = ?1 AND to_uid = ?2 AND status = 'accepted'",
@@ -124,7 +149,11 @@ pub(in crate::domain) fn accepted_request(c: &Connection, from: &str, to: &str) 
     .is_some())
 }
 
-pub(in crate::domain) fn allow_strangers(c: &Connection, user: &str) -> Result<Option<i64>> {
+pub(in crate::domain) fn allow_strangers(
+    c: &StorageConnection<'_>,
+    user: &str,
+) -> Result<Option<i64>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT allow_strangers FROM user_settings WHERE user_id = ?1",
         params![user],
@@ -134,10 +163,11 @@ pub(in crate::domain) fn allow_strangers(c: &Connection, user: &str) -> Result<O
 }
 
 pub(in crate::domain) fn set_allow_strangers(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     allow: bool,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO user_settings(user_id, allow_strangers) VALUES(?1, ?2)
          ON CONFLICT(user_id) DO UPDATE SET allow_strangers = excluded.allow_strangers",
@@ -147,13 +177,14 @@ pub(in crate::domain) fn set_allow_strangers(
 }
 
 pub(in crate::domain) fn patch_friend_meta(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     friend: &str,
     starred: Option<i64>,
     tags_json: Option<String>,
     group: Option<String>,
 ) -> Result<usize> {
+    let c = c.sqlite()?;
     Ok(c.execute(
         "UPDATE friends SET
            starred = COALESCE(?3, starred),

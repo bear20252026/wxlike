@@ -52,13 +52,13 @@ impl Platform {
             return Err(PlatformError::BadInput("cannot block yourself"));
         }
         let exists = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             user_exists(&c, target)?
         };
         if !exists {
             return Err(PlatformError::NotFound);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         insert_block(&c, user, target, wxlike_core::types::now_ms() as i64)?;
         Ok(())
     }
@@ -66,7 +66,7 @@ impl Platform {
     pub(crate) fn unblock_user(&self, user: &str, target: &str) -> Result<()> {
         let (user, target) = (validate::id(user)?, validate::id(target)?);
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             delete_block(&c, user, target)?
         };
         crate::db::ensure_updated(changed)?;
@@ -74,13 +74,13 @@ impl Platform {
     }
 
     pub(crate) fn blocked_list(&self, user: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         blocked_ids(&c, user)
     }
 
     /// 拉黑判定（好友申请闸门 + 陌生人请求闸门 + P3-8 hub 收件过滤复用）。
     pub fn is_blocked(&self, user: &str, by: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         blocked(&c, user, by)
     }
 }
@@ -129,7 +129,7 @@ impl Platform {
         if !self.allow_strangers(to)? {
             return Err(PlatformError::Forbidden);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         // 幂等：同 from→to 已有 pending 则更新文本与时间
         upsert_request(
             &c,
@@ -143,12 +143,12 @@ impl Platform {
     }
 
     pub(crate) fn stranger_requests_in(&self, user: &str) -> Result<Vec<StrangerRequest>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         requests_in(&c, user)
     }
 
     pub(crate) fn stranger_requests_out(&self, user: &str) -> Result<Vec<StrangerRequest>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         requests_out(&c, user)
     }
 
@@ -165,7 +165,7 @@ impl Platform {
     fn decide_stranger_request(&self, user: &str, id: &str, status: &str) -> Result<()> {
         let id = validate::id(id)?;
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             decide_request(&c, user, id, status)?
         };
         crate::db::ensure_updated(changed)?;
@@ -174,19 +174,19 @@ impl Platform {
 
     /// 直发许可：好友，或曾接受过来自 `from` 的请求（接受→正常会话语义）。
     pub fn stranger_accepted(&self, from: &str, to: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         accepted_request(&c, from, to)
     }
 
     // ---- 用户设置（是否允许陌生人发起） ----
 
     pub(crate) fn allow_strangers(&self, user: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         Ok(allow_strangers(&c, user)?.map(|v| v != 0).unwrap_or(true))
     }
 
     pub(crate) fn set_allow_strangers(&self, user: &str, allow: bool) -> Result<()> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         set_allow_strangers(&c, user, allow)
     }
 
@@ -208,7 +208,7 @@ impl Platform {
             return Err(PlatformError::BadInput("group name too long"));
         }
         let tags_json = tags.as_ref().map(serde_json::to_string).transpose()?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let changed = patch_friend_meta(
             &c,
             user,
