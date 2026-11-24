@@ -561,7 +561,7 @@ impl PublishingService {
         if let Some(existing) = find_by_idem(&conn, &sub.idem) {
             return Ok(existing);
         }
-        let item = new_item(&sub, &rule, subject_id, actor, now);
+        let item = new_item(&sub, rule, subject_id, actor, now);
         insert_item(&conn, &item, &sub.idem, now)?;
         drop(conn);
         self.audit.append(

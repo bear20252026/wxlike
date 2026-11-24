@@ -1423,4 +1423,43 @@ mod audit_round4 {
         );
         assert_eq!(crypto.group_seen.len(), crypto.group_seen_order.len());
     }
+
+    /// 在途消息只有两种结局：到点解密成功，或"解不了就丢掉"——坏 base64
+    /// 与被篡改的密文都不能永久堵住队列（否则后续消息永远没法投递）。
+    #[test]
+    fn parked_messages_that_cannot_decode_or_decrypt_are_dropped() {
+        let mut alice = Crypto::new(Device::new());
+        let mut bob = Crypto::new(Device::new());
+        let bundle = alice.bundle("alice");
+        let first = bob.encrypt_dm("alice", &bundle, b"hi").unwrap();
+        assert_eq!(alice.decrypt_dm("bob", &first).unwrap(), b"hi");
+
+        // 1) body 不是合法 base64：from_base64 失败 → 直接移除
+        let state = alice.dm.get_mut("bob").unwrap();
+        let bad = Sealed {
+            pre_key: false,
+            body: "!!!not-base64!!!".to_string(),
+        };
+        let key = ("rk_bad".to_string(), 1);
+        state.parked.insert(key.clone(), bad.clone());
+        Crypto::deliver_parked(state, key.clone(), bad);
+        assert!(
+            !state.parked.contains_key(&key),
+            "undecodable parked message must be dropped"
+        );
+
+        // 2) 合法 base64 但会话解不开（这里用另一个人的密文冒充）：同样移除
+        let mut carol = Crypto::new(Device::new());
+        let carol_bundle = alice.bundle("alice");
+        let _ = carol.encrypt_dm("alice", &carol_bundle, b"x").unwrap();
+        let foreign = carol.encrypt_dm_existing("alice", b"y").unwrap();
+        let state = alice.dm.get_mut("bob").unwrap();
+        let key = ("rk_foreign".to_string(), 1);
+        state.parked.insert(key.clone(), foreign.clone());
+        Crypto::deliver_parked(state, key.clone(), foreign);
+        assert!(
+            !state.parked.contains_key(&key),
+            "tampered parked message must be dropped"
+        );
+    }
 }

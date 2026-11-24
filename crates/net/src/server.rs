@@ -12,6 +12,9 @@ use tokio::task::JoinHandle;
 use crate::framing;
 use crate::wire::WireFrame;
 
+/// 在线 peer 的发送流表：peer id → 单条流的互斥句柄。
+type PeerStreams = Arc<Mutex<HashMap<u64, Arc<Mutex<quinn::SendStream>>>>>;
+
 pub struct Hub {
     pub endpoint: quinn::Endpoint,
     accept_loop: JoinHandle<()>,
@@ -33,8 +36,7 @@ impl Drop for Hub {
 /// Bind and run the broadcast hub until the returned `Hub` is dropped.
 pub async fn run_hub(addr: std::net::SocketAddr) -> anyhow::Result<Hub> {
     let endpoint = crate::transport::make_server_endpoint(addr)?;
-    let peers: Arc<Mutex<HashMap<u64, Arc<Mutex<quinn::SendStream>>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let peers: PeerStreams = Arc::new(Mutex::new(HashMap::new()));
     let next_id = Arc::new(Mutex::new(0u64));
 
     let ep = endpoint.clone();
@@ -119,11 +121,7 @@ async fn next_relay_frame(recv: &mut quinn::RecvStream) -> anyhow::Result<Option
 }
 
 /// 把一帧广播给除发送者外的所有在线 peer。
-async fn relay_frame(
-    peers: &Arc<Mutex<HashMap<u64, Arc<Mutex<quinn::SendStream>>>>>,
-    id: u64,
-    frame: &[u8],
-) {
+async fn relay_frame(peers: &PeerStreams, id: u64, frame: &[u8]) {
     let map = peers.lock().await;
     for (peer_id, peer_send) in map.iter() {
         if *peer_id == id {

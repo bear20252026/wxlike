@@ -40,7 +40,7 @@ async fn handle_special(
 ) -> anyhow::Result<bool> {
     // ":recall" un-sends the last message this client wrote
     if line.starts_with(":recall") {
-        let Some(target) = last_sent.clone() else {
+        let Some(target) = *last_sent else {
             println!("(nothing to recall yet)");
             return Ok(true);
         };

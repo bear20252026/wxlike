@@ -415,3 +415,31 @@ pub fn now_ms() -> i64 {
         .unwrap_or_default()
         .as_millis() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 打开文件库时父目录要自动建出来；裸文件名（父目录为空串）不能当成
+    /// "要创建空目录"而报错。
+    #[test]
+    fn open_connection_creates_missing_parent_and_accepts_bare_names() {
+        let root = std::env::temp_dir().join(format!(
+            "wxlike-ledger-open-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let nested = root.join("a").join("b").join("ledger.db");
+        let conn = open_connection(Some(nested.to_str().unwrap())).expect("nested open");
+        drop(conn);
+        assert!(nested.exists(), "parent directories must be created");
+
+        // 父目录为空串：在进程工作目录下打开相对路径，不应报"创建目录失败"
+        let bare = format!("wxlike-ledger-bare-{}.db", std::process::id());
+        let conn = open_connection(Some(&bare)).expect("bare open");
+        drop(conn);
+        let _ = std::fs::remove_file(&bare);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
