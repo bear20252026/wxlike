@@ -223,8 +223,8 @@ pub(in crate::domain) fn insert_status_indexed(
     tx: &StorageConnection<'_>,
     s: StatusInsert<'_>,
 ) -> Result<()> {
-    let tx = tx.sqlite()?;
-    tx.execute(
+    let conn = tx.sqlite()?;
+    conn.execute(
         "INSERT INTO statuses(id, owner, kind, text, media_id, background_media_id, audience,
                               version, created_at, updated_at, expires_at, cleared_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, ?9, NULL)",
@@ -240,7 +240,7 @@ pub(in crate::domain) fn insert_status_indexed(
             s.expires_at
         ],
     )?;
-    crate::domain::repo::content_index::upsert_tx(
+    crate::domain::repo::content_index::upsert(
         tx,
         &crate::domain::content_index::IndexDoc {
             doc_id: s.id,
@@ -260,9 +260,7 @@ pub(in crate::domain) fn insert_status_indexed(
     if !s.background.is_empty() {
         refs.push(s.background.to_string());
     }
-    crate::domain::repo::content_index::add_media_refs_tx(
-        tx, &refs, "status", s.id, s.owner, s.now,
-    )?;
+    crate::domain::repo::content_index::add_media_refs(tx, &refs, "status", s.id, s.owner, s.now)?;
     Ok(())
 }
 

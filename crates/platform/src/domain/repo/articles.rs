@@ -548,8 +548,8 @@ pub(in crate::domain) fn publish_side_effects(
     plain: &str,
     now: i64,
 ) -> Result<()> {
-    crate::domain::repo::content_index::upsert_tx(
-        tx,
+    crate::domain::repo::content_index::upsert(
+        &crate::storage::StorageConnection::sqlite_borrow(tx),
         &crate::domain::content_index::IndexDoc {
             doc_id: id,
             kind: "article",

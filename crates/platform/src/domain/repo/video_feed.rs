@@ -215,8 +215,8 @@ pub(in crate::domain) fn index_video(
     media_id: &str,
     now: i64,
 ) -> Result<()> {
-    crate::domain::repo::content_index::upsert_tx(
-        tx,
+    crate::domain::repo::content_index::upsert(
+        &crate::storage::StorageConnection::sqlite_borrow(tx),
         &crate::domain::content_index::IndexDoc {
             doc_id: id,
             kind: "video",
@@ -228,8 +228,8 @@ pub(in crate::domain) fn index_video(
         },
         now,
     )?;
-    crate::domain::repo::content_index::add_media_refs_tx(
-        tx,
+    crate::domain::repo::content_index::add_media_refs(
+        &crate::storage::StorageConnection::sqlite_borrow(tx),
         &[media_id.to_string()],
         "video",
         id,
