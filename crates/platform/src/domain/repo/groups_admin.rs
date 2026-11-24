@@ -2,7 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 /// 群公告行；业务上限与管理员断言留在 domain。
 pub(in crate::domain) struct AnnouncementRecord {
@@ -25,13 +26,14 @@ pub(in crate::domain) struct JoinRequestRecord {
 }
 
 pub(in crate::domain) fn upsert_announcement(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     text: &str,
     media_id: &str,
     pinned_by: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO group_announcement(group_id, text, media_id, pinned_by, updated_at)
          VALUES(?1, ?2, ?3, ?4, ?5)
@@ -44,9 +46,10 @@ pub(in crate::domain) fn upsert_announcement(
 }
 
 pub(in crate::domain) fn announcement(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
 ) -> Result<Option<AnnouncementRecord>> {
+    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT text, media_id, pinned_by, updated_at FROM group_announcement
@@ -66,11 +69,12 @@ pub(in crate::domain) fn announcement(
 }
 
 pub(in crate::domain) fn upsert_member_mute(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     target: &str,
     until_ms: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO group_mutes(group_id, user_id, until_ms) VALUES(?1, ?2, ?3)
          ON CONFLICT(group_id, user_id) DO UPDATE SET until_ms = excluded.until_ms",
@@ -80,10 +84,11 @@ pub(in crate::domain) fn upsert_member_mute(
 }
 
 pub(in crate::domain) fn delete_member_mute(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     target: &str,
 ) -> Result<bool> {
+    let c = c.sqlite()?;
     let changed = c.execute(
         "DELETE FROM group_mutes WHERE group_id = ?1 AND user_id = ?2",
         params![group, target],
@@ -91,7 +96,12 @@ pub(in crate::domain) fn delete_member_mute(
     Ok(changed == 1)
 }
 
-pub(in crate::domain) fn set_all_muted(c: &Connection, group: &str, on: bool) -> Result<()> {
+pub(in crate::domain) fn set_all_muted(
+    c: &StorageConnection<'_>,
+    group: &str,
+    on: bool,
+) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE groups SET all_muted = ?1 WHERE id = ?2",
         params![on as i64, group],
@@ -99,7 +109,8 @@ pub(in crate::domain) fn set_all_muted(c: &Connection, group: &str, on: bool) ->
     Ok(())
 }
 
-pub(in crate::domain) fn all_muted(c: &Connection, group: &str) -> Result<bool> {
+pub(in crate::domain) fn all_muted(c: &StorageConnection<'_>, group: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let all: i64 = c.query_row(
         "SELECT all_muted FROM groups WHERE id = ?1",
         params![group],
@@ -109,10 +120,11 @@ pub(in crate::domain) fn all_muted(c: &Connection, group: &str) -> Result<bool> 
 }
 
 pub(in crate::domain) fn mute_until(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     user: &str,
 ) -> Result<Option<i64>> {
+    let c = c.sqlite()?;
     let until = c
         .query_row(
             "SELECT until_ms FROM group_mutes WHERE group_id = ?1 AND user_id = ?2",
@@ -123,7 +135,8 @@ pub(in crate::domain) fn mute_until(
     Ok(until)
 }
 
-pub(in crate::domain) fn member_count(c: &Connection, group: &str) -> Result<i64> {
+pub(in crate::domain) fn member_count(c: &StorageConnection<'_>, group: &str) -> Result<i64> {
+    let c = c.sqlite()?;
     let count = c.query_row(
         "SELECT COUNT(*) FROM group_members WHERE group_id = ?1",
         params![group],
@@ -132,7 +145,8 @@ pub(in crate::domain) fn member_count(c: &Connection, group: &str) -> Result<i64
     Ok(count)
 }
 
-pub(in crate::domain) fn user_exists(c: &Connection, user: &str) -> Result<bool> {
+pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let hit = c
         .query_row("SELECT id FROM users WHERE id = ?1", params![user], |r| {
             r.get::<_, String>(0)
@@ -142,12 +156,13 @@ pub(in crate::domain) fn user_exists(c: &Connection, user: &str) -> Result<bool>
 }
 
 pub(in crate::domain) fn insert_member_direct(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     user: &str,
     role: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO group_members(group_id, user_id, role, my_remark, joined_at)
          VALUES(?1, ?2, ?3, '', ?4)
@@ -157,7 +172,12 @@ pub(in crate::domain) fn insert_member_direct(
     Ok(())
 }
 
-pub(in crate::domain) fn set_join_approval(c: &Connection, group: &str, on: bool) -> Result<()> {
+pub(in crate::domain) fn set_join_approval(
+    c: &StorageConnection<'_>,
+    group: &str,
+    on: bool,
+) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE groups SET approval = ?1 WHERE id = ?2",
         params![on as i64, group],
@@ -166,12 +186,13 @@ pub(in crate::domain) fn set_join_approval(c: &Connection, group: &str, on: bool
 }
 
 pub(in crate::domain) fn insert_invite(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     token: &str,
     group: &str,
     created_by: &str,
     expires_at: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO group_invites(token, group_id, created_by, expires_at)
          VALUES(?1, ?2, ?3, ?4)",
@@ -180,7 +201,11 @@ pub(in crate::domain) fn insert_invite(
     Ok(())
 }
 
-pub(in crate::domain) fn invite(c: &Connection, token: &str) -> Result<Option<InviteRecord>> {
+pub(in crate::domain) fn invite(
+    c: &StorageConnection<'_>,
+    token: &str,
+) -> Result<Option<InviteRecord>> {
+    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT group_id, expires_at FROM group_invites WHERE token = ?1",
@@ -196,7 +221,8 @@ pub(in crate::domain) fn invite(c: &Connection, token: &str) -> Result<Option<In
     Ok(row)
 }
 
-pub(in crate::domain) fn join_approval(c: &Connection, group: &str) -> Result<i64> {
+pub(in crate::domain) fn join_approval(c: &StorageConnection<'_>, group: &str) -> Result<i64> {
+    let c = c.sqlite()?;
     let approval = c.query_row(
         "SELECT approval FROM groups WHERE id = ?1",
         params![group],
@@ -206,11 +232,12 @@ pub(in crate::domain) fn join_approval(c: &Connection, group: &str) -> Result<i6
 }
 
 pub(in crate::domain) fn upsert_join_request(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     user: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO group_join_requests(group_id, user_id, status, requested_at)
          VALUES(?1, ?2, 'pending', ?3)
@@ -222,9 +249,10 @@ pub(in crate::domain) fn upsert_join_request(
 }
 
 pub(in crate::domain) fn join_requests(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
 ) -> Result<Vec<JoinRequestRecord>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT user_id, requested_at FROM group_join_requests
          WHERE group_id = ?1 AND status = 'pending' ORDER BY requested_at",
@@ -239,11 +267,12 @@ pub(in crate::domain) fn join_requests(
 }
 
 pub(in crate::domain) fn set_join_request_status(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     group: &str,
     user: &str,
     status: &str,
 ) -> Result<bool> {
+    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE group_join_requests SET status = ?1
          WHERE group_id = ?2 AND user_id = ?3 AND status = 'pending'",

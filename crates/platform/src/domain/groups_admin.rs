@@ -48,7 +48,7 @@ impl Platform {
             return Err(PlatformError::BadInput("announcement too long"));
         }
         upsert_announcement(
-            &self.db().lock(),
+            &self.db().acquire(),
             group,
             text,
             media_id,
@@ -61,7 +61,7 @@ impl Platform {
     pub(crate) fn announcement(&self, group: &str) -> Result<Option<GroupAnnouncement>> {
         let group = validate::id(group)?;
         Ok(
-            announcement(&self.db().lock(), group)?.map(|r| GroupAnnouncement {
+            announcement(&self.db().acquire(), group)?.map(|r| GroupAnnouncement {
                 text: r.text,
                 media_id: r.media_id,
                 pinned_by: r.pinned_by,
@@ -92,7 +92,7 @@ impl Platform {
         if role == "owner" {
             return Err(PlatformError::BadInput("the owner cannot be muted"));
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         upsert_member_mute(&c, group, target, until_ms as i64)?;
         Ok(())
     }
@@ -100,7 +100,7 @@ impl Platform {
     pub(crate) fn clear_member_mute(&self, group: &str, actor: &str, target: &str) -> Result<()> {
         let (group, target) = (validate::id(group)?, validate::id(target)?);
         self.assert_manager(group, actor)?;
-        if !delete_member_mute(&self.db().lock(), group, target)? {
+        if !delete_member_mute(&self.db().acquire(), group, target)? {
             return Err(PlatformError::NotFound);
         }
         Ok(())
@@ -109,7 +109,7 @@ impl Platform {
     pub(crate) fn set_all_mute(&self, group: &str, actor: &str, on: bool) -> Result<()> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
-        set_all_muted(&self.db().lock(), group, on)
+        set_all_muted(&self.db().acquire(), group, on)
     }
 
     /// 全员禁言的当前状态（#318 遗留缺口的服务端一半）：写入侧只有
@@ -117,7 +117,7 @@ impl Platform {
     /// 客户端都无从读——这里给一个与公告读取对称的域方法。
     pub(crate) fn all_muted(&self, group: &str) -> Result<bool> {
         let group = validate::id(group)?;
-        all_muted(&self.db().lock(), group)
+        all_muted(&self.db().acquire(), group)
     }
 
     /// 发送侧裁决（hub 接线复用）：全员禁言对 owner/admin 无效；单人禁言
@@ -131,7 +131,7 @@ impl Platform {
         if self.all_muted(group)? {
             return Ok(true);
         }
-        let until = mute_until(&self.db().lock(), group, user)?;
+        let until = mute_until(&self.db().acquire(), group, user)?;
         Ok(until
             .map(|u| u > wxlike_core::types::now_ms() as i64)
             .unwrap_or(false))
@@ -159,7 +159,7 @@ impl Platform {
             return Err(PlatformError::NotFound);
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if member_count(&c, group)? as usize >= crate::domain::groups::MAX_GROUP_MEMBERS {
             return Err(PlatformError::BadInput("group member limit exceeded"));
         }
@@ -176,7 +176,7 @@ impl Platform {
     pub(crate) fn set_join_approval(&self, group: &str, actor: &str, on: bool) -> Result<()> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
-        set_join_approval(&self.db().lock(), group, on)
+        set_join_approval(&self.db().acquire(), group, on)
     }
 
     pub(crate) fn create_invite(
@@ -189,7 +189,7 @@ impl Platform {
         self.assert_manager(group, actor)?;
         let token = crate::auth::random_hex(16);
         let expires = wxlike_core::types::now_ms() as i64 + ttl_ms as i64;
-        insert_invite(&self.db().lock(), &token, group, actor, expires)?;
+        insert_invite(&self.db().acquire(), &token, group, actor, expires)?;
         Ok(GroupInvite {
             token,
             group_id: group.to_string(),
@@ -205,7 +205,7 @@ impl Platform {
         // scope the guard: is_member/add_members re-lock the same non-reentrant
         // Mutex — holding it across those calls deadlocked the caller's thread
         let row = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             invite(&c, token)?
         };
         let Some(invite) = row else {
@@ -218,13 +218,13 @@ impl Platform {
         if self.is_member(&group, user)? {
             return Ok("already_member");
         }
-        let approval = join_approval(&self.db().lock(), &group)?;
+        let approval = join_approval(&self.db().acquire(), &group)?;
         if approval == 0 {
             self.add_member_direct(&group, user)?;
             Ok("joined")
         } else {
             upsert_join_request(
-                &self.db().lock(),
+                &self.db().acquire(),
                 &group,
                 user,
                 wxlike_core::types::now_ms() as i64,
@@ -236,7 +236,7 @@ impl Platform {
     pub fn join_requests(&self, group: &str, actor: &str) -> Result<Vec<(String, String)>> {
         let group = validate::id(group)?;
         self.assert_manager(group, actor)?;
-        Ok(join_requests(&self.db().lock(), group)?
+        Ok(join_requests(&self.db().acquire(), group)?
             .into_iter()
             .map(|r| (r.user_id, r.requested_at.to_string()))
             .collect())
@@ -255,7 +255,7 @@ impl Platform {
             self.add_member_direct(group, user)?;
         }
         let status = if approve { "approved" } else { "rejected" };
-        if !set_join_request_status(&self.db().lock(), group, user, status)? {
+        if !set_join_request_status(&self.db().acquire(), group, user, status)? {
             return Err(PlatformError::NotFound);
         }
         Ok(())
