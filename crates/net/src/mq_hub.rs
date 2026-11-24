@@ -1701,7 +1701,7 @@ async fn gate_content(
             if !run_send_gate(state, policy.as_ref(), &env).await {
                 return Ok(None);
             }
-            match apply_delivery_policy(state, policy.as_ref(), env, members).await? {
+            match apply_delivery_policy(state, policy.as_ref(), &env, members).await? {
                 PolicyOutcome::Deliver(owned) => owned,
                 PolicyOutcome::Drop => return Ok(None),
             }
