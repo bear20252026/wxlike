@@ -409,7 +409,7 @@ def _from_osv(scanned: dict[str, Any], known: list[dict[str, Any]], timeout: flo
             detail = {**vuln, **details[vid]}
             if detail.get("withdrawn"):
                 continue
-            info = ((detail.get("database_specific") or {}).get("informational") or "").lower()
+            info = _osv_informational(detail)
             # 只认明确的 informational；不凭摘要文本将真实漏洞降级。
             unmaintained = info == "unmaintained" and _osv_severity(detail) not in {"critical", "high"}
             kind = "unmaintained" if unmaintained else "vulnerability"
@@ -439,6 +439,25 @@ def _osv_severity(vuln: dict[str, Any]) -> str | None:
     """只采用上游明确等级；没有可信评分器时不从 CVSS 向量猜等级。"""
     db = ((vuln.get("database_specific") or {}).get("severity") or "").upper()
     return {"CRITICAL": "critical", "HIGH": "high", "MODERATE": "medium", "MEDIUM": "medium", "LOW": "low"}.get(db)
+
+
+def _osv_informational(vuln: dict[str, Any]) -> str:
+    """OSV 把 `informational` 放在顶层或 `affected[].database_specific`。
+
+    RustSec 的 unmaintained 公告（例如 RUSTSEC-2026-0543）只在 affected 条目里
+    标 `informational: "unmaintained"`，顶层 `database_specific` 只有 license。
+    只看顶层会把"停止维护"误判成未知分级的漏洞，按 unverified=block 拦下。
+    """
+    info = ((vuln.get("database_specific") or {}).get("informational") or "").lower()
+    if info:
+        return info
+    for affected in vuln.get("affected") or []:
+        if not isinstance(affected, dict):
+            continue
+        value = ((affected.get("database_specific") or {}).get("informational") or "").lower()
+        if value:
+            return value
+    return ""
 
 
 def _from_scan(scanned: dict[str, Any]) -> list[dict[str, Any]]:

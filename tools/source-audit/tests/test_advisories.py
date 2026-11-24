@@ -230,6 +230,36 @@ class AdvisoriesTest(unittest.TestCase):
         finally:
             advisories.urllib.request.urlopen = original
 
+    def test_osv_unmaintained_in_affected_block_is_low_warning(self) -> None:
+        """RustSec unmaintained 只在 affected[].database_specific 标记。
+
+        只看顶层会把 RUSTSEC-2026-0543（chrono）判成未知分级漏洞，
+        按 unverified=block 阻断；它应该是 LOW 的 ADV-UNMAINTAINED 警告。
+        """
+        detail = {
+            "id": "RUSTSEC-TEST-UNMAINT",
+            "database_specific": {"license": "CC0-1.0"},
+            "affected": [
+                {
+                    "package": {"name": "chrono", "ecosystem": "crates.io"},
+                    "database_specific": {"informational": "unmaintained", "cvss": None},
+                }
+            ],
+        }
+        scanned = {
+            "index": [["chrono", "0.4.45", "crates.io"]],
+            "osv": {"results": [{"vulns": [{"id": "RUSTSEC-TEST-UNMAINT"}]}]},
+        }
+        original = advisories._osv_detail
+        advisories._osv_detail = lambda _vid, _timeout: detail
+        try:
+            rows = advisories._from_osv(scanned, [])
+        finally:
+            advisories._osv_detail = original
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "unmaintained")
+        self.assertEqual(rows[0]["severity"], "low")
+
 
 class VersionRangeTest(unittest.TestCase):
     def test_range_matrix(self) -> None:

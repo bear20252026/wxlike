@@ -76,3 +76,8 @@ python -m sourceaudit advisories check --input audit.json   # 复用 cargo audit
 2026-10-25：#239 的 ctutils 例外已移除，根/桌面锁均为 0.4.5。上面的例外 JSON 仅为字段示例，实际生效项以 `policy.json` 为准。最新离线复核见 `report-2026-10-25.md`，历史联网记录保留。
 
 2026-10-25 联网政策收紧：`unverified=block`。查询按 crates.io/npm/Pub 分生态并处理分页；响应缺项及详情不可用返回 4。同一公告的多个受影响版本全部保留。不用粗略 CVSS 向量猜分级，未知等级须复核。历史文档中“未知仅警告”口径由本政策替代。
+
+2026-11-24：OSV 的 `informational: "unmaintained"` 可能只写在
+`affected[].database_specific`（RustSec 的 RUSTSEC-2026-0543 就是这样，顶层只有
+license）。扫描器现在两处都读：这类公告按 `ADV-UNMAINTAINED` 的 LOW 警告处理，
+不再被 `unverified=block` 误判成“未知分级漏洞”。
