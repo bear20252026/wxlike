@@ -2,15 +2,17 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 pub(in crate::domain) fn set_settings(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     conv_id: &str,
     enabled: bool,
     ttl_ms: i64,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO secret_settings(conv_id, enabled, ttl_ms, updated_at)
          VALUES(?1, ?2, ?3, ?4)
@@ -23,7 +25,11 @@ pub(in crate::domain) fn set_settings(
     Ok(())
 }
 
-pub(in crate::domain) fn settings(conn: &Connection, conv_id: &str) -> Result<Option<(i64, i64)>> {
+pub(in crate::domain) fn settings(
+    conn: &StorageConnection<'_>,
+    conv_id: &str,
+) -> Result<Option<(i64, i64)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT enabled, ttl_ms FROM secret_settings WHERE conv_id = ?1",
@@ -33,7 +39,11 @@ pub(in crate::domain) fn settings(conn: &Connection, conv_id: &str) -> Result<Op
         .optional()?)
 }
 
-pub(in crate::domain) fn identity(conn: &Connection, user_id: &str) -> Result<Option<String>> {
+pub(in crate::domain) fn identity(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
@@ -44,12 +54,13 @@ pub(in crate::domain) fn identity(conn: &Connection, user_id: &str) -> Result<Op
 }
 
 pub(in crate::domain) fn save_verification(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     conv_id: &str,
     user_id: &str,
     peer_identity: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO secret_verifications(conv_id, user_id, peer_identity, verified_at)
          VALUES(?1, ?2, ?3, ?4)
@@ -62,10 +73,11 @@ pub(in crate::domain) fn save_verification(
 }
 
 pub(in crate::domain) fn verification(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     conv_id: &str,
     user_id: &str,
 ) -> Result<Option<(String, i64)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT peer_identity, verified_at FROM secret_verifications

@@ -64,7 +64,7 @@ impl Platform {
         }
         // 只有会话参与者能改（直聊 conv_id 形如 d-<a>~<b>）
         self.require_conv_member(user_id, &conv_id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         secret_repo::set_settings(
             &c,
             &conv_id,
@@ -81,7 +81,7 @@ impl Platform {
 
     pub fn secret_state(&self, conv_id: &str) -> Result<SecretState> {
         let conv_id = validate::conv(conv_id)?.to_string();
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = secret_repo::settings(&c, &conv_id)?;
         Ok(match row {
             Some((enabled, ttl)) => SecretState {
@@ -121,7 +121,7 @@ impl Platform {
     }
 
     fn identity_of(&self, user_id: &str) -> Result<String> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         secret_repo::identity(&c, user_id)?.ok_or(PlatformError::NotFound)
     }
 
@@ -135,7 +135,7 @@ impl Platform {
             ));
         }
         let conv = crate::direct_conv_id(user_id, peer_id);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         secret_repo::save_verification(
             &c,
             &conv,
@@ -150,7 +150,7 @@ impl Platform {
     pub fn verification_of(&self, user_id: &str, peer_id: &str) -> Result<Option<i64>> {
         let conv = crate::direct_conv_id(user_id, peer_id);
         let current = self.identity_of(peer_id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = secret_repo::verification(&c, &conv, user_id)?;
         Ok(match row {
             Some((identity, at)) if identity == current => Some(at),

@@ -59,7 +59,7 @@ impl Platform {
             let id = crate::auth::random_hex(8);
             let labels = serde_json::to_string(&decision.labels)?;
             let decision_json = serde_json::to_string(&decision)?;
-            let c = self.db().lock();
+            let c = self.db().acquire();
             trust_repo::enqueue(
                 &c,
                 &id,
@@ -89,14 +89,14 @@ impl Platform {
 
     /// 挂起队列（最早在前：先挂起的先处理）。
     pub fn moderation_queue(&self, limit: usize) -> Result<Vec<QueuedItem>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         trust_repo::queue(&c, limit.clamp(1, 200) as i64)
     }
 
     /// 放行：从队列取出并返回原文（调用方负责真正投递）。
     pub fn release_moderated(&self, id: &str, actor: &str) -> Result<Option<QueuedItem>> {
         let item = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             let row = trust_repo::item(&c, id)?;
             if row.is_some() {
                 trust_repo::delete(&c, id)?;
@@ -111,7 +111,7 @@ impl Platform {
 
     /// 拒绝：从队列删除，不投递。
     pub(crate) fn reject_moderated(&self, id: &str, actor: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let n = trust_repo::delete(&c, id)?;
         drop(c);
         if n > 0 {

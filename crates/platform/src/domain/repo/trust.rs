@@ -3,11 +3,12 @@
 
 use crate::domain::trust::QueuedItem;
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn enqueue(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     conv_id: &str,
     sender: &str,
@@ -16,6 +17,7 @@ pub(in crate::domain) fn enqueue(
     decision: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO moderation_queue(id, conv_id, sender, text, labels, decision, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -24,7 +26,11 @@ pub(in crate::domain) fn enqueue(
     Ok(())
 }
 
-pub(in crate::domain) fn queue(conn: &Connection, limit: i64) -> Result<Vec<QueuedItem>> {
+pub(in crate::domain) fn queue(
+    conn: &StorageConnection<'_>,
+    limit: i64,
+) -> Result<Vec<QueuedItem>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id, conv_id, sender, text, labels, created_at
          FROM moderation_queue ORDER BY created_at ASC LIMIT ?1",
@@ -35,7 +41,11 @@ pub(in crate::domain) fn queue(conn: &Connection, limit: i64) -> Result<Vec<Queu
     Ok(rows)
 }
 
-pub(in crate::domain) fn item(conn: &Connection, id: &str) -> Result<Option<QueuedItem>> {
+pub(in crate::domain) fn item(
+    conn: &StorageConnection<'_>,
+    id: &str,
+) -> Result<Option<QueuedItem>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT id, conv_id, sender, text, labels, created_at
@@ -47,7 +57,8 @@ pub(in crate::domain) fn item(conn: &Connection, id: &str) -> Result<Option<Queu
 }
 
 /// 放行与拒绝共用：返回被删行数，调用方据此决定是否审计。
-pub(in crate::domain) fn delete(conn: &Connection, id: &str) -> Result<usize> {
+pub(in crate::domain) fn delete(conn: &StorageConnection<'_>, id: &str) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute("DELETE FROM moderation_queue WHERE id = ?1", params![id])?)
 }
 
