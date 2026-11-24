@@ -499,10 +499,10 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 持久化/重放/扇出拆开，主函数降到约 40 行。全仓 `>100 行` 只剩
 `ui/src-tauri::callrtc::run` 一个，下一批处理。
 
-存储端口本波从 6 个 repo、20 个函数扩到 30 个 repo、317 个函数：
+存储端口本波从 6 个 repo、20 个函数扩到 31 个 repo、350 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /
 `notes` / `favorites` / `stickers` / `friends` / `status` / `media` / `keys` /
-`report` / `inbox` / `perms` / `trust` / `secret` / `recovery` / `reconcile` / `content_index` / `groups_admin` / `relations` / `groups` / `communities` / `moments` / `video_feed` / `account` / `wallet` / `live`
+`report` / `inbox` / `perms` / `trust` / `secret` / `recovery` / `reconcile` / `content_index` / `groups_admin` / `relations` / `groups` / `communities` / `moments` / `video_feed` / `account` / `wallet` / `live` / `articles`
 的参数统一为 `&StorageConnection<'_>`。`notes` 首个打通 `with_tx` 事务内的
 `SqliteTx(&Connection)`，`favorites` / `stickers` / `friends` / `status` /
 `recovery` 随迁；跨域撤权与通知分别用 `revoke_source_tx` / `notify_tx` / `upsert_tx` 桥接，
