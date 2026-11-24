@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn sqlite_tx_and_borrowed_ports_reuse_the_same_connection() {
         let storage = SqliteStorage::open(StorageProfile::Sqlite { path: None }, None).unwrap();
-        let mut guard = storage.lock().unwrap();
+        let mut guard = storage.lock();
         let tx = guard.transaction().unwrap();
 
         // 事务内的端口只借连接，不接管提交/回滚。
