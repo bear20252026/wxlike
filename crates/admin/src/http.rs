@@ -824,65 +824,7 @@ fn build_payload(op: &Op, body: &OpBody) -> Result<Option<serde_json::Value>> {
         "note" => Ok(Some(
             serde_json::json!({ "note": required_note(op, body)? }),
         )),
-        "action+note" => {
-            let note = required_note(op, body)?;
-            // 归一成 `wxlike_report::Action` 的原生形状（内部标签枚举）：
-            // {"action":"mute","duration_ms":60000}。客户端既可以把 action 写成
-            // 字符串（配 duration_ms），也可以直接写整个对象。缺时长就报错，不猜。
-            let mut merged = match (&body.action, body.duration_ms) {
-                (Some(serde_json::Value::String(tag)), ms) => {
-                    let mut map = serde_json::Map::new();
-                    map.insert("action".into(), serde_json::Value::String(tag.clone()));
-                    if let Some(ms) = ms {
-                        map.insert("duration_ms".into(), serde_json::json!(ms));
-                    }
-                    serde_json::Value::Object(map)
-                }
-                (Some(serde_json::Value::Object(inner)), ms) => {
-                    let mut map = inner.clone();
-                    if let Some(ms) = ms {
-                        map.entry("duration_ms").or_insert(serde_json::json!(ms));
-                    }
-                    if map.contains_key("action") {
-                        serde_json::Value::Object(map)
-                    } else {
-                        // {"mute":{"duration_ms":N}} 这种写法包一层，仍然要求时长在对象里
-                        serde_json::json!({ "action": serde_json::Value::Object(map) })
-                    }
-                }
-                (Some(other), _) => {
-                    return Err(AdminError::bad_input(format!(
-                        "action 只能是字符串或对象，收到 {other}"
-                    )))
-                }
-                (None, _) => {
-                    return Err(AdminError::bad_input(
-                        "report.act 需要 action：warn / mute{duration_ms} / ban / remove_content / none",
-                    ))
-                }
-            };
-            // 平铺的 mute 时长也可能写在外层 body 上（表单习惯），补进来
-            if let (Some(ms), Some(map)) = (body.duration_ms, merged.as_object_mut()) {
-                if map.get("action").is_some() {
-                    map.entry("duration_ms").or_insert(serde_json::json!(ms));
-                }
-            }
-            let action = crate::accounts::parse_action(&merged)?;
-            // 转发给平台时用**平铺**形状：`Action` 是内部标签枚举，
-            // 序列化出来就是 `{"action":"mute","duration_ms":60000}`。
-            // 以前这里包了一层 `{"action": {...}}`，导致平台收到的是嵌套的
-            // `{"action":{"action":"mute"}}`——同一个键出现两次。
-            let mut payload = match to_value(action)? {
-                serde_json::Value::Object(map) => map,
-                other => {
-                    return Err(AdminError::bad_input(format!(
-                        "action 序列化后应当是对象，得到 {other}"
-                    )))
-                }
-            };
-            payload.insert("note".into(), serde_json::Value::String(note));
-            Ok(Some(serde_json::Value::Object(payload)))
-        }
+        "action+note" => Ok(Some(build_action_payload(required_note(op, body)?, body)?)),
         "mode" => {
             let raw = body.mode.as_deref().ok_or_else(|| {
                 AdminError::bad_input("moderation.mode 需要 mode：pre_review | post_review")
@@ -899,6 +841,65 @@ fn build_payload(op: &Op, body: &OpBody) -> Result<Option<serde_json::Value>> {
             "目录里 {other:?} 这种载荷 adminx 还没实现"
         ))),
     }
+}
+
+/// `action+note` 载荷：归一成平台 `Action` 的平铺形状，再补 note。
+fn build_action_payload(note: String, body: &OpBody) -> Result<serde_json::Value> {
+    // 归一成 `wxlike_report::Action` 的原生形状（内部标签枚举）：
+    // {"action":"mute","duration_ms":60000}。客户端既可以把 action 写成
+    // 字符串（配 duration_ms），也可以直接写整个对象。缺时长就报错，不猜。
+    let mut merged =
+        match (&body.action, body.duration_ms) {
+            (Some(serde_json::Value::String(tag)), ms) => {
+                let mut map = serde_json::Map::new();
+                map.insert("action".into(), serde_json::Value::String(tag.clone()));
+                if let Some(ms) = ms {
+                    map.insert("duration_ms".into(), serde_json::json!(ms));
+                }
+                serde_json::Value::Object(map)
+            }
+            (Some(serde_json::Value::Object(inner)), ms) => {
+                let mut map = inner.clone();
+                if let Some(ms) = ms {
+                    map.entry("duration_ms").or_insert(serde_json::json!(ms));
+                }
+                if map.contains_key("action") {
+                    serde_json::Value::Object(map)
+                } else {
+                    // {"mute":{"duration_ms":N}} 这种写法包一层，仍然要求时长在对象里
+                    serde_json::json!({ "action": serde_json::Value::Object(map) })
+                }
+            }
+            (Some(other), _) => {
+                return Err(AdminError::bad_input(format!(
+                    "action 只能是字符串或对象，收到 {other}"
+                )))
+            }
+            (None, _) => return Err(AdminError::bad_input(
+                "report.act 需要 action：warn / mute{duration_ms} / ban / remove_content / none",
+            )),
+        };
+    // 平铺的 mute 时长也可能写在外层 body 上（表单习惯），补进来
+    if let (Some(ms), Some(map)) = (body.duration_ms, merged.as_object_mut()) {
+        if map.get("action").is_some() {
+            map.entry("duration_ms").or_insert(serde_json::json!(ms));
+        }
+    }
+    let action = crate::accounts::parse_action(&merged)?;
+    // 转发给平台时用**平铺**形状：`Action` 是内部标签枚举，
+    // 序列化出来就是 `{"action":"mute","duration_ms":60000}`。
+    // 以前这里包了一层 `{"action": {...}}`，导致平台收到的是嵌套的
+    // `{"action":{"action":"mute"}}`——同一个键出现两次。
+    let mut payload = match to_value(action)? {
+        serde_json::Value::Object(map) => map,
+        other => {
+            return Err(AdminError::bad_input(format!(
+                "action 序列化后应当是对象，得到 {other}"
+            )))
+        }
+    };
+    payload.insert("note".into(), serde_json::Value::String(note));
+    Ok(serde_json::Value::Object(payload))
 }
 
 fn required_note(op: &Op, body: &OpBody) -> Result<String> {

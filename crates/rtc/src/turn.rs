@@ -535,6 +535,24 @@ impl TurnClient {
         None
     }
 
+    /// 438 = nonce 过期：记下新 nonce，下次请求自动带上。
+    fn absorb_refresh(&mut self, msg: &Message) {
+        if msg.class == C_SUCCESS || msg.error_code() != Some(438) {
+            return;
+        }
+        if let Some(nonce) = msg.attr(A_NONCE) {
+            self.nonce = String::from_utf8_lossy(nonce).to_string();
+        }
+    }
+
+    /// 同步一问一答：发请求、收一包、解析；任何一步失败都返回 `None`。
+    fn exchange(&mut self, req: &[u8]) -> Option<Message> {
+        self.socket.send(req).ok()?;
+        let mut buf = [0u8; 1500];
+        let n = self.socket.recv(&mut buf).ok()?;
+        Message::parse(&buf[..n])
+    }
+
     /// 到了半衰期就续期（非阻塞，失败只记日志）。
     pub fn maybe_refresh(&mut self) {
         let half = Duration::from_secs(u64::from(self.lifetime.max(60) / 2));
@@ -548,20 +566,8 @@ impl TurnClient {
                 (A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0]),
             ],
         );
-        if self.socket.send(&req).is_ok() {
-            let mut buf = [0u8; 1500];
-            if let Ok(n) = self.socket.recv(&mut buf) {
-                if let Some(msg) = Message::parse(&buf[..n]) {
-                    if msg.class != C_SUCCESS {
-                        // 438 = nonce 过期，重分配一次
-                        if msg.error_code() == Some(438) {
-                            if let Some(nonce) = msg.attr(A_NONCE) {
-                                self.nonce = String::from_utf8_lossy(nonce).to_string();
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(msg) = self.exchange(&req) {
+            self.absorb_refresh(&msg);
         }
         self.allocated_at = Instant::now();
     }

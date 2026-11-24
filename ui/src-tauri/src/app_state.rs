@@ -66,6 +66,113 @@ fn session_token(reply: &serde_json::Value, what: &str) -> Result<String, String
     Ok(token.to_string())
 }
 
+/// 重发泵的一轮任务：解码 → 本地限流 → 发送 → 落本地库。
+fn flush_outbox_task(
+    client: &Client,
+    secret: &Arc<Mutex<Option<SecretStore>>>,
+    local: &Arc<Mutex<Option<LocalStore>>>,
+    avalanche: &wxlike_net::avalanche::Avalanche,
+    task: &wxlike_core::outbox::OutboxTask,
+    now: i64,
+) -> Result<(), wxlike_core::outbox::SendFailure> {
+    let (env, echo) = decode_outbox_task(&task.payload)?;
+    // 本地防雪崩：弱网下重发风暴会把流量打光、把连接堵死。
+    // 键用 conv_id——同一条命令不同会话互不牵连。
+    let bytes = task.payload.to_string().len();
+    if let wxlike_net::avalanche::Verdict::Deny {
+        reason,
+        retry_after_ms,
+    } = avalanche.check(&task.conv_id, bytes, now)
+    {
+        return Err(wxlike_core::outbox::SendFailure::throttled(format!(
+            "本地限流（{}），{}ms 后再试",
+            reason.as_str(),
+            retry_after_ms
+        )));
+    }
+    match wait(client.send(&env)) {
+        Ok(()) => {
+            persist_local_echo(&env, echo.as_deref(), secret, local);
+            Ok(())
+        }
+        Err(e) => Err(wxlike_core::outbox::SendFailure::retryable(format!(
+            "{e:#}"
+        ))),
+    }
+}
+
+/// 发送成功后把这条消息补进本地库；撤回/输入态不落历史。
+fn persist_local_echo(
+    env: &Envelope,
+    echo: Option<&str>,
+    secret: &Arc<Mutex<Option<SecretStore>>>,
+    local: &Arc<Mutex<Option<LocalStore>>>,
+) {
+    if env.is_recall() || env.is_typing() {
+        return;
+    }
+    let payload = render_event_with(env, secret, echo);
+    let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(store) = guard.as_ref() {
+        let _ = store.append(&payload);
+    }
+}
+
+/// 把一条已渲染事件补进本地库（没有本地库时静默跳过）。
+fn append_local_event(local: &Arc<Mutex<Option<LocalStore>>>, payload: &serde_json::Value) {
+    let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(store) = guard.as_ref() {
+        let _ = store.append(payload);
+    }
+}
+
+/// 入站事件的两条 UI 通道：`im-in` 与契约 v1 的信封桥。
+fn emit_inbound_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    env: &Envelope,
+    payload: &serde_json::Value,
+    me: Option<&str>,
+) {
+    use tauri::Emitter as _;
+    let _ = app.emit("im-in", payload);
+    crate::core_bridge::forward_inbound(app, env, payload, me);
+}
+
+/// 这一代泵是否仍是当前泵（重连后旧泵要自己退场）。
+fn pump_generation_is_current(generation: &AtomicU64, mine: u64) -> bool {
+    generation.load(Ordering::SeqCst) == mine
+}
+
+/// 收包泵主体：拉一条信封 → 渲染 → 落本地库 → 发 UI；断流时只由当前代报 `im-down`。
+async fn recv_pump_loop<R: tauri::Runtime>(
+    client: Client,
+    app: tauri::AppHandle<R>,
+    secret: Arc<Mutex<Option<SecretStore>>>,
+    local: Arc<Mutex<Option<LocalStore>>>,
+    me: Option<String>,
+    pump_generation: Arc<AtomicU64>,
+    generation: u64,
+) {
+    use tauri::Emitter as _;
+    while pump_generation_is_current(&pump_generation, generation) {
+        let env = match client.next_envelope().await {
+            Ok(env) => env,
+            Err(_) => {
+                if pump_generation_is_current(&pump_generation, generation) {
+                    let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
+                }
+                break;
+            }
+        };
+        if !pump_generation_is_current(&pump_generation, generation) {
+            break;
+        }
+        let payload = render_event_with(&env, &secret, None);
+        append_local_event(&local, &payload);
+        emit_inbound_event(&app, &env, &payload, me.as_deref());
+    }
+}
+
 impl AppState {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -477,36 +584,7 @@ impl AppState {
                 }
                 let now = wxlike_core::types::now_ms() as i64;
                 let report = outbox.flush_with(now, 20, |task| {
-                    let (env, echo) = decode_outbox_task(&task.payload)?;
-                    // 本地防雪崩：弱网下重发风暴会把流量打光、把连接堵死。
-                    // 键用 conv_id——同一条命令不同会话互不牵连。
-                    let bytes = task.payload.to_string().len();
-                    if let wxlike_net::avalanche::Verdict::Deny {
-                        reason,
-                        retry_after_ms,
-                    } = avalanche.check(&task.conv_id, bytes, now)
-                    {
-                        return Err(wxlike_core::outbox::SendFailure::throttled(format!(
-                            "本地限流（{}），{}ms 后再试",
-                            reason.as_str(),
-                            retry_after_ms
-                        )));
-                    }
-                    match wait(client.send(&env)) {
-                        Ok(()) => {
-                            if !env.is_recall() && !env.is_typing() {
-                                let payload = render_event_with(&env, &secret, echo.as_deref());
-                                let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
-                                if let Some(store) = guard.as_ref() {
-                                    let _ = store.append(&payload);
-                                }
-                            }
-                            Ok(())
-                        }
-                        Err(e) => Err(wxlike_core::outbox::SendFailure::retryable(format!(
-                            "{e:#}"
-                        ))),
-                    }
+                    flush_outbox_task(&client, &secret, &local, &avalanche, task, now)
                 });
                 if let Ok(report) = report {
                     if report.sent > 0 || report.failed > 0 || report.throttled > 0 {
@@ -1314,7 +1392,10 @@ impl AppState {
     }
 
     /// The receiver pump: forwards hub envelopes to the webview as `im-in`.
-    pub fn start_recv_pump<R: tauri::Runtime>(&self, app: tauri::AppHandle<R>) -> Result<(), String> {
+    pub fn start_recv_pump<R: tauri::Runtime>(
+        &self,
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
         let Some(client) = self
             .client
             .lock()
@@ -1334,35 +1415,7 @@ impl AppState {
         //（消息方向退化为全部"入站"，多端同步自己的消息时才受影响）。
         let me = self.user_id().ok();
         tauri::async_runtime::spawn(async move {
-            use tauri::Emitter as _;
-            loop {
-                if pump_generation.load(Ordering::SeqCst) != generation {
-                    break; // 已有新泵接管
-                }
-                match client.next_envelope().await {
-                    Ok(env) => {
-                        if pump_generation.load(Ordering::SeqCst) != generation {
-                            break;
-                        }
-                        let payload = render_event_with(&env, &secret, None);
-                        {
-                            let guard = local.lock().unwrap_or_else(PoisonError::into_inner);
-                            if let Some(store) = guard.as_ref() {
-                                let _ = store.append(&payload);
-                            }
-                        }
-                        let _ = app.emit("im-in", &payload);
-                        // 新 UI（契约 v1）的事件面：同一payload再发一份信封。
-                        crate::core_bridge::forward_inbound(&app, &env, &payload, me.as_deref());
-                    }
-                    Err(_) => {
-                        if pump_generation.load(Ordering::SeqCst) == generation {
-                            let _ = app.emit("im-down", serde_json::json!({"reason": "hub 连接断开"}));
-                        }
-                        break;
-                    }
-                }
-            }
+            recv_pump_loop(client, app, secret, local, me, pump_generation, generation).await;
         });
         Ok(())
     }
@@ -1407,7 +1460,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("wxlike-ttl-cursor-{}-{}", std::process::id(), uniq));
+        let dir =
+            std::env::temp_dir().join(format!("wxlike-ttl-cursor-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("local.db");
 

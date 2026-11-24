@@ -407,40 +407,42 @@ impl CallManager {
             };
             match call.state.phase() {
                 Phase::Ringing => {
-                    if let Some(since) = call.entered_ringing_at {
-                        if now.duration_since(since).as_secs() >= RING_TIMEOUT_SECS {
-                            call.state.apply(Event::RingTimeout);
-                            // tell the peer we stopped ringing (caller side)
-                            if call.state.is_caller() {
-                                actions.push(Action::Send(Signal::new(
-                                    id.clone(),
-                                    self.me.clone(),
-                                    call.peer.clone(),
-                                    SignalContent::Cancel,
-                                )));
-                            }
-                            actions.push(Action::Ended {
-                                call_id: id.clone(),
-                                end: End::Cancelled,
-                            });
-                        }
-                    }
-                }
-                Phase::Active => {
-                    if let Some(last) = call.last_peer_activity {
-                        if now.duration_since(last).as_secs() >= PEER_SILENCE_TIMEOUT_SECS {
-                            call.state.apply(Event::PeerSilent);
+                    let Some(since) = call.entered_ringing_at else {
+                        continue;
+                    };
+                    if now.duration_since(since).as_secs() >= RING_TIMEOUT_SECS {
+                        call.state.apply(Event::RingTimeout);
+                        // tell the peer we stopped ringing (caller side)
+                        if call.state.is_caller() {
                             actions.push(Action::Send(Signal::new(
                                 id.clone(),
                                 self.me.clone(),
                                 call.peer.clone(),
-                                SignalContent::Hangup,
+                                SignalContent::Cancel,
                             )));
-                            actions.push(Action::Ended {
-                                call_id: id.clone(),
-                                end: End::Failed,
-                            });
                         }
+                        actions.push(Action::Ended {
+                            call_id: id.clone(),
+                            end: End::Cancelled,
+                        });
+                    }
+                }
+                Phase::Active => {
+                    let Some(last) = call.last_peer_activity else {
+                        continue;
+                    };
+                    if now.duration_since(last).as_secs() >= PEER_SILENCE_TIMEOUT_SECS {
+                        call.state.apply(Event::PeerSilent);
+                        actions.push(Action::Send(Signal::new(
+                            id.clone(),
+                            self.me.clone(),
+                            call.peer.clone(),
+                            SignalContent::Hangup,
+                        )));
+                        actions.push(Action::Ended {
+                            call_id: id.clone(),
+                            end: End::Failed,
+                        });
                     }
                 }
                 _ => {}

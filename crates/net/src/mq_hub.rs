@@ -1918,6 +1918,58 @@ fn content_recipients(env: &Envelope, members: Option<&[String]>) -> Vec<String>
 ///
 /// 并发写（每个 peer 有自己的写锁），但每个收件人的结果单独记账——这正是
 /// 旧实现缺的那一半：要么整批成功，要么整批不知道。
+/// 过滤重复收件人后的待投递集合；`None` = 全部已投递，整轮可跳过。
+fn pending_recipients(
+    state: &Arc<HubState>,
+    unique: Vec<String>,
+    msg_key: &str,
+) -> Option<Vec<String>> {
+    let Some(store) = &state.storage else {
+        return Some(unique);
+    };
+    if msg_key.is_empty() {
+        return Some(unique);
+    }
+    match store.pending_deliveries(msg_key) {
+        Ok(list) if list.is_empty() => None,
+        Ok(list) => Some(list),
+        Err(err) => {
+            eprintln!("[mq-hub] read delivery outbox failed: {err:#}");
+            Some(unique)
+        }
+    }
+}
+
+/// 为单个收件人起一个投递任务；编码失败也包成同一个任务形状。
+fn spawn_delivery(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    rcpt: String,
+) -> tokio::task::JoinHandle<(String, anyhow::Result<()>)> {
+    let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
+        Ok(frame) => frame,
+        Err(err) => return tokio::spawn(async move { (rcpt, Err(err)) }),
+    };
+    let state = state.clone();
+    tokio::spawn(async move {
+        let outcome = deliver_via_route(&state, &rcpt, &frame, true).await;
+        (rcpt, outcome)
+    })
+}
+
+/// 投递成功后记进任务表；失败只进日志，下一轮 patrol 会重领。
+fn mark_content_delivered(state: &Arc<HubState>, msg_key: &str, rcpt: &str) {
+    let Some(store) = &state.storage else {
+        return;
+    };
+    if msg_key.is_empty() {
+        return;
+    }
+    if let Err(err) = store.mark_delivered(msg_key, rcpt) {
+        eprintln!("[mq-hub] mark delivered {msg_key}/{rcpt} failed: {err:#}");
+    }
+}
+
 async fn fanout_content(
     state: &Arc<HubState>,
     env: &Envelope,
@@ -1934,56 +1986,27 @@ async fn fanout_content(
         return Ok(());
     }
     // 有归档才有任务表；没有归档（纯路由）就退回"每个人都投一遍"。
-    let pending = match &state.storage {
-        Some(store) if !msg_key.is_empty() => match store.pending_deliveries(msg_key) {
-            Ok(list) if list.is_empty() => return Ok(()), // 全部投递过：重放不再重发
-            Ok(list) => list,
-            Err(err) => {
-                eprintln!("[mq-hub] read delivery outbox failed: {err:#}");
-                unique
-            }
-        },
-        _ => unique,
+    let Some(pending) = pending_recipients(state, unique, msg_key) else {
+        return Ok(());
     };
 
-    let tasks = pending.iter().map(|rcpt| {
-        let state = state.clone();
-        let rcpt = rcpt.clone();
-        let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
-            Ok(frame) => frame,
-            Err(err) => return tokio::spawn(async move { (rcpt, Err(err)) }),
-        };
-        tokio::spawn(async move {
-            let outcome = deliver_via_route(&state, &rcpt, &frame, true).await;
-            (rcpt, outcome)
-        })
-    });
+    let tasks = pending
+        .iter()
+        .map(|rcpt| spawn_delivery(state, env, rcpt.clone()));
 
     let mut first_error = None;
     for task in futures_util::future::join_all(tasks).await {
         let (rcpt, outcome) = match task {
             Ok(pair) => pair,
             Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(anyhow::anyhow!("fan-out task panicked: {err}"));
-                }
+                first_error.get_or_insert(anyhow::anyhow!("fan-out task panicked: {err}"));
                 continue;
             }
         };
         match outcome {
-            Ok(()) => {
-                if let Some(store) = &state.storage {
-                    if !msg_key.is_empty() {
-                        if let Err(err) = store.mark_delivered(msg_key, &rcpt) {
-                            eprintln!("[mq-hub] mark delivered {msg_key}/{rcpt} failed: {err:#}");
-                        }
-                    }
-                }
-            }
+            Ok(()) => mark_content_delivered(state, msg_key, &rcpt),
             Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
+                first_error.get_or_insert(err);
             }
         }
     }
