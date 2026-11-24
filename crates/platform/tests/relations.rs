@@ -7,6 +7,7 @@ mod common;
 use axum::http::StatusCode;
 use common::{app, call, platform, req, signup};
 use serde_json::json;
+use wxlike_platform::SocialGraph;
 
 #[tokio::test]
 async fn blocklist_gates_friend_requests_and_roundtrips() {

@@ -94,3 +94,83 @@ impl GroupMembership for Platform {
         Platform::groups_of_user(self, user_id)
     }
 }
+
+/// Account 门面的设备目录切片：推送面要知道"这个人有哪些设备"。
+pub trait AccountDevices {
+    fn devices_of(&self, user_id: &str) -> Result<Vec<crate::DeviceRow>>;
+}
+
+impl AccountDevices for Platform {
+    fn devices_of(&self, user_id: &str) -> Result<Vec<crate::DeviceRow>> {
+        Platform::devices_of(self, user_id)
+    }
+}
+
+/// Messaging 门面的免打扰切片：hub 决策层查会话级通知规则。
+pub trait MessagingPrefs {
+    fn notification_rule(&self, user: &str, conv: &str) -> Result<Option<crate::NotificationRule>>;
+}
+
+impl MessagingPrefs for Platform {
+    fn notification_rule(&self, user: &str, conv: &str) -> Result<Option<crate::NotificationRule>> {
+        Platform::notification_rule(self, user, conv)
+    }
+}
+
+/// Social 门面的关系判定切片：投递策略问"这两个人能不能直发"。
+pub trait SocialGraph {
+    fn are_friends(&self, a: &str, b: &str) -> Result<bool>;
+    fn stranger_accepted(&self, from: &str, to: &str) -> Result<bool>;
+    fn is_blocked(&self, user: &str, by: &str) -> Result<bool>;
+}
+
+impl SocialGraph for Platform {
+    fn are_friends(&self, a: &str, b: &str) -> Result<bool> {
+        Platform::are_friends(self, a, b)
+    }
+
+    fn stranger_accepted(&self, from: &str, to: &str) -> Result<bool> {
+        Platform::stranger_accepted(self, from, to)
+    }
+
+    fn is_blocked(&self, user: &str, by: &str) -> Result<bool> {
+        Platform::is_blocked(self, user, by)
+    }
+}
+
+/// Governance 门面的发送闸门切片：秘密会话 TTL 与内容审核裁决。
+pub trait GovernanceGate {
+    fn secret_state(&self, conv_id: &str) -> Result<crate::SecretState>;
+    fn moderate_for_send(
+        &self,
+        sender: &str,
+        conv_id: &str,
+        text: &str,
+    ) -> Result<crate::SendVerdict>;
+}
+
+impl GovernanceGate for Platform {
+    fn secret_state(&self, conv_id: &str) -> Result<crate::SecretState> {
+        Platform::secret_state(self, conv_id)
+    }
+
+    fn moderate_for_send(
+        &self,
+        sender: &str,
+        conv_id: &str,
+        text: &str,
+    ) -> Result<crate::SendVerdict> {
+        Platform::moderate_for_send(self, sender, conv_id, text)
+    }
+}
+
+/// Social 门面的群禁言切片：投递策略问"这个人在群里被禁言了吗"。
+pub trait GroupModeration {
+    fn is_muted(&self, group: &str, user: &str) -> Result<bool>;
+}
+
+impl GroupModeration for Platform {
+    fn is_muted(&self, group: &str, user: &str) -> Result<bool> {
+        Platform::is_muted(self, group, user)
+    }
+}

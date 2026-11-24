@@ -191,11 +191,12 @@ impl SessionsRepo for SqliteSessionsRepo<'_> {
 /// 认证咽喉必须把 `users.deleted_at` 和过期判定放进**同一条 SQL**，避免
 /// "先查会话、再查账号"之间被注销事务插队。过期行顺手删除，和旧实现一致。
 pub(in crate::domain) fn lookup_live(
-    conn: &Connection,
+    c: &crate::storage::StorageConnection<'_>,
     token: &str,
     now: i64,
 ) -> Result<Option<String>> {
-    let row: Option<(String, i64)> = conn
+    let c = c.sqlite()?;
+    let row: Option<(String, i64)> = c
         .query_row(
             "SELECT s.user_id, s.expires_at FROM sessions s
              JOIN users u ON u.id = s.user_id
@@ -207,7 +208,7 @@ pub(in crate::domain) fn lookup_live(
     match row {
         Some((user_id, expires)) if expires > now => Ok(Some(user_id)),
         Some(_) => {
-            conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+            c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
             Ok(None)
         }
         None => Ok(None),

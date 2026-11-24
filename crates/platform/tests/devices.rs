@@ -5,7 +5,7 @@ mod common;
 
 use axum::http::StatusCode;
 use serde_json::json;
-use wxlike_platform::DeviceReg;
+use wxlike_platform::{AccountDevices, DeviceReg};
 
 use common::{app, call, platform, req, signup};
 

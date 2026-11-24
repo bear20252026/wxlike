@@ -204,7 +204,7 @@ impl Platform {
             .collect())
     }
 
-    pub fn are_friends(&self, a: &str, b: &str) -> Result<bool> {
+    pub(crate) fn are_friends(&self, a: &str, b: &str) -> Result<bool> {
         are_friends(&self.db().acquire(), a, b)
     }
 

@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt as _;
 use wxlike_admin::rbac::Role;
 use wxlike_admin::{App, Config, PlatformRead};
-use wxlike_platform::{Platform, PlatformOptions, PlatformState};
+use wxlike_platform::{GovernanceGate, Platform, PlatformOptions, PlatformState};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 

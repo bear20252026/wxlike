@@ -84,17 +84,23 @@ pub use crate::domain::groups_admin::GroupInvite;
 pub use crate::domain::media::{
     LocalDirStore, MediaStore, StoredObject, MAX_MEDIA_BYTES, THUMB_MAX_EDGE,
 };
+pub use crate::domain::notification::NotificationRule;
 pub use crate::domain::perms::Perm;
 pub use crate::domain::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::domain::relations::{StrangerRequest, StrangerState};
+pub use crate::domain::secret::SecretState;
 pub use crate::domain::security::{
     hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id,
 };
 pub use crate::domain::status::spawn_status_sweeper;
+pub use crate::domain::trust::SendVerdict;
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
-pub use crate::facade::{AccountSessions, AdminAccess, ConversationAccess, GroupMembership};
+pub use crate::facade::{
+    AccountDevices, AccountSessions, AdminAccess, ConversationAccess, GovernanceGate,
+    GroupMembership, GroupModeration, MessagingPrefs, SocialGraph,
+};
 
 /// Periodic refund of unclaimed red packets (WP-09). Started by `wxlike-server`;
 /// tests call `Platform::sweep_expired_redpackets` directly so the expiry path

@@ -122,7 +122,7 @@ impl Platform {
 
     /// 发送侧裁决（hub 接线复用）：全员禁言对 owner/admin 无效；单人禁言
     /// 按 until_ms 定时解除（到点自然放行，无需 sweeper）。
-    pub fn is_muted(&self, group: &str, user: &str) -> Result<bool> {
+    pub(crate) fn is_muted(&self, group: &str, user: &str) -> Result<bool> {
         let group = validate::id(group)?;
         let role = self.role_of(group, user)?;
         if role == "owner" || role == "admin" {

@@ -131,7 +131,8 @@ impl Platform {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().lock();
-        lookup_live(&c, &token, now)
+        let port = crate::storage::StorageConnection::sqlite_borrow(&c);
+        lookup_live(&port, &token, now)
     }
 
     pub(crate) fn revoke_session(&self, token: &str) -> Result<()> {

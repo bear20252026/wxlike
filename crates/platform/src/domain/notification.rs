@@ -49,7 +49,11 @@ impl Platform {
         Ok(())
     }
 
-    pub fn notification_rule(&self, user: &str, conv: &str) -> Result<Option<NotificationRule>> {
+    pub(crate) fn notification_rule(
+        &self,
+        user: &str,
+        conv: &str,
+    ) -> Result<Option<NotificationRule>> {
         let conv = validate::conv(conv)?;
         let c = self.db().acquire();
         let row = notification_repo::get(&c, user, conv)?;

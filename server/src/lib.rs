@@ -46,8 +46,8 @@ use wxlike_core::{Envelope, MsgBody, MsgId, Store};
 use wxlike_net::HubHandle;
 use wxlike_platform::extract::ApiJson;
 use wxlike_platform::{
-    AccountSessions, AdminAccess, Authed, ConversationAccess, GroupMembership, Platform,
-    PlatformState,
+    AccountDevices, AccountSessions, AdminAccess, Authed, ConversationAccess, GovernanceGate,
+    GroupMembership, GroupModeration, MessagingPrefs, Platform, PlatformState, SocialGraph,
 };
 
 /// Shared by the history/search handlers (they need the platform for

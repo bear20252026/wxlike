@@ -47,7 +47,7 @@ impl Platform {
     }
 
     /// 发送闸门：判定 + （先审后发时）挂起。
-    pub fn moderate_for_send(
+    pub(crate) fn moderate_for_send(
         &self,
         sender: &str,
         conv_id: &str,

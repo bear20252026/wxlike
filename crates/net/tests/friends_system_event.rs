@@ -16,7 +16,7 @@ use tower::ServiceExt as _;
 use wxlike_core::{Envelope, MsgKind};
 use wxlike_mq::{memory::MemoryMq, memory::MemoryRoutes, MqRouter};
 use wxlike_net::{run_mq_hub, Client, HubHandle};
-use wxlike_platform::{Platform, PlatformOptions};
+use wxlike_platform::{Platform, PlatformOptions, SocialGraph};
 
 /// Adapts the hub handle to the platform's event sink.
 struct HubSink(HubHandle);

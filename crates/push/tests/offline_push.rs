@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use wxlike_core::{Envelope, MsgBody, MsgKind, PROTOCOL_VERSION};
 use wxlike_net::MqHubOptions;
+use wxlike_platform::AccountDevices;
 use wxlike_push::{DeviceDirectory, DispatchHook, PushPayload, PushProvider};
 
 /// Records every (token, payload) the provider is asked to send.

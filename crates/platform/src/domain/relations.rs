@@ -79,7 +79,7 @@ impl Platform {
     }
 
     /// 拉黑判定（好友申请闸门 + 陌生人请求闸门 + P3-8 hub 收件过滤复用）。
-    pub fn is_blocked(&self, user: &str, by: &str) -> Result<bool> {
+    pub(crate) fn is_blocked(&self, user: &str, by: &str) -> Result<bool> {
         let c = self.db().acquire();
         blocked(&c, user, by)
     }
@@ -173,7 +173,7 @@ impl Platform {
     }
 
     /// 直发许可：好友，或曾接受过来自 `from` 的请求（接受→正常会话语义）。
-    pub fn stranger_accepted(&self, from: &str, to: &str) -> Result<bool> {
+    pub(crate) fn stranger_accepted(&self, from: &str, to: &str) -> Result<bool> {
         let c = self.db().acquire();
         accepted_request(&c, from, to)
     }

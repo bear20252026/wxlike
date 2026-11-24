@@ -40,7 +40,7 @@ impl Platform {
     }
 
     /// All registered devices of a user (push dispatch reads this).
-    pub fn devices_of(&self, user_id: &str) -> Result<Vec<DeviceRow>> {
+    pub(crate) fn devices_of(&self, user_id: &str) -> Result<Vec<DeviceRow>> {
         let c = self.db().acquire();
         devices_repo::list(&c, user_id)
     }

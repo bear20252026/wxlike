@@ -79,7 +79,7 @@ impl Platform {
         })
     }
 
-    pub fn secret_state(&self, conv_id: &str) -> Result<SecretState> {
+    pub(crate) fn secret_state(&self, conv_id: &str) -> Result<SecretState> {
         let conv_id = validate::conv(conv_id)?.to_string();
         let c = self.db().acquire();
         let row = secret_repo::settings(&c, &conv_id)?;

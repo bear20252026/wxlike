@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use common::{app, call, platform, req, signup, Recorder};
 use serde_json::json;
 use std::sync::Arc;
-use wxlike_platform::PlatformState;
+use wxlike_platform::{GroupModeration, PlatformState};
 
 /// 建群并返回 (group_id, owner_tok, member_tok, member_id, platform, app)。
 #[allow(clippy::type_complexity)]

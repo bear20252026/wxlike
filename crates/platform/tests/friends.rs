@@ -9,7 +9,7 @@ use common::{app, call, platform, req, signup, Recorder};
 use serde_json::json;
 use std::sync::Arc;
 use wxlike_core::MsgKind;
-use wxlike_platform::{Platform, PlatformState};
+use wxlike_platform::{Platform, PlatformState, SocialGraph};
 
 async fn scene() -> (PlatformState, Recorder) {
     let state = platform();
