@@ -255,7 +255,7 @@ impl<'a> StorageConnection<'a> {
     pub(crate) fn sqlite(&self) -> Result<&Connection> {
         match self {
             StorageConnection::Sqlite(c) => Ok(&**c),
-            StorageConnection::SqliteTx(c) => Ok(c),
+            StorageConnection::SqliteTx(c) => Ok(*c),
             StorageConnection::Postgres(_) => Err(PlatformError::Storage(
                 "postgres 连接尚未暴露 SQLite Connection；该 repo 仍在 SQLite 入口".into(),
             )),
