@@ -516,8 +516,10 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 `report` / `inbox` / `perms` / `trust` / `secret` / `recovery` / `reconcile` / `content_index` / `groups_admin` / `relations` / `groups` / `communities` / `moments` / `video_feed` / `account` / `wallet` / `live` / `articles` / `governance`
 的参数统一为 `&StorageConnection<'_>`。`notes` 首个打通 `with_tx` 事务内的
 `SqliteTx(&Connection)`，`favorites` / `stickers` / `friends` / `status` /
-`recovery` 随迁；跨域撤权与通知分别用 `revoke_source_tx` / `notify_tx` / `upsert_tx` 桥接，
-旧签名 repo 内部调用走 `notify_conn` / `enqueue_conn` / `sqlite_borrow` 过渡。
+`recovery` 随迁；跨域撤权与通知分别用 `revoke_source_tx` / `notify_tx` / `upsert_tx` 桥接。
+`inbox::notify_conn` 已删除——`articles` / `moments` 的发布扇出直接把手里的端口传给
+`inbox::notify`，不再绕回旧 `&Connection`。剩下的事务桥接（`notify_tx` / `enqueue_conn` /
+`sqlite_borrow`）只服务 `with_tx` 或旧签名入口。
 `Db::acquire()` 是新的统一入口，`Db::lock()` 只留给尚未迁移的事务闭包。
 `docs/g00-04-storage-port.md` 同步记录；`G00-04-PG` 仍未关闭，因为
 `Db::open` 还不接受 PG profile。
