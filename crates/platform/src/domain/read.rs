@@ -73,7 +73,7 @@ impl Platform {
         if conv.starts_with("d-") {
             return Ok(OwnerType::Direct);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let kind = owner_kind(&c, conv)?;
         match kind.as_deref() {
             Some("group") => Ok(OwnerType::Group),
@@ -90,7 +90,7 @@ impl Platform {
             wxlike_message::OwnerType::Group => "group",
             wxlike_message::OwnerType::Channel => "channel",
         };
-        let c = self.db().lock();
+        let c = self.db().acquire();
         set_owner_kind_row(&c, conv, name)?;
         Ok(())
     }

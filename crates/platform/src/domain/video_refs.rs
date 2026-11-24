@@ -159,7 +159,7 @@ pub(crate) fn store_callback(
         .unwrap_or_else(|| wxlike_core::types::now_ms() as i64);
     let renditions = serde_json::to_string(&result.renditions)?;
     {
-        let c = platform.db().lock();
+        let c = platform.db().acquire();
         store(
             &c,
             &result,
@@ -225,7 +225,7 @@ fn row_to_view(row: RefRow) -> VideoRefView {
 impl Platform {
     /// 读一条视频引用。`None` = 还没收到回调（作业没转完，或根本没提交过）。
     pub fn video_ref(&self, video_id: &str) -> Result<Option<VideoRefView>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = load(&c, video_id)?;
         Ok(row.map(row_to_view))
     }

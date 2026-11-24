@@ -3,12 +3,13 @@
 
 use crate::domain::video_refs::{CallbackResult, RefRow};
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 /// 转码回调的幂等落库：`video_id` 是主键，后到的覆盖先到的。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn store(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     result: &CallbackResult,
     job_id: &str,
     state: &str,
@@ -16,6 +17,7 @@ pub(in crate::domain) fn store(
     attempts: i64,
     at: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         r#"
         INSERT INTO video_refs (
@@ -53,7 +55,11 @@ pub(in crate::domain) fn store(
     Ok(())
 }
 
-pub(in crate::domain) fn load(conn: &Connection, video_id: &str) -> Result<Option<RefRow>> {
+pub(in crate::domain) fn load(
+    conn: &StorageConnection<'_>,
+    video_id: &str,
+) -> Result<Option<RefRow>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             r#"

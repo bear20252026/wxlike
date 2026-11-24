@@ -3,13 +3,15 @@
 
 use crate::domain::devices::DeviceRow;
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 pub(in crate::domain) fn token(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     platform: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT device_token FROM devices WHERE user_id = ?1 AND platform = ?2",
@@ -21,13 +23,14 @@ pub(in crate::domain) fn token(
 
 /// 注册同时返回旧 token（`Some` = 替换了已有行），调用方据此给出 replaced。
 pub(in crate::domain) fn register(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     platform: &str,
     device_token: &str,
     now: i64,
 ) -> Result<Option<String>> {
     let existing = token(conn, user_id, platform)?;
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO devices(user_id, platform, device_token, last_seen)
          VALUES(?1, ?2, ?3, ?4)
@@ -39,7 +42,11 @@ pub(in crate::domain) fn register(
     Ok(existing)
 }
 
-pub(in crate::domain) fn list(conn: &Connection, user_id: &str) -> Result<Vec<DeviceRow>> {
+pub(in crate::domain) fn list(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<DeviceRow>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare("SELECT platform, device_token FROM devices WHERE user_id = ?1")?;
     let rows = stmt.query_map(params![user_id], |r| {
         Ok(DeviceRow {
