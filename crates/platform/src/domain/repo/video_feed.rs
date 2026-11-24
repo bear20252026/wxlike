@@ -63,7 +63,13 @@ pub(in crate::domain) fn feed_by_seq(
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    finish(c, viewer, ids, limit, |seq| seq.to_string())
+    finish(
+        &crate::storage::StorageConnection::sqlite_borrow(c),
+        viewer,
+        ids,
+        limit,
+        |seq| seq.to_string(),
+    )
 }
 
 /// 热门：7 天窗口内按点赞/评论加权；新近发的一条保底 1 分。
@@ -106,7 +112,13 @@ pub(in crate::domain) fn feed_hot(
             },
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    page_of_scored(c, viewer, rows, limit, "trending")
+    page_of_scored(
+        &crate::storage::StorageConnection::sqlite_borrow(c),
+        viewer,
+        rows,
+        limit,
+        "trending",
+    )
 }
 
 /// 推荐：只推"好友看过的未关注作者作品"。没有社交痕迹就什么都不推——
@@ -152,7 +164,13 @@ pub(in crate::domain) fn feed_recommend(
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    page_of_scored(c, viewer, rows, limit, "friends_liked")
+    page_of_scored(
+        &crate::storage::StorageConnection::sqlite_borrow(c),
+        viewer,
+        rows,
+        limit,
+        "friends_liked",
+    )
 }
 
 /// 打分流的公共尾部：多取一条判 has_more，游标取自页尾，逐条补视图。
@@ -176,7 +194,11 @@ pub(in crate::domain) fn page_of_scored(
         .unwrap_or_default();
     let mut views = Vec::new();
     for (_, id, _) in take {
-        if let Some(mut view) = video_row(c, viewer, id)? {
+        if let Some(mut view) = video_row(
+            &crate::storage::StorageConnection::sqlite_borrow(c),
+            viewer,
+            id,
+        )? {
             view.reason = reason.to_string();
             views.push(view);
         }
@@ -204,7 +226,11 @@ pub(in crate::domain) fn finish(
         .unwrap_or_default();
     let mut views = Vec::with_capacity(take.len());
     for (_, id) in take {
-        if let Some(view) = video_row(c, viewer, id)? {
+        if let Some(view) = video_row(
+            &crate::storage::StorageConnection::sqlite_borrow(c),
+            viewer,
+            id,
+        )? {
             views.push(view);
         }
     }

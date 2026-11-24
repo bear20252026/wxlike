@@ -328,9 +328,10 @@ impl Platform {
         let user_for_task = user.to_string();
         self.db()
             .blocking(move |c| {
+                let port = crate::storage::StorageConnection::sqlite_borrow(c);
                 let session =
-                    active_session_id(c, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
-                let recipients = danmaku_recipients(c, &session, &user_for_task)?;
+                    active_session_id(&port, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
+                let recipients = danmaku_recipients(&port, &session, &user_for_task)?;
                 Ok((session, recipients))
             })
             .await
