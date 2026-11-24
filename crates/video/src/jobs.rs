@@ -310,6 +310,90 @@ impl std::fmt::Display for Rejected {
 impl std::error::Error for Rejected {}
 
 impl VideoStore {
+    /// 回调地址：客户端给的过白名单，服务端默认地址只做 trim。
+    fn resolve_callback(&self, callback_url: Option<&str>) -> anyhow::Result<Option<String>> {
+        let explicit = callback_url.is_some();
+        let url = match callback_url
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                std::env::var("WXLIKE_VIDEO_CALLBACK_URL")
+                    .ok()
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+            }) {
+            // 客户端给的地址要过白名单（issue #8）；服务端默认地址是运维自己
+            // 配的，不再套一遍白名单，否则环境变量与 allowlist 要写两遍。
+            Some(url) if explicit => {
+                let checked = self
+                    .policy()
+                    .callbacks
+                    .check(&url)
+                    .map_err(|message| Rejected {
+                        kind: RejectKind::BadCallback,
+                        message,
+                    })?;
+                Some(checked)
+            }
+            other => other,
+        };
+        Ok(url)
+    }
+
+    /// 已可播的内容：补一条 succeeded 作业行，回调状态只升不降。
+    fn record_ready_job(
+        &self,
+        conn: &rusqlite::Connection,
+        job_id: &str,
+        owner: &str,
+        size: usize,
+        url: &Option<String>,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        let result = self.ingested_from_meta(job_id)?;
+        conn.execute(
+            "INSERT INTO video_jobs(job_id, owner, state, attempts, next_retry_at, created_at,
+                                    updated_at, source_size, result, callback_state,
+                                    callback_url, callback_next_retry_at)
+             VALUES(?1, ?7, 'succeeded', 0, ?2, ?2, ?2, ?3, ?4, ?5, ?6, ?2)
+             ON CONFLICT(job_id) DO UPDATE SET
+                state = 'succeeded',
+                result = excluded.result,
+                updated_at = excluded.updated_at,
+                callback_state = CASE WHEN video_jobs.callback_state = 'delivered'
+                                      THEN 'delivered' ELSE excluded.callback_state END,
+                callback_next_retry_at = excluded.callback_next_retry_at",
+            params![
+                job_id,
+                now,
+                size as i64,
+                serde_json::to_string(&result)?,
+                CallbackState::for_url(url).as_str(),
+                url,
+                owner
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 源字节先落盘：排队期间进程被杀，重启后作业还能接着跑。
+    fn write_pending_source(&self, job_id: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        let pending = self.pending_dir(job_id);
+        std::fs::create_dir_all(&pending)?;
+        let tmp = pending.join("source.part");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, pending.join("source"))?;
+        Ok(())
+    }
+
+    fn submit_reply(&self, job_id: &str, newly_queued: bool) -> anyhow::Result<JobSubmit> {
+        Ok(JobSubmit {
+            job: self.job(job_id)?.context("job row vanished")?,
+            newly_queued,
+        })
+    }
+
     /// 提交一个转码作业：入库 + 落盘源字节就返回，转码在后台。
     ///
     /// 已经可播的内容直接回现成结果（`newly_queued = false`），同时保证作业行
@@ -325,69 +409,17 @@ impl VideoStore {
     ) -> anyhow::Result<JobSubmit> {
         anyhow::ensure!(!bytes.is_empty(), "empty upload");
         let job_id = self.content_id(bytes);
-        let policy = self.policy();
-        let url = match callback_url
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                std::env::var("WXLIKE_VIDEO_CALLBACK_URL")
-                    .ok()
-                    .map(|u| u.trim().to_string())
-                    .filter(|u| !u.is_empty())
-            }) {
-            // 客户端给的地址要过白名单（issue #8）；服务端默认地址是运维自己
-            // 配的，不再套一遍白名单，否则环境变量与 allowlist 要写两遍。
-            Some(url) if callback_url.is_some() => {
-                let checked = policy.callbacks.check(&url).map_err(|message| Rejected {
-                    kind: RejectKind::BadCallback,
-                    message,
-                })?;
-                Some(checked)
-            }
-            other => other,
-        };
+        let url = self.resolve_callback(callback_url)?;
         self.check_quota(owner, bytes.len() as u64)?;
         let now = wxlike_core::types::now_ms() as i64;
         let db = self.db()?;
 
         if self.contains(&job_id) {
-            let result = self.ingested_from_meta(&job_id)?;
-            db.c().execute(
-                "INSERT INTO video_jobs(job_id, owner, state, attempts, next_retry_at, created_at,
-                                        updated_at, source_size, result, callback_state,
-                                        callback_url, callback_next_retry_at)
-                 VALUES(?1, ?7, 'succeeded', 0, ?2, ?2, ?2, ?3, ?4, ?5, ?6, ?2)
-                 ON CONFLICT(job_id) DO UPDATE SET
-                    state = 'succeeded',
-                    result = excluded.result,
-                    updated_at = excluded.updated_at,
-                    callback_state = CASE WHEN video_jobs.callback_state = 'delivered'
-                                          THEN 'delivered' ELSE excluded.callback_state END,
-                    callback_next_retry_at = excluded.callback_next_retry_at",
-                params![
-                    job_id,
-                    now,
-                    bytes.len() as i64,
-                    serde_json::to_string(&result)?,
-                    CallbackState::for_url(&url).as_str(),
-                    url,
-                    owner
-                ],
-            )?;
-            return Ok(JobSubmit {
-                job: self.job(&job_id)?.context("job row vanished")?,
-                newly_queued: false,
-            });
+            self.record_ready_job(&db.c(), &job_id, owner, bytes.len(), &url, now)?;
+            return self.submit_reply(&job_id, false);
         }
 
-        // 源字节先落盘：排队期间进程被杀，重启后作业还能接着跑
-        let pending = self.pending_dir(&job_id);
-        std::fs::create_dir_all(&pending)?;
-        let tmp = pending.join("source.part");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, pending.join("source"))?;
-
+        self.write_pending_source(&job_id, bytes)?;
         let inserted = db.c().execute(
             "INSERT INTO video_jobs(job_id, owner, state, attempts, next_retry_at, created_at,
                                     updated_at, source_size, callback_state, callback_url)
@@ -402,10 +434,7 @@ impl VideoStore {
                 owner
             ],
         )?;
-        Ok(JobSubmit {
-            job: self.job(&job_id)?.context("job row vanished")?,
-            newly_queued: inserted == 1,
-        })
+        self.submit_reply(&job_id, inserted == 1)
     }
 
     // ---- 归属与配额（issue #7）------------------------------------------

@@ -480,8 +480,8 @@ search、video、hub、router 全串在一个函数里。
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
-2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 619`、
-`>60 行 46`、`>100 行 0`、`深嵌套 70`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
+2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 620`、
+`>60 行 45`、`>100 行 0`、`深嵌套 70`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -510,7 +510,10 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 可选时间戳；`rtc::turn::maybe_refresh` 的收发与 438 nonce 处理收进 `exchange` /
 `absorb_refresh`。`admin::http::build_action_payload` 的 action 归一又收进
 `normalize_action` / `tag_action` / `object_action` / `attach_duration`，
-主函数只剩"归一 → 补 note"。深嵌套从 73 降到 70，`>60` 从 49 降到 46。
+主函数只剩"归一 → 补 note"。`video::jobs::submit_job` 的回调白名单、已可播补行、
+源字节落盘、作业行回读分别收进 `resolve_callback` / `record_ready_job` /
+`write_pending_source` / `submit_reply`，90→约 35 行。深嵌套从 73 降到 70，
+`>60` 从 49 降到 45。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /
