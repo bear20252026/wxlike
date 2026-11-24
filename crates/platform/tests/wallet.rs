@@ -8,7 +8,7 @@ use common::{app, call, req, signup, Recorder};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use wxlike_core::MsgBody;
-use wxlike_platform::{Platform, PlatformOptions, PlatformState};
+use wxlike_platform::{Platform, PlatformOptions, PlatformState, WalletLedger};
 
 fn state() -> PlatformState {
     let opts = PlatformOptions {

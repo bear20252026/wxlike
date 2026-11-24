@@ -12,7 +12,9 @@ use serde_json::{json, Value};
 
 use common::{app, call, platform, req};
 use wxlike_core::e2ee::Device;
-use wxlike_platform::{AccountSessions, ConversationAccess, GovernanceGate, Platform, ReportDesk};
+use wxlike_platform::{
+    AccountSessions, ConversationAccess, GovernanceGate, Platform, ReportDesk, WalletLedger,
+};
 
 /// 带自定义头的请求（风控/管理面需要）。
 fn req_with(

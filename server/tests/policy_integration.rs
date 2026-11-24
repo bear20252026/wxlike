@@ -6,7 +6,7 @@ use std::time::Duration;
 use wxlike_core::custom_kind;
 use wxlike_core::{Envelope, MsgBody, Store};
 use wxlike_net::Client;
-use wxlike_platform::GroupModeration;
+use wxlike_platform::{GroupModeration, WalletLedger};
 use wxlike_server::{start_stack, StackOptions};
 
 async fn boot() -> wxlike_server::Stack {

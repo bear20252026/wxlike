@@ -97,12 +97,13 @@ pub use crate::domain::security::{
 pub use crate::domain::status::spawn_status_sweeper;
 pub use crate::domain::trust::SendVerdict;
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
+pub use crate::domain::wallet::RedpacketRow;
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::facade::{
     AccountDevices, AccountSessions, AdminAccess, AuditTrail, ConversationAccess, GovernanceGate,
     GroupMembership, GroupModeration, MessagingPrefs, RealtimeCalls, ReportDesk, SocialGraph,
-    SocialRelations,
+    SocialRelations, WalletLedger,
 };
 pub use wxlike_report::Ticket;
 

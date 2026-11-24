@@ -48,6 +48,7 @@ use wxlike_platform::extract::ApiJson;
 use wxlike_platform::{
     AccountDevices, AccountSessions, AdminAccess, Authed, ConversationAccess, GovernanceGate,
     GroupMembership, GroupModeration, MessagingPrefs, Platform, PlatformState, SocialGraph,
+    WalletLedger,
 };
 
 /// Shared by the history/search handlers (they need the platform for

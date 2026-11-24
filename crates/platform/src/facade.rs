@@ -84,6 +84,74 @@ impl ConversationAccess for Platform {
     }
 }
 
+/// Wallet 门面：记账、转账、红包与总量核对。
+///
+/// `fund` / `transfer` / `wallet_balance` 有真实平台外调用（commerce HTTP、
+/// ledger 守恒测试）；红包与总量只有验收用例在用，但归同一张账，一并切。
+pub trait WalletLedger {
+    fn wallet_balance(&self, user_id: &str) -> Result<i64>;
+    fn fund(&self, user_id: &str, amount: i64, memo: &str) -> Result<()>;
+    fn transfer(&self, from: &str, to: &str, amount: i64, memo: &str) -> Result<String>;
+    fn create_redpacket(
+        &self,
+        from: &str,
+        amount: i64,
+        count: i64,
+        memo: &str,
+        conv_id: Option<&str>,
+    ) -> Result<String>;
+    fn redpacket(&self, id: &str) -> Result<Option<crate::RedpacketRow>>;
+    fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64>;
+    fn sweep_expired_redpackets(&self) -> Result<usize>;
+    fn total_money(&self) -> Result<i64>;
+    fn money_supply(&self) -> Result<i64>;
+}
+
+impl WalletLedger for Platform {
+    fn wallet_balance(&self, user_id: &str) -> Result<i64> {
+        Platform::wallet_balance(self, user_id)
+    }
+
+    fn fund(&self, user_id: &str, amount: i64, memo: &str) -> Result<()> {
+        Platform::fund(self, user_id, amount, memo)
+    }
+
+    fn transfer(&self, from: &str, to: &str, amount: i64, memo: &str) -> Result<String> {
+        Platform::transfer(self, from, to, amount, memo)
+    }
+
+    fn create_redpacket(
+        &self,
+        from: &str,
+        amount: i64,
+        count: i64,
+        memo: &str,
+        conv_id: Option<&str>,
+    ) -> Result<String> {
+        Platform::create_redpacket(self, from, amount, count, memo, conv_id)
+    }
+
+    fn redpacket(&self, id: &str) -> Result<Option<crate::RedpacketRow>> {
+        Platform::redpacket(self, id)
+    }
+
+    fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64> {
+        Platform::claim_redpacket(self, id, by)
+    }
+
+    fn sweep_expired_redpackets(&self) -> Result<usize> {
+        Platform::sweep_expired_redpackets(self)
+    }
+
+    fn total_money(&self) -> Result<i64> {
+        Platform::total_money(self)
+    }
+
+    fn money_supply(&self) -> Result<i64> {
+        Platform::money_supply(self)
+    }
+}
+
 /// Governance 门面的审计切片：只写、自查两条。
 ///
 /// admin 的运维面是最大的调用方（56 处），但它只需要"记一笔"和"看自己的"，

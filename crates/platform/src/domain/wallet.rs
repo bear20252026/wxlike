@@ -109,7 +109,7 @@ fn check_amount(amount: i64) -> Result<()> {
 
 impl Platform {
     /// Reads a balance, treating a wallet-less user as holding zero.
-    pub fn wallet_balance(&self, user_id: &str) -> Result<i64> {
+    pub(crate) fn wallet_balance(&self, user_id: &str) -> Result<i64> {
         let c = self.db().acquire();
         Ok(repo_wallet_balance(&c, user_id)?.unwrap_or(0))
     }
@@ -117,7 +117,7 @@ impl Platform {
     /// The only way balance enters the system: a virtual funding entry.
     /// A licensed channel would call this on settlement; nothing here speaks to
     /// a payment provider.
-    pub fn fund(&self, user_id: &str, amount: i64, memo: &str) -> Result<()> {
+    pub(crate) fn fund(&self, user_id: &str, amount: i64, memo: &str) -> Result<()> {
         check_amount(amount)?;
         let user_id = validate::id(user_id)?.to_string();
         let mut c = self.db().lock();
@@ -145,7 +145,7 @@ impl Platform {
     /// Moves `amount` from `from` to `to` in **one transaction**: both balance
     /// updates plus both ledger rows, committed together or not at all.
     /// Returns the transfer id used as the ledger `ref_id`.
-    pub fn transfer(&self, from: &str, to: &str, amount: i64, memo: &str) -> Result<String> {
+    pub(crate) fn transfer(&self, from: &str, to: &str, amount: i64, memo: &str) -> Result<String> {
         let from = validate::id(from)?.to_string();
         let to = validate::id(to)?.to_string();
         let memo = validate::note(memo)?.to_string();
@@ -266,7 +266,7 @@ impl Platform {
     /// `conv_id` is where the packet was posted; the contract's body does not
     /// carry one, so an empty value falls back to the packet's own id — the
     /// announcement then lands in a channel only this packet uses.
-    pub fn create_redpacket(
+    pub(crate) fn create_redpacket(
         &self,
         from: &str,
         amount: i64,
@@ -305,7 +305,7 @@ impl Platform {
         Ok(id)
     }
 
-    pub fn redpacket(&self, id: &str) -> Result<Option<RedpacketRow>> {
+    pub(crate) fn redpacket(&self, id: &str) -> Result<Option<RedpacketRow>> {
         let c = self.db().acquire();
         repo_redpacket(&c, id)
     }
@@ -313,7 +313,7 @@ impl Platform {
     /// Claims one share. Exactly `count` claims can succeed; the shares are
     /// random but the sum is conserved by construction (the last claimer takes
     /// the whole remainder).
-    pub fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64> {
+    pub(crate) fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64> {
         let id = validate::id(id)?.to_string();
         let by = validate::id(by)?.to_string();
         let (share, claimed, count, conv) = {
@@ -433,7 +433,7 @@ impl Platform {
 
     /// Refunds whatever is unclaimed on expired packets. Idempotent: the status
     /// flip is part of the same transaction, so a second sweep changes nothing.
-    pub fn sweep_expired_redpackets(&self) -> Result<usize> {
+    pub(crate) fn sweep_expired_redpackets(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
@@ -464,7 +464,7 @@ impl Platform {
     /// Sum of every balance in the system. Excludes money sitting in an open
     /// red packet, which is why the conservation tests use
     /// `Platform::money_supply` instead.
-    pub fn total_money(&self) -> Result<i64> {
+    pub(crate) fn total_money(&self) -> Result<i64> {
         let c = self.db().acquire();
         total_wallets(&c)
     }
@@ -473,7 +473,7 @@ impl Platform {
     /// every wallet plus the unclaimed remainder of every open packet. Frozen
     /// money has left the sender but is still in the system, so a supply check
     /// that ignores escrow would "lose" money on every red packet.
-    pub fn money_supply(&self) -> Result<i64> {
+    pub(crate) fn money_supply(&self) -> Result<i64> {
         let c = self.db().acquire();
         Ok(total_wallets(&c)? + open_escrow(&c)?)
     }
