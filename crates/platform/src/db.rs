@@ -64,6 +64,9 @@ impl Db {
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         match self.storage.acquire() {
             StorageConnection::Sqlite(guard) => guard,
+            StorageConnection::SqliteTx(_) => {
+                unreachable!("Db::lock 只交出拥有的守卫，事务借用走 repo 的 sqlite_tx")
+            }
             StorageConnection::Postgres(_) => {
                 unreachable!("Db 只持有 SqliteStorage；PG 入口走 PgStorage")
             }

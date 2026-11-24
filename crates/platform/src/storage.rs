@@ -233,12 +233,20 @@ impl PostgresPool {
 /// `Postgres` 变体再收窄成 sqlx 事务，这个枚举才真正把方言差异挡在端口后面。
 pub enum StorageConnection<'a> {
     Sqlite(MutexGuard<'a, Connection>),
+    /// 事务内的借用：`with_tx` 闭包只给 `&mut Connection`，repo 要能用同一组
+    /// 端口签名，就必须有一个不拥有守卫的 SQLite 变体。
+    SqliteTx(&'a mut Connection),
     /// PG 连接池句柄。事务边界后续由 sqlx 事务补齐；当前 PG repo 通过
     /// `PostgresPool::block_on` 在自己的 runtime 上执行。
     Postgres(&'a PostgresPool),
 }
 
 impl<'a> StorageConnection<'a> {
+    /// 从事务闭包的 `&mut Connection` 构造端口值。只供 repo 所在 crate 使用。
+    pub(crate) fn sqlite_tx(tx: &'a mut Connection) -> Self {
+        Self::SqliteTx(tx)
+    }
+
     /// 取出 SQLite 连接。PG 变体明确返回受控错误，而不是 panic 或静默降级。
     ///
     /// 这是 repo 迁移期的过渡方法：只接受 `&Connection` 的 repo 先通过它拿
@@ -246,6 +254,7 @@ impl<'a> StorageConnection<'a> {
     pub(crate) fn sqlite(&self) -> Result<&Connection> {
         match self {
             StorageConnection::Sqlite(c) => Ok(&**c),
+            StorageConnection::SqliteTx(c) => Ok(&**c),
             StorageConnection::Postgres(_) => Err(PlatformError::Storage(
                 "postgres 连接尚未暴露 SQLite Connection；该 repo 仍在 SQLite 入口".into(),
             )),
@@ -557,6 +566,7 @@ mod tests {
                     1
                 );
             }
+            StorageConnection::SqliteTx(_) => panic!("acquire must not hand out a transaction"),
             StorageConnection::Postgres(_) => panic!("SqliteStorage must hand out sqlite"),
         };
     }
@@ -584,6 +594,7 @@ mod tests {
         match storage.acquire() {
             StorageConnection::Postgres(pool) => pool.health().expect("pg health"),
             StorageConnection::Sqlite(_) => panic!("PgStorage must not hand out sqlite"),
+            StorageConnection::SqliteTx(_) => panic!("PgStorage must not hand out sqlite tx"),
         };
     }
 

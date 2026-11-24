@@ -12,6 +12,7 @@
 
 use crate::error::{PlatformError, Result};
 use crate::page::parse_cursor;
+use crate::storage::StorageConnection;
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
@@ -53,14 +54,15 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<Note> {
-            if note_exists(tx, &note_id)? {
+            let conn = StorageConnection::sqlite_tx(tx);
+            if note_exists(&conn, &note_id)? {
                 // 已存在：返回现有行，不覆盖（幂等）。空事务直接提交。
-                let note = note_row(tx, user, &note_id)?.ok_or(PlatformError::NotFound)?;
+                let note = note_row(&conn, user, &note_id)?.ok_or(PlatformError::NotFound)?;
                 return Ok(note);
             }
-            insert_note(tx, &note_id, user, title, body, now)?;
-            insert_version(tx, &note_id, 1, title, body, now)?;
-            note_row(tx, user, &note_id)?.ok_or(PlatformError::NotFound)
+            insert_note(&conn, &note_id, user, title, body, now)?;
+            insert_version(&conn, &note_id, 1, title, body, now)?;
+            note_row(&conn, user, &note_id)?.ok_or(PlatformError::NotFound)
         })
     }
 
@@ -81,7 +83,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<Note> {
-            let Some(current) = note_version(tx, user, id)? else {
+            let conn = StorageConnection::sqlite_tx(tx);
+            let Some(current) = note_version(&conn, user, id)? else {
                 return Err(PlatformError::NotFound);
             };
             if current != expected_version {
@@ -90,15 +93,15 @@ impl Platform {
                 )));
             }
             let next = current + 1;
-            update_note(tx, user, id, title, body, next, now)?;
-            insert_version(tx, id, next, title, body, now)?;
-            note_row(tx, user, id)?.ok_or(PlatformError::NotFound)
+            update_note(&conn, user, id, title, body, next, now)?;
+            insert_version(&conn, id, next, title, body, now)?;
+            note_row(&conn, user, id)?.ok_or(PlatformError::NotFound)
         })
     }
 
     pub(crate) fn note(&self, user: &str, id: &str) -> Result<Note> {
         let id = validate::id(id)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         note_row(&c, user, id)?.ok_or(PlatformError::NotFound)
     }
 
@@ -111,7 +114,7 @@ impl Platform {
     ) -> Result<(Vec<Note>, String, bool)> {
         let limit = limit.clamp(1, MAX_NOTE_PAGE);
         let (before_at, before_id) = parse_cursor(cursor)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let mut rows = notes_page(&c, user, before_at, &before_id, limit + 1)?;
         let has_more = rows.len() as i64 > limit;
         if has_more {
@@ -127,7 +130,7 @@ impl Platform {
     pub(crate) fn delete_note(&self, user: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let changed = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             delete_one(&c, user, id)?
         };
         crate::db::ensure_updated(changed)

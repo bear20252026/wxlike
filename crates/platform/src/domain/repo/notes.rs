@@ -2,15 +2,17 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
+use crate::storage::StorageConnection;
 use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::notes::Note;
 
 pub(in crate::domain) fn note_row(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
 ) -> Result<Option<Note>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT id, user_id, title, body, version, created_at, updated_at
          FROM notes WHERE id = ?1 AND user_id = ?2",
@@ -32,7 +34,8 @@ pub(in crate::domain) fn note_map(r: &rusqlite::Row<'_>) -> rusqlite::Result<Not
     })
 }
 
-pub(in crate::domain) fn note_exists(c: &rusqlite::Connection, id: &str) -> Result<bool> {
+pub(in crate::domain) fn note_exists(c: &StorageConnection<'_>, id: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let existing: Option<String> = c
         .query_row(
             "SELECT user_id FROM notes WHERE id = ?1",
@@ -44,13 +47,14 @@ pub(in crate::domain) fn note_exists(c: &rusqlite::Connection, id: &str) -> Resu
 }
 
 pub(in crate::domain) fn insert_note(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     user: &str,
     title: &str,
     body: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO notes(id, user_id, title, body, version, created_at, updated_at)
          VALUES(?1, ?2, ?3, ?4, 1, ?5, ?5)",
@@ -60,13 +64,14 @@ pub(in crate::domain) fn insert_note(
 }
 
 pub(in crate::domain) fn insert_version(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     id: &str,
     version: i64,
     title: &str,
     body: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO note_versions(note_id, version, title, body, saved_at)
          VALUES(?1, ?2, ?3, ?4, ?5)",
@@ -76,10 +81,11 @@ pub(in crate::domain) fn insert_version(
 }
 
 pub(in crate::domain) fn note_version(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
 ) -> Result<Option<i64>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT version FROM notes WHERE id = ?1 AND user_id = ?2",
         params![id, user],
@@ -89,7 +95,7 @@ pub(in crate::domain) fn note_version(
 }
 
 pub(in crate::domain) fn update_note(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
     title: &str,
@@ -97,6 +103,7 @@ pub(in crate::domain) fn update_note(
     version: i64,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE notes SET title = ?1, body = ?2, version = ?3, updated_at = ?4
          WHERE id = ?5 AND user_id = ?6",
@@ -106,12 +113,13 @@ pub(in crate::domain) fn update_note(
 }
 
 pub(in crate::domain) fn notes_page(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     before_at: i64,
     before_id: &str,
     limit: i64,
 ) -> Result<Vec<Note>> {
+    let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT id, user_id, title, body, version, created_at, updated_at
          FROM notes WHERE user_id = ?1
@@ -123,10 +131,11 @@ pub(in crate::domain) fn notes_page(
 }
 
 pub(in crate::domain) fn delete_one(
-    c: &rusqlite::Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     id: &str,
 ) -> Result<usize> {
+    let c = c.sqlite()?;
     Ok(c.execute(
         "DELETE FROM notes WHERE id = ?1 AND user_id = ?2",
         params![id, user],
