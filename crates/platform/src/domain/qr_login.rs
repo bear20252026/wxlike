@@ -30,6 +30,7 @@
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::qr_login`]。
 
 use crate::error::ApiError;
+use crate::storage::StorageConnection;
 use crate::Platform;
 use axum::body::Bytes;
 use axum::http::StatusCode;
@@ -177,6 +178,15 @@ pub(crate) fn db_err(err: rusqlite::Error) -> ApiError {
     ApiError::internal("database failure")
 }
 
+/// identity 状态机仍只接受 `&Connection`：从端口取一次旧守卫，PG 变体
+/// 在这里受控失败，而不是让调用方各自匹配枚举。
+fn sqlite<'a>(
+    conn: &'a StorageConnection<'_>,
+) -> std::result::Result<&'a rusqlite::Connection, ApiError> {
+    conn.sqlite()
+        .map_err(|_| ApiError::internal("storage port unavailable"))
+}
+
 impl Platform {
     /// 建票：identity 状态机（`create` + `bind`）+ 平台自有创建者登记，
     /// 一次持锁做完。
@@ -192,9 +202,10 @@ impl Platform {
         let verifier = crate::auth::random_hex(QR_SECRET_HEX_LEN);
         let now = wxlike_core::types::now_ms() as i64;
         let conn = self.db().acquire();
-        let ticket = qr_login::create(&conn, now).map_err(id_err)?;
+        let raw = sqlite(&conn)?;
+        let ticket = qr_login::create(raw, now).map_err(id_err)?;
         qr_login::bind(
-            &conn,
+            raw,
             &ticket.id,
             &verifier,
             &prefs.device_id,
@@ -216,13 +227,14 @@ impl Platform {
     ) -> std::result::Result<(PollState, Option<String>), ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
         let conn = self.db().acquire();
+        let raw = sqlite(&conn)?;
         // 顺序与 repo 的 `SELECT creator, verifier` 一致：先是创建者，再是 verifier。
         // 两个都是 `String`，写反了编译期看不出来，只会变成 403。
         let (creator, verifier) = creator_and_verifier(&conn, ticket_id)?;
         if creator != viewer {
             return Err(ApiError::forbidden("not your ticket"));
         }
-        let state = qr_login::poll(&conn, ticket_id, &verifier, now).map_err(id_err)?;
+        let state = qr_login::poll(raw, ticket_id, &verifier, now).map_err(id_err)?;
         // 扫过码才给提示：让创建端能显示 "xxx 的手机扫了码"。
         let hint = scan_hint(&conn, ticket_id)?;
         Ok((state, hint))
@@ -236,7 +248,8 @@ impl Platform {
     ) -> std::result::Result<ScanView, ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
         let conn = self.db().acquire();
-        qr_login::scan(&conn, secret, scanner, now).map_err(id_err)
+        let raw = sqlite(&conn)?;
+        qr_login::scan(raw, secret, scanner, now).map_err(id_err)
     }
 
     /// 批准 / 拒绝。
@@ -248,10 +261,11 @@ impl Platform {
     ) -> std::result::Result<(), ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
         let conn = self.db().acquire();
+        let raw = sqlite(&conn)?;
         let outcome = if approve {
-            qr_login::approve(&conn, ticket_id, scanner, now)
+            qr_login::approve(raw, ticket_id, scanner, now)
         } else {
-            qr_login::reject(&conn, ticket_id, scanner, now)
+            qr_login::reject(raw, ticket_id, scanner, now)
         };
         outcome.map_err(id_err)
     }

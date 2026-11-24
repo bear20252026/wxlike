@@ -10,7 +10,9 @@ use crate::domain::qr_login::db_err;
 
 /// 端口 → SQLite 守卫。QR 仓储的公开错误是 `ApiError`，PG 未接通时给出
 /// 明确的 500，而不是把 `PlatformError` 泄漏到 HTTP 面。
-fn sqlite(conn: &StorageConnection<'_>) -> std::result::Result<&rusqlite::Connection, ApiError> {
+fn sqlite<'a>(
+    conn: &'a StorageConnection<'_>,
+) -> std::result::Result<&'a rusqlite::Connection, ApiError> {
     conn.sqlite()
         .map_err(|_| ApiError::internal("storage port unavailable"))
 }
