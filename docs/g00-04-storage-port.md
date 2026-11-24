@@ -99,13 +99,14 @@
 现状（`crates/platform/src/domain/repo/`）：
 
 - 35 个 `.rs`（34 个 feature 文件 + `mod.rs`）。
-- 多数 feature 文件仍直接吃 `&rusqlite::Connection`。已迁移 14 个仓库、共 103 个函数：
-  `notification`（3 个函数）、`audit`（2）、`devices`（3）、`read`（2）、
+- 多数 feature 文件仍直接吃 `&rusqlite::Connection`。已迁移 16 个仓库、共 113 个函数：
+  `notification`（3）、`audit`（2）、`devices`（3）、`read`（2）、
   `video_refs`（2）、`qr_login`（8）、`notes`（8）、`favorites`（15）、
   `stickers`（13）、`friends`（17）、`status`（17）、`media`（3）、`keys`（5）、
-  `report`（5）。这些 repo 参数改为 `&StorageConnection<'_>`，通过
-  `StorageConnection::sqlite()` 拿旧守卫；对应 domain 模块的调用点改走
-  `Db::acquire()`。PG 变体当前返回受控 `PlatformError::Storage`，不 panic。
+  `report`（5）、`inbox`（5）、`perms`（5）。这些 repo 参数改为
+  `&StorageConnection<'_>`，通过 `StorageConnection::sqlite()` 拿旧守卫；
+  对应 domain 模块的调用点改走 `Db::acquire()`。PG 变体当前返回受控
+  `PlatformError::Storage`，不 panic。
 - `notes` 是首个事务内迁移的 repo：`StorageConnection::SqliteTx(&Connection)`
   承接 `with_tx` 闭包里的 `&Transaction`，repo 不再要求 `&mut`；`favorites`
   的跨域撤权走 `revoke_source_tx(tx, ...)` 同一桥接。
@@ -138,7 +139,7 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 ## 5. 本步刻意没做的事
 
 - 不改 `domain/repo/**` 其余 `&Connection` 签名（见 §3 分批）；端口 pilot 已从
-  `notification` 三个函数扩到 14 个仓库、103 个函数。
+  `notification` 三个函数扩到 16 个仓库、113 个函数。
 - `Db::open` 仍不打开 postgres profile；PG 连接只在新端口 `PostgresPool` 中存在。
 - 不动 `server/**`、`ci/**`、`schema/**`、`integration-requests/**` 之外的东西。
 - `G00-04-PG` gap 仍 open：restore drill 已在 GitHub Actions `44989751565` 的 `pg-migration` 中实跑通过，但 `close_when` 的另一半（旧 repo 切 PG / PG profile）未满足；本轮只完成了首批端口与 DDL/导入/恢复闭环。

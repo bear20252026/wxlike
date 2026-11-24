@@ -499,15 +499,16 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 持久化/重放/扇出拆开，主函数降到约 40 行。全仓 `>100 行` 只剩
 `ui/src-tauri::callrtc::run` 一个，下一批处理。
 
-存储端口本波从 6 个 repo、20 个函数扩到 14 个 repo、103 个函数：
+存储端口本波从 6 个 repo、20 个函数扩到 16 个 repo、113 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /
 `notes` / `favorites` / `stickers` / `friends` / `status` / `media` / `keys` /
-`report` 的参数统一为 `&StorageConnection<'_>`。`notes` 首个打通 `with_tx` 事务内的
-`SqliteTx(&Connection)`，`favorites` / `stickers` / `friends` / `status` 随迁；
-跨域撤权用 `revoke_source_tx` 桥接，仍吃 `&Connection` 的 `clear_owner` 用
-`sqlite_borrow` 过渡。`Db::acquire()` 是新的统一入口，`Db::lock()` 只留给
-尚未迁移的事务闭包。`docs/g00-04-storage-port.md` 同步记录；`G00-04-PG`
-仍未关闭，因为 `Db::open` 还不接受 PG profile。
+`report` / `inbox` / `perms` 的参数统一为 `&StorageConnection<'_>`。`notes`
+首个打通 `with_tx` 事务内的 `SqliteTx(&Connection)`，`favorites` / `stickers` /
+`friends` / `status` 随迁；跨域撤权与通知分别用 `revoke_source_tx` /
+`notify_tx` 桥接，仍吃 `&Connection` 的 `clear_owner` 用 `sqlite_borrow` 过渡。
+`Db::acquire()` 是新的统一入口，`Db::lock()` 只留给尚未迁移的事务闭包。
+`docs/g00-04-storage-port.md` 同步记录；`G00-04-PG` 仍未关闭，因为
+`Db::open` 还不接受 PG profile。
 
 ### 测试有效性（2026-10-20 晚补测）
 
