@@ -18,7 +18,7 @@ use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::friends::{
     accept_request, are_friends, changes, changes_head, decline_request, delete_friend,
-    ensure_friend, friends, incoming_requests, insert_request, log, log_tx, outgoing_requests,
+    ensure_friend, friends, incoming_requests, insert_request, log, outgoing_requests,
     reopen_request, request_by_id, request_by_pair, set_remark, user_exists, RequestRecord,
 };
 
@@ -88,7 +88,7 @@ impl Platform {
         }
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         if !user_exists(&c, &to_uid)? {
             return Err(PlatformError::NotFound);
         }
@@ -112,7 +112,8 @@ impl Platform {
     }
 
     pub(crate) fn load_request(&self, req_id: &str) -> Result<RequestRow> {
-        request_by_id(&self.db().lock(), req_id)?
+        let c = self.db().acquire();
+        request_by_id(&c, req_id)?
             .map(request_row)
             .ok_or(PlatformError::NotFound)
     }
@@ -130,7 +131,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<RequestRow> {
-            if !accept_request(tx, req_id)? {
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            if !accept_request(&conn, req_id)? {
                 // lost a race with a concurrent accept/decline
                 return Err(PlatformError::Conflict("request".into()));
             }
@@ -138,8 +140,8 @@ impl Platform {
                 (req.from_uid.as_str(), req.to_uid.as_str()),
                 (req.to_uid.as_str(), req.from_uid.as_str()),
             ] {
-                ensure_friend(tx, a, b, req_id, now)?;
-                log_tx(tx, a, b, "accepted", now)?;
+                ensure_friend(&conn, a, b, req_id, now)?;
+                log(&conn, a, b, "accepted", now)?;
             }
             Ok(req)
         })
@@ -156,15 +158,16 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<RequestRow> {
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             // #340: the verdict rides on the write itself, like accept above —
             // the pre-check reads outside the lock, so two concurrent declines
             // can both pass it; only the conditional UPDATE picks one winner.
-            if !decline_request(tx, req_id)? {
+            if !decline_request(&conn, req_id)? {
                 // lost a race with a concurrent accept/decline
                 return Err(PlatformError::Conflict("request".into()));
             }
-            log_tx(tx, &req.from_uid, &req.to_uid, "declined", now)?;
-            log_tx(tx, &req.to_uid, &req.from_uid, "declined", now)?;
+            log(&conn, &req.from_uid, &req.to_uid, "declined", now)?;
+            log(&conn, &req.to_uid, &req.from_uid, "declined", now)?;
             Ok(req)
         })
     }
@@ -172,7 +175,7 @@ impl Platform {
     pub fn incoming_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // The inbox is the pending queue: answered requests (accepted/declined)
         // leave it, which is what makes "decline empties the inbox" observable.
-        Ok(incoming_requests(&self.db().lock(), me)?
+        Ok(incoming_requests(&self.db().acquire(), me)?
             .into_iter()
             .map(request_row)
             .collect())
@@ -180,14 +183,14 @@ impl Platform {
 
     pub fn outgoing_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // Outgoing keeps every status so the sender can see who declined.
-        Ok(outgoing_requests(&self.db().lock(), me)?
+        Ok(outgoing_requests(&self.db().acquire(), me)?
             .into_iter()
             .map(request_row)
             .collect())
     }
 
     pub fn friends(&self, me: &str) -> Result<Vec<FriendRow>> {
-        Ok(friends(&self.db().lock(), me)?
+        Ok(friends(&self.db().acquire(), me)?
             .into_iter()
             .map(|f| FriendRow {
                 friend_id: f.friend_id,
@@ -202,13 +205,13 @@ impl Platform {
     }
 
     pub fn are_friends(&self, a: &str, b: &str) -> Result<bool> {
-        are_friends(&self.db().lock(), a, b)
+        are_friends(&self.db().acquire(), a, b)
     }
 
     pub(crate) fn set_remark(&self, me: &str, friend: &str, remark: &str) -> Result<()> {
         let friend = validate::id(friend)?.to_string();
         let remark = validate::remark(remark)?.to_string();
-        if !set_remark(&self.db().lock(), me, &friend, &remark)? {
+        if !set_remark(&self.db().acquire(), me, &friend, &remark)? {
             return Err(PlatformError::NotFound);
         }
         Ok(())
@@ -218,15 +221,19 @@ impl Platform {
     pub(crate) fn remove_friend(&self, me: &str, other: &str) -> Result<()> {
         let other = validate::id(other)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
-        if !are_friends(&c, me, &other)? {
-            return Err(PlatformError::NotFound);
+        {
+            let c = self.db().acquire();
+            if !are_friends(&c, me, &other)? {
+                return Err(PlatformError::NotFound);
+            }
         }
+        let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            delete_friend(tx, me, &other)?;
-            delete_friend(tx, &other, me)?;
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            delete_friend(&conn, me, &other)?;
+            delete_friend(&conn, &other, me)?;
             for (a, b) in [(me, other.as_str()), (other.as_str(), me)] {
-                log_tx(tx, a, b, "removed", now)?;
+                log(&conn, a, b, "removed", now)?;
             }
             Ok(())
         })
@@ -234,7 +241,7 @@ impl Platform {
 
     /// Incremental address-book sync: everything for `me` after `since`.
     pub fn changes(&self, me: &str, since: i64, limit: i64) -> Result<Vec<ChangeRow>> {
-        Ok(changes(&self.db().lock(), me, since, limit)?
+        Ok(changes(&self.db().acquire(), me, since, limit)?
             .into_iter()
             .map(|c| ChangeRow {
                 seq: c.seq,
@@ -247,6 +254,6 @@ impl Platform {
 
     /// Highest log sequence, for the client to store as its next cursor.
     pub fn changes_head(&self, me: &str) -> Result<i64> {
-        changes_head(&self.db().lock(), me)
+        changes_head(&self.db().acquire(), me)
     }
 }
