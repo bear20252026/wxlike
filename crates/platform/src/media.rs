@@ -5,7 +5,7 @@ use crate::auth::Authed;
 use crate::db::{offload, offload_api};
 use crate::error::{ApiError, Result};
 use crate::PlatformState;
-use axum::extract::multipart::{Field, Multipart};
+use axum::extract::multipart::{Field, Multipart, MultipartError};
 use axum::extract::{DefaultBodyLimit, Path as ApiPath, Query, State};
 use axum::http::header;
 use axum::http::StatusCode;
@@ -41,17 +41,7 @@ async fn upload(
     // `visibility=public`：头像这类"所有登录用户都要能看"的资源
     let mut public = false;
 
-    while let Some(field) = form.next_field().await.map_err(|err| {
-        // a body over the limit surfaces here rather than at the layer
-        if format!("{err}").contains("length") || format!("{err}").contains("limit") {
-            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "media too large")
-        } else {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("malformed multipart: {err}"),
-            )
-        }
-    })? {
+    while let Some(field) = form.next_field().await.map_err(multipart_error)? {
         match field.name().unwrap_or_default() {
             "file" | "bytes" | "data" => data = Some(read_field(field).await?),
             "sha256" | "sha" => declared = Some(read_text(field).await?),
@@ -71,12 +61,7 @@ async fn upload(
     let conv = conv.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
     if let Some(conv) = conv.as_deref() {
         // 不能把附件挂到别人的会话上——那等于给会话成员投递任意内容
-        let actor = authed.user_id.clone();
-        let conv = conv.to_string();
-        let allowed = offload(&platform, move |p| Ok(p.may_read_conv(&actor, &conv))).await?;
-        if !allowed {
-            return Err(ApiError::forbidden("not your conversation"));
-        }
+        check_upload_conv(&platform, &authed.user_id, conv).await?;
     }
     let reply = platform
         .store_media(
@@ -89,6 +74,34 @@ async fn upload(
         .await
         .map_err(ApiError::from)?;
     Ok((StatusCode::OK, Json(reply)))
+}
+
+/// 超限在 multipart 解析里冒出来，而不是在 layer 上：翻成 413。
+fn multipart_error(err: MultipartError) -> ApiError {
+    let text = format!("{err}");
+    if text.contains("length") || text.contains("limit") {
+        ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "media too large")
+    } else {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("malformed multipart: {err}"),
+        )
+    }
+}
+
+/// 附件只能挂在自己的会话上。
+async fn check_upload_conv(
+    platform: &PlatformState,
+    actor: &str,
+    conv: &str,
+) -> std::result::Result<(), ApiError> {
+    let (actor, conv) = (actor.to_string(), conv.to_string());
+    let allowed = offload(platform, move |p| Ok(p.may_read_conv(&actor, &conv))).await?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("not your conversation"))
+    }
 }
 
 /// `GET /api/media/{id}/url`：给当前用户签一条短期下载链接。

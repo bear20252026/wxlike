@@ -611,6 +611,49 @@ fn apply_effect(
     Applied::default()
 }
 
+/// 声卡槽位：没有 `audio` 特性时是个空壳，接口不变，调用方不用写 cfg。
+struct AudioSlot {
+    #[cfg(feature = "audio")]
+    leg: AudioLeg,
+}
+
+impl AudioSlot {
+    fn start() -> Self {
+        Self {
+            #[cfg(feature = "audio")]
+            leg: AudioLeg::start(),
+        }
+    }
+
+    fn feed(&mut self, host: &mut CallHost) {
+        #[cfg(not(feature = "audio"))]
+        let _ = host;
+        #[cfg(feature = "audio")]
+        pump_mics(host, &mut self.leg);
+    }
+
+    /// 已编码发出的麦克风帧数（没有声卡的构建恒为 0）。
+    fn sent(&self) -> u64 {
+        #[cfg(not(feature = "audio"))]
+        {
+            return 0;
+        }
+        #[cfg(feature = "audio")]
+        self.leg.sent
+    }
+
+    /// 播放收到的音频；返回播放的帧数。
+    fn play_all(&mut self, payloads: &[Vec<u8>]) -> u64 {
+        #[cfg(not(feature = "audio"))]
+        let _ = payloads;
+        #[cfg(feature = "audio")]
+        for payload in payloads {
+            self.leg.play(payload);
+        }
+        payloads.len() as u64
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     app: AppHandle,
@@ -626,19 +669,15 @@ fn run(
     let conn = Connection::new(&cfg);
     let conv = host.conv().to_string();
     let mut audio_frames = 0u64;
-    #[cfg(feature = "audio")]
-    let mut audio = AudioLeg::start();
+    let mut audio = AudioSlot::start();
 
     let mut pending: Vec<Effect> = first;
     while !stop.load(Ordering::SeqCst) {
         // 1. UI 命令
-        while let Ok(cmd) = rx.try_recv() {
-            pending.extend(handle_command(cmd, &mut host, &status));
-        }
+        drain_commands(&rx, &mut host, &status, &mut pending);
 
         // 2. 麦克风 → 编码 → 媒体（先喂再泵，编码帧能赶在同一轮发出去）
-        #[cfg(feature = "audio")]
-        pump_mics(&mut host, &mut audio);
+        audio.feed(&mut host);
 
         // 3. 推进时钟 + 媒体
         pending.extend(host.tick(Instant::now()));
@@ -650,21 +689,20 @@ fn run(
         poll_signals(&conn, &mut host, &mut pending, &mut last_poll);
 
         // 6. 落地所有副作用
-        let (ended, payloads) = apply_all(&mut pending, &conv, &conn, &mut transport, &status, &app);
-        for payload in payloads {
-            audio_frames += 1;
-            #[cfg(feature = "audio")]
-            audio.play(&payload);
-            #[cfg(not(feature = "audio"))]
-            let _ = payload;
-        }
+        let (ended, played) = apply_and_play(
+            &mut pending,
+            &conv,
+            &conn,
+            &mut transport,
+            &status,
+            &app,
+            &mut audio,
+            audio_frames,
+        );
+        audio_frames = played;
 
         // 有新来电时把 call_id / ringing 同步给 UI
-        #[cfg(feature = "audio")]
-        let mic_frames = audio.sent;
-        #[cfg(not(feature = "audio"))]
-        let mic_frames = 0u64;
-        sync_status(&host, &status, &app, audio_frames, mic_frames);
+        sync_status(&host, &status, &app, audio_frames, audio.sent());
 
         if ended {
             break;
@@ -673,6 +711,33 @@ fn run(
     }
 
     finish_status(&status, &app);
+}
+
+fn drain_commands(
+    rx: &Receiver<Cmd>,
+    host: &mut CallHost,
+    status: &Arc<Mutex<EngineStatus>>,
+    pending: &mut Vec<Effect>,
+) {
+    while let Ok(cmd) = rx.try_recv() {
+        pending.extend(handle_command(cmd, host, status));
+    }
+}
+
+/// 落地副作用并播放音频；返回（是否挂断，已播放帧数）。
+#[allow(clippy::too_many_arguments)]
+fn apply_and_play(
+    pending: &mut Vec<Effect>,
+    conv: &str,
+    conn: &Connection,
+    transport: &mut Transport,
+    status: &Arc<Mutex<EngineStatus>>,
+    app: &AppHandle,
+    audio: &mut AudioSlot,
+    frames: u64,
+) -> (bool, u64) {
+    let (ended, payloads) = apply_all(pending, conv, conn, transport, status, app);
+    (ended, frames + audio.play_all(&payloads))
 }
 
 /// mesh 下每人一条会话，麦克风必须喂给每一条——只喂第一条的话，

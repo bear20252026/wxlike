@@ -431,9 +431,10 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "fdc9443d7a881fc6700d6673b3400fff4b2ec197b389ed54509ec3e36685c4ad",
+      "local_sha256": "09207344cdb104bf6591934b6dc0006eab6563bd7474729141ae3471b46c3e83",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-auth-level.md",
-      "used_by": "AuthLevel / Features / 令牌序列号 / 签发侧车表与鉴权时的作废与级别判定"
+      "used_by": "AuthLevel / Features / 令牌序列号 / 签发侧车表与鉴权时的作废与级别判定",
+      "updated_at": "2026-11-24"
     },
     {
       "path": "crates/features/identity/src/refresh.rs",

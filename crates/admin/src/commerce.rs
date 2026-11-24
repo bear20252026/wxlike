@@ -260,6 +260,54 @@ enum RefundPrep {
     },
 }
 
+/// 处理差异的入参校验：说明必填、决策只能三选一。
+fn check_diff_input(note: &str, decision: &str) -> Result<()> {
+    if note.trim().is_empty() {
+        return Err(AdminError::bad_input("处理差异必须写说明（复核要看）"));
+    }
+    let allowed = ["matched", "adjusted", "ignored"];
+    if !allowed.contains(&decision) {
+        return Err(AdminError::bad_input(format!(
+            "decision 只能是 {}",
+            allowed.join("/")
+        )));
+    }
+    Ok(())
+}
+
+/// 读差异当前状态，只有 `open` 才允许处理。
+fn open_diff_state(store: &Store, diff_id: &str) -> Result<String> {
+    let conn = store.lock();
+    let before: String = conn
+        .query_row(
+            "SELECT state FROM g14_recon_diff WHERE id = ?1",
+            [diff_id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|_| AdminError::NotFound)?;
+    if before != "open" {
+        return Err(AdminError::bad_input(format!(
+            "差异已经是 {before}，不能重复处理"
+        )));
+    }
+    Ok(before)
+}
+
+fn set_diff_state(
+    store: &Store,
+    actor: &str,
+    diff_id: &str,
+    decision: &str,
+    note: &str,
+) -> Result<()> {
+    store.lock().execute(
+        "UPDATE g14_recon_diff SET state = ?2, note = ?3, resolved_by = ?4, resolved_at = ?5 \
+         WHERE id = ?1",
+        params![diff_id, decision, note.trim(), actor, now_ms()],
+    )?;
+    Ok(())
+}
+
 impl CommerceService {
     pub fn new(store: Store, audit: AuditLog, port: Arc<dyn MoneyPort>, stepup: StepUp) -> Self {
         Self {
@@ -808,36 +856,10 @@ impl CommerceService {
     ) -> Result<ReconDiff> {
         auth::require(role, Resource::Recon, Action::ApproveMoney)?;
         self.stepup.require(actor, Action::ApproveMoney)?;
-        if note.trim().is_empty() {
-            return Err(AdminError::bad_input("处理差异必须写说明（复核要看）"));
-        }
-        let allowed = ["matched", "adjusted", "ignored"];
-        if !allowed.contains(&decision) {
-            return Err(AdminError::bad_input(format!(
-                "decision 只能是 {}",
-                allowed.join("/")
-            )));
-        }
+        check_diff_input(note, decision)?;
         upstream::check_target(diff_id)?;
-        let before = {
-            let conn = self.store.lock();
-            conn.query_row(
-                "SELECT state FROM g14_recon_diff WHERE id = ?1",
-                [diff_id],
-                |r| r.get::<_, String>(0),
-            )
-            .map_err(|_| AdminError::NotFound)?
-        };
-        if before != "open" {
-            return Err(AdminError::bad_input(format!(
-                "差异已经是 {before}，不能重复处理"
-            )));
-        }
-        self.store.lock().execute(
-            "UPDATE g14_recon_diff SET state = ?2, note = ?3, resolved_by = ?4, resolved_at = ?5 \
-             WHERE id = ?1",
-            params![diff_id, decision, note.trim(), actor, now_ms()],
-        )?;
+        let before = open_diff_state(&self.store, diff_id)?;
+        set_diff_state(&self.store, actor, diff_id, decision, note)?;
         let after = self
             .diffs(None)?
             .into_iter()

@@ -378,24 +378,53 @@ pub fn open_with(
     features: Features,
 ) -> Result<SessionGrant> {
     require_active_device(conn, user_id, device_id)?;
-    // 上游 `GenSecret` 的两条 lifetime 规则原样搬过来：
-    // `0` = 没表态 → 用配置的缺省；负数 = 已经死了 → 拒绝签发，
-    // 而不是签一枚注定过期的令牌再指望调用方看出来。
-    let ttl_ms = match ttl_ms {
-        0 => ACCESS_TTL_MS,
-        n if n < 0 => return Err(IdError::Expired),
-        n => n,
-    };
+    let ttl_ms = normalize_ttl(ttl_ms)?;
     let sid = random_hex(SID_BYTES);
     let access = random_hex(TOKEN_BYTES);
     let expires_at = now.saturating_add(ttl_ms);
     let tx = conn.unchecked_transaction()?;
+    write_session_rows(
+        &tx, user_id, device_id, ip, now, expires_at, &sid, &access, audience, features,
+    )?;
+    let refresh = crate::refresh::issue_default(&tx, user_id, &sid, device_id, audience, now)?;
+    tx.commit()?;
+    Ok(SessionGrant {
+        sid,
+        access_token: access,
+        refresh_token: refresh,
+        expires_at,
+        audience,
+    })
+}
+
+/// `ttl_ms` 的两条上游规则：`0` 用缺省，负数视为已过期。
+fn normalize_ttl(ttl_ms: i64) -> Result<i64> {
+    match ttl_ms {
+        0 => Ok(ACCESS_TTL_MS),
+        n if n < 0 => Err(IdError::Expired),
+        n => Ok(n),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_session_rows(
+    tx: &Connection,
+    user_id: &str,
+    device_id: &str,
+    ip: &str,
+    now: i64,
+    expires_at: i64,
+    sid: &str,
+    access: &str,
+    audience: Audience,
+    features: Features,
+) -> Result<()> {
     tx.execute(
         "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, \
          device_name, ip, last_seen, audience) \
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?3, ?8)",
         params![
-            digest(&access),
+            digest(access),
             user_id,
             now,
             expires_at,
@@ -413,20 +442,12 @@ pub fn open_with(
             user_id,
             AuthLevel::granted_for(audience).as_str(),
             features.to_flags(),
-            current_serial(&tx)?,
+            current_serial(tx)?,
             now,
             expires_at
         ],
     )?;
-    let refresh = crate::refresh::issue_default(&tx, user_id, &sid, device_id, audience, now)?;
-    tx.commit()?;
-    Ok(SessionGrant {
-        sid,
-        access_token: access,
-        refresh_token: refresh,
-        expires_at,
-        audience,
-    })
+    Ok(())
 }
 
 /// 临时认证会话（`L` 位）：能过鉴权，**不许**拿去换刷新链。

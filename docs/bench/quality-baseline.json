@@ -1,9 +1,9 @@
 {
  "total_files": 472,
- "total_lines": 144007,
- "fn_total": 7002,
- "count_len_gt30": 597,
- "count_len_gt60": 14,
+ "total_lines": 144271,
+ "fn_total": 7035,
+ "count_len_gt30": 596,
+ "count_len_gt60": 0,
  "count_len_gt100": 0,
  "count_nest_gt3": 0,
  "count_mixed_sql_http": 1,
@@ -18,7 +18,7 @@
   ],
   [
    "crates/net/src/mq_hub.rs",
-   2487
+   2504
   ],
   [
    "server/src/lib.rs",
@@ -50,7 +50,7 @@
   ],
   [
    "crates/admin/src/publishing.rs",
-   1321
+   1336
   ],
   [
    "crates/features/commerce/src/payments.rs",
@@ -61,16 +61,16 @@
    1252
   ],
   [
+   "crates/admin/src/commerce.rs",
+   1220
+  ],
+  [
    "crates/video/src/lib.rs",
    1206
   ],
   [
    "crates/mcp/src/server.rs",
    1205
-  ],
-  [
-   "crates/admin/src/commerce.rs",
-   1198
   ],
   [
    "crates/features/media/src/processing.rs",
@@ -93,162 +93,7 @@
    986
   ]
  ],
- "long_fns": [
-  {
-   "file": "crates/platform/examples/wp01_demo.rs",
-   "name": "main",
-   "line": 48,
-   "len": 66,
-   "nest": 2,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/net/src/mq_hub.rs",
-   "name": "release_conn",
-   "line": 1304,
-   "len": 65,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/features/identity/src/governance/user.rs",
-   "name": "settle_expired",
-   "line": 456,
-   "len": 64,
-   "nest": 2,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/accounts.rs",
-   "name": "login",
-   "line": 463,
-   "len": 63,
-   "nest": 2,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/jobs.rs",
-   "name": "run_batch_items",
-   "line": 375,
-   "len": 63,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/platform/src/wallet.rs",
-   "name": "transfer",
-   "line": 57,
-   "len": 63,
-   "nest": 2,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/admin/src/publishing.rs",
-   "name": "create_release",
-   "line": 777,
-   "len": 62,
-   "nest": 1,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/platform/src/wallet.rs",
-   "name": "create_redpacket",
-   "line": 121,
-   "len": 62,
-   "nest": 2,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "ui/src-tauri/src/callrtc.rs",
-   "name": "run",
-   "line": 615,
-   "len": 62,
-   "nest": 2,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/admin/src/commerce.rs",
-   "name": "resolve_diff",
-   "line": 800,
-   "len": 61,
-   "nest": 1,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/commerce/src/redpackets.rs",
-   "name": "fund_escrow",
-   "line": 132,
-   "len": 61,
-   "nest": 1,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/features/identity/src/session.rs",
-   "name": "open_with",
-   "line": 370,
-   "len": 61,
-   "nest": 1,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/platform/src/media.rs",
-   "name": "upload",
-   "line": 32,
-   "len": 61,
-   "nest": 3,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/platform/src/domain/wallet.rs",
-   "name": "claim_redpacket_tx",
-   "line": 340,
-   "len": 61,
-   "nest": 2,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  }
- ],
+ "long_fns": [],
  "deep_fns": [],
  "mixed_fns": [
   {
@@ -361,7 +206,7 @@
    "crates/platform/src/communities.rs:235"
   ],
   "32": [
-   "crates/admin/src/accounts.rs:502",
+   "crates/admin/src/accounts.rs:528",
    "crates/admin/src/config.rs:56",
    "crates/admin/src/bin/wxlike_admin.rs:281",
    "crates/client-native/src/realtime.rs:83",
@@ -396,7 +241,7 @@
    "crates/platform/src/storage.rs:390"
   ],
   "512": [
-   "crates/admin/src/accounts.rs:729",
+   "crates/admin/src/accounts.rs:746",
    "crates/admin/src/http.rs:945",
    "crates/container/examples/research_wmpf.rs:38",
    "crates/net/src/avalanche.rs:55",
@@ -432,7 +277,7 @@
   "300": [
    "crates/core/src/test_support.rs:114",
    "server/src/lib.rs:166",
-   "ui/src-tauri/src/callrtc.rs:740"
+   "ui/src-tauri/src/callrtc.rs:805"
   ],
   "17": [
    "crates/rtc/src/turn.rs:327",
@@ -470,41 +315,41 @@
   [
    [
     "crates/admin/src/commerce.rs",
-    265
+    313
    ],
    [
     "crates/admin/src/publishing.rs",
-    531
+    567
    ]
   ],
   [
    [
     "crates/admin/src/commerce.rs",
-    266
+    314
    ],
    [
     "crates/admin/src/publishing.rs",
-    532
+    568
    ]
   ],
   [
    [
     "crates/admin/src/commerce.rs",
-    267
+    315
    ],
    [
     "crates/admin/src/publishing.rs",
-    533
+    569
    ]
   ],
   [
    [
     "crates/admin/src/commerce.rs",
-    268
+    316
    ],
    [
     "crates/admin/src/publishing.rs",
-    534
+    570
    ]
   ],
   [
@@ -514,7 +359,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    588
+    624
    ]
   ],
   [
@@ -524,7 +369,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    589
+    625
    ]
   ],
   [
@@ -534,7 +379,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    590
+    626
    ]
   ],
   [
@@ -544,7 +389,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    591
+    627
    ]
   ],
   [
@@ -554,7 +399,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    592
+    628
    ]
   ],
   [
@@ -564,7 +409,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    593
+    629
    ]
   ],
   [

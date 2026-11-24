@@ -479,26 +479,52 @@ impl AccountStore {
             return Err(AdminError::Unauthorized);
         }
         let role = row.role()?;
-        let mfa = if row.totp_enabled {
-            let Some(code) = totp.map(str::trim).filter(|c| !c.is_empty()) else {
-                return Err(AdminError::MfaRequired(format!(
-                    "账号 {} 已开 TOTP，登录必须带 6 位动态码",
-                    row.name
-                )));
-            };
-            let secret = row.totp_secret.ok_or_else(|| {
-                AdminError::bad_input(format!("账号 {} 开了 TOTP 但没有密钥", row.name))
-            })?;
-            if !wxlike_platform::totp_verify(&secret, code) {
-                return Err(AdminError::MfaRequired("动态码不对".into()));
-            }
-            true
-        } else {
+        let mfa = Self::check_mfa(&row, totp)?;
+        let now = crate::read::now_ms();
+        let token = self.insert_session(&row, mfa, ttl_ms, ip, now)?;
+        Ok((
+            Session {
+                account_id: row.id.clone(),
+                actor: row.name.clone(),
+                role,
+                mfa,
+                expires_at: now + ttl_ms as i64,
+            },
+            token,
+        ))
+    }
+
+    /// 开了 TOTP 就必须验码；没开的账号可以登录，但 `mfa=false`（只读会话）。
+    fn check_mfa(row: &AccountRow, totp: Option<&str>) -> Result<bool> {
+        if !row.totp_enabled {
             // 没开 MFA 也接受登录，但会话没有写权限。多余的码忽略：
             // 一个还没绑码的账号不该因为多填字段而登不进去。
-            false
+            return Ok(false);
+        }
+        let Some(code) = totp.map(str::trim).filter(|c| !c.is_empty()) else {
+            return Err(AdminError::MfaRequired(format!(
+                "账号 {} 已开 TOTP，登录必须带 6 位动态码",
+                row.name
+            )));
         };
-        let now = crate::read::now_ms();
+        let secret = row.totp_secret.as_deref().ok_or_else(|| {
+            AdminError::bad_input(format!("账号 {} 开了 TOTP 但没有密钥", row.name))
+        })?;
+        if !wxlike_platform::totp_verify(secret, code) {
+            return Err(AdminError::MfaRequired("动态码不对".into()));
+        }
+        Ok(true)
+    }
+
+    /// 落一条会话行并返回令牌。
+    fn insert_session(
+        &self,
+        row: &AccountRow,
+        mfa: bool,
+        ttl_ms: u64,
+        ip: &str,
+        now: i64,
+    ) -> Result<String> {
         let token = wxlike_platform::random_hex(32);
         self.lock().execute(
             "INSERT INTO admin_sessions(token, account_id, created_at, expires_at, mfa, ip) \
@@ -512,16 +538,7 @@ impl AccountStore {
                 ip
             ],
         )?;
-        Ok((
-            Session {
-                account_id: row.id.clone(),
-                actor: row.name.clone(),
-                role,
-                mfa,
-                expires_at: now + ttl_ms as i64,
-            },
-            token,
-        ))
+        Ok(token)
     }
 
     /// 会话校验：过期就删行并返回 `None`（与平台 `lookup_token` 同一做法）。

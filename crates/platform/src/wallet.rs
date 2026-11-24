@@ -81,16 +81,10 @@ async fn transfer(
         Ok((None, Some(ref_id)))
     })
     .await?;
-    let ref_id = if let Some(hit) = hit {
+    if let Some(hit) = hit {
         return Ok(Json(hit));
-    } else {
-        ref_id.ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "transfer result vanished",
-            )
-        })?
-    };
+    }
+    let ref_id = ref_or_500(ref_id, "transfer result vanished")?;
     platform
         .emit(wallet_message(
             &crate::direct_conv_id(&actor, &to_uid),
@@ -107,14 +101,7 @@ async fn transfer(
         ))
         .await;
     let response = serde_json::json!({ "transfer_id": ref_id });
-    if let Some(key) = key {
-        let response_for_store = response.clone();
-        let hash_for_store = hash;
-        offload(&platform, move |p| {
-            p.wallet_idem_store(&actor, &key, &hash_for_store, &response_for_store)
-        })
-        .await?;
-    }
+    store_idem(&platform, &actor, key, &hash, &response).await?;
     Ok(Json(response))
 }
 
@@ -159,26 +146,40 @@ async fn create_redpacket(
         Ok((None, Some(id)))
     })
     .await?;
-    let id = if let Some(hit) = hit {
+    if let Some(hit) = hit {
         return Ok(Json(hit));
-    } else {
-        id.ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "redpacket result vanished",
-            )
-        })?
-    };
+    }
+    let id = ref_or_500(id, "redpacket result vanished")?;
     announce_redpacket(&platform, &actor, &id, amount, count, &memo).await?;
     let response = serde_json::json!({ "redpacket_id": id });
-    if let Some(key) = key {
-        let response_for_store = response.clone();
-        offload(&platform, move |p| {
-            p.wallet_idem_store(&actor, &key, &hash, &response_for_store)
-        })
-        .await?;
-    }
+    store_idem(&platform, &actor, key, &hash, &response).await?;
     Ok(Json(response))
+}
+
+/// 幂等命中的旧响应优先返回；否则内部任务必须交出业务 id。
+fn ref_or_500<T>(value: Option<T>, what: &'static str) -> std::result::Result<T, ApiError> {
+    value.ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, what))
+}
+
+/// 带幂等键时把响应记账，供同一键重放。
+async fn store_idem(
+    platform: &PlatformState,
+    actor: &str,
+    key: Option<String>,
+    hash: &str,
+    response: &serde_json::Value,
+) -> std::result::Result<(), ApiError> {
+    let Some(key) = key else {
+        return Ok(());
+    };
+    let actor = actor.to_string();
+    let hash = hash.to_string();
+    let response = response.clone();
+    offload(platform, move |p| {
+        p.wallet_idem_store(&actor, &key, &hash, &response)
+    })
+    .await
+    .map_err(ApiError::from)
 }
 
 /// `GET /api/wallet/redpacket/{id}`：红包本体行。发红包的人或该会话成员

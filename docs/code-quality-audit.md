@@ -393,10 +393,10 @@ search、video、hub、router 全串在一个函数里。
    HEAD。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
-**当前基线（2026-11-24 第五轮收紧）**：函数 >60 行 **14**、>100 行 **0**、嵌套 >3 层
+**当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
 **0**、跨文件重复窗口 **127**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
-当前值（最近一次把嵌套从 4 收到 0、`>60` 从 38 收到 14）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
+当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
 不能再和旧基线相减，否则 `--update` 永远拒绝收紧。重置只把当前值写成新起点，
 之后任何指标上涨仍会被全量闸门拦下。
@@ -475,7 +475,7 @@ search、video、hub、router 全串在一个函数里。
 
 | 指标 | 审计时 | 现在 |
 |---|---|---|
-| 函数 >60 行 | 46 | **14** |
+| 函数 >60 行 | 46 | **0** |
 | 函数 >100 行 | 14 | **0** |
 | 嵌套 >3 层 | 63 | **0** |
 | 跨文件重复窗口 | 78 | 127（扫描面扩到 472 文件） |
@@ -484,8 +484,8 @@ search、video、hub、router 全串在一个函数里。
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
-2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 597`、
-`>60 行 14`、`>100 行 0`、`深嵌套 0`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
+2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 596`、
+`>60 行 0`、`>100 行 0`、`深嵌套 0`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -632,6 +632,28 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 `bench_mailbox::main` 拆 `env_usize` / `write_load` / `count_readable` /
 `percentile` / `print_report`。最终 `>60` 14、`>30` 597、重复 127、魔法 172、
 嵌套 0，基线已同步收紧。
+
+第五批把最后 14 个 `>60` 全部拆完，`long_fns` 归零：
+`platform::wallet` 的 `transfer` / `create_redpacket` 共用 `ref_or_500`（`Option`
+→ 缺失即 500）与 `store_idem`，幂等命中提前返回；`platform::domain::wallet::claim_redpacket_tx`
+把拒绝条件收进 `claimable`（状态/自领/领完/重复领取）、分钱记账收进 `pay_claim`；
+`admin::accounts::login` 拆 `check_mfa`（未开 TOTP / 开而未带码 / 密钥缺失 /
+验码失败四分）与 `insert_session`；`admin::jobs::run_batch_items` 拆
+`batch_cancelled` 与 `audit_batch_item`；`admin::publishing::create_release` 拆
+`draft_release` / `insert_release`；`admin::commerce::resolve_diff` 拆
+`check_diff_input` / `open_diff_state` / `set_diff_state`；`platform::media::upload`
+拆 `multipart_error`（超限 413、其余 400）与 `check_upload_conv`；
+`commerce::redpackets::fund_escrow` 的平衡分录收进 `fund_wallet_into_escrow`；
+`net::mq_hub::release_conn` 拆 `drop_conn_registrations` / `release_inflight` /
+`unbind_route`；`identity::governance::user::settle_expired` 拆
+`expired_suspensions` / `clear_expiry` / `audit_expiry`；`identity::session::open_with`
+拆 `normalize_ttl` 与 `write_session_rows`（该文件在 provenance registry 内，
+`local_sha256` 已按 LF 归一重算）；`ui::callrtc::run` 的命令排空、声卡喂帧与
+播放再收进 `drain_commands` / `AudioSlot`（无 `audio` 特性时是空壳，调用点不再写
+`cfg`），`apply_and_play` 由两份 cfg 变体收敛回一个；`platform` 的 `wp01_demo`
+示例拆 `register_and_login` / `set_profile` / `read_self`。
+复测 `>60 0`、`>30 596`、嵌套 0、重复 127、魔法 172，`quality-gate.py --update`
+输出"函数 >60 行: 14 → 0"，五项全 `+0` 通过。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /

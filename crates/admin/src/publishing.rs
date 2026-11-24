@@ -526,6 +526,42 @@ fn insert_item(conn: &rusqlite::Connection, item: &Item, idem: &str, now: i64) -
     Ok(())
 }
 
+/// 新草稿版本行（未签名、未发布）。
+fn draft_release(app_id: String, version: String, now: i64) -> Release {
+    Release {
+        id: format!("rel_{}", wxlike_platform::random_hex(8)),
+        app_id,
+        version,
+        state: ReleaseState::Draft.as_str().to_string(),
+        signed_by: None,
+        published_by: None,
+        signature_digest: String::new(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn insert_release(
+    conn: &rusqlite::Connection,
+    release: &Release,
+    idem: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO g14_mini_release (id, app_id, version, state, signed_by, published_by, \
+         signature, idem, created_at, updated_at) VALUES (?1,?2,?3,?4,NULL,NULL,NULL,?5,?6,?6)",
+        params![
+            release.id,
+            release.app_id,
+            release.version,
+            release.state,
+            idem,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
 impl PublishingService {
     pub fn new(store: Store, audit: AuditLog, port: Arc<dyn ContentPort>, stepup: StepUp) -> Self {
         Self {
@@ -798,29 +834,8 @@ impl PublishingService {
             return Ok(existing);
         }
         let now = now_ms();
-        let release = Release {
-            id: format!("rel_{}", wxlike_platform::random_hex(8)),
-            app_id,
-            version,
-            state: ReleaseState::Draft.as_str().to_string(),
-            signed_by: None,
-            published_by: None,
-            signature_digest: String::new(),
-            created_at: now,
-            updated_at: now,
-        };
-        conn.execute(
-            "INSERT INTO g14_mini_release (id, app_id, version, state, signed_by, published_by, \
-             signature, idem, created_at, updated_at) VALUES (?1,?2,?3,?4,NULL,NULL,NULL,?5,?6,?6)",
-            params![
-                release.id,
-                release.app_id,
-                release.version,
-                release.state,
-                idem,
-                now
-            ],
-        )?;
+        let release = draft_release(app_id, version, now);
+        insert_release(&conn, &release, idem, now)?;
         drop(conn);
         self.audit.append(
             Draft::new(

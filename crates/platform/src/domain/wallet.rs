@@ -347,56 +347,62 @@ impl Platform {
             let Some(state) = redpacket_state(&port, id)? else {
                 return Err(PlatformError::NotFound);
             };
-            let RedpacketState {
-                from_uid,
-                conv_id,
-                total,
-                count,
-                claimed,
-                claimed_total,
-                claimers_json,
-                status,
-            } = state;
-            if status != "open" {
-                return Err(PlatformError::Conflict("redpacket".into()));
-            }
-            if from_uid == by {
-                // the sender already paid; grabbing their own packet would just move
-                // money from escrow back into their wallet early
-                return Err(PlatformError::Forbidden);
-            }
-            if claimed >= count {
-                return Err(PlatformError::Conflict("redpacket is empty".into()));
-            }
-            let mut claimers: Vec<String> =
-                serde_json::from_str(&claimers_json).unwrap_or_default();
-            if claimers.iter().any(|claimer| claimer == by) {
-                // one share per person; a second grab is refused without touching money
-                return Err(PlatformError::Conflict("already claimed".into()));
-            }
-
-            let remaining_slots = count - claimed;
-            let remaining_money = total - claimed_total;
-            let share = draw_share(remaining_money, remaining_slots);
-
-            ensure_wallet(&port, by)?;
-            credit(&port, by, share)?;
-            claimers.push(by.to_string());
-            let claimers_json = serde_json::to_string(&claimers)
-                .map_err(|_| PlatformError::BadInput("claimers record is corrupt"))?;
-            update_claim(&port, id, share, &claimers_json)?;
-            log_ledger(
-                &port,
-                by,
-                kind::REDPACKET_IN,
-                share,
-                "",
-                id,
-                "",
-                wxlike_core::types::now_ms() as i64,
-            )?;
-            Ok((share, claimed, count, conv_id))
+            let claimers = Self::claimable(&state, by)?;
+            let share = draw_share(
+                state.total - state.claimed_total,
+                state.count - state.claimed,
+            );
+            Self::pay_claim(&port, id, by, share, claimers)?;
+            Ok((share, state.claimed, state.count, state.conv_id))
         })
+    }
+
+    /// 领取前的全部拒绝条件：状态、自领、领完、重复领取。
+    fn claimable(state: &RedpacketState, by: &str) -> Result<Vec<String>> {
+        if state.status != "open" {
+            return Err(PlatformError::Conflict("redpacket".into()));
+        }
+        if state.from_uid == by {
+            // the sender already paid; grabbing their own packet would just move
+            // money from escrow back into their wallet early
+            return Err(PlatformError::Forbidden);
+        }
+        if state.claimed >= state.count {
+            return Err(PlatformError::Conflict("redpacket is empty".into()));
+        }
+        let claimers: Vec<String> = serde_json::from_str(&state.claimers_json).unwrap_or_default();
+        if claimers.iter().any(|claimer| claimer == by) {
+            // one share per person; a second grab is refused without touching money
+            return Err(PlatformError::Conflict("already claimed".into()));
+        }
+        Ok(claimers)
+    }
+
+    /// 分钱、记账、写领取人。
+    fn pay_claim(
+        port: &crate::storage::StorageConnection<'_>,
+        id: &str,
+        by: &str,
+        share: i64,
+        mut claimers: Vec<String>,
+    ) -> Result<()> {
+        ensure_wallet(port, by)?;
+        credit(port, by, share)?;
+        claimers.push(by.to_string());
+        let claimers_json = serde_json::to_string(&claimers)
+            .map_err(|_| PlatformError::BadInput("claimers record is corrupt"))?;
+        update_claim(port, id, share, &claimers_json)?;
+        log_ledger(
+            port,
+            by,
+            kind::REDPACKET_IN,
+            share,
+            "",
+            id,
+            "",
+            wxlike_core::types::now_ms() as i64,
+        )?;
+        Ok(())
     }
 
     /// P4 ADR-5 红包卡片回写：领取事实走 ephemeral 通道更新原卡片（不占

@@ -458,23 +458,10 @@ pub fn settle_expired(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<usize> {
-    let expired: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT user_id FROM identity_user_governance \
-             WHERE suspended = 1 AND suspended_until_ms IS NOT NULL AND suspended_until_ms <= ?1",
-        )?;
-        let rows = stmt.query_map(params![now], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let expired = expired_suspensions(conn, now)?;
     for user_id in &expired {
         let tx = conn.unchecked_transaction()?;
-        let n = tx.execute(
-            "UPDATE identity_user_governance SET suspended = 0, suspended_until_ms = NULL, \
-             updated_at = ?2 WHERE user_id = ?1 AND suspended = 1 \
-             AND suspended_until_ms IS NOT NULL AND suspended_until_ms <= ?2",
-            params![user_id, now],
-        )?;
-        if n == 0 {
+        if !clear_expiry(&tx, user_id, now)? {
             continue;
         }
         let after_row = load(&tx, user_id)?;
@@ -483,23 +470,7 @@ pub fn settle_expired(
             .map(|r| r.state(now))
             .unwrap_or(UserState::Active);
         let after_until = after_row.as_ref().and_then(|r| r.until_ms);
-        let before = summary(UserState::Suspended, None);
-        let after = summary(after_state, after_until);
-        append_audit(
-            &tx,
-            &AuditDraft {
-                action: "suspend.expire",
-                target: user_id,
-                actor: "system",
-                reason: "temporary suspension expired",
-                trace: "",
-                before: &before,
-                after: &after,
-                sessions_revoked: 0,
-                already: false,
-                at: now,
-            },
-        )?;
+        audit_expiry(&tx, user_id, &after_state, after_until, now)?;
         tx.commit()?;
         let (suspended, disabled) = flags_of(after_row.as_ref(), now);
         port.mirror_user_state(user_id, suspended, disabled, after_until)?;
@@ -516,6 +487,53 @@ pub fn settle_expired(
         ]);
     }
     Ok(expired.len())
+}
+
+fn expired_suspensions(conn: &Connection, now: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT user_id FROM identity_user_governance \
+         WHERE suspended = 1 AND suspended_until_ms IS NOT NULL AND suspended_until_ms <= ?1",
+    )?;
+    let rows = stmt.query_map(params![now], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 解封一行；返回是否真的改到了（并发下可能已被别人结算）。
+fn clear_expiry(tx: &Connection, user_id: &str, now: i64) -> Result<bool> {
+    let n = tx.execute(
+        "UPDATE identity_user_governance SET suspended = 0, suspended_until_ms = NULL, \
+         updated_at = ?2 WHERE user_id = ?1 AND suspended = 1 \
+         AND suspended_until_ms IS NOT NULL AND suspended_until_ms <= ?2",
+        params![user_id, now],
+    )?;
+    Ok(n > 0)
+}
+
+fn audit_expiry(
+    tx: &Connection,
+    user_id: &str,
+    after_state: &UserState,
+    after_until: Option<i64>,
+    now: i64,
+) -> Result<()> {
+    let before = summary(UserState::Suspended, None);
+    let after = summary(*after_state, after_until);
+    append_audit(
+        tx,
+        &AuditDraft {
+            action: "suspend.expire",
+            target: user_id,
+            actor: "system",
+            reason: "temporary suspension expired",
+            trace: "",
+            before: &before,
+            after: &after,
+            sessions_revoked: 0,
+            already: false,
+            at: now,
+        },
+    )
+    .map(|_| ())
 }
 
 /// 给用户打管理标签（幂等：同标签重复打不产生第二行）。

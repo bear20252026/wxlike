@@ -383,17 +383,7 @@ impl JobService {
         receipt: &mut Receipt,
     ) -> Result<()> {
         for target in targets {
-            // 取消判定读库：整段进池（ADR-28）。
-            let svc = self.clone();
-            let id_owned = id.to_string();
-            let cancelled = offload(move || {
-                Ok(svc
-                    .job(&id_owned)?
-                    .map(|j| j.state == "cancelled")
-                    .unwrap_or(true))
-            })
-            .await?;
-            if cancelled {
+            if self.batch_cancelled(id).await? {
                 receipt.cancelled = true;
                 receipt.skipped = receipt.total - receipt.processed;
                 break;
@@ -409,31 +399,60 @@ impl JobService {
             let outcome = self.port.suspend_user(&cmd).await;
             receipt.record(target, &outcome);
             // **逐条**审计：批量不等于一条"批量"记录。每个目标都要能单独追责。
-            // 留痕 + 回执写库整段进池；outcome 的 Ok/Err 先折成布尔再进闭包。
             let ok = outcome.is_ok();
-            let svc = self.clone();
-            let (actor, trace, reason, id_owned, target) = (
-                actor.to_string(),
-                trace.to_string(),
-                reason.to_string(),
-                id.to_string(),
-                target.clone(),
-            );
-            let snapshot = receipt.clone();
-            offload(move || {
-                svc.audit.append(
-                    Draft::new(&actor, role.as_str(), "identity.suspend", "user", &target)
-                        .reason(&reason)
-                        .trace(&trace)
-                        .outcome(if ok { Outcome::Ok } else { Outcome::Failed })
-                        .detail(serde_json::json!({"batch_job": id_owned})),
-                )?;
-                svc.write_receipt(&id_owned, &snapshot)
-            })
-            .await?;
+            self.audit_batch_item(actor, role, trace, reason, target, id, ok, receipt)
+                .await?;
         }
 
         Ok(())
+    }
+
+    /// 取消判定读库：整段进池（ADR-28）。
+    async fn batch_cancelled(&self, id: &str) -> Result<bool> {
+        let svc = self.clone();
+        let id_owned = id.to_string();
+        offload(move || {
+            Ok(svc
+                .job(&id_owned)?
+                .map(|j| j.state == "cancelled")
+                .unwrap_or(true))
+        })
+        .await
+    }
+
+    /// 留痕 + 回执写库整段进池；outcome 先折成布尔再进闭包。
+    #[allow(clippy::too_many_arguments)]
+    async fn audit_batch_item(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        reason: &str,
+        target: &str,
+        id: &str,
+        ok: bool,
+        receipt: &Receipt,
+    ) -> Result<()> {
+        let svc = self.clone();
+        let (actor, trace, reason, id_owned, target) = (
+            actor.to_string(),
+            trace.to_string(),
+            reason.to_string(),
+            id.to_string(),
+            target.to_string(),
+        );
+        let snapshot = receipt.clone();
+        offload(move || {
+            svc.audit.append(
+                Draft::new(&actor, role.as_str(), "identity.suspend", "user", &target)
+                    .reason(&reason)
+                    .trace(&trace)
+                    .outcome(if ok { Outcome::Ok } else { Outcome::Failed })
+                    .detail(serde_json::json!({"batch_job": id_owned})),
+            )?;
+            svc.write_receipt(&id_owned, &snapshot)
+        })
+        .await
     }
 
     fn finish_batch(

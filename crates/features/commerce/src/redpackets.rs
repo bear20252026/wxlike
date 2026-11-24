@@ -65,6 +65,29 @@ pub struct RedPacketView {
     pub claims: Vec<RedPacketClaim>,
 }
 
+/// 钱包 → escrow 的一笔平衡分录。
+fn fund_wallet_into_escrow(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    wallet: &str,
+    escrow: &str,
+    total: Money,
+    now: i64,
+) -> Result<()> {
+    let funding = PostingRequest::new(
+        format!("redpacket:{id}:fund"),
+        "redpacket.funded",
+        total.currency(),
+        vec![
+            PostingLine::debit(wallet, total.minor()),
+            PostingLine::credit(escrow, total.minor()),
+        ],
+    )
+    .with_memo("red packet funded");
+    wxlike_ledger::post_in(tx, &funding, now).map_err(store::map_ledger)?;
+    Ok(())
+}
+
 impl Commerce {
     /// 发红包：先扣款进托管账户，再预分配份额。
     ///
@@ -150,17 +173,7 @@ impl Commerce {
             self.config.fund_class,
             now,
         )?;
-        let funding = PostingRequest::new(
-            format!("redpacket:{id}:fund"),
-            "redpacket.funded",
-            total.currency(),
-            vec![
-                PostingLine::debit(wallet, total.minor()),
-                PostingLine::credit(escrow, total.minor()),
-            ],
-        )
-        .with_memo("red packet funded");
-        wxlike_ledger::post_in(tx, &funding, now).map_err(store::map_ledger)?;
+        fund_wallet_into_escrow(tx, &id, &wallet, &escrow, total, now)?;
         let shares = split_shares(total.minor(), count, self.entropy());
         let expires_at = now + self.config.redpacket_ttl_ms;
         insert_packet_and_shares(

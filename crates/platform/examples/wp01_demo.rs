@@ -52,55 +52,14 @@ fn main() -> anyhow::Result<()> {
         let platform = Platform::in_memory_with(PlatformOptions {
             session_ttl_ms: 60 * 60 * 1000,
             pbkdf2_rounds: 1_000,
-        ..Default::default()
+            ..Default::default()
         })?
         .shared();
         let app = Platform::router(platform);
 
-        let (status, body) = call(
-            &app,
-            req("POST", "/api/register", Some(json!({"name": "alice", "password": "hunter2"})), None),
-        )
-        .await;
-        println!("1) POST /api/register   -> {status}");
-        println!("   {body}");
-        let reg_token = body["token"].as_str().expect("register returns a token").to_string();
-
-        let (status, body) = call(
-            &app,
-            req("POST", "/api/login", Some(json!({"name": "alice", "password": "hunter2"})), None),
-        )
-        .await;
-        println!("2) POST /api/login      -> {status}");
-        println!("   {body}");
-        let token = body["token"].as_str().expect("login returns a token").to_string();
-        assert_ne!(token, reg_token, "each login mints a distinct session token");
-
-        let (status, body) = call(
-            &app,
-            req(
-                "PUT",
-                "/api/profile",
-                Some(json!({"avatar": "alice.png", "signature": "rust && quic"})),
-                Some(&token),
-            ),
-        )
-        .await;
-        println!("3) PUT  /api/profile    -> {status}");
-        println!("   {body}");
-
-        let (status, body) = call(&app, req("GET", "/api/me", None, Some(&token))).await;
-        println!("4) GET  /api/me         -> {status}");
-        println!("   {body}");
-
-        let (status, _) = call(&app, req("GET", "/api/me", None, None)).await;
-        println!("5) GET  /api/me (no Authorization)   -> {status} (expected 401)");
-
-        let (status, _) = call(&app, req("GET", "/api/me", None, Some("00112233445566778899"))).await;
-        println!("5a) GET /api/me (forged token)       -> {status} (expected 401)");
-
-        let (status, _) = call(&app, req("GET", "/api/me", None, Some(&reg_token))).await;
-        println!("5b) GET /api/me (register's token)   -> {status} (expected 200: separate live session)");
+        let (reg_token, token) = register_and_login(&app).await;
+        set_profile(&app, &token).await;
+        read_self(&app, &token, &reg_token).await;
 
         let (status, _) = call(&app, req("POST", "/api/logout", None, Some(&token))).await;
         println!("6) POST /api/logout                  -> {status} (expected 204)");
@@ -110,4 +69,83 @@ fn main() -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
     Ok(())
+}
+
+/// 注册 + 登录：两次签发必须是不同的会话令牌。
+async fn register_and_login(app: &Router) -> (String, String) {
+    let (status, body) = call(
+        app,
+        req(
+            "POST",
+            "/api/register",
+            Some(json!({"name": "alice", "password": "hunter2"})),
+            None,
+        ),
+    )
+    .await;
+    println!("1) POST /api/register   -> {status}");
+    println!("   {body}");
+    let reg_token = body["token"]
+        .as_str()
+        .expect("register returns a token")
+        .to_string();
+
+    let (status, body) = call(
+        app,
+        req(
+            "POST",
+            "/api/login",
+            Some(json!({"name": "alice", "password": "hunter2"})),
+            None,
+        ),
+    )
+    .await;
+    println!("2) POST /api/login      -> {status}");
+    println!("   {body}");
+    let token = body["token"]
+        .as_str()
+        .expect("login returns a token")
+        .to_string();
+    assert_ne!(
+        token, reg_token,
+        "each login mints a distinct session token"
+    );
+    (reg_token, token)
+}
+
+async fn set_profile(app: &Router, token: &str) {
+    let (status, body) = call(
+        app,
+        req(
+            "PUT",
+            "/api/profile",
+            Some(json!({"avatar": "alice.png", "signature": "rust && quic"})),
+            Some(token),
+        ),
+    )
+    .await;
+    println!("3) PUT  /api/profile    -> {status}");
+    println!("   {body}");
+}
+
+/// 鉴权边界：本人令牌、无令牌、伪造令牌、注册时的会话。
+async fn read_self(app: &Router, token: &str, reg_token: &str) {
+    let (status, body) = call(app, req("GET", "/api/me", None, Some(token))).await;
+    println!("4) GET  /api/me         -> {status}");
+    println!("   {body}");
+
+    let (status, _) = call(app, req("GET", "/api/me", None, None)).await;
+    println!("5) GET  /api/me (no Authorization)   -> {status} (expected 401)");
+
+    let (status, _) = call(
+        app,
+        req("GET", "/api/me", None, Some("00112233445566778899")),
+    )
+    .await;
+    println!("5a) GET /api/me (forged token)       -> {status} (expected 401)");
+
+    let (status, _) = call(app, req("GET", "/api/me", None, Some(reg_token))).await;
+    println!(
+        "5b) GET /api/me (register's token)   -> {status} (expected 200: separate live session)"
+    );
 }

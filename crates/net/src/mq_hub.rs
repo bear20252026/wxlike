@@ -1302,6 +1302,27 @@ async fn pump_frames(
 /// 消失才解绑路由）。**幂等**：主动撤销（[`HubHandle::disconnect_user`]）与
 /// 对端自然断开可能各调一次，重复调用必须是 no-op。
 async fn release_conn(state: &Arc<HubState>, user_id: &str, conn_id: ConnId, generation: u64) {
+    let keep_bound = drop_conn_registrations(state, user_id, conn_id).await;
+    if !keep_bound {
+        state.user_rate.write().await.remove(user_id);
+        if generation != 0 {
+            state.route_generations.write().await.remove(user_id);
+        }
+    }
+    // G03-02：这条连接写了但没被确认落库的帧，全部放回离线队列。
+    // 不释放就等于"已经交出去但没人收到"，正是本卡要避免的丢失窗口。
+    release_inflight(state, user_id, conn_id).await;
+    state.metrics.disconnected();
+    if keep_bound {
+        tracing::debug!(hub = %state.hub_id, user = %user_id, conn = %conn_id, "conn unbound (devices remain)");
+    } else {
+        tracing::debug!(hub = %state.hub_id, user = %user_id, "user unbound");
+        unbind_route(state, user_id, generation).await;
+    }
+}
+
+/// 摘掉这条连接的各种登记，返回"该用户是否还有别的连接"。
+async fn drop_conn_registrations(state: &Arc<HubState>, user_id: &str, conn_id: ConnId) -> bool {
     // 先清主动撤销侧的登记：`ConnCloser::Quic` 持有整个 `quinn::Connection`，
     // 不在这里 drop 掉的话，连接对端永远收不到关闭（自然断开路径同样要走）。
     state.conn_closers.write().await.remove(&conn_id);
@@ -1319,51 +1340,47 @@ async fn release_conn(state: &Arc<HubState>, user_id: &str, conn_id: ConnId, gen
         }
     }
     state.subscriptions.write().await.remove(&conn_id);
-    if !keep_bound {
-        state.user_rate.write().await.remove(user_id);
-        if generation != 0 {
-            state.route_generations.write().await.remove(user_id);
-        }
-    }
-    // G03-02：这条连接写了但没被确认落库的帧，全部放回离线队列。
-    // 不释放就等于"已经交出去但没人收到"，正是本卡要避免的丢失窗口。
+    keep_bound
+}
+
+/// 未确认落库的帧放回离线队列。
+async fn release_inflight(state: &Arc<HubState>, user_id: &str, conn_id: ConnId) {
     let owed = state.inflight.discard(conn_id);
-    if !owed.is_empty() {
-        state.metrics.inflight_unacked(-(owed.len() as i64));
-        for p in &owed {
-            if let Err(err) = state.offline.release(p.store_id).await {
-                eprintln!(
-                    "[mq-hub] release on disconnect {} failed: {err:#}",
-                    p.store_id
-                );
-            }
-        }
-        tracing::info!(hub = %state.hub_id, user = %user_id, conn = %conn_id, count = owed.len(), "unacked writes requeued");
+    if owed.is_empty() {
+        return;
     }
-    state.metrics.disconnected();
-    if keep_bound {
-        tracing::debug!(hub = %state.hub_id, user = %user_id, conn = %conn_id, "conn unbound (devices remain)");
-    } else {
-        tracing::debug!(hub = %state.hub_id, user = %user_id, "user unbound");
-        let cleared = if generation == 0 {
-            let _ = state
-                .router
-                .routes
-                .unbind_user(user_id, &state.hub_id)
-                .await;
-            true
-        } else {
-            // compare-and-clear：别的连接已经接手时，这里什么都不做
-            state
-                .router
-                .routes
-                .clear_route(user_id, &state.hub_id, generation)
-                .await
-                .unwrap_or(false)
-        };
-        if generation != 0 && !cleared {
-            tracing::info!(hub = %state.hub_id, user = %user_id, "stale route unlink refused: a newer generation holds it");
+    state.metrics.inflight_unacked(-(owed.len() as i64));
+    for p in &owed {
+        if let Err(err) = state.offline.release(p.store_id).await {
+            eprintln!(
+                "[mq-hub] release on disconnect {} failed: {err:#}",
+                p.store_id
+            );
         }
+    }
+    tracing::info!(hub = %state.hub_id, user = %user_id, conn = %conn_id, count = owed.len(), "unacked writes requeued");
+}
+
+/// 用户最后一条连接消失后解绑路由。
+async fn unbind_route(state: &Arc<HubState>, user_id: &str, generation: u64) {
+    let cleared = if generation == 0 {
+        let _ = state
+            .router
+            .routes
+            .unbind_user(user_id, &state.hub_id)
+            .await;
+        true
+    } else {
+        // compare-and-clear：别的连接已经接手时，这里什么都不做
+        state
+            .router
+            .routes
+            .clear_route(user_id, &state.hub_id, generation)
+            .await
+            .unwrap_or(false)
+    };
+    if generation != 0 && !cleared {
+        tracing::info!(hub = %state.hub_id, user = %user_id, "stale route unlink refused: a newer generation holds it");
     }
 }
 
