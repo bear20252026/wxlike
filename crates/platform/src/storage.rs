@@ -245,7 +245,7 @@ impl<'a> StorageConnection<'a> {
     /// 从事务闭包的 `&Transaction` 构造端口值。`Transaction` deref 到
     /// `Connection`，这里只保留连接借用，端口方法不需要事务对象本身。
     pub(crate) fn sqlite_tx(tx: &'a rusqlite::Transaction<'_>) -> Self {
-        Self::SqliteTx(&**tx)
+        Self::SqliteTx(tx)
     }
 
     /// 取出 SQLite 连接。PG 变体明确返回受控错误，而不是 panic 或静默降级。
