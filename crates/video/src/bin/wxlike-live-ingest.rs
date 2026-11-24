@@ -298,39 +298,62 @@ impl Packager {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(PUSH_RETRY_MS * u64::from(attempt)));
             }
-            // ureq 3：`set` → `header`，`response.status()` 是 `http::StatusCode`，
-            // 比较用 `as_u16()`。超时在下面的 agent 上设。
-            let mut request = match method {
-                "PUT" => ureq::put(&url),
-                "POST" => ureq::post(&url),
-                other => anyhow::bail!("internal: {other}"),
-            };
-            request = request
-                .config()
-                .timeout_global(Some(Duration::from_secs(PUSH_TIMEOUT_SECS)))
-                .build();
-            let mut request = request
-                .header(LIVE_TOKEN_HEADER, &self.token)
-                .header("content-type", "video/mp2t");
-            if let Some(ms) = duration_ms {
-                request = request.header(LIVE_SEGMENT_MS_HEADER, ms.to_string());
-            }
-            // send(&[u8])：TS 是二进制，走字符串会被按 UTF-8 改写而损坏
-            match request.send(body) {
-                Ok(response) if response.status().is_success() => return Ok(()),
-                Ok(response) => {
-                    let code = response.status().as_u16();
-                    last_err = Some(anyhow::anyhow!("服务端回了 {code}"));
-                    // 4xx 是配置/凭据问题，重试不会变好——一次就退
-                    if (400..500).contains(&code) {
-                        break;
-                    }
-                }
-                Err(err) => last_err = Some(anyhow::anyhow!("{err}")),
+            match self.push_once(&url, method, body, duration_ms) {
+                Ok(()) => return Ok(()),
+                Err(PushFailure::Fatal(err)) => return Err(err),
+                Err(PushFailure::Retry(err)) => last_err = Some(err),
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("推送失败")))
     }
+
+    /// 单次推送：成功、可重试失败、不可重试失败三态。
+    fn push_once(
+        &self,
+        url: &str,
+        method: &str,
+        body: &[u8],
+        duration_ms: Option<u64>,
+    ) -> Result<(), PushFailure> {
+        // ureq 3：`set` → `header`，`response.status()` 是 `http::StatusCode`，
+        // 比较用 `as_u16()`。超时在下面的 agent 上设。
+        let mut request = match method {
+            "PUT" => ureq::put(url),
+            "POST" => ureq::post(url),
+            other => return Err(PushFailure::Fatal(anyhow::anyhow!("internal: {other}"))),
+        };
+        request = request
+            .config()
+            .timeout_global(Some(Duration::from_secs(PUSH_TIMEOUT_SECS)))
+            .build();
+        let mut request = request
+            .header(LIVE_TOKEN_HEADER, &self.token)
+            .header("content-type", "video/mp2t");
+        if let Some(ms) = duration_ms {
+            request = request.header(LIVE_SEGMENT_MS_HEADER, ms.to_string());
+        }
+        // send(&[u8])：TS 是二进制，走字符串会被按 UTF-8 改写而损坏
+        match request.send(body) {
+            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) => {
+                let code = response.status().as_u16();
+                let err = anyhow::anyhow!("服务端回了 {code}");
+                // 4xx 是配置/凭据问题，重试不会变好——一次就退
+                if (400..500).contains(&code) {
+                    Err(PushFailure::Fatal(err))
+                } else {
+                    Err(PushFailure::Retry(err))
+                }
+            }
+            Err(err) => Err(PushFailure::Retry(anyhow::anyhow!("{err}"))),
+        }
+    }
+}
+
+/// 单次推送的失败分类：`Fatal` 不再重试，`Retry` 交给外层退避。
+enum PushFailure {
+    Fatal(anyhow::Error),
+    Retry(anyhow::Error),
 }
 
 /// ffprobe 实测分片时长（毫秒）。

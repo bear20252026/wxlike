@@ -482,41 +482,8 @@ impl WxlikeClient {
     pub fn conversations(&self) -> Result<ConversationList, WxlikeError> {
         let pending = self.pending_by_conv()?;
         match self.executor().run("conv.list", &json!({})) {
-            Ok(value) => {
-                let mut conversations = Vec::new();
-                for item in value.as_array().cloned().unwrap_or_default() {
-                    let conv = item["conv"].as_str().unwrap_or_default().to_string();
-                    conversations.push(ConversationRow {
-                        kind: item["kind"].as_str().unwrap_or_default().to_string(),
-                        title: item["title"].as_str().unwrap_or_default().to_string(),
-                        members: item["members"].as_i64().unwrap_or(0),
-                        // null / 缺字段 = 没查到，不是"0 条未读"
-                        unread: item["unread"].as_i64().unwrap_or(-1),
-                        pending: *pending.get(&conv).unwrap_or(&0),
-                        conv,
-                    });
-                }
-                self.cache.put_conversations(&conversations)?;
-                Ok(ConversationList {
-                    conversations,
-                    from_cache: false,
-                })
-            }
-            Err(err) => {
-                let classified = classify(&err);
-                if !classified.retryable() {
-                    return Err(classified);
-                }
-                self.set_online(false);
-                let mut conversations = self.cache.conversations(&self.my_id())?;
-                for row in &mut conversations {
-                    row.pending = *pending.get(&row.conv).unwrap_or(&0);
-                }
-                Ok(ConversationList {
-                    conversations,
-                    from_cache: true,
-                })
-            }
+            Ok(value) => self.conversations_from_remote(&value, &pending),
+            Err(err) => self.conversations_from_cache(&pending, &err),
         }
     }
 
@@ -716,42 +683,89 @@ impl WxlikeClient {
     }
 }
 
+/// `conversations` 的内部辅助，放在普通 impl 里避免被 uniffi 导出。
+impl WxlikeClient {
+    fn conversations_from_remote(
+        &self,
+        value: &Value,
+        pending: &HashMap<String, i64>,
+    ) -> Result<ConversationList, WxlikeError> {
+        let conversations: Vec<ConversationRow> = value
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|item| conversation_row(item, pending))
+            .collect();
+        self.cache.put_conversations(&conversations)?;
+        Ok(ConversationList {
+            conversations,
+            from_cache: false,
+        })
+    }
+
+    fn conversations_from_cache(
+        &self,
+        pending: &HashMap<String, i64>,
+        err: &str,
+    ) -> Result<ConversationList, WxlikeError> {
+        let classified = classify(err);
+        if !classified.retryable() {
+            return Err(classified);
+        }
+        self.set_online(false);
+        let mut conversations = self.cache.conversations(&self.my_id())?;
+        for row in &mut conversations {
+            row.pending = *pending.get(&row.conv).unwrap_or(&0);
+        }
+        Ok(ConversationList {
+            conversations,
+            from_cache: true,
+        })
+    }
+}
+
 /// 补发线程：一条就够，跟着客户端活。
 ///
 /// 它只在 `online` 时真发——离线时反复撞墙会把 5 次退避额度烧光，用户还没开机
 /// 消息就"失败"了（`Outbox::MAX_ATTEMPTS`）。空闲节拍拉长到 30 秒是为了待机省电。
 fn spawn_pump(weak: Weak<WxlikeClient>, stop: Arc<AtomicBool>, wake: Receiver<()>) {
-    std::thread::spawn(move || {
-        while !stop.load(Ordering::SeqCst) {
-            // 客户端已经释放：线程跟着退，别留一个没有主人的轮询
-            let Some(this) = weak.upgrade() else { break };
-            let online = this.online.load(Ordering::SeqCst);
-            let pending = match this.outbox.pending_count() {
-                Ok(count) => count > 0,
-                Err(err) => {
-                    this.note_pump_error(&format!("队列读不出来: {err}"));
-                    false
-                }
-            };
-            let tick = if online && pending {
-                BUSY_TICK
-            } else {
-                IDLE_TICK
-            };
-            if online && pending {
-                match this.flush_outbox() {
-                    Ok(_) => this.clear_pump_error(),
-                    Err(err) => this.note_pump_error(&err.to_string()),
-                }
-            }
-            // 用 recv_timeout 而不是 sleep：停机与状态变化要能立刻打断这一觉
-            drop(this);
-            match wake.recv_timeout(tick) {
-                Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => {}
-            }
+    std::thread::spawn(move || pump_loop(&weak, &stop, &wake));
+}
+
+fn pump_loop(weak: &Weak<WxlikeClient>, stop: &AtomicBool, wake: &Receiver<()>) {
+    while !stop.load(Ordering::SeqCst) {
+        // 客户端已经释放：线程跟着退，别留一个没有主人的轮询
+        let Some(this) = weak.upgrade() else { break };
+        let tick = pump_once(&this);
+        drop(this);
+        // 用 recv_timeout 而不是 sleep：停机与状态变化要能立刻打断这一觉
+        match wake.recv_timeout(tick) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
         }
-    });
+    }
+}
+
+/// 跑一轮补发，返回下一觉的节拍。
+fn pump_once(this: &WxlikeClient) -> Duration {
+    let online = this.online.load(Ordering::SeqCst);
+    let pending = match this.outbox.pending_count() {
+        Ok(count) => count > 0,
+        Err(err) => {
+            this.note_pump_error(&format!("队列读不出来: {err}"));
+            false
+        }
+    };
+    if online && pending {
+        match this.flush_outbox() {
+            Ok(_) => this.clear_pump_error(),
+            Err(err) => this.note_pump_error(&err.to_string()),
+        }
+        BUSY_TICK
+    } else {
+        IDLE_TICK
+    }
 }
 
 fn entry_of(task: OutboxTask, state: OutboxState) -> OutboxEntry {
@@ -843,5 +857,19 @@ fn row_to_message(row: &Value, my_id: &str, fallback_conv: &str) -> ChatMessage 
         sent_at_ms: row["sent_at_ms"].as_i64().unwrap_or(0),
         withdrawn: row["withdrawn"].as_bool().unwrap_or(false),
         mine,
+    }
+}
+
+/// 服务端 `conv.list` 的一行 → 本地会话行，带上本地未发计数。
+fn conversation_row(item: &Value, pending: &HashMap<String, i64>) -> ConversationRow {
+    let conv = item["conv"].as_str().unwrap_or_default().to_string();
+    ConversationRow {
+        kind: item["kind"].as_str().unwrap_or_default().to_string(),
+        title: item["title"].as_str().unwrap_or_default().to_string(),
+        members: item["members"].as_i64().unwrap_or(0),
+        // null / 缺字段 = 没查到，不是"0 条未读"
+        unread: item["unread"].as_i64().unwrap_or(-1),
+        pending: *pending.get(&conv).unwrap_or(&0),
+        conv,
     }
 }

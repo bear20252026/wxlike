@@ -241,25 +241,30 @@ async fn dns_probe(target: &DiagTarget, opts: &DiagOptions) -> (StepStatus, Vec<
         Ok(Err(err)) => StepStatus::Failed {
             detail: format!("解析失败：{err}"),
         },
-        Ok(Ok(iter)) => {
-            for addr in iter {
-                if !addrs.contains(&addr) {
-                    addrs.push(addr);
-                }
-            }
-            if addrs.is_empty() {
-                StepStatus::Failed {
-                    detail: "解析结果为空".into(),
-                }
-            } else {
-                let list: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
-                StepStatus::Ok {
-                    detail: format!("{} 个地址：{}", addrs.len(), list.join(", ")),
-                }
-            }
-        }
+        Ok(Ok(iter)) => collect_addrs(iter, &mut addrs),
     };
     (status, addrs)
+}
+
+/// 去重收集地址，并按结果给出状态与可读摘要。
+fn collect_addrs(
+    iter: impl Iterator<Item = SocketAddr>,
+    addrs: &mut Vec<SocketAddr>,
+) -> StepStatus {
+    for addr in iter {
+        if !addrs.contains(&addr) {
+            addrs.push(addr);
+        }
+    }
+    if addrs.is_empty() {
+        return StepStatus::Failed {
+            detail: "解析结果为空".into(),
+        };
+    }
+    let list: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
+    StepStatus::Ok {
+        detail: format!("{} 个地址：{}", addrs.len(), list.join(", ")),
+    }
 }
 
 /// TCP 连接：按解析顺序逐个试，第一个成功即停；全部失败时保留最后一条错误。

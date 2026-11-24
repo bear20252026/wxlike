@@ -802,12 +802,7 @@ struct Session<'a> {
 async fn accept_hello(state: &Arc<HubState>, conn: &PeerConn) -> anyhow::Result<Hello> {
     // 首帧必须是 Hello{token}——**客户端不自报身份**（issue #3 / A01）。
     // v3 多一个前置 `ClientHello{device_id}`：设备认领自己，身份仍然只从凭据解析。
-    let first = conn.read_frame().await.context("await hello")?;
-    if first.len() > state.limits.max_frame_bytes {
-        state.metrics.limit_dropped("max_frame_bytes");
-        reject_hello(conn, "handshake frame too large").await;
-        anyhow::bail!("hello frame {} bytes over the ceiling", first.len());
-    }
+    let first = read_hello_frame(state, conn).await?;
     let mut negotiated = Negotiated::V2;
     let mut device_id = String::new();
     let token = match WireFrame::from_bytes(&first)? {
@@ -816,20 +811,9 @@ async fn accept_hello(state: &Arc<HubState>, conn: &PeerConn) -> anyhow::Result<
             protocol,
             caps,
         } => {
-            negotiated = match Negotiated::negotiate(protocol, caps) {
-                Ok(n) => n,
-                Err(declared) => {
-                    // 封闭失败路径：先给原因，再断，不做"降级放行"
-                    reject_hello(conn, &format!("unsupported protocol {declared}")).await;
-                    anyhow::bail!("peer declared protocol {declared}, cannot serve");
-                }
-            };
+            negotiated = negotiate_or_reject(conn, protocol, caps).await?;
             device_id = dev;
-            let next = conn.read_frame().await.context("await credential")?;
-            match WireFrame::from_bytes(&next)? {
-                WireFrame::Hello { token } => token,
-                _ => anyhow::bail!("ClientHello must be followed by a Hello credential"),
-            }
+            read_credential(conn).await?
         }
         WireFrame::Hello { token } => token,
         _ => anyhow::bail!("first frame was not Hello"),
@@ -839,6 +823,41 @@ async fn accept_hello(state: &Arc<HubState>, conn: &PeerConn) -> anyhow::Result<
         device_id,
         negotiated,
     })
+}
+
+/// 读首帧并挡尺寸上限：握手帧不能撑爆内存。
+async fn read_hello_frame(state: &Arc<HubState>, conn: &PeerConn) -> anyhow::Result<Vec<u8>> {
+    let first = conn.read_frame().await.context("await hello")?;
+    if first.len() > state.limits.max_frame_bytes {
+        state.metrics.limit_dropped("max_frame_bytes");
+        reject_hello(conn, "handshake frame too large").await;
+        anyhow::bail!("hello frame {} bytes over the ceiling", first.len());
+    }
+    Ok(first)
+}
+
+/// 协商协议；失败先给原因再断开，不做"降级放行"。
+async fn negotiate_or_reject(
+    conn: &PeerConn,
+    protocol: u8,
+    caps: u32,
+) -> anyhow::Result<Negotiated> {
+    match Negotiated::negotiate(protocol, caps) {
+        Ok(n) => Ok(n),
+        Err(declared) => {
+            reject_hello(conn, &format!("unsupported protocol {declared}")).await;
+            anyhow::bail!("peer declared protocol {declared}, cannot serve");
+        }
+    }
+}
+
+/// `ClientHello` 之后的凭证帧：只接受 `Hello{token}`。
+async fn read_credential(conn: &PeerConn) -> anyhow::Result<String> {
+    let next = conn.read_frame().await.context("await credential")?;
+    match WireFrame::from_bytes(&next)? {
+        WireFrame::Hello { token } => Ok(token),
+        _ => anyhow::bail!("ClientHello must be followed by a Hello credential"),
+    }
 }
 
 /// fail closed：没有认证器就拒绝。**不要**在这里"为了兼容"放行——
@@ -1081,23 +1100,7 @@ async fn dispatch_control(
     wire: WireFrame,
 ) -> anyhow::Result<Option<Envelope>> {
     match wire {
-        WireFrame::Msg(env) => {
-            // 用户级速率上限（G03-04 要求 3）：超了丢帧并计量，
-            // 不把连接挂起（挂起等于让攻击者占用任务）。
-            let allowed = {
-                let mut rates = state.user_rate.write().await;
-                match rates.get_mut(session.user_id) {
-                    Some(bucket) => bucket.spend(wxlike_core::types::now_ms(), 1),
-                    None => true,
-                }
-            };
-            if !allowed {
-                state.metrics.limit_dropped("max_msgs_per_user_per_min");
-                tracing::warn!(hub = %state.hub_id, user = %session.user_id, "inbound rate ceiling hit");
-                return Ok(None);
-            }
-            Ok(Some(env))
-        }
+        WireFrame::Msg(env) => Ok(admit_content(state, session.user_id).await.then_some(env)),
         WireFrame::Ping => Ok(None),
         WireFrame::Hello { .. }
         | WireFrame::HelloAck { .. }
@@ -1127,6 +1130,23 @@ async fn dispatch_control(
             Ok(None)
         }
     }
+}
+
+/// 用户级速率上限（G03-04 要求 3）：超了丢帧并计量，不把连接挂起（挂起等于
+/// 让攻击者占用任务）。
+async fn admit_content(state: &Arc<HubState>, user_id: &str) -> bool {
+    let allowed = {
+        let mut rates = state.user_rate.write().await;
+        match rates.get_mut(user_id) {
+            Some(bucket) => bucket.spend(wxlike_core::types::now_ms(), 1),
+            None => true,
+        }
+    };
+    if !allowed {
+        state.metrics.limit_dropped("max_msgs_per_user_per_min");
+        tracing::warn!(hub = %state.hub_id, user = %user_id, "inbound rate ceiling hit");
+    }
+    allowed
 }
 
 async fn serve_transport(
@@ -2059,43 +2079,50 @@ async fn fanout(
     recipients: &[String],
     park_offline: bool,
 ) -> anyhow::Result<()> {
-    let mut seen = std::collections::HashSet::new();
-    let unique: Vec<String> = recipients
+    let unique = dedup_recipients(recipients);
+    let tasks = unique
         .iter()
-        .filter(|r| seen.insert((*r).clone()))
-        .cloned()
-        .collect();
-
-    let tasks = unique.iter().map(|rcpt| {
-        let state = state.clone();
-        let rcpt = rcpt.clone();
-        let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
-            Ok(f) => f,
-            Err(err) => return tokio::spawn(async move { Err(err) }),
-        };
-        tokio::spawn(async move { deliver_via_route(&state, &rcpt, &frame, park_offline).await })
-    });
-
-    let mut first_error = None;
-    for task in futures_util::future::join_all(tasks).await {
-        match task {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
-            }
-            Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(anyhow::anyhow!("fan-out task panicked: {err}"));
-                }
-            }
-        }
-    }
-    match first_error {
+        .map(|rcpt| spawn_fanout_delivery(state, env, rcpt, park_offline));
+    match first_task_error(futures_util::future::join_all(tasks).await) {
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+fn dedup_recipients(recipients: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    recipients
+        .iter()
+        .filter(|r| seen.insert((*r).clone()))
+        .cloned()
+        .collect()
+}
+
+/// 给单个收件人起一个投递任务；组帧失败也包成任务，让错误走同一条路径。
+fn spawn_fanout_delivery(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    rcpt: &str,
+    park_offline: bool,
+) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+    let state = state.clone();
+    let rcpt = rcpt.to_string();
+    let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
+        Ok(frame) => frame,
+        Err(err) => return tokio::spawn(async move { Err(err) }),
+    };
+    tokio::spawn(async move { deliver_via_route(&state, &rcpt, &frame, park_offline).await })
+}
+
+/// 取第一个失败（任务 panic 也算），成功返回 `None`。
+fn first_task_error(
+    results: Vec<Result<anyhow::Result<()>, tokio::task::JoinError>>,
+) -> Option<anyhow::Error> {
+    results.into_iter().find_map(|task| match task {
+        Ok(Ok(())) => None,
+        Ok(Err(err)) => Some(err),
+        Err(err) => Some(anyhow::anyhow!("fan-out task panicked: {err}")),
+    })
 }
 
 /// 按路由把一帧交给一个用户（控制帧与瞬时信号走这里；内容帧走
@@ -2325,57 +2352,92 @@ async fn apply_delivery_policy(
     env: &Envelope,
     members: &Option<Vec<String>>,
 ) -> anyhow::Result<PolicyOutcome> {
-    match members {
-        // 群帧：禁言裁决一次
-        Some(_) => {
-            if policy.muted(&env.conv_id, &env.sender).await {
-                tracing::info!(
-                    hub = %state.hub_id,
-                    from = %env.sender,
-                    conv = %env.conv_id,
-                    "muted sender frame dropped"
-                );
-                return Ok(PolicyOutcome::Drop);
-            }
-            Ok(PolicyOutcome::Deliver(env.clone()))
-        }
-        // 直发帧：逐收件人
-        None if !env.to.is_empty() => {
-            let mut kept = Vec::with_capacity(env.to.len());
-            for rcpt in &env.to {
-                if policy.blocked(&env.sender, rcpt).await {
-                    tracing::info!(
-                        hub = %state.hub_id,
-                        from = %env.sender,
-                        to = %rcpt,
-                        "blocked frame dropped"
-                    );
-                    continue;
-                }
-                if !policy.direct_allowed(&env.sender, rcpt).await {
-                    tracing::info!(
-                        hub = %state.hub_id,
-                        from = %env.sender,
-                        to = %rcpt,
-                        "stranger-gate frame dropped"
-                    );
-                    continue;
-                }
-                kept.push(rcpt.clone());
-            }
-            if kept.is_empty() {
-                return Ok(PolicyOutcome::Drop);
-            }
-            if kept.len() == env.to.len() {
-                return Ok(PolicyOutcome::Deliver(env.clone()));
-            }
-            let mut adjusted = env.clone();
-            adjusted.to = kept;
-            Ok(PolicyOutcome::Deliver(adjusted))
-        }
-        // 广播（to 为空）：历史语义，不做关系过滤
-        _ => Ok(PolicyOutcome::Deliver(env.clone())),
+    if members.is_some() {
+        return group_frame(state, policy, env).await;
     }
+    if env.to.is_empty() {
+        // 广播（to 为空）：历史语义，不做关系过滤
+        return Ok(PolicyOutcome::Deliver(env.clone()));
+    }
+    direct_frame(state, policy, env).await
+}
+
+/// 群帧：禁言裁决一次，命中即整帧丢弃。
+async fn group_frame(
+    state: &Arc<HubState>,
+    policy: &dyn DeliveryPolicy,
+    env: &Envelope,
+) -> anyhow::Result<PolicyOutcome> {
+    if policy.muted(&env.conv_id, &env.sender).await {
+        tracing::info!(
+            hub = %state.hub_id,
+            from = %env.sender,
+            conv = %env.conv_id,
+            "muted sender frame dropped"
+        );
+        return Ok(PolicyOutcome::Drop);
+    }
+    Ok(PolicyOutcome::Deliver(env.clone()))
+}
+
+/// 直发帧：逐收件人过黑名单与陌生人门，保留下来的收件人写进帧副本。
+async fn direct_frame(
+    state: &Arc<HubState>,
+    policy: &dyn DeliveryPolicy,
+    env: &Envelope,
+) -> anyhow::Result<PolicyOutcome> {
+    let kept = permitted_recipients(state, policy, env).await;
+    if kept.is_empty() {
+        return Ok(PolicyOutcome::Drop);
+    }
+    if kept.len() == env.to.len() {
+        return Ok(PolicyOutcome::Deliver(env.clone()));
+    }
+    let mut adjusted = env.clone();
+    adjusted.to = kept;
+    Ok(PolicyOutcome::Deliver(adjusted))
+}
+
+async fn permitted_recipients(
+    state: &Arc<HubState>,
+    policy: &dyn DeliveryPolicy,
+    env: &Envelope,
+) -> Vec<String> {
+    let mut kept = Vec::with_capacity(env.to.len());
+    for rcpt in &env.to {
+        if recipient_allowed(state, policy, env, rcpt).await {
+            kept.push(rcpt.clone());
+        }
+    }
+    kept
+}
+
+/// 单个收件人是否还能收到这条直发帧。
+async fn recipient_allowed(
+    state: &Arc<HubState>,
+    policy: &dyn DeliveryPolicy,
+    env: &Envelope,
+    rcpt: &str,
+) -> bool {
+    if policy.blocked(&env.sender, rcpt).await {
+        tracing::info!(
+            hub = %state.hub_id,
+            from = %env.sender,
+            to = %rcpt,
+            "blocked frame dropped"
+        );
+        return false;
+    }
+    if !policy.direct_allowed(&env.sender, rcpt).await {
+        tracing::info!(
+            hub = %state.hub_id,
+            from = %env.sender,
+            to = %rcpt,
+            "stranger-gate frame dropped"
+        );
+        return false;
+    }
+    true
 }
 
 enum PolicyOutcome {

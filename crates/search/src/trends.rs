@@ -128,21 +128,14 @@ pub fn rank_trends_paged(
     page: usize,
     page_size: usize,
 ) -> TrendRanking {
-    let server = server_window(now_ms, opts);
-    let effective = match window {
-        Some(w) => match w.intersect(server) {
-            Some(hit) => hit,
-            // 交集为空：没有可算的行，但这是正常输入，不是错误。
-            None => {
-                return TrendRanking {
-                    terms: Vec::new(),
-                    stats: TrendStats::default(),
-                    ranked_total: 0,
-                    has_more: false,
-                }
-            }
-        },
-        None => server,
+    let Some(effective) = effective_window(now_ms, window, opts) else {
+        // 交集为空：没有可算的行，但这是正常输入，不是错误。
+        return TrendRanking {
+            terms: Vec::new(),
+            stats: TrendStats::default(),
+            ranked_total: 0,
+            has_more: false,
+        };
     };
     let (ranked, stats) = collect(docs, effective, opts);
     // 服务端先定榜单全长上限，分页只在里面切段：`limit` 管"这榜最多多少个词"，
@@ -150,16 +143,40 @@ pub fn rank_trends_paged(
     let mut ranked = ranked;
     ranked.truncate(opts.limit.max(1));
     let ranked_total = ranked.len();
-    let page = page.max(1);
-    let size = page_size.max(1);
-    let start = (page - 1).saturating_mul(size);
-    let terms: Vec<TrendTerm> = ranked.into_iter().skip(start).take(size).collect();
+    let (start, terms) = page_slice(ranked, page, page_size);
     TrendRanking {
         has_more: start + terms.len() < ranked_total,
         terms,
         stats,
         ranked_total,
     }
+}
+
+/// 客户端窗口与服务端窗口的交集；空交集返回 `None`。
+fn effective_window(
+    now_ms: i64,
+    window: Option<crate::query::TimeRange>,
+    opts: &TrendOptions,
+) -> Option<crate::query::TimeRange> {
+    let server = server_window(now_ms, opts);
+    match window {
+        Some(w) => w.intersect(server),
+        None => Some(server),
+    }
+}
+
+/// 按 1 起的页号切一段；返回 `(起始下标, 这一段)`。
+fn page_slice(ranked: Vec<TrendTerm>, page: usize, page_size: usize) -> (usize, Vec<TrendTerm>) {
+    let start = page
+        .max(1)
+        .saturating_sub(1)
+        .saturating_mul(page_size.max(1));
+    let terms = ranked
+        .into_iter()
+        .skip(start)
+        .take(page_size.max(1))
+        .collect();
+    (start, terms)
 }
 
 /// 服务端窗口：`[now - window_ms, now]`，用半开区间写成 `[start, now + 1)`。

@@ -427,26 +427,36 @@ impl VideoStore {
         std::fs::create_dir_all(temp_dir.join("hls"))
             .with_context(|| "create temp transcode dir".to_string())?;
 
-        let result = self.run_pipeline(video_id, bytes, &temp_dir);
-        match result {
-            Ok(meta) => match std::fs::rename(&temp_dir, &final_dir) {
-                Ok(()) => Ok(meta),
-                Err(err) => {
-                    // 同内容并发转码（同步上传撞上班里的同一个作业）时，赢家的
-                    // 目录已经在那儿了。此时"对象存在"是真话，不是降级——
-                    // 清掉自己的临时目录，返回同一份结果。
-                    if self.contains(video_id) {
-                        std::fs::remove_dir_all(&temp_dir).ok();
-                        tracing::debug!(video_id, error = %err, "并发转码：采用已存在的对象");
-                        return Ok(meta);
-                    }
-                    std::fs::remove_dir_all(&temp_dir).ok();
-                    Err(err).with_context(|| "move transcoded artifacts into place".to_string())
-                }
-            },
+        match self.run_pipeline(video_id, bytes, &temp_dir) {
+            Ok(meta) => self.finish_transcode(video_id, meta, &temp_dir, &final_dir),
             Err(err) => {
-                std::fs::remove_dir_all(&temp_dir).ok();
+                cleanup(&temp_dir);
                 Err(err)
+            }
+        }
+    }
+
+    /// 把临时目录换到最终位置；同内容并发转码时采用已存在的对象。
+    fn finish_transcode(
+        &self,
+        video_id: &str,
+        meta: VideoMeta,
+        temp_dir: &std::path::Path,
+        final_dir: &std::path::Path,
+    ) -> anyhow::Result<VideoMeta> {
+        match std::fs::rename(temp_dir, final_dir) {
+            Ok(()) => Ok(meta),
+            Err(err) => {
+                // 同内容并发转码（同步上传撞上班里的同一个作业）时，赢家的
+                // 目录已经在那儿了。此时"对象存在"是真话，不是降级——清掉
+                // 自己的临时目录，返回同一份结果。
+                if self.contains(video_id) {
+                    cleanup(temp_dir);
+                    tracing::debug!(video_id, error = %err, "并发转码：采用已存在的对象");
+                    return Ok(meta);
+                }
+                cleanup(temp_dir);
+                Err(err).with_context(|| "move transcoded artifacts into place".to_string())
             }
         }
     }
@@ -1176,4 +1186,9 @@ async fn read_field(form: &mut Multipart) -> Result<Vec<u8>, String> {
         }
     }
     Err("missing `bytes` field".into())
+}
+
+/// 尽力删掉临时目录：失败也不影响主流程的错误。
+fn cleanup(dir: &std::path::Path) {
+    std::fs::remove_dir_all(dir).ok();
 }

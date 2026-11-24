@@ -129,31 +129,39 @@ async fn commerce_action(
     body: Bytes,
 ) -> Response {
     let Some(actor) = actor_of(&state.platform, &headers) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "UNAUTHORIZED"})),
-        )
-            .into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
     };
     // audience 闸门在解析 body 之前：不给未授权调用方任何参数探测面。
     if let Some(response) = audience_gate(&action, &state.platform, &headers) {
         return response;
     }
-    let payload: serde_json::Value = if body.is_empty() {
-        serde_json::json!({})
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(value) => value,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "BAD_INPUT"})),
-                )
-                    .into_response()
-            }
-        }
+    let Some(payload) = parse_payload(&body) else {
+        return error_response(StatusCode::BAD_REQUEST, "BAD_INPUT");
     };
-    let commerce = Arc::clone(&state.commerce);
+    run_action(&state.commerce, actor, action, payload).await
+}
+
+/// 统一的 JSON 错误体。
+fn error_response(status: StatusCode, label: &str) -> Response {
+    (status, Json(serde_json::json!({ "error": label }))).into_response()
+}
+
+/// 空体按 `{}` 处理；不是合法 JSON 就返回 `None`（调用方回 400）。
+fn parse_payload(body: &Bytes) -> Option<serde_json::Value> {
+    if body.is_empty() {
+        return Some(serde_json::json!({}));
+    }
+    serde_json::from_slice(body).ok()
+}
+
+/// 在阻塞线程里跑命令分发，把 `dispatch` 的三态结果映射回 HTTP。
+async fn run_action(
+    commerce: &Arc<Commerce>,
+    actor: String,
+    action: String,
+    payload: serde_json::Value,
+) -> Response {
+    let commerce = Arc::clone(commerce);
     let ran = tokio::task::spawn_blocking(move || {
         wxlike_commerce::http::dispatch(&commerce, &actor, &action, &payload)
     })
@@ -162,15 +170,11 @@ async fn commerce_action(
         Ok(Ok(value)) => (StatusCode::OK, Json(value)).into_response(),
         Ok(Err(err)) => {
             let (status, label) = classify(&err);
-            (status, Json(serde_json::json!({"error": label}))).into_response()
+            error_response(status, label)
         }
         Err(err) => {
             tracing::error!(%err, "commerce 动作阻塞任务异常结束");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "INTERNAL"})),
-            )
-                .into_response()
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL")
         }
     }
 }

@@ -161,11 +161,37 @@ pub struct Server {
     rt: Option<tokio::runtime::Runtime>,
 }
 
+/// 有运行时就在上面跑 rmcp 会话；建不出运行时就把通道丢掉，让每一帧都在
+/// `pump` 里拿到明确的 INTERNAL_ERROR 回包——"一帧进一帧出"的契约不因启动
+/// 失败而破。
+fn spawn_session(
+    rt: Option<&tokio::runtime::Runtime>,
+    handler: Handler,
+    in_rx: mpsc::UnboundedReceiver<ClientJsonRpcMessage>,
+    out_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+) {
+    let Some(rt) = rt else {
+        drop(in_rx);
+        drop(out_tx);
+        return;
+    };
+    rt.spawn(async move {
+        let session = serve_directly(
+            handler,
+            FrameTransport {
+                incoming: in_rx,
+                outgoing: out_tx,
+            },
+            None,
+        );
+        let _ = session.waiting().await;
+    });
+}
+
 impl Server {
     pub fn new(exec: Executor, policy: Policy) -> Self {
         Self::start(exec, policy, None)
     }
-
     /// 挂上会话/scope 闸门。**没挂不等于没权限**：服务端仍会再验一次，
     /// 但本地就不会提前拦——所以远程 transport 必须挂。
     ///
@@ -240,28 +266,7 @@ impl Server {
         let handler = Handler {
             core: Arc::clone(&core),
         };
-        match rt {
-            Some(ref rt) => {
-                rt.spawn(async move {
-                    let session = serve_directly(
-                        handler,
-                        FrameTransport {
-                            incoming: in_rx,
-                            outgoing: out_tx,
-                        },
-                        None,
-                    );
-                    let _ = session.waiting().await;
-                });
-            }
-            // 连当前线程运行时都建不出来（拿不到线程/epoll）也不再 expect panic：
-            // 直接把入站接收端丢掉，之后每一帧都在 pump 里拿到明确的 INTERNAL_ERROR
-            // 回包——"一帧进一帧出"的契约不因启动失败而破。
-            None => {
-                drop(in_rx);
-                drop(out_tx);
-            }
-        }
+        spawn_session(rt.as_ref(), handler, in_rx, out_tx);
         Server {
             core,
             to_rmcp: in_tx,

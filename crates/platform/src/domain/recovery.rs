@@ -49,6 +49,15 @@ fn rank(v: &wxlike_risk::Verdict) -> u8 {
     }
 }
 
+/// 两个裁决取更严的那个。
+fn stricter(a: wxlike_risk::Verdict, b: wxlike_risk::Verdict) -> wxlike_risk::Verdict {
+    if rank(&b) > rank(&a) {
+        b
+    } else {
+        a
+    }
+}
+
 fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
@@ -79,22 +88,34 @@ impl Platform {
         checks: &[(wxlike_risk::Action, &str)],
         captcha: Option<(&str, &str)>,
     ) -> Result<()> {
+        let worst = self.worst_verdict(checks)?;
+        self.verdict_result(worst.unwrap_or(wxlike_risk::Verdict::Allow), captcha)
+    }
+
+    /// 逐个键取裁决，保留排名最高的那个。
+    fn worst_verdict(
+        &self,
+        checks: &[(wxlike_risk::Action, &str)],
+    ) -> Result<Option<wxlike_risk::Verdict>> {
         let now = wxlike_core::types::now_ms();
         let mut worst: Option<wxlike_risk::Verdict> = None;
         for (action, key) in checks {
             let v = self.risk().check(*action, key, now)?;
-            worst = Some(match (worst, v) {
-                (None, v) => v,
-                (Some(a), b) => {
-                    if rank(&b) > rank(&a) {
-                        b
-                    } else {
-                        a
-                    }
-                }
+            worst = Some(match worst {
+                None => v,
+                Some(a) => stricter(a, v),
             });
         }
-        match worst.unwrap_or(wxlike_risk::Verdict::Allow) {
+        Ok(worst)
+    }
+
+    /// 把裁决翻译成平台错误；Challenge 在这里消费题目。
+    fn verdict_result(
+        &self,
+        verdict: wxlike_risk::Verdict,
+        captcha: Option<(&str, &str)>,
+    ) -> Result<()> {
+        match verdict {
             wxlike_risk::Verdict::Allow => Ok(()),
             wxlike_risk::Verdict::Throttle { retry_after_ms } => {
                 Err(PlatformError::RateLimited { retry_after_ms })

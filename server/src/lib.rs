@@ -668,34 +668,42 @@ async fn serve_http(
 )> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let http_addr = listener.local_addr()?;
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let http_task = tokio::spawn(async move {
-        // with_graceful_shutdown：收到信号后不再 accept，已建立的连接把
-        // 手头请求处理完。没有它，launchd 的 SIGTERM 会直接切断在飞请求。
-        let stop = async move {
-            // 注意：发送端全部被 drop（例如调用方直接丢掉 Stack）时 `changed()`
-            // 返回 Err。那**不是**停止请求——测试与嵌入式用法会丢掉 Stack 但
-            // 希望服务继续跑。只有真正收到 `true` 才停。
-            while shutdown_rx.changed().await.is_ok() {
-                if *shutdown_rx.borrow() {
-                    return;
-                }
-            }
-            std::future::pending::<()>().await;
-        };
-        // `into_make_service_with_connect_info` 让 handler 能拿到**真实对端地址**：
-        // 限流的来源默认用它，而不是客户端可伪造的 `x-forwarded-for`（issue #19）。
-        if let Err(err) = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(stop)
-        .await
-        {
-            eprintln!("[wxlike-server] http serve failed: {err}");
-        }
-    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let http_task = tokio::spawn(serve_http_loop(listener, app, shutdown_rx));
     Ok((http_addr, shutdown_tx, http_task))
+}
+
+/// 跑 HTTP 服务直到收到停机信号。
+async fn serve_http_loop(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    // with_graceful_shutdown：收到信号后不再 accept，已建立的连接把
+    // 手头请求处理完。没有它，launchd 的 SIGTERM 会直接切断在飞请求。
+    //
+    // 注意：发送端全部被 drop（例如调用方直接丢掉 Stack）时 `changed()`
+    // 返回 Err。那**不是**停止请求——测试与嵌入式用法会丢掉 Stack 但
+    // 希望服务继续跑。只有真正收到 `true` 才停。
+    let stop = async move {
+        while shutdown_rx.changed().await.is_ok() {
+            if *shutdown_rx.borrow() {
+                return;
+            }
+        }
+        std::future::pending::<()>().await;
+    };
+    // `into_make_service_with_connect_info` 让 handler 能拿到**真实对端地址**：
+    // 限流的来源默认用它，而不是客户端可伪造的 `x-forwarded-for`（issue #19）。
+    if let Err(err) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(stop)
+    .await
+    {
+        eprintln!("[wxlike-server] http serve failed: {err}");
+    }
 }
 
 /// P3 ADR-8: the WebSocket gateway. Upgraded sockets speak the SAME wire
@@ -1454,10 +1462,10 @@ async fn metrics() -> impl IntoResponse {
 /// 从"永久"收敛到"剩余有效期"。桌面端改从本端点取凭据（客户端半边另跟踪）。
 ///
 /// 没配 `WXLIKE_TURN_SECRET` 就不挂路由——凭据面遵守"没配就是关"。
-fn turn_routes(platform: PlatformState) -> Router {
-    /// 凭据有效期：3600s 是 coturn 文档的建议量级。
-    const TURN_CRED_TTL_SECS: u64 = 3_600;
+/// 凭据有效期：3600s 是 coturn 文档的建议量级。
+const TURN_CRED_TTL_SECS: u64 = 3_600;
 
+fn turn_routes(platform: PlatformState) -> Router {
     let Some(secret) = non_empty_env("WXLIKE_TURN_SECRET") else {
         return Router::new();
     };
@@ -1470,30 +1478,37 @@ fn turn_routes(platform: PlatformState) -> Router {
             let platform = platform.clone();
             let secret = secret.clone();
             let turn_uris = turn_uris.clone();
-            async move {
-                let caller = wxlike_platform::Authed::bearer_from(&headers)
-                    .and_then(|t| platform.lookup_token(t).ok().flatten());
-                let Some(user_id) = caller else {
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        axum::Json(serde_json::json!({"error": "login required"})),
-                    );
-                };
-                let now = wxlike_core::types::now_ms() / 1000;
-                let (username, password) =
-                    turn_rest_credentials(&secret, &user_id, now, TURN_CRED_TTL_SECS);
-                tracing::info!(user = %user_id, "issued TURN rest credentials");
-                (
-                    StatusCode::OK,
-                    axum::Json(serde_json::json!({
-                        "username": username,
-                        "password": password,
-                        "ttl_seconds": TURN_CRED_TTL_SECS,
-                        "uris": turn_uris,
-                    })),
-                )
-            }
+            async move { turn_credentials(platform, secret, turn_uris, headers).await }
         }),
+    )
+}
+
+/// 签发一组合法凭据；未登录一律 401，不泄漏任何 secret 形状。
+async fn turn_credentials(
+    platform: PlatformState,
+    secret: String,
+    turn_uris: Vec<String>,
+    headers: axum::http::HeaderMap,
+) -> (StatusCode, axum::Json<serde_json::Value>) {
+    let caller = wxlike_platform::Authed::bearer_from(&headers)
+        .and_then(|t| platform.lookup_token(t).ok().flatten());
+    let Some(user_id) = caller else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error": "login required"})),
+        );
+    };
+    let now = wxlike_core::types::now_ms() / 1000;
+    let (username, password) = turn_rest_credentials(&secret, &user_id, now, TURN_CRED_TTL_SECS);
+    tracing::info!(user = %user_id, "issued TURN rest credentials");
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "username": username,
+            "password": password,
+            "ttl_seconds": TURN_CRED_TTL_SECS,
+            "uris": turn_uris,
+        })),
     )
 }
 
@@ -1525,73 +1540,92 @@ fn turn_rest_credentials(
 /// configured — the faucet mints money, so it demands the admin token
 /// (`x-admin-token` header) like every other admin surface (AR-2/H-1, audit
 /// round 4). Without an admin token the faucet stays off: "没配就是关".
+/// Per-call cap: enough for any demo, far below the ledger ceiling — an
+/// authorized-but-compromised caller must not be able to hyperinflate the
+/// virtual economy in one request.
+const FAUCET_MAX_PER_CALL: i64 = 1_000_000;
+
 fn dev_routes(platform: PlatformState) -> Router {
-    /// Per-call cap: enough for any demo, far below the ledger ceiling — an
-    /// authorized-but-compromised caller must not be able to hyperinflate
-    /// the virtual economy in one request.
-    const FAUCET_MAX_PER_CALL: i64 = 1_000_000;
-    let mut app = axum::Router::new();
-    if std::env::var("WXLIKE_DEV_FAUCET").as_deref() == Ok("1") {
-        if platform
-            .options()
-            .admin_token
-            .as_deref()
-            .is_none_or(|t| t.is_empty())
-        {
-            eprintln!(
-                "[wxlike-server] WXLIKE_DEV_FAUCET=1 but WXLIKE_ADMIN_TOKEN is not set; \
-                 the faucet stays OFF (it mints money — it will not run unauthenticated)"
-            );
-            return app;
-        }
+    if std::env::var("WXLIKE_DEV_FAUCET").as_deref() != Ok("1") {
+        return Router::new();
+    }
+    if !admin_token_configured(&platform) {
         eprintln!(
-            "[wxlike-server] DEV FAUCET ENABLED: /api/dev/fund is live, admin-token gated, \
-             max {FAUCET_MAX_PER_CALL} per call — do not expose this process to the internet"
+            "[wxlike-server] WXLIKE_DEV_FAUCET=1 but WXLIKE_ADMIN_TOKEN is not set; \
+             the faucet stays OFF (it mints money — it will not run unauthenticated)"
         );
-        let state = platform;
-        app = app.route(
-            "/api/dev/fund",
-            axum::routing::post(
-                move |headers: axum::http::HeaderMap, ApiJson(body): ApiJson<serde_json::Value>| {
-                    let state = state.clone();
-                    async move {
-                        let presented = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
-                        if !state.admin_ok(presented) {
-                            return (
-                                StatusCode::FORBIDDEN,
-                                "{\"error\":\"admin token required\"}".to_string(),
-                            );
-                        }
-                        let user_id = body["user_id"].as_str().unwrap_or_default();
-                        let amount = body["amount"].as_i64().unwrap_or(0);
-                        if amount <= 0 || amount > FAUCET_MAX_PER_CALL {
-                            return (
-                                StatusCode::UNPROCESSABLE_ENTITY,
-                                format!(
-                                    "{{\"error\":\"amount must be 1..={FAUCET_MAX_PER_CALL}\"}}"
-                                ),
-                            );
-                        }
-                        // The fund ledger row itself is the audit trail; the
-                        // log line gives operators a real-time view.
-                        tracing::warn!(
-                            user = user_id,
-                            amount,
-                            "dev faucet fund (admin-authenticated)"
-                        );
-                        match state.fund(user_id, amount, "dev faucet") {
-                            Ok(()) => (StatusCode::NO_CONTENT, "".to_string()),
-                            Err(err) => (
-                                StatusCode::UNPROCESSABLE_ENTITY,
-                                format!("{{\"error\":\"{err}\"}}"),
-                            ),
-                        }
-                    }
-                },
-            ),
+        return Router::new();
+    }
+    eprintln!(
+        "[wxlike-server] DEV FAUCET ENABLED: /api/dev/fund is live, admin-token gated, \
+         max {FAUCET_MAX_PER_CALL} per call — do not expose this process to the internet"
+    );
+    axum::Router::new().route(
+        "/api/dev/fund",
+        axum::routing::post(
+            move |headers: axum::http::HeaderMap, ApiJson(body): ApiJson<serde_json::Value>| {
+                let state = platform.clone();
+                async move { faucet_fund(state, headers, body).await }
+            },
+        ),
+    )
+}
+
+/// The faucet only runs when an admin token is configured: it mints money.
+fn admin_token_configured(platform: &PlatformState) -> bool {
+    platform
+        .options()
+        .admin_token
+        .as_deref()
+        .is_some_and(|t| !t.is_empty())
+}
+
+/// `(user_id, amount)` from the request body, or `None` when the amount falls
+/// outside `1..=FAUCET_MAX_PER_CALL`.
+fn faucet_request(body: &serde_json::Value) -> Option<(&str, i64)> {
+    let user_id = body["user_id"].as_str().unwrap_or_default();
+    let amount = body["amount"].as_i64().unwrap_or(0);
+    (1..=FAUCET_MAX_PER_CALL)
+        .contains(&amount)
+        .then_some((user_id, amount))
+}
+
+/// `x-admin-token` from the request headers.
+fn admin_token_of(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers.get("x-admin-token").and_then(|v| v.to_str().ok())
+}
+
+async fn faucet_fund(
+    state: PlatformState,
+    headers: axum::http::HeaderMap,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
+    if !state.admin_ok(admin_token_of(&headers)) {
+        return (
+            StatusCode::FORBIDDEN,
+            "{\"error\":\"admin token required\"}".to_string(),
         );
     }
-    app
+    let Some((user_id, amount)) = faucet_request(&body) else {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("{{\"error\":\"amount must be 1..={FAUCET_MAX_PER_CALL}\"}}"),
+        );
+    };
+    // The fund ledger row itself is the audit trail; the log line gives
+    // operators a real-time view.
+    tracing::warn!(
+        user = user_id,
+        amount,
+        "dev faucet fund (admin-authenticated)"
+    );
+    match state.fund(user_id, amount, "dev faucet") {
+        Ok(()) => (StatusCode::NO_CONTENT, String::new()),
+        Err(err) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("{{\"error\":\"{err}\"}}"),
+        ),
+    }
 }
 
 /// Pushes platform system envelopes (friend/group lifecycle) into the QUIC hub.

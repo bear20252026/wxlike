@@ -321,34 +321,52 @@ impl Outbox {
     {
         let mut report = FlushReport::default();
         for task in self.due(now_ms, limit)? {
-            match sender(&task) {
-                Ok(()) => {
-                    self.mark_sent(&task.task_id)?;
-                    report.sent += 1;
-                }
-                // 本地限流：不记账、这一轮结束。连"失败"都不算——
-                // 否则用户会看到"发送失败"，而实际只是等一下就好。
-                Err(fail) if fail.throttled => {
-                    report.throttled += 1;
-                    break;
-                }
-                Err(fail) if fail.retryable => {
-                    // 连接层大概率已经坏了：剩下的任务这一轮不再试
-                    let next = self.record_failure(&task.task_id, &fail.message, now_ms)?;
-                    if next.is_some() {
-                        report.retrying += 1;
-                    } else {
-                        report.failed += 1;
-                    }
-                    break;
-                }
-                Err(fail) => {
-                    self.mark_failed(&task.task_id, &fail.message)?;
-                    report.failed += 1;
-                }
+            if !self.deliver_one(&task, &mut sender, now_ms, &mut report)? {
+                break;
             }
         }
         Ok(report)
+    }
+
+    /// 发一条并记账；返回 `false` 表示这一轮该停（限流或连接层失败）。
+    fn deliver_one<F>(
+        &self,
+        task: &OutboxTask,
+        sender: &mut F,
+        now_ms: i64,
+        report: &mut FlushReport,
+    ) -> anyhow::Result<bool>
+    where
+        F: FnMut(&OutboxTask) -> Result<(), SendFailure>,
+    {
+        match sender(task) {
+            Ok(()) => {
+                self.mark_sent(&task.task_id)?;
+                report.sent += 1;
+                Ok(true)
+            }
+            // 本地限流：不记账、这一轮结束。连"失败"都不算——否则用户会看到
+            // "发送失败"，而实际只是等一下就好。
+            Err(fail) if fail.throttled => {
+                report.throttled += 1;
+                Ok(false)
+            }
+            Err(fail) if fail.retryable => {
+                // 连接层大概率已经坏了：剩下的任务这一轮不再试
+                let next = self.record_failure(&task.task_id, &fail.message, now_ms)?;
+                if next.is_some() {
+                    report.retrying += 1;
+                } else {
+                    report.failed += 1;
+                }
+                Ok(false)
+            }
+            Err(fail) => {
+                self.mark_failed(&task.task_id, &fail.message)?;
+                report.failed += 1;
+                Ok(true)
+            }
+        }
     }
 }
 

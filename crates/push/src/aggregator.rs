@@ -250,34 +250,40 @@ impl AggregatingDispatchHook {
             agg: std::sync::Mutex::new(Aggregator::new()),
         });
         // 冲刷循环：window/4 节拍
-        let flusher = hook.clone();
         let interval = (window_ms / 4).max(50);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_millis(interval));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
-                let now = wxlike_core::types::now_ms();
-                let due = {
-                    let mut agg = flusher
-                        .agg
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    agg.flush_all(now)
-                };
-                for (user, task) in due {
-                    let payload = PushPayload {
-                        from_user: task.last_from,
-                        conv_id: task.conv_id,
-                        count: Some(task.count),
-                    };
-                    if let Err(err) = flusher.inner.dispatch_devices(&user, &payload).await {
-                        eprintln!("[push] aggregated send to {user} failed: {err:#}");
-                    }
-                }
-            }
-        });
+        tokio::spawn(flush_loop(hook.clone(), interval));
         hook
+    }
+}
+
+/// window/4 节拍地检查到期缓冲，到期就发一条摘要。
+async fn flush_loop(hook: std::sync::Arc<AggregatingDispatchHook>, interval_ms: u64) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        flush_once(&hook).await;
+    }
+}
+
+async fn flush_once(hook: &AggregatingDispatchHook) {
+    let now = wxlike_core::types::now_ms();
+    let due = {
+        let mut agg = hook
+            .agg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        agg.flush_all(now)
+    };
+    for (user, task) in due {
+        let payload = PushPayload {
+            from_user: task.last_from,
+            conv_id: task.conv_id,
+            count: Some(task.count),
+        };
+        if let Err(err) = hook.inner.dispatch_devices(&user, &payload).await {
+            eprintln!("[push] aggregated send to {user} failed: {err:#}");
+        }
     }
 }
 

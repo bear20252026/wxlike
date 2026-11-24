@@ -383,38 +383,42 @@ impl Commerce {
     /// # Errors
     /// 选取清单时存储失败。
     pub fn refresh_processing_withdrawals(&self) -> Result<usize> {
-        let due: Vec<(String, String)> = {
-            let conn = self.lock();
-            let mut stmt = conn.prepare(
-                "SELECT id, actor_id FROM commerce_withdrawals
-                 WHERE status = 'processing'
-                 ORDER BY updated_at ASC, id ASC LIMIT 50",
-            )?;
-            let rows =
-                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-            let mut ids = Vec::new();
-            for row in rows {
-                ids.push(row?);
-            }
-            ids
-        };
+        let due = self.processing_withdrawals()?;
         let mut advanced = 0usize;
         for (id, actor) in due {
-            match self.refresh_withdrawal(&actor, &id) {
-                Ok(withdrawal) => {
-                    if matches!(
-                        withdrawal.status,
-                        WithdrawalStatus::Paid | WithdrawalStatus::Failed
-                    ) {
-                        advanced += 1;
-                    }
-                }
-                Err(_) => {
-                    // 仍未知：保持冻结与 processing，下一轮用同一幂等键再试。
-                }
+            if self.refresh_advanced(&actor, &id) {
+                advanced += 1;
             }
         }
         Ok(advanced)
+    }
+
+    /// 本轮要重试的 processing 提现（最多 50 笔，按更新时间升序）。
+    fn processing_withdrawals(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, actor_id FROM commerce_withdrawals
+                 WHERE status = 'processing'
+                 ORDER BY updated_at ASC, id ASC LIMIT 50",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
+    /// 重试一笔；返回它是否推进到了终态（paid/failed）。
+    fn refresh_advanced(&self, actor: &str, id: &str) -> bool {
+        match self.refresh_withdrawal(actor, id) {
+            Ok(withdrawal) => matches!(
+                withdrawal.status,
+                WithdrawalStatus::Paid | WithdrawalStatus::Failed
+            ),
+            // 仍未知：保持冻结与 processing，下一轮用同一幂等键再试。
+            Err(_) => false,
+        }
     }
 
     fn apply_payout(

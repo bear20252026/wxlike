@@ -319,44 +319,19 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let media = serde_json::to_string(&cleaned)?;
         let mut c = self.db().lock();
-        let id = c.with_tx(|tx| -> Result<String> {
+        c.with_tx(|tx| -> Result<String> {
             let port = StorageConnection::sqlite_tx(tx);
             require_media(&port, &cleaned)?;
-            let id = match draft_id {
-                Some(id) => {
-                    let id = validate::id(id)?.to_string();
-                    if !update_draft(
-                        &port,
-                        &id,
-                        &author,
-                        text,
-                        &media,
-                        visibility.as_str(),
-                        &group,
-                        now,
-                    )? {
-                        return Err(PlatformError::NotFound);
-                    }
-                    id
-                }
-                None => {
-                    let id = crate::auth::random_hex(8);
-                    insert_draft(
-                        &port,
-                        &id,
-                        &author,
-                        text,
-                        &media,
-                        visibility.as_str(),
-                        &group,
-                        now,
-                    )?;
-                    id
-                }
+            let fields = DraftFields {
+                author: &author,
+                text,
+                media: &media,
+                visibility: visibility.as_str(),
+                group: &group,
+                now,
             };
-            Ok(id)
-        })?;
-        Ok(id)
+            write_draft(&port, draft_id, &fields)
+        })
     }
 
     pub(crate) fn moment_drafts(&self, author: &str) -> Result<Vec<MomentDraft>> {
@@ -587,4 +562,50 @@ impl Platform {
         let rows = feed_page(&c, me, upper, limit + 1)?;
         Ok(page_from_rows(rows, limit, upper))
     }
+}
+
+/// 草稿写入的字段集合（参数超过七个，收进结构体后读写更清楚）。
+struct DraftFields<'a> {
+    author: &'a str,
+    text: &'a str,
+    media: &'a str,
+    visibility: &'a str,
+    group: &'a str,
+    now: i64,
+}
+
+/// 覆盖已有草稿或新建一条，返回草稿 id。
+fn write_draft(
+    port: &StorageConnection<'_>,
+    draft_id: Option<&str>,
+    fields: &DraftFields<'_>,
+) -> Result<String> {
+    let Some(draft_id) = draft_id else {
+        let id = crate::auth::random_hex(8);
+        insert_draft(
+            port,
+            &id,
+            fields.author,
+            fields.text,
+            fields.media,
+            fields.visibility,
+            fields.group,
+            fields.now,
+        )?;
+        return Ok(id);
+    };
+    let id = validate::id(draft_id)?.to_string();
+    if !update_draft(
+        port,
+        &id,
+        fields.author,
+        fields.text,
+        fields.media,
+        fields.visibility,
+        fields.group,
+        fields.now,
+    )? {
+        return Err(PlatformError::NotFound);
+    }
+    Ok(id)
 }

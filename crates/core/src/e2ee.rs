@@ -929,42 +929,45 @@ impl Crypto {
             let Some(state) = self.dm.get_mut(peer_user_id) else {
                 return;
             };
-            let due: Option<((String, u64), Sealed)> = state
-                .parked
-                .iter()
-                .find(|((rk, idx), _)| {
-                    state
-                        .chain_pos
-                        .get(rk)
-                        .is_some_and(|last| *idx == *last + 1)
-                })
-                .map(|(k, v)| (k.clone(), v.clone()));
-            let Some((key, sealed)) = due else {
+            let Some((key, sealed)) = Self::next_due(state) else {
                 return;
             };
-            let Some(state) = self.dm.get_mut(peer_user_id) else {
-                return;
-            };
-            let Ok(message) = Message::from_base64(&sealed.body) else {
+            Self::deliver_parked(state, key, sealed);
+        }
+    }
+
+    /// 下一件到点的在途消息：同一 chain 里紧跟在 `chain_pos` 之后的那条。
+    fn next_due(state: &DmState) -> Option<((String, u64), Sealed)> {
+        state
+            .parked
+            .iter()
+            .find(|((rk, idx), _)| {
+                state
+                    .chain_pos
+                    .get(rk)
+                    .is_some_and(|last| *idx == *last + 1)
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+    }
+
+    /// 解密一条到点消息并推进 chain；失败（被篡改）就丢掉，防止堵住队列。
+    fn deliver_parked(state: &mut DmState, key: (String, u64), sealed: Sealed) {
+        let Ok(message) = Message::from_base64(&sealed.body) else {
+            state.parked.remove(&key);
+            return;
+        };
+        match state.session.decrypt(&OlmMessage::Normal(message)) {
+            Ok(plaintext) => {
+                if state.mark_seen(&sealed.body) {
+                    state.recovered.push(plaintext);
+                }
+                let (rk, idx) = &key;
+                let next = state.chain_pos.get(rk).map_or(*idx, |l| (*l).max(*idx));
+                state.chain_pos.insert(rk.clone(), next);
                 state.parked.remove(&key);
-                continue;
-            };
-            match state.session.decrypt(&OlmMessage::Normal(message)) {
-                Ok(plaintext) => {
-                    if state.mark_seen(&sealed.body) {
-                        state.recovered.push(plaintext);
-                    }
-                    let (rk, idx) = &key;
-                    let next = state.chain_pos.get(rk).map_or(*idx, |l| (*l).max(*idx));
-                    state.chain_pos.insert(rk.clone(), next);
-                    state.parked.remove(&key);
-                    // loop again: this delivery may unblock the next one
-                }
-                Err(_) => {
-                    // Not actually decryptable at its turn (tampered): drop it
-                    // so it cannot wedge the queue, and keep going.
-                    state.parked.remove(&key);
-                }
+            }
+            Err(_) => {
+                state.parked.remove(&key);
             }
         }
     }

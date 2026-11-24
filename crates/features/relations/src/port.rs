@@ -199,24 +199,18 @@ impl Acs {
     pub fn parse(raw: &str) -> Result<Acs> {
         let mut acc: u32 = Acs::UNSET.0;
         for ch in raw.bytes() {
-            match ch {
-                b'J' | b'j' => acc |= Self::JOIN,
-                b'R' | b'r' => acc |= Self::READ,
-                b'W' | b'w' => acc |= Self::WRITE,
-                b'P' | b'p' => acc |= Self::PRES,
-                b'A' | b'a' => acc |= Self::APPROVE,
-                b'S' | b's' => acc |= Self::SHARE,
-                b'D' | b'd' => acc |= Self::DELETE,
-                b'O' | b'o' => acc |= Self::OWNER,
-                b'N' | b'n' => {
-                    if acc != Acs::UNSET.0 {
-                        // 上游原文："access N cannot be combined with any other"。
-                        return Err(RelError::BadInput("access mode N cannot be combined"));
-                    }
-                    return Ok(Acs::NONE);
-                }
-                _ => return Err(RelError::BadInput("invalid access mode character")),
+            if let Some(bit) = bit_of(ch) {
+                acc |= bit;
+                continue;
             }
+            if matches!(ch, b'N' | b'n') {
+                if acc != Acs::UNSET.0 {
+                    // 上游原文："access N cannot be combined with any other"。
+                    return Err(RelError::BadInput("access mode N cannot be combined"));
+                }
+                return Ok(Acs::NONE);
+            }
+            return Err(RelError::BadInput("invalid access mode character"));
         }
         // 上游在 `UnmarshalText` 里做 `m0 & ModeBitmask`：起始的 UNSET 标记位
         // 只是"一个字符都没见过"的记号，绝不能混进结果里，否则 `J` 会变成 0x101。
@@ -418,25 +412,9 @@ impl Acs {
             ));
         }
         let mut acc = *self;
-        let mut i = 0usize;
-        while i < bytes.len() {
-            let sign = bytes[i];
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] != b'+' && bytes[j] != b'-' {
-                j += 1;
-            }
-            let chunk = &delta[i + 1..j];
+        for (sign, chunk) in delta_segments(delta) {
             let upd = Acs::parse(chunk)?;
-            match sign {
-                b'+' => acc = acc.union(upd),
-                b'-' => {
-                    if upd.is_defined() {
-                        acc = Acs(acc.0 & !upd.0 & BITMASK);
-                    }
-                }
-                _ => return Err(RelError::BadInput("access mode delta sign")),
-            }
-            i = j;
+            acc = apply_segment(acc, sign, upd)?;
         }
         *self = acc;
         Ok(())
@@ -597,6 +575,51 @@ impl DefaultAcs {
 
     pub fn select(self, level: RelationLevel) -> Acs {
         select_access_mode(level, self.anon, self.auth, self.auth)
+    }
+}
+
+/// 单个字母对应的权限位；`N` 与表外字符返回 `None`（由调用方分别处理）。
+fn bit_of(ch: u8) -> Option<u32> {
+    Some(match ch {
+        b'J' | b'j' => Acs::JOIN,
+        b'R' | b'r' => Acs::READ,
+        b'W' | b'w' => Acs::WRITE,
+        b'P' | b'p' => Acs::PRES,
+        b'A' | b'a' => Acs::APPROVE,
+        b'S' | b's' => Acs::SHARE,
+        b'D' | b'd' => Acs::DELETE,
+        b'O' | b'o' => Acs::OWNER,
+        _ => return None,
+    })
+}
+
+/// 把 `-PR+W` 切成 `(符号, 片段)`；调用方保证首字符是符号。
+fn delta_segments(delta: &str) -> Vec<(u8, &str)> {
+    let bytes = delta.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let sign = bytes[i];
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j] != b'+' && bytes[j] != b'-' {
+            j += 1;
+        }
+        out.push((sign, &delta[i + 1..j]));
+        i = j;
+    }
+    out
+}
+
+/// 对一段权限做加/减；减号段里的 `UNSET` 不改变任何东西。
+fn apply_segment(acc: Acs, sign: u8, upd: Acs) -> Result<Acs> {
+    match sign {
+        b'+' => Ok(acc.union(upd)),
+        b'-' => Ok(if upd.is_defined() {
+            Acs(acc.0 & !upd.0 & BITMASK)
+        } else {
+            acc
+        }),
+        _ => Err(RelError::BadInput("access mode delta sign")),
     }
 }
 

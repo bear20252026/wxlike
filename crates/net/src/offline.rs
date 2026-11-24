@@ -179,19 +179,36 @@ pub struct SqliteOffline {
 impl SqliteOffline {
     /// `None` uses a temporary on-disk database; `Some(path)` is `WXLIKE_DB`.
     pub fn open(path: Option<&str>, cap_per_user: usize) -> anyhow::Result<Arc<Self>> {
-        let conn = match path {
-            Some(p) => {
-                if let Some(dir) = std::path::Path::new(p).parent() {
-                    if !dir.as_os_str().is_empty() {
-                        std::fs::create_dir_all(dir)?;
-                    }
-                }
-                Connection::open(p)?
-            }
-            None => Connection::open_in_memory()?,
-        };
-        conn.execute_batch(
-            r#"
+        let conn = open_connection(path)?;
+        init_schema(&conn)?;
+        migrate_claimed_until(&conn)?;
+        Ok(Arc::new(Self {
+            conn: Mutex::new(conn),
+            cap_per_user: cap_per_user.max(1),
+        }))
+    }
+
+    fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// 打开配置的库；路径带父目录时先建目录。
+fn open_connection(path: Option<&str>) -> anyhow::Result<Connection> {
+    let Some(path) = path else {
+        return Ok(Connection::open_in_memory()?);
+    };
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    Ok(Connection::open(path)?)
+}
+
+fn init_schema(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        r#"
             PRAGMA journal_mode = WAL;
             PRAGMA busy_timeout = 5000;
             CREATE TABLE IF NOT EXISTS offline_inbox (
@@ -205,28 +222,24 @@ impl SqliteOffline {
             );
             CREATE INDEX IF NOT EXISTS idx_offline_user ON offline_inbox(user, id);
             "#,
-        )?;
-        // 老库迁移：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。
-        let has_claimed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('offline_inbox') WHERE name = 'claimed_until'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_claimed == 0 {
-            conn.execute(
-                "ALTER TABLE offline_inbox ADD COLUMN claimed_until INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        Ok(Arc::new(Self {
-            conn: Mutex::new(conn),
-            cap_per_user: cap_per_user.max(1),
-        }))
-    }
+    )?;
+    Ok(())
+}
 
-    fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+/// 老库迁移：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。
+fn migrate_claimed_until(conn: &Connection) -> anyhow::Result<()> {
+    let has_claimed: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('offline_inbox') WHERE name = 'claimed_until'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_claimed == 0 {
+        conn.execute(
+            "ALTER TABLE offline_inbox ADD COLUMN claimed_until INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
     }
+    Ok(())
 }
 
 #[async_trait]
