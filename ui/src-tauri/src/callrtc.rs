@@ -571,33 +571,11 @@ fn run(
     #[cfg(feature = "audio")]
     let mut audio = AudioLeg::start();
 
-    let publish = |st: &Arc<Mutex<EngineStatus>>, app: &AppHandle| {
-        let snapshot = st.lock().map(|s| s.clone()).unwrap_or_default();
-        let _ = app.emit("call://rtc", &snapshot);
-    };
-
     let mut pending: Vec<Effect> = first;
-    loop {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
+    while !stop.load(Ordering::SeqCst) {
         // 1. UI 命令
         while let Ok(cmd) = rx.try_recv() {
-            let effects = match cmd {
-                Cmd::Accept => {
-                    let id = status.lock().map(|s| s.call_id.clone()).unwrap_or_default();
-                    host.accept(&id, None)
-                }
-                Cmd::Hangup | Cmd::Stop => {
-                    let ids = host.manager().live_calls();
-                    let mut all = Vec::new();
-                    for id in ids {
-                        all.extend(host.hangup(&id));
-                    }
-                    all
-                }
-            };
-            pending.extend(effects);
+            pending.extend(handle_command(cmd, &mut host, &status));
         }
 
         // 2. 麦克风 → 编码 → 媒体（先喂再泵，编码帧能赶在同一轮发出去）
@@ -618,17 +596,7 @@ fn run(
         pending.extend(transport.poll(&mut host));
 
         // 5. 信令：每 300ms 拉一次
-        if last_poll.elapsed() >= Duration::from_millis(300) {
-            last_poll = Instant::now();
-            match conn.take(host.conv()) {
-                Ok(signals) => {
-                    for sig in signals {
-                        pending.extend(host.handle_signal(sig));
-                    }
-                }
-                Err(err) => eprintln!("[call] 拉取信令失败: {err}"),
-            }
-        }
+        poll_signals(&conn, &mut host, &mut pending, &mut last_poll);
 
         // 6. 落地所有副作用
         let mut ended = false;
@@ -653,7 +621,7 @@ fn run(
                         s.phase = "connected".into();
                         s.call_id = call_id;
                     }
-                    publish(&status, &app);
+                    publish_status(&status, &app);
                 }
                 Effect::Ended { call_id, .. } => {
                     ended = true;
@@ -662,7 +630,7 @@ fn run(
                         s.phase = "ended".into();
                         s.call_id = call_id;
                     }
-                    publish(&status, &app);
+                    publish_status(&status, &app);
                 }
             }
         }
@@ -680,6 +648,55 @@ fn run(
         std::thread::sleep(Duration::from_millis(10));
     }
 
+    finish_status(&status, &app);
+}
+
+/// 把当前状态快照推给 UI。
+fn publish_status(status: &Arc<Mutex<EngineStatus>>, app: &AppHandle) {
+    let snapshot = status.lock().map(|s| s.clone()).unwrap_or_default();
+    let _ = app.emit("call://rtc", &snapshot);
+}
+
+/// 收一条 UI 命令，返回需要落地的副作用。
+fn handle_command(cmd: Cmd, host: &mut CallHost, status: &Arc<Mutex<EngineStatus>>) -> Vec<Effect> {
+    match cmd {
+        Cmd::Accept => {
+            let id = status.lock().map(|s| s.call_id.clone()).unwrap_or_default();
+            host.accept(&id, None)
+        }
+        Cmd::Hangup | Cmd::Stop => {
+            let mut all = Vec::new();
+            for id in host.manager().live_calls() {
+                all.extend(host.hangup(&id));
+            }
+            all
+        }
+    }
+}
+
+/// 每 300ms 拉一次信令中继，把新信令喂回 host。
+fn poll_signals(
+    conn: &Connection,
+    host: &mut CallHost,
+    pending: &mut Vec<Effect>,
+    last_poll: &mut Instant,
+) {
+    if last_poll.elapsed() < Duration::from_millis(300) {
+        return;
+    }
+    *last_poll = Instant::now();
+    match conn.take(host.conv()) {
+        Ok(signals) => {
+            for sig in signals {
+                pending.extend(host.handle_signal(sig));
+            }
+        }
+        Err(err) => eprintln!("[call] 拉取信令失败: {err}"),
+    }
+}
+
+/// 收尾：把状态标成结束，并把最后一帧推给 UI。
+fn finish_status(status: &Arc<Mutex<EngineStatus>>, app: &AppHandle) {
     if let Ok(mut s) = status.lock() {
         s.active = false;
         s.connected = false;
