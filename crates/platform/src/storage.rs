@@ -585,30 +585,34 @@ mod tests {
         let tx = guard.transaction().unwrap();
 
         // 事务内的端口只借连接，不接管提交/回滚。
-        let tx_port = StorageConnection::sqlite_tx(&tx);
-        assert_eq!(
-            tx_port
-                .sqlite()
-                .unwrap()
-                .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
+        {
+            let tx_port = StorageConnection::sqlite_tx(&tx);
+            assert_eq!(
+                tx_port
+                    .sqlite()
+                    .unwrap()
+                    .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
         tx.execute("CREATE TEMP TABLE port_probe(v INTEGER)", [])
             .unwrap();
 
         // 旧签名调用方用 sqlite_borrow 过渡时，看到的是同一个事务。
-        let borrowed = StorageConnection::sqlite_borrow(&tx);
-        borrowed
-            .sqlite()
-            .unwrap()
-            .execute("INSERT INTO port_probe(v) VALUES(42)", [])
-            .unwrap();
-        assert_eq!(
-            tx.query_row("SELECT v FROM port_probe", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            42
-        );
+        {
+            let borrowed = StorageConnection::sqlite_borrow(&tx);
+            borrowed
+                .sqlite()
+                .unwrap()
+                .execute("INSERT INTO port_probe(v) VALUES(42)", [])
+                .unwrap();
+            assert_eq!(
+                tx.query_row("SELECT v FROM port_probe", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                42
+            );
+        }
         tx.rollback().unwrap();
     }
 
