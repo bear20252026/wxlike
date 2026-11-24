@@ -163,7 +163,7 @@ impl Platform {
     }
 
     pub fn report(&self, id: &str) -> Result<Option<Ticket>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = load(&c, id)?;
         let Some((
             reporter,
@@ -200,7 +200,7 @@ impl Platform {
     /// 举报人自己的工单，最新在前。
     pub fn reports_by(&self, reporter: &str, limit: usize) -> Result<Vec<Ticket>> {
         let ids: Vec<String> = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             ids_by_reporter(&c, reporter, limit.clamp(1, 200) as i64)?
         };
         let mut out = Vec::with_capacity(ids.len());
@@ -215,7 +215,7 @@ impl Platform {
     /// 处置队列：按状态过滤（`open` / `triaged` / 空 = 全部未终结）。
     pub fn report_queue(&self, state: Option<&str>, limit: usize) -> Result<Vec<Ticket>> {
         let ids: Vec<String> = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             let limit = limit.clamp(1, 200) as i64;
             match state {
                 Some(s) => ids_by_state(&c, s, limit)?,
@@ -276,7 +276,7 @@ impl Platform {
             None => None,
         };
         let history = serde_json::to_string(&t.history)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         save_ticket(&c, t, action, history)
     }
 }

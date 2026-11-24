@@ -2,10 +2,11 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 pub(in crate::domain) fn upsert_bundle(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     identity: &str,
     identity_signing: &str,
@@ -13,6 +14,7 @@ pub(in crate::domain) fn upsert_bundle(
     otks: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO prekey_bundles(user_id, identity, identity_signing, signature, otks, updated_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)
@@ -27,7 +29,8 @@ pub(in crate::domain) fn upsert_bundle(
     Ok(())
 }
 
-pub(in crate::domain) fn shares_group(c: &Connection, a: &str, b: &str) -> Result<bool> {
+pub(in crate::domain) fn shares_group(c: &StorageConnection<'_>, a: &str, b: &str) -> Result<bool> {
+    let c = c.sqlite()?;
     let shares: Option<i64> = c
         .query_row(
             "SELECT 1 FROM group_members a JOIN group_members b
@@ -40,7 +43,11 @@ pub(in crate::domain) fn shares_group(c: &Connection, a: &str, b: &str) -> Resul
     Ok(shares.is_some())
 }
 
-pub(in crate::domain) fn identity_for(c: &Connection, user: &str) -> Result<Option<String>> {
+pub(in crate::domain) fn identity_for(
+    c: &StorageConnection<'_>,
+    user: &str,
+) -> Result<Option<String>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
         params![user],
@@ -56,7 +63,11 @@ pub(in crate::domain) struct BundleRow {
     pub(crate) otks: String,
 }
 
-pub(in crate::domain) fn bundle_row(c: &Connection, user: &str) -> Result<Option<BundleRow>> {
+pub(in crate::domain) fn bundle_row(
+    c: &StorageConnection<'_>,
+    user: &str,
+) -> Result<Option<BundleRow>> {
+    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT identity, identity_signing, signature, otks FROM prekey_bundles WHERE user_id = ?1",
         params![user],
@@ -73,11 +84,12 @@ pub(in crate::domain) fn bundle_row(c: &Connection, user: &str) -> Result<Option
 }
 
 pub(in crate::domain) fn update_otks(
-    c: &Connection,
+    c: &StorageConnection<'_>,
     user: &str,
     otks: &str,
     now: i64,
 ) -> Result<()> {
+    let c = c.sqlite()?;
     c.execute(
         "UPDATE prekey_bundles SET otks = ?1, updated_at = ?2 WHERE user_id = ?3",
         params![otks, now, user],

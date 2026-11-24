@@ -90,7 +90,7 @@ impl Platform {
             .verify_signature()
             .map_err(|_| PlatformError::BadInput("bundle is not signed by its identity key"))?;
         let otks = serialize_otk_pairs(bundle)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         upsert_bundle(
             &c,
             user_id,
@@ -115,20 +115,20 @@ impl Platform {
         if self.are_friends(caller, target)? {
             return Ok(true);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         shares_group(&c, caller, target)
     }
 
     /// 对方当前发布的身份公钥（秘密聊天安全码用；不消费一次性密钥）。
     pub fn public_identity(&self, user_id: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         identity_for(&c, user_id)
     }
 
     /// The caller's own bundle as stored (no claim). Lets a client see how
     /// many one-time keys it still has published and decide to top up.
     pub fn own_keys(&self, user_id: &str) -> Result<PreKeyBundle> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         match bundle_row(&c, user_id)? {
             Some(row) => {
                 let pairs = parse_otk_pairs(&row.otks)?;
@@ -159,7 +159,7 @@ impl Platform {
         let user_id = validate::id(user_id)?;
         // The pop-and-update runs under one guard, so two concurrent claims
         // cannot read the same array.
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let Some(row) = bundle_row(&c, user_id)? else {
             return Ok(None);
         };

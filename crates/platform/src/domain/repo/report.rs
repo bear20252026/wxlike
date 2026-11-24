@@ -3,10 +3,12 @@
 
 use crate::domain::report::ReportRow;
 use crate::error::Result;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 use wxlike_report::Ticket;
 
-pub(in crate::domain) fn load(conn: &Connection, id: &str) -> Result<Option<ReportRow>> {
+pub(in crate::domain) fn load(conn: &StorageConnection<'_>, id: &str) -> Result<Option<ReportRow>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT reporter, target_kind, target_id, reason, detail, state, action_json,
@@ -33,10 +35,11 @@ pub(in crate::domain) fn load(conn: &Connection, id: &str) -> Result<Option<Repo
 }
 
 pub(in crate::domain) fn ids_by_reporter(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     reporter: &str,
     limit: i64,
 ) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn
         .prepare("SELECT id FROM reports WHERE reporter = ?1 ORDER BY created_at DESC LIMIT ?2")?;
     let rows = stmt.query_map(params![reporter, limit], |r| r.get::<_, String>(0))?;
@@ -44,10 +47,11 @@ pub(in crate::domain) fn ids_by_reporter(
 }
 
 pub(in crate::domain) fn ids_by_state(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     state: &str,
     limit: i64,
 ) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt =
         conn.prepare("SELECT id FROM reports WHERE state = ?1 ORDER BY created_at ASC LIMIT ?2")?;
     let rows = stmt.query_map(params![state, limit], |r| r.get::<_, String>(0))?;
@@ -55,7 +59,8 @@ pub(in crate::domain) fn ids_by_state(
 }
 
 /// 未终结工单：open / triaged / actioned 都还在处置队列里。
-pub(in crate::domain) fn open_ids(conn: &Connection, limit: i64) -> Result<Vec<String>> {
+pub(in crate::domain) fn open_ids(conn: &StorageConnection<'_>, limit: i64) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id FROM reports WHERE state IN ('open','triaged','actioned')
          ORDER BY created_at ASC LIMIT ?1",
@@ -65,11 +70,12 @@ pub(in crate::domain) fn open_ids(conn: &Connection, limit: i64) -> Result<Vec<S
 }
 
 pub(in crate::domain) fn save(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     t: &Ticket,
     action: Option<String>,
     history: String,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO reports(id, reporter, target_kind, target_id, reason, detail, state,
                              action_json, handler, created_at, updated_at, history_json)

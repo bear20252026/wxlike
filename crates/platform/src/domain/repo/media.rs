@@ -2,14 +2,14 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageDialect;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::{StorageConnection, StorageDialect};
+use rusqlite::{params, OptionalExtension as _};
 
 /// 内容寻址行的幂等写入。SQLite 用 `ON CONFLICT` 保留首次归属；PostgreSQL
 /// 兼容视图没有唯一约束，由 `media_insert_trg` 在 `media_object` 上做 upsert。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn insert(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     dialect: StorageDialect,
     id: &str,
     size: i64,
@@ -20,6 +20,7 @@ pub(in crate::domain) fn insert(
     has_thumb: bool,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     let sql = match dialect {
         StorageDialect::Sqlite => {
             "INSERT INTO media(id, size, content_type, uploader, conv_id, public, has_thumb, created_at)
@@ -54,9 +55,10 @@ pub(in crate::domain) fn insert(
 }
 
 pub(in crate::domain) fn owner(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     media_id: &str,
 ) -> Result<Option<(String, String, bool)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT uploader, conv_id, public FROM media WHERE id = ?1",
@@ -73,9 +75,10 @@ pub(in crate::domain) fn owner(
 }
 
 pub(in crate::domain) fn meta(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     media_id: &str,
 ) -> Result<Option<(u64, String, bool)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT size, content_type, has_thumb FROM media WHERE id = ?1",

@@ -283,8 +283,9 @@ impl Platform {
         let media_id = sha_hex.clone();
         let reply_content_type = content_type.clone();
         db.blocking(move |c| {
+            let conn = crate::storage::StorageConnection::sqlite_borrow(c);
             media_repo::insert(
-                c,
+                &conn,
                 dialect,
                 &sha_hex,
                 size as i64,
@@ -366,7 +367,7 @@ impl Platform {
 
     /// 媒体归属：`(uploader, conv_id)`。`None` = 没这条记录。
     fn media_owner(&self, media_id: &str) -> Result<Option<(String, String, bool)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         media_repo::owner(&c, media_id)
     }
 
@@ -418,7 +419,7 @@ impl Platform {
     }
 
     pub fn media_meta(&self, media_id: &str) -> Result<Option<(u64, String, bool)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         media_repo::meta(&c, media_id)
     }
 
