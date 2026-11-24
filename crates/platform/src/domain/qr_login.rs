@@ -89,7 +89,7 @@ pub(crate) fn consume_qr_ticket(
     secret: &str,
     now: i64,
 ) -> std::result::Result<(String, String, String), ApiError> {
-    let conn = platform.db().lock();
+    let conn = platform.db().acquire();
     let id = locate_ticket_by_secret(&conn, secret)?;
     secret_must_match(ticket_id, &id)?;
     let (creator, _verifier) = creator_and_verifier(&conn, &id)?;
@@ -191,7 +191,7 @@ impl Platform {
     ) -> std::result::Result<Ticket, ApiError> {
         let verifier = crate::auth::random_hex(QR_SECRET_HEX_LEN);
         let now = wxlike_core::types::now_ms() as i64;
-        let conn = self.db().lock();
+        let conn = self.db().acquire();
         let ticket = qr_login::create(&conn, now).map_err(id_err)?;
         qr_login::bind(
             &conn,
@@ -215,7 +215,7 @@ impl Platform {
         viewer: &str,
     ) -> std::result::Result<(PollState, Option<String>), ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
-        let conn = self.db().lock();
+        let conn = self.db().acquire();
         // 顺序与 repo 的 `SELECT creator, verifier` 一致：先是创建者，再是 verifier。
         // 两个都是 `String`，写反了编译期看不出来，只会变成 403。
         let (creator, verifier) = creator_and_verifier(&conn, ticket_id)?;
@@ -235,7 +235,7 @@ impl Platform {
         scanner: &str,
     ) -> std::result::Result<ScanView, ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
-        let conn = self.db().lock();
+        let conn = self.db().acquire();
         qr_login::scan(&conn, secret, scanner, now).map_err(id_err)
     }
 
@@ -247,7 +247,7 @@ impl Platform {
         approve: bool,
     ) -> std::result::Result<(), ApiError> {
         let now = wxlike_core::types::now_ms() as i64;
-        let conn = self.db().lock();
+        let conn = self.db().acquire();
         let outcome = if approve {
             qr_login::approve(&conn, ticket_id, scanner, now)
         } else {
@@ -258,7 +258,7 @@ impl Platform {
 
     /// 用户显示名（兑换回包 `{name}` 用；用户不存在时退回 id 本身）。
     pub(crate) fn display_name_of(&self, user_id: &str) -> crate::error::Result<String> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         Ok(display_name(&c, user_id)?.unwrap_or_else(|| user_id.to_string()))
     }
 }

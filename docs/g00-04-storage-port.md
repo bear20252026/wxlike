@@ -101,8 +101,8 @@
 - 35 个 `.rs`（34 个 feature 文件 + `mod.rs`）。
 - 多数 feature 文件仍直接吃 `&rusqlite::Connection`。第一批小仓库 pilot 已落：
   `notification`（3 个函数）、`audit`（2）、`devices`（3）、`read`（2）、
-  `video_refs`（2）。这些 repo 参数改为 `&StorageConnection<'_>`，通过
-  `StorageConnection::sqlite()` 拿旧守卫；对应 domain 模块的调用点改走
+  `video_refs`（2）、`qr_login`（8）。这些 repo 参数改为 `&StorageConnection<'_>`，
+  通过 `StorageConnection::sqlite()` 拿旧守卫；对应 domain 模块的调用点改走
   `Db::acquire()`。PG 变体当前返回受控 `PlatformError::Storage`，不 panic。
 
 改造目标：`&Connection` 参数换成端口句柄（`&StorageConnection` 或 `&dyn Storage`），
