@@ -277,9 +277,10 @@ impl Platform {
         let user_for_task = user.to_string();
         self.db()
             .blocking(move |c| {
-                let community =
-                    repo_channel_community(c, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
-                repo_community_role(c, &community, &user_for_task)?
+                let port = crate::storage::StorageConnection::sqlite_borrow(c);
+                let community = repo_channel_community(&port, &channel_for_task)?
+                    .ok_or(PlatformError::NotFound)?;
+                repo_community_role(&port, &community, &user_for_task)?
                     .ok_or(PlatformError::Forbidden)?;
                 Ok(())
             })

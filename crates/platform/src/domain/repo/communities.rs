@@ -4,18 +4,19 @@
 //! 社区/频道/话题的角色继承、发送闸门与成员上限留在
 //! [`crate::domain::communities`]；本文件只负责语句与行映射。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
-
 use crate::domain::communities::{
     ChannelRow, CommunityRow, CommunityThreadRow, ThreadRow, ThreadSubscription,
 };
 use crate::error::Result;
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 pub(in crate::domain) fn community_role(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
     user: &str,
 ) -> Result<Option<i64>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT role FROM community_members WHERE community_id = ?1 AND user_id = ?2",
@@ -26,9 +27,10 @@ pub(in crate::domain) fn community_role(
 }
 
 pub(in crate::domain) fn channel_community(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     channel: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT community_id FROM channels WHERE id = ?1",
@@ -38,7 +40,11 @@ pub(in crate::domain) fn channel_community(
         .optional()?)
 }
 
-pub(in crate::domain) fn channel_kind(conn: &Connection, channel: &str) -> Result<Option<String>> {
+pub(in crate::domain) fn channel_kind(
+    conn: &StorageConnection<'_>,
+    channel: &str,
+) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT kind FROM channels WHERE id = ?1",
@@ -49,10 +55,11 @@ pub(in crate::domain) fn channel_kind(conn: &Connection, channel: &str) -> Resul
 }
 
 pub(in crate::domain) fn channel_role_raw(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     channel: &str,
     user: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT role FROM channel_role WHERE channel_id = ?1 AND user_id = ?2",
@@ -63,13 +70,14 @@ pub(in crate::domain) fn channel_role_raw(
 }
 
 pub(in crate::domain) fn create_community(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     name: &str,
     owner: &str,
     member_limit: i64,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO communities(id, name, owner_uid, member_limit, tenant_id, created_at)
@@ -86,9 +94,10 @@ pub(in crate::domain) fn create_community(
 }
 
 pub(in crate::domain) fn join_limits(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
 ) -> Result<Option<(i64, i64)>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT member_limit,
@@ -101,12 +110,13 @@ pub(in crate::domain) fn join_limits(
 }
 
 pub(in crate::domain) fn insert_community_member(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
     user: &str,
     role: i64,
     now: i64,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "INSERT INTO community_members(community_id, user_id, role, joined_at)
          VALUES(?1, ?2, ?3, ?4)",
@@ -115,9 +125,10 @@ pub(in crate::domain) fn insert_community_member(
 }
 
 pub(in crate::domain) fn my_communities(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Vec<(CommunityRow, i64)>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT c.id, c.name, c.owner_uid, c.member_limit, c.announcement, c.tenant_id,
                 c.created_at, m.role
@@ -143,9 +154,10 @@ pub(in crate::domain) fn my_communities(
 }
 
 pub(in crate::domain) fn community_members(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
 ) -> Result<Vec<(String, i64)>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT user_id, role FROM community_members WHERE community_id = ?1
          ORDER BY role DESC, joined_at",
@@ -157,13 +169,14 @@ pub(in crate::domain) fn community_members(
 }
 
 pub(in crate::domain) fn insert_channel(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     community: &str,
     name: &str,
     kind: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO channels(id, community_id, name, kind, tenant_id, created_at)
          VALUES(?1, ?2, ?3, ?4, 'default', ?5)",
@@ -173,9 +186,10 @@ pub(in crate::domain) fn insert_channel(
 }
 
 pub(in crate::domain) fn list_channels(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
 ) -> Result<Vec<ChannelRow>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id, community_id, name, kind, tenant_id, created_at
          FROM channels WHERE community_id = ?1 ORDER BY created_at",
@@ -202,10 +216,11 @@ pub(in crate::domain) fn row_channel(r: &rusqlite::Row<'_>) -> rusqlite::Result<
 pub(in crate::domain) type ChannelRoleRaw = (String, i64, Option<String>, Option<String>);
 
 pub(in crate::domain) fn channel_roles_raw(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     channel: &str,
     community: &str,
 ) -> Result<Vec<ChannelRoleRaw>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT m.user_id, m.role, r.role, r.granted_by
          FROM community_members m
@@ -220,13 +235,14 @@ pub(in crate::domain) fn channel_roles_raw(
 }
 
 pub(in crate::domain) fn upsert_channel_role(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     channel: &str,
     user: &str,
     role: &str,
     actor: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO channel_role(channel_id, user_id, role, granted_by, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5)
@@ -238,10 +254,11 @@ pub(in crate::domain) fn upsert_channel_role(
 }
 
 pub(in crate::domain) fn delete_channel_role(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     channel: &str,
     user: &str,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "DELETE FROM channel_role WHERE channel_id = ?1 AND user_id = ?2",
         params![channel, user],
@@ -249,7 +266,7 @@ pub(in crate::domain) fn delete_channel_role(
 }
 
 pub(in crate::domain) fn insert_thread(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     channel: &str,
     root_seq: i64,
@@ -257,6 +274,7 @@ pub(in crate::domain) fn insert_thread(
     actor: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO threads(id, channel_id, root_seq, title, created_by, tenant_id, created_at)
@@ -271,7 +289,11 @@ pub(in crate::domain) fn insert_thread(
     Ok(())
 }
 
-pub(in crate::domain) fn list_threads(conn: &Connection, channel: &str) -> Result<Vec<ThreadRow>> {
+pub(in crate::domain) fn list_threads(
+    conn: &StorageConnection<'_>,
+    channel: &str,
+) -> Result<Vec<ThreadRow>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id, channel_id, root_seq, title, created_by, created_at
          FROM threads WHERE channel_id = ?1 ORDER BY created_at, id",
@@ -290,11 +312,12 @@ pub(in crate::domain) fn list_threads(conn: &Connection, channel: &str) -> Resul
 }
 
 pub(in crate::domain) fn community_threads(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
     user: &str,
     limit: i64,
 ) -> Result<Vec<CommunityThreadRow>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT t.id, t.channel_id, ch.name, t.root_seq, t.title, t.created_by, t.created_at,
                 (SELECT COUNT(*) FROM thread_messages m WHERE m.thread_id = t.id),
@@ -321,9 +344,10 @@ pub(in crate::domain) fn community_threads(
 }
 
 pub(in crate::domain) fn thread_community(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
 ) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT c.community_id FROM channels c JOIN threads t ON t.channel_id = c.id
@@ -334,7 +358,11 @@ pub(in crate::domain) fn thread_community(
         .optional()?)
 }
 
-pub(in crate::domain) fn thread_channel(conn: &Connection, thread: &str) -> Result<Option<String>> {
+pub(in crate::domain) fn thread_channel(
+    conn: &StorageConnection<'_>,
+    thread: &str,
+) -> Result<Option<String>> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT channel_id FROM threads WHERE id = ?1",
@@ -345,12 +373,13 @@ pub(in crate::domain) fn thread_channel(conn: &Connection, thread: &str) -> Resu
 }
 
 pub(in crate::domain) fn insert_thread_message(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
     actor: &str,
     text: &str,
     now: i64,
 ) -> Result<i64> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO thread_messages(thread_id, sender, text, created_at)
          VALUES(?1, ?2, ?3, ?4)",
@@ -360,10 +389,11 @@ pub(in crate::domain) fn insert_thread_message(
 }
 
 pub(in crate::domain) fn thread_fanout(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
     community: &str,
 ) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT s.user_id FROM thread_subs s
          JOIN community_members m ON m.community_id = ?2 AND m.user_id = s.user_id
@@ -375,11 +405,12 @@ pub(in crate::domain) fn thread_fanout(
 }
 
 pub(in crate::domain) fn fetch_thread_messages(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
     after_seq: i64,
     limit: i64,
 ) -> Result<Vec<(i64, String, String, i64)>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT seq, sender, text, created_at FROM thread_messages
          WHERE thread_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
@@ -398,11 +429,12 @@ pub(in crate::domain) fn fetch_thread_messages(
 }
 
 pub(in crate::domain) fn upsert_thread_sub(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
     user: &str,
     muted: bool,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO thread_subs(thread_id, user_id, muted) VALUES(?1, ?2, ?3)
          ON CONFLICT(thread_id, user_id) DO UPDATE SET muted = excluded.muted",
@@ -412,10 +444,11 @@ pub(in crate::domain) fn upsert_thread_sub(
 }
 
 pub(in crate::domain) fn delete_thread_sub(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
     user: &str,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     Ok(conn.execute(
         "DELETE FROM thread_subs WHERE thread_id = ?1 AND user_id = ?2",
         params![thread, user],
@@ -423,9 +456,10 @@ pub(in crate::domain) fn delete_thread_sub(
 }
 
 pub(in crate::domain) fn thread_subscribers(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     thread: &str,
 ) -> Result<Vec<ThreadSubscription>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn
         .prepare("SELECT user_id, muted FROM thread_subs WHERE thread_id = ?1 ORDER BY user_id")?;
     let rows = stmt.query_map(params![thread], |r| {
@@ -437,16 +471,21 @@ pub(in crate::domain) fn thread_subscribers(
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-pub(in crate::domain) fn channel_ids(conn: &Connection, community: &str) -> Result<Vec<String>> {
+pub(in crate::domain) fn channel_ids(
+    conn: &StorageConnection<'_>,
+    community: &str,
+) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare("SELECT id FROM channels WHERE community_id = ?1")?;
     let rows = stmt.query_map(params![community], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
 pub(in crate::domain) fn community_member_ids(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     community: &str,
 ) -> Result<Vec<String>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare("SELECT user_id FROM community_members WHERE community_id = ?1")?;
     let rows = stmt.query_map(params![community], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)

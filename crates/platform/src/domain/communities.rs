@@ -248,7 +248,7 @@ impl Platform {
     // ---- 成员/角色（TangSeng 形状） ----
 
     fn community_role(&self, community: &str, user: &str) -> Result<Option<i64>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_community_role(&c, community, user)
     }
 
@@ -265,7 +265,7 @@ impl Platform {
     }
 
     pub(crate) fn channel_community(&self, channel: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_channel_community(&c, channel)
     }
 
@@ -273,7 +273,7 @@ impl Platform {
     /// 其余三型成员可发。直播/语音的时间线在此为过渡承载，P5 媒体面接管。
     /// 频道类型（`text|announce|voice|live`）；不存在返回 `None`。
     pub(crate) fn channel_kind(&self, channel: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_channel_kind(&c, channel)
     }
 
@@ -290,7 +290,7 @@ impl Platform {
 
     /// 频道专属的那一行；没有行 = 继承社区角色。
     fn channel_role_row(&self, channel: &str, user: &str) -> Result<Option<ChannelRole>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let stored = repo_channel_role(&c, channel, user)?;
         Ok(stored.and_then(|s| ChannelRole::parse(&s)))
     }
@@ -364,7 +364,7 @@ impl Platform {
         let member_limit = member_limit.clamp(2, 100_000);
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_create_community(&c, &id, name, owner, member_limit, now)?;
         Ok(id)
     }
@@ -377,7 +377,7 @@ impl Platform {
         }
         // 锁必须在 sync 之前放掉：sync 自己还要开一次锁，std Mutex 不可重入。
         {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             let Some((limit, current)) = repo_join_limits(&c, community)? else {
                 return Err(PlatformError::NotFound);
             };
@@ -397,7 +397,7 @@ impl Platform {
     }
 
     pub(crate) fn my_communities(&self, user: &str) -> Result<Vec<(CommunityRow, i64)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_my_communities(&c, user)
     }
 
@@ -407,7 +407,7 @@ impl Platform {
         user: &str,
     ) -> Result<Vec<(String, i64)>> {
         self.require_member(community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_community_members(&c, community)
     }
 
@@ -429,7 +429,7 @@ impl Platform {
             ));
         }
         let id = crate::auth::random_hex(8);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_insert_channel(
             &c,
             &id,
@@ -449,7 +449,7 @@ impl Platform {
 
     pub(crate) fn list_channels(&self, community: &str, user: &str) -> Result<Vec<ChannelRow>> {
         self.require_member(community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_list_channels(&c, community)
     }
 
@@ -533,7 +533,7 @@ impl Platform {
         let community = self
             .channel_community(channel)?
             .ok_or(PlatformError::NotFound)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let rows = repo_channel_roles_raw(&c, channel, &community)?;
         Ok(rows
             .into_iter()
@@ -579,7 +579,7 @@ impl Platform {
         if current == ROLE_OWNER {
             return Err(PlatformError::Forbidden);
         }
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_upsert_channel_role(
             &c,
             channel,
@@ -603,7 +603,7 @@ impl Platform {
         let channel = validate::id(channel)?;
         let target = validate::id(target)?;
         self.require_grantor(channel, actor)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_delete_channel_role(&c, channel, target)?;
         drop(c);
         self.audit(actor, "channel.reset_role", target, "");
@@ -672,7 +672,7 @@ impl Platform {
             return Err(PlatformError::BadInput("root_seq beyond channel timeline"));
         }
         let id = crate::auth::random_hex(8);
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_insert_thread(
             &c,
             &id,
@@ -692,7 +692,7 @@ impl Platform {
             return Err(PlatformError::NotFound);
         };
         self.require_member(&community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_list_threads(&c, channel)
     }
 
@@ -709,18 +709,18 @@ impl Platform {
         let community = validate::id(community)?;
         self.require_member(community, user)?;
         let limit = limit.clamp(1, 200) as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_community_threads(&c, community, user, limit)
     }
 
     fn thread_community(&self, thread: &str) -> Result<String> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_thread_community(&c, thread)?.ok_or(PlatformError::NotFound)
     }
 
     /// 话题属于哪个频道：推送要挂回频道会话，客户端才认得这条信封。
     fn thread_channel(&self, thread: &str) -> Result<String> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_thread_channel(&c, thread)?.ok_or(PlatformError::NotFound)
     }
 
@@ -728,7 +728,7 @@ impl Platform {
     /// 并算出订阅且未静音的扇出名单（C3）。
     ///
     /// ADR-28 样板 ①「消息写」：改前这是一个 `async fn`，里面直接
-    /// `self.db().lock()` + `INSERT` + 再一次上锁读名单，最后还 `emit().await`——
+    /// `self.db().acquire()` + `INSERT` + 再一次上锁读名单，最后还 `emit().await`——
     /// 同步 SQL 全程占住 await 上下文。现在签名回到同步，写与读仍在**同一次
     /// 阻塞执行**里按原顺序跑完（`offload`），扇出留给 handler 在 async 侧做。
     /// 返回 `(seq, channel, 扇出名单)`。
@@ -746,7 +746,7 @@ impl Platform {
             return Err(PlatformError::BadInput("text required"));
         }
         let seq = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             repo_insert_thread_message(
                 &c,
                 thread,
@@ -769,7 +769,7 @@ impl Platform {
     pub fn thread_fanout(&self, thread: &str) -> Result<Vec<String>> {
         let thread = validate::id(thread)?;
         let community = self.thread_community(thread)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_thread_fanout(&c, thread, &community)
     }
 
@@ -784,7 +784,7 @@ impl Platform {
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
         let limit = limit.clamp(1, 200) as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_fetch_thread_messages(&c, thread, after_seq, limit)
     }
 
@@ -804,7 +804,7 @@ impl Platform {
         let user = validate::id(user)?;
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_upsert_thread_sub(&c, thread, user, muted)
     }
 
@@ -812,7 +812,7 @@ impl Platform {
         let thread = validate::id(thread)?;
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_delete_thread_sub(&c, thread, user)?;
         Ok(())
     }
@@ -825,7 +825,7 @@ impl Platform {
     ) -> Result<Vec<ThreadSubscription>> {
         let community = self.thread_community(thread)?;
         self.require_member(&community, user)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_thread_subscribers(&c, thread)
     }
 
@@ -851,7 +851,7 @@ impl Platform {
     /// 频道，这里要换成增量成员日志（`append_member_change` 已经有位置）。
     pub(crate) fn sync_community_channels(&self, community: &str) -> Result<()> {
         let channels = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             repo_channel_ids(&c, community)?
         };
         for channel in channels {
@@ -861,7 +861,7 @@ impl Platform {
     }
 
     fn community_member_ids(&self, community: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_community_member_ids(&c, community)
     }
 }
