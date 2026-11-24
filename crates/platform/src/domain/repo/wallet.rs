@@ -4,7 +4,8 @@
 //! 金额校验、份额分配、幂等语义和红包状态机留在
 //! [`crate::domain::wallet`]；本文件只负责余额、账本、幂等记录与红包行的读写。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use crate::storage::StorageConnection;
+use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::wallet::{LedgerRow, RedpacketRow};
 use crate::error::Result;
@@ -30,7 +31,11 @@ pub(in crate::domain) struct ExpiredPacket {
 }
 
 /// 读余额。`None` = 没有钱包行；调用方按 0 处理，但不会把读取失败折成 0。
-pub(in crate::domain) fn wallet_balance(conn: &Connection, user_id: &str) -> Result<Option<i64>> {
+pub(in crate::domain) fn wallet_balance(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Option<i64>> {
+    let conn = conn.sqlite()?;
     let balance = conn
         .query_row(
             "SELECT balance FROM wallets WHERE user_id = ?1",
@@ -41,7 +46,8 @@ pub(in crate::domain) fn wallet_balance(conn: &Connection, user_id: &str) -> Res
     Ok(balance)
 }
 
-pub(in crate::domain) fn ensure_wallet(conn: &Connection, user_id: &str) -> Result<()> {
+pub(in crate::domain) fn ensure_wallet(conn: &StorageConnection<'_>, user_id: &str) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO wallets(user_id, balance) VALUES(?1, 0)
          ON CONFLICT(user_id) DO NOTHING",
@@ -50,7 +56,8 @@ pub(in crate::domain) fn ensure_wallet(conn: &Connection, user_id: &str) -> Resu
     Ok(())
 }
 
-pub(in crate::domain) fn user_exists(conn: &Connection, user_id: &str) -> Result<bool> {
+pub(in crate::domain) fn user_exists(conn: &StorageConnection<'_>, user_id: &str) -> Result<bool> {
+    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT 1 FROM users WHERE id = ?1",
@@ -62,10 +69,11 @@ pub(in crate::domain) fn user_exists(conn: &Connection, user_id: &str) -> Result
 }
 
 pub(in crate::domain) fn debit_if_sufficient(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     amount: i64,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE wallets SET balance = balance - ?1 WHERE user_id = ?2 AND balance >= ?1",
         params![amount, user_id],
@@ -73,7 +81,12 @@ pub(in crate::domain) fn debit_if_sufficient(
     Ok(updated)
 }
 
-pub(in crate::domain) fn credit(conn: &Connection, user_id: &str, amount: i64) -> Result<usize> {
+pub(in crate::domain) fn credit(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+    amount: i64,
+) -> Result<usize> {
+    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE wallets SET balance = balance + ?1 WHERE user_id = ?2",
         params![amount, user_id],
@@ -83,7 +96,7 @@ pub(in crate::domain) fn credit(conn: &Connection, user_id: &str, amount: i64) -
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn log_ledger(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     kind: &str,
     amount: i64,
@@ -92,6 +105,7 @@ pub(in crate::domain) fn log_ledger(
     memo: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO ledger(user_id, kind, amount, counterparty, ref_id, memo, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -101,11 +115,12 @@ pub(in crate::domain) fn log_ledger(
 }
 
 pub(in crate::domain) fn ledger_of(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     since: i64,
     limit: i64,
 ) -> Result<Vec<LedgerRow>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id, kind, amount, counterparty, ref_id, memo, created_at
          FROM ledger WHERE user_id = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3",
@@ -125,7 +140,8 @@ pub(in crate::domain) fn ledger_of(
     Ok(ledger)
 }
 
-pub(in crate::domain) fn ledger_head(conn: &Connection, user_id: &str) -> Result<i64> {
+pub(in crate::domain) fn ledger_head(conn: &StorageConnection<'_>, user_id: &str) -> Result<i64> {
+    let conn = conn.sqlite()?;
     let head = conn.query_row(
         "SELECT COALESCE(MAX(id), 0) FROM ledger WHERE user_id = ?1",
         params![user_id],
@@ -135,10 +151,11 @@ pub(in crate::domain) fn ledger_head(conn: &Connection, user_id: &str) -> Result
 }
 
 pub(in crate::domain) fn idem_lookup(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     key: &str,
 ) -> Result<Option<(String, String)>> {
+    let conn = conn.sqlite()?;
     let row = conn
         .query_row(
             "SELECT request_hash, response FROM wallet_idem WHERE user_id = ?1 AND key = ?2",
@@ -149,7 +166,8 @@ pub(in crate::domain) fn idem_lookup(
     Ok(row)
 }
 
-pub(in crate::domain) fn idem_gc(conn: &Connection, cutoff: i64) -> Result<()> {
+pub(in crate::domain) fn idem_gc(conn: &StorageConnection<'_>, cutoff: i64) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "DELETE FROM wallet_idem WHERE created_at < ?1",
         params![cutoff],
@@ -158,13 +176,14 @@ pub(in crate::domain) fn idem_gc(conn: &Connection, cutoff: i64) -> Result<()> {
 }
 
 pub(in crate::domain) fn idem_insert(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     user_id: &str,
     key: &str,
     request_hash: &str,
     response_json: &str,
     now: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO wallet_idem(user_id, key, request_hash, response, created_at) \
          VALUES(?1, ?2, ?3, ?4, ?5) ON CONFLICT(user_id, key) DO NOTHING",
@@ -175,7 +194,7 @@ pub(in crate::domain) fn idem_insert(
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::domain) fn insert_redpacket(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     from: &str,
     conv_id: &str,
@@ -185,6 +204,7 @@ pub(in crate::domain) fn insert_redpacket(
     now: i64,
     expire_at: i64,
 ) -> Result<()> {
+    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO redpackets(id, from_uid, conv_id, total, count, claimed, claimed_total, claimers, memo, status, created_at, expire_at)
          VALUES(?1, ?2, ?3, ?4, ?5, 0, 0, '[]', ?6, 'open', ?7, ?8)",
@@ -193,7 +213,11 @@ pub(in crate::domain) fn insert_redpacket(
     Ok(())
 }
 
-pub(in crate::domain) fn redpacket(conn: &Connection, id: &str) -> Result<Option<RedpacketRow>> {
+pub(in crate::domain) fn redpacket(
+    conn: &StorageConnection<'_>,
+    id: &str,
+) -> Result<Option<RedpacketRow>> {
+    let conn = conn.sqlite()?;
     let row = conn
         .query_row(
             "SELECT id, from_uid, conv_id, total, count, claimed, claimed_total, memo, status, created_at, expire_at
@@ -220,9 +244,10 @@ pub(in crate::domain) fn redpacket(conn: &Connection, id: &str) -> Result<Option
 }
 
 pub(in crate::domain) fn redpacket_state(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<RedpacketState>> {
+    let conn = conn.sqlite()?;
     let state = conn
         .query_row(
             "SELECT total, count, claimed, claimed_total, claimers, status, from_uid, conv_id
@@ -246,11 +271,12 @@ pub(in crate::domain) fn redpacket_state(
 }
 
 pub(in crate::domain) fn update_claim(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     id: &str,
     share: i64,
     claimers_json: &str,
 ) -> Result<usize> {
+    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE redpackets SET claimed = claimed + 1, claimed_total = claimed_total + ?1,
                 claimers = ?2, status = CASE WHEN claimed + 1 >= count THEN 'finished' ELSE status END
@@ -261,9 +287,10 @@ pub(in crate::domain) fn update_claim(
 }
 
 pub(in crate::domain) fn expired_packets(
-    conn: &Connection,
+    conn: &StorageConnection<'_>,
     now: i64,
 ) -> Result<Vec<ExpiredPacket>> {
+    let conn = conn.sqlite()?;
     let mut stmt = conn.prepare(
         "SELECT id, from_uid, total, claimed_total FROM redpackets
          WHERE status = 'open' AND expire_at <= ?1",
@@ -280,7 +307,8 @@ pub(in crate::domain) fn expired_packets(
     Ok(packets)
 }
 
-pub(in crate::domain) fn mark_expired(conn: &Connection, id: &str) -> Result<usize> {
+pub(in crate::domain) fn mark_expired(conn: &StorageConnection<'_>, id: &str) -> Result<usize> {
+    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE redpackets SET status = 'expired' WHERE id = ?1",
         params![id],
@@ -288,14 +316,16 @@ pub(in crate::domain) fn mark_expired(conn: &Connection, id: &str) -> Result<usi
     Ok(updated)
 }
 
-pub(in crate::domain) fn total_wallets(conn: &Connection) -> Result<i64> {
+pub(in crate::domain) fn total_wallets(conn: &StorageConnection<'_>) -> Result<i64> {
+    let conn = conn.sqlite()?;
     let total = conn.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
         r.get::<_, i64>(0)
     })?;
     Ok(total)
 }
 
-pub(in crate::domain) fn open_escrow(conn: &Connection) -> Result<i64> {
+pub(in crate::domain) fn open_escrow(conn: &StorageConnection<'_>) -> Result<i64> {
+    let conn = conn.sqlite()?;
     let escrow = conn.query_row(
         "SELECT COALESCE(SUM(total - claimed_total), 0) FROM redpackets WHERE status = 'open'",
         [],

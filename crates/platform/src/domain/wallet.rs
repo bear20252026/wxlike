@@ -110,7 +110,7 @@ fn check_amount(amount: i64) -> Result<()> {
 impl Platform {
     /// Reads a balance, treating a wallet-less user as holding zero.
     pub fn wallet_balance(&self, user_id: &str) -> Result<i64> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         Ok(repo_wallet_balance(&c, user_id)?.unwrap_or(0))
     }
 
@@ -122,13 +122,14 @@ impl Platform {
         let user_id = validate::id(user_id)?.to_string();
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            ensure_wallet(tx, &user_id)?;
-            if !user_exists(tx, &user_id)? {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            ensure_wallet(&port, &user_id)?;
+            if !user_exists(&port, &user_id)? {
                 return Err(PlatformError::NotFound);
             }
-            credit(tx, &user_id, amount)?;
+            credit(&port, &user_id, amount)?;
             log_ledger(
-                tx,
+                &port,
                 &user_id,
                 kind::FUND_IN,
                 amount,
@@ -156,25 +157,26 @@ impl Platform {
         let ref_id = crate::auth::random_hex(8);
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let now = wxlike_core::types::now_ms() as i64;
             for user in [&from, &to] {
-                if !user_exists(tx, user)? {
+                if !user_exists(&port, user)? {
                     return Err(PlatformError::NotFound);
                 }
-                ensure_wallet(tx, user)?;
+                ensure_wallet(&port, user)?;
             }
 
             // The whole exchange runs under one connection guard, so no other
             // transfer can read a half-applied balance. The CHECK constraint is the
             // backstop if this guard were ever removed.
-            let updated = debit_if_sufficient(tx, &from, amount)?;
+            let updated = debit_if_sufficient(&port, &from, amount)?;
             if updated == 0 {
                 // roll the whole transaction back, including the ensure_wallet rows
                 return Err(PlatformError::BadInput("insufficient balance"));
             }
-            credit(tx, &to, amount)?;
+            credit(&port, &to, amount)?;
             log_ledger(
-                tx,
+                &port,
                 &from,
                 kind::TRANSFER_OUT,
                 amount,
@@ -184,7 +186,7 @@ impl Platform {
                 now,
             )?;
             log_ledger(
-                tx,
+                &port,
                 &to,
                 kind::TRANSFER_IN,
                 amount,
@@ -207,12 +209,12 @@ impl Platform {
         since: i64,
         limit: i64,
     ) -> Result<Vec<LedgerRow>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_ledger_of(&c, user_id, since, limit.clamp(1, 200))
     }
 
     pub(crate) fn ledger_head(&self, user_id: &str) -> Result<i64> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_ledger_head(&c, user_id)
     }
     // ---- 写接口幂等（Idempotency-Key，审计第 5 轮）-----------------------
@@ -229,7 +231,7 @@ impl Platform {
         user_id: &str,
         key: &str,
     ) -> Result<Option<(String, String)>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         idem_lookup(&c, user_id, key)
     }
 
@@ -244,8 +246,16 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            idem_gc(tx, now - IDEMPOTENCY_TTL_MS)?;
-            idem_insert(tx, user_id, key, request_hash, &response.to_string(), now)?;
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            idem_gc(&port, now - IDEMPOTENCY_TTL_MS)?;
+            idem_insert(
+                &port,
+                user_id,
+                key,
+                request_hash,
+                &response.to_string(),
+                now,
+            )?;
             Ok(())
         })
     }
@@ -269,24 +279,34 @@ impl Platform {
 
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            if !user_exists(tx, &from)? {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            if !user_exists(&port, &from)? {
                 return Err(PlatformError::NotFound);
             }
-            ensure_wallet(tx, &from)?;
-            if debit_if_sufficient(tx, &from, amount)? == 0 {
+            ensure_wallet(&port, &from)?;
+            if debit_if_sufficient(&port, &from, amount)? == 0 {
                 return Err(PlatformError::BadInput("insufficient balance"));
             }
             insert_redpacket(
-                tx, &id, &from, &conv_id, amount, count, &memo, now, expire_at,
+                &port, &id, &from, &conv_id, amount, count, &memo, now, expire_at,
             )?;
-            log_ledger(tx, &from, kind::REDPACKET_OUT, amount, "", &id, &memo, now)?;
+            log_ledger(
+                &port,
+                &from,
+                kind::REDPACKET_OUT,
+                amount,
+                "",
+                &id,
+                &memo,
+                now,
+            )?;
             Ok(())
         })?;
         Ok(id)
     }
 
     pub fn redpacket(&self, id: &str) -> Result<Option<RedpacketRow>> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         repo_redpacket(&c, id)
     }
 
@@ -323,7 +343,8 @@ impl Platform {
         by: &str,
     ) -> Result<(i64, i64, i64, String)> {
         c.with_tx(|tx| -> Result<(i64, i64, i64, String)> {
-            let Some(state) = redpacket_state(tx, id)? else {
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            let Some(state) = redpacket_state(&port, id)? else {
                 return Err(PlatformError::NotFound);
             };
             let RedpacketState {
@@ -358,14 +379,14 @@ impl Platform {
             let remaining_money = total - claimed_total;
             let share = draw_share(remaining_money, remaining_slots);
 
-            ensure_wallet(tx, by)?;
-            credit(tx, by, share)?;
+            ensure_wallet(&port, by)?;
+            credit(&port, by, share)?;
             claimers.push(by.to_string());
             let claimers_json = serde_json::to_string(&claimers)
                 .map_err(|_| PlatformError::BadInput("claimers record is corrupt"))?;
-            update_claim(tx, id, share, &claimers_json)?;
+            update_claim(&port, id, share, &claimers_json)?;
             log_ledger(
-                tx,
+                &port,
                 by,
                 kind::REDPACKET_IN,
                 share,
@@ -410,14 +431,15 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<usize> {
-            let expired = expired_packets(tx, now)?;
+            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+            let expired = expired_packets(&port, now)?;
             let refunded = expired.len();
             for packet in expired {
                 let refund = packet.total - packet.claimed_total;
                 if refund > 0 {
-                    credit(tx, &packet.from_uid, refund)?;
+                    credit(&port, &packet.from_uid, refund)?;
                     log_ledger(
-                        tx,
+                        &port,
                         &packet.from_uid,
                         kind::REDPACKET_REFUND,
                         refund,
@@ -427,7 +449,7 @@ impl Platform {
                         now,
                     )?;
                 }
-                mark_expired(tx, &packet.id)?;
+                mark_expired(&port, &packet.id)?;
             }
             Ok(refunded)
         })
@@ -437,7 +459,7 @@ impl Platform {
     /// red packet, which is why the conservation tests use
     /// `Platform::money_supply` instead.
     pub fn total_money(&self) -> Result<i64> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         total_wallets(&c)
     }
 
@@ -446,7 +468,7 @@ impl Platform {
     /// money has left the sender but is still in the system, so a supply check
     /// that ignores escrow would "lose" money on every red packet.
     pub fn money_supply(&self) -> Result<i64> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         Ok(total_wallets(&c)? + open_escrow(&c)?)
     }
 }
