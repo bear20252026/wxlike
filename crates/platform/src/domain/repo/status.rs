@@ -240,7 +240,7 @@ pub(in crate::domain) fn insert_status_indexed(
             s.expires_at
         ],
     )?;
-    crate::domain::repo::content_index::upsert(
+    crate::domain::repo::content_index::upsert_tx(
         tx,
         &crate::domain::content_index::IndexDoc {
             doc_id: s.id,
@@ -260,7 +260,9 @@ pub(in crate::domain) fn insert_status_indexed(
     if !s.background.is_empty() {
         refs.push(s.background.to_string());
     }
-    crate::domain::repo::content_index::add_media_refs(tx, &refs, "status", s.id, s.owner, s.now)?;
+    crate::domain::repo::content_index::add_media_refs_tx(
+        tx, &refs, "status", s.id, s.owner, s.now,
+    )?;
     Ok(())
 }
 
@@ -281,9 +283,9 @@ pub(in crate::domain) fn clear_owner(
             "UPDATE statuses SET cleared_at = ?1, updated_at = ?1 WHERE id = ?2",
             params![now, id],
         )?;
-        crate::domain::repo::content_index::remove(conn, id)?;
-        crate::domain::repo::content_index::remove_media_refs(conn, "status", id)?;
         let port = crate::storage::StorageConnection::sqlite_borrow(conn);
+        crate::domain::repo::content_index::remove(&port, id)?;
+        crate::domain::repo::content_index::remove_media_refs(&port, "status", id)?;
         crate::domain::repo::favorites::revoke_source(&port, "status", id)?;
     }
     Ok(ids.len())

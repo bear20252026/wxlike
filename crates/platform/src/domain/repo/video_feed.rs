@@ -215,7 +215,7 @@ pub(in crate::domain) fn index_video(
     media_id: &str,
     now: i64,
 ) -> Result<()> {
-    crate::domain::repo::content_index::upsert(
+    crate::domain::repo::content_index::upsert_tx(
         tx,
         &crate::domain::content_index::IndexDoc {
             doc_id: id,
@@ -228,7 +228,7 @@ pub(in crate::domain) fn index_video(
         },
         now,
     )?;
-    crate::domain::repo::content_index::add_media_refs(
+    crate::domain::repo::content_index::add_media_refs_tx(
         tx,
         &[media_id.to_string()],
         "video",
