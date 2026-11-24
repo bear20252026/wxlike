@@ -156,73 +156,85 @@ impl DiagReport {
 
 /// 跑完整诊断。顺序短路：上一步失败，后面的标 `skipped`。
 pub async fn run(target: &DiagTarget, opts: &DiagOptions) -> DiagReport {
-    let mut steps = Vec::new();
+    // 顺序短路：上一步失败，后面的标 `skipped`。
+    let (dns, addrs) = run_dns(target, opts).await;
+    let (tcp, tcp_addr) = run_tcp(&addrs, dns.status.is_ok(), opts).await;
+    let http = run_http(tcp_addr, target, opts).await;
+    let quic = run_quic(tcp_addr, target, opts).await;
 
-    // 1) DNS
-    let started = Instant::now();
-    let (dns_status, addrs) = dns_probe(target, opts).await;
-    let dns_ok = dns_status.is_ok();
-    steps.push(StepReport {
-        step: Step::Dns,
-        status: dns_status,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    });
-
-    // 2) TCP（用第一个解析结果；连不上就换下一个）
-    let mut tcp_addr: Option<SocketAddr> = None;
-    if dns_ok {
-        let started = Instant::now();
-        let (status, reached) = tcp_probe(&addrs, opts).await;
-        tcp_addr = reached;
-        steps.push(StepReport {
-            step: Step::Tcp,
-            status,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-        });
-    } else {
-        steps.push(skipped(Step::Tcp, "DNS 未通过"));
-    }
-
-    // 3) HTTP 探活
-    if let Some(addr) = tcp_addr {
-        let started = Instant::now();
-        let status = match http_probe(addr, &target.host, &target.http_path, opts).await {
-            Ok(line) => StepStatus::Ok { detail: line },
-            Err(err) => StepStatus::Failed { detail: err },
-        };
-        steps.push(StepReport {
-            step: Step::Http,
-            status,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-        });
-    } else {
-        steps.push(skipped(Step::Http, "TCP 未通过"));
-    }
-
-    // 4) QUIC 握手（数据面）
-    if let Some(addr) = tcp_addr {
-        let started = Instant::now();
-        let quic_addr = SocketAddr::new(addr.ip(), target.quic_port);
-        let status = match quic_probe(quic_addr, opts).await {
-            Ok(detail) => StepStatus::Ok { detail },
-            Err(err) => StepStatus::Failed { detail: err },
-        };
-        steps.push(StepReport {
-            step: Step::Quic,
-            status,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-        });
-    } else {
-        steps.push(skipped(Step::Quic, "TCP 未通过"));
-    }
-
-    let summary = summarize(&steps);
+    let steps = vec![dns, tcp, http, quic];
     DiagReport {
         host: target.host.clone(),
         http_port: target.http_port,
         quic_port: target.quic_port,
+        summary: summarize(&steps),
         steps,
-        summary,
+    }
+}
+
+/// 1) DNS，同时交出解析到的地址。
+async fn run_dns(target: &DiagTarget, opts: &DiagOptions) -> (StepReport, Vec<SocketAddr>) {
+    let started = Instant::now();
+    let (status, addrs) = dns_probe(target, opts).await;
+    let step = StepReport {
+        step: Step::Dns,
+        status,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    };
+    (step, addrs)
+}
+
+/// 2) TCP（用第一个解析结果；连不上就换下一个）。
+async fn run_tcp(
+    addrs: &[SocketAddr],
+    dns_ok: bool,
+    opts: &DiagOptions,
+) -> (StepReport, Option<SocketAddr>) {
+    if !dns_ok {
+        return (skipped(Step::Tcp, "DNS 未通过"), None);
+    }
+    let started = Instant::now();
+    let (status, reached) = tcp_probe(addrs, opts).await;
+    let step = StepReport {
+        step: Step::Tcp,
+        status,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    };
+    (step, reached)
+}
+
+/// 3) HTTP 探活。
+async fn run_http(addr: Option<SocketAddr>, target: &DiagTarget, opts: &DiagOptions) -> StepReport {
+    let Some(addr) = addr else {
+        return skipped(Step::Http, "TCP 未通过");
+    };
+    let started = Instant::now();
+    let status = match http_probe(addr, &target.host, &target.http_path, opts).await {
+        Ok(line) => StepStatus::Ok { detail: line },
+        Err(err) => StepStatus::Failed { detail: err },
+    };
+    StepReport {
+        step: Step::Http,
+        status,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// 4) QUIC 握手（数据面）。
+async fn run_quic(addr: Option<SocketAddr>, target: &DiagTarget, opts: &DiagOptions) -> StepReport {
+    let Some(addr) = addr else {
+        return skipped(Step::Quic, "TCP 未通过");
+    };
+    let started = Instant::now();
+    let quic_addr = SocketAddr::new(addr.ip(), target.quic_port);
+    let status = match quic_probe(quic_addr, opts).await {
+        Ok(detail) => StepStatus::Ok { detail },
+        Err(err) => StepStatus::Failed { detail: err },
+    };
+    StepReport {
+        step: Step::Quic,
+        status,
+        elapsed_ms: started.elapsed().as_millis() as u64,
     }
 }
 

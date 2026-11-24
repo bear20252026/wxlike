@@ -131,6 +131,36 @@ impl From<rusqlite::Error> for WatchError {
     }
 }
 
+/// 校验观看事件的两个自由字段；返回去空白后的 viewer 与最终 session_id。
+fn watch_fields(event: &WatchEvent) -> Result<(String, String), WatchError> {
+    let viewer = event.viewer.trim();
+    if viewer.is_empty() {
+        return Err(WatchError::Invalid("viewer must not be empty".into()));
+    }
+    if viewer.chars().count() > MAX_WATCH_ID_CHARS {
+        return Err(WatchError::Invalid(format!(
+            "viewer longer than {MAX_WATCH_ID_CHARS} chars"
+        )));
+    }
+    if event.watched_ms == 0 || event.watched_ms > MAX_WATCHED_MS {
+        return Err(WatchError::Invalid(format!(
+            "watched_ms must be 1..={MAX_WATCHED_MS}"
+        )));
+    }
+    let raw_session = event.session_id.trim();
+    if raw_session.chars().count() > MAX_WATCH_ID_CHARS {
+        return Err(WatchError::Invalid(format!(
+            "session_id longer than {MAX_WATCH_ID_CHARS} chars"
+        )));
+    }
+    let session_id = if raw_session.is_empty() {
+        format!("s-{}", random_hex(8))
+    } else {
+        raw_session.to_string()
+    };
+    Ok((viewer.to_string(), session_id))
+}
+
 impl VideoStore {
     /// 记一条观看事件。
     pub fn record_watch(
@@ -138,70 +168,55 @@ impl VideoStore {
         video_id: &str,
         event: &WatchEvent,
     ) -> Result<WatchEventRecord, WatchError> {
-        let viewer = event.viewer.trim();
-        if viewer.is_empty() {
-            return Err(WatchError::Invalid("viewer must not be empty".into()));
-        }
-        if viewer.chars().count() > MAX_WATCH_ID_CHARS {
-            return Err(WatchError::Invalid(format!(
-                "viewer longer than {MAX_WATCH_ID_CHARS} chars"
-            )));
-        }
-        if event.watched_ms == 0 || event.watched_ms > MAX_WATCHED_MS {
-            return Err(WatchError::Invalid(format!(
-                "watched_ms must be 1..={MAX_WATCHED_MS}"
-            )));
-        }
-        let raw_session = event.session_id.trim();
-        if raw_session.chars().count() > MAX_WATCH_ID_CHARS {
-            return Err(WatchError::Invalid(format!(
-                "session_id longer than {MAX_WATCH_ID_CHARS} chars"
-            )));
-        }
-        let session_id = if raw_session.is_empty() {
-            format!("s-{}", random_hex(8))
-        } else {
-            raw_session.to_string()
-        };
+        let (viewer, session_id) = watch_fields(event)?;
         if !self.contains(video_id) {
             return Err(WatchError::UnknownVideo);
         }
         let now = wxlike_core::types::now_ms() as i64;
+        let event_id = self.insert_watch(video_id, &viewer, &session_id, event, now)?;
+        Ok(WatchEventRecord {
+            event_id,
+            viewer,
+            session_id,
+            recorded_at_ms: now,
+        })
+    }
+
+    /// 一次持锁完成 INSERT + last_insert_rowid：分两次取锁的话，中间别人插过
+    /// 一行，回执里的 event_id 就不是自己那条了。
+    fn insert_watch(
+        &self,
+        video_id: &str,
+        viewer: &str,
+        session_id: &str,
+        event: &WatchEvent,
+        now: i64,
+    ) -> Result<i64, WatchError> {
         let db = match self.db() {
             Ok(db) => db,
             Err(err) => return Err(WatchError::Store(err)),
         };
-        // 一次持锁完成 INSERT + last_insert_rowid：分两次取锁的话，中间别人插过
-        // 一行，回执里的 event_id 就不是自己那条了。
-        let event_id = {
-            let c = db.c();
-            let stored = c.execute(
-                "INSERT INTO watch_events(video_id, viewer, session_id, watched_ms,
-                                          position_ms, completed, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    video_id,
-                    viewer,
-                    session_id,
-                    event.watched_ms as i64,
-                    event.position_ms as i64,
-                    i64::from(event.completed),
-                    now
-                ],
-            )?;
-            if stored != 1 {
-                return Err(WatchError::Store(anyhow::anyhow!(
-                    "watch insert affected {stored} rows"
-                )));
-            }
-            c.last_insert_rowid()
-        };
-        Ok(WatchEventRecord {
-            event_id,
-            viewer: viewer.to_string(),
-            session_id,
-            recorded_at_ms: now,
-        })
+        let c = db.c();
+        let stored = c.execute(
+            "INSERT INTO watch_events(video_id, viewer, session_id, watched_ms,
+                                      position_ms, completed, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                video_id,
+                viewer,
+                session_id,
+                event.watched_ms as i64,
+                event.position_ms as i64,
+                i64::from(event.completed),
+                now
+            ],
+        )?;
+        if stored != 1 {
+            return Err(WatchError::Store(anyhow::anyhow!(
+                "watch insert affected {stored} rows"
+            )));
+        }
+        Ok(c.last_insert_rowid())
     }
 
     /// 聚合：多少事件、多少人、看了多久、平均完成度。

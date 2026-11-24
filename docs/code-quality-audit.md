@@ -393,10 +393,10 @@ search、video、hub、router 全串在一个函数里。
    HEAD。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
-**当前基线（2026-11-24 第四轮收紧）**：函数 >60 行 **38**、>100 行 **0**、嵌套 >3 层
-**4**、跨文件重复窗口 **128**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**当前基线（2026-11-24 第五轮收紧）**：函数 >60 行 **14**、>100 行 **0**、嵌套 >3 层
+**0**、跨文件重复窗口 **127**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
-当前值（最近一次把嵌套从 28 收到 4）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
+当前值（最近一次把嵌套从 4 收到 0、`>60` 从 38 收到 14）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
 不能再和旧基线相减，否则 `--update` 永远拒绝收紧。重置只把当前值写成新起点，
 之后任何指标上涨仍会被全量闸门拦下。
@@ -447,8 +447,7 @@ search、video、hub、router 全串在一个函数里。
 |---|---|---|---|
 | 函数 >60 行 | 46 | ≤25 | ≤15 |
 | 函数 >100 行 | 14 | ≤6 | ≤4（只允许 DDL/声明式） |
-| 嵌套 >3 层 | 63 | ≤30 | ≤25 |
-| 跨文件重复窗口 | 78 | ≤55 | ≤35 |
+| 嵌套 >3 层 | 63 | ≤30 | ≤25 || 跨文件重复窗口 | 78 | ≤55 | ≤35 |
 | 魔法数字总数 | 170 | ≤100 | ≤60 |
 | `Platform` 对外方法 | 275 | 275 | ≤120 |
 | `run()` 行数 | 220 | ≤30 | ≤30 |
@@ -476,17 +475,17 @@ search、video、hub、router 全串在一个函数里。
 
 | 指标 | 审计时 | 现在 |
 |---|---|---|
-| 函数 >60 行 | 46 | **38** |
+| 函数 >60 行 | 46 | **14** |
 | 函数 >100 行 | 14 | **0** |
-| 嵌套 >3 层 | 63 | **4** |
-| 跨文件重复窗口 | 78 | 128（扫描面扩到 472 文件） |
+| 嵌套 >3 层 | 63 | **0** |
+| 跨文件重复窗口 | 78 | 127（扫描面扩到 472 文件） |
 | 魔法数字总数 | 170 | 172（同上） |
 
 > 前四项这一波没动（第 2 波才拆函数），**没有变差**是底线；
 > 重复窗口下降发生在权限枚举与权限表收口时（78 已是收口后的数）。
 
-2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 596`、
-`>60 行 38`、`>100 行 0`、`深嵌套 4`、`重复窗口 128`、`魔法数字 172`。统计面随仓库模块
+2026-11-24 全仓生产代码复测（`docs/bench/quality_probe.py`）：`>30 行 597`、
+`>60 行 14`、`>100 行 0`、`深嵌套 0`、`重复窗口 127`、`魔法数字 172`。统计面随仓库模块
 增加而扩大，不能直接和上表的历史口径相减；本轮已拆掉 Platform 最后三个
 `>60` 行函数（`claim_redpacket` 75、`send_danmaku` 73、`login` 72），Platform
 侧 `long_fns` 归零；随后把 `message/src/lib.rs::open` 的 210 行建表 DDL
@@ -598,6 +597,41 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 深嵌套从 28 降到 4，其余指标不变（`>60` 38、`>30` 596、重复 128、魔法 172）。
 剩下 4 个仍是 4 层的是 `message::open`、`video::jobs::spawn_worker`、
 `mcp::list_commands_tool` 与 `container` 示例里的宏展开。
+
+同一轮第四批专攻长函数：按探针 `long_fns` 从大到小拆掉 20 个 `>60` 行热点，
+全部只抽命名步骤、行为不变。`identity::governance::user` 的 `suspend` /
+`unsuspend` / `set_disabled` 共用 `Prep` + `prepare` / `state_of` / `close_tx`，
+三个函数从 87/78/83 降到 40 上下，且 `unsuspend` 复用 `finish_govern` 后事件
+形状与镜像和另两条路径完全一致；`admin` 二进制 `account_command` 拆出
+`list_accounts` / `run_account_action` / `mfa_label` / `yes_no`；`admin::read::stats`
+把 12 项计数收进 `Gauge` / `gauge_counts` / `audit_in_sample` / `last_reconcile_run`；
+`admin::publishing::submit` 拆 `find_by_idem` / `new_item` / `insert_item`；
+`relations::group::grant_member` 拆 `check_approver` / `next_acs` / `check_ceiling` /
+`transfer_ownership`；`identity::login_challenge::verify` 拆 `fetch_challenge` /
+`check_open` / `consume_challenge`；`identity::governance::device::revoke_device`
+拆 `revoke_events` / `revoke_draft`；`search::search` 拆 `boolean_query` / `hit_of` /
+`text_of`；`server::forward_message` 拆 `check_forward_access` / `build_forward`；
+`server::start_stack` 的六段装配收进 `assemble_apps`；`video::stats::record_watch`
+拆 `watch_fields` / `insert_watch`；`video::encode_one` 拆 `encode_mp4` / `encode_hls` /
+`bandwidth_of`；`container::engine::install_bridge` 的五个内嵌函数提到模块级；
+`admin::g14::router` 按域拆五段 `.merge()`；`net::diag::run` 拆
+`run_dns` / `run_tcp` / `run_http` / `run_quic`；`video` live ingest `run` 拆
+`follow` / `drain_tail` / `check_outcome`；`admin::http::run_op` 拆 `classify_outcome`；
+`net::mq_hub::register_connection` 拆 `register_peer` / `ensure_user_bucket` /
+`bind_route`；`rtc::call::start` 的离线分支收进 `start_offline`；
+`rtc::turn::allocate_relayed` 的探包与地址解码收进 `AllocateProbe` /
+`probe_allocate` / `relayed_addr` / `attr_text`；`admin::http::build_payload` 未再动。
+`>60` 从 38 降到 15（含新抽出的 `ui::lib::handlers` 注册表 74 行）。
+
+同一批再收尾四个 4 层嵌套：`message::open` 的父目录创建抽成 `ensure_parent_dir`；
+`video::jobs::spawn_worker` 的一轮收进 `worker_round`；`mcp::list_commands_tool`
+把 `inputSchema` 先建好再拼外层对象；`container` 示例的 DOM 垫片提成
+`DOM_SHIM` 常量（宏/字符串不再计入函数嵌套）。深嵌套 4 → 0。
+`ui::callrtc::run` 的麦克风喂帧与副作用落地收进 `pump_mics` / `apply_all`；
+`ui::lib::run` 的 70 项命令注册搬到 `handlers()`；`message` 压测示例
+`bench_mailbox::main` 拆 `env_usize` / `write_load` / `count_readable` /
+`percentile` / `print_report`。最终 `>60` 14、`>30` 597、重复 127、魔法 172、
+嵌套 0，基线已同步收紧。
 
 存储端口本波从 6 个 repo、20 个函数扩到 32 个 repo、353 个函数：
 `notification` / `audit` / `devices` / `read` / `video_refs` / `qr_login` /

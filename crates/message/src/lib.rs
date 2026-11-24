@@ -457,17 +457,25 @@ CREATE INDEX IF NOT EXISTS idx_push_user
     ON push_device(user_id, revoked);
 "#;
 
+/// 持久化打开时先把父目录建出来（`:memory:` 走不到这里）。
+fn ensure_parent_dir(path: &str) -> Result<()> {
+    let Some(dir) = std::path::Path::new(path).parent() else {
+        return Ok(());
+    };
+    if dir.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    Ok(())
+}
+
 impl MessageStore {
     /// `None` opens in-memory (tests / demos); a path persists to disk.
     pub fn open(path: Option<&str>) -> Result<Self> {
         let conn = match path {
             Some(p) => {
-                if let Some(dir) = std::path::Path::new(p).parent() {
-                    if !dir.as_os_str().is_empty() {
-                        std::fs::create_dir_all(dir)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    }
-                }
+                ensure_parent_dir(p)?;
                 Connection::open(p)?
             }
             None => Connection::open_in_memory()?,

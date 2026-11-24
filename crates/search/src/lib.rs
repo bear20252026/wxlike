@@ -204,6 +204,22 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
 
+        // 查询前 reload：后台索引线程的最新提交此刻可见（无新提交时近零开销）
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+        // tantivy 0.27：TopDocs 结构体本身不再实现 Collector——
+        // 构建器链上 order_by_score() 返回匿名 impl Collector（fruit 形状不变）
+        let top = searcher.search(
+            &self.boolean_query(&tokens, conv_filter),
+            &TopDocs::with_limit(limit.clamp(1, 100)).order_by_score(),
+        )?;
+        top.into_iter()
+            .map(|(score, addr)| self.hit_of(&searcher, addr, score))
+            .collect()
+    }
+
+    /// 文本 token AND + 授权会话过滤（Should 组 + 外层 Must：命中必须落在授权会话内）。
+    fn boolean_query(&self, tokens: &[String], conv_filter: &[String]) -> BooleanQuery {
         let mut musts: Vec<(Occur, Box<dyn Query>)> = tokens
             .iter()
             .map(|t| {
@@ -216,7 +232,6 @@ impl SearchIndex {
                 )
             })
             .collect();
-        // conv 过滤：Should 组 + 外层 Must（命中集合必须落在授权会话内）
         let conv_terms: Vec<(Occur, Box<dyn Query>)> = conv_filter
             .iter()
             .map(|c| {
@@ -230,43 +245,34 @@ impl SearchIndex {
             })
             .collect();
         musts.push((Occur::Must, Box::new(BooleanQuery::new(conv_terms))));
+        BooleanQuery::new(musts)
+    }
 
-        // 查询前 reload：后台索引线程的最新提交此刻可见（无新提交时近零开销）
-        self.reader.reload()?;
-        let searcher = self.reader.searcher();
-        // tantivy 0.27：TopDocs 结构体本身不再实现 Collector——
-        // 构建器链上 order_by_score() 返回匿名 impl Collector（fruit 形状不变）
-        let top = searcher.search(
-            &BooleanQuery::new(musts),
-            &TopDocs::with_limit(limit.clamp(1, 100)).order_by_score(),
-        )?;
-
-        let mut hits = Vec::new();
-        for (score, addr) in top {
-            let hit_doc: tantivy::TantivyDocument = searcher.doc(addr)?;
-            let conv = hit_doc
-                .get_first(self.f_conv)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let seq = hit_doc
+    /// 一条命中：只回投影索引里的四个字段，正文由调用方回权威存储取。
+    fn hit_of(
+        &self,
+        searcher: &tantivy::Searcher,
+        addr: tantivy::DocAddress,
+        score: f32,
+    ) -> anyhow::Result<SearchHit> {
+        let hit_doc: tantivy::TantivyDocument = searcher.doc(addr)?;
+        Ok(SearchHit {
+            conv_id: text_of(&hit_doc, self.f_conv),
+            seq: hit_doc
                 .get_first(self.f_seq)
                 .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let sender = hit_doc
-                .get_first(self.f_sender)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            hits.push(SearchHit {
-                conv_id: conv,
-                seq,
-                sender,
-                score,
-            });
-        }
-        Ok(hits)
+                .unwrap_or(0),
+            sender: text_of(&hit_doc, self.f_sender),
+            score,
+        })
     }
+}
+
+fn text_of(doc: &tantivy::TantivyDocument, field: tantivy::schema::Field) -> String {
+    doc.get_first(field)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------

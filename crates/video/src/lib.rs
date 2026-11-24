@@ -541,11 +541,26 @@ fn encode_one(
     duration_ms: u32,
 ) -> anyhow::Result<(Rendition, PathBuf, u32)> {
     let width = probe.width_at(height);
+    let mp4 = encode_mp4(source, temp_dir, height)?;
+    let playlist = encode_hls(&mp4, hls_root, height)?;
+    let bandwidth_bps = bandwidth_of(&mp4, duration_ms)?;
+    Ok((
+        Rendition {
+            height,
+            width,
+            bandwidth_bps,
+            playlist,
+        },
+        mp4,
+        width,
+    ))
+}
+
+/// 一次编码/档：先出 progressive MP4，再从它 `-c copy` 切 HLS。
+fn encode_mp4(source: &Path, temp_dir: &Path, height: u32) -> anyhow::Result<PathBuf> {
     // libx264 要求偶数宽高；`-2` 保持比例并取偶
     let scale = format!("scale=-2:{height}");
     let mp4 = temp_dir.join(format!("play_{height}.mp4"));
-
-    // 一次编码/档：先出 progressive MP4，再从它 `-c copy` 切 HLS
     run_tool(
         &ffmpeg_bin(),
         &[
@@ -571,7 +586,11 @@ fn encode_one(
     )
     .with_context(|| format!("ffmpeg transcode {height}p to mp4"))?;
     anyhow::ensure!(mp4.is_file(), "ffmpeg produced no {height}p mp4");
+    Ok(mp4)
+}
 
+/// 从 MP4 `-c copy` 切 HLS；返回相对 hls 根的 playlist 路径。
+fn encode_hls(mp4: &Path, hls_root: &Path, height: u32) -> anyhow::Result<String> {
     let rendition_dir = hls_root.join(height.to_string());
     std::fs::create_dir_all(&rendition_dir)?;
     run_tool(
@@ -602,24 +621,17 @@ fn encode_one(
         rendition_dir.join("playlist.m3u8").is_file(),
         "ffmpeg produced no {height}p playlist"
     );
+    Ok(format!("{height}/playlist.m3u8"))
+}
 
-    // 实测码率：比 CRF 猜一个常数靠谱，master 的 BANDWIDTH 直接可用
-    let size = std::fs::metadata(&mp4)?.len();
-    let bandwidth_bps = if duration_ms > 0 {
+/// 实测码率：比 CRF 猜一个常数靠谱，master 的 BANDWIDTH 直接可用。
+fn bandwidth_of(mp4: &Path, duration_ms: u32) -> anyhow::Result<u64> {
+    let size = std::fs::metadata(mp4)?.len();
+    Ok(if duration_ms > 0 {
         size.saturating_mul(8).saturating_mul(1_000) / u64::from(duration_ms)
     } else {
         0
-    };
-    Ok((
-        Rendition {
-            height,
-            width,
-            bandwidth_bps,
-            playlist: format!("{height}/playlist.m3u8"),
-        },
-        mp4,
-        width,
-    ))
+    })
 }
 
 /// master playlist 与老客户端兼容路径。

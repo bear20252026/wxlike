@@ -1,6 +1,6 @@
 {
   "schema": "wxlike.provenance.v1",
-  "updated_at": "2026-11-19",
+  "updated_at": "2026-11-24",
   "note": "三段式登记：upstreams（仓级）→ files（片段级）→ 本地文件 sha256。ported/adapted 必须能在本地复现，且点名出现在 THIRD-PARTY-NOTICES.md。commit 是完整 SHA；每条的永久链接由 `sourceaudit provenance check` 打印。",
   "upstreams": [
     {
@@ -272,7 +272,7 @@
       "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "468bbd0c88cd667acbe68e14e265be9da8ca442c555c9d12aa2a046ec1d2c1fb",
+      "local_sha256": "6eae143f3651586a973d64b6aa32a95bb0787a8844b08a5a41befddf68981a2c",
       "patchlog": "third_party/reviews/patches/UP-OPENIM-trends.md",
       "used_by": "rank_trends / rank_trends_paged（热搜榜；平台侧 /api/search/trends 的算法基线。platform -> wxlike-search 这条依赖边会动根 Cargo.lock，属串行热点，见 integration-requests/G05/authz-matrix-additions.yaml 的 related 段，等 G00 挂）"
     },
@@ -346,7 +346,7 @@
       "commit": "fe463ef1f79adbd0701219bb65514b9f7dcd4a84",
       "decision": "adapted",
       "license_spdx": "NOASSERTION",
-      "local_sha256": "e801fa96ddf45d06ccb16c73523d8bf91d233ee6664800a270954ba893479ada",
+      "local_sha256": "c70f9de911f3ee157b11fc55e99dc76af6915348e47f1d7781bad5b6eb6c9a10",
       "patchlog": "third_party/reviews/patches/UP-FORMANCE-ledger-errors.md",
       "used_by": "LedgerError 新增变体的载荷形状（VolumeOverflow/BadAsset/AssetMismatch/Metadata 系列）与 ApplyOutcome/PostReport 再导出"
     },
@@ -387,7 +387,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "5dce0007d17580ee0a02ff6216792679ed5fdd93236a7b2cd1b69ee131b7fbae",
+      "local_sha256": "f0536cdd3d9f1f3abea0b40ab0b5c5811282a35ca34d0453509ea8b37ea69465",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-acs.md",
       "used_by": "权限位模型 Acs 与全部预设/推导；friend.rs、group.rs、platform 侧的可见性判定都走它"
     },
@@ -409,7 +409,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "d614b8500918cd8f2f4997063c2c9be514c0da1662e303ca992dff7f4a2a3147",
+      "local_sha256": "4052b95e3f3b103ee9cbb6735cf5ff5611a322ef842bb9949f3cde88090196e5",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-group-acs.md",
       "used_by": "群成员的位判定：邀人/审批/转让/踢人/可见性，与 role 列的双向同步"
     },
@@ -464,7 +464,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "2bc0fbc6cf08e365df561ca4a6a54bb5fc5169e82a51da6f5a3c8b7d902ed7d1",
+      "local_sha256": "0e7aadea6d5d4c926fa88db1b7c670d04df2a82ad54118fdd64efce1af574fd2",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-credential-retry.md",
       "used_by": "验证码校验顺序与重试语义、成功连坐同凭据其它挑战、过期行清扫"
     },

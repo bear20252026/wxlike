@@ -309,36 +309,16 @@ fn allocate_relayed(
     socket: &UdpSocket,
     cfg: &TurnConfig,
 ) -> anyhow::Result<(SocketAddr, String, String, u32)> {
-    // 1) 不带凭据的 Allocate：正常会拿到 401 + realm/nonce
-    let req = build(
-        M_ALLOCATE,
-        C_REQUEST,
-        rand_txid(),
-        &[(A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0])],
-        None,
-    );
-    socket.send(&req)?;
-    let (msg, _) = read_message(socket)?;
-    if msg.class == C_SUCCESS {
-        // 服务器开了匿名中继（罕见）：直接用它给的地址
-        let relayed = msg
-            .attr(A_XOR_RELAYED_ADDRESS)
-            .and_then(decode_xor_addr)
-            .ok_or_else(|| anyhow::anyhow!("Allocate 成功但没有 RELAYED-ADDRESS"))?;
-        return Ok((relayed, String::new(), String::new(), LIFETIME_SECS));
-    }
-    if msg.error_code() != Some(401) {
-        anyhow::bail!(
-            "Allocate 被拒: {} {}",
-            msg.error_code().unwrap_or(0),
-            msg.error_reason()
-        );
-    }
-    let realm = String::from_utf8_lossy(msg.attr(A_REALM).unwrap_or(b"")).to_string();
-    let nonce = String::from_utf8_lossy(msg.attr(A_NONCE).unwrap_or(b"")).to_string();
-    let key = long_term_key(&cfg.user, &realm, &cfg.password);
+    // 1) 不带凭据的 Allocate：正常会拿到 401 + realm/nonce；匿名中继则直接成功。
+    let (realm, nonce) = match probe_allocate(socket)? {
+        AllocateProbe::Anonymous(addr) => {
+            return Ok((addr, String::new(), String::new(), LIFETIME_SECS))
+        }
+        AllocateProbe::Challenge { realm, nonce } => (realm, nonce),
+    };
 
     // 2) 带凭据重发
+    let key = long_term_key(&cfg.user, &realm, &cfg.password);
     let req = build(
         M_ALLOCATE,
         C_REQUEST,
@@ -361,16 +341,59 @@ fn allocate_relayed(
             msg.error_reason()
         );
     }
-    let relayed = msg
-        .attr(A_XOR_RELAYED_ADDRESS)
-        .and_then(decode_xor_addr)
-        .ok_or_else(|| anyhow::anyhow!("Allocate 成功但没有 RELAYED-ADDRESS"))?;
+    let relayed = relayed_addr(&msg)?;
     let lifetime = msg
         .attr(A_LIFETIME)
         .filter(|v| v.len() >= 4)
         .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]))
         .unwrap_or(LIFETIME_SECS);
     Ok((relayed, realm, nonce, lifetime))
+}
+
+/// 首次 Allocate 的两种正常结局。
+enum AllocateProbe {
+    /// 服务器开了匿名中继（罕见）：直接用它给的地址。
+    Anonymous(SocketAddr),
+    Challenge {
+        realm: String,
+        nonce: String,
+    },
+}
+
+fn probe_allocate(socket: &UdpSocket) -> anyhow::Result<AllocateProbe> {
+    let req = build(
+        M_ALLOCATE,
+        C_REQUEST,
+        rand_txid(),
+        &[(A_REQUESTED_TRANSPORT, vec![17, 0, 0, 0])],
+        None,
+    );
+    socket.send(&req)?;
+    let (msg, _) = read_message(socket)?;
+    if msg.class == C_SUCCESS {
+        return Ok(AllocateProbe::Anonymous(relayed_addr(&msg)?));
+    }
+    if msg.error_code() != Some(401) {
+        anyhow::bail!(
+            "Allocate 被拒: {} {}",
+            msg.error_code().unwrap_or(0),
+            msg.error_reason()
+        );
+    }
+    Ok(AllocateProbe::Challenge {
+        realm: attr_text(&msg, A_REALM),
+        nonce: attr_text(&msg, A_NONCE),
+    })
+}
+
+fn relayed_addr(msg: &Message) -> anyhow::Result<SocketAddr> {
+    msg.attr(A_XOR_RELAYED_ADDRESS)
+        .and_then(decode_xor_addr)
+        .ok_or_else(|| anyhow::anyhow!("Allocate 成功但没有 RELAYED-ADDRESS"))
+}
+
+fn attr_text(msg: &Message, kind: u16) -> String {
+    String::from_utf8_lossy(msg.attr(kind).unwrap_or(b"")).to_string()
 }
 
 impl TurnClient {

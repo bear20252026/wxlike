@@ -8,25 +8,8 @@
 
 use wxlike_container::BoaEngine;
 
-fn main() -> anyhow::Result<()> {
-    // Boa's recursive parser needs a big stack for megabyte-scale minified bundles.
-    let child = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(run)
-        .expect("spawn research thread");
-    child.join().expect("research thread panicked")
-}
-
-fn run() -> anyhow::Result<()> {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| r"D:\mimo\test\source_recovered\wmpf_js\WAWebview.js".to_string());
-    let code = std::fs::read_to_string(&path)?;
-    println!("[research] loading {} ({} KB)", path, code.len() / 1024);
-
-    let mut eng = BoaEngine::new();
-    println!("[research] installing minimal DOM shim");
-    let shim = r#"
+/// 最小 DOM/BOM 垫片：足够让还原出来的运行时走完解析与早期初始化。
+const DOM_SHIM: &str = r#"
         var window = globalThis;
         var self = globalThis;
         var document = {
@@ -48,7 +31,26 @@ fn run() -> anyhow::Result<()> {
         globalThis.WebSocket = function () { this.send = function(){}; this.close = function(){}; };
         globalThis.__wxConfig = { envVersion: 'research' };
     "#;
-    match eng.eval(shim) {
+
+fn main() -> anyhow::Result<()> {
+    // Boa's recursive parser needs a big stack for megabyte-scale minified bundles.
+    let child = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(run)
+        .expect("spawn research thread");
+    child.join().expect("research thread panicked")
+}
+
+fn run() -> anyhow::Result<()> {
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| r"D:\mimo\test\source_recovered\wmpf_js\WAWebview.js".to_string());
+    let code = std::fs::read_to_string(&path)?;
+    println!("[research] loading {} ({} KB)", path, code.len() / 1024);
+
+    let mut eng = BoaEngine::new();
+    println!("[research] installing minimal DOM shim");
+    match eng.eval(DOM_SHIM) {
         Ok(_) => println!("[research] shim ok"),
         Err(e) => return Err(e.context("shim failed (container bug)")),
     }

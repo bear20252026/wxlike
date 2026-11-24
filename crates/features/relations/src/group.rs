@@ -684,6 +684,22 @@ pub fn grant_member(
 ) -> Result<Acs> {
     let group = require_active(conn, group_id)?;
     let mine = member_acs(conn, group_id, actor, &group)?;
+    let explicit = check_approver(&mine, mutation)?;
+    let (target_want, next) = next_acs(conn, group_id, target, &group, mutation, explicit, &mine)?;
+    check_ceiling(conn, group_id, target, &group, next)?;
+
+    let tx = conn.unchecked_transaction()?;
+    upsert_member_acs(&tx, group_id, target, target_want, next, now)?;
+    if next.is_owner() && group.owner_uid != target {
+        transfer_ownership(&tx, group_id, target, &group, now)?;
+    }
+    audit(&tx, actor, target, "group.grant", now)?;
+    tx.commit()?;
+    Ok(next)
+}
+
+/// 操作者校验；返回这次是否为"整串赋值"（带显式位串，而非 `+`/`-` 增量）。
+fn check_approver(mine: &Acs, mutation: &str) -> Result<bool> {
     if !mine.is_sharer() {
         return Err(RelError::Forbidden("approver has no permission"));
     }
@@ -691,11 +707,24 @@ pub fn grant_member(
     if explicit && !mine.is_admin() {
         return Err(RelError::Forbidden("sharer cannot set explicit modeGiven"));
     }
+    Ok(explicit)
+}
+
+/// 目标的新位串：取现状 → 应用增量 → 掩码，并守住"不静默 ban / 不越权转让"。
+fn next_acs(
+    conn: &Connection,
+    group_id: &str,
+    target: &str,
+    group: &Group,
+    mutation: &str,
+    explicit: bool,
+    mine: &Acs,
+) -> Result<(Acs, Acs)> {
     let (target_want, target_given) = stored_member_acs(conn, group_id, target)?;
     let base = if target_given.is_defined() {
         target_given
     } else {
-        given_of_member(conn, &group, target)?
+        given_of_member(conn, group, target)?
     };
     let mut next = base;
     next.apply_mutation(mutation)?;
@@ -707,7 +736,17 @@ pub fn grant_member(
     if next.is_owner() && !mine.is_owner() {
         return Err(RelError::Forbidden("attempt to transfer ownership"));
     }
-    // 转让路径唯一允许把 `O` 顶到角色上限之上的情形，而且只有 owner 走得到。
+    Ok((target_want, next))
+}
+
+/// 新位串不能超过目标角色上限；转让是唯一允许 `O` 越过上限的例外。
+fn check_ceiling(
+    conn: &Connection,
+    group_id: &str,
+    target: &str,
+    group: &Group,
+    next: Acs,
+) -> Result<()> {
     let transferring = next.is_owner() && group.owner_uid != target;
     let ceiling = role_cap(role_of(conn, group_id, target)?.unwrap_or(Role::Member));
     let ceiling = if transferring {
@@ -718,42 +757,46 @@ pub fn grant_member(
     if next.better_than(ceiling) {
         return Err(RelError::Forbidden("grant exceeds role ceiling"));
     }
-    let tx = conn.unchecked_transaction()?;
-    upsert_member_acs(&tx, group_id, target, target_want, next, now)?;
-    if next.is_owner() && group.owner_uid != target {
-        // 转让：老 owner 的位与角色一起降回 admin（见函数头的说明）。
-        let (old_want, old_given) = stored_member_acs(&tx, group_id, &group.owner_uid)?;
-        let demote = |a: Acs| -> Acs {
-            if a.is_defined() {
-                a.without(Acs::OWNER).masked()
-            } else {
-                a
-            }
-        };
-        upsert_member_acs(
-            &tx,
-            group_id,
-            &group.owner_uid,
-            demote(old_want),
-            demote(old_given),
-            now,
-        )?;
-        tx.execute(
-            "UPDATE group_members SET role = 'admin' WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, group.owner_uid],
-        )?;
-        tx.execute(
-            "UPDATE group_members SET role = 'owner' WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, target],
-        )?;
-        tx.execute(
-            "UPDATE groups SET owner_uid = ?2 WHERE id = ?1",
-            params![group_id, target],
-        )?;
-    }
-    audit(&tx, actor, target, "group.grant", now)?;
-    tx.commit()?;
-    Ok(next)
+    Ok(())
+}
+
+/// 转让：老 owner 的位与角色一起降回 admin（见 `grant_member` 头的说明）。
+fn transfer_ownership(
+    tx: &Connection,
+    group_id: &str,
+    target: &str,
+    group: &Group,
+    now: i64,
+) -> Result<()> {
+    let (old_want, old_given) = stored_member_acs(tx, group_id, &group.owner_uid)?;
+    let demote = |a: Acs| -> Acs {
+        if a.is_defined() {
+            a.without(Acs::OWNER).masked()
+        } else {
+            a
+        }
+    };
+    upsert_member_acs(
+        tx,
+        group_id,
+        &group.owner_uid,
+        demote(old_want),
+        demote(old_given),
+        now,
+    )?;
+    tx.execute(
+        "UPDATE group_members SET role = 'admin' WHERE group_id = ?1 AND user_id = ?2",
+        params![group_id, group.owner_uid],
+    )?;
+    tx.execute(
+        "UPDATE group_members SET role = 'owner' WHERE group_id = ?1 AND user_id = ?2",
+        params![group_id, target],
+    )?;
+    tx.execute(
+        "UPDATE groups SET owner_uid = ?2 WHERE id = ?1",
+        params![group_id, target],
+    )?;
+    Ok(())
 }
 
 /// 自己这一侧改位：退订提示（`-P` = 免打扰）、看不见（`-R`）、自禁（`-J`）。

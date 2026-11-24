@@ -1,21 +1,16 @@
 {
  "total_files": 472,
- "total_lines": 143628,
- "fn_total": 6934,
- "count_len_gt30": 596,
- "count_len_gt60": 38,
+ "total_lines": 144007,
+ "fn_total": 7002,
+ "count_len_gt30": 597,
+ "count_len_gt60": 14,
  "count_len_gt100": 0,
- "count_nest_gt3": 4,
+ "count_nest_gt3": 0,
  "count_mixed_sql_http": 1,
  "magic_total": 172,
  "magic_unique": 55,
  "long_fn_keys": [],
- "deep_fn_keys": [
-  "crates/container/examples/research_wmpf.rs::run",
-  "crates/mcp/src/server.rs::list_commands_tool",
-  "crates/message/src/lib.rs::open",
-  "crates/video/src/jobs.rs::spawn_worker"
- ],
+ "deep_fn_keys": [],
  "largest_files": [
   [
    "crates/rtc/src/room.rs",
@@ -23,19 +18,19 @@
   ],
   [
    "crates/net/src/mq_hub.rs",
-   2467
+   2487
   ],
   [
    "server/src/lib.rs",
-   1774
+   1813
   ],
   [
    "crates/admin/src/g14.rs",
-   1538
+   1564
   ],
   [
    "crates/message/src/lib.rs",
-   1504
+   1512
   ],
   [
    "ui/src-tauri/src/app_state.rs",
@@ -55,7 +50,7 @@
   ],
   [
    "crates/admin/src/publishing.rs",
-   1305
+   1321
   ],
   [
    "crates/features/commerce/src/payments.rs",
@@ -63,31 +58,31 @@
   ],
   [
    "crates/video/src/jobs.rs",
-   1248
+   1252
+  ],
+  [
+   "crates/video/src/lib.rs",
+   1206
   ],
   [
    "crates/mcp/src/server.rs",
-   1204
+   1205
   ],
   [
    "crates/admin/src/commerce.rs",
    1198
   ],
   [
-   "crates/video/src/lib.rs",
-   1194
-  ],
-  [
    "crates/features/media/src/processing.rs",
    1048
   ],
   [
-   "crates/admin/src/http.rs",
-   1021
+   "crates/admin/src/read.rs",
+   1036
   ],
   [
-   "crates/admin/src/read.rs",
-   1004
+   "crates/admin/src/http.rs",
+   1028
   ],
   [
    "crates/ledger/src/store.rs",
@@ -99,281 +94,6 @@
   ]
  ],
  "long_fns": [
-  {
-   "file": "crates/message/examples/bench_mailbox.rs",
-   "name": "main",
-   "line": 16,
-   "len": 94,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/video/src/lib.rs",
-   "name": "encode_one",
-   "line": 535,
-   "len": 89,
-   "nest": 1,
-   "sql": false,
-   "http": false,
-   "io": true,
-   "pub": false
-  },
-  {
-   "file": "crates/features/identity/src/governance/user.rs",
-   "name": "suspend",
-   "line": 218,
-   "len": 87,
-   "nest": 2,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/bin/wxlike_admin.rs",
-   "name": "account_command",
-   "line": 68,
-   "len": 85,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/admin/src/g14.rs",
-   "name": "router",
-   "line": 150,
-   "len": 84,
-   "nest": 0,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/identity/src/governance/user.rs",
-   "name": "set_disabled",
-   "line": 387,
-   "len": 83,
-   "nest": 2,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/container/src/engine.rs",
-   "name": "install_bridge",
-   "line": 137,
-   "len": 81,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/features/relations/src/group.rs",
-   "name": "grant_member",
-   "line": 677,
-   "len": 81,
-   "nest": 3,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "ui/src-tauri/src/lib.rs",
-   "name": "run",
-   "line": 65,
-   "len": 81,
-   "nest": 0,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "server/src/lib.rs",
-   "name": "forward_message",
-   "line": 1245,
-   "len": 79,
-   "nest": 2,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/admin/src/read.rs",
-   "name": "stats",
-   "line": 238,
-   "len": 78,
-   "nest": 3,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/identity/src/governance/user.rs",
-   "name": "unsuspend",
-   "line": 307,
-   "len": 78,
-   "nest": 1,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/search/src/lib.rs",
-   "name": "search",
-   "line": 192,
-   "len": 78,
-   "nest": 2,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/admin/src/publishing.rs",
-   "name": "submit",
-   "line": 494,
-   "len": 76,
-   "nest": 2,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/identity/src/login_challenge.rs",
-   "name": "verify",
-   "line": 297,
-   "len": 76,
-   "nest": 1,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/features/identity/src/governance/device.rs",
-   "name": "revoke_device",
-   "line": 18,
-   "len": 75,
-   "nest": 2,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "server/src/lib.rs",
-   "name": "start_stack",
-   "line": 205,
-   "len": 73,
-   "nest": 1,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "ui/src-tauri/src/callrtc.rs",
-   "name": "run",
-   "line": 615,
-   "len": 73,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/video/src/bin/wxlike-live-ingest.rs",
-   "name": "run",
-   "line": 96,
-   "len": 71,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": true,
-   "pub": false
-  },
-  {
-   "file": "crates/net/src/diag.rs",
-   "name": "run",
-   "line": 158,
-   "len": 70,
-   "nest": 3,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/video/src/stats.rs",
-   "name": "record_watch",
-   "line": 136,
-   "len": 70,
-   "nest": 2,
-   "sql": true,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/net/src/mq_hub.rs",
-   "name": "register_connection",
-   "line": 933,
-   "len": 67,
-   "nest": 1,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/rtc/src/call.rs",
-   "name": "start",
-   "line": 171,
-   "len": 67,
-   "nest": 2,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": true
-  },
-  {
-   "file": "crates/rtc/src/turn.rs",
-   "name": "allocate_relayed",
-   "line": 308,
-   "len": 67,
-   "nest": 1,
-   "sql": false,
-   "http": false,
-   "io": false,
-   "pub": false
-  },
-  {
-   "file": "crates/admin/src/http.rs",
-   "name": "run_op",
-   "line": 607,
-   "len": 66,
-   "nest": 3,
-   "sql": false,
-   "http": true,
-   "io": false,
-   "pub": false
-  },
   {
    "file": "crates/platform/examples/wp01_demo.rs",
    "name": "main",
@@ -388,7 +108,7 @@
   {
    "file": "crates/net/src/mq_hub.rs",
    "name": "release_conn",
-   "line": 1284,
+   "line": 1304,
    "len": 65,
    "nest": 3,
    "sql": false,
@@ -399,7 +119,7 @@
   {
    "file": "crates/features/identity/src/governance/user.rs",
    "name": "settle_expired",
-   "line": 473,
+   "line": 456,
    "len": 64,
    "nest": 2,
    "sql": true,
@@ -443,7 +163,7 @@
   {
    "file": "crates/admin/src/publishing.rs",
    "name": "create_release",
-   "line": 761,
+   "line": 777,
    "len": 62,
    "nest": 1,
    "sql": true,
@@ -459,6 +179,17 @@
    "nest": 2,
    "sql": false,
    "http": true,
+   "io": false,
+   "pub": false
+  },
+  {
+   "file": "ui/src-tauri/src/callrtc.rs",
+   "name": "run",
+   "line": 615,
+   "len": 62,
+   "nest": 2,
+   "sql": false,
+   "http": false,
    "io": false,
    "pub": false
   },
@@ -483,54 +214,42 @@
    "http": false,
    "io": false,
    "pub": false
-  }
- ],
- "deep_fns": [
-  {
-   "file": "crates/message/src/lib.rs",
-   "name": "open",
-   "line": 462,
-   "len": 20,
-   "nest": 4,
-   "sql": false,
-   "http": false,
-   "io": true,
-   "pub": true
   },
   {
-   "file": "crates/video/src/jobs.rs",
-   "name": "spawn_worker",
-   "line": 991,
-   "len": 14,
-   "nest": 4,
-   "sql": false,
+   "file": "crates/features/identity/src/session.rs",
+   "name": "open_with",
+   "line": 370,
+   "len": 61,
+   "nest": 1,
+   "sql": true,
    "http": false,
    "io": false,
    "pub": true
   },
   {
-   "file": "crates/mcp/src/server.rs",
-   "name": "list_commands_tool",
-   "line": 1082,
-   "len": 12,
-   "nest": 4,
+   "file": "crates/platform/src/media.rs",
+   "name": "upload",
+   "line": 32,
+   "len": 61,
+   "nest": 3,
    "sql": false,
-   "http": false,
+   "http": true,
    "io": false,
    "pub": false
   },
   {
-   "file": "crates/container/examples/research_wmpf.rs",
-   "name": "run",
-   "line": 20,
-   "len": 1,
-   "nest": 4,
+   "file": "crates/platform/src/domain/wallet.rs",
+   "name": "claim_redpacket_tx",
+   "line": 340,
+   "len": 61,
+   "nest": 2,
    "sql": false,
    "http": false,
    "io": false,
    "pub": false
   }
  ],
+ "deep_fns": [],
  "mixed_fns": [
   {
    "file": "crates/platform/src/domain/repo/qr_login.rs",
@@ -636,7 +355,7 @@
   ],
   "50": [
    "crates/admin/src/web.rs:182",
-   "crates/admin/src/bin/wxlike_admin.rs:228",
+   "crates/admin/src/bin/wxlike_admin.rs:252",
    "crates/features/commerce/src/settlement.rs:402",
    "crates/platform/src/communities.rs:209",
    "crates/platform/src/communities.rs:235"
@@ -644,7 +363,7 @@
   "32": [
    "crates/admin/src/accounts.rs:502",
    "crates/admin/src/config.rs:56",
-   "crates/admin/src/bin/wxlike_admin.rs:257",
+   "crates/admin/src/bin/wxlike_admin.rs:281",
    "crates/client-native/src/realtime.rs:83",
    "crates/container/src/package.rs:256"
   ],
@@ -678,10 +397,10 @@
   ],
   "512": [
    "crates/admin/src/accounts.rs:729",
-   "crates/admin/src/http.rs:938",
-   "crates/container/examples/research_wmpf.rs:14",
+   "crates/admin/src/http.rs:945",
+   "crates/container/examples/research_wmpf.rs:38",
    "crates/net/src/avalanche.rs:55",
-   "crates/net/src/diag.rs:355"
+   "crates/net/src/diag.rs:367"
   ],
   "256": [
    "crates/admin/src/accounts.rs:255",
@@ -691,11 +410,11 @@
    "ui/src-tauri/src/app_state.rs:767"
   ],
   "11": [
-   "crates/admin/src/read.rs:736",
+   "crates/admin/src/read.rs:768",
    "crates/platform/src/domain/repo/report.rs:82",
    "crates/platform/src/domain/repo/video_refs.rs:26",
    "crates/platform/src/domain/repo/video_refs.rs:84",
-   "crates/video/src/jobs.rs:1029"
+   "crates/video/src/jobs.rs:1033"
   ],
   "9": [
    "crates/features/identity/src/governance/mod.rs:145",
@@ -713,12 +432,12 @@
   "300": [
    "crates/core/src/test_support.rs:114",
    "server/src/lib.rs:166",
-   "ui/src-tauri/src/callrtc.rs:719"
+   "ui/src-tauri/src/callrtc.rs:740"
   ],
   "17": [
-   "crates/rtc/src/turn.rs:317",
-   "crates/rtc/src/turn.rs:347",
-   "crates/rtc/src/turn.rs:566"
+   "crates/rtc/src/turn.rs:327",
+   "crates/rtc/src/turn.rs:368",
+   "crates/rtc/src/turn.rs:589"
   ],
   "2048": [
    "crates/sfu/src/lib.rs:355",
@@ -746,7 +465,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 128,
+ "dup_windows": 127,
  "dup_sample": [
   [
    [
@@ -755,7 +474,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    480
+    531
    ]
   ],
   [
@@ -765,7 +484,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    481
+    532
    ]
   ],
   [
@@ -775,7 +494,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    482
+    533
    ]
   ],
   [
@@ -785,7 +504,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    483
+    534
    ]
   ],
   [
@@ -795,7 +514,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    572
+    588
    ]
   ],
   [
@@ -805,7 +524,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    573
+    589
    ]
   ],
   [
@@ -815,7 +534,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    574
+    590
    ]
   ],
   [
@@ -825,7 +544,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    575
+    591
    ]
   ],
   [
@@ -835,7 +554,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    576
+    592
    ]
   ],
   [
@@ -845,7 +564,7 @@
    ],
    [
     "crates/admin/src/publishing.rs",
-    577
+    593
    ]
   ],
   [

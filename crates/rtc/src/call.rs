@@ -169,38 +169,13 @@ impl CallManager {
     /// offline peer fails **immediately** (task book A3), no 30 s hang and
     /// nothing sent.
     pub fn start(&mut self, peer: &str, video: bool, peer_online: bool) -> (String, Vec<Action>) {
-        let mut actions = Vec::new();
         let call_id = new_call_id(&self.me);
-
         if !peer_online {
-            let mut state = CallState::caller();
-            state.apply(Event::LocalInvite);
-            // undeliverable is known before anything is sent
-            state.apply(Event::InviteUndeliverable);
-            let end = match state.phase() {
-                Phase::Ended(end) => *end,
-                _ => End::Failed,
-            };
-            self.calls.insert(
-                call_id.clone(),
-                Call {
-                    peer: peer.to_string(),
-                    state,
-                    video,
-                    remote_offer: None,
-                    media: None,
-                    entered_ringing_at: None,
-                    last_peer_activity: None,
-                    room: None,
-                },
-            );
-            actions.push(Action::Ended {
-                call_id: call_id.clone(),
-                end,
-            });
+            let actions = self.start_offline(&call_id, peer, video);
             return (call_id, actions);
         }
 
+        let mut actions = Vec::new();
         let mut media = self.new_media(true);
         let offer = media.offer(video).ok();
         let mut state = CallState::caller();
@@ -234,6 +209,35 @@ impl CallManager {
             },
         );
         (call_id, actions)
+    }
+
+    /// 对端离线：立刻 Failed，不发任何信令（任务书 A3）。
+    fn start_offline(&mut self, call_id: &str, peer: &str, video: bool) -> Vec<Action> {
+        let mut state = CallState::caller();
+        state.apply(Event::LocalInvite);
+        // undeliverable is known before anything is sent
+        state.apply(Event::InviteUndeliverable);
+        let end = match state.phase() {
+            Phase::Ended(end) => *end,
+            _ => End::Failed,
+        };
+        self.calls.insert(
+            call_id.to_string(),
+            Call {
+                peer: peer.to_string(),
+                state,
+                video,
+                remote_offer: None,
+                media: None,
+                entered_ringing_at: None,
+                last_peer_activity: None,
+                room: None,
+            },
+        );
+        vec![Action::Ended {
+            call_id: call_id.to_string(),
+            end,
+        }]
     }
 
     /// Callee accepts a ringing call.

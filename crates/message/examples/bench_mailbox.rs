@@ -14,14 +14,8 @@ use std::time::Instant;
 use wxlike_message::{MessageStore, OwnerType};
 
 fn main() {
-    let writers: usize = std::env::var("MAILBOX_WRITERS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(16);
-    let total: usize = std::env::var("MAILBOX_MSGS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20_000);
+    let writers = env_usize("MAILBOX_WRITERS", 16);
+    let total = env_usize("MAILBOX_MSGS", 20_000);
 
     let store = Arc::new(MessageStore::open(None).expect("open mailbox"));
     let channel: (OwnerType, String) = (OwnerType::Channel, "c-10k".into());
@@ -32,6 +26,39 @@ fn main() {
         .unwrap()
         .expect("warmup");
 
+    let (wall, mut all_lat) = write_load(&store, &channel, writers, total);
+    let seen = count_readable(&store, &channel, warm_seq, total);
+    assert_eq!(seen, total as u64, "no holes: every message readable");
+
+    all_lat.sort_unstable();
+    let rate = total as f64 / wall.as_secs_f64();
+    print_report(&Report {
+        writers,
+        total,
+        wall_secs: wall.as_secs_f64(),
+        rate,
+        p50: percentile(&all_lat, 0.50),
+        p95: percentile(&all_lat, 0.95),
+        p99: percentile(&all_lat, 0.99),
+        max: all_lat.last().copied().unwrap_or(0),
+        seen,
+    });
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// 起 `writers` 条线程并发追加，返回总墙钟与全部单次延迟（µs）。
+fn write_load(
+    store: &Arc<MessageStore>,
+    channel: &(OwnerType, String),
+    writers: usize,
+    total: usize,
+) -> (std::time::Duration, Vec<u128>) {
     let per_writer = total / writers.max(1);
     let mut handles = Vec::new();
     let started = Instant::now();
@@ -62,42 +89,66 @@ fn main() {
     for h in handles {
         all_lat.extend(h.join().expect("writer thread"));
     }
-    let wall = started.elapsed();
+    (started.elapsed(), all_lat)
+}
 
-    // 无洞验证：从预热之后拉回全部，恰为 total 条
+/// 无洞验证：从预热之后按 seq 分页拉回全部。
+fn count_readable(
+    store: &MessageStore,
+    channel: &(OwnerType, String),
+    mut after: u64,
+    total: usize,
+) -> u64 {
     let mut seen = 0u64;
-    let mut after = warm_seq;
+    let mut capped = 0usize;
     loop {
         let (rows, next) = store.fetch((channel.0, &channel.1), after, 1000).unwrap();
         seen += rows.len() as u64;
+        capped += rows.len();
+        if capped > total * 2 {
+            break; // 防止存储异常时空转
+        }
         match next {
             Some(n) => after = n,
             None => break,
         }
     }
-    assert_eq!(seen, total as u64, "no holes: every message readable");
+    seen
+}
 
-    all_lat.sort_unstable();
-    let p = |q: f64| -> u128 {
-        let idx = ((all_lat.len() as f64) * q).min((all_lat.len() - 1) as f64) as usize;
-        all_lat[idx]
-    };
-    let rate = total as f64 / wall.as_secs_f64();
+fn percentile(sorted: &[u128], q: f64) -> u128 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = ((sorted.len() as f64) * q).min((sorted.len() - 1) as f64) as usize;
+    sorted[idx]
+}
 
+struct Report {
+    writers: usize,
+    total: usize,
+    wall_secs: f64,
+    rate: f64,
+    p50: u128,
+    p95: u128,
+    p99: u128,
+    max: u128,
+    seen: u64,
+}
+
+fn print_report(r: &Report) {
+    let (writers, total, seen) = (r.writers, r.total, r.seen);
     println!("# 万人群信箱写入压测（wxlike-message，SQLite 过渡存储）");
     println!();
     println!("| metric | value |");
     println!("|---|---|");
     println!("| writers | {writers} |");
     println!("| messages | {total} |");
-    println!("| wall time | {:.2}s |", wall.as_secs_f64());
-    println!("| write throughput | {rate:.0} msg/s |");
+    println!("| wall time | {:.2}s |", r.wall_secs);
+    println!("| write throughput | {:.0} msg/s |", r.rate);
     println!(
         "| append latency p50 / p95 / p99 / max | {} / {} / {} / {} µs |",
-        p(0.50),
-        p(0.95),
-        p(0.99),
-        all_lat.last().copied().unwrap_or(0)
+        r.p50, r.p95, r.p99, r.max
     );
     println!("| hole check | {seen}/{total} readable, 0 holes |");
     println!();

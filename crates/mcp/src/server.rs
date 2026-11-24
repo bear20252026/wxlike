@@ -1080,14 +1080,15 @@ fn meta_tool(name: &str) -> Value {
 }
 
 fn list_commands_tool() -> Value {
+    let input_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"query": {"type": "string", "description": "按 id 或说明过滤，空=全部"}}
+    });
     json!({
             "name": "im_list_commands",
             "description": "列出可用的 IM 命令（id / 工具名 / 参数 / 能力 / scope）。先用它发现能力，再按工具名调用。",
-            "inputSchema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {"query": {"type": "string", "description": "按 id 或说明过滤，空=全部"}}
-            },
+            "inputSchema": input_schema,
             "annotations": {"readOnlyHint": true, "destructiveHint": false}
     })
 }

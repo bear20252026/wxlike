@@ -638,14 +638,7 @@ fn run(
 
         // 2. 麦克风 → 编码 → 媒体（先喂再泵，编码帧能赶在同一轮发出去）
         #[cfg(feature = "audio")]
-        {
-            // mesh 下每人一条会话，麦克风必须喂给每一条——只喂第一条的话，
-            // 多人通话里只有一个人能听到你。
-            let ids = host.manager().live_calls();
-            for id in ids {
-                audio.pump_mic(&mut host, &id);
-            }
-        }
+        pump_mics(&mut host, &mut audio);
 
         // 3. 推进时钟 + 媒体
         pending.extend(host.tick(Instant::now()));
@@ -657,17 +650,13 @@ fn run(
         poll_signals(&conn, &mut host, &mut pending, &mut last_poll);
 
         // 6. 落地所有副作用
-        let mut ended = false;
-        for effect in pending.drain(..) {
-            let applied = apply_effect(effect, &conv, &conn, &mut transport, &status, &app);
-            if let Some(payload) = applied.audio {
-                audio_frames += 1;
-                #[cfg(feature = "audio")]
-                audio.play(&payload);
-                #[cfg(not(feature = "audio"))]
-                let _ = &payload;
-            }
-            ended |= applied.ended;
+        let (ended, payloads) = apply_all(&mut pending, &conv, &conn, &mut transport, &status, &app);
+        for payload in payloads {
+            audio_frames += 1;
+            #[cfg(feature = "audio")]
+            audio.play(&payload);
+            #[cfg(not(feature = "audio"))]
+            let _ = payload;
         }
 
         // 有新来电时把 call_id / ringing 同步给 UI
@@ -684,6 +673,38 @@ fn run(
     }
 
     finish_status(&status, &app);
+}
+
+/// mesh 下每人一条会话，麦克风必须喂给每一条——只喂第一条的话，
+/// 多人通话里只有一个人能听到你。
+#[cfg(feature = "audio")]
+fn pump_mics(host: &mut CallHost, audio: &mut AudioLeg) {
+    let ids = host.manager().live_calls();
+    for id in ids {
+        audio.pump_mic(host, &id);
+    }
+}
+
+/// 把这一轮攒下的副作用全部落地；返回是否挂断与要播放的音频帧。
+#[allow(clippy::too_many_arguments)]
+fn apply_all(
+    pending: &mut Vec<Effect>,
+    conv: &str,
+    conn: &Connection,
+    transport: &mut Transport,
+    status: &Arc<Mutex<EngineStatus>>,
+    app: &AppHandle,
+) -> (bool, Vec<Vec<u8>>) {
+    let mut ended = false;
+    let mut played = Vec::new();
+    for effect in pending.drain(..) {
+        let applied = apply_effect(effect, conv, conn, transport, status, app);
+        if let Some(payload) = applied.audio {
+            played.push(payload);
+        }
+        ended |= applied.ended;
+    }
+    (ended, played)
 }
 
 /// 把当前状态快照推给 UI。

@@ -227,22 +227,8 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         hub: handle.clone(),
         search,
     });
-    // #295：media 域装一次 = 顺带把 M009 打到平台那个库里（MediaDb::open 幂等建表）。
-    let (media_app, media_service) = media_mount::assemble(&platform, opts.db_path.as_deref())?;
-    let discover_app = discover_mount::assemble(&platform, opts.db_path.as_deref()).await?;
-    let mini_app = mini_mount::assemble(&platform, opts.db_path.as_deref())?;
-    // G06/N7：支付回调域装一次 = 顺带把 commerce/ledger 表幂等建到 sidecar 库。
-    let (commerce_app, commerce) = commerce_mount::assemble(&platform, opts.db_path.as_deref())?;
-    // G07/第四轮审计：发现域（扫码/附近/摇一摇）与识物/翻译域进组合根。
-    // 状态是进程内的（域实现即内存态）；视觉/翻译无供应商凭据 → 诚实拒绝面。
-    let discovery_mount = discovery_mount::assemble(&platform)?;
-    let ai_mount = ai_mount::assemble(&platform);
-    let _workers = spawn_background_workers(&platform, &media_service);
-    // G06-02/03/04 的 jobs：支付意图到期、转账/红包 24h 退回、processing 提现
-    // 重试、每日对账。没有这几条循环，那些"只入队的表"在真实进程里永远没人推进。
-    let _commerce_workers = commerce_mount::spawn_commerce_workers(Arc::clone(&commerce));
-    // G07 契约登记的两个清理 job：过期 nonce / 过期识别结果（每分钟一轮）。
-    let _g07_workers = spawn_g07_workers(&discovery_mount, &ai_mount);
+    // #295 / G06 / G07：各域在自己的 assemble 里装表、拼路由、起清理作业。
+    let (feature, commerce) = assemble_apps(&platform, opts.db_path.as_deref()).await?;
     let app = build_app(
         opts.hub_id.clone(),
         quic_addr,
@@ -250,14 +236,7 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         video_state,
         handle.clone(),
         deps,
-        FeatureApps {
-            media: media_app,
-            discover: discover_app,
-            mini: mini_app,
-            commerce: commerce_app,
-            discovery: discovery_mount.router,
-            ai: ai_mount.router,
-        },
+        feature,
     );
     let (http_addr, shutdown_tx, http_task) = serve_http(opts.http_bind, app.clone()).await?;
 
@@ -274,6 +253,44 @@ pub async fn start_stack(opts: StackOptions) -> anyhow::Result<Stack> {
         shutdown: shutdown_tx,
         http_task,
     })
+}
+
+/// 各功能域的装配：装表（幂等）、拼路由、起清理作业。返回 [`FeatureApps`]
+/// 与 commerce 句柄（作业循环与 `/health` 还要用它）。
+async fn assemble_apps(
+    platform: &PlatformState,
+    db_path: Option<&str>,
+) -> anyhow::Result<(FeatureApps, Arc<wxlike_commerce::Commerce>)> {
+    // #295：media 域装一次 = 顺带把 M009 打到平台那个库里（MediaDb::open 幂等建表）。
+    let (media_app, media_service) = media_mount::assemble(platform, db_path)?;
+    let discover_app = discover_mount::assemble(platform, db_path).await?;
+    let mini_app = mini_mount::assemble(platform, db_path)?;
+    // G06/N7：支付回调域装一次 = 顺带把 commerce/ledger 表幂等建到 sidecar 库。
+    let (commerce_app, commerce) = commerce_mount::assemble(platform, db_path)?;
+    // G07/第四轮审计：发现域（扫码/附近/摇一摇）与识物/翻译域进组合根。
+    // 状态是进程内的（域实现即内存态）；视觉/翻译无供应商凭据 → 诚实拒绝面。
+    let discovery_mount = discovery_mount::assemble(platform)?;
+    let ai_mount = ai_mount::assemble(platform);
+
+    // 作业句柄 drop 即 detach，任务照常跑；这里不保存返回值。
+    spawn_background_workers(platform, &media_service);
+    // G06-02/03/04 的 jobs：支付意图到期、转账/红包 24h 退回、processing 提现
+    // 重试、每日对账。没有这几条循环，那些"只入队的表"在真实进程里永远没人推进。
+    commerce_mount::spawn_commerce_workers(Arc::clone(&commerce));
+    // G07 契约登记的两个清理 job：过期 nonce / 过期识别结果（每分钟一轮）。
+    spawn_g07_workers(&discovery_mount, &ai_mount);
+
+    Ok((
+        FeatureApps {
+            media: media_app,
+            discover: discover_app,
+            mini: mini_app,
+            commerce: commerce_app,
+            discovery: discovery_mount.router,
+            ai: ai_mount.router,
+        },
+        commerce,
+    ))
 }
 
 /// 视频域的存储与策略（控制面认证/配额/回调白名单归 issue #7 #8）。
@@ -1252,35 +1269,67 @@ async fn forward_message(
     if body.to_conv != to_conv {
         return Err((StatusCode::BAD_REQUEST, "to_conv 与路径不一致".to_string()));
     }
-    for conv in [&body.from_conv, &to_conv] {
-        if !authorize_conv(&deps.platform, &authed.user_id, conv) {
+    check_forward_access(&deps, &authed.user_id, &body.from_conv, &to_conv)?;
+    let env = build_forward(
+        &deps,
+        &to_conv,
+        &authed.user_id,
+        &body.idempotency_key,
+        &body.msg_id,
+    )?;
+
+    deps.hub
+        .submit(&authed.user_id, &env)
+        .await
+        .map_err(internal)?;
+    Ok(Json(serde_json::json!({
+        "forwarded": true,
+        "conv_id": to_conv,
+        "msg_id": hex(env.msg_id),
+    })))
+}
+
+/// 两边都要鉴权，且两边都不能是秘密会话（issue #15：服务端自己守，不靠客户端）。
+fn check_forward_access(
+    deps: &HistoryDeps,
+    user_id: &str,
+    from_conv: &str,
+    to_conv: &str,
+) -> Result<(), (StatusCode, String)> {
+    for conv in [from_conv, to_conv] {
+        if !authorize_conv(&deps.platform, user_id, conv) {
             return Err((
                 StatusCode::FORBIDDEN,
                 format!("not your conversation: {conv}"),
             ));
         }
     }
-    // 秘密会话的消息不可转发（issue #15）：转发会破坏"两端各持一份密钥"的前提，
-    // 消失消息在第三方副本上也会失效。桌面端早就有这道拦截，但 HTTP 控制面
-    // 是另一条入口——**服务端必须自己守**，不能只靠客户端自觉。
-    if deps
-        .platform
-        .is_secret_conv(&body.from_conv)
-        .map_err(internal)?
-    {
+    // 源端：转发会破坏"两端各持一份密钥"的前提，消失消息在第三方副本上也会失效。
+    if deps.platform.is_secret_conv(from_conv).map_err(internal)? {
         return Err((
             StatusCode::FORBIDDEN,
             "secret conversations cannot be forwarded".to_string(),
         ));
     }
-    // 目标会话同样：往秘密会话里塞一条普通会话的消息，接收方会以为它受保护
-    if deps.platform.is_secret_conv(&to_conv).map_err(internal)? {
+    // 目标端：往秘密会话里塞普通消息，接收方会以为它受保护。
+    if deps.platform.is_secret_conv(to_conv).map_err(internal)? {
         return Err((
             StatusCode::FORBIDDEN,
             "cannot forward into a secret conversation".to_string(),
         ));
     }
-    let id = hex::decode(body.msg_id.trim())
+    Ok(())
+}
+
+/// 取源消息（必须未撤回）并组装转发信封；`msg_id` 的派生与 send 共用一份。
+fn build_forward(
+    deps: &HistoryDeps,
+    to_conv: &str,
+    user_id: &str,
+    idempotency_key: &str,
+    msg_id: &str,
+) -> Result<wxlike_core::Envelope, (StatusCode, String)> {
+    let id = hex::decode(msg_id.trim())
         .map_err(|_| (StatusCode::BAD_REQUEST, "msg_id must be hex".to_string()))?;
     let mut found = deps
         .store
@@ -1292,34 +1341,24 @@ async fn forward_message(
     if row.withdrawn {
         return Err((StatusCode::CONFLICT, "源消息已撤回".into()));
     }
-
     let to = match to_conv.strip_prefix("d-") {
         Some(pair) => pair
             .split('~')
-            .filter(|u| *u != authed.user_id)
+            .filter(|u| *u != user_id)
             .map(str::to_string)
             .collect::<Vec<_>>(),
         None => Vec::new(),
     };
-    let mut env = Envelope::with_body(
-        &to_conv,
-        authed.user_id.clone(),
+    let mut env = wxlike_core::Envelope::with_body(
+        to_conv,
+        user_id.to_string(),
         to,
         0,
         row.envelope.body.clone(),
     );
-    // 幂等：同 key + 同目标会话 → 同 msg_id（派生方式与 send 共用一份）
-    env.msg_id = idempotent_msg_id(&body.idempotency_key, &authed.user_id, &to_conv);
-
-    deps.hub
-        .submit(&authed.user_id, &env)
-        .await
-        .map_err(internal)?;
-    Ok(Json(serde_json::json!({
-        "forwarded": true,
-        "conv_id": to_conv,
-        "msg_id": hex(env.msg_id),
-    })))
+    // 幂等：同 key + 同目标会话 → 同 msg_id
+    env.msg_id = idempotent_msg_id(idempotency_key, user_id, to_conv);
+    Ok(env)
 }
 
 /// `GET /api/conv/{conv}/msg/{msg_id}`：取单条消息。

@@ -35,7 +35,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -113,15 +113,42 @@ fn run() -> anyhow::Result<()> {
     let mut lost: Vec<String> = Vec::new();
     let mut last_change = Instant::now();
 
+    follow(
+        &cfg,
+        &mut child,
+        &packager,
+        &mut next_index,
+        &mut lost,
+        &mut last_change,
+    )?;
+    drain_tail(&cfg, &packager, &mut next_index, &mut lost);
+
+    let status = child.wait().with_context(|| "wait ffmpeg")?;
+    match packager.stop() {
+        Ok(()) => println!("已通知服务端停播（清单已写 #EXT-X-ENDLIST）"),
+        Err(err) => eprintln!("通知停播失败: {err:#}"),
+    }
+    check_outcome(next_index, &lost, status)
+}
+
+/// 跟着 ffmpeg 的分片产出：只推已经写完的片，卡死就退出。
+fn follow(
+    cfg: &Config,
+    child: &mut Child,
+    packager: &Packager,
+    next_index: &mut usize,
+    lost: &mut Vec<String>,
+    last_change: &mut Instant,
+) -> anyhow::Result<()> {
     loop {
         let running = child.try_wait().with_context(|| "poll ffmpeg")?.is_none();
-        let next = path_at(&cfg.work_dir, next_index);
+        let next = path_at(&cfg.work_dir, *next_index);
         // 只推已经写完的片：下一片出现（或 ffmpeg 已退出）才算写完
         let ready =
-            next.is_file() && (!running || path_at(&cfg.work_dir, next_index + 1).is_file());
+            next.is_file() && (!running || path_at(&cfg.work_dir, *next_index + 1).is_file());
         if !ready {
             if !running {
-                break;
+                return Ok(());
             }
             if STALL_EXIT_MS > 0 && last_change.elapsed() > Duration::from_millis(STALL_EXIT_MS) {
                 anyhow::bail!(
@@ -131,26 +158,26 @@ fn run() -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_millis(POLL_MS));
             continue;
         }
-        if push_segment(&packager, &next, &mut lost) {
-            last_change = Instant::now();
+        if push_segment(packager, &next, lost) {
+            *last_change = Instant::now();
         }
-        next_index += 1;
+        *next_index += 1;
         std::fs::remove_file(&next).ok();
     }
+}
 
-    // 收尾：把还没推的碎片推完，再告诉服务端"停播"
-    while path_at(&cfg.work_dir, next_index).is_file() {
-        let seg = path_at(&cfg.work_dir, next_index);
-        // 收尾路径上不能 panic（审计第 5 轮）；失败的文件名已由 push_segment 记下。
-        push_segment(&packager, &seg, &mut lost);
+/// 收尾：把还没推的碎片推完（失败的文件名已由 `push_segment` 记下）。
+fn drain_tail(cfg: &Config, packager: &Packager, next_index: &mut usize, lost: &mut Vec<String>) {
+    while path_at(&cfg.work_dir, *next_index).is_file() {
+        let seg = path_at(&cfg.work_dir, *next_index);
+        push_segment(packager, &seg, lost);
         std::fs::remove_file(&seg).ok();
-        next_index += 1;
+        *next_index += 1;
     }
-    let status = child.wait().with_context(|| "wait ffmpeg")?;
-    match packager.stop() {
-        Ok(()) => println!("已通知服务端停播（清单已写 #EXT-X-ENDLIST）"),
-        Err(err) => eprintln!("通知停播失败: {err:#}"),
-    }
+}
+
+/// 一个分片都没产出、或丢了分片，都要让进程失败退出（不留下半成品）。
+fn check_outcome(next_index: usize, lost: &[String], status: ExitStatus) -> anyhow::Result<()> {
     if next_index == 0 {
         anyhow::bail!("ffmpeg 一个分片都没产出（source 读不到？），不留下半成品");
     }

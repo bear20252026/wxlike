@@ -624,20 +624,7 @@ async fn run_op(
     // 这条工单）必须原样到达操作者，不能被 adminx 二次加工成"上游失败"。
     let svc = app.clone();
     let logged = offload(move || {
-        let (status, detail, result) = match &outcome {
-            Ok(reply) => (OpStatus::Ok, echo(&reply.body), reply.body.clone()),
-            Err(AdminError::Upstream { status: 0, detail }) => (
-                OpStatus::TransportError,
-                detail.clone(),
-                serde_json::Value::Null,
-            ),
-            Err(AdminError::Upstream { status, detail }) => (
-                OpStatus::UpstreamError,
-                format!("platform {status}: {detail}"),
-                serde_json::Value::Null,
-            ),
-            Err(other) => (OpStatus::Denied, other.to_string(), serde_json::Value::Null),
-        };
+        let (status, detail, result) = classify_outcome(&outcome);
         let rec = OpRecord {
             account_id: session.account_id.clone(),
             actor: session.actor.clone(),
@@ -668,6 +655,26 @@ async fn run_op(
             logged,
         })),
         Err(err) => Err(err),
+    }
+}
+
+/// 上游结果 → 留痕三件套：状态、给运维看的一句话、工单上要回显的结构。
+fn classify_outcome(
+    outcome: &Result<crate::upstream::Reply>,
+) -> (OpStatus, String, serde_json::Value) {
+    match outcome {
+        Ok(reply) => (OpStatus::Ok, echo(&reply.body), reply.body.clone()),
+        Err(AdminError::Upstream { status: 0, detail }) => (
+            OpStatus::TransportError,
+            detail.clone(),
+            serde_json::Value::Null,
+        ),
+        Err(AdminError::Upstream { status, detail }) => (
+            OpStatus::UpstreamError,
+            format!("platform {status}: {detail}"),
+            serde_json::Value::Null,
+        ),
+        Err(other) => (OpStatus::Denied, other.to_string(), serde_json::Value::Null),
     }
 }
 

@@ -938,6 +938,20 @@ async fn register_connection(
     device_id: &str,
     closer: Option<ConnCloser>,
 ) -> anyhow::Result<u64> {
+    register_peer(state, conn, conn_id, user_id, device_id, closer).await;
+    ensure_user_bucket(state, user_id).await;
+    bind_route(state, user_id).await
+}
+
+/// peers / 设备表 / closer 表 + 在线计数。
+async fn register_peer(
+    state: &Arc<HubState>,
+    conn: &PeerConn,
+    conn_id: ConnId,
+    user_id: &str,
+    device_id: &str,
+    closer: Option<ConnCloser>,
+) {
     state
         .peers
         .write()
@@ -956,6 +970,10 @@ async fn register_connection(
         state.conn_closers.write().await.insert(conn_id, c);
     }
     state.metrics.connected();
+}
+
+/// 每个用户一枚令牌桶；首条连接时按配置初始化。
+async fn ensure_user_bucket(state: &Arc<HubState>, user_id: &str) {
     state
         .user_rate
         .write()
@@ -968,10 +986,12 @@ async fn register_connection(
                 wxlike_core::types::now_ms(),
             )
         });
+}
 
-    // 路由带世代绑定（G03-04 要求 1）。不支持世代的表返回 0，走原来的
-    // `unbind_user` 路径；支持的表（内存/Redis）在断连时做 compare-and-clear，
-    // 一条迟到的旧连接就删不掉新连接刚写下的路由。
+/// 路由带世代绑定（G03-04 要求 1）。不支持世代的表返回 0，走原来的
+/// `unbind_user` 路径；支持的表（内存/Redis）在断连时做 compare-and-clear，
+/// 一条迟到的旧连接就删不掉新连接刚写下的路由。
+async fn bind_route(state: &Arc<HubState>, user_id: &str) -> anyhow::Result<u64> {
     let generation = if state.router.routes.generations() {
         state
             .router

@@ -149,6 +149,16 @@ type Shared = Arc<App>;
 /// 路由。挂到 [`App::router`]。
 pub fn router() -> Router<Shared> {
     Router::new()
+        .merge(base_routes())
+        .merge(identity_routes())
+        .merge(publishing_routes())
+        .merge(commerce_routes())
+        .merge(jobs_privacy_routes())
+}
+
+/// 授权矩阵、step-up、审计与看板。
+fn base_routes() -> Router<Shared> {
+    Router::new()
         .route("/api/g14/auth/matrix", get(matrix))
         .route(
             "/api/g14/session/stepup",
@@ -157,7 +167,11 @@ pub fn router() -> Router<Shared> {
         .route("/api/g14/audit", get(audit_query))
         .route("/api/g14/audit/verify", get(audit_verify))
         .route("/api/g14/health/summary", get(health))
-        // 身份
+}
+
+/// G02/G03 身份治理面。
+fn identity_routes() -> Router<Shared> {
+    Router::new()
         .route("/api/g14/identity/cases", get(list_cases).post(create_case))
         .route("/api/g14/identity/cases/{id}", get(get_case))
         .route(
@@ -172,7 +186,11 @@ pub fn router() -> Router<Shared> {
         .route("/api/g14/identity/devices/{id}/revoke", post(revoke_device))
         .route("/api/g14/identity/groups/{id}/govern", post(govern_group))
         .route("/api/g14/identity/batch", post(batch_suspend))
-        // 发布
+}
+
+/// G14-03 内容、小程序与服务发布。
+fn publishing_routes() -> Router<Shared> {
+    Router::new()
         .route("/api/g14/publishing/rules", get(publish_rules))
         .route("/api/g14/publishing/queue", get(publish_queue))
         .route("/api/g14/publishing/submissions", post(submit_review))
@@ -195,7 +213,11 @@ pub fn router() -> Router<Shared> {
         )
         .route("/api/g14/publishing/services", get(list_services))
         .route("/api/g14/publishing/services/{id}", put(upsert_service))
-        // 商务
+}
+
+/// 商务：商家、订单、退款、对账、日记账。
+fn commerce_routes() -> Router<Shared> {
+    Router::new()
         .route("/api/g14/commerce/merchants", get(list_merchants))
         .route("/api/g14/commerce/orders", get(list_orders))
         .route("/api/g14/commerce/orders/export.csv", get(export_orders))
@@ -214,7 +236,11 @@ pub fn router() -> Router<Shared> {
             "/api/g14/commerce/journal",
             get(list_journal).post(post_journal),
         )
-        // 作业与隐私
+}
+
+/// 作业与隐私请求。
+fn jobs_privacy_routes() -> Router<Shared> {
+    Router::new()
         .route("/api/g14/jobs", get(list_jobs))
         .route("/api/g14/jobs/{id}/retry", post(retry_job))
         .route("/api/g14/jobs/{id}/cancel", post(cancel_job))

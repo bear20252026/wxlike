@@ -215,6 +215,90 @@ fn finish_govern(
     })
 }
 
+/// 三个处置入口共用的前置：校验字段、鉴权、读变更前状态。
+struct Prep {
+    target: String,
+    reason: String,
+    actor: String,
+    before_row: Option<GovRow>,
+    before_state: UserState,
+    before_until: Option<i64>,
+}
+
+fn prepare(conn: &Connection, operator_token: &str, cmd: &GovernCommand, now: i64) -> Result<Prep> {
+    let target = check_target(&cmd.target)?;
+    let reason = check_reason(&cmd.reason)?;
+    let actor = check_actor(&cmd.actor)?;
+    authenticate_operator(conn, operator_token, now)?;
+    require_user(conn, &target)?;
+    let before_row = load(conn, &target)?;
+    let before_state = state_of(&before_row, now);
+    let before_until = before_row.as_ref().and_then(|r| r.until_ms);
+    Ok(Prep {
+        target,
+        reason,
+        actor,
+        before_row,
+        before_state,
+        before_until,
+    })
+}
+
+fn state_of(row: &Option<GovRow>, now: i64) -> UserState {
+    row.as_ref()
+        .map(|r| r.state(now))
+        .unwrap_or(UserState::Active)
+}
+
+/// 事务内收尾：重读状态 → 审计。提交与镜像由调用方接着做。
+struct WriteOutcome {
+    after_row: Option<GovRow>,
+    after_state: UserState,
+    after_until: Option<i64>,
+    before: serde_json::Value,
+    after: serde_json::Value,
+    seq: i64,
+}
+
+fn close_tx(
+    tx: &Connection,
+    prep: &Prep,
+    action: &str,
+    cmd: &GovernCommand,
+    sessions_revoked: usize,
+    already: bool,
+    now: i64,
+) -> Result<WriteOutcome> {
+    let after_row = load(tx, &prep.target)?;
+    let after_state = state_of(&after_row, now);
+    let after_until = after_row.as_ref().and_then(|r| r.until_ms);
+    let before = summary(prep.before_state, prep.before_until);
+    let after = summary(after_state, after_until);
+    let seq = append_audit(
+        tx,
+        &AuditDraft {
+            action,
+            target: &prep.target,
+            actor: &prep.actor,
+            reason: &prep.reason,
+            trace: &cmd.trace,
+            before: &before,
+            after: &after,
+            sessions_revoked: sessions_revoked as u64,
+            already,
+            at: now,
+        },
+    )?;
+    Ok(WriteOutcome {
+        after_row,
+        after_state,
+        after_until,
+        before,
+        after,
+        seq,
+    })
+}
+
 pub fn suspend(
     conn: &Connection,
     operator_token: &str,
@@ -222,26 +306,16 @@ pub fn suspend(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
-    let target = check_target(&cmd.target)?;
-    let reason = check_reason(&cmd.reason)?;
-    let actor = check_actor(&cmd.actor)?;
-    authenticate_operator(conn, operator_token, now)?;
-    require_user(conn, &target)?;
+    let prep = prepare(conn, operator_token, cmd, now)?;
     if let Some(until) = cmd.until_ms {
         if until <= now {
             return Err(IdError::BadInput("until_ms must be in the future"));
         }
     }
-
-    let before_row = load(conn, &target)?;
-    let before_state = before_row
-        .as_ref()
-        .map(|r| r.state(now))
-        .unwrap_or(UserState::Active);
-    let before_until = before_row.as_ref().and_then(|r| r.until_ms);
     // 幂等命中：已经在**生效的**封禁中且到期时间没变。已到期（标志未结算）
     // 的行不算命中——重新封禁是新的处置，要再踢一遍会话。
-    let already = before_row
+    let already = prep
+        .before_row
         .as_ref()
         .map(|r| r.suspended && r.state(now) == UserState::Suspended && r.until_ms == cmd.until_ms)
         .unwrap_or(false);
@@ -256,47 +330,25 @@ pub fn suspend(
              WHERE user_id = ?1), 0), ?2, ?3, ?4, ?5) \
              ON CONFLICT(user_id) DO UPDATE SET suspended = 1, suspended_until_ms = ?2, \
              reason = ?3, actor = ?4, updated_at = ?5",
-            params![target, cmd.until_ms, reason, actor, now],
+            params![prep.target, cmd.until_ms, prep.reason, prep.actor, now],
         )?;
-        sessions_revoked = revoke_all_sessions(&tx, &target, now)?;
+        sessions_revoked = revoke_all_sessions(&tx, &prep.target, now)?;
     }
-    let after_row = load(&tx, &target)?;
-    let after_state = after_row
-        .as_ref()
-        .map(|r| r.state(now))
-        .unwrap_or(UserState::Active);
-    let after_until = after_row.as_ref().and_then(|r| r.until_ms);
-    let before = summary(before_state, before_until);
-    let after = summary(after_state, after_until);
-    let seq = append_audit(
-        &tx,
-        &AuditDraft {
-            action: "suspend",
-            target: &target,
-            actor: &actor,
-            reason: &reason,
-            trace: &cmd.trace,
-            before: &before,
-            after: &after,
-            sessions_revoked: sessions_revoked as u64,
-            already,
-            at: now,
-        },
-    )?;
+    let out = close_tx(&tx, &prep, "suspend", cmd, sessions_revoked, already, now)?;
     tx.commit()?;
 
     // 镜像与事件**幂等命中也重放**：平台侧据此收敛（"后台封了、服务还通"
     // 的残留就是靠重放消掉的）。操作者上下文只用于鉴权，审计落 cmd.actor。
     finish_govern(
-        &target,
-        after_state,
-        after_until,
-        after_row.as_ref(),
+        &prep.target,
+        out.after_state,
+        out.after_until,
+        out.after_row.as_ref(),
         now,
         "suspend",
-        seq,
-        before,
-        after,
+        out.seq,
+        out.before,
+        out.after,
         sessions_revoked,
         already,
         port,
@@ -311,76 +363,39 @@ pub fn unsuspend(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
-    let target = check_target(&cmd.target)?;
-    let reason = check_reason(&cmd.reason)?;
-    let actor = check_actor(&cmd.actor)?;
-    authenticate_operator(conn, operator_token, now)?;
-    require_user(conn, &target)?;
-
-    let before_row = load(conn, &target)?;
-    let before_state = before_row
-        .as_ref()
-        .map(|r| r.state(now))
-        .unwrap_or(UserState::Active);
-    let before_until = before_row.as_ref().and_then(|r| r.until_ms);
+    let prep = prepare(conn, operator_token, cmd, now)?;
     // 幂等：本来就没在封禁（含已到期）→ already。
-    let already = !before_row.as_ref().map(|r| r.suspended).unwrap_or(false);
+    let already = !prep
+        .before_row
+        .as_ref()
+        .map(|r| r.suspended)
+        .unwrap_or(false);
 
     let tx = conn.unchecked_transaction()?;
     if !already {
         tx.execute(
             "UPDATE identity_user_governance SET suspended = 0, suspended_until_ms = NULL, \
              reason = ?2, actor = ?3, updated_at = ?4 WHERE user_id = ?1",
-            params![target, reason, actor, now],
+            params![prep.target, prep.reason, prep.actor, now],
         )?;
     }
-    let after_row = load(&tx, &target)?;
-    let after_state = after_row
-        .as_ref()
-        .map(|r| r.state(now))
-        .unwrap_or(UserState::Active);
-    let after_until = after_row.as_ref().and_then(|r| r.until_ms);
-    let before = summary(before_state, before_until);
-    let after = summary(after_state, after_until);
-    let seq = append_audit(
-        &tx,
-        &AuditDraft {
-            action: "unsuspend",
-            target: &target,
-            actor: &actor,
-            reason: &reason,
-            trace: &cmd.trace,
-            before: &before,
-            after: &after,
-            sessions_revoked: 0,
-            already,
-            at: now,
-        },
-    )?;
+    let out = close_tx(&tx, &prep, "unsuspend", cmd, 0, already, now)?;
     tx.commit()?;
 
-    let events = vec![
-        GovernanceEvent::UserStateChanged {
-            user_id: target.clone(),
-            state: after_state.as_str().to_string(),
-            suspended_until_ms: after_until,
-        },
-        GovernanceEvent::CacheClear {
-            scope: "user".to_string(),
-            key: target.clone(),
-        },
-    ];
-    let (suspended, disabled) = flags_of(after_row.as_ref(), now);
-    port.mirror_user_state(&target, suspended, disabled, after_until)?;
-    port.dispatch(&events);
-    Ok(GovernEffect {
-        reference: reference("unsuspend", seq),
-        before,
-        after,
-        sessions_revoked: 0,
+    finish_govern(
+        &prep.target,
+        out.after_state,
+        out.after_until,
+        out.after_row.as_ref(),
+        now,
+        "unsuspend",
+        out.seq,
+        out.before,
+        out.after,
+        0,
         already,
-        events,
-    })
+        port,
+    )
 }
 
 /// 停用/启用（`disabled` 标志，独立于封禁）。停用同样即时撤销全部会话。
@@ -392,19 +407,9 @@ pub fn set_disabled(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
-    let target = check_target(&cmd.target)?;
-    let reason = check_reason(&cmd.reason)?;
-    let actor = check_actor(&cmd.actor)?;
-    authenticate_operator(conn, operator_token, now)?;
-    require_user(conn, &target)?;
-
-    let before_row = load(conn, &target)?;
-    let before_state = before_row
-        .as_ref()
-        .map(|r| r.state(now))
-        .unwrap_or(UserState::Active);
-    let before_until = before_row.as_ref().and_then(|r| r.until_ms);
-    let already = before_row
+    let prep = prepare(conn, operator_token, cmd, now)?;
+    let already = prep
+        .before_row
         .as_ref()
         .map(|r| r.disabled == disabled)
         .unwrap_or(!disabled);
@@ -420,48 +425,26 @@ pub fn set_disabled(
              identity_user_governance WHERE user_id = ?1), ?3, ?4, ?5) \
              ON CONFLICT(user_id) DO UPDATE SET disabled = ?2, reason = ?3, actor = ?4, \
              updated_at = ?5",
-            params![target, disabled, reason, actor, now],
+            params![prep.target, disabled, prep.reason, prep.actor, now],
         )?;
         if disabled {
-            sessions_revoked = revoke_all_sessions(&tx, &target, now)?;
+            sessions_revoked = revoke_all_sessions(&tx, &prep.target, now)?;
         }
     }
-    let after_row = load(&tx, &target)?;
-    let after_state = after_row
-        .as_ref()
-        .map(|r| r.state(now))
-        .unwrap_or(UserState::Active);
-    let after_until = after_row.as_ref().and_then(|r| r.until_ms);
-    let before = summary(before_state, before_until);
-    let after = summary(after_state, after_until);
     let action = if disabled { "disable" } else { "enable" };
-    let seq = append_audit(
-        &tx,
-        &AuditDraft {
-            action,
-            target: &target,
-            actor: &actor,
-            reason: &reason,
-            trace: &cmd.trace,
-            before: &before,
-            after: &after,
-            sessions_revoked: sessions_revoked as u64,
-            already,
-            at: now,
-        },
-    )?;
+    let out = close_tx(&tx, &prep, action, cmd, sessions_revoked, already, now)?;
     tx.commit()?;
 
     finish_govern(
-        &target,
-        after_state,
-        after_until,
-        after_row.as_ref(),
+        &prep.target,
+        out.after_state,
+        out.after_until,
+        out.after_row.as_ref(),
         now,
         action,
-        seq,
-        before,
-        after,
+        out.seq,
+        out.before,
+        out.after,
         sessions_revoked,
         already,
         port,

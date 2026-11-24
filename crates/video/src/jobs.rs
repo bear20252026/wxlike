@@ -994,13 +994,17 @@ pub fn spawn_worker(store: VideoStore, poll: Duration) -> tokio::task::JoinHandl
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            match store.run_worker_round().await {
-                Ok(report) if report == WorkerReport::default() => {}
-                Ok(report) => tracing::info!(?report, "video worker 一轮"),
-                Err(err) => tracing::error!(error = %err, "video worker 轮次失败"),
-            }
+            worker_round(&store).await;
         }
     })
+}
+
+async fn worker_round(store: &VideoStore) {
+    match store.run_worker_round().await {
+        Ok(report) if report == WorkerReport::default() => {}
+        Ok(report) => tracing::info!(?report, "video worker 一轮"),
+        Err(err) => tracing::error!(error = %err, "video worker 轮次失败"),
+    }
 }
 
 fn row_to_job(row: &Row<'_>) -> Result<Job, SqliteError> {

@@ -71,40 +71,49 @@ fn account_command(args: &[String]) -> anyhow::Result<()> {
     };
     let cfg = Config::from_env()?;
     if action == "list" {
-        let store = wxlike_admin::AccountStore::open(&cfg.accounts_db)?;
-        let rows = store.list()?;
-        if rows.is_empty() {
-            println!(
-                "{} 里还没有账号：任何写操作都不可用",
-                cfg.accounts_db.display()
-            );
-            return Ok(());
-        }
-        println!(
-            "{:<24} {:<12} {:<8} {:<8} 更新于",
-            "账号", "角色", "MFA", "停用"
-        );
-        for a in rows {
-            println!(
-                "{:<24} {:<12} {:<8} {:<8} {}",
-                a.name,
-                a.role.as_str(),
-                if a.mfa_enabled {
-                    "已开"
-                } else if a.totp_provisioned {
-                    "待确认"
-                } else {
-                    "未绑"
-                },
-                if a.disabled { "是" } else { "否" },
-                a.updated_at
-            );
-        }
-        return Ok(());
+        return list_accounts(&cfg);
     }
     let name = flag(&args[1..], "--name")
         .ok_or_else(|| anyhow::anyhow!("account {action} 需要 --name <账号名>"))?;
     let store = wxlike_admin::AccountStore::open(&cfg.accounts_db)?;
+    run_account_action(action, &store, &name, args)
+}
+
+/// `account list`：空表要明确说"写操作不可用"，不是静默的空输出。
+fn list_accounts(cfg: &Config) -> anyhow::Result<()> {
+    let store = wxlike_admin::AccountStore::open(&cfg.accounts_db)?;
+    let rows = store.list()?;
+    if rows.is_empty() {
+        println!(
+            "{} 里还没有账号：任何写操作都不可用",
+            cfg.accounts_db.display()
+        );
+        return Ok(());
+    }
+    println!(
+        "{:<24} {:<12} {:<8} {:<8} 更新于",
+        "账号", "角色", "MFA", "停用"
+    );
+    for a in rows {
+        println!(
+            "{:<24} {:<12} {:<8} {:<8} {}",
+            a.name,
+            a.role.as_str(),
+            mfa_label(a.mfa_enabled, a.totp_provisioned),
+            yes_no(a.disabled),
+            a.updated_at
+        );
+    }
+    Ok(())
+}
+
+/// 除 `list` 外的六个动作；每个都只动一个账号。
+fn run_account_action(
+    action: &str,
+    store: &wxlike_admin::AccountStore,
+    name: &str,
+    args: &[String],
+) -> anyhow::Result<()> {
     match action {
         "add" => {
             let role = flag(&args[1..], "--role").unwrap_or_else(|| "viewer".into());
@@ -112,7 +121,7 @@ fn account_command(args: &[String]) -> anyhow::Result<()> {
                 anyhow::anyhow!("角色 {role:?} 不认识（viewer | moderator | superadmin）")
             })?;
             let pw = new_password_from_env()?;
-            let acc = store.add(&name, &pw, role)?;
+            let acc = store.add(name, &pw, role)?;
             println!(
                 "已创建 {}（角色 {}）。接下来：\n  1) account totp-init --name {}\n  2) account totp-confirm --name {} --code <6 位码>\n  没开 MFA 的账号只能读，任何写操作都会被拒。",
                 acc.name, acc.role.as_str(), acc.name, acc.name
@@ -120,35 +129,50 @@ fn account_command(args: &[String]) -> anyhow::Result<()> {
         }
         "passwd" => {
             let pw = new_password_from_env()?;
-            let acc = store.set_password(&name, &pw)?;
+            let acc = store.set_password(name, &pw)?;
             println!("已更新 {} 的口令，并且吊销了它的全部会话", acc.name);
         }
         "disable" => {
-            let acc = store.set_disabled(&name, true)?;
+            let acc = store.set_disabled(name, true)?;
             let revoked = store.revoke_sessions(&acc.id)?;
             println!("已停用 {}（吊销 {revoked} 个会话）", acc.name);
         }
         "enable" => {
-            let acc = store.set_disabled(&name, false)?;
+            let acc = store.set_disabled(name, false)?;
             println!("已启用 {}", acc.name);
         }
         "totp-init" => {
-            let secret = store.totp_enroll(&name)?;
+            let secret = store.totp_enroll(name)?;
             println!("把下面这个密钥录进验证器 App（只打印这一次）：\n  {secret}\n  otpauth://totp/wxlike-admin:{name}?secret={secret}&issuer=wxlike-admin");
             println!("录好后执行：account totp-confirm --name {name} --code <当前码>");
         }
         "totp-confirm" => {
             let code = flag(&args[1..], "--code")
                 .ok_or_else(|| anyhow::anyhow!("totp-confirm 需要 --code <6 位动态码>"))?;
-            store.totp_confirm(&name, &code)?;
-            println!(
-                "{} 的 MFA 已激活。重新登录（带码）才会拿到可写的会话。",
-                name
-            );
+            store.totp_confirm(name, &code)?;
+            println!("{name} 的 MFA 已激活。重新登录（带码）才会拿到可写的会话。");
         }
         other => anyhow::bail!("未知子命令 account {other}"),
     }
     Ok(())
+}
+
+fn mfa_label(enabled: bool, provisioned: bool) -> &'static str {
+    if enabled {
+        "已开"
+    } else if provisioned {
+        "待确认"
+    } else {
+        "未绑"
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "是"
+    } else {
+        "否"
+    }
 }
 
 /// SIGTERM/SIGINT。与 `wxlike-server` 同理：supervisor 发的是 SIGTERM，

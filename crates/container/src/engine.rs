@@ -135,56 +135,6 @@ fn log_line(args: &[JsValue], ctx: &mut Context) -> String {
 }
 
 fn install_bridge(ctx: &mut Context) -> JsResult<()> {
-    fn wx_log(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-        let line = log_line(args, ctx);
-        BRIDGE.with(|b| {
-            let mut state = b.borrow_mut();
-            if state.logs.len() >= MAX_LOG_LINES {
-                state.logs.pop_front();
-            }
-            state.logs.push_back(line);
-        });
-        Ok(JsValue::undefined())
-    }
-
-    fn wx_set_title(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-        if let Some(v) = args.first() {
-            let t = v.to_string(ctx)?;
-            BRIDGE.with(|b| b.borrow_mut().title = t.to_std_string_escaped());
-        }
-        Ok(JsValue::undefined())
-    }
-
-    fn wx_store_set(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-        let key = match args.first() {
-            Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
-            None => return Ok(JsValue::undefined()),
-        };
-        let val = match args.get(1) {
-            Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
-            None => return Ok(JsValue::undefined()),
-        };
-        BRIDGE.with(|b| b.borrow_mut().storage.insert(key, val));
-        Ok(JsValue::undefined())
-    }
-
-    fn wx_store_get(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-        let key = match args.first() {
-            Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
-            None => return Ok(JsValue::undefined()),
-        };
-        Ok(
-            match BRIDGE.with(|b| b.borrow().storage.get(&key).cloned()) {
-                Some(v) => JsValue::from(boa_engine::JsString::from(v)),
-                None => JsValue::undefined(),
-            },
-        )
-    }
-
-    fn wx_now_ms(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-        Ok(JsValue::from(now_ms() as f64))
-    }
-
     let obj = ObjectInitializer::new(ctx)
         .function(
             NativeFunction::from_fn_ptr(wx_log),
@@ -214,6 +164,56 @@ fn install_bridge(ctx: &mut Context) -> JsResult<()> {
         .build();
     ctx.register_global_property(boa_engine::js_string!("wxhost"), obj, Attribute::all())?;
     Ok(())
+}
+
+fn wx_log(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let line = log_line(args, ctx);
+    BRIDGE.with(|b| {
+        let mut state = b.borrow_mut();
+        if state.logs.len() >= MAX_LOG_LINES {
+            state.logs.pop_front();
+        }
+        state.logs.push_back(line);
+    });
+    Ok(JsValue::undefined())
+}
+
+fn wx_set_title(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    if let Some(v) = args.first() {
+        let t = v.to_string(ctx)?;
+        BRIDGE.with(|b| b.borrow_mut().title = t.to_std_string_escaped());
+    }
+    Ok(JsValue::undefined())
+}
+
+fn wx_store_set(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let key = match args.first() {
+        Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
+        None => return Ok(JsValue::undefined()),
+    };
+    let val = match args.get(1) {
+        Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
+        None => return Ok(JsValue::undefined()),
+    };
+    BRIDGE.with(|b| b.borrow_mut().storage.insert(key, val));
+    Ok(JsValue::undefined())
+}
+
+fn wx_store_get(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let key = match args.first() {
+        Some(v) => v.to_string(ctx)?.to_std_string_escaped(),
+        None => return Ok(JsValue::undefined()),
+    };
+    Ok(
+        match BRIDGE.with(|b| b.borrow().storage.get(&key).cloned()) {
+            Some(v) => JsValue::from(boa_engine::JsString::from(v)),
+            None => JsValue::undefined(),
+        },
+    )
+}
+
+fn wx_now_ms(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(now_ms() as f64))
 }
 
 fn now_ms() -> u64 {

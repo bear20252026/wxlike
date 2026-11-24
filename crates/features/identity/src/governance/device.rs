@@ -47,39 +47,21 @@ pub fn revoke_device(
 
     let seq = append_audit(
         conn,
-        &AuditDraft {
-            action: "device.revoke",
-            target: &device_id,
-            actor: &actor,
-            reason: &reason,
-            trace: &cmd.trace,
-            before: &before,
-            after: &after,
+        &revoke_draft(
+            &device_id,
+            &actor,
+            &reason,
+            cmd,
+            &before,
+            &after,
             sessions_revoked,
             already,
-            at: now,
-        },
+            now,
+        ),
     )?;
 
-    let mut events = vec![GovernanceEvent::DeviceRevoked {
-        user_id: user_id.clone(),
-        device_id: device_id.clone(),
-    }];
-    if sessions_revoked > 0 {
-        events.push(GovernanceEvent::SessionsRevoked {
-            user_id: user_id.clone(),
-            count: sessions_revoked,
-        });
-    }
-    events.push(GovernanceEvent::CacheClear {
-        scope: "device".to_string(),
-        key: device_id.clone(),
-    });
-    events.push(GovernanceEvent::CacheClear {
-        scope: "user".to_string(),
-        key: user_id.clone(),
-    });
     // 设备撤销不改用户治理标志，无需镜像 users；事件交平台作废设备密钥/断 WS。
+    let events = revoke_events(&user_id, &device_id, sessions_revoked);
     port.dispatch(&events);
     Ok(GovernEffect {
         reference: reference("device.revoke", seq),
@@ -89,6 +71,55 @@ pub fn revoke_device(
         already,
         events,
     })
+}
+
+/// 回执要带的三类事件：设备作废 → （可选）会话撤销 → 两级缓存清理。
+fn revoke_events(user_id: &str, device_id: &str, sessions_revoked: u64) -> Vec<GovernanceEvent> {
+    let mut events = vec![GovernanceEvent::DeviceRevoked {
+        user_id: user_id.to_string(),
+        device_id: device_id.to_string(),
+    }];
+    if sessions_revoked > 0 {
+        events.push(GovernanceEvent::SessionsRevoked {
+            user_id: user_id.to_string(),
+            count: sessions_revoked,
+        });
+    }
+    events.push(GovernanceEvent::CacheClear {
+        scope: "device".to_string(),
+        key: device_id.to_string(),
+    });
+    events.push(GovernanceEvent::CacheClear {
+        scope: "user".to_string(),
+        key: user_id.to_string(),
+    });
+    events
+}
+
+#[allow(clippy::too_many_arguments)]
+fn revoke_draft<'a>(
+    device_id: &'a str,
+    actor: &'a str,
+    reason: &'a str,
+    cmd: &'a GovernCommand,
+    before: &'a serde_json::Value,
+    after: &'a serde_json::Value,
+    sessions_revoked: u64,
+    already: bool,
+    now: i64,
+) -> AuditDraft<'a> {
+    AuditDraft {
+        action: "device.revoke",
+        target: device_id,
+        actor,
+        reason,
+        trace: &cmd.trace,
+        before,
+        after,
+        sessions_revoked,
+        already,
+        at: now,
+    }
 }
 
 #[cfg(test)]

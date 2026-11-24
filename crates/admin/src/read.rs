@@ -155,6 +155,87 @@ pub struct PlatformRead {
     open_mode: &'static str,
 }
 
+/// 看板的基础计数（同一次锁内跑完，避免多个面板跨时刻）。
+struct Gauge {
+    users_total: i64,
+    users_created_24h: i64,
+    active_sessions: i64,
+    groups_total: i64,
+    communities_total: i64,
+    conversations: i64,
+    message_seqs: i64,
+    reports_open: i64,
+    reports_over_24h: i64,
+    moderation_held: i64,
+    friend_requests_pending: i64,
+    wallet_sum: i64,
+}
+
+fn gauge_counts(c: &Connection, now: i64, day: i64) -> Result<Gauge> {
+    let scalar = |sql: &str| -> Result<i64> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
+    let scalar1 =
+        |sql: &str, v: i64| -> Result<i64> { Ok(c.query_row(sql, params![v], |r| r.get(0))?) };
+    Ok(Gauge {
+        users_total: scalar("SELECT COUNT(*) FROM users")?,
+        users_created_24h: scalar1(
+            "SELECT COUNT(*) FROM users WHERE created_at >= ?1",
+            now - day,
+        )?,
+        active_sessions: scalar1("SELECT COUNT(*) FROM sessions WHERE expires_at > ?1", now)?,
+        groups_total: scalar("SELECT COUNT(*) FROM groups")?,
+        communities_total: scalar("SELECT COUNT(*) FROM communities")?,
+        // owner_seq 每个会话一行：这两个数与该表行数成正比，与信箱大小无关。
+        conversations: scalar("SELECT COUNT(*) FROM owner_seq")?,
+        message_seqs: scalar("SELECT COALESCE(SUM(seq), 0) FROM owner_seq")?,
+        reports_open: scalar(
+            "SELECT COUNT(*) FROM reports WHERE state IN ('open','triaged','actioned')",
+        )?,
+        reports_over_24h: c.query_row(
+            "SELECT COUNT(*) FROM reports \
+             WHERE state IN ('open','triaged','actioned') AND created_at < ?1",
+            params![now - day],
+            |r| r.get(0),
+        )?,
+        moderation_held: scalar("SELECT COUNT(*) FROM moderation_queue")?,
+        friend_requests_pending: scalar(
+            "SELECT COUNT(*) FROM friend_requests WHERE status = 'pending'",
+        )?,
+        wallet_sum: scalar("SELECT COALESCE(SUM(balance), 0) FROM wallets")?,
+    })
+}
+
+/// 24 h 内的审计条数：只在最近 [`AUDIT_SAMPLE_ROWS`] 行里数。
+fn audit_in_sample(c: &Connection, cutoff: i64) -> Result<i64> {
+    Ok(c.query_row(
+        "SELECT COUNT(*) FROM (SELECT at_ms FROM audit_log ORDER BY id DESC LIMIT ?1) \
+         WHERE at_ms >= ?2",
+        params![AUDIT_SAMPLE_ROWS, cutoff],
+        |r| r.get(0),
+    )?)
+}
+
+/// 最近一次对账；还没有跑过就是 `None`（看板显示"未跑过"）。
+fn last_reconcile_run(c: &Connection) -> Result<Option<ReconcileRow>> {
+    let row = c.query_row(
+        "SELECT at_ms, users_checked, mismatches, ok \
+         FROM reconcile_runs ORDER BY id DESC LIMIT 1",
+        [],
+        |r| {
+            Ok(ReconcileRow {
+                at_ms: r.get(0)?,
+                users_checked: r.get(1)?,
+                mismatches: r.get(2)?,
+                ok: r.get::<_, i64>(3)? != 0,
+            })
+        },
+    );
+    match row {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(AdminError::from(err)),
+    }
+}
+
 impl PlatformRead {
     /// 只读打开平台库。文件不存在直接失败——创建空库会得到一个"全 0 的看板"，
     /// 那是本项目明令禁止的静默降级。
@@ -239,75 +320,26 @@ impl PlatformRead {
         let now = now_ms();
         let day = 24 * 60 * 60 * 1000;
         let c = self.lock();
-        let scalar = |sql: &str| -> Result<i64> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
-        let scalar1 =
-            |sql: &str, v: i64| -> Result<i64> { Ok(c.query_row(sql, params![v], |r| r.get(0))?) };
-        let users_total = scalar("SELECT COUNT(*) FROM users")?;
-        let users_created_24h = scalar1(
-            "SELECT COUNT(*) FROM users WHERE created_at >= ?1",
-            now - day,
-        )?;
-        let active_sessions = scalar1("SELECT COUNT(*) FROM sessions WHERE expires_at > ?1", now)?;
-        let groups_total = scalar("SELECT COUNT(*) FROM groups")?;
-        let communities_total = scalar("SELECT COUNT(*) FROM communities")?;
-        // owner_seq 每个会话一行：这两个数与该表行数成正比，与信箱大小无关。
-        let conversations = scalar("SELECT COUNT(*) FROM owner_seq")?;
-        let message_seqs = scalar("SELECT COALESCE(SUM(seq), 0) FROM owner_seq")?;
-        let reports_open =
-            scalar("SELECT COUNT(*) FROM reports WHERE state IN ('open','triaged','actioned')")?;
-        let reports_over_24h = c.query_row(
-            "SELECT COUNT(*) FROM reports \
-             WHERE state IN ('open','triaged','actioned') AND created_at < ?1",
-            params![now - day],
-            |r| r.get(0),
-        )?;
-        let moderation_held = scalar("SELECT COUNT(*) FROM moderation_queue")?;
-        let friend_requests_pending =
-            scalar("SELECT COUNT(*) FROM friend_requests WHERE status = 'pending'")?;
-        let wallet_sum = scalar("SELECT COALESCE(SUM(balance), 0) FROM wallets")?;
+        let gauge = gauge_counts(&c, now, day)?;
         // 无界表：先按主键倒序取窗口，再在窗口里数——绝不全表扫。
-        let audit_in_sample_24h = c.query_row(
-            "SELECT COUNT(*) FROM (SELECT at_ms FROM audit_log ORDER BY id DESC LIMIT ?1) \
-             WHERE at_ms >= ?2",
-            params![AUDIT_SAMPLE_ROWS, now - day],
-            |r| r.get(0),
-        )?;
-        let last_reconcile = {
-            let row = c.query_row(
-                "SELECT at_ms, users_checked, mismatches, ok \
-                 FROM reconcile_runs ORDER BY id DESC LIMIT 1",
-                [],
-                |r| {
-                    Ok(ReconcileRow {
-                        at_ms: r.get(0)?,
-                        users_checked: r.get(1)?,
-                        mismatches: r.get(2)?,
-                        ok: r.get::<_, i64>(3)? != 0,
-                    })
-                },
-            );
-            match row {
-                Ok(v) => Some(v),
-                Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(err) => return Err(AdminError::from(err)),
-            }
-        };
+        let audit_in_sample_24h = audit_in_sample(&c, now - day)?;
+        let last_reconcile = last_reconcile_run(&c)?;
         Ok(Stats {
             at_ms: now,
-            users_total,
-            users_created_24h,
-            active_sessions,
-            groups_total,
-            communities_total,
-            conversations,
-            message_seqs,
-            reports_open,
+            users_total: gauge.users_total,
+            users_created_24h: gauge.users_created_24h,
+            active_sessions: gauge.active_sessions,
+            groups_total: gauge.groups_total,
+            communities_total: gauge.communities_total,
+            conversations: gauge.conversations,
+            message_seqs: gauge.message_seqs,
+            reports_open: gauge.reports_open,
             // 看板上的"超时"用固定的 24 h 口径；工单面按配置的 SLA 算 overdue。
             // 两处口径不同是刻意的（一个是趋势、一个是待办），docs 里写清楚。
-            reports_over_24h,
-            moderation_held,
-            friend_requests_pending,
-            wallet_sum_minor: wallet_sum,
+            reports_over_24h: gauge.reports_over_24h,
+            moderation_held: gauge.moderation_held,
+            friend_requests_pending: gauge.friend_requests_pending,
+            wallet_sum_minor: gauge.wallet_sum,
             audit_sample_rows: AUDIT_SAMPLE_ROWS,
             audit_in_sample_24h,
             last_reconcile,

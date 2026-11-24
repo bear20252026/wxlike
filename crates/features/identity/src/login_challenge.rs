@@ -301,14 +301,7 @@ pub fn verify(
     pepper: &[u8],
     now: i64,
 ) -> Result<Verified> {
-    let row: Option<ChallengeRow> = conn
-        .query_row(
-            "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts,              max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
-            params![challenge_id],
-            challenge_row,
-        )
-        .optional()?;
-    let Some(row) = row else {
+    let Some(row) = fetch_challenge(conn, challenge_id)? else {
         return Err(IdError::Unauthorized("invalid or expired code"));
     };
     let ChallengeRow {
@@ -322,19 +315,8 @@ pub fn verify(
         max_attempts,
         consumed_at: consumed,
     } = row;
-    if consumed.is_some() {
-        return Err(IdError::Unauthorized("invalid or expired code"));
-    }
-    if expires_at <= now {
-        return Err(IdError::Expired);
-    }
-    if attempts >= max_attempts {
-        // 单枚挑战的上限先判，**顺序**照抄上游 `auth_code.Authenticate`：
-        // `count >= maxRetries → ErrFailed`，连比对都不做。
-        // 反过来（先比对再判上限）会让"已锁"与"码错"的耗时不同，
-        // 计时差异就此变成一根探针：能测出这枚挑战是不是已经锁死了。
-        return Err(IdError::Unauthorized("too many attempts"));
-    }
+    check_open(consumed, expires_at, attempts, max_attempts, now)?;
+
     // 第二层：跨重发累计的预算桶（见 `throttle::CODE_BUDGET`）。同样在比对之前判。
     let budget_bucket = crate::throttle::key_credential("phone", &phone);
     crate::throttle::check_budget(conn, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
@@ -348,11 +330,7 @@ pub fn verify(
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
     let tx = conn.unchecked_transaction()?;
-    let n = tx.execute(
-        "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1 AND consumed_at IS NULL",
-        params![id, now],
-    )?;
-    if n != 1 {
+    if !consume_challenge(&tx, &id, now)? {
         // 并发验证：另一个请求已经把这枚码用掉了。
         drop(tx);
         return Err(IdError::Unauthorized("invalid or expired code"));
@@ -369,6 +347,47 @@ pub fn verify(
         challenge_id: id,
         phone_e164: phone,
     })
+}
+
+fn fetch_challenge(conn: &Connection, challenge_id: &str) -> Result<Option<ChallengeRow>> {
+    Ok(conn
+        .query_row(
+            "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts,              max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
+            params![challenge_id],
+            challenge_row,
+        )
+        .optional()?)
+}
+
+/// 三态闸门：已消费 / 已过期 / 尝试次数到顶。顺序照抄上游 `auth_code.Authenticate`：
+/// `count >= maxRetries → ErrFailed`，连比对都不做。反过来（先比对再判上限）会让
+/// "已锁"与"码错"的耗时不同，计时差异就此变成一根探针：能测出这枚挑战是不是已经锁死了。
+fn check_open(
+    consumed: Option<i64>,
+    expires_at: i64,
+    attempts: i64,
+    max_attempts: i64,
+    now: i64,
+) -> Result<()> {
+    if consumed.is_some() {
+        return Err(IdError::Unauthorized("invalid or expired code"));
+    }
+    if expires_at <= now {
+        return Err(IdError::Expired);
+    }
+    if attempts >= max_attempts {
+        return Err(IdError::Unauthorized("too many attempts"));
+    }
+    Ok(())
+}
+
+/// 标记消费；返回 false 表示已被并发请求抢先消费。
+fn consume_challenge(tx: &Connection, id: &str, now: i64) -> Result<bool> {
+    let n = tx.execute(
+        "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1 AND consumed_at IS NULL",
+        params![id, now],
+    )?;
+    Ok(n == 1)
 }
 
 /// 作废同一 `phone + purpose` 下除 `keep` 以外的所有未消费挑战。

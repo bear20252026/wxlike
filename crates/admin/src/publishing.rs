@@ -475,6 +475,57 @@ enum PublishPrep {
     },
 }
 
+/// 同一个幂等键重放：返回已存在的那条。
+fn find_by_idem(conn: &rusqlite::Connection, idem: &str) -> Option<Item> {
+    conn.query_row(
+        &format!("SELECT {ITEM_COLS} FROM g14_review_item WHERE idem = ?1"),
+        [idem],
+        row_to_item,
+    )
+    .ok()
+}
+
+/// 新建待审条目（幂等检查在调用方）。
+fn new_item(sub: &Submission, rule: &str, subject_id: String, actor: &str, now: i64) -> Item {
+    Item {
+        id: format!("rv_{}", wxlike_platform::random_hex(8)),
+        kind: sub.kind.clone(),
+        subject_id,
+        version: sub.version.trim().to_string(),
+        rule_version: rule.to_string(),
+        state: ItemState::Pending.as_str().to_string(),
+        submitted_by: if sub.submitted_by.trim().is_empty() {
+            actor.to_string()
+        } else {
+            sub.submitted_by.trim().to_string()
+        },
+        decided_by: None,
+        reason: String::new(),
+        created_at: now,
+        decided_at: None,
+    }
+}
+
+fn insert_item(conn: &rusqlite::Connection, item: &Item, idem: &str, now: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO g14_review_item (id, kind, subject_id, version, rule_version, state, \
+         submitted_by, decided_by, reason, created_at, decided_at, idem) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,'',?8,NULL,?9)",
+        params![
+            item.id,
+            item.kind,
+            item.subject_id,
+            item.version,
+            item.rule_version,
+            item.state,
+            item.submitted_by,
+            now,
+            idem
+        ],
+    )?;
+    Ok(())
+}
+
 impl PublishingService {
     pub fn new(store: Store, audit: AuditLog, port: Arc<dyn ContentPort>, stepup: StepUp) -> Self {
         Self {
@@ -507,46 +558,11 @@ impl PublishingService {
         let now = now_ms();
         let conn = self.store.lock();
         // 幂等：同一个 idem 重放，返回已存在的那条，不新建版本
-        if let Ok(existing) = conn.query_row(
-            &format!("SELECT {ITEM_COLS} FROM g14_review_item WHERE idem = ?1"),
-            [&sub.idem],
-            row_to_item,
-        ) {
+        if let Some(existing) = find_by_idem(&conn, &sub.idem) {
             return Ok(existing);
         }
-        let item = Item {
-            id: format!("rv_{}", wxlike_platform::random_hex(8)),
-            kind: sub.kind.clone(),
-            subject_id,
-            version: sub.version.trim().to_string(),
-            rule_version: rule.to_string(),
-            state: ItemState::Pending.as_str().to_string(),
-            submitted_by: if sub.submitted_by.trim().is_empty() {
-                actor.to_string()
-            } else {
-                sub.submitted_by.trim().to_string()
-            },
-            decided_by: None,
-            reason: String::new(),
-            created_at: now,
-            decided_at: None,
-        };
-        conn.execute(
-            "INSERT INTO g14_review_item (id, kind, subject_id, version, rule_version, state, \
-             submitted_by, decided_by, reason, created_at, decided_at, idem) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,'',?8,NULL,?9)",
-            params![
-                item.id,
-                item.kind,
-                item.subject_id,
-                item.version,
-                item.rule_version,
-                item.state,
-                item.submitted_by,
-                now,
-                sub.idem
-            ],
-        )?;
+        let item = new_item(&sub, &rule, subject_id, actor, now);
+        insert_item(&conn, &item, &sub.idem, now)?;
         drop(conn);
         self.audit.append(
             Draft::new(
