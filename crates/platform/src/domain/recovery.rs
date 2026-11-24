@@ -132,7 +132,7 @@ impl Platform {
         let question = format!("{a} + {b} = ?");
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms();
-        let c = self.db().lock();
+        let c = self.db().acquire();
         insert_captcha(
             &c,
             &id,
@@ -147,7 +147,7 @@ impl Platform {
     /// 避免把题目状态变成探测面）。
     pub fn solve_captcha(&self, id: &str, answer: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let row = captcha_row(&c, id)?;
         let Some(row) = row else {
             return Err(PlatformError::BadInput("captcha not found"));
@@ -175,7 +175,7 @@ impl Platform {
             &raw[15..20]
         );
         let hash = super::security::hash_argon2id(&code)?;
-        let c = self.db().lock();
+        let c = self.db().acquire();
         upsert_recovery_code(&c, &user_id, &hash, wxlike_core::types::now_ms() as i64)?;
         drop(c);
         self.audit(&user_id, "account.recovery.issue", &user_id, "");
@@ -197,7 +197,7 @@ impl Platform {
             .user_id_by_name(&name)?
             .ok_or(PlatformError::NotFound)?;
         let row = {
-            let c = self.db().lock();
+            let c = self.db().acquire();
             recovery_row(&c, &user_id)?
         };
         let Some(row) = row else {
@@ -218,9 +218,10 @@ impl Platform {
         let phc = super::security::hash_argon2id(new_password)?;
         let mut c = self.db().lock();
         c.with_tx(|tx| -> Result<()> {
-            update_password(tx, &user_id, &phc)?;
-            delete_sessions(tx, &user_id)?;
-            mark_recovery_used(tx, &user_id, now)?;
+            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+            update_password(&conn, &user_id, &phc)?;
+            delete_sessions(&conn, &user_id)?;
+            mark_recovery_used(&conn, &user_id, now)?;
             Ok(())
         })?;
         drop(c);
@@ -230,7 +231,7 @@ impl Platform {
 
     /// 是否已设置恢复码（UI 提示"未设置"用）。
     pub fn has_recovery_code(&self, user_id: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().acquire();
         let used = recovery_used_at(&c, user_id)?;
         Ok(matches!(used, Some(None)))
     }
