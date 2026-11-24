@@ -493,7 +493,11 @@ impl Platform {
             advance_follow_cursor(&port, user, &publisher_id, seq, now)?;
             Ok(publisher_id)
         })?;
-        let unread = unread_count(&c, user, &publisher_id)?;
+        let unread = unread_count(
+            &crate::storage::StorageConnection::sqlite_borrow(&c),
+            user,
+            &publisher_id,
+        )?;
         drop(c);
         Ok(unread)
     }

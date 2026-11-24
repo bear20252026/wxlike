@@ -636,7 +636,6 @@ pub(in crate::domain) fn render_block(
     plain: &mut String,
     html: &mut String,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     match block {
         ArticleBlock::Paragraph { spans } => {
             let (text, inner) = render_spans(spans)?;
@@ -688,7 +687,6 @@ pub(in crate::domain) fn render_doc(
     c: &StorageConnection<'_>,
     doc: &ArticleDoc,
 ) -> Result<(String, String)> {
-    let c = c.sqlite()?;
     if doc.blocks.is_empty() {
         return Err(PlatformError::BadInput("article is empty"));
     }
