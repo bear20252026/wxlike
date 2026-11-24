@@ -4,7 +4,7 @@
 //! # 为什么这一步端口没有完全屏蔽 rusqlite
 //!
 //! `crates/platform/src/domain/repo/*.rs` 最早有 12 个 feature 文件、共 51 个函数
-//! 直接吃 `&rusqlite::Connection`。本波分批迁移后，已有 31 个仓库、350 个函数
+//! 直接吃 `&rusqlite::Connection`。本波分批迁移后，已有 32 个仓库、353 个函数
 //! 改吃 [`StorageConnection`]；尚未迁移的函数仍保留旧签名，靠 `sqlite()` /
 //! `sqlite_borrow()` 在同一连接上过渡。因此端口当前仍做三件事：
 //!
@@ -252,6 +252,17 @@ impl<'a> StorageConnection<'a> {
     /// repo 内部再调用已迁移的端口函数。
     pub(crate) fn sqlite_borrow(conn: &'a Connection) -> Self {
         Self::SqliteTx(conn)
+    }
+
+    /// 借出 SQLite 连接；PG 变体返回 `None`。给仍以 `rusqlite::Result`
+    /// 上报错误的 repo（治理镜像/跨域计数）用，避免把平台错误硬塞进
+    /// `IdError::Db`。
+    pub(crate) fn sqlite_ref(&self) -> Option<&Connection> {
+        match self {
+            StorageConnection::Sqlite(c) => Some(&**c),
+            StorageConnection::SqliteTx(c) => Some(c),
+            StorageConnection::Postgres(_) => None,
+        }
     }
 
     /// 取出 SQLite 连接。PG 变体明确返回受控错误，而不是 panic 或静默降级。

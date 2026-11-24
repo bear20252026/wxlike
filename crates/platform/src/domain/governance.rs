@@ -189,7 +189,8 @@ impl PlatformGovernancePort for GovernanceLinks {
             warn!(%user_id, "内存平台无第二条连接，治理镜像跳过（域表仍为权威）");
             return Ok(());
         };
-        governance_repo::mirror_user_state(&guard, user_id, suspended, disabled, until_ms)
+        let port = crate::storage::StorageConnection::sqlite_borrow(&guard);
+        governance_repo::mirror_user_state(&port, user_id, suspended, disabled, until_ms)
             .map_err(wxlike_identity::IdError::Db)?;
         Ok(())
     }
@@ -270,7 +271,8 @@ impl UserMetadataPort for GovernanceLinks {
         let Some(guard) = self.conn() else {
             return Err(wxlike_identity::IdError::Db(rusqlite::Error::InvalidQuery));
         };
-        governance_repo::group_count(&guard, user_id).map_err(wxlike_identity::IdError::Db)
+        let port = crate::storage::StorageConnection::sqlite_borrow(&guard);
+        governance_repo::group_count(&port, user_id).map_err(wxlike_identity::IdError::Db)
     }
 
     /// 针对该用户的举报工单数（平台 `reports` 表，按 target_kind='user'）。
@@ -278,6 +280,7 @@ impl UserMetadataPort for GovernanceLinks {
         let Some(guard) = self.conn() else {
             return Err(wxlike_identity::IdError::Db(rusqlite::Error::InvalidQuery));
         };
-        governance_repo::report_count(&guard, user_id).map_err(wxlike_identity::IdError::Db)
+        let port = crate::storage::StorageConnection::sqlite_borrow(&guard);
+        governance_repo::report_count(&port, user_id).map_err(wxlike_identity::IdError::Db)
     }
 }
