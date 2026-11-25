@@ -28,7 +28,6 @@ use crate::validate;
 use crate::Platform;
 use rand::Rng as _;
 use sha2::{Digest as _, Sha256};
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::recovery::{
     captcha_row, consume_captcha, delete_sessions, insert_captcha, mark_recovery_used,
@@ -237,15 +236,12 @@ impl Platform {
         }
 
         let phc = super::security::hash_argon2id(new_password)?;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            update_password(&conn, &user_id, &phc)?;
-            delete_sessions(&conn, &user_id)?;
-            mark_recovery_used(&conn, &user_id, now)?;
+        self.db().with_tx(|conn| -> Result<()> {
+            update_password(conn, &user_id, &phc)?;
+            delete_sessions(conn, &user_id)?;
+            mark_recovery_used(conn, &user_id, now)?;
             Ok(())
         })?;
-        drop(c);
         self.audit(&user_id, "account.recovery.reset", &user_id, "ok");
         Ok(user_id)
     }

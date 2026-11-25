@@ -19,7 +19,6 @@ use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::stickers::{
     delete_pack, delete_user_sticker, insert_pack, insert_sticker, install_sticker, installed_for,
@@ -85,16 +84,14 @@ impl Platform {
         self.check_sticker_media(owner, &media_ids)?;
         let now = wxlike_core::types::now_ms() as i64;
         let pack_id = crate::auth::random_hex(8);
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<StickerPack> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            insert_pack(&conn, &pack_id, owner, &name, &license, now)?;
+        self.db().with_tx(|conn| -> Result<StickerPack> {
+            insert_pack(conn, &pack_id, owner, &name, &license, now)?;
             for (i, sticker) in body.stickers.iter().enumerate() {
                 let media_id = validate::id(&sticker.media_id)?;
                 let id = crate::auth::random_hex(8);
-                insert_sticker(&conn, &id, &pack_id, media_id, &sticker.name, i as i64, now)?;
+                insert_sticker(conn, &id, &pack_id, media_id, &sticker.name, i as i64, now)?;
             }
-            pack_row(&conn, &pack_id, owner)?.ok_or(PlatformError::NotFound)
+            pack_row(conn, &pack_id, owner)?.ok_or(PlatformError::NotFound)
         })
     }
 
@@ -135,16 +132,14 @@ impl Platform {
     pub(crate) fn install_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
         let pack_id = validate::id(pack_id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<usize> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            if !pack_exists(&conn, pack_id)? {
+        self.db().with_tx(|conn| -> Result<usize> {
+            if !pack_exists(conn, pack_id)? {
                 return Err(PlatformError::NotFound);
             }
-            let stickers = pack_stickers(&conn, pack_id)?;
+            let stickers = pack_stickers(conn, pack_id)?;
             let mut added = 0usize;
             for (sticker_id, sort_order) in stickers {
-                added += install_sticker(&conn, user, &sticker_id, sort_order, now)?;
+                added += install_sticker(conn, user, &sticker_id, sort_order, now)?;
             }
             Ok(added)
         })

@@ -13,7 +13,7 @@
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::sessions`]。
 
-use crate::domain::repo::sessions::{lookup_live, BackendSessionsRepo, SqliteSessionsRepo};
+use crate::domain::repo::sessions::{lookup_live, BackendSessionsRepo};
 use crate::domain::repo::users::BackendUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::storage::sql_port::StorageSqlExec;
@@ -236,10 +236,11 @@ impl Platform {
         )?;
         // 新会话沿用链上的 sid：同一台设备只有一个 sid，撤销时一并失效。
         let digest = crate::auth::token_digest(&token);
-        let c = self.db().lock()?;
-        let repo = SqliteSessionsRepo::new(&c);
-        repo.update_sid(&digest, &rotated.sid)?;
-        repo.delete_by_sid_except_token(&rotated.sid, &digest)?;
+        self.db().with_tx(|c| {
+            crate::domain::repo::sessions::update_sid(c, &digest, &rotated.sid)?;
+            crate::domain::repo::sessions::delete_by_sid_except_token(c, &rotated.sid, &digest)?;
+            Ok(())
+        })?;
         Ok((rotated, token))
     }
 

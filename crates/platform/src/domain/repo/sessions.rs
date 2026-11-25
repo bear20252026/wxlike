@@ -702,6 +702,36 @@ pub(in crate::domain) fn device_name_by_sid(
     Ok(Some(name).filter(|v| !v.is_empty()))
 }
 
+/// 新访问会话沿用链上的 sid。
+pub(in crate::domain) fn update_sid(
+    conn: &StorageConnection<'_>,
+    token: &str,
+    sid: &str,
+) -> Result<usize> {
+    Ok(StorageSqlExec(conn).exec(
+        "UPDATE identity_session_token SET sid = ?2 WHERE token = ?1",
+        &[
+            SqlParam::Text(token.to_string()),
+            SqlParam::Text(sid.to_string()),
+        ],
+    )?)
+}
+
+/// 同一 sid 只保留当前 token，其余会话行清掉。
+pub(in crate::domain) fn delete_by_sid_except_token(
+    conn: &StorageConnection<'_>,
+    sid: &str,
+    token: &str,
+) -> Result<usize> {
+    Ok(StorageSqlExec(conn).exec(
+        "DELETE FROM identity_session_token WHERE sid = ?1 AND token <> ?2",
+        &[
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(token.to_string()),
+        ],
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{lookup_live, NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
