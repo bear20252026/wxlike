@@ -393,10 +393,6 @@ fn find_open_with<E: SqlExec + ?Sized>(
     .transpose()
 }
 
-fn find_open(conn: &Connection, user_id: &str, kind: JobKind) -> Result<Option<Job>> {
-    find_open_with(&SqliteExec(conn), user_id, kind)
-}
-
 /// 申请导出。已有排队/执行中的导出时返回同一条（幂等，不重复打包）。
 pub fn request_export(conn: &Connection, user_id: &str, now: i64) -> Result<Job> {
     request_export_with(&SqliteExec(conn), user_id, now)
@@ -412,12 +408,20 @@ pub fn request_export_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i6
 
 /// 申请注销：**先撤销全部会话与刷新链**，再排队清理各域。
 pub fn request_delete(conn: &Connection, user_id: &str, now: i64) -> Result<Job> {
-    if let Some(job) = find_open(conn, user_id, JobKind::Delete)? {
+    let tx = conn.unchecked_transaction()?;
+    let job = request_delete_with(&SqliteExec(&tx), user_id, now)?;
+    tx.commit()?;
+    Ok(job)
+}
+
+/// 端口版 `request_delete`：**调用方负责事务**（撤销凭证 + 排队必须一起成功）。
+pub fn request_delete_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -> Result<Job> {
+    if let Some(job) = find_open_with(exec, user_id, JobKind::Delete)? {
         return Ok(job);
     }
-    crate::session::logout_all(conn, user_id, now)?;
-    crate::step_up::revoke_all(conn, user_id)?;
-    enqueue(conn, user_id, JobKind::Delete, now)
+    crate::session::logout_all_with(exec, user_id, now)?;
+    crate::step_up::revoke_all_with(exec, user_id)?;
+    enqueue_with(exec, user_id, JobKind::Delete, now)
 }
 
 fn enqueue_with<E: SqlExec + ?Sized>(
@@ -438,10 +442,6 @@ fn enqueue_with<E: SqlExec + ?Sized>(
         ],
     )?;
     job_with(exec, &id)?.ok_or(IdError::NotFound("job"))
-}
-
-fn enqueue(conn: &Connection, user_id: &str, kind: JobKind, now: i64) -> Result<Job> {
-    enqueue_with(&SqliteExec(conn), user_id, kind, now)
 }
 
 /// 单条作业。
@@ -641,21 +641,33 @@ pub fn export_link_with<E: SqlExec + ?Sized>(
 /// 兑换下载令牌：单次、限时。返回产物路径。
 pub fn redeem_link(conn: &Connection, raw: &str, now: i64) -> Result<String> {
     let tx = conn.unchecked_transaction()?;
-    let n = tx.execute(
+    let artifact = redeem_link_with(&SqliteExec(&tx), raw, now)?;
+    tx.commit()?;
+    Ok(artifact)
+}
+
+/// 端口版 `redeem_link`：**调用方负责事务**（标记已用与读产物必须一起完成）。
+pub fn redeem_link_with<E: SqlExec + ?Sized>(exec: &E, raw: &str, now: i64) -> Result<String> {
+    let n = exec.exec(
         "UPDATE identity_export_link SET used_at = ?2 \
          WHERE token_hash = ?1 AND used_at IS NULL AND expires_at > ?2",
-        params![crate::digest(raw), now],
+        &[SqlParam::Text(crate::digest(raw)), SqlParam::Int(now)],
     )?;
     if n != 1 {
         return Err(IdError::Unauthorized("link expired or already used"));
     }
-    let artifact: String = tx.query_row(
-        "SELECT j.artifact FROM identity_job j \
-         JOIN identity_export_link l ON l.job_id = j.id WHERE l.token_hash = ?1",
-        params![crate::digest(raw)],
-        |r| r.get(0),
-    )?;
-    tx.commit()?;
+    let artifact = exec
+        .query(
+            "SELECT j.artifact FROM identity_job j \
+             JOIN identity_export_link l ON l.job_id = j.id WHERE l.token_hash = ?1",
+            &[SqlParam::Text(crate::digest(raw))],
+            &[ColKind::Text],
+        )?
+        .ok_or(IdError::NotFound("job"))?
+        .into_iter()
+        .next()
+        .ok_or(IdError::Corrupt("identity_job.row width"))?
+        .into_text()?;
     Ok(artifact)
 }
 

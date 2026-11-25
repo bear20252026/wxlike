@@ -442,3 +442,32 @@ SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道�
 **验证**：`account_surfaces` 16 passed；新增
 `repo::account::pg_tests::postgres_step_up_throttle_blocks_after_one_failure`
 （ignored）；quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。
+
+## 16. 批次 26：账号注销/导出下载全链路端口化
+
+上一批留下两处 SQLite-only：`schedule_deletion` 仍 `lock()` + `preferences::
+request_delete`，`run_delete_job` 仍 `Db::blocking` 里开 `unchecked_transaction`，
+`take_export_download` 仍 `blocking(redeem_link)`。本批一次收掉：
+
+- identity `session::logout_all` 增加 `logout_all_with`：四张表（sessions、
+  identity_session_token、identity_refresh、identity_step_up）走同一 `SqlExec`，
+  `&Connection` 版本用 `SqliteExec(&tx)` 保留事务。
+- identity `preferences::request_delete_with`：查重、撤销全部凭证、排队全在同一
+  `SqlExec` 上；`request_delete` 只负责 SQLite 事务包装。
+- identity `preferences::redeem_link_with`：条件 UPDATE 标记已用 + 读产物，
+  调用方 `with_tx`；`redeem_link` 保留 SQLite 事务包装。
+- 平台 `Platform::schedule_deletion` 用 `Db::with_tx`：`deleted_at`、
+  `open_delete_job`、`BackendSessionsRepo::count_for_user`、
+  `AccountJobs::request_delete`、`BackendUsersRepo::mark_deleted` 全在同一事务；
+  PG 下不再有 `sqlite()`。
+- `run_delete_job` 改成 `Db::with_tx` 内同步完成：标记校验、钱包余额校验、
+  `purge_rows` / `mask_rows` / `anonymize_user`、作业 finish；不再 `blocking`。
+- `take_export_download` 用 `with_tx(account_jobs::redeem_link)`，再 await 读媒体仓。
+
+**结果**：账号导出的 request → claim → export → finish → link → redeem，以及注销的
+schedule → claim → purge → finish，在 PG profile 下都走同一端口。`run_account_jobs`
+不再依赖 `Db::blocking`。
+
+**验证**：`account_surfaces` 16 passed；`cargo test -p wxlike-platform --lib` 全绿；
+PG ignored 用例补了 `request_delete`（注销作业 kind 断言）；quality gate 重复窗口 2、
+嵌套 0、魔法数字 171；clippy 全绿。

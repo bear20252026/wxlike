@@ -9,6 +9,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension as _};
 
+use crate::sqlport::{SqlExec, SqlParam, SqliteExec};
 use crate::{digest, random_hex, Audience, IdError, Result, ACCESS_TTL_MS, TOKEN_BYTES};
 
 /// `sid` 字节数（12B → 24 hex，够用且能进 URL）。
@@ -599,17 +600,26 @@ pub fn logout(conn: &Connection, user_id: &str, sid: &str, now: i64) -> Result<L
 /// 登出全部会话（改密 / 注销 / "退出所有设备"）。返回被撤销的会话数。
 pub fn logout_all(conn: &Connection, user_id: &str, now: i64) -> Result<usize> {
     let tx = conn.unchecked_transaction()?;
-    let revoked = tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
-    tx.execute(
-        "DELETE FROM identity_session_token WHERE user_id = ?1",
-        params![user_id],
-    )?;
-    crate::refresh::revoke_user(&tx, user_id, now)?;
-    tx.execute(
-        "DELETE FROM identity_step_up WHERE user_id = ?1",
-        params![user_id],
-    )?;
+    let revoked = logout_all_with(&SqliteExec(&tx), user_id, now)?;
     tx.commit()?;
+    Ok(revoked)
+}
+
+/// 端口版 `logout_all`：**调用方负责事务**，四张表必须一起成功。
+pub fn logout_all_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -> Result<usize> {
+    let revoked = exec.exec(
+        "DELETE FROM sessions WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+    )?;
+    exec.exec(
+        "DELETE FROM identity_session_token WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+    )?;
+    crate::refresh::revoke_user_with(exec, user_id, now)?;
+    exec.exec(
+        "DELETE FROM identity_step_up WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+    )?;
     Ok(revoked)
 }
 

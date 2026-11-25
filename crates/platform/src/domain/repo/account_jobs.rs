@@ -21,6 +21,18 @@ pub(in crate::domain) fn request_export(
     )?)
 }
 
+pub(in crate::domain) fn request_delete(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+    now: i64,
+) -> Result<Job> {
+    Ok(preferences::request_delete_with(
+        &StorageSqlExec(conn),
+        user_id,
+        now,
+    )?)
+}
+
 pub(in crate::domain) fn job(conn: &StorageConnection<'_>, job_id: &str) -> Result<Option<Job>> {
     Ok(preferences::job_with(&StorageSqlExec(conn), job_id)?)
 }
@@ -77,6 +89,18 @@ pub(in crate::domain) fn fail(
     )?)
 }
 
+pub(in crate::domain) fn redeem_link(
+    conn: &StorageConnection<'_>,
+    raw: &str,
+    now: i64,
+) -> Result<String> {
+    Ok(preferences::redeem_link_with(
+        &StorageSqlExec(conn),
+        raw,
+        now,
+    )?)
+}
+
 pub(in crate::domain) fn export_link(
     conn: &StorageConnection<'_>,
     job_id: &str,
@@ -93,7 +117,7 @@ pub(in crate::domain) fn export_link(
 
 #[cfg(test)]
 mod pg_tests {
-    use super::{cancel, job, list, request_export};
+    use super::{cancel, job, list, request_delete, request_export};
     use crate::storage::{params, StorageProfile};
     use crate::Db;
     use wxlike_identity::preferences::JobStatus;
@@ -123,5 +147,13 @@ mod pg_tests {
             .with_tx(|c| cancel(c, &created.id, user, 1_100))
             .expect("cancel");
         assert_eq!(cancelled.status, JobStatus::Cancelled);
+        let delete_job = db
+            .with_tx(|c| request_delete(c, user, 1_200))
+            .expect("request delete");
+        assert_ne!(delete_job.id, created.id);
+        assert!(matches!(
+            delete_job.kind,
+            wxlike_identity::preferences::JobKind::Delete
+        ));
     }
 }

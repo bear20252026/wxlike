@@ -61,8 +61,8 @@ use super::repo::account::{
 };
 use super::repo::account_jobs;
 use super::repo::preferences as pref_repo;
-use crate::domain::repo::sessions::SqliteSessionsRepo;
-use crate::domain::repo::users::SqliteUsersRepo;
+use crate::domain::repo::sessions::{BackendSessionsRepo, SqliteSessionsRepo};
+use crate::domain::repo::users::BackendUsersRepo;
 
 /// 一次偏好同步最多返回多少条增量（游标翻页）。
 pub(crate) const MAX_PREF_SYNC_PAGE: i64 = 200;
@@ -351,8 +351,7 @@ impl Platform {
         let raw = raw.to_string();
         let artifact = self
             .db()
-            .blocking(move |c| Ok(preferences::redeem_link(c, &raw, now)?))
-            .await?;
+            .with_tx(move |c| account_jobs::redeem_link(c, &raw, now))?;
         self.read_artifact(&artifact).await
     }
 
@@ -385,31 +384,29 @@ impl Platform {
     /// 3. 没标记 → 正常流程：先撤凭证，再落标记。
     pub fn schedule_deletion(&self, user_id: &str) -> Result<(Job, usize)> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        let port = crate::storage::StorageConnection::sqlite_borrow(&c);
-        if deleted_at(&port, user_id)?.is_some() {
-            if let Some(job) = open_delete_job(&port, user_id)? {
-                tracing::warn!(
-                    job = %job.id,
-                    user = %user_id,
-                    "重复的注销申请：作业已在排，一步都不重做"
-                );
+        self.db().with_tx(|c| {
+            if deleted_at(c, user_id)?.is_some() {
+                if let Some(job) = open_delete_job(c, user_id)? {
+                    tracing::warn!(
+                        job = %job.id,
+                        user = %user_id,
+                        "重复的注销申请：作业已在排，一步都不重做"
+                    );
+                    return Err(PlatformError::Blocked("account already scheduled"));
+                }
+                // 重试：`request_delete` 里撤销的都是已经撤销过的行，会话数按 0 报。
+                let job = account_jobs::request_delete(c, user_id, now)?;
+                return Ok((job, 0));
+            }
+            let revoked = BackendSessionsRepo::new(c)?.count_for_user(user_id)? as usize;
+            let job = account_jobs::request_delete(c, user_id, now)?;
+            let n = BackendUsersRepo::new(c)?.mark_deleted(user_id, now)?;
+            if n != 1 {
+                // 并发：另一个请求已经落了标记（作业是同一条，`find_open` 去重）。
                 return Err(PlatformError::Blocked("account already scheduled"));
             }
-            // 重试：`request_delete` 里撤销的都是已经撤销过的行，会话数按 0 报。
-            let job = preferences::request_delete(&c, user_id, now)?;
-            return Ok((job, 0));
-        }
-        let revoked = SqliteSessionsRepo::new(&c).count_for_user(user_id)? as usize;
-        // 规则本体在 identity：先撤凭证，再排清理作业。
-        let job = preferences::request_delete(&c, user_id, now)?;
-        let n = SqliteUsersRepo::new(&c).mark_deleted(user_id, now)?;
-        if n != 1 {
-            // 并发：另一个请求已经落了标记（作业是同一条，`find_open` 去重）。
-            // 状态是一致的，但这次调用确实没有做成任何事——如实报错。
-            return Err(PlatformError::Blocked("account already scheduled"));
-        }
-        Ok((job, revoked))
+            Ok((job, revoked))
+        })
     }
 
     /// 推进作业队列：导出打包、注销清理。返回本轮完成的条数。
@@ -472,35 +469,24 @@ impl Platform {
     async fn run_delete_job(&self, job: &Job) -> Result<()> {
         let job = job.clone();
         let now = wxlike_core::types::now_ms() as i64;
-        self.db()
-            .blocking(move |conn| {
-                let c = &*conn;
-                let port = crate::storage::StorageConnection::sqlite_borrow(c);
-                // 没有标记绝不清理：一条凭空出现的 delete 作业不属于注销流程。
-                if deleted_at(&port, &job.user_id)?.is_none() {
-                    return Err(PlatformError::Blocked("deletion was never scheduled"));
-                }
-                // 余额没清零就不清钱包：静默销毁余额是不可接受的"清理成功"。
-                if wallet_balance(&port, &job.user_id)? != 0 {
-                    return Err(PlatformError::Blocked("wallet not empty"));
-                }
-                let tx = c.unchecked_transaction()?;
-                let counts = {
-                    let tx_port = crate::storage::StorageConnection::sqlite_borrow(&tx);
-                    let counts = purge_rows(&tx_port, &job.user_id)?;
-                    mask_rows(&tx_port, &job.user_id)?;
-                    anonymize_user(&tx_port, &job.user_id)?;
-                    counts
-                };
-                tx.commit()?;
-                let total: i64 = counts.iter().map(|(_, n)| *n as i64).sum();
-                // 注销作业的 artifact 存的是"每个域清掉多少行"的摘要，不是下载地址
-                // （`export_link` 只认 kind = export，所以这里不会被误当成产物路径）。
-                let summary = serde_json::to_string(&counts)?;
-                preferences::finish(c, &job.id, &summary, total, now)?;
-                Ok(())
-            })
-            .await
+        self.db().with_tx(move |conn| {
+            // 没有标记绝不清理：一条凭空出现的 delete 作业不属于注销流程。
+            if deleted_at(conn, &job.user_id)?.is_none() {
+                return Err(PlatformError::Blocked("deletion was never scheduled"));
+            }
+            // 余额没清零就不清钱包：静默销毁余额是不可接受的"清理成功"。
+            if wallet_balance(conn, &job.user_id)? != 0 {
+                return Err(PlatformError::Blocked("wallet not empty"));
+            }
+            let counts = purge_rows(conn, &job.user_id)?;
+            mask_rows(conn, &job.user_id)?;
+            anonymize_user(conn, &job.user_id)?;
+            let total: i64 = counts.iter().map(|(_, n)| *n as i64).sum();
+            // 注销作业的 artifact 存的是"每个域清掉多少行"的摘要，不是下载地址
+            // （`export_link` 只认 kind = export，所以这里不会被误当成产物路径）。
+            let summary = serde_json::to_string(&counts)?;
+            account_jobs::finish(conn, &job.id, &summary, total, now)
+        })
     }
 
     async fn mark_job_failed(&self, job_id: &str, reason: &str) {
