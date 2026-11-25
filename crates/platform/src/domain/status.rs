@@ -17,7 +17,6 @@ use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::{Platform, PlatformState};
 use serde::{Deserialize, Serialize};
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::status::{
     background_draft, check_media, clear_owner, delete_background, delete_background_draft,
@@ -87,16 +86,14 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let expires_at = now + STATUS_TTL_MS;
         let id = crate::auth::random_hex(8);
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<StatusView> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            clear_owner(&conn, &owner, now)?;
+        self.db().with_tx(|conn| -> Result<StatusView> {
+            clear_owner(conn, &owner, now)?;
             if !background.is_empty() {
                 // 背景草稿被用掉了；清掉引用，不留下一个“未使用”的草稿。
-                delete_background_draft(&conn, &owner, &background)?;
+                delete_background_draft(conn, &owner, &background)?;
             }
             insert_status_indexed(
-                &conn,
+                conn,
                 StatusInsert {
                     id: &id,
                     owner: &owner,
@@ -109,32 +106,26 @@ impl Platform {
                     expires_at,
                 },
             )?;
-            status_row(&conn, &owner, &id)?.ok_or(PlatformError::NotFound)
+            status_row(conn, &owner, &id)?.ok_or(PlatformError::NotFound)
         })
     }
 
     pub(crate) fn clear_status(&self, owner: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            let changed = mark_cleared(&conn, id, owner, now)?;
+        self.db().with_tx(|conn| -> Result<()> {
+            let changed = mark_cleared(conn, id, owner, now)?;
             crate::db::ensure_updated(changed)?;
-            crate::domain::repo::content_index::remove_tx(tx, id)?;
-            crate::domain::repo::content_index::remove_media_refs_tx(tx, "status", id)?;
-            crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
+            crate::domain::repo::content_index::remove(conn, id)?;
+            crate::domain::repo::content_index::remove_media_refs(conn, "status", id)?;
+            crate::domain::repo::favorites::revoke_source(conn, "status", id)?;
             Ok(())
         })
     }
 
     pub(crate) fn clear_all_statuses(&self, owner: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<usize> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            clear_owner(&conn, owner, now)
-        })
+        self.db().with_tx(|conn| clear_owner(conn, owner, now))
     }
 
     /// 好友 + 自己的可见状态（每人只返回最新一条活跃状态）。
@@ -194,14 +185,12 @@ impl Platform {
             return Err(PlatformError::NotFound);
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<(bool, i64)> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            let active = toggle_reaction(&conn, id, user, now)?;
+        self.db().with_tx(|conn| -> Result<(bool, i64)> {
+            let active = toggle_reaction(conn, id, user, now)?;
             if active {
-                if let Some(owner) = status_owner(&conn, id)? {
-                    crate::domain::repo::inbox::notify_tx(
-                        tx,
+                if let Some(owner) = status_owner(conn, id)? {
+                    crate::domain::repo::inbox::notify(
+                        conn,
                         &owner,
                         "status_reaction",
                         user,
@@ -213,7 +202,7 @@ impl Platform {
                     )?;
                 }
             }
-            let count = reaction_count(&conn, id)?;
+            let count = reaction_count(conn, id)?;
             Ok((active, count))
         })
     }
@@ -250,20 +239,16 @@ impl Platform {
     /// 由 `spawn_status_sweeper` 定时调用；测试直接调用以获得确定性。
     pub(crate) fn sweep_expired_statuses(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let expired: Vec<(String, String)> = {
-            let mut c = self.db().lock()?;
-            c.with_tx(|tx| -> Result<Vec<(String, String)>> {
-                let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-                let rows = expired_statuses(&conn, now)?;
-                for (id, _) in &rows {
-                    mark_expired(&conn, id, now)?;
-                    crate::domain::repo::content_index::remove_tx(tx, id)?;
-                    crate::domain::repo::content_index::remove_media_refs_tx(tx, "status", id)?;
-                    crate::domain::repo::favorites::revoke_source_tx(tx, "status", id)?;
-                }
-                Ok(rows)
-            })?
-        };
+        let expired = self.db().with_tx(|conn| -> Result<Vec<(String, String)>> {
+            let rows = expired_statuses(conn, now)?;
+            for (id, _) in &rows {
+                mark_expired(conn, id, now)?;
+                crate::domain::repo::content_index::remove(conn, id)?;
+                crate::domain::repo::content_index::remove_media_refs(conn, "status", id)?;
+                crate::domain::repo::favorites::revoke_source(conn, "status", id)?;
+            }
+            Ok(rows)
+        })?;
         for (id, owner) in &expired {
             self.audit(owner, "status_expire", id, "expires_at reached");
         }
