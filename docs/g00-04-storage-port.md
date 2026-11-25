@@ -1,5 +1,30 @@
 # G00-04 S2 第一步：Storage 端口与 StorageProfile
 
+> **2026-11-24 PG 批次 14 现状（覆盖下文早期描述）**
+>
+> - `Db` 已能按 `StorageProfile::Postgres` 打开：`DbStorage` 分 `Sqlite` / `Postgres(Arc<PgStorage>)`，
+>   `Db::acquire()` 在 PG 下交 `StorageConnection::Postgres(&PostgresPool)`，`Db::dialect()` 返回
+>   `Postgres`。`Db::lock()` 改成 `Result`：SQLite 正常返回守卫，PG 返回受控错误
+>   （`postgres 后端没有 SQLite 互斥守卫；调用点须改用 Db::acquire`），不 panic。
+> - 新增 `crates/platform/src/storage/port.rs`：`Param` / `Params` / `params!` / `StorageRow` /
+>   `FromStorage` / `OptionalExt` / `StorageStatement`，让同一份 repo 代码在两种后端执行；
+>   `?N` 由 `pg_sql()` 翻成 `$N`。
+> - 26 个旧 repo 已从 `conn.sqlite()?` 切到通用端口：
+>   `notes, status, friends, relations, stickers, audit, devices, notification, read, trust,
+>   groups, moments, media, secret, wallet, articles, video_feed, video_refs, reconcile, live,
+>   groups_admin, call, keys, perms, report, content_index`。
+> - PG DDL 目前只落 M014 三张表：`reports`、`content_media_refs`、`content_index`
+>   （`schema/proposals/G05/0003_content_pg_compat.sql`）。其余已端口化 repo 在生产 PG 上仍会因
+>   缺表报 `relation does not exist`，**不能算完成割接**。
+> - 未切：`account`（依赖 `wxlike_identity::preferences` 的 `&Connection`）、`communities` /
+>   `favorites` / `inbox`（依赖 `unchecked_transaction` / `with_tx`）、`users` / `sessions`
+>   （domain 仍直接 `SqliteUsersRepo` / `SqliteSessionsRepo`）、`qr_login`、`governance`。
+> - `with_tx` / `unchecked_transaction` 事务端口、全量表 DDL、`Db::blocking()` 的 PG 等价路径
+>   都还没落；`G00-04-PG` 仍 open。
+> - 本批验证：`cargo check --workspace --all-targets`、`cargo clippy -p wxlike-platform
+>   --all-targets -- -D warnings`、`cargo test -p wxlike-platform`（40 个 test target 全 ok）、
+>   `cargo fmt --all -- --check`、`python3 scripts/quality-gate.py`（171 magic / 4 dup）均通过。
+
 - 车道：`feat/g00-04-s2-storage-port` @ `wt/s2-storage-port`，基线 main `69d002cf`。
 - 范围：引入 `Storage` 端口与 `StorageProfile`，让 `Db` 的打开路径经过 profile；
   SQLite 行为不变，既有测试与调用方零改动。
@@ -47,14 +72,17 @@
   改造后再收窄。
 
 `SqliteStorage` 另有 `lock()`（`MutexGuard<Connection>`）与 `blocking()`（ADR-28：
-同步临界区搬上阻塞池）。`Db` 持有 `SqliteStorage`：
+同步临界区搬上阻塞池）。批次 14 后 `Db` 持有 `DbStorage`（`Sqlite` 或
+`Postgres(Arc<PgStorage>)`）：
 
-- `Db::lock()` → `Storage::acquire()`，再解出 SQLite 守卫；
-- `Db::acquire()` → 原样交出 `StorageConnection`，供 repo 迁移期使用；
-- `Db::blocking()` → `SqliteStorage::blocking()`；
-- `Db::open()` → `StorageProfile::from_env()` + `SqliteStorage::open(profile, path)`。
+- `Db::lock()` → `Result<MutexGuard<Connection>>`：SQLite 正常返回；PG 返回受控错误，
+  不 panic、不静默降级；
+- `Db::acquire()` → `StorageConnection`：SQLite 交 `Sqlite(guard)`，PG 交
+  `Postgres(&PostgresPool)`；
+- `Db::blocking()` → SQLite 原样转发；PG 返回受控错误（16 处 blocking 调用点待改）；
+- `Db::open()` → `StorageProfile::from_env()`，再按 profile 分派到 SQLite 或 PG。
 
-所以既有 `db.lock()` / `db.blocking()` 的签名与全部调用方不变。
+`lock()` 由 `MutexGuard` 改 `Result` 是公开签名变化，全仓 97 处调用点已同步改造。
 
 ### 1.3 事务边界
 
@@ -75,9 +103,8 @@
 - `status()` → 500；`From<PlatformError> for DomainError` → `internal("storage: {msg}")`。
 - 与 `PlatformError::Sqlite` 的分工：`Sqlite` 是"一条 SQL 跑失败了"，`Storage` 是
   "存储配置 / 连接生命周期本身有问题"。两者都不把底层细节给客户端。
-- `Db::open` 的 postgres profile 仍返回 `PlatformError::Storage("postgres profile
-  尚未实现（G00-04 S2）：…")`，**不 `todo!()`、不 panic**；新端口走
-  `PostgresPool::open`，不经过 `Db::open`。
+- `Db::open` 的 postgres profile 已可用：走 `Db::open_profile(Postgres)` → `PgStorage::open`
+  → `PostgresPool::open` + `health()`；不再返回「尚未实现」。
 
 ### 1.5 健康检查
 

@@ -482,7 +482,7 @@ async fn expired_packet_refunds_the_remainder() {
 
     // A1 asserts the refund path without waiting a day: force the deadline past
     {
-        let c = st.db().lock();
+        let c = st.db().lock().expect("db lock");
         c.execute(
             "UPDATE redpackets SET expire_at = ?1 WHERE id = ?2",
             rusqlite::params![1i64, id],
@@ -607,7 +607,7 @@ async fn claim_identity_comes_from_the_token_not_the_body() {
 
     let packet = st.redpacket(&id).unwrap().unwrap();
     let claimers: Vec<String> = {
-        let c = st.db().lock();
+        let c = st.db().lock().expect("db lock");
         let raw: String = c
             .query_row(
                 "SELECT claimers FROM redpackets WHERE id = ?1",
@@ -620,7 +620,7 @@ async fn claim_identity_comes_from_the_token_not_the_body() {
     assert_eq!(claimers, vec![bob.clone()], "the caller is the claimer");
     // shares are drawn randomly, so assert the invariants rather than a value
     let share = {
-        let c = st.db().lock();
+        let c = st.db().lock().expect("db lock");
         c.query_row(
             "SELECT claimed_total FROM redpackets WHERE id = ?1",
             rusqlite::params![id],

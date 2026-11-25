@@ -242,14 +242,14 @@ impl Platform {
         from: &str,
         to: &str,
     ) -> Result<wxlike_relations::port::MessageGate> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let port = wxlike_relations::port::SqlRelations { conn: &c };
         Ok(port.may_message(from, to)?)
     }
 
     /// 两人共同的群 id（交集查询，非成员拿不到任何行）。
     pub(crate) fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let port = wxlike_relations::port::SqlRelations { conn: &c };
         Ok(port.shared_groups(a, b)?)
     }

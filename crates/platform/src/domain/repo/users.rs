@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn sqlite_repo_covers_register_profile_and_delete() {
         let platform = Platform::in_memory().expect("in-memory platform");
-        let db = platform.db().lock();
+        let db = platform.db().lock().expect("db lock");
         let repo = SqliteUsersRepo::new(&db);
 
         repo.insert(&NewUser {

@@ -52,7 +52,7 @@ impl Platform {
             None => crate::auth::random_hex(8),
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<Note> {
             let conn = StorageConnection::sqlite_tx(tx);
             if note_exists(&conn, &note_id)? {
@@ -81,7 +81,7 @@ impl Platform {
             return Err(PlatformError::BadInput("expected_version must be >= 1"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<Note> {
             let conn = StorageConnection::sqlite_tx(tx);
             let Some(current) = note_version(&conn, user, id)? else {

@@ -121,7 +121,7 @@ impl Platform {
     /// 保留旧语义：**包含已注销账号**（历史调用点依赖"名字仍能解析到 id"）；
     /// 是否允许继续操作由各自的授权路径判断。
     pub fn user_id_by_name(&self, name: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).find_id_by_name(name, true, None)
     }
 
@@ -140,7 +140,7 @@ impl Platform {
         let user_id = auth::random_hex(8);
         let now = wxlike_core::types::now_ms();
         {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             let repo = SqliteUsersRepo::new(&c);
             if repo.find_id_by_name(name, true, None)?.is_some() {
                 return Err(PlatformError::Conflict("name".into()));
@@ -175,7 +175,7 @@ impl Platform {
     pub fn verify_credentials(&self, name: &str, password: &str) -> Result<Option<String>> {
         let name = validate::name(name)?;
         let creds = {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             SqliteUsersRepo::new(&c).load_credentials(name)?
         };
         let Some(creds) = creds else {
@@ -209,7 +209,7 @@ impl Platform {
 
     pub fn profile_of(&self, user_id: &str) -> Result<Profile> {
         let row = {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             SqliteUsersRepo::new(&c).load_profile(user_id)?
         };
         let row = row.ok_or(PlatformError::NotFound)?;
@@ -232,7 +232,7 @@ impl Platform {
     /// * 重名检查跳过已注销行，与 `verify_credentials` 的口径一致。
     pub fn update_profile(&self, user_id: &str, patch: &ProfilePatch) -> Result<Profile> {
         {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             let repo = SqliteUsersRepo::new(&c);
             if !repo.active_exists(user_id)? {
                 return Err(PlatformError::NotFound);

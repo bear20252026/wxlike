@@ -2,8 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
+
 
 pub(in crate::domain) fn upsert_bundle(
     c: &StorageConnection<'_>,
@@ -14,7 +14,6 @@ pub(in crate::domain) fn upsert_bundle(
     otks: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO prekey_bundles(user_id, identity, identity_signing, signature, otks, updated_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)
@@ -30,7 +29,6 @@ pub(in crate::domain) fn upsert_bundle(
 }
 
 pub(in crate::domain) fn shares_group(c: &StorageConnection<'_>, a: &str, b: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     let shares: Option<i64> = c
         .query_row(
             "SELECT 1 FROM group_members a JOIN group_members b
@@ -47,13 +45,12 @@ pub(in crate::domain) fn identity_for(
     c: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
         params![user],
         |r| r.get(0),
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) struct BundleRow {
@@ -67,8 +64,7 @@ pub(in crate::domain) fn bundle_row(
     c: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Option<BundleRow>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT identity, identity_signing, signature, otks FROM prekey_bundles WHERE user_id = ?1",
         params![user],
         |r| {
@@ -80,7 +76,7 @@ pub(in crate::domain) fn bundle_row(
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn update_otks(
@@ -89,7 +85,6 @@ pub(in crate::domain) fn update_otks(
     otks: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "UPDATE prekey_bundles SET otks = ?1, updated_at = ?2 WHERE user_id = ?3",
         params![otks, now, user],

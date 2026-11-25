@@ -86,7 +86,7 @@ async fn members_page(app: &axum::Router, token: &str, path: String) -> Vec<Stri
 /// permission checks for `admin` are still under test.
 async fn promote(state: &PlatformState, group: &str, user: &str, role: &str) {
     {
-        let c = state.db().lock();
+        let c = state.db().lock().expect("db lock");
         c.execute(
             "UPDATE group_members SET role = ?3 WHERE group_id = ?1 AND user_id = ?2",
             rusqlite::params![group, user, role],
@@ -459,7 +459,7 @@ async fn my_groups_is_scoped_to_the_caller() {
 async fn seed_users(state: &PlatformState, prefix: &str, count: usize) -> Vec<String> {
     let ids: Vec<String> = (0..count).map(|i| format!("{prefix}{i:04}")).collect();
     {
-        let c = state.db().lock();
+        let c = state.db().lock().expect("db lock");
         for id in &ids {
             c.execute(
                 "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, avatar, signature, created_at)

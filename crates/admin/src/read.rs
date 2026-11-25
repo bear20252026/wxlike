@@ -1323,6 +1323,7 @@ mod tests {
             // 用平台自己的连接改坏（adminx 只读，改坏它也没用——这正是设计）
             p.db()
                 .lock()
+                .expect("db lock")
                 .execute(
                     "UPDATE reports SET state = 'under_review' WHERE id = ?1",
                     params![t.id],

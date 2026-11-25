@@ -12,7 +12,7 @@
 //! **领域层**：本模块含 `impl Platform`（口令透明升级、TOTP 开关）与纯算法
 //! 函数（argon2id 哈希/校验、TOTP 生成/校验）。它原来住在 crate 根——那是
 //! handler 层的位置，于是「handler 不碰 SQL」这条编译期保证对它无效：
-//! `impl Platform` 里的 `self.db().lock()` 就写在 handler 层的文件里。
+//! `impl Platform` 里的 `self.db().lock()?` 就写在 handler 层的文件里。
 //! 搬进 `domain` 后，handler 只能调方法，看不到 SQL。
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -73,18 +73,18 @@ impl Platform {
     /// 登录成功的透明升级：PBKDF2 → argon2id。
     pub(crate) fn upgrade_password_to_argon2id(&self, user_id: &str, password: &str) -> Result<()> {
         let phc = hash_argon2id(password)?;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).update_password_hash(user_id, &phc)?;
         Ok(())
     }
 
     pub(crate) fn totp_secret_of(&self, user_id: &str) -> Result<Option<String>> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).totp_secret(user_id)
     }
 
     pub(crate) fn totp_enabled(&self, user_id: &str) -> Result<bool> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).totp_enabled(user_id)
     }
 
@@ -95,7 +95,7 @@ impl Platform {
         if secret.len() > TOTP_SECRET_MAX {
             return Err(PlatformError::BadInput("secret too long"));
         }
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).set_totp_secret(user_id, &secret)?;
         Ok(secret)
     }
@@ -108,7 +108,7 @@ impl Platform {
         if !totp_verify(&secret, code) {
             return Err(PlatformError::BadInput("invalid code"));
         }
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).enable_totp(user_id)?;
         Ok(())
     }
@@ -120,7 +120,7 @@ impl Platform {
         if !totp_verify(&secret, code) {
             return Err(PlatformError::Forbidden);
         }
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteUsersRepo::new(&c).disable_totp(user_id)?;
         Ok(())
     }
@@ -188,7 +188,7 @@ mod tests {
         let _uid = p.register("alice", "pw").unwrap();
 
         let algo = |name: &str| -> String {
-            let c = p.db().lock();
+            let c = p.db().lock().expect("db lock");
             c.query_row(
                 "SELECT pw_algo FROM users WHERE name = ?1",
                 rusqlite::params![name],
@@ -205,6 +205,7 @@ mod tests {
             crate::auth::hash_password("legacy-pw", crate::auth::DEFAULT_ROUNDS).unwrap();
         p.db()
             .lock()
+            .expect("db lock")
             .execute(
                 "INSERT INTO users(id, name, pw_salt, pw_hash, pw_rounds, pw_algo, created_at)
                  VALUES('legacy01', 'bob', ?1, ?2, ?3, 'pbkdf2', 0)",

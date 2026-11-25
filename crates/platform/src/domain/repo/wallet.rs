@@ -4,8 +4,8 @@
 //! 金额校验、份额分配、幂等语义和红包状态机留在
 //! [`crate::domain::wallet`]；本文件只负责余额、账本、幂等记录与红包行的读写。
 
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
+
 
 use crate::domain::wallet::{LedgerRow, RedpacketRow};
 use crate::error::Result;
@@ -35,7 +35,6 @@ pub(in crate::domain) fn wallet_balance(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Option<i64>> {
-    let conn = conn.sqlite()?;
     let balance = conn
         .query_row(
             "SELECT balance FROM wallets WHERE user_id = ?1",
@@ -47,7 +46,6 @@ pub(in crate::domain) fn wallet_balance(
 }
 
 pub(in crate::domain) fn ensure_wallet(conn: &StorageConnection<'_>, user_id: &str) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO wallets(user_id, balance) VALUES(?1, 0)
          ON CONFLICT(user_id) DO NOTHING",
@@ -63,7 +61,6 @@ pub(in crate::domain) fn debit_if_sufficient(
     user_id: &str,
     amount: i64,
 ) -> Result<usize> {
-    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE wallets SET balance = balance - ?1 WHERE user_id = ?2 AND balance >= ?1",
         params![amount, user_id],
@@ -76,7 +73,6 @@ pub(in crate::domain) fn credit(
     user_id: &str,
     amount: i64,
 ) -> Result<usize> {
-    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE wallets SET balance = balance + ?1 WHERE user_id = ?2",
         params![amount, user_id],
@@ -95,7 +91,6 @@ pub(in crate::domain) fn log_ledger(
     memo: &str,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO ledger(user_id, kind, amount, counterparty, ref_id, memo, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -110,8 +105,7 @@ pub(in crate::domain) fn ledger_of(
     since: i64,
     limit: i64,
 ) -> Result<Vec<LedgerRow>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT id, kind, amount, counterparty, ref_id, memo, created_at
          FROM ledger WHERE user_id = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3",
     )?;
@@ -131,7 +125,6 @@ pub(in crate::domain) fn ledger_of(
 }
 
 pub(in crate::domain) fn ledger_head(conn: &StorageConnection<'_>, user_id: &str) -> Result<i64> {
-    let conn = conn.sqlite()?;
     let head = conn.query_row(
         "SELECT COALESCE(MAX(id), 0) FROM ledger WHERE user_id = ?1",
         params![user_id],
@@ -145,7 +138,6 @@ pub(in crate::domain) fn idem_lookup(
     user_id: &str,
     key: &str,
 ) -> Result<Option<(String, String)>> {
-    let conn = conn.sqlite()?;
     let row = conn
         .query_row(
             "SELECT request_hash, response FROM wallet_idem WHERE user_id = ?1 AND key = ?2",
@@ -157,7 +149,6 @@ pub(in crate::domain) fn idem_lookup(
 }
 
 pub(in crate::domain) fn idem_gc(conn: &StorageConnection<'_>, cutoff: i64) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "DELETE FROM wallet_idem WHERE created_at < ?1",
         params![cutoff],
@@ -173,7 +164,6 @@ pub(in crate::domain) fn idem_insert(
     response_json: &str,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO wallet_idem(user_id, key, request_hash, response, created_at) \
          VALUES(?1, ?2, ?3, ?4, ?5) ON CONFLICT(user_id, key) DO NOTHING",
@@ -194,7 +184,6 @@ pub(in crate::domain) fn insert_redpacket(
     now: i64,
     expire_at: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO redpackets(id, from_uid, conv_id, total, count, claimed, claimed_total, claimers, memo, status, created_at, expire_at)
          VALUES(?1, ?2, ?3, ?4, ?5, 0, 0, '[]', ?6, 'open', ?7, ?8)",
@@ -207,7 +196,6 @@ pub(in crate::domain) fn redpacket(
     conn: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<RedpacketRow>> {
-    let conn = conn.sqlite()?;
     let row = conn
         .query_row(
             "SELECT id, from_uid, conv_id, total, count, claimed, claimed_total, memo, status, created_at, expire_at
@@ -237,7 +225,6 @@ pub(in crate::domain) fn redpacket_state(
     conn: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<RedpacketState>> {
-    let conn = conn.sqlite()?;
     let state = conn
         .query_row(
             "SELECT total, count, claimed, claimed_total, claimers, status, from_uid, conv_id
@@ -266,7 +253,6 @@ pub(in crate::domain) fn update_claim(
     share: i64,
     claimers_json: &str,
 ) -> Result<usize> {
-    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE redpackets SET claimed = claimed + 1, claimed_total = claimed_total + ?1,
                 claimers = ?2, status = CASE WHEN claimed + 1 >= count THEN 'finished' ELSE status END
@@ -280,8 +266,7 @@ pub(in crate::domain) fn expired_packets(
     conn: &StorageConnection<'_>,
     now: i64,
 ) -> Result<Vec<ExpiredPacket>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT id, from_uid, total, claimed_total FROM redpackets
          WHERE status = 'open' AND expire_at <= ?1",
     )?;
@@ -298,7 +283,6 @@ pub(in crate::domain) fn expired_packets(
 }
 
 pub(in crate::domain) fn mark_expired(conn: &StorageConnection<'_>, id: &str) -> Result<usize> {
-    let conn = conn.sqlite()?;
     let updated = conn.execute(
         "UPDATE redpackets SET status = 'expired' WHERE id = ?1",
         params![id],
@@ -307,18 +291,16 @@ pub(in crate::domain) fn mark_expired(conn: &StorageConnection<'_>, id: &str) ->
 }
 
 pub(in crate::domain) fn total_wallets(conn: &StorageConnection<'_>) -> Result<i64> {
-    let conn = conn.sqlite()?;
-    let total = conn.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
+    let total = conn.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", params![], |r| {
         r.get::<_, i64>(0)
     })?;
     Ok(total)
 }
 
 pub(in crate::domain) fn open_escrow(conn: &StorageConnection<'_>) -> Result<i64> {
-    let conn = conn.sqlite()?;
     let escrow = conn.query_row(
         "SELECT COALESCE(SUM(total - claimed_total), 0) FROM redpackets WHERE status = 'open'",
-        [],
+        params![],
         |r| r.get::<_, i64>(0),
     )?;
     Ok(escrow)

@@ -87,7 +87,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let expires_at = now + STATUS_TTL_MS;
         let id = crate::auth::random_hex(8);
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<StatusView> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             clear_owner(&conn, &owner, now)?;
@@ -116,7 +116,7 @@ impl Platform {
     pub(crate) fn clear_status(&self, owner: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             let changed = mark_cleared(&conn, id, owner, now)?;
@@ -130,7 +130,7 @@ impl Platform {
 
     pub(crate) fn clear_all_statuses(&self, owner: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<usize> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             clear_owner(&conn, owner, now)
@@ -194,7 +194,7 @@ impl Platform {
             return Err(PlatformError::NotFound);
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<(bool, i64)> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             let active = toggle_reaction(&conn, id, user, now)?;
@@ -251,7 +251,7 @@ impl Platform {
     pub(crate) fn sweep_expired_statuses(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let expired: Vec<(String, String)> = {
-            let mut c = self.db().lock();
+            let mut c = self.db().lock()?;
             c.with_tx(|tx| -> Result<Vec<(String, String)>> {
                 let conn = crate::storage::StorageConnection::sqlite_tx(tx);
                 let rows = expired_statuses(&conn, now)?;

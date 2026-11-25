@@ -2,16 +2,13 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
+
 
 pub(in crate::domain) fn wallet_balance_sum(c: &StorageConnection<'_>) -> Result<i64> {
-    let c = c.sqlite()?;
-    Ok(
-        c.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", [], |r| {
+    c.query_row("SELECT COALESCE(SUM(balance), 0) FROM wallets", params![], |r| {
             r.get(0)
-        })?,
-    )
+        })
 }
 
 pub(in crate::domain) struct WalletRow {
@@ -21,8 +18,7 @@ pub(in crate::domain) struct WalletRow {
 }
 
 pub(in crate::domain) fn wallet_ledger_rows(c: &StorageConnection<'_>) -> Result<Vec<WalletRow>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT w.user_id, w.balance,
                 COALESCE((SELECT SUM(CASE
                     WHEN l.kind IN ('transfer_out', 'redpacket_out') THEN -l.amount
@@ -30,32 +26,30 @@ pub(in crate::domain) fn wallet_ledger_rows(c: &StorageConnection<'_>) -> Result
                   FROM ledger l WHERE l.user_id = w.user_id), 0)
          FROM wallets w",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![], |r| {
         Ok(WalletRow {
             user: r.get(0)?,
             balance: r.get(1)?,
             ledger_sum: r.get(2)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn escrow_sum(c: &StorageConnection<'_>) -> Result<i64> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT COALESCE(SUM(total - claimed_total), 0) FROM redpackets WHERE status = 'open'",
-        [],
+        params![],
         |r| r.get(0),
-    )?)
+    )
 }
 
 pub(in crate::domain) fn funded_total(c: &StorageConnection<'_>) -> Result<i64> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind = 'fund_in'",
-        [],
+        params![],
         |r| r.get(0),
-    )?)
+    )
 }
 
 pub(in crate::domain) struct PacketRow {
@@ -68,10 +62,9 @@ pub(in crate::domain) struct PacketRow {
 }
 
 pub(in crate::domain) fn redpacket_rows(c: &StorageConnection<'_>) -> Result<Vec<PacketRow>> {
-    let c = c.sqlite()?;
-    let mut stmt =
+    let stmt =
         c.prepare("SELECT id, total, count, claimed, claimed_total, status FROM redpackets")?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![], |r| {
         Ok(PacketRow {
             id: r.get(0)?,
             total: r.get(1)?,
@@ -81,7 +74,7 @@ pub(in crate::domain) fn redpacket_rows(c: &StorageConnection<'_>) -> Result<Vec
             status: r.get(5)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -97,7 +90,6 @@ pub(in crate::domain) fn insert_run(
     detail: &str,
     ok: bool,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO reconcile_runs(at_ms, users_checked, wallet_sum, escrow, supply,
                                      funded_total, mismatches, detail, ok)
@@ -129,11 +121,10 @@ pub(in crate::domain) struct RunRow {
 }
 
 pub(in crate::domain) fn last_run(c: &StorageConnection<'_>) -> Result<Option<RunRow>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT at_ms, users_checked, wallet_sum, escrow, supply, funded_total, detail, ok
          FROM reconcile_runs ORDER BY id DESC LIMIT 1",
-        [],
+        params![],
         |r| {
             Ok(RunRow {
                 at_ms: r.get(0)?,
@@ -147,15 +138,14 @@ pub(in crate::domain) fn last_run(c: &StorageConnection<'_>) -> Result<Option<Ru
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn history_rows(
     c: &StorageConnection<'_>,
     limit: i64,
 ) -> Result<Vec<(i64, bool, i64)>> {
-    let c = c.sqlite()?;
-    let mut stmt =
+    let stmt =
         c.prepare("SELECT at_ms, ok, mismatches FROM reconcile_runs ORDER BY id DESC LIMIT ?1")?;
     let rows = stmt.query_map(params![limit], |r| {
         Ok((
@@ -164,5 +154,5 @@ pub(in crate::domain) fn history_rows(
             r.get::<_, i64>(2)?,
         ))
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }

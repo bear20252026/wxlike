@@ -26,7 +26,7 @@ async fn seed_media(state: &PlatformState, count: usize) -> Vec<String> {
         })
         .collect();
     {
-        let c = state.db().lock();
+        let c = state.db().lock().expect("db lock");
         for id in &ids {
             c.execute(
                 "INSERT OR IGNORE INTO media(id, size, content_type, uploader, has_thumb, created_at)

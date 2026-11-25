@@ -258,7 +258,7 @@ impl Platform {
         let doc_json = serde_json::to_string(&body.doc)?;
         let state = if body.publish { "published" } else { "draft" };
 
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             insert_article(
@@ -383,7 +383,7 @@ impl Platform {
             render_doc(&c, &body.doc)?
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let (publisher_id, state, version) =
@@ -430,7 +430,7 @@ impl Platform {
     pub(crate) fn delete_article(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let changed = soft_delete_article(&port, id, author, now)?;
@@ -481,7 +481,7 @@ impl Platform {
     pub(crate) fn mark_article_read(&self, user: &str, id: &str) -> Result<i64> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         let publisher_id = c.with_tx(|tx| -> Result<String> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let (seq, publisher_id, state) =

@@ -94,7 +94,7 @@ impl Platform {
         let token_digest = crate::auth::token_digest(&token);
         let sid = crate::auth::random_hex(6);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         // 注销后的账号不得再拿到任何会话（#114）。刷新链也在 `logout_all`
         // 里一并作废，这里是第二道：即便有人手工插了一行会话、或哪条路径
         // 漏判，签发环节也拒绝。
@@ -130,14 +130,14 @@ impl Platform {
     pub(crate) fn lookup_token(&self, token: &str) -> Result<Option<String>> {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let port = crate::storage::StorageConnection::sqlite_borrow(&c);
         lookup_live(&port, &token, now)
     }
 
     pub(crate) fn revoke_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteSessionsRepo::new(&c).delete_by_token(&token)?;
         Ok(())
     }
@@ -151,7 +151,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let digest = crate::auth::token_digest(current_token);
         let records = {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             SqliteSessionsRepo::new(&c).list_for_user(user_id, now)?
         };
         Ok(records
@@ -175,7 +175,7 @@ impl Platform {
         if sid.is_empty() || sid.len() > 32 {
             return Err(PlatformError::BadInput("sid malformed"));
         }
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let n = SqliteSessionsRepo::new(&c).revoke_by_sid(user_id, sid)?;
         Ok(n > 0)
     }
@@ -184,7 +184,7 @@ impl Platform {
     pub(crate) fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize> {
         // keep 参数同样要以摘要比对，否则会把当前会话一并删掉（AR-3/H-2）
         let keep = crate::auth::token_digest(keep_token);
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let n = SqliteSessionsRepo::new(&c).revoke_others(user_id, &keep)?;
         Ok(n)
     }
@@ -192,7 +192,7 @@ impl Platform {
     /// 会话的 `sid`（刷新链按 sid 归组）。
     pub(crate) fn session_sid(&self, token: &str) -> Result<Option<String>> {
         let digest = crate::auth::token_digest(token);
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteSessionsRepo::new(&c).sid_by_token(&digest)
     }
 
@@ -204,7 +204,7 @@ impl Platform {
         device_id: &str,
     ) -> Result<String> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         Ok(refresh::issue_default(
             &c,
             user_id,
@@ -222,7 +222,7 @@ impl Platform {
     pub(crate) fn rotate_refresh(&self, raw: &str, ip: &str) -> Result<(Rotated, String)> {
         let now = wxlike_core::types::now_ms() as i64;
         let device_name = {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             match refresh::find(&c, raw)? {
                 Some(chain) => SqliteSessionsRepo::new(&c)
                     .device_name_by_sid(&chain.sid)?
@@ -231,7 +231,7 @@ impl Platform {
             }
         };
         let rotated = {
-            let c = self.db().lock();
+            let c = self.db().lock()?;
             refresh::rotate(&c, raw, now)?
         };
         let token = self.create_session_for_device(
@@ -243,7 +243,7 @@ impl Platform {
         )?;
         // 新会话沿用链上的 sid：同一台设备只有一个 sid，撤销时一并失效。
         let digest = crate::auth::token_digest(&token);
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let repo = SqliteSessionsRepo::new(&c);
         repo.update_sid(&digest, &rotated.sid)?;
         repo.delete_by_sid_except_token(&rotated.sid, &digest)?;
@@ -253,14 +253,14 @@ impl Platform {
     /// 授予一次 step-up（密码或 TOTP 已在上层校验过）。
     pub(crate) fn grant_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<i64> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         Ok(step_up::grant_default(&c, user_id, sid, purpose, now)?)
     }
 
     /// 消费一次 step-up（单次有效）。
     pub(crate) fn consume_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         step_up::consume(&c, user_id, sid, purpose, now)?;
         Ok(())
     }
@@ -271,7 +271,7 @@ impl Platform {
             return Err(PlatformError::BadInput("device_id malformed"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let n = SqliteSessionsRepo::new(&c).delete_by_device(user_id, device_id)?;
         refresh::revoke_device(&c, user_id, device_id, now)?;
         Ok(n)
@@ -280,7 +280,7 @@ impl Platform {
     /// 撤销指定 sid 时同步作废它的刷新链（否则刷新能把会话续回来）。
     pub(crate) fn revoke_refresh_of_sid(&self, sid: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         Ok(refresh::revoke_sid(&c, sid, now)?)
     }
 
@@ -288,7 +288,7 @@ impl Platform {
     pub(crate) fn touch_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         SqliteSessionsRepo::new(&c).touch(&token, now)?;
         Ok(())
     }

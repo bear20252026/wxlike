@@ -37,6 +37,7 @@ use wxlike_platform::{AuditTrail, PlatformState, WalletLedger};
 fn count(st: &PlatformState, sql: &str, arg: &str) -> i64 {
     st.db()
         .lock()
+        .expect("db lock")
         .query_row(sql, params![arg], |r| r.get::<_, i64>(0))
         .unwrap_or_else(|e| panic!("{sql} 读不出来: {e}"))
 }
@@ -44,6 +45,7 @@ fn count(st: &PlatformState, sql: &str, arg: &str) -> i64 {
 fn text(st: &PlatformState, sql: &str, arg: &str) -> String {
     st.db()
         .lock()
+        .expect("db lock")
         .query_row(sql, params![arg], |r| r.get::<_, String>(0))
         .unwrap_or_else(|e| panic!("{sql} 读不出来: {e}"))
 }
@@ -504,6 +506,7 @@ async fn a_corrupt_job_row_is_an_error_not_a_fabricated_export() {
     // 模拟别的写入方/迁移留下的坏行：kind 是拼错的 delete
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE identity_job SET kind = 'deleet' WHERE id = ?1",
             params![job],
@@ -748,6 +751,7 @@ async fn delete_revokes_sessions_and_closes_the_account() {
     let stale = "cafe00000000000000000000000000000000000000000000000000000000beef";
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES(?1, ?2, 1, 999999999999)",
             params![wxlike_platform::token_digest(stale), alice],
@@ -943,6 +947,7 @@ async fn delete_purge_refuses_a_non_empty_wallet_and_rolls_back() {
     // 余额清零 → 重试通道排出一条**新**作业（旧的已经 failed，不会被再领走）
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE wallets SET balance = 0 WHERE user_id = ?1",
             params![alice],
@@ -1711,6 +1716,7 @@ async fn logs_and_audit_never_carry_personal_values_or_credentials() {
     let job = body["job_id"].as_str().unwrap().to_string();
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE identity_job SET kind = 'deleet' WHERE id = ?1",
             params![job],

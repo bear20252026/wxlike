@@ -237,7 +237,7 @@ impl Platform {
         }
 
         let phc = super::security::hash_argon2id(new_password)?;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             update_password(&conn, &user_id, &phc)?;

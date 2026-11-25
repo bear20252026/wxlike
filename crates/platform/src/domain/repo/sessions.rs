@@ -525,7 +525,7 @@ mod tests {
     fn sqlite_repo_covers_insert_list_touch_and_revoke() {
         let platform = Platform::in_memory().expect("in-memory platform");
         let user_id = platform.register("alice", "pw123456").expect("register");
-        let db = platform.db().lock();
+        let db = platform.db().lock().expect("db lock");
         let repo = SqliteSessionsRepo::new(&db);
 
         repo.insert(&NewSession {

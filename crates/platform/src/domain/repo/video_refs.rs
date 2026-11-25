@@ -3,8 +3,8 @@
 
 use crate::domain::video_refs::{CallbackResult, RefRow};
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
+
 
 /// 转码回调的幂等落库：`video_id` 是主键，后到的覆盖先到的。
 #[allow(clippy::too_many_arguments)]
@@ -17,7 +17,6 @@ pub(in crate::domain) fn store(
     attempts: i64,
     at: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         r#"
         INSERT INTO video_refs (
@@ -59,8 +58,7 @@ pub(in crate::domain) fn load(
     conn: &StorageConnection<'_>,
     video_id: &str,
 ) -> Result<Option<RefRow>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
+    conn
         .query_row(
             r#"
             SELECT video_id, job_id, state, playlist_url, play_url, thumb_url,
@@ -70,5 +68,5 @@ pub(in crate::domain) fn load(
             params![video_id],
             |r| wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
         )
-        .optional()?)
+        .optional()
 }

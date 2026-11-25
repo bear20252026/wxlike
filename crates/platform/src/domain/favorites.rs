@@ -245,7 +245,7 @@ impl Platform {
         for id in ids {
             cleaned.push(validate::id(id)?.to_string());
         }
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<usize> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             for id in &cleaned {

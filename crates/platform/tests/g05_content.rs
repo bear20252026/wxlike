@@ -37,6 +37,7 @@ fn seed_media(state: &PlatformState, id: &str, uploader: &str, content_type: &st
     state
         .db()
         .lock()
+        .expect("db lock")
         .execute(
             "INSERT OR IGNORE INTO media(id, size, content_type, uploader, has_thumb, created_at)
              VALUES(?1, ?2, ?3, ?4, 0, 0)",
@@ -91,6 +92,7 @@ async fn moments_group_visibility_block_like_and_delete_index() {
     befriend(&app, &at, &carol, &ct).await;
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE friends SET friend_group = 'close' WHERE user_id = ?1 AND friend_id = ?2",
             params![alice, bob],
@@ -298,6 +300,7 @@ async fn moments_group_visibility_block_like_and_delete_index() {
     let refs: i64 = st
         .db()
         .lock()
+        .expect("db lock")
         .query_row(
             "SELECT COUNT(*) FROM content_media_refs WHERE ref_id = ?1",
             params![moment],
@@ -859,6 +862,7 @@ async fn videos_require_transcode_and_filter_deleted_from_feeds() {
     // 直播标记随停播消失
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "INSERT INTO live_sessions(id, channel_id, host, stream_key, state, recording,
                                        started_at, viewers, peak_viewers)
@@ -874,6 +878,7 @@ async fn videos_require_transcode_and_filter_deleted_from_feeds() {
     assert_eq!(live["live"], true);
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE live_sessions SET state = 'ended' WHERE id = 'ls1'",
             [],
@@ -1146,6 +1151,7 @@ async fn statuses_audience_background_expiry_and_reactions() {
     // 服务端到期：把 expires_at 拨到过去，sweep 清可见性并留审计
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE statuses SET expires_at = 0 WHERE id = ?1",
             params![sid],
@@ -1166,6 +1172,7 @@ async fn statuses_audience_background_expiry_and_reactions() {
     let audited: i64 = st
         .db()
         .lock()
+        .expect("db lock")
         .query_row(
             "SELECT COUNT(*) FROM audit_log WHERE action = 'status_expire' AND target = ?1",
             params![sid],
@@ -1224,6 +1231,7 @@ async fn scopes_album_and_admin_review_endpoints() {
     befriend(&app, &at, &bob, &bt).await;
     st.db()
         .lock()
+        .expect("db lock")
         .execute(
             "UPDATE friends SET friend_group = 'close' WHERE user_id = ?1 AND friend_id = ?2",
             params![alice, bob],

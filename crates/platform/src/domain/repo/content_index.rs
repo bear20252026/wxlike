@@ -2,8 +2,7 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
 
 use crate::domain::content_index::IndexDoc;
 
@@ -12,7 +11,6 @@ pub(in crate::domain) fn upsert(
     doc: &IndexDoc<'_>,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO content_index(doc_id, kind, owner, audience, group_name, title, body,
                                    created_at, updated_at)
@@ -37,7 +35,6 @@ pub(in crate::domain) fn upsert(
 
 /// 删除内容时同步调用：索引行消失后，检索不可能再命中已删内容。
 pub(in crate::domain) fn remove(conn: &StorageConnection<'_>, doc_id: &str) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "DELETE FROM content_index WHERE doc_id = ?1",
         params![doc_id],
@@ -53,7 +50,6 @@ pub(in crate::domain) fn add_media_refs(
     owner: &str,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     for media_id in media_ids {
         conn.execute(
             "INSERT OR IGNORE INTO content_media_refs(media_id, ref_kind, ref_id, owner, created_at)
@@ -69,7 +65,6 @@ pub(in crate::domain) fn remove_media_refs(
     ref_kind: &str,
     ref_id: &str,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "DELETE FROM content_media_refs WHERE ref_kind = ?1 AND ref_id = ?2",
         params![ref_kind, ref_id],
@@ -82,7 +77,6 @@ pub(in crate::domain) fn article_published(
     conn: &StorageConnection<'_>,
     doc_id: &str,
 ) -> Result<bool> {
-    let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
             "SELECT 1 FROM articles WHERE id = ?1 AND state = 'published'",
@@ -102,8 +96,7 @@ pub(in crate::domain) fn candidates(
     before_id: &str,
     limit: i64,
 ) -> Result<Vec<(String, i64)>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT doc_id, created_at FROM content_index
          WHERE kind = ?2 AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\')
            AND (created_at < ?3 OR (created_at = ?3 AND doc_id < ?4))
@@ -112,21 +105,20 @@ pub(in crate::domain) fn candidates(
     let rows = stmt.query_map(params![pattern, kind, before_at, before_id, limit], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn body(
     conn: &StorageConnection<'_>,
     doc_id: &str,
 ) -> Result<Option<(String, String)>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
+    conn
         .query_row(
             "SELECT title, body FROM content_index WHERE doc_id = ?1",
             params![doc_id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
-        .optional()?)
+        .optional()
 }
 
 /// 热搜窗口内的公开语料，排序与计数逻辑留在 domain。
@@ -134,8 +126,7 @@ pub(in crate::domain) fn trend_rows(
     conn: &StorageConnection<'_>,
     cutoff: i64,
 ) -> Result<Vec<(String, String, String)>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT owner, title, body FROM content_index
          WHERE audience = 'public' AND created_at >= ?1",
     )?;
@@ -146,7 +137,7 @@ pub(in crate::domain) fn trend_rows(
             r.get::<_, String>(2)?,
         ))
     })?;
-    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+    it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 // ── 事务内桥接 ─────────────────────────────────────────────────────────────
@@ -190,4 +181,77 @@ pub(in crate::domain) fn remove_media_refs_tx(
     ref_id: &str,
 ) -> Result<()> {
     remove_media_refs(&StorageConnection::sqlite_borrow(tx), ref_kind, ref_id)
+}
+
+#[cfg(test)]
+mod pg_tests {
+    use super::{add_media_refs, body, candidates, remove, remove_media_refs, trend_rows, upsert};
+    use crate::domain::content_index::IndexDoc;
+    use crate::storage::{PostgresPool, StorageConnection};
+
+    /// 内容索引在 PG 上走同一份 SQL：`INSERT OR IGNORE` 被翻译成
+    /// `ON CONFLICT DO NOTHING`，`?N` 被翻译成 `$N`。
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL with M014 applied"]
+    fn postgres_content_index_roundtrip() {
+        let url = std::env::var("WXLIKE_TEST_PG_URL").expect("set WXLIKE_TEST_PG_URL");
+        let pg = PostgresPool::open(&url).expect("postgres pool");
+        let cleanup = || {
+            pg.block_on(
+                sqlx::query("DELETE FROM content_index WHERE doc_id LIKE 'pg14-doc-%'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup index");
+            pg.block_on(
+                sqlx::query("DELETE FROM content_media_refs WHERE ref_id LIKE 'pg14-%'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup refs");
+        };
+        cleanup();
+
+        let doc = IndexDoc {
+            doc_id: "pg14-doc-1",
+            kind: "moment",
+            owner: "pg14-user",
+            audience: "public",
+            group_name: "",
+            title: "pg14 标题",
+            body: "pg14 正文",
+        };
+        let port = StorageConnection::Postgres(&pg);
+        upsert(&port, &doc, 100).expect("pg upsert");
+        assert_eq!(
+            body(&port, doc.doc_id).unwrap(),
+            Some(("pg14 标题".into(), "pg14 正文".into()))
+        );
+        let rows = trend_rows(&port, 0).expect("pg trend");
+        assert!(rows.iter().any(|(owner, _, _)| owner == "pg14-user"));
+        let hits = candidates(&port, "%pg14%", "moment", 200, "z", 10).expect("pg candidates");
+        assert!(hits.iter().any(|(id, _)| id == doc.doc_id));
+
+        add_media_refs(
+            &port,
+            &["pg14-media".to_string()],
+            "moment",
+            "pg14-doc-1",
+            "pg14-user",
+            101,
+        )
+        .expect("pg add ref");
+        add_media_refs(
+            &port,
+            &["pg14-media".to_string()],
+            "moment",
+            "pg14-doc-1",
+            "pg14-user",
+            101,
+        )
+        .expect("重复引用必须幂等");
+        remove_media_refs(&port, "moment", "pg14-doc-1").expect("pg remove ref");
+
+        remove(&port, doc.doc_id).expect("pg remove");
+        assert!(body(&port, doc.doc_id).unwrap().is_none());
+        cleanup();
+    }
 }

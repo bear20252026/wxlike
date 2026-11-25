@@ -377,7 +377,13 @@ impl Platform {
     /// 检查点的页；下次启动要重放，慢且容易在异常掉电时留下半截状态。
     /// 这里在关闭路径上主动 checkpoint，失败只记日志——关闭不该因为磁盘问题卡住。
     pub fn checkpoint_wal(&self) {
-        let conn = self.db.lock();
+        let conn = match self.db.lock() {
+            Ok(conn) => conn,
+            Err(err) => {
+                eprintln!("[wxlike] WAL checkpoint 跳过（非 SQLite 后端）: {err}");
+                return;
+            }
+        };
         if let Err(err) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
             eprintln!("[wxlike] WAL checkpoint 失败（继续关闭）: {err}");
         }

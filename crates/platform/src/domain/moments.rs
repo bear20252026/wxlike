@@ -280,7 +280,7 @@ impl Platform {
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
 
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = StorageConnection::sqlite_tx(tx);
             require_media(&port, &cleaned)?;
@@ -332,7 +332,7 @@ impl Platform {
             check_moment_input(text, media_ids, visibility, audience_group, true)?;
         let now = wxlike_core::types::now_ms() as i64;
         let media = serde_json::to_string(&cleaned)?;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<String> {
             let port = StorageConnection::sqlite_tx(tx);
             require_media(&port, &cleaned)?;
@@ -447,7 +447,7 @@ impl Platform {
     /// Author-only removal. 索引与媒体引用同事务清理：检索同步不可见，
     /// 附件不会留下指向已删动态的孤儿引用。
     pub(crate) fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<bool> {
             let port = StorageConnection::sqlite_tx(tx);
             let changed = soft_delete_moment(&port, moment_id, by)?;
@@ -477,7 +477,7 @@ impl Platform {
     /// dedupe key keeps it from generating a second notification.
     pub(crate) fn like_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<bool> {
             let port = StorageConnection::sqlite_tx(tx);
             let changed = insert_like(&port, moment_id, by, now)?;
@@ -522,7 +522,7 @@ impl Platform {
             Some(r) if !r.is_empty() => Some(validate::id(r)?.to_string()),
             _ => None,
         };
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = StorageConnection::sqlite_tx(tx);
             if let Some(rt) = &reply_to {

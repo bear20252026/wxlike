@@ -281,7 +281,7 @@ async fn fresh_server_db_gets_the_media_migration() {
         .expect("M009 不可重入 = 重启即挂：media 域第二次装配失败")
         .0;
 
-    let conn = platform.db().lock();
+    let conn = platform.db().lock().expect("db lock");
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
@@ -316,7 +316,7 @@ const EXPECTED_TABLES: [&str; 9] = [
 
 /// 平台连接读 `sqlite_master`：media 表必须与业务表**同库**（不是第二个文件）。
 fn media_tables(stack: &wxlike_server::Stack) -> Vec<String> {
-    let conn = stack.platform.db().lock();
+    let conn = stack.platform.db().lock().expect("db lock");
     let mut stmt = conn
         .prepare(
             "SELECT name FROM sqlite_master

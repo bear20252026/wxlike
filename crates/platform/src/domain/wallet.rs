@@ -120,7 +120,7 @@ impl Platform {
     pub(crate) fn fund(&self, user_id: &str, amount: i64, memo: &str) -> Result<()> {
         check_amount(amount)?;
         let user_id = validate::id(user_id)?.to_string();
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             ensure_wallet(&port, &user_id)?;
@@ -155,7 +155,7 @@ impl Platform {
         }
 
         let ref_id = crate::auth::random_hex(8);
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let now = wxlike_core::types::now_ms() as i64;
@@ -244,7 +244,7 @@ impl Platform {
         response: &serde_json::Value,
     ) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             idem_gc(&port, now - IDEMPOTENCY_TTL_MS)?;
@@ -277,7 +277,7 @@ impl Platform {
         let (from, memo, id, conv_id, now, expire_at) =
             validate_redpacket_input(from, amount, count, memo, conv_id)?;
 
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             if !user_exists(&port, &from)? {
@@ -317,7 +317,7 @@ impl Platform {
         let id = validate::id(id)?.to_string();
         let by = validate::id(by)?.to_string();
         let (share, claimed, count, conv) = {
-            let mut c = self.db().lock();
+            let mut c = self.db().lock()?;
             Self::claim_redpacket_tx(&mut c, &id, &by)?
         };
 
@@ -435,7 +435,7 @@ impl Platform {
     /// flip is part of the same transaction, so a second sweep changes nothing.
     pub(crate) fn sweep_expired_redpackets(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<usize> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let expired = expired_packets(&port, now)?;

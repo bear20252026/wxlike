@@ -2,7 +2,7 @@
 //! 不碰 SQL——`crate::domain::repo` 对本模块不可见。
 //!
 //! 这个模块原来有三段裸 SQL（建票登记、轮询取 verifier、扫到的人是谁），
-//! 还有四处 `platform.db().lock()` 直接写在 `async fn` 里。两层问题同源：
+//! 还有四处 `platform.db().lock().expect("db lock")` 直接写在 `async fn` 里。两层问题同源：
 //! handler 自己写 SQL，就必然自己在 await 上下文里上锁。现在两件事一起收：
 //! SQL 全部下沉到 [`crate::domain::qr_login`] / `domain::repo::qr_login`，
 //! 那四处上锁搬进 [`crate::db::offload_api`]。

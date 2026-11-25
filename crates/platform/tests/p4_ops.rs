@@ -84,7 +84,7 @@ fn reconcile_flags_balance_tampering() {
 
     // 绕过账本直接改余额（模拟手工改库/半提交）
     {
-        let c = p.db().lock();
+        let c = p.db().lock().expect("db lock");
         c.execute(
             "UPDATE wallets SET balance = balance + 1 WHERE user_id = ?1",
             rusqlite::params![a],
@@ -112,7 +112,7 @@ fn reconcile_flags_redpacket_drift() {
     p.fund(&a, 5_000, "seed").unwrap();
     let rp = p.create_redpacket(&a, 300, 3, "包", None).unwrap();
     {
-        let c = p.db().lock();
+        let c = p.db().lock().expect("db lock");
         c.execute(
             "UPDATE redpackets SET claimed = 9 WHERE id = ?1",
             rusqlite::params![rp],

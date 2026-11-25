@@ -10,7 +10,7 @@
 //!
 //! ADR-28 (#326) adds the second half of that rule: an `async fn` must not run
 //! the synchronous SQL at all — not even without holding the guard across an
-//! `await`, because `self.db().lock()` inside an axum handler occupies a tokio
+//! `await`, because `self.db().lock()?` inside an axum handler occupies a tokio
 //! worker for the whole transaction. Two entry points exist for that:
 //!
 //! * [`Db::blocking`] — for code that already has a `Db`: the closure gets
@@ -31,13 +31,21 @@ use std::sync::{Arc, MutexGuard};
 use rusqlite::Connection;
 
 use crate::error::{ApiError, PlatformError, Result};
-use crate::storage::{SqliteStorage, Storage, StorageConnection, StorageDialect, StorageProfile};
+use crate::storage::{PgStorage, SqliteStorage, StorageConnection, StorageDialect, StorageProfile};
 
 #[derive(Clone)]
 pub struct Db {
-    /// 连接生命周期（创建/pragma/探活）在 `storage` 端口；这里只持有它，
-    /// 让 `lock()` / `blocking()` 的签名与全部调用方保持不变。
-    storage: SqliteStorage,
+    /// 后端二选一：SQLite 仍是既有主路径，PG 由 `StorageProfile` 显式选择。
+    ///
+    /// `PgStorage` 包 `Arc` 是因为 `Db` 需要 `Clone`（`PlatformState` 会克隆
+    /// 句柄），而连接池本身不该被复制成两份。
+    storage: DbStorage,
+}
+
+#[derive(Clone)]
+enum DbStorage {
+    Sqlite(SqliteStorage),
+    Postgres(Arc<PgStorage>),
 }
 
 impl Db {
@@ -47,29 +55,47 @@ impl Db {
     /// 都会返回受控错误（G00-04 S2 只落 SQLite 实现），不 panic、不 `unwrap`。
     pub fn open(path: Option<&str>) -> Result<Self> {
         let profile = StorageProfile::from_env()?;
-        let storage = SqliteStorage::open(profile, path)?;
+        Self::open_profile(profile, path)
+    }
+
+    /// 按显式 profile 打开。env 解析留给 [`Db::open`]，测试与组合根可以直接传。
+    pub fn open_profile(profile: StorageProfile, path: Option<&str>) -> Result<Self> {
+        let storage = match profile {
+            p @ StorageProfile::Sqlite { .. } => DbStorage::Sqlite(SqliteStorage::open(p, path)?),
+            p @ StorageProfile::Postgres { .. } => {
+                DbStorage::Postgres(Arc::new(PgStorage::open(p)?))
+            }
+        };
         Ok(Self { storage })
     }
 
     /// 当前连接走哪种方言。业务层只在一处需要分支：media 的旧 upsert
     /// 不能作用在 PG 兼容视图上，SQLite 仍保留原语句。
     pub(crate) fn dialect(&self) -> StorageDialect {
-        self.storage.profile().dialect()
+        match &self.storage {
+            DbStorage::Sqlite(s) => s.profile().dialect(),
+            DbStorage::Postgres(s) => s.profile().dialect(),
+        }
+    }
+
+    /// 当前后端是否是 PostgreSQL。迁移期只给明确的 PG 分支用。
+    #[cfg(test)]
+    pub(crate) fn is_postgres(&self) -> bool {
+        matches!(&self.storage, DbStorage::Postgres(_))
     }
 
     /// A poisoned lock only happens if SQL panicked mid-statement; SQLite
     /// connections survive that, so recovering the guard beats crashing.
     ///
     /// 走端口的 [`Storage::acquire`]，让 `Db` 的连接入口确实经过存储端口。
-    pub fn lock(&self) -> MutexGuard<'_, Connection> {
-        match self.storage.acquire() {
-            StorageConnection::Sqlite(guard) => guard,
-            StorageConnection::SqliteTx(_) => {
-                unreachable!("Db::lock 只交出拥有的守卫，事务借用走 repo 的 sqlite_tx")
-            }
-            StorageConnection::Postgres(_) => {
-                unreachable!("Db 只持有 SqliteStorage；PG 入口走 PgStorage")
-            }
+    /// SQLite 专用入口。PG 后端没有 `MutexGuard<Connection>` 可交，调用点必须
+    /// 改走 [`Db::acquire`]；这里返回受控错误，不 panic、不静默降级。
+    pub fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
+        match &self.storage {
+            DbStorage::Sqlite(s) => Ok(s.lock()),
+            DbStorage::Postgres(_) => Err(PlatformError::Storage(
+                "postgres 后端没有 SQLite 互斥守卫；调用点须改用 Db::acquire".into(),
+            )),
         }
     }
 
@@ -77,7 +103,10 @@ impl Db {
     /// `MutexGuard<Connection>`。当前 `Db` 只持有 SQLite，PG 入口仍走
     /// `PgStorage`；等 `Db` 支持 PG profile 时，repo 签名不用再改。
     pub fn acquire(&self) -> StorageConnection<'_> {
-        self.storage.acquire()
+        match &self.storage {
+            DbStorage::Sqlite(s) => StorageConnection::Sqlite(s.lock()),
+            DbStorage::Postgres(s) => StorageConnection::Postgres(s.pool()),
+        }
     }
 
     /// ADR-28: run one synchronous SQLite critical section on the blocking pool.
@@ -91,7 +120,12 @@ impl Db {
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
-        self.storage.blocking(f).await
+        match &self.storage {
+            DbStorage::Sqlite(s) => s.blocking(f).await,
+            DbStorage::Postgres(_) => Err(PlatformError::Storage(
+                "postgres 后端尚未接 blocking(&mut Connection)；该调用点须改走 acquire".into(),
+            )),
+        }
     }
 }
 
@@ -281,7 +315,7 @@ mod adr28_evidence {
         let arm = window.arm();
         let handler = tokio::spawn(async move {
             arm.now();
-            let c = db.lock();
+            let c = db.lock().expect("db lock");
             std::thread::sleep(HOLD);
             c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).unwrap()
         });
@@ -402,5 +436,27 @@ mod zero_rows_rule {
     fn non_zero_rows_passes() {
         assert!(ensure_updated(1).is_ok(), "影响 1 行是成功");
         assert!(ensure_updated(7).is_ok(), "影响多行同样是成功，不是错误");
+    }
+}
+
+#[cfg(test)]
+mod pg_profile_tests {
+    use super::{Db, StorageConnection, StorageProfile};
+
+    /// PG profile 必须真的打开、`acquire` 交出 PG 句柄，而 `lock()` 返回受控
+    /// 错误而不是 panic。只有 `WXLIKE_TEST_PG_URL` 存在时跑。
+    #[test]
+    fn pg_profile_opens_and_hands_out_postgres() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        assert!(db.is_postgres());
+        match db.acquire() {
+            StorageConnection::Postgres(pool) => pool.health().expect("pg health"),
+            _ => panic!("PG profile 必须交出 Postgres 端口"),
+        }
+        let err = db.lock().expect_err("PG 下 lock 必须报错");
+        assert!(err.to_string().contains("Db::acquire"), "{err}");
     }
 }

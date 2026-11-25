@@ -119,7 +119,7 @@ impl Platform {
         };
         let labels = decision.labels.clone();
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         let (id, view) = c.with_tx(|tx| -> Result<(String, VideoView)> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             // 幂等：同一作者重复发布同一份字节，返回已有记录。
@@ -164,7 +164,7 @@ impl Platform {
         }
         let id = validate::id(id)?.to_string();
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         let result = c.with_tx(|tx| -> Result<ReviewResult> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let row = review_record(&port, &id)?.ok_or(PlatformError::NotFound)?;
@@ -263,7 +263,7 @@ impl Platform {
 
     pub(crate) fn delete_video(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             if !soft_delete_video(&port, id, author, STATE_DELETED)? {
@@ -282,7 +282,7 @@ impl Platform {
             return Err(PlatformError::NotFound);
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<(bool, i64)> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let added = insert_video_like(&port, id, by, now)?;
@@ -329,7 +329,7 @@ impl Platform {
         }
         let now = wxlike_core::types::now_ms() as i64;
         let comment_id = crate::auth::random_hex(8);
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             insert_video_comment(&port, &comment_id, id, by, text, now)?;

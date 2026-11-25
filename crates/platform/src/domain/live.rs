@@ -129,7 +129,7 @@ impl Platform {
             return Err(PlatformError::BadInput("channel is not a live channel"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         let (id, stream_key) = c.with_tx(|tx| -> Result<(String, String)> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             if active_session_exists(&port, &channel)? {
@@ -167,7 +167,7 @@ impl Platform {
         // 非重入互斥锁，持锁调用会死锁（本模块第一次运行就被这条坑住）。
         let is_manager = self.require_manager(&community, actor).is_ok();
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         let id = c.with_tx(|tx| -> Result<String> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             let session = active_session_ref(&port, &channel)?.ok_or(PlatformError::NotFound)?;
@@ -226,7 +226,7 @@ impl Platform {
         self.require_member(&community, user)?;
         let session = self.live_session_id(&channel)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<i64> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             insert_viewer(&port, &session, user, now)?;
@@ -237,7 +237,7 @@ impl Platform {
     pub(crate) fn leave_live(&self, channel: &str, user: &str) -> Result<i64> {
         let channel = validate::id(channel)?.to_string();
         let session = self.live_session_id(&channel)?;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<i64> {
             let port = crate::storage::StorageConnection::sqlite_tx(tx);
             delete_viewer(&port, &session, user)?;

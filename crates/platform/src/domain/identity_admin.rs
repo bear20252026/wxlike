@@ -24,7 +24,7 @@ impl Platform {
         operator_token: &str,
         cmd: &GovernCommand,
     ) -> Result<GovernEffect, ApiError> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         governance::suspend(
             &c,
             operator_token,
@@ -41,7 +41,7 @@ impl Platform {
         operator_token: &str,
         cmd: &GovernCommand,
     ) -> Result<GovernEffect, ApiError> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         governance::unsuspend(
             &c,
             operator_token,
@@ -58,7 +58,7 @@ impl Platform {
         operator_token: &str,
         cmd: &GovernCommand,
     ) -> Result<GovernEffect, ApiError> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         governance::revoke_device(
             &c,
             operator_token,
@@ -75,7 +75,7 @@ impl Platform {
         operator_token: &str,
         user_id: &str,
     ) -> Result<AdminUserView, ApiError> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         governance::user_view(
             &c,
             operator_token,
@@ -93,7 +93,7 @@ impl Platform {
         operator_token: &str,
         cmd: &GroupGovernCommand,
     ) -> Result<GroupGovernEffect, ApiError> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         wxlike_identity::session::authenticate(
             &c,
             operator_token,

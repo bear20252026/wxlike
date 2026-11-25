@@ -514,7 +514,7 @@ async fn tenant_id_reserved_column_defaults() {
     .await;
     let community = body["community_id"].as_str().unwrap().to_string();
 
-    let c = p.db().lock();
+    let c = p.db().lock().expect("db lock");
     let tenant: String = c
         .query_row(
             "SELECT tenant_id FROM communities WHERE id = ?1",
@@ -659,7 +659,7 @@ async fn c1_channel_role_table_and_muted_column_migrate_idempotently() {
         .unwrap();
 
     // 非法角色名被 CHECK 拦住：写坏的角色行比没有角色行更糟
-    let err = p.db().lock().execute(
+    let err = p.db().lock().expect("db lock").execute(
         "INSERT INTO channel_role(channel_id, user_id, role, granted_by, created_at)
          VALUES(?1, ?2, 'boss', ?3, 1)",
         rusqlite::params![channel, other, owner],
@@ -689,6 +689,7 @@ async fn c1_channel_role_table_and_muted_column_migrate_idempotently() {
     };
     p.db()
         .lock()
+        .expect("db lock")
         .execute(
             "INSERT INTO thread_subs(thread_id, user_id) VALUES(?1, ?2)",
             rusqlite::params![thread, other],
@@ -697,6 +698,7 @@ async fn c1_channel_role_table_and_muted_column_migrate_idempotently() {
     let muted: i64 = p
         .db()
         .lock()
+        .expect("db lock")
         .query_row(
             "SELECT muted FROM thread_subs WHERE thread_id = ?1 AND user_id = ?2",
             rusqlite::params![thread, other],

@@ -39,7 +39,7 @@ async fn create_ticket(app: &axum::Router, token: &str) -> Value {
 
 /// 把某张票直接改成过期（identity 的 TTL 是 2 分钟，测试不等真实时钟）。
 fn force_expire(platform: &wxlike_platform::Platform, ticket_id: &str) {
-    let conn = platform.db().lock();
+    let conn = platform.db().lock().expect("db lock");
     conn.execute(
         "UPDATE identity_qr SET expires_at = 1 WHERE id = ?1",
         rusqlite::params![ticket_id],

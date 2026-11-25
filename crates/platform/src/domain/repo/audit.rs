@@ -6,7 +6,7 @@
 
 use crate::error::Result;
 use crate::storage::StorageConnection;
-use rusqlite::params;
+use crate::storage::params;
 
 /// 写一条审计。`at_ms` 由 domain 传进来，仓储层不读时钟。
 pub(in crate::domain) fn write(
@@ -17,7 +17,6 @@ pub(in crate::domain) fn write(
     target: &str,
     detail: &str,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO audit_log(at_ms, actor, action, target, detail) VALUES(?1, ?2, ?3, ?4, ?5)",
         params![at_ms, actor, action, target, detail],
@@ -31,8 +30,7 @@ pub(in crate::domain) fn list_for_actor(
     actor: &str,
     limit: i64,
 ) -> Result<Vec<(i64, String, String, String)>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT at_ms, action, target, detail FROM audit_log
          WHERE actor = ?1 ORDER BY at_ms DESC LIMIT ?2",
     )?;
@@ -44,5 +42,5 @@ pub(in crate::domain) fn list_for_actor(
             r.get::<_, String>(3)?,
         ))
     })?;
-    Ok(rows.collect::<std::result::Result<_, _>>()?)
+    rows.collect::<std::result::Result<_, _>>()
 }

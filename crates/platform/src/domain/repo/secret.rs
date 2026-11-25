@@ -2,8 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
+
 
 pub(in crate::domain) fn set_settings(
     conn: &StorageConnection<'_>,
@@ -12,7 +12,6 @@ pub(in crate::domain) fn set_settings(
     ttl_ms: i64,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO secret_settings(conv_id, enabled, ttl_ms, updated_at)
          VALUES(?1, ?2, ?3, ?4)
@@ -29,28 +28,26 @@ pub(in crate::domain) fn settings(
     conn: &StorageConnection<'_>,
     conv_id: &str,
 ) -> Result<Option<(i64, i64)>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
+    conn
         .query_row(
             "SELECT enabled, ttl_ms FROM secret_settings WHERE conv_id = ?1",
             params![conv_id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         )
-        .optional()?)
+        .optional()
 }
 
 pub(in crate::domain) fn identity(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Option<String>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
+    conn
         .query_row(
             "SELECT identity FROM prekey_bundles WHERE user_id = ?1",
             params![user_id],
             |r| r.get::<_, String>(0),
         )
-        .optional()?)
+        .optional()
 }
 
 pub(in crate::domain) fn save_verification(
@@ -60,7 +57,6 @@ pub(in crate::domain) fn save_verification(
     peer_identity: &str,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     conn.execute(
         "INSERT INTO secret_verifications(conv_id, user_id, peer_identity, verified_at)
          VALUES(?1, ?2, ?3, ?4)
@@ -77,13 +73,12 @@ pub(in crate::domain) fn verification(
     conv_id: &str,
     user_id: &str,
 ) -> Result<Option<(String, i64)>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
+    conn
         .query_row(
             "SELECT peer_identity, verified_at FROM secret_verifications
              WHERE conv_id = ?1 AND user_id = ?2",
             params![conv_id, user_id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
         )
-        .optional()?)
+        .optional()
 }

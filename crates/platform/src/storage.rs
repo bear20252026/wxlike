@@ -43,6 +43,9 @@ use crate::error::{PlatformError, Result};
 // G00-02 纯移动拆分：全部建表 SQL 移至子模块 db/schema.rs（内容与 main
 // 提交态逐字节一致）。G00-04 S2：随迁移链一起归到存储端口。
 mod migrate;
+pub(crate) mod port;
+
+pub(crate) use port::{params, OptionalExt, StorageRow};
 #[path = "db/schema.rs"]
 mod schema;
 

@@ -126,7 +126,7 @@ impl Platform {
             return Err(PlatformError::Conflict("request".into()));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<RequestRow> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             if !accept_request(&conn, req_id)? {
@@ -153,7 +153,7 @@ impl Platform {
             return Err(PlatformError::Conflict("request".into()));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<RequestRow> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             // #340: the verdict rides on the write itself, like accept above —
@@ -207,7 +207,7 @@ impl Platform {
                 return Err(PlatformError::NotFound);
             }
         }
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<()> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             delete_friend(&conn, me, &other)?;

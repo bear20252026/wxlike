@@ -388,13 +388,13 @@ async fn concurrent_registers_are_serialized() {
     );
 
     let count: i64 = {
-        let c = platform.db().lock();
+        let c = platform.db().lock().expect("db lock");
         c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
             .unwrap()
     };
     assert_eq!(count, 51);
     let dupes: i64 = {
-        let c = platform.db().lock();
+        let c = platform.db().lock().expect("db lock");
         c.query_row(
             "SELECT COUNT(*) FROM (SELECT name FROM users GROUP BY name HAVING COUNT(*) > 1)",
             [],
@@ -512,7 +512,7 @@ fn session_tokens_are_stored_as_digests() {
     let uid = p.register("alice", "pw").unwrap();
     let token = p.create_session(&uid, 60_000).unwrap();
     let stored: String = {
-        let c = p.db().lock();
+        let c = p.db().lock().expect("db lock");
         c.query_row("SELECT token FROM sessions LIMIT 1", [], |r| r.get(0))
             .unwrap()
     };

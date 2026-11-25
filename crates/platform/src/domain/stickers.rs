@@ -85,7 +85,7 @@ impl Platform {
         self.check_sticker_media(owner, &media_ids)?;
         let now = wxlike_core::types::now_ms() as i64;
         let pack_id = crate::auth::random_hex(8);
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<StickerPack> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             insert_pack(&conn, &pack_id, owner, &name, &license, now)?;
@@ -135,7 +135,7 @@ impl Platform {
     pub(crate) fn install_sticker_pack(&self, user: &str, pack_id: &str) -> Result<usize> {
         let pack_id = validate::id(pack_id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock();
+        let mut c = self.db().lock()?;
         c.with_tx(|tx| -> Result<usize> {
             let conn = crate::storage::StorageConnection::sqlite_tx(tx);
             if !pack_exists(&conn, pack_id)? {

@@ -2,8 +2,7 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
 
 use crate::domain::friends::{FriendRecord, RequestRecord};
 
@@ -15,7 +14,7 @@ pub(in crate::domain) struct ChangeRecord {
     pub changed_at: i64,
 }
 
-fn request_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRecord> {
+fn request_record(row: &crate::storage::StorageRow<'_>) -> Result<RequestRecord> {
     Ok(RequestRecord {
         id: row.get(0)?,
         from_uid: row.get(1)?,
@@ -34,7 +33,6 @@ pub(in crate::domain) fn log(
     kind: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO contact_log(user_id, subject_id, kind, changed_at) VALUES(?1, ?2, ?3, ?4)",
         params![user, subject, kind, now],
@@ -50,7 +48,6 @@ pub(in crate::domain) fn request_by_pair(
     from_uid: &str,
     to_uid: &str,
 ) -> Result<Option<(String, String)>> {
-    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT id, status FROM friend_requests WHERE from_uid = ?1 AND to_uid = ?2",
@@ -69,7 +66,6 @@ pub(in crate::domain) fn insert_request(
     message: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO friend_requests(id, from_uid, to_uid, message, status, created_at)
          VALUES(?1, ?2, ?3, ?4, 'pending', ?5)",
@@ -84,7 +80,6 @@ pub(in crate::domain) fn reopen_request(
     message: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "UPDATE friend_requests SET status = 'pending', message = ?2, created_at = ?3 WHERE id = ?1",
         params![id, message, now],
@@ -96,7 +91,6 @@ pub(in crate::domain) fn request_by_id(
     c: &StorageConnection<'_>,
     req_id: &str,
 ) -> Result<Option<RequestRecord>> {
-    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT id, from_uid, to_uid, message, status, created_at FROM friend_requests WHERE id = ?1",
@@ -108,7 +102,6 @@ pub(in crate::domain) fn request_by_id(
 }
 
 pub(in crate::domain) fn accept_request(c: &StorageConnection<'_>, req_id: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE friend_requests SET status = 'accepted' WHERE id = ?1 AND status = 'pending'",
         params![req_id],
@@ -117,7 +110,6 @@ pub(in crate::domain) fn accept_request(c: &StorageConnection<'_>, req_id: &str)
 }
 
 pub(in crate::domain) fn decline_request(c: &StorageConnection<'_>, req_id: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE friend_requests SET status = 'declined' WHERE id = ?1 AND status = 'pending'",
         params![req_id],
@@ -132,7 +124,6 @@ pub(in crate::domain) fn ensure_friend(
     source: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO friends(user_id, friend_id, remark, source, created_at)
          VALUES(?1, ?2, '', ?3, ?4)
@@ -146,32 +137,29 @@ pub(in crate::domain) fn incoming_requests(
     c: &StorageConnection<'_>,
     me: &str,
 ) -> Result<Vec<RequestRecord>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, from_uid, to_uid, message, status, created_at
          FROM friend_requests WHERE to_uid = ?1 AND status = 'pending'
          ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(params![me], request_record)?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn outgoing_requests(
     c: &StorageConnection<'_>,
     me: &str,
 ) -> Result<Vec<RequestRecord>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, from_uid, to_uid, message, status, created_at
          FROM friend_requests WHERE from_uid = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(params![me], request_record)?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn friends(c: &StorageConnection<'_>, me: &str) -> Result<Vec<FriendRecord>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT friend_id, remark, source, created_at, starred, tags, friend_group
          FROM friends WHERE user_id = ?1 ORDER BY created_at",
     )?;
@@ -186,11 +174,10 @@ pub(in crate::domain) fn friends(c: &StorageConnection<'_>, me: &str) -> Result<
             friend_group: r.get(6)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn are_friends(c: &StorageConnection<'_>, a: &str, b: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     let hit = c
         .query_row(
             "SELECT 1 FROM friends WHERE user_id = ?1 AND friend_id = ?2",
@@ -207,7 +194,6 @@ pub(in crate::domain) fn set_remark(
     friend: &str,
     remark: &str,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE friends SET remark = ?1 WHERE user_id = ?2 AND friend_id = ?3",
         params![remark, me, friend],
@@ -220,7 +206,6 @@ pub(in crate::domain) fn delete_friend(
     user_id: &str,
     friend_id: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "DELETE FROM friends WHERE user_id = ?1 AND friend_id = ?2",
         params![user_id, friend_id],
@@ -234,8 +219,7 @@ pub(in crate::domain) fn changes(
     since: i64,
     limit: i64,
 ) -> Result<Vec<ChangeRecord>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT seq, subject_id, kind, changed_at FROM contact_log
          WHERE user_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
     )?;
@@ -247,11 +231,10 @@ pub(in crate::domain) fn changes(
             changed_at: r.get(3)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn changes_head(c: &StorageConnection<'_>, me: &str) -> Result<i64> {
-    let c = c.sqlite()?;
     let seq = c.query_row(
         "SELECT COALESCE(MAX(seq), 0) FROM contact_log WHERE user_id = ?1",
         params![me],

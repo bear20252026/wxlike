@@ -2,8 +2,7 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
 
 use crate::domain::stickers::{Sticker, StickerPack};
 
@@ -12,7 +11,6 @@ pub(in crate::domain) fn pack_row(
     id: &str,
     viewer: &str,
 ) -> Result<Option<StickerPack>> {
-    let c = c.sqlite()?;
     let head: Option<(String, String, String, String, i64)> = c
         .query_row(
             "SELECT id, owner, name, license, created_at FROM sticker_packs WHERE id = ?1",
@@ -23,7 +21,7 @@ pub(in crate::domain) fn pack_row(
     let Some((id, owner, name, license, created_at)) = head else {
         return Ok(None);
     };
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, pack_id, media_id, name, sort_order FROM stickers
          WHERE pack_id = ?1 ORDER BY sort_order, id",
     )?;
@@ -76,7 +74,6 @@ pub(in crate::domain) fn insert_pack(
     license: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO sticker_packs(id, owner, name, license, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5)",
@@ -95,7 +92,6 @@ pub(in crate::domain) fn insert_sticker(
     sort_order: i64,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO stickers(id, pack_id, media_id, name, sort_order, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
@@ -108,8 +104,7 @@ pub(in crate::domain) fn media_info(
     c: &StorageConnection<'_>,
     media_id: &str,
 ) -> Result<Option<MediaInfo>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT uploader, size, content_type FROM media WHERE id = ?1",
         params![media_id],
         |r| {
@@ -120,13 +115,12 @@ pub(in crate::domain) fn media_info(
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 /// 本人创建或已安装的包 id。
 pub(in crate::domain) fn packs_for(c: &StorageConnection<'_>, user: &str) -> Result<Vec<String>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT p.id FROM sticker_packs p
          WHERE p.owner = ?1
             OR EXISTS (SELECT 1 FROM user_stickers us
@@ -135,11 +129,10 @@ pub(in crate::domain) fn packs_for(c: &StorageConnection<'_>, user: &str) -> Res
          ORDER BY p.created_at DESC",
     )?;
     let it = stmt.query_map(params![user], |r| r.get::<_, String>(0))?;
-    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+    it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn pack_exists(c: &StorageConnection<'_>, pack_id: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     let exists: Option<i64> = c
         .query_row(
             "SELECT 1 FROM sticker_packs WHERE id = ?1",
@@ -155,13 +148,12 @@ pub(in crate::domain) fn pack_stickers(
     c: &StorageConnection<'_>,
     pack_id: &str,
 ) -> Result<Vec<(String, i64)>> {
-    let c = c.sqlite()?;
-    let mut stmt =
+    let stmt =
         c.prepare("SELECT id, sort_order FROM stickers WHERE pack_id = ?1 ORDER BY sort_order")?;
     let rows = stmt.query_map(params![pack_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn install_sticker(
@@ -171,13 +163,12 @@ pub(in crate::domain) fn install_sticker(
     sort_order: i64,
     now: i64,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "INSERT INTO user_stickers(user_id, sticker_id, sort_order, installed_at)
          VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(user_id, sticker_id) DO NOTHING",
         params![user, sticker_id, sort_order, now],
-    )?)
+    )
 }
 
 pub(in crate::domain) fn uninstall_pack(
@@ -185,20 +176,18 @@ pub(in crate::domain) fn uninstall_pack(
     user: &str,
     pack_id: &str,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "DELETE FROM user_stickers
          WHERE user_id = ?1 AND sticker_id IN (SELECT id FROM stickers WHERE pack_id = ?2)",
         params![user, pack_id],
-    )?)
+    )
 }
 
 pub(in crate::domain) fn installed_for(
     c: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Vec<Sticker>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT s.id, s.pack_id, s.media_id, s.name, us.sort_order
          FROM user_stickers us JOIN stickers s ON s.id = us.sticker_id
          WHERE us.user_id = ?1
@@ -213,7 +202,7 @@ pub(in crate::domain) fn installed_for(
             sort_order: r.get(4)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn set_sticker_order(
@@ -222,12 +211,11 @@ pub(in crate::domain) fn set_sticker_order(
     sticker_id: &str,
     sort_order: i64,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "UPDATE user_stickers SET sort_order = ?1
          WHERE user_id = ?2 AND sticker_id = ?3",
         params![sort_order, user, sticker_id],
-    )?)
+    )
 }
 
 pub(in crate::domain) fn delete_user_sticker(
@@ -235,11 +223,10 @@ pub(in crate::domain) fn delete_user_sticker(
     user: &str,
     sticker_id: &str,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "DELETE FROM user_stickers WHERE user_id = ?1 AND sticker_id = ?2",
         params![user, sticker_id],
-    )?)
+    )
 }
 
 pub(in crate::domain) fn delete_pack(
@@ -247,9 +234,8 @@ pub(in crate::domain) fn delete_pack(
     owner: &str,
     pack_id: &str,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "DELETE FROM sticker_packs WHERE id = ?1 AND owner = ?2",
         params![pack_id, owner],
-    )?)
+    )
 }

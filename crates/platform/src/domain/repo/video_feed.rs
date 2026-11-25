@@ -2,8 +2,8 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
+
 
 use crate::domain::video_feed::{
     parse_score_cursor, video_view_from, VideoComment, VideoRow, VideoView, COL_DURATION_MS,
@@ -30,14 +30,13 @@ pub(in crate::domain) fn feed_by_seq(
     cursor: Option<&str>,
     limit: i64,
 ) -> Result<(Vec<VideoView>, String, bool)> {
-    let c = c.sqlite()?;
     let before = match cursor {
         Some(cur) if !cur.is_empty() => cur
             .parse::<i64>()
             .map_err(|_| PlatformError::BadInput("malformed cursor"))?,
         _ => i64::MAX,
     };
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT v.seq, v.id FROM video_posts v
          WHERE v.state = 'published' AND v.seq < ?2
            AND (v.author = ?1
@@ -53,7 +52,7 @@ pub(in crate::domain) fn feed_by_seq(
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     finish(
-        &crate::storage::StorageConnection::sqlite_borrow(c),
+        c,
         viewer,
         ids,
         limit,
@@ -68,10 +67,9 @@ pub(in crate::domain) fn feed_hot(
     cursor: Option<&str>,
     limit: i64,
 ) -> Result<(Vec<VideoView>, String, bool)> {
-    let c = c.sqlite()?;
     let (before_score, before_seq) = parse_score_cursor(cursor)?;
     let cutoff = wxlike_core::types::now_ms() as i64 - HOT_WINDOW_MS;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT seq, id, score FROM (
            SELECT v.seq AS seq, v.id AS id,
                   (SELECT COUNT(*) FROM video_likes l WHERE l.video_id = v.id) * 3
@@ -102,7 +100,7 @@ pub(in crate::domain) fn feed_hot(
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     page_of_scored(
-        &crate::storage::StorageConnection::sqlite_borrow(c),
+        c,
         viewer,
         rows,
         limit,
@@ -118,9 +116,8 @@ pub(in crate::domain) fn feed_recommend(
     cursor: Option<&str>,
     limit: i64,
 ) -> Result<(Vec<VideoView>, String, bool)> {
-    let c = c.sqlite()?;
     let (before_score, before_seq) = parse_score_cursor(cursor)?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT seq, id, score FROM (
            SELECT v.seq AS seq, v.id AS id,
                   (SELECT COUNT(*) FROM video_likes l
@@ -154,7 +151,7 @@ pub(in crate::domain) fn feed_recommend(
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     page_of_scored(
-        &crate::storage::StorageConnection::sqlite_borrow(c),
+        c,
         viewer,
         rows,
         limit,
@@ -170,7 +167,6 @@ pub(in crate::domain) fn page_of_scored(
     limit: i64,
     reason: &str,
 ) -> Result<(Vec<VideoView>, String, bool)> {
-    let c = c.sqlite()?;
     let has_more = rows.len() as i64 > limit;
     let take = if has_more {
         &rows[..rows.len() - 1]
@@ -184,7 +180,7 @@ pub(in crate::domain) fn page_of_scored(
     let mut views = Vec::new();
     for (_, id, _) in take {
         if let Some(mut view) = video_row(
-            &crate::storage::StorageConnection::sqlite_borrow(c),
+            c,
             viewer,
             id,
         )? {
@@ -202,7 +198,6 @@ pub(in crate::domain) fn finish(
     limit: i64,
     cursor_of: impl Fn(i64) -> String,
 ) -> Result<(Vec<VideoView>, String, bool)> {
-    let c = c.sqlite()?;
     let has_more = ids.len() as i64 > limit;
     let take = if has_more {
         &ids[..ids.len() - 1]
@@ -216,7 +211,7 @@ pub(in crate::domain) fn finish(
     let mut views = Vec::with_capacity(take.len());
     for (_, id) in take {
         if let Some(view) = video_row(
-            &crate::storage::StorageConnection::sqlite_borrow(c),
+            c,
             viewer,
             id,
         )? {
@@ -266,15 +261,14 @@ pub(in crate::domain) fn find_active_video_post(
     author: &str,
     media_id: &str,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT id FROM video_posts
          WHERE author = ?1 AND media_id = ?2 AND state IN ('published', 'pending')
          ORDER BY seq LIMIT 1",
         params![author, media_id],
         |r| r.get(0),
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn check_video_gate(
@@ -282,7 +276,6 @@ pub(in crate::domain) fn check_video_gate(
     author: &str,
     media_id: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     let media: Option<String> = c
         .query_row(
             "SELECT uploader FROM media WHERE id = ?1",
@@ -314,7 +307,6 @@ pub(in crate::domain) fn video_row(
     viewer: &str,
     id: &str,
 ) -> Result<Option<VideoView>> {
-    let c = c.sqlite()?;
     let row: Option<VideoRow> = c
         .query_row(
             "SELECT v.id, v.author, u.name, v.caption, v.state, v.created_at,
@@ -370,7 +362,6 @@ pub(in crate::domain) fn insert_video_post(
     state: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO video_posts(seq, id, author, media_id, caption, state, created_at)
          VALUES(NULL, ?1, ?2, ?3, ?4, ?6, ?5)",
@@ -383,7 +374,6 @@ pub(in crate::domain) fn review_record(
     c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<ReviewRecord>> {
-    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT author, state, caption, media_id FROM video_posts WHERE id = ?1",
@@ -406,7 +396,6 @@ pub(in crate::domain) fn set_video_state(
     id: &str,
     state: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "UPDATE video_posts SET state = ?2 WHERE id = ?1",
         params![id, state],
@@ -418,7 +407,6 @@ pub(in crate::domain) fn video_access(
     c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<VideoAccess>> {
-    let c = c.sqlite()?;
     let row = c
         .query_row(
             "SELECT author, state FROM video_posts WHERE id = ?1",
@@ -440,7 +428,6 @@ pub(in crate::domain) fn soft_delete_video(
     author: &str,
     deleted_state: &str,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE video_posts SET state = ?3
          WHERE id = ?1 AND author = ?2 AND state NOT IN ('deleted', 'rejected')",
@@ -455,7 +442,6 @@ pub(in crate::domain) fn insert_video_like(
     by: &str,
     now: i64,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     let added = c.execute(
         "INSERT INTO video_likes(video_id, user_id, created_at) VALUES(?1, ?2, ?3)
          ON CONFLICT(video_id, user_id) DO NOTHING",
@@ -468,7 +454,6 @@ pub(in crate::domain) fn video_author(
     c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
     let author = c
         .query_row(
             "SELECT author FROM video_posts WHERE id = ?1",
@@ -480,7 +465,6 @@ pub(in crate::domain) fn video_author(
 }
 
 pub(in crate::domain) fn video_like_count(c: &StorageConnection<'_>, id: &str) -> Result<i64> {
-    let c = c.sqlite()?;
     let count = c.query_row(
         "SELECT COUNT(*) FROM video_likes WHERE video_id = ?1",
         params![id],
@@ -494,7 +478,6 @@ pub(in crate::domain) fn delete_video_like(
     id: &str,
     by: &str,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     let removed = c.execute(
         "DELETE FROM video_likes WHERE video_id = ?1 AND user_id = ?2",
         params![id, by],
@@ -510,7 +493,6 @@ pub(in crate::domain) fn insert_video_comment(
     text: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO video_comments(seq, id, video_id, author, text, created_at)
          VALUES(NULL, ?1, ?2, ?3, ?4, ?5)",
@@ -525,8 +507,7 @@ pub(in crate::domain) fn video_comments(
     before: i64,
     limit: i64,
 ) -> Result<Vec<VideoComment>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT cm.id, cm.video_id, cm.author, u.name, cm.text, cm.created_at, cm.seq
          FROM video_comments cm JOIN users u ON u.id = cm.author
          WHERE cm.video_id = ?1 AND cm.deleted = 0 AND cm.seq < ?2
@@ -543,7 +524,7 @@ pub(in crate::domain) fn video_comments(
             seq: r.get(6)?,
         })
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn soft_delete_video_comment(
@@ -552,7 +533,6 @@ pub(in crate::domain) fn soft_delete_video_comment(
     comment_id: &str,
     by: &str,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     let changed = c.execute(
         "UPDATE video_comments SET deleted = 1
          WHERE id = ?1 AND video_id = ?2 AND deleted = 0
@@ -563,7 +543,6 @@ pub(in crate::domain) fn soft_delete_video_comment(
 }
 
 pub(in crate::domain) fn creator_exists(c: &StorageConnection<'_>, creator: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     let exists = c
         .query_row("SELECT 1 FROM users WHERE id = ?1", params![creator], |r| {
             r.get::<_, i64>(0)
@@ -578,7 +557,6 @@ pub(in crate::domain) fn follow_creator(
     creator: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT OR IGNORE INTO video_follows(user_id, creator, created_at)
          VALUES(?1, ?2, ?3)",
@@ -592,7 +570,6 @@ pub(in crate::domain) fn unfollow_creator(
     user: &str,
     creator: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "DELETE FROM video_follows WHERE user_id = ?1 AND creator = ?2",
         params![user, creator],

@@ -2,8 +2,7 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
 
 use crate::domain::status::{
     BackgroundDraft, StatusInsert, StatusRow, StatusView, COL_STATUS_EXPIRES_AT,
@@ -15,10 +14,9 @@ pub(in crate::domain) fn friend_ids_for(
     c: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Vec<String>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare("SELECT friend_id FROM friends WHERE user_id = ?1")?;
+    let stmt = c.prepare("SELECT friend_id FROM friends WHERE user_id = ?1")?;
     let it = stmt.query_map(params![user], |r| r.get::<_, String>(0))?;
-    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+    it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 /// 背景草稿被消费后清行，避免留下“未使用”的引用。
@@ -27,11 +25,10 @@ pub(in crate::domain) fn delete_background_draft(
     owner: &str,
     media_id: &str,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "DELETE FROM status_background_drafts WHERE owner = ?1 AND media_id = ?2",
         params![owner, media_id],
-    )?)
+    )
 }
 
 /// 单条状态软清除；影响行数由 domain 判断是否 NotFound。
@@ -41,12 +38,11 @@ pub(in crate::domain) fn mark_cleared(
     owner: &str,
     now: i64,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "UPDATE statuses SET cleared_at = ?1, updated_at = ?1
          WHERE id = ?2 AND owner = ?3 AND cleared_at IS NULL",
         params![now, id, owner],
-    )?)
+    )
 }
 
 /// 好友 + 自己的可见候选 id；每人只留最新一条活跃状态，排序在 SQL 侧。
@@ -55,8 +51,7 @@ pub(in crate::domain) fn visible_status_ids(
     viewer: &str,
     now: i64,
 ) -> Result<Vec<String>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT s.id FROM statuses s
          WHERE s.cleared_at IS NULL AND s.expires_at > ?2
            AND (s.owner = ?1
@@ -71,7 +66,7 @@ pub(in crate::domain) fn visible_status_ids(
          ORDER BY s.updated_at DESC",
     )?;
     let it = stmt.query_map(params![viewer, now], |r| r.get::<_, String>(0))?;
-    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+    it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 /// `status_visible` 的判定原料；可见性规则本身留在 domain。
@@ -86,8 +81,7 @@ pub(in crate::domain) fn status_meta(
     c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<StatusMetaRow>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT owner, audience, expires_at, cleared_at FROM statuses WHERE id = ?1",
         params![id],
         |r| {
@@ -99,7 +93,7 @@ pub(in crate::domain) fn status_meta(
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 /// 点赞/取消赞：先删后插，返回当前是否已点。
@@ -109,7 +103,6 @@ pub(in crate::domain) fn toggle_reaction(
     user: &str,
     now: i64,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     let removed = c.execute(
         "DELETE FROM status_reactions WHERE status_id = ?1 AND user_id = ?2",
         params![id, user],
@@ -128,22 +121,20 @@ pub(in crate::domain) fn status_owner(
     c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT owner FROM statuses WHERE id = ?1",
         params![id],
         |r| r.get(0),
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn reaction_count(c: &StorageConnection<'_>, id: &str) -> Result<i64> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT COUNT(*) FROM status_reactions WHERE status_id = ?1",
         params![id],
         |r| r.get(0),
-    )?)
+    )
 }
 
 pub(in crate::domain) fn upsert_background_draft(
@@ -152,7 +143,6 @@ pub(in crate::domain) fn upsert_background_draft(
     media_id: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO status_background_drafts(owner, media_id, updated_at)
          VALUES(?1, ?2, ?3)
@@ -167,8 +157,7 @@ pub(in crate::domain) fn background_draft(
     c: &StorageConnection<'_>,
     owner: &str,
 ) -> Result<Option<BackgroundDraft>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT owner, media_id, updated_at FROM status_background_drafts WHERE owner = ?1",
         params![owner],
         |r| {
@@ -179,11 +168,10 @@ pub(in crate::domain) fn background_draft(
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn delete_background(c: &StorageConnection<'_>, owner: &str) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "DELETE FROM status_background_drafts WHERE owner = ?1",
         params![owner],
@@ -196,8 +184,7 @@ pub(in crate::domain) fn expired_statuses(
     c: &StorageConnection<'_>,
     now: i64,
 ) -> Result<Vec<(String, String)>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, owner FROM statuses
          WHERE cleared_at IS NULL AND expires_at <= ?1",
     )?;
@@ -210,7 +197,6 @@ pub(in crate::domain) fn expired_statuses(
 }
 
 pub(in crate::domain) fn mark_expired(c: &StorageConnection<'_>, id: &str, now: i64) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "UPDATE statuses SET cleared_at = ?1 WHERE id = ?2 AND cleared_at IS NULL",
         params![now, id],
@@ -223,8 +209,7 @@ pub(in crate::domain) fn insert_status_indexed(
     tx: &StorageConnection<'_>,
     s: StatusInsert<'_>,
 ) -> Result<()> {
-    let conn = tx.sqlite()?;
-    conn.execute(
+    tx.execute(
         "INSERT INTO statuses(id, owner, kind, text, media_id, background_media_id, audience,
                               version, created_at, updated_at, expires_at, cleared_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, ?9, NULL)",
@@ -269,9 +254,8 @@ pub(in crate::domain) fn clear_owner(
     owner: &str,
     now: i64,
 ) -> Result<usize> {
-    let conn = conn.sqlite()?;
     let ids: Vec<String> = {
-        let mut stmt =
+        let stmt =
             conn.prepare("SELECT id FROM statuses WHERE owner = ?1 AND cleared_at IS NULL")?;
         let it = stmt.query_map(params![owner], |r| r.get::<_, String>(0))?;
         it.collect::<std::result::Result<Vec<_>, _>>()?
@@ -281,10 +265,9 @@ pub(in crate::domain) fn clear_owner(
             "UPDATE statuses SET cleared_at = ?1, updated_at = ?1 WHERE id = ?2",
             params![now, id],
         )?;
-        let port = crate::storage::StorageConnection::sqlite_borrow(conn);
-        crate::domain::repo::content_index::remove(&port, id)?;
-        crate::domain::repo::content_index::remove_media_refs(&port, "status", id)?;
-        crate::domain::repo::favorites::revoke_source(&port, "status", id)?;
+        crate::domain::repo::content_index::remove(conn, id)?;
+        crate::domain::repo::content_index::remove_media_refs(conn, "status", id)?;
+        crate::domain::repo::favorites::revoke_source(conn, "status", id)?;
     }
     Ok(ids.len())
 }
@@ -295,7 +278,6 @@ pub(in crate::domain) fn check_media(
     media_id: &str,
     kind: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     let row: Option<(String, String)> = c
         .query_row(
             "SELECT uploader, content_type FROM media WHERE id = ?1",
@@ -337,7 +319,6 @@ pub(in crate::domain) fn status_row(
     viewer: &str,
     id: &str,
 ) -> Result<Option<StatusView>> {
-    let c = c.sqlite()?;
     let now = wxlike_core::types::now_ms() as i64;
     let row: Option<StatusRow> = c
         .query_row(

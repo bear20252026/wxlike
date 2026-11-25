@@ -146,7 +146,7 @@ impl Platform {
         user_id: &str,
         quiet_hours: Option<bool>,
     ) -> Result<Value> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let prefs = preferences::get(&c, user_id)?;
         let head = preferences::head_seq(&c, user_id)?;
         let quiet = quiet_hours.unwrap_or(false);
@@ -169,7 +169,7 @@ impl Platform {
         device_id: &str,
     ) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         preferences::patch(&c, user_id, patch, device_id, now)?;
         Ok(())
     }
@@ -181,7 +181,7 @@ impl Platform {
         since_seq: i64,
         limit: i64,
     ) -> Result<(Vec<preferences::PrefRow>, i64)> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let rows = preferences::since(&c, user_id, since_seq, limit)?;
         Ok((rows, preferences::head_seq(&c, user_id)?))
     }
@@ -196,7 +196,7 @@ impl Platform {
             check_device_id(provided)?;
             return Ok(provided.to_string());
         }
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let stored = SqliteSessionsRepo::new(&c)
             .device_id_by_token(&crate::auth::token_digest(&authed.token))?;
         match stored {
@@ -226,7 +226,7 @@ impl Platform {
             block_ms: STEP_UP_BLOCK_MS,
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         throttle::check(&c, &step_up_bucket(user_id), limit, now)?;
         Ok(())
     }
@@ -239,7 +239,13 @@ impl Platform {
             block_ms: STEP_UP_BLOCK_MS,
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = match self.db().lock() {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::error!(error = %err, "step-up 闸门拿不到连接");
+                return;
+            }
+        };
         match throttle::record_failure(&c, &step_up_bucket(user_id), limit, now) {
             Ok(status) if status.blocked_until > now => {
                 tracing::warn!(user = %user_id, until = status.blocked_until, "step-up 口令闸门封禁");
@@ -251,7 +257,13 @@ impl Platform {
 
     /// 验证通过即清零，不惩罚正常用户。
     pub(crate) fn step_up_passed(&self, user_id: &str) {
-        let c = self.db().lock();
+        let c = match self.db().lock() {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::error!(error = %err, "step-up 闸门拿不到连接");
+                return;
+            }
+        };
         if let Err(err) = throttle::reset(&c, &step_up_bucket(user_id)) {
             tracing::error!(error = %err, "step-up 闸门清不掉");
         }
@@ -277,7 +289,7 @@ impl Platform {
     /// 申请导出。已有排队/执行中的导出时返回同一条作业（不重复打包）。
     pub fn request_export_job(&self, user_id: &str) -> Result<Job> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let port = crate::storage::StorageConnection::sqlite_borrow(&c);
         if deleted_at(&port, user_id)?.is_some() {
             return Err(PlatformError::Blocked("account scheduled for deletion"));
@@ -290,7 +302,7 @@ impl Platform {
     pub fn cancel_account_job(&self, user_id: &str, job_id: &str) -> Result<Job> {
         validate_id(job_id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         preferences::cancel(&c, job_id, user_id, now).map_err(|err| match err {
             wxlike_identity::IdError::Conflict(what) => PlatformError::Blocked(what),
             other => other.into(),
@@ -301,7 +313,7 @@ impl Platform {
     /// （与 `/api/sessions/{sid}/revoke` 同一口径）。
     pub fn account_job(&self, user_id: &str, job_id: &str) -> Result<Job> {
         validate_id(job_id)?;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let job = preferences::job(&c, job_id)?.ok_or(PlatformError::NotFound)?;
         if job.user_id != user_id {
             return Err(PlatformError::NotFound);
@@ -310,14 +322,14 @@ impl Platform {
     }
 
     pub fn account_jobs(&self, user_id: &str) -> Result<Vec<Job>> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         Ok(preferences::list(&c, user_id)?)
     }
 
     /// 为已完成的导出签一个短时单次下载令牌。未完成 → 403（`export not ready`）。
     pub fn create_export_link(&self, user_id: &str, job_id: &str) -> Result<(String, i64)> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let job = preferences::job(&c, job_id)?.ok_or(PlatformError::NotFound)?;
         if job.user_id != user_id {
             return Err(PlatformError::NotFound);
@@ -367,7 +379,7 @@ impl Platform {
     /// 3. 没标记 → 正常流程：先撤凭证，再落标记。
     pub fn schedule_deletion(&self, user_id: &str) -> Result<(Job, usize)> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         let port = crate::storage::StorageConnection::sqlite_borrow(&c);
         if deleted_at(&port, user_id)?.is_some() {
             if let Some(job) = open_delete_job(&port, user_id)? {
@@ -518,7 +530,7 @@ impl Platform {
     /// `pub`：worker 用它，验收测试也要直接读一遍产物（"导出只含本人可见数据、
     /// 不含凭据列"这条只能在内容上断言，看状态字段是不够的）。
     pub fn export_document(&self, user_id: &str) -> Result<Vec<u8>> {
-        let c = self.db().lock();
+        let c = self.db().lock()?;
         export_document_for(&c, user_id)
     }
 }
