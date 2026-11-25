@@ -22,7 +22,7 @@
 
 use serde_json::{json, Value};
 use tauri::Manager as _;
-use wxlike_platform::AccountSessions;
+use wxlike_platform::{AccountSessions, WalletLedger};
 use wxlike_ui_lib::core_bridge::{
     capabilities, dispatch, CoreRequest, CoreState, IMPLEMENTED_ACTIONS, STUBBED_ACTIONS,
 };

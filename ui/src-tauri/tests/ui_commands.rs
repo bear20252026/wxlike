@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wxlike_platform::Platform;
+use wxlike_platform::{Platform, WalletLedger};
 use wxlike_ui_lib::AppState;
 
 /// Boots a fresh real server stack per test: platform HTTP + QUIC hub **with
