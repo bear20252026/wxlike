@@ -26,6 +26,9 @@ pub mod streams;
 
 use async_trait::async_trait;
 
+/// `claim_stale` 的返回形状：`(entry_id, payload)`。
+pub type ClaimedEntries = Vec<(String, Vec<u8>)>;
+
 /// Queue name for a hub's inbound messages.
 pub fn hub_queue(hub_id: &str) -> String {
     format!("wxlike:msg:hub:{hub_id}")
@@ -111,11 +114,7 @@ pub trait ReliableQueue: Send + Sync + 'static {
 
     /// Reclaim entries idle for at least `min_idle_ms`, delivering them to this
     /// consumer. Returns the reclaimed `(id, payload)` pairs.
-    async fn claim_stale(
-        &self,
-        queue: &str,
-        min_idle_ms: u64,
-    ) -> anyhow::Result<Vec<(String, Vec<u8>)>>;
+    async fn claim_stale(&self, queue: &str, min_idle_ms: u64) -> anyhow::Result<ClaimedEntries>;
 
     /// How many entries are in-flight but unacknowledged (backlog metric).
     async fn pending_count(&self, queue: &str) -> anyhow::Result<u64>;

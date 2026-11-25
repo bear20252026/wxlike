@@ -5,17 +5,20 @@ use crate::domain::report::ReportRow;
 use crate::error::Result;
 use crate::storage::StorageConnection;
 use rusqlite::{params, OptionalExtension as _};
-use wxlike_report::Ticket;
+use wxlike_report::{Ticket, TicketRecord};
 
 pub(in crate::domain) fn load(conn: &StorageConnection<'_>, id: &str) -> Result<Option<ReportRow>> {
     let conn = conn.sqlite()?;
     Ok(conn
         .query_row(
-            "SELECT reporter, target_kind, target_id, reason, detail, state, action_json,
+            "SELECT id, reporter, target_kind, target_id, reason, detail, state, action_json,
                     handler, created_at, updated_at, history_json
              FROM reports WHERE id = ?1",
             params![id],
-            |r| wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+            |r| {
+                wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, wxlike_report::LAST_TICKET_COLUMN)
+                    .map(TicketRecord::from)
+            },
         )
         .optional()?)
 }

@@ -15,8 +15,6 @@
 //! 幂等靠 `task_id`：同一个任务重试时 `task_id` 不变，服务端用它派生 `msg_id`
 //! （`POST /api/conv/{c}/send` 的 `idempotency_key`），重试不会变成两条消息。
 
-use std::sync::{Mutex, PoisonError};
-
 use anyhow::Context as _;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -107,7 +105,7 @@ pub struct FlushReport {
 }
 
 pub struct Outbox {
-    conn: Mutex<Connection>,
+    conn: crate::sql::ConnectionHandle,
 }
 
 impl Outbox {
@@ -141,12 +139,12 @@ impl Outbox {
         )
         .context("outbox schema")?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: crate::sql::ConnectionHandle::new(conn),
         })
     }
 
     fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+        self.conn.lock()
     }
 
     /// 入队，返回 `task_id`。**调用方要把这个 id 当作幂等键**：

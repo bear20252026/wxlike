@@ -36,6 +36,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use anyhow::Context as _;
 use serde::Serialize;
+use wxlike_core::net::primary_ipv4;
 use wxlike_platform::{AccountSessions, PlatformError, PlatformState, RealtimeCalls};
 use wxlike_rtc::media::{Datagram, MediaSession};
 
@@ -468,15 +469,5 @@ impl SfuRoom {
             self.base_port,
             last_err
         ))
-    }
-}
-
-/// 本机主网卡 IPv4（connect 一个 TEST-NET 地址拿路由选中的源地址）。
-fn primary_ipv4() -> Option<Ipv4Addr> {
-    let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("192.0.2.1:9").ok()?;
-    match s.local_addr().ok()?.ip() {
-        IpAddr::V4(v4) => Some(v4),
-        IpAddr::V6(_) => None,
     }
 }

@@ -10,10 +10,8 @@
 //! 之后这一条从历史里回来时，同一个 `msg_id` 被就地更新成真实 seq。
 //! 用 seq 做键的话这两行会同时存在，UI 就出现重复气泡。
 
-use std::path::Path;
-use std::sync::{Mutex, PoisonError};
-
 use rusqlite::{params, Connection, OptionalExtension};
+use std::path::Path;
 
 use crate::types::{ChatMessage, ConversationRow};
 
@@ -25,7 +23,7 @@ use crate::types::{ChatMessage, ConversationRow};
 const LOCAL_TENTATIVE_SEQ: i64 = i64::MAX / 2;
 
 pub struct Cache {
-    conn: Mutex<Connection>,
+    conn: wxlike_core::sql::ConnectionHandle,
 }
 
 impl Cache {
@@ -69,12 +67,12 @@ impl Cache {
         )
         .map_err(|e| anyhow::anyhow!("mobile cache schema: {e}"))?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: wxlike_core::sql::ConnectionHandle::new(conn),
         })
     }
 
     fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+        self.conn.lock()
     }
 
     fn upsert(&self, m: &ChatMessage) -> rusqlite::Result<usize> {

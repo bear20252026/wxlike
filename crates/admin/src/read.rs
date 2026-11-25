@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use rusqlite::{params, Connection, OpenFlags, Row, ToSql};
 use serde::{Deserialize, Serialize};
 use wxlike_core::text::escape_like;
-use wxlike_report::{Action, Reason, State as TicketState, Ticket, Transition};
+use wxlike_report::{Ticket, TicketRecord};
 
 use crate::error::{AdminError, Result};
 
@@ -738,90 +738,19 @@ pub struct TicketRow {
     pub overdue: bool,
 }
 
-/// `reports` 一行的读取形状（12 列，用具名结构而不是元组：可读 + 过 clippy）。
-struct TicketLoad {
-    id: String,
-    reporter: String,
-    target_kind: String,
-    target_id: String,
-    reason: String,
-    detail: String,
-    state: String,
-    action_json: Option<String>,
-    handler: Option<String>,
-    created_at: i64,
-    updated_at: i64,
-    history_json: String,
-}
-
-fn ticket_load_from_row(r: &Row<'_>) -> rusqlite::Result<TicketLoad> {
-    Ok(TicketLoad {
-        id: r.get(0)?,
-        reporter: r.get(1)?,
-        target_kind: r.get(2)?,
-        target_id: r.get(3)?,
-        reason: r.get(4)?,
-        detail: r.get(5)?,
-        state: r.get(6)?,
-        action_json: r.get(7)?,
-        handler: r.get(8)?,
-        created_at: r.get(9)?,
-        updated_at: r.get(10)?,
-        history_json: r.get(11)?,
-    })
+/// `reports` 一行的读取形状：列序与 `TicketColumns` 对齐，解释交给 report crate。
+fn ticket_load_from_row(r: &Row<'_>) -> rusqlite::Result<TicketRecord> {
+    wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, wxlike_report::LAST_TICKET_COLUMN)
+        .map(TicketRecord::from)
 }
 
 /// 库里的字符串必须是目前状态机认得的值；认不得就报错。
 ///
 /// 为什么不降级成"未知状态原样显示"：工单状态决定按钮能不能点，
 /// 一个错的状态会让运维在非法流转上浪费一整轮操作，还会让人以为平台坏了。
-fn build_ticket(load: TicketLoad) -> Result<Ticket> {
-    let TicketLoad {
-        id,
-        reporter,
-        target_kind,
-        target_id,
-        reason,
-        detail,
-        state,
-        action_json,
-        handler,
-        created_at,
-        updated_at,
-        history_json,
-    } = load;
-    let reason = Reason::parse(&reason).ok_or_else(|| {
-        AdminError::bad_input(format!("工单 {id} 的 reason 无法识别: {reason:?}"))
-    })?;
-    let state = TicketState::parse(&state)
-        .ok_or_else(|| AdminError::bad_input(format!("工单 {id} 的 state 无法识别: {state:?}")))?;
-    let action: Option<Action> =
-        match action_json.as_deref() {
-            None | Some("") => None,
-            Some(raw) => Some(serde_json::from_str(raw).map_err(|e| {
-                AdminError::bad_input(format!("工单 {id} 的 action_json 损坏: {e}"))
-            })?),
-        };
-    let history: Vec<Transition> = if history_json.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_str(&history_json)
-            .map_err(|e| AdminError::bad_input(format!("工单 {id} 的 history 损坏: {e}")))?
-    };
-    Ok(Ticket {
-        id,
-        reporter,
-        target_kind,
-        target_id,
-        reason,
-        detail,
-        state,
-        created_at: created_at.max(0) as u64,
-        updated_at: updated_at.max(0) as u64,
-        action,
-        handler,
-        history,
-    })
+fn build_ticket(load: TicketRecord) -> Result<Ticket> {
+    load.into_ticket()
+        .map_err(|err| AdminError::bad_input(err.to_string()))
 }
 
 /// `?limit=&offset=&q=` 的统一形状。`q` 只对支持搜索的资源生效。
@@ -1041,6 +970,7 @@ mod tests {
     use super::*;
     use crate::tmp::TmpDir;
     use wxlike_platform::{AuditTrail, Platform, ReportDesk};
+    use wxlike_report::{Action, Reason, State as TicketState};
 
     /// 建一个**真的**平台库（跑平台自己的迁移），再只读打开。全程没有 mock。
     /// `hold` = 保留平台实例（WAL 的 `-shm` 还在），否则干净关闭后再读。

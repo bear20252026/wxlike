@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use tokio::sync::Mutex;
 
-use crate::{MessageQueue, ReliableQueue, RouteTable};
+use crate::{ClaimedEntries, MessageQueue, ReliableQueue, RouteTable};
 
 const STREAM: &str = "WXLIKE";
 const KV_BUCKET: &str = "wxlike";
@@ -170,11 +170,7 @@ impl ReliableQueue for NatsMq {
     /// NATS redelivers unacked entries after `ack_wait` on its own; a fetch
     /// therefore IS the reclaim (what comes back is what a dead consumer
     /// left pending). Idle filtering happens server-side.
-    async fn claim_stale(
-        &self,
-        queue: &str,
-        _min_idle_ms: u64,
-    ) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    async fn claim_stale(&self, queue: &str, _min_idle_ms: u64) -> anyhow::Result<ClaimedEntries> {
         match self.consume_entry(queue).await {
             Ok(entry) => Ok(vec![entry]),
             // expiry with nothing pending is an empty reclaim, not an error

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
-use crate::{MessageQueue, ReliableQueue};
+use crate::{ClaimedEntries, MessageQueue, ReliableQueue};
 
 /// Consumer group shared by every hub process.
 pub const GROUP: &str = "wxlike";
@@ -216,11 +216,7 @@ impl ReliableQueue for RedisStreamsMq {
         Ok(())
     }
 
-    async fn claim_stale(
-        &self,
-        queue: &str,
-        min_idle_ms: u64,
-    ) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    async fn claim_stale(&self, queue: &str, min_idle_ms: u64) -> anyhow::Result<ClaimedEntries> {
         self.ensure_group(queue).await?;
         let key = stream_key(queue);
         let mut c = self.conn().await?;

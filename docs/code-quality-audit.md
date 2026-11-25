@@ -394,7 +394,7 @@ search、video、hub、router 全串在一个函数里。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
-**0**、跨文件重复窗口 **12**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**0**、跨文件重复窗口 **4**、魔法数字总数 **171**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
 当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
@@ -698,6 +698,14 @@ server 两个挂载点各自的 `PlatformSessions` 合成共享实现。
 模块的 HMAC 签名与验签共用 `token::sign_sha256`（验签同时改走
 `constant_time_eq`，不再依赖 `verify_slice` 的内部比较）。
 重复窗口 15→**12**。
+第十二批继续走“结构与解释各留一份”：`reports` 行的 12 列映射改成
+`TicketColumns` 元组 + `TicketRecord::from`，admin 与 platform 只留一行
+`row_tuple!`，坏 reason/state/action/history 统一由 `into_ticket` 报错（不再
+一边静默当空、一边当没处置）；`outbox` 与移动端缓存的 `Mutex<Connection>` 收进
+`wxlike_core::sql::ConnectionHandle`；`claim_stale` 的返回形状用 `ClaimedEntries`
+别名，三处签名不再各占五行；`primary_ipv4` 从 SFU 与桌面端两份收进
+`wxlike_core::net`。重复窗口 12→**4**，只剩三个 crate 各自声明的
+`StorageError` 公共变体——这是 crate 边界上的有意重复，不再强行合并。
 
 探针同时修了一处口径缺陷：trait 里的 `fn foo(...);` 声明没有函数体，旧实现会把
 它一路扫到后面 impl 的第一个 `{`，凭空造出"超长函数"（本批 `RealtimeCalls` 就被

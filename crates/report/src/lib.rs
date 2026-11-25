@@ -134,6 +134,142 @@ pub struct Ticket {
     pub history: Vec<Transition>,
 }
 
+/// `reports` 表的一行原始值（列序与 `SELECT` 一致，id 在第一位）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketRecord {
+    pub id: String,
+    pub reporter: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub reason: String,
+    pub detail: String,
+    pub state: String,
+    pub action_json: Option<String>,
+    pub handler: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub history_json: String,
+}
+
+/// 最后一列的列号；映射处用它，避免把列号本身写成魔法数字。
+pub const LAST_TICKET_COLUMN: usize = 11;
+
+pub type TicketColumns = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    String,
+);
+
+impl From<TicketColumns> for TicketRecord {
+    fn from(columns: TicketColumns) -> Self {
+        let (
+            id,
+            reporter,
+            target_kind,
+            target_id,
+            reason,
+            detail,
+            state,
+            action_json,
+            handler,
+            created_at,
+            updated_at,
+            history_json,
+        ) = columns;
+        Self {
+            id,
+            reporter,
+            target_kind,
+            target_id,
+            reason,
+            detail,
+            state,
+            action_json,
+            handler,
+            created_at,
+            updated_at,
+            history_json,
+        }
+    }
+}
+
+/// 一行读出来但解释不了：字段名 + 原值，调用方决定映射成 422 还是 500。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketDecodeError {
+    pub id: String,
+    pub field: &'static str,
+    pub detail: String,
+}
+
+impl std::fmt::Display for TicketDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ticket {} 的 {} 无法识别: {}",
+            self.id, self.field, self.detail
+        )
+    }
+}
+
+impl std::error::Error for TicketDecodeError {}
+
+impl TicketRecord {
+    /// 原始列 → 领域工单；任何一列坏掉都返回错误，不静默降级。
+    pub fn into_ticket(self) -> std::result::Result<Ticket, TicketDecodeError> {
+        let id = self.id;
+        let reason = Reason::parse(&self.reason).ok_or_else(|| TicketDecodeError {
+            id: id.clone(),
+            field: "reason",
+            detail: self.reason.clone(),
+        })?;
+        let state = State::parse(&self.state).ok_or_else(|| TicketDecodeError {
+            id: id.clone(),
+            field: "state",
+            detail: self.state.clone(),
+        })?;
+        let action: Option<Action> = match self.action_json.as_deref() {
+            None | Some("") => None,
+            Some(raw) => Some(serde_json::from_str(raw).map_err(|e| TicketDecodeError {
+                id: id.clone(),
+                field: "action_json",
+                detail: e.to_string(),
+            })?),
+        };
+        let history: Vec<Transition> = if self.history_json.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&self.history_json).map_err(|e| TicketDecodeError {
+                id: id.clone(),
+                field: "history_json",
+                detail: e.to_string(),
+            })?
+        };
+        Ok(Ticket {
+            id,
+            reporter: self.reporter,
+            target_kind: self.target_kind,
+            target_id: self.target_id,
+            reason,
+            detail: self.detail,
+            state,
+            created_at: self.created_at.max(0) as u64,
+            updated_at: self.updated_at.max(0) as u64,
+            action,
+            handler: self.handler,
+            history,
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ReportError {
     #[error("illegal transition {from:?} -> {to:?}")]
@@ -288,3 +424,52 @@ impl Ticket {
 
 /// 默认 SLA：24 h。
 pub const DEFAULT_SLA_MS: u64 = 24 * 60 * 60 * 1000;
+
+#[cfg(test)]
+mod ticket_record_tests {
+    use super::{Reason, State, TicketRecord};
+
+    fn record() -> TicketRecord {
+        TicketRecord {
+            id: "t1".into(),
+            reporter: "alice".into(),
+            target_kind: "user".into(),
+            target_id: "bob".into(),
+            reason: "spam".into(),
+            detail: "ads".into(),
+            state: "open".into(),
+            action_json: None,
+            handler: None,
+            created_at: 1,
+            updated_at: 2,
+            history_json: "[]".into(),
+        }
+    }
+
+    #[test]
+    fn decodes_valid_row() {
+        let ticket = record().into_ticket().unwrap();
+        assert_eq!(ticket.reason, Reason::Spam);
+        assert_eq!(ticket.state, State::Open);
+        assert_eq!(ticket.created_at, 1);
+        assert!(ticket.action.is_none());
+        assert!(ticket.history.is_empty());
+    }
+
+    #[test]
+    fn bad_reason_is_an_error_not_a_default() {
+        let mut row = record();
+        row.reason = "unknown".into();
+        let err = row.into_ticket().unwrap_err();
+        assert_eq!(err.field, "reason");
+        assert_eq!(err.id, "t1");
+    }
+
+    #[test]
+    fn bad_history_is_an_error_not_an_empty_vec() {
+        let mut row = record();
+        row.history_json = "{".into();
+        let err = row.into_ticket().unwrap_err();
+        assert_eq!(err.field, "history_json");
+    }
+}

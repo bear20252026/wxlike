@@ -13,24 +13,12 @@
 use crate::error::{PlatformError, Result};
 use crate::Platform;
 use serde::Serialize;
-use wxlike_report::{Action, Reason, State as TicketState, Ticket};
+use wxlike_report::{Action, Reason, Ticket, TicketRecord};
 
 use super::repo::report::{ids_by_reporter, ids_by_state, load, open_ids, save as save_ticket};
 
-/// `reports` 一行的读取形状（列多，别名避免 clippy::type_complexity）。
-pub(crate) type ReportRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    i64,
-    i64,
-    String,
-);
+/// `reports` 一行的读取形状：字段解释统一交给 `TicketRecord::into_ticket`。
+pub(crate) type ReportRow = TicketRecord;
 
 /// 处置请求体。
 ///
@@ -164,37 +152,13 @@ impl Platform {
 
     pub(crate) fn report(&self, id: &str) -> Result<Option<Ticket>> {
         let c = self.db().acquire();
-        let row = load(&c, id)?;
-        let Some((
-            reporter,
-            target_kind,
-            target_id,
-            reason,
-            detail,
-            state,
-            action_json,
-            handler,
-            created_at,
-            updated_at,
-            history_json,
-        )) = row
-        else {
+        let Some(record) = load(&c, id)? else {
             return Ok(None);
         };
-        Ok(Some(Ticket {
-            id: id.to_string(),
-            reporter,
-            target_kind,
-            target_id,
-            reason: Reason::parse(&reason).ok_or(PlatformError::BadInput("bad reason"))?,
-            detail,
-            state: TicketState::parse(&state).ok_or(PlatformError::BadInput("bad state"))?,
-            created_at: created_at.max(0) as u64,
-            updated_at: updated_at.max(0) as u64,
-            action: action_json.and_then(|s| serde_json::from_str(&s).ok()),
-            handler,
-            history: serde_json::from_str(&history_json).unwrap_or_default(),
-        }))
+        Ok(Some(record.into_ticket().map_err(|err| {
+            tracing::warn!(%err, "bad report row");
+            PlatformError::BadInput("bad report row")
+        })?))
     }
 
     /// 举报人自己的工单，最新在前。

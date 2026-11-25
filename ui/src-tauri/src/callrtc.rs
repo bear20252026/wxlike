@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+use wxlike_core::net::primary_ipv4;
 use wxlike_rtc::host::{CallHost, Effect};
 use wxlike_rtc::ice::TurnConfig;
 use wxlike_rtc::signal::Signal;
@@ -547,16 +548,6 @@ fn bind_addr() -> String {
     std::env::var("WXLIKE_MEDIA_BIND").unwrap_or_else(|_| "0.0.0.0:0".into())
 }
 
-/// 本机主网卡 IPv4（connect 一个 TEST-NET 地址拿到路由选中的源地址，
-/// 不会真的发包）。
-fn primary_ipv4() -> Option<Ipv4Addr> {
-    let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("192.0.2.1:9").ok()?;
-    match s.local_addr().ok()?.ip() {
-        IpAddr::V4(v4) => Some(v4),
-        IpAddr::V6(_) => None,
-    }
-}
 
 /// 一个副作用的落地结果：是否需要退出循环，以及要不要播放这帧音频。
 #[derive(Default)]

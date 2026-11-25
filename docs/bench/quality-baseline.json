@@ -1,13 +1,13 @@
 {
- "total_files": 479,
- "total_lines": 144971,
- "fn_total": 7070,
- "count_len_gt30": 585,
+ "total_files": 480,
+ "total_lines": 145006,
+ "fn_total": 7074,
+ "count_len_gt30": 584,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
  "count_nest_gt3": 0,
  "count_mixed_sql_http": 1,
- "magic_total": 172,
+ "magic_total": 171,
  "magic_unique": 55,
  "long_fn_keys": [],
  "deep_fn_keys": [],
@@ -77,10 +77,6 @@
    1048
   ],
   [
-   "crates/admin/src/read.rs",
-   1038
-  ],
-  [
    "crates/admin/src/http.rs",
    1028
   ],
@@ -91,6 +87,10 @@
   [
    "crates/ledger/src/store.rs",
    1002
+  ],
+  [
+   "crates/rtc/src/token/livekit.rs",
+   968
   ]
  ],
  "long_fns": [],
@@ -146,15 +146,15 @@
    5
   ],
   [
-   11,
-   5
-  ],
-  [
    9,
    5
   ],
   [
    128,
+   4
+  ],
+  [
+   11,
    4
   ],
   [
@@ -216,7 +216,7 @@
    "crates/limits/src/lib.rs:164",
    "crates/platform/src/db/schema.rs:299",
    "crates/platform/src/domain/live.rs:139",
-   "crates/platform/src/domain/repo/report.rs:68",
+   "crates/platform/src/domain/repo/report.rs:71",
    "crates/platform/src/domain/repo/video_refs.rs:26"
   ],
   "64": [
@@ -254,13 +254,6 @@
    "crates/net/src/avalanche.rs:66",
    "ui/src-tauri/src/app_state.rs:767"
   ],
-  "11": [
-   "crates/admin/src/read.rs:770",
-   "crates/platform/src/domain/repo/report.rs:68",
-   "crates/platform/src/domain/repo/video_refs.rs:26",
-   "crates/platform/src/domain/repo/video_refs.rs:71",
-   "crates/video/src/jobs.rs:985"
-  ],
   "9": [
    "crates/features/identity/src/governance/mod.rs:145",
    "crates/features/identity/src/governance/mod.rs:157",
@@ -274,10 +267,16 @@
    "crates/platform/src/domain/keys.rs:68",
    "crates/platform/src/domain/keys.rs:75"
   ],
+  "11": [
+   "crates/platform/src/domain/repo/report.rs:71",
+   "crates/platform/src/domain/repo/video_refs.rs:26",
+   "crates/platform/src/domain/repo/video_refs.rs:71",
+   "crates/video/src/jobs.rs:985"
+  ],
   "300": [
    "crates/core/src/test_support.rs:114",
    "server/src/lib.rs:168",
-   "ui/src-tauri/src/callrtc.rs:805"
+   "ui/src-tauri/src/callrtc.rs:796"
   ],
   "17": [
    "crates/rtc/src/turn.rs:327",
@@ -285,9 +284,9 @@
    "crates/rtc/src/turn.rs:589"
   ],
   "2048": [
-   "crates/sfu/src/lib.rs:355",
-   "ui/src-tauri/src/callrtc.rs:530",
-   "ui/src-tauri/src/callrtc.rs:537"
+   "crates/sfu/src/lib.rs:356",
+   "ui/src-tauri/src/callrtc.rs:531",
+   "ui/src-tauri/src/callrtc.rs:538"
   ],
   "600": [
    "crates/admin/src/web.rs:25",
@@ -310,7 +309,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 12,
+ "dup_windows": 4,
  "dup_sample": [
   [
    [
@@ -350,86 +349,6 @@
    [
     "crates/features/relations/src/lib.rs",
     57
-   ]
-  ],
-  [
-   [
-    "crates/core/src/outbox.rs",
-    143
-   ],
-   [
-    "crates/ffi/src/cache.rs",
-    71
-   ]
-  ],
-  [
-   [
-    "crates/mq/src/memory.rs",
-    191
-   ],
-   [
-    "crates/mq/src/streams.rs",
-    215
-   ]
-  ],
-  [
-   [
-    "crates/mq/src/memory.rs",
-    192
-   ],
-   [
-    "crates/mq/src/streams.rs",
-    216
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/read.rs",
-    781
-   ],
-   [
-    "crates/platform/src/domain/report.rs",
-    169
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/read.rs",
-    782
-   ],
-   [
-    "crates/platform/src/domain/report.rs",
-    170
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/read.rs",
-    783
-   ],
-   [
-    "crates/platform/src/domain/report.rs",
-    171
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/read.rs",
-    784
-   ],
-   [
-    "crates/platform/src/domain/report.rs",
-    172
-   ]
-  ],
-  [
-   [
-    "crates/sfu/src/lib.rs",
-    474
-   ],
-   [
-    "ui/src-tauri/src/callrtc.rs",
-    551
    ]
   ]
  ],
@@ -533,6 +452,7 @@
   ],
   "service-catalog": [],
   "sfu": [
+   "core",
    "platform",
    "rtc"
   ],

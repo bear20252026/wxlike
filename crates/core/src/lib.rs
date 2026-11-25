@@ -8,6 +8,7 @@ pub mod error;
 pub use wxlike_limits as limits;
 pub mod level;
 pub mod msgmeta;
+pub mod net;
 pub mod outbox;
 pub mod privacy;
 pub mod retry;

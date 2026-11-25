@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 wxlike-rtc = { path = "../rtc" }
+wxlike-core = { path = "../core" }
 # join 的 Bearer → user 与房间成员校验走平台既有 pub API（#58）
 wxlike-platform = { path = "../platform" }
 anyhow = { workspace = true }

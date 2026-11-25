@@ -1,4 +1,4 @@
-//! SQL 行映射的公共宏。
+//! SQL 行映射与连接句柄的公共工具。
 //!
 //! `query_row` 的多列闭包是纯搬运：`Ok((r.get(0)?, r.get(1)?, …))`。
 //! 这类闭包一旦超过七八列，复制粘贴时最容易漏一列，而漏列只会让某个
@@ -21,5 +21,23 @@ pub fn is_unique_violation(err: &rusqlite::Error) -> bool {
     match err {
         rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.contains("UNIQUE"),
         _ => false,
+    }
+}
+
+/// 单连接 + 互斥锁：SQLite 的日常形态（outbox、移动端缓存都是它）。
+///
+/// 锁中毒时继续用内层连接：一次 panic 不该让队列永久不可用；数据一致性由
+/// SQLite 事务保证，而不是靠把后续调用全部拒掉。
+pub struct ConnectionHandle(std::sync::Mutex<rusqlite::Connection>);
+
+impl ConnectionHandle {
+    pub fn new(conn: rusqlite::Connection) -> Self {
+        Self(std::sync::Mutex::new(conn))
+    }
+
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

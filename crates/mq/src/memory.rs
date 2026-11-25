@@ -7,7 +7,7 @@ use std::sync::{Arc, PoisonError};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::{MessageQueue, ReliableQueue, RouteTable};
+use crate::{ClaimedEntries, MessageQueue, ReliableQueue, RouteTable};
 
 struct MemQueue {
     buf: std::sync::Mutex<VecDeque<Vec<u8>>>,
@@ -192,11 +192,7 @@ impl ReliableQueue for MemoryReliableMq {
         Ok(())
     }
 
-    async fn claim_stale(
-        &self,
-        queue: &str,
-        min_idle_ms: u64,
-    ) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    async fn claim_stale(&self, queue: &str, min_idle_ms: u64) -> anyhow::Result<ClaimedEntries> {
         let q = self.queue(queue).await;
         let me = self.here();
         let mut out = Vec::new();
