@@ -1,7 +1,7 @@
 {
- "total_files": 472,
- "total_lines": 144517,
- "fn_total": 7022,
+ "total_files": 473,
+ "total_lines": 144973,
+ "fn_total": 7072,
  "count_len_gt30": 588,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
@@ -22,7 +22,7 @@
   ],
   [
    "server/src/lib.rs",
-   1813
+   1814
   ],
   [
    "crates/admin/src/g14.rs",
@@ -57,10 +57,6 @@
    1252
   ],
   [
-   "crates/video/src/jobs.rs",
-   1252
-  ],
-  [
    "crates/admin/src/commerce.rs",
    1220
   ],
@@ -71,6 +67,10 @@
   [
    "crates/mcp/src/server.rs",
    1205
+  ],
+  [
+   "crates/video/src/jobs.rs",
+   1204
   ],
   [
    "crates/admin/src/read.rs",
@@ -210,7 +210,7 @@
    "crates/admin/src/config.rs:56",
    "crates/admin/src/bin/wxlike_admin.rs:281",
    "crates/client-native/src/realtime.rs:83",
-   "crates/container/src/package.rs:256"
+   "crates/container/src/package.rs:241"
   ],
   "12": [
    "crates/limits/src/lib.rs:164",
@@ -222,9 +222,9 @@
   "64": [
    "crates/admin/src/upstream.rs:29",
    "crates/admin/src/bin/wxlike_admin.rs:54",
-   "crates/container/src/package.rs:79",
-   "crates/container/src/package.rs:89",
-   "crates/container/src/package.rs:180"
+   "crates/container/src/package.rs:64",
+   "crates/container/src/package.rs:74",
+   "crates/container/src/package.rs:165"
   ],
   "30": [
    "crates/features/identity/src/refresh.rs:494",
@@ -259,7 +259,7 @@
    "crates/platform/src/domain/repo/report.rs:82",
    "crates/platform/src/domain/repo/video_refs.rs:26",
    "crates/platform/src/domain/repo/video_refs.rs:84",
-   "crates/video/src/jobs.rs:1033"
+   "crates/video/src/jobs.rs:985"
   ],
   "9": [
    "crates/features/identity/src/governance/mod.rs:145",
@@ -276,7 +276,7 @@
   ],
   "300": [
    "crates/core/src/test_support.rs:114",
-   "server/src/lib.rs:166",
+   "server/src/lib.rs:167",
    "ui/src-tauri/src/callrtc.rs:805"
   ],
   "17": [
@@ -310,7 +310,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 114,
+ "dup_windows": 67,
  "dup_sample": [
   [
    [
@@ -384,52 +384,52 @@
   ],
   [
    [
-    "crates/admin/src/identity.rs",
-    395
+    "crates/features/identity/src/session.rs",
+    328
    ],
    [
-    "crates/features/identity/src/governance/view.rs",
-    16
+    "crates/features/relations/src/governance.rs",
+    210
    ]
   ],
   [
    [
-    "crates/admin/src/identity.rs",
-    396
+    "crates/features/identity/src/session.rs",
+    329
    ],
    [
-    "crates/features/identity/src/governance/view.rs",
-    17
+    "crates/features/relations/src/governance.rs",
+    211
    ]
   ],
   [
    [
-    "crates/admin/src/identity.rs",
-    397
+    "crates/core/src/error.rs",
+    31
    ],
    [
-    "crates/features/identity/src/governance/view.rs",
-    18
+    "crates/features/relations/src/lib.rs",
+    56
    ]
   ],
   [
    [
-    "crates/admin/src/identity.rs",
-    398
+    "crates/core/src/error.rs",
+    31
    ],
    [
-    "crates/features/identity/src/governance/view.rs",
-    19
+    "crates/features/relations/src/lib.rs",
+    57
    ]
   ],
   [
    [
-    "crates/admin/src/identity.rs",
-    399
+    "crates/features/identity/src/lib.rs",
+    78
    ],
    [
-    "crates/features/identity/src/governance/view.rs",
-    20
+    "crates/features/relations/src/lib.rs",
+    73
    ]
   ]
  ],
