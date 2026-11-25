@@ -54,6 +54,7 @@ use wxlike_security::privacy::{
     Visibility,
 };
 
+use super::repo::account as account_repo;
 use super::repo::account::{
     anonymize_user, deleted_at, export_contacts, export_ledger, export_media, export_messages,
     export_profile, export_user_settings, mask_rows, open_delete_job, purge_rows, wallet_balance,
@@ -227,8 +228,8 @@ impl Platform {
             block_ms: STEP_UP_BLOCK_MS,
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        throttle::check(&c, &step_up_bucket(user_id), limit, now)?;
+        let c = self.db().acquire();
+        account_repo::throttle_check(&c, &step_up_bucket(user_id), limit, now)?;
         Ok(())
     }
 
@@ -240,14 +241,11 @@ impl Platform {
             block_ms: STEP_UP_BLOCK_MS,
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let c = match self.db().lock() {
-            Ok(c) => c,
-            Err(err) => {
-                tracing::error!(error = %err, "step-up 闸门拿不到连接");
-                return;
-            }
-        };
-        match throttle::record_failure(&c, &step_up_bucket(user_id), limit, now) {
+        let bucket = step_up_bucket(user_id);
+        match self
+            .db()
+            .with_tx(|c| account_repo::throttle_record(c, &bucket, limit, now))
+        {
             Ok(status) if status.blocked_until > now => {
                 tracing::warn!(user = %user_id, until = status.blocked_until, "step-up 口令闸门封禁");
             }
@@ -258,14 +256,11 @@ impl Platform {
 
     /// 验证通过即清零，不惩罚正常用户。
     pub(crate) fn step_up_passed(&self, user_id: &str) {
-        let c = match self.db().lock() {
-            Ok(c) => c,
-            Err(err) => {
-                tracing::error!(error = %err, "step-up 闸门拿不到连接");
-                return;
-            }
-        };
-        if let Err(err) = throttle::reset(&c, &step_up_bucket(user_id)) {
+        let bucket = step_up_bucket(user_id);
+        if let Err(err) = self
+            .db()
+            .with_tx(|c| account_repo::throttle_reset(c, &bucket))
+        {
             tracing::error!(error = %err, "step-up 闸门清不掉");
         }
     }

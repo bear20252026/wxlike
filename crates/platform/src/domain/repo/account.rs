@@ -371,9 +371,52 @@ const PURGE_MASKS: &[(&str, &str)] = &[
     ),
 ];
 
+/// step-up / 登录限速桶：检查是否已封。
+pub(in crate::domain) fn throttle_check(
+    conn: &StorageConnection<'_>,
+    bucket: &str,
+    limit: wxlike_identity::throttle::Limit,
+    now: i64,
+) -> Result<()> {
+    Ok(wxlike_identity::throttle::check_with(
+        &crate::storage::sql_port::StorageSqlExec(conn),
+        bucket,
+        limit,
+        now,
+    )?)
+}
+
+/// 记一次限速失败（调用方用 `with_tx` 保证窗口读写原子）。
+pub(in crate::domain) fn throttle_record(
+    conn: &StorageConnection<'_>,
+    bucket: &str,
+    limit: wxlike_identity::throttle::Limit,
+    now: i64,
+) -> Result<wxlike_identity::throttle::Status> {
+    Ok(wxlike_identity::throttle::record_failure_with(
+        &crate::storage::sql_port::StorageSqlExec(conn),
+        bucket,
+        limit,
+        now,
+    )?)
+}
+
+/// 成功一次即清零。
+pub(in crate::domain) fn throttle_reset(
+    conn: &StorageConnection<'_>,
+    bucket: &str,
+) -> Result<()> {
+    Ok(wxlike_identity::throttle::reset_with(
+        &crate::storage::sql_port::StorageSqlExec(conn),
+        bucket,
+    )?)
+}
+
 #[cfg(test)]
 mod pg_tests {
-    use super::{deleted_at, open_delete_job, purge_rows, wallet_balance};
+    use super::{
+        deleted_at, open_delete_job, purge_rows, throttle_check, throttle_record, wallet_balance,
+    };
     use crate::storage::params;
     use crate::storage::StorageProfile;
     use crate::Db;
@@ -410,5 +453,33 @@ mod pg_tests {
         assert_eq!(deleted_at(&conn, user).expect("deleted"), None);
         let counts = purge_rows(&conn, user).expect("purge");
         assert!(counts.iter().all(|(_, n)| *n == 0));
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
+    fn postgres_step_up_throttle_blocks_after_one_failure() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        let bucket = "pg-throttle-bucket";
+        let limit = wxlike_identity::throttle::Limit {
+            max_attempts: 1,
+            window_ms: 1_000,
+            block_ms: 5_000,
+        };
+        db.with_tx(|conn| {
+            conn.execute(
+                "DELETE FROM identity_throttle WHERE bucket = ?1",
+                params![bucket],
+            )?;
+            throttle_record(conn, bucket, limit, 1_000)?;
+            Ok(())
+        })
+        .expect("record failure");
+        assert!(
+            db.with_tx(|conn| throttle_check(conn, bucket, limit, 1_100))
+                .is_err()
+        );
     }
 }

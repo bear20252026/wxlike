@@ -424,3 +424,21 @@ SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道�
 
 **验证**：`account_surfaces` 16 passed、`sessions_http` 5 passed；PG ignored 用例
 追加 step-up 授予/消费；quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。
+
+## 15. 批次 25：step-up 限速桶端口化
+
+`step_up_gate/denied/passed` 是账号面最频繁的写路径之一：每次敏感操作先查桶，
+失败记一笔，成功清零。它原来全部走 `identity::throttle` 的 `&Connection`。
+
+- identity `throttle` 增加 `check_with` / `record_failure_with` / `reset_with`；
+  `record_failure` 保留 SQLite 事务包装（`SqliteExec(&tx)` 在同一事务里执行），
+  端口版明确要求调用方 `with_tx`。
+- `check_budget` / `spend_failure`（短信验证码预算）暂不动，它们属于登录/验证码
+  流，下一批一起看。
+- 平台 `repo/account.rs` 增加 `throttle_check` / `throttle_record` /
+  `throttle_reset`；`Platform::step_up_gate` 用 `acquire`，`denied/passed` 用
+  `with_tx`，失败只记日志、不把请求打成 500（与原来语义一致）。
+
+**验证**：`account_surfaces` 16 passed；新增
+`repo::account::pg_tests::postgres_step_up_throttle_blocks_after_one_failure`
+（ignored）；quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。

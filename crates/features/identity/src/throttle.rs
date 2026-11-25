@@ -6,7 +6,8 @@
 
 use rusqlite::{params, Connection, OptionalExtension as _};
 
-use crate::Result;
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
+use crate::{IdError, Result};
 
 /// 限速参数。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,16 +237,37 @@ pub fn sweep(conn: &Connection, now: i64, limit: i64) -> Result<usize> {
 
 /// 当前是否被挡。被封时返回 `RateLimited`，`retry_after_ms` 可直接回给客户端。
 pub fn check(conn: &Connection, bucket: &str, limit: Limit, now: i64) -> Result<()> {
-    let row: Option<(i64, i64, i64)> = conn
-        .query_row(
-            "SELECT window_start, attempts, blocked_until FROM identity_throttle WHERE bucket = ?1",
-            params![bucket],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    let Some((window_start, attempts, blocked_until)) = row else {
+    check_with(&SqliteExec(conn), bucket, limit, now)
+}
+
+/// 端口版 `check`。
+pub fn check_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    bucket: &str,
+    limit: Limit,
+    now: i64,
+) -> Result<()> {
+    let Some(values) = exec.query(
+        "SELECT window_start, attempts, blocked_until FROM identity_throttle WHERE bucket = ?1",
+        &[SqlParam::Text(bucket.to_string())],
+        &[ColKind::Int, ColKind::Int, ColKind::Int],
+    )?
+    else {
         return Ok(());
     };
+    let mut it = values.into_iter();
+    let window_start = it
+        .next()
+        .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+        .into_int()?;
+    let attempts = it
+        .next()
+        .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+        .into_int()?;
+    let blocked_until = it
+        .next()
+        .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+        .into_int()?;
     if blocked_until > now {
         return Err(crate::IdError::RateLimited {
             retry_after_ms: blocked_until - now,
@@ -265,29 +287,58 @@ pub fn check(conn: &Connection, bucket: &str, limit: Limit, now: i64) -> Result<
 /// 记一次失败：窗口过期就重开，达标即封。
 pub fn record_failure(conn: &Connection, bucket: &str, limit: Limit, now: i64) -> Result<Status> {
     let tx = conn.unchecked_transaction()?;
-    let row: Option<(i64, i64)> = tx
-        .query_row(
-            "SELECT window_start, attempts FROM identity_throttle WHERE bucket = ?1",
-            params![bucket],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
+    let status = record_failure_with(&SqliteExec(&tx), bucket, limit, now)?;
+    tx.commit()?;
+    Ok(status)
+}
+
+/// 端口版 `record_failure`：**调用方负责事务**（`Db::with_tx` 或 SQLite 包装）。
+pub fn record_failure_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    bucket: &str,
+    limit: Limit,
+    now: i64,
+) -> Result<Status> {
+    let row = exec.query(
+        "SELECT window_start, attempts FROM identity_throttle WHERE bucket = ?1",
+        &[SqlParam::Text(bucket.to_string())],
+        &[ColKind::Int, ColKind::Int],
+    )?;
     let (start, attempts) = match row {
-        Some((start, attempts)) if now - start < limit.window_ms => (start, attempts + 1),
-        _ => (now, 1),
+        Some(values) => {
+            let mut it = values.into_iter();
+            let start = it
+                .next()
+                .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+                .into_int()?;
+            let attempts = it
+                .next()
+                .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+                .into_int()?;
+            if now - start < limit.window_ms {
+                (start, attempts + 1)
+            } else {
+                (now, 1)
+            }
+        }
+        None => (now, 1),
     };
     let blocked_until = if attempts >= limit.max_attempts {
         now.saturating_add(limit.block_ms)
     } else {
         0
     };
-    tx.execute(
+    exec.exec(
         "INSERT INTO identity_throttle(bucket, window_start, attempts, blocked_until) \
          VALUES(?1, ?2, ?3, ?4) \
          ON CONFLICT(bucket) DO UPDATE SET window_start = ?2, attempts = ?3, blocked_until = ?4",
-        params![bucket, start, attempts, blocked_until],
+        &[
+            SqlParam::Text(bucket.to_string()),
+            SqlParam::Int(start),
+            SqlParam::Int(attempts),
+            SqlParam::Int(blocked_until),
+        ],
     )?;
-    tx.commit()?;
     Ok(Status {
         attempts,
         blocked_until,
@@ -296,9 +347,14 @@ pub fn record_failure(conn: &Connection, bucket: &str, limit: Limit, now: i64) -
 
 /// 成功一次即清零（不惩罚正常用户）。
 pub fn reset(conn: &Connection, bucket: &str) -> Result<()> {
-    conn.execute(
+    reset_with(&SqliteExec(conn), bucket)
+}
+
+/// 端口版 `reset`。
+pub fn reset_with<E: SqlExec + ?Sized>(exec: &E, bucket: &str) -> Result<()> {
+    exec.exec(
         "DELETE FROM identity_throttle WHERE bucket = ?1",
-        params![bucket],
+        &[SqlParam::Text(bucket.to_string())],
     )?;
     Ok(())
 }
