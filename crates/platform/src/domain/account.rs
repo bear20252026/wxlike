@@ -58,6 +58,7 @@ use super::repo::account::{
     anonymize_user, deleted_at, export_contacts, export_ledger, export_media, export_messages,
     export_profile, export_user_settings, mask_rows, open_delete_job, purge_rows, wallet_balance,
 };
+use super::repo::account_jobs;
 use super::repo::preferences as pref_repo;
 use crate::domain::repo::sessions::SqliteSessionsRepo;
 use crate::domain::repo::users::SqliteUsersRepo;
@@ -289,12 +290,12 @@ impl Platform {
     /// 申请导出。已有排队/执行中的导出时返回同一条作业（不重复打包）。
     pub fn request_export_job(&self, user_id: &str) -> Result<Job> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        let port = crate::storage::StorageConnection::sqlite_borrow(&c);
-        if deleted_at(&port, user_id)?.is_some() {
-            return Err(PlatformError::Blocked("account scheduled for deletion"));
-        }
-        Ok(preferences::request_export(&c, user_id, now)?)
+        self.db().with_tx(|c| {
+            if deleted_at(c, user_id)?.is_some() {
+                return Err(PlatformError::Blocked("account scheduled for deletion"));
+            }
+            account_jobs::request_export(c, user_id, now)
+        })
     }
 
     /// 撤回一条排队中的作业。判定全在 `preferences::cancel`，这里只做
@@ -302,19 +303,28 @@ impl Platform {
     pub fn cancel_account_job(&self, user_id: &str, job_id: &str) -> Result<Job> {
         validate_id(job_id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        preferences::cancel(&c, job_id, user_id, now).map_err(|err| match err {
-            wxlike_identity::IdError::Conflict(what) => PlatformError::Blocked(what),
-            other => other.into(),
-        })
+        self.db()
+            .with_tx(|c| account_jobs::cancel(c, job_id, user_id, now))
+            .map_err(|err| match err {
+                PlatformError::Conflict(what) => {
+                    let reason = match what.as_str() {
+                        "deletion cannot be cancelled" => "deletion cannot be cancelled",
+                        "job already left the queue" => "job already left the queue",
+                        "job already claimed" => "job already claimed",
+                        _ => "job conflict",
+                    };
+                    PlatformError::Blocked(reason)
+                }
+                other => other,
+            })
     }
 
     /// 本人的一条作业。**别人的作业一律 404**：作业 id 不是存在性探测面
     /// （与 `/api/sessions/{sid}/revoke` 同一口径）。
     pub fn account_job(&self, user_id: &str, job_id: &str) -> Result<Job> {
         validate_id(job_id)?;
-        let c = self.db().lock()?;
-        let job = preferences::job(&c, job_id)?.ok_or(PlatformError::NotFound)?;
+        let c = self.db().acquire();
+        let job = account_jobs::job(&c, job_id)?.ok_or(PlatformError::NotFound)?;
         if job.user_id != user_id {
             return Err(PlatformError::NotFound);
         }
@@ -322,20 +332,21 @@ impl Platform {
     }
 
     pub fn account_jobs(&self, user_id: &str) -> Result<Vec<Job>> {
-        let c = self.db().lock()?;
-        Ok(preferences::list(&c, user_id)?)
+        let c = self.db().acquire();
+        account_jobs::list(&c, user_id)
     }
 
     /// 为已完成的导出签一个短时单次下载令牌。未完成 → 403（`export not ready`）。
     pub fn create_export_link(&self, user_id: &str, job_id: &str) -> Result<(String, i64)> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        let job = preferences::job(&c, job_id)?.ok_or(PlatformError::NotFound)?;
-        if job.user_id != user_id {
-            return Err(PlatformError::NotFound);
-        }
-        let raw = preferences::export_link(&c, job_id, user_id, now)?;
-        Ok((raw, preferences::EXPORT_LINK_TTL_MS))
+        self.db().with_tx(|c| {
+            let job = account_jobs::job(c, job_id)?.ok_or(PlatformError::NotFound)?;
+            if job.user_id != user_id {
+                return Err(PlatformError::NotFound);
+            }
+            let raw = account_jobs::export_link(c, job_id, user_id, now)?;
+            Ok((raw, preferences::EXPORT_LINK_TTL_MS))
+        })
     }
 
     /// 兑换下载令牌并读出产物。第二次兑换 401（单次）。
@@ -415,10 +426,7 @@ impl Platform {
         let mut done = 0;
         while done < MAX_JOBS_PER_RUN {
             let now = wxlike_core::types::now_ms() as i64;
-            let claimed = self
-                .db()
-                .blocking(move |c| Ok(preferences::claim(c, now)?))
-                .await?;
+            let claimed = self.db().with_tx(move |c| account_jobs::claim(c, now))?;
             let Some(job) = claimed else {
                 break;
             };
@@ -460,11 +468,7 @@ impl Platform {
         let job_id = job.id.clone();
         let size = bytes.len() as i64;
         self.db()
-            .blocking(move |c| {
-                preferences::finish(c, &job_id, &sha, size, now)?;
-                Ok(())
-            })
-            .await?;
+            .with_tx(move |c| account_jobs::finish(c, &job_id, &sha, size, now))?;
         Ok(())
     }
 
@@ -511,11 +515,7 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let ran = self
             .db()
-            .blocking(move |c| {
-                preferences::fail(c, &job_id, &trimmed, now)?;
-                Ok(())
-            })
-            .await;
+            .with_tx(move |c| account_jobs::fail(c, &job_id, &trimmed, now));
         if let Err(err) = ran {
             tracing::error!(job = %fail_id, error = %err, "account job: 连失败原因都没写进去");
         }

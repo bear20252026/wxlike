@@ -5,6 +5,7 @@
 //!
 //! 参数一律走绑定（`params!` / `?N`），本层不拼用户输入进 SQL。
 
+pub(in crate::domain) mod account_jobs;
 pub(in crate::domain) mod preferences;
 pub(in crate::domain) mod qr_state;
 

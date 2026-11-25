@@ -56,6 +56,14 @@ pub trait SqlExec {
         params: &[SqlParam],
         kinds: &[ColKind],
     ) -> Result<Option<Vec<SqlValue>>>;
+
+    /// 多行查询：用于列表类 repo（作业列表、会话列表）。
+    fn query_many(
+        &self,
+        sql: &str,
+        params: &[SqlParam],
+        kinds: &[ColKind],
+    ) -> Result<Vec<Vec<SqlValue>>>;
 }
 
 /// identity 自带的后端：直接走 `rusqlite`。
@@ -66,6 +74,22 @@ fn sqlite_param(p: &SqlParam) -> rusqlite::types::Value {
         SqlParam::Text(v) => rusqlite::types::Value::Text(v.clone()),
         SqlParam::Int(v) => rusqlite::types::Value::Integer(*v),
     }
+}
+
+fn sqlite_values(row: &rusqlite::Row<'_>, kinds: &[ColKind]) -> Result<Vec<SqlValue>> {
+    let mut out = Vec::with_capacity(kinds.len());
+    for (i, kind) in kinds.iter().enumerate() {
+        let value = match (kind, row.get_ref(i)?) {
+            (ColKind::Text, rusqlite::types::ValueRef::Text(v)) => {
+                SqlValue::Text(String::from_utf8_lossy(v).into_owned())
+            }
+            (ColKind::Text, _) => return Err(IdError::Corrupt("sql port.column type")),
+            (ColKind::Int, rusqlite::types::ValueRef::Integer(v)) => SqlValue::Int(v),
+            (ColKind::Int, _) => return Err(IdError::Corrupt("sql port.column type")),
+        };
+        out.push(value);
+    }
+    Ok(out)
 }
 
 impl SqlExec for SqliteExec<'_> {
@@ -88,18 +112,22 @@ impl SqlExec for SqliteExec<'_> {
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
-        let mut out = Vec::with_capacity(kinds.len());
-        for (i, kind) in kinds.iter().enumerate() {
-            let value = match (kind, row.get_ref(i)?) {
-                (ColKind::Text, rusqlite::types::ValueRef::Text(v)) => {
-                    SqlValue::Text(String::from_utf8_lossy(v).into_owned())
-                }
-                (ColKind::Text, _) => return Err(IdError::Corrupt("sql port.column type")),
-                (ColKind::Int, rusqlite::types::ValueRef::Integer(v)) => SqlValue::Int(v),
-                (ColKind::Int, _) => return Err(IdError::Corrupt("sql port.column type")),
-            };
-            out.push(value);
+        Ok(Some(sqlite_values(row, kinds)?))
+    }
+
+    fn query_many(
+        &self,
+        sql: &str,
+        params: &[SqlParam],
+        kinds: &[ColKind],
+    ) -> Result<Vec<Vec<SqlValue>>> {
+        let values: Vec<_> = params.iter().map(sqlite_param).collect();
+        let mut stmt = self.0.prepare(sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(sqlite_values(row, kinds)?);
         }
-        Ok(Some(out))
+        Ok(out)
     }
 }

@@ -50,4 +50,29 @@ impl QrExec for StorageSqlExec<'_, '_> {
             Err(e) => Err(db_err(e)),
         }
     }
+
+    fn query_many(
+        &self,
+        sql: &str,
+        params: &[QrParam],
+        kinds: &[QrKind],
+    ) -> Result<Vec<Vec<QrValue>>, wxlike_identity::IdError> {
+        let bound = Params::new(params.iter().map(param).collect());
+        let stmt = self.0.prepare(sql).map_err(db_err)?;
+        let rows = stmt.query_map(bound, |r: &StorageRow<'_>| {
+            let mut out = Vec::with_capacity(kinds.len());
+            for (i, kind) in kinds.iter().enumerate() {
+                out.push(match kind {
+                    QrKind::Text => QrValue::Text(r.get::<_, String>(i)?),
+                    QrKind::Int => QrValue::Int(r.get::<_, i64>(i)?),
+                });
+            }
+            Ok(out)
+        });
+        let mut out = Vec::new();
+        for row in rows.map_err(db_err)? {
+            out.push(row.map_err(db_err)?);
+        }
+        Ok(out)
+    }
 }

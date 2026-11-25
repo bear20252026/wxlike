@@ -357,3 +357,28 @@ SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道�
 `sessions` 端口化可直接复用 `StorageSqlExec`，不用再抄一遍参数转换。
 `cargo test -p wxlike-platform --test qr_login_http` 5 passed；quality gate
 重复窗口 2、嵌套 0、魔法数字 171。
+
+## 12. 批次 22：账号导出作业生命周期端口化
+
+批次 19 只把“取数”切了端口；作业的 `request → claim → finish/fail → cancel`
+仍在 `preferences` 的 `&Connection` 上。批次 21 的 `SqlExec` 正好是这批的底座：
+
+- identity `preferences` 增加 `request_export_with` / `job_with` / `list_with` /
+  `cancel_with` / `claim_with` / `finish_with` / `fail_with` / `export_link_with`；
+  SQL 与状态规则仍只有一份，`&Connection` 版本只是 `SqliteExec` 包装。
+- `sqlport` 增加 `query_many`（作业列表需要多行），SQLite 与平台适配器同步实现。
+- 平台新增 `repo/account_jobs.rs`：一个薄包装层，把 `StorageConnection` 适配成
+  `StorageSqlExec`。
+- `Platform` 的 `request_export_job`、`account_job(s)`、`cancel_account_job`、
+  `create_export_link`、`run_export_job` 的 finish、`run_account_jobs` 的 claim、
+  `mark_job_failed` 全部改走 `acquire` / `with_tx`；`request_export + deleted_at`
+  闸门在同一事务里。
+
+**还剩**：`request_delete` 仍要 `session::logout_all` / `step_up::revoke_all`
+（SQLite 入口），所以 `schedule_deletion` 与完整 PG 注销 worker 仍是下一批；
+`take_export_download` 的 `redeem_link` 仍有 SQLite 单次事务。
+
+**验证**：`cargo test -p wxlike-identity --lib preferences` 9 passed；
+`cargo test -p wxlike-platform --test account_surfaces` 16 passed；新增
+`account_jobs::pg_tests::postgres_account_export_job_is_created_listed_and_cancelled`
+（ignored）。quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。

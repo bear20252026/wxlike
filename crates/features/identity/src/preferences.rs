@@ -20,9 +20,10 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
 use crate::{random_hex, IdError, Result};
 
 /// 服务端偏好的白名单键。**封闭集合**：写错的键不会静默存进去。
@@ -307,19 +308,6 @@ struct RawJob {
     error: String,
 }
 
-fn raw_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawJob> {
-    Ok(RawJob {
-        id: r.get(0)?,
-        user_id: r.get(1)?,
-        kind: r.get(2)?,
-        status: r.get(3)?,
-        requested_at: r.get(4)?,
-        artifact: r.get(5)?,
-        bytes: r.get(6)?,
-        error: r.get(7)?,
-    })
-}
-
 /// 原文 → 领域对象。任何一种"看不懂"都是一条 [`IdError::Corrupt`]。
 fn decode_job(raw: RawJob) -> Result<Job> {
     Ok(Job {
@@ -336,24 +324,90 @@ fn decode_job(raw: RawJob) -> Result<Job> {
 
 const JOB_COLS: &str = "id, user_id, kind, status, requested_at, artifact, bytes, error";
 
-fn find_open(conn: &Connection, user_id: &str, kind: JobKind) -> Result<Option<Job>> {
+const JOB_KINDS: [ColKind; 8] = [
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Int,
+    ColKind::Text,
+    ColKind::Int,
+    ColKind::Text,
+];
+
+fn job_text<I: Iterator<Item = SqlValue>>(it: &mut I) -> Result<String> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_job.row width"))?
+        .into_text()
+}
+
+fn job_int<I: Iterator<Item = SqlValue>>(it: &mut I) -> Result<i64> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_job.row width"))?
+        .into_int()
+}
+
+fn raw_job_values(values: Vec<SqlValue>) -> Result<RawJob> {
+    let mut it = values.into_iter();
+    let id = job_text(&mut it)?;
+    let user_id = job_text(&mut it)?;
+    let kind = job_text(&mut it)?;
+    let status = job_text(&mut it)?;
+    let requested_at = job_int(&mut it)?;
+    let artifact = job_text(&mut it)?;
+    let bytes = job_int(&mut it)?;
+    let error = job_text(&mut it)?;
+    Ok(RawJob {
+        id,
+        user_id,
+        kind,
+        status,
+        requested_at,
+        artifact,
+        bytes,
+        error,
+    })
+}
+
+fn find_open_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    kind: JobKind,
+) -> Result<Option<Job>> {
     let sql = format!(
         "SELECT {JOB_COLS} FROM identity_job \
          WHERE user_id = ?1 AND kind = ?2 AND status IN ('queued','running') \
          ORDER BY requested_at DESC LIMIT 1"
     );
-    conn.query_row(&sql, params![user_id, kind.as_str()], raw_job)
-        .optional()?
-        .map(decode_job)
-        .transpose()
+    exec.query(
+        &sql,
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(kind.as_str().to_string()),
+        ],
+        &JOB_KINDS,
+    )?
+    .map(raw_job_values)
+    .transpose()?
+    .map(decode_job)
+    .transpose()
+}
+
+fn find_open(conn: &Connection, user_id: &str, kind: JobKind) -> Result<Option<Job>> {
+    find_open_with(&SqliteExec(conn), user_id, kind)
 }
 
 /// 申请导出。已有排队/执行中的导出时返回同一条（幂等，不重复打包）。
 pub fn request_export(conn: &Connection, user_id: &str, now: i64) -> Result<Job> {
-    if let Some(job) = find_open(conn, user_id, JobKind::Export)? {
+    request_export_with(&SqliteExec(conn), user_id, now)
+}
+
+/// 端口版 `request_export`。
+pub fn request_export_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -> Result<Job> {
+    if let Some(job) = find_open_with(exec, user_id, JobKind::Export)? {
         return Ok(job);
     }
-    enqueue(conn, user_id, JobKind::Export, now)
+    enqueue_with(exec, user_id, JobKind::Export, now)
 }
 
 /// 申请注销：**先撤销全部会话与刷新链**，再排队清理各域。
@@ -366,21 +420,41 @@ pub fn request_delete(conn: &Connection, user_id: &str, now: i64) -> Result<Job>
     enqueue(conn, user_id, JobKind::Delete, now)
 }
 
-fn enqueue(conn: &Connection, user_id: &str, kind: JobKind, now: i64) -> Result<Job> {
+fn enqueue_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    kind: JobKind,
+    now: i64,
+) -> Result<Job> {
     let id = random_hex(JOB_ID_BYTES);
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_job(id, user_id, kind, status, requested_at, artifact, bytes, error) \
          VALUES(?1, ?2, ?3, 'queued', ?4, '', 0, '')",
-        params![id, user_id, kind.as_str(), now],
+        &[
+            SqlParam::Text(id.clone()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(kind.as_str().to_string()),
+            SqlParam::Int(now),
+        ],
     )?;
-    job(conn, &id)?.ok_or(IdError::NotFound("job"))
+    job_with(exec, &id)?.ok_or(IdError::NotFound("job"))
+}
+
+fn enqueue(conn: &Connection, user_id: &str, kind: JobKind, now: i64) -> Result<Job> {
+    enqueue_with(&SqliteExec(conn), user_id, kind, now)
 }
 
 /// 单条作业。
 pub fn job(conn: &Connection, id: &str) -> Result<Option<Job>> {
+    job_with(&SqliteExec(conn), id)
+}
+
+/// 端口版 `job`。
+pub fn job_with<E: SqlExec + ?Sized>(exec: &E, id: &str) -> Result<Option<Job>> {
     let sql = format!("SELECT {JOB_COLS} FROM identity_job WHERE id = ?1");
-    conn.query_row(&sql, params![id], raw_job)
-        .optional()?
+    exec.query(&sql, &[SqlParam::Text(id.to_string())], &JOB_KINDS)?
+        .map(raw_job_values)
+        .transpose()?
         .map(decode_job)
         .transpose()
 }
@@ -390,36 +464,60 @@ pub fn job(conn: &Connection, id: &str) -> Result<Option<Job>> {
 /// 取之前先验原文：一行已经坏掉的作业**不该被标记成 running**，否则它从此
 /// 既读不出状态、也不会再被任何 worker 取走（取的是 `status='queued'`）。
 pub fn claim(conn: &Connection, now: i64) -> Result<Option<Job>> {
-    let next: Option<(String, String, String)> = conn
-        .query_row(
-            "SELECT id, kind, status FROM identity_job WHERE status = 'queued' \
-             ORDER BY requested_at ASC LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    let Some((id, kind, status)) = next else {
+    claim_with(&SqliteExec(conn), now)
+}
+
+/// 端口版 `claim`。
+pub fn claim_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<Option<Job>> {
+    let kinds = [ColKind::Text, ColKind::Text, ColKind::Text];
+    let rows = exec.query_many(
+        "SELECT id, kind, status FROM identity_job WHERE status = 'queued' \
+         ORDER BY requested_at ASC LIMIT 1",
+        &[],
+        &kinds,
+    )?;
+    let Some(values) = rows.into_iter().next() else {
         return Ok(None);
     };
+    let mut it = values.into_iter();
+    let id = job_text(&mut it)?;
+    let kind = job_text(&mut it)?;
+    let status = job_text(&mut it)?;
     JobKind::parse(&kind).ok_or(IdError::Corrupt("identity_job.kind"))?;
     JobStatus::parse(&status).ok_or(IdError::Corrupt("identity_job.status"))?;
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_job SET status = 'running', started_at = ?2 \
          WHERE id = ?1 AND status = 'queued'",
-        params![&id, now],
+        &[SqlParam::Text(id.clone()), SqlParam::Int(now)],
     )?;
     if n != 1 {
         return Ok(None);
     }
-    job(conn, &id)
+    job_with(exec, &id)
 }
 
 /// 完成作业（写入产物路径与大小）。
 pub fn finish(conn: &Connection, id: &str, artifact: &str, bytes: i64, now: i64) -> Result<()> {
-    let n = conn.execute(
+    finish_with(&SqliteExec(conn), id, artifact, bytes, now)
+}
+
+/// 端口版 `finish`。
+pub fn finish_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    id: &str,
+    artifact: &str,
+    bytes: i64,
+    now: i64,
+) -> Result<()> {
+    let n = exec.exec(
         "UPDATE identity_job SET status = 'done', artifact = ?2, bytes = ?3, finished_at = ?4 \
          WHERE id = ?1 AND status = 'running'",
-        params![id, artifact, bytes, now],
+        &[
+            SqlParam::Text(id.to_string()),
+            SqlParam::Text(artifact.to_string()),
+            SqlParam::Int(bytes),
+            SqlParam::Int(now),
+        ],
     )?;
     if n != 1 {
         return Err(IdError::Conflict("job not running"));
@@ -429,9 +527,19 @@ pub fn finish(conn: &Connection, id: &str, artifact: &str, bytes: i64, now: i64)
 
 /// 作业失败（保留原因，供用户看到"为什么没导出来"）。
 pub fn fail(conn: &Connection, id: &str, reason: &str, now: i64) -> Result<()> {
-    conn.execute(
+    fail_with(&SqliteExec(conn), id, reason, now)
+}
+
+/// 端口版 `fail`。
+pub fn fail_with<E: SqlExec + ?Sized>(exec: &E, id: &str, reason: &str, now: i64) -> Result<()> {
+    let reason = crate::check_label(reason, "error")?;
+    exec.exec(
         "UPDATE identity_job SET status = 'failed', error = ?2, finished_at = ?3 WHERE id = ?1",
-        params![id, crate::check_label(reason, "error")?, now],
+        &[
+            SqlParam::Text(id.to_string()),
+            SqlParam::Text(reason),
+            SqlParam::Int(now),
+        ],
     )?;
     Ok(())
 }
@@ -446,7 +554,17 @@ pub fn fail(conn: &Connection, id: &str, reason: &str, now: i64) -> Result<()> {
 /// 现在把作业标成取消，用户面对的是一个"已恢复"却没恢复任何凭证的账号。
 /// 错误串是 `'static` 常量，平台层照原样映射成 409，不掺用户数据。
 pub fn cancel(conn: &Connection, job_id: &str, user_id: &str, now: i64) -> Result<Job> {
-    let Some(existing) = job(conn, job_id)? else {
+    cancel_with(&SqliteExec(conn), job_id, user_id, now)
+}
+
+/// 端口版 `cancel`。
+pub fn cancel_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    job_id: &str,
+    user_id: &str,
+    now: i64,
+) -> Result<Job> {
+    let Some(existing) = job_with(exec, job_id)? else {
         return Err(IdError::NotFound("job"));
     };
     // 别人的作业与不存在同形：作业 id 不是存在性探测面。
@@ -459,49 +577,62 @@ pub fn cancel(conn: &Connection, job_id: &str, user_id: &str, now: i64) -> Resul
     if existing.status != JobStatus::Queued {
         return Err(IdError::Conflict("job already left the queue"));
     }
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_job SET status = 'cancelled', finished_at = ?2 \
          WHERE id = ?1 AND status = 'queued'",
-        params![job_id, now],
+        &[SqlParam::Text(job_id.to_string()), SqlParam::Int(now)],
     )?;
     if n != 1 {
         // 并发：worker 正好在这一刻把它领走了。状态是一致的，但这次取消没做成。
         return Err(IdError::Conflict("job already claimed"));
     }
-    job(conn, job_id)?.ok_or(IdError::NotFound("job"))
+    job_with(exec, job_id)?.ok_or(IdError::NotFound("job"))
 }
 
 /// 账号的全部作业，最近在前。
 pub fn list(conn: &Connection, user_id: &str) -> Result<Vec<Job>> {
+    list_with(&SqliteExec(conn), user_id)
+}
+
+/// 端口版 `list`。
+pub fn list_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<Vec<Job>> {
     let sql = format!(
         "SELECT {JOB_COLS} FROM identity_job WHERE user_id = ?1 ORDER BY requested_at DESC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![user_id], raw_job)?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(decode_job(row?)?);
-    }
-    Ok(out)
+    exec.query_many(&sql, &[SqlParam::Text(user_id.to_string())], &JOB_KINDS)?
+        .into_iter()
+        .map(raw_job_values)
+        .map(|r| r.and_then(decode_job))
+        .collect()
 }
 
 /// 为已完成的导出签发短时下载令牌（只存摘要）。
 pub fn export_link(conn: &Connection, job_id: &str, user_id: &str, now: i64) -> Result<String> {
-    let Some(job) = job(conn, job_id)? else {
+    export_link_with(&SqliteExec(conn), job_id, user_id, now)
+}
+
+/// 端口版 `export_link`。
+pub fn export_link_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    job_id: &str,
+    user_id: &str,
+    now: i64,
+) -> Result<String> {
+    let Some(job) = job_with(exec, job_id)? else {
         return Err(IdError::NotFound("job"));
     };
     if job.user_id != user_id || job.kind != JobKind::Export || job.status != JobStatus::Done {
         return Err(IdError::Forbidden("export not ready"));
     }
     let raw = random_hex(crate::TOKEN_BYTES);
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_export_link(token_hash, job_id, user_id, expires_at, used_at) \
          VALUES(?1, ?2, ?3, ?4, NULL)",
-        params![
-            crate::digest(&raw),
-            job_id,
-            user_id,
-            now.saturating_add(EXPORT_LINK_TTL_MS)
+        &[
+            SqlParam::Text(crate::digest(&raw)),
+            SqlParam::Text(job_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Int(now.saturating_add(EXPORT_LINK_TTL_MS)),
         ],
     )?;
     Ok(raw)
