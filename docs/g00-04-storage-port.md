@@ -338,3 +338,22 @@ SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道�
 **验证**：`cargo test -p wxlike-platform --lib domain::communities` 4 passed；
 `quality-gate` 重复窗口 2、嵌套 0、魔法数字 171；`cargo check -p wxlike-platform`
 绿。
+
+## 11. 批次 21：抽出共享 `sqlport` 与平台适配器
+
+批次 18 的 `QrExec` 证明“状态机 SQL 只留一份、后端用 trait 适配”可行，但它当时
+还住在 `qr_login` 里，平台适配器 `StorageExec` 也住在 `repo/qr_state.rs`。下一个
+域（账号作业、刷新令牌）要复用同一套原语，先把它抽正：
+
+- identity 新增 `sqlport` 模块：`SqlParam`（Text/Int）、`ColKind`、`SqlValue`、
+  `SqlExec`、`SqliteExec`。`qr_login` 只做 `pub use` 别名（`QrParam` 等），
+  对平台侧的公开路径不变。
+- 平台新增 `storage/sql_port.rs`：`StorageSqlExec` 把 `StorageConnection`
+  实现成 `SqlExec`。参数经 `Params::new` 进入端口，行按 `QrKind` 取，
+  `NotFound` 折成 `None`，其余映射 `IdError::Storage`。
+- `repo/qr_state.rs` 删掉自己的适配器，只保留领域包装与创建者登记。
+
+**效果**：SQL 仍在域内一份；适配逻辑平台一份；之后 `account_jobs` /
+`sessions` 端口化可直接复用 `StorageSqlExec`，不用再抄一遍参数转换。
+`cargo test -p wxlike-platform --test qr_login_http` 5 passed；quality gate
+重复窗口 2、嵌套 0、魔法数字 171。

@@ -24,6 +24,10 @@
 
 use rusqlite::{params, Connection};
 
+pub use crate::sqlport::{
+    ColKind as QrKind, SqlExec as QrExec, SqlParam as QrParam, SqlValue as QrValue, SqliteExec,
+};
+
 use crate::{digest, random_hex, Audience, IdError, Result};
 
 /// 二维码有效期：2 分钟。
@@ -37,103 +41,6 @@ pub const CHALLENGE_ID_BYTES: usize = 12;
 /// PKCE verifier 长度区间（RFC 7636 §4.1）。
 pub const VERIFIER_MIN: usize = 43;
 pub const VERIFIER_MAX: usize = 128;
-
-/// 端口无关的一条绑定参数：二维码状态机只用到文本与整数。
-#[derive(Clone, Debug)]
-pub enum QrParam {
-    Text(String),
-    Int(i64),
-}
-
-/// 查询结果列的目标类型。端口实现按它取值，避免把整数列读成文本。
-#[derive(Clone, Copy, Debug)]
-pub enum QrKind {
-    Text,
-    Int,
-}
-
-/// 端口返回的一列值。
-#[derive(Clone, Debug)]
-pub enum QrValue {
-    Text(String),
-    Int(i64),
-}
-
-impl QrValue {
-    fn into_text(self) -> Result<String> {
-        match self {
-            Self::Text(v) => Ok(v),
-            Self::Int(_) => Err(IdError::Corrupt("identity_qr.column type")),
-        }
-    }
-
-    fn into_int(self) -> Result<i64> {
-        match self {
-            Self::Int(v) => Ok(v),
-            Self::Text(_) => Err(IdError::Corrupt("identity_qr.column type")),
-        }
-    }
-}
-
-/// 二维码状态机的最小执行面：`exec` 写、`query` 读一行。
-///
-/// 平台侧把 `StorageConnection` 适配到这个 trait，于是同一份状态机 SQL 在
-/// SQLite 与 PostgreSQL 上都跑；identity 自身用 [`SqliteExec`] 适配。
-pub trait QrExec {
-    fn exec(&self, sql: &str, params: &[QrParam]) -> Result<usize>;
-    fn query(
-        &self,
-        sql: &str,
-        params: &[QrParam],
-        kinds: &[QrKind],
-    ) -> Result<Option<Vec<QrValue>>>;
-}
-
-/// identity 自带的后端：直接走 `rusqlite`。
-pub struct SqliteExec<'a>(pub &'a Connection);
-
-fn sqlite_param(p: &QrParam) -> rusqlite::types::Value {
-    match p {
-        QrParam::Text(v) => rusqlite::types::Value::Text(v.clone()),
-        QrParam::Int(v) => rusqlite::types::Value::Integer(*v),
-    }
-}
-
-impl QrExec for SqliteExec<'_> {
-    fn exec(&self, sql: &str, params: &[QrParam]) -> Result<usize> {
-        let values: Vec<_> = params.iter().map(sqlite_param).collect();
-        Ok(self
-            .0
-            .execute(sql, rusqlite::params_from_iter(values.iter()))?)
-    }
-
-    fn query(
-        &self,
-        sql: &str,
-        params: &[QrParam],
-        kinds: &[QrKind],
-    ) -> Result<Option<Vec<QrValue>>> {
-        let values: Vec<_> = params.iter().map(sqlite_param).collect();
-        let mut stmt = self.0.prepare(sql)?;
-        let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
-        let Some(row) = rows.next()? else {
-            return Ok(None);
-        };
-        let mut out = Vec::with_capacity(kinds.len());
-        for (i, kind) in kinds.iter().enumerate() {
-            let value = match (kind, row.get_ref(i)?) {
-                (QrKind::Text, rusqlite::types::ValueRef::Text(v)) => {
-                    QrValue::Text(String::from_utf8_lossy(v).into_owned())
-                }
-                (QrKind::Text, _) => return Err(IdError::Corrupt("identity_qr.column type")),
-                (QrKind::Int, rusqlite::types::ValueRef::Integer(v)) => QrValue::Int(v),
-                (QrKind::Int, _) => return Err(IdError::Corrupt("identity_qr.column type")),
-            };
-            out.push(value);
-        }
-        Ok(Some(out))
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QrState {

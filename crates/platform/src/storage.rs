@@ -45,6 +45,7 @@ use crate::error::{PlatformError, Result};
 // 提交态逐字节一致）。G00-04 S2：随迁移链一起归到存储端口。
 mod migrate;
 pub(crate) mod port;
+pub(crate) mod sql_port;
 
 pub(crate) use port::{params, OptionalExt, StorageRow};
 #[path = "db/schema.rs"]

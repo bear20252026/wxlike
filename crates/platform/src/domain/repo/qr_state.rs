@@ -4,60 +4,13 @@
 //! → `QrExec` 的适配，因此 SQLite 与 PG 共用同一份状态机代码，不存在第二份
 //! 二维码 SQL。
 
-use crate::error::PlatformError;
-use crate::storage::port::{Param, Params};
-use crate::storage::{StorageConnection, StorageRow};
-use wxlike_identity::qr_login::{
-    self, PollState, QrExec, QrKind, QrParam, QrValue, ScanView, Ticket,
-};
+use crate::storage::sql_port::StorageSqlExec;
+use crate::storage::StorageConnection;
+use wxlike_identity::qr_login::{self, PollState, ScanView, Ticket};
 use wxlike_identity::IdError;
 
-struct StorageExec<'a, 'b>(&'b StorageConnection<'a>);
-
-fn param(p: &QrParam) -> Param {
-    match p {
-        QrParam::Text(v) => Param::Text(v.clone()),
-        QrParam::Int(v) => Param::Int(*v),
-    }
-}
-
-fn db_err(e: PlatformError) -> IdError {
-    IdError::Storage(e.to_string())
-}
-
-impl QrExec for StorageExec<'_, '_> {
-    fn exec(&self, sql: &str, params: &[QrParam]) -> Result<usize, IdError> {
-        let bound = Params::new(params.iter().map(param).collect());
-        self.0.execute(sql, bound).map_err(db_err)
-    }
-
-    fn query(
-        &self,
-        sql: &str,
-        params: &[QrParam],
-        kinds: &[QrKind],
-    ) -> Result<Option<Vec<QrValue>>, IdError> {
-        let bound = Params::new(params.iter().map(param).collect());
-        let row = self.0.query_row(sql, bound, |r: &StorageRow<'_>| {
-            let mut out = Vec::with_capacity(kinds.len());
-            for (i, kind) in kinds.iter().enumerate() {
-                out.push(match kind {
-                    QrKind::Text => QrValue::Text(r.get::<_, String>(i)?),
-                    QrKind::Int => QrValue::Int(r.get::<_, i64>(i)?),
-                });
-            }
-            Ok(out)
-        });
-        match row {
-            Ok(values) => Ok(Some(values)),
-            Err(PlatformError::NotFound) => Ok(None),
-            Err(e) => Err(db_err(e)),
-        }
-    }
-}
-
 pub(in crate::domain) fn create(conn: &StorageConnection<'_>, now: i64) -> Result<Ticket, IdError> {
-    qr_login::create_with(&StorageExec(conn), now)
+    qr_login::create_with(&StorageSqlExec(conn), now)
 }
 
 pub(in crate::domain) fn bind(
@@ -68,7 +21,7 @@ pub(in crate::domain) fn bind(
     now: i64,
 ) -> Result<(), IdError> {
     qr_login::bind_with(
-        &StorageExec(conn),
+        &StorageSqlExec(conn),
         id,
         verifier,
         &prefs.device_id,
@@ -85,7 +38,7 @@ pub(in crate::domain) fn scan(
     scanner_user: &str,
     now: i64,
 ) -> Result<ScanView, IdError> {
-    qr_login::scan_with(&StorageExec(conn), secret, scanner_user, now)
+    qr_login::scan_with(&StorageSqlExec(conn), secret, scanner_user, now)
 }
 
 pub(in crate::domain) fn approve(
@@ -94,7 +47,7 @@ pub(in crate::domain) fn approve(
     scanner_user: &str,
     now: i64,
 ) -> Result<(), IdError> {
-    qr_login::approve_with(&StorageExec(conn), id, scanner_user, now)
+    qr_login::approve_with(&StorageSqlExec(conn), id, scanner_user, now)
 }
 
 pub(in crate::domain) fn reject(
@@ -103,7 +56,7 @@ pub(in crate::domain) fn reject(
     scanner_user: &str,
     now: i64,
 ) -> Result<(), IdError> {
-    qr_login::reject_with(&StorageExec(conn), id, scanner_user, now)
+    qr_login::reject_with(&StorageSqlExec(conn), id, scanner_user, now)
 }
 
 pub(in crate::domain) fn poll(
@@ -112,7 +65,7 @@ pub(in crate::domain) fn poll(
     verifier: &str,
     now: i64,
 ) -> Result<PollState, IdError> {
-    qr_login::poll_with(&StorageExec(conn), id, verifier, now)
+    qr_login::poll_with(&StorageSqlExec(conn), id, verifier, now)
 }
 
 /// 平台自有的创建者登记：与 `repo::qr_login::register_creator` 同一行，
@@ -129,7 +82,7 @@ pub(in crate::domain) fn register_creator(
          VALUES(?1, ?2, ?3, ?4)",
         crate::storage::params![ticket_id, creator, verifier, now],
     )
-    .map_err(db_err)?;
+    .map_err(|e| IdError::Storage(e.to_string()))?;
     Ok(())
 }
 
