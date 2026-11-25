@@ -13,14 +13,16 @@
 >   `notes, status, friends, relations, stickers, audit, devices, notification, read, trust,
 >   groups, moments, media, secret, wallet, articles, video_feed, video_refs, reconcile, live,
 >   groups_admin, call, keys, perms, report, content_index`。
-> - PG DDL 目前只落 M014 三张表：`reports`、`content_media_refs`、`content_index`
->   （`schema/proposals/G05/0003_content_pg_compat.sql`）。其余已端口化 repo 在生产 PG 上仍会因
->   缺表报 `relation does not exist`，**不能算完成割接**。
+> - PG DDL：M014 一份文件里两批——三张内容/工单表（`reports`、`content_media_refs`、
+>   `content_index`）+ 六十三张平台旧表（好友/群/社群/钱包/朋友圈/设备/收藏/内容/状态等，
+>   `schema/proposals/G05/0003_content_pg_compat.sql` 后半），另有 M011 的
+>   `users`/`sessions` 兼容视图与 M012 的 `media` 视图。26 个已端口化 repo 的表面已齐；
+>   旧表省略外键，只保列/唯一约束，是割接期兼容层，不是最终模型。
 > - 未切：`account`（依赖 `wxlike_identity::preferences` 的 `&Connection`）、`communities` /
 >   `favorites` / `inbox`（依赖 `unchecked_transaction` / `with_tx`）、`users` / `sessions`
 >   （domain 仍直接 `SqliteUsersRepo` / `SqliteSessionsRepo`）、`qr_login`、`governance`。
-> - `with_tx` / `unchecked_transaction` 事务端口、全量表 DDL、`Db::blocking()` 的 PG 等价路径
->   都还没落；`G00-04-PG` 仍 open。
+> - `with_tx` / `unchecked_transaction` 事务端口、`Db::blocking()` 的 PG 等价路径、
+>   未切 repo 的 DDL/路由都还没落；`G00-04-PG` 仍 open。
 > - 本批验证：`cargo check --workspace --all-targets`、`cargo clippy -p wxlike-platform
 >   --all-targets -- -D warnings`、`cargo test -p wxlike-platform`（40 个 test target 全 ok）、
 >   `cargo fmt --all -- --check`、`python3 scripts/quality-gate.py`（171 magic / 4 dup）均通过。
