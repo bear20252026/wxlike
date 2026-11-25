@@ -253,14 +253,20 @@ impl PostgresPool {
         let mut conn = tx
             .into_inner()
             .map_err(|_| PlatformError::Storage("postgres transaction mutex poisoned".into()))?;
+        let finish = match &out {
+            Ok(_) => self.block_on(sqlx::query("COMMIT").execute(&mut *conn)),
+            Err(_) => self.block_on(sqlx::query("ROLLBACK").execute(&mut *conn)),
+        };
+        // `PoolConnection` 的 Drop 要回池，sqlx 需要 Tokio 上下文；必须在
+        // block_on 里释放，否则测试线程/同步调用方会 panic。
+        self.block_on(async move { drop(conn) });
         match out {
             Ok(value) => {
-                self.block_on(sqlx::query("COMMIT").execute(&mut *conn))
-                    .map_err(pg_bridge_error)?;
+                finish.map_err(pg_bridge_error)?;
                 Ok(value)
             }
             Err(err) => {
-                let _ = self.block_on(sqlx::query("ROLLBACK").execute(&mut *conn));
+                let _ = finish;
                 Err(err)
             }
         }
