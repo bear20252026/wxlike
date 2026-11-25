@@ -349,7 +349,7 @@ impl Platform {
         let moderation_mode = options.moderation_mode;
         let group_cache = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let governance =
-            crate::domain::governance::GovernanceLinks::open(None, Arc::clone(&group_cache))?;
+            crate::domain::governance::GovernanceLinks::open(None, None, Arc::clone(&group_cache))?;
         Ok(Self {
             db: Db::open(None)?,
             options,
@@ -397,10 +397,14 @@ impl Platform {
         let options = normalize_options(options);
         let moderation_mode = options.moderation_mode;
         let group_cache = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        let governance =
-            crate::domain::governance::GovernanceLinks::open(path, Arc::clone(&group_cache))?;
+        let db = Db::open(path)?;
+        let governance = crate::domain::governance::GovernanceLinks::open(
+            path,
+            db.postgres_pool(),
+            Arc::clone(&group_cache),
+        )?;
         Ok(Self {
-            db: Db::open(path)?,
+            db,
             options,
             sink: std::sync::Mutex::new(None),
             group_cache,

@@ -219,3 +219,56 @@ SQL 里的 `?N` 换成 `dialect().placeholder(i)`。建议分批：
 | `WXLIKE_TEST_PG_URL=… cargo test -p wxlike-platform --lib domain::repo:: -- --ignored` | PG16 2 passed |
 
 | `cargo check --workspace --all-targets` | 绿（清理一次旧的 `serde` 元数据后复跑，12m） |
+
+## 7. 批次 16：PG 事务端口 + repo 层全覆盖
+
+批次 15 之后还有三处 repo 没端口化：`account`、`qr_login`、`governance`。它们不是
+SQL 方言问题，而是缺两样基础设施：PG 事务和 identity 兼容表。
+
+**PG 事务端口**。`PostgresPool::with_tx` 从池里借一条连接，显式 `BEGIN`，闭包同步
+执行，结束按结果 `COMMIT` / `ROLLBACK`。关键点是**不要用一个外层 `block_on` 包住
+闭包**：闭包里的端口语句仍逐条 `block_on`，外层再包会嵌套 runtime 死锁。PG 的事务
+状态属于那条连接本身，逐条 `block_on` 之间事务保持。`StorageConnection` 新增
+`PostgresTx { conn, pool }`，`PortConn::PgTx` 在同一连接上执行
+execute/query_row/query_map。`Db::with_tx` 对 SQLite 走 `ConnectionTx`，对 PG 走
+`PgStorage::with_tx`，调用方拿到的都是 `StorageConnection`。
+
+**identity 兼容表**。M014 追加 11 张 identity 表（`identity_device`、
+`identity_throttle`、`identity_step_up`、`identity_reset_token`、
+`identity_challenge`、`identity_consent`、`identity_qr`、`identity_pref`、
+`identity_job`、`identity_export_link`）和 `qr_ticket_creator`。账号注销/导出、
+扫码登录、step-up、限速桶的旧 SQL 在 PG 上因此有表可落。
+
+**三个 repo 端口化**：
+
+- `account`：`deleted_at`、`open_delete_job`（直接查 `identity_job`，不再借
+  `preferences::list`）、`wallet_balance`、六个导出取数、`purge_rows`、
+  `mask_rows`、`anonymize_user` 全部走端口。导出行的 JSON 由
+  `StorageRow::json_value` 按 SQLite/PG 实际列类型生成；PG 的 `BYTEA` 仍只报长度。
+- `qr_login`：定位、creator/verifier、登记、scan hint、状态闸门、ticket row、
+  抢占消费、显示名全部走端口。
+- `governance`：镜像、群数、举报数走端口。PG profile 下 `GovernanceLinks` 直接复用
+  `Db` 的 `Arc<PostgresPool>`（`Db::postgres_pool`），不再要求第二条 SQLite sidecar；
+  SQLite 文件库仍用 sidecar，内存库仍跳过镜像。
+
+**覆盖结果**：`domain/repo` 下所有对外 SQL 函数都已走 `StorageConnection` 端口；
+`communities` / `sessions` 里残留的 `.sqlite()` 只在明确的 SQLite 事务/治理分支。
+`Db::blocking` 仍是 SQLite-only——它签名的 `&mut Connection` 无法由 PG 连接满足。
+
+**还没切的域入口**（下一步，不是本批）：
+
+- `account` 的 `schedule_deletion` / 作业 claim-finish / 偏好读写仍用 `lock()` +
+  `preferences::*`；完整 PG 注销/导出需要把作业生命周期和偏好端口一起搬。
+- `qr_login` 的 `create/bind/poll/scan/approve/reject` 仍调
+  `wxlike_identity::qr_login` 的 `&Connection` 状态机；repo 层已 PG-ready，域层仍
+  SQLite-only。
+- `sessions` 的 `issue_refresh` / `rotate_refresh` / step-up / `revoke_refresh_of_sid`
+  仍是 SQLite 入口。
+- identity 治理命令（suspend/disable）仍接受 `&Connection`；平台侧只完成了镜像与
+  计数。
+
+**验证**：`cargo check --workspace --all-targets`、`cargo clippy -p wxlike-platform
+--all-targets -- -D warnings`、`cargo fmt --check` 全绿；`cargo test -p
+wxlike-platform --lib` 69 passed / 13 ignored（新增 3 条 PG ignored 用例）；
+`quality-gate` 嵌套 0、重复窗口 2、魔法数字 171；`check_domain_sql` 0；
+`check_gaps` 0；contract 0 error。

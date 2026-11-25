@@ -109,6 +109,32 @@ impl Db {
         }
     }
 
+    /// 双后端事务入口：闭包拿到 `StorageConnection`，成功才提交。
+    ///
+    /// SQLite 走 `ConnectionTx::with_tx`；PG 由 `PgStorage::with_tx` 在一条池
+    /// 连接上显式 `BEGIN/COMMIT`，闭包里的端口语句都在同一事务内。
+    pub(crate) fn postgres_pool(&self) -> Option<Arc<crate::storage::PostgresPool>> {
+        match &self.storage {
+            DbStorage::Sqlite(_) => None,
+            DbStorage::Postgres(s) => Some(s.pool_arc()),
+        }
+    }
+
+    pub fn with_tx<T>(
+        &self,
+        body: impl for<'b> FnOnce(&StorageConnection<'b>) -> Result<T>,
+    ) -> Result<T> {
+        match &self.storage {
+            DbStorage::Sqlite(s) => {
+                let mut guard = s.lock();
+                wxlike_core::tx::ConnectionTx::with_tx(&mut *guard, |tx| {
+                    body(&StorageConnection::SqliteTx(tx))
+                })
+            }
+            DbStorage::Postgres(s) => s.with_tx(body),
+        }
+    }
+
     /// ADR-28: run one synchronous SQLite critical section on the blocking pool.
     ///
     /// The `Mutex<Connection>` guard is acquired *inside* the closure and
@@ -446,6 +472,92 @@ mod pg_profile_tests {
     /// PG profile 必须真的打开、`acquire` 交出 PG 句柄，而 `lock()` 返回受控
     /// 错误而不是 panic。只有 `WXLIKE_TEST_PG_URL` 存在时跑。
     #[test]
+    fn with_tx_commits_on_success_and_rolls_back_on_error() {
+        let db = Db::open(None).expect("db");
+        db.with_tx(|port| {
+            port.execute(
+                "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3)",
+                crate::storage::params!["k1", "r1", 1_i64],
+            )?;
+            Ok(())
+        })
+        .expect("commit");
+        let rows: i64 = db
+            .acquire()
+            .query_row(
+                "SELECT COUNT(*) FROM idempotency WHERE key = ?1",
+                crate::storage::params!["k1"],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(rows, 1);
+
+        let out: crate::error::Result<()> = db.with_tx(|port| {
+            port.execute(
+                "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3)",
+                crate::storage::params!["k2", "r2", 2_i64],
+            )?;
+            Err(crate::error::PlatformError::Storage("boom".into()))
+        });
+        assert!(out.is_err());
+        let rows: i64 = db
+            .acquire()
+            .query_row(
+                "SELECT COUNT(*) FROM idempotency WHERE key = ?1",
+                crate::storage::params!["k2"],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
+    fn pg_with_tx_commits_and_rolls_back() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        db.with_tx(|port| {
+            port.execute(
+                "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3) \
+                 ON CONFLICT(key) DO UPDATE SET response = excluded.response",
+                crate::storage::params!["tx_commit", "ok", 1_i64],
+            )?;
+            Ok(())
+        })
+        .expect("commit");
+        let count: i64 = db
+            .acquire()
+            .query_row(
+                "SELECT COUNT(*) FROM idempotency WHERE key = ?1",
+                crate::storage::params!["tx_commit"],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1);
+
+        let out: crate::error::Result<()> = db.with_tx(|port| {
+            port.execute(
+                "INSERT INTO idempotency(key, response, created_at) VALUES(?1, ?2, ?3)",
+                crate::storage::params!["tx_rollback", "no", 2_i64],
+            )?;
+            Err(crate::error::PlatformError::Storage("boom".into()))
+        });
+        assert!(out.is_err());
+        let count: i64 = db
+            .acquire()
+            .query_row(
+                "SELECT COUNT(*) FROM idempotency WHERE key = ?1",
+                crate::storage::params!["tx_rollback"],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL"]
     fn pg_profile_opens_and_hands_out_postgres() {
         let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
             return;

@@ -166,6 +166,10 @@ pub(crate) fn id_err(err: wxlike_identity::IdError) -> ApiError {
             tracing::error!(row = %what, "qr login: corrupt stored row");
             ApiError::internal("storage failure")
         }
+        IdError::Storage(msg) => {
+            tracing::error!(error = %msg, "qr login: storage failure");
+            ApiError::internal("storage failure")
+        }
         IdError::Json(err) => {
             tracing::error!(error = %err, "qr login: encoding failure");
             ApiError::internal("encoding failure")
@@ -173,7 +177,7 @@ pub(crate) fn id_err(err: wxlike_identity::IdError) -> ApiError {
     }
 }
 
-pub(crate) fn db_err(err: rusqlite::Error) -> ApiError {
+pub(crate) fn db_err(err: impl std::fmt::Display) -> ApiError {
     tracing::error!(error = %err, "qr login: database failure");
     ApiError::internal("database failure")
 }

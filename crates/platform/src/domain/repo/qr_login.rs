@@ -2,20 +2,10 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::ApiError;
-use crate::storage::StorageConnection;
+use crate::storage::{params, OptionalExt as _, StorageConnection, StorageRow};
 use axum::http::StatusCode;
-use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::qr_login::db_err;
-
-/// 端口 → SQLite 守卫。QR 仓储的公开错误是 `ApiError`，PG 未接通时给出
-/// 明确的 500，而不是把 `PlatformError` 泄漏到 HTTP 面。
-fn sqlite<'a>(
-    conn: &'a StorageConnection<'_>,
-) -> std::result::Result<&'a rusqlite::Connection, ApiError> {
-    conn.sqlite()
-        .map_err(|_| ApiError::internal("storage port unavailable"))
-}
 
 /// 第一段（持锁）：定位、验期、抢占式消费 → `(creator, device_id, label)`。
 /// 锁在这里必须放下：create_session_for_device 会再拿一次库锁。
@@ -24,11 +14,10 @@ pub(in crate::domain) fn locate_ticket_by_secret(
     conn: &StorageConnection<'_>,
     secret: &str,
 ) -> Result<String, ApiError> {
-    let conn = sqlite(conn)?;
     conn.query_row(
         "SELECT id FROM identity_qr WHERE secret_hash = ?1",
         params![wxlike_identity::digest(secret)],
-        |r| r.get(0),
+        |r: &StorageRow<'_>| r.get::<_, String>(0),
     )
     .optional()
     .map_err(db_err)?
@@ -47,11 +36,10 @@ pub(in crate::domain) fn creator_and_verifier(
     conn: &StorageConnection<'_>,
     ticket_id: &str,
 ) -> Result<(String, String), ApiError> {
-    let conn = sqlite(conn)?;
     conn.query_row(
         "SELECT creator, verifier FROM qr_ticket_creator WHERE ticket_id = ?1",
         params![ticket_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r: &StorageRow<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
     .optional()
     .map_err(db_err)?
@@ -69,7 +57,6 @@ pub(in crate::domain) fn register_creator(
     verifier: &str,
     now: i64,
 ) -> Result<(), ApiError> {
-    let conn = sqlite(conn)?;
     conn.execute(
         "INSERT INTO qr_ticket_creator(ticket_id, creator, verifier, created_at)
          VALUES(?1, ?2, ?3, ?4)",
@@ -84,14 +71,13 @@ pub(in crate::domain) fn scan_hint(
     conn: &StorageConnection<'_>,
     ticket_id: &str,
 ) -> Result<Option<String>, ApiError> {
-    let conn = sqlite(conn)?;
     Ok(conn
         .query_row(
             "SELECT COALESCE(u.name, q.scanned_by) FROM identity_qr q
              LEFT JOIN users u ON u.id = q.scanned_by
              WHERE q.id = ?1 AND q.scanned_by <> ''",
             params![ticket_id],
-            |r| r.get(0),
+            |r: &StorageRow<'_>| r.get(0),
         )
         .optional()
         .map_err(db_err)?
@@ -107,7 +93,6 @@ pub(in crate::domain) fn check_qr_state(
     expires_at: i64,
     now: i64,
 ) -> std::result::Result<(), ApiError> {
-    let conn = sqlite(conn)?;
     if expires_at <= now && matches!(state, "pending" | "scanned" | "approved") {
         conn.execute(
             "UPDATE identity_qr SET state = 'expired' \
@@ -131,11 +116,17 @@ pub(in crate::domain) fn ticket_row(
     conn: &StorageConnection<'_>,
     id: &str,
 ) -> std::result::Result<(String, i64, String, String), ApiError> {
-    let conn = sqlite(conn)?;
     conn.query_row(
         "SELECT state, expires_at, device_id, label FROM identity_qr WHERE id = ?1",
         params![id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r: &StorageRow<'_>| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        },
     )
     .optional()
     .map_err(db_err)?
@@ -148,7 +139,6 @@ pub(in crate::domain) fn consume(
     id: &str,
     now: i64,
 ) -> std::result::Result<usize, ApiError> {
-    let conn = sqlite(conn)?;
     conn.execute(
         "UPDATE identity_qr SET state = 'consumed', consumed_at = ?2 \
          WHERE id = ?1 AND state = 'approved'",
@@ -162,12 +152,60 @@ pub(in crate::domain) fn display_name(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> crate::error::Result<Option<String>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
-        .query_row(
-            "SELECT name FROM users WHERE id = ?1",
-            params![user_id],
-            |r| r.get::<_, String>(0),
+    conn.query_row(
+        "SELECT name FROM users WHERE id = ?1",
+        params![user_id],
+        |r: &StorageRow<'_>| r.get::<_, String>(0),
+    )
+    .optional()
+}
+
+#[cfg(test)]
+mod pg_tests {
+    use super::{consume, creator_and_verifier, locate_ticket_by_secret, ticket_row};
+    use crate::storage::params;
+    use crate::storage::StorageProfile;
+    use crate::Db;
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
+    fn postgres_qr_ticket_roundtrip_and_consume() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        let conn = db.acquire();
+        let id = "pg-qr-1";
+        let secret = "pg-qr-secret";
+        conn.execute("DELETE FROM identity_qr WHERE id = ?1", params![id])
+            .expect("clean qr");
+        conn.execute(
+            "INSERT INTO identity_qr(id, secret_hash, state, expires_at, created_at) \
+             VALUES(?1, ?2, 'pending', ?3, ?4)",
+            params![
+                id,
+                wxlike_identity::digest(secret),
+                10_000_i64,
+                1_i64
+            ],
         )
-        .optional()?)
+        .expect("insert qr");
+        conn.execute(
+            "INSERT INTO qr_ticket_creator(ticket_id, creator, verifier, created_at) \
+             VALUES(?1, ?2, ?3, ?4) ON CONFLICT(ticket_id) DO UPDATE SET creator = excluded.creator",
+            params![id, "creator-1", "verifier-1", 1_i64],
+        )
+        .expect("insert creator");
+        let found = locate_ticket_by_secret(&conn, secret).expect("locate");
+        assert_eq!(found, id);
+        let (creator, verifier) = creator_and_verifier(&conn, id).expect("creator");
+        assert_eq!(creator, "creator-1");
+        assert_eq!(verifier, "verifier-1");
+        let (state, expires_at, device, label) = ticket_row(&conn, id).expect("row");
+        assert_eq!(state, "pending");
+        assert_eq!(expires_at, 10_000);
+        assert!(device.is_empty());
+        assert!(label.is_empty());
+        assert_eq!(consume(&conn, id, 5).expect("consume"), 0);
+    }
 }

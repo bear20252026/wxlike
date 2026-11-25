@@ -120,8 +120,10 @@ impl GovernanceDeviceSink for ChannelGovernanceSink {
 
 /// 平台联动端口的连接与缓存句柄。由 [`crate::Platform::open_with`] 装配。
 pub(crate) struct GovernanceLinks {
-    /// 独立连接（文件库才有）。`None` = 内存库，镜像与跨域计数不可达。
+    /// 独立连接（文件库才有）。`None` = 内存库或 PG profile。
     sidecar: Option<Mutex<Connection>>,
+    /// PG 后端共享的池。PG profile 下治理镜像/跨域计数走池上的一条连接。
+    pg: Option<Arc<crate::storage::PostgresPool>>,
     /// 与 `Platform::group_cache` 共享的同一把缓存（Arc 化后的字段本身）。
     group_cache: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// 设备侧联动句柄（断 WS/QUIC 泵）。`None` = 本进程没跑 hub（测试 /
@@ -133,6 +135,7 @@ impl GovernanceLinks {
     /// 文件库开第二条连接（同文件、同 PRAGMA）；内存库显式无连接。
     pub(crate) fn open(
         path: Option<&str>,
+        pg: Option<Arc<crate::storage::PostgresPool>>,
         group_cache: Arc<Mutex<HashMap<String, Vec<String>>>>,
     ) -> crate::error::Result<Self> {
         let sidecar = match path {
@@ -149,6 +152,7 @@ impl GovernanceLinks {
         };
         Ok(Self {
             sidecar,
+            pg,
             group_cache,
             device_sink: Mutex::new(None),
         })
@@ -185,13 +189,24 @@ impl PlatformGovernancePort for GovernanceLinks {
         disabled: bool,
         until_ms: Option<i64>,
     ) -> wxlike_identity::Result<()> {
+        if let Some(pg) = &self.pg {
+            governance_repo::mirror_user_state(
+                &crate::storage::StorageConnection::Postgres(pg),
+                user_id,
+                suspended,
+                disabled,
+                until_ms,
+            )
+            .map_err(|e| wxlike_identity::IdError::Storage(e.to_string()))?;
+            return Ok(());
+        }
         let Some(guard) = self.conn() else {
             warn!(%user_id, "内存平台无第二条连接，治理镜像跳过（域表仍为权威）");
             return Ok(());
         };
         let port = crate::storage::StorageConnection::sqlite_borrow(&guard);
         governance_repo::mirror_user_state(&port, user_id, suspended, disabled, until_ms)
-            .map_err(wxlike_identity::IdError::Db)?;
+            .map_err(|e| wxlike_identity::IdError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -268,19 +283,39 @@ impl GovernanceLinks {
 impl UserMetadataPort for GovernanceLinks {
     /// 参与的未解散群数（relations 域自有表，与平台同库）。
     fn group_count(&self, user_id: &str) -> wxlike_identity::Result<i64> {
+        if let Some(pg) = &self.pg {
+            return governance_repo::group_count(
+                &crate::storage::StorageConnection::Postgres(pg),
+                user_id,
+            )
+            .map_err(|e| wxlike_identity::IdError::Storage(e.to_string()));
+        }
         let Some(guard) = self.conn() else {
-            return Err(wxlike_identity::IdError::Db(rusqlite::Error::InvalidQuery));
+            return Err(wxlike_identity::IdError::Storage(
+                "no governance connection".into(),
+            ));
         };
         let port = crate::storage::StorageConnection::sqlite_borrow(&guard);
-        governance_repo::group_count(&port, user_id).map_err(wxlike_identity::IdError::Db)
+        governance_repo::group_count(&port, user_id)
+            .map_err(|e| wxlike_identity::IdError::Storage(e.to_string()))
     }
 
     /// 针对该用户的举报工单数（平台 `reports` 表，按 target_kind='user'）。
     fn report_count(&self, user_id: &str) -> wxlike_identity::Result<i64> {
+        if let Some(pg) = &self.pg {
+            return governance_repo::report_count(
+                &crate::storage::StorageConnection::Postgres(pg),
+                user_id,
+            )
+            .map_err(|e| wxlike_identity::IdError::Storage(e.to_string()));
+        }
         let Some(guard) = self.conn() else {
-            return Err(wxlike_identity::IdError::Db(rusqlite::Error::InvalidQuery));
+            return Err(wxlike_identity::IdError::Storage(
+                "no governance connection".into(),
+            ));
         };
         let port = crate::storage::StorageConnection::sqlite_borrow(&guard);
-        governance_repo::report_count(&port, user_id).map_err(wxlike_identity::IdError::Db)
+        governance_repo::report_count(&port, user_id)
+            .map_err(|e| wxlike_identity::IdError::Storage(e.to_string()))
     }
 }

@@ -2,11 +2,10 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::{PlatformError, Result};
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
-use serde_json::{json, Value};
+use crate::storage::{params, OptionalExt as _, StorageConnection, StorageRow};
+use serde_json::Value;
 use std::collections::BTreeMap;
-use wxlike_identity::preferences::{self, Job, JobKind, JobStatus};
+use wxlike_identity::preferences::{Job, JobKind, JobStatus};
 
 /// 注销后 display name 的替换前缀（真名是个人数据，不能留）。
 const DELETED_NAME_PREFIX: &str = "deleted-";
@@ -16,15 +15,14 @@ pub(in crate::domain) fn deleted_at(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Option<i64>> {
-    let conn = conn.sqlite()?;
-    Ok(conn
+    let row = conn
         .query_row(
             "SELECT deleted_at FROM users WHERE id = ?1",
             params![user_id],
-            |r| r.get::<_, Option<i64>>(0),
+            |r: &StorageRow<'_>| r.get::<_, Option<i64>>(0),
         )
-        .optional()?
-        .flatten())
+        .optional()?;
+    Ok(row.flatten())
 }
 
 /// 有没有还在排队/执行中的注销作业。用的就是 `preferences::list` 这条
@@ -33,10 +31,30 @@ pub(in crate::domain) fn open_delete_job(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Option<Job>> {
-    let conn = conn.sqlite()?;
-    Ok(preferences::list(conn, user_id)?.into_iter().find(|j| {
-        j.kind == JobKind::Delete && matches!(j.status, JobStatus::Queued | JobStatus::Running)
-    }))
+    conn.query_row(
+        "SELECT id, user_id, status, requested_at, artifact, bytes, error FROM identity_job \
+         WHERE user_id = ?1 AND kind = 'delete' AND status IN ('queued', 'running') \
+         ORDER BY requested_at DESC LIMIT 1",
+        params![user_id],
+        |r: &StorageRow<'_>| {
+            let status = r.get::<_, String>(2)?;
+            Ok(Job {
+                id: r.get(0)?,
+                user_id: r.get(1)?,
+                kind: JobKind::Delete,
+                status: if status == "running" {
+                    JobStatus::Running
+                } else {
+                    JobStatus::Queued
+                },
+                requested_at: r.get(3)?,
+                artifact: r.get(4)?,
+                bytes: r.get(5)?,
+                error: r.get(6)?,
+            })
+        },
+    )
+    .optional()
 }
 
 /// 钱包余额。用 SQL 的 COALESCE 表达"没有钱包行就是 0"，不在 Rust 里
@@ -45,12 +63,11 @@ pub(in crate::domain) fn wallet_balance(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<i64> {
-    let conn = conn.sqlite()?;
-    Ok(conn.query_row(
+    conn.query_row(
         "SELECT COALESCE((SELECT balance FROM wallets WHERE user_id = ?1), 0)",
         params![user_id],
-        |r| r.get(0),
-    )?)
+        |r: &StorageRow<'_>| r.get(0),
+    )
 }
 
 /// 一条只带一个用户 id 参数的查询 → JSON 数组，列名由调用方给。
@@ -60,28 +77,15 @@ fn rows_json(
     user_id: &str,
     cols: &[&str],
 ) -> Result<Vec<Value>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![user_id], |r| {
+    let stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![user_id], |r: &StorageRow<'_>| {
         let mut obj = serde_json::Map::new();
         for (i, name) in cols.iter().enumerate() {
-            let v: rusqlite::types::Value = r.get(i)?;
-            obj.insert((*name).to_string(), json_of(v));
+            obj.insert((*name).to_string(), r.json_value(i)?);
         }
         Ok(Value::Object(obj))
     })?;
-    Ok(rows.collect::<std::result::Result<_, _>>()?)
-}
-
-fn json_of(v: rusqlite::types::Value) -> Value {
-    match v {
-        rusqlite::types::Value::Null => Value::Null,
-        rusqlite::types::Value::Integer(i) => json!(i),
-        rusqlite::types::Value::Real(f) => json!(f),
-        rusqlite::types::Value::Text(s) => json!(s),
-        // 导出是给人读的 JSON：二进制只报存在与长度，不内联。
-        rusqlite::types::Value::Blob(b) => json!({ "binary_bytes": b.len() }),
-    }
+    rows.collect::<Result<Vec<_>>>()
 }
 
 /// 逐域执行 DELETE，返回每个域清掉的行数（写进作业的摘要）。
@@ -89,7 +93,6 @@ pub(in crate::domain) fn purge_rows(
     conn: &StorageConnection<'_>,
     user_id: &str,
 ) -> Result<Vec<(&'static str, usize)>> {
-    let conn = conn.sqlite()?;
     let mut by_domain: BTreeMap<&'static str, usize> = BTreeMap::new();
     for (domain, sql) in PURGE_DELETES {
         let n = conn.execute(sql, params![user_id])?;
@@ -99,7 +102,6 @@ pub(in crate::domain) fn purge_rows(
 }
 
 pub(in crate::domain) fn mask_rows(conn: &StorageConnection<'_>, user_id: &str) -> Result<()> {
-    let conn = conn.sqlite()?;
     for (_, sql) in PURGE_MASKS {
         conn.execute(sql, params![user_id])?;
     }
@@ -112,7 +114,6 @@ pub(in crate::domain) fn mask_rows(conn: &StorageConnection<'_>, user_id: &str) 
 /// 行留着而不是 DELETE：`groups.owner_uid` / `communities.owner_uid` /
 /// `threads.created_by` 三条外键没有 CASCADE，硬删会把无关的域顶坏。
 pub(in crate::domain) fn anonymize_user(conn: &StorageConnection<'_>, user_id: &str) -> Result<()> {
-    let conn = conn.sqlite()?;
     let anon_name = format!("{DELETED_NAME_PREFIX}{user_id}");
     let n = conn.execute(
         "UPDATE users SET name = ?2, avatar = '', signature = '', pw_salt = '', \
@@ -369,3 +370,45 @@ const PURGE_MASKS: &[(&str, &str)] = &[
         "UPDATE redpackets SET memo = '', claimers = '[]' WHERE from_uid = ?1",
     ),
 ];
+
+#[cfg(test)]
+mod pg_tests {
+    use super::{deleted_at, open_delete_job, purge_rows, wallet_balance};
+    use crate::storage::params;
+    use crate::storage::StorageProfile;
+    use crate::Db;
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
+    fn postgres_account_jobs_and_wallet_are_readable() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        let conn = db.acquire();
+        let user = "pg-account-user";
+        conn.execute(
+            "DELETE FROM identity_job WHERE user_id = ?1",
+            params![user],
+        )
+        .expect("clean jobs");
+        conn.execute(
+            "INSERT INTO identity_job(id, user_id, kind, status, requested_at) \
+             VALUES(?1, ?2, 'delete', 'queued', ?3)",
+            params!["pg-job-1", user, 7_i64],
+        )
+        .expect("insert job");
+        let job = open_delete_job(&conn, user)
+            .expect("query job")
+            .expect("job exists");
+        assert_eq!(job.id, "pg-job-1");
+        assert!(matches!(
+            job.status,
+            wxlike_identity::preferences::JobStatus::Queued
+        ));
+        assert_eq!(wallet_balance(&conn, user).expect("wallet"), 0);
+        assert_eq!(deleted_at(&conn, user).expect("deleted"), None);
+        let counts = purge_rows(&conn, user).expect("purge");
+        assert!(counts.iter().all(|(_, n)| *n == 0));
+    }
+}

@@ -115,3 +115,27 @@ BEGIN
         RAISE EXCEPTION 'M014 notifications dedupe index missing';
     END IF;
 END $$;
+
+-- M014 identity 兼容表：account/qr_login/step-up/限速桶都依赖它们。
+DO $$
+DECLARE missing TEXT;
+BEGIN
+    SELECT string_agg(name, ', ') INTO missing
+      FROM unnest(ARRAY[
+    'identity_device',
+    'identity_throttle',
+    'identity_step_up',
+    'identity_reset_token',
+    'identity_challenge',
+    'identity_consent',
+    'identity_qr',
+    'qr_ticket_creator',
+    'identity_pref',
+    'identity_job',
+    'identity_export_link'
+      ]) AS name
+     WHERE to_regclass('public.' || quote_ident(name)) IS NULL;
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'M014 identity tables missing: %', missing;
+    END IF;
+END $$;

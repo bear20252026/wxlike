@@ -35,8 +35,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::Connection;
+use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres};
 
 use crate::error::{PlatformError, Result};
 
@@ -227,6 +228,47 @@ impl PostgresPool {
             .map(|_| ())
             .map_err(|e| PlatformError::Storage(format!("postgres health: {e}")))
     }
+
+    /// 在**同一条**池连接上开事务，闭包同步执行，结束显式 COMMIT / ROLLBACK。
+    ///
+    /// 这里刻意不用一个外层 `block_on` 包住整个闭包：闭包里的 repo 仍会逐条
+    /// 用 `PostgresPool::block_on` 执行语句，外层再包会嵌套 runtime 并死锁。
+    /// PG 的事务状态属于那条连接本身，所以逐条 `block_on` 之间事务仍然有效。
+    pub fn with_tx<T>(
+        &self,
+        body: impl for<'b> FnOnce(&StorageConnection<'b>) -> Result<T>,
+    ) -> Result<T> {
+        let mut conn = self
+            .block_on(async { self.pool.acquire().await })
+            .map_err(pg_bridge_error)?;
+        self.block_on(sqlx::query("BEGIN").execute(&mut *conn))
+            .map_err(pg_bridge_error)?;
+        let tx = Mutex::new(conn);
+        let port = StorageConnection::PostgresTx {
+            conn: &tx,
+            pool: self,
+        };
+        let out = body(&port);
+        drop(port);
+        let mut conn = tx
+            .into_inner()
+            .map_err(|_| PlatformError::Storage("postgres transaction mutex poisoned".into()))?;
+        match out {
+            Ok(value) => {
+                self.block_on(sqlx::query("COMMIT").execute(&mut *conn))
+                    .map_err(pg_bridge_error)?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self.block_on(sqlx::query("ROLLBACK").execute(&mut *conn));
+                Err(err)
+            }
+        }
+    }
+}
+
+fn pg_bridge_error(e: sqlx::Error) -> PlatformError {
+    PlatformError::Storage(format!("postgres: {e}"))
 }
 
 /// 连接/事务入口：SQLite 交出旧守卫，PG 交出连接池句柄。
@@ -239,9 +281,14 @@ pub enum StorageConnection<'a> {
     /// 事务内的借用：`with_tx` 闭包只给 `&Transaction`，repo 要能用同一组
     /// 端口签名，就必须有一个不拥有守卫、也不要求 `&mut` 的 SQLite 变体。
     SqliteTx(&'a Connection),
-    /// PG 连接池句柄。事务边界后续由 sqlx 事务补齐；当前 PG repo 通过
-    /// `PostgresPool::block_on` 在自己的 runtime 上执行。
+    /// PG 连接池句柄。无事务 repo 直接走池上的一条连接。
     Postgres(&'a PostgresPool),
+    /// PG 事务内的同一条池连接；由 `PostgresPool::with_tx` 持有。
+    /// 语句仍逐条 `block_on`，但 PG 事务状态属于这条连接，跨调用保持。
+    PostgresTx {
+        conn: &'a Mutex<PoolConnection<Postgres>>,
+        pool: &'a PostgresPool,
+    },
 }
 
 impl<'a> StorageConnection<'a> {
@@ -257,17 +304,6 @@ impl<'a> StorageConnection<'a> {
         Self::SqliteTx(conn)
     }
 
-    /// 借出 SQLite 连接；PG 变体返回 `None`。给仍以 `rusqlite::Result`
-    /// 上报错误的 repo（治理镜像/跨域计数）用，避免把平台错误硬塞进
-    /// `IdError::Db`。
-    pub(crate) fn sqlite_ref(&self) -> Option<&Connection> {
-        match self {
-            StorageConnection::Sqlite(c) => Some(&**c),
-            StorageConnection::SqliteTx(c) => Some(c),
-            StorageConnection::Postgres(_) => None,
-        }
-    }
-
     /// 取出 SQLite 连接。PG 变体明确返回受控错误，而不是 panic 或静默降级。
     ///
     /// 这是 repo 迁移期的过渡方法：只接受 `&Connection` 的 repo 先通过它拿
@@ -276,9 +312,11 @@ impl<'a> StorageConnection<'a> {
         match self {
             StorageConnection::Sqlite(c) => Ok(&**c),
             StorageConnection::SqliteTx(c) => Ok(*c),
-            StorageConnection::Postgres(_) => Err(PlatformError::Storage(
-                "postgres 连接尚未暴露 SQLite Connection；该 repo 仍在 SQLite 入口".into(),
-            )),
+            StorageConnection::Postgres(_) | StorageConnection::PostgresTx { .. } => {
+                Err(PlatformError::Storage(
+                    "postgres 连接尚未暴露 SQLite Connection；该 repo 仍在 SQLite 入口".into(),
+                ))
+            }
         }
     }
 }
@@ -295,6 +333,7 @@ pub(crate) fn backend_ref<'a>(conn: &'a StorageConnection<'_>) -> Result<Backend
         StorageConnection::Sqlite(c) => Ok(BackendRef::Sqlite(c)),
         StorageConnection::SqliteTx(c) => Ok(BackendRef::Sqlite(c)),
         StorageConnection::Postgres(p) => Ok(BackendRef::Postgres(p)),
+        StorageConnection::PostgresTx { pool, .. } => Ok(BackendRef::Postgres(pool)),
     }
 }
 
@@ -432,7 +471,7 @@ fn configure_sqlite(conn: &mut Connection) -> Result<()> {
 /// `&Connection` 为参数，先把 `StorageConnection::Postgres` 的端口形状立住。
 pub struct PgStorage {
     profile: StorageProfile,
-    pool: PostgresPool,
+    pool: Arc<PostgresPool>,
 }
 
 impl PgStorage {
@@ -443,7 +482,7 @@ impl PgStorage {
             )));
         };
         Ok(Self {
-            pool: PostgresPool::open(url)?,
+            pool: Arc::new(PostgresPool::open(url)?),
             profile,
         })
     }
@@ -453,9 +492,20 @@ impl PgStorage {
         &self.pool
     }
 
+    pub(crate) fn pool_arc(&self) -> Arc<PostgresPool> {
+        Arc::clone(&self.pool)
+    }
+
     #[must_use]
     pub fn profile(&self) -> &StorageProfile {
         &self.profile
+    }
+
+    pub fn with_tx<T>(
+        &self,
+        body: impl for<'b> FnOnce(&StorageConnection<'b>) -> Result<T>,
+    ) -> Result<T> {
+        self.pool.with_tx(body)
     }
 }
 
@@ -603,6 +653,7 @@ mod tests {
             }
             StorageConnection::SqliteTx(_) => panic!("acquire must not hand out a transaction"),
             StorageConnection::Postgres(_) => panic!("SqliteStorage must hand out sqlite"),
+            StorageConnection::PostgresTx { .. } => panic!("SqliteStorage must not hand out tx"),
         };
     }
 
@@ -668,6 +719,7 @@ mod tests {
             StorageConnection::Postgres(pool) => pool.health().expect("pg health"),
             StorageConnection::Sqlite(_) => panic!("PgStorage must not hand out sqlite"),
             StorageConnection::SqliteTx(_) => panic!("PgStorage must not hand out sqlite tx"),
+            StorageConnection::PostgresTx { .. } => panic!("PgStorage must not hand out tx"),
         };
     }
 

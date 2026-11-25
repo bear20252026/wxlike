@@ -10,8 +10,8 @@
 //! * 行： [`StorageRow`] 同时包装 `rusqlite::Row` 与 `sqlx::PgRow`，repo 的
 //!   `r.get(0)` 不用改。
 //!
-//! 事务不在本模块：`with_tx` / `unchecked_transaction` 仍只走 SQLite，等 PG
-//! 事务端口单独落地。这里先把**无事务**的 repo 批量化，避免把两件事混在一起。
+//! 事务：`PostgresPool::with_tx` 把一条池连接显式 `BEGIN/COMMIT`，闭包里的
+//! 端口语句都走这条连接；`Db::with_tx` 同时覆盖 SQLite 与 PG。
 
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::Connection;
@@ -221,6 +221,10 @@ fn bind_all<'q>(
 pub(crate) enum PortConn<'a> {
     Sqlite(&'a Connection),
     Pg(&'a PostgresPool),
+    PgTx {
+        conn: &'a std::sync::Mutex<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+        pool: &'a PostgresPool,
+    },
 }
 
 /// 一行。SQLite 与 PG 的行都包在这里，`get` 的位置参数语义一致。
@@ -244,6 +248,52 @@ impl<'a> StorageRow<'a> {
     pub fn get<I: RowIndex, T: FromStorage>(&self, idx: I) -> Result<T> {
         T::from_row(self, idx.position())
     }
+
+    /// 按**目标列的实际类型**取值并转成 JSON（导出面用）。
+    pub fn json_value(&self, idx: usize) -> Result<serde_json::Value> {
+        match &self.0 {
+            RowRef::Sqlite(row) => sqlite_json_value(row, idx),
+            RowRef::Pg(row) => pg_json_value(row, idx),
+        }
+    }
+}
+
+fn sqlite_json_value(row: &rusqlite::Row<'_>, idx: usize) -> Result<serde_json::Value> {
+    let v: rusqlite::types::Value = row.get(idx).map_err(PlatformError::from)?;
+    Ok(match v {
+        rusqlite::types::Value::Null => serde_json::Value::Null,
+        rusqlite::types::Value::Integer(i) => serde_json::json!(i),
+        rusqlite::types::Value::Real(f) => serde_json::json!(f),
+        rusqlite::types::Value::Text(s) => serde_json::json!(s),
+        rusqlite::types::Value::Blob(b) => serde_json::json!({ "binary_bytes": b.len() }),
+    })
+}
+
+fn pg_json_value(row: &PgRow, idx: usize) -> Result<serde_json::Value> {
+    use sqlx::{Column as _, TypeInfo};
+    let is_null = row
+        .try_get_raw(idx)
+        .map(|raw| raw.is_null())
+        .map_err(pg_error)?;
+    if is_null {
+        return Ok(serde_json::Value::Null);
+    }
+    let name = row.columns()[idx].type_info().name();
+    Ok(match name {
+        "BOOL" => serde_json::json!(row.try_get::<bool, _>(idx).map_err(pg_error)?),
+        "INT2" => serde_json::json!(row.try_get::<i16, _>(idx).map_err(pg_error)?),
+        "INT4" => serde_json::json!(row.try_get::<i32, _>(idx).map_err(pg_error)?),
+        "INT8" => serde_json::json!(row.try_get::<i64, _>(idx).map_err(pg_error)?),
+        "FLOAT4" => serde_json::json!(row.try_get::<f32, _>(idx).map_err(pg_error)?),
+        "FLOAT8" | "NUMERIC" => {
+            serde_json::json!(row.try_get::<f64, _>(idx).map_err(pg_error)?)
+        }
+        "BYTEA" => {
+            let bytes = row.try_get::<Vec<u8>, _>(idx).map_err(pg_error)?;
+            serde_json::json!({ "binary_bytes": bytes.len() })
+        }
+        _ => serde_json::json!(row.try_get::<String, _>(idx).map_err(pg_error)?),
+    })
 }
 
 /// 列序号。只支持位置：旧 repo 的 `r.get(0)` 全是位置取值。
@@ -402,6 +452,19 @@ impl<'a> StorageStatement<'a> {
                     rows.iter().map(|row| map(&StorageRow::pg(row))).collect();
                 Ok(out.into_iter())
             }
+            PortConn::PgTx { conn, pool } => {
+                let mut guard = conn
+                    .lock()
+                    .map_err(|_| PlatformError::Storage("postgres tx poisoned".into()))?;
+                let sql = pg_sql(&self.sql);
+                let query = bind_all(&sql, params.as_slice());
+                let rows = pool
+                    .block_on(query.fetch_all(&mut **guard))
+                    .map_err(pg_error)?;
+                let out: Vec<Result<T>> =
+                    rows.iter().map(|row| map(&StorageRow::pg(row))).collect();
+                Ok(out.into_iter())
+            }
         }
     }
 }
@@ -413,6 +476,7 @@ impl StorageConnection<'_> {
             StorageConnection::Sqlite(c) => PortConn::Sqlite(c),
             StorageConnection::SqliteTx(c) => PortConn::Sqlite(c),
             StorageConnection::Postgres(p) => PortConn::Pg(p),
+            StorageConnection::PostgresTx { conn, pool } => PortConn::PgTx { conn, pool },
         }
     }
 
@@ -425,6 +489,16 @@ impl StorageConnection<'_> {
                 let sql = pg_sql(sql);
                 let query = bind_all(&sql, params.as_slice());
                 p.block_on(query.execute(p.pool()))
+                    .map(|done| done.rows_affected() as usize)
+                    .map_err(pg_error)
+            }
+            PortConn::PgTx { conn, pool } => {
+                let mut guard = conn
+                    .lock()
+                    .map_err(|_| PlatformError::Storage("postgres tx poisoned".into()))?;
+                let sql = pg_sql(sql);
+                let query = bind_all(&sql, params.as_slice());
+                pool.block_on(query.execute(&mut **guard))
                     .map(|done| done.rows_affected() as usize)
                     .map_err(pg_error)
             }
@@ -449,6 +523,20 @@ impl StorageConnection<'_> {
                 let query = bind_all(&sql, params.as_slice());
                 let row = p
                     .block_on(query.fetch_optional(p.pool()))
+                    .map_err(pg_error)?;
+                let Some(row) = row else {
+                    return Err(PlatformError::NotFound);
+                };
+                map(&StorageRow::pg(&row))
+            }
+            PortConn::PgTx { conn, pool } => {
+                let mut guard = conn
+                    .lock()
+                    .map_err(|_| PlatformError::Storage("postgres tx poisoned".into()))?;
+                let sql = pg_sql(sql);
+                let query = bind_all(&sql, params.as_slice());
+                let row = pool
+                    .block_on(query.fetch_optional(&mut **guard))
                     .map_err(pg_error)?;
                 let Some(row) = row else {
                     return Err(PlatformError::NotFound);

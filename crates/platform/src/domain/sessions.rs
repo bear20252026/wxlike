@@ -45,6 +45,7 @@ impl From<IdError> for PlatformError {
             // 绝不能折成任何一种"看起来还行"的作业状态糊过去（#114）。
             IdError::Corrupt(what) => Self::Internal(format!("corrupt stored row: {what}")),
             IdError::Db(e) => Self::Sqlite(e),
+            IdError::Storage(msg) => Self::Storage(msg),
             IdError::Json(e) => Self::Codec(e),
         }
     }
