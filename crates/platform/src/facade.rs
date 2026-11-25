@@ -385,6 +385,15 @@ pub trait AccountSecurity {
     fn verify_peer(&self, user_id: &str, peer_id: &str, peer_identity: &str) -> Result<()>;
     fn verification_of(&self, user_id: &str, peer_id: &str) -> Result<Option<i64>>;
     fn effective_perms(&self, community: &str, user: &str) -> Result<Vec<&'static str>>;
+
+    /// 该用户是否已开启 TOTP。
+    fn totp_enabled(&self, user_id: &str) -> Result<bool>;
+
+    /// 校验一次 TOTP 码（开启两步验证时的确认动作）。
+    fn totp_confirm(&self, user_id: &str, code: &str) -> Result<()>;
+
+    /// 关闭 TOTP，必须带当前有效码。
+    fn totp_disable(&self, user_id: &str, code: &str) -> Result<()>;
 }
 
 impl AccountSecurity for Platform {
@@ -412,6 +421,18 @@ impl AccountSecurity for Platform {
 
     fn effective_perms(&self, community: &str, user: &str) -> Result<Vec<&'static str>> {
         Platform::effective_perms(self, community, user)
+    }
+
+    fn totp_enabled(&self, user_id: &str) -> Result<bool> {
+        Platform::totp_enabled(self, user_id)
+    }
+
+    fn totp_confirm(&self, user_id: &str, code: &str) -> Result<()> {
+        Platform::totp_confirm(self, user_id, code)
+    }
+
+    fn totp_disable(&self, user_id: &str, code: &str) -> Result<()> {
+        Platform::totp_disable(self, user_id, code)
     }
 }
 
@@ -580,11 +601,18 @@ impl GroupMembership for Platform {
 /// Account 门面的设备目录切片：推送面要知道"这个人有哪些设备"。
 pub trait AccountDevices {
     fn devices_of(&self, user_id: &str) -> Result<Vec<crate::DeviceRow>>;
+
+    /// 注册/刷新一台推送设备；`true` 表示替换了同 id 的旧记录。
+    fn register_device(&self, user_id: &str, reg: &crate::DeviceReg) -> Result<bool>;
 }
 
 impl AccountDevices for Platform {
     fn devices_of(&self, user_id: &str) -> Result<Vec<crate::DeviceRow>> {
         Platform::devices_of(self, user_id)
+    }
+
+    fn register_device(&self, user_id: &str, reg: &crate::DeviceReg) -> Result<bool> {
+        Platform::register_device(self, user_id, reg)
     }
 }
 
@@ -821,10 +849,157 @@ impl RealtimeCalls for Platform {
 /// Social 门面的群禁言切片：投递策略问"这个人在群里被禁言了吗"。
 pub trait GroupModeration {
     fn is_muted(&self, group: &str, user: &str) -> Result<bool>;
+
+    /// 管理员设置群成员禁言到 `until_ms`；`0` 表示解除。
+    fn set_member_mute(&self, group: &str, actor: &str, target: &str, until_ms: u64) -> Result<()>;
 }
 
 impl GroupModeration for Platform {
     fn is_muted(&self, group: &str, user: &str) -> Result<bool> {
         Platform::is_muted(self, group, user)
+    }
+
+    fn set_member_mute(&self, group: &str, actor: &str, target: &str, until_ms: u64) -> Result<()> {
+        Platform::set_member_mute(self, group, actor, target, until_ms)
+    }
+}
+
+/// Account 门面的找回切片：图形验证码、恢复码、凭恢复码重置密码。
+///
+/// 这五条都是"账号丢了怎么回来"的路径，和登录后的 TOTP 管理分开：
+/// 找回面必须能在未登录状态调用，TOTP 面必须在已登录状态调用。
+pub trait AccountRecovery {
+    /// 发一道算术验证码，返回 `(id, question)`；答案只存服务端。
+    fn issue_captcha(&self) -> Result<(String, String)>;
+
+    /// 核销验证码；一次性，过期或已用都报 `BadInput`。
+    fn solve_captcha(&self, id: &str, answer: &str) -> Result<()>;
+
+    /// 生成一组一次性恢复码，返回本次新增的那一条（旧码继续有效）。
+    fn issue_recovery_code(&self, user_id: &str) -> Result<String>;
+
+    /// 该用户是否还有未使用的恢复码。
+    fn has_recovery_code(&self, user_id: &str) -> Result<bool>;
+
+    /// 用恢复码重置密码，返回新会话 token（旧会话全部吊销）。
+    fn reset_password_with_code(
+        &self,
+        name: &str,
+        code: &str,
+        new_password: &str,
+    ) -> Result<String>;
+}
+
+impl AccountRecovery for Platform {
+    fn issue_captcha(&self) -> Result<(String, String)> {
+        Platform::issue_captcha(self)
+    }
+
+    fn solve_captcha(&self, id: &str, answer: &str) -> Result<()> {
+        Platform::solve_captcha(self, id, answer)
+    }
+
+    fn issue_recovery_code(&self, user_id: &str) -> Result<String> {
+        Platform::issue_recovery_code(self, user_id)
+    }
+
+    fn has_recovery_code(&self, user_id: &str) -> Result<bool> {
+        Platform::has_recovery_code(self, user_id)
+    }
+
+    fn reset_password_with_code(
+        &self,
+        name: &str,
+        code: &str,
+        new_password: &str,
+    ) -> Result<String> {
+        Platform::reset_password_with_code(self, name, code, new_password)
+    }
+}
+
+/// Messaging 门面的信箱读切片：未读数、增量同步、已读回执与归属类型。
+///
+/// 四条都围绕"这个会话的信箱现在读到哪了"，调用方是 client、message、ui
+/// 与 server；不需要认识平台其余面。
+pub trait MailboxRead {
+    fn conv_unread(&self, user_id: &str, conv: &str) -> Result<crate::UnreadView>;
+    fn conv_sync(&self, user_id: &str, conv: &str, client_version: u64) -> Result<crate::SyncView>;
+    fn mark_conv_read(
+        &self,
+        user_id: &str,
+        conv: &str,
+        upto: Option<u64>,
+    ) -> Result<crate::UnreadView>;
+    fn owner_kind_of(&self, conv: &str) -> Result<wxlike_message::OwnerType>;
+}
+
+impl MailboxRead for Platform {
+    fn conv_unread(&self, user_id: &str, conv: &str) -> Result<crate::UnreadView> {
+        Platform::conv_unread(self, user_id, conv)
+    }
+
+    fn conv_sync(&self, user_id: &str, conv: &str, client_version: u64) -> Result<crate::SyncView> {
+        Platform::conv_sync(self, user_id, conv, client_version)
+    }
+
+    fn mark_conv_read(
+        &self,
+        user_id: &str,
+        conv: &str,
+        upto: Option<u64>,
+    ) -> Result<crate::UnreadView> {
+        Platform::mark_conv_read(self, user_id, conv, upto)
+    }
+
+    fn owner_kind_of(&self, conv: &str) -> Result<wxlike_message::OwnerType> {
+        Platform::owner_kind_of(self, conv)
+    }
+}
+
+/// Media 门面的转码引用切片：客户端发视频前查"这一档能不能播"。
+pub trait MediaOps {
+    fn video_ref(&self, video_id: &str) -> Result<Option<crate::VideoRefView>>;
+}
+
+impl MediaOps for Platform {
+    fn video_ref(&self, video_id: &str) -> Result<Option<crate::VideoRefView>> {
+        Platform::video_ref(self, video_id)
+    }
+}
+
+/// Realtime 门面的直播互动切片：弹幕只发给当前在房观众，不落库。
+///
+/// `async fn` 在 trait 里只服务于具体 `Platform`（不做 trait object），
+/// 因此不需要 `Send` 约束；加 `allow` 是为了把这条边界写清楚。
+#[allow(async_fn_in_trait)]
+pub trait LiveOps {
+    async fn send_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<usize>;
+}
+
+impl LiveOps for Platform {
+    async fn send_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<usize> {
+        Platform::send_danmaku(self, channel, user, text).await
+    }
+}
+
+/// 动态（状态）生命周期切片：清理过期状态，返回清理条数。
+pub trait StatusOps {
+    fn sweep_expired_statuses(&self) -> Result<usize>;
+}
+
+impl StatusOps for Platform {
+    fn sweep_expired_statuses(&self) -> Result<usize> {
+        Platform::sweep_expired_statuses(self)
+    }
+}
+
+/// 通话注册表的测试/运维检查口：只读快照，不允许改房间状态。
+pub trait CallInspector {
+    fn calls(&self) -> &crate::CallRegistry;
+}
+
+impl CallInspector for Platform {
+    fn calls(&self) -> &crate::CallRegistry {
+        Platform::calls(self)
     }
 }

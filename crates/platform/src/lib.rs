@@ -90,6 +90,7 @@ pub use crate::domain::media::{
 };
 pub use crate::domain::notification::NotificationRule;
 pub use crate::domain::perms::Perm;
+pub use crate::domain::read::{SyncView, UnreadView};
 pub use crate::domain::reconcile::{spawn_reconciler, Mismatch, ReconcileReport};
 pub use crate::domain::relations::{StrangerRequest, StrangerState};
 pub use crate::domain::secret::SecretState;
@@ -99,14 +100,16 @@ pub use crate::domain::security::{
 pub use crate::domain::status::spawn_status_sweeper;
 pub use crate::domain::trust::{QueuedItem, SendVerdict};
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
+pub use crate::domain::video_refs::VideoRefView;
 pub use crate::domain::wallet::RedpacketRow;
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::facade::{
-    AccountDevices, AccountSecurity, AccountSessions, AdminAccess, AuditTrail, CommunityOps,
-    ConversationAccess, Favorites, FriendRequests, GovernanceGate, GroupMembership,
-    GroupModeration, MessagingPrefs, ModerationDesk, RealtimeCalls, ReportDesk, SocialGraph,
-    SocialRelations, WalletLedger,
+    AccountDevices, AccountRecovery, AccountSecurity, AccountSessions, AdminAccess, AuditTrail,
+    CallInspector, CommunityOps, ConversationAccess, Favorites, FriendRequests, GovernanceGate,
+    GroupMembership, GroupModeration, LiveOps, MailboxRead, MediaOps, MessagingPrefs,
+    ModerationDesk, RealtimeCalls, ReportDesk, SocialGraph, SocialRelations, StatusOps,
+    WalletLedger,
 };
 pub use wxlike_report::Ticket;
 

@@ -68,7 +68,7 @@ pub enum SyncView {
 
 impl Platform {
     /// 会话 → 属主类型。direct 由 id 推导，其余查 `conv_owner`。
-    pub fn owner_kind_of(&self, conv: &str) -> Result<wxlike_message::OwnerType> {
+    pub(crate) fn owner_kind_of(&self, conv: &str) -> Result<wxlike_message::OwnerType> {
         use wxlike_message::OwnerType;
         if conv.starts_with("d-") {
             return Ok(OwnerType::Direct);
@@ -128,7 +128,7 @@ impl Platform {
         }
     }
 
-    pub fn conv_unread(&self, user_id: &str, conv: &str) -> Result<UnreadView> {
+    pub(crate) fn conv_unread(&self, user_id: &str, conv: &str) -> Result<UnreadView> {
         self.assert_conv_participant(user_id, conv)?;
         let owner = self.owner_kind_of(conv)?;
         let store = self
@@ -150,7 +150,7 @@ impl Platform {
         })
     }
 
-    pub fn mark_conv_read(
+    pub(crate) fn mark_conv_read(
         &self,
         user_id: &str,
         conv: &str,
@@ -169,7 +169,12 @@ impl Platform {
         self.conv_unread(user_id, conv)
     }
 
-    pub fn conv_sync(&self, user_id: &str, conv: &str, client_version: u64) -> Result<SyncView> {
+    pub(crate) fn conv_sync(
+        &self,
+        user_id: &str,
+        conv: &str,
+        client_version: u64,
+    ) -> Result<SyncView> {
         self.assert_conv_participant(user_id, conv)?;
         let owner = self.owner_kind_of(conv)?;
         let store = self

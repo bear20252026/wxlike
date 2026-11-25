@@ -29,18 +29,19 @@ python scripts/platform_surface_audit.py --json
 | 门面试点后 | 279 | **105** | **174** |
 | 会话 trait 扩容后 | 279 | **102** | **177** |
 | 访问 trait 扩容后 | 279 | **101** | **178** |
+| 门面清零后 | 276 | **0** | **276** |
 
-目标：`pub` 方法 ≤120。
+目标：`pub` 业务方法 = 0；`Platform` 上只剩构造器（`in_memory` / `shared`）是 `pub`。
 
 ## CI 门禁
 
 `ci.yml` 的 `fmt` job 会执行：
 
 ```bash
-python3 scripts/platform_surface_audit.py --max-pub 120 --check-facades
+python3 scripts/platform_surface_audit.py --max-pub 0 --check-facades
 ```
 
-超过 120 直接失败，防止 `Platform` 的公开面在后续迭代里重新膨胀。
+任何新的 `pub fn` 都会直接失败，防止公开面在后续迭代里重新膨胀。
 
 ## 第一批：status / favorites / notes
 

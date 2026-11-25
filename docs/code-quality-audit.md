@@ -468,7 +468,7 @@ search、video、hub、router 全串在一个函数里。
 | 2 | `start_stack` | ✅ | 204 行 → 55 行，拆成 5 个 `build_*` |
 | 2 | 错误契约收口（`crates/api`） | ✅ | 新增零业务依赖的 `wxlike-api`；`video` 的 30 处 `(StatusCode, String)` → `ApiResult`，顺带修掉 Windows 上"视频不存在返回 500" |
 | 2 | `mq_hub` 拆帧 | ⏳ | 主链路，需先补帧级测试 |
-| 3 | `Platform` 门面化 | 🚧 | 六批共降 190 个方法（21+43+48+39+17+22），公开方法 258→**18**；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait，再把这七个判定切进 `SocialGraph` / `GroupModeration` / `GovernanceGate` / `AccountDevices` / `MessagingPrefs`，本批又把 call/live 的 22 个控制方法整体切进 `RealtimeCalls`，接着把审计/工单（`AuditTrail` / `ReportDesk`）与好友/关系（`SocialRelations`）切了出去；剩余门面按 `docs/platform-facades.md` 迁移 |
+| 3 | `Platform` 门面化 | 🚧 | 六批共降 190 个方法（21+43+48+39+17+22），公开方法 258→**0**（业务方法全部经门面 trait，`Platform` 上只剩构造器仍是 `pub`）；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait，再把这七个判定切进 `SocialGraph` / `GroupModeration` / `GovernanceGate` / `AccountDevices` / `MessagingPrefs`，本批又把 call/live 的 22 个控制方法整体切进 `RealtimeCalls`，接着把审计/工单（`AuditTrail` / `ReportDesk`）与好友/关系（`SocialRelations`）切了出去；最后 18 条（TOTP / 恢复码 / 设备注册 / 信箱读 / 视频引用 / 弹幕 / 状态清理 / 通话检查 / 群禁言）分别并入 `AccountSecurity`、`AccountDevices`、新建的 `AccountRecovery`、`MailboxRead`、`MediaOps`、`LiveOps`、`StatusOps`、`CallInspector`、`GroupModeration`，公开面归零；CI 门禁收紧到 `--max-pub 0` |
 | 3 | 抽 `crates/wire` | ⏳ | 单独排期 |
 
 指标变化（口径修正后重新计算，只算生产代码）：

@@ -11,7 +11,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use serde_json::{json, Value};
-use wxlike_platform::{Platform, PlatformOptions, PlatformState};
+use wxlike_platform::{MediaOps, Platform, PlatformOptions, PlatformState};
 
 const TOKEN: &str = "callback-token-for-tests";
 

@@ -224,7 +224,7 @@ fn row_to_view(row: RefRow) -> VideoRefView {
 
 impl Platform {
     /// 读一条视频引用。`None` = 还没收到回调（作业没转完，或根本没提交过）。
-    pub fn video_ref(&self, video_id: &str) -> Result<Option<VideoRefView>> {
+    pub(crate) fn video_ref(&self, video_id: &str) -> Result<Option<VideoRefView>> {
         let c = self.db().acquire();
         let row = load(&c, video_id)?;
         Ok(row.map(row_to_view))

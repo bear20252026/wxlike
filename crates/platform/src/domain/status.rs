@@ -248,7 +248,7 @@ impl Platform {
 
     /// 服务端到期清理：清可见性、删索引、撤收藏、留审计。返回清理条数。
     /// 由 `spawn_status_sweeper` 定时调用；测试直接调用以获得确定性。
-    pub fn sweep_expired_statuses(&self) -> Result<usize> {
+    pub(crate) fn sweep_expired_statuses(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
         let expired: Vec<(String, String)> = {
             let mut c = self.db().lock();

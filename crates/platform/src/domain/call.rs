@@ -96,7 +96,7 @@ fn map_room_error(e: RoomError) -> PlatformError {
 
 impl Platform {
     /// 通话注册表（测试与运维用）。
-    pub fn calls(&self) -> &CallRegistry {
+    pub(crate) fn calls(&self) -> &CallRegistry {
         &self.calls
     }
 

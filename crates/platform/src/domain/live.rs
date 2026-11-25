@@ -246,7 +246,12 @@ impl Platform {
 
     /// 弹幕：只发给当前在房观众，走 `high_priority`（不落库、不占序列号）。
     /// 返回实际收件人数（不含发送者自己）。
-    pub async fn send_danmaku(&self, channel: &str, user: &str, text: &str) -> Result<usize> {
+    pub(crate) async fn send_danmaku(
+        &self,
+        channel: &str,
+        user: &str,
+        text: &str,
+    ) -> Result<usize> {
         let channel = validate::id(channel)?.to_string();
         let user = user.to_string();
         self.ensure_danmaku_member(&channel, &user).await?;

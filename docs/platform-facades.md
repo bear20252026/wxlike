@@ -1,26 +1,27 @@
 # Platform 门面归属表
 
-`Platform` 的公开方法已经压到 18 个，但“少”不等于“有结构”。这份表把每个
-公开方法归到一个门面，作为后续拆 trait / 收敛组合根的边界。
+`Platform` 的**业务方法公开面已经清零**：276 个方法里 0 个 `pub`，全部经
+`facade.rs` 的窄 trait 暴露。这份表记录每个门面的归属，防止新方法又长回
+`Platform` 身上——`pub` 只能是构造器，不能是业务动作。
 
 ## 归属
 
 | 门面 | 模块 | 当前 pub 方法 |
 |---|---|---|
-| Account | `sessions` / `security` / `recovery` / `devices` | 9 |
-| Messaging | `read` / `notification` | 4 |
-| Media | `video_refs` | 1 |
+| Account | `sessions` / `security` / `recovery` / `devices` | 0 |
+| Messaging | `read` / `notification` | 0 |
+| Media | `video_refs` | 0 |
 | Wallet | `wallet` | 0 |
 | Governance | `report` / `audit` / `secret` / `perms` / `trust` | 0 |
-| Realtime | `call` / `live` | 2 |
-| Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 2 |
+| Realtime | `call` / `live` | 0 |
+| Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 0 |
 | Health | 组合根自身（readiness） | 0 |
 
-合计 **18**。
+合计 **0**。
 
 ## 规则
 
-1. 新公开方法必须能归入上表某个门面；归不进去说明边界没想清楚，先不要 `pub`。
+1. 新业务动作必须归入上表某个门面的 trait；`Platform` 上不再新增 `pub fn`，归不进去说明边界没想清楚。
 2. 门面之间不互相调用；跨门面协作走 domain 层或显式端口，不经过 `Platform` 的
    另一个公开方法。
 3. 门面内部实现优先 `pub(crate)`；只有真实跨 crate 入口才 `pub`。
@@ -31,7 +32,7 @@
 `ci.yml` 的 `fmt` job 执行：
 
 ```bash
-python3 scripts/platform_surface_audit.py --max-pub 120 --check-facades
+python3 scripts/platform_surface_audit.py --max-pub 0 --check-facades
 ```
 
 未归类的公开方法、或公开面超过 120，都会直接失败。
@@ -208,12 +209,25 @@ Social 公开面 21→**2**（只剩 `relations` 的陌生人请求状态与 `gr
 调用，几乎全是集成测试）；并入 `AccountSessions` 后 Account 公开面 11→**9**，
 总公开面 47→**18**。
 
+## 收尾：最后 18 条清零
+
+- Account 9 条拆成三块：TOTP 管理（`totp_enabled` / `totp_confirm` /
+  `totp_disable`）并入 `AccountSecurity`；验证码与恢复码 5 条新建
+  `AccountRecovery`；`register_device` 并入 `AccountDevices`。
+- Messaging 4 条（`conv_unread` / `conv_sync` / `mark_conv_read` /
+  `owner_kind_of`）新建 `MailboxRead`。
+- Media 的 `video_ref` 新建 `MediaOps`；Realtime 的 `calls` 新建
+  `CallInspector`、`send_danmaku` 新建 `LiveOps`（trait 内 `async fn`，只服务
+  具体 `Platform`，不装箱）。
+- Social 的 `set_member_mute` 并入 `GroupModeration`，`sweep_expired_statuses`
+  新建 `StatusOps`。
+
+`Platform` 的 pub 业务方法从 18 降到 **0**；门面 trait 从 19 个增到 24 个。
+
 ## 下一步
 
-- Wallet 已整张账切进 `WalletLedger`（9 个方法，公开面 6→0）；后续 ledger 端口化
-  只需替换 trait 实现，不动调用方；
-- Account 只剩 TOTP/recovery/设备目录（`totp_confirm` / `solve_captcha` /
-  `register_device` 等 9 条），下一步按 `AccountSecurity` 同款切；
-- Messaging 的 `conv_unread` / `owner_kind_of` / `conv_sync` / `mark_conv_read`
-  四条同时被 client、message、ui、server 使用，适合单独切 `MailboxRead`；
-- Social 只剩 `set_member_mute`（server）与陌生人请求状态，收尾即可归零。
+- 业务面已经没有 `Platform::pub fn`；新增能力先加门面 trait，再实现
+  `pub(crate)` 方法——`--max-pub 0` 的 CI 门禁会拒绝任何回潮。
+- Wallet 后续 ledger 端口化只需替换 trait 实现，不动调用方。
+- 门面 trait 已经稳定，可开始把组合根装配（`PlatformState`）按门面注入，
+  让 handler 只持有它需要的那张 trait，而不是整个 `Platform`。

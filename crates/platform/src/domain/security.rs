@@ -83,7 +83,7 @@ impl Platform {
         SqliteUsersRepo::new(&c).totp_secret(user_id)
     }
 
-    pub fn totp_enabled(&self, user_id: &str) -> Result<bool> {
+    pub(crate) fn totp_enabled(&self, user_id: &str) -> Result<bool> {
         let c = self.db().lock();
         SqliteUsersRepo::new(&c).totp_enabled(user_id)
     }
@@ -101,7 +101,7 @@ impl Platform {
     }
 
     /// 首码确认激活。
-    pub fn totp_confirm(&self, user_id: &str, code: &str) -> Result<()> {
+    pub(crate) fn totp_confirm(&self, user_id: &str, code: &str) -> Result<()> {
         let secret = self
             .totp_secret_of(user_id)?
             .ok_or(PlatformError::NotFound)?;
@@ -113,7 +113,7 @@ impl Platform {
         Ok(())
     }
 
-    pub fn totp_disable(&self, user_id: &str, code: &str) -> Result<()> {
+    pub(crate) fn totp_disable(&self, user_id: &str, code: &str) -> Result<()> {
         let secret = self
             .totp_secret_of(user_id)?
             .ok_or(PlatformError::NotFound)?;

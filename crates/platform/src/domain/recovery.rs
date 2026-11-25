@@ -146,7 +146,7 @@ impl Platform {
     }
 
     /// 出题：返回 `(challenge_id, question)`。答案只以摘要入库。
-    pub fn issue_captcha(&self) -> Result<(String, String)> {
+    pub(crate) fn issue_captcha(&self) -> Result<(String, String)> {
         let mut rng = rand::thread_rng();
         let a: u32 = rng.gen_range(2..=9);
         let b: u32 = rng.gen_range(2..=9);
@@ -166,7 +166,7 @@ impl Platform {
 
     /// 校验并消费题目。错误一律 `BadInput`（不区分"过期/已用/答错"，
     /// 避免把题目状态变成探测面）。
-    pub fn solve_captcha(&self, id: &str, answer: &str) -> Result<()> {
+    pub(crate) fn solve_captcha(&self, id: &str, answer: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().acquire();
         let row = captcha_row(&c, id)?;
@@ -185,7 +185,7 @@ impl Platform {
     }
 
     /// 生成一次性恢复码（明文只返回这一次）。
-    pub fn issue_recovery_code(&self, user_id: &str) -> Result<String> {
+    pub(crate) fn issue_recovery_code(&self, user_id: &str) -> Result<String> {
         let user_id = validate::id(user_id)?.to_string();
         let raw = crate::auth::random_hex(10); // 80 bit
         let code = format!(
@@ -205,7 +205,7 @@ impl Platform {
 
     /// 凭恢复码重置密码：校验 → 换 argon2id 密码 → 吊销全部会话 → 作废恢复码。
     /// 返回被重置的用户 id（不返回 token：重置后必须重新登录）。
-    pub fn reset_password_with_code(
+    pub(crate) fn reset_password_with_code(
         &self,
         name: &str,
         code: &str,
@@ -251,7 +251,7 @@ impl Platform {
     }
 
     /// 是否已设置恢复码（UI 提示"未设置"用）。
-    pub fn has_recovery_code(&self, user_id: &str) -> Result<bool> {
+    pub(crate) fn has_recovery_code(&self, user_id: &str) -> Result<bool> {
         let c = self.db().acquire();
         let used = recovery_used_at(&c, user_id)?;
         Ok(matches!(used, Some(None)))

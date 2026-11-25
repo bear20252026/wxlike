@@ -12,7 +12,7 @@ mod common;
 
 use common::{app, req, signup};
 use serde_json::json;
-use wxlike_platform::CommunityOps;
+use wxlike_platform::{CommunityOps, MailboxRead};
 
 #[tokio::test]
 async fn channel_unread_ack_and_sync_over_http() {

@@ -21,7 +21,7 @@ pub struct DeviceRow {
 impl Platform {
     /// Upserts the token for `(user, platform)`; returns whether it replaced
     /// an existing row.
-    pub fn register_device(&self, user_id: &str, reg: &DeviceReg) -> Result<bool> {
+    pub(crate) fn register_device(&self, user_id: &str, reg: &DeviceReg) -> Result<bool> {
         let platform = validate::device_platform(&reg.platform)?;
         if reg.device_token.is_empty() || reg.device_token.len() > 512 {
             return Err(PlatformError::BadInput("device token malformed"));

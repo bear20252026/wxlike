@@ -4,7 +4,7 @@
 //! 的 force-mute）、踢人禁入、锁门、录制、移交主持、最后一人离开结束房间、
 //! 出口码率分配接口。
 
-use wxlike_platform::{Platform, RealtimeCalls};
+use wxlike_platform::{CallInspector, Platform, RealtimeCalls};
 use wxlike_rtc::room::Track;
 
 struct Fixture {
