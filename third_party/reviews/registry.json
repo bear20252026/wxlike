@@ -421,7 +421,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "fa77c3a20a2a8f8d388123def986bf8f0a5dfce6d38fb9ea6f3513536305c024",
+      "local_sha256": "06e9cdb18d9d64db0757267f8ae20060c6017dbfb2fb91c0af1ed392cb149afd",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-schema.md",
       "used_by": "friend_acs / friend_policy / group_member_acs 三张表的列形状（两列 mode + 两档默认位）"
     },
@@ -432,7 +432,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "09207344cdb104bf6591934b6dc0006eab6563bd7474729141ae3471b46c3e83",
+      "local_sha256": "c0ae0d8653cb6b263e679b579db9dd562c13a1e7937fc6ebf72539a12ee90474",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-auth-level.md",
       "used_by": "AuthLevel / Features / 令牌序列号 / 签发侧车表与鉴权时的作废与级别判定",
       "updated_at": "2026-11-24"
@@ -477,7 +477,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "6b587f356710d1028944d556a6198c47307b96f8ae67f64833aff3dcdfdbb919",
+      "local_sha256": "c5e0d870d8f2a6b5eaa1f2b856317e166b51c21ec092baaef48b6cfbd50a3534",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-schema.md",
       "used_by": "identity_session_token / identity_token_serial / identity_retry 三张表的列形状"
     }
