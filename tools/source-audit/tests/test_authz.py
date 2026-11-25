@@ -102,6 +102,34 @@ class AuthzTest(unittest.TestCase):
         routes = {(r.method, r.path): r.auth for r in authz.scan_routes(self.repo.root)}
         self.assertEqual(routes[("GET", "/api/admin/queue")], "admin")
 
+    def test_macro_generated_handler_keeps_auth(self) -> None:
+        """`delete_endpoint!` 这类宏生成的 handler 不能因为“源码里没签名”被判成 unknown。"""
+        (self.repo.root / "crates/platform/src/macro_routes.rs").write_text(
+            ROUTES_RS.replace(
+                "use axum::routing::{get, post};", "use axum::routing::{delete, get, post};"
+            ).replace(
+                "Router::new()",
+                'Router::new().route("/api/favorites/{id}", delete(remove))',
+            )
+            + """
+macro_rules! delete_endpoint {
+    ($name:ident, $method:ident) => {
+        async fn $name(
+            State(p): State<PlatformState>,
+            authed: Authed,
+            Path(id): Path<String>,
+        ) -> Result<StatusCode> { Ok(StatusCode::NO_CONTENT) }
+    };
+}
+
+delete_endpoint!(remove, remove_favorite);
+""",
+            encoding="utf-8",
+        )
+        found = [r for r in authz.scan_routes(self.repo.root) if r.handler == "remove"]
+        self.assertTrue(found)
+        self.assertEqual({r.auth for r in found}, {"user"})
+
     def test_named_collision_does_not_hide_handler(self) -> None:
         """同名业务方法在前、处理器在后：必须判成 user，而不是 public。"""
         (self.repo.root / "crates/platform/src/community.rs").write_text(

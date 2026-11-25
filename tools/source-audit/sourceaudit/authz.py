@@ -71,14 +71,17 @@ class Route:
 def scan_routes(root: Path) -> list[Route]:
     """扫 `crates/platform/src/**/*.rs` 里所有 `.route(...)`。"""
     routes: list[Route] = []
-    for path in sorted((root / "crates/platform/src").rglob("*.rs")):
-        text = read_text(path)
+    sources = [(path, read_text(path)) for path in sorted((root / "crates/platform/src").rglob("*.rs"))]
+    macro_defs: dict[str, str] = {}
+    for _, text in sources:
+        macro_defs.update(_macro_definitions(text))
+    for path, text in sources:
         module = str(path.relative_to(root)).replace("\\", "/")
         for args in _route_calls(text):
             literal = _LITERAL_RE.search(args)
             if not literal:
                 continue
-            for method, handler, auth in _methods_of(args, text):
+            for method, handler, auth in _methods_of(args, text, macro_defs):
                 routes.append(Route(method.upper(), literal.group(1), handler, module, auth))
     return routes
 
@@ -100,7 +103,9 @@ def _route_calls(text: str) -> list[str]:
     return out
 
 
-def _methods_of(args: str, file_text: str) -> list[tuple[str, str, str]]:
+def _methods_of(
+    args: str, file_text: str, macro_defs: dict[str, str] | None = None
+) -> list[tuple[str, str, str]]:
     """一条 `.route(...)` 里可能有多个方法（`get(a).post(b)`），也可能内联闭包。
 
     内联闭包（`get(|State(..), authed: Authed| async move {...})`）没有名字可查，
@@ -114,7 +119,7 @@ def _methods_of(args: str, file_text: str) -> list[tuple[str, str, str]]:
         named = _NAME_RE.match(segment)
         if named:
             handler = named.group(1)
-            out.append((hit.group(1), handler, _handler_auth(file_text, handler)))
+            out.append((hit.group(1), handler, _handler_auth(file_text, handler, macro_defs)))
             continue
         if "admin_ok(" in segment or "x-admin-token" in segment:
             auth = "admin"
@@ -126,7 +131,9 @@ def _methods_of(args: str, file_text: str) -> list[tuple[str, str, str]]:
     return out
 
 
-def _handler_auth(file_text: str, handler: str) -> str:
+def _handler_auth(
+    file_text: str, handler: str, macro_defs: dict[str, str] | None = None
+) -> str:
     """从处理函数签名判定鉴权：`Authed` 提取器 = 用户态；`AdminAuth` 提取器
     或 `admin_ok(` = 管理面（#245 起管理面鉴权走提取器，签名即证据）。
 
@@ -138,7 +145,10 @@ def _handler_auth(file_text: str, handler: str) -> str:
     """
     candidates = list(re.finditer(r"\basync fn " + re.escape(handler) + r"\s*\(", file_text))
     if not candidates:
-        return "unknown"
+        # 宏生成的 handler（`delete_endpoint!(remove, ...)`）在源码里没有签名，
+        # 但宏体里的提取器就是它的签名。只认“宏体确实声明了 async fn $name
+        # 且带 Authed/AdminAuth”的形态，避免把任意同名宏当成鉴权证据。
+        return _macro_handler_auth(file_text, handler, macro_defs)
     signatures = [_signature_at(file_text, m.end()) for m in candidates]
     handler_shaped = [item for item in signatures if any(marker in item[0] for marker in _HANDLER_MARKERS)]
     signature, end = (handler_shaped or signatures)[0]
@@ -310,3 +320,45 @@ def _test_names(root: Path) -> set[str]:
     for path in base.rglob("*.rs"):
         names.update(re.findall(r"\bfn\s+([a-z0-9_]+)\s*\(", read_text(path)))
     return names
+
+def _macro_handler_auth(
+    file_text: str, handler: str, definitions: dict[str, str] | None = None
+) -> str:
+    """handler 由 `foo!(handler, ...)` 生成时，从 `macro_rules! foo` 的宏体判定。
+
+    典型形态是 `delete_endpoint!`：宏体里有 `async fn $name(... authed: Authed ...)`。
+    没有这个声明就不猜——返回 `unknown`，让矩阵漂移照常报出来。
+    """
+    definitions = dict(definitions or {})
+    definitions.update(_macro_definitions(file_text))
+    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)!\s*\(\s*" + re.escape(handler) + r"\b", file_text):
+        body = definitions.get(m.group(1), "")
+        if "async fn" not in body or "$name" not in body:
+            continue
+        if "AdminAuth" in body or "require_admin(" in body:
+            return "admin"
+        if "Authed" in body:
+            return "user"
+    return "unknown"
+
+
+def _balanced_braces(text: str, start: int) -> str:
+    """从 `{` 之后开始，返回到配对 `}` 之前的宏体文本。"""
+    depth = 1
+    i = start
+    while i < len(text) and depth:
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    return text[start : i - 1]
+
+def _macro_definitions(text: str) -> dict[str, str]:
+    """收集一段源码里的 `macro_rules!` 名字 → 宏体。"""
+    definitions: dict[str, str] = {}
+    for m in re.finditer(r"\bmacro_rules!\s*([A-Za-z_][A-Za-z0-9_]*)\s*{", text):
+        definitions[m.group(1)] = _balanced_braces(text, m.end())
+    return definitions
+
