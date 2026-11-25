@@ -1,8 +1,8 @@
 {
- "total_files": 473,
- "total_lines": 144973,
- "fn_total": 7072,
- "count_len_gt30": 588,
+ "total_files": 474,
+ "total_lines": 145127,
+ "fn_total": 7089,
+ "count_len_gt30": 585,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
  "count_nest_gt3": 0,
@@ -85,12 +85,12 @@
    1028
   ],
   [
-   "crates/ledger/src/store.rs",
-   1002
+   "crates/platform/src/facade.rs",
+   1005
   ],
   [
-   "crates/rtc/src/token/livekit.rs",
-   986
+   "crates/ledger/src/store.rs",
+   1002
   ]
  ],
  "long_fns": [],
@@ -216,7 +216,7 @@
    "crates/limits/src/lib.rs:164",
    "crates/platform/src/db/schema.rs:299",
    "crates/platform/src/domain/live.rs:138",
-   "crates/platform/src/domain/repo/report.rs:82",
+   "crates/platform/src/domain/repo/report.rs:68",
    "crates/platform/src/domain/repo/video_refs.rs:26"
   ],
   "64": [
@@ -256,16 +256,16 @@
   ],
   "11": [
    "crates/admin/src/read.rs:785",
-   "crates/platform/src/domain/repo/report.rs:82",
+   "crates/platform/src/domain/repo/report.rs:68",
    "crates/platform/src/domain/repo/video_refs.rs:26",
-   "crates/platform/src/domain/repo/video_refs.rs:84",
+   "crates/platform/src/domain/repo/video_refs.rs:71",
    "crates/video/src/jobs.rs:985"
   ],
   "9": [
    "crates/features/identity/src/governance/mod.rs:145",
    "crates/features/identity/src/governance/mod.rs:157",
    "crates/features/identity/src/governance/mod.rs:174",
-   "crates/features/relations/src/lib.rs:155",
+   "crates/features/relations/src/lib.rs:142",
    "crates/platform/src/db/schema.rs:236"
   ],
   "128": [
@@ -310,7 +310,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 67,
+ "dup_windows": 47,
  "dup_sample": [
   [
    [
@@ -384,26 +384,6 @@
   ],
   [
    [
-    "crates/features/identity/src/session.rs",
-    328
-   ],
-   [
-    "crates/features/relations/src/governance.rs",
-    210
-   ]
-  ],
-  [
-   [
-    "crates/features/identity/src/session.rs",
-    329
-   ],
-   [
-    "crates/features/relations/src/governance.rs",
-    211
-   ]
-  ],
-  [
-   [
     "crates/core/src/error.rs",
     31
    ],
@@ -424,12 +404,32 @@
   ],
   [
    [
-    "crates/features/identity/src/lib.rs",
-    78
+    "crates/features/identity/src/session.rs",
+    57
    ],
    [
-    "crates/features/relations/src/lib.rs",
-    73
+    "crates/features/relations/src/port.rs",
+    476
+   ]
+  ],
+  [
+   [
+    "crates/features/identity/src/session.rs",
+    58
+   ],
+   [
+    "crates/features/relations/src/port.rs",
+    477
+   ]
+  ],
+  [
+   [
+    "crates/features/identity/src/session.rs",
+    46
+   ],
+   [
+    "crates/features/relations/src/port.rs",
+    485
    ]
   ]
  ],

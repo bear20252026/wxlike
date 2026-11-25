@@ -67,3 +67,27 @@ impl StorageError {
         Self::Json(e)
     }
 }
+
+/// 为领域错误枚举生成 `StorageError -> 该错误` 的 `From` 实现。
+///
+/// 各域的 `NotFound` / `Conflict` / `Corrupt` / `Db` / `Json` 变体形状一致，
+/// 手写 impl 的 match 只是搬运；集中成宏后，`StorageError` 新增变体会在
+/// 所有接入域同时编译失败，而不是悄悄落进某个 `_ =>` 分支。
+///
+/// 用法：`storage_error_from!(IdError);`（枚举必须在同一模块可见）。
+#[macro_export]
+macro_rules! storage_error_from {
+    ($err:ty) => {
+        impl From<$crate::error::StorageError> for $err {
+            fn from(e: $crate::error::StorageError) -> Self {
+                match e {
+                    $crate::error::StorageError::NotFound(w) => Self::NotFound(w),
+                    $crate::error::StorageError::Conflict(w) => Self::Conflict(w),
+                    $crate::error::StorageError::Corrupt(w) => Self::Corrupt(w),
+                    $crate::error::StorageError::Db(e) => Self::Db(e),
+                    $crate::error::StorageError::Json(e) => Self::Json(e),
+                }
+            }
+        }
+    };
+}

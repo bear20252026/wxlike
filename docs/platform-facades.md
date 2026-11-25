@@ -222,7 +222,7 @@ Social 公开面 21→**2**（只剩 `relations` 的陌生人请求状态与 `gr
 - Social 的 `set_member_mute` 并入 `GroupModeration`，`sweep_expired_statuses`
   新建 `StatusOps`。
 
-`Platform` 的 pub 业务方法从 18 降到 **0**；门面 trait 从 19 个增到 24 个。
+`Platform` 的 pub 业务方法从 18 降到 **0**；门面 trait 从 19 个增到 25 个（以 `pub trait` 计数为准）。
 
 ## 下一步
 

@@ -318,17 +318,7 @@ impl MessageStore {
                    FROM mailbox WHERE owner_type = ?1 AND owner_id = ?2
                   ORDER BY seq DESC LIMIT 1",
                     params![owner_type.as_str(), conv_id],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                            r.get(6)?,
-                        ))
-                    },
+                    |r| wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6),
                 )
                 .optional()?;
             if let Some((seq, _msg_id, sender, type_id, payload, kind, withdrawn)) = latest {

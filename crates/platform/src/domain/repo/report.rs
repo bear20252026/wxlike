@@ -15,21 +15,7 @@ pub(in crate::domain) fn load(conn: &StorageConnection<'_>, id: &str) -> Result<
                     handler, created_at, updated_at, history_json
              FROM reports WHERE id = ?1",
             params![id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                    r.get(9)?,
-                    r.get(10)?,
-                ))
-            },
+            |r| wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
         )
         .optional()?)
 }
