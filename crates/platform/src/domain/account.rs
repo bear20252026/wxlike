@@ -41,7 +41,6 @@
 use crate::auth::Authed;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -445,8 +444,7 @@ impl Platform {
         let user_id = job.user_id.clone();
         let bytes = self
             .db()
-            .blocking(move |c| export_document_for(c, &user_id))
-            .await?;
+            .with_tx(move |c| export_document_for(c, &user_id))?;
         let sha = wxlike_core::msgmeta::sha256_hex(&bytes);
         if let Err(err) = self.media_store().put(&sha, &bytes).await {
             // 底层 io/sqlite 文本只进服务端日志（它可能带路径），跨请求边界的那句
@@ -531,7 +529,7 @@ impl Platform {
     /// `pub`：worker 用它，验收测试也要直接读一遍产物（"导出只含本人可见数据、
     /// 不含凭据列"这条只能在内容上断言，看状态字段是不够的）。
     pub fn export_document(&self, user_id: &str) -> Result<Vec<u8>> {
-        let c = self.db().lock()?;
+        let c = self.db().acquire();
         export_document_for(&c, user_id)
     }
 }
@@ -539,17 +537,19 @@ impl Platform {
 /// `Platform::export_document` 的取数部分：调用方已经持有连接，整段查询
 /// 因此可以作为一个阻塞任务搬进 `Db::blocking`，而不用在 await 上下文里
 /// 再取一次锁。
-fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
-    let port = crate::storage::StorageConnection::sqlite_borrow(c);
-    let profile = export_profile(&port, user_id)?;
+fn export_document_for(
+    port: &crate::storage::StorageConnection<'_>,
+    user_id: &str,
+) -> Result<Vec<u8>> {
+    let profile = export_profile(port, user_id)?;
     let Some(owner) = profile.first().cloned() else {
         // 本人行读不到 = 这份导出没有内容可言，必须失败，不能交空包。
         return Err(PlatformError::NotFound);
     };
-    let prefs = preferences::get(c, user_id)?;
+    let prefs = pref_repo::get(port, user_id)?;
     let settings = json!({
         "preferences": prefs.values,
-        "legacy_user_settings": export_user_settings(&port, user_id)?,
+        "legacy_user_settings": export_user_settings(port, user_id)?,
         "privacy": privacy_view(&prefs),
     });
     let doc = json!({
@@ -557,10 +557,10 @@ fn export_document_for(c: &Connection, user_id: &str) -> Result<Vec<u8>> {
         "exported_at_ms": wxlike_core::types::now_ms(),
         "scopes": EXPORT_SCOPES,
         "profile": owner,
-        "contacts": export_contacts(&port, user_id)?,
-        "messages": export_messages(&port, user_id)?,
-        "media_manifest": export_media(&port, user_id)?,
-        "ledger": export_ledger(&port, user_id)?,
+        "contacts": export_contacts(port, user_id)?,
+        "messages": export_messages(port, user_id)?,
+        "media_manifest": export_media(port, user_id)?,
+        "ledger": export_ledger(port, user_id)?,
         "settings": settings,
     });
     Ok(serde_json::to_vec_pretty(&doc)?)

@@ -303,3 +303,20 @@ wxlike-platform --lib` 69 passed / 13 ignored（新增 3 条 PG ignored 用例�
 `cargo test -p wxlike-platform --lib` 70 passed / 14 ignored；新增
 `qr_state::pg_tests::postgres_qr_state_moves_from_pending_to_approved`（ignored）。
 `quality-gate` 重复窗口 4 → 2、嵌套 0、魔法数字 171；`provenance` pass=84。
+
+## 9. 批次 19：账号导出取数端口化
+
+`export_document_for` 的六个域早就走 repo 端口，但函数签名仍是 `&Connection`，
+偏好又直接调 `preferences::get(c)`，因此 `Platform::export_document` 只能用
+`lock()`，PG profile 下整份导出不可用。
+
+- `export_document_for` 改为接收 `StorageConnection`；`preferences::get` 换成
+  `repo::preferences::get(port, user)`，与批次 17 的偏好读同一实现。
+- `Platform::export_document` 用 `db.acquire()`，不再取 SQLite 守卫。
+- `run_export_job` 先 `db.with_tx(|c| export_document_for(c, &user_id))` 同步算文档，
+  再 `await` 写媒体仓；锁/事务不跨 `.await`。
+
+**边界**：作业 `finish` / `claim` 仍走 `preferences` 的 `&Connection`
+（`Db::blocking`），所以完整 PG 导出 worker 还差一步；本批先把“取数”这一大块
+从 SQLite-only 摘出来。`cargo test -p wxlike-platform --test account_surfaces`
+16 passed；quality gate 重复窗口 2、嵌套 0、魔法数字 171。
