@@ -382,3 +382,26 @@ SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道�
 `cargo test -p wxlike-platform --test account_surfaces` 16 passed；新增
 `account_jobs::pg_tests::postgres_account_export_job_is_created_listed_and_cancelled`
 （ignored）。quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。
+
+## 13. 批次 23：刷新链签发与撤销端口化
+
+`sessions` 的访问会话早已走 `BackendSessionsRepo`，但刷新链仍是 identity
+`refresh::{issue_default,revoke_sid,revoke_device}` 的 `&Connection` 入口。本批只切
+**签发 + 撤销**，轮换 `rotate` 仍留在 SQLite（它要事务内查 `sessions`、判
+`FeatureNoLogin` 并写后继令牌，属于单独一批）：
+
+- identity `refresh` 增加 `issue_with` / `issue_default_with` / `revoke_sid_with` /
+  `revoke_device_with` / `revoke_user_with`；SQL 只有一份，`&Connection` 版本是
+  `SqliteExec` 包装。
+- 平台 `repo/sessions.rs` 增加 `issue_refresh`、`revoke_device_refresh`、
+  `revoke_sid_refresh`，全部走 `StorageSqlExec`。
+- `Platform::issue_refresh` 用 `db.with_tx`；`revoke_device_sessions` 删完访问会话
+  后在同一端口作废设备链；`revoke_refresh_of_sid` 用 `db.with_tx`。`sqlite()` 不再
+  出现在这两个撤销入口。
+
+**验证**：`cargo test -p wxlike-platform --test sessions_http` 5 passed；
+`cargo test -p wxlike-identity --lib refresh` 12 passed；新增
+`repo::sessions::refresh_pg_tests::postgres_refresh_issue_and_revoke_share_the_port`
+（ignored）。quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。
+
+**还剩**：`rotate_refresh` 与 step-up 仍 `lock()`；`rotate` 的 PG 事务化是下一批。

@@ -11,6 +11,7 @@ use hmac::Mac as _;
 use rusqlite::{params, Connection, OptionalExtension as _};
 
 use crate::session::Features;
+use crate::sqlport::{SqlExec, SqlParam, SqliteExec};
 use crate::{digest, random_hex, Audience, IdError, Result, REFRESH_TTL_MS, TOKEN_BYTES};
 
 /// 链上一行。
@@ -101,6 +102,27 @@ pub fn issue(
     ttl_ms: i64,
     now: i64,
 ) -> Result<String> {
+    issue_with(
+        &SqliteExec(conn),
+        user_id,
+        sid,
+        device_id,
+        audience,
+        ttl_ms,
+        now,
+    )
+}
+
+/// 端口版 `issue`。
+pub fn issue_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    device_id: &str,
+    audience: Audience,
+    ttl_ms: i64,
+    now: i64,
+) -> Result<String> {
     // 上游 `GenSecret` 的 lifetime 规则（与 `session::open_with` 同一条）：
     // 0 = 没表态 → 用缺省 30 天；负数 = 已经死了 → 拒签。
     // 少了这条，`issue(.., -1, ..)` 会写出一行 `expires_at < created_at` 的链上记录，
@@ -112,18 +134,18 @@ pub fn issue(
         n => n,
     };
     let raw = random_hex(TOKEN_BYTES);
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_refresh(token_hash, sid, user_id, device_id, audience, \
          generation, created_at, expires_at, used_at, revoked_at) \
          VALUES(?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, NULL, NULL)",
-        params![
-            digest(&raw),
-            sid,
-            user_id,
-            device_id,
-            audience.as_str(),
-            now,
-            now.saturating_add(ttl_ms)
+        &[
+            SqlParam::Text(digest(&raw)),
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(audience.as_str().to_string()),
+            SqlParam::Int(now),
+            SqlParam::Int(now.saturating_add(ttl_ms)),
         ],
     )?;
     Ok(raw)
@@ -139,6 +161,18 @@ pub fn issue_default(
     now: i64,
 ) -> Result<String> {
     issue(conn, user_id, sid, device_id, audience, REFRESH_TTL_MS, now)
+}
+
+/// 端口版 `issue_default`。
+pub fn issue_default_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    device_id: &str,
+    audience: Audience,
+    now: i64,
+) -> Result<String> {
+    issue_with(exec, user_id, sid, device_id, audience, REFRESH_TTL_MS, now)
 }
 
 /// 单行查询（含已用/已撤销）。
@@ -511,27 +545,51 @@ const TAG_BYTES: usize = 32;
 
 /// 作废一个会话下的整条链。
 pub fn revoke_sid(conn: &Connection, sid: &str, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+    revoke_sid_with(&SqliteExec(conn), sid, now)
+}
+
+/// 端口版 `revoke_sid`。
+pub fn revoke_sid_with<E: SqlExec + ?Sized>(exec: &E, sid: &str, now: i64) -> Result<usize> {
+    exec.exec(
         "UPDATE identity_refresh SET revoked_at = ?2 WHERE sid = ?1 AND revoked_at IS NULL",
-        params![sid, now],
-    )?)
+        &[SqlParam::Text(sid.to_string()), SqlParam::Int(now)],
+    )
 }
 
 /// 作废一台设备的全部链（设备移除 / 远程下线）。
 pub fn revoke_device(conn: &Connection, user_id: &str, device_id: &str, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+    revoke_device_with(&SqliteExec(conn), user_id, device_id, now)
+}
+
+/// 端口版 `revoke_device`。
+pub fn revoke_device_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<usize> {
+    exec.exec(
         "UPDATE identity_refresh SET revoked_at = ?3 \
          WHERE user_id = ?1 AND device_id = ?2 AND revoked_at IS NULL",
-        params![user_id, device_id, now],
-    )?)
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Int(now),
+        ],
+    )
 }
 
 /// 作废一个账号的全部链（注销 / 改密后强制全端重登）。
 pub fn revoke_user(conn: &Connection, user_id: &str, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+    revoke_user_with(&SqliteExec(conn), user_id, now)
+}
+
+/// 端口版 `revoke_user`。
+pub fn revoke_user_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -> Result<usize> {
+    exec.exec(
         "UPDATE identity_refresh SET revoked_at = ?2 WHERE user_id = ?1 AND revoked_at IS NULL",
-        params![user_id, now],
-    )?)
+        &[SqlParam::Text(user_id.to_string()), SqlParam::Int(now)],
+    )
 }
 
 /// 一个会话的完整链（运维视图 / 测试断言用）。

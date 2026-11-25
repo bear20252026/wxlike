@@ -19,7 +19,7 @@ use crate::error::{PlatformError, Result};
 use crate::Platform;
 use serde::Serialize;
 use wxlike_identity::refresh::{self, Rotated};
-use wxlike_identity::{step_up, Audience, IdError};
+use wxlike_identity::{step_up, IdError};
 use wxlike_persistence::{NewSession, SessionsRepo, UsersRepo};
 
 /// device_id 的长度上限（客户端生成串，超长按畸形拒绝）。
@@ -203,15 +203,9 @@ impl Platform {
         device_id: &str,
     ) -> Result<String> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        Ok(refresh::issue_default(
-            &c,
-            user_id,
-            sid,
-            device_id,
-            Audience::User,
-            now,
-        )?)
+        self.db().with_tx(|c| {
+            crate::domain::repo::sessions::issue_refresh(c, user_id, sid, device_id, now)
+        })
     }
 
     /// 轮换刷新令牌：旧访问会话作废，发新访问会话 + 新刷新令牌。
@@ -272,15 +266,18 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let c = self.db().acquire();
         let n = BackendSessionsRepo::new(&c)?.delete_by_device(user_id, device_id)?;
-        refresh::revoke_device(c.sqlite()?, user_id, device_id, now)?;
+        drop(c);
+        self.db().with_tx(|c| {
+            crate::domain::repo::sessions::revoke_device_refresh(c, user_id, device_id, now)
+        })?;
         Ok(n)
     }
 
     /// 撤销指定 sid 时同步作废它的刷新链（否则刷新能把会话续回来）。
     pub(crate) fn revoke_refresh_of_sid(&self, sid: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        Ok(refresh::revoke_sid(&c, sid, now)?)
+        self.db()
+            .with_tx(|c| crate::domain::repo::sessions::revoke_sid_refresh(c, sid, now))
     }
 
     /// 记录活跃时间（登录、设备页访问、关键操作时调用）。

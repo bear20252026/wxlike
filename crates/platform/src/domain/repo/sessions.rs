@@ -14,7 +14,9 @@ use sqlx::Row;
 use wxlike_persistence::{NewSession, SessionRecord, SessionsRepo};
 
 use crate::error::{PlatformError, Result};
+use crate::storage::sql_port::StorageSqlExec;
 use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection};
+use wxlike_identity::refresh;
 
 /// 端口定义在 `wxlike-persistence`；SQLite 实现在本 crate。
 pub(in crate::domain) struct SqliteSessionsRepo<'a> {
@@ -591,6 +593,48 @@ impl SessionsRepo for BackendSessionsRepo<'_> {
     }
 }
 
+/// 首枚刷新令牌：SQL 在 identity `refresh::issue_with`，这里只做端口适配。
+pub(in crate::domain) fn issue_refresh(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+    sid: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<String> {
+    Ok(refresh::issue_default_with(
+        &StorageSqlExec(conn),
+        user_id,
+        sid,
+        device_id,
+        wxlike_identity::Audience::User,
+        now,
+    )?)
+}
+
+/// 作废一台设备的刷新链。
+pub(in crate::domain) fn revoke_device_refresh(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<usize> {
+    Ok(refresh::revoke_device_with(
+        &StorageSqlExec(conn),
+        user_id,
+        device_id,
+        now,
+    )?)
+}
+
+/// 作废一个 sid 的刷新链。
+pub(in crate::domain) fn revoke_sid_refresh(
+    conn: &StorageConnection<'_>,
+    sid: &str,
+    now: i64,
+) -> Result<usize> {
+    Ok(refresh::revoke_sid_with(&StorageSqlExec(conn), sid, now)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{lookup_live, NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
@@ -760,5 +804,40 @@ mod tests {
         assert_eq!(repo.delete_by_token("pgbe-t1").unwrap(), 1);
 
         cleanup();
+    }
+}
+
+#[cfg(test)]
+mod refresh_pg_tests {
+    use super::{issue_refresh, revoke_device_refresh, revoke_sid_refresh};
+    use crate::storage::{params, StorageProfile};
+    use crate::Db;
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
+    fn postgres_refresh_issue_and_revoke_share_the_port() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        let user = "pg-refresh-user";
+        let conn = db.acquire();
+        conn.execute(
+            "DELETE FROM identity_refresh WHERE user_id = ?1",
+            params![user],
+        )
+        .expect("clean refresh");
+        drop(conn);
+        db.with_tx(|c| issue_refresh(c, user, "pg-refresh-sid", "pg-refresh-dev", 1_000))
+            .expect("issue refresh");
+        assert_eq!(
+            db.with_tx(|c| revoke_device_refresh(c, user, "pg-refresh-dev", 1_100))
+                .expect("revoke device"),
+            1
+        );
+        assert_eq!(
+            db.with_tx(|c| revoke_sid_refresh(c, "pg-refresh-sid", 1_200)).expect("revoke sid"),
+            0
+        );
     }
 }
