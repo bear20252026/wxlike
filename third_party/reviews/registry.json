@@ -250,7 +250,7 @@
       "commit": "9502a1a15fe63f6342fb1e2d8068346a82f278d8",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "b299c61095a2e10c65b5772966a9c26d1b2b2706db3d10eaf4909a6ad676800f",
+      "local_sha256": "ec705d2983fcb866afe7307c1e2c57166f1ea44b11bc5ef184ecd757a6891a01",
       "patchlog": "third_party/reviews/patches/UP-OPENIM-query.md",
       "used_by": "crates/search/src/unified.rs（TimeRange 双闸）、crates/search/src/trends.rs（窗口求交与日桶键）；G02 消息检索与 G05 内容检索共用同一条校验闸"
     },
@@ -388,7 +388,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "f0536cdd3d9f1f3abea0b40ab0b5c5811282a35ca34d0453509ea8b37ea69465",
+      "local_sha256": "25cbd5cfcd7cd1ec3265213f031dd78f30e5b1d240e2fa2476f1c837a5ca61d7",
       "patchlog": "third_party/reviews/patches/UP-TINODE-relations-acs.md",
       "used_by": "权限位模型 Acs 与全部预设/推导；friend.rs、group.rs、platform 侧的可见性判定都走它"
     },
@@ -432,7 +432,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "c0ae0d8653cb6b263e679b579db9dd562c13a1e7937fc6ebf72539a12ee90474",
+      "local_sha256": "df2e69c9cc0bd72c1c8f42c2e073856af6918f7608110c32b30336d583c1f040",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-auth-level.md",
       "used_by": "AuthLevel / Features / 令牌序列号 / 签发侧车表与鉴权时的作废与级别判定",
       "updated_at": "2026-11-24"
