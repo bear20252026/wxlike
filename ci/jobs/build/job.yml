@@ -46,7 +46,7 @@ jobs:
           rustup default "$RUSTUP_TOOLCHAIN"
       - run: cargo fmt --check
       - name: Platform surface budget
-        run: python3 scripts/platform_surface_audit.py --max-pub 120 --check-facades
+        run: python3 scripts/platform_surface_audit.py --max-pub 0 --check-facades
 
   clippy:
     name: clippy
