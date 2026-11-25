@@ -320,3 +320,21 @@ wxlike-platform --lib` 69 passed / 13 ignored（新增 3 条 PG ignored 用例�
 （`Db::blocking`），所以完整 PG 导出 worker 还差一步；本批先把“取数”这一大块
 从 SQLite-only 摘出来。`cargo test -p wxlike-platform --test account_surfaces`
 16 passed；quality gate 重复窗口 2、嵌套 0、魔法数字 171。
+
+## 10. 批次 20：社区/话题事务统一到 `Db::with_tx`
+
+`create_community` 与 `insert_thread` 原来各自分叉：PG 里手写
+`pg.block_on(begin…commit)` + `$N` SQL，SQLite 里 `unchecked_transaction` + `?N`
+SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道“这两行必须一起成功”。
+
+- 两个 repo 函数降为**单条语句**：`create_community` 插社区行 + 成员行，
+  `insert_thread` 插帖子行 + 订阅行；不再自带事务，也不再匹配
+  `StorageConnection::Postgres`。
+- 调用方 `Platform::create_community` / `Platform::create_thread` 改用
+  `Db::with_tx`，SQLite 与 PG 走同一段闭包；任何一行失败整体回滚。
+- PG 测试改为在 `db.with_tx` 里建社区/帖子，清理也走同一个端口；`pg_err` 与
+  `sqlx` 直连分支删除。
+
+**验证**：`cargo test -p wxlike-platform --lib domain::communities` 4 passed；
+`quality-gate` 重复窗口 2、嵌套 0、魔法数字 171；`cargo check -p wxlike-platform`
+绿。

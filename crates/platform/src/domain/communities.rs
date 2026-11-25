@@ -373,8 +373,8 @@ impl Platform {
         let member_limit = member_limit.clamp(2, 100_000);
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().acquire();
-        repo_create_community(&c, &id, name, owner, member_limit, now)?;
+        self.db()
+            .with_tx(|c| repo_create_community(c, &id, name, owner, member_limit, now))?;
         Ok(id)
     }
 
@@ -681,17 +681,9 @@ impl Platform {
             return Err(PlatformError::BadInput("root_seq beyond channel timeline"));
         }
         let id = crate::auth::random_hex(8);
-        let c = self.db().acquire();
-        repo_insert_thread(
-            &c,
-            &id,
-            channel,
-            root_seq,
-            title,
-            actor,
-            wxlike_core::types::now_ms() as i64,
-        )?;
-        drop(c);
+        let now = wxlike_core::types::now_ms() as i64;
+        self.db()
+            .with_tx(|c| repo_insert_thread(c, &id, channel, root_seq, title, actor, now))?;
         Ok(id)
     }
 

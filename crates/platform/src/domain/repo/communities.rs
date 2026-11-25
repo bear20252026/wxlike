@@ -7,7 +7,7 @@
 use crate::domain::communities::{
     ChannelRow, CommunityRow, CommunityThreadRow, ThreadRow, ThreadSubscription,
 };
-use crate::error::{PlatformError, Result};
+use crate::error::Result;
 use crate::storage::{params, OptionalExt as _, StorageConnection, StorageRow};
 
 pub(in crate::domain) fn community_role(
@@ -72,49 +72,17 @@ pub(in crate::domain) fn create_community(
     member_limit: i64,
     now: i64,
 ) -> Result<()> {
-    if let StorageConnection::Postgres(pg) = conn {
-        return pg.block_on(async {
-            let mut tx = pg.pool().begin().await.map_err(pg_err)?;
-            sqlx::query(
-                "INSERT INTO communities(id, name, owner_uid, member_limit, tenant_id, created_at)
-                 VALUES($1, $2, $3, $4, 'default', $5)",
-            )
-            .bind(id)
-            .bind(name)
-            .bind(owner)
-            .bind(member_limit)
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(pg_err)?;
-            sqlx::query(
-                "INSERT INTO community_members(community_id, user_id, role, joined_at)
-                 VALUES($1, $2, $3, $4)",
-            )
-            .bind(id)
-            .bind(owner)
-            .bind(crate::domain::communities::ROLE_OWNER)
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(pg_err)?;
-            tx.commit().await.map_err(pg_err)?;
-            Ok(())
-        });
-    }
-    let sqlite = conn.sqlite()?;
-    let tx = sqlite.unchecked_transaction()?;
-    tx.execute(
+    // 调用方必须在 `Db::with_tx` 里调用：两行必须一起成功。
+    conn.execute(
         "INSERT INTO communities(id, name, owner_uid, member_limit, tenant_id, created_at)
          VALUES(?1, ?2, ?3, ?4, 'default', ?5)",
-        rusqlite::params![id, name, owner, member_limit, now],
+        params![id, name, owner, member_limit, now],
     )?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO community_members(community_id, user_id, role, joined_at)
          VALUES(?1, ?2, ?3, ?4)",
-        rusqlite::params![id, owner, crate::domain::communities::ROLE_OWNER, now],
+        params![id, owner, crate::domain::communities::ROLE_OWNER, now],
     )?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -290,47 +258,16 @@ pub(in crate::domain) fn insert_thread(
     actor: &str,
     now: i64,
 ) -> Result<()> {
-    if let StorageConnection::Postgres(pg) = conn {
-        return pg.block_on(async {
-            let mut tx = pg.pool().begin().await.map_err(pg_err)?;
-            sqlx::query(
-                "INSERT INTO threads(id, channel_id, root_seq, title, created_by, tenant_id, created_at)
-                 VALUES($1, $2, $3, $4, $5, 'default', $6)",
-            )
-            .bind(id)
-            .bind(channel)
-            .bind(root_seq)
-            .bind(title)
-            .bind(actor)
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(pg_err)?;
-            sqlx::query(
-                "INSERT INTO thread_subs(thread_id, user_id) VALUES($1, $2)
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(id)
-            .bind(actor)
-            .execute(&mut *tx)
-            .await
-            .map_err(pg_err)?;
-            tx.commit().await.map_err(pg_err)?;
-            Ok(())
-        });
-    }
-    let sqlite = conn.sqlite()?;
-    let tx = sqlite.unchecked_transaction()?;
-    tx.execute(
+    // 调用方必须在 `Db::with_tx` 里调用：帖子与订阅行必须一起成功。
+    conn.execute(
         "INSERT INTO threads(id, channel_id, root_seq, title, created_by, tenant_id, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, 'default', ?6)",
-        rusqlite::params![id, channel, root_seq, title, actor, now],
+        params![id, channel, root_seq, title, actor, now],
     )?;
-    tx.execute(
+    conn.execute(
         "INSERT OR IGNORE INTO thread_subs(thread_id, user_id) VALUES(?1, ?2)",
-        rusqlite::params![id, actor],
+        params![id, actor],
     )?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -524,42 +461,44 @@ pub(in crate::domain) fn community_member_ids(
     rows.collect::<std::result::Result<_, _>>()
 }
 
-fn pg_err(e: sqlx::Error) -> PlatformError {
-    PlatformError::Storage(format!("postgres communities: {e}"))
-}
-
 #[cfg(test)]
 mod pg_tests {
     use super::{create_community, insert_thread, thread_subscribers};
-    use crate::storage::{PostgresPool, StorageConnection};
+    use crate::storage::{params, StorageProfile};
 
     #[test]
     #[ignore = "requires WXLIKE_TEST_PG_URL pointing at a DB with M014 applied"]
     fn postgres_community_and_thread_transactions_commit() {
         let url = std::env::var("WXLIKE_TEST_PG_URL")
             .expect("set WXLIKE_TEST_PG_URL to run the PostgreSQL communities test");
-        let pg = PostgresPool::open(&url).expect("postgres pool");
+        let db = crate::Db::open_profile(StorageProfile::Postgres { url }, None)
+            .expect("postgres db");
         let cleanup = || {
-            for sql in [
-                "DELETE FROM thread_subs WHERE thread_id = 'pgbe-th1'",
-                "DELETE FROM threads WHERE id = 'pgbe-th1'",
-                "DELETE FROM community_members WHERE community_id = 'pgbe-c1'",
-                "DELETE FROM communities WHERE id = 'pgbe-c1'",
-            ] {
-                pg.block_on(sqlx::query(sql).execute(pg.pool()))
-                    .expect("cleanup");
-            }
+            db.with_tx(|conn| {
+                for sql in [
+                    "DELETE FROM thread_subs WHERE thread_id = 'pgbe-th1'",
+                    "DELETE FROM threads WHERE id = 'pgbe-th1'",
+                    "DELETE FROM community_members WHERE community_id = 'pgbe-c1'",
+                    "DELETE FROM communities WHERE id = 'pgbe-c1'",
+                ] {
+                    conn.execute(sql, params![])?;
+                }
+                Ok(())
+            })
+            .expect("cleanup");
         };
         cleanup();
 
-        let conn = StorageConnection::Postgres(&pg);
-        create_community(&conn, "pgbe-c1", "PG community", "pgbe-u1", 5, 1)
-            .expect("create community");
-        insert_thread(&conn, "pgbe-th1", "pgbe-ch1", 1, "hello", "pgbe-u1", 2)
-            .expect("create thread");
+        db.with_tx(|conn| {
+            create_community(conn, "pgbe-c1", "PG community", "pgbe-u1", 5, 1)?;
+            insert_thread(conn, "pgbe-th1", "pgbe-ch1", 1, "hello", "pgbe-u1", 2)
+        })
+        .expect("create community and thread");
+        let conn = db.acquire();
         let subs = thread_subscribers(&conn, "pgbe-th1").expect("thread subs");
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].user_id, "pgbe-u1");
+        drop(conn);
 
         cleanup();
     }
