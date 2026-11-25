@@ -17,6 +17,7 @@ use crate::error::{PlatformError, Result};
 use crate::storage::sql_port::StorageSqlExec;
 use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection};
 use wxlike_identity::refresh;
+use wxlike_identity::sqlport::{ColKind, SqlExec as _, SqlParam};
 
 /// 端口定义在 `wxlike-persistence`；SQLite 实现在本 crate。
 pub(in crate::domain) struct SqliteSessionsRepo<'a> {
@@ -680,6 +681,27 @@ pub(in crate::domain) fn revoke_all_step_up(
     )?)
 }
 
+/// 会话的设备名：SQL 与行宽度在本函数；只做存储端口翻译。
+pub(in crate::domain) fn device_name_by_sid(
+    conn: &StorageConnection<'_>,
+    sid: &str,
+) -> Result<Option<String>> {
+    let row = StorageSqlExec(conn).query(
+        "SELECT device_name FROM identity_session_token WHERE sid = ?1",
+        &[SqlParam::Text(sid.to_string())],
+        &[ColKind::OptText],
+    )?;
+    let Some(values) = row else {
+        return Ok(None);
+    };
+    let name = values
+        .into_iter()
+        .next()
+        .ok_or(PlatformError::Storage("device_name row width".into()))?
+        .into_text()?;
+    Ok(Some(name).filter(|v| !v.is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{lookup_live, NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
@@ -894,5 +916,91 @@ mod refresh_pg_tests {
             db.with_tx(|c| consume_step_up(c, user, "pg-refresh-sid", "account.export", 1_500))
                 .is_err()
         );
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
+    fn postgres_refresh_rotate_commits_replay_revocation() {
+        let Ok(url) = std::env::var("WXLIKE_TEST_PG_URL") else {
+            return;
+        };
+        let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
+        let user = "pg-rotate-user";
+        let sid = "pg-rotate-sid";
+        let conn = db.acquire();
+        conn.execute(
+            "DELETE FROM identity_refresh WHERE user_id = ?1",
+            params![user],
+        )
+        .expect("clean refresh");
+        conn.execute(
+            "DELETE FROM identity_session_token WHERE user_id = ?1",
+            params![user],
+        )
+        .expect("clean sessions");
+        let session = [
+            ("token", "pg-rotate-token"),
+            ("user_id", user),
+            ("created_at", "1"),
+            ("expires_at", "10000"),
+            ("sid", sid),
+            ("device_id", "pg-rotate-dev"),
+            ("device_name", "PG rotate"),
+            ("ip", "127.0.0.1"),
+            ("last_seen", "1000"),
+            ("audience", "user"),
+        ];
+        conn.execute(
+            "INSERT INTO identity_session_token(token, user_id, created_at, expires_at, sid, \
+             device_id, device_name, ip, last_seen, audience) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                session[0].1,
+                session[1].1,
+                session[2].1.parse::<i64>().unwrap(),
+                session[3].1.parse::<i64>().unwrap(),
+                session[4].1,
+                session[5].1,
+                session[6].1,
+                session[7].1,
+                session[8].1.parse::<i64>().unwrap(),
+                session[9].1
+            ],
+        )
+        .expect("insert session");
+        drop(conn);
+
+        let first = db
+            .with_tx(|c| issue_refresh(c, user, sid, "pg-rotate-dev", 1_000))
+            .expect("issue");
+        let rotated = db
+            .with_tx(|c| {
+                super::refresh::rotate_outcome_with(&super::StorageSqlExec(c), &first, 2_000)
+                    .map_err(Into::into)
+            })
+            .expect("rotate")
+            .into_result()
+            .expect("first rotate wins");
+        let replay = db
+            .with_tx(|c| {
+                super::refresh::rotate_outcome_with(&super::StorageSqlExec(c), &first, 2_100)
+                    .map_err(Into::into)
+            })
+            .expect("replay commits");
+        match replay {
+            super::refresh::RotateOutcome::Rejected(super::refresh::RotateReject::Replay { sid: s }) => {
+                assert_eq!(s, sid);
+            }
+            other => panic!("expected replay rejection, got {other:?}"),
+        }
+        // 重放检测已撤销整条链：新令牌也不能再用。
+        assert!(db
+            .with_tx(|c| {
+                super::refresh::rotate_outcome_with(&super::StorageSqlExec(c), &rotated.refresh_token, 2_200)
+                    .map_err(Into::into)
+            })
+            .expect("second rotate commits")
+            .into_result()
+            .is_err());
     }
 }

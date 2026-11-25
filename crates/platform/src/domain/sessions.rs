@@ -16,6 +16,7 @@
 use crate::domain::repo::sessions::{lookup_live, BackendSessionsRepo, SqliteSessionsRepo};
 use crate::domain::repo::users::BackendUsersRepo;
 use crate::error::{PlatformError, Result};
+use crate::storage::sql_port::StorageSqlExec;
 use crate::Platform;
 use serde::Serialize;
 use wxlike_identity::refresh::{self, Rotated};
@@ -214,19 +215,18 @@ impl Platform {
     /// 这里的顺序是"先轮换、再换会话"——轮换失败就不该留下新会话。
     pub(crate) fn rotate_refresh(&self, raw: &str, ip: &str) -> Result<(Rotated, String)> {
         let now = wxlike_core::types::now_ms() as i64;
-        let device_name = {
-            let c = self.db().lock()?;
-            match refresh::find(&c, raw)? {
-                Some(chain) => SqliteSessionsRepo::new(&c)
-                    .device_name_by_sid(&chain.sid)?
-                    .unwrap_or_default(),
-                None => String::new(),
-            }
-        };
-        let rotated = {
-            let c = self.db().lock()?;
-            refresh::rotate(&c, raw, now)?
-        };
+        let (outcome, device_name) = self.db().with_tx(|c| {
+            let outcome = refresh::rotate_outcome_with(&StorageSqlExec(c), raw, now)?;
+            let name = match &outcome {
+                refresh::RotateOutcome::Rotated(rotated) => {
+                    crate::domain::repo::sessions::device_name_by_sid(c, &rotated.sid)?
+                        .unwrap_or_default()
+                }
+                refresh::RotateOutcome::Rejected(_) => String::new(),
+            };
+            Ok((outcome, name))
+        })?;
+        let rotated = outcome.into_result()?;
         let token = self.create_session_for_device(
             &rotated.user_id,
             self.options().session_ttl_ms,

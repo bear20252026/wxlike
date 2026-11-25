@@ -21,6 +21,29 @@ fn db_err(e: PlatformError) -> wxlike_identity::IdError {
     wxlike_identity::IdError::Storage(e.to_string())
 }
 
+fn opt_text(r: &StorageRow<'_>, i: usize) -> Result<QrValue, PlatformError> {
+    match r.get::<_, Option<String>>(i)? {
+        Some(v) => Ok(QrValue::Text(v)),
+        None => Ok(QrValue::Null),
+    }
+}
+
+fn opt_int(r: &StorageRow<'_>, i: usize) -> Result<QrValue, PlatformError> {
+    match r.get::<_, Option<i64>>(i)? {
+        Some(v) => Ok(QrValue::Int(v)),
+        None => Ok(QrValue::Null),
+    }
+}
+
+fn cell(r: &StorageRow<'_>, i: usize, kind: &QrKind) -> Result<QrValue, PlatformError> {
+    match kind {
+        QrKind::Text => Ok(QrValue::Text(r.get::<_, String>(i)?)),
+        QrKind::Int => Ok(QrValue::Int(r.get::<_, i64>(i)?)),
+        QrKind::OptText => opt_text(r, i),
+        QrKind::OptInt => opt_int(r, i),
+    }
+}
+
 impl QrExec for StorageSqlExec<'_, '_> {
     fn exec(&self, sql: &str, params: &[QrParam]) -> Result<usize, wxlike_identity::IdError> {
         let bound = Params::new(params.iter().map(param).collect());
@@ -37,10 +60,7 @@ impl QrExec for StorageSqlExec<'_, '_> {
         let row = self.0.query_row(sql, bound, |r: &StorageRow<'_>| {
             let mut out = Vec::with_capacity(kinds.len());
             for (i, kind) in kinds.iter().enumerate() {
-                out.push(match kind {
-                    QrKind::Text => QrValue::Text(r.get::<_, String>(i)?),
-                    QrKind::Int => QrValue::Int(r.get::<_, i64>(i)?),
-                });
+                out.push(cell(r, i, kind)?);
             }
             Ok(out)
         });
@@ -62,10 +82,7 @@ impl QrExec for StorageSqlExec<'_, '_> {
         let rows = stmt.query_map(bound, |r: &StorageRow<'_>| {
             let mut out = Vec::with_capacity(kinds.len());
             for (i, kind) in kinds.iter().enumerate() {
-                out.push(match kind {
-                    QrKind::Text => QrValue::Text(r.get::<_, String>(i)?),
-                    QrKind::Int => QrValue::Int(r.get::<_, i64>(i)?),
-                });
+                out.push(cell(r, i, kind)?);
             }
             Ok(out)
         });

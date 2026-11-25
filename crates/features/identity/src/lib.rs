@@ -19,7 +19,7 @@ pub mod device;
 pub mod governance;
 pub mod login_challenge;
 pub mod preferences;
-mod sqlport;
+pub mod sqlport;
 
 pub mod qr_login;
 pub mod recovery;

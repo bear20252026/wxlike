@@ -19,26 +19,37 @@ pub enum SqlParam {
 pub enum ColKind {
     Text,
     Int,
+    OptText,
+    OptInt,
 }
 
 /// 端口返回的一列值。
 #[derive(Clone, Debug)]
 pub enum SqlValue {
+    Null,
     Text(String),
     Int(i64),
 }
 
 impl SqlValue {
-    pub(crate) fn into_text(self) -> Result<String> {
+    pub fn into_text(self) -> Result<String> {
         match self {
             Self::Text(v) => Ok(v),
-            Self::Int(_) => Err(IdError::Corrupt("sql port.column type")),
+            Self::Int(_) | Self::Null => Err(IdError::Corrupt("sql port.column type")),
         }
     }
 
-    pub(crate) fn into_int(self) -> Result<i64> {
+    pub fn into_int(self) -> Result<i64> {
         match self {
             Self::Int(v) => Ok(v),
+            Self::Text(_) | Self::Null => Err(IdError::Corrupt("sql port.column type")),
+        }
+    }
+
+    pub fn into_opt_int(self) -> Result<Option<i64>> {
+        match self {
+            Self::Null => Ok(None),
+            Self::Int(v) => Ok(Some(v)),
             Self::Text(_) => Err(IdError::Corrupt("sql port.column type")),
         }
     }
@@ -76,16 +87,25 @@ fn sqlite_param(p: &SqlParam) -> rusqlite::types::Value {
     }
 }
 
+fn sqlite_cell(kind: &ColKind, raw: rusqlite::types::ValueRef<'_>) -> Result<SqlValue> {
+    match (kind, raw) {
+        (ColKind::Text | ColKind::OptText, rusqlite::types::ValueRef::Text(v)) => {
+            Ok(SqlValue::Text(String::from_utf8_lossy(v).into_owned()))
+        }
+        (ColKind::Int | ColKind::OptInt, rusqlite::types::ValueRef::Integer(v)) => {
+            Ok(SqlValue::Int(v))
+        }
+        _ => Err(IdError::Corrupt("sql port.column type")),
+    }
+}
+
 fn sqlite_values(row: &rusqlite::Row<'_>, kinds: &[ColKind]) -> Result<Vec<SqlValue>> {
     let mut out = Vec::with_capacity(kinds.len());
     for (i, kind) in kinds.iter().enumerate() {
-        let value = match (kind, row.get_ref(i)?) {
-            (ColKind::Text, rusqlite::types::ValueRef::Text(v)) => {
-                SqlValue::Text(String::from_utf8_lossy(v).into_owned())
-            }
-            (ColKind::Text, _) => return Err(IdError::Corrupt("sql port.column type")),
-            (ColKind::Int, rusqlite::types::ValueRef::Integer(v)) => SqlValue::Int(v),
-            (ColKind::Int, _) => return Err(IdError::Corrupt("sql port.column type")),
+        let raw = row.get_ref(i)?;
+        let value = match raw {
+            rusqlite::types::ValueRef::Null => SqlValue::Null,
+            other => sqlite_cell(kind, other)?,
         };
         out.push(value);
     }

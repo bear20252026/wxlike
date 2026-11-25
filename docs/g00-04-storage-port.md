@@ -471,3 +471,29 @@ schedule → claim → purge → finish，在 PG profile 下都走同一端口�
 **验证**：`account_surfaces` 16 passed；`cargo test -p wxlike-platform --lib` 全绿；
 PG ignored 用例补了 `request_delete`（注销作业 kind 断言）；quality gate 重复窗口 2、
 嵌套 0、魔法数字 171；clippy 全绿。
+
+## 17. 批次 27：刷新令牌轮换端口化
+
+批次 23 只切了签发与撤销；真正消费旧令牌的 `refresh::rotate` 仍持 `&Connection`
+并自己开 `unchecked_transaction`，平台的 `rotate_refresh` 还要先 `lock()` 读设备名、
+再 `lock()` 轮换。本批把轮换收进端口，并保留“拒绝也要撤销”的语义：
+
+- identity `refresh` 增加 `find_with`、`rotate_outcome_with`、`RotateOutcome` /
+  `RotateReject`：未知、已撤销、重放、过期、访问会话消失、临时认证六类拒绝
+  都在同一 `SqlExec` 上完成（重放/过期/临时认证/会话消失会就地撤销整条链）。
+- 拒绝以 `Ok(RotateOutcome::Rejected)` 返回而不是 `Err`：调用方的事务因此
+  **提交**撤销，再在事务外 `into_result()` 转成 `IdError`；只有真正的存储错误
+ 才回滚。`rotate` 的 `&Connection` 版本按同一顺序执行并提交。
+- `mint_successor_with` 的条件 UPDATE 输给并发时返回 `None`，由上层按重放撤销，
+  不再用错误表达可预期的竞争。
+- 平台 `Platform::rotate_refresh` 用一次 `Db::with_tx`：`rotate_outcome_with` +
+  `repo::sessions::device_name_by_sid`（`ColKind::OptText`）同一事务；事务外再
+  创建新访问会话并沿用旧 `sid`。
+- `sqlport` 补 `SqlValue::Null`、`ColKind::OptText` / `OptInt`，SQLite 与平台
+  两侧的列读取抽成 `sqlite_cell` / `cell` 两个小函数，避免嵌套回升。
+- 新增 ignored PG 用例 `postgres_refresh_rotate_commits_replay_revocation`：
+  首轮成功、重放被拒且提交撤销、重放后新令牌也不能再用。
+
+**验证**：`cargo test -p wxlike-identity --lib refresh` 12 passed；
+`sessions_http` 5 passed；`cargo test -p wxlike-platform --lib` 70 passed / 17 ignored；
+quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。

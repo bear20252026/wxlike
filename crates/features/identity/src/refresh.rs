@@ -8,10 +8,10 @@
 //! 库里只存 `sha256(token)`：备份/快照泄露不产生可用凭据。
 
 use hmac::Mac as _;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
 
 use crate::session::Features;
-use crate::sqlport::{SqlExec, SqlParam, SqliteExec};
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
 use crate::{digest, random_hex, Audience, IdError, Result, REFRESH_TTL_MS, TOKEN_BYTES};
 
 /// 链上一行。
@@ -67,6 +67,63 @@ fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawChain> {
         expires_at: r.get(7)?,
         used_at: r.get(8)?,
         revoked_at: r.get(9)?,
+    })
+}
+
+const RAW_KINDS: [ColKind; 10] = [
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Text,
+    ColKind::Int,
+    ColKind::Int,
+    ColKind::Int,
+    ColKind::OptInt,
+    ColKind::OptInt,
+];
+
+fn chain_text<I: Iterator<Item = SqlValue>>(it: &mut I) -> Result<String> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_refresh.row width"))?
+        .into_text()
+}
+
+fn chain_int<I: Iterator<Item = SqlValue>>(it: &mut I) -> Result<i64> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_refresh.row width"))?
+        .into_int()
+}
+
+fn chain_opt_int<I: Iterator<Item = SqlValue>>(it: &mut I) -> Result<Option<i64>> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_refresh.row width"))?
+        .into_opt_int()
+}
+
+fn raw_values(values: Vec<SqlValue>) -> Result<RawChain> {
+    let mut it = values.into_iter();
+    let token_hash = chain_text(&mut it)?;
+    let sid = chain_text(&mut it)?;
+    let user_id = chain_text(&mut it)?;
+    let device_id = chain_text(&mut it)?;
+    let audience = chain_text(&mut it)?;
+    let generation = chain_int(&mut it)?;
+    let created_at = chain_int(&mut it)?;
+    let expires_at = chain_int(&mut it)?;
+    let used_at = chain_opt_int(&mut it)?;
+    let revoked_at = chain_opt_int(&mut it)?;
+    Ok(RawChain {
+        token_hash,
+        sid,
+        user_id,
+        device_id,
+        audience,
+        generation,
+        created_at,
+        expires_at,
+        used_at,
+        revoked_at,
     })
 }
 
@@ -177,9 +234,15 @@ pub fn issue_default_with<E: SqlExec + ?Sized>(
 
 /// 单行查询（含已用/已撤销）。
 pub fn find(conn: &Connection, raw: &str) -> Result<Option<ChainRow>> {
+    find_with(&SqliteExec(conn), raw)
+}
+
+/// 端口版 `find`。
+pub fn find_with<E: SqlExec + ?Sized>(exec: &E, raw: &str) -> Result<Option<ChainRow>> {
     let sql = format!("{SELECT_ROW} WHERE token_hash = ?1");
-    conn.query_row(&sql, params![digest(raw)], raw_of)
-        .optional()?
+    exec.query(&sql, &[SqlParam::Text(digest(raw))], &RAW_KINDS)?
+        .map(raw_values)
+        .transpose()?
         .map(decode)
         .transpose()
 }
@@ -187,98 +250,174 @@ pub fn find(conn: &Connection, raw: &str) -> Result<Option<ChainRow>> {
 /// 轮换。失败即封闭：任何异常状态都会顺手作废整条链。
 pub fn rotate(conn: &Connection, raw: &str, now: i64) -> Result<Rotated> {
     let tx = conn.unchecked_transaction()?;
-    let row = find(&tx, raw)?;
-    let Some(row) = row else {
-        return Err(IdError::Unauthorized("unknown refresh token"));
+    let outcome = rotate_outcome_with(&SqliteExec(&tx), raw, now)?;
+    tx.commit()?;
+    outcome.into_result()
+}
+
+/// 轮换结果的二值形态：被拒绝也已“在事务内完成撤销”，提交后再转错误。
+#[derive(Clone, Debug)]
+pub enum RotateOutcome {
+    Rotated(Rotated),
+    Rejected(RotateReject),
+}
+
+/// 拒绝原因；带 `sid` 表示链已被就地撤销。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RotateReject {
+    Unknown,
+    Revoked,
+    Replay { sid: String },
+    Expired { sid: String },
+    SessionGone { sid: String },
+    TempAuth { sid: String },
+}
+
+impl RotateOutcome {
+    pub fn into_result(self) -> Result<Rotated> {
+        match self {
+            Self::Rotated(rotated) => Ok(rotated),
+            Self::Rejected(reason) => Err(reason.into()),
+        }
+    }
+}
+
+impl From<RotateReject> for IdError {
+    fn from(reason: RotateReject) -> Self {
+        match reason {
+            RotateReject::Unknown => IdError::Unauthorized("unknown refresh token"),
+            RotateReject::Revoked => IdError::Unauthorized("refresh token revoked"),
+            RotateReject::Replay { .. } => IdError::Unauthorized("refresh token replay detected"),
+            RotateReject::Expired { .. } => IdError::Expired,
+            RotateReject::SessionGone { .. } => IdError::Unauthorized("session revoked"),
+            RotateReject::TempAuth { .. } => {
+                IdError::Unauthorized("temp auth cannot mint a session")
+            }
+        }
+    }
+}
+
+/// 端口版 `rotate`：返回**可提交的结果**。
+///
+/// 重放 / 过期 / 临时认证 / 会话已撤销都已在事务内完成撤销，调用方应提交事务，
+/// 再把 [`RotateOutcome::into_result`] 的错误交给上层；只有真正的存储错误才回滚。
+pub fn rotate_outcome_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    raw: &str,
+    now: i64,
+) -> Result<RotateOutcome> {
+    let Some(row) = find_with(exec, raw)? else {
+        return Ok(RotateOutcome::Rejected(RotateReject::Unknown));
     };
     if row.revoked_at.is_some() {
-        return Err(IdError::Unauthorized("refresh token revoked"));
+        return Ok(RotateOutcome::Rejected(RotateReject::Revoked));
     }
     if row.used_at.is_some() {
-        revoke_sid(&tx, &row.sid, now)?;
-        tx.commit()?;
-        return Err(IdError::Unauthorized("refresh token replay detected"));
+        revoke_sid_with(exec, &row.sid, now)?;
+        return Ok(RotateOutcome::Rejected(RotateReject::Replay {
+            sid: row.sid,
+        }));
     }
     if row.expires_at <= now {
-        revoke_sid(&tx, &row.sid, now)?;
-        tx.commit()?;
-        return Err(IdError::Expired);
+        revoke_sid_with(exec, &row.sid, now)?;
+        return Ok(RotateOutcome::Rejected(RotateReject::Expired {
+            sid: row.sid,
+        }));
     }
-    ensure_access_alive(&tx, &row.sid, now)?;
-    if let Err(err) = ensure_not_temp_auth(&tx, &row.sid, now) {
-        tx.commit()?;
-        return Err(err);
+    if !access_alive_with(exec, &row.sid, now)? {
+        revoke_sid_with(exec, &row.sid, now)?;
+        return Ok(RotateOutcome::Rejected(RotateReject::SessionGone {
+            sid: row.sid,
+        }));
     }
-    let next = mint_successor(&tx, &row, now)?;
-    tx.commit()?;
-    Ok(next)
+    if is_temp_auth_with(exec, &row.sid)? {
+        revoke_sid_with(exec, &row.sid, now)?;
+        return Ok(RotateOutcome::Rejected(RotateReject::TempAuth {
+            sid: row.sid,
+        }));
+    }
+    match mint_successor_with(exec, &row, now)? {
+        Some(rotated) => Ok(RotateOutcome::Rotated(rotated)),
+        None => {
+            // 并发轮换：另一个请求抢先用了这枚令牌，本次按重放处理。
+            revoke_sid_with(exec, &row.sid, now)?;
+            Ok(RotateOutcome::Rejected(RotateReject::Replay {
+                sid: row.sid,
+            }))
+        }
+    }
 }
 
 /// `FeatureNoLogin`（`L`）：临时认证**不得**换出永久会话。
 ///
-/// 上游 `auth.Feature` 的注释写得很直白：*"the token should not be used to
-/// permanently authenticate a session"*。落到本平台的形状就是重置密码/改绑手机
-/// 那一类短凭据换出来的会话：它可以问一次，但不许再轮换出下一枚刷新令牌——
-/// 否则"临时认证"顺着刷新链就变成了 30 天有效的正式会话，位标记等于白打。
-///
-/// 命中时**顺手作废整条链**（与 `ensure_access_alive` 同一条处置）：
-/// 一个带 `L` 的会话出现在刷新链上，只可能是有人拿错了令牌在试。
-fn ensure_not_temp_auth(conn: &Connection, sid: &str, now: i64) -> Result<()> {
-    if let Some(record) = crate::session::token_record(conn, sid)? {
-        if record.features.contains(Features::NO_LOGIN) {
-            revoke_sid(conn, sid, now)?;
-            return Err(IdError::Unauthorized("temp auth cannot mint a session"));
-        }
-    }
-    Ok(())
+/// 命中时由调用方顺手作废整条链：一个带 `L` 的会话出现在刷新链上，
+/// 只可能是有人拿错了令牌在试。
+fn is_temp_auth_with<E: SqlExec + ?Sized>(exec: &E, sid: &str) -> Result<bool> {
+    let features = exec.query(
+        "SELECT features FROM identity_session_token WHERE sid = ?1",
+        &[SqlParam::Text(sid.to_string())],
+        &[ColKind::Text],
+    )?;
+    let Some(values) = features else {
+        return Ok(false);
+    };
+    let raw = values
+        .into_iter()
+        .next()
+        .ok_or(IdError::Corrupt("identity_session_token.row width"))?
+        .into_text()?;
+    Ok(Features::parse(&raw)?.contains(Features::NO_LOGIN))
 }
 
 /// 访问会话已被删除（设备被移除 / 已登出）时，刷新令牌一并失效。
-fn ensure_access_alive(conn: &Connection, sid: &str, now: i64) -> Result<()> {
-    let alive: Option<i64> = conn
-        .query_row(
-            "SELECT expires_at FROM sessions WHERE sid = ?1",
-            params![sid],
-            |r| r.get(0),
-        )
-        .optional()?;
-    match alive {
-        Some(expires_at) if expires_at > now => Ok(()),
-        _ => {
-            revoke_sid(conn, sid, now)?;
-            Err(IdError::Unauthorized("session revoked"))
-        }
-    }
+fn access_alive_with<E: SqlExec + ?Sized>(exec: &E, sid: &str, now: i64) -> Result<bool> {
+    let alive = exec.query(
+        "SELECT expires_at FROM sessions WHERE sid = ?1",
+        &[SqlParam::Text(sid.to_string())],
+        &[ColKind::Int],
+    )?;
+    let expires_at = alive
+        .map(|values| {
+            values
+                .into_iter()
+                .next()
+                .ok_or(IdError::Corrupt("sessions.row width"))?
+                .into_int()
+        })
+        .transpose()?;
+    Ok(matches!(expires_at, Some(at) if at > now))
 }
 
-/// 标记旧令牌已用 + 落新令牌。
-fn mint_successor(conn: &Connection, row: &ChainRow, now: i64) -> Result<Rotated> {
+/// 标记旧令牌已用 + 落新令牌；条件更新输给并发时返回 `None`。
+fn mint_successor_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    row: &ChainRow,
+    now: i64,
+) -> Result<Option<Rotated>> {
     let raw = random_hex(TOKEN_BYTES);
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_refresh SET used_at = ?2 WHERE token_hash = ?1 AND used_at IS NULL",
-        params![row.token_hash, now],
+        &[SqlParam::Text(row.token_hash.clone()), SqlParam::Int(now)],
     )?;
     if n != 1 {
-        // 并发轮换：另一个请求抢先用了这枚令牌，本次按重放处理。
-        revoke_sid(conn, &row.sid, now)?;
-        return Err(IdError::Unauthorized("refresh token replay detected"));
+        return Ok(None);
     }
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_refresh(token_hash, sid, user_id, device_id, audience, \
          generation, created_at, expires_at, used_at, revoked_at) \
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL)",
-        params![
-            digest(&raw),
-            row.sid,
-            row.user_id,
-            row.device_id,
-            row.audience.as_str(),
-            row.generation + 1,
-            now,
-            row.expires_at
+        &[
+            SqlParam::Text(digest(&raw)),
+            SqlParam::Text(row.sid.clone()),
+            SqlParam::Text(row.user_id.clone()),
+            SqlParam::Text(row.device_id.clone()),
+            SqlParam::Text(row.audience.as_str().to_string()),
+            SqlParam::Int(row.generation + 1),
+            SqlParam::Int(now),
+            SqlParam::Int(row.expires_at),
         ],
     )?;
-    Ok(Rotated {
+    Ok(Some(Rotated {
         sid: row.sid.clone(),
         user_id: row.user_id.clone(),
         device_id: row.device_id.clone(),
@@ -286,35 +425,8 @@ fn mint_successor(conn: &Connection, row: &ChainRow, now: i64) -> Result<Rotated
         generation: row.generation + 1,
         refresh_token: raw,
         expires_at: row.expires_at,
-    })
+    }))
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// 无状态签名令牌（借 `server/auth/token/auth_token.go`）
-//
-// 上面那条刷新链是**有状态**的（库里一行一枚）。上游还有另一件东西：
-// HMAC 签名的自包含令牌，服务端不存任何一行，验签通过就当次有效。
-// 它解决的正是刷新链解决不了的那一类问题——"跨进程/跨实例、只有几十秒寿命、
-// 不值得为它建一行"的一次性凭证：绑定确认、扫码续跑、内部服务之间的转接票据。
-//
-// 上游的 `tokenLayout` 是 50 字节定长二进制：
-// `[8:UID][4:expires][2:authLevel][2:serial][2:features][32:signature]`。
-// **没照抄这个字节布局**：本平台的用户 id / sid 是变长字符串（`u_` 前缀的
-// XTEA 串与 24 位 hex），照搬定长布局要先发明一套 id→uint64 的可逆映射，
-// 那是为了形似而增加一层能出错的东西。这里改成长度前缀的规范化编码，
-// **保留的是上游的四条判定语义**（一条没少）：
-//
-// 1. 短于 `dataSize + sha256.Size` 的输入 → `ErrMalformed`（结构问题，与密钥无关）；
-// 2. 签名不符 → `ErrFailed`。**与"序列号不符"回同一个错**，
-//    否则错误码就能区分"不是我们签的"与"被我们作废了"；
-// 3. 级别越界 → `ErrMalformed`（先于序列号与过期判定）；
-// 4. 过期 → `ErrExpired`，且判定点是 `now + 1s`（`EXPIRY_SKEW_SECS`）。
-//
-// 另外照抄的两条配置纪律：密钥不足 SHA-256 长度直接拒绝初始化
-// （`the key is missing or too short`）、`expire_in <= 0` 拒绝
-// （`invalid expiration value`）——这两个错在启动时报出来，
-// 比在第一个用户身上静默签出一枚弱签名/永不过期的令牌便宜得多。
-// ───────────────────────────────────────────────────────────────────────────
 
 /// 票据载荷（上游 `tokenLayout` 的等价字段集）。
 #[derive(Clone, Debug, PartialEq, Eq)]
