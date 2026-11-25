@@ -78,8 +78,10 @@ pub use crate::auth::{
 pub use crate::db::Db;
 pub use crate::domain::account::{spawn_account_job_worker, JobReply};
 pub use crate::domain::call::{CallRegistry, CallView};
+pub use crate::domain::communities::{ChannelRole, ChannelRoleRow};
 pub use crate::domain::devices::{DeviceReg, DeviceRow};
 pub use crate::domain::favorites::{Favorite, FavoriteInput, MAX_FAVORITE_PAGE};
+pub use crate::domain::friends::RequestRow;
 pub use crate::domain::friends::{ChangeRow, FriendRow};
 pub use crate::domain::groups_admin::GroupInvite;
 pub use crate::domain::live::{LiveSession, LiveState};
@@ -95,14 +97,15 @@ pub use crate::domain::security::{
     hash_argon2id, totp_generate_secret, totp_verify, verify_argon2id,
 };
 pub use crate::domain::status::spawn_status_sweeper;
-pub use crate::domain::trust::SendVerdict;
+pub use crate::domain::trust::{QueuedItem, SendVerdict};
 pub use crate::domain::users::{Credentials, Profile, ProfilePatch, PublicProfile};
 pub use crate::domain::wallet::RedpacketRow;
 pub use crate::domain::wallet::{kind as wallet_kind, REDPACKET_TTL_MS};
 pub use crate::error::{ApiError, PlatformError, Result};
 pub use crate::facade::{
-    AccountDevices, AccountSessions, AdminAccess, AuditTrail, ConversationAccess, GovernanceGate,
-    GroupMembership, GroupModeration, MessagingPrefs, RealtimeCalls, ReportDesk, SocialGraph,
+    AccountDevices, AccountSecurity, AccountSessions, AdminAccess, AuditTrail, CommunityOps,
+    ConversationAccess, Favorites, FriendRequests, GovernanceGate, GroupMembership,
+    GroupModeration, MessagingPrefs, ModerationDesk, RealtimeCalls, ReportDesk, SocialGraph,
     SocialRelations, WalletLedger,
 };
 pub use wxlike_report::Ticket;

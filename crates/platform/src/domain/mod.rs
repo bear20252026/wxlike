@@ -55,4 +55,13 @@ pub mod video_feed;
 pub mod video_refs;
 pub mod wallet;
 
+/// 仓储子模块清单只维护这一份：`repo` 的每个模块都必须有同名域模块，
+/// 两份手写 `pub mod` 列表一旦漂移就会在 `repo::x` 路径上编译失败。
+macro_rules! repo_modules {
+    ($($name:ident),+ $(,)?) => {
+        $(pub mod $name;)+
+    };
+}
+pub(crate) use repo_modules;
+
 pub mod repo;

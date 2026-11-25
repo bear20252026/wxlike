@@ -44,7 +44,6 @@ pub const RESERVED_RESOURCES: [&str; 2] = [COMPLETE_MARKER, PIN_FILE];
 pub const COMPLETE_MARKER: &str = ".complete";
 /// Operational rollback pin, written next to the version directories.
 pub const PIN_FILE: &str = "pin.json";
-const SEMVER_PARTS: usize = 3;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -221,22 +220,7 @@ fn validate_app_id(app_id: &str) -> Result<()> {
 }
 
 /// Parse `major.minor.patch`, ignoring a `-prerelease` / `+build` suffix.
-pub fn parse_semver(value: &str) -> Option<(u64, u64, u64)> {
-    let core = value.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let mut numbers = [0u64; SEMVER_PARTS];
-    for slot in &mut numbers {
-        let raw = parts.next()?;
-        if raw.is_empty() {
-            return None;
-        }
-        *slot = raw.parse().ok()?;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((numbers[0], numbers[1], numbers[2]))
-}
+pub use wxlike_dpage::parse_semver;
 
 pub fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
     Some(parse_semver(left)?.cmp(&parse_semver(right)?))

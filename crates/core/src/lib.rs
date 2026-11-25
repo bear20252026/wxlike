@@ -8,6 +8,7 @@ pub mod error;
 pub use wxlike_limits as limits;
 pub mod msgmeta;
 pub mod outbox;
+pub mod privacy;
 pub mod retry;
 pub mod store;
 /// 集成测试公共基座（真实 SQLite + 锁竞争重试）。无条件编译，理由见模块注释。

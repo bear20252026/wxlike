@@ -5,6 +5,8 @@
 
 use std::time::Duration;
 
+use wxlike_platform::AccountSessions;
+
 use ureq::http;
 use wxlike_core::custom_kind;
 use wxlike_core::{Envelope, MsgBody, MsgId};

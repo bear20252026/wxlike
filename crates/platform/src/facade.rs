@@ -30,6 +30,19 @@ pub trait AccountSessions {
 
     /// 吊销除当前 token 外的全部会话，返回吊销条数。
     fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize>;
+
+    /// 签发一条会话（登录/内部签发共用），返回原始 token。
+    fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String>;
+
+    /// 带设备信息的会话签发：设备目录与「当前设备」标记由这一层落。
+    fn create_session_for_device(
+        &self,
+        user_id: &str,
+        ttl_ms: u64,
+        device_id: &str,
+        device_name: &str,
+        ip: &str,
+    ) -> Result<String>;
 }
 
 impl AccountSessions for Platform {
@@ -51,6 +64,21 @@ impl AccountSessions for Platform {
 
     fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize> {
         Platform::revoke_other_sessions(self, user_id, keep_token)
+    }
+
+    fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String> {
+        Platform::create_session(self, user_id, ttl_ms)
+    }
+
+    fn create_session_for_device(
+        &self,
+        user_id: &str,
+        ttl_ms: u64,
+        device_id: &str,
+        device_name: &str,
+        ip: &str,
+    ) -> Result<String> {
+        Platform::create_session_for_device(self, user_id, ttl_ms, device_id, device_name, ip)
     }
 }
 
@@ -149,6 +177,262 @@ impl WalletLedger for Platform {
 
     fn money_supply(&self) -> Result<i64> {
         Platform::money_supply(self)
+    }
+}
+
+/// Social 门面的社区/频道切片：建群、入群、频道角色与频道消息。
+///
+/// 十条方法里有九条只有验收用例在调，`send_channel_message` 是 message 面
+/// 真正要走的投递路径；归一张门面，调用方不必认识 `Platform` 的其余面。
+pub trait CommunityOps {
+    fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool>;
+    fn effective_channel_role(
+        &self,
+        channel: &str,
+        user: &str,
+    ) -> Result<Option<crate::ChannelRole>>;
+    fn create_community(&self, owner: &str, name: &str, member_limit: i64) -> Result<String>;
+    fn join_community(&self, community: &str, user: &str) -> Result<&'static str>;
+    fn create_channel(
+        &self,
+        community: &str,
+        actor: &str,
+        name: &str,
+        kind: &str,
+    ) -> Result<String>;
+    fn send_channel_message(
+        &self,
+        channel: &str,
+        actor: &str,
+        type_id: &str,
+        text: &str,
+    ) -> Result<(u64, String)>;
+    fn channel_roles(&self, channel: &str, actor: &str) -> Result<Vec<crate::ChannelRoleRow>>;
+    fn set_channel_role(
+        &self,
+        channel: &str,
+        actor: &str,
+        target: &str,
+        role: &str,
+    ) -> Result<crate::ChannelRole>;
+    fn create_thread(
+        &self,
+        channel: &str,
+        actor: &str,
+        root_seq: i64,
+        title: &str,
+    ) -> Result<String>;
+    fn thread_fanout(&self, thread: &str) -> Result<Vec<String>>;
+}
+
+impl CommunityOps for Platform {
+    fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
+        Platform::channel_send_allowed(self, channel, user)
+    }
+
+    fn effective_channel_role(
+        &self,
+        channel: &str,
+        user: &str,
+    ) -> Result<Option<crate::ChannelRole>> {
+        Platform::effective_channel_role(self, channel, user)
+    }
+
+    fn create_community(&self, owner: &str, name: &str, member_limit: i64) -> Result<String> {
+        Platform::create_community(self, owner, name, member_limit)
+    }
+
+    fn join_community(&self, community: &str, user: &str) -> Result<&'static str> {
+        Platform::join_community(self, community, user)
+    }
+
+    fn create_channel(
+        &self,
+        community: &str,
+        actor: &str,
+        name: &str,
+        kind: &str,
+    ) -> Result<String> {
+        Platform::create_channel(self, community, actor, name, kind)
+    }
+
+    fn send_channel_message(
+        &self,
+        channel: &str,
+        actor: &str,
+        type_id: &str,
+        text: &str,
+    ) -> Result<(u64, String)> {
+        Platform::send_channel_message(self, channel, actor, type_id, text)
+    }
+
+    fn channel_roles(&self, channel: &str, actor: &str) -> Result<Vec<crate::ChannelRoleRow>> {
+        Platform::channel_roles(self, channel, actor)
+    }
+
+    fn set_channel_role(
+        &self,
+        channel: &str,
+        actor: &str,
+        target: &str,
+        role: &str,
+    ) -> Result<crate::ChannelRole> {
+        Platform::set_channel_role(self, channel, actor, target, role)
+    }
+
+    fn create_thread(
+        &self,
+        channel: &str,
+        actor: &str,
+        root_seq: i64,
+        title: &str,
+    ) -> Result<String> {
+        Platform::create_thread(self, channel, actor, root_seq, title)
+    }
+
+    fn thread_fanout(&self, thread: &str) -> Result<Vec<String>> {
+        Platform::thread_fanout(self, thread)
+    }
+}
+
+/// Social 门面的收藏切片。
+pub trait Favorites {
+    fn add_favorite(&self, user_id: &str, input: &crate::FavoriteInput) -> Result<crate::Favorite>;
+    fn list_favorites(
+        &self,
+        user_id: &str,
+        before_created: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<crate::Favorite>>;
+    fn favorite(&self, user_id: &str, id: &str) -> Result<crate::Favorite>;
+    fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()>;
+}
+
+impl Favorites for Platform {
+    fn add_favorite(&self, user_id: &str, input: &crate::FavoriteInput) -> Result<crate::Favorite> {
+        Platform::add_favorite(self, user_id, input)
+    }
+
+    fn list_favorites(
+        &self,
+        user_id: &str,
+        before_created: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<crate::Favorite>> {
+        Platform::list_favorites(self, user_id, before_created, limit)
+    }
+
+    fn favorite(&self, user_id: &str, id: &str) -> Result<crate::Favorite> {
+        Platform::favorite(self, user_id, id)
+    }
+
+    fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
+        Platform::remove_favorite(self, user_id, id)
+    }
+}
+
+/// Social 门面的好友申请切片：收发申请、接受/拒绝、两端列表。
+pub trait FriendRequests {
+    fn send_friend_request(
+        &self,
+        from_uid: &str,
+        to_uid: &str,
+        message: &str,
+    ) -> Result<(String, String)>;
+    fn accept_request(&self, me: &str, req_id: &str) -> Result<crate::RequestRow>;
+    fn decline_request(&self, me: &str, req_id: &str) -> Result<crate::RequestRow>;
+    fn incoming_requests(&self, me: &str) -> Result<Vec<crate::RequestRow>>;
+    fn outgoing_requests(&self, me: &str) -> Result<Vec<crate::RequestRow>>;
+}
+
+impl FriendRequests for Platform {
+    fn send_friend_request(
+        &self,
+        from_uid: &str,
+        to_uid: &str,
+        message: &str,
+    ) -> Result<(String, String)> {
+        Platform::send_friend_request(self, from_uid, to_uid, message)
+    }
+
+    fn accept_request(&self, me: &str, req_id: &str) -> Result<crate::RequestRow> {
+        Platform::accept_request(self, me, req_id)
+    }
+
+    fn decline_request(&self, me: &str, req_id: &str) -> Result<crate::RequestRow> {
+        Platform::decline_request(self, me, req_id)
+    }
+
+    fn incoming_requests(&self, me: &str) -> Result<Vec<crate::RequestRow>> {
+        Platform::incoming_requests(self, me)
+    }
+
+    fn outgoing_requests(&self, me: &str) -> Result<Vec<crate::RequestRow>> {
+        Platform::outgoing_requests(self, me)
+    }
+}
+
+/// Governance 门面的端到端加密与权限切片。
+pub trait AccountSecurity {
+    fn set_secret_chat(
+        &self,
+        user_id: &str,
+        conv_id: &str,
+        enabled: bool,
+        ttl_ms: u64,
+    ) -> Result<crate::SecretState>;
+    fn safety_number(&self, a: &str, b: &str) -> Result<String>;
+    fn verify_peer(&self, user_id: &str, peer_id: &str, peer_identity: &str) -> Result<()>;
+    fn verification_of(&self, user_id: &str, peer_id: &str) -> Result<Option<i64>>;
+    fn effective_perms(&self, community: &str, user: &str) -> Result<Vec<&'static str>>;
+}
+
+impl AccountSecurity for Platform {
+    fn set_secret_chat(
+        &self,
+        user_id: &str,
+        conv_id: &str,
+        enabled: bool,
+        ttl_ms: u64,
+    ) -> Result<crate::SecretState> {
+        Platform::set_secret_chat(self, user_id, conv_id, enabled, ttl_ms)
+    }
+
+    fn safety_number(&self, a: &str, b: &str) -> Result<String> {
+        Platform::safety_number(self, a, b)
+    }
+
+    fn verify_peer(&self, user_id: &str, peer_id: &str, peer_identity: &str) -> Result<()> {
+        Platform::verify_peer(self, user_id, peer_id, peer_identity)
+    }
+
+    fn verification_of(&self, user_id: &str, peer_id: &str) -> Result<Option<i64>> {
+        Platform::verification_of(self, user_id, peer_id)
+    }
+
+    fn effective_perms(&self, community: &str, user: &str) -> Result<Vec<&'static str>> {
+        Platform::effective_perms(self, community, user)
+    }
+}
+
+/// Governance 门面的审核队列切片。
+pub trait ModerationDesk {
+    fn set_moderation_mode(&self, mode: wxlike_moderation::Mode);
+    fn moderation_queue(&self, limit: usize) -> Result<Vec<crate::QueuedItem>>;
+    fn release_moderated(&self, id: &str, actor: &str) -> Result<Option<crate::QueuedItem>>;
+}
+
+impl ModerationDesk for Platform {
+    fn set_moderation_mode(&self, mode: wxlike_moderation::Mode) {
+        Platform::set_moderation_mode(self, mode)
+    }
+
+    fn moderation_queue(&self, limit: usize) -> Result<Vec<crate::QueuedItem>> {
+        Platform::moderation_queue(self, limit)
+    }
+
+    fn release_moderated(&self, id: &str, actor: &str) -> Result<Option<crate::QueuedItem>> {
+        Platform::release_moderated(self, id, actor)
     }
 }
 

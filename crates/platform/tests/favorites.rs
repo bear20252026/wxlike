@@ -1,5 +1,6 @@
 //! P1 favorites (收藏): snapshot storage, ownership, paging, limits.
 
+use wxlike_platform::{AccountSessions, Favorites};
 use wxlike_platform::{FavoriteInput, Platform};
 
 fn user(p: &Platform, name: &str) -> String {

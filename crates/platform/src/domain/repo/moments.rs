@@ -5,32 +5,12 @@ use crate::error::{PlatformError, Result};
 use crate::storage::StorageConnection;
 use rusqlite::{params, OptionalExtension as _};
 
-use crate::domain::moments::{Visibility, MAX_COMMENT_DEPTH, MAX_FANOUT_RECIPIENTS};
-
-/// 动态主行 + 两个读时计数列；`seq` 只用于时间倒序翻页游标。
-pub(in crate::domain) struct MomentRecord {
-    pub seq: i64,
-    pub moment_id: String,
-    pub author: String,
-    pub author_name: String,
-    pub text: String,
-    pub media_ids: Vec<String>,
-    pub visibility: String,
-    pub created_at: i64,
-    pub like_count: i64,
-    pub comment_count: i64,
-}
+use crate::domain::moments::{
+    MomentRecord, Visibility, MAX_COMMENT_DEPTH, MAX_FANOUT_RECIPIENTS,
+};
 
 /// 草稿主行；`media` 在仓储层解成 id 列表，领域层不再碰 JSON。
-pub(in crate::domain) struct DraftRecord {
-    pub id: String,
-    pub author: String,
-    pub text: String,
-    pub media_ids: Vec<String>,
-    pub visibility: String,
-    pub audience_group: String,
-    pub updated_at: i64,
-}
+pub(in crate::domain) use crate::domain::moments::MomentDraft as DraftRecord;
 
 /// 按 id 判定可见性所需的三个字段。
 pub(in crate::domain) struct MomentAccess {

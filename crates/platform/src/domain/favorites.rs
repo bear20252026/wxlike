@@ -88,7 +88,7 @@ pub struct Favorite {
 }
 
 impl Platform {
-    pub fn add_favorite(&self, user_id: &str, input: &FavoriteInput) -> Result<Favorite> {
+    pub(crate) fn add_favorite(&self, user_id: &str, input: &FavoriteInput) -> Result<Favorite> {
         let source_conv = validate::conv(&input.source_conv)?;
         validate_snapshot_input(input)?;
         let c = self.db().acquire();
@@ -145,7 +145,7 @@ impl Platform {
     }
 
     /// Legacy 分页（按 created_at）。新客户端用 `Platform::favorites_sorted`。
-    pub fn list_favorites(
+    pub(crate) fn list_favorites(
         &self,
         user_id: &str,
         before_created: Option<i64>,
@@ -180,7 +180,7 @@ impl Platform {
         Ok((rows.into_iter().map(scrub).collect(), next, has_more))
     }
 
-    pub fn favorite(&self, user_id: &str, id: &str) -> Result<Favorite> {
+    pub(crate) fn favorite(&self, user_id: &str, id: &str) -> Result<Favorite> {
         let id = validate::id(id)?;
         let c = self.db().acquire();
         let row = favorite_row(&c, user_id, id)?.ok_or(PlatformError::NotFound)?;
@@ -260,7 +260,7 @@ impl Platform {
         })
     }
 
-    pub fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
+    pub(crate) fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let changed = {
             let c = self.db().acquire();

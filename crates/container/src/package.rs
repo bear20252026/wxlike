@@ -33,8 +33,6 @@ pub const IM_BRIDGE_ALLOWED: [&str; 4] = [
 pub const MAX_PERMISSIONS: usize = 32;
 /// 单条权限名的字节上限。
 pub const MAX_PERMISSION_LEN: usize = 64;
-/// 语义化版本的段数（`major.minor.patch`，缺一段或多一段都拒绝）。
-const SEMVER_PARTS: usize = 3;
 
 /// 包清单。序列化后即为签名对象，字段顺序由 serde 固定。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -58,20 +56,7 @@ impl Manifest {
     /// `(1,2,3)`，两者都能让一份包绕过"版本严格上升"的水位判定。口径与
     /// `miniapps::packages::manifest::parse_semver` 保持一致。
     pub fn semver(&self) -> Option<(u64, u64, u64)> {
-        let core = self.version.split(['-', '+']).next()?;
-        let mut parts = core.split('.');
-        let mut numbers = [0u64; SEMVER_PARTS];
-        for slot in &mut numbers {
-            let raw = parts.next()?;
-            if raw.is_empty() {
-                return None;
-            }
-            *slot = raw.parse().ok()?;
-        }
-        if parts.next().is_some() {
-            return None;
-        }
-        Some((numbers[0], numbers[1], numbers[2]))
+        wxlike_dpage::parse_semver(&self.version)
     }
 
     /// 清单自检：id/name/entry 的形状、入口路径不得穿越。

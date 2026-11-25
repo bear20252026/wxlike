@@ -8,6 +8,7 @@
 mod common;
 
 use common::Recorder;
+use wxlike_platform::CommunityOps;
 use wxlike_platform::{Platform, RealtimeCalls};
 
 struct Fixture {

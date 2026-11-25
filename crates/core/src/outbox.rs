@@ -49,7 +49,7 @@ pub struct OutboxTask {
 /// 这个区分很关键：403（不是群成员）重试 5 次也不会成功，只会让用户等 30 秒
 /// 才看到失败；而连接断开值得重试。把判断交给**知道错误语义的那一层**（调用方），
 /// 队列只负责执行。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendFailure {
     pub message: String,
     pub retryable: bool,
@@ -62,6 +62,12 @@ pub struct SendFailure {
 }
 
 impl SendFailure {
+    /// 通用错误归类：**默认可重试**。不知道错误语义时不要猜"永久失败"，
+    /// 一次偶发的磁盘满被归成永久，用户看到的就是"永远发不出去"。
+    pub fn from_err(err: &anyhow::Error) -> Self {
+        Self::retryable(format!("{err:#}"))
+    }
+
     pub fn retryable(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),

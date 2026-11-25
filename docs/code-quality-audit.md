@@ -394,7 +394,7 @@ search、video、hub、router 全串在一个函数里。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
-**0**、跨文件重复窗口 **114**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**0**、跨文件重复窗口 **67**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
 当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
@@ -468,7 +468,7 @@ search、video、hub、router 全串在一个函数里。
 | 2 | `start_stack` | ✅ | 204 行 → 55 行，拆成 5 个 `build_*` |
 | 2 | 错误契约收口（`crates/api`） | ✅ | 新增零业务依赖的 `wxlike-api`；`video` 的 30 处 `(StatusCode, String)` → `ApiResult`，顺带修掉 Windows 上"视频不存在返回 500" |
 | 2 | `mq_hub` 拆帧 | ⏳ | 主链路，需先补帧级测试 |
-| 3 | `Platform` 门面化 | 🚧 | 六批共降 190 个方法（21+43+48+39+17+22），公开方法 258→**47**；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait，再把这七个判定切进 `SocialGraph` / `GroupModeration` / `GovernanceGate` / `AccountDevices` / `MessagingPrefs`，本批又把 call/live 的 22 个控制方法整体切进 `RealtimeCalls`，接着把审计/工单（`AuditTrail` / `ReportDesk`）与好友/关系（`SocialRelations`）切了出去；剩余门面按 `docs/platform-facades.md` 迁移 |
+| 3 | `Platform` 门面化 | 🚧 | 六批共降 190 个方法（21+43+48+39+17+22），公开方法 258→**18**；`AccountSessions` 扩到会话列表/撤销，新增 `AdminAccess` / `ConversationAccess` / `GroupMembership` 三个访问 trait，再把这七个判定切进 `SocialGraph` / `GroupModeration` / `GovernanceGate` / `AccountDevices` / `MessagingPrefs`，本批又把 call/live 的 22 个控制方法整体切进 `RealtimeCalls`，接着把审计/工单（`AuditTrail` / `ReportDesk`）与好友/关系（`SocialRelations`）切了出去；剩余门面按 `docs/platform-facades.md` 迁移 |
 | 3 | 抽 `crates/wire` | ⏳ | 单独排期 |
 
 指标变化（口径修正后重新计算，只算生产代码）：
@@ -661,6 +661,14 @@ resume）与入站泵；两者都降到约 30 行。`handle_inbound`（316 行 /
 顺带把 `SELECT 1 FROM users` 的判定口径固定成一处；`admin` 的 `jobs::list` 与
 `publishing::queue` 各自重写一遍分页与 kind/state 过滤，抽成 `read::paging` +
 `read::kind_state_clause`。跨文件重复窗口 127 → 114。
+同时把三处跨文件重复收敛成单一实现：两套包格式的 semver 解析收进
+`wxlike-dpage::parse_semver`（8 个窗口），后台元数据白名单收进
+`wxlike_core::privacy::METADATA_FIELDS`（7 个窗口），动态主行与草稿行改由
+domain 定义、repo 只借用（6 个窗口），转码失败类型直接复用 outbox 的
+`SendFailure`（7 个窗口）。跨文件重复窗口 114→**86**；`domain/mod.rs` 与
+`domain/repo/mod.rs` 的 36 行 `pub mod` 清单原本各写一份（19 个重复窗口），改为
+domain 定义 `repo_modules!` 宏、repo 只留一份模块名清单，86→**67**。
+
 探针同时修了一处口径缺陷：trait 里的 `fn foo(...);` 声明没有函数体，旧实现会把
 它一路扫到后面 impl 的第一个 `{`，凭空造出"超长函数"（本批 `RealtimeCalls` 就被
 误报成 100+ 行）。现在遇到行尾 `;` 先于 `{` 就按声明跳过；`fn_total` 7039→7022、

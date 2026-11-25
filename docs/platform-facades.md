@@ -1,22 +1,22 @@
 # Platform 门面归属表
 
-`Platform` 的公开方法已经压到 47 个，但“少”不等于“有结构”。这份表把每个
+`Platform` 的公开方法已经压到 18 个，但“少”不等于“有结构”。这份表把每个
 公开方法归到一个门面，作为后续拆 trait / 收敛组合根的边界。
 
 ## 归属
 
 | 门面 | 模块 | 当前 pub 方法 |
 |---|---|---|
-| Account | `sessions` / `security` / `recovery` / `devices` | 11 |
+| Account | `sessions` / `security` / `recovery` / `devices` | 9 |
 | Messaging | `read` / `notification` | 4 |
 | Media | `video_refs` | 1 |
 | Wallet | `wallet` | 0 |
-| Governance | `report` / `audit` / `secret` / `perms` / `trust` | 8 |
+| Governance | `report` / `audit` / `secret` / `perms` / `trust` | 0 |
 | Realtime | `call` / `live` | 2 |
-| Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 21 |
+| Social | `communities` / `friends` / `relations` / `favorites` / `status` / `groups_admin` | 2 |
 | Health | 组合根自身（readiness） | 0 |
 
-合计 **47**。
+合计 **18**。
 
 ## 规则
 
@@ -177,13 +177,43 @@ Social 公开面 21（裁掉 5 条），总公开面 62→**53**。
 `WalletLedger`，`RedpacketRow` 从 crate 根再导出。Wallet 公开面 6→**0**，
 总公开面 53→**47**。
 
+## Social 的社区、收藏、好友申请切片
+
+Communities 的十条方法（建群/入群/建频道/频道角色/频道消息/楼中楼）里，九条
+只有验收用例在调，`send_channel_message` 是 message 面真正走的投递路径；
+Favorites 四条、FriendRequests 五条也分别只有各自的验收面在调。三组各切一个
+trait，`ChannelRole` / `ChannelRoleRow` / `RequestRow` 从 crate 根再导出。
+
+```rust
+pub trait CommunityOps { /* channel_send_allowed / effective_channel_role /
+    create_community / join_community / create_channel / send_channel_message /
+    channel_roles / set_channel_role / create_thread / thread_fanout */ }
+pub trait Favorites { /* add_favorite / list_favorites / favorite / remove_favorite */ }
+pub trait FriendRequests { /* send_friend_request / accept_request / decline_request /
+    incoming_requests / outgoing_requests */ }
+```
+
+Social 公开面 21→**2**（只剩 `relations` 的陌生人请求状态与 `groups_admin` 的
+成员禁言仍由 server 直接调）。
+
+## Governance 的加密、权限与审核切片
+
+`set_secret_chat` / `safety_number` / `verify_peer` / `verification_of` 与
+`effective_perms` 合成 `AccountSecurity`；`trust` 的三条（模式、队列、放行）
+合成 `ModerationDesk`。`QueuedItem` 从 crate 根再导出。Governance 公开面 8→**0**。
+
+## Account 会话签发并入
+
+`create_session` / `create_session_for_device` 原本是 inherent pub（24 + 2 处
+调用，几乎全是集成测试）；并入 `AccountSessions` 后 Account 公开面 11→**9**，
+总公开面 47→**18**。
+
 ## 下一步
 
-- Account 继续把 `create_session` / `create_session_for_device` 并入
-  `AccountSessions`（24 + 2 处，几乎全是平台集成测试）；
 - Wallet 已整张账切进 `WalletLedger`（9 个方法，公开面 6→0）；后续 ledger 端口化
   只需替换 trait 实现，不动调用方；
-- Communities 的 `create_community` / `join_community` / `create_channel` 等
-  13 个方法只有集成测试在调，适合连测试一起搬进 domain 单测再降可见性；
-- TOTP/recovery 面（`totp_confirm` / `solve_captcha` 等）被 admin 与验收用例共用，
-  单独切 `AccountSecurity`。
+- Account 只剩 TOTP/recovery/设备目录（`totp_confirm` / `solve_captcha` /
+  `register_device` 等 9 条），下一步按 `AccountSecurity` 同款切；
+- Messaging 的 `conv_unread` / `owner_kind_of` / `conv_sync` / `mark_conv_read`
+  四条同时被 client、message、ui、server 使用，适合单独切 `MailboxRead`；
+- Social 只剩 `set_member_mute`（server）与陌生人请求状态，收尾即可归零。

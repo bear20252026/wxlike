@@ -76,13 +76,13 @@ pub struct SessionRow {
 impl Platform {
     /// Issues a session token valid for `ttl_ms` (0 = already expired, used by
     /// tests to cover the expiry path without sleeping).
-    pub fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String> {
+    pub(crate) fn create_session(&self, user_id: &str, ttl_ms: u64) -> Result<String> {
         self.create_session_for_device(user_id, ttl_ms, "", "", "")
     }
 
     /// 带设备信息的会话（P4 设备管理页：按设备下线、看最近活跃）。
     /// 设备字段为空时与老会话等价，只多一个 `sid` 供设备页寻址。
-    pub fn create_session_for_device(
+    pub(crate) fn create_session_for_device(
         &self,
         user_id: &str,
         ttl_ms: u64,

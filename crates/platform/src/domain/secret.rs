@@ -51,7 +51,7 @@ pub struct SecretState {
 
 impl Platform {
     /// 开/关秘密聊天并设置消失消息 TTL。
-    pub fn set_secret_chat(
+    pub(crate) fn set_secret_chat(
         &self,
         user_id: &str,
         conv_id: &str,
@@ -103,7 +103,7 @@ impl Platform {
     }
 
     /// 两端身份公钥 → 60 位安全码。顺序无关（内部排序），换设备即变化。
-    pub fn safety_number(&self, a: &str, b: &str) -> Result<String> {
+    pub(crate) fn safety_number(&self, a: &str, b: &str) -> Result<String> {
         let (ka, kb) = (self.identity_of(a)?, self.identity_of(b)?);
         let (first, second) = if ka <= kb { (ka, kb) } else { (kb, ka) };
         let mut hasher = Sha256::new();
@@ -127,7 +127,12 @@ impl Platform {
 
     /// 记录"我已核对过对方安全码"。`peer_identity` 与当前密钥不一致时拒绝，
     /// 防止拿旧密钥的核对结果冒充新设备。
-    pub fn verify_peer(&self, user_id: &str, peer_id: &str, peer_identity: &str) -> Result<()> {
+    pub(crate) fn verify_peer(
+        &self,
+        user_id: &str,
+        peer_id: &str,
+        peer_identity: &str,
+    ) -> Result<()> {
         let current = self.identity_of(peer_id)?;
         if current != peer_identity {
             return Err(PlatformError::BadInput(
@@ -147,7 +152,7 @@ impl Platform {
     }
 
     /// 核对状态：`Some(at_ms)` 且密钥未变才算已核对。
-    pub fn verification_of(&self, user_id: &str, peer_id: &str) -> Result<Option<i64>> {
+    pub(crate) fn verification_of(&self, user_id: &str, peer_id: &str) -> Result<Option<i64>> {
         let conv = crate::direct_conv_id(user_id, peer_id);
         let current = self.identity_of(peer_id)?;
         let c = self.db().acquire();

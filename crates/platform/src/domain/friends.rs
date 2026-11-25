@@ -70,7 +70,7 @@ fn request_row(r: RequestRecord) -> RequestRow {
 impl Platform {
     /// Creates (or reuses) the pending request from `from_uid` to `to_uid`.
     /// Returns `(request_id, recipient_id)`.
-    pub fn send_friend_request(
+    pub(crate) fn send_friend_request(
         &self,
         from_uid: &str,
         to_uid: &str,
@@ -120,7 +120,7 @@ impl Platform {
 
     /// Only the recipient of a pending request may accept it, and the
     /// friendship rows + both contact-log entries commit atomically.
-    pub fn accept_request(&self, me: &str, req_id: &str) -> Result<RequestRow> {
+    pub(crate) fn accept_request(&self, me: &str, req_id: &str) -> Result<RequestRow> {
         let req = self.load_request(req_id)?;
         if req.to_uid != me {
             return Err(PlatformError::Forbidden);
@@ -147,7 +147,7 @@ impl Platform {
         })
     }
 
-    pub fn decline_request(&self, me: &str, req_id: &str) -> Result<RequestRow> {
+    pub(crate) fn decline_request(&self, me: &str, req_id: &str) -> Result<RequestRow> {
         let req = self.load_request(req_id)?;
         if req.to_uid != me {
             return Err(PlatformError::Forbidden);
@@ -172,7 +172,7 @@ impl Platform {
         })
     }
 
-    pub fn incoming_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
+    pub(crate) fn incoming_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // The inbox is the pending queue: answered requests (accepted/declined)
         // leave it, which is what makes "decline empties the inbox" observable.
         Ok(incoming_requests(&self.db().acquire(), me)?
@@ -181,7 +181,7 @@ impl Platform {
             .collect())
     }
 
-    pub fn outgoing_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
+    pub(crate) fn outgoing_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // Outgoing keeps every status so the sender can see who declined.
         Ok(outgoing_requests(&self.db().acquire(), me)?
             .into_iter()

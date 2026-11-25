@@ -391,20 +391,7 @@ pub fn fingerprint(action: &str, target: &str, reason: &str, until_ms: Option<i6
 // 只读投影：E2EE 边界
 // ---------------------------------------------------------------------------
 
-/// 后台**允许**看到的用户元数据字段。白名单，不是黑名单：
-/// 黑名单会在域侧新增字段时默认放开，那正好是最危险的方向。
-pub const METADATA_FIELDS: &[&str] = &[
-    "user_id",
-    "display_name",
-    "state",
-    "created_at",
-    "last_seen_ms",
-    "device_count",
-    "group_count",
-    "report_count",
-    "suspended_until_ms",
-    "labels",
-];
+pub use wxlike_core::privacy::METADATA_FIELDS;
 
 /// 把域侧返回的对象投影成白名单元数据。非白名单字段一律丢弃，
 /// 并在结果里标出丢了几个字段——运维要知道自己没看全。

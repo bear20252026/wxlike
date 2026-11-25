@@ -172,57 +172,9 @@ pub struct JobSubmit {
     pub newly_queued: bool,
 }
 
-/// 转码失败的原因（形状照搬 outbox 的 `SendFailure`）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JobFailure {
-    pub message: String,
-    pub retryable: bool,
-    /// 限流/资源不足：**不烧尝试次数**，下一轮再来。
-    pub throttled: bool,
-}
-
-impl JobFailure {
-    /// 流水线报错的默认归类：**全部可重试**。
-    ///
-    /// 这里不猜"哪些错误是永久的"。ffmpeg 的错误文本千奇百怪，一次偶发的磁盘满
-    /// 或 OOM 被归成永久错误，用户看到的就是"这个视频永远转不了"。
-    /// 真正不该重试的错误（源字节长度对不上、参数非法）由调用方显式构造
-    /// [`Self::permanent`]。
-    pub fn from_err(err: &anyhow::Error) -> Self {
-        Self {
-            message: format!("{err:#}"),
-            retryable: true,
-            throttled: false,
-        }
-    }
-
-    /// 可重试的失败。
-    pub fn retryable(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            retryable: true,
-            throttled: false,
-        }
-    }
-
-    /// 不可重试：直接终态。
-    pub fn permanent(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            retryable: false,
-            throttled: false,
-        }
-    }
-
-    /// 被限流：等一等再来，**不烧尝试次数**。
-    pub fn throttled(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            retryable: true,
-            throttled: true,
-        }
-    }
-}
+/// 转码失败的原因：与发送队列共用同一个形状（`SendFailure`），
+/// `from_err` 的默认归类也一致——两类后台任务都"不猜永久失败"。
+pub use wxlike_core::outbox::SendFailure as JobFailure;
 
 /// 第 `attempts` 次失败之后等多久（1/2/4/8/16/30s 封顶）。
 ///

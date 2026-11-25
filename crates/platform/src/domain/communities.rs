@@ -277,7 +277,7 @@ impl Platform {
         repo_channel_kind(&c, channel)
     }
 
-    pub fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
+    pub(crate) fn channel_send_allowed(&self, channel: &str, user: &str) -> Result<bool> {
         let perm = if self.channel_kind(channel)?.as_deref() == Some("announce") {
             crate::domain::perms::Perm::PostInAnnounce
         } else {
@@ -296,7 +296,11 @@ impl Platform {
     }
 
     /// 有效频道角色：专属行优先，其次继承社区角色，都不是成员 = `None`。
-    pub fn effective_channel_role(&self, channel: &str, user: &str) -> Result<Option<ChannelRole>> {
+    pub(crate) fn effective_channel_role(
+        &self,
+        channel: &str,
+        user: &str,
+    ) -> Result<Option<ChannelRole>> {
         if let Some(role) = self.channel_role_row(channel, user)? {
             return Ok(Some(role));
         }
@@ -358,7 +362,12 @@ impl Platform {
 
     // ---- 社区 ----
 
-    pub fn create_community(&self, owner: &str, name: &str, member_limit: i64) -> Result<String> {
+    pub(crate) fn create_community(
+        &self,
+        owner: &str,
+        name: &str,
+        member_limit: i64,
+    ) -> Result<String> {
         let name = validate::name(name)?;
         let owner = validate::id(owner)?;
         let member_limit = member_limit.clamp(2, 100_000);
@@ -369,7 +378,7 @@ impl Platform {
         Ok(id)
     }
 
-    pub fn join_community(&self, community: &str, user: &str) -> Result<&'static str> {
+    pub(crate) fn join_community(&self, community: &str, user: &str) -> Result<&'static str> {
         let community = validate::id(community)?;
         let user = validate::id(user)?;
         if self.community_role(community, user)?.is_some() {
@@ -413,7 +422,7 @@ impl Platform {
 
     // ---- 频道 ----
 
-    pub fn create_channel(
+    pub(crate) fn create_channel(
         &self,
         community: &str,
         actor: &str,
@@ -460,7 +469,7 @@ impl Platform {
     /// `store.append(..)` 是一条同步事务（seq 分配 + mailbox 行 + 投影一次提交），
     /// 挂在 await 上下文里就把 tokio worker 占满。签名改回同步之后，handler 用
     /// `crate::db::offload` 整段搬到阻塞线程池，事务边界一动不动。
-    pub fn send_channel_message(
+    pub(crate) fn send_channel_message(
         &self,
         channel: &str,
         actor: &str,
@@ -526,7 +535,7 @@ impl Platform {
     }
 
     /// 频道角色名单：所有社区成员都在列，`role` 是**有效**角色（行覆盖 or 继承）。
-    pub fn channel_roles(&self, channel: &str, actor: &str) -> Result<Vec<ChannelRoleRow>> {
+    pub(crate) fn channel_roles(&self, channel: &str, actor: &str) -> Result<Vec<ChannelRoleRow>> {
         let channel = validate::id(channel)?;
         self.effective_channel_role(channel, actor)?
             .ok_or(PlatformError::Forbidden)?;
@@ -554,7 +563,7 @@ impl Platform {
 
     /// 覆盖某人的频道角色。`owner` 不在可授予之列——频道 owner 就是社区群主，
     /// 转让是另一套流程（与 `Platform::set_member_role` 同一道口子）。
-    pub fn set_channel_role(
+    pub(crate) fn set_channel_role(
         &self,
         channel: &str,
         actor: &str,
@@ -645,7 +654,7 @@ impl Platform {
 
     // ---- 话题（Zulip 语义：聚合在话题内，不占频道主时间线） ----
 
-    pub fn create_thread(
+    pub(crate) fn create_thread(
         &self,
         channel: &str,
         actor: &str,
@@ -766,7 +775,7 @@ impl Platform {
     ///
     /// 信箱的 `MessageStore::members` 回答"谁拥有这个会话"，这一层回答"其中谁
     /// 要被打扰"——退订或静音只把推送拿掉，**读**话题与频道时间线都不受影响。
-    pub fn thread_fanout(&self, thread: &str) -> Result<Vec<String>> {
+    pub(crate) fn thread_fanout(&self, thread: &str) -> Result<Vec<String>> {
         let thread = validate::id(thread)?;
         let community = self.thread_community(thread)?;
         let c = self.db().acquire();

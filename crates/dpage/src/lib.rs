@@ -303,6 +303,27 @@ fn content_id(files: &FileMap) -> u32 {
     u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
 }
 
+/// 语义化版本的三段解析：`major.minor.patch`，只取 `-`/`+` 之前的 core。
+///
+/// 两处包格式（DPG1 的签名清单与 `mini.json`）对"版本单调上升"的口径必须
+/// 一致；谁都不许接受两段或四段，否则一份旧包可以伪装成同版本绕过水位。
+pub fn parse_semver(value: &str) -> Option<(u64, u64, u64)> {
+    let core = value.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let mut numbers = [0u64; 3];
+    for slot in &mut numbers {
+        let raw = parts.next()?;
+        if raw.is_empty() {
+            return None;
+        }
+        *slot = raw.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((numbers[0], numbers[1], numbers[2]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

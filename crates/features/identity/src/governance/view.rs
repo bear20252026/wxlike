@@ -1,7 +1,7 @@
 //! G02-09 管理端用户元数据视图（`AdminUserView`）。
 //!
-//! **白名单投影**：只返回 [`METADATA_FIELDS`] 里的字段，与 admin
-//! `identity::METADATA_FIELDS` 逐字一致。结构体上根本没有"消息正文"字段——
+//! **白名单投影**：只返回 [`METADATA_FIELDS`] 里的字段，与 admin 共享
+//! [`wxlike_core::privacy::METADATA_FIELDS`] 这一份定义。结构体上根本没有"消息正文"字段——
 //! 从源头就不给，比 admin 侧 `project()` 再丢一遍更早一层（双保险的第一层）。
 //!
 //! 跨域计数（群数/举报数）经 [`UserMetadataPort`] 注入：identity 不直接读
@@ -13,19 +13,7 @@ use serde::Serialize;
 use super::{check_target, user::user_state, UserMetadataPort};
 use crate::Result;
 
-/// 后台允许看到的用户元数据字段（与 admin `identity::METADATA_FIELDS` 逐字一致）。
-pub const METADATA_FIELDS: &[&str] = &[
-    "user_id",
-    "display_name",
-    "state",
-    "created_at",
-    "last_seen_ms",
-    "device_count",
-    "group_count",
-    "report_count",
-    "suspended_until_ms",
-    "labels",
-];
+pub use wxlike_core::privacy::METADATA_FIELDS;
 
 /// 管理端用户视图。**只有元数据**：没有任何消息正文/密文/会话密钥字段。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

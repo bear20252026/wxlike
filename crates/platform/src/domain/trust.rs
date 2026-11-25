@@ -83,18 +83,18 @@ impl Platform {
     }
 
     /// 热切换模式（运营在"先审后发/先发后审"之间调整，无需重启）。
-    pub fn set_moderation_mode(&self, mode: Mode) {
+    pub(crate) fn set_moderation_mode(&self, mode: Mode) {
         self.moderation_pipeline().set_mode(mode);
     }
 
     /// 挂起队列（最早在前：先挂起的先处理）。
-    pub fn moderation_queue(&self, limit: usize) -> Result<Vec<QueuedItem>> {
+    pub(crate) fn moderation_queue(&self, limit: usize) -> Result<Vec<QueuedItem>> {
         let c = self.db().acquire();
         trust_repo::queue(&c, limit.clamp(1, 200) as i64)
     }
 
     /// 放行：从队列取出并返回原文（调用方负责真正投递）。
-    pub fn release_moderated(&self, id: &str, actor: &str) -> Result<Option<QueuedItem>> {
+    pub(crate) fn release_moderated(&self, id: &str, actor: &str) -> Result<Option<QueuedItem>> {
         let item = {
             let c = self.db().acquire();
             let row = trust_repo::item(&c, id)?;

@@ -31,7 +31,7 @@ use super::repo::moments::{
     drafts_by_author, fanout_new_moment, feed_page, friend_group_contains, insert_comment,
     insert_draft, insert_like, insert_moment, moment_access, moment_author_if_live,
     moment_comments, moment_likes, moment_record, notify_comment_inbox, require_media,
-    soft_delete_comment, soft_delete_moment, update_draft, MomentRecord,
+    soft_delete_comment, soft_delete_moment, update_draft,
 };
 
 /// Contract: text above this is refused (the task book allows either refusing
@@ -78,6 +78,20 @@ impl Visibility {
 
 pub(crate) fn default_visibility() -> Visibility {
     Visibility::Friends
+}
+
+/// 动态主行 + 两个读时计数列；`seq` 只用于时间倒序翻页游标。
+pub(in crate::domain) struct MomentRecord {
+    pub seq: i64,
+    pub moment_id: String,
+    pub author: String,
+    pub author_name: String,
+    pub text: String,
+    pub media_ids: Vec<String>,
+    pub visibility: String,
+    pub created_at: i64,
+    pub like_count: i64,
+    pub comment_count: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]

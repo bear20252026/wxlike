@@ -127,7 +127,7 @@ pub fn role_perms(role: i64) -> &'static [Perm] {
 
 impl Platform {
     /// 我在这个社区的有效权限（未加入返回空集，而不是报错——UI 要能显示灰按钮）。
-    pub fn effective_perms(&self, community: &str, user: &str) -> Result<Vec<&'static str>> {
+    pub(crate) fn effective_perms(&self, community: &str, user: &str) -> Result<Vec<&'static str>> {
         let Ok(role) = self.require_member(community, user) else {
             return Ok(Vec::new());
         };
