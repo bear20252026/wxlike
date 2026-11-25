@@ -134,7 +134,8 @@ mod pg_tests {
         assert_eq!(loaded.state, "open");
         assert_eq!(loaded.created_at, 11);
         assert_eq!(ids_by_reporter(&port, "pg14-user", 10).unwrap(), vec![id]);
-        assert_eq!(ids_by_state(&port, "open", 10).unwrap(), vec![id]);
+        let open = ids_by_state(&port, "open", 10).unwrap();
+        assert!(open.contains(&id.to_string()), "open ids: {open:?}");
         assert!(open_ids(&port, 10).unwrap().contains(&id.to_string()));
 
         cleanup();

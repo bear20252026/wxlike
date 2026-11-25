@@ -25,7 +25,7 @@ mod tests {
     #[test]
     fn equal_and_unequal() {
         assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab0"));
         assert!(!constant_time_eq(b"abc", b"ab"));
     }
 

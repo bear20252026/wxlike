@@ -94,7 +94,7 @@ pub fn perm_for_type(type_id: &str) -> Option<crate::domain::perms::Perm> {
 /// 频道级角色（Zone C · C2）。名字与 Rocket.Chat 的频道角色对齐：
 /// `owner` / `moderator` / `member` / `guest`。
 ///
-/// 与社区级三档数字角色（[`ROLE_OWNER`] / [`ROLE_ADMIN`] / [`ROLE_MEMBER`]）的
+/// 与社区级三档数字角色（`ROLE_OWNER` / `ROLE_ADMIN` / `ROLE_MEMBER`）的
 /// 分工：**社区角色决定"能不能建/删频道、踢人、提管理员"，频道角色决定
 /// "在这个频道里能说什么、能不能撤别人的消息"**。频道没有专属行时继承社区角色
 /// （owner→owner、admin→moderator、member→member），有行则以行内为准——

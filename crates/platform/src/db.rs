@@ -87,8 +87,8 @@ impl Db {
     /// A poisoned lock only happens if SQL panicked mid-statement; SQLite
     /// connections survive that, so recovering the guard beats crashing.
     ///
-    /// 走端口的 [`Storage::acquire`]，让 `Db` 的连接入口确实经过存储端口。
-    /// SQLite 专用入口。PG 后端没有 `MutexGuard<Connection>` 可交，调用点必须
+    /// SQLite 专用入口：直接取 SQLite 守卫，不经过 PG 端口。
+    /// PG 后端没有 `MutexGuard<Connection>` 可交，调用点必须
     /// 改走 [`Db::acquire`]；这里返回受控错误，不 panic、不静默降级。
     pub fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
         match &self.storage {

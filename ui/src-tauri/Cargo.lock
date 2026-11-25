@@ -8298,6 +8298,7 @@ dependencies = [
  "ureq",
  "wxlike-cmd",
  "wxlike-limits",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -8357,6 +8358,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+ "wxlike-core",
  "wxlike-ledger",
  "wxlike-limits",
 ]
@@ -8427,6 +8429,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-http-auth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+]
+
+[[package]]
 name = "wxlike-identity"
 version = "0.1.0"
 dependencies = [
@@ -8476,6 +8485,7 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-http-auth",
  "wxlike-limits",
  "wxlike-types",
 ]
@@ -8630,6 +8640,7 @@ name = "wxlike-report"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -8674,6 +8685,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tantivy",
+ "wxlike-core",
 ]
 
 [[package]]
@@ -8749,6 +8761,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
+ "wxlike-http-auth",
 ]
 
 [[package]]
