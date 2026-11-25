@@ -46,26 +46,6 @@ pub(in crate::domain) fn creator_and_verifier(
     .ok_or_else(|| ApiError::not_found("no such ticket"))
 }
 
-/// 建票时登记创建者 + PKCE verifier。
-///
-/// 平台自有表：identity 的状态机不知道 "creator" 是谁（它只认 secret），
-/// 而轮询/兑换要判归属，所以这一行由 HTTP 面补。
-pub(in crate::domain) fn register_creator(
-    conn: &StorageConnection<'_>,
-    ticket_id: &str,
-    creator: &str,
-    verifier: &str,
-    now: i64,
-) -> Result<(), ApiError> {
-    conn.execute(
-        "INSERT INTO qr_ticket_creator(ticket_id, creator, verifier, created_at)
-         VALUES(?1, ?2, ?3, ?4)",
-        params![ticket_id, creator, verifier, now],
-    )
-    .map_err(db_err)?;
-    Ok(())
-}
-
 /// 扫过码的账号线索（给创建端显示 "xxx 的手机扫了码"）；没人扫过 → `None`。
 pub(in crate::domain) fn scan_hint(
     conn: &StorageConnection<'_>,

@@ -272,3 +272,34 @@ execute/query_row/query_map。`Db::with_tx` 对 SQLite 走 `ConnectionTx`，对 
 wxlike-platform --lib` 69 passed / 13 ignored（新增 3 条 PG ignored 用例）；
 `quality-gate` 嵌套 0、重复窗口 2、魔法数字 171；`check_domain_sql` 0；
 `check_gaps` 0；contract 0 error。
+
+## 8. 批次 18：扫码登录状态机端口化
+
+批次 16 只把 QR 的**读写 SQL** 搬进 repo；域层仍 `sqlite(&conn)?` 后调
+`wxlike_identity::qr_login::{create,bind,scan,approve,reject,poll}`。这些函数吃
+`&Connection`，PG profile 下整条扫码登录不可用。
+
+直接把状态机 SQL 复制进平台 repo 会留下第二份二维码实现，也会让质量门禁的跨文件
+重复窗口从 4 涨到 41。最终选的是**把状态机本身做成后端无关**：
+
+- identity 新增 `QrExec`（`exec` / `query` 两条原语）、`QrParam`、`QrKind`、
+  `QrValue`；`SqliteExec` 用 `rusqlite` 实现它，原有 `&Connection` 函数继续可用。
+- `create_with` / `bind_with` / `scan_with` / `approve_with` / `reject_with` /
+  `poll_with` 是端口版状态机；SQL、状态迁移、条件 UPDATE 抢占仍只有一份。`exchange`
+  与 `refresh` 需要设备/会话写入和 SQLite 事务，仍留在 identity 的 `&Connection`
+  入口，不在本批范围。
+- 平台 `domain/repo/qr_state.rs` 只做 `StorageConnection` → `QrExec` 适配：
+  参数转 `Param`，按 `QrKind` 取行，`NotFound` 折成 `None`，其余映射
+  `IdError::Storage`。`Ticket` 建票 + 绑定 + `qr_ticket_creator` 登记在
+  `Db::with_tx` 里一次完成，SQLite/PG 同一段代码。
+
+**结果**：`create_qr_ticket`、`qr_ticket_state`、`scan_qr_ticket`、
+`decide_qr_ticket` 不再有 `sqlite()` 降级；`domain/qr_login.rs` 的 `sqlite` 辅助
+函数已删除。`repo/qr_login.rs` 的旧 `register_creator` 删除，创建者登记归
+`qr_state`。
+
+**验证**：`cargo test -p wxlike-identity` 全绿（QR 状态机 10 条集成测试仍走
+`&Connection` 包装）；`cargo test -p wxlike-platform --test qr_login_http` 5 passed；
+`cargo test -p wxlike-platform --lib` 70 passed / 14 ignored；新增
+`qr_state::pg_tests::postgres_qr_state_moves_from_pending_to_approved`（ignored）。
+`quality-gate` 重复窗口 4 → 2、嵌套 0、魔法数字 171；`provenance` pass=84。

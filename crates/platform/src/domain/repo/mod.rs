@@ -6,6 +6,7 @@
 //! 参数一律走绑定（`params!` / `?N`），本层不拼用户输入进 SQL。
 
 pub(in crate::domain) mod preferences;
+pub(in crate::domain) mod qr_state;
 
 /// 生成"按 `(id, user_id)` 删一行并返回受影响行数"的 `delete_one`。
 ///

@@ -22,7 +22,7 @@
 //! 扫码登录**只**建立一条可撤销的设备会话，不改变任何 E2EE 密钥的信任状态
 //! （那是 G02-03 的 `verify`）。"这台电脑登录成功了"不等于"它历史密钥可信"。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
 
 use crate::{digest, random_hex, Audience, IdError, Result};
 
@@ -37,6 +37,103 @@ pub const CHALLENGE_ID_BYTES: usize = 12;
 /// PKCE verifier 长度区间（RFC 7636 §4.1）。
 pub const VERIFIER_MIN: usize = 43;
 pub const VERIFIER_MAX: usize = 128;
+
+/// 端口无关的一条绑定参数：二维码状态机只用到文本与整数。
+#[derive(Clone, Debug)]
+pub enum QrParam {
+    Text(String),
+    Int(i64),
+}
+
+/// 查询结果列的目标类型。端口实现按它取值，避免把整数列读成文本。
+#[derive(Clone, Copy, Debug)]
+pub enum QrKind {
+    Text,
+    Int,
+}
+
+/// 端口返回的一列值。
+#[derive(Clone, Debug)]
+pub enum QrValue {
+    Text(String),
+    Int(i64),
+}
+
+impl QrValue {
+    fn into_text(self) -> Result<String> {
+        match self {
+            Self::Text(v) => Ok(v),
+            Self::Int(_) => Err(IdError::Corrupt("identity_qr.column type")),
+        }
+    }
+
+    fn into_int(self) -> Result<i64> {
+        match self {
+            Self::Int(v) => Ok(v),
+            Self::Text(_) => Err(IdError::Corrupt("identity_qr.column type")),
+        }
+    }
+}
+
+/// 二维码状态机的最小执行面：`exec` 写、`query` 读一行。
+///
+/// 平台侧把 `StorageConnection` 适配到这个 trait，于是同一份状态机 SQL 在
+/// SQLite 与 PostgreSQL 上都跑；identity 自身用 [`SqliteExec`] 适配。
+pub trait QrExec {
+    fn exec(&self, sql: &str, params: &[QrParam]) -> Result<usize>;
+    fn query(
+        &self,
+        sql: &str,
+        params: &[QrParam],
+        kinds: &[QrKind],
+    ) -> Result<Option<Vec<QrValue>>>;
+}
+
+/// identity 自带的后端：直接走 `rusqlite`。
+pub struct SqliteExec<'a>(pub &'a Connection);
+
+fn sqlite_param(p: &QrParam) -> rusqlite::types::Value {
+    match p {
+        QrParam::Text(v) => rusqlite::types::Value::Text(v.clone()),
+        QrParam::Int(v) => rusqlite::types::Value::Integer(*v),
+    }
+}
+
+impl QrExec for SqliteExec<'_> {
+    fn exec(&self, sql: &str, params: &[QrParam]) -> Result<usize> {
+        let values: Vec<_> = params.iter().map(sqlite_param).collect();
+        Ok(self
+            .0
+            .execute(sql, rusqlite::params_from_iter(values.iter()))?)
+    }
+
+    fn query(
+        &self,
+        sql: &str,
+        params: &[QrParam],
+        kinds: &[QrKind],
+    ) -> Result<Option<Vec<QrValue>>> {
+        let values: Vec<_> = params.iter().map(sqlite_param).collect();
+        let mut stmt = self.0.prepare(sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let mut out = Vec::with_capacity(kinds.len());
+        for (i, kind) in kinds.iter().enumerate() {
+            let value = match (kind, row.get_ref(i)?) {
+                (QrKind::Text, rusqlite::types::ValueRef::Text(v)) => {
+                    QrValue::Text(String::from_utf8_lossy(v).into_owned())
+                }
+                (QrKind::Text, _) => return Err(IdError::Corrupt("identity_qr.column type")),
+                (QrKind::Int, rusqlite::types::ValueRef::Integer(v)) => QrValue::Int(v),
+                (QrKind::Int, _) => return Err(IdError::Corrupt("identity_qr.column type")),
+            };
+            out.push(value);
+        }
+        Ok(Some(out))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QrState {
@@ -150,20 +247,6 @@ struct RawQr {
     scanned_by: String,
 }
 
-fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawQr> {
-    Ok(RawQr {
-        id: r.get(0)?,
-        state: r.get(1)?,
-        pkce_hash: r.get(2)?,
-        device_id: r.get(3)?,
-        platform: r.get(4)?,
-        label: r.get(5)?,
-        ip_hint: r.get(6)?,
-        expires_at: r.get(7)?,
-        scanned_by: r.get(8)?,
-    })
-}
-
 fn decode(raw: RawQr) -> Result<QrRow> {
     Ok(QrRow {
         state: QrState::parse(&raw.state)?,
@@ -178,28 +261,80 @@ fn decode(raw: RawQr) -> Result<QrRow> {
     })
 }
 
-fn load(conn: &Connection, id: &str, now: i64) -> Result<QrRow> {
+fn take_text<I: Iterator<Item = QrValue>>(it: &mut I) -> Result<String> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_qr.row width"))?
+        .into_text()
+}
+
+fn take_int<I: Iterator<Item = QrValue>>(it: &mut I) -> Result<i64> {
+    it.next()
+        .ok_or(IdError::Corrupt("identity_qr.row width"))?
+        .into_int()
+}
+
+fn raw_from_values(values: Vec<QrValue>) -> Result<RawQr> {
+    let mut it = values.into_iter();
+    let id = take_text(&mut it)?;
+    let state = take_text(&mut it)?;
+    let pkce_hash = take_text(&mut it)?;
+    let device_id = take_text(&mut it)?;
+    let platform = take_text(&mut it)?;
+    let label = take_text(&mut it)?;
+    let ip_hint = take_text(&mut it)?;
+    let expires_at = take_int(&mut it)?;
+    let scanned_by = take_text(&mut it)?;
+    Ok(RawQr {
+        id,
+        state,
+        pkce_hash,
+        device_id,
+        platform,
+        label,
+        ip_hint,
+        expires_at,
+        scanned_by,
+    })
+}
+
+const QR_KINDS: [QrKind; 9] = [
+    QrKind::Text,
+    QrKind::Text,
+    QrKind::Text,
+    QrKind::Text,
+    QrKind::Text,
+    QrKind::Text,
+    QrKind::Text,
+    QrKind::Int,
+    QrKind::Text,
+];
+
+fn load_with<E: QrExec + ?Sized>(exec: &E, id: &str, now: i64) -> Result<QrRow> {
     let sql = format!("SELECT {QR_COLS} FROM identity_qr WHERE id = ?1");
-    let row = conn
-        .query_row(&sql, params![id], raw_of)
-        .optional()?
-        .map(decode)
+    let raw = exec
+        .query(&sql, &[QrParam::Text(id.to_string())], &QR_KINDS)?
+        .map(raw_from_values)
         .transpose()?
         .ok_or(IdError::NotFound("challenge"))?;
+    let row = decode(raw)?;
     if row.expires_at <= now
         && matches!(
             row.state,
             QrState::Pending | QrState::Scanned | QrState::Approved
         )
     {
-        conn.execute(
+        exec.exec(
             "UPDATE identity_qr SET state = 'expired' WHERE id = ?1 AND state IN \
              ('pending','scanned','approved')",
-            params![id],
+            &[QrParam::Text(id.to_string())],
         )?;
         return Err(IdError::Expired);
     }
     Ok(row)
+}
+
+fn load(conn: &Connection, id: &str, now: i64) -> Result<QrRow> {
+    load_with(&SqliteExec(conn), id, now)
 }
 
 fn check_verifier(verifier: &str) -> Result<()> {
@@ -217,13 +352,23 @@ fn check_verifier(verifier: &str) -> Result<()> {
 
 /// 桌面第一步：生成二维码内容。此时还没有绑定设备。
 pub fn create(conn: &Connection, now: i64) -> Result<Ticket> {
+    create_with(&SqliteExec(conn), now)
+}
+
+/// 端口版 `create`：同一份 SQL，后端由调用方适配。
+pub fn create_with<E: QrExec + ?Sized>(exec: &E, now: i64) -> Result<Ticket> {
     let id = random_hex(CHALLENGE_ID_BYTES);
     let secret = random_hex(CHALLENGE_BYTES);
     let expires_at = now.saturating_add(QR_TTL_MS);
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_qr(id, secret_hash, state, created_at, expires_at) \
          VALUES(?1, ?2, 'pending', ?3, ?4)",
-        params![id, digest(&secret), now, expires_at],
+        &[
+            QrParam::Text(id.clone()),
+            QrParam::Text(digest(&secret)),
+            QrParam::Int(now),
+            QrParam::Int(expires_at),
+        ],
     )?;
     Ok(Ticket {
         id,
@@ -245,8 +390,32 @@ pub fn bind(
     ip_hint: &str,
     now: i64,
 ) -> Result<()> {
+    bind_with(
+        &SqliteExec(conn),
+        id,
+        verifier,
+        device_id,
+        platform,
+        label,
+        ip_hint,
+        now,
+    )
+}
+
+/// 端口版 `bind`。
+#[allow(clippy::too_many_arguments)]
+pub fn bind_with<E: QrExec + ?Sized>(
+    exec: &E,
+    id: &str,
+    verifier: &str,
+    device_id: &str,
+    platform: &str,
+    label: &str,
+    ip_hint: &str,
+    now: i64,
+) -> Result<()> {
     check_verifier(verifier)?;
-    let row = load(conn, id, now)?;
+    let row = load_with(exec, id, now)?;
     if row.state != QrState::Pending {
         return Err(IdError::Conflict("challenge already used"));
     }
@@ -254,10 +423,17 @@ pub fn bind(
         return Err(IdError::BadInput("platform"));
     }
     let label = crate::check_label(label, "label")?;
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_qr SET pkce_hash = ?2, device_id = ?3, platform = ?4, label = ?5, \
          ip_hint = ?6 WHERE id = ?1 AND state = 'pending' AND pkce_hash = ''",
-        params![id, digest(verifier), device_id, platform, label, ip_hint],
+        &[
+            QrParam::Text(id.to_string()),
+            QrParam::Text(digest(verifier)),
+            QrParam::Text(device_id.to_string()),
+            QrParam::Text(platform.to_string()),
+            QrParam::Text(label),
+            QrParam::Text(ip_hint.to_string()),
+        ],
     )?;
     if n != 1 {
         return Err(IdError::Conflict("challenge already bound"));
@@ -267,15 +443,28 @@ pub fn bind(
 
 /// 手机扫码：只前进到 `scanned`，并把桌面线索回给手机。
 pub fn scan(conn: &Connection, secret: &str, scanner_user: &str, now: i64) -> Result<ScanView> {
-    let id: String = conn
-        .query_row(
+    scan_with(&SqliteExec(conn), secret, scanner_user, now)
+}
+
+/// 端口版 `scan`。
+pub fn scan_with<E: QrExec + ?Sized>(
+    exec: &E,
+    secret: &str,
+    scanner_user: &str,
+    now: i64,
+) -> Result<ScanView> {
+    let id = exec
+        .query(
             "SELECT id FROM identity_qr WHERE secret_hash = ?1",
-            params![digest(secret)],
-            |r| r.get(0),
-        )
-        .optional()?
-        .ok_or(IdError::NotFound("challenge"))?;
-    let row = load(conn, &id, now)?;
+            &[QrParam::Text(digest(secret))],
+            &[QrKind::Text],
+        )?
+        .ok_or(IdError::NotFound("challenge"))?
+        .into_iter()
+        .next()
+        .ok_or(IdError::Corrupt("identity_qr.row width"))?
+        .into_text()?;
+    let row = load_with(exec, &id, now)?;
     if row.pkce_hash.is_empty() {
         return Err(IdError::Conflict("challenge not bound to a device"));
     }
@@ -285,10 +474,14 @@ pub fn scan(conn: &Connection, secret: &str, scanner_user: &str, now: i64) -> Re
     if row.state != QrState::Pending {
         return Err(IdError::Conflict("challenge not scannable"));
     }
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_qr SET state = 'scanned', scanned_by = ?2, scanned_at = ?3 \
          WHERE id = ?1 AND state = 'pending'",
-        params![row.id, scanner_user, now],
+        &[
+            QrParam::Text(row.id.clone()),
+            QrParam::Text(scanner_user.to_string()),
+            QrParam::Int(now),
+        ],
     )?;
     if n != 1 {
         return Err(IdError::Conflict("challenge not scannable"));
@@ -303,32 +496,57 @@ pub fn scan(conn: &Connection, secret: &str, scanner_user: &str, now: i64) -> Re
 
 /// 手机明确批准。只有扫过的那台手机能批准，且必须处在 `scanned`。
 pub fn approve(conn: &Connection, id: &str, scanner_user: &str, now: i64) -> Result<()> {
-    decide(conn, id, scanner_user, QrState::Approved, now)
+    decide_with(&SqliteExec(conn), id, scanner_user, QrState::Approved, now)
+}
+
+/// 端口版 `approve`。
+pub fn approve_with<E: QrExec + ?Sized>(
+    exec: &E,
+    id: &str,
+    scanner_user: &str,
+    now: i64,
+) -> Result<()> {
+    decide_with(exec, id, scanner_user, QrState::Approved, now)
 }
 
 /// 手机拒绝。
 pub fn reject(conn: &Connection, id: &str, scanner_user: &str, now: i64) -> Result<()> {
-    decide(conn, id, scanner_user, QrState::Rejected, now)
+    decide_with(&SqliteExec(conn), id, scanner_user, QrState::Rejected, now)
 }
 
-fn decide(
-    conn: &Connection,
+/// 端口版 `reject`。
+pub fn reject_with<E: QrExec + ?Sized>(
+    exec: &E,
+    id: &str,
+    scanner_user: &str,
+    now: i64,
+) -> Result<()> {
+    decide_with(exec, id, scanner_user, QrState::Rejected, now)
+}
+
+fn decide_with<E: QrExec + ?Sized>(
+    exec: &E,
     id: &str,
     scanner_user: &str,
     target: QrState,
     now: i64,
 ) -> Result<()> {
-    let row = load(conn, id, now)?;
+    let row = load_with(exec, id, now)?;
     if row.state != QrState::Scanned {
         return Err(IdError::Conflict("challenge not scanned"));
     }
     if row.scanned_by != scanner_user {
         return Err(IdError::Forbidden("not the scanning account"));
     }
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_qr SET state = ?3, decided_at = ?4 \
          WHERE id = ?1 AND state = 'scanned' AND scanned_by = ?2",
-        params![id, scanner_user, target.as_str(), now],
+        &[
+            QrParam::Text(id.to_string()),
+            QrParam::Text(scanner_user.to_string()),
+            QrParam::Text(target.as_str().to_string()),
+            QrParam::Int(now),
+        ],
     )?;
     if n != 1 {
         return Err(IdError::Conflict("challenge already decided"));
@@ -338,8 +556,18 @@ fn decide(
 
 /// 桌面轮询：必须出示 verifier，否则拍到二维码的人就能偷看状态。
 pub fn poll(conn: &Connection, id: &str, verifier: &str, now: i64) -> Result<PollState> {
+    poll_with(&SqliteExec(conn), id, verifier, now)
+}
+
+/// 端口版 `poll`。
+pub fn poll_with<E: QrExec + ?Sized>(
+    exec: &E,
+    id: &str,
+    verifier: &str,
+    now: i64,
+) -> Result<PollState> {
     check_verifier(verifier)?;
-    let row = match load(conn, id, now) {
+    let row = match load_with(exec, id, now) {
         Ok(row) => row,
         Err(IdError::Expired) => return Ok(PollState::Expired),
         Err(other) => return Err(other),
