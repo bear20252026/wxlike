@@ -635,6 +635,51 @@ pub(in crate::domain) fn revoke_sid_refresh(
     Ok(refresh::revoke_sid_with(&StorageSqlExec(conn), sid, now)?)
 }
 
+/// 授予一次 step-up（SQL 在 identity `step_up::grant_with`）。
+pub(in crate::domain) fn grant_step_up(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+    sid: &str,
+    purpose: &str,
+    now: i64,
+) -> Result<i64> {
+    Ok(wxlike_identity::step_up::grant_default_with(
+        &StorageSqlExec(conn),
+        user_id,
+        sid,
+        purpose,
+        now,
+    )?)
+}
+
+/// 消费一次 step-up。
+pub(in crate::domain) fn consume_step_up(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+    sid: &str,
+    purpose: &str,
+    now: i64,
+) -> Result<()> {
+    Ok(wxlike_identity::step_up::consume_with(
+        &StorageSqlExec(conn),
+        user_id,
+        sid,
+        purpose,
+        now,
+    )?)
+}
+
+/// 清空一个账号的全部 step-up。
+pub(in crate::domain) fn revoke_all_step_up(
+    conn: &StorageConnection<'_>,
+    user_id: &str,
+) -> Result<usize> {
+    Ok(wxlike_identity::step_up::revoke_all_with(
+        &StorageSqlExec(conn),
+        user_id,
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{lookup_live, NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
@@ -809,7 +854,9 @@ mod tests {
 
 #[cfg(test)]
 mod refresh_pg_tests {
-    use super::{issue_refresh, revoke_device_refresh, revoke_sid_refresh};
+    use super::{
+        consume_step_up, grant_step_up, issue_refresh, revoke_device_refresh, revoke_sid_refresh,
+    };
     use crate::storage::{params, StorageProfile};
     use crate::Db;
 
@@ -838,6 +885,14 @@ mod refresh_pg_tests {
         assert_eq!(
             db.with_tx(|c| revoke_sid_refresh(c, "pg-refresh-sid", 1_200)).expect("revoke sid"),
             0
+        );
+        db.with_tx(|c| grant_step_up(c, user, "pg-refresh-sid", "account.export", 1_300))
+            .expect("grant step-up");
+        db.with_tx(|c| consume_step_up(c, user, "pg-refresh-sid", "account.export", 1_400))
+            .expect("consume step-up");
+        assert!(
+            db.with_tx(|c| consume_step_up(c, user, "pg-refresh-sid", "account.export", 1_500))
+                .is_err()
         );
     }
 }

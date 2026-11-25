@@ -405,3 +405,22 @@ SQL。同一件事两份 SQL、两条控制流，而且只有 repo 函数知道�
 （ignored）。quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。
 
 **还剩**：`rotate_refresh` 与 step-up 仍 `lock()`；`rotate` 的 PG 事务化是下一批。
+
+## 14. 批次 24：step-up 授予/消费端口化
+
+`step_up` 的三条写路径（grant / consume / revoke_all）与刷新链同一形状，直接复用
+`SqlExec`：
+
+- identity `step_up` 增加 `grant_with` / `grant_default_with` / `consume_with` /
+  `revoke_all_with`；`PURPOSES` 白名单与单次消费的条件 UPDATE 逻辑不变。
+- 平台 `repo/sessions.rs` 增加 `grant_step_up` / `consume_step_up` /
+  `revoke_all_step_up`，走 `StorageSqlExec`。
+- `Platform::grant_step_up` / `consume_step_up` 改 `with_tx`；`take_step_up` 的
+  用途校验仍先做，消费仍是一次条件 UPDATE。
+
+**仍未切**：`step_up_gate` / `step_up_denied` / `step_up_passed` 走
+`wxlike_identity::throttle` 的 `&Connection`（限速桶需要单独一批）；`request_delete`
+里的 `step_up::revoke_all` 也同样等 throttle/session 收口。
+
+**验证**：`account_surfaces` 16 passed、`sessions_http` 5 passed；PG ignored 用例
+追加 step-up 授予/消费；quality gate 重复窗口 2、嵌套 0、魔法数字 171；clippy 全绿。

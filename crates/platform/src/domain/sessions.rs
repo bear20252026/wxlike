@@ -19,7 +19,7 @@ use crate::error::{PlatformError, Result};
 use crate::Platform;
 use serde::Serialize;
 use wxlike_identity::refresh::{self, Rotated};
-use wxlike_identity::{step_up, IdError};
+use wxlike_identity::IdError;
 use wxlike_persistence::{NewSession, SessionsRepo, UsersRepo};
 
 /// device_id 的长度上限（客户端生成串，超长按畸形拒绝）。
@@ -246,16 +246,17 @@ impl Platform {
     /// 授予一次 step-up（密码或 TOTP 已在上层校验过）。
     pub(crate) fn grant_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<i64> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        Ok(step_up::grant_default(&c, user_id, sid, purpose, now)?)
+        self.db().with_tx(|c| {
+            crate::domain::repo::sessions::grant_step_up(c, user_id, sid, purpose, now)
+        })
     }
 
     /// 消费一次 step-up（单次有效）。
     pub(crate) fn consume_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        step_up::consume(&c, user_id, sid, purpose, now)?;
-        Ok(())
+        self.db().with_tx(|c| {
+            crate::domain::repo::sessions::consume_step_up(c, user_id, sid, purpose, now)
+        })
     }
 
     /// 下线一台设备：删会话 + 作废该设备全部刷新令牌。

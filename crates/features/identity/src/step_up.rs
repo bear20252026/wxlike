@@ -10,6 +10,7 @@
 
 use rusqlite::{params, Connection};
 
+use crate::sqlport::{SqlExec, SqlParam, SqliteExec};
 use crate::{IdError, Result, STEP_UP_TTL_MS};
 
 /// 允许 step-up 的动作。封闭集合：新增动作必须显式加进来。
@@ -40,14 +41,32 @@ pub fn grant(
     ttl_ms: i64,
     now: i64,
 ) -> Result<i64> {
+    grant_with(&SqliteExec(conn), user_id, sid, purpose, ttl_ms, now)
+}
+
+/// 端口版 `grant`。
+pub fn grant_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    purpose: &str,
+    ttl_ms: i64,
+    now: i64,
+) -> Result<i64> {
     check_purpose(purpose)?;
     let expires_at = now.saturating_add(ttl_ms);
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_step_up(user_id, sid, purpose, granted_at, expires_at, consumed_at) \
          VALUES(?1, ?2, ?3, ?4, ?5, NULL) \
          ON CONFLICT(user_id, sid, purpose) DO UPDATE SET \
              granted_at = ?4, expires_at = ?5, consumed_at = NULL",
-        params![user_id, sid, purpose, now, expires_at],
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(purpose.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Int(expires_at),
+        ],
     )?;
     Ok(expires_at)
 }
@@ -63,14 +82,41 @@ pub fn grant_default(
     grant(conn, user_id, sid, purpose, STEP_UP_TTL_MS, now)
 }
 
+/// 端口版 `grant_default`。
+pub fn grant_default_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    purpose: &str,
+    now: i64,
+) -> Result<i64> {
+    grant_with(exec, user_id, sid, purpose, STEP_UP_TTL_MS, now)
+}
+
 /// 消费授权：单次有效。失败一律同一个错误，不区分"没授权"和"已用过"。
 pub fn consume(conn: &Connection, user_id: &str, sid: &str, purpose: &str, now: i64) -> Result<()> {
+    consume_with(&SqliteExec(conn), user_id, sid, purpose, now)
+}
+
+/// 端口版 `consume`。
+pub fn consume_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    purpose: &str,
+    now: i64,
+) -> Result<()> {
     check_purpose(purpose)?;
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_step_up SET consumed_at = ?4 \
          WHERE user_id = ?1 AND sid = ?2 AND purpose = ?3 \
            AND consumed_at IS NULL AND expires_at > ?4",
-        params![user_id, sid, purpose, now],
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(purpose.to_string()),
+            SqlParam::Int(now),
+        ],
     )?;
     if n != 1 {
         return Err(IdError::Unauthorized("step-up required"));
@@ -98,10 +144,15 @@ pub fn require(conn: &Connection, user_id: &str, sid: &str, purpose: &str, now: 
 
 /// 改密 / 注销后清空该账号全部授权。
 pub fn revoke_all(conn: &Connection, user_id: &str) -> Result<usize> {
-    Ok(conn.execute(
+    revoke_all_with(&SqliteExec(conn), user_id)
+}
+
+/// 端口版 `revoke_all`。
+pub fn revoke_all_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<usize> {
+    exec.exec(
         "DELETE FROM identity_step_up WHERE user_id = ?1",
-        params![user_id],
-    )?)
+        &[SqlParam::Text(user_id.to_string())],
+    )
 }
 
 #[cfg(test)]
