@@ -13,7 +13,7 @@
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::sessions`]。
 
-use crate::domain::repo::sessions::{lookup_live, BackendSessionsRepo};
+use crate::domain::repo::sessions::{lookup_live, BackendSessionsRepo, SqliteSessionsRepo};
 use crate::domain::repo::users::BackendUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
@@ -202,9 +202,9 @@ impl Platform {
         device_id: &str,
     ) -> Result<String> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().acquire();
+        let c = self.db().lock()?;
         Ok(refresh::issue_default(
-            c.sqlite()?,
+            &c,
             user_id,
             sid,
             device_id,
@@ -220,17 +220,17 @@ impl Platform {
     pub(crate) fn rotate_refresh(&self, raw: &str, ip: &str) -> Result<(Rotated, String)> {
         let now = wxlike_core::types::now_ms() as i64;
         let device_name = {
-            let c = self.db().acquire();
-            match refresh::find(c.sqlite()?, raw)? {
-                Some(chain) => BackendSessionsRepo::new(&c)?
+            let c = self.db().lock()?;
+            match refresh::find(&c, raw)? {
+                Some(chain) => SqliteSessionsRepo::new(&c)
                     .device_name_by_sid(&chain.sid)?
                     .unwrap_or_default(),
                 None => String::new(),
             }
         };
         let rotated = {
-            let c = self.db().acquire();
-            refresh::rotate(c.sqlite()?, raw, now)?
+            let c = self.db().lock()?;
+            refresh::rotate(&c, raw, now)?
         };
         let token = self.create_session_for_device(
             &rotated.user_id,
@@ -241,8 +241,8 @@ impl Platform {
         )?;
         // 新会话沿用链上的 sid：同一台设备只有一个 sid，撤销时一并失效。
         let digest = crate::auth::token_digest(&token);
-        let c = self.db().acquire();
-        let repo = BackendSessionsRepo::new(&c)?;
+        let c = self.db().lock()?;
+        let repo = SqliteSessionsRepo::new(&c);
         repo.update_sid(&digest, &rotated.sid)?;
         repo.delete_by_sid_except_token(&rotated.sid, &digest)?;
         Ok((rotated, token))
@@ -251,21 +251,15 @@ impl Platform {
     /// 授予一次 step-up（密码或 TOTP 已在上层校验过）。
     pub(crate) fn grant_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<i64> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().acquire();
-        Ok(step_up::grant_default(
-            c.sqlite()?,
-            user_id,
-            sid,
-            purpose,
-            now,
-        )?)
+        let c = self.db().lock()?;
+        Ok(step_up::grant_default(&c, user_id, sid, purpose, now)?)
     }
 
     /// 消费一次 step-up（单次有效）。
     pub(crate) fn consume_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().acquire();
-        step_up::consume(c.sqlite()?, user_id, sid, purpose, now)?;
+        let c = self.db().lock()?;
+        step_up::consume(&c, user_id, sid, purpose, now)?;
         Ok(())
     }
 
@@ -284,8 +278,8 @@ impl Platform {
     /// 撤销指定 sid 时同步作废它的刷新链（否则刷新能把会话续回来）。
     pub(crate) fn revoke_refresh_of_sid(&self, sid: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().acquire();
-        Ok(refresh::revoke_sid(c.sqlite()?, sid, now)?)
+        let c = self.db().lock()?;
+        Ok(refresh::revoke_sid(&c, sid, now)?)
     }
 
     /// 记录活跃时间（登录、设备页访问、关键操作时调用）。
