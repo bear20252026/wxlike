@@ -102,15 +102,7 @@ async fn one(
     ))
 }
 
-async fn remove(
-    State(platform): State<PlatformState>,
-    authed: Authed,
-    Path(id): Path<String>,
-) -> std::result::Result<StatusCode, ApiError> {
-    let user = authed.user_id.clone();
-    offload(&platform, move |p| p.delete_video(&user, &id)).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
+delete_endpoint!(remove, delete_video);
 
 async fn like(
     State(platform): State<PlatformState>,

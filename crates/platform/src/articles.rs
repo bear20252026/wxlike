@@ -180,15 +180,7 @@ async fn update(
     ))
 }
 
-async fn remove(
-    State(platform): State<PlatformState>,
-    authed: Authed,
-    Path(id): Path<String>,
-) -> std::result::Result<StatusCode, ApiError> {
-    let user = authed.user_id.clone();
-    offload(&platform, move |p| p.delete_article(&user, &id)).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
+delete_endpoint!(remove, delete_article);
 
 async fn mark_read(
     State(platform): State<PlatformState>,

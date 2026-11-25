@@ -562,16 +562,9 @@ fn insert_release(
     Ok(())
 }
 
-impl PublishingService {
-    pub fn new(store: Store, audit: AuditLog, port: Arc<dyn ContentPort>, stepup: StepUp) -> Self {
-        Self {
-            store,
-            audit,
-            port,
-            stepup,
-        }
-    }
+service_new!(PublishingService, ContentPort);
 
+impl PublishingService {
     pub fn audit(&self) -> &AuditLog {
         &self.audit
     }

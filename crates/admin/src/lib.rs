@@ -53,6 +53,30 @@
 //! # let _ = app; Ok(()) }
 //! ```
 
+/// 审核台服务共用的构造函数骨架：`store + audit + 上游端口 + step-up`。
+///
+/// adminx 的每个审核服务都拿这四样东西，字段名与初始化顺序完全一致；
+/// 宏只生成构造函数，结构体字段仍由各模块自己声明。
+macro_rules! service_new {
+    ($name:ident, $port:path) => {
+        impl $name {
+            pub fn new(
+                store: crate::store::Store,
+                audit: crate::audit::AuditLog,
+                port: std::sync::Arc<dyn $port>,
+                stepup: crate::auth::StepUp,
+            ) -> Self {
+                Self {
+                    store,
+                    audit,
+                    port,
+                    stepup,
+                }
+            }
+        }
+    };
+}
+
 pub mod accounts;
 pub mod audit;
 pub mod auth;

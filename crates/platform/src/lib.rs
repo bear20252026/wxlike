@@ -17,6 +17,27 @@
 //! # let _ = app; Ok(()) }
 //! ```
 
+/// “按 id 删除、成功回 204”的 handler 骨架。
+///
+/// 这类端点只差一个领域方法名：取当前用户、把阻塞调用搬进 `offload`、
+/// 回 `NO_CONTENT`。写成宏后，新增删除端点不再复制一遍提取器与错误映射，
+/// 签名与错误码也不会各自漂移。
+///
+/// 用法：`delete_endpoint!(remove, delete_article);`（在 handler 模块内）。
+macro_rules! delete_endpoint {
+    ($name:ident, $method:ident) => {
+        async fn $name(
+            axum::extract::State(platform): axum::extract::State<crate::PlatformState>,
+            authed: crate::auth::Authed,
+            axum::extract::Path(id): axum::extract::Path<String>,
+        ) -> std::result::Result<axum::http::StatusCode, crate::error::ApiError> {
+            let user = authed.user_id.clone();
+            crate::db::offload(&platform, move |p| p.$method(&user, &id)).await?;
+            Ok(axum::http::StatusCode::NO_CONTENT)
+        }
+    };
+}
+
 mod account;
 mod articles;
 mod audit_mw;

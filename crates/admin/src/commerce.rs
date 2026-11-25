@@ -308,16 +308,9 @@ fn set_diff_state(
     Ok(())
 }
 
-impl CommerceService {
-    pub fn new(store: Store, audit: AuditLog, port: Arc<dyn MoneyPort>, stepup: StepUp) -> Self {
-        Self {
-            store,
-            audit,
-            port,
-            stepup,
-        }
-    }
+service_new!(CommerceService, MoneyPort);
 
+impl CommerceService {
     pub fn audit(&self) -> &AuditLog {
         &self.audit
     }
