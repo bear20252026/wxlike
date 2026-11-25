@@ -207,7 +207,7 @@
       "owner": "G17",
       "issue": "#193",
       "expires": "2099-12-31",
-      "local_sha256": "90064c2a56003c4da09ff7e0736acbe0a167262a9427423288c3bba234236365"
+      "local_sha256": "bfe4ce309badb9c6fc2ef136a4d12eea8e511df0fec5528af9dbbb87130f00ca"
     },
     {
       "path": "packages/modules/{payment,promotion,order,cart,auth}/**",
@@ -283,7 +283,7 @@
       "commit": "052f089166b6864bc5f7e92906f6a7897b9f546c",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "a2c3a74383f13b1fe79a88bde53f97827d4a9011b97af2fafab1f28971f14275",
+      "local_sha256": "319c1ffc1c3b81abc57f3c456a11979c8e307b8a75a31f9045e257a03d824db9",
       "patchlog": "third_party/reviews/patches/UP-LIVEKIT-RUSTSDK-access-token.md",
       "used_by": "crates/rtc/src/{call_session,room}.rs 的 ADR-25 入房凭证签发与校验（P3-12 从 crates/rtc/src/token.rs 纯移动拆出，代码逐字节未变）",
       "cross_checked_in": [
@@ -358,7 +358,7 @@
       "commit": "cb48a92f0afe7b5b2ba8d876d4f326e9f645b13e",
       "decision": "adapted",
       "license_spdx": "Apache-2.0",
-      "local_sha256": "97b3799b8e44ebdb4c66fed1eebfff9c00a4220273df18a316b4e430c7b3c206",
+      "local_sha256": "2e7810903c4910fa945e43cb498cca1c2138b6f79d6f9e49cf6e52706740e1be",
       "patchlog": "third_party/reviews/patches/UP-BLNK-replay-legs.md",
       "used_by": "commerce 幂等入口：replay() 摘要形状检查 + 新增 replay_legs()/Leg/is_canonical_digest()，全部腿落库才算重放"
     },
