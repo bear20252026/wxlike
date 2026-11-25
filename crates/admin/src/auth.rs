@@ -102,15 +102,7 @@ pub fn require_admin_audience(audience: Audience) -> Result<()> {
 }
 
 pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
+    wxlike_core::secure::constant_time_eq(a.as_bytes(), b.as_bytes())
 }
 
 // ---------------------------------------------------------------------------

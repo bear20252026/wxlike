@@ -28,6 +28,7 @@ use crate::Platform;
 use hmac::{Hmac, Mac as _};
 use serde::Serialize;
 use sha2::Sha256;
+use wxlike_core::secure::constant_time_eq;
 use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::communities::{
@@ -349,16 +350,6 @@ impl Platform {
 }
 
 /// 常数时间比较（长度不同也走完全程，避免按字节提前返回）。
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = (a.len() ^ b.len()) as u8;
-    let n = a.len().max(b.len());
-    for i in 0..n {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        diff |= x ^ y;
-    }
-    diff == 0
-}
 
 #[derive(Serialize)]
 pub(crate) struct StartReply {

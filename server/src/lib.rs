@@ -33,6 +33,7 @@ pub mod mini_mount;
 pub mod mini_runtime;
 /// 域挂载公共前置（会话鉴权/JSON 解析/稳定错误形状），三个挂载共用一份。
 mod mount_common;
+mod platform_sessions;
 /// A2：`/app` 静态托管（`WXLIKE_WEB_DIR`）。
 mod web_static;
 

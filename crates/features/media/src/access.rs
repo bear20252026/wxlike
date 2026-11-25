@@ -14,6 +14,7 @@ use crate::error::{MediaError, Result};
 use crate::ids;
 use crate::model::{Audience, ObjectRecord, Purpose, RefType};
 use crate::MediaService;
+pub(crate) use wxlike_core::secure::constant_time_eq;
 
 type HmacSha256 = Hmac<Sha256>;
 pub const SIGNED_URL_PREFIX: &str = "/api/v1/objects";
@@ -254,14 +255,4 @@ impl MediaService {
     pub fn audience_port(&self) -> Arc<dyn AudiencePort> {
         Arc::clone(&self.audience)
     }
-}
-
-pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter()
-        .zip(right)
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
 }

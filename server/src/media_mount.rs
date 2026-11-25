@@ -24,13 +24,11 @@
 
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
+use crate::platform_sessions::PlatformSessions;
 use axum::Router;
-use wxlike_media::http::{MediaApp, SessionVerifier};
+use wxlike_media::http::MediaApp;
 use wxlike_media::{AudiencePort, MediaConfig, MediaService};
-use wxlike_platform::{
-    AccountSessions, Authed, ConversationAccess, GroupMembership, PlatformState,
-};
+use wxlike_platform::{ConversationAccess, GroupMembership, PlatformState};
 
 /// 签名密钥的最短字节数。短于此长度的"密钥"是给部署方的错觉，不是安全边界；
 /// 平台自己随机生成时用的就是这个长度（`normalize_options`）。
@@ -38,34 +36,6 @@ pub const MIN_SECRET_BYTES: usize = 32;
 
 /// 媒体签名密钥的环境变量名（生产必填）。
 pub const SECRET_ENV: &str = "WXLIKE_MEDIA_SECRET";
-
-/// 会话校验端口的生产实现：包着平台的 `sessions` 表，没有任何"临时放行"分支。
-pub struct PlatformSessions(PlatformState);
-
-impl PlatformSessions {
-    pub fn new(platform: PlatformState) -> Self {
-        Self(platform)
-    }
-}
-
-impl SessionVerifier for PlatformSessions {
-    fn verify(&self, headers: &HeaderMap) -> Option<String> {
-        // bearer 解析复用 `Authed::bearer_from`：scheme 大小写不敏感、空白容忍、
-        // 空 token 拒绝——与平台 40+ 条接口同一份语义，不在这里重写一遍。
-        let token = Authed::bearer_from(headers)?;
-        match self.0.lookup_token(token) {
-            Ok(Some(user_id)) => Some(user_id),
-            Ok(None) => None,
-            // 查库失败不等于"没登录"，但也绝不能放行。与 hub 的
-            // `SessionAuth::authenticate`（server/src/lib.rs:397-403）同一口径：
-            // 都是拒绝，区别只留在日志里。
-            Err(err) => {
-                tracing::error!(error = %err, "media: lookup_token failed, rejecting");
-                None
-            }
-        }
-    }
-}
 
 /// 成员事实端口：全部问平台，media 域不持有第二份归属判断。
 pub struct PlatformAudience(PlatformState);
@@ -158,10 +128,11 @@ fn object_root(db_path: Option<&str>) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{header, Request, StatusCode};
+    use axum::http::{header, HeaderMap, Request, StatusCode};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
-    use wxlike_platform::{Platform, PlatformOptions};
+    use wxlike_media::http::SessionVerifier as _;
+    use wxlike_platform::{AccountSessions as _, Platform, PlatformOptions};
 
     /// PBKDF2 轮数与平台测试一致：单测不该为此跑 10 万轮。
     const TEST_ROUNDS: u32 = 1_000;

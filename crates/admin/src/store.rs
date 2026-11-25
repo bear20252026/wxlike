@@ -48,11 +48,7 @@ pub struct Store {
 impl Store {
     /// 打开（必要时创建）adminx 库并跑迁移。迁移是幂等的：`CREATE ... IF NOT EXISTS`。
     pub fn open(path: &Path) -> Result<Self> {
-        if let Some(dir) = path.parent() {
-            if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir)?;
-            }
-        }
+        crate::ensure_parent(path)?;
         let conn = Connection::open(path)?;
         Self::prepare(conn)
     }

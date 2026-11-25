@@ -65,3 +65,14 @@ macro_rules! repo_modules {
 pub(crate) use repo_modules;
 
 pub mod repo;
+
+/// 验证码字段的两段式读取：id 与答案必须同时存在，否则视为“没带验证码”。
+pub(crate) fn captcha_pair<'a>(
+    id: Option<&'a str>,
+    answer: Option<&'a str>,
+) -> Option<(&'a str, &'a str)> {
+    match (id, answer) {
+        (Some(id), Some(answer)) => Some((id, answer)),
+        _ => None,
+    }
+}

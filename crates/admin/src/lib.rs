@@ -109,3 +109,13 @@ pub use upstream::Upstream;
 
 #[cfg(test)]
 pub(crate) mod tmp;
+
+/// 建库前确保父目录存在；`":memory:"` 或纯文件名没有父目录时跳过。
+pub(crate) fn ensure_parent(path: &std::path::Path) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    Ok(())
+}

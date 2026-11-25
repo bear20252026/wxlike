@@ -15,11 +15,11 @@
 
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
+use crate::platform_sessions::PlatformSessions;
 use axum::Router;
-use wxlike_platform::{AccountSessions, Authed, PlatformState};
+use wxlike_platform::{AccountSessions, PlatformState};
 use wxlike_service_catalog::auth::Authenticator;
-use wxlike_service_catalog::http::{AppState, CatalogApp, SessionVerifier};
+use wxlike_service_catalog::http::{AppState, CatalogApp};
 use wxlike_service_catalog::{
     Catalog, Clock, OrderService, PaymentIntent, PaymentIntentRequest, PaymentPort, ProviderError,
     RefundReceipt, RefundRequest, SystemClock,
@@ -27,29 +27,6 @@ use wxlike_service_catalog::{
 
 /// 默认服务区域：目录按区域开关投影。组合根可经 `WXLIKE_SERVICE_REGION` 覆盖。
 pub const DEFAULT_REGION: &str = "CN";
-
-/// 会话校验端口的生产实现：包着平台的 `sessions` 表，没有任何"临时放行"分支。
-pub struct PlatformSessions(PlatformState);
-
-impl PlatformSessions {
-    pub fn new(platform: PlatformState) -> Self {
-        Self(platform)
-    }
-}
-
-impl SessionVerifier for PlatformSessions {
-    fn verify(&self, headers: &HeaderMap) -> Option<String> {
-        let token = Authed::bearer_from(headers)?;
-        match self.0.lookup_token(token) {
-            Ok(Some(user_id)) => Some(user_id),
-            Ok(None) => None,
-            Err(err) => {
-                tracing::error!(error = %err, "discover: lookup_token failed, rejecting");
-                None
-            }
-        }
-    }
-}
 
 /// 服务层鉴权器：把 bearer token 交给平台 sessions 表换可信 actor。
 struct PlatformAuth(PlatformState);

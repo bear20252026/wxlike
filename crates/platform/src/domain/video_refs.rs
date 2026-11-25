@@ -23,6 +23,7 @@ use crate::error::{ApiError, PlatformError, Result};
 use crate::Platform;
 use axum::http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
+use wxlike_core::secure::constant_time_eq;
 
 use super::repo::video_refs::{load, store};
 
@@ -83,18 +84,6 @@ fn require_token(platform: &Platform, headers: &HeaderMap) -> Result<()> {
         return Err(PlatformError::Unauthorized);
     }
     Ok(())
-}
-
-/// 长度不短路的比较：令牌比较不该因为"第几位不同"而多花时间。
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 /// `video_id` 与 URL 的规矩和消息侧一致（`VideoPayload::validate` 是权威），

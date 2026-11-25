@@ -38,13 +38,7 @@ pub(crate) fn digest_hex(parts: &[&str]) -> String {
 
 /// 常量时间比较，避免签名比对泄漏时序。
 pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
+    wxlike_core::secure::constant_time_eq(left.as_bytes(), right.as_bytes())
 }
 
 /// 幂等重放判定：同参命中返回既有结果，异参拒绝，未命中放行新建。

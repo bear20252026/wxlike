@@ -10,6 +10,7 @@
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use wxlike_core::secure::constant_time_eq;
 
 use super::media::{MediaScope, TokenError, CLOCK_SKEW_MS};
 
@@ -972,16 +973,6 @@ pub(crate) fn b64url_decode(text: &str) -> Result<Vec<u8>, TokenError> {
         }
     }
     Ok(out)
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter()
-        .zip(b.iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
 }
 
 #[cfg(test)]

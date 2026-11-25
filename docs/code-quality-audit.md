@@ -394,7 +394,7 @@ search、video、hub、router 全串在一个函数里。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
-**0**、跨文件重复窗口 **19**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**0**、跨文件重复窗口 **15**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
 当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
@@ -685,6 +685,13 @@ domain 定义 `repo_modules!` 宏、repo 只留一份模块名清单，86→**67
 `wxlike_core::text`，admin 与 search 共用一份；`direct_conv_id` 在 client
 与 platform 的第三、第四份副本删掉，统一指向 `wxlike_types` 的唯一实现。
 重复窗口 29→**19**。
+第十批先做安全，再顺手收口：9 份 `constant_time_eq` 合并为
+`wxlike_core::secure` 的唯一实现。旧版本有两个隐患——长度不同直接返回，
+长度差是可观察的时序信号；另一版用 `u8` 存长度差，长度相差 256 的倍数时
+会被截成 0。新实现不提前返回、累加器用 `usize`，并补了“空 vs 256 个零字节”
+的单测。随后把 admin 两处建目录、recovery/users 两处验证码字段读取、
+server 两个挂载点各自的 `PlatformSessions` 合成共享实现。
+重复窗口 19→**15**。
 
 探针同时修了一处口径缺陷：trait 里的 `fn foo(...);` 声明没有函数体，旧实现会把
 它一路扫到后面 impl 的第一个 `{`，凭空造出"超长函数"（本批 `RealtimeCalls` 就被

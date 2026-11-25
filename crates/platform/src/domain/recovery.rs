@@ -260,10 +260,7 @@ impl Platform {
 
 impl ResetBody {
     pub(crate) fn captcha(&self) -> Option<(&str, &str)> {
-        match (self.captcha_id.as_deref(), self.captcha_answer.as_deref()) {
-            (Some(id), Some(answer)) => Some((id, answer)),
-            _ => None,
-        }
+        super::captcha_pair(self.captcha_id.as_deref(), self.captcha_answer.as_deref())
     }
 }
 

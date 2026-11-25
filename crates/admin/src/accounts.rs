@@ -153,11 +153,7 @@ pub struct AccountStore {
 impl AccountStore {
     /// 打开（必要时创建）adminx 自己的库。这张库是 adminx 唯一允许写的地方。
     pub fn open(path: &Path) -> Result<Self> {
-        if let Some(dir) = path.parent() {
-            if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir)?;
-            }
-        }
+        crate::ensure_parent(path)?;
         let conn = Connection::open(path)?;
         conn.execute_batch(
             r#"

@@ -15,6 +15,7 @@
 //! 房间内的发布/订阅，后者只约束中继网络资源。
 
 use std::collections::HashMap;
+use wxlike_core::secure::constant_time_eq;
 
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
@@ -105,13 +106,6 @@ fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     out
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 签发短期凭据。`now_ms` 由调用方传入，便于测试。

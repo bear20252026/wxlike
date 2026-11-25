@@ -23,6 +23,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read as _, Seek as _};
 use std::path::{Path, PathBuf};
+use wxlike_core::secure::constant_time_eq;
 
 use super::repo::media as media_repo;
 
@@ -31,14 +32,6 @@ pub const MAX_MEDIA_BYTES: usize = 100 * 1024 * 1024;
 
 /// Longest edge of an generated thumbnail.
 pub const THUMB_MAX_EDGE: u32 = 256;
-
-/// 定长比较：签名不对时不要因为"第几个字节不同"泄露时间差。
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
 
 /// One object as read back from storage.
 #[derive(Debug)]

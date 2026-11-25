@@ -1,7 +1,7 @@
 {
- "total_files": 477,
- "total_lines": 145061,
- "fn_total": 7076,
+ "total_files": 479,
+ "total_lines": 144983,
+ "fn_total": 7070,
  "count_len_gt30": 585,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
@@ -22,7 +22,7 @@
   ],
   [
    "server/src/lib.rs",
-   1814
+   1815
   ],
   [
    "crates/admin/src/g14.rs",
@@ -206,7 +206,7 @@
    "crates/platform/src/communities.rs:235"
   ],
   "32": [
-   "crates/admin/src/accounts.rs:528",
+   "crates/admin/src/accounts.rs:524",
    "crates/admin/src/config.rs:56",
    "crates/admin/src/bin/wxlike_admin.rs:281",
    "crates/client-native/src/realtime.rs:83",
@@ -215,7 +215,7 @@
   "12": [
    "crates/limits/src/lib.rs:164",
    "crates/platform/src/db/schema.rs:299",
-   "crates/platform/src/domain/live.rs:138",
+   "crates/platform/src/domain/live.rs:139",
    "crates/platform/src/domain/repo/report.rs:68",
    "crates/platform/src/domain/repo/video_refs.rs:26"
   ],
@@ -234,21 +234,21 @@
    "crates/platform/src/domain/secret.rs:38"
   ],
   "5000": [
-   "crates/admin/src/accounts.rs:166",
+   "crates/admin/src/accounts.rs:162",
    "crates/core/src/store.rs:73",
    "crates/message/src/lib.rs:249",
    "crates/net/src/offline.rs:213",
    "crates/platform/src/storage.rs:390"
   ],
   "512": [
-   "crates/admin/src/accounts.rs:746",
+   "crates/admin/src/accounts.rs:742",
    "crates/admin/src/http.rs:945",
    "crates/container/examples/research_wmpf.rs:38",
    "crates/net/src/avalanche.rs:55",
    "crates/net/src/diag.rs:367"
   ],
   "256": [
-   "crates/admin/src/accounts.rs:255",
+   "crates/admin/src/accounts.rs:251",
    "crates/client/src/lib.rs:364",
    "crates/client/src/lib.rs:417",
    "crates/net/src/avalanche.rs:66",
@@ -276,7 +276,7 @@
   ],
   "300": [
    "crates/core/src/test_support.rs:114",
-   "server/src/lib.rs:167",
+   "server/src/lib.rs:168",
    "ui/src-tauri/src/callrtc.rs:805"
   ],
   "17": [
@@ -310,18 +310,8 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 19,
+ "dup_windows": 15,
  "dup_sample": [
-  [
-   [
-    "crates/admin/src/accounts.rs",
-    154
-   ],
-   [
-    "crates/admin/src/store.rs",
-    49
-   ]
-  ],
   [
    [
     "crates/core/src/error.rs",
@@ -430,6 +420,16 @@
    [
     "crates/platform/src/domain/report.rs",
     170
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/read.rs",
+    783
+   ],
+   [
+    "crates/platform/src/domain/report.rs",
+    171
    ]
   ]
  ],
