@@ -1,5 +1,26 @@
 # G00-04 S2 第一步：Storage 端口与 StorageProfile
 
+> **2026-11-25 PG 批次 15 现状（优先于下方批次 14）**
+>
+> - `favorites`、`inbox`、`communities`、`recovery` 四个 repo 全部切到
+>   `StorageConnection` 通用端口；`create_community` / `insert_thread` 的 PG 分支用
+>   `sqlx::Transaction`（同一条池连接 `BEGIN/COMMIT`），SQLite 分支保留
+>   `unchecked_transaction`。
+> - 收藏拖拽排序不再依赖 `with_tx`：改成一条 `UPDATE ... CASE id`，`WHERE` 里的
+>   `COUNT(*) = n` 保证缺一即 0 行受影响，单语句在两种后端都原子。
+> - `users` / `sessions` domain 不再直接构造 `SqliteUsersRepo` / `SqliteSessionsRepo`：
+>   新增 `BackendUsersRepo` / `BackendSessionsRepo`，按 `StorageConnection` 选择
+>   SQLite repo 或 `PostgresUsersRepo` / `PostgresSessionsRepo`。
+> - M014 给 `notifications` 补 `(user_id, dedupe_key) WHERE dedupe_key <> ''`
+>   部分唯一索引，使 `inbox::notify` 的 `ON CONFLICT` 在 PG 上有约束可推断。
+> - 仍 SQLite-only：`account`（`wxlike_identity::preferences` 的 `&Connection`）、
+>   `qr_login`（`identity_qr` 无 PG 兼容 DDL）、`governance`；`sessions` 的
+>   刷新链 / step-up / `ensure_user_active` 走 `c.sqlite()?`，PG 下受控报错。
+> - 本批验证：`cargo check --workspace --all-targets`、`cargo clippy -p wxlike-platform
+>   --all-targets -- -D warnings`、`cargo test -p wxlike-platform`（全 target ok）、
+>   `cargo fmt --all -- --check`、`python3 scripts/quality-gate.py`（171 magic / 4 dup）
+>   均通过。
+
 > **2026-11-24 PG 批次 14 现状（覆盖下文早期描述）**
 >
 > - `Db` 已能按 `StorageProfile::Postgres` 打开：`DbStorage` 分 `Sqlite` / `Postgres(Arc<PgStorage>)`，

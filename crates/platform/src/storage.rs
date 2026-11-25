@@ -283,6 +283,21 @@ impl<'a> StorageConnection<'a> {
     }
 }
 
+/// 后端二选一：给需要按后端选择 repo 实现的适配层用。
+pub(crate) enum BackendRef<'a> {
+    Sqlite(&'a Connection),
+    Postgres(&'a PostgresPool),
+}
+
+/// 把 `StorageConnection` 归一成 SQLite 连接或 PG 池。
+pub(crate) fn backend_ref<'a>(conn: &'a StorageConnection<'_>) -> Result<BackendRef<'a>> {
+    match conn {
+        StorageConnection::Sqlite(c) => Ok(BackendRef::Sqlite(c)),
+        StorageConnection::SqliteTx(c) => Ok(BackendRef::Sqlite(c)),
+        StorageConnection::Postgres(p) => Ok(BackendRef::Postgres(p)),
+    }
+}
+
 /// 存储端口。`Db` 持有具体实现（`SqliteStorage`）；repo 改造后改为持句柄。
 pub trait Storage: Send + Sync {
     /// 方言（占位符/名称）。

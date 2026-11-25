@@ -2,8 +2,7 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
 
 use crate::domain::favorites::{
     kind_or_text, Favorite, FavoriteInput, COL_REVOKED, COL_SNAPSHOT_LABEL, COL_SORT_ORDER,
@@ -22,7 +21,6 @@ pub(in crate::domain) fn object_favorite_exists(
     kind: &str,
     source_id: &str,
 ) -> Result<bool> {
-    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT 1 FROM favorites WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
         params![user, kind, source_id],
@@ -43,7 +41,6 @@ pub(in crate::domain) fn insert_object_favorite(
     label: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
                                media_id, sender, sent_at_ms, created_at,
@@ -61,14 +58,13 @@ pub(in crate::domain) fn object_favorite_id(
     kind: &str,
     source_id: &str,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT id FROM favorites
          WHERE user_id = ?1 AND source_kind = ?2 AND source_id = ?3",
         params![user, kind, source_id],
         |r| r.get::<_, String>(0),
     )
-    .optional()?)
+    .optional()
 }
 
 /// 从权威表读一小段快照；对象不存在或未发布返回 `None`。
@@ -77,7 +73,6 @@ pub(in crate::domain) fn snapshot_source(
     kind: &str,
     id: &str,
 ) -> Result<Option<SnapshotSource>> {
-    let c = c.sqlite()?;
     let row = match kind {
         "moment" => c
             .query_row(
@@ -138,8 +133,7 @@ pub(in crate::domain) fn list_page(
     before: i64,
     limit: i64,
 ) -> Result<Vec<Favorite>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
                 snapshot_label, sort_order, revoked
@@ -147,7 +141,7 @@ pub(in crate::domain) fn list_page(
          ORDER BY created_at DESC, id DESC LIMIT ?3",
     )?;
     let rows = stmt.query_map(params![user, before, limit], read_row)?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn sorted_page(
@@ -158,8 +152,7 @@ pub(in crate::domain) fn sorted_page(
     cursor_id: &str,
     limit: i64,
 ) -> Result<Vec<Favorite>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
                 snapshot_label, sort_order, revoked
@@ -171,7 +164,7 @@ pub(in crate::domain) fn sorted_page(
          ORDER BY sort_order ASC, created_at DESC, id DESC LIMIT ?5",
     )?;
     let it = stmt.query_map(params![user, sort, created, cursor_id, limit], read_row)?;
-    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+    it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn search_page(
@@ -180,8 +173,7 @@ pub(in crate::domain) fn search_page(
     pattern: &str,
     limit: i64,
 ) -> Result<Vec<Favorite>> {
-    let c = c.sqlite()?;
-    let mut stmt = c.prepare(
+    let stmt = c.prepare(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
                 snapshot_label, sort_order, revoked
@@ -192,7 +184,7 @@ pub(in crate::domain) fn search_page(
          ORDER BY sort_order ASC, created_at DESC LIMIT ?3",
     )?;
     let rows = stmt.query_map(params![user, pattern, limit], read_row)?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn update_fields(
@@ -202,44 +194,51 @@ pub(in crate::domain) fn update_fields(
     label: Option<&str>,
     sort_order: Option<i64>,
 ) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
+    c.execute(
         "UPDATE favorites SET
            snapshot_label = COALESCE(?1, snapshot_label),
            sort_order = COALESCE(?2, sort_order)
          WHERE id = ?3 AND user_id = ?4",
         params![label, sort_order, id, user],
-    )?)
+    )
 }
 
-pub(in crate::domain) fn owned_exists(
+/// 一次 UPDATE 完成整批排序：`CASE id` 写目标序号，`WHERE` 里的
+/// `COUNT(*) = n` 保证所有 id 都属于本人且都存在，缺一即 0 行受影响。
+/// 这样不依赖 SQLite 事务，PG 单语句也是原子的。
+pub(in crate::domain) fn reorder(
     c: &StorageConnection<'_>,
     user: &str,
-    id: &str,
-) -> Result<bool> {
-    let c = c.sqlite()?;
-    let owned: Option<i64> = c
-        .query_row(
-            "SELECT 1 FROM favorites WHERE id = ?1 AND user_id = ?2",
-            params![id, user],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(owned.is_some())
-}
-
-pub(in crate::domain) fn set_sort_order(
-    c: &StorageConnection<'_>,
-    user: &str,
-    id: &str,
-    order: i64,
-) -> Result<()> {
-    let c = c.sqlite()?;
-    c.execute(
-        "UPDATE favorites SET sort_order = ?1 WHERE id = ?2 AND user_id = ?3",
-        params![order, id, user],
-    )?;
-    Ok(())
+    ids: &[String],
+) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut sql = String::from("UPDATE favorites SET sort_order = CASE id");
+    let mut params = Vec::with_capacity(ids.len() * 2 + 1);
+    for (i, id) in ids.iter().enumerate() {
+        let when = i * 2 + 1;
+        sql.push_str(&format!(" WHEN ?{when} THEN ?{}", when + 1));
+        params.push(crate::storage::port::Param::Text(id.clone()));
+        params.push(crate::storage::port::Param::Int(i as i64));
+    }
+    let user_pos = ids.len() * 2 + 1;
+    let in_list = (1..=ids.len())
+        .map(|i| format!("?{}", i * 2 - 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    sql.push_str(&format!(
+        " END WHERE user_id = ?{user_pos} AND id IN ({in_list})
+          AND (SELECT COUNT(*) FROM favorites WHERE user_id = ?{user_pos} AND id IN ({in_list})) = {}",
+        ids.len()
+    ));
+    params.push(crate::storage::port::Param::Text(user.to_string()));
+    let updated = c.execute(&sql, crate::storage::port::Params::new(params))?;
+    if updated == ids.len() {
+        Ok(updated)
+    } else {
+        Err(crate::error::PlatformError::NotFound)
+    }
 }
 
 delete_owned_row!("favorites");
@@ -250,7 +249,6 @@ pub(in crate::domain) fn revoke_source(
     source_kind: &str,
     source_id: &str,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     if source_kind == "message" || source_id.is_empty() {
         return Ok(());
     }
@@ -279,8 +277,7 @@ pub(in crate::domain) fn find_message_snapshot(
     source_conv: &str,
     input: &FavoriteInput,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT id FROM favorites
          WHERE user_id = ?1 AND source_kind = 'message' AND source_msg_id = ?2
            AND source_conv = ?3 AND kind = ?4 AND text = ?5 AND media_id = ?6
@@ -295,7 +292,7 @@ pub(in crate::domain) fn find_message_snapshot(
         ],
         |r| r.get::<_, String>(0),
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn insert_message_favorite(
@@ -305,7 +302,6 @@ pub(in crate::domain) fn insert_message_favorite(
     input: &FavoriteInput,
     id: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     let now = wxlike_core::types::now_ms() as i64;
     c.execute(
         "INSERT INTO favorites(id, user_id, source_conv, source_msg_id, kind, text,
@@ -333,8 +329,7 @@ pub(in crate::domain) fn favorite_row(
     user: &str,
     id: &str,
 ) -> Result<Option<Favorite>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT id, user_id, source_conv, source_msg_id, kind, text, media_id,
                 sender, sent_at_ms, created_at, source_kind, source_id,
                 snapshot_label, sort_order, revoked
@@ -342,10 +337,10 @@ pub(in crate::domain) fn favorite_row(
         params![id, user],
         read_row,
     )
-    .optional()?)
+    .optional()
 }
 
-pub(in crate::domain) fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Favorite> {
+pub(in crate::domain) fn read_row(r: &crate::storage::StorageRow<'_>) -> Result<Favorite> {
     Ok(Favorite {
         id: r.get(0)?,
         user_id: r.get(1)?,
@@ -363,4 +358,44 @@ pub(in crate::domain) fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Fav
         sort_order: r.get(COL_SORT_ORDER)?,
         revoked: r.get::<_, i64>(COL_REVOKED)? != 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{insert_object_favorite, list_page, reorder};
+    use crate::Platform;
+
+    #[test]
+    fn reorder_is_single_statement_and_rejects_unknown_ids() {
+        let platform = Platform::in_memory().expect("in-memory platform");
+        let user = platform.register("favreorder", "pw123456").expect("register");
+        let c = platform.db().acquire();
+        for (id, source) in [("f1", "s1"), ("f2", "s2"), ("f3", "s3")] {
+            insert_object_favorite(&c, id, &user, "moment", source, "t", "l", 1)
+                .expect("seed favorite");
+        }
+        let ids = vec!["f3".to_string(), "f1".to_string(), "f2".to_string()];
+        assert_eq!(reorder(&c, &user, &ids).expect("reorder"), 3);
+        let rows = list_page(&c, &user, i64::MAX, 10).expect("list");
+        let mut order = rows
+            .into_iter()
+            .map(|f| (f.id, f.sort_order))
+            .collect::<Vec<_>>();
+        order.sort_by_key(|(_, n)| *n);
+        assert_eq!(order, vec![
+            ("f3".to_string(), 0),
+            ("f1".to_string(), 1),
+            ("f2".to_string(), 2)
+        ]);
+
+        let bad = vec![
+            "f1".to_string(),
+            "f3".to_string(),
+            "missing".to_string(),
+        ];
+        assert!(reorder(&c, &user, &bad).is_err());
+        let rows = list_page(&c, &user, i64::MAX, 10).expect("list after bad reorder");
+        let f1 = rows.iter().find(|f| f.id == "f1").expect("f1");
+        assert_eq!(f1.sort_order, 1, "失败批次不得改掉已有顺序");
+    }
 }

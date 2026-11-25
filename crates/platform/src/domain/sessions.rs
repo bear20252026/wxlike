@@ -13,8 +13,8 @@
 //!
 //! **领域层**：本模块只含业务规则与类型，SQL 一律走 [`crate::domain::repo::sessions`]。
 
-use crate::domain::repo::sessions::{lookup_live, SqliteSessionsRepo};
-use crate::domain::repo::users::SqliteUsersRepo;
+use crate::domain::repo::sessions::{lookup_live, BackendSessionsRepo};
+use crate::domain::repo::users::BackendUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
 use serde::Serialize;
@@ -94,18 +94,18 @@ impl Platform {
         let token_digest = crate::auth::token_digest(&token);
         let sid = crate::auth::random_hex(6);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
+        let c = self.db().acquire();
         // 注销后的账号不得再拿到任何会话（#114）。刷新链也在 `logout_all`
         // 里一并作废，这里是第二道：即便有人手工插了一行会话、或哪条路径
         // 漏判，签发环节也拒绝。
-        if !SqliteUsersRepo::new(&c).active_exists(user_id)? {
+        if !BackendUsersRepo::new(&c)?.active_exists(user_id)? {
             return Err(PlatformError::NotFound);
         }
         // G02-09 治理闸门（集成请求 REQ-G00-governance-session-linkage）：
         // 被封禁/停用的账号不再签发任何会话——登录、设备重登、内部签发全部
         // 经过这一个咽喉。临时封禁到期自动放行（域内惰性判定）。
-        ensure_user_active(&c, user_id, now).map_err(|_| PlatformError::Forbidden)?;
-        SqliteSessionsRepo::new(&c).insert(&NewSession {
+        ensure_active_port(&c, user_id, now)?;
+        BackendSessionsRepo::new(&c)?.insert(&NewSession {
             token: &token_digest,
             user_id,
             created_at: now,
@@ -130,15 +130,14 @@ impl Platform {
     pub(crate) fn lookup_token(&self, token: &str) -> Result<Option<String>> {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        let port = crate::storage::StorageConnection::sqlite_borrow(&c);
-        lookup_live(&port, &token, now)
+        let c = self.db().acquire();
+        lookup_live(&c, &token, now)
     }
 
     pub(crate) fn revoke_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
-        let c = self.db().lock()?;
-        SqliteSessionsRepo::new(&c).delete_by_token(&token)?;
+        let c = self.db().acquire();
+        BackendSessionsRepo::new(&c)?.delete_by_token(&token)?;
         Ok(())
     }
 
@@ -151,8 +150,8 @@ impl Platform {
         let now = wxlike_core::types::now_ms() as i64;
         let digest = crate::auth::token_digest(current_token);
         let records = {
-            let c = self.db().lock()?;
-            SqliteSessionsRepo::new(&c).list_for_user(user_id, now)?
+            let c = self.db().acquire();
+            BackendSessionsRepo::new(&c)?.list_for_user(user_id, now)?
         };
         Ok(records
             .into_iter()
@@ -175,8 +174,8 @@ impl Platform {
         if sid.is_empty() || sid.len() > 32 {
             return Err(PlatformError::BadInput("sid malformed"));
         }
-        let c = self.db().lock()?;
-        let n = SqliteSessionsRepo::new(&c).revoke_by_sid(user_id, sid)?;
+        let c = self.db().acquire();
+        let n = BackendSessionsRepo::new(&c)?.revoke_by_sid(user_id, sid)?;
         Ok(n > 0)
     }
 
@@ -184,16 +183,16 @@ impl Platform {
     pub(crate) fn revoke_other_sessions(&self, user_id: &str, keep_token: &str) -> Result<usize> {
         // keep 参数同样要以摘要比对，否则会把当前会话一并删掉（AR-3/H-2）
         let keep = crate::auth::token_digest(keep_token);
-        let c = self.db().lock()?;
-        let n = SqliteSessionsRepo::new(&c).revoke_others(user_id, &keep)?;
+        let c = self.db().acquire();
+        let n = BackendSessionsRepo::new(&c)?.revoke_others(user_id, &keep)?;
         Ok(n)
     }
 
     /// 会话的 `sid`（刷新链按 sid 归组）。
     pub(crate) fn session_sid(&self, token: &str) -> Result<Option<String>> {
         let digest = crate::auth::token_digest(token);
-        let c = self.db().lock()?;
-        SqliteSessionsRepo::new(&c).sid_by_token(&digest)
+        let c = self.db().acquire();
+        BackendSessionsRepo::new(&c)?.sid_by_token(&digest)
     }
 
     /// 登录成功后签发首枚刷新令牌（与访问会话同 sid，便于一起撤销）。
@@ -204,9 +203,9 @@ impl Platform {
         device_id: &str,
     ) -> Result<String> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
+        let c = self.db().acquire();
         Ok(refresh::issue_default(
-            &c,
+            c.sqlite()?,
             user_id,
             sid,
             device_id,
@@ -222,17 +221,17 @@ impl Platform {
     pub(crate) fn rotate_refresh(&self, raw: &str, ip: &str) -> Result<(Rotated, String)> {
         let now = wxlike_core::types::now_ms() as i64;
         let device_name = {
-            let c = self.db().lock()?;
-            match refresh::find(&c, raw)? {
-                Some(chain) => SqliteSessionsRepo::new(&c)
+            let c = self.db().acquire();
+            match refresh::find(c.sqlite()?, raw)? {
+                Some(chain) => BackendSessionsRepo::new(&c)?
                     .device_name_by_sid(&chain.sid)?
                     .unwrap_or_default(),
                 None => String::new(),
             }
         };
         let rotated = {
-            let c = self.db().lock()?;
-            refresh::rotate(&c, raw, now)?
+            let c = self.db().acquire();
+            refresh::rotate(c.sqlite()?, raw, now)?
         };
         let token = self.create_session_for_device(
             &rotated.user_id,
@@ -243,8 +242,8 @@ impl Platform {
         )?;
         // 新会话沿用链上的 sid：同一台设备只有一个 sid，撤销时一并失效。
         let digest = crate::auth::token_digest(&token);
-        let c = self.db().lock()?;
-        let repo = SqliteSessionsRepo::new(&c);
+        let c = self.db().acquire();
+        let repo = BackendSessionsRepo::new(&c)?;
         repo.update_sid(&digest, &rotated.sid)?;
         repo.delete_by_sid_except_token(&rotated.sid, &digest)?;
         Ok((rotated, token))
@@ -253,15 +252,21 @@ impl Platform {
     /// 授予一次 step-up（密码或 TOTP 已在上层校验过）。
     pub(crate) fn grant_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<i64> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        Ok(step_up::grant_default(&c, user_id, sid, purpose, now)?)
+        let c = self.db().acquire();
+        Ok(step_up::grant_default(
+            c.sqlite()?,
+            user_id,
+            sid,
+            purpose,
+            now,
+        )?)
     }
 
     /// 消费一次 step-up（单次有效）。
     pub(crate) fn consume_step_up(&self, user_id: &str, sid: &str, purpose: &str) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        step_up::consume(&c, user_id, sid, purpose, now)?;
+        let c = self.db().acquire();
+        step_up::consume(c.sqlite()?, user_id, sid, purpose, now)?;
         Ok(())
     }
 
@@ -271,27 +276,65 @@ impl Platform {
             return Err(PlatformError::BadInput("device_id malformed"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        let n = SqliteSessionsRepo::new(&c).delete_by_device(user_id, device_id)?;
-        refresh::revoke_device(&c, user_id, device_id, now)?;
+        let c = self.db().acquire();
+        let n = BackendSessionsRepo::new(&c)?.delete_by_device(user_id, device_id)?;
+        refresh::revoke_device(c.sqlite()?, user_id, device_id, now)?;
         Ok(n)
     }
 
     /// 撤销指定 sid 时同步作废它的刷新链（否则刷新能把会话续回来）。
     pub(crate) fn revoke_refresh_of_sid(&self, sid: &str) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        Ok(refresh::revoke_sid(&c, sid, now)?)
+        let c = self.db().acquire();
+        Ok(refresh::revoke_sid(c.sqlite()?, sid, now)?)
     }
 
     /// 记录活跃时间（登录、设备页访问、关键操作时调用）。
     pub(crate) fn touch_session(&self, token: &str) -> Result<()> {
         let token = crate::auth::token_digest(token);
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        SqliteSessionsRepo::new(&c).touch(&token, now)?;
+        let c = self.db().acquire();
+        BackendSessionsRepo::new(&c)?.touch(&token, now)?;
         Ok(())
     }
+}
+
+/// 治理闸门的双后端版本：PG 直接读 `identity_user_governance`，SQLite 仍走
+/// identity 的既有实现。无行 = active；`disabled` 或未到期的 `suspended` 拒绝。
+fn ensure_active_port(
+    c: &crate::storage::StorageConnection<'_>,
+    user_id: &str,
+    now: i64,
+) -> Result<()> {
+    use sqlx::Row as _;
+    if let crate::storage::StorageConnection::Postgres(pg) = c {
+        let row = pg
+            .block_on(
+                sqlx::query(
+                    "SELECT suspended, disabled, suspended_until_ms
+                     FROM identity_user_governance WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .fetch_optional(pg.pool()),
+            )
+            .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+        if let Some(row) = row {
+            let suspended: i64 = row
+                .try_get(0)
+                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+            let disabled: i64 = row
+                .try_get(1)
+                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+            let until: Option<i64> = row
+                .try_get(2)
+                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+            if disabled != 0 || (suspended != 0 && until.is_none_or(|t| now < t)) {
+                return Err(PlatformError::Forbidden);
+            }
+        }
+        return Ok(());
+    }
+    ensure_user_active(c.sqlite()?, user_id, now).map_err(|_| PlatformError::Forbidden)
 }
 
 /// 让被撤销的设备立刻清本地缓存：`session.revoked` 不进消息类型注册表，

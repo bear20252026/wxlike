@@ -19,12 +19,11 @@ use crate::page;
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::favorites::{
     delete_one, favorite_row, find_message_snapshot, insert_message_favorite,
-    insert_object_favorite, list_page, object_favorite_exists, object_favorite_id, owned_exists,
-    search_page, set_sort_order, snapshot_source, sorted_page, update_fields,
+    insert_object_favorite, list_page, object_favorite_exists, object_favorite_id, search_page,
+    snapshot_source, sorted_page, update_fields,
 };
 
 /// Page cap; callers asking for more get this many.
@@ -245,19 +244,9 @@ impl Platform {
         for id in ids {
             cleaned.push(validate::id(id)?.to_string());
         }
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<usize> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            for id in &cleaned {
-                if !owned_exists(&conn, user, id)? {
-                    return Err(PlatformError::NotFound);
-                }
-            }
-            for (i, id) in cleaned.iter().enumerate() {
-                set_sort_order(&conn, user, id, i as i64)?;
-            }
-            Ok(cleaned.len())
-        })
+        let c = self.db().acquire();
+        let updated = crate::domain::repo::favorites::reorder(&c, user, &cleaned)?;
+        Ok(updated)
     }
 
     pub(crate) fn remove_favorite(&self, user_id: &str, id: &str) -> Result<()> {

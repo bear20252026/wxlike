@@ -18,7 +18,7 @@ use sqlx::Row;
 use wxlike_persistence::{NewUser, UserCredentials, UserProfileRow, UsersRepo};
 
 use crate::error::{PlatformError, Result};
-use crate::storage::{PostgresPool, StorageConnection};
+use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection};
 
 /// `users` 表的跨 crate 端口定义在 `wxlike-persistence`，SQLite 实现留在
 /// 本 crate。这样身份 feature 后续接 PostgreSQL 时复用同一份 trait，不需要
@@ -28,10 +28,9 @@ use crate::storage::{PostgresPool, StorageConnection};
 /// 逐字一致；迁移调用点时先换端口，再换 SQL。
 /// 这个用户 id 在 `users` 表里存在吗（不区分注销状态，调用方各自再判）。
 pub(in crate::domain) fn user_exists(c: &StorageConnection<'_>, user_id: &str) -> Result<bool> {
-    let c = c.sqlite()?;
     Ok(c.query_row(
         "SELECT 1 FROM users WHERE id = ?1",
-        params![user_id],
+        crate::storage::params![user_id],
         |_| Ok(1i64),
     )
     .optional()?
@@ -274,6 +273,11 @@ impl<'a> PostgresUsersRepo<'a> {
 }
 
 fn pg_error(e: sqlx::Error) -> PlatformError {
+    if let Some(db) = e.as_database_error() {
+        if db.code().as_deref() == Some("23505") {
+            return PlatformError::Conflict("name".into());
+        }
+    }
     PlatformError::Storage(format!("postgres users: {e}"))
 }
 
@@ -568,6 +572,45 @@ impl UsersRepo for PostgresUsersRepo<'_> {
     }
 }
 
+/// 按 `Db` 后端选择 `users` 实现：SQLite 走旧守卫，PostgreSQL 走
+/// `PostgresUsersRepo`。domain 只认这一层，不再直接构造 `SqliteUsersRepo`。
+pub(in crate::domain) enum BackendUsersRepo<'a> {
+    Sqlite(SqliteUsersRepo<'a>),
+    Postgres(PostgresUsersRepo<'a>),
+}
+
+impl<'a> BackendUsersRepo<'a> {
+    pub(in crate::domain) fn new(conn: &'a StorageConnection<'_>) -> Result<Self> {
+        Ok(match crate::storage::backend_ref(conn)? {
+            crate::storage::BackendRef::Sqlite(c) => Self::Sqlite(SqliteUsersRepo::new(c)),
+            crate::storage::BackendRef::Postgres(p) => Self::Postgres(PostgresUsersRepo::new(p)),
+        })
+    }
+}
+
+impl UsersRepo for BackendUsersRepo<'_> {
+    type Error = PlatformError;
+
+    crate::domain::repo::forward_backend! {
+        fn find_id_by_name(name: &str, include_deleted: bool, exclude_id: Option<&str>) -> Option<String>;
+        fn load_credentials(name: &str) -> Option<UserCredentials>;
+        fn load_profile(user_id: &str) -> Option<UserProfileRow>;
+        fn active_exists(user_id: &str) -> bool;
+        fn update_profile(user_id: &str, name: Option<&str>, avatar: Option<&str>, signature: Option<&str>) -> usize;
+        fn insert(user: &NewUser<'_>) -> ();
+        fn update_name(user_id: &str, name: &str) -> usize;
+        fn update_avatar(user_id: &str, avatar: &str) -> usize;
+        fn update_signature(user_id: &str, signature: &str) -> usize;
+        fn mark_deleted(user_id: &str, deleted_at: i64) -> usize;
+        fn update_password_hash(user_id: &str, phc: &str) -> usize;
+        fn totp_secret(user_id: &str) -> Option<String>;
+        fn totp_enabled(user_id: &str) -> bool;
+        fn set_totp_secret(user_id: &str, secret: &str) -> usize;
+        fn enable_totp(user_id: &str) -> usize;
+        fn disable_totp(user_id: &str) -> usize;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{NewUser, PostgresUsersRepo, SqliteUsersRepo, UsersRepo};
@@ -692,6 +735,49 @@ mod tests {
             repo.find_id_by_name("pgtest-alice2", false, None).unwrap(),
             None
         );
+
+        cleanup();
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL pointing at a DB with M011 applied"]
+    fn postgres_backend_users_repo_routes_to_postgres() {
+        let url = std::env::var("WXLIKE_TEST_PG_URL")
+            .expect("set WXLIKE_TEST_PG_URL to run the PostgreSQL backend test");
+        let pg = PostgresPool::open(&url).expect("postgres pool");
+        let cleanup = || {
+            pg.block_on(
+                sqlx::query("DELETE FROM identity_user WHERE user_id = 'pgbe-u1'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup");
+        };
+        cleanup();
+
+        let conn = crate::storage::StorageConnection::Postgres(&pg);
+        let repo = super::BackendUsersRepo::new(&conn).expect("backend users repo");
+        repo.insert(&NewUser {
+            id: "pgbe-u1",
+            name: "pgbe-alice",
+            pw_salt: "",
+            pw_hash: "phc",
+            pw_rounds: 0,
+            pw_algo: "argon2id",
+            avatar: "",
+            signature: "",
+            created_at: 1,
+        })
+        .expect("insert through backend");
+        assert_eq!(
+            repo.find_id_by_name("pgbe-alice", true, None)
+                .unwrap()
+                .as_deref(),
+            Some("pgbe-u1")
+        );
+        assert!(repo.active_exists("pgbe-u1").unwrap());
+        assert_eq!(repo.update_name("pgbe-u1", "pgbe-alice2").unwrap(), 1);
+        assert_eq!(repo.mark_deleted("pgbe-u1", 99).unwrap(), 1);
+        assert!(!repo.active_exists("pgbe-u1").unwrap());
 
         cleanup();
     }

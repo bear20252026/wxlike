@@ -9,6 +9,20 @@
 ///
 /// 收藏、笔记等按 (行 id, 属主) 归属的表只有表名不同；表名用 `literal`
 /// 传入，拼进 SQL 的永远是编译期常量，用户输入仍走 `params!`。
+macro_rules! forward_backend {
+    ($(fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty;)*) => {
+        $(
+            fn $name(&self, $($arg: $ty),*) -> Result<$ret> {
+                match self {
+                    Self::Sqlite(repo) => repo.$name($($arg),*),
+                    Self::Postgres(repo) => repo.$name($($arg),*),
+                }
+            }
+        )*
+    };
+}
+pub(in crate::domain) use forward_backend;
+
 macro_rules! delete_owned_row {
     ($table:literal) => {
         pub(in crate::domain) fn delete_one(
@@ -16,11 +30,10 @@ macro_rules! delete_owned_row {
             user: &str,
             id: &str,
         ) -> Result<usize> {
-            let c = c.sqlite()?;
-            Ok(c.execute(
+            c.execute(
                 concat!("DELETE FROM ", $table, " WHERE id = ?1 AND user_id = ?2"),
-                rusqlite::params![id, user],
-            )?)
+                crate::storage::params![id, user],
+            )
         }
     };
 }

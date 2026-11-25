@@ -107,3 +107,11 @@ BEGIN
         RAISE EXCEPTION 'M014 platform tables missing: %', missing;
     END IF;
 END $$;
+
+-- M014 通知去重索引：inbox::notify 的 ON CONFLICT(user_id, dedupe_key) 依赖它。
+DO $$
+BEGIN
+    IF to_regclass('public.uq_notifications_dedupe') IS NULL THEN
+        RAISE EXCEPTION 'M014 notifications dedupe index missing';
+    END IF;
+END $$;

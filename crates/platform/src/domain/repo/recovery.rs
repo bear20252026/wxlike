@@ -2,8 +2,7 @@
 //! handler 层在编译期看不到这里，绕不过去。
 
 use crate::error::Result;
-use crate::storage::StorageConnection;
-use rusqlite::{params, OptionalExtension as _};
+use crate::storage::{params, OptionalExt as _, StorageConnection};
 
 pub(in crate::domain) fn insert_captcha(
     c: &StorageConnection<'_>,
@@ -12,7 +11,6 @@ pub(in crate::domain) fn insert_captcha(
     now: i64,
     expires_at: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO captcha(id, answer_hash, created_at, expires_at, used)
          VALUES(?1, ?2, ?3, ?4, 0)",
@@ -31,8 +29,7 @@ pub(in crate::domain) fn captcha_row(
     c: &StorageConnection<'_>,
     id: &str,
 ) -> Result<Option<CaptchaRow>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT answer_hash, expires_at, used FROM captcha WHERE id = ?1",
         params![id],
         |r| {
@@ -43,11 +40,10 @@ pub(in crate::domain) fn captcha_row(
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn consume_captcha(c: &StorageConnection<'_>, id: &str) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute("UPDATE captcha SET used = 1 WHERE id = ?1", params![id])?;
     Ok(())
 }
@@ -58,7 +54,6 @@ pub(in crate::domain) fn upsert_recovery_code(
     code_hash: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "INSERT INTO recovery_codes(user_id, code_hash, created_at, used_at)
          VALUES(?1, ?2, ?3, NULL)
@@ -81,8 +76,7 @@ pub(in crate::domain) fn recovery_row(
     c: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Option<RecoveryRow>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT code_hash, created_at, used_at FROM recovery_codes WHERE user_id = ?1",
         params![user],
         |r| {
@@ -93,7 +87,7 @@ pub(in crate::domain) fn recovery_row(
             })
         },
     )
-    .optional()?)
+    .optional()
 }
 
 pub(in crate::domain) fn update_password(
@@ -101,7 +95,6 @@ pub(in crate::domain) fn update_password(
     user: &str,
     phc: &str,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "UPDATE users SET pw_algo = 'argon2id', pw_salt = '', pw_hash = ?2, pw_rounds = 0
          WHERE id = ?1",
@@ -111,7 +104,6 @@ pub(in crate::domain) fn update_password(
 }
 
 pub(in crate::domain) fn delete_sessions(c: &StorageConnection<'_>, user: &str) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute("DELETE FROM sessions WHERE user_id = ?1", params![user])?;
     Ok(())
 }
@@ -121,7 +113,6 @@ pub(in crate::domain) fn mark_recovery_used(
     user: &str,
     now: i64,
 ) -> Result<()> {
-    let c = c.sqlite()?;
     c.execute(
         "UPDATE recovery_codes SET used_at = ?2 WHERE user_id = ?1",
         params![user, now],
@@ -133,11 +124,10 @@ pub(in crate::domain) fn recovery_used_at(
     c: &StorageConnection<'_>,
     user: &str,
 ) -> Result<Option<Option<i64>>> {
-    let c = c.sqlite()?;
-    Ok(c.query_row(
+    c.query_row(
         "SELECT used_at FROM recovery_codes WHERE user_id = ?1",
         params![user],
         |r| r.get::<_, Option<i64>>(0),
     )
-    .optional()?)
+    .optional()
 }

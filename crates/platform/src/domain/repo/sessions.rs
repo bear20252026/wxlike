@@ -14,7 +14,7 @@ use sqlx::Row;
 use wxlike_persistence::{NewSession, SessionRecord, SessionsRepo};
 
 use crate::error::{PlatformError, Result};
-use crate::storage::PostgresPool;
+use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection};
 
 /// 端口定义在 `wxlike-persistence`；SQLite 实现在本 crate。
 pub(in crate::domain) struct SqliteSessionsRepo<'a> {
@@ -195,20 +195,19 @@ pub(in crate::domain) fn lookup_live(
     token: &str,
     now: i64,
 ) -> Result<Option<String>> {
-    let c = c.sqlite()?;
     let row: Option<(String, i64)> = c
         .query_row(
             "SELECT s.user_id, s.expires_at FROM sessions s
              JOIN users u ON u.id = s.user_id
              WHERE s.token = ?1 AND u.deleted_at IS NULL",
-            params![token],
+            crate::storage::params![token],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
         )
         .optional()?;
     match row {
         Some((user_id, expires)) if expires > now => Ok(Some(user_id)),
         Some(_) => {
-            c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+            c.execute("DELETE FROM sessions WHERE token = ?1", crate::storage::params![token])?;
             Ok(None)
         }
         None => Ok(None),
@@ -516,9 +515,47 @@ impl SessionsRepo for PostgresSessionsRepo<'_> {
     }
 }
 
+/// 按 `Db` 后端选择 `sessions` 实现；domain 不再直接构造 SQLite repo。
+pub(in crate::domain) enum BackendSessionsRepo<'a> {
+    Sqlite(SqliteSessionsRepo<'a>),
+    Postgres(PostgresSessionsRepo<'a>),
+}
+
+impl<'a> BackendSessionsRepo<'a> {
+    pub(in crate::domain) fn new(conn: &'a StorageConnection<'_>) -> Result<Self> {
+        Ok(match crate::storage::backend_ref(conn)? {
+            crate::storage::BackendRef::Sqlite(c) => Self::Sqlite(SqliteSessionsRepo::new(c)),
+            crate::storage::BackendRef::Postgres(p) => Self::Postgres(PostgresSessionsRepo::new(p)),
+        })
+    }
+}
+
+impl SessionsRepo for BackendSessionsRepo<'_> {
+    type Error = PlatformError;
+
+    crate::domain::repo::forward_backend! {
+        fn insert(session: &NewSession<'_>) -> ();
+        fn find_by_token(token: &str) -> Option<SessionRecord>;
+        fn sid_by_token(token: &str) -> Option<String>;
+        fn device_id_by_token(token: &str) -> Option<Option<String>>;
+        fn count_for_user(user_id: &str) -> i64;
+        fn device_name_by_sid(sid: &str) -> Option<String>;
+        fn list_for_user(user_id: &str, now: i64) -> Vec<SessionRecord>;
+        fn delete_by_token(token: &str) -> usize;
+        fn delete_by_user(user_id: &str) -> usize;
+        fn delete_expired_batch(now: i64, limit: i64) -> usize;
+        fn revoke_by_sid(user_id: &str, sid: &str) -> usize;
+        fn revoke_others(user_id: &str, keep_token: &str) -> usize;
+        fn update_sid(token: &str, sid: &str) -> usize;
+        fn delete_by_sid_except_token(sid: &str, token: &str) -> usize;
+        fn delete_by_device(user_id: &str, device_id: &str) -> usize;
+        fn touch(token: &str, now: i64) -> usize;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
+    use super::{lookup_live, NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
     use crate::{storage::PostgresPool, Platform};
 
     #[test]
@@ -626,6 +663,63 @@ mod tests {
         );
         assert_eq!(repo.delete_expired_batch(200, 10).unwrap(), 1);
         assert!(repo.find_by_token("pgtest-t1").unwrap().is_none());
+
+        cleanup();
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL pointing at a DB with M011 applied"]
+    fn postgres_backend_sessions_repo_routes_to_postgres() {
+        let url = std::env::var("WXLIKE_TEST_PG_URL")
+            .expect("set WXLIKE_TEST_PG_URL to run the PostgreSQL backend test");
+        let pg = PostgresPool::open(&url).expect("postgres pool");
+        let cleanup = || {
+            pg.block_on(
+                sqlx::query("DELETE FROM identity_session_token WHERE user_id = 'pgbe-s1'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup sessions");
+            pg.block_on(
+                sqlx::query("DELETE FROM identity_user WHERE user_id = 'pgbe-s1'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup user");
+        };
+        cleanup();
+        pg.block_on(
+            sqlx::query(
+                "INSERT INTO identity_user(user_id, name, pw_hash, created_at)
+                 VALUES ('pgbe-s1', 'pgbe-bob', 'x', 1)",
+            )
+            .execute(pg.pool()),
+        )
+        .expect("seed user");
+
+        let conn = crate::storage::StorageConnection::Postgres(&pg);
+        let repo = super::BackendSessionsRepo::new(&conn).expect("backend sessions repo");
+        repo.insert(&NewSession {
+            token: "pgbe-t1",
+            user_id: "pgbe-s1",
+            created_at: 1,
+            expires_at: 1000,
+            sid: Some("pgbe-sid1"),
+            device_id: "pgbe-d1",
+            device_name: "phone",
+            ip: "127.0.0.1",
+            last_seen: 1,
+            audience: "user",
+        })
+        .expect("insert through backend");
+        assert_eq!(
+            repo.sid_by_token("pgbe-t1").unwrap().as_deref(),
+            Some("pgbe-sid1")
+        );
+        assert_eq!(
+            lookup_live(&conn, "pgbe-t1", 10).unwrap().as_deref(),
+            Some("pgbe-s1")
+        );
+        assert_eq!(repo.touch("pgbe-t1", 50).unwrap(), 1);
+        assert_eq!(repo.delete_by_token("pgbe-t1").unwrap(), 1);
 
         cleanup();
     }

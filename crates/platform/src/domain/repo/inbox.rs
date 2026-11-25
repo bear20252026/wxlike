@@ -4,7 +4,7 @@
 use crate::domain::inbox::Notification;
 use crate::error::Result;
 use crate::storage::StorageConnection;
-use rusqlite::params;
+use crate::storage::params;
 
 /// 事务内插入一条通知。空 `dedupe` = 不参与去重（如每条评论各一条）。
 #[allow(clippy::too_many_arguments)]
@@ -19,7 +19,6 @@ pub(in crate::domain) fn notify(
     dedupe: &str,
     now: i64,
 ) -> Result<()> {
-    let conn = conn.sqlite()?;
     if user_id == actor {
         return Ok(());
     }
@@ -76,8 +75,7 @@ pub(in crate::domain) fn page(
     before: i64,
     limit: i64,
 ) -> Result<Vec<Notification>> {
-    let conn = conn.sqlite()?;
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT seq, id, kind, actor, target_kind, target_id, text, created_at, read_at
          FROM notifications WHERE user_id = ?1 AND seq < ?2
          ORDER BY seq DESC LIMIT ?3",
@@ -95,16 +93,15 @@ pub(in crate::domain) fn page(
             read: r.get::<_, Option<i64>>(8)?.is_some(),
         })
     })?;
-    Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
+    it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
 pub(in crate::domain) fn unread(conn: &StorageConnection<'_>, user: &str) -> Result<i64> {
-    let conn = conn.sqlite()?;
-    Ok(conn.query_row(
+    conn.query_row(
         "SELECT COUNT(*) FROM notifications WHERE user_id = ?1 AND read_at IS NULL",
         params![user],
         |r| r.get(0),
-    )?)
+    )
 }
 
 pub(in crate::domain) fn mark_up_to(
@@ -113,12 +110,11 @@ pub(in crate::domain) fn mark_up_to(
     up_to: i64,
     now: i64,
 ) -> Result<usize> {
-    let conn = conn.sqlite()?;
-    Ok(conn.execute(
+    conn.execute(
         "UPDATE notifications SET read_at = ?1
          WHERE user_id = ?2 AND seq <= ?3 AND read_at IS NULL",
         params![now, user, up_to],
-    )?)
+    )
 }
 
 pub(in crate::domain) fn mark_id(
@@ -127,10 +123,63 @@ pub(in crate::domain) fn mark_id(
     id: &str,
     now: i64,
 ) -> Result<usize> {
-    let conn = conn.sqlite()?;
-    Ok(conn.execute(
+    conn.execute(
         "UPDATE notifications SET read_at = ?1
          WHERE user_id = ?2 AND id = ?3 AND read_at IS NULL",
         params![now, user, id],
-    )?)
+    )
+}
+
+#[cfg(test)]
+mod pg_tests {
+    use super::{mark_id, notify, page};
+    use crate::storage::{PostgresPool, StorageConnection};
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL pointing at a DB with M014 applied"]
+    fn postgres_notify_dedupes_and_marks_read() {
+        let url = std::env::var("WXLIKE_TEST_PG_URL")
+            .expect("set WXLIKE_TEST_PG_URL to run the PostgreSQL inbox test");
+        let pg = PostgresPool::open(&url).expect("postgres pool");
+        pg.block_on(
+            sqlx::query("DELETE FROM notifications WHERE user_id = 'pgbe-inbox'")
+                .execute(pg.pool()),
+        )
+        .expect("cleanup");
+
+        let conn = StorageConnection::Postgres(&pg);
+        notify(
+            &conn,
+            "pgbe-inbox",
+            "mention",
+            "pgbe-actor",
+            "thread",
+            "t1",
+            "hello",
+            "d1",
+            10,
+        )
+        .expect("notify");
+        notify(
+            &conn,
+            "pgbe-inbox",
+            "mention",
+            "pgbe-actor",
+            "thread",
+            "t1",
+            "hello",
+            "d1",
+            11,
+        )
+        .expect("dedupe");
+        let rows = page(&conn, "pgbe-inbox", i64::MAX, 10).expect("page");
+        assert_eq!(rows.len(), 1, "dedupe key suppresses the second notify");
+        assert_eq!(mark_id(&conn, "pgbe-inbox", &rows[0].id, 12).expect("mark"), 1);
+
+        pg.block_on(
+            sqlx::query("DELETE FROM notifications WHERE user_id = 'pgbe-inbox'")
+                .execute(pg.pool()),
+        )
+        .expect("cleanup end");
+    }
 }

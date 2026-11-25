@@ -18,7 +18,7 @@
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 
-use crate::domain::repo::users::SqliteUsersRepo;
+use crate::domain::repo::users::BackendUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
 use wxlike_persistence::UsersRepo;
@@ -73,19 +73,19 @@ impl Platform {
     /// 登录成功的透明升级：PBKDF2 → argon2id。
     pub(crate) fn upgrade_password_to_argon2id(&self, user_id: &str, password: &str) -> Result<()> {
         let phc = hash_argon2id(password)?;
-        let c = self.db().lock()?;
-        SqliteUsersRepo::new(&c).update_password_hash(user_id, &phc)?;
+        let c = self.db().acquire();
+        BackendUsersRepo::new(&c)?.update_password_hash(user_id, &phc)?;
         Ok(())
     }
 
     pub(crate) fn totp_secret_of(&self, user_id: &str) -> Result<Option<String>> {
-        let c = self.db().lock()?;
-        SqliteUsersRepo::new(&c).totp_secret(user_id)
+        let c = self.db().acquire();
+        BackendUsersRepo::new(&c)?.totp_secret(user_id)
     }
 
     pub(crate) fn totp_enabled(&self, user_id: &str) -> Result<bool> {
-        let c = self.db().lock()?;
-        SqliteUsersRepo::new(&c).totp_enabled(user_id)
+        let c = self.db().acquire();
+        BackendUsersRepo::new(&c)?.totp_enabled(user_id)
     }
 
     /// 生成（或重生成）TOTP 密钥；未确认前不改变 `totp_enabled`。
@@ -95,8 +95,8 @@ impl Platform {
         if secret.len() > TOTP_SECRET_MAX {
             return Err(PlatformError::BadInput("secret too long"));
         }
-        let c = self.db().lock()?;
-        SqliteUsersRepo::new(&c).set_totp_secret(user_id, &secret)?;
+        let c = self.db().acquire();
+        BackendUsersRepo::new(&c)?.set_totp_secret(user_id, &secret)?;
         Ok(secret)
     }
 
@@ -108,8 +108,8 @@ impl Platform {
         if !totp_verify(&secret, code) {
             return Err(PlatformError::BadInput("invalid code"));
         }
-        let c = self.db().lock()?;
-        SqliteUsersRepo::new(&c).enable_totp(user_id)?;
+        let c = self.db().acquire();
+        BackendUsersRepo::new(&c)?.enable_totp(user_id)?;
         Ok(())
     }
 
@@ -120,8 +120,8 @@ impl Platform {
         if !totp_verify(&secret, code) {
             return Err(PlatformError::Forbidden);
         }
-        let c = self.db().lock()?;
-        SqliteUsersRepo::new(&c).disable_totp(user_id)?;
+        let c = self.db().acquire();
+        BackendUsersRepo::new(&c)?.disable_totp(user_id)?;
         Ok(())
     }
 
