@@ -18,7 +18,6 @@ use crate::domain::repo::users::BackendUsersRepo;
 use crate::error::{PlatformError, Result};
 use crate::Platform;
 use serde::Serialize;
-use wxlike_identity::governance::ensure_user_active;
 use wxlike_identity::refresh::{self, Rotated};
 use wxlike_identity::{step_up, Audience, IdError};
 use wxlike_persistence::{NewSession, SessionsRepo, UsersRepo};
@@ -104,7 +103,7 @@ impl Platform {
         // G02-09 治理闸门（集成请求 REQ-G00-governance-session-linkage）：
         // 被封禁/停用的账号不再签发任何会话——登录、设备重登、内部签发全部
         // 经过这一个咽喉。临时封禁到期自动放行（域内惰性判定）。
-        ensure_active_port(&c, user_id, now)?;
+        crate::domain::repo::sessions::ensure_active_port(&c, user_id, now)?;
         BackendSessionsRepo::new(&c)?.insert(&NewSession {
             token: &token_digest,
             user_id,
@@ -297,44 +296,6 @@ impl Platform {
         BackendSessionsRepo::new(&c)?.touch(&token, now)?;
         Ok(())
     }
-}
-
-/// 治理闸门的双后端版本：PG 直接读 `identity_user_governance`，SQLite 仍走
-/// identity 的既有实现。无行 = active；`disabled` 或未到期的 `suspended` 拒绝。
-fn ensure_active_port(
-    c: &crate::storage::StorageConnection<'_>,
-    user_id: &str,
-    now: i64,
-) -> Result<()> {
-    use sqlx::Row as _;
-    if let crate::storage::StorageConnection::Postgres(pg) = c {
-        let row = pg
-            .block_on(
-                sqlx::query(
-                    "SELECT suspended, disabled, suspended_until_ms
-                     FROM identity_user_governance WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .fetch_optional(pg.pool()),
-            )
-            .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-        if let Some(row) = row {
-            let suspended: i64 = row
-                .try_get(0)
-                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-            let disabled: i64 = row
-                .try_get(1)
-                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-            let until: Option<i64> = row
-                .try_get(2)
-                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-            if disabled != 0 || (suspended != 0 && until.is_none_or(|t| now < t)) {
-                return Err(PlatformError::Forbidden);
-            }
-        }
-        return Ok(());
-    }
-    ensure_user_active(c.sqlite()?, user_id, now).map_err(|_| PlatformError::Forbidden)
 }
 
 /// 让被撤销的设备立刻清本地缓存：`session.revoked` 不进消息类型注册表，

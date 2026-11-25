@@ -185,6 +185,44 @@ impl SessionsRepo for SqliteSessionsRepo<'_> {
     }
 }
 
+/// 治理闸门的双后端版本：PG 直接读 `identity_user_governance`，SQLite 仍走
+/// identity 的既有实现。无行 = active；`disabled` 或未到期的 `suspended` 拒绝。
+pub(in crate::domain) fn ensure_active_port(
+    c: &StorageConnection<'_>,
+    user_id: &str,
+    now: i64,
+) -> Result<()> {
+    if let StorageConnection::Postgres(pg) = c {
+        let row = pg
+            .block_on(
+                sqlx::query(
+                    "SELECT suspended, disabled, suspended_until_ms
+                     FROM identity_user_governance WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .fetch_optional(pg.pool()),
+            )
+            .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+        if let Some(row) = row {
+            let suspended: i64 = row
+                .try_get(0)
+                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+            let disabled: i64 = row
+                .try_get(1)
+                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+            let until: Option<i64> = row
+                .try_get(2)
+                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
+            if disabled != 0 || (suspended != 0 && until.is_none_or(|t| now < t)) {
+                return Err(PlatformError::Forbidden);
+            }
+        }
+        return Ok(());
+    }
+    wxlike_identity::governance::ensure_user_active(c.sqlite()?, user_id, now)
+        .map_err(|_| PlatformError::Forbidden)
+}
+
 /// 认证入口专用查询：会话有效且账号未注销，才返回 `user_id`。
 ///
 /// 与 `find_by_token` 分开：后者是设备管理面的纯会话读取，不关心账号状态；
