@@ -488,7 +488,7 @@ fn record_key(
     );
     match res {
         Ok(_) => Ok(()),
-        Err(e) if super::is_unique(&e) => {
+        Err(e) if wxlike_core::sql::is_unique_violation(&e) => {
             Err(MailError::InvalidInput("idempotency key already used"))
         }
         Err(e) => Err(e.into()),

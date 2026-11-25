@@ -7,16 +7,10 @@
 //! 按"两件事"拆开后落在这半。**依赖单向**：本模块 `use super::media` 的
 //! `MediaScope` / `TokenError`，`media` 不引用这里。
 
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use wxlike_core::secure::constant_time_eq;
 
 use super::media::{MediaScope, TokenError, CLOCK_SKEW_MS};
-
-// 与 `media` 里那条同名同义的类型别名：两半各自自持一份，换来的是一段可以
-// 逐字对比的纯移动（`Hmac<Sha256>` 是同一个类型，别名不引入新类型）。
-type HmacSha256 = Hmac<Sha256>;
 
 // ==================== ADR-25：LiveKit sidecar 访问令牌 ====================
 //
@@ -90,10 +84,7 @@ impl ApiKeyPair {
     }
 
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, TokenError> {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.secret).map_err(|_| TokenError::WeakSecret)?;
-        mac.update(data);
-        Ok(mac.finalize().into_bytes().to_vec())
+        super::sign_sha256(&self.secret, data)
     }
 
     /// 常数时间比较，避免用耗时差探测签名。

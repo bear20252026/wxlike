@@ -394,7 +394,7 @@ search、video、hub、router 全串在一个函数里。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
-**0**、跨文件重复窗口 **15**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**0**、跨文件重复窗口 **12**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
 当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
@@ -692,6 +692,12 @@ domain 定义 `repo_modules!` 宏、repo 只留一份模块名清单，86→**67
 的单测。随后把 admin 两处建目录、recovery/users 两处验证码字段读取、
 server 两个挂载点各自的 `PlatformSessions` 合成共享实现。
 重复窗口 19→**15**。
+第十一批继续把“同名同义”的局部实现挪到唯一位置：`is_unique_violation`
+从 core store / message / platform users 三份收进 `wxlike_core::sql`；
+举报建单的 201 响应形状由 `platform::report_created` 统一；RTC 两个令牌
+模块的 HMAC 签名与验签共用 `token::sign_sha256`（验签同时改走
+`constant_time_eq`，不再依赖 `verify_slice` 的内部比较）。
+重复窗口 15→**12**。
 
 探针同时修了一处口径缺陷：trait 里的 `fn foo(...);` 声明没有函数体，旧实现会把
 它一路扫到后面 impl 的第一个 `{`，凭空造出"超长函数"（本批 `RealtimeCalls` 就被

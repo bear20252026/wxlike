@@ -9,11 +9,8 @@
 //! `TokenError` 是两半共用的错误类型，物理上留在这里（它原本夹在 `MediaClaims`
 //! 与 `TokenSigner` 之间），由 `super::livekit` 与 `super` 分别 `use`。
 
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
+use wxlike_core::secure::constant_time_eq;
 
 /// 令牌格式版本；不认识的版本直接拒绝，而不是半解析。
 pub const TOKEN_VERSION: u8 = 1;
@@ -228,17 +225,16 @@ impl TokenSigner {
     }
 
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, TokenError> {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.secret).map_err(|_| TokenError::WeakSecret)?;
-        mac.update(data);
-        Ok(mac.finalize().into_bytes().to_vec())
+        super::sign_sha256(&self.secret, data)
     }
 
     fn verify_signature(&self, data: &[u8], sig: &[u8]) -> Result<(), TokenError> {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.secret).map_err(|_| TokenError::WeakSecret)?;
-        mac.update(data);
-        mac.verify_slice(sig).map_err(|_| TokenError::BadSignature)
+        let expected = super::sign_sha256(&self.secret, data)?;
+        if constant_time_eq(&expected, sig) {
+            Ok(())
+        } else {
+            Err(TokenError::BadSignature)
+        }
     }
 }
 

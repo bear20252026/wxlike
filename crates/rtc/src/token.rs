@@ -27,6 +27,16 @@
 mod livekit;
 mod media;
 
+/// 两个令牌模块共用的 HMAC-SHA256：密钥为空或长度不对时统一报 `WeakSecret`。
+fn sign_sha256(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, media::TokenError> {
+    use hmac::{Hmac, Mac as _};
+    use sha2::Sha256;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret).map_err(|_| media::TokenError::WeakSecret)?;
+    mac.update(data);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
 pub use livekit::{
     assert_participant_kind_allowed, assert_sidecar_grant_allowed, bearer_token,
     ensure_admin_permission, ensure_create_permission, ensure_dest_room_permission,

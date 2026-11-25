@@ -203,7 +203,7 @@ impl Store {
                 }
                 Ok(Some(seq))
             }
-            Err(e) if is_unique(&e) => Ok(None),
+            Err(e) if crate::sql::is_unique_violation(&e) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -577,13 +577,6 @@ fn kind_from_tag(t: i64) -> rusqlite::Result<crate::types::MsgKind> {
         2 => crate::types::MsgKind::System,
         _ => return Err(rusqlite::Error::IntegralValueOutOfRange(2, t)),
     })
-}
-
-fn is_unique(e: &rusqlite::Error) -> bool {
-    match e {
-        rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.contains("UNIQUE"),
-        _ => false,
-    }
 }
 
 #[cfg(test)]

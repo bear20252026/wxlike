@@ -115,15 +115,6 @@ pub struct PublicProfile {
     pub avatar: String,
 }
 
-/// rusqlite surfaces the UNIQUE index as this variant; the pre-check below
-/// makes conflicts deterministic, this is the backstop under concurrency.
-fn is_unique_violation(e: &rusqlite::Error) -> bool {
-    match e {
-        rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.contains("UNIQUE"),
-        _ => false,
-    }
-}
-
 impl Platform {
     /// Resolves a display name to a user id (used by friend/group endpoints).
     ///
@@ -166,7 +157,7 @@ impl Platform {
                 created_at: now as i64,
             })
             .map_err(|e| match e {
-                PlatformError::Sqlite(err) if is_unique_violation(&err) => {
+                PlatformError::Sqlite(err) if wxlike_core::sql::is_unique_violation(&err) => {
                     PlatformError::Conflict("name".into())
                 }
                 other => other,

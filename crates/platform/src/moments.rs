@@ -193,10 +193,7 @@ async fn report(
         p.create_report(&viewer, "moment", &moment_id, reason, &detail)
     })
     .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({ "report_id": ticket.id })),
-    ))
+    Ok(crate::report_created(&ticket))
 }
 
 async fn detail(

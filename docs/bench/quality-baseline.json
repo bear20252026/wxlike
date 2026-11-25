@@ -1,6 +1,6 @@
 {
  "total_files": 479,
- "total_lines": 144983,
+ "total_lines": 144971,
  "fn_total": 7070,
  "count_len_gt30": 585,
  "count_len_gt60": 0,
@@ -30,7 +30,7 @@
   ],
   [
    "crates/message/src/lib.rs",
-   1512
+   1505
   ],
   [
    "ui/src-tauri/src/app_state.rs",
@@ -310,7 +310,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 15,
+ "dup_windows": 12,
  "dup_sample": [
   [
    [
@@ -364,16 +364,6 @@
   ],
   [
    [
-    "crates/core/src/store.rs",
-    580
-   ],
-   [
-    "crates/message/src/lib.rs",
-    1301
-   ]
-  ],
-  [
-   [
     "crates/mq/src/memory.rs",
     191
    ],
@@ -390,16 +380,6 @@
    [
     "crates/mq/src/streams.rs",
     216
-   ]
-  ],
-  [
-   [
-    "crates/platform/src/moments.rs",
-    194
-   ],
-   [
-    "crates/platform/src/video_feed.rs",
-    212
    ]
   ],
   [
@@ -430,6 +410,26 @@
    [
     "crates/platform/src/domain/report.rs",
     171
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/read.rs",
+    784
+   ],
+   [
+    "crates/platform/src/domain/report.rs",
+    172
+   ]
+  ],
+  [
+   [
+    "crates/sfu/src/lib.rs",
+    474
+   ],
+   [
+    "ui/src-tauri/src/callrtc.rs",
+    551
    ]
   ]
  ],

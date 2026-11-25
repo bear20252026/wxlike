@@ -211,10 +211,7 @@ async fn report(
         p.create_report(&user, "video", &id, reason, &detail)
     })
     .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({ "report_id": ticket.id })),
-    ))
+    Ok(crate::report_created(&ticket))
 }
 
 #[derive(Deserialize)]

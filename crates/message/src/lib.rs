@@ -1097,7 +1097,7 @@ pub(crate) fn insert_mailbox_tx(
     );
     match res {
         Ok(_) => Ok(true),
-        Err(e) if is_unique(&e) => Ok(false),
+        Err(e) if wxlike_core::sql::is_unique_violation(&e) => Ok(false),
         Err(e) => Err(e),
     }
 }
@@ -1297,13 +1297,6 @@ impl ChannelClass {
             ChannelClass::HighPriority => "high_priority",
             ChannelClass::Ephemeral => "ephemeral",
         }
-    }
-}
-
-fn is_unique(e: &rusqlite::Error) -> bool {
-    match e {
-        rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.contains("UNIQUE"),
-        _ => false,
     }
 }
 

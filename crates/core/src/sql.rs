@@ -14,3 +14,12 @@ macro_rules! row_tuple {
         Ok(($( $row.get($idx)?, )+))
     };
 }
+
+/// rusqlite 把 UNIQUE 索引冲突折成 `SqliteFailure`，消息文本是唯一线索。
+/// 这是并发兜底：能预检的地方仍应先做确定性检查。
+pub fn is_unique_violation(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.contains("UNIQUE"),
+        _ => false,
+    }
+}

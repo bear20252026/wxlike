@@ -536,6 +536,17 @@ impl Platform {
     }
 }
 
+/// 举报建单的统一 HTTP 形状：201 + `{"report_id": ...}`。
+/// 动态与视频两条举报路径只差前置可见性检查，响应不该各写一份。
+pub(crate) fn report_created(
+    ticket: &wxlike_report::Ticket,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    (
+        axum::http::StatusCode::CREATED,
+        axum::Json(serde_json::json!({ "report_id": ticket.id })),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
