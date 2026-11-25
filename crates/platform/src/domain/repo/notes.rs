@@ -130,14 +130,4 @@ pub(in crate::domain) fn notes_page(
     Ok(it.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(in crate::domain) fn delete_one(
-    c: &StorageConnection<'_>,
-    user: &str,
-    id: &str,
-) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
-        "DELETE FROM notes WHERE id = ?1 AND user_id = ?2",
-        params![id, user],
-    )?)
-}
+delete_owned_row!("notes");

@@ -155,21 +155,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
 }
 
 /// LIKE 通配符转义：`%`、`_`、`\`。用户输入里的这些只能当字面量。
-/// 调用方的 LIKE 必须带 `ESCAPE '\'`，否则 `\\` 本身又不对了。
-pub fn escape_like(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '%' | '_' | '\\' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
+pub use wxlike_core::text::escape_like;
 /// 热搜/统计用的词条切分：ASCII 词 + CJK 二元组，稳定排序去重。
 pub fn terms(text: &str) -> Vec<String> {
     let mut out = Vec::new();

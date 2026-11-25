@@ -15,12 +15,12 @@
 //! 但立刻 `query_only=ON` —— 写仍然被数据库拒绝，可读性却不再依赖 `-shm`
 //! 存在的时机。两条路径的"写必失败"各有用例：
 //! `strict_read_only_path_blocks_writes` 与 `fallback_path_also_blocks_writes`。
-
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::{params, Connection, OpenFlags, Row, ToSql};
 use serde::{Deserialize, Serialize};
+use wxlike_core::text::escape_like;
 use wxlike_report::{Action, Reason, State as TicketState, Ticket, Transition};
 
 use crate::error::{AdminError, Result};
@@ -550,21 +550,6 @@ const GROUPS_SQL: &str =
 
 const REPORTS_HEAD: &str = "SELECT id, reporter, target_kind, target_id, reason, detail, state, \
      action_json, handler, created_at, updated_at, history_json FROM reports";
-
-/// 转义 LIKE 的元字符：用户可以搜 `a%b` 这样的串，`%` 不能变成通配符。
-fn escape_like(q: &str) -> String {
-    let mut out = String::with_capacity(q.len() + 4);
-    for ch in q.chars() {
-        match ch {
-            '\\' | '%' | '_' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Paged<T> {

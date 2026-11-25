@@ -242,17 +242,7 @@ pub(in crate::domain) fn set_sort_order(
     Ok(())
 }
 
-pub(in crate::domain) fn delete_one(
-    c: &StorageConnection<'_>,
-    user: &str,
-    id: &str,
-) -> Result<usize> {
-    let c = c.sqlite()?;
-    Ok(c.execute(
-        "DELETE FROM favorites WHERE id = ?1 AND user_id = ?2",
-        params![id, user],
-    )?)
-}
+delete_owned_row!("favorites");
 /// 源对象删除/撤权/到期时调用（与删除同事务）。只标记，不删用户的行：
 /// 用户仍能看到"这条收藏已不可用"，且排序位置保持不变。
 pub(in crate::domain) fn revoke_source(

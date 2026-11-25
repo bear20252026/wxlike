@@ -7013,6 +7013,7 @@ dependencies = [
  "ureq",
  "wxlike-cmd",
  "wxlike-limits",
+ "wxlike-types",
 ]
 
 [[package]]
@@ -7482,6 +7483,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tantivy",
+ "wxlike-core",
 ]
 
 [[package]]

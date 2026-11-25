@@ -472,26 +472,7 @@ pub enum RelationLevel {
     Root,
 }
 
-impl RelationLevel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::Anon => "anon",
-            Self::Auth => "auth",
-            Self::Root => "root",
-        }
-    }
-
-    /// `ParseAuthLevel`：认不出来就是 `None`，不猜。
-    pub fn parse(raw: &str) -> Self {
-        match raw {
-            "anon" | "ANON" => Self::Anon,
-            "auth" | "AUTH" => Self::Auth,
-            "root" | "ROOT" => Self::Root,
-            _ => Self::None,
-        }
-    }
-}
+wxlike_core::auth_level_ops!(RelationLevel);
 
 /// `selectAccessMode`：按级别从三把默认位里挑一把。
 ///

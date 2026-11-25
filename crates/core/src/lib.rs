@@ -6,6 +6,7 @@ pub mod e2ee;
 pub mod error;
 /// 数值约定（实现在零依赖的 `wxlike-limits`，这里只做转发）。
 pub use wxlike_limits as limits;
+pub mod level;
 pub mod msgmeta;
 pub mod outbox;
 pub mod privacy;
@@ -14,6 +15,7 @@ pub mod sql;
 pub mod store;
 /// 集成测试公共基座（真实 SQLite + 锁竞争重试）。无条件编译，理由见模块注释。
 pub mod test_support;
+pub mod text;
 pub mod tx;
 pub mod types;
 

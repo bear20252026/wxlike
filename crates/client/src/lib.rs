@@ -467,16 +467,8 @@ impl Http {
     }
 }
 
-/// Deterministic 1:1 conversation id (mirror of the platform's rule).
-///
-/// 放在客户端层而不是 UI 里：会话 id 的算法是协议的一部分，移动端也要用。
-pub fn direct_conv_id(a: &str, b: &str) -> String {
-    let (mut x, mut y) = (a.to_string(), b.to_string());
-    if x > y {
-        std::mem::swap(&mut x, &mut y);
-    }
-    format!("d-{x}~{y}")
-}
+/// Deterministic 1:1 conversation id; the one implementation lives in `wxlike_types`.
+pub use wxlike_types::direct_conv_id;
 
 impl Http {
     /// 登录并记住 token。

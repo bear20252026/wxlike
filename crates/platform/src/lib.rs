@@ -242,14 +242,8 @@ pub trait EventSink: Send + Sync + 'static {
     async fn publish(&self, env: wxlike_core::Envelope) -> anyhow::Result<()>;
 }
 
-/// Deterministic 1:1 conversation id for a pair (order-independent).
-pub fn direct_conv_id(a: &str, b: &str) -> String {
-    let (mut x, mut y) = (a.to_string(), b.to_string());
-    if x > y {
-        std::mem::swap(&mut x, &mut y);
-    }
-    format!("d-{x}~{y}")
-}
+/// Deterministic 1:1 conversation id; the one implementation lives in `wxlike_types`.
+pub use wxlike_types::direct_conv_id;
 
 /// GET /api/audit/self：本人最近 100 条审计；无记录返回空 entries（不 4xx）。
 async fn audit_self(

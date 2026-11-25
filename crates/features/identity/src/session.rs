@@ -42,27 +42,9 @@ pub enum AuthLevel {
     Root,
 }
 
+wxlike_core::auth_level_ops!(AuthLevel);
+
 impl AuthLevel {
-    /// `ParseAuthLevel`：认不出来就是 `None`，绝不猜"大概是普通用户"。
-    pub fn parse(raw: &str) -> Self {
-        match raw {
-            "anon" | "ANON" => Self::Anon,
-            "auth" | "AUTH" => Self::Auth,
-            "root" | "ROOT" => Self::Root,
-            _ => Self::None,
-        }
-    }
-
-    /// `MarshalText` 的等价物：`None` 是空串（上游同一条）。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::Anon => "anon",
-            Self::Auth => "auth",
-            Self::Root => "root",
-        }
-    }
-
     /// 受众要求的最低认证级别：管理面要 `Root`，用户面要 `Auth`。
     ///
     /// `Anon` 与 `None` 因此都进不了任何一面——上游 `selectAccessMode` 的

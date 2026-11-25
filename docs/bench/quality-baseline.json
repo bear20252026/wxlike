@@ -1,7 +1,7 @@
 {
- "total_files": 475,
- "total_lines": 145078,
- "fn_total": 7082,
+ "total_files": 477,
+ "total_lines": 145061,
+ "fn_total": 7076,
  "count_len_gt30": 585,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
@@ -73,12 +73,12 @@
    1204
   ],
   [
-   "crates/admin/src/read.rs",
-   1053
-  ],
-  [
    "crates/features/media/src/processing.rs",
    1048
+  ],
+  [
+   "crates/admin/src/read.rs",
+   1038
   ],
   [
    "crates/admin/src/http.rs",
@@ -255,7 +255,7 @@
    "ui/src-tauri/src/app_state.rs:767"
   ],
   "11": [
-   "crates/admin/src/read.rs:785",
+   "crates/admin/src/read.rs:770",
    "crates/platform/src/domain/repo/report.rs:68",
    "crates/platform/src/domain/repo/video_refs.rs:26",
    "crates/platform/src/domain/repo/video_refs.rs:71",
@@ -310,7 +310,7 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 29,
+ "dup_windows": 19,
  "dup_sample": [
   [
    [
@@ -364,46 +364,6 @@
   ],
   [
    [
-    "crates/features/identity/src/session.rs",
-    57
-   ],
-   [
-    "crates/features/relations/src/port.rs",
-    476
-   ]
-  ],
-  [
-   [
-    "crates/features/identity/src/session.rs",
-    58
-   ],
-   [
-    "crates/features/relations/src/port.rs",
-    477
-   ]
-  ],
-  [
-   [
-    "crates/features/identity/src/session.rs",
-    46
-   ],
-   [
-    "crates/features/relations/src/port.rs",
-    485
-   ]
-  ],
-  [
-   [
-    "crates/features/identity/src/session.rs",
-    47
-   ],
-   [
-    "crates/features/relations/src/port.rs",
-    486
-   ]
-  ],
-  [
-   [
     "crates/core/src/outbox.rs",
     143
    ],
@@ -431,6 +391,46 @@
     "crates/mq/src/streams.rs",
     215
    ]
+  ],
+  [
+   [
+    "crates/mq/src/memory.rs",
+    192
+   ],
+   [
+    "crates/mq/src/streams.rs",
+    216
+   ]
+  ],
+  [
+   [
+    "crates/platform/src/moments.rs",
+    194
+   ],
+   [
+    "crates/platform/src/video_feed.rs",
+    212
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/read.rs",
+    781
+   ],
+   [
+    "crates/platform/src/domain/report.rs",
+    169
+   ]
+  ],
+  [
+   [
+    "crates/admin/src/read.rs",
+    782
+   ],
+   [
+    "crates/platform/src/domain/report.rs",
+    170
+   ]
   ]
  ],
  "deps": {
@@ -449,7 +449,8 @@
   ],
   "client": [
    "cmd",
-   "limits"
+   "limits",
+   "types"
   ],
   "client-core": [
    "cmd",
@@ -527,7 +528,9 @@
    "core",
    "types"
   ],
-  "search": [],
+  "search": [
+   "core"
+  ],
   "service-catalog": [],
   "sfu": [
    "platform",

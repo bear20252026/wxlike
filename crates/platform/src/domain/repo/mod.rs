@@ -5,6 +5,26 @@
 //!
 //! 参数一律走绑定（`params!` / `?N`），本层不拼用户输入进 SQL。
 
+/// 生成"按 `(id, user_id)` 删一行并返回受影响行数"的 `delete_one`。
+///
+/// 收藏、笔记等按 (行 id, 属主) 归属的表只有表名不同；表名用 `literal`
+/// 传入，拼进 SQL 的永远是编译期常量，用户输入仍走 `params!`。
+macro_rules! delete_owned_row {
+    ($table:literal) => {
+        pub(in crate::domain) fn delete_one(
+            c: &StorageConnection<'_>,
+            user: &str,
+            id: &str,
+        ) -> Result<usize> {
+            let c = c.sqlite()?;
+            Ok(c.execute(
+                concat!("DELETE FROM ", $table, " WHERE id = ?1 AND user_id = ?2"),
+                rusqlite::params![id, user],
+            )?)
+        }
+    };
+}
+
 crate::domain::repo_modules! {
     account,
     articles,
