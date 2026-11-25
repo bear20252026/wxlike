@@ -385,27 +385,27 @@ mod pg_tests {
             return;
         };
         let db = Db::open_profile(StorageProfile::Postgres { url }, None).expect("pg db");
-        let conn = db.acquire();
         let user = "pg-account-user";
-        conn.execute(
-            "DELETE FROM identity_job WHERE user_id = ?1",
-            params![user],
-        )
-        .expect("clean jobs");
-        conn.execute(
-            "INSERT INTO identity_job(id, user_id, kind, status, requested_at) \
-             VALUES(?1, ?2, 'delete', 'queued', ?3)",
-            params!["pg-job-1", user, 7_i64],
-        )
-        .expect("insert job");
-        let job = open_delete_job(&conn, user)
-            .expect("query job")
-            .expect("job exists");
-        assert_eq!(job.id, "pg-job-1");
-        assert!(matches!(
-            job.status,
-            wxlike_identity::preferences::JobStatus::Queued
-        ));
+        db.with_tx(|conn| {
+            conn.execute(
+                "DELETE FROM identity_job WHERE user_id = ?1",
+                params![user],
+            )?;
+            conn.execute(
+                "INSERT INTO identity_job(id, user_id, kind, status, requested_at) \
+                 VALUES(?1, ?2, 'delete', 'queued', ?3)",
+                params!["pg-job-1", user, 7_i64],
+            )?;
+            let job = open_delete_job(conn, user)?.expect("job exists");
+            assert_eq!(job.id, "pg-job-1");
+            assert!(matches!(
+                job.status,
+                wxlike_identity::preferences::JobStatus::Queued
+            ));
+            Ok(())
+        })
+        .expect("tx commit");
+        let conn = db.acquire();
         assert_eq!(wallet_balance(&conn, user).expect("wallet"), 0);
         assert_eq!(deleted_at(&conn, user).expect("deleted"), None);
         let counts = purge_rows(&conn, user).expect("purge");
