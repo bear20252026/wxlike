@@ -5,6 +5,8 @@
 //!
 //! 参数一律走绑定（`params!` / `?N`），本层不拼用户输入进 SQL。
 
+pub(in crate::domain) mod preferences;
+
 /// 生成"按 `(id, user_id)` 删一行并返回受影响行数"的 `delete_one`。
 ///
 /// 收藏、笔记等按 (行 id, 属主) 归属的表只有表名不同；表名用 `literal`

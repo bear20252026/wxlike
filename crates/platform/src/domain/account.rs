@@ -59,6 +59,7 @@ use super::repo::account::{
     anonymize_user, deleted_at, export_contacts, export_ledger, export_media, export_messages,
     export_profile, export_user_settings, mask_rows, open_delete_job, purge_rows, wallet_balance,
 };
+use super::repo::preferences as pref_repo;
 use crate::domain::repo::sessions::SqliteSessionsRepo;
 use crate::domain::repo::users::SqliteUsersRepo;
 
@@ -146,9 +147,9 @@ impl Platform {
         user_id: &str,
         quiet_hours: Option<bool>,
     ) -> Result<Value> {
-        let c = self.db().lock()?;
-        let prefs = preferences::get(&c, user_id)?;
-        let head = preferences::head_seq(&c, user_id)?;
+        let c = self.db().acquire();
+        let prefs = pref_repo::get(&c, user_id)?;
+        let head = pref_repo::head_seq(&c, user_id)?;
         let quiet = quiet_hours.unwrap_or(false);
         Ok(json!({
             "values": prefs.values,
@@ -169,8 +170,8 @@ impl Platform {
         device_id: &str,
     ) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let c = self.db().lock()?;
-        preferences::patch(&c, user_id, patch, device_id, now)?;
+        self.db()
+            .with_tx(|c| pref_repo::patch(c, user_id, patch, device_id, now).map(|_| ()))?;
         Ok(())
     }
 
@@ -181,9 +182,9 @@ impl Platform {
         since_seq: i64,
         limit: i64,
     ) -> Result<(Vec<preferences::PrefRow>, i64)> {
-        let c = self.db().lock()?;
-        let rows = preferences::since(&c, user_id, since_seq, limit)?;
-        Ok((rows, preferences::head_seq(&c, user_id)?))
+        let c = self.db().acquire();
+        let rows = pref_repo::since(&c, user_id, since_seq, limit)?;
+        Ok((rows, pref_repo::head_seq(&c, user_id)?))
     }
 
     /// 补丁归属的设备：body 给了就用 body 的，否则用当前会话里记的那台。
