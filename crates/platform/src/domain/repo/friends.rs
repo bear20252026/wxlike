@@ -5,26 +5,7 @@ use crate::error::Result;
 use crate::storage::StorageConnection;
 use rusqlite::{params, OptionalExtension as _};
 
-/// 好友申请行；状态机在领域层，仓储层只负责存取。
-pub(in crate::domain) struct RequestRecord {
-    pub id: String,
-    pub from_uid: String,
-    pub to_uid: String,
-    pub message: String,
-    pub status: String,
-    pub created_at: i64,
-}
-
-/// 通讯录行；`tags` 已从 JSON 解成数组，`starred` 已从 0/1 解成布尔。
-pub(in crate::domain) struct FriendRecord {
-    pub friend_id: String,
-    pub remark: String,
-    pub source: String,
-    pub created_at: i64,
-    pub starred: bool,
-    pub tags: serde_json::Value,
-    pub friend_group: String,
-}
+use crate::domain::friends::{FriendRecord, RequestRecord};
 
 /// 增量通讯录变更行。
 pub(in crate::domain) struct ChangeRecord {

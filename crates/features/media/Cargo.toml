@@ -6,6 +6,7 @@ license.workspace = true
 description = "G04 object storage, uploads, files, isolated transcoding, backup and cache budgets"
 
 [dependencies]
+wxlike-http-auth = { path = "../../http-auth" }
 wxlike-core = { path = "../../core" }
 wxlike-api = { path = "../../api" }
 # `Authorization: Bearer` 的解析与平台/管理面共用一份（`wxlike_types::Bearer`）

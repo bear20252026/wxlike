@@ -1,7 +1,7 @@
 {
- "total_files": 474,
- "total_lines": 145127,
- "fn_total": 7089,
+ "total_files": 475,
+ "total_lines": 145078,
+ "fn_total": 7082,
  "count_len_gt30": 585,
  "count_len_gt60": 0,
  "count_len_gt100": 0,
@@ -50,7 +50,7 @@
   ],
   [
    "crates/admin/src/publishing.rs",
-   1330
+   1323
   ],
   [
    "crates/features/commerce/src/payments.rs",
@@ -58,7 +58,7 @@
   ],
   [
    "crates/admin/src/commerce.rs",
-   1220
+   1213
   ],
   [
    "crates/video/src/lib.rs",
@@ -310,48 +310,8 @@
    "crates/platform/src/db/schema.rs:677"
   ]
  },
- "dup_windows": 47,
+ "dup_windows": 29,
  "dup_sample": [
-  [
-   [
-    "crates/admin/src/commerce.rs",
-    313
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    567
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/commerce.rs",
-    314
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    568
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/commerce.rs",
-    315
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    569
-   ]
-  ],
-  [
-   [
-    "crates/admin/src/commerce.rs",
-    316
-   ],
-   [
-    "crates/admin/src/publishing.rs",
-    570
-   ]
-  ],
   [
    [
     "crates/admin/src/accounts.rs",
@@ -431,6 +391,46 @@
     "crates/features/relations/src/port.rs",
     485
    ]
+  ],
+  [
+   [
+    "crates/features/identity/src/session.rs",
+    47
+   ],
+   [
+    "crates/features/relations/src/port.rs",
+    486
+   ]
+  ],
+  [
+   [
+    "crates/core/src/outbox.rs",
+    143
+   ],
+   [
+    "crates/ffi/src/cache.rs",
+    71
+   ]
+  ],
+  [
+   [
+    "crates/core/src/store.rs",
+    580
+   ],
+   [
+    "crates/message/src/lib.rs",
+    1301
+   ]
+  ],
+  [
+   [
+    "crates/mq/src/memory.rs",
+    191
+   ],
+   [
+    "crates/mq/src/streams.rs",
+    215
+   ]
   ]
  ],
  "deps": {
@@ -480,6 +480,7 @@
    "core",
    "types"
   ],
+  "http-auth": [],
   "ledger": [
    "types"
   ],
@@ -555,6 +556,7 @@
   "core": [],
   "dpage": [],
   "ffi": [],
+  "http-auth": [],
   "ledger": [
    "core"
   ],

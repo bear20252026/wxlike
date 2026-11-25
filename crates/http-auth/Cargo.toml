@@ -1,0 +1,8 @@
+[package]
+name = "wxlike-http-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { version = "0.8", features = [] }

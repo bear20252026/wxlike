@@ -19,11 +19,16 @@ use wxlike_core::tx::ConnectionTx as _;
 use super::repo::friends::{
     accept_request, are_friends, changes, changes_head, decline_request, delete_friend,
     ensure_friend, friends, incoming_requests, insert_request, log, outgoing_requests,
-    reopen_request, request_by_id, request_by_pair, set_remark, user_exists, RequestRecord,
+    reopen_request, request_by_id, request_by_pair, set_remark, user_exists,
 };
 
+/// 好友申请行；状态机在领域层，仓储层只负责存取。
+///
+/// 领域视图与仓储记录**共用这一个结构**：两者字段完全一致，拆成
+/// `RequestRow` + `RequestRecord` 只多出两份逐字段搬运。`RequestRow`
+/// 保留为别名，序列化字段名与顺序不变。
 #[derive(Serialize)]
-pub struct RequestRow {
+pub struct RequestRecord {
     pub id: String,
     pub from_uid: String,
     pub to_uid: String,
@@ -32,8 +37,11 @@ pub struct RequestRow {
     pub created_at: i64,
 }
 
+pub type RequestRow = RequestRecord;
+
+/// 通讯录行；`tags` 已从 JSON 解成数组，`starred` 已从 0/1 解成布尔。
 #[derive(Serialize)]
-pub struct FriendRow {
+pub struct FriendRecord {
     pub friend_id: String,
     pub remark: String,
     pub source: String,
@@ -43,6 +51,8 @@ pub struct FriendRow {
     pub tags: serde_json::Value,
     pub friend_group: String,
 }
+
+pub type FriendRow = FriendRecord;
 
 #[derive(Serialize)]
 pub struct ChangeRow {
@@ -54,17 +64,6 @@ pub struct ChangeRow {
 
 pub(crate) fn display_name(p: &Platform, user_id: &str) -> String {
     p.profile_of(user_id).map(|x| x.name).unwrap_or_default()
-}
-
-fn request_row(r: RequestRecord) -> RequestRow {
-    RequestRow {
-        id: r.id,
-        from_uid: r.from_uid,
-        to_uid: r.to_uid,
-        message: r.message,
-        status: r.status,
-        created_at: r.created_at,
-    }
 }
 
 impl Platform {
@@ -113,9 +112,7 @@ impl Platform {
 
     pub(crate) fn load_request(&self, req_id: &str) -> Result<RequestRow> {
         let c = self.db().acquire();
-        request_by_id(&c, req_id)?
-            .map(request_row)
-            .ok_or(PlatformError::NotFound)
+        request_by_id(&c, req_id)?.ok_or(PlatformError::NotFound)
     }
 
     /// Only the recipient of a pending request may accept it, and the
@@ -175,33 +172,16 @@ impl Platform {
     pub(crate) fn incoming_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // The inbox is the pending queue: answered requests (accepted/declined)
         // leave it, which is what makes "decline empties the inbox" observable.
-        Ok(incoming_requests(&self.db().acquire(), me)?
-            .into_iter()
-            .map(request_row)
-            .collect())
+        incoming_requests(&self.db().acquire(), me)
     }
 
     pub(crate) fn outgoing_requests(&self, me: &str) -> Result<Vec<RequestRow>> {
         // Outgoing keeps every status so the sender can see who declined.
-        Ok(outgoing_requests(&self.db().acquire(), me)?
-            .into_iter()
-            .map(request_row)
-            .collect())
+        outgoing_requests(&self.db().acquire(), me)
     }
 
     pub(crate) fn friends(&self, me: &str) -> Result<Vec<FriendRow>> {
-        Ok(friends(&self.db().acquire(), me)?
-            .into_iter()
-            .map(|f| FriendRow {
-                friend_id: f.friend_id,
-                remark: f.remark,
-                source: f.source,
-                created_at: f.created_at,
-                starred: f.starred,
-                tags: f.tags,
-                friend_group: f.friend_group,
-            })
-            .collect())
+        friends(&self.db().acquire(), me)
     }
 
     pub(crate) fn are_friends(&self, a: &str, b: &str) -> Result<bool> {

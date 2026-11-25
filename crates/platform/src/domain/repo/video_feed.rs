@@ -6,8 +6,8 @@ use crate::storage::StorageConnection;
 use rusqlite::{params, OptionalExtension as _};
 
 use crate::domain::video_feed::{
-    parse_score_cursor, video_view_from, VideoRow, VideoView, COL_DURATION_MS, COL_PLAYLIST_URL,
-    COL_PLAY_URL, COL_THUMB_URL, HOT_WINDOW_MS,
+    parse_score_cursor, video_view_from, VideoComment, VideoRow, VideoView, COL_DURATION_MS,
+    COL_PLAYLIST_URL, COL_PLAY_URL, COL_THUMB_URL, HOT_WINDOW_MS,
 };
 
 /// 复核事务需要的四个字段；状态机仍在 domain。
@@ -22,17 +22,6 @@ pub(in crate::domain) struct ReviewRecord {
 pub(in crate::domain) struct VideoAccess {
     pub author: String,
     pub state: String,
-}
-
-/// 评论行；`seq` 同时用作倒序翻页游标。
-pub(in crate::domain) struct VideoCommentRecord {
-    pub seq: i64,
-    pub id: String,
-    pub video_id: String,
-    pub author: String,
-    pub author_name: String,
-    pub text: String,
-    pub created_at: i64,
 }
 
 pub(in crate::domain) fn feed_by_seq(
@@ -535,7 +524,7 @@ pub(in crate::domain) fn video_comments(
     id: &str,
     before: i64,
     limit: i64,
-) -> Result<Vec<VideoCommentRecord>> {
+) -> Result<Vec<VideoComment>> {
     let c = c.sqlite()?;
     let mut stmt = c.prepare(
         "SELECT cm.id, cm.video_id, cm.author, u.name, cm.text, cm.created_at, cm.seq
@@ -544,7 +533,7 @@ pub(in crate::domain) fn video_comments(
          ORDER BY cm.seq DESC LIMIT ?3",
     )?;
     let rows = stmt.query_map(params![id, before, limit], |r| {
-        Ok(VideoCommentRecord {
+        Ok(VideoComment {
             id: r.get(0)?,
             video_id: r.get(1)?,
             author: r.get(2)?,

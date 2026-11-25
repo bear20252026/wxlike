@@ -46,20 +46,7 @@ pub const NO_STORE: &str = "private, no-store";
 
 /// Session verification is owned by G02. The composition root injects the real
 /// implementation; this crate only requires "bearer header -> user id".
-pub trait SessionVerifier: Send + Sync {
-    fn verify(&self, headers: &HeaderMap) -> Option<String>;
-}
-
-pub struct FnVerifier<F>(pub F);
-
-impl<F> SessionVerifier for FnVerifier<F>
-where
-    F: Fn(&HeaderMap) -> Option<String> + Send + Sync,
-{
-    fn verify(&self, headers: &HeaderMap) -> Option<String> {
-        (self.0)(headers)
-    }
-}
+pub use wxlike_http_auth::{FnVerifier, SessionVerifier};
 
 /// Development verifier: one static bearer token for one user. Production must
 /// inject a real session verifier through [`MediaApp::new`].

@@ -394,7 +394,7 @@ search、video、hub、router 全串在一个函数里。
 3. **CI 新增 `quality` job**：`python scripts/quality-gate.py --diff --slack 5`，不跑 cargo，十几秒。
 
 **当前基线（2026-11-24 第六轮收紧）**：函数 >60 行 **0**、>100 行 **0**、嵌套 >3 层
-**0**、跨文件重复窗口 **47**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
+**0**、跨文件重复窗口 **29**、魔法数字总数 **172**。重置时是 `>60` 43 / 嵌套 69
 （扫描面 472 个文件），本轮拆完长函数后又用 `quality-gate.py --update` 收紧到
 当前值（先后把嵌套从 4 收到 0、`>60` 从 38 收到 14、再收到 0）。旧基线（扫描面 134 个文件、`>60` 41 / 嵌套 63 / 重复 66 / 魔法 162）已归档到
 `docs/bench/quality-baseline-2026-10-25.json`：扫描面从 134 扩到 472，绝对计数
@@ -673,6 +673,12 @@ domain 定义 `repo_modules!` 宏、repo 只留一份模块名清单，86→**67
 （一次改列序，四处同时编译失败）；两份 `StorageError -> 域错误` 的 match
 收进 `storage_error_from!`（identity/relations），新增存储变体会在接入域
 当场编译失败而不是落进 `_`。重复窗口 67→**47**。
+第八批把"视图结构 + 逐字段搬运"合成一份：好友申请与通讯录的
+`RequestRecord`/`FriendRecord` 移进 domain，`RequestRow`/`FriendRow` 改成
+类型别名、删除两个 `map` 转换；视频评论同样直接复用 `VideoComment`。
+`SessionVerifier` 与 `FnVerifier` 原先在 media 与 service-catalog 各写一份，
+抽成 `wxlike-http-auth` 端口 crate，两端 `pub use` 保持注入方 API 不变。
+重复窗口 47→**29**（低于审计设定的 ≤35 目标线）。
 
 探针同时修了一处口径缺陷：trait 里的 `fn foo(...);` 声明没有函数体，旧实现会把
 它一路扫到后面 impl 的第一个 `{`，凭空造出"超长函数"（本批 `RealtimeCalls` 就被

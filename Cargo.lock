@@ -7182,6 +7182,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wxlike-http-auth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+]
+
+[[package]]
 name = "wxlike-identity"
 version = "0.1.0"
 dependencies = [
@@ -7250,6 +7257,7 @@ dependencies = [
  "tracing",
  "wxlike-api",
  "wxlike-core",
+ "wxlike-http-auth",
  "wxlike-limits",
  "wxlike-types",
 ]
@@ -7560,6 +7568,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tower",
+ "wxlike-http-auth",
 ]
 
 [[package]]

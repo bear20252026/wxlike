@@ -32,20 +32,7 @@ use crate::quote::Quote;
 
 /// Session verification port: bearer token -> trusted actor id. The composition
 /// root injects the real platform-backed implementation; tests inject a fixture.
-pub trait SessionVerifier: Send + Sync {
-    fn verify(&self, headers: &HeaderMap) -> Option<String>;
-}
-
-pub struct FnVerifier<F>(pub F);
-
-impl<F> SessionVerifier for FnVerifier<F>
-where
-    F: Fn(&HeaderMap) -> Option<String> + Send + Sync,
-{
-    fn verify(&self, headers: &HeaderMap) -> Option<String> {
-        (self.0)(headers)
-    }
-}
+pub use wxlike_http_auth::{FnVerifier, SessionVerifier};
 
 pub struct AppState {
     pub catalog: Arc<Catalog>,
