@@ -31,7 +31,7 @@ use std::sync::{Arc, MutexGuard};
 use rusqlite::Connection;
 
 use crate::error::{ApiError, PlatformError, Result};
-use crate::storage::{PgStorage, SqliteStorage, StorageConnection, StorageDialect, StorageProfile};
+use crate::storage::{PgStorage, SqliteStorage, StorageConnection, StorageProfile};
 
 #[derive(Clone)]
 pub struct Db {
@@ -67,15 +67,6 @@ impl Db {
             }
         };
         Ok(Self { storage })
-    }
-
-    /// 当前连接走哪种方言。业务层只在一处需要分支：media 的旧 upsert
-    /// 不能作用在 PG 兼容视图上，SQLite 仍保留原语句。
-    pub(crate) fn dialect(&self) -> StorageDialect {
-        match &self.storage {
-            DbStorage::Sqlite(s) => s.profile().dialect(),
-            DbStorage::Postgres(s) => s.profile().dialect(),
-        }
     }
 
     /// 当前后端是否是 PostgreSQL。迁移期只给明确的 PG 分支用。

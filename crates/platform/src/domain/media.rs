@@ -268,29 +268,27 @@ impl Platform {
 
         // ADR-28: 媒体行这条 INSERT 已搬到 blocking 池；前面的 `store.*().await`
         // 仍是真异步 IO，故意不包进来，避免把网络 IO 塞进 SQLite 临界区。
-        let db = self.db();
-        let dialect = db.dialect();
         let conv_id = conv_id.unwrap_or_default().to_owned();
         let uploader = uploader.to_owned();
         let now = wxlike_core::types::now_ms() as i64;
         let media_id = sha_hex.clone();
         let reply_content_type = content_type.clone();
-        db.blocking(move |c| {
-            let conn = crate::storage::StorageConnection::sqlite_borrow(c);
-            media_repo::insert(
-                &conn,
-                dialect,
-                &sha_hex,
-                size as i64,
-                &content_type,
-                &uploader,
-                &conv_id,
-                public,
-                has_thumb,
-                now,
-            )
-        })
-        .await?;
+        self.db()
+            .offload_port(move |port| {
+                media_repo::insert(
+                    port,
+                    port.dialect(),
+                    &sha_hex,
+                    size as i64,
+                    &content_type,
+                    &uploader,
+                    &conv_id,
+                    public,
+                    has_thumb,
+                    now,
+                )
+            })
+            .await?;
 
         Ok(UploadReply {
             media_id,
