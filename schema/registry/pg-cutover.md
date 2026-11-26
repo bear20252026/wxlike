@@ -47,11 +47,15 @@
 - 会话表存在物理名差异：SQLite 用平台 `sessions`，PG 用 M014 的
   `identity_session_token`；`repo::sessions` 的设备名/设备 id/sid 更新/旧会话清理
   均按 `dialect()` 选表（2c40147f）。
-- 唯一仍持 `Db::lock()` 的生产面是 `domain/identity_admin` 的 5 个治理入口。原因
-  不是平台侧不想迁，而是 identity 治理函数是 `&Connection` 签名，且 M014 没有
-  `identity_user_governance` / `identity_governance_audit` /
-  `identity_governance_label` 三张表；审计 `seq` 依赖 `last_insert_rowid()`，
-  `require_user` 查 `sqlite_master`。这三项要一起做 M015 + 端口化 + PG 断言。
+- 身份治理的读路径已端口化：admin 鉴权、用户视图、设备读取/撤销、登录闸门、
+  会话鉴权与会话签发都走 `SqlExec`（`9ecf5b24..035cee65`）；自增审计 `seq` 由
+  `SqlExec::insert_returning` 在 SQLite 用 `last_insert_rowid()`、在 PG 补
+  `RETURNING seq`，调用方 SQL 不写方言。
+- 治理三表**已在 M011**（`identity_user_governance` / `identity_governance_audit` /
+  `identity_governance_label`），不需要 M015。仍持 `Db::lock()` 的是
+  `suspend` / `unsuspend` / `set_disabled` / `settle_expired` / `revoke_device`
+  与群治理 `admin_govern_group`：这些函数仍以 `&Connection` 自建事务，下一步要
+  改成 `SqlExec` + 平台 `Db::with_tx`，事务边界才落在双后端同一入口。
 - 因此 `G00-04-PG` 保持 open：剩余工作是治理面端口化、SQLite→PG 全量导入、
   PG restore drill 与生产版本/拓扑裁决；本文件不再把「51 个旧 repo 函数」当作
   未完成项。
