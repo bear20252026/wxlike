@@ -7,7 +7,7 @@
 //! 回执按 `(user, doc, version)` 唯一：重复提交是幂等的（返回同一条），
 //! 升级版本会产生新的一条，历史版本保留——这是"同意时间/版本"要能审计的前提。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::{random_hex, IdError, Result};
 
@@ -63,75 +63,161 @@ pub fn record(
     ip_hash: &str,
     now: i64,
 ) -> Result<ConsentReceipt> {
+    record_with(
+        &crate::sqlport::SqliteExec(conn),
+        user_id,
+        doc,
+        version,
+        purpose,
+        locale,
+        ip_hash,
+        now,
+    )
+}
+
+/// 端口版 `record`：`ON CONFLICT DO NOTHING` 在 SQLite / PG 上同一语义。
+#[allow(clippy::too_many_arguments)]
+pub fn record_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    doc: &str,
+    version: &str,
+    purpose: &str,
+    locale: &str,
+    ip_hash: &str,
+    now: i64,
+) -> Result<ConsentReceipt> {
+    use crate::sqlport::SqlParam;
     validate(doc, purpose, version, locale)?;
-    conn.execute(
-        "INSERT OR IGNORE INTO identity_consent(id, user_id, doc, version, purpose, locale, \
-         agreed_at, ip_hash) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            random_hex(RECEIPT_ID_BYTES),
-            user_id,
-            doc,
-            version,
-            purpose,
-            locale,
-            now,
-            ip_hash
+    exec.exec(
+        "INSERT INTO identity_consent(id, user_id, doc, version, purpose, locale, \
+         agreed_at, ip_hash) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+         ON CONFLICT(user_id, doc, version) DO NOTHING",
+        &[
+            SqlParam::Text(random_hex(RECEIPT_ID_BYTES)),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(doc.to_string()),
+            SqlParam::Text(version.to_string()),
+            SqlParam::Text(purpose.to_string()),
+            SqlParam::Text(locale.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Text(ip_hash.to_string()),
         ],
     )?;
-    latest_of(conn, user_id, doc, Some(version))?.ok_or(IdError::NotFound("consent receipt"))
+    latest_of_with(exec, user_id, doc, Some(version))?.ok_or(IdError::NotFound("consent receipt"))
 }
 
 /// 该用户对某份文件的最新一条回执。
 pub fn latest(conn: &Connection, user_id: &str, doc: &str) -> Result<Option<ConsentReceipt>> {
+    latest_with(&crate::sqlport::SqliteExec(conn), user_id, doc)
+}
+
+/// 端口版 `latest`。
+pub fn latest_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    doc: &str,
+) -> Result<Option<ConsentReceipt>> {
     if !DOCS.contains(&doc) {
         return Err(IdError::BadInput("doc"));
     }
-    latest_of(conn, user_id, doc, None)
+    latest_of_with(exec, user_id, doc, None)
 }
 
-fn latest_of(
-    conn: &Connection,
+fn latest_of_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
     user_id: &str,
     doc: &str,
     version: Option<&str>,
 ) -> Result<Option<ConsentReceipt>> {
-    let sql = match version {
-        Some(_) => {
+    use crate::sqlport::{ColKind, SqlParam};
+    let (sql, params) = match version {
+        Some(version) => (
             "SELECT id, user_id, doc, version, purpose, locale, agreed_at FROM identity_consent \
-             WHERE user_id = ?1 AND doc = ?2 AND version = ?3"
-        }
-        None => {
+             WHERE user_id = ?1 AND doc = ?2 AND version = ?3",
+            vec![
+                SqlParam::Text(user_id.to_string()),
+                SqlParam::Text(doc.to_string()),
+                SqlParam::Text(version.to_string()),
+            ],
+        ),
+        None => (
             "SELECT id, user_id, doc, version, purpose, locale, agreed_at FROM identity_consent \
-             WHERE user_id = ?1 AND doc = ?2 ORDER BY agreed_at DESC LIMIT 1"
-        }
+             WHERE user_id = ?1 AND doc = ?2 ORDER BY agreed_at DESC LIMIT 1",
+            vec![
+                SqlParam::Text(user_id.to_string()),
+                SqlParam::Text(doc.to_string()),
+            ],
+        ),
     };
-    let mut stmt = conn.prepare(sql)?;
-    let mut rows = match version {
-        Some(v) => stmt.query(params![user_id, doc, v])?,
-        None => stmt.query(params![user_id, doc])?,
-    };
-    let Some(row) = rows.next()? else {
+    let Some(row) = exec.query(
+        sql,
+        &params,
+        &[
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Int,
+        ],
+    )?
+    else {
         return Ok(None);
     };
+    let mut it = row.into_iter();
     Ok(Some(ConsentReceipt {
-        id: row.get(0)?,
-        user_id: row.get(1)?,
-        doc: row.get(2)?,
-        version: row.get(3)?,
-        purpose: row.get(4)?,
-        locale: row.get(5)?,
-        agreed_at: row.get(6)?,
+        id: text(it.next())?,
+        user_id: text(it.next())?,
+        doc: text(it.next())?,
+        version: text(it.next())?,
+        purpose: text(it.next())?,
+        locale: text(it.next())?,
+        agreed_at: int(it.next())?,
     }))
+}
+
+fn text(value: Option<crate::sqlport::SqlValue>) -> Result<String> {
+    match value {
+        Some(crate::sqlport::SqlValue::Text(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("identity_consent.row column")),
+    }
+}
+
+fn int(value: Option<crate::sqlport::SqlValue>) -> Result<i64> {
+    match value {
+        Some(crate::sqlport::SqlValue::Int(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("identity_consent.row column")),
+    }
 }
 
 /// 是否已同意 `required` 或更新版本（点分数字比较，`1.10 > 1.9`）。
 pub fn has_accepted(conn: &Connection, user_id: &str, doc: &str, required: &str) -> Result<bool> {
-    let mut stmt =
-        conn.prepare("SELECT version FROM identity_consent WHERE user_id = ?1 AND doc = ?2")?;
-    let rows = stmt.query_map(params![user_id, doc], |r| r.get::<_, String>(0))?;
+    has_accepted_with(&crate::sqlport::SqliteExec(conn), user_id, doc, required)
+}
+
+/// 端口版 `has_accepted`。
+pub fn has_accepted_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    doc: &str,
+    required: &str,
+) -> Result<bool> {
+    use crate::sqlport::{ColKind, SqlParam};
+    let rows = exec.query_many(
+        "SELECT version FROM identity_consent WHERE user_id = ?1 AND doc = ?2",
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(doc.to_string()),
+        ],
+        &[ColKind::Text],
+    )?;
     let mut accepted = false;
-    for version in rows {
-        if version_at_least(&version?, required)? {
+    for row in rows {
+        let mut it = row.into_iter();
+        let version = text(it.next())?;
+        if version_at_least(&version, required)? {
             accepted = true;
         }
     }
