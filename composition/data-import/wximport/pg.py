@@ -38,7 +38,17 @@ FROM (
                WHERE a.attrelid = c.oid
                  AND a.attnum > 0
                  AND NOT a.attisdropped
-           ), '[]'::json) AS columns
+           ), '[]'::json) AS columns,
+           COALESCE((
+               SELECT json_agg(json_build_object('target_table', rc.relname)
+                               ORDER BY rc.relname)
+               FROM pg_constraint con
+               JOIN pg_class rc ON rc.oid = con.confrelid
+               JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+               WHERE con.conrelid = c.oid
+                 AND con.contype = 'f'
+                 AND rn.nspname = 'public'
+           ), '[]'::json) AS references
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
@@ -84,10 +94,16 @@ class PgColumn:
 
 
 @dataclass(frozen=True)
+class PgReference:
+    target_table: str
+
+
+@dataclass(frozen=True)
 class PgRelation:
     name: str
     relkind: str
     columns: tuple[PgColumn, ...]
+    references: tuple[PgReference, ...] = ()
 
     @property
     def mode(self) -> str:
@@ -151,7 +167,15 @@ def parse_catalog(text: str) -> dict[str, PgRelation]:
             )
             for column in entry.get("columns", [])
         )
-        relations[name] = PgRelation(name=name, relkind=str(entry["kind"]), columns=columns)
+        relations[name] = PgRelation(
+            name=name,
+            relkind=str(entry["kind"]),
+            columns=columns,
+            references=tuple(
+                PgReference(target_table=str(reference["target_table"]))
+                for reference in entry.get("references", [])
+            ),
+        )
     return relations
 
 
@@ -201,6 +225,77 @@ def apply_catalog(plan: ImportPlan, catalog: dict[str, PgRelation]) -> ImportPla
             )
         )
     plan.tables = checked
+    return order_by_target_dependencies(plan, catalog)
+
+
+# A compatibility view renames a physical base table. A foreign key in another
+# target table still points at the base table, so dependency resolution must
+# translate it back to the source table that fills the view.
+_TARGET_ALIASES = {
+    "identity_user": "users",
+}
+
+
+def order_by_target_dependencies(
+    plan: ImportPlan, catalog: dict[str, PgRelation]
+) -> ImportPlan:
+    """Put target foreign-key parents before children, preserving plan order.
+
+    SQLite's dependency order is the primary signal, but it cannot see a target
+    foreign key that SQLite never declared (for example the legacy identity
+    sidecar) or a table that the importer renamed. A cycle is reported and the
+    remaining tables keep their original order; the loader will still fail on
+    the actual constraint rather than silently reverse rows.
+    """
+
+    original = [table.source for table in plan.tables]
+    by_source = {table.source: table for table in plan.tables}
+    by_target = {table.target: table.source for table in plan.tables}
+    dependencies: dict[str, set[str]] = {source: set() for source in original}
+    children: dict[str, set[str]] = {source: set() for source in original}
+    indegree = {source: 0 for source in original}
+
+    def source_for_target(target: str) -> str | None:
+        if target in by_target:
+            return by_target[target]
+        alias = _TARGET_ALIASES.get(target)
+        return by_target.get(alias) if alias else None
+
+    for table in plan.tables:
+        relation = catalog.get(table.target)
+        if relation is None:
+            continue
+        for reference in relation.references:
+            parent = source_for_target(reference.target_table)
+            if parent is None or parent == table.source:
+                continue
+            if parent not in dependencies[table.source]:
+                dependencies[table.source].add(parent)
+                children[parent].add(table.source)
+                indegree[table.source] += 1
+
+    remaining = set(original)
+    order: list[str] = []
+    while remaining:
+        ready = [source for source in original if source in remaining and indegree[source] == 0]
+        if not ready:
+            forced = [source for source in original if source in remaining]
+            plan.warnings.append(
+                "target foreign-key cycle broken at " + ", ".join(forced[:3])
+            )
+            ready = forced
+        for source in ready:
+            if source not in remaining:
+                continue
+            remaining.remove(source)
+            order.append(source)
+            for child in sorted(children[source]):
+                if child in remaining:
+                    indegree[child] -= 1
+
+    if order != original:
+        plan.warnings.append("target foreign keys reordered the table plan")
+    plan.tables = [by_source[source] for source in order]
     return plan
 
 
