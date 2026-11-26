@@ -417,7 +417,21 @@ pub fn revoke_with<E: SqlExec + ?Sized>(
             SqlParam::Int(now),
         ],
     )?;
-    // 顺序必须是**先清授权、再删会话**：子查询靠 sessions 找回这台设备的 sid。
+    let sessions = revoke_credentials_with(exec, user_id, device_id)?;
+    Ok(RevokeOutcome {
+        device_id: device_id.to_string(),
+        sessions,
+        refresh: crate::refresh::revoke_device_with(exec, user_id, device_id, now)?,
+    })
+}
+
+/// 作废设备凭据：先清 step-up（子查询要靠 sessions 找回 sid），再删会话，
+/// 最后撤刷新链。顺序不能换，否则授权清理会静默漏掉。
+fn revoke_credentials_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+) -> Result<usize> {
     exec.exec(
         "DELETE FROM identity_step_up WHERE user_id = ?1 AND sid IN \
          (SELECT sid FROM sessions WHERE user_id = ?2 AND device_id = ?3 AND sid IS NOT NULL)",
@@ -434,12 +448,7 @@ pub fn revoke_with<E: SqlExec + ?Sized>(
             SqlParam::Text(device_id.to_string()),
         ],
     )?;
-    let refresh = crate::refresh::revoke_device_with(exec, user_id, device_id, now)?;
-    Ok(RevokeOutcome {
-        device_id: device_id.to_string(),
-        sessions,
-        refresh,
-    })
+    Ok(sessions)
 }
 
 /// 当前活跃设备数（限额与运营视图共用）。

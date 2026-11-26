@@ -563,15 +563,7 @@ pub fn authenticate_with<E: SqlExec + ?Sized>(
     if stored != audience {
         return Err(IdError::Unauthorized("wrong audience"));
     }
-    // 令牌侧车两查：序列号与认证级别。分支顺序与错误同形，见上方旧实现注释。
-    if let Some(record) = token_record_with(exec, sid.as_deref().unwrap_or_default())? {
-        if record.serial != current_serial_with(exec)? {
-            return Err(IdError::Unauthorized("invalid or expired token"));
-        }
-        if record.auth_level < AuthLevel::required_for(audience) {
-            return Err(IdError::Unauthorized("wrong audience"));
-        }
-    }
+    check_token_sidecar(exec, sid.as_deref().unwrap_or_default(), audience)?;
     if !device_id.is_empty() {
         require_active_device_with(exec, &user_id, &device_id)?;
     }
@@ -581,6 +573,20 @@ pub fn authenticate_with<E: SqlExec + ?Sized>(
         device_id,
         audience,
     })
+}
+
+/// 令牌侧车两查：序列号与认证级别。分支顺序与错误同形，见旧实现注释。
+fn check_token_sidecar<E: SqlExec + ?Sized>(exec: &E, sid: &str, audience: Audience) -> Result<()> {
+    let Some(record) = token_record_with(exec, sid)? else {
+        return Ok(());
+    };
+    if record.serial != current_serial_with(exec)? {
+        return Err(IdError::Unauthorized("invalid or expired token"));
+    }
+    if record.auth_level < AuthLevel::required_for(audience) {
+        return Err(IdError::Unauthorized("wrong audience"));
+    }
+    Ok(())
 }
 
 /// 端口版设备闸门：设备行不存在是 NotFound，存在但已撤销/不属于该用户是

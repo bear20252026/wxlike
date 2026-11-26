@@ -162,7 +162,16 @@ pub fn user_state_with<E: SqlExec + ?Sized>(
 /// 登录/签发会话前的治理闸门：被封禁/停用一律 `Forbidden`。
 /// 平台登录入口在口令校验后调用它（G00 集成面）；临时封禁到期自动放行。
 pub fn ensure_user_active(conn: &Connection, user_id: &str, now: i64) -> Result<()> {
-    let state = user_state(conn, user_id, now)?;
+    ensure_user_active_with(&SqliteExec(conn), user_id, now)
+}
+
+/// 端口版登录闸门：会话签发与认证咽喉共用同一份有效状态判定。
+pub fn ensure_user_active_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    now: i64,
+) -> Result<()> {
+    let state = user_state_with(exec, user_id, now)?;
     if state.allows_access() {
         Ok(())
     } else {

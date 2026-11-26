@@ -46,8 +46,8 @@ use crate::{IdError, Result};
 
 pub use device::revoke_device;
 pub use user::{
-    add_label, ensure_user_active, remove_label, set_disabled, settle_expired, suspend, unsuspend,
-    user_state, UserState,
+    add_label, ensure_user_active, ensure_user_active_with, remove_label, set_disabled,
+    settle_expired, suspend, unsuspend, user_state, UserState,
 };
 pub use view::{user_view, AdminUserView, NoCounts, METADATA_FIELDS};
 

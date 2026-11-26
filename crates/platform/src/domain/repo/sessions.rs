@@ -195,35 +195,11 @@ pub(in crate::domain) fn ensure_active_port(
     user_id: &str,
     now: i64,
 ) -> Result<()> {
-    if let StorageConnection::Postgres(pg) = c {
-        let row = pg
-            .block_on(
-                sqlx::query(
-                    "SELECT suspended, disabled, suspended_until_ms
-                     FROM identity_user_governance WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .fetch_optional(pg.pool()),
-            )
-            .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-        if let Some(row) = row {
-            let suspended: i64 = row
-                .try_get(0)
-                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-            let disabled: i64 = row
-                .try_get(1)
-                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-            let until: Option<i64> = row
-                .try_get(2)
-                .map_err(|e| PlatformError::Storage(format!("postgres governance: {e}")))?;
-            if disabled != 0 || (suspended != 0 && until.is_none_or(|t| now < t)) {
-                return Err(PlatformError::Forbidden);
-            }
-        }
-        return Ok(());
-    }
-    wxlike_identity::governance::ensure_user_active(c.sqlite()?, user_id, now)
-        .map_err(|_| PlatformError::Forbidden)
+    wxlike_identity::governance::ensure_user_active_with(&StorageSqlExec(c), user_id, now)
+        .map_err(|err| match err {
+            wxlike_identity::IdError::Forbidden(_) => PlatformError::Forbidden,
+            other => other.into(),
+        })
 }
 
 /// 认证入口专用查询：会话有效且账号未注销，才返回 `user_id`。
