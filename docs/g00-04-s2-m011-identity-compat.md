@@ -122,17 +122,19 @@ docker exec -i wxlike-m011-test psql -v ON_ERROR_STOP=1 -U postgres -d wxlike -f
 
 
 
-## 7. M014-M017 与 identity SQL 端口（2026-11-26）
+## 7. M014-M018 与 identity SQL 端口（2026-11-26）
 
-M011 之后，身份域又补了四步，全部走同一编号线：
+M011 之后，身份域又补了五步，全部走同一编号线：
 
 - **M014** `0003_content_pg_compat.sql`：平台内容/工单 + 旧表兼容层，第三批 11 张 identity 兼容表（device/pref/job/export_link/step-up/throttle/reset_token/challenge/consent/qr）。
 - **M015** `0003_identity_retry.sql`：`identity_retry` 预算表，跨重发累计试错靠它。
 - **M016** `0004_identity_session_meta.sql`：给 `identity_session_token` 补 `auth_level/features/serial/issued_at` 四列，刷新链读 `features` 判断临时会话不再缺列。
 - **M017** `0005_identity_session_meta.sql`：把侧车从访问表拆到 `identity_session_meta`（`sid` 主键、`user_id` 外键、auth/features/serial/issued/expiry + 两个索引），按 `sid` 从 M016 回填。platform 继续读写 `identity_session_token`；identity crate 只读写侧车表，避开“访问 token 作主键、sidecar 却要按 sid 写”的形状冲突。
+- **M018** `0006_identity_session_meta_cleanup.sql`：在 `identity_session_token` 上加 AFTER DELETE 触发器；该 sid 已无剩余 token 时清掉 `identity_session_meta`。SQLite 在 `sessions` 上加同名语义的触发器，兜底 platform repo 的删除路径。
 
-CI 的 `pg-migration` 作业现在在 PostgreSQL 16 上把 **M011-M017 各跑两遍**，每一步都跟断言脚本；M015/M016/M017 都有表/索引/回填断言。
+CI 的 `pg-migration` 作业现在在 PostgreSQL 16 上把 **M011-M018 各跑两遍**，每一步都跟断言脚本；M017 前会先写一行旧侧车 fixture，验证真实回填；M018 验证“同 sid 还有 token 时保留、最后一个删掉后清理”。备份/恢复演练也重跑 M014-M018 断言。
 
-identity 的 SQL 访问已经收口到 `sqlport::{SqlExec, SqliteExec}`：会话签发/鉴权/登出、刷新链轮换、设备注册与撤销、登录挑战下发/校验/重发、扫码兑换、找回令牌、治理动作都提供 `_with` 端口，SQLite 入口只做薄包装。调用方事务由平台 `Db::with_tx` 负责；扫码兑换把“抢占 challenge + 登记设备 + 开会话”放进同一事务，失败整体回滚。
+identity 的 SQL 访问已经收口到 `sqlport::{SqlExec, SqliteExec}`：会话签发/鉴权/登出、刷新链轮换、设备注册与撤销、登录挑战下发/校验/重发、扫码兑换、找回令牌、治理动作都提供 `_with` 端口，SQLite 入口只做薄包装。调用方事务由平台 `Db::with_tx` 负责；扫码兑换的 `_with` 可由调用方包进事务，SQLite 入口保持“失败也一次性消费 challenge”的语义。
 
-本机验证：`cargo test -p wxlike-identity --lib` **90 passed**；`cargo fmt --all -- --check` 绿。
+本机验证：`cargo test -p wxlike-identity` 全绿；M017 回填、M018 清理都有独立集成测试；`cargo fmt --all -- --check` 绿。
+
