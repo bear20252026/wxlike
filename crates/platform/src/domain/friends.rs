@@ -14,7 +14,6 @@ use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
 use serde::Serialize;
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::friends::{
     accept_request, are_friends, changes, changes_head, decline_request, delete_friend,
@@ -126,10 +125,8 @@ impl Platform {
             return Err(PlatformError::Conflict("request".into()));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<RequestRow> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            if !accept_request(&conn, req_id)? {
+        self.db().with_tx(|conn| -> Result<RequestRow> {
+            if !accept_request(conn, req_id)? {
                 // lost a race with a concurrent accept/decline
                 return Err(PlatformError::Conflict("request".into()));
             }
@@ -137,8 +134,8 @@ impl Platform {
                 (req.from_uid.as_str(), req.to_uid.as_str()),
                 (req.to_uid.as_str(), req.from_uid.as_str()),
             ] {
-                ensure_friend(&conn, a, b, req_id, now)?;
-                log(&conn, a, b, "accepted", now)?;
+                ensure_friend(conn, a, b, req_id, now)?;
+                log(conn, a, b, "accepted", now)?;
             }
             Ok(req)
         })
@@ -153,18 +150,16 @@ impl Platform {
             return Err(PlatformError::Conflict("request".into()));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<RequestRow> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
+        self.db().with_tx(|conn| -> Result<RequestRow> {
             // #340: the verdict rides on the write itself, like accept above —
             // the pre-check reads outside the lock, so two concurrent declines
             // can both pass it; only the conditional UPDATE picks one winner.
-            if !decline_request(&conn, req_id)? {
+            if !decline_request(conn, req_id)? {
                 // lost a race with a concurrent accept/decline
                 return Err(PlatformError::Conflict("request".into()));
             }
-            log(&conn, &req.from_uid, &req.to_uid, "declined", now)?;
-            log(&conn, &req.to_uid, &req.from_uid, "declined", now)?;
+            log(conn, &req.from_uid, &req.to_uid, "declined", now)?;
+            log(conn, &req.to_uid, &req.from_uid, "declined", now)?;
             Ok(req)
         })
     }
@@ -207,13 +202,11 @@ impl Platform {
                 return Err(PlatformError::NotFound);
             }
         }
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let conn = crate::storage::StorageConnection::sqlite_tx(tx);
-            delete_friend(&conn, me, &other)?;
-            delete_friend(&conn, &other, me)?;
+        self.db().with_tx(|conn| -> Result<()> {
+            delete_friend(conn, me, &other)?;
+            delete_friend(conn, &other, me)?;
             for (a, b) in [(me, other.as_str()), (other.as_str(), me)] {
-                log(&conn, a, b, "removed", now)?;
+                log(conn, a, b, "removed", now)?;
             }
             Ok(())
         })
