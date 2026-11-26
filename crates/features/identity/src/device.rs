@@ -5,7 +5,7 @@
 //! 不能靠"再连一次"复活。`identity_key` 是 E2EE 设备身份公钥（G02-03 消费），
 //! 在这里只做变更检测：同一 `device_id` 换身份密钥必须走轮换流程。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{check_label, now_ms, IdError, Result};

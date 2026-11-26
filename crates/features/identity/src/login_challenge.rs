@@ -419,10 +419,6 @@ pub fn verify_with<E: SqlExec + ?Sized>(
     })
 }
 
-fn fetch_challenge(conn: &Connection, challenge_id: &str) -> Result<Option<ChallengeRow>> {
-    fetch_challenge_with(&SqliteExec(conn), challenge_id)
-}
-
 fn fetch_challenge_with<E: SqlExec + ?Sized>(
     exec: &E,
     challenge_id: &str,
