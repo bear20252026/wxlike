@@ -328,6 +328,13 @@ identity_retry.attempts INTEGER notnull=1 pk=0
 identity_retry.created_at INTEGER notnull=1 pk=0
 identity_retry.updated_at INTEGER notnull=1 pk=0
 identity_retry.expires_at INTEGER notnull=1 pk=0
+identity_session_meta.sid TEXT notnull=0 pk=1
+identity_session_meta.user_id TEXT notnull=1 pk=0
+identity_session_meta.auth_level TEXT notnull=1 pk=0
+identity_session_meta.features TEXT notnull=1 pk=0
+identity_session_meta.serial INTEGER notnull=1 pk=0
+identity_session_meta.issued_at INTEGER notnull=1 pk=0
+identity_session_meta.expires_at INTEGER notnull=1 pk=0
 identity_session_token.sid TEXT notnull=0 pk=1
 identity_session_token.user_id TEXT notnull=1 pk=0
 identity_session_token.auth_level TEXT notnull=1 pk=0
