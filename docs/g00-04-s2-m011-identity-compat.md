@@ -138,3 +138,6 @@ identity 的 SQL 访问已经收口到 `sqlport::{SqlExec, SqliteExec}`：会话
 
 本机验证：`cargo test -p wxlike-identity` 全绿；M017 回填、M018 清理都有独立集成测试；`cargo fmt --all -- --check` 绿。
 
+M019-M022 把 G03 消息/投递、关系 ACL 与全局令牌序列号补进 PG，并加了
+SQLite→PG 覆盖守卫，见 [`g00-04-s3-m019-m022-pg-coverage.md`](g00-04-s3-m019-m022-pg-coverage.md)。
+
