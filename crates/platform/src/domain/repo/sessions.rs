@@ -787,10 +787,25 @@ mod tests {
         );
         assert_eq!(repo.count_for_user(&user_id).unwrap(), 1);
         assert_eq!(repo.list_for_user(&user_id, 0).unwrap().len(), 1);
+        db.execute(
+            "INSERT INTO identity_session_meta(
+                sid, user_id, auth_level, features, serial, issued_at, expires_at
+             ) VALUES('s1', ?1, 'auth', '', 0, 1, 100)",
+            rusqlite::params![user_id],
+        )
+        .expect("insert meta");
         assert_eq!(repo.touch("t1", 50).unwrap(), 1);
         assert_eq!(repo.find_by_token("t1").unwrap().unwrap().last_seen, 50);
         assert_eq!(repo.revoke_by_sid(&user_id, "s1").unwrap(), 1);
         assert!(repo.find_by_token("t1").unwrap().is_none());
+        let meta: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM identity_session_meta WHERE sid = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count meta");
+        assert_eq!(meta, 0, "revoke must clean the sidecar");
         assert_eq!(repo.count_for_user(&user_id).unwrap(), 0);
     }
 
@@ -854,8 +869,27 @@ mod tests {
             repo.find_by_token("pgtest-t1").unwrap().unwrap().last_seen,
             50
         );
+        pg.block_on(
+            sqlx::query(
+                "INSERT INTO identity_session_meta(
+                     sid, user_id, auth_level, features, serial, issued_at, expires_at
+                 ) VALUES('pgtest-sid1', 'pgtest-s1', 'auth', '', 0, 1, 100)
+                 ON CONFLICT (sid) DO NOTHING",
+            )
+            .execute(pg.pool()),
+        )
+        .expect("seed meta");
         assert_eq!(repo.delete_expired_batch(200, 10).unwrap(), 1);
         assert!(repo.find_by_token("pgtest-t1").unwrap().is_none());
+        let meta: i64 = pg
+            .block_on(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM identity_session_meta WHERE sid = 'pgtest-sid1'",
+                )
+                .fetch_one(pg.pool()),
+            )
+            .expect("count meta");
+        assert_eq!(meta, 0, "expired delete must clean the sidecar");
 
         cleanup();
     }
