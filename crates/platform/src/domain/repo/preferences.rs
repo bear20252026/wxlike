@@ -16,10 +16,7 @@ pub(in crate::domain) fn get(conn: &StorageConnection<'_>, user_id: &str) -> Res
 }
 
 pub(in crate::domain) fn head_seq(conn: &StorageConnection<'_>, user_id: &str) -> Result<i64> {
-    Ok(preferences::head_seq_with(
-        &StorageSqlExec(conn),
-        user_id,
-    )?)
+    Ok(preferences::head_seq_with(&StorageSqlExec(conn), user_id)?)
 }
 
 pub(in crate::domain) fn patch(
