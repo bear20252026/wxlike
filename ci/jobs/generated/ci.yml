@@ -285,9 +285,17 @@ jobs:
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
     - name: M010 DDL 重跑（幂等/可重入）
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
-    - name: M011-M017 DDL 首次 + 重跑（幂等）
+    - name: M011-M016 DDL 首次 + 重跑（幂等）
       shell: bash
-      run: "set -euo pipefail\nfor f in \\\n  schema/proposals/G02/0002_identity_pg_compat.sql \\\n  schema/proposals/G04/0002_media_pg_compat.sql \\\n  schema/proposals/G06/0002_ledger_wallets_backfill.sql \\\n  schema/proposals/G05/0003_content_pg_compat.sql \\\n  schema/proposals/G02/0003_identity_retry.sql \\\n  schema/proposals/G02/0004_identity_session_meta.sql \\\n  schema/proposals/G02/0005_identity_session_meta.sql; do\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"\ndone\n"
+      run: "set -euo pipefail\nfor f in \\\n  schema/proposals/G02/0002_identity_pg_compat.sql \\\n  schema/proposals/G04/0002_media_pg_compat.sql \\\n  schema/proposals/G06/0002_ledger_wallets_backfill.sql \\\n  schema/proposals/G05/0003_content_pg_compat.sql \\\n  schema/proposals/G02/0003_identity_retry.sql \\\n  schema/proposals/G02/0004_identity_session_meta.sql; do\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"\ndone\n"
+    - name: M017 前写入旧侧车 fixture
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_m017_backfill_fixture.sql
+    - name: M017 DDL 首次 + 重跑（幂等 + 回填）
+      shell: bash
+      run: "set -euo pipefail\nfor _ in 1 2; do\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 \\\n    -f schema/proposals/G02/0005_identity_session_meta.sql\ndone\n"
+    - name: M018 侧车清理触发器首次 + 重跑（幂等）
+      shell: bash
+      run: "set -euo pipefail\nfor _ in 1 2; do\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 \\\n    -f schema/proposals/G02/0006_identity_session_meta_cleanup.sql\ndone\n"
     - name: M010 schema/触发器/不可变性断言
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
     - name: M011-M013 兼容层与回填断言
@@ -300,6 +308,8 @@ jobs:
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta.sql
     - name: M017 identity 会话侧车表断言
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_table.sql
+    - name: M018 identity 会话侧车清理断言
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_cleanup.sql
     - name: M013 导入器全链路（SQLite → COPY → CALL）
       run: bash ci/jobs/build/pg_import_smoke.sh
     - name: 备份/恢复演练（pg_dump → psql restore → 断言）
