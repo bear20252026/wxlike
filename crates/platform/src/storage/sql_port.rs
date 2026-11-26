@@ -5,7 +5,7 @@
 
 use crate::error::PlatformError;
 use crate::storage::port::{Param, Params};
-use crate::storage::{StorageConnection, StorageRow};
+use crate::storage::{StorageConnection, StorageDialect, StorageRow};
 use wxlike_identity::qr_login::{QrExec, QrKind, QrParam, QrValue};
 
 pub(crate) struct StorageSqlExec<'a, 'b>(pub(crate) &'b StorageConnection<'a>);
@@ -91,5 +91,39 @@ impl QrExec for StorageSqlExec<'_, '_> {
             out.push(row.map_err(db_err)?);
         }
         Ok(out)
+    }
+
+    fn insert_returning(
+        &self,
+        sql: &str,
+        params: &[QrParam],
+    ) -> Result<i64, wxlike_identity::IdError> {
+        match self.0.dialect() {
+            StorageDialect::Sqlite => {
+                <Self as QrExec>::exec(self, sql, params)?;
+                let value = <Self as QrExec>::query(
+                    self,
+                    "SELECT last_insert_rowid()",
+                    &[],
+                    &[QrKind::Int],
+                )?
+                .and_then(|mut row| row.pop())
+                .ok_or_else(|| wxlike_identity::IdError::Corrupt("insert id missing"))?;
+                match value {
+                    QrValue::Int(v) => Ok(v),
+                    _ => Err(wxlike_identity::IdError::Corrupt("insert id type")),
+                }
+            }
+            StorageDialect::Postgres => {
+                let sql = format!("{sql} RETURNING seq");
+                let value = <Self as QrExec>::query(self, &sql, params, &[QrKind::Int])?
+                    .and_then(|mut row| row.pop())
+                    .ok_or_else(|| wxlike_identity::IdError::Corrupt("insert id missing"))?;
+                match value {
+                    QrValue::Int(v) => Ok(v),
+                    _ => Err(wxlike_identity::IdError::Corrupt("insert id type")),
+                }
+            }
+        }
     }
 }

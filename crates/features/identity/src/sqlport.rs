@@ -75,6 +75,10 @@ pub trait SqlExec {
         params: &[SqlParam],
         kinds: &[ColKind],
     ) -> Result<Vec<Vec<SqlValue>>>;
+
+    /// 插入一行并返回自增主键。SQLite 走 `last_insert_rowid()`；PG 适配器
+    /// 负责把 `RETURNING` 补到同一条 INSERT 上——调用方的 SQL 不写方言。
+    fn insert_returning(&self, sql: &str, params: &[SqlParam]) -> Result<i64>;
 }
 
 /// identity 自带的后端：直接走 `rusqlite`。
@@ -149,5 +153,10 @@ impl SqlExec for SqliteExec<'_> {
             out.push(sqlite_values(row, kinds)?);
         }
         Ok(out)
+    }
+
+    fn insert_returning(&self, sql: &str, params: &[SqlParam]) -> Result<i64> {
+        self.exec(sql, params)?;
+        Ok(self.0.last_insert_rowid())
     }
 }
