@@ -173,3 +173,56 @@ pub(in crate::domain) fn patch_friend_meta(
         params![user, friend, starred, tags_json, group],
     )
 }
+
+// ---------------------------------------------------------------------------
+// 跨域只读闸门（G02-02）：聊天/搜索读 friends / blocks / group_members 的唯一入口。
+// 规则与 `wxlike_relations` 的同名判定逐条一致；放在端口上是为了 PG 也能用。
+// ---------------------------------------------------------------------------
+
+/// 任一侧拉黑了吗（不告诉调用方是哪一侧）。
+pub(in crate::domain) fn blocked_either(
+    c: &StorageConnection<'_>,
+    a: &str,
+    b: &str,
+) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT 1 FROM blocks WHERE (user_id = ?1 AND blocked_id = ?2) \
+         OR (user_id = ?2 AND blocked_id = ?1)",
+        params![a, b],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
+}
+
+/// 是否互为好友：两个方向的行都在才算。
+pub(in crate::domain) fn are_friends(
+    c: &StorageConnection<'_>,
+    a: &str,
+    b: &str,
+) -> Result<bool> {
+    let n: i64 = c.query_row(
+        "SELECT COUNT(*) FROM friends WHERE (user_id = ?1 AND friend_id = ?2) \
+         OR (user_id = ?2 AND friend_id = ?1)",
+        params![a, b],
+        |r| r.get(0),
+    )?;
+    Ok(n == 2)
+}
+
+/// 两人共同的、未解散的群 id（按建群时间升序，非成员拿不到任何行）。
+pub(in crate::domain) fn shared_group_ids(
+    c: &StorageConnection<'_>,
+    a: &str,
+    b: &str,
+) -> Result<Vec<String>> {
+    let stmt = c.prepare(
+        "SELECT g.id FROM groups g \
+         JOIN group_members ma ON ma.group_id = g.id AND ma.user_id = ?1 \
+         JOIN group_members mb ON mb.group_id = g.id AND mb.user_id = ?2 \
+         LEFT JOIN group_meta m ON m.group_id = g.id \
+         WHERE m.dissolved_at IS NULL ORDER BY g.created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![a, b], |r| r.get::<_, String>(0))?;
+    rows.collect::<std::result::Result<_, _>>()
+}

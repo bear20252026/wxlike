@@ -14,12 +14,11 @@ use crate::error::{PlatformError, Result};
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
-use wxlike_relations::port::RelationsPort as _;
 
 use super::repo::relations::{
-    accepted_request, allow_strangers, blocked, blocked_ids, decide_request, delete_block,
-    insert_block, patch_friend_meta, requests_in, requests_out, set_allow_strangers,
-    upsert_request, user_exists,
+    accepted_request, allow_strangers, are_friends, blocked, blocked_either, blocked_ids,
+    decide_request, delete_block, insert_block, patch_friend_meta, requests_in, requests_out,
+    set_allow_strangers, shared_group_ids, upsert_request, user_exists,
 };
 
 /// 关系域错误 → 平台错误。规则在 `wxlike-relations` 里，这里只做类型搬运；
@@ -242,15 +241,19 @@ impl Platform {
         from: &str,
         to: &str,
     ) -> Result<wxlike_relations::port::MessageGate> {
-        let c = self.db().lock()?;
-        let port = wxlike_relations::port::SqlRelations { conn: &c };
-        Ok(port.may_message(from, to)?)
+        let c = self.db().acquire();
+        if blocked_either(&c, from, to)? {
+            return Ok(wxlike_relations::port::MessageGate::Blocked);
+        }
+        if from == to || are_friends(&c, from, to)? {
+            return Ok(wxlike_relations::port::MessageGate::Allowed);
+        }
+        Ok(wxlike_relations::port::MessageGate::StrangerRequest)
     }
 
     /// 两人共同的群 id（交集查询，非成员拿不到任何行）。
     pub(crate) fn shared_group_ids(&self, a: &str, b: &str) -> Result<Vec<String>> {
-        let c = self.db().lock()?;
-        let port = wxlike_relations::port::SqlRelations { conn: &c };
-        Ok(port.shared_groups(a, b)?)
+        let c = self.db().acquire();
+        shared_group_ids(&c, a, b)
     }
 }
