@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wximport.codec import RowDigest, encode_field, encode_row, row_hash
+from wximport.codec import RowDigest, coerce_source, encode_field, encode_row, row_hash
 from wximport.exporter import export_table
 from wximport.plan import build_plan
 from wximport.sqlite_source import open_readonly
@@ -31,6 +31,12 @@ class CodecTest(unittest.TestCase):
         self.assertEqual(encode_field(True, "bool"), '"t"')
         self.assertEqual(encode_field(False, "bool"), '"f"')
         self.assertEqual(encode_field(7, "int"), '"7"')
+
+    def test_decimal_from_sqlite_float_has_no_binary_noise(self) -> None:
+        source = coerce_source(1.23, "decimal")
+        self.assertEqual(format(source, "f"), "1.23")
+        self.assertEqual(encode_field(1.23, "decimal"), '"1.23"')
+        self.assertEqual(row_hash([source], ["decimal"]), row_hash([1.23], ["decimal"]))
 
     def test_digest_is_order_independent(self) -> None:
         left = RowDigest()

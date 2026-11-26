@@ -11,7 +11,8 @@
     "clippy.toml",
     "_typos.toml",
     "contracts/**",
-    "crates/types/**"
+    "crates/types/**",
+    "composition/data-import/**"
   ],
   "targets": {
     "rust": [

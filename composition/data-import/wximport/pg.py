@@ -8,6 +8,7 @@ restore drill, and makes every statement visible in CI logs.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import shutil
 import subprocess
@@ -53,6 +54,23 @@ class PsqlError(RuntimeError):
 
 class PlanError(ValueError):
     pass
+
+
+def _iter_csv_rows(stream) -> Iterator[list[str]]:
+    """Decode a UTF-8 COPY stream without rewriting embedded CR/LF bytes.
+
+    ``subprocess`` text mode uses universal newlines, which would turn a
+    quoted ``\r\n`` inside a text field into ``\n`` and make the target digest
+    disagree with the source. Wrapping the raw pipe with ``newline=""`` keeps
+    the field bytes intact while ``csv.reader`` still understands quoted
+    newlines.
+    """
+
+    wrapper = io.TextIOWrapper(stream, encoding="utf-8", newline="")
+    try:
+        yield from csv.reader(wrapper)
+    finally:
+        wrapper.close()
 
 
 @dataclass(frozen=True)
@@ -102,6 +120,10 @@ def _kind_compatible(source: Kind, target: Kind) -> bool:
     if source == "float" and target == "decimal":
         return True
     if source == "decimal" and target == "float":
+        return True
+    # SQLite commonly stores integer minor units in a column whose PG target is
+    # NUMERIC; widening an integer to an exact decimal is lossless.
+    if source == "int" and target == "decimal":
         return True
     # SQLite has no native boolean; INTEGER 0/1 and BOOL both occur.
     if source == "bool" and target == "int":
@@ -190,6 +212,12 @@ class Psql:
             raise PsqlError("psql is not on PATH; install the PostgreSQL client tools")
         self.timeout = timeout
 
+    @staticmethod
+    def _arg(sql: str) -> str:
+        # A Windows .cmd shim cannot carry a multi-line argument reliably; the
+        # statements here have no meaningful line breaks outside literals.
+        return " ".join(line.strip() for line in sql.splitlines() if line.strip())
+
     def run(self, sql: str, stdin_path: Path | None = None) -> str:
         command = [
             self.binary,
@@ -202,7 +230,7 @@ class Psql:
             "-A",
             "-t",
             "-c",
-            sql,
+            self._arg(sql),
         ]
         stdin_handle = stdin_path.open("r", encoding="utf-8", newline="") if stdin_path else None
         try:
@@ -242,7 +270,7 @@ class Psql:
             "-d",
             self.dsn,
             "-c",
-            sql,
+            self._arg(sql),
         ]
         stderr = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         process = subprocess.Popen(
@@ -250,12 +278,10 @@ class Psql:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=stderr,
-            text=True,
-            encoding="utf-8",
         )
         assert process.stdout is not None
         try:
-            for row in csv.reader(process.stdout):
+            for row in _iter_csv_rows(process.stdout):
                 yield row
             process.wait(timeout=self.timeout)
             if process.returncode != 0:

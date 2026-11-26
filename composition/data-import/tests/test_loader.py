@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wximport.loader import clear_sql, copy_sql, load_table, sequence_sql
+from wximport.loader import clear_sql, clear_targets, copy_sql, load_table, sequence_sql
 from wximport.model import Column, TablePlan
 from wximport.pg import PgColumn, PgRelation
 
@@ -55,11 +55,26 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(clear_sql(plan()), 'DELETE FROM "items"')
         self.assertEqual(clear_sql(plan("view")), 'DELETE FROM "items"')
 
+    def test_clear_targets_reverses_order_and_skips_verified(self) -> None:
+        parent = plan()
+        parent.source, parent.target = "parent", "parent"
+        child = plan()
+        child.source, child.target = "child", "child"
+        psql = FakePsql()
+        clear_targets(
+            psql,
+            [parent, child],
+            {"parent": {"status": "verified"}, "child": {"status": "failed"}},
+        )
+        self.assertEqual([call[0] for call in psql.calls], ['DELETE FROM "child"'])
+
     def test_sequence_reset_covers_identity_and_nextval(self) -> None:
         statements = sequence_sql(plan(), relation())
         self.assertEqual(len(statements), 2)
         self.assertTrue(all("setval(" in statement for statement in statements))
         self.assertTrue(any('"seq"' in statement for statement in statements))
+        self.assertTrue(all("GREATEST(" in statement for statement in statements))
+        self.assertFalse(any("MAX(\"id\") FROM \"items\"), 0) + 1" in statement for statement in statements))
 
     def test_sequence_reset_is_skipped_for_views(self) -> None:
         self.assertEqual(sequence_sql(plan("view"), relation()), [])

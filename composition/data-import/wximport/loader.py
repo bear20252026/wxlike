@@ -30,8 +30,8 @@ def sequence_sql(plan: TablePlan, relation: PgRelation) -> list[str]:
     """Reset identity/serial sequences after explicit IDs were imported.
 
     Without this, the first post-cutover insert either collides with an imported
-    id or jumps backwards. ``setval(..., max+1, true)`` leaves the next value
-    exactly at max+1; an empty table gets ``1, false``.
+    id or jumps backwards. ``setval(max, true)`` leaves max as the last used
+    value and makes the next insert max+1; an empty table gets ``1, false``.
     """
 
     statements: list[str] = []
@@ -53,7 +53,7 @@ def sequence_sql(plan: TablePlan, relation: PgRelation) -> list[str]:
         statements.append(
             "SELECT setval("
             f"pg_get_serial_sequence({table_literal}, {column_literal}), "
-            f"COALESCE((SELECT MAX({column_sql}) FROM {table}), 0) + 1, "
+            f"GREATEST(COALESCE((SELECT MAX({column_sql}) FROM {table}), 0), 1), "
             f"COALESCE((SELECT MAX({column_sql}) FROM {table}), 0) > 0"
             ");"
         )
@@ -65,6 +65,21 @@ def clear_sql(plan: TablePlan) -> str:
     # that still has an empty child referencing it, and would bypass the
     # INSTEAD OF triggers on the users/sessions/media compatibility views.
     return f"DELETE FROM {ident(plan.target)}"
+
+
+def clear_targets(psql: Psql, tables: list[TablePlan], statuses: dict[str, dict]) -> None:
+    """Empty pending targets children-first before the load loop.
+
+    Loading parent rows first is required for foreign keys, but clearing a
+    parent while an old child row still points at it is forbidden. A full
+    import therefore clears in reverse dependency order; verified tables in a
+    resumed run are left untouched.
+    """
+
+    for table in reversed(tables):
+        if statuses.get(table.source, {}).get("status") == "verified":
+            continue
+        psql.run(clear_sql(table))
 
 
 def load_table(psql: Psql, plan: TablePlan, csv_path: Path, relation: PgRelation) -> None:

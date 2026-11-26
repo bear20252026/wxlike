@@ -17,6 +17,14 @@ from .model import Kind
 NULL_TOKEN = r"\N"
 
 
+def _decimal(value: object) -> Decimal:
+    """Decimal from SQLite, avoiding the binary float noise in ``Decimal(1.23)``."""
+
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
 def _quote(text: str) -> str:
     return '"' + text.replace('"', '""') + '"'
 
@@ -40,7 +48,7 @@ def encode_field(value: object, kind: Kind) -> str:
             return _quote("Infinity" if number > 0 else "-Infinity")
         return _quote(repr(number))
     if kind == "decimal":
-        return _quote(format(Decimal(value).normalize(), "f"))
+        return _quote(format(_decimal(value).normalize(), "f"))
     if kind == "text":
         return _quote(str(value))
     raise ValueError(f"unknown value family {kind!r}")
@@ -66,7 +74,7 @@ def coerce_source(value: object, kind: Kind) -> object:
     if kind == "float":
         return float(value)
     if kind == "decimal":
-        return Decimal(value) if not isinstance(value, Decimal) else value
+        return _decimal(value)
     if kind == "text":
         return str(value)
     raise ValueError(f"unknown value family {kind!r}")
@@ -84,7 +92,7 @@ def canonical_value(value: object, kind: Kind) -> object:
     if kind == "float":
         return "f:" + repr(float(value))
     if kind == "decimal":
-        return "d:" + format(Decimal(value).normalize(), "f")
+        return "d:" + format(_decimal(value).normalize(), "f")
     if kind == "text":
         return "t:" + str(value)
     raise ValueError(f"unknown value family {kind!r}")

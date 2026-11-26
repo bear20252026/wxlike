@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .exporter import export_table
-from .loader import load_table
+from .loader import clear_targets, load_table
 from .model import ImportPlan
 from .pg import Psql, apply_catalog, parse_catalog
 from .plan import build_plan, plan_payload
@@ -79,6 +79,10 @@ def run_import(config: RunnerConfig, psql: Psql | None = None) -> dict:
     window = StopWriteWindow(source_sha, data_version(connection))
     failures: list[str] = []
     try:
+        if not config.verify_only:
+            # Clear old child rows before old parent rows; the per-table DELETE
+            # inside load_table cannot do that once a parent is reached first.
+            clear_targets(client, plan.tables, state.rows)
         for table in plan.tables:
             row = state.rows[table.source]
             status = row["status"]

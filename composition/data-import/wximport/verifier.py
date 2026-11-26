@@ -48,7 +48,14 @@ def decode_target(raw: str, kind: Kind) -> object:
             return False
         raise ValueError(f"boolean value is not recognized: {raw!r}")
     if kind == "int":
-        return int(raw)
+        # An INTEGER source may land in NUMERIC(20,2); the target prints 12.00.
+        lower = raw.lower()
+        if lower in {"t", "true", "f", "false"}:
+            return 1 if lower in {"t", "true"} else 0
+        value = Decimal(raw)
+        if value != value.to_integral_value():
+            raise ValueError(f"integer target returned a fractional value: {raw!r}")
+        return int(value)
     if kind == "float":
         return float(raw)
     if kind == "decimal":

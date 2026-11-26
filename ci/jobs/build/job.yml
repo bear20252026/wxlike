@@ -381,6 +381,8 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_m019_m022_behavior.sql
       - name: M023 导入控制表形状/约束断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_import.sql
+      - name: M023 数据导入全链路（导出/装载/摘要/续跑）
+        run: bash ci/jobs/build/pg_data_import_smoke.sh
       - name: M013 导入器全链路（SQLite → COPY → CALL）
         run: bash ci/jobs/build/pg_import_smoke.sh
       - name: 备份/恢复演练（pg_dump → psql restore → 断言）

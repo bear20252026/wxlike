@@ -90,6 +90,12 @@ class PathSelectionTest(unittest.TestCase):
         self.assertFalse(result["full"])
         self.assertEqual([name for name, on in result["targets"].items() if on], ["contract"])
 
+    def test_data_import_forces_full_matrix(self):
+        """The importer changes the cutover tool, so it must run against PG."""
+        result = select_targets.classify(["composition/data-import/wximport/pg.py"], self.policy)
+        self.assertTrue(result["full"])
+        self.assertTrue(all(result["targets"].values()))
+
     def test_codegen_still_forces_full_matrix(self):
         """tools/codegen emits contract baselines - deliberately left unclassified."""
         self.assertTrue(select_targets.classify(["tools/codegen/main.rs"], self.policy)["full"])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 import tempfile
@@ -10,6 +11,7 @@ from wximport.pg import (
     PgColumn,
     PgRelation,
     PlanError,
+    _iter_csv_rows,
     apply_catalog,
     kind_for_pg_type,
     parse_catalog,
@@ -81,6 +83,10 @@ class PgCatalogTest(unittest.TestCase):
         self.assertEqual(kind_for_pg_type("numeric(20,0)"), "decimal")
         self.assertEqual(kind_for_pg_type("bytea"), "bytes")
 
+    def test_copy_stream_preserves_embedded_carriage_return(self) -> None:
+        rows = list(_iter_csv_rows(io.BytesIO(b'"id","line1\r\nline2"\n')))
+        self.assertEqual(rows, [["id", "line1\r\nline2"]])
+
     def test_view_target_can_have_a_derived_column(self) -> None:
         catalog = parse_catalog(CATALOG)
         plan = self.plan()
@@ -106,6 +112,21 @@ class PgCatalogTest(unittest.TestCase):
         }
         with self.assertRaises(PlanError):
             apply_catalog(self.plan(), catalog)
+
+    def test_integer_source_can_fill_numeric_target(self) -> None:
+        catalog = {
+            "items": PgRelation(
+                name="items",
+                relkind="r",
+                columns=(
+                    PgColumn("id", "text", "text", True, None, ""),
+                    PgColumn("n", "numeric(20,0)", "decimal", True, None, ""),
+                    PgColumn("note", "text", "text", False, None, ""),
+                ),
+            )
+        }
+        result = apply_catalog(self.plan(), catalog)
+        self.assertEqual(result.tables[0].mode, "table")
 
     def test_incompatible_type_is_rejected(self) -> None:
         catalog = {

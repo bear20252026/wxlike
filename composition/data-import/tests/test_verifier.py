@@ -50,6 +50,10 @@ class VerifierTest(unittest.TestCase):
         self.assertEqual(decode_target("\\x00ff", "bytes"), b"\x00\xff")
         self.assertEqual(decode_target("t", "bool"), True)
         self.assertEqual(decode_target("2", "int"), 2)
+        self.assertEqual(decode_target("12.00", "int"), 12)
+        self.assertEqual(decode_target("t", "int"), 1)
+        with self.assertRaises(ValueError):
+            decode_target("1.5", "int")
 
     def test_copy_out_selects_only_planned_columns(self) -> None:
         sql = copy_out_sql(plan())
