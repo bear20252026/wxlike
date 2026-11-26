@@ -565,8 +565,21 @@ pub fn exchange(
 
 /// 换码：旧 challenge 立刻作废，新码沿用同一设备与 PKCE 绑定。
 pub fn refresh(conn: &Connection, old_id: &str, verifier: &str, now: i64) -> Result<Ticket> {
+    let tx = conn.unchecked_transaction()?;
+    let ticket = refresh_with(&SqliteExec(&tx), old_id, verifier, now)?;
+    tx.commit()?;
+    Ok(ticket)
+}
+
+/// 端口版 `refresh`：**调用方负责事务**（作废旧码与写入新码必须一起成功）。
+pub fn refresh_with<E: QrExec + ?Sized>(
+    exec: &E,
+    old_id: &str,
+    verifier: &str,
+    now: i64,
+) -> Result<Ticket> {
     check_verifier(verifier)?;
-    let row = load(conn, old_id, now)?;
+    let row = load_with(exec, old_id, now)?;
     if row.pkce_hash.is_empty()
         || !crate::ct_eq(row.pkce_hash.as_bytes(), digest(verifier).as_bytes())
     {
@@ -578,31 +591,29 @@ pub fn refresh(conn: &Connection, old_id: &str, verifier: &str, now: i64) -> Res
     ) {
         return Err(IdError::Conflict("challenge finished"));
     }
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    exec.exec(
         "UPDATE identity_qr SET state = 'expired' WHERE id = ?1",
-        params![old_id],
+        &[QrParam::Text(old_id.to_string())],
     )?;
     let id = random_hex(CHALLENGE_ID_BYTES);
     let secret = random_hex(CHALLENGE_BYTES);
     let expires_at = now.saturating_add(QR_TTL_MS);
-    tx.execute(
+    exec.exec(
         "INSERT INTO identity_qr(id, secret_hash, state, pkce_hash, device_id, platform, label, \
          ip_hint, created_at, expires_at) \
          VALUES(?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            id,
-            digest(&secret),
-            row.pkce_hash,
-            row.device_id,
-            row.platform,
-            row.label,
-            row.ip_hint,
-            now,
-            expires_at
+        &[
+            QrParam::Text(id.clone()),
+            QrParam::Text(digest(&secret)),
+            QrParam::Text(row.pkce_hash),
+            QrParam::Text(row.device_id),
+            QrParam::Text(row.platform),
+            QrParam::Text(row.label),
+            QrParam::Text(row.ip_hint),
+            QrParam::Int(now),
+            QrParam::Int(expires_at),
         ],
     )?;
-    tx.commit()?;
     Ok(Ticket {
         id,
         secret,
