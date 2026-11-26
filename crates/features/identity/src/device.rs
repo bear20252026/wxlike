@@ -103,6 +103,17 @@ pub fn register(
     reg: &Registration,
     now: i64,
 ) -> Result<DeviceRow> {
+    register_with(&SqliteExec(conn), user_id, device_id, reg, now)
+}
+
+/// 端口版 `register`：注册/刷新设备的所有读写走同一份 SQL。
+pub fn register_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    reg: &Registration,
+    now: i64,
+) -> Result<DeviceRow> {
     if !valid_device_id(device_id) {
         return Err(IdError::BadInput("device_id"));
     }
@@ -115,15 +126,14 @@ pub fn register(
     if reg.identity_key.len() > MAX_IDENTITY_KEY_LEN {
         return Err(IdError::BadInput("identity_key"));
     }
-    if let Some(existing) = get(conn, device_id)? {
-        return refresh_existing(conn, existing, user_id, reg, &label, &os, &app, now);
+    if let Some(existing) = get_with(exec, device_id)? {
+        return refresh_existing_with(exec, existing, user_id, reg, &label, &os, &app, now);
     }
     // R6：get→admit 是 check-then-act。两个账号并发注册同一 device_id 时，
     // 双方都可能通过 get=None 检查；device_id 是 PRIMARY KEY，输家的 INSERT
     // 撞唯一约束。这不是数据库故障，是"设备已被别人认领"的业务冲突——
-    // 语义化成 Conflict，而不是把裸 rusqlite 约束错误漏给调用方。
-    // （慢 runner 上 identity_concurrency 曾偶发双 Ok，见第二轮审计 §10。）
-    match admit(conn, user_id, device_id, reg, &label, &os, &app, now) {
+    // 语义化成 Conflict，而不是把裸约束错误漏给调用方。
+    match admit_with(exec, user_id, device_id, reg, &label, &os, &app, now) {
         Err(IdError::Db(rusqlite::Error::SqliteFailure(err, _)))
             if err.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
@@ -134,8 +144,8 @@ pub fn register(
 }
 
 /// 已存在的设备：撤销的拒绝复活，换了身份密钥的拒绝静默覆盖。
-fn refresh_existing(
-    conn: &Connection,
+fn refresh_existing_with<E: SqlExec + ?Sized>(
+    exec: &E,
     existing: DeviceRow,
     user_id: &str,
     reg: &Registration,
@@ -166,17 +176,25 @@ fn refresh_existing(
     } else {
         reg.identity_key.clone()
     };
-    conn.execute(
+    exec.exec(
         "UPDATE identity_device SET platform = ?2, label = ?3, os_version = ?4, \
          app_version = ?5, identity_key = ?6, last_seen = ?7 WHERE device_id = ?1",
-        params![existing.device_id, reg.platform, label, os, app, key, now],
+        &[
+            SqlParam::Text(existing.device_id.clone()),
+            SqlParam::Text(reg.platform.clone()),
+            SqlParam::Text(label.to_string()),
+            SqlParam::Text(os.to_string()),
+            SqlParam::Text(app.to_string()),
+            SqlParam::Text(key),
+            SqlParam::Int(now),
+        ],
     )?;
-    get(conn, &existing.device_id)?.ok_or(IdError::NotFound("device"))
+    get_with(exec, &existing.device_id)?.ok_or(IdError::NotFound("device"))
 }
 
 /// 新设备入册；先回收历史撤销行，仍超限则拒绝。
-fn admit(
-    conn: &Connection,
+fn admit_with<E: SqlExec + ?Sized>(
+    exec: &E,
     user_id: &str,
     device_id: &str,
     reg: &Registration,
@@ -185,44 +203,36 @@ fn admit(
     app: &str,
     now: i64,
 ) -> Result<DeviceRow> {
-    let active: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM identity_device WHERE user_id = ?1 AND revoked_at IS NULL",
-        params![user_id],
-        |r| r.get(0),
-    )?;
+    let active = active_count_with(exec, user_id)?;
     if active >= MAX_DEVICES_PER_USER {
-        conn.execute(
+        exec.exec(
             "DELETE FROM identity_device WHERE device_id = (
                  SELECT device_id FROM identity_device
                  WHERE user_id = ?1 AND revoked_at IS NOT NULL
                  ORDER BY revoked_at ASC LIMIT 1)",
-            params![user_id],
+            &[SqlParam::Text(user_id.to_string())],
         )?;
     }
-    let still: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM identity_device WHERE user_id = ?1 AND revoked_at IS NULL",
-        params![user_id],
-        |r| r.get(0),
-    )?;
+    let still = active_count_with(exec, user_id)?;
     if still >= MAX_DEVICES_PER_USER {
         return Err(IdError::Conflict("device limit reached"));
     }
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_device(device_id, user_id, platform, label, os_version, \
          app_version, identity_key, trust, created_at, last_seen, revoked_at) \
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'unverified', ?8, ?8, NULL)",
-        params![
-            device_id,
-            user_id,
-            reg.platform,
-            label,
-            os,
-            app,
-            reg.identity_key,
-            now
+        &[
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(reg.platform.clone()),
+            SqlParam::Text(label.to_string()),
+            SqlParam::Text(os.to_string()),
+            SqlParam::Text(app.to_string()),
+            SqlParam::Text(reg.identity_key.clone()),
+            SqlParam::Int(now),
         ],
     )?;
-    get(conn, device_id)?.ok_or(IdError::NotFound("device"))
+    get_with(exec, device_id)?.ok_or(IdError::NotFound("device"))
 }
 
 /// 单台设备（含已撤销）。
