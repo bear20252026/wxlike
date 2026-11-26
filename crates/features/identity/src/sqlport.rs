@@ -79,6 +79,10 @@ pub trait SqlExec {
     /// 插入一行并返回自增主键。SQLite 走 `last_insert_rowid()`；PG 适配器
     /// 负责把 `RETURNING` 补到同一条 INSERT 上——调用方的 SQL 不写方言。
     fn insert_returning(&self, sql: &str, params: &[SqlParam]) -> Result<i64>;
+
+    /// 表/视图是否存在。治理域要判断平台 `users` 表是否已建（identity 独立
+    /// 测试库没有它），这个探测不能写死 `sqlite_master`。
+    fn table_exists(&self, name: &str) -> Result<bool>;
 }
 
 /// identity 自带的后端：直接走 `rusqlite`。
@@ -158,5 +162,14 @@ impl SqlExec for SqliteExec<'_> {
     fn insert_returning(&self, sql: &str, params: &[SqlParam]) -> Result<i64> {
         self.exec(sql, params)?;
         Ok(self.0.last_insert_rowid())
+    }
+
+    fn table_exists(&self, name: &str) -> Result<bool> {
+        let n: i64 = self.0.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1",
+            rusqlite::params![name],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
     }
 }

@@ -37,7 +37,9 @@ pub mod device;
 pub mod user;
 pub mod view;
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
+
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use serde::{Deserialize, Serialize};
 
 use crate::{IdError, Result};
@@ -187,7 +189,16 @@ pub(crate) fn authenticate_operator(
     operator_token: &str,
     now: i64,
 ) -> Result<crate::session::AuthContext> {
-    crate::session::authenticate(conn, operator_token, crate::Audience::Admin, now)
+    authenticate_operator_with(&SqliteExec(conn), operator_token, now)
+}
+
+/// 端口版管理端鉴权：只认 admin audience 的会话令牌。
+pub(crate) fn authenticate_operator_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    now: i64,
+) -> Result<crate::session::AuthContext> {
+    crate::session::authenticate_with(exec, operator_token, crate::Audience::Admin, now)
 }
 
 /// 目标 id 形状校验（路径段安全：只允许 ASCII 字母数字与 `- _ .`）。
@@ -232,23 +243,24 @@ pub(crate) fn check_actor(raw: &str) -> Result<String> {
 /// 此时跳过存在性校验（治理状态以 user_id 为键，不依赖 users 行）。平台库里
 /// 表一定在，校验照常生效——封一个不存在的账号返回 NotFound。
 pub(crate) fn require_user(conn: &Connection, user_id: &str) -> Result<()> {
-    let has_users: bool = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'",
-        [],
-        |r| r.get::<_, i64>(0),
-    )? > 0;
-    if !has_users {
+    require_user_with(&SqliteExec(conn), user_id)
+}
+
+/// 端口版目标存在性校验：平台 `users` 表不存在时跳过（identity 独立测试库）。
+pub(crate) fn require_user_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<()> {
+    if !exec.table_exists("users")? {
         return Ok(());
     }
-    let n: i64 = conn.query_row(
+    let row = exec.query(
         "SELECT COUNT(*) FROM users WHERE id = ?1",
-        params![user_id],
-        |r| r.get(0),
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Int],
     )?;
-    if n == 0 {
-        return Err(IdError::NotFound("user"));
+    match row.and_then(|mut row| row.pop()) {
+        Some(crate::sqlport::SqlValue::Int(0)) => Err(IdError::NotFound("user")),
+        Some(crate::sqlport::SqlValue::Int(_)) => Ok(()),
+        _ => Err(IdError::Corrupt("users count column")),
     }
-    Ok(())
 }
 
 /// 一条治理审计草稿（字段打包，避免超长参数列表）。
@@ -267,24 +279,31 @@ pub(crate) struct AuditDraft<'a> {
 
 /// 落一条治理回执，返回自增 seq（回执 reference 用它关联审计行）。
 pub(crate) fn append_audit(conn: &Connection, draft: &AuditDraft<'_>) -> Result<i64> {
-    conn.execute(
+    append_audit_with(&SqliteExec(conn), draft)
+}
+
+/// 端口版审计写入：INSERT 不写方言，自增 seq 由端口补 `RETURNING`。
+pub(crate) fn append_audit_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    draft: &AuditDraft<'_>,
+) -> Result<i64> {
+    exec.insert_returning(
         "INSERT INTO identity_governance_audit(action, target, actor, reason, trace, \
          before_json, after_json, sessions_revoked, already, at) \
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            draft.action,
-            draft.target,
-            draft.actor,
-            draft.reason,
-            draft.trace,
-            serde_json::to_string(draft.before)?,
-            serde_json::to_string(draft.after)?,
-            draft.sessions_revoked as i64,
-            draft.already,
-            draft.at,
+        &[
+            SqlParam::Text(draft.action.to_string()),
+            SqlParam::Text(draft.target.to_string()),
+            SqlParam::Text(draft.actor.to_string()),
+            SqlParam::Text(draft.reason.to_string()),
+            SqlParam::Text(draft.trace.to_string()),
+            SqlParam::Text(serde_json::to_string(draft.before)?),
+            SqlParam::Text(serde_json::to_string(draft.after)?),
+            SqlParam::Int(draft.sessions_revoked as i64),
+            SqlParam::Int(i64::from(draft.already)),
+            SqlParam::Int(draft.at),
         ],
-    )?;
-    Ok(conn.last_insert_rowid())
+    )
 }
 
 /// 回执 reference：`gov:<action>:<audit seq>`，可据此回查审计行。

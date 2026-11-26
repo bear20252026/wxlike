@@ -126,4 +126,38 @@ impl QrExec for StorageSqlExec<'_, '_> {
             }
         }
     }
+
+    fn table_exists(&self, name: &str) -> Result<bool, wxlike_identity::IdError> {
+        match self.0.dialect() {
+            StorageDialect::Sqlite => {
+                let value = <Self as QrExec>::query(
+                    self,
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type IN ('table', 'view') AND name = ?1",
+                    &[QrParam::Text(name.to_string())],
+                    &[QrKind::Int],
+                )?
+                .and_then(|mut row| row.pop())
+                .ok_or_else(|| wxlike_identity::IdError::Corrupt("table probe missing"))?;
+                match value {
+                    QrValue::Int(v) => Ok(v > 0),
+                    _ => Err(wxlike_identity::IdError::Corrupt("table probe type")),
+                }
+            }
+            StorageDialect::Postgres => {
+                let value = <Self as QrExec>::query(
+                    self,
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?1",
+                    &[QrParam::Text(name.to_string())],
+                    &[QrKind::Int],
+                )?
+                .and_then(|mut row| row.pop())
+                .ok_or_else(|| wxlike_identity::IdError::Corrupt("table probe missing"))?;
+                match value {
+                    QrValue::Int(v) => Ok(v > 0),
+                    _ => Err(wxlike_identity::IdError::Corrupt("table probe type")),
+                }
+            }
+        }
+    }
 }
