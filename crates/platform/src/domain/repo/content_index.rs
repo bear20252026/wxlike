@@ -140,23 +140,6 @@ pub(in crate::domain) fn trend_rows(
     it.collect::<std::result::Result<Vec<_>, _>>()
 }
 
-// ── 事务内桥接 ─────────────────────────────────────────────────────────────
-//
-// 尚未迁端口的内容域（articles / moments / status / video_feed）仍在
-// `with_tx` 闭包里持 `&Transaction`。这里只把事务借成端口，SQL 仍只有一份。
-
-pub(in crate::domain) fn remove_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<()> {
-    remove(&StorageConnection::sqlite_borrow(tx), doc_id)
-}
-
-pub(in crate::domain) fn remove_media_refs_tx(
-    tx: &rusqlite::Transaction<'_>,
-    ref_kind: &str,
-    ref_id: &str,
-) -> Result<()> {
-    remove_media_refs(&StorageConnection::sqlite_borrow(tx), ref_kind, ref_id)
-}
-
 #[cfg(test)]
 mod pg_tests {
     use super::{add_media_refs, body, candidates, remove, remove_media_refs, trend_rows, upsert};

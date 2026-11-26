@@ -42,32 +42,6 @@ pub(in crate::domain) fn notify(
     Ok(())
 }
 
-/// 事务内调用：`with_tx` 闭包只给 `&Transaction`，这里转成端口值。
-#[allow(clippy::too_many_arguments)]
-pub(in crate::domain) fn notify_tx(
-    tx: &rusqlite::Transaction<'_>,
-    user_id: &str,
-    kind: &str,
-    actor: &str,
-    target_kind: &str,
-    target_id: &str,
-    text: &str,
-    dedupe: &str,
-    now: i64,
-) -> Result<()> {
-    notify(
-        &StorageConnection::sqlite_tx(tx),
-        user_id,
-        kind,
-        actor,
-        target_kind,
-        target_id,
-        text,
-        dedupe,
-        now,
-    )
-}
-
 /// 通知分页（按 `seq` 倒序）。
 pub(in crate::domain) fn page(
     conn: &StorageConnection<'_>,

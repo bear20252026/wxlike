@@ -260,15 +260,6 @@ pub(in crate::domain) fn revoke_source(
     Ok(())
 }
 
-/// 事务内调用：`with_tx` 闭包只给 `&Transaction`，这里把它转成端口值。
-pub(in crate::domain) fn revoke_source_tx(
-    tx: &rusqlite::Transaction<'_>,
-    source_kind: &str,
-    source_id: &str,
-) -> Result<()> {
-    revoke_source(&StorageConnection::sqlite_tx(tx), source_kind, source_id)
-}
-
 /// 幂等语义是"同一载荷重复提交"：同会话同消息、同快照内容返回已有行；
 /// 同消息不同快照（如重发后转发语不同）仍各成一行（P1 契约如此）。
 pub(in crate::domain) fn find_message_snapshot(
