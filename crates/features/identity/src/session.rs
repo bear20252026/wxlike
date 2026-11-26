@@ -268,14 +268,21 @@ pub struct TokenRecord {
 
 /// 当前全局令牌序列号。表里没有行 = 从没轮转过 = 0。
 pub fn current_serial(conn: &Connection) -> Result<i64> {
-    let row: Option<i64> = conn
-        .query_row(
-            "SELECT serial FROM identity_token_serial WHERE id = 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(row.unwrap_or(0))
+    current_serial_with(&SqliteExec(conn))
+}
+
+/// 端口版：同一份 SQL 在 SQLite / PG 上执行。
+pub fn current_serial_with<E: SqlExec + ?Sized>(exec: &E) -> Result<i64> {
+    let row = exec.query(
+        "SELECT serial FROM identity_token_serial WHERE id = 1",
+        &[],
+        &[crate::sqlport::ColKind::Int],
+    )?;
+    match row.and_then(|mut row| row.pop()) {
+        Some(crate::sqlport::SqlValue::Int(v)) => Ok(v),
+        Some(_) => Err(IdError::Corrupt("token serial column")),
+        None => Ok(0),
+    }
 }
 
 /// 轮转序列号：**一次调用作废此前签发的全部令牌**（上游 `serial_num` 的用途：
@@ -299,20 +306,40 @@ pub fn rotate_serial(conn: &Connection, now: i64) -> Result<i64> {
 /// 有行但 `auth_level`/`features` 读不懂 → [`IdError::Corrupt`]：
 /// 绝不能折成 `Auth`/空集，那等于一行坏数据自动获得权限。
 pub fn token_record(conn: &Connection, sid: &str) -> Result<Option<TokenRecord>> {
+    token_record_with(&SqliteExec(conn), sid)
+}
+
+/// 端口版：会话侧车行。
+pub fn token_record_with<E: SqlExec + ?Sized>(exec: &E, sid: &str) -> Result<Option<TokenRecord>> {
     if sid.is_empty() {
         return Ok(None);
     }
-    let raw: Option<(String, String, String, String, i64, i64, i64)> = conn
-        .query_row(
-            "SELECT sid, user_id, auth_level, features, serial, issued_at, expires_at \
-             FROM identity_session_token WHERE sid = ?1",
-            params![sid],
-            |r| wxlike_core::row_tuple!(r; 0, 1, 2, 3, 4, 5, 6),
-        )
-        .optional()?;
-    let Some((sid, user_id, level, features, serial, issued_at, expires_at)) = raw else {
+    use crate::sqlport::{ColKind, SqlParam};
+    let Some(row) = exec.query(
+        "SELECT sid, user_id, auth_level, features, serial, issued_at, expires_at \
+         FROM identity_session_token WHERE sid = ?1",
+        &[SqlParam::Text(sid.to_string())],
+        &[
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Int,
+            ColKind::Int,
+            ColKind::Int,
+        ],
+    )?
+    else {
         return Ok(None);
     };
+    let mut it = row.into_iter();
+    let sid = text(it.next())?;
+    let user_id = text(it.next())?;
+    let level = text(it.next())?;
+    let features = text(it.next())?;
+    let serial = int(it.next())?;
+    let issued_at = int(it.next())?;
+    let expires_at = int(it.next())?;
     Ok(Some(TokenRecord {
         sid,
         user_id,
@@ -322,6 +349,20 @@ pub fn token_record(conn: &Connection, sid: &str) -> Result<Option<TokenRecord>>
         issued_at,
         expires_at,
     }))
+}
+
+fn text(value: Option<crate::sqlport::SqlValue>) -> Result<String> {
+    match value {
+        Some(crate::sqlport::SqlValue::Text(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("session row column")),
+    }
+}
+
+fn int(value: Option<crate::sqlport::SqlValue>) -> Result<i64> {
+    match value {
+        Some(crate::sqlport::SqlValue::Int(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("session row column")),
+    }
 }
 
 /// `ParseAuthLevel` 的严格版：表外值报错而不是回 `LevelNone`。
@@ -476,20 +517,45 @@ pub fn authenticate(
     audience: Audience,
     now: i64,
 ) -> Result<AuthContext> {
-    let found: Option<(String, Option<String>, String, i64, String)> = conn
-        .query_row(
-            "SELECT user_id, sid, device_id, expires_at, audience FROM sessions WHERE token = ?1",
-            params![digest(access_token)],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .optional()?;
-    let Some((user_id, sid, device_id, expires_at, stored_audience)) = found else {
+    authenticate_with(&SqliteExec(conn), access_token, audience, now)
+}
+
+/// 端口版鉴权：同一组规则在 SQLite / PG 上执行。
+pub fn authenticate_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    access_token: &str,
+    audience: Audience,
+    now: i64,
+) -> Result<AuthContext> {
+    use crate::sqlport::{ColKind, SqlParam};
+    let Some(row) = exec.query(
+        "SELECT user_id, sid, device_id, expires_at, audience FROM sessions WHERE token = ?1",
+        &[SqlParam::Text(digest(access_token))],
+        &[
+            ColKind::Text,
+            ColKind::OptText,
+            ColKind::Text,
+            ColKind::Int,
+            ColKind::Text,
+        ],
+    )?
+    else {
         return Err(IdError::Unauthorized("invalid or expired token"));
     };
+    let mut it = row.into_iter();
+    let user_id = text(it.next())?;
+    let sid = match it.next() {
+        Some(crate::sqlport::SqlValue::Text(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("session sid column")),
+    };
+    let device_id = text(it.next())?;
+    let expires_at = int(it.next())?;
+    let stored_audience = text(it.next())?;
     if expires_at <= now {
-        conn.execute(
+        exec.exec(
             "DELETE FROM sessions WHERE token = ?1",
-            params![digest(access_token)],
+            &[SqlParam::Text(digest(access_token))],
         )?;
         return Err(IdError::Unauthorized("invalid or expired token"));
     }
@@ -497,16 +563,9 @@ pub fn authenticate(
     if stored != audience {
         return Err(IdError::Unauthorized("wrong audience"));
     }
-    // 令牌侧车两查：序列号与认证级别。
-    //
-    // 上游 `auth_token.Authenticate` 的分支顺序是"长度 → 签名 → 级别合法 →
-    // 序列号 → 过期"，并且**签名不符和序列号不符回的是同一个 `ErrFailed`**：
-    // 客户端分不清"这枚不是我拿到的那枚"与"这枚被整体轮转作废了"。这里刻意
-    // 同形——两个分支都回与"令牌不存在"完全一样的 `invalid or expired token`，
-    // 免得鉴权错误变成一台轮转状态探测仪。
-    // 级别不足回 `wrong audience`：那是调用方拿错面在问，不是对服务端的探测。
-    if let Some(record) = token_record(conn, sid.as_deref().unwrap_or_default())? {
-        if record.serial != current_serial(conn)? {
+    // 令牌侧车两查：序列号与认证级别。分支顺序与错误同形，见上方旧实现注释。
+    if let Some(record) = token_record_with(exec, sid.as_deref().unwrap_or_default())? {
+        if record.serial != current_serial_with(exec)? {
             return Err(IdError::Unauthorized("invalid or expired token"));
         }
         if record.auth_level < AuthLevel::required_for(audience) {
@@ -514,7 +573,7 @@ pub fn authenticate(
         }
     }
     if !device_id.is_empty() {
-        require_active_device(conn, &user_id, &device_id)?;
+        require_active_device_with(exec, &user_id, &device_id)?;
     }
     Ok(AuthContext {
         sid: sid.unwrap_or_default(),
@@ -522,6 +581,35 @@ pub fn authenticate(
         device_id,
         audience,
     })
+}
+
+/// 端口版设备闸门：设备行不存在是 NotFound，存在但已撤销/不属于该用户是
+/// Forbidden——三种结果与 `device::get` + `is_active` 的旧判定逐条对应。
+fn require_active_device_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+) -> Result<()> {
+    use crate::sqlport::{ColKind, SqlParam};
+    let Some(row) = exec.query(
+        "SELECT user_id, revoked_at FROM identity_device WHERE device_id = ?1",
+        &[SqlParam::Text(device_id.to_string())],
+        &[ColKind::Text, ColKind::OptInt],
+    )?
+    else {
+        return Err(IdError::NotFound("device"));
+    };
+    let mut it = row.into_iter();
+    let stored_user = text(it.next())?;
+    let revoked = match it.next() {
+        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("device revoked_at column")),
+    };
+    if stored_user != user_id || revoked.is_some() {
+        return Err(IdError::Forbidden("device revoked"));
+    }
+    Ok(())
 }
 
 /// 心跳：更新最近活跃时间（失败不阻断请求，鉴权已经过了）。
