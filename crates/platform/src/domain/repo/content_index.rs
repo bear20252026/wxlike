@@ -145,34 +145,8 @@ pub(in crate::domain) fn trend_rows(
 // 尚未迁端口的内容域（articles / moments / status / video_feed）仍在
 // `with_tx` 闭包里持 `&Transaction`。这里只把事务借成端口，SQL 仍只有一份。
 
-pub(in crate::domain) fn upsert_tx(
-    tx: &rusqlite::Transaction<'_>,
-    doc: &IndexDoc<'_>,
-    now: i64,
-) -> Result<()> {
-    upsert(&StorageConnection::sqlite_borrow(tx), doc, now)
-}
-
 pub(in crate::domain) fn remove_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<()> {
     remove(&StorageConnection::sqlite_borrow(tx), doc_id)
-}
-
-pub(in crate::domain) fn add_media_refs_tx(
-    tx: &rusqlite::Transaction<'_>,
-    media_ids: &[String],
-    ref_kind: &str,
-    ref_id: &str,
-    owner: &str,
-    now: i64,
-) -> Result<()> {
-    add_media_refs(
-        &StorageConnection::sqlite_borrow(tx),
-        media_ids,
-        ref_kind,
-        ref_id,
-        owner,
-        now,
-    )
 }
 
 pub(in crate::domain) fn remove_media_refs_tx(

@@ -24,7 +24,6 @@ use crate::storage::StorageConnection;
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::moments::{
     album_page, check_reply_target, delete_draft, delete_draft_for_author, delete_like,
@@ -280,12 +279,10 @@ impl Platform {
         let id = crate::auth::random_hex(8);
         let now = wxlike_core::types::now_ms() as i64;
 
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = StorageConnection::sqlite_tx(tx);
-            require_media(&port, &cleaned)?;
+        self.db().with_tx(|port| -> Result<()> {
+            require_media(port, &cleaned)?;
             insert_moment(
-                &port,
+                port,
                 &id,
                 &author,
                 text,
@@ -294,20 +291,20 @@ impl Platform {
                 &group,
                 now,
             )?;
-            crate::domain::repo::content_index::upsert_tx(
-                tx,
+            crate::domain::repo::content_index::upsert(
+                port,
                 &moment_index_doc(&id, &author, visibility, &group, text),
                 now,
             )?;
-            crate::domain::repo::content_index::add_media_refs_tx(
-                tx, &cleaned, "moment", &id, &author, now,
+            crate::domain::repo::content_index::add_media_refs(
+                port, &cleaned, "moment", &id, &author, now,
             )?;
             // 发布时扇出（issue #126 要求 4）：与插入同事务，所以“帖在提醒不在”
             // 或“提醒先于帖可见”的窗口都不存在。
-            fanout_new_moment(&port, &author, visibility, &group, &id, now)?;
+            fanout_new_moment(port, &author, visibility, &group, &id, now)?;
             if let Some(draft_id) = draft_id {
                 let draft_id = validate::id(draft_id)?;
-                if !delete_draft_for_author(&port, draft_id, &author)? {
+                if !delete_draft_for_author(port, draft_id, &author)? {
                     return Err(PlatformError::Forbidden);
                 }
             }
@@ -332,10 +329,8 @@ impl Platform {
             check_moment_input(text, media_ids, visibility, audience_group, true)?;
         let now = wxlike_core::types::now_ms() as i64;
         let media = serde_json::to_string(&cleaned)?;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<String> {
-            let port = StorageConnection::sqlite_tx(tx);
-            require_media(&port, &cleaned)?;
+        self.db().with_tx(|port| -> Result<String> {
+            require_media(port, &cleaned)?;
             let fields = DraftFields {
                 author: &author,
                 text,
@@ -344,7 +339,7 @@ impl Platform {
                 group: &group,
                 now,
             };
-            write_draft(&port, draft_id, &fields)
+            write_draft(port, draft_id, &fields)
         })
     }
 
@@ -447,14 +442,12 @@ impl Platform {
     /// Author-only removal. 索引与媒体引用同事务清理：检索同步不可见，
     /// 附件不会留下指向已删动态的孤儿引用。
     pub(crate) fn delete_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<bool> {
-            let port = StorageConnection::sqlite_tx(tx);
-            let changed = soft_delete_moment(&port, moment_id, by)?;
+        self.db().with_tx(|port| -> Result<bool> {
+            let changed = soft_delete_moment(port, moment_id, by)?;
             if changed {
-                crate::domain::repo::content_index::remove_tx(tx, moment_id)?;
-                crate::domain::repo::content_index::remove_media_refs_tx(tx, "moment", moment_id)?;
-                crate::domain::repo::favorites::revoke_source_tx(tx, "moment", moment_id)?;
+                crate::domain::repo::content_index::remove(port, moment_id)?;
+                crate::domain::repo::content_index::remove_media_refs(port, "moment", moment_id)?;
+                crate::domain::repo::favorites::revoke_source(port, "moment", moment_id)?;
             }
             Ok(changed)
         })
@@ -477,14 +470,12 @@ impl Platform {
     /// dedupe key keeps it from generating a second notification.
     pub(crate) fn like_moment(&self, moment_id: &str, by: &str) -> Result<bool> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<bool> {
-            let port = StorageConnection::sqlite_tx(tx);
-            let changed = insert_like(&port, moment_id, by, now)?;
+        self.db().with_tx(|port| -> Result<bool> {
+            let changed = insert_like(port, moment_id, by, now)?;
             if changed {
-                if let Some(author) = moment_author_if_live(&port, moment_id)? {
-                    crate::domain::repo::inbox::notify_tx(
-                        tx,
+                if let Some(author) = moment_author_if_live(port, moment_id)? {
+                    crate::domain::repo::inbox::notify(
+                        port,
                         &author,
                         "moment_like",
                         by,
@@ -522,14 +513,12 @@ impl Platform {
             Some(r) if !r.is_empty() => Some(validate::id(r)?.to_string()),
             _ => None,
         };
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = StorageConnection::sqlite_tx(tx);
+        self.db().with_tx(|port| -> Result<()> {
             if let Some(rt) = &reply_to {
-                check_reply_target(&port, moment_id, rt)?;
+                check_reply_target(port, moment_id, rt)?;
             }
-            insert_comment(&port, &id, moment_id, &by, text, reply_to.as_deref(), now)?;
-            notify_comment_inbox(&port, moment_id, &by, reply_to.as_deref(), now)?;
+            insert_comment(port, &id, moment_id, &by, text, reply_to.as_deref(), now)?;
+            notify_comment_inbox(port, moment_id, &by, reply_to.as_deref(), now)?;
             Ok(())
         })?;
         Ok(id)
