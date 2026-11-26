@@ -47,7 +47,8 @@ use crate::{IdError, Result};
 pub use device::{revoke_device, revoke_device_tx};
 pub use user::{
     add_label, add_label_with, ensure_user_active, ensure_user_active_with, remove_label,
-    remove_label_with, set_disabled, settle_expired, suspend, unsuspend, user_state, UserState,
+    remove_label_with, set_disabled, set_disabled_tx, settle_expired, suspend, suspend_tx,
+    unsuspend, unsuspend_tx, user_state, GovernCommit, UserState,
 };
 pub use view::{user_view, user_view_with, AdminUserView, NoCounts, METADATA_FIELDS};
 
@@ -182,16 +183,6 @@ CREATE TABLE IF NOT EXISTS identity_governance_label (
 );
 "#;
 
-/// 管理操作者鉴权：只认 **admin audience** 的会话令牌（复用 G02-01）。
-/// 普通用户令牌、过期/撤销令牌、级别不足一律 `Unauthorized`。
-pub(crate) fn authenticate_operator(
-    conn: &Connection,
-    operator_token: &str,
-    now: i64,
-) -> Result<crate::session::AuthContext> {
-    authenticate_operator_with(&SqliteExec(conn), operator_token, now)
-}
-
 /// 端口版管理端鉴权：只认 admin audience 的会话令牌。
 pub(crate) fn authenticate_operator_with<E: SqlExec + ?Sized>(
     exec: &E,
@@ -235,15 +226,6 @@ pub(crate) fn check_actor(raw: &str) -> Result<String> {
         return Err(IdError::BadInput("actor"));
     }
     Ok(t.to_string())
-}
-
-/// 目标用户必须存在（读平台 users 表，只读不写）。
-///
-/// `users` 表由平台建（与 `sessions` 同口径）：identity 独立测试库没有这张表，
-/// 此时跳过存在性校验（治理状态以 user_id 为键，不依赖 users 行）。平台库里
-/// 表一定在，校验照常生效——封一个不存在的账号返回 NotFound。
-pub(crate) fn require_user(conn: &Connection, user_id: &str) -> Result<()> {
-    require_user_with(&SqliteExec(conn), user_id)
 }
 
 /// 端口版目标存在性校验：平台 `users` 表不存在时跳过（identity 独立测试库）。

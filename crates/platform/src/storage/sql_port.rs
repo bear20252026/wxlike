@@ -14,6 +14,7 @@ fn param(p: &QrParam) -> Param {
     match p {
         QrParam::Text(v) => Param::Text(v.clone()),
         QrParam::Int(v) => Param::Int(*v),
+        QrParam::Null => Param::NullInt,
     }
 }
 

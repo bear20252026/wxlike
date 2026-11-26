@@ -12,6 +12,8 @@ use crate::{IdError, Result};
 pub enum SqlParam {
     Text(String),
     Int(i64),
+    /// SQL NULL。治理的 `suspended_until_ms`（永久封禁）需要显式空值。
+    Null,
 }
 
 /// 查询结果列的目标类型。端口实现按它取值，避免把整数列读成文本。
@@ -92,6 +94,7 @@ fn sqlite_param(p: &SqlParam) -> rusqlite::types::Value {
     match p {
         SqlParam::Text(v) => rusqlite::types::Value::Text(v.clone()),
         SqlParam::Int(v) => rusqlite::types::Value::Integer(*v),
+        SqlParam::Null => rusqlite::types::Value::Null,
     }
 }
 

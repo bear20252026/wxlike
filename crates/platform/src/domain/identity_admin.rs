@@ -27,15 +27,16 @@ impl Platform {
         operator_token: &str,
         cmd: &GovernCommand,
     ) -> Result<GovernEffect, ApiError> {
-        let c = self.db().lock()?;
-        governance::suspend(
-            &c,
-            operator_token,
-            cmd,
-            &self.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-        .map_err(id_err)
+        let now = wxlike_core::types::now_ms() as i64;
+        let pending = self.db().with_tx(|c| {
+            Ok(governance::suspend_tx(
+                &StorageSqlExec(c),
+                operator_token,
+                cmd,
+                now,
+            )?)
+        })?;
+        pending.finish(&self.governance).map_err(id_err)
     }
 
     /// 解封（可逆，留痕）。
@@ -44,15 +45,16 @@ impl Platform {
         operator_token: &str,
         cmd: &GovernCommand,
     ) -> Result<GovernEffect, ApiError> {
-        let c = self.db().lock()?;
-        governance::unsuspend(
-            &c,
-            operator_token,
-            cmd,
-            &self.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-        .map_err(id_err)
+        let now = wxlike_core::types::now_ms() as i64;
+        let pending = self.db().with_tx(|c| {
+            Ok(governance::unsuspend_tx(
+                &StorageSqlExec(c),
+                operator_token,
+                cmd,
+                now,
+            )?)
+        })?;
+        pending.finish(&self.governance).map_err(id_err)
     }
 
     /// 撤销设备：同事务作废该设备的会话/刷新链/step-up。

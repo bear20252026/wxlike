@@ -34,8 +34,9 @@ use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    append_audit, authenticate_operator, check_actor, check_reason, check_target, reference,
-    require_user, AuditDraft, GovernCommand, GovernEffect, GovernanceEvent, PlatformGovernancePort,
+    append_audit, append_audit_with, authenticate_operator_with, check_actor, check_reason,
+    check_target, reference, require_user_with, AuditDraft, GovernCommand, GovernEffect,
+    GovernanceEvent, PlatformGovernancePort,
 };
 use crate::{check_label, IdError, Result};
 
@@ -187,6 +188,25 @@ fn summary(state: UserState, until_ms: Option<i64>) -> serde_json::Value {
     })
 }
 
+/// 事务内完成的治理结果：状态、审计序号与回执都已就绪，只差平台镜像和事件。
+/// 平台 `Db::with_tx` 提交后调用 [`GovernCommit::finish`]，副作用不会跑在提交前。
+pub struct GovernCommit {
+    target: String,
+    suspended: bool,
+    disabled: bool,
+    until_ms: Option<i64>,
+    effect: GovernEffect,
+}
+
+impl GovernCommit {
+    /// 提交后发布：先镜像 `users` 补列，再派发进程内事件。
+    pub fn finish(self, port: &dyn PlatformGovernancePort) -> Result<GovernEffect> {
+        port.mirror_user_state(&self.target, self.suspended, self.disabled, self.until_ms)?;
+        port.dispatch(&self.effect.events);
+        Ok(self.effect)
+    }
+}
+
 /// 封禁。`until_ms = None` 为永久；临时封禁到期后自动恢复（惰性判定）。
 ///
 /// 即时撤销该用户**全部**会话（sessions + 令牌侧车 + 刷新链 + step-up），
@@ -194,16 +214,23 @@ fn summary(state: UserState, until_ms: Option<i64>) -> serde_json::Value {
 /// 即时撤销全部会话：sessions 行删掉即拿到撤销条数；侧车/刷新链/step-up
 /// 按 user_id 直接清，不依赖会话行还在（与 session::logout_all 同口径）。
 /// suspend 与 disable 共用这一份——撤销口径只有一处定义。
-fn revoke_all_sessions(tx: &Connection, target: &str, now: i64) -> Result<usize> {
-    let revoked = tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![target])?;
-    tx.execute(
-        "DELETE FROM identity_session_token WHERE user_id = ?1",
-        params![target],
+fn revoke_all_sessions_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    target: &str,
+    now: i64,
+) -> Result<usize> {
+    let revoked = exec.exec(
+        "DELETE FROM sessions WHERE user_id = ?1",
+        &[SqlParam::Text(target.to_string())],
     )?;
-    crate::refresh::revoke_user(tx, target, now)?;
-    tx.execute(
+    exec.exec(
+        "DELETE FROM identity_session_token WHERE user_id = ?1",
+        &[SqlParam::Text(target.to_string())],
+    )?;
+    crate::refresh::revoke_user_with(exec, target, now)?;
+    exec.exec(
         "DELETE FROM identity_step_up WHERE user_id = ?1",
-        params![target],
+        &[SqlParam::Text(target.to_string())],
     )?;
     Ok(revoked)
 }
@@ -211,7 +238,7 @@ fn revoke_all_sessions(tx: &Connection, target: &str, now: i64) -> Result<usize>
 /// 治理处置的公共收尾：事件构造 + 平台镜像 + 回执。suspend/disable/enable
 /// 的事件形状完全一致（状态变更 + 会话撤销 + 缓存清理），只有 action 名不同。
 #[allow(clippy::too_many_arguments)]
-fn finish_govern(
+fn commit_of(
     target: &str,
     after_state: UserState,
     after_until: Option<i64>,
@@ -223,8 +250,7 @@ fn finish_govern(
     after: serde_json::Value,
     sessions_revoked: usize,
     already: bool,
-    port: &dyn PlatformGovernancePort,
-) -> Result<GovernEffect> {
+) -> GovernCommit {
     let mut events = vec![GovernanceEvent::UserStateChanged {
         user_id: target.to_string(),
         state: after_state.as_str().to_string(),
@@ -241,16 +267,20 @@ fn finish_govern(
         key: target.to_string(),
     });
     let (suspended, disabled) = flags_of(after_row, now);
-    port.mirror_user_state(target, suspended, disabled, after_until)?;
-    port.dispatch(&events);
-    Ok(GovernEffect {
-        reference: reference(action, seq),
-        before,
-        after,
-        sessions_revoked: sessions_revoked as u64,
-        already,
-        events,
-    })
+    GovernCommit {
+        target: target.to_string(),
+        suspended,
+        disabled,
+        until_ms: after_until,
+        effect: GovernEffect {
+            reference: reference(action, seq),
+            before,
+            after,
+            sessions_revoked: sessions_revoked as u64,
+            already,
+            events,
+        },
+    }
 }
 
 /// 三个处置入口共用的前置：校验字段、鉴权、读变更前状态。
@@ -263,13 +293,18 @@ struct Prep {
     before_until: Option<i64>,
 }
 
-fn prepare(conn: &Connection, operator_token: &str, cmd: &GovernCommand, now: i64) -> Result<Prep> {
+fn prepare_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    cmd: &GovernCommand,
+    now: i64,
+) -> Result<Prep> {
     let target = check_target(&cmd.target)?;
     let reason = check_reason(&cmd.reason)?;
     let actor = check_actor(&cmd.actor)?;
-    authenticate_operator(conn, operator_token, now)?;
-    require_user(conn, &target)?;
-    let before_row = load(conn, &target)?;
+    authenticate_operator_with(exec, operator_token, now)?;
+    require_user_with(exec, &target)?;
+    let before_row = load_with(exec, &target)?;
     let before_state = state_of(&before_row, now);
     let before_until = before_row.as_ref().and_then(|r| r.until_ms);
     Ok(Prep {
@@ -298,8 +333,8 @@ struct WriteOutcome {
     seq: i64,
 }
 
-fn close_tx(
-    tx: &Connection,
+fn close_tx_with<E: SqlExec + ?Sized>(
+    exec: &E,
     prep: &Prep,
     action: &str,
     cmd: &GovernCommand,
@@ -307,13 +342,13 @@ fn close_tx(
     already: bool,
     now: i64,
 ) -> Result<WriteOutcome> {
-    let after_row = load(tx, &prep.target)?;
+    let after_row = load_with(exec, &prep.target)?;
     let after_state = state_of(&after_row, now);
     let after_until = after_row.as_ref().and_then(|r| r.until_ms);
     let before = summary(prep.before_state, prep.before_until);
     let after = summary(after_state, after_until);
-    let seq = append_audit(
-        tx,
+    let seq = append_audit_with(
+        exec,
         &AuditDraft {
             action,
             target: &prep.target,
@@ -344,7 +379,20 @@ pub fn suspend(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
-    let prep = prepare(conn, operator_token, cmd, now)?;
+    let tx = conn.unchecked_transaction()?;
+    let pending = suspend_tx(&SqliteExec(&tx), operator_token, cmd, now)?;
+    tx.commit()?;
+    pending.finish(port)
+}
+
+/// 端口版封禁：调用方负责事务边界，提交后再调用 [`GovernCommit::finish`]。
+pub fn suspend_tx<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    cmd: &GovernCommand,
+    now: i64,
+) -> Result<GovernCommit> {
+    let prep = prepare_with(exec, operator_token, cmd, now)?;
     if let Some(until) = cmd.until_ms {
         if until <= now {
             return Err(IdError::BadInput("until_ms must be in the future"));
@@ -358,26 +406,32 @@ pub fn suspend(
         .map(|r| r.suspended && r.state(now) == UserState::Suspended && r.until_ms == cmd.until_ms)
         .unwrap_or(false);
 
-    let tx = conn.unchecked_transaction()?;
     let mut sessions_revoked = 0usize;
     if !already {
-        tx.execute(
+        exec.exec(
             "INSERT INTO identity_user_governance(user_id, suspended, disabled, \
              suspended_until_ms, reason, actor, updated_at) \
              VALUES(?1, 1, COALESCE((SELECT disabled FROM identity_user_governance \
              WHERE user_id = ?1), 0), ?2, ?3, ?4, ?5) \
              ON CONFLICT(user_id) DO UPDATE SET suspended = 1, suspended_until_ms = ?2, \
              reason = ?3, actor = ?4, updated_at = ?5",
-            params![prep.target, cmd.until_ms, prep.reason, prep.actor, now],
+            &[
+                SqlParam::Text(prep.target.to_string()),
+                match cmd.until_ms {
+                    Some(v) => SqlParam::Int(v),
+                    None => SqlParam::Null,
+                },
+                SqlParam::Text(prep.reason.to_string()),
+                SqlParam::Text(prep.actor.to_string()),
+                SqlParam::Int(now),
+            ],
         )?;
-        sessions_revoked = revoke_all_sessions(&tx, &prep.target, now)?;
+        sessions_revoked = revoke_all_sessions_with(exec, &prep.target, now)?;
     }
-    let out = close_tx(&tx, &prep, "suspend", cmd, sessions_revoked, already, now)?;
-    tx.commit()?;
-
+    let out = close_tx_with(exec, &prep, "suspend", cmd, sessions_revoked, already, now)?;
     // 镜像与事件**幂等命中也重放**：平台侧据此收敛（"后台封了、服务还通"
     // 的残留就是靠重放消掉的）。操作者上下文只用于鉴权，审计落 cmd.actor。
-    finish_govern(
+    Ok(commit_of(
         &prep.target,
         out.after_state,
         out.after_until,
@@ -389,8 +443,7 @@ pub fn suspend(
         out.after,
         sessions_revoked,
         already,
-        port,
-    )
+    ))
 }
 
 /// 解封（可逆且本身留痕）。永久/临时封禁都清；`disabled` 是独立处置，不受影响。
@@ -401,7 +454,20 @@ pub fn unsuspend(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
-    let prep = prepare(conn, operator_token, cmd, now)?;
+    let tx = conn.unchecked_transaction()?;
+    let pending = unsuspend_tx(&SqliteExec(&tx), operator_token, cmd, now)?;
+    tx.commit()?;
+    pending.finish(port)
+}
+
+/// 端口版解封：调用方负责事务边界，提交后再调用 [`GovernCommit::finish`]。
+pub fn unsuspend_tx<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    cmd: &GovernCommand,
+    now: i64,
+) -> Result<GovernCommit> {
+    let prep = prepare_with(exec, operator_token, cmd, now)?;
     // 幂等：本来就没在封禁（含已到期）→ already。
     let already = !prep
         .before_row
@@ -409,18 +475,20 @@ pub fn unsuspend(
         .map(|r| r.suspended)
         .unwrap_or(false);
 
-    let tx = conn.unchecked_transaction()?;
     if !already {
-        tx.execute(
+        exec.exec(
             "UPDATE identity_user_governance SET suspended = 0, suspended_until_ms = NULL, \
              reason = ?2, actor = ?3, updated_at = ?4 WHERE user_id = ?1",
-            params![prep.target, prep.reason, prep.actor, now],
+            &[
+                SqlParam::Text(prep.target.to_string()),
+                SqlParam::Text(prep.reason.to_string()),
+                SqlParam::Text(prep.actor.to_string()),
+                SqlParam::Int(now),
+            ],
         )?;
     }
-    let out = close_tx(&tx, &prep, "unsuspend", cmd, 0, already, now)?;
-    tx.commit()?;
-
-    finish_govern(
+    let out = close_tx_with(exec, &prep, "unsuspend", cmd, 0, already, now)?;
+    Ok(commit_of(
         &prep.target,
         out.after_state,
         out.after_until,
@@ -432,8 +500,7 @@ pub fn unsuspend(
         out.after,
         0,
         already,
-        port,
-    )
+    ))
 }
 
 /// 停用/启用（`disabled` 标志，独立于封禁）。停用同样即时撤销全部会话。
@@ -445,17 +512,30 @@ pub fn set_disabled(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
-    let prep = prepare(conn, operator_token, cmd, now)?;
+    let tx = conn.unchecked_transaction()?;
+    let pending = set_disabled_tx(&SqliteExec(&tx), operator_token, cmd, disabled, now)?;
+    tx.commit()?;
+    pending.finish(port)
+}
+
+/// 端口版停用/启用：调用方负责事务边界，提交后再调用 [`GovernCommit::finish`]。
+pub fn set_disabled_tx<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    cmd: &GovernCommand,
+    disabled: bool,
+    now: i64,
+) -> Result<GovernCommit> {
+    let prep = prepare_with(exec, operator_token, cmd, now)?;
     let already = prep
         .before_row
         .as_ref()
         .map(|r| r.disabled == disabled)
         .unwrap_or(!disabled);
 
-    let tx = conn.unchecked_transaction()?;
     let mut sessions_revoked = 0usize;
     if !already {
-        tx.execute(
+        exec.exec(
             "INSERT INTO identity_user_governance(user_id, suspended, disabled, \
              suspended_until_ms, reason, actor, updated_at) \
              VALUES(?1, COALESCE((SELECT suspended FROM identity_user_governance \
@@ -463,17 +543,21 @@ pub fn set_disabled(
              identity_user_governance WHERE user_id = ?1), ?3, ?4, ?5) \
              ON CONFLICT(user_id) DO UPDATE SET disabled = ?2, reason = ?3, actor = ?4, \
              updated_at = ?5",
-            params![prep.target, disabled, prep.reason, prep.actor, now],
+            &[
+                SqlParam::Text(prep.target.to_string()),
+                SqlParam::Int(disabled as i64),
+                SqlParam::Text(prep.reason.to_string()),
+                SqlParam::Text(prep.actor.to_string()),
+                SqlParam::Int(now),
+            ],
         )?;
         if disabled {
-            sessions_revoked = revoke_all_sessions(&tx, &prep.target, now)?;
+            sessions_revoked = revoke_all_sessions_with(exec, &prep.target, now)?;
         }
     }
     let action = if disabled { "disable" } else { "enable" };
-    let out = close_tx(&tx, &prep, action, cmd, sessions_revoked, already, now)?;
-    tx.commit()?;
-
-    finish_govern(
+    let out = close_tx_with(exec, &prep, action, cmd, sessions_revoked, already, now)?;
+    Ok(commit_of(
         &prep.target,
         out.after_state,
         out.after_until,
@@ -485,8 +569,7 @@ pub fn set_disabled(
         out.after,
         sessions_revoked,
         already,
-        port,
-    )
+    ))
 }
 
 /// 结算到期的临时封禁（平台定时作业调用；读路径的惰性判定不依赖它）。
