@@ -13,8 +13,6 @@
 //! 5. 群治理 freeze/unfreeze 回执 + 幂等重放；
 //! 6. 元数据视图白名单投影 + 跨域计数（群数/举报数）。
 
-use std::time::Duration;
-
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
@@ -335,7 +333,7 @@ async fn temporary_suspend_expires_lazily() {
     let conn = sidecar(&path);
     let operator_token = admin_session(&conn, &operator_id);
 
-    let until = wxlike_core::types::now_ms() as i64 + 1_200;
+    let until = wxlike_core::types::now_ms() as i64 + 8_000;
     let (status, receipt) = call(
         &app,
         admin_req(
@@ -348,12 +346,17 @@ async fn temporary_suspend_expires_lazily() {
     assert_eq!(status, StatusCode::OK, "{receipt}");
     assert_eq!(receipt["after"]["suspended_until_ms"], until, "{receipt}");
 
-    // 到期前登录被拒（登录链路自身要几百毫秒，到期窗口留 1.2s）。
+    // 到期前登录被拒（登录链路自身要几百毫秒，到期窗口留 8s，避免慢机器上
+    // 在"到期前"断言之前就已经过期）。
     let before = login(&app, "gov-temp").await;
     assert_eq!(before.err().unwrap(), StatusCode::FORBIDDEN);
 
-    // 到期后惰性恢复（不等后台清扫）：等过 until 窗口再登录。
-    tokio::time::sleep(Duration::from_millis(1_400)).await;
+    // 直接把到期时间拨到过去：惰性判定只读这一行，不依赖后台清扫，也不用等墙钟。
+    conn.execute(
+        "UPDATE identity_user_governance SET suspended_until_ms = ?1 WHERE user_id = ?2",
+        rusqlite::params![wxlike_core::types::now_ms() as i64 - 1_000, &victim],
+    )
+    .unwrap();
     login(&app, "gov-temp")
         .await
         .expect("临时封禁到期应自动放行");
