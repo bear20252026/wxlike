@@ -529,14 +529,12 @@ pub fn exchange(
     ip: &str,
     now: i64,
 ) -> Result<crate::session::SessionGrant> {
-    let tx = conn.unchecked_transaction()?;
-    let grant = exchange_with(&SqliteExec(&tx), id, verifier, audience, ip, now)?;
-    tx.commit()?;
-    Ok(grant)
+    exchange_with(&SqliteExec(conn), id, verifier, audience, ip, now)
 }
 
-/// 端口版 `exchange`：抢占 challenge、登记设备、签发会话都在调用方事务里，
-/// 任一步失败就一起回滚，不会留下"码已消费但会话没开出来"的中间态。
+/// 端口版 `exchange`：调用方可以把它包进事务，让"抢占 challenge + 登记设备 +
+/// 开会话"整体成功或回滚；不包时，challenge 的消费是条件 UPDATE，仍然是
+/// 一次性的——后续步骤失败也不会把码退回。
 pub fn exchange_with<E: QrExec + ?Sized>(
     exec: &E,
     id: &str,
