@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
@@ -135,14 +135,28 @@ pub struct PrefRow {
 
 /// 读取全部服务端偏好（缺的键不补，让客户端用自己的默认值）。
 pub fn get(conn: &Connection, user_id: &str) -> Result<ServerPrefs> {
-    let mut stmt = conn.prepare("SELECT key, value FROM identity_pref WHERE user_id = ?1")?;
-    let rows = stmt.query_map(params![user_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
+    get_with(&SqliteExec(conn), user_id)
+}
+
+/// 端口版读取：偏好是键值对，按两列一次拉完。
+pub fn get_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<ServerPrefs> {
+    let rows = exec.query_many(
+        "SELECT key, value FROM identity_pref WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Text, ColKind::Text],
+    )?;
     let mut values = BTreeMap::new();
     for row in rows {
-        let (k, v) = row?;
-        values.insert(k, v);
+        let mut it = row.into_iter();
+        let key = it
+            .next()
+            .ok_or(IdError::Corrupt("pref row width"))?
+            .into_text()?;
+        let value = it
+            .next()
+            .ok_or(IdError::Corrupt("pref row width"))?
+            .into_text()?;
+        values.insert(key, value);
     }
     Ok(ServerPrefs { values })
 }
@@ -150,6 +164,20 @@ pub fn get(conn: &Connection, user_id: &str) -> Result<ServerPrefs> {
 /// 字段级补丁。幂等：同样的补丁重复提交结果一致。
 pub fn patch(
     conn: &Connection,
+    user_id: &str,
+    patch: &BTreeMap<String, String>,
+    device_id: &str,
+    now: i64,
+) -> Result<ServerPrefs> {
+    let tx = conn.unchecked_transaction()?;
+    let prefs = patch_with(&SqliteExec(&tx), user_id, patch, device_id, now)?;
+    tx.commit()?;
+    Ok(prefs)
+}
+
+/// 端口版字段补丁：调用方负责事务边界；返回合并后的全量偏好。
+pub fn patch_with<E: SqlExec + ?Sized>(
+    exec: &E,
     user_id: &str,
     patch: &BTreeMap<String, String>,
     device_id: &str,
@@ -163,40 +191,80 @@ pub fn patch(
             return Err(IdError::BadInput("pref value"));
         }
     }
-    let tx = conn.unchecked_transaction()?;
     for (key, value) in patch {
-        tx.execute(
+        exec.exec(
             "INSERT INTO identity_pref(user_id, key, value, updated_at, device_id) \
              VALUES(?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT(user_id, key) DO UPDATE SET \
                  value = ?3, updated_at = ?4, device_id = ?5",
-            params![user_id, key, value, now, device_id],
+            &[
+                SqlParam::Text(user_id.to_string()),
+                SqlParam::Text(key.clone()),
+                SqlParam::Text(value.clone()),
+                SqlParam::Int(now),
+                SqlParam::Text(device_id.to_string()),
+            ],
         )?;
     }
-    tx.commit()?;
-    get(conn, user_id)
+    get_with(exec, user_id)
 }
 
 /// 增量同步：`since_seq` 之后的变更（另一台设备拉取用）。
 pub fn since(conn: &Connection, user_id: &str, since_seq: i64, limit: i64) -> Result<Vec<PrefRow>> {
-    let mut stmt = conn.prepare(
+    since_with(&SqliteExec(conn), user_id, since_seq, limit)
+}
+
+/// 端口版增量读取：`since_seq` 之后的变更（另一台设备拉取用）。
+pub fn since_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    since_seq: i64,
+    limit: i64,
+) -> Result<Vec<PrefRow>> {
+    let kinds = [
+        ColKind::Int,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Int,
+        ColKind::Text,
+    ];
+    let rows = exec.query_many(
         "SELECT seq, key, value, updated_at, device_id FROM identity_pref \
          WHERE user_id = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3",
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Int(since_seq),
+            SqlParam::Int(limit),
+        ],
+        &kinds,
     )?;
-    let rows = stmt.query_map(params![user_id, since_seq, limit], |r| {
-        Ok(PrefRow {
-            seq: r.get(0)?,
-            key: r.get(1)?,
-            value: r.get(2)?,
-            updated_at: r.get(3)?,
-            device_id: r.get(4)?,
+    rows.into_iter()
+        .map(|row| {
+            let mut it = row.into_iter();
+            Ok(PrefRow {
+                seq: it
+                    .next()
+                    .ok_or(IdError::Corrupt("pref row width"))?
+                    .into_int()?,
+                key: it
+                    .next()
+                    .ok_or(IdError::Corrupt("pref row width"))?
+                    .into_text()?,
+                value: it
+                    .next()
+                    .ok_or(IdError::Corrupt("pref row width"))?
+                    .into_text()?,
+                updated_at: it
+                    .next()
+                    .ok_or(IdError::Corrupt("pref row width"))?
+                    .into_int()?,
+                device_id: it
+                    .next()
+                    .ok_or(IdError::Corrupt("pref row width"))?
+                    .into_text()?,
+            })
         })
-    })?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
-    Ok(out)
+        .collect()
 }
 
 /// 当前游标上界（客户端下次从这里接着拉）。
@@ -205,11 +273,19 @@ pub fn since(conn: &Connection, user_id: &str, since_seq: i64, limit: i64) -> Re
 /// **查询本身失败绝不折成 0**——那会把"库读不动"伪装成"这个账号还没写过偏好"，
 /// 客户端于是把游标重置到 0，同步从下一次开始静默漏掉全部增量。
 pub fn head_seq(conn: &Connection, user_id: &str) -> Result<i64> {
-    Ok(conn.query_row(
+    head_seq_with(&SqliteExec(conn), user_id)
+}
+
+/// 端口版游标上界。
+pub fn head_seq_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<i64> {
+    let row = exec.query(
         "SELECT COALESCE(MAX(seq), 0) FROM identity_pref WHERE user_id = ?1",
-        params![user_id],
-        |r| r.get(0),
-    )?)
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Int],
+    )?;
+    row.and_then(|mut row| row.pop())
+        .ok_or(IdError::Corrupt("pref head column"))?
+        .into_int()
 }
 
 /// 作业种类。
