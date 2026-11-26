@@ -9,9 +9,10 @@
 use rusqlite::Connection;
 
 use super::{
-    append_audit, authenticate_operator, check_actor, check_reason, check_target, reference,
-    AuditDraft, GovernCommand, GovernEffect, GovernanceEvent, PlatformGovernancePort,
+    append_audit_with, authenticate_operator_with, check_actor, check_reason, check_target,
+    reference, AuditDraft, GovernCommand, GovernEffect, GovernanceEvent, PlatformGovernancePort,
 };
+use crate::sqlport::{SqlExec, SqliteExec};
 use crate::{device, IdError, Result};
 
 /// 管理端撤销设备。`cmd.target` 是 device_id。
@@ -22,12 +23,26 @@ pub fn revoke_device(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<GovernEffect> {
+    let tx = conn.unchecked_transaction()?;
+    let effect = revoke_device_tx(&SqliteExec(&tx), operator_token, cmd, now)?;
+    tx.commit()?;
+    port.dispatch(&effect.events);
+    Ok(effect)
+}
+
+/// 端口版设备撤销：调用方负责事务边界，事件在提交后由调用方派发。
+pub fn revoke_device_tx<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    cmd: &GovernCommand,
+    now: i64,
+) -> Result<GovernEffect> {
     let device_id = check_target(&cmd.target)?;
     let reason = check_reason(&cmd.reason)?;
     let actor = check_actor(&cmd.actor)?;
-    authenticate_operator(conn, operator_token, now)?;
+    authenticate_operator_with(exec, operator_token, now)?;
 
-    let row = device::get(conn, &device_id)?.ok_or(IdError::NotFound("device"))?;
+    let row = device::get_with(exec, &device_id)?.ok_or(IdError::NotFound("device"))?;
     let user_id = row.user_id.clone();
     let already = !row.is_active();
     let before = serde_json::json!({
@@ -37,7 +52,7 @@ pub fn revoke_device(
     });
 
     // 复用域撤销：幂等命中返回 sessions=0；未撤销则同事务作废会话/刷新链/step-up。
-    let outcome = device::revoke(conn, &user_id, &device_id, now)?;
+    let outcome = device::revoke_with(exec, &user_id, &device_id, now)?;
     let sessions_revoked = outcome.sessions as u64;
     let after = serde_json::json!({
         "device_id": device_id,
@@ -45,8 +60,8 @@ pub fn revoke_device(
         "state": "revoked",
     });
 
-    let seq = append_audit(
-        conn,
+    let seq = append_audit_with(
+        exec,
         &revoke_draft(
             &device_id,
             &actor,
@@ -60,16 +75,13 @@ pub fn revoke_device(
         ),
     )?;
 
-    // 设备撤销不改用户治理标志，无需镜像 users；事件交平台作废设备密钥/断 WS。
-    let events = revoke_events(&user_id, &device_id, sessions_revoked);
-    port.dispatch(&events);
     Ok(GovernEffect {
         reference: reference("device.revoke", seq),
         before,
         after,
         sessions_revoked,
         already,
-        events,
+        events: revoke_events(&user_id, &device_id, sessions_revoked),
     })
 }
 

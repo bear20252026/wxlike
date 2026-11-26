@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{IdError, Result};
 
-pub use device::revoke_device;
+pub use device::{revoke_device, revoke_device_tx};
 pub use user::{
     add_label, add_label_with, ensure_user_active, ensure_user_active_with, remove_label,
     remove_label_with, set_disabled, settle_expired, suspend, unsuspend, user_state, UserState,

@@ -13,7 +13,9 @@ use crate::domain::qr_login::id_err;
 use crate::error::ApiError;
 use crate::storage::sql_port::StorageSqlExec;
 use crate::Platform;
-use wxlike_identity::governance::{self, AdminUserView, GovernCommand, GovernEffect};
+use wxlike_identity::governance::{
+    self, AdminUserView, GovernCommand, GovernEffect, PlatformGovernancePort,
+};
 use wxlike_relations::governance::{
     self as relations_governance, GroupGovernCommand, GroupGovernEffect, GroupGovernanceEvent,
 };
@@ -59,15 +61,18 @@ impl Platform {
         operator_token: &str,
         cmd: &GovernCommand,
     ) -> Result<GovernEffect, ApiError> {
-        let c = self.db().lock()?;
-        governance::revoke_device(
-            &c,
-            operator_token,
-            cmd,
-            &self.governance,
-            wxlike_core::types::now_ms() as i64,
-        )
-        .map_err(id_err)
+        let now = wxlike_core::types::now_ms() as i64;
+        let effect = self.db().with_tx(|c| {
+            Ok(governance::revoke_device_tx(
+                &StorageSqlExec(c),
+                operator_token,
+                cmd,
+                now,
+            )?)
+        })?;
+        // 事件必须在事务提交后派发：提交失败时不能先告诉平台"设备已下线"。
+        self.governance.dispatch(&effect.events);
+        Ok(effect)
     }
 
     /// 管理员元数据视图（白名单投影）；群数/举报数经 `UserMetadataPort`。
