@@ -16,7 +16,6 @@ use crate::page;
 use crate::validate;
 use crate::Platform;
 use serde::{Deserialize, Serialize};
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::articles::{
     advance_follow_cursor, article_is_published, article_list, article_read_target, article_row,
@@ -258,11 +257,9 @@ impl Platform {
         let doc_json = serde_json::to_string(&body.doc)?;
         let state = if body.publish { "published" } else { "draft" };
 
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+        self.db().with_tx(|port| -> Result<()> {
             insert_article(
-                &port,
+                port,
                 &ArticleCreate {
                     id: &id,
                     publisher_id: &publisher_id,
@@ -276,11 +273,11 @@ impl Platform {
                     published_at: body.publish.then_some(now),
                 },
             )?;
-            insert_article_version(&port, &id, &doc_json, now)?;
+            insert_article_version(port, &id, &doc_json, now)?;
             if body.publish {
-                publish_side_effects(&port, &id, &publisher_id, author, &title, &plain, now)?;
-                crate::domain::repo::content_index::add_media_refs_tx(
-                    tx,
+                publish_side_effects(port, &id, &publisher_id, author, &title, &plain, now)?;
+                crate::domain::repo::content_index::add_media_refs(
+                    port,
                     &doc_media_ids(&body.doc),
                     "article",
                     &id,
@@ -290,7 +287,6 @@ impl Platform {
             }
             Ok(())
         })?;
-        drop(c);
         self.article_for(author, &id)
     }
 
@@ -383,11 +379,9 @@ impl Platform {
             render_doc(&c, &body.doc)?
         };
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+        self.db().with_tx(|port| -> Result<()> {
             let (publisher_id, state, version) =
-                load_editable_article(&port, id, author, body.expected_version)?;
+                load_editable_article(port, id, author, body.expected_version)?;
             let next_version = version + 1;
             let next_state = if body.publish || state == "published" {
                 "published"
@@ -396,7 +390,7 @@ impl Platform {
             };
             let publish_now = state != "published" && next_state == "published";
             write_article_revision(
-                &port,
+                port,
                 id,
                 &ArticleRevision {
                     title: &title,
@@ -410,10 +404,10 @@ impl Platform {
                 },
             )?;
             if next_state == "published" {
-                publish_side_effects(&port, id, &publisher_id, author, &title, &plain, now)?;
-                crate::domain::repo::content_index::remove_media_refs_tx(tx, "article", id)?;
-                crate::domain::repo::content_index::add_media_refs_tx(
-                    tx,
+                publish_side_effects(port, id, &publisher_id, author, &title, &plain, now)?;
+                crate::domain::repo::content_index::remove_media_refs(port, "article", id)?;
+                crate::domain::repo::content_index::add_media_refs(
+                    port,
                     &doc_media_ids(&body.doc),
                     "article",
                     id,
@@ -423,21 +417,18 @@ impl Platform {
             }
             Ok(())
         })?;
-        drop(c);
         self.article_for(author, id)
     }
 
     pub(crate) fn delete_article(&self, author: &str, id: &str) -> Result<()> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            let changed = soft_delete_article(&port, id, author, now)?;
+        self.db().with_tx(|port| -> Result<()> {
+            let changed = soft_delete_article(port, id, author, now)?;
             crate::db::ensure_updated(changed)?;
-            crate::domain::repo::content_index::remove_tx(tx, id)?;
-            crate::domain::repo::content_index::remove_media_refs_tx(tx, "article", id)?;
-            crate::domain::repo::favorites::revoke_source_tx(tx, "article", id)?;
+            crate::domain::repo::content_index::remove(port, id)?;
+            crate::domain::repo::content_index::remove_media_refs(port, "article", id)?;
+            crate::domain::repo::favorites::revoke_source(port, "article", id)?;
             Ok(())
         })
     }
@@ -481,24 +472,20 @@ impl Platform {
     pub(crate) fn mark_article_read(&self, user: &str, id: &str) -> Result<i64> {
         let id = validate::id(id)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        let publisher_id = c.with_tx(|tx| -> Result<String> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+        let publisher_id = self.db().with_tx(|port| -> Result<String> {
             let (seq, publisher_id, state) =
-                article_read_target(&port, id)?.ok_or(PlatformError::NotFound)?;
+                article_read_target(port, id)?.ok_or(PlatformError::NotFound)?;
             if state != "published" {
                 return Err(PlatformError::NotFound);
             }
-            record_article_read(&port, user, id, now)?;
-            advance_follow_cursor(&port, user, &publisher_id, seq, now)?;
+            record_article_read(port, user, id, now)?;
+            advance_follow_cursor(port, user, &publisher_id, seq, now)?;
             Ok(publisher_id)
         })?;
-        let unread = unread_count(
-            &crate::storage::StorageConnection::sqlite_borrow(&c),
-            user,
-            &publisher_id,
-        )?;
-        drop(c);
+        let unread = {
+            let c = self.db().acquire();
+            unread_count(&c, user, &publisher_id)?
+        };
         Ok(unread)
     }
 
