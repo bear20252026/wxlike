@@ -7,9 +7,9 @@
 //! 令牌是 32 字节随机数，库里只有 `sha256` 摘要；`Display`/日志里永远不出现
 //! 明文令牌。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
 
-use crate::sqlport::{SqlExec, SqlParam, SqliteExec};
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{digest, random_hex, Audience, IdError, Result, ACCESS_TTL_MS, TOKEN_BYTES};
 
 /// `sid` 字节数（12B → 24 hex，够用且能进 URL）。
@@ -186,50 +186,6 @@ pub struct LogoutOutcome {
     pub device_id: String,
     pub refresh_revoked: usize,
     pub cache_events: Vec<CacheEvent>,
-}
-
-/// 一行的**原文**读法，`audience` 的判定留给 [`decode`]。
-struct RawSession {
-    sid: Option<String>,
-    device_id: String,
-    device_name: String,
-    ip: String,
-    created_at: i64,
-    expires_at: i64,
-    last_seen: i64,
-    audience: String,
-}
-
-fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
-    Ok(RawSession {
-        sid: r.get(0)?,
-        device_id: r.get(1)?,
-        device_name: r.get(2)?,
-        ip: r.get(3)?,
-        created_at: r.get(4)?,
-        expires_at: r.get(5)?,
-        last_seen: r.get(6)?,
-        audience: r.get(7)?,
-    })
-}
-
-/// `audience` 读不懂必须报错，不能折成 `User`。
-///
-/// `authenticate()` 早就按 `ok_or(Unauthorized)` 处理同一个字段了——列表这条路
-/// 却折默认值，结果是**"会话列表显示的受众"和"真正生效的受众"可以不是同一回事**：
-/// 一条管理面会话能在"我的登录设备"里被显示成普通登录。#103 要求管理令牌与用户
-/// 令牌分开受众，展示面撒谎同样是失效。
-fn decode(raw: RawSession) -> Result<SessionRow> {
-    Ok(SessionRow {
-        sid: raw.sid.unwrap_or_default(),
-        device_id: raw.device_id,
-        device_name: raw.device_name,
-        ip: raw.ip,
-        created_at: raw.created_at,
-        expires_at: raw.expires_at,
-        last_seen: raw.last_seen,
-        audience: Audience::parse(&raw.audience).ok_or(IdError::Corrupt("audience"))?,
-    })
 }
 
 /// 签发会话：先确认设备活跃，再落会话与刷新链。
@@ -620,59 +576,122 @@ fn require_active_device_with<E: SqlExec + ?Sized>(
 
 /// 心跳：更新最近活跃时间（失败不阻断请求，鉴权已经过了）。
 pub fn touch(conn: &Connection, sid: &str, now: i64) -> Result<()> {
-    conn.execute(
+    touch_with(&SqliteExec(conn), sid, now)
+}
+
+/// 端口版 `touch`。
+pub fn touch_with<E: SqlExec + ?Sized>(exec: &E, sid: &str, now: i64) -> Result<()> {
+    exec.exec(
         "UPDATE sessions SET last_seen = ?2 WHERE sid = ?1",
-        params![sid, now],
+        &[SqlParam::Text(sid.to_string()), SqlParam::Int(now)],
     )?;
     Ok(())
 }
 
 /// 账号的有效会话，最近活跃在前；顺手清掉过期行。
 pub fn list(conn: &Connection, user_id: &str, now: i64) -> Result<Vec<SessionRow>> {
-    conn.execute(
+    list_with(&SqliteExec(conn), user_id, now)
+}
+
+/// 端口版 `list`。
+pub fn list_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    now: i64,
+) -> Result<Vec<SessionRow>> {
+    exec.exec(
         "DELETE FROM sessions WHERE user_id = ?1 AND expires_at <= ?2",
-        params![user_id, now],
+        &[SqlParam::Text(user_id.to_string()), SqlParam::Int(now)],
     )?;
-    let mut stmt = conn.prepare(
+    let rows = exec.query_many(
         "SELECT sid, device_id, device_name, ip, created_at, expires_at, last_seen, audience \
          FROM sessions WHERE user_id = ?1 ORDER BY last_seen DESC, created_at DESC",
+        &[SqlParam::Text(user_id.to_string())],
+        &[
+            ColKind::OptText,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Int,
+            ColKind::Int,
+            ColKind::Int,
+            ColKind::Text,
+        ],
     )?;
-    let rows = stmt.query_map(params![user_id], raw_of)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .map(decode)
-        .collect()
+    rows.into_iter().map(decode_values).collect()
+}
+
+fn decode_values(row: Vec<crate::sqlport::SqlValue>) -> Result<SessionRow> {
+    let mut it = row.into_iter();
+    let sid = match it.next() {
+        Some(crate::sqlport::SqlValue::Text(v)) => v,
+        Some(crate::sqlport::SqlValue::Null) => String::new(),
+        _ => return Err(IdError::Corrupt("session sid column")),
+    };
+    Ok(SessionRow {
+        sid,
+        device_id: text(it.next())?,
+        device_name: text(it.next())?,
+        ip: text(it.next())?,
+        created_at: int(it.next())?,
+        expires_at: int(it.next())?,
+        last_seen: int(it.next())?,
+        audience: Audience::parse(&text(it.next())?).ok_or(IdError::Corrupt("audience"))?,
+    })
 }
 
 /// 登出指定会话：删会话 + 作废整条刷新链 + 给出缓存清理事件。
 pub fn logout(conn: &Connection, user_id: &str, sid: &str, now: i64) -> Result<LogoutOutcome> {
     let tx = conn.unchecked_transaction()?;
-    let device_id: Option<String> = tx
-        .query_row(
-            "SELECT device_id FROM sessions WHERE user_id = ?1 AND sid = ?2",
-            params![user_id, sid],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(device_id) = device_id else {
+    let outcome = logout_with(&SqliteExec(&tx), user_id, sid, now)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+/// 端口版 `logout`：**调用方负责事务**（删会话/侧车/刷新链/step-up 必须一起成功）。
+pub fn logout_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    now: i64,
+) -> Result<LogoutOutcome> {
+    let Some(values) = exec.query(
+        "SELECT device_id FROM sessions WHERE user_id = ?1 AND sid = ?2",
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(sid.to_string()),
+        ],
+        &[ColKind::Text],
+    )?
+    else {
         return Err(IdError::NotFound("session"));
     };
-    tx.execute(
+    let device_id = values
+        .into_iter()
+        .next()
+        .ok_or(IdError::Corrupt("sessions.row width"))?
+        .into_text()?;
+    exec.exec(
         "DELETE FROM sessions WHERE user_id = ?1 AND sid = ?2",
-        params![user_id, sid],
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(sid.to_string()),
+        ],
     )?;
     // 侧车行一并删掉：留着的话同一 sid 复用时（理论上不会，但主键冲突比
     // 残留鉴权数据好排查）会撞 PRIMARY KEY，而更糟的是它继续参与序列号判定。
-    tx.execute(
+    exec.exec(
         "DELETE FROM identity_session_token WHERE sid = ?1",
-        params![sid],
+        &[SqlParam::Text(sid.to_string())],
     )?;
-    let refresh_revoked = crate::refresh::revoke_sid(&tx, sid, now)?;
-    tx.execute(
+    let refresh_revoked = crate::refresh::revoke_sid_with(exec, sid, now)?;
+    exec.exec(
         "DELETE FROM identity_step_up WHERE user_id = ?1 AND sid = ?2",
-        params![user_id, sid],
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(sid.to_string()),
+        ],
     )?;
-    tx.commit()?;
     Ok(LogoutOutcome {
         sid: sid.to_string(),
         user_id: user_id.to_string(),
@@ -720,19 +739,27 @@ pub fn logout_all_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -
 /// 清扫过期会话（定时任务；返回删除行数）。
 pub fn purge_expired(conn: &Connection, now: i64) -> Result<usize> {
     let tx = conn.unchecked_transaction()?;
-    let removed = tx.execute(
-        "DELETE FROM sessions WHERE rowid IN (
-             SELECT rowid FROM sessions WHERE expires_at <= ?1 LIMIT ?2)",
-        params![now, PURGE_LIMIT],
+    let removed = purge_expired_with(&SqliteExec(&tx), now)?;
+    tx.commit()?;
+    Ok(removed)
+}
+
+/// 端口版 `purge_expired`：**调用方负责事务**。
+///
+/// 用主键 `token` / `sid` 的子查询限量删除，不依赖 `rowid`（PG 视图没有）。
+pub fn purge_expired_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<usize> {
+    let removed = exec.exec(
+        "DELETE FROM sessions WHERE token IN ( \
+             SELECT token FROM sessions WHERE expires_at <= ?1 LIMIT ?2)",
+        &[SqlParam::Int(now), SqlParam::Int(PURGE_LIMIT)],
     )?;
     // 只留"会话已删、侧车还在"的状态会让 `token_record` 返回一条指向不存在的
     // 会话的行；同一批量上限内一起清，两张表不会长期错位。
-    tx.execute(
-        "DELETE FROM identity_session_token WHERE rowid IN (
-             SELECT rowid FROM identity_session_token WHERE expires_at <= ?1 LIMIT ?2)",
-        params![now, PURGE_LIMIT],
+    exec.exec(
+        "DELETE FROM identity_session_token WHERE sid IN ( \
+             SELECT sid FROM identity_session_token WHERE expires_at <= ?1 LIMIT ?2)",
+        &[SqlParam::Int(now), SqlParam::Int(PURGE_LIMIT)],
     )?;
-    tx.commit()?;
     Ok(removed)
 }
 
