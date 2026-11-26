@@ -60,6 +60,17 @@ class TargetOrderTest(unittest.TestCase):
         result = apply_catalog(plan(meta, users), catalog)
         self.assertEqual([t.source for t in result.tables], ["users", "identity_session_meta"])
 
+    def test_identity_root_users_runs_first_even_without_a_visible_fk(self) -> None:
+        sessions = table("sessions")
+        users = table("users")
+        catalog = {
+            "sessions": PgRelation("sessions", "v", (pg_col("id"),)),
+            "users": PgRelation("users", "v", (pg_col("id"),)),
+        }
+        result = apply_catalog(plan(sessions, users), catalog)
+        self.assertEqual([t.source for t in result.tables], ["users", "sessions"])
+        self.assertTrue(any("identity root" in warning for warning in result.warnings))
+
     def test_cycle_keeps_every_table_and_warns(self) -> None:
         a = table("a")
         b = table("b")

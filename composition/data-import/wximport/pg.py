@@ -293,6 +293,13 @@ def order_by_target_dependencies(
                 if child in remaining:
                     indegree[child] -= 1
 
+    # The users view is the only source of identity_user rows. Sessions and
+    # refresh rows reference identity_user through physical base tables that the
+    # view catalog cannot expose, so the root must be loaded first explicitly.
+    if "users" in by_source and order and order[0] != "users":
+        order.remove("users")
+        order.insert(0, "users")
+        plan.warnings.append("users moved first as the identity root")
     if order != original:
         plan.warnings.append("target foreign keys reordered the table plan")
     plan.tables = [by_source[source] for source in order]
