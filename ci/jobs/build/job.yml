@@ -353,6 +353,8 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta.sql
       - name: M017 identity 会话侧车表断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_table.sql
+      - name: M018 identity 会话侧车清理断言
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_cleanup.sql
       - name: M013 导入器全链路（SQLite → COPY → CALL）
         run: bash ci/jobs/build/pg_import_smoke.sh
       - name: 备份/恢复演练（pg_dump → psql restore → 断言）
