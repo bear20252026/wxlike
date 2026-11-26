@@ -26,11 +26,11 @@
 //!
 //! 纯同步域 API（`&Connection` 进、`Result` 出），无 async 体、不新增 tokio。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::exec::{RelExec, RelKind, RelParam, RelValue};
-use crate::{audit, group, RelError, Result};
+use crate::{group, RelError, Result};
 
 /// 处置理由上限（与 identity 治理域同口径）。
 pub const REASON_MAX_CHARS: usize = 512;
@@ -190,18 +190,8 @@ fn summary(g: &group::Group) -> serde_json::Value {
     })
 }
 
-/// `groups LEFT JOIN group_meta` 的原始行（按 SELECT 列序展开）。
-type GroupRawRow = (
-    String,         // g.id
-    String,         // g.name
-    String,         // g.owner_uid
-    i64,            // g.created_at
-    Option<String>, // m.visibility
-    Option<i64>,    // m.dissolved_at
-    Option<i64>,    // m.frozen_at
-);
-
 /// 读群（含已解散/已冻结；治理要能对已冻结的群解冻）。
+#[cfg(test)]
 fn load(conn: &Connection, group_id: &str) -> Result<group::Group> {
     load_with(conn, group_id)
 }
@@ -613,6 +603,7 @@ CREATE INDEX IF NOT EXISTS idx_group_gov_audit_group
 mod tests {
     use super::*;
     use crate::testing::db;
+    use rusqlite::params;
 
     fn seed(conn: &Connection) -> String {
         let g = group::create(
