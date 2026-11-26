@@ -2,9 +2,10 @@
 
 ## 现状
 
-服务端使用 SQLite，迁移在 `start_stack` 打开数据库时执行（`crates/platform/src/db.rs`）。
-迁移是**向前执行**、幂等的 SQL；没有自动 down 迁移。PostgreSQL 割接仍是
-`G00-04-PG` 缺口。
+服务端默认使用 SQLite，迁移在 `start_stack` 打开数据库时执行（`crates/platform/src/db.rs`）。
+迁移是**向前执行**、幂等的 SQL；没有自动 down 迁移。平台已有可选 Postgres
+profile 与域端口，但身份治理面、全量导入和 PG restore drill 未完成，PostgreSQL
+割接仍是 `G00-04-PG` 缺口。
 
 ## 发布前
 
