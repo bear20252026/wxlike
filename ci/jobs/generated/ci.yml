@@ -315,6 +315,8 @@ jobs:
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_cleanup.sql
     - name: M019-M022 消息/关系/序列号形状断言
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_g03.sql
+    - name: M019-M022 默认值/唯一约束行为冒烟
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_m019_m022_behavior.sql
     - name: M013 导入器全链路（SQLite → COPY → CALL）
       run: bash ci/jobs/build/pg_import_smoke.sh
     - name: 备份/恢复演练（pg_dump → psql restore → 断言）
