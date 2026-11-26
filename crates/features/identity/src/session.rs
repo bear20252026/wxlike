@@ -347,17 +347,45 @@ pub fn open_with(
     now: i64,
     features: Features,
 ) -> Result<SessionGrant> {
-    require_active_device(conn, user_id, device_id)?;
+    let tx = conn.unchecked_transaction()?;
+    let grant = open_tx_with(
+        &SqliteExec(&tx),
+        user_id,
+        device_id,
+        audience,
+        ttl_ms,
+        ip,
+        now,
+        features,
+    )?;
+    tx.commit()?;
+    Ok(grant)
+}
+
+/// 端口版 `open_with`：**调用方负责事务**。平台 `Db::with_tx` 把
+/// SQLite/PG 的 `sessions` 访问行与 `identity_session_meta` 侧车行放在
+/// 同一个事务里，任一失败整体回滚。
+#[allow(clippy::too_many_arguments)]
+pub fn open_tx_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    audience: Audience,
+    ttl_ms: i64,
+    ip: &str,
+    now: i64,
+    features: Features,
+) -> Result<SessionGrant> {
+    require_active_device_with(exec, user_id, device_id)?;
     let ttl_ms = normalize_ttl(ttl_ms)?;
     let sid = random_hex(SID_BYTES);
     let access = random_hex(TOKEN_BYTES);
     let expires_at = now.saturating_add(ttl_ms);
-    let tx = conn.unchecked_transaction()?;
-    write_session_rows(
-        &tx, user_id, device_id, ip, now, expires_at, &sid, &access, audience, features,
+    write_session_rows_with(
+        exec, user_id, device_id, ip, now, expires_at, &sid, &access, audience, features,
     )?;
-    let refresh = crate::refresh::issue_default(&tx, user_id, &sid, device_id, audience, now)?;
-    tx.commit()?;
+    let refresh =
+        crate::refresh::issue_default_with(exec, user_id, &sid, device_id, audience, now)?;
     Ok(SessionGrant {
         sid,
         access_token: access,
@@ -377,8 +405,8 @@ fn normalize_ttl(ttl_ms: i64) -> Result<i64> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_session_rows(
-    tx: &Connection,
+fn write_session_rows_with<E: SqlExec + ?Sized>(
+    exec: &E,
     user_id: &str,
     device_id: &str,
     ip: &str,
@@ -389,32 +417,33 @@ fn write_session_rows(
     audience: Audience,
     features: Features,
 ) -> Result<()> {
-    tx.execute(
+    exec.exec(
         "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, \
          device_name, ip, last_seen, audience) \
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?3, ?8)",
-        params![
-            digest(access),
-            user_id,
-            now,
-            expires_at,
-            sid,
-            device_id,
-            ip,
-            audience.as_str()
+        &[
+            SqlParam::Text(digest(access)),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Int(expires_at),
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(ip.to_string()),
+            SqlParam::Text(audience.as_str().to_string()),
         ],
     )?;
-    tx.execute(
+    let serial = current_serial_with(exec)?;
+    exec.exec(
         "INSERT INTO identity_session_meta(sid, user_id, auth_level, features, serial, \
          issued_at, expires_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            sid,
-            user_id,
-            AuthLevel::granted_for(audience).as_str(),
-            features.to_flags(),
-            current_serial(tx)?,
-            now,
-            expires_at
+        &[
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(AuthLevel::granted_for(audience).as_str().to_string()),
+            SqlParam::Text(features.to_flags()),
+            SqlParam::Int(serial),
+            SqlParam::Int(now),
+            SqlParam::Int(expires_at),
         ],
     )?;
     Ok(())
@@ -456,14 +485,6 @@ pub fn open_default(
     now: i64,
 ) -> Result<SessionGrant> {
     open(conn, user_id, device_id, audience, ACCESS_TTL_MS, ip, now)
-}
-
-fn require_active_device(conn: &Connection, user_id: &str, device_id: &str) -> Result<()> {
-    match crate::device::get(conn, device_id)? {
-        Some(d) if d.user_id == user_id && d.is_active() => Ok(()),
-        Some(_) => Err(IdError::Forbidden("device revoked")),
-        None => Err(IdError::NotFound("device")),
-    }
 }
 
 /// 用访问令牌鉴权。**受众必须显式给出**：管理面拿用户令牌进不来，反之亦然。
