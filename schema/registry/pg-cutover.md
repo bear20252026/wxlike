@@ -52,10 +52,13 @@
   `SqlExec::insert_returning` 在 SQLite 用 `last_insert_rowid()`、在 PG 补
   `RETURNING seq`，调用方 SQL 不写方言。
 - 治理三表**已在 M011**（`identity_user_governance` / `identity_governance_audit` /
-  `identity_governance_label`），不需要 M015。仍持 `Db::lock()` 的是
+  `identity_governance_label`），不需要 M015。治理写路径也已端口化：
   `suspend` / `unsuspend` / `set_disabled` / `settle_expired` / `revoke_device`
-  与群治理 `admin_govern_group`：这些函数仍以 `&Connection` 自建事务，下一步要
-  改成 `SqlExec` + 平台 `Db::with_tx`，事务边界才落在双后端同一入口。
+  由 `*_tx` 在同一 `SqlExec` 事务内完成，平台 `Db::with_tx` 提交后才镜像与派发
+  事件；群治理 `admin_govern_group` 的 admin 鉴权与 `govern_with` 共用同一事务。
+- 平台 `domain` 层已经**没有** `self.db().lock()` 生产调用；`Db::lock` 只剩测试
+  与过渡辅助在用。服务端偏好也收敛到 identity `preferences::*_with` 一份 SQL
+  （`343542f`）。
 - 因此 `G00-04-PG` 保持 open：剩余工作是治理面端口化、SQLite→PG 全量导入、
   PG restore drill 与生产版本/拓扑裁决；本文件不再把「51 个旧 repo 函数」当作
   未完成项。
@@ -68,9 +71,9 @@
 
 ## 后续待办（未落地，属 G00-04 剩余工作）
 
-1. **PG repository**：platform 的 `StorageProfile` / `Db` PG profile 与平台域
-   repo 端口化已落地；**identity 治理**仍为 SQLite-only（见 S3），commerce/ledger
-   的 PG repository 仍待做。
+1. **PG repository**：platform 的 `StorageProfile` / `Db` PG profile、平台域
+   repo 端口化与 identity/relations 治理写路径均已落地；commerce/ledger 的 PG
+   repository 仍待做。
 2. **数据导入**：`composition/data-import/` 不存在；需做计数/摘要/余额守恒对账与
    中断可重跑，先在空库/合成库验证。
 3. **restore drill**：现有 drill 仅 SQLite（`deploy/production/restore-drill.sh`）；
