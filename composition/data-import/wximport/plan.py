@@ -27,6 +27,15 @@ DEFAULT_SKIP = {
     "ledger": "M013 replays ledger entries into journals, never copies rows",
 }
 
+# SQLite's `identity_session_token` is the sid sidecar (auth_level/features/
+# serial/issued_at/expires_at); PostgreSQL's table of that name is the access
+# token row (token PK) and the sidecar lives in `identity_session_meta`.
+# Keeping the same-name default would fail catalog validation and, worse, could
+# copy sidecar rows into the token table if the shapes ever converged.
+DEFAULT_TARGETS = {
+    "identity_session_token": "identity_session_meta",
+}
+
 
 def load_mapping(path: Path | None) -> dict:
     if path is None:
@@ -110,7 +119,7 @@ def build_plan(
                 plan.skipped.append((name, skip[name]))
                 continue
             table = tables[name]
-            target = targets.get(name, name)
+            target = targets.get(name, DEFAULT_TARGETS.get(name, name))
             plan.tables.append(
                 TablePlan(
                     source=name,

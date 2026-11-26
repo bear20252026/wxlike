@@ -25,6 +25,15 @@ class PlanTest(unittest.TestCase):
                 body TEXT
             );
             CREATE TABLE audit (id INTEGER PRIMARY KEY, note TEXT);
+            CREATE TABLE identity_session_token (
+                sid TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                auth_level TEXT NOT NULL,
+                features TEXT NOT NULL,
+                serial INTEGER NOT NULL,
+                issued_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
             """
         )
         conn.execute("INSERT INTO parent VALUES ('p1', 'P')")
@@ -53,6 +62,26 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([(name, reason) for name, reason in plan.skipped], [("audit", "derived elsewhere")])
         child = next(table for table in plan.tables if table.source == "child")
         self.assertEqual(child.target, "child_v2")
+
+    def test_identity_session_token_targets_the_sidecar_table(self) -> None:
+        plan = build_plan(self.path)
+        sidecar = next(
+            table for table in plan.tables if table.source == "identity_session_token"
+        )
+        self.assertEqual(sidecar.target, "identity_session_meta")
+        self.assertEqual(sidecar.primary_key, ("sid",))
+
+    def test_explicit_mapping_still_overrides_the_default_alias(self) -> None:
+        mapping = Path(self.temp.name) / "alias.json"
+        mapping.write_text(
+            json.dumps({"targets": {"identity_session_token": "custom_meta"}}),
+            encoding="utf-8",
+        )
+        plan = build_plan(self.path, mapping)
+        sidecar = next(
+            table for table in plan.tables if table.source == "identity_session_token"
+        )
+        self.assertEqual(sidecar.target, "custom_meta")
 
     def test_payload_contains_both_shapes(self) -> None:
         payload = plan_payload(build_plan(self.path))
