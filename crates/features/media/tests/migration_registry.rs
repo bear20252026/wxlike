@@ -21,7 +21,7 @@ const MEDIA_ID: &str = "M009";
 /// 媒体/账本/内容兼容迁移占用，M015 由 identity 重试预算表、M016 由 identity
 /// 会话侧车列、M017 由 identity 会话侧车表占用（schema/registry/migrations.json），
 /// 故此处随登记表前移到 M018。
-const NEXT_ID: &str = "M018";
+const NEXT_ID: &str = "M019";
 /// M009 应当建的 9 张表。
 const MEDIA_TABLES: &[&str] = &[
     "media_object",

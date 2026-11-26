@@ -333,6 +333,14 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
               -f schema/proposals/G02/0005_identity_session_meta.sql
           done
+      - name: M018 侧车清理触发器首次 + 重跑（幂等）
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in 1 2; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+              -f schema/proposals/G02/0006_identity_session_meta_cleanup.sql
+          done
       - name: M010 schema/触发器/不可变性断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
       - name: M011-M013 兼容层与回填断言
