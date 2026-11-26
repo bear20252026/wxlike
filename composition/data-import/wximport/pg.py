@@ -7,11 +7,14 @@ restore drill, and makes every statement visible in CI logs.
 
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from .model import ImportPlan, Kind, TablePlan
 
@@ -221,3 +224,47 @@ class Psql:
 
     def catalog(self) -> dict[str, PgRelation]:
         return parse_catalog(self.run(CATALOG_SQL))
+
+    def iter_copy_rows(self, sql: str) -> Iterator[list[str]]:
+        """Stream ``COPY ... TO STDOUT`` rows without buffering the table.
+
+        ``csv.reader`` is fed the live pipe, so a text field containing a
+        newline stays one row. stderr goes to a temporary file to keep it out
+        of the CSV stream and avoid a full-pipe deadlock.
+        """
+
+        command = [
+            self.binary,
+            "-X",
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            self.dsn,
+            "-c",
+            sql,
+        ]
+        stderr = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            text=True,
+            encoding="utf-8",
+        )
+        assert process.stdout is not None
+        try:
+            for row in csv.reader(process.stdout):
+                yield row
+            process.wait(timeout=self.timeout)
+            if process.returncode != 0:
+                stderr.seek(0)
+                detail = stderr.read().strip().splitlines()
+                suffix = f": {detail[-1]}" if detail else ""
+                raise PsqlError(f"psql COPY OUT failed ({process.returncode}){suffix}")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            stderr.close()
