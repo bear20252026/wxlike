@@ -29,7 +29,6 @@ use hmac::{Hmac, Mac as _};
 use serde::Serialize;
 use sha2::Sha256;
 use wxlike_core::secure::constant_time_eq;
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::communities::{
     channel_community as repo_channel_community, community_role as repo_community_role,
@@ -129,18 +128,15 @@ impl Platform {
             return Err(PlatformError::BadInput("channel is not a live channel"));
         }
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        let (id, stream_key) = c.with_tx(|tx| -> Result<(String, String)> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            if active_session_exists(&port, &channel)? {
+        let (id, stream_key) = self.db().with_tx(|port| -> Result<(String, String)> {
+            if active_session_exists(port, &channel)? {
                 return Err(PlatformError::Conflict("channel is already live".into()));
             }
             let id = crate::auth::random_hex(8);
             let stream_key = crate::auth::random_hex(12);
-            insert_live_session(&port, &id, &channel, actor, &stream_key, recording, now)?;
+            insert_live_session(port, &id, &channel, actor, &stream_key, recording, now)?;
             Ok((id, stream_key))
         })?;
-        drop(c);
         self.audit(actor, "live.start", &channel, &id);
         Ok(LiveSession {
             id,
@@ -167,19 +163,16 @@ impl Platform {
         // 非重入互斥锁，持锁调用会死锁（本模块第一次运行就被这条坑住）。
         let is_manager = self.require_manager(&community, actor).is_ok();
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        let id = c.with_tx(|tx| -> Result<String> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            let session = active_session_ref(&port, &channel)?.ok_or(PlatformError::NotFound)?;
+        let id = self.db().with_tx(|port| -> Result<String> {
+            let session = active_session_ref(port, &channel)?.ok_or(PlatformError::NotFound)?;
             let (id, host) = (session.id, session.host);
             // 主播本人，或社群管理员（主持人失联时的兜底）
             if host != actor && !is_manager {
                 return Err(PlatformError::Forbidden);
             }
-            end_live_session(&port, &id, now)?;
+            end_live_session(port, &id, now)?;
             Ok(id)
         })?;
-        drop(c);
         self.audit(actor, "live.stop", &channel, &id);
         Ok(())
     }
@@ -226,22 +219,18 @@ impl Platform {
         self.require_member(&community, user)?;
         let session = self.live_session_id(&channel)?;
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<i64> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            insert_viewer(&port, &session, user, now)?;
-            refresh_viewer_counts(&port, &session)
+        self.db().with_tx(|port| -> Result<i64> {
+            insert_viewer(port, &session, user, now)?;
+            refresh_viewer_counts(port, &session)
         })
     }
 
     pub(crate) fn leave_live(&self, channel: &str, user: &str) -> Result<i64> {
         let channel = validate::id(channel)?.to_string();
         let session = self.live_session_id(&channel)?;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<i64> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            delete_viewer(&port, &session, user)?;
-            refresh_viewer_counts(&port, &session)
+        self.db().with_tx(|port| -> Result<i64> {
+            delete_viewer(port, &session, user)?;
+            refresh_viewer_counts(port, &session)
         })
     }
 
