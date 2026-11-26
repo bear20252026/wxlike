@@ -29,6 +29,7 @@
 use rusqlite::{params, Connection, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 
+use crate::exec::{RelExec, RelKind, RelParam, RelValue};
 use crate::{audit, group, RelError, Result};
 
 /// 处置理由上限（与 identity 治理域同口径）。
@@ -202,25 +203,33 @@ type GroupRawRow = (
 
 /// 读群（含已解散/已冻结；治理要能对已冻结的群解冻）。
 fn load(conn: &Connection, group_id: &str) -> Result<group::Group> {
-    // 复用 group 的公开读路径：groups_of 只给未解散，这里直接按 id 查。
+    load_with(conn, group_id)
+}
+
+/// 端口版读群（含已解散/已冻结；治理要能对已冻结的群解冻）。
+fn load_with<E: RelExec + ?Sized>(exec: &E, group_id: &str) -> Result<group::Group> {
+    let kinds = [
+        RelKind::Text,
+        RelKind::Text,
+        RelKind::Text,
+        RelKind::Int,
+        RelKind::Text,
+        RelKind::Int,
+        RelKind::Int,
+    ];
     let sql = "SELECT g.id, g.name, g.owner_uid, g.created_at, m.visibility, m.dissolved_at, \
          m.frozen_at FROM groups g LEFT JOIN group_meta m ON m.group_id = g.id WHERE g.id = ?1";
-    let raw: Option<GroupRawRow> = conn
-        .query_row(sql, params![group_id], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-            ))
-        })
-        .optional()?;
-    let Some((id, name, owner_uid, created_at, visibility, dissolved_at, frozen_at)) = raw else {
+    let raw = exec.query(sql, &[RelParam::Text(group_id.to_string())], &kinds)?;
+    let Some(mut raw) = raw else {
         return Err(RelError::NotFound("group"));
     };
+    let id = take_text(&mut raw)?;
+    let name = take_text(&mut raw)?;
+    let owner_uid = take_text(&mut raw)?;
+    let created_at = take_int(&mut raw)?;
+    let visibility = take_opt_text(&mut raw)?;
+    let dissolved_at = take_opt_int(&mut raw)?;
+    let frozen_at = take_opt_int(&mut raw)?;
     let visibility = match visibility.as_deref() {
         None => group::Visibility::Public,
         Some(v) => group::Visibility::parse(v).ok_or(RelError::Corrupt("group_meta.visibility"))?,
@@ -234,6 +243,34 @@ fn load(conn: &Connection, group_id: &str) -> Result<group::Group> {
         dissolved: dissolved_at.is_some(),
         frozen: frozen_at.is_some(),
     })
+}
+
+fn take_text(values: &mut Vec<RelValue>) -> Result<String> {
+    if values.is_empty() {
+        return Err(RelError::Corrupt("governance row width"));
+    }
+    values.remove(0).into_text()
+}
+
+fn take_int(values: &mut Vec<RelValue>) -> Result<i64> {
+    if values.is_empty() {
+        return Err(RelError::Corrupt("governance row width"));
+    }
+    values.remove(0).into_int()
+}
+
+fn take_opt_text(values: &mut Vec<RelValue>) -> Result<Option<String>> {
+    if values.is_empty() {
+        return Err(RelError::Corrupt("governance row width"));
+    }
+    values.remove(0).opt_text()
+}
+
+fn take_opt_int(values: &mut Vec<RelValue>) -> Result<Option<i64>> {
+    if values.is_empty() {
+        return Err(RelError::Corrupt("governance row width"));
+    }
+    values.remove(0).opt_int()
 }
 
 /// 群治理入口。audience 鉴权由 identity 域在 HTTP 面完成（本函数收到的是已鉴权

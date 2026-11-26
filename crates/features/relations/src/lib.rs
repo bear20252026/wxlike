@@ -20,6 +20,7 @@
 
 use rand::RngCore as _;
 
+pub mod exec;
 pub mod friend;
 pub mod governance;
 pub mod group;
@@ -58,6 +59,9 @@ pub enum RelError {
     Corrupt(&'static str),
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
+    /// 跨后端存储错误（PG 端口）：关系域不依赖平台类型，只存文本。
+    #[error("storage error: {0}")]
+    Storage(String),
     #[error("serialization error: {0}")]
     Json(#[from] serde_json::Error),
 }
