@@ -48,7 +48,7 @@ class SourceTable:
         return [column for column in self.columns if column.hidden == 0]
 
 
-@dataclass(frozen=True)
+@dataclass
 class TablePlan:
     """One source table and its reviewed PostgreSQL target."""
 
