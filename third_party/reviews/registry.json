@@ -432,7 +432,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "3e2c6aba26e530b5a0eb279890e1817d367d332f423555d8efad0174237e4d93",
+      "local_sha256": "c65e096dc2cae9223e6d15e22d5bf9ffbd0d53caf41d5b928f54757a1696927d",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-auth-level.md",
       "used_by": "AuthLevel / Features / 令牌序列号 / 签发侧车表与鉴权时的作废与级别判定",
       "updated_at": "2026-11-24"
@@ -444,7 +444,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "bec1e4f3cccaee17dc193886dde922e3bf82e007f4989c11bd20db88e8fcf504",
+      "local_sha256": "18db2ef06f6c3516047d688354f2ab4afe26d8ebf38e575863980b42de441cb2",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-signed-ticket.md",
       "used_by": "HMAC 自包含签名票据（TicketSigner）的签发与五步校验；刷新链的 lifetime 三态与临时认证闸门"
     },
@@ -466,7 +466,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "0e7aadea6d5d4c926fa88db1b7c670d04df2a82ad54118fdd64efce1af574fd2",
+      "local_sha256": "2cb78ac5832b347bee5c89db46d44801c1040d8a4825cdfcecc0528fb94275bc",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-credential-retry.md",
       "used_by": "验证码校验顺序与重试语义、成功连坐同凭据其它挑战、过期行清扫"
     },
@@ -477,7 +477,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "b5cc3fec88add3aeab96c99171b0c72d9cb9908422d1608688d8ca97de7aa9c2",
+      "local_sha256": "0ce33580448c33c0ceb3bbe0e6ca451a692f8fff8e10c4ef1e0adfedd8afef6b",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-schema.md",
       "used_by": "identity_session_token / identity_token_serial / identity_retry 三张表的列形状"
     }
