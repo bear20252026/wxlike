@@ -45,6 +45,18 @@ python3 composition/data-import/import_all.py \
 `--verify-only` 只回读已有 CSV 并校验；`--allow-concurrent-writes` 关闭
 `quiescent` 强制失败（仍记录测量值）。
 
+停写窗口前先跑只读 preflight，确认源文件、PG 版本、M023 控制表和 107 个目标形状：
+
+```bash
+PYTHONPATH=composition/data-import python3 composition/data-import/preflight.py \
+  --sqlite /path/to/app.db \
+  --dsn "$DATABASE_URL" \
+  --output /path/to/preflight.json
+```
+
+`--min-pg-version` 默认 160000（PostgreSQL 16）；WAL 侧车文件存在时会告警，
+提示在停写窗口前 checkpoint。preflight 不复制任何行，失败即退出 1。
+
 形状普查独立于行导入，可对快照或真实 SQLite 运行：
 
 ```bash
@@ -106,7 +118,7 @@ python3 -m unittest discover -s composition/data-import/tests \
   -t composition/data-import
 ```
 
-当前 59 个测试通过。CI 的 `pg-migration` 作业新增
+当前 63 个测试通过。CI 的 `pg-migration` 作业新增
 `ci/jobs/build/pg_data_import_smoke.sh`，在 M023 断言之后跑：
 
 - 合成五表 `ci_import_parent / ci_import_child / ci_import_serial /

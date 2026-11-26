@@ -25,6 +25,11 @@ PY
 psql -X "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
   -c "DELETE FROM import_run WHERE run_id = 'ci-shape'"
 
+PYTHONPATH=composition/data-import python3 composition/data-import/preflight.py \
+  --sqlite "$SQLITE_FILE" \
+  --dsn "$DATABASE_URL" \
+  --output "$WORK_DIR/preflight.json"
+
 python3 composition/data-import/import_all.py \
   --sqlite "$SQLITE_FILE" \
   --dsn "$DATABASE_URL" \
