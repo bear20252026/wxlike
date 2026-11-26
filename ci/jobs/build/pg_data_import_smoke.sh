@@ -226,3 +226,16 @@ END $$;
 SQL
 
 echo "G00-04 data import smoke: OK"
+
+# The baseline workflow only calls this script. Keep the newer gates here too,
+# so M024, the 110-table census and the empty full-shape import cannot rot
+# while the workflow wiring is being reviewed.
+echo "G00-04 extended import checks: M024 + census + full shape"
+for _ in 1 2; do
+  psql -X "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+    -f schema/proposals/G00/0002_import_compat_backfill.sql
+done
+psql -X "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+  -f ci/jobs/build/pg_migration_asserts_import_compat.sql
+bash ci/jobs/build/pg_data_import_census.sh
+bash ci/jobs/build/pg_data_import_full_shape.sh
