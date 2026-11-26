@@ -308,6 +308,18 @@ INSERT OR IGNORE INTO identity_session_meta(
 SELECT sid, user_id, auth_level, features, serial, issued_at, expires_at
 FROM identity_session_token;
 
+-- M018 的 SQLite 对应：删掉访问会话行后，如果同一 sid 已没有任何
+-- `sessions` 行，就清掉侧车。platform repo 的 delete_by_token /
+-- delete_by_user / delete_expired_batch 只碰 `sessions`，这里兜底。
+CREATE TRIGGER IF NOT EXISTS identity_session_meta_cleanup
+AFTER DELETE ON sessions
+FOR EACH ROW WHEN OLD.sid IS NOT NULL
+BEGIN
+  DELETE FROM identity_session_meta
+  WHERE sid = OLD.sid
+    AND NOT EXISTS (SELECT 1 FROM sessions WHERE sid = OLD.sid);
+END;
+
 -- 全局令牌序列号（上游 config 里的 serial_num：一次性作废所有已签发令牌）。
 -- 单行表，id 恒为 1，避免"取最新一行"这种靠 ORDER BY 兜底的读法。
 CREATE TABLE IF NOT EXISTS identity_token_serial (
