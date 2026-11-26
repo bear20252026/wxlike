@@ -305,10 +305,10 @@ impl Platform {
         let body = text.to_string();
         let now = wxlike_core::types::now_ms() as i64;
         self.db()
-            .blocking(move |c| {
+            .offload_port(move |port| {
                 let id = crate::auth::random_hex(8);
-                trust_repo::enqueue_conn(
-                    c,
+                trust_repo::enqueue(
+                    port,
                     &id,
                     &conv,
                     &sender,
