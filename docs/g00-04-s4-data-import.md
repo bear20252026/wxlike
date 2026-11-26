@@ -118,7 +118,7 @@ python3 -m unittest discover -s composition/data-import/tests \
   -t composition/data-import
 ```
 
-当前 64 个测试通过。CI 的 `pg-migration` 作业新增
+当前 64 个测试通过。CI run `45876884424` 的 `pg-migration` 已在真实 PostgreSQL 16 上通过：M024 连跑两次幂等、107 表 census、空 110 表 `pg_data_import_full_shape.sh` 全部 107 表 `verified`（`run_id=ci-shape`），并完成 restore drill。CI 的 `pg-migration` 作业新增
 `ci/jobs/build/pg_data_import_smoke.sh`，在 M023 断言之后跑：
 
 - 合成五表 `ci_import_parent / ci_import_child / ci_import_serial /
