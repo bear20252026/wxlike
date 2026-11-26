@@ -39,7 +39,7 @@ pub mod view;
 
 use rusqlite::Connection;
 
-use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
+use crate::sqlport::{ColKind, SqlExec, SqlParam};
 use serde::{Deserialize, Serialize};
 
 use crate::{IdError, Result};
@@ -47,8 +47,8 @@ use crate::{IdError, Result};
 pub use device::{revoke_device, revoke_device_tx};
 pub use user::{
     add_label, add_label_with, ensure_user_active, ensure_user_active_with, remove_label,
-    remove_label_with, set_disabled, set_disabled_tx, settle_expired, suspend, suspend_tx,
-    unsuspend, unsuspend_tx, user_state, GovernCommit, UserState,
+    remove_label_with, set_disabled, set_disabled_tx, settle_expired, settle_expired_tx, suspend,
+    suspend_tx, unsuspend, unsuspend_tx, user_state, GovernCommit, UserState,
 };
 pub use view::{user_view, user_view_with, AdminUserView, NoCounts, METADATA_FIELDS};
 
@@ -257,11 +257,6 @@ pub(crate) struct AuditDraft<'a> {
     pub sessions_revoked: u64,
     pub already: bool,
     pub at: i64,
-}
-
-/// 落一条治理回执，返回自增 seq（回执 reference 用它关联审计行）。
-pub(crate) fn append_audit(conn: &Connection, draft: &AuditDraft<'_>) -> Result<i64> {
-    append_audit_with(&SqliteExec(conn), draft)
 }
 
 /// 端口版审计写入：INSERT 不写方言，自增 seq 由端口补 `RETURNING`。

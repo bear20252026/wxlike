@@ -28,15 +28,15 @@
 //! 改期（已封禁但 `until_ms` 变了）视为**新处置**：`already=false`，重新撤销
 //! 会话——封禁期延长必须把现存会话再踢一遍。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    append_audit, append_audit_with, authenticate_operator_with, check_actor, check_reason,
-    check_target, reference, require_user_with, AuditDraft, GovernCommand, GovernEffect,
-    GovernanceEvent, PlatformGovernancePort,
+    append_audit_with, authenticate_operator_with, check_actor, check_reason, check_target,
+    reference, require_user_with, AuditDraft, GovernCommand, GovernEffect, GovernanceEvent,
+    PlatformGovernancePort,
 };
 use crate::{check_label, IdError, Result};
 
@@ -105,10 +105,6 @@ impl GovRow {
 /// 无治理行 = 两个标志都 false。
 fn flags_of(row: Option<&GovRow>, now: i64) -> (bool, bool) {
     row.map(|r| r.mirror_flags(now)).unwrap_or((false, false))
-}
-
-fn load(conn: &Connection, user_id: &str) -> Result<Option<GovRow>> {
-    load_with(&SqliteExec(conn), user_id)
 }
 
 /// 端口版：读治理行（无行 = 从未处置）。
@@ -579,68 +575,82 @@ pub fn settle_expired(
     port: &dyn PlatformGovernancePort,
     now: i64,
 ) -> Result<usize> {
-    let expired = expired_suspensions(conn, now)?;
-    for user_id in &expired {
-        let tx = conn.unchecked_transaction()?;
-        if !clear_expiry(&tx, user_id, now)? {
-            continue;
-        }
-        let after_row = load(&tx, user_id)?;
-        let after_state = after_row
-            .as_ref()
-            .map(|r| r.state(now))
-            .unwrap_or(UserState::Active);
-        let after_until = after_row.as_ref().and_then(|r| r.until_ms);
-        audit_expiry(&tx, user_id, &after_state, after_until, now)?;
-        tx.commit()?;
-        let (suspended, disabled) = flags_of(after_row.as_ref(), now);
-        port.mirror_user_state(user_id, suspended, disabled, after_until)?;
-        port.dispatch(&[
-            GovernanceEvent::UserStateChanged {
-                user_id: user_id.clone(),
-                state: after_state.as_str().to_string(),
-                suspended_until_ms: after_until,
-            },
-            GovernanceEvent::CacheClear {
-                scope: "user".to_string(),
-                key: user_id.clone(),
-            },
-        ]);
+    let tx = conn.unchecked_transaction()?;
+    let commits = settle_expired_tx(&SqliteExec(&tx), now)?;
+    tx.commit()?;
+    let n = commits.len();
+    for commit in commits {
+        commit.finish(port)?;
     }
-    Ok(expired.len())
+    Ok(n)
 }
 
-fn expired_suspensions(conn: &Connection, now: i64) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
+/// 端口版到期结算：返回每个被结算用户的 [`GovernCommit`]，提交后逐个发布。
+pub fn settle_expired_tx<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<Vec<GovernCommit>> {
+    let expired = expired_suspensions_with(exec, now)?;
+    let mut commits = Vec::new();
+    for user_id in expired {
+        if !clear_expiry_with(exec, &user_id, now)? {
+            continue;
+        }
+        let after_row = load_with(exec, &user_id)?;
+        let after_state = state_of(&after_row, now);
+        let after_until = after_row.as_ref().and_then(|r| r.until_ms);
+        let seq = audit_expiry_with(exec, &user_id, after_state, after_until, now)?;
+        commits.push(commit_of(
+            &user_id,
+            after_state,
+            after_until,
+            after_row.as_ref(),
+            now,
+            "suspend.expire",
+            seq,
+            summary(UserState::Suspended, None),
+            summary(after_state, after_until),
+            0,
+            false,
+        ));
+    }
+    Ok(commits)
+}
+
+fn expired_suspensions_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<Vec<String>> {
+    let rows = exec.query_many(
         "SELECT user_id FROM identity_user_governance \
          WHERE suspended = 1 AND suspended_until_ms IS NOT NULL AND suspended_until_ms <= ?1",
+        &[SqlParam::Int(now)],
+        &[ColKind::Text],
     )?;
-    let rows = stmt.query_map(params![now], |r| r.get::<_, String>(0))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    rows.into_iter()
+        .map(|row| match row.into_iter().next() {
+            Some(SqlValue::Text(v)) => Ok(v),
+            _ => Err(IdError::Corrupt("governance user column")),
+        })
+        .collect()
 }
 
 /// 解封一行；返回是否真的改到了（并发下可能已被别人结算）。
-fn clear_expiry(tx: &Connection, user_id: &str, now: i64) -> Result<bool> {
-    let n = tx.execute(
+fn clear_expiry_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -> Result<bool> {
+    let n = exec.exec(
         "UPDATE identity_user_governance SET suspended = 0, suspended_until_ms = NULL, \
          updated_at = ?2 WHERE user_id = ?1 AND suspended = 1 \
          AND suspended_until_ms IS NOT NULL AND suspended_until_ms <= ?2",
-        params![user_id, now],
+        &[SqlParam::Text(user_id.to_string()), SqlParam::Int(now)],
     )?;
     Ok(n > 0)
 }
 
-fn audit_expiry(
-    tx: &Connection,
+fn audit_expiry_with<E: SqlExec + ?Sized>(
+    exec: &E,
     user_id: &str,
-    after_state: &UserState,
+    after_state: UserState,
     after_until: Option<i64>,
     now: i64,
-) -> Result<()> {
+) -> Result<i64> {
     let before = summary(UserState::Suspended, None);
-    let after = summary(*after_state, after_until);
-    append_audit(
-        tx,
+    let after = summary(after_state, after_until);
+    append_audit_with(
+        exec,
         &AuditDraft {
             action: "suspend.expire",
             target: user_id,
@@ -654,7 +664,6 @@ fn audit_expiry(
             at: now,
         },
     )
-    .map(|_| ())
 }
 
 /// 给用户打管理标签（幂等：同标签重复打不产生第二行）。
