@@ -97,9 +97,12 @@
   `created_at`，新增 `friend_tag`、`group_governance_audit`、`relations_audit`。
 - 全量形状普查：`composition/data-import/census.py` 可从
   `crates/platform/tests/schema_snapshot.txt` 生成空形状库，逐表校验目标
-  catalog；CI `pg_data_import_census.sh` 断言 107 个计划表全部通过。
+  catalog；CI `pg_data_import_census.sh` 断言 107 个计划表全部通过，
+  `pg_data_import_full_shape.sh` 再对空 110 表快照执行真实清空/装载/回读，
+  107 张目标表全部 `verified`（`run_id=ci-shape`）。
 - 目标外键排序：catalog 读取 `pg_constraint`，父表先于子表；`identity_user`
-  等兼容视图基表映射回 `users` 源表，避免推演顺序漏掉 PG-only 外键。
+  等兼容视图基表映射回 `users` 源表，`users` 身份根固定最先，避免推演顺序
+  漏掉 PG-only 外键。
 - 边界：本地/CI 只证 PostgreSQL 16 空库形状与合成数据；真实 110 表的行导入、
   生产快照、生产 restore drill 仍未执行。旧 `pg-table-map.json` 已 stale。
 - 详细口径与回滚见 `docs/g00-04-s4-data-import.md`。
