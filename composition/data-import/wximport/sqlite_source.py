@@ -43,7 +43,7 @@ def list_tables(connection: sqlite3.Connection) -> list[str]:
         "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
         "ORDER BY name"
     ).fetchall()
-    return [str(row["name"]) for row in rows]
+    return [str(row[0]) for row in rows]
 
 
 def kind_for_sqlite_type(declared_type: str) -> Kind:
@@ -67,19 +67,19 @@ def table_columns(connection: sqlite3.Connection, table: str) -> list[Column]:
     rows = connection.execute(f"PRAGMA table_xinfo({quote_ident(table)})").fetchall()
     columns: list[Column] = []
     for row in rows:
-        hidden = int(row["hidden"])
+        hidden = int(row[6])
         # hidden=1 is a virtual-table hidden column; hidden=2/3 are generated
         # columns. Neither can be inserted through a plain INSERT/COPY.
         if hidden != 0:
             continue
-        declared = str(row["type"] or "")
+        declared = str(row[2] or "")
         columns.append(
             Column(
-                name=str(row["name"]),
+                name=str(row[1]),
                 declared_type=declared,
                 kind=kind_for_sqlite_type(declared),
-                not_null=bool(row["notnull"]),
-                pk=int(row["pk"]),
+                not_null=bool(row[3]),
+                pk=int(row[5]),
                 hidden=hidden,
             )
         )
@@ -97,20 +97,20 @@ def table_foreign_keys(connection: sqlite3.Connection, table: str) -> list[Forei
     result: list[ForeignKey] = []
     pk_by_table: dict[str, tuple[str, ...]] = {}
     for row in rows:
-        ref_table = str(row["table"])
-        ref_column = str(row["to"] or "")
+        ref_table = str(row[2])
+        ref_column = str(row[4] or "")
         if not ref_column:
             if ref_table not in pk_by_table:
                 pk_by_table[ref_table] = table_primary_key(connection, ref_table)
             if len(pk_by_table[ref_table]) != 1:
                 raise ValueError(
-                    f"foreign key {table}.{row['from']} -> {ref_table} has no single target column"
+                    f"foreign key {table}.{row[3]} -> {ref_table} has no single target column"
                 )
             ref_column = pk_by_table[ref_table][0]
         result.append(
             ForeignKey(
                 table=table,
-                column=str(row["from"]),
+                column=str(row[3]),
                 ref_table=ref_table,
                 ref_column=ref_column,
             )
