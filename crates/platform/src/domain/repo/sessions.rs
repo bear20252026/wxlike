@@ -926,6 +926,17 @@ mod refresh_pg_tests {
     use crate::storage::{params, StorageProfile};
     use crate::Db;
 
+    /// PG 的 `identity_refresh` / `identity_session_token` 有 `user_id` 外键；
+    /// 这些测试直接写刷新链与会话，必须先把账号行补上（SQLite 没有该约束）。
+    fn seed_user(conn: &crate::storage::StorageConnection<'_>, user: &str) {
+        conn.execute(
+            "INSERT INTO identity_user(user_id, name, pw_hash, created_at) \
+             VALUES(?1, ?1, 'phc', 1) ON CONFLICT DO NOTHING",
+            params![user],
+        )
+        .expect("seed user");
+    }
+
     #[test]
     #[ignore = "requires WXLIKE_TEST_PG_URL and M014 applied"]
     fn postgres_refresh_issue_and_revoke_share_the_port() {
@@ -940,6 +951,7 @@ mod refresh_pg_tests {
             params![user],
         )
         .expect("clean refresh");
+        seed_user(&conn, user);
         drop(conn);
         db.with_tx(|c| issue_refresh(c, user, "pg-refresh-sid", "pg-refresh-dev", 1_000))
             .expect("issue refresh");
@@ -982,6 +994,7 @@ mod refresh_pg_tests {
             params![user],
         )
         .expect("clean sessions");
+        seed_user(&conn, user);
         let session = [
             ("token", "pg-rotate-token"),
             ("user_id", user),
