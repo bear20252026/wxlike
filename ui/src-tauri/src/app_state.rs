@@ -1506,10 +1506,13 @@ mod tests {
 
         let conv = format!("d-ttl-cursor-{uniq}");
         let conv = conv.as_str();
-        let now = wxlike_core::types::now_ms() as i64;
-        let ttl_ms: u64 = 1_000;
+        // 60s 而不是 1s：CI 冷启动时 local_open + 五条写入可能超过 1s，
+        // 那样连“新鲜”消息也会过期，测试会以 0 条失败。TTL 长短不影响
+        // 本用例的翻页语义，只影响时间余量。
+        let ttl_ms: u64 = 60_000;
         // 直接写内存 TTL 缓存，避免依赖服务端（单元测试离线）。
         state.cache_secret_conv(conv, true, ttl_ms);
+        let now = wxlike_core::types::now_ms() as i64;
 
         // seq 1..4 新鲜；seq 5 已到期（sent_at + ttl <= now）。
         for seq in 1..=4i64 {
