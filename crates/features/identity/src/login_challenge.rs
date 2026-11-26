@@ -13,7 +13,7 @@
 use std::fmt;
 
 use hmac::Mac as _;
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::Connection;
 
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{random_hex, IdError, Result};
@@ -179,26 +179,6 @@ fn prepare(
         expires_at: now.saturating_add(limits.ttl_ms),
         resend_after: now.saturating_add(limits.resend_ms),
     })
-}
-
-fn insert_row(
-    conn: &Connection,
-    prepared: &Prepared,
-    phone: &str,
-    purpose: &str,
-    device_id: &str,
-    max_attempts: i64,
-    now: i64,
-) -> Result<()> {
-    insert_row_with(
-        &SqliteExec(conn),
-        prepared,
-        phone,
-        purpose,
-        device_id,
-        max_attempts,
-        now,
-    )
 }
 
 fn insert_row_with<E: SqlExec + ?Sized>(
@@ -534,15 +514,43 @@ pub fn resend(
     limits: Limits,
     now: i64,
 ) -> Result<ChallengeIssued> {
-    let row: Option<(String, String, String, i64, Option<i64>)> = conn
-        .query_row(
-            "SELECT phone_e164, purpose, device_id, resend_after, consumed_at              FROM identity_challenge WHERE id = ?1",
-            params![challenge_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .optional()?;
-    let Some((phone, purpose, device_id, resend_after, consumed)) = row else {
+    let tx = conn.unchecked_transaction()?;
+    let issued = resend_with(&SqliteExec(&tx), challenge_id, pepper, limits, now)?;
+    tx.commit()?;
+    Ok(issued)
+}
+
+/// 端口版 `resend`：调用方负责事务（旧码作废 + 新码插入必须一起成功）。
+pub fn resend_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    challenge_id: &str,
+    pepper: &[u8],
+    limits: Limits,
+    now: i64,
+) -> Result<ChallengeIssued> {
+    let Some(row) = exec.query(
+        "SELECT phone_e164, purpose, device_id, resend_after, consumed_at FROM identity_challenge WHERE id = ?1",
+        &[SqlParam::Text(challenge_id.to_string())],
+        &[
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Int,
+            ColKind::OptInt,
+        ],
+    )?
+    else {
         return Err(IdError::NotFound("challenge"));
+    };
+    let mut it = row.into_iter();
+    let phone = challenge_text(it.next())?;
+    let purpose = challenge_text(it.next())?;
+    let device_id = challenge_text(it.next())?;
+    let resend_after = challenge_int(it.next())?;
+    let consumed = match it.next() {
+        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("challenge consumed_at column")),
     };
     if consumed.is_some() {
         return Err(IdError::Unauthorized("challenge already used"));
@@ -554,19 +562,18 @@ pub fn resend(
     }
     let prepared = prepare(&phone, &purpose, &device_id, pepper, limits, now)?;
     // 重发**不重置**重试预算：重置就等于"再换一枚码又能从头试"。
-    crate::throttle::arm_budget(
-        conn,
+    crate::throttle::arm_budget_with(
+        exec,
         &crate::throttle::key_credential("phone", &phone),
         crate::throttle::CODE_BUDGET,
         now,
     )?;
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    exec.exec(
         "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1",
-        params![challenge_id, now],
+        &[SqlParam::Text(challenge_id.to_string()), SqlParam::Int(now)],
     )?;
-    insert_row(
-        &tx,
+    insert_row_with(
+        exec,
         &prepared,
         &phone,
         &purpose,
@@ -574,7 +581,6 @@ pub fn resend(
         limits.max_attempts,
         now,
     )?;
-    tx.commit()?;
     Ok(issued(prepared))
 }
 
@@ -582,6 +588,7 @@ pub fn resend(
 mod tests {
     use super::*;
     use crate::testing::db;
+    use rusqlite::params;
 
     const PEPPER: &[u8] = b"test-pepper-not-in-repo";
 
