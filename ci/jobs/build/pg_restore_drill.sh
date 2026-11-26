@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # G00-04 S2 PostgreSQL 备份/恢复演练。
 #
-# 前提：DATABASE_URL 指向已执行 M010-M013 的库；PATH 里有 pg_dump / psql。
+# 前提：DATABASE_URL 指向已执行 M010-M018 的库；PATH 里有 pg_dump / psql。
 # 流程：pg_dump plain SQL -> 过滤客户端版本特有的 SET -> 新库 psql 还原 ->
-# 在新库重跑 M010/M011-M013 断言。断言会写最小 fixtures 并自行清理。
+# 在新库重跑 M010-M018 断言。断言会写最小 fixtures 并自行清理。
 #
 # 为什么不用 custom + pg_restore：CI runner 的 pg_dump 可能比 postgres:16
 # service 新，会在 dump 头写 `SET transaction_timeout = 0;`；服务端 16 不认识
@@ -36,11 +36,21 @@ psql -X "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
 
 psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$DUMP_FILE"
 
-# 恢复出来的库必须能过同一组 M010/M011-M013 断言：这同时验证了
+# 恢复出来的库必须能过同一组 M010-M018 断言：这同时验证了
 # 表、视图、函数、触发器、序列与索引都完整恢复，而不只是“行数对得上”。
 psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
   -f ci/jobs/build/pg_migration_asserts.sql
 psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
   -f ci/jobs/build/pg_migration_asserts_compat.sql
+psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+  -f ci/jobs/build/pg_migration_asserts_content.sql
+psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+  -f ci/jobs/build/pg_migration_asserts_identity_retry.sql
+psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+  -f ci/jobs/build/pg_migration_asserts_identity_session_meta.sql
+psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+  -f ci/jobs/build/pg_migration_asserts_identity_session_meta_table.sql
+psql -X "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+  -f ci/jobs/build/pg_migration_asserts_identity_session_meta_cleanup.sql
 
 echo "restore drill: OK"

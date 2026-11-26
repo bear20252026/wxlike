@@ -35,7 +35,9 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'M017: 侧车表不可写';
     END IF;
-    IF NOT EXISTS (
+    IF EXISTS (
+        SELECT 1 FROM identity_session_token WHERE token = 'm017_backfill_token'
+    ) AND NOT EXISTS (
         SELECT 1 FROM identity_session_meta
         WHERE sid = 'm017_backfill_sid'
           AND user_id = 'm017_backfill'
