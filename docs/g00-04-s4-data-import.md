@@ -22,7 +22,7 @@
 | 阶段 | 文件 | 行为 |
 | --- | --- | --- |
 | 盘点 | `sqlite_source.py` | `mode=ro` 打开 SQLite；列出物理表；`PRAGMA table_xinfo` 排除生成列/虚拟表隐藏列；解析主键、外键；记录 `PRAGMA data_version` 与文件 SHA-256 |
-| 计划 | `plan.py` | 按 SQLite 外键做 Kahn 拓扑排序，父表先于子表；有环时确定性断开并告警；`DEFAULT_SKIP` 跳过 `wallets`/`ledger`；`DEFAULT_TARGETS` 把 SQLite 的 `identity_session_token` 侧车映射到 PG 的 `identity_session_meta`；支持 mapping 的 `skip` 与 `targets` |
+| 计划 | `plan.py` | 按 SQLite 外键做 Kahn 拓扑排序，父表先于子表；有环时确定性断开并告警；`DEFAULT_SKIP` 跳过 `wallets`/`ledger` 和 M017 已回填的 `identity_session_token` 旧侧车；默认同名复制，mapping 可覆盖 `skip` 与 `targets` |
 | 目标盘点 | `pg.py` | 通过 `psql` 读取 `pg_class`/`pg_attribute`/`pg_attrdef`/`pg_constraint` 的 JSON catalog；识别表/视图/物化视图/分区表；复制任何行之前拒绝缺目标、物化视图、源独有列、目标独有 NOT NULL 无默认列、类型族不兼容；再按目标外键把父表移到子表之前（兼容视图的基表会映射回源表，`users` 身份根固定最先） |
 | 形状普查 | `snapshot.py` / `census.py` | 从 `crates/platform/tests/schema_snapshot.txt` 生成空 SQLite 形状库（110 表/704 列，无外键、无数据）；逐表跑 `apply_catalog`，输出 verified/failures JSON；失败表不进入行导入 |
 | 导出 | `codec.py` / `exporter.py` | 流式 SELECT；NULL 写未加引号的 `\N`，空串写 `""`，bytea 写 `"\x..."`，所有非 NULL 字段加引号；逐行规范化哈希后排序再 SHA-256，得到顺序无关的行多重集摘要 |
