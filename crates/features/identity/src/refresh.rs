@@ -8,7 +8,7 @@
 //! 库里只存 `sha256(token)`：备份/快照泄露不产生可用凭据。
 
 use hmac::Mac as _;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::session::Features;
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
@@ -53,21 +53,6 @@ struct RawChain {
     expires_at: i64,
     used_at: Option<i64>,
     revoked_at: Option<i64>,
-}
-
-fn raw_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawChain> {
-    Ok(RawChain {
-        token_hash: r.get(0)?,
-        sid: r.get(1)?,
-        user_id: r.get(2)?,
-        device_id: r.get(3)?,
-        audience: r.get(4)?,
-        generation: r.get(5)?,
-        created_at: r.get(6)?,
-        expires_at: r.get(7)?,
-        used_at: r.get(8)?,
-        revoked_at: r.get(9)?,
-    })
 }
 
 const RAW_KINDS: [ColKind; 10] = [
@@ -706,10 +691,16 @@ pub fn revoke_user_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) 
 
 /// 一个会话的完整链（运维视图 / 测试断言用）。
 pub fn chain_of(conn: &Connection, sid: &str) -> Result<Vec<ChainRow>> {
+    chain_of_with(&SqliteExec(conn), sid)
+}
+
+/// 端口版 `chain_of`。
+pub fn chain_of_with<E: SqlExec + ?Sized>(exec: &E, sid: &str) -> Result<Vec<ChainRow>> {
     let sql = format!("{SELECT_ROW} WHERE sid = ?1 ORDER BY generation ASC");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![sid], raw_of)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()?
+    exec.query_many(&sql, &[SqlParam::Text(sid.to_string())], &RAW_KINDS)?
+        .into_iter()
+        .map(raw_values)
+        .collect::<Result<Vec<_>>>()?
         .into_iter()
         .map(decode)
         .collect()
@@ -719,6 +710,7 @@ pub fn chain_of(conn: &Connection, sid: &str) -> Result<Vec<ChainRow>> {
 mod tests {
     use super::*;
     use crate::testing::db;
+    use rusqlite::params;
 
     fn session_row(conn: &Connection, sid: &str, now: i64) {
         conn.execute(
