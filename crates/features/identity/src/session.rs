@@ -475,8 +475,32 @@ pub fn open_temp(
     ip: &str,
     now: i64,
 ) -> Result<SessionGrant> {
-    open_with(
-        conn,
+    let tx = conn.unchecked_transaction()?;
+    let grant = open_temp_with(
+        &SqliteExec(&tx),
+        user_id,
+        device_id,
+        audience,
+        ttl_ms,
+        ip,
+        now,
+    )?;
+    tx.commit()?;
+    Ok(grant)
+}
+
+/// 端口版临时会话：调用方负责事务。
+pub fn open_temp_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    audience: Audience,
+    ttl_ms: i64,
+    ip: &str,
+    now: i64,
+) -> Result<SessionGrant> {
+    open_tx_with(
+        exec,
         user_id,
         device_id,
         audience,
