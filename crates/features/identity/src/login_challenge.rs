@@ -307,6 +307,12 @@ struct ChallengeRow {
     consumed_at: Option<i64>,
 }
 
+const CH_T: ColKind = ColKind::Text;
+const CH_I: ColKind = ColKind::Int;
+const CH_O: ColKind = ColKind::OptInt;
+
+const CHALLENGE_KINDS: [ColKind; 9] = [CH_T, CH_T, CH_T, CH_T, CH_T, CH_I, CH_I, CH_I, CH_O];
+
 fn challenge_from_values(row: Vec<crate::sqlport::SqlValue>) -> Result<ChallengeRow> {
     let mut it = row.into_iter();
     let phone = challenge_text(it.next())?;
@@ -426,17 +432,7 @@ fn fetch_challenge_with<E: SqlExec + ?Sized>(
     let Some(row) = exec.query(
         "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts,              max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
         &[SqlParam::Text(challenge_id.to_string())],
-        &[
-            ColKind::Text,
-            ColKind::Text,
-            ColKind::Text,
-            ColKind::Text,
-            ColKind::Text,
-            ColKind::Int,
-            ColKind::Int,
-            ColKind::Int,
-            ColKind::OptInt,
-        ],
+        &CHALLENGE_KINDS,
     )? else {
         return Ok(None);
     };
@@ -502,6 +498,51 @@ fn bump_attempts_with<E: SqlExec + ?Sized>(exec: &E, id: &str) -> Result<()> {
     Ok(())
 }
 
+struct ResendTarget {
+    phone: String,
+    purpose: String,
+    device_id: String,
+    resend_after: i64,
+    consumed: Option<i64>,
+}
+
+fn resend_target_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    challenge_id: &str,
+) -> Result<Option<ResendTarget>> {
+    let Some(row) = exec.query(
+        "SELECT phone_e164, purpose, device_id, resend_after, consumed_at FROM identity_challenge WHERE id = ?1",
+        &[SqlParam::Text(challenge_id.to_string())],
+        &[
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Int,
+            ColKind::OptInt,
+        ],
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut it = row.into_iter();
+    let phone = challenge_text(it.next())?;
+    let purpose = challenge_text(it.next())?;
+    let device_id = challenge_text(it.next())?;
+    let resend_after = challenge_int(it.next())?;
+    let consumed = match it.next() {
+        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("challenge consumed_at column")),
+    };
+    Ok(Some(ResendTarget {
+        phone,
+        purpose,
+        device_id,
+        resend_after,
+        consumed,
+    }))
+}
+
 /// 重发：旧码立即作废，新码绑定同一手机号/用途/设备。
 pub fn resend(
     conn: &Connection,
@@ -524,30 +565,16 @@ pub fn resend_with<E: SqlExec + ?Sized>(
     limits: Limits,
     now: i64,
 ) -> Result<ChallengeIssued> {
-    let Some(row) = exec.query(
-        "SELECT phone_e164, purpose, device_id, resend_after, consumed_at FROM identity_challenge WHERE id = ?1",
-        &[SqlParam::Text(challenge_id.to_string())],
-        &[
-            ColKind::Text,
-            ColKind::Text,
-            ColKind::Text,
-            ColKind::Int,
-            ColKind::OptInt,
-        ],
-    )?
-    else {
+    let Some(row) = resend_target_with(exec, challenge_id)? else {
         return Err(IdError::NotFound("challenge"));
     };
-    let mut it = row.into_iter();
-    let phone = challenge_text(it.next())?;
-    let purpose = challenge_text(it.next())?;
-    let device_id = challenge_text(it.next())?;
-    let resend_after = challenge_int(it.next())?;
-    let consumed = match it.next() {
-        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
-        Some(crate::sqlport::SqlValue::Null) => None,
-        _ => return Err(IdError::Corrupt("challenge consumed_at column")),
-    };
+    let ResendTarget {
+        phone,
+        purpose,
+        device_id,
+        resend_after,
+        consumed,
+    } = row;
     if consumed.is_some() {
         return Err(IdError::Unauthorized("challenge already used"));
     }
