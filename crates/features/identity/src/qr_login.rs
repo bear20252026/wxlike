@@ -22,7 +22,7 @@
 //! 扫码登录**只**建立一条可撤销的设备会话，不改变任何 E2EE 密钥的信任状态
 //! （那是 G02-03 的 `verify`）。"这台电脑登录成功了"不等于"它历史密钥可信"。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 pub use crate::sqlport::{
     ColKind as QrKind, SqlExec as QrExec, SqlParam as QrParam, SqlValue as QrValue, SqliteExec,
@@ -238,10 +238,6 @@ fn load_with<E: QrExec + ?Sized>(exec: &E, id: &str, now: i64) -> Result<QrRow> 
         return Err(IdError::Expired);
     }
     Ok(row)
-}
-
-fn load(conn: &Connection, id: &str, now: i64) -> Result<QrRow> {
-    load_with(&SqliteExec(conn), id, now)
 }
 
 fn check_verifier(verifier: &str) -> Result<()> {
@@ -497,8 +493,8 @@ pub fn poll_with<E: QrExec + ?Sized>(
 ///
 /// 所以规则是：**没有设备行就以批准者名义登记；已被别人登记就拒绝**。宁可让
 /// 这次登录失败，也不改变一台已存在设备的归属。
-fn adopt_device(
-    conn: &Connection,
+fn adopt_device_with<E: QrExec + ?Sized>(
+    exec: &E,
     scanner: &str,
     device_id: &str,
     platform: &str,
@@ -508,14 +504,14 @@ fn adopt_device(
     if device_id.is_empty() {
         return Ok(());
     }
-    match crate::device::get(conn, device_id)? {
+    match crate::device::get_with(exec, device_id)? {
         None => {
             let reg = crate::device::Registration {
                 platform: platform.to_string(),
                 label: label.to_string(),
                 ..Default::default()
             };
-            crate::device::register(conn, scanner, device_id, &reg, now)?;
+            crate::device::register_with(exec, scanner, device_id, &reg, now)?;
             Ok(())
         }
         Some(row) if row.user_id == scanner => Ok(()),
@@ -533,8 +529,24 @@ pub fn exchange(
     ip: &str,
     now: i64,
 ) -> Result<crate::session::SessionGrant> {
+    let tx = conn.unchecked_transaction()?;
+    let grant = exchange_with(&SqliteExec(&tx), id, verifier, audience, ip, now)?;
+    tx.commit()?;
+    Ok(grant)
+}
+
+/// 端口版 `exchange`：抢占 challenge、登记设备、签发会话都在调用方事务里，
+/// 任一步失败就一起回滚，不会留下"码已消费但会话没开出来"的中间态。
+pub fn exchange_with<E: QrExec + ?Sized>(
+    exec: &E,
+    id: &str,
+    verifier: &str,
+    audience: Audience,
+    ip: &str,
+    now: i64,
+) -> Result<crate::session::SessionGrant> {
     check_verifier(verifier)?;
-    let row = load(conn, id, now)?;
+    let row = load_with(exec, id, now)?;
     if row.state != QrState::Approved {
         return Err(IdError::Conflict("challenge not approved"));
     }
@@ -544,23 +556,23 @@ pub fn exchange(
     if row.scanned_by.is_empty() {
         return Err(IdError::Conflict("challenge not approved"));
     }
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_qr SET state = 'consumed', consumed_at = ?2 \
          WHERE id = ?1 AND state = 'approved'",
-        params![id, now],
+        &[QrParam::Text(id.to_string()), QrParam::Int(now)],
     )?;
     if n != 1 {
         return Err(IdError::Conflict("challenge already consumed"));
     }
-    adopt_device(
-        conn,
+    adopt_device_with(
+        exec,
         &row.scanned_by,
         &row.device_id,
         &row.platform,
         &row.label,
         now,
     )?;
-    crate::session::open_default(conn, &row.scanned_by, &row.device_id, audience, ip, now)
+    crate::session::open_default_with(exec, &row.scanned_by, &row.device_id, audience, ip, now)
 }
 
 /// 换码：旧 challenge 立刻作废，新码沿用同一设备与 PKCE 绑定。

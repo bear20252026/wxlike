@@ -487,6 +487,27 @@ pub fn open_default(
     open(conn, user_id, device_id, audience, ACCESS_TTL_MS, ip, now)
 }
 
+/// 端口版默认签发：调用方负责事务，适合扫码兑换这类"开会话 + 改其它表"的流程。
+pub fn open_default_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    audience: Audience,
+    ip: &str,
+    now: i64,
+) -> Result<SessionGrant> {
+    open_tx_with(
+        exec,
+        user_id,
+        device_id,
+        audience,
+        ACCESS_TTL_MS,
+        ip,
+        now,
+        Features::empty(),
+    )
+}
+
 /// 用访问令牌鉴权。**受众必须显式给出**：管理面拿用户令牌进不来，反之亦然。
 pub fn authenticate(
     conn: &Connection,
