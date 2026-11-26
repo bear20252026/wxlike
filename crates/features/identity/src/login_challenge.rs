@@ -377,7 +377,19 @@ pub fn verify(
     pepper: &[u8],
     now: i64,
 ) -> Result<Verified> {
-    let Some(row) = fetch_challenge(conn, challenge_id)? else {
+    verify_with(&SqliteExec(conn), challenge_id, code, pepper, now)
+}
+
+/// 端口版 `verify`。调用方可以把它包进事务；不包时消费仍是条件 UPDATE，
+/// 并发验证只有一个请求能把 `consumed_at` 从 NULL 改掉。
+pub fn verify_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    challenge_id: &str,
+    code: &str,
+    pepper: &[u8],
+    now: i64,
+) -> Result<Verified> {
+    let Some(row) = fetch_challenge_with(exec, challenge_id)? else {
         return Err(IdError::Unauthorized("invalid or expired code"));
     };
     let ChallengeRow {
@@ -395,30 +407,32 @@ pub fn verify(
 
     // 第二层：跨重发累计的预算桶（见 `throttle::CODE_BUDGET`）。同样在比对之前判。
     let budget_bucket = crate::throttle::key_credential("phone", &phone);
-    crate::throttle::check_budget(conn, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
+    crate::throttle::check_budget_with(exec, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
     let candidate = code_hash(pepper, &id, &phone, &purpose, &device_id, code)?;
     if !crate::ct_eq(candidate.as_bytes(), stored_hash.as_bytes()) {
         // 只有**失败**才计数（上游 `parts[0] != code` 才 `count+1`）。
         // 原实现是"进来先 bump 再比对"，差别不只在美观：一次正确验证也会
         // 白白吃掉一格配额，用户输对了却被告知"尝试次数超限"。
-        bump_attempts(conn, &id)?;
-        crate::throttle::spend_failure(conn, &budget_bucket, crate::throttle::CODE_BUDGET, now)?;
+        bump_attempts_with(exec, &id)?;
+        crate::throttle::spend_failure_with(
+            exec,
+            &budget_bucket,
+            crate::throttle::CODE_BUDGET,
+            now,
+        )?;
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
-    let tx = conn.unchecked_transaction()?;
-    if !consume_challenge(&tx, &id, now)? {
+    if !consume_challenge_with(exec, &id, now)? {
         // 并发验证：另一个请求已经把这枚码用掉了。
-        drop(tx);
         return Err(IdError::Unauthorized("invalid or expired code"));
     }
     // 上游一个凭据只有一个键（`code_<method>:<value>`），验证成功即 `Delete`。
     // 本平台把同一手机号+用途下**其它仍在有效期内的挑战一并作废**：
     // 否则"下发 20 枚、猜中任意一枚"就成了免费的多次尝试，
     // 而 `identity_retry` 的预算也拦不住这种横向铺开。
-    retire_siblings(&tx, &phone, &purpose, &id, now)?;
-    tx.commit()?;
-    crate::throttle::clear_budget(conn, &budget_bucket)?;
-    crate::throttle::reset(conn, &crate::throttle::key_phone(&phone))?;
+    retire_siblings_with(exec, &phone, &purpose, &id, now)?;
+    crate::throttle::clear_budget_with(exec, &budget_bucket)?;
+    crate::throttle::reset_with(exec, &crate::throttle::key_phone(&phone))?;
     Ok(Verified {
         challenge_id: id,
         phone_e164: phone,
@@ -476,33 +490,38 @@ fn check_open(
 }
 
 /// 标记消费；返回 false 表示已被并发请求抢先消费。
-fn consume_challenge(tx: &Connection, id: &str, now: i64) -> Result<bool> {
-    let n = tx.execute(
+fn consume_challenge_with<E: SqlExec + ?Sized>(exec: &E, id: &str, now: i64) -> Result<bool> {
+    let n = exec.exec(
         "UPDATE identity_challenge SET consumed_at = ?2 WHERE id = ?1 AND consumed_at IS NULL",
-        params![id, now],
+        &[SqlParam::Text(id.to_string()), SqlParam::Int(now)],
     )?;
     Ok(n == 1)
 }
 
 /// 作废同一 `phone + purpose` 下除 `keep` 以外的所有未消费挑战。
-fn retire_siblings(
-    conn: &rusqlite::Connection,
+fn retire_siblings_with<E: SqlExec + ?Sized>(
+    exec: &E,
     phone: &str,
     purpose: &str,
     keep: &str,
     now: i64,
 ) -> Result<()> {
-    conn.execute(
+    exec.exec(
         "UPDATE identity_challenge SET consumed_at = ?3 WHERE phone_e164 = ?1 AND purpose = ?2 AND id <> ?4 AND consumed_at IS NULL",
-        params![phone, purpose, now, keep],
+        &[
+            SqlParam::Text(phone.to_string()),
+            SqlParam::Text(purpose.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Text(keep.to_string()),
+        ],
     )?;
     Ok(())
 }
 
-fn bump_attempts(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute(
+fn bump_attempts_with<E: SqlExec + ?Sized>(exec: &E, id: &str) -> Result<()> {
+    exec.exec(
         "UPDATE identity_challenge SET attempts = attempts + 1 WHERE id = ?1",
-        params![id],
+        &[SqlParam::Text(id.to_string())],
     )?;
     Ok(())
 }
