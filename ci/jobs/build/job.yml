@@ -341,6 +341,18 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
               -f schema/proposals/G02/0006_identity_session_meta_cleanup.sql
           done
+      - name: M019-M022 消息/关系/序列号首次 + 重跑（幂等）
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            schema/proposals/G03/0001_message_timeline.sql \
+            schema/proposals/G03/0002_message_delivery.sql \
+            schema/proposals/G02/0007_relations_acs.sql \
+            schema/proposals/G02/0008_identity_token_serial.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
       - name: M010 schema/触发器/不可变性断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
       - name: M011-M013 兼容层与回填断言
@@ -355,6 +367,8 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_table.sql
       - name: M018 identity 会话侧车清理断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta_cleanup.sql
+      - name: M019-M022 消息/关系/序列号形状断言
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_g03.sql
       - name: M013 导入器全链路（SQLite → COPY → CALL）
         run: bash ci/jobs/build/pg_import_smoke.sh
       - name: 备份/恢复演练（pg_dump → psql restore → 断言）
