@@ -26,7 +26,7 @@
 //!
 //! 纯同步域 API（`&Connection` 进、`Result` 出），无 async 体、不新增 tokio。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::exec::{RelExec, RelKind, RelParam, RelValue};
@@ -276,15 +276,27 @@ fn take_opt_int(values: &mut Vec<RelValue>) -> Result<Option<i64>> {
 /// 群治理入口。audience 鉴权由 identity 域在 HTTP 面完成（本函数收到的是已鉴权
 /// 命令）；这里做目标/理由/状态校验、幂等写入、留痕与事件产出。
 pub fn govern(conn: &Connection, cmd: &GroupGovernCommand, now: i64) -> Result<GroupGovernEffect> {
+    let tx = conn.unchecked_transaction()?;
+    let effect = govern_with(&*tx, cmd, now)?;
+    tx.commit()?;
+    Ok(effect)
+}
+
+/// 端口版群治理：全部状态/审计写入在一个事务里，事件由调用方提交后派发。
+pub fn govern_with<E: RelExec + ?Sized>(
+    exec: &E,
+    cmd: &GroupGovernCommand,
+    now: i64,
+) -> Result<GroupGovernEffect> {
     let group_id = check_target(&cmd.group_id)?;
     let reason = check_reason(&cmd.reason)?;
     let actor = check_actor(&cmd.actor)?;
-    let before_group = load(conn, &group_id)?;
+    let before_group = load_with(exec, &group_id)?;
     let before = summary(&before_group);
 
     let (after_group, already, mut events) = match cmd.action {
-        GroupAction::Freeze => freeze(conn, &before_group, &actor, now)?,
-        GroupAction::Unfreeze => unfreeze(conn, &before_group, &actor)?,
+        GroupAction::Freeze => freeze_with(exec, &before_group, &actor, now)?,
+        GroupAction::Unfreeze => unfreeze_with(exec, &before_group, &actor)?,
         GroupAction::Transfer => {
             let new_owner = cmd
                 .new_owner
@@ -293,18 +305,26 @@ pub fn govern(conn: &Connection, cmd: &GroupGovernCommand, now: i64) -> Result<G
                 .filter(|s| !s.is_empty())
                 .ok_or(RelError::BadInput("transfer requires new_owner"))?;
             let new_owner = check_target(new_owner)?;
-            transfer(conn, &before_group, &new_owner, &actor, now)?
+            transfer_with(exec, &before_group, &new_owner, &actor, now)?
         }
-        GroupAction::Dissolve => dissolve(conn, &before_group, &actor, now)?,
+        GroupAction::Dissolve => dissolve_with(exec, &before_group, &actor, now)?,
     };
     let after = summary(&after_group);
 
     // 留痕：每个动作（含幂等命中）都落 relations_audit，kind 带治理前缀。
     let kind = format!("group.govern.{}", cmd.action.as_str());
-    audit(conn, &actor, &group_id, &kind, now)?;
+    exec.exec(
+        "INSERT INTO relations_audit(actor, subject, kind, at) VALUES(?1, ?2, ?3, ?4)",
+        &[
+            RelParam::Text(actor.clone()),
+            RelParam::Text(group_id.clone()),
+            RelParam::Text(kind),
+            RelParam::Int(now),
+        ],
+    )?;
     // 治理理由单独落一条可复核记录（relations_audit 只有 kind，理由进 detail 表）。
-    let seq = append_reason(
-        conn,
+    let seq = append_reason_with(
+        exec,
         &group_id,
         cmd.action.as_str(),
         &actor,
@@ -328,8 +348,8 @@ pub fn govern(conn: &Connection, cmd: &GroupGovernCommand, now: i64) -> Result<G
     })
 }
 
-fn freeze(
-    conn: &Connection,
+fn freeze_with<E: RelExec + ?Sized>(
+    exec: &E,
     g: &group::Group,
     actor: &str,
     now: i64,
@@ -339,9 +359,9 @@ fn freeze(
     }
     let already = g.frozen;
     if !already {
-        upsert_meta(conn, g, Some(now), None, actor)?;
+        upsert_meta_with(exec, g, Some(now), None, actor)?;
     }
-    let after = load(conn, &g.id)?;
+    let after = load_with(exec, &g.id)?;
     let events = vec![GroupGovernanceEvent::GroupStateChanged {
         group_id: g.id.clone(),
         state: state_of(&after).to_string(),
@@ -349,8 +369,8 @@ fn freeze(
     Ok((after, already, events))
 }
 
-fn unfreeze(
-    conn: &Connection,
+fn unfreeze_with<E: RelExec + ?Sized>(
+    exec: &E,
     g: &group::Group,
     actor: &str,
 ) -> Result<(group::Group, bool, Vec<GroupGovernanceEvent>)> {
@@ -359,9 +379,9 @@ fn unfreeze(
     }
     let already = !g.frozen;
     if !already {
-        upsert_meta(conn, g, None, None, actor)?;
+        upsert_meta_with(exec, g, None, None, actor)?;
     }
-    let after = load(conn, &g.id)?;
+    let after = load_with(exec, &g.id)?;
     let events = vec![GroupGovernanceEvent::GroupStateChanged {
         group_id: g.id.clone(),
         state: state_of(&after).to_string(),
@@ -369,8 +389,8 @@ fn unfreeze(
     Ok((after, already, events))
 }
 
-fn transfer(
-    conn: &Connection,
+fn transfer_with<E: RelExec + ?Sized>(
+    exec: &E,
     g: &group::Group,
     new_owner: &str,
     _actor: &str,
@@ -381,34 +401,41 @@ fn transfer(
     }
     if new_owner == g.owner_uid {
         // 幂等：已经是这个群主。
-        let after = load(conn, &g.id)?;
+        let after = load_with(exec, &g.id)?;
         return Ok((after, true, Vec::new()));
     }
     // 新群主必须是现有成员（治理不凭空造成员；先拉人再转让）。
-    if group::role_of(conn, &g.id, new_owner)?.is_none() {
+    if role_of_with(exec, &g.id, new_owner)?.is_none() {
         return Err(RelError::NotFound("member"));
     }
     let old_owner = g.owner_uid.clone();
-    let tx = conn.unchecked_transaction()?;
     // 新群主升 owner，原群主降 admin（与 group::set_role 的转让同口径）。
-    tx.execute(
+    exec.exec(
         "UPDATE group_members SET role = 'owner' WHERE group_id = ?1 AND user_id = ?2",
-        params![g.id, new_owner],
+        &[
+            RelParam::Text(g.id.clone()),
+            RelParam::Text(new_owner.to_string()),
+        ],
     )?;
-    tx.execute(
+    exec.exec(
         "UPDATE group_members SET role = 'admin' WHERE group_id = ?1 AND user_id = ?2",
-        params![g.id, old_owner],
+        &[
+            RelParam::Text(g.id.clone()),
+            RelParam::Text(old_owner.clone()),
+        ],
     )?;
-    tx.execute(
+    exec.exec(
         "UPDATE groups SET owner_uid = ?2 WHERE id = ?1",
-        params![g.id, new_owner],
+        &[
+            RelParam::Text(g.id.clone()),
+            RelParam::Text(new_owner.to_string()),
+        ],
     )?;
     // 位行同步：新群主给 O，原群主收回 O（避免两个 owner 的位残留）。
     // 只改已存在的显式位行；没有显式行的成员走角色缺省位，角色已更新即可。
-    set_owner_bit(&tx, &g.id, new_owner, true, now)?;
-    set_owner_bit(&tx, &g.id, &old_owner, false, now)?;
-    tx.commit()?;
-    let after = load(conn, &g.id)?;
+    set_owner_bit_with(exec, &g.id, new_owner, true, now)?;
+    set_owner_bit_with(exec, &g.id, &old_owner, false, now)?;
+    let after = load_with(exec, &g.id)?;
     let events = vec![GroupGovernanceEvent::GroupTransferred {
         group_id: g.id.clone(),
         old_owner,
@@ -417,18 +444,18 @@ fn transfer(
     Ok((after, false, events))
 }
 
-fn dissolve(
-    conn: &Connection,
+fn dissolve_with<E: RelExec + ?Sized>(
+    exec: &E,
     g: &group::Group,
     actor: &str,
     now: i64,
 ) -> Result<(group::Group, bool, Vec<GroupGovernanceEvent>)> {
     let already = g.dissolved;
-    let members = group::members(conn, &g.id)?;
+    let members = members_with(exec, &g.id)?;
     if !already {
-        upsert_meta(conn, g, g.frozen.then_some(now), Some(now), actor)?;
+        upsert_meta_with(exec, g, g.frozen.then_some(now), Some(now), actor)?;
     }
-    let after = load(conn, &g.id)?;
+    let after = load_with(exec, &g.id)?;
     let events = vec![GroupGovernanceEvent::GroupDissolved {
         group_id: g.id.clone(),
         members,
@@ -437,23 +464,25 @@ fn dissolve(
 }
 
 /// 增/删某成员显式位行里的 `O` 位（只动已存在的行；无行 = 走角色缺省，不造行）。
-fn set_owner_bit(
-    conn: &Connection,
+fn set_owner_bit_with<E: RelExec + ?Sized>(
+    exec: &E,
     group_id: &str,
     user: &str,
     give: bool,
     now: i64,
 ) -> Result<()> {
-    let given_raw: Option<String> = conn
-        .query_row(
-            "SELECT mode_given FROM group_member_acs WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, user],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(given_raw) = given_raw else {
+    let given_raw = exec.query(
+        "SELECT mode_given FROM group_member_acs WHERE group_id = ?1 AND user_id = ?2",
+        &[
+            RelParam::Text(group_id.to_string()),
+            RelParam::Text(user.to_string()),
+        ],
+        &[RelKind::Text],
+    )?;
+    let Some(mut row) = given_raw else {
         return Ok(());
     };
+    let given_raw = row.remove(0).into_text()?;
     let mut given = crate::port::Acs::parse(&given_raw)
         .map_err(|_| RelError::Corrupt("group_member_acs.mode_given"))?;
     if given.is_defined() {
@@ -462,10 +491,15 @@ fn set_owner_bit(
         } else {
             given.without(crate::port::Acs::OWNER)
         };
-        conn.execute(
+        exec.exec(
             "UPDATE group_member_acs SET mode_given = ?3, updated_at = ?4 \
              WHERE group_id = ?1 AND user_id = ?2",
-            params![group_id, user, given.masked().to_flags(), now],
+            &[
+                RelParam::Text(group_id.to_string()),
+                RelParam::Text(user.to_string()),
+                RelParam::Text(given.masked().to_flags()),
+                RelParam::Int(now),
+            ],
         )?;
     }
     Ok(())
@@ -473,26 +507,38 @@ fn set_owner_bit(
 
 /// 写 group_meta 的冻结/解散标记（保留可见性；幂等 upsert）。
 /// `frozen_at`：`Some(t)` 置冻结、`None` 清冻结；`dissolved_at` 同理。
-fn upsert_meta(
-    conn: &Connection,
+fn upsert_meta_with<E: RelExec + ?Sized>(
+    exec: &E,
     g: &group::Group,
     frozen_at: Option<i64>,
     dissolved_at: Option<i64>,
     actor: &str,
 ) -> Result<()> {
-    conn.execute(
+    exec.exec(
         "INSERT INTO group_meta(group_id, visibility, dissolved_at, dissolved_by, frozen_at) \
          VALUES(?1, ?2, ?3, ?4, ?5) \
          ON CONFLICT(group_id) DO UPDATE SET dissolved_at = ?3, \
          dissolved_by = CASE WHEN ?3 IS NOT NULL THEN ?4 ELSE dissolved_by END, frozen_at = ?5",
-        params![g.id, g.visibility.as_str(), dissolved_at, actor, frozen_at],
+        &[
+            RelParam::Text(g.id.clone()),
+            RelParam::Text(g.visibility.as_str().to_string()),
+            match dissolved_at {
+                Some(v) => RelParam::Int(v),
+                None => RelParam::Null,
+            },
+            RelParam::Text(actor.to_string()),
+            match frozen_at {
+                Some(v) => RelParam::Int(v),
+                None => RelParam::Null,
+            },
+        ],
     )?;
     Ok(())
 }
 
 /// 治理理由留痕（可复核"凭什么"）。独立小表，append-only；返回自增 seq。
-fn append_reason(
-    conn: &Connection,
+fn append_reason_with<E: RelExec + ?Sized>(
+    exec: &E,
     group_id: &str,
     action: &str,
     actor: &str,
@@ -500,12 +546,52 @@ fn append_reason(
     trace: &str,
     now: i64,
 ) -> Result<i64> {
-    conn.execute(
+    exec.insert_returning(
         "INSERT INTO group_governance_audit(group_id, action, actor, reason, trace, at) \
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        params![group_id, action, actor, reason, trace, now],
+        &[
+            RelParam::Text(group_id.to_string()),
+            RelParam::Text(action.to_string()),
+            RelParam::Text(actor.to_string()),
+            RelParam::Text(reason.to_string()),
+            RelParam::Text(trace.to_string()),
+            RelParam::Int(now),
+        ],
+    )
+}
+
+fn role_of_with<E: RelExec + ?Sized>(
+    exec: &E,
+    group_id: &str,
+    user: &str,
+) -> Result<Option<group::Role>> {
+    let raw = exec.query(
+        "SELECT role FROM group_members WHERE group_id = ?1 AND user_id = ?2",
+        &[
+            RelParam::Text(group_id.to_string()),
+            RelParam::Text(user.to_string()),
+        ],
+        &[RelKind::Text],
     )?;
-    Ok(conn.last_insert_rowid())
+    let Some(mut row) = raw else {
+        return Ok(None);
+    };
+    let raw = row.remove(0).into_text()?;
+    group::Role::parse(&raw)
+        .map(Some)
+        .ok_or(RelError::Corrupt("group_members.role"))
+}
+
+fn members_with<E: RelExec + ?Sized>(exec: &E, group_id: &str) -> Result<Vec<String>> {
+    let rows = exec.query_many(
+        "SELECT user_id FROM group_members WHERE group_id = ?1 \
+         ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, joined_at ASC",
+        &[RelParam::Text(group_id.to_string())],
+        &[RelKind::Text],
+    )?;
+    rows.into_iter()
+        .map(|mut row| row.remove(0).into_text())
+        .collect()
 }
 
 /// 治理域自有审计表（理由/trace 可复核；与 relations_audit 的 kind 行互补）。

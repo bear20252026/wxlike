@@ -88,6 +88,8 @@ pub trait RelExec {
         params: &[RelParam],
         kinds: &[RelKind],
     ) -> Result<Vec<Vec<RelValue>>>;
+    /// INSERT 一行并返回自增 id（审计 seq）。
+    fn insert_returning(&self, sql: &str, params: &[RelParam]) -> Result<i64>;
 }
 
 impl RelExec for Connection {
@@ -129,6 +131,11 @@ impl RelExec for Connection {
             out.push(read_row(row, kinds)?);
         }
         Ok(out)
+    }
+
+    fn insert_returning(&self, sql: &str, params: &[RelParam]) -> Result<i64> {
+        self.exec(sql, params)?;
+        Ok(self.last_insert_rowid())
     }
 }
 
