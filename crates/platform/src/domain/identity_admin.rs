@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 
 use crate::domain::qr_login::id_err;
 use crate::error::ApiError;
+use crate::storage::sql_port::StorageSqlExec;
 use crate::Platform;
 use wxlike_identity::governance::{self, AdminUserView, GovernCommand, GovernEffect};
 use wxlike_relations::governance::{
@@ -75,9 +76,9 @@ impl Platform {
         operator_token: &str,
         user_id: &str,
     ) -> Result<AdminUserView, ApiError> {
-        let c = self.db().lock()?;
-        governance::user_view(
-            &c,
+        let c = self.db().acquire();
+        governance::user_view_with(
+            &StorageSqlExec(&c),
             operator_token,
             user_id,
             &self.governance,

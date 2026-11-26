@@ -49,7 +49,7 @@ pub use user::{
     add_label, ensure_user_active, ensure_user_active_with, remove_label, set_disabled,
     settle_expired, suspend, unsuspend, user_state, UserState,
 };
-pub use view::{user_view, AdminUserView, NoCounts, METADATA_FIELDS};
+pub use view::{user_view, user_view_with, AdminUserView, NoCounts, METADATA_FIELDS};
 
 /// 处置理由上限（与 admin `audit::REASON_MAX_CHARS` 同口径）。
 pub const REASON_MAX_CHARS: usize = 512;
