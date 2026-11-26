@@ -86,14 +86,20 @@
   类型族不兼容都会拒绝；不允许“先复制再发现丢列”。
 - M023（`schema/proposals/G00/0001_import_control.sql`）新增
   `import_run` / `import_table`，记录源 SHA、data_version、逐表行数/摘要/状态，
-  支撑 `--resume` 与失败表重跑；`next_id=M024`。
+  支撑 `--resume` 与失败表重跑；当前 `next_id=M025`。
 - CI：`pg-migration` 在 M023 断言后跑 `pg_data_import_smoke.sh`（合成五表：
   父子外键、identity、空表、bytea/CRLF/numeric），验证清空旧行、NULL/空串、
   摘要、续跑和序列复位。`composition/data-import/**` 属于完整矩阵触发路径。
 - 停写窗口：`window.json` 记录源 SHA、SQLite data_version、逐表/总耗时；
   前后 SHA 与 data_version 不变才算 `quiescent`，`--max-window-seconds` 可设上限。
-- 边界：本地/CI 只证 PostgreSQL 16 合成库；真实 110 表的 `apply_catalog`、
-  生产快照导入与生产 restore drill 仍未执行。旧 `pg-table-map.json` 已 stale。
+- M024（`schema/proposals/G00/0002_import_compat_backfill.sql`）补齐 110 表
+  普查发现的四张目标：`channel_role` 角色列改为 TEXT 并补 `granted_by`/
+  `created_at`，新增 `friend_tag`、`group_governance_audit`、`relations_audit`。
+- 全量形状普查：`composition/data-import/census.py` 可从
+  `crates/platform/tests/schema_snapshot.txt` 生成空形状库，逐表校验目标
+  catalog；CI `pg_data_import_census.sh` 断言 108 个计划表全部通过。
+- 边界：本地/CI 只证 PostgreSQL 16 空库形状与合成数据；真实 110 表的行导入、
+  生产快照、生产 restore drill 仍未执行。旧 `pg-table-map.json` 已 stale。
 - 详细口径与回滚见 `docs/g00-04-s4-data-import.md`。
 
 ## S2 设计决策（开工前需拍板）
@@ -107,9 +113,10 @@
 1. **PG repository**：platform 的 `StorageProfile` / `Db` PG profile、平台域
    repo 端口化、identity 可复用面与 relations 治理写路径均已落地；commerce/ledger
    的 PG repository 仍待做。
-2. **数据导入**：`composition/data-import/` 工具链已落地（S4，2026-11-26），
-   覆盖盘点/计划/CSV/装载/回读摘要/中断续跑/停写窗口，并在 PostgreSQL 16
-   合成库上跑通；仍需对真实 SQLite 快照执行全量导入并逐表处理 catalog 差异。
+2. **数据导入**：`composition/data-import/` 工具链已落地（S4，2026-11-27），
+   覆盖盘点/计划/CSV/装载/回读摘要/中断续跑/停写窗口；110 表形状普查已在
+   PostgreSQL 16 空库全绿。仍需对真实 SQLite 快照执行全量行导入、钱包对账
+   与生产停写窗口演练。
 3. **restore drill**：CI `pg-migration` 作业已在 PostgreSQL 16 上跑过
    `pg_dump → psql restore → 断言`；生产部署环境的 drill 仍需在割接窗口前实跑。
    `deploy/runbooks/backup-restore.md:70-71`、`deploy/runbooks/migration.md:37-38`

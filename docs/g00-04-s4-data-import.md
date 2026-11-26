@@ -1,8 +1,9 @@
 # G00-04 S4 — SQLite → PostgreSQL 数据导入工具链
 
-状态（2026-11-26）：可重跑的导入工具链与 M023 控制表已落地，并在本地
-PostgreSQL 16.15 与 CI 合成库冒烟上跑通。**全量生产库导入、真实 110 表
-形状核对、生产停写窗口演练仍未执行**，`G00-04-PG` 继续保持 open。
+状态（2026-11-27）：可重跑的导入工具链、M023 控制表与 M024 全量兼容补齐
+已落地；**110 张 SQLite 表的 PG 形状普查已在本地 PostgreSQL 16.15 全绿**。
+真实生产快照的行导入、生产停写窗口演练与生产 restore drill 仍未执行，
+`G00-04-PG` 继续保持 open。
 
 ## 1. 交付边界
 
@@ -21,8 +22,9 @@ PostgreSQL 16.15 与 CI 合成库冒烟上跑通。**全量生产库导入、真
 | 阶段 | 文件 | 行为 |
 | --- | --- | --- |
 | 盘点 | `sqlite_source.py` | `mode=ro` 打开 SQLite；列出物理表；`PRAGMA table_xinfo` 排除生成列/虚拟表隐藏列；解析主键、外键；记录 `PRAGMA data_version` 与文件 SHA-256 |
-| 计划 | `plan.py` | 按 SQLite 外键做 Kahn 拓扑排序，父表先于子表；有环时确定性断开并告警；`DEFAULT_SKIP` 跳过 `wallets`/`ledger`；支持 mapping 的 `skip` 与 `targets` |
+| 计划 | `plan.py` | 按 SQLite 外键做 Kahn 拓扑排序，父表先于子表；有环时确定性断开并告警；`DEFAULT_SKIP` 跳过 `wallets`/`ledger`；`DEFAULT_TARGETS` 把 SQLite 的 `identity_session_token` 侧车映射到 PG 的 `identity_session_meta`；支持 mapping 的 `skip` 与 `targets` |
 | 目标盘点 | `pg.py` | 通过 `psql` 读取 `pg_class`/`pg_attribute`/`pg_attrdef` 的 JSON catalog；识别表/视图/物化视图/分区表；复制任何行之前拒绝缺目标、物化视图、源独有列、目标独有 NOT NULL 无默认列、类型族不兼容 |
+| 形状普查 | `snapshot.py` / `census.py` | 从 `crates/platform/tests/schema_snapshot.txt` 生成空 SQLite 形状库（110 表/704 列，无外键、无数据）；逐表跑 `apply_catalog`，输出 verified/failures JSON；失败表不进入行导入 |
 | 导出 | `codec.py` / `exporter.py` | 流式 SELECT；NULL 写未加引号的 `\N`，空串写 `""`，bytea 写 `"\x..."`，所有非 NULL 字段加引号；逐行规范化哈希后排序再 SHA-256，得到顺序无关的行多重集摘要 |
 | 装载 | `loader.py` | 先按依赖逆序清空未验证目标（子表先于父表，表和视图统一 `DELETE`），再 `COPY ... FROM STDIN WITH (FORMAT csv, HEADER false, NULL '\N')`；装载后对 identity/serial 列 `setval(max, true)`，空表 `setval(1, false)` |
 | 校验 | `verifier.py` / `pg.py` | `COPY (SELECT ...) TO STDOUT` 流式回读；`csv.reader` 直接吃 raw pipe 并保留字段内 CR/LF；按目标类型解码 `\N`、空串、`\x`、`t/f`、数值；重建同一个 `RowDigest`，比对行数与摘要 |
@@ -43,6 +45,20 @@ python3 composition/data-import/import_all.py \
 `--verify-only` 只回读已有 CSV 并校验；`--allow-concurrent-writes` 关闭
 `quiescent` 强制失败（仍记录测量值）。
 
+形状普查独立于行导入，可对快照或真实 SQLite 运行：
+
+```bash
+PYTHONPATH=composition/data-import python3 composition/data-import/census.py \
+  --snapshot crates/platform/tests/schema_snapshot.txt \
+  --dsn "$DATABASE_URL" \
+  --output /path/to/census.json
+```
+
+`--snapshot` 会先重建一个空形状库；`--sqlite` 可改为对真实快照只读盘点。
+失败表按源表名列出，任何失败都会让进程退出 1。CI 在 M024 断言后跑
+`ci/jobs/build/pg_data_import_census.sh`，把 108 个计划表（扣掉 M013 的
+`wallets` / `ledger`）全部过一遍 target catalog。
+
 ## 3. M023 控制表
 
 `schema/proposals/G00/0001_import_control.sql` 新增：
@@ -54,10 +70,21 @@ python3 composition/data-import/import_all.py \
 M023 已追加到 `schema/registry/migrations.json`，`next_id=M024`；
 `crates/features/media/tests/migration_registry.rs` 的 `NEXT_ID` 同步为 M024。
 
+M024（`schema/proposals/G00/0002_import_compat_backfill.sql`）是 110 表普查
+发现的兼容补齐：
+
+- `channel_role.role` 从 `BIGINT` 改为 SQLite 实际使用的 `TEXT` 角色名，补
+  `granted_by` / `created_at` 与 `(user_id, channel_id)` 索引；
+- 新增 `friend_tag`、`group_governance_audit`、`relations_audit` 三张关系域
+  物理表，两张审计表的 `seq` 使用 identity；
+- M014 保持不改，M024 只做前向修复；`next_id=M025`、`NEXT_ID=M025` 已同步。
+
 ## 4. 验证证据
 
 本地 PostgreSQL 16.15 容器（`artex-pg`）实跑：
 
+- 110 表形状普查：108 个计划表全部通过，0 失败；`wallets`/`ledger` 按
+  M013 跳过；唯一 warning 是 `sessions.rowid` 由兼容视图默认值填充；
 - M023 DDL 连跑两次幂等；`pg_migration_asserts_import.sql` 输出
   `M023 import control: OK`；
 - 合成 SQLite 四表（父子外键、identity、空表）导入后 run 与四表全
@@ -75,7 +102,7 @@ python3 -m unittest discover -s composition/data-import/tests \
   -t composition/data-import
 ```
 
-当前 44 个测试通过。CI 的 `pg-migration` 作业新增
+当前 55 个测试通过。CI 的 `pg-migration` 作业新增
 `ci/jobs/build/pg_data_import_smoke.sh`，在 M023 断言之后跑：
 
 - 合成五表 `ci_import_parent / ci_import_child / ci_import_serial /
@@ -89,9 +116,9 @@ python3 -m unittest discover -s composition/data-import/tests \
 
 ## 5. 未完成与边界
 
-- **全量生产导入未执行**：尚未对真实 SQLite 快照跑 `apply_catalog`，110 张
-  表的列形状、视图触发器、类型族兼容性仍需逐表核对；旧 `pg-table-map.json`
-  已标记 stale，不能当现状。
+- **真实生产快照的行导入未执行**：形状普查已证明 110 张表的列/类型/目标
+  对象在空库上兼容，但真实快照的行数、NULL 分布、目标触发器反馈、钱包
+  对账仍必须在割接演练库上逐表跑；旧 `pg-table-map.json` 仍标记 stale。
 - **M013 范围不变**：`wallets` / `ledger` 仍由 M013 导入器处理，新工具只负责
   其余同名列；余额守恒仍以 M013 的 strict 回填为准。
 - **停写窗口只有源侧测量**：`window.json` 记录 SHA、data_version、逐表/总耗时，
