@@ -309,7 +309,7 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
       - name: M010 DDL 重跑（幂等/可重入）
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema/proposals/G06/0001_ledger_commerce.sql
-      - name: M011-M015 DDL 首次 + 重跑（幂等）
+      - name: M011-M016 DDL 首次 + 重跑（幂等）
         shell: bash
         run: |
           set -euo pipefail
@@ -318,7 +318,8 @@ jobs:
             schema/proposals/G04/0002_media_pg_compat.sql \
             schema/proposals/G06/0002_ledger_wallets_backfill.sql \
             schema/proposals/G05/0003_content_pg_compat.sql \
-            schema/proposals/G02/0003_identity_retry.sql; do
+            schema/proposals/G02/0003_identity_retry.sql \
+            schema/proposals/G02/0004_identity_session_meta.sql; do
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
@@ -330,6 +331,8 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_content.sql
       - name: M015 identity_retry 断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_retry.sql
+      - name: M016 identity 会话侧车列断言
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_identity_session_meta.sql
       - name: M013 导入器全链路（SQLite → COPY → CALL）
         run: bash ci/jobs/build/pg_import_smoke.sh
       - name: 备份/恢复演练（pg_dump → psql restore → 断言）

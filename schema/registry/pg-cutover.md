@@ -53,13 +53,20 @@
   `RETURNING seq`，调用方 SQL 不写方言。
 - 治理三表**已在 M011**（`identity_user_governance` / `identity_governance_audit` /
   `identity_governance_label`）；M015 不重复建治理表，只补 identity 域此前遗漏的
-  `identity_retry`（跨重发累计试错预算）与过期索引。治理写路径已端口化：
+  `identity_retry`（跨重发累计试错预算）与过期索引。M016 再补
+  `identity_session_token` 的侧车四列（`auth_level` / `features` / `serial` /
+  `issued_at`），让刷新轮换能读 `features` 判断临时认证；M011 已有访问行按
+  `auth='auth'`、`features=''`、`serial=0`、`issued_at=0` 解释。治理写路径已端口化：
   `suspend` / `unsuspend` / `set_disabled` / `settle_expired` / `revoke_device`
   由 `*_tx` 在同一 `SqlExec` 事务内完成，平台 `Db::with_tx` 提交后才镜像与派发
   事件；群治理 `admin_govern_group` 的 admin 鉴权与 `govern_with` 共用同一事务。
 - 身份域其余可复用面也已端口化：同意回执、找回令牌、限速桶与重试预算、设备读取/
   心跳/信任设置、会话列表/心跳/单会话登出/过期清扫、刷新链查询、step-up 只读校验、
   扫码换码都提供 `*_with`（`5863e5c..c57df46`）。SQLite 旧入口保留为薄包装。
+- **会话侧车形状仍有差异**：SQLite 的 `identity_session_token` 以 `sid` 为主键、
+  与平台 `sessions` 分表；PG 的 M011 表以 `token` 为主键，把访问会话与侧车合并。
+  M016 补列后读路径可用，但 `session::open_with` 的侧车写入仍是 SQLite-only，
+  PG 上真正签发新会话前需要拆表或改写入形状，未在本轮完成。
 - 平台 `domain` 层已经**没有** `self.db().lock()` 生产调用；`Db::lock` 只剩测试
   与过渡辅助在用。服务端偏好也收敛到 identity `preferences::*_with` 一份 SQL
   （`343542f`）。

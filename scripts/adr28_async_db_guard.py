@@ -141,6 +141,9 @@ NON_DB_IMPL_TYPES = {
 # `moderation_pipeline` 不与 admin 的查库 `moderation` 同名。
 IN_MEMORY_LOCK_METHODS = {
     ("crates/platform/src/lib.rs", "moderation_pipeline"),
+    # `Platform::media_store` 锁的是 `self.media` 这个进程内 Arc 槽位，
+    # 不是 SQLite 连接；它返回对象仓句柄，真正的 IO 在 `.put(..).await`。
+    ("crates/platform/src/domain/media.rs", "media_store"),
 }
 IMPL_TYPE = re.compile(r"\bimpl\s+(?:[A-Za-z0-9_:]+\s+for\s+)?([A-Za-z0-9_]+)")
 

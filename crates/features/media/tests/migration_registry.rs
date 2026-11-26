@@ -18,9 +18,9 @@ use wxlike_media::db::SCHEMA_SQL;
 const MEDIA_ID: &str = "M009";
 /// 登记后 `next_id` 应当指向的下一个编号：编号永不复用、永不重排。
 /// M010 由 G00-04 的 PG ledger/commerce DDL 占用，M011–M014 由 G00-04 的身份/
-/// 媒体/账本/内容兼容迁移占用，M015 由 identity 重试预算表占用
-/// （schema/registry/migrations.json），故此处随登记表前移到 M016。
-const NEXT_ID: &str = "M016";
+/// 媒体/账本/内容兼容迁移占用，M015 由 identity 重试预算表、M016 由 identity
+/// 会话侧车列占用（schema/registry/migrations.json），故此处随登记表前移到 M017。
+const NEXT_ID: &str = "M017";
 /// M009 应当建的 9 张表。
 const MEDIA_TABLES: &[&str] = &[
     "media_object",
