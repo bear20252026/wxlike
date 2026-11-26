@@ -273,7 +273,7 @@ pub fn token_record_with<E: SqlExec + ?Sized>(exec: &E, sid: &str) -> Result<Opt
     use crate::sqlport::{ColKind, SqlParam};
     let Some(row) = exec.query(
         "SELECT sid, user_id, auth_level, features, serial, issued_at, expires_at \
-         FROM identity_session_token WHERE sid = ?1",
+         FROM identity_session_meta WHERE sid = ?1",
         &[SqlParam::Text(sid.to_string())],
         &[
             ColKind::Text,
@@ -405,7 +405,7 @@ fn write_session_rows(
         ],
     )?;
     tx.execute(
-        "INSERT INTO identity_session_token(sid, user_id, auth_level, features, serial, \
+        "INSERT INTO identity_session_meta(sid, user_id, auth_level, features, serial, \
          issued_at, expires_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             sid,
@@ -681,7 +681,7 @@ pub fn logout_with<E: SqlExec + ?Sized>(
     // 侧车行一并删掉：留着的话同一 sid 复用时（理论上不会，但主键冲突比
     // 残留鉴权数据好排查）会撞 PRIMARY KEY，而更糟的是它继续参与序列号判定。
     exec.exec(
-        "DELETE FROM identity_session_token WHERE sid = ?1",
+        "DELETE FROM identity_session_meta WHERE sid = ?1",
         &[SqlParam::Text(sid.to_string())],
     )?;
     let refresh_revoked = crate::refresh::revoke_sid_with(exec, sid, now)?;
@@ -725,7 +725,7 @@ pub fn logout_all_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, now: i64) -
         &[SqlParam::Text(user_id.to_string())],
     )?;
     exec.exec(
-        "DELETE FROM identity_session_token WHERE user_id = ?1",
+        "DELETE FROM identity_session_meta WHERE user_id = ?1",
         &[SqlParam::Text(user_id.to_string())],
     )?;
     crate::refresh::revoke_user_with(exec, user_id, now)?;
@@ -756,8 +756,8 @@ pub fn purge_expired_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<usi
     // 只留"会话已删、侧车还在"的状态会让 `token_record` 返回一条指向不存在的
     // 会话的行；同一批量上限内一起清，两张表不会长期错位。
     exec.exec(
-        "DELETE FROM identity_session_token WHERE sid IN ( \
-             SELECT sid FROM identity_session_token WHERE expires_at <= ?1 LIMIT ?2)",
+        "DELETE FROM identity_session_meta WHERE sid IN ( \
+             SELECT sid FROM identity_session_meta WHERE expires_at <= ?1 LIMIT ?2)",
         &[SqlParam::Int(now), SqlParam::Int(PURGE_LIMIT)],
     )?;
     Ok(removed)
@@ -890,7 +890,7 @@ mod tests {
         assert_eq!(rec.auth_level, AuthLevel::Auth);
         // 手工把级别降到 anon（模拟一行被写坏/被降级签发的会话）。
         conn.execute(
-            "UPDATE identity_session_token SET auth_level = 'anon' WHERE sid = ?1",
+            "UPDATE identity_session_meta SET auth_level = 'anon' WHERE sid = ?1",
             params![user.sid],
         )
         .unwrap();
@@ -958,7 +958,7 @@ mod tests {
         device(&conn, "u1", "dev-aaaa1111", 1_000);
         let grant = open_default(&conn, "u1", "dev-aaaa1111", Audience::User, "", 1_000).unwrap();
         conn.execute(
-            "UPDATE identity_session_token SET auth_level = 'roo' WHERE sid = ?1",
+            "UPDATE identity_session_meta SET auth_level = 'roo' WHERE sid = ?1",
             params![grant.sid],
         )
         .unwrap();
@@ -967,7 +967,7 @@ mod tests {
             Err(IdError::Corrupt("auth_level"))
         ));
         conn.execute(
-            "UPDATE identity_session_token SET auth_level = 'auth', features = 'VLX' WHERE sid = ?1",
+            "UPDATE identity_session_meta SET auth_level = 'auth', features = 'VLX' WHERE sid = ?1",
             params![grant.sid],
         )
         .unwrap();

@@ -339,7 +339,7 @@ pub fn rotate_outcome_with<E: SqlExec + ?Sized>(
 /// 只可能是有人拿错了令牌在试。
 fn is_temp_auth_with<E: SqlExec + ?Sized>(exec: &E, sid: &str) -> Result<bool> {
     let features = exec.query(
-        "SELECT features FROM identity_session_token WHERE sid = ?1",
+        "SELECT features FROM identity_session_meta WHERE sid = ?1",
         &[SqlParam::Text(sid.to_string())],
         &[ColKind::Text],
     )?;
@@ -349,7 +349,7 @@ fn is_temp_auth_with<E: SqlExec + ?Sized>(exec: &E, sid: &str) -> Result<bool> {
     let raw = values
         .into_iter()
         .next()
-        .ok_or(IdError::Corrupt("identity_session_token.row width"))?
+        .ok_or(IdError::Corrupt("identity_session_meta.row width"))?
         .into_text()?;
     Ok(Features::parse(&raw)?.contains(Features::NO_LOGIN))
 }
@@ -900,7 +900,7 @@ mod tests {
         // 直接落一条带 `L` 的侧车行：等价于 `session::open_temp` 的产物，
         // 但不必把 device 注册那套搬进本模块的测试里。
         conn.execute(
-            "INSERT INTO identity_session_token(sid, user_id, auth_level, features, serial, issued_at, expires_at) VALUES('s1', 'u1', 'auth', 'L', 0, 1000, 61000)",
+            "INSERT INTO identity_session_meta(sid, user_id, auth_level, features, serial, issued_at, expires_at) VALUES('s1', 'u1', 'auth', 'L', 0, 1000, 61000)",
             [],
         )
         .unwrap();

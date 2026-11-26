@@ -220,6 +220,10 @@ fn revoke_all_sessions_with<E: SqlExec + ?Sized>(
         &[SqlParam::Text(target.to_string())],
     )?;
     exec.exec(
+        "DELETE FROM identity_session_meta WHERE user_id = ?1",
+        &[SqlParam::Text(target.to_string())],
+    )?;
+    exec.exec(
         "DELETE FROM identity_session_token WHERE user_id = ?1",
         &[SqlParam::Text(target.to_string())],
     )?;

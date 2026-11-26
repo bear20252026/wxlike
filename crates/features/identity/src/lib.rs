@@ -286,6 +286,28 @@ CREATE TABLE IF NOT EXISTS identity_session_token (
     expires_at INTEGER NOT NULL
 );
 
+-- M017：侧车表与平台访问表分家。`identity_session_token` 在 PG 上是
+-- platform 的访问会话表（token 主键），无法同时承载 sid 主键的侧车；
+-- 新代码统一读写 `identity_session_meta`，旧表仅保留作历史兼容/回填来源。
+CREATE TABLE IF NOT EXISTS identity_session_meta (
+    sid        TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    auth_level TEXT NOT NULL DEFAULT 'auth',
+    features   TEXT NOT NULL DEFAULT '',
+    serial     INTEGER NOT NULL DEFAULT 0,
+    issued_at  INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_identity_session_meta_user
+    ON identity_session_meta(user_id);
+CREATE INDEX IF NOT EXISTS idx_identity_session_meta_expiry
+    ON identity_session_meta(expires_at);
+INSERT OR IGNORE INTO identity_session_meta(
+    sid, user_id, auth_level, features, serial, issued_at, expires_at
+)
+SELECT sid, user_id, auth_level, features, serial, issued_at, expires_at
+FROM identity_session_token;
+
 -- 全局令牌序列号（上游 config 里的 serial_num：一次性作废所有已签发令牌）。
 -- 单行表，id 恒为 1，避免"取最新一行"这种靠 ORDER BY 兜底的读法。
 CREATE TABLE IF NOT EXISTS identity_token_serial (
