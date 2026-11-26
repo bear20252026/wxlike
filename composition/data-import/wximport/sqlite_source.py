@@ -52,7 +52,7 @@ def kind_for_sqlite_type(declared_type: str) -> Kind:
     upper = declared_type.upper()
     if "INT" in upper:
         return "int"
-    if any(token in upper for token in ("REAL", "FLOA", "DOUB")):
+    if any(token in upper for token in ("REAL", "FLOA", "DOUBLE")):
         return "float"
     if "BLOB" in upper:
         return "bytes"
