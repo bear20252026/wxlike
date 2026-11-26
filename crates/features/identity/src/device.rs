@@ -5,8 +5,9 @@
 //! 不能靠"再连一次"复活。`identity_key` 是 E2EE 设备身份公钥（G02-03 消费），
 //! 在这里只做变更检测：同一 `device_id` 换身份密钥必须走轮换流程。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
 
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{check_label, now_ms, IdError, Result};
 
 /// 单账号活跃设备上限：超出后先回收已撤销的历史行，仍超则拒绝新设备。
@@ -242,10 +243,83 @@ fn admit(
 
 /// 单台设备（含已撤销）。
 pub fn get(conn: &Connection, device_id: &str) -> Result<Option<DeviceRow>> {
+    get_with(&SqliteExec(conn), device_id)
+}
+
+/// 端口版：读一台设备（不存在返回 None）。
+pub fn get_with<E: SqlExec + ?Sized>(exec: &E, device_id: &str) -> Result<Option<DeviceRow>> {
     let sql = format!("{SELECT_ROW} WHERE device_id = ?1");
-    Ok(conn
-        .query_row(&sql, params![device_id], row_of)
-        .optional()?)
+    let Some(row) = exec.query(
+        &sql,
+        &[SqlParam::Text(device_id.to_string())],
+        &device_kinds(),
+    )?
+    else {
+        return Ok(None);
+    };
+    device_from_row(row).map(Some)
+}
+
+fn device_kinds() -> [ColKind; 11] {
+    [
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Text,
+        ColKind::Int,
+        ColKind::Int,
+        ColKind::OptInt,
+    ]
+}
+
+fn device_from_row(row: Vec<crate::sqlport::SqlValue>) -> Result<DeviceRow> {
+    let mut it = row.into_iter();
+    let device_id = device_text(it.next())?;
+    let user_id = device_text(it.next())?;
+    let platform = device_text(it.next())?;
+    let label = device_text(it.next())?;
+    let os_version = device_text(it.next())?;
+    let app_version = device_text(it.next())?;
+    let identity_key = device_text(it.next())?;
+    let trust = Trust::parse(&device_text(it.next())?);
+    let created_at = device_int(it.next())?;
+    let last_seen = device_int(it.next())?;
+    let revoked_at = match it.next() {
+        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("device revoked_at column")),
+    };
+    Ok(DeviceRow {
+        device_id,
+        user_id,
+        platform,
+        label,
+        os_version,
+        app_version,
+        identity_key,
+        trust,
+        created_at,
+        last_seen,
+        revoked_at,
+    })
+}
+
+fn device_text(value: Option<crate::sqlport::SqlValue>) -> Result<String> {
+    match value {
+        Some(crate::sqlport::SqlValue::Text(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("device row column")),
+    }
+}
+
+fn device_int(value: Option<crate::sqlport::SqlValue>) -> Result<i64> {
+    match value {
+        Some(crate::sqlport::SqlValue::Int(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("device row column")),
+    }
 }
 
 /// 该账号的设备列表，最近活跃在前。默认不含已撤销。
@@ -298,15 +372,33 @@ pub fn revoke(
     now: i64,
 ) -> Result<RevokeOutcome> {
     let tx = conn.unchecked_transaction()?;
-    let found = tx
-        .query_row(
-            "SELECT revoked_at FROM identity_device WHERE device_id = ?1 AND user_id = ?2",
-            params![device_id, user_id],
-            |r| r.get::<_, Option<i64>>(0),
-        )
-        .optional()?;
-    let Some(revoked_at) = found else {
+    let outcome = revoke_with(&SqliteExec(&tx), user_id, device_id, now)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+/// 端口版：调用方负责事务边界（平台用 `Db::with_tx`）。
+pub fn revoke_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<RevokeOutcome> {
+    let found = exec.query(
+        "SELECT revoked_at FROM identity_device WHERE device_id = ?1 AND user_id = ?2",
+        &[
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+        ],
+        &[ColKind::OptInt],
+    )?;
+    let Some(mut row) = found else {
         return Err(IdError::NotFound("device"));
+    };
+    let revoked_at = match row.pop() {
+        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("device revoked_at column")),
     };
     if revoked_at.is_some() {
         // 幂等：重复移除返回同一结论，不再动别的设备。
@@ -316,29 +408,33 @@ pub fn revoke(
             refresh: 0,
         });
     }
-    tx.execute(
+    exec.exec(
         "UPDATE identity_device SET trust = 'revoked', revoked_at = ?3 \
          WHERE device_id = ?1 AND user_id = ?2",
-        params![device_id, user_id, now],
+        &[
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Int(now),
+        ],
     )?;
-    // step-up 授权是按 (user_id, sid) 存的。`session::logout` 会连带清掉，
-    // 这里过去只删会话不删授权，于是"移除设备"与"退出登录"两条路给出的撤销
-    // 强度不一样：前者会留下一条本来绑在这台设备上的敏感操作授权。敏感操作
-    // 授权的意义是"刚刚在这台设备上验证过"，设备都没了就没意义。
-    //
-    // 顺序必须是**先清授权、再删会话**：子查询靠 sessions 找回这台设备的 sid，
-    // 会话先删掉的话子查询返回空集，这条清理就变成静默的无用功。
-    tx.execute(
+    // 顺序必须是**先清授权、再删会话**：子查询靠 sessions 找回这台设备的 sid。
+    exec.exec(
         "DELETE FROM identity_step_up WHERE user_id = ?1 AND sid IN \
          (SELECT sid FROM sessions WHERE user_id = ?2 AND device_id = ?3 AND sid IS NOT NULL)",
-        params![user_id, user_id, device_id],
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(device_id.to_string()),
+        ],
     )?;
-    let sessions = tx.execute(
+    let sessions = exec.exec(
         "DELETE FROM sessions WHERE user_id = ?1 AND device_id = ?2",
-        params![user_id, device_id],
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(device_id.to_string()),
+        ],
     )?;
-    let refresh = crate::refresh::revoke_device(&tx, user_id, device_id, now)?;
-    tx.commit()?;
+    let refresh = crate::refresh::revoke_device_with(exec, user_id, device_id, now)?;
     Ok(RevokeOutcome {
         device_id: device_id.to_string(),
         sessions,
@@ -348,11 +444,20 @@ pub fn revoke(
 
 /// 当前活跃设备数（限额与运营视图共用）。
 pub fn active_count(conn: &Connection, user_id: &str) -> Result<i64> {
-    Ok(conn.query_row(
+    active_count_with(&SqliteExec(conn), user_id)
+}
+
+/// 端口版：活跃设备数。
+pub fn active_count_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<i64> {
+    let row = exec.query(
         "SELECT COUNT(*) FROM identity_device WHERE user_id = ?1 AND revoked_at IS NULL",
-        params![user_id],
-        |r| r.get(0),
-    )?)
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Int],
+    )?;
+    match row.and_then(|mut row| row.pop()) {
+        Some(crate::sqlport::SqlValue::Int(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("device count column")),
+    }
 }
 
 /// 给设备打心跳时的"现在"，抽出来便于调用方注入固定时钟。
