@@ -15,6 +15,7 @@ use std::fmt;
 use hmac::Mac as _;
 use rusqlite::{params, Connection, OptionalExtension as _};
 
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{random_hex, IdError, Result};
 
 /// 挑战 id 的随机字节数。
@@ -145,11 +146,11 @@ fn random_code() -> String {
 ///
 /// 只做"过期且没被消费"这一类：`consumed_at` 有值的行**留着**，
 /// 它是重放检测的证据（`verify` 靠它把"用过的码再用一次"判成失败）。
-fn purge_expired_rows(conn: &rusqlite::Connection, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+fn purge_expired_rows_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<usize> {
+    exec.exec(
         "DELETE FROM identity_challenge WHERE expires_at <= ?1 AND consumed_at IS NULL",
-        params![now],
-    )?)
+        &[SqlParam::Int(now)],
+    )
 }
 
 /// 生成好的挑战材料（id/code/摘要/两个时间点）。
@@ -189,19 +190,39 @@ fn insert_row(
     max_attempts: i64,
     now: i64,
 ) -> Result<()> {
-    conn.execute(
+    insert_row_with(
+        &SqliteExec(conn),
+        prepared,
+        phone,
+        purpose,
+        device_id,
+        max_attempts,
+        now,
+    )
+}
+
+fn insert_row_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    prepared: &Prepared,
+    phone: &str,
+    purpose: &str,
+    device_id: &str,
+    max_attempts: i64,
+    now: i64,
+) -> Result<()> {
+    exec.exec(
         "INSERT INTO identity_challenge(id, phone_e164, phone_hash, purpose, device_id,          code_hash, created_at, expires_at, resend_after, attempts, max_attempts, consumed_at)          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, NULL)",
-        params![
-            prepared.id,
-            phone,
-            crate::digest(phone),
-            purpose,
-            device_id,
-            prepared.hash,
-            now,
-            prepared.expires_at,
-            prepared.resend_after,
-            max_attempts
+        &[
+            SqlParam::Text(prepared.id.clone()),
+            SqlParam::Text(phone.to_string()),
+            SqlParam::Text(crate::digest(phone)),
+            SqlParam::Text(purpose.to_string()),
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(prepared.hash.clone()),
+            SqlParam::Int(now),
+            SqlParam::Int(prepared.expires_at),
+            SqlParam::Int(prepared.resend_after),
+            SqlParam::Int(max_attempts),
         ],
     )?;
     Ok(())
@@ -229,24 +250,51 @@ pub fn issue(
     limits: Limits,
     now: i64,
 ) -> Result<ChallengeIssued> {
+    issue_with(
+        &SqliteExec(conn),
+        phone_raw,
+        default_cc,
+        purpose,
+        device_id,
+        ip,
+        pepper,
+        limits,
+        now,
+    )
+}
+
+/// 端口版 `issue`。限速桶、过期清扫与挑战行写入都走同一个 `SqlExec`；
+/// 调用方负责把 `issue_with` 放进事务（需要和发短信的副作用一起回滚时）。
+#[allow(clippy::too_many_arguments)]
+pub fn issue_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    phone_raw: &str,
+    default_cc: &str,
+    purpose: &str,
+    device_id: &str,
+    ip: &str,
+    pepper: &[u8],
+    limits: Limits,
+    now: i64,
+) -> Result<ChallengeIssued> {
     if !PURPOSES.contains(&purpose) {
         return Err(IdError::BadInput("purpose"));
     }
     let phone = normalize_phone(phone_raw, default_cc)?;
     let phone_bucket = crate::throttle::key_phone(&phone);
-    crate::throttle::check(conn, &phone_bucket, crate::throttle::SMS_PHONE, now)?;
+    crate::throttle::check_with(exec, &phone_bucket, crate::throttle::SMS_PHONE, now)?;
     let ip_bucket = crate::throttle::key_ip(ip);
-    crate::throttle::check(conn, &ip_bucket, crate::throttle::SMS_IP, now)?;
+    crate::throttle::check_with(exec, &ip_bucket, crate::throttle::SMS_IP, now)?;
 
     // 上游 `GenSecret` 第一件事就是 `PCache.Expire(prefix, now - lifetime)`：
     // **在发新码的时候顺手扫垃圾**，不另起定时任务。本平台照抄这个位置——
     // 过期挑战行与过期预算行如果只能靠后台任务清，测试环境与新部署的库里
     // 就会一直留着早该失效的凭据。
-    crate::throttle::sweep(conn, now, crate::throttle::SWEEP_LIMIT)?;
-    purge_expired_rows(conn, now)?;
+    crate::throttle::sweep_with(exec, now, crate::throttle::SWEEP_LIMIT)?;
+    purge_expired_rows_with(exec, now)?;
     let prepared = prepare(&phone, purpose, device_id, pepper, limits, now)?;
-    insert_row(
-        conn,
+    insert_row_with(
+        exec,
         &prepared,
         &phone,
         purpose,
@@ -255,14 +303,14 @@ pub fn issue(
         now,
     )?;
     // 预算上弦：有行只续期不清零（与上游的 `":0:"` 是不同的，理由见 arm_budget）。
-    crate::throttle::arm_budget(
-        conn,
+    crate::throttle::arm_budget_with(
+        exec,
         &crate::throttle::key_credential("phone", &phone),
         crate::throttle::CODE_BUDGET,
         now,
     )?;
-    crate::throttle::record_failure(conn, &phone_bucket, crate::throttle::SMS_PHONE, now)?;
-    crate::throttle::record_failure(conn, &ip_bucket, crate::throttle::SMS_IP, now)?;
+    crate::throttle::record_failure_with(exec, &phone_bucket, crate::throttle::SMS_PHONE, now)?;
+    crate::throttle::record_failure_with(exec, &ip_bucket, crate::throttle::SMS_IP, now)?;
     Ok(issued(prepared))
 }
 
@@ -279,18 +327,46 @@ struct ChallengeRow {
     consumed_at: Option<i64>,
 }
 
-fn challenge_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChallengeRow> {
+fn challenge_from_values(row: Vec<crate::sqlport::SqlValue>) -> Result<ChallengeRow> {
+    let mut it = row.into_iter();
+    let phone = challenge_text(it.next())?;
+    let purpose = challenge_text(it.next())?;
+    let device_id = challenge_text(it.next())?;
+    let code_hash = challenge_text(it.next())?;
+    let id = challenge_text(it.next())?;
+    let expires_at = challenge_int(it.next())?;
+    let attempts = challenge_int(it.next())?;
+    let max_attempts = challenge_int(it.next())?;
+    let consumed_at = match it.next() {
+        Some(crate::sqlport::SqlValue::Int(v)) => Some(v),
+        Some(crate::sqlport::SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("challenge consumed_at column")),
+    };
     Ok(ChallengeRow {
-        phone: r.get(0)?,
-        purpose: r.get(1)?,
-        device_id: r.get(2)?,
-        code_hash: r.get(3)?,
-        id: r.get(4)?,
-        expires_at: r.get(5)?,
-        attempts: r.get(6)?,
-        max_attempts: r.get(7)?,
-        consumed_at: r.get(8)?,
+        phone,
+        purpose,
+        device_id,
+        code_hash,
+        id,
+        expires_at,
+        attempts,
+        max_attempts,
+        consumed_at,
     })
+}
+
+fn challenge_text(value: Option<crate::sqlport::SqlValue>) -> Result<String> {
+    match value {
+        Some(crate::sqlport::SqlValue::Text(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("challenge row column")),
+    }
+}
+
+fn challenge_int(value: Option<crate::sqlport::SqlValue>) -> Result<i64> {
+    match value {
+        Some(crate::sqlport::SqlValue::Int(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("challenge row column")),
+    }
 }
 
 /// 校验并消费。任何失败都不透露"这个号码是否存在"。
@@ -350,13 +426,31 @@ pub fn verify(
 }
 
 fn fetch_challenge(conn: &Connection, challenge_id: &str) -> Result<Option<ChallengeRow>> {
-    Ok(conn
-        .query_row(
-            "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts,              max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
-            params![challenge_id],
-            challenge_row,
-        )
-        .optional()?)
+    fetch_challenge_with(&SqliteExec(conn), challenge_id)
+}
+
+fn fetch_challenge_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    challenge_id: &str,
+) -> Result<Option<ChallengeRow>> {
+    let Some(row) = exec.query(
+        "SELECT phone_e164, purpose, device_id, code_hash, id, expires_at, attempts,              max_attempts, consumed_at FROM identity_challenge WHERE id = ?1",
+        &[SqlParam::Text(challenge_id.to_string())],
+        &[
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Text,
+            ColKind::Int,
+            ColKind::Int,
+            ColKind::Int,
+            ColKind::OptInt,
+        ],
+    )? else {
+        return Ok(None);
+    };
+    challenge_from_values(row).map(Some)
 }
 
 /// 三态闸门：已消费 / 已过期 / 尝试次数到顶。顺序照抄上游 `auth_code.Authenticate`：
