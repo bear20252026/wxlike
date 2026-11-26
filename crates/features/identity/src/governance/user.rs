@@ -582,17 +582,32 @@ pub fn add_label(
     label: &str,
     now: i64,
 ) -> Result<()> {
-    authenticate_operator(conn, operator_token, now)?;
+    add_label_with(&SqliteExec(conn), operator_token, user_id, label, now)
+}
+
+/// 端口版打标签：一条语句，事务由调用方决定。
+pub fn add_label_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    user_id: &str,
+    label: &str,
+    now: i64,
+) -> Result<()> {
+    super::authenticate_operator_with(exec, operator_token, now)?;
     let target = check_target(user_id)?;
-    require_user(conn, &target)?;
+    super::require_user_with(exec, &target)?;
     let label = check_label(label, "label")?;
     if label.is_empty() {
         return Err(IdError::BadInput("label"));
     }
-    conn.execute(
-        "INSERT OR IGNORE INTO identity_governance_label(user_id, label, created_at) \
-         VALUES(?1, ?2, ?3)",
-        params![target, label, now],
+    exec.exec(
+        "INSERT INTO identity_governance_label(user_id, label, created_at) \
+         VALUES(?1, ?2, ?3) ON CONFLICT DO NOTHING",
+        &[
+            SqlParam::Text(target),
+            SqlParam::Text(label),
+            SqlParam::Int(now),
+        ],
     )?;
     Ok(())
 }
@@ -605,11 +620,22 @@ pub fn remove_label(
     label: &str,
     now: i64,
 ) -> Result<()> {
-    authenticate_operator(conn, operator_token, now)?;
+    remove_label_with(&SqliteExec(conn), operator_token, user_id, label, now)
+}
+
+/// 端口版移除标签：一条语句，事务由调用方决定。
+pub fn remove_label_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    user_id: &str,
+    label: &str,
+    now: i64,
+) -> Result<()> {
+    super::authenticate_operator_with(exec, operator_token, now)?;
     let target = check_target(user_id)?;
-    conn.execute(
+    exec.exec(
         "DELETE FROM identity_governance_label WHERE user_id = ?1 AND label = ?2",
-        params![target, label],
+        &[SqlParam::Text(target), SqlParam::Text(label.to_string())],
     )?;
     Ok(())
 }
