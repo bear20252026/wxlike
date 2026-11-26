@@ -280,11 +280,10 @@ impl Platform {
         let channel_for_task = channel.to_string();
         let user_for_task = user.to_string();
         self.db()
-            .blocking(move |c| {
-                let port = crate::storage::StorageConnection::sqlite_borrow(c);
-                let community = repo_channel_community(&port, &channel_for_task)?
+            .offload_port(move |port| {
+                let community = repo_channel_community(port, &channel_for_task)?
                     .ok_or(PlatformError::NotFound)?;
-                repo_community_role(&port, &community, &user_for_task)?
+                repo_community_role(port, &community, &user_for_task)?
                     .ok_or(PlatformError::Forbidden)?;
                 Ok(())
             })
@@ -327,11 +326,10 @@ impl Platform {
         let channel_for_task = channel.to_string();
         let user_for_task = user.to_string();
         self.db()
-            .blocking(move |c| {
-                let port = crate::storage::StorageConnection::sqlite_borrow(c);
+            .offload_port(move |port| {
                 let session =
-                    active_session_id(&port, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
-                let recipients = danmaku_recipients(&port, &session, &user_for_task)?;
+                    active_session_id(port, &channel_for_task)?.ok_or(PlatformError::NotFound)?;
+                let recipients = danmaku_recipients(port, &session, &user_for_task)?;
                 Ok((session, recipients))
             })
             .await
