@@ -153,6 +153,30 @@ impl Db {
             )),
         }
     }
+
+    /// 端口版 blocking：闭包在阻塞线程上拿到 [`StorageConnection`]，SQLite 与
+    /// PG 走同一个入口。SQLite 用 `SqliteTx` 借用（没有真事务，语义等同
+    /// `blocking(&mut Connection)`）；PG 把池 `Arc` 移进任务，事务仍由
+    /// 调用方用 `with_tx` 显式包。
+    pub async fn offload_port<T, F>(&self, f: F) -> Result<T>
+    where
+        F: for<'b> FnOnce(&StorageConnection<'b>) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        match &self.storage {
+            DbStorage::Sqlite(s) => {
+                s.blocking(move |conn| f(&StorageConnection::SqliteTx(conn)))
+                    .await
+            }
+            DbStorage::Postgres(s) => {
+                let pool = s.pool_arc();
+                let ran =
+                    tokio::task::spawn_blocking(move || f(&StorageConnection::Postgres(&pool)))
+                        .await;
+                crate::storage::join_blocking(ran)
+            }
+        }
+    }
 }
 
 /// ADR-28 offload for handlers: move an existing synchronous `Platform` call
