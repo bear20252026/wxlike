@@ -4,7 +4,7 @@
 //! 窗口内超过阈值就整桶封禁一段时间，成功一次即清零。桶键由调用方给（IP、
 //! 账号、手机号分别一桶），本模块不猜业务。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::Connection;
 
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{IdError, Result};
@@ -142,21 +142,38 @@ pub fn key_credential(method: &str, value: &str) -> String {
 /// `count >= maxRetries → ErrFailed`，压根不去比码）。反过来做的话，
 /// 「已经锁住」与「码不对」的耗时会不一样，等于给攻击者一根探针。
 pub fn check_budget(conn: &Connection, bucket: &str, budget: Budget, now: i64) -> Result<()> {
-    let row: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT attempts, expires_at FROM identity_retry WHERE bucket = ?1",
-            params![bucket],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let Some((attempts, expires_at)) = row else {
+    check_budget_with(&SqliteExec(conn), bucket, budget, now)
+}
+
+/// 端口版 `check_budget`。
+pub fn check_budget_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    bucket: &str,
+    budget: Budget,
+    now: i64,
+) -> Result<()> {
+    let Some(values) = exec.query(
+        "SELECT attempts, expires_at FROM identity_retry WHERE bucket = ?1",
+        &[SqlParam::Text(bucket.to_string())],
+        &[ColKind::Int, ColKind::Int],
+    )?
+    else {
         return Ok(());
     };
+    let mut it = values.into_iter();
+    let attempts = it
+        .next()
+        .ok_or(IdError::Corrupt("identity_retry.row width"))?
+        .into_int()?;
+    let expires_at = it
+        .next()
+        .ok_or(IdError::Corrupt("identity_retry.row width"))?
+        .into_int()?;
     if expires_at <= now {
         // 预算随行（凭据本来也已经作废）：清掉，让下一次下发从 0 开始。
-        conn.execute(
+        exec.exec(
             "DELETE FROM identity_retry WHERE bucket = ?1",
-            params![bucket],
+            &[SqlParam::Text(bucket.to_string())],
         )?;
         return Ok(());
     }
@@ -174,35 +191,60 @@ pub fn check_budget(conn: &Connection, bucket: &str, budget: Budget, now: i64) -
 
 /// 记一次**失败**的比对（上游只在 `parts[0] != code` 时自增，比对成功不计数）。
 pub fn spend_failure(conn: &Connection, bucket: &str, budget: Budget, now: i64) -> Result<i64> {
-    conn.execute(
+    spend_failure_with(&SqliteExec(conn), bucket, budget, now)
+}
+
+/// 端口版 `spend_failure`。
+pub fn spend_failure_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    bucket: &str,
+    budget: Budget,
+    now: i64,
+) -> Result<i64> {
+    exec.exec(
         "INSERT INTO identity_retry(bucket, attempts, created_at, updated_at, expires_at) VALUES(?1, 1, ?2, ?2, ?3) ON CONFLICT(bucket) DO UPDATE SET attempts = attempts + 1, updated_at = ?2",
-        params![bucket, now, now.saturating_add(budget.ttl_ms)],
+        &[
+            SqlParam::Text(bucket.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Int(now.saturating_add(budget.ttl_ms)),
+        ],
     )?;
-    Ok(conn.query_row(
-        "SELECT attempts FROM identity_retry WHERE bucket = ?1",
-        params![bucket],
-        |r| r.get(0),
-    )?)
+    budget_attempts_with(exec, bucket)
 }
 
 /// 当前计数（审计与测试断言用）。没有行 = 0。
 pub fn budget_attempts(conn: &Connection, bucket: &str) -> Result<i64> {
-    Ok(conn
-        .query_row(
-            "SELECT attempts FROM identity_retry WHERE bucket = ?1",
-            params![bucket],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(0))
+    budget_attempts_with(&SqliteExec(conn), bucket)
+}
+
+/// 端口版 `budget_attempts`。
+pub fn budget_attempts_with<E: SqlExec + ?Sized>(exec: &E, bucket: &str) -> Result<i64> {
+    let Some(values) = exec.query(
+        "SELECT attempts FROM identity_retry WHERE bucket = ?1",
+        &[SqlParam::Text(bucket.to_string())],
+        &[ColKind::Int],
+    )?
+    else {
+        return Ok(0);
+    };
+    values
+        .into_iter()
+        .next()
+        .ok_or(IdError::Corrupt("identity_retry.row width"))?
+        .into_int()
 }
 
 /// 验证成功即删（上游 `store.PCache.Delete(key)`：留着没有意义——
 /// 一枚用过的凭据不该继续占着一个计数，也不该让「重试预算」变成可查询的账号状态）。
 pub fn clear_budget(conn: &Connection, bucket: &str) -> Result<()> {
-    conn.execute(
+    clear_budget_with(&SqliteExec(conn), bucket)
+}
+
+/// 端口版 `clear_budget`。
+pub fn clear_budget_with<E: SqlExec + ?Sized>(exec: &E, bucket: &str) -> Result<()> {
+    exec.exec(
         "DELETE FROM identity_retry WHERE bucket = ?1",
-        params![bucket],
+        &[SqlParam::Text(bucket.to_string())],
     )?;
     Ok(())
 }
@@ -215,9 +257,23 @@ pub fn clear_budget(conn: &Connection, bucket: &str) -> Result<()> {
 /// 本平台的 `resend()` 由客户端在同一个挑战上反复触发，如果照抄归零，
 /// "换一枚码又能试 5 次"就成了无限次尝试的通道——所以计数留在原处，只把寿命往前推。
 pub fn arm_budget(conn: &Connection, bucket: &str, budget: Budget, now: i64) -> Result<()> {
-    conn.execute(
+    arm_budget_with(&SqliteExec(conn), bucket, budget, now)
+}
+
+/// 端口版 `arm_budget`。
+pub fn arm_budget_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    bucket: &str,
+    budget: Budget,
+    now: i64,
+) -> Result<()> {
+    exec.exec(
         "INSERT INTO identity_retry(bucket, attempts, created_at, updated_at, expires_at) VALUES(?1, 0, ?2, ?2, ?3) ON CONFLICT(bucket) DO UPDATE SET updated_at = ?2, expires_at = ?3",
-        params![bucket, now, now.saturating_add(budget.ttl_ms)],
+        &[
+            SqlParam::Text(bucket.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Int(now.saturating_add(budget.ttl_ms)),
+        ],
     )?;
     Ok(())
 }
@@ -229,10 +285,16 @@ pub fn arm_budget(conn: &Connection, bucket: &str, budget: Budget, now: i64) -> 
 /// （见 `login_challenge::issue`）：这些行没人扫就会一直躺在库里，
 /// 既占空间又会被误读成「这个手机号还在被锁」。
 pub fn sweep(conn: &Connection, now: i64, limit: i64) -> Result<usize> {
-    Ok(conn.execute(
-        "DELETE FROM identity_retry WHERE rowid IN (SELECT rowid FROM identity_retry WHERE expires_at <= ?1 LIMIT ?2)",
-        params![now, limit],
-    )?)
+    sweep_with(&SqliteExec(conn), now, limit)
+}
+
+/// 端口版 `sweep`：用主键 `bucket` 的子查询，不依赖 `rowid`（PG 没有）。
+pub fn sweep_with<E: SqlExec + ?Sized>(exec: &E, now: i64, limit: i64) -> Result<usize> {
+    exec.exec(
+        "DELETE FROM identity_retry WHERE bucket IN \
+         (SELECT bucket FROM identity_retry WHERE expires_at <= ?1 LIMIT ?2)",
+        &[SqlParam::Int(now), SqlParam::Int(limit)],
+    )
 }
 
 /// 当前是否被挡。被封时返回 `RateLimited`，`retry_after_ms` 可直接回给客户端。
@@ -361,18 +423,30 @@ pub fn reset_with<E: SqlExec + ?Sized>(exec: &E, bucket: &str) -> Result<()> {
 
 /// 桶现状（运维视图 / 测试断言）。
 pub fn status(conn: &Connection, bucket: &str) -> Result<Option<Status>> {
-    Ok(conn
-        .query_row(
-            "SELECT attempts, blocked_until FROM identity_throttle WHERE bucket = ?1",
-            params![bucket],
-            |r| {
-                Ok(Status {
-                    attempts: r.get(0)?,
-                    blocked_until: r.get(1)?,
-                })
-            },
-        )
-        .optional()?)
+    status_with(&SqliteExec(conn), bucket)
+}
+
+/// 端口版 `status`。
+pub fn status_with<E: SqlExec + ?Sized>(exec: &E, bucket: &str) -> Result<Option<Status>> {
+    let Some(values) = exec.query(
+        "SELECT attempts, blocked_until FROM identity_throttle WHERE bucket = ?1",
+        &[SqlParam::Text(bucket.to_string())],
+        &[ColKind::Int, ColKind::Int],
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut it = values.into_iter();
+    Ok(Some(Status {
+        attempts: it
+            .next()
+            .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+            .into_int()?,
+        blocked_until: it
+            .next()
+            .ok_or(IdError::Corrupt("identity_throttle.row width"))?
+            .into_int()?,
+    }))
 }
 
 #[cfg(test)]
