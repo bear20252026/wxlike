@@ -353,6 +353,14 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
+      - name: M023 割接导入控制表首次 + 重跑（幂等）
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in 1 2; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+              -f schema/proposals/G00/0001_import_control.sql
+          done
       - name: M010 schema/触发器/不可变性断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
       - name: M011-M013 兼容层与回填断言
@@ -371,6 +379,8 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_g03.sql
       - name: M019-M022 默认值/唯一约束行为冒烟
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_m019_m022_behavior.sql
+      - name: M023 导入控制表形状/约束断言
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_import.sql
       - name: M013 导入器全链路（SQLite → COPY → CALL）
         run: bash ci/jobs/build/pg_import_smoke.sh
       - name: 备份/恢复演练（pg_dump → psql restore → 断言）
