@@ -8,7 +8,7 @@
 //! * 绑定：`(user_id, sid, purpose)` 三元组，A 会话的授权不能给 B 会话用；
 //! * 用途封闭：只接受白名单里的 purpose，写错的用途不会意外放行。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::sqlport::{SqlExec, SqlParam, SqliteExec};
 use crate::{IdError, Result, STEP_UP_TTL_MS};
@@ -126,16 +126,37 @@ pub fn consume_with<E: SqlExec + ?Sized>(
 
 /// 只检查不消费（页面渲染"是否还需要输密码"用）。
 pub fn require(conn: &Connection, user_id: &str, sid: &str, purpose: &str, now: i64) -> Result<()> {
+    require_with(
+        &crate::sqlport::SqliteExec(conn),
+        user_id,
+        sid,
+        purpose,
+        now,
+    )
+}
+
+/// 端口版 `require`：只检查不消费，SQLite / PG 同一份 SQL。
+pub fn require_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    sid: &str,
+    purpose: &str,
+    now: i64,
+) -> Result<()> {
+    use crate::sqlport::{ColKind, SqlParam};
     check_purpose(purpose)?;
-    let alive: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM identity_step_up \
-             WHERE user_id = ?1 AND sid = ?2 AND purpose = ?3 \
-               AND consumed_at IS NULL AND expires_at > ?4",
-            params![user_id, sid, purpose, now],
-            |r| r.get(0),
-        )
-        .ok();
+    let alive = exec.query(
+        "SELECT 1 FROM identity_step_up \
+         WHERE user_id = ?1 AND sid = ?2 AND purpose = ?3 \
+           AND consumed_at IS NULL AND expires_at > ?4",
+        &[
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(sid.to_string()),
+            SqlParam::Text(purpose.to_string()),
+            SqlParam::Int(now),
+        ],
+        &[ColKind::Int],
+    )?;
     match alive {
         Some(_) => Ok(()),
         None => Err(IdError::Unauthorized("step-up required")),
