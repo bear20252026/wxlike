@@ -61,7 +61,7 @@ use super::repo::account::{
 };
 use super::repo::account_jobs;
 use super::repo::preferences as pref_repo;
-use crate::domain::repo::sessions::{BackendSessionsRepo, SqliteSessionsRepo};
+use crate::domain::repo::sessions::BackendSessionsRepo;
 use crate::domain::repo::users::BackendUsersRepo;
 
 /// 一次偏好同步最多返回多少条增量（游标翻页）。
@@ -198,9 +198,11 @@ impl Platform {
             check_device_id(provided)?;
             return Ok(provided.to_string());
         }
-        let c = self.db().lock()?;
-        let stored = SqliteSessionsRepo::new(&c)
-            .device_id_by_token(&crate::auth::token_digest(&authed.token))?;
+        let c = self.db().acquire();
+        let stored = crate::domain::repo::sessions::device_id_by_token(
+            &c,
+            &crate::auth::token_digest(&authed.token),
+        )?;
         match stored {
             // 行在、`device_id` 是 NULL/空 = 历史会话确实没有这个字段，如实记空。
             Some(value) => Ok(value.unwrap_or_default()),

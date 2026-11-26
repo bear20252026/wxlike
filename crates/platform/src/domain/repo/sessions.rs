@@ -15,9 +15,9 @@ use wxlike_persistence::{NewSession, SessionRecord, SessionsRepo};
 
 use crate::error::{PlatformError, Result};
 use crate::storage::sql_port::StorageSqlExec;
-use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection};
+use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection, StorageDialect};
 use wxlike_identity::refresh;
-use wxlike_identity::sqlport::{ColKind, SqlExec as _, SqlParam};
+use wxlike_identity::sqlport::{ColKind, SqlExec as _, SqlParam, SqlValue};
 
 /// 端口定义在 `wxlike-persistence`；SQLite 实现在本 crate。
 pub(in crate::domain) struct SqliteSessionsRepo<'a> {
@@ -686,8 +686,9 @@ pub(in crate::domain) fn device_name_by_sid(
     conn: &StorageConnection<'_>,
     sid: &str,
 ) -> Result<Option<String>> {
+    let sql = format!("SELECT device_name FROM {} WHERE sid = ?1", session_table(conn));
     let row = StorageSqlExec(conn).query(
-        "SELECT device_name FROM identity_session_token WHERE sid = ?1",
+        &sql,
         &[SqlParam::Text(sid.to_string())],
         &[ColKind::OptText],
     )?;
@@ -702,14 +703,47 @@ pub(in crate::domain) fn device_name_by_sid(
     Ok(Some(name).filter(|v| !v.is_empty()))
 }
 
+/// 会话表的物理名：SQLite 用平台 `sessions`，PG 用 M014 的 `identity_session_token`。
+fn session_table(conn: &StorageConnection<'_>) -> &'static str {
+    match conn.dialect() {
+        StorageDialect::Sqlite => "sessions",
+        StorageDialect::Postgres => "identity_session_token",
+    }
+}
+
+/// 会话行里的设备 id；`None` = 行不存在，`Some(None)` = 行在但字段为空。
+pub(in crate::domain) fn device_id_by_token(
+    conn: &StorageConnection<'_>,
+    token: &str,
+) -> Result<Option<Option<String>>> {
+    let sql = format!("SELECT device_id FROM {} WHERE token = ?1", session_table(conn));
+    let row = StorageSqlExec(conn).query(
+        &sql,
+        &[SqlParam::Text(token.to_string())],
+        &[ColKind::OptText],
+    )?;
+    let Some(values) = row else {
+        return Ok(None);
+    };
+    let value = values
+        .into_iter()
+        .next()
+        .ok_or(PlatformError::Storage("device_id row width".into()))?;
+    Ok(Some(match value {
+        SqlValue::Null => None,
+        other => Some(other.into_text()?),
+    }))
+}
+
 /// 新访问会话沿用链上的 sid。
 pub(in crate::domain) fn update_sid(
     conn: &StorageConnection<'_>,
     token: &str,
     sid: &str,
 ) -> Result<usize> {
+    let sql = format!("UPDATE {} SET sid = ?2 WHERE token = ?1", session_table(conn));
     Ok(StorageSqlExec(conn).exec(
-        "UPDATE identity_session_token SET sid = ?2 WHERE token = ?1",
+        &sql,
         &[
             SqlParam::Text(token.to_string()),
             SqlParam::Text(sid.to_string()),
@@ -723,8 +757,12 @@ pub(in crate::domain) fn delete_by_sid_except_token(
     sid: &str,
     token: &str,
 ) -> Result<usize> {
+    let sql = format!(
+        "DELETE FROM {} WHERE sid = ?1 AND token <> ?2",
+        session_table(conn)
+    );
     Ok(StorageSqlExec(conn).exec(
-        "DELETE FROM identity_session_token WHERE sid = ?1 AND token <> ?2",
+        &sql,
         &[
             SqlParam::Text(sid.to_string()),
             SqlParam::Text(token.to_string()),

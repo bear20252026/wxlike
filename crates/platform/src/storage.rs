@@ -299,6 +299,14 @@ pub enum StorageConnection<'a> {
 }
 
 impl<'a> StorageConnection<'a> {
+    /// 当前后端方言：同一份端口 SQL 遇到表名/列名差异时据此分派。
+    pub(crate) fn dialect(&self) -> StorageDialect {
+        match self {
+            Self::Sqlite(_) | Self::SqliteTx(_) => StorageDialect::Sqlite,
+            Self::Postgres(_) | Self::PostgresTx { .. } => StorageDialect::Postgres,
+        }
+    }
+
     /// 从已借出的 `&Connection` 构造端口值，用于仍以旧签名接收连接的
     /// repo 内部再调用已迁移的端口函数。
     pub(crate) fn sqlite_borrow(conn: &'a Connection) -> Self {
