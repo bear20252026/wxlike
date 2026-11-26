@@ -7,7 +7,7 @@
 //! 令牌是 32 字节随机数，库里只有 `sha256` 摘要；`Display`/日志里永远不出现
 //! 明文令牌。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::sqlport::{ColKind, SqlExec, SqlParam, SqliteExec};
 use crate::{digest, random_hex, Audience, IdError, Result, ACCESS_TTL_MS, TOKEN_BYTES};
@@ -247,11 +247,23 @@ pub fn current_serial_with<E: SqlExec + ?Sized>(exec: &E) -> Result<i64> {
 /// 与"逐个撤销"的区别是它不需要知道有哪些会话：新签发的带新序列号，
 /// 老的在 [`authenticate`] 里当场失效——等价于上游换掉 `serial_num` 重启服务。
 pub fn rotate_serial(conn: &Connection, now: i64) -> Result<i64> {
-    let next = current_serial(conn)?.saturating_add(1);
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let next = rotate_serial_with(&SqliteExec(&tx), now)?;
+    tx.commit()?;
+    Ok(next)
+}
+
+/// 端口版轮转。调用方负责事务：读当前值 + 写回必须原子，否则两个并发轮转
+/// 可能都读到同一个旧值、写出同一个新值。
+pub fn rotate_serial_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<i64> {
+    let next = current_serial_with(exec)?.saturating_add(1);
+    exec.exec(
         "INSERT INTO identity_token_serial(id, serial, rotated_at) VALUES(1, ?1, ?2) \
          ON CONFLICT(id) DO UPDATE SET serial = ?1, rotated_at = ?2",
-        params![next, now],
+        &[
+            crate::sqlport::SqlParam::Int(next),
+            crate::sqlport::SqlParam::Int(now),
+        ],
     )?;
     Ok(next)
 }
@@ -809,6 +821,7 @@ pub fn purge_expired_with<E: SqlExec + ?Sized>(exec: &E, now: i64) -> Result<usi
 mod tests {
     use super::*;
     use crate::testing::db;
+    use rusqlite::params;
 
     fn device(conn: &Connection, user: &str, id: &str, now: i64) {
         let reg = crate::device::Registration {
