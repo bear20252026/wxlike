@@ -7,7 +7,7 @@ DO $$
 DECLARE
     seq_value BIGINT;
     generated_id BIGINT;
-    mode_want TEXT;
+    want_value TEXT;
     epoch_value BIGINT;
 BEGIN
     -- owner_seq：默认 0，UPDATE ... RETURNING 递增值。
@@ -90,9 +90,9 @@ BEGIN
     INSERT INTO friend_acs(user_id, peer_id, updated_at)
     VALUES ('m021_smoke', 'm021_smoke_peer', 1)
     ON CONFLICT (user_id, peer_id) DO NOTHING;
-    SELECT mode_want INTO mode_want FROM friend_acs
+    SELECT mode_want INTO want_value FROM friend_acs
     WHERE user_id = 'm021_smoke' AND peer_id = 'm021_smoke_peer';
-    IF mode_want IS NULL OR mode_want <> '' THEN
+    IF want_value IS NULL OR want_value <> '' THEN
         RAISE EXCEPTION 'M021: friend_acs.mode_want 默认值不是空串';
     END IF;
 
