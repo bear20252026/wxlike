@@ -299,12 +299,6 @@ pub enum StorageConnection<'a> {
 }
 
 impl<'a> StorageConnection<'a> {
-    /// 从事务闭包的 `&Transaction` 构造端口值。`Transaction` deref 到
-    /// `Connection`，这里只保留连接借用，端口方法不需要事务对象本身。
-    pub(crate) fn sqlite_tx(tx: &'a rusqlite::Transaction<'_>) -> Self {
-        Self::SqliteTx(tx)
-    }
-
     /// 从已借出的 `&Connection` 构造端口值，用于仍以旧签名接收连接的
     /// repo 内部再调用已迁移的端口函数。
     pub(crate) fn sqlite_borrow(conn: &'a Connection) -> Self {
@@ -672,7 +666,7 @@ mod tests {
 
         // 事务内的端口只借连接，不接管提交/回滚。
         {
-            let tx_port = StorageConnection::sqlite_tx(&tx);
+            let tx_port = StorageConnection::sqlite_borrow(&tx);
             assert_eq!(
                 tx_port
                     .sqlite()

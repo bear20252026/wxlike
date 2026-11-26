@@ -24,7 +24,6 @@ use crate::Platform;
 use axum::http::HeaderMap;
 use rand::Rng as _;
 use serde::Serialize;
-use wxlike_core::tx::ConnectionTx as _;
 
 use super::repo::wallet::{
     credit, debit_if_sufficient, ensure_wallet, expired_packets, idem_gc, idem_insert, idem_lookup,
@@ -120,16 +119,14 @@ impl Platform {
     pub(crate) fn fund(&self, user_id: &str, amount: i64, memo: &str) -> Result<()> {
         check_amount(amount)?;
         let user_id = validate::id(user_id)?.to_string();
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            ensure_wallet(&port, &user_id)?;
-            if !user_exists(&port, &user_id)? {
+        self.db().with_tx(|port| -> Result<()> {
+            ensure_wallet(port, &user_id)?;
+            if !user_exists(port, &user_id)? {
                 return Err(PlatformError::NotFound);
             }
-            credit(&port, &user_id, amount)?;
+            credit(port, &user_id, amount)?;
             log_ledger(
-                &port,
+                port,
                 &user_id,
                 kind::FUND_IN,
                 amount,
@@ -155,28 +152,26 @@ impl Platform {
         }
 
         let ref_id = crate::auth::random_hex(8);
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
+        self.db().with_tx(|port| -> Result<()> {
             let now = wxlike_core::types::now_ms() as i64;
             for user in [&from, &to] {
-                if !user_exists(&port, user)? {
+                if !user_exists(port, user)? {
                     return Err(PlatformError::NotFound);
                 }
-                ensure_wallet(&port, user)?;
+                ensure_wallet(port, user)?;
             }
 
             // The whole exchange runs under one connection guard, so no other
             // transfer can read a half-applied balance. The CHECK constraint is the
             // backstop if this guard were ever removed.
-            let updated = debit_if_sufficient(&port, &from, amount)?;
+            let updated = debit_if_sufficient(port, &from, amount)?;
             if updated == 0 {
                 // roll the whole transaction back, including the ensure_wallet rows
                 return Err(PlatformError::BadInput("insufficient balance"));
             }
-            credit(&port, &to, amount)?;
+            credit(port, &to, amount)?;
             log_ledger(
-                &port,
+                port,
                 &from,
                 kind::TRANSFER_OUT,
                 amount,
@@ -186,7 +181,7 @@ impl Platform {
                 now,
             )?;
             log_ledger(
-                &port,
+                port,
                 &to,
                 kind::TRANSFER_IN,
                 amount,
@@ -244,18 +239,9 @@ impl Platform {
         response: &serde_json::Value,
     ) -> Result<()> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            idem_gc(&port, now - IDEMPOTENCY_TTL_MS)?;
-            idem_insert(
-                &port,
-                user_id,
-                key,
-                request_hash,
-                &response.to_string(),
-                now,
-            )?;
+        self.db().with_tx(|port| -> Result<()> {
+            idem_gc(port, now - IDEMPOTENCY_TTL_MS)?;
+            idem_insert(port, user_id, key, request_hash, &response.to_string(), now)?;
             Ok(())
         })
     }
@@ -277,21 +263,19 @@ impl Platform {
         let (from, memo, id, conv_id, now, expire_at) =
             validate_redpacket_input(from, amount, count, memo, conv_id)?;
 
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<()> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            if !user_exists(&port, &from)? {
+        self.db().with_tx(|port| -> Result<()> {
+            if !user_exists(port, &from)? {
                 return Err(PlatformError::NotFound);
             }
-            ensure_wallet(&port, &from)?;
-            if debit_if_sufficient(&port, &from, amount)? == 0 {
+            ensure_wallet(port, &from)?;
+            if debit_if_sufficient(port, &from, amount)? == 0 {
                 return Err(PlatformError::BadInput("insufficient balance"));
             }
             insert_redpacket(
-                &port, &id, &from, &conv_id, amount, count, &memo, now, expire_at,
+                port, &id, &from, &conv_id, amount, count, &memo, now, expire_at,
             )?;
             log_ledger(
-                &port,
+                port,
                 &from,
                 kind::REDPACKET_OUT,
                 amount,
@@ -316,10 +300,9 @@ impl Platform {
     pub(crate) fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64> {
         let id = validate::id(id)?.to_string();
         let by = validate::id(by)?.to_string();
-        let (share, claimed, count, conv) = {
-            let mut c = self.db().lock()?;
-            Self::claim_redpacket_tx(&mut c, &id, &by)?
-        };
+        let (share, claimed, count, conv) = self
+            .db()
+            .with_tx(|port| Self::claim_redpacket_tx(port, &id, &by))?;
 
         if !conv.is_empty() {
             self.notify_redpacket_claim(
@@ -338,13 +321,12 @@ impl Platform {
     /// 返回的是**领取前**的 `(share, claimed, count, conv)`：`claimed/count`
     /// 供事务外的卡片回写判断“最后一手”，`conv` 为空表示无需回写。
     fn claim_redpacket_tx(
-        c: &mut rusqlite::Connection,
+        port: &crate::storage::StorageConnection<'_>,
         id: &str,
         by: &str,
     ) -> Result<(i64, i64, i64, String)> {
-        c.with_tx(|tx| -> Result<(i64, i64, i64, String)> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            let Some(state) = redpacket_state(&port, id)? else {
+        {
+            let Some(state) = redpacket_state(port, id)? else {
                 return Err(PlatformError::NotFound);
             };
             let claimers = Self::claimable(&state, by)?;
@@ -352,9 +334,9 @@ impl Platform {
                 state.total - state.claimed_total,
                 state.count - state.claimed,
             );
-            Self::pay_claim(&port, id, by, share, claimers)?;
+            Self::pay_claim(port, id, by, share, claimers)?;
             Ok((share, state.claimed, state.count, state.conv_id))
-        })
+        }
     }
 
     /// 领取前的全部拒绝条件：状态、自领、领完、重复领取。
@@ -435,17 +417,15 @@ impl Platform {
     /// flip is part of the same transaction, so a second sweep changes nothing.
     pub(crate) fn sweep_expired_redpackets(&self) -> Result<usize> {
         let now = wxlike_core::types::now_ms() as i64;
-        let mut c = self.db().lock()?;
-        c.with_tx(|tx| -> Result<usize> {
-            let port = crate::storage::StorageConnection::sqlite_tx(tx);
-            let expired = expired_packets(&port, now)?;
+        self.db().with_tx(|port| -> Result<usize> {
+            let expired = expired_packets(port, now)?;
             let refunded = expired.len();
             for packet in expired {
                 let refund = packet.total - packet.claimed_total;
                 if refund > 0 {
-                    credit(&port, &packet.from_uid, refund)?;
+                    credit(port, &packet.from_uid, refund)?;
                     log_ledger(
-                        &port,
+                        port,
                         &packet.from_uid,
                         kind::REDPACKET_REFUND,
                         refund,
@@ -455,7 +435,7 @@ impl Platform {
                         now,
                     )?;
                 }
-                mark_expired(&port, &packet.id)?;
+                mark_expired(port, &packet.id)?;
             }
             Ok(refunded)
         })
