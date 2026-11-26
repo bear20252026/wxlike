@@ -477,7 +477,7 @@
       "commit": "eb90ef83acae6542f52719377ee5a76d267a5618",
       "decision": "adapted",
       "license_spdx": "GPL-3.0-only",
-      "local_sha256": "0ce33580448c33c0ceb3bbe0e6ca451a692f8fff8e10c4ef1e0adfedd8afef6b",
+      "local_sha256": "d1d4cc6948264301891f7c9eb54e41d266e779653b86b231cee6c390cf2cf95d",
       "patchlog": "third_party/reviews/patches/UP-TINODE-identity-schema.md",
       "used_by": "identity_session_token / identity_token_serial / identity_retry 三张表的列形状"
     }
