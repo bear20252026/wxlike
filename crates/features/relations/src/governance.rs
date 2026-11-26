@@ -203,9 +203,9 @@ fn load_with<E: RelExec + ?Sized>(exec: &E, group_id: &str) -> Result<group::Gro
         RelKind::Text,
         RelKind::Text,
         RelKind::Int,
-        RelKind::Text,
-        RelKind::Int,
-        RelKind::Int,
+        RelKind::OptText,
+        RelKind::OptInt,
+        RelKind::OptInt,
     ];
     let sql = "SELECT g.id, g.name, g.owner_uid, g.created_at, m.visibility, m.dissolved_at, \
          m.frozen_at FROM groups g LEFT JOIN group_meta m ON m.group_id = g.id WHERE g.id = ?1";

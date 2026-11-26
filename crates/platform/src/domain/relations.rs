@@ -35,6 +35,7 @@ impl From<wxlike_relations::RelError> for PlatformError {
             // 也不能让读不出的行折成"这条关系正常"。见 `RelError::Corrupt` 文档。
             E::Corrupt(msg) => Self::Internal(format!("corrupt relation row: {msg}")),
             E::Db(e) => Self::Sqlite(e),
+            E::Storage(msg) => Self::Storage(msg),
             E::Json(e) => Self::Codec(e),
         }
     }

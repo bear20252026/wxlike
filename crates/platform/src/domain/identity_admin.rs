@@ -7,8 +7,6 @@
 //! 同步域 API 仍由 handler 包进 `spawn_blocking`（ADR-28）；本模块不引入
 //! `await`，事务边界保持在一次连接守卫内。
 
-use axum::http::StatusCode;
-
 use crate::domain::qr_login::id_err;
 use crate::error::ApiError;
 use crate::storage::sql_port::StorageSqlExec;
@@ -101,16 +99,18 @@ impl Platform {
         operator_token: &str,
         cmd: &GroupGovernCommand,
     ) -> Result<GroupGovernEffect, ApiError> {
-        let c = self.db().lock()?;
-        wxlike_identity::session::authenticate(
-            &c,
-            operator_token,
-            wxlike_identity::Audience::Admin,
-            wxlike_core::types::now_ms() as i64,
-        )
-        .map_err(id_err)?;
-        let effect = relations_governance::govern(&c, cmd, wxlike_core::types::now_ms() as i64)
-            .map_err(rel_err)?;
+        let now = wxlike_core::types::now_ms() as i64;
+        // 鉴权与群治理共用同一个事务：令牌在事务里校验，治理写入失败时一并回滚。
+        let effect = self.db().with_tx(|c| {
+            let exec = StorageSqlExec(c);
+            wxlike_identity::session::authenticate_with(
+                &exec,
+                operator_token,
+                wxlike_identity::Audience::Admin,
+                now,
+            )?;
+            Ok(relations_governance::govern_with(&exec, cmd, now)?)
+        })?;
         for event in &effect.events {
             if let GroupGovernanceEvent::CacheClear { scope, key } = event {
                 if scope == "group" {
@@ -119,24 +119,5 @@ impl Platform {
             }
         }
         Ok(effect)
-    }
-}
-
-/// relations 的 `RelError` → HTTP。与 identity 的 `id_err` 同口径：
-/// 损坏/存储/解码一律 500（服务端问题），不伪装成客户端错误。
-fn rel_err(err: wxlike_relations::RelError) -> ApiError {
-    use wxlike_relations::RelError;
-    match err {
-        RelError::BadInput(what) => ApiError::unprocessable(format!("bad input: {what}")),
-        RelError::Forbidden(what) => ApiError::forbidden(format!("forbidden: {what}")),
-        RelError::NotFound(what) => ApiError::not_found(format!("no such {what}")),
-        RelError::Conflict(what) => ApiError::conflict(what),
-        RelError::Corrupt(what) => {
-            tracing::error!(%what, "relations 治理读到损坏行");
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "corrupt stored row")
-        }
-        RelError::Db(_) | RelError::Json(_) => {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-        }
     }
 }

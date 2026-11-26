@@ -7,6 +7,7 @@ use crate::error::PlatformError;
 use crate::storage::port::{Param, Params};
 use crate::storage::{StorageConnection, StorageDialect, StorageRow};
 use wxlike_identity::qr_login::{QrExec, QrKind, QrParam, QrValue};
+use wxlike_relations::exec::{RelExec, RelKind, RelParam, RelValue};
 
 pub(crate) struct StorageSqlExec<'a, 'b>(pub(crate) &'b StorageConnection<'a>);
 
@@ -160,5 +161,77 @@ impl QrExec for StorageSqlExec<'_, '_> {
                 }
             }
         }
+    }
+}
+
+fn rel_param(p: &RelParam) -> QrParam {
+    match p {
+        RelParam::Text(v) => QrParam::Text(v.clone()),
+        RelParam::Int(v) => QrParam::Int(*v),
+        RelParam::Null => QrParam::Null,
+    }
+}
+
+fn rel_kind(kind: &RelKind) -> QrKind {
+    match kind {
+        RelKind::Text => QrKind::Text,
+        RelKind::Int => QrKind::Int,
+        RelKind::OptText => QrKind::OptText,
+        RelKind::OptInt => QrKind::OptInt,
+    }
+}
+
+fn rel_err(e: wxlike_identity::IdError) -> wxlike_relations::RelError {
+    wxlike_relations::RelError::Storage(e.to_string())
+}
+
+fn rel_value(v: QrValue) -> RelValue {
+    match v {
+        QrValue::Text(v) => RelValue::Text(v),
+        QrValue::Int(v) => RelValue::Int(v),
+        QrValue::Null => RelValue::Null,
+    }
+}
+
+impl RelExec for StorageSqlExec<'_, '_> {
+    fn exec(&self, sql: &str, params: &[RelParam]) -> Result<usize, wxlike_relations::RelError> {
+        let bound: Vec<QrParam> = params.iter().map(rel_param).collect();
+        <Self as QrExec>::exec(self, sql, &bound).map_err(rel_err)
+    }
+
+    fn query(
+        &self,
+        sql: &str,
+        params: &[RelParam],
+        kinds: &[RelKind],
+    ) -> Result<Option<Vec<RelValue>>, wxlike_relations::RelError> {
+        let bound: Vec<QrParam> = params.iter().map(rel_param).collect();
+        let kinds: Vec<QrKind> = kinds.iter().map(rel_kind).collect();
+        let rows = <Self as QrExec>::query(self, sql, &bound, &kinds).map_err(rel_err)?;
+        Ok(rows.map(|row| row.into_iter().map(rel_value).collect()))
+    }
+
+    fn query_many(
+        &self,
+        sql: &str,
+        params: &[RelParam],
+        kinds: &[RelKind],
+    ) -> Result<Vec<Vec<RelValue>>, wxlike_relations::RelError> {
+        let bound: Vec<QrParam> = params.iter().map(rel_param).collect();
+        let kinds: Vec<QrKind> = kinds.iter().map(rel_kind).collect();
+        let rows = <Self as QrExec>::query_many(self, sql, &bound, &kinds).map_err(rel_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.into_iter().map(rel_value).collect())
+            .collect())
+    }
+
+    fn insert_returning(
+        &self,
+        sql: &str,
+        params: &[RelParam],
+    ) -> Result<i64, wxlike_relations::RelError> {
+        let bound: Vec<QrParam> = params.iter().map(rel_param).collect();
+        <Self as QrExec>::insert_returning(self, sql, &bound).map_err(rel_err)
     }
 }

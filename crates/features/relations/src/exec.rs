@@ -31,6 +31,8 @@ impl From<RelParam> for rusqlite::types::Value {
 pub enum RelKind {
     Text,
     Int,
+    OptText,
+    OptInt,
 }
 
 /// 从端口读回的值。
@@ -151,9 +153,10 @@ fn read_row(row: &rusqlite::Row<'_>, kinds: &[RelKind]) -> Result<Vec<RelValue>>
         };
         match (kind, &value) {
             (RelKind::Text, RelValue::Text(_))
-            | (RelKind::Text, RelValue::Null)
             | (RelKind::Int, RelValue::Int(_))
-            | (RelKind::Int, RelValue::Null) => {}
+            | (RelKind::OptText, RelValue::Text(_) | RelValue::Null)
+            | (RelKind::OptInt, RelValue::Int(_) | RelValue::Null)
+            | (RelKind::Text | RelKind::Int, RelValue::Null) => {}
             _ => return Err(RelError::Corrupt("relations row type")),
         }
         out.push(value);
