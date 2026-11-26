@@ -28,7 +28,9 @@
 //! 改期（已封禁但 `until_ms` 变了）视为**新处置**：`already=false`，重新撤销
 //! 会话——封禁期延长必须把现存会话再踢一遍。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::{params, Connection};
+
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -104,28 +106,55 @@ fn flags_of(row: Option<&GovRow>, now: i64) -> (bool, bool) {
     row.map(|r| r.mirror_flags(now)).unwrap_or((false, false))
 }
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<GovRow> {
-    Ok(GovRow {
-        suspended: r.get::<_, i64>(0)? != 0,
-        disabled: r.get::<_, i64>(1)? != 0,
-        until_ms: r.get(2)?,
-    })
+fn load(conn: &Connection, user_id: &str) -> Result<Option<GovRow>> {
+    load_with(&SqliteExec(conn), user_id)
 }
 
-fn load(conn: &Connection, user_id: &str) -> Result<Option<GovRow>> {
-    Ok(conn
-        .query_row(
-            "SELECT suspended, disabled, suspended_until_ms FROM identity_user_governance \
-             WHERE user_id = ?1",
-            params![user_id],
-            row_of,
-        )
-        .optional()?)
+/// 端口版：读治理行（无行 = 从未处置）。
+fn load_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<Option<GovRow>> {
+    let Some(row) = exec.query(
+        "SELECT suspended, disabled, suspended_until_ms FROM identity_user_governance \
+         WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Int, ColKind::Int, ColKind::OptInt],
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut it = row.into_iter();
+    let suspended = sql_int(it.next())? != 0;
+    let disabled = sql_int(it.next())? != 0;
+    let until_ms = match it.next() {
+        Some(SqlValue::Int(v)) => Some(v),
+        Some(SqlValue::Null) => None,
+        _ => return Err(IdError::Corrupt("governance until column")),
+    };
+    Ok(Some(GovRow {
+        suspended,
+        disabled,
+        until_ms,
+    }))
+}
+
+fn sql_int(value: Option<SqlValue>) -> Result<i64> {
+    match value {
+        Some(SqlValue::Int(v)) => Ok(v),
+        _ => Err(IdError::Corrupt("governance row column")),
+    }
 }
 
 /// 读用户有效治理状态（无行 = active）。
 pub fn user_state(conn: &Connection, user_id: &str, now: i64) -> Result<UserState> {
-    Ok(load(conn, user_id)?
+    user_state_with(&SqliteExec(conn), user_id, now)
+}
+
+/// 端口版有效状态。
+pub fn user_state_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    now: i64,
+) -> Result<UserState> {
+    Ok(load_with(exec, user_id)?
         .map(|r| r.state(now))
         .unwrap_or(UserState::Active))
 }

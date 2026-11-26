@@ -7,10 +7,11 @@
 //! 跨域计数（群数/举报数）经 [`UserMetadataPort`] 注入：identity 不直接读
 //! relations / 平台 reports 表。测试与未装配场景可用 [`NoCounts`]（计 0）。
 
-use rusqlite::{params, Connection, OptionalExtension as _};
+use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{check_target, user::user_state, UserMetadataPort};
+use super::{check_target, user::user_state_with, UserMetadataPort};
+use crate::sqlport::{ColKind, SqlExec, SqlParam, SqlValue, SqliteExec};
 use crate::Result;
 
 pub use wxlike_core::privacy::METADATA_FIELDS;
@@ -54,19 +55,23 @@ pub fn user_view(
     counts: &dyn UserMetadataPort,
     now: i64,
 ) -> Result<AdminUserView> {
-    super::authenticate_operator(conn, operator_token, now)?;
-    let target = check_target(user_id)?;
-    super::require_user(conn, &target)?;
+    user_view_with(&SqliteExec(conn), operator_token, user_id, counts, now)
+}
 
-    let state = user_state(conn, &target, now)?;
-    let until_ms: Option<i64> = conn
-        .query_row(
-            "SELECT suspended_until_ms FROM identity_user_governance WHERE user_id = ?1",
-            params![target],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
+/// 端口版管理视图：鉴权、治理状态、平台 Profile、会话活跃、设备数、标签。
+pub fn user_view_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    user_id: &str,
+    counts: &dyn UserMetadataPort,
+    now: i64,
+) -> Result<AdminUserView> {
+    super::authenticate_operator_with(exec, operator_token, now)?;
+    let target = check_target(user_id)?;
+    super::require_user_with(exec, &target)?;
+
+    let state = user_state_with(exec, &target, now)?;
+    let until_ms = read_until(exec, &target)?;
     // 到期未结算：对外不展示一个已经失效的封禁期限。
     let until_ms = if state == super::UserState::Expired {
         None
@@ -74,16 +79,10 @@ pub fn user_view(
         until_ms
     };
 
-    let (display_name, created_at) = profile_of(conn, &target)?;
-    let last_seen_ms: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(last_seen), 0) FROM sessions WHERE user_id = ?1",
-            params![target],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let device_count = crate::device::active_count(conn, &target)?;
-    let labels = labels_of(conn, &target)?;
+    let (display_name, created_at) = profile_of_with(exec, &target)?;
+    let last_seen_ms = last_seen_with(exec, &target)?;
+    let device_count = crate::device::active_count_with(exec, &target)?;
+    let labels = labels_of_with(exec, &target)?;
 
     Ok(AdminUserView {
         user_id: target.clone(),
@@ -99,32 +98,74 @@ pub fn user_view(
     })
 }
 
-/// 读平台 users 表的展示名与注册时间（只读；无表/无行回落空名/0）。
-fn profile_of(conn: &Connection, user_id: &str) -> Result<(String, i64)> {
-    let has_users: bool = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'",
-        [],
-        |r| r.get::<_, i64>(0),
-    )? > 0;
-    if !has_users {
-        return Ok((String::new(), 0));
+fn read_until<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<Option<i64>> {
+    let Some(row) = exec.query(
+        "SELECT suspended_until_ms FROM identity_user_governance WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::OptInt],
+    )?
+    else {
+        return Ok(None);
+    };
+    match row.into_iter().next() {
+        Some(SqlValue::Int(v)) => Ok(Some(v)),
+        Some(SqlValue::Null) => Ok(None),
+        _ => Err(crate::IdError::Corrupt("governance until column")),
     }
-    let row: Option<(String, i64)> = conn
-        .query_row(
-            "SELECT name, created_at FROM users WHERE id = ?1",
-            params![user_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    Ok(row.unwrap_or((String::new(), 0)))
 }
 
-fn labels_of(conn: &Connection, user_id: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
+fn last_seen_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<i64> {
+    let Some(row) = exec.query(
+        "SELECT COALESCE(MAX(last_seen), 0) FROM sessions WHERE user_id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Int],
+    )?
+    else {
+        return Ok(0);
+    };
+    match row.into_iter().next() {
+        Some(SqlValue::Int(v)) => Ok(v),
+        _ => Err(crate::IdError::Corrupt("session last_seen column")),
+    }
+}
+
+/// 读平台 users 表的展示名与注册时间（只读；无表/无行回落空名/0）。
+fn profile_of_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<(String, i64)> {
+    if !exec.table_exists("users")? {
+        return Ok((String::new(), 0));
+    }
+    let Some(row) = exec.query(
+        "SELECT name, created_at FROM users WHERE id = ?1",
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Text, ColKind::Int],
+    )?
+    else {
+        return Ok((String::new(), 0));
+    };
+    let mut it = row.into_iter();
+    let name = match it.next() {
+        Some(SqlValue::Text(v)) => v,
+        _ => return Err(crate::IdError::Corrupt("user name column")),
+    };
+    let created_at = match it.next() {
+        Some(SqlValue::Int(v)) => v,
+        _ => return Err(crate::IdError::Corrupt("user created_at column")),
+    };
+    Ok((name, created_at))
+}
+
+fn labels_of_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result<Vec<String>> {
+    let rows = exec.query_many(
         "SELECT label FROM identity_governance_label WHERE user_id = ?1 ORDER BY created_at ASC",
+        &[SqlParam::Text(user_id.to_string())],
+        &[ColKind::Text],
     )?;
-    let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    rows.into_iter()
+        .map(|row| match row.into_iter().next() {
+            Some(SqlValue::Text(v)) => Ok(v),
+            _ => Err(crate::IdError::Corrupt("governance label column")),
+        })
+        .collect()
 }
 
 #[cfg(test)]
