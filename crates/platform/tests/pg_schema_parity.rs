@@ -17,8 +17,8 @@ fn repo_root() -> PathBuf {
 }
 
 fn collect_sql(dir: &Path, out: &mut String) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|err| panic!("读不到 {}：{err}", dir.display()));
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|err| panic!("读不到 {}：{err}", dir.display()));
     for entry in entries {
         let entry = entry.expect("目录项");
         let path = entry.path();
@@ -49,7 +49,7 @@ fn strip_leading_comments(mut sql: &str) -> &str {
 fn object_name(token: &str) -> Option<String> {
     let name = token
         .trim_matches(|c: char| c == '"' || c == '\'' || c == '`')
-        .trim_end_matches(|c: char| c == '(');
+        .trim_end_matches('(');
     if name.is_empty() {
         return None;
     }
