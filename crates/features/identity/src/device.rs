@@ -92,22 +92,6 @@ fn valid_device_id(raw: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
-    Ok(DeviceRow {
-        device_id: r.get(0)?,
-        user_id: r.get(1)?,
-        platform: r.get(2)?,
-        label: r.get(3)?,
-        os_version: r.get(4)?,
-        app_version: r.get(5)?,
-        identity_key: r.get(6)?,
-        trust: Trust::parse(&r.get::<_, String>(7)?),
-        created_at: r.get(8)?,
-        last_seen: r.get(9)?,
-        revoked_at: r.get(10)?,
-    })
-}
-
 const SELECT_ROW: &str = "SELECT device_id, user_id, platform, label, os_version, app_version, \
      identity_key, trust, created_at, last_seen, revoked_at FROM identity_device";
 
@@ -324,23 +308,50 @@ fn device_int(value: Option<crate::sqlport::SqlValue>) -> Result<i64> {
 
 /// 该账号的设备列表，最近活跃在前。默认不含已撤销。
 pub fn list(conn: &Connection, user_id: &str, include_revoked: bool) -> Result<Vec<DeviceRow>> {
+    list_with(&SqliteExec(conn), user_id, include_revoked)
+}
+
+/// 端口版 `list`。
+pub fn list_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    include_revoked: bool,
+) -> Result<Vec<DeviceRow>> {
     let sql = if include_revoked {
         format!("{SELECT_ROW} WHERE user_id = ?1 ORDER BY last_seen DESC")
     } else {
         format!("{SELECT_ROW} WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY last_seen DESC")
     };
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![user_id], row_of)?;
-    let out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(out)
+    exec.query_many(
+        &sql,
+        &[SqlParam::Text(user_id.to_string())],
+        &device_kinds(),
+    )?
+    .into_iter()
+    .map(device_from_row)
+    .collect()
 }
 
 /// 心跳：更新最近活跃时间。设备已撤销时返回错误，调用方据此断开连接。
 pub fn touch(conn: &Connection, user_id: &str, device_id: &str, now: i64) -> Result<()> {
-    let n = conn.execute(
+    touch_with(&SqliteExec(conn), user_id, device_id, now)
+}
+
+/// 端口版 `touch`。
+pub fn touch_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<()> {
+    let n = exec.exec(
         "UPDATE identity_device SET last_seen = ?3 \
          WHERE device_id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
-        params![device_id, user_id, now],
+        &[
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Int(now),
+        ],
     )?;
     if n == 0 {
         return Err(IdError::Unauthorized("device not active"));
@@ -350,13 +361,27 @@ pub fn touch(conn: &Connection, user_id: &str, device_id: &str, now: i64) -> Res
 
 /// 设备验证结果（G02-03 写入，G02-07 读）。
 pub fn set_trust(conn: &Connection, user_id: &str, device_id: &str, trust: Trust) -> Result<()> {
+    set_trust_with(&SqliteExec(conn), user_id, device_id, trust)
+}
+
+/// 端口版 `set_trust`。
+pub fn set_trust_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    device_id: &str,
+    trust: Trust,
+) -> Result<()> {
     if trust == Trust::Revoked {
         return Err(IdError::BadInput("use revoke()"));
     }
-    let n = conn.execute(
+    let n = exec.exec(
         "UPDATE identity_device SET trust = ?3 \
          WHERE device_id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
-        params![device_id, user_id, trust.as_str()],
+        &[
+            SqlParam::Text(device_id.to_string()),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Text(trust.as_str().to_string()),
+        ],
     )?;
     if n == 0 {
         return Err(IdError::NotFound("device"));
@@ -471,7 +496,12 @@ pub fn active_count_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str) -> Result
 
 /// 给设备打心跳时的"现在"，抽出来便于调用方注入固定时钟。
 pub fn touch_now(conn: &Connection, user_id: &str, device_id: &str) -> Result<()> {
-    touch(conn, user_id, device_id, now_ms())
+    touch_now_with(&SqliteExec(conn), user_id, device_id)
+}
+
+/// 端口版 `touch_now`。
+pub fn touch_now_with<E: SqlExec + ?Sized>(exec: &E, user_id: &str, device_id: &str) -> Result<()> {
+    touch_with(exec, user_id, device_id, now_ms())
 }
 
 #[cfg(test)]
