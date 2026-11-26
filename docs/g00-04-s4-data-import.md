@@ -80,8 +80,8 @@ PYTHONPATH=composition/data-import python3 composition/data-import/census.py \
 - `import_table`：每表源/目标行数、双侧摘要、`pending/loading/loaded/verified/failed/skipped`、错误；
 - 复合主键 `(run_id, source_table)`、`ON DELETE CASCADE`、状态 CHECK、状态/目标索引。
 
-M023 已追加到 `schema/registry/migrations.json`，`next_id=M024`；
-`crates/features/media/tests/migration_registry.rs` 的 `NEXT_ID` 同步为 M024。
+M023 已追加到 `schema/registry/migrations.json`；当前 `next_id=M025`，
+`crates/features/media/tests/migration_registry.rs` 的 `NEXT_ID` 同步为 M025。
 
 M024（`schema/proposals/G00/0002_import_compat_backfill.sql`）是 110 表普查
 发现的兼容补齐：
