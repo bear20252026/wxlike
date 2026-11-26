@@ -72,14 +72,34 @@
   （`343542f`）。
 - `login_challenge` 的下发/校验/重发仍是 SQLite-only，且平台生产路径未直接调用；
   属于可选清理，不阻塞当前切换。
-- 因此 `G00-04-PG` 保持 open：剩余工作是 SQLite→PG 全量导入、生产 PG 版本/拓扑
-  裁决与生产环境 restore/drill 演练；治理面端口化与「51 个旧 repo 函数」不再是
-  未完成项。
+- 因此 `G00-04-PG` 保持 open：剩余工作是真实 SQLite 快照的全量导入、生产 PG
+  版本/拓扑裁决与生产环境 restore/drill 演练；治理面端口化与「51 个旧 repo
+  函数」不再是未完成项。S4 导入工具链已落地（见下节），但尚未对生产快照执行。
+
+## S4 数据导入工具链（2026-11-26）
+
+- 目录：`composition/data-import/`；入口 `import_all.py`；包内按
+  盘点/计划/目标 catalog/CSV 编码/装载/回读摘要/状态续跑/停写窗口分层。
+- 默认同名复制；`wallets` / `ledger` 仍跳过，由 M013 导入器做严格回填。
+  `users` / `sessions` / `media` 按 M011/M012 可写兼容视图写入。
+- 复制前先校验目标：缺表、物化视图、源独有列、目标独有 NOT NULL 无默认列、
+  类型族不兼容都会拒绝；不允许“先复制再发现丢列”。
+- M023（`schema/proposals/G00/0001_import_control.sql`）新增
+  `import_run` / `import_table`，记录源 SHA、data_version、逐表行数/摘要/状态，
+  支撑 `--resume` 与失败表重跑；`next_id=M024`。
+- CI：`pg-migration` 在 M023 断言后跑 `pg_data_import_smoke.sh`（合成五表：
+  父子外键、identity、空表、bytea/CRLF/numeric），验证清空旧行、NULL/空串、
+  摘要、续跑和序列复位。`composition/data-import/**` 属于完整矩阵触发路径。
+- 停写窗口：`window.json` 记录源 SHA、SQLite data_version、逐表/总耗时；
+  前后 SHA 与 data_version 不变才算 `quiescent`，`--max-window-seconds` 可设上限。
+- 边界：本地/CI 只证 PostgreSQL 16 合成库；真实 110 表的 `apply_catalog`、
+  生产快照导入与生产 restore drill 仍未执行。旧 `pg-table-map.json` 已 stale。
+- 详细口径与回滚见 `docs/g00-04-s4-data-import.md`。
 
 ## S2 设计决策（开工前需拍板）
 - **PG 驱动**：`sqlx`（编译期校验、自带池）vs `tokio-postgres`（更贴近现有手写 SQL 风格）。现有 `crates/platform/src/domain/repo/*.rs` 是手写 SQL，`tokio-postgres` 迁移成本可能更低；`sqlx` 的编译期查询校验在 132K 行手写 SQL 上收益有限。
 - **双实现策略**：trait 双实现（`PlatformXxxRepo for SqliteRepo / PgRepo`）vs 条件编译 vs 单一 `Storage` 端口。trait 双实现类型与编译时间翻倍；条件编译会让"同一份逻辑两种方言"难以对账；单一端口需在 repo 层引入方言抽象。**建议先做单一 `Storage` 端口 + SQLite 实现跑通，再落 PG 实现**——方向性决策，需 owner 拍板。
-- **停写窗口**：切换必须"停写 > 导入 > 影子读对账 > 切读 > 启用写"；窗口时长要有测量（`data-import` 对账脚本产出），不允许无测量的在线双写。
+- **停写窗口**：切换必须"停写 > 导入 > 影子读对账 > 切读 > 启用写"；窗口时长要有测量（`composition/data-import` 的 `window.json` 产出），不允许无测量的在线双写。当前只有源侧 SHA/data_version/耗时测量，生产窗口长度与外部停写信号仍需 owner 评审。
 - **真实版本**：CI 冒烟用 `postgres:16`，生产版本按部署环境裁决（§3 S6）。
 
 ## 后续待办（未落地，属 G00-04 剩余工作）
@@ -87,8 +107,9 @@
 1. **PG repository**：platform 的 `StorageProfile` / `Db` PG profile、平台域
    repo 端口化、identity 可复用面与 relations 治理写路径均已落地；commerce/ledger
    的 PG repository 仍待做。
-2. **数据导入**：`composition/data-import/` 不存在；需做计数/摘要/余额守恒对账与
-   中断可重跑，先在空库/合成库验证。M015 只补表，不代做数据回填。
+2. **数据导入**：`composition/data-import/` 工具链已落地（S4，2026-11-26），
+   覆盖盘点/计划/CSV/装载/回读摘要/中断续跑/停写窗口，并在 PostgreSQL 16
+   合成库上跑通；仍需对真实 SQLite 快照执行全量导入并逐表处理 catalog 差异。
 3. **restore drill**：CI `pg-migration` 作业已在 PostgreSQL 16 上跑过
    `pg_dump → psql restore → 断言`；生产部署环境的 drill 仍需在割接窗口前实跑。
    `deploy/runbooks/backup-restore.md:70-71`、`deploy/runbooks/migration.md:37-38`
