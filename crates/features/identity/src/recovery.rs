@@ -7,7 +7,7 @@
 //! 唯一的差别是后台有没有真的发一封邮件，这个差别不能出现在响应体、状态码
 //! 或响应时间上（发送走异步队列，不在请求路径里等）。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::{digest, random_hex, Result, TOKEN_BYTES};
 
@@ -40,9 +40,19 @@ pub fn should_issue(
     limit: crate::throttle::Limit,
     now: i64,
 ) -> Result<bool> {
-    match crate::throttle::check(conn, bucket, limit, now) {
+    should_issue_with(&crate::sqlport::SqliteExec(conn), bucket, limit, now)
+}
+
+/// 端口版 `should_issue`：限速桶的读写走同一后端。
+pub fn should_issue_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    bucket: &str,
+    limit: crate::throttle::Limit,
+    now: i64,
+) -> Result<bool> {
+    match crate::throttle::check_with(exec, bucket, limit, now) {
         Ok(()) => {
-            crate::throttle::record_failure(conn, bucket, limit, now)?;
+            crate::throttle::record_failure_with(exec, bucket, limit, now)?;
             Ok(true)
         }
         Err(crate::IdError::RateLimited { .. }) => Ok(false),
@@ -52,11 +62,26 @@ pub fn should_issue(
 
 /// 给已确认存在的账号签发找回令牌（库里只存摘要）。重复调用各自独立，互不覆盖。
 pub fn issue_token(conn: &Connection, user_id: &str, now: i64) -> Result<String> {
+    issue_token_with(&crate::sqlport::SqliteExec(conn), user_id, now)
+}
+
+/// 端口版 `issue_token`。
+pub fn issue_token_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    user_id: &str,
+    now: i64,
+) -> Result<String> {
+    use crate::sqlport::SqlParam;
     let raw = random_hex(TOKEN_BYTES);
-    conn.execute(
+    exec.exec(
         "INSERT INTO identity_reset_token(token_hash, user_id, created_at, expires_at, used_at) \
          VALUES(?1, ?2, ?3, ?4, NULL)",
-        params![digest(&raw), user_id, now, now.saturating_add(RESET_TTL_MS)],
+        &[
+            SqlParam::Text(digest(&raw)),
+            SqlParam::Text(user_id.to_string()),
+            SqlParam::Int(now),
+            SqlParam::Int(now.saturating_add(RESET_TTL_MS)),
+        ],
     )?;
     Ok(raw)
 }
@@ -64,27 +89,45 @@ pub fn issue_token(conn: &Connection, user_id: &str, now: i64) -> Result<String>
 /// 消费找回令牌：单次、限时。成功后同一账号其余令牌一并作废。
 pub fn consume_token(conn: &Connection, raw: &str, now: i64) -> Result<String> {
     let tx = conn.unchecked_transaction()?;
-    let n = tx.execute(
+    let user_id = consume_token_with(&crate::sqlport::SqliteExec(&tx), raw, now)?;
+    tx.commit()?;
+    Ok(user_id)
+}
+
+/// 端口版 `consume_token`：**调用方负责事务**（标记已用与作废旧令牌必须一起成功）。
+pub fn consume_token_with<E: crate::sqlport::SqlExec + ?Sized>(
+    exec: &E,
+    raw: &str,
+    now: i64,
+) -> Result<String> {
+    use crate::sqlport::{ColKind, SqlParam};
+    let hash = digest(raw);
+    let n = exec.exec(
         "UPDATE identity_reset_token SET used_at = ?2 \
          WHERE token_hash = ?1 AND used_at IS NULL AND expires_at > ?2",
-        params![digest(raw), now],
+        &[SqlParam::Text(hash.clone()), SqlParam::Int(now)],
     )?;
     if n != 1 {
         return Err(crate::IdError::Unauthorized(
             "invalid or expired reset token",
         ));
     }
-    let user_id: String = tx.query_row(
-        "SELECT user_id FROM identity_reset_token WHERE token_hash = ?1",
-        params![digest(raw)],
-        |r| r.get(0),
-    )?;
-    tx.execute(
+    let user_id = exec
+        .query(
+            "SELECT user_id FROM identity_reset_token WHERE token_hash = ?1",
+            &[SqlParam::Text(hash)],
+            &[ColKind::Text],
+        )?
+        .ok_or(crate::IdError::NotFound("reset token"))?
+        .into_iter()
+        .next()
+        .ok_or(crate::IdError::Corrupt("identity_reset_token.row width"))?
+        .into_text()?;
+    exec.exec(
         "UPDATE identity_reset_token SET used_at = ?2 \
          WHERE user_id = ?1 AND used_at IS NULL",
-        params![user_id, now],
+        &[SqlParam::Text(user_id.clone()), SqlParam::Int(now)],
     )?;
-    tx.commit()?;
     Ok(user_id)
 }
 
