@@ -35,7 +35,7 @@
   这只证明 DDL 在稳定版 PostgreSQL 上成立，**不代表**生产 PG profile 已落地。
 - 回滚：全部为新增对象，无 down migration；说明见 `schema/proposals/G06/ROLLBACK.md`。
 
-## S3 端口化进度（2026-11-25）
+## S3 端口化进度（2026-11-26）
 
 - 平台 `Db` 已有 Postgres profile（sqlx 池 + 事务端口）；`StorageProfile::dialect()`
   是唯一方言判据，`StorageConnection` 亦暴露只读 `dialect()` 供少数表名差异分派。
@@ -44,7 +44,7 @@
   关系闸门（`may_message`、`shared_group_ids`）。旧 `content_index::*_tx`、
   `favorites::revoke_source_tx`、`inbox::notify_tx` 与
   `StorageConnection::sqlite_tx` 已删除。
-- 会话表存在物理名差异：SQLite 用平台 `sessions`，PG 用 M014 的
+- 会话表存在物理名差异：SQLite 用平台 `sessions`，PG 用 M011/M014 的
   `identity_session_token`；`repo::sessions` 的设备名/设备 id/sid 更新/旧会话清理
   均按 `dialect()` 选表（2c40147f）。
 - 身份治理的读路径已端口化：admin 鉴权、用户视图、设备读取/撤销、登录闸门、
@@ -52,15 +52,21 @@
   `SqlExec::insert_returning` 在 SQLite 用 `last_insert_rowid()`、在 PG 补
   `RETURNING seq`，调用方 SQL 不写方言。
 - 治理三表**已在 M011**（`identity_user_governance` / `identity_governance_audit` /
-  `identity_governance_label`），不需要 M015。治理写路径也已端口化：
+  `identity_governance_label`）；M015 不重复建治理表，只补 identity 域此前遗漏的
+  `identity_retry`（跨重发累计试错预算）与过期索引。治理写路径已端口化：
   `suspend` / `unsuspend` / `set_disabled` / `settle_expired` / `revoke_device`
   由 `*_tx` 在同一 `SqlExec` 事务内完成，平台 `Db::with_tx` 提交后才镜像与派发
   事件；群治理 `admin_govern_group` 的 admin 鉴权与 `govern_with` 共用同一事务。
+- 身份域其余可复用面也已端口化：同意回执、找回令牌、限速桶与重试预算、设备读取/
+  心跳/信任设置、会话列表/心跳/单会话登出/过期清扫、刷新链查询、step-up 只读校验、
+  扫码换码都提供 `*_with`（`5863e5c..c57df46`）。SQLite 旧入口保留为薄包装。
 - 平台 `domain` 层已经**没有** `self.db().lock()` 生产调用；`Db::lock` 只剩测试
   与过渡辅助在用。服务端偏好也收敛到 identity `preferences::*_with` 一份 SQL
   （`343542f`）。
-- 因此 `G00-04-PG` 保持 open：剩余工作是治理面端口化、SQLite→PG 全量导入、
-  PG restore drill 与生产版本/拓扑裁决；本文件不再把「51 个旧 repo 函数」当作
+- `login_challenge` 的下发/校验/重发仍是 SQLite-only，且平台生产路径未直接调用；
+  属于可选清理，不阻塞当前切换。
+- 因此 `G00-04-PG` 保持 open：剩余工作是 SQLite→PG 全量导入、生产 PG 版本/拓扑
+  裁决与生产环境 restore/drill 演练；治理面端口化与「51 个旧 repo 函数」不再是
   未完成项。
 
 ## S2 设计决策（开工前需拍板）
@@ -72,14 +78,14 @@
 ## 后续待办（未落地，属 G00-04 剩余工作）
 
 1. **PG repository**：platform 的 `StorageProfile` / `Db` PG profile、平台域
-   repo 端口化与 identity/relations 治理写路径均已落地；commerce/ledger 的 PG
-   repository 仍待做。
+   repo 端口化、identity 可复用面与 relations 治理写路径均已落地；commerce/ledger
+   的 PG repository 仍待做。
 2. **数据导入**：`composition/data-import/` 不存在；需做计数/摘要/余额守恒对账与
-   中断可重跑，先在空库/合成库验证。
-3. **restore drill**：现有 drill 仅 SQLite（`deploy/production/restore-drill.sh`）；
-   PG drill 未做。`deploy/runbooks/backup-restore.md:70-71`、
-   `deploy/runbooks/migration.md:37-38` 明确 defer：PG 割接后才改 `pg_dump/pg_restore`
-   并重新演练，在此之前不得声称支持 PG 备份/回滚。
+   中断可重跑，先在空库/合成库验证。M015 只补表，不代做数据回填。
+3. **restore drill**：CI `pg-migration` 作业已在 PostgreSQL 16 上跑过
+   `pg_dump → psql restore → 断言`；生产部署环境的 drill 仍需在割接窗口前实跑。
+   `deploy/runbooks/backup-restore.md:70-71`、`deploy/runbooks/migration.md:37-38`
+   仍明确 defer：生产 PG 备份/回滚口径随割接一起改并重新演练。
 4. **真实版本裁决**：CI 用 `postgres:16` 只是稳定版冒烟；生产 PG 大版本、连接池
    （sqlx / tokio-postgres）与部署拓扑由 G00-04 后续决定。
 
