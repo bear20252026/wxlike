@@ -20,9 +20,9 @@ const MEDIA_ID: &str = "M009";
 /// M010 由 G00-04 的 PG ledger/commerce DDL 占用，M011–M014 由 G00-04 的身份/
 /// 媒体/账本/内容兼容迁移占用，M015 由 identity 重试预算表、M016 由 identity
 /// 会话侧车列、M017 由 identity 会话侧车表、M018 由侧车清理触发器、
-/// M019/M020 由 G03 消息时间线与投递表占用（schema/registry/migrations.json），
-/// 故此处随登记表前移到 M021。
-const NEXT_ID: &str = "M021";
+/// M019/M020 由 G03 消息时间线与投递表、M021 由关系域 ACL 表占用
+/// （schema/registry/migrations.json），故此处随登记表前移到 M022。
+const NEXT_ID: &str = "M022";
 /// M009 应当建的 9 张表。
 const MEDIA_TABLES: &[&str] = &[
     "media_object",
