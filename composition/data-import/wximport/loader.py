@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from .model import TablePlan
@@ -18,11 +19,44 @@ def literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def copy_sql(plan: TablePlan) -> str:
+def copy_sql(plan: TablePlan, target: str | None = None) -> str:
+    columns = ", ".join(ident(column.name) for column in plan.columns)
+    destination = ident(target or plan.target)
+    return (
+        f"COPY {destination} ({columns}) FROM STDIN "
+        "WITH (FORMAT csv, HEADER false, NULL '\\N')"
+    )
+
+
+def view_stage(plan: TablePlan) -> str:
+    """Stable, <=63-byte staging name for a compatibility view.
+
+    PostgreSQL cannot COPY FROM a view even when it has INSTEAD OF triggers.
+    The loader stages rows in a plain table, then one INSERT SELECT fires the
+    view triggers. The name is derived from the target so a failed run can
+    clean up the same table next time.
+    """
+
+    digest = hashlib.sha1(plan.target.encode("utf-8")).hexdigest()[:12]
+    return f"_wximport_stage_{digest}"
+
+
+def stage_ddl(plan: TablePlan, relation: PgRelation, stage: str) -> str:
+    relation_columns = {column.name: column for column in relation.columns}
+    definitions = []
+    for column in plan.columns:
+        target = relation_columns.get(column.name)
+        if target is None:
+            raise ValueError(f"{plan.target}.{column.name} is missing from the catalog")
+        definitions.append(f"{ident(column.name)} {target.declared_type}")
+    return f"CREATE TABLE {ident(stage)} ({', '.join(definitions)})"
+
+
+def view_insert_sql(plan: TablePlan, stage: str) -> str:
     columns = ", ".join(ident(column.name) for column in plan.columns)
     return (
-        f"COPY {ident(plan.target)} ({columns}) FROM STDIN "
-        "WITH (FORMAT csv, HEADER false, NULL '\\N')"
+        f"INSERT INTO {ident(plan.target)} ({columns}) "
+        f"SELECT {columns} FROM {ident(stage)}"
     )
 
 
@@ -86,6 +120,15 @@ def load_table(psql: Psql, plan: TablePlan, csv_path: Path, relation: PgRelation
     if not csv_path.is_file():
         raise FileNotFoundError(f"export file is missing: {csv_path}")
     psql.run(clear_sql(plan))
+    if relation.mode == "view":
+        stage = view_stage(plan)
+        psql.run(f"DROP TABLE IF EXISTS {ident(stage)}")
+        psql.run(stage_ddl(plan, relation, stage))
+        psql.run(copy_sql(plan, stage), stdin_path=csv_path)
+        # DROP runs only after a successful INSERT; a failed trigger leaves the
+        # staging table for diagnosis and the next attempt drops it first.
+        psql.run(view_insert_sql(plan, stage) + ";" + f" DROP TABLE {ident(stage)}")
+        return
     psql.run(copy_sql(plan), stdin_path=csv_path)
     for statement in sequence_sql(plan, relation):
         psql.run(statement)

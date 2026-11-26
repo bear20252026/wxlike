@@ -26,7 +26,7 @@
 | 目标盘点 | `pg.py` | 通过 `psql` 读取 `pg_class`/`pg_attribute`/`pg_attrdef`/`pg_constraint` 的 JSON catalog；识别表/视图/物化视图/分区表；复制任何行之前拒绝缺目标、物化视图、源独有列、目标独有 NOT NULL 无默认列、类型族不兼容；再按目标外键把父表移到子表之前（兼容视图的基表会映射回源表） |
 | 形状普查 | `snapshot.py` / `census.py` | 从 `crates/platform/tests/schema_snapshot.txt` 生成空 SQLite 形状库（110 表/704 列，无外键、无数据）；逐表跑 `apply_catalog`，输出 verified/failures JSON；失败表不进入行导入 |
 | 导出 | `codec.py` / `exporter.py` | 流式 SELECT；NULL 写未加引号的 `\N`，空串写 `""`，bytea 写 `"\x..."`，所有非 NULL 字段加引号；逐行规范化哈希后排序再 SHA-256，得到顺序无关的行多重集摘要 |
-| 装载 | `loader.py` | 先按依赖逆序清空未验证目标（子表先于父表，表和视图统一 `DELETE`），再 `COPY ... FROM STDIN WITH (FORMAT csv, HEADER false, NULL '\N')`；装载后对 identity/serial 列 `setval(max, true)`，空表 `setval(1, false)` |
+| 装载 | `loader.py` | 先按依赖逆序清空未验证目标（子表先于父表，表和视图统一 `DELETE`）；普通表 `COPY ... FROM STDIN`，兼容视图先 `COPY` 到临时 staging 表，再 `INSERT INTO view SELECT ...` 让 INSTEAD OF 触发器生效（PostgreSQL 不支持 COPY FROM 视图）；装载后对 identity/serial 列 `setval(max, true)`，空表 `setval(1, false)` |
 | 校验 | `verifier.py` / `pg.py` | `COPY (SELECT ...) TO STDOUT` 流式回读；`csv.reader` 直接吃 raw pipe 并保留字段内 CR/LF；按目标类型解码 `\N`、空串、`\x`、`t/f`、数值；重建同一个 `RowDigest`，比对行数与摘要 |
 | 状态/续跑 | `state.py` / `runner.py` | M023 `import_run` / `import_table` 记录源 SHA、data_version、逐表行数/摘要/状态；已验证表跳过；失败表置 `failed`，`--resume` 只重跑失败/未完成表；run 收口为 `verified`/`failed` |
 | 停写窗口 | `window.py` | 记录源 SHA、SQLite data_version、逐表耗时、总耗时；前后 SHA 与 data_version 都不变才算 `quiescent`；产出 `window.json`；可设 `--max-window-seconds` 上限 |
@@ -91,6 +91,8 @@ M024（`schema/proposals/G00/0002_import_compat_backfill.sql`）是 110 表普�
   `M023 import control: OK`；
 - 合成 SQLite 四表（父子外键、identity、空表）导入后 run 与四表全
   `verified`，NULL/空串分离，identity 下一个 id=3；
+- 兼容视图 `ci_import_view` 通过 staging 表 + INSERT SELECT 触发 INSTEAD OF
+  INSERT/DELETE，视图行与基表行同时被校验；
 - 删除 child 行并把该表置 `failed`，`--resume` 恢复 child，父表不重跑；
 - 额外的 bytea/CRLF/`numeric` 值表验证：`bytea` 保持 `00ff`，字段内
   `\r\n` 不被改写，`1.23`/`0.10` 摘要一致；
@@ -104,7 +106,7 @@ python3 -m unittest discover -s composition/data-import/tests \
   -t composition/data-import
 ```
 
-当前 58 个测试通过。CI 的 `pg-migration` 作业新增
+当前 59 个测试通过。CI 的 `pg-migration` 作业新增
 `ci/jobs/build/pg_data_import_smoke.sh`，在 M023 断言之后跑：
 
 - 合成五表 `ci_import_parent / ci_import_child / ci_import_serial /
@@ -118,7 +120,7 @@ python3 -m unittest discover -s composition/data-import/tests \
 
 ## 5. 未完成与边界
 
-- **真实生产快照的行导入未执行**：形状普查已证明 110 张表的列/类型/目标
+- **真实生产快照的行导入未执行**：形状普查与兼容视图 staging 已证明列/类型/目标
   对象在空库上兼容，但真实快照的行数、NULL 分布、目标触发器反馈、钱包
   对账仍必须在割接演练库上逐表跑；旧 `pg-table-map.json` 仍标记 stale。
 - **M013 范围不变**：`wallets` / `ledger` 仍由 M013 导入器处理，新工具只负责

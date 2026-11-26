@@ -11,6 +11,7 @@ set -euo pipefail
 SQLITE_FILE="$(mktemp /tmp/wxlike-data-import-XXXXXX.db)"
 WORK_DIR="$(mktemp -d /tmp/wxlike-data-import-work-XXXXXX)"
 trap 'rm -f "$SQLITE_FILE"; rm -rf "$WORK_DIR"' EXIT
+printf '%s\n' '{"targets": {"ci_import_view_source": "ci_import_view"}}' > "$WORK_DIR/mapping.json"
 
 python3 - "$SQLITE_FILE" <<'PY'
 import sqlite3
@@ -43,6 +44,11 @@ conn.executescript(
         note TEXT,
         amount NUMERIC
     );
+    CREATE TABLE ci_import_view_source (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        extra TEXT NOT NULL DEFAULT ''
+    );
     """
 )
 conn.execute("INSERT INTO ci_import_parent VALUES ('p1', 'one')")
@@ -56,13 +62,15 @@ conn.execute(
     ("v1", b"\x00\xff", "line1\r\nline2", 1.23),
 )
 conn.execute("INSERT INTO ci_import_values VALUES ('v2', NULL, '', 0.10)")
+conn.execute("INSERT INTO ci_import_view_source VALUES ('e1', 'view label', 'view extra')")
 conn.commit()
 conn.close()
 PY
 
 psql -X "$DATABASE_URL" -v ON_ERROR_STOP=1 -q <<'SQL'
+DROP VIEW IF EXISTS ci_import_view CASCADE;
 DROP TABLE IF EXISTS ci_import_child, ci_import_parent, ci_import_serial,
-    ci_import_empty, ci_import_values CASCADE;
+    ci_import_empty, ci_import_values, ci_import_view_base CASCADE;
 DELETE FROM import_run WHERE run_id = 'ci-import';
 CREATE TABLE ci_import_parent (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE ci_import_child (
@@ -82,6 +90,31 @@ CREATE TABLE ci_import_values (
     note TEXT,
     amount NUMERIC(20, 2)
 );
+CREATE TABLE ci_import_view_base (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    extra TEXT NOT NULL DEFAULT ''
+);
+CREATE VIEW ci_import_view AS
+    SELECT id, label, extra FROM ci_import_view_base;
+CREATE OR REPLACE FUNCTION ci_import_view_insert_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO ci_import_view_base (id, label, extra)
+    VALUES (NEW.id, NEW.label, NEW.extra);
+    RETURN NEW;
+END $$;
+CREATE OR REPLACE FUNCTION ci_import_view_delete_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM ci_import_view_base WHERE id = OLD.id;
+    RETURN OLD;
+END $$;
+CREATE TRIGGER ci_import_view_insert
+    INSTEAD OF INSERT ON ci_import_view
+    FOR EACH ROW EXECUTE FUNCTION ci_import_view_insert_fn();
+CREATE TRIGGER ci_import_view_delete
+    INSTEAD OF DELETE ON ci_import_view
+    FOR EACH ROW EXECUTE FUNCTION ci_import_view_delete_fn();
+INSERT INTO ci_import_view_base VALUES ('e0', 'old view', '');
 INSERT INTO ci_import_parent VALUES ('p0', 'old');
 INSERT INTO ci_import_child VALUES ('c0', 'p0', NULL, 0);
 INSERT INTO ci_import_serial(note) VALUES ('old');
@@ -92,6 +125,7 @@ python3 composition/data-import/import_all.py \
     --sqlite "$SQLITE_FILE" \
     --dsn "$DATABASE_URL" \
     --work-dir "$WORK_DIR" \
+    --mapping "$WORK_DIR/mapping.json" \
     --run-id ci-import \
     --max-window-seconds 120
 
@@ -112,6 +146,15 @@ BEGIN
     END IF;
     IF (SELECT count(*) FROM ci_import_values) <> 2 THEN
         RAISE EXCEPTION 'data-import: value table';
+    END IF;
+    IF (SELECT count(*) FROM ci_import_view) <> 1 THEN
+        RAISE EXCEPTION 'data-import: view rows';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM ci_import_view
+        WHERE id = 'e1' AND label = 'view label' AND extra = 'view extra'
+    ) THEN
+        RAISE EXCEPTION 'data-import: view trigger did not fire';
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM ci_import_values
@@ -162,6 +205,7 @@ python3 composition/data-import/import_all.py \
     --sqlite "$SQLITE_FILE" \
     --dsn "$DATABASE_URL" \
     --work-dir "$WORK_DIR" \
+    --mapping "$WORK_DIR/mapping.json" \
     --run-id ci-import \
     --resume \
     --max-window-seconds 120

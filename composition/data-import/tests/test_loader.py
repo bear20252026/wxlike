@@ -4,7 +4,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wximport.loader import clear_sql, clear_targets, copy_sql, load_table, sequence_sql
+from wximport.loader import (
+    clear_sql,
+    clear_targets,
+    copy_sql,
+    load_table,
+    sequence_sql,
+    stage_ddl,
+    view_insert_sql,
+    view_stage,
+)
 from wximport.model import Column, TablePlan
 from wximport.pg import PgColumn, PgRelation
 
@@ -23,10 +32,10 @@ def plan(mode: str = "table") -> TablePlan:
     )
 
 
-def relation() -> PgRelation:
+def relation(relkind: str = "r") -> PgRelation:
     return PgRelation(
         name="items",
-        relkind="r",
+        relkind=relkind,
         columns=(
             PgColumn("id", "bigint", "int", True, None, "d"),
             PgColumn("seq", "bigint", "int", True, "nextval('items_seq'::regclass)", ""),
@@ -91,6 +100,27 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(psql.calls[1][1], csv_path)
         self.assertTrue(psql.calls[2][0].startswith("SELECT setval("))
         self.assertTrue(psql.calls[3][0].startswith("SELECT setval("))
+
+    def test_view_is_staged_then_inserted_once(self) -> None:
+        psql = FakePsql()
+        with tempfile.TemporaryDirectory() as temp:
+            csv_path = Path(temp) / "items.csv"
+            csv_path.write_text('"1","1",""\\n', encoding="utf-8")
+            load_table(psql, plan("view"), csv_path, relation("v"))
+        stage = view_stage(plan("view"))
+        self.assertEqual(len(psql.calls), 5)
+        self.assertTrue(psql.calls[0][0].startswith("DELETE FROM"))
+        self.assertEqual(psql.calls[1][0], f'DROP TABLE IF EXISTS "{stage}"')
+        self.assertEqual(
+            psql.calls[2][0],
+            stage_ddl(plan("view"), relation("v"), stage),
+        )
+        self.assertEqual(psql.calls[3][0], copy_sql(plan("view"), stage))
+        self.assertEqual(psql.calls[3][1], csv_path)
+        self.assertEqual(
+            psql.calls[4][0],
+            view_insert_sql(plan("view"), stage) + '; DROP TABLE "' + stage + '"',
+        )
 
     def test_missing_csv_is_rejected_before_any_write(self) -> None:
         psql = FakePsql()
