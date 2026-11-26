@@ -25,15 +25,11 @@ from .sqlite_source import (
 DEFAULT_SKIP = {
     "wallets": "M013 derives ledger_accounts from immutable ledger entries",
     "ledger": "M013 replays ledger entries into journals, never copies rows",
-}
-
-# SQLite's `identity_session_token` is the sid sidecar (auth_level/features/
-# serial/issued_at/expires_at); PostgreSQL's table of that name is the access
-# token row (token PK) and the sidecar lives in `identity_session_meta`.
-# Keeping the same-name default would fail catalog validation and, worse, could
-# copy sidecar rows into the token table if the shapes ever converged.
-DEFAULT_TARGETS = {
-    "identity_session_token": "identity_session_meta",
+    # M017 moved the sid sidecar to `identity_session_meta` and copied the old
+    # rows into it. The legacy SQLite table is kept for compatibility, but
+    # copying both would write the same PostgreSQL table twice and make the
+    # second digest meaningless.
+    "identity_session_token": "M017 migrated the sid sidecar into identity_session_meta",
 }
 
 
@@ -114,12 +110,19 @@ def build_plan(
         skip = dict(DEFAULT_SKIP)
         skip.update(mapping["skip"])
         targets = mapping["targets"]
+        seen_targets: dict[str, str] = {}
         for name in order:
             if name in skip:
                 plan.skipped.append((name, skip[name]))
                 continue
             table = tables[name]
-            target = targets.get(name, DEFAULT_TARGETS.get(name, name))
+            target = targets.get(name, name)
+            if target in seen_targets:
+                raise ValueError(
+                    f"tables {seen_targets[target]!r} and {name!r} both target {target!r}; "
+                    "skip or rename one before importing"
+                )
+            seen_targets[target] = name
             plan.tables.append(
                 TablePlan(
                     source=name,

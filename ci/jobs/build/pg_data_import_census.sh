@@ -20,8 +20,8 @@ import sys
 
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
 assert payload["ok"], payload["failures"]
-assert payload["tables"] == 108, payload["tables"]
-assert payload["verified"] == 108, payload["verified"]
+assert payload["tables"] == 107, payload["tables"]
+assert payload["verified"] == 107, payload["verified"]
 assert payload["skipped"], "wallets/ledger must stay in M013"
 assert len(payload["failures"]) == 0
 print("G00-04 full-schema census: OK")

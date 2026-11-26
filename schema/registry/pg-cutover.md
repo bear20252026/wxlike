@@ -97,7 +97,7 @@
   `created_at`，新增 `friend_tag`、`group_governance_audit`、`relations_audit`。
 - 全量形状普查：`composition/data-import/census.py` 可从
   `crates/platform/tests/schema_snapshot.txt` 生成空形状库，逐表校验目标
-  catalog；CI `pg_data_import_census.sh` 断言 108 个计划表全部通过。
+  catalog；CI `pg_data_import_census.sh` 断言 107 个计划表全部通过。
 - 边界：本地/CI 只证 PostgreSQL 16 空库形状与合成数据；真实 110 表的行导入、
   生产快照、生产 restore drill 仍未执行。旧 `pg-table-map.json` 已 stale。
 - 详细口径与回滚见 `docs/g00-04-s4-data-import.md`。

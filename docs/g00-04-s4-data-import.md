@@ -56,8 +56,9 @@ PYTHONPATH=composition/data-import python3 composition/data-import/census.py \
 
 `--snapshot` 会先重建一个空形状库；`--sqlite` 可改为对真实快照只读盘点。
 失败表按源表名列出，任何失败都会让进程退出 1。CI 在 M024 断言后跑
-`ci/jobs/build/pg_data_import_census.sh`，把 108 个计划表（扣掉 M013 的
-`wallets` / `ledger`）全部过一遍 target catalog。
+`ci/jobs/build/pg_data_import_census.sh`，把 107 个计划表（扣掉 M013 的
+`wallets` / `ledger` 与 M017 已回填的旧侧车 `identity_session_token`）
+全部过一遍 target catalog。
 
 ## 3. M023 控制表
 
@@ -83,8 +84,9 @@ M024（`schema/proposals/G00/0002_import_compat_backfill.sql`）是 110 表普�
 
 本地 PostgreSQL 16.15 容器（`artex-pg`）实跑：
 
-- 110 表形状普查：108 个计划表全部通过，0 失败；`wallets`/`ledger` 按
-  M013 跳过；唯一 warning 是 `sessions.rowid` 由兼容视图默认值填充；
+- 110 表形状普查：107 个计划表全部通过，0 失败；`wallets`/`ledger` 按
+  M013 跳过，旧侧车 `identity_session_token` 按 M017 跳过（其行已回填到
+  `identity_session_meta`）；唯一 warning 是 `sessions.rowid` 由兼容视图默认值填充；
 - M023 DDL 连跑两次幂等；`pg_migration_asserts_import.sql` 输出
   `M023 import control: OK`；
 - 合成 SQLite 四表（父子外键、identity、空表）导入后 run 与四表全

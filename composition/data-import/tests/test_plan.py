@@ -49,7 +49,9 @@ class PlanTest(unittest.TestCase):
         names = [table.source for table in plan.tables]
         self.assertLess(names.index("parent"), names.index("child"))
         self.assertIn("audit", names)
-        self.assertEqual(plan.skipped, [])
+        self.assertEqual(
+            [name for name, _ in plan.skipped], ["identity_session_token"]
+        )
         self.assertEqual(plan.tables[0].mode, "table")
 
     def test_mapping_can_skip_and_rename(self) -> None:
@@ -59,29 +61,29 @@ class PlanTest(unittest.TestCase):
             encoding="utf-8",
         )
         plan = build_plan(self.path, mapping)
-        self.assertEqual([(name, reason) for name, reason in plan.skipped], [("audit", "derived elsewhere")])
+        skipped = dict(plan.skipped)
+        self.assertEqual(skipped.get("audit"), "derived elsewhere")
+        self.assertIn("identity_session_token", skipped)
         child = next(table for table in plan.tables if table.source == "child")
         self.assertEqual(child.target, "child_v2")
 
-    def test_identity_session_token_targets_the_sidecar_table(self) -> None:
+    def test_identity_session_token_is_skipped_after_m017(self) -> None:
         plan = build_plan(self.path)
-        sidecar = next(
-            table for table in plan.tables if table.source == "identity_session_token"
+        skipped = dict(plan.skipped)
+        self.assertIn("identity_session_token", skipped)
+        self.assertIn("M017", skipped["identity_session_token"])
+        self.assertNotIn(
+            "identity_session_token", [table.source for table in plan.tables]
         )
-        self.assertEqual(sidecar.target, "identity_session_meta")
-        self.assertEqual(sidecar.primary_key, ("sid",))
 
-    def test_explicit_mapping_still_overrides_the_default_alias(self) -> None:
-        mapping = Path(self.temp.name) / "alias.json"
+    def test_two_source_tables_cannot_target_one_table(self) -> None:
+        mapping = Path(self.temp.name) / "duplicate.json"
         mapping.write_text(
-            json.dumps({"targets": {"identity_session_token": "custom_meta"}}),
+            json.dumps({"targets": {"audit": "parent"}}),
             encoding="utf-8",
         )
-        plan = build_plan(self.path, mapping)
-        sidecar = next(
-            table for table in plan.tables if table.source == "identity_session_token"
-        )
-        self.assertEqual(sidecar.target, "custom_meta")
+        with self.assertRaisesRegex(ValueError, "both target"):
+            build_plan(self.path, mapping)
 
     def test_payload_contains_both_shapes(self) -> None:
         payload = plan_payload(build_plan(self.path))
