@@ -35,7 +35,21 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'M017: 侧车表不可写';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM identity_session_meta
+        WHERE sid = 'm017_backfill_sid'
+          AND user_id = 'm017_backfill'
+          AND auth_level = 'root'
+          AND features = 'V'
+          AND serial = 7
+          AND issued_at = 100
+          AND expires_at = 200
+    ) THEN
+        RAISE EXCEPTION 'M017: 旧访问表侧车行没有回填到 identity_session_meta';
+    END IF;
 END $$;
 
 DELETE FROM identity_session_meta WHERE sid = 'm017_assert';
 DELETE FROM identity_user WHERE user_id = 'm017_assert';
+DELETE FROM identity_session_token WHERE token = 'm017_backfill_token';
+DELETE FROM identity_user WHERE user_id = 'm017_backfill';
