@@ -267,7 +267,8 @@ async fn download(
     headers: HeaderMap,
 ) -> std::result::Result<Response, wxlike_api::ApiError> {
     ids::validate_object_id(&id).map_err(map_err)?;
-    let object = resolve_download(&state, &id, &query)?;
+    let caller = state.verifier.verify(&headers);
+    let object = resolve_download(&state, &id, &query, caller.as_deref())?;
     let range = parse_range(
         headers.get(RANGE).and_then(|v| v.to_str().ok()),
         object.size,
@@ -281,9 +282,10 @@ fn resolve_download(
     state: &AppState,
     object_id: &str,
     query: &DownloadQuery,
+    caller: Option<&str>,
 ) -> std::result::Result<crate::model::ObjectRecord, wxlike_api::ApiError> {
     if let Some(token) = query.share.as_deref().filter(|value| !value.is_empty()) {
-        return state.service.resolve_share(token).map_err(map_err);
+        return state.service.resolve_share(token, caller).map_err(map_err);
     }
     let (Some(exp), Some(epoch), Some(sig)) = (query.exp, query.epoch, query.sig.as_deref()) else {
         return Err(MediaError::Unauthorized.into_api());

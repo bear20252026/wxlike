@@ -169,6 +169,54 @@ async fn http_upload_access_download_and_revoke() {
 }
 
 #[tokio::test]
+async fn http_directed_share_requires_the_audience() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service(dir.path());
+    let start = service
+        .upload_start(
+            "u1",
+            UploadStart {
+                purpose: Purpose::File,
+                name: "directed.txt".into(),
+                size: 8,
+                mime: "text/plain".into(),
+                digest: ids::sha256_hex(b"directed"),
+            },
+        )
+        .unwrap();
+    service
+        .upload_chunk("u1", &start.upload_id, 0, b"directed", None)
+        .unwrap();
+    let done = service
+        .upload_complete("u1", &start.upload_id, Some(&ids::sha256_hex(b"directed")))
+        .unwrap();
+    let grant = service
+        .create_share(
+            "u1",
+            &done.file_id,
+            60_000,
+            Some(Audience::User { id: "u2".into() }),
+        )
+        .unwrap();
+    let app = app(service);
+    let url = format!("/api/v1/objects/{}?share={}", done.object_id, grant.token);
+
+    let (status, _, body) = send(&app, authed("GET", &url, "tok-b", None)).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body, b"directed");
+
+    // 非受众即使是有效登录用户也是 403，而不是拿到 bytes。
+    let (status, _, body) = send(&app, authed("GET", &url, "tok-a", None)).await;
+    assert_eq!(status, StatusCode::OK, "owner preview: {body:?}");
+    let (status, _, _) = send(
+        &app,
+        Request::builder().uri(&url).body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn http_denies_foreign_and_forged_objects() {
     let dir = tempfile::tempdir().unwrap();
     let service = service(dir.path());

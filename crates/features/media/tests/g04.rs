@@ -443,12 +443,63 @@ fn shares_are_revocable_bearer_references() {
         .unwrap();
     assert!(grant.url.contains("share="));
     assert_eq!(
-        service.resolve_share(&grant.token).unwrap().object_id,
+        service.resolve_share(&grant.token, None).unwrap().object_id,
         done.object_id
     );
     service.revoke_share("u1", &grant.share_id).unwrap();
-    assert!(service.resolve_share(&grant.token).is_err());
-    assert!(service.resolve_share("bogus-token").is_err());
+    assert!(service.resolve_share(&grant.token, None).is_err());
+    assert!(service.resolve_share("bogus-token", None).is_err());
+}
+
+#[test]
+fn directed_shares_check_the_audience_on_every_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_at(dir.path());
+    let done = upload(
+        &service,
+        "u1",
+        "directed.txt",
+        "text/plain",
+        Purpose::File,
+        b"directed",
+    );
+
+    let user_grant = service
+        .create_share(
+            "u1",
+            &done.file_id,
+            60_000,
+            Some(Audience::User { id: "u2".into() }),
+        )
+        .unwrap();
+    assert!(service.resolve_share(&user_grant.token, None).is_err());
+    assert!(service
+        .resolve_share(&user_grant.token, Some("u3"))
+        .is_err());
+    assert!(service.resolve_share(&user_grant.token, Some("u2")).is_ok());
+    // Owner preview still works.
+    assert!(service.resolve_share(&user_grant.token, Some("u1")).is_ok());
+
+    let group_grant = service
+        .create_share(
+            "u1",
+            &done.file_id,
+            60_000,
+            Some(Audience::Group { id: "g1".into() }),
+        )
+        .unwrap();
+    assert!(service
+        .resolve_share(&group_grant.token, Some("u2"))
+        .is_ok());
+    assert!(service
+        .resolve_share(&group_grant.token, Some("u3"))
+        .is_err());
+    assert!(service.resolve_share(&group_grant.token, None).is_err());
+
+    service.revoke_share("u1", &user_grant.share_id).unwrap();
+    assert!(service
+        .resolve_share(&user_grant.token, Some("u2"))
+        .is_err());
 }
 
 #[test]

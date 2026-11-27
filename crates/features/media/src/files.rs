@@ -491,22 +491,45 @@ impl MediaService {
     }
 
     /// Resolve a bearer share token. Expired and revoked tokens are both
-    /// `Gone`; an unknown token is `NotFound`.
-    pub fn resolve_share(&self, token: &str) -> Result<crate::model::ObjectRecord> {
+    /// `Gone`; an unknown token is `NotFound`. A non-public share also checks
+    /// the caller against the stored audience on every resolution.
+    pub fn resolve_share(
+        &self,
+        token: &str,
+        caller: Option<&str>,
+    ) -> Result<crate::model::ObjectRecord> {
         let token_hash = ids::sha256_hex(token.as_bytes());
-        let row: Option<(String, i64, Option<i64>)> = {
+        let row: Option<(String, String, String, i64, Option<i64>)> = {
             let c = self.db.lock();
             c.query_row(
-                "SELECT object_id, expires_at, revoked_at FROM media_share
+                "SELECT object_id, owner, audience, expires_at, revoked_at FROM media_share
                  WHERE token_hash = ?1",
                 params![token_hash],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?
         };
-        let (object_id, expires_at, revoked_at) = row.ok_or(MediaError::NotFound)?;
+        let (object_id, owner, audience, expires_at, revoked_at) =
+            row.ok_or(MediaError::NotFound)?;
         if revoked_at.is_some() || expires_at < now_ms() {
             return Err(MediaError::Gone("share is no longer valid".into()));
+        }
+        let audience: Audience = serde_json::from_str(&audience)
+            .map_err(|_| MediaError::Tampered("share audience is corrupt".into()))?;
+        let allowed = match &audience {
+            Audience::Public => true,
+            Audience::User { id } => caller == Some(id.as_str()),
+            Audience::Conversation { id } => {
+                caller.is_some_and(|user| self.audience.may_read_conversation(user, id))
+            }
+            Audience::Group { id } => {
+                caller.is_some_and(|user| self.audience.may_read_group(user, id))
+            }
+        };
+        // Owner can always open their own share, even if it was directed to
+        // someone else (e.g. testing the link before sending it).
+        if !allowed && caller != Some(owner.as_str()) {
+            return Err(MediaError::Forbidden);
         }
         self.object(&object_id)
     }
