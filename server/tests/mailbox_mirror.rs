@@ -590,3 +590,50 @@ async fn http_forward_copies_into_the_target_conversation() {
     let u = wait_unread(&base, &ac, &tc, 1);
     assert_eq!(u["unread"], 1, "carol 只该收到一条：{u}");
 }
+
+/// C-01：源消息必须属于 body 声明的 from_conv。
+/// 知道另一会话的 msg_id 也不能通过伪造 from_conv 把正文转发出来。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http_forward_binds_msg_id_to_from_conv() {
+    let stack = start_stack(opts("forward-bind")).await.expect("stack");
+    let base = format!("http://{}", stack.http_addr);
+    let (alice, ta) = register(&base, "alice");
+    let (bob, tb) = register(&base, "bob");
+    let (carol, tc) = register(&base, "carol");
+    befriend(&base, &ta, &bob, &tb);
+    befriend(&base, &ta, &carol, &tc);
+    let ab = format!("d-{alice}~{bob}");
+    let ac = format!("d-{alice}~{carol}");
+
+    let sent: Value = ureq::post(&format!("{base}/api/conv/{ab}/send"))
+        .header("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({"text": "private to ab", "idempotency_key": "src"}))
+        .unwrap()
+        .body_mut()
+        .read_json()
+        .unwrap();
+    let msg_id = sent["msg_id"].as_str().unwrap();
+
+    // alice 对 ac 也有权限，但 msg_id 实际属于 ab；声明 from_conv=ac 必须失败。
+    let res = ureq::post(&format!("{base}/api/conv/{ac}/forward"))
+        .header("Authorization", &format!("Bearer {ta}"))
+        .send_json(serde_json::json!({
+            "from_conv": ac, "to_conv": ac, "msg_id": msg_id, "idempotency_key": "fake"
+        }));
+    let status = match res {
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(e) => panic!("transport: {e}"),
+    };
+    assert_eq!(status, 404, "msg_id 必须绑定真实 conv_id");
+
+    // 目标会话不应出现伪造转发的正文。
+    let page: Value = ureq::get(&format!("{base}/api/history/{ac}?limit=10"))
+        .header("Authorization", &format!("Bearer {tc}"))
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_json()
+        .unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 0, "{page}");
+}

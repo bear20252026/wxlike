@@ -1274,6 +1274,7 @@ async fn forward_message(
     check_forward_access(&deps, &authed.user_id, &body.from_conv, &to_conv)?;
     let env = build_forward(
         &deps,
+        &body.from_conv,
         &to_conv,
         &authed.user_id,
         &body.idempotency_key,
@@ -1326,6 +1327,7 @@ fn check_forward_access(
 /// 取源消息（必须未撤回）并组装转发信封；`msg_id` 的派生与 send 共用一份。
 fn build_forward(
     deps: &HistoryDeps,
+    from_conv: &str,
     to_conv: &str,
     user_id: &str,
     idempotency_key: &str,
@@ -1340,6 +1342,12 @@ fn build_forward(
     let Some(row) = found.remove(&id) else {
         return Err((StatusCode::NOT_FOUND, "no such message".into()));
     };
+    // The message body must belong to the conversation the caller declared.
+    // Otherwise a caller who can read one conversation can forward a msg_id
+    // from another private conversation by relabelling `from_conv`.
+    if row.envelope.conv_id != from_conv {
+        return Err((StatusCode::NOT_FOUND, "no such message".into()));
+    }
     if row.withdrawn {
         return Err((StatusCode::CONFLICT, "源消息已撤回".into()));
     }
