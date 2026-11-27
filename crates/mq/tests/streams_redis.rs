@@ -181,22 +181,45 @@ async fn streams_trim_never_touches_pending() {
     }
 }
 
-/// issue #20：MAXLEN 天花板——即使精确裁剪一次都没跑，stream 也不该无限涨。
+/// H-29：消费者崩溃留下 pending 后，即使 retention 阈值很小、后续还有
+/// backlog，也不能把那条 pending 一起裁掉。旧实现的 `XADD MAXLEN ~` 会在
+/// 这里删掉最老的 pending，导致 XAUTOCLAIM 永远捞不回来。
 #[tokio::test]
 #[ignore = "requires REDIS_URL"]
-async fn streams_backstop_keeps_the_stream_bounded() {
+async fn streams_retention_never_trims_pending() {
     let url = require_redis!();
-    let queue = unique_queue("backstop");
-    let mq = wxlike_mq::streams::RedisStreamsMq::connect(&url, Some("backstop-consumer"))
+    let queue = unique_queue("pending-retention");
+    let mq = wxlike_mq::streams::RedisStreamsMq::connect(&url, Some("pending-retention-consumer"))
         .unwrap()
         .with_timeouts(2_000, 1_000)
-        .with_retention(50, 1_000_000); // 精确裁剪几乎不会跑
+        .with_retention(2, 1);
 
-    for i in 0..300u16 {
-        mq.publish(&queue, format!("payload-{i}").into_bytes())
+    // 先造出 backlog，再让一个消费者读走最老的一条但不 ack。
+    for i in 0..6u16 {
+        mq.publish(&queue, format!("before-{i}").into_bytes())
             .await
             .unwrap();
     }
-    let len = mq.stream_len(&queue).await.unwrap();
-    assert!(len <= 120, "MAXLEN ~ 50 是近似裁剪，留一倍余量：实际 {len}");
+    let (pending_id, _) = read_within(&mq, &queue).await;
+    assert_eq!(mq.pending_count(&queue).await.unwrap(), 1);
+
+    // 后续 backlog 把 max_len 远远甩开；裁剪只能动 pending 之前的已确认前缀。
+    for i in 0..20u16 {
+        mq.publish(&queue, format!("after-{i}").into_bytes())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        mq.pending_count(&queue).await.unwrap(),
+        1,
+        "retention 不能删掉未 ack 的 pending"
+    );
+    let reclaimed = mq.claim_stale(&queue, 0).await.unwrap();
+    assert!(
+        reclaimed.iter().any(|(id, _)| id == &pending_id),
+        "pending {pending_id} 必须还能被 XAUTOCLAIM 领走"
+    );
+    for (id, _) in &reclaimed {
+        mq.ack(&queue, id).await.unwrap();
+    }
 }

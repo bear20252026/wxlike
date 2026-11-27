@@ -16,12 +16,13 @@ use crate::{ClaimedEntries, MessageQueue, ReliableQueue};
 pub const GROUP: &str = "wxlike";
 /// Contract floor: reclaim entries idle for at least this long.
 pub const DEFAULT_CLAIM_IDLE_MS: u64 = 60_000;
-/// Backstop retention: the stream never keeps more than this many entries
-/// (issue #20). `XADD ... MAXLEN ~` is approximate, so treat it as a ceiling,
-/// not a precise cap - the pending-aware sweep below does the precise work.
+/// Retention target: once the stream grows past this many entries, a
+/// pending-aware sweep may trim already-acked prefixes. It is deliberately
+/// **not** a hard `XADD MAXLEN` cap: that command can delete entries that are
+/// still pending and would silently lose messages (H-29).
 pub const DEFAULT_MAX_LEN: u64 = 100_000;
-/// Run the pending-aware trim sweep after this many acks (issue #20).
-/// One sweep costs two extra round trips, so it is amortised.
+/// Run the pending-aware trim sweep after this many acks or publishes.
+/// One sweep costs a few extra round trips, so it is amortised.
 pub const DEFAULT_SWEEP_EVERY: u64 = 256;
 
 /// The id the stream should be trimmed **at** (exclusive: everything older goes).
@@ -59,6 +60,7 @@ pub struct RedisStreamsMq {
     max_len: u64,
     sweep_every: u64,
     acks: std::sync::atomic::AtomicU64,
+    publishes: std::sync::atomic::AtomicU64,
 }
 
 impl RedisStreamsMq {
@@ -79,6 +81,7 @@ impl RedisStreamsMq {
             max_len: DEFAULT_MAX_LEN,
             sweep_every: DEFAULT_SWEEP_EVERY,
             acks: std::sync::atomic::AtomicU64::new(0),
+            publishes: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -88,8 +91,9 @@ impl RedisStreamsMq {
         self
     }
 
-    /// Retention: at most `max_len` entries, and a precise trim sweep every
-    /// `sweep_every` acks.
+    /// Retention: trigger a pending-aware trim sweep every `sweep_every`
+    /// acks/publishes once the stream exceeds `max_len`; pending entries are
+    /// never trimmed.
     pub fn with_retention(mut self, max_len: u64, sweep_every: u64) -> Self {
         self.max_len = max_len.max(1);
         self.sweep_every = sweep_every.max(1);
@@ -142,19 +146,24 @@ impl MessageQueue for RedisStreamsMq {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> anyhow::Result<()> {
         let key = stream_key(queue);
         let mut c = self.conn().await?;
-        // Backstop retention: even if the precise sweep never runs, the
-        // stream cannot grow without bound. `~` is approximate trimming (no
-        // full scan for an exact length), so this is a ceiling, not a value.
+        // H-29: no `MAXLEN` here. Redis trims by entry age, not ack state, so
+        // a hard cap can delete a crashed consumer's still-pending entry before
+        // XAUTOCLAIM sees it. The pending-aware sweep below is the only trim
+        // path and never cuts into pending.
         let _: String = redis::cmd("XADD")
             .arg(&key)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(self.max_len)
             .arg("*")
             .arg("p")
             .arg(payload.as_slice())
             .query_async(&mut c)
             .await?;
+        drop(c);
+        let n = self.publishes.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(self.sweep_every) {
+            if let Err(err) = self.sweep(queue).await {
+                eprintln!("[mq] stream trim sweep failed for {queue}: {err:#}");
+            }
+        }
         Ok(())
     }
 
@@ -205,8 +214,8 @@ impl ReliableQueue for RedisStreamsMq {
             .await?;
         drop(c);
         // Every `sweep_every` acks, do the precise trim (issue #20).
-        // Failing is fine: the MAXLEN ceiling still holds and the next sweep
-        // catches up.
+        // Failing is fine: no trim is safer than an unsafe trim, and the next
+        // sweep catches up.
         let n = self.acks.fetch_add(1, Ordering::Relaxed) + 1;
         if n.is_multiple_of(self.sweep_every) {
             if let Err(err) = self.sweep(queue).await {
@@ -291,6 +300,13 @@ impl RedisStreamsMq {
         };
         let boundary = trim_boundary(oldest.as_deref(), &last_delivered);
         if boundary == "0" {
+            return Ok(());
+        }
+        // `max_len` is a sweep threshold, not a hard cap: below it there is
+        // nothing worth the extra round trip, above it trim only the safe
+        // prefix (never pending, never undelivered).
+        let len: u64 = redis::cmd("XLEN").arg(&key).query_async(&mut c).await?;
+        if len <= self.max_len {
             return Ok(());
         }
         let _: i64 = redis::cmd("XTRIM")
