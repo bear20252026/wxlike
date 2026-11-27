@@ -232,9 +232,8 @@ impl PostgresPool {
 
     /// 启动期 schema 守卫：`public` 里必须存在快照中的每个表/视图。
     ///
-    /// 只查对象存在性，不校验列/触发器/索引；列形状由 `pg-migration` 断言与
-    /// `pg_schema_parity` 守卫。这里挡的是“连到空库/半迁移库仍然启动”的
-    /// 部署事故。
+    /// 表存在还不够：旧 schema 缺一列，服务能启动、第一条业务查询才炸。
+    /// [`Self::require_columns`] 用同一份快照校验 `table.column`。
     pub fn require_objects(&self, names: &[String]) -> Result<()> {
         let missing: String = self
             .block_on(
@@ -257,6 +256,47 @@ impl PostgresPool {
             missing.len(),
             names.len(),
             missing.join(", ")
+        )))
+    }
+
+    /// 启动期列守卫：快照里的每个 `table.column` 都必须存在。
+    ///
+    /// 查询用 `information_schema.columns`，不依赖 PG 版本私有 catalog。
+    /// 缺失列会直接拒绝启动，而不是把错误拖到第一次读写。
+    pub fn require_columns(&self, required: &[String]) -> Result<()> {
+        let missing: String = self
+            .block_on(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT COALESCE(json_agg(pair ORDER BY pair), '[]')::text
+                     FROM unnest($1::text[]) AS pair
+                     WHERE NOT EXISTS (
+                         SELECT 1
+                         FROM information_schema.columns c
+                         WHERE c.table_schema = 'public'
+                           AND (c.table_name || '.' || c.column_name) = pair
+                     )",
+                )
+                .bind(required.to_vec())
+                .fetch_one(&self.pool),
+            )
+            .map_err(|e| PlatformError::Storage(format!("postgres column probe: {e}")))?;
+        let missing: Vec<String> = serde_json::from_str(&missing)
+            .map_err(|e| PlatformError::Storage(format!("postgres column probe decode: {e}")))?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let preview: Vec<&str> = missing.iter().take(20).map(String::as_str).collect();
+        let more = missing.len().saturating_sub(preview.len());
+        Err(PlatformError::Storage(format!(
+            "postgres schema incomplete: missing {} of {} columns: {}{}",
+            missing.len(),
+            required.len(),
+            preview.join(", "),
+            if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            }
         )))
     }
 
@@ -591,6 +631,20 @@ fn required_pg_objects() -> Vec<String> {
     names.into_iter().collect()
 }
 
+fn required_pg_columns() -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for line in REQUIRED_PG_OBJECTS.lines() {
+        if let Some((table, rest)) = line.split_once('.') {
+            if let Some(column) = rest.split_whitespace().next() {
+                if !table.is_empty() && !column.is_empty() {
+                    names.insert(format!("{table}.{column}"));
+                }
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
 /// PostgreSQL 存储实现：池 + 专属 runtime，打开时探活并校验 schema。
 pub struct PgStorage {
     profile: StorageProfile,
@@ -606,6 +660,7 @@ impl PgStorage {
         };
         let pool = PostgresPool::open(url)?;
         pool.require_objects(&required_pg_objects())?;
+        pool.require_columns(&required_pg_columns())?;
         Ok(Self {
             pool: Arc::new(pool),
             profile,
@@ -846,6 +901,21 @@ mod tests {
         let mut deduped = objects.clone();
         deduped.dedup();
         assert_eq!(deduped, objects, "表名必须去重且有序");
+    }
+
+    #[test]
+    fn required_pg_columns_cover_every_snapshot_column() {
+        let columns = required_pg_columns();
+        assert!(columns.len() >= 700, "快照列数异常：{}", columns.len());
+        for required in ["users.id", "conversation_event.conv_id", "wallets.balance"] {
+            assert!(
+                columns.contains(&required.to_string()),
+                "快照缺少关键列 {required}"
+            );
+        }
+        let mut deduped = columns.clone();
+        deduped.dedup();
+        assert_eq!(deduped, columns, "列名必须去重且有序");
     }
 
     #[test]
