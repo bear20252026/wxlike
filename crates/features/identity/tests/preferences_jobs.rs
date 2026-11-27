@@ -99,6 +99,38 @@ fn well_known_values_still_round_trip() {
 }
 
 #[test]
+fn same_key_update_advances_seq_and_reaches_another_device() {
+    let conn = db();
+    let mut first = std::collections::BTreeMap::new();
+    first.insert("notify.dm".to_string(), "off".to_string());
+    preferences::patch(&conn, "u1", &first, "dev-a", 1_000).unwrap();
+    let cursor = preferences::head_seq(&conn, "u1").unwrap();
+
+    let mut second = std::collections::BTreeMap::new();
+    second.insert("notify.dm".to_string(), "on".to_string());
+    preferences::patch(&conn, "u1", &second, "dev-b", 2_000).unwrap();
+    let new_head = preferences::head_seq(&conn, "u1").unwrap();
+    assert!(new_head > cursor, "同 key 更新必须推进 seq");
+
+    let rows = preferences::since(&conn, "u1", cursor, 10).unwrap();
+    assert_eq!(rows.len(), 1, "另一台设备应看到这次更新: {rows:?}");
+    assert_eq!(rows[0].key, "notify.dm");
+    assert_eq!(rows[0].value, "on");
+    assert_eq!(rows[0].device_id, "dev-b");
+    assert_eq!(rows[0].seq, new_head);
+
+    // 临时分配行不能留在偏好表里。
+    let leftovers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM identity_pref WHERE user_id = 'u1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leftovers, 1);
+}
+
+#[test]
 fn head_seq_reports_a_broken_database_instead_of_zero() {
     let conn = db();
     // 正常的空账号：0 是真答案

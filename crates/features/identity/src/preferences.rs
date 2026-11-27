@@ -192,12 +192,35 @@ pub fn patch_with<E: SqlExec + ?Sized>(
         }
     }
     for (key, value) in patch {
-        exec.exec(
+        // H-15：同一 (user,key) 更新也必须产生新 seq，否则另一台设备的
+        // `seq > since` 永远看不到第二次修改。`seq` 是自增主键，不能直接
+        // 改成 `MAX(seq)+1`：那会和并发插入抢同一个值。这里先插一条临时
+        // 行让数据库分配新 seq，再删临时行，把新 seq 显式写进目标行。
+        let probe_key = format!("__seq_probe_{}", random_hex(8));
+        let new_seq = exec.insert_returning(
             "INSERT INTO identity_pref(user_id, key, value, updated_at, device_id) \
-             VALUES(?1, ?2, ?3, ?4, ?5) \
-             ON CONFLICT(user_id, key) DO UPDATE SET \
-                 value = ?3, updated_at = ?4, device_id = ?5",
+             VALUES(?1, ?2, '', ?3, '')",
             &[
+                SqlParam::Text(user_id.to_string()),
+                SqlParam::Text(probe_key.clone()),
+                SqlParam::Int(now),
+            ],
+        )?;
+        exec.exec(
+            "DELETE FROM identity_pref WHERE user_id = ?1 AND key = ?2",
+            &[
+                SqlParam::Text(user_id.to_string()),
+                SqlParam::Text(probe_key),
+            ],
+        )?;
+        exec.exec(
+            "INSERT INTO identity_pref(seq, user_id, key, value, updated_at, device_id) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(user_id, key) DO UPDATE SET \
+                 seq = excluded.seq, value = excluded.value, \
+                 updated_at = excluded.updated_at, device_id = excluded.device_id",
+            &[
+                SqlParam::Int(new_seq),
                 SqlParam::Text(user_id.to_string()),
                 SqlParam::Text(key.clone()),
                 SqlParam::Text(value.clone()),
