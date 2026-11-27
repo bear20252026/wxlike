@@ -22,6 +22,8 @@ rusqlite = { workspace = true }
 # WP-12 TOFU: SHA-256 certificate fingerprints for first-use pinning
 sha2 = { workspace = true }
 hex = { workspace = true }
+# H-31: 每次 offline claim 的 ownership token
+rand = { workspace = true }
 serde_json = { workspace = true }
 # WP-13: hub observability (Prometheus text format) + forwarding traces
 metrics = "0.24"

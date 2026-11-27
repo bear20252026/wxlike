@@ -34,21 +34,31 @@ pub const LEASE_MS: i64 = 30_000;
 ///
 /// 现在分成三步：`claim`（标记领取，不删）→ 逐条 `ack`（删）→ 失败 `release`
 /// （立刻重新可见）。没 ack 的条目在 [`LEASE_MS`] 之后也会自己回来。
+/// 一次领取得到的行。`claim_token` 是这次领取的 ownership proof；
+/// ack/release 必须带同一个 token，旧 claimant 不能动新 claimant 的行。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedFrame {
+    pub id: i64,
+    pub claim_token: String,
+    pub frame: Vec<u8>,
+}
+
 #[async_trait]
 pub trait OfflineStore: Send + Sync + 'static {
     async fn enqueue(&self, user: &str, frame: Vec<u8>) -> anyhow::Result<()>;
 
-    /// 领取最多 `limit` 条（**不删除**），返回 `(id, frame)`，最老的在前。
+    /// 领取最多 `limit` 条（**不删除**），最老的在前。
     ///
     /// 已被别人领取且未过期的条目不会被返回——同一用户的两次并发 Hello
-    /// 不会重复发同一批。
-    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<(i64, Vec<u8>)>>;
+    /// 不会重复发同一批。每次领取生成新的 `claim_token`；lease 过期后
+    /// 新 claimant 拿到的是新 token，旧 token 的 ack/release 影响 0 行。
+    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<ClaimedFrame>>;
 
-    /// 投递成功 → 删掉这一条。
-    async fn ack(&self, id: i64) -> anyhow::Result<()>;
+    /// 投递成功 → 删掉这一条。`claim_token` 不匹配时什么都不做。
+    async fn ack(&self, id: i64, claim_token: &str) -> anyhow::Result<()>;
 
-    /// 投递失败 → 立刻重新可见（不等 lease 到期）。
-    async fn release(&self, id: i64) -> anyhow::Result<()>;
+    /// 投递失败 → 立刻重新可见（不等 lease 到期）。token 不匹配时不动。
+    async fn release(&self, id: i64, claim_token: &str) -> anyhow::Result<()>;
 
     /// 便捷封装：领取全部并立刻 ack（"拿走就不管"的调用方，主要是测试）。
     ///
@@ -56,15 +66,23 @@ pub trait OfflineStore: Send + Sync + 'static {
     async fn drain(&self, user: &str) -> anyhow::Result<Vec<Vec<u8>>> {
         let batch = self.claim(user, usize::MAX).await?;
         let mut out = Vec::with_capacity(batch.len());
-        for (id, frame) in batch {
-            self.ack(id).await?;
-            out.push(frame);
+        for claimed in batch {
+            self.ack(claimed.id, &claimed.claim_token).await?;
+            out.push(claimed.frame);
         }
         Ok(out)
     }
 
     /// How many frames are waiting (metrics, tests).
     async fn depth(&self, user: &str) -> anyhow::Result<usize>;
+}
+
+/// 领取 token：每次 claim 一个，不按行复用。16 字节随机十六进制。
+fn claim_token() -> String {
+    use rand::RngCore as _;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 /// 队列里的一条：id 给 ack/release 用，`claimed_until` 是 lease 到期时间（ms）。
@@ -76,6 +94,7 @@ struct MemEntry {
     id: i64,
     frame: Vec<u8>,
     claimed_until: i64,
+    claim_token: String,
 }
 
 /// Per-user FIFO with a cap (oldest dropped beyond cap).
@@ -110,12 +129,14 @@ impl OfflineStore for MemoryOffline {
             id,
             frame,
             claimed_until: 0,
+            claim_token: String::new(),
         });
         Ok(())
     }
 
-    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<(i64, Vec<u8>)>> {
+    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<ClaimedFrame>> {
         let now = wxlike_core::types::now_ms() as i64;
+        let token = claim_token();
         let mut m = self.inner.lock().await;
         let Some(dq) = m.get_mut(user) else {
             return Ok(Vec::new());
@@ -127,16 +148,24 @@ impl OfflineStore for MemoryOffline {
             }
             if e.claimed_until <= now {
                 e.claimed_until = now + LEASE_MS;
-                out.push((e.id, e.frame.clone()));
+                e.claim_token = token.clone();
+                out.push(ClaimedFrame {
+                    id: e.id,
+                    claim_token: token.clone(),
+                    frame: e.frame.clone(),
+                });
             }
         }
         Ok(out)
     }
 
-    async fn ack(&self, id: i64) -> anyhow::Result<()> {
+    async fn ack(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
         let mut m = self.inner.lock().await;
         for dq in m.values_mut() {
-            if let Some(pos) = dq.iter().position(|e| e.id == id) {
+            if let Some(pos) = dq
+                .iter()
+                .position(|e| e.id == id && e.claim_token == claim_token)
+            {
                 dq.remove(pos);
                 break;
             }
@@ -144,11 +173,15 @@ impl OfflineStore for MemoryOffline {
         Ok(())
     }
 
-    async fn release(&self, id: i64) -> anyhow::Result<()> {
+    async fn release(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
         let mut m = self.inner.lock().await;
         for dq in m.values_mut() {
-            if let Some(e) = dq.iter_mut().find(|e| e.id == id) {
+            if let Some(e) = dq
+                .iter_mut()
+                .find(|e| e.id == id && e.claim_token == claim_token)
+            {
                 e.claimed_until = 0;
+                e.claim_token.clear();
                 break;
             }
         }
@@ -218,7 +251,10 @@ fn init_schema(conn: &Connection) -> anyhow::Result<()> {
                 enqueued_at  INTEGER NOT NULL,
                 -- 0 = 未领取；否则是 lease 到期时间（ms）。老库靠下面的
                 -- ALTER 补这一列，不能只改 CREATE TABLE（已存在的表不会重建）。
-                claimed_until INTEGER NOT NULL DEFAULT 0
+                claimed_until INTEGER NOT NULL DEFAULT 0,
+                -- 本次领取的 ownership proof；ack/release 必须匹配，
+                -- 防止 lease 过期后的旧 claimant 动新 claimant 的行。
+                claim_token  TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_offline_user ON offline_inbox(user, id);
             "#,
@@ -228,16 +264,27 @@ fn init_schema(conn: &Connection) -> anyhow::Result<()> {
 
 /// 老库迁移：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。
 fn migrate_claimed_until(conn: &Connection) -> anyhow::Result<()> {
-    let has_claimed: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('offline_inbox') WHERE name = 'claimed_until'",
-        [],
+    migrate_column(
+        conn,
+        "claimed_until",
+        "ALTER TABLE offline_inbox ADD COLUMN claimed_until INTEGER NOT NULL DEFAULT 0",
+    )?;
+    migrate_column(
+        conn,
+        "claim_token",
+        "ALTER TABLE offline_inbox ADD COLUMN claim_token TEXT NOT NULL DEFAULT ''",
+    )?;
+    Ok(())
+}
+
+fn migrate_column(conn: &Connection, name: &str, sql: &str) -> anyhow::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('offline_inbox') WHERE name = ?1",
+        params![name],
         |r| r.get(0),
     )?;
-    if has_claimed == 0 {
-        conn.execute(
-            "ALTER TABLE offline_inbox ADD COLUMN claimed_until INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
+    if exists == 0 {
+        conn.execute(sql, [])?;
     }
     Ok(())
 }
@@ -259,40 +306,48 @@ impl OfflineStore for SqliteOffline {
         Ok(())
     }
 
-    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<(i64, Vec<u8>)>> {
+    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<ClaimedFrame>> {
         let now = wxlike_core::types::now_ms() as i64;
         // `usize::MAX`（drain 的便捷封装会传）不能直接塞进 SQLite 的 LIMIT
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let token = claim_token();
         let c = self.c();
         let mut stmt = c.prepare(
             r#"
-            UPDATE offline_inbox SET claimed_until = ?2
+            UPDATE offline_inbox SET claimed_until = ?2, claim_token = ?3
             WHERE id IN (
                 SELECT id FROM offline_inbox
-                WHERE user = ?1 AND claimed_until <= ?3
-                ORDER BY id LIMIT ?4
+                WHERE user = ?1 AND claimed_until <= ?4
+                ORDER BY id LIMIT ?5
             )
             RETURNING id, frame
             "#,
         )?;
         let rows = stmt
-            .query_map(params![user, now + LEASE_MS, now, limit], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+            .query_map(params![user, now + LEASE_MS, token, now, limit], |r| {
+                Ok(ClaimedFrame {
+                    id: r.get(0)?,
+                    claim_token: token.clone(),
+                    frame: r.get(1)?,
+                })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    async fn ack(&self, id: i64) -> anyhow::Result<()> {
-        self.c()
-            .execute("DELETE FROM offline_inbox WHERE id = ?1", params![id])?;
+    async fn ack(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
+        self.c().execute(
+            "DELETE FROM offline_inbox WHERE id = ?1 AND claim_token = ?2",
+            params![id, claim_token],
+        )?;
         Ok(())
     }
 
-    async fn release(&self, id: i64) -> anyhow::Result<()> {
+    async fn release(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
         self.c().execute(
-            "UPDATE offline_inbox SET claimed_until = 0 WHERE id = ?1",
-            params![id],
+            "UPDATE offline_inbox SET claimed_until = 0, claim_token = '' \
+             WHERE id = ?1 AND claim_token = ?2",
+            params![id, claim_token],
         )?;
         Ok(())
     }
@@ -347,17 +402,20 @@ mod tests {
         // lease 未过期：同一条不会被再次领取
         let second = store.claim("bob", 10).await.unwrap();
         assert_eq!(second.len(), 1, "只剩第二条可领");
-        assert_ne!(second[0].0, first[0].0, "第一条还在 lease 里");
+        assert_ne!(second[0].id, first[0].id, "第一条还在 lease 里");
 
         // ack 掉第一条 → depth 减一
-        store.ack(first[0].0).await.unwrap();
+        store.ack(first[0].id, &first[0].claim_token).await.unwrap();
         assert_eq!(store.depth("bob").await.unwrap(), 1);
 
         // release 第二条 → 立刻重新可见（不用等 30 秒）
-        store.release(second[0].0).await.unwrap();
+        store
+            .release(second[0].id, &second[0].claim_token)
+            .await
+            .unwrap();
         let third = store.claim("bob", 10).await.unwrap();
         assert_eq!(third.len(), 1, "release 之后应当立刻能再领");
-        assert_eq!(third[0].0, second[0].0);
+        assert_eq!(third[0].id, second[0].id);
     }
 
     /// 同一个语义在 SQLite 上也要成立（生产用的是它）。
@@ -383,12 +441,18 @@ mod tests {
         let third = store.claim("bob", 10).await.unwrap();
         assert_eq!(third.len(), 1, "只剩第三条（前两条还在 lease 里）");
         assert!(
-            !claimed.iter().any(|(id, _)| *id == third[0].0),
+            !claimed.iter().any(|c| c.id == third[0].id),
             "已经在 lease 里的条目不该被重复领取"
         );
 
-        store.ack(claimed[0].0).await.unwrap();
-        store.release(claimed[1].0).await.unwrap();
+        store
+            .ack(claimed[0].id, &claimed[0].claim_token)
+            .await
+            .unwrap();
+        store
+            .release(claimed[1].id, &claimed[1].claim_token)
+            .await
+            .unwrap();
         assert_eq!(
             store.depth("bob").await.unwrap(),
             2,
@@ -398,9 +462,47 @@ mod tests {
         // release 的那条立刻重新可见；第三条仍在 lease 里
         let again = store.claim("bob", 10).await.unwrap();
         assert_eq!(again.len(), 1, "只有 release 的那条重新可见");
-        assert_eq!(again[0].0, claimed[1].0);
+        assert_eq!(again[0].id, claimed[1].id);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-31：lease 过期后新 claimant 拿到新 token；旧 claimant 的 ack/release
+    /// 必须影响 0 行，不能删掉/释放别人刚领到的行。
+    #[tokio::test]
+    async fn stale_claimant_cannot_ack_or_release_the_reclaimed_row() {
+        let store = SqliteOffline::open(None, 10).unwrap();
+        store.enqueue("bob", b"m1".to_vec()).await.unwrap();
+
+        let old = store.claim("bob", 1).await.unwrap();
+        assert_eq!(old.len(), 1);
+        // 模拟 30s lease 到期：直接把这行的 lease 归零，不睡 30 秒。
+        store
+            .c()
+            .execute(
+                "UPDATE offline_inbox SET claimed_until = 0 WHERE id = ?1",
+                params![old[0].id],
+            )
+            .unwrap();
+
+        let fresh = store.claim("bob", 1).await.unwrap();
+        assert_eq!(fresh.len(), 1, "过期行必须能被新 claimant 领到");
+        assert_eq!(fresh[0].id, old[0].id);
+        assert_ne!(fresh[0].claim_token, old[0].claim_token);
+
+        // 旧 claimant 的 ack/release 都是 no-op
+        store.ack(old[0].id, &old[0].claim_token).await.unwrap();
+        store.release(old[0].id, &old[0].claim_token).await.unwrap();
+        assert_eq!(store.depth("bob").await.unwrap(), 1);
+        let still_leased = store.claim("bob", 1).await.unwrap();
+        assert!(
+            still_leased.is_empty(),
+            "旧 token 的 release 不能把新 lease 提前放出来"
+        );
+
+        // 新 claimant 才能真正退休这一行
+        store.ack(fresh[0].id, &fresh[0].claim_token).await.unwrap();
+        assert_eq!(store.depth("bob").await.unwrap(), 0);
     }
 
     #[tokio::test]

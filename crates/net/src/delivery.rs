@@ -32,6 +32,9 @@ pub const MAX_INFLIGHT_PER_CONNECTION: usize = 512;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
     pub store_id: i64,
+    /// H-31：领取时拿到的 ownership token；ack/release 必须带它，
+    /// 否则 lease 过期后的旧连接会动到新 claimant 的行。
+    pub claim_token: String,
     pub conv_id: Option<String>,
     pub seq: Option<u64>,
 }
@@ -40,14 +43,22 @@ impl Pending {
     pub fn sequenced(store_id: i64, conv_id: impl Into<String>, seq: u64) -> Self {
         Self {
             store_id,
+            claim_token: String::new(),
             conv_id: Some(conv_id.into()),
             seq: Some(seq),
         }
     }
 
+    /// 给从 offline store claim 出来的 Pending 带上 ownership token。
+    pub fn with_claim_token(mut self, token: impl Into<String>) -> Self {
+        self.claim_token = token.into();
+        self
+    }
+
     pub fn opaque(store_id: i64) -> Self {
         Self {
             store_id,
+            claim_token: String::new(),
             conv_id: None,
             seq: None,
         }

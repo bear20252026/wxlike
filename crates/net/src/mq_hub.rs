@@ -1052,7 +1052,7 @@ async fn handle_stored_ack(
     }
     state.metrics.inflight_unacked(-(retired.len() as i64));
     for p in &retired {
-        if let Err(err) = state.offline.ack(p.store_id).await {
+        if let Err(err) = state.offline.ack(p.store_id, &p.claim_token).await {
             eprintln!("[mq-hub] stored-ack retire {} failed: {err:#}", p.store_id);
         }
     }
@@ -1351,7 +1351,7 @@ async fn release_inflight(state: &Arc<HubState>, user_id: &str, conn_id: ConnId)
     }
     state.metrics.inflight_unacked(-(owed.len() as i64));
     for p in &owed {
-        if let Err(err) = state.offline.release(p.store_id).await {
+        if let Err(err) = state.offline.release(p.store_id, &p.claim_token).await {
             eprintln!(
                 "[mq-hub] release on disconnect {} failed: {err:#}",
                 p.store_id
@@ -1423,11 +1423,12 @@ async fn disconnect_conn(state: &Arc<HubState>, user_id: &str, conn_id: ConnId) 
 ///
 /// A frame we cannot parse is still tracked (`Pending::opaque`), but it can only
 /// be retired by the store lease — a cursor ack must never silently credit it.
-fn pending_of(store_id: i64, frame: &[u8]) -> Pending {
-    match WireFrame::from_bytes(frame) {
+fn pending_of(store_id: i64, claim_token: &str, frame: &[u8]) -> Pending {
+    let pending = match WireFrame::from_bytes(frame) {
         Ok(WireFrame::Msg(env)) => Pending::sequenced(store_id, env.conv_id, env.seq),
         _ => Pending::opaque(store_id),
-    }
+    };
+    pending.with_claim_token(claim_token)
 }
 
 /// Flush what is parked for `user` on this connection.
@@ -1489,15 +1490,24 @@ async fn flush_batch(
     conn: &PeerConn,
     conn_id: ConnId,
     user_id: &str,
-    batch: &[(i64, Vec<u8>)],
+    batch: &[crate::offline::ClaimedFrame],
     negotiated: Negotiated,
 ) -> usize {
     let mut delivered = 0usize;
-    for (idx, (id, frame)) in batch.iter().enumerate() {
+    for (idx, claimed) in batch.iter().enumerate() {
+        let id = &claimed.id;
+        let frame = &claimed.frame;
         // AR-6（#30）：过期的秘密会话帧不再补发，ack 即丢弃（与 HTTP 检索面的
         // TTL 过滤同口径）。QUIC 与 WS 都走这一条补发路径，一处判定即全覆盖。
         if expired_secret_frame(state.policy.as_deref(), frame).await {
-            drop_parked(state, *id, user_id, "expired secret-chat frame").await;
+            drop_parked(
+                state,
+                *id,
+                &claimed.claim_token,
+                user_id,
+                "expired secret-chat frame",
+            )
+            .await;
             continue;
         }
         if conn.send_frame(frame).await.is_err() {
@@ -1506,7 +1516,7 @@ async fn flush_batch(
             return delivered;
         }
         delivered += 1;
-        track_written(state, conn_id, *id, frame, negotiated).await;
+        track_written(state, conn_id, *id, &claimed.claim_token, frame, negotiated).await;
     }
     delivered
 }
@@ -1515,9 +1525,10 @@ async fn flush_batch(
 ///
 /// The rest of the batch is unreachable once one write fails: releasing it now is
 /// what keeps a dead socket from holding 64 rows leased for 30 seconds.
-async fn release_from(state: &Arc<HubState>, batch: &[(i64, Vec<u8>)], from: usize) {
-    for (id, _) in batch.iter().skip(from) {
-        if let Err(e) = state.offline.release(*id).await {
+async fn release_from(state: &Arc<HubState>, batch: &[crate::offline::ClaimedFrame], from: usize) {
+    for claimed in batch.iter().skip(from) {
+        let id = claimed.id;
+        if let Err(e) = state.offline.release(id, &claimed.claim_token).await {
             eprintln!("[mq-hub] offline release {id} failed: {e:#}");
         }
     }
@@ -1529,19 +1540,22 @@ async fn track_written(
     state: &Arc<HubState>,
     conn_id: ConnId,
     id: i64,
+    claim_token: &str,
     frame: &[u8],
     negotiated: Negotiated,
 ) {
     if !negotiated.stored_ack {
         // ack 失败不该让已经发出的条目再发一遍；下一轮 claim 会因为 lease 未过期
         // 而跳过它们，最坏是重复一次。
-        if let Err(err) = state.offline.ack(id).await {
+        if let Err(err) = state.offline.ack(id, claim_token).await {
             eprintln!("[mq-hub] offline ack {id} failed: {err:#}");
         }
         return;
     }
     state.metrics.inflight_unacked(1);
-    let overflow = state.inflight.record(conn_id, pending_of(id, frame));
+    let overflow = state
+        .inflight
+        .record(conn_id, pending_of(id, claim_token, frame));
     if overflow.is_empty() {
         return;
     }
@@ -1549,14 +1563,14 @@ async fn track_written(
     state.metrics.inflight_unacked(-(overflow.len() as i64));
     state.metrics.limit_dropped("max_inflight_per_conn");
     for p in &overflow {
-        let _ = state.offline.release(p.store_id).await;
+        let _ = state.offline.release(p.store_id, &p.claim_token).await;
     }
     tracing::warn!(hub = %state.hub_id, conn = conn_id, count = overflow.len(), "inflight window overflow: oldest requeued");
 }
 
 /// Drop a parked row for a reason that is not a client acknowledgement.
-async fn drop_parked(state: &Arc<HubState>, id: i64, user_id: &str, why: &str) {
-    if let Err(err) = state.offline.ack(id).await {
+async fn drop_parked(state: &Arc<HubState>, id: i64, claim_token: &str, user_id: &str, why: &str) {
+    if let Err(err) = state.offline.ack(id, claim_token).await {
         eprintln!("[mq-hub] offline ack {id} ({why}) failed: {err:#}");
     }
     tracing::info!(hub = %state.hub_id, user = %user_id, id, why, "dropped parked frame");

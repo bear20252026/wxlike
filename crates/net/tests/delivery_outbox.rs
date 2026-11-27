@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use wxlike_core::{Envelope, Store};
 use wxlike_mq::{memory::MemoryMq, memory::MemoryRoutes, MqRouter, RouteTable as _};
-use wxlike_net::offline::{MemoryOffline, OfflineStore};
+use wxlike_net::offline::{ClaimedFrame, MemoryOffline, OfflineStore};
 use wxlike_net::{run_mq_hub_with, Client, MqHubOptions};
 
 fn router(mq: Arc<MemoryMq>, routes: Arc<MemoryRoutes>) -> MqRouter {
@@ -48,16 +48,16 @@ impl OfflineStore for FlakyOffline {
         self.inner.enqueue(user, frame).await
     }
 
-    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<(i64, Vec<u8>)>> {
+    async fn claim(&self, user: &str, limit: usize) -> anyhow::Result<Vec<ClaimedFrame>> {
         self.inner.claim(user, limit).await
     }
 
-    async fn ack(&self, id: i64) -> anyhow::Result<()> {
-        self.inner.ack(id).await
+    async fn ack(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
+        self.inner.ack(id, claim_token).await
     }
 
-    async fn release(&self, id: i64) -> anyhow::Result<()> {
-        self.inner.release(id).await
+    async fn release(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
+        self.inner.release(id, claim_token).await
     }
 
     async fn depth(&self, user: &str) -> anyhow::Result<usize> {
