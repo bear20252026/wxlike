@@ -31,7 +31,12 @@ import type {
 } from "./models";
 import type { FixtureCore } from "./adapters/fixture/fixture-core";
 import type { PlatformPort } from "./platform/port";
-import { installCoreSession, resetCoreSession, uninstallCoreSession } from "../lib/core-transport";
+import {
+  coreSessionSnapshot,
+  installCoreSession,
+  resetCoreSession,
+  uninstallCoreSession,
+} from "../lib/core-transport";
 
 export interface Toast {
   id: number;
@@ -252,6 +257,7 @@ export class AppStore {
   }
 
   async bootstrap(core: CoreHandle): Promise<void> {
+    const generation = coreSessionSnapshot().generation;
     let capabilities: CoreCapabilities;
     let projection: ActionResponse<SessionProjection>;
     try {
@@ -276,6 +282,7 @@ export class AppStore {
       });
       return;
     }
+    if (coreSessionSnapshot().generation !== generation) return;
     if (!projection.ok) {
       this.set({
         bootstrapped: true,
@@ -291,8 +298,33 @@ export class AppStore {
   }
 
   async refreshSession(core: CoreHandle): Promise<void> {
+    const generation = coreSessionSnapshot().generation;
+    const previous = this.currentAccount();
     const projection = await core.dispatch<SessionProjection>(newRequest(ACTIONS.sessionProjection, {}));
-    if (projection.ok) this.set({ session: projection.data });
+    // 刷新期间会话已经切代：这份投影属于上一个会话，不能写进新账号。
+    if (coreSessionSnapshot().generation !== generation) return;
+    if (!projection.ok) return;
+
+    const next = accountOf(projection.data);
+    if (projection.data.phase === "signed_out") {
+      this.sessionBoundary("logout");
+    } else if (projection.data.phase === "locked" && this.state.session.phase === "authenticated") {
+      this.sessionBoundary("lock");
+    } else if (previous !== null && next !== null && previous !== next) {
+      // 401/407 之后刷新出一个别的账号：先把旧工作区/草稿/事件缓存清掉。
+      this.sessionBoundary("account-switch");
+    }
+    this.set({ session: projection.data });
+    if (projection.data.phase === "authenticated" || projection.data.phase === "locked") {
+      await this.loadWorkspace(core);
+    }
+  }
+
+  /** 当前 session 投影里的账号；未登录/锁定时为 null。 */
+  private currentAccount(): string | null {
+    return this.state.session.phase === "authenticated"
+      ? this.state.session.account?.user_id ?? null
+      : null;
   }
 
   /** Account whose workspace projection is currently loaded; login/logout invalidates it. */
@@ -301,6 +333,7 @@ export class AppStore {
   private workspaceFailureNoted = false;
 
   async loadWorkspace(core: CoreHandle, accountId?: string): Promise<void> {
+    const generation = coreSessionSnapshot().generation;
     const target =
       accountId ??
       (this.state.session.phase === "authenticated" ? this.state.session.account?.user_id ?? null : null);
@@ -315,6 +348,9 @@ export class AppStore {
       core.dispatch<{ items: Contact[] }>(newRequest(ACTIONS.relationsList, {})),
       core.dispatch<FriendRequest[]>(newRequest(ACTIONS.requestsIncoming, {})),
     ]);
+    // 四路请求返回时可能早已切号/退出：旧代次的结果一律不落地。
+    if (coreSessionSnapshot().generation !== generation) return;
+    if (target !== null && this.currentAccount() !== target) return;
     const failed = [preferences, conversations, contacts, requests].filter((item) => !item.ok);
     // Silent data staleness is not acceptable: surface the FIRST failure once
     // per workspace load instead of pretending the projection is complete.
@@ -378,6 +414,10 @@ export function AppProvider({
   const coreRef = useRef(core);
   coreRef.current = core;
   const session = useSyncExternalStore(store.subscribe, () => store.getSnapshot().session);
+  const boundaryGeneration = useSyncExternalStore(
+    store.subscribe,
+    () => store.getSnapshot().sessionBoundary?.generation ?? 0,
+  );
 
   useEffect(() => {
     // 组合根是"核心会话"装进公共 transport 的唯一入口：装了之后，已迁移域
@@ -388,10 +428,16 @@ export function AppProvider({
   }, [core]);
 
   useEffect(() => {
-    const unsubscribe = core.subscribe(null, (event) => store.applyEvent(event));
+    const generation = coreSessionSnapshot().generation;
+    const unsubscribe = core.subscribe(null, (event) => {
+      // 事件本身没有账号/代次；按订阅时的核心代次过滤。边界一到就重订阅，
+      // 旧会话晚到的事件不能写进新账号的缓存。
+      if (coreSessionSnapshot().generation !== generation) return;
+      store.applyEvent(event);
+    });
     void store.bootstrap(core);
     return unsubscribe;
-  }, [core, store]);
+  }, [core, store, boundaryGeneration]);
 
   useEffect(() => {
     const accountId = session.phase === "authenticated" ? session.account?.user_id ?? null : null;
