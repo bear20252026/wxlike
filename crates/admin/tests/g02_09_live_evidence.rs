@@ -61,7 +61,7 @@ fn admin_session_token(db: &Path, user_id: &str) -> String {
     conn.execute(
         "INSERT INTO identity_session_meta( \
              sid, user_id, auth_level, features, serial, issued_at, expires_at \
-         ) VALUES(?1, ?2, 'roo', 'VLX', ?3, ?4, ?5)",
+         ) VALUES(?1, ?2, 'root', 'VL', ?3, ?4, ?5)",
         rusqlite::params![sid, user_id, serial, now, now + 60_000],
     )
     .expect("写入 Admin 会话侧车行");

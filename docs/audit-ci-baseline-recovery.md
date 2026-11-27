@@ -41,3 +41,14 @@
 - 本地 e2e（修复后的二进制）：`smoke` 与 `errors` 两个套件全过；其中 `errors` 覆盖“同 payload 200、异 payload 409”。
 - 未在本地验证：PostgreSQL 19 实际迁移（本机无 `psql`）；Redis 集成用例（本机无 Redis）；Flutter/Dart 测试（本机无工具链）。这些仍以 CI 为唯一真实证据。
 - 下一道门：修复提交推送后，`ci` 与 `security` 两个 workflow 的全部非可选 job 必须为 success，`gate` 才会通过。
+
+## 第三轮（`89b1a3e` 之后）
+
+`89b1a3e` 的 `ci` run `46043972474` 仍有 `test ×3` / `coverage` 失败，`security` run `46043972330` 的 `source + policy` 失败：
+
+| 失败 job | 根因 | 修法 |
+|---|---|---|
+| `test ×3` / `coverage` | `g02_09_live_evidence` 的 Admin 侧车 fixture 把 `auth_level` 写成 `'roo'`、`features` 写成 `'VLX'`；严格解析分别报 `corrupt stored row: auth_level` / `features` | 改为合法值 `'root'` / `'VL'`；本地 `cargo test -p wxlike-admin --test g02_09_live_evidence` 2 passed |
+| `security (source + policy)` | C-02/C-04 改动锁文件后 committed SBOM 未重生成，20 条 `@esbuild/*@0.28.1` 漂移 | `sourceaudit sbom generate` 重生成；`sbom check`、`advisories check --offline`、`authz check` 本地全 PASS |
+
+本地同时通过：`sbom check`（components=1392，fail=0）、`provenance check`（fail=0 pass=78）、`advisories check --offline`（fail=0 warn=10）、`authz check`（fail=0）。
