@@ -19,9 +19,11 @@
 //! curl --noproxy '*' http://127.0.0.1:8099/api/video/{video_id}/playlist.m3u8
 //! ```
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use axum::extract::multipart::Multipart;
@@ -70,6 +72,20 @@ pub const TARGET_HEIGHT: u32 = 720;
 pub const LADDER: [u32; 3] = [360, 720, 1080];
 /// Segment target length.
 pub const HLS_SECONDS: f64 = 4.0;
+/// 外部工具单次执行上限。ffprobe 应该秒级返回；ffmpeg 走大视频时给足
+/// 25 分钟，但仍低于 H-20 的 stale-running 阈值（30 分钟）。
+pub const FFPROBE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const FFMPEG_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+const TOOL_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+const TOOL_POLL: Duration = Duration::from_millis(20);
+/// 单次转码临时目录上限（源 + 各档 MP4 + HLS 分片 + 缩略图）。
+pub const MAX_TRANSCODE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+/// 单个外部工具进程的 CPU 硬上限（秒）；与命令 deadline 同量级。
+const TOOL_CPU_LIMIT_SECS: u64 = 25 * 60;
+/// 单个输出文件上限；HLS 分片/MP4 都不应该接近这个值。
+const TOOL_FSIZE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+/// 外部工具地址空间上限（Linux）；防止病态媒体把 ffmpeg 吃成 OOM killer。
+const TOOL_AS_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
 
 /// 实际产出的档位：阶梯中 ≤ 源高的项；源比最小档还矮时保留源高（封顶 720）。
 ///
@@ -189,7 +205,9 @@ pub fn ffprobe_bin() -> String {
 /// bail with a clear message instead of a confusing spawn failure.
 pub fn tools_available() -> bool {
     for bin in [ffmpeg_bin(), ffprobe_bin()] {
-        let Ok(out) = std::process::Command::new(&bin).arg("-version").output() else {
+        let mut cmd = Command::new(&bin);
+        cmd.arg("-version");
+        let Ok(out) = run_limited(cmd, TOOL_VERSION_TIMEOUT, &bin, false) else {
             return false;
         };
         if !out.status.success() {
@@ -485,6 +503,7 @@ impl VideoStore {
             .with_context(|| "copy best rendition to play.mp4".to_string())?;
         publish_playlists(&hls_root, &renditions)?;
         make_thumbnail(&source, temp_dir, duration_ms)?;
+        ensure_dir_budget(temp_dir)?;
 
         let meta = VideoMeta {
             video_id: video_id.to_string(),
@@ -525,6 +544,8 @@ fn encode_renditions(
     for height in heights {
         let (rendition, mp4, width) =
             encode_one(source, temp_dir, hls_root, probe, *height, duration_ms)?;
+        // 每档产出后都查一次预算：不等整个 3 档跑完才发现磁盘被写爆。
+        ensure_dir_budget(temp_dir)?;
         renditions.push(rendition);
         best = Some((*height, mp4, width));
     }
@@ -763,32 +784,161 @@ impl Probe {
 }
 
 fn ffprobe(source: &Path) -> anyhow::Result<Probe> {
-    let out = std::process::Command::new(ffprobe_bin())
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-        ])
-        .arg(source)
-        .stderr(Stdio::null())
-        .output()
-        .with_context(|| "spawn ffprobe (is ffmpeg installed? set WXLIKE_FFPROBE)".to_string())?;
+    let mut cmd = Command::new(ffprobe_bin());
+    cmd.args([
+        "-v",
+        "quiet",
+        // 上传的是本地文件；禁止 ffprobe 跟随远端协议（H-19 协议白名单）。
+        "-protocol_whitelist",
+        "file,pipe",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+    ])
+    .arg(source);
+    let out = run_limited(
+        cmd,
+        FFPROBE_TIMEOUT,
+        "ffprobe (is ffmpeg installed? set WXLIKE_FFPROBE)",
+        true,
+    )
+    .context("spawn ffprobe")?;
     anyhow::ensure!(out.status.success(), "ffprobe failed on the upload");
     serde_json::from_slice(&out.stdout).context("parse ffprobe json")
 }
 
+/// 递归统计目录字节数；只用于转码临时目录。
+fn dir_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        if meta.is_dir() {
+            total = total.saturating_add(dir_bytes(&entry.path()));
+        } else {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
+fn ensure_dir_budget(path: &Path) -> anyhow::Result<()> {
+    ensure_dir_budget_at(path, MAX_TRANSCODE_BYTES)
+}
+
+fn ensure_dir_budget_at(path: &Path, max: u64) -> anyhow::Result<()> {
+    let used = dir_bytes(path);
+    anyhow::ensure!(
+        used <= max,
+        "transcode temp dir uses {used} bytes, over the {max}-byte budget"
+    );
+    Ok(())
+}
+
 fn run_tool(bin: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = std::process::Command::new(bin)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .with_context(|| format!("spawn {bin}"))?;
+    let mut cmd = Command::new(bin);
+    // 源/目标都是本机路径；HLS 输出也只走 file。禁掉 http/rtmp 等协议，
+    // 防止恶意媒体把 ffmpeg 变成出站客户端。
+    cmd.args(["-protocol_whitelist", "file,pipe"]);
+    cmd.args(args);
+    let out =
+        run_limited(cmd, FFMPEG_TIMEOUT, bin, false).with_context(|| format!("spawn {bin}"))?;
     anyhow::ensure!(out.status.success(), "{bin} exited non-zero");
     Ok(())
+}
+
+/// 限时执行外部工具，超时杀**整个进程组**。
+///
+/// ffmpeg 的转码进程会再起子进程；只 kill 直接子进程会留下孤儿占着 CPU/磁盘。
+/// Unix 上让子进程自成一组（`process_group(0)`），超时对负 pid 发 SIGKILL。
+/// 读取管道放在进程退出之后：ffprobe 的输出很小，不会先写满管道再卡死。
+fn run_limited(
+    mut cmd: Command,
+    timeout: Duration,
+    label: &str,
+    capture_stdout: bool,
+) -> anyhow::Result<Output> {
+    cmd.stdout(if capture_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+        #[cfg(target_os = "linux")]
+        {
+            // pre_exec 在 fork 后 exec 前执行；只在这里设置子进程自己的
+            // rlimit，不影响 hub 本体。
+            unsafe {
+                cmd.pre_exec(move || {
+                    let cpu = libc::rlimit {
+                        rlim_cur: TOOL_CPU_LIMIT_SECS,
+                        rlim_max: TOOL_CPU_LIMIT_SECS,
+                    };
+                    let fsize = libc::rlimit {
+                        rlim_cur: TOOL_FSIZE_LIMIT,
+                        rlim_max: TOOL_FSIZE_LIMIT,
+                    };
+                    let address = libc::rlimit {
+                        rlim_cur: TOOL_AS_LIMIT,
+                        rlim_max: TOOL_AS_LIMIT,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_CPU, &cpu) != 0
+                        || libc::setrlimit(libc::RLIMIT_FSIZE, &fsize) != 0
+                        || libc::setrlimit(libc::RLIMIT_AS, &address) != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
+    let mut child = cmd.spawn().with_context(|| format!("spawn {label}"))?;
+    let pid = child.id();
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            #[cfg(unix)]
+            unsafe {
+                // 负 pid 表示整个进程组；子进程已退出时 ESRCH 也无害。
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+            anyhow::bail!(
+                "{label} timed out after {}s",
+                timeout.as_secs_f64().round() as u64
+            );
+        }
+        std::thread::sleep(TOOL_POLL);
+    };
+    let mut stdout = Vec::new();
+    if capture_stdout {
+        if let Some(mut pipe) = child.stdout.take() {
+            pipe.read_to_end(&mut stdout)?;
+        }
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,4 +1353,69 @@ async fn read_field(form: &mut Multipart) -> Result<Vec<u8>, String> {
 /// 尽力删掉临时目录：失败也不影响主流程的错误。
 fn cleanup(dir: &std::path::Path) {
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[cfg(all(test, unix))]
+mod tool_timeout_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn external_tool_timeout_kills_the_process_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "wxlike-tool-timeout-{}-{}",
+            std::process::id(),
+            wxlike_core::types::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("hang.sh");
+        // 子进程 sleep 在同一个进程组；只 kill 直接子进程会留下它。
+        std::fs::write(&script, "#!/bin/sh\nsleep 30 &\necho $! > \"$1\"\nwait\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pidfile = dir.join("child.pid");
+
+        let mut cmd = Command::new(&script);
+        cmd.arg(&pidfile);
+        let started = Instant::now();
+        let err = run_limited(cmd, Duration::from_millis(120), "fake-ffmpeg", false).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "超时必须及时返回: {err:#}"
+        );
+        assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+
+        // 等脚本把 sleep 的 pid 写出来，再确认整组都被 SIGKILL。
+        for _ in 0..50 {
+            if pidfile.is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .expect("pid file")
+            .trim()
+            .parse()
+            .expect("pid");
+        std::thread::sleep(Duration::from_millis(100));
+        let alive = unsafe { libc::kill(pid, 0) == 0 };
+        assert!(!alive, "sleep 子进程仍活着（pid {pid}）");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn temp_dir_budget_rejects_oversize_output() {
+        let dir = std::env::temp_dir().join(format!(
+            "wxlike-budget-{}-{}",
+            std::process::id(),
+            wxlike_core::types::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("artifact.bin");
+        let file = std::fs::File::create(&f).unwrap();
+        file.set_len(2 * 1024 * 1024).unwrap();
+        let err = ensure_dir_budget_at(&dir, 1024 * 1024).unwrap_err();
+        assert!(format!("{err:#}").contains("budget"), "{err:#}");
+        ensure_dir_budget_at(&dir, 4 * 1024 * 1024).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
