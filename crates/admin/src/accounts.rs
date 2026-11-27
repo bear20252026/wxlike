@@ -373,6 +373,28 @@ impl AccountStore {
         })
     }
 
+    /// H-14：MFA 边界变化时，同一事务里撤销全部会话和 step-up。
+    /// `g14_stepup` 是 G14 迁移建的表；AccountStore 单独打开时可能还没有它，
+    /// 所以先看表是否存在，避免把“没有 step-up 表”误报成删除失败。
+    fn revoke_mfa_bound_state(tx: &Connection, account_id: &str) -> Result<()> {
+        tx.execute(
+            "DELETE FROM admin_sessions WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        let has_stepup: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'g14_stepup'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_stepup > 0 {
+            tx.execute(
+                "DELETE FROM g14_stepup WHERE account_id = ?1",
+                params![account_id],
+            )?;
+        }
+        Ok(())
+    }
+
     /// 生成（或重生成）TOTP 密钥。未确认前不改变 `totp_enabled`——与平台的
     /// `totp_enable` 同一语义，避免"扫了码就以为开了"。
     pub fn totp_enroll(&self, name: &str) -> Result<String> {
@@ -380,10 +402,15 @@ impl AccountStore {
             .row_by_name(name)?
             .ok_or_else(|| AdminError::bad_input("没有这个管理员账号"))?;
         let secret = wxlike_platform::totp_generate_secret();
-        self.lock().execute(
+        let c = self.lock();
+        let tx = c.unchecked_transaction()?;
+        tx.execute(
             "UPDATE admin_accounts SET totp_secret = ?2, totp_enabled = 0, updated_at = ?3 WHERE id = ?1",
             params![row.id, secret, crate::read::now_ms()],
         )?;
+        // H-14：换 seed 等于换身份，旧会话和旧 step-up 必须一起失效。
+        Self::revoke_mfa_bound_state(&tx, &row.id)?;
+        tx.commit()?;
         Ok(secret)
     }
 
@@ -400,10 +427,15 @@ impl AccountStore {
                 "动态码不对（时钟偏差 30 秒内可接受）",
             ));
         }
-        self.lock().execute(
+        let c = self.lock();
+        let tx = c.unchecked_transaction()?;
+        tx.execute(
             "UPDATE admin_accounts SET totp_enabled = 1, updated_at = ?2 WHERE id = ?1",
             params![row.id, crate::read::now_ms()],
         )?;
+        // 确认 MFA 也是安全边界变化：确认前拿到的会话不能自动升级成 MFA 会话。
+        Self::revoke_mfa_bound_state(&tx, &row.id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -443,10 +475,15 @@ impl AccountStore {
         if !wxlike_platform::totp_verify(&secret, code) {
             return Err(AdminError::Forbidden("动态码不对".into()));
         }
-        self.lock().execute(
+        let c = self.lock();
+        let tx = c.unchecked_transaction()?;
+        tx.execute(
             "UPDATE admin_accounts SET totp_enabled = 0, totp_secret = NULL, updated_at = ?2 WHERE id = ?1",
             params![row.id, crate::read::now_ms()],
         )?;
+        // H-14：关闭 MFA 是降级，旧会话/旧 step-up 不能跨过这次降级继续用。
+        Self::revoke_mfa_bound_state(&tx, &row.id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -871,6 +908,65 @@ mod tests {
         assert!(s.totp_disable("ops3", "999999").is_err());
         s.totp_disable("ops3", &code).unwrap();
         assert!(!s.account("ops3").unwrap().unwrap().mfa_enabled);
+    }
+
+    #[test]
+    fn mfa_boundary_changes_revoke_sessions_and_stepups_atomically() {
+        let (_dir, s) = store("mfa-revoke");
+        s.add("ops5", "a-fairly-long-pass", Role::Superadmin)
+            .unwrap();
+        let account_id = s.account("ops5").unwrap().unwrap().id;
+        let (_, token) = s
+            .login("ops5", "a-fairly-long-pass", None, 60_000, "")
+            .unwrap();
+        s.lock()
+            .execute_batch(
+                "CREATE TABLE g14_stepup (account_id TEXT PRIMARY KEY, verified_at_ms INTEGER NOT NULL);",
+            )
+            .unwrap();
+        s.lock()
+            .execute(
+                "INSERT INTO g14_stepup(account_id, verified_at_ms) VALUES(?1, 1)",
+                params![account_id],
+            )
+            .unwrap();
+
+        // 重生成 seed：旧 bearer 与旧 step-up 都必须失效。
+        s.totp_enroll("ops5").unwrap();
+        assert!(
+            s.session(&token).unwrap().is_none(),
+            "re-enroll 后旧会话必须失效"
+        );
+        let stepups: i64 = s
+            .lock()
+            .query_row("SELECT COUNT(*) FROM g14_stepup", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stepups, 0, "re-enroll 后旧 step-up 必须清空");
+
+        let secret = s.totp_enroll("ops5").unwrap();
+        let code = current_code(&secret);
+        s.totp_confirm("ops5", &code).unwrap();
+        let (_, token2) = s
+            .login("ops5", "a-fairly-long-pass", Some(&code), 60_000, "")
+            .unwrap();
+        s.lock()
+            .execute(
+                "INSERT INTO g14_stepup(account_id, verified_at_ms) VALUES(?1, 2) ON CONFLICT(account_id) DO UPDATE SET verified_at_ms = excluded.verified_at_ms",
+                params![account_id],
+            )
+            .unwrap();
+
+        // 关闭 MFA：降级后旧会话/旧 step-up 也立即失效。
+        s.totp_disable("ops5", &code).unwrap();
+        assert!(
+            s.session(&token2).unwrap().is_none(),
+            "disable 后旧会话必须失效"
+        );
+        let stepups: i64 = s
+            .lock()
+            .query_row("SELECT COUNT(*) FROM g14_stepup", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stepups, 0, "disable 后旧 step-up 必须清空");
     }
 
     #[test]
