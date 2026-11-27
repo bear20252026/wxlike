@@ -37,16 +37,34 @@ use wxlike_platform::PlatformState;
 fn admin_session_token(db: &Path, user_id: &str) -> String {
     let access = wxlike_platform::random_hex(32);
     let digest = wxlike_platform::token_digest(&access);
+    let sid = wxlike_platform::random_hex(16);
     let now = wxlike_core::types::now_ms() as i64;
     let conn = rusqlite::Connection::open(db).expect("打开平台库 sidecar 连接");
     conn.execute_batch("PRAGMA busy_timeout = 5000;").unwrap();
+    // H-34：有效的访问会话必须同时有 identity_session_meta 侧车行；只写
+    // `sessions` 的老 fixture 会被 fail-closed 挡成 401。serial/auth_level
+    // 也要对得上：管理面要求 Root，serial 跟当前令牌序列一致。
+    let serial: i64 = conn
+        .query_row(
+            "SELECT COALESCE((SELECT serial FROM identity_token_serial WHERE id = 1), 0)",
+            [],
+            |row| row.get(0),
+        )
+        .expect("读取当前令牌序列");
     conn.execute(
         "INSERT INTO sessions(token, user_id, created_at, expires_at, sid, device_id, \
          device_name, ip, last_seen, audience) \
-         VALUES(?1, ?2, ?3, ?4, '', '', '', '', ?3, 'admin')",
-        rusqlite::params![digest, user_id, now, now + 60_000],
+         VALUES(?1, ?2, ?3, ?4, ?5, '', '', '', ?3, 'admin')",
+        rusqlite::params![digest, user_id, now, now + 60_000, sid],
     )
     .expect("写入 Admin audience 会话行");
+    conn.execute(
+        "INSERT INTO identity_session_meta( \
+             sid, user_id, auth_level, features, serial, issued_at, expires_at \
+         ) VALUES(?1, ?2, 'roo', 'VLX', ?3, ?4, ?5)",
+        rusqlite::params![sid, user_id, serial, now, now + 60_000],
+    )
+    .expect("写入 Admin 会话侧车行");
     access
 }
 

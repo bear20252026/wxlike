@@ -440,7 +440,12 @@ impl PgRef<'_> {
         match self {
             Self::Pool(pool) => {
                 let mut conn = pool.block_on(pool.pool().acquire())?;
-                f(&mut conn)
+                let out = f(&mut conn);
+                // `PoolConnection::drop` 会 `rt::spawn` 归还连接；必须在
+                // 专属 runtime 的上下文里丢，普通 `#[test]` 线程没有 Tokio
+                // 上下文，直接 drop 会 panic（sqlx "requires a Tokio context"）。
+                pool.block_on(async move { drop(conn) });
+                out
             }
             Self::Tx { conn, .. } => {
                 let mut guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
@@ -460,13 +465,18 @@ impl PgRef<'_> {
                 let mut conn = pool.block_on(pool.pool().acquire())?;
                 pool.block_on(sqlx::query("BEGIN").execute(&mut *conn))?;
                 let out = f(&mut conn);
-                match &out {
-                    Ok(_) => {
-                        pool.block_on(sqlx::query("COMMIT").execute(&mut *conn))?;
-                    }
-                    Err(_) => {
-                        let _ = pool.block_on(sqlx::query("ROLLBACK").execute(&mut *conn));
-                    }
+                let commit_error = if out.is_ok() {
+                    pool.block_on(sqlx::query("COMMIT").execute(&mut *conn))
+                        .err()
+                } else {
+                    let _ = pool.block_on(sqlx::query("ROLLBACK").execute(&mut *conn));
+                    None
+                };
+                // 同上：连接归还必须在 runtime 上下文内完成；COMMIT 失败也
+                // 必须先归还再向上返回，否则 Drop 又会落在没有 Tokio 的线程上。
+                pool.block_on(async move { drop(conn) });
+                if let Some(error) = commit_error {
+                    return Err(error);
                 }
                 out
             }

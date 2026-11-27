@@ -1149,6 +1149,42 @@ fn idempotent_msg_id(key: &str, user: &str, conv: &str) -> MsgId {
     id
 }
 
+/// HTTP 发送的幂等重放：同一个 key 的第二次请求不能再生成新的
+/// `sent_at_ms`，否则 hub 的完整 envelope 比较会把一次正常重试判成冲突。
+///
+/// 这里只看**调用方提供且可比较的字段**（会话、发送者、收件人、正文、引用）；
+/// `seq`/`msg_id`/`sent_at_ms` 是服务端生成或派生的，不参与。语义与 hub 的
+/// `replay_matches` 分工：hub 防的是“同一 msg_id 换内容”的伪造帧；HTTP 这一层
+/// 防的是“同一幂等键换请求”的冲突，同时让同请求重试稳定返回原 msg_id。
+fn http_send_replay(
+    deps: &HistoryDeps,
+    env: &Envelope,
+) -> Result<Option<MsgId>, (StatusCode, String)> {
+    let Some(stored) = deps.store.message_by_id(&env.msg_id).map_err(internal)? else {
+        return Ok(None);
+    };
+    let same = stored.envelope.conv_id == env.conv_id
+        && stored.envelope.sender == env.sender
+        && stored.envelope.to == env.to
+        && stored.envelope.body == env.body
+        && stored.envelope.quote_of == env.quote_of;
+    if !same {
+        return Err((
+            StatusCode::CONFLICT,
+            "idempotency key reused with different parameters".into(),
+        ));
+    }
+    Ok(Some(stored.envelope.msg_id))
+}
+
+fn send_ok(conv_id: &str, msg_id: MsgId) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "msg_id": hex(msg_id),
+        "conv_id": conv_id,
+        "accepted": true,
+    }))
+}
+
 /// `POST /api/conv/{conv}/send`：HTTP 控制面的发消息入口。
 ///
 /// 走的是 hub 的入站路径（`HubHandle::submit`），因此投递策略、落库、
@@ -1182,25 +1218,32 @@ async fn send_message(
     if let Some(quote) = quote {
         env = env.quoted(quote);
     }
-    if let Some(key) = body
+    let idempotency_key = body
         .idempotency_key
         .as_deref()
         .map(str::trim)
         .filter(|k| !k.is_empty())
-    {
+        .map(str::to_string);
+    if let Some(key) = idempotency_key.as_deref() {
         env.msg_id = idempotent_msg_id(key, &authed.user_id, &conv_id);
+        if let Some(msg_id) = http_send_replay(&deps, &env)? {
+            return Ok(send_ok(&conv_id, msg_id));
+        }
     }
 
-    deps.hub
-        .submit(&authed.user_id, &env)
-        .await
-        .map_err(send_error)?;
+    if let Err(error) = deps.hub.submit(&authed.user_id, &env).await {
+        // 并发重试可能两边都先读到“未落库”，后到的那次会在 hub 的
+        // 完整 envelope 比较上输给 sent_at_ms。这里回读一次已落库的原消息：
+        // 请求字段一致就按成功重放返回，不一致仍然 409。
+        if idempotency_key.is_some() && error.is::<wxlike_net::mq_hub::QuoteReplayConflict>() {
+            if let Some(msg_id) = http_send_replay(&deps, &env)? {
+                return Ok(send_ok(&conv_id, msg_id));
+            }
+        }
+        return Err(send_error(error));
+    }
 
-    Ok(Json(serde_json::json!({
-        "msg_id": hex(env.msg_id),
-        "conv_id": conv_id,
-        "accepted": true,
-    })))
+    Ok(send_ok(&conv_id, env.msg_id))
 }
 
 #[derive(serde::Deserialize)]

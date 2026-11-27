@@ -1,6 +1,6 @@
 //! 浏览器侧的 bincode wire 镜像。
 //!
-//! `/ws` 只有一种线上格式：`bincode` 1.3 编码的 [`WireFrame`]
+//! `/ws` 只有一种线上格式：`bincode` 1.3 编码的 [`crate::wire::WireFrame`]
 //! （`crates/net/src/wire.rs` / `crates/core/src/types.rs`）。浏览器不能复用
 //! `wxlike-core`（它带 rusqlite/vodozemac），所以这里按字段位置逐项镜像；
 //! 任何字段顺序、枚举序号、`u64` 长度前缀的漂移都由 `ci/jobs/contract/
