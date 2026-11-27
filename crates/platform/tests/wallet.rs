@@ -314,6 +314,59 @@ async fn redpacket_freezes_the_full_total_at_creation() {
     }
 }
 
+#[tokio::test]
+async fn non_member_claim_is_forbidden_over_http() {
+    let (st, _rec) = scene().await;
+    let app = app(st.clone());
+    let (alice, at) = signup(&app, "alice").await;
+    let (bob, bt) = signup(&app, "bob").await;
+    let (_carol, ct) = signup(&app, "carol").await;
+    let conv = wxlike_platform::direct_conv_id(&alice, &bob);
+    st.fund(&alice, 1_000, "test funding").unwrap();
+
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/wallet/redpacket",
+            Some(json!({"amount": 100, "count": 1, "conv_id": conv})),
+            Some(&at),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["redpacket_id"].as_str().unwrap().to_string();
+
+    // 非成员即使拿到红包 id 也必须 403；不能占名额、不能拿钱。
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            &format!("/api/wallet/redpacket/{id}/claim"),
+            None,
+            Some(&ct),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let packet = st.redpacket(&id).unwrap().unwrap();
+    assert_eq!(packet.claimed, 0);
+    assert_eq!(packet.claimed_total, 0);
+
+    // 会话成员仍可领。
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            &format!("/api/wallet/redpacket/{id}/claim"),
+            None,
+            Some(&bt),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 /// A1: 3 shares, 5 claimers — exactly 3 succeed and the total is conserved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn exactly_count_claims_succeed_and_the_total_is_conserved() {

@@ -300,9 +300,28 @@ impl Platform {
     pub(crate) fn claim_redpacket(&self, id: &str, by: &str) -> Result<i64> {
         let id = validate::id(id)?.to_string();
         let by = validate::id(by)?.to_string();
+        // 先按红包落点校验领取人：红包 id 可被枚举，成员资格不能靠客户端。
+        // 这一步在资金事务前完成；事务里再对直聊/群复核一次，然后才处理钱与
+        // 名额。不属于该会话的人连资金事务都不会进入。
+        let Some(packet) = self.redpacket(&id)? else {
+            return Err(PlatformError::NotFound);
+        };
+        // `conv_id == id` 是“没有落到具体会话”的存量回退编码，不当作会话。
+        let member_before = if !packet.conv_id.is_empty() && packet.conv_id != id {
+            match self.conv_member_allowed(&packet.conv_id, &by) {
+                Ok(true) => true,
+                Ok(false) | Err(PlatformError::NotFound) => false,
+                Err(err) => return Err(err),
+            }
+        } else {
+            true
+        };
+        if !member_before {
+            return Err(PlatformError::Forbidden);
+        }
         let (share, claimed, count, conv) = self
             .db()
-            .with_tx(|port| Self::claim_redpacket_tx(port, &id, &by))?;
+            .with_tx(|port| Self::claim_redpacket_tx(port, &id, &by, member_before))?;
 
         if !conv.is_empty() {
             self.notify_redpacket_claim(
@@ -324,11 +343,22 @@ impl Platform {
         port: &crate::storage::StorageConnection<'_>,
         id: &str,
         by: &str,
+        member_before: bool,
     ) -> Result<(i64, i64, i64, String)> {
         {
             let Some(state) = redpacket_state(port, id)? else {
                 return Err(PlatformError::NotFound);
             };
+            // 直聊/群在资金事务内用同一连接再判一次成员，关掉“校验后被踢”
+            // 的窗口；频道没有群成员表，沿用事务前的平台判定。
+            if !state.conv_id.is_empty() && state.conv_id != id {
+                match Self::redpacket_member_on(port, &state.conv_id, by)? {
+                    Some(true) => {}
+                    Some(false) => return Err(PlatformError::Forbidden),
+                    None if !member_before => return Err(PlatformError::Forbidden),
+                    None => {}
+                }
+            }
             let claimers = Self::claimable(&state, by)?;
             let share = draw_share(
                 state.total - state.claimed_total,
@@ -337,6 +367,26 @@ impl Platform {
             Self::pay_claim(port, id, by, share, claimers)?;
             Ok((share, state.claimed, state.count, state.conv_id))
         }
+    }
+
+    /// 事务连接上的成员判定：直聊与群给出明确答案，频道返回 `None`
+    /// （频道成员要跨社区表，事务外已判过）。
+    fn redpacket_member_on(
+        port: &crate::storage::StorageConnection<'_>,
+        conv: &str,
+        user: &str,
+    ) -> Result<Option<bool>> {
+        if let Some(rest) = conv.strip_prefix("d-") {
+            let (a, b) = rest
+                .split_once('~')
+                .ok_or(PlatformError::BadInput("malformed direct conversation"))?;
+            return Ok(Some(a == user || b == user));
+        }
+        if crate::domain::repo::groups::group_header(port, conv)?.is_some() {
+            let members = crate::domain::repo::groups::member_ids(port, conv)?;
+            return Ok(Some(members.iter().any(|m| m == user)));
+        }
+        Ok(None)
     }
 
     /// 领取前的全部拒绝条件：状态、自领、领完、重复领取。
@@ -600,24 +650,45 @@ mod ephemeral_tests {
         let p = Platform::in_memory().unwrap();
         let a = p.register("alice", "pw").unwrap();
         let b = p.register("bob", "pw").unwrap();
+        let conv = crate::direct_conv_id(&a, &b);
         p.fund(&a, 10_000, "test").unwrap();
 
         // 带会话发红包 → bob 领取 → ephemeral 回写进该会话
-        let rp = p.create_redpacket(&a, 300, 2, "包", Some("d-a~b")).unwrap();
+        let rp = p.create_redpacket(&a, 300, 2, "包", Some(&conv)).unwrap();
         let _ = p.claim_redpacket(&rp, &b).unwrap();
 
         let store = p.message_store.as_ref().unwrap();
         let (updates, _) = store
-            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, conv.as_str()), 0, 10)
             .unwrap();
         assert_eq!(updates.len(), 1, "claim 写了一条卡片更新");
         assert_eq!(updates[0].target_msg_id, rp);
         assert!(updates[0].payload.contains(&b));
         // 频道主时间线不受影响（不变式 3）
         let (timeline, _) = store
-            .fetch((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .fetch((wxlike_message::OwnerType::Direct, conv.as_str()), 0, 10)
             .unwrap();
         assert!(timeline.is_empty(), "ephemeral 不占时间线");
+    }
+
+    #[test]
+    fn non_member_cannot_claim_a_packet_bound_to_a_conversation() {
+        let p = Platform::in_memory().unwrap();
+        let a = p.register("alice", "pw").unwrap();
+        let b = p.register("bob", "pw").unwrap();
+        let c = p.register("carol", "pw").unwrap();
+        let conv = crate::direct_conv_id(&a, &b);
+        p.fund(&a, 1_000, "test").unwrap();
+        let rp = p.create_redpacket(&a, 100, 1, "包", Some(&conv)).unwrap();
+
+        assert!(matches!(
+            p.claim_redpacket(&rp, &c),
+            Err(crate::PlatformError::Forbidden)
+        ));
+        let packet = p.redpacket(&rp).unwrap().unwrap();
+        assert_eq!(packet.claimed, 0, "非成员不能占名额");
+        assert_eq!(packet.claimed_total, 0, "非成员不能拿钱");
+        assert!(p.claim_redpacket(&rp, &b).is_ok(), "会话成员仍可领");
     }
 
     #[test]
@@ -628,13 +699,16 @@ mod ephemeral_tests {
         let a = p.register("alice", "pw").unwrap();
         let b = p.register("bob", "pw").unwrap();
         let c = p.register("carol", "pw").unwrap();
+        let conv = p
+            .create_group(&a, "计数群", &[b.clone(), c.clone()])
+            .unwrap();
         p.fund(&a, 10_000, "test").unwrap();
-        let rp = p.create_redpacket(&a, 300, 2, "包", Some("d-a~b")).unwrap();
+        let rp = p.create_redpacket(&a, 300, 2, "包", Some(&conv)).unwrap();
 
         let store = p.message_store.as_ref().unwrap();
         let last_finished = |after: i64| -> bool {
             let (updates, _) = store
-                .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), after, 10)
+                .fetch_ephemeral((wxlike_message::OwnerType::Group, conv.as_str()), after, 10)
                 .unwrap();
             let last = updates.last().unwrap();
             last.target_msg_id == rp && last.payload.contains("\"finished\":true")
@@ -642,7 +716,7 @@ mod ephemeral_tests {
 
         p.claim_redpacket(&rp, &b).unwrap();
         let (updates, _) = store
-            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), 0, 10)
+            .fetch_ephemeral((wxlike_message::OwnerType::Group, conv.as_str()), 0, 10)
             .unwrap();
         assert_eq!(updates.len(), 1);
         assert!(
@@ -654,7 +728,11 @@ mod ephemeral_tests {
 
         p.claim_redpacket(&rp, &c).unwrap();
         let (updates, _) = store
-            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "d-a~b"), cursor, 10)
+            .fetch_ephemeral(
+                (wxlike_message::OwnerType::Group, conv.as_str()),
+                cursor,
+                10,
+            )
             .unwrap();
         assert_eq!(updates.len(), 1);
         assert!(
@@ -691,15 +769,16 @@ mod ephemeral_tests {
         let b = p.register("bob", "pw").unwrap();
         p.fund(&a, 10_000, "test").unwrap();
 
-        // 群会话 id 不带 d- 前缀 → 属主类型应推导为 Group
-        let rp = p
-            .create_redpacket(&a, 300, 2, "包", Some("g-team~room"))
+        // 真群：领取人必须是成员；群会话 id 不带 d- 前缀 → 属主类型推导为 Group
+        let conv = p
+            .create_group(&a, "红包群", std::slice::from_ref(&b))
             .unwrap();
+        let rp = p.create_redpacket(&a, 300, 2, "包", Some(&conv)).unwrap();
         let _ = p.claim_redpacket(&rp, &b).unwrap();
 
         let store = p.message_store.as_ref().unwrap();
         let (updates, _) = store
-            .fetch_ephemeral((wxlike_message::OwnerType::Group, "g-team~room"), 0, 10)
+            .fetch_ephemeral((wxlike_message::OwnerType::Group, conv.as_str()), 0, 10)
             .unwrap();
         assert_eq!(updates.len(), 1, "群红包 claim 写了一条 Group 卡片更新");
         assert_eq!(updates[0].target_msg_id, rp);
@@ -707,13 +786,13 @@ mod ephemeral_tests {
 
         // 不能落进 Direct 信箱（原 bug 的形状）
         let (wrong, _) = store
-            .fetch_ephemeral((wxlike_message::OwnerType::Direct, "g-team~room"), 0, 10)
+            .fetch_ephemeral((wxlike_message::OwnerType::Direct, conv.as_str()), 0, 10)
             .unwrap();
         assert!(wrong.is_empty(), "群红包卡片更新不应落进 Direct 信箱");
 
         // 频道主时间线不受影响（不变式 3）
         let (timeline, _) = store
-            .fetch((wxlike_message::OwnerType::Group, "g-team~room"), 0, 10)
+            .fetch((wxlike_message::OwnerType::Group, conv.as_str()), 0, 10)
             .unwrap();
         assert!(timeline.is_empty(), "ephemeral 不占时间线");
     }

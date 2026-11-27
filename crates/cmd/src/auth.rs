@@ -169,18 +169,31 @@ impl ScopeSet {
     }
 
     /// 交集：**只收窄**。两个来源都允许的才算有效授权。
+    ///
+    /// 结果写的是**语义交集**，不是左侧原样保留：`conv:*` ∩ `conv:g-1`
+    /// 必须得到 `conv:g-1`。否则受限 grant 收不窄宽 token，代理/MCP 就能
+    /// 越过授予范围。
     pub fn intersect(&self, other: &ScopeSet) -> ScopeSet {
-        let entries = self
-            .entries
-            .iter()
-            .filter(|s| {
-                other
-                    .entries
+        let mut entries: Vec<Scope> = Vec::new();
+        for left in &self.entries {
+            for right in &other.entries {
+                if left.class != right.class {
+                    continue;
+                }
+                let Some(selector) = selector_intersection(&left.selector, &right.selector) else {
+                    continue;
+                };
+                if !entries
                     .iter()
-                    .any(|o| o.class == s.class && selectors_overlap(&o.selector, &s.selector))
-            })
-            .cloned()
-            .collect();
+                    .any(|e| e.class == left.class && e.selector == selector)
+                {
+                    entries.push(Scope {
+                        class: left.class,
+                        selector,
+                    });
+                }
+            }
+        }
         ScopeSet {
             entries,
             invalid: Vec::new(),
@@ -188,10 +201,34 @@ impl ScopeSet {
     }
 }
 
-/// 两个选择器是否有交集。只有"相等"和"其中一个是 `*`"两种情况算重叠——
-/// 保守是正确的方向：算不出交集就当没有。
-fn selectors_overlap(a: &str, b: &str) -> bool {
-    a == "*" || b == "*" || a == b
+/// 两个选择器的语义交集；算不出精确交集时返回 `None`（保守拒绝）。
+///
+/// 常见形态（`*`、精确资源、`prefix*`）给出精确结果；两个复杂 glob
+/// 不猜，直接当无交集，避免把错误模式当成授权。
+fn selector_intersection(a: &str, b: &str) -> Option<String> {
+    if a == "*" {
+        return Some(b.to_string());
+    }
+    if b == "*" {
+        return Some(a.to_string());
+    }
+    if !a.contains('*') {
+        return glob_match(b, a).then(|| a.to_string());
+    }
+    if !b.contains('*') {
+        return glob_match(a, b).then(|| b.to_string());
+    }
+    let a_prefix = a.strip_suffix('*').filter(|p| !p.contains('*'))?;
+    let b_prefix = b.strip_suffix('*').filter(|p| !p.contains('*'))?;
+    let (longer, shorter) = if a_prefix.len() >= b_prefix.len() {
+        (a_prefix, b_prefix)
+    } else {
+        (b_prefix, a_prefix)
+    };
+    if longer.starts_with(shorter) {
+        return Some(format!("{longer}*"));
+    }
+    None
 }
 
 /// 令牌声明（由服务端签发；签名由宿主校验，本层只做语义校验）。
@@ -1106,5 +1143,38 @@ mod tests {
         assert!(text.contains("actor=u-alice"), "{text}");
         assert!(text.contains("conv:g-1"), "{text}");
         assert!(!text.contains("token"), "{text}");
+    }
+
+    #[test]
+    fn scope_intersection_narrows_wildcards_instead_of_keeping_the_token() {
+        // H-02：宽 token `conv:*` 遇到受限 grant `conv:g-1`，有效范围必须
+        // 是 g-1，而不是原样保留 `*`。
+        let token = ScopeSet::parse("conv:*");
+        let grant = ScopeSet::parse("conv:g-1");
+        let effective = token.intersect(&grant);
+        assert!(effective.allows(ScopeClass::Conversation, "g-1"));
+        assert!(
+            !effective.allows(ScopeClass::Conversation, "g-2"),
+            "grant must cap the token: {:?}",
+            effective.entries()
+        );
+    }
+
+    #[test]
+    fn scope_intersection_handles_prefix_containment_and_disjoint() {
+        let token = ScopeSet::parse("conv:team-*");
+        let narrower = assert_effective(&token, "conv:team-a*");
+        assert!(narrower.allows(ScopeClass::Conversation, "team-a-1"));
+        assert!(!narrower.allows(ScopeClass::Conversation, "team-b-1"));
+
+        let disjoint = token.intersect(&ScopeSet::parse("conv:other-*"));
+        assert!(disjoint.is_empty(), "no semantic overlap");
+        assert!(!disjoint.allows(ScopeClass::Conversation, "team-a-1"));
+    }
+
+    fn assert_effective(left: &ScopeSet, right: &str) -> ScopeSet {
+        let out = left.intersect(&ScopeSet::parse(right));
+        assert!(!out.is_empty(), "expected a non-empty intersection");
+        out
     }
 }

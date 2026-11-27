@@ -280,10 +280,14 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
             }
         }
     }
-    // 末段必须在后缀处
+    // 末段必须在 `rest` 的后缀处；先从 rest 里剥掉，再让中间段扫描。
+    // 不剥会在 `a*b*bc` vs `abc` 这类模式里让中间段重复吃掉末段。
     let last = parts.last().copied().unwrap_or("");
-    if !last.is_empty() && !text.ends_with(last) {
-        return false;
+    if !last.is_empty() {
+        let Some(stripped) = rest.strip_suffix(last) else {
+            return false;
+        };
+        rest = stripped;
     }
     // 中间段按顺序找
     for part in parts.iter().skip(1).take(parts.len().saturating_sub(2)) {
@@ -629,5 +633,15 @@ mod tests {
         let mut convs = vec!["g-1".to_string(), "g-2".to_string()];
         p.retain_allowed(&mut convs);
         assert_eq!(convs, vec!["g-1".to_string()]);
+    }
+
+    #[test]
+    fn glob_reserves_the_suffix_before_scanning_middle_segments() {
+        // H-03：`a*b*bc` 至少需要 a + b + bc；`abc` 不能被中间 `*` 吞掉 bc。
+        assert!(!glob_match("a*b*bc", "abc"), "suffix was double-spent");
+        assert!(glob_match("a*b*bc", "abbc"));
+        assert!(glob_match("g-*-room", "g-1-room"));
+        assert!(!glob_match("g-*-room", "g-1-Room"));
+        assert!(!glob_match("a*a", "a"), "two literals need two a's");
     }
 }
