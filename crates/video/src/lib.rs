@@ -45,10 +45,10 @@ mod stats;
 mod timing;
 
 pub use jobs::{
-    backoff_ms, deliver_callback, deliver_callback_signed, spawn_worker, CallbackBody,
-    CallbackState, Delivery, Job, JobFailure, JobState, JobSubmit, RejectKind, Rejected,
-    WorkerReport, BASE_DELAY_MS, CALLBACK_TIMEOUT_MS, CALLBACK_TOKEN_HEADER, MAX_DELAY_MS,
-    MAX_ERROR_CHARS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS, WORKER_POLL,
+    backoff_ms, deliver_callback, deliver_callback_signed, deliver_callback_signed_to,
+    spawn_worker, CallbackBody, CallbackState, Delivery, Job, JobFailure, JobState, JobSubmit,
+    RejectKind, Rejected, WorkerReport, BASE_DELAY_MS, CALLBACK_TIMEOUT_MS, CALLBACK_TOKEN_HEADER,
+    MAX_DELAY_MS, MAX_ERROR_CHARS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS, WORKER_POLL,
 };
 pub use live::{
     check_live_segment_name, check_stream_key, ingest_secret_from_env, ingest_token, live_playlist,

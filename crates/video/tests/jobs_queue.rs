@@ -15,9 +15,9 @@ use std::net::TcpListener;
 use support::spawn_sink;
 use tower::ServiceExt as _;
 use wxlike_video::{
-    backoff_ms, deliver_callback, routes, CallbackBody, CallbackState, Delivery, Ingested,
-    JobFailure, JobState, Rendition, VideoState, VideoStore, BASE_DELAY_MS, MAX_DELAY_MS,
-    MAX_JOB_ATTEMPTS, STALE_RUNNING_MS,
+    backoff_ms, deliver_callback, deliver_callback_signed_to, routes, CallbackBody, CallbackState,
+    Delivery, Ingested, JobFailure, JobState, Rendition, VideoState, VideoStore, BASE_DELAY_MS,
+    MAX_DELAY_MS, MAX_JOB_ATTEMPTS, STALE_RUNNING_MS,
 };
 
 fn store(tag: &str) -> VideoStore {
@@ -473,6 +473,45 @@ fn callback_state_transitions() {
 }
 
 #[test]
+fn retryable_failure_does_not_fire_a_preterminal_callback() {
+    let store = store("preterminal-callback");
+    let job = store
+        .submit_job(
+            &bytes_of("preterminal"),
+            "tester",
+            Some("http://127.0.0.1:1/cb"),
+        )
+        .unwrap()
+        .job;
+    assert_eq!(job.callback_state, CallbackState::Pending);
+
+    // 可重试失败：作业回到 pending 等下一轮，不是终态
+    let retrying = store
+        .fail_job(
+            &job.job_id,
+            &JobFailure::retryable("ffmpeg crashed".to_string()),
+        )
+        .unwrap();
+    assert_eq!(retrying.state, JobState::Pending);
+    let due = store.due_callbacks(now() + 10_000_000, 8).unwrap();
+    assert!(
+        due.iter().all(|j| j.job_id != job.job_id),
+        "重试中的作业不能发终态回调"
+    );
+
+    // 永久失败才是终态，回调这时才该 due
+    let failed = store
+        .fail_job(
+            &job.job_id,
+            &JobFailure::permanent("unsupported codec".to_string()),
+        )
+        .unwrap();
+    assert_eq!(failed.state, JobState::Failed);
+    let due = store.due_callbacks(now() + 10_000_000, 8).unwrap();
+    assert!(due.iter().any(|j| j.job_id == job.job_id));
+}
+
+#[test]
 fn manual_requeue_rearms_the_callback() {
     let store = store("rearm");
     let job = store
@@ -502,6 +541,30 @@ fn body_of(job_id: &str) -> CallbackBody {
         attempts: 1,
         updated_at: now(),
     }
+}
+
+#[tokio::test]
+async fn callback_connector_uses_only_the_pinned_address() {
+    let (url, _) = spawn_sink(204, "No Content");
+    // sink 的真实地址是 127.0.0.1:<port>；请求里的 host 故意用不可解析的
+    // 名字，只有 PinnedResolver 返回预解析 IP 才可能成功。
+    let port = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|rest| rest.split('/').next())
+        .expect("sink url");
+    let pinned_url = format!("http://pinned.invalid:{port}/cb");
+    let delivery = deliver_callback_signed_to(
+        &pinned_url,
+        &body_of(&"p".repeat(64)),
+        None,
+        &[std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)],
+    )
+    .await;
+    assert_eq!(
+        delivery,
+        Delivery::Delivered,
+        "必须直连 pinned IP，不能再查 DNS"
+    );
 }
 
 #[tokio::test]

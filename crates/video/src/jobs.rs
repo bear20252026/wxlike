@@ -246,6 +246,7 @@ static DUE_CALLBACKS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
         "SELECT {JOB_SELECT_COLUMNS}
          FROM video_jobs
          WHERE callback_state = 'pending' AND callback_next_retry_at <= ?1
+           AND state IN ('succeeded', 'failed')
          ORDER BY callback_next_retry_at, created_at
          LIMIT ?2"
     )
@@ -756,8 +757,16 @@ impl VideoStore {
             // 先解析到公网、回调时再指向 169.254.169.254 就绕过去了（issue #8）。
             let delivery = match self.policy().callbacks.resolve(&url).await {
                 Err(message) => Delivery::Permanent(message),
-                Ok(()) => {
-                    deliver_callback_signed(&url, &body, self.policy().callbacks.token()).await
+                // resolve 已把域名钉成 IP；connector 只能连这些地址，避免
+                // 校验与 ureq 自己再解析之间的 DNS rebinding 窗口（H-22）。
+                Ok(pinned) => {
+                    deliver_callback_signed_to(
+                        &url,
+                        &body,
+                        self.policy().callbacks.token(),
+                        &pinned,
+                    )
+                    .await
                 }
             };
             self.record_callback(&job.job_id, &delivery)?;
@@ -903,6 +912,61 @@ pub enum Delivery {
     Permanent(String),
 }
 
+/// 从 URL 里取小写 host（只用于 PinnedResolver 的 host 断言）。
+fn url_host(url: &str) -> String {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = authority
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(authority);
+    host.trim_matches(['[', ']']).to_ascii_lowercase()
+}
+
+/// 只返回预解析地址的 ureq resolver。
+///
+/// 校验时解析过一遍，connector 这里不允许再查 DNS：URI host 必须和校验时的
+/// host 一致，返回的地址只能是校验通过的 IP 列表。
+#[derive(Debug)]
+struct PinnedResolver {
+    host: String,
+    addrs: Vec<std::net::IpAddr>,
+}
+
+impl ureq::unversioned::resolver::Resolver for PinnedResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        _config: &ureq::config::Config,
+        _timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let host = uri.host().unwrap_or_default().trim_matches(['[', ']']);
+        if !host.eq_ignore_ascii_case(&self.host) {
+            return Err(ureq::Error::HostNotFound);
+        }
+        let port = uri
+            .port_u16()
+            .unwrap_or(if uri.scheme_str() == Some("https") {
+                443
+            } else {
+                80
+            });
+        let mut out = <Self as ureq::unversioned::resolver::Resolver>::empty(self);
+        for ip in &self.addrs {
+            if out.try_push(std::net::SocketAddr::new(*ip, port)).is_err() {
+                break;
+            }
+        }
+        if out.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(out)
+    }
+}
+
 /// 阻塞 IO 的分类结果（小枚举：把 `ureq::Error` 直接带回 `Result` 的
 /// `Err` 变体是 272 字节，clippy 会拦，而且调用方本来也不需要整个错误结构）。
 enum Sent {
@@ -929,15 +993,28 @@ pub async fn deliver_callback_signed(
     body: &CallbackBody,
     token: Option<&str>,
 ) -> Delivery {
+    deliver_callback_signed_to(url, body, token, &[]).await
+}
+
+/// 固定连接地址的回调发送。`pinned` 为空时退回系统 DNS（仅测试/内部调用）；
+/// 生产 worker 必须传 [`CallbackPolicy::resolve`] 的结果。
+pub async fn deliver_callback_signed_to(
+    url: &str,
+    body: &CallbackBody,
+    token: Option<&str>,
+    pinned: &[std::net::IpAddr],
+) -> Delivery {
     let json = match serde_json::to_string(body) {
         Ok(json) => json,
         Err(err) => return Delivery::Permanent(format!("serialize callback: {err}")),
     };
     let url = url.to_string();
     let token = token.map(str::to_string);
+    let pinned = pinned.to_vec();
+    let host = url_host(&url);
     let sent = tokio::task::spawn_blocking(move || -> Result<Sent, String> {
         // ureq 3：超时是 agent 级配置（顺带白拿连接池），body 用 `send()`。
-        let agent: ureq::Agent = ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_millis(CALLBACK_TIMEOUT_MS)))
             // 4xx/5xx 不当错误：状态码要交给 `classify_status` 分流
             // （429 是限流、5xx 才重试），当成错误就分不出来了。
@@ -946,8 +1023,22 @@ pub async fn deliver_callback_signed(
             // ureq 2 对 POST 本来就不跟；3 默认会跟（还把 POST 改成 GET），
             // 所以这里显式关掉，顺便让 3xx 落回 `classify_status` 的永久档。
             .max_redirects(0)
-            .build()
-            .into();
+            // 出站回调不能吃环境里的 HTTP(S)_PROXY：代理会自己解析目标，
+            // 我们固定的 IP/白名单就失效了。回调要么直连，要么显式配置。
+            .proxy(None)
+            .build();
+        let agent: ureq::Agent = if pinned.is_empty() {
+            config.into()
+        } else {
+            ureq::Agent::with_parts(
+                config,
+                ureq::unversioned::transport::DefaultConnector::default(),
+                PinnedResolver {
+                    host,
+                    addrs: pinned,
+                },
+            )
+        };
         let mut request = agent.post(&url).header("content-type", "application/json");
         if let Some(token) = token.as_deref() {
             request = request.header(CALLBACK_TOKEN_HEADER, token);

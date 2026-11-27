@@ -203,8 +203,11 @@ impl CallbackPolicy {
         Ok(parsed.normalized())
     }
 
-    /// 发送前再解析一次并校验（DNS 重绑定防线）。
-    pub async fn resolve(&self, url: &str) -> Result<(), String> {
+    /// 发送前再解析一次并校验（DNS 重绑定防线），返回**已经校验过的 IP**。
+    ///
+    /// 调用方必须把这些地址固定给 connector，不能再让 ureq 重新做一次 DNS；
+    /// 只校验不固定就是审计里的 TOCTOU 窗口。
+    pub async fn resolve(&self, url: &str) -> Result<Vec<IpAddr>, String> {
         let parsed = parse_http_url(url)?;
         let port = parsed.port.unwrap_or(if parsed.tls {
             DEFAULT_HTTPS_PORT
@@ -213,11 +216,10 @@ impl CallbackPolicy {
         });
         // 主机本身就是 IP 时不必查 DNS
         if let Ok(ip) = parsed.host.parse::<IpAddr>() {
-            return if self.allow_private {
-                Ok(())
-            } else {
-                ensure_public(ip)
-            };
+            if !self.allow_private {
+                ensure_public(ip)?;
+            }
+            return Ok(vec![ip]);
         }
         let addrs: Vec<IpAddr> = tokio::net::lookup_host((parsed.host.as_str(), port))
             .await
@@ -227,14 +229,13 @@ impl CallbackPolicy {
         if addrs.is_empty() {
             return Err("回调地址解析不到任何地址".to_string());
         }
-        if self.allow_private {
-            return Ok(());
+        if !self.allow_private {
+            // **任何一个**解析结果是私网就整体拒绝：混合解析是重绑定的常见形态
+            for ip in &addrs {
+                ensure_public(*ip)?;
+            }
         }
-        // **任何一个**解析结果是私网就整体拒绝：混合解析是重绑定的常见形态
-        for ip in addrs {
-            ensure_public(ip)?;
-        }
-        Ok(())
+        Ok(addrs)
     }
 }
 
