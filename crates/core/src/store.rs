@@ -430,6 +430,17 @@ impl Store {
             .optional()?)
     }
 
+    /// One archived message by `msg_id`, including its authoritative
+    /// `conv_id` and recipient list. Receipt validation uses this so a
+    /// control frame cannot point at a message from another conversation.
+    pub fn message_by_id(&self, msg_id: &MsgId) -> anyhow::Result<Option<StoredMessage>> {
+        let c = self.c();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE msg_id = ?1"
+        ))?;
+        Ok(stmt.query_row(params![msg_id], row_to_message).optional()?)
+    }
+
     /// Who authored `msg_id` — the hub needs this to route a receipt back.
     pub fn sender_of(&self, msg_id: &MsgId) -> anyhow::Result<Option<String>> {
         Ok(self

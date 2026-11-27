@@ -1611,19 +1611,34 @@ impl std::fmt::Display for QuoteReplayConflict {
 
 impl std::error::Error for QuoteReplayConflict {}
 
-fn check_quoted_replay(store: &Store, env: &Envelope) -> anyhow::Result<()> {
-    let key = env.msg_id.to_vec();
+/// 重复 `msg_id` 的完整 envelope 比较。
+///
+/// `seq` 是服务端/信箱分配的投递序号，允许重放帧为 0；`msg_id` 是主键，
+/// 天然相同。其余字段全部参与比较，`to` 先排序去重，避免仅换收件人顺序
+/// 的帧被当成新消息。任何差异都是幂等键冲突，不落库、不投递、不分配新 seq。
+fn replay_matches(prev: &Envelope, next: &Envelope) -> bool {
+    fn recipients(to: &[String]) -> Vec<&str> {
+        let mut out: Vec<&str> = to.iter().map(String::as_str).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+    prev.version == next.version
+        && prev.conv_id == next.conv_id
+        && prev.sender == next.sender
+        && recipients(&prev.to) == recipients(&next.to)
+        && prev.kind == next.kind
+        && prev.body == next.body
+        && prev.sent_at_ms == next.sent_at_ms
+        && prev.quote_of == next.quote_of
+        && prev.receipt == next.receipt
+}
+
+fn check_replay(store: &Store, env: &Envelope) -> anyhow::Result<()> {
     let stored = store
-        .by_msg_ids(std::slice::from_ref(&key))?
-        .remove(&key)
+        .message_by_id(&env.msg_id)?
         .context("persisted message missing during replay check")?;
-    let prev = stored.envelope;
-    if (prev.quote_of.is_some() || env.quote_of.is_some())
-        && (prev.sender != env.sender
-            || prev.conv_id != env.conv_id
-            || prev.body != env.body
-            || prev.quote_of != env.quote_of)
-    {
+    if !replay_matches(&stored.envelope, env) {
         return Err(QuoteReplayConflict.into());
     }
     Ok(())
@@ -1654,7 +1669,7 @@ async fn handle_inbound(
     }
     // Control frames (receipts, recalls) are never conversation content.
     if env.receipt.is_some() {
-        return handle_receipt(state, &env).await;
+        return handle_receipt(state, &env, members.as_deref()).await;
     }
     if env.is_recall() {
         return handle_recall(state, &env, members).await;
@@ -1816,30 +1831,67 @@ async fn run_send_gate(state: &Arc<HubState>, policy: &dyn DeliveryPolicy, env: 
     }
 }
 
-/// 回执：只回原消息作者（`to` 仅作提示，去重后不再多通知一次）。
-async fn handle_receipt(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result<()> {
+/// 回执：只回原消息作者，且必须绑定原消息的会话与合法接收者。
+///
+/// 客户端传来的 `env.to` 一律不参与收件人推导：`refers_to` 找到归档行，
+/// 用归档行的 `conv_id` 校验 `env.conv_id`，再用直聊对端 / 群成员 / 原
+/// 收件人列表判断 `env.sender` 是否有权对这条消息回执。伪造会话 id 或
+/// 指定任意 `to` 都不会产生通知。
+async fn handle_receipt(
+    state: &Arc<HubState>,
+    env: &Envelope,
+    members: Option<&[String]>,
+) -> anyhow::Result<()> {
     if env.msg_id != NO_MSG_ID && state.seen.lock().await.check_and_insert(env.msg_id) {
         return Ok(());
     }
-    let author = match (&state.storage, env.refers_to()) {
-        (Some(store), Some(target)) => store.sender_of(&target)?,
-        _ => None,
+    let Some(store) = &state.storage else {
+        eprintln!("[mq-hub] receipt without archival storage, dropping");
+        return Ok(());
     };
-    let mut recipients: Vec<String> = Vec::with_capacity(env.to.len() + 1);
-    if let Some(author) = author {
-        recipients.push(author);
-    }
-    for rcpt in &env.to {
-        if !recipients.contains(rcpt) {
-            recipients.push(rcpt.clone());
-        }
-    }
-    if recipients.is_empty() {
+    let Some(target) = env.refers_to() else {
+        eprintln!("[mq-hub] receipt without refers_to, dropping");
+        return Ok(());
+    };
+    let Some(original) = store.message_by_id(&target)? else {
         eprintln!("[mq-hub] receipt for an unknown message, dropping");
         return Ok(());
+    };
+    if original.envelope.conv_id != env.conv_id {
+        eprintln!(
+            "[mq-hub] receipt conv {} does not own message {} (conv {}), dropping",
+            env.conv_id,
+            hex::encode(target),
+            original.envelope.conv_id
+        );
+        return Ok(());
     }
+    if original.envelope.sender == env.sender {
+        eprintln!("[mq-hub] author cannot receipt their own message, dropping");
+        return Ok(());
+    }
+    let allowed = if let Some((a, b)) = direct_members(&env.conv_id) {
+        env.sender == a || env.sender == b
+    } else if let Some(members) = members {
+        members.iter().any(|member| member == &env.sender)
+    } else {
+        original
+            .envelope
+            .to
+            .iter()
+            .any(|recipient| recipient == &env.sender)
+    };
+    if !allowed {
+        eprintln!(
+            "[mq-hub] {} is not a legal recipient of {}, receipt dropped",
+            env.sender,
+            hex::encode(target)
+        );
+        return Ok(());
+    }
+    // 作者从归档行取，收件人只留作者；`env.to` 被完全忽略。
     let mut directed = env.clone();
-    directed.to = recipients;
+    directed.to = vec![original.envelope.sender];
     route_envelope(state, &directed, true).await
 }
 
@@ -1910,7 +1962,7 @@ async fn replay_content(
     let msg_key = hex::encode(env.msg_id);
     let recipients = content_recipients(env, members);
     if let Some(store) = &state.storage {
-        check_quoted_replay(store, env)?;
+        check_replay(store, env)?;
         store.ensure_deliveries(&msg_key, &recipients)?;
     }
     tracing::debug!(
@@ -1925,7 +1977,7 @@ async fn replay_content(
 fn archive_content(store: &Store, env: &mut Envelope) -> anyhow::Result<()> {
     // 唯一索引决定并发胜者，冲突帧必须在镜像与投递前退出。
     if store.append(env, false)?.is_none() {
-        check_quoted_replay(store, env)?;
+        check_replay(store, env)?;
     }
     Ok(())
 }
@@ -1952,9 +2004,10 @@ fn mirror_content(mailbox: &wxlike_message::MessageStore, env: &mut Envelope) {
         &payload,
     ) {
         Ok(Some(seq)) => env.seq = seq,
-        // 重复 msg_id：信箱已有这一条，沿用它的序号
+        // 重复 msg_id：信箱已有这一条，沿用原消息的序号；不能用当前
+        // conversation head，否则并发 duplicate 会拿到一个更新的 seq。
         Ok(None) => {
-            if let Ok(seq) = mailbox.head_seq((owner, &env.conv_id)) {
+            if let Ok(Some(seq)) = mailbox.seq_of((owner, &env.conv_id), &msg_id) {
                 env.seq = seq;
             }
         }
@@ -2500,5 +2553,32 @@ impl HubLease {
     /// 从路由表注销本 hub（幂等；失败不 panic，由调用方记日志）。
     pub async fn unregister(&self) -> anyhow::Result<()> {
         self.routes.unregister_hub(&self.hub_id).await
+    }
+}
+
+#[cfg(test)]
+mod mailbox_replay_tests {
+    use super::*;
+    use wxlike_message::MessageStore;
+
+    /// H-07：重复 msg_id 镜像进信箱时必须沿用原消息 seq，不能拿当前 head。
+    #[test]
+    fn duplicate_mirror_keeps_the_original_mailbox_seq() {
+        let mailbox = MessageStore::open(None).unwrap();
+        let mut first = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "one");
+        mirror_content(&mailbox, &mut first);
+        assert_eq!(first.seq, 1);
+
+        let mut second = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "two");
+        mirror_content(&mailbox, &mut second);
+        assert_eq!(second.seq, 2);
+
+        let mut duplicate = first.clone();
+        duplicate.seq = 0;
+        mirror_content(&mailbox, &mut duplicate);
+        assert_eq!(
+            duplicate.seq, 1,
+            "duplicate keeps its original seq, not head 2"
+        );
     }
 }

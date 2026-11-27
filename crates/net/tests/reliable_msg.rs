@@ -220,6 +220,100 @@ async fn receipt_travels_back_to_the_author_only() {
 }
 
 #[tokio::test]
+async fn conflicting_replay_keeps_the_original_and_adds_no_delivery() {
+    let (store, addr) = hub_and_store("hub-1").await;
+    let alice = connect(addr, "alice").await;
+    let bob = connect(addr, "bob").await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let original = Envelope::direct("conv1", "alice", vec!["bob".into()], 1, "original body");
+    alice.send(&original).await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(5), bob.next_envelope())
+        .await
+        .expect("bob receives the original")
+        .unwrap();
+    assert_eq!(got.body, original.body);
+
+    // 同一 msg_id 换正文/收件人/时间戳：幂等冲突，不能产生第二次投递。
+    let mut forged = original.clone();
+    forged.body = MsgBody::Text("forged body".into());
+    forged.to = vec!["carol".into()];
+    forged.sent_at_ms = original.sent_at_ms.saturating_add(1);
+    alice.send(&forged).await.unwrap();
+    assert!(
+        drain(&bob, Duration::from_millis(700)).await.is_empty(),
+        "conflicting replay must not be delivered"
+    );
+
+    let rows = store.list_messages("conv1").unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "conflicting replay must not write a second row"
+    );
+    assert_eq!(rows[0].envelope.body, original.body, "first writer wins");
+}
+
+#[tokio::test]
+async fn receipt_is_bound_to_the_original_conversation_and_ignores_env_to() {
+    let (_store, addr) = hub_and_store("hub-1").await;
+    let alice = connect(addr, "alice").await;
+    let bob = connect(addr, "bob").await;
+    let carol = connect(addr, "carol").await;
+    let mallory = connect(addr, "mallory").await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let msg = Envelope::direct(
+        "conv1",
+        "alice",
+        vec!["bob".into()],
+        1,
+        "only bob should ack",
+    );
+    alice.send(&msg).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), bob.next_envelope())
+        .await
+        .expect("bob receives the message")
+        .unwrap();
+
+    // 合法接收者可以回执，但客户端塞进来的任意 `to` 不产生第二个通知。
+    let mut ack = msg.receipt_from(
+        "bob",
+        Receipt::Read {
+            up_to_msg_id: msg.msg_id,
+        },
+    );
+    ack.to = vec!["carol".into()];
+    bob.send(&ack).await.unwrap();
+    let to_alice = drain(&alice, Duration::from_millis(700)).await;
+    assert_eq!(to_alice.len(), 1, "only the author is notified");
+    assert_eq!(to_alice[0].receipt, ack.receipt);
+    assert!(
+        drain(&carol, Duration::from_millis(400)).await.is_empty(),
+        "env.to must not add recipients"
+    );
+
+    // 另一个会话的成员知道 msg_id 也不能伪造跨会话回执。
+    let mut forged = msg.receipt_from(
+        "mallory",
+        Receipt::Read {
+            up_to_msg_id: msg.msg_id,
+        },
+    );
+    forged.conv_id = "d-mallory~carol".into();
+    forged.to = vec!["carol".into()];
+    mallory.send(&forged).await.unwrap();
+    assert!(
+        drain(&alice, Duration::from_millis(600)).await.is_empty(),
+        "cross-conversation receipt must be dropped"
+    );
+    assert!(
+        drain(&carol, Duration::from_millis(400)).await.is_empty(),
+        "forged recipient gets nothing"
+    );
+}
+
+#[tokio::test]
 async fn receipt_for_an_offline_author_is_parked() {
     let (_store, addr) = hub_and_store("hub-1").await;
 
