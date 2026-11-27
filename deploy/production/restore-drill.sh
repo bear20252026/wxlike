@@ -29,20 +29,48 @@ DEST="$OUT/restored"
 rm -rf "$DEST"
 mkdir -p "$DEST"
 cp "$BACKUP/wxlike.db" "$DEST/wxlike.db"
-[ -f "$BACKUP/media.tar.gz" ] && tar -xzf "$BACKUP/media.tar.gz" -C "$DEST" || true
 
 INTEGRITY="$(sqlite3 "$(sqlpath "$DEST/wxlike.db")" 'PRAGMA integrity_check;')"
 [ "$INTEGRITY" = "ok" ] || { echo "restored database failed integrity_check: $INTEGRITY" >&2; exit 1; }
 
 MANIFEST="$(sqlpath "$BACKUP/manifest.json")"
-EXPECTED_DB_SHA="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['database']['sha256'])")"
+readarray -t MEDIA_META < <(python3 - "$MANIFEST" <<'MEDIA_PY'
+import json, sys
+media = json.load(open(sys.argv[1], encoding="utf-8")).get("media") or {}
+print(media.get("path") or "")
+print(media.get("sha256") or "")
+print(int(media.get("bytes") or 0))
+MEDIA_PY
+)
+MEDIA_REL="${MEDIA_META[0]:-}"
+EXPECTED_MEDIA_SHA="${MEDIA_META[1]:-}"
+EXPECTED_MEDIA_BYTES="${MEDIA_META[2]:-0}"
+
+if [ -n "$MEDIA_REL" ]; then
+  case "$MEDIA_REL" in
+    /*|*..*) echo "manifest media path must be relative and stay inside the backup: $MEDIA_REL" >&2; exit 1 ;;
+  esac
+  MEDIA_SRC="$BACKUP/$MEDIA_REL"
+  [ -f "$MEDIA_SRC" ] || { echo "manifest declares media but $MEDIA_SRC is missing" >&2; exit 1; }
+  [ -n "$EXPECTED_MEDIA_SHA" ] || { echo "manifest declares media without sha256" >&2; exit 1; }
+  ACTUAL_MEDIA_SHA="$(sha256sum "$MEDIA_SRC" | cut -d' ' -f1)"
+  [ "$EXPECTED_MEDIA_SHA" = "$ACTUAL_MEDIA_SHA" ] || { echo "media archive sha256 mismatch" >&2; exit 1; }
+  ACTUAL_MEDIA_BYTES="$(wc -c < "$MEDIA_SRC" | tr -d ' ')"
+  [ "$ACTUAL_MEDIA_BYTES" = "$EXPECTED_MEDIA_BYTES" ] || { echo "media archive size $ACTUAL_MEDIA_BYTES != manifest $EXPECTED_MEDIA_BYTES" >&2; exit 1; }
+  tar -xzf "$MEDIA_SRC" -C "$DEST" || { echo "media archive extraction failed" >&2; exit 1; }
+  MEDIA_VERIFIED=true
+else
+  MEDIA_VERIFIED=false
+fi
+
+EXPECTED_DB_SHA="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['database']['sha256'])" "$MANIFEST")"
 ACTUAL_DB_SHA="$(sha256sum "$DEST/wxlike.db" | cut -d' ' -f1)"
 [ "$EXPECTED_DB_SHA" = "$ACTUAL_DB_SHA" ] || { echo "restored database hash mismatch" >&2; exit 1; }
 
 USERS="$(sqlite3 "$(sqlpath "$DEST/wxlike.db")" "SELECT count(*) FROM users;" 2>/dev/null || echo 0)"
 MESSAGES="$(sqlite3 "$(sqlpath "$DEST/wxlike.db")" "SELECT count(*) FROM messages;" 2>/dev/null || echo 0)"
-EXPECTED_USERS="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['counts']['users'])")"
-EXPECTED_MESSAGES="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['counts']['messages'])")"
+EXPECTED_USERS="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['counts']['users'])" "$MANIFEST")"
+EXPECTED_MESSAGES="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['counts']['messages'])" "$MANIFEST")"
 [ "$USERS" = "$EXPECTED_USERS" ] || { echo "users $USERS != manifest $EXPECTED_USERS" >&2; exit 1; }
 [ "$MESSAGES" = "$EXPECTED_MESSAGES" ] || { echo "messages $MESSAGES != manifest $EXPECTED_MESSAGES" >&2; exit 1; }
 
@@ -61,14 +89,36 @@ if [ -n "$SERVER_BIN" ]; then
     kill -0 "$PID" 2>/dev/null || break
     sleep 0.25
   done
+  [ "$healthy" = true ] || {
+    kill -KILL "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+    echo "restored server never became healthy" >&2
+    cat "$DEST/server.log" >&2
+    exit 1
+  }
   kill -TERM "$PID" 2>/dev/null || true
-  wait "$PID" 2>/dev/null || true
-  [ "$healthy" = true ] || { echo "restored server never became healthy" >&2; cat "$DEST/server.log" >&2; exit 1; }
+  stopped=false
+  for _ in $(seq 1 40); do
+    if ! kill -0 "$PID" 2>/dev/null; then stopped=true; break; fi
+    sleep 0.25
+  done
+  if [ "$stopped" != true ]; then
+    kill -KILL "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+    echo "restored server ignored SIGTERM and had to be killed" >&2
+    exit 1
+  fi
+  wait "$PID" 2>/dev/null || WAIT_STATUS=$?
+  WAIT_STATUS="${WAIT_STATUS:-0}"
+  case "$WAIT_STATUS" in
+    0|137|143) ;;
+    *) echo "restored server exited with status $WAIT_STATUS" >&2; exit 1 ;;
+  esac
   SERVER_STARTED=true
 fi
 
 END_EPOCH="$(python3 -c 'import time;print(time.time())')"
-python3 - "$MANIFEST" "$END_EPOCH" "$START_EPOCH" "$SERVER_STARTED" "$(sqlpath "$OUT/drill.json")" <<'PY'
+python3 - "$MANIFEST" "$END_EPOCH" "$START_EPOCH" "$SERVER_STARTED" "$(sqlpath "$OUT/drill.json")" "$MEDIA_VERIFIED" "$EXPECTED_MEDIA_SHA" <<'PY'
 import json, sys
 from datetime import datetime, timezone
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -82,6 +132,8 @@ payload = {
     "rto_ms": int((float(sys.argv[2]) - restore_start) * 1000),
     "server_started": sys.argv[4] == "true",
     "integrity_check": "ok",
+    "media_verified": sys.argv[6] == "true",
+    "media_sha256": sys.argv[7] or None,
     "counts": manifest["counts"],
 }
 with open(sys.argv[5], "w", encoding="utf-8") as fh:
