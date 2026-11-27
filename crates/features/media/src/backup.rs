@@ -319,11 +319,17 @@ impl MediaService {
     fn owner_entries(&self, user_id: &str) -> Result<Vec<BackupEntry>> {
         let c = self.db.lock();
         let mut stmt = c.prepare(
+            // H-38：按**逻辑文件**的 owner 选，而不是物理 object 的 owner。
+            // B 上传与 A 相同的字节时 object.owner 仍是 A，但 B 有
+            // media_file；按 object owner 会让 B 的备份静默漏掉这份文件。
+            // GROUP BY object_id：同一用户多次上传同一内容时物理 blob 只
+            // 打包一次（manifest 里也只留一条 entry，选字典序最小的名字）。
             "SELECT o.object_id, o.size, o.mime,
-                    COALESCE(f.name, ''), COALESCE(f.category, 'file')
-             FROM media_object o
-             LEFT JOIN media_file f ON f.object_id = o.object_id AND f.owner = o.owner
-             WHERE o.owner = ?1 AND o.status = 'ready'
+                    COALESCE(MIN(f.name), ''), COALESCE(MIN(f.category), 'file')
+             FROM media_file f
+             JOIN media_object o ON o.object_id = f.object_id
+             WHERE f.owner = ?1 AND o.status = 'ready'
+             GROUP BY o.object_id, o.size, o.mime, o.created_at
              ORDER BY o.created_at, o.object_id
              LIMIT ?2",
         )?;

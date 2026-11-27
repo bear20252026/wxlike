@@ -91,6 +91,13 @@ fn upload(
             },
         )
         .unwrap();
+    // 秒传：同内容的对象已经就绪时 upload_start 就把会话落成 completed，
+    // 不再有 open 会话可以接分片。
+    if matches!(start.status, UploadStatus::Completed) {
+        return service
+            .upload_complete(owner, &start.upload_id, Some(&ids::sha256_hex(bytes)))
+            .unwrap();
+    }
     let step = start.chunk_size as usize;
     for (index, chunk) in bytes.chunks(step).enumerate() {
         service
@@ -693,6 +700,73 @@ fn chat_messages() -> Vec<ChatSnapshotMessage> {
             body_ref: "world".into(),
         },
     ]
+}
+
+#[test]
+fn backup_includes_a_second_owners_logical_file_for_the_same_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_at(dir.path());
+    let shared = b"same bytes for two owners";
+
+    let alice = upload(
+        &service,
+        "alice",
+        "a.txt",
+        "text/plain",
+        Purpose::File,
+        shared,
+    );
+    // Bob 上传同样的字节：content-addressed object 已存在，owner 仍是 alice，
+    // 但 bob 会拿到自己的 media_file。
+    let bob = upload(
+        &service,
+        "bob",
+        "b.txt",
+        "text/plain",
+        Purpose::File,
+        shared,
+    );
+    assert_eq!(alice.object_id, bob.object_id, "同一份内容同一个物理对象");
+
+    let alice_plan = service
+        .plan_backup_export("alice", "device-a", EncryptionMeta::plaintext())
+        .unwrap();
+    let bob_plan = service
+        .plan_backup_export("bob", "device-b", EncryptionMeta::plaintext())
+        .unwrap();
+    assert_eq!(alice_plan.entries.len(), 1);
+    assert_eq!(
+        bob_plan.entries.len(),
+        1,
+        "bob 的逻辑文件必须进备份，不能因为 object.owner=alice 被漏掉"
+    );
+    assert_eq!(bob_plan.entries[0].object_id, bob.object_id);
+    assert_eq!(bob_plan.entries[0].name, "b.txt");
+    assert_eq!(
+        bob_plan.payload_bytes,
+        shared.len() as u64,
+        "物理 blob 只算一次"
+    );
+
+    let bob_summary = service
+        .export_backup("bob", "device-b", EncryptionMeta::plaintext())
+        .unwrap();
+    assert_eq!(bob_summary.entries, 1);
+    let package = service
+        .backup_package("bob", &bob_summary.backup_id)
+        .unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = service_at(target_dir.path());
+    let outcome = target.import_backup("bob", "device-c", &package).unwrap();
+    assert_eq!(outcome.imported, 1);
+    assert_eq!(
+        target
+            .authorize_read("bob", &bob.object_id)
+            .unwrap()
+            .object
+            .object_id,
+        bob.object_id
+    );
 }
 
 #[test]
