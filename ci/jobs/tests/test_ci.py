@@ -985,6 +985,13 @@ class OldUiRetirementTest(unittest.TestCase):
             "旧 UI 构建脚本必须退役",
         )
 
+    def test_old_ui_archive_is_gone(self):
+        """C-02：旧 UI 源码/产物/构建脚本不得再留在树里，避免被误打包。"""
+        self.assertFalse((ROOT / "ui" / "src").exists(), "ui/src 必须删除")
+        self.assertFalse((ROOT / "ui" / "dist").exists(), "ui/dist 必须删除")
+        self.assertFalse((ROOT / "ui" / "dist-web").exists(), "ui/dist-web 必须删除")
+        self.assertFalse((ROOT / "scripts" / "build-web.sh").exists(), "旧网页构建脚本必须删除")
+
     def test_only_core_bridge_is_registered(self):
         self.assertEqual(
             self._registered(),

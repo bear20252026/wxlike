@@ -112,7 +112,7 @@ The classification is fail-safe: if `git diff` cannot be computed, `full=true`.
 - **Image layer caches use `mode=min`, not `mode=max`.** `mode=max` caches
   every intermediate build stage, which accumulated 17 `buildkit-blob-*`
   entries / 0.78 GB; `mode=min` keeps only the final image layers.
-- Node caches use `ui/package-lock.json` (and `apps/desktop-web/package-lock.json`
+- Node caches use `apps/desktop-web/package-lock.json` (the retired `ui/package-lock.json` is gone)
   for the `web-v2` job; `packages/mini-sdk` has no dependencies, so no npm
   cache or lockfile is claimed for it). No Gradle cache is configured yet, so
   no claim is made about Gradle reproducibility.

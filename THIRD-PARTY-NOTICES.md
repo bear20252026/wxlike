@@ -23,7 +23,7 @@
 | image, zstd, sha2, chacha20poly1305, hkdf, x25519-dalek, pbkdf2, rand, hex, base64 | — | MIT/Apache-2.0 | media/crypto primitives |
 | ureq | 2.x | MIT | UI-side HTTP client |
 | rusqlite / rand / hmac / ureq | 0.32 / 0.8 / 0.12 / 2.12 | MIT/Apache-2.0 | **已在 Cargo.lock 里**：`crates/video` 新增对这四个既有 crate 的依赖边（播放统计与作业队列的库、缺省 session_id、推流凭据 HMAC、出站回调与接入节点推片）。Cargo.lock 只 +4 行，无新包 |
-| **tower-http** | 0.7 (`fs`, `set-header`) | MIT | A2 静态托管：`ServeDir`/`ServeFile` 发 `ui/dist-web`，并给壳/资源分别打 `no-store` / `immutable`（Zone A 请求，用户批准新增） |
+| **tower-http** | 0.7 (`fs`, `set-header`) | MIT | A2 静态托管：`ServeDir`/`ServeFile` 发 `apps/desktop-web/dist`，并给壳/资源分别打 `no-store` / `immutable`（Zone A 请求，用户批准新增） |
 | **uniffi** | 0.32.2 + `scaffolding-ffi-buffer-fns` | MPL-2.0 | Zone B 的绑定生成器（`crates/ffi`，ADR-11）。Rust 侧只贡献 `#[derive(uniffi::*)]` 元数据；生成的 Kotlin 与 Dart 都不进 git（`crates/ffi/generated/`、`apps/mobile/lib/src/rust/`），由 `crates/ffi/regenerate.sh` 重建。 |
 | **uniffi-bindgen-dart** | 0.2.0 | MIT | [nchapman/uniffi-bindgen-dart](https://github.com/nchapman/uniffi-bindgen-dart) · 第三方 Dart 后端。UniFFI 官方只有 Kotlin/Swift/Python/Ruby，Flutter 侧必须有这一个；它依赖 `uniffi_bindgen 0.32.2`（与主 crate 同版本，不是 fork）。**只在生成期用**（`crates/ffi` 的 `dart` feature，`cargo build -p wxlike-ffi` 默认不带），不进手机上的 .so。产物 `apps/mobile/lib/src/rust/wxlike_ffi.dart` 是生成代码，重新生成走 `crates/ffi/regenerate.sh`。 |
 | **tantivy** | 0.22.1 | MIT | P3 full-text search index (ADR-22) — replaces the transitional P1 substring search; ngram tokenizer for CJK |
@@ -75,10 +75,7 @@ https://github.com/bluexsx/box-im
 
 | file | upstream | license | what was taken / adapted |
 |---|---|---|---|
-| `ui/src/vendor/tweb/slicedArray.ts` | [morethanwords/tweb](https://github.com/morethanwords/tweb) · `src/helpers/slicedArray.ts` | **GPL-3.0** | 降序分块数组（`SlicedArray` + `Slice` 的 ends 追踪、`insertSlice` 合并）。适配三处，均写在文件头：去掉 `MOUNT_CLASS_TO` 调试挂载、内联 `indexOfAndSplice` 与 number-only `compareValue`、按本项目 `strict` 补变量初始化。用于 `ui/src/msgIndex.ts`（历史分页合并 + 实时消息插入）。 |
-| `ui/src/vendor/tweb/listenerSetter.ts` | 同上 · `src/helpers/listenerSetter.ts` | **GPL-3.0** | 事件监听器集中登记与清理（`add`/`remove`/`removeManual`/`addCleanup`/`removeAll`）。适配：去掉 tweb 内部类型 `EventListenerBase` 的 import 与 union 成员；`strict` 下补 `let listener: Listener \| undefined`。用于消息菜单/贴纸面板的"点外面关闭"——原来两处各写一遍自清监听器，切视图关菜单时会漏。 |
 | `crates/rtc/src/sfu.rs` | [8xFF/atm0s-media-server](https://github.com/8xFF/atm0s-media-server) · `packages/media_core/src/endpoint/internal/bitrate_allocator/egress.rs` | **MIT** | 出口码率分配算法（按权重比例分、BWE 目标 6/5、无轨道兜底）。**跨库重写**：类型换成我们的 `TrackId=u32`，去掉 `log`/`indexmap`/`sans-io-runtime` 依赖，`Vec` 保持插入序。前 3 个单测从上游等价移植。 |
-| `ui/scripts/check-msgindex.sh` | 本项目原创 | GPL-3.0 | 该 vendored 文件的回归脚本（esbuild 打包 + node 断言 7 条）。 |
 
 > 这是本仓库第一次**实际复制**第三方源码。选择 tweb 而非自研的原因：它的
 > 切片合并算法（跨页去重、乱序插入、ends 语义）是消息列表虚拟化的核心，

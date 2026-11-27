@@ -1,6 +1,6 @@
 //! A2 — 服务端直接发网页，不需要额外 nginx。
 //!
-//! `WXLIKE_WEB_DIR` 指向 `scripts/build-web.sh` 的产物目录（`ui/dist-web`），
+//! `WXLIKE_WEB_DIR` 指向 `scripts/build-web-v2.sh` 的产物目录（`apps/desktop-web/dist`），
 //! 里面只有三样东西：
 //!
 //! ```text
@@ -99,7 +99,7 @@ fn disabled_routes(dir: Option<&Path>) -> Router {
 async fn disabled() -> Response {
     (
         axum::http::StatusCode::NOT_FOUND,
-        format!("网页端未启用：设置 {ENV_WEB_DIR} 指向 ui/dist-web 后重启"),
+        format!("网页端未启用：设置 {ENV_WEB_DIR} 指向 apps/desktop-web/dist 后重启"),
     )
         .into_response()
 }

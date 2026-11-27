@@ -15,9 +15,6 @@ __pycache__/
 ui/src-tauri/target
 ui/src-tauri/gen
 ui/src-tauri/data/
-ui/dist/app.js
-# A5 网页端产物（scripts/build-web.sh 生成）
-ui/dist-web/
 # G10 新版 Web UI 产物（vite build 输出）
 apps/desktop-web/dist/
 # G01-03 Rust WASM 打包产物（scripts/build-wasm.sh 生成，wasm-pack 出）
@@ -27,5 +24,5 @@ packages/wasm-client/
 crates/ffi/generated/
 apps/mobile/android/app/src/main/jniLibs/*/libwxlike_ffi.so
 
-# UniFFI 生成的 Dart 绑定：`bash crates/ffi/regenerate.sh` 重建（同 ui/dist/app.js 的口径，生成物不进 git）
+# UniFFI 生成的 Dart 绑定：`bash crates/ffi/regenerate.sh` 重建（同 packages/wasm-client 的口径，生成物不进 git）
 apps/mobile/lib/src/rust/

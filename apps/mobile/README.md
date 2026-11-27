@@ -16,7 +16,7 @@ apps/mobile/build_android.sh            # release，arm64，约 21 MB
 apps/mobile/build_android.sh --debug    # debug，含 x86_64（模拟器）
 ```
 
-**新检出必须先跑这个。** 仓库里不提交两样生成物（和 `ui/dist/app.js` 同口径）：
+**新检出必须先跑这个。** 仓库里不提交两样生成物（和 `packages/wasm-client` 同口径）：
 
 | 不提交的东西 | 为什么 | 谁生成 |
 |---|---|---|

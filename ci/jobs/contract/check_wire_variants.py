@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Compare bincode enum order between Rust and the browser codec.
+"""Compare bincode enum order and struct field order between the real hub and
+the browser wire mirror.
 
-bincode serializes enum variants by declaration index. A reordered Rust enum
-compiles fine and the browser decoder silently reads the wrong variant. This
-check is cheap and catches exactly that drift before it reaches a browser.
+bincode serializes enum variants by declaration index and struct fields by
+declaration order. Reordering either side compiles fine and the browser
+decoder silently reads the wrong variant/field. The mirror lives in
+``crates/client-web/src/wire.rs`` (the retired ``ui/src/web/wire.ts`` is gone
+with C-02); this check is cheap and catches drift before it reaches a browser.
 """
 
 from __future__ import annotations
@@ -16,11 +19,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def rust_enum(path: Path, name: str) -> list[str]:
+def rust_body(path: Path, kind: str, name: str) -> str:
     text = path.read_text(encoding="utf-8")
-    match = re.search(rf"pub enum {name}\b[^{{]*\{{", text)
+    match = re.search(rf"pub {kind} {name}\b[^{{]*\{{", text)
     if not match:
-        raise ValueError(f"{path}: enum {name} not found")
+        raise ValueError(f"{path}: {kind} {name} not found")
     depth = 0
     body_start = match.end() - 1
     for idx in range(body_start, len(text)):
@@ -29,25 +32,22 @@ def rust_enum(path: Path, name: str) -> list[str]:
         elif text[idx] == "}":
             depth -= 1
             if depth == 0:
-                body = text[body_start + 1 : idx]
-                break
-    else:
-        raise ValueError(f"{path}: enum {name} is unterminated")
+                return text[body_start + 1 : idx]
+    raise ValueError(f"{path}: {kind} {name} is unterminated")
+
+
+def rust_enum(path: Path, name: str) -> list[str]:
+    body = rust_body(path, "enum", name)
     body = re.sub(r"///.*", "", body)
     body = re.sub(r"//.*", "", body)
-    variants = re.findall(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:[({,])", body, re.MULTILINE)
-    return variants
+    return re.findall(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:[({,])", body, re.MULTILINE)
 
 
-def ts_union(path: Path, name: str) -> list[str]:
-    text = path.read_text(encoding="utf-8")
-    # The union arms contain semicolons, so stopping at the first ";" truncates
-    # at variant 0. A TypeScript type block ends at a blank line.
-    match = re.search(rf"export type {name}\s*=\s*(.*?)\n\s*\n", text, re.DOTALL)
-    if not match:
-        raise ValueError(f"{path}: union {name} not found or not followed by a blank line")
-    body = match.group(1)
-    return re.findall(r'readonly t:\s*"([A-Za-z0-9_]+)"', body)
+def rust_fields(path: Path, name: str) -> list[str]:
+    body = rust_body(path, "struct", name)
+    body = re.sub(r"///.*", "", body)
+    body = re.sub(r"//.*", "", body)
+    return re.findall(r"^\s*pub\s+([a-z_][a-z0-9_]*)\s*:", body, re.MULTILINE)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,23 +56,40 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root
 
-    checks = [
-        ("WireFrame", root / "crates/net/src/wire.rs", "WireFrame", root / "ui/src/web/wire.ts"),
-        ("MsgBody", root / "crates/core/src/types.rs", "MsgBody", root / "ui/src/web/wire.ts"),
-        ("Receipt", root / "crates/core/src/types.rs", "Receipt", root / "ui/src/web/wire.ts"),
+    server_wire = root / "crates/net/src/wire.rs"
+    server_types = root / "crates/core/src/types.rs"
+    browser_wire = root / "crates/client-web/src/wire.rs"
+
+    enum_checks = [
+        ("WireFrame", server_wire, browser_wire),
+        ("MsgBody", server_types, browser_wire),
+        ("Receipt", server_types, browser_wire),
     ]
+    struct_checks = [("Envelope", server_types, browser_wire)]
+
     problems: list[str] = []
-    for name, rust_path, rust_name, ts_path in checks:
+    for name, server, browser in enum_checks:
         try:
-            rust = rust_enum(rust_path, rust_name)
-            ts = ts_union(ts_path, name)
+            left = rust_enum(server, name)
+            right = rust_enum(browser, name)
         except ValueError as err:
             problems.append(str(err))
             continue
-        if rust != ts:
-            problems.append(f"{name}: Rust {rust} != browser {ts}")
+        if left != right:
+            problems.append(f"{name}: hub {left} != browser {right}")
         else:
-            print(f"{name}: {len(rust)} variants in order")
+            print(f"{name}: {len(left)} variants in order")
+    for name, server, browser in struct_checks:
+        try:
+            left = rust_fields(server, name)
+            right = rust_fields(browser, name)
+        except ValueError as err:
+            problems.append(str(err))
+            continue
+        if left != right:
+            problems.append(f"{name}: hub fields {left} != browser {right}")
+        else:
+            print(f"{name}: {len(left)} fields in order")
     for problem in problems:
         print(f"ERROR {problem}", file=sys.stderr)
     return 1 if problems else 0

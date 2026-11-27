@@ -23,8 +23,6 @@
     { "path": "crates/container/** + crates/dpage/**", "owner": "G08" },
     { "path": "crates/{rtc,sfu,video}/**", "owner": "G09" },
     { "path": "ui/src-tauri/**", "owner": "G10", "note": "含 G00-02 拆出的 app_state/commands/store/render/util 模块" },
-    { "path": "ui/src/{ui.ts,ui-dom.ts,ui-format.ts,api.ts,state.ts,callpage.ts,msgIndex.ts,vendor/**}", "owner": "G10" },
-    { "path": "ui/src/web/**", "owner": "G11" },
     { "path": "design/ui-v2/prototype/**", "owner": "G11", "note": "只读参照：原型不进产品构建" },
     { "path": "apps/mobile/lib/**", "owner": "G12" },
     { "path": "apps/mobile/android/**", "owner": "G12" },

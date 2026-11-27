@@ -196,6 +196,13 @@ jobs:
     - name: C6 wasm browser acceptance (G01-03)
       shell: bash
       run: wasm-pack test --headless --chrome crates/client-web
+    - name: C6c browser ws handshake and resume (C-04)
+      shell: bash
+      run: 'python3 -m pip install --user ''websockets==15.0.1''
+
+        bash scripts/test-ws-browser.sh
+
+        '
     - name: record known gaps
       run: python3 ci/jobs/build/check_gaps.py
   ui:

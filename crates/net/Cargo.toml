@@ -42,6 +42,8 @@ insecure-lab = []
 
 [dev-dependencies]
 futures-util = "0.3"
+# 浏览器 wire 镜像与真实 hub 帧类型必须字节兼容；只在测试里链接。
+wxlike-client-web = { path = "../client-web" }
 # 自依赖只为在**测试与示例**里打开 `insecure-lab`：本仓 20+ 个集成测试和
 # scripts/bench_*.rs 需要跳过校验的构造。`cargo build` 不走 dev-dependencies，
 # 所以默认构建里仍然没有它们。

@@ -17,7 +17,9 @@
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen_test::*;
-use wxlike_client_core::ports::{LocalStore, Secret, Secrets, StoreError, Transport};
+use wxlike_client_core::ports::{
+    Clock, EventSource, LocalStore, Secret, Secrets, StoreError, Transport,
+};
 use wxlike_client_web::crypto::{WebCacheCipher, WebSecrets};
 use wxlike_client_web::fetch::FetchTransport;
 use wxlike_client_web::idb::IdbStore;
@@ -148,4 +150,45 @@ fn policy_covers_the_browser_specific_failures() {
     assert!(is_sensitive_cache("msg:d-a~b"));
     assert!(PageState::Frozen.needs_resync(PageState::Frozen) == false);
     assert!(PageState::Visible.needs_resync(PageState::Frozen));
+}
+
+/// C-04 的真实浏览器验收：连本地 `ws_fixture.py`，走 v3 握手、收消息、
+/// 断线重连并按会话 seq 发 `Resume`。
+///
+/// 默认 `#[ignore]`：普通 `wasm-pack test` 不要求外部 fixture；CI 的
+/// `scripts/test-ws-browser.sh` 会先起 fixture，再带 `-- --ignored` 跑这一条。
+#[cfg(feature = "ws-fixture")]
+#[wasm_bindgen_test]
+async fn ws_v3_authenticates_subscribes_and_resumes_after_reconnect() {
+    use wxlike_client_web::ws::WebSocketEvents;
+    use wxlike_types::SubscribeRequest;
+
+    let request = SubscribeRequest::all();
+    let mut source = WebSocketEvents::open(
+        "ws://127.0.0.1:18765/ws",
+        "browser-test-token",
+        "web-browser-test",
+        &request,
+    )
+    .expect("connect");
+
+    let first = source
+        .next()
+        .await
+        .expect("first next")
+        .expect("first event");
+    assert_eq!(first.seq, Seq::new(42));
+    assert_eq!(first.payload["body"]["text"], "first");
+    assert_eq!(first.payload["conv_id"], "d-browser-test");
+
+    // fixture 发完第一条就关连接；下一次 next 必须重连、带 cursor=42 发
+    // Resume，服务端只在这条路径上回 seq=43。
+    let second = source
+        .next()
+        .await
+        .expect("second next")
+        .expect("second event");
+    assert_eq!(second.seq, Seq::new(43));
+    assert_eq!(second.payload["body"]["text"], "second");
+    source.close().await;
 }

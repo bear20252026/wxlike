@@ -15,10 +15,15 @@ description = "wxlike 客户端 Web 实现：fetch / WebSocket / IndexedDB / Web
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+ws-fixture = []
+
 [dependencies]
 wxlike-types = { path = "../types" }
 wxlike-client-core = { path = "../client-core" }
+serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = { workspace = true }
 async-trait = { workspace = true }
 # 敏感缓存的 AEAD：纯 Rust，wasm 上可用；密钥存储才是安全边界（见 crypto.rs）
 # 关掉默认的 getrandom：浏览器侧随机数走 WebCrypto（crypto.rs），
@@ -61,6 +66,7 @@ web-sys = { version = "0.3", features = [
     "EventTarget",
     "MessageEvent",
     "WebSocket",
+    "BinaryType",
     "Performance",
 ] }
 

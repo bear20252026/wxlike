@@ -21,6 +21,8 @@
 #![warn(missing_docs)]
 
 pub mod policy;
+/// 浏览器端 bincode `/ws` 协议镜像；原生测试也编它。
+pub mod wire;
 
 #[cfg(target_arch = "wasm32")]
 pub mod clock;
@@ -121,7 +123,8 @@ mod bindgen_entry {
     use wxlike_client_core::ports::Ports;
     use wxlike_client_core::runtime::{action_ids, EventSubscription, Session};
     use wxlike_types::{
-        ActionId, ActionOutcome, ActionRequest, DomainError, IdempotencyKey, TraceId,
+        ActionId, ActionOutcome, ActionRequest, DomainError, IdempotencyKey, SubscribeRequest,
+        TraceId,
     };
 
     use crate::{clock, crypto, fetch, idb, platform, NoNotifications};
@@ -178,7 +181,7 @@ mod bindgen_entry {
         loop {
             match subscription.next().await {
                 Ok(Some(event)) => {
-                    let text = serde_json::to_string(&event).unwrap_or_default();
+                    let text = crate::wire::ui_event_json(&event);
                     deliver_text(&on_event, &text);
                 }
                 // 服务端要求换连接：宿主应重新订阅
@@ -346,13 +349,20 @@ mod bindgen_entry {
             on_event: js_sys::Function,
         ) -> Result<WxlikeSubscription, JsValue> {
             // 取消信号挂在**订阅自己**上——退订单条订阅不该杀掉整个会话。
-            let source = crate::ws::WebSocketEvents::open(&self.ws_url)
-                .map_err(|err| JsValue::from_str(&err.into_domain().to_string()))?;
+            let token = self
+                .transport
+                .token()
+                .ok_or_else(|| JsValue::from_str("未登录，不能订阅实时事件"))?;
+            let device_id = crate::ws::device_id();
+            let request = SubscribeRequest::all();
+            let source =
+                crate::ws::WebSocketEvents::open(&self.ws_url, &token, &device_id, &request)
+                    .map_err(|err| JsValue::from_str(&err.into_domain().to_string()))?;
             let cancel = Cancellation::new();
             let subscription = EventSubscription::new(
                 Box::new(source),
                 self.session.ports().clone(),
-                wxlike_types::SubscribeRequest::all(),
+                request,
                 cancel.clone(),
             );
             let task_cancel = cancel.clone();

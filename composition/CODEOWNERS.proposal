@@ -64,16 +64,8 @@
 
 # G10 —— React 桌面核心界面
 /ui/src-tauri/           @group-G10
-/ui/src/ui.ts            @group-G10
-/ui/src/ui-dom.ts        @group-G10
-/ui/src/ui-format.ts     @group-G10
-/ui/src/api.ts           @group-G10
-/ui/src/state.ts         @group-G10
 
 # G11 —— React 扩展界面与服务入口（网页）
-/ui/src/web/             @group-G11
-/ui/src/callpage.ts      @group-G11
-/ui/src/msgIndex.ts      @group-G11
 
 # G12 —— Flutter 核心界面与原生桥
 /apps/mobile/            @group-G12

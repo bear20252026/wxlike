@@ -18,8 +18,6 @@ mutants.out*
 
 # 前端 / 移动端的依赖与产物
 ui/node_modules
-ui/dist
-ui/dist-web
 apps/mobile/build
 apps/mobile/.dart_tool
 apps/mobile/.flutter-plugins*

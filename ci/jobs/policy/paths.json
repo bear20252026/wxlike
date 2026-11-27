@@ -32,7 +32,7 @@
       "crates/types/**",
       "crates/core/src/envelope.rs",
       "crates/core/src/proto.rs",
-      "ui/src/web/wire.ts",
+      "crates/client-web/src/wire.rs",
       "apps/mobile/lib/src/rust/**",
       "composition/**"
     ],
@@ -40,7 +40,6 @@
       "ui/**",
       "apps/desktop-web/**",
       "packages/**",
-      "scripts/build-web.sh",
       "scripts/build-web-v2.sh"
     ],
     "desktop": [

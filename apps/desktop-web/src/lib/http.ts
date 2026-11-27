@@ -1,7 +1,7 @@
 /**
  * HTTP transport for the desktop-web client (FP-G11).
  *
- * Same wire conventions as the shipping web build (`ui/src/web/session.ts`):
+ * Same wire conventions as the shipping web build (`crates/client-web/src/wire.rs`):
  * same-origin by default, `Authorization: Bearer`, `Idempotency-Key` for write
  * retries, `{"error": "…"}` bodies from `crates/platform` — but the transport
  * itself is injected so feature code never reaches for `fetch` directly:

@@ -2,17 +2,16 @@
 
 > **状态：旧 UI 与 raw IPC 已退役（2026-11-27，owner 决策）。**
 > 默认宿主只加载 `apps/desktop-web`（React 19 新架构）。
-> `ui/src/` 旧前端源码仅作为历史归档保留，不再有**桌面宿主**配置、构建入口或发布路径；
-> 例外：`scripts/build-web.sh` 仍可生成旧的浏览器 `ui/dist-web` 包，直到 G01-03
-> 的 WASM Web 适配完成；它不是桌面发布路径，也不得再进 Tauri 产物。
+> `ui/src/`、`ui/dist`、旧 UI 构建脚本与 npm 元数据已删除，不再保留历史归档；
+> 浏览器实时入口由 `apps/desktop-web` + `crates/client-web` 的 WASM 协议承担。
 > 任何重新引入旧 UI 桌面入口的提交都必须先经过 owner 评审。
 
 ## 新旧边界（事实）
 
 | 项 | 新 UI（唯一发布路径） | 旧 UI（已退役） |
 |---|---|---|
-| 源码 | `apps/desktop-web/src` | `ui/src`（仅归档，不可构建发布） |
-| 产物 | `apps/desktop-web/dist` | `ui/dist`（不再被任何配置引用） |
+| 源码 | `apps/desktop-web/src` | 已删除（C-02，2026-11-27） |
+| 产物 | `apps/desktop-web/dist` | 已删除 |
 | 宿主配置 | `ui/src-tauri/tauri.conf.json` | `tauri.conf.old-ui.json` 已删除 |
 | 与 Rust 接口 | `core_dispatch` / `core_subscribe` / `core_capabilities` | 原 70 个 Tauri 命令中的 67 个已从 `generate_handler!` 移除（其中 62 个旧 UI 独占） |
 | 守卫 | `scripts/check-tauri-host.mjs` 要求默认指向新 UI，且要求旧配置不存在 | 同左 |

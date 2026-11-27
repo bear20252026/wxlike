@@ -51,6 +51,12 @@ impl FetchTransport {
             *slot = token;
         }
     }
+
+    /// 当前 token 快照；实时通道建连时用它，避免再走一遍登录态。
+    #[must_use]
+    pub fn token(&self) -> Option<String> {
+        self.token.try_borrow().ok().and_then(|slot| slot.clone())
+    }
 }
 
 fn js_error(context: &str, error: &JsValue) -> TransportError {

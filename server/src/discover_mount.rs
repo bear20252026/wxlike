@@ -22,7 +22,7 @@ use wxlike_service_catalog::auth::Authenticator;
 use wxlike_service_catalog::http::{AppState, CatalogApp};
 use wxlike_service_catalog::{
     Catalog, Clock, OrderService, PaymentIntent, PaymentIntentRequest, PaymentPort, ProviderError,
-    RefundReceipt, RefundRequest, SystemClock,
+    RefundReceipt, RefundRequest, ServiceProvider, SystemClock,
 };
 
 /// 默认服务区域：目录按区域开关投影。组合根可经 `WXLIKE_SERVICE_REGION` 覆盖。
@@ -60,6 +60,12 @@ impl PaymentPort for UnwiredPayment {
     }
 }
 
+/// 生产供应商列表：C-03 的 owner 决策是**不接外部 provider**。
+/// 这里单独成函数，让测试能钉住“生产装配不会悄悄塞进供应商”。
+fn production_providers() -> Vec<Arc<dyn ServiceProvider>> {
+    Vec::new()
+}
+
 /// 装配服务目录域路由。返回值由 `build_app` 直接 `merge`。
 ///
 /// 生产默认：空目录（管理后台配置）+ 空供应商列表（无凭据→报价/下单诚实阻塞）
@@ -76,8 +82,7 @@ pub async fn assemble(platform: &PlatformState, db_path: Option<&str>) -> anyhow
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let orders = Arc::new(OrderService::with_store(
         Arc::clone(&catalog),
-        // 生产默认不配置供应商沙箱凭据：报价/下单经服务层诚实报 BLOCKED_EXTERNAL。
-        Vec::new(),
+        production_providers(),
         Arc::new(UnwiredPayment),
         auth,
         clock,
@@ -91,4 +96,16 @@ pub async fn assemble(platform: &PlatformState, db_path: Option<&str>) -> anyhow
         region,
     })
     .router())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_has_no_external_provider() {
+        // C-03：生产必须保持空供应商；一旦有人往这里塞 provider，
+        // “先履约后付款”的条件路径就重新可达，必须红。
+        assert!(production_providers().is_empty());
+    }
 }

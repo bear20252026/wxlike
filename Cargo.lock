@@ -7056,8 +7056,10 @@ name = "wxlike-client-web"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bincode",
  "chacha20poly1305 0.10.1",
  "js-sys",
+ "serde",
  "serde_json",
  "tokio",
  "wasm-bindgen",
@@ -7341,6 +7343,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "wxlike-client-web",
  "wxlike-core",
  "wxlike-identity",
  "wxlike-message",

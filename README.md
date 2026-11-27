@@ -425,7 +425,7 @@ id，对端经 `/api/media/{id}` 渲染。"我"页可设置头像并即时回显
   `--example` 双端脚本就绪，需两台真机实录。
 - WP-10 Redis 真机：本机无 Redis；`REDIS_URL=redis://… cargo test -p wxlike-mq
   --features redis -- --ignored` 在有 Redis 的环境一键跑。
-- WP-11 tauri dev 真机演示：`cd ui && npm i && npx tauri dev`（构建链已验证）。
+- WP-11 tauri dev 真机演示：先在 `apps/desktop-web` 执行 `npm ci && npm run build`，再从 `ui` 执行 `npx @tauri-apps/cli dev`（构建链已验证）。
 - mac·Linux 构建验证：Tauri 2 前端与 Rust workspace 均为跨平台构建，需对应主机。
 
 ## P4 运营合规 + 账本 + 通话房间（合同 §第五条 P4）
@@ -471,15 +471,12 @@ P5 是 8 周量级，本轮先交付**不依赖移动端工具链**的两块，�
   同版本拒装；`im_bridge` 授予面 = 清单声明 ∩ 宿主白名单，白名单外权限只记录不授予
   （不变式 6）；入口路径 `../` 与非法版本号在清单校验阶段拒绝。
 
-- **消息索引（首次实际借用 Telegram 代码）**：`ui/src/vendor/tweb/slicedArray.ts`
-  复制自 tweb（GPL-3.0，可并入 AGPL-3.0 作品）的 `SlicedArray`，替换手写的 `Map + sort` 分页合并；
-  同源的 `ListenerSetter` 用于菜单外点关闭的监听器清理。适配与来源见文件头与
-  `THIRD-PARTY-NOTICES.md`。
+- **消息索引**：旧 UI 的 tweb `SlicedArray` 适配代码已随 C-02 删除；
+  `apps/desktop-web` 的会话分页由新 UI 自己的 store 维护，不再依赖该 GPL 代码。
 
 ```bash
 cargo test -p wxlike-platform --test p5_live     # 9
 cargo test -p wxlike-container --test package    # 7
-bash ui/scripts/check-msgindex.sh                # 7（tweb 索引合并语义）
 ```
 
 ## 系统推送（WP-06）
@@ -562,7 +559,7 @@ cargo run -p wxlike-container --example research_wmpf -- <path-to-JS>
 ## 桌面 UI（G10，Tauri2 + React 19 + Vite）
 
 **唯一发布路径是 `apps/desktop-web`**。旧 `ui/` TypeScript/esbuild 界面与 raw IPC
-已于 2026-11-27 退役：`ui/src` 仅作历史归档，不再有旧宿主配置、构建脚本或发布入口；
+已于 2026-11-27 退役：`ui/src`、旧构建脚本与 npm 元数据已删除，不再有旧宿主配置或发布入口；
 Tauri 的 `generate_handler!` 只暴露 `core_dispatch` / `core_subscribe` / `core_capabilities`。
 
 新 UI 与 Rust 的边界是 `CoreHandle`/`PlatformPort`：所有功能走 `core_dispatch` action 面，
