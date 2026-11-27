@@ -54,6 +54,8 @@ pub const BACKUP_VERSION: u16 = 1;
 pub const BACKUP_HEADER_LEN: usize = 10;
 pub const BACKUP_TRAILER_LEN: usize = 32;
 pub const BACKUP_MAX_BYTES: u64 = 64 * GIB;
+/// H-17：manifest 解析前不得按包内声明分配超过这个上限的内存。
+pub const BACKUP_MANIFEST_MAX_BYTES: u64 = 64 * MIB;
 pub const BACKUP_MAX_ENTRIES: usize = 100_000;
 pub const BACKUP_PACKAGE_NAME: &str = "package.wxbk";
 pub const BACKUP_FORMAT: &str = "wxlike-backup";
@@ -1034,7 +1036,11 @@ impl MediaService {
         }
         let mut file = std::fs::File::open(package)?;
         let mut hasher = Sha256::new();
-        let manifest = read_header(&mut file, &mut hasher)?;
+        // 头部之后还必须留出 trailer 的 32 字节，manifest 不能把整包吃掉。
+        let manifest_room = meta
+            .len()
+            .saturating_sub(BACKUP_HEADER_LEN as u64 + BACKUP_TRAILER_LEN as u64);
+        let manifest = read_header(&mut file, &mut hasher, manifest_room)?;
         validate_manifest(&manifest)?;
         let payloads =
             self.read_payloads(&mut file, &mut hasher, &manifest.entries, keep_payloads)?;
@@ -1334,7 +1340,11 @@ fn object_is_unclaimed(c: &rusqlite::Connection, object_id: &str, now: i64) -> R
     Ok(live_refs + live_files + live_shares == 0)
 }
 
-fn read_header(file: &mut std::fs::File, hasher: &mut Sha256) -> Result<BackupManifest> {
+fn read_header(
+    file: &mut std::fs::File,
+    hasher: &mut Sha256,
+    manifest_room: u64,
+) -> Result<BackupManifest> {
     let mut magic = [0u8; 4];
     read_hashed(file, hasher, &mut magic)?;
     if &magic != BACKUP_MAGIC {
@@ -1345,6 +1355,18 @@ fn read_header(file: &mut std::fs::File, hasher: &mut Sha256) -> Result<BackupMa
         return Err(MediaError::Unsupported(format!("backup version {version}")));
     }
     let manifest_len = read_u32_hashed(file, hasher)?;
+    let declared = u64::from(manifest_len);
+    if declared > BACKUP_MANIFEST_MAX_BYTES {
+        return Err(MediaError::Tampered(format!(
+            "backup manifest {declared} bytes exceeds the {} byte limit",
+            BACKUP_MANIFEST_MAX_BYTES
+        )));
+    }
+    if declared > manifest_room {
+        return Err(MediaError::Tampered(format!(
+            "backup manifest {declared} bytes does not fit in the remaining package ({manifest_room} bytes)"
+        )));
+    }
     let mut manifest_bytes = vec![0u8; manifest_len as usize];
     read_hashed(file, hasher, &mut manifest_bytes)?;
     Ok(serde_json::from_slice(&manifest_bytes)?)

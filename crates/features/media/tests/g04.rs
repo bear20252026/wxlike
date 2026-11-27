@@ -715,6 +715,20 @@ fn backup_roundtrip_preserves_ids_and_rejects_tampering() {
     assert!(target
         .verify_backup(&corrupt)
         .is_err_and(|err| matches!(err, MediaError::Tampered(_))));
+
+    // H-17：14 字节的包声明 4 GiB manifest。校验 remaining 后必须在分配前失败，
+    // 不能先 vec![0; 4GiB] 再发现读不满。
+    let huge_manifest = target_dir.path().join("huge-manifest.wxbk");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WXBK");
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+    std::fs::write(&huge_manifest, bytes).unwrap();
+    let err = target.verify_backup(&huge_manifest).unwrap_err();
+    match err {
+        MediaError::Tampered(msg) => assert!(msg.contains("manifest"), "{msg}"),
+        other => panic!("must fail before allocation: {other:?}"),
+    }
 }
 
 #[test]
