@@ -30,7 +30,7 @@
   「入账分录集冻结」触发器（`entry_count` 在入账时声明，事后追加分录被拒）。
   `ledger_closing_balances` 复用 `ledger_closings_immutable()`，报错文案与日结快照同源。
 - CI 验证：`ci/jobs/build/job.yml` 的 `pg-migration` 作业（gate matrix C12）在
-  `postgres:16` service container 上连跑两次 DDL，再用
+  `postgres:19.0` service container 上连跑两次 DDL，再用
   `ci/jobs/build/pg_migration_asserts.sql` 断言表/触发器/函数存在与不可变性。
   这只证明 DDL 在稳定版 PostgreSQL 上成立，**不代表**生产 PG profile 已落地。
 - 回滚：全部为新增对象，无 down migration；说明见 `schema/proposals/G06/ROLLBACK.md`。
@@ -103,15 +103,18 @@
 - 目标外键排序：catalog 读取 `pg_constraint`，父表先于子表；`identity_user`
   等兼容视图基表映射回 `users` 源表，`users` 身份根固定最先，避免推演顺序
   漏掉 PG-only 外键。
-- 边界：本地/CI 只证 PostgreSQL 16 空库形状与合成数据；真实 110 表的行导入、
-  生产快照、生产 restore drill 仍未执行。旧 `pg-table-map.json` 已 stale。
+- 边界：本地/CI 只证 PostgreSQL 空库形状与合成数据；真实 110 表的行导入、
+  生产快照、生产 restore drill 仍未执行。CI 已在 2026-11-27 切到 PostgreSQL 19.0，
+  但 19.0 上的完整实跑证据尚未产出，不能把 16 的历史 run 当作 19 的 PASS。
+  旧 `pg-table-map.json` 已 stale。
 - 详细口径与回滚见 `docs/g00-04-s4-data-import.md`。
 
 ## S2 设计决策（开工前需拍板）
 - **PG 驱动**：`sqlx`（编译期校验、自带池）vs `tokio-postgres`（更贴近现有手写 SQL 风格）。现有 `crates/platform/src/domain/repo/*.rs` 是手写 SQL，`tokio-postgres` 迁移成本可能更低；`sqlx` 的编译期查询校验在 132K 行手写 SQL 上收益有限。
 - **双实现策略**：trait 双实现（`PlatformXxxRepo for SqliteRepo / PgRepo`）vs 条件编译 vs 单一 `Storage` 端口。trait 双实现类型与编译时间翻倍；条件编译会让"同一份逻辑两种方言"难以对账；单一端口需在 repo 层引入方言抽象。**建议先做单一 `Storage` 端口 + SQLite 实现跑通，再落 PG 实现**——方向性决策，需 owner 拍板。
 - **停写窗口**：切换必须"停写 > 导入 > 影子读对账 > 切读 > 启用写"；窗口时长要有测量（`composition/data-import` 的 `window.json` 产出），不允许无测量的在线双写。当前只有源侧 SHA/data_version/耗时测量，生产窗口长度与外部停写信号仍需 owner 评审。
-- **真实版本**：CI 冒烟用 `postgres:16`，生产版本按部署环境裁决（§3 S6）。
+- **真实版本**：已拍板 PostgreSQL **19.0**（2026-11-19 GA，官方当前最新稳定版）；
+  CI 冒烟目标同步切到 `postgres:19.0`。部署拓扑（单主 / 单主+只读副本）仍未拍板。
 
 ## 后续待办（未落地，属 G00-04 剩余工作）
 
@@ -120,14 +123,16 @@
    的 PG repository 仍待做。
 2. **数据导入**：`composition/data-import/` 工具链已落地（S4，2026-11-27），
    覆盖盘点/计划/CSV/装载/回读摘要/中断续跑/停写窗口；110 表形状普查已在
-   PostgreSQL 16 空库全绿。仍需对真实 SQLite 快照执行全量行导入、钱包对账
+   PostgreSQL 空库全绿。仍需对真实 SQLite 快照执行全量行导入、钱包对账
    与生产停写窗口演练。
-3. **restore drill**：CI `pg-migration` 作业已在 PostgreSQL 16 上跑过
-   `pg_dump → psql restore → 断言`；生产部署环境的 drill 仍需在割接窗口前实跑。
+3. **restore drill**：CI `pg-migration` 作业的历史证据是 PostgreSQL 16；
+   2026-11-27 起配置为 19.0（服务容器内 pg_dump，避免 runner 客户端版本过低），
+   需在 19.0 上重跑 `pg_dump → psql restore → 断言` 后才能把 19 的车道标绿。
+   生产部署环境的 drill 仍需在割接窗口前实跑。
    `deploy/runbooks/backup-restore.md:70-71`、`deploy/runbooks/migration.md:37-38`
    仍明确 defer：生产 PG 备份/回滚口径随割接一起改并重新演练。
-4. **真实版本裁决**：CI 用 `postgres:16` 只是稳定版冒烟；生产 PG 大版本、连接池
-   （sqlx / tokio-postgres）与部署拓扑由 G00-04 后续决定。
+4. **真实版本**：生产 PG 大版本已定为 19.0；连接池（sqlx / tokio-postgres）与部署
+   拓扑仍由 G00-04 后续决定。
 
 ## 与 SQLite 的一致性对账口径
 

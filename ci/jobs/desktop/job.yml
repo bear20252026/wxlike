@@ -17,9 +17,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: |
-            ui/package-lock.json
-            apps/desktop-web/package-lock.json
+          cache-dependency-path: apps/desktop-web/package-lock.json
       - name: webkit build dependencies
         run: |
           sudo apt-get update
@@ -32,11 +30,6 @@ jobs:
           add-rust-environment-hash-key: false
           key: ${{ runner.os }}-desktop-${{ env.RUSTUP_TOOLCHAIN }}
           workspaces: ui/src-tauri
-      - run: npm ci
-        working-directory: ui
-      - name: C9 frontend bundle consumed by Tauri
-        run: npm run build
-        working-directory: ui
       - name: C9 prepare wasm client for the new UI (G01-03)
         run: bash scripts/ci-prepare-wasm-client.sh
       - name: C9 new UI bundle consumed by the default host
@@ -87,9 +80,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: |
-            ui/package-lock.json
-            apps/desktop-web/package-lock.json
+          cache-dependency-path: apps/desktop-web/package-lock.json
       - name: Linux webkit build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -100,11 +91,6 @@ jobs:
           add-rust-environment-hash-key: false
           key: ${{ runner.os }}-desktop-package-${{ env.RUSTUP_TOOLCHAIN }}
           workspaces: ui/src-tauri
-      - run: npm ci
-        working-directory: ui
-      - name: C9 frontend bundle consumed by Tauri
-        run: npm run build
-        working-directory: ui
       - name: C9 prepare wasm client for the new UI (G01-03)
         run: bash scripts/ci-prepare-wasm-client.sh
       - name: C9 new UI bundle consumed by the default host

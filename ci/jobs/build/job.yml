@@ -199,31 +199,18 @@ jobs:
         run: python3 ci/jobs/build/check_gaps.py
 
   ui:
-    name: ui
+    name: ui (old-UI retirement guard)
     needs: [select]
     if: needs.select.outputs.ui == 'true' || needs.select.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - run: npm ci
-        working-directory: ui
-      - name: C7 typecheck
-        run: npm run typecheck
-        working-directory: ui
-      - name: C7 bundle
-        run: npm run build
-        working-directory: ui
-      - name: C7 wire bincode selftest
-        run: npm run test:wire
-        working-directory: ui
-      - name: C7 message index contract
-        run: npm run check:msgindex
-        working-directory: ui
+      # 新 UI 的 typecheck/test/build 由 web-v2 作业覆盖；这里只钉住退役契约：
+      # 旧宿主配置/脚本不得复活，Tauri 命令面只剩三个 core_*。
+      - name: old-UI retirement guard
+        run: python3 ci/jobs/tests/test_ci.py OldUiRetirementTest
+      - name: host config guard
+        run: node scripts/check-tauri-host.mjs
 
   flutter:
     name: flutter
@@ -266,8 +253,9 @@ jobs:
 
   # G00-04 S1 的可验证子集：PG 迁移冒烟。提案 DDL 已自带 BEGIN/COMMIT 且可重入，
   # 所以直接连跑两次同一文件验证幂等，再用只读断言钉住表/触发器/函数与不可变性。
-  # 这里只证 DDL 在稳定版 PostgreSQL 上成立；生产 profile、真实版本与 restore
-  # drill 由 G00-04 后续裁决（见 schema/registry/pg-cutover.md）。
+  # 这里按生产目标版本 PostgreSQL 19.0 跑 DDL/导入/恢复；19.0 上的实跑证据
+  # 产出前不把该车道标绿。生产 profile 与拓扑由 G00-04 后续裁决
+  # （见 schema/registry/pg-cutover.md）。
   pg-migration:
     name: pg-migration
     needs: [select]
@@ -277,7 +265,7 @@ jobs:
       contents: read
     services:
       postgres:
-        image: postgres:16
+        image: postgres:19.0
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -361,6 +349,14 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
               -f schema/proposals/G00/0001_import_control.sql
           done
+      - name: M024 全量导入兼容补齐首次 + 重跑（幂等）
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in 1 2; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+              -f schema/proposals/G00/0002_import_compat_backfill.sql
+          done
       - name: M010 schema/触发器/不可变性断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
       - name: M011-M013 兼容层与回填断言
@@ -381,16 +377,28 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_m019_m022_behavior.sql
       - name: M023 导入控制表形状/约束断言
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_import.sql
+      - name: M024 全量导入兼容形状/identity 断言
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_import_compat.sql
+      - name: 110 表全量导入 catalog 普查
+        run: bash ci/jobs/build/pg_data_import_census.sh
+      - name: 110 表全量导入（空快照真实跑通 DELETE/COPY/回读/序列）
+        run: bash ci/jobs/build/pg_data_import_full_shape.sh
       - name: M023 数据导入全链路（导出/装载/摘要/续跑）
         run: bash ci/jobs/build/pg_data_import_smoke.sh
       - name: M013 导入器全链路（SQLite → COPY → CALL）
         run: bash ci/jobs/build/pg_import_smoke.sh
-      - name: 备份/恢复演练（pg_dump → psql restore → 断言）
+      - name: 备份/恢复演练（pg_dump 19 → psql restore → 断言）
         env:
           ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
           RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wxlike_restore
           RESTORE_DB: wxlike_restore
-        run: bash ci/jobs/build/pg_restore_drill.sh
+        run: |
+          set -euo pipefail
+          # runner 自带的 pg_dump 可能是 16，遇到 19.0 服务端会直接拒绝；
+          # 用 service 容器内的 19.0 客户端导出，psql 仍走 runner（兼容旧客户端）。
+          PG_CONTAINER=$(docker ps --filter "ancestor=postgres:19.0" --format "{{.ID}}" | head -1)
+          test -n "$PG_CONTAINER" || { echo "postgres:19.0 service container not found" >&2; exit 1; }
+          PG_DUMP_CONTAINER="$PG_CONTAINER" bash ci/jobs/build/pg_restore_drill.sh
       - name: toolchain
         shell: bash
         run: |

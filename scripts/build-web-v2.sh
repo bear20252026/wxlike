@@ -3,7 +3,7 @@
 # 然后打印产物体积。Tauri 宿主的默认配置 ui/src-tauri/tauri.conf.json 直接加载
 # 这里的产物（issue #158：默认宿主已经是新 UI，不再需要 --config）。
 #
-# 旧界面（ui/ 那套 esbuild 产物）没删：要打包旧 UI 用 bash scripts/build-old-ui.sh。
+# 旧界面已退役：ui/src 仅作历史归档，不再有构建或发布入口。
 #
 # 产物：apps/desktop-web/dist/（vite 默认 outDir；production 不带 sourcemap）
 # 打包前会跑 scripts/check-tauri-host.mjs --require-built，钉住「宿主指得到这份产物、

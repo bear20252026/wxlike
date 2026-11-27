@@ -5,9 +5,9 @@
 # 流程：pg_dump plain SQL -> 过滤客户端版本特有的 SET -> 新库 psql 还原 ->
 # 在新库重跑 M010-M024 断言。断言会写最小 fixtures 并自行清理。
 #
-# 为什么不用 custom + pg_restore：CI runner 的 pg_dump 可能比 postgres:16
-# service 新，会在 dump 头写 `SET transaction_timeout = 0;`；服务端 16 不认识
-# 这个参数，pg_restore 会整库失败。plain SQL 只过滤这一行，保留全部 DDL/DML。
+# 为什么不用 custom + pg_restore：plain SQL 只过滤客户端版本特有的 SET，
+# 保留全部 DDL/DML，跨小版本更稳。CI 用服务容器内的 PG 19.0 pg_dump，
+# 避免 runner 自带客户端版本低于服务端时被直接拒绝。
 #
 # 用法：
 #   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/wxlike \
@@ -25,7 +25,12 @@ DUMP_FILE="${DUMP_FILE:-/tmp/wxlike-restore.sql}"
 
 echo "restore drill: pg_dump -> filter client-only SET -> psql restore -> same assertions"
 
-pg_dump "$DATABASE_URL" \
+DUMP_CMD=(pg_dump)
+if [[ -n "${PG_DUMP_CONTAINER:-}" ]]; then
+  DUMP_CMD=(docker exec "$PG_DUMP_CONTAINER" pg_dump)
+fi
+
+"${DUMP_CMD[@]}" "$DATABASE_URL" \
   --no-owner --no-privileges --format=plain \
   | sed '/transaction_timeout/d' > "$DUMP_FILE"
 

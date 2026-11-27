@@ -76,24 +76,10 @@ pub fn run() {
 /// 命令注册表单独成函数：`run` 只保留装配逻辑，注册列表本身不再撑长它。
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
-        commands::core_dispatch, commands::core_subscribe, commands::core_capabilities, commands::set_server,
-        commands::conv_unread, commands::conv_mark_read, commands::call_state, commands::call_action,
-        commands::call_signal_post, commands::call_signal_take, commands::call_rtc_start, commands::call_rtc_accept,
-        commands::call_rtc_hangup, commands::call_rtc_status, commands::safety_number, commands::verify_peer,
-        commands::register, commands::login, commands::logout, commands::me,
-        commands::update_profile, commands::friends, commands::friend_request, commands::friend_requests_incoming,
-        commands::friend_accept, commands::friend_decline, commands::groups_create, commands::wallet_balance,
-        commands::wallet_redpacket_cmd, commands::wallet_claim, commands::upload_media, commands::download_media,
-        commands::connect_hub, commands::send_text, commands::outbox_status, commands::outbox_retry,
-        commands::outbox_drop, commands::net_diag, commands::send_image, commands::send_redpacket_msg,
-        commands::start_recv_pump, commands::send_typing, commands::forward_message, commands::recall_msg,
-        commands::send_read_receipt, commands::merge_forward, commands::load_history, commands::search_messages,
-        commands::favorite_add, commands::favorites_list, commands::sessions_list, commands::session_revoke,
-        commands::sessions_revoke_others, commands::favorite_remove, commands::secret_enable, commands::secret_enabled,
-        commands::secret_configure, commands::secret_state, commands::send_secret_text, commands::send_voice,
-        commands::send_file, commands::send_sticker, commands::upload_video, commands::send_video,
-        commands::download_video, commands::upload_avatar, commands::local_open, commands::local_autopen,
-        commands::local_ready, commands::local_history,
+        // Retired raw-IPC surface: only the single typed core bridge remains.
+        commands::core_dispatch,
+        commands::core_subscribe,
+        commands::core_capabilities,
     ]
 }
 

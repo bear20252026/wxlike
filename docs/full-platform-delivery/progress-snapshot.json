@@ -702,7 +702,7 @@
       "title": "从展示稿拆分产品壳与登录",
       "wave": "W3",
       "status": "LANDED",
-      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 152,
       "github_issue_state": "OPEN"
@@ -713,7 +713,7 @@
       "title": "聊天闭环与消息操作",
       "wave": "W3",
       "status": "LANDED",
-      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 154,
       "github_issue_state": "OPEN"
@@ -724,7 +724,7 @@
       "title": "联系人、新朋友与群管理",
       "wave": "W3",
       "status": "LANDED",
-      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 157,
       "github_issue_state": "OPEN"
@@ -735,7 +735,7 @@
       "title": "桌面系统与网页能力适配",
       "wave": "W3",
       "status": "LANDED",
-      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 158,
       "github_issue_state": "CLOSED"
@@ -746,7 +746,7 @@
       "title": "搜索、设置与本地安全界面",
       "wave": "W3",
       "status": "LANDED",
-      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 161,
       "github_issue_state": "OPEN"
@@ -1197,7 +1197,7 @@
       "title": "桌面扫码登录与新版界面字面承诺接线",
       "wave": "W2/W3",
       "status": "LANDED",
-      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役",
+      "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 160,
       "github_issue_state": "OPEN"

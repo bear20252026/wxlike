@@ -195,7 +195,8 @@ function checkHostConnect(name, csp) {
 }
 
 const defaultConf = readJson(path.join("ui", "src-tauri", "tauri.conf.json"));
-const oldUiConf = readJson(path.join("ui", "src-tauri", "tauri.conf.old-ui.json"));
+const oldUiConfigPath = path.join("ui", "src-tauri", "tauri.conf.old-ui.json");
+const oldUiConfigExists = fs.existsSync(path.join(ROOT, oldUiConfigPath));
 const newUiConf = readJson(path.join("ui", "src-tauri", "tauri.conf.new-ui.json"));
 
 if (defaultConf) {
@@ -237,14 +238,13 @@ if (defaultConf) {
   checkHostConnect(DEFAULT_POLICY, defaultConf?.app?.security?.csp);
 }
 
-// 4) 旧 UI 逃生阀：文件必须在，且确实指回 ui/dist（旧 UI 没被删掉）。
-if (oldUiConf) {
-  const dist = oldUiConf?.build?.frontendDist;
-  if (dist !== OLD_UI_DIST_REL) {
-    problems.push(`tauri.conf.old-ui.json 的 frontendDist 期望 "${OLD_UI_DIST_REL}"，实际 "${dist}"`);
-  } else {
-    notes.push(`旧 UI 逃生阀 OK：--config src-tauri/tauri.conf.old-ui.json -> ${path.join("ui", "dist")}`);
-  }
+// 4) 旧 UI 逃生阀已退役：文件必须不存在；任何重新引入都必须红。
+if (oldUiConfigExists) {
+  problems.push(
+    "tauri.conf.old-ui.json 仍然存在：旧 UI 逃生阀已退役，禁止重新引入旧界面入口",
+  );
+} else {
+  notes.push("旧 UI 逃生阀已退役：tauri.conf.old-ui.json 不存在");
 }
 
 // 5) README/handover 提到的 tauri.conf.new-ui.json 还在被引用，留着当别名；

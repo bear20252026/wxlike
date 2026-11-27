@@ -199,32 +199,17 @@ jobs:
     - name: record known gaps
       run: python3 ci/jobs/build/check_gaps.py
   ui:
-    name: ui
+    name: ui (old-UI retirement guard)
     needs:
     - select
     if: needs.select.outputs.ui == 'true' || needs.select.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-      with:
-        node-version: '22'
-        cache: npm
-        cache-dependency-path: ui/package-lock.json
-    - run: npm ci
-      working-directory: ui
-    - name: C7 typecheck
-      run: npm run typecheck
-      working-directory: ui
-    - name: C7 bundle
-      run: npm run build
-      working-directory: ui
-    - name: C7 wire bincode selftest
-      run: npm run test:wire
-      working-directory: ui
-    - name: C7 message index contract
-      run: npm run check:msgindex
-      working-directory: ui
+    - name: old-UI retirement guard
+      run: python3 ci/jobs/tests/test_ci.py OldUiRetirementTest
+    - name: host config guard
+      run: node scripts/check-tauri-host.mjs
   flutter:
     name: flutter
     needs:
@@ -266,7 +251,7 @@ jobs:
       contents: read
     services:
       postgres:
-        image: postgres:16
+        image: postgres:19.0
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -302,6 +287,9 @@ jobs:
     - name: M023 割接导入控制表首次 + 重跑（幂等）
       shell: bash
       run: "set -euo pipefail\nfor _ in 1 2; do\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 \\\n    -f schema/proposals/G00/0001_import_control.sql\ndone\n"
+    - name: M024 全量导入兼容补齐首次 + 重跑（幂等）
+      shell: bash
+      run: "set -euo pipefail\nfor _ in 1 2; do\n  psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 \\\n    -f schema/proposals/G00/0002_import_compat_backfill.sql\ndone\n"
     - name: M010 schema/触发器/不可变性断言
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts.sql
     - name: M011-M013 兼容层与回填断言
@@ -322,16 +310,34 @@ jobs:
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_m019_m022_behavior.sql
     - name: M023 导入控制表形状/约束断言
       run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_import.sql
+    - name: M024 全量导入兼容形状/identity 断言
+      run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/jobs/build/pg_migration_asserts_import_compat.sql
+    - name: 110 表全量导入 catalog 普查
+      run: bash ci/jobs/build/pg_data_import_census.sh
+    - name: 110 表全量导入（空快照真实跑通 DELETE/COPY/回读/序列）
+      run: bash ci/jobs/build/pg_data_import_full_shape.sh
     - name: M023 数据导入全链路（导出/装载/摘要/续跑）
       run: bash ci/jobs/build/pg_data_import_smoke.sh
     - name: M013 导入器全链路（SQLite → COPY → CALL）
       run: bash ci/jobs/build/pg_import_smoke.sh
-    - name: 备份/恢复演练（pg_dump → psql restore → 断言）
+    - name: 备份/恢复演练（pg_dump 19 → psql restore → 断言）
       env:
         ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wxlike_restore
         RESTORE_DB: wxlike_restore
-      run: bash ci/jobs/build/pg_restore_drill.sh
+      run: 'set -euo pipefail
+
+        # runner 自带的 pg_dump 可能是 16，遇到 19.0 服务端会直接拒绝；
+
+        # 用 service 容器内的 19.0 客户端导出，psql 仍走 runner（兼容旧客户端）。
+
+        PG_CONTAINER=$(docker ps --filter "ancestor=postgres:19.0" --format "{{.ID}}" | head -1)
+
+        test -n "$PG_CONTAINER" || { echo "postgres:19.0 service container not found" >&2; exit 1; }
+
+        PG_DUMP_CONTAINER="$PG_CONTAINER" bash ci/jobs/build/pg_restore_drill.sh
+
+        '
     - name: toolchain
       shell: bash
       run: 'rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
@@ -823,11 +829,7 @@ jobs:
       with:
         node-version: '22'
         cache: npm
-        cache-dependency-path: 'ui/package-lock.json
-
-          apps/desktop-web/package-lock.json
-
-          '
+        cache-dependency-path: apps/desktop-web/package-lock.json
     - name: webkit build dependencies
       run: 'sudo apt-get update
 
@@ -839,11 +841,6 @@ jobs:
         add-rust-environment-hash-key: false
         key: ${{ runner.os }}-desktop-${{ env.RUSTUP_TOOLCHAIN }}
         workspaces: ui/src-tauri
-    - run: npm ci
-      working-directory: ui
-    - name: C9 frontend bundle consumed by Tauri
-      run: npm run build
-      working-directory: ui
     - name: C9 prepare wasm client for the new UI (G01-03)
       run: bash scripts/ci-prepare-wasm-client.sh
     - name: C9 new UI bundle consumed by the default host
@@ -904,11 +901,7 @@ jobs:
       with:
         node-version: '22'
         cache: npm
-        cache-dependency-path: 'ui/package-lock.json
-
-          apps/desktop-web/package-lock.json
-
-          '
+        cache-dependency-path: apps/desktop-web/package-lock.json
     - name: Linux webkit build dependencies
       if: runner.os == 'Linux'
       run: 'sudo apt-get update
@@ -921,11 +914,6 @@ jobs:
         add-rust-environment-hash-key: false
         key: ${{ runner.os }}-desktop-package-${{ env.RUSTUP_TOOLCHAIN }}
         workspaces: ui/src-tauri
-    - run: npm ci
-      working-directory: ui
-    - name: C9 frontend bundle consumed by Tauri
-      run: npm run build
-      working-directory: ui
     - name: C9 prepare wasm client for the new UI (G01-03)
       run: bash scripts/ci-prepare-wasm-client.sh
     - name: C9 new UI bundle consumed by the default host

@@ -61,7 +61,7 @@ GROUP_ASSESSMENT = {
     "G07": {"default": "PARTIAL", "evidence": "service-catalog 已挂载；discovery（扫码/二维码/附近）2026-11-19 接线；vision/translation 编排面已挂载但无供应商凭据=诚实 503 拒绝面（真实适配器待接）；购物/游戏 provider 未接", "overrides": {}},
     "G08": {"default": "PARTIAL", "evidence": "container/dpage/miniapps 2026-11-19 经 mini_runtime 真实接线（审核目录搜索/推荐、包检视、根信任验签、容器沙箱启动）；安装/签包发布诚实 501（缺签名上传流式核心与离线根密钥）；SEAM 登记已移除", "overrides": {}},
     "G09": {"default": "PARTIAL", "evidence": "str0m 媒体+房间制+直播控制面+信令落地；ADR-25 门禁对齐但 LiveKit sidecar 未接", "overrides": {}},
-    "G10": {"default": "LANDED", "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 逃生阀待退役", "overrides": {}},
+    "G10": {"default": "LANDED", "evidence": "desktop-web 262 测试、核心装配/会话边界/历史分页落地；旧 UI 与 raw IPC 已退役（功能等价待补）", "overrides": {}},
     "G11": {"default": "LANDED", "evidence": "wallet/files/mini/discover/video/calls 功能页+core-only 迁移层落地", "overrides": {}},
     "G12": {"default": "RETIRED", "evidence": "Flutter 退役（ADR-29）；原生壳未建（MOBILE-NATIVE-SHELLS）", "overrides": {}},
     "G13": {"default": "RETIRED", "evidence": "Flutter 退役（ADR-29）；团队卡未标退役", "overrides": {}},

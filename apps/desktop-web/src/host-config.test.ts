@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -60,9 +60,8 @@ describe("桌面宿主默认配置（issue #158）", () => {
     expect(connectSrcOf(conf.app?.security?.csp)).toEqual(["http://ipc.localhost", "ipc:"]);
   });
 
-  it("旧 UI 仍可从 tauri.conf.old-ui.json 打包（逃生阀没被拆掉）", () => {
-    const conf = JSON.parse(readFileSync(OLD_UI_CONFIG, "utf8")) as { build?: { frontendDist?: string } };
-    expect(conf.build?.frontendDist).toBe("../dist");
+  it("旧 UI 逃生阀已退役：tauri.conf.old-ui.json 不存在", () => {
+    expect(existsSync(OLD_UI_CONFIG)).toBe(false);
   });
 
   it("守卫脚本判定宿主/前端双 CSP 交集仍允许 Rust 桥", () => {

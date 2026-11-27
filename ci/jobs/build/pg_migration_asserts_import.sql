@@ -1,4 +1,4 @@
--- M023 shape and behavior assertions (CI PostgreSQL 16).
+-- M023 shape and behavior assertions (CI PostgreSQL 19.0).
 -- Run after 0001_import_control.sql has been applied twice.
 
 DO $$

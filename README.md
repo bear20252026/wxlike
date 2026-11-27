@@ -559,47 +559,24 @@ cargo run -p wxlike-container --example research_wmpf -- <path-to-JS>
 
 **边界**：`source_recovered/wmpf_js/*` 是腾讯版权代码，仅限本地研究，禁止随任何构建产物分发。
 
-## 桌面 UI（WP-11，Tauri2 + TypeScript + jotai）
+## 桌面 UI（G10，Tauri2 + React 19 + Vite）
 
-`ui/` 独立于 workspace 构建。**所有服务器交互都是 Rust command**——前端只渲染，
-从不自己开 HTTP/QUIC 连接（架构铁律 §0.1.1）；状态管理 jotai（vanilla API）；
-esbuild 打包进 `ui/dist`（frontendDist）。QUIC 连接走 WP-12 的 TOFU 钉扎，
-指纹落在应用数据目录。已覆盖：注册登录、会话列表（滑动操作/搜索展开/未读角标）、
-聊天气泡（收发分侧）、图片消息（九宫格 + 缩略图点击看原图）、好友（申请/同意/备注）、
-建群/群聊、红包（发送/拆/余额）、全量深色模式、聊天页转场。
+**唯一发布路径是 `apps/desktop-web`**。旧 `ui/` TypeScript/esbuild 界面与 raw IPC
+已于 2026-11-27 退役：`ui/src` 仅作历史归档，不再有旧宿主配置、构建脚本或发布入口；
+Tauri 的 `generate_handler!` 只暴露 `core_dispatch` / `core_subscribe` / `core_capabilities`。
 
-```bash
-# 前置：Rust(MSVC) + Node ≥18 + WebView2（Win10/11 自带）+ VS Build Tools
-cd ui
-npm i
-npm run build            # tsc --noEmit + esbuild 打包到 dist/
-npx tauri dev            # 首次编译 src-tauri 后弹出窗口（干凈环境 ≤15 分钟）
-
-# 命令层的 Rust 侧测试（打真实 in-process 服务器，禁 mock）
-cd ui/src-tauri && cargo test --test ui_commands   # 16 项
-cargo clippy --all-targets                          # 0 warning（任务书 A4）
-```
-
-## 新版 UI 运行（apps/desktop-web，G10）
-
-`apps/desktop-web/` 是新写的桌面/Web 核心 UI（React 19 + Vite + Tailwind 4），
-与 Rust 的边界和 `ui/` 一致：只通过 CoreHandle/PlatformPort，前端不开自己的
-HTTP/QUIC 连接。CI 对应 `web-v2` 任务（typecheck → lint → test → build，
-顺带跑 `packages/mini-sdk` 的契约一致性测试，见 `ci/jobs/build/web_v2.job.yml`）。
+新 UI 与 Rust 的边界是 `CoreHandle`/`PlatformPort`：所有功能走 `core_dispatch` action 面，
+前端不开自己的 HTTP/QUIC 连接。QUIC 连接走 WP-12 的 TOFU 钉扎，指纹落在应用数据目录。
+覆盖范围与仍缺的功能见 `ui/README.md` 和 `ci/jobs/policy/known-gaps.json` 的
+`OLD-UI-RETIREMENT`，不把“入口退役”当成“功能等价”。
 
 ```bash
 cd apps/desktop-web
 npm ci
 npm run dev         # Vite dev server（端口 5183，strictPort）
-
-# 打包（tsc --noEmit + vite build，产物 dist/，体积打印）
-npm run build       # 或在仓库根：bash scripts/build-web-v2.sh
+npm run build       # tsc --noEmit + vite build，产物 dist/
+# 或在仓库根：bash scripts/build-web-v2.sh
 ```
-
-桌面宿主通过 `ui/src-tauri/tauri.conf.new-ui.json` 把 frontendDist 指到这套
-产物（该配置由桌面端任务维护，加载方式以其说明为准）；Web 侧的 Rust 落地是
-`crates/client-web`（wasm32，见 `ci/jobs/policy/known-gaps.json` 的
-G01-03-WASM：JS 侧打包/接线仍在进行）。
 
 ## Rust 版本注意（已踩坑记录）
 

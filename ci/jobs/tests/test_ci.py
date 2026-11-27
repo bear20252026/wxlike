@@ -952,7 +952,7 @@ class OldUiRetirementTest(unittest.TestCase):
         `core_bridge`/`render_event_with` 等不是命令清单的一部分。
         """
         text = self._readme()
-        section = text.split("**命令面盘点", 1)[1].split("注意：", 1)[0]
+        section = text.split("## 命令面", 1)[1].split("## 发布门禁", 1)[0]
         listed = set(re.findall(r"`([a-z_][a-z_0-9]*)`", section))
         listed.discard("lib.rs")
         return listed
@@ -976,8 +976,20 @@ class OldUiRetirementTest(unittest.TestCase):
     def test_default_host_still_points_to_desktop_web(self):
         conf = json.loads((ROOT / "ui" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
         self.assertIn("desktop-web", conf["build"]["frontendDist"])
-        old = json.loads((ROOT / "ui" / "src-tauri" / "tauri.conf.old-ui.json").read_text(encoding="utf-8"))
-        self.assertEqual(old["build"]["frontendDist"], "../dist")
+        self.assertFalse(
+            (ROOT / "ui" / "src-tauri" / "tauri.conf.old-ui.json").exists(),
+            "旧 UI 宿主配置必须退役",
+        )
+        self.assertFalse(
+            (ROOT / "scripts" / "build-old-ui.sh").exists(),
+            "旧 UI 构建脚本必须退役",
+        )
+
+    def test_only_core_bridge_is_registered(self):
+        self.assertEqual(
+            self._registered(),
+            ["core_dispatch", "core_subscribe", "core_capabilities"],
+        )
 
 
 if __name__ == "__main__":
