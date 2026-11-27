@@ -153,6 +153,33 @@ fn due_respects_the_clock_and_reclaims_stale_running() {
     assert_eq!(reclaimed[0].state, JobState::Running);
 }
 
+#[tokio::test]
+async fn stale_running_job_is_reclaimed_and_run() {
+    let store = store("stale-run");
+    let job = store
+        .submit_job(&bytes_of("stale-run"), "tester", None)
+        .unwrap()
+        .job;
+    // 模拟 worker 在很久以前领了作业后崩溃：state=running, updated_at 已过期。
+    let old = now() - STALE_RUNNING_MS - 1_000;
+    assert!(store.claim_job_at(&job.job_id, old).unwrap());
+    assert!(store
+        .due_jobs(now(), 4)
+        .unwrap()
+        .iter()
+        .any(|j| j.job_id == job.job_id));
+
+    // run_job 的 CAS 必须能重新领到这条 stale running；旧实现只认 pending，
+    // 会直接报 "not claimable" 并让整轮 worker 退出。
+    let updated = store.run_job(&job.job_id).await.unwrap();
+    assert_ne!(
+        updated.state,
+        JobState::Running,
+        "stale running 必须被重新执行: {updated:?}"
+    );
+    assert_eq!(updated.attempts, 1, "重新领取后要真的跑一轮: {updated:?}");
+}
+
 #[test]
 fn failures_burn_attempts_then_go_terminal() {
     let store = store("fail");

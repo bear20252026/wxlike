@@ -544,14 +544,22 @@ impl VideoStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// 领取作业（CAS：只有还是 `pending` 才领得到，两个 worker 不会转同一份）。
+    /// 领取作业（CAS：只有还是 `pending`，或 `running` 已卡过
+    /// [`STALE_RUNNING_MS`] 才领得到；两个 worker 不会转同一份）。
     pub fn claim_job(&self, job_id: &str) -> anyhow::Result<bool> {
-        let now = wxlike_core::types::now_ms() as i64;
+        self.claim_job_at(job_id, wxlike_core::types::now_ms() as i64)
+    }
+
+    /// 带时钟的领取，测试用。`stale_before = now - STALE_RUNNING_MS`。
+    pub fn claim_job_at(&self, job_id: &str, now_ms: i64) -> anyhow::Result<bool> {
+        let stale_before = now_ms - STALE_RUNNING_MS;
         let db = self.db()?;
         let changed = db.c().execute(
             "UPDATE video_jobs SET state = 'running', updated_at = ?2
-             WHERE job_id = ?1 AND state = 'pending'",
-            params![job_id, now],
+             WHERE job_id = ?1
+               AND (state = 'pending'
+                    OR (state = 'running' AND updated_at <= ?3))",
+            params![job_id, now_ms, stale_before],
         )?;
         Ok(changed == 1)
     }
@@ -644,8 +652,13 @@ impl VideoStore {
     /// 作业行里。
     pub async fn run_job(&self, job_id: &str) -> anyhow::Result<Job> {
         if !self.claim_job(job_id)? {
-            anyhow::bail!("job {job_id} is not claimable (not pending)");
+            anyhow::bail!("job {job_id} is not claimable (not pending or not stale)");
         }
+        self.run_claimed_job(job_id).await
+    }
+
+    /// 已经由调用方 CAS 领到的作业：读暂存源、跑流水线、写回结果。
+    async fn run_claimed_job(&self, job_id: &str) -> anyhow::Result<Job> {
         let job = self.job(job_id)?.context("no such job")?;
         let staged = self.pending_dir(job_id).join("source");
         let bytes = match std::fs::read(&staged) {
@@ -685,7 +698,12 @@ impl VideoStore {
         let mut report = WorkerReport::default();
         let now = wxlike_core::types::now_ms() as i64;
         for job in self.due_jobs(now, JOBS_PER_ROUND)? {
-            let updated = self.run_job(&job.job_id).await?;
+            // due_jobs 里可能是一条 stale running；另一个 worker 刚好先抢到，
+            // 这里 CAS 失败就跳过，不能因为一条被别人领走的作业中止整轮。
+            if !self.claim_job(&job.job_id)? {
+                continue;
+            }
+            let updated = self.run_claimed_job(&job.job_id).await?;
             match updated.state {
                 JobState::Succeeded => report.succeeded += 1,
                 JobState::Failed => report.failed += 1,
