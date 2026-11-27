@@ -308,6 +308,35 @@ pub struct Preview {
     pub next: String,
 }
 
+/// 批量目标的集合指纹。排序去重后对整个集合做 SHA-256，审计里只出现
+/// 这个 hash，既能把"预览的到底是哪一批人"钉死，又不把目标列表散落到
+/// 每一条日志里。
+pub fn batch_target_hash(targets: &[String]) -> String {
+    crate::audit::digest(&serde_json::json!({"targets": targets}))
+}
+
+/// 批量危险动作的两阶段结果。
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum BatchPrep {
+    Preview(BatchPreview),
+    Execute {
+        targets: Vec<String>,
+        target_hash: String,
+    },
+}
+
+#[derive(Serialize)]
+pub struct BatchPreview {
+    pub action: String,
+    pub reason: String,
+    pub targets: Vec<String>,
+    pub target_hash: String,
+    pub total: usize,
+    pub confirmation: Confirmation,
+    pub next: String,
+}
+
 /// 确认令牌池。放内存里而不是库里：令牌活 5 分钟，进程重启后本来就该重来，
 /// 落盘只会多一份"忘了清理"的垃圾。
 #[derive(Clone)]
@@ -580,6 +609,58 @@ impl IdentityService {
     pub fn with_confirmer(mut self, confirmer: Confirmer) -> Self {
         self.confirmer = confirmer;
         self
+    }
+
+    /// 批量封禁的两阶段准入：角色 → step-up → 预览/消费一次性令牌。
+    ///
+    /// 单目标 `danger_prepare` 已有同样的门；批量以前只有角色检查，等于
+    /// 用一次请求绕过了 step-up 和二次确认。
+    pub fn batch_prepare(
+        &self,
+        actor: &str,
+        role: Role,
+        reason: &str,
+        targets: &[String],
+        confirm: Option<&str>,
+    ) -> Result<BatchPrep> {
+        let reason = required_reason(reason)?;
+        if targets.is_empty() {
+            return Err(AdminError::bad_input("批量处罚的目标列表为空"));
+        }
+        let mut normalized: Vec<String> = targets
+            .iter()
+            .map(|target| upstream::check_target(target))
+            .collect::<Result<Vec<_>>>()?;
+        normalized.sort_unstable();
+        normalized.dedup();
+        if normalized.is_empty() {
+            return Err(AdminError::bad_input("批量处罚的目标列表为空"));
+        }
+
+        auth::require(role, Resource::Identity, Action::Destructive)?;
+        self.stepup.require(actor, Action::Destructive)?;
+
+        let target_hash = batch_target_hash(&normalized);
+        let fingerprint_want = fingerprint("batch_suspend", &target_hash, &reason, None);
+        let Some(token) = confirm else {
+            let confirmation = self
+                .confirmer
+                .prepare("batch_suspend", &target_hash, &reason, None);
+            return Ok(BatchPrep::Preview(BatchPreview {
+                action: "batch_suspend".into(),
+                reason,
+                total: normalized.len(),
+                targets: normalized,
+                target_hash,
+                confirmation,
+                next: "确认无误后带 {\"confirm\":\"<token>\"} 重发同一请求".into(),
+            }));
+        };
+        self.confirmer.consume(token, &fingerprint_want)?;
+        Ok(BatchPrep::Execute {
+            targets: normalized,
+            target_hash,
+        })
     }
 
     pub fn audit(&self) -> &AuditLog {

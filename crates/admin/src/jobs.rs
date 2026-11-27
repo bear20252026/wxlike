@@ -118,6 +118,9 @@ pub struct JobFilter {
 /// 批量作业的回执。写进 `payload.receipt`，取消/失败都能看到进度。
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Receipt {
+    /// 整批目标的集合哈希，确认令牌与作业回执用同一口径。
+    #[serde(default)]
+    pub target_hash: String,
     pub total: usize,
     pub processed: usize,
     pub succeeded: usize,
@@ -354,7 +357,9 @@ impl JobService {
         }
         let now = now_ms();
         let id = format!("job_{}", wxlike_platform::random_hex(8));
+        let target_hash = crate::identity::batch_target_hash(targets);
         let receipt = Receipt {
+            target_hash,
             total: targets.len(),
             ..Default::default()
         };

@@ -836,6 +836,8 @@ async fn govern_group(
 struct BatchBody {
     reason: String,
     targets: Vec<String>,
+    #[serde(default)]
+    confirm: Option<String>,
 }
 
 async fn batch_suspend(
@@ -846,14 +848,58 @@ async fn batch_suspend(
     let trace = new_trace();
     let jobs = app.g14().jobs.clone();
     let t = trace.clone();
+    let app_for_gate = app.clone();
     let (actor, role) = offload(move || {
-        let caller = write_caller(&app, &incoming, Resource::Identity, Action::Destructive, &t)?;
+        let caller = write_caller(
+            &app_for_gate,
+            &incoming,
+            Resource::Identity,
+            Action::Destructive,
+            &t,
+        )?;
         Ok((caller.session.actor, caller.session.role))
     })
     .await?;
+
+    let svc = app.g14().identity.clone();
+    let reason = body.reason.clone();
+    let targets = body.targets.clone();
+    let confirm = body.confirm.clone();
+    let actor_for_prep = actor.clone();
+    let prep = match offload(move || {
+        svc.batch_prepare(&actor_for_prep, role, &reason, &targets, confirm.as_deref())
+    })
+    .await
+    {
+        Ok(prep) => prep,
+        Err(err) => {
+            record_denial(
+                &app,
+                &actor,
+                role.as_str(),
+                Resource::Identity,
+                Action::Destructive,
+                &trace,
+                &err,
+            );
+            return Err(err);
+        }
+    };
+    let (targets, target_hash) = match prep {
+        crate::identity::BatchPrep::Preview(preview) => {
+            return Ok(Json(
+                serde_json::json!({"trace": trace.as_ref(), "result": preview}),
+            ));
+        }
+        crate::identity::BatchPrep::Execute {
+            targets,
+            target_hash,
+        } => (targets, target_hash),
+    };
     let job = jobs
-        .run_batch(&actor, role, &trace, &body.reason, &body.targets)
+        .run_batch(&actor, role, &trace, &body.reason, &targets)
         .await?;
+    let _ = target_hash;
     Ok(Json(
         serde_json::json!({"trace": trace.as_ref(), "job": job}),
     ))

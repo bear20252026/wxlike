@@ -320,16 +320,87 @@ async fn invalid_group_verb_is_refused_before_any_call() {
 }
 
 #[tokio::test]
-async fn batch_suspend_reports_per_item_and_audits_each_target() {
-    let mut env = Env::new("g14-02-batch");
-    let token = env.ready("mod").await;
+async fn batch_requires_step_up_and_a_single_use_confirmation() {
+    let mut env = Env::new("g14-02-batch-confirm");
+    let mod_token = env.token("mod"); // mfa=true，但没有 step-up
     let (st, body) = env
         .call(
             "POST",
             "/api/g14/identity/batch",
-            Some(&token),
-            Some(json!({"reason":"同批刷屏账号","targets":["u_21","u_22","u_23"]})),
+            Some(&mod_token),
+            Some(json!({"reason":"同批刷屏账号","targets":["u_51","u_52"]})),
         )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("step-up")
+            || body["error"].as_str().unwrap().contains("步进"),
+        "批量必须先过 step-up: {body}"
+    );
+    assert!(env.identity.calls().is_empty(), "没 step-up 不能碰域侧");
+
+    let ready = env.ready("mod").await;
+    let (st, preview) = env
+        .call(
+            "POST",
+            "/api/g14/identity/batch",
+            Some(&ready),
+            Some(json!({"reason":"同批刷屏账号","targets":["u_51","u_52"]})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{preview}");
+    let token = preview["result"]["confirmation"]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let preview_hash = preview["result"]["target_hash"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(env.identity.calls().is_empty(), "预览不能执行域动作");
+
+    let (st, body) = env
+        .call(
+            "POST",
+            "/api/g14/identity/batch",
+            Some(&ready),
+            Some(json!({
+                "reason":"同批刷屏账号",
+                "targets":["u_51","u_52"],
+                "confirm":token
+            })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let job_hash = body["job"]["payload"]["receipt"]["target_hash"]
+        .as_str()
+        .unwrap();
+    assert_eq!(job_hash, preview_hash, "执行作业必须记录预览的目标集合哈希");
+    assert_eq!(env.identity.calls().len(), 2, "只有两个目标被执行");
+
+    // 同一个令牌不能再用一次。
+    let (st, again) = env
+        .call(
+            "POST",
+            "/api/g14/identity/batch",
+            Some(&ready),
+            Some(json!({
+                "reason":"同批刷屏账号",
+                "targets":["u_51","u_52"],
+                "confirm":token
+            })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{again}");
+    assert_eq!(env.identity.calls().len(), 2, "令牌复用不能二次执行");
+}
+
+#[tokio::test]
+async fn batch_suspend_reports_per_item_and_audits_each_target() {
+    let mut env = Env::new("g14-02-batch");
+    let token = env.ready("mod").await;
+    let (st, body) = env
+        .batch(&token, "同批刷屏账号", &["u_21", "u_22", "u_23"])
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let receipt = &body["job"]["payload"]["receipt"];

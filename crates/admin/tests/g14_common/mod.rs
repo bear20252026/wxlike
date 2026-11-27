@@ -158,6 +158,38 @@ impl Env {
         self.step_up(name).await;
         token
     }
+
+    /// 批量封禁的两阶段助手：先拿预览令牌，再带 confirm 执行。
+    /// 返回执行响应，断言预览阶段 200 且令牌存在。
+    pub async fn batch(
+        &mut self,
+        token: &str,
+        reason: &str,
+        targets: &[&str],
+    ) -> (StatusCode, Value) {
+        let payload = serde_json::json!({"reason": reason, "targets": targets});
+        let (status, preview) = self
+            .call(
+                "POST",
+                "/api/g14/identity/batch",
+                Some(token),
+                Some(payload.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "批量预览失败: {preview}");
+        let confirm = preview["result"]["confirmation"]["token"]
+            .as_str()
+            .expect("批量预览必须返回一次性确认令牌");
+        let mut execute = payload;
+        execute["confirm"] = serde_json::json!(confirm);
+        self.call(
+            "POST",
+            "/api/g14/identity/batch",
+            Some(token),
+            Some(execute),
+        )
+        .await
+    }
 }
 
 /// 断言状态码并返回 body，失败时把 body 打出来——否则调试只有一句 "assert failed"。

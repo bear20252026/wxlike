@@ -20,14 +20,7 @@ async fn job_list_is_empty_then_reflects_a_batch() {
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["page"]["total"], 0, "{body}");
 
-    let (st, body) = env
-        .call(
-            "POST",
-            "/api/g14/identity/batch",
-            Some(&mod_token),
-            Some(json!({"reason":"批量处置","targets":["u_31","u_32"]})),
-        )
-        .await;
+    let (st, body) = env.batch(&mod_token, "批量处置", &["u_31", "u_32"]).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let job_id = body["job"]["id"].as_str().unwrap().to_string();
 
@@ -52,14 +45,7 @@ async fn retry_revives_the_same_job_and_duplicate_clicks_are_harmless() {
     // 让第一条失败，制造一个 failed 作业
     env.identity
         .fail_next(wxlike_admin::AdminError::upstream(500, "identity exploded"));
-    let (st, body) = env
-        .call(
-            "POST",
-            "/api/g14/identity/batch",
-            Some(&mod_token),
-            Some(json!({"reason":"批量处置","targets":["u_41","u_42"]})),
-        )
-        .await;
+    let (st, body) = env.batch(&mod_token, "批量处置", &["u_41", "u_42"]).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["job"]["state"], "failed", "{body}");
     let job_id = body["job"]["id"].as_str().unwrap().to_string();
@@ -101,14 +87,7 @@ async fn retry_revives_the_same_job_and_duplicate_clicks_are_harmless() {
     assert!(!body["job"]["finished_at"].is_null(), "{body}");
 
     // 成功作业不能重试
-    let (_, ok_job) = env
-        .call(
-            "POST",
-            "/api/g14/identity/batch",
-            Some(&mod_token),
-            Some(json!({"reason":"批量处置","targets":["u_43"]})),
-        )
-        .await;
+    let (_, ok_job) = env.batch(&mod_token, "批量处置", &["u_43"]).await;
     let ok_id = ok_job["job"]["id"].as_str().unwrap().to_string();
     let (st, body) = env
         .call(
