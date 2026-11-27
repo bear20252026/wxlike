@@ -92,6 +92,7 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
   late final ContactsController _contacts = ContactsController(port: widget.relations);
   Uri? _pendingLink;
   bool _pushSynced = false;
+  bool _lockReady = false;
 
   @override
   void initState() {
@@ -106,11 +107,40 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
       }
     });
     _session = widget.session.signedIn ? widget.session : null;
-    _lock = AppLockController(secrets: widget.secrets)..restore();
-    if (_session != null) {
-      _mountConversations();
-      _syncPush();
+    _lock = AppLockController(secrets: widget.secrets);
+    _lock.addListener(_onLockChanged);
+    // H-24：先恢复应用锁，再决定是否挂会话/联网。旧实现这里直接
+    // `..restore()`（不 await）并立刻 `_mountConversations()`，Keystore 慢时
+    // 会在锁状态未知前把缓存消息和轮询放出去。
+    _restoreLock();
+  }
+
+  Future<void> _restoreLock() async {
+    await _lock.restore();
+    if (!mounted) return;
+    setState(() => _lockReady = true);
+    if (_session != null && !_lock.locked) _afterUnlock();
+  }
+
+  void _onLockChanged() {
+    if (!mounted || !_lockReady) return;
+    if (_lock.locked) {
+      // 锁上时把 AppShell 从树上拿掉，并释放会话控制器，停掉轮询/订阅。
+      final old = _conversations;
+      _conversations = null;
+      if (old != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+      }
+      setState(() {});
+      return;
     }
+    if (_session != null) _afterUnlock();
+    setState(() {});
+  }
+
+  void _afterUnlock() {
+    if (_conversations == null) _mountConversations();
+    _syncPush();
   }
 
   @override
@@ -196,7 +226,6 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
 
   @override
   Widget build(BuildContext context) {
-    final session = _session;
     return MaterialApp(
       title: 'wxlike',
       debugShowCheckedModeBanner: false,
@@ -204,8 +233,19 @@ class _WxlikeMobileAppState extends State<WxlikeMobileApp> {
       theme: WxTheme.light(),
       darkTheme: WxTheme.dark(),
       themeMode: ThemeMode.system,
-      home: session == null ? _login() : _shell(session),
+      home: _home(_session),
     );
+  }
+
+  Widget _home(SessionInfo? session) {
+    if (!_lockReady) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (session == null) return _login();
+    if (_lock.locked) {
+      return Scaffold(body: AppLockScreen(lock: _lock, onSignOut: _onSignOut));
+    }
+    return _shell(session);
   }
 
   Widget _login() {
