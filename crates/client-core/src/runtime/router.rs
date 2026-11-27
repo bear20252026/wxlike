@@ -444,12 +444,10 @@ fn percent_encode(text: &str) -> String {
 /// 服务端 `SendBody` 收的是 `quote_of`；两者必须在唯一的路由层翻译一次。
 fn wire_aliases(id: &str, params: &Value) -> Value {
     let mut out = params.clone();
-    if id == "msg.send" {
-        if out.get("quote_of").is_none() {
-            if let Some(reply_to) = out.get("reply_to").cloned() {
-                if let Some(map) = out.as_object_mut() {
-                    map.insert("quote_of".to_string(), reply_to);
-                }
+    if id == "msg.send" && out.get("quote_of").is_none() {
+        if let Some(reply_to) = out.get("reply_to").cloned() {
+            if let Some(map) = out.as_object_mut() {
+                map.insert("quote_of".to_string(), reply_to);
             }
         }
     }

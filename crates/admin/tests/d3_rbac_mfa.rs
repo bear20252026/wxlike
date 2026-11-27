@@ -751,13 +751,22 @@ async fn login_flow_and_totp_self_service() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let token = body["token"].as_str().unwrap().to_string();
+    let token_before_enroll = body["token"].as_str().unwrap().to_string();
     assert_eq!(body["session"]["mfa"], json!(false));
-    let (_, id_before) = call(&router, req("GET", "/api/me", None, Some(&token))).await;
+    let (_, id_before) = call(
+        &router,
+        req("GET", "/api/me", None, Some(&token_before_enroll)),
+    )
+    .await;
 
     let (status, enroll) = call(
         &router,
-        req("POST", "/api/me/totp/enroll", None, Some(&token)),
+        req(
+            "POST",
+            "/api/me/totp/enroll",
+            None,
+            Some(&token_before_enroll),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{enroll}");
@@ -766,6 +775,20 @@ async fn login_flow_and_totp_self_service() {
         .as_str()
         .unwrap()
         .contains("otpauth://totp/"));
+    // H-14: 换 seed 会撤销全部会话；确认前必须用密码重新登录一次。
+    let (status, body) = call(
+        &router,
+        req(
+            "POST",
+            "/api/login",
+            Some(json!({"username": "ops-flow", "password": PW})),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "enroll 后重新登录失败: {body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    assert_eq!(body["session"]["mfa"], json!(false));
     // /api/me 不能把密钥再吐一次
     let (_, me) = call(&router, req("GET", "/api/me", None, Some(&token))).await;
     assert!(
@@ -801,18 +824,20 @@ async fn login_flow_and_totp_self_service() {
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert!(resp["next"].as_str().unwrap().contains("重新登录"));
 
-    // 旧会话仍然没有写权限（mfa 是登录时定的）
-    let (status, _) = call(
-        &router,
-        req(
-            "POST",
-            "/api/op/wallet.reconcile",
-            Some(json!({})),
-            Some(&token),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "旧会话不该突然能写");
+    // H-14: 确认 MFA 也是边界变化，enroll 前后两枚会话都必须当场失效。
+    for stale in [&token_before_enroll, &token] {
+        let (status, _) = call(
+            &router,
+            req(
+                "POST",
+                "/api/op/wallet.reconcile",
+                Some(json!({})),
+                Some(stale),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "旧会话必须被撤销");
+    }
 
     // 现在登录必须带码
     let (status, body) = call(

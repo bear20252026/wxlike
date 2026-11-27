@@ -411,7 +411,7 @@ COMMIT;
 -- (redpacket_id,user_id) 的并发第二次领取在唯一键上落空并回滚。
 CREATE TABLE IF NOT EXISTS redpacket_claims (
     redpacket_id TEXT NOT NULL REFERENCES redpackets(id) ON DELETE CASCADE,
-    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL REFERENCES identity_user(user_id) ON DELETE CASCADE,
     share        BIGINT NOT NULL,
     claimed_at   BIGINT NOT NULL,
     PRIMARY KEY (redpacket_id, user_id)

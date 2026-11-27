@@ -134,7 +134,7 @@ def suite_smoke(args) -> Suite:
         first = client.send(alice["token"], conv, "hello e2e", key)
         if not first.get("msg_id") or not first.get("accepted"):
             raise CaseFailure(f"send reply: {first}")
-        replay = client.send(alice["token"], conv, "hello e2e (retry)", key)
+        replay = client.send(alice["token"], conv, "hello e2e", key)
         if replay.get("msg_id") != first["msg_id"]:
             raise CaseFailure(f"idempotency replay produced {replay.get('msg_id')} != {first['msg_id']}")
         messages = client.wait_for_message(alice["token"], conv, first["msg_id"])
@@ -323,13 +323,22 @@ def suite_errors(args) -> Suite:
     def replay_same_key():
         key = "replay-" + uuid.uuid4().hex
         first = client.send(alice["token"], conv, "original", key)
-        second = client.send(alice["token"], conv, "different payload", key)
-        if first["msg_id"] != second["msg_id"]:
-            raise CaseFailure("same idempotency key produced different msg_id")
+        replay = client.send(alice["token"], conv, "original", key)
+        if first["msg_id"] != replay["msg_id"]:
+            raise CaseFailure("same idempotency key + same payload produced different msg_id")
         messages = [m for m in client.history(alice["token"], conv) if m.get("msg_id") == first["msg_id"]]
         if len(messages) != 1:
             raise CaseFailure(f"replay stored {len(messages)} rows")
-        return f"single effect {first['msg_id']}"
+        conflict = client.expect(
+            "POST",
+            f"/api/conv/{conv}/send",
+            409,
+            body={"text": "different payload", "idempotency_key": key},
+            token=alice["token"],
+        )
+        if "different parameters" not in conflict.text:
+            raise CaseFailure(f"reused key with new payload -> {conflict.status}: {conflict.text}")
+        return f"single effect {first['msg_id']}, conflict on changed payload"
 
     suite.case("duplicate registration", duplicate_registration)
     suite.case("duplicate name is 409", duplicate_name)
@@ -338,7 +347,7 @@ def suite_errors(args) -> Suite:
     suite.case("empty message is 422", empty_send)
     suite.case("foreign conversation is 403", foreign_conversation)
     suite.case("bad parameters and unknown route", bad_parameters)
-    suite.case("idempotency key replay", replay_same_key)
+    suite.case("idempotency key replay and conflict", replay_same_key)
     return suite
 
 

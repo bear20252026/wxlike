@@ -997,7 +997,7 @@ pub async fn deliver_callback_signed(
 }
 
 /// 固定连接地址的回调发送。`pinned` 为空时退回系统 DNS（仅测试/内部调用）；
-/// 生产 worker 必须传 [`CallbackPolicy::resolve`] 的结果。
+/// 生产 worker 必须传 [`crate::CallbackPolicy::resolve`] 的结果。
 pub async fn deliver_callback_signed_to(
     url: &str,
     body: &CallbackBody,
