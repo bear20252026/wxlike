@@ -90,6 +90,13 @@
 - CI：`pg-migration` 在 M023 断言后跑 `pg_data_import_smoke.sh`（合成五表：
   父子外键、identity、空表、bytea/CRLF/numeric），验证清空旧行、NULL/空串、
   摘要、续跑和序列复位。`composition/data-import/**` 属于完整矩阵触发路径。
+- 装载原子性：本轮 pending 表先全部导出，再用一个 `psql -f -` 脚本执行
+  `BEGIN → 逆序 DELETE → 逐表 \\copy → COMMIT`；任一语句失败由
+  `ON_ERROR_STOP` 退出并让服务端回滚整批，不再留下半清空/半装载目标。
+  `--resume` 只把非 `verified` 表放进这一批。
+- 启动 schema 守卫：`PgStorage::open` 在 `SELECT 1` 之后校验
+  `schema_snapshot.txt` 的每个表/视图都存在于 `public`，缺一个即拒绝启动；
+  列形状仍由 `pg-migration` 断言与 `pg_schema_parity` 守卫。
 - 停写窗口：`window.json` 记录源 SHA、SQLite data_version、逐表/总耗时；
   前后 SHA 与 data_version 不变才算 `quiescent`，`--max-window-seconds` 可设上限。
 - M024（`schema/proposals/G00/0002_import_compat_backfill.sql`）补齐 110 表

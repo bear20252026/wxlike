@@ -91,8 +91,9 @@
 - `dialect()`：方言。
 - `health()`：`SELECT 1`，连接不可用时返回受控错误。
 - `acquire()`：连接/事务入口。`StorageConnection::Sqlite(MutexGuard<Connection>)`
-  保持旧形状；`StorageConnection::Postgres(&PostgresPool)` 已落，事务句柄待 repo
-  改造后再收窄。
+  保持旧形状；`StorageConnection::Postgres(&PostgresPool)` 与非事务的
+  `PostgresTx { conn, pool }` 都已落。事务内的 repo 通过 `backend_ref` 拿到
+  `PgRef::Tx`，而不是被静默降级成池。
 
 `SqliteStorage` 另有 `lock()`（`MutexGuard<Connection>`）与 `blocking()`（ADR-28：
 同步临界区搬上阻塞池）。批次 14 后 `Db` 持有 `DbStorage`（`Sqlite` 或
@@ -104,6 +105,8 @@
   `Postgres(&PostgresPool)`；
 - `Db::blocking()` → SQLite 原样转发；PG 返回受控错误（16 处 blocking 调用点待改）；
 - `Db::open()` → `StorageProfile::from_env()`，再按 profile 分派到 SQLite 或 PG。
+  `PgStorage::open` 连接后先跑 `require_objects`：`schema_snapshot.txt` 里的每个表/视图
+  都必须在 `public` 中存在，缺一个就拒绝启动，避免连到空库/半迁移库。
 
 `lock()` 由 `MutexGuard` 改 `Result` 是公开签名变化，全仓 97 处调用点已同步改造。
 
@@ -114,10 +117,13 @@
 - `Db::blocking` 的闭包在阻塞池里取锁、跑完整事务、释放锁；`offload` 把整个
   `Platform` 调用搬上阻塞池。两者语义逐字不变。
 - `with_tx`（`wxlike_core::tx`）仍由调用方在 `&mut Connection` 上使用。
-- PG 实现的事务边界在 S2 后续落地：sqlx 事务句柄通过 `StorageConnection::Postgres`
-  交给 repo，`with_tx` 的等价包装再对齐。**不允许**把一次事务拆到多个 `await` 上。
-  当前已落 `PostgresPool`（sqlx 池 + 专属 runtime），但只服务新端口
-  `PostgresUsersRepo` / `PostgresSessionsRepo`；`Db::lock()` 仍只返回 SQLite 连接。
+- PG 事务边界：`PostgresPool::with_tx` 从池里借一条连接、显式 `BEGIN`，把
+  `PostgresTx` 交给闭包；`Db::with_tx` 对 PG 直接转发。闭包内不再包一层
+  `block_on`，repo 的语句逐条驱动同一条连接，事务状态保持。
+- `backend_ref` 遇到 `PostgresTx` 返回 `PgRef::Tx`；`PostgresUsersRepo` /
+  `PostgresSessionsRepo` 的 SQL 统一经 `PgRef::with_conn` 执行，不会另借池连接。
+  `update_profile` 与 `list_for_user` 的多语句块走 `with_conn_atomic`：事务外自己
+  `BEGIN/COMMIT`，事务内复用外层事务，不再嵌套 `BEGIN`。
 
 ### 1.4 错误口径
 

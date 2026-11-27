@@ -15,7 +15,7 @@ use wxlike_persistence::{NewSession, SessionRecord, SessionsRepo};
 
 use crate::error::{PlatformError, Result};
 use crate::storage::sql_port::StorageSqlExec;
-use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection, StorageDialect};
+use crate::storage::{OptionalExt as _, PgRef, StorageConnection, StorageDialect};
 use wxlike_identity::refresh;
 use wxlike_identity::sqlport::{ColKind, SqlExec as _, SqlParam, SqlValue};
 
@@ -249,11 +249,11 @@ fn row_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
 /// PostgreSQL 实现。物理表是 `identity_session_token`，不是 `sessions` 视图。
 /// `delete_expired_batch` 不再依赖 SQLite 的 `rowid`：直接用 token 子查询。
 pub(in crate::domain) struct PostgresSessionsRepo<'a> {
-    pg: &'a PostgresPool,
+    pg: PgRef<'a>,
 }
 
 impl<'a> PostgresSessionsRepo<'a> {
-    pub(in crate::domain) fn new(pg: &'a PostgresPool) -> Self {
+    pub(in crate::domain) fn new(pg: PgRef<'a>) -> Self {
         Self { pg }
     }
 }
@@ -282,251 +282,215 @@ impl SessionsRepo for PostgresSessionsRepo<'_> {
 
     fn insert(&self, s: &NewSession<'_>) -> Result<()> {
         self.pg
-            .block_on(
-                sqlx::query(
-                    "INSERT INTO identity_session_token(
-                         token, user_id, created_at, expires_at, sid,
-                         device_id, device_name, ip, last_seen, audience
-                     ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                )
-                .bind(s.token)
-                .bind(s.user_id)
-                .bind(s.created_at)
-                .bind(s.expires_at)
-                .bind(s.sid)
-                .bind(s.device_id)
-                .bind(s.device_name)
-                .bind(s.ip)
-                .bind(s.last_seen)
-                .bind(s.audience)
-                .execute(self.pg.pool()),
-            )
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "INSERT INTO identity_session_token(
+                             token, user_id, created_at, expires_at, sid,
+                             device_id, device_name, ip, last_seen, audience
+                         ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    )
+                    .bind(s.token)
+                    .bind(s.user_id)
+                    .bind(s.created_at)
+                    .bind(s.expires_at)
+                    .bind(s.sid)
+                    .bind(s.device_id)
+                    .bind(s.device_name)
+                    .bind(s.ip)
+                    .bind(s.last_seen)
+                    .bind(s.audience)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(())
     }
 
     fn find_by_token(&self, token: &str) -> Result<Option<SessionRecord>> {
-        let row = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "SELECT token, user_id, sid, device_id, device_name, ip,
-                            created_at, expires_at, last_seen, audience
-                     FROM identity_session_token WHERE token = $1",
-                )
-                .bind(token)
-                .fetch_optional(self.pg.pool()),
-            )
+        let row = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "SELECT token, user_id, sid, device_id, device_name, ip,
+                                created_at, expires_at, last_seen, audience
+                         FROM identity_session_token WHERE token = $1",
+                    )
+                    .bind(token)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         row.as_ref().map(pg_record).transpose()
     }
 
     fn sid_by_token(&self, token: &str) -> Result<Option<String>> {
-        let sid: Option<Option<String>> = self
-            .pg
-            .block_on(
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT sid FROM identity_session_token WHERE token = $1",
-                )
-                .bind(token)
-                .fetch_optional(self.pg.pool()),
-            )
+        let sid: Option<Option<String>> = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT sid FROM identity_session_token WHERE token = $1",
+                    )
+                    .bind(token)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(sid.flatten())
     }
 
     fn device_id_by_token(&self, token: &str) -> Result<Option<Option<String>>> {
         self.pg
-            .block_on(
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT device_id FROM identity_session_token WHERE token = $1",
-                )
-                .bind(token)
-                .fetch_optional(self.pg.pool()),
-            )
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT device_id FROM identity_session_token WHERE token = $1",
+                    )
+                    .bind(token)
+                    .fetch_optional(conn)))
             .map_err(pg_error)
     }
 
     fn count_for_user(&self, user_id: &str) -> Result<i64> {
         self.pg
-            .block_on(
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM identity_session_token WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .fetch_one(self.pg.pool()),
-            )
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM identity_session_token WHERE user_id = $1",
+                    )
+                    .bind(user_id)
+                    .fetch_one(conn)))
             .map_err(pg_error)
     }
 
     fn device_name_by_sid(&self, sid: &str) -> Result<Option<String>> {
-        let name: Option<String> = self
-            .pg
-            .block_on(
-                sqlx::query_scalar::<_, String>(
-                    "SELECT device_name FROM identity_session_token WHERE sid = $1",
-                )
-                .bind(sid)
-                .fetch_optional(self.pg.pool()),
-            )
+        let name: Option<String> = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, String>(
+                        "SELECT device_name FROM identity_session_token WHERE sid = $1",
+                    )
+                    .bind(sid)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(name.filter(|v| !v.is_empty()))
     }
 
     fn list_for_user(&self, user_id: &str, now: i64) -> Result<Vec<SessionRecord>> {
-        self.pg
-            .block_on(
-                sqlx::query(
-                    "DELETE FROM identity_session_token
-                     WHERE user_id = $1 AND expires_at <= $2",
-                )
-                .bind(user_id)
-                .bind(now)
-                .execute(self.pg.pool()),
-            )
-            .map_err(pg_error)?;
+        // 先清过期行再读列表，两条语句必须在同一事务里；否则读到的
+        // “expired 行已删、列表还没查”的中间态会短暂漏掉/多出会话。
         let rows = self
             .pg
-            .block_on(
-                sqlx::query(
-                    "SELECT token, user_id, sid, device_id, device_name, ip,
-                            created_at, expires_at, last_seen, audience
-                     FROM identity_session_token
-                     WHERE user_id = $1
-                     ORDER BY last_seen DESC, created_at DESC",
-                )
-                .bind(user_id)
-                .fetch_all(self.pg.pool()),
-            )
+            .with_conn_atomic(|conn| {
+                self.pg.block_on(async {
+                    sqlx::query(
+                        "DELETE FROM identity_session_token
+                         WHERE user_id = $1 AND expires_at <= $2",
+                    )
+                    .bind(user_id)
+                    .bind(now)
+                    .execute(&mut *conn)
+                    .await?;
+                    sqlx::query(
+                        "SELECT token, user_id, sid, device_id, device_name, ip,
+                                created_at, expires_at, last_seen, audience
+                         FROM identity_session_token
+                         WHERE user_id = $1
+                         ORDER BY last_seen DESC, created_at DESC",
+                    )
+                    .bind(user_id)
+                    .fetch_all(&mut *conn)
+                    .await
+                })
+            })
             .map_err(pg_error)?;
         rows.iter().map(pg_record).collect()
     }
 
     fn delete_by_token(&self, token: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("DELETE FROM identity_session_token WHERE token = $1")
-                    .bind(token)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("DELETE FROM identity_session_token WHERE token = $1")
+                        .bind(token)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn delete_by_user(&self, user_id: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("DELETE FROM identity_session_token WHERE user_id = $1")
-                    .bind(user_id)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("DELETE FROM identity_session_token WHERE user_id = $1")
+                        .bind(user_id)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn delete_expired_batch(&self, now: i64, limit: i64) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "DELETE FROM identity_session_token
-                     WHERE token IN (
-                         SELECT token FROM identity_session_token
-                         WHERE expires_at <= $1
-                         ORDER BY expires_at, token
-                         LIMIT $2
-                     )",
-                )
-                .bind(now)
-                .bind(limit)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "DELETE FROM identity_session_token
+                         WHERE token IN (
+                             SELECT token FROM identity_session_token
+                             WHERE expires_at <= $1
+                             ORDER BY expires_at, token
+                             LIMIT $2
+                         )",
+                    )
+                    .bind(now)
+                    .bind(limit)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn revoke_by_sid(&self, user_id: &str, sid: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("DELETE FROM identity_session_token WHERE user_id = $1 AND sid = $2")
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "DELETE FROM identity_session_token WHERE user_id = $1 AND sid = $2",
+                    )
                     .bind(user_id)
                     .bind(sid)
-                    .execute(self.pg.pool()),
-            )
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn revoke_others(&self, user_id: &str, keep_token: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "DELETE FROM identity_session_token
-                     WHERE user_id = $1 AND token <> $2",
-                )
-                .bind(user_id)
-                .bind(keep_token)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "DELETE FROM identity_session_token
+                         WHERE user_id = $1 AND token <> $2",
+                    )
+                    .bind(user_id)
+                    .bind(keep_token)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn update_sid(&self, token: &str, sid: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("UPDATE identity_session_token SET sid = $2 WHERE token = $1")
-                    .bind(token)
-                    .bind(sid)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("UPDATE identity_session_token SET sid = $2 WHERE token = $1")
+                        .bind(token)
+                        .bind(sid)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn delete_by_sid_except_token(&self, sid: &str, token: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("DELETE FROM identity_session_token WHERE sid = $1 AND token <> $2")
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "DELETE FROM identity_session_token WHERE sid = $1 AND token <> $2",
+                    )
                     .bind(sid)
                     .bind(token)
-                    .execute(self.pg.pool()),
-            )
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn delete_by_device(&self, user_id: &str, device_id: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "DELETE FROM identity_session_token
-                     WHERE user_id = $1 AND device_id = $2",
-                )
-                .bind(user_id)
-                .bind(device_id)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "DELETE FROM identity_session_token
+                         WHERE user_id = $1 AND device_id = $2",
+                    )
+                    .bind(user_id)
+                    .bind(device_id)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn touch(&self, token: &str, now: i64) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("UPDATE identity_session_token SET last_seen = $2 WHERE token = $1")
-                    .bind(token)
-                    .bind(now)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("UPDATE identity_session_token SET last_seen = $2 WHERE token = $1")
+                        .bind(token)
+                        .bind(now)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
@@ -749,6 +713,7 @@ pub(in crate::domain) fn delete_by_sid_except_token(
 #[cfg(test)]
 mod tests {
     use super::{lookup_live, NewSession, PostgresSessionsRepo, SessionsRepo, SqliteSessionsRepo};
+    use crate::error::{PlatformError, Result};
     use crate::{storage::PostgresPool, Platform};
 
     #[test]
@@ -837,7 +802,7 @@ mod tests {
         )
         .expect("seed user");
 
-        let repo = PostgresSessionsRepo::new(&pg);
+        let repo = PostgresSessionsRepo::new(crate::storage::PgRef::Pool(&pg));
         repo.insert(&NewSession {
             token: "pgtest-t1",
             user_id: "pgtest-s1",
@@ -891,6 +856,64 @@ mod tests {
             .expect("count meta");
         assert_eq!(meta, 0, "expired delete must clean the sidecar");
 
+        cleanup();
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL pointing at a DB with M011 applied"]
+    fn postgres_backend_sessions_repo_uses_the_outer_transaction() {
+        let url = std::env::var("WXLIKE_TEST_PG_URL")
+            .expect("set WXLIKE_TEST_PG_URL to run the PostgreSQL transaction test");
+        let pg = PostgresPool::open(&url).expect("postgres pool");
+        let cleanup = || {
+            pg.block_on(
+                sqlx::query("DELETE FROM identity_session_token WHERE user_id = 'pgtx-s1'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup sessions");
+            pg.block_on(
+                sqlx::query("DELETE FROM identity_user WHERE user_id = 'pgtx-s1'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup user");
+        };
+        cleanup();
+        pg.block_on(
+            sqlx::query(
+                "INSERT INTO identity_user(user_id, name, pw_hash, created_at)
+                 VALUES ('pgtx-s1', 'pgtx-session', 'x', 1)",
+            )
+            .execute(pg.pool()),
+        )
+        .expect("seed user");
+
+        let result: Result<()> = pg.with_tx(|conn| {
+            let repo = super::BackendSessionsRepo::new(conn)?;
+            repo.insert(&NewSession {
+                token: "pgtx-t1",
+                user_id: "pgtx-s1",
+                created_at: 1,
+                expires_at: 100,
+                sid: Some("pgtx-sid1"),
+                device_id: "d1",
+                device_name: "phone",
+                ip: "127.0.0.1",
+                last_seen: 1,
+                audience: "user",
+            })?;
+            Err(PlatformError::Storage("forced rollback".into()))
+        });
+        assert!(result.is_err(), "with_tx 必须把错误传出来");
+
+        let count: i64 = pg
+            .block_on(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM identity_session_token WHERE user_id = 'pgtx-s1'",
+                )
+                .fetch_one(pg.pool()),
+            )
+            .expect("count");
+        assert_eq!(count, 0, "sessions repo 的写入必须跟随外层事务回滚");
         cleanup();
     }
 

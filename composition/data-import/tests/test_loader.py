@@ -5,9 +5,11 @@ import unittest
 from pathlib import Path
 
 from wximport.loader import (
+    atomic_script,
     clear_sql,
     clear_targets,
     copy_sql,
+    load_all_atomic,
     load_table,
     sequence_sql,
     stage_ddl,
@@ -47,10 +49,14 @@ def relation(relkind: str = "r") -> PgRelation:
 class FakePsql:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Path | None]] = []
+        self.scripts: list[str] = []
 
     def run(self, sql: str, stdin_path: Path | None = None) -> str:
         self.calls.append((sql, stdin_path))
         return ""
+
+    def run_script(self, script: str) -> None:
+        self.scripts.append(script)
 
 
 class LoaderTest(unittest.TestCase):
@@ -121,6 +127,56 @@ class LoaderTest(unittest.TestCase):
             psql.calls[4][0],
             view_insert_sql(plan("view"), stage) + '; DROP TABLE "' + stage + '"',
         )
+
+    def test_atomic_script_clears_children_first_and_commits_once(self) -> None:
+        parent = plan()
+        parent.source, parent.target = "parent", "parent"
+        child = plan()
+        child.source, child.target = "child", "child"
+        with tempfile.TemporaryDirectory() as temp:
+            parent_csv = Path(temp) / "parent.csv"
+            child_csv = Path(temp) / "child.csv"
+            parent_csv.write_text('"1","1",""\n', encoding="utf-8")
+            child_csv.write_text('"2","2",""\n', encoding="utf-8")
+            script = atomic_script(
+                [(parent, relation(), parent_csv), (child, relation(), child_csv)]
+            )
+        lines = script.splitlines()
+        self.assertEqual(lines[0], "BEGIN;")
+        self.assertEqual(lines[-1], "COMMIT;")
+        self.assertEqual(lines[1], 'DELETE FROM "child";')
+        self.assertEqual(lines[2], 'DELETE FROM "parent";')
+        self.assertEqual(script.count("BEGIN;"), 1)
+        self.assertEqual(script.count("COMMIT;"), 1)
+        self.assertIn('\\copy "parent" ("id", "seq", "note")', script)
+        self.assertIn('\\copy "child" ("id", "seq", "note")', script)
+
+    def test_atomic_view_uses_one_staging_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            csv_path = Path(temp) / "items.csv"
+            csv_path.write_text('"1","1",""\n', encoding="utf-8")
+            script = atomic_script([(plan("view"), relation("v"), csv_path)])
+        stage = view_stage(plan("view"))
+        self.assertIn(f'DROP TABLE IF EXISTS "{stage}";', script)
+        self.assertIn(f'CREATE TABLE "{stage}"', script)
+        self.assertIn(f'\\copy "{stage}"', script)
+        self.assertIn(view_insert_sql(plan("view"), stage) + ";", script)
+        self.assertIn(f'DROP TABLE "{stage}";', script)
+
+    def test_load_all_atomic_checks_every_csv_before_the_script(self) -> None:
+        psql = FakePsql()
+        with tempfile.TemporaryDirectory() as temp:
+            csv_path = Path(temp) / "items.csv"
+            csv_path.write_text('"1","1",""\n', encoding="utf-8")
+            load_all_atomic(psql, [(plan(), relation(), csv_path)])
+        self.assertEqual(len(psql.scripts), 1)
+        self.assertIn('\\copy "items"', psql.scripts[0])
+
+    def test_load_all_atomic_rejects_missing_csv_before_any_write(self) -> None:
+        psql = FakePsql()
+        with self.assertRaises(FileNotFoundError):
+            load_all_atomic(psql, [(plan(), relation(), Path("does-not-exist.csv"))])
+        self.assertEqual(psql.scripts, [])
 
     def test_missing_csv_is_rejected_before_any_write(self) -> None:
         psql = FakePsql()

@@ -230,6 +230,36 @@ impl PostgresPool {
             .map_err(|e| PlatformError::Storage(format!("postgres health: {e}")))
     }
 
+    /// 启动期 schema 守卫：`public` 里必须存在快照中的每个表/视图。
+    ///
+    /// 只查对象存在性，不校验列/触发器/索引；列形状由 `pg-migration` 断言与
+    /// `pg_schema_parity` 守卫。这里挡的是“连到空库/半迁移库仍然启动”的
+    /// 部署事故。
+    pub fn require_objects(&self, names: &[String]) -> Result<()> {
+        let missing: String = self
+            .block_on(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT COALESCE(json_agg(name ORDER BY name), '[]')::text
+                     FROM unnest($1::text[]) AS name
+                     WHERE to_regclass('public.' || name) IS NULL",
+                )
+                .bind(names.to_vec())
+                .fetch_one(&self.pool),
+            )
+            .map_err(|e| PlatformError::Storage(format!("postgres schema probe: {e}")))?;
+        let missing: Vec<String> = serde_json::from_str(&missing)
+            .map_err(|e| PlatformError::Storage(format!("postgres schema probe decode: {e}")))?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(PlatformError::Storage(format!(
+            "postgres schema incomplete: missing {} of {} objects: {}",
+            missing.len(),
+            names.len(),
+            missing.join(", ")
+        )))
+    }
+
     /// 在**同一条**池连接上开事务，闭包同步执行，结束显式 COMMIT / ROLLBACK。
     ///
     /// 这里刻意不用一个外层 `block_on` 包住整个闭包：闭包里的 repo 仍会逐条
@@ -334,16 +364,86 @@ impl<'a> StorageConnection<'a> {
 /// 后端二选一：给需要按后端选择 repo 实现的适配层用。
 pub(crate) enum BackendRef<'a> {
     Sqlite(&'a Connection),
-    Postgres(&'a PostgresPool),
+    Postgres(PgRef<'a>),
 }
 
-/// 把 `StorageConnection` 归一成 SQLite 连接或 PG 池。
+/// PG 执行句柄：普通 repo 走池；`with_tx` 闭包里必须走同一条事务连接。
+///
+/// 这个类型存在的唯一理由是防止 `PostgresTx` 被静默降级成池：一旦降级，
+/// repo 的每条 SQL 都会在池上另开连接，外层 `BEGIN` 形同虚设。
+pub(crate) enum PgRef<'a> {
+    Pool(&'a PostgresPool),
+    Tx {
+        conn: &'a Mutex<PoolConnection<Postgres>>,
+        pool: &'a PostgresPool,
+    },
+}
+
+impl PgRef<'_> {
+    /// 在底层 runtime 上驱动 future。连接由 [`Self::with_conn`] 借出，
+    /// 这里的 future 只借用该连接，不再借池。
+    pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
+        match self {
+            Self::Pool(pool) | Self::Tx { pool, .. } => pool.block_on(future),
+        }
+    }
+
+    /// 在“池连接”或“事务连接”上跑一段同步闭包。闭包内部用
+    /// [`Self::block_on`] 驱动该连接上的 SQL future。
+    ///
+    /// 与返回 boxed future 的写法相比，这把连接借用留在 `with_conn` 的栈帧里，
+    /// 调用方不需要为每个方法声明 `for<'c>` 生命周期约束。
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&mut sqlx::PgConnection) -> std::result::Result<T, sqlx::Error>,
+    ) -> std::result::Result<T, sqlx::Error> {
+        match self {
+            Self::Pool(pool) => {
+                let mut conn = pool.block_on(pool.pool().acquire())?;
+                f(&mut conn)
+            }
+            Self::Tx { conn, .. } => {
+                let mut guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
+                f(&mut guard)
+            }
+        }
+    }
+
+    /// 多语句原子块：池上自己 `BEGIN/COMMIT`；已经在 `with_tx` 里时直接
+    /// 复用外层事务，**不再**嵌套 `BEGIN`（PG 会报 `transaction already in progress`）。
+    pub(crate) fn with_conn_atomic<T>(
+        &self,
+        f: impl FnOnce(&mut sqlx::PgConnection) -> std::result::Result<T, sqlx::Error>,
+    ) -> std::result::Result<T, sqlx::Error> {
+        match self {
+            Self::Pool(pool) => {
+                let mut conn = pool.block_on(pool.pool().acquire())?;
+                pool.block_on(sqlx::query("BEGIN").execute(&mut *conn))?;
+                let out = f(&mut conn);
+                match &out {
+                    Ok(_) => {
+                        pool.block_on(sqlx::query("COMMIT").execute(&mut *conn))?;
+                    }
+                    Err(_) => {
+                        let _ = pool.block_on(sqlx::query("ROLLBACK").execute(&mut *conn));
+                    }
+                }
+                out
+            }
+            Self::Tx { .. } => self.with_conn(f),
+        }
+    }
+}
+
+/// 把 `StorageConnection` 归一成 SQLite 连接或 PG 执行句柄。
 pub(crate) fn backend_ref<'a>(conn: &'a StorageConnection<'_>) -> Result<BackendRef<'a>> {
     match conn {
         StorageConnection::Sqlite(c) => Ok(BackendRef::Sqlite(c)),
         StorageConnection::SqliteTx(c) => Ok(BackendRef::Sqlite(c)),
-        StorageConnection::Postgres(p) => Ok(BackendRef::Postgres(p)),
-        StorageConnection::PostgresTx { pool, .. } => Ok(BackendRef::Postgres(pool)),
+        StorageConnection::Postgres(p) => Ok(BackendRef::Postgres(PgRef::Pool(p))),
+        StorageConnection::PostgresTx { conn, pool } => {
+            Ok(BackendRef::Postgres(PgRef::Tx { conn, pool }))
+        }
     }
 }
 
@@ -475,10 +575,23 @@ fn configure_sqlite(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// PostgreSQL 存储实现：池 + 专属 runtime，打开时探活。
-///
-/// 还没接进 `Db`（`Db` 仍只构造 `SqliteStorage`）：51 个旧 repo 仍以
-/// `&Connection` 为参数，先把 `StorageConnection::Postgres` 的端口形状立住。
+/// SQLite 快照里的全部业务对象名。PG 启动时必须能在 `public` schema 里
+/// 找到同名表/视图；少一个就说明迁移没跑全或连错了库，直接拒绝启动。
+const REQUIRED_PG_OBJECTS: &str = include_str!("../tests/schema_snapshot.txt");
+
+fn required_pg_objects() -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for line in REQUIRED_PG_OBJECTS.lines() {
+        if let Some((table, _column)) = line.split_once('.') {
+            if !table.is_empty() {
+                names.insert(table.to_string());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// PostgreSQL 存储实现：池 + 专属 runtime，打开时探活并校验 schema。
 pub struct PgStorage {
     profile: StorageProfile,
     pool: Arc<PostgresPool>,
@@ -491,8 +604,10 @@ impl PgStorage {
                 "PgStorage 只接受 postgres profile：{profile}"
             )));
         };
+        let pool = PostgresPool::open(url)?;
+        pool.require_objects(&required_pg_objects())?;
         Ok(Self {
-            pool: Arc::new(PostgresPool::open(url)?),
+            pool: Arc::new(pool),
             profile,
         })
     }
@@ -716,6 +831,21 @@ mod tests {
             err.to_string().contains("postgres profile 尚未实现"),
             "错误文案要说明是未实现，实际：{err}"
         );
+    }
+
+    #[test]
+    fn required_pg_objects_cover_every_snapshot_table() {
+        let objects = required_pg_objects();
+        assert!(objects.len() >= 100, "快照表数异常：{}", objects.len());
+        for required in ["users", "sessions", "conversation_event", "wallets"] {
+            assert!(
+                objects.contains(&required.to_string()),
+                "快照缺少关键对象 {required}"
+            );
+        }
+        let mut deduped = objects.clone();
+        deduped.dedup();
+        assert_eq!(deduped, objects, "表名必须去重且有序");
     }
 
     #[test]

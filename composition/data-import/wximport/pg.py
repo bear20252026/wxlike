@@ -352,6 +352,38 @@ class Psql:
             raise PsqlError(f"psql failed ({result.returncode}){suffix}")
         return result.stdout
 
+    def run_script(self, script: str) -> None:
+        r"""Run one multi-statement psql script with ``ON_ERROR_STOP``.
+
+        The script is fed through ``-f -`` so psql executes ``\copy`` meta-
+        commands in file order. A failed statement exits non-zero; the caller
+        relies on the open transaction being rolled back when the connection
+        closes.
+        """
+
+        command = [
+            self.binary,
+            "-X",
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            self.dsn,
+            "-f",
+            "-",
+        ]
+        result = subprocess.run(
+            command,
+            input=script,
+            text=True,
+            capture_output=True,
+            timeout=self.timeout,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            raise PsqlError(f"psql script failed ({result.returncode}){suffix}")
+
     def catalog(self) -> dict[str, PgRelation]:
         return parse_catalog(self.run(CATALOG_SQL))
 

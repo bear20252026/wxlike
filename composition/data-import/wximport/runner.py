@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .exporter import export_table
-from .loader import clear_targets, load_table
+from .loader import load_all_atomic
 from .model import ImportPlan
 from .pg import Psql, apply_catalog, parse_catalog
 from .plan import build_plan, plan_payload
@@ -79,28 +79,49 @@ def run_import(config: RunnerConfig, psql: Psql | None = None) -> dict:
     window = StopWriteWindow(source_sha, data_version(connection))
     failures: list[str] = []
     try:
+        pending = [
+            table
+            for table in plan.tables
+            if state.rows[table.source]["status"] != "verified"
+        ]
         if not config.verify_only:
-            # Clear old child rows before old parent rows; the per-table DELETE
-            # inside load_table cannot do that once a parent is reached first.
-            clear_targets(client, plan.tables, state.rows)
-        for table in plan.tables:
-            row = state.rows[table.source]
-            status = row["status"]
-            if status == "verified":
-                continue
-            path = csv_path(config.work_dir, table.source)
-            started = now_ms()
-            try:
-                if config.verify_only:
-                    if not path.is_file():
-                        raise FileNotFoundError(
-                            f"verify-only needs the prior CSV for {table.source}: {path}"
-                        )
-                else:
+            entries = []
+            for table in pending:
+                path = csv_path(config.work_dir, table.source)
+                started = now_ms()
+                try:
                     state.begin(table.source, table.target)
                     result = export_table(connection, table, path)
                     state.loaded(table.source, result.rows, result.digest)
-                    load_table(client, table, path, catalog[table.target])
+                    entries.append((table, catalog[table.target], path))
+                except Exception as err:  # noqa: BLE001 - the state must record any failure
+                    state.failed(table.source, str(err))
+                    failures.append(table.source)
+                    raise
+                finally:
+                    window.record_table(table.source, max(0, now_ms() - started))
+                if (
+                    config.require_quiescence
+                    and data_version(connection) != window.source_data_version
+                ):
+                    raise RuntimeError("SQLite writes were observed during the import window")
+            # One psql script, one transaction: a failure cannot leave the
+            # target half-cleared or half-loaded. See `atomic_script`.
+            try:
+                load_all_atomic(client, entries)
+            except Exception as err:  # noqa: BLE001 - record every pending table
+                for table in pending:
+                    state.failed(table.source, str(err))
+                raise
+
+        for table in pending:
+            path = csv_path(config.work_dir, table.source)
+            started = now_ms()
+            try:
+                if config.verify_only and not path.is_file():
+                    raise FileNotFoundError(
+                        f"verify-only needs the prior CSV for {table.source}: {path}"
+                    )
                 result = verify_table(
                     client,
                     table,
@@ -115,7 +136,8 @@ def run_import(config: RunnerConfig, psql: Psql | None = None) -> dict:
                 failures.append(table.source)
                 raise
             finally:
-                window.record_table(table.source, max(0, now_ms() - started))
+                if config.verify_only:
+                    window.record_table(table.source, max(0, now_ms() - started))
             if config.require_quiescence and data_version(connection) != window.source_data_version:
                 raise RuntimeError("SQLite writes were observed during the import window")
     except Exception as err:  # noqa: BLE001 - report the run instead of leaving it running

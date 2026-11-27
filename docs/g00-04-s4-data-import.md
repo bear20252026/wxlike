@@ -72,6 +72,21 @@ PYTHONPATH=composition/data-import python3 composition/data-import/census.py \
 `wallets` / `ledger` 与 M017 已回填的旧侧车 `identity_session_token`）
 全部过一遍 target catalog。
 
+## 2.1 装载原子性（H-28）
+
+全量/续跑都不再“逐表起一个 psql、各自提交”：
+
+1. 先把本轮 pending 表全部导出成 CSV，并写入 `import_table` 的 `loading/loaded`；
+2. 用一个 `psql -f -` 脚本按依赖顺序执行 `BEGIN` → 逆序 `DELETE` → 逐表
+   `\copy`（视图先写 staging 表，再 `INSERT ... SELECT` 触发触发器）→
+   `COMMIT`；
+3. 任一语句失败，`ON_ERROR_STOP` 让 psql 退出，连接关闭时服务端回滚整个事务。
+   不会再留下“父表已清空、子表还没装”的中间态。
+
+`--resume` 只把非 `verified` 表放进这一批；已验证表不重跑。校验仍在提交后
+执行：如果摘要/行数校验失败，数据已经落库，run 会标 `failed`，下次 `--resume`
+会把该表重新清空装载；这是“装载原子、校验不原子”的边界，已写进验收口径。
+
 ## 3. M023 控制表
 
 `schema/proposals/G00/0001_import_control.sql` 新增：

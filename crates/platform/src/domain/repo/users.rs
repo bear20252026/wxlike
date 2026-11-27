@@ -18,7 +18,7 @@ use sqlx::Row;
 use wxlike_persistence::{NewUser, UserCredentials, UserProfileRow, UsersRepo};
 
 use crate::error::{PlatformError, Result};
-use crate::storage::{OptionalExt as _, PostgresPool, StorageConnection};
+use crate::storage::{OptionalExt as _, PgRef, StorageConnection};
 
 /// `users` 表的跨 crate 端口定义在 `wxlike-persistence`，SQLite 实现留在
 /// 本 crate。这样身份 feature 后续接 PostgreSQL 时复用同一份 trait，不需要
@@ -263,11 +263,11 @@ impl UsersRepo for SqliteUsersRepo<'_> {
 /// PostgreSQL 实现。物理表是 `identity_user`，不是 `users` 视图；写路径
 /// 不依赖视图触发器，读路径也不依赖视图的列别名。
 pub(in crate::domain) struct PostgresUsersRepo<'a> {
-    pg: &'a PostgresPool,
+    pg: PgRef<'a>,
 }
 
 impl<'a> PostgresUsersRepo<'a> {
-    pub(in crate::domain) fn new(pg: &'a PostgresPool) -> Self {
+    pub(in crate::domain) fn new(pg: PgRef<'a>) -> Self {
         Self { pg }
     }
 }
@@ -302,21 +302,18 @@ impl UsersRepo for PostgresUsersRepo<'_> {
             query = query.bind(exclude);
         }
         self.pg
-            .block_on(query.fetch_optional(self.pg.pool()))
+            .with_conn(|conn| self.pg.block_on(query.fetch_optional(conn)))
             .map_err(pg_error)
     }
 
     fn load_credentials(&self, name: &str) -> Result<Option<UserCredentials>> {
-        let row = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "SELECT user_id, pw_salt, pw_hash, pw_rounds, pw_algo
-                     FROM identity_user WHERE name = $1 AND deleted_at IS NULL",
-                )
-                .bind(name)
-                .fetch_optional(self.pg.pool()),
-            )
+        let row = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "SELECT user_id, pw_salt, pw_hash, pw_rounds, pw_algo
+                         FROM identity_user WHERE name = $1 AND deleted_at IS NULL",
+                    )
+                    .bind(name)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(row.map(|r| UserCredentials {
             user_id: r.get("user_id"),
@@ -330,13 +327,12 @@ impl UsersRepo for PostgresUsersRepo<'_> {
     }
 
     fn load_profile(&self, user_id: &str) -> Result<Option<UserProfileRow>> {
-        let row = self
-            .pg
-            .block_on(
-                sqlx::query("SELECT name, avatar, signature FROM identity_user WHERE user_id = $1")
+        let row = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "SELECT name, avatar, signature FROM identity_user WHERE user_id = $1",
+                    )
                     .bind(user_id)
-                    .fetch_optional(self.pg.pool()),
-            )
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(row.map(|r| UserProfileRow {
             name: r.get("name"),
@@ -346,15 +342,12 @@ impl UsersRepo for PostgresUsersRepo<'_> {
     }
 
     fn active_exists(&self, user_id: &str) -> Result<bool> {
-        let row = self
-            .pg
-            .block_on(
-                sqlx::query_scalar::<_, i32>(
-                    "SELECT 1 FROM identity_user WHERE user_id = $1 AND deleted_at IS NULL",
-                )
-                .bind(user_id)
-                .fetch_optional(self.pg.pool()),
-            )
+        let row = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, i32>(
+                        "SELECT 1 FROM identity_user WHERE user_id = $1 AND deleted_at IS NULL",
+                    )
+                    .bind(user_id)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(row.is_some())
     }
@@ -366,39 +359,44 @@ impl UsersRepo for PostgresUsersRepo<'_> {
         avatar: Option<&str>,
         signature: Option<&str>,
     ) -> Result<usize> {
+        // 三条 UPDATE 必须同事务：旧实现逐字段写，`signature` 校验失败会
+        // 留下已经改掉的 `name`。事务内复用外层事务，事务外由 `with_conn_atomic`
+        // 自己开 BEGIN/COMMIT；不能再 `pool.begin()` 嵌套。
         let changed = self
             .pg
-            .block_on(async {
-                let mut tx = self.pg.pool().begin().await?;
-                let mut changed = 0u64;
-                if let Some(name) = name {
-                    changed += sqlx::query("UPDATE identity_user SET name = $1 WHERE user_id = $2")
-                        .bind(name)
+            .with_conn_atomic(|conn| {
+                self.pg.block_on(async {
+                    let mut changed = 0u64;
+                    if let Some(name) = name {
+                        changed +=
+                            sqlx::query("UPDATE identity_user SET name = $1 WHERE user_id = $2")
+                                .bind(name)
+                                .bind(user_id)
+                                .execute(&mut *conn)
+                                .await?
+                                .rows_affected();
+                    }
+                    if let Some(avatar) = avatar {
+                        changed +=
+                            sqlx::query("UPDATE identity_user SET avatar = $1 WHERE user_id = $2")
+                                .bind(avatar)
+                                .bind(user_id)
+                                .execute(&mut *conn)
+                                .await?
+                                .rows_affected();
+                    }
+                    if let Some(signature) = signature {
+                        changed += sqlx::query(
+                            "UPDATE identity_user SET signature = $1 WHERE user_id = $2",
+                        )
+                        .bind(signature)
                         .bind(user_id)
-                        .execute(&mut *tx)
+                        .execute(&mut *conn)
                         .await?
                         .rows_affected();
-                }
-                if let Some(avatar) = avatar {
-                    changed +=
-                        sqlx::query("UPDATE identity_user SET avatar = $1 WHERE user_id = $2")
-                            .bind(avatar)
-                            .bind(user_id)
-                            .execute(&mut *tx)
-                            .await?
-                            .rows_affected();
-                }
-                if let Some(signature) = signature {
-                    changed +=
-                        sqlx::query("UPDATE identity_user SET signature = $1 WHERE user_id = $2")
-                            .bind(signature)
-                            .bind(user_id)
-                            .execute(&mut *tx)
-                            .await?
-                            .rows_affected();
-                }
-                tx.commit().await?;
-                Ok::<u64, sqlx::Error>(changed)
+                    }
+                    Ok::<u64, sqlx::Error>(changed)
+                })
             })
             .map_err(pg_error)?;
         Ok(changed as usize)
@@ -406,167 +404,137 @@ impl UsersRepo for PostgresUsersRepo<'_> {
 
     fn insert(&self, user: &NewUser<'_>) -> Result<()> {
         self.pg
-            .block_on(
-                sqlx::query(
-                    "INSERT INTO identity_user(
-                         user_id, name, pw_salt, pw_hash, pw_rounds, pw_algo,
-                         avatar, signature, created_at
-                     ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                )
-                .bind(user.id)
-                .bind(user.name)
-                .bind(user.pw_salt)
-                .bind(user.pw_hash)
-                .bind(user.pw_rounds)
-                .bind(user.pw_algo)
-                .bind(user.avatar)
-                .bind(user.signature)
-                .bind(user.created_at)
-                .execute(self.pg.pool()),
-            )
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "INSERT INTO identity_user(
+                             user_id, name, pw_salt, pw_hash, pw_rounds, pw_algo,
+                             avatar, signature, created_at
+                         ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                    )
+                    .bind(user.id)
+                    .bind(user.name)
+                    .bind(user.pw_salt)
+                    .bind(user.pw_hash)
+                    .bind(user.pw_rounds)
+                    .bind(user.pw_algo)
+                    .bind(user.avatar)
+                    .bind(user.signature)
+                    .bind(user.created_at)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(())
     }
 
     fn update_name(&self, user_id: &str, name: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(
                 sqlx::query("UPDATE identity_user SET name = $1 WHERE user_id = $2")
                     .bind(name)
                     .bind(user_id)
-                    .execute(self.pg.pool()),
-            )
+                    .execute(conn),
+            ))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn update_avatar(&self, user_id: &str, avatar: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("UPDATE identity_user SET avatar = $1 WHERE user_id = $2")
-                    .bind(avatar)
-                    .bind(user_id)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("UPDATE identity_user SET avatar = $1 WHERE user_id = $2")
+                        .bind(avatar)
+                        .bind(user_id)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn update_signature(&self, user_id: &str, signature: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("UPDATE identity_user SET signature = $1 WHERE user_id = $2")
-                    .bind(signature)
-                    .bind(user_id)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("UPDATE identity_user SET signature = $1 WHERE user_id = $2")
+                        .bind(signature)
+                        .bind(user_id)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn mark_deleted(&self, user_id: &str, deleted_at: i64) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "UPDATE identity_user SET deleted_at = $2
-                     WHERE user_id = $1 AND deleted_at IS NULL",
-                )
-                .bind(user_id)
-                .bind(deleted_at)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "UPDATE identity_user SET deleted_at = $2
+                         WHERE user_id = $1 AND deleted_at IS NULL",
+                    )
+                    .bind(user_id)
+                    .bind(deleted_at)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn update_password_hash(&self, user_id: &str, phc: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "UPDATE identity_user
-                     SET pw_algo = 'argon2id', pw_salt = '', pw_hash = $2, pw_rounds = 0
-                     WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .bind(phc)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "UPDATE identity_user
+                         SET pw_algo = 'argon2id', pw_salt = '', pw_hash = $2, pw_rounds = 0
+                         WHERE user_id = $1",
+                    )
+                    .bind(user_id)
+                    .bind(phc)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn totp_secret(&self, user_id: &str) -> Result<Option<String>> {
-        let secret: Option<Option<String>> = self
-            .pg
-            .block_on(
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT totp_secret FROM identity_user WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .fetch_optional(self.pg.pool()),
-            )
+        let secret: Option<Option<String>> = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT totp_secret FROM identity_user WHERE user_id = $1",
+                    )
+                    .bind(user_id)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(secret.flatten())
     }
 
     fn totp_enabled(&self, user_id: &str) -> Result<bool> {
-        let enabled: Option<i32> = self
-            .pg
-            .block_on(
-                sqlx::query_scalar::<_, i32>(
-                    "SELECT totp_enabled FROM identity_user WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .fetch_optional(self.pg.pool()),
-            )
+        let enabled: Option<i32> = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query_scalar::<_, i32>(
+                        "SELECT totp_enabled FROM identity_user WHERE user_id = $1",
+                    )
+                    .bind(user_id)
+                    .fetch_optional(conn)))
             .map_err(pg_error)?;
         Ok(enabled.map(|v| v != 0).unwrap_or(false))
     }
 
     fn set_totp_secret(&self, user_id: &str, secret: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "UPDATE identity_user SET totp_secret = $2, totp_enabled = 0
-                     WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .bind(secret)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "UPDATE identity_user SET totp_secret = $2, totp_enabled = 0
+                         WHERE user_id = $1",
+                    )
+                    .bind(user_id)
+                    .bind(secret)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn enable_totp(&self, user_id: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query("UPDATE identity_user SET totp_enabled = 1 WHERE user_id = $1")
-                    .bind(user_id)
-                    .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query("UPDATE identity_user SET totp_enabled = 1 WHERE user_id = $1")
+                        .bind(user_id)
+                        .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
 
     fn disable_totp(&self, user_id: &str) -> Result<usize> {
-        let result = self
-            .pg
-            .block_on(
-                sqlx::query(
-                    "UPDATE identity_user SET totp_enabled = 0, totp_secret = NULL
-                     WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .execute(self.pg.pool()),
-            )
+        let result = self.pg
+            .with_conn(|conn| self.pg.block_on(sqlx::query(
+                        "UPDATE identity_user SET totp_enabled = 0, totp_secret = NULL
+                         WHERE user_id = $1",
+                    )
+                    .bind(user_id)
+                    .execute(conn)))
             .map_err(pg_error)?;
         Ok(result.rows_affected() as usize)
     }
@@ -614,6 +582,7 @@ impl UsersRepo for BackendUsersRepo<'_> {
 #[cfg(test)]
 mod tests {
     use super::{NewUser, PostgresUsersRepo, SqliteUsersRepo, UsersRepo};
+    use crate::error::{PlatformError, Result};
     use crate::{storage::PostgresPool, Platform};
 
     #[test]
@@ -691,7 +660,7 @@ mod tests {
         };
         cleanup();
 
-        let repo = PostgresUsersRepo::new(&pg);
+        let repo = PostgresUsersRepo::new(crate::storage::PgRef::Pool(&pg));
         repo.insert(&NewUser {
             id: "pgtest-u1",
             name: "pgtest-alice",
@@ -736,6 +705,52 @@ mod tests {
             None
         );
 
+        cleanup();
+    }
+
+    #[test]
+    #[ignore = "requires WXLIKE_TEST_PG_URL pointing at a DB with M011 applied"]
+    fn postgres_backend_users_repo_uses_the_outer_transaction() {
+        let url = std::env::var("WXLIKE_TEST_PG_URL")
+            .expect("set WXLIKE_TEST_PG_URL to run the PostgreSQL transaction test");
+        let pg = PostgresPool::open(&url).expect("postgres pool");
+        let cleanup = || {
+            pg.block_on(
+                sqlx::query("DELETE FROM identity_user WHERE user_id = 'pgtx-u1'")
+                    .execute(pg.pool()),
+            )
+            .expect("cleanup");
+        };
+        cleanup();
+
+        let result: Result<()> = pg.with_tx(|conn| {
+            let repo = super::BackendUsersRepo::new(conn)?;
+            repo.insert(&NewUser {
+                id: "pgtx-u1",
+                name: "pgtx-alice",
+                pw_salt: "",
+                pw_hash: "phc",
+                pw_rounds: 0,
+                pw_algo: "argon2id",
+                avatar: "",
+                signature: "",
+                created_at: 1,
+            })?;
+            // 外层事务必须能回滚 repo 的写入；如果 repo 逃到池连接上，
+            // 这条 INSERT 已经独立提交，下面的 COUNT 会是 1。
+            Err(PlatformError::Storage("forced rollback".into()))
+        });
+        assert!(result.is_err(), "with_tx 必须把错误传出来");
+
+        let count: i64 = pg
+            .block_on(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM identity_user WHERE user_id = 'pgtx-u1'",
+                )
+                .fetch_one(pg.pool()),
+            )
+            .expect("count");
+        assert_eq!(count, 0, "users repo 的写入必须跟随外层事务回滚");
         cleanup();
     }
 

@@ -116,6 +116,71 @@ def clear_targets(psql: Psql, tables: list[TablePlan], statuses: dict[str, dict]
         psql.run(clear_sql(table))
 
 
+def copy_from_file(plan: TablePlan, target: str, csv_path: Path) -> str:
+    r"""A ``\copy`` meta-command that reads the CSV client-side.
+
+    ``\copy`` is used instead of ``COPY ... FROM STDIN`` because one psql
+    script feeds many tables: psql's stdin is already occupied by the script,
+    and a CSV field containing a bare ``\.`` line must not terminate the data
+    stream early.
+    """
+
+    path = csv_path.resolve().as_posix()
+    if "'" in path or "\n" in path or "\r" in path:
+        raise ValueError(f"CSV path cannot be embedded in a \\copy command: {path!r}")
+    columns = ", ".join(ident(column.name) for column in plan.columns)
+    return (
+        f"\\copy {ident(target)} ({columns}) FROM '{path}' "
+        "WITH (FORMAT csv, HEADER false, NULL '\\N')"
+    )
+
+
+def atomic_script(entries: list[tuple[TablePlan, PgRelation, Path]]) -> str:
+    r"""Build one transaction for the whole import.
+
+    Order is deliberate:
+
+    1. clear all pending targets children-first (reverse plan order);
+    2. load parents-first, one ``\copy`` per table;
+    3. for a compatibility view, stage into a plain table, ``INSERT ... SELECT``
+       once to fire the view triggers, then drop the stage.
+
+    Any failure inside psql leaves the transaction open; psql exits on
+    ``ON_ERROR_STOP`` and the server rolls the whole transaction back when the
+    connection closes. That is the difference from the old per-table
+    ``subprocess.run``: the target is never left half-cleared or half-loaded.
+    """
+
+    if not entries:
+        raise ValueError("atomic import needs at least one table")
+    lines = ["BEGIN;"]
+    for table, _relation, _csv in reversed(entries):
+        lines.append(clear_sql(table) + ";")
+    for table, relation, csv_path in entries:
+        if relation.mode == "view":
+            stage = view_stage(table)
+            lines.append(f"DROP TABLE IF EXISTS {ident(stage)};")
+            lines.append(stage_ddl(table, relation, stage) + ";")
+            lines.append(copy_from_file(table, stage, csv_path))
+            lines.append(view_insert_sql(table, stage) + ";")
+            lines.append(f"DROP TABLE {ident(stage)};")
+            continue
+        lines.append(copy_from_file(table, table.target, csv_path))
+        for statement in sequence_sql(table, relation):
+            lines.append(statement)
+    lines.append("COMMIT;")
+    return "\n".join(lines) + "\n"
+
+
+def load_all_atomic(psql: Psql, entries: list[tuple[TablePlan, PgRelation, Path]]) -> None:
+    if not entries:
+        return
+    for _table, _relation, csv_path in entries:
+        if not csv_path.is_file():
+            raise FileNotFoundError(f"export file is missing: {csv_path}")
+    psql.run_script(atomic_script(entries))
+
+
 def load_table(psql: Psql, plan: TablePlan, csv_path: Path, relation: PgRelation) -> None:
     if not csv_path.is_file():
         raise FileNotFoundError(f"export file is missing: {csv_path}")

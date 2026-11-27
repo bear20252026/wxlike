@@ -163,7 +163,7 @@
       "title": "服务端数据库生产迁移",
       "wave": "W2",
       "status": "PARTIAL",
-      "evidence": "拆分/契约/所有权落地；PG 迁移未做（G00-04）；G06/G14 集成请求积压 ready-for-G00",
+      "evidence": "PG M010-M024 迁移链、导入器、19.0 CI 已落地；H-04 事务降级/H-28 原子装载/H-45 启动 schema 校验已修；生产拓扑、真实 19.0 run、真实快照演练未完成",
       "tasks_json_status": "PLANNED",
       "github_issue_number": 104,
       "github_issue_state": "OPEN"
