@@ -164,6 +164,23 @@ pub struct Job {
     pub callback_error: Option<String>,
 }
 
+impl Job {
+    /// 内容哈希命中别人的作业时，只返回当前调用者能看的公共字段。
+    /// callback URL/错误、last_error、别人的 owner 都不出库（H-37）。
+    pub fn public_view_for(&self, caller: &str) -> Job {
+        Job {
+            owner: caller.to_string(),
+            last_error: None,
+            callback_state: CallbackState::None,
+            callback_url: None,
+            callback_attempts: 0,
+            callback_next_retry_at: 0,
+            callback_error: None,
+            ..self.clone()
+        }
+    }
+}
+
 /// 提交结果。
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct JobSubmit {
@@ -313,9 +330,13 @@ impl VideoStore {
                 state = 'succeeded',
                 result = excluded.result,
                 updated_at = excluded.updated_at,
+                -- 已有行的 owner/callback_url 不能被后来者改写；回调状态只升不降，
+                -- 否则 B 重提同一份内容会把 A 还没发的 terminal callback 压掉。
                 callback_state = CASE WHEN video_jobs.callback_state = 'delivered'
-                                      THEN 'delivered' ELSE excluded.callback_state END,
-                callback_next_retry_at = excluded.callback_next_retry_at",
+                                      THEN 'delivered' ELSE video_jobs.callback_state END,
+                callback_next_retry_at = CASE WHEN video_jobs.callback_state = 'pending'
+                                              THEN video_jobs.callback_next_retry_at
+                                              ELSE excluded.callback_next_retry_at END",
             params![
                 job_id,
                 now,
@@ -339,11 +360,21 @@ impl VideoStore {
         Ok(())
     }
 
-    fn submit_reply(&self, job_id: &str, newly_queued: bool) -> anyhow::Result<JobSubmit> {
-        Ok(JobSubmit {
-            job: self.job(job_id)?.context("job row vanished")?,
-            newly_queued,
-        })
+    fn submit_reply(
+        &self,
+        job_id: &str,
+        caller: &str,
+        newly_queued: bool,
+    ) -> anyhow::Result<JobSubmit> {
+        let job = self.job(job_id)?.context("job row vanished")?;
+        // 同一份内容可能先被别人提交；作业行只有一个。对非 owner 只回公共
+        // 字段，不把对方的 callback/错误/owner 随 submit 响应带出去。
+        let job = if job.owner == caller {
+            job
+        } else {
+            job.public_view_for(caller)
+        };
+        Ok(JobSubmit { job, newly_queued })
     }
 
     /// 提交一个转码作业：入库 + 落盘源字节就返回，转码在后台。
@@ -368,7 +399,7 @@ impl VideoStore {
 
         if self.contains(&job_id) {
             self.record_ready_job(&db.c(), &job_id, owner, bytes.len(), &url, now)?;
-            return self.submit_reply(&job_id, false);
+            return self.submit_reply(&job_id, owner, false);
         }
 
         self.write_pending_source(&job_id, bytes)?;
@@ -386,7 +417,7 @@ impl VideoStore {
                 owner
             ],
         )?;
-        self.submit_reply(&job_id, inserted == 1)
+        self.submit_reply(&job_id, owner, inserted == 1)
     }
 
     // ---- 归属与配额（issue #7）------------------------------------------

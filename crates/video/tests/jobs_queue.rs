@@ -82,6 +82,39 @@ fn backoff_ladder_matches_the_outbox() {
     assert_eq!(backoff_ms(u32::MAX), MAX_DELAY_MS);
 }
 
+#[tokio::test]
+async fn submit_same_bytes_does_not_expose_the_other_owners_job() {
+    let store = store("cross-owner");
+    let bytes = bytes_of("same-content");
+    let alice = store
+        .submit_job(&bytes, "alice", Some("http://127.0.0.1:9/cb"))
+        .unwrap();
+    assert_eq!(alice.job.owner, "alice");
+    assert_eq!(
+        alice.job.callback_url.as_deref(),
+        Some("http://127.0.0.1:9/cb")
+    );
+
+    // 让作业带上 owner 才看得到的错误字段
+    let failed = store.run_job(&alice.job.job_id).await.unwrap();
+    assert!(failed.last_error.is_some(), "假字节应留下可读错误");
+
+    let bob = store.submit_job(&bytes, "bob", None).unwrap();
+    assert!(!bob.newly_queued, "内容哈希命中已有作业");
+    assert_eq!(bob.job.owner, "bob", "不能把 alice 的 owner 回给 bob");
+    assert!(bob.job.callback_url.is_none(), "不能泄露 alice 的回调地址");
+    assert!(bob.job.callback_error.is_none());
+    assert!(bob.job.last_error.is_none(), "不能泄露 alice 的转码错误");
+    assert_eq!(bob.job.callback_state, CallbackState::None);
+
+    let stored = store.job(&alice.job.job_id).unwrap().unwrap();
+    assert_eq!(stored.owner, "alice", "原作业归属不能被 bob 改写");
+    assert_eq!(
+        stored.callback_url.as_deref(),
+        Some("http://127.0.0.1:9/cb")
+    );
+}
+
 #[test]
 fn submit_is_idempotent_by_content_hash() {
     let store = store("idempotent");
