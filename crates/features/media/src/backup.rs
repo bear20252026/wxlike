@@ -109,6 +109,18 @@ impl EncryptionMeta {
     }
 }
 
+/// H-39：真正实现客户端侧加密 envelope 之前，拒绝把明文 payload 标成
+/// ClientSide。manifest 的声明必须和 payload 的实际加密方式一致。
+fn ensure_supported_encryption(encryption: &EncryptionMeta) -> Result<()> {
+    match encryption.mode {
+        EncryptionMode::None => Ok(()),
+        EncryptionMode::ClientSide => Err(MediaError::Unsupported(
+            "client-side encryption is not implemented; refusing to label a plaintext payload as encrypted"
+                .into(),
+        )),
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BackupEntry {
     pub index: u32,
@@ -361,6 +373,7 @@ impl MediaService {
         device_id: &str,
         encryption: EncryptionMeta,
     ) -> Result<BackupSummary> {
+        ensure_supported_encryption(&encryption)?;
         if encryption.key_ref.len() > ids::MAX_NAME_CHARS {
             return Err(MediaError::bad("key reference is too long"));
         }
@@ -424,6 +437,7 @@ impl MediaService {
         device_id: &str,
         encryption: EncryptionMeta,
     ) -> Result<BackupPlan> {
+        ensure_supported_encryption(&encryption)?;
         if encryption.key_ref.len() > ids::MAX_NAME_CHARS {
             return Err(MediaError::bad("key reference is too long"));
         }
@@ -593,6 +607,7 @@ impl MediaService {
     pub fn verify_backup(&self, package: &Path) -> Result<BackupSummary> {
         let parsed = self.read_container(package, false)?;
         let manifest = parsed.manifest;
+        ensure_supported_encryption(&manifest.encryption)?;
         let total_bytes: u64 = manifest.entries.iter().map(|entry| entry.size).sum();
         Ok(BackupSummary {
             backup_id: manifest.backup_id,
@@ -621,6 +636,7 @@ impl MediaService {
     ) -> Result<ImportOutcome> {
         let parsed = self.read_container(package, true)?;
         let manifest = parsed.manifest;
+        ensure_supported_encryption(&manifest.encryption)?;
         self.register_import(user_id, &manifest, &parsed.package_digest)?;
         let mut outcome = ImportOutcome {
             backup_id: manifest.backup_id.clone(),
@@ -981,6 +997,7 @@ impl MediaService {
         package: &Path,
     ) -> Result<String> {
         let manifest = self.read_manifest_only(package)?;
+        ensure_supported_encryption(&manifest.encryption)?;
         if manifest.backup_id != backup_id {
             return Err(MediaError::bad("package does not match backup id"));
         }

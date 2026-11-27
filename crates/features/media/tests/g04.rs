@@ -770,6 +770,28 @@ fn backup_includes_a_second_owners_logical_file_for_the_same_blob() {
 }
 
 #[test]
+fn client_side_encryption_is_rejected_when_payload_is_plaintext() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_at(dir.path());
+    upload(
+        &service,
+        "u1",
+        "a.txt",
+        "text/plain",
+        Purpose::File,
+        b"data",
+    );
+    let err = service
+        .plan_backup_export("u1", "device-a", EncryptionMeta::client_side("kms-1"))
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Unsupported(_)), "{err:?}");
+    let err = service
+        .export_backup("u1", "device-a", EncryptionMeta::client_side("kms-1"))
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Unsupported(_)), "{err:?}");
+}
+
+#[test]
 fn backup_roundtrip_preserves_ids_and_rejects_tampering() {
     let source_dir = tempfile::tempdir().unwrap();
     let chat = Arc::new(ChatFixture::new(
@@ -803,16 +825,17 @@ fn backup_roundtrip_preserves_ids_and_rejects_tampering() {
         b"backup me",
     );
     let summary = source
-        .export_backup("u1", "device-a", EncryptionMeta::client_side("kms-7"))
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
         .unwrap();
     assert_eq!(summary.entries, 2);
     let package = source.backup_package("u1", &summary.backup_id).unwrap();
     let verified = source.verify_backup(&package).unwrap();
     assert_eq!(verified.entries, 2);
-    source
+    // 明文包没有 escrow key，恢复密钥必须明确拒绝。
+    assert!(source
         .restore_backup_keys("u1", &summary.backup_id, &package)
-        .unwrap();
-    assert_eq!(keys.seen.lock().unwrap().as_slice(), ["kms-7".to_string()]);
+        .is_err());
+    assert!(keys.seen.lock().unwrap().is_empty());
 
     let target_dir = tempfile::tempdir().unwrap();
     let target = service_at(target_dir.path()).with_chat_port(chat.clone());
@@ -1055,7 +1078,7 @@ fn export_plan_matches_the_package_and_flags_missing_blobs() {
         b"two!",
     );
     let plan = service
-        .plan_backup_export("u1", "device-a", EncryptionMeta::client_side("kms-1"))
+        .plan_backup_export("u1", "device-a", EncryptionMeta::plaintext())
         .unwrap();
     assert_eq!(plan.entries.len(), 2);
     assert!(plan.within_budget && plan.publishable);
@@ -1063,7 +1086,7 @@ fn export_plan_matches_the_package_and_flags_missing_blobs() {
     assert_eq!(plan.payload_bytes, a.size + b.size);
     assert!(plan.entries.iter().all(|entry| entry.present));
     let summary = service
-        .export_backup("u1", "device-a", EncryptionMeta::client_side("kms-1"))
+        .export_backup("u1", "device-a", EncryptionMeta::plaintext())
         .unwrap();
     assert_eq!(summary.total_bytes, plan.payload_bytes);
     assert_eq!(summary.entries as usize, plan.entries.len());
