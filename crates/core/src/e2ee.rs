@@ -628,9 +628,11 @@ struct GroupState {
     inbound: HashMap<String, InboundGroupSession>,
 }
 
-/// On-disk format version. Bump when the shape changes: an old snapshot is
-/// then refused with a clear error instead of half-loading.
-const SNAPSHOT_VERSION: u32 = 1;
+/// On-disk format version. v2 adds the Megolm replay window; v1 snapshots
+/// are still accepted and restore with an empty window (they predate the
+/// field, and refusing them would strand every existing device).
+const SNAPSHOT_VERSION: u32 = 2;
+const MIN_SNAPSHOT_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
@@ -638,6 +640,18 @@ struct Snapshot {
     account: AccountPickle,
     dm: BTreeMap<String, DmSnapshot>,
     groups: BTreeMap<String, GroupSnapshot>,
+    /// H-30: replay watermarks are part of the durable crypto state, not a
+    /// rebuildable cache. v1 snapshots simply have none.
+    #[serde(default)]
+    group_seen: Vec<GroupSeenSnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GroupSeenSnapshot {
+    group: String,
+    sender: String,
+    session: String,
+    index: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -661,8 +675,8 @@ pub struct Crypto {
     /// The session id is part of the key so a key rotation (new session, index
     /// restarts at 0) is not mistaken for a replay.
     group_seen: HashMap<(String, String, String), u32>,
-    /// Insertion order for [`GROUP_SEEN_CAP`] eviction (not snapshotted, like
-    /// the watermarks themselves).
+    /// Insertion order for [`GROUP_SEEN_CAP`] eviction. Snapshotted together
+    /// with the watermarks so a restart does not silently reopen old indices.
     group_seen_order: VecDeque<(String, String, String)>,
 }
 
@@ -1042,6 +1056,20 @@ impl Crypto {
                     )
                 })
                 .collect(),
+            group_seen: self
+                .group_seen_order
+                .iter()
+                .filter_map(|(group, sender, session)| {
+                    self.group_seen
+                        .get(&(group.clone(), sender.clone(), session.clone()))
+                        .map(|index| GroupSeenSnapshot {
+                            group: group.clone(),
+                            sender: sender.clone(),
+                            session: session.clone(),
+                            index: *index,
+                        })
+                })
+                .collect(),
         };
         serde_json::to_vec(&snap).map_err(|e| CryptoError::Snapshot(e.to_string()))
     }
@@ -1051,9 +1079,9 @@ impl Crypto {
     pub fn restore(bytes: &[u8]) -> Result<Self> {
         let snap: Snapshot =
             serde_json::from_slice(bytes).map_err(|e| CryptoError::Snapshot(e.to_string()))?;
-        if snap.version != SNAPSHOT_VERSION {
+        if !(MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION).contains(&snap.version) {
             return Err(CryptoError::Snapshot(format!(
-                "unsupported snapshot version {} (expected {SNAPSHOT_VERSION})",
+                "unsupported snapshot version {} (supported {MIN_SNAPSHOT_VERSION}..={SNAPSHOT_VERSION})",
                 snap.version
             )));
         }
@@ -1075,6 +1103,16 @@ impl Crypto {
                         .collect(),
                 },
             );
+        }
+        // The snapshot is ordered; keep only cap-sized tail, then rebuild the
+        // map and the FIFO in the same order. Duplicate keys are ignored so a
+        // hand-edited snapshot cannot inflate the order queue.
+        let start = snap.group_seen.len().saturating_sub(GROUP_SEEN_CAP);
+        for entry in snap.group_seen.into_iter().skip(start) {
+            let key = (entry.group, entry.sender, entry.session);
+            if crypto.group_seen.insert(key.clone(), entry.index).is_none() {
+                crypto.group_seen_order.push_back(key);
+            }
         }
         Ok(crypto)
     }
@@ -1205,7 +1243,14 @@ impl Crypto {
     }
 
     /// M-6：水位写入带 FIFO 上限，长驻进程内存不再随会话数单调增长。
+    /// H-30: updating an existing key only advances its watermark; it must not
+    /// evict an unrelated key or append a second order entry (the old
+    /// `len >= cap` branch did both once the same session sent a newer index).
     fn mark_group_seen(&mut self, key: (String, String, String), idx: u32) {
+        if let Some(current) = self.group_seen.get_mut(&key) {
+            *current = idx;
+            return;
+        }
         if self.group_seen.len() >= GROUP_SEEN_CAP {
             if let Some(oldest) = self.group_seen_order.pop_front() {
                 self.group_seen.remove(&oldest);
@@ -1422,6 +1467,66 @@ mod audit_round4 {
             crypto.group_seen.len()
         );
         assert_eq!(crypto.group_seen.len(), crypto.group_seen_order.len());
+    }
+
+    /// H-30：重放水位必须随 snapshot 持久化，重启后旧 index 仍被拒。
+    #[test]
+    fn group_seen_watermarks_survive_snapshot_restore() {
+        let mut crypto = Crypto::new(Device::new());
+        crypto.mark_group_seen(("g1".into(), "s1".into(), "sess1".into()), 7);
+        crypto.mark_group_seen(("g2".into(), "s2".into(), "sess2".into()), 3);
+        let snapshot = crypto.snapshot().unwrap();
+        let restored = Crypto::restore(&snapshot).unwrap();
+        assert_eq!(
+            restored
+                .group_seen
+                .get(&("g1".into(), "s1".into(), "sess1".into())),
+            Some(&7)
+        );
+        assert_eq!(
+            restored
+                .group_seen
+                .get(&("g2".into(), "s2".into(), "sess2".into())),
+            Some(&3)
+        );
+        assert_eq!(restored.group_seen_order.len(), 2);
+    }
+
+    /// H-30：同一 (group,sender,session) 的新 index 只推进水位，不能把
+    /// 另一个仍活跃的会话挤出 FIFO，也不能重复占用 order 槽位。
+    #[test]
+    fn advancing_an_existing_watermark_does_not_evict_or_duplicate() {
+        let mut crypto = Crypto::new(Device::new());
+        for i in 0..GROUP_SEEN_CAP {
+            crypto.mark_group_seen((format!("g{i}"), format!("s{i}"), format!("sess{i}")), 1);
+        }
+        let first = ("g0".to_string(), "s0".to_string(), "sess0".to_string());
+        crypto.mark_group_seen(first.clone(), 9);
+        assert_eq!(crypto.group_seen.len(), GROUP_SEEN_CAP);
+        assert_eq!(crypto.group_seen_order.len(), GROUP_SEEN_CAP);
+        assert_eq!(crypto.group_seen.get(&first), Some(&9));
+        assert!(
+            crypto.group_seen.contains_key(&(
+                "g1".to_string(),
+                "s1".to_string(),
+                "sess1".to_string()
+            )),
+            "an unrelated live watermark must stay"
+        );
+    }
+
+    /// H-30：旧版 v1 snapshot 没有 replay 字段，仍应能恢复；窗口为空是
+    /// 明确的旧格式上限，而不是解析失败。
+    #[test]
+    fn v1_snapshot_without_replay_window_still_loads() {
+        let crypto = Crypto::new(Device::new());
+        let snapshot = crypto.snapshot().unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
+        value["version"] = serde_json::json!(1);
+        value.as_object_mut().unwrap().remove("group_seen");
+        let v1 = serde_json::to_vec(&value).unwrap();
+        let restored = Crypto::restore(&v1).unwrap();
+        assert!(restored.group_seen.is_empty());
     }
 
     /// 在途消息只有两种结局：到点解密成功，或"解不了就丢掉"——坏 base64
