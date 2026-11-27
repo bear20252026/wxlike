@@ -224,11 +224,20 @@ pub(in crate::domain) fn redpacket(
 pub(in crate::domain) fn redpacket_state(
     conn: &StorageConnection<'_>,
     id: &str,
+    for_update: bool,
 ) -> Result<Option<RedpacketState>> {
+    // PostgreSQL 领取事务先锁红包行，后续同一包的所有领取串行化；
+    // SQLite 的单写锁已经提供同等串行性，不支持 `FOR UPDATE`。
+    let sql = if for_update && conn.dialect() == crate::storage::StorageDialect::Postgres {
+        "SELECT total, count, claimed, claimed_total, claimers, status, from_uid, conv_id
+         FROM redpackets WHERE id = ?1 FOR UPDATE"
+    } else {
+        "SELECT total, count, claimed, claimed_total, claimers, status, from_uid, conv_id
+         FROM redpackets WHERE id = ?1"
+    };
     let state = conn
         .query_row(
-            "SELECT total, count, claimed, claimed_total, claimers, status, from_uid, conv_id
-             FROM redpackets WHERE id = ?1",
+            sql,
             params![id],
             |r| {
                 Ok(RedpacketState {
@@ -247,17 +256,41 @@ pub(in crate::domain) fn redpacket_state(
     Ok(state)
 }
 
+pub(in crate::domain) fn record_claim(
+    conn: &StorageConnection<'_>,
+    redpacket_id: &str,
+    user_id: &str,
+    share: i64,
+    now: i64,
+) -> Result<usize> {
+    // PG 用唯一领取表兜底；SQLite 没有这张表，`claimers` 列表在单写锁下
+    // 就是领取记录，直接返回成功让既有领取流程继续。
+    if conn.dialect() != crate::storage::StorageDialect::Postgres {
+        return Ok(1);
+    }
+    let inserted = conn.execute(
+        "INSERT INTO redpacket_claims(redpacket_id, user_id, share, claimed_at)
+         VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT (redpacket_id, user_id) DO NOTHING",
+        params![redpacket_id, user_id, share, now],
+    )?;
+    Ok(inserted)
+}
+
 pub(in crate::domain) fn update_claim(
     conn: &StorageConnection<'_>,
     id: &str,
     share: i64,
     claimers_json: &str,
+    now: i64,
 ) -> Result<usize> {
+    // 条件 UPDATE 是最后一道闸：即使调用方漏了预检，已领完/过期/已关闭
+    // 也不能再加一笔。返回 0 表示状态在事务内已经变了，调用方必须回滚。
     let updated = conn.execute(
         "UPDATE redpackets SET claimed = claimed + 1, claimed_total = claimed_total + ?1,
                 claimers = ?2, status = CASE WHEN claimed + 1 >= count THEN 'finished' ELSE status END
-         WHERE id = ?3",
-        params![share, claimers_json, id],
+         WHERE id = ?3 AND status = 'open' AND claimed < count AND expire_at > ?4",
+        params![share, claimers_json, id, now],
     )?;
     Ok(updated)
 }

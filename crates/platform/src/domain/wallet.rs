@@ -28,8 +28,9 @@ use serde::Serialize;
 use super::repo::wallet::{
     credit, debit_if_sufficient, ensure_wallet, expired_packets, idem_gc, idem_insert, idem_lookup,
     insert_redpacket, ledger_head as repo_ledger_head, ledger_of as repo_ledger_of, log_ledger,
-    mark_expired, open_escrow, redpacket as repo_redpacket, redpacket_state, total_wallets,
-    update_claim, user_exists, wallet_balance as repo_wallet_balance, RedpacketState,
+    mark_expired, open_escrow, record_claim, redpacket as repo_redpacket, redpacket_state,
+    total_wallets, update_claim, user_exists, wallet_balance as repo_wallet_balance,
+    RedpacketState,
 };
 
 /// Ledger kinds (contract names them explicitly).
@@ -346,7 +347,7 @@ impl Platform {
         member_before: bool,
     ) -> Result<(i64, i64, i64, String)> {
         {
-            let Some(state) = redpacket_state(port, id)? else {
+            let Some(state) = redpacket_state(port, id, true)? else {
                 return Err(PlatformError::NotFound);
             };
             // 直聊/群在资金事务内用同一连接再判一次成员，关掉“校验后被踢”
@@ -418,12 +419,19 @@ impl Platform {
         share: i64,
         mut claimers: Vec<String>,
     ) -> Result<()> {
+        let now = wxlike_core::types::now_ms() as i64;
+        if record_claim(port, id, by, share, now)? != 1 {
+            return Err(PlatformError::Conflict("already claimed".into()));
+        }
         ensure_wallet(port, by)?;
         credit(port, by, share)?;
         claimers.push(by.to_string());
         let claimers_json = serde_json::to_string(&claimers)
             .map_err(|_| PlatformError::BadInput("claimers record is corrupt"))?;
-        update_claim(port, id, share, &claimers_json)?;
+        if update_claim(port, id, share, &claimers_json, now)? != 1 {
+            // 事务内状态已经变了（过期/领完/被关），整笔领取回滚。
+            return Err(PlatformError::Conflict("redpacket changed".into()));
+        }
         log_ledger(
             port,
             by,
@@ -643,7 +651,27 @@ fn status_now_finished(claimed_before: i64, count: i64) -> bool {
 }
 #[cfg(test)]
 mod ephemeral_tests {
+    use crate::domain::repo::wallet::update_claim;
     use crate::Platform;
+
+    /// H-05 回归：领满后的条件 UPDATE 必须影响 0 行，调用方据此回滚。
+    #[test]
+    fn conditional_claim_update_refuses_a_finished_packet() {
+        let p = Platform::in_memory().unwrap();
+        let a = p.register("alice", "pw").unwrap();
+        let b = p.register("bob", "pw").unwrap();
+        p.fund(&a, 1_000, "test").unwrap();
+        let rp = p.create_redpacket(&a, 100, 1, "包", None).unwrap();
+        let c = p.db().acquire();
+        let now = wxlike_core::types::now_ms() as i64;
+        let claimers = format!("[\"{b}\"]");
+        assert_eq!(update_claim(&c, &rp, 100, &claimers, now).unwrap(), 1);
+        assert_eq!(
+            update_claim(&c, &rp, 100, &claimers, now).unwrap(),
+            0,
+            "finished packet must not accept a second conditional update"
+        );
+    }
 
     #[test]
     fn claim_writes_ephemeral_card_update() {
