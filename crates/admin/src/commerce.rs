@@ -73,13 +73,15 @@ impl MoneyPort for HttpMoneyPort {
         amount_cents: i64,
     ) -> Result<String> {
         upstream::check_target(order_id)?;
+        let idempotency_key = format!("refund:{refund_id}");
         let reply = self
             .upstream
-            .call(
+            .call_with_idempotency(
                 "POST",
                 &format!("/api/admin/commerce/refunds/{refund_id}/apply"),
                 "admin",
                 Some(serde_json::json!({"order_id": order_id, "amount_cents": amount_cents})),
+                Some(&idempotency_key),
             )
             .await?;
         Ok(reply.reference())
@@ -584,6 +586,20 @@ impl CommerceService {
         ) {
             return Ok(existing);
         }
+        // H-11：同一订单的未结/已结退款总额不能超过订单金额。查询与插入
+        // 在同一把 SQLite 锁里，避免两个不同 idem 的申请并发穿透单笔校验。
+        let already_refunded: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM g14_refund \
+             WHERE order_id = ?1 AND state IN ('pending','partially_approved','processing','approved')",
+            [order.id.as_str()],
+            |row| row.get(0),
+        )?;
+        if already_refunded.saturating_add(amount_cents) > order.amount_cents {
+            return Err(AdminError::bad_input(format!(
+                "累计退款 {} + 本笔 {} 超过订单金额 {} 分",
+                already_refunded, amount_cents, order.amount_cents
+            )));
+        }
         let now = now_ms();
         let refund = Refund {
             id: format!("rf_{}", wxlike_platform::random_hex(8)),
@@ -655,12 +671,45 @@ impl CommerceService {
             } => (refund, first, second, needs_two, apply),
         };
 
+        let reserve_state = if apply {
+            "processing"
+        } else {
+            "partially_approved"
+        };
+        let svc = self.clone();
+        let (rid, from_state) = (refund.id.clone(), refund.state.clone());
+        let (ef, es) = (refund.approved_by.clone(), refund.second_approver.clone());
+        let (nf, ns) = (first.clone(), second.clone());
+        let reserved = offload(move || {
+            svc.reserve_refund(
+                &rid,
+                &from_state,
+                ef.as_deref(),
+                es.as_deref(),
+                nf.as_deref(),
+                ns.as_deref(),
+                reserve_state,
+            )
+        })
+        .await?;
+        if !reserved {
+            return Err(AdminError::bad_input(
+                "退款状态已被其他审批改变，请刷新后重试",
+            ));
+        }
+
         let (state, reference) = if apply {
-            let reference = self
+            match self
                 .port
                 .apply_refund(&refund.id, &refund.order_id, refund.amount_cents)
-                .await?;
-            ("approved", reference)
+                .await
+            {
+                Ok(reference) => ("approved", reference),
+                Err(err) => {
+                    self.mark_refund_apply_failed(&refund.id);
+                    return Err(err);
+                }
+            }
         } else {
             ("partially_approved", String::new())
         };
@@ -668,7 +717,17 @@ impl CommerceService {
         let svc = self.clone();
         offload(move || {
             svc.approve_refund_finish(
-                &actor, role, &trace, &refund_id, &note, &refund, first, second, needs_two, state,
+                &actor,
+                role,
+                &trace,
+                &refund_id,
+                &note,
+                &refund,
+                first,
+                second,
+                needs_two,
+                reserve_state,
+                state,
                 &reference,
             )
         })
@@ -705,6 +764,51 @@ impl CommerceService {
         })
     }
 
+    /// H-10：审批预占。CAS 绑定旧 state / 旧审批人，只有一个并发审批能进入
+    /// 域侧出账；失败方不碰钱。
+    #[allow(clippy::too_many_arguments)]
+    fn reserve_refund(
+        &self,
+        refund_id: &str,
+        expected_state: &str,
+        expected_first: Option<&str>,
+        expected_second: Option<&str>,
+        first: Option<&str>,
+        second: Option<&str>,
+        next_state: &str,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let updated = self.store.lock().execute(
+            "UPDATE g14_refund SET state = ?7, approved_by = ?5, second_approver = ?6, \
+             updated_at = ?8 \
+             WHERE id = ?1 AND state = ?2 \
+               AND COALESCE(approved_by, '') = ?3 \
+               AND COALESCE(second_approver, '') = ?4",
+            params![
+                refund_id,
+                expected_state,
+                expected_first.unwrap_or(""),
+                expected_second.unwrap_or(""),
+                first,
+                second,
+                next_state,
+                now
+            ],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// 出账失败后把预占标记为 `apply_failed`，不把状态退回去自动重试：
+    /// 上游可能已经扣款，是否重放由带同一 Idempotency-Key 的人工复核决定。
+    fn mark_refund_apply_failed(&self, refund_id: &str) {
+        let now = now_ms();
+        let _ = self.store.lock().execute(
+            "UPDATE g14_refund SET state = 'apply_failed', updated_at = ?2 \
+             WHERE id = ?1 AND state = 'processing'",
+            params![refund_id, now],
+        );
+    }
+
     /// [`Self::approve_refund`] 的同步后段：UPDATE + 审计整段一个临界区。
     #[allow(clippy::too_many_arguments)]
     fn approve_refund_finish(
@@ -718,15 +822,19 @@ impl CommerceService {
         first: Option<String>,
         second: Option<String>,
         needs_two: bool,
+        expected_state: &str,
         state: &str,
         reference: &str,
     ) -> Result<Refund> {
         let now = now_ms();
-        self.store.lock().execute(
+        let updated_rows = self.store.lock().execute(
             "UPDATE g14_refund SET state = ?2, approved_by = ?3, second_approver = ?4, \
-             updated_at = ?5 WHERE id = ?1",
-            params![refund_id, state, first, second, now],
+             updated_at = ?5 WHERE id = ?1 AND state = ?6",
+            params![refund_id, state, first, second, now, expected_state],
         )?;
+        if updated_rows != 1 {
+            return Err(AdminError::bad_input("退款预占状态已变化，审批结果未落库"));
+        }
         let updated = self.refund(refund_id)?.ok_or(AdminError::NotFound)?;
         self.audit.append(
             Draft::new(
@@ -1431,6 +1539,94 @@ mod tests {
             .unwrap();
         assert_eq!(a.id, b.id);
         assert_eq!(svc.refunds().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn refund_reservation_is_a_compare_and_swap() {
+        let (svc, _p, _s) = service();
+        seed(&svc, "m1", "o1", 5_000);
+        let refund = svc
+            .request_refund(
+                "fin_a",
+                Role::Finance,
+                "t1",
+                &MerchantScope::All,
+                "o1",
+                1_000,
+                "少发",
+                "cas-1",
+            )
+            .unwrap();
+        assert!(svc
+            .reserve_refund(
+                &refund.id,
+                "pending",
+                None,
+                None,
+                Some("fin_a"),
+                None,
+                "processing",
+            )
+            .unwrap());
+        assert!(
+            !svc.reserve_refund(
+                &refund.id,
+                "pending",
+                None,
+                None,
+                Some("fin_b"),
+                None,
+                "processing",
+            )
+            .unwrap(),
+            "第二个并发审批必须 CAS 失败"
+        );
+        assert_eq!(svc.refund(&refund.id).unwrap().unwrap().state, "processing");
+    }
+
+    #[test]
+    fn cumulative_refunds_cannot_exceed_the_order() {
+        let (svc, _p, _s) = service();
+        seed(&svc, "m1", "o1", 10_000);
+        svc.request_refund(
+            "fin_a",
+            Role::Finance,
+            "t1",
+            &MerchantScope::All,
+            "o1",
+            8_000,
+            "第一笔",
+            "cum-1",
+        )
+        .unwrap();
+        let err = svc
+            .request_refund(
+                "fin_a",
+                Role::Finance,
+                "t2",
+                &MerchantScope::All,
+                "o1",
+                3_000,
+                "第二笔",
+                "cum-2",
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("累计退款"), "{err}");
+        assert_eq!(svc.refunds().unwrap().len(), 1, "超额申请不能落行");
+
+        let last = svc
+            .request_refund(
+                "fin_a",
+                Role::Finance,
+                "t3",
+                &MerchantScope::All,
+                "o1",
+                2_000,
+                "补足差额",
+                "cum-3",
+            )
+            .unwrap();
+        assert_eq!(last.amount_cents, 2_000);
     }
 
     #[test]

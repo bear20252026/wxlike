@@ -108,14 +108,31 @@ impl Upstream {
         actor: &str,
         body: Option<serde_json::Value>,
     ) -> Result<Reply> {
+        self.call_with_idempotency(method, path, actor, body, None)
+            .await
+    }
+
+    /// 带 `Idempotency-Key` 的转发。退款出账必须走这条：同一退款重试时
+    /// 上游按同一个键去重，网络超时不等于重复打款。
+    pub async fn call_with_idempotency(
+        &self,
+        method: &str,
+        path: &str,
+        actor: &str,
+        body: Option<serde_json::Value>,
+        idempotency_key: Option<&str>,
+    ) -> Result<Reply> {
         let this = self.clone();
         let method = method.to_string();
         let path = path.to_string();
         let actor = actor.to_string();
+        let idempotency_key = idempotency_key.map(str::to_string);
         // 阻塞 I/O 挪到专用线程：10 秒超时不能占住工作线程
-        tokio::task::spawn_blocking(move || this.call_blocking(&method, &path, &actor, body))
-            .await
-            .map_err(|e| AdminError::upstream(0, format!("转发任务被终止: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            this.call_blocking(&method, &path, &actor, body, idempotency_key.as_deref())
+        })
+        .await
+        .map_err(|e| AdminError::upstream(0, format!("转发任务被终止: {e}")))?
     }
 
     fn call_blocking(
@@ -124,6 +141,7 @@ impl Upstream {
         path: &str,
         actor: &str,
         body: Option<serde_json::Value>,
+        idempotency_key: Option<&str>,
     ) -> Result<Reply> {
         let url = format!("{}{}", self.base, path);
         let mut req = match method {
@@ -146,10 +164,13 @@ impl Upstream {
             // will_error=false ⇒ 3xx 原样返回，由状态码检查显式拒绝。
             .max_redirects(0)
             .build();
-        let req = req
+        let mut req = req
             .header("x-admin-token", &self.token)
             .header("x-admin-actor", actor)
             .header("content-type", "application/json");
+        if let Some(key) = idempotency_key {
+            req = req.header("Idempotency-Key", key);
+        }
         let sent = match body {
             Some(v) => req.send_json(v),
             // 没有 body 的写请求（比如 204 的开关）：显式发空体
@@ -267,6 +288,41 @@ mod tests {
         let u = Upstream::new("http://127.0.0.1:1", "tok");
         let err = u.call("DELETE", "/x", "ops", None).await.unwrap_err();
         assert!(err.to_string().contains("不支持的方法"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn idempotency_key_is_forwarded() {
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let seen = StdArc::new(StdMutex::new(String::new()));
+        let seen_for_server = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).await.unwrap();
+            *seen_for_server.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"reference\":\"r1\"}";
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let u = Upstream::new(format!("http://{addr}"), "tok");
+        u.call_with_idempotency(
+            "POST",
+            "/api/admin/commerce/refunds/rf_1/apply",
+            "ops",
+            Some(serde_json::json!({"order_id": "o1", "amount_cents": 100})),
+            Some("refund:rf_1"),
+        )
+        .await
+        .unwrap();
+        let raw = seen.lock().unwrap().clone();
+        assert!(
+            raw.to_lowercase().contains("idempotency-key: refund:rf_1"),
+            "上游必须收到同一幂等键: {raw}"
+        );
     }
 
     /// T-Z1（#60）：上游 3xx 不得跟随——admin 请求带 x-admin-token，
