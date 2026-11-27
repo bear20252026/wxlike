@@ -597,23 +597,39 @@ pub fn authenticate_with<E: SqlExec + ?Sized>(
     if stored != audience {
         return Err(IdError::Unauthorized("wrong audience"));
     }
-    check_token_sidecar(exec, sid.as_deref().unwrap_or_default(), audience)?;
+    // H-34: legacy sessions without a sidecar used to skip serial/auth-level
+    // checks entirely. A missing or empty sid means we cannot prove the token's
+    // revocation state, so it must fail closed like any other invalid token.
+    let sid = match sid {
+        Some(sid) if !sid.is_empty() => sid,
+        _ => return Err(IdError::Unauthorized("invalid or expired token")),
+    };
+    check_token_sidecar(exec, &sid, &user_id, audience)?;
     if !device_id.is_empty() {
         require_active_device_with(exec, &user_id, &device_id)?;
     }
     Ok(AuthContext {
-        sid: sid.unwrap_or_default(),
+        sid,
         user_id,
         device_id,
         audience,
     })
 }
 
-/// 令牌侧车两查：序列号与认证级别。分支顺序与错误同形，见旧实现注释。
-fn check_token_sidecar<E: SqlExec + ?Sized>(exec: &E, sid: &str, audience: Audience) -> Result<()> {
+/// 令牌侧车三查：归属、序列号与认证级别。缺失一律拒绝，不能再走
+/// "平台历史数据没有额外约束"的 fail-open 兼容路径（H-34）。
+fn check_token_sidecar<E: SqlExec + ?Sized>(
+    exec: &E,
+    sid: &str,
+    user_id: &str,
+    audience: Audience,
+) -> Result<()> {
     let Some(record) = token_record_with(exec, sid)? else {
-        return Ok(());
+        return Err(IdError::Unauthorized("invalid or expired token"));
     };
+    if record.user_id != user_id {
+        return Err(IdError::Unauthorized("invalid or expired token"));
+    }
     if record.serial != current_serial_with(exec)? {
         return Err(IdError::Unauthorized("invalid or expired token"));
     }
@@ -1053,6 +1069,41 @@ mod tests {
         assert!(matches!(
             token_record(&conn, &grant.sid),
             Err(IdError::Corrupt("features"))
+        ));
+    }
+
+    #[test]
+    fn missing_token_sidecar_fails_closed() {
+        // H-34: an access token whose sidecar row disappeared must not
+        // authenticate just because the legacy table has no extra constraint.
+        let conn = db();
+        device(&conn, "u1", "dev-aaaa1111", 1_000);
+        let grant = open_default(&conn, "u1", "dev-aaaa1111", Audience::User, "", 1_000).unwrap();
+        conn.execute(
+            "DELETE FROM identity_session_meta WHERE sid = ?1",
+            params![grant.sid],
+        )
+        .unwrap();
+        assert!(matches!(
+            authenticate(&conn, &grant.access_token, Audience::User, 1_100),
+            Err(IdError::Unauthorized("invalid or expired token"))
+        ));
+    }
+
+    #[test]
+    fn token_sidecar_must_belong_to_the_same_user() {
+        let conn = db();
+        device(&conn, "u1", "dev-aaaa1111", 1_000);
+        device(&conn, "u2", "dev-bbbb2222", 1_000);
+        let grant = open_default(&conn, "u2", "dev-bbbb2222", Audience::User, "", 1_000).unwrap();
+        conn.execute(
+            "UPDATE identity_session_meta SET user_id = 'u1' WHERE sid = ?1",
+            params![grant.sid],
+        )
+        .unwrap();
+        assert!(matches!(
+            authenticate(&conn, &grant.access_token, Audience::User, 1_100),
+            Err(IdError::Unauthorized("invalid or expired token"))
         ));
     }
 
