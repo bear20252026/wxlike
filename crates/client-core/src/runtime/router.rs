@@ -12,7 +12,7 @@
 //! 把它们硬塞进"一个 action 一个 URL"反而会掩盖真实语义。
 
 use serde_json::{json, Map, Value};
-use wxlike_types::{ActionId, Deadline, DomainError};
+use wxlike_types::{ActionId, Deadline, DomainError, IdempotencyKey};
 
 use crate::ports::{HttpMethod, Transport, TransportRequest};
 
@@ -254,7 +254,8 @@ pub const ROUTES: &[Route] = &[
         id: "msg.send",
         method: HttpMethod::Post,
         path: "/api/conv/{conv}/send",
-        body: &["text", "idempotency_key"],
+        // 命令面叫 reply_to，HTTP 面叫 quote_of（服务端 SendBody）。
+        body: &["text", "quote_of", "idempotency_key"],
     },
     Route {
         id: "msg.forward",
@@ -419,22 +420,74 @@ fn scalar(params: &Value, name: &str) -> Result<String, DomainError> {
     }
 }
 
-/// 最小 percent-encoding：只处理会破坏 URL 结构的字符。
+/// RFC 3986 的 unreserved 字符原样保留，其余字节一律 `%XX`。
+///
+/// 旧实现只转义 7 个 URL 元字符，非 ASCII 字节被 `byte as char` 转成
+/// Latin-1 字符（"你" 的 0xE4 会变成 'ä'），服务端收到的路径/查询已损坏。
+/// 按 UTF-8 字节逐个编码才是正确的 percent-encoding。
 fn percent_encode(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
-        match byte {
-            b' ' => out.push_str("%20"),
-            b'&' => out.push_str("%26"),
-            b'#' => out.push_str("%23"),
-            b'+' => out.push_str("%2B"),
-            b'?' => out.push_str("%3F"),
-            b'%' => out.push_str("%25"),
-            b'/' => out.push_str("%2F"),
-            other => out.push(other as char),
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
         }
     }
     out
+}
+
+/// 命令参数到 HTTP body 的字段别名。命令面保留 `reply_to`（契约名称），
+/// 服务端 `SendBody` 收的是 `quote_of`；两者必须在唯一的路由层翻译一次。
+fn wire_aliases(id: &str, params: &Value) -> Value {
+    let mut out = params.clone();
+    if id == "msg.send" {
+        if out.get("quote_of").is_none() {
+            if let Some(reply_to) = out.get("reply_to").cloned() {
+                if let Some(map) = out.as_object_mut() {
+                    map.insert("quote_of".to_string(), reply_to);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 把调用方的独立幂等键合并进 wire 参数。`ActionRequest.idempotency_key`
+/// 是唯一权威；params 里同名键只允许与它一致（旧调用方兼容），不一致直接
+/// 拒绝，避免"请求头一个键、body 另一个键"。
+pub fn with_request_idempotency(
+    params: &Value,
+    key: Option<&IdempotencyKey>,
+) -> Result<Value, DomainError> {
+    let mut out = params.clone();
+    let Some(key) = key else {
+        if out.get("idempotency_key").is_some() {
+            return Err(DomainError::invalid_field(
+                "idempotency_key",
+                "幂等键必须由 ActionRequest.idempotency_key 提供",
+            ));
+        }
+        return Ok(out);
+    };
+    if let Some(existing) = out.get("idempotency_key") {
+        if existing.as_str() != Some(key.as_str()) {
+            return Err(DomainError::invalid_field(
+                "idempotency_key",
+                "params.idempotency_key 与请求幂等键不一致",
+            ));
+        }
+    }
+    if let Some(map) = out.as_object_mut() {
+        map.insert(
+            "idempotency_key".to_string(),
+            Value::String(key.as_str().to_string()),
+        );
+    }
+    Ok(out)
 }
 
 /// 按 `body` 字段清单从参数里挑出请求体。
@@ -464,7 +517,7 @@ pub fn route(action: &ActionId, params: &Value) -> Result<TransportRequest, Doma
             .unwrap_or_else(|| "未登记的命令".to_string());
         DomainError::invalid(format!("{} 不能直接路由：{hint}", action.as_str()))
     })?;
-    let filled = with_defaults(route.id, params);
+    let filled = wire_aliases(route.id, &with_defaults(route.id, params));
     let path = fill(route.path, &filled)?;
     let mut request = TransportRequest {
         method: route.method,
@@ -690,6 +743,56 @@ mod tests {
             request.path,
             "/api/search/messages?q=a%20b%26c%23d&limit=20"
         );
+    }
+
+    #[test]
+    fn non_ascii_path_and_query_are_utf8_percent_encoded() {
+        let request =
+            route(&action("msg.search"), &json!({"q": "你好 😀", "limit": 20})).expect("route");
+        assert_eq!(
+            request.path,
+            "/api/search/messages?q=%E4%BD%A0%E5%A5%BD%20%F0%9F%98%80&limit=20"
+        );
+
+        let request = route(
+            &action("conv.history"),
+            &json!({"conv": "会话/一", "before_seq": 0, "limit": 50}),
+        )
+        .expect("route");
+        assert_eq!(
+            request.path,
+            "/api/history/%E4%BC%9A%E8%AF%9D%2F%E4%B8%80?before_seq=0&limit=50"
+        );
+    }
+
+    #[test]
+    fn msg_send_carries_reply_to_as_quote_of() {
+        let request = route(
+            &action("msg.send"),
+            &json!({
+                "conv": "c1", "text": "hi", "reply_to": "00112233445566778899aabbccddeeff"
+            }),
+        )
+        .expect("route");
+        let body: Value =
+            serde_json::from_slice(request.body.as_ref().expect("body")).expect("json");
+        assert_eq!(body["quote_of"], "00112233445566778899aabbccddeeff");
+        assert!(body.get("reply_to").is_none());
+    }
+
+    #[test]
+    fn request_idempotency_key_is_the_only_source() {
+        let key = IdempotencyKey::parse("k-1").expect("key");
+        let params = with_request_idempotency(&json!({"conv": "c1"}), Some(&key)).expect("merge");
+        assert_eq!(params["idempotency_key"], "k-1");
+
+        let params = with_request_idempotency(&json!({"idempotency_key": "k-1"}), Some(&key))
+            .expect("same key is accepted");
+        assert_eq!(params["idempotency_key"], "k-1");
+
+        let err = with_request_idempotency(&json!({"idempotency_key": "other"}), Some(&key))
+            .expect_err("conflicting keys must fail");
+        assert_eq!(err.code(), "invalid_argument");
     }
 
     #[test]

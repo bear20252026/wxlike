@@ -65,7 +65,7 @@ fn trace() -> TraceId {
 fn send_request(key: &str) -> ActionRequest {
     ActionRequest::new(
         action("msg.send"),
-        serde_json::json!({"conv": "d-a~b", "text": "你好", "idempotency_key": key}),
+        serde_json::json!({"conv": "d-a~b", "text": "你好"}),
         trace(),
     )
     .with_idempotency(idem(key))
@@ -141,7 +141,7 @@ async fn retry_is_delayed_by_backoff_and_keeps_the_same_key() {
     let mut record = OutboxRecord::new(
         idem("k-1"),
         action("msg.send"),
-        serde_json::json!({"conv": "d-a~b", "text": "x", "idempotency_key": "k-1"}),
+        serde_json::json!({"conv": "d-a~b", "text": "x"}),
         NOW,
     );
     record.attempts = 1;

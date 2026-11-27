@@ -219,7 +219,11 @@ impl Session {
             )
             .await?
         } else {
-            let mut transport_request = router::route(&request.action_id, &request.params)?;
+            let params = router::with_request_idempotency(
+                &request.params,
+                request.idempotency_key.as_ref(),
+            )?;
+            let mut transport_request = router::route(&request.action_id, &params)?;
             transport_request.deadline = request.deadline;
             let response = self
                 .ports
