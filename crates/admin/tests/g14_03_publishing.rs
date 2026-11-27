@@ -249,6 +249,41 @@ async fn publish_failure_is_retryable_without_new_version() {
 }
 
 #[tokio::test]
+async fn reconcile_resets_an_interrupted_release_transition() {
+    let mut env = Env::new("g14-03-reconcile");
+    let pub_token = env.ready("pub").await;
+    let (st, body) = env
+        .call(
+            "POST",
+            "/api/g14/publishing/mini/app_1/releases",
+            Some(&pub_token),
+            Some(json!({"version":"1.0.0","idem":"reconcile-1"})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let id = body["release"]["id"].as_str().unwrap().to_string();
+
+    // 模拟签名进程在调用上游后、落库前中断：留下 signing。
+    let conn = rusqlite::Connection::open(env.accounts_db()).unwrap();
+    conn.execute(
+        "UPDATE g14_mini_release SET state = 'signing' WHERE id = ?1",
+        [id.as_str()],
+    )
+    .unwrap();
+
+    let (st, body) = env
+        .call(
+            "POST",
+            &format!("/api/g14/publishing/mini/releases/{id}/reconcile"),
+            Some(&pub_token),
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["release"]["state"], "draft", "{body}");
+}
+
+#[tokio::test]
 async fn service_config_refuses_plaintext_secrets_and_versions_changes() {
     let mut env = Env::new("g14-03-service");
     let pub_token = env.token("pub");

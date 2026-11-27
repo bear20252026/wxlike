@@ -42,14 +42,31 @@ pub trait ContentPort: Send + Sync {
         subject_id: &str,
         state: &str,
         note: &str,
+        idempotency_key: &str,
     ) -> Result<String>;
     /// 给小程序包签名，返回签名串（真实实现由 G07 的签名服务产出）。
-    async fn sign_package(&self, app_id: &str, version: &str) -> Result<String>;
+    async fn sign_package(
+        &self,
+        app_id: &str,
+        version: &str,
+        idempotency_key: &str,
+    ) -> Result<String>;
     /// 发布一个已签名的版本。
-    async fn publish_release(&self, app_id: &str, version: &str, signature: &str)
-        -> Result<String>;
+    async fn publish_release(
+        &self,
+        app_id: &str,
+        version: &str,
+        signature: &str,
+        idempotency_key: &str,
+    ) -> Result<String>;
     /// 撤回已发布的版本。
-    async fn revoke_release(&self, app_id: &str, version: &str, reason: &str) -> Result<String>;
+    async fn revoke_release(
+        &self,
+        app_id: &str,
+        version: &str,
+        reason: &str,
+        idempotency_key: &str,
+    ) -> Result<String>;
 }
 
 pub struct HttpContentPort {
@@ -61,10 +78,15 @@ impl HttpContentPort {
         Self { upstream }
     }
 
-    async fn post(&self, path: &str, body: serde_json::Value) -> Result<String> {
+    async fn post(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        idempotency_key: &str,
+    ) -> Result<String> {
         let reply = self
             .upstream
-            .call("POST", path, "admin", Some(body))
+            .call_with_idempotency("POST", path, "admin", Some(body), Some(idempotency_key))
             .await?;
         Ok(reply.reference())
     }
@@ -78,6 +100,7 @@ impl ContentPort for HttpContentPort {
         subject_id: &str,
         state: &str,
         note: &str,
+        idempotency_key: &str,
     ) -> Result<String> {
         upstream::check_target(subject_id)?;
         let path = match subject_kind {
@@ -85,16 +108,26 @@ impl ContentPort for HttpContentPort {
             "service" => format!("/api/admin/services/{subject_id}/visibility"),
             _ => format!("/api/admin/content/{subject_id}/visibility"),
         };
-        self.post(&path, serde_json::json!({"state": state, "note": note}))
-            .await
+        self.post(
+            &path,
+            serde_json::json!({"state": state, "note": note}),
+            idempotency_key,
+        )
+        .await
     }
 
-    async fn sign_package(&self, app_id: &str, version: &str) -> Result<String> {
+    async fn sign_package(
+        &self,
+        app_id: &str,
+        version: &str,
+        idempotency_key: &str,
+    ) -> Result<String> {
         upstream::check_target(app_id)?;
         upstream::check_target(version)?;
         self.post(
             &format!("/api/admin/mini/{app_id}/versions/{version}/sign"),
             serde_json::json!({}),
+            idempotency_key,
         )
         .await
     }
@@ -104,20 +137,29 @@ impl ContentPort for HttpContentPort {
         app_id: &str,
         version: &str,
         signature: &str,
+        idempotency_key: &str,
     ) -> Result<String> {
         upstream::check_target(app_id)?;
         self.post(
             &format!("/api/admin/mini/{app_id}/versions/{version}/publish"),
             serde_json::json!({"signature": signature}),
+            idempotency_key,
         )
         .await
     }
 
-    async fn revoke_release(&self, app_id: &str, version: &str, reason: &str) -> Result<String> {
+    async fn revoke_release(
+        &self,
+        app_id: &str,
+        version: &str,
+        reason: &str,
+        idempotency_key: &str,
+    ) -> Result<String> {
         upstream::check_target(app_id)?;
         self.post(
             &format!("/api/admin/mini/{app_id}/versions/{version}/revoke"),
             serde_json::json!({"reason": reason}),
+            idempotency_key,
         )
         .await
     }
@@ -160,17 +202,23 @@ impl ContentPort for FixtureContentPort {
         subject_id: &str,
         state: &str,
         note: &str,
+        idempotency_key: &str,
     ) -> Result<String> {
         self.record(
             "set_visibility",
-            serde_json::json!({"kind": subject_kind, "id": subject_id, "state": state, "note": note}),
+            serde_json::json!({"kind": subject_kind, "id": subject_id, "state": state, "note": note, "idempotency_key": idempotency_key}),
         )
     }
 
-    async fn sign_package(&self, app_id: &str, version: &str) -> Result<String> {
+    async fn sign_package(
+        &self,
+        app_id: &str,
+        version: &str,
+        idempotency_key: &str,
+    ) -> Result<String> {
         self.record(
             "sign_package",
-            serde_json::json!({"app": app_id, "version": version}),
+            serde_json::json!({"app": app_id, "version": version, "idempotency_key": idempotency_key}),
         )?;
         Ok(format!("sig:fixture:{app_id}:{version}"))
     }
@@ -180,17 +228,24 @@ impl ContentPort for FixtureContentPort {
         app_id: &str,
         version: &str,
         signature: &str,
+        idempotency_key: &str,
     ) -> Result<String> {
         self.record(
             "publish_release",
-            serde_json::json!({"app": app_id, "version": version, "signature": signature}),
+            serde_json::json!({"app": app_id, "version": version, "signature": signature, "idempotency_key": idempotency_key}),
         )
     }
 
-    async fn revoke_release(&self, app_id: &str, version: &str, reason: &str) -> Result<String> {
+    async fn revoke_release(
+        &self,
+        app_id: &str,
+        version: &str,
+        reason: &str,
+        idempotency_key: &str,
+    ) -> Result<String> {
         self.record(
             "revoke_release",
-            serde_json::json!({"app": app_id, "version": version, "reason": reason}),
+            serde_json::json!({"app": app_id, "version": version, "reason": reason, "idempotency_key": idempotency_key}),
         )
     }
 }
@@ -365,8 +420,14 @@ pub struct QueueFilter {
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseState {
     Draft,
+    /// 已预占、正在调用签名服务。进程中断时由 reconcile 退回 draft。
+    Signing,
     Signed,
+    /// 已预占、正在调用发布服务。进程中断时由 reconcile 退回 signed。
+    Publishing,
     Published,
+    /// 已预占、正在调用撤回服务。进程中断时由 reconcile 退回 published。
+    Revoking,
     Revoked,
 }
 
@@ -374,8 +435,11 @@ impl ReleaseState {
     pub fn as_str(self) -> &'static str {
         match self {
             ReleaseState::Draft => "draft",
+            ReleaseState::Signing => "signing",
             ReleaseState::Signed => "signed",
+            ReleaseState::Publishing => "publishing",
             ReleaseState::Published => "published",
+            ReleaseState::Revoking => "revoking",
             ReleaseState::Revoked => "revoked",
         }
     }
@@ -383,8 +447,11 @@ impl ReleaseState {
     fn parse(s: &str) -> Option<Self> {
         match s {
             "draft" => Some(ReleaseState::Draft),
+            "signing" => Some(ReleaseState::Signing),
             "signed" => Some(ReleaseState::Signed),
+            "publishing" => Some(ReleaseState::Publishing),
             "published" => Some(ReleaseState::Published),
+            "revoking" => Some(ReleaseState::Revoking),
             "revoked" => Some(ReleaseState::Revoked),
             _ => None,
         }
@@ -657,9 +724,16 @@ impl PublishingService {
         } else {
             "approved"
         };
+        let idempotency_key = format!("review:{}:{}", item.id, decision.as_str());
         if let Err(err) = self
             .port
-            .set_visibility(&item.kind, &item.subject_id, state_word, reason)
+            .set_visibility(
+                &item.kind,
+                &item.subject_id,
+                state_word,
+                reason,
+                &idempotency_key,
+            )
             .await
         {
             let svc = self.clone();
@@ -778,11 +852,16 @@ impl PublishingService {
         next: ItemState,
     ) -> Result<Item> {
         let now = now_ms();
-        self.store.lock().execute(
+        let updated_rows = self.store.lock().execute(
             "UPDATE g14_review_item SET state = ?2, decided_by = ?3, reason = ?4, decided_at = ?5 \
-             WHERE id = ?1",
-            params![id, next.as_str(), actor, reason, now],
+             WHERE id = ?1 AND state = ?6",
+            params![id, next.as_str(), actor, reason, now, state.as_str()],
         )?;
+        if updated_rows != 1 {
+            return Err(AdminError::bad_input(
+                "审核项状态已被其他决定改变，本次决定未落库",
+            ));
+        }
         let updated = self.item(id)?.ok_or(AdminError::NotFound)?;
         self.audit.append(
             Draft::new(actor, role.as_str(), "publish.decide", "review_item", id)
@@ -854,13 +933,51 @@ impl PublishingService {
             (actor.to_string(), trace.to_string(), release_id.to_string());
         let (a, rid) = (actor.clone(), release_id.clone());
         let (release, state) = offload(move || svc.sign_prepare(&a, role, &rid)).await?;
-        let signature = self
+        let idempotency_key = format!("mini:{}:{}:sign", release.app_id, release.version);
+        // 先预占再调上游：两个并发 sign 只能有一个进入签名服务。
+        let svc = self.clone();
+        let (rid, from) = (release_id.clone(), ReleaseState::Draft.as_str());
+        let reserved = offload(move || svc.transition_release(&rid, from, "signing")).await?;
+        if !reserved {
+            return Err(AdminError::bad_input(
+                "发行状态已被其他操作改变，请刷新后重试",
+            ));
+        }
+        let signature = match self
             .port
-            .sign_package(&release.app_id, &release.version)
-            .await?;
+            .sign_package(&release.app_id, &release.version, &idempotency_key)
+            .await
+        {
+            Ok(signature) => signature,
+            Err(err) => {
+                self.restore_release_transition(&release_id, "signing", "draft");
+                return Err(err);
+            }
+        };
         let svc = self.clone();
         offload(move || svc.sign_finish(&actor, role, &trace, &release_id, &state, &signature))
             .await
+    }
+
+    /// 预占/推进发行状态。返回 false 表示状态已不是 `from`，调用方不能碰上游。
+    fn transition_release(&self, release_id: &str, from: &str, to: &str) -> Result<bool> {
+        let now = now_ms();
+        let updated = self.store.lock().execute(
+            "UPDATE g14_mini_release SET state = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND state = ?4",
+            params![release_id, to, now, from],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// 上游明确失败时把预占状态退回，允许用同一幂等键重试。
+    fn restore_release_transition(&self, release_id: &str, from: &str, to: &str) {
+        let now = now_ms();
+        let _ = self.store.lock().execute(
+            "UPDATE g14_mini_release SET state = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND state = ?4",
+            params![release_id, to, now, from],
+        );
     }
 
     /// [`Self::sign`] 的同步前段。整段在阻塞池里跑。
@@ -895,9 +1012,9 @@ impl PublishingService {
         signature: &str,
     ) -> Result<Release> {
         let now = now_ms();
-        self.store.lock().execute(
+        let updated_rows = self.store.lock().execute(
             "UPDATE g14_mini_release SET state = ?2, signed_by = ?3, signature = ?4, updated_at = ?5 \
-             WHERE id = ?1",
+             WHERE id = ?1 AND state = 'signing'",
             params![
                 release_id,
                 ReleaseState::Signed.as_str(),
@@ -906,6 +1023,9 @@ impl PublishingService {
                 now
             ],
         )?;
+        if updated_rows != 1 {
+            return Err(AdminError::bad_input("签名预占状态已变化，签名结果未落库"));
+        }
         let updated = self.release(release_id)?.ok_or(AdminError::NotFound)?;
         self.audit.append(
             Draft::new(
@@ -950,10 +1070,32 @@ impl PublishingService {
                 signature,
             } => (release, state, signature),
         };
-        let reference = self
+        let idempotency_key = format!("mini:{}:{}:publish", release.app_id, release.version);
+        let svc = self.clone();
+        let rid = release_id.clone();
+        let reserved =
+            offload(move || svc.transition_release(&rid, "signed", "publishing")).await?;
+        if !reserved {
+            return Err(AdminError::bad_input(
+                "发行状态已被其他操作改变，请刷新后重试",
+            ));
+        }
+        let reference = match self
             .port
-            .publish_release(&release.app_id, &release.version, &signature)
-            .await?;
+            .publish_release(
+                &release.app_id,
+                &release.version,
+                &signature,
+                &idempotency_key,
+            )
+            .await
+        {
+            Ok(reference) => reference,
+            Err(err) => {
+                self.restore_release_transition(&release_id, "publishing", "signed");
+                return Err(err);
+            }
+        };
         let svc = self.clone();
         offload(move || svc.publish_finish(&actor, role, &trace, &release_id, &state, &reference))
             .await
@@ -997,10 +1139,14 @@ impl PublishingService {
         reference: &str,
     ) -> Result<Release> {
         let now = now_ms();
-        self.store.lock().execute(
-            "UPDATE g14_mini_release SET state = ?2, published_by = ?3, updated_at = ?4 WHERE id = ?1",
+        let updated_rows = self.store.lock().execute(
+            "UPDATE g14_mini_release SET state = ?2, published_by = ?3, updated_at = ?4 \
+             WHERE id = ?1 AND state = 'publishing'",
             params![release_id, ReleaseState::Published.as_str(), actor, now],
         )?;
+        if updated_rows != 1 {
+            return Err(AdminError::bad_input("发布预占状态已变化，发布结果未落库"));
+        }
         let updated = self.release(release_id)?.ok_or(AdminError::NotFound)?;
         self.audit.append(
             Draft::new(
@@ -1040,10 +1186,27 @@ impl PublishingService {
         let (a, rid, r) = (actor.clone(), release_id.clone(), reason.clone());
         let (release, state, reason) =
             offload(move || svc.revoke_prepare(&a, role, &rid, &r)).await?;
-        let reference = self
+        let idempotency_key = format!("mini:{}:{}:revoke", release.app_id, release.version);
+        let svc = self.clone();
+        let rid = release_id.clone();
+        let reserved =
+            offload(move || svc.transition_release(&rid, "published", "revoking")).await?;
+        if !reserved {
+            return Err(AdminError::bad_input(
+                "发行状态已被其他操作改变，请刷新后重试",
+            ));
+        }
+        let reference = match self
             .port
-            .revoke_release(&release.app_id, &release.version, &reason)
-            .await?;
+            .revoke_release(&release.app_id, &release.version, &reason, &idempotency_key)
+            .await
+        {
+            Ok(reference) => reference,
+            Err(err) => {
+                self.restore_release_transition(&release_id, "revoking", "published");
+                return Err(err);
+            }
+        };
         let svc = self.clone();
         offload(move || {
             svc.revoke_finish(
@@ -1095,10 +1258,14 @@ impl PublishingService {
         reference: &str,
     ) -> Result<Release> {
         let now = now_ms();
-        self.store.lock().execute(
-            "UPDATE g14_mini_release SET state = ?2, updated_at = ?3 WHERE id = ?1",
+        let updated_rows = self.store.lock().execute(
+            "UPDATE g14_mini_release SET state = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND state = 'revoking'",
             params![release_id, ReleaseState::Revoked.as_str(), now],
         )?;
+        if updated_rows != 1 {
+            return Err(AdminError::bad_input("撤回预占状态已变化，撤回结果未落库"));
+        }
         let updated = self.release(release_id)?.ok_or(AdminError::NotFound)?;
         self.audit.append(
             Draft::new(
@@ -1117,6 +1284,53 @@ impl PublishingService {
             })),
         )?;
         Ok(updated)
+    }
+
+    /// H-12：把进程中断留下的瞬时状态退回可重试状态。
+    ///
+    /// `signing -> draft`、`publishing -> signed`、`revoking -> published`。
+    /// 退回后调用方用同一幂等键重试，不会产生第二次外部副作用。
+    pub fn reconcile_release(
+        &self,
+        actor: &str,
+        role: Role,
+        trace: &str,
+        release_id: &str,
+    ) -> Result<Release> {
+        auth::require(role, Resource::MiniApp, Action::Write)?;
+        let release = self.release(release_id)?.ok_or(AdminError::NotFound)?;
+        let (from, to) = match ReleaseState::parse(&release.state) {
+            Some(ReleaseState::Signing) => ("signing", "draft"),
+            Some(ReleaseState::Publishing) => ("publishing", "signed"),
+            Some(ReleaseState::Revoking) => ("revoking", "published"),
+            _ => return Ok(release),
+        };
+        let now = now_ms();
+        let updated = self.store.lock().execute(
+            "UPDATE g14_mini_release SET state = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND state = ?4",
+            params![release_id, to, now, from],
+        )?;
+        if updated != 1 {
+            return Err(AdminError::bad_input(
+                "发行状态已被其他操作改变，reconcile 未生效",
+            ));
+        }
+        let after = self.release(release_id)?.ok_or(AdminError::NotFound)?;
+        self.audit.append(
+            Draft::new(
+                actor,
+                role.as_str(),
+                "mini.reconcile",
+                "mini_release",
+                release_id,
+            )
+            .reason("回收中断的发行预占状态")
+            .trace(trace)
+            .before(serde_json::json!({"state": from}))
+            .after(serde_json::json!({"state": to})),
+        )?;
+        Ok(after)
     }
 
     /// 读签名串。单独一个方法而不是内联在发布流程里：锁不该跨 `await`。
@@ -1453,6 +1667,58 @@ mod tests {
         assert_eq!(again.state, "published");
         assert_eq!(port.calls().len(), calls_before);
         assert_eq!(svc.releases(Some("app_1")).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn release_transitions_are_cas_guarded_and_reconcile_returns_to_retryable() {
+        let (svc, port, store) = service();
+        open_step_up(&store, "ops");
+        let rel = svc
+            .create_release("ops", Role::Publisher, "t1", "app_1", "1.0.0", "idem-cas")
+            .unwrap();
+        // 第一个签名预占成功，第二个并发预占看到状态已变，必须失败。
+        assert!(svc.transition_release(&rel.id, "draft", "signing").unwrap());
+        assert!(!svc.transition_release(&rel.id, "draft", "signing").unwrap());
+        // 模拟进程在调签名服务前中断：reconcile 把 signing 退回 draft。
+        let reconciled = svc
+            .reconcile_release("ops", Role::Publisher, "t2", &rel.id)
+            .unwrap();
+        assert_eq!(reconciled.state, "draft");
+
+        let signed = svc
+            .sign("ops", Role::Publisher, "t3", &rel.id)
+            .await
+            .unwrap();
+        assert_eq!(signed.state, "signed");
+        let sign_call = port
+            .calls()
+            .into_iter()
+            .find(|(op, _)| op == "sign_package")
+            .expect("签名端口被调用");
+        assert_eq!(sign_call.1["idempotency_key"], "mini:app_1:1.0.0:sign");
+
+        // publishing 预占中断后 reconcile 回 signed，重试发布仍用同一幂等键。
+        assert!(svc
+            .transition_release(&rel.id, "signed", "publishing")
+            .unwrap());
+        let reconciled = svc
+            .reconcile_release("ops", Role::Publisher, "t4", &rel.id)
+            .unwrap();
+        assert_eq!(reconciled.state, "signed");
+        let published = svc
+            .publish("ops", Role::Publisher, "t5", &rel.id)
+            .await
+            .unwrap();
+        assert_eq!(published.state, "published");
+        let publish_call = port
+            .calls()
+            .into_iter()
+            .find(|(op, _)| op == "publish_release")
+            .expect("发布端口被调用");
+        assert_eq!(
+            publish_call.1["idempotency_key"],
+            "mini:app_1:1.0.0:publish"
+        );
     }
 
     #[tokio::test]

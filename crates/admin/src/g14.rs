@@ -211,6 +211,10 @@ fn publishing_routes() -> Router<Shared> {
             "/api/g14/publishing/mini/releases/{id}/revoke",
             post(revoke_release),
         )
+        .route(
+            "/api/g14/publishing/mini/releases/{id}/reconcile",
+            post(reconcile_release),
+        )
         .route("/api/g14/publishing/services", get(list_services))
         .route("/api/g14/publishing/services/{id}", put(upsert_service))
 }
@@ -1122,6 +1126,25 @@ async fn revoke_release(
     let release = publishing
         .revoke(&actor, role, &trace, &id, &body.reason)
         .await?;
+    Ok(Json(
+        serde_json::json!({"trace": trace.as_ref(), "release": release}),
+    ))
+}
+
+async fn reconcile_release(
+    State(app): State<Shared>,
+    incoming: auth::AdminAuth,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    let trace = new_trace();
+    let t = trace.clone();
+    let release = offload(move || {
+        let caller = write_caller(&app, &incoming, Resource::MiniApp, Action::Write, &t)?;
+        app.g14()
+            .publishing
+            .reconcile_release(&caller.session.actor, caller.session.role, &t, &id)
+    })
+    .await?;
     Ok(Json(
         serde_json::json!({"trace": trace.as_ref(), "release": release}),
     ))
