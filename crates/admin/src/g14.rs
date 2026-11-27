@@ -340,21 +340,51 @@ fn write_via(
     };
     let caller = Caller { session };
     app.g14().limiter.check(&caller.session.actor)?;
-    match auth::require(caller.session.role, resource, action) {
-        Ok(()) => Ok(caller),
-        Err(err) => {
-            record_denial(
-                app,
-                &caller.session.actor,
-                caller.session.role.as_str(),
-                resource,
-                action,
-                trace,
-                &err,
-            );
-            Err(err)
-        }
+    // H-08：G14 的所有写入口统一要求本次登录真的验过动态码。旧 /api/op
+    // 路径早已把 session.mfa 传进 rbac，新路径以前漏了这一步。
+    if !caller.session.mfa {
+        let err = AdminError::MfaRequired(
+            "G14 写操作需要 MFA 会话：请重新登录并完成动态码验证（POST /api/login）".into(),
+        );
+        record_denial(
+            app,
+            &caller.session.actor,
+            caller.session.role.as_str(),
+            resource,
+            action,
+            trace,
+            &err,
+        );
+        return Err(err);
     }
+    if let Err(err) = auth::require(caller.session.role, resource, action) {
+        record_denial(
+            app,
+            &caller.session.actor,
+            caller.session.role.as_str(),
+            resource,
+            action,
+            trace,
+            &err,
+        );
+        return Err(err);
+    }
+    // H-08：角色够 ≠ 可以写。G14 的写入口统一要求登录时真的验过动态码；
+    // 没开 MFA / 没验码的会话只能读。
+    if !caller.session.mfa {
+        let err = AdminError::MfaRequired("G14 write requires an MFA-verified session".into());
+        record_denial(
+            app,
+            &caller.session.actor,
+            caller.session.role.as_str(),
+            resource,
+            action,
+            trace,
+            &err,
+        );
+        return Err(err);
+    }
+    Ok(caller)
 }
 
 /// 越权尝试落一条 `Denied` 审计。

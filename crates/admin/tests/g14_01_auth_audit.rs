@@ -44,6 +44,50 @@ async fn end_user_tokens_and_unknown_tokens_are_refused() {
 }
 
 #[tokio::test]
+async fn g14_writes_require_an_mfa_verified_session() {
+    let mut env = Env::new("g14-01-no-mfa");
+    let accounts = env.app.accounts();
+    accounts
+        .add("nomfa", common::PW, wxlike_admin::rbac::Role::Superadmin)
+        .unwrap();
+    let (session, token) = accounts
+        .login(
+            "nomfa",
+            common::PW,
+            None,
+            env.app.config().session_ttl_ms,
+            "",
+        )
+        .unwrap();
+    assert!(!session.mfa, "没有验码的会话必须 mfa=false");
+
+    // 角色是 superadmin，角色门会放行；拦住它的是 MFA 门。
+    let (st, body) = env
+        .call("POST", "/api/g14/jobs/job-1/retry", Some(&token), None)
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("mfa"),
+        "拒绝理由必须指向 MFA: {body}"
+    );
+
+    // 同一个角色、验过码的会话可以进入业务层（job 不存在由域侧返回，不是 403）。
+    let root = env.token("root");
+    let (st, _) = env
+        .call("POST", "/api/g14/jobs/job-1/retry", Some(&root), None)
+        .await;
+    assert_ne!(
+        st,
+        StatusCode::FORBIDDEN,
+        "mfa=true 的会话不应被 MFA 门拦住"
+    );
+}
+
+#[tokio::test]
 async fn operator_static_token_reads_but_never_writes() {
     let env = Env::new("g14-01-operator");
     let op = env.app.config().token.clone();
