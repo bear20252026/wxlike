@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 pub use clock::Clock;
 pub use notification::{Notification, NotificationError, NotificationSink};
-pub use paging::{check_cursor_advance, cursor_floor, page_events};
+pub use paging::{check_cursor_advance, event_cursor_floor, page_events};
 pub use platform::{InstanceLock, Lifecycle, Platform, PlatformCaps, PlatformError, Release};
 pub use secrets::{Secret, SecretError, Secrets};
 pub use store::{LocalStore, OutboxRecord, StoreError};

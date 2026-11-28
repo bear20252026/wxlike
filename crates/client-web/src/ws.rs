@@ -23,7 +23,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, Event, MessageEvent, WebSocket};
 
 use wxlike_client_core::ports::{Clock, EventSource, TransportError};
-use wxlike_types::{Cursor, EventEnvelope, SubscribeRequest};
+use wxlike_types::{Cursor, CursorKind, EventEnvelope, SubscribeRequest};
 
 use crate::clock::WebClock;
 use crate::wire::{envelope_to_event, WireFrame, CAP_RESUME, PROTOCOL_V3};
@@ -108,9 +108,9 @@ pub fn device_id() -> String {
 impl WebSocketEvents {
     /// 建连。`url` 必须是 `ws://` 或 `wss://` 全量地址。
     ///
-    /// `request` 里的 `convs` 会转成 `conv:<id>` scopes；`cursor` 作为各会话
-    /// 的初始 `Resume` 游标（`SubscribeRequest` 目前只有一个事件游标，逐会话
-    /// 游标由连接自己收到的 `Msg` seq 继续推进）。
+    /// `request` 里的 `convs` 会转成 `conv:<id>` scopes；`cursor` 只用于它
+    /// 自己绑定的会话（v1 无会话游标仅在 `convs` 恰好一个时兼容使用）。
+    /// 其余会话的初始游标由连接收到的 `Msg` seq 逐会话推进。
     ///
     /// # Errors
     /// 未登录、浏览器拒绝建连（混合内容、非法 URL）。
@@ -124,15 +124,22 @@ impl WebSocketEvents {
             return Err(TransportError::Protocol("未登录，不能订阅实时事件".into()));
         }
         let scopes = scopes_for(request);
-        let base_cursor = request
+        let decoded = request
             .cursor
             .as_ref()
             .and_then(|cursor| cursor.decode().ok())
-            .map(|value| value.seq.get());
+            .filter(|value| value.kind == CursorKind::Event);
         let mut initial = HashMap::new();
-        if let Some(cursor) = base_cursor {
-            for conv in &request.convs {
-                initial.insert(conv.as_str().to_string(), cursor);
+        if let Some(value) = decoded {
+            match value.conv {
+                Some(conv) => {
+                    initial.insert(conv.as_str().to_string(), value.seq.get());
+                }
+                // 旧版无会话游标：只有单会话订阅时才能无歧义地套用。
+                None if request.convs.len() == 1 => {
+                    initial.insert(request.convs[0].as_str().to_string(), value.seq.get());
+                }
+                None => {}
             }
         }
         let shared = Rc::new(Shared {

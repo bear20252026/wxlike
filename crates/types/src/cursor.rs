@@ -13,6 +13,7 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::ids::ConvId;
 use crate::seq::Seq;
 
 /// 游标属于哪个流。不同类型不能混用（事件游标拿去翻消息页会漏数据）。
@@ -67,16 +68,22 @@ impl fmt::Display for CursorError {
 
 impl std::error::Error for CursorError {}
 
-/// 游标当前版本。
-const CURSOR_VERSION: u8 = 1;
+/// 游标当前版本。v1 只有 `(kind, seq)`；v2 在事件游标上增加会话身份。
+const CURSOR_VERSION: u8 = 2;
+/// v1 仍然可解：旧客户端/旧本地库里的 token 不能因为升级就变成坏数据。
+const CURSOR_VERSION_V1: u8 = 1;
 
 /// 游标解出来的内容。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CursorValue {
     /// 属于哪个流。
     pub kind: CursorKind,
     /// 已经消费到哪个序列号。
     pub seq: Seq,
+    /// 事件游标属于哪个会话；`None` 表示全局事件（presence 等）。
+    ///
+    /// 消息历史游标目前不带会话，保持 v1 的兼容形状。
+    pub conv: Option<ConvId>,
 }
 
 /// 不透明游标。
@@ -84,10 +91,26 @@ pub struct CursorValue {
 pub struct Cursor(String);
 
 impl Cursor {
-    /// 构造一个游标。服务端返回给客户端用这个；客户端只会原样回传。
+    /// 构造一个不带会话作用域的游标（v1 形状，兼容旧 fixture）。
     #[must_use]
     pub fn at(kind: CursorKind, seq: Seq) -> Self {
-        let raw = format!("{CURSOR_VERSION}:{}:{}", kind.tag(), seq.get());
+        let raw = format!("{CURSOR_VERSION_V1}:{}:{}", kind.tag(), seq.get());
+        let tag = checksum(raw.as_bytes());
+        Self(format!("{}.{tag:04x}", b64url_encode(raw.as_bytes())))
+    }
+
+    /// 构造一个绑定到具体会话的游标（v2 形状）。
+    ///
+    /// `seq` 是**该会话内**的序列号；不同会话的同号事件是两条不同事件，
+    /// 不能拿同一个游标互相推进。
+    #[must_use]
+    pub fn at_conv(kind: CursorKind, conv: &ConvId, seq: Seq) -> Self {
+        let raw = format!(
+            "{CURSOR_VERSION}:{}:{}:{}",
+            kind.tag(),
+            conv.as_str(),
+            seq.get()
+        );
         let tag = checksum(raw.as_bytes());
         Self(format!("{}.{tag:04x}", b64url_encode(raw.as_bytes())))
     }
@@ -137,33 +160,40 @@ impl Cursor {
 
 fn parse_payload(bytes: &[u8]) -> Result<CursorValue, CursorError> {
     let text = std::str::from_utf8(bytes).map_err(|_| CursorError::Malformed)?;
-    let mut parts = text.split(':');
-    let version: u8 = parts
-        .next()
-        .ok_or(CursorError::Malformed)?
-        .parse()
-        .map_err(|_| CursorError::Malformed)?;
-    if version != CURSOR_VERSION {
-        return Err(CursorError::UnsupportedVersion(version));
-    }
-    let kind_tag: u8 = parts
-        .next()
-        .ok_or(CursorError::Malformed)?
-        .parse()
-        .map_err(|_| CursorError::Malformed)?;
-    let seq: u64 = parts
-        .next()
-        .ok_or(CursorError::Malformed)?
-        .parse()
-        .map_err(|_| CursorError::Malformed)?;
-    if parts.next().is_some() {
-        return Err(CursorError::Malformed);
-    }
+    let (version_text, rest) = text.split_once(':').ok_or(CursorError::Malformed)?;
+    let version: u8 = version_text.parse().map_err(|_| CursorError::Malformed)?;
+    let (kind_text, rest) = rest.split_once(':').ok_or(CursorError::Malformed)?;
+    let kind_tag: u8 = kind_text.parse().map_err(|_| CursorError::Malformed)?;
     let kind = CursorKind::from_tag(kind_tag).ok_or(CursorError::UnknownKind(kind_tag))?;
-    Ok(CursorValue {
-        kind,
-        seq: Seq::new(seq),
-    })
+    match version {
+        CURSOR_VERSION_V1 => {
+            // v1 没有会话字段，且 seq 之后不允许再出现分隔符。
+            if rest.contains(':') {
+                return Err(CursorError::Malformed);
+            }
+            let seq = rest.parse().map_err(|_| CursorError::Malformed)?;
+            Ok(CursorValue {
+                kind,
+                seq: Seq::new(seq),
+                conv: None,
+            })
+        }
+        CURSOR_VERSION => {
+            // 会话 id 本身允许 ':'（ID 字符集包含它），所以从右边拆 seq。
+            let (conv_text, seq_text) = rest.rsplit_once(':').ok_or(CursorError::Malformed)?;
+            if conv_text.is_empty() {
+                return Err(CursorError::Malformed);
+            }
+            let conv = ConvId::parse(conv_text).map_err(|_| CursorError::Malformed)?;
+            let seq = seq_text.parse().map_err(|_| CursorError::Malformed)?;
+            Ok(CursorValue {
+                kind,
+                seq: Seq::new(seq),
+                conv: Some(conv),
+            })
+        }
+        other => Err(CursorError::UnsupportedVersion(other)),
+    }
 }
 
 impl fmt::Display for Cursor {
@@ -288,7 +318,28 @@ mod tests {
             let decoded = cursor.decode().expect("decode");
             assert_eq!(decoded.kind, kind);
             assert_eq!(decoded.seq, Seq::new(42));
+            assert_eq!(decoded.conv, None, "v1 不带会话身份");
         }
+    }
+
+    #[test]
+    fn scoped_cursor_round_trips_a_conversation_with_a_colon() {
+        let conv = ConvId::parse("d-a~b:room").expect("conv");
+        let cursor = Cursor::at_conv(CursorKind::Event, &conv, Seq::new(7));
+        let decoded = cursor.decode().expect("decode");
+        assert_eq!(decoded.kind, CursorKind::Event);
+        assert_eq!(decoded.seq, Seq::new(7));
+        assert_eq!(decoded.conv.as_ref(), Some(&conv));
+    }
+
+    #[test]
+    fn v1_tokens_still_decode_as_unscoped() {
+        let raw = format!("{CURSOR_VERSION_V1}:{}:{}", CursorKind::Event.tag(), 9);
+        let tag = checksum(raw.as_bytes());
+        let cursor = Cursor(format!("{}.{tag:04x}", b64url_encode(raw.as_bytes())));
+        let decoded = cursor.decode().expect("v1 is still readable");
+        assert_eq!(decoded.conv, None);
+        assert_eq!(decoded.seq, Seq::new(9));
     }
 
     #[test]
@@ -317,7 +368,7 @@ mod tests {
 
     #[test]
     fn unknown_kind_is_reported_not_guessed() {
-        let raw = format!("{CURSOR_VERSION}:9:1");
+        let raw = format!("{CURSOR_VERSION_V1}:9:1");
         let tag = checksum(raw.as_bytes());
         let cursor = Cursor(format!("{}.{tag:04x}", b64url_encode(raw.as_bytes())));
         assert_eq!(cursor.decode(), Err(CursorError::UnknownKind(9)));

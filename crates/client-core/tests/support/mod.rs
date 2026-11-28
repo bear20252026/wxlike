@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
 use wxlike_types::{
-    ActionId, Cursor, CursorKind, Deadline, DomainError, EventEnvelope, IdempotencyKey, Seq,
-    SubscribeRequest,
+    ActionId, ConvId, Cursor, CursorKind, Deadline, DomainError, EventEnvelope, IdempotencyKey,
+    Seq, SubscribeRequest,
 };
 
 use wxlike_client_core::ports::{
@@ -40,7 +40,8 @@ pub struct MemStore {
 struct MemState {
     outbox: BTreeMap<String, OutboxRecord>,
     events: Vec<EventEnvelope>,
-    cursor: Option<Cursor>,
+    /// 按会话分键的事件游标；`None` 键 = 全局事件流。
+    cursors: BTreeMap<Option<String>, Cursor>,
     cache: BTreeMap<String, (Vec<u8>, bool)>,
     /// 模拟配额用尽 / 私有模式。
     fail_with: Option<StoreError>,
@@ -159,17 +160,16 @@ impl LocalStore for MemStore {
 
     async fn events_after(
         &self,
+        conv: Option<&ConvId>,
         cursor: Option<&Cursor>,
         limit: u32,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let after = cursor
-            .and_then(|c| c.decode().ok())
-            .map_or(Seq::ZERO, |v| v.seq);
+        let after = wxlike_client_core::ports::event_cursor_floor(cursor, conv)?;
         let mut rows: Vec<EventEnvelope> = state
             .events
             .iter()
-            .filter(|e| e.seq.get() > after.get())
+            .filter(|e| e.conv.as_ref() == conv && e.seq.get() > after)
             .cloned()
             .collect();
         rows.sort_by_key(|e| e.seq.get());
@@ -185,18 +185,36 @@ impl LocalStore for MemStore {
         let incoming = cursor
             .decode()
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        if let Some(existing) = state.cursor.as_ref().and_then(|c| c.decode().ok()) {
-            if incoming.seq < existing.seq {
-                return Err(StoreError::Corrupt("游标不许回退".to_string()));
-            }
+        if incoming.kind != CursorKind::Event {
+            return Err(StoreError::Corrupt(
+                "本地事件游标槽只接受 Event 游标".to_string(),
+            ));
         }
-        state.cursor = Some(cursor.clone());
+        let key = incoming.conv.as_ref().map(|conv| conv.as_str().to_string());
+        if let Some(existing) = state.cursors.get(&key) {
+            wxlike_client_core::ports::check_cursor_advance(Some(existing.as_str()), cursor)?;
+        }
+        state.cursors.insert(key, cursor.clone());
         Ok(())
     }
 
-    async fn cursor(&self) -> Result<Option<Cursor>, StoreError> {
+    async fn cursor(&self, conv: Option<&ConvId>) -> Result<Option<Cursor>, StoreError> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(state.cursor.clone())
+        let key = conv.map(|conv| conv.as_str().to_string());
+        let Some(cursor) = state.cursors.get(&key) else {
+            return Ok(None);
+        };
+        let decoded = cursor
+            .decode()
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        if decoded.kind != CursorKind::Event
+            || decoded.conv.as_ref().map(|conv| conv.as_str()) != conv.map(|conv| conv.as_str())
+        {
+            return Err(StoreError::Corrupt(
+                "本地事件游标缺少会话身份或作用域不一致".to_string(),
+            ));
+        }
+        Ok(Some(cursor.clone()))
     }
 
     async fn put_cache(&self, key: &str, value: &[u8], sensitive: bool) -> Result<(), StoreError> {
@@ -220,7 +238,7 @@ impl LocalStore for MemStore {
         state.outbox.clear();
         state.events.clear();
         state.cache.clear();
-        state.cursor = None;
+        state.cursors.clear();
         Ok(())
     }
 }
@@ -579,6 +597,12 @@ pub fn idem(key: &str) -> IdempotencyKey {
 #[must_use]
 pub fn event_cursor(seq: u64) -> Cursor {
     Cursor::at(CursorKind::Event, Seq::new(seq))
+}
+
+/// 造一个绑定会话的事件游标。
+#[must_use]
+pub fn conv_cursor(conv: &ConvId, seq: u64) -> Cursor {
+    Cursor::at_conv(CursorKind::Event, conv, Seq::new(seq))
 }
 
 /// 造一个未来截止时间。

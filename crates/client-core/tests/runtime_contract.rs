@@ -12,15 +12,16 @@ mod support;
 use std::sync::Arc;
 
 use support::{
-    action, event_cursor, idem, MemClock, MemNotifications, MemPlatform, MemSecrets, MemStore,
-    MemTransport,
+    action, conv_cursor, event_cursor, idem, MemClock, MemNotifications, MemPlatform, MemSecrets,
+    MemStore, MemTransport,
 };
 use wxlike_client_core::ports::{
     Clock, LocalStore, OutboxRecord, PlatformCaps, Ports, StoreError, TransportError,
 };
 use wxlike_client_core::runtime::{Backoff, Session, SessionError};
 use wxlike_types::{
-    ActionOutcome, ActionRequest, EventEnvelope, EventId, EventKind, Seq, SubscribeRequest, TraceId,
+    ActionOutcome, ActionRequest, ConvId, EventEnvelope, EventId, EventKind, Seq, SubscribeRequest,
+    TraceId,
 };
 
 const NOW: i64 = 1_700_000_000_000;
@@ -79,6 +80,14 @@ fn event(id: &str, seq: u64) -> EventEnvelope {
         serde_json::json!({"text": "hi"}),
         1_700_000_000_000,
     )
+}
+
+fn conv(raw: &str) -> ConvId {
+    ConvId::parse(raw).expect("conv")
+}
+
+fn event_in(id: &str, conv: &ConvId, seq: u64) -> EventEnvelope {
+    event(id, seq).with_conv(conv.clone())
 }
 
 #[tokio::test]
@@ -216,7 +225,12 @@ async fn events_are_persisted_before_delivery_and_deduped() {
     let second = subscription.next().await.expect("第二条").expect("有事件");
     assert_eq!(second.event_id.as_str(), "evt-2", "重复投递不该交付两次");
     assert_eq!(fixture.store.event_count(), 2);
-    let cursor = fixture.store.cursor().await.expect("游标").expect("有游标");
+    let cursor = fixture
+        .store
+        .cursor(None)
+        .await
+        .expect("游标")
+        .expect("有游标");
     assert_eq!(cursor.decode().expect("解码").seq, Seq::new(2));
 }
 
@@ -248,8 +262,113 @@ async fn replay_returns_persisted_events_after_cold_start() {
         .expect("订阅");
     subscription.next().await.expect("一");
     subscription.next().await.expect("二");
-    let replayed = session.replay(10).await.expect("重放");
+    let replayed = session.replay(None, 10).await.expect("重放");
     assert!(replayed.is_empty(), "游标之后没有新事件");
+}
+
+#[tokio::test]
+async fn event_cursors_advance_independently_per_conversation() {
+    let fixture = Fixture::new();
+    let a = conv("d-alice~bob");
+    let b = conv("d-alice~carol");
+    // 跨会话乱序：A1, B10, A2, B11。per-conversation cursor 不该互相推进。
+    fixture.transport.push_event(event_in("a-1", &a, 1));
+    fixture.transport.push_event(event_in("b-1", &b, 10));
+    fixture.transport.push_event(event_in("a-2", &a, 2));
+    fixture.transport.push_event(event_in("b-2", &b, 11));
+    let session = fixture.session().await;
+    let mut subscription = session
+        .subscribe(SubscribeRequest::all())
+        .await
+        .expect("订阅");
+    for _ in 0..4 {
+        subscription.next().await.expect("事件").expect("有事件");
+    }
+    let cursor_a = fixture
+        .store
+        .cursor(Some(&a))
+        .await
+        .expect("A 游标")
+        .expect("已写入");
+    let cursor_b = fixture
+        .store
+        .cursor(Some(&b))
+        .await
+        .expect("B 游标")
+        .expect("已写入");
+    assert_eq!(cursor_a.decode().expect("A").seq, Seq::new(2));
+    assert_eq!(cursor_b.decode().expect("B").seq, Seq::new(11));
+    assert!(session
+        .replay(Some(&a), 10)
+        .await
+        .expect("A 重放")
+        .is_empty());
+    assert!(session
+        .replay(Some(&b), 10)
+        .await
+        .expect("B 重放")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn replay_only_returns_the_requested_conversation() {
+    let fixture = Fixture::new();
+    let a = conv("d-alice~bob");
+    let b = conv("d-alice~carol");
+    fixture
+        .store
+        .append_event(&event_in("a-1", &a, 1))
+        .await
+        .expect("A1");
+    fixture
+        .store
+        .append_event(&event_in("a-3", &a, 3))
+        .await
+        .expect("A3");
+    fixture
+        .store
+        .append_event(&event_in("b-2", &b, 2))
+        .await
+        .expect("B2");
+    fixture
+        .store
+        .put_cursor(&conv_cursor(&a, 1))
+        .await
+        .expect("A 游标");
+    let session = fixture.session().await;
+    let rows = session.replay(Some(&a), 10).await.expect("A 重放");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].event_id.as_str(), "a-3");
+    let rows_b = session.replay(Some(&b), 10).await.expect("B 重放");
+    assert_eq!(rows_b.len(), 1, "B 的游标和 A 互不影响");
+    assert_eq!(rows_b[0].event_id.as_str(), "b-2");
+}
+
+#[tokio::test]
+async fn a_scoped_cursor_is_never_squeezed_into_one_global_slot() {
+    let fixture = Fixture::new();
+    let a = conv("d-alice~bob");
+    let b = conv("d-alice~carol");
+    fixture
+        .store
+        .put_cursor(&conv_cursor(&a, 5))
+        .await
+        .expect("A 游标");
+    assert!(
+        fixture
+            .store
+            .cursor(None)
+            .await
+            .expect("全局游标")
+            .is_none(),
+        "带会话的游标不能写进全局槽"
+    );
+    let err = fixture
+        .store
+        .events_after(Some(&b), Some(&conv_cursor(&a, 5)), 10)
+        .await
+        .expect_err("跨会话游标必须拒绝");
+    assert!(matches!(err, StoreError::Corrupt(_)), "{err:?}");
 }
 
 #[tokio::test]
@@ -335,9 +454,9 @@ async fn cursor_survives_restart_so_events_are_not_replayed() {
         session.shutdown();
     }
     let session = fixture.session().await;
-    let replayed = session.replay(10).await.expect("重放");
+    let replayed = session.replay(None, 10).await.expect("重放");
     assert!(replayed.is_empty(), "重启后不该重放已消费事件");
-    let cursor: Option<wxlike_types::Cursor> = fixture.store.cursor().await.expect("游标");
+    let cursor: Option<wxlike_types::Cursor> = fixture.store.cursor(None).await.expect("游标");
     assert_eq!(cursor.expect("有游标"), event_cursor(1));
 }
 

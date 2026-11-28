@@ -15,7 +15,7 @@
 //!    返回错误而不是 panic 或静默丢弃——浏览器私有模式下 IndexedDB 打不开，
 //!    用户该看到"当前模式不能离线保存"，而不是白屏。
 
-use wxlike_types::{ActionId, Cursor, EventEnvelope, IdempotencyKey};
+use wxlike_types::{ActionId, ConvId, Cursor, EventEnvelope, IdempotencyKey};
 
 use super::MaybeSend;
 
@@ -138,27 +138,32 @@ pub trait LocalStore: MaybeSend {
     /// 见 [`StoreError`]。
     async fn append_event(&self, event: &EventEnvelope) -> Result<bool, StoreError>;
 
-    /// 读游标之后的事件（`None` = 从头）。
+    /// 读某个会话游标之后的事件（`None` = 从头）。
+    ///
+    /// `conv` 是会话作用域：`Some` 只返回该会话的事件，`None` 只返回
+    /// 全局事件（presence 等）。游标本身必须绑定到同一个会话。
     ///
     /// # Errors
-    /// 见 [`StoreError`]。
+    /// 见 [`StoreError`]；游标作用域与 `conv` 不一致时返回 `Corrupt`。
     async fn events_after(
         &self,
+        conv: Option<&ConvId>,
         cursor: Option<&Cursor>,
         limit: u32,
     ) -> Result<Vec<EventEnvelope>, StoreError>;
 
     /// 推进游标。只许前进：实现必须拒绝回退（回退 = 重放已确认的事件）。
+    /// 游标自带会话身份，实现按它分键存储，不能写进单一全局槽位。
     ///
     /// # Errors
     /// 见 [`StoreError`]。
     async fn put_cursor(&self, cursor: &Cursor) -> Result<(), StoreError>;
 
-    /// 读游标。
+    /// 读某个会话的游标。`None` = 全局事件游标。
     ///
     /// # Errors
     /// 见 [`StoreError`]。
-    async fn cursor(&self) -> Result<Option<Cursor>, StoreError>;
+    async fn cursor(&self, conv: Option<&ConvId>) -> Result<Option<Cursor>, StoreError>;
 
     /// 写渲染缓存。`sensitive = true` 时实现必须加密后再落盘
     /// （Web 端用 WebCrypto，原生端用设备密钥）。

@@ -17,15 +17,13 @@
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen_test::*;
-use wxlike_client_core::ports::{
-    Clock, EventSource, LocalStore, Secret, Secrets, StoreError, Transport,
-};
+use wxlike_client_core::ports::{LocalStore, Secret, Secrets, StoreError, Transport};
 use wxlike_client_web::crypto::{WebCacheCipher, WebSecrets};
 use wxlike_client_web::fetch::FetchTransport;
 use wxlike_client_web::idb::IdbStore;
 use wxlike_client_web::policy::{classify, is_sensitive_cache, PageState, StorageMode};
 use wxlike_client_web::ws::WebSocketEvents;
-use wxlike_types::{Cursor, CursorKind, EventEnvelope, EventId, EventKind, Seq};
+use wxlike_types::{ConvId, Cursor, CursorKind, EventEnvelope, EventId, EventKind, Seq};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -37,6 +35,10 @@ fn event(id: &str, seq: u64) -> EventEnvelope {
         serde_json::json!({"text": "你好"}),
         1_700_000_000_000,
     )
+}
+
+fn event_in(id: &str, conv: &ConvId, seq: u64) -> EventEnvelope {
+    event(id, seq).with_conv(conv.clone())
 }
 
 #[wasm_bindgen_test]
@@ -72,7 +74,7 @@ async fn idb_is_idempotent_on_event_id_and_cursor_never_rewinds() {
         .append_event(&event("evt-2", 2))
         .await
         .expect("第二条"));
-    let rows = store.events_after(None, 10).await.expect("读");
+    let rows = store.events_after(None, None, 10).await.expect("读");
     assert_eq!(rows.len(), 2);
 
     store
@@ -88,6 +90,50 @@ async fn idb_is_idempotent_on_event_id_and_cursor_never_rewinds() {
 }
 
 #[wasm_bindgen_test]
+async fn idb_cursors_and_replay_are_per_conversation() {
+    let store = IdbStore::open().await.expect("打开 IndexedDB");
+    store.purge().await.expect("清空");
+    let a = ConvId::parse("d-alice~bob").expect("A");
+    let b = ConvId::parse("d-alice~carol").expect("B");
+    store
+        .append_event(&event_in("a-1", &a, 1))
+        .await
+        .expect("A1");
+    store
+        .append_event(&event_in("a-2", &a, 2))
+        .await
+        .expect("A2");
+    store
+        .append_event(&event_in("b-10", &b, 10))
+        .await
+        .expect("B10");
+    store
+        .put_cursor(&Cursor::at_conv(CursorKind::Event, &a, Seq::new(2)))
+        .await
+        .expect("A 游标");
+    store
+        .put_cursor(&Cursor::at_conv(CursorKind::Event, &b, Seq::new(10)))
+        .await
+        .expect("B 游标");
+    let a_rows = store
+        .events_after(Some(&a), None, 10)
+        .await
+        .expect("A 全量");
+    assert_eq!(a_rows.len(), 2, "只能读到 A 的事件");
+    assert!(store
+        .events_after(
+            Some(&a),
+            Some(&Cursor::at_conv(CursorKind::Event, &a, Seq::new(2))),
+            10,
+        )
+        .await
+        .expect("A 之后")
+        .is_empty());
+    assert!(store.cursor(None).await.expect("全局槽").is_none());
+    store.purge().await.expect("收尾");
+}
+
+#[wasm_bindgen_test]
 async fn idb_survives_a_reopen_which_is_what_refresh_replay_needs() {
     {
         let store = IdbStore::open().await.expect("打开");
@@ -96,7 +142,7 @@ async fn idb_survives_a_reopen_which_is_what_refresh_replay_needs() {
     }
     // 模拟刷新：重新 open，数据还在
     let reopened = IdbStore::open().await.expect("重开");
-    let rows = reopened.events_after(None, 10).await.expect("读");
+    let rows = reopened.events_after(None, None, 10).await.expect("读");
     assert_eq!(rows.len(), 1, "刷新之后事件必须还在");
     assert_eq!(rows[0].event_id.as_str(), "evt-9");
     reopened.purge().await.expect("收尾");

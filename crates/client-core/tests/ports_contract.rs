@@ -69,7 +69,10 @@ async fn events_after_cursor_never_replays_consumed_ones() {
             .expect("append");
     }
     let cursor = event_cursor(2);
-    let rows = store.events_after(Some(&cursor), 10).await.expect("读");
+    let rows = store
+        .events_after(None, Some(&cursor), 10)
+        .await
+        .expect("读");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].seq, Seq::new(3));
 }

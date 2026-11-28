@@ -83,7 +83,12 @@ impl EventSubscription {
         if !fresh {
             return Ok(false);
         }
-        let cursor = Cursor::at(CursorKind::Event, Seq::new(event.seq.get()));
+        // 游标必须绑定事件所属会话：不同会话的 seq 各自从 1 开始，
+        // 用一个全局游标推进会在两个会话之间来回“前进/回退”。
+        let cursor = match event.conv.as_ref() {
+            Some(conv) => Cursor::at_conv(CursorKind::Event, conv, Seq::new(event.seq.get())),
+            None => Cursor::at(CursorKind::Event, Seq::new(event.seq.get())),
+        };
         self.ports
             .store
             .put_cursor(&cursor)

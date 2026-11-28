@@ -19,9 +19,9 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use wxlike_client_core::ports::{
-    check_cursor_advance, cursor_floor, LocalStore, OutboxRecord, StoreError,
+    check_cursor_advance, event_cursor_floor, LocalStore, OutboxRecord, StoreError,
 };
-use wxlike_types::{ActionId, Cursor, EventEnvelope, IdempotencyKey};
+use wxlike_types::{ActionId, ConvId, Cursor, CursorKind, EventEnvelope, IdempotencyKey};
 
 /// 建表语句。**只增不改**：真要改结构，走 `user_version` 迁移。
 const SCHEMA: &str = r"
@@ -43,6 +43,7 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox(next_attempt_at, created_at);
 CREATE TABLE IF NOT EXISTS events (
     event_id   TEXT PRIMARY KEY,
     seq        INTEGER NOT NULL,
+    conv       TEXT,
     body       TEXT NOT NULL,
     emitted_at INTEGER NOT NULL
 );
@@ -86,6 +87,9 @@ impl SqliteStore {
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.execute_batch(SCHEMA).map_err(map_sqlite)?;
+        migrate_events_conv(&conn)?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS events_conv_seq ON events(conv, seq);")
+            .map_err(map_sqlite)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -104,6 +108,41 @@ impl SqliteStore {
         })
         .await;
         joined.map_err(|err| StoreError::Unavailable(format!("存储线程异常：{err}")))?
+    }
+}
+
+/// 旧库的 `events` 表没有 `conv` 列：补列并从已存 JSON 回填。
+///
+/// 回填失败就报错而不是把整库事件当全局事件——那会让多会话重放再次
+/// 混成一个序列。
+fn migrate_events_conv(conn: &Connection) -> Result<(), StoreError> {
+    let has_conv = conn
+        .query_row(
+            "SELECT 1 FROM pragma_table_info('events') WHERE name = 'conv'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(map_sqlite)?
+        .is_some();
+    if has_conv {
+        return Ok(());
+    }
+    conn.execute("ALTER TABLE events ADD COLUMN conv TEXT", [])
+        .map_err(map_sqlite)?;
+    conn.execute(
+        "UPDATE events SET conv = json_extract(body, '$.conv') WHERE conv IS NULL",
+        [],
+    )
+    .map_err(map_sqlite)?;
+    Ok(())
+}
+
+/// 事件游标只按会话分键；全局事件用独立键，不和旧版单一 `cursor` 混用。
+fn cursor_key(conv: Option<&ConvId>) -> String {
+    match conv {
+        Some(conv) => format!("cursor:conv:{}", conv.as_str()),
+        None => "cursor:global".to_string(),
     }
 }
 
@@ -235,14 +274,15 @@ impl LocalStore for SqliteStore {
     async fn append_event(&self, event: &EventEnvelope) -> Result<bool, StoreError> {
         let id = event.event_id.as_str().to_string();
         let seq = i64::try_from(event.seq.get()).unwrap_or(i64::MAX);
+        let conv = event.conv.as_ref().map(|conv| conv.as_str().to_string());
         let body =
             serde_json::to_string(event).map_err(|err| StoreError::Corrupt(err.to_string()))?;
         let emitted = i64::try_from(event.emitted_at_ms).unwrap_or(i64::MAX);
         self.run(move |conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO events (event_id, seq, body, emitted_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![id, seq, body, emitted],
+                "INSERT OR IGNORE INTO events (event_id, seq, conv, body, emitted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, seq, conv, body, emitted],
             )
             .map_err(map_sqlite)?;
             Ok(conn.changes() > 0)
@@ -252,17 +292,23 @@ impl LocalStore for SqliteStore {
 
     async fn events_after(
         &self,
+        conv: Option<&ConvId>,
         cursor: Option<&Cursor>,
         limit: u32,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
-        let after = i64::try_from(cursor_floor(cursor)?).unwrap_or(i64::MAX);
+        let after = i64::try_from(event_cursor_floor(cursor, conv)?).unwrap_or(i64::MAX);
+        let conv = conv.map(|conv| conv.as_str().to_string());
         let limit = i64::from(limit);
         self.run(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT body FROM events WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2")
+                .prepare(
+                    "SELECT body FROM events
+                     WHERE conv IS ?1 AND seq > ?2
+                     ORDER BY seq ASC LIMIT ?3",
+                )
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map(params![after, limit], |row| row.get::<_, String>(0))
+                .query_map(params![conv, after, limit], |row| row.get::<_, String>(0))
                 .map_err(map_sqlite)?;
             let mut out = Vec::new();
             for row in rows {
@@ -277,20 +323,31 @@ impl LocalStore for SqliteStore {
     }
 
     async fn put_cursor(&self, cursor: &Cursor) -> Result<(), StoreError> {
+        let incoming = cursor
+            .decode()
+            .map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        if incoming.kind != CursorKind::Event {
+            return Err(StoreError::Corrupt(
+                "本地事件游标槽只接受 Event 游标".to_string(),
+            ));
+        }
+        let key = cursor_key(incoming.conv.as_ref());
         let text = cursor.as_str().to_string();
         let incoming = cursor.clone();
         self.run(move |conn| {
             let existing: Option<String> = conn
-                .query_row("SELECT value FROM meta WHERE key = 'cursor'", [], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    params![key],
+                    |row| row.get(0),
+                )
                 .optional()
                 .map_err(map_sqlite)?;
             check_cursor_advance(existing.as_deref(), &incoming)?;
             conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('cursor', ?1)
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![text],
+                params![key, text],
             )
             .map_err(map_sqlite)?;
             Ok(())
@@ -298,20 +355,34 @@ impl LocalStore for SqliteStore {
         .await
     }
 
-    async fn cursor(&self) -> Result<Option<Cursor>, StoreError> {
-        self.run(|conn| {
+    async fn cursor(&self, conv: Option<&ConvId>) -> Result<Option<Cursor>, StoreError> {
+        let key = cursor_key(conv);
+        let conv = conv.map(|conv| conv.as_str().to_string());
+        self.run(move |conn| {
             let raw: Option<String> = conn
-                .query_row("SELECT value FROM meta WHERE key = 'cursor'", [], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    params![key],
+                    |row| row.get(0),
+                )
                 .optional()
                 .map_err(map_sqlite)?;
-            match raw {
-                None => Ok(None),
-                Some(text) => Cursor::parse_text(&text)
-                    .map(Some)
-                    .map_err(|err| StoreError::Corrupt(err.to_string())),
+            let Some(text) = raw else {
+                return Ok(None);
+            };
+            let cursor =
+                Cursor::parse_text(&text).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+            let value = cursor
+                .decode()
+                .map_err(|err| StoreError::Corrupt(err.to_string()))?;
+            if value.kind != CursorKind::Event
+                || value.conv.as_ref().map(|conv| conv.as_str()) != conv.as_deref()
+            {
+                return Err(StoreError::Corrupt(
+                    "本地事件游标缺少会话身份或作用域不一致".to_string(),
+                ));
             }
+            Ok(Some(cursor))
         })
         .await
     }

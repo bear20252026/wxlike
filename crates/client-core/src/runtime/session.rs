@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use serde_json::json;
 use wxlike_types::{
-    ActionId, ActionOutcome, ActionRequest, ActionResult, DomainError, EventEnvelope,
+    ActionId, ActionOutcome, ActionRequest, ActionResult, ConvId, DomainError, EventEnvelope,
     IdempotencyKey, SubscribeRequest,
 };
 
@@ -91,7 +91,11 @@ impl Session {
             })?;
         // 本地库连不上就别装作能离线：这时候打开会话，用户发出去的东西
         // 只会留在内存里，杀进程就没了。
-        ports.store.cursor().await.map_err(SessionError::Store)?;
+        ports
+            .store
+            .cursor(None)
+            .await
+            .map_err(SessionError::Store)?;
         Ok(Self {
             ports,
             lock: Mutex::new(Some(lock)),
@@ -378,15 +382,23 @@ impl Session {
         Ok(true)
     }
 
-    /// 本地重放（冷启动 / 刷新页面）：从游标之后把已落盘的事件交出来。
+    /// 本地重放（冷启动 / 刷新页面）：从**指定会话**的游标之后把已落盘
+    /// 的事件交出来。`None` 表示全局事件流（presence 等），不是“所有会话”。
+    ///
+    /// 调用方按会话分别重放；不同会话的 seq 没有可比性，合在一起排序会
+    /// 产生错误的“已读到哪”。
     ///
     /// # Errors
     /// 本地库读失败。
-    pub async fn replay(&self, limit: u32) -> Result<Vec<EventEnvelope>, DomainError> {
-        let cursor = self.ports.store.cursor().await.map_err(store_error)?;
+    pub async fn replay(
+        &self,
+        conv: Option<&ConvId>,
+        limit: u32,
+    ) -> Result<Vec<EventEnvelope>, DomainError> {
+        let cursor = self.ports.store.cursor(conv).await.map_err(store_error)?;
         self.ports
             .store
-            .events_after(cursor.as_ref(), limit)
+            .events_after(conv, cursor.as_ref(), limit)
             .await
             .map_err(store_error)
     }

@@ -28,9 +28,9 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransactionMode};
 
 use wxlike_client_core::ports::{
-    check_cursor_advance, cursor_floor, page_events, LocalStore, OutboxRecord, StoreError,
+    check_cursor_advance, event_cursor_floor, page_events, LocalStore, OutboxRecord, StoreError,
 };
-use wxlike_types::{Cursor, EventEnvelope, IdempotencyKey};
+use wxlike_types::{ConvId, Cursor, CursorKind, EventEnvelope, IdempotencyKey};
 
 use crate::policy::classify;
 
@@ -260,8 +260,12 @@ fn seq_sort_key(seq: u64) -> String {
     format!("{seq:0width$}", width = SEQ_PAD)
 }
 
-fn cursor_key() -> &'static str {
-    "m:cursor"
+/// 事件游标按会话分键；`None` 是全局事件，和旧版单一 `m:cursor` 不混用。
+fn cursor_key(conv: Option<&ConvId>) -> String {
+    match conv {
+        Some(conv) => format!("m:cursor:{}", conv.as_str()),
+        None => "m:cursor:global".to_string(),
+    }
 }
 
 fn cache_key(key: &str) -> String {
@@ -350,10 +354,11 @@ impl LocalStore for IdbStore {
 
     async fn events_after(
         &self,
+        conv: Option<&ConvId>,
         cursor: Option<&Cursor>,
         limit: u32,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
-        let after = cursor_floor(cursor)?;
+        let after = event_cursor_floor(cursor, conv)?;
         let mut rows = Vec::new();
         for value in self.all(STORE_EVENTS).await? {
             let Some(text) = value_as_event_text(&value) else {
@@ -363,29 +368,49 @@ impl LocalStore for IdbStore {
                 rows.push(event);
             }
         }
-        Ok(page_events(rows, after, limit))
+        Ok(page_events(rows, conv, after, limit))
     }
 
     async fn put_cursor(&self, cursor: &Cursor) -> Result<(), StoreError> {
+        let incoming = cursor
+            .decode()
+            .map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        if incoming.kind != CursorKind::Event {
+            return Err(StoreError::Corrupt(
+                "本地事件游标槽只接受 Event 游标".to_string(),
+            ));
+        }
+        let key = cursor_key(incoming.conv.as_ref());
         let current = self
-            .get(STORE_KV, cursor_key())
+            .get(STORE_KV, &key)
             .await?
             .and_then(|value| value.as_string());
         check_cursor_advance(current.as_deref(), cursor)?;
-        self.put(STORE_KV, cursor_key(), &JsValue::from_str(cursor.as_str()))
+        self.put(STORE_KV, &key, &JsValue::from_str(cursor.as_str()))
             .await
     }
 
-    async fn cursor(&self) -> Result<Option<Cursor>, StoreError> {
-        let Some(value) = self.get(STORE_KV, cursor_key()).await? else {
+    async fn cursor(&self, conv: Option<&ConvId>) -> Result<Option<Cursor>, StoreError> {
+        let key = cursor_key(conv);
+        let Some(value) = self.get(STORE_KV, &key).await? else {
             return Ok(None);
         };
         let Some(text) = value.as_string() else {
-            return Ok(None);
+            return Err(StoreError::Corrupt("本地事件游标不是字符串".to_string()));
         };
-        Cursor::parse_text(&text)
-            .map(Some)
-            .map_err(|err| StoreError::Corrupt(err.to_string()))
+        let cursor =
+            Cursor::parse_text(&text).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        let decoded = cursor
+            .decode()
+            .map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        if decoded.kind != CursorKind::Event
+            || decoded.conv.as_ref().map(|conv| conv.as_str()) != conv.map(|conv| conv.as_str())
+        {
+            return Err(StoreError::Corrupt(
+                "本地事件游标缺少会话身份或作用域不一致".to_string(),
+            ));
+        }
+        Ok(Some(cursor))
     }
 
     async fn put_cache(&self, key: &str, value: &[u8], sensitive: bool) -> Result<(), StoreError> {
