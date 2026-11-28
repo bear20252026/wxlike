@@ -22,6 +22,7 @@
 //!    不该让作业永远停在 running；重跑安全是因为产物是改名到位的（见
 //!    `VideoStore::transcode`），半途而废的产物根本不会出现在对象目录里。
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -34,7 +35,7 @@ use rusqlite::{params, Error as SqliteError, OptionalExtension as _, Row};
 use serde::{Deserialize, Serialize};
 use wxlike_api::{ApiError, ApiResult};
 
-use crate::{Ingested, VideoState, VideoStore};
+use crate::{Ingested, UploadTemp, VideoState, VideoStore};
 
 /// 作业最多尝试几次（含首次）。超过进 `failed`，等运营点重试。
 ///
@@ -317,7 +318,7 @@ impl VideoStore {
         conn: &rusqlite::Connection,
         job_id: &str,
         owner: &str,
-        size: usize,
+        size: u64,
         url: &Option<String>,
         now: i64,
     ) -> anyhow::Result<()> {
@@ -351,13 +352,18 @@ impl VideoStore {
         Ok(())
     }
 
-    /// 源字节先落盘：排队期间进程被杀，重启后作业还能接着跑。
-    fn write_pending_source(&self, job_id: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    /// 源文件直接移动到 pending 目录：同一视频根目录内 rename，不复制。
+    fn write_pending_source_from_file(&self, job_id: &str, source: &Path) -> anyhow::Result<()> {
         let pending = self.pending_dir(job_id);
         std::fs::create_dir_all(&pending)?;
-        let tmp = pending.join("source.part");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, pending.join("source"))?;
+        let target = pending.join("source");
+        std::fs::rename(source, &target).with_context(|| {
+            format!(
+                "move staged upload {} to {}",
+                source.display(),
+                target.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -392,18 +398,35 @@ impl VideoStore {
         callback_url: Option<&str>,
     ) -> anyhow::Result<JobSubmit> {
         anyhow::ensure!(!bytes.is_empty(), "empty upload");
-        let job_id = self.content_id(bytes);
+        // 兼容字节调用方：先落临时文件再走文件版；HTTP 面已直接流式落盘，
+        // 不会经过这次写。这里没有 `to_vec`，也不在内存里复制源字节。
+        let source = UploadTemp::new(self.root(), "job")?;
+        source.write_bytes(bytes)?;
+        self.submit_job_file(source.path(), owner, callback_url)
+    }
+
+    /// 文件版提交：哈希流式读文件，源文件直接 rename 到 pending，不读成 Vec。
+    /// `source` 的生命周期由调用方持有；提交成功后这里只做移动。
+    pub fn submit_job_file(
+        &self,
+        source: &Path,
+        owner: &str,
+        callback_url: Option<&str>,
+    ) -> anyhow::Result<JobSubmit> {
+        anyhow::ensure!(source.is_file(), "staged upload is missing");
+        let (job_id, size) = self.hash_file(source)?;
+        anyhow::ensure!(size > 0, "empty upload");
         let url = self.resolve_callback(callback_url)?;
-        self.check_quota(owner, bytes.len() as u64)?;
+        self.check_quota(owner, size)?;
         let now = wxlike_core::types::now_ms() as i64;
         let db = self.db()?;
 
         if self.contains(&job_id) {
-            self.record_ready_job(&db.c(), &job_id, owner, bytes.len(), &url, now)?;
+            self.record_ready_job(&db.c(), &job_id, owner, size, &url, now)?;
             return self.submit_reply(&job_id, owner, false);
         }
 
-        self.write_pending_source(&job_id, bytes)?;
+        self.write_pending_source_from_file(&job_id, source)?;
         let inserted = db.c().execute(
             "INSERT INTO video_jobs(job_id, owner, state, attempts, next_retry_at, created_at,
                                     updated_at, source_size, callback_state, callback_url)
@@ -412,7 +435,7 @@ impl VideoStore {
             params![
                 job_id,
                 now,
-                bytes.len() as i64,
+                size as i64,
                 CallbackState::for_url(&url).as_str(),
                 url,
                 owner
@@ -689,31 +712,38 @@ impl VideoStore {
         self.run_claimed_job(job_id).await
     }
 
-    /// 已经由调用方 CAS 领到的作业：读暂存源、跑流水线、写回结果。
+    /// 已经由调用方 CAS 领到的作业：源文件已落盘，直接按路径转码，不再把
+    /// 500 MiB 源读成 Vec。源文件保留到 `succeed_job`/失败重试，重试可复用。
     async fn run_claimed_job(&self, job_id: &str) -> anyhow::Result<Job> {
         let job = self.job(job_id)?.context("no such job")?;
         let staged = self.pending_dir(job_id).join("source");
-        let bytes = match std::fs::read(&staged) {
-            Ok(bytes) => bytes,
+        let size = match std::fs::metadata(&staged) {
+            Ok(meta) => meta.len(),
             Err(err) => {
                 return self.fail_job(
                     job_id,
-                    &JobFailure::retryable(format!("read staged source: {err}")),
+                    &JobFailure::retryable(format!("stat staged source: {err}")),
                 );
             }
         };
-        if bytes.len() as u64 != job.source_size {
+        if size != job.source_size {
             return self.fail_job(
                 job_id,
                 &JobFailure::permanent(format!(
-                    "staged source is {} bytes, job recorded {}",
-                    bytes.len(),
+                    "staged source is {size} bytes, job recorded {}",
                     job.source_size
                 )),
             );
         }
-        match self.ingest(&bytes).await {
-            Ok(ingested) => self.succeed_job(job_id, &ingested),
+        match self.ingest_file(&staged).await {
+            Ok(ingested) if ingested.video_id == job_id => self.succeed_job(job_id, &ingested),
+            Ok(ingested) => self.fail_job(
+                job_id,
+                &JobFailure::permanent(format!(
+                    "staged source hashed to {}, expected {job_id}",
+                    ingested.video_id
+                )),
+            ),
             Err(err) => self.fail_job(job_id, &JobFailure::from_err(&err)),
         }
     }
@@ -1174,18 +1204,17 @@ async fn create_job(
     mut form: Multipart,
 ) -> ApiResult<(StatusCode, Json<JobSubmit>)> {
     let caller = crate::policy::require_caller(state.store.policy(), &headers)?;
-    let (bytes, callback_url) = read_job_fields(&mut form)
+    let (source, size, callback_url) = read_job_fields(&state.store, &mut form)
         .await
         .map_err(ApiError::unprocessable)?;
-    if bytes.is_empty() {
+    if size == 0 {
         return Err(ApiError::unprocessable("empty upload"));
     }
-    // `submit_job` 里有真实的落盘（源字节写进 pending 目录）+ SQLite 写，
-    // 都不能在异步线程上做（审计第 5 轮）；它自己不做哈希——哈希在
-    // blocking 任务里算完再把 `job_id` 带回来。
+    // `submit_job_file` 会把已落盘的源文件 rename 进 pending 目录；哈希和
+    // SQLite 写都不能在异步线程上做（审计第 5 轮）。
     let store = state.store.clone();
     let submit = tokio::task::spawn_blocking(move || {
-        store.submit_job(&bytes, &caller, callback_url.as_deref())
+        store.submit_job_file(source.path(), &caller, callback_url.as_deref())
     })
     .await
     .map_err(|err| {
@@ -1283,22 +1312,6 @@ async fn retry_job(
         .ok_or_else(|| ApiError::conflict("job left the failed state mid-retry"))
 }
 
-/// 读 `bytes` / `file` 字段；重复出现直接报错（否则静默丢第一份）。
-async fn read_bytes_field(
-    field: axum::extract::multipart::Field<'_>,
-    slot: &mut Option<Vec<u8>>,
-) -> Result<(), String> {
-    if slot.is_some() {
-        return Err("duplicate `bytes` field".into());
-    }
-    let bytes = field
-        .bytes()
-        .await
-        .map_err(|e| format!("read bytes: {e}"))?;
-    *slot = Some(bytes.to_vec());
-    Ok(())
-}
-
 /// 读 `callback_url`；空串视为没给，非 http(s) 直接拒绝。
 async fn read_callback_field(
     field: axum::extract::multipart::Field<'_>,
@@ -1319,12 +1332,13 @@ async fn read_callback_field(
     Ok(())
 }
 
-/// 一次遍历把 `bytes` 与可选的 `callback_url` 都读出来。
-///
-/// 不能像同步上传那样"读到 bytes 就 return"——作业面允许多带一个字段，
-/// 提前返回会把后面的字段留在流里，axum 会把它当成半个 multipart 报错。
-async fn read_job_fields(form: &mut Multipart) -> Result<(Vec<u8>, Option<String>), String> {
-    let mut bytes: Option<Vec<u8>> = None;
+/// 一次遍历把 `bytes` 与可选的 `callback_url` 都读出来。视频字段直接流式
+/// 落到临时文件，不读成 `Vec<u8>`；重复出现直接报错（否则静默丢第一份）。
+async fn read_job_fields(
+    store: &VideoStore,
+    form: &mut Multipart,
+) -> Result<(UploadTemp, u64, Option<String>), String> {
+    let mut source: Option<(UploadTemp, u64)> = None;
     let mut callback_url: Option<String> = None;
     while let Some(field) = form
         .next_field()
@@ -1334,11 +1348,16 @@ async fn read_job_fields(form: &mut Multipart) -> Result<(Vec<u8>, Option<String
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
             // `file` 是 `bytes` 的别名（与 `/api/video` 同一收宽口径）
-            "bytes" | "file" => read_bytes_field(field, &mut bytes).await?,
+            "bytes" | "file" => {
+                if source.is_some() {
+                    return Err("duplicate `bytes` field".into());
+                }
+                source = Some(crate::stage_field(field, store.root()).await?);
+            }
             "callback_url" => read_callback_field(field, &mut callback_url).await?,
             other => return Err(format!("unexpected field `{other}`")),
         }
     }
-    let bytes = bytes.ok_or_else(|| "missing `bytes` field".to_string())?;
-    Ok((bytes, callback_url))
+    let (source, size) = source.ok_or_else(|| "missing `bytes` field".to_string())?;
+    Ok((source, size, callback_url))
 }

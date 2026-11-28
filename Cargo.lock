@@ -7624,6 +7624,7 @@ dependencies = [
  "axum",
  "hex",
  "hmac 0.12.1",
+ "http-body",
  "http-body-util",
  "libc",
  "rand 0.8.8",

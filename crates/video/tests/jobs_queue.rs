@@ -354,7 +354,7 @@ async fn missing_staged_source_is_a_retryable_failure_not_a_panic() {
         .last_error
         .as_deref()
         .unwrap()
-        .contains("read staged source"));
+        .contains("stat staged source"));
 
     // 已经 running 的作业领不到第二次（CAS），不会静默重跑一遍
     store.claim_job(&job.job_id).unwrap();

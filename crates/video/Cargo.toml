@@ -31,3 +31,5 @@ libc = "0.2"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# H-21 流式压测：自定义 chunked body，不在测试进程里先攒整份文件
+http-body = "1"

@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use axum::extract::multipart::Multipart;
+use axum::extract::multipart::{Field, Multipart};
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, State};
 use axum::http::header;
 use axum::response::IntoResponse;
@@ -34,6 +34,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
+use tokio::io::AsyncWriteExt as _;
 use wxlike_api::{ApiError, ApiResult};
 
 mod db;
@@ -86,6 +87,120 @@ const TOOL_CPU_LIMIT_SECS: u64 = 25 * 60;
 const TOOL_FSIZE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 /// 外部工具地址空间上限（Linux）；防止病态媒体把 ffmpeg 吃成 OOM killer。
 const TOOL_AS_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
+
+/// 上传字段的临时落盘文件。Drop 时尽量删除：成功路径由调用方移交到
+/// pending/对象目录，失败路径不能把半个 500 MiB 的 body 留在磁盘上。
+pub(crate) struct UploadTemp {
+    path: PathBuf,
+}
+
+impl UploadTemp {
+    /// 在视频根目录下创建一个唯一的新文件。`create_new` 让并发上传不会
+    /// 互相覆盖；路径只由服务端生成，不接受客户端文件名。
+    pub(crate) fn new_file(root: &Path, prefix: &str) -> anyhow::Result<(Self, std::fs::File)> {
+        std::fs::create_dir_all(root)
+            .with_context(|| format!("create upload temp root {}", root.display()))?;
+        for _ in 0..16 {
+            let path = root.join(format!(".{prefix}-{:016x}.part", rand::random::<u64>()));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("create upload temp {}", path.display()))
+                }
+            }
+        }
+        anyhow::bail!("could not allocate a unique upload temp file")
+    }
+
+    pub(crate) fn new(root: &Path, prefix: &str) -> anyhow::Result<Self> {
+        let (temp, file) = Self::new_file(root, prefix)?;
+        drop(file);
+        Ok(temp)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// 兼容旧 `VideoStore::ingest(&[u8])` 的落盘路径。生产 HTTP 面不再走
+    /// 这里；保留给测试与调用方传字节的 API。
+    pub(crate) fn write_bytes(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        std::fs::write(&self.path, bytes)
+            .with_context(|| format!("write upload temp {}", self.path.display()))
+    }
+}
+
+impl Drop for UploadTemp {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).ok();
+    }
+}
+
+/// 把 multipart 的 `bytes`/`file` 字段流式写入临时文件。**不把整个字段
+/// 读成 `Vec<u8>`**；长度边写边累计，超过 500 MiB 立即中止。
+pub(crate) async fn stage_field(
+    mut field: Field<'_>,
+    root: &Path,
+) -> Result<(UploadTemp, u64), String> {
+    let (temp, std_file) =
+        UploadTemp::new_file(root, "upload").map_err(|err| format!("create upload temp: {err}"))?;
+    let mut file = tokio::fs::File::from_std(std_file);
+    // 有界 channel：读 body 与写盘解耦，但最多积压 4 个 body frame；磁盘慢时
+    // `send` 反压到网络读，峰值内存不随文件大小增长。
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<axum::body::Bytes>(4);
+    let writer = tokio::spawn(async move {
+        let mut size = 0u64;
+        while let Some(chunk) = rx.recv().await {
+            size = size.saturating_add(chunk.len() as u64);
+            if size > MAX_VIDEO_BYTES as u64 {
+                return Err(format!("upload exceeds {} bytes", MAX_VIDEO_BYTES));
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|err| format!("write upload temp: {err}"))?;
+        }
+        file.flush()
+            .await
+            .map_err(|err| format!("flush upload temp: {err}"))?;
+        Ok::<u64, String>(size)
+    });
+
+    let mut read_err: Option<String> = None;
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                // writer 已经失败（超限/磁盘错）时接收端关闭，这里停止继续读 body。
+                if tx.send(chunk).await.is_err() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                read_err = Some(format!("read upload chunk: {err}"));
+                break;
+            }
+        }
+    }
+    drop(tx);
+
+    let written = writer
+        .await
+        .map_err(|err| format!("upload writer task: {err}"))?;
+    if let Some(err) = read_err {
+        return Err(err);
+    }
+    let size = written?;
+    if size == 0 {
+        return Err("empty upload".into());
+    }
+    Ok((temp, size))
+}
 
 /// 实际产出的档位：阶梯中 ≤ 源高的项；源比最小档还矮时保留源高（封顶 720）。
 ///
@@ -295,6 +410,26 @@ impl VideoStore {
         hex::encode(sha2::Sha256::digest(bytes))
     }
 
+    /// 流式哈希一个源文件：只按 64 KiB 块读，不把文件读进内存。
+    pub(crate) fn hash_file(&self, path: &Path) -> anyhow::Result<(String, u64)> {
+        let mut file = std::fs::File::open(path)
+            .with_context(|| format!("open ingest source {}", path.display()))?;
+        let mut hasher = sha2::Sha256::new();
+        let mut size = 0u64;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .with_context(|| format!("read ingest source {}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            size = size.saturating_add(n as u64);
+            hasher.update(&buf[..n]);
+        }
+        Ok((hex::encode(hasher.finalize()), size))
+    }
+
     fn dir(&self, video_id: &str) -> PathBuf {
         self.root().join(video_id)
     }
@@ -395,34 +530,39 @@ impl Ingested {
 // ---------------------------------------------------------------------------
 
 impl VideoStore {
-    /// Content-addressed ingest. Re-uploading identical bytes is a no-op
-    /// that returns the existing object (idempotent, like the media store).
-    ///
-    /// External tools run to completion inside a blocking task context; the
-    /// transcode happens in a sibling temp dir and is renamed into place
-    /// only when every artifact exists.
+    /// 兼容字节调用方的入口：先把字节落临时文件，再走 [`Self::ingest_file`]。
+    /// 不再 `to_vec`，也不会把 500 MiB 的副本搬进 blocking 任务；HTTP 上传
+    /// 直接调用 `ingest_file`，不会经过这里。
     pub async fn ingest(&self, bytes: &[u8]) -> anyhow::Result<Ingested> {
-        // 内容哈希与整份源字节的克隆一起进 blocking 池：500 MiB 的上传，
-        // SHA-256 + `to_vec` 在异步线程上跑会卡住同一条 worker 上的所有
-        // 连接（转码本身早就在 blocking 池里了，这两步是漏网的）。
-        // 字节跟着任务搬进去再搬回来，只有 move、没有第二次拷贝。
+        anyhow::ensure!(!bytes.is_empty(), "empty upload");
+        let temp = UploadTemp::new(self.root(), "ingest")?;
+        temp.write_bytes(bytes)?;
+        self.ingest_file(temp.path()).await
+    }
+
+    /// 从已落盘文件 ingest。哈希、转码都只读文件，不在内存里复制源字节。
+    /// 调用方拥有 `source` 的生命周期：成功/失败后自行删除。
+    pub async fn ingest_file(&self, source: &Path) -> anyhow::Result<Ingested> {
+        anyhow::ensure!(source.is_file(), "ingest source is missing");
+        let source = source.to_path_buf();
         let store = self.clone();
-        let bytes = bytes.to_vec();
-        let (video_id, bytes) = tokio::task::spawn_blocking(move || {
-            let video_id = store.content_id(&bytes);
-            (video_id, bytes)
-        })
-        .await
-        .context("hash task panicked")?;
+        let hash_source = source.clone();
+        let (video_id, source_size) =
+            tokio::task::spawn_blocking(move || store.hash_file(&hash_source))
+                .await
+                .context("hash task panicked")??;
+        anyhow::ensure!(source_size > 0, "empty upload");
         if self.contains(&video_id) {
             return self.ingested_from_meta(&video_id);
         }
 
         let store = self.clone();
         let task_id = video_id.clone();
-        let meta = tokio::task::spawn_blocking(move || store.transcode(&task_id, &bytes))
-            .await
-            .context("transcode task panicked")??;
+        let meta = tokio::task::spawn_blocking(move || {
+            store.transcode_from_path(&task_id, &source, source_size)
+        })
+        .await
+        .context("transcode task panicked")??;
 
         Ok(Ingested::from_meta(&video_id, &meta))
     }
@@ -437,7 +577,13 @@ impl VideoStore {
     }
 
     /// The blocking pipeline: probe → transcode → thumb → rename into place.
-    fn transcode(&self, video_id: &str, bytes: &[u8]) -> anyhow::Result<VideoMeta> {
+    /// `source` 是已落盘的源文件；本函数不再复制源字节。
+    fn transcode_from_path(
+        &self,
+        video_id: &str,
+        source: &Path,
+        source_size: u64,
+    ) -> anyhow::Result<VideoMeta> {
         let final_dir = self.dir(video_id);
         let temp_dir = self
             .root()
@@ -445,7 +591,7 @@ impl VideoStore {
         std::fs::create_dir_all(temp_dir.join("hls"))
             .with_context(|| "create temp transcode dir".to_string())?;
 
-        match self.run_pipeline(video_id, bytes, &temp_dir) {
+        match self.run_pipeline(video_id, source, source_size, &temp_dir) {
             Ok(meta) => self.finish_transcode(video_id, meta, &temp_dir, &final_dir),
             Err(err) => {
                 cleanup(&temp_dir);
@@ -482,13 +628,11 @@ impl VideoStore {
     fn run_pipeline(
         &self,
         video_id: &str,
-        bytes: &[u8],
+        source: &Path,
+        source_size: u64,
         temp_dir: &Path,
     ) -> anyhow::Result<VideoMeta> {
-        let source = temp_dir.join("source");
-        std::fs::write(&source, bytes).with_context(|| "stage source bytes".to_string())?;
-
-        let probe = ffprobe(&source)?;
+        let probe = ffprobe(source)?;
         let duration_ms = probe.duration_ms()?;
         let (_src_w, src_h) = probe.video_size();
         let heights = rendition_heights(src_h);
@@ -496,18 +640,18 @@ impl VideoStore {
         let hls_root = temp_dir.join("hls");
         std::fs::create_dir_all(&hls_root)?;
         let (renditions, (best_h, best_mp4, best_w)) =
-            encode_renditions(&source, temp_dir, &hls_root, &probe, &heights, duration_ms)?;
+            encode_renditions(source, temp_dir, &hls_root, &probe, &heights, duration_ms)?;
 
         // 渐进播放源 = 最高档（webview 的 <video> 与倍速靠它）
         std::fs::copy(&best_mp4, temp_dir.join("play.mp4"))
             .with_context(|| "copy best rendition to play.mp4".to_string())?;
         publish_playlists(&hls_root, &renditions)?;
-        make_thumbnail(&source, temp_dir, duration_ms)?;
+        make_thumbnail(source, temp_dir, duration_ms)?;
         ensure_dir_budget(temp_dir)?;
 
         let meta = VideoMeta {
             video_id: video_id.to_string(),
-            source_size: bytes.len() as u64,
+            source_size,
             duration_ms,
             width: best_w,
             height: best_h,
@@ -1009,15 +1153,15 @@ async fn upload(
     // 同步上传也要登录（issue #7）：500 MiB 的匿名上传是"带宽 + 磁盘 + CPU
     // 三份资源任人取用"，不是"一个方便的调试入口"。
     let caller = policy::require_caller(state.store.policy(), &headers)?;
-    let bytes = read_field(&mut form)
+    let (source, size) = read_field(&mut form, state.store.root())
         .await
         .map_err(ApiError::unprocessable)?;
-    if bytes.is_empty() {
+    if size == 0 {
         return Err(ApiError::unprocessable("empty upload"));
     }
     state
         .store
-        .check_upload_quota(&caller, bytes.len() as u64)
+        .check_upload_quota(&caller, size)
         .map_err(|err| match err.downcast_ref::<jobs::Rejected>() {
             Some(rejected) => ApiError::new(
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -1027,12 +1171,12 @@ async fn upload(
         })?;
     let ingested = state
         .store
-        .ingest(&bytes)
+        .ingest_file(source.path())
         .await
         .map_err(|e| ApiError::internal(format!("ingest: {e:#}")))?;
     state
         .store
-        .set_owner(&ingested.video_id, &caller, bytes.len() as u64)
+        .set_owner(&ingested.video_id, &caller, size)
         .map_err(|e| ApiError::internal(format!("owner: {e:#}")))?;
     Ok(Json(ingested))
 }
@@ -1333,18 +1477,16 @@ fn not_found_if_missing(err: anyhow::Error) -> ApiError {
 /// 读上传的视频本体。字段名收 `bytes`（新客户端）与 `file`（老客户端/与
 /// `/api/media` 的 `file` 同名）——与 media 面的收宽不同（那边还收 `data`），
 /// 视频面只此两个别名，多收一个就多一个能绕过字段校验的口子。
-async fn read_field(form: &mut Multipart) -> Result<Vec<u8>, String> {
+///
+/// 字段内容**流式落盘**，不经过 `Vec<u8>`。
+async fn read_field(form: &mut Multipart, root: &Path) -> Result<(UploadTemp, u64), String> {
     while let Some(field) = form
         .next_field()
         .await
         .map_err(|e| format!("multipart: {e}"))?
     {
         if matches!(field.name(), Some("bytes") | Some("file")) {
-            return field
-                .bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| format!("read bytes: {e}"));
+            return stage_field(field, root).await;
         }
     }
     Err("missing `bytes` field".into())
