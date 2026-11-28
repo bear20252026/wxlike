@@ -233,7 +233,10 @@ impl PreauthBudget {
             .try_acquire_owned()
             .map_err(|_| "max_preauth_conns")?;
         if let Some(addr) = ip {
-            let mut counts = self.per_ip.lock().expect("preauth ip counts poisoned");
+            let mut counts = self
+                .per_ip
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let held = counts.get(&addr).copied().unwrap_or(0);
             if held >= self.max_per_ip {
                 return Err("max_preauth_conns_per_ip");
