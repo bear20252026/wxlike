@@ -28,6 +28,11 @@ VERSION_RE = re.compile(r"versionName='([^']+)'")
 # （`#1` 后没有冒号），新版按签名方案打 `V2 Signer: certificate DN:`。只认一种
 # 就会把**已签名**的 APK 判成"没有证书"（CI 上红的就是这个）。
 DN_RE = re.compile(r"(?:Signer #\d+|V\d+ Signer):? certificate DN: (.+)")
+# apksigner 的证书 SHA-256 标签同样随版本变：老版 `Signer #1 certificate SHA-256 digest:`
+# 新版 `V2 Signer: certificate SHA-256 digest:`。
+SIGNER_SHA256_RE = re.compile(
+    r"(?:Signer #\d+|V\d+ Signer):? certificate SHA-256 digest: ([0-9a-fA-F]+)"
+)
 # 原生库存放处：APK 是 `lib/<abi>/`，AAB 是 `<模块>/lib/<abi>/`（Flutter 只有 `base`）。
 # 同一条规则两边都要能用，否则 release 的 AAB 是一个没人看的旁路产物。
 LIB_ENTRY_RE = re.compile(r"^(?:(?P<module>[^/]+)/)?lib/(?P<abi>[^/]+)/(?P<name>[^/]+)$")
@@ -122,6 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbols-dir", type=Path)
     parser.add_argument("--require-release-key", action="store_true")
     parser.add_argument(
+        "--expected-cert-sha256",
+        help="expected signer certificate SHA-256; release builds must match this pinned fingerprint",
+    )
+    parser.add_argument(
         "--require-native-lib",
         action="append",
         default=[],
@@ -155,8 +164,18 @@ def main(argv: list[str] | None = None) -> int:
     if not dn_match:
         raise SystemExit(f"apksigner found no signer certificate:\n{signer_out}")
     signer = dn_match.group(1).strip()
+    sha_match = SIGNER_SHA256_RE.search(signer_out)
+    signer_sha256 = sha_match.group(1).lower() if sha_match else ""
     if args.require_release_key and "Android Debug" in signer:
         raise SystemExit(f"release build is signed with the debug key: {signer}")
+    if args.expected_cert_sha256:
+        expected = args.expected_cert_sha256.replace(":", "").replace(" ", "").lower()
+        if not signer_sha256:
+            raise SystemExit(f"apksigner found no signer certificate SHA-256:\n{signer_out}")
+        if signer_sha256 != expected:
+            raise SystemExit(
+                f"release signer fingerprint {signer_sha256} does not match expected {expected}"
+            )
 
     symbols = []
     if args.symbols_dir:
@@ -170,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         "size": args.apk.stat().st_size,
         "version": version,
         "signer": signer,
+        "signer_sha256": signer_sha256,
         "debug_key": "Android Debug" in signer,
         "symbols": symbols,
         "native_libs": args.require_native_lib,

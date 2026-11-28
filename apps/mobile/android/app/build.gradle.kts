@@ -6,15 +6,23 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// CI（与持有 key.properties 的发布机）用这里的签名配置；
-// 两者都没有时回退 debug 签名，保证 `flutter run --release` 可用。
+// CI（与持有 key.properties 的发布机）用这里的签名配置。
+// **release 没有完整签名材料就必须失败**：不再回退 debug 签名，否则会产出
+// debug-cert APK，破坏发布身份与升级路径（H-26）。
 val keystoreProperties = Properties().apply {
     val f = rootProject.file("key.properties")
     if (f.exists()) {
         f.inputStream().use(::load)
     }
 }
-val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
+val signingPropertyNames = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val missingSigningProperties = signingPropertyNames.filter {
+    keystoreProperties.getProperty(it).isNullOrBlank()
+}
+val releaseKeystoreFile = keystoreProperties.getProperty("storeFile")
+    ?.takeIf { it.isNotBlank() }
+    ?.let { rootProject.file(it) }
+val hasReleaseKeystore = missingSigningProperties.isEmpty() && releaseKeystoreFile?.isFile == true
 
 android {
     namespace = "com.wxlike.wxlike_mobile"
@@ -54,14 +62,29 @@ android {
 
     buildTypes {
         release {
-            // CI 生成 key.properties（见 ci/jobs/mobile/job.yml 的 keystore 步骤）；
-            // 没有 key.properties 时回退 debug 签名，保证 `flutter run --release` 可用。
-            signingConfig = if (hasReleaseKeystore) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            // CI 与发布机都通过 key.properties 提供完整签名材料（见
+            // ci/jobs/mobile/job.yml 与 release.yml）。缺任何一项都不配置签名，
+            // 并由下面的 taskGraph 检查硬失败，绝不静默产出 debug-cert APK。
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
             }
         }
+    }
+}
+
+// release 任务一旦出现在 task graph，签名材料必须完整；否则在建任何产物前失败。
+gradle.taskGraph.whenReady {
+    val releaseRequested = allTasks.any { it.name.contains("Release") }
+    if (releaseRequested && !hasReleaseKeystore) {
+        val missing = if (missingSigningProperties.isEmpty()) {
+            "storeFile does not exist: ${releaseKeystoreFile ?: "<unset>"}"
+        } else {
+            "missing properties: ${missingSigningProperties.joinToString(", ")}"
+        }
+        throw GradleException(
+            "release build requires a complete apps/mobile/android/key.properties " +
+                "($missing); debug signing is not a release fallback (H-26)"
+        )
     }
 }
 

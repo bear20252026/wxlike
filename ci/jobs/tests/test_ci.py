@@ -598,6 +598,12 @@ class NativeLibGateTest(unittest.TestCase):
             argv += ["--aab", str(aab)]
         return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
 
+    def test_signer_fingerprint_labels_are_read_for_both_apksigner_formats(self):
+        legacy = "Signer #1 certificate SHA-256 digest: ABCD"
+        modern = "V2 Signer: certificate SHA-256 digest: ABCD"
+        self.assertEqual(apk_gate.SIGNER_SHA256_RE.search(legacy).group(1), "ABCD")
+        self.assertEqual(apk_gate.SIGNER_SHA256_RE.search(modern).group(1), "ABCD")
+
     def test_apk_without_the_native_lib_is_red(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

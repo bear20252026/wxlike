@@ -70,7 +70,8 @@ jobs:
         STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      run: "missing=0\nfor name in KEYSTORE STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do\n  if [ -z \"${!name:-}\" ]; then echo \"::error::secret $name is not configured in the mobile-release environment\"; missing=1; fi\ndone\n[ \"$missing\" = 0 ] || exit 1\necho \"$KEYSTORE\" | base64 -d > \"$RUNNER_TEMP/release.keystore\"\ncat > apps/mobile/android/key.properties <<EOF\nstoreFile=$RUNNER_TEMP/release.keystore\nstorePassword=$STORE_PASSWORD\nkeyAlias=$KEY_ALIAS\nkeyPassword=$KEY_PASSWORD\nEOF\nchmod 600 \"$RUNNER_TEMP/release.keystore\" apps/mobile/android/key.properties\n"
+        CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+      run: "missing=0\nfor name in KEYSTORE STORE_PASSWORD KEY_ALIAS KEY_PASSWORD CERT_SHA256; do\n  if [ -z \"${!name:-}\" ]; then echo \"::error::secret $name is not configured in the mobile-release environment\"; missing=1; fi\ndone\n[ \"$missing\" = 0 ] || exit 1\necho \"$KEYSTORE\" | base64 -d > \"$RUNNER_TEMP/release.keystore\"\ncat > apps/mobile/android/key.properties <<EOF\nstoreFile=$RUNNER_TEMP/release.keystore\nstorePassword=$STORE_PASSWORD\nkeyAlias=$KEY_ALIAS\nkeyPassword=$KEY_PASSWORD\nEOF\nchmod 600 \"$RUNNER_TEMP/release.keystore\" apps/mobile/android/key.properties\n"
     - name: C8 regenerate bindings and fetch packages
       shell: bash
       run: 'bash crates/ffi/regenerate.sh
@@ -89,7 +90,9 @@ jobs:
       working-directory: apps/mobile
     - name: C8 verify release signature, native lib and symbols
       shell: bash
-      run: "version=$(sed -n 's/^version: *\\([^+]*\\).*/\\1/p' apps/mobile/pubspec.yaml | head -1)\npython3 ci/jobs/mobile/check_apk.py \\\n  --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \\\n  --aab apps/mobile/build/app/outputs/bundle/release/app-release.aab \\\n  --expected-version \"$version\" \\\n  --symbols-dir apps/mobile/build/app/outputs/symbols \\\n  --require-release-key \\\n  --require-native-lib libwxlike_ffi.so \\\n  --output mobile-evidence/android-release.json\n"
+      env:
+        EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+      run: "version=$(sed -n 's/^version: *\\([^+]*\\).*/\\1/p' apps/mobile/pubspec.yaml | head -1)\npython3 ci/jobs/mobile/check_apk.py \\\n  --apk apps/mobile/build/app/outputs/flutter-apk/app-release.apk \\\n  --aab apps/mobile/build/app/outputs/bundle/release/app-release.aab \\\n  --expected-version \"$version\" \\\n  --symbols-dir apps/mobile/build/app/outputs/symbols \\\n  --require-release-key \\\n  --expected-cert-sha256 \"$EXPECTED_CERT_SHA256\" \\\n  --require-native-lib libwxlike_ffi.so \\\n  --output mobile-evidence/android-release.json\n"
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: android-release

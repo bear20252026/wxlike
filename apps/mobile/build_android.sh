@@ -101,6 +101,21 @@ if [[ "${ALLOW_RETIRED:-0}" != "1" ]]; then
   echo "如确要尝试旧壳构建：ALLOW_RETIRED=1 apps/mobile/build_android.sh" >&2
   exit 1
 fi
+# release 不允许缺签名材料：Gradle 侧也会硬失败，这里提前给出可操作的报错。
+if [[ "$MODE" == "release" ]]; then
+  key_props="apps/mobile/android/key.properties"
+  if [[ ! -f "$key_props" ]]; then
+    echo "release 构建缺少 $key_props：请配置 storeFile/storePassword/keyAlias/keyPassword。" >&2
+    echo "debug 构建请用 --debug；不接受 debug 签名冒充 release。" >&2
+    exit 1
+  fi
+  for key in storeFile storePassword keyAlias keyPassword; do
+    if ! grep -Eq "^${key}=.+$" "$key_props"; then
+      echo "release 签名配置缺少 $key（$key_props）" >&2
+      exit 1
+    fi
+  done
+fi
 echo "==> 1/3 生成 UniFFI 绑定（Dart + Kotlin，--dart 显式启用）"
 bash crates/ffi/regenerate.sh "$MODE" --dart
 
