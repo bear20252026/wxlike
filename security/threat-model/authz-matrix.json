@@ -134,12 +134,36 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/admin/identity/devices/{id}",
+      "handler": "device_metadata_view",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "device",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/admin/identity/devices/{id}/revoke",
       "handler": "revoke_device",
       "module": "crates/platform/src/identity_admin.rs",
       "auth": "admin",
       "object": "endpoint",
+      "scope": "admin",
+      "tests": [
+        "unauth_sweep_rejects_every_private_route"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/identity/groups/{id}",
+      "handler": "group_metadata_view",
+      "module": "crates/platform/src/identity_admin.rs",
+      "auth": "admin",
+      "object": "group",
       "scope": "admin",
       "tests": [
         "unauth_sweep_rejects_every_private_route"
