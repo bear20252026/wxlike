@@ -177,6 +177,20 @@ pub enum WireFrame {
         /// 本地游标。
         cursor: u64,
     },
+    /// hub 间转发帧；浏览器永远不会发送或使用，镜像只为枚举序号一致。
+    RoutedMsg {
+        /// 源 hub id。
+        source_hub: String,
+        /// 原始内容信封。
+        envelope: Envelope,
+    },
+    /// hub 间投递回执；浏览器永远不会发送或使用。
+    DeliveryReceipt {
+        /// 源 outbox 的消息键。
+        msg_key: String,
+        /// 收件人。
+        recipient: String,
+    },
 }
 
 impl WireFrame {

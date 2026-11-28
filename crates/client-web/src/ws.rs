@@ -382,7 +382,9 @@ fn handle_frame(shared: &Shared, socket: &WebSocket, config: &Config, frame: Wir
         | WireFrame::ClientHello { .. }
         | WireFrame::Subscribe { .. }
         | WireFrame::Ack { .. }
-        | WireFrame::Resume { .. } => {}
+        | WireFrame::Resume { .. }
+        | WireFrame::RoutedMsg { .. }
+        | WireFrame::DeliveryReceipt { .. } => {}
     }
 }
 
