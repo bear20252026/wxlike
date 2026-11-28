@@ -1334,20 +1334,15 @@ async fn forward_message(
 
     // 转发与 send 共用同一套幂等派生：同一个 key 的第二次请求不能再生成新的
     // `sent_at_ms`，否则 hub 的完整 envelope 比较会把正常重试判成冲突。先回读
-    // 已落库的转发；并发重试输掉时再回读一次，同请求返回原 msg_id、异请求 409。
+    // 已落库的转发，同请求直接返回原 msg_id；并发输掉的一方如实回 409，重试
+    // 会回到已落库的那条。
     if let Some(msg_id) = http_send_replay(&deps, &env)? {
         return Ok(forward_ok(&to_conv, msg_id));
     }
-    match deps.hub.submit(&authed.user_id, &env).await {
-        Ok(()) => {}
-        Err(error) if error.is::<wxlike_net::mq_hub::QuoteReplayConflict>() => {
-            if let Some(msg_id) = http_send_replay(&deps, &env)? {
-                return Ok(forward_ok(&to_conv, msg_id));
-            }
-            return Err(send_error(error));
-        }
-        Err(error) => return Err(internal(error)),
-    }
+    deps.hub
+        .submit(&authed.user_id, &env)
+        .await
+        .map_err(send_error)?;
     Ok(forward_ok(&to_conv, env.msg_id))
 }
 

@@ -61,4 +61,4 @@
 
 ### 第三轮补丁：转发幂等
 
-`mailbox_mirror::http_forward_copies_into_the_target_conversation` 的第二次同 key 转发返回 500：`build_forward` 每次重新生成 `sent_at_ms`，hub 的完整 envelope 比较把正常重试判成 `QuoteReplayConflict`，`forward_message` 又把它统一映射成 500。转发入口改为与 `/send` 共用 `http_send_replay`：先回读已落库转发，同请求直接返回原 `msg_id`；并发冲突后再回读一次，同请求成功、异请求 409。本地 `cargo test -p wxlike-server --test mailbox_mirror` 13 passed。
+`mailbox_mirror::http_forward_copies_into_the_target_conversation` 的第二次同 key 转发返回 500：`build_forward` 每次重新生成 `sent_at_ms`，hub 的完整 envelope 比较把正常重试判成 `QuoteReplayConflict`，`forward_message` 又把它统一映射成 500。转发入口改为与 `/send` 共用 `http_send_replay`：先回读已落库转发，同请求直接返回原 `msg_id`；并发输掉的一方如实回 409，重试会回到已落库的那条。本地 `cargo test -p wxlike-server --test mailbox_mirror` 13 passed。
