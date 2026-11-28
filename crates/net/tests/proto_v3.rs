@@ -7,6 +7,7 @@
 //! covered by the existing QUIC/WS suites (`offline_reconnect`, `multi_device`,
 //! `route_lease`), which is what "旧协议兼容" has to mean in practice.
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,9 +51,21 @@ struct Peer {
 impl Peer {
     /// Attach a fresh connection to the hub and return the client halves.
     fn attach(hub: &MqHub) -> Self {
+        Self::attach_inner(hub, None)
+    }
+
+    /// Same, but presents a peer IP to the pre-auth per-IP budget.
+    fn attach_from(hub: &MqHub, ip: IpAddr) -> Self {
+        Self::attach_inner(hub, Some(ip))
+    }
+
+    fn attach_inner(hub: &MqHub, ip: Option<IpAddr>) -> Self {
         let (hub_out, client_in) = tokio::io::duplex(64 * 1024);
         let (client_out, hub_in) = tokio::io::duplex(64 * 1024);
-        let conn = PeerConn::new(Box::new(WriteHalf(hub_out)), Box::new(ReadHalf(hub_in)));
+        let mut conn = PeerConn::new(Box::new(WriteHalf(hub_out)), Box::new(ReadHalf(hub_in)));
+        if let Some(ip) = ip {
+            conn = conn.with_peer_ip(ip);
+        }
         hub.handle().attach_transport(conn);
         Self {
             to_hub: client_out,
@@ -502,6 +515,129 @@ async fn the_connection_ceiling_is_enforced_per_user() {
     }
     // the first connection is untouched by the refusal: it still gets a reply
     first.send(&WireFrame::Ping).await;
+    hub.shutdown().await;
+}
+
+#[tokio::test]
+async fn simultaneous_handshakes_cannot_exceed_the_per_user_ceiling() {
+    let limits = Limits {
+        max_conns_per_user: 1,
+        max_preauth_conns: 16,
+        ..Limits::default()
+    };
+    let hub = hub_with(limits, false).await;
+    let mut peers: Vec<Peer> = (0..8).map(|_| Peer::attach(&hub)).collect();
+    for peer in peers.iter_mut() {
+        peer.send(&WireFrame::Hello {
+            token: "eve".into(),
+        })
+        .await;
+    }
+    let mut accepted = 0usize;
+    for peer in peers.iter_mut() {
+        match peer.next().await.expect("a verdict for every handshake") {
+            WireFrame::HelloAck { user_id, .. } => {
+                assert_eq!(user_id, "eve");
+                accepted += 1;
+            }
+            WireFrame::HelloReject { reason } => {
+                assert!(reason.contains("too many"), "{reason}");
+            }
+            other => panic!("unexpected frame {other:?}"),
+        }
+    }
+    assert_eq!(accepted, 1, "the check and the insert must be one step");
+    assert_eq!(hub.handle().conn_count("eve").await, 1);
+    hub.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_slow_handshake_is_closed_at_the_deadline() {
+    let limits = Limits {
+        handshake_timeout_ms: 50,
+        ..Limits::default()
+    };
+    let hub = hub_with(limits, false).await;
+    let mut peer = Peer::attach(&hub);
+    match peer.next().await.expect("the hub should send a reason") {
+        WireFrame::HelloReject { reason } => assert!(reason.contains("timed out"), "{reason}"),
+        other => panic!("expected a timeout rejection, got {other:?}"),
+    }
+    hub.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_oversized_v3_credential_is_refused_without_reading_it_as_a_frame() {
+    let limits = Limits {
+        max_credential_bytes: 16,
+        ..Limits::default()
+    };
+    let hub = hub_with(limits, false).await;
+    let mut peer = Peer::attach(&hub);
+    peer.send(&WireFrame::ClientHello {
+        device_id: "dev-x".into(),
+        protocol: wxlike_net::proto::PROTOCOL_V3,
+        caps: 0,
+    })
+    .await;
+    peer.send(&WireFrame::Hello {
+        token: "a-token-far-past-the-limit".into(),
+    })
+    .await;
+    match peer.next().await.expect("a rejection") {
+        WireFrame::HelloReject { reason } => assert!(reason.contains("credential"), "{reason}"),
+        other => panic!("expected a credential rejection, got {other:?}"),
+    }
+    hub.shutdown().await;
+}
+
+#[tokio::test]
+async fn preauth_budget_is_per_ip_and_released_after_auth() {
+    let limits = Limits {
+        max_preauth_conns_per_ip: 1,
+        max_preauth_conns: 8,
+        ..Limits::default()
+    };
+    let hub = hub_with(limits, false).await;
+    let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+    let mut first = Peer::attach_from(&hub, ip);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut second = Peer::attach_from(&hub, ip);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    match second.next().await.expect("the second peer is refused") {
+        WireFrame::HelloReject { reason } => {
+            assert!(reason.contains("unauthenticated"), "{reason}")
+        }
+        other => panic!("expected a pre-auth rejection, got {other:?}"),
+    }
+    // The first peer was never blocked; once it authenticates it releases its
+    // slot and a new connection from the same IP is admitted.
+    hello_v2(&mut first, "alice").await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut third = Peer::attach_from(&hub, ip);
+    hello_v2(&mut third, "bob").await;
+    hub.shutdown().await;
+}
+
+#[tokio::test]
+async fn preauth_global_budget_is_not_per_ip_only() {
+    let limits = Limits {
+        max_preauth_conns: 1,
+        max_preauth_conns_per_ip: 8,
+        ..Limits::default()
+    };
+    let hub = hub_with(limits, false).await;
+    let mut first = Peer::attach_from(&hub, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut second = Peer::attach_from(&hub, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    match second.next().await.expect("the global budget refuses") {
+        WireFrame::HelloReject { reason } => {
+            assert!(reason.contains("unauthenticated"), "{reason}")
+        }
+        other => panic!("expected a pre-auth rejection, got {other:?}"),
+    }
+    hello_v2(&mut first, "alice").await;
     hub.shutdown().await;
 }
 

@@ -109,6 +109,15 @@ pub struct Limits {
     pub max_msgs_per_user_per_min: u64,
     /// Frames written to one connection that are still awaiting a stored ack.
     pub max_inflight_per_conn: usize,
+    /// How long a transport may stay unauthenticated before the hub closes it.
+    pub handshake_timeout_ms: u64,
+    /// Pre-auth connections across the whole hub (slow-handshake memory bound).
+    pub max_preauth_conns: usize,
+    /// Pre-auth connections from one peer IP (one host cannot fill the hub).
+    pub max_preauth_conns_per_ip: usize,
+    /// A v3 credential frame has its own ceiling; it may arrive after a small
+    /// `ClientHello`, so the general frame limit is not enough.
+    pub max_credential_bytes: usize,
 }
 
 /// Defaults are generous on purpose: tightening them is a deployment decision,
@@ -116,6 +125,10 @@ pub struct Limits {
 const DEFAULT_CONNS_PER_USER: usize = 8;
 const DEFAULT_SUBSCRIPTIONS_PER_CONN: usize = 512;
 const DEFAULT_MSGS_PER_USER_PER_MIN: u64 = 600;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_PREAUTH_CONNS: usize = 1_024;
+const DEFAULT_PREAUTH_CONNS_PER_IP: usize = 32;
+const DEFAULT_CREDENTIAL_BYTES: usize = 8 * 1024;
 
 impl Default for Limits {
     fn default() -> Self {
@@ -125,6 +138,10 @@ impl Default for Limits {
             max_subscriptions_per_conn: DEFAULT_SUBSCRIPTIONS_PER_CONN,
             max_msgs_per_user_per_min: DEFAULT_MSGS_PER_USER_PER_MIN,
             max_inflight_per_conn: crate::delivery::MAX_INFLIGHT_PER_CONNECTION,
+            handshake_timeout_ms: DEFAULT_HANDSHAKE_TIMEOUT_MS,
+            max_preauth_conns: DEFAULT_PREAUTH_CONNS,
+            max_preauth_conns_per_ip: DEFAULT_PREAUTH_CONNS_PER_IP,
+            max_credential_bytes: DEFAULT_CREDENTIAL_BYTES,
         }
     }
 }

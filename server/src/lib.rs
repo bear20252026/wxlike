@@ -731,21 +731,25 @@ async fn serve_http_loop(
 /// multi-device fan-out, parking, dedup and receipts behave identically.
 fn ws_routes(handle: HubHandle) -> Router {
     use axum::extract::ws::WebSocketUpgrade;
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
     Router::new().route(
         "/ws",
-        get(move |upgrade: WebSocketUpgrade| async move {
-            // AR-2/H-9 (audit round 4): one resource boundary for both
-            // transports. The QUIC path caps frames at MAX_FRAME before
-            // allocating; an unauthenticated WS peer used to be able to push
-            // the axum default (64 MiB) per message.
-            upgrade
-                .max_message_size(wxlike_net::framing::MAX_FRAME as usize)
-                .max_frame_size(wxlike_net::framing::MAX_FRAME as usize)
-                .on_upgrade(move |socket| async move {
-                    let conn = wxlike_net::conn::ws::peer_conn(socket);
-                    let _ = handle.attach_transport(conn).await;
-                })
-        }),
+        get(
+            move |ConnectInfo(peer): ConnectInfo<SocketAddr>, upgrade: WebSocketUpgrade| async move {
+                // AR-2/H-9 (audit round 4): one resource boundary for both
+                // transports. The QUIC path caps frames at MAX_FRAME before
+                // allocating; an unauthenticated WS peer used to be able to push
+                // the axum default (64 MiB) per message.
+                upgrade
+                    .max_message_size(wxlike_net::framing::MAX_FRAME as usize)
+                    .max_frame_size(wxlike_net::framing::MAX_FRAME as usize)
+                    .on_upgrade(move |socket| async move {
+                        let conn = wxlike_net::conn::ws::peer_conn(socket, peer.ip());
+                        let _ = handle.attach_transport(conn).await;
+                    })
+            },
+        ),
     )
 }
 

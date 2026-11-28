@@ -20,7 +20,9 @@
 //!    silently rather than reported as an error.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use tokio::sync::{Mutex, RwLock};
@@ -196,6 +198,71 @@ impl MqHub {
 
 type Peers = Arc<RwLock<HashMap<String, HashMap<ConnId, PeerConn>>>>;
 
+/// Pre-authentication connection budget. A connection consumes one global
+/// slot and, when the carrier exposes a peer address, one per-IP slot until it
+/// has authenticated and registered. Slots are RAII so every early return
+/// (bad frame, timeout, auth failure) releases them.
+struct PreauthBudget {
+    global: Arc<tokio::sync::Semaphore>,
+    per_ip: std::sync::Mutex<HashMap<IpAddr, usize>>,
+    max_per_ip: usize,
+}
+
+struct PreauthPermit {
+    budget: Arc<PreauthBudget>,
+    ip: Option<IpAddr>,
+    _global: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl PreauthBudget {
+    fn new(max_global: usize, max_per_ip: usize) -> Arc<Self> {
+        Arc::new(Self {
+            global: Arc::new(tokio::sync::Semaphore::new(max_global)),
+            per_ip: std::sync::Mutex::new(HashMap::new()),
+            max_per_ip,
+        })
+    }
+
+    /// The error is the metric label of the budget that refused: the global
+    /// one or this peer IP's. The global permit is dropped automatically on
+    /// the per-IP path.
+    fn try_acquire(self: &Arc<Self>, ip: Option<IpAddr>) -> Result<PreauthPermit, &'static str> {
+        let global = self
+            .global
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "max_preauth_conns")?;
+        if let Some(addr) = ip {
+            let mut counts = self.per_ip.lock().expect("preauth ip counts poisoned");
+            let held = counts.get(&addr).copied().unwrap_or(0);
+            if held >= self.max_per_ip {
+                return Err("max_preauth_conns_per_ip");
+            }
+            counts.insert(addr, held + 1);
+        }
+        Ok(PreauthPermit {
+            budget: self.clone(),
+            ip,
+            _global: global,
+        })
+    }
+}
+
+impl Drop for PreauthPermit {
+    fn drop(&mut self) {
+        if let Some(addr) = self.ip {
+            if let Ok(mut counts) = self.budget.per_ip.lock() {
+                if let Some(held) = counts.get_mut(&addr) {
+                    *held = held.saturating_sub(1);
+                    if *held == 0 {
+                        counts.remove(&addr);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 主动断开连接的句柄。QUIC 用整个连接（`close` 立即断开，所有流 reset）；
 /// WS 载体没有等价的单句柄，走 [`PeerConn::close`]。
 pub(crate) enum ConnCloser {
@@ -223,6 +290,8 @@ struct HubState {
     auth: Option<Arc<dyn crate::auth::HubAuthenticator>>,
     /// G03-04：四级速率上限的生效值。
     limits: Limits,
+    /// H-36：未认证连接预算（全局 + 每 IP），握手完成即释放。
+    preauth: Arc<PreauthBudget>,
     /// G03-02：写了但还没被客户端确认落库的帧（按连接、有上界）。
     inflight: Arc<InflightLedger>,
     /// 每用户发送令牌桶（`limits.max_msgs_per_user_per_min`）。
@@ -507,6 +576,7 @@ fn build_hub_state(hub_id: String, router: MqRouter, options: MqHubOptions) -> A
         policy,
         auth,
         inflight: Arc::new(InflightLedger::with_cap(limits.max_inflight_per_conn)),
+        preauth: PreauthBudget::new(limits.max_preauth_conns, limits.max_preauth_conns_per_ip),
         limits,
         user_rate: Arc::new(RwLock::new(HashMap::new())),
         subscriptions: Arc::new(RwLock::new(HashMap::new())),
@@ -756,10 +826,11 @@ async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) -> anyhow::Result<()
 }
 
 async fn serve_conn(conn: quinn::Connection, state: Arc<HubState>) -> anyhow::Result<()> {
+    let peer_ip = conn.remote_address().ip();
     let (send, recv) = conn.accept_bi().await.context("accept control stream")?;
     serve_transport(
         state,
-        PeerConn::quic(send, recv),
+        PeerConn::quic(send, recv).with_peer_ip(peer_ip),
         Some(ConnCloser::Quic(conn)),
     )
     .await
@@ -820,7 +891,7 @@ async fn accept_hello(state: &Arc<HubState>, conn: &PeerConn) -> anyhow::Result<
         } => {
             negotiated = negotiate_or_reject(conn, protocol, caps).await?;
             device_id = dev;
-            read_credential(conn).await?
+            read_credential(state, conn).await?
         }
         WireFrame::Hello { token } => token,
         _ => anyhow::bail!("first frame was not Hello"),
@@ -858,9 +929,19 @@ async fn negotiate_or_reject(
     }
 }
 
-/// `ClientHello` 之后的凭证帧：只接受 `Hello{token}`。
-async fn read_credential(conn: &PeerConn) -> anyhow::Result<String> {
+/// `ClientHello` 之后的凭证帧：只接受 `Hello{token}`，并有独立的大小上限。
+/// A tiny `ClientHello` must not buy a full `max_frame_bytes` credential read.
+async fn read_credential(state: &Arc<HubState>, conn: &PeerConn) -> anyhow::Result<String> {
     let next = conn.read_frame().await.context("await credential")?;
+    if next.len() > state.limits.max_credential_bytes {
+        state.metrics.limit_dropped("max_credential_bytes");
+        reject_hello(conn, "credential frame too large").await;
+        anyhow::bail!(
+            "credential frame {} bytes over the ceiling {}",
+            next.len(),
+            state.limits.max_credential_bytes
+        );
+    }
     match WireFrame::from_bytes(&next)? {
         WireFrame::Hello { token } => Ok(token),
         _ => anyhow::bail!("ClientHello must be followed by a Hello credential"),
@@ -887,24 +968,22 @@ async fn authenticate_hello(
         reject_hello(conn, "invalid or expired credential").await;
         anyhow::bail!("invalid credential");
     };
-    let user_id = identity.user_id.clone();
+    Ok(identity)
+}
 
-    // 设备数上限（G03-04 要求 3）。判断依据是在册连接数，不是启发式：
-    // peers 就是权威表，满了还放会把单个用户的写放大成 DoS 面。
-    {
-        let peers = state.peers.read().await;
-        let held = peers.get(&user_id).map(|m| m.len()).unwrap_or(0);
-        if held >= state.limits.max_conns_per_user {
-            state.metrics.limit_dropped("max_conns_per_user");
-            reject_hello(conn, "too many live connections for this account").await;
-            anyhow::bail!("connection ceiling for {user_id}: {held}");
-        }
-    }
-
-    // 告诉客户端它是谁：`user_id` 由服务端给出，客户端不再自己拼。
+/// Tell the client who it is and which device/protocol generation this
+/// connection claims. Called only after the peer has been admitted by
+/// [`register_connection`], so an over-limit connection never receives an
+/// `HelloAck` first.
+async fn confirm_hello(
+    state: &Arc<HubState>,
+    conn: &PeerConn,
+    hello: &Hello,
+    identity: &crate::auth::HubIdentity,
+) -> anyhow::Result<()> {
     conn.send_frame(
         &WireFrame::HelloAck {
-            user_id: user_id.clone(),
+            user_id: identity.user_id.clone(),
             session_id: identity.session_id.clone(),
         }
         .to_bytes()?,
@@ -915,7 +994,7 @@ async fn authenticate_hello(
         // v3 的第二张回执：这条连接认领的是哪个设备、哪个协议世代。
         conn.send_frame(
             &WireFrame::Auth {
-                user_id: user_id.clone(),
+                user_id: identity.user_id.clone(),
                 device_id: hello.device_id.clone(),
                 session_id: identity.session_id.clone(),
                 version: hello.negotiated.version,
@@ -926,7 +1005,7 @@ async fn authenticate_hello(
         .context("send v3 auth")?;
     }
     state.metrics.protocol_negotiated(hello.negotiated.version);
-    Ok(identity)
+    Ok(())
 }
 
 /// 把连接登记进 peers / 设备表 / closer 表，并绑定带世代的路由。
@@ -938,12 +1017,28 @@ async fn register_connection(
     device_id: &str,
     closer: Option<ConnCloser>,
 ) -> anyhow::Result<u64> {
-    register_peer(state, conn, conn_id, user_id, device_id, closer).await;
+    if !register_peer(state, conn, conn_id, user_id, device_id, closer).await {
+        anyhow::bail!("connection ceiling for {user_id}");
+    }
     ensure_user_bucket(state, user_id).await;
-    bind_route(state, user_id).await
+    match bind_route(state, user_id).await {
+        Ok(generation) => Ok(generation),
+        Err(err) => {
+            // The peer row was inserted first; a route failure must not leave
+            // a ghost connection counting against the per-user ceiling.
+            let keep_bound = drop_conn_registrations(state, user_id, conn_id).await;
+            if !keep_bound {
+                state.user_rate.write().await.remove(user_id);
+            }
+            state.metrics.disconnected();
+            Err(err)
+        }
+    }
 }
 
-/// peers / 设备表 / closer 表 + 在线计数。
+/// peers / 设备表 / closer 表 + 在线计数。The per-user ceiling is checked
+/// and the row inserted under one write lock: two simultaneous handshakes can
+/// no longer both observe `held = max - 1` and both be admitted.
 async fn register_peer(
     state: &Arc<HubState>,
     conn: &PeerConn,
@@ -951,14 +1046,22 @@ async fn register_peer(
     user_id: &str,
     device_id: &str,
     closer: Option<ConnCloser>,
-) {
-    state
-        .peers
-        .write()
-        .await
-        .entry(user_id.to_string())
-        .or_default()
-        .insert(conn_id, conn.clone());
+) -> bool {
+    let admitted = {
+        let mut peers = state.peers.write().await;
+        let entry = peers.entry(user_id.to_string()).or_default();
+        if entry.len() >= state.limits.max_conns_per_user {
+            false
+        } else {
+            entry.insert(conn_id, conn.clone());
+            true
+        }
+    };
+    if !admitted {
+        state.metrics.limit_dropped("max_conns_per_user");
+        reject_hello(conn, "too many live connections for this account").await;
+        return false;
+    }
     if !device_id.is_empty() {
         state
             .conn_devices
@@ -970,6 +1073,7 @@ async fn register_peer(
         state.conn_closers.write().await.insert(conn_id, c);
     }
     state.metrics.connected();
+    true
 }
 
 /// 每个用户一枚令牌桶；首条连接时按配置初始化。
@@ -1184,11 +1288,38 @@ async fn serve_transport(
     let conn_id = state
         .next_conn
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let hello = accept_hello(&state, &conn).await?;
+    let preauth = match state.preauth.try_acquire(conn.peer_ip()) {
+        Ok(permit) => permit,
+        Err(limit) => {
+            state.metrics.limit_dropped(limit);
+            reject_hello(&conn, "too many unauthenticated connections").await;
+            anyhow::bail!("pre-auth connection budget exhausted");
+        }
+    };
+    let hello = match tokio::time::timeout(
+        Duration::from_millis(state.limits.handshake_timeout_ms.max(1)),
+        accept_hello(&state, &conn),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            state.metrics.limit_dropped("handshake_timeout");
+            reject_hello(&conn, "handshake timed out").await;
+            anyhow::bail!("handshake deadline exceeded");
+        }
+    };
     let identity = authenticate_hello(&state, &conn, &hello).await?;
     let user_id = identity.user_id.clone();
     let generation =
         register_connection(&state, &conn, conn_id, &user_id, &hello.device_id, closer).await?;
+    // Handshake is over: this connection no longer consumes the pre-auth
+    // budget, even if it later stays connected for hours.
+    drop(preauth);
+    if let Err(err) = confirm_hello(&state, &conn, &hello, &identity).await {
+        release_conn(&state, &user_id, conn_id, generation).await;
+        return Err(err);
+    }
 
     let session = Session {
         user_id: &user_id,

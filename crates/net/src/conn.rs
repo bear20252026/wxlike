@@ -15,6 +15,7 @@
 //! other layer.
 
 use anyhow::Context as _;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -45,6 +46,10 @@ pub type SharedRx = Arc<Mutex<Box<dyn FrameRx>>>;
 pub struct PeerConn {
     tx: SharedTx,
     rx: SharedRx,
+    /// Best-effort transport peer address, when the carrier exposes one.
+    /// The hub uses it for the pre-auth per-IP budget only; it is never an
+    /// identity or an authorization input.
+    peer_ip: Option<IpAddr>,
 }
 
 impl PeerConn {
@@ -52,6 +57,7 @@ impl PeerConn {
         Self {
             tx: Arc::new(Mutex::new(Box::new(QuicTx { send }))),
             rx: Arc::new(Mutex::new(Box::new(QuicRx { recv }))),
+            peer_ip: None,
         }
     }
 
@@ -61,7 +67,20 @@ impl PeerConn {
         Self {
             tx: Arc::new(Mutex::new(tx)),
             rx: Arc::new(Mutex::new(rx)),
+            peer_ip: None,
         }
+    }
+
+    /// Attach the carrier's observed peer address. In-process test pipes have
+    /// no address and simply skip the per-IP budget.
+    #[must_use]
+    pub fn with_peer_ip(mut self, peer_ip: IpAddr) -> Self {
+        self.peer_ip = Some(peer_ip);
+        self
+    }
+
+    pub fn peer_ip(&self) -> Option<IpAddr> {
+        self.peer_ip
     }
 
     pub async fn send_frame(&self, frame: &[u8]) -> anyhow::Result<()> {
@@ -133,9 +152,10 @@ pub mod ws {
     /// Builds a hub-facing connection from an upgraded WebSocket: one binary
     /// message per frame; ping/pong and text are not part of the protocol and
     /// are skipped (or rejected) on read.
-    pub fn peer_conn(socket: WebSocket) -> super::PeerConn {
+    pub fn peer_conn(socket: WebSocket, peer_ip: std::net::IpAddr) -> super::PeerConn {
         let (sink, stream) = socket.split();
         super::PeerConn::new(Box::new(WsTx(Mutex::new(sink))), Box::new(WsRx(stream)))
+            .with_peer_ip(peer_ip)
     }
 
     /// axum's sink is `SinkExt`-based rather than `&mut`-friendly under our
