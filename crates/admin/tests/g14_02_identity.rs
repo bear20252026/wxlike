@@ -130,6 +130,42 @@ async fn confirmation_token_is_single_use() {
 }
 
 #[tokio::test]
+async fn state_change_between_preview_and_confirm_aborts_before_domain() {
+    let mut env = Env::new("g14-02-current-race");
+    let token = env.ready("mod").await;
+    env.identity
+        .set_current("user", "u_9", json!({"user_id":"u_9","state":"active"}));
+    let (_, preview) = env
+        .call(
+            "POST",
+            "/api/g14/identity/users/u_9/suspend",
+            Some(&token),
+            Some(json!({"reason":"刷屏","current":{"state":"active"}})),
+        )
+        .await;
+    assert_eq!(preview["result"]["current"]["state"], "active", "{preview}");
+    let confirm = preview["result"]["confirmation"]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 预览之后状态被另一条路径改掉：确认令牌必须失效，且不能发域命令。
+    env.identity
+        .set_current("user", "u_9", json!({"user_id":"u_9","state":"suspended"}));
+    let (st, body) = env
+        .call(
+            "POST",
+            "/api/g14/identity/users/u_9/suspend",
+            Some(&token),
+            Some(json!({"reason":"刷屏","confirm":confirm})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("不匹配"), "{body}");
+    assert!(env.identity.calls().is_empty(), "状态变了不能真的发命令");
+}
+
+#[tokio::test]
 async fn case_can_be_reviewed_end_to_end_with_reasons() {
     let mut env = Env::new("g14-02-case");
     let token = env.ready("mod").await;
@@ -209,6 +245,18 @@ async fn case_can_be_reviewed_end_to_end_with_reasons() {
 async fn admin_never_sees_message_plaintext() {
     let mut env = Env::new("g14-02-e2ee");
     let token = env.ready("mod").await;
+    // 服务端复读到的才是权威状态；客户端 body 里的 current 只是伪造输入。
+    env.identity.set_current(
+        "user",
+        "u_11",
+        json!({
+            "user_id":"u_11",
+            "state":"active",
+            "message":"服务端也不该展示的正文",
+            "ciphertext":"QUJDREVGRw==",
+            "session_key":"aabbccdd"
+        }),
+    );
     let (st, body) = env
         .call(
             "POST",
@@ -217,8 +265,8 @@ async fn admin_never_sees_message_plaintext() {
             Some(json!({
                 "reason":"传播违规内容",
                 "current":{
-                    "user_id":"u_11",
-                    "state":"active",
+                    "user_id":"attacker-chosen",
+                    "state":"suspended",
                     "message":"明天下午三点见面",
                     "ciphertext":"QUJDREVGRw==",
                     "session_key":"aabbccdd"
@@ -228,7 +276,8 @@ async fn admin_never_sees_message_plaintext() {
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let preview = &body["result"]["current"];
-    assert_eq!(preview["user_id"], "u_11");
+    assert_eq!(preview["user_id"], "u_11", "{preview}");
+    assert_eq!(preview["state"], "active", "{preview}");
     assert_eq!(preview["dropped_fields"], 3, "{preview}");
     assert!(
         preview["content_visible"]
@@ -238,7 +287,12 @@ async fn admin_never_sees_message_plaintext() {
         "{preview}"
     );
     let dump = body.to_string();
-    for leak in ["明天下午三点见面", "QUJDREVGRw==", "aabbccdd"] {
+    for leak in [
+        "明天下午三点见面",
+        "服务端也不该展示的正文",
+        "QUJDREVGRw==",
+        "aabbccdd",
+    ] {
         assert!(!dump.contains(leak), "响应泄漏内容 {leak}: {dump}");
     }
 }

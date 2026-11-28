@@ -427,6 +427,85 @@ async fn group_govern_freeze_unfreeze_and_idempotent_replay() {
 }
 
 #[tokio::test]
+async fn device_and_group_current_views_are_read_from_the_server() {
+    let (app, path) = file_platform();
+    let victim = register(&app, "gov-current").await;
+    let operator_id = register(&app, "gov-operator-view").await;
+    let conn = sidecar(&path);
+    let operator_token = admin_session(&conn, &operator_id);
+
+    // 设备视图：管理端自己那台设备；不能把 identity_key 带出来。
+    let mut get_device = req(
+        "GET",
+        "/api/admin/identity/devices/device-admin0001",
+        None,
+        None,
+    );
+    get_device
+        .headers_mut()
+        .insert("x-admin-token", operator_token.parse().unwrap());
+    let (status, device) = call(&app, get_device).await;
+    assert_eq!(status, StatusCode::OK, "device view: {device}");
+    assert_eq!(device["device_id"], "device-admin0001", "{device}");
+    assert_eq!(device["user_id"], operator_id, "{device}");
+    assert!(!device.to_string().contains("identity_key"), "{device}");
+
+    // 群视图：创建后读 active，冻结后同一 GET 必须读到 frozen。
+    let owner = register(&app, "gov-current-owner").await;
+    let owner_tok = login(&app, "gov-current-owner").await.unwrap();
+    let (status, body) = call(
+        &app,
+        req(
+            "POST",
+            "/api/groups",
+            Some(json!({"name": "current-group", "member_ids": [victim]})),
+            Some(&owner_tok),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create group: {body}");
+    let group_id = body["group_id"].as_str().unwrap().to_string();
+
+    let mut get_group = req(
+        "GET",
+        &format!("/api/admin/identity/groups/{group_id}"),
+        None,
+        None,
+    );
+    get_group
+        .headers_mut()
+        .insert("x-admin-token", operator_token.parse().unwrap());
+    let (status, group) = call(&app, get_group).await;
+    assert_eq!(status, StatusCode::OK, "group view: {group}");
+    assert_eq!(group["group_id"], group_id, "{group}");
+    assert_eq!(group["state"], "active", "{group}");
+    assert_eq!(group["owner_uid"], owner, "{group}");
+
+    let (status, r) = call(
+        &app,
+        admin_req(
+            &format!("/api/admin/identity/groups/{group_id}/govern"),
+            json!({"reason": "current-state", "actor": "ops", "action": "freeze"}),
+            &operator_token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "freeze: {r}");
+    let mut get_group_after = req(
+        "GET",
+        &format!("/api/admin/identity/groups/{group_id}"),
+        None,
+        None,
+    );
+    get_group_after
+        .headers_mut()
+        .insert("x-admin-token", operator_token.parse().unwrap());
+    let (status, group) = call(&app, get_group_after).await;
+    assert_eq!(status, StatusCode::OK, "group view after freeze: {group}");
+    assert_eq!(group["state"], "frozen", "{group}");
+}
+
+#[tokio::test]
 async fn metadata_view_is_whitelist_projection_with_counts() {
     let (app, path) = file_platform();
     let victim = register(&app, "gov-viewed").await;

@@ -69,6 +69,14 @@ pub trait PlatformPort: Send + Sync {
     async fn unsuspend_user(&self, cmd: &Command) -> Result<Effect>;
     async fn revoke_device(&self, cmd: &Command) -> Result<Effect>;
     async fn govern_group(&self, cmd: &Command) -> Result<Effect>;
+    /// 服务端复读目标当前状态。`object_kind` 是 `user` / `device` / `group`。
+    /// 危险操作预览与确认都用这条只读路径，客户端不能提供状态。
+    async fn current_state(
+        &self,
+        object_kind: &str,
+        target: &str,
+        actor: &str,
+    ) -> Result<serde_json::Value>;
 }
 
 /// 转发到平台管理面。路径与平台端点一一对应，id 先过 [`upstream::check_target`]。
@@ -170,6 +178,27 @@ impl PlatformPort for HttpPort {
         )
         .await
     }
+
+    async fn current_state(
+        &self,
+        object_kind: &str,
+        target: &str,
+        actor: &str,
+    ) -> Result<serde_json::Value> {
+        let path_template = match object_kind {
+            "user" => "/api/admin/identity/users/{id}",
+            "device" => "/api/admin/identity/devices/{id}",
+            "group" => "/api/admin/identity/groups/{id}",
+            other => {
+                return Err(AdminError::bad_input(format!(
+                    "未知的危险操作对象类型 {other}"
+                )))
+            }
+        };
+        let path = upstream::render_path(path_template, Some(target))?;
+        let reply = self.upstream.call("GET", &path, actor, None).await?;
+        Ok(reply.body)
+    }
 }
 
 /// **只给上游未合入时的联调/测试用**。生产装配（`App::open`）只装 [`HttpPort`]。
@@ -182,11 +211,20 @@ pub struct FixturePort {
     fail_next: Mutex<Option<AdminError>>,
     delay_ms: Mutex<u64>,
     sessions_revoked: Mutex<u64>,
+    current: Mutex<HashMap<String, serde_json::Value>>,
 }
 
 impl FixturePort {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 预置服务端复读的当前状态。键是 `"<kind>:<target>"`。
+    pub fn set_current(&self, object_kind: &str, target: &str, value: serde_json::Value) {
+        self.current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(format!("{object_kind}:{target}"), value);
     }
 
     pub fn fail_next(&self, err: AdminError) {
@@ -268,6 +306,36 @@ impl PlatformPort for FixturePort {
 
     async fn govern_group(&self, cmd: &Command) -> Result<Effect> {
         self.record("govern_group", cmd)
+    }
+
+    async fn current_state(
+        &self,
+        object_kind: &str,
+        target: &str,
+        _actor: &str,
+    ) -> Result<serde_json::Value> {
+        let key = format!("{object_kind}:{target}");
+        if let Some(value) = self
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned()
+        {
+            return Ok(value);
+        }
+        // 未预置时给一个稳定的最小状态：FixturePort 是测试/联调替身，不能
+        // 让危险操作因为"没有状态"而不可预览。
+        Ok(match object_kind {
+            "user" => serde_json::json!({"user_id": target, "state": "active"}),
+            "device" => serde_json::json!({"device_id": target, "trust": "unverified"}),
+            "group" => serde_json::json!({
+                "group_id": target,
+                "state": "active",
+                "owner_uid": "",
+            }),
+            _ => serde_json::Value::Null,
+        })
     }
 }
 
@@ -365,10 +433,23 @@ impl Confirmer {
         reason: &str,
         until_ms: Option<i64>,
     ) -> Confirmation {
+        self.prepare_with_state(action, target, reason, until_ms, None)
+    }
+
+    /// 带服务端当前状态的令牌。危险操作单目标走这条：预览时拿到的状态摘要
+    /// 进指纹，确认时必须复读到同一份状态才放行。
+    pub fn prepare_with_state(
+        &self,
+        action: &str,
+        target: &str,
+        reason: &str,
+        until_ms: Option<i64>,
+        current: Option<&serde_json::Value>,
+    ) -> Confirmation {
         let now = now_ms();
         let confirmation = Confirmation {
             token: format!("cfm_{}", wxlike_platform::random_hex(16)),
-            fingerprint: fingerprint(action, target, reason, until_ms),
+            fingerprint: fingerprint_with_state(action, target, reason, until_ms, current),
             expires_at_ms: now + self.ttl_ms,
         };
         let mut pool = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
@@ -408,11 +489,24 @@ impl Default for Confirmer {
 
 /// 指纹 = 这次操作的可判定要素。理由也进来：改理由就是改处置依据，必须重新确认。
 pub fn fingerprint(action: &str, target: &str, reason: &str, until_ms: Option<i64>) -> String {
+    fingerprint_with_state(action, target, reason, until_ms, None)
+}
+
+/// 危险操作的完整指纹：目标、动作、参数、理由**与服务端当前状态的摘要**。
+/// `current` 只接受服务端复读后的白名单投影；客户端传值不会进入这里。
+pub fn fingerprint_with_state(
+    action: &str,
+    target: &str,
+    reason: &str,
+    until_ms: Option<i64>,
+    current: Option<&serde_json::Value>,
+) -> String {
     crate::audit::digest(&serde_json::json!({
         "action": action,
         "target": target,
         "reason": reason,
         "until_ms": until_ms,
+        "current_digest": current.map(crate::audit::digest),
     }))
 }
 
@@ -425,11 +519,50 @@ pub use wxlike_core::privacy::METADATA_FIELDS;
 /// 把域侧返回的对象投影成白名单元数据。非白名单字段一律丢弃，
 /// 并在结果里标出丢了几个字段——运维要知道自己没看全。
 pub fn project(raw: &serde_json::Value) -> serde_json::Value {
+    project_fields(raw, METADATA_FIELDS)
+}
+
+/// 设备预览只允许这些字段；`identity_key` 永不进入预览或指纹。
+const DEVICE_VIEW_FIELDS: &[&str] = &[
+    "device_id",
+    "user_id",
+    "platform",
+    "label",
+    "os_version",
+    "app_version",
+    "trust",
+    "created_at",
+    "last_seen",
+    "revoked_at",
+];
+
+/// 群预览只允许治理需要的元数据。
+const GROUP_VIEW_FIELDS: &[&str] = &[
+    "group_id",
+    "name",
+    "state",
+    "owner_uid",
+    "visibility",
+    "created_at",
+];
+
+/// 服务端当前状态的只读投影。域侧返回的视图本身就是白名单，这里再做一遍
+/// 字段裁剪：即使上游以后多塞了字段，也不会进预览/指纹/审计。
+fn current_view(object_kind: &str, raw: &serde_json::Value) -> serde_json::Value {
+    match object_kind {
+        "user" => project(raw),
+        "device" => project_fields(raw, DEVICE_VIEW_FIELDS),
+        "group" => project_fields(raw, GROUP_VIEW_FIELDS),
+        _ => project_fields(raw, &[]),
+    }
+}
+
+fn project_fields(raw: &serde_json::Value, fields: &[&str]) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     let mut dropped = 0usize;
     if let Some(map) = raw.as_object() {
         for (k, v) in map {
-            if METADATA_FIELDS.contains(&k.as_str()) {
+            if fields.contains(&k.as_str()) {
                 out.insert(k.clone(), v.clone());
             } else {
                 dropped += 1;
@@ -577,6 +710,9 @@ enum DangerPrep {
         target: String,
         reason: String,
         cmd: Command,
+        /// 确认时服务端复读到的当前状态（已投影）。进审计，证明操作人
+        /// 确认的是哪一份状态。
+        current: serde_json::Value,
     },
 }
 
@@ -591,8 +727,6 @@ pub struct DangerRequest {
     pub until_ms: Option<i64>,
     /// `None` = 只预览（dry run），`Some` = 真的执行。
     pub confirm: Option<String>,
-    /// 域侧当前状态摘要，用于预览与审计的 `before`。
-    pub current: serde_json::Value,
 }
 
 impl IdentityService {
@@ -875,25 +1009,52 @@ impl IdentityService {
         let svc = self.clone();
         let op = op.to_string();
         let kind = object_kind.to_string();
+        let target = upstream::check_target(&req.target)?;
+        // 预览与确认都必须先由服务端复读当前状态；客户端 body 里的 current
+        // 已不在请求结构里。复读失败就拒绝，不拿陈旧/伪造状态做确认。
+        let current = self
+            .port
+            .current_state(object_kind, &target, &req.actor)
+            .await?;
         let req_for_prepare = req.clone();
         let (op_for_prepare, kind_for_prepare) = (op.clone(), kind.clone());
+        let target_for_prepare = target.clone();
+        let current_for_prepare = current.clone();
         let prepared = offload(move || {
-            svc.danger_prepare(&req_for_prepare, &op_for_prepare, &kind_for_prepare)
+            svc.danger_prepare(
+                &req_for_prepare,
+                &op_for_prepare,
+                &kind_for_prepare,
+                &target_for_prepare,
+                &current_for_prepare,
+            )
         })
         .await?;
-        let (target, reason, cmd) = match prepared {
+        let (target, reason, cmd, confirmed_current) = match prepared {
             DangerPrep::Preview(preview) => return Ok(Dangerous::Preview(preview)),
             DangerPrep::Execute {
                 target,
                 reason,
                 cmd,
-            } => (target, reason, cmd),
+                current,
+            } => (target, reason, cmd, current),
         };
 
         // 执行并留痕。失败也留痕（含上游 5xx / 传输失败）；留痕段整段进池。
         let outcome = run(cmd).await;
         let svc = self.clone();
-        offload(move || svc.record_effect(&req, &op, &kind, &target, &reason, outcome)).await
+        offload(move || {
+            svc.record_effect(
+                &req,
+                &op,
+                &kind,
+                &target,
+                &reason,
+                &confirmed_current,
+                outcome,
+            )
+        })
+        .await
     }
 
     /// [`Self::danger`] 的同步前段：准入 + 两阶段确认。整段在阻塞池里跑。
@@ -902,9 +1063,12 @@ impl IdentityService {
         req: &DangerRequest,
         op: &str,
         object_kind: &str,
+        target: &str,
+        current: &serde_json::Value,
     ) -> Result<DangerPrep> {
         let reason = required_reason(&req.reason)?;
-        let target = upstream::check_target(&req.target)?;
+        let target = upstream::check_target(target)?;
+        let current = current_view(object_kind, current);
 
         // 1) 准入：角色 + 步进验证。被拒也留痕——"谁试过封号"是运维要看的。
         let gate = auth::require(req.role, resource_for(object_kind), Action::Destructive)
@@ -915,15 +1079,21 @@ impl IdentityService {
         }
 
         // 2) 两阶段：没带确认令牌就只发预览。
-        let want = fingerprint(op, &target, &reason, req.until_ms);
+        let want = fingerprint_with_state(op, &target, &reason, req.until_ms, Some(&current));
         let Some(token) = req.confirm.as_deref() else {
-            let confirmation = self.confirmer.prepare(op, &target, &reason, req.until_ms);
+            let confirmation = self.confirmer.prepare_with_state(
+                op,
+                &target,
+                &reason,
+                req.until_ms,
+                Some(&current),
+            );
             return Ok(DangerPrep::Preview(Preview {
                 action: op.to_string(),
                 target,
                 reason,
                 until_ms: req.until_ms,
-                current: project(&req.current),
+                current,
                 confirmation,
                 next: "确认无误后带 {\"confirm\":\"<token>\"} 重发同一请求".into(),
             }));
@@ -944,6 +1114,7 @@ impl IdentityService {
                 trace: req.trace.clone(),
                 verb: None,
             },
+            current,
         })
     }
 
@@ -973,6 +1144,7 @@ impl IdentityService {
         object_kind: &str,
         target: &str,
         reason: &str,
+        confirmed_current: &serde_json::Value,
         outcome: Result<Effect>,
     ) -> Result<Dangerous> {
         match outcome {
@@ -981,12 +1153,16 @@ impl IdentityService {
                     Draft::new(&req.actor, req.role.as_str(), op, object_kind, target)
                         .reason(reason)
                         .trace(&req.trace)
-                        .before(effect.before.clone())
+                        // 审计的 before 是操作人确认过的服务端预览，不是上游
+                        // 回执里可能已经变化的状态；上游 before 放 detail 对照。
+                        .before(confirmed_current.clone())
                         .after(effect.after.clone())
                         .detail(serde_json::json!({
                             "reference": effect.reference,
                             "sessions_revoked": effect.sessions_revoked,
                             "already": effect.already,
+                            "confirmed_current": confirmed_current,
+                            "upstream_before": effect.before,
                         })),
                 )?;
                 Ok(Dangerous::Done(effect))
@@ -997,7 +1173,10 @@ impl IdentityService {
                         .reason(reason)
                         .trace(&req.trace)
                         .outcome(Outcome::Failed)
-                        .detail(serde_json::json!({"error": err.to_string()})),
+                        .detail(serde_json::json!({
+                            "error": err.to_string(),
+                            "confirmed_current": confirmed_current,
+                        })),
                 )?;
                 Err(err)
             }
@@ -1066,7 +1245,6 @@ mod tests {
             reason: "举报成立：冒充客服".into(),
             until_ms: None,
             confirm: None,
-            current: serde_json::json!({"user_id": "u_1001", "state": "active", "message": "正文"}),
         }
     }
 
@@ -1179,6 +1357,46 @@ mod tests {
     }
 
     #[test]
+    fn confirmation_is_bound_to_the_server_state() {
+        let confirmer = Confirmer::new();
+        let active = serde_json::json!({"user_id": "u1", "state": "active"});
+        let suspended = serde_json::json!({"user_id": "u1", "state": "suspended"});
+        let c = confirmer.prepare_with_state("suspend", "u1", "理由", None, Some(&active));
+        let same = fingerprint_with_state("suspend", "u1", "理由", None, Some(&active));
+        assert!(confirmer.consume(&c.token, &same).is_ok());
+
+        let c = confirmer.prepare_with_state("suspend", "u1", "理由", None, Some(&active));
+        let changed = fingerprint_with_state("suspend", "u1", "理由", None, Some(&suspended));
+        let err = confirmer.consume(&c.token, &changed).unwrap_err();
+        assert!(err.to_string().contains("不匹配"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_state_change_between_preview_and_confirm_aborts_the_danger_action() {
+        let (svc, port, store) = service();
+        open_step_up(&store, "ops");
+        port.set_current(
+            "user",
+            "u_1001",
+            serde_json::json!({"user_id": "u_1001", "state": "active"}),
+        );
+        let preview = preview_of(svc.suspend(req("ops", Role::Moderator)).await.unwrap());
+        assert_eq!(preview.current["state"], "active");
+
+        // 预览后对象被别的人/别的事改了：确认时必须复读到同一状态才放行。
+        port.set_current(
+            "user",
+            "u_1001",
+            serde_json::json!({"user_id": "u_1001", "state": "suspended"}),
+        );
+        let mut confirmed = req("ops", Role::Moderator);
+        confirmed.confirm = Some(preview.confirmation.token);
+        let err = svc.suspend(confirmed).await.unwrap_err();
+        assert!(err.to_string().contains("不匹配"), "{err}");
+        assert!(port.calls().is_empty(), "状态变了不能真的发命令");
+    }
+
+    #[test]
     fn expired_confirmation_is_refused() {
         let confirmer = Confirmer::with_ttl(1);
         let c = confirmer.prepare("suspend", "u1", "理由", None);
@@ -1238,6 +1456,16 @@ mod tests {
             "{actions:?}"
         );
         assert!(log.rows.iter().all(|e| !e.reason.is_empty()));
+        let suspend = log
+            .rows
+            .iter()
+            .find(|e| e.action == "suspend")
+            .expect("suspend audit row");
+        assert_eq!(
+            suspend.detail["confirmed_current"]["state"], "active",
+            "执行审计必须留下确认时的服务端状态: {:?}",
+            suspend.detail
+        );
     }
 
     #[tokio::test]

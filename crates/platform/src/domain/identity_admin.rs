@@ -8,14 +8,15 @@
 //! `await`，事务边界保持在一次连接守卫内。
 
 use crate::domain::qr_login::id_err;
-use crate::error::ApiError;
+use crate::error::{ApiError, PlatformError};
 use crate::storage::sql_port::StorageSqlExec;
 use crate::Platform;
 use wxlike_identity::governance::{
-    self, AdminUserView, GovernCommand, GovernEffect, PlatformGovernancePort,
+    self, AdminDeviceView, AdminUserView, GovernCommand, GovernEffect, PlatformGovernancePort,
 };
 use wxlike_relations::governance::{
-    self as relations_governance, GroupGovernCommand, GroupGovernEffect, GroupGovernanceEvent,
+    self as relations_governance, AdminGroupView, GroupGovernCommand, GroupGovernEffect,
+    GroupGovernanceEvent,
 };
 
 impl Platform {
@@ -90,6 +91,43 @@ impl Platform {
             wxlike_core::types::now_ms() as i64,
         )
         .map_err(id_err)
+    }
+
+    /// 管理员设备元数据视图（服务端复读；管理端危险操作预览用）。
+    pub(crate) fn admin_device_view(
+        &self,
+        operator_token: &str,
+        device_id: &str,
+    ) -> Result<AdminDeviceView, ApiError> {
+        let c = self.db().acquire();
+        governance::device_view_with(
+            &StorageSqlExec(&c),
+            operator_token,
+            device_id,
+            wxlike_core::types::now_ms() as i64,
+        )
+        .map_err(id_err)
+    }
+
+    /// 管理员群当前状态视图。先做 Admin audience 鉴权（relations 域只读不鉴权），
+    /// 再在同一连接上读群；预览与确认都可复用。
+    pub(crate) fn admin_group_view(
+        &self,
+        operator_token: &str,
+        group_id: &str,
+    ) -> Result<AdminGroupView, ApiError> {
+        let now = wxlike_core::types::now_ms() as i64;
+        let c = self.db().acquire();
+        let exec = StorageSqlExec(&c);
+        wxlike_identity::session::authenticate_with(
+            &exec,
+            operator_token,
+            wxlike_identity::Audience::Admin,
+            now,
+        )
+        .map_err(id_err)?;
+        relations_governance::group_view_with(&exec, group_id)
+            .map_err(|err| ApiError::from(PlatformError::from(err)))
     }
 
     /// 群治理：先做 Admin audience 鉴权（relations 域函数不鉴权），再执行

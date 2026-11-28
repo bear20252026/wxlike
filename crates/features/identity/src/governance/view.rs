@@ -16,6 +16,22 @@ use crate::Result;
 
 pub use wxlike_core::privacy::METADATA_FIELDS;
 
+/// 管理端设备视图。只含设备元数据；**不含** `identity_key`（设备身份公钥的
+/// 配对私钥材料），也不含任何消息正文。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AdminDeviceView {
+    pub device_id: String,
+    pub user_id: String,
+    pub platform: String,
+    pub label: String,
+    pub os_version: String,
+    pub app_version: String,
+    pub trust: String,
+    pub created_at: i64,
+    pub last_seen: i64,
+    pub revoked_at: Option<i64>,
+}
+
 /// 管理端用户视图。**只有元数据**：没有任何消息正文/密文/会话密钥字段。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AdminUserView {
@@ -95,6 +111,31 @@ pub fn user_view_with<E: SqlExec + ?Sized>(
         report_count: counts.report_count(&target)?,
         suspended_until_ms: until_ms,
         labels,
+    })
+}
+
+/// 设备当前状态视图。管理端危险操作预览与复读共用这一条路径：服务端重新
+/// 读库，客户端不能自带状态。鉴权与用户视图同口径（Admin audience）。
+pub fn device_view_with<E: SqlExec + ?Sized>(
+    exec: &E,
+    operator_token: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<AdminDeviceView> {
+    super::authenticate_operator_with(exec, operator_token, now)?;
+    let target = check_target(device_id)?;
+    let row = crate::device::get_with(exec, &target)?.ok_or(crate::IdError::NotFound("device"))?;
+    Ok(AdminDeviceView {
+        device_id: row.device_id,
+        user_id: row.user_id,
+        platform: row.platform,
+        label: row.label,
+        os_version: row.os_version,
+        app_version: row.app_version,
+        trust: row.trust.as_str().to_string(),
+        created_at: row.created_at,
+        last_seen: row.last_seen,
+        revoked_at: row.revoked_at,
     })
 }
 
@@ -224,6 +265,19 @@ mod tests {
                 "视图出现正文相关字段 {field}: {text}"
             );
         }
+    }
+
+    #[test]
+    fn device_view_never_carries_the_identity_key() {
+        let conn = db();
+        let token = admin_token(&conn);
+        let view = device_view_with(&SqliteExec(&conn), &token, "dev-ops00001", 1_000).unwrap();
+        assert_eq!(view.user_id, "ops");
+        let text = serde_json::to_string(&view).unwrap();
+        assert!(
+            !text.contains("identity_key") && !text.contains("key-"),
+            "设备视图不能带身份密钥材料: {text}"
+        );
     }
 
     #[test]

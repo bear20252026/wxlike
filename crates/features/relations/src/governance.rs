@@ -116,6 +116,35 @@ pub struct GroupGovernEffect {
     pub events: Vec<GroupGovernanceEvent>,
 }
 
+/// 管理端群当前状态视图。只含治理需要的元数据：群名、状态、群主、可见性与
+/// 创建时间；不含成员列表之外的正文。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AdminGroupView {
+    pub group_id: String,
+    pub name: String,
+    pub state: String,
+    pub owner_uid: String,
+    pub visibility: String,
+    pub created_at: i64,
+}
+
+/// 读群当前状态（含已冻结/已解散）。**鉴权由调用方先做**（平台 HTTP 面复用
+/// identity 的 Admin audience 校验）；本函数只负责服务端复读，绝不接受调用方
+/// 自带的状态。
+pub fn group_view_with<E: RelExec + ?Sized>(exec: &E, group_id: &str) -> Result<AdminGroupView> {
+    let group_id = check_target(group_id)?;
+    let g = load_with(exec, &group_id)?;
+    let state = state_of(&g).to_string();
+    Ok(AdminGroupView {
+        group_id: g.id,
+        name: g.name,
+        state,
+        owner_uid: g.owner_uid,
+        visibility: g.visibility.as_str().to_string(),
+        created_at: g.created_at,
+    })
+}
+
 /// 治理域建表 + group_meta 补列（幂等）。由 [`crate::migrate`] 调用。
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(GOV_SCHEMA)?;
@@ -634,6 +663,20 @@ mod tests {
         assert_eq!(GroupAction::parse("freeze"), Some(GroupAction::Freeze));
         assert_eq!(GroupAction::parse("dissolve"), Some(GroupAction::Dissolve));
         assert_eq!(GroupAction::parse("nuke"), None);
+    }
+
+    #[test]
+    fn group_view_reflects_server_state_after_governance() {
+        let conn = db();
+        migrate(&conn).unwrap();
+        let id = seed(&conn);
+        let before = group_view_with(&conn, &id).unwrap();
+        assert_eq!(before.state, "active");
+        assert_eq!(before.owner_uid, "u1");
+        govern(&conn, &cmd(&id, GroupAction::Freeze), 1_100).unwrap();
+        let frozen = group_view_with(&conn, &id).unwrap();
+        assert_eq!(frozen.state, "frozen");
+        assert_eq!(frozen.group_id, id);
     }
 
     #[test]

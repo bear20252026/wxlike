@@ -735,8 +735,6 @@ struct DangerBody {
     #[serde(default)]
     confirm: Option<String>,
     #[serde(default)]
-    current: Option<serde_json::Value>,
-    #[serde(default)]
     action: Option<String>,
 }
 
@@ -762,7 +760,6 @@ fn danger_request(
         reason: body.reason,
         until_ms: body.until_ms,
         confirm: body.confirm,
-        current: body.current.unwrap_or(serde_json::Value::Null),
     })
 }
 

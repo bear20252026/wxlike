@@ -52,6 +52,11 @@ pub fn routes() -> Router<PlatformState> {
         )
         .route("/api/admin/identity/groups/{id}/govern", post(govern_group))
         .route("/api/admin/identity/users/{id}", get(user_metadata_view))
+        .route(
+            "/api/admin/identity/devices/{id}",
+            get(device_metadata_view),
+        )
+        .route("/api/admin/identity/groups/{id}", get(group_metadata_view))
 }
 
 /// spawn_blocking 的 JoinError：阻塞任务 panic/被取消时结论不可信，
@@ -208,6 +213,37 @@ async fn user_metadata_view(
 ) -> Result<Json<wxlike_identity::governance::AdminUserView>, ApiError> {
     let ran =
         tokio::task::spawn_blocking(move || platform.admin_user_view(&operator.token, &id)).await;
+    match ran {
+        Ok(Ok(view)) => Ok(Json(view)),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(join_err(err)),
+    }
+}
+
+/// `GET /api/admin/identity/devices/{id}`：设备元数据视图。设备身份密钥材料
+/// 不在视图里；只给管理端预览撤销所必需的字段。
+async fn device_metadata_view(
+    State(platform): State<PlatformState>,
+    Path(id): Path<String>,
+    operator: AdminAuthSession,
+) -> Result<Json<wxlike_identity::governance::AdminDeviceView>, ApiError> {
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_device_view(&operator.token, &id)).await;
+    match ran {
+        Ok(Ok(view)) => Ok(Json(view)),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(join_err(err)),
+    }
+}
+
+/// `GET /api/admin/identity/groups/{id}`：群当前状态视图（含冻结/解散态）。
+async fn group_metadata_view(
+    State(platform): State<PlatformState>,
+    Path(id): Path<String>,
+    operator: AdminAuthSession,
+) -> Result<Json<wxlike_relations::governance::AdminGroupView>, ApiError> {
+    let ran =
+        tokio::task::spawn_blocking(move || platform.admin_group_view(&operator.token, &id)).await;
     match ran {
         Ok(Ok(view)) => Ok(Json(view)),
         Ok(Err(err)) => Err(err),

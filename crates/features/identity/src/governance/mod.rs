@@ -50,7 +50,10 @@ pub use user::{
     remove_label_with, set_disabled, set_disabled_tx, settle_expired, settle_expired_tx, suspend,
     suspend_tx, unsuspend, unsuspend_tx, user_state, GovernCommit, UserState,
 };
-pub use view::{user_view, user_view_with, AdminUserView, NoCounts, METADATA_FIELDS};
+pub use view::{
+    device_view_with, user_view, user_view_with, AdminDeviceView, AdminUserView, NoCounts,
+    METADATA_FIELDS,
+};
 
 /// 处置理由上限（与 admin `audit::REASON_MAX_CHARS` 同口径）。
 pub const REASON_MAX_CHARS: usize = 512;

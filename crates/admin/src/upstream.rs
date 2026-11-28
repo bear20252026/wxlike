@@ -144,6 +144,24 @@ impl Upstream {
         idempotency_key: Option<&str>,
     ) -> Result<Reply> {
         let url = format!("{}{}", self.base, path);
+        if method == "GET" {
+            let req = ureq::get(&url)
+                .config()
+                .timeout_global(Some(self.timeout))
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .build()
+                .header("x-admin-token", &self.token)
+                .header("x-admin-actor", actor)
+                .header("content-type", "application/json");
+            return match req.call() {
+                Ok(mut resp) => {
+                    let (status, value) = read_json(&mut resp);
+                    finish_reply(status, value)
+                }
+                Err(err) => Err(AdminError::upstream(0, format!("连不上平台 {url}: {err}"))),
+            };
+        }
         let mut req = match method {
             "POST" => ureq::post(&url),
             "PUT" => ureq::put(&url),
