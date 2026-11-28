@@ -61,7 +61,10 @@ fn reconcile_clean_after_wallet_ops() {
     let b = p.register("bob", "pw").unwrap();
     p.fund(&a, 10_000, "seed").unwrap();
     p.transfer(&a, &b, 1_000, "lunch").unwrap();
-    let rp = p.create_redpacket(&a, 300, 3, "包", Some("d-a~b")).unwrap();
+    // H-01/H-02/H-03 之后，红包落点会校验领取人是否属于该会话；fixture 不能
+    // 再用 "d-a~b" 这种字面直聊 id，必须用注册返回的真实用户 id 拼出来。
+    let conv = format!("d-{a}~{b}");
+    let rp = p.create_redpacket(&a, 300, 3, "包", Some(&conv)).unwrap();
     p.claim_redpacket(&rp, &b).unwrap();
 
     let report = p.reconcile().unwrap();

@@ -52,3 +52,9 @@
 | `security (source + policy)` | C-02/C-04 改动锁文件后 committed SBOM 未重生成，20 条 `@esbuild/*@0.28.1` 漂移 | `sourceaudit sbom generate` 重生成；`sbom check`、`advisories check --offline`、`authz check` 本地全 PASS |
 
 本地同时通过：`sbom check`（components=1392，fail=0）、`provenance check`（fail=0 pass=78）、`advisories check --offline`（fail=0 warn=10）、`authz check`（fail=0）。
+
+### 第三轮补丁：红包对账 fixture
+
+`test ×3` / `coverage` 还暴露 `crates/platform/tests/p4_ops.rs::reconcile_clean_after_wallet_ops`：fixture 用字面 `d-a~b` 直聊 id，而 H-01/H-02/H-03 已按真实用户 id 校验会话成员，`claim_redpacket` 返回 `Forbidden`。改为用注册返回的 `a`/`b` 拼 `d-{a}~{b}`；本地 `cargo test -p wxlike-platform --test p4_ops` 18 passed。
+
+`image` job 的失败是 `anchore/sbom-action` 下载 syft v1.42.3 时 GitHub 返回 504，属外部瞬态，代码与镜像检查未失败。
